@@ -66,7 +66,7 @@ export async function approveBuilderFee(signer) {
   const client    = new ExchangeClient({ transport, wallet: signer })
   return client.approveBuilderFee({
     maxFeeRate: '0.1%',
-    builder: '0xad9be64fd7a35d99a138b87cb212baefbcdcf045',
+    builder: '0x25A267e78F51A2E4Ddd6d4951b7f7Ed752891c38',
   })
 }
 
@@ -109,7 +109,7 @@ async function placeOrderRaw({
     grouping: 'na',
   }
   if (builderFeeEnabled) {
-    params.builder = { b: '0xad9be64fd7a35d99a138b87cb212baefbcdcf045', f: 100 }
+    params.builder = { b: '0x25A267e78F51A2E4Ddd6d4951b7f7Ed752891c38', f: 100 }
   }
   return exchangeClient.order(params)
 }

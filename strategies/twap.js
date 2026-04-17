@@ -35,8 +35,9 @@ const { values: args } = parseArgs({
   allowPositionals: false,
 })
 
-if (!args.wallet) {
-  console.error('ERROR: --wallet is required (agent private key starting with 0x)')
+const walletKey = process.env.AGENT_KEY || args.wallet
+if (!walletKey) {
+  console.error('ERROR: agent key not provided')
   process.exit(1)
 }
 
@@ -56,7 +57,7 @@ if (SLICES < 1)    { console.error('ERROR: --slices must be ≥ 1'); process.exi
 // ─── CLIENTS ──────────────────────────────────────────────────────────────────
 const transport   = new HttpTransport()
 const info        = new InfoClient({ transport })
-const etherWallet = new ethers.Wallet(args.wallet)
+const etherWallet = new ethers.Wallet(walletKey)
 const exchange    = new ExchangeClient({ transport, wallet: etherWallet })
 
 // ─── LOGGING ──────────────────────────────────────────────────────────────────

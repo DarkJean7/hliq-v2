@@ -37,8 +37,9 @@ const { values: args } = parseArgs({
   strict: false,   // ignore unknown flags (e.g. --long-assets passed from UI)
 })
 
-if (!args.wallet) {
-  console.error('ERROR: --wallet is required (agent private key starting with 0x)')
+const walletKey = process.env.AGENT_KEY || args.wallet
+if (!walletKey) {
+  console.error('ERROR: agent key not provided')
   process.exit(1)
 }
 
@@ -57,7 +58,7 @@ if (LEVELS < 2)      { console.error('ERROR: --levels must be ≥ 2');          
 // ─── CLIENTS ──────────────────────────────────────────────────────────────────
 const transport   = new HttpTransport()
 const info        = new InfoClient({ transport })
-const etherWallet = new ethers.Wallet(args.wallet)
+const etherWallet = new ethers.Wallet(walletKey)
 const exchange    = new ExchangeClient({ transport, wallet: etherWallet })
 const ADDRESS     = etherWallet.address
 

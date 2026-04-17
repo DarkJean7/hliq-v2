@@ -1,6 +1,32 @@
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc } from './format.js'
 import { aggregateFillsByCoin } from './api.js'
 
+// ─── SORT / EXPAND STATE ─────────────────────────────────────────────────────
+let _tradesExpanded = false
+let _posSortKey = null, _posSortDir = 1
+let _ordSortKey  = null, _ordSortDir  = 1
+
+export function setSortPos(key) {
+  if (_posSortKey === key) _posSortDir *= -1
+  else { _posSortKey = key; _posSortDir = 1 }
+}
+export function setSortOrd(key) {
+  if (_ordSortKey === key) _ordSortDir *= -1
+  else { _ordSortKey = key; _ordSortDir = 1 }
+}
+export function toggleTradesExpanded() { _tradesExpanded = !_tradesExpanded }
+
+function _sortArrow(key, activeKey, dir) {
+  if (key !== activeKey) return `<span style="color:var(--muted);font-size:9px;margin-left:3px;opacity:0.4">^</span>`
+  return `<span style="color:var(--accent);font-size:9px;margin-left:3px">${dir === 1 ? '^' : 'v'}</span>`
+}
+function _th(key, label, activeKey, dir) {
+  return `<th style="cursor:pointer;user-select:none" onclick="window.__sortPositions('${key}')">${label}${_sortArrow(key, activeKey, dir)}</th>`
+}
+function _thOrd(key, label, activeKey, dir) {
+  return `<th style="cursor:pointer;user-select:none" onclick="window.__sortOrders('${key}')">${label}${_sortArrow(key, activeKey, dir)}</th>`
+}
+
 // ─── DURATION & STREAK HELPERS ────────────────────────────────────────────────
 
 function computeAvgHoldTime(coinFills) {
@@ -346,15 +372,55 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
 
 // ─── POSITIONS TAB ───────────────────────────────────────────────────────────
 export function renderPositions(perpState, allMids = {}) {
-  const positions = perpState.assetPositions ?? []
+  let positions = perpState.assetPositions ?? []
   const tbody = document.getElementById('positionsTbody')
 
   document.getElementById('posCount').textContent    = positions.length
   document.getElementById('posCountBig').textContent = positions.length
 
+  // Update sortable headers
+  const thead = document.querySelector('#positionsTable thead tr')
+  if (thead) {
+    const k = _posSortKey, d = _posSortDir
+    thead.innerHTML =
+      _th('coin',  'Coin',     k, d) +
+      _th('side',  'Side',     k, d) +
+      _th('size',  'Size',     k, d) +
+      _th('entry', 'Entry',    k, d) +
+      _th('mark',  'Mark',     k, d) +
+      _th('value', 'Value',    k, d) +
+      _th('pnl',   'Unr. PnL',k, d) +
+      _th('roe',   'ROE',      k, d) +
+      '<th>Liq.</th><th>Lev.</th><th>Margin</th><th>Actions</th>'
+  }
+
   if (positions.length === 0) {
     tbody.innerHTML = emptyRow(12, '📭', 'No open positions')
     return
+  }
+
+  // Apply sort
+  if (_posSortKey) {
+    const val = (p) => {
+      const pos = p.position
+      switch (_posSortKey) {
+        case 'coin':  return pos.coin
+        case 'side':  return parseFloat(pos.szi) > 0 ? 'LONG' : 'SHORT'
+        case 'size':  return Math.abs(parseFloat(pos.szi))
+        case 'entry': return parseFloat(pos.entryPx)
+        case 'mark':  return parseFloat(allMids[pos.coin] ?? 0)
+        case 'value': return parseFloat(pos.positionValue)
+        case 'pnl':   return parseFloat(pos.unrealizedPnl)
+        case 'roe':   return parseFloat(pos.returnOnEquity)
+        default:      return 0
+      }
+    }
+    positions = [...positions].sort((a, b) => {
+      const av = val(a), bv = val(b)
+      return typeof av === 'string'
+        ? av.localeCompare(bv) * _posSortDir
+        : (av - bv) * _posSortDir
+    })
   }
 
   tbody.innerHTML = positions.map((p, i) => {
@@ -456,9 +522,38 @@ export function renderOrders(openOrders, perpState) {
   document.getElementById('ordCount').textContent    = openOrders.length
   document.getElementById('ordCountBig').textContent = openOrders.length
 
+  // Update sortable headers
+  const thead = document.querySelector('#ordersTable thead tr')
+  if (thead) {
+    const k = _ordSortKey, d = _ordSortDir
+    thead.innerHTML =
+      _thOrd('coin',  'Coin',  k, d) +
+      '<th>Intent</th>' +
+      _thOrd('size',  'Size',  k, d) +
+      _thOrd('price', 'Price', k, d) +
+      '<th>Margin</th><th>Expected P&amp;L</th><th>Actions</th>'
+  }
+
   if (openOrders.length === 0) {
     tbody.innerHTML = emptyRow(7, '📋', 'No open orders')
     return
+  }
+
+  // Apply sort
+  let orders = openOrders
+  if (_ordSortKey) {
+    orders = [...openOrders].sort((a, b) => {
+      let av, bv
+      if (_ordSortKey === 'coin') { av = a.coin; bv = b.coin }
+      else if (_ordSortKey === 'size') { av = parseFloat(a.sz ?? 0); bv = parseFloat(b.sz ?? 0) }
+      else if (_ordSortKey === 'price') {
+        av = parseFloat(a.triggerPx ?? a.limitPx ?? 0)
+        bv = parseFloat(b.triggerPx ?? b.limitPx ?? 0)
+      }
+      return typeof av === 'string'
+        ? av.localeCompare(bv) * _ordSortDir
+        : (av - bv) * _ordSortDir
+    })
   }
 
   // Build a quick lookup: coin → position data
@@ -468,7 +563,7 @@ export function renderOrders(openOrders, perpState) {
     posMap[p.coin] = p
   }
 
-  tbody.innerHTML = openOrders.map(o => {
+  tbody.innerHTML = orders.map(o => {
     const isTrigger = o.isTrigger || (parseFloat(o.triggerPx ?? 0) > 0)
     const triggerPx = parseFloat(o.triggerPx ?? 0)
     const limitPx   = parseFloat(o.limitPx  ?? 0)
@@ -634,7 +729,11 @@ export function renderTrades(fills) {
   }
 
   // Render aggregated trades, newest first
-  tbody.innerHTML = trades.sort((a, b) => b.time - a.time).slice(0, 500).map(t => {
+  const LIMIT = 20
+  const sorted  = trades.sort((a, b) => b.time - a.time)
+  const visible = _tradesExpanded ? sorted : sorted.slice(0, LIMIT)
+
+  const rowHtml = visible.map(t => {
     const hasPnl  = t.closedPnl !== 0
     const netPnl  = t.closedPnl - t.fee
     const pnl     = fmtPnL(netPnl)
@@ -650,6 +749,16 @@ export function renderTrades(fills) {
       <td class="neg" style="font-size:11px">-$${fmtUSD(t.fee)}</td>
     </tr>`
   }).join('')
+
+  const expandRow = !_tradesExpanded && sorted.length > LIMIT
+    ? `<tr><td colspan="7" style="text-align:center;padding:10px 0">
+        <button class="btn-sm" onclick="window.__expandTrades()" style="width:100%;letter-spacing:.05em">
+          + Show all ${sorted.length} trades
+        </button>
+       </td></tr>`
+    : ''
+
+  tbody.innerHTML = rowHtml + expandRow
 }
 
 

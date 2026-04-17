@@ -20,6 +20,9 @@ import {
   renderTransfers,
   skeletonStatCards,
   skeletonRows,
+  setSortPos,
+  setSortOrd,
+  toggleTradesExpanded,
 } from './render.js'
 import { renderCharts, destroyCharts } from './charts.js'
 import Chart from 'chart.js/auto'
@@ -675,6 +678,15 @@ async function fetchSubAccounts(addr) {
   }
 }
 
+// Fingerprints for skip-render optimization
+let _lastPosHash  = null
+let _lastOrdHash  = null
+let _lastAcctHash = null
+
+function _fingerprint(obj) {
+  try { return JSON.stringify(obj) } catch (e) { return null }
+}
+
 async function refreshLive() {
   try {
     const info = new InfoClient({ transport: new HttpTransport() })
@@ -712,12 +724,25 @@ async function refreshLive() {
     document.getElementById('ordCount').textContent    = openOrders.length
     document.getElementById('ordCountBig').textContent = openOrders.length
 
-    // Re-render account, positions, and trade UI with updated state
-    renderAccountSection()
-    renderPositions(perpState, allMids)
-    renderOrders(openOrders, perpState)
-    renderManageTables(perpState, openOrders, allMids)
-    updateTradeBalance()
+    // Re-render only when data actually changed
+    const posHash  = _fingerprint(perpState.assetPositions)
+    const ordHash  = _fingerprint(openOrders)
+    const acctHash = _fingerprint({ mv: perpState.crossMarginSummary?.accountValue, w: perpState.withdrawable })
+
+    if (acctHash !== _lastAcctHash) {
+      renderAccountSection()
+      updateTradeBalance()
+      _lastAcctHash = acctHash
+    }
+    if (posHash !== _lastPosHash) {
+      renderPositions(perpState, allMids)
+      _lastPosHash = posHash
+    }
+    if (ordHash !== _lastOrdHash || posHash !== _lastPosHash) {
+      renderOrders(openOrders, perpState)
+      renderManageTables(perpState, openOrders, allMids)
+      _lastOrdHash = ordHash
+    }
 
     updateAccountValue(totalPerpEquity(perpState))
     maybeSendLiqNotification(perpState, state.allMids)
@@ -827,9 +852,11 @@ window.__pickWallet = async function(rdns) {
     try {
       statusEl.textContent = 'Approving...'
       const signer = getMainSigner()
-      await approveBuilderFee(signer)
+      const feeResult = await approveBuilderFee(signer)
+      console.log('approveBuilderFee result:', JSON.stringify(feeResult))
       setBuilderFeeEnabled(true)
-    } catch (_) {
+    } catch (e) {
+      console.error('approveBuilderFee failed:', e)
       setBuilderFeeEnabled(false)
     }
     dotEl.classList.add('connected')
@@ -860,8 +887,11 @@ function disconnectMainWalletUI() {
   btn.onclick = openWalletPicker
 }
 
-window.connectMainWalletUI = openWalletPicker
-window.closeWalletPicker   = () => { document.getElementById('walletPickerModal').style.display = 'none' }
+window.connectMainWalletUI  = openWalletPicker
+window.closeWalletPicker    = () => { document.getElementById('walletPickerModal').style.display = 'none' }
+window.__sortPositions      = (key) => { if (!state.perpState) return; setSortPos(key); renderPositions(state.perpState, state.allMids) }
+window.__sortOrders         = (key) => { if (!state.perpState) return; setSortOrd(key); renderOrders(state.openOrders, state.perpState) }
+window.__expandTrades       = () => { if (!state.fills) return; toggleTradesExpanded(); renderTrades(state.fills) }
 
 // ─── DEPOSIT / WITHDRAW ───────────────────────────────────────────────────────
 let _depositDest = 'perps'
@@ -1827,6 +1857,7 @@ function resetDashboard() {
   btn.disabled = true; btn.textContent = 'Connect agent key to trade'; btn.className = 'btn-trade-long'
 
   state = INITIAL_STATE()
+  _lastPosHash = null; _lastOrdHash = null; _lastAcctHash = null
 }
 
 // ─── DOWNLOADS ────────────────────────────────────────────────────────────────

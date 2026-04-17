@@ -65,8 +65,11 @@ function startStrategy(type, agentKey, extraArgs = [], scriptOverride = null) {
   const script = scriptOverride ?? SCRIPTS[type]
   if (!script) return { ok: false, error: 'No script path — fill in the Script Path field' }
 
-  const argv = [script, '--wallet', agentKey, ...extraArgs]
-  const proc = spawn('node', argv, { cwd: __dirname, env: process.env })
+  const argv = [script, ...extraArgs]
+  const proc = spawn('node', argv, {
+    cwd: __dirname,
+    env: { ...process.env, AGENT_KEY: agentKey },
+  })
   procs[type] = { proc, buffer: [] }
 
   let outBuf = '', errBuf = ''
@@ -232,6 +235,18 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('@walletconnect') || id.includes('@web3modal') || id.includes('w3m')) {
+            return 'walletconnect'
+          }
+          if (id.includes('chart.js')) {
+            return 'charts'
+          }
+        },
+      },
+    },
   },
   optimizeDeps: {
     include: ['@nktkas/hyperliquid', 'ethers', 'chart.js'],
