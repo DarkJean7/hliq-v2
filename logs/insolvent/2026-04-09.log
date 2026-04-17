@@ -1,0 +1,18 @@
+[2026-04-09 03:15:55] [START   ] ════════════════════════════════════════════════════════════
+[2026-04-09 03:15:55] [START   ] Insolvent Terminal — Strategy Manager
+[2026-04-09 03:15:55] [START   ] Address:   0xE05B576cDB74634D5c94Fb8C95f80431258992fe
+[2026-04-09 03:15:55] [START   ] Long:      BTC, SOL, HYPE, XRP
+[2026-04-09 03:15:55] [START   ] Short:     ALGO, CHILLGUY, PUMP
+[2026-04-09 03:15:55] [START   ] Cap limit: 30% | Short zone: 0.5% from 7d high | Long zone: 0.5% from 7d low | Interval: 5min
+[2026-04-09 03:15:55] [START   ] ════════════════════════════════════════════════════════════
+[2026-04-09 03:15:56] [RUN     ] ────────────────────────────────────────────────────────────
+[2026-04-09 03:15:57] [MACRO   ] BTC $70957 | 7d-high $72851 short-zone: no | 7d-low $65697 long-zone: no | 4h chg: -0.10%
+[2026-04-09 03:15:57] [MACRO   ] SPX $0.29 | 7d-high $0.32 | zone: no
+[2026-04-09 03:15:57] [ACCT    ] Value $0.00 | Available $0.00 | Capital used 0.0% / 30%
+[2026-04-09 03:15:57] [SHORT   ] BTC not in short zone — skipping
+[2026-04-09 03:15:57] [LONG    ] BTC — no position & BTC not in long zone — skipping
+[2026-04-09 03:15:57] [LONG    ] SOL — no position & BTC not in long zone — skipping
+[2026-04-09 03:15:57] [LONG    ] HYPE — no position & BTC not in long zone — skipping
+[2026-04-09 03:15:57] [LONG    ] XRP — no position & BTC not in long zone — skipping
+[2026-04-09 03:15:57] [RUN     ] Sleeping 5 min...
+[2026-04-09 03:16:06] [EXIT    ] Process exited — code ?

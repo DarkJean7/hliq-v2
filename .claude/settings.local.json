@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check strategies/dca.js)",
+      "Bash(node --check strategies/shorter.js)",
+      "Bash(node --check \"c:\\\\Users\\\\jeank\\\\OneDrive\\\\Desktop\\\\hliq\\\\strategies\\\\shorter.js\")",
+      "Bash(node --input-type=module)"
+    ]
+  }
+}
