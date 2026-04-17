@@ -824,10 +824,14 @@ window.__pickWallet = async function(rdns) {
   statusEl.style.color = 'var(--muted)'
   try {
     const addr = await connectWallet(rdns)
-    statusEl.textContent = 'Approving builder fee...'
-    const signer = getMainSigner()
-    await approveBuilderFee(signer)
-    setBuilderFeeEnabled(true)
+    try {
+      statusEl.textContent = 'Approving...'
+      const signer = getMainSigner()
+      await approveBuilderFee(signer)
+      setBuilderFeeEnabled(true)
+    } catch (_) {
+      setBuilderFeeEnabled(false)
+    }
     dotEl.classList.add('connected')
     statusEl.innerHTML = `✓ <span style="color:var(--accent)">${addr.slice(0,6)}...${addr.slice(-4)}</span> · Connected`
     statusEl.style.color = 'var(--green)'
