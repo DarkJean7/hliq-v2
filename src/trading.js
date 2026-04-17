@@ -46,9 +46,28 @@ export async function connectAgentKey(privateKey) {
 }
 
 export function disconnect() {
-  walletAddress  = null
-  exchangeClient = null
-  assetIndexCache = null
+  walletAddress    = null
+  exchangeClient   = null
+  assetIndexCache  = null
+  builderFeeEnabled = false
+}
+
+let builderFeeEnabled = false
+export function setBuilderFeeEnabled(val) { builderFeeEnabled = val }
+export function isBuilderFeeEnabled()     { return builderFeeEnabled }
+
+export async function applyReferrer() {
+  if (!exchangeClient) throw new Error('Agent key not connected')
+  return exchangeClient.setReferrer({ code: 'INSOLVENTSPARTAN' })
+}
+
+export async function approveBuilderFee(signer) {
+  const transport = new HttpTransport()
+  const client    = new ExchangeClient({ transport, wallet: signer })
+  return client.approveBuilderFee({
+    maxFeeRate: '0.1%',
+    builder: '0xad9be64fd7a35d99a138b87cb212baefbcdcf045',
+  })
 }
 
 
@@ -78,7 +97,7 @@ async function placeOrderRaw({
     })
   }
 
-  return exchangeClient.order({
+  const params = {
     orders: [{
       a: assetIndex,
       b: isBuy,
@@ -88,7 +107,11 @@ async function placeOrderRaw({
       t: orderType,
     }],
     grouping: 'na',
-  })
+  }
+  if (builderFeeEnabled) {
+    params.builder = { b: '0xad9be64fd7a35d99a138b87cb212baefbcdcf045', f: 100 }
+  }
+  return exchangeClient.order(params)
 }
 
 /**

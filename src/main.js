@@ -34,7 +34,19 @@ import {
   closePosition,
   cancelOrder,
   parseOrderResult,
+  approveBuilderFee,
+  setBuilderFeeEnabled,
+  applyReferrer,
 } from './trading.js'
+import {
+  getDiscoveredWallets,
+  getMainAddress,
+  isMainWalletConnected,
+  getMainSigner,
+  connectWallet,
+  disconnectMainWallet,
+} from './wallet.js'
+import { deposit, withdraw, getUsdcBalance } from './defi.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding } from './format.js'
 import {
   initRisk, updateAccountValue, computeLossStreak,
@@ -362,6 +374,14 @@ async function loadDashboard() {
 
     pushRecentAddr(addr)
     renderAll()
+    const _wdrawEl = document.getElementById('withdrawAvail')
+    if (_wdrawEl) {
+      const _perpWdraw  = parseFloat(state.perpState?.withdrawable ?? 0)
+      const _spotUSDC   = (state.spotState?.balances ?? []).find(b => b.coin === 'USDC')
+      const _spotFree   = _spotUSDC ? Math.max(0, parseFloat(_spotUSDC.total ?? 0) - parseFloat(_spotUSDC.hold ?? 0)) : 0
+      _withdrawAvailable = _perpWdraw + _spotFree
+      _wdrawEl.textContent = `Available: ${_withdrawAvailable.toFixed(2)} USDC`
+    }
     document.getElementById('loadingOverlay').classList.remove('active')
     document.getElementById('dashboard').classList.add('active')
 
@@ -750,6 +770,7 @@ async function connectAgentKeyUI() {
     localStorage.setItem('hliq_agent_key', keyVal)
     const stratInput = document.getElementById('agentKey')
     if (stratInput) stratInput.value = keyVal
+    applyReferrer().catch(() => {})
     updateSubmitBtn()
     updateTradeBalance()
   } catch (e) {
@@ -757,6 +778,264 @@ async function connectAgentKeyUI() {
     statusEl.style.color = 'var(--red)'
     dotEl.classList.remove('connected')
   }
+}
+
+// ─── MAIN WALLET ──────────────────────────────────────────────────────────────
+function openWalletPicker() {
+  const list    = document.getElementById('walletPickerList')
+  const wallets = getDiscoveredWallets()
+  const isMob   = /iPhone|iPad|Android/i.test(navigator.userAgent)
+  const appUrl  = encodeURIComponent(window.location.href)
+
+  let html = wallets.map(w => `
+    <button class="wallet-picker-btn" onclick="window.__pickWallet('${w.info.rdns}')">
+      <img src="${w.info.icon}" width="28" height="28" style="border-radius:6px" onerror="this.style.display='none'"/>
+      <span>${w.info.name}</span>
+    </button>
+  `).join('')
+
+  if (wallets.length === 0 && !isMob) {
+    html = `<p style="font-size:11px;color:var(--muted);text-align:center;padding:8px 0 4px">No wallet extensions detected in this browser.</p>`
+  }
+
+  const wcSep = (wallets.length > 0)
+    ? `<div style="font-size:10px;color:var(--muted);text-align:center;margin:10px 0 6px;letter-spacing:.05em">OR SCAN WITH ANY WALLET</div>`
+    : ''
+  html += `
+    ${wcSep}
+    <button class="wallet-picker-btn" onclick="window.__pickWallet('walletconnect')">
+      <svg width="28" height="28" viewBox="0 0 32 32" fill="none" style="border-radius:6px;background:#3b99fc;padding:4px">
+        <path d="M9.6 12.8c3.5-3.5 9.3-3.5 12.8 0l.4.4a.4.4 0 010 .6l-1.4 1.4a.2.2 0 01-.3 0l-.6-.6c-2.4-2.4-6.4-2.4-8.8 0l-.6.6a.2.2 0 01-.3 0L9.4 13.8a.4.4 0 010-.6l.2-.4zm15.8 3l1.2 1.2a.4.4 0 010 .6l-5.6 5.6a.4.4 0 01-.6 0l-4-4a.1.1 0 00-.2 0l-4 4a.4.4 0 01-.6 0L5.4 17.6a.4.4 0 010-.6l1.2-1.2a.4.4 0 01.6 0l4 4a.1.1 0 00.2 0l4-4a.4.4 0 01.6 0l4 4a.1.1 0 00.2 0l4-4a.4.4 0 01.6 0z" fill="white"/>
+      </svg>
+      <span>WalletConnect <span style="color:var(--muted);font-size:10px">— Uniswap, Phantom &amp; 300+ wallets</span></span>
+    </button>
+  `
+
+  list.innerHTML = html
+  document.getElementById('walletPickerModal').style.display = 'flex'
+}
+
+window.__pickWallet = async function(rdns) {
+  document.getElementById('walletPickerModal').style.display = 'none'
+  const statusEl = document.getElementById('mainWalletStatus')
+  const dotEl    = document.getElementById('mainWalletDot')
+  const btn      = document.getElementById('mainWalletBtn')
+  statusEl.textContent = 'Connecting...'
+  statusEl.style.color = 'var(--muted)'
+  try {
+    const addr = await connectWallet(rdns)
+    statusEl.textContent = 'Approving builder fee...'
+    const signer = getMainSigner()
+    await approveBuilderFee(signer)
+    setBuilderFeeEnabled(true)
+    dotEl.classList.add('connected')
+    statusEl.innerHTML = `✓ <span style="color:var(--accent)">${addr.slice(0,6)}...${addr.slice(-4)}</span> · Connected`
+    statusEl.style.color = 'var(--green)'
+    btn.textContent = 'Disconnect'
+    btn.onclick = disconnectMainWalletUI
+    window.__updateDepositPreview()
+    window.__updateWithdrawPreview()
+    refreshDefiBalances()
+  } catch (e) {
+    statusEl.textContent = '✗ ' + e.message
+    statusEl.style.color = 'var(--red)'
+    dotEl.classList.remove('connected')
+  }
+}
+
+function disconnectMainWalletUI() {
+  disconnectMainWallet()
+  setBuilderFeeEnabled(false)
+  const dotEl = document.getElementById('mainWalletDot')
+  const statusEl = document.getElementById('mainWalletStatus')
+  const btn = document.getElementById('mainWalletBtn')
+  dotEl.classList.remove('connected')
+  statusEl.textContent = 'Connect to enable builder fee'
+  statusEl.style.color = 'var(--muted)'
+  btn.textContent = 'Connect Wallet'
+  btn.onclick = openWalletPicker
+}
+
+window.connectMainWalletUI = openWalletPicker
+window.closeWalletPicker   = () => { document.getElementById('walletPickerModal').style.display = 'none' }
+
+// ─── DEPOSIT / WITHDRAW ───────────────────────────────────────────────────────
+let _depositDest = 'perps'
+
+window.__setDepositDest = function(dest) {
+  _depositDest = dest
+  document.getElementById('depDest-perps').classList.toggle('active', dest === 'perps')
+  document.getElementById('depDest-spot').classList.toggle('active', dest === 'spot')
+  window.__updateDepositPreview()
+}
+
+let _usdcBalance      = null
+let _withdrawAvailable = 0
+
+window.__setDepositMax = function() {
+  if (!_usdcBalance) return
+  const el = document.getElementById('depositAmount')
+  if (el) { el.value = Math.floor(_usdcBalance * 100) / 100; window.__updateDepositPreview() }
+}
+
+window.__setWithdrawMax = function() {
+  if (!_withdrawAvailable) return
+  const el = document.getElementById('withdrawAmount')
+  if (el) { el.value = Math.floor(_withdrawAvailable * 100) / 100; window.__updateWithdrawPreview() }
+}
+
+window.__updateDepositPreview = function() {
+  const amount  = parseFloat(document.getElementById('depositAmount')?.value)
+  const preview = document.getElementById('depositPreview')
+  const warning = document.getElementById('depositWarning')
+  const btn     = document.getElementById('depositBtn')
+  if (!preview) return
+
+  if (!isMainWalletConnected()) {
+    btn.textContent = 'Connect Wallet'
+    btn.disabled    = false
+    btn.onclick     = () => window.connectMainWalletUI()
+    preview.style.opacity = '0.4'
+    warning.style.display = 'none'
+    return
+  }
+  btn.onclick = () => window.__executeDeposit()
+  if (!amount || amount <= 0) {
+    preview.style.opacity = '0.4'
+    warning.style.display = 'none'
+    btn.disabled = true
+    btn.textContent = 'Enter amount'
+    return
+  }
+  if (amount < 5) {
+    warning.style.display = 'block'
+    warning.textContent   = '⚠ Minimum deposit is 5 USDC. Deposits below this amount will be permanently lost.'
+    preview.style.opacity = '0.4'
+    btn.disabled = true
+    btn.textContent = 'Amount too low'
+    return
+  }
+  if (_usdcBalance !== null && amount > _usdcBalance) {
+    warning.style.display = 'block'
+    warning.textContent   = `⚠ Insufficient balance. You have ${_usdcBalance.toFixed(2)} USDC on Arbitrum.`
+    preview.style.opacity = '0.4'
+    btn.disabled = true
+    btn.textContent = 'Insufficient balance'
+    return
+  }
+  warning.style.display = 'none'
+  preview.style.opacity = '1'
+  document.getElementById('dp-send').textContent    = `${amount.toFixed(2)} USDC`
+  document.getElementById('dp-receive').textContent = `${amount.toFixed(2)} USDC`
+  document.getElementById('dp-dest').textContent    = _depositDest === 'perps' ? 'Perps Account' : 'Spot Account'
+  btn.disabled    = false
+  btn.textContent = 'Deposit'
+}
+
+window.__updateWithdrawPreview = function() {
+  const amount  = parseFloat(document.getElementById('withdrawAmount')?.value)
+  const dest    = document.getElementById('withdrawDest')?.value.trim()
+  const preview = document.getElementById('withdrawPreview')
+  const warning = document.getElementById('withdrawWarning')
+  const btn     = document.getElementById('withdrawBtn')
+  if (!preview) return
+
+  if (!isMainWalletConnected()) {
+    btn.textContent = 'Connect Wallet'
+    btn.disabled    = false
+    btn.onclick     = () => window.connectMainWalletUI()
+    preview.style.opacity = '0.4'
+    warning.style.display = 'none'
+    return
+  }
+  btn.onclick = () => window.__executeWithdraw()
+  if (!amount || amount <= 0) {
+    preview.style.opacity = '0.4'
+    warning.style.display = 'none'
+    btn.disabled = true
+    btn.textContent = 'Enter amount'
+    return
+  }
+  const receive = amount - 1
+  if (receive <= 0) {
+    warning.style.display = 'block'
+    warning.textContent   = '⚠ Amount must be greater than the $1 withdrawal fee.'
+    preview.style.opacity = '0.4'
+    btn.disabled = true
+    btn.textContent = 'Amount too low'
+    return
+  }
+  if (!dest || !dest.startsWith('0x') || dest.length !== 42) {
+    warning.style.display = 'none'
+    preview.style.opacity = '0.4'
+    btn.disabled = true
+    btn.textContent = 'Enter destination'
+    return
+  }
+  warning.style.display = 'none'
+  preview.style.opacity = '1'
+  document.getElementById('wp-amount').textContent  = `${amount.toFixed(2)} USDC`
+  document.getElementById('wp-receive').textContent = `${receive.toFixed(2)} USDC`
+  document.getElementById('wp-dest').textContent    = `${dest.slice(0,8)}...${dest.slice(-6)}`
+  btn.disabled    = false
+  btn.textContent = 'Withdraw'
+}
+
+window.__useConnectedAddress = function() {
+  const addr = getMainAddress()
+  if (!addr) return
+  const el = document.getElementById('withdrawDest')
+  if (el) { el.value = addr; window.__updateWithdrawPreview() }
+}
+
+window.__executeDeposit = async function() {
+  const amount   = parseFloat(document.getElementById('depositAmount').value)
+  const statusEl = document.getElementById('depositStatus')
+  const btn      = document.getElementById('depositBtn')
+  btn.disabled = true
+  try {
+    const hash = await deposit({
+      amount,
+      destination: _depositDest,
+      onStep: msg => { statusEl.innerHTML = `<span style="color:var(--muted)">${msg}</span>` },
+    })
+    statusEl.innerHTML = `<span style="color:var(--green)">✓ Deposit confirmed · <a href="https://arbiscan.io/tx/${hash}" target="_blank" rel="noopener" style="color:var(--accent)">View on Arbiscan</a></span>`
+    document.getElementById('depositAmount').value = ''
+    window.__updateDepositPreview()
+    refreshDefiBalances()
+  } catch (e) {
+    statusEl.innerHTML = `<span style="color:var(--red)">✗ ${e.message}</span>`
+    btn.disabled = false
+    window.__updateDepositPreview()
+  }
+}
+
+window.__executeWithdraw = async function() {
+  const amount   = parseFloat(document.getElementById('withdrawAmount').value)
+  const dest     = document.getElementById('withdrawDest').value.trim()
+  const statusEl = document.getElementById('withdrawStatus')
+  const btn      = document.getElementById('withdrawBtn')
+  btn.disabled = true
+  statusEl.innerHTML = '<span style="color:var(--muted)">Confirm in wallet...</span>'
+  try {
+    await withdraw({ amount, destination: dest })
+    statusEl.innerHTML = `<span style="color:var(--green)">✓ Withdrawal submitted — arrives on Arbitrum in ~1 min</span>`
+    document.getElementById('withdrawAmount').value = ''
+    window.__updateWithdrawPreview()
+    refreshDefiBalances()
+  } catch (e) {
+    statusEl.innerHTML = `<span style="color:var(--red)">✗ ${e.message}</span>`
+    btn.disabled = false
+    window.__updateWithdrawPreview()
+  }
+}
+
+async function refreshDefiBalances() {
+  const bal = await getUsdcBalance()
+  _usdcBalance = bal
+  const balEl = document.getElementById('depositUsdcBal')
+  if (balEl) balEl.textContent = bal !== null ? `${bal.toFixed(2)} USDC on Arbitrum` : '—'
+  window.__updateDepositPreview()
 }
 
 // ─── TRADE BALANCE ────────────────────────────────────────────────────────────
@@ -2312,6 +2591,7 @@ function restoreAgentKey() {
       statusEl.innerHTML = `✓ Connected: <span style="color:var(--accent)">${connectedAddr.slice(0,6)}...${connectedAddr.slice(-4)}</span>`
       statusEl.style.color = 'var(--green)'
     }
+    applyReferrer().catch(() => {})
     updateSubmitBtn()
     updateTradeBalance()
   }).catch(() => {})
@@ -2985,12 +3265,17 @@ document.addEventListener('click', e => {
   }
 })
 
-// Hook switchTab to load watch data when entering the tab
+// Hook switchTab to load watch data and refresh defi cards
 const _origSwitchTab = window.switchTab
 window.switchTab = function(name, btn) {
   _origSwitchTab(name, btn)
-  if (name === 'watch') refreshWatchTab()
+  if (name === 'watch')     refreshWatchTab()
+  if (name === 'portfolio') { window.__updateDepositPreview(); window.__updateWithdrawPreview() }
 }
+
+// Init defi card buttons on load
+window.__updateDepositPreview()
+window.__updateWithdrawPreview()
 
 // Initial ticker render
 updateWatchTicker()

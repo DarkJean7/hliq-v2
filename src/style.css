@@ -1062,6 +1062,68 @@ tbody td {
   color: var(--muted); cursor: pointer; transition: all 0.2s;
 }
 .btn-modal-cancel:hover { color: var(--text); border-color: var(--text); }
+.wallet-picker-btn {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; padding: 12px 14px;
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text);
+  font-family: 'Space Mono', monospace; font-size: 13px;
+  cursor: pointer; transition: border-color .15s, background .15s;
+}
+.wallet-picker-btn:hover { border-color: var(--accent); background: rgba(0,255,136,.05); }
+
+/* ── DEFI CARDS (Deposit / Withdraw) ──────────────────────────────── */
+.defi-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 28px;
+}
+@media (max-width: 700px) { .defi-row { grid-template-columns: 1fr; } }
+.defi-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.defi-card-header { display: flex; flex-direction: column; gap: 2px; }
+.defi-card-title  { font-size: 14px; font-weight: 700; color: var(--text); }
+.defi-card-subtitle { font-size: 10px; color: var(--muted); letter-spacing: .05em; }
+.defi-preview {
+  background: rgba(255,255,255,.03);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.defi-preview-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+.defi-preview-row span:last-child { color: var(--text); font-weight: 600; }
+.defi-preview-total {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 2px;
+}
+.defi-preview-total span:last-child { font-size: 13px; }
+.defi-warning {
+  background: rgba(255,80,80,.08);
+  border: 1px solid rgba(255,80,80,.25);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 11px;
+  color: #ff9090;
+  line-height: 1.6;
+}
 .btn-modal-confirm {
   flex: 1; background: var(--accent); border: none;
   border-radius: 8px; padding: 11px;
@@ -2869,10 +2931,11 @@ tbody td {
 
 /* ─── EXPANDABLE ROWS (mobile only) ─────────────────────────────────────── */
 .row-expand-btn { display: none; }
-.row-expand-detail { display: none !important; }
+.row-expand-detail { display: none; }
 
 @media (max-width: 768px) {
 .row-expand-btn {
+  display: inline-block;
   background: none; border: none; color: var(--muted); cursor: pointer;
   font-size: 14px; line-height: 1; padding: 0 2px;
   transition: transform 0.2s, color 0.2s;

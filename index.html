@@ -75,6 +75,13 @@
     <div class="error-box" id="errorBox"></div>
     <div id="recentAddrsRow"></div>
     <div id="savedWalletsRow"></div>
+    <p style="margin-top:18px;font-size:11px;color:rgba(255,255,255,0.25);font-family:'Space Mono',monospace;text-align:center">
+      New to Hyperliquid?
+      <a href="https://app.hyperliquid.xyz/join/INSOLVENTSPARTAN" target="_blank" rel="noopener"
+         style="color:rgba(0,255,136,0.5);text-decoration:none">
+        Create your account →
+      </a>
+    </p>
   </div>
 
   <!-- LOADING -->
@@ -695,6 +702,80 @@
           <canvas id="pnlChart" height="150"></canvas>
         </div>
       </div>
+      <!-- DEPOSIT / WITHDRAW -->
+      <div class="defi-row">
+
+        <!-- Deposit -->
+        <div class="defi-card">
+          <div class="defi-card-header">
+            <div class="defi-card-title">Deposit</div>
+            <div class="defi-card-subtitle">Arbitrum → Hyperliquid</div>
+          </div>
+          <div class="field-group">
+            <div class="field-label" style="display:flex;justify-content:space-between;align-items:center">
+              <span>Amount (USDC)</span>
+              <span id="depositUsdcBal" style="color:var(--accent);font-size:10px;font-weight:600">—</span>
+            </div>
+            <div style="display:flex;gap:6px">
+              <input class="field-input" id="depositAmount" type="number" placeholder="0.00" min="5" step="1" oninput="window.__updateDepositPreview()" style="flex:1"/>
+              <button class="btn-sm" onclick="window.__setDepositMax()" style="white-space:nowrap">MAX</button>
+            </div>
+          </div>
+          <div class="field-group">
+            <div class="field-label">Destination</div>
+            <div class="order-type-tabs" style="margin:0">
+              <button class="order-type-tab active" id="depDest-perps" onclick="window.__setDepositDest('perps')">Perps</button>
+              <button class="order-type-tab" id="depDest-spot" onclick="window.__setDepositDest('spot')">Spot</button>
+            </div>
+          </div>
+          <div class="defi-preview" id="depositPreview">
+            <div class="defi-preview-row"><span>You send</span><span id="dp-send">—</span></div>
+            <div class="defi-preview-row"><span>You receive</span><span id="dp-receive">—</span></div>
+            <div class="defi-preview-row"><span>Destination</span><span id="dp-dest">—</span></div>
+            <div class="defi-preview-row"><span>Network</span><span style="color:var(--muted)">Arbitrum One</span></div>
+            <div class="defi-preview-row"><span>Time</span><span style="color:var(--muted)">~1 minute</span></div>
+          </div>
+          <div class="defi-warning" id="depositWarning" style="display:none"></div>
+          <div class="trade-status" id="depositStatus" style="margin-bottom:8px"></div>
+          <button class="btn-strategy" id="depositBtn" onclick="window.__executeDeposit()" disabled style="width:100%;margin:0">Connect wallet</button>
+        </div>
+
+        <!-- Withdraw -->
+        <div class="defi-card">
+          <div class="defi-card-header">
+            <div class="defi-card-title">Withdraw</div>
+            <div class="defi-card-subtitle">Hyperliquid → Arbitrum</div>
+          </div>
+          <div class="field-group">
+            <div class="field-label" style="display:flex;justify-content:space-between;align-items:center">
+              <span>Amount (USDC)</span>
+              <span id="withdrawAvail" style="color:var(--accent);font-size:10px;font-weight:600">Available: —</span>
+            </div>
+            <div style="display:flex;gap:6px">
+              <input class="field-input" id="withdrawAmount" type="number" placeholder="0.00" min="2" step="1" oninput="window.__updateWithdrawPreview()" style="flex:1"/>
+              <button class="btn-sm" onclick="window.__setWithdrawMax()" style="white-space:nowrap">MAX</button>
+            </div>
+          </div>
+          <div class="field-group">
+            <div class="field-label" style="display:flex;justify-content:space-between">
+              <span>Destination address</span>
+              <span class="field-hint" onclick="window.__useConnectedAddress()" style="cursor:pointer">Use my wallet</span>
+            </div>
+            <input class="field-input" id="withdrawDest" placeholder="0x..." oninput="window.__updateWithdrawPreview()"/>
+          </div>
+          <div class="defi-preview" id="withdrawPreview">
+            <div class="defi-preview-row"><span>You withdraw</span><span id="wp-amount">—</span></div>
+            <div class="defi-preview-row"><span>Fee</span><span style="color:var(--muted)">$1.00</span></div>
+            <div class="defi-preview-row defi-preview-total"><span>You receive</span><span id="wp-receive" style="color:var(--green)">—</span></div>
+            <div class="defi-preview-row"><span>Destination</span><span id="wp-dest" style="font-size:10px;color:var(--muted)">—</span></div>
+            <div class="defi-preview-row"><span>Time</span><span style="color:var(--muted)">~1 minute</span></div>
+          </div>
+          <div class="defi-warning" id="withdrawWarning" style="display:none"></div>
+          <div class="trade-status" id="withdrawStatus" style="margin-bottom:8px"></div>
+          <button class="btn-strategy" id="withdrawBtn" onclick="window.__executeWithdraw()" disabled style="width:100%;margin:0">Connect wallet</button>
+        </div>
+
+      </div>
     </div>
 
     <!-- MARKETS -->
@@ -760,6 +841,16 @@
 
     <!-- TRADE -->
     <div class="tab-panel" id="tab-trade">
+
+      <!-- Main wallet bar -->
+      <div class="trade-agent-bar" style="border-bottom:none;padding-bottom:0">
+        <div class="trade-agent-left">
+          <div class="api-status-dot" id="mainWalletDot"></div>
+          <span class="trade-agent-label">Main Wallet</span>
+          <span id="mainWalletStatus" style="font-family:'Space Mono',monospace;font-size:11px;color:var(--muted)">Connect for full access</span>
+          <button class="btn-sm" id="mainWalletBtn" onclick="connectMainWalletUI()">Connect Wallet</button>
+        </div>
+      </div>
 
       <!-- Agent wallet bar -->
       <div class="trade-agent-bar">
@@ -1216,6 +1307,18 @@
         <button class="btn-sm" onclick="window.__hideForgotPin()">Cancel</button>
       </div>
       <div id="pinForgotError" style="font-size:11px;color:var(--red);margin-top:6px;min-height:16px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- WALLET PICKER MODAL -->
+<div class="modal-overlay" id="walletPickerModal" style="display:none">
+  <div class="modal" style="max-width:340px">
+    <div class="modal-title">Connect Wallet</div>
+    <div class="modal-desc" style="margin-bottom:16px">Select your wallet. One-time signature required.</div>
+    <div id="walletPickerList" style="display:flex;flex-direction:column;gap:8px"></div>
+    <div class="modal-actions" style="margin-top:20px">
+      <button class="btn-modal-cancel" onclick="closeWalletPicker()">Cancel</button>
     </div>
   </div>
 </div>
