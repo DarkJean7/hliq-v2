@@ -132,6 +132,7 @@
     <!-- POSITIONS + ORDERS -->
     <div class="tab-panel" id="tab-positions">
 
+      <div class="stats-row" id="tradesSummary" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px"></div>
       <div class="section-title" style="margin-bottom:12px">Open Positions <span class="count-pill" id="posCountBig">0</span></div>
       <div class="table-wrap" style="margin-bottom:32px">
         <div class="table-header">
@@ -185,7 +186,6 @@
 
     <!-- TRADE HISTORY -->
     <div class="tab-panel" id="tab-trades">
-      <div class="stats-row" id="tradesSummary" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px"></div>
       <div class="table-wrap">
         <div class="table-header">
           <div class="table-title">Trade History <span class="count-pill" id="fillCountBig">0</span></div>
@@ -1032,33 +1032,23 @@
         <!-- Right: positions + orders management -->
         <div class="trade-manage-col">
 
-          <div class="manage-collapse-btn open" onclick="window.__toggleManageSection('managePosSec',this)">
-            <span class="section-title" style="margin:0">Open Positions</span>
-            <svg class="collapse-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-          </div>
-          <div class="manage-collapse-body open" id="managePosSec">
-            <div class="table-wrap" style="margin-bottom:20px">
-              <div style="overflow-x:auto">
-                <table>
-                  <thead><tr><th>Coin</th><th>Side</th><th>Size</th><th>Entry</th><th>Mark</th><th>Unr. PnL</th><th>ROE</th><th>Liq.</th><th>Margin</th><th>Actions</th></tr></thead>
-                  <tbody id="managePosTbody"></tbody>
-                </table>
-              </div>
+          <div class="section-title" style="margin-bottom:12px">Open Positions <span class="count-pill" id="managePosCount">0</span></div>
+          <div class="table-wrap" style="margin-bottom:28px">
+            <div style="overflow-x:auto">
+              <table id="managePosTable">
+                <thead><tr><th>Coin</th><th>Side</th><th>Size</th><th>Entry</th><th>Mark</th><th>Unr. PnL</th><th>ROE</th><th>Liq.</th><th>Margin</th><th>Actions</th></tr></thead>
+                <tbody id="managePosTbody"></tbody>
+              </table>
             </div>
           </div>
 
-          <div class="manage-collapse-btn open" onclick="window.__toggleManageSection('manageOrdSec',this)">
-            <span class="section-title" style="margin:0">Open Orders</span>
-            <svg class="collapse-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-          </div>
-          <div class="manage-collapse-body open" id="manageOrdSec">
-            <div class="table-wrap">
-              <div style="overflow-x:auto">
-                <table>
-                  <thead><tr><th>Coin</th><th>Intent</th><th>Size</th><th>Price</th><th>Margin</th><th>Expected P&amp;L</th><th>Actions</th></tr></thead>
-                  <tbody id="manageOrdersTbody"></tbody>
-                </table>
-              </div>
+          <div class="section-title" style="margin-bottom:12px">Open Orders <span class="count-pill" id="manageOrdCount">0</span></div>
+          <div class="table-wrap">
+            <div style="overflow-x:auto">
+              <table id="manageOrdTable">
+                <thead><tr><th>Coin</th><th>Intent</th><th>Size</th><th>Price</th><th>Margin</th><th>Expected P&amp;L</th><th>Actions</th></tr></thead>
+                <tbody id="manageOrdersTbody"></tbody>
+              </table>
             </div>
           </div>
 

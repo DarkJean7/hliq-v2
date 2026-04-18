@@ -139,13 +139,17 @@ export function parseFills(rawFills) {
  * Derive clean funding records
  */
 export function parseFunding(rawFunding) {
-  return rawFunding.map(f => ({
-    time:        f.time,
-    timeStr:     fmtTime(f.time),
-    coin:        f.delta?.coin ?? '—',
-    usdc:        parseFloat(f.delta?.usdc ?? 0),
-    szi:         parseFloat(f.delta?.szi ?? 0),
-    fundingRate: f.delta?.fundingRate ?? '—',
-  }))
+  const types = [...new Set(rawFunding.map(f => f.delta?.type))]
+  console.log('[funding] entry types in raw data:', types, '| total entries:', rawFunding.length)
+  return rawFunding
+    .filter(f => f.delta?.type === 'funding')
+    .map(f => ({
+      time:        f.time,
+      timeStr:     fmtTime(f.time),
+      coin:        f.delta?.coin ?? '—',
+      usdc:        parseFloat(f.delta?.usdc ?? 0),
+      szi:         parseFloat(f.delta?.szi ?? 0),
+      fundingRate: f.delta?.fundingRate ?? '—',
+    }))
 }
 

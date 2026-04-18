@@ -2,9 +2,12 @@ import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc } f
 import { aggregateFillsByCoin } from './api.js'
 
 // ─── SORT / EXPAND STATE ─────────────────────────────────────────────────────
-let _tradesExpanded = false
+let _tradesExpanded  = false
+let _lastUnrealPnl  = null
 let _posSortKey = null, _posSortDir = 1
 let _ordSortKey  = null, _ordSortDir  = 1
+let _mPosSortKey = null, _mPosSortDir = 1
+let _mOrdSortKey  = null, _mOrdSortDir  = 1
 
 export function setSortPos(key) {
   if (_posSortKey === key) _posSortDir *= -1
@@ -14,7 +17,41 @@ export function setSortOrd(key) {
   if (_ordSortKey === key) _ordSortDir *= -1
   else { _ordSortKey = key; _ordSortDir = 1 }
 }
+export function setSortMPos(key) {
+  if (_mPosSortKey === key) _mPosSortDir *= -1
+  else { _mPosSortKey = key; _mPosSortDir = 1 }
+}
+export function setSortMOrd(key) {
+  if (_mOrdSortKey === key) _mOrdSortDir *= -1
+  else { _mOrdSortKey = key; _mOrdSortDir = 1 }
+}
 export function toggleTradesExpanded() { _tradesExpanded = !_tradesExpanded }
+
+export function renderSummaryCards(fills, perpState) {
+  const el = document.getElementById('tradesSummary')
+  if (!el) return
+  const positions   = perpState?.assetPositions ?? []
+  const totalUnreal = positions.reduce((s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0)
+  const totalVolume = fills.reduce((s, f) => s + f.notional, 0)
+  const totalFees   = fills.reduce((s, f) => s + f.fee, 0)
+  const ONE_HOUR_T  = 60 * 60 * 1000
+  const tradeWindows = {}
+  for (const f of fills.filter(f => f.closedPnl !== 0)) {
+    const bucket = Math.floor(f.time / ONE_HOUR_T)
+    const key    = `${f.coin}_${bucket}`
+    if (!tradeWindows[key]) tradeWindows[key] = { netPnl: 0 }
+    tradeWindows[key].netPnl += f.closedPnl - f.fee
+  }
+  const twList  = Object.values(tradeWindows)
+  const winners = twList.filter(w => w.netPnl > 0).length
+  const winRate = twList.length > 0 ? (winners / twList.length * 100).toFixed(1) : '—'
+  const unreal  = fmtPnL(totalUnreal)
+  el.innerHTML = `
+    <div class="stat-card"><div class="stat-label">Total Volume</div><div class="stat-value neu">$${fmtCompact(totalVolume)}</div></div>
+    <div class="stat-card"><div class="stat-label">Unrealized PnL</div><div class="stat-value ${unreal.cls}">${unreal.text}</div></div>
+    <div class="stat-card"><div class="stat-label">Total Fees</div><div class="stat-value neg">-$${fmtUSD(totalFees)}</div></div>
+    <div class="stat-card"><div class="stat-label">Win Rate</div><div class="stat-value neu">${winRate}${twList.length > 0 ? '%' : ''}</div></div>`
+}
 
 function _sortArrow(key, activeKey, dir) {
   if (key !== activeKey) return `<span style="color:var(--muted);font-size:9px;margin-left:3px;opacity:0.4">^</span>`
@@ -25,6 +62,12 @@ function _th(key, label, activeKey, dir) {
 }
 function _thOrd(key, label, activeKey, dir) {
   return `<th style="cursor:pointer;user-select:none" onclick="window.__sortOrders('${key}')">${label}${_sortArrow(key, activeKey, dir)}</th>`
+}
+function _thMPos(key, label, activeKey, dir) {
+  return `<th style="cursor:pointer;user-select:none" onclick="window.__sortMPos('${key}')">${label}${_sortArrow(key, activeKey, dir)}</th>`
+}
+function _thMOrd(key, label, activeKey, dir) {
+  return `<th style="cursor:pointer;user-select:none" onclick="window.__sortMOrd('${key}')">${label}${_sortArrow(key, activeKey, dir)}</th>`
 }
 
 // ─── DURATION & STREAK HELPERS ────────────────────────────────────────────────
@@ -702,32 +745,6 @@ export function renderTrades(fills) {
     return
   }
 
-  // Summary stats (from raw fills for accuracy on fees/pnl)
-  const totalVolume  = fills.reduce((s, f) => s + f.notional, 0)
-  const totalFees    = fills.reduce((s, f) => s + f.fee, 0)
-  const totalRealPnl = fills.reduce((s, f) => s + f.closedPnl, 0)
-  // Group closing fills by coin + 1h bucket to avoid counting partial fills as separate trades
-  const ONE_HOUR_T = 60 * 60 * 1000
-  const tradeWindows = {}
-  for (const f of fills.filter(f => f.closedPnl !== 0)) {
-    const bucket = Math.floor(f.time / ONE_HOUR_T)
-    const key    = `${f.coin}_${bucket}`
-    if (!tradeWindows[key]) tradeWindows[key] = { netPnl: 0 }
-    tradeWindows[key].netPnl += f.closedPnl - f.fee
-  }
-  const tradeWindowList = Object.values(tradeWindows)
-  const winners  = tradeWindowList.filter(w => w.netPnl > 0).length
-  const winRate  = tradeWindowList.length > 0 ? (winners / tradeWindowList.length * 100).toFixed(1) : '—'
-
-  const summaryEl = document.getElementById('tradesSummary')
-  if (summaryEl) {
-    summaryEl.innerHTML = `
-      <div class="stat-card"><div class="stat-label">Total Volume</div><div class="stat-value neu">$${fmtCompact(totalVolume)}</div></div>
-      <div class="stat-card"><div class="stat-label">Realized PnL</div><div class="stat-value ${fmtPnL(totalRealPnl).cls}">${fmtPnL(totalRealPnl).text}</div></div>
-      <div class="stat-card"><div class="stat-label">Total Fees</div><div class="stat-value neg">-$${fmtUSD(totalFees)}</div></div>
-      <div class="stat-card"><div class="stat-label">Win Rate</div><div class="stat-value neu">${winRate}${tradeWindowList.length > 0 ? '%' : ''}</div></div>`
-  }
-
   // Render aggregated trades, newest first
   const LIMIT = 20
   const sorted  = trades.sort((a, b) => b.time - a.time)
@@ -1133,12 +1150,48 @@ export function renderManageTables(perpState, openOrders, allMids) {
 }
 
 export function renderManagePositions(perpState, allMids) {
-  const positions = perpState.assetPositions ?? []
-  const tbody     = document.getElementById('managePosTbody')
+  let positions = perpState.assetPositions ?? []
+  const tbody   = document.getElementById('managePosTbody')
+  const countEl = document.getElementById('managePosCount')
+  if (countEl) countEl.textContent = positions.length
+
+  const thead = document.querySelector('#managePosTable thead tr')
+  if (thead) {
+    const k = _mPosSortKey, d = _mPosSortDir
+    thead.innerHTML =
+      _thMPos('coin',  'Coin',     k, d) +
+      _thMPos('side',  'Side',     k, d) +
+      _thMPos('size',  'Size',     k, d) +
+      _thMPos('entry', 'Entry',    k, d) +
+      _thMPos('mark',  'Mark',     k, d) +
+      _thMPos('pnl',   'Unr. PnL',k, d) +
+      _thMPos('roe',   'ROE',      k, d) +
+      '<th>Liq.</th><th>Margin</th><th>Actions</th>'
+  }
 
   if (positions.length === 0) {
     tbody.innerHTML = emptyRow(10, '📭', 'No open positions')
     return
+  }
+
+  if (_mPosSortKey) {
+    const val = (p) => {
+      const pos = p.position
+      switch (_mPosSortKey) {
+        case 'coin':  return pos.coin
+        case 'side':  return parseFloat(pos.szi) > 0 ? 'LONG' : 'SHORT'
+        case 'size':  return Math.abs(parseFloat(pos.szi))
+        case 'entry': return parseFloat(pos.entryPx)
+        case 'mark':  return parseFloat(allMids[pos.coin] ?? 0)
+        case 'pnl':   return parseFloat(pos.unrealizedPnl)
+        case 'roe':   return parseFloat(pos.returnOnEquity)
+        default:      return 0
+      }
+    }
+    positions = [...positions].sort((a, b) => {
+      const av = val(a), bv = val(b)
+      return typeof av === 'string' ? av.localeCompare(bv) * _mPosSortDir : (av - bv) * _mPosSortDir
+    })
   }
 
   tbody.innerHTML = positions.map(p => {
@@ -1173,7 +1226,20 @@ export function renderManagePositions(perpState, allMids) {
 }
 
 export function renderManageOrders(openOrders, perpState) {
-  const tbody = document.getElementById('manageOrdersTbody')
+  const tbody   = document.getElementById('manageOrdersTbody')
+  const countEl = document.getElementById('manageOrdCount')
+  if (countEl) countEl.textContent = openOrders.length
+
+  const thead = document.querySelector('#manageOrdTable thead tr')
+  if (thead) {
+    const k = _mOrdSortKey, d = _mOrdSortDir
+    thead.innerHTML =
+      _thMOrd('coin',  'Coin',  k, d) +
+      '<th>Intent</th>' +
+      _thMOrd('size',  'Size',  k, d) +
+      _thMOrd('price', 'Price', k, d) +
+      '<th>Margin</th><th>Expected P&amp;L</th><th>Actions</th>'
+  }
 
   if (openOrders.length === 0) {
     tbody.innerHTML = emptyRow(7, '📋', 'No open orders')
@@ -1187,7 +1253,21 @@ export function renderManageOrders(openOrders, perpState) {
     posMap[p.coin] = p
   }
 
-  tbody.innerHTML = openOrders.map(o => {
+  let orders = openOrders
+  if (_mOrdSortKey) {
+    orders = [...openOrders].sort((a, b) => {
+      let av, bv
+      if (_mOrdSortKey === 'coin') { av = a.coin; bv = b.coin }
+      else if (_mOrdSortKey === 'size') { av = parseFloat(a.sz ?? 0); bv = parseFloat(b.sz ?? 0) }
+      else if (_mOrdSortKey === 'price') {
+        av = parseFloat(a.triggerPx ?? a.limitPx ?? 0)
+        bv = parseFloat(b.triggerPx ?? b.limitPx ?? 0)
+      }
+      return typeof av === 'string' ? av.localeCompare(bv) * _mOrdSortDir : (av - bv) * _mOrdSortDir
+    })
+  }
+
+  tbody.innerHTML = orders.map(o => {
     const isTrigger = o.isTrigger || (parseFloat(o.triggerPx ?? 0) > 0)
     const triggerPx = parseFloat(o.triggerPx ?? 0)
     const limitPx   = parseFloat(o.limitPx  ?? 0)

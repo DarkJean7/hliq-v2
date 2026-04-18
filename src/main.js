@@ -22,7 +22,10 @@ import {
   skeletonRows,
   setSortPos,
   setSortOrd,
+  setSortMPos,
+  setSortMOrd,
   toggleTradesExpanded,
+  renderSummaryCards,
 } from './render.js'
 import { renderCharts, destroyCharts } from './charts.js'
 import Chart from 'chart.js/auto'
@@ -39,6 +42,7 @@ import {
   parseOrderResult,
   approveBuilderFee,
   setBuilderFeeEnabled,
+  isBuilderFeeEnabled,
   applyReferrer,
 } from './trading.js'
 import {
@@ -48,6 +52,7 @@ import {
   getMainSigner,
   connectWallet,
   disconnectMainWallet,
+  onWalletDisconnect,
 } from './wallet.js'
 import { deposit, withdraw, getUsdcBalance } from './defi.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding } from './format.js'
@@ -425,6 +430,7 @@ function renderAccountSection() {
   const { perpState, spotState, fills, funding, portfolio, allMids, openOrders } = state
   renderOverview({ perpState, spotState, fills, funding, openOrders, allMids, portfolio, webData: state.webData, sessionStart: state.sessionStart, firstFillTime: state.firstFillTime ?? null })
   renderPortfolioStats({ perpState, fills, funding, portfolio, webData: state.webData })
+  renderSummaryCards(fills, perpState)
 }
 
 function renderPositionSection() {
@@ -715,6 +721,7 @@ async function refreshLive() {
       state.fills = [...newFills, ...state.fills]
       computeLossStreak(state.fills)
       renderTrades(state.fills)
+      renderPositions(perpState, allMids)
       renderMarkets({ fills: state.fills, allMids, perpState })
     }
 
@@ -729,20 +736,18 @@ async function refreshLive() {
     const ordHash  = _fingerprint(openOrders)
     const acctHash = _fingerprint({ mv: perpState.crossMarginSummary?.accountValue, w: perpState.withdrawable })
 
+    renderSummaryCards(state.fills, perpState)
+
     if (acctHash !== _lastAcctHash) {
       renderAccountSection()
       updateTradeBalance()
       _lastAcctHash = acctHash
     }
-    if (posHash !== _lastPosHash) {
-      renderPositions(perpState, allMids)
-      _lastPosHash = posHash
-    }
-    if (ordHash !== _lastOrdHash || posHash !== _lastPosHash) {
-      renderOrders(openOrders, perpState)
-      renderManageTables(perpState, openOrders, allMids)
-      _lastOrdHash = ordHash
-    }
+    const posChanged = posHash !== _lastPosHash
+    const ordChanged = ordHash !== _lastOrdHash
+    if (posChanged) { renderPositions(perpState, allMids); _lastPosHash = posHash }
+    if (ordChanged) { renderOrders(openOrders, perpState); _lastOrdHash = ordHash }
+    if (posChanged || ordChanged) { renderManageTables(perpState, openOrders, allMids) }
 
     updateAccountValue(totalPerpEquity(perpState))
     maybeSendLiqNotification(perpState, state.allMids)
@@ -791,7 +796,6 @@ async function connectAgentKeyUI() {
     dotEl.classList.add('connected')
     statusEl.innerHTML = `✓ Connected: <span style="color:var(--accent)">${addr.slice(0, 6)}...${addr.slice(-4)}</span>`
     statusEl.style.color = 'var(--green)'
-    document.getElementById('privateKeyInput').value = ''
     localStorage.setItem('hliq_agent_key', keyVal)
     const stratInput = document.getElementById('agentKey')
     if (stratInput) stratInput.value = keyVal
@@ -868,7 +872,10 @@ window.__pickWallet = async function(rdns) {
     window.__updateWithdrawPreview()
     refreshDefiBalances()
   } catch (e) {
-    statusEl.textContent = '✗ ' + e.message
+    const msg = /proposal expired/i.test(e.message) ? 'Session expired — please reconnect'
+              : /rejected|denied|cancel/i.test(e.message) ? 'Connection rejected'
+              : e.message
+    statusEl.textContent = '✗ ' + msg
     statusEl.style.color = 'var(--red)'
     dotEl.classList.remove('connected')
   }
@@ -887,10 +894,14 @@ function disconnectMainWalletUI() {
   btn.onclick = openWalletPicker
 }
 
+onWalletDisconnect(disconnectMainWalletUI)
+
 window.connectMainWalletUI  = openWalletPicker
 window.closeWalletPicker    = () => { document.getElementById('walletPickerModal').style.display = 'none' }
 window.__sortPositions      = (key) => { if (!state.perpState) return; setSortPos(key); renderPositions(state.perpState, state.allMids) }
 window.__sortOrders         = (key) => { if (!state.perpState) return; setSortOrd(key); renderOrders(state.openOrders, state.perpState) }
+window.__sortMPos           = (key) => { if (!state.perpState) return; setSortMPos(key); renderManageTables(state.perpState, state.openOrders, state.allMids) }
+window.__sortMOrd           = (key) => { if (!state.perpState) return; setSortMOrd(key); renderManageTables(state.perpState, state.openOrders, state.allMids) }
 window.__expandTrades       = () => { if (!state.fills) return; toggleTradesExpanded(); renderTrades(state.fills) }
 
 // ─── DEPOSIT / WITHDRAW ───────────────────────────────────────────────────────
@@ -1401,6 +1412,7 @@ function updateSubmitBtn() {
 async function submitOrder() {
   const statusEl = document.getElementById('tradeStatus')
   if (!isConnected()) { showTradeStatus(statusEl, 'error', 'Connect your agent key first.'); return }
+  if (!isBuilderFeeEnabled()) { showTradeStatus(statusEl, 'error', '✗ Builder fee not approved — reconnect your main wallet to enable trading.'); return }
   if (!state.selectedCoin) { showTradeStatus(statusEl, 'error', 'Select a market first.'); return }
   if (riskMgmtEnabled && isPaused()) {
     const r = getRiskState()
@@ -2618,6 +2630,8 @@ function restoreAgentKey() {
   if (!savedKey) return
   const el = document.getElementById('agentKey')
   if (el) el.value = savedKey
+  const tradeInput = document.getElementById('privateKeyInput')
+  if (tradeInput) tradeInput.value = savedKey
   connectAgentKey(savedKey).then(connectedAddr => {
     const dotEl    = document.getElementById('apiStatusDot')
     const statusEl = document.getElementById('apiConnectStatus')

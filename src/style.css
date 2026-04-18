@@ -2794,6 +2794,9 @@ tbody td {
 
   /* ── Trade tab ── */
   .trade-agent-bar { flex-wrap: wrap; gap: 6px; padding: 8px 11px; border-radius: 10px; }
+  .trade-agent-left { flex-wrap: wrap; }
+  .api-input { width: 100%; min-width: 0; }
+  #apiConnectStatus { width: 100%; white-space: normal !important; font-size: 10px; }
   .trade-agent-right { width: 100%; justify-content: space-between; }
   .trade-account-label { font-size: 10px; }
   .trade-account-value { font-size: 11px; }

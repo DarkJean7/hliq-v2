@@ -5,6 +5,9 @@ const WC_PROJECT_ID = 'e8673b3e68c70c77520d9f0042aebce4'
 let mainSigner   = null
 let mainAddress  = null
 let rawProvider  = null
+let _onDisconnect = null
+
+export function onWalletDisconnect(cb) { _onDisconnect = cb }
 
 const discovered = new Map() // rdns → { info, provider }
 
@@ -36,6 +39,8 @@ export async function connectWallet(rdns) {
       },
     })
     await wc.connect()
+    wc.on('disconnect', () => { disconnectMainWallet(); _onDisconnect?.() })
+    wc.on('session_expire', () => { disconnectMainWallet(); _onDisconnect?.() })
     raw = wc
   } else if (rdns && discovered.has(rdns)) {
     raw = discovered.get(rdns).provider

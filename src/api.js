@@ -24,7 +24,7 @@ async function fetchAllFunding(address, startTime) {
       if (!seen.has(key)) { seen.add(key); all.push(f) }
     }
 
-    if (batch.length < 500) break
+    if (batch.length < 2000) break
 
     const maxTime = Math.max(...batch.map(f => f.time))
     startTime = maxTime + 1
