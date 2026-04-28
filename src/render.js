@@ -2,7 +2,7 @@ import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc } f
 import { aggregateFillsByCoin } from './api.js'
 
 // ─── SORT / EXPAND STATE ─────────────────────────────────────────────────────
-let _tradesExpanded  = false
+let _tradesPage = 0
 let _lastUnrealPnl  = null
 let _posSortKey = null, _posSortDir = 1
 let _ordSortKey  = null, _ordSortDir  = 1
@@ -25,7 +25,8 @@ export function setSortMOrd(key) {
   if (_mOrdSortKey === key) _mOrdSortDir *= -1
   else { _mOrdSortKey = key; _mOrdSortDir = 1 }
 }
-export function toggleTradesExpanded() { _tradesExpanded = !_tradesExpanded }
+export function setTradesPage(p) { _tradesPage = p }
+export function getTradesPage()  { return _tradesPage }
 
 export function renderSummaryCards(fills, perpState) {
   const el = document.getElementById('tradesSummary')
@@ -212,9 +213,11 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   const winningTrades = allWindows.filter(w => w.netPnl > 0).length
   const winRate       = closedTrades > 0 ? (winningTrades / closedTrades * 100).toFixed(1) : '—'
 
-  // ── Current streak & avg hold time ───────────────────────────────────────
+  // ── Current streak & profit factor ───────────────────────────────────────
   const currentStreak = computeCurrentStreak(fills)
-  const avgHoldMs     = computeAvgHoldTime(fills)
+  const _grossWin  = fills.reduce((s, f) => f.closedPnl > 0 ? s + f.closedPnl : s, 0)
+  const _grossLoss = fills.reduce((s, f) => f.closedPnl < 0 ? s + Math.abs(f.closedPnl) : s, 0)
+  const profitFactor = _grossLoss > 0 ? _grossWin / _grossLoss : _grossWin > 0 ? Infinity : 0
 
   const worstWindow = allWindows.reduce(
     (worst, w) => w.netPnl < worst.netPnl ? w : worst,
@@ -299,6 +302,12 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
     },
     // ── Fees & Funding ───────────────────────────────────────────────────────
     {
+      label: 'Profit Factor',
+      value: profitFactor === Infinity ? 'No losses' : profitFactor > 0 ? profitFactor.toFixed(2) : '—',
+      sub:   'Gross wins ÷ gross losses',
+      cls:   profitFactor >= 1 ? 'pos' : profitFactor > 0 ? 'neg' : 'neu',
+    },
+    {
       label: 'All Time Funding',
       value: fmtPnL(allTimeFunding).text,
       sub:   funding.length + ' payments in last 30 days',
@@ -312,12 +321,6 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
     },
     // ── Win rate & streak ────────────────────────────────────────────────────
     {
-      label: 'Win Rate',
-      value: winRate + (closedTrades > 0 ? '%' : ''),
-      sub:   winningTrades + ' of ' + closedTrades + ' closed',
-      cls:   'neu',
-    },
-    {
       label: 'Current Streak',
       value: currentStreak === 0 ? '—'
         : currentStreak > 0
@@ -328,19 +331,11 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
            : 'No closed trades yet',
       cls:   currentStreak > 0 ? 'pos' : currentStreak < 0 ? 'neg' : 'neu',
     },
-    // ── Volume & duration ────────────────────────────────────────────────────
     {
-      label: 'Avg Hold Time',
-      value: fmtDuration(avgHoldMs),
-      sub:   'Avg time from open to close fill',
+      label: 'Win Rate',
+      value: winRate + (closedTrades > 0 ? '%' : ''),
+      sub:   winningTrades + ' of ' + closedTrades + ' closed',
       cls:   'neu',
-    },
-    {
-      label: 'Total Volume',
-      value: '$' + fmtCompact(totalVolume),
-      sub:   fills.length + ' fills',
-      cls:   'neu',
-      id:    'statTotalVolume',
     },
     // ── Best / worst ─────────────────────────────────────────────────────────
     {
@@ -369,6 +364,13 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
       cls:   netWithdrawn > 0 ? 'neg' : 'neu',
     },
     {
+      label: 'Total Volume',
+      value: '$' + fmtCompact(totalVolume),
+      sub:   fills.length + ' fills',
+      cls:   'neu',
+      id:    'statTotalVolume',
+    },
+    {
       label: 'Member Since',
       value: memberSince,
       sub:   isFinite(earliestTs) ? Math.floor((Date.now() - earliestTs) / (1000 * 60 * 60 * 24)) + ' days ago' : '—',
@@ -392,11 +394,11 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
         </div>`).join('')}
       <div class="stat-card stat-card-hero">
         <div class="stat-label">Account Health</div>
-        <div class="stat-value" style="color:${healthColor};font-size:22px">${health.toFixed(1)}%</div>
-        <div class="health-bar-wrap" style="margin:8px 0 6px">
+        <div class="stat-value" style="color:${healthColor}">${health.toFixed(1)}%</div>
+        <div class="health-bar-wrap health-bar-mob-hide" style="margin:8px 0 6px">
           <div class="health-bar-fill" style="width:${health.toFixed(2)}%;background:${healthColor}"></div>
         </div>
-        <div class="stat-sub">Maint. margin $${fmtUSD(maintMargin)} — ${positions.length} pos open</div>
+        <div class="stat-sub">Maint. $${fmtUSD(maintMargin)} — ${positions.length} pos</div>
       </div>
     </div>
     <div class="overview-perf-row">
@@ -414,7 +416,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
 }
 
 // ─── POSITIONS TAB ───────────────────────────────────────────────────────────
-export function renderPositions(perpState, allMids = {}) {
+export function renderPositions(perpState, allMids = {}, openOrders = []) {
   let positions = perpState.assetPositions ?? []
   const tbody = document.getElementById('positionsTbody')
 
@@ -432,14 +434,31 @@ export function renderPositions(perpState, allMids = {}) {
       _th('entry', 'Entry',    k, d) +
       _th('mark',  'Mark',     k, d) +
       _th('value', 'Value',    k, d) +
-      _th('pnl',   'Unr. PnL',k, d) +
-      _th('roe',   'ROE',      k, d) +
-      '<th>Liq.</th><th>Lev.</th><th>Margin</th><th>Actions</th>'
+      _th('pnl',     'Unr. PnL', k, d) +
+      _th('roe',     'ROE',      k, d) +
+      '<th>Liq.</th><th>Lev.</th><th>Margin</th>' +
+      _th('funding', 'Funding',  k, d) +
+      '<th>Actions</th>'
   }
 
   if (positions.length === 0) {
     tbody.innerHTML = emptyRow(12, '📭', 'No open positions')
     return
+  }
+
+  // Build TP/SL map from open orders: coin → { tpPx, slPx }
+  const tpslMap = {}
+  for (const o of openOrders) {
+    const orderType = o.orderType ?? ''
+    const isTp = orderType.startsWith('Take Profit') || o.triggerCondition === 'tp'
+    const isSl = orderType.startsWith('Stop')        || o.triggerCondition === 'sl'
+    if (!isTp && !isSl) continue
+    const triggerPx = parseFloat(o.triggerPx ?? 0)
+    const limitPx   = parseFloat(o.limitPx   ?? 0)
+    const px = triggerPx > 0 ? triggerPx : limitPx
+    if (!tpslMap[o.coin]) tpslMap[o.coin] = {}
+    if (isTp) { tpslMap[o.coin].tpPx = px; tpslMap[o.coin].tpOid = o.oid }
+    if (isSl) { tpslMap[o.coin].slPx = px; tpslMap[o.coin].slOid = o.oid }
   }
 
   // Apply sort
@@ -450,12 +469,13 @@ export function renderPositions(perpState, allMids = {}) {
         case 'coin':  return pos.coin
         case 'side':  return parseFloat(pos.szi) > 0 ? 'LONG' : 'SHORT'
         case 'size':  return Math.abs(parseFloat(pos.szi))
-        case 'entry': return parseFloat(pos.entryPx)
-        case 'mark':  return parseFloat(allMids[pos.coin] ?? 0)
-        case 'value': return parseFloat(pos.positionValue)
-        case 'pnl':   return parseFloat(pos.unrealizedPnl)
-        case 'roe':   return parseFloat(pos.returnOnEquity)
-        default:      return 0
+        case 'entry':   return parseFloat(pos.entryPx)
+        case 'mark':    return parseFloat(allMids[pos.coin] ?? 0)
+        case 'value':   return parseFloat(pos.positionValue)
+        case 'pnl':     return parseFloat(pos.unrealizedPnl)
+        case 'funding': return parseFloat(pos.cumFunding?.sinceOpen ?? 0)
+        case 'roe':     return parseFloat(pos.returnOnEquity)
+        default:        return 0
       }
     }
     positions = [...positions].sort((a, b) => {
@@ -465,6 +485,11 @@ export function renderPositions(perpState, allMids = {}) {
         : (av - bv) * _posSortDir
     })
   }
+
+  // Preserve expanded rows across re-renders
+  const openIds = new Set(
+    [...tbody.querySelectorAll('.row-expand-detail.open')].map(el => el.id)
+  )
 
   tbody.innerHTML = positions.map((p, i) => {
     const pos    = p.position
@@ -505,9 +530,10 @@ export function renderPositions(perpState, allMids = {}) {
       </td>
       <td>${esc(String(pos.leverage.value))}x (${esc(pos.leverage.type)})</td>
       <td>$${fmtUSD(pos.marginUsed)}</td>
+      <td class="${fmtPnL(-parseFloat(pos.cumFunding?.sinceOpen ?? 0)).cls}" style="font-size:11px">${fmtPnL(-parseFloat(pos.cumFunding?.sinceOpen ?? 0)).text}</td>
       <td>
         <button class="manage-btn"
-          onclick="window.__openEditModal('${esc(pos.coin)}','${side}','${pos.szi}','${pos.entryPx}')">
+          onclick="window.__openEditModal('${esc(pos.coin)}','${side}','${pos.szi}','${pos.entryPx}',${tpslMap[pos.coin]?.tpPx ?? 0},${tpslMap[pos.coin]?.slPx ?? 0},${tpslMap[pos.coin]?.tpOid ?? 0},${tpslMap[pos.coin]?.slOid ?? 0},${pos.leverage?.value ?? 1})">
           ✏ TP/SL
         </button>
         <button class="manage-btn close"
@@ -517,18 +543,30 @@ export function renderPositions(perpState, allMids = {}) {
       </td>
     </tr>
     <tr class="row-expand-detail" id="${eid}">
-      <td colspan="12">
+      <td colspan="13">
         <div class="row-expand-grid">
-          <div class="row-expand-item"><span>Mark Price</span><span>$${mktPx ? fmtPrice(mktPx) : '—'}</span></div>
+          <div class="row-expand-item"><span>Size</span><span>${fmtSize(pos.szi)} ${esc(pos.coin)}</span></div>
           <div class="row-expand-item"><span>Position Value</span><span>$${fmtUSD(pos.positionValue)}</span></div>
+          <div class="row-expand-item"><span>Mark Price</span><span>$${mktPx ? fmtPrice(mktPx) : '—'}</span></div>
+          <div class="row-expand-item"><span>Entry Price</span><span>$${fmtPrice(pos.entryPx)}</span></div>
           <div class="row-expand-item ${liqWarn ? 'liq-warn' : ''}"><span>Liq. Price</span><span>${liqWarn ? '⚠ ' : ''}$${fmtPrice(liqPx)}</span></div>
           <div class="row-expand-item"><span>Leverage</span><span>${esc(String(pos.leverage.value))}x (${esc(pos.leverage.type)})</span></div>
           <div class="row-expand-item"><span>Margin Used</span><span>$${fmtUSD(pos.marginUsed)}</span></div>
           <div class="row-expand-item"><span>ROE</span><span class="${roe >= 0 ? 'pos' : 'neg'}">${fmtPct(roe, true)}</span></div>
+          <div class="row-expand-item"><span>Funding</span><span class="${fmtPnL(-parseFloat(pos.cumFunding?.sinceOpen ?? 0)).cls}">${fmtPnL(-parseFloat(pos.cumFunding?.sinceOpen ?? 0)).text}</span></div>
         </div>
       </td>
     </tr>`
   }).join('')
+
+  // Restore previously expanded rows
+  openIds.forEach(id => {
+    const row = document.getElementById(id)
+    if (!row) return
+    row.classList.add('open')
+    const btn = row.previousElementSibling?.querySelector('.row-expand-btn')
+    if (btn) btn.classList.add('open')
+  })
 }
 
 // ─── SPOT TAB ────────────────────────────────────────────────────────────────
@@ -621,24 +659,25 @@ export function renderOrders(openOrders, perpState) {
     const isSl    = orderType.startsWith('Stop')        || o.triggerCondition === 'sl'
     const isBuy   = o.side === 'B'
 
-    let intentLabel, intentCls, intentIcon
+    let intentLabel, intentCls
     if (isTp) {
-      intentLabel = 'Take Profit'; intentCls = 'badge-tp';         intentIcon = '✦'
+      intentLabel = 'Take Profit'; intentCls = 'badge-tp'
     } else if (isSl) {
-      intentLabel = 'Stop Loss';   intentCls = 'badge-sl';         intentIcon = '⬡'
+      intentLabel = 'Stop Loss';   intentCls = 'badge-sl'
     } else if (o.reduceOnly) {
       intentLabel = isBuy ? 'Close Short' : 'Close Long'
-      intentCls   = 'badge-reduce'; intentIcon = '◈'
+      intentCls   = 'badge-reduce'
     } else {
       intentLabel = isBuy ? 'Open Long' : 'Open Short'
-      intentCls   = isBuy ? 'badge-open-long' : 'badge-open-short'
-      intentIcon  = isBuy ? '▲' : '▼'
+      intentCls   = isBuy ? 'badge-long' : 'badge-short'
     }
 
     // Use the exact orderType string HL provides (e.g. "Take Profit Limit", "Stop Market")
     const orderKind = orderType || (isTrigger
       ? (limitPx > 0 && limitPx !== triggerPx ? 'Stop Limit' : 'Stop Market')
       : 'Limit')
+    // Strip "Take Profit" / "Stop" prefix for compact mobile subtitle
+    const orderKindShort = orderKind.replace(/^(Take Profit|Stop)\s*/i, '') || orderKind
 
     const priceDetail = isTrigger && triggerPx > 0 && limitPx > 0 && limitPx !== triggerPx
       ? `<div style="color:var(--muted);font-size:9px;margin-top:2px">Entry $${fmtPrice(limitPx)}</div>`
@@ -668,7 +707,7 @@ export function renderOrders(openOrders, perpState) {
         : (entryPx - displayPx) * effectiveSz
       const cls  = pnl >= 0 ? 'pos' : 'neg'
       const sign = pnl >= 0 ? '+' : ''
-      pnlHtml = `<span class="${cls}" style="font-family:'Space Mono',monospace;font-weight:700">${sign}$${fmtUSD(Math.abs(pnl))}</span>`
+      pnlHtml = `<span class="${cls}" style="font-family:'JetBrains Mono',monospace;font-weight:700">${sign}$${fmtUSD(Math.abs(pnl))}</span>`
       // Show % ROE on margin
       if (pos?.marginUsed) {
         const margin = parseFloat(pos.marginUsed)
@@ -688,17 +727,18 @@ export function renderOrders(openOrders, perpState) {
           <b>${esc(o.coin)}</b>
         </div>
       </td>
-      <td>
-        <span class="badge ${intentCls}">${intentIcon} ${esc(intentLabel)}</span>
-        <div style="font-size:10px;color:var(--muted);margin-top:3px">${esc(orderKind)}</div>
-      </td>
+      <td><span class="badge ${intentCls}">${esc(intentLabel)}</span></td>
       <td>${fmtSize(effectiveSz > 0 ? effectiveSz : sz)} ${esc(o.coin)}<div style="font-size:10px;color:var(--muted);margin-top:2px">Value $${fmtUSD(orderValue)}</div></td>
       <td>$${fmtPrice(displayPx)}${priceDetail}</td>
-      <td style="font-family:'Space Mono',monospace">${marginHtml}</td>
+      <td style="font-family:'JetBrains Mono',monospace">${marginHtml}</td>
       <td>${pnlHtml}</td>
       <td>
+        <button class="manage-btn"
+          onclick="window.__openEditOrderModal('${esc(o.coin)}',${o.oid},${o.side === 'B'},${effectiveSz},${displayPx},'${isTp ? 'tp' : isSl ? 'sl' : ''}',${isTrigger})">
+          ✏ Edit
+        </button>
         <button class="manage-btn close"
-          onclick="window.__cancelOrder('${esc(o.coin)}', ${o.oid})">
+          onclick="window.__cancelOrder('${esc(o.coin)}', ${o.oid}, ${!!o.isPositionTpsl})">
           ✕ Cancel
         </button>
       </td>
@@ -745,10 +785,14 @@ export function renderTrades(fills) {
     return
   }
 
-  // Render aggregated trades, newest first
-  const LIMIT = 20
-  const sorted  = trades.sort((a, b) => b.time - a.time)
-  const visible = _tradesExpanded ? sorted : sorted.slice(0, LIMIT)
+  const LIMIT  = window.innerWidth <= 768 ? 10 : 20
+  const sorted = trades.sort((a, b) => b.time - a.time)
+  const pages  = Math.ceil(sorted.length / LIMIT)
+  _tradesPage  = Math.min(_tradesPage, pages - 1)
+  const start  = _tradesPage * LIMIT
+  const visible = sorted.slice(start, start + LIMIT)
+
+  const isMobile = window.innerWidth <= 768
 
   const rowHtml = visible.map(t => {
     const hasPnl  = t.closedPnl !== 0
@@ -756,26 +800,49 @@ export function renderTrades(fills) {
     const pnl     = fmtPnL(netPnl)
     const dir     = t.dir || (t.side === 'BUY' ? 'Open Long' : 'Open Short')
     const isClose = dir.toLowerCase().includes('close')
-    return `<tr>
-      <td style="color:var(--muted);white-space:nowrap;font-size:11px">${esc(t.timeStr)}</td>
+    const eid     = `fill-expand-${t.hash || t.time + '_' + t.coin}`
+    const sizeCell = `${fmtSize(t.sz)}<div style="font-size:10px;color:var(--muted)">$${fmtUSD(t.notional)}</div>`
+    const tapExpand = isMobile ? `onclick="window.__toggleRowExpand('${eid}')" style="cursor:pointer"` : ''
+    const mainRow  = `<tr ${tapExpand}>
+      <td style="color:var(--muted);white-space:nowrap;font-size:11px">
+        <div style="display:flex;align-items:center;gap:6px">
+          ${isMobile ? `<span class="row-expand-btn" id="btn-${eid}">&#8964;</span>` : ''}
+          ${esc(t.timeStr)}
+        </div>
+      </td>
       <td><b>${esc(t.coin)}</b></td>
       <td><span class="dir-badge ${isClose ? 'dir-close' : 'dir-open'}">${esc(dir)}</span></td>
-      <td>${fmtSize(t.sz)}</td>
+      <td>${sizeCell}</td>
       <td>$${fmtPrice(t.px)}</td>
       <td class="${hasPnl ? pnl.cls : 'muted'}">${hasPnl ? pnl.text : '—'}</td>
       <td class="neg" style="font-size:11px">-$${fmtUSD(t.fee)}</td>
     </tr>`
+    const expandRow = isMobile ? `<tr class="row-expand-detail" id="${eid}">
+      <td colspan="7">
+        <div class="row-expand-grid">
+          <div class="row-expand-item"><span>Price</span><span>$${fmtPrice(t.px)}</span></div>
+          <div class="row-expand-item"><span>Size</span><span>${fmtSize(t.sz)} ${esc(t.coin)}<div style="font-size:10px;color:var(--muted)">$${fmtUSD(t.notional)}</div></span></div>
+          <div class="row-expand-item"><span>Closed PnL</span><span class="${fmtPnL(t.closedPnl).cls}">${hasPnl ? fmtPnL(t.closedPnl).text : '—'}</span></div>
+          <div class="row-expand-item"><span>Fee</span><span class="neg">-$${fmtUSD(t.fee)} ${esc(t.feeToken ?? 'USDC')}</span></div>
+          <div class="row-expand-item"><span>Net PnL</span><span class="${fmtPnL(netPnl).cls}">${hasPnl ? fmtPnL(netPnl).text : '—'}</span></div>
+          <div class="row-expand-item"><span>Direction</span><span class="dir-badge ${isClose ? 'dir-close' : 'dir-open'}">${esc(dir)}</span></div>
+        </div>
+      </td>
+    </tr>` : ''
+    return mainRow + expandRow
   }).join('')
 
-  const expandRow = !_tradesExpanded && sorted.length > LIMIT
+  const paginationRow = pages > 1
     ? `<tr><td colspan="7" style="text-align:center;padding:10px 0">
-        <button class="btn-sm" onclick="window.__expandTrades()" style="width:100%;letter-spacing:.05em">
-          + Show all ${sorted.length} trades
-        </button>
+        <div style="display:inline-flex;align-items:center;gap:12px">
+          <button class="btn-sm" onclick="window.__tradesPrevPage()" ${_tradesPage === 0 ? 'disabled' : ''} style="padding:5px 10px">&#8249;</button>
+          <span style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace">${_tradesPage + 1} / ${pages}</span>
+          <button class="btn-sm" onclick="window.__tradesNextPage()" ${_tradesPage >= pages - 1 ? 'disabled' : ''} style="padding:5px 10px">&#8250;</button>
+        </div>
        </td></tr>`
     : ''
 
-  tbody.innerHTML = rowHtml + expandRow
+  tbody.innerHTML = rowHtml + paginationRow
 }
 
 
@@ -1029,7 +1096,7 @@ export function renderTokenList(allMids, query, fills) {
         <div class="token-icon">${esc(coin.slice(0, 3))}</div>
         <div>
           <div class="token-result-name">${esc(coin)}</div>
-          <div style="font-size:11px;color:var(--muted);font-family:'Space Mono',monospace">
+          <div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace">
             ${stats ? stats.trades + ' trades' : 'No trades'}
           </div>
         </div>
@@ -1105,7 +1172,7 @@ export function renderTokenDetail(coin, price, perpState, fills) {
   document.getElementById('tokenDetailCard').innerHTML = `
     <div class="token-card">
       <div class="token-name">${esc(coin)}</div>
-      <div style="color:var(--muted);font-size:12px;font-family:'Space Mono',monospace">PERPETUAL / USDC</div>
+      <div style="color:var(--muted);font-size:12px;font-family:'JetBrains Mono',monospace">PERPETUAL / USDC</div>
       <div class="token-price">$${fmtPrice(price)}</div>
       <div class="token-stats-grid">
         <div class="token-stat">
@@ -1317,7 +1384,7 @@ export function renderManageOrders(openOrders, perpState) {
       const pnl  = isLong ? (displayPx - entryPx) * effectiveSz : (entryPx - displayPx) * effectiveSz
       const cls  = pnl >= 0 ? 'pos' : 'neg'
       const sign = pnl >= 0 ? '+' : ''
-      pnlHtml = `<span class="${cls}" style="font-family:'Space Mono',monospace;font-weight:700">${sign}$${fmtUSD(Math.abs(pnl))}</span>`
+      pnlHtml = `<span class="${cls}" style="font-family:'JetBrains Mono',monospace;font-weight:700">${sign}$${fmtUSD(Math.abs(pnl))}</span>`
       if (pos?.marginUsed) {
         const margin = parseFloat(pos.marginUsed)
         const roe    = margin > 0 ? (pnl / margin) * 100 : 0
@@ -1336,11 +1403,11 @@ export function renderManageOrders(openOrders, perpState) {
       </td>
       <td>${fmtSize(effectiveSz > 0 ? effectiveSz : sz)} ${esc(o.coin)}<div style="font-size:9px;color:var(--muted);margin-top:2px">Value $${fmtUSD(orderValue)}</div></td>
       <td>$${fmtPrice(displayPx)}${priceDetail}</td>
-      <td style="font-family:'Space Mono',monospace">${marginHtml}</td>
+      <td style="font-family:'JetBrains Mono',monospace">${marginHtml}</td>
       <td>${pnlHtml}</td>
       <td>
         <button class="manage-btn close"
-          onclick="window.__cancelOrder('${esc(o.coin)}', ${o.oid})">
+          onclick="window.__cancelOrder('${esc(o.coin)}', ${o.oid}, ${!!o.isPositionTpsl})">
           ✕ Cancel
         </button>
       </td>
@@ -1416,7 +1483,7 @@ export function calDayClick(key) {
         const amt       = parseFloat(isDeposit ? (t === 'deposit' ? e.delta.usdc : e.delta.usdcValue) : e.delta.usdc) || 0
         return `<div class="cal-detail-tx">
           <span class="badge ${isDeposit ? 'badge-deposit' : 'badge-withdraw'}">${isDeposit ? 'Deposit' : 'Withdrawal'}</span>
-          <span class="${isDeposit ? 'pos' : 'neg'}" style="font-family:'Space Mono',monospace;font-weight:700">${isDeposit ? '+' : '-'}$${fmtUSD(amt)} USDC</span>
+          <span class="${isDeposit ? 'pos' : 'neg'}" style="font-family:'JetBrains Mono',monospace;font-weight:700">${isDeposit ? '+' : '-'}$${fmtUSD(amt)} USDC</span>
         </div>`
       }).join('')}
     </div>` : ''
@@ -1646,20 +1713,41 @@ export function renderTransfers(ledger, filter = 'all') {
     return
   }
 
+  const isMobile = window.innerWidth <= 768
+
   tbody.innerHTML = visible.slice().sort((a, b) => b.time - a.time).map(entry => {
-    const meta   = TRANSFER_TYPES[entry.delta.type] ?? { label: entry.delta.type, badge: 'badge-transfer', sign: 0 }
-    const amt    = ledgerAmount(entry)
-    const amtStr = amt > 0 ? '+$' + fmtUSD(amt) : amt < 0 ? '-$' + fmtUSD(Math.abs(amt)) : '$0.00'
-    const amtCls = meta.sign > 0 ? 'pos' : meta.sign < 0 ? 'neg' : 'muted'
-    const date   = new Date(entry.time)
+    const meta    = TRANSFER_TYPES[entry.delta.type] ?? { label: entry.delta.type, badge: 'badge-transfer', sign: 0 }
+    const amt     = ledgerAmount(entry)
+    const amtStr  = amt > 0 ? '+$' + fmtUSD(amt) : amt < 0 ? '-$' + fmtUSD(Math.abs(amt)) : '$0.00'
+    const amtCls  = meta.sign > 0 ? 'pos' : meta.sign < 0 ? 'neg' : 'muted'
+    const date    = new Date(entry.time)
     const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) +
                     ' ' + date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-    return `<tr>
-      <td style="color:var(--muted);white-space:nowrap;font-size:11px">${esc(dateStr)}</td>
+    const details = ledgerDetails(entry)
+    const eid     = `txfr-expand-${entry.time}_${entry.delta.type}`
+    const tapExpand = isMobile ? `onclick="window.__toggleRowExpand('${eid}')" style="cursor:pointer"` : ''
+    const mainRow = `<tr ${tapExpand}>
+      <td style="color:var(--muted);white-space:nowrap;font-size:11px">
+        <div style="display:flex;align-items:center;gap:6px">
+          ${isMobile ? `<span class="row-expand-btn" id="btn-${eid}">&#8964;</span>` : ''}
+          ${esc(dateStr)}
+        </div>
+      </td>
       <td><span class="badge ${meta.badge}">${esc(meta.label)}</span></td>
-      <td class="${amtCls}" style="font-family:'Space Mono',monospace">${esc(amtStr)}</td>
-      <td style="color:var(--muted);font-size:11px">${esc(ledgerDetails(entry))}</td>
+      <td class="${amtCls}" style="font-family:'JetBrains Mono',monospace">${esc(amtStr)}</td>
+      <td style="color:var(--muted);font-size:11px">${esc(details)}</td>
     </tr>`
+    const expandRow = isMobile ? `<tr class="row-expand-detail" id="${eid}">
+      <td colspan="4">
+        <div class="row-expand-grid">
+          <div class="row-expand-item"><span>Type</span><span><span class="badge ${meta.badge}">${esc(meta.label)}</span></span></div>
+          <div class="row-expand-item"><span>Amount</span><span class="${amtCls}">${esc(amtStr)}</span></div>
+          <div class="row-expand-item"><span>Details</span><span style="color:var(--muted)">${esc(details)}</span></div>
+          <div class="row-expand-item"><span>Date</span><span style="color:var(--muted);font-size:11px">${esc(dateStr)}</span></div>
+        </div>
+      </td>
+    </tr>` : ''
+    return mainRow + expandRow
   }).join('')
 }
 

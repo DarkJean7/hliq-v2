@@ -4,6 +4,29 @@ import { InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 const transport = new HttpTransport()
 export const infoClient = new InfoClient({ transport })
 
+// Extract HIP-3 DEX names from allPerpMetas array (index 0 = main DEX, rest = HIP-3)
+function _hip3DexNames(allMetas) {
+  const dexes = new Set()
+  for (let i = 1; i < allMetas.length; i++) {
+    for (const u of (allMetas[i].universe ?? [])) {
+      const idx = u.name.indexOf(':')
+      if (idx > 0) dexes.add(u.name.slice(0, idx))
+    }
+  }
+  return [...dexes]
+}
+
+// Fetch allMids for main DEX + all HIP-3 DEXes, merged into one object.
+// Never throws — HIP-3 failures are silently skipped.
+export async function fetchAllMids(allMetas) {
+  const mainMids = await infoClient.allMids()
+  if (!allMetas || allMetas.length <= 1) return mainMids
+  const dexes = _hip3DexNames(allMetas)
+  if (!dexes.length) return mainMids
+  const hip3Arr = await Promise.all(dexes.map(dex => infoClient.allMids({ dex }).catch(() => ({}))))
+  return Object.assign({}, mainMids, ...hip3Arr)
+}
+
 
 /**
  * Fetch all-time fills via sequential pagination.
@@ -24,7 +47,7 @@ async function fetchAllFunding(address, startTime) {
       if (!seen.has(key)) { seen.add(key); all.push(f) }
     }
 
-    if (batch.length < 2000) break
+    if (batch.length < 500) break
 
     const maxTime = Math.max(...batch.map(f => f.time))
     startTime = maxTime + 1
@@ -53,7 +76,7 @@ export async function loadAccountData(address, onStep, { mobile = false } = {}) 
   onStep(2, 'done')
 
   onStep(3, 'active')
-  const [openOrders, fills, portfolio, allMetas, allMids] = await Promise.all([
+  const [openOrders, fills, portfolio, allMetas, mainMids] = await Promise.all([
     infoClient.frontendOpenOrders({ user: address }),
     infoClient.userFillsByTime({ user: address, startTime: fillsFrom, reversed: true })
       .catch(() => infoClient.userFills({ user: address })),
@@ -62,6 +85,13 @@ export async function loadAccountData(address, onStep, { mobile = false } = {}) 
     infoClient.allMids(),
   ])
   const meta = { universe: allMetas.flatMap(m => m.universe ?? []) }
+
+  // Fetch HIP-3 DEX mids in parallel (DEX name = prefix before ':' in coin names)
+  const hip3Dexes = _hip3DexNames(allMetas)
+  const hip3MidsArr = await Promise.all(
+    hip3Dexes.map(dex => infoClient.allMids({ dex }).catch(() => ({})))
+  )
+  const allMids = Object.assign({}, mainMids, ...hip3MidsArr)
   onStep(3, 'done')
 
   // Step 4: funding + webData2 in parallel

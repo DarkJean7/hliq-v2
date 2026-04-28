@@ -27,6 +27,18 @@ async function getAssetInfo(coin) {
 export function getWalletAddress() { return walletAddress }
 export function isConnected()      { return exchangeClient !== null }
 
+export async function fetchCandles(coin, interval, startTime, endTime) {
+  return infoClient.candleSnapshot({ coin, interval, startTime, ...(endTime ? { endTime } : {}) })
+}
+
+export async function fetchMarketCtxs() {
+  return infoClient.metaAndAssetCtxs()
+}
+
+export async function fetchPerpCategories() {
+  return infoClient.perpCategories()
+}
+
 /**
  * Connect an agent private key.
  * Returns the derived address on success, throws on failure.
@@ -80,16 +92,16 @@ async function placeOrderRaw({
   sz,
   limitPx,
   orderType,
-  reduceOnly = false,
-  leverage   = 5,
-  isIsolated = false,
+  reduceOnly    = false,
+  leverage      = 5,
+  isIsolated    = false,
+  skipLevUpdate = false,
 }) {
   if (!exchangeClient) throw new Error('Agent key not connected')
 
   const { index: assetIndex, szDecimals } = await getAssetInfo(coin)
 
-  // Set leverage (fire-and-forget errors are non-fatal for reduce-only closes)
-  if (!reduceOnly) {
+  if (!reduceOnly && !skipLevUpdate) {
     await exchangeClient.updateLeverage({
       asset:   assetIndex,
       isCross: !isIsolated,
@@ -149,17 +161,18 @@ export async function placeLimitOrder({ coin, isBuy, sz, limitPx, leverage, isIs
  * Close position at market (reduce-only IOC)
  */
 export async function closePosition({ coin, isBuy, sz, markPrice }) {
-  const slippage = 0.003
+  const slippage = 0.03
   const limitPx  = isBuy
     ? markPrice * (1 + slippage)
     : markPrice * (1 - slippage)
 
   return placeOrderRaw({
     coin, isBuy, sz, limitPx,
-    orderType:  { limit: { tif: 'Ioc' } },
-    reduceOnly: true,
-    leverage:   1,
-    isIsolated: false,
+    orderType:     { limit: { tif: 'Ioc' } },
+    reduceOnly:    false,
+    leverage:      1,
+    isIsolated:    false,
+    skipLevUpdate: true,
   })
 }
 
@@ -188,14 +201,47 @@ export async function placeTriggerOrder({ coin, isBuy, sz, triggerPx, tpsl }) {
 }
 
 /**
+ * Modify an order.
+ * - Trigger (TP/SL): cancel old then place replacement (HL modify/batchModify reject triggers).
+ * - Regular limit orders: atomic modify (throws on failure).
+ */
+export async function modifyOrderPrice({ coin, oid, isBuy, sz, newPx, tpsl, isTrigger }) {
+  if (!exchangeClient) throw new Error('Agent key not connected')
+
+  if (isTrigger && tpsl) {
+    // Cancel existing order first (ignore "already gone" errors)
+    try {
+      const res    = await cancelOrder({ coin, oid: parseInt(oid) })
+      const parsed = parseOrderResult(res)
+      const gone   = parsed.errors.some(e => /never placed|already cancel|filled/i.test(e))
+      if (!parsed.ok && !gone) throw new Error(parsed.errors.join(', '))
+    } catch (e) {
+      if (!/never placed|already cancel|filled/i.test(e.message)) throw e
+    }
+    return placeTriggerOrder({ coin, isBuy, sz, triggerPx: newPx, tpsl })
+  }
+
+  const { index: assetIndex, szDecimals } = await getAssetInfo(coin)
+  return exchangeClient.modify({
+    oid: parseInt(oid),
+    order: {
+      a: assetIndex,
+      b: isBuy,
+      p: roundPx(newPx).toString(),
+      s: roundSz(sz, szDecimals).toString(),
+      r: false,
+      t: { limit: { tif: 'Gtc' } },
+    },
+  })
+}
+
+/**
  * Cancel an open order
  */
 export async function cancelOrder({ coin, oid }) {
   if (!exchangeClient) throw new Error('Agent key not connected')
   const { index: assetIndex } = await getAssetInfo(coin)
-  return exchangeClient.cancel({
-    cancels: [{ a: assetIndex, o: oid }],
-  })
+  return exchangeClient.cancel({ cancels: [{ a: assetIndex, o: parseInt(oid) }] })
 }
 
 // ─── PRECISION HELPERS ────────────────────────────────────────────────────────
@@ -217,15 +263,17 @@ function roundPx(n) {
  */
 export function parseOrderResult(result) {
   const statuses = result?.response?.data?.statuses ?? []
-  const errors   = statuses.filter(s => s.error).map(s => s.error)
-  const filled   = statuses.filter(s => s.filled)
-  const resting  = statuses.filter(s => s.resting)
+  const errors   = statuses.filter(s => s && typeof s === 'object' && s.error).map(s => s.error)
+  const filled   = statuses.filter(s => s && typeof s === 'object' && s.filled)
+  const resting  = statuses.filter(s => s && typeof s === 'object' && s.resting)
+  const waiting  = statuses.filter(s => s === 'waitingForFill' || s === 'waitingForTrigger')
 
   return {
     ok:      errors.length === 0,
     errors,
     filled,
     resting,
+    waiting,
     raw:     result,
   }
 }

@@ -64,3 +64,21 @@ export function disconnectMainWallet() {
   mainAddress = null
   rawProvider = null
 }
+
+export async function connectWalletSilent(rdns) {
+  if (rdns === 'walletconnect') return null // WC always needs user interaction
+  let raw
+  if (rdns && discovered.has(rdns)) raw = discovered.get(rdns).provider
+  else if (window.ethereum)         raw = window.ethereum
+  else                              return null
+  try {
+    const provider = new ethers.BrowserProvider(raw)
+    const accounts = await provider.send('eth_accounts', []) // no popup
+    if (!accounts || accounts.length === 0) return null
+    const signer = await provider.getSigner()
+    mainAddress  = (await signer.getAddress()).toLowerCase()
+    mainSigner   = signer
+    rawProvider  = raw
+    return mainAddress
+  } catch { return null }
+}

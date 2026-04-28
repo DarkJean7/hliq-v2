@@ -34,9 +34,12 @@ body.light-mode {
 body {
   background:  var(--bg);
   color:       var(--text);
-  font-family: 'Space Mono', monospace;
+  font-family: 'Inter', sans-serif;
   min-height:  100vh;
   overflow-x:  hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 /* noise */
@@ -80,7 +83,7 @@ header {
   justify-content: space-between; gap: 16px;
 }
 .logo {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 18px; font-weight: 700;
   letter-spacing: -0.5px; color: var(--accent);
   display: flex; align-items: center; gap: 10px;
@@ -96,7 +99,7 @@ header {
   50%      { opacity:0.5; transform:scale(0.8); }
 }
 .header-status {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px; color: var(--muted);
   display: flex; align-items: center; gap: 8px;
 }
@@ -118,13 +121,13 @@ header {
   font-size: clamp(32px, 5vw, 56px);
   font-weight: 800; line-height: 1.1;
   letter-spacing: -2px; margin-bottom: 12px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
 }
 .main-title span { color: var(--accent); }
 .main-subtitle {
   color: var(--muted); font-size: 14px;
   margin-bottom: 40px; font-weight: 400;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
 }
 .wallet-form {
   display: flex; gap: 12px;
@@ -136,7 +139,7 @@ header {
   border: 1px solid var(--border2);
   border-radius: 10px;
   padding: 14px 20px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 13px; color: var(--text);
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
@@ -150,7 +153,7 @@ header {
   background: var(--accent); color: #000;
   border: none; border-radius: 10px;
   padding: 14px 28px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 14px; font-weight: 700;
   cursor: pointer;
   transition: transform 0.15s, box-shadow 0.2s;
@@ -172,7 +175,7 @@ header {
   margin: 0 auto 24px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-.loading-text { font-family: 'Space Mono', monospace; font-size: 13px; color: var(--muted); }
+.loading-text { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--muted); }
 .loading-steps { margin-top: 16px; }
 .load-step { font-size: 12px; color: var(--muted); padding: 4px 0; transition: color 0.3s; }
 .load-step.done   { color: var(--green); }
@@ -185,7 +188,7 @@ header {
   border: 1px solid rgba(255,77,109,0.25);
   border-radius: 10px; padding: 14px 20px;
   margin: 16px auto 0; max-width: 700px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 13px; color: var(--red);
 }
 .error-box.active { display: block; }
@@ -205,7 +208,7 @@ header {
 }
 .watch-ticker-label {
   font-size: 10px; font-weight: 700; color: var(--muted);
-  font-family: 'Space Mono', monospace; letter-spacing: 1px;
+  font-family: 'JetBrains Mono', monospace; letter-spacing: 1px;
   white-space: nowrap; padding-right: 4px;
 }
 .watch-ticker-track {
@@ -216,7 +219,7 @@ header {
 .watch-ticker-item {
   display: flex; align-items: center; gap: 7px;
   font-size: 11px; white-space: nowrap; cursor: pointer;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   padding: 2px 4px; border-radius: 4px;
   transition: background 0.15s;
 }
@@ -258,7 +261,7 @@ header {
 .tab-badge {
   background: rgba(0,255,204,0.1); color: var(--accent);
   border-radius: 20px; padding: 2px 7px;
-  font-size: 10px; font-family: 'Space Mono', monospace;
+  font-size: 10px; font-family: 'JetBrains Mono', monospace;
 }
 
 .tab-panel { display: none; }
@@ -288,8 +291,8 @@ header {
   .overview-perf-row { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 640px) {
-  .overview-hero-row { grid-template-columns: 1fr; }
-  .overview-perf-row { grid-template-columns: repeat(2, 1fr); }
+  .overview-hero-row { grid-template-columns: 1fr 1fr; }
+  .overview-perf-row { grid-template-columns: 1fr 1fr; }
 }
 
 .stat-card {
@@ -316,14 +319,14 @@ header {
   font-size: 10px; font-weight: 700;
   letter-spacing: 1.2px; text-transform: uppercase;
   color: var(--muted); margin-bottom: 10px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
 }
 .stat-value {
   font-size: 16px; font-weight: 700;
   letter-spacing: -0.5px; line-height: 1;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
 }
-.stat-sub { font-size: 11px; color: var(--muted); margin-top: 6px; font-family: 'Space Mono', monospace; }
+.stat-sub { font-size: 11px; color: var(--muted); margin-top: 6px; font-family: 'JetBrains Mono', monospace; }
 
 .pos   { color: var(--green); }
 .neg   { color: var(--red); }
@@ -336,7 +339,7 @@ header {
   letter-spacing: 1.5px; text-transform: uppercase;
   color: var(--muted); margin-bottom: 14px;
   display: flex; align-items: center; gap: 10px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
 }
 .section-title::after {
   content: ''; flex: 1; height: 1px; background: var(--border);
@@ -361,7 +364,7 @@ header {
 .count-pill {
   background: var(--bg3); border: 1px solid var(--border2);
   border-radius: 20px; padding: 2px 10px;
-  font-size: 11px; font-family: 'Space Mono', monospace;
+  font-size: 11px; font-family: 'JetBrains Mono', monospace;
   color: var(--muted);
 }
 .table-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -373,7 +376,7 @@ thead th {
   font-size: 10px; font-weight: 700;
   letter-spacing: 1px; text-transform: uppercase;
   color: var(--muted);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
@@ -385,7 +388,7 @@ tbody tr:last-child { border-bottom: none; }
 tbody tr:hover { background: rgba(255,255,255,0.02); }
 tbody td {
   padding: 13px 18px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 12px; vertical-align: middle;
 }
 
@@ -393,7 +396,7 @@ tbody td {
 .btn-sm {
   background: var(--bg3); border: 1px solid var(--border2);
   border-radius: 8px; padding: 7px 14px;
-  font-family: 'Space Mono', monospace; font-size: 11px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
   color: var(--text); cursor: pointer;
   transition: border-color 0.2s, color 0.2s;
   white-space: nowrap;
@@ -405,7 +408,7 @@ tbody td {
   display: inline-flex; align-items: center;
   padding: 3px 9px; border-radius: 20px;
   font-size: 10px; font-weight: 700;
-  font-family: 'Space Mono', monospace; letter-spacing: 0.5px;
+  font-family: 'JetBrains Mono', monospace; letter-spacing: 0.5px;
 }
 .badge-long    { background: rgba(0,229,160,0.1);  color: var(--green); border: 1px solid rgba(0,229,160,0.2); }
 .badge-short   { background: rgba(255,77,109,0.1); color: var(--red);   border: 1px solid rgba(255,77,109,0.2); }
@@ -422,7 +425,7 @@ tbody td {
 .search-input {
   background: var(--bg3); border: 1px solid var(--border2);
   border-radius: 8px; padding: 8px 14px;
-  font-family: 'Space Mono', monospace; font-size: 12px;
+  font-family: 'JetBrains Mono', monospace; font-size: 12px;
   color: var(--text); outline: none;
   transition: border-color 0.2s;
 }
@@ -457,7 +460,7 @@ tbody td {
 .chart-tab {
   background: none; border: 1px solid var(--border);
   border-radius: 6px; padding: 5px 12px;
-  font-size: 11px; font-family: 'Space Mono', monospace;
+  font-size: 11px; font-family: 'JetBrains Mono', monospace;
   color: var(--muted); cursor: pointer; transition: all 0.2s;
 }
 .chart-tab.active,
@@ -472,18 +475,18 @@ tbody td {
 .portfolio-pnl-num {
   font-size: 24px; font-weight: 700;
   letter-spacing: -1px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
 }
 .portfolio-pnl-num.pos { color: var(--green); text-shadow: 0 0 20px rgba(0,229,160,0.25); }
 .portfolio-pnl-num.neg { color: var(--red);   text-shadow: 0 0 20px rgba(255,77,109,0.25); }
 .portfolio-pnl-pct {
-  font-size: 13px; font-family: 'Space Mono', monospace;
+  font-size: 13px; font-family: 'JetBrains Mono', monospace;
   font-weight: 700; padding: 3px 10px; border-radius: 20px;
 }
 .portfolio-pnl-pct.pos { background: rgba(0,229,160,0.1);  color: var(--green); }
 .portfolio-pnl-pct.neg { background: rgba(255,77,109,0.1); color: var(--red); }
 .portfolio-pnl-date {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px; color: var(--muted);
   align-self: center; margin-left: 4px;
 }
@@ -502,7 +505,7 @@ tbody td {
 .token-name { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 4px; }
 .token-price {
   font-size: 24px; font-weight: 700; letter-spacing: -1px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   color: var(--accent); margin: 14px 0 8px;
 }
 .token-stats-grid {
@@ -512,10 +515,10 @@ tbody td {
 .token-stat { background: var(--bg3); border-radius: 8px; padding: 11px 13px; }
 .token-stat-label {
   font-size: 10px; color: var(--muted);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 5px;
 }
-.token-stat-value { font-size: 14px; font-weight: 700; font-family: 'Space Mono', monospace; }
+.token-stat-value { font-size: 14px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
 
 .token-result-item {
   display: flex; align-items: center;
@@ -534,10 +537,10 @@ tbody td {
   color: var(--accent); flex-shrink: 0;
 }
 .token-result-name { font-weight: 700; font-size: 14px; }
-.token-result-price { font-family: 'Space Mono', monospace; font-size: 13px; text-align: right; }
+.token-result-price { font-family: 'JetBrains Mono', monospace; font-size: 13px; text-align: right; }
 .market-empty {
   text-align: center; padding: 48px 20px;
-  color: var(--muted); font-family: 'Space Mono', monospace; font-size: 13px;
+  color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 13px;
 }
 
 /* ─── TRADE TAB ─────────────────────────────────────────────────────────────── */
@@ -552,14 +555,14 @@ tbody td {
   display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;
 }
 .trade-agent-label {
-  font-family: 'Space Mono', monospace; font-size: 10px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
   color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px;
   white-space: nowrap;
 }
 .api-input {
   flex: 1; background: var(--bg3); border: 1px solid var(--border2);
   border-radius: 8px; padding: 8px 12px;
-  font-family: 'Space Mono', monospace; font-size: 11px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
   color: var(--text); outline: none; transition: border-color 0.2s;
   min-width: 0;
 }
@@ -579,13 +582,185 @@ tbody td {
   display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
 }
 .trade-account-label {
-  font-family: 'Space Mono', monospace; font-size: 10px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
   color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
 }
 .trade-account-value {
-  font-family: 'Space Mono', monospace; font-size: 13px; font-weight: 700;
+  font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700;
 }
 .trade-account-divider { width: 1px; height: 30px; background: var(--border); }
+
+/* ─── TRADE MARKET HEADER ───────────────────────────────────────────────────── */
+.trade-mkt-header {
+  display: flex; align-items: center; gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px; position: relative; overflow: visible;
+}
+
+/* Coin selector button */
+.mkt-selector { position: relative; flex-shrink: 0; }
+.mkt-coin-btn {
+  display: flex; align-items: center; gap: 8px;
+  background: none; border: none; cursor: pointer;
+  padding: 10px 16px 10px 0; color: var(--text);
+  border-right: 1px solid var(--border);
+  transition: opacity 0.15s;
+}
+.mkt-coin-btn:hover { opacity: 0.8; }
+.mkt-coin-icon {
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--accent); color: #000;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 700;
+  flex-shrink: 0; line-height: 1;
+}
+.mkt-coin-name {
+  font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 700;
+  color: var(--text); letter-spacing: -0.3px;
+}
+.mkt-caret { color: var(--muted); flex-shrink: 0; }
+.mkt-coin-lev {
+  display: inline-flex; align-items: center;
+  font-family: 'Inter', sans-serif; font-size: 10px; font-weight: 700;
+  background: rgba(0,229,160,0.12); color: var(--green);
+  border-radius: 4px; padding: 1px 6px;
+}
+
+/* Market panel (the big dropdown) */
+.mkt-panel {
+  display: none; position: absolute;
+  top: calc(100% + 8px); left: 0;
+  width: min(860px, calc(100vw - 40px));
+  background: var(--bg2); border: 1px solid var(--border2);
+  border-radius: 12px; z-index: 300;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.7);
+  overflow: hidden;
+}
+.mkt-panel.open { display: flex; flex-direction: column; }
+
+.mkt-panel-search {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+.mkt-panel-search svg { color: var(--muted); flex-shrink: 0; }
+.mkt-panel-search input {
+  flex: 1; background: none; border: none; outline: none;
+  font-family: 'Inter', sans-serif; font-size: 13px;
+  color: var(--text);
+}
+.mkt-panel-search input::placeholder { color: var(--muted); }
+
+/* Type tabs (All, Perps, Spot, Crypto...) */
+.mkt-type-row {
+  display: flex; gap: 0; padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+.mkt-type-btn {
+  background: none; border: none; cursor: pointer;
+  font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 500;
+  color: var(--muted); padding: 10px 10px 9px;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.mkt-type-btn:hover { color: var(--text); }
+.mkt-type-btn.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+
+/* Category sub-tabs (All, AI, Defi, Gaming...) */
+.mkt-cat-row {
+  display: flex; gap: 4px; padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap; background: var(--bg2);
+}
+.mkt-cat-btn {
+  background: none; border: 1px solid transparent;
+  border-radius: 12px; padding: 2px 10px;
+  font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 500;
+  color: var(--muted); cursor: pointer; transition: all 0.12s;
+}
+.mkt-cat-btn:hover { color: var(--text); border-color: var(--border2); }
+.mkt-cat-btn.active { background: rgba(255,255,255,0.08); color: var(--text); border-color: var(--border2); font-weight: 600; }
+
+/* Table */
+.mkt-table-wrap { overflow-y: auto; max-height: 380px; }
+.mkt-table {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+}
+.mkt-table thead { position: sticky; top: 0; background: var(--bg2); z-index: 1; }
+.mkt-table thead th {
+  padding: 8px 12px; text-align: right;
+  font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 500;
+  color: var(--muted); border-bottom: 1px solid var(--border);
+  white-space: nowrap; user-select: none;
+}
+.mkt-th-sym { text-align: left !important; }
+.mkt-th-sort { cursor: pointer; transition: color 0.12s; }
+.mkt-th-sort:hover { color: var(--text); }
+.mkt-th-sort.active { color: var(--text); }
+.mkt-th-sort.active::after { content: ' ↓'; }
+.mkt-row {
+  cursor: pointer; transition: background 0.1s;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.mkt-row:hover { background: rgba(255,255,255,0.04); }
+.mkt-row.active { background: rgba(0,255,204,0.05); }
+.mkt-td-symbol {
+  padding: 9px 12px; display: flex; align-items: center; gap: 8px;
+}
+.mkt-td-symbol .coin-fav-btn { font-size: 12px; }
+.mkt-sym-icon {
+  width: 24px; height: 24px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Inter', sans-serif; font-size: 10px; font-weight: 700;
+  color: #000; flex-shrink: 0;
+}
+.mkt-sym-name {
+  font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600;
+  color: var(--text);
+}
+.mkt-sym-lev {
+  font-size: 9px; font-family: 'Inter', sans-serif; font-weight: 700;
+  background: rgba(0,229,160,0.1); color: var(--green);
+  border-radius: 3px; padding: 1px 4px; flex-shrink: 0;
+}
+.mkt-td-num {
+  padding: 9px 12px; text-align: right;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  color: var(--text); white-space: nowrap;
+}
+.mkt-section-row td {
+  padding: 5px 12px; font-family: 'Inter', sans-serif; font-size: 10px;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em;
+  border-top: 1px solid var(--border);
+}
+.mkt-empty-row td {
+  padding: 24px 12px; text-align: center;
+  color: var(--muted); font-family: 'Inter', sans-serif; font-size: 12px;
+}
+
+/* Inline header stats */
+.mkt-hdr-stats {
+  display: flex; align-items: stretch; overflow-x: auto; flex: 1;
+  scrollbar-width: none;
+}
+.mkt-hdr-stats::-webkit-scrollbar { display: none; }
+.mkt-hdr-stats .cs-stat {
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  padding: 8px 16px; min-width: 0; flex-shrink: 0;
+  border-right: 1px solid var(--border);
+}
+.mkt-hdr-stats .cs-label {
+  font-family: 'Inter', sans-serif; font-size: 10px;
+  color: var(--muted); white-space: nowrap;
+}
+.mkt-hdr-stats .cs-val {
+  font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600;
+  color: var(--text); white-space: nowrap;
+}
+.cs-oracle { text-decoration: underline; text-decoration-style: dashed; text-underline-offset: 3px; }
+.cs-cd { color: var(--muted); font-size: 11px; margin-left: 6px; }
 
 /* Main 2-column layout */
 .trade-main-layout {
@@ -594,6 +769,43 @@ tbody td {
   gap: 20px; align-items: start;
 }
 @media (max-width: 1000px) { .trade-main-layout { grid-template-columns: 1fr; } }
+
+/* ─── TRADE CARD COIN SEARCH ────────────────────────────────── */
+.tcs-wrap {
+  position: relative;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: 10px; padding: 8px 12px;
+  margin-bottom: 14px;
+}
+.tcs-icon {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--bg4, var(--border)); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: var(--muted); overflow: hidden;
+}
+.tcs-input {
+  flex: 1; background: none; border: none; outline: none;
+  color: var(--text); font-size: 14px; font-weight: 600;
+  font-family: inherit; min-width: 0;
+}
+.tcs-input::placeholder { color: var(--muted); font-weight: 400; font-size: 13px; }
+.tcs-results {
+  display: none;
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0;
+  background: var(--bg2); border: 1px solid var(--border2);
+  border-radius: 10px; z-index: 200;
+  max-height: 260px; overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.tcs-result-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 9px 14px; cursor: pointer; font-size: 13px;
+  transition: background 0.1s;
+}
+.tcs-result-item:hover { background: var(--bg3); }
+.tcs-result-item .tcs-ri-coin { font-weight: 600; color: var(--text); }
+.tcs-result-item .tcs-ri-px   { color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
 
 /* Order form column */
 .trade-order-col {
@@ -604,6 +816,74 @@ tbody td {
   box-shadow: var(--card-glow);
 }
 .trade-manage-col { min-width: 0; }
+
+/* ─── TRADE CHART ─────────────────────────────────────────────────────────── */
+.trade-chart-wrap {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 14px; padding: 12px 16px 16px;
+  margin-bottom: 24px; overflow: hidden;
+}
+.trade-chart-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px; gap: 8px;
+}
+
+.trade-chart-tfs { display: flex; flex-wrap: wrap; gap: 4px; }
+.chart-tf-btn {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--muted); border-radius: 6px;
+  padding: 3px 9px; font-size: 11px; font-family: 'JetBrains Mono', monospace;
+  cursor: pointer; transition: all 0.15s;
+}
+.chart-tf-btn:hover { color: var(--text); border-color: var(--border2); }
+.chart-tf-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 700; }
+.chart-mode-row { display: flex; gap: 3px; }
+.chart-mode-btn {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--muted); border-radius: 6px;
+  padding: 3px 9px; font-size: 11px; font-family: 'JetBrains Mono', monospace;
+  cursor: pointer; transition: all 0.15s;
+}
+.chart-mode-btn:hover { color: var(--text); border-color: var(--border2); }
+.chart-mode-btn.active { background: rgba(255,255,255,0.08); color: var(--text); border-color: var(--border2); font-weight: 600; }
+.trade-chart-body { position: relative; height: 380px; }
+.trade-chart-body canvas { display: block; width: 100% !important; height: 100% !important; touch-action: none; cursor: grab; }
+.trade-chart-body canvas:active { cursor: grabbing; }
+#markDot {
+  position: absolute; pointer-events: none;
+  transform: translate(-50%, -50%); z-index: 10;
+  display: none; align-items: center; justify-content: center;
+  width: 14px; height: 14px;
+}
+.mark-dot-core {
+  position: absolute; width: 7px; height: 7px;
+  border-radius: 50%; background: #00e5a0; z-index: 2;
+}
+.mark-dot-ring {
+  position: absolute; width: 7px; height: 7px;
+  border-radius: 50%; background: rgba(0,229,160,0.5);
+  animation: markDotPulse 1.5s ease-out infinite;
+}
+@keyframes markDotPulse {
+  0%   { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(3.5); opacity: 0; }
+}
+.chart-range-row {
+  display: flex; align-items: center; justify-content: flex-end; gap: 2px;
+  padding-top: 8px; border-top: 1px solid var(--border); margin-top: 8px;
+}
+.chart-range-btn {
+  background: none; border: none; cursor: pointer;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
+  color: var(--muted); padding: 3px 7px; border-radius: 4px;
+  transition: all 0.12s; letter-spacing: 0.3px;
+}
+.chart-range-btn:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+.chart-range-btn.active { color: var(--accent); background: rgba(0,255,204,0.08); }
+.trade-chart-empty {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 13px;
+}
 
 /* ─── MANAGE COLLAPSE (mobile only) ─────────────────────────────────────────── */
 .manage-collapse-btn { display: none; }
@@ -644,7 +924,7 @@ tbody td {
 }
 .side-btn {
   background: none; border: none; border-radius: 6px;
-  padding: 10px; font-family: 'Space Mono', monospace;
+  padding: 10px; font-family: 'JetBrains Mono', monospace;
   font-size: 13px; font-weight: 700; cursor: pointer;
   transition: background 0.2s, color 0.2s; color: var(--muted);
 }
@@ -656,7 +936,7 @@ tbody td {
 .order-type-tab {
   flex: 1; background: none; border: 1px solid var(--border);
   border-radius: 7px; padding: 7px 8px;
-  font-family: 'Space Mono', monospace; font-size: 10px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
   color: var(--muted); cursor: pointer; transition: all 0.2s; text-align: center;
 }
 .order-type-tab.active {
@@ -667,7 +947,7 @@ tbody td {
 /* Fields */
 .field-group { margin-bottom: 13px; }
 .field-label {
-  font-size: 10px; font-family: 'Space Mono', monospace;
+  font-size: 10px; font-family: 'JetBrains Mono', monospace;
   color: var(--muted); text-transform: uppercase;
   letter-spacing: 0.8px; margin-bottom: 6px;
   display: flex; justify-content: space-between; align-items: center;
@@ -681,7 +961,7 @@ tbody td {
 .field-input {
   width: 100%; background: var(--bg3); border: 1px solid var(--border2);
   border-radius: 8px; padding: 10px 13px;
-  font-family: 'Space Mono', monospace; font-size: 13px;
+  font-family: 'JetBrains Mono', monospace; font-size: 13px;
   color: var(--text); outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
@@ -696,7 +976,7 @@ tbody td {
 .coin-selector-btn {
   width: 100%; background: var(--bg3); border: 1px solid var(--border2);
   border-radius: 8px; padding: 10px 13px;
-  font-family: 'Space Mono', monospace; font-size: 13px;
+  font-family: 'JetBrains Mono', monospace; font-size: 13px;
   color: var(--text); cursor: pointer;
   display: flex; align-items: center; justify-content: space-between;
   transition: border-color 0.2s;
@@ -707,7 +987,7 @@ tbody td {
   top: calc(100% + 4px); left: 0; right: 0;
   background: var(--bg2); border: 1px solid var(--border2);
   border-radius: 10px; z-index: 200;
-  max-height: 280px; overflow-y: auto;
+  max-height: 420px; overflow-y: auto;
   box-shadow: 0 16px 40px rgba(0,0,0,0.5);
 }
 .coin-dropdown.open { display: block; }
@@ -718,17 +998,86 @@ tbody td {
 .coin-dropdown-search input {
   width: 100%; background: var(--bg3); border: 1px solid var(--border2);
   border-radius: 6px; padding: 7px 10px;
-  font-family: 'Space Mono', monospace; font-size: 11px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
   color: var(--text); outline: none;
 }
 .coin-dropdown-item {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 14px; cursor: pointer;
-  font-family: 'Space Mono', monospace; font-size: 12px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px; cursor: pointer;
+  font-family: 'JetBrains Mono', monospace; font-size: 12px;
   transition: background 0.1s;
 }
 .coin-dropdown-item:hover { background: rgba(255,255,255,0.04); }
 .coin-dropdown-item.active { color: var(--accent); }
+.coin-fav-btn {
+  background: none; border: none; cursor: pointer; padding: 0;
+  font-size: 13px; color: var(--muted); line-height: 1;
+  flex-shrink: 0; transition: color 0.15s;
+}
+.coin-fav-btn:hover, .coin-fav-btn.active { color: #f5c518; }
+.coin-dropdown-section {
+  padding: 6px 14px 4px; font-size: 10px; font-family: 'Inter', sans-serif;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em;
+  border-top: 1px solid var(--border);
+}
+.coin-dropdown-section:first-child { border-top: none; }
+
+/* Drop controls (sort + category filter) */
+.drop-controls {
+  position: sticky; top: 41px; background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 10px; z-index: 1;
+}
+.drop-sort-row {
+  display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 4px;
+}
+.drop-sort-row:last-child { margin-bottom: 0; }
+.drop-cat-row {
+  display: flex; gap: 4px; flex-wrap: wrap;
+}
+.drop-sort-btn, .drop-cat-btn {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 4px; padding: 2px 7px;
+  font-family: 'Inter', sans-serif; font-size: 10px; font-weight: 600;
+  color: var(--muted); cursor: pointer; transition: all 0.12s;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.drop-sort-btn:hover, .drop-cat-btn:hover { color: var(--text); border-color: var(--border2); }
+.drop-sort-btn.active, .drop-cat-btn.active {
+  background: var(--accent); color: #000; border-color: var(--accent);
+}
+
+/* Drop item layout */
+.drop-item-main {
+  display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0;
+}
+.drop-item-coin {
+  font-weight: 600; font-family: 'JetBrains Mono', monospace;
+  font-size: 12px; color: var(--text);
+}
+.drop-item-lev {
+  font-size: 9px; font-family: 'Inter', sans-serif; font-weight: 700;
+  background: rgba(0,229,160,0.12); color: var(--green);
+  border-radius: 3px; padding: 1px 4px; flex-shrink: 0;
+}
+.drop-item-cat {
+  font-size: 9px; font-family: 'Inter', sans-serif; font-weight: 600;
+  background: rgba(255,255,255,0.06); color: var(--muted);
+  border-radius: 3px; padding: 1px 4px; flex-shrink: 0;
+  max-width: 70px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.drop-item-right {
+  display: flex; flex-direction: column; align-items: flex-end; flex-shrink: 0;
+  gap: 1px;
+}
+.drop-item-price {
+  font-size: 11px; font-family: 'JetBrains Mono', monospace;
+  color: var(--text); font-weight: 600;
+}
+.drop-item-meta {
+  font-size: 10px; font-family: 'JetBrains Mono', monospace; color: var(--text);
+}
+.drop-item-meta.muted { color: var(--muted); }
 
 /* Size mode toggle (USD / Coin) */
 .size-mode-toggle {
@@ -739,7 +1088,7 @@ tbody td {
 .size-mode-btn {
   background: none; border: none;
   border-radius: 4px; padding: 2px 8px;
-  font-family: 'Space Mono', monospace; font-size: 10px; font-weight: 700;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
   color: var(--muted); cursor: pointer; transition: all 0.15s;
   text-transform: uppercase; letter-spacing: 0.4px;
 }
@@ -752,8 +1101,8 @@ tbody td {
   display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
 }
 .leverage-slider {
-  /* flex: 1; -webkit-appearance: none; */
-  height: 3px; background: var(--bg3); border-radius: 2px; outline: none;
+  -webkit-appearance: none; appearance: none;
+  height: 3px; background: var(--bg3); border-radius: 2px; outline: none; cursor: pointer;
 }
 .leverage-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -761,23 +1110,39 @@ tbody td {
   border-radius: 50%; cursor: pointer;
   box-shadow: 0 0 8px rgba(0,255,204,0.4);
 }
+.leverage-slider::-moz-range-thumb {
+  width: 16px; height: 16px; background: var(--accent);
+  border-radius: 50%; cursor: pointer; border: none;
+}
 .leverage-display {
   background: var(--bg3); border: 1px solid var(--border2);
   border-radius: 6px; padding: 5px 12px;
-  font-family: 'Space Mono', monospace; font-size: 13px;
+  font-family: 'JetBrains Mono', monospace; font-size: 13px;
   font-weight: 700; color: var(--accent);
   min-width: 52px; text-align: center;
 }
-.leverage-presets { display: flex; gap: 5px; margin-bottom: 14px; flex-wrap: wrap; }
-.lev-preset {
-  flex: 1; min-width: 36px;
-  background: var(--bg3); border: 1px solid var(--border);
-  border-radius: 5px; padding: 4px 0;
-  font-family: 'Space Mono', monospace; font-size: 10px;
-  color: var(--muted); cursor: pointer; text-align: center;
-  transition: all 0.15s;
+/* Size slider (mirrors leverage slider style) */
+.sz-slider-row {
+  display: flex; align-items: center; gap: 10px; margin-top: 8px;
 }
-.lev-preset:hover { border-color: var(--accent); color: var(--accent); }
+.sz-slider {
+  flex: 1; -webkit-appearance: none; appearance: none;
+  height: 3px; background: var(--bg3); border-radius: 2px; outline: none; cursor: pointer;
+}
+.sz-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px; height: 18px; background: var(--accent);
+  border-radius: 50%; cursor: pointer;
+  box-shadow: 0 0 8px rgba(0,255,204,0.4);
+}
+.sz-slider::-moz-range-thumb {
+  width: 18px; height: 18px; background: var(--accent);
+  border-radius: 50%; cursor: pointer; border: none;
+}
+.sz-pct-label {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  font-weight: 700; color: var(--accent); min-width: 38px; text-align: right;
+}
 
 /* Margin mode toggle */
 .margin-toggle {
@@ -786,7 +1151,7 @@ tbody td {
 .margin-btn {
   flex: 1; background: none; border: 1px solid var(--border);
   border-radius: 6px; padding: 7px;
-  font-family: 'Space Mono', monospace; font-size: 10px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
   color: var(--muted); cursor: pointer; text-align: center;
   transition: all 0.15s;
 }
@@ -795,11 +1160,109 @@ tbody td {
 /* TP/SL */
 .tp-sl-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 13px; }
 
+/* Available balance hint below pct row */
+.avail-hint {
+  font-size: 10px; font-family: 'JetBrains Mono', monospace;
+  color: var(--muted); text-align: right; margin-top: 5px;
+  letter-spacing: 0.02em;
+}
+
+/* Available balance bar (HL-style, above size) */
+.hl-avail-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 5px 2px; margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.hl-avail-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); font-family: 'JetBrains Mono', monospace;
+}
+.hl-avail-val {
+  font-size: 12px; font-family: 'JetBrains Mono', monospace;
+  color: var(--text); font-weight: 600;
+}
+
+/* Percentage quick-select row */
+.hl-pct-row {
+  display: flex; gap: 4px; margin-top: 8px;
+}
+.hl-pct-btn {
+  flex: 1; padding: 5px 0;
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: 6px; color: var(--muted);
+  font-size: 10px; font-family: 'JetBrains Mono', monospace;
+  cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.hl-pct-btn:hover  { background: var(--bg4, var(--border)); color: var(--text); border-color: var(--accent); }
+.hl-pct-btn.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 700; }
+
+/* ─── SCROLL WHEEL SIZE PICKER ───────────────────────────────── */
+.sz-picker {
+  position: relative;
+  height: 220px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.sz-picker:active { cursor: grabbing; }
+
+.sz-picker-track {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  will-change: transform;
+}
+
+.sz-item {
+  height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--muted);
+  font-size: 12px;
+  opacity: 0.2;
+  transition: opacity 0.15s, font-size 0.15s, color 0.15s, font-weight 0.15s;
+  pointer-events: none;
+}
+.sz-item.d2 { opacity: 0.3;  font-size: 13px; }
+.sz-item.d1 { opacity: 0.55; font-size: 15px; }
+.sz-item.active {
+  opacity: 1; font-size: 22px; font-weight: 700;
+  color: var(--text);
+}
+
+/* Top/bottom fade gradients */
+.sz-picker-fade {
+  position: absolute; left: 0; right: 0; height: 88px;
+  pointer-events: none; z-index: 2;
+}
+.sz-picker-fade-top {
+  top: 0;
+  background: linear-gradient(to bottom, var(--bg3) 0%, transparent 100%);
+}
+.sz-picker-fade-bot {
+  bottom: 0;
+  background: linear-gradient(to top, var(--bg3) 0%, transparent 100%);
+}
+
+/* Center selection highlight lines */
+.sz-picker-center {
+  position: absolute;
+  top: 50%; left: 14px; right: 14px;
+  height: 44px; margin-top: -22px;
+  border-top: 1px solid var(--border2);
+  border-bottom: 1px solid var(--border2);
+  pointer-events: none; z-index: 3;
+  border-radius: 4px;
+}
+
 /* Order summary */
 .order-summary {
   background: var(--bg3); border-radius: 10px;
   padding: 13px 14px; margin-bottom: 14px;
-  font-family: 'Space Mono', monospace; font-size: 11px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
   border: 1px solid var(--border);
 }
 .order-summary-row {
@@ -814,7 +1277,7 @@ tbody td {
 .pos-preview {
   background: var(--bg3); border-radius: 10px;
   padding: 13px 14px; margin-bottom: 14px;
-  font-family: 'Space Mono', monospace; font-size: 11px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
   border: 1px solid rgba(255,200,50,0.18);
 }
 .pos-preview-header {
@@ -862,12 +1325,12 @@ tbody td {
 }
 .cal-month-label {
   font-size: 20px; font-weight: 700; color: var(--text);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
 }
 .cal-nav-btn {
   background: var(--bg2); border: 1px solid var(--border); color: var(--text);
   border-radius: 8px; padding: 6px 16px; cursor: pointer;
-  font-family: 'Space Mono', monospace; font-size: 12px;
+  font-family: 'JetBrains Mono', monospace; font-size: 12px;
   transition: background 0.15s;
 }
 .cal-nav-btn:hover { background: var(--bg3); }
@@ -881,7 +1344,7 @@ tbody td {
 }
 .cal-dow-cell {
   text-align: center; font-size: 10px; color: var(--muted);
-  font-family: 'Space Mono', monospace; text-transform: uppercase;
+  font-family: 'JetBrains Mono', monospace; text-transform: uppercase;
   letter-spacing: 0.08em; padding: 4px 0;
 }
 .cal-grid {
@@ -901,17 +1364,17 @@ tbody td {
 .cal-cell.cal-neg { background: rgba(255,59,59,0.07);  border-color: rgba(255,59,59,0.22); }
 .cal-day-num {
   font-size: 11px; color: var(--muted);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
 }
 .cal-cell.cal-today .cal-day-num { color: var(--accent); font-weight: 700; }
 .cal-day-pnl {
   font-size: 12px; font-weight: 700; margin-top: 6px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
 }
 .cal-day-pnl.pos { color: var(--green); }
 .cal-day-pnl.neg { color: var(--red); }
 .cal-day-tx {
-  font-size: 10px; font-family: 'Space Mono', monospace;
+  font-size: 10px; font-family: 'JetBrains Mono', monospace;
   font-weight: 700; margin-top: 3px; letter-spacing: 0.3px;
 }
 .cal-day-tx.dep { color: var(--green); }
@@ -940,7 +1403,7 @@ tbody td {
   display: flex; flex-wrap: wrap; gap: 6px; flex: 1;
 }
 .cal-detail-pill {
-  font-family: 'Space Mono', monospace; font-size: 10px; font-weight: 700;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
   padding: 3px 9px; border-radius: 20px; background: var(--bg3);
   border: 1px solid var(--border);
 }
@@ -955,7 +1418,7 @@ tbody td {
 .cal-detail-section { padding: 14px 20px; border-bottom: 1px solid var(--border); }
 .cal-detail-section:last-child { border-bottom: none; }
 .cal-detail-section-title {
-  font-family: 'Space Mono', monospace; font-size: 10px; font-weight: 700;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
   letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted);
   margin-bottom: 10px;
 }
@@ -964,9 +1427,9 @@ tbody td {
   border-bottom: 1px solid rgba(255,255,255,0.04);
 }
 .cal-detail-trade:last-child { border-bottom: none; }
-.cal-detail-coin { font-family: 'Space Mono', monospace; font-size: 12px; font-weight: 700; min-width: 60px; }
-.cal-detail-meta { font-family: 'Space Mono', monospace; font-size: 11px; color: var(--muted); flex: 1; }
-.cal-detail-pnl  { font-family: 'Space Mono', monospace; font-size: 12px; font-weight: 700; text-align: right; }
+.cal-detail-coin { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; min-width: 60px; }
+.cal-detail-meta { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); flex: 1; }
+.cal-detail-pnl  { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; text-align: right; }
 .cal-detail-tx {
   display: flex; align-items: center; gap: 12px; padding: 6px 0;
   border-bottom: 1px solid rgba(255,255,255,0.04);
@@ -989,7 +1452,7 @@ tbody td {
   background: linear-gradient(135deg, rgba(0,229,160,0.14), rgba(0,229,160,0.07));
   border: 1px solid rgba(0,229,160,0.35);
   border-radius: 10px; padding: 13px;
-  font-family: 'Space Mono', monospace; font-size: 14px; font-weight: 800;
+  font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 800;
   color: var(--green); cursor: pointer; transition: all 0.2s; letter-spacing: 0.3px;
 }
 .btn-trade-long:hover:not(:disabled) {
@@ -1001,7 +1464,7 @@ tbody td {
   background: linear-gradient(135deg, rgba(255,77,109,0.14), rgba(255,77,109,0.07));
   border: 1px solid rgba(255,77,109,0.35);
   border-radius: 10px; padding: 13px;
-  font-family: 'Space Mono', monospace; font-size: 14px; font-weight: 800;
+  font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 800;
   color: var(--red); cursor: pointer; transition: all 0.2s; letter-spacing: 0.3px;
 }
 .btn-trade-short:hover:not(:disabled) {
@@ -1014,7 +1477,7 @@ tbody td {
 /* Trade status */
 .trade-status {
   border-radius: 8px; padding: 10px 13px;
-  font-family: 'Space Mono', monospace; font-size: 11px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
   margin-top: 10px; display: none; line-height: 1.5;
 }
 .trade-status.success { background: rgba(0,229,160,0.07);  border: 1px solid rgba(0,229,160,0.2);  color: var(--green); display: block; }
@@ -1025,13 +1488,14 @@ tbody td {
 .manage-btn {
   background: var(--bg3); border: 1px solid var(--border2);
   border-radius: 6px; padding: 5px 10px;
-  font-family: 'Space Mono', monospace; font-size: 10px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
   cursor: pointer; transition: all 0.15s; margin-right: 4px;
   color: var(--text);
 }
 .manage-btn:hover { border-color: var(--accent); color: var(--accent); }
 .manage-btn.close { border-color: rgba(255,77,109,0.25); color: var(--red); }
 .manage-btn.close:hover { background: rgba(255,77,109,0.08); border-color: var(--red); }
+#ordersTable .manage-btn { display: block; margin: 0 0 3px 0; white-space: nowrap; }
 
 /* ─── MODALS ────────────────────────────────────────────────────────────────── */
 .modal-overlay {
@@ -1050,7 +1514,7 @@ tbody td {
 }
 .modal-title { font-size: 18px; font-weight: 800; margin-bottom: 20px; }
 .modal-desc {
-  font-family: 'Space Mono', monospace; font-size: 12px;
+  font-family: 'JetBrains Mono', monospace; font-size: 12px;
   color: var(--muted); margin-bottom: 18px; line-height: 1.7;
   white-space: pre-line;
 }
@@ -1058,7 +1522,7 @@ tbody td {
 .btn-modal-cancel {
   flex: 1; background: var(--bg3); border: 1px solid var(--border2);
   border-radius: 8px; padding: 11px;
-  font-family: 'Space Mono', monospace; font-size: 13px; font-weight: 700;
+  font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700;
   color: var(--muted); cursor: pointer; transition: all 0.2s;
 }
 .btn-modal-cancel:hover { color: var(--text); border-color: var(--text); }
@@ -1067,7 +1531,7 @@ tbody td {
   width: 100%; padding: 12px 14px;
   background: var(--card-bg); border: 1px solid var(--border);
   border-radius: 8px; color: var(--text);
-  font-family: 'Space Mono', monospace; font-size: 13px;
+  font-family: 'JetBrains Mono', monospace; font-size: 13px;
   cursor: pointer; transition: border-color .15s, background .15s;
 }
 .wallet-picker-btn:hover { border-color: var(--accent); background: rgba(0,255,136,.05); }
@@ -1127,7 +1591,7 @@ tbody td {
 .btn-modal-confirm {
   flex: 1; background: var(--accent); border: none;
   border-radius: 8px; padding: 11px;
-  font-family: 'Space Mono', monospace; font-size: 13px; font-weight: 700;
+  font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700;
   color: #000; cursor: pointer; transition: all 0.2s;
 }
 .btn-modal-confirm:hover { box-shadow: 0 4px 20px rgba(0,255,204,0.3); }
@@ -1135,10 +1599,113 @@ tbody td {
 .btn-modal-confirm.danger { background: var(--red); color: #fff; }
 .btn-modal-confirm.danger:hover { box-shadow: 0 4px 20px rgba(255,77,109,0.3); }
 
+/* ─── CLOSE POSITION SLIDER ──────────────────────────────────────────────── */
+.close-slider-wrap { margin: 4px 0 12px; }
+.close-slider-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.close-pct-display { font-family: 'JetBrains Mono', monospace; font-size: 16px; font-weight: 700; color: var(--red); }
+.close-slider {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 4px; border-radius: 2px;
+  background: linear-gradient(to right, var(--slider-color, var(--red)) 0%, var(--slider-color, var(--red)) 100%, var(--border2) 100%);
+  outline: none; cursor: pointer;
+}
+.close-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--slider-color, var(--red)); border: 2px solid var(--bg1);
+  box-shadow: 0 0 6px rgba(0,0,0,0.3); cursor: pointer;
+}
+.close-slider::-moz-range-thumb {
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--slider-color, var(--red)); border: 2px solid var(--bg1); cursor: pointer;
+}
+.close-slider-track-labels { display: flex; justify-content: space-between; margin-top: 4px; }
+.close-slider-track-labels span { font-size: 10px; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+.close-presets { display: flex; gap: 6px; margin-top: 12px; }
+.close-preset-btn {
+  flex: 1; padding: 5px 0; border-radius: 6px;
+  background: var(--bg3); border: 1px solid var(--border2);
+  color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  cursor: pointer; transition: all 0.15s;
+}
+.close-preset-btn:hover, .close-preset-btn.active {
+  background: rgba(255,77,109,0.1); border-color: var(--red); color: var(--red);
+}
+.close-size-display {
+  margin-top: 12px; padding: 8px 12px; border-radius: 8px;
+  background: var(--bg3); border: 1px solid var(--border);
+  font-size: 12px; color: var(--muted); text-align: center;
+}
+.close-size-display b { color: var(--text); }
+
+/* ─── TP/SL MODAL ─────────────────────────────────────────────────────────── */
+.tpsl-modal { padding: 0; overflow: hidden; max-width: 420px; }
+.tpsl-hdr { display: flex; align-items: center; justify-content: space-between; padding: 18px 18px 0; }
+.tpsl-title { font-size: 16px; font-weight: 700; }
+.tpsl-close-btn { background: none; border: none; color: var(--muted); cursor: pointer; padding: 4px; display: flex; align-items: center; transition: color .15s; }
+.tpsl-close-btn:hover { color: var(--text); }
+.tpsl-tabs { display: flex; border-bottom: 1px solid var(--border2); margin: 14px 0 0; }
+.tpsl-tab { flex: 1; background: none; border: none; color: var(--muted); font-size: 13px; font-weight: 600; padding: 10px 0; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .15s, border-color .15s; }
+.tpsl-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.tpsl-info-box { margin: 14px 18px 0; background: var(--card2); border-radius: 8px; padding: 10px 14px; }
+.tpsl-info-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; padding: 3px 0; }
+.tpsl-info-lbl { color: var(--muted); }
+.tpsl-info-val { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; }
+.tpsl-sec-lbl { font-size: 13px; font-weight: 700; margin: 16px 18px 8px; }
+.tpsl-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 18px 6px; }
+.tpsl-cell { background: var(--card2); border: 1px solid var(--border2); border-radius: 8px; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+.tpsl-cell-right { align-items: flex-start; justify-content: center; flex-direction: row; align-items: center; gap: 0; justify-content: space-between; }
+.tpsl-cell-lbl { font-size: 10px; color: var(--muted); }
+.tpsl-num { background: none; border: none; outline: none; color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600; width: 100%; padding: 0; }
+.tpsl-num::-webkit-outer-spin-button, .tpsl-num::-webkit-inner-spin-button { -webkit-appearance: none; appearance: none; }
+.tpsl-num[type=number] { -moz-appearance: textfield; appearance: textfield; }
+.tpsl-mode-btn { background: none; border: none; color: var(--muted); font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; padding: 0; white-space: nowrap; }
+.tpsl-echo { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; color: var(--text); }
+.tpsl-type-sel { font-size: 12px; font-weight: 600; color: var(--muted); }
+.tpsl-swap-icon { color: var(--muted); flex-shrink: 0; }
+.tpsl-pnl-row { font-size: 11px; color: var(--muted); margin: 0 18px 4px; }
+.tpsl-pnl-val { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+.tpsl-disclaimer { font-size: 11px; color: var(--muted); line-height: 1.5; margin: 14px 18px 0; padding: 10px 12px; background: var(--card2); border-radius: 8px; }
+.tpsl-confirm-btn { display: block; width: calc(100% - 36px); margin: 14px 18px 18px; padding: 13px; background: var(--bg2); border: 1px solid var(--border2); border-radius: 10px; color: var(--muted); font-size: 14px; font-weight: 700; cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
+.tpsl-confirm-btn:not(:disabled):hover { background: var(--accent); color: #000; border-color: var(--accent); }
+.tpsl-confirm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+#editModalStatus { margin: 8px 18px 0; }
+
+@media (max-width: 640px) {
+  .tpsl-modal { max-width: 92vw; width: 92vw; }
+  .tpsl-hdr { padding: 12px 12px 0; }
+  .tpsl-title { font-size: 14px; }
+  .tpsl-tab { font-size: 11px; padding: 7px 0; }
+  .tpsl-info-box { margin: 10px 12px 0; padding: 8px 10px; }
+  .tpsl-info-row { font-size: 11px; }
+  .tpsl-sec-lbl { font-size: 11px; margin: 10px 12px 5px; }
+  .tpsl-row { margin: 0 12px 4px; gap: 6px; }
+  .tpsl-cell { padding: 6px 10px; }
+  .tpsl-cell-lbl { font-size: 9px; }
+  .tpsl-num { font-size: 12px; }
+  .tpsl-echo { font-size: 11px; }
+  .tpsl-mode-btn { font-size: 10px; }
+  .tpsl-pnl-row { font-size: 10px; margin: 0 12px 3px; }
+  .tpsl-disclaimer { font-size: 10px; margin: 10px 12px 0; padding: 8px 10px; }
+  .tpsl-confirm-btn { width: calc(100% - 24px); margin: 10px 12px 12px; padding: 10px; font-size: 13px; }
+  #editModalStatus { margin: 6px 12px 0; }
+  .eord-available { margin: 8px 12px 0; }
+}
+.eord-available { font-size: 12px; margin: 10px 18px 0; color: var(--muted); }
+.eord-mid-btn { background: var(--card2); border: 1px solid var(--border2); border-radius: 6px; color: var(--accent); font-size: 11px; font-weight: 700; padding: 4px 10px; cursor: pointer; white-space: nowrap; transition: background .15s; flex-shrink: 0; margin-left: 10px; }
+.eord-mid-btn:hover { background: var(--accent); color: #000; }
+.eord-swap-btn { background: none; border: none; color: var(--muted); cursor: pointer; padding: 2px; display: flex; align-items: center; transition: color .15s; }
+.eord-swap-btn:hover { color: var(--accent); }
+.tpsl-sz-slider { width: 100%; -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: var(--border2); outline: none; cursor: pointer; }
+.tpsl-sz-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); cursor: pointer; }
+.tpsl-sz-slider::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); cursor: pointer; border: none; }
+.tpsl-slider-labels { display: flex; justify-content: space-between; margin-top: 5px; }
+.tpsl-slider-labels span { font-size: 10px; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+
 /* Direction badges (Trade History) */
 .dir-badge {
   display: inline-block;
-  font-family: 'Space Mono', monospace; font-size: 10px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
   padding: 2px 7px; border-radius: 4px; white-space: nowrap;
 }
 .dir-open  { background: rgba(0,255,204,0.08);  color: var(--accent); border: 1px solid rgba(0,255,204,0.15); }
@@ -1147,7 +1714,7 @@ tbody td {
 /* ─── EMPTY STATE ───────────────────────────────────────────────────────────── */
 .empty-state { text-align: center; padding: 48px 20px; color: var(--muted); }
 .empty-icon  { font-size: 36px; margin-bottom: 14px; opacity: 0.5; }
-.empty-text  { font-family: 'Space Mono', monospace; font-size: 13px; }
+.empty-text  { font-family: 'JetBrains Mono', monospace; font-size: 13px; }
 
 /* ─── ANIMATIONS ────────────────────────────────────────────────────────────── */
 @keyframes fadeIn {
@@ -1186,14 +1753,14 @@ tbody td {
   border: 1px solid rgba(255,77,109,0.2);
   border-radius: 10px; padding: 10px 16px;
   margin-bottom: 16px;
-  font-family: 'Space Mono', monospace; font-size: 11px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
   color: var(--red);
 }
 .refresh-error-banner.active { display: flex; }
 .refresh-error-retry {
   margin-left: auto; background: none; border: 1px solid rgba(255,77,109,0.4);
   border-radius: 6px; padding: 3px 10px; white-space: nowrap;
-  font-family: 'Space Mono', monospace; font-size: 10px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
   color: var(--red); cursor: pointer; transition: background 0.15s;
 }
 .refresh-error-retry:hover { background: rgba(255,77,109,0.1); }
@@ -1205,14 +1772,14 @@ tbody td {
   border-top: 1px solid var(--border);
 }
 .sub-accounts-label {
-  font-family: 'Space Mono', monospace; font-size: 10px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
   color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px;
   white-space: nowrap;
 }
 .btn-sub-account {
   background: var(--bg3); border: 1px solid var(--border2);
   border-radius: 20px; padding: 3px 12px;
-  font-family: 'Space Mono', monospace; font-size: 10px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
   color: var(--muted); cursor: pointer; transition: all 0.15s;
 }
 .btn-sub-account:hover { border-color: var(--accent); color: var(--accent); }
@@ -1259,7 +1826,7 @@ tbody td {
   gap: 12px;
 }
 .strat-config-label {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 1.2px;
@@ -1323,7 +1890,7 @@ tbody td {
   border-color: rgba(255, 75, 75, 0.7);
 }
 .field-error-hint {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: rgba(255, 75, 75, 0.9);
   margin-top: 3px;
@@ -1345,14 +1912,14 @@ tbody td {
 }
 
 .strategy-desc {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--muted);
   line-height: 1.6;
 }
 
 .strategy-badge {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   font-weight: 700;
   padding: 4px 9px;
@@ -1386,7 +1953,7 @@ tbody td {
   border: 1px solid rgba(0,255,204,0.2);
   border-radius: 8px;
   padding: 10px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 13px;
   font-weight: 700;
   color: var(--accent);
@@ -1405,7 +1972,7 @@ tbody td {
 }
 
 .strategy-cmd-label {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: var(--muted);
   margin-bottom: 6px;
@@ -1418,7 +1985,7 @@ tbody td {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 11px 13px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: var(--accent);
   word-break: break-all;
@@ -1431,7 +1998,7 @@ tbody td {
   border: 1px solid var(--border2);
   border-radius: 6px;
   padding: 5px 14px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: var(--text);
   cursor: pointer;
@@ -1461,14 +2028,14 @@ tbody td {
   overflow-y: auto;
 }
 .card-back-title {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 18px;
   font-weight: 800;
   color: var(--text);
   margin-bottom: 12px;
 }
 .card-back-desc {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
   color: var(--muted);
   line-height: 1.8;
@@ -1484,7 +2051,7 @@ tbody td {
   display: grid;
   grid-template-columns: 130px 1fr;
   gap: 10px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   line-height: 1.65;
 }
@@ -1503,7 +2070,7 @@ tbody td {
 .btn-flip {
   background: none;
   border: none;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: var(--muted);
   cursor: pointer;
@@ -1563,7 +2130,7 @@ tbody td {
   border: 1px solid var(--border2);
   border-radius: 4px;
   padding: 1px 7px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   font-weight: 700;
   color: var(--muted);
@@ -1587,7 +2154,7 @@ tbody td {
 /* ─── SERVER BADGE ──────────────────────────────────────────────────────────── */
 .server-badge {
   font-size: 10px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   padding: 3px 10px;
   border-radius: 20px;
   margin-left: 12px;
@@ -1611,7 +2178,7 @@ tbody td {
   border: 1px solid rgba(0,229,160,0.4);
   border-radius: 8px;
   padding: 6px 18px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--green);
   cursor: pointer;
@@ -1627,7 +2194,7 @@ tbody td {
   border: 1px solid rgba(255,77,109,0.4);
   border-radius: 8px;
   padding: 6px 18px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--red);
   cursor: pointer;
@@ -1643,7 +2210,7 @@ tbody td {
   border: 1px solid var(--border2);
   border-radius: 8px;
   padding: 6px 14px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--muted);
   cursor: pointer;
@@ -1674,7 +2241,7 @@ tbody td {
   padding: 10px 16px;
   background: var(--bg3);
   border-bottom: 1px solid var(--border);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--accent);
   letter-spacing: 0.5px;
@@ -1684,7 +2251,7 @@ tbody td {
   background: none;
   border: none;
   color: var(--muted);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   cursor: pointer;
   padding: 2px 6px;
@@ -1699,7 +2266,7 @@ tbody td {
   background: none;
   border: 1px solid var(--border2);
   color: var(--muted);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   cursor: pointer;
   padding: 2px 8px;
@@ -1719,7 +2286,7 @@ tbody td {
   padding: 12px 16px;
   height: 280px;
   overflow-y: auto;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   line-height: 1.7;
   color: var(--muted);
@@ -1748,7 +2315,7 @@ tbody td {
 .wins-strategy-block:last-child { margin-bottom: 0; }
 
 .wins-strategy-title {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--accent);
   text-transform: uppercase;
@@ -1776,7 +2343,7 @@ tbody td {
   align-items: baseline;
   padding: 6px 0;
   border-bottom: 1px solid var(--border);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
 }
 .win-row:last-child { border-bottom: none; }
@@ -1793,7 +2360,7 @@ tbody td {
   flex: 1; height: 1px; background: rgba(255,255,255,0.08);
 }
 .markets-section-divider-label {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px; font-weight: 700;
   color: var(--red); text-transform: uppercase; letter-spacing: 1.5px;
   white-space: nowrap;
@@ -1870,7 +2437,7 @@ tbody td {
   margin-bottom: 2px;
 }
 .pokemon-coin-price {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--muted);
   margin-bottom: 14px;
@@ -1897,7 +2464,7 @@ tbody td {
   text-align: center;
 }
 .pokemon-stat-label {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: var(--muted);
   text-transform: uppercase;
@@ -1915,7 +2482,7 @@ tbody td {
   margin-bottom: 4px;
 }
 .pokemon-vol {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: var(--muted);
 }
@@ -1933,7 +2500,7 @@ tbody td {
   line-height: 1;
 }
 .pokemon-search-label {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--muted);
   text-transform: uppercase;
@@ -1945,7 +2512,7 @@ tbody td {
   border: 1px solid var(--border2);
   border-radius: 8px;
   color: var(--text);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
   padding: 8px 12px;
   text-align: center;
@@ -1970,7 +2537,7 @@ tbody td {
   padding: 7px 10px;
   background: var(--bg3);
   border-radius: 6px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   cursor: pointer;
   transition: background 0.15s;
@@ -1978,7 +2545,7 @@ tbody td {
 .pokemon-search-result-item:hover { background: var(--bg); border: 1px solid var(--border2); }
 .pokemon-search-result-item span  { color: var(--muted); }
 .pokemon-search-no-results {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--muted);
   text-align: center;
@@ -2005,7 +2572,7 @@ tbody td {
   padding: 10px 14px;
   border-radius: 8px;
   margin-bottom: 18px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
   font-weight: 700;
   flex-wrap: wrap;
@@ -2038,7 +2605,7 @@ tbody td {
   border: 1px solid rgba(255,77,109,0.4);
   border-radius: 6px;
   color: var(--red);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   padding: 4px 12px;
   cursor: pointer;
@@ -2059,7 +2626,7 @@ tbody td {
   padding: 14px;
 }
 .risk-metric-label {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: var(--muted);
   text-transform: uppercase;
@@ -2073,7 +2640,7 @@ tbody td {
   margin-bottom: 6px;
 }
 .risk-metric-sub {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: var(--muted);
   line-height: 1.5;
@@ -2084,7 +2651,7 @@ tbody td {
   padding-top: 16px;
 }
 .risk-threshold-title {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: var(--muted);
   text-transform: uppercase;
@@ -2104,7 +2671,7 @@ tbody td {
   flex: 1;
 }
 .risk-threshold-label {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--text);
   min-width: 140px;
@@ -2114,7 +2681,7 @@ tbody td {
   border: 1px solid var(--border2);
   border-radius: 6px;
   color: var(--text);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
   padding: 5px 10px;
   width: 80px;
@@ -2128,7 +2695,7 @@ tbody td {
   border: 1px solid var(--border2);
   border-radius: 8px;
   color: var(--text);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   padding: 8px 16px;
   cursor: pointer;
@@ -2156,7 +2723,7 @@ tbody td {
   border: 1px solid var(--border2);
   border-radius: 8px;
   color: var(--text);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
   padding: 10px 12px;
   resize: vertical;
@@ -2177,7 +2744,7 @@ tbody td {
   border: 1px solid var(--border2);
   border-radius: 6px;
   color: var(--muted);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   padding: 5px 12px;
   cursor: pointer;
@@ -2185,7 +2752,7 @@ tbody td {
 }
 .btn-asset-save:hover { color: var(--accent); border-color: var(--accent); }
 .asset-save-status {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: var(--green);
 }
@@ -2214,7 +2781,7 @@ tbody td {
   border: 1px solid var(--border2);
   border-radius: 8px;
   color: var(--muted);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   padding: 7px 14px;
   cursor: pointer;
@@ -2237,7 +2804,7 @@ tbody td {
   justify-content: center;
 }
 .saved-wallets-label {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: var(--muted);
   text-transform: uppercase;
@@ -2249,7 +2816,7 @@ tbody td {
   border: 1px solid var(--border2);
   border-radius: 20px;
   color: var(--accent);
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   padding: 4px 14px;
   cursor: pointer;
@@ -2292,7 +2859,7 @@ tbody td {
   border-radius: 20px;
   color: var(--text);
   font-size: 11px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   padding: 4px 12px;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
@@ -2316,7 +2883,7 @@ tbody td {
   border-radius: 6px;
   color: var(--muted);
   font-size: 11px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   padding: 5px 10px;
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s, background 0.15s;
@@ -2336,14 +2903,14 @@ tbody td {
 }
 .ws-identity { display: flex; align-items: baseline; gap: 12px; }
 .ws-name {
-  font-family: 'Space Mono', monospace; font-size: 14px; font-weight: 700; color: var(--text);
+  font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; color: var(--text);
 }
-.ws-addr { font-family: 'Space Mono', monospace; font-size: 11px; color: var(--muted); }
+.ws-addr { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); }
 .ws-addr span { color: var(--accent); }
 .ws-actions { display: flex; align-items: center; gap: 6px; }
 .ws-btn {
   background: none; border: 1px solid var(--border2); border-radius: 6px;
-  padding: 5px 11px; font-family: 'Space Mono', monospace; font-size: 10px;
+  padding: 5px 11px; font-family: 'JetBrains Mono', monospace; font-size: 10px;
   color: var(--muted); cursor: pointer; transition: all 0.15s; white-space: nowrap;
 }
 .ws-btn { touch-action: manipulation; }
@@ -2354,7 +2921,7 @@ tbody td {
 .ws-switcher-btn {
   display: flex; align-items: center; gap: 7px;
   background: var(--bg2); border: 1px solid var(--border2); border-radius: 6px;
-  padding: 5px 12px; font-family: 'Space Mono', monospace; font-size: 10px;
+  padding: 5px 12px; font-family: 'JetBrains Mono', monospace; font-size: 10px;
   font-weight: 700; color: var(--text); cursor: pointer; transition: all 0.15s; white-space: nowrap;
 }
 .ws-switcher-btn:hover { border-color: var(--accent); }
@@ -2379,7 +2946,7 @@ tbody td {
 .ws-panel.open { display: block; animation: fadeIn 0.15s ease; }
 .ws-panel-section { padding: 12px 12px 8px; }
 .ws-panel-section-label {
-  font-family: 'Space Mono', monospace; font-size: 10px; font-weight: 700;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
   letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px;
 }
 .ws-panel-divider { height: 1px; background: var(--border); }
@@ -2394,11 +2961,11 @@ tbody td {
 .ws-wallet-row.ws-wallet-current { background: rgba(0,255,204,0.06); cursor: default; }
 .ws-wallet-row-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
 .ws-wallet-row-name {
-  font-family: 'Space Mono', monospace; font-size: 11px; font-weight: 700;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
   color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .ws-wallet-current .ws-wallet-row-name { color: var(--accent); }
-.ws-wallet-row-addr { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--muted); }
+.ws-wallet-row-addr { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted); }
 .ws-wallet-row-acts {
   display: flex; gap: 2px; flex-shrink: 0;
   margin-left: 6px; opacity: 0; transition: opacity 0.1s;
@@ -2415,7 +2982,7 @@ tbody td {
 /* Inline rename input */
 .ws-panel-rename-input {
   background: var(--bg3); border: 1px solid var(--accent); border-radius: 4px;
-  padding: 2px 7px; font-family: 'Space Mono', monospace; font-size: 11px;
+  padding: 2px 7px; font-family: 'JetBrains Mono', monospace; font-size: 11px;
   color: var(--text); outline: none; width: 120px;
 }
 
@@ -2424,14 +2991,14 @@ tbody td {
 .ws-panel-input {
   flex: 1; background: var(--bg3); border: 1px solid var(--border2);
   border-radius: 6px; padding: 7px 10px;
-  font-family: 'Space Mono', monospace; font-size: 11px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
   color: var(--text); outline: none; transition: border-color 0.15s;
 }
 .ws-panel-input:focus { border-color: var(--accent); }
 .ws-panel-input::placeholder { color: var(--muted); font-size: 10px; }
 .ws-panel-save-btn {
   background: var(--accent); border: none; border-radius: 6px; padding: 7px 14px;
-  font-family: 'Space Mono', monospace; font-size: 10px; font-weight: 700;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
   color: #000; cursor: pointer; white-space: nowrap; transition: opacity 0.15s;
 }
 .ws-panel-save-btn:hover { opacity: 0.85; }
@@ -2440,7 +3007,7 @@ tbody td {
 .ws-sub-pills { display: flex; flex-wrap: wrap; gap: 5px; padding: 2px 0 4px; }
 .ws-sub-pill {
   background: var(--bg3); border: 1px solid var(--border); border-radius: 20px;
-  padding: 3px 10px; font-family: 'Space Mono', monospace; font-size: 10px;
+  padding: 3px 10px; font-family: 'JetBrains Mono', monospace; font-size: 10px;
   color: var(--muted); cursor: pointer; transition: all 0.1s;
 }
 .ws-sub-pill { touch-action: manipulation; }
@@ -2462,7 +3029,7 @@ tbody td {
   margin-bottom: 10px;
 }
 .health-pct {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 24px;
   font-weight: 700;
   line-height: 1;
@@ -2498,7 +3065,7 @@ tbody td {
   margin-bottom: 24px;
 }
 .perf-table-wrap table th {
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.8px;
@@ -2536,7 +3103,7 @@ tbody td {
 .watch-market-badge {
   display: inline-block;
   font-size: 10px;
-  font-family: 'Space Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
   letter-spacing: 0.5px;
   padding: 1px 5px;
@@ -2557,7 +3124,7 @@ tbody td {
 .watch-result-item {
   padding: 9px 14px; cursor: pointer; font-size: 12px;
   display: flex; align-items: center; justify-content: space-between;
-  font-family: 'Space Mono', monospace; transition: background 0.1s;
+  font-family: 'JetBrains Mono', monospace; transition: background 0.1s;
 }
 .watch-result-item:hover { background: rgba(0,255,204,0.06); color: var(--accent); }
 .watch-result-price { color: var(--muted); font-size: 11px; }
@@ -2566,7 +3133,7 @@ tbody td {
 .watch-table-wrap { overflow-x: auto; }
 .watch-table {
   width: 100%; border-collapse: collapse;
-  font-family: 'Space Mono', monospace; font-size: 12px;
+  font-family: 'JetBrains Mono', monospace; font-size: 12px;
 }
 .watch-table thead th {
   padding: 8px 14px; text-align: right;
@@ -2593,7 +3160,7 @@ tbody td {
 .watch-coin-cell { display: flex; align-items: center; gap: 10px; }
 .watch-coin-name {
   font-size: 13px; font-weight: 800;
-  font-family: 'Space Mono', monospace; color: var(--text);
+  font-family: 'JetBrains Mono', monospace; color: var(--text);
 }
 .watch-price-cell {
   font-size: 13px; font-weight: 700; color: var(--text);
@@ -2639,7 +3206,7 @@ tbody td {
     align-items: center; justify-content: center;
     gap: 5px; padding: 14px 4px 12px;
     background: none; border: none; cursor: pointer;
-    color: var(--muted); font-family: 'Space Mono', monospace;
+    color: var(--muted); font-family: 'JetBrains Mono', monospace;
     font-size: 10px; letter-spacing: 0.3px;
     transition: color 0.15s; touch-action: manipulation;
   }
@@ -2685,7 +3252,7 @@ tbody td {
     gap: 14px; padding: 14px 16px; border-radius: 12px;
     background: var(--bg3); border: 1px solid var(--border);
     color: var(--text); cursor: pointer; width: 100%;
-    font-family: 'Space Mono', monospace; font-size: 11px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
     letter-spacing: 0.5px; transition: all 0.15s; text-align: left;
     touch-action: manipulation;
   }
@@ -2716,11 +3283,12 @@ tbody td {
 
   /* ── Stat cards ── */
   .stat-card { padding: 10px 12px; border-radius: 10px; }
-  .stat-card-hero { padding: 12px 14px; }
+  .stat-card-hero { padding: 10px 12px; }
   .stat-label { font-size: 10px; letter-spacing: 0.8px; margin-bottom: 5px; }
-  .stat-value { font-size: 13px; }
-  .stat-card-hero .stat-value { font-size: 17px; }
-  .stat-sub { font-size: 10px; margin-top: 3px; }
+  .stat-value { font-size: 13px !important; }
+  .stat-card-hero .stat-value { font-size: 13px !important; }
+  .stat-sub { font-size: 10px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .health-bar-mob-hide { display: none; }
 
   /* ── Overview grids ── */
   .overview-hero-row { grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px; }
@@ -2749,21 +3317,23 @@ tbody td {
   /* Keep inner scroll wrappers from adding scrollbars */
   [style*="overflow-x:auto"], [style*="overflow-x: auto"] { overflow-x: visible !important; }
 
-  /* Positions: keep only Coin(1), Side(2), Entry(4), PnL(7), Actions(12) */
+  /* Positions: keep Coin(1), Side(2), Mark(5), PnL(7), Actions(13) — Entry moves to expand row */
   #positionsTable thead th:nth-child(3),
-  #positionsTable thead th:nth-child(5),
+  #positionsTable thead th:nth-child(4),
   #positionsTable thead th:nth-child(6),
   #positionsTable thead th:nth-child(8),
   #positionsTable thead th:nth-child(9),
   #positionsTable thead th:nth-child(10),
   #positionsTable thead th:nth-child(11),
+  #positionsTable thead th:nth-child(12),
   #positionsTable tbody td:nth-child(3),
-  #positionsTable tbody td:nth-child(5),
+  #positionsTable tbody td:nth-child(4),
   #positionsTable tbody td:nth-child(6),
   #positionsTable tbody td:nth-child(8),
   #positionsTable tbody td:nth-child(9),
   #positionsTable tbody td:nth-child(10),
-  #positionsTable tbody td:nth-child(11) { display: none; }
+  #positionsTable tbody td:nth-child(11),
+  #positionsTable tbody td:nth-child(12) { display: none; }
 
   /* Positions — tighter on mobile now that entry price is visible */
   #positionsTable thead th,
@@ -2780,6 +3350,10 @@ tbody td {
   #ordersTable tbody td:nth-child(3),
   #ordersTable tbody td:nth-child(5),
   #ordersTable tbody td:nth-child(6) { display: none; }
+
+  /* Tighter badge + cancel button for orders on mobile */
+  #ordersTable .badge { padding: 2px 5px; font-size: 9px; }
+  #ordersTable .manage-btn { padding: 3px 4px; font-size: 9px; display: block; margin: 1px 0 0 0; width: 100%; text-align: center; }
 
   /* Trades: keep Time(1), Coin(2), Direction(3), PnL(6) */
   #tradesTable thead th:nth-child(4),
@@ -2876,8 +3450,39 @@ tbody td {
   .strategy-card-header { margin-bottom: 10px; }
   .log-output { font-size: 10px; padding: 8px; max-height: 120px; }
 
-  /* ── Trade manage col: hidden on mobile ── */
-  .trade-manage-col { display: none; }
+  /* ── Trade tab on mobile ── */
+  .trade-manage-col { display: block; }
+  .trade-manage-tables { display: none; }
+  .trade-main-layout { grid-template-columns: 1fr; gap: 12px; }
+
+  /* Market header: stack coin btn + scrollable stats */
+  .trade-mkt-header { flex-direction: column; align-items: stretch; gap: 0; margin-bottom: 10px; }
+  .mkt-coin-btn { padding: 10px 0 8px; border-right: none; border-bottom: 1px solid var(--border); }
+  .mkt-coin-name { font-size: 14px; }
+  .mkt-hdr-stats { border-top: none; }
+  .mkt-hdr-stats .cs-stat { padding: 7px 12px; min-width: 90px; }
+  .mkt-hdr-stats .cs-label { font-size: 9px; }
+  .mkt-hdr-stats .cs-val { font-size: 11px; }
+
+  /* Market panel: full-width on mobile */
+  .mkt-panel { width: 100%; left: 0; right: 0; border-radius: 0 0 12px 12px; }
+  .mkt-type-row { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .mkt-type-row::-webkit-scrollbar { display: none; }
+  .mkt-cat-row { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .mkt-cat-row::-webkit-scrollbar { display: none; }
+  .mkt-table-wrap { max-height: 320px; }
+  /* Hide Volume and OI columns on mobile — keep Symbol, Price, Change, Funding */
+  .mkt-table thead th:nth-child(5),
+  .mkt-table thead th:nth-child(6),
+  .mkt-table tbody td:nth-child(5),
+  .mkt-table tbody td:nth-child(6) { display: none; }
+
+  /* Chart — keep identical to desktop, just allow TF row to scroll if needed */
+  .trade-chart-tfs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .trade-chart-tfs::-webkit-scrollbar { display: none; }
+
+  /* Order form below chart */
+  .trade-order-col { order: 2; }
 
   /* ── Calendar ── */
   .cal-summary { grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
@@ -2926,23 +3531,19 @@ tbody td {
 
 /* ── Extra small (≤390px) ── */
 @media (max-width: 390px) {
-  .overview-hero-row { grid-template-columns: 1fr; }
-  .stat-card-hero .stat-value { font-size: 17px; }
+  .overview-hero-row { grid-template-columns: 1fr 1fr; }
+  .stat-card-hero .stat-value { font-size: 13px; }
   .mob-more-grid button { padding: 12px 14px; font-size: 10px; }
 }
 .watch-empty { font-size: 12px; color: var(--muted); padding: 32px 0; }
 
-/* ─── EXPANDABLE ROWS (mobile only) ─────────────────────────────────────── */
-.row-expand-btn { display: none; }
-.row-expand-detail { display: none; }
-
-@media (max-width: 768px) {
+/* ─── EXPANDABLE ROWS ────────────────────────────────────────────────────── */
 .row-expand-btn {
-  display: inline-block;
-  background: none; border: none; color: var(--muted); cursor: pointer;
-  font-size: 14px; line-height: 1; padding: 0 2px;
+  display: none;
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--muted); font-size: 14px; line-height: 1;
   transition: transform 0.2s, color 0.2s;
-  touch-action: manipulation; flex-shrink: 0;
+  flex-shrink: 0; user-select: none;
 }
 .row-expand-btn.open { transform: rotate(180deg); color: var(--accent); }
 .row-expand-detail { display: none; }
@@ -2963,7 +3564,12 @@ tbody td {
 .row-expand-item > span:last-child {
   font-size: 12px; color: var(--text);
 }
-} /* end @media expand */
+
+@media (max-width: 768px) {
+.row-expand-btn { display: inline-flex; align-items: center; }
+#tradesTable tbody tr[onclick]:active,
+#transfersTable tbody tr[onclick]:active { background: var(--bg3); }
+}
 
 /* ─── SETTINGS TAB ───────────────────────────────────────────────────────── */
 .settings-body { display: flex; flex-direction: column; gap: 14px; max-width: 560px; }
@@ -2982,7 +3588,7 @@ tbody td {
 }
 .settings-section:last-child { border-bottom: none; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.settings-label { font-size: 13px; color: var(--text); font-family: 'Space Mono', monospace; }
+.settings-label { font-size: 13px; color: var(--text); font-family: 'JetBrains Mono', monospace; }
 .settings-desc  { font-size: 11px; color: var(--muted); margin-top: 3px; }
 
 

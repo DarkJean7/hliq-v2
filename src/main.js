@@ -2,7 +2,7 @@ import './style.css'
 const _il = document.getElementById('init-loader')
 if (_il) _il.remove()
 import { InfoClient, HttpTransport } from '@nktkas/hyperliquid'
-import { loadAccountData, buildAssetMap, infoClient } from './api.js'
+import { loadAccountData, buildAssetMap, infoClient, fetchAllMids } from './api.js'
 import {
   renderOverview,
   renderPositions,
@@ -24,11 +24,112 @@ import {
   setSortOrd,
   setSortMPos,
   setSortMOrd,
-  toggleTradesExpanded,
+  setTradesPage,
+  getTradesPage,
   renderSummaryCards,
 } from './render.js'
 import { renderCharts, destroyCharts } from './charts.js'
+import 'hammerjs'
 import Chart from 'chart.js/auto'
+import zoomPlugin from 'chartjs-plugin-zoom'
+import annotationPlugin from 'chartjs-plugin-annotation'
+Chart.register(zoomPlugin, annotationPlugin)
+
+// ── Custom candle drawing plugin ──────────────────────────────────────────────
+const _candlePlugin = {
+  id: 'hlCandles',
+  afterDatasetsDraw(chart) {
+    if (!chart._candleMode || !chart._candleData || !chart._candleData.length) return
+    const ctx    = chart.ctx
+    const meta   = chart.getDatasetMeta(0)
+    const yScale = chart.scales.y
+    const area   = chart.chartArea
+    const n      = Math.min(chart._candleData.length, meta.data.length)
+    if (!n) return
+    const candleW = n >= 2 && meta.data[1]
+      ? Math.max(1, (meta.data[1].x - meta.data[0].x) * 0.7)
+      : Math.max(1, (area.right - area.left) / n * 0.7)
+    const halfW = candleW / 2
+    ctx.save()
+    ctx.beginPath(); ctx.rect(area.left, area.top, area.right - area.left, area.bottom - area.top); ctx.clip()
+    for (let i = 0; i < n; i++) {
+      const d = chart._candleData[i]; if (!d) continue
+      const x = meta.data[i].x
+      const o = parseFloat(d.o), c = parseFloat(d.c)
+      const h = parseFloat(d.h), l = parseFloat(d.l)
+      const col = c >= o ? '#00e5a0' : '#ff4d6d'
+      const yO = yScale.getPixelForValue(o), yC = yScale.getPixelForValue(c)
+      const yH = yScale.getPixelForValue(h), yL = yScale.getPixelForValue(l)
+      ctx.strokeStyle = col; ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(x, yH); ctx.lineTo(x, yL); ctx.stroke()
+      ctx.fillStyle = col
+      ctx.fillRect(x - halfW, Math.min(yO, yC), candleW, Math.max(1, Math.abs(yO - yC)))
+    }
+    ctx.restore()
+  },
+}
+
+// ── Mark dot plugin — sits at the tip of the last visible data point ──────────
+const _markDotPlugin = {
+  id: 'markDot',
+  afterDraw(chart) {
+    const dot = document.getElementById('markDot')
+    if (!dot) return
+    const meta = chart.getDatasetMeta(0)
+    if (!meta?.data?.length) { dot.style.display = 'none'; return }
+    const last = meta.data[meta.data.length - 1]
+    const area = chart.chartArea
+    if (!last || !area || last.x < area.left || last.x > area.right ||
+        last.y < area.top  || last.y > area.bottom) {
+      dot.style.display = 'none'; return
+    }
+    dot.style.left    = last.x + 'px'
+    dot.style.top     = last.y + 'px'
+    dot.style.display = 'flex'
+  },
+}
+// ── Y-axis price box labels (replaces default muted tick text) ────────────────
+function _rrect(ctx, x, y, w, h, r) {
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r)
+  ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h)
+  ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r)
+  ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y)
+  ctx.closePath()
+}
+const _yPriceBoxPlugin = {
+  id: 'yPriceBoxes',
+  afterDraw(chart) {
+    const yScale = chart.scales.y
+    const area   = chart.chartArea
+    if (!yScale || !area || !yScale.ticks?.length) return
+    // Chart.js already applies ctx.scale(dpr,dpr) — draw in CSS pixels directly
+    const ctx  = chart.ctx
+    ctx.save()
+    ctx.font         = '600 9px "JetBrains Mono", monospace'
+    ctx.textBaseline = 'middle'
+    ctx.textAlign    = 'left'
+    const padX = 5, boxH = 15, r = 3
+    for (const tick of yScale.ticks) {
+      const v = tick.value
+      const y = yScale.getPixelForValue(v)
+      if (y < area.top || y > area.bottom) continue
+      const label = v >= 1000
+        ? v.toLocaleString('en-US', { maximumFractionDigits: 0 })
+        : v >= 1 ? v.toFixed(2) : v.toPrecision(4)
+      const tw = ctx.measureText(label).width
+      const bx = area.right + 4
+      _rrect(ctx, bx, y - boxH / 2, tw + padX * 2, boxH, r)
+      ctx.fillStyle = 'rgba(18,18,30,0.9)'; ctx.fill()
+      ctx.strokeStyle = 'rgba(255,255,255,0.13)'; ctx.lineWidth = 0.5; ctx.stroke()
+      ctx.fillStyle = '#9999bb'
+      ctx.fillText(label, bx + padX, y)
+    }
+    ctx.restore()
+  },
+}
+Chart.register(_candlePlugin, _markDotPlugin, _yPriceBoxPlugin)
 import {
   connectAgentKey,
   disconnect,
@@ -39,11 +140,15 @@ import {
   placeTriggerOrder,
   closePosition,
   cancelOrder,
+  modifyOrderPrice,
   parseOrderResult,
   approveBuilderFee,
   setBuilderFeeEnabled,
   isBuilderFeeEnabled,
   applyReferrer,
+  fetchCandles,
+  fetchMarketCtxs,
+  fetchPerpCategories,
 } from './trading.js'
 import {
   getDiscoveredWallets,
@@ -51,6 +156,7 @@ import {
   isMainWalletConnected,
   getMainSigner,
   connectWallet,
+  connectWalletSilent,
   disconnectMainWallet,
   onWalletDisconnect,
 } from './wallet.js'
@@ -382,6 +488,11 @@ async function loadDashboard() {
 
     pushRecentAddr(addr)
     renderAll()
+    _szSyncSlider()
+    _disconnectAgentKeyUI()
+    _resetMainWalletUI()
+    restoreAgentKey(addr)
+    restoreWalletForAddr(addr)
     const _wdrawEl = document.getElementById('withdrawAvail')
     if (_wdrawEl) {
       const _perpWdraw  = parseFloat(state.perpState?.withdrawable ?? 0)
@@ -409,8 +520,12 @@ async function loadDashboard() {
     const cachedFirstFill = localStorage.getItem(FIRST_FILL_KEY)
     state.firstFillTime = cachedFirstFill ? parseInt(cachedFirstFill) : null
 
-    liveTimer    = setInterval(refreshLive, isMobile ? 30000 : 5000)
+    liveTimer    = setInterval(refreshLive, 5000)
     sessionTimer = setInterval(tickSessionUptime, 1000)
+    // Refresh HIP-3 mids separately every 60s (they don't need per-tick updates)
+    setInterval(() => {
+      if (state.allMetas) fetchAllMids(state.allMetas).then(m => { state.allMids = m }).catch(() => {})
+    }, 60000)
 
     if (!isMobile) fetchAllTimeVolume(addr)
     fetchLedger(addr)
@@ -435,7 +550,7 @@ function renderAccountSection() {
 
 function renderPositionSection() {
   const { perpState, spotState, openOrders, allMids } = state
-  renderPositions(perpState, allMids)
+  renderPositions(perpState, allMids, state.openOrders ?? [])
   renderSpot(spotState)
   renderOrders(openOrders, perpState)
 }
@@ -452,6 +567,7 @@ function renderMarketSection() {
   renderManageTables(perpState, openOrders, allMids)
   populateCoinDropdown()
   updateTradeBalance()
+  _updateAvailDisplay()
 }
 
 // ─── RENDER ALL ───────────────────────────────────────────────────────────────
@@ -588,7 +704,7 @@ let refreshFailCount = 0
 function updateRefreshBanner() {
   const banner = document.getElementById('refreshErrorBanner')
   if (!banner) return
-  if (refreshFailCount === 0) {
+  if (refreshFailCount < 3) {
     banner.classList.remove('active')
     return
   }
@@ -688,6 +804,7 @@ async function fetchSubAccounts(addr) {
 let _lastPosHash  = null
 let _lastOrdHash  = null
 let _lastAcctHash = null
+const _cancelledOids = new Set()  // oids removed optimistically, filtered from refreshes
 
 function _fingerprint(obj) {
   try { return JSON.stringify(obj) } catch (e) { return null }
@@ -702,7 +819,7 @@ async function refreshLive() {
       ? Math.max(...state.fills.map(f => f.time))
       : Date.now() - 60 * 1000
 
-    const [perpState, openOrders, allMids, newRawFills] = await Promise.all([
+    const [perpState, openOrders, mainMids, newRawFills] = await Promise.all([
       info.clearinghouseState({ user: state.addr }),
       info.frontendOpenOrders({ user: state.addr }),
       info.allMids(),
@@ -712,8 +829,15 @@ async function refreshLive() {
     ])
 
     state.perpState  = perpState
-    state.openOrders = openOrders
-    state.allMids    = allMids
+    state.openOrders = openOrders.filter(o => !_cancelledOids.has(o.oid))
+    // Merge main-DEX prices into allMids (HIP-3 mids loaded at startup, refreshed separately)
+    state.allMids    = { ...state.allMids, ...mainMids }
+    const allMids    = state.allMids
+
+    // Auto-select BTC on first data load if no coin chosen yet
+    if (!state.selectedCoin && allMids['BTC']) {
+      window.__selectCoin('BTC')
+    }
 
     // Merge new fills if any arrived
     if (newRawFills.length > 0) {
@@ -721,15 +845,15 @@ async function refreshLive() {
       state.fills = [...newFills, ...state.fills]
       computeLossStreak(state.fills)
       renderTrades(state.fills)
-      renderPositions(perpState, allMids)
+      renderPositions(perpState, allMids, state.openOrders ?? [])
       renderMarkets({ fills: state.fills, allMids, perpState })
     }
 
     const posCount = (perpState.assetPositions ?? []).length
     document.getElementById('posCount').textContent    = posCount
     document.getElementById('posCountBig').textContent = posCount
-    document.getElementById('ordCount').textContent    = openOrders.length
-    document.getElementById('ordCountBig').textContent = openOrders.length
+    document.getElementById('ordCount').textContent    = state.openOrders.length
+    document.getElementById('ordCountBig').textContent = state.openOrders.length
 
     // Re-render only when data actually changed
     const posHash  = _fingerprint(perpState.assetPositions)
@@ -741,11 +865,12 @@ async function refreshLive() {
     if (acctHash !== _lastAcctHash) {
       renderAccountSection()
       updateTradeBalance()
+      _updateAvailDisplay()
       _lastAcctHash = acctHash
     }
     const posChanged = posHash !== _lastPosHash
     const ordChanged = ordHash !== _lastOrdHash
-    if (posChanged) { renderPositions(perpState, allMids); _lastPosHash = posHash }
+    if (posChanged) { renderPositions(perpState, allMids, state.openOrders ?? []); _lastPosHash = posHash }
     if (ordChanged) { renderOrders(openOrders, perpState); _lastOrdHash = ordHash }
     if (posChanged || ordChanged) { renderManageTables(perpState, openOrders, allMids) }
 
@@ -757,6 +882,7 @@ async function refreshLive() {
     refreshFailCount = 0
     updateRefreshBanner()
     updateWatchTicker()
+    if (state.selectedCoin) updateChartStats(state.selectedCoin)
 
   } catch (e) {
     refreshFailCount++
@@ -796,7 +922,8 @@ async function connectAgentKeyUI() {
     dotEl.classList.add('connected')
     statusEl.innerHTML = `✓ Connected: <span style="color:var(--accent)">${addr.slice(0, 6)}...${addr.slice(-4)}</span>`
     statusEl.style.color = 'var(--green)'
-    localStorage.setItem('hliq_agent_key', keyVal)
+    if (state.addr) localStorage.setItem(_agentKeyForAddr(state.addr), keyVal)
+    else localStorage.setItem('hliq_agent_key', keyVal)
     const stratInput = document.getElementById('agentKey')
     if (stratInput) stratInput.value = keyVal
     applyReferrer().catch(() => {})
@@ -853,6 +980,7 @@ window.__pickWallet = async function(rdns) {
   statusEl.style.color = 'var(--muted)'
   try {
     const addr = await connectWallet(rdns)
+    if (state.addr) localStorage.setItem(_walletRdnsForAddr(state.addr), rdns)
     try {
       statusEl.textContent = 'Approving...'
       const signer = getMainSigner()
@@ -882,6 +1010,7 @@ window.__pickWallet = async function(rdns) {
 }
 
 function disconnectMainWalletUI() {
+  if (state.addr) localStorage.removeItem(_walletRdnsForAddr(state.addr))
   disconnectMainWallet()
   setBuilderFeeEnabled(false)
   const dotEl = document.getElementById('mainWalletDot')
@@ -902,7 +1031,8 @@ window.__sortPositions      = (key) => { if (!state.perpState) return; setSortPo
 window.__sortOrders         = (key) => { if (!state.perpState) return; setSortOrd(key); renderOrders(state.openOrders, state.perpState) }
 window.__sortMPos           = (key) => { if (!state.perpState) return; setSortMPos(key); renderManageTables(state.perpState, state.openOrders, state.allMids) }
 window.__sortMOrd           = (key) => { if (!state.perpState) return; setSortMOrd(key); renderManageTables(state.perpState, state.openOrders, state.allMids) }
-window.__expandTrades       = () => { if (!state.fills) return; toggleTradesExpanded(); renderTrades(state.fills) }
+window.__tradesPrevPage = () => { if (!state.fills) return; setTradesPage(Math.max(0, getTradesPage() - 1)); renderTrades(state.fills) }
+window.__tradesNextPage = () => { if (!state.fills) return; setTradesPage(getTradesPage() + 1); renderTrades(state.fills) }
 
 // ─── DEPOSIT / WITHDRAW ───────────────────────────────────────────────────────
 let _depositDest = 'perps'
@@ -1101,23 +1231,306 @@ function populateCoinDropdown() {
   renderCoinDropdownItems('')
 }
 
-function renderCoinDropdownItems(query) {
-  const list    = document.getElementById('coinDropdownList')
-  const entries = Object.entries(state.allMids)
-  const q       = query.toLowerCase().trim()
-  const filtered = q ? entries.filter(([k]) => k.toLowerCase().includes(q)) : entries
+// ─── MARKET DROPDOWN STATE ────────────────────────────────────────────────────
+let _mktCtxMap   = {}   // coin → { oi, volume, change24h, funding, markPx, ... }
+let _mktCatMap   = {}   // coin → category string
+let _mktCtxReady = false
+let _dropSort    = 'oi'
+let _dropCat     = 'all'
+let _dropType    = 'all'
+const _TRADFI_CATS = new Set(['Forex', 'Commodities', 'Commodity', 'Indices', 'Index', 'Equity', 'Equities', 'Metal', 'Metals', 'Energy', 'Rates', 'Rate'])
 
-  if (filtered.length === 0) {
-    list.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted);font-family:\'Space Mono\',monospace;font-size:12px">No markets found</div>'
+async function _ensureMarketData() {
+  if (_mktCtxReady) return
+  try {
+    const [[meta, ctxs], cats] = await Promise.all([fetchMarketCtxs(), fetchPerpCategories()])
+    _mktCtxMap = {}
+    ;(meta.universe ?? []).forEach((u, i) => {
+      const c   = ctxs[i]
+      if (!c) return
+      const mark = parseFloat(c.markPx ?? 0)
+      const prev = parseFloat(c.prevDayPx ?? 0)
+      _mktCtxMap[u.name] = {
+        oi:              parseFloat(c.openInterest ?? 0) * mark,
+        volume:          parseFloat(c.dayNtlVlm ?? 0),
+        change24:        prev > 0 ? (mark - prev) / prev * 100 : 0,
+        change24Abs:     mark - prev,
+        funding:         parseFloat(c.funding ?? 0) * 100,
+        markPx:          mark,
+        oraclePx:        parseFloat(c.oraclePx ?? 0),
+        nextFundingTime: c.nextFundingTime ? parseInt(c.nextFundingTime) : null,
+        prevDayPx:       prev,
+      }
+    })
+    _mktCatMap = {}
+    for (const [coin, cat] of (cats ?? [])) _mktCatMap[coin] = cat
+    const uniqueCats = [...new Set(Object.values(_mktCatMap))]
+    console.log('[hliq] perpCategories unique values:', uniqueCats)
+    _mktCtxReady = true
+  } catch { /* use allMids only */ }
+}
+
+// ─── FAVORITES ────────────────────────────────────────────────────────────────
+function loadFavCoins()     { try { return JSON.parse(localStorage.getItem('favCoins') || '[]') } catch { return [] } }
+function saveFavCoins(favs) { localStorage.setItem('favCoins', JSON.stringify(favs)) }
+function isFav(coin)        { return loadFavCoins().includes(coin) }
+
+window.__toggleFav = function(coin, e) {
+  e.stopPropagation()
+  const favs = loadFavCoins()
+  const idx  = favs.indexOf(coin)
+  if (idx >= 0) favs.splice(idx, 1)
+  else favs.unshift(coin)
+  saveFavCoins(favs)
+  renderCoinDropdownItems(document.getElementById('coinDropdownSearch').value)
+}
+window.__dropSort = function(s) {
+  _dropSort = s
+  document.querySelectorAll('.mkt-th-sort').forEach(th => th.classList.toggle('active', th.dataset.col === s))
+  renderCoinDropdownItems(document.getElementById('coinDropdownSearch')?.value ?? '')
+}
+window.__dropCat  = function(c) { _dropCat  = c; renderCoinDropdownItems(document.getElementById('coinDropdownSearch')?.value ?? '') }
+window.__dropType = function(t) {
+  _dropType = t; _dropCat = 'all'
+  document.querySelectorAll('.mkt-type-btn').forEach(b => b.classList.toggle('active', b.dataset.type === t))
+  renderCoinDropdownItems(document.getElementById('coinDropdownSearch')?.value ?? '')
+}
+
+function _coinColor(coin) {
+  let h = 0
+  for (let i = 0; i < coin.length; i++) h = (h * 31 + coin.charCodeAt(i)) % 360
+  return `hsl(${h},62%,48%)`
+}
+
+window.__coinImgErr = function(img, coin) {
+  const p = img?.parentElement
+  if (!p) return
+  p.style.background = _coinColor(coin)
+  p.textContent = coin.charAt(0)
+}
+
+function _coinIconHtml(coin, style = '') {
+  const sym = coin.replace(/[-/].*/, '').toLowerCase()
+  return `<img src="https://cdn.jsdelivr.net/npm/cryptocurrency-icons@0.18.1/svg/color/${sym}.svg"
+    style="width:100%;height:100%;border-radius:50%;object-fit:cover;${style}"
+    onerror="window.__coinImgErr(this,'${coin}')">`
+}
+
+function updateCoinHeader(coin) {
+  const nameEl = document.getElementById('mktCoinName')
+  const iconEl = document.getElementById('mktCoinIcon')
+  const levEl  = document.getElementById('mktCoinLev')
+  if (!nameEl) return
+  if (!coin) {
+    nameEl.textContent = 'Select market'
+    if (iconEl) { iconEl.textContent = '—'; iconEl.style.background = 'var(--bg3)' }
+    if (levEl)  levEl.style.display = 'none'
+    return
+  }
+  nameEl.textContent = coin + '-USDC'
+  if (iconEl) {
+    iconEl.innerHTML = _coinIconHtml(coin)
+    iconEl.style.background = 'transparent'
+  }
+  const lev = state.assetMap?.[coin]?.maxLeverage
+  if (levEl) { levEl.textContent = lev ? lev + 'x' : ''; levEl.style.display = lev ? 'inline-flex' : 'none' }
+
+  // Also update trade card search bar
+  const tcsInput = document.getElementById('tcsCoinInput')
+  const tcsIcon  = document.getElementById('tcsCoinIcon')
+  if (tcsInput) tcsInput.value = coin ?? ''
+  if (tcsIcon)  {
+    if (coin) { tcsIcon.innerHTML = _coinIconHtml(coin); tcsIcon.style.background = 'transparent' }
+    else      { tcsIcon.textContent = '—'; tcsIcon.style.background = 'var(--bg3)' }
+  }
+}
+
+// ─── TRADE CARD COIN SEARCH ───────────────────────────────────────────────────
+window._tcsFilter = function(q = '') {
+  const results = document.getElementById('tcsResults')
+  if (!results) return
+  const lq = q.toLowerCase()
+  const mids = state.allMids ?? {}
+  const entries = Object.entries(mids)
+    .filter(([c]) => !q || c.toLowerCase().includes(lq))
+    .sort((a, b) => {
+      const d = _mktCtxMap[b[0]]?.oi ?? 0
+      return d - (_mktCtxMap[a[0]]?.oi ?? 0)
+    })
+    .slice(0, 12)
+  if (!entries.length) { results.style.display = 'none'; return }
+  results.style.display = 'block'
+  results.innerHTML = entries.map(([coin, px]) => {
+    const ch  = _mktCtxMap[coin]?.change24 ?? null
+    const cls = ch === null ? '' : ch >= 0 ? 'pos' : 'neg'
+    const chStr = ch !== null ? `<span class="${cls}" style="font-size:10px">${ch >= 0 ? '+' : ''}${ch.toFixed(2)}%</span>` : ''
+    return `<div class="tcs-result-item" onmousedown="window._tcsSelect('${coin}')">
+      <span class="tcs-ri-coin">${esc(coin)}</span>
+      <span class="tcs-ri-px">${chStr}&nbsp;&nbsp;$${fmtPrice(parseFloat(px))}</span>
+    </div>`
+  }).join('')
+}
+
+window._tcsFocus = function() {
+  const inp = document.getElementById('tcsCoinInput')
+  if (inp) inp.select()
+  window._tcsFilter('')
+}
+
+window._tcsBlur = function() {
+  setTimeout(() => {
+    const results = document.getElementById('tcsResults')
+    if (results) results.style.display = 'none'
+    const inp  = document.getElementById('tcsCoinInput')
+    const coin = state.selectedCoin
+    if (inp) inp.value = coin ?? ''
+  }, 150)
+}
+
+window._tcsSelect = function(coin) {
+  window.__selectCoin(coin)
+  const results = document.getElementById('tcsResults')
+  if (results) results.style.display = 'none'
+}
+
+// ─── AVAILABLE BALANCE DISPLAY ────────────────────────────────────────────────
+function _updateAvailDisplay() {
+  const ps = state.perpState
+  if (!ps) {
+    const el = document.getElementById('availDisplay')
+    const hint = document.getElementById('availHint')
+    if (el) el.textContent = '—'
+    if (hint) hint.textContent = 'Max: —'
+    return
+  }
+  const accountValue   = parseFloat(ps.crossMarginSummary?.accountValue ?? 0)
+  const posMarginUsed  = (ps.assetPositions ?? []).reduce((sum, ap) => sum + parseFloat(ap.position?.marginUsed ?? 0), 0)
+  const avail  = Math.max(0, accountValue - posMarginUsed)
+  console.log('[avail2] accountValue:', accountValue, 'posMarginUsed:', posMarginUsed, 'avail:', avail)
+  ;(ps.assetPositions??[]).forEach(ap=>{ const p=ap.position; console.log(' pos:', p.coin, '| marginUsed:', p.marginUsed, '| positionValue:', p.positionValue, '| leverageType:', p.leverage?.type, '| leverageVal:', p.leverage?.value, '| rawUsd:', p.leverage?.rawUsd) })
+  const maxPos = avail * state.leverage
+  const el   = document.getElementById('availDisplay')
+  const hint = document.getElementById('availHint')
+  if (el)   el.textContent   = '$' + fmtUSD(avail) + ' USDC'
+  if (hint) hint.textContent = maxPos > 0 ? `Max: $${fmtUSD(maxPos)} at ${state.leverage}x` : 'Max: —'
+}
+
+function _fmtCompactNum(n) {
+  if (n >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B'
+  if (n >= 1e6) return '$' + (n/1e6).toFixed(1) + 'M'
+  if (n >= 1e3) return '$' + (n/1e3).toFixed(0) + 'K'
+  return '$' + n.toFixed(0)
+}
+
+function _fmtTablePx(p) {
+  if (p >= 1000) return p.toLocaleString('en-US', { maximumFractionDigits: 0 })
+  if (p >= 10)   return p.toFixed(4)
+  if (p >= 1)    return p.toFixed(4)
+  return p.toPrecision(5)
+}
+
+function _fmtTableDollar(n) {
+  return '$' + Math.round(n).toLocaleString('en-US')
+}
+
+function renderCoinDropdownItems(query) {
+  const list     = document.getElementById('coinDropdownList')
+  const catTabsEl= document.getElementById('mktCatTabs')
+  if (!list) return
+  const q    = (query ?? '').toLowerCase().trim()
+  const favs = loadFavCoins()
+
+  // Update column header sort indicator
+  document.querySelectorAll('.mkt-th-sort').forEach(th => th.classList.toggle('active', th.dataset.col === _dropSort))
+
+  // Type-based filtering
+  let entries = Object.entries(state.allMids)
+  if (q) entries = entries.filter(([k]) => k.toLowerCase().includes(q) || (k + '-USDC').toLowerCase().includes(q))
+
+  if (_dropType === 'spot') {
+    if (catTabsEl) catTabsEl.innerHTML = ''
+    list.innerHTML = `<tr class="mkt-empty-row"><td colspan="6">Spot markets not available</td></tr>`
+    return
+  }
+  if (_dropType === 'perps') { /* all — same as all */ }
+  if (_dropType === 'crypto')    entries = entries.filter(([k]) => !_TRADFI_CATS.has(_mktCatMap[k]))
+  if (_dropType === 'tradfi')    entries = entries.filter(([k]) =>  _TRADFI_CATS.has(_mktCatMap[k]))
+  if (_dropType === 'hip3')      entries = entries.filter(([k]) => _mktCatMap[k] === 'HIP-3')
+  if (_dropType === 'prelaunch') entries = entries.filter(([k]) => _mktCatMap[k] === 'Pre-launch')
+
+  // Category sub-tabs — derived from filtered entries
+  const availCats = [...new Set(entries.map(([k]) => _mktCatMap[k]).filter(Boolean))].sort()
+  if (catTabsEl) {
+    catTabsEl.innerHTML = ['all', ...availCats].map(c =>
+      `<button class="mkt-cat-btn ${_dropCat===c?'active':''}" onclick="window.__dropCat('${esc(c)}')">${c==='all'?'All':esc(c)}</button>`
+    ).join('')
+  }
+
+  // Category filter
+  if (_dropCat !== 'all') entries = entries.filter(([k]) => _mktCatMap[k] === _dropCat)
+
+  // Sort
+  const sortVal = ([coin, px]) => {
+    const d = _mktCtxMap[coin]
+    if (_dropSort === 'price')   return parseFloat(px)
+    if (!d) return 0
+    if (_dropSort === 'oi')      return d.oi
+    if (_dropSort === 'volume')  return d.volume
+    if (_dropSort === 'change')  return Math.abs(d.change24)
+    if (_dropSort === 'funding') return Math.abs(d.funding)
+    return 0
+  }
+  if (_dropType === 'trending') {
+    entries = [...entries].sort((a, b) => ((_mktCtxMap[b[0]]?.volume ?? 0) - (_mktCtxMap[a[0]]?.volume ?? 0)))
+  } else {
+    entries = [...entries].sort((a, b) => sortVal(b) - sortVal(a))
+  }
+
+  if (entries.length === 0) {
+    list.innerHTML = `<tr class="mkt-empty-row"><td colspan="6">No markets found</td></tr>`
     return
   }
 
-  list.innerHTML = filtered.slice(0, 120).map(([coin, price]) => `
-    <div class="coin-dropdown-item ${state.selectedCoin === coin ? 'active' : ''}"
-      onclick="window.__selectCoin('${coin}')">
-      <span style="font-weight:700">${coin}</span>
-      <span style="color:var(--muted)">$${fmtPrice(parseFloat(price))}</span>
-    </div>`).join('')
+  const row = ([coin, px]) => {
+    const d       = _mktCtxMap[coin]
+    const mark    = d?.markPx || parseFloat(px)
+    const ch      = d?.change24 ?? 0
+    const chAbs   = d?.change24Abs ?? 0
+    const chCls   = ch >= 0 ? 'pos' : 'neg'
+    const chSign  = ch >= 0 ? '+' : ''
+    const fund    = d?.funding ?? 0
+    const fundCls = fund >= 0 ? 'pos' : 'neg'
+    const fundSign= fund >= 0 ? '+' : ''
+    const vol     = d?.volume ?? 0
+    const oi      = d?.oi ?? 0
+    const lev     = state.assetMap?.[coin]?.maxLeverage
+    const active  = state.selectedCoin === coin ? 'active' : ''
+    const fav     = favs.includes(coin) ? 'active' : ''
+    const col     = _coinColor(coin)
+    return `<tr class="mkt-row ${active}" onclick="window.__selectCoin('${coin}')">
+      <td class="mkt-td-symbol">
+        <button class="coin-fav-btn ${fav}" onclick="window.__toggleFav('${coin}',event)">★</button>
+        <div class="mkt-sym-icon" style="background:transparent;overflow:hidden">${_coinIconHtml(coin)}</div>
+        <span class="mkt-sym-name">${coin}-USDC</span>
+        ${lev ? `<span class="mkt-sym-lev">${lev}x</span>` : ''}
+      </td>
+      <td class="mkt-td-num">${_fmtTablePx(mark)}</td>
+      <td class="mkt-td-num ${chCls}">${chSign}${_fmtTablePx(Math.abs(chAbs))} / ${chSign}${ch.toFixed(2)}%</td>
+      <td class="mkt-td-num ${fundCls}">${fundSign}${Math.abs(fund).toFixed(4)}%</td>
+      <td class="mkt-td-num">${_fmtTableDollar(vol)}</td>
+      <td class="mkt-td-num">${_fmtTableDollar(oi)}</td>
+    </tr>`
+  }
+
+  const favEntries   = !q ? entries.filter(([k]) => favs.includes(k))  : []
+  const otherEntries = !q ? entries.filter(([k]) => !favs.includes(k)) : entries
+
+  const favSection = favEntries.length > 0
+    ? `<tr class="mkt-section-row"><td colspan="6">⭐ Favorites</td></tr>` + favEntries.map(row).join('') +
+      `<tr class="mkt-section-row"><td colspan="6">All Markets</td></tr>`
+    : ''
+
+  list.innerHTML = favSection + otherEntries.slice(0, 500).map(row).join('')
 }
 
 window.__selectCoin = function (coin) {
@@ -1126,7 +1539,7 @@ window.__selectCoin = function (coin) {
   const assetInfo  = state.assetMap[coin]
   const maxLev     = assetInfo?.maxLeverage ?? 50
 
-  document.getElementById('selectedCoinLabel').textContent = coin + '  ·  $' + fmtPrice(price)
+  updateCoinHeader(coin)
   document.getElementById('coinDropdown').classList.remove('open')
 
   // Cap leverage to this asset's max
@@ -1138,21 +1551,29 @@ window.__selectCoin = function (coin) {
     document.getElementById('levDisplay').textContent = maxLev + 'x'
   }
 
-  // Update size label to reflect current mode
   updateSizeModeLabel()
+  _szSyncSlider()
 
   if (state.orderType !== 'market') {
     document.getElementById('limitPriceInput').value = price.toString()
   }
   updateOrderSummary()
   updateSubmitBtn()
+  loadTradeChart(coin, _chartTf)
 }
 
 window.toggleCoinDropdown = function () {
   const dd = document.getElementById('coinDropdown')
   dd.classList.toggle('open')
   if (dd.classList.contains('open')) {
-    setTimeout(() => document.getElementById('coinDropdownSearch').focus(), 50)
+    const inp = document.getElementById('coinDropdownSearch')
+    if (inp) inp.value = ''
+    _ensureMarketData().then(() => {
+      renderCoinDropdownItems('')
+      if (state.selectedCoin) updateChartStats(state.selectedCoin)
+    })
+    renderCoinDropdownItems('')
+    setTimeout(() => document.getElementById('coinDropdownSearch')?.focus(), 50)
   }
 }
 
@@ -1206,6 +1627,7 @@ function updateLevDisplay() {
   const v = parseInt(document.getElementById('levSlider').value)
   state.leverage = v
   document.getElementById('levDisplay').textContent = v + 'x'
+  _szSyncSlider()
   updateOrderSummary()
 }
 
@@ -1213,6 +1635,7 @@ function setLev(n) {
   state.leverage = n
   document.getElementById('levSlider').value = n
   document.getElementById('levDisplay').textContent = n + 'x'
+  _szSyncSlider()
   updateOrderSummary()
 }
 
@@ -1229,31 +1652,62 @@ function setSizeMode(mode) {
   document.getElementById('sizeBtn-usd').classList.toggle('active',  mode === 'usd')
   document.getElementById('sizeBtn-coin').classList.toggle('active', mode === 'coin')
   updateSizeModeLabel()
-  document.getElementById('sizeInput').value = ''
+  _szSyncSlider()
   updateOrderSummary()
 }
 
 function updateSizeModeLabel() {
-  const coin = state.selectedCoin
+  const coin  = state.selectedCoin
   const label = document.getElementById('sizeModeLabel')
-  if (!label) return
-  label.textContent = state.sizeMode === 'usd' ? 'Size (USD notional)' : `Size (${coin ?? 'Coin'} amount)`
-  const input = document.getElementById('sizeInput')
-  input.placeholder = state.sizeMode === 'usd' ? '100' : '0.00'
+  if (label) label.textContent = state.sizeMode === 'usd' ? 'Size (USD)' : `Size (${coin ?? 'Coin'})`
+}
+
+// ─── SIZE SLIDER ──────────────────────────────────────────────────────────────
+// Sync slider + label from the current sizeInput value
+function _szSyncSlider() {
+  const avail  = parseFloat(state.perpState?.withdrawable ?? 0)
+  const maxPos = avail * state.leverage
+  const rawVal = parseFloat(document.getElementById('sizeInput').value) || 0
+  const mktPx  = state.selectedCoin ? parseFloat(state.allMids?.[state.selectedCoin] ?? 0) : 0
+  const usdVal = state.sizeMode === 'usd' ? rawVal : rawVal * (mktPx > 0 ? mktPx : 0)
+  const pct    = maxPos > 0 ? Math.min(100, Math.round(usdVal / maxPos * 100)) : 0
+  const slider = document.getElementById('szPctSlider')
+  const label  = document.getElementById('szPctLabel')
+  if (slider) slider.value = pct
+  if (label)  label.textContent = pct + ' %'
+}
+
+// Slider moved → update sizeInput value
+window._szFromSlider = function() {
+  const pct    = parseInt(document.getElementById('szPctSlider').value) / 100
+  const avail  = parseFloat(state.perpState?.withdrawable ?? 0)
+  const maxPos = avail * state.leverage
+  const mktPx  = state.selectedCoin ? parseFloat(state.allMids?.[state.selectedCoin] ?? 0) : 0
+  const label  = document.getElementById('szPctLabel')
+  if (label) label.textContent = Math.round(pct * 100) + ' %'
+  const inp = document.getElementById('sizeInput')
+  if (state.sizeMode === 'usd') {
+    inp.value = maxPos > 0 ? (maxPos * pct).toFixed(2) : ''
+  } else if (mktPx > 0 && maxPos > 0) {
+    inp.value = ((maxPos * pct) / mktPx).toFixed(4)
+  }
+  updateOrderSummary()
 }
 
 // ─── SIZE PRESETS ─────────────────────────────────────────────────────────────
 function setSizePct(pct) {
-  const avail = parseFloat(state.perpState?.withdrawable ?? 0)
-  if (avail <= 0) return
+  const slider = document.getElementById('szPctSlider')
+  const label  = document.getElementById('szPctLabel')
+  if (slider) slider.value = Math.round(pct * 100)
+  if (label)  label.textContent = Math.round(pct * 100) + ' %'
+  const avail  = parseFloat(state.perpState?.withdrawable ?? 0)
+  const maxPos = avail * state.leverage
+  const mktPx  = state.selectedCoin ? parseFloat(state.allMids?.[state.selectedCoin] ?? 0) : 0
+  const inp    = document.getElementById('sizeInput')
   if (state.sizeMode === 'usd') {
-    document.getElementById('sizeInput').value = (avail * pct * state.leverage).toFixed(2)
-  } else {
-    const mktPx = state.selectedCoin ? parseFloat(state.allMids[state.selectedCoin] ?? 0) : 0
-    if (mktPx > 0) {
-      const coinSz = (avail * pct * state.leverage) / mktPx
-      document.getElementById('sizeInput').value = coinSz.toFixed(4)
-    }
+    inp.value = maxPos > 0 ? (maxPos * pct).toFixed(2) : ''
+  } else if (mktPx > 0 && maxPos > 0) {
+    inp.value = ((maxPos * pct) / mktPx).toFixed(4)
   }
   updateOrderSummary()
 }
@@ -1291,8 +1745,31 @@ function updateOrderSummary() {
   document.getElementById('sum-size').textContent   = sizeUSD > 0 ? '$' + fmtUSD(sizeUSD)  : '—'
   document.getElementById('sum-coins').textContent  = coinSz  > 0 ? fmtSize(coinSz) + (coin ? ' ' + coin : '') : '—'
   document.getElementById('sum-lev').textContent    = state.leverage + 'x'
+  document.getElementById('sum-lev-row').textContent = state.leverage + 'x'
   document.getElementById('sum-margin').textContent = margin  > 0 ? '$' + fmtUSD(margin)   : '—'
 
+  _updateAvailDisplay()
+
+  // Funding rate (8h) from market context map
+  const ctx     = _mktCtxMap[coin]
+  const fundVal = ctx?.funding ?? null
+  const sumFund = document.getElementById('sum-fund')
+  if (sumFund) {
+    if (fundVal !== null && coin) {
+      const sign = fundVal >= 0 ? '+' : ''
+      const cls  = fundVal >= 0 ? 'pos' : 'neg'
+      sumFund.innerHTML = `<span class="${cls}">${sign}${Math.abs(fundVal).toFixed(4)}%</span>`
+    } else {
+      sumFund.textContent = '—'
+    }
+  }
+
+  // Estimated fee: ~0.05% taker (market/stop), ~0.02% maker (limit)
+  const feeRate = state.orderType === 'limit' ? 0.0002 : 0.00045
+  const estFee  = sizeUSD * feeRate
+  document.getElementById('sum-fee').textContent = estFee > 0 ? '-$' + fmtUSD(estFee) : '—'
+
+  _szSyncSlider()
   updatePositionPreview({ coin, coinSz, price, margin })
 }
 
@@ -1373,12 +1850,745 @@ function updatePositionPreview({ coin, coinSz, price, margin }) {
 
   document.getElementById('pp-new-entry').textContent  = newEntry > 0  ? '$' + fmtPrice(newEntry)  : '—'
   const liqEl = document.getElementById('pp-new-liq')
-  liqEl.textContent = curHlLiq > 0 ? '$' + fmtPrice(curHlLiq) : '—'
-  const liqDist = curHlLiq > 0 && price > 0 ? Math.abs(curHlLiq - price) / price : 1
+
+  // Estimate projected liq price.
+  // For adding to an existing position: curHlLiq already encodes the full cross-margin
+  // account equity, so we use it as an anchor rather than re-deriving from scratch.
+  //   LONG add:  newLiq = (newPrice×newSz + curHlLiq×curSz×(1−mmr)) / (totalSz×(1−mmr))
+  //   SHORT add: same shape but (1+mmr)
+  // mmr = 0.005 (HL baseline maintenance margin rate)
+  const mmr = 0.005
+  let newLiqPx = 0
+  const absCurSzi = Math.abs(curSzi)
+  const absNewSzi = Math.abs(newSzi)
+
+  if (newSzi === 0) {
+    newLiqPx = 0
+  } else if (absCurSzi > 0 && curHlLiq > 0 && Math.sign(curSzi) === Math.sign(newSzi)) {
+    // Adding to existing position — anchor off current HL liq
+    const orderSz = coinSz
+    if (newSzi > 0) {
+      newLiqPx = (price * orderSz + curHlLiq * absCurSzi * (1 - mmr)) / (absNewSzi * (1 - mmr))
+    } else {
+      newLiqPx = (price * orderSz + curHlLiq * absCurSzi * (1 + mmr)) / (absNewSzi * (1 + mmr))
+    }
+    if (newLiqPx < 0) newLiqPx = 0
+  } else if (absCurSzi === 0 || curHlLiq === 0) {
+    // Fresh position — use account equity from marginSummary
+    const equity = parseFloat(state.perpState?.marginSummary?.accountValue ?? 0)
+    const notional = absNewSzi * newEntry
+    if (equity > 0 && notional > 0) {
+      newLiqPx = newSzi > 0
+        ? (notional - equity) / (absNewSzi * (1 - mmr))
+        : (notional + equity) / (absNewSzi * (1 + mmr))
+      if (newLiqPx < 0) newLiqPx = 0
+    }
+  } else {
+    // Reducing or flipping — fall back to current HL liq as rough estimate
+    newLiqPx = curHlLiq
+  }
+
+  liqEl.textContent = newLiqPx > 0 ? '$' + fmtPrice(newLiqPx) : (newSzi === 0 ? '—' : '—')
+  const liqDist = newLiqPx > 0 && price > 0 ? Math.abs(newLiqPx - price) / price : 1
   liqEl.className = liqDist < 0.05 ? 'neg' : liqDist < 0.1 ? '' : 'pos-preview-liq-safe'
   document.getElementById('pp-new-margin').textContent = newMargin > 0 ? '$' + fmtUSD(newMargin) : '$' + fmtUSD(margin)
 
   previewEl.style.display = 'block'
+}
+
+// ─── TRADE CHART ──────────────────────────────────────────────────────────────
+let _tradeChart        = null
+let _chartTf           = '1h'
+let _chartMode         = 'line'
+let _chartPanCleanup   = null
+let _crosshairCleanup  = null
+let _chartAllLabels    = []
+let _chartAllData      = []
+let _chartAllCandles   = []
+let _chartViewStart    = 0
+let _chartViewEnd      = 0
+let _chartYMin         = 0
+let _chartYMax         = 0
+let _chartFmtLabel     = null
+let _chartCurrentCoin  = null
+let _chartCurrentTf    = null
+let _chartEarliestTs   = null
+let _chartLoadingMore  = false
+let _chartYPanned      = false
+
+function _setupCrosshair(chart, fmtLbl) {
+  const mainCanvas = chart.canvas
+  const overlay    = document.getElementById('chartCrosshair')
+  if (!overlay) return () => {}
+
+  function sync() {
+    overlay.width  = mainCanvas.width
+    overlay.height = mainCanvas.height
+    overlay.style.width  = mainCanvas.style.width  || mainCanvas.offsetWidth  + 'px'
+    overlay.style.height = mainCanvas.style.height || mainCanvas.offsetHeight + 'px'
+  }
+  sync()
+
+  const oc = overlay.getContext('2d')
+  const dpr = window.devicePixelRatio || 1
+
+  function draw(e) {
+    sync()
+    oc.clearRect(0, 0, overlay.width, overlay.height)
+    const rect = mainCanvas.getBoundingClientRect()
+
+    // cursor in CSS pixels (matches chart.chartArea which is also CSS pixels)
+    const mxCss = e.clientX - rect.left
+    const myCss = e.clientY - rect.top
+    const area = chart.chartArea
+    if (!area || mxCss < area.left || mxCss > area.right || myCss < area.top || myCss > area.bottom) return
+
+    // physical pixels for drawing on the unscaled overlay canvas
+    const mx = mxCss * dpr
+    const my = myCss * dpr
+    const aL = area.left   * dpr,  aR = area.right  * dpr
+    const aT = area.top    * dpr,  aB = area.bottom * dpr
+
+    oc.save()
+
+    // Dashed crosshair lines
+    oc.strokeStyle = 'rgba(255,255,255,0.35)'
+    oc.lineWidth   = dpr
+    oc.setLineDash([4 * dpr, 4 * dpr])
+    oc.beginPath(); oc.moveTo(mx, aT); oc.lineTo(mx, aB); oc.stroke()
+    oc.beginPath(); oc.moveTo(aL, my); oc.lineTo(aR, my); oc.stroke()
+    oc.setLineDash([])
+
+    const fontPx = Math.round(9 * dpr)
+    oc.font = `600 ${fontPx}px "JetBrains Mono", monospace`
+
+    // Price label on right Y-axis (in CSS px coords → physical for drawing)
+    const price    = chart.scales.y.getValueForPixel(myCss)
+    const priceStr = price >= 1000
+      ? price.toLocaleString('en-US', { maximumFractionDigits: 0 })
+      : price >= 1 ? price.toFixed(4) : price.toPrecision(5)
+    const pw = oc.measureText(priceStr).width
+    const ph = fontPx + 6 * dpr
+    const px = 6 * dpr
+    oc.fillStyle = 'rgba(0,0,0,0.85)'
+    oc.fillRect(aR + 2 * dpr, my - ph / 2, pw + px * 2, ph)
+    oc.fillStyle = '#ffffff'
+    oc.textAlign    = 'left'
+    oc.textBaseline = 'middle'
+    oc.fillText(priceStr, aR + 2 * dpr + px, my)
+
+    // Date label + dot — meta.data coords are in CSS pixels
+    const meta = chart.getDatasetMeta(0)
+    if (meta?.data?.length) {
+      let closest = 0, minDist = Infinity
+      for (let i = 0; i < meta.data.length; i++) {
+        const d = Math.abs(meta.data[i].x - mxCss)   // compare in CSS px
+        if (d < minDist) { minDist = d; closest = i }
+      }
+      // Black dot at nearest data point (convert CSS→physical)
+      const pt = meta.data[closest]
+      if (pt && pt.y >= area.top && pt.y <= area.bottom) {
+        oc.beginPath(); oc.arc(pt.x * dpr, pt.y * dpr, 4 * dpr, 0, Math.PI * 2)
+        oc.fillStyle = '#000'; oc.fill()
+        oc.strokeStyle = 'rgba(255,255,255,0.45)'; oc.lineWidth = dpr; oc.stroke()
+      }
+      const viewCandles = _chartAllCandles.slice(_chartViewStart, _chartViewEnd)
+      const cd = viewCandles[closest]
+      if (cd && fmtLbl) {
+        const dateStr = fmtLbl(cd.t)
+        const dw = oc.measureText(dateStr).width
+        const dh = fontPx + 6 * dpr
+        const dpx = 6 * dpr
+        const dbx = Math.max(aL, Math.min(mx - dw / 2 - dpx, aR - dw - dpx * 2))
+        oc.fillStyle = 'rgba(0,0,0,0.85)'
+        oc.fillRect(dbx, aB + 2 * dpr, dw + dpx * 2, dh)
+        oc.fillStyle = '#ffffff'
+        oc.textAlign    = 'left'
+        oc.textBaseline = 'top'
+        oc.fillText(dateStr, dbx + dpx, aB + 2 * dpr + 3 * dpr)
+      }
+    }
+
+    oc.restore()
+  }
+
+  function clear() { oc.clearRect(0, 0, overlay.width, overlay.height) }
+
+  function onTouch(e) {
+    if (!e.touches.length) return
+    e.preventDefault()
+    draw({ clientX: e.touches[0].clientX, clientY: e.touches[0].clientY })
+  }
+
+  mainCanvas.addEventListener('mousemove',  draw)
+  mainCanvas.addEventListener('mouseleave', clear)
+  mainCanvas.addEventListener('touchmove',  onTouch, { passive: false })
+  mainCanvas.addEventListener('touchend',   clear)
+  return () => {
+    mainCanvas.removeEventListener('mousemove',  draw)
+    mainCanvas.removeEventListener('mouseleave', clear)
+    mainCanvas.removeEventListener('touchmove',  onTouch)
+    mainCanvas.removeEventListener('touchend',   clear)
+    clear()
+  }
+}
+
+function _chartSetView(start, end) {
+  const total  = _chartAllLabels.length
+  const minWin = Math.min(30, total)
+  end   = Math.min(total, end)
+  start = Math.max(0, start)
+  if (end - start < minWin) {
+    if (start === 0) end = minWin
+    else start = Math.max(0, end - minWin)
+  }
+  _chartViewStart = start
+  _chartViewEnd   = end
+  _tradeChart.data.labels           = _chartAllLabels.slice(start, end)
+  _tradeChart.data.datasets[0].data = _chartAllData.slice(start, end)
+  _tradeChart._candleData           = _chartAllCandles.slice(start, end)
+
+  // Auto-scale Y to visible price range (unless user manually panned Y)
+  if (!_chartYPanned) {
+    const vd = _chartAllData.slice(start, end)
+    const vc = _chartAllCandles.slice(start, end)
+    let yMin = Infinity, yMax = -Infinity
+    for (const v of vd) { if (isFinite(v)) { if (v < yMin) yMin = v; if (v > yMax) yMax = v } }
+    for (const c of vc) {
+      if (!c) continue
+      const l = parseFloat(c.l), h = parseFloat(c.h)
+      if (isFinite(l) && l < yMin) yMin = l
+      if (isFinite(h) && h > yMax) yMax = h
+    }
+    if (isFinite(yMin) && isFinite(yMax) && yMax > yMin) {
+      const pad = (yMax - yMin) * 0.08
+      _tradeChart.options.scales.y.min = yMin - pad
+      _tradeChart.options.scales.y.max = yMax + pad
+    }
+  }
+
+  _tradeChart.update('none')
+
+  // Fetch older history when user reaches the left edge
+  if (start === 0) _loadMoreHistory()
+}
+
+async function _loadMoreHistory() {
+  if (_chartLoadingMore || !_chartCurrentCoin || !_chartCurrentTf || !_chartEarliestTs) return
+  _chartLoadingMore = true
+  try {
+    const lookback = _TF_LOOKBACK[_chartCurrentTf] ?? 5 * 24 * 60 * 60 * 1000
+    const endTs    = _chartEarliestTs
+    const startTs  = endTs - lookback
+    const more     = await fetchCandles(_chartCurrentCoin, _chartCurrentTf, startTs, endTs - 1)
+    if (!more || more.length === 0) return
+
+    const tf = _chartCurrentTf
+    const _fp = (ts) => {
+      const d  = new Date(ts)
+      const dd = String(d.getDate()).padStart(2, '0')
+      const mo = String(d.getMonth() + 1).padStart(2, '0')
+      const HH = String(d.getHours()).padStart(2, '0')
+      const MM = String(d.getMinutes()).padStart(2, '0')
+      return { date: `${dd}/${mo}/${d.getFullYear()}`, time: `${HH}:${MM}` }
+    }
+    const fmtAxisLbl = (ts) => {
+      const { date, time } = _fp(ts)
+      return (tf === '1w' || tf === '1d') ? date : [date, time]
+    }
+
+    const newLabels  = more.map(c => fmtAxisLbl(c.t))
+    const newData    = more.map(c => parseFloat(c.c))
+    const prepend    = newLabels.length
+
+    _chartAllLabels  = [...newLabels,  ..._chartAllLabels]
+    _chartAllData    = [...newData,    ..._chartAllData]
+    _chartAllCandles = [...more,       ..._chartAllCandles]
+    _chartEarliestTs = more[0].t
+
+    // Shift view window to keep the same visible candles after prepend
+    _chartViewStart += prepend
+    _chartViewEnd   += prepend
+    _tradeChart.data.labels           = _chartAllLabels.slice(_chartViewStart, _chartViewEnd)
+    _tradeChart.data.datasets[0].data = _chartAllData.slice(_chartViewStart, _chartViewEnd)
+    _tradeChart._candleData           = _chartAllCandles.slice(_chartViewStart, _chartViewEnd)
+    _tradeChart.update('none')
+  } catch (e) {
+    console.warn('[hliq] loadMoreHistory failed:', e)
+  } finally {
+    _chartLoadingMore = false
+  }
+}
+
+function _setupChartPan(chart) {
+  const canvas = chart.canvas
+  let dragging = false, lastX = 0, lastY = 0, panAxis = 'x'
+  let pinchDist = null
+
+  function doPanX(clientX) {
+    const dx = clientX - lastX
+    lastX = clientX
+    if (dx === 0) return
+    const viewLen = _chartViewEnd - _chartViewStart
+    const pxWidth = canvas.offsetWidth || 600
+    const shift   = Math.round((dx / pxWidth) * viewLen * -1)
+    if (shift === 0) return
+    _chartSetView(_chartViewStart + shift, _chartViewEnd + shift)
+  }
+
+  function doPanY(clientY) {
+    const dy = clientY - lastY
+    lastY = clientY
+    if (dy === 0) return
+    const sc  = chart.options.scales.y
+    const rng = (sc.max ?? _chartYMax) - (sc.min ?? _chartYMin)
+    const h   = (chart.chartArea?.bottom ?? 300) - (chart.chartArea?.top ?? 0)
+    const shift = (dy / h) * rng
+    _chartYPanned = true
+    sc.min = (sc.min ?? _chartYMin) + shift
+    sc.max = (sc.max ?? _chartYMax) + shift
+    chart.update('none')
+  }
+
+  function doZoomX(pxX, factor) {
+    const viewLen   = _chartViewEnd - _chartViewStart
+    const pxWidth   = canvas.offsetWidth || 600
+    const cursorPct = Math.max(0, Math.min(1, pxX / pxWidth))
+    const newLen    = Math.max(10, Math.min(_chartAllLabels.length, Math.round(viewLen * factor)))
+    const anchor    = _chartViewStart + cursorPct * viewLen
+    const newStart  = Math.round(anchor - cursorPct * newLen)
+    _chartSetView(newStart, newStart + newLen)
+  }
+
+  function doZoomY(pxY, factor) {
+    const sc   = chart.options.scales.y
+    const area = chart.chartArea ?? {}
+    const h    = (area.bottom ?? 300) - (area.top ?? 0)
+    const pct  = Math.max(0, Math.min(1, (pxY - (area.top ?? 0)) / h))
+    const yMin = sc.min ?? _chartYMin
+    const yMax = sc.max ?? _chartYMax
+    const rng  = yMax - yMin
+    const anchor = yMax - pct * rng
+    const newRng = rng * factor
+    _chartYPanned = true
+    sc.min = anchor - (1 - pct) * newRng
+    sc.max = anchor + pct * newRng
+    chart.update('none')
+  }
+
+  const md = e => {
+    dragging = true
+    lastX = e.clientX; lastY = e.clientY
+    panAxis = e.shiftKey ? 'y' : 'x'
+  }
+  const mm = e => {
+    if (!dragging) return
+    if (panAxis === 'y') doPanY(e.clientY)
+    else doPanX(e.clientX)
+  }
+  const mu = () => { dragging = false }
+  const wh = e => {
+    e.preventDefault()
+    if (e.ctrlKey || e.metaKey) doZoomY(e.offsetY, e.deltaY > 0 ? 1.1 : 0.91)
+    else doZoomX(e.offsetX, e.deltaY > 0 ? 1.15 : 0.87)
+  }
+  const db = () => {
+    _chartYPanned = false
+    _chartSetView(0, _chartAllLabels.length)
+  }
+
+  // Touch: single-finger X/Y pan, two-finger X pinch-zoom
+  const ts = e => {
+    if (e.touches.length === 1) {
+      dragging = true
+      lastX = e.touches[0].clientX; lastY = e.touches[0].clientY
+      panAxis = 'x'
+      pinchDist = null
+    } else if (e.touches.length === 2) {
+      dragging = false
+      pinchDist = Math.hypot(
+        e.touches[1].clientX - e.touches[0].clientX,
+        e.touches[1].clientY - e.touches[0].clientY
+      )
+    }
+  }
+  const tm = e => {
+    if (e.touches.length === 1 && dragging) {
+      e.preventDefault()
+      const dx = e.touches[0].clientX - lastX
+      const dy = e.touches[0].clientY - lastY
+      // After some vertical movement, switch to Y-pan
+      if (panAxis === 'x' && Math.abs(dy) > Math.abs(dx) * 1.8 && Math.abs(dy) > 8) panAxis = 'y'
+      if (panAxis === 'y') doPanY(e.touches[0].clientY)
+      else doPanX(e.touches[0].clientX)
+      lastY = e.touches[0].clientY
+    } else if (e.touches.length === 2 && pinchDist !== null) {
+      e.preventDefault()
+      const dist = Math.hypot(
+        e.touches[1].clientX - e.touches[0].clientX,
+        e.touches[1].clientY - e.touches[0].clientY
+      )
+      const midX = ((e.touches[0].clientX + e.touches[1].clientX) / 2) - canvas.getBoundingClientRect().left
+      doZoomX(midX, pinchDist / dist)
+      pinchDist = dist
+    }
+  }
+  const te = () => { dragging = false; pinchDist = null }
+
+  canvas.addEventListener('mousedown',  md)
+  window.addEventListener('mousemove',  mm)
+  window.addEventListener('mouseup',    mu)
+  canvas.addEventListener('wheel',      wh, { passive: false })
+  canvas.addEventListener('dblclick',   db)
+  canvas.addEventListener('touchstart', ts, { passive: true })
+  canvas.addEventListener('touchmove',  tm, { passive: false })
+  window.addEventListener('touchend',   te, { passive: true })
+
+  _chartPanCleanup = () => {
+    canvas.removeEventListener('mousedown',  md)
+    window.removeEventListener('mousemove',  mm)
+    window.removeEventListener('mouseup',    mu)
+    canvas.removeEventListener('wheel',      wh)
+    canvas.removeEventListener('dblclick',   db)
+    canvas.removeEventListener('touchstart', ts)
+    canvas.removeEventListener('touchmove',  tm)
+    window.removeEventListener('touchend',   te)
+  }
+}
+const _TF_LOOKBACK = {
+  '1m':  2*60*60*1000,       '5m':  10*60*60*1000,
+  '15m': 30*60*60*1000,      '30m': 60*60*60*1000,
+  '1h':  5*24*60*60*1000,    '4h':  20*24*60*60*1000,
+  '8h':  40*24*60*60*1000,   '1d':  120*24*60*60*1000,
+  '1w':  365*24*60*60*1000,
+}
+
+function _buildChartAnnotations(coin) {
+  const annotations = {}
+  const pos = (state.perpState?.assetPositions ?? [])
+    .find(p => p.position.coin === coin)?.position
+  if (!pos) return annotations
+
+  const entryPx = parseFloat(pos.entryPx      ?? 0)
+  const liqPx   = parseFloat(pos.liquidationPx ?? 0)
+  const isLong  = parseFloat(pos.szi) > 0
+
+  const line = (value, color, label) => ({
+    type: 'line', scaleID: 'y', value,
+    borderColor: color, borderWidth: 1.5, borderDash: [4, 3],
+    adjustScaleRange: false,
+    label: {
+      display: true, content: label,
+      backgroundColor: color, color: '#000',
+      font: { family: 'JetBrains Mono', size: 10, weight: '700' },
+      padding: { x: 6, y: 2 }, borderRadius: 4,
+      position: 'end',
+    },
+  })
+
+  if (entryPx > 0) annotations.entry = line(entryPx, '#f5c518', `Entry $${fmtPrice(entryPx)}`)
+  if (liqPx   > 0) annotations.liq   = line(liqPx,   '#ff4d6d', `Liq $${fmtPrice(liqPx)}`)
+
+  // TP / SL from open orders
+  for (const o of (state.openOrders ?? [])) {
+    if (o.coin !== coin) continue
+    const orderType = o.orderType ?? ''
+    const isTp = orderType.startsWith('Take Profit') || o.triggerCondition === 'tp'
+    const isSl = orderType.startsWith('Stop')        || o.triggerCondition === 'sl'
+    const px   = parseFloat(o.triggerPx ?? o.limitPx ?? 0)
+    if (isTp && px > 0) annotations.tp = line(px, '#00e5a0', `TP $${fmtPrice(px)}`)
+    if (isSl && px > 0) annotations.sl = line(px, '#ff8c42', `SL $${fmtPrice(px)}`)
+  }
+
+  return annotations
+}
+
+async function loadTradeChart(coin, tf) {
+  tf = tf || _chartTf
+  _chartTf = tf
+
+  document.querySelectorAll('.chart-tf-btn').forEach(b => {
+    b.classList.toggle('active', b.textContent.toLowerCase() === tf.toLowerCase())
+  })
+
+  const emptyEl = document.getElementById('tradeChartEmpty')
+  const canvas  = document.getElementById('tradeChartCanvas')
+  if (!canvas) return
+
+  if (!coin) {
+    if (emptyEl) emptyEl.style.display = 'flex'
+    canvas.style.display = 'none'
+    return
+  }
+
+  updateCoinHeader(coin)
+  updateChartStats(coin)
+  if (emptyEl) emptyEl.style.display = 'none'
+  canvas.style.display = 'block'
+
+  let candles
+  try {
+    candles = await fetchCandles(coin, tf, Date.now() - (_TF_LOOKBACK[tf] ?? 5*24*60*60*1000))
+  } catch { return }
+  if (!candles || candles.length === 0) return
+
+  // fmtLabel → string for crosshair; fmtAxisLabel → array for two-line axis ticks
+  const _fmtParts = (ts) => {
+    const d  = new Date(ts)
+    const dd = String(d.getDate()).padStart(2, '0')
+    const mo = String(d.getMonth() + 1).padStart(2, '0')
+    const HH = String(d.getHours()).padStart(2, '0')
+    const MM = String(d.getMinutes()).padStart(2, '0')
+    return { date: `${dd}/${mo}/${d.getFullYear()}`, time: `${HH}:${MM}` }
+  }
+  const fmtLabel = (ts) => {
+    const { date, time } = _fmtParts(ts)
+    if (tf === '1w' || tf === '1d') return date
+    return `${date} ${time}`
+  }
+  const fmtAxisLabel = (ts) => {
+    const { date, time } = _fmtParts(ts)
+    if (tf === '1w' || tf === '1d') return date
+    return [date, time]
+  }
+  _chartFmtLabel = fmtLabel
+  const fmtYAxis = (v) => {
+    if (v >= 1000) return '$' + (v / 1000).toFixed(1) + 'k'
+    if (v >= 1)    return '$' + parseFloat(v.toFixed(2))
+    return '$' + parseFloat(v.toPrecision(4))
+  }
+
+  const labels = candles.map(c => fmtAxisLabel(c.t))
+  const closes = candles.map(c => parseFloat(c.c))
+  _chartAllLabels  = labels
+  _chartAllData    = closes
+  _chartAllCandles = candles
+  _chartViewStart  = 0
+  _chartViewEnd    = labels.length
+  _chartCurrentCoin = coin
+  _chartCurrentTf   = tf
+  _chartEarliestTs  = candles[0]?.t ?? null
+  _chartYPanned     = false
+  const isUp  = closes[closes.length - 1] >= closes[0]
+  const color = isUp ? '#00e5a0' : '#ff4d6d'
+
+  // Y-axis bounds — use H/L range for candle mode, close range for line mode
+  const dataMin = _chartMode === 'candle'
+    ? Math.min(...candles.map(c => parseFloat(c.l)))
+    : Math.min(...closes)
+  const dataMax = _chartMode === 'candle'
+    ? Math.max(...candles.map(c => parseFloat(c.h)))
+    : Math.max(...closes)
+  const pad  = (dataMax - dataMin) * 0.08
+  const yMin = dataMin - pad
+  const yMax = dataMax + pad
+  _chartYMin = yMin
+  _chartYMax = yMax
+
+  // Mark price annotation — green if above entry, red if below
+  const markPx   = parseFloat(state.allMids?.[coin] ?? 0)
+  const annotations = _buildChartAnnotations(coin)
+  if (markPx > 0) {
+    const openPos   = (state.perpState?.assetPositions ?? [])
+      .find(p => p.position.coin === coin)?.position
+    const posEntry  = parseFloat(openPos?.entryPx ?? 0)
+    const isLong    = parseFloat(openPos?.szi ?? 0) > 0
+    const inProfit  = posEntry > 0
+      ? (isLong ? markPx >= posEntry : markPx <= posEntry)
+      : null
+    const markColor = inProfit === null ? 'rgba(255,255,255,0.5)'
+      : inProfit ? '#00e5a0' : '#ff4d6d'
+    annotations.mark = {
+      type: 'line', scaleID: 'y', value: markPx,
+      borderColor: markColor, borderWidth: 1,
+      borderDash: [4, 4],
+      adjustScaleRange: false,
+      label: {
+        display: true,
+        content: `$${fmtPrice(markPx)}`,
+        backgroundColor: 'rgba(30,30,45,0.9)',
+        color: markColor,
+        font: { family: 'JetBrains Mono', size: 10, weight: '600' },
+        padding: { x: 5, y: 2 }, borderRadius: 3,
+        position: 'end',
+      },
+    }
+  }
+
+  if (_tradeChart) { _tradeChart.destroy(); _tradeChart = null }
+  if (_chartPanCleanup)  { _chartPanCleanup();  _chartPanCleanup  = null }
+  if (_crosshairCleanup) { _crosshairCleanup(); _crosshairCleanup = null }
+
+  const dot = document.getElementById('markDot')
+  if (dot) dot.style.display = 'none'
+
+  const ctx    = canvas.getContext('2d')
+  const h      = canvas.parentElement.offsetHeight || 380
+  const grad   = ctx.createLinearGradient(0, 0, 0, h)
+  grad.addColorStop(0,   isUp ? 'rgba(0,229,160,0.20)' : 'rgba(255,77,109,0.20)')
+  grad.addColorStop(0.6, isUp ? 'rgba(0,229,160,0.04)' : 'rgba(255,77,109,0.04)')
+  grad.addColorStop(1,   'rgba(0,0,0,0)')
+  const isCandleMode = _chartMode === 'candle'
+  _tradeChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: closes,
+        borderColor:     isCandleMode ? 'transparent' : color,
+        backgroundColor: isCandleMode ? 'transparent' : grad,
+        fill: !isCandleMode,
+        pointRadius: 0, pointHoverRadius: 0,
+        tension: 0,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 250 },
+      layout: { padding: { left: 0, right: 0, top: 8, bottom: 0 } },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { enabled: false },
+        zoom: {
+          pan:  { enabled: false },
+          zoom: { wheel: { enabled: false }, pinch: { enabled: false }, mode: 'x' },
+        },
+        annotation: { annotations },
+      },
+      scales: {
+        x: {
+          ticks: { color: '#555566', font: { family: 'JetBrains Mono', size: 9 }, maxTicksLimit: 4, maxRotation: 0, minRotation: 0 },
+          grid:  { color: 'rgba(255,255,255,0.03)', drawBorder: false },
+          border: { display: false },
+        },
+        y: {
+          position: 'right',
+          min: yMin, max: yMax,
+          afterFit(scale) { scale.width = Math.max(scale.width, 72) },
+          ticks: { color: 'transparent', font: { family: 'JetBrains Mono', size: 9 }, callback: fmtYAxis, maxTicksLimit: 10 },
+          grid:  { color: 'rgba(255,255,255,0.03)', drawBorder: false },
+          border: { display: false },
+        },
+      },
+    },
+  })
+  _tradeChart._candleMode = isCandleMode
+  _tradeChart._candleData = candles
+  _setupChartPan(_tradeChart)
+  _crosshairCleanup = _setupCrosshair(_tradeChart, fmtLabel)
+}
+
+// Double-click resets view (handled inside _setupChartPan via the db handler)
+
+window.__chartSetTf     = function(tf) {
+  _chartRange = null
+  document.querySelectorAll('.chart-range-btn').forEach(b => b.classList.remove('active'))
+  loadTradeChart(state.selectedCoin, tf)
+}
+window.__chartResetZoom = function() {
+  if (_tradeChart && _chartAllLabels.length) _chartSetView(0, _chartAllLabels.length)
+}
+window.__chartSetMode = function(mode) {
+  if (_chartMode === mode) return
+  _chartMode = mode
+  document.querySelectorAll('.chart-mode-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === mode)
+  )
+  if (state.selectedCoin) loadTradeChart(state.selectedCoin, _chartTf)
+}
+
+const _RANGE_CFG = {
+  '1d': { tf: '1m',  ms: 1   * 24 * 3600 * 1000 },
+  '5d': { tf: '15m', ms: 5   * 24 * 3600 * 1000 },
+  '1m': { tf: '1h',  ms: 30  * 24 * 3600 * 1000 },
+  '3m': { tf: '4h',  ms: 90  * 24 * 3600 * 1000 },
+  '6m': { tf: '1d',  ms: 180 * 24 * 3600 * 1000 },
+  '1y': { tf: '1d',  ms: 365 * 24 * 3600 * 1000 },
+  '5y': { tf: '1w',  ms: 5 * 365 * 24 * 3600 * 1000 },
+}
+let _chartRange = null
+
+window.__chartSetRange = function(range) {
+  _chartRange = range
+  document.querySelectorAll('.chart-range-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase() === range))
+  const cfg = _RANGE_CFG[range]
+  if (!cfg || !state.selectedCoin) return
+  _TF_LOOKBACK[cfg.tf] = cfg.ms
+  loadTradeChart(state.selectedCoin, cfg.tf)
+}
+
+// ─── CHART STATS BAR ──────────────────────────────────────────────────────────
+let _fundingCdInterval = null
+
+function _fmtHdrPx(p) {
+  if (!p || p <= 0) return '—'
+  if (p >= 1000) return p.toLocaleString('en-US', { maximumFractionDigits: 0 })
+  if (p >= 10)   return p.toFixed(4)
+  if (p >= 1)    return p.toFixed(4)
+  return p.toPrecision(5)
+}
+function _fmtHdrChgAbs(abs, p) {
+  if (p >= 1000) return Math.round(abs).toLocaleString('en-US')
+  if (p >= 10)   return abs.toFixed(4)
+  if (p >= 1)    return abs.toFixed(4)
+  return abs.toPrecision(4)
+}
+function _fmtHdrDollar(n) {
+  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function updateChartStats(coin) {
+  const el = document.getElementById('tradeChartStats')
+  if (!el) return
+  if (!coin) { el.innerHTML = ''; return }
+
+  const d   = _mktCtxMap[coin]
+  const mid = parseFloat(state.allMids?.[coin] ?? 0)
+  const mark    = d?.markPx   || mid
+  const oracle  = d?.oraclePx || 0
+  const ch      = d?.change24 ?? 0
+  const chAbs   = d?.change24Abs ?? 0
+  const chCls   = ch >= 0 ? 'pos' : 'neg'
+  const chSign  = ch >= 0 ? '+' : ''
+  const vol     = d?.volume ?? 0
+  const oi      = d?.oi ?? 0
+  const fund    = d?.funding ?? 0
+  const fundCls = fund >= 0 ? 'pos' : 'neg'
+  const fundSign= fund >= 0 ? '+' : ''
+  const nft     = d?.nextFundingTime
+
+  function stat(label, val) {
+    return `<div class="cs-stat"><span class="cs-label">${label}</span><span class="cs-val">${val}</span></div>`
+  }
+
+  el.innerHTML =
+    stat('Mark',     _fmtHdrPx(mark)) +
+    stat('Oracle',   oracle > 0 ? `<span class="cs-oracle">${_fmtHdrPx(oracle)}</span>` : '—') +
+    stat('24h Change', `<span class="${chCls}">${chSign}${_fmtHdrChgAbs(Math.abs(chAbs), mark)} / ${chSign}${ch.toFixed(2)}%</span>`) +
+    stat('24h Volume', _fmtHdrDollar(vol)) +
+    stat('Open Interest', _fmtHdrDollar(oi)) +
+    `<div class="cs-stat" id="csFundStat"><span class="cs-label">Funding / Countdown</span><span class="cs-val"><span class="${fundCls}">${fundSign}${Math.abs(fund).toFixed(4)}%</span><span class="cs-cd" id="csFundCd">${nft ? _fmtCd(nft) : ''}</span></span></div>`
+
+  if (_fundingCdInterval) clearInterval(_fundingCdInterval)
+  if (nft) {
+    _fundingCdInterval = setInterval(() => {
+      const cdEl = document.getElementById('csFundCd')
+      if (!cdEl) { clearInterval(_fundingCdInterval); return }
+      const s = _fmtCd(nft)
+      cdEl.textContent = s
+      if (!s) clearInterval(_fundingCdInterval)
+    }, 1000)
+  }
+}
+
+function _fmtCd(nft) {
+  const ms = nft - Date.now()
+  if (ms <= 0) return '00:00:00'
+  const h = Math.floor(ms / 3600000)
+  const m = Math.floor((ms % 3600000) / 60000)
+  const s = Math.floor((ms % 60000) / 1000)
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
 }
 
 // ─── SUBMIT BUTTON ────────────────────────────────────────────────────────────
@@ -1491,15 +2701,198 @@ async function submitOrder() {
 }
 
 // ─── CLOSE MODAL ──────────────────────────────────────────────────────────────
+function _closeColor() {
+  return state.closingPos?.side === 'LONG' ? 'var(--green)' : 'var(--red)'
+}
+
+function _updateCloseDisplay() {
+  const pos = state.closingPos
+  if (!pos) return
+  const color   = _closeColor()
+  const pct     = parseInt(document.getElementById('closeSlider').value)
+  const closeSz = Math.abs(pos.szi) * pct / 100
+  document.getElementById('closePctDisplay').textContent  = pct + '%'
+  document.getElementById('closePctDisplay').style.color  = color
+  document.getElementById('closeSzDisplay').textContent   = fmtSize(closeSz) + ' ' + pos.coin
+  document.getElementById('closeValDisplay').textContent  = '$' + fmtUSD(closeSz * pos.mktPx)
+  document.querySelectorAll('.close-preset-btn').forEach(b => b.classList.toggle('active', parseInt(b.textContent) === pct))
+  const slider = document.getElementById('closeSlider')
+  slider.style.setProperty('--slider-color', color)
+  slider.style.background = `linear-gradient(to right, ${color} 0%, ${color} ${pct}%, var(--border2) ${pct}%)`
+}
+
+window.__onCloseSlider = function () { _updateCloseDisplay() }
+window.__setClosePct   = function (pct) {
+  document.getElementById('closeSlider').value = pct
+  _updateCloseDisplay()
+}
+
+// ─── EDIT POSITION SLIDERS ────────────────────────────────────────────────────
+function _tpslCalcPrice(pctInput, isTp) {
+  const pos = state.editingPos
+  if (!pos || pctInput === 0) return null
+  const { isLong, entryPx, leverage } = pos
+  // Convert ROI% → price% if in roi mode
+  const pct = pos[isTp ? 'tpMode' : 'slMode'] === 'roi' ? pctInput / leverage : pctInput
+  if (isTp) return isLong ? entryPx * (1 + pct / 100) : entryPx * (1 - pct / 100)
+  else       return isLong ? entryPx * (1 - pct / 100) : entryPx * (1 + pct / 100)
+}
+
+function _tpslCalcPct(price, isTp) {
+  const pos = state.editingPos
+  if (!pos || price <= 0) return 0
+  const { entryPx, leverage } = pos
+  const pricePct = Math.abs((price - entryPx) / entryPx * 100)
+  const mode = pos[isTp ? 'tpMode' : 'slMode']
+  return mode === 'roi' ? pricePct * leverage : pricePct
+}
+
+function _tpslUpdatePnl(isTp) {
+  const pos    = state.editingPos
+  const usdEl  = document.getElementById(isTp ? 'tpslTpUsd' : 'tpslSlUsd')
+  const pnlEl  = document.getElementById(isTp ? 'tpslTpPnl' : 'tpslSlPnl')
+  const echoEl = document.getElementById(isTp ? 'tpslTpPctEcho' : 'tpslSlPctEcho')
+  const pctEl  = document.getElementById(isTp ? 'tpslTpPct' : 'tpslSlPct')
+  if (!pos || !pnlEl) return
+  const usdPrice = parseFloat(usdEl?.value) || 0
+  const pctVal   = parseFloat(pctEl?.value) || 0
+  if (echoEl) echoEl.textContent = pctVal > 0 ? pctVal.toFixed(2) : '0.00'
+  // P&L uses effective size (partial support)
+  const szPct = pos[isTp ? 'tpSzPct' : 'slSzPct'] ?? 100
+  const effectiveSz = Math.abs(pos.szi) * szPct / 100
+  if (usdPrice > 0 && pos.entryPx > 0) {
+    const pnl = (usdPrice - pos.entryPx) * effectiveSz * (pos.isLong ? 1 : -1)
+    pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2)
+    pnlEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)'
+  } else {
+    pnlEl.textContent = '—'
+    pnlEl.style.color = ''
+  }
+}
+
+window.__tpslSync = function(side, from) {
+  const isTp  = side === 'tp'
+  const pctEl = document.getElementById(isTp ? 'tpslTpPct' : 'tpslSlPct')
+  const usdEl = document.getElementById(isTp ? 'tpslTpUsd' : 'tpslSlUsd')
+  if (from === 'pct') {
+    const px = _tpslCalcPrice(parseFloat(pctEl.value) || 0, isTp)
+    usdEl.value = px ? px.toFixed(5) : ''
+  } else {
+    const pct = _tpslCalcPct(parseFloat(usdEl.value) || 0, isTp)
+    pctEl.value = pct > 0 ? pct.toFixed(2) : ''
+  }
+  _tpslUpdatePnl(isTp)
+}
+
+window.__tpslTab = function(tab) {
+  const isPartial = tab === 'partial'
+  document.getElementById('tpslTabEntire').classList.toggle('active', !isPartial)
+  document.getElementById('tpslTabPartial').classList.toggle('active', isPartial)
+  document.querySelectorAll('.tpsl-partial-only').forEach(el => {
+    el.style.display = isPartial ? '' : 'none'
+  })
+  if (state.editingPos) state.editingPos.activeTab = tab
+  _tpslUpdatePnl(true)
+  _tpslUpdatePnl(false)
+}
+
+window.__tpslToggleMode = function(side) {
+  const isTp   = side === 'tp'
+  const modeKey = isTp ? 'tpMode' : 'slMode'
+  const pos    = state.editingPos
+  if (!pos) return
+  const newMode = (pos[modeKey] === 'roi') ? 'pct' : 'roi'
+  pos[modeKey]  = newMode
+  const lbl = newMode === 'roi' ? 'ROI %' : 'Price %'
+  document.getElementById(isTp ? 'tpslTpModeLbl' : 'tpslSlModeLbl').textContent = lbl
+  document.getElementById(isTp ? 'tpslTpPctLbl'  : 'tpslSlPctLbl').textContent  = isTp ? 'TP' : 'SL'
+  // Recalculate pct display from current USD price
+  const usdEl = document.getElementById(isTp ? 'tpslTpUsd' : 'tpslSlUsd')
+  const usd   = parseFloat(usdEl?.value) || 0
+  if (usd > 0) {
+    const pct = _tpslCalcPct(usd, isTp)
+    const pctEl = document.getElementById(isTp ? 'tpslTpPct' : 'tpslSlPct')
+    if (pctEl) pctEl.value = pct.toFixed(2)
+  }
+  _tpslUpdatePnl(isTp)
+}
+
+window.__tpslToggleType = function(side) {
+  const isTp   = side === 'tp'
+  const typeKey = isTp ? 'tpType' : 'slType'
+  const pos    = state.editingPos
+  if (!pos) return
+  const newType = (pos[typeKey] === 'limit') ? 'market' : 'limit'
+  pos[typeKey]  = newType
+  document.getElementById(isTp ? 'tpslTpTypeLbl' : 'tpslSlTypeLbl').textContent =
+    newType === 'limit' ? 'Limit' : 'Market'
+}
+
+window.__tpslSzSlider = function(side) {
+  const isTp   = side === 'tp'
+  const pos    = state.editingPos
+  if (!pos) return
+  const slider  = document.getElementById(isTp ? 'tpslTpSzSlider' : 'tpslSlSzSlider')
+  const display = document.getElementById(isTp ? 'tpslTpSzDisplay' : 'tpslSlSzDisplay')
+  const pct     = parseFloat(slider.value)
+  const sz      = Math.abs(pos.szi) * pct / 100
+  pos[isTp ? 'tpSzPct' : 'slSzPct'] = pct
+  if (display) display.textContent = fmtSize(sz) + ' ' + pos.coin
+  slider.style.background = `linear-gradient(to right, var(--accent) 0%, var(--accent) ${pct}%, var(--border2) ${pct}%)`
+  _tpslUpdatePnl(isTp)
+}
+
+function _updateEditOrdSlider() {
+  const ord    = state.editingOrder
+  if (!ord) return
+  const slider = document.getElementById('editOrdSlider')
+  const pct    = parseInt(slider.value)
+  const sz     = ord.maxSz * pct / 100
+  const px     = parseFloat(document.getElementById('editOrderPriceInput').value) || ord.currentPx || 0
+  slider.style.background = `linear-gradient(to right, var(--accent) 0%, var(--accent) ${pct}%, var(--border2) ${pct}%)`
+  const display = document.getElementById('eordSzDisplay')
+  if (display) {
+    if (ord.szUnit === 'usdc' && px > 0) {
+      display.textContent = '$' + fmtUSD(sz * px)
+    } else {
+      display.textContent = fmtSize(sz) + ' ' + ord.coin
+    }
+  }
+}
+window.__onEditOrdSlider = function () { _updateEditOrdSlider() }
+window.__setEditOrdPct   = function (pct) {
+  document.getElementById('editOrdSlider').value = pct
+  _updateEditOrdSlider()
+}
+window.__eordUpdateSize = function () { _updateEditOrdSlider() }
+window.__eordSetMid = function () {
+  const ord = state.editingOrder
+  if (!ord) return
+  const mid = state.allMids?.[ord.coin]
+  if (mid) {
+    document.getElementById('editOrderPriceInput').value = parseFloat(mid).toFixed(5)
+    _updateEditOrdSlider()
+  }
+}
+window.__eordToggleSzUnit = function () {
+  const ord = state.editingOrder
+  if (!ord) return
+  ord.szUnit = ord.szUnit === 'usdc' ? 'token' : 'usdc'
+  _updateEditOrdSlider()
+}
+
 window.__openCloseModal = function (coin, side, szi, mktPx) {
   state.closingPos = { coin, side, szi: parseFloat(szi), mktPx: parseFloat(mktPx) }
   document.getElementById('closeModalTitle').textContent = `Close ${coin} ${side}`
-  document.getElementById('closeModalDesc').textContent  =
-    `Size: ${fmtSize(Math.abs(parseFloat(szi)))} ${coin}\nMark: $${fmtPrice(parseFloat(mktPx))}\n\nLeave blank to fully close.`
-  document.getElementById('closeSizeInput').value       = ''
-  document.getElementById('closeModalStatus').className = 'trade-status'
-  document.getElementById('closeModalConfirm').disabled = false
+  document.getElementById('closeModalDesc').textContent  = `Mark: $${fmtPrice(parseFloat(mktPx))}`
+  const slider = document.getElementById('closeSlider')
+  slider.value = 100
+  slider.style.setProperty('--slider-color', _closeColor())
+  slider.style.background = _closeColor()
+  document.getElementById('closeModalStatus').className  = 'trade-status'
+  document.getElementById('closeModalConfirm').disabled  = false
   document.getElementById('closeModal').classList.add('open')
+  _updateCloseDisplay()
 }
 
 window.__confirmClosePosition = async function () {
@@ -1507,22 +2900,26 @@ window.__confirmClosePosition = async function () {
   if (!isConnected()) { showTradeStatus(document.getElementById('closeModalStatus'), 'error', 'Connect agent key first.'); return }
 
   const { coin, side, szi, mktPx } = state.closingPos
-  const inputSz  = parseFloat(document.getElementById('closeSizeInput').value)
-  const closeSz  = inputSz > 0 ? inputSz : Math.abs(szi)
+  const pct     = parseInt(document.getElementById('closeSlider').value)
+  const closeSz = Math.abs(szi) * pct / 100
   const statusEl = document.getElementById('closeModalStatus')
 
   showTradeStatus(statusEl, 'pending', 'Submitting close order...')
   document.getElementById('closeModalConfirm').disabled = true
 
   try {
-    const result = await closePosition({ coin, isBuy: side === 'SHORT', sz: closeSz, markPrice: mktPx })
+    const result = await closePosition({ coin, isBuy: szi < 0, sz: closeSz, markPrice: mktPx })
     const parsed = parseOrderResult(result)
-    if (parsed.ok) {
-      showTradeStatus(statusEl, 'success', '✓ Position closed!')
-      setTimeout(() => { closeModals(); refreshLive() }, 1000)
-    } else {
+    const didFill = parsed.filled.some(f => parseFloat(f.filled?.totalSz ?? 0) > 0)
+    if (!parsed.ok) {
       showTradeStatus(statusEl, 'error', '✗ ' + parsed.errors.join(', '))
       document.getElementById('closeModalConfirm').disabled = false
+    } else if (!didFill) {
+      showTradeStatus(statusEl, 'error', '✗ Order did not fill — market may have moved. Try again.')
+      document.getElementById('closeModalConfirm').disabled = false
+    } else {
+      showTradeStatus(statusEl, 'success', '✓ Position closed!')
+      setTimeout(() => { closeModals(); refreshLive() }, 1000)
     }
   } catch (e) {
     showTradeStatus(statusEl, 'error', '✗ ' + e.message)
@@ -1531,13 +2928,58 @@ window.__confirmClosePosition = async function () {
 }
 
 // ─── EDIT MODAL ───────────────────────────────────────────────────────────────
-window.__openEditModal = function (coin, side, szi, entryPx) {
-  state.editingPos = { coin, side, szi: parseFloat(szi), entryPx: parseFloat(entryPx) }
-  document.getElementById('editModalTitle').textContent = `Edit ${coin} ${side}`
-  document.getElementById('editTpInput').value          = ''
-  document.getElementById('editSlInput').value          = ''
-  document.getElementById('editModalStatus').className  = 'trade-status'
-  document.getElementById('editModalConfirm').disabled  = false
+window.__openEditModal = function (coin, side, szi, entryPx, existingTpPx = 0, existingSlPx = 0, existingTpOid = 0, existingSlOid = 0, leverage = 1) {
+  const entry  = parseFloat(entryPx)
+  const isLong = side === 'LONG'
+  const sz     = Math.abs(parseFloat(szi))
+  state.editingPos = {
+    coin, side, szi: parseFloat(szi), entryPx: entry, isLong,
+    leverage: parseFloat(leverage) || 1,
+    tpOid: existingTpOid || 0, slOid: existingSlOid || 0,
+    tpMode: 'pct', slMode: 'pct', tpType: 'market', slType: 'market',
+    tpSzPct: 100, slSzPct: 100, activeTab: 'entire',
+  }
+
+  // Position info
+  document.getElementById('tpslPosLabel').textContent = `${sz} ${coin} ${side.charAt(0) + side.slice(1).toLowerCase()}`
+  document.getElementById('tpslEntryPx').textContent  = '$' + fmtPrice(entry)
+  const refPx = parseFloat(state.allMids?.[coin] ?? entry)
+  document.getElementById('tpslRefPx').textContent = '$' + fmtPrice(refPx)
+
+  // Reset tab to Entire Position
+  window.__tpslTab('entire')
+
+  // Reset mode labels
+  ;['tpslTpModeLbl','tpslSlModeLbl'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = 'Price %' })
+  ;['tpslTpTypeLbl','tpslSlTypeLbl'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = 'Market' })
+
+  // Initialize size sliders
+  ;['Tp','Sl'].forEach(s => {
+    const slider  = document.getElementById(`tpsl${s}SzSlider`)
+    const display = document.getElementById(`tpsl${s}SzDisplay`)
+    if (slider)  { slider.value = 100; slider.style.background = `linear-gradient(to right, var(--accent) 0%, var(--accent) 100%, var(--border2) 100%)` }
+    if (display) display.textContent = fmtSize(sz) + ' ' + coin
+  })
+
+  // Clear all inputs
+  ;['tpslTpPct','tpslTpUsd','tpslSlPct','tpslSlUsd'].forEach(id => { const el = document.getElementById(id); if (el) el.value = '' })
+  ;['tpslTpPnl','tpslSlPnl'].forEach(id => { const el = document.getElementById(id); if (el) { el.textContent = '—'; el.style.color = '' } })
+  ;['tpslTpPctEcho','tpslSlPctEcho'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '0.00' })
+
+  // Pre-fill from existing TP/SL
+  const tpPx = parseFloat(existingTpPx) || 0
+  if (tpPx > 0) {
+    document.getElementById('tpslTpUsd').value = tpPx.toFixed(5)
+    window.__tpslSync('tp', 'usd')
+  }
+  const slPx = parseFloat(existingSlPx) || 0
+  if (slPx > 0) {
+    document.getElementById('tpslSlUsd').value = slPx.toFixed(5)
+    window.__tpslSync('sl', 'usd')
+  }
+
+  document.getElementById('editModalStatus').className = 'trade-status'
+  document.getElementById('editModalConfirm').disabled = false
   document.getElementById('editModal').classList.add('open')
 }
 
@@ -1545,26 +2987,31 @@ window.__confirmEditPosition = async function () {
   if (!state.editingPos) return
   if (!isConnected()) { showTradeStatus(document.getElementById('editModalStatus'), 'error', 'Connect agent key first.'); return }
 
-  const { coin, side, szi } = state.editingPos
-  const tpPx     = parseFloat(document.getElementById('editTpInput').value)
-  const slPx     = parseFloat(document.getElementById('editSlInput').value)
+  const { coin, side, szi, tpOid, slOid, tpSzPct, slSzPct, activeTab } = state.editingPos
+  const tpPx     = parseFloat(document.getElementById('tpslTpUsd').value) || 0
+  const slPx     = parseFloat(document.getElementById('tpslSlUsd').value) || 0
   const statusEl = document.getElementById('editModalStatus')
 
-  if (!tpPx && !slPx) { showTradeStatus(statusEl, 'error', 'Enter TP and/or SL.'); return }
+  if (!tpPx && !slPx) { showTradeStatus(statusEl, 'error', 'Set TP and/or SL price first.'); return }
 
-  const isBuy = side === 'SHORT'
-  const sz    = Math.abs(szi)
+  const isBuy   = side === 'SHORT'
+  const fullSz  = Math.abs(szi)
+  const tpSz    = activeTab === 'partial' ? fullSz * (tpSzPct ?? 100) / 100 : fullSz
+  const slSz    = activeTab === 'partial' ? fullSz * (slSzPct ?? 100) / 100 : fullSz
+
   showTradeStatus(statusEl, 'pending', 'Placing trigger orders...')
   document.getElementById('editModalConfirm').disabled = true
 
   try {
-    if (tpPx > 0) { const r = await placeTriggerOrder({ coin, isBuy, sz, triggerPx: tpPx, tpsl: 'tp' }); if (!parseOrderResult(r).ok) throw new Error('TP failed') }
-    if (slPx > 0) { const r = await placeTriggerOrder({ coin, isBuy, sz, triggerPx: slPx, tpsl: 'sl' }); if (!parseOrderResult(r).ok) throw new Error('SL failed') }
+    if (tpOid && tpPx) { try { await cancelOrder({ coin, oid: tpOid }) } catch (_) {} }
+    if (slOid && slPx) { try { await cancelOrder({ coin, oid: slOid }) } catch (_) {} }
+    if (tpPx && tpSz > 0) { const r = await placeTriggerOrder({ coin, isBuy, sz: tpSz, triggerPx: tpPx, tpsl: 'tp' }); if (!parseOrderResult(r).ok) throw new Error('TP failed') }
+    if (slPx && slSz > 0) { const r = await placeTriggerOrder({ coin, isBuy, sz: slSz, triggerPx: slPx, tpsl: 'sl' }); if (!parseOrderResult(r).ok) throw new Error('SL failed') }
     const parts = []
-    if (tpPx > 0) parts.push('TP @ $' + fmtPrice(tpPx))
-    if (slPx > 0) parts.push('SL @ $' + fmtPrice(slPx))
+    if (tpPx) parts.push('TP @ $' + fmtPrice(tpPx))
+    if (slPx) parts.push('SL @ $' + fmtPrice(slPx))
     showTradeStatus(statusEl, 'success', '✓ ' + parts.join(' · ') + ' placed!')
-    setTimeout(() => { closeModals(); refreshLive() }, 1000)
+    setTimeout(() => { closeModals(); refreshLive() }, 1500)
   } catch (e) {
     showTradeStatus(statusEl, 'error', '✗ ' + e.message)
     document.getElementById('editModalConfirm').disabled = false
@@ -1575,30 +3022,201 @@ window.__confirmEditPosition = async function () {
 window.__toggleRowExpand = function(id) {
   const row = document.getElementById(id)
   if (!row) return
-  const btn = row.previousElementSibling?.querySelector('.row-expand-btn')
   const open = row.classList.toggle('open')
+  // Update chevron by btn id pattern
+  const btn = document.getElementById('btn-' + id) || row.previousElementSibling?.querySelector('.row-expand-btn')
   if (btn) btn.classList.toggle('open', open)
 }
 
 // ─── CANCEL ORDER ─────────────────────────────────────────────────────────────
-window.__cancelOrder = async function (coin, oid) {
+function _removeOrderFromUI(oid) {
+  const numOid = parseInt(oid)
+  _cancelledOids.add(numOid)
+  setTimeout(() => _cancelledOids.delete(numOid), 10000)
+  state.openOrders = (state.openOrders ?? []).filter(o => o.oid !== numOid)
+  _lastOrdHash = null
+  renderOrders(state.openOrders, state.perpState)
+  setTimeout(refreshLive, 2000)
+}
+
+window.__cancelOrder = async function (coin, oid, isPositionTpsl) {
   const statusEl = document.getElementById('ordersStatus') ?? document.getElementById('tradeStatus')
   if (!isConnected()) { showTradeStatus(statusEl, 'error', 'Connect agent key first (go to ⚡ Trade tab).'); return }
-  showTradeStatus(statusEl, 'pending', `Cancelling order ${oid}...`)
+
+  showTradeStatus(statusEl, 'pending', 'Cancelling order...')
+
+  let resolvedOid = parseInt(oid)
+  const frontendOrder = (state.openOrders ?? []).find(o => o.coin === coin && o.oid === resolvedOid)
+  console.log('[cancelOrder] coin:', coin, 'oid:', oid, 'isPositionTpsl:', isPositionTpsl,
+    'isTrigger:', frontendOrder?.isTrigger, 'orderType:', frontendOrder?.orderType,
+    'triggerPx:', frontendOrder?.triggerPx, 'side:', frontendOrder?.side,
+    'sz:', frontendOrder?.sz, 'limitPx:', frontendOrder?.limitPx)
+
+  // Always cross-reference with openOrders to compare oids
   try {
-    const result = await cancelOrder({ coin, oid })
-    const parsed = parseOrderResult(result)
-    if (parsed.ok) { showTradeStatus(statusEl, 'success', `✓ Order cancelled.`); setTimeout(refreshLive, 800) }
-    else showTradeStatus(statusEl, 'error', '✗ ' + parsed.errors.join(', '))
-  } catch (e) { showTradeStatus(statusEl, 'error', '✗ ' + e.message) }
+    const info = new InfoClient({ transport: new HttpTransport() })
+    const rawOrders = await info.openOrders({ user: state.addr })
+    const rawMatch = rawOrders.find(o => o.coin === coin)
+    const rawMatchByOid = rawOrders.find(o => o.oid === resolvedOid)
+    console.log('[cancelOrder] openOrders for', coin, ':', JSON.stringify(rawOrders.filter(o => o.coin === coin)))
+    console.log('[cancelOrder] frontendOpenOrders oid:', resolvedOid, '— found in openOrders by oid:', !!rawMatchByOid)
+
+    if (isPositionTpsl || resolvedOid === 0) {
+      const match = rawOrders.find(o =>
+        o.coin === coin &&
+        o.side === frontendOrder?.side &&
+        o.sz   === frontendOrder?.sz &&
+        o.limitPx === frontendOrder?.limitPx
+      )
+      if (match && match.oid > 0) {
+        resolvedOid = match.oid
+        console.log('[cancelOrder] resolved isPositionTpsl oid to:', resolvedOid)
+      } else {
+        showTradeStatus(statusEl, 'error', '✗ Cannot resolve order ID — try cancelling from HL directly.')
+        return
+      }
+    }
+  } catch (e) {
+    console.warn('[cancelOrder] openOrders fetch failed:', e.message)
+  }
+
+  const agentAddr = getWalletAddress()
+  console.log('[cancelOrder] agentAddr:', agentAddr, '| state.addr:', state.addr, '| match:', agentAddr?.toLowerCase() === state.addr?.toLowerCase())
+  console.log('[cancelOrder] sending cancel: coin=', coin, 'resolvedOid=', resolvedOid)
+
+  try {
+    const result = await cancelOrder({ coin, oid: resolvedOid })
+    const statuses = result?.response?.data?.statuses ?? []
+    const errors   = statuses.filter(s => s && typeof s === 'object' && s.error).map(s => s.error)
+    if (statuses.some(s => s === 'success')) {
+      showTradeStatus(statusEl, 'success', '✓ Order cancelled.')
+      _removeOrderFromUI(oid)
+    } else if (errors.length > 0) {
+      showTradeStatus(statusEl, 'error', '✗ ' + errors.join(', '))
+    } else {
+      showTradeStatus(statusEl, 'error', '✗ Cancel failed — check the order is still open.')
+    }
+  } catch (e) {
+    console.log('[cancelOrder] error:', e.message)
+    if (/never placed|already cancel|filled/i.test(e.message)) {
+      try {
+        const info = new InfoClient({ transport: new HttpTransport() })
+        const fresh = await info.frontendOpenOrders({ user: state.addr })
+        const stillExists = fresh.some(o => o.oid === parseInt(oid))
+        console.log('[cancelOrder] fresh frontendOpenOrders stillExists:', stillExists, '(oid=', oid, ')')
+        if (!stillExists) {
+          showTradeStatus(statusEl, 'success', '✓ Order was already filled or cancelled.')
+          _removeOrderFromUI(oid)
+        } else {
+          showTradeStatus(statusEl, 'error', '✗ Cannot cancel — this order must be cancelled from HL\'s interface directly.')
+        }
+      } catch (_) {
+        showTradeStatus(statusEl, 'error', '✗ ' + e.message)
+      }
+    } else {
+      showTradeStatus(statusEl, 'error', '✗ ' + e.message)
+    }
+  }
+}
+
+// ─── EDIT ORDER ───────────────────────────────────────────────────────────────
+window.__openEditOrderModal = function (coin, oid, isBuy, sz, currentPx, tpsl, isTrigger) {
+  // TP/SL orders open the position TP/SL modal instead
+  if (tpsl) {
+    const positions = state.perpState?.assetPositions ?? []
+    const posEntry  = positions.map(ap => ap.position ?? ap).find(p => p.coin === coin)
+    if (posEntry) {
+      const side     = parseFloat(posEntry.szi) > 0 ? 'LONG' : 'SHORT'
+      const leverage = posEntry.leverage?.value ?? 1
+      let tpPx = 0, slPx = 0, tpOid = 0, slOid = 0
+      for (const o of (state.openOrders ?? [])) {
+        if (o.coin !== coin) continue
+        const type  = o.orderType ?? ''
+        const isTp2 = type.startsWith('Take Profit') || o.triggerCondition === 'tp'
+        const isSl2 = type.startsWith('Stop')        || o.triggerCondition === 'sl'
+        const px    = parseFloat(o.triggerPx ?? 0) > 0 ? parseFloat(o.triggerPx) : parseFloat(o.limitPx ?? 0)
+        if (isTp2) { tpPx = px; tpOid = o.oid }
+        if (isSl2) { slPx = px; slOid = o.oid }
+      }
+      window.__openEditModal(coin, side, posEntry.szi, posEntry.entryPx, tpPx, slPx, tpOid, slOid, leverage)
+      return
+    }
+  }
+
+  // For regular limit orders: maxSz = full position size
+  let posSz = 0
+  const maxSz   = (tpsl && posSz > 0) ? posSz : (sz > 0 ? sz : 0)
+  const initPct = (sz > 0 && maxSz > 0) ? Math.min(100, Math.round(sz / maxSz * 100)) : 100
+  const px      = parseFloat(currentPx) || 0
+  state.editingOrder = { coin, oid, isBuy, sz, maxSz, tpsl, isTrigger, currentPx: px, szUnit: 'token' }
+
+  // Header
+  const typeLabel = tpsl === 'tp' ? 'Take Profit' : tpsl === 'sl' ? 'Stop Loss' : 'Limit'
+  document.getElementById('editOrderModalTitle').textContent = `Edit ${typeLabel} Order`
+
+  // Info box
+  const direction = isBuy ? 'Buy/Long' : 'Sell/Short'
+  document.getElementById('eordAction').textContent  = `${direction} ${coin}-PERP`
+  document.getElementById('eordSizeInfo').textContent = fmtSize(sz) + ' ' + coin
+  document.getElementById('eordType').textContent    = typeLabel
+  const refPx = parseFloat(state.allMids?.[coin] ?? currentPx)
+  document.getElementById('eordRefPx').textContent   = '$' + fmtPrice(refPx)
+
+  // Available balance
+  const avail = parseFloat(state.perpState?.crossMarginSummary?.availableBalance ?? state.perpState?.marginSummary?.availableBalance ?? 0)
+  document.getElementById('eordAvailable').textContent = '$' + fmtUSD(avail)
+
+  // Price input
+  document.getElementById('editOrderPriceInput').value = px > 0 ? px : ''
+
+  // Slider
+  const slider = document.getElementById('editOrdSlider')
+  slider.value = initPct
+  _updateEditOrdSlider()
+
+  document.getElementById('editOrderModalStatus').className = 'trade-status'
+  document.getElementById('editOrderModalConfirm').disabled = false
+  document.getElementById('editOrderModal').classList.add('open')
+}
+
+window.__confirmEditOrder = async function () {
+  if (!state.editingOrder) return
+  if (!isConnected()) { showTradeStatus(document.getElementById('editOrderModalStatus'), 'error', 'Connect agent key first.'); return }
+  const { coin, oid, isBuy, sz: origSz, maxSz, tpsl, isTrigger } = state.editingOrder
+  const newPx  = parseFloat(document.getElementById('editOrderPriceInput').value)
+  const pct    = parseInt(document.getElementById('editOrdSlider').value)
+  const newSz  = maxSz > 0 ? maxSz * pct / 100 : origSz
+  const statusEl = document.getElementById('editOrderModalStatus')
+  if (!newPx || newPx <= 0) { showTradeStatus(statusEl, 'error', 'Enter a valid price.'); return }
+  showTradeStatus(statusEl, 'pending', 'Modifying order...')
+  document.getElementById('editOrderModalConfirm').disabled = true
+  try {
+    const result = await modifyOrderPrice({ coin, oid, isBuy, sz: newSz, newPx, tpsl, isTrigger })
+    // batchModify (triggers) returns OrderResponse with statuses; modify (limits) throws on failure.
+    if (result && isTrigger && tpsl) {
+      const parsed = parseOrderResult(result)
+      if (!parsed.ok) {
+        showTradeStatus(statusEl, 'error', '✗ ' + parsed.errors.join(', '))
+        document.getElementById('editOrderModalConfirm').disabled = false
+        return
+      }
+    }
+    showTradeStatus(statusEl, 'success', '✓ Order updated!')
+    setTimeout(() => { closeModals(); refreshLive() }, 1500)
+  } catch (e) {
+    showTradeStatus(statusEl, 'error', '✗ ' + e.message)
+    document.getElementById('editOrderModalConfirm').disabled = false
+  }
 }
 
 // ─── MODALS ───────────────────────────────────────────────────────────────────
 function closeModals() {
-  document.getElementById('closeModal').classList.remove('open')
-  document.getElementById('editModal').classList.remove('open')
-  state.closingPos = null
-  state.editingPos = null
+  ;['closeModal','editModal','editOrderModal'].forEach(id => {
+    document.getElementById(id)?.classList.remove('open')
+  })
+  state.closingPos   = null
+  state.editingPos   = null
+  state.editingOrder = null
 }
 
 // ─── PERFORMANCE TAB ──────────────────────────────────────────────────────────
@@ -1620,8 +3238,8 @@ async function renderPerformance() {
     return
   }
 
-  const types  = ['insolvent', 'dca', 'grid', 'twap', 'trend', 'shorter']
-  const labels = { insolvent: 'F', dca: 'DCA Bot', grid: 'Grid Bot', twap: 'TWAP', trend: 'Trend Follower', shorter: 'Shorter Bot' }
+  const types  = ['insolvent', 'dca', 'grid', 'trend', 'longer', 'shorter']
+  const labels = { insolvent: 'F', dca: 'DCA Bot', grid: 'Grid Bot', trend: 'Trend Follower', longer: 'Longer Bot', shorter: 'Shorter Bot' }
 
   // Flatten all wins with profit parsed
   const allWins = []
@@ -1703,7 +3321,7 @@ async function renderPerformance() {
             <td style="text-align:right">${s.wins}</td>
             <td style="text-align:right;color:${s.total >= 0 ? 'var(--green)' : 'var(--red)'}">$${fmtUSD(s.total)}</td>
             <td style="text-align:right;color:${s.avg >= 0 ? 'var(--green)' : 'var(--red)'}">$${fmtUSD(s.avg)}</td>
-            <td style="text-align:right;color:var(--muted);font-family:'Space Mono',monospace;font-size:10px">${esc(s.lastWin)}</td>
+            <td style="text-align:right;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:10px">${esc(s.lastWin)}</td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -1737,12 +3355,12 @@ async function renderPerformance() {
       options: {
         responsive: true,
         plugins: {
-          legend: { labels: { color: '#aaa', font: { family: 'Space Mono', size: 11 } } },
+          legend: { labels: { color: '#aaa', font: { family: 'JetBrains Mono', size: 11 } } },
           tooltip: { callbacks: { label: ctx => ' $' + fmtUSD(ctx.parsed.y) } },
         },
         scales: {
-          x: { ticks: { color: '#666', font: { family: 'Space Mono', size: 10 }, maxTicksLimit: 10 }, grid: { color: 'rgba(255,255,255,0.05)' } },
-          y: { ticks: { color: '#666', font: { family: 'Space Mono', size: 10 }, callback: v => '$' + fmtUSD(v) }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          x: { ticks: { color: '#666', font: { family: 'JetBrains Mono', size: 10 }, maxTicksLimit: 10 }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          y: { ticks: { color: '#666', font: { family: 'JetBrains Mono', size: 10 }, callback: v => '$' + fmtUSD(v) }, grid: { color: 'rgba(255,255,255,0.05)' } },
         },
       },
     })
@@ -1780,9 +3398,8 @@ window.__mobMore = function() {
   backdrop?.classList.toggle('open', open)
 }
 window.__mobMoreTab = function(name) {
-  // find the matching top nav button and switch
   const btn = [...document.querySelectorAll('.nav-tab')].find(b => b.getAttribute('onclick')?.includes(`'${name}'`))
-  switchTab(name, btn)
+  window.switchTab(name, btn)
 }
 
 function filterTable(tableId, inputId) {
@@ -1855,7 +3472,7 @@ function resetDashboard() {
   document.getElementById('apiConnectStatus').textContent  = ''
   document.getElementById('tradeBalance').textContent      = '—'
   document.getElementById('tradeWithdrawable').textContent = '—'
-  document.getElementById('selectedCoinLabel').textContent = 'Select market...'
+  updateCoinHeader(null)
   document.getElementById('sizeInput').value       = ''
   document.getElementById('tpInput').value         = ''
   document.getElementById('slInput').value         = ''
@@ -1932,12 +3549,11 @@ const CARD_RULES = {
   dca:  [
     { ids: ['dca-size'],     test: vs => parseFloat(vs[0]) > 0, hint: 'Size must be > 0', targets: ['dca-size'] },
   ],
-  twap: [
-    { ids: ['twap-total'],   test: vs => parseFloat(vs[0]) > 0, hint: 'Total must be > 0', targets: ['twap-total'] },
-    { ids: ['twap-slices'],  test: vs => parseInt(vs[0]) >= 1,  hint: 'Min 1 slice', targets: ['twap-slices'] },
-  ],
   trend: [
     { ids: ['trend-size'],   test: vs => parseFloat(vs[0]) > 0, hint: 'Size must be > 0', targets: ['trend-size'] },
+  ],
+  longer: [
+    { ids: ['longer-size'], test: vs => parseFloat(vs[0]) > 0, hint: 'Size must be > 0', targets: ['longer-size'] },
   ],
   shorter: [
     { ids: ['shorter-size'], test: vs => parseFloat(vs[0]) > 0, hint: 'Size must be > 0', targets: ['shorter-size'] },
@@ -2016,15 +3632,6 @@ function generateCommand(type) {
     const size  = getSizeUsd('grid-size', 'grid-coin') || '50'
     const lev   = get('grid-leverage') || '1'
     cmd = `node strategies/grid.js --coin ${coin} --lower ${lower} --upper ${upper} --levels ${levels} --size ${size} --leverage ${lev} --wallet $WALLET_KEY --address ${state.addr}${assetFlags ? ' ' + assetFlags : ''}`
-  } else if (type === 'twap') {
-    const coin     = get('twap-coin') || 'SOL'
-    const side     = get('twap-side') || 'long'
-    const total    = getSizeUsd('twap-total', 'twap-coin') || '1000'
-    const duration = get('twap-duration') || '60'
-    const slices   = get('twap-slices') || '12'
-    const maxpos   = get('twap-maxpos') || '0'
-    const lev      = get('twap-leverage') || '1'
-    cmd = `node strategies/twap.js --coin ${coin} --side ${side} --total ${total} --duration ${duration} --slices ${slices} --max-position ${maxpos} --leverage ${lev} --wallet $WALLET_KEY${assetFlags ? ' ' + assetFlags : ''}`
   } else if (type === 'trend') {
     const coin     = get('trend-coin') || 'BTC'
     const fast     = get('trend-fast') || '9'
@@ -2035,6 +3642,17 @@ function generateCommand(type) {
     const interval = get('trend-interval') || '5'
     const sl       = get('trend-stoploss') || '0'
     cmd = `node strategies/trend.js --coin ${coin} --fast-ema ${fast} --slow-ema ${slow} --candle-tf ${tf} --size ${size} --leverage ${lev} --interval ${interval} --stop-loss-pct ${sl} --wallet $WALLET_KEY${assetFlags ? ' ' + assetFlags : ''}`
+  } else if (type === 'longer') {
+    const coins      = get('longer-coins') || 'BTC'
+    const size       = getSizeUsd('longer-size', 'longer-coins') || '100'
+    const lev        = get('longer-leverage') || '2'
+    const trigger    = get('longer-trigger') || 'always'
+    const dumppct    = get('longer-dumppct')    || '7'
+    const dumpwindow = get('longer-dumpwindow') || '1d'
+    const tp         = get('longer-tp') || '3'
+    const sl         = get('longer-sl') || '2'
+    const interval   = get('longer-interval') || '5'
+    cmd = `node strategies/longer.js --coins ${coins} --size ${size} --leverage ${lev} --trigger ${trigger}${trigger === 'dump' ? ` --dump-pct ${dumppct} --dump-window ${dumpwindow}` : ''} --take-profit-pct ${tp} --stop-loss-pct ${sl} --interval ${interval} --wallet $WALLET_KEY`
   } else if (type === 'shorter') {
     const coins    = get('shorter-coins') || 'BTC'
     const size     = getSizeUsd('shorter-size', 'shorter-coins') || '100'
@@ -2129,6 +3747,8 @@ window.updateRiskUI       = updateRiskUI
 window.toggleDcaMode        = toggleDcaMode
 window.toggleShorterTrigger = toggleShorterTrigger
 window.syncShorterTpSl      = syncShorterTpSl
+window.toggleLongerTrigger  = toggleLongerTrigger
+window.syncLongerTpSl       = syncLongerTpSl
 
 // ─── NEWS PAUSE ───────────────────────────────────────────────────────────────
 let newsPauseEnabled = false
@@ -2172,12 +3792,12 @@ function updateNewsPauseUI(paused, keyword) {
   if (!el) return
   if (paused) {
     el.innerHTML = `<span class="risk-status-dot" style="background:var(--red)"></span>
-      <span style="font-family:'Space Mono',monospace;font-size:11px;color:var(--red)">
+      <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--red)">
         News pause: "${keyword}" detected
       </span>`
   } else {
     el.innerHTML = `<span class="risk-status-dot" style="background:var(--green)"></span>
-      <span style="font-family:'Space Mono',monospace;font-size:11px">News: clear</span>`
+      <span style="font-family:'JetBrains Mono',monospace;font-size:11px">News: clear</span>`
   }
 }
 
@@ -2201,7 +3821,7 @@ async function checkServer() {
     updateAllStrategyButtons()
     if (justCameOnline) {
       // Inject Run/Stop into any command outputs already on screen
-      for (const type of ['insolvent','dca','grid','twap','trend','shorter']) {
+      for (const type of ['insolvent','dca','grid','trend','longer','shorter']) {
         const outputEl = document.getElementById('cmd-' + type)
         if (outputEl && outputEl.innerHTML.trim() && !document.getElementById('run-btn-' + type)) {
           injectRunButtons(type)
@@ -2227,9 +3847,9 @@ function updateServerBadge() {
 
 // ── Inject Run/Stop row into a strategy command output area ──────────────────
 function updateAllStrategyButtons() {
-  const labels  = { insolvent:'Insolvent', dca:'DCA', grid:'Grid', twap:'TWAP', trend:'Trend', shorter:'Shorter' }
+  const labels  = { insolvent:'Insolvent', dca:'DCA', grid:'Grid', trend:'Trend', longer:'Longer', shorter:'Shorter' }
   const running = []
-  for (const type of ['insolvent','dca','grid','twap','trend','shorter']) {
+  for (const type of ['insolvent','dca','grid','trend','longer','shorter']) {
     const runBtn  = document.getElementById(`run-btn-${type}`)
     const stopBtn = document.getElementById(`stop-btn-${type}`)
     if (!runBtn || !stopBtn) continue
@@ -2305,14 +3925,6 @@ function buildArgv(type) {
     push('--levels',   get('grid-levels')   || '10')
     push('--size',     getSizeUsd('grid-size',  'grid-coin')  || '50')
     push('--leverage', get('grid-leverage') || '1')
-  } else if (type === 'twap') {
-    push('--coin',     get('twap-coin')     || 'SOL')
-    push('--side',     get('twap-side')     || 'long')
-    push('--total',    getSizeUsd('twap-total', 'twap-coin')  || '1000')
-    push('--duration',     get('twap-duration') || '60')
-    push('--slices',       get('twap-slices')   || '12')
-    push('--max-position', get('twap-maxpos')   || '0')
-    push('--leverage',     get('twap-leverage') || '1')
   } else if (type === 'trend') {
     push('--coin',      get('trend-coin')     || 'BTC')
     push('--fast-ema',       get('trend-fast')      || '9')
@@ -2322,6 +3934,19 @@ function buildArgv(type) {
     push('--leverage',       get('trend-leverage')  || '3')
     push('--interval',       get('trend-interval')  || '5')
     push('--stop-loss-pct',  get('trend-stoploss')  || '0')
+  } else if (type === 'longer') {
+    const trigger = get('longer-trigger') || 'always'
+    push('--coins',            get('longer-coins')    || 'BTC')
+    push('--size',             getSizeUsd('longer-size', 'longer-coins') || '100')
+    push('--leverage',         get('longer-leverage') || '2')
+    push('--trigger',          trigger)
+    if (trigger === 'dump') {
+      push('--dump-pct',    get('longer-dumppct')    || '7')
+      push('--dump-window', get('longer-dumpwindow') || '1d')
+    }
+    push('--take-profit-pct',  get('longer-tp')       || '3')
+    push('--stop-loss-pct',    get('longer-sl')       || '2')
+    push('--interval',         get('longer-interval') || '5')
   } else if (type === 'shorter') {
     const trigger = get('shorter-trigger') || 'always'
     push('--coins',            get('shorter-coins')    || 'BTC')
@@ -2487,8 +4112,8 @@ async function renderWinsPanel() {
   try { wins = await serverFetch('/api/wins') }
   catch { return }
 
-  const types    = ['insolvent','dca','grid','twap','trend','shorter']
-  const labels   = { insolvent:'Insolvent', dca:'DCA Bot', grid:'Grid Bot', twap:'TWAP', trend:'Trend Follower', shorter:'Shorter Bot' }
+  const types    = ['insolvent','dca','grid','trend','longer','shorter']
+  const labels   = { insolvent:'Insolvent', dca:'DCA Bot', grid:'Grid Bot', trend:'Trend Follower', longer:'Longer Bot', shorter:'Shorter Bot' }
 
   const sections = types.map(t => {
     const list = wins[t] ?? []
@@ -2590,6 +4215,51 @@ function toggleShorterTrigger() {
   if (pumpRow) pumpRow.style.display = trigger === 'pump' ? '' : 'none'
 }
 
+// ─── LONGER TRIGGER TOGGLE ────────────────────────────────────────────────────
+function toggleLongerTrigger() {
+  const trigger = document.getElementById('longer-trigger')?.value ?? 'always'
+  const dumpRow = document.getElementById('longer-dumppct-row')
+  if (dumpRow) dumpRow.style.display = trigger === 'dump' ? '' : 'none'
+}
+
+function syncLongerTpSl(which, changedField) {
+  const coinRaw = (document.getElementById('longer-coins')?.value?.split(',')[0]?.trim() || 'BTC').toUpperCase()
+  const midPx   = parseFloat(state.allMids?.[coinRaw] ?? 0)
+
+  const pctEl = document.getElementById(`longer-${which}`)
+  const pxEl  = document.getElementById(`longer-${which}-px`)
+  const refEl = document.getElementById(`longer-${which}-ref`)
+  if (!pctEl || !pxEl) return
+
+  if (changedField === 'pct') {
+    const pct = parseFloat(pctEl.value)
+    if (!isNaN(pct) && midPx > 0) {
+      const targetPx = which === 'tp'
+        ? midPx * (1 + pct / 100)   // TP: price rises for profit
+        : midPx * (1 - pct / 100)   // SL: price falls against us
+      pxEl.value = targetPx.toFixed(targetPx >= 1000 ? 1 : targetPx >= 1 ? 2 : 4)
+    } else {
+      pxEl.value = ''
+    }
+  } else {
+    const px = parseFloat(pxEl.value)
+    if (!isNaN(px) && midPx > 0) {
+      const calcPct = which === 'tp'
+        ? (px - midPx) / midPx * 100   // how much above entry
+        : (midPx - px) / midPx * 100   // how much below entry
+      pctEl.value = Math.max(0, calcPct).toFixed(2)
+    } else {
+      pctEl.value = ''
+    }
+  }
+
+  if (refEl) {
+    refEl.textContent = midPx > 0
+      ? `based on ${coinRaw} @ $${midPx.toLocaleString('en-US', { maximumFractionDigits: 2 })}`
+      : `load a wallet to see live prices`
+  }
+}
+
 // ─── SIZE UNIT TOGGLE ─────────────────────────────────────────────────────────
 function toggleSizeMode(inputId, _coinInputId, btn) {
   const el = document.getElementById(inputId)
@@ -2613,24 +4283,72 @@ function getSizeUsd(inputId, coinInputId) {
   return val
 }
 
-// ─── AGENT KEY ────────────────────────────────────────────────────────────────
-window.__saveAgentKey = function(val) {
-  if (val) localStorage.setItem('hliq_agent_key', val)
+// ─── MAIN WALLET (per-address) ───────────────────────────────────────────────
+function _walletRdnsForAddr(addr) {
+  return addr ? 'hliq_wallet_rdns_' + addr.toLowerCase() : null
 }
-function restoreAgentKey() {
-  // Check current key, then fall back to any old per-wallet key
-  let savedKey = localStorage.getItem('hliq_agent_key')
-  if (!savedKey) {
-    const oldKey = Object.keys(localStorage).find(k => k.startsWith('agentKey_'))
-    if (oldKey) {
-      savedKey = localStorage.getItem(oldKey)
-      if (savedKey) localStorage.setItem('hliq_agent_key', savedKey) // migrate
-    }
-  }
-  if (!savedKey) return
-  const el = document.getElementById('agentKey')
-  if (el) el.value = savedKey
+
+function _resetMainWalletUI() {
+  const dotEl    = document.getElementById('mainWalletDot')
+  const statusEl = document.getElementById('mainWalletStatus')
+  const btn      = document.getElementById('mainWalletBtn')
+  disconnectMainWallet()
+  setBuilderFeeEnabled(false)
+  if (dotEl)    dotEl.classList.remove('connected')
+  if (statusEl) { statusEl.textContent = 'Not connected'; statusEl.style.color = 'var(--muted)' }
+  if (btn)      { btn.textContent = 'Connect Wallet'; btn.onclick = openWalletPicker }
+}
+
+async function restoreWalletForAddr(addr) {
+  const lookupAddr = addr || state.addr
+  if (!lookupAddr) return
+  const savedRdns = localStorage.getItem(_walletRdnsForAddr(lookupAddr))
+  if (!savedRdns) return
+  try {
+    const connected = await connectWalletSilent(savedRdns)
+    if (!connected) return
+    const dotEl    = document.getElementById('mainWalletDot')
+    const statusEl = document.getElementById('mainWalletStatus')
+    const btn      = document.getElementById('mainWalletBtn')
+    if (dotEl)    dotEl.classList.add('connected')
+    if (statusEl) { statusEl.innerHTML = `✓ <span style="color:var(--accent)">${connected.slice(0,6)}...${connected.slice(-4)}</span> · Connected`; statusEl.style.color = 'var(--green)' }
+    if (btn)      { btn.textContent = 'Disconnect'; btn.onclick = disconnectMainWalletUI }
+    window.__updateDepositPreview?.()
+    window.__updateWithdrawPreview?.()
+    refreshDefiBalances?.()
+  } catch { /* silent fail — wallet not available */ }
+}
+
+// ─── AGENT KEY (per-address) ──────────────────────────────────────────────────
+function _agentKeyForAddr(addr) {
+  return addr ? 'hliq_agent_key_' + addr.toLowerCase() : null
+}
+window.__saveAgentKey = function(val) {
+  if (val && state.addr) localStorage.setItem(_agentKeyForAddr(state.addr), val)
+}
+function _disconnectAgentKeyUI() {
+  const dotEl    = document.getElementById('apiStatusDot')
+  const statusEl = document.getElementById('apiConnectStatus')
   const tradeInput = document.getElementById('privateKeyInput')
+  const stratInput = document.getElementById('agentKey')
+  if (dotEl)    dotEl.classList.remove('connected')
+  if (statusEl) { statusEl.textContent = 'Not connected'; statusEl.style.color = 'var(--muted)' }
+  if (tradeInput) tradeInput.value = ''
+  if (stratInput) stratInput.value = ''
+  disconnect()
+}
+function restoreAgentKey(addr) {
+  const lookupAddr = addr || state.addr
+  if (!lookupAddr) return
+  const savedKey = localStorage.getItem(_agentKeyForAddr(lookupAddr))
+  const el = document.getElementById('agentKey')
+  const tradeInput = document.getElementById('privateKeyInput')
+  if (!savedKey) {
+    if (el) el.value = ''
+    if (tradeInput) tradeInput.value = ''
+    return
+  }
+  if (el) el.value = savedKey
   if (tradeInput) tradeInput.value = savedKey
   connectAgentKey(savedKey).then(connectedAddr => {
     const dotEl    = document.getElementById('apiStatusDot')
@@ -2709,14 +4427,27 @@ function _hashPin(pin) {
 })()
 
 window.__clearAgentKey = function() {
+  if (state.addr) localStorage.removeItem(_agentKeyForAddr(state.addr))
   localStorage.removeItem('hliq_agent_key')
+  // Clear key from Trade and Strategies inputs
+  const tradeInput = document.getElementById('privateKeyInput')
+  const stratInput = document.getElementById('agentKey')
+  if (tradeInput) tradeInput.value = ''
+  if (stratInput) stratInput.value = ''
+  // Disconnect the active agent session
+  disconnect()
+  const dotEl    = document.getElementById('apiStatusDot')
+  const statusEl = document.getElementById('apiConnectStatus')
+  if (dotEl) dotEl.classList.remove('connected')
+  if (statusEl) { statusEl.textContent = 'Not connected'; statusEl.style.color = '' }
+  updateSubmitBtn?.()
   _syncSettingsTab()
 }
 
 // Sync toggle state whenever settings tab is opened
 function _syncSettingsTab() {
   // Agent key
-  const agentKey = localStorage.getItem('hliq_agent_key')
+  const agentKey = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null) || localStorage.getItem('hliq_agent_key')
   const statusEl = document.getElementById('agentKeySavedStatus')
   const clearBtn = document.getElementById('agentKeyClearBtn')
   if (statusEl) statusEl.textContent = agentKey ? 'Saved — auto-connects on load' : 'Not saved'
@@ -2951,7 +4682,7 @@ async function ensureAllMids() {
   if (_allMidsPromise) return _allMidsPromise
   _allMidsPromise = (async () => {
     try {
-      state.allMids = await infoClient.allMids()
+      state.allMids = await fetchAllMids(state.allMetas)
     } catch (e) {
       console.warn('allMids fetch failed:', e.message)
     } finally {
@@ -3297,9 +5028,9 @@ window.__watchOpenTrade = function(coin) {
   setTimeout(() => {
     if (state.allMids?.[coin]) {
       state.selectedCoin = coin
-      const lbl = document.getElementById('selectedCoinLabel')
-      if (lbl) lbl.textContent = coin
+      updateCoinHeader(coin)
       updateOrderSummary()
+      loadTradeChart(coin, _chartTf)
     }
   }, 80)
 }
@@ -3320,6 +5051,12 @@ window.switchTab = function(name, btn) {
   _origSwitchTab(name, btn)
   if (name === 'watch')     refreshWatchTab()
   if (name === 'portfolio') { window.__updateDepositPreview(); window.__updateWithdrawPreview() }
+  if (name === 'trade' && !state.selectedCoin && state.allMids?.['BTC']) {
+    window.__selectCoin('BTC')
+  }
+  if (name === 'trade' && state.selectedCoin) {
+    _ensureMarketData().then(() => updateChartStats(state.selectedCoin))
+  }
 }
 
 // Init defi card buttons on load

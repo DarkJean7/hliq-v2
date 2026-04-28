@@ -29,7 +29,7 @@
       })
     }
   </script>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <!-- PWA -->
   <link rel="manifest" href="/manifest.json"/>
   <meta name="theme-color" content="#0a0a0f"/>
@@ -75,7 +75,7 @@
     <div class="error-box" id="errorBox"></div>
     <div id="recentAddrsRow"></div>
     <div id="savedWalletsRow"></div>
-    <p style="margin-top:18px;font-size:11px;color:rgba(255,255,255,0.25);font-family:'Space Mono',monospace;text-align:center">
+    <p style="margin-top:18px;font-size:11px;color:rgba(255,255,255,0.25);font-family:'JetBrains Mono',monospace;text-align:center">
       New to Hyperliquid?
       <a href="https://app.hyperliquid.xyz/join/INSOLVENTSPARTAN" target="_blank" rel="noopener"
          style="color:rgba(0,255,136,0.5);text-decoration:none">
@@ -135,15 +135,9 @@
       <div class="stats-row" id="tradesSummary" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px"></div>
       <div class="section-title" style="margin-bottom:12px">Open Positions <span class="count-pill" id="posCountBig">0</span></div>
       <div class="table-wrap" style="margin-bottom:32px">
-        <div class="table-header">
-          <div class="table-actions">
-            <input class="search-input" id="posSearch" placeholder="Search coin..." oninput="filterTable('positionsTable','posSearch')" style="width:160px"/>
-            <button class="btn-sm" onclick="downloadTableCSV('positionsTable','positions')">⬇ CSV</button>
-          </div>
-        </div>
         <div style="overflow-x:auto">
           <table id="positionsTable">
-            <thead><tr><th>Coin</th><th>Side</th><th>Size</th><th>Entry</th><th>Mark</th><th>Value</th><th>Unr. PnL</th><th>ROE</th><th>Liq.</th><th>Lev.</th><th>Margin</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Coin</th><th>Side</th><th>Size</th><th>Entry</th><th>Mark</th><th>Value</th><th>Unr. PnL</th><th>ROE</th><th>Liq.</th><th>Lev.</th><th>Margin</th><th>Funding</th><th>Actions</th></tr></thead>
             <tbody id="positionsTbody"></tbody>
           </table>
         </div>
@@ -152,12 +146,6 @@
       <div class="section-title" style="margin-bottom:12px">Open Orders <span class="count-pill" id="ordCountBig">0</span></div>
       <div class="trade-status" id="ordersStatus" style="margin-bottom:14px"></div>
       <div class="table-wrap">
-        <div class="table-header">
-          <div class="table-actions">
-            <input class="search-input" id="ordSearch" placeholder="Search coin..." oninput="filterTable('ordersTable','ordSearch')" style="width:160px"/>
-            <button class="btn-sm" onclick="downloadTableCSV('ordersTable','orders')">⬇ CSV</button>
-          </div>
-        </div>
         <div style="overflow-x:auto">
           <table id="ordersTable">
             <thead><tr><th>Coin</th><th>Intent</th><th>Size</th><th>Price</th><th>Margin</th><th>Expected P&amp;L</th><th>Actions</th></tr></thead>
@@ -420,50 +408,6 @@
           </div>
         </div>
 
-        <!-- ── TWAP ───────────────────────────────────────────── -->
-        <div class="strategy-card" id="strat-twap">
-          <div class="card-face card-front" id="front-twap">
-            <div class="strategy-card-header">
-              <div>
-                <div class="strategy-name">TWAP</div>
-                <div class="strategy-desc">Split a large order evenly over time to reduce impact</div>
-              </div>
-              <span class="strategy-badge badge-strategy-passive">Passive</span>
-            </div>
-            <div class="strategy-params">
-              <div class="field-group"><div class="field-label">Coin</div><input class="field-input" id="twap-coin" placeholder="SOL" /></div>
-              <div class="field-group"><div class="field-label">Side</div>
-                <select class="field-input" id="twap-side"><option value="long">Long</option><option value="short">Short</option></select>
-              </div>
-              <div class="field-group">
-                <div class="field-label-row"><span class="field-label">Total Size</span><button class="btn-size-unit" id="tog-twap-total" onclick="toggleSizeMode('twap-total','twap-coin',this)">USD</button></div>
-                <input class="field-input" id="twap-total" type="number" placeholder="1000" data-mode="usd" />
-              </div>
-              <div class="field-group"><div class="field-label">Duration (min)</div><input class="field-input" id="twap-duration" type="number" placeholder="60" /></div>
-              <div class="field-group"><div class="field-label">Slices</div><input class="field-input" id="twap-slices" type="number" placeholder="12" /></div>
-              <div class="field-group"><div class="field-label">Max Position (USD, 0=∞)</div><input class="field-input" id="twap-maxpos" type="number" placeholder="0" /></div>
-              <div class="field-group"><div class="field-label">Leverage</div><input class="field-input" id="twap-leverage" type="number" placeholder="1" /></div>
-            </div>
-            <button class="btn-strategy" onclick="generateCommand('twap')">Generate Command</button>
-            <div class="strategy-cmd-output" id="cmd-twap"></div>
-            <button class="btn-flip" onclick="flipCard('twap')">↩ What does this do?</button>
-          </div>
-          <div class="card-face card-back" id="back-twap" style="display:none">
-            <div class="card-back-scroll">
-              <div class="card-back-title">TWAP</div>
-              <p class="card-back-desc">Time-Weighted Average Price. Splits a large total order into equal slices and executes them at regular intervals over a set duration. Minimises market impact and achieves an average fill price. Exits automatically when all slices are done.</p>
-              <div class="card-param-list">
-                <div class="card-param"><span class="card-param-name">Coin / Side</span><span class="card-param-desc">Asset and direction: Long = buying, Short = selling.</span></div>
-                <div class="card-param"><span class="card-param-name">Total Size</span><span class="card-param-desc">Total amount to execute. Divided equally across all slices. Toggle USD or tokens.</span></div>
-                <div class="card-param"><span class="card-param-name">Duration</span><span class="card-param-desc">Total time in minutes to spread the execution. E.g. 60 = execute over 1 hour.</span></div>
-                <div class="card-param"><span class="card-param-name">Slices</span><span class="card-param-desc">Number of sub-orders. E.g. 12 slices over 60 min = one order every 5 minutes.</span></div>
-                <div class="card-param"><span class="card-param-name">Leverage</span><span class="card-param-desc">Position leverage multiplier.</span></div>
-              </div>
-            </div>
-            <button class="btn-flip" onclick="flipCard('twap')">↩ Back</button>
-          </div>
-        </div>
-
         <!-- ── TREND FOLLOWER ─────────────────────────────────── -->
         <div class="strategy-card" id="strat-trend">
           <div class="card-face card-front" id="front-trend">
@@ -510,6 +454,97 @@
         </div>
 
         <!-- ── SHORTER BOT ────────────────────────────────────── -->
+        <!-- ── LONGER BOT ──────────────────────────────────────── -->
+        <div class="strategy-card" id="strat-longer">
+          <div class="card-face card-front" id="front-longer">
+            <div class="strategy-card-header">
+              <div>
+                <div class="strategy-name">Longer Bot</div>
+                <div class="strategy-desc">Long a list of coins with automated TP/SL</div>
+              </div>
+              <span class="strategy-badge badge-strategy-active">Active</span>
+            </div>
+            <div class="strategy-params">
+              <div class="field-group"><div class="field-label">Coins (comma-separated)</div><input class="field-input" id="longer-coins" placeholder="BTC,ETH,SOL" oninput="syncLongerTpSl('tp','pct');syncLongerTpSl('sl','pct')" /></div>
+              <div class="field-group">
+                <div class="field-label-row"><span class="field-label">Size per Position</span><button class="btn-size-unit" id="tog-longer-size" onclick="toggleSizeMode('longer-size','longer-coins',this)">USD</button></div>
+                <input class="field-input" id="longer-size" type="number" placeholder="100" data-mode="usd" />
+              </div>
+              <div class="field-group"><div class="field-label">Leverage</div><input class="field-input" id="longer-leverage" type="number" placeholder="2" /></div>
+              <div class="field-group">
+                <div class="field-label">Trigger</div>
+                <select class="field-input" id="longer-trigger" onchange="window.toggleLongerTrigger()">
+                  <option value="always">Always — long all coins</option>
+                  <option value="dump">Dump — long coins that dumped</option>
+                </select>
+              </div>
+              <div class="field-group" id="longer-dumppct-row" style="display:none">
+                <div class="field-label">Dump % threshold</div>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <input class="field-input" id="longer-dumppct" type="number" placeholder="7" step="0.5" style="flex:1" />
+                  <select class="field-input" id="longer-dumpwindow" style="flex:1;min-width:0">
+                    <option value="1h">1 hour</option>
+                    <option value="4h">4 hours</option>
+                    <option value="1d" selected>1 day</option>
+                    <option value="3d">3 days</option>
+                    <option value="1w">1 week</option>
+                  </select>
+                </div>
+              </div>
+              <div class="field-group">
+                <div class="field-label">Take Profit</div>
+                <div class="tp-sl-row">
+                  <div class="tp-sl-half">
+                    <input class="field-input" id="longer-tp" type="number" placeholder="3" step="0.5" oninput="syncLongerTpSl('tp','pct')" />
+                    <span class="tp-sl-unit">%</span>
+                  </div>
+                  <span class="tp-sl-sep">↔</span>
+                  <div class="tp-sl-half">
+                    <span class="tp-sl-unit">$</span>
+                    <input class="field-input" id="longer-tp-px" type="number" placeholder="price" step="1" oninput="syncLongerTpSl('tp','px')" />
+                  </div>
+                </div>
+                <div class="tp-sl-ref" id="longer-tp-ref"></div>
+              </div>
+              <div class="field-group">
+                <div class="field-label">Stop Loss (0 = off)</div>
+                <div class="tp-sl-row">
+                  <div class="tp-sl-half">
+                    <input class="field-input" id="longer-sl" type="number" placeholder="2" step="0.5" oninput="syncLongerTpSl('sl','pct')" />
+                    <span class="tp-sl-unit">%</span>
+                  </div>
+                  <span class="tp-sl-sep">↔</span>
+                  <div class="tp-sl-half">
+                    <span class="tp-sl-unit">$</span>
+                    <input class="field-input" id="longer-sl-px" type="number" placeholder="price" step="1" oninput="syncLongerTpSl('sl','px')" />
+                  </div>
+                </div>
+                <div class="tp-sl-ref" id="longer-sl-ref"></div>
+              </div>
+              <div class="field-group"><div class="field-label">Check Interval (min)</div><input class="field-input" id="longer-interval" type="number" placeholder="5" /></div>
+            </div>
+            <button class="btn-strategy" onclick="generateCommand('longer')">Generate Command</button>
+            <div class="strategy-cmd-output" id="cmd-longer"></div>
+            <button class="btn-flip" onclick="flipCard('longer')">↩ What does this do?</button>
+          </div>
+          <div class="card-face card-back" id="back-longer" style="display:none">
+            <div class="card-back-scroll">
+              <div class="card-back-title">Longer Bot</div>
+              <p class="card-back-desc">Opens long positions on a list of coins and manages them automatically. <b>Always</b> mode longs everything in the list. <b>Dump</b> mode only enters longs when a coin has fallen below the threshold (buy the dip). Each position is closed at take-profit or stop-loss independently.</p>
+              <div class="card-param-list">
+                <div class="card-param"><span class="card-param-name">Coins</span><span class="card-param-desc">Comma-separated list of assets to long. E.g. BTC,ETH,SOL.</span></div>
+                <div class="card-param"><span class="card-param-name">Size</span><span class="card-param-desc">USD (or tokens) per position. Each coin gets this allocation.</span></div>
+                <div class="card-param"><span class="card-param-name">Trigger</span><span class="card-param-desc">Always = long immediately. Dump = wait for coin to drop X% before longing.</span></div>
+                <div class="card-param"><span class="card-param-name">Dump % + Window</span><span class="card-param-desc">Minimum drop % over the selected time window. E.g. 7% / 1w = long if down ≥7% this week.</span></div>
+                <div class="card-param"><span class="card-param-name">Take Profit</span><span class="card-param-desc">Close the long when price rises this % (or hits the $ price) from entry. Logs a WIN.</span></div>
+                <div class="card-param"><span class="card-param-name">Stop Loss</span><span class="card-param-desc">Close the long if price drops this % (or hits the $ price) from entry. 0 = disabled.</span></div>
+                <div class="card-param"><span class="card-param-name">Check Interval</span><span class="card-param-desc">Minutes between each cycle. Lower = faster TP/SL response.</span></div>
+              </div>
+            </div>
+            <button class="btn-flip" onclick="flipCard('longer')">↩ Back</button>
+          </div>
+        </div>
+
         <div class="strategy-card" id="strat-shorter">
           <div class="card-face card-front" id="front-shorter">
             <div class="strategy-card-header">
@@ -851,7 +886,7 @@
         <div class="trade-agent-left">
           <div class="api-status-dot" id="mainWalletDot"></div>
           <span class="trade-agent-label">Main Wallet</span>
-          <span id="mainWalletStatus" style="font-family:'Space Mono',monospace;font-size:11px;color:var(--muted)">Connect for full access</span>
+          <span id="mainWalletStatus" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted)">Connect for full access</span>
           <button class="btn-sm" id="mainWalletBtn" onclick="connectMainWalletUI()">Connect Wallet</button>
         </div>
       </div>
@@ -863,7 +898,7 @@
           <span class="trade-agent-label">Agent Wallet</span>
           <input class="api-input" id="privateKeyInput" type="password" placeholder="Paste agent private key (0x...)  ·  app.hyperliquid.xyz → Settings → API → Create Agent" autocomplete="off"/>
           <button class="btn-sm" onclick="connectAgentKeyUI()">Connect</button>
-          <div id="apiConnectStatus" style="font-family:'Space Mono',monospace;font-size:11px;color:var(--muted);white-space:nowrap"></div>
+          <div id="apiConnectStatus" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);white-space:nowrap"></div>
         </div>
         <div class="trade-agent-right">
           <div class="trade-account-stat">
@@ -878,24 +913,67 @@
         </div>
       </div>
 
+      <!-- Market header: coin selector + inline stats -->
+      <div class="trade-mkt-header">
+        <div class="mkt-selector" id="coinSelectorWrap">
+          <button class="mkt-coin-btn" onclick="window.toggleCoinDropdown()">
+            <div class="mkt-coin-icon" id="mktCoinIcon">—</div>
+            <span class="mkt-coin-name" id="mktCoinName">Select market</span>
+            <svg class="mkt-caret" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="mkt-coin-lev" id="mktCoinLev" style="display:none"></span>
+          </button>
+          <!-- Full market panel -->
+          <div class="mkt-panel" id="coinDropdown">
+            <div class="mkt-panel-search">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+              <input type="text" id="coinDropdownSearch" placeholder="Search" oninput="filterCoinDropdown()" autocomplete="off"/>
+            </div>
+            <div class="mkt-type-row">
+              <button class="mkt-type-btn active" data-type="all"       onclick="window.__dropType('all')">All</button>
+              <button class="mkt-type-btn"         data-type="perps"     onclick="window.__dropType('perps')">Perps</button>
+              <button class="mkt-type-btn"         data-type="spot"      onclick="window.__dropType('spot')">Spot</button>
+              <button class="mkt-type-btn"         data-type="crypto"    onclick="window.__dropType('crypto')">Crypto</button>
+              <button class="mkt-type-btn"         data-type="tradfi"    onclick="window.__dropType('tradfi')">Tradfi</button>
+              <button class="mkt-type-btn"         data-type="hip3"      onclick="window.__dropType('hip3')">HIP-3</button>
+              <button class="mkt-type-btn"         data-type="trending"  onclick="window.__dropType('trending')">Trending</button>
+              <button class="mkt-type-btn"         data-type="prelaunch" onclick="window.__dropType('prelaunch')">Pre-launch</button>
+            </div>
+            <div class="mkt-cat-row" id="mktCatTabs"></div>
+            <div class="mkt-table-wrap">
+              <table class="mkt-table">
+                <thead>
+                  <tr>
+                    <th class="mkt-th-sym">Symbol</th>
+                    <th class="mkt-th-sort" data-col="price"   onclick="window.__dropSort('price')">Last Price</th>
+                    <th class="mkt-th-sort" data-col="change"  onclick="window.__dropSort('change')">24h Change</th>
+                    <th class="mkt-th-sort" data-col="funding" onclick="window.__dropSort('funding')">8h Funding</th>
+                    <th class="mkt-th-sort" data-col="volume"  onclick="window.__dropSort('volume')">Volume</th>
+                    <th class="mkt-th-sort" data-col="oi"      onclick="window.__dropSort('oi')">Open Interest</th>
+                  </tr>
+                </thead>
+                <tbody id="coinDropdownList"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="mkt-hdr-stats" id="tradeChartStats"></div>
+      </div>
+
       <!-- Main layout -->
       <div class="trade-main-layout">
 
         <!-- Left: Order form -->
         <div class="trade-order-col">
 
-          <!-- Market selector -->
-          <div class="coin-selector" id="coinSelectorWrap">
-            <button class="coin-selector-btn coin-selector-btn-lg" onclick="toggleCoinDropdown()">
-              <span id="selectedCoinLabel">Select market...</span>
-              <span style="color:var(--muted)">▾</span>
-            </button>
-            <div class="coin-dropdown" id="coinDropdown">
-              <div class="coin-dropdown-search">
-                <input type="text" id="coinDropdownSearch" placeholder="Search market..." oninput="filterCoinDropdown()" autocomplete="off"/>
-              </div>
-              <div id="coinDropdownList"></div>
-            </div>
+          <!-- Coin search -->
+          <div class="tcs-wrap" id="tcsCoinWrap">
+            <div class="tcs-icon" id="tcsCoinIcon">—</div>
+            <input class="tcs-input" id="tcsCoinInput" placeholder="Search market…"
+                   autocomplete="off" spellcheck="false"
+                   oninput="window._tcsFilter(this.value)"
+                   onfocus="window._tcsFocus()"
+                   onblur="window._tcsBlur()"/>
+            <div class="tcs-results" id="tcsResults"></div>
           </div>
 
           <!-- Side toggle -->
@@ -927,41 +1005,37 @@
             <input class="field-input" id="stopPriceInput" type="number" placeholder="0.00" step="any"/>
           </div>
 
+          <!-- Available balance bar -->
+          <div class="hl-avail-bar">
+            <span class="hl-avail-label">Available</span>
+            <span id="availDisplay" class="hl-avail-val">—</span>
+          </div>
+
           <!-- Size -->
-          <div class="field-group">
-            <div class="field-label" style="display:flex;align-items:center;justify-content:space-between">
+          <div class="field-group" style="margin-bottom:8px">
+            <div class="field-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
               <span id="sizeModeLabel">Size (USD)</span>
-              <div style="display:flex;align-items:center;gap:6px">
-                <div class="size-mode-toggle">
-                  <button class="size-mode-btn active" id="sizeBtn-usd"  onclick="setSizeMode('usd')">USD</button>
-                  <button class="size-mode-btn"        id="sizeBtn-coin" onclick="setSizeMode('coin')">Coin</button>
-                </div>
-                <span class="field-hint" style="margin:0">
-                  <span onclick="setSizePct(0.25)">25%</span>
-                  <span onclick="setSizePct(0.5)">50%</span>
-                  <span onclick="setSizePct(1)">MAX</span>
-                </span>
+              <div class="size-mode-toggle">
+                <button class="size-mode-btn active" id="sizeBtn-usd"  onclick="setSizeMode('usd')">USD</button>
+                <button class="size-mode-btn"        id="sizeBtn-coin" onclick="setSizeMode('coin')">Coin</button>
               </div>
             </div>
-            <input class="field-input" id="sizeInput" type="number" placeholder="100" step="any" oninput="updateOrderSummary()"/>
+            <input class="field-input" id="sizeInput" type="number" step="any" placeholder="0.00" oninput="updateOrderSummary()"/>
+            <!-- Percentage slider (like leverage slider) -->
+            <div class="sz-slider-row">
+              <input type="range" class="sz-slider" id="szPctSlider" min="0" max="100" value="0" oninput="window._szFromSlider()"/>
+              <span class="sz-pct-label" id="szPctLabel">0 %</span>
+            </div>
+            <div id="availHint" class="avail-hint">Max: —</div>
           </div>
 
           <!-- Leverage -->
-          <div class="field-group" style="margin-bottom:6px">
+          <div class="field-group" style="margin-bottom:14px">
             <div class="field-label" style="display:flex;align-items:center;justify-content:space-between">
               <span>Leverage</span>
               <div class="leverage-display" id="levDisplay">5x</div>
             </div>
             <input type="range" class="leverage-slider" id="levSlider" min="1" max="50" value="5" oninput="updateLevDisplay()" style="width:100%;margin-top:6px"/>
-          </div>
-          <div class="leverage-presets" style="margin-bottom:14px">
-            <button class="lev-preset" onclick="setLev(1)">1x</button>
-            <button class="lev-preset" onclick="setLev(2)">2x</button>
-            <button class="lev-preset" onclick="setLev(3)">3x</button>
-            <button class="lev-preset" onclick="setLev(5)">5x</button>
-            <button class="lev-preset" onclick="setLev(10)">10x</button>
-            <button class="lev-preset" onclick="setLev(20)">20x</button>
-            <button class="lev-preset" onclick="setLev(50)">50x</button>
           </div>
 
           <!-- TP / SL -->
@@ -981,6 +1055,9 @@
             <div class="order-summary-row"><span>Est. Price</span><span id="sum-price">—</span></div>
             <div class="order-summary-row"><span>Size (USD)</span><span id="sum-size">—</span></div>
             <div class="order-summary-row"><span>Size (Coin)</span><span id="sum-coins">—</span></div>
+            <div class="order-summary-row"><span>Leverage</span><span id="sum-lev-row">—</span></div>
+            <div class="order-summary-row"><span>Funding (8h)</span><span id="sum-fund">—</span></div>
+            <div class="order-summary-row"><span>Est. Fee</span><span id="sum-fee">—</span></div>
             <div class="order-summary-row total"><span>Required Margin</span><span id="sum-margin">—</span></div>
           </div>
 
@@ -1029,9 +1106,49 @@
           <span id="sum-lev"   style="display:none"></span>
         </div>
 
-        <!-- Right: positions + orders management -->
+        <!-- Right: chart + positions + orders -->
         <div class="trade-manage-col">
 
+          <!-- Chart -->
+          <div class="trade-chart-wrap">
+            <div class="trade-chart-header">
+              <div class="trade-chart-tfs">
+                <button class="chart-tf-btn" onclick="window.__chartSetTf('1m')">1m</button>
+                <button class="chart-tf-btn" onclick="window.__chartSetTf('5m')">5m</button>
+                <button class="chart-tf-btn" onclick="window.__chartSetTf('15m')">15m</button>
+                <button class="chart-tf-btn" onclick="window.__chartSetTf('30m')">30m</button>
+                <button class="chart-tf-btn active" onclick="window.__chartSetTf('1h')">1h</button>
+                <button class="chart-tf-btn" onclick="window.__chartSetTf('4h')">4h</button>
+                <button class="chart-tf-btn" onclick="window.__chartSetTf('8h')">8h</button>
+                <button class="chart-tf-btn" onclick="window.__chartSetTf('1d')">1D</button>
+                <button class="chart-tf-btn" onclick="window.__chartSetTf('1w')">1W</button>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px">
+                <div class="chart-mode-row">
+                  <button class="chart-mode-btn active" data-mode="line" onclick="window.__chartSetMode('line')">Line</button>
+                  <button class="chart-mode-btn" data-mode="candle" onclick="window.__chartSetMode('candle')">Candles</button>
+                </div>
+                <button class="chart-tf-btn" onclick="window.__chartResetZoom()" title="Reset zoom" style="font-size:12px;padding:3px 7px">⟳</button>
+              </div>
+            </div>
+            <div class="trade-chart-body">
+              <canvas id="tradeChartCanvas"></canvas>
+              <canvas id="chartCrosshair" style="position:absolute;top:0;left:0;pointer-events:none;"></canvas>
+              <div id="markDot"><span class="mark-dot-ring"></span><span class="mark-dot-core"></span></div>
+              <div class="trade-chart-empty" id="tradeChartEmpty">Select a market to view chart</div>
+            </div>
+            <div class="chart-range-row">
+              <button class="chart-range-btn" onclick="window.__chartSetRange('1d')">1D</button>
+              <button class="chart-range-btn" onclick="window.__chartSetRange('5d')">5D</button>
+              <button class="chart-range-btn" onclick="window.__chartSetRange('1m')">1M</button>
+              <button class="chart-range-btn" onclick="window.__chartSetRange('3m')">3M</button>
+              <button class="chart-range-btn" onclick="window.__chartSetRange('6m')">6M</button>
+              <button class="chart-range-btn" onclick="window.__chartSetRange('1y')">1Y</button>
+              <button class="chart-range-btn" onclick="window.__chartSetRange('5y')">5Y</button>
+            </div>
+          </div>
+
+          <div class="trade-manage-tables">
           <div class="section-title" style="margin-bottom:12px">Open Positions <span class="count-pill" id="managePosCount">0</span></div>
           <div class="table-wrap" style="margin-bottom:28px">
             <div style="overflow-x:auto">
@@ -1051,6 +1168,7 @@
               </table>
             </div>
           </div>
+          </div><!-- /.trade-manage-tables -->
 
         </div>
 
@@ -1193,9 +1311,25 @@
   <div class="modal">
     <div class="modal-title" id="closeModalTitle">Close Position</div>
     <div class="modal-desc" id="closeModalDesc"></div>
-    <div class="field-group">
-      <div class="field-label">Partial Size (blank = full close)</div>
-      <input class="field-input" id="closeSizeInput" type="number" placeholder="Full size" step="any"/>
+    <div class="close-slider-wrap">
+      <div class="close-slider-header">
+        <span class="field-label">Amount to close</span>
+        <span class="close-pct-display" id="closePctDisplay">100%</span>
+      </div>
+      <input class="close-slider" id="closeSlider" type="range" min="1" max="100" value="100"
+        oninput="window.__onCloseSlider(this.value)"/>
+      <div class="close-slider-track-labels">
+        <span>0%</span><span>50%</span><span>100%</span>
+      </div>
+      <div class="close-presets">
+        <button class="close-preset-btn" onclick="window.__setClosePct(25)">25%</button>
+        <button class="close-preset-btn" onclick="window.__setClosePct(50)">50%</button>
+        <button class="close-preset-btn" onclick="window.__setClosePct(75)">75%</button>
+        <button class="close-preset-btn active" onclick="window.__setClosePct(100)">100%</button>
+      </div>
+      <div class="close-size-display">
+        Closing <b id="closeSzDisplay">—</b> · Est. value <b id="closeValDisplay">—</b>
+      </div>
     </div>
     <div class="trade-status" id="closeModalStatus"></div>
     <div class="modal-actions">
@@ -1206,25 +1340,193 @@
 </div>
 
 <!-- EDIT MODAL -->
+<div class="modal-overlay" id="editOrderModal">
+  <div class="modal tpsl-modal">
+    <!-- Header -->
+    <div class="tpsl-hdr">
+      <span class="tpsl-title" id="editOrderModalTitle">Edit Order</span>
+      <button class="tpsl-close-btn" onclick="closeModals()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <!-- Order info -->
+    <div class="tpsl-info-box" style="margin-top:14px">
+      <div class="tpsl-info-row">
+        <span class="tpsl-info-lbl">Action</span>
+        <span class="tpsl-info-val" id="eordAction" style="color:var(--orange)">—</span>
+      </div>
+      <div class="tpsl-info-row">
+        <span class="tpsl-info-lbl">Size</span>
+        <span class="tpsl-info-val" id="eordSizeInfo">—</span>
+      </div>
+      <div class="tpsl-info-row">
+        <span class="tpsl-info-lbl">Order Type</span>
+        <span class="tpsl-info-val" id="eordType">Limit</span>
+      </div>
+      <div class="tpsl-info-row">
+        <span class="tpsl-info-lbl">Market Price</span>
+        <span class="tpsl-info-val" id="eordRefPx">—</span>
+      </div>
+    </div>
+
+    <!-- Available -->
+    <div class="eord-available">Available: <span id="eordAvailable" style="color:var(--green)">—</span></div>
+
+    <!-- Price input -->
+    <div class="tpsl-row" style="margin-top:10px">
+      <div class="tpsl-cell" style="grid-column:1/-1;flex-direction:row;align-items:center;justify-content:space-between">
+        <div style="display:flex;flex-direction:column;gap:4px;flex:1">
+          <span class="tpsl-cell-lbl">Price (USD)</span>
+          <input class="tpsl-num" id="editOrderPriceInput" type="number" placeholder="0.00000" step="any"
+            oninput="window.__eordUpdateSize()">
+        </div>
+        <button class="eord-mid-btn" onclick="window.__eordSetMid()">Mid</button>
+      </div>
+    </div>
+
+    <!-- Size input + slider -->
+    <div class="tpsl-row" style="margin-top:6px">
+      <div class="tpsl-cell" style="grid-column:1/-1;flex-direction:row;align-items:center;justify-content:space-between">
+        <span class="tpsl-cell-lbl">Size</span>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span id="eordSzDisplay" style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600">—</span>
+          <button class="eord-swap-btn" onclick="window.__eordToggleSzUnit()" title="Toggle tokens / USDC">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+    <div style="margin:6px 18px 0">
+      <input class="tpsl-sz-slider" id="editOrdSlider" type="range" min="1" max="100" value="100"
+        oninput="window.__onEditOrdSlider()">
+      <div class="tpsl-slider-labels"><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>
+    </div>
+
+    <div class="trade-status" id="editOrderModalStatus" style="margin:8px 18px 0"></div>
+    <button class="tpsl-confirm-btn" id="editOrderModalConfirm" onclick="window.__confirmEditOrder()">Confirm</button>
+  </div>
+</div>
+
 <div class="modal-overlay" id="editModal">
-  <div class="modal">
-    <div class="modal-title" id="editModalTitle">Edit Position</div>
-    <div class="modal-desc">Set Take Profit and/or Stop Loss as reduce-only trigger orders.</div>
-    <div class="tp-sl-row">
-      <div class="field-group" style="margin:0">
-        <div class="field-label">Take Profit Price</div>
-        <input class="field-input" id="editTpInput" type="number" placeholder="optional" step="any"/>
+  <div class="modal tpsl-modal">
+    <!-- Header -->
+    <div class="tpsl-hdr">
+      <span class="tpsl-title">Take Profit / Stop Loss</span>
+      <button class="tpsl-close-btn" onclick="closeModals()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tpsl-tabs">
+      <button class="tpsl-tab active" id="tpslTabEntire" onclick="window.__tpslTab('entire')">Entire Position</button>
+      <button class="tpsl-tab" id="tpslTabPartial" onclick="window.__tpslTab('partial')">Partial</button>
+    </div>
+
+    <!-- Position info -->
+    <div class="tpsl-info-box">
+      <div class="tpsl-info-row">
+        <span class="tpsl-info-lbl">Position</span>
+        <span class="tpsl-info-val" id="tpslPosLabel" style="color:var(--orange)">—</span>
       </div>
-      <div class="field-group" style="margin:0">
-        <div class="field-label">Stop Loss Price</div>
-        <input class="field-input" id="editSlInput" type="number" placeholder="optional" step="any"/>
+      <div class="tpsl-info-row">
+        <span class="tpsl-info-lbl">Entry Price</span>
+        <span class="tpsl-info-val" id="tpslEntryPx">—</span>
+      </div>
+      <div class="tpsl-info-row">
+        <span class="tpsl-info-lbl">Market Price</span>
+        <span class="tpsl-info-val" id="tpslRefPx">—</span>
       </div>
     </div>
+
+    <!-- Take Profit -->
+    <div class="tpsl-sec-lbl">Take Profit</div>
+    <div class="tpsl-row">
+      <div class="tpsl-cell">
+        <span class="tpsl-cell-lbl" id="tpslTpPctLbl">TP</span>
+        <input class="tpsl-num" id="tpslTpPct" type="number" min="0" placeholder="0.00" step="0.01"
+          oninput="window.__tpslSync('tp','pct')">
+      </div>
+      <div class="tpsl-cell tpsl-cell-right">
+        <button class="tpsl-mode-btn" id="tpslTpModeBtn" onclick="window.__tpslToggleMode('tp')">
+          <span id="tpslTpModeLbl">Price %</span>
+          <svg viewBox="0 0 10 6" width="8" height="8" fill="currentColor" style="margin-left:3px"><path d="M0 0l5 6 5-6z"/></svg>
+        </button>
+        <span class="tpsl-echo" id="tpslTpPctEcho">0.00</span>
+      </div>
+    </div>
+    <div class="tpsl-row">
+      <div class="tpsl-cell">
+        <span class="tpsl-cell-lbl">Price (USD)</span>
+        <input class="tpsl-num" id="tpslTpUsd" type="number" min="0" placeholder="0.00" step="0.00001"
+          oninput="window.__tpslSync('tp','usd')">
+      </div>
+      <div class="tpsl-cell tpsl-cell-right" style="cursor:pointer" onclick="window.__tpslToggleType('tp')">
+        <span class="tpsl-type-sel" id="tpslTpTypeLbl">Market</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" class="tpsl-swap-icon"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+      </div>
+    </div>
+    <div class="tpsl-row tpsl-partial-only" style="display:none">
+      <div class="tpsl-cell" style="grid-column:1/-1">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span class="tpsl-cell-lbl">Size</span>
+          <span id="tpslTpSzDisplay" style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600"></span>
+        </div>
+        <input class="tpsl-sz-slider" id="tpslTpSzSlider" type="range" min="0" max="100" value="100"
+          oninput="window.__tpslSzSlider('tp')">
+        <div class="tpsl-slider-labels"><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>
+      </div>
+    </div>
+    <div class="tpsl-pnl-row">Est. P&amp;L: <span id="tpslTpPnl" class="tpsl-pnl-val">—</span></div>
+
+    <!-- Stop Loss -->
+    <div class="tpsl-sec-lbl">Stop Loss</div>
+    <div class="tpsl-row">
+      <div class="tpsl-cell">
+        <span class="tpsl-cell-lbl" id="tpslSlPctLbl">SL</span>
+        <input class="tpsl-num" id="tpslSlPct" type="number" min="0" placeholder="0.00" step="0.01"
+          oninput="window.__tpslSync('sl','pct')">
+      </div>
+      <div class="tpsl-cell tpsl-cell-right">
+        <button class="tpsl-mode-btn" id="tpslSlModeBtn" onclick="window.__tpslToggleMode('sl')">
+          <span id="tpslSlModeLbl">Price %</span>
+          <svg viewBox="0 0 10 6" width="8" height="8" fill="currentColor" style="margin-left:3px"><path d="M0 0l5 6 5-6z"/></svg>
+        </button>
+        <span class="tpsl-echo" id="tpslSlPctEcho">0.00</span>
+      </div>
+    </div>
+    <div class="tpsl-row">
+      <div class="tpsl-cell">
+        <span class="tpsl-cell-lbl">Price (USD)</span>
+        <input class="tpsl-num" id="tpslSlUsd" type="number" min="0" placeholder="0.00" step="0.00001"
+          oninput="window.__tpslSync('sl','usd')">
+      </div>
+      <div class="tpsl-cell tpsl-cell-right" style="cursor:pointer" onclick="window.__tpslToggleType('sl')">
+        <span class="tpsl-type-sel" id="tpslSlTypeLbl">Market</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" class="tpsl-swap-icon"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+      </div>
+    </div>
+    <div class="tpsl-row tpsl-partial-only" style="display:none">
+      <div class="tpsl-cell" style="grid-column:1/-1">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span class="tpsl-cell-lbl">Size</span>
+          <span id="tpslSlSzDisplay" style="font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600"></span>
+        </div>
+        <input class="tpsl-sz-slider" id="tpslSlSzSlider" type="range" min="0" max="100" value="100"
+          oninput="window.__tpslSzSlider('sl')">
+        <div class="tpsl-slider-labels"><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>
+      </div>
+    </div>
+    <div class="tpsl-pnl-row">Est. P&amp;L: <span id="tpslSlPnl" class="tpsl-pnl-val">—</span></div>
+
+    <!-- Disclaimer -->
+    <div class="tpsl-disclaimer">
+      This setting applies to the entire position, regardless of whether you add or reduce the position from here onwards. You can only set one position TP and one position SL.
+    </div>
+
     <div class="trade-status" id="editModalStatus"></div>
-    <div class="modal-actions">
-      <button class="btn-modal-cancel" onclick="closeModals()">Cancel</button>
-      <button class="btn-modal-confirm" id="editModalConfirm" onclick="window.__confirmEditPosition()">Confirm</button>
-    </div>
+    <button class="tpsl-confirm-btn" id="editModalConfirm" onclick="window.__confirmEditPosition()">Confirm</button>
   </div>
 </div>
 
@@ -1272,7 +1574,7 @@
 
 <!-- PIN LOCK SCREEN -->
 <div id="pinLockScreen" style="display:none;position:fixed;inset:0;background:#0a0a0f;z-index:99999;align-items:center;justify-content:center;flex-direction:column;gap:20px">
-  <div style="font-family:'Space Mono',monospace;font-size:11px;letter-spacing:2px;color:var(--muted)">ENTER PIN</div>
+  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:2px;color:var(--muted)">ENTER PIN</div>
   <div style="display:flex;gap:12px" id="pinDots">
     <div class="pin-dot"></div><div class="pin-dot"></div><div class="pin-dot"></div><div class="pin-dot"></div>
   </div>
@@ -1292,7 +1594,7 @@
   </div>
   <div id="pinError" style="font-size:11px;color:var(--red);height:16px"></div>
   <div id="pinForgotArea" style="margin-top:8px;text-align:center">
-    <button onclick="window.__showForgotPin()" style="background:none;border:none;color:var(--muted);font-family:'Space Mono',monospace;font-size:10px;cursor:pointer;text-decoration:underline">Forgot PIN?</button>
+    <button onclick="window.__showForgotPin()" style="background:none;border:none;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:10px;cursor:pointer;text-decoration:underline">Forgot PIN?</button>
     <div id="pinForgotForm" style="display:none;margin-top:12px">
       <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Enter your wallet address to reset</div>
       <input id="pinForgotInput" class="field-input" type="text" placeholder="0x..." style="width:220px;font-size:11px"/>
