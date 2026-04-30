@@ -2,7 +2,7 @@ import './style.css'
 const _il = document.getElementById('init-loader')
 if (_il) _il.remove()
 import { InfoClient, HttpTransport } from '@nktkas/hyperliquid'
-import { loadAccountData, buildAssetMap, infoClient, fetchAllMids } from './api.js'
+import { loadAccountData, loadFundingData, buildAssetMap, infoClient, fetchAllMids } from './api.js'
 import {
   renderOverview,
   renderPositions,
@@ -196,8 +196,10 @@ const INITIAL_STATE = () => ({
   calMonth:       new Date().getMonth(),
   calYear:        new Date().getFullYear(),
   transferFilter: 'all',
+  basicMode:      localStorage.getItem('hliq_basicMode') === '1',
 })
 let state = INITIAL_STATE()
+window.__getState = () => state
 
 let perfChart = null
 
@@ -206,7 +208,6 @@ const STEP_LABELS = [
   'Perp positions & margin',
   'Spot balances',
   'Orders, fills, portfolio & prices',
-  'Funding payments (all-time)',
 ]
 
 function setStep(n, status) {
@@ -340,6 +341,10 @@ function renderWalletStrip(addr) {
         ${label ? `<div class="ws-name">${esc(label)}</div>` : ''}
         <div class="ws-addr"><span>${short}</span></div>
       </div>
+      <button class="mob-mode-btn" id="mobModeBtn" onclick="window.toggleBasicMode()">
+        <span class="mode-switch"></span>
+        <span id="mobModeBtnLabel">${state.basicMode ? 'Basic' : 'Advanced'}</span>
+      </button>
       <div class="ws-actions">
         <div class="ws-switcher-wrap" id="wsSwitcherWrap">
           <button class="ws-switcher-btn" id="wsSwitcherBtn" onclick="window.__toggleWalletPanel()">
@@ -460,9 +465,9 @@ async function loadDashboard() {
   document.getElementById('loadingOverlay').classList.add('active')
 
   try {
-    const raw     = await loadAccountData(addr, setStep, { mobile: window.innerWidth <= 768 })
-    const fills   = parseFills(raw.fills)
-    const funding = parseFunding(raw.funding)
+    const isMobile = window.innerWidth <= 768
+    const raw      = await loadAccountData(addr, setStep, { mobile: isMobile })
+    const fills    = parseFills(raw.fills)
 
     state = {
       ...state,
@@ -471,12 +476,12 @@ async function loadDashboard() {
       spotState:  raw.spotState,
       openOrders: raw.openOrders,
       fills,
-      funding,
+      funding:    [],    // populated in background below
       portfolio:  raw.portfolio,
       allMids:    raw.allMids,
       assetMap:   buildAssetMap(raw.meta),
       allMetas:   raw.allMetas,
-      webData:    raw.webData ?? null,
+      webData:    null,  // populated in background below
       sessionStart: Date.now(),
     }
     // Seed perp name list from already-fetched allMetas so Watch search doesn't re-fetch
@@ -510,7 +515,6 @@ async function loadDashboard() {
 
     if (liveTimer)    clearInterval(liveTimer)
     if (sessionTimer) clearInterval(sessionTimer)
-    const isMobile = window.innerWidth <= 768
 
     // Cache first fill time so mobile (90-day) loads still show correct "Member Since"
     const FIRST_FILL_KEY = 'hliq_first_fill_' + addr
@@ -522,6 +526,14 @@ async function loadDashboard() {
 
     liveTimer    = setInterval(refreshLive, 5000)
     sessionTimer = setInterval(tickSessionUptime, 1000)
+    // Fast mids refresh — drives the available-to-trade display between full refreshes
+    setInterval(() => {
+      if (!state.addr) return
+      infoClient.allMids().then(m => {
+        state.allMids = { ...state.allMids, ...m }
+        _updateAvailDisplay()
+      }).catch(() => {})
+    }, 2000)
     // Refresh HIP-3 mids separately every 60s (they don't need per-tick updates)
     setInterval(() => {
       if (state.allMetas) fetchAllMids(state.allMetas).then(m => { state.allMids = m }).catch(() => {})
@@ -530,6 +542,20 @@ async function loadDashboard() {
     if (!isMobile) fetchAllTimeVolume(addr)
     fetchLedger(addr)
     fetchSubAccounts(addr)
+
+    // HIP-3 DEX mids — patch allMids silently when ready
+    raw.hip3Promise.then(merged => {
+      if (state.addr !== addr) return
+      state.allMids = merged
+    }).catch(() => {})
+
+    // Funding + webData in background — re-renders stats when ready
+    loadFundingData(addr, { mobile: isMobile }).then(({ funding, webData }) => {
+      if (state.addr !== addr) return
+      state.funding = parseFunding(funding)
+      state.webData = webData ?? null
+      renderAccountSection()
+    }).catch(e => console.warn('Background funding load failed:', e.message))
 
   } catch (e) {
     console.error(e)
@@ -544,7 +570,7 @@ async function loadDashboard() {
 function renderAccountSection() {
   const { perpState, spotState, fills, funding, portfolio, allMids, openOrders } = state
   renderOverview({ perpState, spotState, fills, funding, openOrders, allMids, portfolio, webData: state.webData, sessionStart: state.sessionStart, firstFillTime: state.firstFillTime ?? null })
-  renderPortfolioStats({ perpState, fills, funding, portfolio, webData: state.webData })
+  renderPortfolioStats({ perpState, spotState, fills, funding, portfolio, webData: state.webData })
   renderSummaryCards(fills, perpState)
 }
 
@@ -580,6 +606,7 @@ function renderAll() {
   renderHistorySection()
   renderMarketSection()
   updateWatchTicker()
+  _applyBasicMode()
 
   setTimeout(() => renderChartPeriod('day'), 80)
 }
@@ -704,13 +731,12 @@ let refreshFailCount = 0
 function updateRefreshBanner() {
   const banner = document.getElementById('refreshErrorBanner')
   if (!banner) return
-  if (refreshFailCount < 3) {
+  if (refreshFailCount < 12) {
     banner.classList.remove('active')
     return
   }
   banner.classList.add('active')
-  banner.innerHTML = `⚠ Live data paused — connection lost (${refreshFailCount} failed attempt${refreshFailCount !== 1 ? 's' : ''})
-    <button class="refresh-error-retry" onclick="window.__retryRefresh()">Retry now</button>`
+  banner.innerHTML = `⚠ Live data paused — connection lost. <button class="refresh-error-retry" onclick="window.__retryRefresh()">Retry now</button>`
 }
 
 window.__retryRefresh = function() {
@@ -1403,12 +1429,47 @@ function _updateAvailDisplay() {
     if (hint) hint.textContent = 'Max: —'
     return
   }
-  const accountValue   = parseFloat(ps.crossMarginSummary?.accountValue ?? 0)
-  const posMarginUsed  = (ps.assetPositions ?? []).reduce((sum, ap) => sum + parseFloat(ap.position?.marginUsed ?? 0), 0)
-  const avail  = Math.max(0, accountValue - posMarginUsed)
-  console.log('[avail2] accountValue:', accountValue, 'posMarginUsed:', posMarginUsed, 'avail:', avail)
-  ;(ps.assetPositions??[]).forEach(ap=>{ const p=ap.position; console.log(' pos:', p.coin, '| marginUsed:', p.marginUsed, '| positionValue:', p.positionValue, '| leverageType:', p.leverage?.type, '| leverageVal:', p.leverage?.value, '| rawUsd:', p.leverage?.rawUsd) })
+
+  let avail
+  if (state.isIsolated) {
+    // Isolated mode: free USDC = perp withdrawable + free spot USDC (matches overview)
+    const perpWdraw  = parseFloat(ps.withdrawable ?? 0)
+    const spotUSDC   = (state.spotState?.balances ?? []).find(b => b.coin === 'USDC')
+    const spotFree   = spotUSDC ? Math.max(0, parseFloat(spotUSDC.total ?? 0) - parseFloat(spotUSDC.hold ?? 0)) : 0
+    avail = Math.max(0, perpWdraw + spotFree)
+  } else {
+    const cms            = ps.crossMarginSummary ?? {}
+    const accountValue   = parseFloat(cms.accountValue   ?? 0)
+    const totalMarginUsed = parseFloat(cms.totalMarginUsed ?? 0)
+
+    // HL unified account: spot non-USDC tokens count as collateral
+    const spotNonUSDC = (state.spotState?.balances ?? [])
+      .filter(b => b.coin !== 'USDC')
+      .reduce((sum, b) => {
+        const px  = parseFloat(state.allMids[b.coin] ?? 0)
+        const qty = parseFloat(b.total ?? 0)
+        return sum + px * qty
+      }, 0)
+
+    const selectedPos = (ps.assetPositions ?? []).find(ap => ap.position?.coin === state.selectedCoin)
+    const selSzi      = parseFloat(selectedPos?.position?.szi ?? 0)
+    const selIsCross  = selectedPos?.position?.leverage?.type === 'cross'
+
+    const opposingPos =
+      (state.tradeSide === 'short' && selSzi > 0) ||
+      (state.tradeSide === 'long'  && selSzi < 0)
+
+    if (opposingPos && selIsCross) {
+      // Opposing an existing cross position: raw snapshot formula (no spotNonUSDC)
+      avail = (accountValue + totalMarginUsed) / 2
+    } else {
+      // Same direction or no position: portfolioValue minus margin used
+      avail = Math.max(0, accountValue + spotNonUSDC - totalMarginUsed)
+    }
+  }
+
   const maxPos = avail * state.leverage
+
   const el   = document.getElementById('availDisplay')
   const hint = document.getElementById('availHint')
   if (el)   el.textContent   = '$' + fmtUSD(avail) + ' USDC'
@@ -1427,6 +1488,97 @@ function _fmtTablePx(p) {
   if (p >= 10)   return p.toFixed(4)
   if (p >= 1)    return p.toFixed(4)
   return p.toPrecision(5)
+}
+
+// ─── BASIC MODE ───────────────────────────────────────────────────────────────
+function _renderBasicExtraCards() {
+  const el = document.getElementById('basicExtraCards')
+  if (!el) return
+  const { fills, funding, allMids, ledger, perpState } = state
+  if (!fills) return
+
+  // Deposits & withdrawals from ledger
+  let totalDeposited = 0, totalWithdrawn = 0
+  for (const e of (ledger ?? [])) {
+    const t = e.delta?.type
+    if (t === 'deposit') totalDeposited += parseFloat(e.delta.usdc ?? 0)
+    else if (t === 'send' && e.delta?.token === 'USDC') totalDeposited += parseFloat(e.delta.usdcValue ?? 0)
+    else if (t === 'withdraw') totalWithdrawn += parseFloat(e.delta.usdc ?? 0)
+  }
+
+  // Net PnL
+  const realizedPnl   = fills.reduce((s, f) => s + f.closedPnl, 0)
+  const unrealizedPnl = (perpState?.assetPositions ?? []).reduce((s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0)
+  const totalFees     = fills.reduce((s, f) => {
+    if (!f.fee) return s
+    if (f.feeToken === 'USDC' || !f.feeToken) return s + f.fee
+    const px = parseFloat(allMids[f.feeToken] ?? 0)
+    return s + (px > 0 ? f.fee * px : 0)
+  }, 0)
+  const allTimeFunding = (funding ?? []).reduce((s, f) => s + f.usdc, 0)
+  const netPnl         = realizedPnl + unrealizedPnl + allTimeFunding - totalFees
+
+  // Win rate (coin+hour buckets)
+  const ONE_HOUR = 3600000
+  const windows  = {}
+  for (const f of fills.filter(f => f.closedPnl !== 0)) {
+    const key = `${f.coin}_${Math.floor(f.time / ONE_HOUR)}`
+    if (!windows[key]) windows[key] = 0
+    windows[key] += f.closedPnl - f.fee
+  }
+  const allW    = Object.values(windows)
+  const winRate = allW.length > 0 ? (allW.filter(n => n > 0).length / allW.length * 100).toFixed(1) + '%' : '—'
+
+  // Total volume
+  const totalVolume = fills.reduce((s, f) => s + (f.notional ?? 0), 0)
+
+  const pnlCls = v => v >= 0 ? 'pos' : 'neg'
+  const pnlFmt = v => (v >= 0 ? '+$' : '-$') + fmtUSD(Math.abs(v))
+
+  const cards = [
+    { label: 'Total Deposited', value: '$' + fmtUSD(totalDeposited),  sub: 'All-time USDC in',             cls: 'neu' },
+    { label: 'Total Withdrawn', value: '$' + fmtUSD(totalWithdrawn),  sub: 'All-time USDC out',            cls: 'neu' },
+    { label: 'Net PnL',         value: pnlFmt(netPnl),                sub: 'Realized + unrealized + funding − fees', cls: pnlCls(netPnl) },
+    { label: 'Win Rate',        value: winRate,                        sub: 'Winning trade windows',         cls: 'neu' },
+    { label: 'Total Volume',    value: '$' + fmtCompact(totalVolume), sub: 'Notional traded all-time',     cls: 'neu' },
+  ]
+
+  el.innerHTML = cards.map(c => `
+    <div class="stat-card">
+      <div class="stat-label">${c.label}</div>
+      <div class="stat-value ${c.cls}">${c.value}</div>
+      <div class="stat-sub">${c.sub}</div>
+    </div>`).join('')
+}
+
+function _applyBasicMode() {
+  document.body.classList.toggle('is-basic-mode', state.basicMode)
+  const fab = document.getElementById('modeFab')
+  if (fab) {
+    const label = document.getElementById('modeFabLabel')
+    if (label) label.textContent = state.basicMode ? 'Basic' : 'Advanced'
+    fab.classList.toggle('fab-visible', true)
+  }
+  // Mobile wallet-strip toggle button
+  const mobLbl = document.getElementById('mobModeBtnLabel')
+  if (mobLbl) mobLbl.textContent = state.basicMode ? 'Basic' : 'Advanced'
+  // Settings toggle checkbox
+  const settingsChk = document.getElementById('basicModeToggle')
+  if (settingsChk) settingsChk.checked = state.basicMode
+  if (state.basicMode) _renderBasicExtraCards()
+}
+
+window.toggleBasicMode = function() {
+  state.basicMode = !state.basicMode
+  localStorage.setItem('hliq_basicMode', state.basicMode ? '1' : '0')
+  _applyBasicMode()
+  if (state.basicMode) {
+    const portfolioBtn = document.querySelector('.nav-tab[data-basic="1"]')
+    switchTab('portfolio', portfolioBtn)
+  } else {
+    const overviewBtn = document.querySelector('.nav-tab[onclick*="overview"]')
+    switchTab('overview', overviewBtn)
+  }
 }
 
 function _fmtTableDollar(n) {
@@ -1553,6 +1705,7 @@ window.__selectCoin = function (coin) {
 
   updateSizeModeLabel()
   _szSyncSlider()
+  _updateAvailDisplay()
 
   if (state.orderType !== 'market') {
     document.getElementById('limitPriceInput').value = price.toString()
@@ -1600,6 +1753,7 @@ function setSide(side) {
   state.tradeSide = side
   document.getElementById('sideBtn-long').className  = 'side-btn' + (side === 'long'  ? ' active-long'  : '')
   document.getElementById('sideBtn-short').className = 'side-btn' + (side === 'short' ? ' active-short' : '')
+  _updateAvailDisplay()
   updateOrderSummary()
   updateSubmitBtn()
 }
@@ -1628,6 +1782,7 @@ function updateLevDisplay() {
   state.leverage = v
   document.getElementById('levDisplay').textContent = v + 'x'
   _szSyncSlider()
+  _updateAvailDisplay()
   updateOrderSummary()
 }
 
@@ -1636,6 +1791,7 @@ function setLev(n) {
   document.getElementById('levSlider').value = n
   document.getElementById('levDisplay').textContent = n + 'x'
   _szSyncSlider()
+  _updateAvailDisplay()
   updateOrderSummary()
 }
 
@@ -1644,6 +1800,7 @@ function setMarginMode(isIsolated) {
   state.isIsolated = isIsolated
   document.getElementById('marginCross').classList.toggle('active', !isIsolated)
   document.getElementById('marginIsolated').classList.toggle('active', isIsolated)
+  _updateAvailDisplay()
 }
 
 // ─── SIZE MODE (USD / COIN) ───────────────────────────────────────────────────
@@ -3384,6 +3541,7 @@ function switchTab(name, btn) {
   if (name === 'portfolio') setTimeout(() => renderChartPeriod(state.currentPeriod), 60)
   if (name === 'performance') renderPerformance()
   if (name === 'settings') _syncSettingsTab()
+  if (name === 'leaderboard') renderLeaderboard()
   // sync bottom nav
   document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name))
   // close more drawer + backdrop
@@ -5062,6 +5220,167 @@ window.switchTab = function(name, btn) {
 // Init defi card buttons on load
 window.__updateDepositPreview()
 window.__updateWithdrawPreview()
+
+// ─── LEADERBOARD ──────────────────────────────────────────────────────────────
+const _LB_LS_KEY = 'hliq_lb_extra'
+
+async function _lbLoad() {
+  try {
+    const r = await fetch('/api/leaderboard')
+    if (!r.ok) throw new Error()
+    return await r.json()
+  } catch {
+    try { return JSON.parse(localStorage.getItem(_LB_LS_KEY) || '[]') } catch { return [] }
+  }
+}
+
+async function _lbSave(addrs) {
+  localStorage.setItem(_LB_LS_KEY, JSON.stringify(addrs))
+  try {
+    await fetch('/api/leaderboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ addrs }),
+    })
+  } catch {}
+}
+
+function _lbPosHtml(positions) {
+  if (!positions.length) return `<div class="lb-no-pos">No open positions</div>`
+  return `<table class="lb-pos-table">
+    <thead><tr><th>Coin</th><th>Side</th><th>Size</th><th>Entry</th><th>PnL</th></tr></thead>
+    <tbody>${positions.map(p => {
+      const pos  = p.position
+      const side = parseFloat(pos.szi) > 0 ? 'LONG' : 'SHORT'
+      const pnl  = parseFloat(pos.unrealizedPnl ?? 0)
+      const cls  = pnl >= 0 ? 'pos' : 'neg'
+      return `<tr>
+        <td><b>${esc(pos.coin)}</b></td>
+        <td class="${cls}">${side}</td>
+        <td>${Math.abs(parseFloat(pos.szi))}</td>
+        <td>$${fmtPrice(parseFloat(pos.entryPx ?? 0))}</td>
+        <td class="${cls}">${pnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(pnl))}</td>
+      </tr>`
+    }).join('')}</tbody>
+  </table>`
+}
+
+function _lbRowHtml(entry, rank) {
+  const short  = entry.addr.slice(0, 8) + '…' + entry.addr.slice(-5)
+  const pnlCls = entry.unrealizedPnl >= 0 ? 'pos' : 'neg'
+  const pnlStr = entry.error ? '—'
+    : (entry.unrealizedPnl >= 0 ? '+' : '') + '$' + fmtUSD(Math.abs(entry.unrealizedPnl))
+  const valStr = entry.error ? '<span class="lb-err">Error</span>' : '$' + fmtUSD(entry.accountValue)
+  const uid    = 'lbx-' + entry.addr.slice(2, 10)
+  return `
+    <tr class="lb-row" onclick="window.__lbToggle('${uid}', this)">
+      <td class="lb-rank">${rank}</td>
+      <td class="lb-identity">
+        ${entry.label ? `<div class="lb-label">${esc(entry.label)}</div>` : ''}
+        <div class="lb-addr-short">${short}</div>
+      </td>
+      <td class="lb-val">${valStr}</td>
+      <td class="lb-pnl ${pnlCls}">${pnlStr}</td>
+      <td class="lb-chev">▶</td>
+    </tr>
+    <tr class="lb-expand" id="${uid}" style="display:none">
+      <td colspan="5"><div class="lb-expand-inner">${entry.error ? `<div class="lb-err">${entry.error}</div>` : _lbPosHtml(entry.positions)}</div></td>
+    </tr>`
+}
+
+async function renderLeaderboard() {
+  const root = document.getElementById('leaderboardRoot')
+  if (!root) return
+
+  root.innerHTML = `<div class="lb-loading">Fetching wallets…</div>`
+
+  const extras   = await _lbLoad()
+  const saved    = WM.load()
+  const seen     = new Set(saved.map(w => w.addr.toLowerCase()))
+  const allEntries = [
+    ...saved.map(w => ({ addr: w.addr, label: w.label })),
+    ...extras.filter(a => !seen.has(a.toLowerCase())).map(a => ({ addr: a, label: null })),
+  ]
+
+  if (!allEntries.length) {
+    root.innerHTML = `<div class="lb-empty">Add wallet addresses below to start tracking.</div>`
+    root.appendChild(_lbFormEl(extras))
+    return
+  }
+
+  const results = await Promise.all(allEntries.map(async entry => {
+    try {
+      const info = new InfoClient({ transport: new HttpTransport() })
+      const cs   = await info.clearinghouseState({ user: entry.addr })
+      const positions    = cs.assetPositions ?? []
+      const accountValue = parseFloat(cs.marginSummary?.accountValue ?? 0)
+      const unrealizedPnl = positions.reduce((s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0)
+      return { ...entry, accountValue, unrealizedPnl, positions, error: null }
+    } catch (e) {
+      return { ...entry, accountValue: 0, unrealizedPnl: 0, positions: [], error: 'Failed to load' }
+    }
+  }))
+
+  results.sort((a, b) => b.accountValue - a.accountValue)
+
+  root.innerHTML = `
+    <div class="lb-toolbar">
+      <div class="lb-count">${results.length} wallet${results.length !== 1 ? 's' : ''}</div>
+      <button class="btn-sm" onclick="renderLeaderboard()">↻ Refresh</button>
+    </div>
+    <div class="table-wrap">
+      <table class="lb-table">
+        <thead><tr><th>#</th><th>Wallet</th><th>Account Value</th><th>Unrealized PnL</th><th></th></tr></thead>
+        <tbody>${results.map((r, i) => _lbRowHtml(r, i + 1)).join('')}</tbody>
+      </table>
+    </div>`
+  root.appendChild(_lbFormEl(extras))
+}
+
+function _lbFormEl(extras) {
+  const div = document.createElement('div')
+  div.className = 'lb-form'
+  div.innerHTML = `
+    <div class="lb-form-title">Tracked Addresses</div>
+    <div class="lb-extras" id="lbExtrasList">
+      ${extras.length ? extras.map(a => `
+        <div class="lb-extra-row">
+          <span class="lb-extra-addr">${a.slice(0, 8)}…${a.slice(-5)}</span>
+          <button class="lb-remove" onclick="window.__lbRemove('${esc(a)}')">✕</button>
+        </div>`).join('') : '<div class="lb-extras-empty">None added yet</div>'}
+    </div>
+    <div class="lb-add-row">
+      <input class="lb-input" id="lbAddrInput" placeholder="0x… wallet address" />
+      <button class="btn-sm" onclick="window.__lbAdd()">Add</button>
+    </div>`
+  return div
+}
+
+window.__lbToggle = function(uid, tr) {
+  const row  = document.getElementById(uid)
+  if (!row) return
+  const open = row.style.display === 'none'
+  row.style.display = open ? '' : 'none'
+  const chev = tr.querySelector('.lb-chev')
+  if (chev) chev.textContent = open ? '▼' : '▶'
+}
+
+window.__lbAdd = async function() {
+  const input = document.getElementById('lbAddrInput')
+  const addr  = input?.value?.trim()
+  if (!addr || !addr.startsWith('0x') || addr.length < 42) return
+  const extras = await _lbLoad()
+  if (extras.some(a => a.toLowerCase() === addr.toLowerCase())) return
+  extras.push(addr)
+  await _lbSave(extras)
+  renderLeaderboard()
+}
+
+window.__lbRemove = async function(addr) {
+  const extras = await _lbLoad()
+  await _lbSave(extras.filter(a => a.toLowerCase() !== addr.toLowerCase()))
+  renderLeaderboard()
+}
 
 // Initial ticker render
 updateWatchTicker()

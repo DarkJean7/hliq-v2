@@ -92,7 +92,6 @@
       <div class="load-step" id="step1">→ Perp positions &amp; margin</div>
       <div class="load-step" id="step2">→ Spot balances</div>
       <div class="load-step" id="step3">→ Orders, fills, portfolio &amp; prices</div>
-      <div class="load-step" id="step4">→ Funding payments (all-time)</div>
     </div>
   </div>
 
@@ -112,15 +111,16 @@
       <button class="nav-tab active" onclick="switchTab('overview',this)">Overview</button>
       <button class="nav-tab" onclick="switchTab('positions',this)">Positions <span class="tab-badge" id="posCount">0</span> <span class="tab-badge" id="ordCount" style="background:rgba(255,200,50,0.15);color:rgba(255,200,50,0.8)">0</span></button>
       <button class="nav-tab" onclick="switchTab('trade',this)">⚡ Trade</button>
-      <button class="nav-tab" onclick="switchTab('trades',this)">Trade History <span class="tab-badge" id="fillCount">0</span></button>
-      <button class="nav-tab" onclick="switchTab('portfolio',this)">Portfolio</button>
-      <button class="nav-tab" onclick="switchTab('calendar',this)">PnL Calendar</button>
+      <button class="nav-tab" onclick="switchTab('trades',this)">History <span class="tab-badge" id="fillCount">0</span></button>
+      <button class="nav-tab" data-basic="1" onclick="switchTab('portfolio',this)">Portfolio</button>
+      <button class="nav-tab" data-basic="1" onclick="switchTab('calendar',this)">Calendar</button>
       <button class="nav-tab" onclick="switchTab('transfers',this)">Transfers</button>
       <button class="nav-tab" onclick="switchTab('performance',this)">📈 Performance</button>
       <button class="nav-tab" onclick="switchTab('tokens',this)"><svg viewBox="0 0 20 20" width="12" height="12" fill="currentColor" style="vertical-align:middle;margin-bottom:1px"><rect x="0" y="13" width="4" height="7" rx="1"/><rect x="5.5" y="8" width="4" height="12" rx="1"/><rect x="11" y="4" width="4" height="16" rx="1"/><rect x="16.5" y="0" width="3.5" height="20" rx="1"/></svg>Scoreboard</button>
       <button class="nav-tab" onclick="switchTab('strategies',this)"><svg viewBox="0 0 20 22" width="11" height="12" fill="currentColor" style="vertical-align:middle;margin-bottom:1px"><rect x="1" y="0" width="4" height="5" rx="1"/><rect x="8" y="0" width="4" height="5" rx="1"/><rect x="15" y="0" width="4" height="5" rx="1"/><rect x="2" y="5" width="16" height="11" rx="1"/><rect x="0" y="16" width="20" height="5" rx="1"/></svg>Strategies</button>
       <button class="nav-tab" onclick="switchTab('watch',this)">🔭 Watch</button>
-      <button class="nav-tab" onclick="switchTab('settings',this)">⚙ Settings</button>
+      <button class="nav-tab" onclick="switchTab('leaderboard',this)">🏆 Leaderboard</button>
+      <button class="nav-tab" data-basic="1" onclick="switchTab('settings',this)">⚙ Settings</button>
     </div>
 
     <!-- OVERVIEW -->
@@ -715,6 +715,7 @@
       <div class="portfolio-stats-sticky">
         <div class="stats-row" id="portfolioStats"></div>
       </div>
+      <div class="stats-row bm-extra-cards" id="basicExtraCards"></div>
       <div class="charts-two-col">
         <div class="chart-container">
           <div class="chart-header">
@@ -1175,9 +1176,31 @@
       </div>
     </div>
 
+    <!-- LEADERBOARD -->
+    <div class="tab-panel" id="tab-leaderboard">
+      <div id="leaderboardRoot"></div>
+    </div>
+
     <!-- SETTINGS -->
     <div class="tab-panel" id="tab-settings">
       <div class="settings-body">
+
+          <!-- VIEW MODE -->
+          <div class="settings-card">
+            <div class="settings-card-title">View Mode</div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Basic Mode</div>
+                  <div class="settings-desc">Simplified read-only view — Portfolio &amp; Calendar only</div>
+                </div>
+                <label class="pin-toggle">
+                  <input type="checkbox" id="basicModeToggle" onchange="if(this.checked!==window.__getState().basicMode)window.toggleBasicMode()">
+                  <span class="pin-toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
 
           <!-- APPEARANCE -->
           <div class="settings-card" id="settings-panel-appearance">
@@ -1302,6 +1325,12 @@
 
       </div><!-- /settings-body -->
     </div>
+
+  <!-- MODE FAB — fixed bottom-left, always visible when dashboard is open -->
+  <button class="mode-fab" id="modeFab" onclick="window.toggleBasicMode()">
+    <span class="mode-switch"></span>
+    <span id="modeFabLabel">Basic</span>
+  </button>
 
   </div><!-- /dashboard -->
 </div><!-- /container -->
@@ -1532,25 +1561,39 @@
 
 <!-- MOBILE BOTTOM NAV -->
 <nav class="mob-nav" id="mobNav">
-  <button class="mob-nav-btn active" data-tab="overview" onclick="window.__mobMoreTab('overview')">
+  <!-- Advanced mode tabs -->
+  <button class="mob-nav-btn active" data-mob-adv data-tab="overview" onclick="window.__mobMoreTab('overview')">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
     <span>Overview</span>
   </button>
-  <button class="mob-nav-btn" data-tab="positions" onclick="window.__mobMoreTab('positions')">
+  <button class="mob-nav-btn" data-mob-adv data-tab="positions" onclick="window.__mobMoreTab('positions')">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
     <span>Positions</span>
   </button>
-  <button class="mob-nav-btn" data-tab="trade" onclick="window.__mobMoreTab('trade')">
+  <button class="mob-nav-btn" data-mob-adv data-tab="trade" onclick="window.__mobMoreTab('trade')">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
     <span>Trade</span>
   </button>
-  <button class="mob-nav-btn" data-tab="watch" onclick="window.__mobMoreTab('watch')">
+  <button class="mob-nav-btn" data-mob-adv data-tab="watch" onclick="window.__mobMoreTab('watch')">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
     <span>Watch</span>
   </button>
-  <button class="mob-nav-btn" onclick="window.__mobMore()">
+  <button class="mob-nav-btn" data-mob-adv onclick="window.__mobMore()">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/></svg>
     <span>More</span>
+  </button>
+  <!-- Basic mode tabs -->
+  <button class="mob-nav-btn mob-basic-tab" data-tab="portfolio" onclick="window.__mobMoreTab('portfolio')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+    <span>Portfolio</span>
+  </button>
+  <button class="mob-nav-btn mob-basic-tab" data-tab="calendar" onclick="window.__mobMoreTab('calendar')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+    <span>Calendar</span>
+  </button>
+  <button class="mob-nav-btn mob-basic-tab" data-tab="settings" onclick="window.__mobMoreTab('settings')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+    <span>Settings</span>
   </button>
 </nav>
 
@@ -1560,14 +1603,15 @@
   <div class="mob-more-handle"></div>
   <div class="mob-more-grid">
     <button onclick="window.__mobMoreTab('trades')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>History</button>
-    <button onclick="window.__mobMoreTab('portfolio')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>Portfolio</button>
-    <button onclick="window.__mobMoreTab('calendar')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Calendar</button>
+    <button data-mob-basic="1" onclick="window.__mobMoreTab('portfolio')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>Portfolio</button>
+    <button data-mob-basic="1" onclick="window.__mobMoreTab('calendar')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Calendar</button>
     <button onclick="window.__mobMoreTab('performance')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Performance</button>
     <button onclick="window.__mobMoreTab('transfers')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>Transfers</button>
     <button onclick="window.__mobMoreTab('tokens')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="0" y="13" width="4" height="7" rx="1"/><rect x="5.5" y="8" width="4" height="12" rx="1"/><rect x="11" y="4" width="4" height="16" rx="1"/><rect x="16.5" y="0" width="3.5" height="20" rx="1"/></svg>Scoreboard</button>
+    <button onclick="window.__mobMoreTab('leaderboard')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>Leaderboard</button>
     <button onclick="window.__mobMoreTab('strategies')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="8" height="8" rx="1"/><rect x="14" y="2" width="8" height="8" rx="1"/><rect x="2" y="14" width="8" height="8" rx="1"/><path d="M14 18h8M18 14v8"/></svg>Strategies</button>
     <div style="height:1px;background:var(--border);margin:10px 0"></div>
-    <button onclick="window.__mobMoreTab('settings')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</button>
+    <button data-mob-basic="1" onclick="window.__mobMoreTab('settings')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</button>
   </div>
 </div>
 

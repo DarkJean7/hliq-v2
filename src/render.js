@@ -847,20 +847,30 @@ export function renderTrades(fills) {
 
 
 // ─── PORTFOLIO STATS ──────────────────────────────────────────────────────────
-export function renderPortfolioStats({ perpState, fills, funding, portfolio = [], webData = null }) {
+export function renderPortfolioStats({ perpState, spotState, fills, funding, portfolio = [], webData = null }) {
   const accountValue = portfolioLatest(portfolio, 'allTime', 'accountValueHistory')
     ?? parseFloat((perpState.marginSummary ?? {}).accountValue ?? 0)
-
-  const cumLedger    = parseFloat(webData?.cumLedger ?? 0)
-  const allTimePnl   = cumLedger !== 0
-    ? accountValue - cumLedger
-    : portfolioLatest(portfolio, 'allTime', 'pnlHistory') ?? fills.reduce((s, f) => s + f.closedPnl, 0)
 
   const totalUnrPnl  = (perpState.assetPositions ?? []).reduce(
     (s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0
   )
-  const totalFees    = fills.reduce((s, f) => s + f.fee, 0)
-  const totalFunding = funding.reduce((s, f) => s + f.usdc, 0)
+  const realizedPnl  = fills.reduce((s, f) => s + f.closedPnl, 0)
+
+  // Withdrawable: perp withdrawable + free spot USDC (matches overview)
+  const perpWdraw    = parseFloat(perpState.withdrawable ?? 0)
+  const spotUSDC     = (spotState?.balances ?? []).find(b => b.coin === 'USDC')
+  const spotUSDCFree = spotUSDC ? Math.max(0, parseFloat(spotUSDC.total ?? 0) - parseFloat(spotUSDC.hold ?? 0)) : 0
+  const withdrawable = perpWdraw + spotUSDCFree
+
+  // Account health: free equity as % of account value (100% = fully unlevered, lower = more risk)
+  const cms          = perpState.crossMarginSummary ?? {}
+  const marginUsed   = parseFloat(cms.totalMarginUsed ?? 0)
+  const maintMargin  = parseFloat(perpState.crossMaintenanceMarginUsed ?? 0)
+  const healthPct    = accountValue > 0
+    ? Math.max(0, (accountValue - maintMargin) / accountValue * 100)
+    : 0
+  const healthStr    = accountValue > 0 ? healthPct.toFixed(1) + '%' : '—'
+  const healthCls    = healthPct > 60 ? 'pos' : healthPct > 30 ? 'neu' : 'neg'
 
   const stats = [
     {
@@ -876,22 +886,22 @@ export function renderPortfolioStats({ perpState, fills, funding, portfolio = []
       cls:   fmtPnL(totalUnrPnl).cls,
     },
     {
-      label: 'All Time PnL',
-      value: fmtPnL(allTimePnl).text,
-      sub:   'Equity minus net deposits',
-      cls:   fmtPnL(allTimePnl).cls,
+      label: 'Realized PnL',
+      value: fmtPnL(realizedPnl).text,
+      sub:   'Sum of all closed trades',
+      cls:   fmtPnL(realizedPnl).cls,
     },
     {
-      label: 'Net Funding',
-      value: fmtPnL(totalFunding).text,
-      sub:   'Received minus paid (30d)',
-      cls:   fmtPnL(totalFunding).cls,
+      label: 'Withdrawable',
+      value: '$' + fmtUSD(withdrawable),
+      sub:   'Perp + free spot USDC',
+      cls:   'neu',
     },
     {
-      label: 'Total Fees',
-      value: '-$' + fmtUSD(totalFees),
-      sub:   'Paid to exchange',
-      cls:   'neg',
+      label: 'Account Health',
+      value: healthStr,
+      sub:   'Equity above maintenance margin',
+      cls:   healthCls,
     },
   ]
 

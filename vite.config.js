@@ -2,7 +2,7 @@ import { defineConfig }    from 'vite'
 import { spawn }           from 'node:child_process'
 import {
   existsSync, mkdirSync,
-  appendFileSync, readFileSync, readdirSync,
+  appendFileSync, readFileSync, readdirSync, writeFileSync,
 } from 'node:fs'
 import { join, dirname }   from 'node:path'
 import { fileURLToPath }   from 'node:url'
@@ -217,6 +217,21 @@ function strategyPlugin() {
           subs[type].add(res)
           req.on('close', () => { subs[type]?.delete(res) })
           return
+        }
+
+        // GET /api/leaderboard
+        if (method === 'GET' && path === '/api/leaderboard') {
+          const f = join(__dirname, 'leaderboard.json')
+          const addrs = existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : []
+          return sendJson(res, 200, addrs)
+        }
+
+        // POST /api/leaderboard
+        if (method === 'POST' && path === '/api/leaderboard') {
+          const b = await readBody(req)
+          if (!Array.isArray(b.addrs)) return sendJson(res, 400, { error: 'addrs must be array' })
+          writeFileSync(join(__dirname, 'leaderboard.json'), JSON.stringify(b.addrs))
+          return sendJson(res, 200, { ok: true })
         }
 
         next()

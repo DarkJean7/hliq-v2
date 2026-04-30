@@ -65,18 +65,13 @@ export async function loadAccountData(address, onStep, { mobile = false } = {}) 
   const NINETY_D  = Date.now() - 90 * 24 * 60 * 60 * 1000
   const fillsFrom = mobile ? NINETY_D : GENESIS
 
-  // Steps 1 & 2 are independent — fetch in parallel
+  // Fire all 7 calls simultaneously — none depend on each other
   onStep(1, 'active')
   onStep(2, 'active')
-  const [perpState, spotState] = await Promise.all([
+  onStep(3, 'active')
+  const [perpState, spotState, openOrders, fills, portfolio, allMetas, allMids] = await Promise.all([
     infoClient.clearinghouseState({ user: address }),
     infoClient.spotClearinghouseState({ user: address }),
-  ])
-  onStep(1, 'done')
-  onStep(2, 'done')
-
-  onStep(3, 'active')
-  const [openOrders, fills, portfolio, allMetas, mainMids] = await Promise.all([
     infoClient.frontendOpenOrders({ user: address }),
     infoClient.userFillsByTime({ user: address, startTime: fillsFrom, reversed: true })
       .catch(() => infoClient.userFills({ user: address })),
@@ -84,18 +79,25 @@ export async function loadAccountData(address, onStep, { mobile = false } = {}) 
     infoClient.allPerpMetas(),
     infoClient.allMids(),
   ])
-  const meta = { universe: allMetas.flatMap(m => m.universe ?? []) }
-
-  // Fetch HIP-3 DEX mids in parallel (DEX name = prefix before ':' in coin names)
-  const hip3Dexes = _hip3DexNames(allMetas)
-  const hip3MidsArr = await Promise.all(
-    hip3Dexes.map(dex => infoClient.allMids({ dex }).catch(() => ({})))
-  )
-  const allMids = Object.assign({}, mainMids, ...hip3MidsArr)
+  onStep(1, 'done')
+  onStep(2, 'done')
   onStep(3, 'done')
 
-  // Step 4: funding + webData2 in parallel
-  onStep(4, 'active')
+  const meta = { universe: allMetas.flatMap(m => m.universe ?? []) }
+
+  // HIP-3 DEX mids deferred — don't block render, caller patches state.allMids in background
+  const hip3Promise = Promise.all(
+    _hip3DexNames(allMetas).map(dex => infoClient.allMids({ dex }).catch(() => ({})))
+  ).then(arr => Object.assign({}, allMids, ...arr))
+
+  return { perpState, spotState, openOrders, fills, portfolio, meta, allMetas, allMids, hip3Promise }
+  // funding + webData deferred — call loadFundingData() separately
+}
+
+export async function loadFundingData(address, { mobile = false } = {}) {
+  const GENESIS  = 1667260800000
+  const NINETY_D = Date.now() - 90 * 24 * 60 * 60 * 1000
+  const fillsFrom = mobile ? NINETY_D : GENESIS
   const [funding, webData] = await Promise.all([
     fetchAllFunding(address, fillsFrom).catch(e => {
       console.warn('Funding fetch failed:', e.message)
@@ -106,9 +108,7 @@ export async function loadAccountData(address, onStep, { mobile = false } = {}) 
       return null
     }),
   ])
-  onStep(4, 'done')
-
-  return { perpState, spotState, openOrders, fills, portfolio, funding, meta, allMetas, allMids, webData }
+  return { funding, webData }
 }
 
 /**

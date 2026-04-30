@@ -13,13 +13,14 @@
 
 import { createServer }                                       from 'node:http'
 import { spawn }                                              from 'node:child_process'
-import { existsSync, mkdirSync, appendFileSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, appendFileSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join, dirname }                                      from 'node:path'
 import { fileURLToPath }                                      from 'node:url'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const PORT       = 3001
-const LOGS_DIR   = join(__dirname, 'logs')
+const LOGS_DIR        = join(__dirname, 'logs')
+const LEADERBOARD_FILE = join(__dirname, 'leaderboard.json')
 
 const CORS = {
   'Access-Control-Allow-Origin':  '*',
@@ -271,6 +272,22 @@ const server = createServer(async (req, res) => {
 
     req.on('close', () => { subs[type]?.delete(res) })
     return
+  }
+
+  // ── GET /api/leaderboard  → return saved extra addresses ────────────────
+  if (method === 'GET' && path === '/api/leaderboard') {
+    const addrs = existsSync(LEADERBOARD_FILE)
+      ? JSON.parse(readFileSync(LEADERBOARD_FILE, 'utf8'))
+      : []
+    return json(res, 200, addrs)
+  }
+
+  // ── POST /api/leaderboard → save extra addresses { addrs: string[] } ────
+  if (method === 'POST' && path === '/api/leaderboard') {
+    const b = await body(req)
+    if (!Array.isArray(b.addrs)) return json(res, 400, { error: 'addrs must be array' })
+    writeFileSync(LEADERBOARD_FILE, JSON.stringify(b.addrs))
+    return json(res, 200, { ok: true })
   }
 
   json(res, 404, { error: 'not found' })

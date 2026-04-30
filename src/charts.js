@@ -207,10 +207,9 @@ function makeChartOptions() {
     animation:   { duration: window.innerWidth <= 768 ? 0 : 500 },
     interaction: { mode: 'index', intersect: false },
     plugins: {
-      legend: { display: false },
-      tooltip: {
-        enabled:         false, // hero above chart replaces tooltip
-      },
+      legend:      { display: false },
+      tooltip:     { enabled: false },
+      yPriceBoxes: false,
     },
     scales: {
       x: {
