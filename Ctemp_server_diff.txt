@@ -1,0 +1,340 @@
+diff --git a/server.js b/server.js
+index 665ee2c6..15c35714 100644
+--- a/server.js
++++ b/server.js
+@@ -2,13 +2,13 @@
+ /**
+  * INSOLVENT TERMINAL — Strategy Server
+  *
+- * Manages strategy processes, streams live logs via SSE,
++ * Manages strategy processes per address, streams live logs via SSE,
+  * persists logs to disk, and records wins per strategy.
+  *
+  * Run:
+  *   WALLET_KEY=0xYOUR_KEY node server.js
+  *
+- * Port: 3001
++ * Port: 3002
+  */
+ 
+ import { createServer }                                       from 'node:http'
+@@ -18,7 +18,7 @@ import { join, dirname }                                      from 'node:path'
+ import { fileURLToPath }                                      from 'node:url'
+ 
+ const __dirname  = dirname(fileURLToPath(import.meta.url))
+-const PORT       = 3001
++const PORT       = 3002
+ const LOGS_DIR        = join(__dirname, 'logs')
+ const LEADERBOARD_FILE = join(__dirname, 'leaderboard.json')
+ 
+@@ -37,70 +37,72 @@ const SCRIPTS = {
+ }
+ 
+ // ─── RUNTIME STATE ────────────────────────────────────────────────────────────
+-const procs  = {}        // type → { proc, buffer: string[] }
+-const subs   = {}        // type → Set<ServerResponse>  (SSE subscribers)
++// Keyed by "type:address" so each address has independent bot instances
++const procs  = {}   // "type:addr" → { proc, buffer: string[], address }
++const subs   = {}   // "type:addr" → Set<ServerResponse>  (SSE subscribers)
++
++function procKey(type, addr) {
++  return `${type}:${(addr || '').toLowerCase()}`
++}
+ 
+ // ─── FS HELPERS ───────────────────────────────────────────────────────────────
+-function stratDir(type) {
+-  const d = join(LOGS_DIR, type)
++function stratDir(type, addr) {
++  const d = join(LOGS_DIR, type, addr.toLowerCase())
+   if (!existsSync(d)) mkdirSync(d, { recursive: true })
+   return d
+ }
+ 
+-function logPath(type) {
++function logPath(type, addr) {
+   const day = new Date().toISOString().slice(0, 10)
+-  return join(stratDir(type), `${day}.log`)
++  return join(stratDir(type, addr), `${day}.log`)
+ }
+ 
+-function winsPath(type) {
+-  return join(stratDir(type), 'wins.jsonl')
++function winsPath(type, addr) {
++  return join(stratDir(type, addr), 'wins.jsonl')
+ }
+ 
+ // ─── WIN DETECTION ────────────────────────────────────────────────────────────
+-// Matches: [2026-04-06 12:00:00] [WIN     ] some message
+ const WIN_RE = /^\[(.+?)\] \[WIN\s*\] (.+)$/
+ 
+-function recordWin(type, line) {
++function recordWin(type, addr, line) {
+   const m = WIN_RE.exec(line)
+   if (!m) return
+   const entry = JSON.stringify({ ts: m[1], type, msg: m[2] }) + '\n'
+-  try { appendFileSync(winsPath(type), entry) } catch (_) {}
++  try { appendFileSync(winsPath(type, addr), entry) } catch (_) {}
+ }
+ 
+ // ─── LINE HANDLER (stdout/stderr) ─────────────────────────────────────────────
+-function handleLine(type, line) {
+-  // Persist to log file
+-  try { appendFileSync(logPath(type), line + '\n') } catch (_) {}
++function handleLine(type, addr, line) {
++  try { appendFileSync(logPath(type, addr), line + '\n') } catch (_) {}
++  recordWin(type, addr, line)
+ 
+-  // Check for win
+-  recordWin(type, line)
+-
+-  // Buffer last 500 lines for late SSE subscribers
+-  const p = procs[type]
++  const key = procKey(type, addr)
++  const p = procs[key]
+   if (p) {
+     p.buffer.push(line)
+     if (p.buffer.length > 500) p.buffer.shift()
+   }
+ 
+-  // Push to live SSE subscribers
+   const msg = `data: ${JSON.stringify({ line })}\n\n`
+-  for (const res of (subs[type] ?? [])) {
++  for (const res of (subs[key] ?? [])) {
+     try { res.write(msg) } catch (_) {}
+   }
+ }
+ 
+ // ─── PROCESS MANAGEMENT ───────────────────────────────────────────────────────
+-function startStrategy(type, extraArgs = []) {
+-  if (procs[type])         return { ok: false, error: 'already running' }
+-  if (!SCRIPTS[type])      return { ok: false, error: 'unknown strategy' }
++function startStrategy(type, extraArgs = [], agentKey = '', address = '') {
++  const key = procKey(type, address)
++  if (procs[key])    return { ok: false, error: 'already running' }
++  if (!SCRIPTS[type]) return { ok: false, error: 'unknown strategy' }
+ 
+-  const key = process.env.WALLET_KEY
+-  if (!key) return { ok: false, error: 'WALLET_KEY environment variable not set' }
++  const envKey = agentKey || process.env.WALLET_KEY
++  if (!envKey) return { ok: false, error: 'Agent key not provided — enter it in the Strategies tab' }
+ 
+-  const argv = [SCRIPTS[type], '--wallet', key, ...extraArgs]
++  const addressArgs = (address && type === 'grid') ? ['--address', address] : []
++  const argv = [SCRIPTS[type], '--wallet', envKey, ...addressArgs, ...extraArgs]
+   const proc = spawn('node', argv, { cwd: __dirname, env: process.env })
+ 
+-  procs[type] = { proc, buffer: [] }
++  procs[key] = { proc, buffer: [], address }
+ 
+   let outBuf = ''
+   let errBuf = ''
+@@ -109,23 +111,22 @@ function startStrategy(type, extraArgs = []) {
+     outBuf += chunk.toString()
+     const lines = outBuf.split('\n')
+     outBuf = lines.pop()
+-    for (const l of lines) if (l) handleLine(type, l)
++    for (const l of lines) if (l) handleLine(type, address, l)
+   })
+ 
+   proc.stderr.on('data', chunk => {
+     errBuf += chunk.toString()
+     const lines = errBuf.split('\n')
+     errBuf = lines.pop()
+-    for (const l of lines) if (l) handleLine(type, `[STDERR] ${l}`)
++    for (const l of lines) if (l) handleLine(type, address, `[STDERR] ${l}`)
+   })
+ 
+   proc.on('exit', code => {
+     const ts  = new Date().toISOString().replace('T', ' ').slice(0, 19)
+-    handleLine(type, `[${ts}] [EXIT    ] Process exited — code ${code ?? '?'}`)
+-    delete procs[type]
+-    // Notify subscribers the process ended
++    handleLine(type, address, `[${ts}] [EXIT    ] Process exited — code ${code ?? '?'}`)
++    delete procs[key]
+     const exit = `data: ${JSON.stringify({ exit: code ?? -1 })}\n\n`
+-    for (const res of (subs[type] ?? [])) {
++    for (const res of (subs[key] ?? [])) {
+       try { res.write(exit) } catch (_) {}
+     }
+   })
+@@ -133,50 +134,51 @@ function startStrategy(type, extraArgs = []) {
+   return { ok: true }
+ }
+ 
+-function stopStrategy(type) {
+-  const p = procs[type]
++function stopStrategy(type, address) {
++  const key = procKey(type, address)
++  const p = procs[key]
+   if (!p) return { ok: false, error: 'not running' }
+   p.proc.kill('SIGTERM')
+-  // exit event will clean up procs[type]
+   return { ok: true }
+ }
+ 
+-function getStatus() {
++function getStatus(address) {
+   const out = {}
+-  for (const t of Object.keys(SCRIPTS)) out[t] = !!procs[t]
++  for (const t of Object.keys(SCRIPTS)) {
++    out[t] = !!procs[procKey(t, address)]
++  }
+   return out
+ }
+ 
+ // ─── WIN READERS ──────────────────────────────────────────────────────────────
+-function readWins(type) {
+-  const p = winsPath(type)
++function readWins(type, addr) {
++  const p = winsPath(type, addr)
+   if (!existsSync(p)) return []
+   return readFileSync(p, 'utf8')
+     .split('\n').filter(Boolean)
+     .map(l => { try { return JSON.parse(l) } catch { return null } })
+     .filter(Boolean)
+-    .reverse()   // newest first
++    .reverse()
+ }
+ 
+-function readAllWins() {
++function readAllWins(addr) {
+   const out = {}
+-  for (const t of Object.keys(SCRIPTS)) out[t] = readWins(t)
++  for (const t of Object.keys(SCRIPTS)) out[t] = readWins(t, addr)
+   return out
+ }
+ 
+ // ─── LOG FILE LIST ────────────────────────────────────────────────────────────
+-function logFiles(type) {
+-  const d = join(LOGS_DIR, type)
++function logFiles(type, addr) {
++  const d = join(LOGS_DIR, type, addr.toLowerCase())
+   if (!existsSync(d)) return []
+   return readdirSync(d)
+     .filter(f => f.endsWith('.log'))
+     .sort().reverse()
+ }
+ 
+-function readLogFile(type, filename) {
+-  // Basic path sanity — no directory traversal
++function readLogFile(type, addr, filename) {
+   if (filename.includes('/') || filename.includes('\\') || filename.includes('..')) return null
+-  const p = join(LOGS_DIR, type, filename)
++  const p = join(LOGS_DIR, type, addr.toLowerCase(), filename)
+   if (!existsSync(p)) return null
+   return readFileSync(p, 'utf8')
+ }
+@@ -212,47 +214,64 @@ const server = createServer(async (req, res) => {
+   // ── POST /api/start ───────────────────────────────────────────────────────
+   if (method === 'POST' && path === '/api/start') {
+     const b      = await body(req)
+-    const result = startStrategy(b.type, b.args ?? [])
++    const result = startStrategy(b.type, b.args ?? [], b.agentKey ?? '', b.address ?? '')
+     return json(res, result.ok ? 200 : 400, result)
+   }
+ 
+   // ── POST /api/stop ────────────────────────────────────────────────────────
+   if (method === 'POST' && path === '/api/stop') {
+     const b      = await body(req)
+-    const result = stopStrategy(b.type)
++    const result = stopStrategy(b.type, b.address ?? '')
+     return json(res, result.ok ? 200 : 400, result)
+   }
+ 
+-  // ── GET /api/status ───────────────────────────────────────────────────────
++  // ── GET /api/status?address=0x... ─────────────────────────────────────────
+   if (method === 'GET' && path === '/api/status') {
+-    return json(res, 200, getStatus())
++    const addr = url.searchParams.get('address') || ''
++    return json(res, 200, getStatus(addr))
+   }
+ 
+-  // ── GET /api/wins        → all strategies ────────────────────────────────
+-  // ── GET /api/wins/:type  → one strategy ──────────────────────────────────
++  // ── GET /api/status/all  → { "0xaddr": ["grid","dca",...] } ───────────────
++  if (method === 'GET' && path === '/api/status/all') {
++    const out = {}
++    for (const key of Object.keys(procs)) {
++      const colonIdx = key.indexOf(':')
++      const type = key.slice(0, colonIdx)
++      const addr = key.slice(colonIdx + 1)
++      if (!out[addr]) out[addr] = []
++      out[addr].push(type)
++    }
++    return json(res, 200, out)
++  }
++
++  // ── GET /api/wins?address=0x...          → all strategies ─────────────────
++  // ── GET /api/wins/:type?address=0x...    → one strategy ───────────────────
+   if (method === 'GET' && path.startsWith('/api/wins')) {
++    const addr  = url.searchParams.get('address') || ''
+     const parts = path.split('/').filter(Boolean)   // ['api','wins','type'?]
+-    if (parts.length >= 3) return json(res, 200, readWins(parts[2]))
+-    return json(res, 200, readAllWins())
++    if (parts.length >= 3) return json(res, 200, readWins(parts[2], addr))
++    return json(res, 200, readAllWins(addr))
+   }
+ 
+-  // ── GET /api/history/:type           → list of log files ─────────────────
+-  // ── GET /api/history/:type/:filename → read one log file ─────────────────
++  // ── GET /api/history/:type?address=0x...                  → list log files ─
++  // ── GET /api/history/:type/:filename?address=0x...         → read one file ──
+   if (method === 'GET' && path.startsWith('/api/history/')) {
++    const addr  = url.searchParams.get('address') || ''
+     const parts = path.split('/').filter(Boolean)   // ['api','history','type','file'?]
+     const type  = parts[2]
+     if (!type) return json(res, 400, { error: 'missing type' })
+     if (parts[3]) {
+-      const content = readLogFile(type, parts[3])
++      const content = readLogFile(type, addr, parts[3])
+       if (!content) return json(res, 404, { error: 'not found' })
+       return text(res, 200, content)
+     }
+-    return json(res, 200, logFiles(type))
++    return json(res, 200, logFiles(type, addr))
+   }
+ 
+-  // ── GET /api/logs/:type  → SSE live stream ────────────────────────────────
++  // ── GET /api/logs/:type?address=0x...  → SSE live stream ─────────────────
+   if (method === 'GET' && path.startsWith('/api/logs/')) {
+     const type = path.split('/')[3]
++    const addr = url.searchParams.get('address') || ''
+     if (!type) return json(res, 400, { error: 'missing type' })
+ 
+     res.writeHead(200, {
+@@ -262,19 +281,21 @@ const server = createServer(async (req, res) => {
+       'Connection':    'keep-alive',
+     })
+ 
++    const key = procKey(type, addr)
++
+     // Replay buffer to late subscriber
+-    for (const line of (procs[type]?.buffer ?? [])) {
++    for (const line of (procs[key]?.buffer ?? [])) {
+       res.write(`data: ${JSON.stringify({ line })}\n\n`)
+     }
+ 
+-    if (!subs[type]) subs[type] = new Set()
+-    subs[type].add(res)
++    if (!subs[key]) subs[key] = new Set()
++    subs[key].add(res)
+ 
+-    req.on('close', () => { subs[type]?.delete(res) })
++    req.on('close', () => { subs[key]?.delete(res) })
+     return
+   }
+ 
+-  // ── GET /api/leaderboard  → return saved extra addresses ────────────────
++  // ── GET /api/leaderboard  → return saved extra addresses ─────────────────
+   if (method === 'GET' && path === '/api/leaderboard') {
+     const addrs = existsSync(LEADERBOARD_FILE)
+       ? JSON.parse(readFileSync(LEADERBOARD_FILE, 'utf8'))
+@@ -282,7 +303,7 @@ const server = createServer(async (req, res) => {
+     return json(res, 200, addrs)
+   }
+ 
+-  // ── POST /api/leaderboard → save extra addresses { addrs: string[] } ────
++  // ── POST /api/leaderboard → save extra addresses { addrs: string[] } ──────
+   if (method === 'POST' && path === '/api/leaderboard') {
+     const b = await body(req)
+     if (!Array.isArray(b.addrs)) return json(res, 400, { error: 'addrs must be array' })

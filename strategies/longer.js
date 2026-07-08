@@ -8,31 +8,30 @@
  *
  * Usage:
  *   node strategies/longer.js \
- *     --wallet 0xYOUR_AGENT_KEY \
- *     --coins BTC,ETH,SOL \
- *     --size 100 \
- *     --leverage 2 \
- *     --take-profit-pct 3 \
- *     --stop-loss-pct 2 \
- *     --trigger dump \
- *     --dump-pct 5 \
- *     --interval 5
+ *     --wallet 0xAGENT_KEY [--address 0xMASTER] \
+ *     --coins BTC,ETH,SOL --size 100 --leverage 2 \
+ *     --take-profit-pct 3 --stop-loss-pct 2 \
+ *     --trigger dump --dump-pct 5 --dump-window 1d --interval 5
  *
  * Triggers:
  *   always  — long everything in the list that doesn't have an open position
  *   dump    — long coins that dumped ≥ --dump-pct % over --dump-window
  *             dump-window: 1h | 4h | 1d | 3d | 1w  (default: 1d)
- *             e.g. --trigger dump --dump-pct 7 --dump-window 1w  → long if down ≥7% this week
+ *
+ * After a stop-loss exit, the coin is on cooldown (--cooldown minutes,
+ * default 60) before a new entry is allowed — prevents stop/re-enter loops.
  */
 
 import { ExchangeClient, InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { ethers }    from 'ethers'
 import { parseArgs } from 'node:util'
+import { isPaused } from './_pause.js'
 
 // ─── CLI ARGS ─────────────────────────────────────────────────────────────────
 const { values: args } = parseArgs({
   options: {
     wallet:            { type: 'string' },
+    address:           { type: 'string' },
     coins:             { type: 'string', default: 'BTC'  },
     size:              { type: 'string', default: '100'  },  // USD per position
     leverage:          { type: 'string', default: '2'    },
@@ -42,8 +41,10 @@ const { values: args } = parseArgs({
     'dump-pct':        { type: 'string', default: '5'    },  // % drop to trigger long
     'dump-window':     { type: 'string', default: '1d'   },  // 1h | 4h | 1d | 3d | 1w
     interval:          { type: 'string', default: '5'    },  // minutes between checks
+    cooldown:          { type: 'string', default: '60'   },  // minutes after stop-loss before re-entry
   },
   allowPositionals: false,
+  strict: false,
 })
 
 const walletKey = process.env.AGENT_KEY || args.wallet
@@ -60,8 +61,10 @@ const SL_PCT      = parseFloat(args['stop-loss-pct'])   / 100
 const TRIGGER     = args.trigger.toLowerCase()
 const DUMP_PCT    = parseFloat(args['dump-pct']) / 100
 const DUMP_WINDOW = args['dump-window'].toLowerCase()
-const INTERVAL_MS = parseInt(args.interval) * 60 * 1000
+const INTERVAL_MS = Math.max(1, parseInt(args.interval) || 5) * 60 * 1000
+const COOLDOWN_MS = Math.max(0, parseInt(args.cooldown) || 0) * 60 * 1000
 const SLIPPAGE    = 0.003
+const HL_MIN_ORDER = 10
 
 // ─── DUMP WINDOW CONFIG ───────────────────────────────────────────────────────
 const WINDOW_MAP = {
@@ -86,25 +89,40 @@ const transport   = new HttpTransport()
 const info        = new InfoClient({ transport })
 const etherWallet = new ethers.Wallet(walletKey)
 const exchange    = new ExchangeClient({ transport, wallet: etherWallet })
+const QUERY_ADDR  = args.address ?? etherWallet.address   // master wallet for reads
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+const cooldownUntil = new Map()   // coin → timestamp before which no re-entry
 
 // ─── LOGGING ──────────────────────────────────────────────────────────────────
 function log(tag, msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19)
-  console.log(`[${ts}] [${tag.padEnd(8)}] ${msg}`)
+  let m = msg
+  // Trim noisy upstream errors (e.g. the HL API returning a full 502 HTML page) to one line.
+  if (tag.trim() === 'ERROR' && typeof m === 'string') {
+    const h = m.search(/<\s*html/i)
+    if (h !== -1) m = m.slice(0, h).replace(/[-\s]+$/, '').trim() || ((m.match(/<title>([^<]+)<\/title>/i) || [])[1] || 'HTML error').trim()
+    m = m.replace(/\s+/g, ' ').trim().slice(0, 200)
+  }
+  console.log(`[${ts}] [${tag.padEnd(8)}] ${m}`)
 }
 
 // ─── PRECISION ────────────────────────────────────────────────────────────────
 function roundPx(n) {
+  // 5 significant figures
   const f = parseFloat(n)
-  if (f >= 10000) return Math.round(f * 10) / 10
-  if (f >= 1000)  return Math.round(f * 100) / 100
-  if (f >= 1)     return Math.round(f * 1000) / 1000
-  return parseFloat(f.toPrecision(5))
+  if (f <= 0) return 0
+  const magnitude = Math.floor(Math.log10(Math.abs(f)))
+  const factor    = Math.pow(10, 4 - magnitude)
+  return Math.round(f * factor) / factor
 }
 
-function roundSz(n, szDecimals = 6) {
-  const factor = Math.pow(10, szDecimals)
-  return Math.floor(parseFloat(n) * factor) / factor
+function roundSz(n, szDecimals = 6, px = 0) {
+  const factor  = Math.pow(10, szDecimals)
+  const minTick = 1 / factor
+  let   sz      = Math.floor(parseFloat(n) * factor) / factor
+  if (px > 0 && sz * px < HL_MIN_ORDER) sz = Math.round((sz + minTick) * factor) / factor
+  return sz
 }
 
 // ─── ASSET INDEX CACHE ────────────────────────────────────────────────────────
@@ -123,15 +141,13 @@ async function getAssetInfo(coin) {
   return asset
 }
 
-// ─── PLACE MARKET ORDER ───────────────────────────────────────────────────────
-async function placeMarketOrder(coin, isBuy, sizeUsd, markPx) {
+// ─── ORDERS — both return { filledSz, avgPx }; filledSz 0 = IOC missed ────────
+async function placeMarketOrder(coin, isBuy, sizeUsd, markPx, reduceOnly = false, szOverride = null) {
   const { index, szDecimals } = await getAssetInfo(coin)
   const limitPx = isBuy
     ? markPx * (1 + SLIPPAGE)
     : markPx * (1 - SLIPPAGE)
-  const sz = sizeUsd / markPx
-
-  await exchange.updateLeverage({ asset: index, isCross: true, leverage: LEVERAGE })
+  const sz = szOverride ?? roundSz(sizeUsd / markPx, szDecimals, roundPx(markPx))
 
   const result = await exchange.order({
     orders: [{
@@ -139,7 +155,7 @@ async function placeMarketOrder(coin, isBuy, sizeUsd, markPx) {
       b: isBuy,
       p: roundPx(limitPx).toString(),
       s: roundSz(sz, szDecimals).toString(),
-      r: false,
+      r: reduceOnly,
       t: { limit: { tif: 'Ioc' } },
     }],
     grouping: 'na',
@@ -149,33 +165,15 @@ async function placeMarketOrder(coin, isBuy, sizeUsd, markPx) {
   const errors   = statuses.filter(s => s.error).map(s => s.error)
   if (errors.length) throw new Error(errors.join(', '))
 
-  return roundSz(sz, szDecimals)
+  const filled = statuses[0]?.filled
+  return {
+    filledSz: parseFloat(filled?.totalSz ?? 0),
+    avgPx:    parseFloat(filled?.avgPx ?? 0),
+  }
 }
 
-// ─── CLOSE POSITION (reduce-only) ─────────────────────────────────────────────
 async function closePosition(coin, szi, markPx) {
-  const { index, szDecimals } = await getAssetInfo(coin)
-  const isBuy  = szi < 0   // short position → close with buy
-  const absSzi = Math.abs(szi)
-  const limitPx = isBuy
-    ? markPx * (1 + SLIPPAGE)
-    : markPx * (1 - SLIPPAGE)
-
-  const result = await exchange.order({
-    orders: [{
-      a: index,
-      b: isBuy,
-      p: roundPx(limitPx).toString(),
-      s: roundSz(absSzi, szDecimals).toString(),
-      r: true,   // reduce-only
-      t: { limit: { tif: 'Ioc' } },
-    }],
-    grouping: 'na',
-  })
-
-  const statuses = result?.response?.data?.statuses ?? []
-  const errors   = statuses.filter(s => s.error).map(s => s.error)
-  if (errors.length) throw new Error(errors.join(', '))
+  return placeMarketOrder(coin, szi < 0, 0, markPx, true, Math.abs(szi))
 }
 
 // ─── GET PRICE CHANGE OVER WINDOW (for dump trigger) ─────────────────────────
@@ -183,11 +181,10 @@ async function getPriceChangePct(coin) {
   try {
     const { candleInterval, lookbackMs } = WINDOW_MAP[DUMP_WINDOW]
     const now     = Date.now()
-    const from    = now - lookbackMs
     const candles = await info.candleSnapshot({
       coin,
       interval:  candleInterval,
-      startTime: from,
+      startTime: now - lookbackMs,
       endTime:   now,
     })
     if (!candles || candles.length === 0) return 0
@@ -202,7 +199,7 @@ async function getPriceChangePct(coin) {
 
 // ─── AUDIT ON STARTUP ─────────────────────────────────────────────────────────
 async function auditPositions() {
-  const state = await info.clearinghouseState({ user: etherWallet.address })
+  const state = await info.clearinghouseState({ user: QUERY_ADDR })
   for (const coin of COINS) {
     const pos = (state.assetPositions ?? []).find(p => p.position.coin === coin)
     if (!pos || parseFloat(pos.position.szi ?? 0) === 0) {
@@ -221,7 +218,7 @@ async function auditPositions() {
 // ─── MAIN TICK ────────────────────────────────────────────────────────────────
 async function tick() {
   const allMids   = await info.allMids()
-  const acctState = await info.clearinghouseState({ user: etherWallet.address })
+  const acctState = await info.clearinghouseState({ user: QUERY_ADDR })
 
   for (const coin of COINS) {
     try {
@@ -230,37 +227,57 @@ async function tick() {
 
       const posObj  = (acctState.assetPositions ?? []).find(p => p.position.coin === coin)
       const szi     = parseFloat(posObj?.position?.szi ?? 0)
-      const entryPx = parseFloat(posObj?.position?.entryPx  ?? 0)
+      const entryPx = parseFloat(posObj?.position?.entryPx ?? 0)
       const upnl    = parseFloat(posObj?.position?.unrealizedPnl ?? 0)
 
       // ── Manage existing LONG position ────────────────────────────────────
       if (szi > 0 && entryPx > 0) {
-        const gainPct = (markPx - entryPx) / entryPx   // positive = price rose = profit for long
+        const gainPct = (markPx - entryPx) / entryPx
 
         // Take profit
         if (TP_PCT > 0 && gainPct >= TP_PCT) {
           log('TP', `${coin} take-profit hit — entry $${entryPx.toFixed(4)} → now $${markPx.toFixed(4)} (+${(gainPct * 100).toFixed(2)}%)`)
-          await closePosition(coin, szi, markPx)
-          log('WIN', `${coin} long closed TP | profit ~$${upnl.toFixed(2)} | entry $${entryPx.toFixed(4)} → $${markPx.toFixed(4)}`)
+          const { filledSz, avgPx } = await closePosition(coin, szi, markPx)
+          if (filledSz > 0) {
+            const exitPx = avgPx || markPx
+            const profit = ((exitPx - entryPx) * filledSz).toFixed(2)
+            log('WIN', `${coin} long closed TP | profit ~$${profit} | entry $${entryPx.toFixed(4)} → $${exitPx.toFixed(4)}`)
+          } else {
+            log('WARN', `${coin} TP close did not fill — retrying next cycle`)
+          }
           continue
         }
 
         // Stop loss
         if (SL_PCT > 0 && gainPct <= -SL_PCT) {
-          const lossPct = -gainPct * 100
-          log('SL', `${coin} stop-loss hit — entry $${entryPx.toFixed(4)} → now $${markPx.toFixed(4)} (-${lossPct.toFixed(2)}%)`)
-          await closePosition(coin, szi, markPx)
-          log('CLOSE', `${coin} long stopped out | loss ~$${Math.abs(upnl).toFixed(2)}`)
+          log('SL', `${coin} stop-loss hit — entry $${entryPx.toFixed(4)} → now $${markPx.toFixed(4)} (${(gainPct * 100).toFixed(2)}%)`)
+          const { filledSz } = await closePosition(coin, szi, markPx)
+          if (filledSz > 0) {
+            log('CLOSE', `${coin} long stopped out | loss ~$${Math.abs(upnl).toFixed(2)}`)
+            if (COOLDOWN_MS > 0) {
+              cooldownUntil.set(coin, Date.now() + COOLDOWN_MS)
+              log('COOLDOWN', `${coin} — no re-entry for ${COOLDOWN_MS / 60000} min`)
+            }
+          } else {
+            log('WARN', `${coin} SL close did not fill — retrying next cycle`)
+          }
           continue
         }
 
-        log('HOLD', `${coin} LONG @ $${entryPx.toFixed(4)} | now $${markPx.toFixed(4)} | uPnL ${upnl >= 0 ? '+' : ''}$${upnl.toFixed(2)} | TP in ${((TP_PCT * 100) - gainPct * 100).toFixed(2)}%`)
+        log('HOLD', `${coin} LONG @ $${entryPx.toFixed(4)} | now $${markPx.toFixed(4)} | uPnL ${upnl >= 0 ? '+' : ''}$${upnl.toFixed(2)} | TP in ${((TP_PCT - gainPct) * 100).toFixed(2)}%`)
         continue
       }
 
       // ── Skip if already short (unexpected for this bot) ──────────────────
       if (szi < 0) {
         log('SKIP', `${coin} — SHORT position open (not managed by Longer). Skipping.`)
+        continue
+      }
+
+      // ── Cooldown after a stop-loss exit ──────────────────────────────────
+      const cdUntil = cooldownUntil.get(coin) ?? 0
+      if (Date.now() < cdUntil) {
+        log('WAIT', `${coin} — cooling down after stop-loss (${Math.ceil((cdUntil - Date.now()) / 60000)} min left)`)
         continue
       }
 
@@ -275,8 +292,12 @@ async function tick() {
       }
 
       // ── Enter long ───────────────────────────────────────────────────────
-      const sz = await placeMarketOrder(coin, true, SIZE_USD, markPx)
-      log('LONG', `${coin} longed ${sz} @ ~$${markPx.toFixed(4)} ($${SIZE_USD})`)
+      const { filledSz, avgPx } = await placeMarketOrder(coin, true, SIZE_USD, markPx)
+      if (filledSz > 0) {
+        log('LONG', `${coin} longed ${filledSz} @ $${(avgPx || markPx).toFixed(4)} (~$${SIZE_USD})`)
+      } else {
+        log('MISS', `${coin} entry IOC did not fill — retrying next cycle`)
+      }
 
     } catch (e) {
       log('ERROR', `${coin} — ${e.message}`)
@@ -289,16 +310,31 @@ async function run() {
   log('START', '═'.repeat(60))
   log('START', `Longer Bot`)
   log('START', `Coins:     ${COINS.join(', ')}`)
-  log('START', `Size:      $${SIZE_USD} | Leverage: ${LEVERAGE}x`)
+  log('START', `Size:      $${SIZE_USD} | Leverage: ${LEVERAGE}x  |  querying ${QUERY_ADDR}`)
   log('START', `Trigger:   ${TRIGGER}${TRIGGER === 'dump' ? ` (≥${(DUMP_PCT * 100).toFixed(1)}% drop over ${DUMP_WINDOW})` : ''}`)
-  log('START', `TP: ${(TP_PCT * 100).toFixed(1)}%  |  SL: ${SL_PCT > 0 ? (SL_PCT * 100).toFixed(1) + '%' : 'disabled'}`)
+  log('START', `TP: ${(TP_PCT * 100).toFixed(1)}%  |  SL: ${SL_PCT > 0 ? (SL_PCT * 100).toFixed(1) + '%' : 'disabled'}  |  SL cooldown: ${COOLDOWN_MS / 60000} min`)
   log('START', `Interval:  ${INTERVAL_MS / 60000} min`)
   log('START', '═'.repeat(60))
 
-  for (const coin of COINS) await getAssetInfo(coin)
+  if (SIZE_USD < HL_MIN_ORDER) {
+    log('ERROR', `Size $${SIZE_USD} is below HL's $${HL_MIN_ORDER} minimum. Increase --size.`)
+    process.exit(1)
+  }
+
+  for (const coin of COINS) {
+    const { index } = await getAssetInfo(coin)
+    try {
+      await exchange.updateLeverage({ asset: index, isCross: true, leverage: LEVERAGE })
+    } catch (e) {
+      log('WARN', `${coin}: could not set leverage: ${e.message}`)
+    }
+  }
+  log('INIT', `Leverage set to ${LEVERAGE}x cross for ${COINS.length} coin(s)`)
+
   await auditPositions()
 
   while (true) {
+    if (isPaused()) { await sleep(INTERVAL_MS); continue }
     try {
       await tick()
     } catch (e) {

@@ -148,12 +148,10 @@ export function maybeSendLiqNotification(perpState, allMids = {}) {
 
   rs.lastLiqNotifAt = now
 
-  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-    new Notification('⚠ Near Liquidation — Insolvent Terminal', {
-      body: `${liq.coin} is ${liq.bufferPct.toFixed(1)}% from liquidation price. Check your positions.`,
-      tag:  'liq-warning',
-    })
-  }
+  showNotif('⚠ Near Liquidation — Insolvent Terminal', {
+    body: `${liq.coin} is ${liq.bufferPct.toFixed(1)}% from liquidation price. Check your positions.`,
+    tag:  'liq-warning',
+  })
 }
 
 // ─── RESUME ──────────────────────────────────────────────────────────────────
@@ -190,11 +188,32 @@ export function getRiskState() {
 
 export function requestNotifications() {
   if (typeof Notification === 'undefined') return Promise.resolve('unsupported')
+  if (!window.isSecureContext) return Promise.resolve('insecure')
   if (Notification.permission === 'granted') return Promise.resolve('granted')
   return Notification.requestPermission()
 }
 
 export function notifPermission() {
   if (typeof Notification === 'undefined') return 'unsupported'
+  if (!window.isSecureContext) return 'insecure'
   return Notification.permission
+}
+
+// Show a notification cross-platform. Mobile browsers (Android Chrome, all iOS)
+// do NOT support the `new Notification()` constructor — it throws "Illegal
+// constructor". The portable path is the service worker registration's
+// showNotification(); the constructor is only a desktop fallback.
+export function showNotif(title, opts = {}) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+  const o = { icon: '/pwa-192x192.png', badge: '/pwa-192x192.png', ...opts }
+  if ('serviceWorker' in navigator) {
+    // If SW registration failed, .ready never settles — race it with a timeout
+    // so the constructor fallback is still reachable.
+    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('sw-timeout')), 3000))
+    Promise.race([navigator.serviceWorker.ready, timeout])
+      .then(reg => reg.showNotification(title, o))
+      .catch(() => { try { new Notification(title, o) } catch {} })
+    return
+  }
+  try { new Notification(title, o) } catch {}
 }

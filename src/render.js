@@ -1,18 +1,38 @@
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc } from './format.js'
-import { aggregateFillsByCoin } from './api.js'
+import { aggregateFillsByCoin, coinLabel } from './api.js'
+import { renderOverviewChart } from './charts.js'
+
+// Outcome-aware coin label: resolves prediction-market "#N"/"+N" codes to their
+// market name + side via main.js's ocTokenMap (window._ocCoinLabel). Falls back to
+// the plain HIP-3-stripped label. Use this for any user-facing coin name.
+function _lbl(coin) {
+  return (typeof window !== 'undefined' && window._ocCoinLabel) ? window._ocCoinLabel(coin) : coinLabel(coin)
+}
+// Escape for a single-quoted JS string inside a double-quoted HTML onclick attr.
+const _jss = s => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;')
+
+// Overview hero chart period/type + cached data for the switchers
+let _ovPeriod = 'week'
+let _ovChartType = 'value'   // 'value' | 'accumulated' | 'realized'
+let _ovPortfolio = []
+let _ovFills = []
+let _ovPosTab = 'positions'   // 'positions' | 'orders' (shown one at a time)
+let _ovPosBody = ''
+let _ovOrdBody = ''
+let _ovPosSortKey = 'pnl', _ovPosSortDir = -1   // default: unrealized PnL, descending
+let _ovPosData = null                          // { positions, allMids, tpslMap } for re-sort without full re-render
+let _ovOrdSortKey = null, _ovOrdSortDir = -1
+let _ovOrdData = null                          // { orders, allMids } for re-sort without full re-render
+const _ovExpanded = new Set()   // sanitized coin ids whose action row is open (survives re-renders)
+const _OV_PERIOD_KEY = { '1D': 'day', '1W': 'week', '1M': 'month', 'All': 'allTime' }
 
 // ─── SORT / EXPAND STATE ─────────────────────────────────────────────────────
 let _tradesPage = 0
 let _lastUnrealPnl  = null
-let _posSortKey = null, _posSortDir = 1
 let _ordSortKey  = null, _ordSortDir  = 1
 let _mPosSortKey = null, _mPosSortDir = 1
 let _mOrdSortKey  = null, _mOrdSortDir  = 1
 
-export function setSortPos(key) {
-  if (_posSortKey === key) _posSortDir *= -1
-  else { _posSortKey = key; _posSortDir = 1 }
-}
 export function setSortOrd(key) {
   if (_ordSortKey === key) _ordSortDir *= -1
   else { _ordSortKey = key; _ordSortDir = 1 }
@@ -57,9 +77,6 @@ export function renderSummaryCards(fills, perpState) {
 function _sortArrow(key, activeKey, dir) {
   if (key !== activeKey) return `<span style="color:var(--muted);font-size:9px;margin-left:3px;opacity:0.4">^</span>`
   return `<span style="color:var(--accent);font-size:9px;margin-left:3px">${dir === 1 ? '^' : 'v'}</span>`
-}
-function _th(key, label, activeKey, dir) {
-  return `<th style="cursor:pointer;user-select:none" onclick="window.__sortPositions('${key}')">${label}${_sortArrow(key, activeKey, dir)}</th>`
 }
 function _thOrd(key, label, activeKey, dir) {
   return `<th style="cursor:pointer;user-select:none" onclick="window.__sortOrders('${key}')">${label}${_sortArrow(key, activeKey, dir)}</th>`
@@ -146,16 +163,54 @@ function portfolioLatest(portfolio, period, key) {
   return last ? parseFloat(last[1]) : null
 }
 
+// Live unified account value. The portfolio endpoint is HL's own "Portfolio
+// Value" but the app only refetches it once a minute — meanwhile uPnL flows
+// 1:1 into the unified balance, so add the perp-equity delta since the
+// snapshot (_perpAnchor is stamped on the portfolio at fetch time in main.js).
+function liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal) {
+  const snap = portfolioLatest(portfolio, 'allTime', 'accountValueHistory')
+  if (snap == null) return perpAcctVal + spotUSDCTotal
+  const anchor = portfolio?._perpAnchor
+  return anchor != null ? snap + (perpAcctVal - anchor) : snap
+}
+
+// ─── ACCOUNT STATS ───────────────────────────────────────────────────────────
+export function computeAcctStats(perpState, spotState, fills, portfolio = []) {
+  const margin     = perpState?.marginSummary ?? {}
+  const positions  = perpState?.assetPositions ?? []
+
+  const totalNtl      = parseFloat(margin.totalNtlPos      ?? 0)
+  const maintMargin   = parseFloat(perpState?.crossMaintenanceMarginUsed ?? margin.totalMarginUsed ?? 0)
+  const perpWithdraw  = parseFloat(perpState?.withdrawable  ?? 0)
+  const spotUSDC      = (spotState?.balances ?? []).find(b => b.coin === 'USDC')
+  const spotUSDCFree  = spotUSDC ? Math.max(0, parseFloat(spotUSDC.total ?? 0) - parseFloat(spotUSDC.hold ?? 0)) : 0
+  const spotUSDCTotal = spotUSDC ? parseFloat(spotUSDC.total ?? 0) : 0
+  const withdrawable  = perpWithdraw + spotUSDCFree
+  const perpAcctVal   = parseFloat(margin.accountValue ?? 0)
+  // HL "Portfolio Value": unified account value (on unified accounts the USDC
+  // balance already contains perp equity, so perp+spot would double-count).
+  const accountValue  = liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal)
+
+  const unrealizedPnl = positions.reduce((s, p) => s + parseFloat(p.position?.unrealizedPnl ?? 0), 0)
+  const realizedPnl   = (fills ?? []).reduce((s, f) => s + (f.closedPnl ?? 0), 0)
+  const netPnl        = realizedPnl + unrealizedPnl
+
+  // HL "Unified Account Ratio" = perps maintenance margin / unified USDC balance.
+  // Health = 100 − that ratio. Falls back to perp equity for non-unified accounts.
+  const marginBase = spotUSDCTotal > 0 ? spotUSDCTotal : perpAcctVal
+  const healthPct  = marginBase > 0 ? Math.max(0, (1 - maintMargin / marginBase) * 100) : 0
+  const healthCls  = healthPct > 60 ? 'pos' : healthPct > 30 ? 'warn' : 'neg'
+  const healthStr  = accountValue > 0 ? healthPct.toFixed(1) + '%' : '—'
+
+  const accountLeverage = accountValue > 0 ? totalNtl / accountValue : 0
+
+  return { accountValue, unrealizedPnl, realizedPnl, netPnl, maintMargin, withdrawable, healthPct, healthStr, healthCls, accountLeverage }
+}
+
 // ─── OVERVIEW ────────────────────────────────────────────────────────────────
-export function renderOverview({ perpState, spotState, fills, funding = [], openOrders, allMids = {}, portfolio = [], webData = null, sessionStart = null, firstFillTime = null }) {
+export function renderOverview({ perpState, spotState, fills, funding = [], openOrders, allMids = {}, portfolio = [], webData = null, sessionStart = null, firstFillTime = null, addr = null }) {
   const margin    = perpState.marginSummary ?? {}
   const positions = perpState.assetPositions ?? []
-
-  // Account value from portfolio allTime — same source as the charts
-  const portfolioAcctVal = portfolioLatest(portfolio, 'allTime', 'accountValueHistory')
-
-  // Fall back to clearinghouseState if portfolio not yet loaded
-  const accountValue = portfolioAcctVal ?? parseFloat(margin.accountValue ?? 0)
 
   const totalNtl    = parseFloat(margin.totalNtlPos    ?? 0)
   const marginUsed  = parseFloat(margin.totalMarginUsed ?? 0)
@@ -164,7 +219,11 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   const perpWithdrawable = parseFloat(perpState.withdrawable ?? 0)
   const spotUSDC         = (spotState?.balances ?? []).find(b => b.coin === 'USDC')
   const spotUSDCFree     = spotUSDC ? Math.max(0, parseFloat(spotUSDC.total ?? 0) - parseFloat(spotUSDC.hold ?? 0)) : 0
+  const spotUSDCTotal    = spotUSDC ? parseFloat(spotUSDC.total ?? 0) : 0
   const withdrawable     = perpWithdrawable + spotUSDCFree
+  const perpAcctVal      = parseFloat(margin.accountValue ?? 0)
+  // HL "Portfolio Value" — see liveAccountValue; unified USDC already contains perp equity
+  const accountValue     = liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal)
 
   const totalUnrPnl = positions.reduce((s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0)
   const totalVolume = fills.reduce((s, f) => s + f.notional, 0)
@@ -379,198 +438,523 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   ]
 
   const maintMargin = parseFloat(perpState.crossMaintenanceMarginUsed ?? 0)
-  const health      = accountValue > 0
-    ? Math.max(0, Math.min(100, (accountValue - maintMargin) / accountValue * 100))
+  // Health = 100 − HL's Unified Account Ratio (maint margin / unified USDC balance)
+  const _healthBase = spotUSDCTotal > 0 ? spotUSDCTotal : perpAcctVal
+  const health      = _healthBase > 0
+    ? Math.max(0, Math.min(100, (1 - maintMargin / _healthBase) * 100))
     : 100
   const healthColor = health > 50 ? 'var(--green)' : health > 25 ? 'var(--yellow)' : health > 10 ? '#ff9444' : 'var(--red)'
 
-  document.getElementById('overviewStats').innerHTML = `
-    <div class="overview-hero-row">
-      ${heroStats.map(s => `
-        <div class="stat-card stat-card-hero">
-          <div class="stat-label">${esc(s.label)}</div>
-          <div class="stat-value ${s.cls}">${esc(s.value)}</div>
-          <div class="stat-sub">${esc(s.sub)}</div>
-        </div>`).join('')}
-      <div class="stat-card stat-card-hero">
-        <div class="stat-label">Account Health</div>
-        <div class="stat-value" style="color:${healthColor}">${health.toFixed(1)}%</div>
-        <div class="health-bar-wrap health-bar-mob-hide" style="margin:8px 0 6px">
-          <div class="health-bar-fill" style="width:${health.toFixed(2)}%;background:${healthColor}"></div>
-        </div>
-        <div class="stat-sub">Maint. $${fmtUSD(maintMargin)} — ${positions.length} pos</div>
-      </div>
-    </div>
-    <div class="overview-perf-row">
-      ${perfStats.map(s => `
-        <div class="stat-card">
-          <div class="stat-label">${esc(s.label)}</div>
-          <div class="stat-value ${s.cls}"${s.id ? ` id="${s.id}"` : ''}>${esc(s.value)}</div>
-          ${s.sub ? `<div class="stat-sub">${esc(s.sub)}</div>` : ''}
-        </div>`).join('')}
-    </div>`
+  // ── Period change for the hero (from portfolio account-value history) ──────
+  _ovPortfolio = portfolio
+  _ovFills = fills
+  const periodChg = _ovComputeChange(_ovPeriod)
+  const chgCls    = periodChg.diff >= 0 ? 'pos' : 'neg'
+  const chgArrow  = periodChg.diff >= 0 ? '▲' : '▼'
+  const chgTxt    = (periodChg.diff >= 0 ? '+$' : '-$') + fmtUSD(Math.abs(periodChg.diff))
+  const chgPctTxt = (periodChg.diff >= 0 ? '+' : '') + periodChg.pct.toFixed(2) + '%'
 
-  // Clear legacy positions wrap if it still exists in HTML
-  const wrap = document.getElementById('overviewPositionsWrap')
-  if (wrap) wrap.innerHTML = ''
-}
+  const inMarginPct = accountValue > 0 ? (marginUsed / accountValue * 100) : 0
 
-// ─── POSITIONS TAB ───────────────────────────────────────────────────────────
-export function renderPositions(perpState, allMids = {}, openOrders = []) {
-  let positions = perpState.assetPositions ?? []
-  const tbody = document.getElementById('positionsTbody')
+  // ── Selected stats for the strip (the 6 from the mockup) ──────────────────
+  const ringColor = health > 70 ? 'var(--green)' : health > 40 ? 'var(--yellow)' : health > 20 ? '#ff9444' : 'var(--red)'
+  const strip = [
+    { label: 'All-Time PnL',  value: fmtPnL(allTimePnl).text,   sub: roiStr || 'vs net deposits', cls: fmtPnL(allTimePnl).cls },
+    { label: 'Net PnL',       value: fmtPnL(netPnl).text,       sub: pctEq(netPnl) || 'incl. funding', cls: fmtPnL(netPnl).cls },
+    { label: 'Win Rate',      value: winRate + (closedTrades > 0 ? '%' : ''), sub: winningTrades + ' / ' + closedTrades, cls: 'neu' },
+    { label: 'Profit Factor', value: profitFactor === Infinity ? '∞' : profitFactor > 0 ? profitFactor.toFixed(2) : '—', sub: 'wins ÷ losses', cls: profitFactor >= 1 ? 'pos' : profitFactor > 0 ? 'neg' : 'neu' },
+    { label: 'Total Volume',  value: '$' + fmtCompact(totalVolume), sub: fills.length + ' fills', cls: 'neu', id: 'statTotalVolume' },
+    { label: 'Current Streak', value: currentStreak === 0 ? '—' : Math.abs(currentStreak) + (currentStreak > 0 ? ' win' : ' loss') + (Math.abs(currentStreak) !== 1 ? (currentStreak > 0 ? 's' : 'es') : ''), sub: 'consecutive', cls: currentStreak > 0 ? 'pos' : currentStreak < 0 ? 'neg' : 'neu' },
+  ]
 
-  document.getElementById('posCount').textContent    = positions.length
-  document.getElementById('posCountBig').textContent = positions.length
-
-  // Update sortable headers
-  const thead = document.querySelector('#positionsTable thead tr')
-  if (thead) {
-    const k = _posSortKey, d = _posSortDir
-    thead.innerHTML =
-      _th('coin',  'Coin',     k, d) +
-      _th('side',  'Side',     k, d) +
-      _th('size',  'Size',     k, d) +
-      _th('entry', 'Entry',    k, d) +
-      _th('mark',  'Mark',     k, d) +
-      _th('value', 'Value',    k, d) +
-      _th('pnl',     'Unr. PnL', k, d) +
-      _th('roe',     'ROE',      k, d) +
-      '<th>Liq.</th><th>Lev.</th><th>Margin</th>' +
-      _th('funding', 'Funding',  k, d) +
-      '<th>Actions</th>'
-  }
-
-  if (positions.length === 0) {
-    tbody.innerHTML = emptyRow(12, '📭', 'No open positions')
-    return
-  }
-
-  // Build TP/SL map from open orders: coin → { tpPx, slPx }
+  // TP/SL map from open orders (for the per-position Edit modal)
   const tpslMap = {}
-  for (const o of openOrders) {
-    const orderType = o.orderType ?? ''
-    const isTp = orderType.startsWith('Take Profit') || o.triggerCondition === 'tp'
-    const isSl = orderType.startsWith('Stop')        || o.triggerCondition === 'sl'
+  for (const o of (openOrders ?? [])) {
+    const ot = o.orderType ?? ''
+    const isTp = ot.startsWith('Take Profit') || o.triggerCondition === 'tp'
+    const isSl = ot.startsWith('Stop')        || o.triggerCondition === 'sl'
     if (!isTp && !isSl) continue
-    const triggerPx = parseFloat(o.triggerPx ?? 0)
-    const limitPx   = parseFloat(o.limitPx   ?? 0)
-    const px = triggerPx > 0 ? triggerPx : limitPx
+    const px = parseFloat(o.triggerPx ?? 0) > 0 ? parseFloat(o.triggerPx) : parseFloat(o.limitPx ?? 0)
     if (!tpslMap[o.coin]) tpslMap[o.coin] = {}
     if (isTp) { tpslMap[o.coin].tpPx = px; tpslMap[o.coin].tpOid = o.oid }
     if (isSl) { tpslMap[o.coin].slPx = px; tpslMap[o.coin].slOid = o.oid }
   }
 
-  // Apply sort
-  if (_posSortKey) {
-    const val = (p) => {
-      const pos = p.position
-      switch (_posSortKey) {
-        case 'coin':  return pos.coin
-        case 'side':  return parseFloat(pos.szi) > 0 ? 'LONG' : 'SHORT'
-        case 'size':  return Math.abs(parseFloat(pos.szi))
-        case 'entry':   return parseFloat(pos.entryPx)
-        case 'mark':    return parseFloat(allMids[pos.coin] ?? 0)
-        case 'value':   return parseFloat(pos.positionValue)
-        case 'pnl':     return parseFloat(pos.unrealizedPnl)
-        case 'funding': return parseFloat(pos.cumFunding?.sinceOpen ?? 0)
-        case 'roe':     return parseFloat(pos.returnOnEquity)
-        default:        return 0
-      }
-    }
-    positions = [...positions].sort((a, b) => {
-      const av = val(a), bv = val(b)
-      return typeof av === 'string'
-        ? av.localeCompare(bv) * _posSortDir
-        : (av - bv) * _posSortDir
-    })
-  }
+  // Position / Order tab bodies (one shown at a time via __ovSetPosTab)
+  _ovPosData = { positions, allMids, tpslMap }
+  _ovPosBody = _ovBuildPosBody(positions, allMids, tpslMap)
+  _ovOrdData = { orders: openOrders ?? [], allMids }
+  _ovOrdBody = _ovBuildOrdBody(openOrders ?? [], allMids)
 
-  // Preserve expanded rows across re-renders
-  const openIds = new Set(
-    [...tbody.querySelectorAll('.row-expand-detail.open')].map(el => el.id)
-  )
+  // ── Recent activity from fills ────────────────────────────────────────────
+  const activity = _ovRecentActivity(fills)
 
-  tbody.innerHTML = positions.map((p, i) => {
-    const pos    = p.position
-    const side   = parseFloat(pos.szi) > 0 ? 'LONG' : 'SHORT'
-    const pnl    = fmtPnL(pos.unrealizedPnl)
-    const roe    = parseFloat(pos.returnOnEquity) * 100
-    const mktPx  = parseFloat(allMids[pos.coin] ?? 0)
-    const liqPx  = parseFloat(pos.liquidationPx ?? 0)
-    const isLong = side === 'LONG'
-    const eid    = `pos-expand-${i}`
-
-    // Warn if mark price is within 15% of liquidation price
-    let liqWarn = false, liqDistPct = 0
-    if (liqPx > 0 && mktPx > 0) {
-      liqDistPct = isLong
-        ? (mktPx - liqPx) / mktPx * 100
-        : (liqPx - mktPx) / mktPx * 100
-      liqWarn = liqDistPct > 0 && liqDistPct < 15
-    }
-
-    return `<tr${liqWarn ? ' class="liq-warn-row"' : ''}>
-      <td>
-        <div style="display:flex;align-items:center;gap:6px">
-          <button class="row-expand-btn" onclick="window.__toggleRowExpand('${eid}')" aria-label="expand">&#8964;</button>
-          <b>${esc(pos.coin)}</b>
-        </div>
-      </td>
-      <td><span class="badge badge-${side.toLowerCase()}">${side}</span></td>
-      <td>${fmtSize(pos.szi)}</td>
-      <td>$${fmtPrice(pos.entryPx)}</td>
-      <td>$${mktPx ? fmtPrice(mktPx) : '—'}</td>
-      <td>$${fmtUSD(pos.positionValue)}</td>
-      <td class="${pnl.cls}">${pnl.text}</td>
-      <td class="${roe >= 0 ? 'pos' : 'neg'}">${fmtPct(roe, true)}</td>
-      <td class="${liqWarn ? 'liq-warn' : ''}">
-        ${liqWarn ? '⚠ ' : ''}$${fmtPrice(liqPx)}
-        ${liqWarn ? `<div style="font-size:10px;margin-top:2px">${liqDistPct.toFixed(1)}% away</div>` : ''}
-      </td>
-      <td>${esc(String(pos.leverage.value))}x (${esc(pos.leverage.type)})</td>
-      <td>$${fmtUSD(pos.marginUsed)}</td>
-      <td class="${fmtPnL(-parseFloat(pos.cumFunding?.sinceOpen ?? 0)).cls}" style="font-size:11px">${fmtPnL(-parseFloat(pos.cumFunding?.sinceOpen ?? 0)).text}</td>
-      <td>
-        <button class="manage-btn"
-          onclick="window.__openEditModal('${esc(pos.coin)}','${side}','${pos.szi}','${pos.entryPx}',${tpslMap[pos.coin]?.tpPx ?? 0},${tpslMap[pos.coin]?.slPx ?? 0},${tpslMap[pos.coin]?.tpOid ?? 0},${tpslMap[pos.coin]?.slOid ?? 0},${pos.leverage?.value ?? 1})">
-          ✏ TP/SL
-        </button>
-        <button class="manage-btn close"
-          onclick="window.__openCloseModal('${esc(pos.coin)}','${side}','${pos.szi}',${mktPx || parseFloat(pos.entryPx)})">
-          ✕ Close
-        </button>
-      </td>
-    </tr>
-    <tr class="row-expand-detail" id="${eid}">
-      <td colspan="13">
-        <div class="row-expand-grid">
-          <div class="row-expand-item"><span>Size</span><span>${fmtSize(pos.szi)} ${esc(pos.coin)}</span></div>
-          <div class="row-expand-item"><span>Position Value</span><span>$${fmtUSD(pos.positionValue)}</span></div>
-          <div class="row-expand-item"><span>Mark Price</span><span>$${mktPx ? fmtPrice(mktPx) : '—'}</span></div>
-          <div class="row-expand-item"><span>Entry Price</span><span>$${fmtPrice(pos.entryPx)}</span></div>
-          <div class="row-expand-item ${liqWarn ? 'liq-warn' : ''}"><span>Liq. Price</span><span>${liqWarn ? '⚠ ' : ''}$${fmtPrice(liqPx)}</span></div>
-          <div class="row-expand-item"><span>Leverage</span><span>${esc(String(pos.leverage.value))}x (${esc(pos.leverage.type)})</span></div>
-          <div class="row-expand-item"><span>Margin Used</span><span>$${fmtUSD(pos.marginUsed)}</span></div>
-          <div class="row-expand-item"><span>ROE</span><span class="${roe >= 0 ? 'pos' : 'neg'}">${fmtPct(roe, true)}</span></div>
-          <div class="row-expand-item"><span>Funding</span><span class="${fmtPnL(-parseFloat(pos.cumFunding?.sinceOpen ?? 0)).cls}">${fmtPnL(-parseFloat(pos.cumFunding?.sinceOpen ?? 0)).text}</span></div>
-        </div>
-      </td>
-    </tr>`
+  const rangeBtns = ['1D','1W','1M','All'].map(r => {
+    const active = _OV_PERIOD_KEY[r] === _ovPeriod
+    return `<button class="ov-range-btn${active ? ' active' : ''}" onclick="window.__ovSetRange('${r}')">${r}</button>`
   }).join('')
 
-  // Restore previously expanded rows
-  openIds.forEach(id => {
-    const row = document.getElementById(id)
-    if (!row) return
-    row.classList.add('open')
-    const btn = row.previousElementSibling?.querySelector('.row-expand-btn')
-    if (btn) btn.classList.add('open')
-  })
+  // Preserve scroll across the full re-render (a live PnL update re-runs this and
+  // would otherwise snap the page — and the positions list — back to the top).
+  const _ovStatsEl = document.getElementById('overviewStats')
+  const _ovWinY    = window.scrollY
+  const _ovPosTop  = _ovStatsEl?.querySelector('.ov-pos-scroll')?.scrollTop ?? 0
+
+  _ovStatsEl.innerHTML = `
+    <div class="ov-grid">
+      <div class="ov-main">
+
+        <div class="ov-top-row">
+          <div class="ov-card ov-equity">
+            <div class="ov-eq-head">
+              <div style="display:flex;align-items:flex-start;gap:12px;min-width:0">
+                <div class="ov-acct-av">${(typeof window !== 'undefined' && window._mobVAvatarHtml) ? window._mobVAvatarHtml(addr, 44) : ''}</div>
+                <div style="min-width:0">
+                <div class="ov-label">Account Value · Perp Equity</div>
+                <div class="ov-eq-val">$${fmtUSD(accountValue)}</div>
+                <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+                  <span class="ov-chg ${chgCls}" id="ovChgPill">${chgArrow} ${chgTxt} · ${chgPctTxt}</span>
+                </div>
+                <div class="ov-eq-sub">${positions.length} open position${positions.length !== 1 ? 's' : ''} · cross + isolated · today</div>
+                </div>
+              </div>
+              <div class="ov-range" id="ovRange">${rangeBtns}</div>
+            </div>
+            <div class="ov-chart-tabs" id="ovChartTabs">
+              ${[['value','Equity'],['accumulated','Acc. PnL'],['realized','Realized']].map(([t,l]) =>
+                `<button class="ov-ct-btn${_ovChartType===t?' active':''}" data-ct="${t}" onclick="window.__ovSetChartType('${t}')">${l}</button>`).join('')}
+            </div>
+            <div class="ov-chart-wrap"><canvas id="overviewChart"></canvas></div>
+          </div>
+
+          <div class="ov-card ov-health">
+            <div class="ov-health-head"><span class="ov-label">Account Health</span></div>
+            <div class="ov-ring-wrap">
+              ${_ovRing(health, ringColor)}
+            </div>
+            <div class="ov-health-rows">
+              <div class="ov-hr"><span>Unrealized PnL</span><b class="${totalUnrPnl >= 0 ? 'pos' : 'neg'}">${fmtPnL(totalUnrPnl).text}</b></div>
+              <div class="ov-hr"><span>Leverage</span><b>${(accountValue > 0 ? totalNtl / accountValue : 0).toFixed(2)}×</b></div>
+              <div class="ov-hr"><span>Withdrawable</span><b class="pos">$${fmtUSD(withdrawable)}</b></div>
+              <div class="ov-hr"><span>In margin · ${inMarginPct.toFixed(1)}%</span><b>$${fmtUSD(marginUsed)}</b></div>
+              <div class="ov-hr"><span>Maint. margin</span><b>$${fmtUSD(maintMargin)}</b></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ov-stat-strip">
+          ${strip.map(s => `
+            <div class="ov-stat">
+              <div class="ov-stat-label">${esc(s.label)}</div>
+              <div class="ov-stat-val ${s.cls}"${s.id ? ` id="${s.id}"` : ''}>${esc(s.value)}</div>
+              <div class="ov-stat-sub">${esc(s.sub)}</div>
+            </div>`).join('')}
+        </div>
+
+        <div class="ov-card ov-positions">
+          <div class="ov-card-head">
+            <div class="ov-postabs">
+              <button class="ov-postab${_ovPosTab === 'positions' ? ' active' : ''}" data-pt="positions" onclick="window.__ovSetPosTab('positions')">Positions <span class="count-pill">${positions.length}</span></button>
+              <button class="ov-postab${_ovPosTab === 'orders' ? ' active' : ''}" data-pt="orders" onclick="window.__ovSetPosTab('orders')">Orders <span class="count-pill">${(openOrders ?? []).length}</span></button>
+              <button class="ov-postab${_ovPosTab === 'outcomes' ? ' active' : ''}" data-pt="outcomes" onclick="window.__ovSetPosTab('outcomes')">Outcomes <span class="count-pill">${_ovOcCount()}</span></button>
+            </div>
+            <button class="manage-btn close" id="ovPosAction" style="padding:4px 12px;font-size:11px;display:${_ovPosTab === 'outcomes' ? 'none' : ''}" onclick="window.__ovPosAction()">${_ovPosTab === 'positions' ? 'Close all' : 'Cancel all'}</button>
+          </div>
+          <div id="ovPosBody">${_ovTabBody(_ovPosTab)}</div>
+        </div>
+
+      </div>
+
+      <div class="ov-side">
+        <div class="ov-winloss">
+          <div class="ov-card ov-wl">
+            <div class="ov-stat-label">Biggest Win</div>
+            <div class="ov-wl-val pos">${biggestWin > 0 ? fmtPnL(biggestWin).text : '—'}</div>
+            <div class="ov-stat-sub">${biggestWin > 0 ? esc(biggestWinCoin) + ' · ' + esc(biggestWinTime) : 'No wins yet'}</div>
+          </div>
+          <div class="ov-card ov-wl">
+            <div class="ov-stat-label">Biggest Loss</div>
+            <div class="ov-wl-val neg">${biggestLoss < 0 ? fmtPnL(biggestLoss).text : '—'}</div>
+            <div class="ov-stat-sub">${biggestLoss < 0 ? esc(biggestLossCoin) + ' · ' + esc(biggestLossTime) : 'No losses yet'}</div>
+          </div>
+        </div>
+
+        <div class="ov-card ov-activity">
+          <div class="ov-card-head">
+            <div class="ov-card-title">Recent activity</div>
+            <span class="ov-link" onclick="window.switchTab('trades',null)">History →</span>
+          </div>
+          ${activity || '<div class="ov-empty">No recent activity</div>'}
+        </div>
+
+        <div class="ov-card ov-footer">
+          <div class="ov-hr"><span>Net deposited</span><b>${cumLedger !== 0 ? '$' + fmtUSD(netDeposited) : '—'}</b></div>
+          <div class="ov-hr"><span>All-time funding</span><b class="${allTimeFunding >= 0 ? 'pos' : 'neg'}">${fmtPnL(allTimeFunding).text}</b></div>
+          <div class="ov-hr"><span>Member since</span><b>${esc(memberSince)}</b></div>
+        </div>
+      </div>
+    </div>`
+
+  // Restore scroll (window + inner positions list) after the innerHTML swap.
+  const _newPosScroll = _ovStatsEl.querySelector('.ov-pos-scroll')
+  if (_newPosScroll && _ovPosTop) _newPosScroll.scrollTop = _ovPosTop
+  if (_ovWinY) window.scrollTo(0, _ovWinY)
+
+  if (_ovPosTab === 'outcomes') _ovRefreshOcMarks()   // fetch live marks for the outcomes body
+
+  // Draw / update the hero chart
+  try { renderOverviewChart(portfolio, _ovPeriod, _ovChartType, fills) } catch (e) { console.warn('overview chart', e) }
+
+  const wrap = document.getElementById('overviewPositionsWrap')
+  if (wrap) wrap.innerHTML = ''
 }
 
+// Period change from cached portfolio account-value history
+function _ovComputeChange(period) {
+  const entry = (_ovPortfolio || []).find(p => p[0] === period) ?? (_ovPortfolio || []).find(p => p[0] === 'allTime')
+  const hist  = entry?.[1]?.accountValueHistory ?? []
+  if (hist.length < 2) return { diff: 0, pct: 0 }
+  const first = parseFloat(hist[0][1]), last = parseFloat(hist[hist.length - 1][1])
+  const diff  = last - first
+  return { diff, pct: first !== 0 ? diff / first * 100 : 0 }
+}
+
+// SVG donut ring for account health — starts at 12 o'clock and sweeps CLOCKWISE
+// (top → right → bottom → left). Parametrized so direction is unambiguous:
+//   x = cx + r·sin(θ),  y = cy − r·cos(θ),  θ = 2π·fraction  (θ=0 → top, θ grows clockwise)
+function _ovRing(pct, color) {
+  const p = Math.max(0, Math.min(100, pct)) / 100
+  const cx = 65, cy = 65, r = 52
+  let arc
+  if (p >= 0.999) {
+    arc = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="10"/>`
+  } else {
+    const end = 2 * Math.PI * p
+    const x1 = cx - r * Math.sin(end), y1 = cy - r * Math.cos(end)
+    const large = p > 0.5 ? 1 : 0
+    arc = `<path d="M ${cx} ${(cy - r).toFixed(2)} A ${r} ${r} 0 ${large} 0 ${x1.toFixed(2)} ${y1.toFixed(2)}" fill="none" stroke="${color}" stroke-width="10" stroke-linecap="round"/>`
+  }
+  return `<svg viewBox="0 0 130 130" width="150" height="150" class="ov-ring">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--border)" stroke-width="10"/>
+    ${arc}
+    <text x="65" y="72" text-anchor="middle" fill="${color}" font-size="27" font-weight="800" font-family="var(--font-mono)">${(p * 100).toFixed(1)}%</text>
+  </svg>`
+}
+
+// Real token icon (same renderer as mobile), wrapped in a sized circle.
+function _ovCoinIcon(coin) {
+  const inner = (typeof window !== 'undefined' && window._coinIconHtml)
+    ? window._coinIconHtml(coin)
+    : esc((String(coin)[0] || '?').toUpperCase())
+  return `<div class="ov-av-img">${inner}</div>`
+}
+
+function _ovPositionRow(p, allMids, tpslMap = {}) {
+  const szi    = parseFloat(p.szi ?? 0)
+  const isLong = szi > 0
+  const mark   = parseFloat(allMids?.[p.coin] ?? 0)
+  const entry  = parseFloat(p.entryPx ?? 0)
+  const liq    = parseFloat(p.liquidationPx ?? 0)
+  const uPnl   = parseFloat(p.unrealizedPnl ?? 0)
+  const roe    = parseFloat(p.returnOnEquity ?? 0) * 100
+  const lev    = p.leverage?.value ?? 1
+  const isIso  = (p.leverage?.type ?? 'cross') === 'isolated'
+  const levT   = isIso ? 'iso' : 'cross'
+  const side   = isLong ? 'LONG' : 'SHORT'
+  const sideCls = isLong ? 'pos' : 'neg'
+  const notional = parseFloat(p.positionValue ?? 0) || Math.abs(szi) * mark
+  const margin   = parseFloat(p.marginUsed ?? 0)
+  const funding  = -parseFloat(p.cumFunding?.sinceOpen ?? 0)   // positive = received
+  // Health: liq-distance (100% at entry → 0% at liq)
+  let hp = 100
+  if (liq > 0 && entry > 0 && mark > 0) {
+    if (isLong && entry > liq)       hp = Math.max(0, Math.min(100, (mark - liq) / (entry - liq) * 100))
+    else if (!isLong && liq > entry) hp = Math.max(0, Math.min(100, (liq - mark) / (liq - entry) * 100))
+  }
+  const hpColor = hp > 70 ? 'var(--green)' : hp > 40 ? 'var(--yellow)' : hp > 20 ? '#ff9444' : 'var(--red)'
+  const pnlCls  = uPnl >= 0 ? 'pos' : 'neg'
+  const sid = String(p.coin).replace(/[^a-z0-9]/gi, '_')
+  const t   = tpslMap[p.coin] ?? {}
+  const px  = mark || entry
+  const open = _ovExpanded.has(sid)
+  const actions = `
+    <div class="ov-pos-actions" id="ovpa-${sid}" style="display:${open ? 'flex' : 'none'}">
+      <button class="manage-btn" onclick="event.stopPropagation();window.__openEditModal('${esc(p.coin)}','${side}','${p.szi}','${p.entryPx}',${t.tpPx ?? 0},${t.slPx ?? 0},${t.tpOid ?? 0},${t.slOid ?? 0},${lev})">✏ TP/SL · Leverage</button>
+      <button class="manage-btn" onclick="event.stopPropagation();window.__openShareCard({coin:'${esc(p.coin)}',title:'${esc(_lbl(p.coin))}',side:'${side}',lev:${lev},roePct:${roe.toFixed(2)},entry:'$${fmtPrice(entry)}',mark:'$${fmtPrice(mark)}'})">↗ Share PnL</button>
+      ${isIso ? `<button class="manage-btn margin" onclick="event.stopPropagation();window.__openAdjustMarginModal('${esc(p.coin)}','${side}',${margin},${notional},${lev})">⊕ Margin</button>
+      <button class="manage-btn" onclick="event.stopPropagation();window.__openGuardModal('liqguard','${esc(p.coin)}','${side}')">🛡 Liq Guard</button>
+      <button class="manage-btn" onclick="event.stopPropagation();window.__openGuardModal('levbrake','${esc(p.coin)}','${side}')">🛑 Lev Brake</button>` : ''}
+    </div>`
+  return `<div class="ov-pos-item">
+    <div class="ov-pos-row" onclick="window.__ovTogglePos('${sid}')">
+      <span class="ov-pos-mkt">${_ovCoinIcon(p.coin)}<span class="ov-pos-info"><b>${esc(_lbl(p.coin))}</b><i>${lev}× ${levT}</i></span></span>
+      <span class="ov-side-badge ${sideCls}">${side}</span>
+      <span class="ov-r ov-pos-size"><b>${fmtSize(Math.abs(szi))}</b><i>$${fmtUSD(notional)}</i></span>
+      <span class="ov-r mono">$${fmtPrice(entry)}</span>
+      <span class="ov-r mono">$${fmtPrice(mark)}</span>
+      <span class="ov-r mono neg">${liq > 0 ? '$' + fmtPrice(liq) : '—'}</span>
+      <span class="ov-r mono">$${fmtUSD(margin)}</span>
+      <span class="ov-r mono ${funding >= 0 ? 'pos' : 'neg'}">${funding >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(funding))}</span>
+      <span class="ov-r ov-hp"><span class="ov-hp-bar"><i style="width:${hp.toFixed(0)}%;background:${hpColor}"></i></span><em>${hp.toFixed(0)}%</em></span>
+      <span class="ov-r mono ${pnlCls}">${fmtPnL(uPnl).text}<i class="ov-roe">${roe >= 0 ? '+' : ''}${roe.toFixed(2)}%</i></span>
+      <span class="ov-r"><button class="ov-close-x" title="Close position" onclick="event.stopPropagation();window.__openCloseModal('${esc(p.coin)}','${side}','${p.szi}',${px})">✕</button></span>
+    </div>
+    ${actions}
+  </div>`
+}
+
+window.__ovTogglePos = function(sid) {
+  const el = document.getElementById('ovpa-' + sid)
+  const open = !_ovExpanded.has(sid)
+  if (open) _ovExpanded.add(sid); else _ovExpanded.delete(sid)
+  if (el) el.style.display = open ? 'flex' : 'none'
+}
+
+// ── Overview positions — sortable column headers ────────────────────────────
+const _OV_SORT_COLS = [
+  ['market', 'Market', false], ['side', 'Side', false], ['size', 'Size', true],
+  ['entry', 'Entry', true], ['mark', 'Mark', true], ['liq', 'Liq. Price', true],
+  ['margin', 'Margin', true], ['funding', 'Funding', true], ['health', 'Health', true], ['pnl', 'PnL', true],
+]
+
+function _ovPosSortVal(ap, key, allMids) {
+  const p    = ap.position
+  const szi  = parseFloat(p.szi ?? 0)
+  const mark = parseFloat(allMids?.[p.coin] ?? 0)
+  const entry = parseFloat(p.entryPx ?? 0)
+  const liq   = parseFloat(p.liquidationPx ?? 0)
+  switch (key) {
+    case 'market':  return String(_lbl(p.coin)).toUpperCase()
+    case 'side':    return szi >= 0 ? 1 : 0
+    case 'size':    return parseFloat(p.positionValue ?? 0) || Math.abs(szi) * mark
+    case 'entry':   return entry
+    case 'mark':    return mark
+    case 'liq':     return liq
+    case 'margin':  return parseFloat(p.marginUsed ?? 0)
+    case 'funding': return -parseFloat(p.cumFunding?.sinceOpen ?? 0)
+    case 'health': {
+      const isLong = szi > 0; let hp = 100
+      if (liq > 0 && entry > 0 && mark > 0) {
+        if (isLong && entry > liq)       hp = Math.max(0, Math.min(100, (mark - liq) / (entry - liq) * 100))
+        else if (!isLong && liq > entry) hp = Math.max(0, Math.min(100, (liq - mark) / (liq - entry) * 100))
+      }
+      return hp
+    }
+    case 'pnl':     return parseFloat(p.unrealizedPnl ?? 0)
+    default:        return Math.abs(parseFloat(p.positionValue ?? 0))
+  }
+}
+
+function _ovBuildPosBody(positions, allMids, tpslMap) {
+  if (!positions.length) return `<div class="ov-empty">No open positions</div>`
+  const sorted = [...positions].sort((a, b) => {
+    if (!_ovPosSortKey) return Math.abs(parseFloat(b.position.positionValue ?? 0)) - Math.abs(parseFloat(a.position.positionValue ?? 0))
+    const av = _ovPosSortVal(a, _ovPosSortKey, allMids), bv = _ovPosSortVal(b, _ovPosSortKey, allMids)
+    if (typeof av === 'string') return av.localeCompare(bv) * _ovPosSortDir
+    return (av - bv) * _ovPosSortDir
+  })
+  const head = `<div class="ov-pos-head">
+    ${_OV_SORT_COLS.map(([k, l, r]) => `<span class="ov-sort${r ? ' ov-r' : ''}" onclick="window.__ovSortPos('${k}')">${l}${_ovSortArr(k, _ovPosSortKey, _ovPosSortDir)}</span>`).join('')}
+    <span></span>
+  </div>`
+  return `${head}<div class="ov-pos-scroll">${sorted.map(ap => _ovPositionRow(ap.position, allMids, tpslMap)).join('')}</div>`
+}
+
+// Sort indicator: accent ▲/▼ on the active column, faint ⇅ on the rest so the
+// feature is discoverable even before the user has clicked anything.
+function _ovSortArr(key, activeKey, dir) {
+  return key === activeKey
+    ? `<i class="ov-sort-arr">${dir === 1 ? '▲' : '▼'}</i>`
+    : `<i class="ov-sort-arr ov-sort-idle">⇅</i>`
+}
+
+window.__ovSortPos = function(key) {
+  if (_ovPosSortKey === key) _ovPosSortDir *= -1
+  else { _ovPosSortKey = key; _ovPosSortDir = (key === 'market' || key === 'side') ? 1 : -1 }
+  if (!_ovPosData) return
+  _ovPosBody = _ovBuildPosBody(_ovPosData.positions, _ovPosData.allMids, _ovPosData.tpslMap)
+  if (_ovPosTab === 'positions') { const b = document.getElementById('ovPosBody'); if (b) b.innerHTML = _ovPosBody }
+}
+
+// ── Overview orders — sortable + extra columns (matches mobile detail) ───────
+const _OV_ORD_COLS = [
+  ['market', 'Market', false], ['side', 'Type', false], ['size', 'Size', true],
+  ['price', 'Price', true], ['value', 'Value', true], ['pnl', 'Est. PnL', true],
+]
+
+function _ovOrdSortVal(o, key, allMids) {
+  const trig = parseFloat(o.triggerPx ?? 0)
+  const px   = trig > 0 ? trig : parseFloat(o.limitPx ?? 0)
+  const sz   = parseFloat(o.sz ?? 0)
+  switch (key) {
+    case 'market': return String(_lbl(o.coin)).toUpperCase()
+    case 'side': {
+      const isBuy = o.side === 'B' || /buy|long/i.test(o.side ?? '')
+      const ot = o.orderType ?? ''
+      const isTp = ot.startsWith('Take Profit') || o.triggerCondition === 'tp'
+      const isSl = ot.startsWith('Stop') || o.triggerCondition === 'sl'
+      return isTp ? 3 : isSl ? 2 : (isBuy ? 1 : 0)
+    }
+    case 'size':  return sz
+    case 'price': return px
+    case 'value': return px * sz
+    case 'pnl':   return _ovOrderEstPnl(o, allMids) ?? -Infinity
+    default:      return px * sz
+  }
+}
+
+// Estimated PnL if this order fills, vs the current open position's entry. Mirrors
+// the mobile order detail: meaningful for TP/SL AND reduce-only orders (e.g. a limit
+// take-profit ladder) tied to a position. Returns null otherwise.
+function _ovOrderEstPnl(o, allMids) {
+  const ot = o.orderType ?? ''
+  const isTp = ot.startsWith('Take Profit') || o.triggerCondition === 'tp'
+  const isSl = ot.startsWith('Stop') || o.triggerCondition === 'sl'
+  if (!isTp && !isSl && !o.reduceOnly) return null
+  const pos = _ovPosData?.positions?.find(ap => ap.position.coin === o.coin)?.position
+  if (!pos) return null
+  const entry = parseFloat(pos.entryPx ?? 0)
+  const trig  = parseFloat(o.triggerPx ?? 0) || parseFloat(o.limitPx ?? 0)
+  const sz    = parseFloat(o.sz ?? 0) || Math.abs(parseFloat(pos.szi ?? 0))
+  if (!entry || !trig || !sz) return null
+  const isLong = parseFloat(pos.szi ?? 0) > 0
+  return (isLong ? (trig - entry) : (entry - trig)) * sz
+}
+
+function _ovBuildOrdBody(orders, allMids) {
+  if (!orders?.length) return `<div class="ov-empty">No open orders</div>`
+  const sorted = [...orders].sort((a, b) => {
+    if (!_ovOrdSortKey) return 0
+    const av = _ovOrdSortVal(a, _ovOrdSortKey, allMids), bv = _ovOrdSortVal(b, _ovOrdSortKey, allMids)
+    if (typeof av === 'string') return av.localeCompare(bv) * _ovOrdSortDir
+    return (av - bv) * _ovOrdSortDir
+  })
+  const head = `<div class="ov-ord-head">
+    ${_OV_ORD_COLS.map(([k, l, r]) => `<span class="ov-sort${r ? ' ov-r' : ''}" onclick="window.__ovSortOrd('${k}')">${l}${_ovSortArr(k, _ovOrdSortKey, _ovOrdSortDir)}</span>`).join('')}
+    <span class="ov-r"></span>
+  </div>`
+  return `${head}<div class="ov-pos-scroll">${_ovOrderRows(sorted, allMids)}</div>`
+}
+
+window.__ovSortOrd = function(key) {
+  if (_ovOrdSortKey === key) _ovOrdSortDir *= -1
+  else { _ovOrdSortKey = key; _ovOrdSortDir = (key === 'market' || key === 'side') ? 1 : -1 }
+  if (!_ovOrdData) return
+  _ovOrdBody = _ovBuildOrdBody(_ovOrdData.orders, _ovOrdData.allMids)
+  if (_ovPosTab === 'orders') { const b = document.getElementById('ovPosBody'); if (b) b.innerHTML = _ovOrdBody }
+}
+
+function _ovOrderRows(orders, allMids) {
+  return (orders || []).map(o => {
+    const trig  = parseFloat(o.triggerPx ?? 0)
+    const px    = trig > 0 ? trig : parseFloat(o.limitPx ?? 0)
+    const sz    = parseFloat(o.sz ?? 0)
+    const isBuy = o.side === 'B' || /buy|long/i.test(o.side ?? '')
+    const ot    = o.orderType ?? 'Limit'
+    const val   = px * sz
+    const isTp  = ot.startsWith('Take Profit') || o.triggerCondition === 'tp'
+    const isSl  = ot.startsWith('Stop') || o.triggerCondition === 'sl'
+    const typeLabel = isTp ? 'TP' : isSl ? 'SL' : (isBuy ? 'BUY' : 'SELL')
+    const typeCls   = isTp ? 'pos' : isSl ? 'neg' : (isBuy ? 'pos' : 'neg')
+    const estPnl    = _ovOrderEstPnl(o, allMids)
+    const pnlHtml   = estPnl == null
+      ? `<span class="ov-r mono" style="color:var(--muted)">—</span>`
+      : `<span class="ov-r mono ${estPnl >= 0 ? 'pos' : 'neg'}">${fmtPnL(estPnl).text}</span>`
+    return `<div class="ov-ord-row">
+      <span class="ov-pos-mkt">${_ovCoinIcon(o.coin)}<span class="ov-pos-info"><b>${esc(_lbl(o.coin))}</b><i>${esc(ot)}</i></span></span>
+      <span class="ov-side-badge ${typeCls}">${typeLabel}</span>
+      <span class="ov-r mono">${fmtSize(sz)}</span>
+      <span class="ov-r mono">$${fmtPrice(px)}</span>
+      <span class="ov-r mono">$${fmtUSD(val)}</span>
+      ${pnlHtml}
+      <span class="ov-r"><button class="ov-cancel" onclick="event.stopPropagation();window.__cancelOrder('${esc(o.coin)}',${o.oid},false,this)">✕</button></span>
+    </div>`
+  }).join('')
+}
+
+function _ovRecentActivity(fills) {
+  // Collapse partial fills of one order (same as the History tab) so e.g. 3 partial
+  // PURR fills show as a single "Opened PURR long" row, not three.
+  const grouped = aggregateByHash(fills || []).sort((a, b) => b.time - a.time)
+  const items = grouped.slice(0, 5).map(f => {
+    const dir   = (f.dir ?? '').toLowerCase()
+    const isClose = dir.includes('close') || f.closedPnl !== 0
+    const sideWord = dir.includes('long') ? 'long' : dir.includes('short') ? 'short' : (f.side === 'BUY' ? 'long' : 'short')
+    const verb  = isClose ? 'Closed' : 'Opened'
+    const subCls = isClose && f.closedPnl ? (f.closedPnl >= 0 ? 'pos' : 'neg') : ''
+    const sub   = isClose && f.closedPnl ? fmtPnL(f.closedPnl).text + ' realized'
+               : '$' + fmtUSD(f.notional) + ' notional'
+    const ago   = _ovTimeAgo(f.time)
+    return `<div class="ov-act-row">
+      ${_ovCoinIcon(f.coin)}
+      <span class="ov-act-main"><b>${verb} ${esc(_lbl(f.coin))} ${sideWord}</b><i class="${subCls}">${esc(sub)}</i></span>
+      <span class="ov-act-ago">${ago}</span>
+    </div>`
+  })
+  return items.join('')
+}
+
+function _ovTimeAgo(t) {
+  const s = Math.max(0, (Date.now() - t) / 1000)
+  if (s < 90)      return Math.round(s) + 's'
+  if (s < 5400)    return Math.round(s / 60) + 'm'
+  if (s < 86400)   return Math.round(s / 3600) + 'h'
+  return Math.round(s / 86400) + 'd'
+}
+
+// Range switcher — re-render chart + period change only
+window.__ovSetRange = function(label) {
+  _ovPeriod = _OV_PERIOD_KEY[label] || 'week'
+  document.querySelectorAll('#ovRange .ov-range-btn').forEach(b => b.classList.toggle('active', b.textContent === label))
+  const chg = _ovComputeChange(_ovPeriod)
+  const pill = document.getElementById('ovChgPill')
+  if (pill) {
+    const up = chg.diff >= 0
+    pill.className = 'ov-chg ' + (up ? 'pos' : 'neg')
+    pill.textContent = `${up ? '▲' : '▼'} ${up ? '+$' : '-$'}${fmtUSD(Math.abs(chg.diff))} · ${up ? '+' : ''}${chg.pct.toFixed(2)}%`
+  }
+  try { renderOverviewChart(_ovPortfolio, _ovPeriod, _ovChartType, _ovFills) } catch {}
+}
+
+// Outcome (prediction) holdings live in main.js — access via window bridges.
+function _ovOcCount() { return (typeof window !== 'undefined' && window.__ovOutcomeHoldings) ? window.__ovOutcomeHoldings().length : 0 }
+function _ovTabBody(tab) {
+  if (tab === 'orders')   return _ovOrdBody
+  if (tab === 'outcomes') return (typeof window !== 'undefined' && window.__ovBuildOcBody) ? window.__ovBuildOcBody() : `<div class="ov-empty">No outcome positions</div>`
+  return _ovPosBody
+}
+// Fetch live outcome marks after the outcomes body is in the DOM.
+function _ovRefreshOcMarks() { try { window.__ovUpdateOcMarks?.() } catch {} }
+
+// Positions / Orders / Outcomes sub-tab switcher (one at a time)
+window.__ovSetPosTab = function(tab) {
+  _ovPosTab = tab
+  document.querySelectorAll('.ov-postab').forEach(b => b.classList.toggle('active', b.dataset.pt === tab))
+  const body = document.getElementById('ovPosBody')
+  if (body) body.innerHTML = _ovTabBody(tab)
+  const act = document.getElementById('ovPosAction')
+  if (act) {
+    act.style.display = tab === 'outcomes' ? 'none' : ''
+    act.textContent = tab === 'positions' ? 'Close all' : 'Cancel all'
+  }
+  if (tab === 'outcomes') _ovRefreshOcMarks()
+}
+
+window.__ovPosAction = function() {
+  if (_ovPosTab === 'positions') window.__closeAllPositions?.(document.getElementById('ovPosAction'))
+  else                           window.__cancelAllOrders?.()
+}
+
+// Chart type switcher (Equity / Acc. PnL / Realized)
+window.__ovSetChartType = function(type) {
+  _ovChartType = type
+  document.querySelectorAll('#ovChartTabs .ov-ct-btn').forEach(b => b.classList.toggle('active', b.dataset.ct === type))
+  try { renderOverviewChart(_ovPortfolio, _ovPeriod, _ovChartType, _ovFills) } catch {}
+}
+
+
 // ─── SPOT TAB ────────────────────────────────────────────────────────────────
-export function renderSpot(spotState) {
+export function renderSpot(spotState, ocTokenMap = {}) {
   const bals  = (spotState.balances ?? []).filter(b => parseFloat(b.total) > 0)
   const tbody = document.getElementById('spotTbody')
 
@@ -588,7 +972,7 @@ export function renderSpot(spotState) {
     const hold  = parseFloat(b.hold ?? 0)
     const avail = total - hold
     return `<tr>
-      <td><b>${esc(b.coin)}</b></td>
+      <td><b>${esc(ocCoinLabel(b.coin, ocTokenMap))}</b></td>
       <td>${fmtSize(total)}</td>
       <td>${fmtSize(hold)}</td>
       <td class="pos">${fmtSize(avail)}</td>
@@ -597,11 +981,25 @@ export function renderSpot(spotState) {
 }
 
 // ─── ORDERS TAB ──────────────────────────────────────────────────────────────
-export function renderOrders(openOrders, perpState) {
+// Friendly label for a coin: prediction-market "#N" codes resolve to their
+// market name + side via ocTokenMap (e.g. "#2170" → "USA Yes"); else strip the
+// HIP-3 dex prefix as usual.
+function ocCoinLabel(coin, ocTokenMap) {
+  if (typeof coin === 'string' && (coin[0] === '#' || coin[0] === '+')) {
+    const t = ocTokenMap?.['#' + coin.slice(1)]
+    if (t && t.name) return `${t.name} ${t.side ?? ''}`.trim()
+    // Settled outcome we never cached — decode to a readable placeholder.
+    if (typeof window !== 'undefined' && window._ocFallbackLabel) return window._ocFallbackLabel(coin)
+  }
+  return coinLabel(coin)
+}
+
+export function renderOrders(openOrders, perpState, ocTokenMap = {}) {
   const tbody = document.getElementById('ordersTbody')
 
-  document.getElementById('ordCount').textContent    = openOrders.length
-  document.getElementById('ordCountBig').textContent = openOrders.length
+  const _oc  = document.getElementById('ordCount');    if (_oc)  _oc.textContent  = openOrders.length
+  const _ocb = document.getElementById('ordCountBig'); if (_ocb) _ocb.textContent = openOrders.length
+  if (!tbody) return   // Orders tab removed — orders now render on the Overview
 
   // Update sortable headers
   const thead = document.querySelector('#ordersTable thead tr')
@@ -628,8 +1026,10 @@ export function renderOrders(openOrders, perpState) {
       if (_ordSortKey === 'coin') { av = a.coin; bv = b.coin }
       else if (_ordSortKey === 'size') { av = parseFloat(a.sz ?? 0); bv = parseFloat(b.sz ?? 0) }
       else if (_ordSortKey === 'price') {
-        av = parseFloat(a.triggerPx ?? a.limitPx ?? 0)
-        bv = parseFloat(b.triggerPx ?? b.limitPx ?? 0)
+        // triggerPx is "0.0" (string, not null) on plain limit orders — `??`
+        // never falls through, so use numeric-or to pick the real price
+        av = parseFloat(a.triggerPx ?? 0) || parseFloat(a.limitPx ?? 0)
+        bv = parseFloat(b.triggerPx ?? 0) || parseFloat(b.limitPx ?? 0)
       }
       return typeof av === 'string'
         ? av.localeCompare(bv) * _ordSortDir
@@ -724,11 +1124,11 @@ export function renderOrders(openOrders, perpState) {
       <td>
         <div style="display:flex;align-items:center;gap:6px">
           <button class="row-expand-btn" onclick="window.__toggleRowExpand('${eid}')" aria-label="expand">&#8964;</button>
-          <b>${esc(o.coin)}</b>
+          <b>${esc(ocCoinLabel(o.coin, ocTokenMap))}</b>
         </div>
       </td>
       <td><span class="badge ${intentCls}">${esc(intentLabel)}</span></td>
-      <td>${fmtSize(effectiveSz > 0 ? effectiveSz : sz)} ${esc(o.coin)}<div style="font-size:10px;color:var(--muted);margin-top:2px">Value $${fmtUSD(orderValue)}</div></td>
+      <td>${fmtSize(effectiveSz > 0 ? effectiveSz : sz)} ${esc(ocCoinLabel(o.coin, ocTokenMap))}<div style="font-size:10px;color:var(--muted);margin-top:2px">Value $${fmtUSD(orderValue)}</div></td>
       <td>$${fmtPrice(displayPx)}${priceDetail}</td>
       <td style="font-family:'JetBrains Mono',monospace">${marginHtml}</td>
       <td>${pnlHtml}</td>
@@ -746,7 +1146,7 @@ export function renderOrders(openOrders, perpState) {
     <tr class="row-expand-detail" id="${eid}">
       <td colspan="7">
         <div class="row-expand-grid">
-          <div class="row-expand-item"><span>Size</span><span>${fmtSize(effectiveSz > 0 ? effectiveSz : sz)} ${esc(o.coin)}</span></div>
+          <div class="row-expand-item"><span>Size</span><span>${fmtSize(effectiveSz > 0 ? effectiveSz : sz)} ${esc(ocCoinLabel(o.coin, ocTokenMap))}</span></div>
           <div class="row-expand-item"><span>Order Value</span><span>$${fmtUSD(orderValue)}</span></div>
           <div class="row-expand-item"><span>Margin</span><span>${marginHtml}</span></div>
           <div class="row-expand-item"><span>P&L if Hit</span><span>${pnlHtml}</span></div>
@@ -757,10 +1157,16 @@ export function renderOrders(openOrders, perpState) {
 }
 
 // ─── TRADE HISTORY TAB ───────────────────────────────────────────────────────
-function aggregateByHash(fills) {
+// Collapse partial fills of the same order (shared hash) into one trade row.
+export function aggregateByHash(fills) {
   const groups = new Map()
   for (const f of fills) {
-    const key = f.hash || `${f.time}_${f.coin}_${f.side}`
+    // Collapse partial fills of ONE order. Group by oid (unique per order); HL returns
+    // hash=0x0…0 for a whole class of fills, so grouping by hash merged unrelated orders
+    // into a phantom row at a blended price. Fall back to tid (unique per fill) so a
+    // missing oid never merges distinct fills.
+    const key = f.oid != null ? `oid_${f.oid}`
+      : (f.hash && !/^0x0+$/.test(f.hash) ? f.hash : `tid_${f.tid ?? f.time + '_' + f.coin + '_' + f.px}`)
     if (!groups.has(key)) {
       groups.set(key, { time: f.time, timeStr: f.timeStr, coin: f.coin, side: f.side,
         dir: f.dir, sz: 0, notional: 0, fee: 0, feeToken: f.feeToken, closedPnl: 0, hash: f.hash })
@@ -802,6 +1208,22 @@ export function renderTrades(fills) {
     const isClose = dir.toLowerCase().includes('close')
     const eid     = `fill-expand-${t.hash || t.time + '_' + t.coin}`
     const sizeCell = `${fmtSize(t.sz)}<div style="font-size:10px;color:var(--muted)">$${fmtUSD(t.notional)}</div>`
+    // Share card for a closed trade: derive entry/exit + return-on-cost from the fill.
+    // Position side = opposite of a closing fill's side (a sell closes a long);
+    // outcome positions are always long (settlement fills have no long/short word).
+    const _isOc     = typeof t.coin === 'string' && (t.coin[0] === '#' || t.coin[0] === '+')
+    const _sideLong = _isOc ? true
+                    : /long/i.test(dir)  ? true
+                    : /short/i.test(dir) ? false
+                    : t.side !== 'BUY'
+    const _cost     = _sideLong ? (t.notional - t.closedPnl) : (t.notional + t.closedPnl)
+    const _entryPx  = (t.sz > 0 && _cost > 0) ? _cost / t.sz : t.px
+    const _priceRet = _cost > 0 ? (t.closedPnl / _cost) * 100 : 0
+    const _entryStr = _isOc ? _entryPx.toFixed(5) : '$' + fmtPrice(_entryPx)
+    const _markStr  = _isOc ? Number(t.px).toFixed(5) : '$' + fmtPrice(t.px)
+    const _sideStr  = _isOc ? '' : (_sideLong ? 'LONG' : 'SHORT')
+    const _shareCall = `window.__shareTrade('${_jss(t.coin)}',{title:'${_jss(_lbl(t.coin))}',side:'${_sideStr}',roePct:${_priceRet.toFixed(2)},entry:'${_entryStr}',mark:'${_markStr}'})`
+    const shareBtn  = hasPnl ? ` <button class="trade-share-btn" title="Share this trade" onclick="event.stopPropagation();${_shareCall}">↗</button>` : ''
     const tapExpand = isMobile ? `onclick="window.__toggleRowExpand('${eid}')" style="cursor:pointer"` : ''
     const mainRow  = `<tr ${tapExpand}>
       <td style="color:var(--muted);white-space:nowrap;font-size:11px">
@@ -810,23 +1232,24 @@ export function renderTrades(fills) {
           ${esc(t.timeStr)}
         </div>
       </td>
-      <td><b>${esc(t.coin)}</b></td>
+      <td><b>${esc(_lbl(t.coin))}</b></td>
       <td><span class="dir-badge ${isClose ? 'dir-close' : 'dir-open'}">${esc(dir)}</span></td>
       <td>${sizeCell}</td>
       <td>$${fmtPrice(t.px)}</td>
-      <td class="${hasPnl ? pnl.cls : 'muted'}">${hasPnl ? pnl.text : '—'}</td>
+      <td class="${hasPnl ? pnl.cls : 'muted'}" style="white-space:nowrap">${hasPnl ? pnl.text : '—'}${isMobile ? '' : shareBtn}</td>
       <td class="neg" style="font-size:11px">-$${fmtUSD(t.fee)}</td>
     </tr>`
     const expandRow = isMobile ? `<tr class="row-expand-detail" id="${eid}">
       <td colspan="7">
         <div class="row-expand-grid">
           <div class="row-expand-item"><span>Price</span><span>$${fmtPrice(t.px)}</span></div>
-          <div class="row-expand-item"><span>Size</span><span>${fmtSize(t.sz)} ${esc(t.coin)}<div style="font-size:10px;color:var(--muted)">$${fmtUSD(t.notional)}</div></span></div>
+          <div class="row-expand-item"><span>Size</span><span>${fmtSize(t.sz)} ${esc(_lbl(t.coin))}<div style="font-size:10px;color:var(--muted)">$${fmtUSD(t.notional)}</div></span></div>
           <div class="row-expand-item"><span>Closed PnL</span><span class="${fmtPnL(t.closedPnl).cls}">${hasPnl ? fmtPnL(t.closedPnl).text : '—'}</span></div>
           <div class="row-expand-item"><span>Fee</span><span class="neg">-$${fmtUSD(t.fee)} ${esc(t.feeToken ?? 'USDC')}</span></div>
           <div class="row-expand-item"><span>Net PnL</span><span class="${fmtPnL(netPnl).cls}">${hasPnl ? fmtPnL(netPnl).text : '—'}</span></div>
           <div class="row-expand-item"><span>Direction</span><span class="dir-badge ${isClose ? 'dir-close' : 'dir-open'}">${esc(dir)}</span></div>
         </div>
+        ${hasPnl ? `<button class="trade-share-btn-full" onclick="event.stopPropagation();${_shareCall}">↗ Share this trade</button>` : ''}
       </td>
     </tr>` : ''
     return mainRow + expandRow
@@ -848,8 +1271,10 @@ export function renderTrades(fills) {
 
 // ─── PORTFOLIO STATS ──────────────────────────────────────────────────────────
 export function renderPortfolioStats({ perpState, spotState, fills, funding, portfolio = [], webData = null }) {
-  const accountValue = portfolioLatest(portfolio, 'allTime', 'accountValueHistory')
-    ?? parseFloat((perpState.marginSummary ?? {}).accountValue ?? 0)
+  // HL "Portfolio Value" — the portfolio endpoint is HL's own unified account value
+  const _perpVal      = parseFloat((perpState.marginSummary ?? {}).accountValue ?? 0)
+  const _spotUSDCTot  = parseFloat((spotState?.balances ?? []).find(b => b.coin === 'USDC')?.total ?? 0)
+  const accountValue  = liveAccountValue(portfolio, _perpVal, _spotUSDCTot)
 
   const totalUnrPnl  = (perpState.assetPositions ?? []).reduce(
     (s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0
@@ -862,12 +1287,13 @@ export function renderPortfolioStats({ perpState, spotState, fills, funding, por
   const spotUSDCFree = spotUSDC ? Math.max(0, parseFloat(spotUSDC.total ?? 0) - parseFloat(spotUSDC.hold ?? 0)) : 0
   const withdrawable = perpWdraw + spotUSDCFree
 
-  // Account health: free equity as % of account value (100% = fully unlevered, lower = more risk)
+  // Health = 100 − HL's Unified Account Ratio (maint margin / unified USDC balance)
   const cms          = perpState.crossMarginSummary ?? {}
   const marginUsed   = parseFloat(cms.totalMarginUsed ?? 0)
   const maintMargin  = parseFloat(perpState.crossMaintenanceMarginUsed ?? 0)
-  const healthPct    = accountValue > 0
-    ? Math.max(0, (accountValue - maintMargin) / accountValue * 100)
+  const _hBase       = _spotUSDCTot > 0 ? _spotUSDCTot : _perpVal
+  const healthPct    = _hBase > 0
+    ? Math.max(0, (1 - maintMargin / _hBase) * 100)
     : 0
   const healthStr    = accountValue > 0 ? healthPct.toFixed(1) + '%' : '—'
   const healthCls    = healthPct > 60 ? 'pos' : healthPct > 30 ? 'neu' : 'neg'
@@ -1080,45 +1506,6 @@ export function renderMarkets({ fills, allMids, perpState }) {
 }
 
 // ─── TOKEN LIST (legacy — kept for search card detail) ────────────────────────
-export function renderTokenList(allMids, query, fills) {
-  const list    = document.getElementById('tokenResultsList')
-  const entries = Object.entries(allMids)
-  const q       = query.toLowerCase().trim()
-  const filtered = q ? entries.filter(([k]) => k.toLowerCase().includes(q)) : entries
-
-  if (filtered.length === 0) {
-    list.innerHTML = '<div class="market-empty">No tokens found.</div>'
-    return
-  }
-
-  const coinStats = {}
-  for (const f of fills) {
-    if (!coinStats[f.coin]) coinStats[f.coin] = { trades: 0, pnl: 0 }
-    coinStats[f.coin].trades++
-    coinStats[f.coin].pnl += f.closedPnl
-  }
-
-  list.innerHTML = filtered.slice(0, 100).map(([coin, price]) => {
-    const p     = parseFloat(price)
-    const stats = coinStats[coin]
-    return `<div class="token-result-item" onclick="window.__showTokenDetail('${esc(coin)}', ${p})">
-      <div class="token-result-left">
-        <div class="token-icon">${esc(coin.slice(0, 3))}</div>
-        <div>
-          <div class="token-result-name">${esc(coin)}</div>
-          <div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace">
-            ${stats ? stats.trades + ' trades' : 'No trades'}
-          </div>
-        </div>
-      </div>
-      <div class="token-result-price">
-        <div style="font-weight:700">$${fmtPrice(p)}</div>
-        ${stats ? `<div style="font-size:10px" class="${stats.pnl >= 0 ? 'pos' : 'neg'}">${fmtPnL(stats.pnl).text}</div>` : ''}
-      </div>
-    </div>`
-  }).join('')
-}
-
 // ─── TOKEN DETAIL ─────────────────────────────────────────────────────────────
 export function renderTokenDetail(coin, price, perpState, fills) {
   const positions   = perpState.assetPositions ?? []
@@ -1279,7 +1666,7 @@ export function renderManagePositions(perpState, allMids) {
     const roe     = parseFloat(pos.returnOnEquity) * 100
 
     return `<tr>
-      <td><b>${esc(pos.coin)}</b></td>
+      <td><b>${esc(_lbl(pos.coin))}</b></td>
       <td><span class="badge badge-${side.toLowerCase()}">${side}</span></td>
       <td>${fmtSize(pos.szi)}</td>
       <td>$${fmtPrice(pos.entryPx)}</td>
@@ -1406,12 +1793,12 @@ export function renderManageOrders(openOrders, perpState) {
     const orderValue = effectiveSz * displayPx
 
     return `<tr>
-      <td><b>${esc(o.coin)}</b></td>
+      <td><b>${esc(_lbl(o.coin))}</b></td>
       <td>
         <span class="badge ${intentCls}">${intentIcon} ${esc(intentLabel)}</span>
         <div style="font-size:9px;color:var(--muted);margin-top:3px">${esc(orderKind)}</div>
       </td>
-      <td>${fmtSize(effectiveSz > 0 ? effectiveSz : sz)} ${esc(o.coin)}<div style="font-size:9px;color:var(--muted);margin-top:2px">Value $${fmtUSD(orderValue)}</div></td>
+      <td>${fmtSize(effectiveSz > 0 ? effectiveSz : sz)} ${esc(_lbl(o.coin))}<div style="font-size:9px;color:var(--muted);margin-top:2px">Value $${fmtUSD(orderValue)}</div></td>
       <td>$${fmtPrice(displayPx)}${priceDetail}</td>
       <td style="font-family:'JetBrains Mono',monospace">${marginHtml}</td>
       <td>${pnlHtml}</td>
@@ -1427,11 +1814,15 @@ export function renderManageOrders(openOrders, perpState) {
 
 // ─── PNL CALENDAR ─────────────────────────────────────────────────────────────
 // Cache for day-click detail rendering
-let _calCache = { fills: [], ledger: [], byDay: {} }
+let _calCache = { fills: [], ledger: [], byDay: {}, rootId: 'calendarRoot', detailId: 'calDetail' }
 
-export function calDayClick(key) {
-  // Toggle off if same day clicked again
-  const detail = document.getElementById('calDetail')
+export function calDayClick(key, rootId) {
+  // Resolve the calendar's own data/detail from its root (each calendar stores its
+  // own _calData), so multiple calendars (desktop, mobile calendar tab, accounts tab)
+  // don't clobber each other via the shared _calCache.
+  const root  = rootId ? document.getElementById(rootId) : null
+  const cache = (root && root._calData) || _calCache
+  const detail = document.getElementById(cache.detailId || 'calDetail')
   if (!detail) return
   document.querySelectorAll('.cal-cell.cal-selected').forEach(c => c.classList.remove('cal-selected'))
   if (detail.dataset.activeKey === key) { detail.innerHTML = ''; detail.dataset.activeKey = ''; return }
@@ -1440,7 +1831,7 @@ export function calDayClick(key) {
   if (cell) cell.classList.add('cal-selected')
   detail.dataset.activeKey = key
 
-  const data = _calCache.byDay[key]
+  const data = cache.byDay[key]
   const [yr, mo, dy] = key.split('-').map(Number)
   const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
   const dateLabel = `${MONTHS[mo - 1]} ${dy}, ${yr}`
@@ -1448,12 +1839,14 @@ export function calDayClick(key) {
   // Fills for this day
   const dayStart = new Date(yr, mo - 1, dy).getTime()
   const dayEnd   = dayStart + 86400000
-  const dayFills = _calCache.fills.filter(f => f.time >= dayStart && f.time < dayEnd)
+  const dayFills = cache.fills.filter(f => f.time >= dayStart && f.time < dayEnd)
 
-  // Aggregate by hash
+  // Aggregate by order (oid). hash is 0x0…0 for many HL fills, which would merge
+  // unrelated orders into a phantom blended row — see aggregateByHash above.
   const groups = new Map()
   for (const f of dayFills) {
-    const k = f.hash || `${f.time}_${f.coin}`
+    const k = f.oid != null ? `oid_${f.oid}`
+      : (f.hash && !/^0x0+$/.test(f.hash) ? f.hash : `tid_${f.tid ?? f.time + '_' + f.coin + '_' + f.px}`)
     if (!groups.has(k)) groups.set(k, { coin: f.coin, dir: f.dir, sz: 0, notional: 0, fee: 0, closedPnl: 0, time: f.time })
     const g = groups.get(k)
     g.sz += f.sz; g.notional += f.notional; g.fee += f.fee; g.closedPnl += f.closedPnl
@@ -1463,7 +1856,7 @@ export function calDayClick(key) {
     .sort((a, b) => a.time - b.time)
 
   // Ledger entries for this day
-  const dayLedger = _calCache.ledger.filter(e => e.time >= dayStart && e.time < dayEnd)
+  const dayLedger = cache.ledger.filter(e => e.time >= dayStart && e.time < dayEnd)
   const txEntries = dayLedger.filter(e => {
     const t = e.delta.type
     return t === 'deposit' || t === 'withdraw' || (t === 'send' && e.delta.token === 'USDC')
@@ -1476,7 +1869,7 @@ export function calDayClick(key) {
         const isClose = (t.dir || '').toLowerCase().includes('close')
         const netPnl  = t.closedPnl - t.fee
         return `<div class="cal-detail-trade">
-          <span class="cal-detail-coin">${esc(t.coin)}</span>
+          <span class="cal-detail-coin">${esc(_lbl(t.coin))}</span>
           <span class="dir-badge ${isClose ? 'dir-close' : 'dir-open'}">${esc(t.dir || '')}</span>
           <span class="cal-detail-meta">${fmtSize(t.sz)} @ $${fmtPrice(t.px)}</span>
           ${t.closedPnl !== 0 ? `<span class="${netPnl >= 0 ? 'pos' : 'neg'} cal-detail-pnl">${netPnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(netPnl))}</span>` : '<span class="cal-detail-pnl" style="color:var(--muted)">—</span>'}
@@ -1508,14 +1901,14 @@ export function calDayClick(key) {
         ${(data?.deposited ?? 0) > 0 ? `<span class="cal-detail-pill pos">Deposited +$${fmtUSD(data.deposited)}</span>` : ''}
         ${(data?.withdrawn ?? 0) > 0 ? `<span class="cal-detail-pill neg">Withdrawn -$${fmtUSD(data.withdrawn)}</span>` : ''}
       </div>
-      <button class="cal-detail-close" onclick="window.__calDayClick('${key}')">✕</button>
+      <button class="cal-detail-close" onclick="window.__calDayClick('${key}','${rootId || ''}')">✕</button>
     </div>
     ${tradesHtml}${txHtml}
     ${!trades.length && !txEntries.length ? '<div style="color:var(--muted);font-size:12px;padding:12px 0">No activity on this day.</div>' : ''}`
 }
 
-export function renderPnLCalendar(fills, month, year, ledger = []) {
-  const root = document.getElementById('calendarRoot')
+export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'calendarRoot', navId = null, detailId = 'calDetail') {
+  const root = document.getElementById(rootId)
   if (!root) return
 
   // Aggregate closedPnl per calendar day
@@ -1546,8 +1939,10 @@ export function renderPnLCalendar(fills, month, year, ledger = []) {
     else            byDay[key].withdrawn += amt
   }
 
-  // Store in cache for click handler
-  _calCache = { fills, ledger, byDay }
+  // Store in cache for click handler + month nav re-render. Also stash per-root so
+  // each calendar (desktop / mobile calendar tab / accounts tab) clicks its OWN data.
+  _calCache = { fills, ledger, byDay, rootId, detailId: detailId || 'calDetail' }
+  root._calData = { fills, ledger, byDay, detailId: detailId || 'calDetail' }
 
   // Month summary
   const todayD    = new Date()
@@ -1593,7 +1988,7 @@ export function renderPnLCalendar(fills, month, year, ledger = []) {
     const hasActivity = data && (data.pnl !== 0 || data.deposited > 0 || data.withdrawn > 0)
     if (hasActivity) cls += ' cal-clickable'
 
-    cells += `<div class="${cls}"${hasActivity ? ` data-key="${key}" onclick="window.__calDayClick('${key}')"` : ''}>
+    cells += `<div class="${cls}"${hasActivity ? ` data-key="${key}" onclick="window.__calDayClick('${key}','${rootId}')"` : ''}>
       <div class="cal-day-num">${dayNum}</div>
       ${data && data.pnl !== 0 ? `
         <div class="cal-day-pnl ${data.pnl >= 0 ? 'pos' : 'neg'}">${data.pnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(data.pnl))}</div>
@@ -1611,9 +2006,9 @@ export function renderPnLCalendar(fills, month, year, ledger = []) {
 
   root.innerHTML = `
     <div class="cal-header-row">
-      <button class="cal-nav-btn" onclick="calNav(-1)">◀ Prev</button>
+      <button class="cal-nav-btn" onclick="${navId || 'calNav'}(-1)">◀ Prev</button>
       <div class="cal-month-label">${MONTHS[month]} ${year}</div>
-      <button class="cal-nav-btn" onclick="calNav(1)">Next ▶</button>
+      <button class="cal-nav-btn" onclick="${navId || 'calNav'}(1)">Next ▶</button>
     </div>
     <div class="cal-summary">
       <div class="stat-card">
@@ -1648,23 +2043,33 @@ const TRANSFER_TYPES = {
   accountClassTransfer:{ label: 'Spot ↔ Perp',       badge: 'badge-transfer',    sign:  0 },
   internalTransfer:    { label: 'Internal Transfer',  badge: 'badge-transfer',    sign:  0 },
   spotTransfer:        { label: 'Spot Transfer',      badge: 'badge-transfer',    sign:  0 },
-  send:                { label: 'Received',            badge: 'badge-deposit',     sign: +1 },
+  send:                { label: 'Transfer',            badge: 'badge-transfer',    sign:  0 },
   liquidation:         { label: 'Liquidation',        badge: 'badge-liquidation', sign: -1 },
   rewardsClaim:        { label: 'Rewards',            badge: 'badge-reward',      sign: +1 },
   subAccountTransfer:  { label: 'Sub-account',        badge: 'badge-transfer',    sign:  0 },
 }
 
-function ledgerAmount(entry) {
-  const d = entry.delta
+// Signed USDC value of a ledger entry (+ added to the account, − left it).
+// `addr` is the viewing account — used to sign peer transfers (spotTransfer/send)
+// by whether we were the sender (outflow) or the recipient (inflow).
+export function ledgerAmount(entry, addr = null) {
+  const d  = entry.delta
+  const me = (addr || '').toLowerCase()
+  // For a peer transfer, outgoing = the destination is someone other than us.
+  const dir = () => {
+    const dest = (d.destination || '').toLowerCase()
+    if (!me || !dest) return 1            // unknown → keep positive (legacy behaviour)
+    return dest === me ? 1 : -1           // to us = inflow(+), to someone else = outflow(−)
+  }
   switch (d.type) {
     case 'deposit':             return parseFloat(d.usdc)
-    case 'withdraw':            return parseFloat(d.usdc)
+    case 'withdraw':            return -parseFloat(d.usdc)
     case 'accountClassTransfer':return parseFloat(d.usdc) * (d.toPerp ? 1 : -1)
-    case 'internalTransfer':    return parseFloat(d.usdc)
-    case 'subAccountTransfer':  return parseFloat(d.usdc)
-    case 'spotTransfer':        return parseFloat(d.usdcValue ?? 0)
-    case 'send':                return parseFloat(d.usdcValue ?? 0)
-    case 'liquidation':         return parseFloat(d.accountValue ?? 0)
+    case 'internalTransfer':    return parseFloat(d.usdc) * dir()
+    case 'subAccountTransfer':  return parseFloat(d.usdc) * dir()
+    case 'spotTransfer':        return parseFloat(d.usdcValue ?? 0) * dir()
+    case 'send':                return parseFloat(d.usdcValue ?? 0) * dir()
+    case 'liquidation':         return -parseFloat(d.accountValue ?? 0)
     case 'rewardsClaim':        return parseFloat(d.amount ?? 0)
     default:                    return 0
   }
@@ -1688,22 +2093,27 @@ function ledgerDetails(entry) {
   }
 }
 
-export function renderTransfers(ledger, filter = 'all') {
+export function renderTransfers(ledger, filter = 'all', addr = null) {
   const summaryEl = document.getElementById('transfersSummary')
-  const tbody     = document.getElementById('transfersTbody')
-  if (!summaryEl || !tbody) return
+  const cardsEl   = document.getElementById('transfersCards')
+  if (!summaryEl || !cardsEl) return
 
   const DEPOSIT_TYPES  = ['deposit','accountClassTransfer','internalTransfer','subAccountTransfer','spotTransfer','send']
   const WITHDRAW_TYPES = ['withdraw']
 
-  const totalDeposited = ledger.reduce((s, e) => {
-    if (e.delta.type === 'deposit') return s + parseFloat(e.delta.usdc ?? 0)
-    if (e.delta.type === 'send' && e.delta.token === 'USDC') return s + parseFloat(e.delta.usdcValue ?? 0)
-    return s
-  }, 0)
-  const totalWithdrawn = ledger
-    .filter(e => e.delta.type === 'withdraw')
-    .reduce((s, e) => s + parseFloat(e.delta.usdc ?? 0), 0)
+  // Deposited / Withdrawn count real value in/out of the account: bridge
+  // deposits & withdrawals plus peer transfers (spot transfers, USDC sends) —
+  // an incoming transfer adds to Deposited, an outgoing one to Withdrawn. Uses
+  // the same signed amount as the rows so totals and line items agree.
+  const FLOW_TYPES = ['deposit', 'withdraw', 'send', 'spotTransfer']
+  let totalDeposited = 0, totalWithdrawn = 0
+  for (const e of ledger) {
+    if (!FLOW_TYPES.includes(e.delta.type)) continue
+    if (e.delta.type === 'send' && e.delta.token !== 'USDC') continue   // non-USDC sends carry no USDC value
+    const v = ledgerAmount(e, addr)
+    if (v > 0) totalDeposited += v
+    else if (v < 0) totalWithdrawn += -v
+  }
   const net = totalDeposited - totalWithdrawn
 
   summaryEl.innerHTML = `
@@ -1719,45 +2129,34 @@ export function renderTransfers(ledger, filter = 'all') {
   const visible = filter === 'all' ? ledger : ledger.filter(e => (filterMap[filter] ?? []).includes(e.delta.type))
 
   if (!visible.length) {
-    tbody.innerHTML = emptyRow(4, '📋', 'No transfers found')
+    cardsEl.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
+      <div class="empty-icon">📋</div>
+      <div class="empty-text">No transfers found</div>
+    </div>`
     return
   }
 
-  const isMobile = window.innerWidth <= 768
-
-  tbody.innerHTML = visible.slice().sort((a, b) => b.time - a.time).map(entry => {
+  cardsEl.innerHTML = visible.slice().sort((a, b) => b.time - a.time).map(entry => {
     const meta    = TRANSFER_TYPES[entry.delta.type] ?? { label: entry.delta.type, badge: 'badge-transfer', sign: 0 }
-    const amt     = ledgerAmount(entry)
+    const amt     = ledgerAmount(entry, addr)
     const amtStr  = amt > 0 ? '+$' + fmtUSD(amt) : amt < 0 ? '-$' + fmtUSD(Math.abs(amt)) : '$0.00'
-    const amtCls  = meta.sign > 0 ? 'pos' : meta.sign < 0 ? 'neg' : 'muted'
+    // Colour follows the actual signed flow (so spot/internal transfers get +/-),
+    // falling back to the type's nominal sign when the amount is zero.
+    const amtCls  = amt > 0 ? 'pos' : amt < 0 ? 'neg' : (meta.sign > 0 ? 'pos' : meta.sign < 0 ? 'neg' : 'muted')
     const date    = new Date(entry.time)
     const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) +
                     ' ' + date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
     const details = ledgerDetails(entry)
-    const eid     = `txfr-expand-${entry.time}_${entry.delta.type}`
-    const tapExpand = isMobile ? `onclick="window.__toggleRowExpand('${eid}')" style="cursor:pointer"` : ''
-    const mainRow = `<tr ${tapExpand}>
-      <td style="color:var(--muted);white-space:nowrap;font-size:11px">
-        <div style="display:flex;align-items:center;gap:6px">
-          ${isMobile ? `<span class="row-expand-btn" id="btn-${eid}">&#8964;</span>` : ''}
-          ${esc(dateStr)}
-        </div>
-      </td>
-      <td><span class="badge ${meta.badge}">${esc(meta.label)}</span></td>
-      <td class="${amtCls}" style="font-family:'JetBrains Mono',monospace">${esc(amtStr)}</td>
-      <td style="color:var(--muted);font-size:11px">${esc(details)}</td>
-    </tr>`
-    const expandRow = isMobile ? `<tr class="row-expand-detail" id="${eid}">
-      <td colspan="4">
-        <div class="row-expand-grid">
-          <div class="row-expand-item"><span>Type</span><span><span class="badge ${meta.badge}">${esc(meta.label)}</span></span></div>
-          <div class="row-expand-item"><span>Amount</span><span class="${amtCls}">${esc(amtStr)}</span></div>
-          <div class="row-expand-item"><span>Details</span><span style="color:var(--muted)">${esc(details)}</span></div>
-          <div class="row-expand-item"><span>Date</span><span style="color:var(--muted);font-size:11px">${esc(dateStr)}</span></div>
-        </div>
-      </td>
-    </tr>` : ''
-    return mainRow + expandRow
+    return `<div class="txfr-card">
+      <div class="txfr-card-top">
+        <span class="badge ${meta.badge}">${esc(meta.label)}</span>
+        <span class="txfr-card-amt ${amtCls}">${esc(amtStr)}</span>
+      </div>
+      <div class="txfr-card-bottom">
+        <span class="txfr-card-date">${esc(dateStr)}</span>
+        <span class="txfr-card-detail" title="${esc(details)}">${esc(details)}</span>
+      </div>
+    </div>`
   }).join('')
 }
 

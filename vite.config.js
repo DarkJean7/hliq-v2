@@ -9,6 +9,7 @@ import { fileURLToPath }   from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LOGS_DIR  = join(__dirname, 'logs')
+const PFP_DIR   = join(__dirname, 'pfp')
 
 const SCRIPTS = {
   insolvent: 'strategies/manager.js',
@@ -57,7 +58,7 @@ function handleLine(type, line) {
 }
 
 // ─── PROCESS MANAGEMENT ───────────────────────────────────────────────────────
-function startStrategy(type, agentKey, extraArgs = [], scriptOverride = null) {
+function startStrategy(type, agentKey, extraArgs = [], scriptOverride = null, address = '') {
   if (procs[type])               return { ok: false, error: 'already running' }
   if (!(type in SCRIPTS))        return { ok: false, error: 'unknown strategy' }
   if (!agentKey)                 return { ok: false, error: 'Agent key not set — enter it in the Strategies tab' }
@@ -65,7 +66,8 @@ function startStrategy(type, agentKey, extraArgs = [], scriptOverride = null) {
   const script = scriptOverride ?? SCRIPTS[type]
   if (!script) return { ok: false, error: 'No script path — fill in the Script Path field' }
 
-  const argv = [script, ...extraArgs]
+  // Reads (positions, margin) go to the master wallet; the agent key only signs
+  const argv = [script, ...(address ? ['--address', address] : []), ...extraArgs]
   const proc = spawn('node', argv, {
     cwd: __dirname,
     env: { ...process.env, AGENT_KEY: agentKey },
@@ -153,12 +155,12 @@ function strategyPlugin() {
         const path   = req.url?.split('?')[0] ?? ''
         const method = req.method
 
-        if (!path.startsWith('/api/')) return next()
+        if (!path.startsWith('/api/') && !path.startsWith('/pfp/')) return next()
 
         // POST /api/start
         if (method === 'POST' && path === '/api/start') {
           const b      = await readBody(req)
-          const result = startStrategy(b.type, b.agentKey, b.args ?? [], b.script ?? null)
+          const result = startStrategy(b.type, b.agentKey, b.args ?? [], b.script ?? null, b.address ?? '')
           return sendJson(res, result.ok ? 200 : 400, result)
         }
 
@@ -228,10 +230,43 @@ function strategyPlugin() {
 
         // POST /api/leaderboard
         if (method === 'POST' && path === '/api/leaderboard') {
+          const pinFile = join(__dirname, 'lb_pin.txt')
+          const pin     = (req.headers['x-lb-pin'] || '').trim()
+          const stored  = existsSync(pinFile) ? readFileSync(pinFile, 'utf8').trim() : null
+          if (stored === null && pin) {
+            writeFileSync(pinFile, pin)
+          } else if (stored && pin !== stored) {
+            return sendJson(res, 403, { error: 'wrong pin' })
+          } else if (stored && !pin) {
+            return sendJson(res, 403, { error: 'pin required' })
+          }
           const b = await readBody(req)
           if (!Array.isArray(b.addrs)) return sendJson(res, 400, { error: 'addrs must be array' })
           writeFileSync(join(__dirname, 'leaderboard.json'), JSON.stringify(b.addrs))
           return sendJson(res, 200, { ok: true })
+        }
+
+        // POST /pfp/:addr  — upload a profile picture
+        if (method === 'POST' && path.startsWith('/pfp/')) {
+          const addr = path.slice(5).toLowerCase()
+          if (!/^0x[0-9a-f]{40}$/.test(addr)) return sendJson(res, 400, { error: 'invalid addr' })
+          const b = await readBody(req)
+          if (!b.dataUrl?.startsWith('data:image/')) return sendJson(res, 400, { error: 'invalid image' })
+          if (!existsSync(PFP_DIR)) mkdirSync(PFP_DIR, { recursive: true })
+          writeFileSync(join(PFP_DIR, addr + '.jpg'), Buffer.from(b.dataUrl.split(',')[1], 'base64'))
+          return sendJson(res, 200, { ok: true })
+        }
+
+        // GET /pfp/:addr  — serve saved profile picture
+        if (method === 'GET' && path.startsWith('/pfp/')) {
+          const addr = path.slice(5).split('?')[0].toLowerCase()
+          if (!/^0x[0-9a-f]{40}$/.test(addr)) return sendJson(res, 400, { error: 'invalid addr' })
+          const imgPath = join(PFP_DIR, addr + '.jpg')
+          if (!existsSync(imgPath)) return sendJson(res, 404, { error: 'not found' })
+          res.statusCode = 200
+          res.setHeader('Content-Type', 'image/jpeg')
+          res.setHeader('Cache-Control', 'public, max-age=60')
+          return res.end(readFileSync(imgPath))
         }
 
         next()
@@ -243,10 +278,17 @@ function strategyPlugin() {
 // ─── VITE CONFIG ──────────────────────────────────────────────────────────────
 export default defineConfig({
   plugins: [strategyPlugin()],
+  define: {
+    __HLIQ_BUILD__: JSON.stringify(Date.now().toString(36)),
+  },
   server: {
     port: 5175,
     allowedHosts: true,
     hmr: false,
+    proxy: {
+      // notify-server.js (push subscriptions) — run it locally with `node notify-server.js`
+      '/notify': 'http://localhost:3001',
+    },
   },
   build: {
     target: 'esnext',

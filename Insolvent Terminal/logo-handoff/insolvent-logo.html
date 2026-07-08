@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Insolvent — Logo Reference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0c0f15;
+    --bg-2: #11151e;
+    --rule: #1f2533;
+    --fg: #e5e9f0;
+    --fg-2: #aab1c0;
+    --fg-3: #6b7384;
+    --accent: oklch(0.78 0.18 142);
+  }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: 'Inter', sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; padding: 64px 24px; gap: 64px; }
+
+  .label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--fg-3);
+    margin-bottom: 24px;
+    text-align: center;
+  }
+
+  .insolvent-logo {
+    font-family: 'IBM Plex Mono', monospace;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    color: var(--fg);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.08em;
+  }
+  .insolvent-logo .prompt {
+    color: var(--accent);
+    font-weight: 400;
+    margin-right: 0.12em;
+  }
+  .insolvent-logo .cursor {
+    display: inline-block;
+    width: 0.5em;
+    height: 0.96em;
+    background: var(--accent);
+    margin-left: 0.12em;
+    animation: insolvent-blink 1s steps(1) infinite;
+  }
+  @keyframes insolvent-blink { 50% { opacity: 0; } }
+
+  .row {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 48px 64px;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--bg-2);
+    min-width: 480px;
+  }
+
+  /* Light surface variant */
+  .row.light { background: #fafaf7; border-color: #d8d8d2; }
+  .row.light .insolvent-logo { color: #15171c; }
+  .row.light .insolvent-logo .prompt,
+  .row.light .insolvent-logo .cursor { color: oklch(0.55 0.18 142); background: oklch(0.55 0.18 142); }
+</style>
+</head>
+<body>
+
+  <div class="row">
+    <div class="label">Hero · 96px</div>
+    <div class="insolvent-logo" style="font-size: 96px;">
+      <span class="prompt">&gt;</span><span>insolvent</span><span class="cursor" aria-hidden="true"></span>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="label">Header · 32px</div>
+    <div class="insolvent-logo" style="font-size: 32px;">
+      <span class="prompt">&gt;</span><span>insolvent</span><span class="cursor" aria-hidden="true"></span>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="label">Inline / nav · 18px</div>
+    <div class="insolvent-logo" style="font-size: 18px;">
+      <span class="prompt">&gt;</span><span>insolvent</span><span class="cursor" aria-hidden="true"></span>
+    </div>
+  </div>
+
+  <div class="row light">
+    <div class="label" style="color: #6b7384;">Light surface · 48px</div>
+    <div class="insolvent-logo" style="font-size: 48px;">
+      <span class="prompt">&gt;</span><span>insolvent</span><span class="cursor" aria-hidden="true"></span>
+    </div>
+  </div>
+
+</body>
+</html>

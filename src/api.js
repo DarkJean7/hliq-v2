@@ -1,8 +1,21 @@
 import { InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 
 // Single shared transport + info client
-const transport = new HttpTransport()
+const transport = new HttpTransport({ timeout: 30_000 })
 export const infoClient = new InfoClient({ transport })
+
+// HIP-3 internal tickers that differ from HL's canonical display names.
+// Keys are the prefixed HL coin names; values are what HL's own UI shows.
+const HIP3_RENAMES = {
+  'xyz:CL': 'WTIOIL',
+}
+function _hip3Rename(coin) { return HIP3_RENAMES[coin] ?? coin }
+export function hip3Rename(coin) { return _hip3Rename(coin) }
+
+// User-facing coin label: apply the rename, then drop the HIP-3 dex prefix
+// (e.g. "xyz:SPCX" → "SPCX", "xyz:CL" → "WTIOIL"). Display only — never use this
+// for order/close actions, which need the real prefixed coin id.
+export function coinLabel(coin) { return _hip3Rename(String(coin ?? '')).replace(/.*:/, '') }
 
 // Extract HIP-3 DEX names from allPerpMetas array (index 0 = main DEX, rest = HIP-3)
 function _hip3DexNames(allMetas) {
@@ -16,6 +29,63 @@ function _hip3DexNames(allMetas) {
   return [...dexes]
 }
 
+// Fetch clearinghouseState for main DEX + all HIP-3 DEXes; merges assetPositions from all.
+// Main DEX + HIP-3 DEXes are fetched in parallel. HIP-3 failures are silently skipped.
+export async function fetchClearinghouseState(address, allMetas) {
+  const dexes = allMetas && allMetas.length > 1 ? _hip3DexNames(allMetas) : []
+  const [mainState, ...hip3States] = await Promise.all([
+    infoClient.clearinghouseState({ user: address }),
+    ...dexes.map(dex => infoClient.clearinghouseState({ user: address, dex }).catch(() => null)),
+  ])
+  if (!dexes.length) {
+    // Caller skipped the HIP-3 fan-out this tick (rate-limit protection) —
+    // reuse the cached HIP-3 positions so they don't flicker out of the UI.
+    if (_hip3Cache.addr === address && _hip3Cache.positions.length) {
+      return { ...mainState, assetPositions: [...(mainState.assetPositions ?? []), ..._hip3Cache.positions] }
+    }
+    return mainState
+  }
+  // HIP-3 clearinghouseState returns coin names WITHOUT the "dex:" prefix (e.g. "CL" not "xyz:CL").
+  // Prefix them so they match allMids keys and fills (which do use the "dex:coin" convention).
+  const extraPositions = hip3States.flatMap((s, i) => {
+    if (!s) return []
+    const dex = dexes[i]
+    return (s.assetPositions ?? []).map(ap => {
+      const prefixed = ap.position.coin.includes(':') ? ap.position.coin : `${dex}:${ap.position.coin}`
+      return { ...ap, position: { ...ap.position, coin: _hip3Rename(prefixed) } }
+    })
+  })
+  _hip3Cache.addr = address
+  _hip3Cache.positions = extraPositions
+  if (!extraPositions.length) return mainState
+  return { ...mainState, assetPositions: [...(mainState.assetPositions ?? []), ...extraPositions] }
+}
+
+// Fetch frontendOpenOrders for main DEX + all HIP-3 DEXes, merged into one array.
+// HIP-3 failures are silently skipped; main DEX errors propagate to caller.
+// Cache of the last HIP-3 fan-out results, reused on ticks that skip the fan-out
+const _hip3Cache = { addr: null, positions: [], orders: [] }
+
+export async function fetchFrontendOpenOrders(address, allMetas) {
+  const mainOrders = await infoClient.frontendOpenOrders({ user: address })
+  const dexes = allMetas && allMetas.length > 1 ? _hip3DexNames(allMetas) : []
+  if (!dexes.length) {
+    if (_hip3Cache.addr === address && _hip3Cache.orders.length) return [...mainOrders, ..._hip3Cache.orders]
+    return mainOrders
+  }
+  const hip3Arrays = await Promise.all(
+    dexes.map(dex => infoClient.frontendOpenOrders({ user: address, dex }).catch(() => []).then(orders =>
+      orders.map(o => {
+        const prefixed = o.coin.includes(':') ? o.coin : `${dex}:${o.coin}`
+        return { ...o, coin: _hip3Rename(prefixed) }
+      })
+    ))
+  )
+  _hip3Cache.addr = address
+  _hip3Cache.orders = hip3Arrays.flat()
+  return [...mainOrders, ..._hip3Cache.orders]
+}
+
 // Fetch allMids for main DEX + all HIP-3 DEXes, merged into one object.
 // Never throws — HIP-3 failures are silently skipped.
 export async function fetchAllMids(allMetas) {
@@ -24,7 +94,12 @@ export async function fetchAllMids(allMetas) {
   const dexes = _hip3DexNames(allMetas)
   if (!dexes.length) return mainMids
   const hip3Arr = await Promise.all(dexes.map(dex => infoClient.allMids({ dex }).catch(() => ({}))))
-  return Object.assign({}, mainMids, ...hip3Arr)
+  const merged = Object.assign({}, mainMids, ...hip3Arr)
+  // Mirror renamed keys so mark price lookups still work after position coin rename
+  for (const [from, to] of Object.entries(HIP3_RENAMES)) {
+    if (from in merged) merged[to] = merged[from]
+  }
+  return merged
 }
 
 
@@ -69,7 +144,7 @@ export async function loadAccountData(address, onStep, { mobile = false } = {}) 
   onStep(1, 'active')
   onStep(2, 'active')
   onStep(3, 'active')
-  const [perpState, spotState, openOrders, fills, portfolio, allMetas, allMids] = await Promise.all([
+  const [perpState, spotState, openOrders, fills, portfolio, allMetas, allMids, outcomeMeta] = await Promise.all([
     infoClient.clearinghouseState({ user: address }),
     infoClient.spotClearinghouseState({ user: address }),
     infoClient.frontendOpenOrders({ user: address }),
@@ -78,6 +153,7 @@ export async function loadAccountData(address, onStep, { mobile = false } = {}) 
     infoClient.portfolio({ user: address }),
     infoClient.allPerpMetas(),
     infoClient.allMids(),
+    infoClient.outcomeMeta().catch(() => null),
   ])
   onStep(1, 'done')
   onStep(2, 'done')
@@ -90,7 +166,7 @@ export async function loadAccountData(address, onStep, { mobile = false } = {}) 
     _hip3DexNames(allMetas).map(dex => infoClient.allMids({ dex }).catch(() => ({})))
   ).then(arr => Object.assign({}, allMids, ...arr))
 
-  return { perpState, spotState, openOrders, fills, portfolio, meta, allMetas, allMids, hip3Promise }
+  return { perpState, spotState, openOrders, fills, portfolio, meta, allMetas, allMids, hip3Promise, outcomeMeta }
   // funding + webData deferred — call loadFundingData() separately
 }
 
@@ -128,13 +204,14 @@ export function buildAssetMap(meta) {
 export function aggregateFillsByCoin(fills) {
   const map = {}
   for (const f of fills) {
-    if (!map[f.coin]) {
-      map[f.coin] = { coin: f.coin, trades: 0, volume: 0, closedPnl: 0, fees: 0 }
+    const coin = _hip3Rename(f.coin)
+    if (!map[coin]) {
+      map[coin] = { coin, trades: 0, volume: 0, closedPnl: 0, fees: 0 }
     }
-    map[f.coin].trades++
-    map[f.coin].volume    += f.notional
-    map[f.coin].closedPnl += f.closedPnl
-    map[f.coin].fees      += f.fee
+    map[coin].trades++
+    map[coin].volume    += f.notional
+    map[coin].closedPnl += f.closedPnl
+    map[coin].fees      += f.fee
   }
   return Object.values(map).sort((a, b) => b.volume - a.volume)
 }

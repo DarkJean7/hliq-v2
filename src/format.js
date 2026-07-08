@@ -86,7 +86,7 @@ export function fmtTime(ms) {
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false,
+    hour12: true,
   })
 }
 
@@ -99,7 +99,7 @@ export function fmtTimeShort(ms) {
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false,
+    hour12: true,
   })
 }
 
@@ -132,6 +132,8 @@ export function parseFills(rawFills) {
     feeToken:  f.feeToken ?? 'USDC',
     dir:       f.dir ?? '',
     hash:      f.hash ?? '',
+    oid:       f.oid ?? null,   // unique per order — used to collapse partial fills (hash is 0x0…0 for many HL fills)
+    tid:       f.tid ?? null,   // unique per fill — last-resort key
   }))
 }
 

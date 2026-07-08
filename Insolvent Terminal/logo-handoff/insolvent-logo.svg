@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 120" role="img" aria-label="insolvent">
+  
+  <text x="0" y="92" class="prompt">&gt;</text>
+  <text x="68" y="92" class="word">insolvent</text>
+  <rect x="540" y="22" width="46" height="76" class="cursor"></rect>
+</svg>
