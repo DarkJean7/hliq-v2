@@ -21422,12 +21422,14 @@ let _ocMetaMissAt   = 0
 let _ocMetaMissBusy = false
 function _refreshOcMetaForMiss() {
   const now = Date.now()
-  if (_ocMetaMissBusy || now - _ocMetaMissAt < 60_000) return
+  // Respect the global 429 breaker. A cosmetic label refresh is the least urgent
+  // request in the app — it must never spend weight while HL is throttling us.
+  if (_hlLimited() || _ocMetaMissBusy || now - _ocMetaMissAt < 60_000) return
   _ocMetaMissBusy = true
   _ocMetaMissAt   = now
   infoClient.outcomeMeta()
     .then(m => { if (m) { _buildOcTokenMap(m); _ocRerenderLabels() } })
-    .catch(() => {})
+    .catch(e => { _hl429(e) })
     .finally(() => { _ocMetaMissBusy = false })
 }
 function _lazyResolveSettledOutcome(coin) {
@@ -21435,6 +21437,10 @@ function _lazyResolveSettledOutcome(coin) {
   if (!Number.isFinite(n)) return
   const outcome = Math.floor(n / 10)
   if (_settledOcSeen.has(outcome)) return
+  // Respect the global 429 breaker, and check it BEFORE marking the id seen —
+  // bailing after the add would blacklist the title for the whole session over a
+  // transient pause, since this set is never cleared.
+  if (_hlLimited()) return
   _settledOcSeen.add(outcome)
   fetch('https://api.hyperliquid.xyz/info', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -21460,7 +21466,7 @@ function _lazyResolveSettledOutcome(coin) {
       } catch {}
       _ocRerenderLabels()
     })
-    .catch(() => {})
+    .catch(e => { _hl429(e) })
 }
 window._ocCoinLabel = _ocCoinLabel   // reused by render.js (history, overview, manage tables)
 
@@ -22340,7 +22346,11 @@ async function renderOutcomes() {
       root.innerHTML = '<div class="ma-empty">No prediction markets available</div>'
       return
     }
-    _buildOcTokenMap(outcomes)
+    // Pass the raw response, not the outcomes array: _buildOcTokenMap reads
+    // `questions` off the object to fill ocQuestionMap (the grouped market title),
+    // and an array argument makes it skip that half entirely. It derives the same
+    // outcome list from `raw.outcomes`, so nothing else changes.
+    _buildOcTokenMap(raw)
     // Combined view: "can trade" is per selected account's agent key, not a single client.
     const connected = window.__canTradeUI()
     const expiryMap = {}
