@@ -1275,6 +1275,28 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true })
   }
 
+  // ── GET /api/errors → read back what POST /api/error collects (OWNER-ONLY) ───
+  // Same gate as /api/challenge/audit: ADMIN_TOKEN bearer, or LB_PIN by header or
+  // ?pin= query. The query form is the point — it opens in a phone browser, which
+  // is where a rate-limit episode actually gets noticed. Newest-seen first.
+  //   /api/errors?pin=…&kind=ratelimit
+  if (method === 'GET' && path === '/api/errors') {
+    const tok    = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '')
+    const pin    = req.headers['x-lb-pin'] || url.searchParams.get('pin') || ''
+    const authed = (ADMIN_TOKEN && tok === ADMIN_TOKEN) || (LB_PIN && pin === LB_PIN)
+    if (!authed) return json(res, 403, { error: 'forbidden' })
+    let map = {}
+    try { if (existsSync(ERR_FILE)) map = JSON.parse(readFileSync(ERR_FILE, 'utf8')) } catch {}
+    if (!map || typeof map !== 'object') map = {}
+    const kind  = String(url.searchParams.get('kind') || '')
+    const limit = Math.min(parseInt(url.searchParams.get('limit'), 10) || 100, 500)
+    const entries = Object.entries(map)
+      .map(([message, v]) => ({ message, ...v }))
+      .filter(e => !kind || e.kind === kind)
+      .sort((a, b) => (b.last || 0) - (a.last || 0))
+    return json(res, 200, { total: entries.length, entries: entries.slice(0, limit) })
+  }
+
   if (method === 'POST' && path === '/api/bug-report') {
     const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
     if (!bugReportAllowed(ip)) return json(res, 429, { error: 'too many reports, try later' })
