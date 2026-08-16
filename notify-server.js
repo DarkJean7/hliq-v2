@@ -147,7 +147,11 @@ function worstPositionHealth(cs, usdcTotal = 0) {
     const markPx = markOf(p)
     const health = positionHealth(p, markPx, ctx)
     if (worst == null || health < worst.health) {
-      worst = { coin: p.coin, health, liqPx: parseFloat(p.liquidationPx ?? 0), markPx, side: parseFloat(p.szi) > 0 ? 'long' : 'short' }
+      const liqPx = parseFloat(p.liquidationPx ?? 0)
+      // Actual price move (as % of mark) needed to hit the liquidation price — far more
+      // intuitive in a push than an abstract "health %".
+      const liqDistPct = (liqPx > 0 && markPx > 0) ? Math.abs(markPx - liqPx) / markPx * 100 : null
+      worst = { coin: p.coin, health, liqPx, markPx, side: parseFloat(p.szi) > 0 ? 'long' : 'short', liqDistPct }
     }
   }
   return worst
@@ -281,9 +285,12 @@ async function checkAndNotify() {
       lastFired.set(key, now)
 
       const label   = w.label || (w.addr.slice(0, 6) + '…' + w.addr.slice(-4))
+      const dist = liq.liqDistPct != null
+        ? `${liq.liqDistPct.toFixed(1)}% from liquidation ($${liq.liqPx})`
+        : `health ${liq.health.toFixed(1)}% (liq $${liq.liqPx})`
       const payload = JSON.stringify({
-        title: `🚨 Position Health — ${label}`,
-        body:  `${liq.coin} ${liq.side} health at ${liq.health.toFixed(1)}% (liq $${liq.liqPx})`,
+        title: `🚨 Near Liquidation — ${label}`,
+        body:  `${liq.coin} ${liq.side} is ${dist}`,
         tag:   'hliq-liq-' + w.addr,
       })
 

@@ -3,7 +3,9 @@ window.__build = typeof __HLIQ_BUILD__ !== 'undefined' ? __HLIQ_BUILD__ : ''
 const _il = document.getElementById('init-loader')
 if (_il) _il.remove()
 import { InfoClient, HttpTransport } from '@nktkas/hyperliquid'
-import { loadAccountData, loadFundingData, buildAssetMap, infoClient, fetchAllMids, fetchFrontendOpenOrders, fetchClearinghouseState, hip3Rename, coinLabel } from './api.js'
+import { updateGameMode as _updateGameMode, gmOrdersInvalidate } from './game.js'
+import { initOnboarding } from './onboard.js'   // also registers window.__glossary/__openLearn/__startMainTour/__term
+import { loadAccountData, loadFundingData, buildAssetMap, infoClient, fetchAllMids, fetchHip3Mids, fetchFrontendOpenOrders, fetchClearinghouseState, hip3Rename, coinLabel, hlPool, subsClient, fetchAllFills, fetchAllFunding } from './api.js'
 const _transport = new HttpTransport({ timeout: 30_000 })
 import {
   renderOverview,
@@ -29,6 +31,7 @@ import {
   getTradesPage,
   renderSummaryCards,
   computeAcctStats,
+  resetLiveAccountValue,
   aggregateByHash,
 } from './render.js'
 import { renderCharts, destroyCharts, setPnlChartType, renderAcctCharts, destroyAcctCharts, setAcctPnlChartType, zoomAcctChartsToPeriod, renderMobTradeChart, updateMobTradeChartData, destroyMobTradeChart, resetMobTradeChart, renderPerfChart, destroyPerfCharts } from './charts.js'
@@ -142,6 +145,10 @@ const _yPriceBoxPlugin = {
 Chart.register(_candlePlugin, _markDotPlugin, _yPriceBoxPlugin)
 import {
   connectAgentKey,
+  registerAgentKey,
+  hasAgentFor,
+  clearAgentKeys,
+  setMultiAcctStrict,
   disconnect,
   isConnected,
   getWalletAddress,
@@ -166,6 +173,10 @@ import {
   fetchSpotMeta,
   fetchSpotMarketCtxs,
   fetchDexMarketCtxs,
+  signWithAgentKey,
+  agentAddressOf,
+  fetchApprovedAgents,
+  invalidateApprovedAgents,
 } from './trading.js'
 import {
   getDiscoveredWallets,
@@ -179,15 +190,76 @@ import {
   generateAgentWallet,
   ensureChain,
   getHlSigner,
+  wakeWallet,
+  setActiveWallet,
+  getConnectedWallets,
+  hasWalletFor,
 } from './wallet.js'
 import { deposit, withdraw, getUsdcBalance } from './defi.js'
+import {
+  PAPER_ADDR, PAPER_START, isPaper, setPaper, setPaperMarks, paperTick, paperReset, setPaperSlot, paperSlot,
+  paperPerpState, paperOpenOrders, paperSpotState, paperPortfolio, paperFills, paperWithdrawable, paperStore, paperEquity,
+  paperDeposit, paperWithdraw, paperLedger, paperPnl, paperDeposited, setPaperAssets, paperSpotValue,
+  paperSettleOutcomes, paperFundingHistory, paperAccrueFunding, setPaperFundingRates, PAPER_COSTS,
+} from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding } from './format.js'
+import { ES_DICT } from './i18n-es.js'
+
+/**
+ * "Can this view act on the account right now?"
+ *
+ * isConnected() means an agent key is loaded, which is the right question for a
+ * real account but wrong for paper — paper needs no key and must never load one.
+ * Trading gates use this; identity checks ("My Wallet" vs "Watching") keep using
+ * isConnected() directly, since paper is neither.
+ */
+function _canAct() { return isPaper() || isConnected() }
 import {
   initRisk, updateAccountValue, computeLossStreak,
   maybeSendLiqNotification, checkLiquidation,
   isPaused, resume, getRiskState,
   setThresholds, requestNotifications, notifPermission, showNotif,
 } from './risk.js'
+
+// ─── ERROR MONITORING ────────────────────────────────────────────────────────
+// Catch uncaught errors + unhandled promise rejections and report them (deduped + capped per
+// session, rate-limited server-side) so real-world crashes surface even when nobody files a
+// bug. Sends only the error itself + coarse context (no keys, no wallet addresses).
+;(() => {
+  try { window.__appLoadedAt = Date.now() } catch {}
+  const seen = new Set()
+  let sent = 0
+  const MAX_PER_SESSION = 25
+  function _report(kind, message, stack, extra) {
+    try {
+      if (sent >= MAX_PER_SESSION) return
+      const key = String(message || '').slice(0, 160) + '|' + String(stack || '').slice(0, 100)
+      if (seen.has(key)) return
+      seen.add(key); sent++
+      let lang = 'en'; try { lang = localStorage.getItem('hliq_lang') || 'en' } catch {}
+      const body = JSON.stringify({
+        kind,
+        message: String(message || '').slice(0, 500),
+        stack:   String(stack || '').slice(0, 2000),
+        url:     location.pathname + location.hash,
+        ua:      navigator.userAgent,
+        screen:  `${window.innerWidth}x${window.innerHeight}`,
+        lang,
+        ...extra,
+      })
+      fetch('/api/error', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {})
+    } catch {}
+  }
+  window.addEventListener('error', e => {
+    if (!e || !e.message) return   // resource-load errors have no message — ignore
+    _report('error', e.message, e.error && e.error.stack, { src: e.filename, line: e.lineno, col: e.colno })
+  })
+  window.addEventListener('unhandledrejection', e => {
+    const r = e && e.reason
+    _report('rejection', (r && (r.message || String(r))) || 'unhandledrejection', r && r.stack)
+  })
+  window.__reportError = (msg, err) => _report('manual', msg, err && err.stack)   // optional manual hook
+})()
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 const INITIAL_STATE = () => ({
@@ -271,18 +343,68 @@ function renderRecentAddrs() {
 }
 
 // ─── i18n ─────────────────────────────────────────────────────────────────────
-const _LANG_NAMES = { en:'English', es:'Español (LatAm)', pt:'Português', fr:'Français', de:'Deutsch', zh:'中文', ja:'日本語', ko:'한국어', ru:'Русский', it:'Italiano', tr:'Türkçe', ar:'العربية' }
-// Map a UI language code to the actual translation locale. Spanish → Latin American (es-419)
-// rather than Spain's generic 'es'. Used as both the API langpair and the cache key.
-const _xlLang = l => (l === 'es' ? 'es-419' : l)
+// Only two languages: English (source) and Spanish. Translation is a hand-curated
+// dictionary (src/i18n-es.js) — no network, no Google, no per-language cache fetch.
+const _LANG_NAMES = { en:'English', es:'Español' }
+const _xlLang = l => l   // cache is keyed by the bare code ('es')
+// Source-level bilingual picker for prose blocks too formatted (inline <b>) for the DOM
+// dictionary — mirrors onboard.js's T(). Reads the live language.
+const _T = (en, es) => _currentLang === 'es' ? es : en
 let _i18nCache  = {}
 let _currentLang = 'en'
 const _origNodes = new Map()   // textNode → original full textContent
 
-function _i18nLoadCache() {
-  // _g = Google-translate cache version (higher quality than the old MyMemory cache)
-  try { _i18nCache = JSON.parse(localStorage.getItem('hliq_i18n_g') || '{}') } catch { _i18nCache = {} }
+// Every language switch bumps this. Any async work (a fetch mid-switch, a queued observer
+// flush) captures the token and aborts if it's since changed — so a slow translation for an
+// OLD language can never land after you've already switched to a new one. That stale-apply
+// race is what left the UI in one language while the chip showed another.
+let _i18nSwitchToken = 0
+
+// Incremental auto-translate observer: keeps translation "sticky" without re-walking the
+// whole page. When new DOM is added (a background repaint, the watchlist rotator, or an
+// overlay like Help & Learn / Security & Keys), we translate ONLY those new subtrees.
+//
+// The apply is SYNCHRONOUS and dictionary-only, done inside the observer callback.
+// MutationObserver callbacks run as microtasks — AFTER the render that added the English
+// nodes, but BEFORE the browser paints. So dictionary strings are swapped to Spanish before
+// any English frame is shown: no flicker. Strings not in the dictionary simply stay English
+// (no network, nothing queued) — there's no async pass anymore.
+let _i18nObserver = null
+function _i18nStartObserver() {
+  if (_i18nObserver || typeof MutationObserver === 'undefined') return
+  _i18nObserver = new MutationObserver(muts => {
+    if (_currentLang === 'en') return
+    const roots = []
+    for (const m of muts) {
+      for (const n of m.addedNodes) {
+        if (n.nodeType === 1 || n.nodeType === 3) roots.push(n)
+      }
+    }
+    if (!roots.length) return
+    _i18nApplyCachedSync(roots.filter(n => n.isConnected), _currentLang)
+  })
+  _i18nObserver.observe(document.body, { childList: true, subtree: true })
 }
+function _i18nStopObserver() {
+  _i18nObserver?.disconnect(); _i18nObserver = null
+}
+// One-shot re-apply for callers that inject overlays synchronously (dictionary-only).
+window.__i18nApply = () => {
+  if (_currentLang === 'en') return
+  _i18nApplyCachedSync([document.body], _currentLang)
+}
+
+function _i18nLoadCache() {
+  // The cache IS the bundled dictionary now — no localStorage, no fetch. Missing strings
+  // simply stay English. (Old 'hliq_i18n_g' / 'hliq_i18n_seen' keys are abandoned.)
+  _i18nCache = { es: ES_DICT }
+}
+
+// Record the English originals under a root into the seen-set (runs even in English, so normal
+// browsing builds the set that a later switch pre-warms from).
+function _i18nHarvest(_root) { /* no-op: dictionary is bundled, nothing to harvest */ }
+// No-op: every translation is already bundled, so there's nothing to pre-warm.
+function _i18nPrewarm(_lang) {}
 
 function _i18nShouldSkip(text) {
   if (!text || text.length < 2) return true
@@ -295,85 +417,139 @@ function _i18nShouldSkip(text) {
   return false
 }
 
-async function _i18nBatchFetch(texts, lang) {
-  const L = _xlLang(lang)
-  const toFetch = texts.filter(t => !_i18nCache[L]?.[t])
-  if (!toFetch.length) return
-  // Batch into ≤400-char chunks joined by \n
-  let batch = [], len = 0
-  const send = async b => {
-    if (!b.length) return
-    try {
-      // Google Translate's public endpoint — far better quality than MyMemory. Lines are
-      // joined by \n; the response keeps those boundaries, so split back 1:1.
-      const q = b.join('\n')
-      const r = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=${encodeURIComponent(L)}&dt=t&q=${encodeURIComponent(q)}`)
-      const j = await r.json()
-      const parts = (j?.[0] || []).map(s => s?.[0] ?? '').join('').split('\n')
-      if (!_i18nCache[L]) _i18nCache[L] = {}
-      if (parts.length === b.length) b.forEach((orig, i) => { if (parts[i] && parts[i] !== orig) _i18nCache[L][orig] = parts[i] })
-    } catch {}
+// No-op: translations come from the bundled dictionary, never the network. Kept as an
+// async stub so existing `await _i18nBatchFetch(...)` call sites need no change.
+async function _i18nBatchFetch(_texts, _lang) {}
+
+// Gather translatable text nodes under a set of roots (elements or text nodes).
+function _i18nGatherNodes(roots) {
+  const out = []
+  const accept = node => {
+    const tag = node.parentElement?.tagName
+    if (!tag || ['SCRIPT','STYLE','INPUT','TEXTAREA','CANVAS'].includes(tag)) return false
+    // skip elements that update every second (prices, countdowns) and any opted-out subtree —
+    // .notranslate / translate="no" mark user data (account/wallet names) that must stay verbatim.
+    if (node.parentElement?.closest('.oc-countdown, .topbar-price, .pos-liq, [id^="oc-cd-"], [id^="oc-chance-"], .notranslate, [translate="no"]')) return false
+    const text = (_origNodes.get(node) ?? node.textContent).trim()
+    return !_i18nShouldSkip(text)
   }
-  for (const t of toFetch) {
-    if (len + t.length + 1 > 400) { await send(batch); batch = []; len = 0 }
-    batch.push(t); len += t.length + 1
+  for (const root of roots) {
+    if (root.nodeType === 3) { if (accept(root)) out.push(root); continue }
+    if (root.nodeType !== 1) continue
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: n => accept(n) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+    })
+    let n; while (n = walker.nextNode()) out.push(n)
   }
-  await send(batch)
-  localStorage.setItem('hliq_i18n_g', JSON.stringify(_i18nCache))
+  return out
 }
 
-async function _translateDOM(lang) {
-  if (lang === 'en') {
-    for (const [node, orig] of _origNodes) node.textContent = orig
-    _origNodes.clear()
-    return
+// Synchronous, cache-only apply. Swaps every already-cached string under `roots` to `lang`
+// right now (no fetch, no await) so it can run inside the observer microtask before paint.
+// Returns true if any string was NOT cached (caller should fetch), false if fully applied.
+// Look up a translation for `s` in `cache`. Exact match first; then a fallback for a leading
+// decoration (emoji / arrow / star / bullet + space) followed by a translatable phrase — so a
+// button like "🏆 Paper Challenge", "↓ Save Image" or "★ Favs" reuses the plain key ("Paper
+// Challenge", "Save Image", "Favs") and keeps its symbol. Returns the translated string or null.
+const _I18N_DECOR = /^([^\p{L}\p{N}\s]+\s+)(\p{L}[\s\S]*)$/u
+function _i18nLookup(cache, s) {
+  const t = cache[s]
+  if (t && t !== s) return t
+  const m = s.match(_I18N_DECOR)
+  if (m && /[^\x00-\x7F]/.test(m[1])) {   // only strip a genuine symbol/emoji prefix, not "$"/"-"
+    const rt = cache[m[2]]
+    if (rt && rt !== m[2]) return m[1] + rt
   }
-
-  // Collect all translatable text nodes
-  const nodes = []
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const tag = node.parentElement?.tagName
-      if (!tag || ['SCRIPT','STYLE','INPUT','TEXTAREA','CANVAS'].includes(tag)) return NodeFilter.FILTER_REJECT
-      // skip elements that update every second (prices, countdowns)
-      if (node.parentElement?.closest('.oc-countdown, .topbar-price, .pos-liq, [id^="oc-cd-"], [id^="oc-chance-"]')) return NodeFilter.FILTER_REJECT
-      const text = (_origNodes.get(node) ?? node.textContent).trim()
-      if (_i18nShouldSkip(text)) return NodeFilter.FILTER_REJECT
-      return NodeFilter.FILTER_ACCEPT
-    }
-  })
-  let n; while (n = walker.nextNode()) nodes.push(n)
-
-  // Unique originals not yet cached
-  const originals = nodes.map(n => (_origNodes.get(n) ?? n.textContent).trim())
-  const unique = [...new Set(originals.filter(t => !_i18nShouldSkip(t)))]
-  await _i18nBatchFetch(unique, lang)
-
-  // Apply to DOM
+  return null
+}
+function _i18nApplyCachedSync(roots, lang) {
+  if (lang === 'en') return false
   const L = _xlLang(lang)
-  for (let i = 0; i < nodes.length; i++) {
-    const node = nodes[i]
+  const cache = _i18nCache[L] || {}
+  const nodes = _i18nGatherNodes(roots)
+  let missed = false
+  for (const node of nodes) {
+    if (!node.isConnected) continue
     const origFull = _origNodes.get(node) ?? node.textContent
     const origTrim = origFull.trim()
-    const t = _i18nCache[L]?.[origTrim]
-    if (!t || t === origTrim) continue
+    if (_i18nShouldSkip(origTrim)) continue
+    const t = _i18nLookup(cache, origTrim)
+    if (t) {
+      if (!_origNodes.has(node)) _origNodes.set(node, origFull)
+      const next = origFull.replace(origTrim, t)
+      if (node.textContent !== next) node.textContent = next
+    } else {
+      missed = true
+    }
+  }
+  return missed
+}
+
+// Translate the text nodes under the given roots to `lang` — fetch anything uncached, then
+// apply. Token-guarded so a slow fetch for a superseded language never writes stale text.
+async function _translateNodesUnder(roots, lang) {
+  if (lang === 'en') return
+  _i18nStartObserver()
+  const tok = _i18nSwitchToken
+  const nodes = _i18nGatherNodes(roots)
+  if (!nodes.length) return
+  const unique = [...new Set(nodes.map(n => (_origNodes.get(n) ?? n.textContent).trim()).filter(t => !_i18nShouldSkip(t)))]
+  await _i18nBatchFetch(unique, lang)
+  if (tok !== _i18nSwitchToken) return   // a newer switch happened while fetching — abandon
+  const L = _xlLang(lang)
+  for (const node of nodes) {
+    if (!node.isConnected) continue
+    const origFull = _origNodes.get(node) ?? node.textContent
+    const origTrim = origFull.trim()
+    const t = _i18nLookup(_i18nCache[L] || {}, origTrim)
+    if (!t) continue
     if (!_origNodes.has(node)) _origNodes.set(node, origFull)
     node.textContent = origFull.replace(origTrim, t)
   }
 }
 
+async function _translateDOM(lang) {
+  if (lang === 'en') {
+    _i18nStopObserver()
+    for (const [node, orig] of _origNodes) { if (node.isConnected) node.textContent = orig }
+    _origNodes.clear()
+    return
+  }
+  await _translateNodesUnder([document.body], lang)
+}
+
+// The single entry point for a language change — used by both desktop and mobile. Bumping the
+// token first cancels any in-flight translation for the previous language, and we set state +
+// chip highlight synchronously so `_currentLang` and what's on screen can never disagree.
 async function _applyLang(lang) {
+  if (lang !== 'es') lang = 'en'   // only en/es now; coerce any stale saved code (fr/de/…) to English
+  _i18nSwitchToken++
+  if (lang === 'en') _i18nStopObserver()   // stop the observer BEFORE restoring, so its flush can't re-translate
   _currentLang = lang
+  localStorage.setItem('hliq_lang', lang)
+  document.documentElement.lang = lang
   document.querySelectorAll('.lang-chip').forEach(b => b.classList.toggle('active', b.dataset.lang === lang))
   const nameEl = document.getElementById('langCurrentName')
   if (nameEl) nameEl.textContent = _LANG_NAMES[lang] || lang
-  document.documentElement.lang = lang
+  _i18nPrewarm(lang)          // warm the cache for every seen string, in the background
   await _translateDOM(lang)
 }
 
-window.__setLang = function(lang) {
+window.__setLang = function(lang) { _applyLang(lang) }
+
+// Mobile settings language switch. Re-render the settings body first (so the selected chip
+// highlights immediately), then translate. Token-guarding + the incremental observer make a
+// single press land reliably and stay put as the screen live-updates.
+window.__setLangMob = async function(lang) {
+  if (lang !== 'es') lang = 'en'   // only en/es now; coerce any stale saved code to English
+  _i18nSwitchToken++
+  _currentLang = lang
   localStorage.setItem('hliq_lang', lang)
-  _applyLang(lang)
+  document.documentElement.lang = lang
+  if (lang === 'en') _i18nStopObserver()
+  _i18nPrewarm(lang)          // warm the cache for every seen string, in the background
+  _mobVRenderContent()
+  await _translateDOM(lang)
 }
 
 // ─── WALLET MANAGER ──────────────────────────────────────────────────────────
@@ -381,6 +557,9 @@ const WM = {
   load()              { return JSON.parse(localStorage.getItem('savedWallets') || '[]') },
   save(list)          {
     localStorage.setItem('savedWallets', JSON.stringify(list))
+    // The cached All Accounts snapshot describes the OLD wallet set (and labels),
+    // so drop it rather than paint stale totals on the next open.
+    try { localStorage.removeItem('hliq_allacct_v1'); _allAcctLastPersist = 0 } catch {}
     // Wallet list changed — re-sync the push subscription so removed
     // accounts stop alerting and new ones start (no-op if notifs are off)
     try { _registerPushDebounced() } catch {}
@@ -404,7 +583,7 @@ function renderSavedWallets() {
     <div class="saved-wallets-row">
       <span class="saved-wallets-label">Saved wallets</span>
       ${list.map(w => `
-        <button class="btn-wallet-chip" onclick="window.__quickLoad('${esc(w.addr)}')">
+        <button class="btn-wallet-chip notranslate" onclick="window.__quickLoad('${esc(w.addr)}')">
           ${esc(w.label)}
         </button>
         <button class="btn-wallet-chip-del" title="Remove" onclick="window.__removeWallet('${esc(w.addr)}')">✕</button>
@@ -415,10 +594,15 @@ function renderSavedWallets() {
 function renderWalletStrip(addr) {
   const el = document.getElementById('walletStrip')
   if (!el) return
-  const short   = addr.slice(0, 8) + '...' + addr.slice(-6)
-  const label   = WM.getLabel(addr)
+  const _chalCur = addr === PAPER_ADDR && paperSlot() === 'challenge'
+  const short   = addr === '__all_accounts__'
+    ? _maLoad().length + ' wallets combined'
+    : addr === PAPER_ADDR ? (_chalCur ? 'Challenge · $1,000 paper' : 'Paper · simulated funds, no real orders')
+    : addr.slice(0, 8) + '...' + addr.slice(-6)
+  const label   = addr === '__all_accounts__' ? 'All Accounts'
+    : addr === PAPER_ADDR ? (_paperName() + (_chalCur ? ' (Challenge)' : '')) : WM.getLabel(addr)
   const list    = WM.load()
-  const isSaved = !!label
+  const isSaved = (addr === '__all_accounts__' || addr === PAPER_ADDR) ? true : !!label
   const subs    = state.subAccounts ?? []
 
   const totalAccounts = list.length + subs.length
@@ -433,7 +617,7 @@ function renderWalletStrip(addr) {
            data-ws-addr="${esc(w.addr)}"
            onclick="window.__switchWallet('${esc(w.addr)}')">
         <div class="ws-wallet-row-info">
-          <span class="ws-wallet-row-name">${esc(w.label)}</span>
+          <span class="ws-wallet-row-name notranslate">${esc(w.label)}</span>
           <span class="ws-wallet-row-addr">${wShort}</span>
         </div>
         <div class="ws-wallet-row-acts" onclick="event.stopPropagation()">
@@ -482,6 +666,28 @@ function renderWalletStrip(addr) {
             Accounts ${badgeHtml} <span class="ws-chevron">▾</span>
           </button>
           <div class="ws-panel" id="wsPanel">
+            ${list.length > 1 ? `
+              <div class="ws-panel-section">
+                <button class="ws-all-accounts-btn"
+                  onclick="window.__toggleWalletPanel();window.__goAllAccounts()">
+                  ⊕ All Accounts Combined
+                </button>
+              </div>` : ''}
+            <div class="ws-panel-section">
+              <button class="ws-all-accounts-btn" style="color:#ff9f43"
+                onclick="window.__toggleWalletPanel();window.__goPaper('main')">
+                📝 ${esc(_paperName())} <span style="opacity:.6">· Paper</span>
+              </button>
+              ${_chalActive() ? `<button class="ws-all-accounts-btn" style="color:#f5c518;margin-top:6px"
+                onclick="window.__toggleWalletPanel();window.__goPaper('challenge')">
+                🏆 ${esc(_paperName())} (Challenge) <span style="opacity:.6">· $1,000</span>
+              </button>` : ''}
+              ${addr === PAPER_ADDR ? `
+                <div style="display:flex;gap:6px;margin-top:6px">
+                  <button class="ws-btn" style="flex:1" onclick="window.__paperRename()">✎ Rename</button>
+                  <button class="ws-btn" style="flex:1" onclick="window.__paperResetAcct()">↺ Reset</button>
+                </div>` : ''}
+            </div>
             ${list.length ? `
               <div class="ws-panel-section">
                 <div class="ws-panel-section-label">Saved Wallets</div>
@@ -555,6 +761,7 @@ window.__panelRenameSave = function(addr, label) {
 }
 
 window.__panelRemove = function(addr) {
+  if (!_confirmRemoveWallet(addr)) return
   WM.remove(addr)
   if (state.addr && addr.toLowerCase() === state.addr.toLowerCase()) {
     resetDashboard()
@@ -575,7 +782,19 @@ window.__panelSave = function() {
   _reopenWsPanel()
 }
 
+// Shared confirmation for every "remove this account" ✕ — the desktop chip, the
+// wallet panel, and the All Accounts card. Removing a watched account is a quiet
+// destructive action (and re-adding means re-pasting the address + relabelling),
+// so it should never happen on a single stray tap.
+function _confirmRemoveWallet(addr) {
+  if (!addr) return false
+  const w     = WM.load().find(e => e.addr.toLowerCase() === String(addr).toLowerCase())
+  const label = w?.label ? `"${w.label}" (${addr.slice(0, 6)}…${addr.slice(-4)})` : `${addr.slice(0, 8)}…${addr.slice(-6)}`
+  return confirm(`Remove ${label} from your accounts?\n\nIt stops being tracked and drops out of All Accounts. You can add it back by pasting the address again.`)
+}
+
 window.__removeWallet = function(addr) {
+  if (!_confirmRemoveWallet(addr)) return
   WM.remove(addr)
   if (state.addr === addr) resetDashboard()
   else renderSavedWallets()
@@ -616,6 +835,7 @@ function _bootSetPos(n) {
 
 // ─── LOAD DASHBOARD ──────────────────────────────────────────────────────────
 async function loadDashboard() {
+  _paperExit()   // leaving the simulated account
   const addr = document.getElementById('walletInput').value.trim()
 
   if (!addr || !addr.startsWith('0x') || addr.length < 42) {
@@ -623,6 +843,15 @@ async function loadDashboard() {
     return
   }
   localStorage.setItem('walletAddr', addr)
+
+  // Leaving the combined "All Accounts" view — stop its refresh loop + clear its chrome.
+  if (_allAcctTimer) { clearInterval(_allAcctTimer); _allAcctTimer = null }
+  if (_allAcctFastTimer) { clearInterval(_allAcctFastTimer); _allAcctFastTimer = null }
+  if (_allAcctMidsTimer) { clearInterval(_allAcctMidsTimer); _allAcctMidsTimer = null }
+  _stopAllAcctWs()   // drop the per-wallet WebSocket subscriptions
+  setMultiAcctStrict(false)
+  clearAgentKeys()
+  _hideAllAcctLoader()
 
   _showBootSplash(addr)   // full-screen boot sequence until account data lands
   setTimeout(_hideBootSplash, 12000)   // safety: never let the splash get stuck
@@ -645,9 +874,15 @@ async function loadDashboard() {
     if (_balEl) _balEl.textContent = '—'
   }
 
+  // Point the wallet layer at this account so getMainSigner()/isMainWalletConnected()
+  // resolve to the wallet that controls IT, not to whichever connected last.
+  setActiveWallet(addr)
+  resetLiveAccountValue()   // don't carry the previous account's value into this one
+
   // Seed state with safe empty defaults so renders don't crash before data arrives
   state = {
     ...state, addr,
+    isAllAccounts: false,
     perpState:   { assetPositions: [], withdrawable: '0', marginSummary: {} },
     spotState:   { balances: [] },
     openOrders:  [], fills: [], funding: [],
@@ -674,9 +909,13 @@ async function loadDashboard() {
   if (sessionTimer) clearInterval(sessionTimer)
   if (midsTimer)    clearInterval(midsTimer)   // was leaking one per account switch
   liveTimer    = setInterval(refreshLive, 5000)
+  // Validate stored agent keys against HL in the background, so a key HL no longer
+  // recognizes is flagged in Settings BEFORE the user needs it to close a position.
+  setTimeout(() => { _sweepAgentKeys().catch(() => {}) }, 12_000)
   sessionTimer = setInterval(tickSessionUptime, 1000)
   midsTimer    = setInterval(() => {
-    if (state.allMetas) fetchAllMids(state.allMetas).then(m => { state.allMids = m }).catch(() => {})
+    if (_hlLimited()) return
+    if (state.allMetas) fetchAllMids(state.allMetas).then(m => { state.allMids = m }).catch(e => _hl429(e))
   }, 60000)
 
   try {
@@ -787,9 +1026,10 @@ async function loadDashboard() {
       .catch(() => [])
       .then(recent => {
         applyFills(recent)
-        // Full history in the background (idle) — backfills all-time totals
+        // Full history in the background (idle) — backfills all-time totals. Time-pages
+        // past the 2000-per-response cap so accounts with long histories aren't truncated.
         setTimeout(() => {
-          infoClient.userFillsByTime({ user: addr, startTime: GENESIS, reversed: true })
+          fetchAllFills(addr, { startTime: GENESIS })
             .catch(() => infoClient.userFills({ user: addr }).catch(() => []))
             .then(full => { if (Array.isArray(full) && full.length) applyFills(full) })
         }, 600)
@@ -812,7 +1052,6 @@ async function loadDashboard() {
       renderAccountSection()
     }).catch(e => console.warn('Background funding load failed:', e.message))
 
-    if (!isMobile) fetchAllTimeVolume(addr)
     setTimeout(() => { fetchLedger(addr); fetchSubAccounts(addr) }, 4000)
 
   } catch (e) {
@@ -915,15 +1154,44 @@ function _updateMobTabCounts(posCount, ordCount) {
   const _bals = (state.spotState?.balances ?? []).filter(b => parseFloat(b.total) > 0)
   const mobOc = document.getElementById('mobOcCount')
   if (mobOc) {
-    const ocCount = _bals.filter(b => isOutcome(b.coin)).length
+    const ocCount = _ocClampPending(_bals.filter(b => isOutcome(b.coin))).length
     mobOc.textContent = ocCount
     mobOc.style.display = ocCount > 0 ? '' : 'none'
   }
   const mobSpot = document.getElementById('mobSpotCount')
   if (mobSpot) {
-    const spCount = _bals.filter(b => !isOutcome(b.coin)).length
+    let spCount = _bals.filter(b => !isOutcome(b.coin)).length
+    // Combined view keeps real spot tokens on each wallet's row, not on state.spotState.
+    // Count UNIQUE assets across accounts (matches the grouped Spot tab), not row count.
+    if (state.isAllAccounts) {
+      const hidden = _maHiddenLoad()
+      const coins  = new Set()
+      _allAcctLastResults
+        .filter(r => !r.error && !hidden.has(r.addr))
+        .forEach(r => (r.spotBalances ?? []).forEach(b => coins.add(b.coin)))
+      spCount = coins.size
+    }
     mobSpot.textContent = spCount
     mobSpot.style.display = spCount > 0 ? '' : 'none'
+  }
+  // Strats badge in the combined view: count trading bots (not per-position guards)
+  // across every visible account from the all-accounts status poll. In a single account
+  // this badge is maintained by the strategy-status renderer instead.
+  if (state.isAllAccounts) {
+    const mobStrat = document.getElementById('mobStratCount')
+    if (mobStrat) {
+      const hidden   = _maHiddenLoad()
+      const wallets  = _maLoad()
+      const isGuard  = k => k.startsWith('liqguard:') || k.startsWith('levbrake:')
+      let count = 0
+      for (const [addr, bots] of Object.entries(_maBotStatus || {})) {
+        if (!Array.isArray(bots) || hidden.has(addr)) continue
+        if (!wallets.some(w => w.addr.toLowerCase() === addr.toLowerCase())) continue
+        count += bots.filter(b => !isGuard(String(b))).length
+      }
+      mobStrat.textContent = count
+      mobStrat.style.display = count > 0 ? '' : 'none'
+    }
   }
 }
 
@@ -938,7 +1206,7 @@ function _updateSidebarAccount() {
 }
 
 function totalPerpEquity(perpState) {
-  return computeAcctStats(perpState, state.spotState, state.fills, state.portfolio).accountValue
+  return computeAcctStats(perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids).accountValue
 }
 
 // ─── RISK UI ──────────────────────────────────────────────────────────────────
@@ -1101,6 +1369,8 @@ window.__retryRefresh = async function(btn) {
   _refreshInProgress = false
   // Clear render caches so everything is force-redrawn on next tick
   _lastPosHash = null; _lastOrdHash = null; _lastAcctHash = null
+  // A manual reload must force-fresh history too, not reuse the 8-min combined-view cache.
+  try { _maHistCache2.clear(); _maLedgerCache.clear() } catch {}
   _updateRetryBtn('retrying')
   updateRefreshBanner()
   // Mobile has no #wsRetryBtn — spin the tapped icon so the user sees it working.
@@ -1111,8 +1381,13 @@ window.__retryRefresh = async function(btn) {
   // leave refreshLive() pending forever. Stop the spinner after 12s no matter what so
   // the button never gets stuck (the live timer keeps retrying in the background).
   const failsafe = setTimeout(stopSpin, 12000)
+  // In the combined view refreshLive() no-ops — drive the All-Accounts fan directly instead.
+  if (state.isAllAccounts) {
+    try { await _allAcctSilentRefresh(_maLoad()) } catch {} finally { clearTimeout(failsafe); stopSpin() }
+    return
+  }
   liveTimer = setInterval(refreshLive, _pollInterval())
-  try { await refreshLive() } catch {} finally { clearTimeout(failsafe); stopSpin() }
+  try { await refreshLive(true) } catch {} finally { clearTimeout(failsafe); stopSpin() }
 }
 
 // Header reload button — full app refresh: nudge the service worker for the
@@ -1135,6 +1410,7 @@ document.addEventListener('visibilitychange', () => {
   } else if (state.addr) {
     refreshFailCount = 0
     updateRefreshBanner()
+    _rlBannerTick()   // a backgrounded interval may have left the rate-limit banner stuck
     setTimeout(_restartLiveTimer, 300)
   }
 })
@@ -1144,6 +1420,7 @@ window.addEventListener('pageshow', (e) => {
   if (e.persisted && state.addr) {
     refreshFailCount = 0
     _lastPosHash = null; _lastOrdHash = null; _lastAcctHash = null
+    _rlBannerTick()
     setTimeout(_restartLiveTimer, 300)
   }
 })
@@ -1153,6 +1430,7 @@ window.addEventListener('focus', () => {
   if (!liveTimer && state.addr) {
     refreshFailCount = 0
     updateRefreshBanner()
+    _rlBannerTick()
     setTimeout(_restartLiveTimer, 300)
   }
 })
@@ -1168,44 +1446,9 @@ function tickSessionUptime() {
   el.textContent = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`
 }
 
-// Fetch all-time volume via sequential pagination — same pattern as funding.
-// userFillsByTime caps at 2000 per request; we page forward until < 2000 returned.
-// Only updates #statTotalVolume — touches nothing else.
-async function fetchAllTimeVolume(addr) {
-  try {
-    const info  = new InfoClient({ transport: _transport })
-    // Pre-seed seen with hashes already in state so we don't double-count
-    const seen  = new Set(state.fills.map(f => f.hash).filter(Boolean))
-    let   volume    = state.fills.reduce((s, f) => s + f.notional, 0)
-    let   fillCount = state.fills.length
-    // Start from HL launch — userFillsByTime handles pre-account dates fine
-    let startTime = 1667260800000
-
-    while (true) {
-      const batch = await info.userFillsByTime({ user: addr, startTime })
-        .catch(() => [])
-      if (!batch.length) break
-
-      for (const f of batch) {
-        if (seen.has(f.hash)) continue
-        seen.add(f.hash)
-        volume    += parseFloat(f.sz) * parseFloat(f.px)
-        fillCount++
-      }
-
-      if (batch.length < 2000) break
-
-      const maxTime = Math.max(...batch.map(f => f.time))
-      startTime = maxTime + 1
-    }
-
-    if (!fillCount) return
-    const el = document.getElementById('statTotalVolume')
-    if (el) el.textContent = '$' + fmtCompact(volume)
-  } catch (e) {
-    console.warn('All-time volume fetch failed:', e.message)
-  }
-}
+// (Removed: fetchAllTimeVolume.) state.fills now holds the complete, time-paged
+// history, so renderOverview computes all-time Total Volume from it directly —
+// no separate fetch, and no hash-dedup bug (HL's 0x0…0 hashes made it undercount).
 
 async function fetchLedger(addr) {
   // Show skeleton while the ledger loads
@@ -1255,7 +1498,94 @@ function _dom(id) {
   return _domCache[id] || (_domCache[id] = document.getElementById(id))
 }
 
+// ── HL rate-limit circuit breaker ─────────────────────────────────────────────
+// One 429 anywhere trips a GLOBAL pause that every poller respects (refresh
+// loop, mids fan-out, prediction books, game sparklines…). Exponential: 15s →
+// 30s → 60s → 120s cap, reset after the first clean refresh.
+let _hlBackoffUntil = 0
+let _hlBackoffMs    = 15000
+function _hlLimited() { return Date.now() < _hlBackoffUntil }
+function _hlTrip() {
+  const wasLimited = _hlLimited()
+  _hlBackoffUntil = Date.now() + _hlBackoffMs
+  console.warn(`[hliq] HL 429 — pausing all polls ${Math.round(_hlBackoffMs / 1000)}s`)
+  _hlBackoffMs = Math.min(_hlBackoffMs * 2, 120000)
+  _rlBannerStart()   // tell the user why updates paused, instead of silently freezing
+  if (!wasLimited) _hlReportLimit()   // report only a fresh episode, not each escalation
+}
+// Telemetry: log a rate-limit episode server-side (throttled) so we can measure how often real
+// users get throttled and under what shape (All Accounts + wallet count is the key dimension).
+let _hlReportAt = 0
+function _hlReportLimit() {
+  const now = Date.now()
+  if (now - _hlReportAt < 120000) return
+  _hlReportAt = now
+  try {
+    let lang = 'en'; try { lang = localStorage.getItem('hliq_lang') || 'en' } catch {}
+    const n = state.isAllAccounts ? (typeof _maLoad === 'function' ? _maLoad().length : 0) : 1
+    const secSinceLoad = Math.round((now - (window.__appLoadedAt || now)) / 1000)
+    fetch('/api/error', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        kind: 'ratelimit',
+        message: `client 429 · all=${state.isAllAccounts ? 1 : 0} · wallets=${n} · tab=${_activeTab}`,
+        stack: `sinceLoad=${secSinceLoad}s`,
+        url: location.pathname, ua: navigator.userAgent, screen: `${window.innerWidth}x${window.innerHeight}`, lang,
+      }),
+    }).catch(() => {})
+  } catch {}
+}
+
+// ── RATE-LIMIT "COOLING DOWN" BANNER ──────────────────────────────────────────
+// The breaker pauses every poll when HL throttles us; without this the UI just froze
+// with no explanation. Shows a thin countdown bar while limited, self-clears after.
+let _rlBannerTimer = null
+function _rlBannerTick() {
+  const el = document.getElementById('rlBanner')
+  if (!_hlLimited()) {
+    if (el) el.remove()
+    if (_rlBannerTimer) { clearInterval(_rlBannerTimer); _rlBannerTimer = null }
+    return
+  }
+  let b = el
+  if (!b) {
+    b = document.createElement('div')
+    b.id = 'rlBanner'
+    b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:100002;background:rgba(245,158,11,0.96);color:#1a1200;font-size:12px;font-weight:700;text-align:center;padding:calc(6px + env(safe-area-inset-top,0px)) 12px 6px;box-shadow:0 2px 8px rgba(0,0,0,.35)'
+    document.body.appendChild(b)
+  }
+  const secs = Math.max(0, Math.ceil((_hlBackoffUntil - Date.now()) / 1000))
+  b.textContent = `⏳ Hyperliquid is rate-limiting — updates paused, resuming in ${secs}s`
+}
+function _rlBannerStart() {
+  _rlBannerTick()
+  if (!_rlBannerTimer) _rlBannerTimer = setInterval(_rlBannerTick, 1000)
+}
+function _hlOk() {
+  _hlBackoffMs = 15000
+  // Data is flowing again — end the pause window and pull the banner NOW rather than
+  // waiting on the 1s interval (which iOS suspends in the background, leaving it stuck).
+  if (_hlBackoffUntil) { _hlBackoffUntil = 0; _rlBannerTick() }
+}
+// Returns true (and trips the breaker) when the error is a rate limit OR the
+// network/CORS failure a rate limit produces in the browser. HL returns 429s
+// WITHOUT CORS headers, so the browser rejects them as "Failed to fetch" / a CORS
+// error with no "429" text — meaning the old check never tripped, the breaker never
+// backed off, and the app kept hammering HL, flooding the console. Treating the
+// network-failure shape as a limit lets it pause and recover.
+function _hl429(e) {
+  const m = String(e?.message ?? e)
+  if (/429|too many|failed to fetch|load failed|networkerror|err_failed|cors|access-control/i.test(m)) {
+    _hlTrip(); return true
+  }
+  return false
+}
+
 let _refreshTick  = 0
+// After a user action (place/close/cancel), force the NEXT refresh to fetch the
+// weight-gated endpoints (orders every 2nd tick, fills every 3rd, spot/portfolio every 12th)
+// so the change shows in Orders/History/Calendar immediately instead of up to ~15s later.
+let _forceFreshNext = false
 let _activeTab    = 'overview'
 let _lbTabTimer   = null
 let _maTabTimer   = null
@@ -1297,8 +1627,12 @@ function _fanMetas(full) {
   return filtered.length > 1 ? filtered : null
 }
 
-async function refreshLive() {
+async function refreshLive(force = false) {
+  if (force) _forceFreshNext = true
   if (_refreshInProgress) return
+  if (state.isAllAccounts) return   // combined view has its own refresh loop
+  if (isPaper()) return             // paper has its own loop; the sentinel isn't a real address
+  if (_hlLimited()) return   // circuit breaker open — let HL cool down
   _refreshInProgress = true
   // Pin the account this tick is for. If the user switches accounts while these
   // fetches are in flight, the results belong to the OLD account and must be
@@ -1314,21 +1648,45 @@ async function refreshLive() {
       ? state.fills.reduce((m, f) => Math.max(m, f.time), 0)
       : Date.now() - 60 * 1000
 
+    // A forced refresh (right after a user action) fetches the gated endpoints regardless of
+    // the tick, so Orders/History/Calendar/Spot reflect the change immediately. Consumed once.
+    const _forced = _forceFreshNext; _forceFreshNext = false
     const shouldFetchOutcomeMeta = _refreshTick === 1 || _refreshTick % 60 === 0
     const _needsPrices = !['history', 'transfers', 'settings', 'leaderboard', 'accounts'].includes(_activeTab)
-    const shouldRefreshSpot      = _refreshTick === 1 || _refreshTick % 12 === 0
-    const shouldRefreshPortfolio = _refreshTick === 1 || _refreshTick % 12 === 0
-    // Active HIP-3 dexes fan out every tick (so orders/positions stay fresh);
-    // the full set is fanned every 12th tick to discover newly-used dexes.
-    const _fullFan  = _refreshTick === 1 || _refreshTick % 12 === 0
-    const _fanMeta  = _fanMetas(_fullFan)
-    const [perpState, openOrders, mainMids, newRawFills, freshOutcomeMeta, freshSpot, freshPortfolio] = await Promise.all([
+    const shouldRefreshSpot      = _forced || _refreshTick === 1 || _refreshTick % 12 === 0
+    const shouldRefreshPortfolio = _forced || _refreshTick === 1 || _refreshTick % 12 === 0
+    // HIP-3 fan-out is the dominant cost of a tick: one clearinghouseState AND one
+    // frontendOpenOrders per dex, and frontendOpenOrders is a heavy-weight endpoint.
+    // Fanning every 5s tick pushed us over HL's per-minute weight budget and 429'd.
+    // Fan the active dexes every 4th tick (~20s) and the full set every 24th (~2min);
+    // in between, passing `null` makes the fetch helpers reuse their HIP-3 cache, so
+    // positions and orders don't flicker.
+    const _fullFan  = _refreshTick === 1 || _refreshTick % 24 === 0
+    const _fanTick  = _refreshTick === 1 || _refreshTick % 4 === 0
+    const _fanMeta  = _fanTick ? _fanMetas(_fullFan) : null
+    // HL's 1200 weight/min IP budget is shared between /info and /exchange, so a
+    // chatty poll loop doesn't just 429 the dashboard — it starves order placement.
+    // frontendOpenOrders and userFillsByTime are weight-20 (most endpoints are 2),
+    // so polling both every 5s tick burned ~480 weight/min on data that tolerates
+    // lag. Orders refresh every 2nd tick (~10s), fills every 3rd (~15s).
+    // userFillsByTime is keyed off latestFillTs, so a fills tick still returns every
+    // fill from the ticks it skipped — nothing is missed, only delayed.
+    const _ordTick   = _forced || _refreshTick === 1 || _refreshTick % 2 === 0
+    const _fillsTick = _forced || _refreshTick === 1 || _refreshTick % 3 === 0
+    const [perpState, openOrders, mainMids, hip3Mids, newRawFills, freshOutcomeMeta, freshSpot, freshPortfolio] = await Promise.all([
       fetchClearinghouseState(state.addr, _fanMeta),
-      fetchFrontendOpenOrders(state.addr, _fanMeta),
-      _needsPrices ? info.allMids() : Promise.resolve({}),
-      // Fetch only fills newer than what we already have (startTime is exclusive on HL)
-      info.userFillsByTime({ user: state.addr, startTime: latestFillTs + 1 })
-        .catch(() => []),
+      _ordTick ? fetchFrontendOpenOrders(state.addr, _fanMeta) : Promise.resolve(state.openOrders ?? []),
+      (_needsPrices && !_midsWsOk()) ? info.allMids() : Promise.resolve({}),   // WS keeps prices fresh; skip REST when it's delivering
+      // HIP-3 dex mids aren't in the main allMids feed (nor the WS), so without this a
+      // HIP-3 position's mark comes only from positionValue/sz and lags. Fetch active-dex
+      // mids on the fan tick (weight-2 each) so SPCX/GOLD/etc. marks stay live.
+      (_needsPrices && _fanMeta) ? fetchHip3Mids(_fanMeta) : Promise.resolve({}),
+      // Fetch only fills newer than what we already have (startTime is exclusive on HL).
+      // `null` (not []) means "not fetched this tick" — the anchor logic below must not
+      // mistake a skipped tick for "no new fills".
+      _fillsTick
+        ? info.userFillsByTime({ user: state.addr, startTime: latestFillTs + 1 }).catch(() => [])
+        : Promise.resolve(null),
       shouldFetchOutcomeMeta  ? info.outcomeMeta().catch(() => null)                              : Promise.resolve(null),
       shouldRefreshSpot       ? info.spotClearinghouseState({ user: state.addr }).catch(() => null) : Promise.resolve(null),
       shouldRefreshPortfolio  ? info.portfolio({ user: state.addr }).catch(() => null)             : Promise.resolve(null),
@@ -1348,7 +1706,11 @@ async function refreshLive() {
     // the live perp-delta would otherwise spike it. perp "cash" = accountValue −
     // uPnL stays flat under pure PnL, but jumps on a transfer/deposit. When it
     // jumps (and it isn't a fill), shift the anchor so the value stays continuous.
-    {
+    // Only reconcile on ticks where we actually fetched fills. On a skipped tick
+    // `newRawFills` is null, so we can't tell a legit realized-PnL move from a
+    // transfer — and `_lastPerpCash` deliberately does NOT advance, so the next
+    // fills tick compares against the right baseline and sees every fill in between.
+    if (_fillsTick) {
       const _uPnl    = (perpState.assetPositions ?? []).reduce((s, p) => s + parseFloat(p.position?.unrealizedPnl ?? 0), 0)
       const _perpVal = parseFloat(perpState.marginSummary?.accountValue ?? 0)
       const _perpCash = _perpVal - _uPnl
@@ -1379,8 +1741,25 @@ async function refreshLive() {
     // then refresh the History table so any newly-resolved outcome names appear.
     if (freshOutcomeMeta) { _buildOcTokenMap(freshOutcomeMeta); _refreshVisitedSection('trades') }
 
-    // Merge fresh prices only when on a price-displaying tab; otherwise reuse cached values
-    if (_needsPrices) state.allMids = { ...state.allMids, ...mainMids }
+    // Merge fresh prices only when on a price-displaying tab; otherwise reuse cached values.
+    // HIP-3 dex mids merge in too (keyed "dex:coin"), keeping HIP-3 position marks live.
+    // state.allMids is THE single price store — every view reads its mark from here via
+    // _livePx, so nobody derives their own number. Guarantee it always holds a mark for each
+    // open position: if a dex mid wasn't fetched this tick, backfill from the position's own
+    // notional (HL: positionValue = |szi| × mark). Without this, a position falls back to its
+    // notional while the watch strip falls back to a stale ctx/candle → the same asset shows
+    // two slightly different prices. One store, one value, read everywhere.
+    if (_needsPrices) {
+      const _mids = { ...state.allMids, ...mainMids, ...hip3Mids }
+      for (const ap of (perpState.assetPositions ?? [])) {
+        const p = ap.position
+        if (!p?.coin || parseFloat(_mids[p.coin] ?? 0) > 0) continue
+        const sz = Math.abs(parseFloat(p.szi ?? 0))
+        const pv = Math.abs(parseFloat(p.positionValue ?? 0))
+        if (sz > 0 && pv > 0) _mids[p.coin] = String(pv / sz)
+      }
+      state.allMids = _mids
+    }
     const allMids    = state.allMids
 
     // Auto-select BTC on first data load if no coin chosen yet
@@ -1388,8 +1767,8 @@ async function refreshLive() {
       window.__selectCoin('BTC')
     }
 
-    // Merge new fills if any arrived
-    if (newRawFills.length > 0) {
+    // Merge new fills if any arrived (null = fills weren't fetched this tick)
+    if (newRawFills && newRawFills.length > 0) {
       const newFills = parseFills(newRawFills).map(f => ({ ...f, coin: hip3Rename(f.coin) }))
       state.fills = [...newFills, ...state.fills]
       computeLossStreak(state.fills)
@@ -1440,24 +1819,85 @@ async function refreshLive() {
     updateWatchTicker()
     if (state.selectedCoin) updateChartStats(state.selectedCoin)
     updateMobileView()
+    _hlOk()   // clean pass — reset the breaker's escalation
 
   } catch (e) {
     refreshFailCount++
     console.warn('Live refresh failed:', e.message)
     updateRefreshBanner()
-    if (/429|too many/i.test(e.message)) {
-      // Back off for 30s on rate-limit
-      clearInterval(liveTimer)
-      liveTimer = setTimeout(() => {
-        liveTimer = setInterval(refreshLive, 5000)
-      }, 30000)
-    }
+    _hl429(e)   // rate limit → trip the global breaker (all pollers pause)
   } finally {
     _refreshInProgress = false
   }
 }
 
-// ─── PORTFOLIO CHARTS ─────────────────────────────────────────────────────────
+// Pull fresh data right after a user action (place / close / cancel) so Orders, History,
+// Positions and Calendar update immediately instead of waiting for the next gated tick.
+// Handles all three account modes and waits out any in-flight refresh so the forced fetch
+// actually runs. Fires TWICE — a quick pass, then a second ~2.5s later — because HL doesn't
+// always have the new fill queryable on the first pass, and the combined view's heavy fan is
+// slow; the second pass catches whatever the first missed.
+function _doForcedRefresh() {
+  try {
+    if (state.isAllAccounts) {
+      if (_allAcctRefreshing) { setTimeout(_doForcedRefresh, 350); return }   // busy — retry, don't drop it
+      _allAcctSilentRefresh(_maLoad())
+      return
+    }
+    if (isPaper()) return                                       // paper state is local — already current
+    if (_refreshInProgress) { setTimeout(_doForcedRefresh, 250); return }  // let the in-flight tick finish, then force
+    refreshLive(true)
+  } catch {}
+}
+window.__refreshAfterAction = function(delay = 700, addr = null) {
+  if (state.isAllAccounts) {
+    // The combined view caches each wallet's all-time history (fills/portfolio/funding) for
+    // 8 min — so a just-closed trade won't appear until it expires. Force fresh FILLS only:
+    // the cached (portfolio snapshot + perp anchor) is a mutually-consistent pair, and the
+    // value bridge `_portVal + (perpNow − _perpBase)` already reflects a close through the
+    // live perp delta. Re-snapshotting mid-close instead re-baselines against a half-settled
+    // account, which is what made equity jump right after closing a trade.
+    //
+    // If we know WHICH wallet the action hit, refresh only that one (fast, ~1 wallet's
+    // requests) instead of re-fanning all N. Fall back to the full fan when it's unknown.
+    if (addr) {
+      try { _maLedgerCache.delete(String(addr).toLowerCase()) } catch {}
+      setTimeout(() => _allAcctRefreshOne(addr), delay)
+      setTimeout(() => _allAcctRefreshOne(addr), delay + 2300)
+      return
+    }
+    try { _maFillsStale = true; _maLedgerCache.clear() } catch {}
+    setTimeout(_doForcedRefresh, delay)
+    return
+  }
+  setTimeout(_doForcedRefresh, delay)
+  setTimeout(_doForcedRefresh, delay + 2300)   // second pass catches fills HL hadn't propagated yet
+}
+
+// Outcome (HIP-4 spot) fills reach HL's fill feed slower than perp fills, so the two
+// passes above often miss them and History/Calendar only catch up on the ~15s fills tick.
+// Poll a few times over ~11s instead, stopping the moment the new fill lands.
+window.__refreshOutcomeClose = function(acct = null) {
+  const single = !state.isAllAccounts && !isPaper()
+  // Combined view: re-render straight from cache NOW so the pending-close clamp hides the
+  // just-closed outcome instantly (as the single-account view does), instead of waiting on
+  // the slow multi-wallet fan. The forced refreshes below then reconcile fills/history.
+  if (state.isAllAccounts) { try { _allAcctReaggregate() } catch {} }
+  // Combined view, known wallet: poll only THAT wallet for the new fill (outcome fills reach
+  // HL's feed slower than perp fills), instead of re-fanning every account each tick.
+  if (state.isAllAccounts && acct) {
+    for (const t of [800, 2000, 3800, 6000, 9000]) setTimeout(() => _allAcctRefreshOne(acct), t)
+    return
+  }
+  const start  = single ? (state.fills?.length ?? 0) : -1
+  for (const t of [700, 1800, 3200, 5200, 7800, 11000]) {
+    setTimeout(() => {
+      if (single && (state.fills?.length ?? 0) > start) return   // fill already landed — stop polling
+      if (state.isAllAccounts) { try { _maFillsStale = true; _maLedgerCache.clear() } catch {} }
+      _doForcedRefresh()
+    }, t)
+  }
+}
 function renderChartPeriod(period) {
   state.currentPeriod = period
   document.querySelectorAll('.chart-tab').forEach(b => {
@@ -1541,11 +1981,62 @@ window.__pickWallet = async function(rdns) {
   statusEl.textContent = 'Connecting...'
   statusEl.style.color = 'var(--muted)'
   try {
-    const addr = await connectWallet(rdns)
+    // Only ask for a specific account when we're viewing a real one — the
+    // All Accounts / Paper sentinels aren't addresses and would send the wallet
+    // hunting for an account that can't exist.
+    const _want = /^0x[0-9a-fA-F]{40}$/.test(state.addr ?? '') ? state.addr : null
+    const addr = await connectWallet(rdns, _want)
+    // Connecting is only needed to ACT on an account (deposit / withdraw / approve an
+    // agent key) — all owner operations. Watching is free and never needs a wallet. So
+    // the connected wallet MUST equal the address being viewed; otherwise we'd let one
+    // wallet sign actions while the UI shows another account. Reject the mismatch.
+    const viewing = (state.addr || '').toLowerCase()
+    // Reject-and-notify helper: the inline status element is on the (desktop) trade tab
+    // and is invisible inside the Settings modal, so surface an alert too — guaranteed
+    // visible in any context (desktop trade tab, desktop Settings, mobile Settings).
+    const rejectConnect = (inline, popup) => {
+      // The wallet is left registered under the address it controls — it just isn't
+      // usable from THIS view (All Accounts / Paper aren't single signable accounts).
+      if (statusEl) { statusEl.innerHTML = inline; statusEl.style.color = 'var(--red)' }
+      dotEl?.classList.remove('connected')
+      _refreshWalletUI()
+      alert(popup)
+    }
+    if (viewing === '__all_accounts__') {
+      rejectConnect('✗ Open a single account to connect.',
+        'Open a single account first — you can\'t connect a wallet in the All Accounts view.')
+      return
+    }
+    // The paper account has no on-chain address, so the mismatch check below would
+    // compare against the "__paper__" sentinel and print nonsense. Nothing in paper
+    // needs a wallet anyway — it never signs.
+    if (viewing === PAPER_ADDR) {
+      rejectConnect('✗ The paper account doesn\'t use a wallet.',
+        'The paper account is simulated — it never signs anything, so there is nothing to connect.\n\nSwitch to a real account first if you want to connect a wallet.')
+      return
+    }
+    if (viewing && addr.toLowerCase() !== viewing) {
+      const w = `${addr.slice(0,6)}…${addr.slice(-4)}`, v = `${viewing.slice(0,6)}…${viewing.slice(-4)}`
+      // The wallet is KEPT — it's registered under the address it actually controls,
+      // so it's ready the moment that account is opened. Multiple wallets can be
+      // connected at once and each account routes to its own, so there's nothing to
+      // reject here; just say what happened and offer to jump to that account.
+      if (statusEl) { statusEl.innerHTML = `Connected <b>${w}</b> — open that account to use it.`; statusEl.style.color = 'var(--muted)' }
+      _refreshWalletUI()
+      if (confirm(
+        `Connected ${w}.\n\n` +
+        `You're viewing ${v}, which this wallet doesn't control, so it stays connected to ${w} and is kept for when you open it.\n\n` +
+        `Open ${w} now?`
+      )) {
+        window.__quickLoad(addr)
+      }
+      return
+    }
     if (state.addr) localStorage.setItem(_walletRdnsForAddr(state.addr), rdns)
     try {
       statusEl.textContent = 'Approving...'
-      await ensureChain('0xa4b1')   // Arbitrum — needed to sign HL user actions
+      // Builder-fee approval is a user-signed EIP-712 action — HL accepts it on any
+      // chain, so no chain switch is needed (signs on the wallet's current chain).
       const feeResult = await approveBuilderFee(getHlSigner())
       console.log('approveBuilderFee result:', JSON.stringify(feeResult))
       setBuilderFeeEnabled(true)
@@ -1558,7 +2049,11 @@ window.__pickWallet = async function(rdns) {
     statusEl.style.color = 'var(--green)'
     btn.textContent = 'Disconnect'
     btn.onclick = disconnectMainWalletUI
+    // Privacy: joining the public leaderboard is OPT-IN. Connecting no longer auto-publishes
+    // your address — the user adds themselves explicitly via the "➕ Add me" button, and can
+    // remove themselves anytime (signature-proven). Never add an account without asking.
     _updateAutoGenBtnVisibility()   // wallet now connected → auto-gen buttons relabel
+    _refreshWalletUI()              // repaint the Settings view so it shows Connected without a reopen
     window.__updateDepositPreview()
     window.__updateWithdrawPreview()
     refreshDefiBalances()
@@ -1570,6 +2065,16 @@ window.__pickWallet = async function(rdns) {
     statusEl.style.color = 'var(--red)'
     dotEl.classList.remove('connected')
   }
+}
+
+// Repaint whichever wallet/settings surface is open so a connect/disconnect reflects
+// immediately (the mobile Settings modal is re-rendered wholesale; it doesn't share the
+// desktop trade-tab's live status element, so without this it only updated on reopen).
+function _refreshWalletUI() {
+  try {
+    if (typeof _isMobView === 'function' && _isMobView() && _mobVActiveTab === 'settings') _mobVRenderContent()
+    else _syncSettingsTab()
+  } catch {}
 }
 
 function disconnectMainWalletUI() {
@@ -1585,6 +2090,7 @@ function disconnectMainWalletUI() {
   btn.textContent = 'Connect Wallet'
   btn.onclick = openWalletPicker
   _updateAutoGenBtnVisibility()   // wallet gone → buttons relabel to "Connect wallet"
+  _refreshWalletUI()
 }
 
 onWalletDisconnect(disconnectMainWalletUI)
@@ -1596,6 +2102,7 @@ window.__sortMPos           = (key) => { if (!state.perpState) return; setSortMP
 window.__sortMOrd           = (key) => { if (!state.perpState) return; setSortMOrd(key); renderManageTables(state.perpState, state.openOrders, state.allMids) }
 window.__tradesPrevPage = () => { if (!state.fills) return; setTradesPage(Math.max(0, getTradesPage() - 1)); renderTrades(state.fills) }
 window.__tradesNextPage = () => { if (!state.fills) return; setTradesPage(getTradesPage() + 1); renderTrades(state.fills) }
+window.__tradesDateFilter = () => { if (!state.fills) return; setTradesPage(0); renderTrades(state.fills) }
 
 // ─── DEPOSIT / WITHDRAW ───────────────────────────────────────────────────────
 let _depositDest = 'perps'
@@ -1606,10 +2113,12 @@ function _defiEl(id) {
   return (mob && mob.querySelector('#' + id)) || document.getElementById(id)
 }
 
+// Kept for compatibility — the Perps/Spot toggle is gone (a bridge deposit has no
+// destination field), so the buttons may not exist. Never assume they do.
 window.__setDepositDest = function(dest) {
   _depositDest = dest
-  document.getElementById('depDest-perps').classList.toggle('active', dest === 'perps')
-  document.getElementById('depDest-spot').classList.toggle('active', dest === 'spot')
+  document.getElementById('depDest-perps')?.classList.toggle('active', dest === 'perps')
+  document.getElementById('depDest-spot')?.classList.toggle('active', dest === 'spot')
   window.__updateDepositPreview()
 }
 
@@ -1675,7 +2184,7 @@ window.__updateDepositPreview = function() {
   preview.style.opacity = '1'
   _defiEl('dp-send').textContent    = `${amount.toFixed(2)} USDC`
   _defiEl('dp-receive').textContent = `${amount.toFixed(2)} USDC`
-  _defiEl('dp-dest').textContent    = _depositDest === 'perps' ? 'Perps Account' : 'Spot Account'
+  _defiEl('dp-dest').textContent    = 'Hyperliquid account'
   btn.disabled    = false
   btn.textContent = 'Deposit'
 }
@@ -1795,11 +2304,18 @@ async function refreshDefiBalances() {
 let _tradePerpState = null  // refreshed clearinghouseState for the loaded wallet
 
 function _renderTradeAccountStats(ps) {
+  const tb = document.getElementById('tradeBalance')
+  const tw = document.getElementById('tradeWithdrawable')
+  if (!tb || !tw) return
+  // Watch-only session: no wallet can trade, and the core-dex numbers shown here
+  // (perp equity/withdrawable) don't match the unified totals elsewhere — dashes
+  // are less confusing than balances the viewer can't act on.
+  if (!isConnected()) { tb.textContent = '—'; tw.textContent = '—'; return }
   if (!ps?.marginSummary) return
   const val   = parseFloat(ps.marginSummary?.accountValue ?? 0)
   const wdraw = parseFloat(ps.withdrawable ?? 0)
-  document.getElementById('tradeBalance').textContent      = '$' + fmtUSD(val)
-  document.getElementById('tradeWithdrawable').textContent = '$' + fmtUSD(wdraw)
+  tb.textContent = '$' + fmtUSD(val)
+  tw.textContent = '$' + fmtUSD(wdraw)
 }
 
 async function updateTradeBalance() {
@@ -1808,6 +2324,7 @@ async function updateTradeBalance() {
   _updateAvailDisplay()
 
   if (!isConnected()) return
+  if (_hlLimited()) return   // global 429 breaker
   const addr = state.addr
   if (!addr) return
   try {
@@ -1834,8 +2351,10 @@ let _mktCatMap     = {}   // coin → category string
 let _spotNameMap   = {}   // @N / 'TOKEN/USDC' → display name
 let _spotPairToAt  = {}   // 'TOKEN/USDC' → '@N'  (used to deduplicate allMids entries)
 let _spotCommunityKeys = new Set()  // @N keys with deployerTradingFeeShare == 0 (real community tokens)
+let _spotProtocolKeys  = new Set()  // @N keys that are protocol-deployed spot (BTC/ETH/stocks/ETFs) — feeShare != 0
 let _mktCtxReady   = false
 let _mktHip3Ready = false  // separate gate so HIP-3 ctx is fetched once allMetas is available
+let _mktDataInFlight = null // dedupe concurrent _ensureMarketData() calls (they each fired a full burst)
 let _dropSort    = 'oi'
 let _dropCat     = 'all'
 let _dropType    = 'all'
@@ -1867,9 +2386,19 @@ function _buildCtxEntry(c) {
   }
 }
 
-async function _ensureMarketData() {
-  if (_mktCtxReady && _mktHip3Ready) return
+function _ensureMarketData() {
+  if (_mktCtxReady && _mktHip3Ready) { _startHip3CtxLoader(); return Promise.resolve() }  // periodic staggered ctx refresh
+  // Dedupe: several tabs/renders call this on mount; without a guard each fired its own
+  // full ctx burst (main + spot + one metaAndAssetCtxs PER HIP-3 dex) concurrently — a
+  // wall of weight-20 /info calls that 429'd. Share one in-flight load instead.
+  if (_mktDataInFlight) return _mktDataInFlight
+  // Don't pile onto an open rate-limit breaker; retry on a later call once it clears.
+  if (_hlLimited()) return Promise.resolve()
+  _mktDataInFlight = _doEnsureMarketData().finally(() => { _mktDataInFlight = null })
+  return _mktDataInFlight
+}
 
+async function _doEnsureMarketData() {
   if (!_mktCtxReady) {
     // Use allSettled so any single failure doesn't block the rest
     const [mktR, catR, spotR, spotCtxR] = await Promise.allSettled([
@@ -1897,17 +2426,22 @@ async function _ensureMarketData() {
       _spotNameMap  = {}
       _spotPairToAt = {}
       _spotCommunityKeys = new Set()
+      _spotProtocolKeys  = new Set()
       const { tokens = [], universe = [] } = spotR.value ?? {}
       for (const u of universe) {
         const base    = tokens[u.tokens?.[0]]
-        const display = base?.name ?? u.name
+        // Alias baked in HERE (not just in the market-list row) so every consumer — trade
+        // detail header, chart title, position/order labels — shows "BTC" not "UBTC".
+        const display = _spotDisplayAlias(base?.name ?? u.name)
         const atKey   = `@${u.index}`
         _spotNameMap[u.name] = display    // 'PURR/USDC' → 'PURR'
         _spotNameMap[atKey]  = display    // '@0' → 'PURR'
         _spotPairToAt[u.name] = atKey     // 'PURR/USDC' → '@0'
-        // Only community-created tokens (deployerTradingFeeShare == 0) belong in the Spot filter.
-        // Protocol-deployed synthetic assets (stocks, ETFs, wrapped tokens) use feeShare == 1.0.
+        // Split spot markets by deployer: community-created tokens (deployerTradingFeeShare == 0)
+        // vs protocol-deployed synthetic assets (BTC/ETH/stocks/ETFs, feeShare != 0). The Spot tab
+        // shows BOTH (like Hyperliquid) — protocol markets are why BTC/ETH/stocks must appear.
         if (parseFloat(base?.deployerTradingFeeShare ?? '0') === 0) _spotCommunityKeys.add(atKey)
+        else _spotProtocolKeys.add(atKey)
       }
     } else { console.warn('[hliq] fetchSpotMeta failed:', spotR.reason) }
 
@@ -1961,31 +2495,80 @@ async function _ensureMarketData() {
       )
     } else { console.warn('[hliq] fetchSpotMarketCtxs failed:', spotCtxR.reason) }
 
-    // Fetch HIP-3 DEX ctx using DEX names from perpCategories — no wallet needed.
-    // metaAndAssetCtxs({dex}) returns coin names WITH prefix (e.g. 'flx:TSLA'),
-    // so u.name is the correct allMids key directly.
-    if (!_mktHip3Ready && catR.status === 'fulfilled') {
-      const hip3Dexes = new Set()
-      for (const [coin] of (catR.value ?? [])) {
-        const ci = coin.indexOf(':')
-        if (ci > 0) hip3Dexes.add(coin.slice(0, ci))
-      }
-      if (hip3Dexes.size > 0) {
-        const hip3DexArr = [...hip3Dexes]
-        const hip3Results = await Promise.allSettled(hip3DexArr.map(dex => fetchDexMarketCtxs(dex)))
-        hip3DexArr.forEach((dex, i) => {
-          const r = hip3Results[i]
-          if (r.status !== 'fulfilled') return
-          const [meta2, ctxs2] = r.value
-          ;(meta2.universe ?? []).forEach((u, j) => {
-            const c2 = ctxs2[j]
-            if (!c2) return
-            _mktCtxMap[u.name] = _buildCtxEntry(c2)
-          })
-        })
-      }
-      _mktHip3Ready = true
-    }
+  }
+  // HIP-3 ctx is loaded lazily in the background, one dex at a time (see below) — NOT as a
+  // burst here. Kick the drain now that _mktCatMap (the dex list) is populated.
+  _startHip3CtxLoader()
+}
+
+// ─── HIP-3 market ctx: staggered background loader ─────────────────────────────
+// metaAndAssetCtxs has no "all dexes" form, so every HIP-3 dex needs its own weight-20
+// call. Fetching them all at once (even pooled) was the burst that 429'd and left TradFi
+// blank. Instead we drain a queue a couple dexes at a time on a timer, filling _mktCtxMap
+// incrementally and repainting the markets list as each lands. Dexes the user holds or
+// watches are fetched first. Spreads the weight so it never trips the limiter, and always
+// finishes — a rate-limited dex is requeued, not dropped.
+let _hip3CtxQueue    = null   // remaining dex names, or null when idle
+let _hip3CtxTimer    = null
+let _hip3CtxLoadedAt = 0
+const _HIP3_CTX_TTL  = 300_000   // 5 min — refresh the (slow-moving) volume/OI/funding ctx
+const _HIP3_CTX_BATCH = 2        // dexes fetched per tick
+const _HIP3_CTX_EVERY = 3000     // ms between ticks
+
+function _startHip3CtxLoader(force = false) {
+  if (_hip3CtxTimer) return                                   // already draining
+  if (!force && _mktHip3Ready && Date.now() - _hip3CtxLoadedAt < _HIP3_CTX_TTL) return
+  const dexes = new Set()
+  for (const coin of Object.keys(_mktCatMap)) {
+    const ci = coin.indexOf(':')
+    if (ci > 0) dexes.add(coin.slice(0, ci))
+  }
+  if (!dexes.size) { _mktHip3Ready = true; return }           // no HIP-3 dexes on this deployment
+  // Priority: dexes the wallet holds positions/orders in, then watchlisted, then the rest.
+  const priority = new Set([
+    ...(state.perpState?.assetPositions ?? []).map(ap => String(ap.position?.coin ?? '').split(':')[0]),
+    ...(state.openOrders ?? []).map(o => String(o.coin ?? '').split(':')[0]),
+    ...loadWatchlist().map(c => String(c).split(':')[0]),
+  ].filter(Boolean))
+  _hip3CtxQueue = [...dexes].sort((a, b) => (priority.has(b) ? 1 : 0) - (priority.has(a) ? 1 : 0))
+  _hip3CtxTick()                                              // fetch the first batch immediately
+  _hip3CtxTimer = setInterval(_hip3CtxTick, _HIP3_CTX_EVERY)
+}
+
+async function _hip3CtxTick() {
+  if (_hlLimited()) return                                    // breaker open — hold the queue, retry next tick
+  if (!_hip3CtxQueue || !_hip3CtxQueue.length) {
+    if (_hip3CtxTimer) { clearInterval(_hip3CtxTimer); _hip3CtxTimer = null }
+    _hip3CtxQueue = null
+    _mktHip3Ready = true
+    _hip3CtxLoadedAt = Date.now()
+    return
+  }
+  const batch = _hip3CtxQueue.splice(0, _HIP3_CTX_BATCH)
+  const results = await hlPool(batch, dex =>
+    fetchDexMarketCtxs(dex).then(r => ({ dex, r })).catch(e => { _hl429(e); return { dex, r: null } }), 2)
+  let changed = false
+  for (const { dex, r } of results) {
+    if (!r) { _hip3CtxQueue.push(dex); continue }             // failed — requeue to retry at the end
+    const [meta2, ctxs2] = r
+    ;(meta2.universe ?? []).forEach((u, j) => {
+      const c2 = ctxs2[j]
+      if (!c2) return
+      _mktCtxMap[u.name] = _buildCtxEntry(c2)
+      changed = true
+    })
+    _mktHip3Ready = true                                      // partial data is enough to show the tab
+  }
+  if (changed) _repaintMarketsLive()
+}
+
+// Repaint whichever markets view is currently on screen, so staggered ctx fills in live.
+function _repaintMarketsLive() {
+  const rows = document.getElementById('mobMktRows')
+  if (rows && _mobTradeView === 'list') rows.innerHTML = _mobBuildMarketRows()
+  const dd = document.getElementById('coinDropdown')
+  if (dd && dd.classList.contains('open')) {
+    renderCoinDropdownItems(document.getElementById('coinDropdownSearch')?.value ?? '')
   }
 }
 
@@ -2139,8 +2722,42 @@ function _tradFiIconUrl(sym) {
 }
 
 function _cgLetterAvatar(coin) {
-  const letter = coin.replace(/.*:/, '').replace(/[-/@].*/, '').charAt(0).toUpperCase()
-  return `<span style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;border-radius:50%;background:${_coinColor(coin)};font-size:0.6em;font-weight:700;color:#fff">${letter}</span>`
+  const raw = String(coin ?? '')
+  // Use the DISPLAY name for the ticker (so "xyz:CL" reads "WTI", not "C"). Show 2–3 chars
+  // — a real ticker reads as intentional where a lone letter looked like a placeholder.
+  const label = (typeof coinLabel === 'function' ? coinLabel(raw) : raw)
+    .replace(/.*:/, '').replace(/[-/@].*/, '')
+  const txt = (label.slice(0, 3) || '?').toUpperCase()
+  let h = 0
+  for (let i = 0; i < raw.length; i++) h = (h * 31 + raw.charCodeAt(i)) % 360
+  const fs = txt.length >= 3 ? 0.34 : txt.length === 2 ? 0.42 : 0.54
+  // Soft two-stop gradient of one hue + a subtle top highlight / bottom shade for depth,
+  // ticker in semibold. Deterministic per coin, tuned to look designed rather than random.
+  return `<span style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;border-radius:50%;`
+    + `background:linear-gradient(145deg,hsl(${h} 58% 46%),hsl(${(h + 22) % 360} 62% 32%));`
+    + `box-shadow:inset 0 1px 1px rgba(255,255,255,.20),inset 0 -2px 3px rgba(0,0,0,.22);`
+    + `color:#fff;font-weight:700;font-size:${fs}em;letter-spacing:.01em">${txt}</span>`
+}
+
+// A coin logo with the colored letter-avatar rendered UNDERNEATH as a stable base. The
+// icon is therefore NEVER blank: the letter paints instantly (no network), the real logo
+// layers on top once it loads, and if the logo 403/404s the <img> is removed to reveal the
+// base. This is what stops icons from blinking/disappearing while the markets list
+// re-renders and while the flaky external logo CDNs (HL / CoinGecko / TradingView) load.
+function _iconImg(coin, src, alt, style = '') {
+  const altAttr = alt ? ` data-alt="${alt}"` : ''
+  // loading="lazy": the markets list has 700+ rows; without this every icon fetched at once
+  // (a huge burst even first-party). Lazy = only rows scrolled into view fetch. The letter
+  // base underneath shows instantly for the rest, so nothing looks empty while scrolling.
+  // The letter base is a LOADING placeholder shown until a real logo loads (then hidden so the
+  // logo isn't layered over a colored letter). But if we ALREADY know this coin resolved to a
+  // logo this session, skip the letter entirely — on a re-render the browser-cached image
+  // repaints over a neutral panel bg with no colored-letter flash. That kills the flicker.
+  const knownLogo = _iconResolved.get(coin) === 'logo'
+  const base = knownLogo ? '' : _cgLetterAvatar(coin)
+  return `<span style="position:relative;display:block;width:100%;height:100%;border-radius:50%;overflow:hidden;background:var(--panel-2)">`
+    + base
+    + `<img src="${src}"${altAttr} loading="lazy" decoding="async" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;${style}" onload="window.__coinImgOk(this,'${coin}')" onerror="window.__coinImgErr(this,'${coin}')"></span>`
 }
 
 ;(function _initCGIconMap() {
@@ -2148,8 +2765,8 @@ function _cgLetterAvatar(coin) {
   try {
     const raw = localStorage.getItem('cg_icon_map')
     const age = Date.now() - parseInt(localStorage.getItem('cg_icon_map_at') || '0')
-    const ver = localStorage.getItem('cg_icon_map_ver')
-    if (raw && ver === '2' && age < 24 * 3600 * 1000) { _cgIconMap = JSON.parse(raw); return }
+    const ver = localStorage.getItem('cg_icon_map_ver_v3')
+    if (raw && ver === '3' && age < 24 * 3600 * 1000) { _cgIconMap = JSON.parse(raw); return }
   } catch {}
 
   // Fetch top 1000 coins from CoinGecko (4 pages × 250) + supplemental HL ecosystem tokens
@@ -2164,31 +2781,73 @@ function _cgLetterAvatar(coin) {
       .then(r => r.ok ? r.json() : []).catch(() => []),
   ]).then(pages => {
     const map = {}
+    // FIRST-wins, not last-wins: CoinGecko returns coins by market cap, so the first coin
+    // for a symbol is the real/major one (e.g. Hyperliquid HYPE), and a lower-cap memecoin
+    // sharing that ticker can't overwrite it with the wrong (pink) logo. This is what made
+    // HYPE/NEAR/etc. show the wrong project's icon.
     for (const c of pages.flat()) {
-      if (c.symbol && c.image) map[c.symbol.toLowerCase()] = c.image.replace('/large/', '/small/')
+      if (!c.symbol || !c.image) continue
+      const key = c.symbol.toLowerCase()
+      if (!map[key]) map[key] = c.image.replace('/large/', '/small/')
     }
     _cgIconMap = map
     window.__cgIconMap = () => _cgIconMap
     localStorage.setItem('cg_icon_map', JSON.stringify(map))
     localStorage.setItem('cg_icon_map_at', Date.now().toString())
-    localStorage.setItem('cg_icon_map_ver', '2')
+    localStorage.setItem('cg_icon_map_ver_v3', '3')
+    // The map loads async; icons that rendered before it were requested without a CoinGecko
+    // candidate (so the server cached HL). Re-render the on-screen icons now that the map is
+    // ready — the new requests carry the CoinGecko URL, and the server upgrades those coins to
+    // the real CoinGecko artwork. Without this the first page load keeps the fallback icons.
+    try {
+      if (typeof _isMobView === 'function' && _isMobView() && typeof _mobVRenderContent === 'function') _mobVRenderContent()
+      if (typeof _repaintMarketsLive === 'function') _repaintMarketsLive()
+      if (typeof renderCoinDropdownItems === 'function' && document.getElementById('coinDropdown')?.classList.contains('open')) renderCoinDropdownItems(document.getElementById('coinDropdownSearch')?.value ?? '')
+    } catch {}
   }).catch(() => {})
 })()
 
-// Coins whose remote artwork failed to load — render a letter avatar directly on
-// subsequent renders so frequently-refreshed lists (Watch tab) don't re-fetch the
-// dead URL and visibly blink the broken image → avatar on every refresh cycle.
+// Coins whose remote artwork failed to load THIS session — render a letter avatar
+// directly on subsequent renders so frequently-refreshed lists (Watch tab) don't
+// re-fetch the dead URL and visibly blink the broken image → avatar every cycle.
+//
+// Deliberately NOT persisted across reloads: a transient failure (mobile briefly
+// offline, a CDN hiccup, a rate-limited icon host) must never stick an asset on the
+// default avatar for good. A page reload starts this set empty and re-attempts every
+// icon, so transient failures self-heal; a genuinely-missing icon just fails once more
+// (one console 404) and short-circuits again for the rest of that session.
 const _iconFailed = new Set()
+// What each coin resolved to this session: 'logo' (a real image loaded) or 'letter' (no art,
+// or a transparent miss). Used so RE-RENDERS (the markets list and All-Accounts cards rebuild
+// on a timer) don't flash the letter placeholder before the cached logo repaints — a resolved
+// 'logo' renders straight to the <img> with no letter underneath, and a resolved 'letter'
+// renders the tile directly with no <img> at all. That's what stops the icon flicker.
+const _iconResolved = new Map()
+// One-time cleanup of the old persisted failed-icon cache (v1). Left behind it would
+// only linger as dead data; a stale entry there is what stuck some tokens on the
+// default icon across reloads.
+try { localStorage.removeItem('hliq_icon_fail_v1') } catch {}
+
+// A real logo finished loading. Ignore the 1×1 transparent "no-logo" placeholder the server
+// returns for logo-less coins (naturalWidth ≤ 2) — that must NOT hide the letter base.
+window.__coinImgOk = function(img, coin) {
+  if (img.naturalWidth > 2) {
+    if (coin) _iconResolved.set(coin, 'logo')
+    img.style.background = 'var(--panel-2)'
+    const b = img.previousElementSibling; if (b) b.style.display = 'none'
+  } else if (coin) {
+    _iconResolved.set(coin, 'letter')   // transparent miss → this coin has no artwork
+  }
+}
 
 window.__coinImgErr = function(img, coin) {
-  // One-step fallback chain: if a data-alt URL is present try it first,
-  // then give up to a letter avatar.
+  // Fallback chain: if a data-alt URL is present try it first, then give up.
   const alt = img?.dataset?.alt
   if (alt) { img.removeAttribute('data-alt'); img.src = alt; return }
-  const p = img?.parentElement
-  if (!p) return
-  if (coin) _iconFailed.add(coin)
-  p.innerHTML = _cgLetterAvatar(coin)
+  if (coin) { _iconFailed.add(coin); _iconResolved.set(coin, 'letter') }
+  // Every logo renders over a letter-avatar base (_iconImg), so just drop the failed <img>
+  // to reveal it — no innerHTML swap, no reflow, no blank flash.
+  img.remove()
 }
 
 // Hyperliquid's own icon CDN — covers HL-native listings (k-prefixed thousand
@@ -2199,6 +2858,14 @@ function _hlIconUrl(base) {
   return `https://app.hyperliquid.xyz/coins/${/^k[A-Z]/.test(base) ? base.slice(1) : base}.svg`
 }
 
+// Symbol → icon, for tickers the CoinGecko-symbol lookup gets wrong. Symbols are not unique
+// on CoinGecko (and a cached map can keep an older claimant of a ticker), which showed e.g.
+// MON with another project's logo instead of Monad's. HL's own CDN is authoritative for what
+// HL listed, and its artwork is full-colour, so pin these there.
+const _ICON_OVERRIDE = {
+  mon: 'https://app.hyperliquid.xyz/coins/MON.svg',   // Monad
+}
+
 function _coinIconHtml(coin, style = '') {
   // Prediction-market codes have no token artwork — return a static letter
   // avatar (no <img>) so the icon doesn't blink retrying a 404 image.
@@ -2207,7 +2874,7 @@ function _coinIconHtml(coin, style = '') {
     return _cgLetterAvatar(state.ocTokenMap?.['#' + coin.slice(1)]?.name || coin)
   }
   // Already known to have no artwork — skip the <img> entirely (no blink on re-render)
-  if (_iconFailed.has(coin)) return _cgLetterAvatar(coin)
+  if (_iconFailed.has(coin) || _iconResolved.get(coin) === 'letter') return _cgLetterAvatar(coin)
   const isTradFi = coin.includes(':') || _isTradFiCat(_mktCatMap[coin])
   let raw = coin.replace(/.*:/, '').replace(/[-/].*/, '')
   // Resolve @N spot index tokens and TOKEN/USDC pair names to the real token name
@@ -2218,34 +2885,44 @@ function _coinIconHtml(coin, style = '') {
     else return _cgLetterAvatar(raw || coin)
   }
   const sym = raw.toLowerCase()
-  // HIP-3 markets: HL hosts artwork under the full prefixed name
-  // (coins/xyz:TSLA.svg) — covers stocks, indices, and synthetics (108/161).
-  // Fallback: TradFi map / CoinGecko (crypto on HIP-3 dexes) / TV ticker guess.
+  // Every logo is served through OUR OWN /icon/<coin> cache (see serve-prod.js): the browser
+  // only ever calls our origin, the server fetches each source ONCE and caches it on disk,
+  // then serves every future request first-party — fast, stable, no per-client external
+  // calls, no console 403s, no flicker (the _iconImg letter base covers any gap). We pass the
+  // resolved candidate URLs as hints (?u=…) so the server caches the best available artwork.
+  let cands
   if (coin.includes(':')) {
-    const hlUrl = `https://app.hyperliquid.xyz/coins/${encodeURIComponent(coin)}.svg`
-    const alt   = _tradFiIconUrl(sym) ?? _cgIconMap?.[sym] ?? `${_TV_BASE}${sym}--big.svg`
-    return `<img src="${hlUrl}" data-alt="${alt}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;${style}" onerror="window.__coinImgErr(this,'${coin}')">`
-  }
-  if (!isTradFi) {
-    // k-prefixed coins (kPEPE = 1000×PEPE) match CoinGecko under the base symbol
+    // HIP-3 markets: HL hosts artwork under the full prefixed name (coins/xyz:TSLA.svg);
+    // then TradFi map / CoinGecko / TV ticker guess.
+    cands = [`https://app.hyperliquid.xyz/coins/${encodeURIComponent(coin)}.svg`,
+             _tradFiIconUrl(sym), _cgIconMap?.[sym], `${_TV_BASE}${sym}--big.svg`]
+  } else if (!isTradFi) {
+    // Crypto: CoinGecko first — real brand artwork, collision-free (the CG map is market-cap
+    // first-wins). Wait for that map before rendering, otherwise each icon shows the HL
+    // fallback for a beat and then FLIPS to CoinGecko when the map lands — that's the icons
+    // "keep changing". Until it's ready, show the letter placeholder; the map-load repaint
+    // re-renders these once. HL's CDN stays the fallback for coins CoinGecko's top-1000 misses.
+    if (!_cgIconMap || !Object.keys(_cgIconMap).length) return _cgLetterAvatar(coin)
     const kBase = /^k[A-Z]/.test(raw) ? raw.slice(1).toLowerCase() : null
     const cgUrl = _cgIconMap?.[sym] ?? (kBase ? _cgIconMap?.[kBase] : null)
-    const hlUrl = _hlIconUrl(raw)
-    // CoinGecko first — colorful artwork. HL's CDN (monochrome glyphs) is the
-    // fallback covering k-coins / low-caps that CoinGecko's top-1000 misses.
-    const src = cgUrl ?? hlUrl
-    const alt = cgUrl ? hlUrl : null
-    return `<img src="${src}"${alt ? ` data-alt="${alt}"` : ''} style="width:100%;height:100%;border-radius:50%;object-fit:cover;${style}" onerror="window.__coinImgErr(this,'${coin}')">`
+    cands = [_ICON_OVERRIDE[sym], cgUrl, _hlIconUrl(raw)]
+  } else {
+    // Main-dex TradFi (stocks / indices): mapped icon, else TV ticker guess.
+    cands = [_tradFiIconUrl(sym), `${_TV_BASE}${sym}--big.svg`]
   }
-  const tfUrl = _tradFiIconUrl(sym)
-  if (tfUrl) return `<img src="${tfUrl}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;${style}" onerror="window.__coinImgErr(this,'${coin}')">`
-  // For HIP-3 DEX coins with no exact mapping, try the ticker directly on TV CDN.
-  // If the ticker URL 404s the error handler falls back to a clean letter avatar.
-  if (isTradFi) {
-    const tickerUrl = `${_TV_BASE}${sym}--big.svg`
-    return `<img src="${tickerUrl}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;${style}" onerror="window.__coinImgErr(this,'${coin}')">`
-  }
-  return _cgLetterAvatar(sym || coin)
+  return _iconImg(coin, _serverIconUrl(coin, cands), null, style)
+}
+
+// Cache-bust version for icon URLs. Bump this whenever the icon-resolution logic changes so
+// browsers holding a stale cached icon (e.g. the old wrong-project CoinGecko "HYPE") re-fetch
+// against the corrected server instead of serving their cached copy until it expires.
+const _ICON_V = '4'
+
+// Build the first-party /icon/<coin> URL, passing the resolved external candidate URLs as
+// ?u= hints (in priority order) for the server-side cache to fetch and store.
+function _serverIconUrl(coin, cands) {
+  const q = (cands || []).filter(Boolean).map(u => 'u=' + encodeURIComponent(u)).join('&')
+  return `/icon/${encodeURIComponent(coin)}?v=${_ICON_V}${q ? '&' + q : ''}`
 }
 window._coinIconHtml = _coinIconHtml   // reused by the desktop overview (render.js)
 
@@ -2265,7 +2942,7 @@ function updateCoinHeader(coin) {
     iconEl.innerHTML = _coinIconHtml(coin)
     iconEl.style.background = 'transparent'
   }
-  const lev = state.assetMap?.[coin]?.maxLeverage
+  const lev = _coinMaxLev(coin)
   if (levEl) { levEl.textContent = lev ? lev + 'x' : ''; levEl.style.display = lev ? 'inline-flex' : 'none' }
 
   // Also update trade card search bar
@@ -2276,6 +2953,21 @@ function updateCoinHeader(coin) {
     if (coin) { tcsIcon.innerHTML = _coinIconHtml(coin); tcsIcon.style.background = 'transparent' }
     else      { tcsIcon.textContent = '—'; tcsIcon.style.background = 'var(--bg3)' }
   }
+}
+
+// Real max leverage for a coin, HIP-3-aware. `state.assetMap` is NOT rebuilt with HIP-3 in the
+// All-Accounts / leaderboard path (only `state.allMetas` is), so a HIP-3 coin like "xyz:SPCX"
+// misses the map and used to default to 50× — letting users over-lever past the dex's real cap
+// (SPCX is 20×). Fall back to searching every loaded dex universe, which IS populated there.
+function _coinMaxLev(coin) {
+  const c = String(coin || '')
+  const fromMap = state.assetMap?.[c]?.maxLeverage
+  if (fromMap) return fromMap
+  for (const m of (state.allMetas || [])) {
+    const u = (m.universe || []).find(x => x && x.name === c)
+    if (u && u.maxLeverage) return u.maxLeverage
+  }
+  return 50
 }
 
 // ─── TRADE CARD COIN SEARCH ───────────────────────────────────────────────────
@@ -2335,12 +3027,226 @@ let _availCache = { min: 0, max: 0, coin: null }
 let _availFetching = false
 let _availTimer   = null
 
-// Use max when going opposing to an existing position, min otherwise
+// Rough free margin of the account SELECTED in the combined view's "Trade from" picker,
+// from the combined snapshot. Used only as a fallback until _fetchAvail loads HL's exact
+// availableToTrade for that account + coin.
+function _selectedAcctAvail() {
+  const addr = window.__getTradeAcct()
+  if (!addr) return 0
+  const r = _allAcctLastResults.find(x => x.addr && x.addr.toLowerCase() === addr.toLowerCase())
+  return r ? Math.max(0, parseFloat(r.withdrawable ?? 0)) : 0
+}
+
+// ─── MARGIN ALLOCATION ───────────────────────────────────────────────────────
+// Donut of how the account's margin is split across open positions: each asset's slice is
+// sized by the margin backing it. Grouped by coin, so the same asset held on several accounts
+// (combined view) reads as one allocation.
+function _allocationSlices() {
+  const byCoin = new Map()
+  for (const ap of (state.perpState?.assetPositions ?? [])) {
+    const p  = ap.position ?? {}
+    const sz = parseFloat(p.szi ?? 0)
+    if (!sz) continue
+    // Cross positions report the margin HL has allocated to them; fall back to
+    // notional / leverage when marginUsed is absent.
+    const lev = parseFloat(p.leverage?.value ?? 0) || 1
+    const notional = Math.abs(parseFloat(p.positionValue ?? 0)) || Math.abs(sz) * _posMarkPx(p)
+    const margin = Math.abs(parseFloat(p.marginUsed ?? 0)) || (notional / lev)
+    if (!(margin > 0)) continue
+    const key = p.coin
+    const cur = byCoin.get(key) ?? { coin: key, margin: 0, notional: 0, uPnl: 0, longs: 0, shorts: 0, accts: new Set() }
+    cur.margin   += margin
+    cur.notional += notional
+    cur.uPnl     += parseFloat(p.unrealizedPnl ?? 0)
+    if (sz > 0) cur.longs++; else cur.shorts++
+    if (p._acct) cur.accts.add(p._acct)
+    byCoin.set(key, cur)
+  }
+  const slices = [...byCoin.values()].sort((a, b) => b.margin - a.margin)
+  const total  = slices.reduce((s, x) => s + x.margin, 0)
+  return { slices, total }
+}
+
+// Hover/tap state for the allocation wheel: the slice list plus the default centre readout to
+// restore when nothing is highlighted.
+let _allocSlices = [], _allocCenterHtml = ''
+const _ALLOC_SW = 18, _ALLOC_SW_HI = 26
+
+// Highlight one slice: thicken it, dim the rest, and swap the centre to that asset's numbers.
+window.__allocHover = function(i) {
+  const s = _allocSlices[i]
+  if (!s) return
+  document.querySelectorAll('[data-alloc-arc]').forEach(a => {
+    const on = a.dataset.allocArc === String(i)
+    a.setAttribute('stroke-width', String(on ? _ALLOC_SW_HI : _ALLOC_SW))
+    a.style.opacity = on ? '1' : '0.35'
+  })
+  document.querySelectorAll('[data-alloc-row]').forEach(r => {
+    r.style.background = r.dataset.allocRow === String(i) ? 'var(--panel-2)' : ''
+  })
+  const c = document.getElementById('allocCenter')
+  if (c) c.innerHTML = `
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+      <span style="width:9px;height:9px;border-radius:3px;background:${_coinColor(s.coin)}"></span>
+      <span style="font-size:13px;font-weight:700;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_ocCoinLabel(s.coin))}</span>
+    </div>
+    <div style="font-size:26px;font-weight:800;font-family:var(--font-mono);line-height:1.15">$${_prv(fmtUSD(s.margin, 2))}</div>
+    <div style="font-size:12px;color:var(--muted)">${s.pct.toFixed(1)}% of margin</div>
+    <div style="font-size:12px;color:var(--muted)">$${_prv(fmtUSD(s.notional, 2))} position value</div>
+    <div style="font-size:12px;font-weight:600;margin-top:1px" class="${s.uPnl >= 0 ? 'pos' : 'neg'}">${s.uPnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(s.uPnl))}</div>`
+}
+
+// Back to the totals view.
+window.__allocLeave = function() {
+  document.querySelectorAll('[data-alloc-arc]').forEach(a => {
+    a.setAttribute('stroke-width', String(_ALLOC_SW))
+    a.style.opacity = '1'
+  })
+  document.querySelectorAll('[data-alloc-row]').forEach(r => { r.style.background = '' })
+  const c = document.getElementById('allocCenter')
+  if (c) c.innerHTML = _allocCenterHtml
+}
+
+function _mobVRenderAllocation(el) {
+  if (_allocView === 'movers') { _mobVRenderAttribution(el); return }
+  const header = _allocViewHeader()
+  const { slices, total } = _allocationSlices()
+  if (!slices.length || total <= 0) {
+    _allocSlices = []
+    el.innerHTML = `${header}<div class="mob-v-empty">${_T('No open positions to allocate.', 'Sin posiciones abiertas para asignar.')}</div>`
+    return
+  }
+
+  // Cache each slice's share so the hover readout doesn't recompute it.
+  _allocSlices = slices.map(s => ({ ...s, pct: (s.margin / total) * 100 }))
+
+  // Donut geometry. Segments are drawn as dashed arcs on stacked circles: each gets a dash of
+  // its own arc length, offset by everything before it, with a small gap so slices read apart.
+  // The radius leaves room for the thicker highlighted stroke so it can't clip at the edge.
+  const SIZE = 260, R = (SIZE - _ALLOC_SW_HI) / 2 - 4, CX = SIZE / 2, C = 2 * Math.PI * R
+  const GAP  = slices.length > 1 ? Math.min(6, C * 0.012) : 0
+  // Each slice is drawn twice: the visible arc (whose width animates on highlight) and an
+  // invisible, FIXED-width hit band on top. Hit-testing the visible arc directly caused a
+  // feedback loop — growing it moved its edge past the cursor, firing mouseleave, which shrank
+  // it and re-fired mouseenter, so the highlight flickered and stuck. The hit band never
+  // changes size, so the pointer target is stable.
+  const HIT = _ALLOC_SW_HI + 8
+  let acc = 0
+  const geo = _allocSlices.map(s => {
+    const frac = s.margin / total
+    const len  = Math.max(1, frac * C - GAP)
+    const off  = -acc
+    acc += frac * C
+    return { s, dash: `${len.toFixed(2)} ${(C - len).toFixed(2)}`, off: off.toFixed(2) }
+  })
+  const arcs = geo.map((g, i) =>
+    `<circle data-alloc-arc="${i}" cx="${CX}" cy="${CX}" r="${R}" fill="none"
+      stroke="${_coinColor(g.s.coin)}" stroke-width="${_ALLOC_SW}"
+      stroke-dasharray="${g.dash}" stroke-dashoffset="${g.off}"
+      transform="rotate(-90 ${CX} ${CX})" stroke-linecap="butt"
+      style="pointer-events:none;transition:stroke-width .12s ease,opacity .12s ease"></circle>`
+  ).join('')
+  // pointer-events="stroke" makes a transparent stroke hit-testable (visiblePainted wouldn't).
+  const hits = geo.map((g, i) =>
+    `<circle data-alloc-hit="${i}" cx="${CX}" cy="${CX}" r="${R}" fill="none"
+      stroke="transparent" stroke-width="${HIT}" pointer-events="stroke"
+      stroke-dasharray="${g.dash}" stroke-dashoffset="${g.off}"
+      transform="rotate(-90 ${CX} ${CX})" stroke-linecap="butt" style="cursor:pointer"></circle>`
+  ).join('')
+
+  const totalNotional = slices.reduce((s, x) => s + x.notional, 0)
+  _allocCenterHtml = `
+    <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Margin used</div>
+    <div style="font-size:28px;font-weight:800;font-family:var(--font-mono);line-height:1.15">$${_prv(fmtUSD(total, 2))}</div>
+    <div style="font-size:12px;color:var(--muted)">${slices.length} asset${slices.length === 1 ? '' : 's'} · $${_prv(fmtUSD(totalNotional))} position value</div>`
+
+  const wheel = `
+    <div style="display:flex;justify-content:center;padding:18px 12px 6px">
+      <div style="position:relative;width:${SIZE}px;height:${SIZE}px;max-width:100%">
+        <svg viewBox="0 0 ${SIZE} ${SIZE}" style="width:100%;height:100%;display:block;overflow:visible">
+          <circle cx="${CX}" cy="${CX}" r="${R}" fill="none" stroke="var(--panel-2)" stroke-width="${_ALLOC_SW}" style="pointer-events:none"></circle>
+          ${arcs}
+          ${hits}
+        </svg>
+        <div id="allocCenter" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;pointer-events:none;padding:0 34px">
+          ${_allocCenterHtml}
+        </div>
+      </div>
+    </div>`
+
+  const rows = _allocSlices.map((s, i) => {
+    const pnl   = s.uPnl
+    const cls   = pnl >= 0 ? 'pos' : 'neg'
+    const sides = s.longs && s.shorts ? `${s.longs}L / ${s.shorts}S`
+                : s.shorts ? `${s.shorts > 1 ? s.shorts + ' ' : ''}Short`
+                : `${s.longs > 1 ? s.longs + ' ' : ''}Long`
+    const acctTxt = s.accts.size ? ` · <span style="color:var(--accent)">${esc([...s.accts].join(', '))}</span>` : ''
+    // Rows drive the same highlight — the arcs are thin to hit accurately on a phone.
+    return `<div class="mob-v-row" data-alloc-row="${i}" style="cursor:pointer;transition:background .12s ease">
+      <span style="width:10px;height:10px;border-radius:3px;background:${_coinColor(s.coin)};flex-shrink:0;margin-right:10px"></span>
+      <div style="width:28px;height:28px;border-radius:50%;overflow:hidden;background:var(--panel-2);flex-shrink:0;margin-right:10px">${_coinIconHtml(s.coin)}</div>
+      <div class="mob-v-row-info">
+        <div class="mob-v-row-name">${esc(_ocCoinLabel(s.coin))}</div>
+        <div class="mob-v-row-sub">${sides} · Value $${_prv(fmtUSD(s.notional, 2))}${acctTxt}</div>
+      </div>
+      <div class="mob-v-row-right">
+        <div class="mob-v-row-val">$${_prv(fmtUSD(s.margin, 2))}</div>
+        <div class="mob-v-row-pct ${cls}">${s.pct.toFixed(1)}% · ${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}</div>
+      </div>
+    </div>`
+  }).join('')
+
+  el.innerHTML = `${header}${wheel}
+    <div style="padding:10px 16px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">Breakdown</div>
+    <div style="padding-bottom:calc(90px + env(safe-area-inset-bottom))">${rows}</div>`
+
+  // Wire hover/tap in JS rather than inline attributes: onmouseenter/onmouseleave are NOT SVG
+  // event attributes (SVG only defines onmouseover/onmouseout), so inline handlers silently do
+  // nothing on the arcs. addEventListener works the same for SVG and HTML nodes.
+  el.querySelectorAll('[data-alloc-hit], [data-alloc-row]').forEach(node => {
+    const i = Number(node.dataset.allocHit ?? node.dataset.allocRow)
+    if (!Number.isFinite(i)) return
+    node.addEventListener('mouseenter', () => window.__allocHover(i))
+    node.addEventListener('mouseleave', () => window.__allocLeave())
+    // Touch selects and stays put (no timer clearing it out from under you); tapping another
+    // slice or row switches the selection.
+    node.addEventListener('touchstart', () => window.__allocHover(i), { passive: true })
+    node.addEventListener('click',      () => window.__allocHover(i))
+  })
+}
+
+// Positions the trade UI should reason about. state.perpState aggregates EVERY account in the
+// combined view, so scope it to the account being traded from — otherwise the trade screen
+// would treat another wallet's position as yours (wrong avail, wrong position card/overlays).
+function _tradePositions() {
+  if (state.isAllAccounts) {
+    const acct = String(window.__getTradeAcct() ?? '').toLowerCase()
+    if (!acct) return []
+    return (state.perpState?.assetPositions ?? []).filter(ap =>
+      String(ap.position?._acctAddr ?? '').toLowerCase() === acct)
+  }
+  return ((isConnected() && _tradePerpState) ? _tradePerpState : state.perpState)?.assetPositions ?? []
+}
+
+// Same idea for open orders — state.openOrders aggregates every account in the combined view,
+// so the trade chart would otherwise plot another wallet's TP/SL/limit lines on your screen.
+function _tradeOpenOrders() {
+  const all = state.openOrders ?? []
+  if (!state.isAllAccounts) return all
+  const acct = String(window.__getTradeAcct() ?? '').toLowerCase()
+  if (!acct) return []
+  return all.filter(o => String(o._acctAddr ?? '').toLowerCase() === acct)
+}
+
 function _availEffective() {
   const coin = state.selectedCoin
-  if (coin && isConnected()) {
-    const ps      = (_tradePerpState ?? state.perpState)
-    const selPos  = (ps?.assetPositions ?? []).find(ap => ap.position?.coin === coin)?.position
+  // Combined view: HL's exact availableToTrade for the selected account lands via _fetchAvail;
+  // until it does, fall back to that account's snapshot free margin.
+  if (state.isAllAccounts && _availCache.coin !== coin) return _selectedAcctAvail()
+  if (coin && (state.isAllAccounts || _canAct())) {
+    // Opening OPPOSITE an existing position frees the margin backing it, so HL reports a
+    // larger availableToTrade for that direction (max) than for adding to it (min).
+    const selPos  = _tradePositions().find(ap => ap.position?.coin === coin)?.position
     const selSzi  = parseFloat(selPos?.szi ?? 0)
     const opposing = selSzi !== 0 && (
       (state.tradeSide === 'short' && selSzi > 0) ||
@@ -2357,9 +3263,33 @@ function _updateAvailEl() {
 }
 
 async function _fetchAvail() {
-  if (!isConnected() || _availFetching) return
+  // Paper: there is no on-chain account to ask, so compute the same two numbers
+  // locally. min = free collateral; max additionally frees the margin held by an
+  // opposing position, since closing it releases that margin (HL's own rule).
+  if (isPaper()) {
+    const coin = state.selectedCoin
+    if (!coin) return
+    // Mirror HL's activeAssetData.availableToTrade [min, max]:
+    //   min = free collateral
+    //   max = free + the margin an EXISTING position would release when closed
+    // Both are side-independent — _availEffective() decides which applies from the
+    // selected side. Baking the side check in here meant the number never changed
+    // when flipping long→short, because the cache only refreshes on a 5s timer.
+    const free = paperWithdrawable()
+    const p    = (state.perpState?.assetPositions ?? [])
+      .find(ap => ap.position?.coin === coin)?.position
+    const held = parseFloat(p?.szi ?? 0) !== 0 ? Math.abs(parseFloat(p?.marginUsed ?? 0)) : 0
+    _availCache = { min: free, max: free + held, coin }
+    _updateAvailEl()
+    _updateAvailDisplay()
+    return
+  }
+  // Combined view: query the SELECTED account (state.addr is the __all_accounts__ sentinel).
+  // activeAssetData is a read-only info call, so it works for any account without a client.
+  const combined = state.isAllAccounts
+  const addr = combined ? window.__getTradeAcct() : state.addr
+  if ((!combined && !isConnected()) || _availFetching) return
   const coin = state.selectedCoin
-  const addr = state.addr
   if (!addr || !coin) return
   _availFetching = true
   try {
@@ -2383,7 +3313,11 @@ function _stopAvailTimer() {
 }
 
 function _tradeAvail() {
-  if (isConnected()) {
+  if (state.isAllAccounts) {
+    const avail = _availEffective()
+    return { avail, maxNotional: avail * (state.leverage ?? 1) }
+  }
+  if (_canAct()) {
     const avail = _availEffective()
     return { avail, maxNotional: avail * (state.leverage ?? 1) }
   }
@@ -2401,9 +3335,9 @@ function _tradeAvail() {
 function _updateAvailDisplay() {
   const el   = document.getElementById('availDisplay')
   const hint = document.getElementById('availHint')
-  if (!state.perpState) {
+  if (!state.perpState || !_canAct()) {
     if (el)   el.textContent   = '—'
-    if (hint) hint.textContent = 'Max: —'
+    if (hint) hint.textContent = _canAct() ? 'Max: —' : 'Connect a wallet to trade'
     return
   }
   const { avail, maxNotional } = _tradeAvail()
@@ -2448,8 +3382,10 @@ function renderCoinDropdownItems(query) {
   // Update column header sort indicator
   document.querySelectorAll('.mkt-th-sort').forEach(th => th.classList.toggle('active', th.dataset.col === _dropSort))
 
-  // Type-based filtering
-  let entries = Object.entries(state.allMids)
+  // Type-based filtering. Universe = UNION of the live-mid feed and the market-ctx map so
+  // HIP-3 markets (ctx-only until held) show up too, not just coins present in state.allMids.
+  const _uni = { ...Object.fromEntries(Object.keys(_mktCtxMap).map(k => [k, _mktCtxMap[k]?.markPx ?? 0])), ...state.allMids }
+  let entries = Object.entries(_uni)
   if (q) entries = entries.filter(([k]) => k.toLowerCase().includes(q) || (k + '-USDC').toLowerCase().includes(q) || (_mktDisplay(k) ?? '').toLowerCase().includes(q))
 
   if (_dropType === 'spot') {
@@ -2498,7 +3434,7 @@ function renderCoinDropdownItems(query) {
 
   const row = ([coin, px]) => {
     const d       = _mktCtxMap[coin]
-    const mark    = d?.markPx || parseFloat(px)
+    const mark    = _livePx(coin) || parseFloat(px)
     const ch      = d?.change24 ?? 0
     const chAbs   = d?.change24Abs ?? 0
     const chCls   = ch >= 0 ? 'pos' : 'neg'
@@ -2541,8 +3477,7 @@ function renderCoinDropdownItems(query) {
 window.__selectCoin = function (coin) {
   state.selectedCoin = coin
   const price      = parseFloat(state.allMids[coin] ?? 0)
-  const assetInfo  = state.assetMap[coin]
-  const maxLev     = assetInfo?.maxLeverage ?? 50
+  const maxLev     = _coinMaxLev(coin)
 
   updateCoinHeader(coin)
   document.getElementById('coinDropdown').classList.remove('open')
@@ -3304,7 +4239,7 @@ function _buildChartAnnotations(coin) {
   if (liqPx   > 0) annotations.liq   = line(liqPx,   '#ff4d6d', `Liq $${fmtPrice(liqPx)}`)
 
   // TP / SL from open orders
-  for (const o of (state.openOrders ?? [])) {
+  for (const o of _tradeOpenOrders()) {
     if (o.coin !== coin) continue
     const orderType = o.orderType ?? ''
     const isTp = orderType.startsWith('Take Profit') || o.triggerCondition === 'tp'
@@ -3362,8 +4297,7 @@ function _refreshChartLines(coin) {
   _deskPriceLines     = []
   _deskPriceLinesInfo = []
 
-  const ps = (isConnected() && _tradePerpState) ? _tradePerpState : state.perpState
-  const posEntry = (ps?.assetPositions ?? []).find(ap => ap.position?.coin === activeCoin)
+  const posEntry = _tradePositions().find(ap => ap.position?.coin === activeCoin)
   const pos = posEntry?.position
 
   if (pos && parseFloat(pos.szi ?? 0) !== 0) {
@@ -3381,7 +4315,7 @@ function _refreshChartLines(coin) {
     }
   }
 
-  for (const o of (state.openOrders ?? [])) {
+  for (const o of _tradeOpenOrders()) {
     if (o.coin !== activeCoin) continue
     const orderType = o.orderType ?? ''
     const isTp = orderType.startsWith('Take Profit') || o.triggerCondition === 'tp'
@@ -3466,7 +4400,7 @@ function _deskChartPointerUp() {
 }
 
 async function _deskCommitDraggedLine(info, origPrice) {
-  if (!isConnected()) {
+  if (!_canAct()) {
     info.line.applyOptions({ price: origPrice })
     info.price = origPrice
     return
@@ -3474,7 +4408,7 @@ async function _deskCommitDraggedLine(info, origPrice) {
   try {
     await modifyOrderPrice({ coin: info.coin, oid: info.oid, isBuy: info.isBuy, sz: info.sz, newPx: info.price, tpsl: info.tpsl, isTrigger: info.isTrigger })
     _showChartToast(`${info.title} → $${fmtPrice(info.price)}`)
-    setTimeout(refreshLive, 1000)
+    window.__refreshAfterAction(1000)
   } catch (err) {
     _showChartToast(`Failed to update ${info.title}`)
     info.line.applyOptions({ price: origPrice })
@@ -3561,8 +4495,7 @@ function updateChartStats(coin) {
   if (!coin) { el.innerHTML = ''; return }
 
   const d   = _mktCtxMap[coin]
-  const mid = parseFloat(state.allMids?.[coin] ?? 0)
-  const mark    = d?.markPx   || mid
+  const mark    = _livePx(coin)
   const oracle  = d?.oraclePx || 0
   const ch      = d?.change24 ?? 0
   const chAbs   = d?.change24Abs ?? 0
@@ -3608,10 +4541,23 @@ function _fmtCd(nft) {
   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
 }
 
+// Show/refresh the "trade from account" <select> — combined view only.
+function _syncTradeAcctPicker() {
+  const el = document.getElementById('tradeAcctPicker')
+  if (el) el.innerHTML = window.__tradeAcctPickerHtml()
+}
+
 // ─── SUBMIT BUTTON ────────────────────────────────────────────────────────────
 function updateSubmitBtn() {
   const btn = document.getElementById('tradeSubmitBtn')
-  if (!isConnected()) {
+  _syncTradeAcctPicker()
+  // In the combined view there is no single connected wallet — what matters is
+  // whether the chosen account has an agent key.
+  if (state.isAllAccounts) {
+    const acct = window.__getTradeAcct()
+    btn.disabled = !acct
+    if (!acct) { btn.textContent = 'No agent key for any account'; btn.className = 'btn-trade-long'; return }
+  } else if (!_canAct()) {
     btn.disabled = false
     btn.textContent = isMainWalletConnected() ? '⚡ Auto-generate agent key to trade' : '🔗 Connect wallet to trade'
     btn.className = 'btn-trade-long'
@@ -3640,7 +4586,10 @@ function updateSubmitBtn() {
 // ─── SUBMIT ORDER ─────────────────────────────────────────────────────────────
 async function submitOrder() {
   const statusEl = document.getElementById('tradeStatus')
-  if (!isConnected()) { window.__quickConnectAgent(); return }
+  if (!window.__canTradeUI()) {
+    if (state.isAllAccounts) { showTradeStatus(statusEl, 'error', 'No agent key for the selected account.'); return }
+    window.__quickConnectAgent(); return
+  }
   if (!isBuilderFeeEnabled()) { showTradeStatus(statusEl, 'error', '✗ Builder fee not approved — reconnect your main wallet to enable trading.'); return }
   if (!state.selectedCoin) { showTradeStatus(statusEl, 'error', 'Select a market first.'); return }
   if (riskMgmtEnabled && isPaused()) {
@@ -3652,6 +4601,8 @@ async function submitOrder() {
     showTradeStatus(statusEl, 'error', '⛔ News pause active — clear the alert in Strategies → News Pause.')
     return
   }
+  // One-time risk acknowledgment before the first real order (paper exempt).
+  if (!isPaper() && !(await _riskAckGate())) return
 
   const coin    = state.selectedCoin
   const isBuy   = state.tradeSide === 'long'
@@ -3674,11 +4625,11 @@ async function submitOrder() {
   try {
     let result
     if (state.orderType === 'market') {
-      result = await placeMarketOrder({ coin, isBuy, sz: coinSz, markPrice: mktPx, leverage: state.leverage, isIsolated: state.isIsolated })
+      result = await placeMarketOrder({ coin, isBuy, sz: coinSz, markPrice: mktPx, leverage: state.leverage, isIsolated: state.isIsolated, acct: window.__getTradeAcct() })
     } else if (state.orderType === 'limit') {
-      result = await placeLimitOrder({ coin, isBuy, sz: coinSz, limitPx, leverage: state.leverage, isIsolated: state.isIsolated })
+      result = await placeLimitOrder({ coin, isBuy, sz: coinSz, limitPx, leverage: state.leverage, isIsolated: state.isIsolated, acct: window.__getTradeAcct() })
     } else {
-      result = await placeMarketOrder({ coin, isBuy, sz: coinSz, markPrice: stopPx, leverage: state.leverage, isIsolated: state.isIsolated })
+      result = await placeMarketOrder({ coin, isBuy, sz: coinSz, markPrice: stopPx, leverage: state.leverage, isIsolated: state.isIsolated, acct: window.__getTradeAcct() })
     }
 
     const parsed = parseOrderResult(result)
@@ -3698,18 +4649,18 @@ async function submitOrder() {
     showTradeStatus(statusEl, 'success', msg)
 
     if (tpPx > 0) {
-      try { await placeTriggerOrder({ coin, isBuy: !isBuy, sz: coinSz, triggerPx: tpPx, tpsl: 'tp' }); msg += ' · TP set' } catch(e) { msg += ' · TP failed' }
+      try { await placeTriggerOrder({ coin, isBuy: !isBuy, sz: coinSz, triggerPx: tpPx, tpsl: 'tp', acct: window.__getTradeAcct() }); msg += ' · TP set' } catch(e) { msg += ' · TP failed' }
       showTradeStatus(statusEl, 'success', msg)
     }
     if (slPx > 0) {
-      try { await placeTriggerOrder({ coin, isBuy: !isBuy, sz: coinSz, triggerPx: slPx, tpsl: 'sl' }); msg += ' · SL set' } catch(e) { msg += ' · SL failed' }
+      try { await placeTriggerOrder({ coin, isBuy: !isBuy, sz: coinSz, triggerPx: slPx, tpsl: 'sl', acct: window.__getTradeAcct() }); msg += ' · SL set' } catch(e) { msg += ' · SL failed' }
       showTradeStatus(statusEl, 'success', msg)
     }
 
     document.getElementById('sizeInput').value = ''
     document.getElementById('tpInput').value   = ''
     document.getElementById('slInput').value   = ''
-    setTimeout(refreshLive, 1500)
+    window.__refreshAfterAction(1500, window.__getTradeAcct?.() ?? null)
 
   } catch (e) {
     showTradeStatus(statusEl, 'error', '✗ ' + e.message)
@@ -3900,8 +4851,9 @@ window.__eordToggleSzUnit = function () {
   _updateEditOrdSlider()
 }
 
-window.__openCloseModal = function (coin, side, szi, mktPx) {
-  state.closingPos = { coin, side, szi: parseFloat(szi), mktPx: parseFloat(mktPx) }
+window.__openCloseModal = function (coin, side, szi, mktPx, acct = null) {
+  // `acct` = owning wallet in the combined view; null means "the connected wallet".
+  state.closingPos = { coin, side, szi: parseFloat(szi), mktPx: parseFloat(mktPx), acct }
   document.getElementById('closeModalTitle').textContent = `Close ${coinLabel(coin)} ${side}`
   document.getElementById('closeModalDesc').textContent  = `Mark: $${fmtPrice(parseFloat(mktPx))}`
   const slider = document.getElementById('closeSlider')
@@ -3931,23 +4883,39 @@ function _optimisticClosePos(coin, closedSz) {
   state.perpState.assetPositions = aps.filter(ap => parseFloat(ap.position?.szi ?? 0) !== 0)
   try { renderPositionSection() } catch {}
   try { updateMobileView(true) } catch {}
-  try { _gmOrdersHash = null; _updateGameMode() } catch {}
+  try { gmOrdersInvalidate() } catch {}
 }
 
 window.__confirmClosePosition = async function () {
   if (!state.closingPos) return
-  if (!isConnected()) { showTradeStatus(document.getElementById('closeModalStatus'), 'error', 'Connect agent key first.'); return }
+  // Route the guard to the position's OWNING wallet (combined view), not the globally
+  // connected wallet — otherwise closing in All Accounts always fails with "connect
+  // agent key" even though that account has a key. Mirrors the per-row button check.
+  const _closeAcct = state.closingPos.acct ?? null
+  if (!window.__acctCanTrade(_closeAcct)) {
+    showTradeStatus(document.getElementById('closeModalStatus'), 'error', _closeAcct ? 'No agent key for that account.' : 'Connect agent key first.')
+    return
+  }
 
   const { coin, side, szi, mktPx } = state.closingPos
   const pct     = parseInt(document.getElementById('closeSlider').value)
   const closeSz = Math.abs(szi) * pct / 100
   const statusEl = document.getElementById('closeModalStatus')
 
-  showTradeStatus(statusEl, 'pending', 'Submitting close order...')
+  showTradeStatus(statusEl, 'pending', 'Checking agent key...')
   document.getElementById('closeModalConfirm').disabled = true
+  // Verify the agent key is actually approved on HL before signing — otherwise the close
+  // dies here with HL's opaque "User or API Wallet 0x… does not exist".
+  if (!await _guardAgent(_closeAcct)) {
+    showTradeStatus(statusEl, 'error', 'Agent key not valid for this account.')
+    document.getElementById('closeModalConfirm').disabled = false
+    return
+  }
+
+  showTradeStatus(statusEl, 'pending', 'Submitting close order...')
 
   try {
-    const result = await closePosition({ coin, isBuy: szi < 0, sz: closeSz, markPrice: mktPx })
+    const result = await closePosition({ coin, isBuy: szi < 0, sz: closeSz, markPrice: mktPx, acct: state.closingPos?.acct ?? null })
     const parsed = parseOrderResult(result)
     const didFill = parsed.filled.some(f => parseFloat(f.filled?.totalSz ?? 0) > 0)
     if (!parsed.ok) {
@@ -3959,7 +4927,7 @@ window.__confirmClosePosition = async function () {
     } else {
       showTradeStatus(statusEl, 'success', '✓ Position closed!')
       _optimisticClosePos(coin, closeSz)   // reflect immediately, don't wait on the tick
-      setTimeout(() => { closeModals(); refreshLive() }, 1000)
+      setTimeout(closeModals, 1000); window.__refreshAfterAction(1000, _closeAcct)
     }
   } catch (e) {
     showTradeStatus(statusEl, 'error', '✗ ' + e.message)
@@ -3968,7 +4936,7 @@ window.__confirmClosePosition = async function () {
 }
 
 // ─── ADJUST MARGIN MODAL (isolated positions only) ─────────────────────────────
-window.__openAdjustMarginModal = function (coin, side, marginUsed, positionValue, leverage) {
+window.__openAdjustMarginModal = function (coin, side, marginUsed, positionValue, leverage, acct = null) {
   const isLong = side === 'LONG'
   // Reparent to <body> so it shows in the mobile view (.app is display:none there)
   const _ov = document.getElementById('marginModal')
@@ -3987,7 +4955,7 @@ window.__openAdjustMarginModal = function (coin, side, marginUsed, positionValue
   const equity     = parseFloat(marginUsed) + uPnl
   const removable  = Math.max(0, equity - initMargin)
   state.marginPos = {
-    coin, isLong,
+    coin, isLong, acct,
     marginUsed: parseFloat(marginUsed) || 0,
     available: perpWdraw + spotFree, removable,
     // For the projected-liquidation preview (HL liq price is linear in margin)
@@ -4074,8 +5042,8 @@ window.__marginValidate = function () {
 window.__confirmAdjustMargin = async function () {
   if (!state.marginPos) return
   const statusEl = document.getElementById('marginModalStatus')
-  if (!isConnected()) { showTradeStatus(statusEl, 'error', 'Connect agent key first.'); return }
-  const { coin, isLong } = state.marginPos
+  const { coin, isLong, acct: _mAcct } = state.marginPos
+  if (!window.__acctCanTrade(_mAcct)) { showTradeStatus(statusEl, 'error', _mAcct ? 'No agent key for that account.' : 'Connect agent key first.'); return }
   const isAdd  = document.getElementById('marginDirSelect').value === 'add'
   const amount = parseFloat(document.getElementById('marginAmtInput').value) || 0
   if (amount <= 0) { showTradeStatus(statusEl, 'error', 'Enter an amount first.'); return }
@@ -4083,9 +5051,9 @@ window.__confirmAdjustMargin = async function () {
   showTradeStatus(statusEl, 'pending', `${isAdd ? 'Adding' : 'Removing'} margin...`)
   document.getElementById('marginModalConfirm').disabled = true
   try {
-    await adjustIsolatedMargin({ coin, isLong, usdAmount: amount, isAdd })
+    await adjustIsolatedMargin({ coin, isLong, usdAmount: amount, isAdd, acct: _mAcct ?? null })
     showTradeStatus(statusEl, 'success', `✓ ${isAdd ? 'Added' : 'Removed'} $${fmtUSD(amount)} margin!`)
-    setTimeout(() => { closeModals(); refreshLive() }, 1000)
+    setTimeout(closeModals, 1000); window.__refreshAfterAction(1000, _mAcct)
   } catch (e) {
     showTradeStatus(statusEl, 'error', '✗ ' + e.message)
     document.getElementById('marginModalConfirm').disabled = false
@@ -4096,9 +5064,18 @@ window.__confirmAdjustMargin = async function () {
 // Per-position price-triggered safety bots that run server-side: Liq Guard adds
 // margin as price nears liquidation, Lev Brake reduces position size. One server
 // instance per (coin, mode); the running set is reflected in serverStatus._instances.
-function _guardFindPos(coin) {
-  return (state.perpState?.assetPositions ?? []).find(a => a.position?.coin === coin)?.position || null
+function _guardFindPos(coin, acct) {
+  const list = state.perpState?.assetPositions ?? []
+  // Combined view: two wallets can hold the same coin, so match the OWNING account too —
+  // otherwise the guard would target (and try to sign as) the wrong wallet.
+  if (acct) {
+    const a = String(acct).toLowerCase()
+    const m = list.find(x => x.position?.coin === coin && String(x.position?._acctAddr ?? '').toLowerCase() === a)
+    if (m) return m.position
+  }
+  return list.find(x => x.position?.coin === coin)?.position || null
 }
+const _isRealAddr = a => /^0x[0-9a-fA-F]{40}$/.test(String(a ?? ''))
 // Parse a flat ['--flag','value',...] argv (from a running guard) into an object.
 function _parseGuardArgs(args) {
   const o = {}
@@ -4127,9 +5104,13 @@ function _guardResetConfirm() {
   if (d) { d.textContent = 'Disarm'; d.classList.remove('btn-confirming') }
 }
 
-window.__openGuardModal = function (mode, coin, apiSide) {
-  const p = _guardFindPos(coin)
+window.__openGuardModal = function (mode, coin, apiSide, acct) {
+  const p = _guardFindPos(coin, acct)
   if (!p) { alert('Position not found — refresh and try again.'); return }
+  // Owning account for this guard: the one passed by the card (combined view), else the
+  // real connected wallet, else the position's own tag. NEVER the '__all_accounts__' sentinel
+  // — the bot API is owner-gated per real address, so the sentinel yields no auth token.
+  const guardAcct = _isRealAddr(acct) ? acct : (_isRealAddr(state.addr) ? state.addr : (p._acctAddr || null))
   // The modal lives inside .app, which is display:none in the mobile view — reparent
   // it to <body> so it renders on mobile too (idempotent: a no-op after the first open).
   const _ov = document.getElementById('guardModal')
@@ -4147,14 +5128,14 @@ window.__openGuardModal = function (mode, coin, apiSide) {
   const uPnl    = parseFloat(p.unrealizedPnl ?? 0)
   const running = !!serverStatus?._instances?.[`${mode}:${String(coin).toUpperCase()}`]
   const gStatus = running ? serverStatus?._guards?.[`${mode}:${String(coin).toUpperCase()}`] : null
-  state.guardCfg = { mode, coin, isLong, entry, liq, mark, posVal, margin, curLev, setLev, size, maxLev, uPnl, running,
+  state.guardCfg = { mode, coin, acct: guardAcct, isLong, entry, liq, mark, posVal, margin, curLev, setLev, size, maxLev, uPnl, running,
                      added: parseFloat(gStatus?.added) || 0, fires: parseInt(gStatus?.fires) || 0 }
 
   const isLiq = mode === 'liqguard'
   document.getElementById('guardTitle').textContent = isLiq ? '🛡 Liq Guard' : '🛑 Lev Brake'
   document.getElementById('guardDesc').textContent  = isLiq
-    ? 'Automatically ADD margin as price approaches liquidation, pushing the liq price further away.'
-    : 'Automatically REDUCE position size (reduce-only) as price approaches liquidation.'
+    ? _T('Automatically ADD margin as price approaches liquidation, pushing the liq price further away.', 'AGREGA margen automáticamente a medida que el precio se acerca a la liquidación, alejando el precio de liquidación.')
+    : _T('Automatically REDUCE position size (reduce-only) as price approaches liquidation.', 'REDUCE automáticamente el tamaño de la posición (solo reducir) a medida que el precio se acerca a la liquidación.')
   document.getElementById('guardLiqSection').style.display = isLiq ? '' : 'none'
   document.getElementById('guardBrkSection').style.display = isLiq ? 'none' : ''
 
@@ -4173,7 +5154,7 @@ window.__openGuardModal = function (mode, coin, apiSide) {
     document.getElementById('guardReducePct').value = live?.['reduce-pct'] ?? 25
   }
 
-  const verb = running ? 'Edit' : (isLiq ? '🛡 Liq Guard' : '🛑 Lev Brake')
+  const verb = running ? _T('Edit', 'Editar') : (isLiq ? '🛡 Liq Guard' : '🛑 Lev Brake')
   document.getElementById('guardTitle').textContent = running ? `${verb} ${isLiq ? 'Liq Guard' : 'Lev Brake'}` : verb
   document.getElementById('guardEntryLiq').textContent = `$${fmtPrice(entry)} / ${liq > 0 ? '$' + fmtPrice(liq) : '—'}`
   document.getElementById('guardMarkVal').textContent  = mark > 0 ? '$' + fmtPrice(mark) : '—'
@@ -4204,9 +5185,9 @@ window.__guardPreview = function () {
   const prev = document.getElementById('guardTrigPreview')
   if (g.liq > 0 && pct > 0) {
     const trig = g.isLong ? g.entry - pct * (g.entry - g.liq) : g.entry + pct * (g.liq - g.entry)
-    prev.textContent = `Fires at ~$${fmtPrice(trig)} (mark now $${fmtPrice(g.mark)})`
+    prev.textContent = _T(`Fires at ~$${fmtPrice(trig)} (mark now $${fmtPrice(g.mark)})`, `Se dispara a ~$${fmtPrice(trig)} (marca ahora $${fmtPrice(g.mark)})`)
   } else {
-    prev.textContent = g.liq > 0 ? '' : 'No liquidation price available for this position.'
+    prev.textContent = g.liq > 0 ? '' : _T('No liquidation price available for this position.', 'No hay precio de liquidación disponible para esta posición.')
   }
 
   // Dynamic per-field descriptions — interpolate the user's live inputs (no hardcoded values)
@@ -4216,31 +5197,37 @@ window.__guardPreview = function () {
   const maxFiresV = Math.max(1, parseInt(document.getElementById('guardMaxFires').value) || 1)
   const dir       = g.isLong ? 'falls' : 'rises'
 
-  setD('gdescTrig', `Acts when ${sym} ${dir} to ${trigPctV}% of the way from your entry toward the liquidation price${g.mode === 'liqguard' ? ', adding margin to push liq away' : ', trimming size to pull liq away'}.`)
-  setD('gdescMaxFires', `Stops after firing ${maxFiresV} time${maxFiresV === 1 ? '' : 's'} in total, then stays armed but idle.`)
+  const _dirW = g.isLong ? _T('falls', 'cae') : _T('rises', 'sube')
+  setD('gdescTrig', _T(
+    `Acts when ${sym} ${dir} to ${trigPctV}% of the way from your entry toward the liquidation price${g.mode === 'liqguard' ? ', adding margin to push liq away' : ', trimming size to pull liq away'}.`,
+    `Actúa cuando ${sym} ${_dirW} al ${trigPctV}% del camino desde tu entrada hacia el precio de liquidación${g.mode === 'liqguard' ? ', agregando margen para alejar la liq' : ', recortando tamaño para alejar la liq'}.`))
+  setD('gdescMaxFires', _T(
+    `Stops after firing ${maxFiresV} time${maxFiresV === 1 ? '' : 's'} in total, then stays armed but idle.`,
+    `Se detiene tras dispararse ${maxFiresV} ${maxFiresV === 1 ? 'vez' : 'veces'} en total, luego queda armado pero inactivo.`))
 
   if (g.mode === 'liqguard') {
     const targetMode = g.addMode === 'target'
     const maxAddV    = parseFloat(document.getElementById('guardMaxAdd').value) || 0
     setD('gdescMode', targetMode
-      ? 'Scales each top-up to your drawdown — adds only what is needed to restore the target leverage.'
-      : 'Splits your max total margin evenly across the fires — same amount added each time.')
+      ? _T('Scales each top-up to your drawdown — adds only what is needed to restore the target leverage.', 'Ajusta cada recarga a tu caída — agrega solo lo necesario para restaurar el apalancamiento objetivo.')
+      : _T('Splits your max total margin evenly across the fires — same amount added each time.', 'Reparte tu margen total máx de forma pareja entre los disparos — la misma cantidad cada vez.'))
     const tlV = parseFloat(document.getElementById('guardTargetLev').value) || 0
     const effLev = (g.margin + g.uPnl) > 0 ? g.posVal / (g.margin + g.uPnl) : g.curLev
     setD('gdescTarget', tlV > 0
-      ? `Each fire adds margin until effective leverage drops to ≈${tlV}x (now ${effLev.toFixed(1)}x effective${g.setLev ? `, ${g.setLev}x setting` : ''}). Lower = safer, uses more margin.`
+      ? _T(`Each fire adds margin until effective leverage drops to ≈${tlV}x (now ${effLev.toFixed(1)}x effective${g.setLev ? `, ${g.setLev}x setting` : ''}). Lower = safer, uses more margin.`,
+           `Cada disparo agrega margen hasta que el apalancamiento efectivo baje a ≈${tlV}x (ahora ${effLev.toFixed(1)}x efectivo${g.setLev ? `, ${g.setLev}x configurado` : ''}). Menor = más seguro, usa más margen.`)
       : '')
     if (maxAddV > 0) {
       setD('gdescMaxAdd', targetMode
-        ? `Hard ceiling — never commits more than $${maxAddV} of margin in total across all fires.`
-        : `Hard cap. Adds ~$${(maxAddV / maxFiresV).toFixed(2)} per fire (max total ÷ ${maxFiresV} fires).`)
+        ? _T(`Hard ceiling — never commits more than $${maxAddV} of margin in total across all fires.`, `Tope duro — nunca compromete más de $${maxAddV} de margen en total entre todos los disparos.`)
+        : _T(`Hard cap. Adds ~$${(maxAddV / maxFiresV).toFixed(2)} per fire (max total ÷ ${maxFiresV} fires).`, `Tope duro. Agrega ~$${(maxAddV / maxFiresV).toFixed(2)} por disparo (máx total ÷ ${maxFiresV} disparos).`))
     } else {
-      setD('gdescMaxAdd', 'Required — the total margin this guard may ever add, across all fires.')
+      setD('gdescMaxAdd', _T('Required — the total margin this guard may ever add, across all fires.', 'Requerido — el margen total que este guardián puede agregar, entre todos los disparos.'))
     }
   } else {
     const rV = parseFloat(document.getElementById('guardReducePct').value) || 0
     setD('gdescReduce', rV > 0
-      ? `Each fire market-closes ${rV}% of the current ${sym} position (reduce-only), moving liq to safety.`
+      ? _T(`Each fire market-closes ${rV}% of the current ${sym} position (reduce-only), moving liq to safety.`, `Cada disparo cierra a mercado ${rV}% de la posición actual de ${sym} (solo reducir), moviendo la liq a un lugar más seguro.`)
       : '')
   }
   window.__guardValidate()
@@ -4255,17 +5242,18 @@ function _guardPlanHtml(g, rows, foot, firesUsed = 0, firedRows = []) {
   // Already-fired fires shown first (greyed, chronological), so the user sees #1/#2 done
   // before "now" and the projected #3/#4. Past trigger prices aren't stored, so we show
   // the action only (no fabricated price) — marked ✓ fired.
+  const _mgn = _T('margin', 'margen')
   const fired = firedRows.map(fr =>
-    `<div class="guard-plan-row" style="opacity:.5"><span class="gp-when">#${fr.n} ✓ fired</span><span class="gp-act">${fr.act}</span><span class="gp-liq">done</span></div>`).join('')
-  const nowAct = g.mode === 'liqguard' ? `margin $${fmtUSD(g.margin)}` : `${fmtSize(g.size)} ${sym}`
-  const now = `<div class="guard-plan-row guard-plan-now"><span class="gp-when">now</span><span class="gp-act">${nowAct}</span><span class="gp-liq">liq $${fmtPrice(g.liq)}</span></div>`
+    `<div class="guard-plan-row" style="opacity:.5"><span class="gp-when">#${fr.n} ✓ ${_T('fired', 'disparado')}</span><span class="gp-act">${fr.act}</span><span class="gp-liq">${_T('done', 'listo')}</span></div>`).join('')
+  const nowAct = g.mode === 'liqguard' ? `${_mgn} $${fmtUSD(g.margin)}` : `${fmtSize(g.size)} ${sym}`
+  const now = `<div class="guard-plan-row guard-plan-now"><span class="gp-when">${_T('now', 'ahora')}</span><span class="gp-act">${nowAct}</span><span class="gp-liq">liq $${fmtPrice(g.liq)}</span></div>`
   // Number the projected fires CONTINUING from those already fired (#3, #4… not #1 again).
   const body = rows.map((r, i) =>
     `<div class="guard-plan-row"><span class="gp-when">#${firesUsed + i + 1} @ $${fmtPrice(r.px)}</span><span class="gp-act">${r.act}</span><span class="gp-liq">liq $${fmtPrice(r.liq)}</span></div>`).join('')
   const title = rows.length === 0 && firesUsed > 0
-    ? `Plan — max fires reached`
-    : firesUsed > 0 ? `Projected plan — ${rows.length} more fire${rows.length === 1 ? '' : 's'}`
-    : `Projected plan — ${rows.length} fire${rows.length === 1 ? '' : 's'}`
+    ? _T(`Plan — max fires reached`, `Plan — máx disparos alcanzado`)
+    : firesUsed > 0 ? _T(`Projected plan — ${rows.length} more fire${rows.length === 1 ? '' : 's'}`, `Plan proyectado — ${rows.length} disparo${rows.length === 1 ? '' : 's'} más`)
+    : _T(`Projected plan — ${rows.length} fire${rows.length === 1 ? '' : 's'}`, `Plan proyectado — ${rows.length} disparo${rows.length === 1 ? '' : 's'}`)
   return `<div class="guard-plan-title">${title}</div>${fired}${now}${body}<div class="guard-plan-foot">${foot}</div>`
 }
 
@@ -4294,7 +5282,7 @@ function _guardRenderPlan() {
     // cap; only remaining fires are projected; futureAdd is the additional margin from here.
     const remainingFires = Math.max(0, maxFires - firesUsed)
     const avgPast  = firesUsed > 0 ? (g.added || 0) / firesUsed : 0
-    const firedRows = Array.from({ length: firesUsed }, (_, i) => ({ n: i + 1, act: `+$${avgPast.toFixed(2)} margin` }))
+    const firedRows = Array.from({ length: firesUsed }, (_, i) => ({ n: i + 1, act: `+$${avgPast.toFixed(2)} ${_T('margin', 'margen')}` }))
     let liq = g.liq, margin = g.margin, budgetUsed = g.added || 0, futureAdd = 0
     for (let i = 1; i <= remainingFires; i++) {
       const remaining = maxTotal - budgetUsed
@@ -4309,18 +5297,19 @@ function _guardRenderPlan() {
         add = maxTotal / maxFires
       }
       add = Math.min(add, remaining)
-      if (add < 0.01) { rows.push({ px, act: 'already ≤ target', liq }); continue }
+      if (add < 0.01) { rows.push({ px, act: _T('already ≤ target', 'ya ≤ objetivo'), liq }); continue }
       const newLiq = long ? liq - add * slope : liq + add * slope
-      rows.push({ px, act: `+$${add.toFixed(2)} margin`, liq: Math.max(0, newLiq) })
+      rows.push({ px, act: `+$${add.toFixed(2)} ${_T('margin', 'margen')}`, liq: Math.max(0, newLiq) })
       liq = newLiq; margin += add; budgetUsed += add; futureAdd += add
     }
     const capReached = remainingFires <= 0 && firesUsed >= maxFires
     const foot = (capReached
-        ? `Max Fires reached (${firesUsed}/${maxFires}) — raise Max Fires to add more. `
+        ? _T(`Max Fires reached (${firesUsed}/${maxFires}) — raise Max Fires to add more. `, `Máx disparos alcanzado (${firesUsed}/${maxFires}) — sube Disparos máx para agregar más. `)
         : '')
-      + `Adds $${futureAdd.toFixed(2)}${firesUsed > 0 ? ' more' : ''} → position margin $${fmtUSD(g.margin)} → $${fmtUSD(g.margin + futureAdd)}`
-      + (firesUsed > 0 ? ` · $${fmtUSD(g.added || 0)} already added (${firesUsed}/${maxFires} fired)` : '')
-      + `. Estimates — actual fills/fees vary slightly.`
+      + _T(`Adds $${futureAdd.toFixed(2)}${firesUsed > 0 ? ' more' : ''} → position margin $${fmtUSD(g.margin)} → $${fmtUSD(g.margin + futureAdd)}`,
+           `Agrega $${futureAdd.toFixed(2)}${firesUsed > 0 ? ' más' : ''} → margen de posición $${fmtUSD(g.margin)} → $${fmtUSD(g.margin + futureAdd)}`)
+      + (firesUsed > 0 ? _T(` · $${fmtUSD(g.added || 0)} already added (${firesUsed}/${maxFires} fired)`, ` · $${fmtUSD(g.added || 0)} ya agregado (${firesUsed}/${maxFires} disparados)`) : '')
+      + _T(`. Estimates — actual fills/fees vary slightly.`, `. Estimaciones — los llenados/comisiones reales varían ligeramente.`)
     box.innerHTML = _guardPlanHtml(g, rows, foot, firesUsed, firedRows)
   } else {
     const r = (parseFloat(document.getElementById('guardReducePct').value) || 0) / 100
@@ -4329,7 +5318,7 @@ function _guardRenderPlan() {
     const M = long ? g.size * (g.entry - (1 - mf) * g.liq) : g.size * ((1 + mf) * g.liq - g.entry)
     // g.size is the CURRENT (already-reduced) size, so project only the remaining fires.
     const remainingFires = Math.max(0, maxFires - firesUsed)
-    const firedRows = Array.from({ length: firesUsed }, (_, i) => ({ n: i + 1, act: 'reduced' }))
+    const firedRows = Array.from({ length: firesUsed }, (_, i) => ({ n: i + 1, act: _T('reduced', 'reducido') }))
     let size = g.size, liq = g.liq
     for (let i = 1; i <= remainingFires; i++) {
       const px  = trigFrom(liq)
@@ -4341,8 +5330,8 @@ function _guardRenderPlan() {
       size = newSize; liq = newLiq
     }
     const capReached = remainingFires <= 0 && firesUsed >= maxFires
-    const foot = (capReached ? `Max Fires reached (${firesUsed}/${maxFires}) — raise Max Fires to add more. ` : firesUsed > 0 ? `${firesUsed}/${maxFires} already fired. ` : '')
-      + 'Liq estimate assumes freed margin stays on the position. Estimates — actual fills/fees vary slightly.'
+    const foot = (capReached ? _T(`Max Fires reached (${firesUsed}/${maxFires}) — raise Max Fires to add more. `, `Máx disparos alcanzado (${firesUsed}/${maxFires}) — sube Disparos máx para agregar más. `) : firesUsed > 0 ? _T(`${firesUsed}/${maxFires} already fired. `, `${firesUsed}/${maxFires} ya disparados. `) : '')
+      + _T('Liq estimate assumes freed margin stays on the position. Estimates — actual fills/fees vary slightly.', 'La estimación de liq asume que el margen liberado permanece en la posición. Estimaciones — los llenados/comisiones reales varían ligeramente.')
     box.innerHTML = _guardPlanHtml(g, rows, foot, firesUsed, firedRows)
   }
   box.style.display = (rows.length || firesUsed) ? '' : 'none'
@@ -4370,10 +5359,14 @@ window.__guardValidate = function () {
 window.__guardArm = async function () {
   const g = state.guardCfg; if (!g) return
   const statusEl = document.getElementById('guardStatus')
-  const agentKey = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null)
+  // The account that OWNS this position — not state.addr, which is '__all_accounts__' in the
+  // combined view (yielding no agent key and a 401 "authentication required" from the bot API).
+  const gAddr    = _isRealAddr(g.acct) ? g.acct : (_isRealAddr(state.addr) ? state.addr : null)
+  const agentKey = (gAddr ? localStorage.getItem(_agentKeyForAddr(gAddr)) : null)
               || document.getElementById('m-agentKey')?.value?.trim()
               || document.getElementById('agentKey')?.value?.trim()
-  if (!agentKey) { showTradeStatus(statusEl, 'error', 'Enter your Agent Private Key first (Strategies tab).'); return }
+  if (!gAddr)    { showTradeStatus(statusEl, 'error', 'Open this guard from the specific account\'s position.'); return }
+  if (!agentKey) { showTradeStatus(statusEl, 'error', 'No agent key for this account — connect it first.'); return }
 
   const trigPct   = Math.min(99, Math.max(1, parseFloat(document.getElementById('guardTrigPct').value) || 0))
   const maxFires  = Math.max(1, parseInt(document.getElementById('guardMaxFires').value) || 2)
@@ -4433,11 +5426,11 @@ window.__guardArm = async function () {
   document.getElementById('guardConfirmBtn').disabled = true
   try {
     // Re-arm = restart with fresh config: stop any existing instance first.
-    if (g.running) { try { await _postStop(g.mode, inst) } catch {} await new Promise(r => setTimeout(r, 600)) }
+    if (g.running) { try { await _postStop(g.mode, inst, gAddr) } catch {} await new Promise(r => setTimeout(r, 600)) }
     const res = await serverFetch('/api/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: g.mode, agentKey, args: argv, address: state.addr, instance: inst }),
+      body: JSON.stringify({ type: g.mode, agentKey, args: argv, address: gAddr, instance: inst }),
     })
     if (!res.ok) { showTradeStatus(statusEl, 'error', '✗ ' + (res.error || 'Could not start')); document.getElementById('guardConfirmBtn').disabled = false; return }
     showTradeStatus(statusEl, 'success', dryRun ? '✓ Armed (dry-run)' : '✓ Guard armed')
@@ -4467,7 +5460,7 @@ window.__guardDisarm = async function () {
   _guardResetConfirm()
   showTradeStatus(statusEl, 'pending', 'Disarming…')
   try {
-    await _postStop(g.mode, String(g.coin))
+    await _postStop(g.mode, String(g.coin), _isRealAddr(g.acct) ? g.acct : state.addr)
     showTradeStatus(statusEl, 'success', '✓ Disarmed')
     checkServer()
     setTimeout(() => { closeModals(); if (typeof _mobVActiveTab !== 'undefined' && _mobVActiveTab === 'positions') _mobVRenderContent() }, 800)
@@ -4475,12 +5468,12 @@ window.__guardDisarm = async function () {
 }
 
 // ─── EDIT MODAL ───────────────────────────────────────────────────────────────
-window.__openEditModal = function (coin, side, szi, entryPx, existingTpPx = 0, existingSlPx = 0, existingTpOid = 0, existingSlOid = 0, leverage = 1) {
+window.__openEditModal = function (coin, side, szi, entryPx, existingTpPx = 0, existingSlPx = 0, existingTpOid = 0, existingSlOid = 0, leverage = 1, acct = null) {
   const entry  = parseFloat(entryPx)
   const isLong = side === 'LONG'
   const sz     = Math.abs(parseFloat(szi))
   state.editingPos = {
-    coin, side, szi: parseFloat(szi), entryPx: entry, isLong,
+    coin, side, szi: parseFloat(szi), entryPx: entry, isLong, acct,
     leverage: parseFloat(leverage) || 1,
     tpOid: existingTpOid || 0, slOid: existingSlOid || 0,
     tpMode: 'pct', slMode: 'pct', tpType: 'market', slType: 'market',
@@ -4532,9 +5525,11 @@ window.__openEditModal = function (coin, side, szi, entryPx, existingTpPx = 0, e
 
 window.__confirmEditPosition = async function () {
   if (!state.editingPos) return
-  if (!isConnected()) { showTradeStatus(document.getElementById('editModalStatus'), 'error', 'Connect agent key first.'); return }
-
-  const { coin, side, szi, tpOid, slOid, tpSzPct, slSzPct, activeTab } = state.editingPos
+  const { coin, side, szi, tpOid, slOid, tpSzPct, slSzPct, activeTab, acct: _eAcct } = state.editingPos
+  if (!window.__acctCanTrade(_eAcct ?? null)) {
+    showTradeStatus(document.getElementById('editModalStatus'), 'error', _eAcct ? 'No agent key for that account.' : 'Connect agent key first.')
+    return
+  }
   const tpPx     = parseFloat(document.getElementById('tpslTpUsd').value) || 0
   const slPx     = parseFloat(document.getElementById('tpslSlUsd').value) || 0
   const statusEl = document.getElementById('editModalStatus')
@@ -4550,15 +5545,16 @@ window.__confirmEditPosition = async function () {
   document.getElementById('editModalConfirm').disabled = true
 
   try {
-    if (tpOid && tpPx) { try { await cancelOrder({ coin, oid: tpOid }) } catch (_) {} }
-    if (slOid && slPx) { try { await cancelOrder({ coin, oid: slOid }) } catch (_) {} }
-    if (tpPx && tpSz > 0) { const r = await placeTriggerOrder({ coin, isBuy, sz: tpSz, triggerPx: tpPx, tpsl: 'tp' }); if (!parseOrderResult(r).ok) throw new Error('TP failed') }
-    if (slPx && slSz > 0) { const r = await placeTriggerOrder({ coin, isBuy, sz: slSz, triggerPx: slPx, tpsl: 'sl' }); if (!parseOrderResult(r).ok) throw new Error('SL failed') }
+    const _a = _eAcct ?? null
+    if (tpOid && tpPx) { try { await cancelOrder({ coin, oid: tpOid, acct: _a }) } catch (_) {} }
+    if (slOid && slPx) { try { await cancelOrder({ coin, oid: slOid, acct: _a }) } catch (_) {} }
+    if (tpPx && tpSz > 0) { const r = await placeTriggerOrder({ coin, isBuy, sz: tpSz, triggerPx: tpPx, tpsl: 'tp', acct: _a }); if (!parseOrderResult(r).ok) throw new Error('TP failed') }
+    if (slPx && slSz > 0) { const r = await placeTriggerOrder({ coin, isBuy, sz: slSz, triggerPx: slPx, tpsl: 'sl', acct: _a }); if (!parseOrderResult(r).ok) throw new Error('SL failed') }
     const parts = []
     if (tpPx) parts.push('TP @ $' + fmtPrice(tpPx))
     if (slPx) parts.push('SL @ $' + fmtPrice(slPx))
     showTradeStatus(statusEl, 'success', '✓ ' + parts.join(' · ') + ' placed!')
-    setTimeout(() => { closeModals(); refreshLive() }, 1500)
+    setTimeout(closeModals, 1500); window.__refreshAfterAction(1500, _a)
   } catch (e) {
     showTradeStatus(statusEl, 'error', '✗ ' + e.message)
     document.getElementById('editModalConfirm').disabled = false
@@ -4576,19 +5572,19 @@ window.__toggleRowExpand = function(id) {
 }
 
 // ─── CANCEL ORDER ─────────────────────────────────────────────────────────────
-function _removeOrderFromUI(oid) {
+function _removeOrderFromUI(oid, acct = null) {
   const numOid = parseInt(oid)
   _cancelledOids.add(numOid)
   setTimeout(() => _cancelledOids.delete(numOid), 10000)
   state.openOrders = (state.openOrders ?? []).filter(o => o.oid !== numOid)
   _lastOrdHash = null
   renderOrders(state.openOrders, state.perpState, state.ocTokenMap)
-  setTimeout(refreshLive, 2000)
+  window.__refreshAfterAction(2000, acct)
 }
 
-window.__cancelOrder = async function (coin, oid, _isPositionTpsl, btn) {
+window.__cancelOrder = async function (coin, oid, _isPositionTpsl, btn, acct = null) {
   const statusEl = document.getElementById('ordersStatus') ?? document.getElementById('tradeStatus')
-  if (!isConnected()) {
+  if (!window.__acctCanTrade(acct)) {
     showTradeStatus(statusEl, 'error', 'Connect agent key first.')
     _showChartToast('✗ Connect agent key first')
     if (btn && btn.isConnected) { btn.textContent = '✗ No key'; setTimeout(() => { if (btn.isConnected) btn.textContent = '✕ Cancel' }, 2000) }
@@ -4597,13 +5593,13 @@ window.__cancelOrder = async function (coin, oid, _isPositionTpsl, btn) {
   showTradeStatus(statusEl, 'pending', 'Cancelling…')
   if (btn) { btn.textContent = 'Cancelling…'; btn.disabled = true }
   try {
-    const result   = await cancelOrder({ coin, oid: parseInt(oid) })
+    const result   = await cancelOrder({ coin, oid: parseInt(oid), acct })
     const statuses = result?.response?.data?.statuses ?? []
     const errors   = statuses.filter(s => s?.error).map(s => s.error)
     const ok       = statuses.some(s => s === 'success' || (s && s.success !== undefined))
     if (ok || !statuses.length) {
       showTradeStatus(statusEl, 'success', '✓ Cancelled.')
-      _removeOrderFromUI(oid)
+      _removeOrderFromUI(oid, acct)
     } else if (errors.length) {
       const errMsg = errors.join(', ')
       showTradeStatus(statusEl, 'error', '✗ ' + errMsg)
@@ -4614,7 +5610,7 @@ window.__cancelOrder = async function (coin, oid, _isPositionTpsl, btn) {
     console.error('[cancel]', coin, oid, e)
     if (/never placed|already cancel|filled/i.test(e.message)) {
       showTradeStatus(statusEl, 'success', '✓ Already cancelled or filled.')
-      _removeOrderFromUI(oid)
+      _removeOrderFromUI(oid, acct)
     } else {
       const errMsg = e.message || String(e)
       showTradeStatus(statusEl, 'error', '✗ ' + errMsg)
@@ -4625,9 +5621,13 @@ window.__cancelOrder = async function (coin, oid, _isPositionTpsl, btn) {
 }
 
 window.__closeAllPositions = async function (btn) {
+  // Bulk actions span wallets in the combined view, where one tap would fire orders
+  // across every account. Guard at the function so no UI path can slip through.
+  if (state.isAllAccounts) { _showChartToast('Switch to a single account for bulk actions'); return }
+
   const positions = (state.perpState?.assetPositions ?? []).filter(p => parseFloat(p.position?.szi ?? 0) !== 0)
   if (!positions.length) return
-  if (!isConnected()) { _showChartToast('✗ Connect agent key first'); return }
+  if (!_canAct()) { _showChartToast('✗ Connect agent key first'); return }
   if (!confirm(`Close all ${positions.length} open position${positions.length > 1 ? 's' : ''} at market price?`)) return
   if (btn) { btn.disabled = true; btn.textContent = 'Closing…' }
   let ok = 0, fail = 0
@@ -4647,14 +5647,18 @@ window.__closeAllPositions = async function (btn) {
   const msg = fail === 0 ? `✓ Closed ${ok} position${ok > 1 ? 's' : ''}` : `${ok} closed, ${fail} failed`
   _showChartToast(msg)
   if (btn) { btn.disabled = false; btn.textContent = 'Close All' }
-  setTimeout(refreshLive, 1500)
+  window.__refreshAfterAction(1500)
 }
 
 window.__cancelAllOrders = async function () {
+  // Bulk actions span wallets in the combined view, where one tap would fire orders
+  // across every account. Guard at the function so no UI path can slip through.
+  if (state.isAllAccounts) { _showChartToast('Switch to a single account for bulk actions'); return }
+
   const orders = state.openOrders ?? []
   if (!orders.length) return
   const statusEl = document.getElementById('ordersStatus') ?? document.getElementById('tradeStatus')
-  if (!isConnected()) {
+  if (!_canAct()) {
     showTradeStatus(statusEl, 'error', 'Connect agent key first.')
     _showChartToast('✗ Connect agent key first')
     return
@@ -4685,7 +5689,7 @@ window.__cancelAllOrders = async function () {
     const msg = fail === 0 ? `✓ Cancelled ${ok} order${ok > 1 ? 's' : ''}` : `${ok} cancelled, ${fail} failed`
     showTradeStatus(statusEl, fail === 0 ? 'success' : ok > 0 ? 'success' : 'error', msg + '.')
     _showChartToast(msg)
-    setTimeout(refreshLive, 1500)
+    window.__refreshAfterAction(1500)
   } catch (e) {
     console.error('[cancelAll]', e)
     const errMsg = e.message || String(e)
@@ -4695,7 +5699,7 @@ window.__cancelAllOrders = async function () {
 }
 
 // ─── EDIT ORDER ───────────────────────────────────────────────────────────────
-window.__openEditOrderModal = function (coin, oid, isBuy, sz, currentPx, tpsl, isTrigger) {
+window.__openEditOrderModal = function (coin, oid, isBuy, sz, currentPx, tpsl, isTrigger, acct = null) {
   // TP/SL orders open the position TP/SL modal instead
   if (tpsl) {
     const positions = state.perpState?.assetPositions ?? []
@@ -4713,7 +5717,7 @@ window.__openEditOrderModal = function (coin, oid, isBuy, sz, currentPx, tpsl, i
         if (isTp2) { tpPx = px; tpOid = o.oid }
         if (isSl2) { slPx = px; slOid = o.oid }
       }
-      window.__openEditModal(coin, side, posEntry.szi, posEntry.entryPx, tpPx, slPx, tpOid, slOid, leverage)
+      window.__openEditModal(coin, side, posEntry.szi, posEntry.entryPx, tpPx, slPx, tpOid, slOid, leverage, acct)
       return
     }
   }
@@ -4723,7 +5727,7 @@ window.__openEditOrderModal = function (coin, oid, isBuy, sz, currentPx, tpsl, i
   const maxSz   = (tpsl && posSz > 0) ? posSz : (sz > 0 ? sz : 0)
   const initPct = (sz > 0 && maxSz > 0) ? Math.min(100, Math.round(sz / maxSz * 100)) : 100
   const px      = parseFloat(currentPx) || 0
-  state.editingOrder = { coin, oid, isBuy, sz, maxSz, tpsl, isTrigger, currentPx: px, szUnit: 'token' }
+  state.editingOrder = { coin, oid, isBuy, sz, maxSz, tpsl, isTrigger, currentPx: px, szUnit: 'token', acct }
 
   // Header
   const typeLabel = tpsl === 'tp' ? 'Take Profit' : tpsl === 'sl' ? 'Stop Loss' : 'Limit'
@@ -4756,7 +5760,11 @@ window.__openEditOrderModal = function (coin, oid, isBuy, sz, currentPx, tpsl, i
 
 window.__confirmEditOrder = async function () {
   if (!state.editingOrder) return
-  if (!isConnected()) { showTradeStatus(document.getElementById('editOrderModalStatus'), 'error', 'Connect agent key first.'); return }
+  const _ordAcct = state.editingOrder.acct ?? null
+  if (!window.__acctCanTrade(_ordAcct)) {
+    showTradeStatus(document.getElementById('editOrderModalStatus'), 'error', _ordAcct ? 'No agent key for that account.' : 'Connect agent key first.')
+    return
+  }
   const { coin, oid, isBuy, sz: origSz, maxSz, tpsl, isTrigger } = state.editingOrder
   const newPx  = parseFloat(document.getElementById('editOrderPriceInput').value)
   const pct    = parseInt(document.getElementById('editOrdSlider').value)
@@ -4766,7 +5774,7 @@ window.__confirmEditOrder = async function () {
   showTradeStatus(statusEl, 'pending', 'Modifying order...')
   document.getElementById('editOrderModalConfirm').disabled = true
   try {
-    const result = await modifyOrderPrice({ coin, oid, isBuy, sz: newSz, newPx, tpsl, isTrigger })
+    const result = await modifyOrderPrice({ coin, oid, isBuy, sz: newSz, newPx, tpsl, isTrigger, acct: _ordAcct })
     // batchModify (triggers) returns OrderResponse with statuses; modify (limits) throws on failure.
     if (result && isTrigger && tpsl) {
       const parsed = parseOrderResult(result)
@@ -4777,7 +5785,7 @@ window.__confirmEditOrder = async function () {
       }
     }
     showTradeStatus(statusEl, 'success', '✓ Order updated!')
-    setTimeout(() => { closeModals(); refreshLive() }, 1500)
+    setTimeout(closeModals, 1500); window.__refreshAfterAction(1500, _ordAcct)
   } catch (e) {
     showTradeStatus(statusEl, 'error', '✗ ' + e.message)
     document.getElementById('editOrderModalConfirm').disabled = false
@@ -4899,8 +5907,13 @@ async function renderPerformance() {
     return
   }
 
+  const _wAddr = _botApiAddr()
+  if (!_wAddr) {
+    el.innerHTML = `<div style="text-align:center;padding:60px 20px;color:var(--muted)">Open a single account to see bot performance.</div>`
+    return
+  }
   let wins
-  try { wins = await serverFetch(`/api/wins?address=${encodeURIComponent(state.addr ?? '')}`) }
+  try { wins = await serverFetch(`/api/wins?address=${encodeURIComponent(_wAddr)}`) }
   catch {
     el.innerHTML = `<div style="text-align:center;padding:60px 20px;color:var(--muted)">Failed to load performance data.</div>`
     return
@@ -5134,7 +6147,7 @@ function switchTab(name, btn) {
   if (activeNavTab) activeNavTab.classList.add('active')
   document.getElementById('tab-' + name).classList.add('active')
   _ensureTabRendered(name)   // trades / calendar / transfers render on first open
-  if (name === 'portfolio') setTimeout(() => renderChartPeriod(state.currentPeriod), 60)
+  if (name === 'portfolio') { _syncAllAcctCards(); setTimeout(() => renderChartPeriod(state.currentPeriod), 60) }
   if (name === 'tokens')    renderMarkets({ fills: state.fills, allMids: state.allMids, perpState: state.perpState })
   if (name === 'trade')     { try { renderManageTables(state.perpState, state.openOrders, state.allMids); populateCoinDropdown(); updateTradeBalance(); _updateAvailDisplay() } catch (e) { console.error(e) } }
   if (name === 'performance') renderPerformance()
@@ -5148,10 +6161,10 @@ function switchTab(name, btn) {
   }
   if (name === 'accounts') {
     const root = document.getElementById('multiAcctRoot')
-    const stale = Date.now() - _maLastFetch > 30_000
+    const stale = Date.now() - _maLastFetch > 60_000
     if (!root?.querySelector('#maGrid')) renderMultiAccount().catch(() => {})
     else if (stale) _maSilentUpdate().catch(() => {})
-    _maTabTimer = setInterval(() => _maSilentUpdate().catch(() => {}), 30_000)
+    _maTabTimer = setInterval(() => _maSilentUpdate().catch(() => {}), 60_000)
   }
   if (name === 'outcomes')   renderOutcomes()
   // sync bottom nav
@@ -5161,8 +6174,8 @@ function switchTab(name, btn) {
   // close more drawer + backdrop
   document.getElementById('mobMoreDrawer')?.classList.remove('open')
   document.getElementById('mobMoreBackdrop')?.classList.remove('open')
-  // re-translate newly rendered content
-  if (_currentLang !== 'en') setTimeout(() => _translateDOM(_currentLang), 150)
+  // re-translate newly rendered content (cache-first, no flash; observer also covers it)
+  if (_currentLang !== 'en') window.__i18nApply()
 }
 
 window.setSidebarActive = function(el) {
@@ -5181,16 +6194,952 @@ window.__mobMoreTab = function(name) {
   const backdrop = document.getElementById('mobMoreBackdrop')
   drawer?.classList.remove('open')
   backdrop?.classList.remove('open')
-  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'accounts', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'news'])
+  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'news', 'allocation', 'heatmap'])
   if (mobileTabs.has(name)) {
     _mobVActiveTab = name
     document.querySelectorAll('.mob-v-tab').forEach(b => b.classList.remove('active'))
     _mobVRenderContent()
+    if (_currentLang !== 'en') window.__i18nApply()
   } else {
     mobVHide()
     const btn = [...document.querySelectorAll('.nav-tab')].find(b => b.getAttribute('onclick')?.includes(`'${name}'`))
     window.switchTab(name, btn)
   }
+}
+
+// ─── ALL ACCOUNTS AS ONE ──────────────────────────────────────────────────────
+// Aggregates every saved wallet into a single synthetic `state` and drives the
+// normal single-account dashboard — so the whole app behaves as if all wallets
+// were one account.
+let _allAcctTimer = null
+let _allAcctFastTimer = null   // authoritative value-only poller (clearinghouseState per wallet)
+let _allAcctMidsTimer = null   // fast main-dex mark refresh + repaint (matches single-account 5s)
+
+// ── LIVE PRICES OVER WEBSOCKET ────────────────────────────────────────────────
+// Prices were polled over REST on every 5s loop (single + combined + watch) — a steady
+// drain on HL's shared weight budget. HL pushes allMids over WS at ZERO REST weight, so
+// subscribe once and merge pushes into state.allMids. `_midsWsOk()` (pushed within 30s)
+// lets the REST pollers SKIP their allMids fetch while the socket delivers, and quietly
+// resume if it goes silent. No auth needed; the transport auto-reconnects.
+let _midsWsSub      = null
+let _midsWsLastPush = 0
+function _midsWsOk() { return Date.now() - _midsWsLastPush < 30_000 }
+async function _startMidsWs() {
+  if (_midsWsSub) return
+  try {
+    _midsWsSub = await subsClient().allMids((ev) => {
+      if (ev?.mids) { state.allMids = { ...state.allMids, ...ev.mids }; _midsWsLastPush = Date.now() }
+    })
+  } catch (e) { console.warn('[ws] allMids subscribe failed:', e?.message) }
+}
+
+// In the combined view, position MARK columns must track live like the watch ticker.
+// Repaint every 5s from state.allMids (kept fresh by the WS push above); only fall back
+// to a REST allMids fetch when the socket has gone quiet. HIP-3 marks stay on the heavy
+// cycle (rare, and its own fan-out is heavy).
+async function _allAcctFastMids() {
+  if (!state.isAllAccounts) return
+  if (!_midsWsOk()) {
+    if (_hlLimited()) return
+    try {
+      const mids = await infoClient.allMids()
+      if (!mids || !state.isAllAccounts) return
+      state.allMids = { ...state.allMids, ...mids }
+    } catch (e) { _hl429(e); return }
+  }
+  // Backfill every open position's mark into the single price store (state.allMids), so the
+  // watch strip and the position cards read ONE value via _livePx. Main-dex mids arrive from
+  // allMids()/WS above; HIP-3 marks aren't in that feed here, so derive from the position's
+  // own notional (positionValue = |szi| × mark). Without this, state.allMids has no HIP-3 key
+  // in All Accounts → _livePx returns 0 → the chip and the card each fall to a DIFFERENT last
+  // resort (candle cache vs positionValue/sz) and disagree by a few cents.
+  if (!state.allMids) state.allMids = {}
+  const _hidden = _maHiddenLoad()
+  for (const r of _allAcctLastResults) {
+    if (r.error || _hidden.has(r.addr) || r.addr === '__all_accounts__') continue
+    for (const ap of (r.positions ?? [])) {
+      const p = ap.position ?? ap
+      const coin = p?.coin
+      if (!coin || parseFloat(state.allMids[coin] ?? 0) > 0) continue
+      const sz = Math.abs(parseFloat(p.szi ?? 0))
+      const pv = Math.abs(parseFloat(p.positionValue ?? 0))
+      if (sz > 0 && pv > 0) state.allMids[coin] = String(pv / sz)
+    }
+  }
+
+  // Repaint marks. Equity always; the position/orders/spot rows only when one is on
+  // screen and the user isn't mid-input (a redraw would drop what they're typing).
+  try {
+    if (_isMobView()) {
+      _mobVRenderBalance()
+      // The home list views (Positions/Orders/Spot/Outcomes) are themselves values of
+      // _mobVActiveTab — there is no separate sub-tab var. Repaint only those.
+      const onList = ['positions', 'orders', 'spot', 'outcomes'].includes(_mobVActiveTab)
+      const typing = /^(mobTrade|paperCoin|paperSize|paperLev|closeSlider|depositAmount)/.test(document.activeElement?.id ?? '')
+      if (onList && !typing) {
+        // Don't tear down and rebuild the whole list every 5s just to move the numbers — that
+        // destroyed/recreated every row (and every icon → the flicker) 12×/min. Update the
+        // values IN PLACE; only do a full rebuild when the set of positions actually changes
+        // (one opened/closed). Same approach the single-account view uses (updateMobileView).
+        if (_mobVActiveTab === 'positions') {
+          const hash = _mobVPosStructHash()
+          if (hash !== _mobVLastPosHash) { _mobVLastPosHash = hash; _mobVRenderContent() }
+          else _mobVUpdatePositionsLive()
+        } else {
+          _mobVRenderContent(true)   // orders/spot/outcomes: skips the rebuild when unchanged
+        }
+      }
+    } else {
+      renderPositionSection()
+    }
+  } catch {}
+}
+let _allAcctLastResults = []   // cached per-account results so hide/show re-aggregates without refetch
+
+// TRUE while the combined view is missing at least one wallet's data. On a COLD load a wallet
+// that fails (429/timeout) has no cached snapshot to fall back on, so `_allAcctMerge` drops it
+// entirely — and the combined equity silently renders as the sum of the wallets that DID land,
+// i.e. understated by the missing one(s). That reads as a real balance drop and is alarming.
+// While this is set, the equity shows a loading indicator instead of a number it can't stand behind.
+let _allAcctIncomplete = false
+let _allAcctMissing    = 0
+let _allAcctRetryTimer = null
+let _allAcctRetries    = 0
+
+// Register one agent key per wallet so every action in the combined view is signed by
+// the account that owns the position/order. ONLY exact per-address keys are used — the
+// legacy global `hliq_agent_key` belongs to whichever account approved it, so trusting
+// it here would sign as the wrong wallet.
+async function _allAcctRegisterAgents() {
+  clearAgentKeys()
+  for (const w of _maLoad()) {
+    const key = localStorage.getItem(_agentKeyForAddr(w.addr))
+    if (!key) continue
+    try { await registerAgentKey(w.addr, key) }
+    catch (e) { console.warn('[allAcct] agent key rejected for', w.addr, e.message) }
+  }
+}
+
+// Which wallet new orders are placed from while the combined view is active.
+// There is no "current" account there, so the user must pick one explicitly.
+let _tradeAcct = null
+window.__setTradeAcct = function(v) { _tradeAcct = v || null }
+window.__getTradeAcct = function() {
+  if (!state.isAllAccounts) return null
+  if (_tradeAcct) return _tradeAcct
+  // Default to the first account with a usable agent key so gating/order-routing work even
+  // before the "Trade from account" picker has rendered and set a selection.
+  return _maLoad().find(w => hasAgentFor(w.addr))?.addr ?? null
+}
+// Can the user place an order from the trade UI right now? Combined view: does the SELECTED
+// account have a stored/registered agent key (no wallet connection needed). Single account:
+// is the one agent client connected.
+window.__canTradeUI = function() {
+  if (isPaper()) return true   // simulated account needs no agent key
+  return state.isAllAccounts ? window.__acctCanTrade(window.__getTradeAcct()) : isConnected()
+}
+
+// <select> of wallets that actually have an agent key. Rendered only in the combined view.
+// ─── DRAG-SCROLL FOR HORIZONTAL STRIPS ───────────────────────────────────────
+// iOS does not reliably deliver native `overflow-x` scrolling to elements inside a
+// position:fixed overlay — and both the mobile view and the predictions sheet are fixed. The
+// coin-picker pills already worked around this with a hand-rolled touch handler; this is the
+// same trick, delegated once at the document so any strip can opt in with `data-dragscroll`
+// instead of needing wiring at every render site.
+//
+// Passive + scrollLeft only: we never preventDefault, so a vertical drag still scrolls the
+// page normally and only the horizontal component is applied here.
+;(function initDragScroll() {
+  let el = null, startX = 0, startY = 0, startLeft = 0, axis = null
+  document.addEventListener('touchstart', e => {
+    el = e.target?.closest?.('[data-dragscroll]') ?? null
+    if (!el) return
+    startX = e.touches[0].clientX
+    startY = e.touches[0].clientY
+    startLeft = el.scrollLeft
+    axis = null
+  }, { passive: true })
+  document.addEventListener('touchmove', e => {
+    if (!el) return
+    const dx = startX - e.touches[0].clientX
+    const dy = startY - e.touches[0].clientY
+    // Lock the axis on the first meaningful movement: horizontal → we drive scrollLeft;
+    // vertical → release so the page scrolls normally (never hijack a vertical drag).
+    if (axis === null) {
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return
+      axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y'
+      if (axis === 'y') { el = null; return }
+    }
+    el.scrollLeft = startLeft + dx
+  }, { passive: true })
+  const end = () => { el = null; axis = null }
+  document.addEventListener('touchend', end, { passive: true })
+  document.addEventListener('touchcancel', end, { passive: true })
+})()
+
+window.__tradeAcctPickerHtml = function() {
+  if (!state.isAllAccounts) return ''
+  const opts = _maLoad().filter(w => hasAgentFor(w.addr))
+  if (!opts.length) return `<div style="padding:9px 12px;border-radius:10px;background:rgba(255,77,109,0.1);color:var(--red);font-size:12px">No wallet has an agent key — connect one to trade.</div>`
+  if (!_tradeAcct || !opts.some(w => w.addr.toLowerCase() === _tradeAcct.toLowerCase())) _tradeAcct = opts[0].addr
+  const cur = _tradeAcct.toLowerCase()
+  const pill = w => {
+    const on  = w.addr.toLowerCase() === cur
+    const lbl = w.label || (w.addr.slice(0, 6) + '…')
+    return `<button data-acct="${esc(w.addr)}" onclick="window.__pickTradeAcct('${esc(w.addr)}')"
+      style="flex-shrink:0;display:flex;align-items:center;gap:7px;padding:5px 13px 5px 5px;border-radius:22px;cursor:pointer;white-space:nowrap;font-size:13px;font-weight:700;transition:background .15s,border-color .15s,color .15s;border:1.5px solid ${on ? 'var(--accent)' : 'var(--border2)'};background:${on ? 'color-mix(in oklch,var(--accent) 15%,transparent)' : 'var(--panel-2)'};color:${on ? 'var(--accent)' : 'var(--fg)'}">
+      ${_mobVAvatarHtml(w.addr, 24)}<span class="notranslate">${esc(lbl)}</span>
+    </button>`
+  }
+  return `<div style="border:1px solid var(--border2);border-radius:14px;background:var(--panel);padding:11px 12px">
+    <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-bottom:9px">Trade from account</div>
+    <div id="tradeAcctPills" class="no-swipe hscroll-x" style="display:flex;gap:8px">
+      ${opts.map(pill).join('')}
+    </div>
+  </div>`
+}
+
+// Select the trade-from account and update the pill highlight in place (no full re-render,
+// which would rebuild the chart).
+window.__pickTradeAcct = function(addr) {
+  window.__setTradeAcct(addr)
+  const cur = String(addr).toLowerCase()
+  document.querySelectorAll('#tradeAcctPills [data-acct]').forEach(b => {
+    const on = b.dataset.acct.toLowerCase() === cur
+    b.style.borderColor = on ? 'var(--accent)' : 'var(--border2)'
+    b.style.background  = on ? 'color-mix(in oklch,var(--accent) 15%,transparent)' : 'var(--panel-2)'
+    b.style.color       = on ? 'var(--accent)' : 'var(--fg)'
+  })
+  // Refresh "Available" for the newly selected account (avoid showing the previous one's).
+  _availCache = { min: 0, max: 0, coin: null }
+  try { _updateAvailEl(); _updateAvailDisplay() } catch {}
+  try { _fetchAvail() } catch {}
+  // Outcomes panels spend this account's USDC (buy) / shares (sell) — repoint them too.
+  try { _ocSyncAllBalRows() } catch {}
+}
+
+// Can we sign for this account right now? Used to enable/disable per-row actions.
+window.__acctCanTrade = function(addr) {
+  if (isPaper()) return true   // simulated account needs no agent key
+  if (!state.isAllAccounts) return isConnected()
+  return hasAgentFor(addr)
+}
+
+// ─── AGENT-KEY PREFLIGHT ──────────────────────────────────────────────────────
+// An agent key lives in THIS browser, but its approval lives on Hyperliquid. The two drift:
+// generating a key on another device can supersede the one stored here, and a key can end up
+// saved under the wrong account. The order then dies mid-action with HL's opaque
+// "User or API Wallet 0x… does not exist" — which is how the user first found out, while
+// trying to close a position. So verify the stored key is actually an approved agent for the
+// owning account BEFORE signing, and surface a fixable message instead of a cryptic failure.
+// Result cache is keyed by master+agent so a re-check after regenerating is immediate.
+const _agentOkCache = new Map()   // `${master}|${agent}` -> { ok, ts }
+const _AGENT_OK_TTL = 120_000
+
+// Which real address owns this action: explicit acct (combined view) → connected wallet.
+function _preflightAddrFor(acct) {
+  if (_isRealAddr(acct)) return String(acct).toLowerCase()
+  if (_isRealAddr(state.addr)) return String(state.addr).toLowerCase()
+  return null
+}
+
+/**
+ * Verify the agent key stored for `acct` is approved on HL for that account.
+ * Returns { ok, reason, agentAddr, master }. FAILS OPEN (ok:true) when the check itself
+ * can't run — no key to check, paper mode, or the request errored/rate-limited. A network
+ * blip must never block a close; the real order still surfaces HL's own error in that case.
+ */
+async function _preflightAgent(acct) {
+  if (isPaper()) return { ok: true }
+  const master = _preflightAddrFor(acct)
+  if (!master) return { ok: true }
+  const key = localStorage.getItem(_agentKeyForAddr(master))
+  if (!key) return { ok: true }            // no stored key — existing "connect key" paths handle it
+  const agentAddr = agentAddressOf(key)
+  if (!agentAddr) return { ok: true }
+  const ck = `${master}|${agentAddr}`
+  const hit = _agentOkCache.get(ck)
+  if (hit && hit.ok && Date.now() - hit.ts < _AGENT_OK_TTL) return { ok: true, agentAddr, master }
+  let addrs
+  try { addrs = await fetchApprovedAgents(master) } catch { return { ok: true } }   // fail open
+  if (!addrs) return { ok: true }
+  const ok = addrs.has(agentAddr)
+  _agentOkCache.set(ck, { ok, ts: Date.now() })
+  return ok ? { ok: true, agentAddr, master }
+            : { ok: false, reason: 'not-approved', agentAddr, master }
+}
+
+// Shown when the preflight rejects: explains it in plain language and offers the one-tap fix.
+async function _agentInvalidPrompt(master, agentAddr) {
+  const label = (() => { try { return WM.getLabel(master) } catch { return null } })()
+  const short = a => a ? a.slice(0, 6) + '…' + a.slice(-4) : '?'
+  const fix = await _appConfirm({
+    title: _T('Agent key not valid', 'Clave de agente no válida'),
+    body: `${_T('Hyperliquid does not recognize this account\'s agent key', 'Hyperliquid no reconoce la clave de agente de esta cuenta')}${label ? ` (<b>${esc(label)}</b>)` : ''}, ${_T('so it can\'t sign orders', 'así que no puede firmar órdenes')}.<br><br>
+      ${_T('This usually means the key was replaced by one generated on another device, or it belongs to a different account. Your funds and positions are unaffected.', 'Suele significar que la clave fue reemplazada por una generada en otro dispositivo, o que pertenece a otra cuenta. Tus fondos y posiciones no se ven afectados.')}
+      <br><br><span style="opacity:.6;font-size:11px" class="notranslate">agent ${esc(short(agentAddr))}</span>`,
+    confirmText: _T('⚡ Regenerate key', '⚡ Regenerar clave'),
+  })
+  if (!fix) return
+  // Regenerating requires the owning wallet connected as the ACTIVE account.
+  const cur = (() => { try { return String(getMainAddress() ?? '').toLowerCase() } catch { return '' } })()
+  if (!isMainWalletConnected() || cur !== String(master).toLowerCase()) {
+    _paperToast('⚠ ' + _T('Open that account and connect its wallet to regenerate', 'Abre esa cuenta y conecta su billetera para regenerar'))
+    return
+  }
+  try { localStorage.removeItem(_agentKeyForAddr(master)) } catch {}
+  _agentOkCache.clear(); invalidateApprovedAgents(master)
+  await window.__autoGenerateAgentKey()
+}
+
+/**
+ * Gate a signing action. Returns true when it's safe to proceed. On failure it has already
+ * told the user what's wrong and offered the fix, so callers just bail.
+ */
+async function _guardAgent(acct) {
+  const r = await _preflightAgent(acct)
+  if (r.ok) return true
+  await _agentInvalidPrompt(r.master, r.agentAddr)
+  return false
+}
+
+// Accounts whose stored key is known-bad, so the UI can warn BEFORE the user needs to trade
+// (the whole point: don't let someone discover this mid-close). Populated by the sweep below
+// and read synchronously while rendering.
+const _agentBadAccts = new Set()
+window.__agentKeyBad = addr => _agentBadAccts.has(String(addr ?? '').toLowerCase())
+
+// Background sweep: validate every stored agent key against HL. One request per account,
+// spaced out so it never contributes to a rate-limit burst, and only for accounts that
+// actually have a key. Silent — it just marks accounts; the UI surfaces it.
+let _agentSweepDone = 0
+async function _sweepAgentKeys() {
+  if (Date.now() - _agentSweepDone < 300_000) return   // at most every 5 min
+  _agentSweepDone = Date.now()
+  let addrs = []
+  try { addrs = (_maLoad() ?? []).map(e => e.addr).filter(_isRealAddr) } catch {}
+  if (_isRealAddr(state.addr) && !addrs.some(a => a.toLowerCase() === state.addr.toLowerCase())) addrs.push(state.addr)
+  for (const a of addrs) {
+    const key = String(a).toLowerCase()
+    if (!localStorage.getItem(_agentKeyForAddr(key))) { _agentBadAccts.delete(key); continue }
+    if (_hlLimited()) return                       // back off entirely while limited
+    const r = await _preflightAgent(key)
+    if (r.ok) _agentBadAccts.delete(key)
+    else      _agentBadAccts.add(key)
+    await new Promise(r2 => setTimeout(r2, 400))   // keep it off the burst bucket
+  }
+  // Repaint so a newly-flagged account shows its warning without waiting for a tab switch.
+  try { if (_isMobView()) _mobVRenderContent() } catch {}
+}
+window.__sweepAgentKeys = _sweepAgentKeys
+let _allAcctRefreshing  = false
+let _allAcctLastPersist = 0
+let _allAcctLastGoodFetch = 0   // ts of last successful full fan-out — gates re-entry re-fetches
+const _ALLACCT_FRESH_MS = 45_000  // don't re-fan the 8-wallet burst if data is younger than this
+
+window.__goAllAccounts = function() {
+  loadAllAccountsDashboard().catch(e => {
+    console.error('All-accounts load failed:', e)
+    _hideAllAcctLoader()
+    showError('Failed to load all accounts: ' + (e?.message ?? 'Unknown error'))
+  })
+}
+
+// Toggle a wallet's membership in the combined view (hide/show) without refetching.
+window._mobVToggleHiddenAcct = function(addr, ev) {
+  ev?.stopPropagation?.()
+  const h = _maHiddenLoad()
+  if (h.has(addr)) h.delete(addr); else h.add(addr)
+  _maHiddenSave(h)
+  window._mobVOpenWalletSwitch?.()          // refresh drawer highlight + eye state
+  if (state.isAllAccounts) _allAcctReaggregate()
+}
+
+function _showAllAcctLoader() {
+  let ov = document.getElementById('allAcctLoader')
+  if (!ov) {
+    ov = document.createElement('div')
+    ov.id = 'allAcctLoader'
+    ov.innerHTML = `
+      <div class="aal-inner">
+        <div class="aal-orbit"></div>
+        <div class="aal-title">Combining all accounts</div>
+        <div class="aal-sub">Fetching wallets &amp; merging balances…</div>
+      </div>`
+    document.body.appendChild(ov)
+  }
+  ov.style.display = 'flex'
+}
+function _hideAllAcctLoader() {
+  const ov = document.getElementById('allAcctLoader')
+  if (ov) ov.style.display = 'none'
+}
+
+// ── Snapshot cache ────────────────────────────────────────────────────────────
+// The combined view costs one fan-out per wallet, so a cold load takes seconds.
+// We keep the last successful fetch (in memory, and in localStorage so it survives
+// a reload) and paint from it instantly, then refresh in the background.
+const _ALLACCT_CACHE_KEY = 'hliq_allacct_v1'
+const _ALLACCT_MAX_BYTES = 4_000_000   // stay clear of the ~5MB localStorage quota
+
+// Only reuse a snapshot that covers exactly today's wallet set — otherwise the
+// combined equity would silently omit (or double-count) a wallet until the
+// background refresh lands.
+function _allAcctCovers(results, entries) {
+  if (!results?.length) return false
+  const have = new Set(results.map(r => r.addr.toLowerCase()))
+  const want = entries.map(e => e.addr.toLowerCase())
+  return have.size === want.length && want.every(a => have.has(a))
+}
+
+// A wallet that failed this round (rate limit, transient network) must NOT drop out
+// of the combined total — dropping it shrinks equity and yanks its whole history out
+// of the merged curve, which reads as a huge fake dip/spike. Keep its last good
+// snapshot until a fetch for it succeeds again.
+// Per-account equity spike guard. HL sometimes returns a glitched account value / unrealized
+// for a single poll of ONE wallet. Summed in, that shows as a fake jump (e.g. +$200) on that
+// account's card and the total — while being far too small a share of the combined total for a
+// whole-total filter to catch. Hold that account's last good value on a >25% single-update
+// jump, and accept the new level only once the next reading confirms it (a real move persists,
+// a glitch doesn't).
+const _acctEqGuard = new Map()   // addr(lowercase) -> { last, pending, holds }
+function _acctEqReset() { _acctEqGuard.clear() }
+function _acctEqFilter(addr, val) {
+  if (!Number.isFinite(val) || val <= 0) return val
+  const k = String(addr ?? '').toLowerCase()
+  const g = _acctEqGuard.get(k)
+  if (!g || !(g.last > 0)) { _acctEqGuard.set(k, { last: val, pending: null, holds: 0 }); return val }
+  if (Math.abs(val - g.last) / g.last <= 0.25) { g.last = val; g.pending = null; g.holds = 0; return val }
+  g.holds = (g.holds || 0) + 1
+  // Accept when a second reading agrees (real move) OR the "glitch" has persisted several
+  // polls — a lasting value is the truth, not a glitch. Without this, a wallet's value could
+  // latch (differently per device during a rate-limit storm) and never re-sync → two devices
+  // showing different combined equity forever.
+  if ((g.pending > 0 && Math.abs(val - g.pending) / g.pending <= 0.25) || g.holds >= 3) {
+    g.last = val; g.pending = null; g.holds = 0; return val
+  }
+  g.pending = val
+  return g.last                                         // suspected glitch — keep last good (briefly)
+}
+
+function _allAcctMerge(fresh, prev) {
+  const prevByAddr = new Map((prev ?? []).map(r => [r.addr.toLowerCase(), r]))
+  const out = []
+  for (const r of fresh) {
+    if (!r.error) {
+      // Heavy-refresh values go through the same guard (a glitched portfolio value would
+      // otherwise land straight on the card and the total).
+      r.accountValue = _acctEqFilter(r.addr, parseFloat(r.accountValue ?? 0))
+      out.push(r); continue
+    }
+    const stale = prevByAddr.get(r.addr.toLowerCase())
+    if (stale) out.push(stale)
+  }
+  return out
+}
+
+function _allAcctCacheLoad() {
+  try {
+    const o = JSON.parse(localStorage.getItem(_ALLACCT_CACHE_KEY) || 'null')
+    return (o && Array.isArray(o.results) && o.results.length) ? o.results : null
+  } catch { return null }
+}
+
+function _allAcctCachePersist() {
+  if (Date.now() - _allAcctLastPersist < 60_000) return   // don't re-serialise every tick
+  try {
+    const json = JSON.stringify({ ts: Date.now(), results: _allAcctLastResults })
+    if (json.length > _ALLACCT_MAX_BYTES) return          // too big to store; memory cache still works
+    localStorage.setItem(_ALLACCT_CACHE_KEY, json)
+    _allAcctLastPersist = Date.now()
+  } catch { /* quota / private mode — caching is best-effort */ }
+}
+
+async function loadAllAccountsDashboard() {
+  _paperExit()   // leaving the simulated account
+  const entries = _maLoad()
+  if (!entries.length) { showError('No saved accounts yet — add wallets first.'); return }
+
+  // Remember that the combined view is the active one so a reload / app relaunch
+  // restores it instead of dropping back to a single account. Cleared whenever a
+  // single account is opened (loadDashboard) or the dashboard is reset.
+  localStorage.setItem('walletAddr', '__all_accounts__')
+  setActiveWallet(null)   // combined view isn't a single signable account
+  resetLiveAccountValue()
+  _comboEqReset(); _acctEqReset()   // fresh spike-filter baselines for this combined session
+  // Assume incomplete until a fetch proves otherwise, so the very first paint of a cold load
+  // shows the loader rather than a partial sum. _allAcctReaggregate clears it once all wallets land.
+  _allAcctIncomplete = true
+  _allAcctRetries = 0
+  if (_allAcctRetryTimer) { clearTimeout(_allAcctRetryTimer); _allAcctRetryTimer = null }
+
+  // Close any open switchers/drawers
+  document.getElementById('wsPanel')?.classList.remove('open')
+  window._mobVCloseWalletSwitch?.()
+
+  // Show the dashboard shell (same as loadDashboard)
+  document.getElementById('inputArea').style.display = 'none'
+  document.getElementById('loadingOverlay')?.classList.remove('active')
+  document.getElementById('dashboard').classList.add('active')
+
+  // Stop the single-account refresh loop; start the combined one.
+  if (liveTimer)     { clearInterval(liveTimer); liveTimer = null }
+  // midsTimer was NOT being cleared here — the single-account 60s price fan-out (which
+  // fans out over every HIP-3 dex) kept running silently in the background of All Accounts,
+  // burning weight for data the combined view already gets from WS + its own loops.
+  if (midsTimer)     { clearInterval(midsTimer); midsTimer = null }
+  if (_allAcctTimer) { clearInterval(_allAcctTimer); _allAcctTimer = null }
+  if (_allAcctFastTimer) { clearInterval(_allAcctFastTimer); _allAcctFastTimer = null }
+  if (_allAcctMidsTimer) { clearInterval(_allAcctMidsTimer); _allAcctMidsTimer = null }
+
+  // Load each wallet's agent key up front so per-position actions sign as their owning
+  // account. Wallets without a key just get their action buttons disabled.
+  await _allAcctRegisterAgents()
+  // Powers the "Grid:HYPE" bot pills on the per-account cards.
+  serverFetch('/api/status/all').then(st => {
+    _maBotStatus = st ?? {}; _syncAllAcctCards()
+    // Refresh the mobile view once bot status lands: the Strats badge counts from it, and
+    // the Strats tab lists the running bots.
+    if (_isMobView()) _mobVRenderContent()
+  }).catch(() => {})
+  setMultiAcctStrict(true)   // any unrouted signed action now throws instead of mis-signing
+
+  if (!_allAcctCovers(_allAcctLastResults, entries)) {
+    const cached = _allAcctCacheLoad()
+    _allAcctLastResults = _allAcctCovers(cached, entries) ? cached : []
+  }
+
+  if (_allAcctLastResults.length) {
+    _allAcctReaggregate()                 // instant paint from the last fetch
+    // Only re-fan the 8-wallet burst if the cached data is actually stale. Re-entering All
+    // Accounts (e.g. Home → back) used to re-fetch everything every time — a ~40-call spike
+    // that 429'd HL and starved the chart. The 5-min _allAcctTimer keeps it fresh after this.
+    if (Date.now() - _allAcctLastGoodFetch > _ALLACCT_FRESH_MS) _allAcctSilentRefresh(entries)
+  } else {
+    _showAllAcctLoader()
+    try {
+      await _allAcctFetchAndRender(entries)
+    } finally {
+      _hideAllAcctLoader()
+    }
+  }
+  // The heavy fan-out re-pulls ALL-TIME history per wallet — portfolio + all-time fills +
+  // all-time funding + open orders (≈84 weight/wallet, weight-20 endpoints). At 60s with
+  // 7 wallets that's ~590 weight/min — half of HL's 1200/min budget, burning it on data
+  // that barely changes minute-to-minute and CONSTANTLY 429'd the app. The live value,
+  // positions and health come from the cheap 12s clearinghouseState loop below, so this
+  // history refresh can be slow: 5 min. Orders/realized-PnL/chart lag that long in the
+  // combined view — an acceptable trade for never starving the budget. The ~670-weight
+  // burst now lands once every 5 min instead of every 1–3, leaving headroom for everything
+  // else in the same minute.
+  _allAcctTimer = setInterval(() => _allAcctSilentRefresh(entries), 300000)
+  // Value tick: re-fetch ONLY clearinghouseState per wallet (1 cheap request each) for
+  // HL's authoritative account value + unrealized, so the combined value moves every
+  // ~12s between the heavy 60s fan-outs. No local mark-to-market math (that spiked).
+  if (_allAcctFastTimer) clearInterval(_allAcctFastTimer)
+  _allAcctFastTimer = setInterval(_allAcctFastValue, 12000)
+  // Fast mark refresh so position MARK columns track live, like single-account.
+  if (_allAcctMidsTimer) clearInterval(_allAcctMidsTimer)
+  _allAcctMidsTimer = setInterval(_allAcctFastMids, 5000)
+  // Live account state over WebSocket (all dexes → main + HIP-3, zero REST weight). The 12s
+  // poll above stays as a fallback for any wallet the socket isn't delivering. Fire-and-forget.
+  _startAllAcctWs(entries).catch(() => {})
+}
+
+// Authoritative value refresh: one clearinghouseState per wallet (weight 2, pooled).
+// Uses HL's OWN unrealizedPnl — the value ticks by the exact change HL reports, anchored
+// to the cached unified Portfolio Value. Never recomputes value from marks locally.
+async function _allAcctFastValue() {
+  if (!state.isAllAccounts || _allAcctLastResults.length === 0) return
+  if (_allAcctRefreshing || _hlLimited()) return   // heavy refresh running, or breaker open
+  const info    = new InfoClient({ transport: _transport })
+  const hidden  = _maHiddenLoad()
+  const targets = _allAcctLastResults.filter(r => !r.error && !hidden.has(r.addr) && r.addr !== '__all_accounts__')
+  if (!targets.length) return
+  let changed = false
+  await hlPool(targets, async (r) => {
+    if (_acctWsOk(r.addr)) return   // the WebSocket is streaming this wallet — skip the REST poll
+    let cs
+    try { cs = await info.clearinghouseState({ user: r.addr }) }
+    catch (e) { _hl429(e); return }
+    if (!cs || !state.isAllAccounts) return
+    if (_applyAcctLiveCs(r, cs)) changed = true
+  }, 3)
+  if (changed && state.isAllAccounts) _allAcctLightPaint()
+}
+
+// Apply one wallet's live main-dex clearinghouse state to its cached row `r`, in place —
+// value, positions, unrealized, health. Shared by the REST poll (main-dex `cs`, HIP-3 kept
+// from the cached row) AND the WebSocket push (which passes live HIP-3 positions in
+// `hip3Override`). Returns true if it updated. The VALUE MATH is unchanged and validated:
+// accountValue = snapshot Portfolio Value + (main perp equity − its time-aligned anchor) —
+// byte-for-byte the single-account liveAccountValue formula, so a wallet reads identically
+// in All Accounts and its own view; re-derived from a fixed snapshot each time so it can't
+// drift or diverge between devices.
+function _applyAcctLiveCs(r, cs, hip3Override) {
+  if (!cs || !r || r.error) return false
+  const mainPos    = cs.assetPositions ?? []
+  const liveUnreal = mainPos.reduce((s, p) => s + parseFloat(p.position?.unrealizedPnl ?? 0), 0)
+  const maint      = parseFloat(cs.crossMaintenanceMarginUsed ?? 0)
+  // HIP-3 positions: from the WS push (live, all dexes) when given, else the ones merged into
+  // the row by the heavy fetch. clearinghouseState/main-dex never carries them, so keeping
+  // them here stops the summed unrealized from collapsing and jumping back.
+  const hip3 = hip3Override ?? (r.positions ?? []).filter(ap => String((ap.position ?? ap)?.coin ?? '').includes(':'))
+  const _base   = Number.isFinite(parseFloat(r._portVal))  ? parseFloat(r._portVal)  : parseFloat(r.accountValue ?? 0)
+  const perpNow = parseFloat(cs.marginSummary?.accountValue ?? 0)
+  const _perpB  = Number.isFinite(parseFloat(r._perpBase)) ? parseFloat(r._perpBase) : perpNow
+  const cand    = _base + (perpNow - _perpB)
+  // Glitched reading? Hold this account entirely for this update so the next good reading
+  // still yields a correct delta from the same anchor.
+  if (_acctEqFilter(r.addr, cand) !== cand) return false
+  r.accountValue  = cand
+  const hip3Unreal = hip3.reduce((s, ap) => s + parseFloat((ap.position ?? ap)?.unrealizedPnl ?? 0), 0)
+  r._mainUnreal   = liveUnreal
+  r.unrealizedPnl = liveUnreal + hip3Unreal
+  r.positions     = [...mainPos, ...hip3]
+  r.maintMargin   = maint
+  r.withdrawable  = parseFloat(cs.withdrawable ?? 0) + parseFloat(r._spotFree ?? 0)
+  const hBase     = (r._marginBase ?? 0) > 0 ? r._marginBase : r.accountValue
+  r.healthPct     = hBase > 0 ? Math.max(0, Math.min(100, (1 - maint / hBase) * 100)) : 100
+  r.healthCls     = r.healthPct > 60 ? 'pos' : r.healthPct > 30 ? 'warn' : 'neg'
+  r.netPnl        = parseFloat(r.realizedPnl ?? 0) + r.unrealizedPnl + parseFloat(r.allTimeFunding ?? 0) - parseFloat(r.totalFees ?? 0)
+  return true
+}
+
+// ── All-Accounts live state over WebSocket (allDexsClearinghouseState) ────────────────
+// Replaces the per-wallet REST poll (and the HIP-3 dex fan-out) with a pushed stream per
+// wallet across ALL dexes — main + HIP-3 — at ZERO REST weight. This is what removes the
+// rate-limit banner: the 8-wallet account polling that caused it stops. The 12s poll above
+// stays as a fallback for any wallet the socket isn't delivering (see _acctWsOk gate).
+const _acctWsSubs = new Map()   // addr → ISubscription
+const _acctWsLast = new Map()   // addr → last push timestamp
+let   _acctWsPaintT = null
+function _acctWsOk(addr) { return Date.now() - (_acctWsLast.get(String(addr).toLowerCase()) ?? 0) < 30_000 }
+function _acctWsSchedulePaint() {
+  if (_acctWsPaintT) return
+  // Coalesce bursts of pushes into one repaint every ~500ms.
+  _acctWsPaintT = setTimeout(() => { _acctWsPaintT = null; if (state.isAllAccounts) _allAcctLightPaint() }, 500)
+}
+async function _startAllAcctWs(entries) {
+  await _stopAllAcctWs()
+  const hidden = _maHiddenLoad()
+  for (const e of entries) {
+    if (hidden.has(e.addr)) continue
+    const addr = e.addr, key = addr.toLowerCase()
+    try {
+      const sub = await subsClient().allDexsClearinghouseState({ user: addr }, (ev) => {
+        if (!state.isAllAccounts) return
+        const states = ev?.clearinghouseStates
+        if (!Array.isArray(states)) return
+        // Split main dex (empty dex name) from HIP-3 dexes; prefix HIP-3 coins "dex:coin"
+        // exactly like the REST fetch does, then rename to HL's display tickers.
+        let mainSt = null
+        const hip3Pos = []
+        for (const [dex, st] of states) {
+          if (!dex) { mainSt = st; continue }
+          for (const ap of (st?.assetPositions ?? [])) {
+            const bare = ap.position?.coin ?? ''
+            const prefixed = String(bare).includes(':') ? bare : `${dex}:${bare}`
+            hip3Pos.push({ ...ap, position: { ...ap.position, coin: hip3Rename(prefixed) } })
+          }
+        }
+        if (!mainSt) return   // couldn't identify main dex — let the REST fallback handle it
+        const r = _allAcctLastResults.find(x => String(x.addr).toLowerCase() === key)
+        if (!r || r.error) return
+        _acctWsLast.set(key, Date.now())
+        if (_applyAcctLiveCs(r, mainSt, hip3Pos)) _acctWsSchedulePaint()
+      })
+      _acctWsSubs.set(key, sub)
+    } catch (err) { console.warn('[ws] allDexsClearinghouseState subscribe failed for', addr, err?.message) }
+  }
+}
+async function _stopAllAcctWs() {
+  for (const sub of _acctWsSubs.values()) { try { await sub?.unsubscribe?.() } catch {} }
+  _acctWsSubs.clear(); _acctWsLast.clear()
+  if (_acctWsPaintT) { clearTimeout(_acctWsPaintT); _acctWsPaintT = null }
+}
+
+// Repaint only the value UI — the per-account cards, the equity card, and the portfolio
+// hero NUMBER. The chart LINE is left untouched (drawn from portfolio history), so no
+// spike can appear at its tail; only the headline value ticks.
+function _allAcctLightPaint() {
+  const hidden  = _maHiddenLoad()
+  const visible = _allAcctLastResults.filter(r => !hidden.has(r.addr))
+  state.perpState = _aggPerpState(visible)
+  // Make liveAccountValue return the summed live equity: anchor = the series' latest
+  // point, so snap + (perpAcctVal − anchor) = perpAcctVal = Σ r.accountValue.
+  const snapAll = (state.portfolio ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory?.at(-1)?.[1]
+  if (snapAll != null && state.portfolio) state.portfolio._perpAnchor = parseFloat(snapAll)
+  const liveTotal = visible.reduce((s, r) => s + (r.error ? 0 : parseFloat(r.accountValue ?? 0)), 0)
+
+  _syncAllAcctCards()
+  if (_isMobView()) {
+    _mobVRenderBalance()
+    // Positions tab: push the fresh marks/PnL into the cards IN PLACE (no rebuild) so the
+    // WebSocket updates show live without flicker.
+    if (_mobVActiveTab === 'positions') { try { _mobVUpdatePositionsLive() } catch {} }
+    // Portfolio tab: refresh the headline number in place without redrawing the chart line.
+    // _mobVRenderBalance already ran the spike filter this paint, so reuse its accepted value
+    // (falling back to liveTotal) instead of re-filtering (which would double-advance it).
+    // Skip while a wallet is still missing — liveTotal would be understated (see _allAcctIncomplete).
+    if (_mobVActiveTab === 'portfolio' && _mobVPortChartType === 'value' && liveTotal > 0 && !_allAcctIncomplete) {
+      const valDiv = document.getElementById('mobVPortHero')?.firstElementChild
+      if (valDiv) valDiv.textContent = _prv('$' + fmtUSD(_comboEqLast ?? liveTotal))
+    }
+  } else {
+    try { renderAccountSection() } catch {}
+  }
+}
+
+// Cold path: paint as soon as the per-wallet fan-out lands. The ledger/spot
+// enrichment is a second sequential pass that only feeds Net Deposited and the
+// calendar, so it must not gate the first paint.
+async function _allAcctFetchAndRender(entries) {
+  const base = _allAcctMerge(await _lbFetchResults(entries), _allAcctLastResults)
+  if (!base.length) throw new Error('No account data returned')
+  _allAcctLastGoodFetch = Date.now()
+  _allAcctLastResults = base
+  _allAcctReaggregate()
+  _allAcctRetryMissing(entries)   // some wallet didn't land → refetch soon so the loader clears
+  if (_hlLimited()) return   // breaker tripped mid-fetch — don't chase it with enrichment
+  _maEnrichResults(base, false).then(enriched => {
+    const ok = _allAcctMerge(enriched, _allAcctLastResults)
+    if (!ok.length || !state.isAllAccounts) return
+    _allAcctLastResults = ok
+    _allAcctReaggregate()
+    _allAcctCachePersist()
+  }).catch(() => {})
+}
+
+// A wallet missing from the combined total holds the equity behind a loader, so don't make the
+// user wait for the 5-minute refresh. Retry a few times, backing off, and always honour the
+// shared 429 breaker so this can't become the storm that caused the failure in the first place.
+function _allAcctRetryMissing(entries) {
+  if (_allAcctRetryTimer) return
+  if (!_allAcctIncomplete) { _allAcctRetries = 0; return }
+  if (_allAcctRetries >= 4) return          // give up quietly; the 5-min timer takes over
+  const delay = _hlLimited() ? 15_000 : 4_000 * (_allAcctRetries + 1)
+  _allAcctRetries++
+  _allAcctRetryTimer = setTimeout(async () => {
+    _allAcctRetryTimer = null
+    if (!state.isAllAccounts || !_allAcctIncomplete) { _allAcctRetries = 0; return }
+    try { await _allAcctSilentRefresh(entries) } catch {}
+    _allAcctRetryMissing(entries)           // still short? schedule the next attempt
+  }, delay)
+}
+
+// Background refresh — no loader, keeps the current view on screen. Repaints once
+// the base data lands, then again after enrichment.
+async function _allAcctSilentRefresh(entries) {
+  if (_allAcctRefreshing || !state.isAllAccounts) return
+  if (_hlLimited()) return   // HL is throttling us — skip this tick entirely
+  _allAcctRefreshing = true
+  try {
+    const base = _allAcctMerge(await _lbFetchResults(entries), _allAcctLastResults)
+    if (!base.length || !state.isAllAccounts) return
+    _allAcctLastGoodFetch = Date.now()
+    _allAcctLastResults = base
+    _allAcctReaggregate()
+
+    if (_hlLimited()) return   // breaker tripped mid-fetch — don't chase it with enrichment
+    const enriched = _allAcctMerge(await _maEnrichResults(base, false), _allAcctLastResults)
+    if (enriched.length && state.isAllAccounts) {
+      _allAcctLastResults = enriched
+      _allAcctReaggregate()
+    }
+    _allAcctCachePersist()
+  } catch { /* keep showing the last good data */ }
+  finally {
+    _allAcctRefreshing = false
+  }
+}
+
+// TARGETED refresh of a SINGLE wallet in the combined view. When an action only
+// changed one account (a close/order/cancel on that wallet), re-fetching all N
+// wallets is wasteful and slow — this re-reads just the acted wallet, splices its
+// result back into the cached set, and re-aggregates. Costs ~1 wallet's requests
+// instead of N, so the combined view reflects the change almost as fast as a single
+// account would. Runs even while a full background fan is in flight (it just replaces
+// one entry by address afterward).
+async function _allAcctRefreshOne(addr) {
+  if (!state.isAllAccounts || _hlLimited() || !addr) return
+  const lc    = String(addr).toLowerCase()
+  const entry = (_maLoad() || []).find(e => e.addr.toLowerCase() === lc)
+  if (!entry) return
+  try {
+    _maFillsStale = true                                  // force fresh fills for this wallet
+    let [fresh] = await _lbFetchResults([entry])
+    if (!fresh || fresh.error || !state.isAllAccounts) return
+    ;[fresh] = await _maEnrichResults([fresh], false)     // re-attach ledger (cached — cheap)
+    const merged = _allAcctMerge([fresh], _allAcctLastResults)   // equity-glitch guard
+    if (!merged.length) return
+    const i = _allAcctLastResults.findIndex(r => r.addr.toLowerCase() === lc)
+    if (i >= 0) _allAcctLastResults[i] = merged[0]
+    else        _allAcctLastResults.push(merged[0])
+    _allAcctReaggregate()
+    _allAcctCachePersist()
+  } catch { /* keep last good data */ }
+}
+
+// Per-account cards (the same ones the Accounts tab shows), rendered inside the
+// combined view's Portfolio tab. Driven by the results we already have cached, so
+// this costs no extra Hyperliquid requests.
+function _allAcctCardsHtml() {
+  return _allAcctLastResults
+    .slice()
+    .sort((a, b) => b.accountValue - a.accountValue)
+    .map(r => _maCardHtml(r))
+    .join('')
+}
+
+function _syncAllAcctCards() {
+  const show = state.isAllAccounts && _allAcctLastResults.length > 0
+  const wrap = document.getElementById('allAcctCardsWrap')
+  if (wrap) wrap.style.display = show ? '' : 'none'
+  for (const id of ['allAcctCards', 'mobAllAcctCards']) {
+    const el = document.getElementById(id)
+    if (el) el.innerHTML = show ? _allAcctCardsHtml() : ''
+  }
+}
+
+// Rebuild the synthetic single-account `state` from cached results, excluding any
+// wallets hidden from the combined view. Runs on every fetch and on hide/show.
+function _allAcctReaggregate() {
+  const hidden  = _maHiddenLoad()
+  const visible = _allAcctLastResults.filter(r => !hidden.has(r.addr))
+
+  // How many wallets SHOULD be in this total? Any shortfall means the sum below is missing a
+  // wallet (cold-load failure with no cached snapshot to hold its place), so the equity would
+  // render understated. Flag it so the UI shows a loader instead of a misleading number.
+  let expected = 0
+  try { expected = _maLoad().filter(e => !hidden.has(e.addr)).length } catch {}
+  _allAcctMissing    = expected > 0 ? Math.max(0, expected - visible.length) : 0
+  _allAcctIncomplete = _allAcctMissing > 0
+
+  state = {
+    ...state,
+    addr:        '__all_accounts__',
+    isAllAccounts: true,
+    perpState:   _aggPerpState(visible),
+    // Rebuild spot balances from each wallet's outcome holdings (only outcome coins are
+    // kept, so no USDC → health still uses summed equity as its base) so the combined
+    // Outcomes tab shows every account's prediction positions, tagged with their owner.
+    spotState:   { balances: visible.flatMap(r => (r.outcomes ?? []).map(o => ({
+      coin: o.coin, total: o.total, hold: o.hold ?? 0, entryNtl: o.cost,
+      _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr,
+    }))) },
+    fills:       visible.flatMap(r => (r.fills ?? []).map(f => ({ ...f, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr }))),
+    openOrders:  visible.flatMap(r => (r.openOrders ?? []).map(o => ({ ...o, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr }))),
+    funding:     [],
+    portfolio:   _mergePortfolio(visible),
+    ledger:      visible.flatMap(r => (r.ledgerEntries ?? []).map(e => ({ ...e, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr }))),
+    webData:     { cumLedger: visible.reduce((s, r) => s + (r.totalDeposited || 0) - (r.totalWithdrawn || 0), 0) },
+    ocTokenMap:  state.ocTokenMap,
+  }
+  // Anchor liveAccountValue to the merged history's latest point so the combined equity
+  // reads Σ r.accountValue on EVERY paint — the same value the fast value-tick shows. The
+  // fast tick set this anchor but a full reaggregate rebuilt the portfolio without it, so
+  // the equity alternated between the live sum (fast tick) and the snapshot (reaggregate):
+  // the "spiking" the user saw.
+  const _snap = (state.portfolio ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory?.at(-1)?.[1]
+  if (_snap != null && state.portfolio) state.portfolio._perpAnchor = parseFloat(_snap)
+  renderAll()
+  renderMobileView()
+  _syncAllAcctCards()
+}
+
+// Merge every wallet's positions + margin into one perpState. Each position is
+// tagged with `_acct` (its wallet label) so the UI can show its origin.
+function _aggPerpState(results) {
+  const assetPositions = []
+  let accountValue = 0, totalNtl = 0, totalMarginUsed = 0, maint = 0, withdrawable = 0
+  for (const r of results) {
+    const acctLabel = r.label || r.addr.slice(0, 6) + '…'
+    for (const ap of (r.positions ?? [])) {
+      const p = ap.position ?? {}
+      assetPositions.push({ ...ap, position: { ...p, _acct: acctLabel, _acctAddr: r.addr } })
+      totalNtl        += Math.abs(parseFloat(p.positionValue ?? 0))
+      totalMarginUsed += parseFloat(p.marginUsed ?? 0)
+    }
+    accountValue += parseFloat(r.accountValue ?? 0)
+    maint        += parseFloat(r.maintMargin ?? 0)
+    withdrawable += parseFloat(r.withdrawable ?? 0)
+  }
+  return {
+    assetPositions,
+    marginSummary: { accountValue: String(accountValue), totalNtlPos: String(totalNtl), totalMarginUsed: String(totalMarginUsed) },
+    crossMaintenanceMarginUsed: String(maint),
+    withdrawable: String(withdrawable),
+  }
+}
+
+// Sum each wallet's portfolio history (account value + cumulative PnL) into one
+// series per period, unioning timestamps and forward-filling each wallet.
+//
+// Wallets are sampled on slightly offset grids, so before a wallet's first sample
+// we must carry its first known value — seeding 0 there made the summed curve ramp
+// up from a single wallet's balance to the true total (a bogus +698% on 1D).
+// all-time is the exception: a wallet genuinely held $0 before it existed, so it
+// keeps the zero seed rather than inventing history back to genesis.
+function _mergePortfolio(results) {
+  const PERIODS = ['day', 'week', 'month', 'allTime', 'perpDay', 'perpWeek', 'perpMonth', 'perpAllTime']
+  const out = []
+  for (const period of PERIODS) {
+    const backfill = !/alltime/i.test(period)
+    const av  = _mergeSeries(results, period, 'accountValueHistory', backfill)
+    const pnl = _mergeSeries(results, period, 'pnlHistory', backfill)
+    if (av.length || pnl.length) out.push([period, { accountValueHistory: av, pnlHistory: pnl }])
+  }
+  return out
+}
+
+// Value of a series at time `t`, linearly interpolated between its samples.
+// `pre` is the value to use before the series starts.
+function _sampleAt(s, t, pre) {
+  if (t <= s[0][0])      return t === s[0][0] ? s[0][1] : pre
+  if (t >= s[s.length - 1][0]) return s[s.length - 1][1]
+  let lo = 0, hi = s.length - 1
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (s[m][0] <= t) lo = m; else hi = m }
+  const [t0, v0] = s[lo], [t1, v1] = s[hi]
+  return t1 === t0 ? v1 : v0 + (v1 - v0) * ((t - t0) / (t1 - t0))
+}
+
+function _mergeSeries(results, period, key, backfill = false) {
+  const series = []
+  for (const r of results) {
+    const entry = (r.portfolio ?? []).find(p => p[0] === period)
+    const hist  = entry?.[1]?.[key] ?? []
+    if (hist.length) series.push(hist.map(([ts, v]) => [+ts, parseFloat(v) || 0]))
+  }
+  if (!series.length) return []
+
+  // HL samples each wallet on its own grid — across 4 wallets, ZERO timestamps are
+  // shared. Summing on the union of timestamps with a forward-fill meant only one
+  // wallet had a fresh value at each point while the rest carried a stale one, so the
+  // combined curve advanced in visible stair-steps. Instead, resample every wallet
+  // onto one uniform grid with linear interpolation, then sum.
+  let gStart = Infinity, gEnd = -Infinity, maxLen = 0
+  for (const s of series) {
+    gStart = Math.min(gStart, s[0][0])
+    gEnd   = Math.max(gEnd, s[s.length - 1][0])
+    maxLen = Math.max(maxLen, s.length)
+  }
+  if (!(gEnd > gStart)) return [[gStart, String(series.reduce((a, s) => a + s[s.length - 1][1], 0))]]
+
+  const N    = Math.max(60, Math.min(240, maxLen * 4))
+  const step = (gEnd - gStart) / (N - 1)
+  // Before a wallet's first sample: its own first value on bounded periods (it
+  // already existed, HL just started sampling later), or 0 all-time (it didn't exist).
+  const pre = series.map(s => (backfill ? s[0][1] : 0))
+
+  const merged = []
+  for (let i = 0; i < N; i++) {
+    const t = i === N - 1 ? gEnd : gStart + i * step
+    let sum = 0
+    for (let j = 0; j < series.length; j++) sum += _sampleAt(series[j], t, pre[j])
+    merged.push([Math.round(t), String(sum)])
+  }
+  return merged
 }
 
 function filterTable(tableId, inputId) {
@@ -5236,10 +7185,599 @@ window.__selectMarketCard = function (coin, price) {
   window.__showMarketDetail(coin, price)
 }
 
+// Minimal transient notice. The app had no general toast — trade results go to an
+// inline status element — but paper events (fills, liquidations) happen off the
+// back of the poll loop with no element to attach to, so they need one.
+function _paperToast(msg, kind = 'success') {
+  let host = document.getElementById('paperToastHost')
+  if (!host) {
+    host = document.createElement('div')
+    host.id = 'paperToastHost'
+    host.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:86px;z-index:9999;display:flex;flex-direction:column;gap:7px;align-items:center;pointer-events:none;width:max-content;max-width:92vw'
+    document.body.appendChild(host)
+  }
+  const el = document.createElement('div')
+  const bad = kind === 'error'
+  el.style.cssText = `padding:10px 15px;border-radius:10px;font-size:13px;font-weight:600;line-height:1.35;text-align:center;
+    background:${bad ? 'rgba(255,77,109,0.14)' : 'rgba(0,255,204,0.12)'};
+    border:1px solid ${bad ? 'rgba(255,77,109,0.35)' : 'rgba(0,255,204,0.30)'};
+    color:${bad ? '#ff8fa3' : 'var(--accent)'};
+    backdrop-filter:blur(10px);opacity:0;transition:opacity .18s ease`
+  el.textContent = msg
+  host.appendChild(el)
+  requestAnimationFrame(() => { el.style.opacity = '1' })
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 250) }, 3200)
+}
+
+// Themed confirm sheet (replaces the browser's confirm() so dialogs match the app).
+// Returns Promise<boolean>.
+function _appConfirm({ title, body = '', confirmText = 'Confirm', danger = false }) {
+  return new Promise(resolve => {
+    const ov = document.createElement('div')
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100080;background:rgba(0,0,0,.6);display:flex;flex-direction:column;justify-content:flex-end'
+    const done = ok => { ov.remove(); resolve(ok) }
+    ov.onclick = e => { if (e.target === ov) done(false) }
+    const acc = danger ? 'var(--red)' : 'var(--accent)'
+    const fg  = danger ? '#fff' : '#000'
+    ov.innerHTML = `<div style="background:var(--panel-2,#1a1d24);border:1px solid var(--border2,#2a2e39);border-radius:20px 20px 0 0;padding:22px 18px calc(18px + env(safe-area-inset-bottom))">
+      <div style="width:38px;height:4px;border-radius:2px;background:var(--border2,#2a2e39);margin:-8px auto 16px"></div>
+      <div style="font-size:18px;font-weight:800;margin-bottom:6px">${title}</div>
+      ${body ? `<div style="font-size:13.5px;line-height:1.55;color:var(--fg-2,#c9cdd6);margin-bottom:18px">${body}</div>` : '<div style="height:8px"></div>'}
+      <button id="_acY" style="border:none;border-radius:12px;padding:14px;font-size:15px;font-weight:800;cursor:pointer;width:100%;background:${acc};color:${fg};margin-bottom:8px">${esc(confirmText)}</button>
+      <button id="_acN" style="border:none;border-radius:12px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;width:100%;background:transparent;color:var(--muted,#8a90a0)">Cancel</button>
+    </div>`
+    document.body.appendChild(ov)
+    ov.querySelector('#_acY').onclick = () => done(true)
+    ov.querySelector('#_acN').onclick = () => done(false)
+  })
+}
+window.__appConfirm = _appConfirm
+
+// Themed input sheet (replaces the browser's prompt() so dialogs match the app). Returns
+// Promise<string|null> — the trimmed value, or null on cancel. Optional `validate(v)` returns
+// an error string to keep the sheet open with an inline message, or a falsy value to accept.
+function _appPrompt({ title, body = '', placeholder = '', value = '', confirmText = 'Save', validate = null }) {
+  return new Promise(resolve => {
+    const ov = document.createElement('div')
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100080;background:rgba(0,0,0,.6);display:flex;flex-direction:column;justify-content:flex-end'
+    const done = v => { ov.remove(); resolve(v) }
+    ov.onclick = e => { if (e.target === ov) done(null) }
+    ov.innerHTML = `<div style="background:var(--panel-2,#1a1d24);border:1px solid var(--border2,#2a2e39);border-radius:20px 20px 0 0;padding:22px 18px calc(18px + env(safe-area-inset-bottom))">
+      <div style="width:38px;height:4px;border-radius:2px;background:var(--border2,#2a2e39);margin:-8px auto 16px"></div>
+      <div style="font-size:18px;font-weight:800;margin-bottom:6px">${title}</div>
+      ${body ? `<div style="font-size:13.5px;line-height:1.55;color:var(--fg-2,#c9cdd6);margin-bottom:14px">${body}</div>` : '<div style="height:6px"></div>'}
+      <input id="_apI" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off" autocapitalize="off" spellcheck="false"
+        style="width:100%;box-sizing:border-box;padding:13px 14px;border-radius:12px;border:1px solid var(--border2,#2a2e39);background:var(--panel,#12141a);color:var(--fg,#e8eaf0);font-size:15px;font-family:var(--font-mono,monospace);outline:none"/>
+      <div id="_apErr" style="font-size:12.5px;color:var(--red,#ff4d6d);min-height:16px;margin:7px 2px 0"></div>
+      <button id="_apY" style="border:none;border-radius:12px;padding:14px;font-size:15px;font-weight:800;cursor:pointer;width:100%;background:var(--accent);color:#000;margin-bottom:8px;margin-top:4px">${esc(confirmText)}</button>
+      <button id="_apN" style="border:none;border-radius:12px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;width:100%;background:transparent;color:var(--muted,#8a90a0)">Cancel</button>
+    </div>`
+    document.body.appendChild(ov)
+    const input = ov.querySelector('#_apI'), errEl = ov.querySelector('#_apErr')
+    const submit = () => {
+      const v = (input.value || '').trim()
+      const err = validate ? validate(v) : null
+      if (err) { errEl.textContent = err; input.focus(); return }
+      done(v)
+    }
+    ov.querySelector('#_apY').onclick = submit
+    ov.querySelector('#_apN').onclick = () => done(null)
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') submit() })
+    input.addEventListener('input', () => { errEl.textContent = '' })
+    setTimeout(() => input.focus(), 60)
+  })
+}
+window.__appPrompt = _appPrompt
+
+// ─── PAPER ACCOUNT ────────────────────────────────────────────────────────────
+// Selected like "All Accounts": state.addr becomes the PAPER_ADDR sentinel and
+// every state slice the dashboard renders from is synthesised by paper.js, so
+// the whole UI works unchanged — only the money is fake. trading.js refuses to
+// sign anything while setPaper(true) is on.
+let _paperTimer = null
+
+// Live per-coin hourly funding rates for the paper simulation. Refreshed every
+// 10 min — they move slowly, and this is one request for every coin at once.
+let _paperFundRates = {}
+let _paperFundRatesAt = 0
+async function _paperLoadFundingRates() {
+  if (_hlLimited() || Date.now() - _paperFundRatesAt < 600_000) return
+  _paperFundRatesAt = Date.now()
+  try {
+    const [meta, ctxs] = await infoClient.metaAndAssetCtxs()
+    const map = {}
+    ;(meta?.universe ?? []).forEach((u, i) => {
+      const f = parseFloat(ctxs?.[i]?.funding)
+      if (u?.name && Number.isFinite(f)) map[u.name] = f
+    })
+    if (Object.keys(map).length) { _paperFundRates = map; setPaperFundingRates(map) }
+  } catch { /* keep the previous rates; paper falls back to its default */ }
+}
+
+/** Rebuild state from the paper store and repaint. */
+function _paperRefresh() {
+  setPaperMarks(state.allMids)
+  // Real per-asset limits (maxLeverage) so maintenance margin and liquidation
+  // prices match the actual market instead of a hardcoded guess.
+  setPaperAssets(state.assetMap)
+  setPaperFundingRates(_paperFundRates)
+  const events = paperTick()
+  for (const e of events) _paperToast(`📝 ${e}`, e.includes('LIQUIDATED') ? 'error' : 'success')
+
+  state.perpState  = paperPerpState()
+  state.openOrders = paperOpenOrders()
+  state.spotState  = paperSpotState()
+  state.portfolio  = paperPortfolio()
+  state.fills      = parseFills(paperFills())
+  state.ledger     = paperLedger()   // Transfers tab reads this
+  state.funding    = parseFunding(paperFundingHistory())   // Net Funding row + PnL
+  // liveAccountValue() offsets a portfolio snapshot by the perp delta; the paper
+  // portfolio is already exact, so anchor it to itself and the offset is zero.
+  const snap = state.portfolio.find(p => p[0] === 'allTime')?.[1]?.accountValueHistory?.at(-1)?.[1]
+  if (snap != null) state.portfolio._perpAnchor = parseFloat(snap)
+
+  // A throw in any renderer must not take down the caller — __goPaper installs the
+  // 5s poll loop after this, so an unguarded render error left paper frozen: the
+  // store updated on every trade but nothing ever repainted.
+  try {
+    renderAll()
+    if (_isMobView()) {
+      _mobVRenderBalance()
+      // Only repaint tabs that actually show paper account data. Full-page tabs run
+      // their own fetch/render lifecycle, and blanket-repainting them every 5s made
+      // the leaderboard visibly blink (it re-ran its loader on each tick).
+      if (!_MOBV_FULLPAGE.has(_mobVActiveTab)) _mobVRenderContent()
+    }
+  } catch (e) {
+    console.error('[paper] render failed:', e)
+  }
+
+  // Keep the paper board current without the user pressing anything. Self-throttling.
+  _lbPaperSync()
+  // Paper is invisible to the server-side alert service, so it checks its own risk.
+  try { _paperRiskAlerts() } catch (e) { console.error('[paper] alert check failed:', e) }
+}
+
+window.__goPaper = async function(which) {
+  // Paper has two selectable accounts backed by separate stores: the regular practice
+  // account ('main') and the Challenge account ('challenge'). Pass which to pick one;
+  // omit to keep whatever slot is active. See setPaperSlot in paper.js.
+  if (which === 'challenge' || which === 'main') { try { setPaperSlot(which) } catch {} }
+  // Tear down whatever view is running so its pollers don't fight the paper one.
+  if (liveTimer)         { clearInterval(liveTimer); liveTimer = null }
+  if (_allAcctTimer)     { clearInterval(_allAcctTimer); _allAcctTimer = null }
+  if (_allAcctFastTimer) { clearInterval(_allAcctFastTimer); _allAcctFastTimer = null }
+  if (_allAcctMidsTimer) { clearInterval(_allAcctMidsTimer); _allAcctMidsTimer = null }
+  if (_paperTimer)       { clearInterval(_paperTimer); _paperTimer = null }
+  _stopAllAcctWs()       // drop the per-wallet WebSocket subscriptions
+
+  state.isAllAccounts = false
+  setMultiAcctStrict(false)
+  setPaper(true)
+  state.addr = PAPER_ADDR
+  setActiveWallet(null)   // paper has no wallet
+  resetLiveAccountValue()
+  localStorage.setItem('walletAddr', PAPER_ADDR)
+  try { localStorage.setItem('hliq_paper_slot', paperSlot()) } catch {}   // restore the same paper account on reload
+
+  document.getElementById('wsPanel')?.classList.remove('open')
+  window._mobVCloseWalletSwitch?.()
+  document.getElementById('inputArea').style.display = 'none'
+  document.getElementById('loadingOverlay')?.classList.remove('active')
+  document.getElementById('dashboard').classList.add('active')
+
+  // Paper marks come from the shared price feed. fetchAllMids works with a null
+  // asset map (it just returns main-dex mids), so prices must NOT be gated on the
+  // map loading — gating them meant one failed buildAssetMap left paper with no
+  // marks at all, and every order died on "No price for <coin>".
+  // buildAssetMap(meta) maps coin → { index, szDecimals, maxLeverage }; allPerpMetas
+  // is the raw universe list. Paper needs the map (maintenance margin / liquidation
+  // use each asset's real maxLeverage) and the metas (HIP-3 mids fan-out).
+  if (!state.allMetas?.length || !Object.keys(state.assetMap ?? {}).length) {
+    try {
+      const allMetas = await infoClient.allPerpMetas()
+      state.allMetas = allMetas
+      state.assetMap = buildAssetMap({ universe: allMetas.flatMap(m => m.universe ?? []) })
+    } catch (e) { _hl429(e) }   // mids still work without it
+  }
+  if (!Object.keys(state.allMids ?? {}).length) {
+    try { state.allMids = await fetchAllMids(state.allMetas ?? null) } catch (e) { _hl429(e) }
+  }
+  _paperLoadFundingRates()   // real per-coin funding rates for the simulation
+  if (!state.selectedCoin) window.__selectCoin?.('BTC')
+
+  // Install the poll loop FIRST. Anything below can throw on a half-built page;
+  // if that happens the loop still runs and the next tick repaints correctly,
+  // instead of leaving a frozen dashboard that never updates again.
+  _paperTimer = setInterval(async () => {
+    if (!isPaper()) return
+    if (!_hlLimited()) {
+      // Keep retrying the asset map so HIP-3 marks appear if it failed at startup,
+      // but never let that block the main-dex mids.
+      if (!state.allMetas?.length) {
+        try {
+          const am = await infoClient.allPerpMetas()
+          state.allMetas = am
+          state.assetMap = buildAssetMap({ universe: am.flatMap(m => m.universe ?? []) })
+        } catch {}
+      }
+      try { state.allMids = await fetchAllMids(state.allMetas ?? null) } catch (e) { _hl429(e) }
+      _paperLoadFundingRates()   // self-throttled to every 10 min
+    }
+    _paperRefresh()
+    _paperSettleCheck()   // self-throttled to once a minute
+  }, 5000)
+
+  // First paint. _paperRefresh already swallows renderer errors, and the loop above
+  // is live regardless, so a bad first paint self-corrects within 5s.
+  _paperRefresh()
+  try {
+    renderWalletStrip(PAPER_ADDR)
+    // Mount the mobile shell exactly like the real loaders do. Without this the
+    // phone kept showing the boot overlay forever after reopening into paper —
+    // the data was ready, but #mobileView was never displayed.
+    if (_isMobView()) renderMobileView()
+  } catch (e) {
+    console.error('[paper] header render failed:', e)
+  }
+  document.getElementById('loadingOverlay')?.classList.remove('active')
+
+  _paperToast('📝 Paper account — simulated funds, no real orders', 'success')
+}
+
+/**
+ * The paper account's display name. Set from the account switcher (like naming a
+ * wallet) and reused as the leaderboard entry, so there is one name, in one place.
+ * Auto-generated on first use with a random suffix so shared-board names collide
+ * as little as possible.
+ */
+function _paperName() {
+  let n = localStorage.getItem('hliq_paper_name')
+  if (!n) {
+    n = localStorage.getItem('hliq_paper_lb_name')          // migrate the old key
+      || 'Trader-' + Math.random().toString(36).slice(2, 6).toUpperCase()
+    localStorage.setItem('hliq_paper_name', n)
+  }
+  return n
+}
+
+window.__paperRename = async function() {
+  const cur  = _paperName()
+  const name = await _appPrompt({
+    title: '✎ Name your account',
+    body: 'This is the name shown on the paper leaderboard. 2–24 characters.',
+    placeholder: 'e.g. MoonTrader',
+    value: cur,
+    confirmText: 'Save name',
+    validate: v => !v ? 'Please enter a name.' : (v.length < 2 ? 'Name must be at least 2 characters.' : (v.length > 24 ? 'Name must be 24 characters or fewer.' : null)),
+  })
+  if (!name || name === cur) return
+
+  // The board's update secret is bound to the old name, so a rename starts a new
+  // entry. Drop the secret and re-post; restore the old name if it's taken.
+  localStorage.setItem('hliq_paper_name', name)
+  const prevSecret = localStorage.getItem('hliq_paper_lb_secret') ?? ''
+  localStorage.removeItem('hliq_paper_lb_secret')
+
+  const r = await _lbPaperSync(true)
+  if (r && !r.ok) {
+    localStorage.setItem('hliq_paper_name', cur)
+    if (prevSecret) localStorage.setItem('hliq_paper_lb_secret', prevSecret)
+    _paperToast(r.error ?? 'That name is taken', 'error')
+    return
+  }
+
+  renderWalletStrip(PAPER_ADDR)
+  if (_isMobView()) { _mobVRenderHeader(); window._mobVOpenWalletSwitch?.() }
+  _paperToast('Renamed to ' + name, 'success')
+}
+
+/** Deposit / withdraw simulated USDC. Mirrors the real flow's bottom-sheet shape. */
+window.__paperFund = function(mode) {
+  const isDep = mode !== 'withdraw'
+  const free  = paperWithdrawable()
+  document.getElementById('paperFundOverlay')?.remove()
+
+  const ov = document.createElement('div')
+  ov.id = 'paperFundOverlay'
+  ov.style.cssText = 'position:fixed;inset:0;z-index:10002;display:flex;flex-direction:column;justify-content:flex-end'
+  const quick = (isDep ? [100, 500, 1000, 5000] : [])
+    .map(v => `<button onclick="document.getElementById('paperFundAmt').value=${v}"
+      style="flex:1;padding:8px 0;border-radius:8px;border:1px solid var(--border2);background:transparent;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer">$${v.toLocaleString()}</button>`).join('')
+
+  ov.innerHTML = `
+    <div onclick="document.getElementById('paperFundOverlay').remove()" style="position:absolute;inset:0;background:rgba(0,0,0,0.55)"></div>
+    <div style="position:relative;background:var(--bg);border-radius:20px 20px 0 0;border-top:1px solid var(--border);padding:22px 20px calc(24px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:14px;box-shadow:0 -8px 30px rgba(0,0,0,0.4)">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div style="font-size:17px;font-weight:800">${isDep ? 'Deposit' : 'Withdraw'} paper funds</div>
+        <span style="font-size:9px;font-weight:800;padding:3px 7px;border-radius:5px;background:rgba(255,159,67,0.14);color:#ff9f43">SIMULATED</span>
+      </div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.5">
+        ${isDep
+          ? 'Adds simulated USDC to the paper account. It appears in Transfers as a deposit and raises your cost basis, so topping up never counts as profit.'
+          : `Free to withdraw: <b style="color:var(--text)">${fmtUSD(free, 2)}</b>. Margin backing open positions stays put.`}
+      </div>
+      <input id="paperFundAmt" type="number" inputmode="decimal" placeholder="0.00" step="100"
+        style="width:100%;padding:13px 14px;border-radius:11px;border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:19px;font-weight:700">
+      ${quick ? `<div style="display:flex;gap:7px">${quick}</div>` : ''}
+      <button onclick="window.__paperFundSubmit('${isDep ? 'deposit' : 'withdraw'}')"
+        style="width:100%;padding:14px;border-radius:12px;border:none;background:${isDep ? 'var(--accent)' : '#ff9f43'};color:#000;font-size:15px;font-weight:800;cursor:pointer">
+        ${isDep ? 'Add paper funds' : 'Withdraw'}
+      </button>
+      <div id="paperFundStatus" style="text-align:center;font-size:12px;min-height:16px"></div>
+    </div>`
+  document.body.appendChild(ov)
+  setTimeout(() => document.getElementById('paperFundAmt')?.focus(), 60)
+}
+
+window.__paperFundSubmit = function(mode) {
+  // Deposits are disabled while competing in the Challenge (everyone plays the same $1,000).
+  if (mode !== 'withdraw' && _chalActive()) {
+    const st = document.getElementById('paperFundStatus')
+    if (st) st.innerHTML = '<span style="color:#ff9f43">Deposits are off during the Challenge — trade your $1,000 to grow it.</span>'
+    return
+  }
+  const amt = document.getElementById('paperFundAmt')?.value
+  const r   = mode === 'withdraw' ? paperWithdraw(amt) : paperDeposit(amt)
+  const st  = document.getElementById('paperFundStatus')
+  if (!r.ok) { if (st) st.innerHTML = `<span style="color:#ff4d6d">${esc(r.error)}</span>`; return }
+  document.getElementById('paperFundOverlay')?.remove()
+  _paperRefresh()
+  _paperToast(`${mode === 'withdraw' ? 'Withdrew' : 'Deposited'} ${fmtUSD(r.amount, 2)} paper funds`, 'success')
+}
+
+window.__paperResetAcct = function() {
+  if (!confirm('Reset the paper account?\n\nAll simulated positions, orders and history are erased and the balance returns to $' + PAPER_START.toLocaleString() + '.')) return
+  paperReset()
+  _paperRefresh()
+  _paperToast('Paper account reset', 'success')
+}
+
+/**
+ * Resolve settled outcome shares in the paper account. Runs on its own slow
+ * cadence (60s) rather than the 5s price loop — settlement is a rare, one-way
+ * event and each check costs an API call per held market.
+ */
+let _paperSettleAt = 0
+async function _paperSettleCheck() {
+  if (!isPaper() || _hlLimited() || Date.now() - _paperSettleAt < 60_000) return
+  _paperSettleAt = Date.now()
+  try {
+    const events = await paperSettleOutcomes(async (outcome) => {
+      const r = await fetch('https://api.hyperliquid.xyz/info', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'settledOutcome', outcome }),
+      })
+      if (r.status === 429) throw new Error('429')
+      return r.ok ? r.json() : null
+    })
+    for (const e of events) _paperToast(`📝 ${e}`, 'success')
+    if (events.length) _paperRefresh()
+  } catch (e) {
+    if (!_hl429(e)) console.error('[paper] settlement check failed:', e)  // trips the breaker on a limit
+  }
+}
+
+/**
+ * Health / liquidation alerts for the PAPER account.
+ *
+ * Real accounts are checked server-side (hliq-notify) by on-chain address. The paper
+ * account has no address and its positions live only in this browser, so the server
+ * can never see it — without this, paper was the one account type that silently never
+ * alerted. Same settings, same thresholds, same cooldown as the real ones.
+ */
+const _PAPER_ALERT_KEY = 'hliq_paper_alert_state_v1'
+let _paperAlertStreak = { health: 0, liq: 0 }
+
+function _paperAlertState() {
+  try { return JSON.parse(localStorage.getItem(_PAPER_ALERT_KEY) ?? '{}') } catch { return {} }
+}
+function _paperAlertFired(kind) {
+  const s = _paperAlertState(); s[kind] = Date.now()
+  try { localStorage.setItem(_PAPER_ALERT_KEY, JSON.stringify(s)) } catch {}
+}
+
+function _paperRiskAlerts() {
+  if (!isPaper()) return
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+
+  const cooldownMs = Math.max(1, parseInt(localStorage.getItem('hliq_notif_cooldown_min') || '60')) * 60_000
+  const last = _paperAlertState()
+  const positions = (state.perpState?.assetPositions ?? []).filter(ap => parseFloat(ap.position?.szi ?? 0) !== 0)
+  if (!positions.length) { _paperAlertStreak = { health: 0, liq: 0 }; return }
+
+  // ── Account health ──
+  if (localStorage.getItem('hliq_health_alert_enabled') === '1') {
+    const threshold = parseInt(localStorage.getItem('hliq_health_alert_threshold') || '50')
+    const { healthPct } = computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids)
+    // Two consecutive breaches before firing — the server uses the same guard so a
+    // single odd reading (a missing mark, mid-update state) can't cry wolf.
+    _paperAlertStreak.health = healthPct < threshold ? _paperAlertStreak.health + 1 : 0
+    if (_paperAlertStreak.health >= 2 && Date.now() - (last.health ?? 0) > cooldownMs) {
+      _paperAlertFired('health')
+      showNotif('📝 Paper account health low', {
+        body: `Health ${healthPct.toFixed(1)}% is below your ${threshold}% alert. Simulated account.`,
+        tag:  'paper-health',
+      })
+    }
+  }
+
+  // ── Position near liquidation ──
+  if (localStorage.getItem('hliq_liq_alert_enabled') === '1') {
+    const liqThreshold = parseInt(localStorage.getItem('hliq_liq_alert_threshold') || '20')
+    const worst = checkLiquidation(state.perpState, state.allMids)
+    const breach = worst && worst.bufferPct < liqThreshold
+    _paperAlertStreak.liq = breach ? _paperAlertStreak.liq + 1 : 0
+    if (breach && _paperAlertStreak.liq >= 2 && Date.now() - (last.liq ?? 0) > cooldownMs) {
+      _paperAlertFired('liq')
+      showNotif('📝 Paper position near liquidation', {
+        body: `${worst.coin} is ${worst.bufferPct.toFixed(1)}% from its liquidation price. Simulated account.`,
+        tag:  'paper-liq',
+      })
+    }
+  }
+}
+
+// ─── DEBUG PANEL ──────────────────────────────────────────────────────────────
+// Manual test surface for things that are awkward to verify by waiting: which alert
+// path an account uses, what health/liq the app currently computes, and firing the
+// notifications on demand. Open from Settings, or call window.__debug() anywhere.
+window.__debug = function() {
+  const close = () => document.getElementById('dbgPanel')?.remove()
+  close()
+
+  const paper = isPaper()
+  const combo = state.isAllAccounts
+  const kind  = paper ? '📝 Paper' : combo ? '⊕ All Accounts' : 'Individual'
+  // Real accounts are checked by the hliq-notify service; paper is checked in-browser
+  // because the server has no address for it.
+  const route = paper ? 'client-side (this browser, 5s loop)' : 'server-side (hliq-notify)'
+
+  let health = '—', liq = '—', liqCoin = ''
+  try {
+    health = computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids)
+      .healthPct.toFixed(1) + '%'
+  } catch (e) { health = 'error: ' + e.message }
+  try {
+    const w = checkLiquidation(state.perpState, state.allMids)
+    if (w) { liq = w.bufferPct.toFixed(1) + '%'; liqCoin = w.coin }
+    else liq = 'no position with a liq price'
+  } catch (e) { liq = 'error: ' + e.message }
+
+  const perm = (typeof Notification === 'undefined') ? 'unsupported' : Notification.permission
+  const g = (k, d) => localStorage.getItem(k) ?? d
+  const alertState = (() => { try { return JSON.parse(localStorage.getItem('hliq_paper_alert_state_v1') ?? '{}') } catch { return {} } })()
+  const ago = (t) => t ? Math.round((Date.now() - t) / 1000) + 's ago' : 'never'
+
+  const row = (k, v, warn) =>
+    `<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
+      <span style="color:var(--muted)">${esc(k)}</span>
+      <span style="font-weight:700;text-align:right;color:${warn ? '#ff9f43' : 'var(--text)'}">${v}</span>
+    </div>`
+  const btn = (label, fn, color) =>
+    `<button onclick="${fn}" style="flex:1;min-width:130px;padding:9px;border-radius:8px;border:1px solid var(--border2);
+      background:${color ?? 'transparent'};color:${color ? '#000' : 'var(--text)'};font-size:12px;font-weight:700;cursor:pointer">${label}</button>`
+
+  const el = document.createElement('div')
+  el.id = 'dbgPanel'
+  el.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px'
+  el.innerHTML = `
+    <div style="background:var(--bg);border:1px solid var(--border2);border-radius:14px;max-width:460px;width:100%;max-height:88vh;overflow:auto;padding:16px 18px" onclick="event.stopPropagation()">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <b style="font-size:16px">Debug</b>
+        <button onclick="document.getElementById('dbgPanel').remove()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">&times;</button>
+      </div>
+
+      <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:10px 0 2px">Account</div>
+      ${row('Type', esc(kind))}
+      ${row('Address', esc(String(state.addr ?? '—')).slice(0, 24))}
+      ${row('Alert routing', esc(route))}
+      ${row('Open positions', (state.perpState?.assetPositions ?? []).filter(a => parseFloat(a.position?.szi ?? 0) !== 0).length)}
+
+      <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 2px">Live risk</div>
+      ${row('Account health', health)}
+      ${row('Worst liq buffer' + (liqCoin ? ` (${esc(liqCoin)})` : ''), liq)}
+
+      <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 2px">Alert settings</div>
+      ${row('Notification permission', perm, perm !== 'granted')}
+      ${row('Health alert', g('hliq_health_alert_enabled', '0') === '1' ? `on · below ${g('hliq_health_alert_threshold', '50')}%` : 'off', g('hliq_health_alert_enabled','0') !== '1')}
+      ${row('Liq alert', g('hliq_liq_alert_enabled', '0') === '1' ? `on · below ${g('hliq_liq_alert_threshold', '20')}%` : 'off', g('hliq_liq_alert_enabled','0') !== '1')}
+      ${row('Cooldown', g('hliq_notif_cooldown_min', '60') + ' min')}
+      ${paper ? row('Paper health last fired', ago(alertState.health)) : ''}
+      ${paper ? row('Paper liq last fired', ago(alertState.liq)) : ''}
+
+      ${paper ? `<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 2px">Simulated costs (% of notional)</div>
+      ${row('Taker fee', PAPER_COSTS.takerBps + ' bps')}
+      ${row('Maker fee', PAPER_COSTS.makerBps + ' bps')}
+      ${row('Spot fee', PAPER_COSTS.spotBps + ' bps')}
+      ${row('Market slippage', PAPER_COSTS.slipBps + ' bps')}
+      ${row('Funding', 'hourly, live per-coin rate')}` : ''}
+
+      <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px">Actions</div>
+      <div style="display:flex;flex-wrap:wrap;gap:7px">
+        ${btn('Ask permission', 'window.__dbgPerm()')}
+        ${btn('Test notification', 'window.__dbgTestNotif()')}
+        ${btn('Force health alert', "window.__dbgFire('health')")}
+        ${btn('Force liq alert', "window.__dbgFire('liq')")}
+        ${btn('Run paper check now', 'window.__dbgPaperCheck()')}
+        ${btn('Force funding tick', 'window.__dbgFunding()')}
+        ${btn('Reset alert cooldowns', 'window.__dbgResetCooldown()')}
+      </div>
+      <div id="dbgOut" style="margin-top:10px;font-size:11px;color:var(--muted);min-height:16px"></div>
+      <div style="margin-top:12px;font-size:10px;color:var(--muted);line-height:1.5">
+        Real accounts alert from the server, so they keep working with the app closed.
+        Paper alerts are computed here and only fire while the app is open.
+      </div>
+    </div>`
+  el.onclick = close
+  document.body.appendChild(el)
+}
+const _dbgOut = (m) => { const o = document.getElementById('dbgOut'); if (o) o.textContent = m }
+
+window.__dbgPerm = async function() {
+  try { _dbgOut('permission: ' + await Notification.requestPermission()) }
+  catch (e) { _dbgOut('failed: ' + e.message) }
+}
+window.__dbgTestNotif = function() {
+  if (Notification?.permission !== 'granted') { _dbgOut('permission not granted — press "Ask permission" first'); return }
+  showNotif('✅ Test — Insolvent Trade', { body: 'Notifications are working on this device.', tag: 'dbg-test' })
+  _dbgOut('sent (if nothing appears, notifications are blocked at the OS level)')
+}
+/** Fire a real health/liq alert using the CURRENT numbers, ignoring streak + cooldown. */
+window.__dbgFire = function(kind) {
+  if (Notification?.permission !== 'granted') { _dbgOut('permission not granted'); return }
+  try {
+    if (kind === 'health') {
+      const h = computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids).healthPct
+      showNotif(isPaper() ? '📝 Paper account health low' : '⚠ Account health low', {
+        body: `Health ${h.toFixed(1)}%${isPaper() ? ' · simulated account' : ''}`, tag: 'dbg-health' })
+      _dbgOut(`fired with health ${h.toFixed(1)}%`)
+    } else {
+      const w = checkLiquidation(state.perpState, state.allMids)
+      if (!w) { _dbgOut('no position with a liquidation price to report'); return }
+      showNotif(isPaper() ? '📝 Paper position near liquidation' : '⚠ Near Liquidation', {
+        body: `${w.coin} is ${w.bufferPct.toFixed(1)}% from liquidation`, tag: 'dbg-liq' })
+      _dbgOut(`fired for ${w.coin} at ${w.bufferPct.toFixed(1)}%`)
+    }
+  } catch (e) { _dbgOut('error: ' + e.message) }
+}
+window.__dbgPaperCheck = function() {
+  if (!isPaper()) { _dbgOut('not in the paper account — switch to it first'); return }
+  try { _paperRiskAlerts(); _dbgOut('paper alert check ran (needs 2 consecutive breaches + cooldown elapsed)') }
+  catch (e) { _dbgOut('error: ' + e.message) }
+}
+window.__dbgFunding = function() {
+  if (!isPaper()) { _dbgOut('not in the paper account'); return }
+  try {
+    const ev = paperAccrueFunding(true)   // force one period regardless of the clock
+    _paperRefresh()
+    _dbgOut(ev.length ? ev.join(' · ') : 'no open positions to charge funding on')
+  } catch (e) { _dbgOut('error: ' + e.message) }
+}
+window.__dbgResetCooldown = function() {
+  localStorage.removeItem('hliq_paper_alert_state_v1')
+  _paperAlertStreak = { health: 0, liq: 0 }
+  _dbgOut('cooldowns cleared')
+}
+
+/** Leaving paper mode — called by every real-account entry point. */
+function _paperExit() {
+  if (_paperTimer) { clearInterval(_paperTimer); _paperTimer = null }
+  setPaper(false)
+}
+
 // ─── RESET ────────────────────────────────────────────────────────────────────
 function resetDashboard() {
+  _paperExit()
   if (liveTimer)    { clearInterval(liveTimer);    liveTimer    = null }
   if (sessionTimer) { clearInterval(sessionTimer); sessionTimer = null }
+  if (_allAcctTimer) { clearInterval(_allAcctTimer); _allAcctTimer = null }
+  if (_allAcctFastTimer) { clearInterval(_allAcctFastTimer); _allAcctFastTimer = null }
+  if (_allAcctMidsTimer) { clearInterval(_allAcctMidsTimer); _allAcctMidsTimer = null }
+  state.isAllAccounts = false
+  setMultiAcctStrict(false)
+  clearAgentKeys()
+  _hideAllAcctLoader()
   document.getElementById('dashboard').classList.remove('active')
   document.getElementById('inputArea').style.display = ''
   document.getElementById('loadBtn').disabled        = false
@@ -5258,6 +7796,9 @@ function resetDashboard() {
 
   destroyCharts()
   disconnect()
+  // Full reset — drop every connected wallet, not just the viewed account's.
+  disconnectMainWallet({ all: true })
+  setActiveWallet(null)
 
   document.getElementById('apiStatusDot').classList.remove('connected')
   document.getElementById('apiConnectStatus').textContent  = ''
@@ -5314,6 +7855,26 @@ function downloadBlob(content, filename, type) {
   a.href = URL.createObjectURL(new Blob([content], { type }))
   a.download = filename; a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+}
+
+// Clean trade-history CSV (fills only) — for taxes / analysis. Includes the account label in
+// the combined view. Reachable from the mobile History tab.
+window.__exportTradesCsv = function() {
+  const fills = (state.fills ?? []).slice().sort((a, b) => b.time - a.time)
+  if (!fills.length) { _paperToast('No trade history to export yet.', 'error'); return }
+  const q = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s }
+  const combined = state.isAllAccounts
+  const head = ['Time', 'Coin', 'Direction', 'Side', 'Size', 'Price', 'Notional', 'Fee', 'FeeToken', 'ClosedPnL']
+  if (combined) head.push('Account')
+  const lines = [head.join(',')]
+  for (const f of fills) {
+    const row = [new Date(f.time).toISOString(), f.coin, f.dir, f.side, f.sz, f.px, f.notional, f.fee, f.feeToken, f.closedPnl]
+    if (combined) row.push(f._acct ?? '')
+    lines.push(row.map(q).join(','))
+  }
+  const tag = combined ? 'all' : (state.addr ? state.addr.slice(0, 8) : 'trades')
+  downloadBlob(lines.join('\n'), `insolvent_trades_${tag}_${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv')
+  _paperToast(`Exported ${fills.length} trade${fills.length === 1 ? '' : 's'} ✓`)
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -5547,22 +8108,87 @@ let _mobVMaLastFetch   = 0
 let _mobVExpandedIds   = new Set()
 let _mobVPortPeriod    = 'allTime'
 let _mobVPortChartType = 'value'  // 'value' | 'pnl' | 'realized'
+let _mobVPortMarkers   = localStorage.getItem('mobPortMarkers') === '1'  // overlay buy/sell/deposit/withdraw dots
 let _mobVLastPosHash   = ''
+let _mobVLastFillsHash = ''   // History/Calendar re-render only when fills/ledger actually change (no scroll-jump)
+let _mobVLastContentHash = ''     // last rendered orders/spot/outcomes signature (tick-skip)
+let _mobVWatchStructHash = ''     // last rendered Watch-tab coin/market SET (tick-skip)
+// True while the user is typing into a field in the mobile content area. These list rebuilds
+// replace innerHTML wholesale, which destroys the focused input and reverts it to its
+// server-derived default — e.g. the outcome close panel's limit price is seeded from the mark,
+// and that mark is part of the rebuild hash, so every price tick snapped a half-typed price
+// back to the mark and made it feel like the field simply refused input.
+function _mobVEditing() {
+  const a = document.activeElement
+  if (!a || !(a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT')) return false
+  if (a.type === 'range' || a.type === 'checkbox' || a.type === 'radio' || a.type === 'button') return false
+  return !!document.getElementById('mobVContent')?.contains(a)
+}
+
+// On a background TICK, skip rebuilding a list whose visible data is unchanged (orders are
+// static; spot/outcome values only move when the price does). Returns true = skip. A forced
+// render (tab switch, user action) passes tick=false and always rebuilds.
+function _mobVTickSkip(tick, hash) {
+  // Never rebuild out from under an active edit. Deliberately does NOT record the hash, so
+  // the next tick after blur repaints with whatever changed meanwhile.
+  if (tick && _mobVEditing()) return true
+  if (tick && hash === _mobVLastContentHash) return true
+  _mobVLastContentHash = hash
+  return false
+}
 let _mobVPortChartData = null     // { hist, pts, vals, W, H, isUp, color, dpr }
 let _mobVMaPeriod      = 'allTime'
 let _mobVMaChartType   = 'value'  // 'value' | 'pnl' | 'realized'
 let _mobVMaChartData   = null
 let _mobVMaCalMonth    = new Date().getMonth()
+
+// ─── PnL ATTRIBUTION ("what moved your account") ──────────────────────────────
+// Windows (ms) for the selected timeframe; null = all-time (no lower bound).
+const _ATTR_PERIODS = [['1H', 3_600e3], ['4H', 14_400e3], ['8H', 28_800e3], ['1D', 86_400e3], ['1W', 604_800e3], ['1M', 2_592_000e3], ['ALL', null]]
+let _attrPeriod = '1D'
+// Which slice of each asset's contribution to rank/show:
+//   all        = realized − fees + funding + uMove  (everything)
+//   realized   = realized − fees + funding          (money actually booked)
+//   unrealized = uMove                              (floating mark-to-market on open positions)
+let _attrMode = 'all'
+// Metric for the active mode, computed from a row's already-split components.
+function _attrMetric(r) {
+  if (_attrMode === 'realized')   return r.realized - r.fees + r.funding
+  if (_attrMode === 'unrealized') return r.uMove
+  return r.realized - r.fees + r.funding + r.uMove
+}
+// Historical mark at a window's start, cached per coin+window bucket so the live
+// re-render doesn't re-hit candleSnapshot every few seconds.
+const _attrMarkCache = new Map()   // `${coin}|${bucketStartMs}` -> px
+let _attrComputeToken = 0          // bumps to cancel a stale in-flight compute
 let _mobVMaCalYear     = new Date().getFullYear()
 let _mobVTradeMarginPct = 50  // 0-100 slider
 let _mobVTradeTp        = ''
 let _mobVTradeSl        = ''
 let _mobVTradesPage     = 0   // History tab pagination (20 per page)
 
+// Close the live candle WS without triggering the "closed before the connection is
+// established" console warning: closing a CONNECTING socket logs that warning, so if it
+// hasn't opened yet, defer the close until it does.
+function _closeMobCandleWs() {
+  const old = window._mobCandleWs
+  if (!old) return
+  window._mobCandleWs = null
+  try {
+    if (old.readyState === WebSocket.CONNECTING) {
+      old.addEventListener('open', () => { try { old.close() } catch {} }, { once: true })
+    } else {
+      old.close()
+    }
+  } catch {}
+}
+
 // ─── MOBILE MARKETS / TRADE VIEW STATE ───────────────────────────────────────
 let _mobTradeView       = 'list'    // 'list' | 'detail'
+let _mobTradeDetailCoin = null      // coin the detail was last fully built for (chart-preserve guard)
 let _mobTradeDetailTab  = 'chart'   // 'chart' | 'trade' | 'orderbook' | 'history'
 let _mobTradeSort       = 'oi'      // 'volume' | 'change' | 'price' | 'name' | 'oi'
+let _mobTradeSortDir    = 'desc'    // 'desc' | 'asc' — re-pressing the active sort flips it
 let _mobTradeMainFilter = 'all'     // 'all' | 'perps' | 'spot' | 'crypto' | 'tradfi' | 'stocks' | 'indices' | 'commodities' | 'fx' | 'metals' | 'energy' | 'preipo' | 'hip3' | 'trending' | 'favorites'
 let _mobTradeSearchQ    = ''
 let _mobTradeObTimer    = null
@@ -5589,9 +8215,15 @@ function mobVShow() {
 }
 
 // Horizontal swipe to move between the bottom-nav pages (like changing pages from the
-// sides). Page order matches the nav L→R, excluding the More drawer:  More ← History ←
-// Home → Trade. Swiping right from History opens the (left) More drawer; swiping left
-// while it's open closes it. Ignores swipes that start on scrollers/charts/inputs/tabs.
+// sides). Page order matches the nav L→R:  More ← Home → Trade. Swiping right from Home
+// opens the (left) More drawer; swiping left while it's open closes it. Ignores swipes
+// that start on scrollers/charts/inputs/tabs.
+// Horizontally-scrolling children must be excluded from page swipes, or dragging one also
+// fires the navigation gesture (jumping to Trade / opening the More drawer). `[data-dragscroll]`
+// covers every strip that opts into manual horizontal scrolling, so new ones are safe by default.
+const _SWIPE_BLOCKED_SEL = 'canvas, input, textarea, select, .mob-v-tabs, .mob-watch-rotator, .mob-more-drawer, .no-swipe, [data-dragscroll]'
+const _swipeBlocked = t => !!(t && t.closest && t.closest(_SWIPE_BLOCKED_SEL))
+
 let _mobVSwipeInit = false
 function _mobVInitSwipe() {
   if (_mobVSwipeInit) return
@@ -5599,14 +8231,13 @@ function _mobVInitSwipe() {
   if (!view) return
   _mobVSwipeInit = true
   let sx = 0, sy = 0, st = 0, tracking = false
-  const curPage = () => _mobVActiveTab === 'trades' ? 0 : _mobVActiveTab === 'trade' ? 2 : 1
+  const curPage = () => _mobVActiveTab === 'trade' ? 1 : 0
   const go = i => {
-    if (i < 0)        window.mobVOpenMore()       // past History (left edge) → More drawer
-    else if (i === 0) window.mobVGoTab('trades')
-    else if (i === 1) window.mobVHome()
+    if (i < 0)        window.mobVOpenMore()       // left of Home → More drawer
+    else if (i === 0) window.mobVHome()
     else              window.mobVGoTab('trade')
   }
-  const blocked = t => !!(t && t.closest && t.closest('canvas, input, textarea, select, .mob-v-tabs, .mob-more-drawer, .no-swipe'))
+  const blocked = t => _swipeBlocked(t)
   view.addEventListener('touchstart', e => {
     if (e.touches.length !== 1 || blocked(e.target)) { tracking = false; return }
     sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now(); tracking = true
@@ -5621,7 +8252,7 @@ function _mobVInitSwipe() {
     if (drawerOpen) { if (dx < 0) window.mobVOpenMore(); return }   // swipe left closes the left drawer
     if (_mobVActiveTab === 'settings') { window.mobVHome(); return } // swipe anywhere closes Settings
     const cur = curPage()
-    go(dx < 0 ? Math.min(2, cur + 1) : cur - 1)                     // left = next page, right = prev
+    go(dx < 0 ? Math.min(1, cur + 1) : cur - 1)                     // left = next page, right = prev
   }, { passive: true })
 
   // The More drawer lives outside #mobileView, so it needs its own swipe-to-close
@@ -5665,7 +8296,784 @@ function _mobSwipeCloseMore() {
 // Direction comes from the tab's position in the nav order so a forward move enters from
 // the right, a back move from the left.
 let _mobVLastTab = null
-const _MOBV_NAV_ORDER = ['trades', 'positions', 'orders', 'outcomes', 'spot', 'strategies', 'watch', 'trade', 'settings', 'leaderboard', 'transfers', 'accounts', 'portfolio', 'calendar', 'tokens', 'news', 'performance']
+const _MOBV_NAV_ORDER = ['trades', 'positions', 'orders', 'outcomes', 'spot', 'strategies', 'watch', 'trade', 'settings', 'leaderboard', 'transfers', 'portfolio', 'calendar', 'tokens', 'news', 'performance', 'allocation']
+
+// Tabs that take the WHOLE mobile screen: the home chrome (hero / actions / watch
+// strip / sub-tabs) is hidden and the view renders its own sticky header + × back
+// button instead of sitting in the bottom half. Shared by the chrome-hide logic and
+// the watch-strip visibility check so they never drift apart.
+const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 'transfers', 'trades', 'tokens', 'leaderboard', 'allocation'])
+
+// Sticky full-page header with a × that returns to the home view. Used by every
+// full-screen tab so they share one look.
+function _mobVFullHeader(title) {
+  return `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:14px 16px 11px;background:var(--bg);border-bottom:1px solid var(--border)">
+    <span style="font-size:18px;font-weight:700">${esc(title)}</span>
+    <button onclick="window.mobVHome()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+  </div>`
+}
+
+// ─── PnL ATTRIBUTION compute + render ─────────────────────────────────────────
+window.__attrSetPeriod = function(p) {
+  _attrPeriod = p
+  const el = document.getElementById('mobVContent')
+  if (el) el.dataset.attrSig = ''   // force a recompute for the new window
+  if (_mobVActiveTab === 'allocation' || _mobVActiveTab === 'attribution') _mobVRenderContent()
+}
+
+window.__attrSetMode = function(m) {
+  _attrMode = m
+  const el = document.getElementById('mobVContent')
+  if (el) el.dataset.attrSig = ''   // re-render (same data, different slice)
+  if (_mobVActiveTab === 'allocation' || _mobVActiveTab === 'attribution') _mobVRenderContent()
+}
+
+// The Allocation screen hosts two interchangeable views, toggled from its header:
+//   'allocation' = the margin donut · 'movers' = the "what moved" attribution list.
+let _allocView = 'allocation'
+window.__allocSetView = function(v) {
+  _allocView = v
+  const el = document.getElementById('mobVContent')
+  if (el) el.dataset.attrSig = ''
+  if (_mobVActiveTab === 'allocation') _mobVRenderContent()
+}
+// Entry point from the More drawer's "What moved" button — opens Allocation on the movers view.
+window.__openMovers = function() {
+  _allocView = 'movers'
+  window.__mobMoreTab('allocation')
+}
+
+// Shared header for the Allocation screen: an Allocation ⇄ What-moved segmented toggle + close.
+function _allocViewHeader() {
+  const tab = (k, lbl) => `<button onclick="window.__allocSetView('${k}')" style="padding:6px 15px;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;background:${_allocView === k ? 'var(--accent)' : 'transparent'};color:${_allocView === k ? '#000' : 'var(--muted)'};transition:background .15s">${lbl}</button>`
+  return `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 12px 10px;background:var(--bg);border-bottom:1px solid var(--border)">
+    <div style="display:flex;gap:3px;background:var(--panel-1);border-radius:10px;padding:3px">${tab('allocation', _T('Allocation', 'Asignación'))}${tab('movers', _T('What moved', 'Qué movió'))}</div>
+    <button onclick="window.mobVHome()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+  </div>`
+}
+
+// Price formatter for attribution rows: outcome (prediction) markets price in cents/prob,
+// everything else in dollars.
+const _attrPx = (coin, p) => (p > 0 || p < 0) ? (_lbIsOutcome(coin) ? (p * 100).toFixed(1) + '¢' : '$' + fmtPrice(p)) : '—'
+
+// Historical mark for `coin` at ~`windowStart`. Uses candleSnapshot (same call the watch
+// ticker / winner audit use). Candle granularity scales with the window so the short 1H/4H/8H
+// frames get an accurate baseline (an hourly candle would be up to an hour off on a 1H window).
+// Bucketed+cached (key includes interval) so repeated renders are free.
+async function _attrHistMark(coin, windowStart, info) {
+  const span = Date.now() - windowStart
+  let interval, step
+  if      (span <= 6 * 3_600_000)  { interval = '5m';  step = 300_000 }      // ≤6h  → 5-min candles
+  else if (span <= 2 * 86_400_000) { interval = '15m'; step = 900_000 }      // ≤2d  → 15-min
+  else                             { interval = '1h';  step = 3_600_000 }     // else → hourly
+  const bucket = Math.floor(windowStart / step) * step
+  const ckey   = `${coin}|${interval}|${bucket}`
+  if (_attrMarkCache.has(ckey)) return _attrMarkCache.get(ckey)
+  let px = null
+  try {
+    // Wider than needed so at least one candle lands at/after the boundary; pick the first
+    // candle whose open time is >= windowStart (fallback: the last one before it).
+    const candles = await info.candleSnapshot({ coin, interval, startTime: windowStart - 2 * step, endTime: windowStart + 6 * step })
+    if (candles?.length) {
+      const at = candles.find(c => c.t >= windowStart) || candles[candles.length - 1]
+      px = parseFloat(at.o ?? at.c)
+    }
+  } catch (_) {}
+  _attrMarkCache.set(ckey, px)
+  return px
+}
+
+// HL returns SEPARATE account-value series per period ('day' | 'week' | 'month' | 'allTime'),
+// each sampled at its own resolution — the allTime one is far too coarse to contain any point
+// inside a 1H/4H/8H window, so reading it made every intraday timeframe resolve to the SAME
+// sample and report an identical equity change. Pick the finest series that still reaches back
+// past the window start.
+function _attrSeries(winMs) {
+  const port = state.portfolio ?? []
+  const get  = k => port.find(p => p[0] === k)?.[1]?.accountValueHistory ?? []
+  const order = winMs == null            ? ['allTime']
+              : winMs <= 86_400e3        ? ['day', 'week', 'month', 'allTime']
+              : winMs <= 604_800e3       ? ['week', 'month', 'allTime']
+              : winMs <= 2_592_000e3     ? ['month', 'allTime']
+              :                            ['allTime']
+  const need = winMs == null ? null : Date.now() - winMs
+  for (const k of order) {
+    const h = get(k)
+    // Need ≥2 points AND coverage back past the window start, else the delta is meaningless.
+    if (h.length >= 2 && (need == null || h[0][0] <= need)) return h
+  }
+  for (const k of ['allTime', 'month', 'week', 'day']) { const h = get(k); if (h.length) return h }
+  return []
+}
+
+// Equity at `t` (≤ t) and now, read from the SAME series so the difference is self-consistent.
+// Also reports `coarse`: HL samples even its finest ('day') series only ~every 2.3h, so for a
+// short window the nearest samples can sit further from the window edges than the window is
+// long — the resulting "change" would be measuring a different span than the label claims.
+// The caller drops the equity figure rather than presenting a precise-looking wrong number.
+function _attrEquityRange(windowStart, winMs) {
+  const hist = _attrSeries(winMs)
+  if (!hist.length) return { start: null, now: NaN, coarse: false }
+  const nowTs = hist.at(-1)[0], now = parseFloat(hist.at(-1)[1])
+  if (windowStart == null) return { start: parseFloat(hist[0][1]), now, coarse: false }  // ALL → first point
+  let v = null, vTs = null
+  for (const [ts, val] of hist) { if (ts <= windowStart) { v = parseFloat(val); vTs = ts } else break }
+  const start   = v != null ? v : parseFloat(hist[0][1])
+  const startTs = vTs != null ? vTs : hist[0][0]
+  // Sampling is too coarse when either edge is off by more than one whole window.
+  const coarse = (windowStart - startTs) > winMs || (Date.now() - nowTs) > winMs
+  return { start, now, coarse }
+}
+
+// Build per-coin contributions over the selected window. Realized/fees/funding are exact
+// from fills+funding already in state; open-position uMove is sizeNow × (markNow − markStart)
+// — approximate when size changed mid-window, so we surface a reconciliation residual.
+async function _attrCompute(windowStart, token, winMs) {
+  const fills   = state.fills ?? []
+  const funding = state.funding ?? []
+  const byCoin  = {}
+  const row = c => (byCoin[c] ??= { coin: c, realized: 0, fees: 0, funding: 0, uMove: 0, firstFill: Infinity, trades: 0,
+    // Realized: size-weighted avg close & entry over the window's CLOSING fills.
+    closeSz: 0, closeNtl: 0, entryNtlR: 0,
+    // Unrealized: current open position's avg entry + live mark.
+    openEntry: 0, openMark: 0 })
+
+  for (const f of fills) {
+    if (windowStart && f.time < windowStart) { const r = row(f.coin); r.firstFill = Math.min(r.firstFill, f.time); continue }
+    const r = row(f.coin)
+    const cp = f.closedPnl ?? 0
+    r.realized += cp
+    r.fees     += f.fee ?? 0
+    r.firstFill = Math.min(r.firstFill, f.time)
+    if (cp !== 0 && f.sz > 0) {
+      r.trades++
+      // Back out the entry price the close realized against: for a closed long (SELL)
+      // cp = (px − entry)·sz; for a closed short (BUY) cp = (entry − px)·sz.
+      const entry = f.side === 'SELL' ? f.px - cp / f.sz : f.px + cp / f.sz
+      r.closeSz   += f.sz
+      r.closeNtl  += f.px * f.sz
+      r.entryNtlR += entry * f.sz
+    }
+  }
+  for (const fn of funding) {
+    if (windowStart && fn.time < windowStart) continue
+    row(fn.coin).funding += fn.usdc ?? 0
+  }
+
+  // Open-position mark-to-market since the window start.
+  const positions = (state.perpState?.assetPositions ?? []).filter(p => parseFloat(p.position?.szi ?? 0) !== 0)
+  const mids = state.allMids ?? {}
+  const info = new InfoClient({ transport: _transport })
+  // Net size per coin (two accounts on the same coin net out in the combined view).
+  const bySz = {}
+  for (const ap of positions) {
+    const c = ap.position.coin
+    bySz[c] ??= { szi: 0, entryNtl: 0, absSz: 0, markNow: 0 }
+    const szi = parseFloat(ap.position.szi)
+    bySz[c].szi     += szi
+    bySz[c].absSz   += Math.abs(szi)
+    bySz[c].entryNtl += Math.abs(szi) * parseFloat(ap.position.entryPx ?? 0)
+    bySz[c].markNow  = parseFloat(mids[c] ?? ap.position.markPx ?? ap.position.entryPx ?? 0)
+  }
+  await Promise.all(Object.entries(bySz).map(async ([coin, p]) => {
+    if (token !== _attrComputeToken) return
+    const markNow = p.markNow
+    const entryPx = p.absSz > 0 ? p.entryNtl / p.absSz : markNow
+    // Default (ALL timeframe, no lower bound): measure unrealized from ENTRY, i.e. the
+    // position's full open PnL. (Using markNow here gave mark−mark = 0, so ALL/Unrealized
+    // showed "nothing".) Bounded windows override markStart below.
+    let markStart = entryPx
+    if (windowStart) {
+      // If the coin's earliest-ever fill is inside the window, the position was opened
+      // in-window → its start value is entry, not the window-boundary price.
+      const openedInWindow = (byCoin[coin]?.firstFill ?? Infinity) >= windowStart
+      markStart = openedInWindow ? entryPx : ((await _attrHistMark(coin, windowStart, info)) ?? entryPx)
+    }
+    const rr = row(coin)
+    rr.uMove += p.szi * (markNow - markStart)   // signed size carries direction
+    rr.openEntry = entryPx
+    rr.openMark  = markNow
+  }))
+  if (token !== _attrComputeToken) return null
+
+  const rows = Object.values(byCoin).map(r => ({ ...r, total: r.realized - r.fees + r.funding + r.uMove }))
+    // Keep a coin if ANY component moved — so realized-only and unrealized-only slices
+    // don't drop coins whose blended total happens to net near zero.
+    .filter(r => r.trades > 0 || Math.abs(r.total) > 0.005 || Math.abs(r.uMove) > 0.005 ||
+                 Math.abs(r.realized) > 0.005 || Math.abs(r.funding) > 0.005 || r.fees > 0.005)
+    .sort((a, b) => Math.abs(b.total) - Math.abs(a.total))
+
+  const attributed = rows.reduce((s, r) => s + r.total, 0)
+  const { start: eqStart, now: eqNow, coarse } = _attrEquityRange(windowStart, winMs)
+  // `coarse` → HL's history can't resolve a window this short; report no equity figure rather
+  // than one measured over a materially different span (the render falls back to the subtotal).
+  const actualΔ = (!coarse && Number.isFinite(eqNow) && eqStart != null) ? eqNow - eqStart : null
+  const residual = actualΔ != null ? actualΔ - attributed : null
+  return { rows, attributed, actualΔ, residual, coarse }
+}
+
+function _mobVRenderAttribution(el) {
+  const period    = _ATTR_PERIODS.find(p => p[0] === _attrPeriod) ?? _ATTR_PERIODS[0]
+  const winMs     = period[1]
+  const windowStart = winMs ? Date.now() - winMs : null
+
+  // Re-render guard: skip the async recompute when nothing that affects it changed. The
+  // position hash is SORTED so a re-ordered assetPositions array (the combined view rebuilds
+  // it every tick) doesn't spuriously flip the signature and force a scroll-resetting rebuild.
+  const posHash = (state.perpState?.assetPositions ?? []).map(p => `${p.position?.coin}:${p.position?.szi}`).sort().join(',')
+  const sig = `${_attrPeriod}|${_attrMode}|${state.addr}|${(state.fills ?? []).length}|${posHash}`
+  if (el.dataset.attrSig === sig && document.getElementById('attrBody')) return
+  const prevScroll = el.scrollTop   // preserve scroll across a genuine rebuild
+  el.dataset.attrSig = sig
+
+  const label = { '1H': _T('past hour', 'última hora'), '4H': _T('past 4 hours', 'últimas 4 horas'), '8H': _T('past 8 hours', 'últimas 8 horas'), '1D': _T('past 24 hours', 'últimas 24 horas'), '1W': _T('past week', 'última semana'), '1M': _T('past month', 'último mes'), 'ALL': _T('all time', 'todo el tiempo') }[_attrPeriod]
+  const segs = _ATTR_PERIODS.map(([k]) =>
+    `<button onclick="window.__attrSetPeriod('${k}')" class="notranslate" style="flex:1;min-width:0;padding:8px 0;border:none;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;background:${k === _attrPeriod ? 'var(--accent)' : 'var(--panel-1)'};color:${k === _attrPeriod ? '#000' : 'var(--muted)'}">${k}</button>`).join('')
+  const modes = [['all', _T('All', 'Todo')], ['realized', _T('Realized', 'Realizado')], ['unrealized', _T('Unrealized', 'No realiz.')]]
+  const modeSegs = modes.map(([k, lbl]) =>
+    `<button onclick="window.__attrSetMode('${k}')" style="flex:1;padding:7px 0;border:1px solid var(--border);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;background:${k === _attrMode ? 'var(--panel-2)' : 'transparent'};color:${k === _attrMode ? 'var(--fg)' : 'var(--muted)'}">${lbl}</button>`).join('')
+  const modeHint = { all: _T('Closed trades + open-position price moves + funding', 'Operaciones cerradas + movimientos de precio + financiamiento'), realized: _T('Only money actually booked (closed trades, funding, fees)', 'Solo dinero ya realizado (cerradas, financiamiento, comisiones)'), unrealized: _T('Only floating mark-to-market on positions you still hold', 'Solo el flotante de posiciones que aún mantienes') }[_attrMode]
+
+  el.innerHTML = `${_allocViewHeader()}
+    <div style="padding:12px 16px 4px">
+      <div style="display:flex;gap:4px;margin-bottom:8px">${segs}</div>
+      <div style="display:flex;gap:6px;margin-bottom:8px">${modeSegs}</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">${modeHint} · ${label}</div>
+      <div id="attrBody"><div class="mob-v-empty">${_T('Calculating…', 'Calculando…')}</div></div>
+    </div>`
+
+  const token = ++_attrComputeToken
+  _attrCompute(windowStart, token, winMs).then(res => {
+    if (token !== _attrComputeToken) return
+    const body = document.getElementById('attrBody')
+    if (!body) return
+    if (!res || !res.rows.length) { body.innerHTML = `<div class="mob-v-empty">${_T('No activity in this period', 'Sin actividad en este período')}</div>`; return }
+
+    const sign = n => (n >= 0 ? '+' : '−')
+    // Rank/filter by the active slice, not the blended total.
+    const shown = res.rows
+      .map(r => ({ r, m: _attrMetric(r) }))
+      .filter(x => Math.abs(x.m) > 0.005)
+      .sort((a, b) => Math.abs(b.m) - Math.abs(a.m))
+    if (!shown.length) { body.innerHTML = `<div class="mob-v-empty">${_T('Nothing in this slice for this period', 'Nada en esta categoría para este período')}</div>`; return }
+
+    const maxAbs = Math.max(...shown.map(x => Math.abs(x.m)), 0.01)
+    // "entry $X → $Y" price pair (dollars, or ¢ for outcome markets).
+    const pricePair = (coin, a, b) => `${_T('entry', 'entrada')} ${_attrPx(coin, a)} → ${_attrPx(coin, b)}`
+    const avgEntryR = r => r.closeSz > 0 ? r.entryNtlR / r.closeSz : 0
+    const avgCloseR = r => r.closeSz > 0 ? r.closeNtl  / r.closeSz : 0
+    // When there were closing trades the second sub-row is a true "Realized" line with an
+    // entry→close price; with NO close the amount is just the open fee / funding on a position
+    // still held, so label the row for what it actually is (Fees / Funding) — no fake entry→close.
+    const realLabel = r => r.closeSz > 0 ? _T('Realized', 'Realizado')
+      : (Math.abs(r.funding) > r.fees ? _T('Funding', 'Financiamiento') : _T('Fees', 'Comisiones'))
+    const realDesc = r => {
+      if (r.closeSz > 0) return pricePair(r.coin, avgEntryR(r), avgCloseR(r))
+      const bits = []
+      if (Math.abs(r.funding) > 0.005) bits.push(_T('funding', 'financiam.'))
+      if (r.fees > 0.005)              bits.push(_T('fees', 'comisiones'))
+      return bits.join(' · ')
+    }
+    // A compact left-label / prices / right-value sub-row (used for the two-row All card).
+    const infoRow = (lbl, priceTxt, val) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11px;line-height:1.5">
+        <span style="color:var(--muted);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b style="color:var(--fg);opacity:.85">${lbl}</b>${priceTxt ? ` · <span class="notranslate">${priceTxt}</span>` : ''}</span>
+        <span class="notranslate" style="flex-shrink:0;font-weight:700;color:var(--${val >= 0 ? 'pos' : 'neg'})">${sign(val)}$${fmtUSD(Math.abs(val))}</span>
+      </div>`
+
+    const bar = (pos, w) => `<div style="height:5px;border-radius:3px;background:var(--panel-1);margin-top:8px;overflow:hidden">
+        <div style="height:100%;width:${w}%;background:var(--${pos ? 'pos' : 'neg'});margin-left:${pos ? '0' : 'auto'}"></div>
+      </div>`
+    const rowsHtml = shown.map(({ r, m }) => {
+      const pos = m >= 0
+      const w   = Math.max(3, Math.round(Math.abs(m) / maxAbs * 100))
+      const realVal = r.realized - r.fees + r.funding
+      const total = `<div style="flex-shrink:0;font-size:15px;font-weight:800;color:var(--${pos ? 'pos' : 'neg'})">${sign(m)}$${fmtUSD(Math.abs(m))}</div>`
+
+      if (_attrMode === 'all') {
+        // Header row (icon + name + blended total), then two full-width info rows below whose
+        // right-hand values align to the SAME edge as the total — Unrealized on top, Realized under.
+        const rowsInner = []
+        if (Math.abs(r.uMove) > 0.005 || r.openEntry > 0)
+          rowsInner.push(infoRow(_T('Unrealized', 'No realizado'), r.openEntry > 0 ? pricePair(r.coin, r.openEntry, r.openMark) : '', r.uMove))
+        if (Math.abs(realVal) > 0.005 || r.closeSz > 0)
+          rowsInner.push(infoRow(realLabel(r), r.closeSz > 0 ? pricePair(r.coin, avgEntryR(r), avgCloseR(r)) : '', realVal))
+        return `<div style="padding:11px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:10px">
+            ${_mobVCoinIcon(r.coin)}
+            <div style="flex:1;min-width:0;font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_ocCoinLabel(r.coin))}</div>
+            ${total}
+          </div>
+          <div style="margin-top:7px;padding-left:38px;display:flex;flex-direction:column;gap:3px">${rowsInner.join('')}</div>
+          ${bar(pos, w)}
+        </div>`
+      }
+
+      const sub = _attrMode === 'unrealized'
+        ? (r.openEntry > 0 ? pricePair(r.coin, r.openEntry, r.openMark) : _T('open position', 'posición abierta'))
+        : (realDesc(r) || '—')
+      return `<div style="padding:11px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:10px">
+          ${_mobVCoinIcon(r.coin)}
+          <div style="flex:1;min-width:0">
+            <div style="font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_ocCoinLabel(r.coin))}</div>
+            <div class="notranslate" style="font-size:11px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sub}</div>
+          </div>
+          ${total}
+        </div>
+        ${bar(pos, w)}
+      </div>`
+    }).join('')
+
+    const sliceSum = shown.reduce((s, x) => s + x.m, 0)
+
+    // ── Hero summary card (top). The ground-truth number is the actual equity change;
+    // in the All slice we show it big and break it into "explained by assets" + "other".
+    // Realized/Unrealized show their own subtotal as the hero.
+    const showRecon = _attrMode === 'all' && res.actualΔ != null
+    const heroVal = showRecon ? res.actualΔ : sliceSum
+    const heroLbl = showRecon
+      ? _T('Equity change', 'Cambio de capital')
+      : { realized: _T('Realized P&L', 'P&L realizado'), unrealized: _T('Unrealized P&L', 'P&L no realizado'), all: _T('Attributed', 'Atribuido') }[_attrMode]
+    const heroPos = heroVal >= 0
+    const heroCol = `var(--${heroPos ? 'pos' : 'neg'})`
+    const glowRgb = heroPos ? '52,199,123' : '255,77,109'
+
+    // Net real deposits/withdrawals in this window (non-funding ledger). The residual lumps
+    // these in with spot/size/rounding — so pull them out and only mention "deposits" when
+    // there actually were some (otherwise "Other · deposits…" reads as misleading).
+    let winTransfers = 0
+    if (showRecon) {
+      const wStart = winMs ? Date.now() - winMs : 0
+      for (const e of (state.ledger ?? [])) {
+        const t = +(e.time ?? e.timestamp ?? 0)
+        if (wStart && t < wStart) continue
+        // accountClassTransfer = spot↔perp WITHIN the unified account: net-zero to total
+        // equity, so it's not in the residual — skip it or we'd invent a phantom transfer.
+        if (e.delta?.type === 'accountClassTransfer') continue
+        winTransfers += (ledgerAmount(e, state.addr) || 0)
+      }
+    }
+    const hasXfer  = Math.abs(winTransfers) > 0.5
+    const otherVal = showRecon ? (res.residual - (hasXfer ? winTransfers : 0)) : 0
+    const otherSub = hasXfer ? _T('spot · funding · rounding', 'spot · financiam. · redondeo')
+                             : _T('spot moves · funding · size Δ', 'spot · financiam. · Δ tamaño')
+    const reconRow = (lbl, sub, val) => `
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px;margin-top:6px">
+          <span style="color:var(--muted)">${lbl}${sub ? ` <span style="opacity:.65;font-size:11px">${sub}</span>` : ''}</span>
+          <span class="notranslate" style="font-weight:700;color:var(--${val >= 0 ? 'pos' : 'neg'})">${val >= 0 ? '+' : '−'}$${fmtUSD(Math.abs(val))}</span>
+        </div>`
+    const reconRows = showRecon
+      ? reconRow(_T('Explained by assets', 'Explicado por activos'), '', res.attributed)
+        + (hasXfer ? reconRow(_T('Deposits / Withdrawals', 'Depósitos / Retiros'), '', winTransfers) : '')
+        + reconRow(_T('Other', 'Otros'), otherSub, otherVal)
+      : ''
+
+    const summaryCard = `
+      <div style="position:relative;overflow:hidden;border:1px solid rgba(${glowRgb},.28);border-radius:16px;padding:16px 16px 14px;margin-bottom:14px;background:
+           radial-gradient(120% 140% at 100% 0%, rgba(${glowRgb},.14), transparent 60%), var(--panel-2)">
+        <div style="font-size:10.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-bottom:5px">${heroLbl}</div>
+        <div style="display:flex;align-items:baseline;gap:9px;flex-wrap:wrap">
+          <span class="notranslate" style="font-size:30px;font-weight:900;letter-spacing:-.02em;line-height:1;color:${heroCol}">${heroPos ? '+' : '−'}$${fmtUSD(Math.abs(heroVal))}</span>
+          <span style="font-size:11.5px;font-weight:600;color:var(--muted)">${label}</span>
+        </div>
+        ${reconRows ? `<div style="margin-top:12px;padding-top:11px;border-top:1px solid var(--border)">${reconRows}</div>` : ''}
+      </div>`
+
+    // Explain a missing equity-change figure, so it doesn't just look like it failed.
+    const coarseNote = (_attrMode === 'all' && res.coarse) ? `<div style="margin-top:10px;font-size:11px;color:var(--muted);line-height:1.5;text-align:center">${_T('Hyperliquid samples account history about every 2 hours, so an exact equity change for this window isn\'t available — the per-asset figures above are still accurate.', 'Hyperliquid registra el historial de la cuenta cada ~2 horas, así que no hay un cambio de capital exacto para este período — las cifras por activo siguen siendo precisas.')}</div>` : ''
+    const fundingNote = (_attrMode !== 'unrealized' && state.isAllAccounts) ? `<div style="margin-top:12px;font-size:11px;color:var(--muted);text-align:center">${_T('Combined view: funding is not broken out per account.', 'Vista combinada: el financiamiento no se desglosa por cuenta.')}</div>` : ''
+
+    body.innerHTML = summaryCard + rowsHtml + coarseNote + fundingNote
+    // Rebuilding innerHTML reset the scroll container to the top; put the user back where they were.
+    if (prevScroll > 0) el.scrollTop = prevScroll
+  }).catch(e => {
+    const body = document.getElementById('attrBody')
+    if (body) body.innerHTML = `<div class="mob-v-empty">${_T('Could not compute', 'No se pudo calcular')}: ${esc(e.message || '')}</div>`
+  })
+}
+
+// ─── GLOBAL CHAT ──────────────────────────────────────────────────────────────
+// Poll-based global chatroom (server: GET/POST /api/chat). Full-screen overlay so it's
+// reachable everywhere; polls every 4s while open, stops on close.
+let _chatPollTimer = null, _chatLastTs = 0, _chatMsgs = []
+const _CHAT_NAME_KEY = 'hliq_chat_name'
+function _chatName() {
+  const saved = localStorage.getItem(_CHAT_NAME_KEY)
+  if (saved) return saved
+  try { if (isMainWalletConnected() && getMainAddress()) { const a = getMainAddress(); return a.slice(0, 6) + '…' + a.slice(-4) } } catch {}
+  let anon = localStorage.getItem('hliq_chat_anon')
+  if (!anon) { anon = 'anon' + Math.floor(Math.random() * 9000 + 1000); localStorage.setItem('hliq_chat_anon', anon) }
+  return anon
+}
+function _chatColor(name) { let h = 0; const s = String(name || 'anon'); for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return `hsl(${h % 360} 68% 62%)` }
+function _chatAgo(ts) { const s = Math.floor((Date.now() - ts) / 1000); if (s < 60) return s + 's'; const m = Math.floor(s / 60); if (m < 60) return m + 'm'; const h = Math.floor(m / 60); if (h < 24) return h + 'h'; return Math.floor(h / 24) + 'd' }
+
+window.__openChat = function() {
+  document.getElementById('mobMoreDrawer')?.classList.remove('open')
+  document.getElementById('mobMoreBackdrop')?.classList.remove('open')
+  let ov = document.getElementById('globalChatOverlay')
+  if (!ov) {
+    ov = document.createElement('div'); ov.id = 'globalChatOverlay'
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100055;background:var(--bg);display:flex;flex-direction:column'
+    document.body.appendChild(ov)
+  }
+  ov.style.display = 'flex'
+  ov.innerHTML = `
+    <div style="flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border)">
+      <span style="font-size:17px;font-weight:700;display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:50%;background:var(--pos);box-shadow:0 0 7px var(--pos)"></span> ${_T('Global Chat', 'Chat global')}</span>
+      <div style="display:flex;align-items:center;gap:4px">
+        <button onclick="window.__chatSetName()" title="${_T('Set your name', 'Elegir nombre')}" style="background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:4px 8px">✎</button>
+        <button onclick="window.__closeChat()" style="background:none;border:none;color:var(--muted);font-size:24px;cursor:pointer;padding:0 4px">×</button>
+      </div>
+    </div>
+    <div id="chatScroll" style="flex:1;min-height:0;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:11px"><div class="mob-v-empty">${_T('Loading…', 'Cargando…')}</div></div>
+    <div style="flex-shrink:0;border-top:1px solid var(--border);padding:10px 12px calc(10px + env(safe-area-inset-bottom));display:flex;gap:8px;align-items:center">
+      <input id="chatInput" maxlength="280" placeholder="${_T('Message', 'Mensaje')}…" enterkeyhint="send" autocomplete="off"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();window.__chatSend()}"
+        style="flex:1;background:var(--panel-1);border:1px solid var(--border);border-radius:10px;padding:11px 13px;font-size:16px;color:var(--fg);outline:none">
+      <button onclick="window.__chatSend()" style="flex-shrink:0;background:var(--accent);border:none;border-radius:10px;padding:11px 17px;color:#000;font-weight:800;font-size:14px;cursor:pointer">${_T('Send', 'Enviar')}</button>
+    </div>`
+  _chatLastTs = 0; _chatMsgs = []
+  _chatPoll(true)
+  if (_chatPollTimer) clearInterval(_chatPollTimer)
+  _chatPollTimer = setInterval(() => _chatPoll(false), 4000)
+}
+
+window.__closeChat = function() {
+  if (_chatPollTimer) { clearInterval(_chatPollTimer); _chatPollTimer = null }
+  const o = document.getElementById('globalChatOverlay'); if (o) o.style.display = 'none'
+}
+
+async function _chatPoll(full) {
+  if (!document.getElementById('globalChatOverlay') || document.getElementById('globalChatOverlay').style.display === 'none') return
+  try {
+    const r = await fetch(full ? '/api/chat' : `/api/chat?since=${_chatLastTs}`)
+    const j = await r.json()
+    const msgs = j.messages ?? []
+    if (full) _chatMsgs = msgs
+    else if (msgs.length) _chatMsgs = [..._chatMsgs, ...msgs].slice(-200)
+    if (msgs.length) _chatLastTs = Math.max(_chatLastTs, msgs[msgs.length - 1].ts)
+    if (full || msgs.length) _chatRender(full)
+  } catch {}
+}
+
+function _chatRender(forceBottom) {
+  const el = document.getElementById('chatScroll'); if (!el) return
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 90
+  if (!_chatMsgs.length) { el.innerHTML = `<div class="mob-v-empty">${_T('No messages yet — say hi 👋', 'Sin mensajes aún — saluda 👋')}</div>`; return }
+  el.innerHTML = _chatMsgs.map(m => `<div style="display:flex;flex-direction:column;gap:2px">
+      <div style="display:flex;align-items:baseline;gap:7px">
+        <span class="notranslate" style="font-size:12px;font-weight:700;color:${_chatColor(m.name)}">${esc(m.name || 'anon')}</span>
+        <span style="font-size:10px;color:var(--muted)">${_chatAgo(m.ts)}</span>
+      </div>
+      <div class="notranslate" style="font-size:14px;color:var(--fg);word-break:break-word;line-height:1.35">${esc(m.text)}</div>
+    </div>`).join('')
+  if (forceBottom || nearBottom) el.scrollTop = el.scrollHeight
+}
+
+window.__chatSend = async function() {
+  const inp = document.getElementById('chatInput'); if (!inp) return
+  const text = inp.value.trim(); if (!text) return
+  inp.value = ''
+  let addr = null; try { if (isMainWalletConnected()) addr = getMainAddress() } catch {}
+  const name = _chatName()
+  _chatMsgs = [..._chatMsgs, { id: 'tmp' + Date.now(), name, addr, text, ts: Date.now() }].slice(-200)
+  _chatRender(true)
+  try {
+    const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, text, addr }) })
+    const j = await r.json()
+    if (j.ok && j.message) _chatLastTs = Math.max(_chatLastTs, j.message.ts)
+    else if (j.error) _paperToast('⚠ ' + j.error)
+  } catch { _paperToast('⚠ ' + _T('Could not send', 'No se pudo enviar')) }
+}
+
+window.__chatSetName = async function() {
+  const cur = localStorage.getItem(_CHAT_NAME_KEY) || _chatName()
+  const n = await _appPrompt({ title: _T('Your chat name', 'Tu nombre en el chat'), placeholder: _T('Name', 'Nombre'), value: cur, confirmText: _T('Save', 'Guardar'), validate: v => v.trim().length ? null : _T('Enter a name', 'Escribe un nombre') })
+  if (n) { localStorage.setItem(_CHAT_NAME_KEY, n.trim().slice(0, 24)); _paperToast('✓ ' + _T('Name set', 'Nombre guardado')) }
+}
+
+// Security & Keys — the trust page. Rendered as a standalone overlay (via
+// __openSecurityInfo) so it's reachable EVERYWHERE, including the pre-connect landing
+// screen where the mobile-view harness isn't mounted. Plain-language, honest about the
+// real model: agent keys can trade but never withdraw; where the key lives (browser for
+// manual, encrypted server for bots); how to revoke; the backup-file risk; who's behind
+// it; and starter Terms/Privacy. Static — no data, no API calls.
+window.__openSecurityInfo = function() {
+  document.getElementById('mobMoreDrawer')?.classList.remove('open')
+  document.getElementById('mobMoreBackdrop')?.classList.remove('open')
+  let ov = document.getElementById('securityInfoOverlay')
+  if (!ov) {
+    ov = document.createElement('div')
+    ov.id = 'securityInfoOverlay'
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100050;background:var(--bg);overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch'
+    document.body.appendChild(ov)
+  }
+  ov.innerHTML = _mobVSecurityHtml()
+  ov.scrollTop = 0
+  ov.style.display = 'block'
+  window.__i18nApply && window.__i18nApply()
+}
+window.__closeSecurityInfo = function() {
+  const ov = document.getElementById('securityInfoOverlay')
+  if (ov) ov.style.display = 'none'
+}
+
+function _mobVSecurityHtml() {
+  const card = (inner, accent) =>
+    `<div style="margin:12px 12px 0;border:1px solid ${accent || 'var(--border2)'};border-radius:16px;background:var(--bg2);padding:16px">${inner}</div>`
+  const h = (t) => `<div style="font-size:13px;font-weight:800;letter-spacing:.02em;margin-bottom:8px">${t}</div>`
+  const p = (t) => `<div style="font-size:13px;line-height:1.6;color:var(--fg-2,#c9cdd6)">${t}</div>`
+  const li = (t) => `<div style="display:flex;gap:8px;font-size:13px;line-height:1.55;color:var(--fg-2,#c9cdd6);margin-top:7px"><span style="color:var(--accent);flex-shrink:0">•</span><span>${t}</span></div>`
+
+  const hero = `<div style="margin:12px;border:1px solid rgba(0,229,160,0.35);border-radius:18px;background:linear-gradient(160deg,rgba(0,229,160,0.10),transparent);padding:18px">
+    <div style="font-size:30px;line-height:1">🛡️</div>
+    <div style="font-size:19px;font-weight:800;margin-top:8px">${_T('Your keys can trade — never withdraw', 'Tus claves pueden operar — nunca retirar')}</div>
+    <div style="font-size:13px;line-height:1.6;color:var(--fg-2,#c9cdd6);margin-top:8px">${_T('Insolvent trades through a Hyperliquid <b>agent key</b> (an "API wallet"). It can place and cancel orders on your behalf — and nothing else. It <b>cannot withdraw, transfer, or move your funds.</b> Even in the worst case — your key fully leaked — no one can take your money. The most anyone could do is place trades.', 'Insolvent opera mediante una <b>clave de agente</b> de Hyperliquid (una "billetera API"). Puede colocar y cancelar órdenes por ti — y nada más. <b>No puede retirar, transferir ni mover tus fondos.</b> Incluso en el peor caso — tu clave totalmente filtrada — nadie puede llevarse tu dinero. Lo máximo que alguien podría hacer es colocar operaciones.')}</div>
+  </div>`
+
+  const storage = card(
+    h(_T('Where your key is stored', 'Dónde se guarda tu clave')) +
+    `<div style="display:flex;gap:10px;margin-top:6px">
+      <div style="font-size:18px;flex-shrink:0">📱</div>
+      <div>${p(_T('<b>Manual trading.</b> Your agent key stays in this browser, on this device only. It is never sent to our servers — signing happens locally.', '<b>Trading manual.</b> Tu clave de agente permanece en este navegador, solo en este dispositivo. Nunca se envía a nuestros servidores — la firma ocurre localmente.'))}</div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:12px">
+      <div style="font-size:18px;flex-shrink:0">🤖</div>
+      <div>${p(_T('<b>Automated bots.</b> If you start a bot, your key is sent to our server so it can keep trading after you close the app. There it is <b>encrypted at rest (AES-256-GCM)</b> and bound to your account. It still cannot withdraw. If you never run a bot, your key never leaves your browser.', '<b>Bots automáticos.</b> Si inicias un bot, tu clave se envía a nuestro servidor para que pueda seguir operando después de cerrar la app. Ahí se guarda <b>cifrada (AES-256-GCM)</b> y ligada a tu cuenta. Aun así no puede retirar. Si nunca ejecutas un bot, tu clave nunca sale de tu navegador.'))}</div>
+    </div>`
+  )
+
+  const control = card(
+    h(_T('You stay in control — revoke anytime', 'Tú tienes el control — revoca cuando quieras')) +
+    p(_T('Agent keys live on Hyperliquid, not with us — so you can revoke ours whenever you want, and we cannot stop you.', 'Las claves de agente viven en Hyperliquid, no con nosotros — así que puedes revocar la nuestra cuando quieras, y no podemos impedirlo.')) +
+    li(_T('On Hyperliquid, open the <b>API / agent wallets</b> section and revoke the Insolvent agent. That instantly cuts off all trading access.', 'En Hyperliquid, abre la sección de <b>billeteras API / de agente</b> y revoca el agente de Insolvent. Eso corta al instante todo acceso de trading.')) +
+    li(_T('You can also clear this site\'s browser data to remove the local copy of your key.', 'También puedes borrar los datos de este sitio en tu navegador para eliminar la copia local de tu clave.'))
+  )
+
+  const backup = card(
+    h(_T('⚠️ Your backup file contains keys', '⚠️ Tu archivo de respaldo contiene claves')) +
+    p(_T('The <b>Export</b> backup includes your signing keys in plain text. Anyone who gets that file can trade your accounts (still not withdraw). Keep it <b>offline and private</b> — never email it, share it, or put it in cloud storage unencrypted.', 'El respaldo de <b>Exportar</b> incluye tus claves de firma en texto plano. Cualquiera que obtenga ese archivo puede operar tus cuentas (aun así no retirar). Mantenlo <b>sin conexión y privado</b> — nunca lo envíes por correo, lo compartas ni lo subas a la nube sin cifrar.')),
+    'rgba(255,180,60,0.4)'
+  )
+
+  const honest = card(
+    h(_T('Being straight about the risks', 'Siendo honestos sobre los riesgos')) +
+    p(_T('No app is risk-free. We\'d rather tell you than bury it:', 'Ninguna app está libre de riesgo. Preferimos decírtelo a ocultarlo:')) +
+    li(_T('Your key sits in this browser, so any script running on the page could in principle read it. Our own app code is self-hosted (first-party) — the only outside script we load is TradingView (only on the Watch/chart screens). Fewer moving parts, but no guarantee is ever absolute.', 'Tu clave está en este navegador, así que cualquier script en la página podría en principio leerla. Nuestro propio código es auto-alojado (de origen) — el único script externo que cargamos es TradingView (solo en las pantallas de Seguimiento/gráfico). Menos piezas móviles, pero ninguna garantía es absoluta.')) +
+    li(_T('Bot keys sit encrypted on our server; a server breach could expose them. They still cannot withdraw.', 'Las claves de bots están cifradas en nuestro servidor; una brecha podría exponerlas. Aun así no pueden retirar.')) +
+    li(_T('Trading leveraged perpetuals is high-risk — you can lose your entire balance. Bots included.', 'Operar perpetuos apalancados es de alto riesgo — puedes perder todo tu saldo. Bots incluidos.'))
+  )
+
+  const who = card(
+    h(_T('Who\'s behind Insolvent', 'Quién está detrás de Insolvent')) +
+    p(_T('Insolvent is an independent project, built and maintained with care by one team — not affiliated with Hyperliquid. Questions, security reports, or feedback are welcome.', 'Insolvent es un proyecto independiente, construido y mantenido con cuidado por un solo equipo — no afiliado con Hyperliquid. Preguntas, reportes de seguridad o comentarios son bienvenidos.')) +
+    `<a href="https://x.com/insolventPr" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;gap:7px;margin-top:11px;padding:9px 14px;border-radius:10px;background:var(--panel-2);border:1px solid var(--border2);color:var(--fg);font-size:13px;font-weight:700;text-decoration:none">𝕏 @insolventPr</a>`
+  )
+
+  const detail = (title, body) =>
+    `<details style="margin:12px 12px 0;border:1px solid var(--border2);border-radius:16px;background:var(--bg2);overflow:hidden">
+      <summary style="padding:15px 16px;font-size:13px;font-weight:800;cursor:pointer;list-style:none">${title}</summary>
+      <div style="padding:0 16px 16px;font-size:12.5px;line-height:1.65;color:var(--fg-2,#c9cdd6)">${body}</div>
+    </details>`
+
+  const _updated = new Date().toLocaleDateString(_currentLang === 'es' ? 'es' : 'en-US', { month: 'long', year: 'numeric' })
+  const tos = detail(_T('Terms of Service', 'Términos del servicio'), _T(`
+    <p style="margin:0 0 10px"><b>What this is.</b> Insolvent is a tool to view and trade your own Hyperliquid account. We are not a broker, custodian, or exchange, and we never hold your funds — they stay in your Hyperliquid account at all times.</p>
+    <p style="margin:0 0 10px"><b>Your responsibility.</b> You control your keys and your trades. You are responsible for every order you or any bot you start places. Leveraged perpetual trading can lose your entire balance.</p>
+    <p style="margin:0 0 10px"><b>No guarantees.</b> The app is provided "as is", without warranty of any kind. We do not guarantee uptime, data accuracy, or that bots behave as expected — markets and the Hyperliquid API can fail or change without notice.</p>
+    <p style="margin:0 0 10px"><b>Limitation of liability.</b> To the fullest extent permitted by law, Insolvent and its maintainers are not liable for trading losses, missed or duplicated trades, downtime, or data errors arising from use of the app.</p>
+    <p style="margin:0 0 10px"><b>Acceptable use.</b> Don't use Insolvent to break the law or to abuse Hyperliquid's systems.</p>
+    <p style="margin:0"><b>Changes.</b> We may update the app and these terms. Continued use means you accept the current version. Last updated ${_updated}.</p>`, `
+    <p style="margin:0 0 10px"><b>Qué es esto.</b> Insolvent es una herramienta para ver y operar tu propia cuenta de Hyperliquid. No somos un bróker, custodio ni exchange, y nunca guardamos tus fondos — permanecen en tu cuenta de Hyperliquid en todo momento.</p>
+    <p style="margin:0 0 10px"><b>Tu responsabilidad.</b> Tú controlas tus claves y tus operaciones. Eres responsable de cada orden que tú o cualquier bot que inicies coloque. Operar perpetuos apalancados puede perder todo tu saldo.</p>
+    <p style="margin:0 0 10px"><b>Sin garantías.</b> La app se ofrece "tal cual", sin garantía de ningún tipo. No garantizamos disponibilidad, exactitud de datos, ni que los bots se comporten como se espera — los mercados y la API de Hyperliquid pueden fallar o cambiar sin aviso.</p>
+    <p style="margin:0 0 10px"><b>Limitación de responsabilidad.</b> En la máxima medida permitida por la ley, Insolvent y sus mantenedores no son responsables de pérdidas de trading, operaciones omitidas o duplicadas, caídas o errores de datos derivados del uso de la app.</p>
+    <p style="margin:0 0 10px"><b>Uso aceptable.</b> No uses Insolvent para infringir la ley ni para abusar de los sistemas de Hyperliquid.</p>
+    <p style="margin:0"><b>Cambios.</b> Podemos actualizar la app y estos términos. El uso continuado significa que aceptas la versión actual. Última actualización ${_updated}.</p>`))
+
+  const privacy = detail(_T('Privacy', 'Privacidad'), _T(`
+    <p style="margin:0 0 10px"><b>Your keys.</b> Handled as described above: kept in your browser for manual trading; sent to our server encrypted (AES-256-GCM) only when you run a bot.</p>
+    <p style="margin:0 0 10px"><b>What our server sees.</b> When you run a bot, the server receives your agent key (stored encrypted), your account address, and the bot's settings — the minimum needed to run it. It never receives anything that can withdraw your funds.</p>
+    <p style="margin:0 0 10px"><b>Market &amp; account data.</b> Your read-only positions, balances, and market prices are fetched directly by your browser from Hyperliquid's public API.</p>
+    <p style="margin:0 0 10px"><b>What we don't do.</b> We don't sell your personal data.</p>
+    <p style="margin:0"><b>Your control.</b> Revoke the agent key on Hyperliquid and clear this site's browser data at any time to remove your footprint. Last updated ${_updated}.</p>`, `
+    <p style="margin:0 0 10px"><b>Tus claves.</b> Se manejan como se describe arriba: guardadas en tu navegador para el trading manual; enviadas a nuestro servidor cifradas (AES-256-GCM) solo cuando ejecutas un bot.</p>
+    <p style="margin:0 0 10px"><b>Qué ve nuestro servidor.</b> Cuando ejecutas un bot, el servidor recibe tu clave de agente (guardada cifrada), la dirección de tu cuenta y la configuración del bot — lo mínimo necesario para ejecutarlo. Nunca recibe nada que pueda retirar tus fondos.</p>
+    <p style="margin:0 0 10px"><b>Datos de mercado y cuenta.</b> Tus posiciones, saldos y precios de mercado (solo lectura) los obtiene tu navegador directamente de la API pública de Hyperliquid.</p>
+    <p style="margin:0 0 10px"><b>Lo que no hacemos.</b> No vendemos tus datos personales.</p>
+    <p style="margin:0"><b>Tu control.</b> Revoca la clave de agente en Hyperliquid y borra los datos de este sitio en tu navegador en cualquier momento para eliminar tu rastro. Última actualización ${_updated}.</p>`))
+
+  const footer = `<div style="padding:18px 16px calc(90px + env(safe-area-inset-bottom));text-align:center;font-size:11px;line-height:1.6;color:var(--muted)">
+    ${_T('Insolvent is not financial advice and is not affiliated with Hyperliquid. Trading is risky. Use at your own risk.', 'Insolvent no es asesoría financiera y no está afiliado con Hyperliquid. Operar es arriesgado. Úsalo bajo tu propio riesgo.')}
+  </div>`
+
+  const header = `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:14px 16px 11px;background:var(--bg);border-bottom:1px solid var(--border)">
+    <span style="font-size:18px;font-weight:700">${_T('Security & Keys', 'Seguridad y claves')}</span>
+    <button onclick="window.__closeSecurityInfo()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+  </div>`
+  return header + hero + storage + control + backup + honest + who + tos + privacy + footer
+}
+
+// Mark price for a position. Prefer the live mid from allMids; but HIP-3 dex
+// positions (and the combined "All Accounts" view) often aren't in allMids, so
+// fall back to the position's own notional — HL computes positionValue = |szi| ×
+// mark, so positionValue / |szi| recovers the exact mark. Without this the mark
+// shows "—" and the health bar wrongly reads 100% (markPx 0 skips the calc).
+// Single source of truth for an asset's live price, shared by EVERY view (positions,
+// Watch list, top chips, chart header). The mid (state.allMids — fed by the WS + the
+// HIP-3 fan tick) is authoritative; _mktCtxMap.markPx is only a cold-start fallback for
+// coins not yet in the mids map. That ctx snapshot is fetched once and NEVER refreshes,
+// so it must never win over a live mid — reading it as the price is exactly what made the
+// same asset show two different numbers in Watch vs its position card.
+function _livePx(coin) {
+  const m = parseFloat(state.allMids?.[coin] ?? 0)
+  if (m > 0) return m
+  const c = _mktCtxMap[coin]
+  return c ? parseFloat(c.markPx ?? 0) : 0
+}
+
+function _posMarkPx(p) {
+  const m = _livePx(p.coin)
+  if (m > 0) return m
+  // Last resort: recover mark from the position's own notional (HL: positionValue = |szi| × mark).
+  const sz = Math.abs(parseFloat(p.szi ?? 0))
+  const pv = Math.abs(parseFloat(p.positionValue ?? 0))
+  return sz > 0 && pv > 0 ? pv / sz : 0
+}
+
+// Per-position health = distance from mark to the position's liquidation price,
+// relative to entry (100% at entry → 0% at liq). Same metric the position card
+// renders; extracted so the sort comparator can rank by it too.
+function _mobVPosHealth(p) {
+  const sz      = parseFloat(p.szi ?? 0)
+  const liqPx   = parseFloat(p.liquidationPx ?? 0)
+  const entryPx = parseFloat(p.entryPx ?? 0)
+  const markPx  = _posMarkPx(p)
+  if (liqPx > 0 && entryPx > 0 && markPx > 0) {
+    if (sz > 0 && entryPx > liqPx) return Math.max(0, Math.min(100, (markPx - liqPx) / (entryPx - liqPx) * 100))
+    if (sz < 0 && liqPx > entryPx) return Math.max(0, Math.min(100, (liqPx - markPx) / (liqPx - entryPx) * 100))
+  }
+  return 100
+}
+// Stable id for a merged position group (coin + direction). Must match the id the live
+// updater targets so per-tick PnL/health patches land on the right summary card.
+function _mobVGid(coin, side) { return `${String(coin).replace(/[^a-z0-9]/gi, '')}-${side}` }
+
+// Summary card for several accounts holding the same coin + direction. Combines the
+// ADDITIVE metrics (size, weighted avg entry, notional, uPnL, margin, funding) and shows
+// the WORST (nearest-liquidation) health — because liquidation is per-account and does NOT
+// merge. Expands to the individual per-account cards (passed in as `members[].html`).
+// Small badge shown under a position's MARK price when a server-side guard is armed for that
+// coin — 🛡 Liq Guard and/or 🛑 Lev Brake — so the user sees at a glance that it's protected.
+function _mobVGuardBadge(coin) {
+  const c   = String(coin).toUpperCase()
+  const liq = !!serverStatus?._instances?.[`liqguard:${c}`]
+  const brk = !!serverStatus?._instances?.[`levbrake:${c}`]
+  if (!liq && !brk) return ''
+  const tip = [liq ? '🛡 Liq Guard' : '', brk ? '🛑 Lev Brake' : ''].filter(Boolean).join(' · ') + ' active'
+  return `<div style="display:flex;gap:4px;justify-content:center;margin-top:3px;line-height:1;font-size:11px" title="${tip}">${liq ? '🛡' : ''}${brk ? '🛑' : ''}</div>`
+}
+
+function _mobVMergedPosCard(members) {
+  const first     = members[0]
+  const coin      = first.coin
+  const isLong    = first.side === 'LONG'
+  const side      = isLong ? 'Long' : 'Short'
+  const sideColor = isLong ? '#00e5a0' : '#ff4d6d'
+  const sideBg    = isLong ? 'rgba(0,229,160,0.15)' : 'rgba(255,77,109,0.15)'
+  const cardBg    = isLong
+    ? 'linear-gradient(160deg, rgba(0,229,160,0.10), rgba(255,255,255,0.012) 60%)'
+    : 'linear-gradient(160deg, rgba(255,77,109,0.10), rgba(255,255,255,0.012) 60%)'
+  const n       = members.length
+  const totSz   = members.reduce((s, c) => s + c.absSz, 0)
+  const totVal  = members.reduce((s, c) => s + c.posVal, 0)
+  const totUPnl = members.reduce((s, c) => s + c.uPnl, 0)
+  const totMrg  = members.reduce((s, c) => s + c.margin, 0)
+  const totFund = members.reduce((s, c) => s + c.funding, 0)
+  const avgEntry = totSz > 0 ? members.reduce((s, c) => s + c.entryPx * c.absSz, 0) / totSz : 0
+  const roe     = totMrg > 0 ? totUPnl / totMrg * 100 : 0
+  const markPx  = first.markPx
+  let worst = members[0]; for (const c of members) if (c.healthPct < worst.healthPct) worst = c
+  const healthPct = worst.healthPct
+  const worstAcct = worst.acct || '—'
+  const barColor  = healthPct > 70 ? '#00e5a0' : healthPct > 40 ? '#f59e0b' : healthPct > 20 ? '#ff9444' : '#ff4d6d'
+  // "mixed" = the merged accounts don't share one leverage / margin mode, so their risk
+  // settings (and thus per-account liq) genuinely differ — flag it so the summary isn't read
+  // as uniform.
+  const mixed   = !(members.every(c => c.lev === first.lev) && members.every(c => c.isIso === first.isIso))
+  const pnlCls  = totUPnl >= 0 ? 'pos' : 'neg'
+  // The bottom summary follows the active sort. Direction matches the list: ▲ (dir=+1) =
+  // biggest first → feature the MAX account ("Top"); ▼ (dir=-1) = the MIN ("Lowest").
+  // For PnL/Value it also shows that account's health so risk stays visible.
+  const _sBy = _mobVPosSortBy, _top = _mobVPosSortDir > 0
+  let summary
+  if (_sBy === 'unrl') {
+    let f = members[0]; for (const c of members) if (_top ? c.uPnl > f.uPnl : c.uPnl < f.uPnl) f = c
+    summary = { mode: 'metric', label: _top ? _T('Top PnL', 'Mayor PnL') : _T('Lowest PnL', 'Menor PnL'),
+      acct: f.acct || '—', valText: _prv((f.uPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(f.uPnl))),
+      valColor: f.uPnl >= 0 ? '#00e5a0' : '#ff4d6d', health: f.healthPct }
+  } else if (_sBy === 'posval') {
+    let f = members[0]; for (const c of members) if (_top ? c.posVal > f.posVal : c.posVal < f.posVal) f = c
+    summary = { mode: 'metric', label: _top ? _T('Top value', 'Mayor valor') : _T('Lowest value', 'Menor valor'),
+      acct: f.acct || '—', valText: _prv('$' + fmtUSD(f.posVal)), valColor: 'var(--fg)', health: f.healthPct }
+  } else {
+    summary = { mode: 'health', label: _T('Worst health', 'Peor salud'), acct: worstAcct,
+      valText: healthPct.toFixed(1) + '%', valColor: barColor, health: healthPct }
+  }
+  const sHealth   = Math.max(0, Math.min(100, summary.health))
+  const sBarColor = sHealth > 70 ? '#00e5a0' : sHealth > 40 ? '#f59e0b' : sHealth > 20 ? '#ff9444' : '#ff4d6d'
+  const gid     = _mobVGid(coin, first.side)
+  const id      = `posg-${gid}`
+  const xp      = _mobVExpandedIds.has(id)
+  const chev    = `<svg id="mrc-${id}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>`
+  return `<div style="margin:0 12px 8px;border-radius:14px;background:${cardBg};border:1px solid rgba(255,255,255,0.10);border-left:3px solid ${sideColor};overflow:hidden">
+    <div style="padding:12px 14px;cursor:pointer;-webkit-touch-callout:none" data-lp-coin="${esc(coin)}" data-lp-px="${markPx}" onclick="window._mobVToggleRow('${id}')">
+      <div style="display:flex;align-items:center;gap:10px">
+        ${_mobVCoinIcon(coin)}
+        <div style="min-width:0;flex:1">
+          <div style="display:flex;align-items:center;gap:7px">
+            <span style="font-size:15px;font-weight:700">${esc(_ocCoinLabel(coin))}</span>
+            <span style="font-size:9.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:${sideBg};color:${sideColor};text-transform:uppercase;letter-spacing:0.5px;flex-shrink:0">${side}</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px"><span class="notranslate">×${n}</span> ${_T('accounts', 'cuentas')}</div>
+        </div>
+        <div style="text-align:center;flex-shrink:0">
+          <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
+          <div id="pos-mark-g-${gid}" style="font-size:13px;font-weight:600;margin-top:2px">${markPx > 0 ? '$' + fmtPrice(markPx) : '—'}</div>
+          ${_mobVGuardBadge(coin)}
+        </div>
+        <div style="text-align:right;flex-shrink:0;min-width:64px">
+          <div class="mob-v-row-val ${pnlCls}" id="pos-upnl-g-${gid}" style="font-size:15px;font-weight:700;line-height:1.15">${_prv((totUPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(totUPnl)))}</div>
+          <div class="mob-v-row-pct ${pnlCls}" id="pos-roe-g-${gid}" style="font-size:11px;font-weight:600;line-height:1.15;margin-top:1px">${_prv((roe >= 0 ? '+' : '-') + Math.abs(roe).toFixed(2) + '%')}</div>
+        </div>
+        ${chev}
+      </div>
+      <div style="margin-top:12px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+          <span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">${summary.label}</span>
+          <span style="font-size:11px;font-weight:700"><span class="notranslate" style="color:var(--accent);font-weight:700">${esc(summary.acct)}</span> <span ${summary.mode === 'health' ? `id="pos-hpct-g-${gid}"` : ''} style="color:${summary.valColor}">${summary.valText}</span>${summary.mode !== 'health' ? ` <span style="color:var(--muted);font-weight:600;font-size:10px">· Health <span style="color:${sBarColor};font-weight:700">${sHealth.toFixed(0)}%</span></span>` : ''}</span>
+        </div>
+        <div style="position:relative;height:6px;border-radius:3px;background:linear-gradient(90deg,#ff4d6d 0%,#f5a623 50%,#00e5a0 100%)">
+          <div ${summary.mode === 'health' ? `id="pos-hdot-g-${gid}"` : ''} style="position:absolute;top:50%;left:${sHealth.toFixed(1)}%;width:12px;height:12px;border-radius:50%;background:#fff;border:2px solid var(--bg);transform:translate(-50%,-50%);box-shadow:0 1px 3px rgba(0,0,0,0.45)"></div>
+        </div>
+      </div>
+    </div>
+    <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">
+      ${_mobVDetailGrid([
+        ['Size', fmtSize(totSz) + ' ' + esc(_ocCoinLabel(coin))],
+        ['Position Value', _prv('$' + fmtUSD(totVal))],
+        [_T('Avg Entry', 'Entrada prom.'), '$' + fmtPrice(avgEntry)],
+        ['Margin Used', _prv('$' + fmtUSD(totMrg))],
+        ['Real Leverage', totMrg > 0 ? (totVal / totMrg).toFixed(2) + 'x' : '—'],
+        ['Funding', _prv((totFund >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(totFund))), totFund >= 0 ? 'var(--green)' : 'var(--red)'],
+      ])}
+      <div style="padding:9px 16px 4px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;background:var(--panel-2)">${n} ${_T('accounts', 'cuentas')} · ${_T('tap any to manage', 'toca cualquiera para gestionar')}</div>
+      ${members.map(c => c.html).join('')}
+    </div>
+  </div>`
+}
+
 function _mobVSlideIn(dir) {
   const c = document.getElementById('mobVContent')
   if (!c) return
@@ -5694,6 +9102,165 @@ function mobVHide() {
   document.body.classList.remove('is-mob-view')
   const app = document.querySelector('.app')
   if (app) app.style.display = ''
+  _mobWatchRotatorStop()
+}
+
+// ── Home watchlist strip ───────────────────────────────────────────────────────
+// A horizontally swipeable row of every watched coin (name + price + 24h %), sitting above
+// the home tabs. It used to show only 2 at a time and auto-advance every 5s, which made the
+// cards change under the user while they were reading one; now they're all laid out and you
+// drag through them, like the tab/pill rows elsewhere.
+function _mobWatchRotatorStart() { _mobWatchRender() }
+function _mobWatchRotatorStop()  { _mobWatchLastKey = '' }
+
+// Live figures for one watch cell, shared by the initial build and the per-tick patch so
+// both always format identically.
+function _mobWatchVals(coin) {
+  const cached = _watchCandleCache[`${coin}_1D`]
+  const price  = _livePx(coin) || (cached?.candles?.length ? parseFloat(cached.candles.at(-1).c) : null)
+  const pct    = cached?.candles?.length ? (watchChgPct(cached.candles, price) ?? 0) : null
+  const cls    = pct == null ? 'neu' : pct > 0 ? 'pos' : pct < 0 ? 'neg' : 'neu'
+  const arr    = pct == null ? '' : pct > 0 ? '▲' : pct < 0 ? '▼' : '·'
+  const chg    = pct == null ? '—' : `${arr} ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
+  // Whole dollars for 4+ digit prices — the cell is narrow and a full "$64,380.50"
+  // squeezes the body until the 24h% wraps, growing the box.
+  const pxStr = price == null ? '—'
+    : price >= 1000 ? '$' + Math.round(price).toLocaleString('en-US')
+    : '$' + fmtPrice(price)
+  return { chg, cls, pxStr }
+}
+const _mobWatchId = coin => 'mw-' + String(coin).replace(/[^a-z0-9]/gi, '_')
+
+function _mobWatchCell(coin) {
+  // Same single price source as the position card and the markets list (_livePx = live mid,
+  // else the once-fetched market-ctx mark). Only when the asset is in neither do we fall back
+  // to the last 1D candle close — that stale close is what made the watch chip and this coin's
+  // position card show two different numbers.
+  const { chg, cls, pxStr } = _mobWatchVals(coin)
+  const id = _mobWatchId(coin)
+  return `<button class="mob-watch-cell" onclick="window.__watchOpenTrade('${esc(coin)}')">
+    <span class="mob-watch-cell-ic">${_mobVCoinIcon(coin)}</span>
+    <span class="mob-watch-cell-body">
+      <span class="mob-watch-cell-name">${esc(watchCoinLabel(coin))}</span>
+      <span class="mob-watch-cell-chg ${cls}" id="${id}-chg">${chg}</span>
+    </span>
+    <span class="mob-watch-cell-px" id="${id}-px">${pxStr}</span>
+  </button>`
+}
+
+function _mobWatchRender() {
+  const el = document.getElementById('mobWatchRotator')
+  if (!el) return
+  // Hide the strip on any full-page view — it's home-tab chrome, not something to sit
+  // above a view that owns the whole screen.
+  if (_MOBV_FULLPAGE.has(_mobVActiveTab)) { el.style.display = 'none'; return }
+  const list = loadWatchlist()
+  if (!list.length) { el.style.display = 'none'; return }
+  el.style.display = 'flex'
+
+  // Rebuild ONLY when the watched set changes. This runs on every position tick, and
+  // replacing innerHTML would both recreate every coin icon and — now that the strip
+  // scrolls — yank the user back to the start mid-drag. Prices are patched in place instead.
+  //
+  // The key ALSO tracks whether the CoinGecko icon map has landed: _coinIconHtml deliberately
+  // returns a letter avatar until that map exists (so icons don't visibly flip once it loads)
+  // and relies on a later repaint to swap in real artwork. Without this the strip built once
+  // with placeholders and never rebuilt, leaving letter icons permanently on any device where
+  // the map arrived after the first paint.
+  const _iconsReady = !!(_cgIconMap && Object.keys(_cgIconMap).length)
+  const key = list.join('|') + (_iconsReady ? '|i1' : '|i0')
+  if (key !== _mobWatchLastKey) {
+    _mobWatchLastKey = key
+    el.innerHTML = list.map(_mobWatchCell).join('')
+  } else {
+    for (const coin of list) {
+      const { chg, cls, pxStr } = _mobWatchVals(coin)
+      const id  = _mobWatchId(coin)
+      const pxE = document.getElementById(`${id}-px`)
+      const chE = document.getElementById(`${id}-chg`)
+      if (pxE && pxE.textContent !== pxStr) pxE.textContent = pxStr
+      if (chE) {
+        if (chE.textContent !== chg) chE.textContent = chg
+        const want = `mob-watch-cell-chg ${cls}`
+        if (chE.className !== want) chE.className = want
+      }
+    }
+  }
+  _ensureTickerCandles()   // keep 24h % fresh (shared cache with the desktop ticker)
+}
+let _mobWatchLastKey = ''
+
+// Draw the watch-tab sparklines (24h hourly closes), coloured by 24h direction, and
+// wire touch-drag so dragging along one shows a dot + price at that point.
+function _mobWatchDrawSparks() {
+  document.querySelectorAll('.mob-watch-spark').forEach(cv => {
+    const coin    = cv.dataset.coin
+    const candles = _watchCandleCache[`${coin}_1D`]?.candles
+    const ctx     = cv.getContext('2d')
+    const dpr     = window.devicePixelRatio || 1
+    const W = cv.width, H = cv.height
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.clearRect(0, 0, W, H)
+    if (!candles || candles.length < 2) return
+
+    const closes = candles.map(c => parseFloat(c.c)).filter(Number.isFinite)
+    const lo = Math.min(...closes), hi = Math.max(...closes)
+    const pad = 5
+    const up  = closes.at(-1) >= closes[0]
+    const col = up ? '#00e5a0' : '#ff4d6d'
+    const xAt = i => pad + (i / (closes.length - 1)) * (W - 2 * pad)
+    const yAt = v => hi === lo ? H / 2 : H - pad - ((v - lo) / (hi - lo)) * (H - 2 * pad)
+
+    // gradient fill under the line
+    const g = ctx.createLinearGradient(0, 0, 0, H)
+    g.addColorStop(0, up ? 'rgba(0,229,160,0.28)' : 'rgba(255,77,109,0.28)')
+    g.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.beginPath(); ctx.moveTo(xAt(0), H)
+    closes.forEach((v, i) => ctx.lineTo(xAt(i), yAt(v)))
+    ctx.lineTo(xAt(closes.length - 1), H); ctx.closePath(); ctx.fillStyle = g; ctx.fill()
+
+    ctx.beginPath()
+    closes.forEach((v, i) => i ? ctx.lineTo(xAt(i), yAt(v)) : ctx.moveTo(xAt(i), yAt(v)))
+    ctx.strokeStyle = col; ctx.lineWidth = 1.6; ctx.lineJoin = 'round'; ctx.stroke()
+
+    // A drag scrubs the sparkline (dot + price at the touch point); a plain tap opens
+    // the full interactive chart. `_startX`/`_moved` disambiguate the two on touchend.
+    if (!cv._interactive) {
+      cv._interactive = true
+      const redraw = () => _mobWatchDrawSparks()
+      const scrubAt = (clientX) => {
+        const r = cv.getBoundingClientRect()
+        const frac = Math.max(0, Math.min(1, (clientX - r.left) / r.width))
+        const cur = _watchCandleCache[`${cv.dataset.coin}_1D`]?.candles?.map(c => parseFloat(c.c)).filter(Number.isFinite)
+        if (!cur || cur.length < 2) return
+        const idx = Math.round(frac * (cur.length - 1))
+        redraw()
+        const x = xAt(idx), y = yAt(cur[idx])
+        ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill()
+        const lbl = '$' + fmtPrice(cur[idx])
+        ctx.font = 'bold 10px "JetBrains Mono", monospace'
+        const tw = ctx.measureText(lbl).width
+        const bx = Math.max(1, Math.min(W - tw - 5, x - tw / 2))
+        ctx.fillStyle = 'rgba(20,22,30,0.92)'; ctx.fillRect(bx - 2, 0, tw + 6, 13)
+        ctx.fillStyle = '#e5e9f0'; ctx.textBaseline = 'top'; ctx.fillText(lbl, bx + 1, 2)
+      }
+      cv.addEventListener('touchstart', e => { cv._startX = e.touches[0].clientX; cv._moved = false }, { passive: true })
+      cv.addEventListener('touchmove',  e => {
+        if (Math.abs(e.touches[0].clientX - cv._startX) > 6) cv._moved = true
+        if (cv._moved) { e.stopPropagation(); scrubAt(e.touches[0].clientX) }
+      }, { passive: true })
+      cv.addEventListener('touchend', () => {
+        if (cv._moved) setTimeout(redraw, 900)       // was a scrub — restore after a beat
+        // a plain tap is handled by the synthesized click below (opens the trade view)
+      }, { passive: true })
+      // Click (mouse or synthesized tap) opens the asset in the trade tab; a drag-scrub
+      // sets `_moved`, so guard against that so scrubbing doesn't navigate away.
+      cv.addEventListener('click', () => {
+        if (cv._moved) { cv._moved = false; return }
+        window.__watchOpenTrade(cv.dataset.coin)
+      })
+    }
+  })
 }
 
 function renderMobileView() {
@@ -5702,6 +9269,10 @@ function renderMobileView() {
   _mobVRenderHeader()
   _mobVRenderBalance()
   _mobVRenderContent()
+  // Re-apply the active translation — a re-render rebuilds content in English, so without
+  // this a background refresh or tab change would wipe it. Cache-first, so no flash.
+  if (_currentLang !== 'en') window.__i18nApply()
+  _mobWatchRotatorStart()
   // Sync privacy button initial state
   const privBtn = document.getElementById('mobVPrivacyBtn')
   if (privBtn) {
@@ -5722,15 +9293,30 @@ function renderMobileView() {
 function updateMobileView(fullData = false) {
   if (!_isMobView()) return
   _mobVRenderBalance()
-  if (fullData || ['orders', 'spot', 'outcomes', 'watch'].includes(_mobVActiveTab)) {
+  if (fullData) {
     _mobVRenderContent()
+  } else if (['orders', 'spot', 'outcomes'].includes(_mobVActiveTab)) {
+    _mobVRenderContent(true)   // tick — skips the rebuild when the visible data is unchanged
+  } else if (_mobVActiveTab === 'watch') {
+    _mobVRenderContent(true)   // tick — updates prices in place, skips the full rebuild
   } else if (_mobVActiveTab === 'positions') {
     const hash = _mobVPosStructHash()
     if (hash !== _mobVLastPosHash) { _mobVLastPosHash = hash; _mobVRenderContent() }
     else _mobVUpdatePositionsLive()
+  } else if (_mobVActiveTab === 'trades' || _mobVActiveTab === 'calendar') {
+    // Repaint History/Calendar only when fills or ledger change — so a new trade shows up
+    // live, but an unchanged tick doesn't reset scroll position / calendar month.
+    const h = (state.fills?.length ?? 0) + '|' + (state.ledger?.length ?? 0)
+    if (h !== _mobVLastFillsHash) { _mobVLastFillsHash = h; _mobVRenderContent() }
   } else if (_mobVActiveTab === 'portfolio') {
     _mobVUpdatePortfolioLive()
+  } else if (_mobVActiveTab === 'trade' && _mobTradeView === 'detail') {
+    _mobUpdateTradeDetailLive()   // keep the header mark price live without touching the chart
   }
+  // Repaint the home watch strip on the SAME tick as the positions, from the SAME
+  // state.allMids snapshot, so a coin that's both watched and held can't show two
+  // different marks due to the strip and the position cards rendering on offset timers.
+  _mobWatchRender()
 }
 
 // Whether the unified portfolio snapshot has loaded — until it does, the perp-only
@@ -5743,7 +9329,7 @@ function _acctValueReady() {
 // Update only the live-changing values in the portfolio tab without rebuilding
 function _mobVUpdatePortfolioLive() {
   if (!state.perpState || !_acctValueReady()) return
-  const stats = computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio)
+  const stats = computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids)
   const { accountValue, unrealizedPnl, healthStr, healthCls } = stats
   const pnlCls = v => v >= 0 ? 'pos' : 'neg'
   const pnlFmt = v => (v >= 0 ? '+$' : '-$') + fmtUSD(Math.abs(v))
@@ -5766,31 +9352,97 @@ function _mobVUpdatePortfolioLive() {
 }
 
 function _mobVPosStructHash() {
+  // Account-aware so opening/closing a position in ANY wallet triggers a full rebuild (the
+  // combined view can hold the same coin in two wallets).
   return (state.perpState?.assetPositions ?? [])
     .filter(ap => parseFloat(ap.position.szi ?? 0) !== 0)
-    .map(ap => `${ap.position.coin}:${ap.position.szi}`).join('|')
+    .map(ap => `${ap.position._acctAddr ?? ''}:${ap.position.coin}:${ap.position.szi}`).join('|')
 }
 
 function _mobVUpdatePositionsLive() {
   const pos = (state.perpState?.assetPositions ?? []).filter(ap => parseFloat(ap.position.szi ?? 0) !== 0)
   pos.forEach(ap => {
     const p      = ap.position
+    // Same key the card render uses (coin + account in the combined view), so we target the
+    // right card when two wallets hold the same coin — otherwise the in-place update misses.
+    const uid    = p._acctAddr ? `${p.coin}-${p._acctAddr.slice(2, 8)}` : p.coin
     const uPnl   = parseFloat(p.unrealizedPnl ?? 0)
     const roe    = parseFloat(p.returnOnEquity ?? 0) * 100
-    const markPx = parseFloat(state.allMids?.[p.coin] ?? 0)
+    const markPx = _posMarkPx(p)
     const pnlCls = uPnl >= 0 ? 'pos' : 'neg'
-    const markEl = document.getElementById(`pos-mark-${p.coin}`)
-    const upnlEl = document.getElementById(`pos-upnl-${p.coin}`)
-    const roeEl  = document.getElementById(`pos-roe-${p.coin}`)
+    const markEl = document.getElementById(`pos-mark-${uid}`)
+    const upnlEl = document.getElementById(`pos-upnl-${uid}`)
+    const roeEl  = document.getElementById(`pos-roe-${uid}`)
     if (markEl) markEl.textContent = markPx > 0 ? '$' + fmtPrice(markPx) : '—'
     // Respect privacy mode — the live tick must not un-mask what the full render hid.
     if (upnlEl) { upnlEl.textContent = _prv((uPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(uPnl))); upnlEl.className = 'mob-v-row-val ' + pnlCls }
     if (roeEl)  { roeEl.textContent  = _prv((roe  >= 0 ? '+' : '-') + Math.abs(roe).toFixed(2) + '%'); roeEl.className  = 'mob-v-row-pct ' + pnlCls }
   })
+  // Merged same-coin/side summary cards (combined view) — recompute the additive totals and
+  // worst health each tick so the collapsed header stays live like the individual cards.
+  if (state.isAllAccounts) {
+    const groups = new Map()
+    for (const ap of pos) {
+      const side = parseFloat(ap.position.szi ?? 0) > 0 ? 'LONG' : 'SHORT'
+      const k = ap.position.coin + '|' + side
+      if (!groups.has(k)) groups.set(k, [])
+      groups.get(k).push(ap)
+    }
+    for (const [k, members] of groups) {
+      if (members.length < 2) continue
+      const gid = _mobVGid(members[0].position.coin, k.split('|')[1])
+      let totUPnl = 0, totMrg = 0, worst = 101, markPx = 0
+      for (const ap of members) {
+        const p = ap.position
+        totUPnl += parseFloat(p.unrealizedPnl ?? 0)
+        totMrg  += parseFloat(p.marginUsed ?? 0)
+        markPx   = _posMarkPx(p)
+        const h  = _mobVPosHealth(p); if (h < worst) worst = h
+      }
+      const roe = totMrg > 0 ? totUPnl / totMrg * 100 : 0
+      const pnlCls = totUPnl >= 0 ? 'pos' : 'neg'
+      const upEl = document.getElementById(`pos-upnl-g-${gid}`)
+      const rEl  = document.getElementById(`pos-roe-g-${gid}`)
+      const mEl  = document.getElementById(`pos-mark-g-${gid}`)
+      const hEl  = document.getElementById(`pos-hpct-g-${gid}`)
+      const dEl  = document.getElementById(`pos-hdot-g-${gid}`)
+      if (upEl) { upEl.textContent = _prv((totUPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(totUPnl))); upEl.className = 'mob-v-row-val ' + pnlCls }
+      if (rEl)  { rEl.textContent  = _prv((roe >= 0 ? '+' : '-') + Math.abs(roe).toFixed(2) + '%'); rEl.className = 'mob-v-row-pct ' + pnlCls }
+      if (mEl)  mEl.textContent = markPx > 0 ? '$' + fmtPrice(markPx) : '—'
+      if (hEl)  { hEl.textContent = worst.toFixed(1) + '%'; hEl.style.color = worst > 70 ? '#00e5a0' : worst > 40 ? '#f59e0b' : worst > 20 ? '#ff9444' : '#ff4d6d' }
+      if (dEl)  dEl.style.left = Math.max(0, Math.min(100, worst)).toFixed(1) + '%'
+    }
+  }
+}
+
+// Live price update for the Watch tab — used on ticks when the coin/market SET is unchanged,
+// so we never rebuild the rows (which would re-fetch icons, redraw sparks, re-mount the
+// TradingView minis, and steal focus from the search box).
+function _mobVUpdateWatchLive() {
+  document.querySelectorAll('#mobVContent .mob-watch-mid-px[data-wcoin]').forEach(elx => {
+    const coin = elx.dataset.wcoin
+    const px   = parseFloat(state.allMids?.[coin] ?? 0)
+    const s    = px > 0 ? '$' + fmtPrice(px) : '—'
+    if (elx.textContent !== s) elx.textContent = s
+  })
 }
 
 function _mobVCoinIcon(coin) {
   return `<div class="mob-v-row-icon" style="padding:0;overflow:hidden;background:var(--panel-2)">${_coinIconHtml(coin)}</div>`
+}
+
+// Friendly, teaching empty-state — turns a dead end into a next step for newcomers.
+// Shows a plain-language line plus quick actions (Trade / Practice) instead of a bare label.
+function _emptyTeach(title, body) {
+  return `<div style="padding:40px 24px;text-align:center;max-width:360px;margin:0 auto">
+    <div style="font-size:34px;margin-bottom:8px;opacity:.7">🌱</div>
+    <div style="font-size:15px;font-weight:800;margin-bottom:6px">${esc(title)}</div>
+    <div style="font-size:13px;line-height:1.6;color:var(--muted)">${esc(body)}</div>
+    <div style="display:flex;gap:8px;justify-content:center;margin-top:16px;flex-wrap:wrap">
+      <button onclick="window.__mobMoreTab('trade')" style="border:none;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;background:var(--accent);color:#000">⚡ Trade</button>
+      ${state.isAllAccounts || isPaper() ? '' : `<button onclick="window.__openLearn()" style="border:none;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;background:var(--panel-2);color:var(--fg)">Learn how</button>`}
+    </div>
+  </div>`
 }
 
 function _mobVDetailGrid(items) {
@@ -5812,9 +9464,13 @@ window._mobVToggleRow = function(id) {
   if (chev) chev.style.transform = open ? '' : 'rotate(90deg)'
 }
 
-window._mobVEditPosTpSl = function(coin) {
+window._mobVEditPosTpSl = function(coin, acct = null) {
   try {
-    const ap = (state.perpState?.assetPositions ?? []).find(ap => ap.position.coin === coin && parseFloat(ap.position.szi ?? 0) !== 0)
+    // Two wallets can hold the same coin in the combined view, so the position must
+    // be matched on the owning account too — not just the ticker.
+    const ap = (state.perpState?.assetPositions ?? []).find(ap =>
+      ap.position.coin === coin && parseFloat(ap.position.szi ?? 0) !== 0 &&
+      (!acct || (ap.position._acctAddr ?? '').toLowerCase() === acct.toLowerCase()))
     if (!ap) return
     const p       = ap.position
     const sz      = parseFloat(p.szi ?? 0)
@@ -5823,6 +9479,7 @@ window._mobVEditPosTpSl = function(coin) {
     let tpPx = 0, slPx = 0, tpOid = 0, slOid = 0
     for (const o of (state.openOrders ?? [])) {
       if (o.coin !== p.coin || !o.isTrigger) continue
+      if (acct && (o._acctAddr ?? '').toLowerCase() !== acct.toLowerCase()) continue
       const isTp = o.orderType?.startsWith('Take Profit') || o.triggerCondition === 'tp'
       const isSl = o.orderType?.startsWith('Stop') || o.triggerCondition === 'sl'
       const opx  = parseFloat(o.triggerPx ?? 0)
@@ -5834,7 +9491,7 @@ window._mobVEditPosTpSl = function(coin) {
     if (overlay && overlay.parentNode !== document.body || overlay?.nextSibling) {
       document.body.appendChild(overlay)
     }
-    window.__openEditModal(p.coin, apiSide, p.szi, p.entryPx, tpPx, slPx, tpOid, slOid, levVal)
+    window.__openEditModal(p.coin, apiSide, p.szi, p.entryPx, tpPx, slPx, tpOid, slOid, levVal, acct)
     if (overlay) {
       overlay.style.zIndex     = '99999'
       overlay.style.alignItems = 'flex-start'
@@ -5865,26 +9522,28 @@ window._mobVBtn = function(el, event) {
   }
 }
 
-window._mobVClosePos = function(btn, coin, side, szi, mark) {
+window._mobVClosePos = function(btn, coin, side, szi, mark, acct) {
   // The close modal IS the confirmation — it lets the user pick how much to
   // close (slider/presets) before submitting, so open it directly.
   const overlay = document.getElementById('closeModal')
   if (overlay) document.body.appendChild(overlay)   // ensure it sits above the mobile sheet
-  window.__openCloseModal(coin, side, szi, mark)
+  window.__openCloseModal(coin, side, szi, mark, acct)
 }
 
-window._mobVAdjustMargin = function(coin) {
-  const ap = (state.perpState?.assetPositions ?? []).find(ap => ap.position.coin === coin && parseFloat(ap.position.szi ?? 0) !== 0)
+window._mobVAdjustMargin = function(coin, acct = null) {
+  const ap = (state.perpState?.assetPositions ?? []).find(ap =>
+    ap.position.coin === coin && parseFloat(ap.position.szi ?? 0) !== 0 &&
+    (!acct || (ap.position._acctAddr ?? '').toLowerCase() === acct.toLowerCase()))
   if (!ap) return
   const p    = ap.position
   const side = parseFloat(p.szi) > 0 ? 'LONG' : 'SHORT'
   const overlay = document.getElementById('marginModal')
   if (overlay) document.body.appendChild(overlay)   // sit above the mobile sheet
-  window.__openAdjustMarginModal(coin, side, parseFloat(p.marginUsed ?? 0), parseFloat(p.positionValue ?? 0), p.leverage?.value ?? 1)
+  window.__openAdjustMarginModal(coin, side, parseFloat(p.marginUsed ?? 0), parseFloat(p.positionValue ?? 0), p.leverage?.value ?? 1, acct)
 }
 
-window._mobVCancelOrd = async function(btn, coin, oid) {
-  if (!isConnected()) {
+window._mobVCancelOrd = async function(btn, coin, oid, acct = null) {
+  if (!window.__acctCanTrade(acct)) {
     btn.textContent = '⚠ Connect key'
     setTimeout(() => { if (btn.isConnected) btn.textContent = 'Cancel' }, 2000)
     return
@@ -5892,19 +9551,19 @@ window._mobVCancelOrd = async function(btn, coin, oid) {
   btn.textContent = 'Cancelling…'
   btn.disabled = true
   try {
-    const result   = await cancelOrder({ coin, oid: parseInt(oid) })
+    const result   = await cancelOrder({ coin, oid: parseInt(oid), acct })
     const statuses = result?.response?.data?.statuses ?? []
     const errors   = statuses.filter(s => s?.error).map(s => s.error)
     const ok       = statuses.some(s => s === 'success' || (s && s.success !== undefined))
     if (ok || (!errors.length && !statuses.length)) {
-      _removeOrderFromUI(oid)
+      _removeOrderFromUI(oid, acct)
     } else if (errors.length) {
       if (btn.isConnected) { btn.textContent = 'Cancel'; btn.disabled = false }
       _showChartToast('✗ ' + errors.join(', '))
     }
   } catch (e) {
     if (/never placed|already cancel|filled/i.test(e.message)) {
-      _removeOrderFromUI(oid)
+      _removeOrderFromUI(oid, acct)
     } else {
       if (btn.isConnected) { btn.textContent = 'Cancel'; btn.disabled = false }
       _showChartToast('✗ ' + e.message)
@@ -5913,9 +9572,12 @@ window._mobVCancelOrd = async function(btn, coin, oid) {
 }
 
 window._mobVCancelAll = async function() {
+  // Bulk cancel would fire across every wallet in the combined view — block it there
+  // (matches the desktop __cancelAllOrders guard); cancel per-order from each row instead.
+  if (state.isAllAccounts) { _showChartToast('Switch to a single account for bulk actions'); return }
   const orders = state.openOrders ?? []
   if (!orders.length) return
-  if (!isConnected()) { _showChartToast('✗ Connect agent key first'); return }
+  if (!_canAct()) { _showChartToast('✗ Connect agent key first'); return }
   const n = orders.length
   if (!confirm(`Cancel all ${n} open order${n > 1 ? 's' : ''}?`)) return
   _showChartToast(`Cancelling ${n} order${n > 1 ? 's' : ''}…`)
@@ -5937,7 +9599,7 @@ window._mobVCancelAll = async function() {
     })
     if (!statuses.length) { orders.forEach(o => _removeOrderFromUI(o.oid)); ok = n }
     _showChartToast(fail === 0 ? `✓ Cancelled ${ok} order${ok > 1 ? 's' : ''}` : `${ok} cancelled, ${fail} failed`)
-    if (ok > 0) setTimeout(refreshLive, 1000)
+    if (ok > 0) window.__refreshAfterAction(1000)
   } catch (e) {
     console.error('[mobCancelAll]', e)
     _showChartToast('✗ ' + (e.message || String(e)))
@@ -5946,20 +9608,28 @@ window._mobVCancelAll = async function() {
 
 // Fetch live marks for held outcomes and update their Mark/PnL/ROE in place.
 async function _mobUpdateOcMarks(holdings) {
-  for (const b of holdings) {
+  // Rows are rendered as oc-<index>, so target by index — the same token held by
+  // multiple accounts must update EACH row (getElementById by token id clobbered them).
+  const bookCache = {}   // token n → mark, so duplicate-token holdings don't re-fetch
+  for (let i = 0; i < holdings.length; i++) {
+    const b = holdings[i]
     const n = parseInt(String(b.coin).replace(/[^\d]/g, '')) || 0
     if (!n) continue
     try {
-      const book = await infoClient.l2Book({ coin: '#' + n })
-      const bid  = parseFloat(book.levels?.[0]?.[0]?.px ?? 0)
-      const ask  = parseFloat(book.levels?.[1]?.[0]?.px ?? 0)
-      const mark = (bid > 0 && ask > 0) ? (bid + ask) / 2 : (bid || ask)
+      let mark = bookCache[n]
+      if (mark == null) {
+        const book = await infoClient.l2Book({ coin: '#' + n })
+        const bid  = parseFloat(book.levels?.[0]?.[0]?.px ?? 0)
+        const ask  = parseFloat(book.levels?.[1]?.[0]?.px ?? 0)
+        mark = (bid > 0 && ask > 0) ? (bid + ask) / 2 : (bid || ask)
+        bookCache[n] = mark
+      }
       if (!(mark > 0)) continue
       _ocMarkCache[b.coin] = mark
       const total = parseFloat(b.total || 0), cost = parseFloat(b.entryNtl || 0)
       const entry = total > 0 ? cost / total : 0
       const pnl = (mark - entry) * total, roe = cost > 0 ? pnl / cost * 100 : 0
-      const cls = pnl >= 0 ? 'pos' : 'neg', key = String(n)
+      const cls = pnl >= 0 ? 'pos' : 'neg', key = 'oc-' + i
       const mk = document.getElementById('ocmark-' + key); if (mk) mk.textContent = (mark * 100).toFixed(2) + '¢'
       const pe = document.getElementById('ocpnl-' + key);  if (pe) { pe.textContent = (pnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(pnl)); pe.className = 'mob-v-row-val ' + cls }
       const re = document.getElementById('ocroe-' + key);  if (re) { re.textContent = (roe >= 0 ? '+' : '') + roe.toFixed(1) + '%'; re.className = 'mob-v-row-pct ' + cls }
@@ -5968,39 +9638,90 @@ async function _mobUpdateOcMarks(holdings) {
 }
 
 // Close an outcome (prediction) holding by selling its shares — limit or market.
-window._mobOcClose = async function(coin, mode, id, btn) {
+window._mobOcClose = async function(coin, mode, id, btn, acct = null) {
   const stEl = document.getElementById('ocst-' + id)
   const setSt = (c, t) => { if (stEl) { stEl.style.color = c; stEl.textContent = t } }
-  if (!isConnected()) { setSt('var(--red)', '✗ Connect agent key first'); return }
+  // In the combined view the position is owned by `acct`; sign with that account's key.
+  const canTrade = acct ? window.__acctCanTrade?.(acct) : _canAct()
+  if (!canTrade) { setSt('var(--red)', acct ? '✗ No agent key for that account' : '✗ Connect agent key first'); return }
   const sz = parseFloat(document.getElementById('ocsz-' + id)?.value || 0)
   if (!(sz > 0)) { setSt('var(--red)', 'Enter shares'); return }
   btn.disabled = true
   setSt('var(--muted)', mode === 'market' ? 'Market closing…' : 'Placing limit…')
   try {
+    // Shares this account has reserved in resting orders on THIS market (an earlier unfilled
+    // limit close). We free them by cancelling first — but ONLY after the close is sure to go
+    // through, so a bail-out (e.g. no buyer for a market close) never leaves the user with no
+    // order at all.
+    const resting = (state.openOrders ?? []).filter(o => o.coin === coin &&
+      (!acct || String(o._acctAddr ?? '').toLowerCase() === String(acct).toLowerCase()))
+    const _freeResting = async () => {
+      if (!resting.length) return
+      setSt('var(--muted)', _T('Cancelling pending order…', 'Cancelando orden pendiente…'))
+      try { await cancelOrders(resting.map(o => ({ coin, oid: o.oid, _acctAddr: o._acctAddr ?? acct })), acct) } catch {}
+      setSt('var(--muted)', mode === 'market' ? 'Market closing…' : 'Placing limit…')
+    }
     let result
     if (mode === 'limit') {
       const cents = parseFloat(document.getElementById('ocpx-' + id)?.value || 0)
       if (!(cents > 0)) { setSt('var(--red)', 'Enter a limit price (¢)'); btn.disabled = false; return }
-      result = await placeLimitOrder({ coin, isBuy: false, sz, limitPx: cents / 100, leverage: 1, isIsolated: false })
+      await _freeResting()
+      // Outcome (HIP-4) order — resting GTC at the exact price. Uses placeOutcomeOrder, which
+      // applies the 1e-5 tick and skips the perp leverage update (calling updateLeverage on an
+      // outcome asset is what broke closes here).
+      result = await placeOutcomeOrder({ coin, isBuy: false, sz, limitPx: cents / 100, market: false, acct })
     } else {
-      // Market: sell IOC through the live best bid so it actually fills
+      // Market: cross the live best bid with an IOC so it fills now. Outcome books can be
+      // thin — if there's no bid at all, an IOC has nothing to match ("could not immediately
+      // match against any resting orders"), so bail with a clear hint instead of that error
+      // (and WITHOUT cancelling the user's resting order).
       const book = await infoClient.l2Book({ coin }).catch(() => null)
       const bid  = parseFloat(book?.levels?.[0]?.[0]?.px ?? 0)
-      const ref  = bid > 0 ? bid : (parseFloat(document.getElementById('ocpx-' + id)?.value || 0) / 100)
-      if (!(ref > 0)) { setSt('var(--red)', 'No price available'); btn.disabled = false; return }
-      result = await placeMarketOrder({ coin, isBuy: false, sz, markPrice: ref, leverage: 1, isIsolated: false })
+      if (!(bid > 0)) { setSt('var(--red)', '✗ No buyers right now — use Limit Close'); btn.disabled = false; return }
+      await _freeResting()
+      const crossPx = Math.max(1e-5, bid * 0.97)   // sell a touch below best bid to guarantee the cross
+      result = await placeOutcomeOrder({ coin, isBuy: false, sz, limitPx: crossPx, market: true, acct })
     }
     const statuses = result?.response?.data?.statuses ?? []
     const err = statuses.find(s => s?.error)?.error
     if (err) setSt('var(--red)', '✗ ' + err)
     else {
-      const filled = statuses.some(s => s?.filled)
+      const filled   = statuses.some(s => s?.filled)
+      const filledSz = statuses.reduce((a, s) => a + parseFloat(s?.filled?.totalSz ?? 0), 0) || (mode === 'market' ? sz : 0)
+      // Optimistically remember the reduced holding so the card updates instantly and a
+      // lagging spot refresh can't flip it back to "open" (see _ocClampPending).
+      if (mode === 'market' && filled && filledSz > 0) {
+        _ocPendingClose[_ocPendKey(coin, acct)] = { total: Math.max(0, _ocFindBalTotal(coin, acct) - filledSz), ts: Date.now() }
+      }
       setSt('var(--green)', mode === 'market' ? (filled ? '✓ Closed' : '✓ Submitted') : '✓ Limit placed')
-      setTimeout(refreshLive, 1200)
+      window.__refreshOutcomeClose(acct)
     }
   } catch (e) {
     setSt('var(--red)', '✗ ' + (e.message || String(e)))
   } finally { btn.disabled = false }
+}
+
+// Amount configurator for the outcome close panel — mirrors the perp close slider/presets.
+function _mobOcUpdateEst(id, max) {
+  const sz    = Math.max(0, Math.min(max, Math.floor(parseFloat(document.getElementById('ocsz-' + id)?.value) || 0)))
+  const cents = parseFloat(document.getElementById('ocpx-' + id)?.value) || 0
+  const pctEl = document.getElementById('ocpct-' + id)
+  const estEl = document.getElementById('ocest-' + id)
+  if (pctEl) pctEl.textContent = max > 0 ? Math.round(sz / max * 100) + '%' : '0%'
+  if (estEl) estEl.textContent = `${_T('Closing', 'Cerrando')} ${sz} ${_T('shares', 'acciones')} · ~$${(sz * cents / 100).toFixed(2)}`
+}
+// Slider / preset → set the shares input (and mirror the range), then refresh the estimate.
+window._mobOcSetShares = function(id, max, val) {
+  val = Math.max(0, Math.min(max, Math.floor(val)))
+  const szEl = document.getElementById('ocsz-' + id); if (szEl) szEl.value = val
+  const rEl  = document.getElementById('ocrange-' + id); if (rEl) rEl.value = val
+  _mobOcUpdateEst(id, max)
+}
+// Typing in the shares (or price) field → keep the range in sync and refresh the estimate.
+window._mobOcSyncRange = function(id, max) {
+  const sz   = Math.max(0, Math.min(max, Math.floor(parseFloat(document.getElementById('ocsz-' + id)?.value) || 0)))
+  const rEl  = document.getElementById('ocrange-' + id); if (rEl) rEl.value = sz
+  _mobOcUpdateEst(id, max)
 }
 
 // ── Bulk-cancel selection mode ──────────────────────────────────────────────
@@ -6025,10 +9746,14 @@ window._mobVOrdSelectAll = function() {
 }
 
 window._mobVCancelSelected = async function() {
+  // Bulk actions span wallets in the combined view, where one tap would fire orders
+  // across every account. Guard at the function so no UI path can slip through.
+  if (state.isAllAccounts) { _showChartToast('Switch to a single account for bulk actions'); return }
+
   const oids   = new Set(_mobVOrdSel)
   const orders = (state.openOrders ?? []).filter(o => oids.has(o.oid))
   if (!orders.length) { _showChartToast('No orders selected'); return }
-  if (!isConnected()) { _showChartToast('✗ Connect agent key first'); return }
+  if (!_canAct()) { _showChartToast('✗ Connect agent key first'); return }
   const n = orders.length
   if (!confirm(`Cancel ${n} selected order${n > 1 ? 's' : ''}?`)) return
   _showChartToast(`Cancelling ${n} order${n > 1 ? 's' : ''}…`)
@@ -6053,14 +9778,14 @@ window._mobVCancelSelected = async function() {
     _mobVOrdSelMode = false
     _mobVOrdSel.clear()
     _mobVRenderContent()
-    if (ok > 0) setTimeout(refreshLive, 1000)
+    if (ok > 0) window.__refreshAfterAction(1000)
   } catch (e) {
     console.error('[mobCancelSelected]', e)
     _showChartToast('✗ ' + (e.message || String(e)))
   }
 }
 
-window._mobVEditOrd = function(coin, oid, side, sz, px, tpsl, isTrigger) {
+window._mobVEditOrd = function(coin, oid, side, sz, px, tpsl, isTrigger, acct = null) {
   try {
     const isBuy = side === 'B'
     if (tpsl) {
@@ -6068,7 +9793,7 @@ window._mobVEditOrd = function(coin, oid, side, sz, px, tpsl, isTrigger) {
       const overlay = document.getElementById('editModal')
       if (overlay) document.body.appendChild(overlay)
       const o = (state.openOrders ?? []).find(o => o.oid === oid)
-      window.__openEditOrderModal(coin, oid, isBuy, sz, px, tpsl, isTrigger)
+      window.__openEditOrderModal(coin, oid, isBuy, sz, px, tpsl, isTrigger, acct)
       const ov = document.getElementById('editModal')
       if (ov) {
         ov.style.zIndex     = '99999'
@@ -6124,6 +9849,9 @@ window._mobVHandlePfp = function(input) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ dataUrl }),
       }).then(() => {
+        // This address now HAS a photo — clear the "missing" mark so later renders
+        // request it again instead of drawing the fallback badge.
+        _pfpForget(state.addr)
         const bust = `/pfp/${state.addr.toLowerCase()}?v=${ts}`
         const avatarEl = document.getElementById('mobVAvatar')
         if (avatarEl) { const img = avatarEl.querySelector('img'); if (img) img.src = bust }
@@ -6139,9 +9867,25 @@ window._mobVHandlePfp = function(input) {
 }
 
 window._mobVAvatarError = function(img, addr, size) {
+  _pfpMissing.add(addr)   // don't re-request this one for the rest of the session
+  const d = document.createElement('div')
+  // Combined view has no hex address to derive a colour/initials from — use the ⊕ badge.
+  if (addr === '__all_accounts__') {
+    d.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:${Math.round(size * 0.48)}px;color:#000;flex-shrink:0`
+    d.textContent = '⊕'
+    img.replaceWith(d)
+    return
+  }
+  if (addr === PAPER_ADDR) {
+    // Amber, not the accent colour — the simulated account must never be mistaken
+    // for a real one at a glance.
+    d.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;background:#ff9f43;display:flex;align-items:center;justify-content:center;font-size:${Math.round(size * 0.46)}px;color:#000;flex-shrink:0`
+    d.textContent = '📝'
+    img.replaceWith(d)
+    return
+  }
   const hue = parseInt(addr.slice(2, 8), 16) % 360
   const initials = (addr.slice(2, 3) + addr.slice(3, 4)).toUpperCase()
-  const d = document.createElement('div')
   d.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;background:oklch(0.52 0.2 ${hue});display:flex;align-items:center;justify-content:center;font-weight:700;font-size:${Math.round(size * 0.38)}px;color:#fff;flex-shrink:0`
   d.textContent = initials
   img.replaceWith(d)
@@ -6149,7 +9893,32 @@ window._mobVAvatarError = function(img, addr, size) {
 
 function _mobVAvatarHtml(addr, size) {
   if (!addr) return `<div style="width:${size}px;height:${size}px;border-radius:50%;background:var(--panel-2);flex-shrink:0"></div>`
+  // Sentinels CAN have a custom photo (All Accounts / Paper are uploadable like any
+  // wallet), so the request must still be made — skipping it erased images the user
+  // had set. Instead, remember which avatars 404/400'd this session and render the
+  // fallback straight away next time, so the console gets one failed request per
+  // address rather than one per re-render.
+  if (_pfpMissing.has(addr)) return _avatarFallbackHtml(addr, size)
   return `<img src="/pfp/${addr.toLowerCase()}" width="${size}" height="${size}" style="border-radius:50%;object-fit:cover;display:block;flex-shrink:0" onerror="window._mobVAvatarError(this,'${addr}',${size})">`
+}
+
+// Addresses with no stored photo — session-only, so uploading one takes effect
+// immediately on the next render without a reload.
+const _pfpMissing = new Set()
+function _pfpForget(addr) { _pfpMissing.delete(addr) }
+
+/** The non-photo avatar, as markup. Mirrors _mobVAvatarError's DOM version. */
+function _avatarFallbackHtml(addr, size) {
+  const base = `width:${size}px;height:${size}px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0`
+  if (addr === '__all_accounts__') {
+    return `<div style="${base};background:var(--accent);font-size:${Math.round(size * 0.48)}px;color:#000">⊕</div>`
+  }
+  if (addr === PAPER_ADDR) {
+    return `<div style="${base};background:#ff9f43;font-size:${Math.round(size * 0.46)}px;color:#000">📝</div>`
+  }
+  const hue      = parseInt(addr.slice(2, 8), 16) % 360
+  const initials = (addr.slice(2, 3) + addr.slice(3, 4)).toUpperCase()
+  return `<div style="${base};background:oklch(0.52 0.2 ${hue});font-weight:700;font-size:${Math.round(size * 0.38)}px;color:#fff">${esc(initials)}</div>`
 }
 
 function _mobVAvatarImgHtml(addr, size) {
@@ -6159,13 +9928,32 @@ window._mobVAvatarHtml = _mobVAvatarHtml   // reused by the desktop overview (re
 
 function _mobVRenderHeader() {
   if (!state.addr) return
-  const saved = WM.load().find(w => w.addr.toLowerCase() === state.addr.toLowerCase())
-  const label = saved?.label || ''
   const avatarEl = document.getElementById('mobVAvatar')
   const nameEl   = document.getElementById('mobVName')
   const addrEl   = document.getElementById('mobVAddr')
+  if (state.isAllAccounts) {
+    const n = _maLoad().length
+    if (avatarEl) avatarEl.innerHTML = _mobVAvatarHtml('__all_accounts__', 50)
+    if (nameEl) { nameEl.textContent = 'All Accounts'; nameEl.classList.remove('notranslate') }  // UI label — translate
+    if (addrEl)   addrEl.textContent = n + ' wallets combined'
+    return
+  }
+  if (isPaper()) {
+    const _chal = paperSlot() === 'challenge'
+    if (avatarEl) avatarEl.innerHTML = _mobVAvatarHtml(PAPER_ADDR, 50)
+    if (nameEl) { nameEl.textContent = (_chal ? '🏆 ' : '') + _paperName(); nameEl.classList.add('notranslate') }   // user-named — keep verbatim
+    if (addrEl)   addrEl.textContent = _chal ? 'Challenge · $1,000 paper' : 'Paper · simulated funds'
+    return
+  }
+  const saved = WM.load().find(w => w.addr.toLowerCase() === state.addr.toLowerCase())
+  const label = saved?.label || ''
   if (avatarEl) avatarEl.innerHTML = _mobVAvatarHtml(state.addr, 50)
-  if (nameEl)   nameEl.textContent = label || 'My Wallet'
+  // An address that was just pasted (not saved, nothing connected) isn't "My
+  // Wallet" — it's someone's account being watched.
+  if (nameEl) {
+    nameEl.textContent = label || (saved || isConnected() ? 'My Wallet' : 'Watching')
+    nameEl.classList.toggle('notranslate', !!label)   // a user label stays verbatim; the "My Wallet"/"Watching" fallbacks translate
+  }
   if (addrEl)   addrEl.textContent = state.addr.slice(0, 6) + '…' + state.addr.slice(-4)
 }
 
@@ -6175,10 +9963,82 @@ window._mobVOpenWalletSwitch = function() {
   const backdrop = document.getElementById('mobWalletBackdrop')
   if (!drawer) return
   const allWallets = WM.load()
-  const current    = allWallets.find(w => w.addr.toLowerCase() === state.addr.toLowerCase())
-  const label      = current?.label || 'My Wallet'
-  const short      = state.addr.slice(0, 10) + '…' + state.addr.slice(-8)
-  const others     = allWallets.filter(w => w.addr.toLowerCase() !== state.addr.toLowerCase())
+  const _isAll     = state.addr === '__all_accounts__'
+  const _isPaperCur = isPaper()
+  const current    = (_isAll || _isPaperCur) ? null : allWallets.find(w => w.addr.toLowerCase() === state.addr.toLowerCase())
+  const _chalCur   = _isPaperCur && paperSlot() === 'challenge'
+  const label      = _isAll ? 'All Accounts'
+    : _isPaperCur ? (_paperName() + (_chalCur ? ' (Challenge)' : ''))
+    : (current?.label || (current || isConnected() ? 'My Wallet' : 'Watching'))
+  const short      = _isAll ? allWallets.length + ' wallets combined'
+    : _isPaperCur ? (_chalCur ? 'Challenge · $1,000 paper' : 'Paper · simulated funds, no real orders')
+    : state.addr.slice(0, 10) + '…' + state.addr.slice(-8)
+  // A real user-chosen name (paper or a saved label) must stay verbatim; the "All Accounts" /
+  // "My Wallet" / "Watching" fallbacks are UI labels and should translate.
+  const _labelNt   = (_isPaperCur || !!current?.label) ? ' notranslate' : ''
+  const hidden     = _maHiddenLoad()
+  const visCount   = allWallets.filter(w => !hidden.has(w.addr)).length
+  const _eyeOpen   = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
+  const _eyeOff    = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
+
+  // "All Accounts" as a list item, aligned with the wallet rows.
+  const allAcctsRow = allWallets.length > 1 ? `
+    <div class="mob-wallet-list-item mob-wallet-all-row${_isAll ? ' selected' : ''}" onclick="window._mobVCloseWalletSwitch();window.__goAllAccounts()">
+      ${_mobVAvatarHtml('__all_accounts__', 40)}
+      <div class="mob-wallet-list-info">
+        <div class="mob-wallet-list-name">All Accounts</div>
+        <div class="mob-wallet-list-addr">Combined view of ${visCount} wallet${visCount !== 1 ? 's' : ''}</div>
+      </div>
+    </div>` : ''
+
+  // In single-account mode the selected wallet already sits in the header above, so
+  // it's dropped from the switch list entirely. In the combined view every wallet is
+  // listed (they're all members), highlighted when included, with an eye to exclude
+  // them — both of which are meaningless outside that view.
+  // Paper sits with All Accounts as a "not a real wallet" entry. Always listed so
+  // it's reachable even with a single wallet saved.
+  // Two paper accounts: the practice account (always) and — once the user has entered —
+  // the separate Challenge account, each selectable and highlighted by which slot is live.
+  const _paperOn   = isPaper()
+  const _chalOn    = _chalActive() && _CHALLENGE_ENABLED   // Challenge hidden — see _CHALLENGE_ENABLED
+  const _mainSel   = _paperOn && paperSlot() !== 'challenge'
+  const _chalSel   = _paperOn && paperSlot() === 'challenge'
+  const paperRow = `
+    <div class="mob-wallet-list-item${_mainSel ? ' selected' : ''}" onclick="window._mobVCloseWalletSwitch();window.__goPaper('main')">
+      ${_mobVAvatarHtml(PAPER_ADDR, 40)}
+      <div class="mob-wallet-list-info">
+        <div class="mob-wallet-list-name notranslate">${esc(_paperName())}</div>
+        <div class="mob-wallet-list-addr">Paper · practice with simulated funds</div>
+      </div>
+      ${_mainSel ? `
+        <button class="mob-wallet-icon-btn" onclick="event.stopPropagation();window.__paperRename()" title="Rename paper account">✎</button>
+        <button class="mob-wallet-icon-btn" onclick="event.stopPropagation();window.__paperResetAcct()" title="Reset paper account">↺</button>` : ''}
+    </div>${_chalOn ? `
+    <div class="mob-wallet-list-item${_chalSel ? ' selected' : ''}" onclick="window._mobVCloseWalletSwitch();window.__goPaper('challenge')">
+      <div class="mob-wallet-list-avatar" style="width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#f5c518,#ff9f43);color:#000;display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0">🏆</div>
+      <div class="mob-wallet-list-info">
+        <div class="mob-wallet-list-name notranslate">${esc(_paperName())} (Challenge)</div>
+        <div class="mob-wallet-list-addr">Challenge · $1,000 · compete for the prize</div>
+      </div>
+      ${_chalSel ? `<button class="mob-wallet-icon-btn" onclick="event.stopPropagation();window.__openChallenge()" title="Challenge details">🏆</button>` : ''}
+    </div>` : ''}`
+
+  const rowWallets = _isAll ? allWallets : allWallets.filter(w => w.addr.toLowerCase() !== state.addr.toLowerCase())
+  const walletRows = rowWallets.map(w => {
+    const isHidden = hidden.has(w.addr)
+    const sel      = _isAll && !isHidden
+    return `
+      <div class="mob-wallet-list-item${sel ? ' selected' : ''}${_isAll && isHidden ? ' hidden-acct' : ''}" onclick="window._mobVCloseWalletSwitch();window.__quickLoad('${esc(w.addr)}')">
+        ${_mobVAvatarHtml(w.addr, 40)}
+        <div class="mob-wallet-list-info">
+          <div class="mob-wallet-list-name notranslate">${esc(w.label || w.addr.slice(0, 8) + '…')}</div>
+          <div class="mob-wallet-list-addr">${esc(w.addr.slice(0, 8) + '…' + w.addr.slice(-6))}</div>
+        </div>
+        ${_isAll ? `<button class="mob-wallet-icon-btn" onclick="window._mobVToggleHiddenAcct('${esc(w.addr)}',event)" title="${isHidden ? 'Show in All Accounts' : 'Hide from All Accounts'}">${isHidden ? _eyeOff : _eyeOpen}</button>` : ''}
+        <button class="mob-wallet-icon-btn del" onclick="event.stopPropagation();window._mobVRemoveWallet('${esc(w.addr)}')" title="Remove">✕</button>
+      </div>`
+  }).join('')
+
   drawer.innerHTML = `
     <div class="mob-wallet-handle"></div>
     <div class="mob-wallet-current">
@@ -6190,25 +10050,16 @@ window._mobVOpenWalletSwitch = function() {
              </button>`
           : ''}
       </div>
-      <div class="mob-wallet-current-name">${esc(label)}</div>
+      <div class="mob-wallet-current-name${_labelNt}">${esc(label)}</div>
       <div class="mob-wallet-current-addr">
         ${esc(short)}
-        <button class="mob-wallet-copy-btn" onclick="navigator.clipboard?.writeText('${esc(state.addr)}').catch(()=>{})">⧉</button>
+        ${(_isAll || _isPaperCur) ? '' : `<button class="mob-wallet-copy-btn" onclick="navigator.clipboard?.writeText('${esc(state.addr)}').catch(()=>{})">⧉</button>`}
       </div>
     </div>
     <button class="mob-wallet-settings-btn" onclick="window._mobVCloseWalletSwitch();_mobVActiveTab='settings';document.querySelectorAll('.mob-v-tab').forEach(b=>b.classList.remove('active'));_mobVRenderContent()">Wallet settings</button>
-    ${others.length ? `<div class="mob-wallet-list">
-      ${others.map(w => `
-        <div class="mob-wallet-list-item" onclick="window._mobVCloseWalletSwitch();window.__quickLoad('${esc(w.addr)}')">
-          ${_mobVAvatarHtml(w.addr, 40)}
-          <div class="mob-wallet-list-info">
-            <div class="mob-wallet-list-name">${esc(w.label || w.addr.slice(0, 8) + '…')}</div>
-            <div class="mob-wallet-list-addr">${esc(w.addr.slice(0, 8) + '…' + w.addr.slice(-6))}</div>
-          </div>
-          <button onclick="event.stopPropagation();window._mobVRemoveWallet('${esc(w.addr)}')"
-            style="margin-left:auto;background:none;border:none;color:var(--muted);font-size:16px;padding:10px 12px;cursor:pointer;flex-shrink:0;min-width:40px;min-height:40px" title="Remove">✕</button>
-        </div>`).join('')}
-    </div>` : ''}
+    ${allAcctsRow}
+    ${paperRow}
+    <div class="mob-wallet-list">${walletRows}</div>
     <button class="mob-wallet-add-btn" onclick="window._mobVCloseWalletSwitch();window._mobVAddAddress()">
       <div style="width:40px;height:40px;border-radius:50%;background:var(--panel-2);display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--fg);flex-shrink:0">+</div>
       Add address
@@ -6234,6 +10085,9 @@ window._mobVRemoveWallet = async function(addr) {
   })
   if (ok === null || ok.trim().toUpperCase() !== 'YES') return
   WM.remove(addr)   // WM.save re-syncs the push subscription — alerts stop too
+  // Drop it from the combined view's cache + re-aggregate if that view is active.
+  _allAcctLastResults = _allAcctLastResults.filter(r => r.addr !== addr)
+  if (state.isAllAccounts) _allAcctReaggregate()
   window._mobVOpenWalletSwitch()   // re-render the drawer in place
 }
 
@@ -6262,146 +10116,6 @@ window._mobVAddAddress = async function() {
   window.__quickLoad(a)
 }
 
-// ── Solvi: the account-health pet ────────────────────────────────────────────
-// A Tamagotchi-style creature whose mood = your account health (liq-distance).
-// It turns a cold margin ratio into a visceral "feed me" instinct that nudges
-// de-risking. v1 = one pet for the whole account; positions become a "zoo" later.
-const _PET_STATES = {
-  thriving: { color: '#00e5a0', label: 'Thriving', sub: 'Well fed and healthy. Nice work.' },
-  uneasy:   { color: '#f5a623', label: 'Uneasy',   sub: 'Risk is creeping up — ease leverage or add margin.' },
-  critical: { color: '#ff4d6d', label: 'Critical', sub: 'Close to liquidation! Feed me — cut risk now.' },
-  idle:     { color: '#63b3ed', label: 'Chilling', sub: 'No open positions. Nothing at risk.' },
-}
-function _mobPetState(healthPct, hasPos) {
-  if (!hasPos) return 'idle'
-  if (healthPct > 60) return 'thriving'
-  if (healthPct > 30) return 'uneasy'
-  return 'critical'
-}
-// ── 3 selectable creatures — trading spirits (species persisted) ─────────────
-// Bullo the bull (longs), Bera the bear (shorts), Botto the bot (automation).
-// Bodies keep their species identity; the MOOD shows in the face + glow aura.
-const _GM_SPECIES = ['bullo', 'bera', 'botto']
-const _GM_NAMES   = { bullo: 'Bullo', bera: 'Bera', botto: 'Botto' }
-// Species is PER ACCOUNT (each wallet can keep a different companion); falls
-// back to the legacy global key, then Bullo.
-function _gmGetSpecies() {
-  const a = (state?.addr || '').toLowerCase()
-  const s = (a && localStorage.getItem('hliq_pet_species_' + a)) || localStorage.getItem('hliq_pet_species')
-  return _GM_SPECIES.includes(s) ? s : 'bullo'
-}
-function _gmSetSpecies(s) {
-  const a = (state?.addr || '').toLowerCase()
-  localStorage.setItem(a ? 'hliq_pet_species_' + a : 'hliq_pet_species', s)
-}
-
-// Shared face parts — same mood language across all three species.
-function _gmFace(key, cx, cy, s = 1) {
-  const crit  = key === 'critical'
-  const happy = key === 'thriving' || key === 'idle'
-  const ew    = (crit ? 8 : 6.5) * s
-  const eyes  = key === 'idle'
-    // sleepy: content closed-arc eyes
-    ? `<path d="M${cx-16*s} ${cy} q ${4*s} ${5*s} ${8*s} 0" stroke="#0a0e14" stroke-width="${3*s}" fill="none" stroke-linecap="round"/>
-       <path d="M${cx+8*s} ${cy} q ${4*s} ${5*s} ${8*s} 0" stroke="#0a0e14" stroke-width="${3*s}" fill="none" stroke-linecap="round"/>`
-    : `<ellipse cx="${cx-12*s}" cy="${cy}" rx="${ew}" ry="${ew+2*s}" fill="#0a0e14"/>
-       <ellipse cx="${cx+12*s}" cy="${cy}" rx="${ew}" ry="${ew+2*s}" fill="#0a0e14"/>
-       <circle cx="${cx-10*s}" cy="${cy-3*s}" r="${2.6*s}" fill="#fff"/><circle cx="${cx+14*s}" cy="${cy-3*s}" r="${2.6*s}" fill="#fff"/>
-       <circle cx="${cx-14*s}" cy="${cy+2*s}" r="${1.2*s}" fill="#fff" opacity="0.8"/><circle cx="${cx+10*s}" cy="${cy+2*s}" r="${1.2*s}" fill="#fff" opacity="0.8"/>`
-  const mouth = happy
-    ? `<path d="M${cx-13*s} ${cy+16*s} Q${cx} ${cy+28*s} ${cx+13*s} ${cy+16*s}" fill="none" stroke="#0a0e14" stroke-width="${3*s}" stroke-linecap="round"/>`
-    : crit
-      ? `<path d="M${cx-9*s} ${cy+18*s} Q${cx} ${cy+11*s} ${cx+9*s} ${cy+18*s} Q${cx} ${cy+30*s} ${cx-9*s} ${cy+18*s} Z" fill="#0a0e14"/>`
-      : `<path d="M${cx-10*s} ${cy+19*s} Q${cx} ${cy+14*s} ${cx+10*s} ${cy+19*s}" fill="none" stroke="#0a0e14" stroke-width="${3*s}" stroke-linecap="round"/>`
-  const blush = happy
-    ? `<ellipse cx="${cx-21*s}" cy="${cy+11*s}" rx="${6*s}" ry="${3.4*s}" fill="#ff9db0" opacity="0.55"/><ellipse cx="${cx+21*s}" cy="${cy+11*s}" rx="${6*s}" ry="${3.4*s}" fill="#ff9db0" opacity="0.55"/>` : ''
-  const sweat = crit
-    ? `<path d="M${cx+30*s} ${cy-14*s} q ${4.5*s} ${8*s} 0 ${13*s} q ${-4.5*s} ${-5*s} 0 ${-13*s}Z" fill="#7cc4ff"><animate attributeName="opacity" values="0.25;1;0.25" dur="0.9s" repeatCount="indefinite"/></path>` : ''
-  const zzz = key === 'idle'
-    ? `<text x="${cx+30*s}" y="${cy-22*s}" font-size="${13*s}" font-weight="900" fill="#3d5a80" opacity="0.9">z<animate attributeName="opacity" values="0.2;1;0.2" dur="2.4s" repeatCount="indefinite"/></text>` : ''
-  return eyes + mouth + blush + sweat + zzz
-}
-
-function _gmPetSvg(species, key) {
-  const mood = _PET_STATES[key].color
-  const dark = 'rgba(0,0,0,0.22)'
-  // Mood aura = soft radial GLOW that fades to nothing (a hard ellipse behind the
-  // body read as "a second pet underneath" on the dark den background).
-  const aura = `<radialGradient id="au-${species}-${key}" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="${mood}" stop-opacity="0.5"/><stop offset="60%" stop-color="${mood}" stop-opacity="0.22"/><stop offset="100%" stop-color="${mood}" stop-opacity="0"/>
-    </radialGradient>
-    <ellipse cx="60" cy="72" rx="58" ry="54" fill="url(#au-${species}-${key})">
-      <animate attributeName="opacity" values="0.55;1;0.55" dur="2.8s" repeatCount="indefinite"/></ellipse>`
-  const bodyGrad = (id, base, light) => `<radialGradient id="${id}" cx="38%" cy="28%" r="80%">
-    <stop offset="0%" stop-color="${light}"/><stop offset="55%" stop-color="${base}"/><stop offset="100%" stop-color="${base}"/>
-  </radialGradient>`
-  const shadow = `<ellipse cx="60" cy="119" rx="33" ry="6" fill="rgba(0,0,0,0.35)"/>`
-
-  if (species === 'bera') {
-    // Bera — the bear. Round brown bear cub, big ears, light muzzle, tummy patch.
-    const B = '#c9855a', L = '#e8b38b', M = '#f2dcc3'
-    return `<svg viewBox="0 0 120 124" width="108" height="112" aria-hidden="true">
-      <defs>${bodyGrad('bg-bera', B, L)}</defs>
-      ${aura}${shadow}
-      <circle cx="30" cy="30" r="14" fill="url(#bg-bera)" stroke="${dark}" stroke-width="1.5"/>
-      <circle cx="90" cy="30" r="14" fill="url(#bg-bera)" stroke="${dark}" stroke-width="1.5"/>
-      <circle cx="30" cy="30" r="7" fill="${M}"/><circle cx="90" cy="30" r="7" fill="${M}"/>
-      <path d="M60 20 C 90 20 105 44 103 74 C 101 102 87 114 60 114 C 33 114 19 102 17 74 C 15 44 30 20 60 20 Z" fill="url(#bg-bera)" stroke="${dark}" stroke-width="1.5"/>
-      <ellipse cx="60" cy="96" rx="22" ry="15" fill="${M}" opacity="0.9"/>
-      <ellipse cx="60" cy="74" rx="16" ry="12" fill="${M}"/>
-      <ellipse cx="40" cy="113" rx="11" ry="6.5" fill="${B}" stroke="${dark}" stroke-width="1.5"/>
-      <ellipse cx="80" cy="113" rx="11" ry="6.5" fill="${B}" stroke="${dark}" stroke-width="1.5"/>
-      <path d="M14 74 q -7 4 -3 12 q 7 1 11 -5" fill="${B}" stroke="${dark}" stroke-width="1.5"/>
-      <path d="M106 74 q 7 4 3 12 q -7 1 -11 -5" fill="${B}" stroke="${dark}" stroke-width="1.5"/>
-      ${_gmFace(key, 60, 56, 0.94)}
-    </svg>`
-  }
-  if (species === 'botto') {
-    // Botto — the trading bot. Steel shell, candlestick antenna, mood-lit visor.
-    const S = '#9aa6ba', L = '#cdd6e4'
-    return `<svg viewBox="0 0 120 124" width="108" height="112" aria-hidden="true">
-      <defs>${bodyGrad('bg-botto', S, L)}</defs>
-      ${aura}${shadow}
-      <g stroke="${dark}" stroke-width="1.4">
-        <line x1="60" y1="22" x2="60" y2="4" stroke-width="3.4" stroke-linecap="round"/>
-        <rect x="55.5" y="4" width="9" height="12" rx="2" fill="#35c97e"/>
-        <line x1="60" y1="1" x2="60" y2="19" stroke="#35c97e" stroke-width="2"/>
-      </g>
-      <rect x="20" y="22" width="80" height="78" rx="24" fill="url(#bg-botto)" stroke="${dark}" stroke-width="1.5"/>
-      <rect x="9"  y="50" width="13" height="30" rx="6.5" fill="${S}" stroke="${dark}" stroke-width="1.5"/>
-      <rect x="98" y="50" width="13" height="30" rx="6.5" fill="${S}" stroke="${dark}" stroke-width="1.5"/>
-      <circle cx="15.5" cy="46" r="5" fill="#ffd93b" stroke="${dark}" stroke-width="1.2"/>
-      <circle cx="104.5" cy="46" r="5" fill="#ffd93b" stroke="${dark}" stroke-width="1.2"/>
-      <rect x="30" y="34" width="60" height="50" rx="13" fill="#0d1420" stroke="rgba(255,255,255,0.3)" stroke-width="2"/>
-      <g style="filter:drop-shadow(0 0 5px ${mood})">${_gmFace(key, 60, 53, 0.8).replaceAll('#0a0e14', mood).replaceAll('#ff9db0', mood)}</g>
-      <rect x="32" y="88" width="56" height="7" rx="3.5" fill="rgba(0,0,0,0.25)"/>
-      <rect x="34" y="89.5" width="${key === 'critical' ? 12 : key === 'uneasy' ? 28 : 52}" height="4" rx="2" fill="${mood}"/>
-      <rect x="32" y="100" width="24" height="16" rx="6" fill="${S}" stroke="${dark}" stroke-width="1.5"/>
-      <rect x="64" y="100" width="24" height="16" rx="6" fill="${S}" stroke="${dark}" stroke-width="1.5"/>
-      <line x1="38" y1="104" x2="38" y2="112" stroke="${dark}" stroke-width="2"/><line x1="46" y1="104" x2="46" y2="112" stroke="${dark}" stroke-width="2"/>
-      <line x1="70" y1="104" x2="70" y2="112" stroke="${dark}" stroke-width="2"/><line x1="78" y1="104" x2="78" y2="112" stroke="${dark}" stroke-width="2"/>
-    </svg>`
-  }
-  // Bullo — the bull. Clean mint round-body, crescent horns curving UP, small ears.
-  const G = '#3fbf7f', GL = '#7fdcae', H = '#f7f3e8'
-  return `<svg viewBox="0 0 120 124" width="108" height="112" aria-hidden="true">
-    <defs>${bodyGrad('bg-bullo', G, GL)}</defs>
-    ${aura}${shadow}
-    <path d="M34 30 C 26 26 20 18 21 8 C 30 10 37 18 38 28 Z" fill="${H}" stroke="${dark}" stroke-width="1.5"/>
-    <path d="M86 30 C 94 26 100 18 99 8 C 90 10 83 18 82 28 Z" fill="${H}" stroke="${dark}" stroke-width="1.5"/>
-    <ellipse cx="24" cy="42" rx="8" ry="5.5" fill="${G}" stroke="${dark}" stroke-width="1.5" transform="rotate(-30 24 42)"/>
-    <ellipse cx="96" cy="42" rx="8" ry="5.5" fill="${G}" stroke="${dark}" stroke-width="1.5" transform="rotate(30 96 42)"/>
-    <path d="M60 22 C 92 22 106 46 104 76 C 102 103 88 114 60 114 C 32 114 18 103 16 76 C 14 46 28 22 60 22 Z" fill="url(#bg-bullo)" stroke="${dark}" stroke-width="1.5"/>
-    <ellipse cx="60" cy="94" rx="17" ry="10" fill="#8fe6bb" opacity="0.85"/>
-    <circle cx="54" cy="94" r="2.2" fill="#1d6b43"/><circle cx="66" cy="94" r="2.2" fill="#1d6b43"/>
-    <ellipse cx="42" cy="113" rx="11" ry="6.5" fill="${G}" stroke="${dark}" stroke-width="1.5"/>
-    <ellipse cx="78" cy="113" rx="11" ry="6.5" fill="${G}" stroke="${dark}" stroke-width="1.5"/>
-    ${_gmFace(key, 60, 56, 0.94)}
-  </svg>`
-}
-
-// Back-compat shim — Solvi card + game world both render the selected species.
-function _petSvg(key, _color) { return _gmPetSvg(_gmGetSpecies(), key) }
 // The pet lives ONLY in Game Mode now — Pro stays clean. This is just the
 // per-tick sync hook (kept so every balance render refreshes the game world).
 function _mobVRenderPet(healthPct, hasPos) {
@@ -6410,992 +10124,81 @@ function _mobVRenderPet(healthPct, hasPos) {
   _updateGameMode()
 }
 
-// ── GAME MODE ─────────────────────────────────────────────────────────────────
-// A full Moy/Pou-style illustrated pet world, drawn 100% in inline SVG (zero
-// image assets) and skinned over the REAL account: coins = account value,
-// hearts = liq-distance health, the wooden sign = live uPnL, and every action
-// button is a real trading action wearing a cute verb. Toggleable — Pro UI stays.
-let _gameMode = localStorage.getItem('hliq_game_mode') === '1'
-let _gmLastMood = null
-
-const _GM_QUIPS = {
-  thriving: ['Green candles for dinner! 🌿', 'The desk is printing~', 'Health bar full, LFG!', 'Funding just hit the bowl 😋', 'We are so back.'],
-  uneasy:   ['Margin\'s getting thin, boss…', 'Maybe ease the leverage?', 'The monitors look scary today…', 'I\'d hedge. Just saying.'],
-  critical: ['FEED ME MARGIN!! 😰', 'LIQ PRICE ON SCREEN 2!!', 'It\'s not a loss until we sell— wait', 'MAYDAY MAYDAY 🚨'],
-  idle:     ['Flat book~ nap time 💤', 'Wanna flip a card in the shop?', 'Charts are for watching, not touching.', 'The neon sign flickers sometimes.'],
+// Compact money for the cramped 4-up stat row: K/M suffixes, and cents dropped
+// once the integer part is wide enough that they'd push the cells together.
+function _mobVStatUSD(v) {
+  const n = parseFloat(v) || 0
+  const a = Math.abs(n)
+  const s = n < 0 ? '-' : ''
+  if (a >= 1_000_000_000) return s + '$' + (a / 1e9).toFixed(2) + 'B'
+  if (a >= 1_000_000)     return s + '$' + (a / 1e6).toFixed(2) + 'M'
+  if (a >= 10_000)        return s + '$' + (a / 1e3).toFixed(0) + 'K'
+  if (a >= 1_000)         return s + '$' + (a / 1e3).toFixed(1) + 'K'
+  if (a >= 100)           return s + '$' + a.toFixed(0)
+  return s + '$' + a.toFixed(2)
 }
 
-window.__toggleGameMode = function() {
-  _gameMode = !_gameMode
-  localStorage.setItem('hliq_game_mode', _gameMode ? '1' : '0')
-  const ov = document.getElementById('gameModeOverlay')
-  if (!_gameMode && ov) { ov.style.display = 'none'; ov.innerHTML = ''; delete ov.dataset.screen; _gmLastMood = null; _gmCardsBuilt = false }
-  else { _gmScreen = 'home'; _updateGameMode() }
-}
-
-// Home scene: the trading den, but the ROOM IS THE MENU — every piece of
-// furniture is a real action. viewBox is phone-shaped (400×820) so nothing gets
-// cropped off the sides on tall screens (the old 400×560 lost ~100px each side).
-//   · food table  → Feed (deposit)         · terminal  → Trade (card shop)
-//   · clipboard   → List (positions+orders) · robot     → Bots (soon)
-//   · door        → Outside (zoo, soon)     · monitor   → REAL account value + equity chart
-// Every interactive furniture piece goes through this wrapper: a stable
-// data-obj id, shared hover/press glow, floating name label — and if a painted
-// `obj-<id>.png` is in the manifest, it replaces the SVG art in `box` while any
-// `live` layers (screen text, charts) stay composited on top.
-function _gmObj(id, action, box, svgArt, live, labelX, labelY, labelText) {
-  const img = _gmV('obj-' + id, id)
-  const art = img && box
-    ? `<image href="${img}" x="${box[0]}" y="${box[1]}" width="${box[2]}" height="${box[3]}" preserveAspectRatio="xMidYMid meet"/>`
-    : svgArt
-  // Floating name labels removed — objects speak for themselves (label params
-  // kept so call sites/skins stay stable).
-  return `<g class="gm-obj" data-obj="${id}" onclick="${action}">${art}${live || ''}</g>`
-}
-
-function _gmWorldSvg() {
-  const bg = _gmV('bg-den', 'bg-den')
-  return `<svg class="gm-world" viewBox="0 0 400 820" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
-    <defs>
-      <linearGradient id="gmDenWall" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#151a2c"/><stop offset="100%" stop-color="#242c4a"/></linearGradient>
-      <linearGradient id="gmDenFloor" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#38291c"/><stop offset="100%" stop-color="#221812"/></linearGradient>
-      <linearGradient id="gmCity" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#0a1026"/><stop offset="100%" stop-color="#1e2d56"/></linearGradient>
-      <linearGradient id="gmWoodTop" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#4a3826"/><stop offset="100%" stop-color="#33261a"/></linearGradient>
-    </defs>
-    ${bg ? `<image href="${bg}" x="0" y="0" width="400" height="820" preserveAspectRatio="xMidYMax slice"/>` : `
-    <rect width="400" height="600" fill="url(#gmDenWall)"/>
-    <rect y="600" width="400" height="220" fill="url(#gmDenFloor)"/>
-    ${[0,1,2,3].map(i => `<line x1="0" y1="${640 + i * 46}" x2="400" y2="${640 + i * 46}" stroke="rgba(0,0,0,0.25)" stroke-width="2"/>`).join('')}`}
-
-    <g class="gm-neon">
-      <text x="242" y="242" text-anchor="middle" font-size="19" font-weight="900" letter-spacing="2.5" fill="none" stroke="#ff8a2a" stroke-width="1.4" style="filter:drop-shadow(0 0 8px #ff8a2a) drop-shadow(0 0 16px #ff8a2a88)">INSOLVENT</text>
-      <text x="242" y="262" text-anchor="middle" font-size="9" font-weight="700" letter-spacing="4.5" fill="#ffb84d" opacity="0.8" style="filter:drop-shadow(0 0 6px #ff8a2a)">· TERMINAL ·</text>
-    </g>
-
-    <!-- Big window onto the city; the far building carries a LIVE billboard that
-         cycles through the watchlist (coin · price · 24h%) like Times Square. -->
-    <g stroke="#0d1120" stroke-width="5">
-      <rect x="20" y="204" width="150" height="136" rx="7" fill="url(#gmCity)"/>
-      <line x1="95" y1="206" x2="95" y2="338"/>
-    </g>
-    <g fill="#101a38">
-      <rect x="28" y="268" width="18" height="72"/><rect x="52" y="248" width="15" height="92"/><rect x="126" y="256" width="17" height="84"/><rect x="150" y="276" width="14" height="64"/>
-    </g>
-    <g fill="#ffd93b">${[[32,276],[38,292],[56,256],[62,272],[130,264],[136,282],[153,284],[32,308],[62,300],[130,300],[153,306]].map(([x,y]) => `<rect x="${x}" y="${y}" width="3" height="3" opacity="0.85"/>`).join('')}</g>
-    <circle cx="152" cy="222" r="7" fill="#e8ecf4" opacity="0.9"/>
-    <g>
-      <rect x="72" y="252" width="50" height="34" rx="4" fill="#06101f" stroke="#ff8a2a" stroke-width="2" style="filter:drop-shadow(0 0 6px #ff8a2a66)"/>
-      <line x1="82" y1="286" x2="82" y2="300" stroke="#0d1120" stroke-width="3"/><line x1="112" y1="286" x2="112" y2="300" stroke="#0d1120" stroke-width="3"/>
-      <text id="gmBillCoin" x="97" y="265" text-anchor="middle" font-size="9.5" font-weight="900" fill="#ffb84d">—</text>
-      <text id="gmBillPx"   x="97" y="276" text-anchor="middle" font-size="8.5" font-weight="700" font-family="monospace" fill="#f4f6ff">—</text>
-      <text id="gmBillChg"  x="97" y="284" text-anchor="middle" font-size="7.5" font-weight="900" font-family="monospace" fill="#8a93a8">—</text>
-    </g>
-
-    ${_gmObj('list', "window.__gmScreen('list')", [318, 216, 66, 112], `
-      <rect x="322" y="228" width="58" height="76" rx="6" fill="#c9a755" stroke="#10141f" stroke-width="3"/>
-      <rect x="330" y="240" width="42" height="58" rx="3" fill="#fdf7e4"/>
-      <rect x="342" y="222" width="18" height="12" rx="4" fill="#8a93a8" stroke="#10141f" stroke-width="2"/>
-      <text x="351" y="252" text-anchor="middle" font-size="7" font-weight="900" fill="#5d8f6f" letter-spacing="0.2">Hyperliquid</text>
-      ${[262,272,282,290].map(y => `<line x1="335" y1="${y}" x2="367" y2="${y}" stroke="#b8a67c" stroke-width="2.5"/>`).join('')}`,
-      '', 351, 322, 'List')}
-
-    ${_gmObj('monitor', 'window.__gmPokeMonitor()', [96, 300, 208, 188], `
-      <rect x="100" y="306" width="200" height="158" rx="12" fill="#0b1220" stroke="#2b2b2b" stroke-width="4"/>
-      <rect x="107" y="313" width="186" height="144" rx="7" fill="#081018"/>
-      <rect x="186" y="464" width="28" height="12" fill="#1c1c1e"/>
-      <rect x="172" y="474" width="56" height="6" rx="3" fill="#1c1c1e"/>`, `
-      <text x="114" y="326" font-size="7.5" font-weight="700" font-family="monospace" fill="#35c97e">┌ INSOLVENT:acct ── LIVE</text>
-      <text x="114" y="326" font-size="7.5" font-family="monospace" fill="#35c97e"><tspan x="248">▮</tspan><animate attributeName="opacity" values="1;0;1" dur="1.2s" repeatCount="indefinite"/></text>
-      <g id="gmMonPriv" onclick="event.stopPropagation();window.__gmMonPriv()" style="cursor:pointer">
-        <rect x="264" y="316" width="24" height="14" rx="4" fill="#0f1d2e" stroke="#2f3a55" stroke-width="1.2"/>
-        <text id="gmMonPrivIc" x="276" y="327" text-anchor="middle" font-size="8.5">👁</text>
-      </g>
-      <text id="gmMonVal" x="192" y="349" text-anchor="middle" font-size="19" font-weight="800" font-family="monospace" fill="#f4f6ff">—</text>
-      <text id="gmMonDelta" x="192" y="362" text-anchor="middle" font-size="8.5" font-weight="700" font-family="monospace" fill="#8a93a8">—</text>
-      <text id="gmMonPnl" x="192" y="374" text-anchor="middle" font-size="8.5" font-weight="700" font-family="monospace" fill="#8a93a8">—</text>
-      <polyline id="gmMonSpark" points="" fill="none" stroke="#35c97e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="gm-mon"/>
-      ${['value', 'accum', 'realized'].map((t, i) => `
-      <g onclick="event.stopPropagation();window.__gmMonType('${t}')" style="cursor:pointer">
-        <rect id="gmMonBtn-${t}" x="${112 + i * 47}" y="422" width="43" height="13" rx="4" fill="#0f1d2e" stroke="#2f3a55" stroke-width="1.2"/>
-        <text id="gmMonBtnT-${t}" x="${133.5 + i * 47}" y="431.5" text-anchor="middle" font-size="7.5" font-weight="800" font-family="monospace" fill="#8a93a8">${t === 'value' ? 'VALUE' : t === 'accum' ? 'ACCUM' : 'REALZD'}</text>
-      </g>`).join('')}
-      <g onclick="event.stopPropagation();window.__toggleGameMode()" style="cursor:pointer">
-        <rect x="255" y="422" width="35" height="13" rx="4" fill="#2b1a08" stroke="#ff8a2a" stroke-width="1.2"/>
-        <text x="272.5" y="431.5" text-anchor="middle" font-size="7.5" font-weight="900" font-family="monospace" fill="#ffb84d">PRO</text>
-      </g>
-      ${[['day', '1D'], ['week', '1W'], ['month', '1M'], ['allTime', 'ALL']].map(([tf, lb], i) => `
-      <g onclick="event.stopPropagation();window.__gmMonTf('${tf}')" style="cursor:pointer">
-        <rect id="gmMonTf-${tf}" x="${112 + i * 39}" y="439" width="35" height="13" rx="4" fill="#0f1d2e" stroke="#2f3a55" stroke-width="1.2"/>
-        <text id="gmMonTfT-${tf}" x="${129.5 + i * 39}" y="448.5" text-anchor="middle" font-size="7.5" font-weight="800" font-family="monospace" fill="#8a93a8">${lb}</text>
-      </g>`).join('')}`,
-      0, 0, '')}
-
-    ${_gmObj('terminal', "window.__gmScreen('trade')", [24, 382, 74, 104], `
-      <rect x="28" y="386" width="66" height="76" rx="7" fill="#1a212f" stroke="#10141f" stroke-width="4"/>
-      <rect x="34" y="392" width="54" height="56" rx="4" fill="#04140a"/>
-      <rect x="40" y="452" width="42" height="5" rx="2.5" fill="#2b3350"/>`, `
-      <text x="38" y="406" font-size="9" font-family="monospace" fill="#35c97e">&gt; long?</text>
-      <text x="38" y="419" font-size="9" font-family="monospace" fill="#35c97e">&gt; short?</text>
-      <text x="38" y="432" font-size="9" font-family="monospace" fill="#ffb84d">&gt; deal_</text>`,
-      61, 480, 'Trade')}
-
-    ${bg ? '' : `
-    <g stroke="#181008" stroke-width="2.5">
-      <rect x="312" y="424" width="18" height="22" rx="4" fill="#f4f0e4"/>
-      <path d="M330 430 q 8 2 0 11" fill="none"/>
-      <path d="M316 419 q 3 -6 0 -9 M323 419 q 3 -6 0 -9" fill="none" stroke="#8a93a8" opacity="0.8"/>
-    </g>
-    <rect x="12" y="464" width="288" height="18" rx="7" fill="url(#gmWoodTop)" stroke="#181008" stroke-width="3"/>
-    <rect x="16" y="482" width="280" height="5" rx="2.5" fill="#ff8a2a" opacity="0.85" style="filter:drop-shadow(0 3px 8px #ff8a2a)"/>
-    <rect x="36" y="482" width="13" height="118" fill="#241a12" stroke="#181008" stroke-width="3"/>
-    <rect x="262" y="482" width="13" height="118" fill="#241a12" stroke="#181008" stroke-width="3"/>`}
-
-    ${_gmObj('door', "window.__gmSoon('🚪 The pen outside is under construction!')", [310, 340, 84, 282], `
-      <rect x="314" y="368" width="74" height="232" rx="8" fill="#5a3d20" stroke="#10141f" stroke-width="4"/>
-      <rect x="322" y="378" width="58" height="102" rx="5" fill="none" stroke="#3d2913" stroke-width="3"/>
-      <rect x="322" y="490" width="58" height="98" rx="5" fill="none" stroke="#3d2913" stroke-width="3"/>
-      <circle cx="326" cy="486" r="5" fill="#ffd93b" stroke="#10141f" stroke-width="2"/>
-      <rect x="328" y="346" width="46" height="18" rx="4" fill="#1a212f" stroke="#10141f" stroke-width="2.5"/>
-      <text x="351" y="359" text-anchor="middle" font-size="9" font-weight="900" fill="#7cc4ff">EXIT</text>`,
-      '', 351, 616, 'Outside')}
-
-    ${_gmObj('feed', "window.__gmScreen('feed')", [18, 634, 120, 118], `
-      <ellipse cx="78" cy="668" rx="55" ry="17" fill="#7a4e1e" stroke="#181008" stroke-width="3"/>
-      <ellipse cx="78" cy="663" rx="55" ry="17" fill="#a06a2c" stroke="#181008" stroke-width="2.5"/>
-      <path d="M23 663 q 55 26 110 0 l 0 8 q -55 26 -110 0 Z" fill="#e8e2d4" opacity="0.14"/>
-      <rect x="70" y="676" width="16" height="40" fill="#5f3d17" stroke="#181008" stroke-width="2.5"/>
-      <ellipse cx="78" cy="718" rx="27" ry="7" fill="#5f3d17" stroke="#181008" stroke-width="2.5"/>
-      <ellipse cx="78" cy="658" rx="31" ry="9.5" fill="#f7f3e8" stroke="#c9c2b0" stroke-width="2"/>
-      <ellipse cx="78" cy="656" rx="24" ry="6.5" fill="none" stroke="#d9d2c0" stroke-width="1.5"/>
-      <text x="59" y="656" font-size="17">🍕</text><text x="83" y="653" font-size="15">🍎</text>
-      <text x="97" y="660" font-size="13">🧀</text>`,
-      '', 78, 746, 'Feed')}
-
-    ${_gmObj('bots', "window.__gmSoon('🤖 Bot garage opening soon — my cousins are coming!')", [252, 612, 60, 110], `
-      <g class="pet-bob" style="transform-origin:282px 700px">
-        <rect x="258" y="640" width="48" height="44" rx="12" fill="#9aa6ba" stroke="#10141f" stroke-width="3"/>
-        <rect x="266" y="648" width="32" height="20" rx="6" fill="#0d1420"/>
-        <circle cx="275" cy="658" r="3.4" fill="#7cc4ff"/><circle cx="289" cy="658" r="3.4" fill="#7cc4ff"/>
-        <line x1="282" y1="640" x2="282" y2="628" stroke="#10141f" stroke-width="3"/>
-        <circle cx="282" cy="625" r="4" fill="#ffd93b" stroke="#10141f" stroke-width="1.5"/>
-        <rect x="262" y="684" width="16" height="10" rx="4" fill="#7e8aa0" stroke="#10141f" stroke-width="2.5"/>
-        <rect x="286" y="684" width="16" height="10" rx="4" fill="#7e8aa0" stroke="#10141f" stroke-width="2.5"/>
-      </g>`,
-      '', 282, 714, 'Bots')}
-
-    ${bg ? '' : `
-    <ellipse cx="180" cy="766" rx="130" ry="36" fill="#54412e" stroke="#241a12" stroke-width="4"/>
-    <ellipse cx="180" cy="766" rx="98" ry="26" fill="none" stroke="#241a12" stroke-width="2.5" opacity="0.6"/>
-    <ellipse cx="180" cy="766" rx="66" ry="16" fill="none" stroke="#241a12" stroke-width="2.5" opacity="0.5"/>`}
-  </svg>`
-}
-
-window.__gmMonType = function(t) {
-  _gmMonType = t
-  _updateGameMode()
-}
-window.__gmMonTf = function(tf) {
-  _gmMonTf = tf
-  _updateGameMode()
-}
-window.__gmMonPriv = function() {
-  window.__togglePrivacy?.()   // shared app-wide privacy mode (Pro UI follows too)
-  _updateGameMode()
-}
-
-// Tap the big monitor → the pet comments on the stack (it's display-only).
-window.__gmPokeMonitor = function() {
-  const bub = document.getElementById('gmBubble')
-  if (!bub) return
-  bub.textContent = 'That\'s our whole stack up there 📈'
-  bub.classList.add('show'); clearTimeout(bub._t)
-  bub._t = setTimeout(() => bub.classList.remove('show'), 2200)
-}
-
-function _gmLevel(v)  { return Math.max(1, Math.floor(Math.log10(Math.max(v, 1)))) }
-function _gmHearts(pct, hasPos) {
-  const filled = hasPos ? Math.max(1, Math.round((pct || 0) / 20)) : 5
-  return Array.from({ length: 5 }, (_, i) =>
-    `<span class="gm-heart${i < filled ? '' : ' off'}">❤</span>`).join('')
-}
-
-// ── Screens: home | feed (food shop) | list (order board) | trade (card shop) ─
-let _gmScreen     = 'home'
-let _gmLastVal    = null       // account value at last tick — a jump = deposit landed → eat!
-let _gmValAddr    = null
-let _gmOrdersHash = null
-let _gmCardCoin   = null       // expanded market card
-let _gmBillIdx    = 0          // billboard rotation through the watchlist
-let _gmBillTs     = 0
-let _gmMonType    = 'value'    // desk monitor chart: value | accum | realized
-let _gmMonTf      = 'allTime'  // desk monitor timeframe: day | week | month | allTime
-const _gmSparkCache = {}
-
-// ── Painted-asset pipeline ────────────────────────────────────────────────────
-// Drop PNGs in public/game/ and list their names in public/game/manifest.json —
-// every listed asset replaces its SVG placeholder (see GAME-ASSETS.md for the
-// full spec + prompts). Missing assets keep the hand-drawn fallback, so art can
-// ship one file at a time.
-let _gmAssets = new Set()
-fetch('/game/manifest.json')
-  .then(r => (r.ok ? r.json() : []))
-  .then(list => {
-    _gmAssets = new Set(Array.isArray(list) ? list : [])
-    if (_gmAssets.size && _gameMode) {
-      const ov = document.getElementById('gameModeOverlay')
-      if (ov) { ov.innerHTML = ''; delete ov.dataset.screen; _gmLastMood = null; _gmCardsBuilt = false }
-      _updateGameMode()
-    }
-  })
-  .catch(() => {})
-const _gmA = n => (_gmAssets.has(n) ? `/game/${n}.png` : null)
-
-// ── Skins ─────────────────────────────────────────────────────────────────────
-// Every slot (object id, background name, or 'pet') can wear a named look.
-// Variant files use a dot suffix: obj-door.neon.png, bg-den.winter.png,
-// pet-bullo-thriving.royal.png. Resolution: selected variant → base painted
-// asset → built-in SVG. The current SVG art IS the "default" skin, so future
-// looks are purely additive — the shop just calls __gmSetSkin.
-// Skins are PER ACCOUNT (each wallet can decorate its own room). Cached per addr.
-let _gmSkinsAddr = undefined, _gmSkins = {}
-function _gmSkinsLoad() {
-  const a = (state?.addr || '').toLowerCase()
-  if (a === _gmSkinsAddr) return _gmSkins
-  _gmSkinsAddr = a
-  try {
-    _gmSkins = JSON.parse(localStorage.getItem('hliq_game_skins_' + a) || localStorage.getItem('hliq_game_skins') || '{}')
-  } catch { _gmSkins = {} }
-  return _gmSkins
-}
-window.__gmSetSkin = function(slot, skin) {
-  const skins = _gmSkinsLoad()
-  if (!skin || skin === 'default') delete skins[slot]
-  else skins[slot] = skin
-  localStorage.setItem('hliq_game_skins_' + (state?.addr || '').toLowerCase(), JSON.stringify(skins))
-  const ov = document.getElementById('gameModeOverlay')
-  if (ov) { ov.innerHTML = ''; delete ov.dataset.screen; _gmLastMood = null; _gmCardsBuilt = false }
-  _updateGameMode()
-}
-// Variant-aware lookup: base asset name + the skin slot that owns it.
-const _gmV = (base, slot) => {
-  const sk = _gmSkinsLoad()[slot]
-  return (sk ? _gmA(`${base}.${sk}`) : null) || _gmA(base)
-}
-
-window.__gmScreen = function(s) {
-  _gmScreen = s
-  const ov = document.getElementById('gameModeOverlay')
-  if (ov) { ov.innerHTML = ''; delete ov.dataset.screen }
-  _gmLastMood = null; _gmOrdersHash = null; _gmCardCoin = null; _gmCardsBuilt = false
-  _updateGameMode()
-}
-
-// Shared top chrome. Home gets the player HUD (avatar · name · HP bar · coins),
-// like a proper game; sub-screens get just the wooden back arrow. Exit to Pro
-// lives on the monitor's PRO key.
-function _gmChrome(title, sub) {
-  return `
-    ${title ? `<div class="gm-title gm-outline">${title}</div>` : ''}
-    ${sub
-      ? `<button class="gm-back" onclick="window.__gmScreen('home')">◀</button>`
-      : `<div class="gm-hud">
-           <div class="gm-hud-ava" id="gmHudAva"></div>
-           <div class="gm-hud-info">
-             <div class="gm-hud-name gm-outline" id="gmHudName">—</div>
-             <div class="gm-hud-hp"><div class="gm-hud-hp-fill" id="gmHudHp"></div></div>
-             <div class="gm-hud-coins">🪙 <span id="gmCoins" class="gm-outline">—</span></div>
-           </div>
-         </div>`}`
-}
-
-// ── Scene backgrounds (all inline SVG) ────────────────────────────────────────
-// Food shop: warm bistro — pendant lamps with light cones, wood-panel wainscot,
-// stocked shelves with proper jars, a glass display counter, checkerboard floor.
-function _gmShopSvg() {
-  const bg = _gmV('bg-shop', 'bg-shop')
-  if (bg) return `<svg class="gm-world" viewBox="0 0 400 820" preserveAspectRatio="xMidYMax slice" aria-hidden="true"><image href="${bg}" width="400" height="820" preserveAspectRatio="xMidYMax slice"/></svg>`
-  const jar = (x, y, w, h, c) => `
-    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="4" fill="${c}" stroke="#5f3d17" stroke-width="2"/>
-    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="4" fill="url(#gmGlass)"/>
-    <rect x="${x + w * 0.2}" y="${y - 5}" width="${w * 0.6}" height="6" rx="2" fill="#8a5a22" stroke="#5f3d17" stroke-width="1.5"/>`
-  const lamp = (x) => `
-    <line x1="${x}" y1="0" x2="${x}" y2="64" stroke="#3d2913" stroke-width="3"/>
-    <path d="M${x - 22} 88 Q${x} 58 ${x + 22} 88 Z" fill="#d9542e" stroke="#8f2f14" stroke-width="2.5"/>
-    <circle cx="${x}" cy="88" r="6" fill="#ffe9a3" style="filter:drop-shadow(0 0 10px #ffd93b)"/>
-    <path d="M${x - 30} 92 L${x + 30} 92 L${x + 58} 240 L${x - 58} 240 Z" fill="#ffd93b" opacity="0.07"/>`
-  return `<svg class="gm-world" viewBox="0 0 400 820" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
-    <defs>
-      <linearGradient id="gmShopWall" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3a2a22"/><stop offset="100%" stop-color="#5a4232"/></linearGradient>
-      <linearGradient id="gmGlass" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ffffff" stop-opacity="0.35"/><stop offset="40%" stop-color="#ffffff" stop-opacity="0.05"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0.15"/></linearGradient>
-      <linearGradient id="gmCounter" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#6e4a2a"/><stop offset="100%" stop-color="#4a2f18"/></linearGradient>
-      <pattern id="gmChecker" width="64" height="34" patternUnits="userSpaceOnUse">
-        <rect width="64" height="34" fill="#2a201a"/>
-        <path d="M0 0 L32 0 L48 17 L16 17 Z" fill="#3d2f24"/>
-        <path d="M16 17 L48 17 L64 34 L32 34 Z" fill="#3d2f24"/>
-      </pattern>
-    </defs>
-    <rect width="400" height="620" fill="url(#gmShopWall)"/>
-    ${[0,1,2,3].map(i => `<rect x="${i * 104 + 8}" y="330" width="88" height="180" rx="6" fill="rgba(0,0,0,0.16)" stroke="#2a1c12" stroke-width="2"/>`).join('')}
-    <rect y="620" width="400" height="200" fill="url(#gmChecker)"/>
-    <rect y="614" width="400" height="10" fill="#1d140e"/>
-
-    ${lamp(100)}${lamp(300)}
-
-    <g>
-      <rect x="36" y="196" width="328" height="12" rx="4" fill="#7a4e1e" stroke="#3d2913" stroke-width="2.5"/>
-      <rect x="42" y="208" width="316" height="6" fill="rgba(0,0,0,0.3)"/>
-      ${jar(60, 160, 30, 36, '#9edb7a')}${jar(112, 166, 24, 30, '#f2b04a')}${jar(238, 162, 28, 34, '#7cc4ff')}${jar(296, 168, 30, 28, '#ff9db0')}
-      <circle cx="180" cy="180" r="16" fill="#ffd93b" stroke="#5f3d17" stroke-width="2"/>
-      <circle cx="196" cy="186" r="11" fill="#e2643d" stroke="#5f3d17" stroke-width="2"/>
-    </g>
-
-    <!-- Glass display counter: the food row (HTML) sits right on top of it -->
-    <g>
-      <rect x="14" y="300" width="372" height="96" rx="10" fill="#101a26" stroke="#2b2b2b" stroke-width="3"/>
-      <rect x="14" y="300" width="372" height="96" rx="10" fill="url(#gmGlass)"/>
-      <line x1="14" y1="348" x2="386" y2="348" stroke="rgba(255,255,255,0.18)" stroke-width="2"/>
-      <rect x="6" y="392" width="388" height="26" rx="8" fill="url(#gmCounter)" stroke="#241505" stroke-width="3"/>
-      <rect x="10" y="418" width="380" height="120" fill="#3a2716" stroke="#241505" stroke-width="3"/>
-      <rect x="26" y="436" width="160" height="84" rx="6" fill="rgba(0,0,0,0.22)" stroke="#241505" stroke-width="2"/>
-      <rect x="214" y="436" width="160" height="84" rx="6" fill="rgba(0,0,0,0.22)" stroke="#241505" stroke-width="2"/>
-      <text x="200" y="410" text-anchor="middle" font-size="12" font-weight="900" letter-spacing="2" fill="#ffd93b" style="filter:drop-shadow(0 0 6px #ff8a2a)">FRESH MARGIN DAILY</text>
-    </g>
-  </svg>`
-}
-// Cozy study for the order board: wall, window, desk lamp glow.
-function _gmRoomSvg() {
-  const bg = _gmV('bg-study', 'bg-study')
-  if (bg) return `<svg class="gm-world" viewBox="0 0 400 820" preserveAspectRatio="xMidYMax slice" aria-hidden="true"><image href="${bg}" width="400" height="820" preserveAspectRatio="xMidYMax slice"/></svg>`
-  return `<svg class="gm-world" viewBox="0 0 400 560" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
-    <defs><linearGradient id="gmRoomWall" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#5d6a8c"/><stop offset="100%" stop-color="#48536e"/></linearGradient></defs>
-    <rect width="400" height="450" fill="url(#gmRoomWall)"/>
-    <rect y="450" width="400" height="110" fill="#6e4a24"/>
-    <rect y="444" width="400" height="12" fill="#8a5a22"/>
-    <g stroke="#2b3247" stroke-width="4">
-      <rect x="290" y="46" width="86" height="70" rx="8" fill="#0e1524"/>
-      <line x1="333" y1="50" x2="333" y2="112"/><line x1="294" y1="81" x2="372" y2="81"/>
-    </g>
-    <circle cx="320" cy="60" r="7" fill="#f4f6ff" opacity="0.9"/>
-    <circle cx="352" cy="70" r="3" fill="#f4f6ff" opacity="0.7"/><circle cx="306" cy="98" r="2.5" fill="#f4f6ff" opacity="0.6"/>
-    <ellipse cx="70" cy="120" rx="46" ry="40" fill="#ffd93b" opacity="0.12"/>
-    <path d="M46 96 q 24 -26 48 0 l -6 34 q -18 8 -36 0 Z" fill="#f2b04a" stroke="#8a5a22" stroke-width="3"/>
-    <rect x="66" y="130" width="8" height="26" fill="#8a5a22"/>
-  </svg>`
-}
-// Market stall for the card shop: tent top + counter.
-function _gmMarketSvg() {
-  const bg = _gmV('bg-market', 'bg-market')
-  if (bg) return `<svg class="gm-world" viewBox="0 0 400 820" preserveAspectRatio="xMidYMax slice" aria-hidden="true"><image href="${bg}" width="400" height="820" preserveAspectRatio="xMidYMax slice"/></svg>`
-  return `<svg class="gm-world" viewBox="0 0 400 560" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
-    <defs><linearGradient id="gmMktSky" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#79c7f2"/><stop offset="100%" stop-color="#b8e6fa"/></linearGradient></defs>
-    <rect width="400" height="470" fill="url(#gmMktSky)"/>
-    <rect y="470" width="400" height="90" fill="#4ea82e"/>
-    <g class="gm-cloud gm-cloud-a" fill="#fff" opacity="0.9"><ellipse cx="120" cy="70" rx="30" ry="14"/><ellipse cx="146" cy="63" rx="22" ry="12"/></g>
-    <g>${[0,1,2,3,4,5,6,7].map(i => `<path d="M${i*50} 8 L${i*50+50} 8 L${i*50+42} 78 Q${i*50+25} 94 ${i*50+8} 78 Z" fill="${i%2 ? '#6d28d9' : '#f6f2ea'}" stroke="#4c1d95" stroke-width="2.5"/>`).join('')}</g>
-    <rect x="14" y="8" width="10" height="440" fill="#8a5a22" stroke="#5f3d17" stroke-width="2"/>
-    <rect x="376" y="8" width="10" height="440" fill="#8a5a22" stroke="#5f3d17" stroke-width="2"/>
-    <rect x="0" y="440" width="400" height="34" rx="8" fill="#a96e2c" stroke="#5f3d17" stroke-width="3"/>
-  </svg>`
-}
-
-// ── The dispatcher: builds the active screen once, then patches live numbers ──
-function _updateGameMode() {
-  const ov = document.getElementById('gameModeOverlay')
-  if (!ov) return
-  if (!_gameMode || !_isMobView()) { if (ov.style.display !== 'none') { ov.style.display = 'none'; ov.innerHTML = ''; delete ov.dataset.screen; _gmLastMood = null; _gmCardsBuilt = false } return }
-
-  const stats  = computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio)
-  const hasPos = (state.perpState?.assetPositions ?? []).some(p => parseFloat(p.position?.szi ?? 0) !== 0)
-  const mood   = _mobPetState(stats.healthPct, hasPos)
-  ov.style.display = 'block'
-
-  // Deposit detector: the account value jumping between ticks (same account, no
-  // position-PnL of that size in 5s) = food arrived → chomp chomp.
-  if (_gmValAddr === state.addr && _gmLastVal != null) {
-    const jump = stats.accountValue - _gmLastVal
-    if (jump > 1 && stats.accountValue > 0) _gmEatAnim(jump)
+// Combined-equity spike filter. HL occasionally returns a glitched account value / unrealized
+// for a single poll; summed across accounts that shows up as a big "fake" jump that snaps back
+// next tick. Hold the last good value on a >35% single-tick jump, and only accept the new level
+// once a second reading confirms it (a real move persists; a glitch doesn't). 35% of the whole
+// combined equity in ~12s never happens for real, so this can't hide genuine movement.
+let _comboEqLast = null, _comboEqPending = null, _comboEqHolds = 0
+function _comboEqReset() { _comboEqLast = null; _comboEqPending = null; _comboEqHolds = 0 }
+function _comboEqFilter(val) {
+  if (!Number.isFinite(val) || val <= 0) return _comboEqLast ?? val
+  if (_comboEqLast == null) { _comboEqLast = val; return val }
+  const dev = Math.abs(val - _comboEqLast) / _comboEqLast
+  if (dev <= 0.35) { _comboEqLast = val; _comboEqPending = null; _comboEqHolds = 0; return val }
+  // Big jump: confirm against the previous reading, OR accept after it persists — a lasting
+  // value is real, so the filter can never latch permanently.
+  _comboEqHolds++
+  if ((_comboEqPending != null && Math.abs(val - _comboEqPending) / _comboEqPending <= 0.35) || _comboEqHolds >= 3) {
+    _comboEqLast = val; _comboEqPending = null; _comboEqHolds = 0; return val
   }
-  _gmValAddr = state.addr
-  if (stats.accountValue > 0) _gmLastVal = stats.accountValue
-
-  if (_gmScreen === 'feed')       { _gmFeedScreen(ov, stats, mood) }
-  else if (_gmScreen === 'list')  { _gmListScreen(ov, mood) }
-  else if (_gmScreen === 'trade') { _gmTradeScreen(ov, mood) }
-  else                            { _gmHomeScreen(ov, stats, hasPos, mood) }
+  _comboEqPending = val
+  return _comboEqLast
 }
 
-function _gmSetPet(mood, size = 190, cls = '') {
-  const pet = document.getElementById('gmPet')
-  if (!pet) return
-  if (mood !== _gmLastMood || !pet.innerHTML) {
-    _gmLastMood = mood
-    pet.className = 'gm-pet ' + cls
-    // Painted pet if the asset shipped (pet-<species>-<mood>.png), else SVG.
-    const img = _gmV(`pet-${_gmGetSpecies()}-${mood}`, 'pet')
-    const art = img
-      ? `<img src="${img}" width="${size}" alt="" draggable="false" style="display:block;filter:drop-shadow(0 0 22px ${_PET_STATES[mood].color}55) drop-shadow(0 8px 10px rgba(0,0,0,0.45))">`
-      : _gmPetSvg(_gmGetSpecies(), mood).replace('width="108" height="112"', `width="${size}" height="${Math.round(size * 112 / 108)}"`)
-    // Idle animation lives on an INNER wrapper so dragging can freely transform
-    // the outer element without fighting the keyframes.
-    pet.innerHTML = `<div class="gm-pet-inner ${mood === 'critical' ? 'pet-shake' : 'pet-bob'}">${art}</div>`
-    if (_gmScreen === 'home') {
-      pet.style.transition = 'none'
-      pet.style.transform = `translate(${_gmPetOff.x}px, ${_gmPetOff.y}px)`
-    }
-  }
+// Home balance card: the Unreal/Net PnL stat toggles between the two on tap.
+function _mobVPnlStatMode() { return localStorage.getItem('hliq_mobv_pnlstat') === 'net' ? 'net' : 'unreal' }
+window.__mobVTogglePnlStat = function() {
+  localStorage.setItem('hliq_mobv_pnlstat', _mobVPnlStatMode() === 'net' ? 'unreal' : 'net')
+  _mobVRenderBalance()
 }
 
-// ── Grab & drag the pet (Beat-the-Boss style) + swipe-to-switch-account ──────
-const _gmPetOff = { x: 0, y: 0 }   // where the pet was dropped (home screen)
-function _gmWireGestures() {
-  const ov = document.getElementById('gameModeOverlay')
-  if (!ov || ov._wired) return
-  ov._wired = true
-  let sx = 0, sy = 0, t0 = 0, grabbed = null, baseX = 0, baseY = 0, moved = false, lastTap = 0
-  ov.addEventListener('pointerdown', e => {
-    sx = e.clientX; sy = e.clientY; t0 = Date.now(); moved = false
-    const pet = _gmScreen === 'home' ? e.target.closest('#gmPet') : null
-    if (pet) {
-      grabbed = pet; baseX = _gmPetOff.x; baseY = _gmPetOff.y
-      pet.classList.add('gm-grabbed')
-      try { ov.setPointerCapture(e.pointerId) } catch {}
-      e.preventDefault()
-    } else grabbed = null
-  })
-  ov.addEventListener('pointermove', e => {
-    if (!grabbed) return
-    const dx = e.clientX - sx, dy = e.clientY - sy
-    if (Math.abs(dx) + Math.abs(dy) > 6) moved = true
-    _gmPetOff.x = baseX + dx; _gmPetOff.y = baseY + dy
-    grabbed.style.transition = 'none'
-    grabbed.style.transform = `translate(${_gmPetOff.x}px, ${_gmPetOff.y}px)`
-  })
-  ov.addEventListener('pointerup', e => {
-    if (grabbed) {
-      grabbed.classList.remove('gm-grabbed')
-      if (!moved && Date.now() - t0 < 350) {
-        // tap = poke · double-tap = swap companion
-        const now = Date.now()
-        if (now - lastTap < 320) { lastTap = 0; window.__gmSwapPet(1) }
-        else { lastTap = now; window.__gmPokePet() }
-      } else {
-        // Drop: clamp inside the room, fall back to the rug with a bounce.
-        const maxX = Math.max(60, ov.clientWidth / 2 - 70)
-        _gmPetOff.x = Math.max(-maxX, Math.min(maxX, _gmPetOff.x))
-        _gmPetOff.y = 0
-        grabbed.style.transition = 'transform 0.55s cubic-bezier(0.34, 1.6, 0.5, 1)'
-        grabbed.style.transform = `translate(${_gmPetOff.x}px, 0px)`
-      }
-      grabbed = null
-      return
-    }
-    // Elsewhere on the home screen: a horizontal swipe flips to the next account.
-    if (_gmScreen !== 'home') return
-    const dx = e.clientX - sx, dy = e.clientY - sy
-    if (Math.abs(dx) > 70 && Math.abs(dx) > 2.2 * Math.abs(dy)) _gmSwitchAccount(dx < 0 ? 1 : -1)
-  })
-}
-
-// Swipe → cycle through the saved recent accounts. Each account brings its own
-// pet, skins and (of course) data — the room literally changes owners.
-function _gmSwitchAccount(dir) {
-  let list = []
-  try { list = JSON.parse(localStorage.getItem('hliq_recent_addrs') || '[]') } catch {}
-  list = list.filter(a => typeof a === 'string' && a.startsWith('0x'))
-  if (list.length < 2) { window.__gmSoon('👤 Save another account to swipe between rooms!'); return }
-  const cur = (state.addr || '').toLowerCase()
-  let i = list.findIndex(a => a.toLowerCase() === cur)
-  if (i < 0) i = 0
-  const next = list[(i + dir + list.length) % list.length]
-  if (next.toLowerCase() === cur) return
-  window.__gmSoon(`🚪 Heading to ${next.slice(0, 6)}…${next.slice(-4)}'s room`)
-  _gmPetOff.x = 0; _gmPetOff.y = 0
-  setTimeout(() => window.__quickLoad?.(next), 250)
-}
-
-// ── HOME ──────────────────────────────────────────────────────────────────────
-function _gmHomeScreen(ov, stats, hasPos, mood) {
-  if (ov.dataset.screen !== 'home') {
-    ov.dataset.screen = 'home'
-    ov.innerHTML = `
-      ${_gmWorldSvg()}
-      ${_gmChrome('', false)}
-      <div class="gm-bubble" id="gmBubble"></div>
-      <div class="gm-pet" id="gmPet"></div>`
-    _gmLastMood = null
-    if (!_mktCtxReady) _ensureMarketData().catch(() => {})   // billboard 24h% data
-    _gmWireGestures()   // drag the pet, swipe to switch accounts
-  }
-  // ── Player HUD: mini pet avatar, account name, HP bar, coins ──
-  const ava = document.getElementById('gmHudAva')
-  if (ava) ava.innerHTML = _gmPetSvg(_gmGetSpecies(), mood).replace('width="108" height="112"', 'width="40" height="41"')
-  const nameEl = document.getElementById('gmHudName')
-  if (nameEl) {
-    const a = state.addr || ''
-    nameEl.textContent = (typeof WM !== 'undefined' && WM.getLabel?.(a)) || (a ? a.slice(0, 6) + '…' + a.slice(-4) : '—')
-  }
-  const hp = document.getElementById('gmHudHp')
-  if (hp) {
-    const pct = hasPos ? Math.max(4, Math.min(100, stats.healthPct || 0)) : 100
-    hp.style.width = pct + '%'
-    hp.style.background = pct > 60 ? 'linear-gradient(90deg,#35c97e,#7fdcae)' : pct > 30 ? 'linear-gradient(90deg,#f5a623,#ffd93b)' : 'linear-gradient(90deg,#f0597a,#ff8aa0)'
-  }
-  const coins = document.getElementById('gmCoins')
-  if (coins) coins.textContent = _privacyMode ? '•••••' : fmtUSD(stats.accountValue, 0)
-
-  // The desk monitor is a live terminal: chart TYPE (VALUE / ACCUM / REALZD) ×
-  // TIMEFRAME (1D / 1W / 1M / ALL), a Δ line for the period, uPnL, and privacy.
-  const port = (state.portfolio ?? []).find(p => p[0] === _gmMonTf)?.[1]
-             ?? (state.portfolio ?? []).find(p => p[0] === 'allTime')?.[1]
-  const _tfMs = { day: 864e5, week: 7 * 864e5, month: 30 * 864e5 }[_gmMonTf] ?? Infinity
-  let series = [], big = '', bigColor = '#f4f6ff'
-  if (_gmMonType === 'accum') {
-    series = (port?.pnlHistory ?? []).map(h => parseFloat(h[1]))
-    const last = series.length ? series[series.length - 1] : 0
-    big = (last >= 0 ? '+' : '−') + '$' + (_privacyMode ? '•••' : fmtUSD(Math.abs(last), 0))
-    bigColor = last >= 0 ? '#35c97e' : '#f0597a'
-  } else if (_gmMonType === 'realized') {
-    const cutoff = Date.now() - _tfMs
-    let acc = 0
-    series = (state.fills ?? []).filter(f => f.time >= cutoff).sort((a, b) => a.time - b.time).map(f => (acc += (f.closedPnl || 0)))
-    big = (acc >= 0 ? '+' : '−') + '$' + (_privacyMode ? '•••' : fmtUSD(Math.abs(acc), 0))
-    bigColor = acc >= 0 ? '#35c97e' : '#f0597a'
-  } else {
-    series = (port?.accountValueHistory ?? []).map(h => parseFloat(h[1]))
-    big = _privacyMode ? '•••••' : '$' + fmtUSD(stats.accountValue, 0)
-  }
-  // Downsample long series to ~48 points so the polyline stays light
-  if (series.length > 48) {
-    const step = series.length / 48
-    series = Array.from({ length: 48 }, (_, i) => series[Math.floor(i * step)])
-  }
-  const mv = document.getElementById('gmMonVal')
-  if (mv) { mv.textContent = big; mv.setAttribute('fill', bigColor) }
-  // Δ over the selected period ($ and %)
-  const md = document.getElementById('gmMonDelta')
-  if (md) {
-    if (series.length >= 2 && series[0] !== 0) {
-      const d = series[series.length - 1] - series[0]
-      const pct = Math.abs(series[0]) > 0 ? d / Math.abs(series[0]) * 100 : 0
-      const tfLbl = { day: '24h', week: '7d', month: '30d', allTime: 'all' }[_gmMonTf]
-      md.textContent = `Δ ${tfLbl}: ${d >= 0 ? '+' : '−'}$${_privacyMode ? '•••' : fmtUSD(Math.abs(d))} (${d >= 0 ? '+' : ''}${pct.toFixed(1)}%)`
-      md.setAttribute('fill', d >= 0 ? '#35c97e' : '#f0597a')
-    } else { md.textContent = 'Δ —'; md.setAttribute('fill', '#8a93a8') }
-  }
-  const mp = document.getElementById('gmMonPnl')
-  if (mp) {
-    const uPnl = stats.unrealizedPnl || 0
-    mp.textContent = hasPos ? `uPnL ${uPnl >= 0 ? '+' : '−'}$${_privacyMode ? '•••' : fmtUSD(Math.abs(uPnl))} · lev ${stats.accountLeverage > 0 ? stats.accountLeverage.toFixed(1) + 'x' : '—'}` : 'no open risk'
-    mp.setAttribute('fill', !hasPos ? '#8a93a8' : uPnl >= 0 ? '#35c97e' : '#f0597a')
-  }
-  const spark = document.getElementById('gmMonSpark')
-  if (spark && series.length >= 2) {
-    const min = Math.min(...series), max = Math.max(...series), rng = (max - min) || 1
-    // chart area: x 114..286, y 382..414 (button rows live below)
-    const pts = series.map((v, i) => `${(114 + i / (series.length - 1) * 172).toFixed(1)},${(414 - (v - min) / rng * 32).toFixed(1)}`).join(' ')
-    spark.setAttribute('points', pts)
-    spark.setAttribute('stroke', series[series.length - 1] >= series[0] ? '#35c97e' : '#f0597a')
-  } else if (spark) spark.setAttribute('points', '')
-  // Active buttons (type row + timeframe row) + privacy eye
-  for (const t of ['value', 'accum', 'realized']) {
-    const b = document.getElementById('gmMonBtn-' + t), tx = document.getElementById('gmMonBtnT-' + t)
-    if (b)  { b.setAttribute('fill', t === _gmMonType ? '#1e3050' : '#0f1d2e'); b.setAttribute('stroke', t === _gmMonType ? '#7cc4ff' : '#2f3a55') }
-    if (tx) tx.setAttribute('fill', t === _gmMonType ? '#cfe4ff' : '#8a93a8')
-  }
-  for (const tf of ['day', 'week', 'month', 'allTime']) {
-    const b = document.getElementById('gmMonTf-' + tf), tx = document.getElementById('gmMonTfT-' + tf)
-    if (b)  { b.setAttribute('fill', tf === _gmMonTf ? '#1e3050' : '#0f1d2e'); b.setAttribute('stroke', tf === _gmMonTf ? '#7cc4ff' : '#2f3a55') }
-    if (tx) tx.setAttribute('fill', tf === _gmMonTf ? '#cfe4ff' : '#8a93a8')
-  }
-  const pv = document.getElementById('gmMonPrivIc')
-  if (pv) pv.textContent = _privacyMode ? '🙈' : '👁'
-
-  // City billboard: rotates through the watchlist (name · price · 24h%), one
-  // asset every ~4s — falls back to the majors if the watchlist is empty.
-  const nowTs = Date.now()
-  if (nowTs - _gmBillTs > 4000) { _gmBillTs = nowTs; _gmBillIdx++ }
-  const wl    = (loadWatchlist() || []).map(w => typeof w === 'string' ? w : w?.coin).filter(Boolean)
-  const bills = wl.length ? wl : ['BTC', 'ETH', 'SOL', 'HYPE']
-  const bCoin = bills[_gmBillIdx % bills.length]
-  const bEl   = document.getElementById('gmBillCoin')
-  if (bEl && bCoin) {
-    const px  = parseFloat(state.allMids?.[bCoin] ?? 0)
-    const chg = _mktCtxMap?.[bCoin]?.change24
-    bEl.textContent = coinLabel(bCoin)
-    const pxEl = document.getElementById('gmBillPx')
-    if (pxEl) pxEl.textContent = px > 0 ? '$' + fmtPrice(px) : '…'
-    const chEl = document.getElementById('gmBillChg')
-    if (chEl) {
-      if (Number.isFinite(chg)) {
-        chEl.textContent = `${chg >= 0 ? '▲' : '▼'} ${Math.abs(chg).toFixed(2)}%`
-        chEl.setAttribute('fill', chg >= 0 ? '#35c97e' : '#f0597a')
-      } else { chEl.textContent = '· · ·'; chEl.setAttribute('fill', '#8a93a8') }
-    }
-  }
-  _gmSetPet(mood, 190)
-}
-
-// Cycle this account's companion — triggered by DOUBLE-TAPPING the pet.
-window.__gmSwapPet = function(dir) {
-  const next = _GM_SPECIES[(_GM_SPECIES.indexOf(_gmGetSpecies()) + dir + _GM_SPECIES.length) % _GM_SPECIES.length]
-  _gmSetSpecies(next)
-  _gmLastMood = null                       // force pet redraw
-  _updateGameMode()
-  const bub = document.getElementById('gmBubble')
-  if (bub) {
-    bub.textContent = `${_GM_NAMES[next]} reporting for duty!`
-    bub.classList.add('show'); clearTimeout(bub._t)
-    bub._t = setTimeout(() => bub.classList.remove('show'), 2000)
-  }
-}
-
-window.__gmSoon = function(msg) {
-  const bub = document.getElementById('gmBubble')
-  if (bub) {
-    bub.textContent = msg || '🚧 Under construction!'
-    bub.classList.add('show'); clearTimeout(bub._t)
-    bub._t = setTimeout(() => bub.classList.remove('show'), 2200)
-  }
-}
-
-// ── FEED: the food shop. Each dish = a real USDC deposit amount ───────────────
-const _GM_FOODS = [
-  { ic: '🍎', usd: 10,  plate: '#7cc4ff', as: 'food-apple'  },
-  { ic: '🍕', usd: 20,  plate: '#9edb7a', as: 'food-pizza'  },
-  { ic: '🍔', usd: 50,  plate: '#b98aff', as: 'food-burger' },
-  { ic: '🎂', usd: 100, plate: '#ffd93b', as: 'food-cake'   },
-]
-function _gmFeedScreen(ov, stats, mood) {
-  if (ov.dataset.screen !== 'feed') {
-    ov.dataset.screen = 'feed'
-    ov.innerHTML = `
-      ${_gmShopSvg()}
-      ${_gmChrome('Food Shop', true)}
-      <div class="gm-feed-hint gm-outline">Pick a snack — it's a real USDC deposit!</div>
-      <div class="gm-food-row">
-        ${[..._GM_FOODS, { ic: '🍱', usd: 0, plate: '#ff9db0', as: 'food-bento' }].map(f => {
-          const im = _gmV(f.as, 'food')
-          return `<button class="gm-food" onclick="window.__gmFeedPick(${f.usd})">
-            ${im ? `<img class="gm-food-img" src="${im}" alt="" draggable="false">`
-                 : `<span class="gm-food-ic">${f.ic}</span><span class="gm-plate" style="background:${f.plate}"></span>`}
-            <span class="gm-food-tag gm-outline">${f.usd ? '$' + f.usd : '$…'}</span>
-          </button>`
-        }).join('')}
+// Tapping "Free margin" in All Accounts opens a bottom-sheet breaking the combined
+// free margin down per wallet (withdrawable = perp withdrawable + un-held spot USDC).
+window.__mobVFreeMarginBreakdown = function() {
+  if (!state.isAllAccounts) return
+  const hidden = _maHiddenLoad()
+  const rows = (_allAcctLastResults ?? [])
+    .filter(r => !r.error && !hidden.has(r.addr))
+    .map(r => ({ name: r.label || (r.addr.slice(0, 8) + '…' + r.addr.slice(-5)), wd: r.withdrawable ?? 0, cls: r.healthCls }))
+    .sort((a, b) => b.wd - a.wd)
+  const total = rows.reduce((s, r) => s + r.wd, 0)
+  document.getElementById('fmBreakdown')?.remove()
+  const ov = document.createElement('div')
+  ov.id = 'fmBreakdown'
+  ov.style.cssText = 'position:fixed;inset:0;z-index:100050;background:rgba(0,0,0,0.55);display:flex;align-items:flex-end;justify-content:center'
+  ov.onclick = (e) => { if (e.target === ov) ov.remove() }
+  const list = rows.map(r => `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 2px;border-top:1px solid var(--border)">
+      <span class="notranslate" style="font-weight:600;font-size:14px;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name)}</span>
+      <span style="font-weight:700;font-size:14px;white-space:nowrap">${_prv('$' + fmtUSD(r.wd))}</span>
+    </div>`).join('')
+  ov.innerHTML = `<div style="width:100%;max-width:520px;background:var(--panel);border-radius:16px 16px 0 0;padding:16px 18px calc(18px + env(safe-area-inset-bottom,0px));box-shadow:0 -8px 40px rgba(0,0,0,.5);max-height:80vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+        <span style="font-size:16px;font-weight:700">Free margin by account</span>
+        <button onclick="document.getElementById('fmBreakdown').remove()" style="background:none;border:none;color:var(--muted);font-size:24px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
       </div>
-      <div class="gm-bubble" id="gmBubble"></div>
-      <div class="gm-pet gm-pet-feed" id="gmPet" onclick="window.__gmPokePet()"></div>
-      <div class="gm-feed-bal"><span class="gm-outline" id="gmFeedBal">—</span></div>`
-    _gmLastMood = null
-  }
-  const bal = document.getElementById('gmFeedBal')
-  if (bal) bal.textContent = 'Balance: ' + (_privacyMode ? '•••••' : '$' + fmtUSD(stats.accountValue, 0))
-  _gmSetPet(mood, 150)
-}
-
-window.__gmFeedPick = function(usd) {
-  if (!usd) {
-    const v = parseFloat(prompt('How much USDC should we feed?') || 0)
-    if (!(v > 0)) return
-    usd = v
-  }
-  // Open the REAL deposit sheet (z 9000 — sits above the game) with the amount
-  // prefilled. When the deposit lands on-chain the value-jump detector plays the
-  // eating animation, so the chomp only happens on real food.
-  window.mobVDeposit?.()
-  setTimeout(() => {
-    const inp = document.getElementById('depositAmount')
-    if (inp) { inp.value = usd; window.__updateDepositPreview?.() }
-  }, 60)
-  const bub = document.getElementById('gmBubble')
-  if (bub) {
-    bub.textContent = 'Ooh!! Is that for me?? 🤤'
-    bub.classList.add('show'); clearTimeout(bub._t)
-    bub._t = setTimeout(() => bub.classList.remove('show'), 2400)
-  }
-}
-
-// Deposit landed → food falls to the pet, big chomp, happy bubble.
-function _gmEatAnim(amount) {
-  const ov = document.getElementById('gameModeOverlay')
-  const pet = document.getElementById('gmPet')
-  if (!ov || !pet || ov.style.display === 'none') return
-  const food = document.createElement('div')
-  food.className = 'gm-fall-food'
-  food.textContent = _GM_FOODS[Math.floor(Math.random() * _GM_FOODS.length)].ic
-  ov.appendChild(food)
-  setTimeout(() => {
-    food.remove()
-    const _pi = pet.firstElementChild || pet; _pi.classList.remove('gm-boing'); void _pi.offsetWidth
-    _pi.classList.add('gm-boing')
-    const bub = document.getElementById('gmBubble')
-    if (bub) {
-      bub.textContent = `YUM!! +$${fmtUSD(amount)} 😋`
-      bub.classList.add('show'); clearTimeout(bub._t)
-      bub._t = setTimeout(() => bub.classList.remove('show'), 3000)
-    }
-  }, 950)
-}
-
-// ── LIST: the pet studies your open orders on a corkboard; edits = rewriting ──
-function _gmListScreen(ov, mood) {
-  if (ov.dataset.screen !== 'list') {
-    ov.dataset.screen = 'list'
-    ov.innerHTML = `
-      ${_gmRoomSvg()}
-      ${_gmChrome('The List', true)}
-      <div class="gm-board">
-        <div class="gm-board-pin"></div><div class="gm-board-pin gm-board-pin-r"></div>
-        <div class="gm-board-title">THE BOOK <span id="gmListPencil">✏️</span></div>
-        <div class="gm-board-body" id="gmListBody"></div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;padding:8px 2px 6px">
+        <span style="color:var(--muted);font-size:12px">Total across ${rows.length} account${rows.length === 1 ? '' : 's'}</span>
+        <span style="font-size:20px;font-weight:800">${_prv('$' + fmtUSD(total))}</span>
       </div>
-      <div class="gm-bubble" id="gmBubble"></div>
-      <div class="gm-pet gm-pet-list" id="gmPet" onclick="window.__gmPokePet()"></div>`
-    _gmLastMood = null
-  }
-  _gmSetPet(mood, 120)
-
-  const positions = (state.perpState?.assetPositions ?? []).filter(ap => parseFloat(ap.position?.szi ?? 0) !== 0)
-  const orders    = state.openOrders ?? []
-
-  // Live uPnL refresh on the existing rows (no rebuild — that would restart
-  // animations and eat taps); the structural hash below decides full rewrites.
-  positions.forEach((ap, i) => {
-    const el = document.getElementById('gmpos-u-' + i)
-    if (!el) return
-    const u = parseFloat(ap.position?.unrealizedPnl ?? 0)
-    el.textContent = `${u >= 0 ? '+' : '−'}$${fmtUSD(Math.abs(u))}`
-    el.style.color = u >= 0 ? '#1d9e5f' : '#d33a56'
-  })
-
-  const hash = positions.map(ap => `${ap.position.coin}:${ap.position.szi}`).join('|') + '§' +
-               orders.map(o => `${o.oid}:${o.sz}:${o.limitPx}`).join('|')
-  if (hash === _gmOrdersHash) return
-  const changed = _gmOrdersHash !== null
-  _gmOrdersHash = hash
-
-  const body = document.getElementById('gmListBody')
-  if (body) {
-    // ALL positions — each with mark, live uPnL and a real market-close button
-    const posHtml = positions.length ? `<div class="gm-board-sec">— positions (${positions.length}) —</div>` + positions.map((ap, i) => {
-      const p = ap.position, szi = parseFloat(p.szi ?? 0)
-      const long = szi > 0
-      const u    = parseFloat(p.unrealizedPnl ?? 0)
-      const mark = parseFloat(state.allMids?.[p.coin] ?? 0)
-      const lev  = p.leverage?.value ? ` ${p.leverage.value}x` : ''
-      return `<div class="gm-order">
-        <span class="gm-order-side" style="color:${long ? '#1d9e5f' : '#d33a56'}">${long ? 'LONG' : 'SHORT'}${lev}</span>
-        <span class="gm-order-coin">${esc(_ocCoinLabel(p.coin))}</span>
-        <span class="gm-order-px">${fmtSize(Math.abs(szi))} @ $${fmtPrice(parseFloat(p.entryPx ?? 0))}</span>
-        <span class="gm-order-upnl" id="gmpos-u-${i}" style="color:${u >= 0 ? '#1d9e5f' : '#d33a56'}">${u >= 0 ? '+' : '−'}$${fmtUSD(Math.abs(u))}</span>
-        <button class="gm-order-x" title="Market close" onclick="window._mobVClosePos(this,'${_jsStr(p.coin)}','${long ? 'LONG' : 'SHORT'}','${p.szi}','${mark}')">✕</button>
-      </div>`
-    }).join('') : ''
-    // ALL orders — the board itself scrolls, so nothing gets cut off anymore
-    const ordHtml = orders.length ? `<div class="gm-board-sec">— orders (${orders.length}) —</div>` + orders.map(o => {
-      const isBuy = o.side === 'B'
-      const px = parseFloat(o.triggerPx ?? 0) > 0 ? o.triggerPx : o.limitPx
-      const kind = o.orderType?.startsWith('Take Profit') ? 'TP' : o.orderType?.startsWith('Stop') ? 'SL' : (o.isTrigger ? 'TRG' : '')
-      return `<div class="gm-order">
-        <span class="gm-order-side" style="color:${isBuy ? '#1d9e5f' : '#d33a56'}">${isBuy ? 'BUY' : 'SELL'}${kind ? ' ' + kind : ''}</span>
-        <span class="gm-order-coin">${esc(_ocCoinLabel(o.coin))}</span>
-        <span class="gm-order-px">${fmtSize(parseFloat(o.sz ?? 0))} @ $${fmtPrice(parseFloat(px ?? 0))}</span>
-        <button class="gm-order-x" onclick="window.__gmCancel('${_jsStr(o.coin)}',${o.oid},this)">✕</button>
-      </div>`
-    }).join('') + (orders.length > 1 ? `<button class="gm-board-clear" onclick="window.__gmCancelAll(this)">🧹 Cancel all orders</button>` : '') : ''
-    body.innerHTML = (posHtml + ordHtml) || '<div class="gm-order-empty">Flat book, empty list.<br>Nothing to rewrite~ 📝</div>'
-  }
-  if (changed) {
-    // scribble: pencil wiggles + pet reacts, like it's rewriting the board
-    const pencil = document.getElementById('gmListPencil')
-    if (pencil) { pencil.classList.remove('gm-scribble'); void pencil.offsetWidth; pencil.classList.add('gm-scribble') }
-    const bub = document.getElementById('gmBubble')
-    if (bub) {
-      bub.textContent = 'Rewriting the list… ✏️'
-      bub.classList.add('show'); clearTimeout(bub._t)
-      bub._t = setTimeout(() => bub.classList.remove('show'), 2000)
-    }
-  }
-}
-
-window.__gmCancel = async function(coin, oid, btn) {
-  btn.disabled = true; btn.textContent = '…'
-  try { await window.__cancelOrder(coin, oid, false, null) } catch {}
-  _gmOrdersHash = null   // force list re-render next tick
-  _updateGameMode()
-}
-
-window.__gmCancelAll = async function(btn) {
-  const orders = (state.openOrders ?? []).slice()
-  if (!orders.length) return
-  if (!confirm(`Cancel all ${orders.length} open orders?`)) return
-  btn.disabled = true; btn.textContent = 'Sweeping…'
-  for (const o of orders) { try { await window.__cancelOrder(o.coin, o.oid, false, null) } catch {} }
-  _gmOrdersHash = null
-  _updateGameMode()
-}
-
-// ── TRADE: scrollable card shop — each card is a real market ──────────────────
-function _gmTopMarkets() {
-  return Object.entries(_mktCtxMap)
-    .filter(([coin, c]) => c.volume > 0 && !coin.includes(':') && !coin.startsWith('@'))
-    .sort((a, b) => b[1].volume - a[1].volume)
-    .slice(0, 30)
-}
-function _gmTradeScreen(ov, mood) {
-  if (ov.dataset.screen !== 'trade') {
-    ov.dataset.screen = 'trade'
-    ov.innerHTML = `
-      ${_gmMarketSvg()}
-      ${_gmChrome('Card Shop', true)}
-      <input class="gm-card-search" id="gmCardSearch" placeholder="🔎 Search markets…" oninput="window.__gmCardFilter(this.value)">
-      <div class="gm-cards" id="gmCards"><div class="gm-cards-loading gm-outline">Opening the shop…</div></div>
-      <div class="gm-bubble" id="gmBubble"></div>
-      <div class="gm-pet gm-pet-trade" id="gmPet" onclick="window.__gmPokePet()"></div>`
-    _gmLastMood = null
-    if (!_mktCtxReady) _ensureMarketData().then(() => { if (_gmScreen === 'trade') { _gmCardsBuilt = false; _updateGameMode() } })
-  }
-  _gmSetPet(mood, 110)
-  _gmBuildCards()
-  _gmPatchCards()
-}
-
-let _gmCardsBuilt = false
-function _gmBuildCards() {
-  const host = document.getElementById('gmCards')
-  if (!host || !_mktCtxReady || _gmCardsBuilt) return
-  const mkts = _gmTopMarkets()
-  if (!mkts.length) return
-  _gmCardsBuilt = true
-  host.innerHTML = mkts.map(([coin, c]) => {
-    const cid = coin.replace(/[^a-zA-Z0-9]/g, '_')
-    return `<div class="gm-card" id="gmcard-${cid}" data-q="${esc(coinLabel(coin).toLowerCase())}" onclick="window.__gmCardTap('${_jsStr(coin)}')">
-      <div class="gm-card-head">${_mobVCoinIcon(coin)}<span class="gm-card-name">${esc(coinLabel(coin))}</span></div>
-      <div class="gm-card-px" id="gmpx-${cid}">$${fmtPrice(c.markPx)}</div>
-      <div class="gm-card-chg ${c.change24 >= 0 ? 'up' : 'dn'}" id="gmchg-${cid}">${c.change24 >= 0 ? '▲' : '▼'} ${Math.abs(c.change24).toFixed(2)}%</div>
-      <svg class="gm-card-spark" id="gmspark-${cid}" viewBox="0 0 100 34" preserveAspectRatio="none"></svg>
-      <div class="gm-card-buy" id="gmbuy-${cid}" onclick="event.stopPropagation()">
-        <div class="gm-card-meta">vol $${_fmtOcK(c.volume)} · fund ${(c.funding ?? 0).toFixed(4)}%</div>
-        <div class="gm-card-amts">${[10, 25, 50, 100].map(u => `<button class="gm-card-amt" onclick="window.__gmCardAmt('${cid}',${u},this)">$${u}</button>`).join('')}
-          <input class="gm-card-cust" id="gmcust-${cid}" type="number" min="0" placeholder="$…" inputmode="decimal" onclick="event.stopPropagation()">
-        </div>
-        <div class="gm-card-levs">${[1, 3, 5, 10, 20].map(l => `<button class="gm-card-lev${l === 1 ? ' on' : ''}" onclick="window.__gmCardLev('${cid}',${l},this)">${l}x</button>`).join('')}</div>
-        <div class="gm-card-btns">
-          <button class="gm-card-long"  onclick="window.__gmCardBuy('${_jsStr(coin)}','${cid}',true ,this)">LONG</button>
-          <button class="gm-card-short" onclick="window.__gmCardBuy('${_jsStr(coin)}','${cid}',false,this)">SHORT</button>
-        </div>
-        <div class="gm-card-st" id="gmst-${cid}"></div>
-      </div>
+      ${list || '<div style="color:var(--muted);padding:12px 2px">No accounts loaded</div>'}
+      <div style="font-size:11px;color:var(--muted);margin-top:12px;line-height:1.45">Free margin = withdrawable USDC (perp withdrawable + un-held spot USDC) — what's available to open new positions or withdraw.</div>
     </div>`
-  }).join('')
-  // Sparklines: 24h of 1h candles per card — fetched in small chunks so 30
-  // cards don't burst-fire the rate limit at once.
-  ;(async () => {
-    for (let i = 0; i < mkts.length; i += 6) {
-      await Promise.all(mkts.slice(i, i + 6).map(([coin]) => _gmDrawSpark(coin)))
-      if (_gmScreen !== 'trade') return
-    }
-  })()
-}
-
-window.__gmCardFilter = function(q) {
-  q = (q || '').toLowerCase().trim()
-  document.querySelectorAll('#gmCards .gm-card').forEach(c => {
-    c.style.display = !q || (c.dataset.q || '').includes(q) ? '' : 'none'
-  })
-}
-window.__gmCardLev = function(cid, lev, btn) {
-  const wrap = document.getElementById('gmbuy-' + cid)
-  if (!wrap) return
-  wrap.dataset.lev = lev
-  wrap.querySelectorAll('.gm-card-lev').forEach(b => b.classList.remove('on'))
-  btn.classList.add('on')
-}
-async function _gmDrawSpark(coin) {
-  const cid = coin.replace(/[^a-zA-Z0-9]/g, '_')
-  try {
-    if (!_gmSparkCache[coin]) {
-      _gmSparkCache[coin] = fetch('https://api.hyperliquid.xyz/info', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval: '1h', startTime: Date.now() - 24 * 3600 * 1000, endTime: null } }),
-      }).then(r => r.json())
-    }
-    const cs = await _gmSparkCache[coin]
-    const el = document.getElementById('gmspark-' + cid)
-    if (!el || !Array.isArray(cs) || cs.length < 2) return
-    const vals = cs.map(k => parseFloat(k.c))
-    const min = Math.min(...vals), max = Math.max(...vals), rng = (max - min) || 1
-    const pts = vals.map((v, i) => `${(i / (vals.length - 1) * 100).toFixed(1)},${(30 - (v - min) / rng * 26 + 2).toFixed(1)}`).join(' ')
-    const up  = vals[vals.length - 1] >= vals[0]
-    el.innerHTML = `<polyline points="${pts}" fill="none" stroke="${up ? '#1d9e5f' : '#d33a56'}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`
-  } catch {}
-}
-function _gmPatchCards() {
-  if (!_gmCardsBuilt) return
-  for (const [coin, c] of _gmTopMarkets()) {
-    const cid = coin.replace(/[^a-zA-Z0-9]/g, '_')
-    const px  = parseFloat(state.allMids?.[coin] ?? c.markPx)
-    const pxEl = document.getElementById('gmpx-' + cid)
-    if (pxEl) pxEl.textContent = '$' + fmtPrice(px)
-  }
-}
-window.__gmCardTap = function(coin) {
-  const cid = coin.replace(/[^a-zA-Z0-9]/g, '_')
-  const open = _gmCardCoin === coin
-  document.querySelectorAll('.gm-card.open').forEach(c => c.classList.remove('open'))
-  _gmCardCoin = open ? null : coin
-  if (!open) document.getElementById('gmcard-' + cid)?.classList.add('open')
-  document.getElementById('gmCards')?.classList.toggle('has-open', !open)
-}
-window.__gmCardAmt = function(cid, usd, btn) {
-  const wrap = document.getElementById('gmbuy-' + cid)
-  if (!wrap) return
-  wrap.dataset.usd = usd
-  wrap.querySelectorAll('.gm-card-amt').forEach(b => b.classList.remove('on'))
-  btn.classList.add('on')
-}
-window.__gmCardBuy = async function(coin, cid, isBuy, btn) {
-  const st   = document.getElementById('gmst-' + cid)
-  if (!isConnected()) { window.__quickConnectAgent?.(); if (st) st.textContent = 'Connect agent key first!'; return }
-  const wrap = document.getElementById('gmbuy-' + cid)
-  const cust = parseFloat(document.getElementById('gmcust-' + cid)?.value)
-  const usd  = cust > 0 ? cust : parseFloat(wrap?.dataset.usd || 25)
-  const px   = parseFloat(state.allMids?.[coin] ?? _mktCtxMap[coin]?.markPx ?? 0)
-  if (!(px > 0)) { if (st) st.textContent = 'No price — try again.'; return }
-  const lev = parseFloat(wrap?.dataset.lev) || 1
-  const sz  = (usd * lev) / px
-  if (st) { st.textContent = 'Placing…'; st.style.color = '#5d6a8c' }
-  btn.disabled = true
-  try {
-    const result   = await placeMarketOrder({ coin, isBuy, sz, markPrice: px, leverage: lev, isIsolated: state.isIsolated || false })
-    const statuses = result?.response?.data?.statuses ?? []
-    const filled   = statuses.find(x => x?.filled)?.filled
-    if (filled) {
-      if (st) { st.textContent = `✓ Got it! ${filled.totalSz} @ $${fmtPrice(parseFloat(filled.avgPx))}`; st.style.color = '#1d9e5f' }
-      const bub = document.getElementById('gmBubble')
-      if (bub) { bub.textContent = 'New card for the collection! 🃏'; bub.classList.add('show'); clearTimeout(bub._t); bub._t = setTimeout(() => bub.classList.remove('show'), 2600) }
-    } else {
-      const err = statuses.find(x => x?.error)?.error ?? 'rejected'
-      if (st) { st.textContent = '✗ ' + err; st.style.color = '#d33a56' }
-    }
-  } catch (e) {
-    if (st) { st.textContent = '✗ ' + e.message; st.style.color = '#d33a56' }
-  } finally { btn.disabled = false }
-}
-
-window.__gmPokePet = function() {
-  const pet = document.getElementById('gmPet')
-  const bub = document.getElementById('gmBubble')
-  if (pet) {
-    const _pi2 = pet.firstElementChild || pet; _pi2.classList.remove('gm-boing'); void _pi2.offsetWidth   // restart animation
-    _pi2.classList.add('gm-boing')
-  }
-  if (bub) {
-    const qs = _GM_QUIPS[_gmLastMood || 'idle'] || _GM_QUIPS.idle
-    bub.textContent = qs[Math.floor(Math.random() * qs.length)]
-    bub.classList.add('show')
-    clearTimeout(bub._t)
-    bub._t = setTimeout(() => bub.classList.remove('show'), 2600)
-  }
+  document.body.appendChild(ov)
 }
 
 function _mobVRenderBalance() {
@@ -7408,16 +10211,29 @@ function _mobVRenderBalance() {
 
   const _petHasPos = (state.perpState?.assetPositions ?? []).some(p => parseFloat(p.position?.szi ?? 0) !== 0)
 
+  // Combined view still missing a wallet → the sum would be understated (looks like a real
+  // balance drop). Show loading dots rather than a number we know is incomplete.
+  if (state.isAllAccounts && _allAcctIncomplete) {
+    balEl.innerHTML = `<span class="acct-loading-dots" aria-label="Loading balance"><i></i><i></i><i></i></span>`
+    if (changeEl) changeEl.style.display = 'none'
+    _mobVRenderPet(computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids).healthPct, _petHasPos)
+    return
+  }
+  if (changeEl && changeEl.style.display === 'none') changeEl.style.display = ''
+
   // Wait for portfolio before showing a value — avoids flashing perp-only number
   if (!hist.length) {
     balEl.innerHTML = '<span style="color:var(--muted)">—</span>'
     if (changeEl) changeEl.textContent = ''
     // Health needs only perpState, so keep Solvi alive even before the portfolio lands.
-    _mobVRenderPet(computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio).healthPct, _petHasPos)
+    _mobVRenderPet(computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids).healthPct, _petHasPos)
     return
   }
 
-  const { accountValue: val, healthStr, healthCls, healthPct, accountLeverage, withdrawable, maintMargin, unrealizedPnl } = computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio)
+  const { accountValue: _rawVal, healthStr, healthCls, healthPct, accountLeverage, withdrawable, maintMargin, unrealizedPnl, netPnl } = computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids)
+  // Combined view: filter transient glitch spikes (a single bad poll shouldn't flash a huge
+  // fake equity). Single accounts are already smooth (one authoritative source).
+  const val = state.isAllAccounts ? _comboEqFilter(_rawVal) : _rawVal
   _mobVRenderPet(healthPct, _petHasPos)
 
   // Format: $XX,XXX.XX — split cents dim
@@ -7436,7 +10252,11 @@ function _mobVRenderBalance() {
       const pct  = parseFloat(prev) > 0 ? diff / parseFloat(prev) * 100 : 0
       const up   = diff >= 0
       changeEl.style.cssText = `display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:8px;font-size:12px;font-weight:600;margin-top:7px;background:${up ? 'rgba(0,229,160,0.12)' : 'rgba(255,77,109,0.14)'};color:${up ? 'var(--green)' : 'var(--red)'}`
-      changeEl.textContent = _privacyMode ? '••• today' : `${up ? '▲' : '▼'} $${fmtUSD(Math.abs(diff))} · ${Math.abs(pct).toFixed(2)}% today`
+      // Keep the ever-changing number in a .notranslate span, and "today" as its OWN stable text
+      // node. Otherwise the whole "▲ $X · Y% today" string changes every tick, never caches, and
+      // the translator re-fetches it forever → flicker between English and the target language.
+      const _num = _privacyMode ? '•••' : `${up ? '▲' : '▼'} $${fmtUSD(Math.abs(diff))} · ${Math.abs(pct).toFixed(2)}%`
+      changeEl.innerHTML = `<span class="notranslate">${_num}</span> today`
     } else {
       changeEl.style.display = 'none'
     }
@@ -7460,22 +10280,47 @@ function _mobVRenderBalance() {
   }
 
   // Stats row — leverage is a ratio (not masked); free margin + maint respect privacy.
+  // The Unreal/Net PnL stat is tappable — toggles which of the two it shows (__mobVTogglePnlStat)
+  const _pnlNet = _mobVPnlStatMode() === 'net'
+  const _pnlVal = _pnlNet ? netPnl : unrealizedPnl
   const upEl = document.getElementById('mobVUnrealPnl')
   if (upEl) {
-    upEl.textContent = _privacyMode ? '•••' : (unrealizedPnl >= 0 ? '+$' : '-$') + fmtUSD(Math.abs(unrealizedPnl))
-    upEl.style.color = unrealizedPnl > 0 ? 'var(--green)' : unrealizedPnl < 0 ? 'var(--red)' : ''
+    upEl.textContent = _privacyMode ? '•••' : (_pnlVal >= 0 ? '+' : '') + _mobVStatUSD(_pnlVal)
+    upEl.style.color = _pnlVal > 0 ? 'var(--green)' : _pnlVal < 0 ? 'var(--red)' : ''
   }
+  const upLbl = document.getElementById('mobVUnrealPnlLbl')
+  if (upLbl) upLbl.innerHTML = `${_pnlNet ? 'Net PnL' : 'Unreal. PnL'} <span style="opacity:.45;font-size:9px">⇄</span>`
   const levEl = document.getElementById('mobVLeverage')
   if (levEl) levEl.textContent = accountLeverage > 0 ? accountLeverage.toFixed(2) + 'x' : '—'
   const fmEl = document.getElementById('mobVFreeMargin')
-  if (fmEl) fmEl.textContent = _prv('$' + fmtUSD(withdrawable))
+  if (fmEl) fmEl.textContent = _prv(_mobVStatUSD(withdrawable))
+  const fmLbl = document.getElementById('mobVFreeMarginLbl')
+  if (fmLbl) fmLbl.innerHTML = 'Free margin' + (state.isAllAccounts ? ' <span style="opacity:.45;font-size:9px">⊞</span>' : '')
   const mmEl = document.getElementById('mobVMaintMargin')
-  if (mmEl) mmEl.textContent = _prv(maintMargin > 0 ? '$' + fmtUSD(maintMargin) : '—')
+  if (mmEl) mmEl.textContent = _prv(maintMargin > 0 ? _mobVStatUSD(maintMargin) : '—')
 
   _mobVDrawSpark()
 }
 
-function _mobVPortHeroHtml(hist, vals, idx) {
+// Net capital put into the account (deposits − withdrawals), from the ledger the
+// Portfolio page already renders. Used as the denominator for the all-time PnL %,
+// where "value at window start" is ~$0 (account genesis) and would hide the %.
+function _netDepositedFromLedger() {
+  let dep = 0, wd = 0
+  for (const e of (state.ledger ?? [])) {
+    const d = e.delta ?? {}
+    if (d.type === 'deposit') dep += parseFloat(d.usdc ?? 0)
+    else if (d.type === 'withdraw') wd += parseFloat(d.usdc ?? 0)
+    else if (d.type === 'send' || d.type === 'spotTransfer') {
+      const me = (e._acctAddr ?? state.addr ?? '').toLowerCase()
+      const v  = parseFloat(d.usdcValue ?? 0)
+      if ((d.destination ?? '').toLowerCase() === me) dep += v; else wd += v
+    }
+  }
+  return dep - wd
+}
+
+function _mobVPortHeroHtml(hist, vals, idx, baseRef = 0) {
   const val  = vals[idx]
   const ts   = hist[idx][0]
   const date = new Date(+ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
@@ -7483,14 +10328,25 @@ function _mobVPortHeroHtml(hist, vals, idx) {
   if (_mobVPortChartType === 'value') {
     const base = vals[0]
     const diff = val - base
-    const pct  = base > 0 ? diff / base * 100 : 0
+    // % of the value at window start. On All-time that start is ~$0 (genesis), so use
+    // net invested capital instead — the same fallback the PnL views use — rather than
+    // hiding the %. Only omitted if there's no basis at all (never funded).
+    const denom = base > 1 ? base : (baseRef > 1 ? baseRef : null)
+    const pct   = denom ? diff / denom * 100 : null
     const sign = diff >= 0 ? '+' : '-'
     const cls  = diff >= 0 ? 'pos' : 'neg'
-    return `<div style="font-size:22px;font-weight:700;color:var(--fg)">${_prv('$' + fmtUSD(val))}</div><div style="font-size:13px;margin-top:2px" class="${cls}">${_prv(sign + '$' + fmtUSD(Math.abs(diff)) + ' (' + sign + Math.abs(pct).toFixed(2) + '%)')}</div>${!isLatest ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${date}</div>` : ''}`
+    const pctStr = pct == null ? '' : ' (' + sign + Math.abs(pct).toFixed(2) + '%)'
+    return `<div style="font-size:22px;font-weight:700;color:var(--fg)">${_prv('$' + fmtUSD(val))}</div><div style="font-size:13px;margin-top:2px" class="${cls}">${_prv(sign + '$' + fmtUSD(Math.abs(diff)) + pctStr)}</div>${!isLatest ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${date}</div>` : ''}`
   } else {
+    // Accum. PnL / Realized: show the value as a % of the capital held at the start
+    // of the period (baseRef = account value at window start), the same basis the
+    // Value tab divides by. Omitted when that basis is ~$0 (account funded inside the
+    // window), where a percentage would be meaningless.
     const sign = val >= 0 ? '+' : '-'
     const cls  = val >= 0 ? 'pos' : 'neg'
-    return `<div style="font-size:22px;font-weight:700" class="${cls}">${_prv(sign + '$' + fmtUSD(Math.abs(val)))}</div>${!isLatest ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${date}</div>` : ''}`
+    const pct  = baseRef > 1 ? val / baseRef * 100 : null
+    const pctStr = pct == null ? '' : ' (' + (pct >= 0 ? '+' : '-') + Math.abs(pct).toFixed(2) + '%)'
+    return `<div style="font-size:22px;font-weight:700" class="${cls}">${_prv(sign + '$' + fmtUSD(Math.abs(val)) + pctStr)}</div>${!isLatest ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${date}</div>` : ''}`
   }
 }
 
@@ -7584,12 +10440,56 @@ function _mobVDrawPortCanvas(canvas, crosshairIdx) {
     ctx.fill()
     ctx.shadowBlur = 0
   }
+
+  // ── Action markers: buys/sells (fills) + deposits/withdrawals (ledger) ────────
+  // Toggled by the Markers button; only on the account-VALUE chart where they make sense.
+  if (_mobVPortMarkers && _mobVPortChartType === 'value' && hist.length >= 2) {
+    const n = hist.length, t0 = +hist[0][0], t1 = +hist[n - 1][0]
+    // Map a timestamp → [x,y] on the index-spaced line (null if outside the window).
+    const xyAt = (t) => {
+      if (!(t > t0 && t < t1)) return null
+      let i = 0; while (i < n - 1 && +hist[i + 1][0] < t) i++
+      const ta = +hist[i][0], tb = +hist[i + 1][0]
+      const f  = tb > ta ? (t - ta) / (tb - ta) : 0
+      return [ (i + f) / (n - 1) * (W - 4), pts[i][1] + (pts[i + 1][1] - pts[i][1]) * f ]
+    }
+    const evs = []
+    for (const fl of (state.fills ?? [])) {
+      if (!(fl.time > t0 && fl.time < t1)) continue
+      evs.push({ t: +fl.time, type: fl.side === 'SELL' ? 'sell' : 'buy' })
+    }
+    for (const e of (state.ledger ?? [])) {
+      const ty = e.delta?.type, t = +(e.time ?? 0)
+      if (!(t > t0 && t < t1)) continue
+      const amt = ledgerAmount(e, e._acctAddr ?? state.addr) || 0
+      if (ty === 'deposit' || ((ty === 'send' || ty === 'spotTransfer') && amt > 0)) evs.push({ t, type: 'dep' })
+      else if (ty === 'withdraw' || ((ty === 'send' || ty === 'spotTransfer') && amt < 0)) evs.push({ t, type: 'wd' })
+    }
+    evs.sort((a, b) => a.t - b.t)
+    const style = { buy: { c: '#00e5a0', l: 'B', dy: 11 }, sell: { c: '#ff4d6d', l: 'S', dy: -11 },
+                    dep: { c: '#4aa3ff', l: 'D', dy: 0 }, wd: { c: '#f5a623', l: 'W', dy: 0 } }
+    const bucketPx = { buy: 15, sell: 15, dep: 8, wd: 8 }, seen = new Set()
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = 'bold 8px system-ui, sans-serif'
+    for (const ev of evs) {
+      const xy = xyAt(ev.t); if (!xy) continue
+      const key = ev.type + ':' + Math.round(xy[0] / bucketPx[ev.type])   // merge a cluster into one dot
+      if (seen.has(key)) continue
+      seen.add(key)
+      const s  = style[ev.type]
+      const mx = Math.max(7, Math.min(W - 7, xy[0]))
+      const my = Math.max(padY + 2, Math.min(H - 2, xy[1] + s.dy))
+      ctx.beginPath(); ctx.arc(mx, my, 6.5, 0, Math.PI * 2)
+      ctx.globalAlpha = 0.94; ctx.fillStyle = s.c; ctx.fill(); ctx.globalAlpha = 1
+      ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(10,12,16,0.55)'; ctx.stroke()
+      ctx.fillStyle = '#0a0c10'; ctx.fillText(s.l, mx, my + 0.5)
+    }
+  }
 }
 
 function _mobVPortTouchMove(e) {
   e.preventDefault()
   if (!_mobVPortChartData) return
-  const { pts, vals, hist } = _mobVPortChartData
+  const { pts, vals, hist, baseRef } = _mobVPortChartData
   const canvas = document.getElementById('mobVPortChart')
   if (!canvas) return
   const rect = canvas.getBoundingClientRect()
@@ -7601,31 +10501,36 @@ function _mobVPortTouchMove(e) {
   }
   _mobVDrawPortCanvas(canvas, nearestIdx)
   const heroEl = document.getElementById('mobVPortHero')
-  if (heroEl) heroEl.innerHTML = _mobVPortHeroHtml(hist, vals, nearestIdx)
+  if (heroEl) heroEl.innerHTML = _mobVPortHeroHtml(hist, vals, nearestIdx, baseRef)
 }
 
 function _mobVPortTouchEnd() {
   _mobVDrawPortChart()
 }
 
-function _mobVDrawPortChart() {
-  const canvas = document.getElementById('mobVPortChart')
-  if (!canvas) return
-  const periodKey = { '1D': 'day', '7D': 'week', '1M': 'month', 'allTime': 'allTime' }[_mobVPortPeriod] ?? 'allTime'
+// Build the [ts, value] series for a given period + chart type. Shared by the inline
+// mobile chart and the Advanced interactive chart so both stay perfectly in sync.
+function _portSeries(period, type) {
+  const periodKey = { '1D': 'day', '7D': 'week', '1M': 'month', 'allTime': 'allTime' }[period] ?? 'allTime'
   const portEntry = (state.portfolio ?? []).find(p => p[0] === periodKey)
-  const heroEl    = document.getElementById('mobVPortHero')
+  // Denominator for the PnL %. Prefer the account value at the START of the period
+  // (same basis the Value tab uses) — precise for 1D/7D/1M. On All-time that value is
+  // ~$0 (account genesis), so fall back to net invested capital, giving an all-time
+  // return % instead of hiding it.
+  const _avHist   = portEntry?.[1]?.accountValueHistory ?? []
+  const _startVal = parseFloat(_avHist[0]?.[1] ?? 0)
+  const baseRef   = _startVal > 1 ? _startVal : _netDepositedFromLedger()
   let hist = []
-
-  if (_mobVPortChartType === 'value') {
+  if (type === 'value') {
     hist = portEntry?.[1]?.accountValueHistory ?? []
-  } else if (_mobVPortChartType === 'pnl') {
+  } else if (type === 'pnl') {
     hist = portEntry?.[1]?.pnlHistory ?? []
   } else {
     // realized: bucket fills into period pnlHistory timestamps, cumulative sum
     const pnlHist = portEntry?.[1]?.pnlHistory ?? []
     const buckets = pnlHist.map(p => +p[0])
     if (buckets.length >= 2) {
-      const cutoffMs = { '1D': 86400000, '7D': 7 * 86400000, '1M': 30 * 86400000 }[_mobVPortPeriod]
+      const cutoffMs = { '1D': 86400000, '7D': 7 * 86400000, '1M': 30 * 86400000 }[period]
       const cutoffTs = cutoffMs ? Date.now() - cutoffMs : 0
       const fills    = (state.fills ?? []).filter(f => !cutoffTs || f.time >= cutoffTs)
       const bucketPnl = new Array(buckets.length).fill(0)
@@ -7639,10 +10544,18 @@ function _mobVDrawPortChart() {
       hist = buckets.map((ts, i) => [ts, (running += bucketPnl[i]).toString()])
     }
   }
+  return { hist, baseRef }
+}
+
+function _mobVDrawPortChart() {
+  const canvas = document.getElementById('mobVPortChart')
+  if (!canvas) return
+  const heroEl = document.getElementById('mobVPortHero')
+  const { hist, baseRef: _baseRef } = _portSeries(_mobVPortPeriod, _mobVPortChartType)
 
   if (heroEl) {
     if (hist.length >= 2) {
-      heroEl.innerHTML = _mobVPortHeroHtml(hist, hist.map(h => parseFloat(h[1])), hist.length - 1)
+      heroEl.innerHTML = _mobVPortHeroHtml(hist, hist.map(h => parseFloat(h[1])), hist.length - 1, _baseRef)
     } else {
       heroEl.innerHTML = `<div style="color:var(--muted);font-size:13px">No data for period</div>`
     }
@@ -7673,7 +10586,7 @@ function _mobVDrawPortChart() {
   const isUp  = _mobVPortChartType === 'value' ? lastV >= vals[0] : lastV >= 0
   const color = isUp ? '#00e5a0' : '#ff4d6d'
 
-  _mobVPortChartData = { hist, pts, vals, W, H, isUp, color, dpr, min, max, range, padY }
+  _mobVPortChartData = { hist, pts, vals, W, H, isUp, color, dpr, min, max, range, padY, baseRef: _baseRef }
   _mobVDrawPortCanvas(canvas, -1)
 
   // Bind touch handlers once per canvas instance
@@ -7702,6 +10615,483 @@ window.mobVSetPortChartType = function(t) {
   })
   _mobVDrawPortChart()
 }
+
+window.mobVTogglePortMarkers = function() {
+  _mobVPortMarkers = !_mobVPortMarkers
+  localStorage.setItem('mobPortMarkers', _mobVPortMarkers ? '1' : '0')
+  // Re-render the tab so the button style + legend update alongside the redrawn chart.
+  if (_mobVActiveTab === 'portfolio') _mobVRenderContent()
+  // Keep the advanced chart in step if it's open (markers only — no viewport reset).
+  if (_adv.open) { _advSyncControls(); _advDraw() }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ADVANCED INTERACTIVE CHART
+//  Full-screen version of the portfolio chart: pan (drag), zoom (pinch / wheel /
+//  buttons), tap a point for its value, tap a B/S/D/W marker for the underlying
+//  trade or transfer. Shares period / type / markers state with the inline chart.
+// ─────────────────────────────────────────────────────────────────────────────
+// Viewport is a TIME window [t0, t1] (ms). Timeframe sets its width; panning scrolls
+// it through history keeping that width fixed — exactly like the trade charts.
+let _adv = { open: false, t0: 0, t1: 1, dataMin: 0, dataMax: 1, data: null, cross: -1, markerHits: [], touch: null, periodSel: 'allTime', style: 'line' }
+
+const _ADV_DAYMS = 86400000
+
+// Fractional index (0..n-1) for a timestamp within the cached series.
+function _advFiAtTime(t) {
+  const hist = _adv.data?.hist ?? []
+  const n = hist.length
+  if (n < 2) return 0
+  const t0 = +hist[0][0], tN = +hist[n - 1][0]
+  if (t <= t0) return 0; if (t >= tN) return n - 1
+  let i = 0; while (i < n - 1 && +hist[i + 1][0] < t) i++
+  const ta = +hist[i][0], tb = +hist[i + 1][0]
+  return i + (tb > ta ? (t - ta) / (tb - ta) : 0)
+}
+
+// Keep [t0,t1] within the data bounds, preserving the window WIDTH where possible.
+function _advClampView() {
+  const range = _adv.dataMax - _adv.dataMin
+  let w = _adv.t1 - _adv.t0
+  if (w >= range || w <= 0) { _adv.t0 = _adv.dataMin; _adv.t1 = _adv.dataMax; return }
+  if (_adv.t1 > _adv.dataMax) { _adv.t1 = _adv.dataMax; _adv.t0 = _adv.t1 - w }
+  if (_adv.t0 < _adv.dataMin) { _adv.t0 = _adv.dataMin; _adv.t1 = _adv.t0 + w }
+}
+
+// Timeframe = window WIDTH anchored at "now". "All" shows the full range.
+function _advApplyPeriodSpan() {
+  const days = { '1H': 1 / 24, '8H': 8 / 24, '1D': 1, '7D': 7, '1M': 30, 'allTime': null }[_adv.periodSel]
+  if (days == null) { _adv.t0 = _adv.dataMin; _adv.t1 = _adv.dataMax; return }
+  _adv.t1 = _adv.dataMax
+  _adv.t0 = _adv.dataMax - days * _ADV_DAYMS
+  _advClampView()
+}
+
+// Resize the window to `newW` (ms) keeping `centerT` fixed on screen (zoom).
+function _advSetWindow(centerT, newW) {
+  const range = _adv.dataMax - _adv.dataMin
+  const minW = Math.max(1800000, range / 2000)   // ~30-min floor
+  newW = Math.max(minW, Math.min(range, newW))
+  const cur = _adv.t1 - _adv.t0
+  const p = cur > 0 ? (centerT - _adv.t0) / cur : 0.5
+  _adv.t0 = centerT - p * newW
+  _adv.t1 = _adv.t0 + newW
+  _adv.periodSel = null   // manual zoom → no preset highlighted
+  _advClampView()
+}
+
+// Pan by a fraction of the canvas width (positive = content moves right → back in time).
+function _advPanTime(dxFrac) {
+  const w = _adv.t1 - _adv.t0
+  const dt = -dxFrac * w
+  _adv.t0 += dt; _adv.t1 += dt
+  _advClampView()
+}
+
+function _advFmtSz(v) {
+  const n = Math.abs(+v || 0)
+  return n >= 1000 ? fmtUSD(n, 0) : (+v).toLocaleString(undefined, { maximumFractionDigits: n < 1 ? 4 : 2 })
+}
+
+// Assemble the event list (fills + ledger transfers) with human-readable details.
+function _advBuildEvents() {
+  const evs = []
+  for (const fl of (state.fills ?? [])) {
+    const isSell = fl.side === 'SELL'
+    const pnl = +fl.closedPnl || 0
+    evs.push({
+      t: +fl.time, kind: isSell ? 'sell' : 'buy',
+      title: `${isSell ? 'Sell' : 'Buy'} ${esc(String(fl.coin ?? ''))}`,
+      lines: [
+        `${_advFmtSz(fl.sz)} @ $${fmtUSD(+fl.px || 0)}`,
+        pnl ? `Realized ${pnl >= 0 ? '+' : '−'}$${fmtUSD(Math.abs(pnl))}` : null,
+      ].filter(Boolean),
+    })
+  }
+  for (const e of (state.ledger ?? [])) {
+    const ty = e.delta?.type, t = +(e.time ?? 0)
+    const amt = ledgerAmount(e, e._acctAddr ?? state.addr) || 0
+    if (ty === 'deposit' || ((ty === 'send' || ty === 'spotTransfer') && amt > 0))
+      evs.push({ t, kind: 'dep', title: 'Deposit', lines: [`+$${fmtUSD(Math.abs(amt))}`] })
+    else if (ty === 'withdraw' || ((ty === 'send' || ty === 'spotTransfer') && amt < 0))
+      evs.push({ t, kind: 'wd', title: 'Withdraw', lines: [`−$${fmtUSD(Math.abs(amt))}`] })
+  }
+  evs.sort((a, b) => a.t - b.t)
+  return evs
+}
+
+// Rebuild the cached series (call on open + whenever type / markers change). Advanced
+// always loads the FULL history; the timeframe controls the visible window width.
+function _advRebuild() {
+  const { hist, baseRef } = _portSeries('allTime', _mobVPortChartType)
+  const vals = hist.map(h => parseFloat(h[1]))
+  _adv.data = { hist, vals, baseRef, evs: _advBuildEvents() }
+  _adv.cross = -1
+  const n = hist.length
+  _adv.dataMin = n ? +hist[0][0] : 0
+  _adv.dataMax = n ? +hist[n - 1][0] : 1
+  _advApplyPeriodSpan()
+  _advSyncControls()
+  _advHideTip()
+  _advDraw()
+}
+
+function _advSyncControls() {
+  document.querySelectorAll('#advChartOverlay [data-adv-type]').forEach(btn =>
+    btn.style.cssText = _mobVPortBtnStyle(btn.dataset.advType === _mobVPortChartType))
+  document.querySelectorAll('#advChartOverlay [data-adv-period]').forEach(btn =>
+    btn.style.cssText = _mobVPortBtnStyle(btn.dataset.advPeriod === _adv.periodSel))
+  const mk = document.getElementById('advMarkersBtn')
+  if (mk) { mk.style.borderColor = _mobVPortMarkers ? '#00e5a0' : ''; mk.style.color = _mobVPortMarkers ? 'var(--fg)' : '' }
+  const sb = document.getElementById('advStyleBtn')
+  if (sb) { sb.textContent = _adv.style === 'candle' ? '📈 Line' : '🕯 Candles'; sb.style.borderColor = _adv.style === 'candle' ? '#00e5a0' : ''; sb.style.color = _adv.style === 'candle' ? 'var(--fg)' : '' }
+}
+
+function _advDraw() {
+  const canvas = document.getElementById('advChart')
+  const d = _adv.data
+  if (!canvas || !d) return
+  const wrap = canvas.parentElement
+  const dpr = window.devicePixelRatio || 1
+  const W = Math.max(120, Math.round(wrap.clientWidth))
+  const H = Math.max(160, Math.round(wrap.clientHeight))
+  canvas.width = W * dpr; canvas.height = H * dpr
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px'
+  const ctx = canvas.getContext('2d')
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.clearRect(0, 0, W, H)
+
+  const { hist, vals } = d
+  const n = hist.length
+  if (n < 2) return
+  const { t0, t1 } = _adv
+  const winMs = (t1 - t0) || 1
+  const padY = 26, padTop = 14
+  const plotH = H - padY - padTop
+  const xOfT = t => (t - t0) / winMs * (W - 2) + 1
+
+  // Visible index window (+1 neighbour each side for line continuity).
+  let lo = 0; while (lo < n && +hist[lo][0] < t0) lo++
+  let hi = n - 1; while (hi > 0 && +hist[hi][0] > t1) hi--
+  let i0 = Math.max(0, lo - 1), i1 = Math.min(n - 1, hi + 1)
+  if (i0 > i1) { i0 = Math.max(0, Math.min(i0, n - 1)); i1 = i0 }
+
+  // Y auto-scales to the visible slice.
+  let mn = Infinity, mx = -Infinity
+  for (let i = i0; i <= i1; i++) { if (vals[i] < mn) mn = vals[i]; if (vals[i] > mx) mx = vals[i] }
+  if (!isFinite(mn)) { mn = 0; mx = 1 }
+  if (_mobVPortChartType !== 'value') { mn = Math.min(mn, 0); mx = Math.max(mx, 0) }
+  let range = mx - mn || 1
+  // small headroom
+  mn -= range * 0.06; mx += range * 0.06; range = mx - mn || 1
+  const yOf = v => padTop + plotH - ((v - mn) / range) * plotH
+
+  const lastV = vals.at(-1)
+  const isUp = _mobVPortChartType === 'value' ? lastV >= vals[0] : lastV >= 0
+  const color = isUp ? '#00e5a0' : '#ff4d6d'
+
+  const pts = []
+  for (let i = i0; i <= i1; i++) pts.push([xOfT(+hist[i][0]), yOf(vals[i])])
+  // Guarantee a drawable segment even when the window holds a single point.
+  if (pts.length === 1) pts.push([W, pts[0][1]])
+
+  // Horizontal gridlines + Y labels (4 rows).
+  ctx.font = '10px system-ui, sans-serif'; ctx.textAlign = 'right'
+  const fmtAxisVal = v => (v < 0 ? '-' : '') + '$' + (Math.abs(v) >= 1000 ? fmtUSD(Math.abs(v), 0) : Math.abs(v).toFixed(2))
+  for (let g = 0; g <= 4; g++) {
+    const v = mx - (range) * g / 4
+    const y = yOf(v)
+    ctx.beginPath(); ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1
+    ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke()
+    ctx.fillStyle = 'rgba(255,255,255,0.4)'
+    ctx.fillText(fmtAxisVal(v), W - 3, y - 3)
+  }
+  // Zero baseline for pnl charts.
+  if (_mobVPortChartType !== 'value' && mn < 0 && mx > 0) {
+    const zy = yOf(0)
+    ctx.beginPath(); ctx.strokeStyle = 'rgba(255,255,255,0.22)'; ctx.lineWidth = 1
+    ctx.setLineDash([4, 4]); ctx.moveTo(0, zy); ctx.lineTo(W, zy); ctx.stroke(); ctx.setLineDash([])
+  }
+
+  const smoothPath = (p) => {
+    ctx.moveTo(p[0][0], p[0][1])
+    for (let i = 0; i < p.length - 1; i++) {
+      const mxp = (p[i][0] + p[i + 1][0]) / 2, myp = (p[i][1] + p[i + 1][1]) / 2
+      ctx.quadraticCurveTo(p[i][0], p[i][1], mxp, myp)
+    }
+    ctx.lineTo(p[p.length - 1][0], p[p.length - 1][1])
+  }
+
+  if (_adv.style === 'candle') {
+    // Bucket the value series into OHLC candles across the visible window.
+    const candleN = Math.min(50, Math.max(8, Math.floor(W / 11)))
+    const bMs = winMs / candleN
+    const bodyW = Math.max(2, (W / candleN) * 0.62)
+    let p = 0
+    for (let k = 0; k < candleN; k++) {
+      const bs = t0 + k * bMs, be = bs + bMs
+      while (p < n && +hist[p][0] < bs) p++
+      let o = null, c = null, hi = -Infinity, lo = Infinity, has = false
+      let q = p
+      while (q < n && +hist[q][0] < be) { const v = vals[q]; if (!has) { o = v; has = true } c = v; if (v > hi) hi = v; if (v < lo) lo = v; q++ }
+      if (!has) continue
+      const cx = xOfT(bs + bMs / 2)
+      const up = c >= o, col = up ? '#00e5a0' : '#ff4d6d'
+      ctx.beginPath(); ctx.strokeStyle = col; ctx.lineWidth = 1
+      ctx.moveTo(cx, yOf(hi)); ctx.lineTo(cx, yOf(lo)); ctx.stroke()
+      const yO = yOf(o), yC = yOf(c), top = Math.min(yO, yC)
+      let bh = Math.abs(yC - yO); if (bh < 1.5) bh = 1.5
+      ctx.fillStyle = col; ctx.fillRect(cx - bodyW / 2, top, bodyW, bh)
+    }
+  } else {
+    // Fill
+    const grad = ctx.createLinearGradient(0, padTop, 0, H - padY)
+    grad.addColorStop(0, isUp ? 'rgba(0,229,160,0.20)' : 'rgba(255,77,109,0.20)')
+    grad.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.beginPath(); ctx.moveTo(pts[0][0], H - padY); smoothPath(pts)
+    ctx.lineTo(pts.at(-1)[0], H - padY); ctx.closePath(); ctx.fillStyle = grad; ctx.fill()
+    // Line
+    ctx.beginPath(); smoothPath(pts); ctx.strokeStyle = color; ctx.lineWidth = 2
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke()
+  }
+
+  // X-axis date ticks (visible time range, evenly spaced in TIME).
+  ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.font = '10px system-ui, sans-serif'
+  const spanDays = winMs / _ADV_DAYMS
+  const dOpts = spanDays > 200 ? { month: 'short', year: '2-digit' }
+    : spanDays > 2 ? { month: 'short', day: 'numeric' }
+    : spanDays > 0.5 ? { month: 'short', day: 'numeric', hour: 'numeric' }
+    : { hour: 'numeric', minute: '2-digit' }
+  for (let g = 0; g <= 3; g++) {
+    const t = t0 + winMs * g / 3
+    let x = xOfT(t); x = Math.max(24, Math.min(W - 24, x))
+    ctx.fillText(new Date(t).toLocaleString('en-US', dOpts).replace(',', ''), x, H - 8)
+  }
+
+  // Crosshair
+  if (_adv.cross >= 0 && _adv.cross < n) {
+    const cx = xOfT(+hist[_adv.cross][0]), cy = yOf(vals[_adv.cross])
+    if (cx >= 0 && cx <= W) {
+      ctx.beginPath(); ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 1
+      ctx.setLineDash([3, 3]); ctx.moveTo(cx, padTop); ctx.lineTo(cx, H - padY); ctx.stroke(); ctx.setLineDash([])
+      ctx.shadowColor = color; ctx.shadowBlur = 8
+      ctx.beginPath(); ctx.arc(cx, cy, 4.5, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); ctx.shadowBlur = 0
+    }
+  }
+
+  // Markers + hit map
+  _adv.markerHits = []
+  if (_mobVPortMarkers && _mobVPortChartType === 'value' && n >= 2) {
+    const style = { buy: { c: '#00e5a0', l: 'B', dy: 13 }, sell: { c: '#ff4d6d', l: 'S', dy: -13 },
+                    dep: { c: '#4aa3ff', l: 'D', dy: 0 }, wd: { c: '#f5a623', l: 'W', dy: 0 } }
+    const merged = new Map()   // cluster by screen-x bucket + kind → keep first, count rest
+    for (const ev of d.evs) {
+      if (ev.t < t0 || ev.t > t1) continue
+      const fi = _advFiAtTime(ev.t)
+      const x = xOfT(ev.t)
+      if (x < 4 || x > W - 4) continue
+      const yi = Math.floor(fi), yf = fi - yi
+      const yl = yOf(vals[yi] + (vals[Math.min(n - 1, yi + 1)] - vals[yi]) * yf)
+      const s = style[ev.kind]
+      const key = ev.kind + ':' + Math.round(x / 16)
+      if (merged.has(key)) { merged.get(key).n++; continue }
+      merged.set(key, { ev, s, x, y: yl, n: 1 })
+    }
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = 'bold 9px system-ui, sans-serif'
+    for (const m of merged.values()) {
+      const mx2 = Math.max(8, Math.min(W - 8, m.x))
+      const my2 = Math.max(padTop + 6, Math.min(H - padY - 2, m.y + m.s.dy))
+      ctx.beginPath(); ctx.arc(mx2, my2, 7.5, 0, Math.PI * 2)
+      ctx.globalAlpha = 0.95; ctx.fillStyle = m.s.c; ctx.fill(); ctx.globalAlpha = 1
+      ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(10,12,16,0.6)'; ctx.stroke()
+      ctx.fillStyle = '#0a0c10'; ctx.fillText(m.s.l, mx2, my2 + 0.5)
+      _adv.markerHits.push({ x: mx2, y: my2, ev: m.ev, extra: m.n - 1, color: m.s.c })
+    }
+    ctx.textBaseline = 'alphabetic'
+  }
+
+  // Hero (big value for crosshair position, else latest).
+  const heroEl = document.getElementById('advHero')
+  if (heroEl) {
+    const idx = _adv.cross >= 0 ? _adv.cross : n - 1
+    heroEl.innerHTML = _mobVPortHeroHtml(hist, vals, idx, d.baseRef)
+  }
+}
+
+// ---- input: unified pointer / touch / wheel --------------------------------
+function _advCanvasX(clientX) {
+  const c = document.getElementById('advChart'); if (!c) return 0
+  return clientX - c.getBoundingClientRect().left
+}
+function _advNearestIdx(px) {
+  const d = _adv.data; if (!d) return -1
+  const hist = d.hist, n = hist.length
+  const w = document.getElementById('advChart').clientWidth || 1
+  const t = _adv.t0 + (px / w) * (_adv.t1 - _adv.t0)
+  let best = 0, bd = Infinity
+  for (let i = 0; i < n; i++) { const dd = Math.abs(+hist[i][0] - t); if (dd < bd) { bd = dd; best = i } }
+  return best
+}
+function _advTapAt(px, py) {
+  // Marker first (within 16px), else drop a crosshair.
+  let hit = null, best = 18
+  for (const m of _adv.markerHits) {
+    const dd = Math.hypot(m.x - px, m.y - py)
+    if (dd < best) { best = dd; hit = m }
+  }
+  if (hit) { _adv.cross = -1; _advShowTip(hit); _advDraw(); return }
+  _advHideTip()
+  _adv.cross = _advNearestIdx(px)
+  _advDraw()
+}
+function _advShowTip(hit) {
+  const tip = document.getElementById('advTip'); if (!tip) return
+  const ev = hit.ev
+  const date = new Date(ev.t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  tip.innerHTML = `<div style="font-weight:700;color:${hit.color};margin-bottom:2px">${ev.title}${hit.extra ? ` <span style="color:var(--muted);font-weight:600">+${hit.extra} more</span>` : ''}</div>`
+    + ev.lines.map(l => `<div>${_prv(esc(l))}</div>`).join('')
+    + `<div style="color:var(--muted);margin-top:2px">${date}</div>`
+  const wrap = document.getElementById('advChart').parentElement
+  const W = wrap.clientWidth
+  let left = hit.x + 12
+  tip.style.display = 'block'
+  const tw = tip.offsetWidth || 150
+  if (left + tw > W - 6) left = hit.x - tw - 12
+  if (left < 6) left = 6
+  tip.style.left = left + 'px'
+  tip.style.top = Math.max(6, hit.y - 10) + 'px'
+}
+function _advHideTip() { const t = document.getElementById('advTip'); if (t) t.style.display = 'none' }
+
+// Canvas time under a screen-x (px within the canvas).
+function _advTimeAtPx(px) {
+  const w = document.getElementById('advChart').clientWidth || 1
+  return _adv.t0 + (px / w) * (_adv.t1 - _adv.t0)
+}
+function _advTouchStart(e) {
+  if (e.touches.length === 2) {
+    const [t1, t2] = e.touches
+    _adv.touch = { mode: 'pinch', d0: Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY),
+                   midT: _advTimeAtPx(_advCanvasX((t1.clientX + t2.clientX) / 2)),
+                   w0: _adv.t1 - _adv.t0 }
+    e.preventDefault()
+  } else if (e.touches.length === 1) {
+    _adv.touch = { mode: 'maybe', x0: e.touches[0].clientX, y0: e.touches[0].clientY, lastX: e.touches[0].clientX, moved: false }
+  }
+}
+function _advTouchMove(e) {
+  const tc = _adv.touch; if (!tc) return
+  if (tc.mode === 'pinch' && e.touches.length === 2) {
+    e.preventDefault()
+    const [t1, t2] = e.touches
+    const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY) || 1
+    _advSetWindow(tc.midT, tc.w0 * (tc.d0 / dist))
+    _advDraw()
+  } else if (e.touches.length === 1) {
+    const x = e.touches[0].clientX
+    if (!tc.moved && Math.hypot(x - tc.x0, e.touches[0].clientY - tc.y0) > 6) { tc.moved = true; tc.mode = 'pan'; _advHideTip() }
+    if (tc.mode === 'pan') {
+      e.preventDefault()
+      const w = document.getElementById('advChart').clientWidth || 1
+      _advPanTime((x - tc.lastX) / w); tc.lastX = x; _advDraw()
+    }
+  }
+}
+function _advTouchEnd(e) {
+  const tc = _adv.touch
+  if (tc && tc.mode === 'maybe' && !tc.moved) {
+    _advTapAt(_advCanvasX(tc.x0), tc.y0 - document.getElementById('advChart').getBoundingClientRect().top)
+  }
+  if (tc && tc.mode === 'pinch') _advSyncControls()   // preset highlight cleared by zoom
+  _adv.touch = null
+}
+function _advWheel(e) {
+  e.preventDefault()
+  const centerT = _advTimeAtPx(_advCanvasX(e.clientX))
+  _advSetWindow(centerT, (_adv.t1 - _adv.t0) * (e.deltaY > 0 ? 1.18 : 0.85))
+  _advSyncControls(); _advDraw()
+}
+// Desktop mouse drag = pan; a click without drag = tap.
+function _advMouseDown(e) {
+  _adv.touch = { mode: 'maybe', x0: e.clientX, y0: e.clientY, lastX: e.clientX, moved: false, mouse: true }
+  const mv = (ev) => {
+    const tc = _adv.touch; if (!tc) return
+    if (!tc.moved && Math.abs(ev.clientX - tc.x0) > 5) { tc.moved = true; tc.mode = 'pan'; _advHideTip() }
+    if (tc.mode === 'pan') {
+      const w = document.getElementById('advChart').clientWidth || 1
+      _advPanTime((ev.clientX - tc.lastX) / w); tc.lastX = ev.clientX; _advDraw()
+    }
+  }
+  const up = (ev) => {
+    const tc = _adv.touch
+    if (tc && tc.mode === 'maybe' && !tc.moved)
+      _advTapAt(_advCanvasX(ev.clientX), ev.clientY - document.getElementById('advChart').getBoundingClientRect().top)
+    _adv.touch = null
+    window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up)
+  }
+  window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up)
+}
+
+window.mobVOpenAdvChart = function() {
+  let ov = document.getElementById('advChartOverlay')
+  if (!ov) {
+    ov = document.createElement('div')
+    ov.id = 'advChartOverlay'
+    ov.className = 'adv-overlay'
+    const types   = [['Value', 'value'], ['Accum. PnL', 'pnl'], ['Realized', 'realized']]
+    const periods = [['1H', '1H'], ['8H', '8H'], ['1D', '1D'], ['7D', '7D'], ['1M', '1M'], ['All', 'allTime']]
+    ov.innerHTML = `
+      <div class="adv-head">
+        <span class="adv-title">Portfolio Chart</span>
+        <button class="adv-x" onclick="window.mobVCloseAdvChart()" aria-label="Close">&times;</button>
+      </div>
+      <div class="adv-row" style="padding-top:8px">
+        ${types.map(([l, t]) => `<button data-adv-type="${t}" onclick="window.advSetType('${t}')">${l}</button>`).join('')}
+      </div>
+      <div class="adv-row" style="padding-top:6px">
+        ${periods.map(([l, p]) => `<button data-adv-period="${p}" onclick="window.advSetPeriod('${p}')">${l}</button>`).join('')}
+      </div>
+      <div id="advHero" class="adv-hero"></div>
+      <div class="adv-canvas-wrap">
+        <canvas id="advChart"></canvas>
+        <div id="advTip" class="adv-tip"></div>
+      </div>
+      <div class="adv-foot">
+        <button onclick="window.advZoom(0.6)" aria-label="Zoom in">＋</button>
+        <button onclick="window.advZoom(1.6667)" aria-label="Zoom out">－</button>
+        <button onclick="window.advReset()">Reset</button>
+        <button id="advStyleBtn" onclick="window.advToggleStyle()">🕯 Candles</button>
+        <button id="advMarkersBtn" onclick="window.advToggleMarkers()">📍 Markers</button>
+      </div>
+      <div class="adv-hint-line">Drag to pan · pinch / scroll to zoom · tap a point or marker</div>`
+    document.body.appendChild(ov)
+    const c = ov.querySelector('#advChart')
+    c.addEventListener('touchstart', _advTouchStart, { passive: false })
+    c.addEventListener('touchmove',  _advTouchMove,  { passive: false })
+    c.addEventListener('touchend',   _advTouchEnd)
+    c.addEventListener('wheel',      _advWheel, { passive: false })
+    c.addEventListener('mousedown',  _advMouseDown)
+    window.addEventListener('resize', _advOnResize)
+  }
+  ov.style.display = 'flex'
+  _adv.open = true
+  document.body.style.overflow = 'hidden'
+  requestAnimationFrame(() => _advRebuild())
+}
+function _advOnResize() { if (_adv.open) _advDraw() }
+window.mobVCloseAdvChart = function() {
+  const ov = document.getElementById('advChartOverlay')
+  if (ov) ov.style.display = 'none'
+  _adv.open = false
+  document.body.style.overflow = ''
+}
+window.advSetType = function(t) { _mobVPortChartType = t; if (_mobVActiveTab === 'portfolio') { document.querySelectorAll('[data-port-type]').forEach(b => b.style.cssText = _mobVPortBtnStyle(b.dataset.portType === t)); _mobVDrawPortChart() } _advRebuild() }
+// Timeframe = visible window width over the full series (scrollable), not a dataset swap.
+window.advSetPeriod = function(p) { _adv.periodSel = p; _adv.cross = -1; _advHideTip(); _advApplyPeriodSpan(); _advSyncControls(); _advDraw() }
+window.advZoom = function(factor) { _advSetWindow((_adv.t0 + _adv.t1) / 2, (_adv.t1 - _adv.t0) * factor); _advSyncControls(); _advDraw() }
+window.advReset = function() { _adv.periodSel = 'allTime'; _adv.cross = -1; _advHideTip(); _advApplyPeriodSpan(); _advSyncControls(); _advDraw() }
+window.advToggleMarkers = function() { window.mobVTogglePortMarkers() }
+window.advToggleStyle = function() { _adv.style = _adv.style === 'candle' ? 'line' : 'candle'; _advSyncControls(); _advDraw() }
 
 function _mobVDrawSpark() {
   const canvas = document.getElementById('mobVSpark')
@@ -7772,18 +11162,160 @@ function _mobVDrawSpark() {
   ctx.shadowBlur = 0
 }
 
-window._mobVRenderContent = () => _mobVRenderContent()
-function _mobVRenderContent() {
+// ─── LIQUIDATION HEATMAP (estimated) ───────────────────────────────────────────
+// Hyperliquid exposes no per-trader position feed, so an EXACT liquidation map is
+// impossible from the public API. This is a MODEL — the same approach every public
+// liquidation heatmap (Coinglass et al.) uses: take the coin's open interest, spread
+// it across a plausible leverage distribution, and compute where each leverage bucket
+// would be force-closed. It is clearly labelled as an estimate in the UI.
+// Coins the real feed covers (HyperPerps market-wide feed).
+const _HM_COINS   = ['BTC', 'ETH', 'SOL']
+let _heatmapCoin  = 'BTC'
+let _heatmapData  = null      // { coin, ts, feed }
+let _heatmapTimer = null
+
+function _hmCompact(n) {
+  const f = Math.abs(parseFloat(n) || 0)
+  if (f >= 1e9) return '$' + (f / 1e9).toFixed(1) + 'B'
+  if (f >= 1e6) return '$' + (f / 1e6).toFixed(1) + 'M'
+  if (f >= 1e3) return '$' + (f / 1e3).toFixed(1) + 'K'
+  if (f < 1)    return '$0'
+  return '$' + Math.round(f)
+}
+
+// Fetch the REAL on-chain liquidation clusters for the selected coin — proxied server-side
+// from HyperPerps (actual positions, not a model). Cached ~30s per coin client-side.
+async function _heatmapLoad(force = false) {
+  if (!force && _heatmapData?.coin === _heatmapCoin && Date.now() - _heatmapData.ts < 30_000) return _heatmapData
+  try {
+    const r = await fetch('/api/heatmap/' + encodeURIComponent(_heatmapCoin))
+    const feed = await r.json()
+    _heatmapData = { coin: _heatmapCoin, ts: Date.now(), feed }
+  } catch (e) { /* keep last good */ }
+  return _heatmapData
+}
+
+function _heatmapRow(r, color, maxAmt) {
+  const w   = Math.max(1.5, (Math.abs(r.notional_usd) / maxAmt) * 100)
+  const pct = r.distance_pct
+  return `<div style="display:grid;grid-template-columns:50px 82px 1fr 66px;align-items:center;gap:8px;padding:5px 0">
+    <span style="font-size:12px;font-weight:700;color:${color}">${pct > 0 ? '+' : ''}${pct.toFixed(pct % 1 ? 1 : 0)}%</span>
+    <span style="font-size:12px;color:var(--muted)">$${fmtPrice(r.price)}</span>
+    <span style="height:9px;border-radius:3px;background:var(--panel-2);overflow:hidden;display:block"><span style="display:block;height:100%;width:${w}%;background:${color};border-radius:3px;opacity:.85"></span></span>
+    <span style="font-size:12px;font-weight:600;text-align:right">${_hmCompact(r.notional_usd)}</span>
+  </div>`
+}
+
+function _heatmapCardHtml(feed) {
+  if (feed?.error || (!feed?.longs && !feed?.shorts)) {
+    return `<div class="mob-v-empty" style="padding:40px 24px;line-height:1.5">Real liquidation feed is temporarily unavailable.<br><span style="font-size:12px;opacity:.7">Reconnecting to the on-chain source…</span></div>`
+  }
+  if (feed.stale || (!(feed.longs || []).length && !(feed.shorts || []).length)) {
+    return `<div class="mob-v-empty">Live data warming up for ${esc(_heatmapCoin)} — check back in a moment.</div>`
+  }
+  const RED = 'var(--red)', GRN = 'var(--green)'
+  const P      = parseFloat(feed.spot_at_compute) || 0
+  const longs  = [...(feed.longs  || [])].sort((a, b) => b.distance_pct - a.distance_pct)  // -2 … -15 down
+  const shorts = [...(feed.shorts || [])].sort((a, b) => b.distance_pct - a.distance_pct)  // +15 … +2 down (far→near)
+  const all    = [...longs, ...shorts]
+  const maxAmt = Math.max(1, ...all.map(r => Math.abs(r.notional_usd)))
+  const magnet = all.reduce((m, r) => (Math.abs(r.notional_usd) > Math.abs(m.notional_usd) ? r : m), all[0])
+  const within = (rows, lim) => rows.filter(r => Math.abs(r.distance_pct) <= lim).reduce((a, r) => a + Math.abs(r.notional_usd), 0)
+  const long5 = within(longs, 5), short5 = within(shorts, 5)
+  const cap   = Math.min(60, Math.ceil(Math.max(2, ...all.map(r => Math.abs(r.distance_pct)))))
+  const shortRows = shorts.map(r => _heatmapRow(r, RED, maxAmt)).join('')
+  const longRows  = longs.map(r => _heatmapRow(r, GRN, maxAmt)).join('')
+  const nWallets  = feed.sample_size ? Math.round(feed.sample_size) : null
+  const ageMin    = feed._meta?.age_seconds != null ? Math.round(feed._meta.age_seconds / 60) : null
+  return `<div style="background:var(--panel-1);border:1px solid var(--border);border-radius:16px;padding:16px;margin:12px">
+    <div style="font-size:19px;font-weight:800;line-height:1.15;margin-bottom:6px">Liquidations Around the Price</div>
+    <div style="font-size:12.5px;color:var(--muted);line-height:1.4;margin-bottom:14px">
+      A 5% dip force-closes <b style="color:${GRN}">${_hmCompact(long5)}</b> of longs · a 5% rally force-closes <b style="color:${RED}">${_hmCompact(short5)}</b> of shorts.
+    </div>
+    ${shortRows}
+    <div style="display:flex;align-items:center;gap:8px;margin:9px 0;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.04em">
+      <span style="flex:1;border-top:1px dashed var(--border)"></span>
+      NOW $${fmtPrice(P)}
+      <span style="flex:1;border-top:1px dashed var(--border)"></span>
+    </div>
+    ${longRows}
+    <div style="border-top:1px solid var(--border);margin-top:14px;padding-top:12px">
+      <div style="font-size:10.5px;font-weight:700;letter-spacing:.05em;color:var(--muted);margin-bottom:3px">BIGGEST CLUSTER · THE MAGNET</div>
+      <div style="font-size:14px;font-weight:700"><span style="color:${magnet.distance_pct >= 0 ? RED : GRN}">${_hmCompact(magnet.notional_usd)}</span> at $${fmtPrice(magnet.price)} · <span style="color:var(--muted)">${magnet.distance_pct > 0 ? '+' : ''}${magnet.distance_pct.toFixed(1)}%${magnet.wallet_count ? ' · ' + magnet.wallet_count + ' wallets' : ''}</span></div>
+    </div>
+    <div style="margin-top:16px">
+      <input id="hmSlider" type="range" min="${-cap}" max="${cap}" step="0.5" value="0"
+        oninput="window.__heatmapSlide(this.value)"
+        style="width:100%;accent-color:var(--accent, #4ea1ff)">
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px">
+        <span>-${cap}%</span><span id="hmSlideNow">NOW $${fmtPrice(P)}</span><span>+${cap}%</span>
+      </div>
+      <div id="hmSlideRead" style="text-align:center;font-size:12px;color:var(--muted);margin-top:8px;min-height:16px"></div>
+    </div>
+    <div style="font-size:10.5px;color:var(--muted);opacity:.75;margin-top:14px;line-height:1.4">
+      ✓ Real on-chain positions${nWallets ? ` · ~${nWallets.toLocaleString()} wallets sampled` : ''}${ageMin != null ? ` · updated ${ageMin <= 0 ? 'just now' : ageMin + 'm ago'}` : ''} · via HyperPerps.
+    </div>
+  </div>`
+}
+
+window.__heatmapSlide = function(v) {
+  const feed = _heatmapData?.feed
+  if (!feed) return
+  const P   = parseFloat(feed.spot_at_compute) || 0
+  const pct = parseFloat(v) || 0
+  const px  = P * (1 + pct / 100)
+  const now = document.getElementById('hmSlideNow')
+  const read = document.getElementById('hmSlideRead')
+  if (now) now.textContent = (pct === 0 ? 'NOW ' : (pct > 0 ? '+' + pct + '% ' : pct + '% ')) + '$' + fmtPrice(px)
+  if (read) {
+    if (pct === 0) { read.textContent = 'Drag to see cumulative liquidations up to a move.'; return }
+    const side = pct > 0 ? (feed.shorts || []) : (feed.longs || [])
+    const amt  = side.filter(r => Math.abs(r.distance_pct) <= Math.abs(pct)).reduce((a, r) => a + Math.abs(r.notional_usd), 0)
+    read.innerHTML = `A move to <b>$${fmtPrice(px)}</b> force-closes <b style="color:${pct > 0 ? 'var(--red)' : 'var(--green)'}">${_hmCompact(amt)}</b> of ${pct > 0 ? 'shorts' : 'longs'}.`
+  }
+}
+
+window.__heatmapSetCoin = function(coin) {
+  _heatmapCoin = coin
+  _heatmapData = null
+  _mobVRenderHeatmap()
+}
+
+function _mobVRenderHeatmap() {
   const el = document.getElementById('mobVContent')
   if (!el) return
+  const coinSel = `<div style="padding:12px 16px 2px;display:flex;align-items:center;gap:8px">
+       <span style="font-size:12px;color:var(--muted);margin-right:2px">Market</span>
+       ${_HM_COINS.map(c => `<button onclick="window.__heatmapSetCoin('${c}')" style="padding:6px 15px;border-radius:20px;border:1px solid ${c === _heatmapCoin ? 'var(--accent)' : 'var(--border)'};background:${c === _heatmapCoin ? 'var(--accent)' : 'transparent'};color:${c === _heatmapCoin ? '#000' : 'var(--fg)'};font-size:13px;font-weight:700;cursor:pointer">${c}</button>`).join('')}
+     </div>`
+  const data = (_heatmapData?.coin === _heatmapCoin) ? _heatmapData : null
+  if (!data) {
+    el.innerHTML = _mobVFullHeader('Heatmap') + coinSel + `<div class="mob-v-empty">Loading real positions…</div>`
+    _heatmapLoad(true).then(() => { if (_mobVActiveTab === 'heatmap') _mobVRenderHeatmap() })
+    return
+  }
+  el.innerHTML = _mobVFullHeader('Heatmap') + coinSel + _heatmapCardHtml(data.feed)
+}
+
+window._mobVRenderContent = () => _mobVRenderContent()
+// tick=true → a background refresh that may be skipped when the list's visible data is
+// unchanged (see _mobVTickSkip). Default false = a forced render (tab switch / user action).
+function _mobVRenderContent(tick = false) {
+  const el = document.getElementById('mobVContent')
+  if (!el) return
+
+  // On a real (non-tick) render, harvest this tab's strings after it's in the DOM so a later
+  // language switch can pre-warm from them. Deferred + non-tick only, so it's cheap.
+  if (!tick) setTimeout(() => _i18nHarvest(el), 0)
 
   const _pc = (state.perpState?.assetPositions ?? []).filter(p => parseFloat(p.position?.szi ?? 0) !== 0).length
   _updateMobTabCounts(_pc, state.openOrders?.length ?? 0)
 
-  // Hide home-tab chrome (header/balance/actions/tabs) when trade OR settings is active
-  // so those take the whole screen (bottom nav stays for getting back).
+  // Hide home-tab chrome (header/balance/actions/tabs) so the active view takes the
+  // whole screen (bottom nav stays for getting back). Trade + settings + the full-page
+  // portfolio and calendar views all get the full screen instead of the bottom half.
   const isTrade    = _mobVActiveTab === 'trade'
-  const hideChrome = isTrade || _mobVActiveTab === 'settings'
+  const hideChrome = _MOBV_FULLPAGE.has(_mobVActiveTab)
   document.querySelectorAll('.mob-v-header, .mob-v-equity-card, .mob-v-actions, .mob-v-tabs, .mob-pet-card')
     .forEach(e => { e.style.display = hideChrome ? 'none' : '' })
 
@@ -7793,6 +11325,8 @@ function _mobVRenderContent() {
   document.querySelectorAll('.mob-v-bottom')
     .forEach(e => { e.style.display = inTradeDetail ? 'none' : '' })
 
+  _mobWatchRender()   // keep the home watch strip in sync (hidden on trade/settings)
+
   // Reset overrides that the trade tab applies to #mobVContent
   if (!isTrade) {
     el.style.overflow      = ''
@@ -7800,12 +11334,22 @@ function _mobVRenderContent() {
     el.style.display       = ''
     el.style.flexDirection = ''
     el.style.minHeight     = ''
+    el.style.height        = ''
   }
 
   if (_mobVActiveTab === 'spot' || _mobVActiveTab === 'outcomes') {
-    const bals = (state.spotState?.balances ?? []).filter(b => parseFloat(b.total) > 0)
     const isOutcome = c => typeof c === 'string' && (c[0] === '+' || c[0] === '#' || /^o\d/.test(c))
-    const outcomes  = bals.filter(b => isOutcome(b.coin))
+    let bals = (state.spotState?.balances ?? []).filter(b => parseFloat(b.total) > 0)
+    if (state.isAllAccounts) {
+      // Real spot tokens are kept off state.spotState (they'd double-count into the
+      // combined Free-margin math), so pull them per-wallet here, tagged by account.
+      const hidden = _maHiddenLoad()
+      const spotBals = _allAcctLastResults
+        .filter(r => !r.error && !hidden.has(r.addr))
+        .flatMap(r => (r.spotBalances ?? []).map(b => ({ ...b, _acct: r.label || (r.addr.slice(0, 6) + '…'), _acctAddr: r.addr })))
+      bals = [...bals, ...spotBals]
+    }
+    const outcomes  = _ocClampPending(bals.filter(b => isOutcome(b.coin)))
     const spots     = bals.filter(b => !isOutcome(b.coin))
 
     // ── Spot row (USDC, etc.) ────────────────────────────────────────────────
@@ -7822,7 +11366,7 @@ function _mobVRenderContent() {
           ${_mobVCoinIcon(b.coin)}
           <div class="mob-v-row-info">
             <div class="mob-v-row-name">${esc(_ocCoinLabel(b.coin))}</div>
-            <div class="mob-v-row-sub">${fmtSize(total)} ${esc(_ocCoinLabel(b.coin))}</div>
+            <div class="mob-v-row-sub">${fmtSize(total)} ${esc(_ocCoinLabel(b.coin))}${b._acct ? ` · <span class="notranslate" style="color:var(--accent)">${esc(b._acct)}</span>` : ''}</div>
           </div>
           <div style="flex-shrink:0;width:74px;display:flex;flex-direction:column">
             <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;line-height:1.2;text-align:center">Price</div>
@@ -7857,6 +11401,10 @@ function _mobVRenderContent() {
       const pnl   = (mark - entry) * total
       const roe   = cost > 0 ? pnl / cost * 100 : 0
       const cls   = pnl >= 0 ? 'pos' : 'neg'
+      // If this outcome resolves in your favor, each share pays $1 — so the payout is the
+      // share count and the profit is that minus what you paid.
+      const winProfit = total - cost
+      const winPct    = cost > 0 ? winProfit / cost * 100 : 0
       const nm    = _ocCoinLabel(b.coin)                       // "USA Yes"
       const sideLabel = nm.replace(/\s+/g, '-')                // "USA-Yes"
       const title = state.ocQuestionMap?.[oid] || nm           // "2026 World Cup Champion"
@@ -7871,17 +11419,38 @@ function _mobVRenderContent() {
         : 'linear-gradient(160deg, rgba(255,77,109,0.10), rgba(255,255,255,0.012) 60%)'
       const xp    = _mobVExpandedIds.has(id)
       const chev  = `<svg id="mrc-${id}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>`
+      // Slider spans the FULL position (not just free shares): if the whole holding is tied
+      // up in a resting order (a limit close that hasn't filled), free-to-close would be 0 and
+      // the slider would be stuck at 0. Closing cancels this market's resting orders first.
+      const _ocMax  = Math.max(0, Math.floor(total))
+      const _ocHold = Math.max(0, Math.floor(hold))
       const closePanel = `
         <div style="padding:2px 16px 14px;background:var(--panel-2);border-bottom:1px solid rgba(255,255,255,0.04)" onclick="event.stopPropagation()">
-          <div style="display:flex;gap:6px;margin-bottom:6px">
-            <div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font-size:10px;color:var(--muted)">Shares</span>
-              <input id="ocsz-${id}" type="number" value="${Math.max(0, Math.floor(total - hold))}" style="background:var(--bg1);border:1px solid var(--border2);border-radius:7px;color:var(--fg);padding:7px;font-size:13px;width:100%"></div>
-            <div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font-size:10px;color:var(--muted)">Limit ¢/share</span>
-              <input id="ocpx-${id}" type="number" step="0.1" value="${mark > 0 ? (mark * 100).toFixed(1) : ''}" style="background:var(--bg1);border:1px solid var(--border2);border-radius:7px;color:var(--fg);padding:7px;font-size:13px;width:100%"></div>
+          ${_ocHold > 0 ? `<div class="notranslate" style="font-size:10.5px;color:#f59e0b;margin-bottom:7px">⏳ ${_ocHold} ${_T('shares in a resting order — closing cancels it first', 'acciones en una orden pendiente — cerrar la cancela primero')}</div>` : ''}
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:3px">
+            <span>${_T('Amount to close', 'Cantidad a cerrar')}</span><span id="ocpct-${id}" class="notranslate">100%</span>
           </div>
+          <input id="ocrange-${id}" type="range" min="0" max="${_ocMax}" value="${_ocMax}" step="1"
+            oninput="window._mobOcSetShares('${id}',${_ocMax},this.value)" style="width:100%;accent-color:var(--accent);margin-bottom:7px">
+          <div style="display:flex;gap:6px;margin-bottom:8px">
+            ${[25, 50, 75, 100].map(pc => `<button onclick="window._mobOcSetShares('${id}',${_ocMax},${_ocMax} * ${pc} / 100)" style="flex:1;padding:8px 0;border-radius:8px;border:1px solid var(--border);background:var(--panel-3);color:var(--fg-2);font-size:11px;font-weight:700;cursor:pointer;touch-action:manipulation">${pc === 100 ? _T('Max', 'Máx') : pc + '%'}</button>`).join('')}
+          </div>
+          <div style="display:flex;gap:6px;margin-bottom:6px">
+            <label class="oc-field" style="flex:1"><span class="oc-field-lbl">${_T('Shares', 'Acciones')}</span>
+              <span class="oc-field-box">
+                <input class="oc-field-input" id="ocsz-${id}" type="text" inputmode="numeric" value="${_ocMax}" onfocus="this.select()" oninput="window._mobOcSyncRange('${id}',${_ocMax})">
+                <span class="oc-field-pen">✎</span>
+              </span></label>
+            <label class="oc-field" style="flex:1"><span class="oc-field-lbl">${_T('Limit ¢/share', 'Límite ¢/acción')}</span>
+              <span class="oc-field-box">
+                <input class="oc-field-input" id="ocpx-${id}" type="text" inputmode="decimal" value="${mark > 0 ? (mark * 100).toFixed(1) : ''}" onfocus="this.select()" oninput="window._mobOcSyncRange('${id}',${_ocMax})">
+                <span class="oc-field-pen">✎</span>
+              </span></label>
+          </div>
+          <div id="ocest-${id}" class="notranslate" style="font-size:11px;color:var(--muted);text-align:center;margin-bottom:8px">${_T('Closing', 'Cerrando')} ${_ocMax} ${_T('shares', 'acciones')} · ~$${(_ocMax * mark).toFixed(2)}</div>
           <div style="display:flex;gap:8px">
-            <button onclick="window._mobOcClose('#${n}','limit','${id}',this)" style="flex:1;padding:8px;background:rgba(0,229,160,0.1);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation">Limit Close</button>
-            <button onclick="window._mobOcClose('#${n}','market','${id}',this)" style="flex:1;padding:8px;background:rgba(255,77,109,0.1);border:none;border-radius:8px;color:var(--red);font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation">Market Close</button>
+            <button onclick="window._mobOcClose('#${n}','limit','${id}',this,${b._acctAddr ? `'${esc(b._acctAddr)}'` : 'null'})" style="flex:1;padding:8px;background:rgba(0,229,160,0.1);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation">Limit Close</button>
+            <button onclick="window._mobOcClose('#${n}','market','${id}',this,${b._acctAddr ? `'${esc(b._acctAddr)}'` : 'null'})" style="flex:1;padding:8px;background:rgba(255,77,109,0.1);border:none;border-radius:8px;color:var(--red);font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation">Market Close</button>
           </div>
           <button onclick="window.__openShareCard({coin:'${_jsStr(b.coin)}',title:'${_jsStr(title)}',side:'${sideTxt}',roePct:${roe.toFixed(2)},entry:'${(entry * 100).toFixed(2)}¢',mark:'${mark > 0 ? (mark * 100).toFixed(2) + '¢' : '—'}'})" style="width:100%;margin-top:8px;padding:8px;background:rgba(255,138,42,0.12);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation">↗ Share PnL</button>
           <div id="ocst-${id}" style="font-size:11px;margin-top:6px;text-align:center"></div>
@@ -7895,15 +11464,16 @@ function _mobVRenderContent() {
                 <span style="font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(title)}</span>
                 <span style="font-size:9.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:${sideBg};color:${sideColor};text-transform:uppercase;letter-spacing:0.5px;flex-shrink:0">${sideTxt}</span>
               </div>
-              <div style="font-size:11px;color:var(--muted);margin-top:2px">${fmtSize(total)} shares</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px">${fmtSize(total)} shares${b._acct ? ` · <span class="notranslate" style="color:var(--accent)">${esc(b._acct)}</span>` : ''}</div>
+              <div style="font-size:10.5px;margin-top:3px;white-space:nowrap"><span style="color:var(--muted)">If it wins </span><span style="color:var(--green);font-weight:700">+$${fmtUSD(winProfit)}</span><span style="color:var(--green)"> (+${winPct.toFixed(0)}%)</span></div>
             </div>
             <div style="text-align:center;flex-shrink:0">
               <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
-              <div id="ocmark-${key}" style="font-size:13px;font-weight:600;margin-top:2px">${mark > 0 ? (mark * 100).toFixed(2) + '¢' : '—'}</div>
+              <div id="ocmark-${id}" style="font-size:13px;font-weight:600;margin-top:2px">${mark > 0 ? (mark * 100).toFixed(2) + '¢' : '—'}</div>
             </div>
             <div style="text-align:right;flex-shrink:0;min-width:62px">
-              <div class="mob-v-row-val ${cls}" id="ocpnl-${key}" style="font-size:15px;font-weight:700;line-height:1.15">${(pnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(pnl))}</div>
-              <div class="mob-v-row-pct ${cls}" id="ocroe-${key}" style="font-size:11px;font-weight:600;line-height:1.15;margin-top:1px">${(roe >= 0 ? '+' : '') + roe.toFixed(1)}%</div>
+              <div class="mob-v-row-val ${cls}" id="ocpnl-${id}" style="font-size:15px;font-weight:700;line-height:1.15">${(pnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(pnl))}</div>
+              <div class="mob-v-row-pct ${cls}" id="ocroe-${id}" style="font-size:11px;font-weight:600;line-height:1.15;margin-top:1px">${(roe >= 0 ? '+' : '') + roe.toFixed(1)}%</div>
             </div>
             ${chev}
           </div>
@@ -7915,18 +11485,83 @@ function _mobVRenderContent() {
           ['Mark Price', mark > 0 ? (mark * 100).toFixed(2) + '¢' : '—'],
           ['Cost', '$' + fmtUSD(cost, 2)],
           ['PnL (ROE)', `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} (${roe >= 0 ? '+' : ''}${roe.toFixed(1)}%)`, pnl >= 0 ? 'var(--green)' : 'var(--red)'],
+          ['If it wins', `$${fmtUSD(total, 2)} payout · +$${fmtUSD(winProfit)} (+${winPct.toFixed(1)}%)`, 'var(--green)'],
           ...(hold > 0 ? [['In Orders', fmtSize(hold) + ' ' + sideLabel]] : []),
         ])}${closePanel}</div>
       </div>`
     }
 
+    // Combined view: collapse the same token held across multiple accounts into ONE row
+    // showing the summed amount/value; tapping expands to each account's own holding.
+    const renderSpotGroup = (coin, items, id) => {
+      const total = items.reduce((s, b) => s + parseFloat(b.total ?? 0), 0)
+      const px    = parseFloat(state.allMids?.[coin] ?? 0)
+      const usdOf = t => px > 0 ? t * px : (coin === 'USDC' ? t : 0)
+      const usd   = usdOf(total)
+      const xp    = _mobVExpandedIds.has(id)
+      const chev  = `<svg id="mrc-${id}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>`
+      const sub   = items.length > 1
+        ? `${fmtSize(total)} · ${items.length} accounts`
+        : `${fmtSize(total)} ${esc(_ocCoinLabel(coin))}${items[0]._acct ? ` · <span class="notranslate" style="color:var(--accent)">${esc(items[0]._acct)}</span>` : ''}`
+      const subRows = items
+        .slice().sort((a, b) => usdOf(parseFloat(b.total ?? 0)) - usdOf(parseFloat(a.total ?? 0)))
+        .map(b => {
+          const t = parseFloat(b.total ?? 0), u = usdOf(t)
+          return `<div class="mob-v-row" style="padding-left:52px;background:var(--panel-2)">
+            <div class="mob-v-row-info">
+              <div class="mob-v-row-name notranslate" style="font-size:13px;color:var(--accent)">${esc(b._acct ?? '—')}</div>
+              <div class="mob-v-row-sub">${fmtSize(t)} ${esc(_ocCoinLabel(coin))}</div>
+            </div>
+            <div class="mob-v-row-right" style="width:86px;flex-shrink:0;flex-grow:0">
+              <div class="mob-v-row-val">${u > 0 ? '$' + fmtUSD(u) : '—'}</div>
+            </div>
+          </div>`
+        }).join('')
+      return `<div>
+        <div class="mob-v-row" style="cursor:pointer" onclick="window._mobVToggleRow('${id}')">
+          ${_mobVCoinIcon(coin)}
+          <div class="mob-v-row-info">
+            <div class="mob-v-row-name">${esc(_ocCoinLabel(coin))}</div>
+            <div class="mob-v-row-sub">${sub}</div>
+          </div>
+          <div style="flex-shrink:0;width:74px;display:flex;flex-direction:column">
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;line-height:1.2;text-align:center">Price</div>
+            <div style="font-size:13px;font-weight:500;color:var(--fg);line-height:1.3;margin-top:2px;white-space:nowrap;text-align:center;overflow:hidden;text-overflow:ellipsis">${px > 0 ? '$' + fmtPrice(px) : coin === 'USDC' ? '$1.00' : '—'}</div>
+          </div>
+          <div class="mob-v-row-right" style="width:86px;flex-shrink:0;flex-grow:0">
+            <div class="mob-v-row-val">${usd > 0 ? '$' + fmtUSD(usd) : '—'}</div>
+          </div>
+          ${chev}
+        </div>
+        <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${subRows}</div>
+      </div>`
+    }
+
     if (_mobVActiveTab === 'spot') {
+      // On a tick, only rebuild when a holding's displayed USD value actually changed.
+      if (_mobVTickSkip(tick, 'spot:' + spots.map(b => {
+        const px = parseFloat(state.allMids?.[b.coin] ?? 0)
+        const usd = px > 0 ? parseFloat(b.total) * px : (b.coin === 'USDC' ? parseFloat(b.total) : 0)
+        return `${b.coin}:${b._acct ?? ''}:${usd.toFixed(2)}`
+      }).join('|'))) return
+      if (state.isAllAccounts) {
+        const groups = {}
+        for (const b of spots) (groups[b.coin] ??= []).push(b)
+        const keys = Object.keys(groups)
+        el.innerHTML = keys.length
+          ? `<div style="padding-top:6px">${keys.map((coin, gi) => renderSpotGroup(coin, groups[coin], `spg-${gi}`)).join('')}</div>`
+          : `<div class="mob-v-empty">No spot balances</div>`
+        return
+      }
       el.innerHTML = spots.length
         ? `<div style="padding-top:6px">${spots.map((b, i) => renderSpotRow(b, `sp-${i}`)).join('')}</div>`
         : `<div class="mob-v-empty">No spot balances</div>`
       return
     }
-    // Outcomes tab — prediction holdings as position-style cards
+    // Outcomes tab — prediction holdings as position-style cards. On a tick, skip the rebuild
+    // (and the l2Book mark fetch it triggers) when the set and last-known marks are unchanged —
+    // that also stops the outcomes tab from re-fetching order books every 5s.
+    if (_mobVTickSkip(tick, 'oc:' + outcomes.map(b => `${b.coin}:${b.total}:${_ocMarkCache[b.coin] || 0}`).join('|'))) return
     el.innerHTML = outcomes.length
       ? `<div style="padding-top:6px">${outcomes.map((b, i) => renderOcRow(b, `oc-${i}`)).join('')}</div>`
       : `<div class="mob-v-empty">No outcome positions</div>`
@@ -7934,16 +11569,28 @@ function _mobVRenderContent() {
     return
   }
 
+  if (_mobVActiveTab === 'allocation') {
+    _mobVRenderAllocation(el)
+    return
+  }
+
   if (_mobVActiveTab === 'positions') {
+    _initLongPressAlerts()   // hold-press a position card → quick price alert (idempotent)
     const allPos = state.perpState?.assetPositions ?? []
     const rawPos = allPos.filter(ap => parseFloat(ap.position.szi ?? 0) !== 0)
-    if (!rawPos.length) { el.innerHTML = `<div class="mob-v-empty">No open positions</div>`; return }
+    if (!rawPos.length) { el.innerHTML = _emptyTeach('No open trades yet', 'A “position” is a trade you\'ve opened. Tap Trade to make your first one — or practice with fake money first.'); return }
     const pos = [...rawPos].sort((a, b) => {
       const pa = a.position, pb = b.position
+      if (_mobVPosSortBy === 'name') {
+        // Ascending A→Z when dir is 1; the shared `dir` flips it like the other keys.
+        return -_mobVPosSortDir * String(_ocCoinLabel(pa.coin)).localeCompare(String(_ocCoinLabel(pb.coin)))
+      }
       let va, vb
       if (_mobVPosSortBy === 'posval') {
         va = parseFloat(pa.positionValue ?? Math.abs(parseFloat(pa.szi ?? 0)) * parseFloat(state.allMids?.[pa.coin] ?? 0))
         vb = parseFloat(pb.positionValue ?? Math.abs(parseFloat(pb.szi ?? 0)) * parseFloat(state.allMids?.[pb.coin] ?? 0))
+      } else if (_mobVPosSortBy === 'health') {
+        va = _mobVPosHealth(pa); vb = _mobVPosHealth(pb)
       } else {
         va = parseFloat(pa.unrealizedPnl ?? 0); vb = parseFloat(pb.unrealizedPnl ?? 0)
       }
@@ -7951,30 +11598,28 @@ function _mobVRenderContent() {
     })
     const _mobVSortPill = (by, label) => {
       const active = _mobVPosSortBy === by
-      const arrow  = active ? (_mobVPosSortDir === -1 ? ' ↓' : ' ↑') : ''
-      return `<button onclick="window._mobVSortPos('${by}')" style="padding:3px 9px;border-radius:20px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'rgba(0,229,160,0.12)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};font-size:11px;font-weight:600;cursor:pointer;touch-action:manipulation">${label}${arrow}</button>`
+      const arrow  = active ? `<span class="mob-pill-arrow">${_mobVPosSortDir === -1 ? '▼' : '▲'}</span>` : ''
+      return `<button class="mob-pill${active ? ' active' : ''}" onclick="window._mobVSortPos('${by}')">${label}${arrow}</button>`
     }
-    const sortBar = `<div style="display:flex;gap:6px;padding:8px 14px 2px;align-items:center">
-      <span style="font-size:10px;color:var(--muted);margin-right:2px">Sort:</span>
-      ${_mobVSortPill('unrl','Unrl PnL')}
-      ${_mobVSortPill('posval','Pos Value')}
-      <button onclick="window.__closeAllPositions(this)" style="margin-left:auto;padding:3px 10px;border-radius:20px;border:1px solid rgba(255,77,109,0.4);background:rgba(255,77,109,0.08);color:var(--red);font-size:11px;font-weight:600;cursor:pointer;touch-action:manipulation">Close All</button>
+    // "Sort:" label dropped and Allocation reduced to its icon — on a narrow phone
+    // the labelled version left no room and the row wrapped.
+    const sortBar = `<div class="mob-sortbar">
+      <div class="mob-sortbar-scroll">
+        ${_mobVSortPill('unrl','PnL')}
+        ${_mobVSortPill('posval','Value')}
+        ${_mobVSortPill('health','Health')}
+        ${_mobVSortPill('name','Asset')}
+      </div>
+      <div class="mob-sortbar-actions">
+        <button class="mob-pill mob-pill-icon" onclick="window.mobVGoTab('allocation')"
+          title="Margin allocation" aria-label="Margin allocation">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 8 8"/></svg>
+        </button>
+        ${state.isAllAccounts ? '' : `<button class="mob-pill mob-pill-danger" onclick="window.__closeAllPositions(this)">Close All</button>`}
+      </div>
     </div>`
-    // Per-position cross health = each position's SHARE of the account's maintenance
-    // margin against the unified balance, scaled so the shares sum to the exact account
-    // maintenance. So one position's health == the account Health in the header, and
-    // multiple positions each get their own (riskier = consumes more maint = lower).
-    const _crossMaint = parseFloat(state.perpState?.crossMaintenanceMarginUsed ?? state.perpState?.marginSummary?.totalMarginUsed ?? 0)
-    const _suUSDC     = (state.spotState?.balances ?? []).find(b => b.coin === 'USDC')
-    const _marginBase = (_suUSDC && parseFloat(_suUSDC.total ?? 0) > 0) ? parseFloat(_suUSDC.total) : parseFloat(state.perpState?.marginSummary?.accountValue ?? 0)
-    const _estMaint   = (q) => {
-      const pv  = parseFloat(q.positionValue ?? Math.abs(parseFloat(q.szi ?? 0)) * parseFloat(state.allMids?.[q.coin] ?? 0))
-      const mlv = parseFloat(q.maxLeverage ?? q.leverage?.value ?? 1) || 1
-      return pv / (2 * mlv)   // HL maintenance ≈ notional / (2 × maxLeverage)
-    }
-    const _sumEstMaint = rawPos.reduce((s, ap) => s + _estMaint(ap.position), 0)
 
-    el.innerHTML = sortBar + pos.map((ap, i) => {
+    const _posCards = pos.map((ap, i) => {
       const p       = ap.position
       const sz      = parseFloat(p.szi ?? 0)
       const uPnl    = parseFloat(p.unrealizedPnl ?? 0)
@@ -7990,16 +11635,25 @@ function _mobVRenderContent() {
         : 'linear-gradient(160deg, rgba(255,77,109,0.10), rgba(255,255,255,0.012) 60%)'
       const pnlCls  = uPnl >= 0 ? 'pos' : 'neg'
       const lev     = p.leverage?.value ? `${p.leverage.value}x` : ''
-      const markPx  = parseFloat(state.allMids?.[p.coin] ?? 0)
+      const markPx  = _posMarkPx(p)
       const liqPx   = parseFloat(p.liquidationPx ?? 0)
       const margin  = parseFloat(p.marginUsed ?? 0)
       const posVal  = parseFloat(p.positionValue ?? Math.abs(sz) * markPx)
-      const funding = parseFloat(p.cumFunding?.sinceOpen ?? 0)
+      // HL's cumFunding.sinceOpen is the amount PAID (positive = you paid), so it must
+      // be negated to read as a cashflow (positive = you received). The desktop rows and
+      // the position detail sheet already do this; this card did not, so its Funding
+      // figure showed the opposite sign to every other view — a long paying funding
+      // displayed as a gain. Verified against HL: HYPE sinceOpen +13.26 while the
+      // userFunding cashflow for HYPE is −9.67.
+      const funding = -parseFloat(p.cumFunding?.sinceOpen ?? 0)
       const levType = p.leverage?.type ?? ''
-      // Find TP/SL orders for this position
+      // Find TP/SL orders for this position. In the combined view orders from every account
+      // are pooled, so match the owning account too — otherwise another wallet's TP/SL on the
+      // same coin would show on (and be edited/cancelled from) this position.
       let tpPx = 0, slPx = 0, tpOid = 0, slOid = 0
       for (const o of (state.openOrders ?? [])) {
         if (o.coin !== p.coin || !o.isTrigger) continue
+        if (String(o._acctAddr ?? '').toLowerCase() !== String(p._acctAddr ?? '').toLowerCase()) continue
         const isTp = o.orderType?.startsWith('Take Profit') || o.triggerCondition === 'tp'
         const isSl = o.orderType?.startsWith('Stop') || o.triggerCondition === 'sl'
         const opx  = parseFloat(o.triggerPx ?? 0)
@@ -8010,29 +11664,26 @@ function _mobVRenderContent() {
       const isLong  = sz > 0
       const entryPx = parseFloat(p.entryPx ?? 0)
       const isCross = (p.leverage?.type ?? 'cross') !== 'isolated'
-      // Health: CROSS positions share the whole account's margin, so their health =
-      // the account Health shown in the header (HL Unified Account Ratio: 1 −
-      // maintMargin / USDC balance). ISOLATED positions have their own margin, so use
-      // the liq-distance metric (100% at entry, 0% at liquidation).
-      let healthPct
-      if (isCross) {
-        const share   = _sumEstMaint > 0 ? _estMaint(p) / _sumEstMaint : 0
-        const mmShare = _crossMaint * share   // this position's slice of account maintenance
-        healthPct = _marginBase > 0 ? Math.max(0, Math.min(100, (1 - mmShare / _marginBase) * 100)) : 100
-      } else if (liqPx > 0 && entryPx > 0 && markPx > 0) {
+      // Per-position health = distance from mark to the position's liquidation price,
+      // relative to entry (100% at entry → 0% at liq). Same metric desktop uses for
+      // BOTH cross and isolated (HL reports a liquidationPx per position either way).
+      // The old mobile path used a maintenance-margin SHARE heuristic for cross
+      // positions, which gave different numbers than desktop and blended accounts
+      // together in the combined view.
+      let healthPct = 100
+      if (liqPx > 0 && entryPx > 0 && markPx > 0) {
         if (isLong && entryPx > liqPx) {
           healthPct = Math.max(0, Math.min(100, (markPx - liqPx) / (entryPx - liqPx) * 100))
         } else if (!isLong && liqPx > entryPx) {
           healthPct = Math.max(0, Math.min(100, (liqPx - markPx) / (liqPx - entryPx) * 100))
-        } else {
-          healthPct = 100
         }
-      } else {
-        healthPct = Math.max(0, Math.min(100, roe + 100))
       }
       // Graded by distance to liquidation: losing ~a third of margin = amber
       const liqBarColorRaw = healthPct > 70 ? '#00e5a0' : healthPct > 40 ? '#f59e0b' : healthPct > 20 ? '#ff9444' : '#ff4d6d'
-      const id      = `pos-${p.coin}`
+      // In the combined view two wallets can hold the same coin, so key the card
+      // (and its live-update element ids) by coin + account to avoid id collisions.
+      const uid     = p._acctAddr ? `${p.coin}-${p._acctAddr.slice(2, 8)}` : p.coin
+      const id      = `pos-${uid}`
       const xp      = _mobVExpandedIds.has(id)
       const chev    = `<svg id="mrc-${id}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>`
       const isIso   = levType === 'isolated'
@@ -8040,24 +11691,34 @@ function _mobVRenderContent() {
       const _gInst  = String(p.coin).toUpperCase()
       const _liqOn  = !!serverStatus?._instances?.[`liqguard:${_gInst}`]
       const _brkOn  = !!serverStatus?._instances?.[`levbrake:${_gInst}`]
+      const _gAcctArg = p._acctAddr ? `,'${esc(p._acctAddr)}'` : ''
       const guardsRow = isIso ? `<div style="display:flex;gap:8px;padding:0 16px 12px;background:var(--panel-2)">
-        <button onclick="event.stopPropagation();window.__openGuardModal('liqguard','${esc(p.coin)}','${apiSide}')"
+        <button onclick="event.stopPropagation();window.__openGuardModal('liqguard','${esc(p.coin)}','${apiSide}'${_gAcctArg})"
           style="flex:1;padding:8px;background:${_liqOn ? 'rgba(0,229,160,0.18)' : 'rgba(255,255,255,0.05)'};border:1px solid ${_liqOn ? 'var(--accent)' : 'rgba(255,255,255,0.12)'};border-radius:8px;color:${_liqOn ? 'var(--accent)' : 'var(--fg)'};font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">🛡 Liq Guard${_liqOn ? ' ✓' : ''}</button>
-        <button onclick="event.stopPropagation();window.__openGuardModal('levbrake','${esc(p.coin)}','${apiSide}')"
+        <button onclick="event.stopPropagation();window.__openGuardModal('levbrake','${esc(p.coin)}','${apiSide}'${_gAcctArg})"
           style="flex:1;padding:8px;background:${_brkOn ? 'rgba(245,158,11,0.18)' : 'rgba(255,255,255,0.05)'};border:1px solid ${_brkOn ? '#f59e0b' : 'rgba(255,255,255,0.12)'};border-radius:8px;color:${_brkOn ? '#f59e0b' : 'var(--fg)'};font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">🛑 Lev Brake${_brkOn ? ' ✓' : ''}</button>
       </div>` : ''
+      // In the combined view every action is routed to the wallet that owns this
+      // position. A wallet with no agent key can't sign, so its buttons are disabled
+      // rather than silently signing as whoever happens to be connected.
+      const _acct    = p._acctAddr ?? null
+      const _acctArg = _acct ? `'${esc(_acct)}'` : 'null'
+      const _canAct  = window.__acctCanTrade(_acct)
+      const _dis     = _canAct ? '' : 'disabled'
+      const _disCss  = _canAct ? '' : 'opacity:.4;cursor:not-allowed;'
+      const _noKey   = _canAct ? '' : ` title="No agent key for ${esc(p._acct ?? 'this account')}"`
       const actions = `<div style="display:flex;flex-wrap:wrap;gap:8px;padding:0 16px 14px;background:var(--panel-2);border-bottom:1px solid rgba(255,255,255,0.04)">
-        <button onclick="event.stopPropagation();window._mobVEditPosTpSl('${esc(p.coin)}')"
-          style="flex:1;min-width:80px;padding:8px;background:rgba(0,229,160,0.1);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Edit TP/SL</button>
-        ${isIso ? `<button onclick="event.stopPropagation();window._mobVAdjustMargin('${esc(p.coin)}')"
-          style="flex:1;min-width:80px;padding:8px;background:rgba(99,179,237,0.12);border:none;border-radius:8px;color:#63b3ed;font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Margin</button>` : ''}
+        <button ${_dis}${_noKey} onclick="event.stopPropagation();window._mobVEditPosTpSl('${esc(p.coin)}',${_acctArg})"
+          style="${_disCss}flex:1;min-width:80px;padding:8px;background:rgba(0,229,160,0.1);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Edit TP/SL</button>
+        ${isIso ? `<button ${_dis}${_noKey} onclick="event.stopPropagation();window._mobVAdjustMargin('${esc(p.coin)}',${_acctArg})"
+          style="${_disCss}flex:1;min-width:80px;padding:8px;background:rgba(99,179,237,0.12);border:none;border-radius:8px;color:#63b3ed;font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Margin</button>` : ''}
         <button onclick="event.stopPropagation();window.__openShareCard({coin:'${_jsStr(p.coin)}',title:'${_jsStr(_ocCoinLabel(p.coin))}',side:'${side}',lev:${levVal},roePct:${roe.toFixed(2)},entry:'$${fmtPrice(entryPx)}',mark:'$${fmtPrice(markPx)}'})"
           style="flex:1;min-width:80px;padding:8px;background:rgba(255,138,42,0.12);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">↗ Share</button>
-        <button onclick="event.stopPropagation();window._mobVClosePos(this,'${esc(p.coin)}','${apiSide}','${p.szi}','${markPx}')"
-          style="flex:1;min-width:80px;padding:8px;background:rgba(255,77,109,0.1);border:none;border-radius:8px;color:var(--red);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Close</button>
+        <button ${_dis}${_noKey} onclick="event.stopPropagation();window._mobVClosePos(this,'${esc(p.coin)}','${apiSide}','${p.szi}','${markPx}',${_acctArg})"
+          style="${_disCss}flex:1;min-width:80px;padding:8px;background:rgba(255,77,109,0.1);border:none;border-radius:8px;color:var(--red);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Close</button>
       </div>`
-      return `<div style="margin:0 12px 8px;border-radius:14px;background:${cardBg};border:1px solid rgba(255,255,255,0.07);border-left:3px solid ${sideColor};overflow:hidden">
-        <div style="padding:12px 14px;cursor:pointer" onclick="window._mobVToggleRow('${id}')">
+      const _cardHtml = `<div style="margin:0 12px 8px;border-radius:14px;background:${cardBg};border:1px solid rgba(255,255,255,0.07);border-left:3px solid ${sideColor};overflow:hidden">
+        <div style="padding:12px 14px;cursor:pointer;-webkit-touch-callout:none" data-lp-coin="${esc(p.coin)}" data-lp-px="${markPx}" onclick="window._mobVToggleRow('${id}')">
           <div style="display:flex;align-items:center;gap:10px">
             ${_mobVCoinIcon(p.coin)}
             <div style="min-width:0;flex:1">
@@ -8065,15 +11726,19 @@ function _mobVRenderContent() {
                 <span style="font-size:15px;font-weight:700">${esc(_ocCoinLabel(p.coin))}</span>
                 <span style="font-size:9.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:${sideBg};color:${sideColor};text-transform:uppercase;letter-spacing:0.5px">${side}</span>
               </div>
-              <div style="font-size:11px;color:var(--muted);margin-top:2px">${lev}${levType ? ' ' + levType : ''}</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px;display:flex;align-items:center;gap:6px">
+                <span class="notranslate">${lev}</span>${levType ? ` <span>${levType}</span>` : ''}
+              </div>
+              ${p._acct ? `<div class="notranslate" style="font-size:11px;font-weight:700;color:var(--accent);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p._acct)}</div>` : ''}
             </div>
             <div style="text-align:center;flex-shrink:0">
               <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
-              <div id="pos-mark-${p.coin}" style="font-size:13px;font-weight:600;margin-top:2px">${markPx > 0 ? '$' + fmtPrice(markPx) : '—'}</div>
+              <div id="pos-mark-${uid}" style="font-size:13px;font-weight:600;margin-top:2px">${markPx > 0 ? '$' + fmtPrice(markPx) : '—'}</div>
+              ${_mobVGuardBadge(p.coin)}
             </div>
             <div style="text-align:right;flex-shrink:0;min-width:64px">
-              <div class="mob-v-row-val ${pnlCls}" id="pos-upnl-${p.coin}" style="font-size:15px;font-weight:700;line-height:1.15">${_prv((uPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(uPnl)))}</div>
-              <div class="mob-v-row-pct ${pnlCls}" id="pos-roe-${p.coin}" style="font-size:11px;font-weight:600;line-height:1.15;margin-top:1px">${_prv((roe >= 0 ? '+' : '-') + Math.abs(roe).toFixed(2) + '%')}</div>
+              <div class="mob-v-row-val ${pnlCls}" id="pos-upnl-${uid}" style="font-size:15px;font-weight:700;line-height:1.15">${_prv((uPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(uPnl)))}</div>
+              <div class="mob-v-row-pct ${pnlCls}" id="pos-roe-${uid}" style="font-size:11px;font-weight:600;line-height:1.15;margin-top:1px">${_prv((roe >= 0 ? '+' : '-') + Math.abs(roe).toFixed(2) + '%')}</div>
             </div>
             ${chev}
           </div>
@@ -8103,13 +11768,36 @@ function _mobVRenderContent() {
           ${actions}
         </div>
       </div>`
-    }).join('')
+      return { coin: p.coin, side: apiSide, healthPct, acct: p._acct || '', lev: levVal, isIso, absSz: Math.abs(sz), entryPx, posVal, uPnl, margin, funding, markPx, html: _cardHtml }
+    })
+    // Combined view: collapse multiple accounts holding the SAME coin + SAME direction into
+    // one summary card (additive exposure/PnL + worst-case health) that expands to the
+    // individual per-account cards. Single positions render unchanged. Display-only — no
+    // position is hidden or its per-account risk laundered (each member card is shown in full).
+    if (!state.isAllAccounts) {
+      el.innerHTML = sortBar + _posCards.map(c => c.html).join('')
+    } else {
+      const groups = new Map()
+      for (const c of _posCards) { const k = c.coin + '|' + c.side; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(c) }
+      const seen = new Set(), out = []
+      for (const c of _posCards) {
+        const k = c.coin + '|' + c.side
+        if (seen.has(k)) continue
+        seen.add(k)
+        const g = groups.get(k)
+        out.push(g.length > 1 ? _mobVMergedPosCard(g) : g[0].html)
+      }
+      el.innerHTML = sortBar + out.join('')
+    }
     return
   }
 
   if (_mobVActiveTab === 'orders') {
     const rawOrders = state.openOrders ?? []
-    if (!rawOrders.length) { el.innerHTML = `<div class="mob-v-empty">No open orders</div>`; return }
+    if (!rawOrders.length) { el.innerHTML = _emptyTeach('No open orders', 'Orders are trades waiting to happen at a price you set (like “buy if it drops to $X”). You don\'t have any pending.'); return }
+    // Orders are static (price/size fixed until filled or cancelled), so on a tick skip the
+    // rebuild entirely unless the order set changed. Include select-mode so the UI still reacts.
+    if (_mobVTickSkip(tick, 'ord:' + _mobVOrdSelMode + ':' + [...rawOrders].map(o => `${o.oid}:${o.sz}:${o.limitPx}:${o.triggerPx}:${_mobVOrdSel.has(o.oid) ? 1 : 0}`).join('|'))) return
     const orders = [...rawOrders].sort((a, b) => {
       if (_mobVOrdSortBy === 'px') {
         // triggerPx is the string "0.0" (not null) on plain limit orders — `??`
@@ -8124,28 +11812,32 @@ function _mobVRenderContent() {
     })
     const _mobVSortOrdPill = (by, label) => {
       const active = _mobVOrdSortBy === by
-      const arrow  = active ? (_mobVOrdSortDir === 1 ? ' ↑' : ' ↓') : ''
-      return `<button onclick="window._mobVSortOrd('${by}')" style="padding:3px 9px;border-radius:20px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'rgba(0,229,160,0.12)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};font-size:11px;font-weight:600;cursor:pointer;touch-action:manipulation">${label}${arrow}</button>`
+      const arrow  = active ? `<span class="mob-pill-arrow">${_mobVOrdSortDir === 1 ? '▲' : '▼'}</span>` : ''
+      return `<button class="mob-pill${active ? ' active' : ''}" onclick="window._mobVSortOrd('${by}')">${label}${arrow}</button>`
     }
-    const _pill = (txt, cb, color) => `<button onclick="${cb}" style="padding:3px 10px;border-radius:20px;border:1px solid ${color}55;background:${color}14;color:${color};font-size:11px;font-weight:600;cursor:pointer;touch-action:manipulation">${txt}</button>`
+    const _pill = (txt, cb, color) =>
+      `<button class="mob-pill${color === '#ff4d6d' ? ' mob-pill-danger' : ''}" onclick="${cb}"${color === '#ff4d6d' ? '' : ` style="border-color:${color}55;background:${color}14;color:${color}"`}>${txt}</button>`
     const ordSortBar = _mobVOrdSelMode
-      ? `<div style="display:flex;gap:6px;padding:8px 14px 2px;align-items:center">
-          <span style="font-size:11px;color:var(--muted);margin-right:2px">${_mobVOrdSel.size} selected</span>
-          ${_pill('Select all', 'window._mobVOrdSelectAll()', '#9aa0ab')}
-          <span style="margin-left:auto;display:flex;gap:6px">
+      ? `<div class="mob-sortbar">
+          <div class="mob-sortbar-scroll">
+            <span style="font-size:11px;color:var(--muted);align-self:center;white-space:nowrap">${_mobVOrdSel.size} selected</span>
+            ${_pill('Select all', 'window._mobVOrdSelectAll()', '#9aa0ab')}
+          </div>
+          <div class="mob-sortbar-actions">
             ${_pill('Done', 'window._mobVOrdToggleSelMode()', '#9aa0ab')}
             ${_pill(`Cancel (${_mobVOrdSel.size})`, 'window._mobVCancelSelected()', '#ff4d6d')}
-          </span>
+          </div>
         </div>`
-      : `<div style="display:flex;gap:6px;padding:8px 14px 2px;align-items:center">
-          <span style="font-size:10px;color:var(--muted);margin-right:2px">Sort:</span>
-          ${_mobVSortOrdPill('coin','Coin')}
-          ${_mobVSortOrdPill('px','Price')}
-          ${_mobVSortOrdPill('sz','Size')}
-          <span style="margin-left:auto;display:flex;gap:6px">
+      : `<div class="mob-sortbar">
+          <div class="mob-sortbar-scroll">
+            ${_mobVSortOrdPill('coin','Coin')}
+            ${_mobVSortOrdPill('px','Price')}
+            ${_mobVSortOrdPill('sz','Size')}
+          </div>
+          <div class="mob-sortbar-actions">
             ${_pill('Select', 'window._mobVOrdToggleSelMode()', '#9aa0ab')}
             ${_pill('Cancel All', 'window._mobVCancelAll()', '#ff4d6d')}
-          </span>
+          </div>
         </div>`
     el.innerHTML = ordSortBar + orders.map((o, i) => {
       const side      = o.side === 'B' ? 'Buy' : 'Sell'
@@ -8171,6 +11863,14 @@ function _mobVRenderContent() {
           <div style="flex-shrink:0;width:74px;display:flex;flex-direction:column">
             <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;line-height:1.2;text-align:center">Price</div>
             <div style="font-size:13px;font-weight:500;color:var(--fg);line-height:1.3;margin-top:2px;white-space:nowrap;text-align:center;overflow:hidden;text-overflow:ellipsis">${(triggerPx || limitPx) > 0 ? '$' + fmtPrice(triggerPx || limitPx) : '—'}</div>
+            ${(() => {
+              // Distance from current mark — how far this order is from filling
+              const _opx  = triggerPx || limitPx
+              const _mark = parseFloat(state.allMids?.[o.coin] ?? 0)
+              if (!(_opx > 0 && _mark > 0)) return ''
+              const d = (_opx - _mark) / _mark * 100
+              return `<div style="font-size:10px;color:var(--muted);line-height:1.3;text-align:center;white-space:nowrap">${Math.abs(d) < 0.005 ? 'at mark' : (d > 0 ? '+' : '') + d.toFixed(Math.abs(d) < 1 ? 2 : 1) + '% away'}</div>`
+            })()}
           </div>
           <div class="mob-v-row-right" style="width:86px;flex-shrink:0;flex-grow:0">
             <div class="mob-v-row-val">${fmtSize(parseFloat(o.sz ?? 0))}</div>
@@ -8218,10 +11918,10 @@ function _mobVRenderContent() {
           })()}
           <div style="padding:0 16px 14px;background:var(--panel-2);border-bottom:1px solid rgba(255,255,255,0.04)">
             <div style="display:flex;gap:8px;margin-bottom:8px">
-              <button onclick="event.stopPropagation();window._mobVEditOrd('${esc(o.coin)}',${o.oid},'${o.side}',${o.sz},${triggerPx || limitPx},'${isTrigger ? (o.orderType?.startsWith('Take Profit') || o.triggerCondition === 'tp' ? 'tp' : o.orderType?.startsWith('Stop') || o.triggerCondition === 'sl' ? 'sl' : '') : ''}',${isTrigger})"
-                style="flex:1;padding:8px;background:rgba(0,229,160,0.1);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Edit</button>
-              <button onclick="event.stopPropagation();window._mobVCancelOrd(this,'${esc(o.coin)}',${o.oid})"
-                style="flex:1;padding:8px;background:rgba(255,77,109,0.1);border:none;border-radius:8px;color:var(--red);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Cancel</button>
+              <button ${window.__acctCanTrade(o._acctAddr ?? null) ? '' : 'disabled'} onclick="event.stopPropagation();window._mobVEditOrd('${esc(o.coin)}',${o.oid},'${o.side}',${o.sz},${triggerPx || limitPx},'${isTrigger ? (o.orderType?.startsWith('Take Profit') || o.triggerCondition === 'tp' ? 'tp' : o.orderType?.startsWith('Stop') || o.triggerCondition === 'sl' ? 'sl' : '') : ''}',${isTrigger},${o._acctAddr ? `'${esc(o._acctAddr)}'` : 'null'})"
+                style="${window.__acctCanTrade(o._acctAddr ?? null) ? '' : 'opacity:.4;cursor:not-allowed;'}flex:1;padding:8px;background:rgba(0,229,160,0.1);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Edit</button>
+              <button ${window.__acctCanTrade(o._acctAddr ?? null) ? '' : 'disabled'} onclick="event.stopPropagation();window._mobVCancelOrd(this,'${esc(o.coin)}',${o.oid},${o._acctAddr ? `'${esc(o._acctAddr)}'` : 'null'})"
+                style="${window.__acctCanTrade(o._acctAddr ?? null) ? '' : 'opacity:.4;cursor:not-allowed;'}flex:1;padding:8px;background:rgba(255,77,109,0.1);border:none;border-radius:8px;color:var(--red);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Cancel</button>
             </div>
           </div>
         </div>
@@ -8238,9 +11938,11 @@ function _mobVRenderContent() {
     if (_mobVTradesPage >= pages) _mobVTradesPage = pages - 1
     if (_mobVTradesPage < 0) _mobVTradesPage = 0
     const start  = _mobVTradesPage * PER
-    const header = `<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px 10px">
-      <span style="font-size:17px;font-weight:700">History</span>
-      ${all.length ? `<span style="font-size:11px;color:var(--muted)">${all.length} trade${all.length === 1 ? '' : 's'}</span>` : ''}</div>`
+    const header = `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:8px;padding:14px 16px 11px;background:var(--bg);border-bottom:1px solid var(--border)">
+      <span style="font-size:18px;font-weight:700">History</span>
+      ${all.length ? `<span style="font-size:11px;color:var(--muted)">${all.length} trade${all.length === 1 ? '' : 's'}</span>` : ''}
+      ${all.length ? `<button onclick="window.__exportTradesCsv()" title="Export CSV" style="margin-left:auto;background:var(--panel-2);border:1px solid var(--border2);color:var(--fg-2);border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer">⬇ CSV</button>` : ''}
+      <button onclick="window.mobVHome()" aria-label="Close" style="${all.length ? '' : 'margin-left:auto;'}background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button></div>`
     if (!all.length) { el.innerHTML = header + `<div class="mob-v-empty">No trade history yet</div>`; return }
     const fills = all.slice(start, start + PER)
     const rows = fills.map((f, idx) => {
@@ -8277,8 +11979,8 @@ function _mobVRenderContent() {
         <div class="mob-v-row" style="cursor:pointer" onclick="window._mobVToggleRow('${id}')">
           ${_mobVCoinIcon(f.coin)}
           <div class="mob-v-row-info">
-            <div class="mob-v-row-name">${esc(_ocCoinLabel(f.coin))} <span class="${isBuy ? 'pos' : 'neg'}" style="font-size:11px;font-weight:500">${f.side}</span></div>
-            <div class="mob-v-row-sub">${f.timeStr}</div>
+            <div class="mob-v-row-name">${esc(_ocCoinLabel(f.coin))} <span class="${isBuy ? 'pos' : 'neg'}" style="font-size:11px;font-weight:500">${esc(f.side ?? '')}</span></div>
+            <div class="mob-v-row-sub">${esc(f.timeStr ?? '')}${f._acct ? ` <span class="acct-pill notranslate">${esc(f._acct)}</span>` : ''}</div>
           </div>
           <div class="mob-v-row-right">
             <div class="mob-v-row-val">${fmtSize(f.sz)} @ $${fmtPrice(f.px)}</div>
@@ -8310,40 +12012,54 @@ function _mobVRenderContent() {
   }
 
   if (_mobVActiveTab === 'leaderboard') {
+    if (_lbMode === 'paper') {
+      if (_lbPaperRows.length && Date.now() - _lbPaperLoaded < 30_000) el.innerHTML = _lbPaperHtml()
+      else _lbPaperFetch(el)
+      return
+    }
     const stale = Date.now() - _lbLastFetch > 30_000
     if (_mobVLbResults.length && !stale) {
       el.innerHTML = _mobVBuildLbHtml(_mobVLbResults)
     } else {
-      if (!_mobVLbResults.length) el.innerHTML = `<div class="mob-v-empty">Loading…</div>`
+      if (!_mobVLbResults.length) el.innerHTML = _mobVFullHeader('Leaderboard') + `<div class="mob-v-empty">Loading…</div>`
       _mobVFetchLeaderboard(el)
     }
     return
   }
 
   if (_mobVActiveTab === 'transfers') {
+    const txHeader = _mobVFullHeader('Transfers')
     const ledger = (state.ledger ?? []).slice().sort((a, b) => b.time - a.time)
-    if (!ledger.length) { el.innerHTML = `<div class="mob-v-empty">No transfers yet</div>`; return }
+    if (!ledger.length) { el.innerHTML = `${txHeader}<div class="mob-v-empty">No transfers yet</div>`; return }
     const typeLabel = { deposit: 'Deposit', withdraw: 'Withdraw', send: 'Send', accountClassTransfer: 'Internal', internalTransfer: 'Internal', subAccountTransfer: 'Sub-account', spotTransfer: 'Spot transfer' }
-    el.innerHTML = ledger.map(e => {
+    // Peer/USDC/spot transfers are directional: money arriving IS a deposit into the
+    // account, money leaving is a send. Label them by flow rather than the raw type.
+    const dirTypes = new Set(['send', 'internalTransfer', 'spotTransfer'])
+    const rows = ledger.map(e => {
       const type   = e.delta?.type ?? ''
-      const label  = typeLabel[type] ?? type
       // Signed flow (+ into the account, − out) — spot/peer transfers are signed
-      // by whether we sent or received them (shared with the desktop ledger).
-      const amt    = ledgerAmount(e, state.addr)
+      // by whether we sent or received them (shared with the desktop ledger). In the
+      // combined view state.addr is a sentinel, so judge against the owning wallet.
+      const amt    = ledgerAmount(e, e._acctAddr ?? state.addr)
       const isIn   = amt >= 0
+      const label  = dirTypes.has(type) ? (isIn ? 'Deposit' : 'Send') : (typeLabel[type] ?? type)
       const cls    = isIn ? 'pos' : 'neg'
       const ts     = new Date(e.time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+      const acctHtml = e._acctAddr
+        ? `<span class="txfr-acct-chip notranslate">${_mobVAvatarHtml(e._acctAddr, 16)}<span>${esc(e._acct ?? '')}</span></span>`
+        : ''
       return `<div class="mob-v-row">
         <div class="mob-v-row-icon" style="color:${isIn ? 'var(--green)' : 'var(--red)'};font-size:18px">${isIn ? '↓' : '↑'}</div>
         <div class="mob-v-row-info">
           <div class="mob-v-row-name">${esc(label)}</div>
-          <div class="mob-v-row-sub">${ts}</div>
+          <div class="mob-v-row-sub" style="display:flex;align-items:center;gap:6px">${ts}${acctHtml}</div>
         </div>
         <div class="mob-v-row-right">
           <div class="mob-v-row-val ${cls}">${isIn ? '+' : '-'}$${fmtUSD(Math.abs(amt))}</div>
         </div>
       </div>`
     }).join('')
+    el.innerHTML = `${txHeader}<div style="padding-bottom:calc(82px + env(safe-area-inset-bottom))">${rows}</div>`
     return
   }
 
@@ -8366,9 +12082,13 @@ function _mobVRenderContent() {
     const mainConnected = isMainWalletConnected()
     const mainAddr     = getMainAddress?.() || state.addr || ''
     const walletStatus = mainConnected ? (mainAddr ? mainAddr.slice(0, 8) + '…' + mainAddr.slice(-5) : 'Connected') : 'Not connected'
-    const savedKey     = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null) || localStorage.getItem('hliq_agent_key') || ''
-    const agentStatus  = isConnected() ? 'Connected' : (savedKey ? 'Saved — not active' : 'Not connected')
-    const agentCls     = isConnected() ? 'var(--green)' : 'var(--muted)'
+    const savedKey     = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null) || ''   // this account's own key ONLY (no global/other-account fallback)
+    // A stored key HL no longer recognizes (replaced from another device / wrong account) —
+    // say so here rather than letting it fail mid-order.
+    const agentBad     = !!savedKey && window.__agentKeyBad(state.addr)
+    const agentStatus  = agentBad ? 'Not valid on Hyperliquid'
+                       : isConnected() ? 'Connected' : (savedKey ? 'Saved — not active' : 'Not connected')
+    const agentCls     = agentBad ? 'var(--neg)' : isConnected() ? 'var(--green)' : 'var(--muted)'
     const newsKw       = document.getElementById('newsKeywords')?.value || 'war, attack, sanctions, hack, exploit, ban, seized, collapse, default'
     const devOn        = !!localStorage.getItem('hliq_dev')
     const bioEnabled   = !!localStorage.getItem('hliq_biometric_cred')
@@ -8404,8 +12124,15 @@ function _mobVRenderContent() {
               style="flex:1;min-width:0;padding:7px 10px;background:var(--input-bg,var(--panel-2));border:1px solid var(--border2);border-radius:6px;color:var(--fg);font-size:12px;font-family:monospace"
               value="${esc(savedKey)}" />
             <button class="mob-v-setting-btn" onclick="window._mobVConnectAgentKey()">Connect</button>
+            ${savedKey ? `<button class="mob-v-setting-btn" style="color:var(--neg);border-color:rgba(255,77,109,0.3)" onclick="window.__clearAgentKey()" title="Remove this account's agent key">${_T('Clear key', 'Borrar clave')}</button>` : ''}
           </div>
           ${savedKey ? '' : `<button class="auto-gen-agent-btn" onclick="window.__quickConnectAgent()" style="width:100%;margin-top:8px;padding:9px;border-radius:8px;border:none;background:rgba(255,138,42,0.14);color:var(--accent);font-size:12px;font-weight:700;cursor:pointer">${mainConnected ? '⚡ Auto-generate Agent Key' : '🔗 Connect wallet'}</button>`}
+          ${agentBad ? `<div style="margin-top:9px;padding:10px 12px;border-radius:9px;background:rgba(255,77,109,.09);border:1px solid rgba(255,77,109,.28)">
+            <div style="font-size:12px;font-weight:700;color:var(--neg);margin-bottom:3px">${_T('⚠ Hyperliquid does not recognize this key', '⚠ Hyperliquid no reconoce esta clave')}</div>
+            <div style="font-size:11px;color:var(--muted);line-height:1.5">${_T('Orders from this account will fail. It was likely replaced by a key generated on another device. Regenerate it here — your funds and positions are unaffected.', 'Las órdenes de esta cuenta fallarán. Probablemente fue reemplazada por una clave generada en otro dispositivo. Regenérala aquí — tus fondos y posiciones no se ven afectados.')}</div>
+            <button class="auto-gen-agent-btn" onclick="window.__regenAgentKey()" style="width:100%;margin-top:8px;padding:9px;border-radius:8px;border:none;background:var(--accent);color:#000;font-size:12px;font-weight:800;cursor:pointer">${_T('⚡ Regenerate Agent Key', '⚡ Regenerar clave de agente')}</button>
+          </div>` : ''}
+          <div style="margin-top:9px;font-size:11px;line-height:1.5;color:var(--muted)">${_T('🛡️ This key can trade but <b>never withdraw</b> your funds. It stays in your browser (bots store it encrypted on our server).', '🛡️ Esta clave puede operar pero <b>nunca retirar</b> tus fondos. Permanece en tu navegador (los bots la guardan cifrada en nuestro servidor).')} <a onclick="window.__openSecurityInfo()" style="color:var(--accent);cursor:pointer;font-weight:700">${_T('How keys are handled →', 'Cómo se manejan las claves →')}</a></div>
         </div>
       </div>
 
@@ -8442,9 +12169,9 @@ function _mobVRenderContent() {
         <div class="mob-v-setting-row" style="flex-direction:column;align-items:flex-start;gap:8px">
           <div>Language</div>
           <div style="display:flex;flex-wrap:wrap;gap:6px">
-            ${Object.entries(_LANG_NAMES).map(([code]) =>
-              `<button onclick="window.__setLang('${code}');_mobVRenderContent()"
-                style="padding:4px 10px;border-radius:4px;border:1px solid ${savedLang === code ? 'var(--accent)' : 'var(--border2)'};background:${savedLang === code ? 'color-mix(in oklch,var(--accent) 15%,transparent)' : 'var(--panel-2)'};color:${savedLang === code ? 'var(--accent)' : 'var(--muted)'};font-size:12px;font-weight:600;cursor:pointer">${code.toUpperCase()}</button>`
+            ${Object.entries(_LANG_NAMES).map(([code, name]) =>
+              `<button onclick="window.__setLangMob('${code}')"
+                style="padding:4px 12px;border-radius:4px;border:1px solid ${savedLang === code ? 'var(--accent)' : 'var(--border2)'};background:${savedLang === code ? 'color-mix(in oklch,var(--accent) 15%,transparent)' : 'var(--panel-2)'};color:${savedLang === code ? 'var(--accent)' : 'var(--muted)'};font-size:12px;font-weight:600;cursor:pointer">${name}</button>`
             ).join('')}
           </div>
         </div>
@@ -8556,6 +12283,13 @@ function _mobVRenderContent() {
 
       <!-- Trading -->
       <div class="mob-v-setting-group">
+        <div class="mob-v-setting-row" onclick="window.__debug()" style="cursor:pointer">
+          <div><div>Debug panel</div><div style="font-size:11px;color:var(--muted)">Alert routing, live health, test notifications</div></div>
+          <span style="color:var(--muted);font-size:18px">›</span>
+        </div>
+      </div>
+
+      <div class="mob-v-setting-group">
         <div class="mob-v-setting-row">
           <div><div>News Pause</div><div style="font-size:11px;color:var(--muted)">Pause trading on matching headlines</div></div>
           ${tog(newsPauseEnabled, 'window.__onNewsPauseToggle(this.checked);_mobVRenderContent()')}
@@ -8610,8 +12344,15 @@ function _mobVRenderContent() {
       <!-- Data & Backup -->
       <div class="mob-v-setting-group">
         <div class="mob-v-setting-row">
-          <span>Export Settings</span>
-          <button class="mob-v-setting-btn" onclick="window.__exportSettings()">Export JSON</button>
+          <div><div>🛡️ Security &amp; Keys</div><div style="font-size:11px;color:var(--muted)">How keys are stored, why they can't withdraw, how to revoke</div></div>
+          <button class="mob-v-setting-btn" onclick="window.__openSecurityInfo()">Open</button>
+        </div>
+        <div class="mob-v-setting-row" style="flex-direction:column;align-items:flex-start;gap:6px">
+          <div style="display:flex;align-items:center;justify-content:space-between;width:100%">
+            <span>Export Settings</span>
+            <button class="mob-v-setting-btn" onclick="window.__exportSettings()">Export JSON</button>
+          </div>
+          <div style="font-size:11px;line-height:1.5;color:var(--warn,#f5b73c)">⚠️ Contains your signing keys in plain text — anyone with the file can trade your accounts. Keep it offline.</div>
         </div>
         <div class="mob-v-setting-row">
           <span>Import Settings</span>
@@ -8639,7 +12380,7 @@ function _mobVRenderContent() {
   }
 
   if (_mobVActiveTab === 'accounts') {
-    const stale = Date.now() - _mobVMaLastFetch > 30_000
+    const stale = Date.now() - _mobVMaLastFetch > 60_000
     if (_mobVMaResults.length && !stale) {
       el.innerHTML = _mobVBuildAccountsHtml(_mobVMaResults)
       setTimeout(() => _mobVAfterMaRender(_mobVMaResults), 10)
@@ -8651,21 +12392,32 @@ function _mobVRenderContent() {
   }
 
   if (_mobVActiveTab === 'portfolio') {
-    const stats = computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio)
-    const { accountValue, unrealizedPnl, realizedPnl, netPnl, healthStr, healthCls, maintMargin, withdrawable } = stats
+    const stats = computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids)
+    const { accountValue, unrealizedPnl, realizedPnl, healthStr, healthCls, maintMargin, marginUsed, withdrawable } = stats
     const fills    = state.fills ?? []
     const funding  = state.funding ?? []
     const ledger   = state.ledger ?? []
     let totalDeposited = 0, totalWithdrawn = 0
     for (const e of ledger) {
-      const t = e.delta?.type
-      if (t === 'deposit') totalDeposited += parseFloat(e.delta.usdc ?? 0)
-      else if (t === 'send' && e.delta?.token === 'USDC') totalDeposited += parseFloat(e.delta.usdcValue ?? 0)
-      else if (t === 'withdraw') totalWithdrawn += parseFloat(e.delta.usdc ?? 0)
+      const d = e.delta ?? {}
+      if (d.type === 'deposit') totalDeposited += parseFloat(d.usdc ?? 0)
+      else if (d.type === 'withdraw') totalWithdrawn += parseFloat(d.usdc ?? 0)
+      // USDC sends + spot-token transfers, counted by direction at USD value
+      // (in the combined view each entry's owner is its _acctAddr)
+      else if (d.type === 'send' || d.type === 'spotTransfer') {
+        const me = (e._acctAddr ?? state.addr ?? '').toLowerCase()
+        const v  = parseFloat(d.usdcValue ?? 0)
+        if ((d.destination ?? '').toLowerCase() === me) totalDeposited += v
+        else totalWithdrawn += v
+      }
     }
     const netDeposited  = totalDeposited - totalWithdrawn
     const totalFees     = fills.reduce((s, f) => s + (f.fee ?? 0), 0)
     const netFunding    = funding.reduce((s, f) => s + (f.usdc ?? 0), 0)
+    // Net PnL = realized + unrealized + funding − fees — the same full formula the
+    // desktop overview and the All-Accounts cards use (computeAcctStats returns only
+    // realized+unrealized, which made this tab disagree with the account cards).
+    const netPnl        = realizedPnl + unrealizedPnl + netFunding - totalFees
     const totalVol      = fills.reduce((s, f) => s + (f.notional ?? 0), 0)
     const ONE_HOUR = 3600000
     const windows  = {}
@@ -8675,12 +12427,46 @@ function _mobVRenderContent() {
     }
     const allW    = Object.values(windows)
     const winRate = allW.length > 0 ? (allW.filter(n => n > 0).length / allW.length * 100).toFixed(1) + '%' : '—'
+    // Profit factor = gross wins ÷ gross losses (matches the desktop overview strip)
+    const grossWin  = fills.reduce((s, f) => f.closedPnl > 0 ? s + f.closedPnl : s, 0)
+    const grossLoss = fills.reduce((s, f) => f.closedPnl < 0 ? s + Math.abs(f.closedPnl) : s, 0)
+    const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : 0)
+    const pfStr = profitFactor === Infinity ? '∞' : profitFactor > 0 ? profitFactor.toFixed(2) : '—'
+    const pfCls = profitFactor >= 1 ? 'pos' : profitFactor > 0 ? 'neg' : ''
+    // Member since = earliest activity. Combined view concatenates several accounts'
+    // (each descending) fill lists, so scan for the min rather than taking the last.
+    const earliestTs = state.firstFillTime
+      ?? (fills.length ? fills.reduce((m, f) => Math.min(m, f.time), Infinity) : null)
+    const memberSince = (earliestTs != null && isFinite(earliestTs))
+      ? new Date(earliestTs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+      : '—'
     const pnlFmt = v => (v >= 0 ? '+$' : '-$') + fmtUSD(Math.abs(v))
     const pnlCls = v => v >= 0 ? 'pos' : 'neg'
     const btnStyle = (active) => `padding:4px 10px;border:1px solid var(--border2);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;touch-action:manipulation;background:${active ? 'var(--panel-2)' : 'transparent'};color:${active ? 'var(--fg)' : 'var(--muted)'}`
     const periods   = [['1D','1D'],['7D','7D'],['1M','1M'],['All','allTime']]
     const chartTypes = [['Value','value'],['Accum. PnL','pnl'],['Realized','realized']]
+    // Full-page header (these views hide the home chrome now) + optional Accounts cards
+    // pinned to the TOP in the combined view.
+    const portHeader = `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:14px 16px 11px;background:var(--bg);border-bottom:1px solid var(--border)">
+        <span style="font-size:18px;font-weight:700">Portfolio</span>
+        <button onclick="window.mobVHome()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+      </div>`
+    // "Expand All" if any card is collapsed, otherwise "Collapse All".
+    const _visAccts   = _allAcctLastResults.filter(r => !_maHiddenLoad().has(r.addr))
+    const _allExpanded = _visAccts.length > 0 && _visAccts.every(r => _maExpandedCards.has(r.addr))
+    const acctCardsHtml = state.isAllAccounts ? `<div style="padding:14px 12px 4px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <span style="font-size:13px;font-weight:700;color:var(--fg)">Accounts</span>
+          <button id="maToggleAllBtn" onclick="window.__maToggleAll()"
+            style="background:none;border:1px solid var(--border2);border-radius:14px;padding:4px 11px;color:var(--muted);font-size:11px;font-weight:600;cursor:pointer;touch-action:manipulation">
+            ${_allExpanded ? 'Collapse All' : 'Expand All'}
+          </button>
+        </div>
+        <div class="multi-acct-grid" id="mobAllAcctCards"></div>
+      </div>` : ''
     el.innerHTML = `<div style="padding:0 0 24px">
+      ${portHeader}
+      ${acctCardsHtml}
       <div style="display:flex;gap:4px;padding:12px 16px 0;overflow-x:auto;scrollbar-width:none">
         ${chartTypes.map(([lbl,t]) => `<button data-port-type="${t}" onclick="window.mobVSetPortChartType('${t}')"
           style="${btnStyle(t === _mobVPortChartType)}">${lbl}</button>`).join('')}
@@ -8692,6 +12478,15 @@ function _mobVRenderContent() {
       <div style="padding:0 16px 8px">
         <canvas id="mobVPortChart" height="120" style="width:100%;display:block"></canvas>
       </div>
+      <div style="padding:0 16px 6px;display:flex;align-items:center;gap:8px">
+        <button id="mobVPortMarkersBtn" data-port-markers onclick="window.mobVTogglePortMarkers()"
+          style="${_mobVPortBtnStyle(_mobVPortMarkers)}">📍 Markers</button>
+        <button onclick="window.mobVOpenAdvChart()"
+          style="${_mobVPortBtnStyle(false)}">⛶ Advanced</button>
+        ${_mobVPortMarkers ? `<span style="display:flex;gap:8px;font-size:9.5px;color:var(--muted);font-weight:600;margin-left:auto;flex-wrap:wrap;justify-content:flex-end">
+          <span style="color:#00e5a0">● Buy</span><span style="color:#ff4d6d">● Sell</span><span style="color:#4aa3ff">● Deposit</span><span style="color:#f5a623">● Withdraw</span>
+        </span>` : ''}
+      </div>
       <div class="mob-v-setting-group" style="margin-top:8px">
         <div class="mob-v-setting-row"><span>Account Value</span><span style="font-weight:600;font-size:14px">${_acctValueReady() ? _prv('$' + fmtUSD(accountValue)) : '<span style="color:var(--muted)">—</span>'}</span></div>
         <div class="mob-v-setting-row"><span>Unrealized PnL</span><span class="${pnlCls(unrealizedPnl)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(unrealizedPnl))}</span></div>
@@ -8700,15 +12495,23 @@ function _mobVRenderContent() {
         ${netFunding !== 0 ? `<div class="mob-v-setting-row"><span>Net Funding</span><span class="${pnlCls(netFunding)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(netFunding))}</span></div>` : ''}
         <div class="mob-v-setting-row"><span>Health</span><span class="${healthCls}" style="font-weight:600;font-size:14px">${healthStr}</span></div>
         <div class="mob-v-setting-row"><span>Withdrawable</span><span style="font-weight:600;font-size:14px">$${fmtUSD(withdrawable)}</span></div>
-        <div class="mob-v-setting-row"><span>Margin Used</span><span style="font-weight:600;font-size:14px">$${fmtUSD(maintMargin)}</span></div>
+        <!-- These are two DIFFERENT numbers and this row used to show maintenance
+             margin under a "Margin Used" label — so the Portfolio page reported e.g.
+             $140 while the Allocation page and each position card reported the true
+             $1,499 of collateral. Show both, each named for what it actually is. -->
+        <div class="mob-v-setting-row"><span>Margin Used</span><span style="font-weight:600;font-size:14px">$${fmtUSD(marginUsed)}</span></div>
+        <div class="mob-v-setting-row"><span>Maintenance Margin</span><span style="font-weight:600;font-size:14px">$${fmtUSD(maintMargin)}</span></div>
         ${totalFees > 0 ? `<div class="mob-v-setting-row"><span>Total Fees</span><span class="neg" style="font-weight:600;font-size:14px">-$${fmtUSD(totalFees)}</span></div>` : ''}
         ${totalVol > 0 ? `<div class="mob-v-setting-row"><span>Total Volume</span><span style="font-weight:600;font-size:14px">$${fmtCompact(totalVol)}</span></div>` : ''}
         <div class="mob-v-setting-row"><span>Win Rate</span><span style="font-weight:600;font-size:14px">${winRate}</span></div>
+        <div class="mob-v-setting-row"><span>Profit Factor</span><span class="${pfCls}" style="font-weight:600;font-size:14px">${pfStr}</span></div>
         ${totalDeposited > 0 ? `<div class="mob-v-setting-row"><span>Total Deposited</span><span style="font-weight:600;font-size:14px">$${fmtUSD(totalDeposited)}</span></div>` : ''}
         ${totalWithdrawn > 0 ? `<div class="mob-v-setting-row"><span>Total Withdrawn</span><span style="font-weight:600;font-size:14px">$${fmtUSD(totalWithdrawn)}</span></div>` : ''}
         ${(totalDeposited > 0 || totalWithdrawn > 0) ? `<div class="mob-v-setting-row"><span>Net Deposited</span><span class="${accountValue >= netDeposited ? 'pos' : 'neg'}" style="font-weight:600;font-size:14px">${pnlFmt(netDeposited)}</span></div>` : ''}
+        <div class="mob-v-setting-row"><span>Member Since</span><span style="font-weight:600;font-size:14px">${esc(memberSince)}</span></div>
       </div>
     </div>`
+    _syncAllAcctCards()
     setTimeout(_mobVDrawPortChart, 10)
     return
   }
@@ -8717,9 +12520,33 @@ function _mobVRenderContent() {
     const now = new Date()
     if (state.calMonth == null) state.calMonth = now.getMonth()
     if (state.calYear  == null) state.calYear  = now.getFullYear()
-    el.innerHTML = `<div style="padding:0 8px"><div id="mobCalRoot"></div></div><div id="mobCalDetail" class="cal-detail" style="margin:8px 16px 0"></div>`
+    const calHeader = `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:14px 16px 11px;background:var(--bg);border-bottom:1px solid var(--border)">
+        <span style="font-size:18px;font-weight:700">Calendar</span>
+        <button onclick="window.mobVHome()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+      </div>`
+    // The live refresh re-renders whatever tab is open. Rebuilding the calendar wipes
+    // #mobCalDetail, so an open day's activity vanished mid-read every few seconds.
+    // Skip the rebuild when nothing that affects the calendar changed, and when a
+    // rebuild IS needed, reopen the day the user had expanded.
+    const fills  = state.fills ?? []
+    const ledger = state.ledger ?? []
+    const monthKey = `${state.calMonth}-${state.calYear}`
+    const sig = `${monthKey}|${fills.length}|${fills[0]?.time ?? 0}|${ledger.length}`
+    const prevSig  = el.dataset.calSig || ''
+    // Only reopen the day if we're still on the same month — otherwise paging to a new
+    // month would expand a day that isn't on screen.
+    const sameMonth = prevSig.split('|')[0] === monthKey
+    const openDay = sameMonth ? (document.getElementById('mobCalDetail')?.dataset.activeKey || '') : ''
+
+    if (document.getElementById('mobCalRoot') && prevSig === sig) return
+
+    el.innerHTML = `${calHeader}<div style="padding:8px 8px 0"><div id="mobCalRoot"></div></div><div id="mobCalDetail" class="cal-detail" style="margin:8px 16px 24px"></div>`
     try {
-      renderPnLCalendar(state.fills ?? [], state.calMonth, state.calYear, state.ledger ?? [], 'mobCalRoot', 'mobCalNav', 'mobCalDetail')
+      renderPnLCalendar(fills, state.calMonth, state.calYear, ledger, 'mobCalRoot', 'mobCalNav', 'mobCalDetail')
+      el.dataset.calSig = sig
+      // Reopen the previously expanded day. calDayClick toggles, and the fresh panel
+      // has no activeKey, so this call opens it rather than closing it.
+      if (openDay) { try { calDayClick(openDay, 'mobCalRoot') } catch {} }
     } catch (e) {
       console.error('[mobile calendar]', e)
       el.innerHTML = `<div class="mob-v-empty">Calendar failed to load: ${esc(e.message)}</div>`
@@ -8728,8 +12555,9 @@ function _mobVRenderContent() {
   }
 
   if (_mobVActiveTab === 'tokens') {
+    const scHeader = _mobVFullHeader('Scoreboard')
     const fills = state.fills ?? []
-    if (!fills.length) { el.innerHTML = `<div class="mob-v-empty">No trades yet</div>`; return }
+    if (!fills.length) { el.innerHTML = `${scHeader}<div class="mob-v-empty">No trades yet</div>`; return }
     const coinMap = {}
     for (const f of fills) {
       if (!coinMap[f.coin]) coinMap[f.coin] = []
@@ -8738,14 +12566,14 @@ function _mobVRenderContent() {
     const allStats = Object.entries(coinMap)
       .map(([coin, cf]) => computeCoinStats(coin, cf, parseFloat(state.allMids?.[coin] ?? 0)))
       .sort((a, b) => Math.abs(b.totalPnl) - Math.abs(a.totalPnl))
-    el.innerHTML = allStats.map(s => {
+    el.innerHTML = scHeader + allStats.map(s => {
       const cls = s.totalPnl >= 0 ? 'pos' : 'neg'
       const wl  = s.longs + s.shorts
       const wr  = wl > 0 ? Math.round((s.longsWon + s.shortsWon) / wl * 100) : 0
       return `<div class="mob-v-row">
         ${_mobVCoinIcon(s.coin)}
         <div class="mob-v-row-info">
-          <div class="mob-v-row-name">${esc(s.coin)}</div>
+          <div class="mob-v-row-name">${esc(_ocCoinLabel(s.coin))}</div>
           <div class="mob-v-row-sub">${s.fills} trades · ${wr}% win</div>
         </div>
         <div class="mob-v-row-right">
@@ -8758,7 +12586,18 @@ function _mobVRenderContent() {
   }
 
   if (_mobVActiveTab === 'watch') {
-    const list = loadWatchlist()
+    const list   = loadWatchlist()
+    const tvList = loadTvWatch()
+    // Structural signature = the SET of coins/markets only (not their live prices). On a tick
+    // where that set is unchanged, update prices in place and bail — rebuilding would re-fetch
+    // every icon, redraw every sparkline, RE-MOUNT the TradingView minis, and drop focus from
+    // the search box. That per-tick rebuild is what made the Watch tab flicker.
+    const structHash = list.join('|') + '##' + tvList.join('|')
+    if (tick && structHash === _mobVWatchStructHash && el.querySelector('.mob-watch-row')) {
+      _mobVUpdateWatchLive()
+      return
+    }
+    _mobVWatchStructHash = structHash
     el.innerHTML = `
       <div style="padding:12px 16px;position:sticky;top:0;background:var(--panel-1);z-index:10;border-bottom:1px solid var(--border)">
         <div style="position:relative">
@@ -8770,25 +12609,45 @@ function _mobVRenderContent() {
         </div>
       </div>
       ${!list.length
-        ? `<div class="mob-v-empty">No coins in watchlist.<br>Search above to add coins.</div>`
+        ? `<div class="mob-v-empty" style="padding:26px 16px 18px">No coins yet — search above to add.</div>`
         : list.map(coin => {
             const px = parseFloat(state.allMids?.[coin] ?? 0)
-            return `<div class="mob-v-row">
+            const cid = 'watchspark-' + coin.replace(/[^a-z0-9]/gi, '_')
+            return `<div class="mob-v-row mob-watch-row">
               ${_mobVCoinIcon(coin)}
-              <div class="mob-v-row-info">
+              <div class="mob-v-row-info" onclick="window.__watchOpenTrade('${esc(coin)}')" style="cursor:pointer">
                 <div class="mob-v-row-name">${esc(watchCoinLabel(coin))}</div>
-                <div class="mob-v-row-sub">${coin.startsWith('@') ? 'Spot' : 'Perp'}</div>
+                <div class="mob-v-row-sub notranslate">${coin.startsWith('@') ? 'Spot' : 'Perp'}</div>
               </div>
-              <div class="mob-v-row-right">
-                <div class="mob-v-row-val">${px > 0 ? '$' + fmtPrice(px) : '—'}</div>
-              </div>
-              <button onclick="window.__mobWatchRemove('${esc(coin)}')" style="background:none;border:none;color:var(--muted);padding:8px 4px 8px 10px;cursor:pointer;flex-shrink:0;line-height:0">
+              <canvas class="mob-watch-spark" id="${cid}" data-coin="${esc(coin)}"
+                width="132" height="40" style="cursor:pointer"></canvas>
+              <div class="mob-watch-mid-px" data-wcoin="${esc(coin)}">${px > 0 ? '$' + fmtPrice(px) : '—'}</div>
+              <button onclick="window.__mobWatchRemove('${esc(coin)}')" style="background:none;border:none;color:var(--muted);padding:8px 4px 8px 8px;cursor:pointer;flex-shrink:0;line-height:0">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>`
           }).join('')
       }
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 16px 8px;border-top:1px solid var(--border);margin-top:6px">
+        <span style="font-size:13px;font-weight:800">Markets</span>
+        <button onclick="window.__tvMarketsPicker()" style="background:var(--panel-2);border:1px solid var(--border);color:var(--fg);border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer">+ Add market</button>
+      </div>
+      ${!tvList.length
+        ? `<div style="padding:2px 16px 22px;font-size:12px;color:var(--muted);line-height:1.5">Watch DXY, indices, gold, oil, yields & forex — charts via TradingView. Tap <b>+ Add market</b>.</div>`
+        : tvList.map(sym => `<div class="mob-v-row mob-watch-row" onclick="window.__tvOpenChart('${esc(sym)}')" style="cursor:pointer">
+              <div class="mob-v-row-info">
+                <div class="mob-v-row-name">${esc(_tvLabel(sym))}</div>
+                <div class="mob-v-row-sub">${esc(sym)}</div>
+              </div>
+              <div id="tvmini-${_tvId(sym)}" style="width:150px;height:52px;flex-shrink:0;pointer-events:none"></div>
+              <button onclick="event.stopPropagation();window.__tvRemove('${esc(sym)}')" style="background:none;border:none;color:var(--muted);padding:8px 4px 8px 8px;cursor:pointer;flex-shrink:0;line-height:0">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>`).join('')
+      }
     `
+    if (list.length) { _mobWatchDrawSparks(); _ensureTickerCandles() }
+    if (tvList.length) _tvMountMinis()
     return
   }
 
@@ -8812,10 +12671,70 @@ function _mobVRenderContent() {
     return
   }
 
+  if (_mobVActiveTab === 'heatmap') {
+    _mobVRenderHeatmap()
+    if (!_heatmapTimer) {
+      _heatmapTimer = setInterval(() => {
+        if (_mobVActiveTab !== 'heatmap') { clearInterval(_heatmapTimer); _heatmapTimer = null; return }
+        _heatmapLoad(true).then(() => { if (_mobVActiveTab === 'heatmap') _mobVRenderHeatmap() })
+      }, 30_000)
+    }
+    return
+  }
+
   if (_mobVActiveTab === 'trade') {
-    if (_mobTradeView === 'list') { _mobRenderTradeList(el); return }
+    if (_mobTradeView === 'list') { _mobTradeDetailCoin = null; _mobRenderTradeList(el); return }
+    // Preserve the live chart across BACKGROUND re-renders. A full rebuild destroys the chart
+    // canvas and its candle WebSocket — which is exactly what blanked the chart ~1s after
+    // opening an asset (a fills/data refresh fired updateMobileView(true) → _mobVRenderContent).
+    // When the detail is already built for this coin and its chart is alive, just refresh the
+    // live header values in place and leave the chart untouched. A coin change rebuilds fully.
+    const wantCoin = state.selectedCoin || 'BTC'
+    if (_mobTradeDetailCoin === wantCoin && document.getElementById('mobChartCanvas')) {
+      _mobUpdateTradeDetailLive()
+      return
+    }
+    _mobTradeDetailCoin = wantCoin
     _mobRenderTradeDetail(el)
     return
+  }
+}
+
+// Live, in-place refresh of the trade-detail header (mark price + 24h change) so it stays
+// current WITHOUT rebuilding the detail (which would kill the chart). Called on ticks and on
+// background refreshes while the detail is open.
+function _mobUpdateTradeDetailLive() {
+  const coin = _mobTradeDetailCoin
+  if (!coin) return
+  const mark  = _livePx(coin)
+  const intEl = document.getElementById('mobTdPxInt')
+  const decEl = document.getElementById('mobTdPxDec')
+  // Change-guarded writes ONLY. This runs on every candle WS message (many/sec); rewriting
+  // textContent unconditionally would replace the text node each time — a childList mutation
+  // that also wakes the i18n observer — causing constant repaint churn / flicker.
+  if (intEl && mark > 0) {
+    const pxStr  = fmtPrice(mark)
+    const dotIdx = pxStr.indexOf('.')
+    const nextInt = dotIdx >= 0 ? pxStr.slice(0, dotIdx) : pxStr
+    const nextDec = dotIdx >= 0 ? pxStr.slice(dotIdx) : ''
+    if (intEl.textContent !== nextInt) intEl.textContent = nextInt
+    if (decEl && decEl.textContent !== nextDec) decEl.textContent = nextDec
+  }
+  // 24h change only moves on the ~60s ctx refresh, not the price WS — skip when there's no ctx
+  // so a transient miss can't flash the badge to +0.00%.
+  const ctx = _mktCtxMap[coin]
+  const chgEl = document.getElementById('mobTdChg')
+  if (chgEl && ctx) {
+    const chg24  = ctx.change24 ?? 0
+    const chgAbs = ctx.change24Abs ?? 0
+    const clr = chg24 >= 0 ? 'var(--green)' : 'var(--red)'
+    const bg  = chg24 >= 0 ? 'color-mix(in oklch,var(--green) 16%,transparent)' : 'color-mix(in oklch,var(--red) 16%,transparent)'
+    const next = `${chg24 >= 0 ? '▲' : '▼'} ${chg24 >= 0 ? '+' : '−'}$${_fmtHdrChgAbs(Math.abs(chgAbs), mark)} (${chg24 >= 0 ? '+' : ''}${chg24.toFixed(2)}%)`
+    if (chgEl.textContent.trim() !== next) {
+      chgEl.style.color = clr
+      chgEl.style.background = bg
+      chgEl.textContent = next
+    }
   }
 }
 
@@ -8824,7 +12743,7 @@ function _mobVSubPosRow(ap, pid) {
   const sz     = parseFloat(p.szi ?? 0)
   const pnl    = parseFloat(p.unrealizedPnl ?? 0)
   const roe    = parseFloat(p.returnOnEquity ?? 0) * 100
-  const markPx = parseFloat(state.allMids?.[p.coin] ?? 0)
+  const markPx = _posMarkPx(p)
   const liqPx  = parseFloat(p.liquidationPx ?? 0)
   const margin = parseFloat(p.marginUsed ?? 0)
   const lev    = p.leverage?.value ? p.leverage.value + 'x' : ''
@@ -9030,7 +12949,8 @@ function _mobVAfterMaRender(results) {
 async function _mobVFetchAccounts(el) {
   const entries = _maLoad()
   if (!entries.length) {
-    el.innerHTML = `<div class="mob-v-empty">No saved wallets yet.<br>Add wallets using the wallet switcher.</div>`
+    el.innerHTML = `<div class="mob-v-empty">No saved wallets yet.<br><br>
+      <button class="btn-sm" onclick="window._mobVOpenWalletSwitch()">Open wallet switcher →</button></div>`
     return
   }
   let results = await _lbFetchResults(entries)
@@ -9213,27 +13133,387 @@ window.mobVMaCalNav = function(dir) {
 window._mobVLbSort = function(by) {
   _mobVLbSortBy = by
   const el = document.getElementById('mobVContent')
-  if (el && _mobVLbResults.length) el.innerHTML = _mobVBuildLbHtml(_mobVLbResults)
+  if (!el) return
+  // The sort chips are shared by both boards. This always rebuilt the REAL board,
+  // so tapping "Net PnL" while on the Paper board replaced the paper rows with the
+  // real accounts. Re-render whichever board is actually showing.
+  if (_lbMode === 'paper') el.innerHTML = _lbPaperHtml()
+  else if (_mobVLbResults.length) el.innerHTML = _mobVBuildLbHtml(_mobVLbResults)
 }
 
-function _mobVBuildLbHtml(results) {
+// Sanitize a leaderboard display name EXACTLY as the server does — the signature covers the
+// cleaned name, so any divergence here would make the server reject it as a bad signature.
+function _lbCleanName(s) {
+  return String(s ?? '')
+    .split('').filter(ch => ch.charCodeAt(0) >= 32 && ch.charCodeAt(0) !== 127).join('')
+    .replace(/\s+/g, ' ').trim().slice(0, 24)
+}
+
+// Set the public display name for the connected wallet's leaderboard entry. The address is
+// public, so ownership is proven by signing the request with that wallet — nobody can rename
+// an account they don't control.
+window.__lbSetMyName = async function() {
+  const addr = getMainAddress?.()
+  if (!isMainWalletConnected() || !addr) {
+    alert('Connect your wallet first — the display name is signed by the account owner.')
+    try { openWalletPicker() } catch {}
+    return
+  }
+  const cur   = _mobVLbResults.find(r => String(r.addr).toLowerCase() === addr.toLowerCase())?.label ?? ''
+  const input = prompt('Leaderboard display name (max 24 chars — leave blank to show your address):', cur)
+  if (input === null) return
+  const name = _lbCleanName(input)
+  try {
+    const ts        = Date.now()
+    const msg       = `Insolvent Trade — set leaderboard name\naddress: ${addr.toLowerCase()}\nname: ${name}\nts: ${ts}`
+    const signature = await getMainSigner().signMessage(msg)
+    const r = await fetch('/api/leaderboard/name', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ addr, name, ts, signature }),
+    })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok || j.error) { alert('Could not set name: ' + (j.error ?? r.status)); return }
+    // Reflect immediately, then force a refetch so everyone's view agrees.
+    const row = _mobVLbResults.find(x => String(x.addr).toLowerCase() === addr.toLowerCase())
+    if (row) row.label = j.label ?? name
+    _lbLastFetch = 0
+    const el = document.getElementById('mobVContent')
+    if (el && _mobVActiveTab === 'leaderboard') el.innerHTML = _mobVBuildLbHtml(_mobVLbResults)
+    try { renderLeaderboard() } catch {}
+  } catch (e) {
+    alert('Signing failed: ' + (e?.message ?? e))
+  }
+}
+
+// ─── LEADERBOARD REMOVE ───────────────────────────────────────────────────────
+// The currently-connected owner address (can sign a removal). Null when no single
+// real wallet is connected — then only dev mode (PIN) can remove.
+function _lbMyActiveAddr() {
+  try { if (isMainWalletConnected() && getMainAddress?.()) return getMainAddress().toLowerCase() } catch {}
+  return null
+}
+function _lbAfterRemove() {
+  _lbLastFetch = 0
+  const el = document.getElementById('mobVContent')
+  if (_lbMode === 'paper') { if (el) _lbPaperFetch(el) }
+  else if (el && _mobVActiveTab === 'leaderboard') { _mobVFetchLeaderboard(el) }
+  try { renderLeaderboard() } catch {}
+}
+
+// Return a verified management PIN — from cache, or prompt → verify → cache. This
+// self-heals a stale/missing cached PIN (e.g. after the server PIN was rotated).
+async function _lbAdminPin(force = false) {
+  if (!force) { const c = _lbGetPin(); if (c) return c }
+  const pin = await _showPinModal({ title: 'Leaderboard PIN', desc: 'Enter the dev / management PIN.', confirmText: 'OK' })
+  if (!pin) return ''
+  try {
+    const r = await fetch('/api/leaderboard/verify-pin', { method: 'POST', headers: { 'x-lb-pin': pin } })
+    if (!r.ok) { await _showPinModal({ title: 'Wrong PIN', desc: 'That PIN is incorrect.', confirmText: 'OK', type: 'text' }); return '' }
+  } catch { await _showPinModal({ title: 'Offline', desc: 'Could not reach the server.', confirmText: 'OK', type: 'text' }); return '' }
+  localStorage.setItem('hliq_lb_pin', pin)
+  return pin
+}
+
+// Remove a real-board account. via 'owner' → wallet signature; via 'dev' → LB PIN.
+window.__lbRemove = async function(addr, via) {
+  if (!(await _appConfirm({ title: 'Remove from leaderboard?', body: 'Your account will no longer appear on the public board. You can add yourself back anytime.', confirmText: 'Remove', danger: true }))) return
+  try {
+    if (via === 'owner') {
+      const a = getMainAddress?.()
+      if (!isMainWalletConnected() || !a || a.toLowerCase() !== addr.toLowerCase()) {
+        _paperToast('Connect this wallet to remove it.', 'error'); return
+      }
+      const ts        = Date.now()
+      const msg       = `Insolvent Trade — remove from leaderboard\naddress: ${addr.toLowerCase()}\nts: ${ts}`
+      _paperToast('Approve the signature in your wallet…')
+      const signature = await getMainSigner().signMessage(msg)
+      const r = await fetch('/api/leaderboard/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ addr, ts, signature }) })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok || j.error) { _paperToast('Could not remove: ' + (j.error ?? r.status), 'error'); return }
+      _lbAfterRemove(); _paperToast('Removed from the leaderboard'); return
+    }
+    // dev / PIN path — self-heals a stale or missing cached PIN with one retry.
+    const send = p => fetch('/api/leaderboard/remove', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-lb-pin': p }, body: JSON.stringify({ addr }) })
+    let pin = await _lbAdminPin(); if (!pin) return
+    let r = await send(pin)
+    if (r.status === 403) { localStorage.removeItem('hliq_lb_pin'); pin = await _lbAdminPin(true); if (!pin) return; r = await send(pin) }
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok || j.error) { _paperToast('Could not remove: ' + (j.error ?? r.status), 'error'); return }
+    _lbAfterRemove(); _paperToast('Removed from the leaderboard')
+  } catch (e) {
+    const m = /reject|denied|cancel/i.test(e?.message ?? '') ? 'Signature cancelled' : 'Remove failed: ' + (e?.message ?? e)
+    _paperToast(m, 'error')
+  }
+}
+
+// Remove a paper-board entry. via 'owner' → row secret; via 'dev' → LB PIN.
+window.__lbPaperRemove = async function(nameEnc, via) {
+  const name = decodeURIComponent(nameEnc)
+  if (!confirm(`Remove "${name}" from the paper leaderboard?`)) return
+  try {
+    let r
+    if (via === 'dev') {
+      const send = p => fetch('/api/leaderboard/paper/remove', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-lb-pin': p }, body: JSON.stringify({ name }) })
+      let pin = await _lbAdminPin(); if (!pin) return
+      r = await send(pin)
+      if (r.status === 403) { localStorage.removeItem('hliq_lb_pin'); pin = await _lbAdminPin(true); if (!pin) return; r = await send(pin) }
+    } else {
+      r = await fetch('/api/leaderboard/paper/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, secret: localStorage.getItem('hliq_paper_lb_secret') ?? '' }) })
+    }
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok || j.error) { alert('Could not remove: ' + (j.error ?? r.status)); return }
+    if (via === 'owner') {
+      localStorage.removeItem('hliq_paper_lb_secret')
+      localStorage.setItem('hliq_paper_lb_optout', '1')   // don't silently re-post on the next trade
+    }
+    _lbAfterRemove()
+  } catch (e) { alert('Remove failed: ' + (e?.message ?? e)) }
+}
+
+// Explicit, user-prompted re-add of the connected account (force:true clears the
+// server's "removed" flag). This is the ONLY way a removed account gets back on —
+// auto-join on connect stays blocked.
+window.__lbAddMe = async function() {
+  const addr = _lbMyActiveAddr()
+  if (!addr) { _paperToast('Connect the account you want to add first.', 'error'); return }
+  if (!(await _appConfirm({ title: 'Join the leaderboard?', body: 'Your account value and PnL become publicly visible on the board. You can remove yourself anytime.', confirmText: '➕ Add me' }))) return
+  try {
+    const r = await fetch('/api/leaderboard/join', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ addr, force: true }),
+    })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok || j.error) { _paperToast('Could not add: ' + (j.error ?? r.status), 'error'); return }
+    _lbAfterRemove()
+    _paperToast('You’re on the leaderboard ✓')
+  } catch (e) { _paperToast('Add failed: ' + (e?.message ?? e), 'error') }
+}
+
+// ─── PAPER LEADERBOARD ────────────────────────────────────────────────────────
+// A SEPARATE board from the real one. Real rows are computed server-side from
+// Hyperliquid and cannot be faked; paper rows are simulated on the user's own
+// device and submitted by the client, so they are self-reported and unverifiable.
+// Keeping them apart is what protects the real ranking's meaning — and the UI
+// says plainly that these numbers are not verified.
+let _lbMode        = 'real'     // 'real' | 'paper'
+let _lbPaperRows   = []
+let _lbPaperLoaded = 0
+
+window._mobVLbMode = function(mode) {
+  _lbMode = mode === 'paper' ? 'paper' : 'real'
+  const el = document.getElementById('mobVContent')
+  if (!el) return
+  if (_lbMode === 'paper') { _lbPaperFetch(el) }
+  else el.innerHTML = _mobVBuildLbHtml(_mobVLbResults)
+}
+
+let _lbPaperFetching = false
+let _lbHealFailed   = false   // stop retrying a re-post the server keeps rejecting
+
+async function _lbPaperFetch(el) {
+  if (_lbPaperFetching) return
+  _lbPaperFetching = true
+  // Only show a loader on the very first fetch. Re-showing it on every refresh is
+  // what made the board flash — repaint in place once the new rows land instead.
+  if (el && !_lbPaperRows.length) {
+    el.innerHTML = _mobVFullHeader('Leaderboard') + _lbModeBar() + `<div class="mob-v-empty">Loading…</div>`
+  }
+  try {
+    const r = await fetch('/api/leaderboard/paper').then(x => x.json())
+    _lbPaperRows   = r?.rows ?? []
+    _lbPaperLoaded = Date.now()
+  } catch { /* keep the rows we already have rather than blanking the board */ }
+  finally { _lbPaperFetching = false }
+  if (el && _mobVActiveTab === 'leaderboard' && _lbMode === 'paper') el.innerHTML = _lbPaperHtml()
+
+  // Self-heal: if this account should be on the board but isn't (entry pruned,
+  // server data lost, a submit that never landed), re-post instead of waiting for
+  // the local numbers to change — otherwise a missing row stays missing forever.
+  if (isPaper() && localStorage.getItem('hliq_paper_lb_optout') !== '1' && !_lbHealFailed) {
+    const mine = _paperName().toLowerCase()
+    if (!_lbPaperRows.some(r => String(r.name ?? '').toLowerCase() === mine)) {
+      const r = await _lbPaperSync(true)
+      // A rejected re-post (name taken, rate limited) must not retry on every view.
+      if (r && !r.ok) _lbHealFailed = true
+      if (r?.ok) {
+        try {
+          const fresh = await fetch('/api/leaderboard/paper').then(x => x.json())
+          _lbPaperRows = fresh?.rows ?? _lbPaperRows
+          _lbPaperLoaded = Date.now()
+          if (el && _mobVActiveTab === 'leaderboard' && _lbMode === 'paper') el.innerHTML = _lbPaperHtml()
+        } catch {}
+      }
+    }
+  }
+}
+
+function _lbModeBar() {
+  const tab = (m, label) => {
+    const on = _lbMode === m
+    return `<button onclick="window._mobVLbMode('${m}')" style="flex:1;padding:7px 0;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;
+      border:1px solid ${on ? 'var(--accent)' : 'var(--border2)'};
+      background:${on ? 'rgba(0,255,204,0.10)' : 'transparent'};
+      color:${on ? 'var(--accent)' : 'var(--muted)'}">${label}</button>`
+  }
+  return `<div style="display:flex;gap:7px;padding:8px 16px 4px">${tab('real', 'Real')}${tab('paper', '📝 Paper')}</div>`
+}
+
+function _lbPaperHtml() {
+  if (!_lbPaperRows.length) {
+    return _mobVFullHeader('Leaderboard') + _lbModeBar() +
+      `<div class="mob-v-empty">No paper results yet.${isPaper() ? '<br>Close a trade and yours posts automatically.' : '<br>Open the Paper account to join.'}</div>`
+  }
+
+  // Map into the SAME row shape the real board uses, then hand it to the same
+  // renderer — that's what makes the two boards identical rather than lookalikes.
+  const mine = _paperName().toLowerCase()
+  const rows = _lbPaperRows.map((r, i) => ({
+    // Every paper entry draws the 📝 paper avatar; `_id` keeps row ids unique
+    // since they'd otherwise all collide on the shared sentinel address.
+    addr:  PAPER_ADDR,
+    _id:   'p' + i + '-' + String(r.name ?? '').replace(/[^a-z0-9]/gi, '').slice(0, 8),
+    _pname: r.name ?? '',
+    label: (r.name ?? '') + (String(r.name ?? '').toLowerCase() === mine && isPaper() ? ' (you)' : ''),
+
+    accountValue:  r.equity ?? 0,
+    netPnl:        r.pnl ?? 0,
+    unrealizedPnl: r.unrealizedPnl ?? 0,
+    realizedPnl:   r.realizedPnl ?? 0,
+    totalVolume:   r.volume ?? 0,
+    healthPct:     r.healthPct ?? 0,
+    healthCls:     (r.healthPct ?? 0) >= 50 ? 'pos' : (r.healthPct ?? 0) >= 20 ? 'warn' : 'neg',
+    winCount:      r.wins ?? 0,
+    totalWindows:  r.trades ?? 0,
+    positions:     r.positions ?? [],
+    outcomes:      [],
+    openOrders:    [],
+    error:         null,
+  }))
+
+  return _mobVBuildLbHtml(rows, { paper: true })
+}
+
+/**
+ * Auto-sync the paper result to the board. Runs off the paper refresh loop, so
+ * there is nothing to press: trade, and the board keeps up.
+ *
+ * Throttled to once every 90s (the server allows 30/hour per IP) and skipped
+ * entirely when nothing changed, so an idle account never spends budget.
+ * A name is generated on first use and can be changed from the paper board.
+ */
+let _lbPaperSyncAt = 0, _lbPaperSyncKey = '', _lbPaperSyncing = false
+
+function _lbPaperName() { return _paperName() }
+
+/** Worst position health in the paper account — matches the real board's column. */
+function _paperHealthPct() {
+  const pos = (state.perpState?.assetPositions ?? []).filter(ap => parseFloat(ap.position?.szi ?? 0) !== 0)
+  if (!pos.length) return 100
+  return Math.min(...pos.map(ap => _mobVPosHealth(ap.position)))
+}
+
+async function _lbPaperSync(force = false) {
+  if (!isPaper() || _lbPaperSyncing) return
+  if (paperSlot() === 'challenge') return   // the Challenge account has its OWN board (standings), not the paper one
+  if (localStorage.getItem('hliq_paper_lb_optout') === '1') return
+
+  const s      = paperStore()
+  const closed = s.fills.filter(f => parseFloat(f.closedPnl ?? 0) !== 0)
+  // Nothing to rank until the account has actually closed a trade.
+  if (!closed.length) return
+
+  const equity = paperEquity()
+  const key    = `${closed.length}:${equity.toFixed(2)}`
+  if (!force && key === _lbPaperSyncKey) return                 // unchanged
+  if (!force && Date.now() - _lbPaperSyncAt < 90_000) return    // throttled
+
+  _lbPaperSyncing = true
+  try {
+    const r = await fetch('/api/leaderboard/paper', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name:   _lbPaperName(),
+        // Minted on first submit and kept locally — it's what stops someone else
+        // overwriting this name later. Not proof the figures are honest.
+        secret: localStorage.getItem('hliq_paper_lb_secret') ?? '',
+        equity,
+        // Against net deposits, not the opening balance — otherwise anyone could
+        // top up with paper money and climb the board without trading well.
+        pnl:    paperPnl(),
+        trades: closed.length,
+        wins:   closed.filter(f => parseFloat(f.closedPnl) > 0).length,
+        // The same detail the real board reveals when a row is expanded, so the
+        // paper board isn't a stripped-down imitation of it.
+        unrealizedPnl: (state.perpState?.assetPositions ?? [])
+          .reduce((a, ap) => a + parseFloat(ap.position?.unrealizedPnl ?? 0), 0),
+        realizedPnl:   closed.reduce((a, f) => a + parseFloat(f.closedPnl ?? 0), 0),
+        volume:        (s.fills ?? []).reduce((a, f) => a + Math.abs(parseFloat(f.sz ?? 0)) * parseFloat(f.px ?? 0), 0),
+        healthPct:     _paperHealthPct(),
+        positions:     state.perpState?.assetPositions ?? [],
+      }),
+    }).then(x => x.json())
+
+    if (r?.secret) localStorage.setItem('hliq_paper_lb_secret', r.secret)
+    if (r?.ok) { _lbPaperSyncAt = Date.now(); _lbPaperSyncKey = key }
+    return r
+  } catch { /* offline — the next tick retries */ }
+  finally { _lbPaperSyncing = false }
+}
+
+/** Stop or resume sharing this paper account's result on the board. */
+window.__lbPaperOptOut = function() {
+  const off = localStorage.getItem('hliq_paper_lb_optout') === '1'
+  localStorage.setItem('hliq_paper_lb_optout', off ? '0' : '1')
+  _paperToast(off ? 'Paper results will be shared again' : 'Paper results are no longer shared', 'success')
+  _lbPaperFetch(document.getElementById('mobVContent'))
+}
+
+/**
+ * Renders BOTH boards. Paper rows arrive already mapped into the real row shape
+ * (see _lbPaperHtml) so the two look identical — same rank badges, avatar, value
+ * and Net PnL columns, and the same expandable detail. `opts.paper` only swaps
+ * the header controls and the row id source.
+ */
+function _mobVBuildLbHtml(results, opts = {}) {
   const RANK_BADGE = [
     { bg: 'linear-gradient(135deg,#FFD700,#FFA500)', color: '#7a4800', label: '👑' },
     { bg: 'linear-gradient(135deg,#D8D8D8,#A8A8A8)', color: '#444',    label: '2' },
     { bg: 'linear-gradient(135deg,#E8A96A,#B87333)', color: '#5a2a00', label: '3' },
   ]
-  const key    = _mobVLbSortBy === 'net' ? 'netPnl' : 'accountValue'
+  const key    = (opts.sortBy || _mobVLbSortBy) === 'net' ? 'netPnl' : 'accountValue'
   const sorted = [...results].sort((a, b) => (b.error ? -Infinity : (b[key] ?? 0)) - (a.error ? -Infinity : (a[key] ?? 0)))
   const chip = (by, label) => {
     const on = _mobVLbSortBy === by
     return `<button onclick="window._mobVLbSort('${by}')" style="padding:5px 11px;border-radius:14px;border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};background:${on ? 'var(--accent)' : 'transparent'};color:${on ? '#000' : 'var(--muted)'};font-size:11px;font-weight:700;cursor:pointer">${label}</button>`
   }
-  const header = `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px 8px">
-    <span style="font-size:13px;font-weight:700;color:var(--fg);text-transform:uppercase;letter-spacing:0.04em">Rankings</span>
+  // Paper names are set in the account switcher, so its header offers the share
+  // toggle instead of the signature-backed rename the real board uses.
+  const leftBtn = opts.paper
+    ? (isPaper()
+        ? `<button onclick="window.__lbPaperOptOut()" title="Share or hide your paper result"
+             style="flex-shrink:0;padding:5px 11px;border-radius:14px;border:1px solid var(--border2);background:var(--panel-2);color:var(--muted);font-size:11px;font-weight:700;cursor:pointer">${localStorage.getItem('hliq_paper_lb_optout') === '1' ? '▶ Share mine' : '⏸ Stop sharing'}</button>`
+        : `<span style="flex-shrink:0;font-size:10px;color:var(--muted)">Open the Paper account to join</span>`)
+    : `<button onclick="window.__lbSetMyName()" title="Set your display name (signed by your wallet)"
+      style="flex-shrink:0;padding:5px 11px;border-radius:14px;border:1px solid var(--border2);background:var(--panel-2);color:var(--muted);font-size:11px;font-weight:700;cursor:pointer">✏️ My name</button>`
+
+  // When your connected account isn't on the board (e.g. after removing it), offer an
+  // explicit re-add. Auto-join never brings a removed account back on its own.
+  const myAddr  = opts.paper ? null : _lbMyActiveAddr()
+  const listed  = myAddr && sorted.some(r => String(r.addr ?? '').toLowerCase() === myAddr)
+  const addMeBtn = (myAddr && !listed)
+    ? `<button onclick="window.__lbAddMe()" title="Add your connected account to the leaderboard"
+        style="flex-shrink:0;padding:5px 11px;border-radius:14px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:11px;font-weight:700;cursor:pointer">➕ Add me</button>`
+    : ''
+  const header = `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px 8px;gap:8px">
+    <div style="display:flex;gap:6px;align-items:center">${leftBtn}${addMeBtn}</div>
     <div style="display:flex;gap:6px">${chip('value', 'Value')}${chip('net', 'Net PnL')}</div>
   </div>`
-  return header + sorted.map((r, i) => {
-    const id     = `lb-${r.addr.slice(2, 10)}`
+  // `bare` (used by the Challenge standings) drops the full-screen header, the Real/Paper
+  // mode bar and the action row — the caller supplies its own chrome and just wants the rows.
+  const chrome = opts.bare ? '' : (_mobVFullHeader('Leaderboard') + _lbModeBar() + header)
+  return chrome + sorted.map((r, i) => {
+    const id     = `lb-${r._id ?? r.addr.slice(2, 10)}`
     const xp     = _mobVExpandedIds.has(id)
     const val    = r.error ? '—' : '$' + fmtUSD(r.accountValue)
     const net    = r.error ? '—' : _lbPnl(r.netPnl, r.error)
@@ -9272,7 +13552,7 @@ function _mobVBuildLbHtml(results) {
           ${openPos.map((ap, pi) => _mobVSubPosRow(ap, `${id}-p${pi}`)).join('')}
         </div>`
       }
-      const outcomes = r.outcomes ?? []
+      const outcomes = _ocClampPending((r.outcomes ?? []).map(o => ({ ...o, _acctAddr: r.addr })))
       if (outcomes.length) {
         expandHtml += `<div style="border-bottom:1px solid rgba(255,255,255,0.04)">
           <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;padding:8px 16px 4px;background:var(--panel-2)">${outcomes.length} Outcome${outcomes.length !== 1 ? 's' : ''}</div>
@@ -9287,11 +13567,30 @@ function _mobVBuildLbHtml(results) {
         </div>`
       }
     }
+    // Remove control — shown on your own row (signature / secret) or on ANY row in dev mode (PIN).
+    const dev = isDev()
+    let removeBtn = ''
+    if (opts.challenge) {
+      removeBtn = ''   // the Challenge board has no self-remove — entries expire with the round
+    } else if (opts.paper) {
+      const pname = r._pname ?? ''
+      const owner = !!pname && isPaper() && pname.toLowerCase() === _paperName().toLowerCase()
+      if (pname && (dev || owner)) {
+        const via = dev ? 'dev' : 'owner'   // dev mode → PIN (works on any row); else owner secret
+        removeBtn = `<div style="padding:10px 16px 14px"><button onclick="event.stopPropagation();window.__lbPaperRemove('${encodeURIComponent(pname)}','${via}')" style="width:100%;background:transparent;border:1px solid var(--red);color:var(--red);border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer">Remove from leaderboard</button></div>`
+      }
+    } else if (r.addr) {
+      const owner = _lbMyActiveAddr() && r.addr.toLowerCase() === _lbMyActiveAddr()
+      if (dev || owner) {
+        const via = dev ? 'dev' : 'owner'   // dev mode → PIN (works on any row); else owner signature
+        removeBtn = `<div style="padding:10px 16px 14px"><button onclick="event.stopPropagation();window.__lbRemove('${esc(r.addr)}','${via}')" style="width:100%;background:transparent;border:1px solid var(--red);color:var(--red);border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer">Remove from leaderboard</button></div>`
+      }
+    }
     return `<div>
       <div class="mob-v-row" style="cursor:pointer" onclick="window._mobVToggleRow('${id}')">
         ${avatar}
         <div class="mob-v-row-info" style="margin-left:10px">
-          <div class="mob-v-row-name">${esc(label)}</div>
+          <div class="mob-v-row-name notranslate">${esc(label)}</div>
           <div class="mob-v-row-sub">${val}</div>
         </div>
         <div class="mob-v-row-right">
@@ -9300,7 +13599,7 @@ function _mobVBuildLbHtml(results) {
         </div>
         ${chev}
       </div>
-      <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${expandHtml}</div>
+      <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${expandHtml}${removeBtn}</div>
     </div>`
   }).join('')
 }
@@ -9311,14 +13610,14 @@ async function _mobVFetchLeaderboard(el) {
   try {
     const entries = await _lbLoad()
     if (!entries.length) {
-      el.innerHTML = `<div class="mob-v-empty">No wallets tracked yet.<br>Add wallets in the Leaderboard tab.</div>`
+      el.innerHTML = _mobVFullHeader('Leaderboard') + `<div class="mob-v-empty">No wallets tracked yet.<br>Add wallets in the Leaderboard tab.</div>`
       return
     }
-    const results = await _lbFetchResults(entries)
+    const results = await _lbFetchRows(entries)
     _lbLastFetch = Date.now()
     _mobVLbResults = results
     if (_mobVActiveTab !== 'leaderboard') return
-    if (!results.length) { el.innerHTML = `<div class="mob-v-empty">No data available</div>`; return }
+    if (!results.length) { el.innerHTML = _mobVFullHeader('Leaderboard') + `<div class="mob-v-empty">No data available</div>`; return }
     el.innerHTML = _mobVBuildLbHtml(results)
   } finally {
     _lbFetching = false
@@ -9326,8 +13625,13 @@ async function _mobVFetchLeaderboard(el) {
 }
 
 async function _mobVFetchPerformance(el) {
+  const _wAddr = _botApiAddr()
+  if (!_wAddr) {
+    el.innerHTML = `<div class="mob-v-empty">Open a single account to see bot performance.</div>`
+    return
+  }
   let wins
-  try { wins = await serverFetch(`/api/wins?address=${encodeURIComponent(state.addr ?? '')}`) }
+  try { wins = await serverFetch(`/api/wins?address=${encodeURIComponent(_wAddr)}`) }
   catch {
     el.innerHTML = `<div class="mob-v-empty">Performance data unavailable.<br>Start the strategy server to see bot performance.</div>`
     return
@@ -9418,7 +13722,7 @@ function _mobVTradeCoinList(q = '') {
 
   const rowHtml = (c) => {
     const d        = _mktCtxMap[c]
-    const mark     = d?.markPx || parseFloat(mids[c] ?? 0)
+    const mark     = _livePx(c)
     const ch       = d?.change24 ?? 0
     const chCls    = ch >= 0 ? 'pos' : 'neg'
     const chSign   = ch >= 0 ? '+' : ''
@@ -9544,7 +13848,7 @@ window._mobVTradeToggleCoinPicker = function() {
         </div>
         <div id="mobCoinPickerPills" style="display:flex;gap:6px;padding:0 14px 10px;overflow-x:auto;-webkit-overflow-scrolling:touch;touch-action:pan-x;scrollbar-width:none"></div>
       </div>
-      <div id="mobCoinPickerList" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch"></div>`
+      <div id="mobCoinPickerList" style="flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch"></div>`
     document.body.appendChild(ov)
     // Manually drive horizontal scroll — CSS overflow-x scroll is unreliable on iOS fixed overlays
     const pillsEl = ov.querySelector('#mobCoinPickerPills')
@@ -9593,7 +13897,10 @@ window._mobVSetSide = function(side) {
     shortBtn.style.border     = `1px solid ${!isBuy ? 'var(--red)' : 'var(--border2)'}`
     shortBtn.style.background  = !isBuy ? 'color-mix(in oklch,var(--red) 18%,transparent)' : 'var(--panel-2)'
     shortBtn.style.color       = !isBuy ? 'var(--red)' : 'var(--muted)'
-    if (submitBtn && isConnected()) {
+    // Update the submit label whenever trading is possible — use the All-Accounts-aware check,
+    // not isConnected() (which is false in the combined view where you trade via agent keys, so
+    // the button kept showing the old side while the toggle flipped).
+    if (submitBtn && window.__canTradeUI()) {
       const coin = state.selectedCoin || 'BTC'
       const display = _spotNameMap[coin] ?? _mktDisplay(coin) ?? coin.replace(/.*:/, '')
       submitBtn.style.background = isBuy ? 'var(--green)' : 'var(--red)'
@@ -9659,10 +13966,52 @@ window._mobVEditTpSl = function(type) {
   _mobVRenderContent()
 }
 
+// ── First real-trade risk acknowledgment ─────────────────────────────────────
+// The legal text lives in Security & Keys; this is the one-time gate that makes a beginner
+// actively acknowledge the core risks before their FIRST real order. Paper is exempt, and it
+// only ever shows once (localStorage flag). Returns a Promise<boolean>.
+const RISK_ACK_KEY = 'hliq_risk_ack_v1'
+let _riskAckResolve = null
+window.__riskAckDone = function(ok) {
+  document.getElementById('riskAckOverlay')?.remove()
+  if (ok) { try { localStorage.setItem(RISK_ACK_KEY, '1') } catch {} }
+  const r = _riskAckResolve; _riskAckResolve = null
+  if (r) r(ok)
+}
+function _riskAckGate() {
+  return new Promise(resolve => {
+    let acked = false
+    try { acked = localStorage.getItem(RISK_ACK_KEY) === '1' } catch {}
+    if (acked || isPaper()) return resolve(true)
+    _riskAckResolve = resolve
+    const ov = document.createElement('div')
+    ov.id = 'riskAckOverlay'
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100070;background:rgba(0,0,0,.62);display:flex;flex-direction:column;justify-content:flex-end'
+    ov.onclick = e => { if (e.target === ov) window.__riskAckDone(false) }
+    const bullet = t => `<li style="margin:0 0 9px;padding-left:2px">${t}</li>`
+    ov.innerHTML = `<div style="background:var(--panel-2,#1a1d24);border:1px solid var(--border2,#2a2e39);border-radius:20px 20px 0 0;padding:22px 18px calc(20px + env(safe-area-inset-bottom));max-height:88vh;overflow-y:auto">
+      <div style="width:38px;height:4px;border-radius:2px;background:var(--border2,#2a2e39);margin:-8px auto 16px"></div>
+      <div style="font-size:20px;font-weight:800;margin-bottom:4px">Before your first real trade</div>
+      <div style="font-size:12.5px;color:var(--muted,#8a90a0);margin-bottom:14px">Insolvent is in early beta. Please read this once — it only shows now.</div>
+      <ul style="list-style:none;padding:0;margin:0 0 4px;font-size:13.5px;line-height:1.55;color:var(--fg-2,#c9cdd6)">
+        ${bullet('⚠️ <b>You can lose money — up to your entire margin.</b> Leverage multiplies losses as well as gains, and a leveraged position can be liquidated fast.')}
+        ${bullet('🔑 <b>You control your funds and your trades.</b> They stay in your Hyperliquid account — we never hold or can withdraw them. Every order you or a bot places is your responsibility.')}
+        ${bullet('📉 <b>This is not financial advice</b>, and we’re not affiliated with Hyperliquid. Data and the app can fail or change without notice.')}
+        ${bullet('🎓 New to this? <b>Practice with fake money</b> in Paper mode first.')}
+      </ul>
+      <div style="font-size:11.5px;color:var(--muted,#8a90a0);margin:10px 2px 16px">Full <a onclick="window.__riskAckDone(false);window.__openSecurityInfo&&window.__openSecurityInfo()" style="color:var(--accent,#00e5a0);cursor:pointer;font-weight:700">Terms &amp; Security</a>.</div>
+      <button onclick="window.__riskAckDone(true)" style="border:none;border-radius:12px;padding:14px;font-size:15px;font-weight:800;cursor:pointer;width:100%;background:var(--accent,#00e5a0);color:#000;margin-bottom:8px">I understand — continue</button>
+      <button onclick="window.__riskAckDone(false)" style="border:none;border-radius:12px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;width:100%;background:transparent;color:var(--muted,#8a90a0)">Cancel</button>
+    </div>`
+    document.body.appendChild(ov)
+    try { window.__i18nApply && window.__i18nApply() } catch {}
+  })
+}
+
 window._mobVSubmitOrder = async function() {
   const statusEl = document.getElementById('mobTradeStatus')
   const btnEl    = document.getElementById('mobTradeSubmitBtn')
-  if (!isConnected()) { if (statusEl) statusEl.innerHTML = '<span style="color:var(--neg)">Connect agent key to trade</span>'; return }
+  if (!window.__canTradeUI()) { if (statusEl) statusEl.innerHTML = `<span style="color:var(--neg)">${state.isAllAccounts ? 'No agent key for the selected account' : 'Connect agent key to trade'}</span>`; return }
   const coin    = state.selectedCoin
   const isBuy   = state.tradeSide !== 'short'
   const mktPx   = parseFloat(state.allMids?.[coin] ?? 0)
@@ -9676,14 +14025,26 @@ window._mobVSubmitOrder = async function() {
   if (notional <= 0) { if (statusEl) statusEl.innerHTML = '<span style="color:var(--neg)">Move the margin slider above 0%</span>'; return }
   if (mktPx <= 0)    { if (statusEl) statusEl.innerHTML = `<span style="color:var(--neg)">No price for ${coin}</span>`; return }
   if (state.orderType === 'limit' && (!limitPx || limitPx <= 0)) { if (statusEl) statusEl.innerHTML = '<span style="color:var(--neg)">Enter limit price</span>'; return }
+  // One-time risk acknowledgment before the first real order (paper exempt).
+  if (!isPaper() && !(await _riskAckGate())) { if (statusEl) statusEl.innerHTML = ''; return }
+  // Beginner guardrail: real money + high leverage → make the liquidation risk explicit before
+  // it's placed. Only fires ≥15× (genuinely dangerous) and can be turned off; paper is exempt.
+  const _lev = state.leverage ?? 5
+  if (!isPaper() && _lev >= 15 && localStorage.getItem('hliq_lev_warn_off') !== '1') {
+    const movePct = (100 / _lev).toFixed(1)
+    if (!confirm(`⚠️ ${_lev}× leverage is high.\n\nA move of just ${movePct}% against you would liquidate this trade — you'd lose the margin you put in.\n\nConsider lower leverage while you're learning.\n\nPlace it anyway?`)) {
+      if (statusEl) statusEl.innerHTML = ''
+      return
+    }
+  }
   if (btnEl) btnEl.disabled = true
   if (statusEl) statusEl.innerHTML = '<span style="color:var(--muted)">Signing…</span>'
   try {
     let result
     if (state.orderType === 'market') {
-      result = await placeMarketOrder({ coin, isBuy, sz: coinSz, markPrice: mktPx, leverage: state.leverage, isIsolated: state.isIsolated })
+      result = await placeMarketOrder({ coin, isBuy, sz: coinSz, markPrice: mktPx, leverage: state.leverage, isIsolated: state.isIsolated, acct: window.__getTradeAcct() })
     } else {
-      result = await placeLimitOrder({ coin, isBuy, sz: coinSz, limitPx, leverage: state.leverage, isIsolated: state.isIsolated })
+      result = await placeLimitOrder({ coin, isBuy, sz: coinSz, limitPx, leverage: state.leverage, isIsolated: state.isIsolated, acct: window.__getTradeAcct() })
     }
     const parsed = parseOrderResult(result)
     if (!parsed.ok) { if (statusEl) statusEl.innerHTML = `<span style="color:var(--neg)">✗ ${esc(parsed.errors.join(', '))}</span>`; if (btnEl) btnEl.disabled = false; return }
@@ -9696,7 +14057,7 @@ window._mobVSubmitOrder = async function() {
     if (tpPx > 0) { try { await placeTriggerOrder({ coin, isBuy: !isBuy, sz: coinSz, triggerPx: tpPx, tpsl: 'tp' }) } catch {} }
     if (slPx > 0) { try { await placeTriggerOrder({ coin, isBuy: !isBuy, sz: coinSz, triggerPx: slPx, tpsl: 'sl' }) } catch {} }
     _mobVTradeMarginPct = 50
-    setTimeout(refreshLive, 1500)
+    window.__refreshAfterAction(1500, window.__getTradeAcct?.() ?? null)
   } catch (e) {
     if (statusEl) statusEl.innerHTML = `<span style="color:var(--neg)">✗ ${esc(e.message)}</span>`
   }
@@ -9715,7 +14076,7 @@ window._mobSelectMarket = function(coin) {
 
 window._mobTradeGoBack = function() {
   if (_mobTradeObTimer) { clearInterval(_mobTradeObTimer); _mobTradeObTimer = null }
-  if (window._mobCandleWs) { try { window._mobCandleWs.close() } catch {} window._mobCandleWs = null }
+  _closeMobCandleWs()
   destroyMobTradeChart()
   _stopAvailTimer()
   _mobTradeView = 'list'
@@ -9724,14 +14085,20 @@ window._mobTradeGoBack = function() {
 
 window._mobTradeSetFilter = function(type) {
   _mobTradeMainFilter = type
+  // Sensible default sort per tab: Spot → Volume (BTC/ETH lead like HL; the stock synthetics
+  // carry REAL company market caps — MSFT ~$3.7T — which otherwise bury crypto). Others → OI.
+  _mobTradeSort = type === 'spot' ? 'volume' : 'oi'
+  _mobTradeSortDir = 'desc'
   const rows = document.getElementById('mobMktRows')
   if (rows) rows.innerHTML = _mobBuildMarketRows()
-  // Update OI sort button label based on filter context
+  // Refresh every sort button's active state + label (OI relabels to Mkt Cap in the spot tab).
   document.querySelectorAll('.mob-mkt-sortbtn').forEach(b => {
-    if (b.dataset.sort !== 'oi') return
-    const active = _mobTradeSort === 'oi' || (_mobTradeSort !== 'volume' && _mobTradeSort !== 'change' && _mobTradeSort !== 'price' && _mobTradeSort !== 'name')
-    const lbl = type === 'spot' ? 'Mkt Cap' : 'OI'
-    b.textContent = lbl + (active ? ' ▾' : '')
+    const active = b.dataset.sort === _mobTradeSort
+    b.style.fontWeight = active ? '700' : '500'
+    b.style.color      = active ? 'var(--fg)' : 'var(--muted)'
+    const lbl = b.dataset.sort === 'oi' && type === 'spot' ? 'Mkt Cap'
+              : ({ volume:'Vol', change:'Chg%', price:'Price', oi:'OI' }[b.dataset.sort] ?? b.dataset.sort)
+    b.textContent = lbl + (active ? (_mobTradeSortDir === 'asc' ? ' ▴' : ' ▾') : '')
   })
   // Re-render pills
   document.querySelectorAll('.mob-mkt-fpill').forEach(b => {
@@ -9743,15 +14110,18 @@ window._mobTradeSetFilter = function(type) {
 }
 
 window._mobTradeSetSort = function(type) {
-  _mobTradeSort = type
+  // Re-pressing the active column toggles asc/desc; a new column starts descending.
+  if (_mobTradeSort === type) _mobTradeSortDir = _mobTradeSortDir === 'desc' ? 'asc' : 'desc'
+  else { _mobTradeSort = type; _mobTradeSortDir = 'desc' }
   const rows = document.getElementById('mobMktRows')
   if (rows) rows.innerHTML = _mobBuildMarketRows()
+  const arrow = _mobTradeSortDir === 'asc' ? ' ▴' : ' ▾'
   document.querySelectorAll('.mob-mkt-sortbtn').forEach(b => {
-    const active = b.dataset.sort === type
+    const active = b.dataset.sort === _mobTradeSort
     b.style.fontWeight = active ? '700' : '500'
     b.style.color      = active ? 'var(--fg)' : 'var(--muted)'
     const baseLabel = b.dataset.sort === 'oi' && _mobTradeMainFilter === 'spot' ? 'Mkt Cap' : ({ volume:'Vol', change:'Chg%', price:'Price', oi:'OI' }[b.dataset.sort] ?? b.dataset.sort)
-    b.textContent = baseLabel + (active ? ' ▾' : '')
+    b.textContent = baseLabel + (active ? arrow : '')
   })
 }
 
@@ -9797,14 +14167,36 @@ window._mobTradeSetDetailTab = function(tab) {
 window._mobTradeGoLong  = function() { window._mobOpenOrderSheet('long') }
 window._mobTradeGoShort = function() { window._mobOpenOrderSheet('short') }
 
+// HL's "Unit" bridge wraps a handful of major assets as native HyperCore spot tokens named
+// UBTC/UETH/USOL — Hyperliquid's own UI displays these as plain BTC/ETH/SOL. Hardcoded (rather
+// than derived from `U` + `_perpNames.includes(rest)`) for two reasons: it must work even
+// before `_perpNames` has loaded (that dependency was silently no-op-ing this alias on some
+// renders), and stripping U generically risks false positives on coincidentally-named tokens
+// (e.g. a community "UPUMP" or "UBONK" token is NOT a wrapped PUMP/BONK — Unit only bridges
+// this small set). Verified against HL's live spotMetaAndAssetCtxs 2026-08-10.
+const _UNIT_WRAPPED = { UBTC: 'BTC', UETH: 'ETH', USOL: 'SOL' }
+function _spotDisplayAlias(name) {
+  return _UNIT_WRAPPED[name] ?? name
+}
+
 function _mobBuildMarketRows() {
   const mids = state.allMids ?? {}
   const lq   = _mobTradeSearchQ.trim().toLowerCase()
   const favs = loadFavCoins()
 
+  // The coin universe is the UNION of the live-mid feed and the market-ctx map: a HIP-3
+  // market has ctx (from the staggered loader) but usually no mid unless it's a held
+  // position — take it from either source, with the live mid overriding the ctx price
+  // where both exist. (Using mids alone dropped every non-held HIP-3 market from the list;
+  // using ctx alone is the All-Accounts fallback, where state.allMids is empty.)
+  const src = {
+    ...Object.fromEntries(Object.keys(_mktCtxMap).map(k => [k, _mktCtxMap[k]?.markPx ?? 0])),
+    ...mids,
+  }
+
   // Exclude 'TOKEN/USDC' pair-name keys — they duplicate their '@N' counterparts in allMids.
   // The @N key always has ctx data (we populate both in _ensureMarketData).
-  let entries = Object.entries(mids).filter(([k]) => !k.includes('/') && !k.startsWith('#'))
+  let entries = Object.entries(src).filter(([k]) => !k.includes('/') && !k.startsWith('#'))
   if (lq) entries = entries.filter(([k]) => {
     const d = (_spotNameMap[k] ?? k.replace(/.*:/, '')).toLowerCase()
     return k.toLowerCase().includes(lq) || d.includes(lq)
@@ -9813,7 +14205,15 @@ function _mobBuildMarketRows() {
   const f = _mobTradeMainFilter
   if      (f === 'favorites')   entries = entries.filter(([k]) => favs.includes(k))
   else if (f === 'perps')       entries = entries.filter(([k]) => !k.includes(':') && !k.startsWith('@'))
-  else if (f === 'spot')        entries = entries.filter(([k]) => _spotCommunityKeys.has(k))
+  // "Strict" spot: PROTOCOL-deployed tokens (BTC/ETH/stocks — anyone can permissionlessly
+  // deploy one named "MSFT"/"AMZN" with a share count that multiplies out to a genuine-looking
+  // multi-trillion cap, verified against HL's live API, with ZERO actual trades) must show REAL
+  // volume to appear — kills dead impersonators without guessing which deploy is "official."
+  // Community tokens are NOT held to a live volume check here: they're a smaller, pre-vetted set
+  // (deduped by name upstream, kept only if EVER liquid) and real ones like PURR can show 0
+  // volume for a quiet stretch — requiring it live would flicker them in and out of the list.
+  else if (f === 'spot')        entries = entries.filter(([k]) =>
+    (_spotProtocolKeys.has(k) && (_mktCtxMap[k]?.volume ?? 0) > 0) || _spotCommunityKeys.has(k))
   else if (f === 'hip3')        entries = entries.filter(([k]) => k.includes(':'))
   else if (f === 'crypto')      entries = entries.filter(([k]) => !_isTradFiCat(_mktCatMap[k]) && !k.includes(':') && !k.startsWith('@'))
   else if (f === 'tradfi')      entries = entries.filter(([k]) => _isTradFiCat(_mktCatMap[k]))
@@ -9827,26 +14227,77 @@ function _mobBuildMarketRows() {
   else if (f === 'trending')    entries = [...entries].sort((a,b) => (_mktCtxMap[b[0]]?.volume ?? 0) - (_mktCtxMap[a[0]]?.volume ?? 0)).slice(0, 30)
   // 'all' — no filter
 
-  if (_mobTradeSort === 'volume')      entries.sort((a,b) => (_mktCtxMap[b[0]]?.volume ?? 0) - (_mktCtxMap[a[0]]?.volume ?? 0))
-  else if (_mobTradeSort === 'change') entries.sort((a,b) => (_mktCtxMap[b[0]]?.change24 ?? 0) - (_mktCtxMap[a[0]]?.change24 ?? 0))
-  else if (_mobTradeSort === 'price')  entries.sort((a,b) => parseFloat(b[1] ?? 0) - parseFloat(a[1] ?? 0))
-  else if (_mobTradeSort === 'name')   entries.sort((a,b) => a[0].replace(/.*:/,'').localeCompare(b[0].replace(/.*:/,'')))
-  else if (f === 'spot')               entries.sort((a,b) => (_mktCtxMap[b[0]]?.marketCap ?? 0) - (_mktCtxMap[a[0]]?.marketCap ?? 0))
-  else                                 entries.sort((a,b) => (_mktCtxMap[b[0]]?.oi ?? 0) - (_mktCtxMap[a[0]]?.oi ?? 0))
+  // HIP-3 markets: SHOW EVERY LIQUID one (any volume or OI), even if the same underlying is
+  // listed on several dexes. Only collapse a symbol whose copies are ALL dead ($0 vol + $0 OI)
+  // down to its single best, so a dead stock still appears once instead of 3–4 stale duplicates.
+  const _liqScore = k => { const c = _mktCtxMap[k]; return (c?.volume ?? 0) * 1e6 + (c?.oi ?? 0) + (c?.marketCap ?? 0) / 1e6 }
+  const _isLiquid = k => (_mktCtxMap[k]?.volume ?? 0) > 0 || (_mktCtxMap[k]?.oi ?? 0) > 0
+  const _hip3ByBase = new Map()
+  for (const [k] of entries) {
+    if (!k.includes(':')) continue
+    const base = k.replace(/.*:/, '').toUpperCase()
+    if (!_hip3ByBase.has(base)) _hip3ByBase.set(base, [])
+    _hip3ByBase.get(base).push(k)
+  }
+  const _dropHip3 = new Set()
+  for (const [, keys] of _hip3ByBase) {
+    if (keys.some(_isLiquid)) {
+      for (const k of keys) if (!_isLiquid(k)) _dropHip3.add(k)   // keep liquid, drop dead copies
+    } else {
+      let best = keys[0]; for (const k of keys) if (_liqScore(k) > _liqScore(best)) best = k
+      for (const k of keys) if (k !== best) _dropHip3.add(k)       // all dead → keep one
+    }
+  }
+  entries = entries.filter(([k]) => !_dropHip3.has(k))
+
+  // Collapse duplicate SPOT listings that share a display name (e.g. a live UBTC market plus a
+  // stale $0 copy — both now shown as "BTC") down to the most-liquid one, so BTC/ETH appear once.
+  const _bestSpotDisp = new Map()
+  for (const [k] of entries) {
+    if (!k.startsWith('@')) continue
+    const disp = _spotDisplayAlias(_spotNameMap[k] ?? k).toUpperCase()
+    const cur  = _bestSpotDisp.get(disp)
+    if (!cur || _liqScore(k) > _liqScore(cur)) _bestSpotDisp.set(disp, k)
+  }
+  const _keepSpot = new Set(_bestSpotDisp.values())
+  entries = entries.filter(([k]) => !k.startsWith('@') || _keepSpot.has(k))
+
+  // Directional sort: re-pressing the active column flips asc/desc (so a press always reorders).
+  const dir = _mobTradeSortDir === 'asc' ? 1 : -1
+  // Many community spot tokens report an absurd `circulatingSupply × price` market cap (e.g. RUBT
+  // at $1.4 QUADRILLION) that buries the real markets. Total crypto mkt cap is ~$3T, so treat any
+  // spot market cap above a sane ceiling as unreliable (→ 0 for sorting) — this lets BTC/ETH/real
+  // assets surface at the top like on Hyperliquid, instead of below supply-glitch meme tokens.
+  const _MCAP_CEIL = 4e12
+  const _saneMcap = k => { const m = _mktCtxMap[k]?.marketCap ?? 0; return m > _MCAP_CEIL ? 0 : m }
+  const oiMetric = k => f === 'spot' ? _saneMcap(k) : (_mktCtxMap[k]?.oi ?? 0)
+  const volOf    = k => _mktCtxMap[k]?.volume ?? 0
+  if (_mobTradeSort === 'volume')      entries.sort((a,b) => ((_mktCtxMap[a[0]]?.volume ?? 0) - (_mktCtxMap[b[0]]?.volume ?? 0)) * dir)
+  else if (_mobTradeSort === 'change') entries.sort((a,b) => ((_mktCtxMap[a[0]]?.change24 ?? 0) - (_mktCtxMap[b[0]]?.change24 ?? 0)) * dir)
+  else if (_mobTradeSort === 'price')  entries.sort((a,b) => (parseFloat(a[1] ?? 0) - parseFloat(b[1] ?? 0)) * dir)
+  else if (_mobTradeSort === 'name')   entries.sort((a,b) => a[0].replace(/.*:/,'').localeCompare(b[0].replace(/.*:/,'')) * dir)
+  // Default (OI / Mkt Cap): primary metric, then a volume tiebreak so equal/zero values (common
+  // for spot market caps) still land in a sensible order instead of raw insertion order.
+  else                                 entries.sort((a,b) => {
+    const d = (oiMetric(a[0]) - oiMetric(b[0])) * dir
+    return d !== 0 ? d : (volOf(b[0]) - volOf(a[0]))
+  })
 
   if (!entries.length) return `<div style="padding:40px;text-align:center;color:var(--muted)">No markets found</div>`
 
   return entries.map(([coin]) => {
     const d        = _mktCtxMap[coin]
-    const mark     = d?.markPx || parseFloat(mids[coin] ?? 0)
+    const mark     = _livePx(coin)
     const ch       = d?.change24 ?? 0
     const vol      = d?.volume ?? 0
     const oi       = d?.oi ?? 0
-    const display  = _spotNameMap[coin] ?? _mktDisplay(coin) ?? coin.replace(/.*:/, '')
+    const display  = _spotDisplayAlias(_spotNameMap[coin] ?? _mktDisplay(coin) ?? coin.replace(/.*:/, ''))
     const isSpot   = coin.startsWith('@') || !!_spotNameMap[coin]
     const rawCat   = _mktCatMap[coin]
     const catLabel = rawCat ? (_CAT_LABEL[rawCat] ?? rawCat) : (isSpot ? 'Spot' : coin.includes(':') ? 'HIP-3' : 'Perp')
-    const oiVal    = isSpot ? (d?.marketCap ?? 0) : oi
+    // Hide absurd (supply-glitch) market caps in the row too — show '—' rather than "$80T".
+    const rawMcap  = d?.marketCap ?? 0
+    const oiVal    = isSpot ? (rawMcap > 4e12 ? 0 : rawMcap) : oi
     const oiLbl   = isSpot ? 'Mkt Cap' : 'OI'
     const coinFav  = favs.includes(coin)
     const chBg     = ch >= 0 ? 'rgba(0,229,160,0.15)' : 'rgba(255,77,109,0.15)'
@@ -9859,7 +14310,7 @@ function _mobBuildMarketRows() {
       <div style="flex:1;min-width:0">
         <div style="font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(display)}<span style="color:var(--muted);font-weight:400">/USDC</span></div>
         <div style="font-size:11px;color:var(--muted);margin-top:2px;display:flex;align-items:center;gap:5px">
-          <span style="background:var(--panel-2);padding:1px 5px;border-radius:3px;font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted)">${esc(catLabel)}</span>
+          <span class="notranslate" style="background:var(--panel-2);padding:1px 5px;border-radius:3px;font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted)">${esc(catLabel)}</span>
           <span>Vol $${_fmtK(vol)} · ${oiLbl} $${_fmtK(oiVal)}</span>
         </div>
       </div>
@@ -9880,16 +14331,21 @@ function _mobRenderTradeList(el) {
   el.style.flexDirection = 'column'
   el.style.minHeight     = '0'
 
-  const fp = (label, type) => {
+  // `nt` = keep the label out of auto-translation (trading jargon: Perps, Spot, acronyms —
+  // Google turns "Perps" into "delincuentes" and "Spot" into "lugar"). Real-word categories
+  // (All, Crypto, Stocks, Energy…) stay translatable.
+  const fp = (label, type, nt) => {
     const active = _mobTradeMainFilter === type
+    const lbl = nt ? `<span class="notranslate">${label}</span>` : label
     // display:inline-block + white-space:nowrap in parent = simplest reliable iOS horizontal scroll
     return `<button class="mob-mkt-fpill" data-type="${type}" onclick="window._mobTradeSetFilter('${type}')"
-      style="display:inline-block;padding:6px 14px;border-radius:20px;border:1px solid ${active?'var(--accent)':'var(--border)'};background:${active?'color-mix(in oklch,var(--accent) 15%,transparent)':'transparent'};color:${active?'var(--accent)':'var(--muted)'};font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;vertical-align:middle">${label}</button>`
+      style="display:inline-block;padding:6px 14px;border-radius:20px;border:1px solid ${active?'var(--accent)':'var(--border)'};background:${active?'color-mix(in oklch,var(--accent) 15%,transparent)':'transparent'};color:${active?'var(--accent)':'var(--muted)'};font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;vertical-align:middle">${lbl}</button>`
   }
   const sb = (label, type) => {
     const active = _mobTradeSort === type
+    const arrow  = _mobTradeSortDir === 'asc' ? ' ▴' : ' ▾'
     return `<button class="mob-mkt-sortbtn" data-sort="${type}" onclick="window._mobTradeSetSort('${type}')"
-      style="padding:10px 6px;border:none;background:none;font-size:12px;font-weight:${active?'700':'500'};color:${active?'var(--fg)':'var(--muted)'};cursor:pointer;white-space:nowrap;min-height:40px">${label}${active?' ▾':''}</button>`
+      style="padding:10px 6px;border:none;background:none;font-size:12px;font-weight:${active?'700':'500'};color:${active?'var(--fg)':'var(--muted)'};cursor:pointer;white-space:nowrap;min-height:40px">${label}${active?arrow:''}</button>`
   }
 
   el.innerHTML = `
@@ -9913,7 +14369,7 @@ function _mobRenderTradeList(el) {
         </div>
       </div>
       <div style="overflow-x:scroll;-webkit-overflow-scrolling:touch;touch-action:pan-x;scrollbar-width:none;-ms-overflow-style:none;border-bottom:1px solid var(--border);padding:8px 12px;white-space:nowrap">
-        ${fp('All','all')} ${fp('★ Favs','favorites')} ${fp('Perps','perps')} ${fp('Spot','spot')} ${fp('Crypto','crypto')} ${fp('TradFi','tradfi')} ${fp('Stocks','stocks')} ${fp('Indices','indices')} ${fp('Commod.','commodities')} ${fp('FX','fx')} ${fp('Metals','metals')} ${fp('Energy','energy')} ${fp('Pre-IPO','preipo')} ${fp('HIP-3','hip3')} ${fp('Trending','trending')}
+        ${fp('All','all')} ${fp('★ Favs','favorites')} ${fp('Perps','perps',true)} ${fp('Spot','spot',true)} ${fp('Crypto','crypto')} ${fp('TradFi','tradfi',true)} ${fp('Stocks','stocks')} ${fp('Indices','indices')} ${fp('Commod.','commodities')} ${fp('FX','fx',true)} ${fp('Metals','metals')} ${fp('Energy','energy')} ${fp('Pre-IPO','preipo',true)} ${fp('HIP-3','hip3',true)} ${fp('Trending','trending')}
       </div>
       <div style="display:flex;align-items:center;padding:0 12px 0 52px;border-bottom:2px solid var(--border);background:var(--panel-2);min-height:42px;gap:4px">
         <div style="flex:1;font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:0.06em">Symbol</div>
@@ -9967,9 +14423,14 @@ function _mobRenderTradeDetail(el) {
   el.style.display       = 'flex'
   el.style.flexDirection = 'column'
   el.style.minHeight     = '0'
+  // .mob-v-content is flex:1 0 auto (grows with content, page scrolls) — but this
+  // screen needs the sticky Long/Short bar pinned in view, so bound it to the
+  // viewport and let .mob-trade-scroll do the scrolling instead.
+  el.style.height        = '100vh'
+  el.style.height        = '100dvh'
 
   // Clean up any running chart/ws from a previous render
-  if (window._mobCandleWs) { try { window._mobCandleWs.close() } catch {} window._mobCandleWs = null }
+  _closeMobCandleWs()
   destroyMobTradeChart()
 
   const coin    = state.selectedCoin || 'BTC'
@@ -9980,8 +14441,7 @@ function _mobRenderTradeDetail(el) {
   const badge   = isSpot ? 'SPOT' : isHip3 ? 'HIP-3' : 'PERP'
   const quote   = isSpot ? 'SPOT' : 'PERP'
   const ctx     = _mktCtxMap[coin]
-  const mids    = state.allMids ?? {}
-  const mark    = ctx?.markPx || parseFloat(mids[coin] ?? 0)
+  const mark    = _livePx(coin)
   const chg24   = ctx?.change24 ?? 0
   const chgAbs  = ctx?.change24Abs ?? 0
   const chgClr  = chg24 >= 0 ? 'var(--green)' : 'var(--red)'
@@ -9998,9 +14458,9 @@ function _mobRenderTradeDetail(el) {
   const pxInt   = dotIdx >= 0 ? pxStr.slice(0, dotIdx) : pxStr
   const pxDec   = dotIdx >= 0 ? pxStr.slice(dotIdx) : ''
 
-  // Current open position on this coin (if any)
-  const ps      = (isConnected() && _tradePerpState) ? _tradePerpState : state.perpState
-  const posEntry= (ps?.assetPositions ?? []).find(ap => ap.position?.coin === coin)
+  // Current open position on this coin (if any) — in the combined view, the position held by
+  // the account being traded from, not whichever wallet happens to hold this coin.
+  const posEntry= _tradePositions().find(ap => ap.position?.coin === coin)
   const pos     = posEntry?.position
   const hasPos  = pos && parseFloat(pos.szi ?? 0) !== 0
 
@@ -10110,7 +14570,9 @@ function _mobRenderTradeDetail(el) {
       <button id="mobDetailFavBtn" onclick="window._mobTradeFavToggle('${esc(coin)}')" style="background:none;border:none;color:${coinFav?'var(--accent)':'var(--muted)'};font-size:20px;padding:4px;cursor:pointer;line-height:1">★</button>
     </div>
 
-    <div class="mob-trade-scroll" style="flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 12px 100px;display:flex;flex-direction:column;gap:14px">
+    <div class="mob-trade-scroll" style="flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding:14px 12px 100px;display:flex;flex-direction:column;gap:14px">
+      <!-- Which account to trade from (combined "All Accounts" view only; returns '' otherwise) -->
+      ${window.__tradeAcctPickerHtml()}
       <!-- Hero: mark price -->
       <div>
         <div style="display:flex;align-items:center;gap:7px;margin-bottom:2px">
@@ -10118,10 +14580,10 @@ function _mobRenderTradeDetail(el) {
           <span style="font-size:9px;font-weight:800;letter-spacing:.05em;padding:2px 6px;border-radius:5px;background:var(--panel-2);color:var(--muted)">${badge}</span>
         </div>
         <div style="font-family:var(--font-mono);font-weight:800;line-height:1;margin:2px 0 8px">
-          <span style="font-size:42px">${pxInt}</span><span style="font-size:24px;color:var(--muted)">${pxDec}</span>
+          <span id="mobTdPxInt" style="font-size:42px">${pxInt}</span><span id="mobTdPxDec" style="font-size:24px;color:var(--muted)">${pxDec}</span>
         </div>
         <div style="display:inline-flex;align-items:center;gap:6px">
-          <span style="display:inline-flex;align-items:center;gap:4px;font-size:13px;font-weight:700;color:${chgClr};background:${chgBg};padding:4px 9px;border-radius:8px">
+          <span id="mobTdChg" style="display:inline-flex;align-items:center;gap:4px;font-size:13px;font-weight:700;color:${chgClr};background:${chgBg};padding:4px 9px;border-radius:8px">
             ${chgArr} ${chg24 >= 0 ? '+' : '−'}$${_fmtHdrChgAbs(Math.abs(chgAbs), mark)} (${chg24 >= 0 ? '+' : ''}${chg24.toFixed(2)}%)
           </span>
           <span style="font-size:12px;color:var(--muted)">24h</span>
@@ -10181,6 +14643,18 @@ function _mobRenderTradeDetail(el) {
 
   // Interactive Chart.js price chart (crosshair, axes, pan/zoom) + overlays
   _mobRenderTradeChart(coin, _mobChartTf)
+
+  // Market context (funding / OI / 24h volume / 24h change) can be un-loaded when the detail is
+  // opened straight from a position/watch link, or after a 429 cleared the cache — that's the
+  // "sometimes everything shows $0" case. Fetch it and re-render once it lands.
+  if (!isSpot && !_mktCtxMap[coin]) {
+    _ensureMarketData().then(() => {
+      if (state.selectedCoin === coin && _mobTradeView === 'detail' && _mobVActiveTab === 'trade' && _mktCtxMap[coin]) {
+        _mobTradeDetailCoin = null   // bypass the chart-preserve guard so the header stats rebuild
+        _mobVRenderContent()
+      }
+    }).catch(() => {})
+  }
 }
 
 window._mobChartReset = function() { resetMobTradeChart() }
@@ -10228,26 +14702,28 @@ window._mobDetailSetTf = function(tf) {
 // open limit orders (capped so a grid bot's dozens of orders don't bury the chart).
 function _mobChartOverlays(coin) {
   const overlays = []
-  const ps  = (isConnected() && _tradePerpState) ? _tradePerpState : state.perpState
-  const pos = (ps?.assetPositions ?? []).find(ap => ap.position?.coin === coin)?.position
+  const mark = _livePx(coin)
+  if (!mark) return []
+  const showThreshold = mark * 0.15 // only show overlays within ±15% of mark price
+
+  const pos = _tradePositions().find(ap => ap.position?.coin === coin)?.position
   if (pos && parseFloat(pos.szi ?? 0) !== 0) {
     const e = parseFloat(pos.entryPx ?? 0), l = parseFloat(pos.liquidationPx ?? 0)
-    if (e > 0) overlays.push({ price: e, color: '#f5c518', label: 'Entry' })
-    if (l > 0) overlays.push({ price: l, color: '#ff4d6d', label: 'Liq' })
+    if (e > 0 && Math.abs(e - mark) <= showThreshold) overlays.push({ price: e, color: '#f5c518', label: 'Entry' })
+    if (l > 0 && Math.abs(l - mark) <= showThreshold) overlays.push({ price: l, color: '#ff4d6d', label: 'Liq' })
   }
   const orders = []
-  for (const o of (state.openOrders ?? [])) {
+  for (const o of _tradeOpenOrders()) {
     if (o.coin !== coin) continue
     const ot   = o.orderType ?? ''
     const isTp = ot.startsWith('Take Profit') || o.triggerCondition === 'tp'
     const isSl = ot.startsWith('Stop')        || o.triggerCondition === 'sl'
     const px   = parseFloat(o.triggerPx ?? 0) > 0 ? parseFloat(o.triggerPx) : parseFloat(o.limitPx ?? 0)
-    if (!px) continue
+    if (!px || Math.abs(px - mark) > showThreshold) continue
     if      (isTp) overlays.push({ price: px, color: '#00e5a0', label: 'TP', type: 'line' })
     else if (isSl) overlays.push({ price: px, color: '#ff8c42', label: 'SL', type: 'line' })
     else           orders.push({ price: px, color: '#ffa033', label: 'Order', type: 'dot' })
   }
-  const mark = _mktCtxMap[coin]?.markPx || parseFloat(state.allMids?.[coin] ?? 0)
   orders.sort((a, b) => Math.abs(a.price - mark) - Math.abs(b.price - mark))
   return overlays.concat(orders.slice(0, 40))
 }
@@ -10265,20 +14741,29 @@ async function _mobRenderTradeChart(coin, tf, canvasId = 'mobChartCanvas', heroI
   const D = 86400 * 1000
   const lookbackMs = { '1m':3.3*D,'5m':17*D,'15m':50*D,'30m':100*D,'1h':200*D,'4h':800*D,'8h':1600*D,'1D':3650*D,'1d':3650*D,'1W':3650*D,'1w':3650*D }[tf] ?? 200*D
 
-  let candles
-  try {
-    const r = await fetch('https://api.hyperliquid.xyz/info', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval: hlInterval, startTime: Date.now() - lookbackMs, endTime: null } })
-    })
-    candles = await r.json()
-  } catch { candles = [] }
+  // Fetch with retry/backoff — a single 429 or network blip used to leave the chart blank
+  // ("this happens sometimes"). Keep "Loading…" and retry a few times before giving up.
+  let candles = []
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if ((state.selectedCoin || 'BTC') !== coin) return   // user navigated away mid-retry
+    if (typeof _hlLimited === 'function' && _hlLimited()) { await new Promise(r => setTimeout(r, 1200)); continue }
+    try {
+      const r = await fetch('https://api.hyperliquid.xyz/info', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval: hlInterval, startTime: Date.now() - lookbackMs, endTime: null } })
+      })
+      if (r.status === 429) { await new Promise(res => setTimeout(res, 1000 * (attempt + 1))); continue }
+      const j = await r.json()
+      if (Array.isArray(j) && j.length >= 2) { candles = j; break }
+    } catch {}
+    await new Promise(r => setTimeout(r, 700 * (attempt + 1)))
+  }
 
   const cv = document.getElementById(canvasId)
   if (!cv || (state.selectedCoin || 'BTC') !== coin) return   // user navigated away
   if (!Array.isArray(candles) || candles.length < 2) {
     const h = document.getElementById(heroId)
-    if (h) h.innerHTML = '<span style="color:var(--muted)">No chart data</span>'
+    if (h) h.innerHTML = '<span style="color:var(--muted)">Chart data unavailable — retry in a moment</span>'
     return
   }
 
@@ -10287,7 +14772,7 @@ async function _mobRenderTradeChart(coin, tf, canvasId = 'mobChartCanvas', heroI
   _mobUpdateChartTypeBtn()
 
   // Live updates via candle WS
-  if (window._mobCandleWs) { try { window._mobCandleWs.close() } catch {} window._mobCandleWs = null }
+  _closeMobCandleWs()
   const ws = new WebSocket('wss://api.hyperliquid.xyz/ws')
   window._mobCandleWs = ws
   ws.onopen = () => ws.send(JSON.stringify({ method: 'subscribe', subscription: { type: 'candle', coin, interval: hlInterval } }))
@@ -10303,6 +14788,13 @@ async function _mobRenderTradeChart(coin, tf, canvasId = 'mobChartCanvas', heroI
       if (last && k.t === last.t) arr[arr.length - 1] = k
       else { arr.push(k); if (arr.length > 6000) arr.shift() }
       updateMobTradeChartData(arr, _mobChartOverlays(coin))
+      // Keep the hero mark price real-time from the live candle close (mids poll is only 60s).
+      // Change-guarded inside _mobUpdateTradeDetailLive, so no redundant DOM churn.
+      const live = parseFloat(k.c)
+      if (live > 0) {
+        if (state.allMids) state.allMids[coin] = String(live)
+        if (_mobTradeDetailCoin === coin) _mobUpdateTradeDetailLive()
+      }
     } catch {}
   }
   ws.onerror = ws.onclose = () => {}
@@ -10310,6 +14802,25 @@ async function _mobRenderTradeChart(coin, tf, canvasId = 'mobChartCanvas', heroI
 
 // Order entry as a bottom sheet (reuses the full trade form)
 window._mobOpenOrderSheet = function(side) {
+  // Watch-only: nothing can sign an order, so lead with the connect flow instead of a dead
+  // form. In the combined view "can sign" means the SELECTED account has an agent key —
+  // no wallet connection required.
+  if (!window.__canTradeUI()) {
+    let ov = document.getElementById('mobOrderSheetOverlay')
+    if (ov) ov.remove()
+    ov = document.createElement('div')
+    ov.id = 'mobOrderSheetOverlay'
+    ov.style.cssText = 'position:fixed;inset:0;z-index:10001;display:flex;flex-direction:column;justify-content:flex-end'
+    ov.innerHTML = `
+      <div onclick="window._mobCloseOrderSheet()" style="position:absolute;inset:0;background:rgba(0,0,0,0.55)"></div>
+      <div style="position:relative;background:var(--bg);border-radius:20px 20px 0 0;border-top:1px solid var(--border);padding:28px 20px calc(28px + env(safe-area-inset-bottom));display:flex;flex-direction:column;align-items:center;gap:14px;box-shadow:0 -8px 30px rgba(0,0,0,0.4)">
+        <div style="font-size:16px;font-weight:700">Connect a wallet to trade</div>
+        <div style="font-size:13px;color:var(--muted);text-align:center;max-width:280px">You're watching this account. Connect your own wallet to place orders.</div>
+        <button onclick="window._mobCloseOrderSheet();window.__mobConnectWallet()" style="width:100%;max-width:320px;padding:14px;border-radius:13px;border:none;background:var(--accent);color:#000;font-weight:800;font-size:15px;cursor:pointer">Connect Wallet</button>
+      </div>`
+    document.body.appendChild(ov)
+    return
+  }
   state.tradeSide = side
   const coin    = state.selectedCoin || 'BTC'
   const display = _spotNameMap[coin] ?? _mktDisplay(coin) ?? coin.replace(/.*:/, '')
@@ -10383,7 +14894,7 @@ window._mobCloseMktTools = function() {
 
 function _mobRenderDetailContent(el, coin) {
   // Always clean up any running chart when switching content
-  if (window._mobCandleWs) { try { window._mobCandleWs.close() } catch {} window._mobCandleWs = null }
+  _closeMobCandleWs()
   if (window._mobLWChart)  { try { window._mobLWChart.remove() } catch {} window._mobLWChart = null }
   if (window._mobLWRO)     { window._mobLWRO.disconnect(); window._mobLWRO = null }
   window._mobCandleSeries = null
@@ -10431,7 +14942,10 @@ async function _mobLoadHLChart(coin, tf) {
       await new Promise(resolve => {
         const s = document.createElement('script')
         s.id = 'lwcScript'
-        s.src = 'https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js'
+        // Self-hosted from our own origin (was unpkg.com). Keeping it first-party means no
+        // third-party script can execute on the page and read the agent key from localStorage,
+        // and the chart still loads if a CDN is down. Lazy-loaded on first chart open.
+        s.src = '/vendor/lightweight-charts.standalone.production.js'
         s.onload  = resolve
         s.onerror = resolve
         document.head.appendChild(s)
@@ -10453,20 +14967,30 @@ async function _mobLoadHLChart(coin, tf) {
   const hlInterval = { '1m':'1m','5m':'5m','15m':'15m','1h':'1h','4h':'4h','1D':'1d' }[tf] ?? '1h'
   const lookbackMs = { '1m':12*3600*1000,'5m':4*86400*1000,'15m':10*86400*1000,'1h':45*86400*1000,'4h':180*86400*1000,'1D':600*86400*1000 }[tf] ?? 45*86400*1000
 
-  let candles
-  try {
-    const r = await fetch('https://api.hyperliquid.xyz/info', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval: hlInterval, startTime: Date.now() - lookbackMs, endTime: null } })
-    })
-    candles = await r.json()
-  } catch { candles = [] }
+  // Fetch candles with breaker-awareness + retry. A single 429 during a rate-limit burst
+  // used to blank the chart ("No chart data") instantly; instead keep "Loading…" and retry
+  // a few times with backoff so the chart fills in once HL cools down.
+  let candles = []
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (_mobChartTf !== tf) return   // user changed timeframe mid-retry — abandon this load
+    if (_hlLimited()) { await new Promise(r => setTimeout(r, 1500)); continue }
+    try {
+      const r = await fetch('https://api.hyperliquid.xyz/info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval: hlInterval, startTime: Date.now() - lookbackMs, endTime: null } })
+      })
+      if (r.status === 429) { await new Promise(res => setTimeout(res, 1500 * (attempt + 1))); continue }
+      const j = await r.json()
+      if (Array.isArray(j) && j.length) { candles = j; break }
+    } catch {}
+    await new Promise(r => setTimeout(r, 800 * (attempt + 1)))
+  }
 
   const c = document.getElementById('mobChartWidget')
-  if (!c) return
+  if (!c || _mobChartTf !== tf) return
   if (!Array.isArray(candles) || !candles.length) {
-    c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted);font-size:13px">No chart data available</div>'
+    c.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted);font-size:13px">Chart data unavailable — Hyperliquid is rate-limiting. Retry in a moment.</div>'
     return
   }
 
@@ -10557,8 +15081,7 @@ function _refreshMobChartLines(coin) {
   }
   window._mobPriceLines = []
 
-  const ps = (isConnected() && _tradePerpState) ? _tradePerpState : state.perpState
-  const posEntry = (ps?.assetPositions ?? []).find(ap => ap.position?.coin === activeCoin)
+  const posEntry = _tradePositions().find(ap => ap.position?.coin === activeCoin)
   const pos = posEntry?.position
 
   if (pos && parseFloat(pos.szi ?? 0) !== 0) {
@@ -10578,7 +15101,7 @@ function _refreshMobChartLines(coin) {
     }
   }
 
-  for (const o of (state.openOrders ?? [])) {
+  for (const o of _tradeOpenOrders()) {
     if (o.coin !== activeCoin) continue
     const orderType = o.orderType ?? ''
     const isTp = orderType.startsWith('Take Profit') || o.triggerCondition === 'tp'
@@ -10611,7 +15134,12 @@ function _mobRenderDetailTrade(el, coin) {
   const avail     = _tradeAvail().avail
   const isIso     = state.isIsolated ?? false
   const accentClr = isBuy ? 'var(--green)' : 'var(--red)'
-  const connected = isConnected()
+  // In the combined "All Accounts" view there is no single connected client — trading is
+  // gated per-account by whether the SELECTED account has a stored/registered agent key.
+  // Must go through __canTradeUI so the paper account (which has no agent key and
+  // needs none) is treated as tradeable. Re-deriving this inline is what left the
+  // form stuck on "Connect wallet to trade" in paper mode.
+  const connected = window.__canTradeUI()
   const display   = _spotNameMap[coin] ?? _mktDisplay(coin) ?? coin.replace(/.*:/, '')
 
   // Make el a flex row (horizontal split) — no wrapper div needed
@@ -10620,7 +15148,7 @@ function _mobRenderDetailTrade(el, coin) {
   el.style.flexDirection = 'column'
   const isCoin    = _mobTradeAmtUnit === 'coin'
   el.innerHTML = `
-    <div style="flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 12px 84px;display:flex;flex-direction:column;gap:11px">
+    <div style="flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding:12px 12px 84px;display:flex;flex-direction:column;gap:11px">
       <!-- Order type + available -->
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div style="display:flex;gap:3px;background:var(--panel-2);border-radius:9px;padding:3px">
@@ -10669,10 +15197,11 @@ function _mobRenderDetailTrade(el, coin) {
       <!-- Limit price — always in DOM, toggled by display -->
       <div id="mobTradeLimitWrapper" style="display:${isLmt?'flex':'none'};border:1px solid var(--border2);border-radius:12px;padding:11px 12px;background:var(--panel-2);align-items:center;gap:8px">
         <span style="color:var(--muted);font-size:12px;flex-shrink:0;font-weight:600">Limit price</span>
-        <input id="mobTradeLimitInput" type="number" placeholder="${fmtPrice(price)}" step="any" min="0"
+        <input id="mobTradeLimitInput" type="text" inputmode="decimal" placeholder="${fmtPrice(price)}" value="${price > 0 ? fmtPrice(price) : ''}"
           oninput="window._mobUpdateOrderSummary&&window._mobUpdateOrderSummary()"
-          style="flex:1;background:none;border:none;color:var(--fg);font-size:15px;font-weight:700;outline:none;-webkit-text-size-adjust:none;text-align:right;font-family:var(--font-mono)">
-        <span style="font-size:12px;color:var(--muted)">USDC</span>
+          onfocus="this.select()"
+          style="flex:1;min-width:0;background:none;border:none;color:var(--fg);font-size:15px;font-weight:700;outline:none;-webkit-text-size-adjust:none;text-align:right;font-family:var(--font-mono)">
+        <span style="font-size:12px;color:var(--muted);flex-shrink:0">USDC</span>
       </div>
       <!-- TP/SL -->
       <div style="border:1px solid var(--border2);border-radius:12px;overflow:hidden">
@@ -11057,8 +15586,8 @@ window._mobTradeSlChange = function(val) { _mobVTradeSl = val.trim() }
 
 window._mobTradeLevPicker = function() {
   const coin   = state.selectedCoin || 'BTC'
-  const maxLev = state.assetMap?.[coin]?.maxLeverage ?? 50
-  const curLev = state.leverage ?? 5
+  const maxLev = _coinMaxLev(coin)
+  const curLev = Math.min(state.leverage ?? 5, maxLev)
   const presets = [1,2,3,5,10,20,50].filter(v => v <= maxLev)
   const existing = document.getElementById('mobLevModal')
   if (existing) existing.remove()
@@ -11094,7 +15623,7 @@ window._mobLevConfirm = function() {
   const modal   = document.getElementById('mobLevModal')
   if (!slider) return
   const coin    = state.selectedCoin || 'BTC'
-  const maxLev  = state.assetMap?.[coin]?.maxLeverage ?? 50
+  const maxLev  = _coinMaxLev(coin)
   state.leverage = Math.max(1, Math.min(maxLev, parseInt(slider.value)))
   try { localStorage.setItem('hliq_leverage', String(state.leverage)) } catch {}
   const btn = document.getElementById('mobTradeLevBtn')
@@ -11107,7 +15636,14 @@ window._mobLevConfirm = function() {
 window._mobTradeSubmitNew = async function() {
   const statusEl = document.getElementById('mobTradeStatus')
   const btnEl    = document.getElementById('mobTradeSubmitBtn')
-  if (!isConnected()) { window.__quickConnectAgent(); return }
+  if (state.isAllAccounts) {
+    // Combined view: sign with the selected account's registered agent key — no wallet
+    // connection required as long as that account has a key stored on this device.
+    if (!window.__acctCanTrade(window.__getTradeAcct())) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--neg)">No agent key for the selected account</span>'
+      return
+    }
+  } else if (!_canAct()) { window.__quickConnectAgent(); return }
   const coin      = state.selectedCoin
   const isBuy     = state.tradeSide !== 'short'
   const mktPx     = parseFloat(state.allMids?.[coin] ?? 0)
@@ -11125,13 +15661,20 @@ window._mobTradeSubmitNew = async function() {
   if (state.orderType === 'limit' && (!limitPx || limitPx <= 0)) { if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Enter limit price</span>'; return }
 
   if (btnEl) btnEl.disabled = true
+  // Verify this account's agent key is approved on HL before signing (see _preflightAgent).
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--muted)">Checking key…</span>'
+  if (!await _guardAgent(window.__getTradeAcct())) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--neg)">Agent key not valid for this account</span>'
+    if (btnEl) btnEl.disabled = false
+    return
+  }
   if (statusEl) statusEl.innerHTML = '<span style="color:var(--muted)">Signing…</span>'
   try {
     let result
     if (state.orderType === 'market') {
-      result = await placeMarketOrder({ coin, isBuy, sz: coinSz, markPrice: mktPx, leverage: lev, isIsolated: state.isIsolated, reduceOnly })
+      result = await placeMarketOrder({ coin, isBuy, sz: coinSz, markPrice: mktPx, leverage: lev, isIsolated: state.isIsolated, reduceOnly, acct: window.__getTradeAcct() })
     } else {
-      result = await placeLimitOrder({ coin, isBuy, sz: coinSz, limitPx, leverage: lev, isIsolated: state.isIsolated, reduceOnly })
+      result = await placeLimitOrder({ coin, isBuy, sz: coinSz, limitPx, leverage: lev, isIsolated: state.isIsolated, reduceOnly, acct: window.__getTradeAcct() })
     }
     const parsed = parseOrderResult(result)
     if (!parsed.ok) { if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">✗ ${esc(parsed.errors.join(', '))}</span>`; if (btnEl) btnEl.disabled = false; return }
@@ -11145,7 +15688,7 @@ window._mobTradeSubmitNew = async function() {
     if (slPx > 0) { try { await placeTriggerOrder({ coin, isBuy: !isBuy, sz: coinSz, triggerPx: slPx, tpsl: 'sl' }) } catch {} }
     const amtInput = document.getElementById('mobTradeAmtInput')
     if (amtInput) amtInput.value = ''
-    setTimeout(refreshLive, 1500)
+    window.__refreshAfterAction(1500, window.__getTradeAcct?.() ?? null)
   } catch (e) {
     if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">✗ ${esc(e.message)}</span>`
   }
@@ -11166,29 +15709,29 @@ window.mobCalNav = function(dir) {
 
 window._mobVConnectAgentKey = async function() {
   const input    = document.getElementById('mobVAgentKeyInput')
-  const statusEl = document.getElementById('mobVAgentKeyStatus')
-  if (!input || !statusEl) return
+  const statusEl = document.getElementById('mobVAgentKeyStatus')   // optional feedback element
+  if (!input) return
+  const setStatus = (txt, color) => { if (statusEl) { statusEl.textContent = txt; statusEl.style.color = color } }
   const keyVal = input.value.trim()
   if (!keyVal || !keyVal.startsWith('0x') || keyVal.length < 66) {
-    statusEl.textContent = 'Invalid key (must be 0x + 64 hex chars)'
-    statusEl.style.color = 'var(--red)'
+    setStatus('Invalid key (must be 0x + 64 hex chars)', 'var(--red)')
+    if (!statusEl) alert('Invalid agent key — must be 0x followed by 64 hex characters.')
     return
   }
-  statusEl.textContent = 'Connecting…'
-  statusEl.style.color = 'var(--muted)'
+  setStatus('Connecting…', 'var(--muted)')
   try {
     const addr = await connectAgentKey(keyVal)
     if (state.addr) localStorage.setItem(_agentKeyForAddr(state.addr), keyVal)
     else localStorage.setItem('hliq_agent_key', keyVal)
     const agentInputDesktop = document.getElementById('agentKey')
     if (agentInputDesktop) agentInputDesktop.value = keyVal
-    statusEl.innerHTML = `Connected: ${addr.slice(0, 6)}…${addr.slice(-4)}`
-    statusEl.style.color = 'var(--green)'
+    setStatus(`Connected: ${addr.slice(0, 6)}…${addr.slice(-4)}`, 'var(--green)')
     applyReferrer().catch(() => {})
     updateSubmitBtn()
+    _refreshWalletUI()   // repaint Settings so the "Connected" state shows without a reopen
   } catch {
-    statusEl.textContent = 'Failed — check key and try again'
-    statusEl.style.color = 'var(--red)'
+    setStatus('Failed — check key and try again', 'var(--red)')
+    if (!statusEl) alert('Couldn\'t connect that agent key — check it and try again.')
   }
 }
 
@@ -11226,7 +15769,7 @@ window._mobVEnableBiometric = async function() {
     const cred = await navigator.credentials.create({
       publicKey: {
         challenge,
-        rp: { name: 'Insolvent Terminal', id: location.hostname },
+        rp: { name: 'Insolvent Trade', id: location.hostname },
         user: { id: new Uint8Array(16), name: 'trader', displayName: 'Trader' },
         pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
         authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
@@ -11334,8 +15877,9 @@ window._mobVTradesPageChange = function(d) {
 
 window.mobVGoTab = function(tabName) {
   if (tabName === 'trades') _mobVTradesPage = 0   // start History at the latest page
+  if (tabName === 'allocation') _allocView = 'allocation'   // the donut pill always opens the donut
   document.querySelectorAll('.mob-v-bottom-btn').forEach(b => b.classList.remove('active'))
-  const _mobTabs = new Set(['trades', 'leaderboard', 'accounts', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'news'])
+  const _mobTabs = new Set(['trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'news', 'allocation'])
   if (_mobTabs.has(tabName)) {
     _mobVActiveTab = tabName
     document.querySelectorAll('.mob-v-tab').forEach(b => b.classList.remove('active'))
@@ -11343,6 +15887,7 @@ window.mobVGoTab = function(tabName) {
     const _botBtn = { trades: 'mobVBotHistory' }[tabName]
     if (_botBtn) document.getElementById(_botBtn)?.classList.add('active')
     _mobVRenderContent()
+    if (_currentLang !== 'en') window.__i18nApply()
     _mobVAnimateTo(tabName)
     return
   }
@@ -11382,13 +15927,15 @@ function _mobDefiModal(type) {
       <span style="font-size:12px;color:var(--muted)">Arbitrum USDC Balance</span>
       <span style="font-size:14px;font-weight:600" id="depositUsdcBal">Loading…</span>
     </div>
+    <!-- A Hyperliquid deposit is a plain USDC transfer to the bridge; it carries no
+         destination and always credits the unified account balance. The old Perps/Spot
+         toggle implied a choice the chain never received, so it's replaced with a
+         statement of what actually happens. -->
     <div style="margin-bottom:14px">
       <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Destination</div>
-      <div style="display:flex;gap:8px">
-        <button id="depDest-perps" onclick="window.__mobDepDest('perps')"
-          style="flex:1;padding:10px;border-radius:8px;border:1px solid var(--border);background:${ppActive?'var(--accent)':'var(--panel-1)'};color:${ppActive?'#000':'var(--fg)'};font-size:13px;font-weight:600;cursor:pointer">Perps</button>
-        <button id="depDest-spot" onclick="window.__mobDepDest('spot')"
-          style="flex:1;padding:10px;border-radius:8px;border:1px solid var(--border);background:${!ppActive?'var(--accent)':'var(--panel-1)'};color:${!ppActive?'#000':'var(--fg)'};font-size:13px;font-weight:600;cursor:pointer">Spot</button>
+      <div style="display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel-1)">
+        <span style="font-size:13px;font-weight:600;color:var(--fg)">Hyperliquid account</span>
+        <span style="font-size:11px;color:var(--muted);margin-left:auto">Minimum ${5} USDC</span>
       </div>
     </div>
     <div style="margin-bottom:14px">
@@ -11489,8 +16036,10 @@ window.__mobDepDest = function(dest) {
   window.__updateDepositPreview()
 }
 
-window.mobVDeposit  = function() { _mobDefiModal('deposit') }
-window.mobVWithdraw = function() { _mobDefiModal('withdraw') }
+// In paper mode these move simulated money instead of opening the real bridge flow —
+// same buttons, same place, so the account behaves like any other.
+window.mobVDeposit  = function() { isPaper() ? window.__paperFund('deposit')  : _mobDefiModal('deposit') }
+window.mobVWithdraw = function() { isPaper() ? window.__paperFund('withdraw') : _mobDefiModal('withdraw') }
 
 // ─── GLOBAL EXPORTS ───────────────────────────────────────────────────────────
 window.loadDashboard      = loadDashboard
@@ -11970,7 +16519,60 @@ function _mobToggleSizeMode(inputId, coinId, btn) {
   el.placeholder = toToken ? '10' : '100'
 }
 
+// Read-only list of every bot running across the combined view's accounts.
+function _mobVRenderAllAcctStrats(el) {
+  const labels = { dca: 'DCA Bot', grid: 'Grid Bot', trend: 'Trend Follower', longer: 'Longer Bot', shorter: 'Shorter Bot', accumulator: '🪙 Profit Stack', liqguard: '🛡 Liq Guard', levbrake: '🛑 Lev Brake', insolvent: 'Manager', twap: 'TWAP', ocgrid: 'Outcome Grid' }
+  const wallets  = _maLoad()
+  const hidden   = _maHiddenLoad()
+  const labelFor = a => wallets.find(w => w.addr.toLowerCase() === a.toLowerCase())?.label || (a.slice(0, 6) + '…' + a.slice(-4))
+  const rows = []
+  for (const [addr, bots] of Object.entries(_maBotStatus || {})) {
+    if (!Array.isArray(bots) || !bots.length || hidden.has(addr)) continue
+    if (!wallets.some(w => w.addr.toLowerCase() === addr.toLowerCase())) continue
+    for (const bot of bots) {
+      const [type, ...rest] = String(bot).split(':')
+      rows.push({ addr, label: labelFor(addr), type, inst: rest.join(':') })
+    }
+  }
+  rows.sort((a, b) => a.label.localeCompare(b.label) || a.type.localeCompare(b.type))
+  el.innerHTML = `<div style="padding:14px 12px calc(90px + env(safe-area-inset-bottom))">
+    <div style="font-size:16px;font-weight:700;margin-bottom:3px">Running Bots · All Accounts</div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:14px;line-height:1.5">Every bot running across the accounts in this view. To start or configure bots, switch to a single account from the wallet switcher.</div>
+    ${rows.length ? rows.map(r => `
+      <div class="mob-v-row" style="align-items:center">
+        <span style="width:9px;height:9px;border-radius:50%;background:var(--green);flex-shrink:0;margin-right:11px;box-shadow:0 0 6px var(--green)"></span>
+        <div class="mob-v-row-info">
+          <div class="mob-v-row-name">${esc(labels[r.type] || r.type)}${r.inst ? ` · ${esc(r.inst)}` : ''}</div>
+          <div class="mob-v-row-sub"><span class="notranslate" style="color:var(--accent)">${esc(r.label)}</span></div>
+        </div>
+        <button class="mob-v-setting-btn" onclick="window._mobShowStratLogs('${esc(r.type)}','${esc(r.inst)}','${esc(r.addr)}')">Logs</button>
+      </div>`).join('') : `<div class="mob-v-empty">No bots running on any account in this view.</div>`}
+  </div>`
+}
+
+// Read a "--flag value" pair out of a persisted bot's launch args.
+function _argVal(args, flag, def) { const i = (args || []).indexOf(flag); return (i >= 0 && args[i + 1] != null) ? args[i + 1] : def }
+
+// One-line live status for a running bot (surfaces the state that was previously
+// invisible — chiefly the Profit Stack's buffer + LIVE/dry-run mode).
+function _stratRunStatus(type) {
+  if (type !== 'accumulator') return 'Running'
+  const cfg  = serverStatus?._configs?.['accumulator:']
+  const args = cfg?.args || []
+  const dry  = args.includes('--dry-run')
+  const asset = String(_argVal(args, '--asset', 'HYPE')).toUpperCase()
+  const thr   = _argVal(args, '--threshold', '11')
+  const acc   = serverStatus?._accum?.[asset]
+  const parts = [dry ? '🧪 Dry-run' : '🟢 LIVE']
+  if (acc) parts.push(`buffer $${(acc.buffer || 0).toFixed(2)}/$${thr}`, `stacked ${(acc.lifetimeQty || 0).toFixed(2)} ${asset}`)
+  return parts.join(' · ')
+}
+
 function _mobVRenderStrategies(el) {
+  // Combined view: the launch UI targets one account, so instead show a read-only list
+  // of every bot running across all accounts in the view. Starting/configuring new bots
+  // is done by switching to a single account.
+  if (state.isAllAccounts) { _mobVRenderAllAcctStrats(el); return }
   // Preserve in-progress edits across re-renders. This view rebuilds via innerHTML on a
   // server-status poll or any toggle (Cross/Isolated, Long/Short, %/$, size unit). The
   // config inputs carry no value= attribute, so without this a re-render mid-typing wipes
@@ -11979,8 +16581,7 @@ function _mobVRenderStrategies(el) {
   const _preserved = {}
   el.querySelectorAll('input[id]').forEach(i => { _preserved[i.id] = { v: i.value, mode: i.dataset.mode } })
   const _focusedId = (document.activeElement && el.contains(document.activeElement)) ? document.activeElement.id : null
-  const savedKey = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null)
-                || document.getElementById('agentKey')?.value?.trim() || ''
+  const savedKey = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null) || ''   // this account's own key ONLY
   const serverBadge = serverOnline
     ? `<span style="font-size:11px;color:var(--green)">server ● online</span>`
     : `<span style="font-size:11px;color:var(--red)">server ○ offline</span>`
@@ -11990,12 +16591,12 @@ function _mobVRenderStrategies(el) {
     : `<span style="color:var(--muted)">Not connected</span>`
 
   const stratsConfig = [
-    { type: 'accumulator', label: '🪙 Profit Stack', desc: 'Skim a % of winning trades into spot' },
-    { type: 'dca',     label: 'DCA Bot',       desc: 'Dollar-cost average into a position'    },
-    { type: 'grid',    label: 'Grid Bot',       desc: 'Range grid with automatic rebalancing'  },
-    { type: 'trend',   label: 'Trend Follower', desc: 'EMA crossover trend following'          },
-    { type: 'longer',  label: 'Longer Bot',     desc: 'Long bias with take-profit / stop-loss' },
-    { type: 'shorter', label: 'Shorter Bot',    desc: 'Short bias with take-profit / stop-loss'},
+    { type: 'accumulator', label: _T('🪙 Profit Stack', '🪙 Pila de ganancias'), desc: _T('Skim a % of winning trades into spot', 'Aparta un % de las operaciones ganadoras en spot') },
+    { type: 'dca',     label: _T('DCA Bot', 'Bot DCA'),               desc: _T('Dollar-cost average into a position', 'Promedia el costo hacia una posición')      },
+    { type: 'grid',    label: _T('Grid Bot', 'Bot de rejilla'),      desc: _T('Range grid with automatic rebalancing', 'Rejilla de rango con reajuste automático') },
+    { type: 'trend',   label: _T('Trend Follower', 'Seguidor de tendencia'), desc: _T('EMA crossover trend following', 'Seguimiento por cruce de EMA')          },
+    { type: 'longer',  label: _T('Longer Bot', 'Bot Largo'),         desc: _T('Long bias with take-profit / stop-loss', 'Sesgo largo con toma de ganancias / stop de pérdida') },
+    { type: 'shorter', label: _T('Shorter Bot', 'Bot Corto'),        desc: _T('Short bias with take-profit / stop-loss', 'Sesgo corto con toma de ganancias / stop de pérdida')},
   ]
 
   const cards = stratsConfig.map(s => {
@@ -12007,10 +16608,10 @@ function _mobVRenderStrategies(el) {
     if (expanded) {
       if (s.type === 'accumulator') {
         bodyHtml = `
-          <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:12px">Takes a cut of every <b style="color:var(--green)">net-profitable</b> window across <b>all</b> your bots and buys spot — a stack that's ring-fenced from perp risk (only USDC is collateral, not your accumulated token). One per account.</div>
+          <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:12px">${_T('Takes a cut of every <b style="color:var(--green)">net-profitable</b> window across <b>all</b> your bots and buys spot — a stack that\'s ring-fenced from perp risk (only USDC is collateral, not your accumulated token). One per account.', 'Toma una parte de cada ventana <b style="color:var(--green)">con ganancia neta</b> de <b>todos</b> tus bots y compra spot — una pila aislada del riesgo de perps (solo USDC es garantía, no tu token acumulado). Una por cuenta.')}</div>
           <div class="mob-strat-field"><span class="mob-strat-label" title="Spot token to accumulate (must have a SYM/USDC spot pair)">Accumulate</span><input class="mob-strat-input" id="m-accum-asset" placeholder="HYPE"></div>
-          <div class="mob-strat-field"><span class="mob-strat-label" title="% of net realized profit skimmed each window">Cut %</span><input class="mob-strat-input" id="m-accum-cut" type="number" placeholder="10"></div>
-          <div class="mob-strat-field"><span class="mob-strat-label" title="Buffer up to this USD before each spot buy — batches to clear HL's $10 min and cut fee drag">Buy at ($)</span><input class="mob-strat-input" id="m-accum-threshold" type="number" placeholder="15"></div>
+          <div class="mob-strat-field"><span class="mob-strat-label" title="% of net realized profit skimmed each window">Cut %</span><input class="mob-strat-input" id="m-accum-cut" type="number" placeholder="25"></div>
+          <div class="mob-strat-field"><span class="mob-strat-label" title="Buffer up to this USD before each spot buy. ~$11 is the floor — it fires as soon as that stacks, clearing HL's $10 min after fees. Set higher to batch bigger buys.">Buy at ($)</span><input class="mob-strat-input" id="m-accum-threshold" type="number" placeholder="11"></div>
           <div class="mob-strat-field"><span class="mob-strat-label" title="Optional cap on USD skimmed per day (0 = no cap)">Max / day ($)</span><input class="mob-strat-input" id="m-accum-maxdaily" type="number" placeholder="0"></div>
           <div class="mob-strat-field">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px"><span class="mob-strat-label" style="margin:0" title="Dry-run logs what it WOULD buy without moving funds. Switch to LIVE to place real transfers + spot buys.">Mode</span><button class="btn-size-unit" style="color:var(--muted)" onclick="window._mobToggleAccumDryRun(this)">${_mobAccumDryRun ? 'Dry-run' : 'LIVE'}</button></div>
@@ -12151,7 +16752,7 @@ function _mobVRenderStrategies(el) {
       <div class="mob-strat-header" onclick="window._mobExpandStrat('${s.type}')">
         <div style="display:flex;align-items:center">${dot}<div>
           <div style="font-size:14px;font-weight:600">${esc(s.label)}</div>
-          <div style="font-size:11px;color:${running ? 'var(--green)' : 'var(--muted)'};margin-top:1px">${running ? 'Running' : esc(s.desc)}</div>
+          <div style="font-size:11px;color:${running ? 'var(--green)' : 'var(--muted)'};margin-top:1px">${running ? esc(_stratRunStatus(s.type)) : esc(s.desc)}</div>
         </div></div>
         <div style="display:flex;align-items:center;gap:8px">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color:var(--muted);flex-shrink:0;transform:rotate(${expanded ? 180 : 0}deg);transition:transform .2s"><polyline points="6 9 12 15 18 9"/></svg>
@@ -12208,8 +16809,8 @@ function buildArgvMob(type) {
 
   if (type === 'accumulator') {
     push('--asset',     get('m-accum-asset')     || 'HYPE')
-    push('--cut-pct',   get('m-accum-cut')       || '10')
-    push('--threshold', get('m-accum-threshold') || '15')
+    push('--cut-pct',   get('m-accum-cut')       || '25')
+    push('--threshold', get('m-accum-threshold') || '11')
     push('--max-daily', get('m-accum-maxdaily')  || '0')
     if (_mobAccumDryRun) argv.push('--dry-run')
   } else if (type === 'dca') {
@@ -12327,7 +16928,7 @@ async function stopStrategyMob(type, instance) {
   } catch { alert('Server unreachable.') }
 }
 
-function _mobShowStratLogs(type, inst = '') {
+async function _mobShowStratLogs(type, inst = '', addrOverride = '') {
   const labels = { dca: 'DCA', grid: 'Grid', trend: 'Trend', longer: 'Longer', shorter: 'Shorter', accumulator: '🪙 Profit Stack', liqguard: '🛡 Liq Guard', levbrake: '🛑 Lev Brake' }
   let overlay = document.getElementById('mobStratLogOverlay')
   if (!overlay) {
@@ -12348,11 +16949,13 @@ function _mobShowStratLogs(type, inst = '') {
 
   if (_mobLogStream) { _mobLogStream.close(); _mobLogStream = null }
   const out  = document.getElementById('mobStratLogOut')
-  const addr = state.addr || ''
+  const addr = addrOverride || state.addr || ''   // combined view passes the owning account
+  const token = await _ensureBotToken(addr)   // owner-gated logs need a session token
+  const authHdr = token ? { Authorization: 'Bearer ' + token } : {}
 
   // Load today's log file from disk first, then attach SSE for live tail
   const today = (inst ? inst.toUpperCase() + '-' : '') + new Date().toISOString().slice(0, 10) + '.log'
-  fetch(`/api/history/${type}/${today}?address=${encodeURIComponent(addr)}`)
+  fetch(`/api/history/${type}/${today}?address=${encodeURIComponent(addr)}`, { headers: authHdr })
     .then(r => r.ok ? r.text() : null).catch(() => null)
     .then(text => {
       if (text) {
@@ -12364,7 +16967,7 @@ function _mobShowStratLogs(type, inst = '') {
       }
     })
 
-  const es = new EventSource(`/api/logs/${type}?address=${encodeURIComponent(addr)}&instance=${encodeURIComponent(inst)}`)
+  const es = new EventSource(`/api/logs/${type}?address=${encodeURIComponent(addr)}&instance=${encodeURIComponent(inst)}${token ? '&token=' + encodeURIComponent(token) : ''}`)
   _mobLogStream = es
   es.onmessage = e => {
     const d = JSON.parse(e.data)
@@ -12417,7 +17020,73 @@ let serverOnline  = false
 let serverStatus  = {}          // { insolvent: bool, dca: bool, ... }
 const logStreams   = {}          // type → EventSource
 
+// ─── BOT-SERVER AUTH ──────────────────────────────────────────────────────────
+// The bot-control API is owner-gated: mutations and log reads require a session token
+// proving control of the account's agent key. We obtain one by signing a server nonce
+// with the agent key held in localStorage — silent, no wallet popup. Tokens are cached
+// per account until they near expiry.
+const _botTokens = {}   // addrLower -> { token, exp }
+
+function _botAgentKeyFor(address) {
+  if (!address) return null
+  return localStorage.getItem(_agentKeyForAddr(address))   // strictly this account's own key
+}
+
+async function _ensureBotToken(address) {
+  if (!address) return null
+  const key    = address.toLowerCase()
+  const cached = _botTokens[key]
+  if (cached && cached.exp - 60_000 > Date.now()) return cached.token
+  const agentKey = _botAgentKeyFor(address)
+  if (!agentKey) return null           // watch-only for this account — can't authenticate
+  try {
+    const { nonce } = await (await fetch('/api/auth/nonce')).json()
+    if (!nonce) return null
+    const msg = `Insolvent Trade — bot control login\nAccount: ${key}\nNonce: ${nonce}`
+    const signature = await signWithAgentKey(agentKey, msg)
+    const r = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address, nonce, signature }),
+    })
+    const j = await r.json()
+    if (j.token) { _botTokens[key] = { token: j.token, exp: j.exp ?? (Date.now() + 11 * 3600_000) }; return j.token }
+  } catch { /* server unreachable / no key — fall through unauthenticated */ }
+  return null
+}
+
+// Best-effort: pull the account this request concerns from an explicit opt, the query
+// string, or the JSON body, so a token can be attached without touching every call site.
+function _botReqAddr(path, opts) {
+  if (opts.authAddr) return opts.authAddr
+  const q = path.split('?')[1]
+  if (q) { const m = new URLSearchParams(q).get('address'); if (m) return m }
+  if (typeof opts.body === 'string') { try { const a = JSON.parse(opts.body).address; if (a) return a } catch {} }
+  return null
+}
+
+// Return a token for the given account, for callers that build their own URL (SSE).
+async function _botTokenParam(address) {
+  const t = await _ensureBotToken(address)
+  return t ? '&token=' + encodeURIComponent(t) : ''
+}
+
+/**
+ * The bot API is keyed by a real on-chain address and owner-gated. The All Accounts
+ * and Paper sentinels are not addresses, so any request carrying one is rejected 401
+ * — and because these run on a refresh loop it produced a stream of failures in the
+ * console. Callers use this to skip the request entirely instead.
+ */
+function _botApiAddr() {
+  const a = state.addr ?? ''
+  return /^0x[0-9a-fA-F]{40}$/.test(a) ? a : null
+}
+
 async function serverFetch(path, opts = {}) {
+  const addr = _botReqAddr(path, opts)
+  if (addr) {
+    const tok = await _ensureBotToken(addr)
+    if (tok) opts = { ...opts, headers: { ...(opts.headers ?? {}), Authorization: 'Bearer ' + tok } }
+  }
   const r = await fetch(path, opts)
   const ct = r.headers.get('content-type') ?? ''
   if (ct.includes('application/json')) return r.json()
@@ -12429,7 +17098,7 @@ let _lastStatusHash = ''
 async function checkServer() {
   if (!state.addr) return
   try {
-    serverStatus = await serverFetch(`/api/status?address=${encodeURIComponent(state.addr)}`)
+    serverStatus = await serverFetch(`/api/status?address=${encodeURIComponent(_botApiAddr() ?? state.addr)}`)
     const justCameOnline = !serverOnline
     serverOnline = true
     updateServerBadge()
@@ -12529,8 +17198,11 @@ function updateAllStrategyButtons() {
   }
   // Mobile Strats tab badge — count only trading-strategy bots, NOT the per-position
   // risk guards (liqguard/levbrake), which are managed from the position rows.
+  // Skip in the combined view: there this badge is driven by _updateMobTabCounts from the
+  // all-accounts poll, and serverStatus here is a single account's — writing it would zero
+  // the combined count (the badge flickering in and out).
   const mobStrat = document.getElementById('mobStratCount')
-  if (mobStrat) {
+  if (mobStrat && !state.isAllAccounts) {
     const isGuard = k => k.startsWith('liqguard:') || k.startsWith('levbrake:')
     const inst  = Object.keys(serverStatus?._instances ?? {}).filter(k => !isGuard(k)).length
     const count = inst || Object.keys(serverStatus ?? {}).filter(k => k !== '_instances' && k !== '_paused' && k !== '_guards' && k !== 'liqguard' && k !== 'levbrake' && serverStatus[k] === true).length
@@ -12704,11 +17376,11 @@ function _typeInstances(type) {
     .map(k => k.slice(type.length + 1))
 }
 
-async function _postStop(type, instance) {
+async function _postStop(type, instance, addr) {
   await serverFetch('/api/stop', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type, address: state.addr, instance }),
+    body: JSON.stringify({ type, address: _isRealAddr(addr) ? addr : state.addr, instance }),
   })
 }
 
@@ -12779,7 +17451,7 @@ async function stopStrategy(type, instance) {
 window.stopInstance = (type, inst) => stopStrategy(type, inst)
 
 // ── Live log panel ────────────────────────────────────────────────────────────
-function showStrategyLogs(type, inst = '') {
+async function showStrategyLogs(type, inst = '') {
   const panel  = document.getElementById('logPanel')
   const title  = document.getElementById('logPanelTitle')
   const output = document.getElementById('logPanelOutput')
@@ -12797,7 +17469,10 @@ function showStrategyLogs(type, inst = '') {
   title.textContent = type.toUpperCase() + (inst ? ' · ' + inst : '') + ' — Live Logs'
   panel.style.display = 'flex'
 
-  const es = new EventSource(`/api/logs/${type}?address=${encodeURIComponent(state.addr || '')}&instance=${encodeURIComponent(inst)}`)
+  const _lAddr = _botApiAddr()
+  if (!_lAddr) return   // sentinel account — no bot logs to stream
+  const tokenParam = await _botTokenParam(_lAddr)   // owner-gated SSE
+  const es = new EventSource(`/api/logs/${type}?address=${encodeURIComponent(_lAddr)}&instance=${encodeURIComponent(inst)}${tokenParam}`)
   logStreams[type] = es
 
   es.onmessage = e => {
@@ -12833,7 +17508,7 @@ async function togglePastLogs() {
 
   // Fetch file list for current log type
   try {
-    const files = await serverFetch(`/api/history/${_pastLogsType}?address=${encodeURIComponent(state.addr || '')}`)
+    const files = await serverFetch(`/api/history/${_pastLogsType}?address=${encodeURIComponent(_botApiAddr() || '')}`)
     select.innerHTML = '<option value="">— select a log file —</option>' +
       files.map(f => `<option value="${f}">${f}</option>`).join('')
     bar.style.display = 'block'
@@ -12855,7 +17530,7 @@ async function loadPastLog(filename) {
   if (!output) return
   output.innerHTML = ''
   try {
-    const text = await serverFetch(`/api/history/${_pastLogsType}/${filename}?address=${encodeURIComponent(state.addr || '')}`)
+    const text = await serverFetch(`/api/history/${_pastLogsType}/${filename}?address=${encodeURIComponent(_botApiAddr() || '')}`)
     const lines = (typeof text === 'string' ? text : JSON.stringify(text)).split('\n')
     for (const line of lines) {
       if (line) appendLog(output, line, colorLogLine(line))
@@ -12890,9 +17565,10 @@ async function renderWinsPanel() {
   const el = document.getElementById('winsPanel')
   if (!el || !serverOnline) return
 
-  if (!state.addr) return
+  const _wAddr = _botApiAddr()
+  if (!_wAddr) return
   let wins
-  try { wins = await serverFetch(`/api/wins?address=${encodeURIComponent(state.addr)}`) }
+  try { wins = await serverFetch(`/api/wins?address=${encodeURIComponent(_wAddr)}`) }
   catch { return }
 
   const types    = ['insolvent','dca','grid','trend','longer','shorter']
@@ -13127,7 +17803,10 @@ function _resetMainWalletUI() {
   const dotEl    = document.getElementById('mainWalletDot')
   const statusEl = document.getElementById('mainWalletStatus')
   const btn      = document.getElementById('mainWalletBtn')
-  disconnectMainWallet()
+  // UI reset ONLY. This runs on every account switch, and connections now live in a
+  // per-address registry — disconnecting here would drop the wallet belonging to the
+  // account being opened, which is the exact thing the registry exists to prevent.
+  // restoreWalletForAddr() repaints the real state a moment later.
   setBuilderFeeEnabled(false)
   if (dotEl)    dotEl.classList.remove('connected')
   if (statusEl) { statusEl.textContent = 'Not connected'; statusEl.style.color = 'var(--muted)' }
@@ -13140,11 +17819,17 @@ async function restoreWalletForAddr(addr) {
   const savedRdns = localStorage.getItem(_walletRdnsForAddr(lookupAddr))
   if (!savedRdns) return
   try {
-    const connected = await connectWalletSilent(savedRdns)
+    const connected = await connectWalletSilent(savedRdns, lookupAddr)
     if (!connected) return
     // Switched accounts while the silent reconnect was in flight — don't paint
     // this account's wallet status over the account now loaded.
     if (state.addr !== lookupAddr) return
+    // The wallet's active account may differ from the one we're viewing (user changed
+    // accounts in their extension). Never attach a mismatched signer to this view.
+    // Wallet's active account differs from the one we're viewing. It stays connected
+    // under its OWN address (useful when that account is opened) — we simply don't
+    // paint it as this account's wallet.
+    if (connected.toLowerCase() !== lookupAddr.toLowerCase()) return
     const dotEl    = document.getElementById('mainWalletDot')
     const statusEl = document.getElementById('mainWalletStatus')
     const btn      = document.getElementById('mainWalletBtn')
@@ -13160,6 +17845,34 @@ async function restoreWalletForAddr(addr) {
 // ─── AGENT KEY (per-address) ──────────────────────────────────────────────────
 function _agentKeyForAddr(addr) {
   return addr ? 'hliq_agent_key_' + addr.toLowerCase() : null
+}
+
+// One-time cleanup of pre-fix contamination: the old restoreAgentKey copied the SAME legacy
+// global key into every account visited. An agent key is approved per-master, so any
+// per-address key VALUE shared across >1 account is that mis-migrated global — it belongs to
+// the main wallet alone. Keep it only in the main wallet's slot; clear it from the rest so no
+// account shows or signs with a key that isn't its own. Deferred until the main wallet is
+// connected so we can identify which copy to keep (retries via restoreAgentKey each load).
+function _dedupeAgentKeys() {
+  try {
+    if (localStorage.getItem('hliq_agentkey_dedupe_v1') === '1') return
+    const main = (typeof getMainAddress === 'function' ? (getMainAddress() || '') : '').toLowerCase()
+    if (!main) return
+    const entries = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const sk = localStorage.key(i)
+      if (sk && sk.startsWith('hliq_agent_key_') && sk !== 'hliq_agent_key') entries.push([sk, localStorage.getItem(sk)])
+    }
+    const counts = new Map()
+    for (const [, v] of entries) if (v) counts.set(v, (counts.get(v) || 0) + 1)
+    const mainSk = 'hliq_agent_key_' + main
+    for (const [sk, v] of entries) {
+      if (!v || (counts.get(v) || 0) < 2) continue   // unique value = a legit per-account key, keep
+      if (sk === mainSk) continue                     // keep the main wallet's copy
+      localStorage.removeItem(sk)                      // drop the mis-migrated duplicate from other accounts
+    }
+    localStorage.setItem('hliq_agentkey_dedupe_v1', '1')
+  } catch {}
 }
 function _updateAutoGenBtnVisibility() {
   const hasKey    = !!(state.addr && localStorage.getItem(_agentKeyForAddr(state.addr)))
@@ -13229,13 +17942,19 @@ window.__autoGenerateAgentKey = async function() {
     return
   }
 
-  document.querySelectorAll('.auto-gen-agent-btn').forEach(b => { b.disabled = true; b.textContent = 'Approving on HL…' })
+  document.querySelectorAll('.auto-gen-agent-btn').forEach(b => { b.disabled = true; b.textContent = _T('Check your wallet to sign…', 'Revisa tu billetera para firmar…') })
 
   try {
     const { privateKey, address: agentAddr } = generateAgentWallet()
 
-    await ensureChain('0xa4b1')   // wallet must be on Arbitrum to sign the HL agent approval
-    await approveAgentKey(getHlSigner(), agentAddr)
+    // No chain switch needed — the signer signs on the wallet's current chain and HL
+    // accepts agent approval signed on any chain (see getHlSigner).
+    // Mobile WalletConnect: the sign request is relayed to the wallet app but the tab
+    // isn't switched to it, so the prompt never surfaces and this hangs. Fire the sign,
+    // then deep-link into the wallet a beat later so its approval screen comes up.
+    const _approval = approveAgentKey(getHlSigner(), agentAddr)
+    setTimeout(() => { try { wakeWallet() } catch (_) {} }, 350)
+    await _approval
 
     window.__saveAgentKey(privateKey)
     const connectedAddr = await connectAgentKey(privateKey)
@@ -13272,7 +17991,18 @@ window.__autoGenerateAgentKey = async function() {
     const top   = e?.message || String(e)
     const cause = e?.cause?.message || e?.cause?.cause?.message || ''
     const full  = cause && cause !== top ? `${top}\n\n${cause}` : top
-    alert('Failed:\n\n' + (/rejected|denied|cancel|user (rejected|denied)/i.test(full) ? 'Signature rejected in your wallet.' : full))
+    let msg
+    if (/must deposit before performing actions/i.test(full)) {
+      // HL requires a funded account before it will approve an agent — the #1 reason a
+      // brand-new user "can't trade". Tell them what to actually do.
+      msg = 'This wallet has no funds on Hyperliquid yet.\n\nDeposit USDC to Hyperliquid first (Portfolio → Deposit), then generate your agent key.'
+    } else if (/rejected|denied|cancel|user (rejected|denied)/i.test(full)) {
+      msg = 'Signature rejected in your wallet.'
+    } else {
+      // Surface the real error rather than guessing — signing works on any chain now.
+      msg = full
+    }
+    alert('Couldn\'t generate agent key:\n\n' + msg)
     console.error('auto-gen agent key failed:', e)
     document.querySelectorAll('.auto-gen-agent-btn').forEach(b => { b.disabled = false; b.textContent = 'Auto-generate' })
   }
@@ -13294,11 +18024,21 @@ function _disconnectAgentKeyUI() {
 function restoreAgentKey(addr) {
   const lookupAddr = addr || state.addr
   if (!lookupAddr) return
-  const perAddrKey = localStorage.getItem(_agentKeyForAddr(lookupAddr))
-  const globalKey  = localStorage.getItem('hliq_agent_key')
-  const savedKey   = perAddrKey || globalKey
-  // Migrate global key to per-address slot so future restores find it
-  if (!perAddrKey && globalKey) localStorage.setItem(_agentKeyForAddr(lookupAddr), globalKey)
+  _dedupeAgentKeys()   // clean up any keys the old buggy migration spread across accounts
+  // One-time legacy migration ONLY: a lone global `hliq_agent_key` (from before per-address
+  // storage) belongs to the connected MAIN wallet — migrate it to that wallet's slot and then
+  // delete it. It must NEVER be assigned to an arbitrary account being viewed: doing so
+  // mis-showed (and could mis-sign with) another account's key. Each account uses strictly its
+  // own `hliq_agent_key_<addr>`.
+  const globalKey = localStorage.getItem('hliq_agent_key')
+  if (globalKey && !localStorage.getItem(_agentKeyForAddr(lookupAddr))) {
+    const main = (typeof getMainAddress === 'function' ? (getMainAddress() || '') : '')
+    if (main && lookupAddr.toLowerCase() === main.toLowerCase()) {
+      localStorage.setItem(_agentKeyForAddr(lookupAddr), globalKey)
+      try { localStorage.removeItem('hliq_agent_key') } catch {}
+    }
+  }
+  const savedKey = localStorage.getItem(_agentKeyForAddr(lookupAddr))   // this account's own key ONLY
   const el = document.getElementById('agentKey')
   const tradeInput = document.getElementById('privateKeyInput')
   _updateAutoGenBtnVisibility()
@@ -13350,12 +18090,30 @@ window.__saveAssetLists = function() {
 
 // Restore wallet address from localStorage (agent key restored after wallet loads)
 const _savedAddr = localStorage.getItem('walletAddr')
-if (_savedAddr) { const el = document.getElementById('walletInput'); if (el) el.value = _savedAddr }
+if (_savedAddr && _savedAddr !== '__all_accounts__') { const el = document.getElementById('walletInput'); if (el) el.value = _savedAddr }
 renderSavedWallets()
 renderRecentAddrs()
 
-// Auto-load last used address if explicitly saved
-if (_savedAddr) loadDashboard()
+// Restore which paper account (practice vs Challenge) was last selected, BEFORE any paper
+// load, so we never briefly paint the wrong one. Only honor 'challenge' if still enrolled;
+// the two accounts live in separate stores (see setPaperSlot / paper.js).
+try {
+  if (localStorage.getItem('hliq_paper_slot') === 'challenge' && localStorage.getItem('hliq_chal_active') === '1') setPaperSlot('challenge')
+} catch {}
+
+// Auto-load last used view. If the user was in the combined "All Accounts" view,
+// restore that (as long as they still have saved accounts) instead of a single wallet.
+if (_savedAddr === PAPER_ADDR) {
+  // Deferred to the next macrotask: paper renders positions immediately (no network
+  // round-trip like the real loaders), which reaches render helpers whose module-level
+  // bindings are declared further down this file and would still be in their temporal
+  // dead zone if we called straight from module evaluation.
+  setTimeout(() => window.__goPaper(), 0)
+} else if (_savedAddr === '__all_accounts__') {
+  if (_maLoad().length) window.__goAllAccounts()
+} else if (_savedAddr) {
+  loadDashboard()
+}
 
 // Restore agent key connection immediately on startup
 restoreAgentKey()
@@ -13365,7 +18123,14 @@ restoreAgentKey()
   _i18nLoadCache()
   const savedLang = localStorage.getItem('hliq_lang') || 'en'
   if (savedLang !== 'en') _applyLang(savedLang)
+  // One-time harvest of the static chrome (bottom nav, More drawer, header) that
+  // _mobVRenderContent never rebuilds — so a later switch pre-warms these too.
+  setTimeout(() => { try { _i18nHarvest(document.body) } catch {} }, 3000)
 })()
+
+// Resume challenge score auto-submit if a round is in progress on this device.
+// Deferred so the whole module (incl. __chalMaybeAutoSubmit, defined later) has evaluated.
+setTimeout(() => { try { window.__chalMaybeAutoSubmit && window.__chalMaybeAutoSubmit() } catch {} }, 4000)
 
 // Restore appearance preferences
 ;(() => {
@@ -13434,8 +18199,37 @@ window.__pinShowPad = function() {
   if (usePin) usePin.style.display = 'none'
 }
 
-window.__clearAgentKey = function() {
-  if (state.addr) localStorage.removeItem(_agentKeyForAddr(state.addr))
+// Replace an agent key HL no longer recognizes: drop the stale one, then run the normal
+// approve+store flow. Needs the owning wallet connected as the active account to sign.
+window.__regenAgentKey = async function() {
+  const acct = state.addr
+  if (!_isRealAddr(acct)) { _paperToast('⚠ ' + _T('Open that account first', 'Abre esa cuenta primero')); return }
+  const cur = (() => { try { return String(getMainAddress() ?? '').toLowerCase() } catch { return '' } })()
+  if (!isMainWalletConnected() || cur !== acct.toLowerCase()) {
+    _paperToast('⚠ ' + _T('Connect this account\'s wallet to regenerate', 'Conecta la billetera de esta cuenta para regenerar'))
+    try { if (!isMainWalletConnected()) openWalletPicker() } catch {}
+    return
+  }
+  try { localStorage.removeItem(_agentKeyForAddr(acct)) } catch {}
+  _agentBadAccts.delete(acct.toLowerCase())
+  _agentOkCache.clear(); invalidateApprovedAgents(acct)
+  await window.__autoGenerateAgentKey()
+  _agentSweepDone = 0                       // let the sweep re-verify the new key promptly
+  _sweepAgentKeys().catch(() => {})
+}
+
+window.__clearAgentKey = async function() {
+  const acct  = state.addr
+  const label = acct === PAPER_ADDR ? 'the paper account'
+    : (acct && acct.startsWith('0x')) ? (WM.getLabel(acct) || acct.slice(0, 6) + '…' + acct.slice(-4))
+    : 'this account'
+  if (!(await _appConfirm({
+    title: '🗑 ' + _T('Clear agent key?', '¿Borrar clave de agente?'),
+    body: _T(`Removes the stored agent key for <b>${esc(label)}</b> from this device. Your funds are unaffected — you can generate a new key anytime.`,
+             `Elimina la clave de agente guardada para <b>${esc(label)}</b> de este dispositivo. Tus fondos no se ven afectados — puedes generar una nueva clave cuando quieras.`),
+    confirmText: _T('Clear key', 'Borrar clave'), danger: true,
+  }))) return
+  if (acct) localStorage.removeItem(_agentKeyForAddr(acct))
   localStorage.removeItem('hliq_agent_key')
   const tradeInput = document.getElementById('privateKeyInput')
   const stratInput = document.getElementById('agentKey')
@@ -13456,7 +18250,11 @@ window.__clearAgentKey = function() {
   if (_mobVActiveTab === 'strategies') {
     const mobEl = document.getElementById('mobVContent')
     if (mobEl) _mobVRenderStrategies(mobEl)
+  } else if (_mobVActiveTab === 'settings') {
+    const mobEl = document.getElementById('mobVContent')
+    if (mobEl) _mobVRenderContent()   // refresh the Settings agent-key section (clears the field, restores auto-generate)
   }
+  _paperToast('✓ ' + _T('Agent key cleared', 'Clave de agente borrada'))
 }
 
 // Sync toggle state whenever settings tab is opened
@@ -13566,6 +18364,15 @@ window.__switchSettingsPanel = function(name, btn) {
 }
 
 window.__exportSettings = function() {
+  // This backup dumps ALL of localStorage — which INCLUDES your agent signing keys in
+  // plain text. Anyone with the file can trade your accounts (they still can't withdraw).
+  // Make that explicit before the file is created; silent "Export Settings" hid it.
+  const hasKeys = Object.keys(localStorage).some(k => k.startsWith('hliq_agent_key') || k === 'savedWallets')
+  if (hasKeys && !confirm(
+    'This backup file will contain your AGENT SIGNING KEYS in plain text.\n\n' +
+    'Anyone who gets this file can place trades on your accounts (they cannot withdraw your funds).\n\n' +
+    'Only save it somewhere private and offline — never email it, share it, or put it in cloud storage.\n\nContinue?'
+  )) return
   const data = { _exportedAt: new Date().toISOString(), _version: 1 }
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i)
@@ -13778,6 +18585,106 @@ function _checkPriceAlerts(allMids) {
   if (changed) { _paSave(alerts); _renderPriceAlerts() }
 }
 
+// ─── LONG-PRESS → QUICK PRICE ALERT ──────────────────────────────────────────
+// Hold-press any position card (elements carrying data-lp-coin) to open a pre-filled price
+// alert for that coin. Delegated once at the document level so it survives card re-renders,
+// and it suppresses the tap-to-expand click that would otherwise fire on release.
+let _lpTimer = null, _lpSuppressUntil = 0
+function _initLongPressAlerts() {
+  if (window.__lpInit) return
+  window.__lpInit = true
+  const start = (e) => {
+    const t = e.target
+    if (!t?.closest) return
+    // Don't hijack a press on an interactive control inside the card (buttons, inputs).
+    if (t.closest('button, input, a, select, textarea')) return
+    const el = t.closest('[data-lp-coin]')
+    if (!el) return
+    const coin = el.getAttribute('data-lp-coin')
+    const px   = parseFloat(el.getAttribute('data-lp-px')) || 0
+    clearTimeout(_lpTimer)
+    _lpTimer = setTimeout(() => {
+      _lpSuppressUntil = Date.now() + 800   // eat the click that follows the release
+      try { navigator.vibrate?.(15) } catch {}
+      window.__quickPriceAlert(coin, px)
+    }, 480)
+  }
+  const cancel = () => clearTimeout(_lpTimer)
+  document.addEventListener('touchstart', start, { passive: true })
+  document.addEventListener('touchend',   cancel, { passive: true })
+  document.addEventListener('touchmove',  cancel, { passive: true })
+  document.addEventListener('mousedown',  start)
+  document.addEventListener('mouseup',    cancel)
+  document.addEventListener('scroll',     cancel, { passive: true, capture: true })
+  // Swallow the synthetic click after a long-press so the card doesn't also toggle open.
+  document.addEventListener('click', (e) => {
+    if (Date.now() < _lpSuppressUntil) { e.stopPropagation(); e.preventDefault(); _lpSuppressUntil = 0 }
+  }, true)
+  // Kill the native context menu / text-selection callout on a long-press over a card.
+  document.addEventListener('contextmenu', (e) => { if (e.target?.closest?.('[data-lp-coin]')) e.preventDefault() })
+}
+
+window.__quickPriceAlert = function(coin, px) {
+  document.getElementById('quickAlertModal')?.remove()
+  window._qaDir = 'above'
+  const isOc  = _lbIsOutcome(coin)
+  const cur   = parseFloat(state.allMids?.[coin] ?? px ?? 0) || px || 0
+  const label = _ocCoinLabel(coin)
+  const pxStr = cur > 0 ? (isOc ? (cur * 100).toFixed(1) : fmtPrice(cur)) : ''
+  const curTxt = cur > 0 ? (isOc ? (cur * 100).toFixed(1) + '¢' : '$' + fmtPrice(cur)) : '—'
+  const wrap = document.createElement('div')
+  wrap.id = 'quickAlertModal'
+  wrap.innerHTML = `
+    <div onclick="document.getElementById('quickAlertModal').remove()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100060"></div>
+    <div style="position:fixed;bottom:0;left:0;right:0;z-index:100061;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-width:520px;margin:0 auto">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px 12px;border-bottom:1px solid var(--border)">
+        <span style="font-size:16px;font-weight:700">🔔 ${_T('Price alert', 'Alerta de precio')} · <span class="notranslate">${esc(label)}</span></span>
+        <button onclick="document.getElementById('quickAlertModal').remove()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:0 4px">×</button>
+      </div>
+      <div style="padding:16px 18px 22px">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${_T('Notify me when the price is', 'Avísame cuando el precio esté')}:</div>
+        <div id="qaDir" style="display:flex;gap:8px;margin-bottom:14px">
+          <button data-dir="above" onclick="window.__qaSetDir('above')" class="qa-dir-btn" style="flex:1;padding:11px;border-radius:10px;border:1px solid var(--accent);background:rgba(0,229,160,.14);color:var(--accent);font-weight:700;font-size:13px;cursor:pointer">↑ ${_T('Above', 'Por encima')}</button>
+          <button data-dir="below" onclick="window.__qaSetDir('below')" class="qa-dir-btn" style="flex:1;padding:11px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--muted);font-weight:700;font-size:13px;cursor:pointer">↓ ${_T('Below', 'Por debajo')}</button>
+        </div>
+        <div style="position:relative;margin-bottom:8px">
+          ${isOc ? '' : '<span style="position:absolute;left:13px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:16px">$</span>'}
+          <input id="qaPrice" type="text" inputmode="decimal" value="${pxStr}" onfocus="this.select()"
+            style="width:100%;box-sizing:border-box;padding:13px 13px 13px ${isOc ? '13px' : '26px'};background:var(--panel-1);border:1px solid var(--border);border-radius:10px;font-size:17px;font-weight:600;color:var(--fg);outline:none">
+          ${isOc ? '<span style="position:absolute;right:13px;top:50%;transform:translateY(-50%);color:var(--muted)">¢</span>' : ''}
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:16px">${_T('Current', 'Actual')}: <span class="notranslate">${curTxt}</span></div>
+        <button onclick="window.__qaSave('${_jsStr(coin)}',${isOc ? 1 : 0})" style="width:100%;padding:14px;border:none;border-radius:12px;background:var(--accent);color:#000;font-weight:800;font-size:15px;cursor:pointer">${_T('Set alert', 'Crear alerta')}</button>
+        ${notifPermission() !== 'granted' ? `<div style="font-size:11px;color:#ff9f43;margin-top:10px;text-align:center">${_T('Enable notifications to receive alerts', 'Activa las notificaciones para recibir alertas')}</div>` : ''}
+      </div>
+    </div>`
+  document.body.appendChild(wrap)
+}
+
+window.__qaSetDir = function(dir) {
+  window._qaDir = dir
+  document.querySelectorAll('#qaDir .qa-dir-btn').forEach(b => {
+    const on = b.getAttribute('data-dir') === dir
+    b.style.border     = `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`
+    b.style.background = on ? 'rgba(0,229,160,.14)' : 'transparent'
+    b.style.color      = on ? 'var(--accent)' : 'var(--muted)'
+  })
+}
+
+window.__qaSave = function(coin, isOc) {
+  const raw = parseFloat(document.getElementById('qaPrice')?.value)
+  if (isNaN(raw) || raw <= 0) return
+  const price = isOc ? raw / 100 : raw   // store outcome alerts in 0..1 units, like the mids
+  const dir   = window._qaDir || 'above'
+  const alerts = _paLoad()
+  alerts.push({ id: Date.now().toString(36), coin, dir, price, fired: false })
+  _paSave(alerts)
+  if (notifPermission() !== 'granted') { try { requestNotifications() } catch {} }
+  document.getElementById('quickAlertModal')?.remove()
+  _paperToast('🔔 ' + _T('Alert set', 'Alerta creada'))
+  try { _renderPriceAlerts() } catch {}
+}
+
 // ─── PUSH SUBSCRIPTION ───────────────────────────────────────────────────────
 
 function _urlBase64ToUint8Array(b64) {
@@ -13821,9 +18728,14 @@ async function _registerPush() {
       })
     }
     const wallets   = WM.load()
-    const watchList = wallets.length
+    // Only real on-chain addresses can be watched server-side — the All Accounts and
+    // Paper sentinels aren't addresses. (The server drops them anyway, but sending
+    // "__paper__" as the sole entry produced a subscription that watched nothing.)
+    const _isAddr = a => /^0x[0-9a-fA-F]{40}$/.test(String(a ?? ''))
+    const watchList = (wallets.length
       ? wallets.map(w => ({ addr: w.addr, label: w.label || '' }))
       : state.addr ? [{ addr: state.addr, label: '' }] : []
+    ).filter(w => _isAddr(w.addr))
     if (!watchList.length) return
     const healthEnabled = localStorage.getItem('hliq_health_alert_enabled') === '1'
     const threshold    = parseInt(localStorage.getItem('hliq_health_alert_threshold') || '50')
@@ -13997,6 +18909,34 @@ window.__submitForgotPin = function() {
 checkServer()
 setInterval(checkServer, 5000)
 if (window.innerWidth > 768) setInterval(renderWinsPanel, 30000)
+initOnboarding()   // first-launch welcome + guided tour + glossary (see onboard.js)
+
+// ── Auto-update ────────────────────────────────────────────────────────────────
+// Users kept getting stuck on a stale cached bundle after a deploy (a fixed icon still
+// showed the old one, etc.). Compare the running bundle's hash against the freshly-served
+// index.html; if a newer build is out, hard-reload once to pick it up. index.html is
+// network-first (see sw.js), so the reload gets the new hashed bundle. Guarded so it
+// reloads at most once and never loops.
+let _buildReloaded = false
+async function _checkBuildUpdate() {
+  if (_buildReloaded) return
+  try {
+    const running = ([...document.querySelectorAll('script[src*="/assets/index-"]')]
+      .map(s => s.src.match(/index-([A-Za-z0-9_-]+)\.js/)?.[1]).find(Boolean)) || null
+    if (!running) return
+    const html  = await fetch('/', { cache: 'no-store' }).then(r => r.text())
+    const fresh = html.match(/\/assets\/index-([A-Za-z0-9_-]+)\.js/)?.[1] || null
+    if (fresh && running !== fresh) { _buildReloaded = true; location.reload() }
+  } catch { /* offline / transient — try again next tick */ }
+}
+setTimeout(_checkBuildUpdate, 8000)          // shortly after load
+setInterval(_checkBuildUpdate, 5 * 60_000)   // and every 5 min while open
+// Also re-check when the app returns to the foreground (PWA relaunch / tab focus).
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') _checkBuildUpdate() })
+
+// Live prices over WebSocket (zero REST weight) — see _startMidsWs. Fire-and-forget;
+// REST price polls fall back automatically if the socket never connects.
+_startMidsWs()
 
 // ─── WATCHLIST ────────────────────────────────────────────────────────────────
 const WATCH_KEY = 'hliq_watchlist'
@@ -14149,7 +19089,11 @@ function renderWatchTab(allTfData) {
   if (!wrap) return
 
   if (!list.length) {
-    wrap.innerHTML = '<div class="watch-empty">No tokens on watchlist. Search above to add coins.</div>'
+    const _starters = ['BTC', 'ETH', 'SOL', 'HYPE']
+    wrap.innerHTML = `<div class="watch-empty">No tokens on watchlist. Search above to add coins, or start with:
+      <div style="display:flex;gap:8px;justify-content:center;margin-top:12px">
+        ${_starters.map(c => `<button class="btn-sm" onclick="window.__watchAdd('${c}')">+ ${c}</button>`).join('')}
+      </div></div>`
     return
   }
 
@@ -14289,6 +19233,7 @@ window.__watchSetTf = async function(tf) {
 // by TTL + an in-flight flag, and uses its own request (won't abort the Watch tab).
 let _tickerFetching = false
 async function _ensureTickerCandles() {
+  if (_hlLimited()) return   // global 429 breaker
   const list = loadWatchlist()
   if (!list.length || _tickerFetching) return
   const now  = Date.now()
@@ -14408,6 +19353,12 @@ window.__watchRemove = function(coin) {
 
 
 window.__watchOpenTrade = function(coin) {
+  // Mobile: the mobile-view overlay covers the desktop tabs, so route through the
+  // mobile trade flow (same path the coin picker uses) to actually show the chart.
+  if (typeof _isMobView === 'function' && _isMobView()) {
+    window._mobVSelectTradeCoin(coin)
+    return
+  }
   const tradeBtn = [...document.querySelectorAll('.nav-tab')]
     .find(b => b.getAttribute('onclick')?.includes("'trade'"))
   switchTab('trade', tradeBtn)
@@ -14489,6 +19440,150 @@ window.__mobWatchAdd = function(coin) {
   updateWatchTicker()
   refreshWatchTab()
   updateMobileView()
+  _mobWatchRender()
+}
+
+// ─── EXTERNAL MARKETS (TradingView, view-only) ─────────────────────────────────
+// Watch non-Hyperliquid markets — DXY, indices, gold, oil, yields, forex — as live
+// TradingView charts. Stored SEPARATELY from the HL watchlist (TV_WATCH_KEY) so none
+// of the HL price / candle / ticker paths ever touch these. Entries are TradingView
+// symbols like "TVC:DXY". View-only; only the symbol is sent to TradingView.
+const TV_WATCH_KEY = 'hliq_tv_watch'
+const _TV_MARKETS = [
+  { s: 'TVC:DXY',         n: 'US Dollar Index' },
+  { s: 'SP:SPX',          n: 'S&P 500' },
+  { s: 'TVC:NDX',         n: 'Nasdaq 100' },
+  { s: 'DJ:DJI',          n: 'Dow Jones' },
+  { s: 'TVC:GOLD',        n: 'Gold · spot' },
+  { s: 'TVC:SILVER',      n: 'Silver · spot' },
+  { s: 'TVC:USOIL',       n: 'Crude Oil · WTI' },
+  { s: 'TVC:US10Y',       n: 'US 10Y Yield' },
+  { s: 'TVC:VIX',         n: 'Volatility · VIX' },
+  { s: 'CRYPTOCAP:BTC.D', n: 'BTC Dominance' },
+  { s: 'CRYPTOCAP:TOTAL', n: 'Total Crypto Cap' },
+  { s: 'FX:EURUSD',       n: 'EUR / USD' },
+  { s: 'FX:GBPUSD',       n: 'GBP / USD' },
+  { s: 'FX:USDJPY',       n: 'USD / JPY' },
+]
+const _tvLabelMap = Object.fromEntries(_TV_MARKETS.map(m => [m.s, m.n]))
+function loadTvWatch() { try { return JSON.parse(localStorage.getItem(TV_WATCH_KEY)) || [] } catch { return [] } }
+function saveTvWatch(list) { localStorage.setItem(TV_WATCH_KEY, JSON.stringify(list)) }
+function _tvLabel(sym) { return _tvLabelMap[sym] || String(sym).replace(/.*:/, '') }
+function _tvId(sym) { return String(sym).replace(/[^a-z0-9]/gi, '_') }
+function _tvTheme() { return document.body.classList.contains('light-theme') ? 'light' : 'dark' }
+
+// Inject a TradingView embed widget. innerHTML won't execute <script>, so build a real
+// script node with the JSON config as its text content (the embed's required shape).
+function _tvInject(el, src, config) {
+  if (!el) return
+  el.innerHTML = ''
+  const c = document.createElement('div')
+  c.className = 'tradingview-widget-container'
+  c.style.cssText = 'height:100%;width:100%'
+  const w = document.createElement('div')
+  w.className = 'tradingview-widget-container__widget'
+  w.style.cssText = 'height:100%;width:100%'
+  const s = document.createElement('script')
+  s.type = 'text/javascript'
+  s.async = true
+  s.src = src
+  s.textContent = JSON.stringify(config)
+  c.appendChild(w)
+  c.appendChild(s)
+  el.appendChild(c)
+}
+
+// Mount a compact live mini-chart into each external market row.
+function _tvMountMinis() {
+  for (const sym of loadTvWatch()) {
+    const el = document.getElementById('tvmini-' + _tvId(sym))
+    if (el && !el.dataset.mounted) {
+      el.dataset.mounted = '1'
+      _tvInject(el, 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js', {
+        symbol: sym, width: '100%', height: '100%', locale: 'en', dateRange: '1M',
+        colorTheme: _tvTheme(), isTransparent: true, autosize: true,
+      })
+    }
+  }
+}
+
+// Full-screen advanced chart overlay.
+window.__tvOpenChart = function(sym) {
+  let ov = document.getElementById('tvChartOverlay')
+  if (!ov) {
+    ov = document.createElement('div')
+    ov.id = 'tvChartOverlay'
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:var(--bg);display:flex;flex-direction:column'
+    document.body.appendChild(ov)
+  }
+  ov.style.display = 'flex'
+  ov.innerHTML = `
+    <div style="flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)">
+      <span style="font-size:15px;font-weight:800">${esc(_tvLabel(sym))} <span style="color:var(--muted);font-weight:500;font-size:12px">${esc(sym)}</span></span>
+      <button onclick="window.__tvCloseChart()" style="background:none;border:none;color:var(--muted);font-size:26px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+    </div>
+    <div id="tvChartMount" style="flex:1;min-height:0"></div>`
+  _tvInject(document.getElementById('tvChartMount'),
+    'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js', {
+      symbol: sym, interval: 'D', timezone: 'Etc/UTC', theme: _tvTheme(), style: '1',
+      locale: 'en', autosize: true, allow_symbol_change: true, hide_side_toolbar: false,
+      support_host: 'https://www.tradingview.com',
+    })
+}
+window.__tvCloseChart = function() {
+  const ov = document.getElementById('tvChartOverlay')
+  if (ov) { ov.style.display = 'none'; ov.innerHTML = '' }
+}
+
+window.__tvAdd = function(sym) {
+  sym = String(sym || '').trim().toUpperCase()
+  if (!sym) return
+  const list = loadTvWatch()
+  if (!list.includes(sym)) { list.push(sym); saveTvWatch(list) }
+  window.__tvClosePicker()
+  if (_mobVActiveTab === 'watch') _mobVRenderContent()
+}
+window.__tvRemove = function(sym) {
+  saveTvWatch(loadTvWatch().filter(s => s !== sym))
+  if (_mobVActiveTab === 'watch') _mobVRenderContent()
+}
+
+window.__tvMarketsPicker = function() {
+  let ov = document.getElementById('tvPicker')
+  if (!ov) {
+    ov = document.createElement('div')
+    ov.id = 'tvPicker'
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100001;background:rgba(0,0,0,.6);display:flex;align-items:flex-end'
+    ov.onclick = e => { if (e.target === ov) window.__tvClosePicker() }
+    document.body.appendChild(ov)
+  }
+  const have = new Set(loadTvWatch())
+  ov.style.display = 'flex'
+  ov.innerHTML = `
+    <div style="width:100%;max-height:82vh;overflow-y:auto;background:var(--panel-1);border-radius:16px 16px 0 0;padding:16px 16px 28px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <span style="font-size:16px;font-weight:800">Add market</span>
+        <button onclick="window.__tvClosePicker()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">&times;</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        <input id="tvSymInput" placeholder="Any TradingView symbol, e.g. NASDAQ:AAPL" autocapitalize="characters"
+          onkeydown="if(event.key==='Enter')window.__tvAdd(this.value)"
+          style="flex:1;min-width:0;background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:9px 11px;font-size:13px;color:var(--fg);outline:none">
+        <button onclick="window.__tvAdd(document.getElementById('tvSymInput').value)" style="background:var(--accent,#4ea1ff);color:#fff;border:none;border-radius:8px;padding:0 15px;font-weight:700;cursor:pointer">Add</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        ${_TV_MARKETS.map(m => `
+          <button ${have.has(m.s) ? 'disabled' : `onclick="window.__tvAdd('${esc(m.s)}')"`}
+            style="text-align:left;background:var(--panel-2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;cursor:pointer;${have.has(m.s) ? 'opacity:.4' : ''}">
+            <div style="font-size:13px;font-weight:700;color:var(--fg)">${esc(m.n)}</div>
+            <div style="font-size:11px;color:var(--muted)">${esc(m.s)}${have.has(m.s) ? ' · added' : ''}</div>
+          </button>`).join('')}
+      </div>
+    </div>`
+}
+window.__tvClosePicker = function() {
+  const ov = document.getElementById('tvPicker')
+  if (ov) { ov.style.display = 'none'; ov.innerHTML = '' }
 }
 
 window.__mobWatchRemove = function(coin) {
@@ -14498,6 +19593,7 @@ window.__mobWatchRemove = function(coin) {
   updateWatchTicker()
   refreshWatchTab()
   updateMobileView()
+  _mobWatchRender()
 }
 
 // Hook switchTab to load watch data and refresh defi cards
@@ -14574,23 +19670,27 @@ window.toggleDevMode = async function(wantOn) {
     desc:  'Enter the leaderboard PIN to unlock management controls.',
     confirmText: 'Activate',
   })
-  if (!pin) { _applyDevMode(); return }
+  if (pin === null || pin === '') { _applyDevMode(); return }   // cancelled
+  // Non-destructive check — no longer overwrites the board just to test the PIN.
+  let status = 0
   try {
-    const current = await _lbLoad()
-    const r = await fetch('/api/leaderboard', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-lb-pin': pin },
-      body: JSON.stringify({ addrs: current }),
-    })
-    if (r.status === 403) {
-      await _showPinModal({ title: 'Wrong PIN', desc: 'The PIN you entered is incorrect.', confirmText: 'OK', type: 'text' })
-      _applyDevMode(); return
-    }
-    localStorage.setItem('hliq_lb_pin', pin)
-    localStorage.setItem('hliq_dev', '1')
+    const r = await fetch('/api/leaderboard/verify-pin', { method: 'POST', headers: { 'x-lb-pin': pin } })
+    status = r.status
   } catch {
-    await _showPinModal({ title: 'Error', desc: 'Could not reach the server.', confirmText: 'OK', type: 'text' })
+    await _showPinModal({ title: 'Offline', desc: 'Could not reach the server — try again.', confirmText: 'OK', type: 'text' })
+    _applyDevMode(); return
   }
+  if (status === 503) {
+    await _showPinModal({ title: 'Unavailable', desc: 'The dev PIN is not configured on the server.', confirmText: 'OK', type: 'text' })
+    _applyDevMode(); return
+  }
+  if (status !== 200) {
+    await _showPinModal({ title: 'Wrong PIN', desc: 'That PIN is incorrect.', confirmText: 'OK', type: 'text' })
+    _applyDevMode(); return
+  }
+  // Verified — turn dev mode on and cache the PIN for management actions.
+  localStorage.setItem('hliq_lb_pin', pin)
+  localStorage.setItem('hliq_dev', '1')
   _applyDevMode()
 }
 
@@ -14607,6 +19707,37 @@ async function _lbLoad() {
   } catch {
     try { return JSON.parse(localStorage.getItem(_LB_LS_KEY) || '[]') } catch { return [] }
   }
+}
+
+// Prefer the server's pre-computed leaderboard rows: ONE request instead of ~7
+// Hyperliquid calls per address from every visitor's browser. Falls back to the
+// in-browser fan-out when the cache is missing, stale, or doesn't yet cover a
+// freshly-joined address.
+const _LB_STATS_MAX_AGE = 15 * 60 * 1000
+async function _lbFetchRows(entries) {
+  try {
+    const r = await fetch('/api/leaderboard/stats')
+    if (r.ok) {
+      const { updatedAt, rows } = await r.json()
+      const fresh = Array.isArray(rows) && rows.length && (Date.now() - updatedAt) < _LB_STATS_MAX_AGE
+      if (fresh) {
+        const have = new Set(rows.map(x => x.addr.toLowerCase()))
+        if (entries.every(e => have.has(e.addr.toLowerCase()))) return rows
+      }
+    }
+  } catch {}
+  return _lbFetchResults(entries)
+}
+
+// Add a wallet the user just connected (and therefore owns) to the public board.
+// Best-effort and idempotent — the server dedupes, rate-limits and caps the list.
+function _lbJoin(addr) {
+  if (!addr || localStorage.getItem('hliq_lb_optout') === '1') return
+  fetch('/api/leaderboard/join', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ addr }),
+  }).catch(() => {})
 }
 
 function _lbGetPin() {
@@ -14700,12 +19831,17 @@ function _lbOrdersHtml(openOrders) {
 
 function _lbPnl(val, err) {
   if (err) return '—'
-  return (val >= 0 ? '+' : '') + '$' + fmtUSD(Math.abs(val))
+  return (val >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(val))
 }
 
-function _lbPct(val, acctVal, err) {
-  if (err || !acctVal) return ''
-  const pct = (val / acctVal) * 100
+// % of the account's starting basis (current value minus net PnL ≈ what was put in),
+// not of current equity — dividing by what's LEFT gave absurd readings (-4997%) for
+// accounts that lost most of their stack.
+function _lbPct(val, acctVal, netPnl, err) {
+  if (err) return ''
+  const basis = acctVal - (netPnl ?? 0)
+  if (!(basis > 1)) return ''
+  const pct = (val / basis) * 100
   return `<span style="font-size:10px;opacity:0.65;margin-left:4px">(${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)</span>`
 }
 
@@ -14748,14 +19884,14 @@ function _lbRowHtml(entry, rank) {
       <td class="lb-identity">
         ${avatarHtml}
         <div>
-          ${entry.label ? `<div class="lb-label">${esc(entry.label)}</div>` : ''}
+          ${entry.label ? `<div class="lb-label notranslate">${esc(entry.label)}</div>` : ''}
           <div class="lb-addr-short">${short}</div>
         </div>
       </td>
       <td class="lb-val">${valStr}</td>
       <td class="lb-pnl ${uCls}">${_lbPnl(entry.unrealizedPnl, entry.error)}</td>
-      <td class="lb-pnl ${rCls} lb-col-full">${_lbPnl(entry.realizedPnl, entry.error)}${_lbPct(entry.realizedPnl, entry.accountValue, entry.error)}</td>
-      <td class="lb-pnl ${nCls} lb-col-full">${_lbPnl(entry.netPnl, entry.error)}${_lbPct(entry.netPnl, entry.accountValue, entry.error)}</td>
+      <td class="lb-pnl ${rCls} lb-col-full">${_lbPnl(entry.realizedPnl, entry.error)}${_lbPct(entry.realizedPnl, entry.accountValue, entry.netPnl, entry.error)}</td>
+      <td class="lb-pnl ${nCls} lb-col-full">${_lbPnl(entry.netPnl, entry.error)}${_lbPct(entry.netPnl, entry.accountValue, entry.netPnl, entry.error)}</td>
       <td class="lb-chev">▶</td>
     </tr>
     <tr class="lb-expand" id="${uid}" style="display:none">
@@ -14764,7 +19900,7 @@ function _lbRowHtml(entry, rank) {
           <div style="display:flex;align-items:center;gap:12px">
             ${_lbAvatarHtml(entry.addr, 44)}
             <div class="lb-expand-identity">
-              ${entry.label ? `<span class="lb-expand-label">${esc(entry.label)}</span>` : ''}
+              ${entry.label ? `<span class="lb-expand-label notranslate">${esc(entry.label)}</span>` : ''}
               <span class="lb-expand-addr-row">
                 <span class="lb-expand-addr">${entry.addr.slice(0, 10)}…${entry.addr.slice(-6)}</span>
                 <button class="lb-copy-btn" onclick="event.stopPropagation();window.__lbCopy('${esc(entry.addr)}',this)">⎘ copy</button>
@@ -14772,6 +19908,7 @@ function _lbRowHtml(entry, rank) {
             </div>
           </div>
           ${isDev() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbRename('${esc(entry.addr)}')">✎ Rename</button>` : ''}
+          ${(() => { const own = _lbMyActiveAddr() && entry.addr.toLowerCase() === _lbMyActiveAddr(); if (!isDev() && !own) return ''; return `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbRemove('${esc(entry.addr)}','${isDev() ? 'dev' : 'owner'}')">🗑 Remove</button>` })()}
         </div>
         ${entry.error ? `<div class="lb-err">${entry.error}</div>` : `
           <div class="lb-pnl-breakdown">
@@ -14824,23 +19961,36 @@ async function _lbFetchHip3(addr) {
   const out = { ts: Date.now(), positions: [], orders: [] }
   if (!dexes.length) return out
   const info = new InfoClient({ transport: _transport })
-  await Promise.all(dexes.map(async dex => {
-    try {
-      const [cs, oo] = await Promise.all([
-        info.clearinghouseState({ user: addr, dex }),
-        info.frontendOpenOrders({ user: addr, dex }).catch(() => []),
-      ])
-      for (const ap of (cs?.assetPositions ?? [])) {
-        if (parseFloat(ap.position?.szi ?? 0) === 0) continue
-        const c = ap.position.coin.includes(':') ? ap.position.coin : `${dex}:${ap.position.coin}`
-        out.positions.push({ ...ap, position: { ...ap.position, coin: hip3Rename(c) } })
-      }
-      for (const o of (oo ?? [])) {
-        const c = o.coin.includes(':') ? o.coin : `${dex}:${o.coin}`
-        out.orders.push({ ...o, coin: hip3Rename(c) })
-      }
-    } catch {}
-  }))
+
+  // clearinghouseState is weight 2; frontendOpenOrders is weight 20. Fanning BOTH
+  // across every dex, for every wallet, cost ~200 weight per wallet — opening All
+  // Accounts with 5 wallets blew HL's whole 1200/min IP budget in one shot and 429'd.
+  // So: fan the cheap call to discover which dexes a wallet actually trades on, then
+  // pull orders only from those. Trade-off: a resting HIP-3 order on a dex where the
+  // wallet holds no position won't show here.
+  const states = await hlPool(dexes, dex => info.clearinghouseState({ user: addr, dex }).catch(() => null))
+  const withPositions = []
+  states.forEach((cs, i) => {
+    const dex = dexes[i]
+    let has = false
+    for (const ap of (cs?.assetPositions ?? [])) {
+      if (parseFloat(ap.position?.szi ?? 0) === 0) continue
+      has = true
+      const c = ap.position.coin.includes(':') ? ap.position.coin : `${dex}:${ap.position.coin}`
+      out.positions.push({ ...ap, position: { ...ap.position, coin: hip3Rename(c) } })
+    }
+    if (has) withPositions.push(dex)
+  })
+
+  const orderArrays = await hlPool(withPositions, dex =>
+    info.frontendOpenOrders({ user: addr, dex }).catch(() => []))
+  orderArrays.forEach((oo, i) => {
+    const dex = withPositions[i]
+    for (const o of (oo ?? [])) {
+      const c = o.coin.includes(':') ? o.coin : `${dex}:${o.coin}`
+      out.orders.push({ ...o, coin: hip3Rename(c) })
+    }
+  })
   return out
 }
 
@@ -14862,48 +20012,137 @@ async function _lbOcMark(coin, info) {
   return px
 }
 
+// Per-wallet cache of the expensive ALL-TIME history (portfolio + fills + funding). These
+// drive the chart / realized-PnL / net-deposited, which change slowly — so caching them
+// keeps the heavy fan-out from re-downloading everyone's whole history every cycle (the
+// main rate-limit driver). Live value/positions come from the fast clearinghouse tick.
+const _maHistCache2 = new Map()   // addr -> { portfolio, fills, funding, perpAtHist, ts }
+const _MA_HIST_TTL2 = 480_000
+// Set after a user action (place/close/cancel) to force fresh FILLS on the next fan WITHOUT
+// discarding the cached portfolio-snapshot/perp-anchor pair — see __refreshAfterAction.
+let _maFillsStale = false
 async function _lbFetchResults(entries) {
   const GENESIS = 1667260800000
   const info    = new InfoClient({ transport: _transport })
   const results = []
+  const _deferredHip3 = []   // addrs whose HIP-3 fan we skipped on the cold burst (All Accounts only)
   await _lbEnsureMetas()
   const _fetchOne = async (entry) => {
     const key = entry.addr.toLowerCase()
+    // The row this wallet had before this refresh — used to hold the last known
+    // account value if HL's portfolio snapshot comes back empty (see below).
+    const prevRow = _allAcctLastResults.find(r => String(r.addr ?? '').toLowerCase() === key)
     let hip3 = _lbHip3ByAddr[key]
-    const hip3Pending = (!hip3 || Date.now() - hip3.ts > 60_000)
-      ? _lbFetchHip3(entry.addr).then(h => { _lbHip3ByAddr[key] = h; return h })
-      : Promise.resolve(hip3)
-    const [cs, portfolio, fills, funding, openOrders, spotState, hip3Res] = await Promise.all([
+    // HIP-3 probes clearinghouseState across EVERY exotic dex per wallet to find positions
+    // (e.g. SPCX) — a ~150-weight, ~70-request burst across 8 wallets that was 429'ing
+    // app-open. In All Accounts the WS (allDexsClearinghouseState) already streams HIP-3
+    // POSITIONS live at zero REST weight, so on a cold miss we skip the fan here and let a
+    // deferred, throttled pass populate HIP-3 (chiefly resting ORDERS, which the WS doesn't
+    // carry) once the main burst has cleared. The leaderboard has no WS, so it keeps the
+    // inline fan. HIP-3 positions/orders change rarely, so cache for 15 min once fetched.
+    const _coldHip3 = !hip3
+    if (state.isAllAccounts && _coldHip3) _deferredHip3.push(entry.addr)
+    const hip3Pending = (state.isAllAccounts && _coldHip3)
+      ? Promise.resolve({ positions: [], orders: [] })
+      : ((!hip3 || Date.now() - hip3.ts > 900_000)
+          ? _lbFetchHip3(entry.addr).then(h => { _lbHip3ByAddr[key] = h; return h })
+          : Promise.resolve(hip3))
+    // Cheap/live endpoints every cycle; expensive all-time history reused from cache when fresh.
+    const [cs, openOrders, spotState, hip3Res] = await Promise.all([
       info.clearinghouseState({ user: entry.addr }),
-      info.portfolio({ user: entry.addr }).catch(() => []),
-      info.userFillsByTime({ user: entry.addr, startTime: GENESIS, reversed: true })
-        .catch(() => info.userFills({ user: entry.addr }).catch(() => [])),
-      info.userFunding({ user: entry.addr, startTime: GENESIS }).catch(() => []),
       info.frontendOpenOrders({ user: entry.addr }).catch(() => []),
       info.spotClearinghouseState({ user: entry.addr }).catch(() => null),
       hip3Pending.catch(() => ({ positions: [], orders: [] })),
     ])
-    const positions        = cs.assetPositions ?? []
+    const _hc = _maHistCache2.get(key)
+    let portfolio, fills, funding, _perpAtHist
+    // Perp state used for BOTH the anchor and the live value. Starts as the parallel read
+    // above, but on a cache miss it's re-read AFTER the portfolio snapshot (see below).
+    let csNow = cs
+    const _histFresh = _hc && Date.now() - _hc.ts < _MA_HIST_TTL2
+    if (_histFresh && _maFillsStale) {
+      // Post-action: refresh only the activity log. KEEP the cached snapshot+anchor pair —
+      // it's internally consistent, and the live perp delta already carries the close.
+      ;({ portfolio, perpAtHist: _perpAtHist } = _hc)
+      const [f2, fu2] = await Promise.all([
+        fetchAllFills(entry.addr, { startTime: GENESIS, info })
+          .catch(() => info.userFills({ user: entry.addr }).catch(() => _hc.fills ?? [])),
+        fetchAllFunding(entry.addr, GENESIS, { info }).catch(() => _hc.funding ?? []),
+      ])
+      fills = f2; funding = fu2
+      _maHistCache2.set(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: _hc.ts })
+    } else if (_histFresh) {
+      ({ portfolio, fills, funding, perpAtHist: _perpAtHist } = _hc)
+    } else {
+      ;[portfolio, fills, funding] = await Promise.all([
+        info.portfolio({ user: entry.addr }).catch(() => []),
+        fetchAllFills(entry.addr, { startTime: GENESIS, info })
+          .catch(() => info.userFills({ user: entry.addr }).catch(() => [])),
+        fetchAllFunding(entry.addr, GENESIS, { info }).catch(() => []),
+      ])
+      // Perp account value AT the moment this portfolio snapshot was taken — the anchor that
+      // keeps the (now-cached) snapshot time-aligned with the live perp delta below.
+      //
+      // This MUST be re-read here, not taken from the `cs` fetched before the batch above.
+      // That batch takes a while (all-time fills), and closing a trade triggers an immediate
+      // refresh (__refreshAfterAction) — so a close landing inside that gap left the snapshot
+      // already containing the close while the anchor predated it. Every later live tick then
+      // re-applied the same delta on top (`_portVal + (perpNow − _perpBase)`), double-counting
+      // it and spiking the equity until the next heavy refresh. Costs one weight-2 call, and
+      // only on a cache miss.
+      try { csNow = await info.clearinghouseState({ user: entry.addr }) } catch { csNow = cs }
+      _perpAtHist = parseFloat(csNow.marginSummary?.accountValue ?? 0)
+      _maHistCache2.set(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: Date.now() })
+    }
+    const positions        = csNow.assetPositions ?? []
     const allTimePort      = (portfolio ?? []).find(p => p[0] === 'allTime')
     const acctValHist      = allTimePort?.[1]?.accountValueHistory ?? []
     const portfolioAcctVal = acctValHist.length ? parseFloat(acctValHist.at(-1)[1]) : null
-    const _perpAcctVal     = parseFloat(cs.marginSummary?.accountValue ?? 0)
+    const _perpAcctVal     = parseFloat(csNow.marginSummary?.accountValue ?? 0)
     const _spotUSDCTotal   = parseFloat((spotState?.balances ?? []).find(b => b.coin === 'USDC')?.total ?? 0)
-    // HL "Portfolio Value" — the portfolio endpoint is HL's own unified account
-    // value (unified USDC already contains perp equity; perp+spot only as fallback)
-    const accountValue     = portfolioAcctVal ?? (_perpAcctVal + _spotUSDCTotal)
-    // Denominator of HL's Unified Account Ratio — cached for the light refresh
-    const _marginBase      = _spotUSDCTotal > 0 ? _spotUSDCTotal : _perpAcctVal
+    // HL "Portfolio Value" — the portfolio endpoint is HL's own unified account value.
+    //
+    // `perp + spot` is NOT a substitute for it: on a unified account the USDC balance
+    // already contains perp equity, so the sum double-counts. Measured live, the two
+    // differ by $237 / $126 / $69 on three of these wallets — so every time the
+    // portfolio call came back empty the equity leapt by that amount and snapped back
+    // on the next refresh. That is the "fake ~$200 spike".
+    //
+    // Fix: never switch formulas mid-session. A missing snapshot holds the account's
+    // last known value; the double-counting sum is a last resort for a cold start with
+    // nothing cached at all (better than rendering $0).
+    const _prevAcctVal     = parseFloat(prevRow?.accountValue)
+    // Live-reconstructed Portfolio Value, mirroring liveAccountValue() in the single-account
+    // view: bridge the (possibly cache-stale) snapshot to now with the fresh perp-equity
+    // delta since the snapshot was taken. Without this bridge the cached snapshot is up to
+    // _MA_HIST_TTL2 old, which is exactly what made one account read ~$2 off in All Accounts
+    // vs its own (60s-fresh) single view. On a cache miss _perpAtHist == _perpAcctVal, so the
+    // delta is 0 and this equals the raw snapshot.
+    const accountValue     = portfolioAcctVal != null
+      ? portfolioAcctVal + (_perpAcctVal - _perpAtHist)
+      : (Number.isFinite(_prevAcctVal) && _prevAcctVal > 0 ? _prevAcctVal : _perpAcctVal + _spotUSDCTotal)
+    // Fast-tick baseline: the FIXED snapshot + its time-aligned perp anchor. The 12s value
+    // tick recomputes _portVal + (perpNow − _perpBase) — identical formula to the single view.
+    const _fastBase        = portfolioAcctVal != null ? portfolioAcctVal : accountValue
+    const _perpBase        = portfolioAcctVal != null ? _perpAtHist       : _perpAcctVal
+    // Denominator of HL's Unified Account Ratio = the Portfolio Value (unified account
+    // value), NOT the perp-only account value. Cached for the light refresh.
+    const _marginBase      = accountValue
     const unrealizedPnl    = positions.reduce((s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0)
     const realizedPnl      = fills.reduce((s, f) => s + parseFloat(f.closedPnl ?? 0), 0)
     const totalFees        = fills.reduce((s, f) => s + parseFloat(f.fee ?? 0), 0)
     const allTimeFunding   = funding.reduce((s, f) => s + parseFloat(f.delta?.usdc ?? 0), 0)
     const netPnl           = realizedPnl + unrealizedPnl + allTimeFunding - totalFees
-    const maintMargin      = parseFloat(cs.crossMaintenanceMarginUsed ?? 0)
-    // Health = 100 − HL's Unified Account Ratio (maint / unified USDC balance)
-    const healthPct        = _marginBase > 0 ? Math.max(0, (1 - maintMargin / _marginBase) * 100) : 0
+    const maintMargin      = parseFloat(csNow.crossMaintenanceMarginUsed ?? 0)
+    // Health = 100 − HL's Unified Account Ratio (maintenance margin ÷ Portfolio Value)
+    const healthPct        = _marginBase > 0 ? Math.max(0, Math.min(100, (1 - maintMargin / _marginBase) * 100)) : 100
     const healthCls        = healthPct > 60 ? 'pos' : healthPct > 30 ? 'warn' : 'neg'
-    const withdrawable     = parseFloat(cs.withdrawable ?? 0)
+    // Free margin = perp withdrawable + free (un-held) spot USDC. Compute it here in the
+    // base fetch (the spot state is already loaded) so free margin is correct on the very
+    // first paint and the 12s value tick can re-add the spot part via _spotFree.
+    const _spotUSDC        = (spotState?.balances ?? []).find(b => b.coin === 'USDC')
+    const _spotFree        = _spotUSDC ? Math.max(0, parseFloat(_spotUSDC.total ?? 0) - parseFloat(_spotUSDC.hold ?? 0)) : 0
+    const withdrawable     = parseFloat(csNow.withdrawable ?? 0) + _spotFree
     const totalVolume      = fills.reduce((s, f) => s + parseFloat(f.sz ?? 0) * parseFloat(f.px ?? 0), 0)
     let grossWin = 0, grossLoss = 0
     const ONE_HOUR = 3600000
@@ -14920,7 +20159,9 @@ async function _lbFetchResults(entries) {
     const _allW        = Object.values(_windows)
     const winCount     = _allW.filter(n => n > 0).length
     const totalWindows = _allW.length
-    const chartFills   = fills.map(f => ({ time: +f.time, closedPnl: parseFloat(f.closedPnl ?? 0), coin: f.coin, fee: parseFloat(f.fee ?? 0), sz: parseFloat(f.sz ?? 0), px: parseFloat(f.px ?? 0), notional: parseFloat(f.sz ?? 0) * parseFloat(f.px ?? 0), dir: f.dir ?? '', hash: f.hash ?? '' }))
+    // Full canonical fill shape (adds side/timeStr/oid/tid/feeToken over the old
+    // reduced form) so the combined view's History/Calendar render like a normal account.
+    const chartFills   = parseFills(fills)
     // Merge HIP-3 (TradFi) positions/orders for display; outcomes come from spot balances.
     const allPositions = [...positions, ...(hip3Res?.positions ?? [])]
     const allOrders    = [...openOrders, ...(hip3Res?.orders ?? [])]
@@ -14933,25 +20174,85 @@ async function _lbFetchResults(entries) {
       const pnl   = (m - entry) * total
       return { coin: b.coin, total, hold: parseFloat(b.hold ?? 0), cost, entry, mark: m, value: total * m, pnl, roe: cost > 0 ? pnl / cost * 100 : 0 }
     }))
-    return { ...entry, accountValue, _marginBase, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, positions: allPositions, openOrders: allOrders, outcomes, portfolio, fills: chartFills, error: null }
+    // Real (non-outcome) spot tokens — carried so the combined view can list them in its
+    // Spot tab. Kept OFF the aggregated spotState (which would double-count USDC into the
+    // combined Free-margin/equity math); the combined Spot render reads this directly.
+    const spotBalances = (spotState?.balances ?? []).filter(b => !_lbIsOutcome(b.coin) && parseFloat(b.total ?? 0) > 0)
+      .map(b => ({ coin: b.coin, total: parseFloat(b.total ?? 0), hold: parseFloat(b.hold ?? 0), entryNtl: parseFloat(b.entryNtl ?? 0) }))
+    // Snapshot baselines for the fast value tick: it recomputes accountValue as
+    // _portVal + (liveMainUnreal − _unrealAtSnap) each tick (NON-cumulative, self-correcting),
+    // instead of accumulating deltas — which drifted and diverged between devices.
+    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, error: null }
   }
 
   for (let i = 0; i < entries.length; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, 150))
+    // Stagger wallets so N accounts don't fire their (cs+orders+spot+history+HIP-3) bursts on
+    // top of each other and blow HL's burst bucket. Widen the gap for bigger wallet sets — 8
+    // wallets was tripping the limit on app-open. ~650ms spreads 8 wallets over ~4.5s.
+    if (i > 0) await new Promise(r => setTimeout(r, entries.length > 4 ? 650 : 350))
     const entry = entries[i]
     let ok = false
     for (let attempt = 0; attempt < 8; attempt++) {
+      if (_hlLimited()) break   // global breaker already open — don't pile on
       if (attempt > 0) await new Promise(r => setTimeout(r, Math.min(500 * attempt, 4000)))
       try {
         results.push(await _fetchOne(entry))
         ok = true
+        _hlOk()
         break
-      } catch {}
+      } catch (e) {
+        // A 429 means the endpoint is throttling us globally. Retrying this wallet
+        // 8× (each attempt is ~7 requests) only deepens the hole, so trip the shared
+        // breaker and stop — every other poller backs off with us.
+        if (_hl429(e)) break
+      }
     }
     if (!ok) results.push({ ...entry, accountValue: 0, unrealizedPnl: 0, realizedPnl: 0, netPnl: 0, positions: [], error: 'Failed to load' })
   }
+  _maFillsStale = false   // one-shot: this fan already re-read fills for every wallet
   results.sort((a, b) => b.accountValue - a.accountValue)
+  // Cold-load relief: HIP-3 fans we skipped above now run OFF the critical burst, once the
+  // main load has settled. Populates _lbHip3ByAddr so the next silent re-aggregation shows
+  // HIP-3 orders; positions are already live from the WS in the meantime.
+  if (_deferredHip3.length) _scheduleDeferredHip3(_deferredHip3)
   return results
+}
+
+// Fill HIP-3 positions/orders for wallets whose fan we deferred off the cold All-Accounts
+// burst. Runs one wallet at a time with a wide gap and the shared 429 breaker, so it can
+// never re-create the burst it was meant to avoid. Merges the result straight into the
+// cached rows (HIP-3 is display-only — equity/health/uPnL use MAIN perp state, not these),
+// then re-aggregates once. Positions are deduped by coin so this can't double up with the
+// WS, which may have already streamed the same HIP-3 positions.
+let _deferHip3Timer = null
+function _scheduleDeferredHip3(addrs) {
+  if (_deferHip3Timer) return   // one pass at a time
+  const list = [...new Set(addrs.map(a => String(a).toLowerCase()))]
+  _deferHip3Timer = setTimeout(async () => {
+    try {
+      let changed = false
+      for (const addr of list) {
+        if (!state.isAllAccounts) break            // user left the combined view — stop
+        if (_hlLimited()) await new Promise(r => setTimeout(r, 4000))
+        if (_hlLimited()) break
+        try {
+          const h = await _lbFetchHip3(addr)
+          _lbHip3ByAddr[addr] = h
+          const row = _allAcctLastResults.find(r => String(r.addr ?? '').toLowerCase() === addr)
+          if (row && (h.positions?.length || h.orders?.length)) {
+            const haveCoins = new Set((row.positions ?? []).map(p => p.position?.coin))
+            const newPos    = (h.positions ?? []).filter(p => !haveCoins.has(p.position?.coin))
+            const haveOids  = new Set((row.openOrders ?? []).map(o => o.oid))
+            const newOrders = (h.orders ?? []).filter(o => !haveOids.has(o.oid))
+            if (newPos.length)    { row.positions  = [...(row.positions ?? []),  ...newPos];    changed = true }
+            if (newOrders.length) { row.openOrders = [...(row.openOrders ?? []), ...newOrders]; changed = true }
+          }
+        } catch (_) {}
+        await new Promise(r => setTimeout(r, 900))  // wide gap — stay off the burst bucket
+      }
+      if (changed && state.isAllAccounts) { try { _allAcctReaggregate(); updateMobileView() } catch (_) {} }
+    } finally { _deferHip3Timer = null }
+  }, 2500)   // let the main cold burst fully clear first
 }
 
 async function _lbSilentUpdate() {
@@ -14972,7 +20273,7 @@ async function _lbSilentUpdate() {
       if (tr.style.display !== 'none') openUids.add(tr.id)
     })
 
-    const results = await _lbFetchResults(entries)
+    const results = await _lbFetchRows(entries)
     _lbLastFetch = Date.now()
 
     // Re-render tbody only if data changed
@@ -15019,7 +20320,7 @@ async function renderLeaderboard() {
       return
     }
 
-    results = await _lbFetchResults(entries)
+    results = await _lbFetchRows(entries)
     _lbLastFetch = Date.now()
   } finally {
     _lbFetching = false
@@ -15055,10 +20356,10 @@ function _lbFormEl(entries) {
     <div class="lb-extras" id="lbExtrasList">
       ${entries.length ? entries.map(e => `
         <div class="lb-extra-row">
-          <span class="lb-extra-name">${esc(e.label || e.addr.slice(0, 8) + '…' + e.addr.slice(-5))}</span>
+          <span class="lb-extra-name notranslate">${esc(e.label || e.addr.slice(0, 8) + '…' + e.addr.slice(-5))}</span>
           <span class="lb-extra-addr-sub">${e.label ? e.addr.slice(0, 6) + '…' + e.addr.slice(-4) : ''}</span>
           <button class="lb-edit" onclick="window.__lbRename('${esc(e.addr)}')">✎</button>
-          <button class="lb-remove" onclick="window.__lbRemove('${esc(e.addr)}')">✕</button>
+          <button class="lb-remove" onclick="window.__lbAdminRemove('${esc(e.addr)}')">✕</button>
         </div>`).join('') : '<div class="lb-extras-empty">None added yet</div>'}
     </div>
     <div class="lb-add-row">
@@ -15118,7 +20419,10 @@ window.__lbAdd = async function() {
   })
 }
 
-window.__lbRemove = async function(addr) {
+// Admin/PIN removal from the tracked-accounts list (dev "manage" UI). Renamed from __lbRemove
+// so it stops SHADOWING the owner-signature self-removal above — that name collision is what
+// broke the "Remove from leaderboard" button on a user's own row.
+window.__lbAdminRemove = async function(addr) {
   await _lbWithPin(async () => {
     const entries = await _lbLoad()
     await _lbSave(entries.filter(e => e.addr.toLowerCase() !== addr.toLowerCase()))
@@ -15193,6 +20497,9 @@ function _maLoad() {
 
 function _maCardHtml(r) {
   const hidden   = _maHiddenLoad().has(r.addr)
+  // r.unrealizedPnl / r.netPnl now cover the whole account (main dex + HIP-3), fixed
+  // at the source in _allAcctFastValue — so this reads them directly and Net PnL keeps
+  // its funding and fees.
   const unreal   = fmtPnL(r.unrealizedPnl)
   const real     = fmtPnL(r.realizedPnl)
   const net      = fmtPnL(r.netPnl)
@@ -15204,17 +20511,22 @@ function _maCardHtml(r) {
   const eyeIcon  = hidden
     ? `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="2" y1="2" x2="14" y2="14"/><path d="M6.5 6.6A2 2 0 009.4 9.5"/><path d="M4 4.3A7 7 0 001 8s2.5 5 7 5a6.8 6.8 0 003.7-1.1"/><path d="M12.5 12A7 7 0 0015 8s-2.5-5-7-5c-1 0-2 .2-2.8.6"/></svg>`
     : `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z"/><circle cx="8" cy="8" r="2"/></svg>`
+  // Cards default to COLLAPSED (name + address + value + health bar only) to fit more
+  // accounts on screen; tapping expands to the full stats. State persists in a Set so a
+  // data refresh keeps whatever the user opened.
+  const expanded = _maExpandedCards.has(r.addr)
+  const chevron  = `<svg class="ma-card-chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>`
   return `
-  <div class="ma-card${r.error ? ' ma-card-err' : ''}${hidden ? ' ma-card-hidden' : ''}">
+  <div class="ma-card${r.error ? ' ma-card-err' : ''}${hidden ? ' ma-card-hidden' : ''}${expanded ? ' expanded' : ''}">
     <div class="ma-card-head">
-      <div class="ma-card-identity">
-        <div class="ma-card-name">${esc(dispName)}</div>
+      <div class="ma-card-identity" onclick="window.__maToggleCard('${esc(r.addr)}', this)" style="cursor:pointer">
+        <div class="ma-card-name notranslate">${esc(dispName)}</div>
         ${dispAddr ? `<div class="ma-card-addr">${esc(dispAddr)}</div>` : ''}
       </div>
       <div class="ma-card-actions">
-        <button class="lb-edit" onclick="window.__maToggleHide('${esc(r.addr)}')" title="${hidden ? 'Show' : 'Hide'}">${eyeIcon}</button>
-        <button class="lb-edit" onclick="window.__maRename('${esc(r.addr)}')">✎</button>
-        <button class="lb-remove" onclick="window.__maRemove('${esc(r.addr)}')">✕</button>
+        <button class="lb-edit" onclick="event.stopPropagation();window.__maToggleHide('${esc(r.addr)}')" title="${hidden ? 'Show' : 'Hide'}">${eyeIcon}</button>
+        <button class="lb-edit" onclick="event.stopPropagation();window.__maRename('${esc(r.addr)}')">✎</button>
+        <button class="lb-remove" onclick="event.stopPropagation();window.__maRemove('${esc(r.addr)}')">✕</button>
       </div>
     </div>
     ${r.error
@@ -15225,18 +20537,55 @@ function _maCardHtml(r) {
           const botsHtml = runningBots.length
             ? `<div class="ma-bots-row">${runningBots.map(t => `<span class="ma-bot-pill">${t}</span>`).join('')}</div>`
             : ''
-          return `<div class="ma-card-value">$${fmtUSD(r.accountValue)}</div>
-         <div class="stat-health-bar" style="margin:8px 0 4px"><div class="stat-health-fill ${hCls}" style="width:${Math.min(100, hPct).toFixed(1)}%"></div></div>
-         <div class="ma-card-grid">
-           <div class="ma-stat"><span class="ma-stat-lbl">Health</span><span class="ma-stat-val ${hCls}">${hStr}</span></div>
-           <div class="ma-stat"><span class="ma-stat-lbl">Positions</span><span class="ma-stat-val">${r.positions.length} open</span></div>
-           <div class="ma-stat"><span class="ma-stat-lbl">Unrealized</span><span class="ma-stat-val ${unreal.cls}">${unreal.text}</span></div>
-           <div class="ma-stat"><span class="ma-stat-lbl">Realized</span><span class="ma-stat-val ${real.cls}">${real.text}</span></div>
-           <div class="ma-stat"><span class="ma-stat-lbl">Net PnL</span><span class="ma-stat-val ${net.cls}">${net.text}</span></div>
-         </div>${botsHtml}`
+          return `<div class="ma-card-summary" onclick="window.__maToggleCard('${esc(r.addr)}', this)" style="cursor:pointer">
+           <div class="ma-card-value">$${fmtUSD(r.accountValue)} ${chevron}</div>
+           <div class="stat-health-bar" style="margin:8px 0 4px"><div class="stat-health-fill ${hCls}" style="width:${Math.min(100, hPct).toFixed(1)}%"></div></div>
+         </div>
+         <div class="ma-card-ext">
+           <div class="ma-card-grid">
+             <div class="ma-stat"><span class="ma-stat-lbl">Health</span><span class="ma-stat-val ${hCls}">${hStr}</span></div>
+             <div class="ma-stat"><span class="ma-stat-lbl">Positions</span><span class="ma-stat-val">${r.positions.length} open</span></div>
+             <div class="ma-stat"><span class="ma-stat-lbl">Unrealized</span><span class="ma-stat-val ${unreal.cls}">${unreal.text}</span></div>
+             <div class="ma-stat"><span class="ma-stat-lbl">Realized</span><span class="ma-stat-val ${real.cls}">${real.text}</span></div>
+             <div class="ma-stat"><span class="ma-stat-lbl">Net PnL</span><span class="ma-stat-val ${net.cls}">${net.text}</span></div>
+             <div class="ma-stat"><span class="ma-stat-lbl">Free margin</span><span class="ma-stat-val">$${fmtUSD(r.withdrawable ?? 0)}</span></div>
+           </div>${botsHtml}
+         </div>`
         })()
     }
   </div>`
+}
+
+// Expanded-card state (default: all collapsed). Persisted across data refreshes so an
+// account the user opened stays open when the cards re-render.
+const _maExpandedCards = new Set()
+
+// Expand or collapse every visible account card at once. Expands unless they're all
+// already open, in which case it collapses — one button, both directions.
+window.__maToggleAll = function() {
+  const vis = _allAcctLastResults.filter(r => !_maHiddenLoad().has(r.addr))
+  const allOpen = vis.length > 0 && vis.every(r => _maExpandedCards.has(r.addr))
+  if (allOpen) _maExpandedCards.clear()
+  else for (const r of vis) _maExpandedCards.add(r.addr)
+  _syncAllAcctCards()   // repaint the grid with the new expansion state
+  const btn = document.getElementById('maToggleAllBtn')
+  if (btn) btn.textContent = allOpen ? 'Expand All' : 'Collapse All'
+}
+
+window.__maToggleCard = function(addr, el) {
+  const key  = addr
+  const open = !_maExpandedCards.has(key)
+  if (open) _maExpandedCards.add(key); else _maExpandedCards.delete(key)
+  // Toggle live on the clicked card (snappy, no full re-render). Both the portfolio grid
+  // and the Accounts tab render the same markup, so class-toggle keeps them in sync too.
+  const card = el?.closest?.('.ma-card')
+  if (card) card.classList.toggle('expanded', open)
+  // Keep the Expand/Collapse-All button honest after a manual toggle.
+  const btn = document.getElementById('maToggleAllBtn')
+  if (btn) {
+    const vis = _allAcctLastResults.filter(r => !_maHiddenLoad().has(r.addr))
+    btn.textContent = (vis.length > 0 && vis.every(r => _maExpandedCards.has(r.addr))) ? 'Collapse All' : 'Expand All'
+  }
 }
 
 function _maAggregateHtml(results) {
@@ -15280,7 +20629,7 @@ function _maStatsHtml(results) {
   const wrCls        = wrPct === null ? 'neu' : wrPct >= 50 ? 'pos' : 'neg'
 
   const cards = [
-    { label: 'Total Deposited',  value: '$'  + fmtUSD(totalDeposited),    sub: 'All-time USDC bridged in',          cls: 'neu' },
+    { label: 'Total Deposited',  value: '$'  + fmtUSD(totalDeposited),    sub: 'All-time in (bridge + transfers)',  cls: 'neu' },
     { label: 'Total Withdrawn',  value: '$'  + fmtUSD(totalWithdrawn),    sub: 'All-time USDC bridged out',         cls: 'neu' },
     { label: 'Withdrawable',     value: '$'  + fmtUSD(withdrawable),      sub: 'Perp + free spot USDC',             cls: 'pos' },
     { label: 'Total Volume',     value: '$'  + fmtCompact(totalVolume),   sub: 'Notional traded all-time',          cls: 'neu' },
@@ -15395,18 +20744,26 @@ async function _maEnrichResults(results, forceRefreshLedger = false) {
       } else {
         const ledger = await info.userNonFundingLedgerUpdates({ user: r.addr, startTime: GENESIS }).catch(() => [])
         ledgerEntries = ledger ?? []
+        const _me = r.addr.toLowerCase()
         for (const e of ledgerEntries) {
-          const t = e.delta?.type
-          if (t === 'deposit') totalDeposited += parseFloat(e.delta.usdc ?? 0)
-          else if (t === 'send' && e.delta?.token === 'USDC') totalDeposited += parseFloat(e.delta.usdcValue ?? 0)
-          else if (t === 'withdraw') totalWithdrawn += parseFloat(e.delta.usdc ?? 0)
+          const d = e.delta ?? {}
+          if (d.type === 'deposit') totalDeposited += parseFloat(d.usdc ?? 0)
+          else if (d.type === 'withdraw') totalWithdrawn += parseFloat(d.usdc ?? 0)
+          // Transfers (USDC sends AND spot-token transfers) move real money in or out:
+          // count them by direction at their USD value, otherwise received tokens show
+          // up as pure "profit" and outgoing sends vanish from the books.
+          else if (d.type === 'send' || d.type === 'spotTransfer') {
+            const v = parseFloat(d.usdcValue ?? 0)
+            if ((d.destination ?? '').toLowerCase() === _me) totalDeposited += v
+            else totalWithdrawn += v
+          }
         }
         _maLedgerCache.set(r.addr, { totalDeposited, totalWithdrawn, ledgerEntries, ts: now })
       }
-      const spotCs  = await info.spotClearinghouseState({ user: r.addr }).catch(() => ({ balances: [] }))
-      const spotUSDC = (spotCs?.balances ?? []).find(b => b.coin === 'USDC')
-      const spotFree = spotUSDC ? Math.max(0, parseFloat(spotUSDC.total ?? 0) - parseFloat(spotUSDC.hold ?? 0)) : 0
-      enriched[i] = { ...r, totalDeposited, totalWithdrawn, withdrawable: r.withdrawable + spotFree, ledgerEntries }
+      // Free margin (withdrawable, incl. spot-free USDC) and _spotFree are computed in the
+      // base fetch (_lbFetchResults), so don't touch them here — re-adding spot-free would
+      // double-count it.
+      enriched[i] = { ...r, totalDeposited, totalWithdrawn, ledgerEntries }
     } catch {}
   }
   return enriched
@@ -15419,7 +20776,8 @@ async function renderMultiAccount() {
   root.innerHTML = `<div class="ma-loading">Fetching accounts…</div>`
   const entries = _maLoad()
   if (!entries.length) {
-    root.innerHTML = `<div class="ma-empty">No saved wallets yet — add one using the wallet switcher.</div>`
+    root.innerHTML = `<div class="ma-empty">No saved wallets yet.<br><br>
+      <button class="btn-sm" onclick="window.__toggleWalletPanel()">Open wallet switcher →</button></div>`
     return
   }
   const [results] = await Promise.all([
@@ -15747,8 +21105,11 @@ async function _maSilentUpdate() {
         const unrealizedPnl = positions.reduce((s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0)
         const withdrawable  = parseFloat(cs.withdrawable ?? 0)
         const maintMargin   = parseFloat(cs.crossMaintenanceMarginUsed ?? 0)
-        const _hBase        = (cached._marginBase ?? 0) > 0 ? cached._marginBase : perpAcctVal
-        const healthPct     = _hBase > 0 ? Math.max(0, (1 - maintMargin / _hBase) * 100) : 0
+        // HL's Unified Account Ratio divides by the Portfolio Value (unified account
+        // value), cached as _marginBase from the full fetch and kept fresh via
+        // accountValue (which the full fetch refreshes every 5 min).
+        const _hBase        = (cached._marginBase ?? 0) > 0 ? cached._marginBase : accountValue
+        const healthPct     = _hBase > 0 ? Math.max(0, Math.min(100, (1 - maintMargin / _hBase) * 100)) : 100
         const healthCls     = healthPct > 60 ? 'pos' : healthPct > 30 ? 'warn' : 'neg'
         const netPnl        = (cached.realizedPnl ?? 0) + unrealizedPnl + (cached.allTimeFunding ?? 0) - (cached.totalFees ?? 0)
         results.push({ ...cached, accountValue, unrealizedPnl, netPnl, withdrawable, maintMargin, healthPct, healthCls, positions })
@@ -15785,12 +21146,19 @@ window.__maToggleHide = function(addr) {
   const s = _maHiddenLoad()
   if (s.has(addr)) s.delete(addr); else s.add(addr)
   _maHiddenSave(s)
+  // In the combined view, hiding changes the totals — re-aggregate from cache rather
+  // than rebuilding (and refetching) the Accounts tab.
+  if (state.isAllAccounts) { _allAcctReaggregate(); return }
   renderMultiAccount()
 }
 
 window.__maRemove = function(addr) {
+  if (!_confirmRemoveWallet(addr)) return
   WM.remove(addr)
   _maLedgerCache.delete(addr)
+  // Drop it from the combined view's cache too, or its equity lingers in the totals.
+  _allAcctLastResults = _allAcctLastResults.filter(r => r.addr.toLowerCase() !== addr.toLowerCase())
+  if (state.isAllAccounts) { _allAcctReaggregate(); return }
   renderMultiAccount()
 }
 
@@ -15805,6 +21173,10 @@ window.__maRename = async function(addr) {
   })
   if (name === null) return
   WM.upsert(addr, name.trim())
+  // Labels live on the cached results, so patch them rather than refetching.
+  const _lbl = name.trim()
+  for (const r of _allAcctLastResults) if (r.addr.toLowerCase() === addr.toLowerCase()) r.label = _lbl
+  if (state.isAllAccounts) { _allAcctReaggregate(); return }
   renderMultiAccount()
 }
 
@@ -15894,12 +21266,80 @@ window.__closePredictions = () => _predictSettle(false)
   }
 })()
 
+// The More drawer is reached by a horizontal swipe, but that gesture lives on #mobileView —
+// and while predictions are showing, #mobileView is parked off-screen as a bottom lip, so the
+// swipe never fired and More was unreachable from here. Same gesture, bound to the predictions
+// overlay. Either direction opens it (this view has no left/right paging to conflict with),
+// and swiping left closes it again — matching the home view's behaviour.
+;(function initPredictSwipe() {
+  const ov = document.getElementById('mobPredictOverlay')
+  if (!ov) return
+  let sx = 0, sy = 0, st = 0, tracking = false
+  ov.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1 || _swipeBlocked(e.target)) { tracking = false; return }
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now(); tracking = true
+  }, { passive: true })
+  ov.addEventListener('touchend', e => {
+    if (!tracking) return
+    tracking = false
+    const t = e.changedTouches[0]
+    const dx = t.clientX - sx, dy = t.clientY - sy
+    // Same thresholds as the main page swipe: decisive, horizontal, and quick.
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.8 || Date.now() - st > 600) return
+    const drawer = document.getElementById('mobMoreDrawer')
+    const isOpen = drawer?.classList.contains('open')
+    if (isOpen) { if (dx < 0) window.mobVOpenMore() }   // swipe left pushes the drawer back out
+    else window.mobVOpenMore()
+  }, { passive: true })
+})()
+
 // ─── OUTCOMES (PREDICTION MARKETS) ───────────────────────────────────────────
 let _ocCharts          = {}
 let _ocCountdownInterval = null
 let _ocRefreshInterval = null
 let _ocPrices          = {}   // { [outcomeId]: { yes: number, no: number } }
 let _ocMarkCache       = {}   // { [spotCoin '+N']: mark price } — last live mid for held outcomes
+let _ocPendingClose    = {}   // "digits@acctAddr" → { total: expected shares after close, ts } — masks HL spot-balance lag
+
+// Pending-close key: outcome token + owning account, so closing the SAME token on one
+// account in the combined view never clamps another account's holding of it.
+function _ocPendKey(coin, acctAddr) {
+  const n = parseInt(String(coin).replace(/[^\d]/g, '')) || 0
+  return n + '@' + String(acctAddr || '').toLowerCase()
+}
+
+// Current held shares for an outcome (this account, or a specific one in the combined view).
+function _ocFindBalTotal(coin, acct) {
+  const n = parseInt(String(coin).replace(/[^\d]/g, '')) || 0
+  const match = b => (parseInt(String(b.coin).replace(/[^\d]/g, '')) || 0) === n
+  let arr = state.spotState?.balances
+  if (acct && state.isAllAccounts) {
+    // Outcomes live in r.outcomes (kept off r.spotBalances to avoid double-counting USDC),
+    // so search both — otherwise an outcome always reads 0 shares and partial closes mis-clamp.
+    const r = (_allAcctLastResults || []).find(x => String(x.addr).toLowerCase() === String(acct).toLowerCase())
+    arr = [...(r?.spotBalances ?? []), ...(r?.outcomes ?? [])]
+  }
+  const b = (arr || []).find(match)
+  return b ? parseFloat(b.total || 0) : 0
+}
+
+// Clamp outcome holdings to their expected post-close size so a just-closed position
+// disappears immediately — and a spot refresh that hasn't propagated yet can't revert it
+// to "open". Self-clears once HL confirms the reduction (or after 15s as a safety net).
+function _ocClampPending(list) {
+  const now = Date.now()
+  const out = []
+  for (const b of (list || [])) {
+    const key = _ocPendKey(b.coin, b._acctAddr)
+    const p = _ocPendingClose[key]
+    if (!p) { out.push(b); continue }
+    if (now - p.ts > 15000) { delete _ocPendingClose[key]; out.push(b); continue }
+    const cur = parseFloat(b.total || 0)
+    if (cur <= p.total + 0.001) { delete _ocPendingClose[key]; if (cur > 0) out.push(b); continue }  // HL confirmed
+    if (p.total > 0) out.push({ ...b, total: String(p.total) })   // show reduced size (drop entirely if fully closed)
+  }
+  return out
+}
 let _ocLiveOutcomes    = []   // stored for polling
 let _ocLiveQuestions   = []   // HL question groups (native event grouping)
 let _ocLiveInfo        = null
@@ -15924,7 +21364,9 @@ function _ocCoinLabel(coin) {
   // the "#N" entry in ocTokenMap.
   if (typeof coin === 'string' && (coin[0] === '#' || coin[0] === '+')) {
     const t = state.ocTokenMap?.['#' + coin.slice(1)]
-    if (t && t.name) return `${t.name} ${t.side ?? ''}`.trim()
+    // "Market question · Side" — without the separator the side reads as a
+    // duplicated word ("…Switzerland vs Colombia Colombia").
+    if (t && t.name) return t.side ? `${t.name} · ${t.side}` : t.name
     // Settled outcomes drop out of the live outcomeMeta, but HL keeps their
     // spec behind {type:'settledOutcome'}. Fire a one-shot lazy fetch to pull
     // the real title (e.g. "World Cup Round of 16: Brazil vs Norway · Norway")
@@ -15935,6 +21377,7 @@ function _ocCoinLabel(coin) {
   return coinLabel(coin)
 }
 window._ocFallbackLabel = _ocFallbackLabel   // used by render.js ocCoinLabel fallback
+window.__ocLabel = _ocCoinLabel              // render.js scoreboard cards resolve "#N" ids
 
 // Human-readable placeholder for an outcome coin whose title isn't in ocTokenMap.
 // "#7391"/"+7391" → outcome 739, side 1 → "Prediction #739 · No".
@@ -16033,6 +21476,12 @@ function _buildOcTokenMap(meta) {
 function _hydrateOcTokenMap() {
   if (state.ocTokenMap && Object.keys(state.ocTokenMap).length) return
   try {
+    // One-time migration: older caches stored labels with the "…, 02:00 AM GMT-4)" expiry
+    // format. Drop that cache once so labels rebuild in the new date-only format.
+    if (localStorage.getItem('hliq_oc_label_fmt') !== '2') {
+      localStorage.removeItem('hliq_oc_token_map')
+      localStorage.setItem('hliq_oc_label_fmt', '2')
+    }
     const cached = JSON.parse(localStorage.getItem('hliq_oc_token_map') || 'null')
     if (cached && Object.keys(cached).length) {
       state.ocTokenMap    = cached
@@ -16052,7 +21501,8 @@ function _fmtOutcomeExpiry(raw) {
   if (!raw || raw.length < 8) return raw
   const ds = raw.slice(0, 8), ts = (raw.slice(9) || '0000').padEnd(4, '0')
   const utc = new Date(Date.UTC(+ds.slice(0,4), +ds.slice(4,6)-1, +ds.slice(6,8), +ts.slice(0,2), +ts.slice(2,4)))
-  return utc.toLocaleString(undefined, { month:'short', day:'numeric', year:'numeric', hour:'2-digit', minute:'2-digit', timeZoneName:'short' })
+  // Date only — the time-of-day + "GMT-4" made outcome labels long and noisy.
+  return utc.toLocaleString(undefined, { month:'short', day:'numeric', year:'numeric' })
 }
 
 function _expiryDate(raw) {
@@ -16230,7 +21680,18 @@ async function _loadOcStats(outcomes, info) {
 }
 
 function _ocAvailBalance() {
-  const balances = state.spotState?.balances ?? []
+  // Paper keeps ONE cash pool rather than a separate spot USDC token, so there is no
+  // USDC balance row to read — outcome buying power is simply the free collateral,
+  // which is exactly what paperFillSpot debits.
+  if (isPaper()) return paperWithdrawable()
+  // Combined view: spend from the account selected in the "Trade from" picker. Its real spot
+  // balances live on its own row (state.spotState holds only outcome coins there).
+  let balances = state.spotState?.balances ?? []
+  if (state.isAllAccounts) {
+    const addr = window.__getTradeAcct()
+    const r = addr ? _allAcctLastResults.find(x => x.addr && x.addr.toLowerCase() === addr.toLowerCase()) : null
+    balances = r?.spotBalances ?? []
+  }
   // Outcome markets are quoted in USDC; fall back to other USD stables.
   const order = ['USDC', 'USDH', 'USDY', 'USDE', 'USDT0', 'USD']
   let best = null
@@ -16245,6 +21706,80 @@ function _ocAvailBalance() {
 // True when the outcomes grid is currently living inside the mobile predictions sheet.
 function _ocInMobileSheet() {
   return !!document.getElementById('mobPredictBody')?.contains(document.getElementById('ocGrid'))
+}
+
+// Chart decoration for outcome cards. Replaces a numeric y-axis (which clipped at the canvas
+// edge and looked like a spreadsheet in a ~118px card) with two purposeful marks:
+//   · a dashed 50/50 line — the only reference point that matters on a binary market
+//   · a pill on the line's end showing the current odds, coloured by which side is winning
+// Drawn after the dataset so it always sits on top of the fill.
+function _ocChartDecor() {
+  return {
+    id: 'ocDecor',
+    afterDatasetsDraw(chart) {
+      const { ctx, chartArea: area, scales } = chart
+      if (!area || !scales?.y) return
+      const font = "600 9px 'JetBrains Mono', ui-monospace, monospace"
+
+      // ── 50/50 reference line
+      const y50 = scales.y.getPixelForValue(50)
+      ctx.save()
+      ctx.setLineDash([3, 4])
+      ctx.strokeStyle = 'rgba(255,255,255,0.16)'
+      ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(area.left, y50); ctx.lineTo(area.right, y50); ctx.stroke()
+      ctx.setLineDash([])
+      ctx.font = font
+      ctx.fillStyle = 'rgba(255,255,255,0.34)'
+      ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'
+      ctx.fillText('50%', area.left + 3, y50 - 3)
+
+      // ── Current-odds pill, anchored to the last real point. Value and colour are read from
+      // the dataset at DRAW time, not captured at creation, so the 30s price refresh
+      // (chart.update) moves the badge and re-tints it instead of leaving a stale number.
+      const pts  = chart.getDatasetMeta(0)?.data ?? []
+      const data = chart.data.datasets[0]?.data ?? []
+      let anchor = null, pct = null
+      for (let i = pts.length - 1; i >= 0; i--) {
+        if (data[i] != null) { anchor = pts[i]; pct = data[i]; break }
+      }
+      if (anchor && pct != null) {
+        const c = pct >= 50 ? '#00e5a0' : '#ff4d6d'
+        const label = `${Math.round(pct)}%`
+        ctx.font = "700 10px 'JetBrains Mono', ui-monospace, monospace"
+        const w = ctx.measureText(label).width + 12
+        const h = 16
+        // Keep the pill inside the plot area so it can't clip at the card edge.
+        let x = Math.min(anchor.x + 8, area.right - w - 2)
+        if (x < area.left + 2) x = area.left + 2
+        let y = anchor.y - h / 2
+        if (y < area.top + 2) y = area.top + 2
+        if (y + h > area.bottom - 2) y = area.bottom - 2 - h
+        ctx.beginPath()
+        // roundRect is unsupported on older WebKit — fall back to a plain rect rather than throw.
+        if (ctx.roundRect) ctx.roundRect(x, y, w, h, 8)
+        else ctx.rect(x, y, w, h)
+        ctx.fillStyle = c
+        ctx.globalAlpha = 0.16; ctx.fill(); ctx.globalAlpha = 1
+        ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.stroke()
+        ctx.fillStyle = c
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+        ctx.fillText(label, x + w / 2, y + h / 2 + 0.5)
+      }
+      ctx.restore()
+    },
+  }
+}
+
+// Render the live underlying price for an outcome card: full precision (the target beside it
+// is shown to 3 decimals, so a whole-dollar figure looked wrong and hid how close the market
+// is), tinted green/red by which side of the target it currently sits on.
+function _ocSetCurrentPx(outcome, mid, targetPrice) {
+  const el = document.getElementById('oc-current-' + outcome)
+  if (!el || !(mid > 0)) return
+  el.textContent = '$' + fmtPrice(mid)
+  const t = parseFloat(targetPrice)
+  el.className = 'oc-price-current' + (Number.isFinite(t) && t > 0 ? (mid >= t ? ' oc-above' : ' oc-below') : '')
 }
 
 async function _initOcCharts(outcomes) {
@@ -16312,31 +21847,51 @@ async function _initOcCharts(outcomes) {
       },
       options: {
         animation: false, responsive: true, maintainAspectRatio: false,
+        // Room for the odds pill at the line's end without it touching the card edge.
+        layout: { padding: { top: 10, right: 6, bottom: 4, left: 2 } },
+        // Mouse only — including touch events here would let the chart swallow vertical
+        // drags and make the predictions sheet feel stuck when scrolling past a card.
+        events: ['mousemove', 'mouseout', 'click'],
         plugins: {
-          legend: { display: false }, tooltip: { enabled: false },
+          legend: { display: false },
+          // Scrub the line to read the odds at any past moment.
+          tooltip: {
+            enabled: true, mode: 'index', intersect: false,
+            displayColors: false, backgroundColor: 'rgba(18,20,26,.94)',
+            borderColor: 'rgba(255,255,255,.12)', borderWidth: 1,
+            padding: 8, caretSize: 4,
+            titleFont: { size: 10 }, bodyFont: { size: 12, weight: '700' },
+            callbacks: {
+              title: it => { const t = Number(it?.[0]?.label); return Number.isFinite(t) ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric' }) : '' },
+              label: it => (it.parsed.y == null ? '' : `${it.parsed.y.toFixed(1)}% chance`),
+            },
+          },
           zoom: { zoom: { wheel: { enabled: false }, drag: { enabled: false } }, pan: { enabled: false } },
         },
-        scales: { x: { display: false }, y: { display: false, min: 0, max: 100 } },
+        // No tick labels: a numeric axis crowds a ~118px card and reads like a spreadsheet.
+        // The odds are conveyed by the dashed 50/50 line and the live badge drawn below.
+        scales: {
+          x: { display: false },
+          y: { display: false, min: 0, max: 100, grace: 0 },
+        },
       },
+      plugins: [_ocChartDecor()],
     })
 
     // Store index so _refreshOcPrices updates the right (last real) data point
     _ocCharts[o.outcome]._dataIdx = dataLen - 1
 
-    // Set initial current BTC price from allMids
+    // Set initial current price from allMids. fmtPrice (not maximumFractionDigits:0) — the
+    // target sits beside it at full precision ("$76.285"), so rounding the current price to
+    // a whole dollar made it look wrong and hid how close the market actually is.
     const underlying = d.underlying
-    if (underlying) {
-      const mid = parseFloat(state.allMids?.[underlying] ?? 0)
-      if (mid > 0) {
-        const el = document.getElementById('oc-current-' + o.outcome)
-        if (el) el.textContent = '$' + mid.toLocaleString(undefined, { maximumFractionDigits: 0 })
-      }
-    }
+    if (underlying) _ocSetCurrentPx(o.outcome, parseFloat(state.allMids?.[underlying] ?? 0), d.targetPrice)
   }))
 }
 
 // Poll live prices every 30s and update charts + DOM
 async function _refreshOcPrices() {
+  if (_hlLimited()) return   // global 429 breaker
   const outcomes = _ocLiveOutcomes
   const info     = _ocLiveInfo
   if (!outcomes.length || !info) return
@@ -16408,15 +21963,9 @@ async function _refreshOcPrices() {
         }
       }
 
-      // Update current underlying price from allMids
+      // Update current underlying price from allMids (see _ocSetCurrentPx).
       const d = _parseOutcomeDesc(o.description)
-      if (d.underlying) {
-        const mid = parseFloat(state.allMids?.[d.underlying] ?? 0)
-        if (mid > 0) {
-          const el = document.getElementById('oc-current-' + o.outcome)
-          if (el) el.textContent = '$' + mid.toLocaleString(undefined, { maximumFractionDigits: 0 })
-        }
-      }
+      if (d.underlying) _ocSetCurrentPx(o.outcome, parseFloat(state.allMids?.[d.underlying] ?? 0), d.targetPrice)
     } catch {}
   }))
   _ocEvtResortAll()
@@ -16764,7 +22313,8 @@ async function renderOutcomes() {
       return
     }
     _buildOcTokenMap(outcomes)
-    const connected = isConnected()
+    // Combined view: "can trade" is per selected account's agent key, not a single client.
+    const connected = window.__canTradeUI()
     const expiryMap = {}
     const balStr    = connected ? '$' + fmtUSD(_ocAvailBalance()) : 'N/A'
 
@@ -16918,7 +22468,7 @@ async function renderOutcomes() {
           <svg class="oc-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="5"/><line x1="14" y1="14" x2="10.35" y2="10.35"/></svg>
           <input class="oc-search" id="ocSearchInput" placeholder="Search markets…" oninput="window.__ocFilter()">
         </div>
-        <div class="oc-cats" id="ocCats">
+        <div class="oc-cats no-swipe" id="ocCats">
           <button class="oc-cat oc-cat-active" data-cat="all" onclick="window.__ocSetCat('all',this)">All</button>
           <button class="oc-cat" data-cat="crypto" onclick="window.__ocSetCat('crypto',this)">Crypto</button>
           <button class="oc-cat" data-cat="sports" onclick="window.__ocSetCat('sports',this)">Sports</button>
@@ -16931,6 +22481,7 @@ async function renderOutcomes() {
           <button class="oc-cat" data-cat="other" onclick="window.__ocSetCat('other',this)">Other</button>
         </div>
       </div>
+      ${state.isAllAccounts ? `<div style="padding:0 12px 10px">${window.__tradeAcctPickerHtml()}</div>` : ''}
       <div class="oc-grid" id="ocGrid">${cardsHtml}</div>`
     _ocLiveOutcomes = outcomes
     _ocLiveInfo     = info
@@ -16949,6 +22500,43 @@ async function renderOutcomes() {
   }
 }
 
+// Free (un-held) shares of an outcome coin owned by the account being traded from. The
+// combined view pools every account's outcome holdings into spotState, so scope to the
+// account in the "Trade from" picker — otherwise a sell would size off another wallet's shares.
+function _ocHeldShares(coin) {
+  const acct = state.isAllAccounts ? String(window.__getTradeAcct() ?? '').toLowerCase() : null
+  let total = 0
+  for (const b of (state.spotState?.balances ?? [])) {
+    if (b.coin !== coin) continue
+    if (acct && String(b._acctAddr ?? '').toLowerCase() !== acct) continue
+    total += Math.max(0, parseFloat(b.total ?? 0) - parseFloat(b.hold ?? 0))
+  }
+  return total
+}
+
+// Buying spends USDC, selling spends shares you hold — show whichever applies to the panel's
+// current mode (both scoped to the selected account in the combined view).
+function _ocSyncBalRow(panel) {
+  if (!panel) return
+  const lbl = panel.querySelector('.oc-bal-label')
+  const val = panel.querySelector('.oc-bal-val')
+  if (!lbl || !val) return
+  const id   = Number(String(panel.id || '').replace('oc-panel-', ''))
+  const mode = panel.dataset.mode || 'buy'
+  const side = parseInt(panel.dataset.side ?? 0)
+  const can  = window.__canTradeUI()
+  if (mode === 'buy') {
+    lbl.textContent = 'Available Balance'
+    val.textContent = can ? '$' + fmtUSD(_ocAvailBalance()) : 'N/A'
+  } else {
+    lbl.textContent = 'Shares held'
+    val.textContent = can ? fmtSize(_ocHeldShares('#' + (id * 10 + side))) : 'N/A'
+  }
+}
+function _ocSyncAllBalRows() {
+  document.querySelectorAll('.oc-panel').forEach(p => _ocSyncBalRow(p))
+}
+
 function _ocRefreshAction(id) {
   const panel     = document.getElementById('oc-panel-' + id)
   const actionBtn = document.getElementById('oc-action-' + id)
@@ -16959,6 +22547,7 @@ function _ocRefreshAction(id) {
   const sideName = (o?.sideSpecs?.[side]?.name || (side === 0 ? 'Yes' : 'No')).toUpperCase()
   actionBtn.textContent = (mode === 'buy' ? 'BUY ' : 'SELL ') + sideName
   actionBtn.className   = 'oc-action-btn ' + (side === 0 ? 'oc-action-yes' : 'oc-action-no')
+  _ocSyncBalRow(panel)
 }
 
 window.__ocSetMode = function(id, mode, btn) {
@@ -17039,9 +22628,22 @@ window.__ocAddAmt = function(id, n) {
 }
 
 window.__ocMaxAmt = function(id) {
-  const bal = _ocAvailBalance()
-  const el  = document.getElementById('oc-amt-' + id)
-  if (el) { el.value = Math.floor(bal * 100) / 100; window.__ocUpdCalc(id) }
+  const el    = document.getElementById('oc-amt-' + id)
+  if (!el) return
+  const panel = document.getElementById('oc-panel-' + id)
+  const isBuy = (panel?.dataset.mode || 'buy') === 'buy'
+  let max
+  if (isBuy) {
+    max = _ocAvailBalance()                       // spendable USDC on the selected account
+  } else {
+    // Selling is capped by the shares that account actually holds — the amount box is in $,
+    // so convert at the effective price.
+    const side   = parseInt(panel?.dataset.side ?? 0)
+    const px     = _ocEffPx(id) || 0
+    max = px > 0 ? _ocHeldShares('#' + (id * 10 + side)) * px : 0
+  }
+  el.value = Math.floor(Math.max(0, max) * 100) / 100
+  window.__ocUpdCalc(id)
 }
 
 window.__ocUpdCalc = function(id) {
@@ -17078,6 +22680,12 @@ window.__ocUpdCalc = function(id) {
 // Pull fresh balances/positions shortly after an outcome fill so the Available
 // Balance line and any open positions reflect the trade.
 function _ocPostTradeRefresh() {
+  // Poll a few times so the new/closed holding shows quickly (works in both single and the
+  // combined view — the latter re-runs the all-accounts fan, which recomputes each wallet's
+  // outcomes). state.addr is the __all_accounts__ sentinel in the combined view, so the direct
+  // spot fetch below must only run for a single real account.
+  window.__refreshOutcomeClose?.()
+  if (state.isAllAccounts) return
   const addr = state.addr
   if (!addr) return
   setTimeout(async () => {
@@ -17090,8 +22698,7 @@ function _ocPostTradeRefresh() {
       if (state.addr !== addr) return
       if (spot) state.spotState = spot
       if (perp) state.perpState = perp
-      const balStr = isConnected() ? '$' + fmtUSD(_ocAvailBalance()) : 'N/A'
-      document.querySelectorAll('.oc-bal-val').forEach(el => { el.textContent = balStr })
+      _ocSyncAllBalRows()
       if (_isMobView()) _mobVRenderBalance()
     } catch {}
   }, 800)
@@ -17103,7 +22710,10 @@ window.__ocTrade = async function(id, btn) {
   const statusEl = document.getElementById('oc-status-' + id)
   if (!panel || !amtEl) return
 
-  if (!isConnected()) { window.__quickConnectAgent?.(); return }
+  if (!window.__canTradeUI()) {
+    if (state.isAllAccounts) { if (statusEl) statusEl.textContent = 'No agent key for the selected account'; return }
+    window.__quickConnectAgent?.(); return
+  }
 
   const mode    = panel.dataset.mode || 'buy'
   const otype   = panel.dataset.otype || 'market'
@@ -17160,7 +22770,7 @@ window.__ocTrade = async function(id, btn) {
   if (statusEl) { statusEl.className = 'oc-trade-status oc-status-pending'; statusEl.textContent = isMarket ? 'Placing market order…' : 'Placing limit order…' }
   btn.disabled = true
   try {
-    const result   = await placeOutcomeOrder({ coin, isBuy, sz, limitPx: postPx, market: isMarket })
+    const result   = await placeOutcomeOrder({ coin, isBuy, sz, limitPx: postPx, market: isMarket, acct: window.__getTradeAcct() })
     const statuses = result?.response?.data?.statuses ?? []
     if (statuses.some(s => s?.resting || s?.filled)) {
       const filled = statuses.find(s => s?.filled)?.filled
@@ -17407,8 +23017,229 @@ window.__shareOnX = function() {
   const d = _shareData; if (!d) return
   const cap = document.getElementById('shareTextInput')?.value || d.title
   const up  = d.roePct >= 0
-  const txt = `${cap}\n${(up ? '+' : '') + d.roePct.toFixed(1)}% on Insolvent Terminal 📈`
+  const txt = `${cap}\n${(up ? '+' : '') + d.roePct.toFixed(1)}% on Insolvent Trade 📈`
   window.open('https://twitter.com/intent/tweet?text=' + encodeURIComponent(txt) + '&url=' + encodeURIComponent('https://insolvent.trade'), '_blank', 'noopener')
+}
+
+// ─── PAPER-TRADING CHALLENGE (client) ────────────────────────────────────────
+// Time-boxed contest on a fresh $1,000 paper account (deposits locked). Score = net PnL.
+// Highest at the deadline wins; anyone plays, a wallet is only needed to claim.
+function _chalId() {
+  let c = ''; try { c = localStorage.getItem('hliq_chal_id') || '' } catch {}
+  if (!c) { c = Math.random().toString(36).slice(2, 10); try { localStorage.setItem('hliq_chal_id', c) } catch {} }
+  return c
+}
+function _chalActive() { try { return localStorage.getItem('hliq_chal_active') === '1' } catch { return false } }
+function _chalScore()  { try { return paperPnl() } catch { return 0 } }   // net PnL from the $1,000 basis
+let _chalData = null, _chalTimer = null, _chalAuditKey = ''
+async function _chalSubmit() {
+  if (!_chalActive()) return
+  // Only report while the LIVE Challenge account is the one on screen — otherwise state
+  // reflects a different account (practice or a real wallet) and we'd post the wrong data.
+  if (!(isPaper() && paperSlot() === 'challenge')) return
+  try {
+    const s        = paperStore()
+    const closed    = (s.fills ?? []).filter(f => parseFloat(f.closedPnl ?? 0) !== 0)
+    const positions = state.perpState?.assetPositions ?? []
+    const payload = {
+      id: _chalId(), name: _paperName(), netPnl: _chalScore(),
+      // Same rich snapshot the paper leaderboard sends, so the standings can show each
+      // player's live positions + PnL breakdown when their row is expanded.
+      equity:        paperEquity(),
+      unrealizedPnl: positions.reduce((a, ap) => a + parseFloat(ap.position?.unrealizedPnl ?? 0), 0),
+      realizedPnl:   closed.reduce((a, f) => a + parseFloat(f.closedPnl ?? 0), 0),
+      volume:        (s.fills ?? []).reduce((a, f) => a + Math.abs(parseFloat(f.sz ?? 0)) * parseFloat(f.px ?? 0), 0),
+      healthPct:     _paperHealthPct(),
+      trades:        closed.length,
+      wins:          closed.filter(f => parseFloat(f.closedPnl) > 0).length,
+      positions,
+    }
+    // Audit trail: attach the FULL fill log + total funding, but only when the trade log
+    // actually changed (so the 30s heartbeat stays light). The server stores it privately so
+    // a winning run can be reviewed — reconciled against the claimed PnL and each fill's price
+    // cross-checked against real Hyperliquid history. See GET /api/challenge/audit.
+    const fillsKey = (s.fills?.length ?? 0) + ':' + (s.fills?.[0]?.tid ?? '')
+    if (fillsKey !== _chalAuditKey) {
+      payload.fills = (s.fills ?? []).slice(0, 400).map(f => ({
+        coin: f.coin, px: f.px, sz: f.sz, side: f.side, time: f.time, closedPnl: f.closedPnl, dir: f.dir, fee: f.fee,
+      }))
+      payload.funding = (s.funding ?? []).reduce((a, f) => a + parseFloat(f.delta?.usdc ?? 0), 0)
+    }
+    await fetch('/api/challenge/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    _chalAuditKey = fillsKey
+  } catch {}
+}
+function _chalStartAutoSubmit() { if (_chalTimer) return; _chalSubmit(); _chalTimer = setInterval(_chalSubmit, 30000) }
+window.__chalMaybeAutoSubmit = () => { if (_chalActive()) { try { setPaperSlot('challenge') } catch {}; _chalStartAutoSubmit() } }   // called at init
+
+function _chalCountdown(end) {
+  const ms = end - Date.now()
+  if (ms <= 0) return 'Ended'
+  const d = Math.floor(ms / 86400000), h = Math.floor(ms / 3600000) % 24, m = Math.floor(ms / 60000) % 60
+  return d > 0 ? `${d}d ${h}h left` : h > 0 ? `${h}h ${m}m left` : `${m}m left`
+}
+function _chalPnl(v) { const s = v >= 0 ? '+' : '−'; return s + '$' + fmtUSD(Math.abs(v), 2) }
+
+function _chalHtml(data) {
+  const close = `<button onclick="window.__closeChallenge()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>`
+  const header = `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:14px 16px 11px;background:var(--bg);border-bottom:1px solid var(--border)">
+    <span style="font-size:18px;font-weight:700">🏆 Paper Challenge</span>${close}</div>`
+  if (!data)        return header + `<div style="padding:50px;text-align:center;color:var(--muted)">Loading…</div>`
+  if (data.error)   return header + `<div style="padding:50px;text-align:center;color:var(--muted)">Couldn't load the challenge. Try again.</div>`
+  const cfg = data.config || {}
+  const active = _chalActive()
+  const myId = _chalId()
+  const board = data.board || []
+  const myRow = board.find(r => r.id === myId)
+  const myRank = myRow ? (board.findIndex(r => r.id === myId) + 1) : null
+  // Live local score only when the Challenge slot is the active paper store; otherwise the
+  // last value the server has (so a practice/real account's PnL never masquerades as yours).
+  const myScore = (active && paperSlot() === 'challenge') ? _chalScore() : (myRow ? myRow.netPnl : 0)
+  const pct = Math.max(0, Math.min(100, (myScore / (cfg.target || 500)) * 100))
+  const ended = data.ended
+  const won = ended && myRow && data.winner && data.winner.id === myId
+
+  const hero = `<div style="margin:14px 12px 0;padding:18px 16px;border-radius:18px;background:linear-gradient(160deg,rgba(0,229,160,0.10),rgba(255,255,255,0.015) 60%);border:1px solid rgba(255,255,255,0.08);text-align:center">
+    <div style="font-size:13px;color:var(--muted)">Prize</div>
+    <div style="font-size:30px;font-weight:800;font-family:var(--font-mono);margin:2px 0 6px">${esc(cfg.prize || '$100 USDC')}</div>
+    <div style="font-size:13px;color:${ended ? 'var(--red)' : 'var(--accent)'};font-weight:700">${ended ? 'Round ended' : _chalCountdown(cfg.end)}</div>
+    <div style="font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5">Start with <b>$${(cfg.start || 1000).toLocaleString()}</b> paper · no deposits · <b>highest net PnL wins</b>. Target: reach <b>+$${(cfg.target || 500).toLocaleString()}</b>.</div>
+  </div>`
+
+  let mine
+  if (active) {
+    mine = `<div style="margin:12px 12px 0;padding:14px 16px;border:1px solid var(--border);border-radius:16px;background:var(--panel)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <span style="font-size:12px;color:var(--muted)">Your net PnL${myRank ? `<span class="notranslate"> · rank #${myRank}</span>` : ''}</span>
+        <span class="notranslate" style="font-size:20px;font-weight:800;font-family:var(--font-mono);color:${myScore >= 0 ? 'var(--green)' : 'var(--red)'}">${_chalPnl(myScore)}</span>
+      </div>
+      <div style="position:relative;height:8px;border-radius:5px;background:var(--panel-2);margin-top:10px;overflow:hidden">
+        <div style="position:absolute;left:0;top:0;bottom:0;width:${pct.toFixed(1)}%;background:var(--accent);border-radius:5px"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:5px"><span>$0</span><span>Target +$${(cfg.target || 500).toLocaleString()}</span></div>
+      ${!ended ? `<button onclick="window.__closeChallenge();window.mobVGoTab&&window.mobVGoTab('trade')" style="width:100%;margin-top:12px;padding:12px;border:none;border-radius:11px;background:var(--accent);color:#000;font-weight:800;font-size:14px;cursor:pointer">Trade now →</button>` : ''}
+      ${won ? `<div style="margin-top:12px;padding:10px;border-radius:10px;background:rgba(0,229,160,0.12);color:var(--accent);font-size:13px;font-weight:700;text-align:center">🎉 You're winning! Claim below to get paid.</div>` : ''}
+      <button onclick="window.__chalClaim()" style="width:100%;margin-top:8px;padding:11px;border:1px solid var(--accent);border-radius:11px;background:transparent;color:var(--accent);font-weight:700;font-size:13px;cursor:pointer">${myRow && myRow.claimed ? '✓ Prize wallet set — edit' : '🎁 Set prize wallet'}</button>
+    </div>`
+  } else {
+    mine = `<div style="margin:12px 12px 0">
+      <button onclick="window.__enterChallenge()" style="width:100%;padding:14px;border:none;border-radius:14px;background:var(--accent);color:#000;font-weight:800;font-size:15px;cursor:pointer">${ended ? 'Round ended — see results' : '🚀 Enter the challenge'}</button>
+      <div style="font-size:11.5px;color:var(--muted);text-align:center;margin-top:8px;line-height:1.5">Entering starts a fresh $${(cfg.start || 1000).toLocaleString()} paper account. Practice risk-free — no real money to enter.</div>
+    </div>`
+  }
+
+  // Map the challenge board into the SAME row shape the paper/real leaderboards use, then
+  // hand it to the same renderer — so the standings get identical rank badges, avatars and
+  // EXPANDABLE rows (tap a player to watch their open positions, PnL breakdown, health…).
+  // For MY row, use the live local figures (same source as the card) so the standings never
+  // disagree with "Your net PnL" — the server row can be up to ~30s stale between submits.
+  const inChal     = active && paperSlot() === 'challenge'
+  const liveEquity = inChal ? paperEquity() : NaN
+  const chalRows = board.map((r, i) => {
+    const isMe = r.id === myId
+    return {
+    addr:  PAPER_ADDR,
+    _id:   'c' + i + '-' + String(r.id ?? '').replace(/[^a-z0-9]/gi, '').slice(0, 10),
+    _pname: r.name ?? '',
+    label: (r.name ?? '') + (isMe ? ' (you)' : ''),
+    accountValue:  (isMe && Number.isFinite(liveEquity)) ? liveEquity : (Number.isFinite(r.equity) ? r.equity : ((cfg.start || 1000) + (r.netPnl ?? 0))),
+    netPnl:        (isMe && inChal) ? myScore : (r.netPnl ?? 0),
+    unrealizedPnl: r.unrealizedPnl ?? 0,
+    realizedPnl:   r.realizedPnl ?? 0,
+    totalVolume:   r.volume ?? 0,
+    healthPct:     r.healthPct ?? 0,
+    healthCls:     (r.healthPct ?? 0) >= 50 ? 'pos' : (r.healthPct ?? 0) >= 20 ? 'warn' : 'neg',
+    winCount:      r.wins ?? 0,
+    totalWindows:  r.trades ?? 0,
+    positions:     r.positions ?? [],
+    outcomes:      [],
+    openOrders:    [],
+    error:         null,
+  } })
+  const rows = board.length
+    ? _mobVBuildLbHtml(chalRows, { paper: true, bare: true, challenge: true, sortBy: 'net' })
+    : `<div style="padding:30px 16px;text-align:center;color:var(--muted);font-size:13px">No players yet — be the first!</div>`
+  const boardHtml = `<div style="margin-top:18px"><div style="padding:6px 16px;font-size:12px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Standings <span style="font-weight:600;text-transform:none;letter-spacing:0">· tap a player to watch their positions</span></div>${rows}</div>`
+
+  const foot = `<div style="padding:16px 16px calc(40px + env(safe-area-inset-bottom));font-size:11px;line-height:1.6;color:var(--muted);text-align:center">Paper results are self-reported and for fun. The prize is paid manually to the winner after review. One entry per player; don't try to game it. Not affiliated with Hyperliquid.</div>`
+  return header + hero + mine + boardHtml + foot
+}
+
+// Master switch for the Paper Challenge. Set false 2026-08-10 (per request) to hide every
+// Challenge surface — announcement (onboard.js ANNOUNCEMENTS emptied), More-drawer tab
+// (index.html button commented), the wallet-switcher Challenge account, and this overlay.
+// Flip to true to bring it all back.
+const _CHALLENGE_ENABLED = false
+
+window.__openChallenge = async function() {
+  if (!_CHALLENGE_ENABLED) return
+  document.getElementById('mobMoreDrawer')?.classList.remove('open')
+  document.getElementById('mobMoreBackdrop')?.classList.remove('open')
+  let ov = document.getElementById('challengeOverlay')
+  if (!ov) {
+    ov = document.createElement('div'); ov.id = 'challengeOverlay'
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100050;background:var(--bg);overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch'
+    document.body.appendChild(ov)
+  }
+  ov.style.display = 'block'; ov.scrollTop = 0
+  ov.innerHTML = _chalHtml(_chalData)   // paint cached first (instant), then refresh
+  await _chalSubmit()                   // push our latest score before reading the board
+  try {
+    const r = await fetch('/api/challenge'); const data = await r.json()
+    _chalData = data
+    if (data.ended && _chalActive()) _chalLeave()   // round over → hand the paper account back to the practice store
+    ov.innerHTML = _chalHtml(data)
+    try { window.__i18nApply && window.__i18nApply() } catch {}
+  } catch { ov.innerHTML = _chalHtml({ error: true }) }
+}
+window.__closeChallenge = function() { const o = document.getElementById('challengeOverlay'); if (o) o.style.display = 'none' }
+
+window.__enterChallenge = async function() {
+  const prize = _chalData?.config?.prize || '$100 USDC'
+  if (_chalData?.ended) { _paperToast('This round has ended — check the standings.'); return }
+  const ok = await _appConfirm({
+    title: '🏆 Enter the Challenge?',
+    body: `This opens a <b>separate</b> Challenge account with a fresh <b>$1,000</b> in paper money — your regular practice account is kept safe and untouched. No deposits while you compete; highest net PnL by the deadline wins ${esc(prize)}.`,
+    confirmText: '🚀 Start',
+  })
+  if (!ok) return
+  try { localStorage.setItem('hliq_chal_active', '1') } catch {}
+  try { setPaperSlot('challenge'); paperReset() } catch {}   // fresh, isolated challenge store
+  _chalStartAutoSubmit()
+  window.__closeChallenge()
+  // Land ON the new Challenge account (its positions/home) — no forced Trade tab.
+  try { await window.__goPaper('challenge') } catch {}
+  _paperToast('🏆 Challenge account ready — $1,000 to compete')
+}
+
+// Leaving the Challenge (round ended, or user exits): swap the paper account back to the
+// regular practice store, which was preserved untouched the whole time.
+function _chalLeave() {
+  try { localStorage.removeItem('hliq_chal_active') } catch {}
+  if (_chalTimer) { clearInterval(_chalTimer); _chalTimer = null }
+  // Hand the paper account back to the practice store and repaint if it's on screen.
+  try { if (isPaper()) { setPaperSlot('main'); window.__goPaper && window.__goPaper() } } catch {}
+}
+
+window.__chalClaim = async function() {
+  const isAddr = a => /^0x[0-9a-fA-F]{40}$/.test(a)
+  const prefill = (typeof getMainAddress === 'function' && getMainAddress()) || (state.addr && String(state.addr).startsWith('0x') ? state.addr : '')
+  const addr = await _appPrompt({
+    title: '🎁 Set your prize wallet',
+    body: 'Where should we send the <b>$100 USDC</b> if you finish on top? Enter the wallet address that will receive the prize.',
+    placeholder: '0x… (Arbitrum wallet)',
+    value: isAddr(prefill) ? prefill : '',
+    confirmText: 'Save wallet',
+    validate: v => !v ? 'Please enter a wallet address.' : (!isAddr(v) ? "That doesn't look like a valid 0x address." : null),
+  })
+  if (!addr) return
+  try {
+    const r = await fetch('/api/challenge/claim', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: _chalId(), addr }) })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok || j.error) { _paperToast('Could not save: ' + (j.error ?? r.status), 'error'); return }
+    _paperToast('🍀 Prize wallet saved — good luck!')
+    window.__openChallenge()
+  } catch (e) { _paperToast('Failed: ' + (e?.message ?? e), 'error') }
 }
 
 // ── Desktop Overview: outcome (prediction) holdings manager ──────────────────
@@ -17551,3 +23382,20 @@ _applyPrivacyUI()   // restore persisted privacy (body.priv blur + toggle icons)
     window.__ocFilter = function() { orig(); try { _ocSectionVis() } catch {} }
   }
 })()
+
+// ─── BRIDGE for extracted modules (game.js) ───────────────────────────────────
+// Late-bound getters so `let` variables stay live; set at module end (all fns
+// above are hoisted). game.js guards against calls before this runs.
+window.__app = {
+  state:            () => state,
+  privacy:          () => _privacyMode,
+  isMobView:        _isMobView,
+  mktCtxMap:        () => _mktCtxMap,
+  mktCtxReady:      () => _mktCtxReady,
+  ensureMarketData: _ensureMarketData,
+  loadWatchlist:    () => loadWatchlist(),
+  coinIcon:         c => _mobVCoinIcon(c),
+  hlLimited:        () => _hlLimited(),
+  hl429:            e => _hl429(e),
+  getLabel:         a => WM.getLabel(a),
+}

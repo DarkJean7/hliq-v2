@@ -1,7 +1,7 @@
 {
-  "name": "Insolvent Terminal",
-  "short_name": "Insolvent Terminal",
-  "description": "Hyperliquid portfolio dashboard",
+  "name": "Insolvent Trade",
+  "short_name": "Insolvent",
+  "description": "Trade Hyperliquid from your phone",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0a0a0f",

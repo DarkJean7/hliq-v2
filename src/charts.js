@@ -832,6 +832,46 @@ function _mobAutoScaleY(chart) {
   chart.options.scales.y.max = hi + pad
 }
 
+// Chart.js ships no candlestick type. In candle mode the price line is drawn fully
+// transparent, so the OHLC bodies/wicks must be painted here — without this the chart renders
+// completely blank the moment candlestick mode is toggled on.
+const mobCandlesPlugin = {
+  id: 'mobCandles',
+  beforeDatasetsDraw(chart) {
+    if (!chart._candleMode || !Array.isArray(chart._candleData)) return
+    const xs = chart.scales.x, ys = chart.scales.y
+    if (!xs || !ys) return
+    const vis = chart._candleData.filter(d =>
+      Number.isFinite(d.x) && Number.isFinite(d.o) && Number.isFinite(d.h) &&
+      Number.isFinite(d.l) && Number.isFinite(d.c) && d.x >= xs.min && d.x <= xs.max)
+    if (!vis.length) return
+
+    // Body width from the tightest gap between candles, so it stays right at any zoom.
+    let gap = Infinity
+    for (let i = 1; i < vis.length; i++) gap = Math.min(gap, vis[i].x - vis[i - 1].x)
+    if (!Number.isFinite(gap) || gap <= 0) gap = (xs.max - xs.min) / Math.max(1, vis.length)
+    const span = Math.abs(xs.getPixelForValue(xs.min + gap) - xs.getPixelForValue(xs.min))
+    const w    = Math.max(1, Math.min(18, span * 0.62))
+
+    const { ctx, chartArea } = chart
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(chartArea.left, chartArea.top, chartArea.right - chartArea.left, chartArea.bottom - chartArea.top)
+    ctx.clip()
+    for (const d of vis) {
+      const col = d.c >= d.o ? '#00e5a0' : '#ff4d6d'
+      const x   = xs.getPixelForValue(d.x)
+      const yO  = ys.getPixelForValue(d.o), yC = ys.getPixelForValue(d.c)
+      const yH  = ys.getPixelForValue(d.h), yL = ys.getPixelForValue(d.l)
+      ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(x, yH); ctx.lineTo(x, yL); ctx.stroke()   // wick
+      // Body — min 1px tall so doji / untraded candles still show.
+      ctx.fillRect(x - w / 2, Math.min(yO, yC), w, Math.max(1, Math.abs(yC - yO)))
+    }
+    ctx.restore()
+  },
+}
+
 export function renderMobTradeChart(canvas, candles, overlays, heroId, tf = '1h', type = 'line') {
   destroyMobTradeChart()
   _mobOverlays = (overlays || []).map(o => ({ ...o, fmt: fmtPrice(o.price) }))
@@ -912,7 +952,7 @@ export function renderMobTradeChart(canvas, candles, overlays, heroId, tf = '1h'
       fill: isCandle ? false : 'start', tension: 0,
     }] },
     options,
-    plugins: [crosshairPlugin, mobOverlayLinesPlugin],
+    plugins: [crosshairPlugin, mobOverlayLinesPlugin, mobCandlesPlugin],
   })
   mobTradeChartInst._candleMode = isCandle
   mobTradeChartInst._candleData = pts

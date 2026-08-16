@@ -119,14 +119,18 @@ function log(tag, msg) {
   console.log(`[${ts}] [${tag.padEnd(8)}] ${m}`)
 }
 
-// ─── PRECISION ────────────────────────────────────────────────────────────────
-function roundPx(n) {
-  // HL prices use 5 significant figures (e.g. ETH at $2103 → tick size 0.1)
+function roundPx(n, szDecimals) {
+  // HL price tick: <=5 significant figures AND <=(6 - szDecimals) decimals. The old
+  // magnitude form applied only the sig-fig cap, so a low-priced / high-szDecimals asset
+  // could emit too many decimals and HL rejected the order ("not divisible by tick size").
+  // szDecimals omitted => pure 5-sig-fig (unchanged behavior for range/threshold math).
   const f = parseFloat(n)
-  if (f <= 0) return 0
-  const magnitude = Math.floor(Math.log10(Math.abs(f)))
-  const factor    = Math.pow(10, 4 - magnitude)
-  return Math.round(f * factor) / factor
+  if (!(f > 0)) return 0
+  const sig = parseFloat(f.toPrecision(5))
+  if (szDecimals == null) return sig
+  const maxDec = Math.max(0, 6 - szDecimals)
+  const factor = Math.pow(10, maxDec)
+  return Math.round(sig * factor) / factor
 }
 
 function roundSz(n, szDecimals = 6, px = 0) {
@@ -166,15 +170,17 @@ async function getAssetInfo(coin) {
 }
 
 // ─── GRID PRICE LEVELS ────────────────────────────────────────────────────────
-function computePrices() {
+// Level prices become RESTING orders, so they must be tick-valid for the asset —
+// pass szDecimals so roundPx applies the decimal cap, not just the sig-fig cap.
+function computePrices(szDecimals) {
   if (PCT_SPACING) {
     // Geometric: equal % gap between each level
     const ratio = Math.pow(UPPER / LOWER, 1 / (LEVELS - 1))
-    return Array.from({ length: LEVELS }, (_, i) => roundPx(LOWER * Math.pow(ratio, i)))
+    return Array.from({ length: LEVELS }, (_, i) => roundPx(LOWER * Math.pow(ratio, i), szDecimals))
   }
   // Linear: equal $ gap between each level
   const step = (UPPER - LOWER) / (LEVELS - 1)
-  return Array.from({ length: LEVELS }, (_, i) => roundPx(LOWER + i * step))
+  return Array.from({ length: LEVELS }, (_, i) => roundPx(LOWER + i * step, szDecimals))
 }
 
 // Gap size around level i — used as the matching tolerance and the dead zone
@@ -350,7 +356,7 @@ async function closeAtBoundary(markPx, levelOrders) {
   }
 
   const { index, szDecimals } = await getAssetInfo(COIN)
-  const closePx = roundPx(IS_SHORT ? markPx * 1.01 : markPx * 0.99)   // IOC 1% through mark
+  const closePx = roundPx(IS_SHORT ? markPx * 1.01 : markPx * 0.99, szDecimals)   // IOC 1% through mark, tick-valid
   const closeSz = roundSz(openSz, szDecimals, closePx)
 
   log('CLOSE', `${bound} hit (mark $${markPx}) — closing ${IS_SHORT ? 'short' : 'long'} ${openSz} ${COIN} @ $${closePx} (IOC)`)
@@ -648,7 +654,8 @@ async function run() {
   }
   if (!(LEVELS >= 2)) { console.error('ERROR: --levels must be ≥ 2'); process.exit(1) }
 
-  PRICES = computePrices()
+  const { szDecimals: _levelSzDec } = await getAssetInfo(COIN)
+  PRICES = computePrices(_levelSzDec)
 
   // activeAssetData.availableToTrade is the authoritative max-openable NOTIONAL and
   // already reflects UNIFIED collateral (spot USDC counts toward perp margin) — so it

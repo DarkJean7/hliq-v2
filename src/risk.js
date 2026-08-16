@@ -148,7 +148,7 @@ export function maybeSendLiqNotification(perpState, allMids = {}) {
 
   rs.lastLiqNotifAt = now
 
-  showNotif('⚠ Near Liquidation — Insolvent Terminal', {
+  showNotif('⚠ Near Liquidation — Insolvent Trade', {
     body: `${liq.coin} is ${liq.bufferPct.toFixed(1)}% from liquidation price. Check your positions.`,
     tag:  'liq-warning',
   })

@@ -142,12 +142,19 @@ function clearState() {
   catch {}
 }
 
-function roundPx(n) {
+// HL perp price tick: at most 5 significant figures AND at most (6 - szDecimals)
+// decimal places. The old magnitude-based form applied only the sig-fig cap, so
+// a low-priced / high-szDecimals asset could emit too many decimals and HL would
+// reject the order ("not divisible by tick size") — fatal for the reduce path.
+// When szDecimals is omitted this is pure 5-sig-fig (unchanged for internal thresholds).
+function roundPx(n, szDecimals) {
   const f = parseFloat(n)
-  if (f <= 0) return 0
-  const magnitude = Math.floor(Math.log10(Math.abs(f)))
-  const factor    = Math.pow(10, 4 - magnitude)
-  return Math.round(f * factor) / factor
+  if (!(f > 0)) return 0
+  const sig = parseFloat(f.toPrecision(5))
+  if (szDecimals == null) return sig
+  const maxDec = Math.max(0, 6 - szDecimals)
+  const factor = Math.pow(10, maxDec)
+  return Math.round(sig * factor) / factor
 }
 function roundSz(n, szDecimals = 6) {
   const factor = Math.pow(10, szDecimals)
@@ -225,12 +232,19 @@ async function getPosition() {
 }
 
 // Free USDC this account can commit as margin (matches HL's "available to add").
+// A failed read must NOT read as "infinite funds" (fail-open), so we return the last
+// known-good value instead. Only a cold-start failure (never read successfully) falls
+// back to Infinity, so a permanently-unsupported read can't hard-block a valid setup —
+// the MAX_TOTAL_ADD cap and HL's own validation remain the ultimate backstops.
+let _lastAvail = null
 async function availableToAdd() {
   try {
     const d = await info.activeAssetData({ user: QUERY_ADDR, coin: COIN })
-    return Math.max(0, parseFloat(d?.availableToTrade?.[0] ?? 0))
+    _lastAvail = Math.max(0, parseFloat(d?.availableToTrade?.[0] ?? 0))
+    return _lastAvail
   } catch {
-    return Infinity   // read failed — don't block; HL validates the real cap
+    if (_lastAvail != null) { log('WARN', `availableToAdd read failed — using last known $${_lastAvail.toFixed(2)}`); return _lastAvail }
+    return Infinity   // cold start, never read — defer to MAX_TOTAL_ADD + HL validation
   }
 }
 
@@ -303,7 +317,7 @@ async function fireLevBrake(pos, markPx) {
 
   const oldLiq = pos.liq
   const isBuy  = !pos.isLong                          // reduce long = sell; reduce short = buy
-  const px     = roundPx(isBuy ? markPx * 1.01 : markPx * 0.99)   // IOC 1% through mark
+  const px     = roundPx(isBuy ? markPx * 1.01 : markPx * 0.99, szDecimals)   // IOC 1% through mark, tick-valid
   if (DRY_RUN) {
     log('DRY-RUN', `Would REDUCE ${sz} ${COIN} (${(REDUCE_PCT * 100).toFixed(0)}%) reduce-only @ ~$${px} (mark $${markPx}, liq $${oldLiq})`)
   } else {
@@ -314,6 +328,12 @@ async function fireLevBrake(pos, markPx) {
     const statuses = result?.response?.data?.statuses ?? []
     const errs     = statuses.filter(s => s.error).map(s => s.error)
     if (errs.length) { log('ERROR', `Reduce order rejected: ${errs.join(', ')} — will retry`); return false }
+    // An IOC 1% through mark can miss entirely in a fast move. Counting a 0-fill as a
+    // "fire" would burn a --max-fires slot without reducing any risk, so treat it as a
+    // no-op and retry next tick. A partial fill DID reduce risk, so it counts.
+    const filledSz = parseFloat(statuses[0]?.filled?.totalSz ?? 0)
+    if (filledSz <= 0) { log('SKIP', `Reduce IOC did not fill (mark moved past $${px}) — will retry`); return false }
+    if (filledSz < sz * 0.999) log('PARTIAL', `Reduce filled ${filledSz}/${sz} ${COIN} — counting as one fire`)
     await sleep(1500)
   }
   fires++

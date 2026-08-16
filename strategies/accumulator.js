@@ -38,8 +38,8 @@ const { values: args } = parseArgs({
     wallet:      { type: 'string' },
     address:     { type: 'string' },
     asset:       { type: 'string', default: 'HYPE' },  // spot token to accumulate
-    'cut-pct':   { type: 'string', default: '10'  },   // % of net positive PnL to skim
-    threshold:   { type: 'string', default: '15'  },   // min USD buffered before a buy
+    'cut-pct':   { type: 'string', default: '25'  },   // % of net positive PnL to skim
+    threshold:   { type: 'string', default: '11'  },   // min USD buffered before a buy
     'net-fees':  { type: 'string', default: 'true' },  // subtract fees so skim = true net
     'max-daily': { type: 'string', default: '0'   },   // optional daily USD skim cap (0 = none)
     interval:    { type: 'string', default: '60'  },   // scan cycle, seconds
@@ -61,7 +61,11 @@ const MAX_DAILY = Math.max(0, parseFloat(args['max-daily']) || 0)
 const CHECK_MS  = Math.max(15, parseInt(args.interval) || 60) * 1000
 const DRY_RUN   = !!args['dry-run']
 const RESUME    = !!args.resume
-const HL_MIN_ORDER = 10
+// HL rejects spot orders below $10 notional. After the 0.3% fee headroom and the
+// size round-DOWN (one tick can be ~$0.60 on HYPE), a $10 buffer produces a ~$9.4
+// order that HL bounces. $11 is the smallest buffer that reliably clears $10 — this
+// is the floor the buy fires at, so profit buys happen as soon as the minimum stacks.
+const HL_MIN_ORDER = 11
 
 if (CUT_PCT <= 0)   { console.error('ERROR: --cut-pct must be > 0'); process.exit(1) }
 if (THRESHOLD <= 0) { console.error('ERROR: --threshold must be > 0'); process.exit(1) }
@@ -97,12 +101,19 @@ function log(tag, msg) {
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 function _today() { return new Date().toISOString().slice(0, 10) }
 
-function roundPx(n) {
+// HL price tick: ≤5 significant figures AND ≤(MAX_DEC - szDecimals) decimals, where
+// MAX_DEC is 6 for perps and 8 for SPOT. Accumulator buys SPOT, so pass isSpot=true
+// to use the spot cap; the old magnitude form applied only the sig-fig cap and could
+// emit too many decimals → HL rejects ("not divisible by tick size").
+// szDecimals omitted → pure 5-sig-fig (unchanged behavior for threshold math).
+function roundPx(n, szDecimals, isSpot = false) {
   const f = parseFloat(n)
-  if (f <= 0) return 0
-  const magnitude = Math.floor(Math.log10(Math.abs(f)))
-  const factor    = Math.pow(10, 4 - magnitude)
-  return Math.round(f * factor) / factor
+  if (!(f > 0)) return 0
+  const sig = parseFloat(f.toPrecision(5))
+  if (szDecimals == null) return sig
+  const maxDec = Math.max(0, (isSpot ? 8 : 6) - szDecimals)
+  const factor = Math.pow(10, maxDec)
+  return Math.round(sig * factor) / factor
 }
 function roundSz(n, szDecimals = 6) {
   const factor = Math.pow(10, szDecimals)
@@ -183,7 +194,7 @@ async function buy(usd) {
   const mid  = parseFloat(mids[spot.name] ?? 0)
   if (!mid) { log('ERROR', `No spot price for ${ASSET_SYM} (${spot.name}) — retry next cycle`); return false }
 
-  const px = roundPx(mid * 1.005)   // marketable: 0.5% through mid
+  const px = roundPx(mid * 1.005, spot.szDecimals, true)   // marketable: 0.5% through mid, spot tick
   const estSz = roundSz(usd / px, spot.szDecimals)
   if (estSz <= 0) { log('WARN', `Buffer $${usd.toFixed(2)} too small for one ${ASSET_SYM} unit @ $${px}`); return false }
 
@@ -203,8 +214,16 @@ async function buy(usd) {
   // Size against the USDC that actually landed; keep a small headroom for fees.
   const freeUsdc = await getFreeSpotUsdc()
   const spend    = Math.min(usd, freeUsdc)
-  const sz       = roundSz((spend * 0.997) / px, spot.szDecimals)
-  if (sz <= 0) { log('ERROR', `Post-transfer free USDC $${freeUsdc.toFixed(2)} too small to buy — USDC sits in spot, retry next cycle`); return false }
+  let   sz       = roundSz((spend * 0.997) / px, spot.szDecimals)
+  // Rounding down can drop the order below HL's $10 notional min. Bump up to the
+  // smallest size that clears $10, but only if the landed USDC can still afford it.
+  const HL_MIN_NOTIONAL = 10
+  if (sz * px < HL_MIN_NOTIONAL) {
+    const tick  = 1 / Math.pow(10, spot.szDecimals)
+    const minSz = Math.ceil((HL_MIN_NOTIONAL / px) / tick) * tick
+    if (roundSz(minSz, spot.szDecimals) * px <= freeUsdc) sz = roundSz(minSz, spot.szDecimals)
+  }
+  if (sz <= 0 || sz * px < HL_MIN_NOTIONAL) { log('ERROR', `Post-transfer free USDC $${freeUsdc.toFixed(2)} too small to clear HL's $${HL_MIN_NOTIONAL} min — USDC sits in spot, retry next cycle`); return false }
 
   let result
   try {

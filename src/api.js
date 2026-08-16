@@ -1,8 +1,16 @@
-import { InfoClient, HttpTransport } from '@nktkas/hyperliquid'
+import { InfoClient, HttpTransport, SubscriptionClient, WebSocketTransport } from '@nktkas/hyperliquid'
 
 // Single shared transport + info client
 const transport = new HttpTransport({ timeout: 30_000 })
 export const infoClient = new InfoClient({ transport })
+
+// Lazy WebSocket subscription client — used for live price (allMids) pushes so we don't
+// poll HL over REST for prices (which burns the weight budget). Auto-reconnects.
+let _subsClient = null
+export function subsClient() {
+  if (!_subsClient) _subsClient = new SubscriptionClient({ transport: new WebSocketTransport() })
+  return _subsClient
+}
 
 // HIP-3 internal tickers that differ from HL's canonical display names.
 // Keys are the prefixed HL coin names; values are what HL's own UI shows.
@@ -11,6 +19,27 @@ const HIP3_RENAMES = {
 }
 function _hip3Rename(coin) { return HIP3_RENAMES[coin] ?? coin }
 export function hip3Rename(coin) { return _hip3Rename(coin) }
+
+// Bounded-concurrency map, preserving input order.
+//
+// The HIP-3 fan-outs fired one request per dex through Promise.all. With ~9 dexes
+// that's a 9-wide burst per call site, and several call sites tick together — enough
+// to blow HL's burst bucket and 429 even though the average rate is modest. Capping
+// in-flight requests flattens the spike without making the data any less fresh.
+const HL_FAN_CONCURRENCY = 3
+export async function hlPool(items, fn, limit = HL_FAN_CONCURRENCY) { return _pool(items, fn, limit) }
+async function _pool(items, fn, limit = HL_FAN_CONCURRENCY) {
+  const out = new Array(items.length)
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++
+      out[i] = await fn(items[i], i)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
+}
 
 // User-facing coin label: apply the rename, then drop the HIP-3 dex prefix
 // (e.g. "xyz:SPCX" → "SPCX", "xyz:CL" → "WTIOIL"). Display only — never use this
@@ -33,10 +62,9 @@ function _hip3DexNames(allMetas) {
 // Main DEX + HIP-3 DEXes are fetched in parallel. HIP-3 failures are silently skipped.
 export async function fetchClearinghouseState(address, allMetas) {
   const dexes = allMetas && allMetas.length > 1 ? _hip3DexNames(allMetas) : []
-  const [mainState, ...hip3States] = await Promise.all([
-    infoClient.clearinghouseState({ user: address }),
-    ...dexes.map(dex => infoClient.clearinghouseState({ user: address, dex }).catch(() => null)),
-  ])
+  const mainState  = await infoClient.clearinghouseState({ user: address })
+  const hip3States = await _pool(dexes, dex =>
+    infoClient.clearinghouseState({ user: address, dex }).catch(() => null))
   if (!dexes.length) {
     // Caller skipped the HIP-3 fan-out this tick (rate-limit protection) —
     // reuse the cached HIP-3 positions so they don't flicker out of the UI.
@@ -73,17 +101,31 @@ export async function fetchFrontendOpenOrders(address, allMetas) {
     if (_hip3Cache.addr === address && _hip3Cache.orders.length) return [...mainOrders, ..._hip3Cache.orders]
     return mainOrders
   }
-  const hip3Arrays = await Promise.all(
-    dexes.map(dex => infoClient.frontendOpenOrders({ user: address, dex }).catch(() => []).then(orders =>
+  const hip3Arrays = await _pool(dexes, dex =>
+    infoClient.frontendOpenOrders({ user: address, dex }).catch(() => []).then(orders =>
       orders.map(o => {
         const prefixed = o.coin.includes(':') ? o.coin : `${dex}:${o.coin}`
         return { ...o, coin: _hip3Rename(prefixed) }
       })
     ))
-  )
   _hip3Cache.addr = address
   _hip3Cache.orders = hip3Arrays.flat()
   return [...mainOrders, ..._hip3Cache.orders]
+}
+
+// HIP-3 dex mids ONLY (main-dex mids come from the WS/allMids feed, which does not
+// cover HIP-3 dexes). Pass the filtered fan-metas so only the account's active dexes
+// are hit — allMids({dex}) is weight-2, so 1–2 active dexes is cheap. Keys come back
+// already "dex:coin" prefixed, matching position coin ids. Returns {} when none.
+export async function fetchHip3Mids(allMetas) {
+  const dexes = (allMetas && allMetas.length > 1) ? _hip3DexNames(allMetas) : []
+  if (!dexes.length) return {}
+  const arr = await _pool(dexes, dex => infoClient.allMids({ dex }).catch(() => ({})))
+  const merged = Object.assign({}, ...arr)
+  for (const [from, to] of Object.entries(HIP3_RENAMES)) {
+    if (from in merged) merged[to] = merged[from]
+  }
+  return merged
 }
 
 // Fetch allMids for main DEX + all HIP-3 DEXes, merged into one object.
@@ -93,7 +135,7 @@ export async function fetchAllMids(allMetas) {
   if (!allMetas || allMetas.length <= 1) return mainMids
   const dexes = _hip3DexNames(allMetas)
   if (!dexes.length) return mainMids
-  const hip3Arr = await Promise.all(dexes.map(dex => infoClient.allMids({ dex }).catch(() => ({}))))
+  const hip3Arr = await _pool(dexes, dex => infoClient.allMids({ dex }).catch(() => ({})))
   const merged = Object.assign({}, mainMids, ...hip3Arr)
   // Mirror renamed keys so mark price lookups still work after position coin rename
   for (const [from, to] of Object.entries(HIP3_RENAMES)) {
@@ -108,13 +150,13 @@ export async function fetchAllMids(allMetas) {
  * userFillsByTime caps at 2000 per request — page forward until < 2000 returned.
  * Returns raw HL fill objects sorted newest-first.
  */
-async function fetchAllFunding(address, startTime) {
+export async function fetchAllFunding(address, startTime = 1667260800000, { info = infoClient, maxPages = 60 } = {}) {
   const all  = []
   const seen = new Set()
 
-  while (true) {
-    const batch = await infoClient.userFunding({ user: address, startTime }).catch(() => [])
-    if (!batch.length) break
+  for (let page = 0; page < maxPages; page++) {
+    const batch = await info.userFunding({ user: address, startTime }).catch(() => [])
+    if (!Array.isArray(batch) || !batch.length) break
 
     for (const f of batch) {
       // Funding hashes are always 0x000...0 — use composite key instead
@@ -125,9 +167,42 @@ async function fetchAllFunding(address, startTime) {
     if (batch.length < 500) break
 
     const maxTime = Math.max(...batch.map(f => f.time))
+    if (maxTime + 1 <= startTime) break   // no forward progress — bail
     startTime = maxTime + 1
   }
 
+  return all.sort((a, b) => b.time - a.time)
+}
+
+/**
+ * Fetch a user's fills across an unbounded window via sequential time-paging.
+ * userFillsByTime returns at most 2000 fills per response, so a single call
+ * silently truncates once an account crosses ~2000 lifetime fills. We page
+ * forward by time until a short page (< 2000) proves we've reached the end.
+ *
+ * Dedupe key is `tid` (the unique per-fill trade id) — NEVER `hash`, which HL
+ * returns as 0x000…0 for many fills, so hash-keying would collapse distinct
+ * fills into one. Returns raw HL fill objects sorted newest-first.
+ *
+ * @param {string} address
+ * @param {{ startTime?: number, info?: object, maxPages?: number }} [opts]
+ */
+export async function fetchAllFills(address, { startTime = 1667260800000, info = infoClient, maxPages = 60 } = {}) {
+  const all  = []
+  const seen = new Set()
+  let cursor = startTime
+  for (let page = 0; page < maxPages; page++) {
+    const batch = await info.userFillsByTime({ user: address, startTime: cursor }).catch(() => [])
+    if (!Array.isArray(batch) || !batch.length) break
+    for (const f of batch) {
+      const key = f.tid ?? `${f.time}_${f.oid}_${f.px}_${f.sz}_${f.dir}`
+      if (!seen.has(key)) { seen.add(key); all.push(f) }
+    }
+    if (batch.length < 2000) break
+    const maxTime = Math.max(...batch.map(f => f.time))
+    if (maxTime + 1 <= cursor) break   // no forward progress — bail rather than loop forever
+    cursor = maxTime + 1
+  }
   return all.sort((a, b) => b.time - a.time)
 }
 
@@ -148,7 +223,7 @@ export async function loadAccountData(address, onStep, { mobile = false } = {}) 
     infoClient.clearinghouseState({ user: address }),
     infoClient.spotClearinghouseState({ user: address }),
     infoClient.frontendOpenOrders({ user: address }),
-    infoClient.userFillsByTime({ user: address, startTime: fillsFrom, reversed: true })
+    fetchAllFills(address, { startTime: fillsFrom })
       .catch(() => infoClient.userFills({ user: address })),
     infoClient.portfolio({ user: address }),
     infoClient.allPerpMetas(),
@@ -162,9 +237,8 @@ export async function loadAccountData(address, onStep, { mobile = false } = {}) 
   const meta = { universe: allMetas.flatMap(m => m.universe ?? []) }
 
   // HIP-3 DEX mids deferred — don't block render, caller patches state.allMids in background
-  const hip3Promise = Promise.all(
-    _hip3DexNames(allMetas).map(dex => infoClient.allMids({ dex }).catch(() => ({})))
-  ).then(arr => Object.assign({}, allMids, ...arr))
+  const hip3Promise = _pool(_hip3DexNames(allMetas), dex => infoClient.allMids({ dex }).catch(() => ({})))
+    .then(arr => Object.assign({}, allMids, ...arr))
 
   return { perpState, spotState, openOrders, fills, portfolio, meta, allMetas, allMids, hip3Promise, outcomeMeta }
   // funding + webData deferred — call loadFundingData() separately

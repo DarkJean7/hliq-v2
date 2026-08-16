@@ -8,7 +8,7 @@ on:
 env:
   DEPLOY_HOST: 159.69.193.250
   DEPLOY_USER: root
-  DEPLOY_PATH: /root/hliq
+  DEPLOY_PATH: /root/hliq-v2
 
 jobs:
   deploy:
@@ -27,10 +27,15 @@ jobs:
 
       - name: Sync files to server
         run: |
-          rsync -avz --delete src/          "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/src/"
-          rsync -avz --delete public/       "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/public/"
-          rsync -avz index.html             "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/index.html"
-          rsync -avz vite.config.js         "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/vite.config.js"
+          rsync -avz --delete src/     "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/src/"
+          rsync -avz --delete public/  "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/public/"
+          rsync -avz index.html        "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/index.html"
+          rsync -avz vite.config.js    "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/vite.config.js"
+          rsync -avz serve-prod.js     "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/serve-prod.js"
 
-      - name: Restart app
-        run: ssh "$DEPLOY_USER@$DEPLOY_HOST" "pm2 restart hliq"
+      # pm2 runs serve-prod.js, which serves dist/ — source changes have no
+      # effect until the bundle is rebuilt on the server.
+      - name: Build and restart app
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd $DEPLOY_PATH && npm run build && pm2 restart hliq-v2"

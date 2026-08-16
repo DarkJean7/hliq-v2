@@ -11,6 +11,17 @@ function _lbl(coin) {
 // Escape for a single-quoted JS string inside a double-quoted HTML onclick attr.
 const _jss = s => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;')
 
+// dir-badge colour. Closes stay yellow (dir-close); OPENS are coloured by side —
+// long = green, short = red. A flip ("Long > Short") is coloured by its NEW side.
+function _dirBadgeCls(dir) {
+  const d = (dir || '').toLowerCase()
+  if (d.includes('close')) return 'dir-close'          // close long / close short → yellow
+  const side = d.includes('>') ? d.split('>').pop() : d // flip → colour by resulting side
+  if (side.includes('short')) return 'dir-short'        // open short → red
+  if (side.includes('long'))  return 'dir-long'         // open long → green
+  return 'dir-close'                                    // settlement / other → neutral
+}
+
 // Overview hero chart period/type + cached data for the switchers
 let _ovPeriod = 'week'
 let _ovChartType = 'value'   // 'value' | 'accumulated' | 'realized'
@@ -167,20 +178,41 @@ function portfolioLatest(portfolio, period, key) {
 // Value" but the app only refetches it once a minute — meanwhile uPnL flows
 // 1:1 into the unified balance, so add the perp-equity delta since the
 // snapshot (_perpAnchor is stamped on the portfolio at fetch time in main.js).
+// Last good Portfolio Value, so a momentarily-empty portfolio response doesn't
+// swap in a different (double-counting) formula and jolt the displayed equity.
+let _lastGoodAcctVal = null
+
 function liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal) {
   const snap = portfolioLatest(portfolio, 'allTime', 'accountValueHistory')
-  if (snap == null) return perpAcctVal + spotUSDCTotal
+  if (snap == null) {
+    // `perp + spot` double-counts on a unified account (the USDC balance already
+    // holds perp equity) — measured $69–$237 too high on real wallets. Falling back
+    // to it mid-session is what made the value spike and snap back, so prefer the
+    // last good reading and use the sum only when there has never been one.
+    if (_lastGoodAcctVal != null) return _lastGoodAcctVal
+    return perpAcctVal + spotUSDCTotal
+  }
   const anchor = portfolio?._perpAnchor
-  return anchor != null ? snap + (perpAcctVal - anchor) : snap
+  const val = anchor != null ? snap + (perpAcctVal - anchor) : snap
+  _lastGoodAcctVal = val
+  return val
 }
 
+// A different account is being shown — drop the cached value so it can't leak across.
+export function resetLiveAccountValue() { _lastGoodAcctVal = null }
+
 // ─── ACCOUNT STATS ───────────────────────────────────────────────────────────
-export function computeAcctStats(perpState, spotState, fills, portfolio = []) {
+export function computeAcctStats(perpState, spotState, fills, portfolio = [], funding = [], allMids = {}) {
   const margin     = perpState?.marginSummary ?? {}
   const positions  = perpState?.assetPositions ?? []
 
   const totalNtl      = parseFloat(margin.totalNtlPos      ?? 0)
   const maintMargin   = parseFloat(perpState?.crossMaintenanceMarginUsed ?? margin.totalMarginUsed ?? 0)
+  // Collateral actually backing open positions — NOT the same as maintenance margin
+  // (typically ~10x larger). Summed from the positions so it always matches what the
+  // position cards and the allocation wheel show.
+  const marginUsed    = positions.reduce((s, p) => s + Math.abs(parseFloat(p.position?.marginUsed ?? 0)), 0)
+    || parseFloat(margin.totalMarginUsed ?? 0)
   const perpWithdraw  = parseFloat(perpState?.withdrawable  ?? 0)
   const spotUSDC      = (spotState?.balances ?? []).find(b => b.coin === 'USDC')
   const spotUSDCFree  = spotUSDC ? Math.max(0, parseFloat(spotUSDC.total ?? 0) - parseFloat(spotUSDC.hold ?? 0)) : 0
@@ -191,24 +223,44 @@ export function computeAcctStats(perpState, spotState, fills, portfolio = []) {
   // balance already contains perp equity, so perp+spot would double-count).
   const accountValue  = liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal)
 
-  const unrealizedPnl = positions.reduce((s, p) => s + parseFloat(p.position?.unrealizedPnl ?? 0), 0)
+  const perpUnrealized = positions.reduce((s, p) => s + parseFloat(p.position?.unrealizedPnl ?? 0), 0)
+  // Spot/outcome holdings move in value too, and that was counted nowhere: an account
+  // holding a token down 65% still reported Net PnL +$0.00. Each holding carries its
+  // cost basis (entryNtl), so unrealized = market value − cost. Only counted when both
+  // a live mark and a real basis exist; USDC is cash, not a position.
+  const spotUnrealized = (spotState?.balances ?? []).reduce((s, b) => {
+    if (b.coin === 'USDC') return s
+    const total = parseFloat(b.total ?? 0)
+    const basis = parseFloat(b.entryNtl ?? 0)
+    const px    = parseFloat(allMids?.[b.coin] ?? 0)
+    if (!(total > 0) || !(basis > 0) || !(px > 0)) return s
+    return s + (total * px - basis)
+  }, 0)
+  const unrealizedPnl = perpUnrealized + spotUnrealized
   const realizedPnl   = (fills ?? []).reduce((s, f) => s + (f.closedPnl ?? 0), 0)
-  const netPnl        = realizedPnl + unrealizedPnl
+  // Net PnL counts what the account actually kept: trading result MINUS the fees paid
+  // and PLUS/MINUS funding. Leaving those out (as this did) put every surface using
+  // this helper roughly a hundred dollars above the Portfolio page and the leaderboard,
+  // which already included them — the same label meaning two different things.
+  const totalFees     = (fills ?? []).reduce((s, f) => s + (f.fee ?? 0), 0)
+  const netFunding    = (funding ?? []).reduce((s, f) => s + (f.usdc ?? parseFloat(f.delta?.usdc ?? 0) ?? 0), 0)
+  const netPnl        = realizedPnl + unrealizedPnl + netFunding - totalFees
 
-  // HL "Unified Account Ratio" = perps maintenance margin / unified USDC balance.
-  // Health = 100 − that ratio. Falls back to perp equity for non-unified accounts.
-  const marginBase = spotUSDCTotal > 0 ? spotUSDCTotal : perpAcctVal
-  const healthPct  = marginBase > 0 ? Math.max(0, (1 - maintMargin / marginBase) * 100) : 0
+  // Health = 100 − HL's "Unified Account Ratio" = perps maintenance margin ÷ Portfolio
+  // Value (the unified account value: perp + spot + vaults, NOT the perp-only account
+  // value). This is the exact number HL shows in its Unified Account Summary.
+  const marginBase = accountValue
+  const healthPct  = marginBase > 0 ? Math.max(0, Math.min(100, (1 - maintMargin / marginBase) * 100)) : 100
   const healthCls  = healthPct > 60 ? 'pos' : healthPct > 30 ? 'warn' : 'neg'
   const healthStr  = accountValue > 0 ? healthPct.toFixed(1) + '%' : '—'
 
   const accountLeverage = accountValue > 0 ? totalNtl / accountValue : 0
 
-  return { accountValue, unrealizedPnl, realizedPnl, netPnl, maintMargin, withdrawable, healthPct, healthStr, healthCls, accountLeverage }
+  return { accountValue, unrealizedPnl, perpUnrealized, spotUnrealized, realizedPnl, netPnl, totalFees, netFunding, maintMargin, marginUsed, withdrawable, healthPct, healthStr, healthCls, accountLeverage }
 }
 
 // ─── OVERVIEW ────────────────────────────────────────────────────────────────
-export function renderOverview({ perpState, spotState, fills, funding = [], openOrders, allMids = {}, portfolio = [], webData = null, sessionStart = null, firstFillTime = null, addr = null }) {
+export function renderOverview({ perpState, spotState, fills, funding = [], openOrders, allMids = {}, portfolio = [], webData = null, sessionStart = null, firstFillTime = null, addr = null, ledger = [] }) {
   const margin    = perpState.marginSummary ?? {}
   const positions = perpState.assetPositions ?? []
 
@@ -237,8 +289,12 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   }, 0)
 
   // ── Net deposited from webData2.cumLedger ────────────────────────────────
-  // cumLedger = total USDC bridged IN minus total USDC bridged OUT (Arbitrum ↔ HL).
-  // This is the authoritative value HL tracks internally.
+  // cumLedger = HL's authoritative all-time net money in: bridge deposits AND
+  // received sends AND cross-chain token deposits, minus withdrawals. Do NOT add
+  // ledger transfers on top — they're already inside it (verified against the HL
+  // UI's deposit history; adding them double-counts). The combined All-Accounts
+  // view has no webData2, so its synthetic webData.cumLedger is built from each
+  // wallet's ledger with the same all-inclusive semantics.
   const cumLedger = parseFloat(webData?.cumLedger ?? 0)
 
   // Realized PnL = literal sum of all closed trade PnL from fills
@@ -413,13 +469,13 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
     {
       label: 'Net Deposited',
       value: cumLedger !== 0 ? '$' + fmtUSD(netDeposited) : '—',
-      sub:   'Total deposited minus withdrawals',
+      sub:   'Bridge + transfers, minus outflows',
       cls:   'neu',
     },
     {
       label: 'Total Withdrawn',
       value: cumLedger !== 0 ? '$' + fmtUSD(netWithdrawn) : '—',
-      sub:   'Net USDC bridged out',
+      sub:   'Net USDC out (bridge + transfers)',
       cls:   netWithdrawn > 0 ? 'neg' : 'neu',
     },
     {
@@ -438,8 +494,8 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   ]
 
   const maintMargin = parseFloat(perpState.crossMaintenanceMarginUsed ?? 0)
-  // Health = 100 − HL's Unified Account Ratio (maint margin / unified USDC balance)
-  const _healthBase = spotUSDCTotal > 0 ? spotUSDCTotal : perpAcctVal
+  // Health = 100 − HL's Unified Account Ratio (maintenance margin ÷ Portfolio Value)
+  const _healthBase = accountValue
   const health      = _healthBase > 0
     ? Math.max(0, Math.min(100, (1 - maintMargin / _healthBase) * 100))
     : 100
@@ -450,16 +506,14 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   _ovFills = fills
   const periodChg = _ovComputeChange(_ovPeriod)
   const chgCls    = periodChg.diff >= 0 ? 'pos' : 'neg'
-  const chgArrow  = periodChg.diff >= 0 ? '▲' : '▼'
-  const chgTxt    = (periodChg.diff >= 0 ? '+$' : '-$') + fmtUSD(Math.abs(periodChg.diff))
-  const chgPctTxt = (periodChg.diff >= 0 ? '+' : '') + periodChg.pct.toFixed(2) + '%'
+  const chgFull   = _ovChgText(periodChg)
 
   const inMarginPct = accountValue > 0 ? (marginUsed / accountValue * 100) : 0
 
   // ── Selected stats for the strip (the 6 from the mockup) ──────────────────
   const ringColor = health > 70 ? 'var(--green)' : health > 40 ? 'var(--yellow)' : health > 20 ? '#ff9444' : 'var(--red)'
   const strip = [
-    { label: 'All-Time PnL',  value: fmtPnL(allTimePnl).text,   sub: roiStr || 'vs net deposits', cls: fmtPnL(allTimePnl).cls },
+    { label: 'Unrealized PnL', value: fmtPnL(totalUnrPnl).text, sub: (accountValue > 0 ? (totalUnrPnl >= 0 ? '+' : '') + (totalUnrPnl / accountValue * 100).toFixed(2) + '% of equity' : 'open positions'), cls: fmtPnL(totalUnrPnl).cls },
     { label: 'Net PnL',       value: fmtPnL(netPnl).text,       sub: pctEq(netPnl) || 'incl. funding', cls: fmtPnL(netPnl).cls },
     { label: 'Win Rate',      value: winRate + (closedTrades > 0 ? '%' : ''), sub: winningTrades + ' / ' + closedTrades, cls: 'neu' },
     { label: 'Profit Factor', value: profitFactor === Infinity ? '∞' : profitFactor > 0 ? profitFactor.toFixed(2) : '—', sub: 'wins ÷ losses', cls: profitFactor >= 1 ? 'pos' : profitFactor > 0 ? 'neg' : 'neu' },
@@ -513,7 +567,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
                 <div class="ov-label">Account Value · Perp Equity</div>
                 <div class="ov-eq-val">$${fmtUSD(accountValue)}</div>
                 <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
-                  <span class="ov-chg ${chgCls}" id="ovChgPill">${chgArrow} ${chgTxt} · ${chgPctTxt}</span>
+                  <span class="ov-chg ${chgCls}" id="ovChgPill">${chgFull}</span>
                 </div>
                 <div class="ov-eq-sub">${positions.length} open position${positions.length !== 1 ? 's' : ''} · cross + isolated · today</div>
                 </div>
@@ -533,7 +587,6 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
               ${_ovRing(health, ringColor)}
             </div>
             <div class="ov-health-rows">
-              <div class="ov-hr"><span>Unrealized PnL</span><b class="${totalUnrPnl >= 0 ? 'pos' : 'neg'}">${fmtPnL(totalUnrPnl).text}</b></div>
               <div class="ov-hr"><span>Leverage</span><b>${(accountValue > 0 ? totalNtl / accountValue : 0).toFixed(2)}×</b></div>
               <div class="ov-hr"><span>Withdrawable</span><b class="pos">$${fmtUSD(withdrawable)}</b></div>
               <div class="ov-hr"><span>In margin · ${inMarginPct.toFixed(1)}%</span><b>$${fmtUSD(marginUsed)}</b></div>
@@ -613,10 +666,21 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
 function _ovComputeChange(period) {
   const entry = (_ovPortfolio || []).find(p => p[0] === period) ?? (_ovPortfolio || []).find(p => p[0] === 'allTime')
   const hist  = entry?.[1]?.accountValueHistory ?? []
-  if (hist.length < 2) return { diff: 0, pct: 0 }
+  if (hist.length < 2) return { diff: 0, pct: null }
   const first = parseFloat(hist[0][1]), last = parseFloat(hist[hist.length - 1][1])
   const diff  = last - first
-  return { diff, pct: first !== 0 ? diff / first * 100 : 0 }
+  // A percentage against a near-zero baseline is noise, not information: an all-time
+  // series starts when the account held $0, which rendered as "+$2,372.80 · +0.00%".
+  // `pct: null` tells the caller to show the dollar change on its own.
+  const meaningful = first > 0 && first >= Math.abs(last) * 0.01
+  return { diff, pct: meaningful ? diff / first * 100 : null }
+}
+
+// "▲ +$12.34 · +1.23%", or just "▲ +$12.34" when the baseline can't support a %.
+function _ovChgText(chg) {
+  const up = chg.diff >= 0
+  const money = `${up ? '▲' : '▼'} ${up ? '+$' : '-$'}${fmtUSD(Math.abs(chg.diff))}`
+  return chg.pct == null ? money : `${money} · ${up ? '+' : ''}${chg.pct.toFixed(2)}%`
 }
 
 // SVG donut ring for account health — starts at 12 o'clock and sweeps CLOCKWISE
@@ -649,10 +713,22 @@ function _ovCoinIcon(coin) {
   return `<div class="ov-av-img">${inner}</div>`
 }
 
+// Mark price for a position row. Prefer the live mid, but HIP-3 (dex) coins and the combined
+// "All Accounts" view are often missing from allMids — fall back to the position's own
+// notional, since HL computes positionValue = |szi| × mark, so the division recovers it
+// exactly. Without this the Mark column (and liq-distance health) read 0 / "—".
+function _posMark(p, allMids) {
+  const m = parseFloat(allMids?.[p.coin] ?? 0)
+  if (m > 0) return m
+  const sz = Math.abs(parseFloat(p.szi ?? 0))
+  const pv = Math.abs(parseFloat(p.positionValue ?? 0))
+  return sz > 0 && pv > 0 ? pv / sz : 0
+}
+
 function _ovPositionRow(p, allMids, tpslMap = {}) {
   const szi    = parseFloat(p.szi ?? 0)
   const isLong = szi > 0
-  const mark   = parseFloat(allMids?.[p.coin] ?? 0)
+  const mark   = _posMark(p, allMids)
   const entry  = parseFloat(p.entryPx ?? 0)
   const liq    = parseFloat(p.liquidationPx ?? 0)
   const uPnl   = parseFloat(p.unrealizedPnl ?? 0)
@@ -720,7 +796,7 @@ const _OV_SORT_COLS = [
 function _ovPosSortVal(ap, key, allMids) {
   const p    = ap.position
   const szi  = parseFloat(p.szi ?? 0)
-  const mark = parseFloat(allMids?.[p.coin] ?? 0)
+  const mark = _posMark(p, allMids)
   const entry = parseFloat(p.entryPx ?? 0)
   const liq   = parseFloat(p.liquidationPx ?? 0)
   switch (key) {
@@ -909,9 +985,8 @@ window.__ovSetRange = function(label) {
   const chg = _ovComputeChange(_ovPeriod)
   const pill = document.getElementById('ovChgPill')
   if (pill) {
-    const up = chg.diff >= 0
-    pill.className = 'ov-chg ' + (up ? 'pos' : 'neg')
-    pill.textContent = `${up ? '▲' : '▼'} ${up ? '+$' : '-$'}${fmtUSD(Math.abs(chg.diff))} · ${up ? '+' : ''}${chg.pct.toFixed(2)}%`
+    pill.className = 'ov-chg ' + (chg.diff >= 0 ? 'pos' : 'neg')
+    pill.textContent = _ovChgText(chg)
   }
   try { renderOverviewChart(_ovPortfolio, _ovPeriod, _ovChartType, _ovFills) } catch {}
 }
@@ -1165,11 +1240,15 @@ export function aggregateByHash(fills) {
     // hash=0x0…0 for a whole class of fills, so grouping by hash merged unrelated orders
     // into a phantom row at a blended price. Fall back to tid (unique per fill) so a
     // missing oid never merges distinct fills.
-    const key = f.oid != null ? `oid_${f.oid}`
-      : (f.hash && !/^0x0+$/.test(f.hash) ? f.hash : `tid_${f.tid ?? f.time + '_' + f.coin + '_' + f.px}`)
+    // oids are unique per account, so in the combined "All Accounts" view the key must
+    // also carry the account or two wallets' orders could merge into one phantom row.
+    const acctKey = f._acctAddr ? f._acctAddr + '|' : ''
+    const key = acctKey + (f.oid != null ? `oid_${f.oid}`
+      : (f.hash && !/^0x0+$/.test(f.hash) ? f.hash : `tid_${f.tid ?? f.time + '_' + f.coin + '_' + f.px}`))
     if (!groups.has(key)) {
       groups.set(key, { time: f.time, timeStr: f.timeStr, coin: f.coin, side: f.side,
-        dir: f.dir, sz: 0, notional: 0, fee: 0, feeToken: f.feeToken, closedPnl: 0, hash: f.hash })
+        dir: f.dir, sz: 0, notional: 0, fee: 0, feeToken: f.feeToken, closedPnl: 0, hash: f.hash,
+        _acct: f._acct, _acctAddr: f._acctAddr })
     }
     const g = groups.get(key)
     g.sz += f.sz; g.notional += f.notional; g.fee += f.fee; g.closedPnl += f.closedPnl
@@ -1181,7 +1260,13 @@ export function aggregateByHash(fills) {
 export function renderTrades(fills) {
   const tbody = document.getElementById('tradesTbody')
 
-  const trades = aggregateByHash(fills)
+  let trades = aggregateByHash(fills)
+
+  // Optional date-range filter (History tab header inputs)
+  const _from = document.getElementById('fillDateFrom')?.value
+  const _to   = document.getElementById('fillDateTo')?.value
+  if (_from) { const t0 = new Date(_from + 'T00:00:00').getTime();     trades = trades.filter(t => t.time >= t0) }
+  if (_to)   { const t1 = new Date(_to   + 'T23:59:59.999').getTime(); trades = trades.filter(t => t.time <= t1) }
 
   document.getElementById('fillCount').textContent    = trades.length
   document.getElementById('fillCountBig').textContent = trades.length
@@ -1233,7 +1318,7 @@ export function renderTrades(fills) {
         </div>
       </td>
       <td><b>${esc(_lbl(t.coin))}</b></td>
-      <td><span class="dir-badge ${isClose ? 'dir-close' : 'dir-open'}">${esc(dir)}</span></td>
+      <td><span class="dir-badge ${_dirBadgeCls(dir)}">${esc(dir)}</span></td>
       <td>${sizeCell}</td>
       <td>$${fmtPrice(t.px)}</td>
       <td class="${hasPnl ? pnl.cls : 'muted'}" style="white-space:nowrap">${hasPnl ? pnl.text : '—'}${isMobile ? '' : shareBtn}</td>
@@ -1247,7 +1332,7 @@ export function renderTrades(fills) {
           <div class="row-expand-item"><span>Closed PnL</span><span class="${fmtPnL(t.closedPnl).cls}">${hasPnl ? fmtPnL(t.closedPnl).text : '—'}</span></div>
           <div class="row-expand-item"><span>Fee</span><span class="neg">-$${fmtUSD(t.fee)} ${esc(t.feeToken ?? 'USDC')}</span></div>
           <div class="row-expand-item"><span>Net PnL</span><span class="${fmtPnL(netPnl).cls}">${hasPnl ? fmtPnL(netPnl).text : '—'}</span></div>
-          <div class="row-expand-item"><span>Direction</span><span class="dir-badge ${isClose ? 'dir-close' : 'dir-open'}">${esc(dir)}</span></div>
+          <div class="row-expand-item"><span>Direction</span><span class="dir-badge ${_dirBadgeCls(dir)}">${esc(dir)}</span></div>
         </div>
         ${hasPnl ? `<button class="trade-share-btn-full" onclick="event.stopPropagation();${_shareCall}">↗ Share this trade</button>` : ''}
       </td>
@@ -1287,14 +1372,14 @@ export function renderPortfolioStats({ perpState, spotState, fills, funding, por
   const spotUSDCFree = spotUSDC ? Math.max(0, parseFloat(spotUSDC.total ?? 0) - parseFloat(spotUSDC.hold ?? 0)) : 0
   const withdrawable = perpWdraw + spotUSDCFree
 
-  // Health = 100 − HL's Unified Account Ratio (maint margin / unified USDC balance)
+  // Health = 100 − HL's Unified Account Ratio (maintenance margin ÷ Portfolio Value)
   const cms          = perpState.crossMarginSummary ?? {}
   const marginUsed   = parseFloat(cms.totalMarginUsed ?? 0)
   const maintMargin  = parseFloat(perpState.crossMaintenanceMarginUsed ?? 0)
-  const _hBase       = _spotUSDCTot > 0 ? _spotUSDCTot : _perpVal
+  const _hBase       = accountValue
   const healthPct    = _hBase > 0
-    ? Math.max(0, (1 - maintMargin / _hBase) * 100)
-    : 0
+    ? Math.max(0, Math.min(100, (1 - maintMargin / _hBase) * 100))
+    : 100
   const healthStr    = accountValue > 0 ? healthPct.toFixed(1) + '%' : '—'
   const healthCls    = healthPct > 60 ? 'pos' : healthPct > 30 ? 'neu' : 'neg'
 
@@ -1402,6 +1487,14 @@ export function renderCoinCard(stats, _price, isSearchResult = false) {
   const pnlCls  = stats.totalPnl >= 0 ? 'pos' : 'neg'
   const pnlSign = stats.totalPnl >= 0 ? '+' : '-'
   const id      = isSearchResult ? 'pokemonSearchCard' : ''
+  // Outcome-market coins are raw ids ("#7391") — resolve to the market question
+  // via the main-app hook so the card reads like a market, not an asset id.
+  const label   = (stats.coin[0] === '#' || stats.coin[0] === '+') && typeof window.__ocLabel === 'function'
+    ? window.__ocLabel(stats.coin) : stats.coin
+  const isLong  = label !== stats.coin
+  const symHtml = isLong
+    ? `<div class="pokemon-coin-symbol" style="font-size:12px;line-height:1.25;white-space:normal;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden" title="${esc(label)}">${esc(label)}</div>`
+    : `<div class="pokemon-coin-symbol">${esc(label)}</div>`
 
   return `
     <div class="pokemon-card" style="--coin-color:${color}" ${id ? `id="${id}"` : ''}
@@ -1411,11 +1504,11 @@ export function renderCoinCard(stats, _price, isSearchResult = false) {
           <img class="pokemon-logo-img" src="${logo}" alt="${esc(stats.coin)}"
                onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/>
           <div class="pokemon-logo-fallback" style="display:none;background:${color}22;color:${color}">
-            ${esc(stats.coin.slice(0, 3))}
+            ${esc(isLong ? '🎯' : stats.coin.slice(0, 3))}
           </div>
         </div>
-        <div class="pokemon-coin-symbol">${esc(stats.coin)}</div>
-        <div class="pokemon-coin-price">$${fmtPrice(stats.price)}</div>
+        ${symHtml}
+        <div class="pokemon-coin-price">${stats.price > 0 ? '$' + fmtPrice(stats.price) : '—'}</div>
         <div class="pokemon-divider"></div>
         <div class="pokemon-stats-grid">
           <div class="pokemon-stat">
@@ -1610,7 +1703,7 @@ export function renderTokenDetail(coin, price, perpState, fills) {
 // ─── MANAGE TABLES (Trade tab) ───────────────────────────────────────────────
 export function renderManageTables(perpState, openOrders, allMids) {
   renderManagePositions(perpState, allMids)
-  renderManageOrders(openOrders, perpState)
+  renderManageOrders(openOrders, perpState, allMids)
 }
 
 export function renderManagePositions(perpState, allMids) {
@@ -1646,7 +1739,7 @@ export function renderManagePositions(perpState, allMids) {
         case 'side':  return parseFloat(pos.szi) > 0 ? 'LONG' : 'SHORT'
         case 'size':  return Math.abs(parseFloat(pos.szi))
         case 'entry': return parseFloat(pos.entryPx)
-        case 'mark':  return parseFloat(allMids[pos.coin] ?? 0)
+        case 'mark':  return _posMark(pos, allMids)
         case 'pnl':   return parseFloat(pos.unrealizedPnl)
         case 'roe':   return parseFloat(pos.returnOnEquity)
         default:      return 0
@@ -1662,7 +1755,7 @@ export function renderManagePositions(perpState, allMids) {
     const pos     = p.position
     const side    = parseFloat(pos.szi) > 0 ? 'LONG' : 'SHORT'
     const pnl     = fmtPnL(pos.unrealizedPnl)
-    const mktPx   = parseFloat(allMids[pos.coin] ?? 0)
+    const mktPx   = _posMark(pos, allMids)
     const roe     = parseFloat(pos.returnOnEquity) * 100
 
     return `<tr>
@@ -1689,7 +1782,7 @@ export function renderManagePositions(perpState, allMids) {
   }).join('')
 }
 
-export function renderManageOrders(openOrders, perpState) {
+export function renderManageOrders(openOrders, perpState, allMids = {}) {
   const tbody   = document.getElementById('manageOrdersTbody')
   const countEl = document.getElementById('manageOrdCount')
   if (countEl) countEl.textContent = openOrders.length
@@ -1761,9 +1854,15 @@ export function renderManageOrders(openOrders, perpState) {
       ? (limitPx > 0 && limitPx !== triggerPx ? 'Stop Limit' : 'Stop Market')
       : 'Limit')
 
-    const priceDetail = isTrigger && triggerPx > 0 && limitPx > 0 && limitPx !== triggerPx
+    let priceDetail = isTrigger && triggerPx > 0 && limitPx > 0 && limitPx !== triggerPx
       ? `<div style="color:var(--muted);font-size:9px;margin-top:2px">Entry $${fmtPrice(limitPx)}</div>`
       : ''
+    // How far the order sits from the current mark
+    const _mark = parseFloat(allMids?.[o.coin] ?? 0)
+    if (displayPx > 0 && _mark > 0) {
+      const dist = (displayPx - _mark) / _mark * 100
+      priceDetail += `<div style="color:var(--muted);font-size:9px;margin-top:2px">${Math.abs(dist) < 0.005 ? 'at mark' : (dist > 0 ? '+' : '') + dist.toFixed(Math.abs(dist) < 1 ? 2 : 1) + '% away'}</div>`
+    }
 
     const pos       = posMap[o.coin]
     const entryPx   = pos ? parseFloat(pos.entryPx ?? 0) : 0
@@ -1816,7 +1915,15 @@ export function renderManageOrders(openOrders, perpState) {
 // Cache for day-click detail rendering
 let _calCache = { fills: [], ledger: [], byDay: {}, rootId: 'calendarRoot', detailId: 'calDetail' }
 
+let _calClickGuard = { key: '', ts: 0 }
 export function calDayClick(key, rootId) {
+  // A single tap on a day sometimes fires twice (touch → synthesised click, or a
+  // re-render swapping the cell mid-tap), which toggled the panel closed then open
+  // again — the "collapses then re-extends" flicker. Ignore a repeat of the same key
+  // within 350ms so one tap = one toggle.
+  const _now = Date.now()
+  if (_calClickGuard.key === key && _now - _calClickGuard.ts < 350) return
+  _calClickGuard = { key, ts: _now }
   // Resolve the calendar's own data/detail from its root (each calendar stores its
   // own _calData), so multiple calendars (desktop, mobile calendar tab, accounts tab)
   // don't clobber each other via the shared _calCache.
@@ -1845,9 +1952,11 @@ export function calDayClick(key, rootId) {
   // unrelated orders into a phantom blended row — see aggregateByHash above.
   const groups = new Map()
   for (const f of dayFills) {
-    const k = f.oid != null ? `oid_${f.oid}`
-      : (f.hash && !/^0x0+$/.test(f.hash) ? f.hash : `tid_${f.tid ?? f.time + '_' + f.coin + '_' + f.px}`)
-    if (!groups.has(k)) groups.set(k, { coin: f.coin, dir: f.dir, sz: 0, notional: 0, fee: 0, closedPnl: 0, time: f.time })
+    // oids repeat across wallets, so the combined view keys by account too.
+    const acctKey = f._acctAddr ? f._acctAddr + '|' : ''
+    const k = acctKey + (f.oid != null ? `oid_${f.oid}`
+      : (f.hash && !/^0x0+$/.test(f.hash) ? f.hash : `tid_${f.tid ?? f.time + '_' + f.coin + '_' + f.px}`))
+    if (!groups.has(k)) groups.set(k, { coin: f.coin, dir: f.dir, sz: 0, notional: 0, fee: 0, closedPnl: 0, time: f.time, _acct: f._acct })
     const g = groups.get(k)
     g.sz += f.sz; g.notional += f.notional; g.fee += f.fee; g.closedPnl += f.closedPnl
   }
@@ -1866,11 +1975,11 @@ export function calDayClick(key, rootId) {
     <div class="cal-detail-section">
       <div class="cal-detail-section-title">Trades</div>
       ${trades.map(t => {
-        const isClose = (t.dir || '').toLowerCase().includes('close')
         const netPnl  = t.closedPnl - t.fee
         return `<div class="cal-detail-trade">
           <span class="cal-detail-coin">${esc(_lbl(t.coin))}</span>
-          <span class="dir-badge ${isClose ? 'dir-close' : 'dir-open'}">${esc(t.dir || '')}</span>
+          <span class="dir-badge ${_dirBadgeCls(t.dir)}">${esc(t.dir || '')}</span>
+          ${t._acct ? `<span class="acct-pill">${esc(t._acct)}</span>` : ''}
           <span class="cal-detail-meta">${fmtSize(t.sz)} @ $${fmtPrice(t.px)}</span>
           ${t.closedPnl !== 0 ? `<span class="${netPnl >= 0 ? 'pos' : 'neg'} cal-detail-pnl">${netPnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(netPnl))}</span>` : '<span class="cal-detail-pnl" style="color:var(--muted)">—</span>'}
         </div>`
@@ -1886,6 +1995,7 @@ export function calDayClick(key, rootId) {
         const amt       = parseFloat(isDeposit ? (t === 'deposit' ? e.delta.usdc : e.delta.usdcValue) : e.delta.usdc) || 0
         return `<div class="cal-detail-tx">
           <span class="badge ${isDeposit ? 'badge-deposit' : 'badge-withdraw'}">${isDeposit ? 'Deposit' : 'Withdrawal'}</span>
+          ${e._acct ? `<span class="acct-pill">${esc(e._acct)}</span>` : ''}
           <span class="${isDeposit ? 'pos' : 'neg'}" style="font-family:'JetBrains Mono',monospace;font-weight:700">${isDeposit ? '+' : '-'}$${fmtUSD(amt)} USDC</span>
         </div>`
       }).join('')}
@@ -1957,6 +2067,8 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
   const redDays    = monthKeys.filter(k => byDay[k].pnl < 0).length
   const bestDay    = monthKeys.reduce((b, k) => byDay[k].pnl > (byDay[b]?.pnl ?? -Infinity) ? k : b, monthKeys[0])
   const worstDay   = monthKeys.reduce((w, k) => byDay[k].pnl < (byDay[w]?.pnl ?? Infinity) ? k : w, monthKeys[0])
+  const monthDeposited = monthKeys.reduce((s, k) => s + (byDay[k].deposited || 0), 0)
+  const monthWithdrawn = monthKeys.reduce((s, k) => s + (byDay[k].withdrawn || 0), 0)
 
   const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
   const DOWS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
@@ -2028,6 +2140,14 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
         <div class="stat-label">Worst Day</div>
         <div class="stat-value neg">${worstDay && byDay[worstDay].pnl < 0 ? '-$' + fmtUSD(Math.abs(byDay[worstDay].pnl)) : '—'}</div>
         ${worstDay && byDay[worstDay].pnl < 0 ? `<div class="stat-sub">${fmtDayLabel(worstDay)}</div>` : ''}
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Deposited</div>
+        <div class="stat-value pos">${monthDeposited > 0 ? '+$' + fmtUSD(monthDeposited) : '$0'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Withdrawn</div>
+        <div class="stat-value neg">${monthWithdrawn > 0 ? '-$' + fmtUSD(monthWithdrawn) : '$0'}</div>
       </div>
     </div>
     <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
@@ -2110,7 +2230,9 @@ export function renderTransfers(ledger, filter = 'all', addr = null) {
   for (const e of ledger) {
     if (!FLOW_TYPES.includes(e.delta.type)) continue
     if (e.delta.type === 'send' && e.delta.token !== 'USDC') continue   // non-USDC sends carry no USDC value
-    const v = ledgerAmount(e, addr)
+    // In the combined view `addr` is a sentinel, so direction must be judged against
+    // the wallet the entry actually came from.
+    const v = ledgerAmount(e, e._acctAddr ?? addr)
     if (v > 0) totalDeposited += v
     else if (v < 0) totalWithdrawn += -v
   }
@@ -2138,7 +2260,7 @@ export function renderTransfers(ledger, filter = 'all', addr = null) {
 
   cardsEl.innerHTML = visible.slice().sort((a, b) => b.time - a.time).map(entry => {
     const meta    = TRANSFER_TYPES[entry.delta.type] ?? { label: entry.delta.type, badge: 'badge-transfer', sign: 0 }
-    const amt     = ledgerAmount(entry, addr)
+    const amt     = ledgerAmount(entry, entry._acctAddr ?? addr)
     const amtStr  = amt > 0 ? '+$' + fmtUSD(amt) : amt < 0 ? '-$' + fmtUSD(Math.abs(amt)) : '$0.00'
     // Colour follows the actual signed flow (so spot/internal transfers get +/-),
     // falling back to the type's nominal sign when the amount is zero.
@@ -2147,9 +2269,17 @@ export function renderTransfers(ledger, filter = 'all', addr = null) {
     const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) +
                     ' ' + date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
     const details = ledgerDetails(entry)
+    // In the combined view show whose wallet the transfer belongs to.
+    const acctHtml = entry._acctAddr && typeof window !== 'undefined' && window._mobVAvatarHtml
+      ? `<span class="txfr-card-acct" title="${esc(entry._acct ?? '')}">
+           ${window._mobVAvatarHtml(entry._acctAddr, 18)}
+           <span>${esc(entry._acct ?? '')}</span>
+         </span>`
+      : ''
     return `<div class="txfr-card">
       <div class="txfr-card-top">
         <span class="badge ${meta.badge}">${esc(meta.label)}</span>
+        ${acctHtml}
         <span class="txfr-card-amt ${amtCls}">${esc(amtStr)}</span>
       </div>
       <div class="txfr-card-bottom">

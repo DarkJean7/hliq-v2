@@ -1,11 +1,11 @@
-const CACHE = 'hliq-v2-assets-v7'
+const CACHE = 'hliq-v2-assets-v12'
 
 // ─── PUSH NOTIFICATIONS ───────────────────────────────────────────────────────
 
 self.addEventListener('push', event => {
   const data = event.data?.json?.() ?? {}
   event.waitUntil(
-    self.registration.showNotification(data.title || 'Insolvent Terminal', {
+    self.registration.showNotification(data.title || 'Insolvent Trade', {
       body:  data.body  || '',
       tag:   data.tag   || 'hliq-notif',
       icon:  '/pwa-192x192.png',
@@ -42,6 +42,12 @@ self.addEventListener('fetch', event => {
 
   // Never intercept non-GET requests or API calls
   if (request.method !== 'GET' || url.pathname.startsWith('/api/')) return
+
+  // Coin icons: let the browser HTTP-cache handle them normally (they carry a 1-day max-age),
+  // so re-renders and scrolling serve instantly from cache with no flicker. Corrections still
+  // reach users because the client bumps the icon URL version (?v=) when the logic changes,
+  // which is a brand-new URL the cache has never seen. (An earlier cache:'reload' here forced
+  // a network fetch on every render — that's what made icons re-flicker.)
 
   if (url.pathname.startsWith('/assets/')) {
     event.respondWith(

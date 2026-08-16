@@ -100,14 +100,18 @@ function log(tag, msg) {
   console.log(`[${ts}] [${tag.padEnd(8)}] ${m}`)
 }
 
-// ─── PRICE PRECISION ──────────────────────────────────────────────────────────
-function roundPx(n) {
-  // 5 significant figures
+function roundPx(n, szDecimals) {
+  // HL price tick: <=5 significant figures AND <=(6 - szDecimals) decimals. The old
+  // magnitude form applied only the sig-fig cap, so a low-priced / high-szDecimals asset
+  // could emit too many decimals and HL rejected the order ("not divisible by tick size").
+  // szDecimals omitted => pure 5-sig-fig (unchanged behavior for range/threshold math).
   const f = parseFloat(n)
-  if (f <= 0) return 0
-  const magnitude = Math.floor(Math.log10(Math.abs(f)))
-  const factor    = Math.pow(10, 4 - magnitude)
-  return Math.round(f * factor) / factor
+  if (!(f > 0)) return 0
+  const sig = parseFloat(f.toPrecision(5))
+  if (szDecimals == null) return sig
+  const maxDec = Math.max(0, 6 - szDecimals)
+  const factor = Math.pow(10, maxDec)
+  return Math.round(sig * factor) / factor
 }
 
 function roundSz(n, szDecimals = 6, px = 0) {
@@ -206,7 +210,7 @@ async function marketOrder({ coin, isBuy, sz, markPx, reduceOnly = false }) {
     orders: [{
       a: index,
       b: isBuy,
-      p: roundPx(limitPx).toString(),
+      p: roundPx(limitPx, szDecimals).toString(),
       s: roundSz(sz, szDecimals, roundPx(markPx)).toString(),
       r: reduceOnly,
       t: { limit: { tif: 'Ioc' } },
@@ -233,7 +237,7 @@ async function limitOrder({ coin, isBuy, sz, px, reduceOnly = false }) {
     orders: [{
       a: index,
       b: isBuy,
-      p: roundPx(px).toString(),
+      p: roundPx(px, szDecimals).toString(),
       s: roundSz(sz, szDecimals, roundPx(px)).toString(),
       r: reduceOnly,
       t: { limit: { tif: 'Gtc' } },
@@ -464,7 +468,7 @@ async function runLongSide(macro, positions, acctVal, cap, allMids) {
 
 async function run() {
   log('START', '═'.repeat(60))
-  log('START', `Insolvent Terminal — Strategy Manager`)
+  log('START', `Insolvent Trade — Strategy Manager`)
   log('START', `Querying:  ${QUERY_ADDR}`)
   log('START', `Long:      ${LONG_ASSETS.length  ? LONG_ASSETS.join(', ')  : '(none)'}`)
   log('START', `Short:     ${SHORT_ASSETS.length ? SHORT_ASSETS.join(', ') : '(none)'}`)

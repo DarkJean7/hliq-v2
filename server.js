@@ -17,18 +17,39 @@ import { existsSync, mkdirSync, appendFileSync, readFileSync, readdirSync, write
 import { join, dirname }                                      from 'node:path'
 import { fileURLToPath }                                      from 'node:url'
 import { homedir }                                            from 'node:os'
-import { randomBytes, createCipheriv, createDecipheriv }      from 'node:crypto'
+import { randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual } from 'node:crypto'
+import { ethers }                                             from 'ethers'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const PORT       = 3002
 const LOGS_DIR        = join(__dirname, 'logs')
 const LEADERBOARD_FILE = join(__dirname, 'leaderboard.json')
+const LB_STATS_FILE    = join(__dirname, 'leaderboard-stats.json')
+
+// Admin/dev PIN for leaderboard management (replace list, remove entries, dev mode).
+// Read from ~/.hliq/lb_pin FIRST (durable across deploys/reboots, editable without
+// touching the pm2 env), falling back to the LB_PIN env var. Fails closed: with no
+// PIN configured, nobody can manage the board.
+function _readLbPin() {
+  try { return readFileSync(join(homedir(), '.hliq', 'lb_pin'), 'utf8').trim() } catch { return '' }
+}
+const LB_PIN     = _readLbPin() || process.env.LB_PIN || ''
+const LB_MAX     = 500                 // hard cap on auto-joined accounts
+// Minimum equity to auto-join. `> 0` is not enough: plenty of addresses (e.g.
+// 0x…0001) hold a few cents of dust and would otherwise land on the board.
+const LB_MIN_EQUITY = 10
+const HL_INFO    = 'https://api.hyperliquid.xyz/info'
+const LB_GENESIS = 1667260800000
 
 const CORS = {
   'Access-Control-Allow-Origin':  '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, x-lb-pin, Authorization',
 }
+
+// Operator super-user bypass: `Authorization: Bearer <ADMIN_TOKEN>` acts on any account.
+// Ensures the server owner can never be locked out by the auth layer below.
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''
 
 const SCRIPTS = {
   insolvent: 'strategies/manager.js',
@@ -38,6 +59,7 @@ const SCRIPTS = {
   twap:      'strategies/twap.js',
   trend:     'strategies/trend.js',
   accumulator: 'strategies/accumulator.js',
+  volbreak:  'strategies/volbreak.js',
   // Per-position risk guards (share one script; mode comes from --mode in args)
   liqguard:  'strategies/guardian.js',
   levbrake:  'strategies/guardian.js',
@@ -125,6 +147,75 @@ function unpersistBot(type, address, instance) {
   saveRegistry(reg)
 }
 
+// ─── AUTH ───────────────────────────────────────────────────────────────────────
+// The bot-control API takes an `address` and acts on that account's bots. Unauthenticated,
+// anyone could stop another user's bots or read their strategy logs. Model: the client
+// proves possession of the account's AGENT KEY (the same credential it trades with) by
+// signing a short-lived server nonce; the server binds each bot to the agent address that
+// started it (`botOwner`) and gates mutations + log reads to that owner. Boolean run-state
+// (/api/status) stays open so the dashboard's bot badges work for any viewer.
+const TOKEN_TTL_MS = 12 * 60 * 60 * 1000   // 12h session
+const NONCE_TTL_MS = 5 * 60 * 1000
+// Token-signing secret derived from the master key (already persisted outside the repo),
+// so tokens survive restarts without a second key file.
+const AUTH_SECRET  = createHmac('sha256', MASTER_KEY).update('insolvent-auth-token-v1').digest()
+
+const nonces = new Map()   // nonce -> expiry
+function issueNonce() { const n = randomBytes(16).toString('hex'); nonces.set(n, Date.now() + NONCE_TTL_MS); return n }
+function consumeNonce(n) { const e = nonces.get(n); if (e == null) return false; nonces.delete(n); return e > Date.now() }
+setInterval(() => { const now = Date.now(); for (const [n, e] of nonces) if (e < now) nonces.delete(n) }, 60_000).unref()
+
+const authMsg = (address, nonce) =>
+  `Insolvent Trade — bot control login\nAccount: ${String(address).toLowerCase()}\nNonce: ${nonce}`
+
+const b64url = (buf) => Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+function signToken(payload) {
+  const p   = b64url(JSON.stringify(payload))
+  const sig = b64url(createHmac('sha256', AUTH_SECRET).update(p).digest())
+  return `${p}.${sig}`
+}
+function verifyToken(token) {
+  if (typeof token !== 'string' || !token.includes('.')) return null
+  const [p, sig] = token.split('.')
+  const expect   = b64url(createHmac('sha256', AUTH_SECRET).update(p).digest())
+  const a = Buffer.from(sig), b = Buffer.from(expect)
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null
+  let payload
+  try { payload = JSON.parse(Buffer.from(p.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString()) } catch { return null }
+  if (!payload || (payload.e ?? 0) < Date.now()) return null
+  return payload   // { s: signer(lower), e: exp }
+}
+
+function agentAddrFromKey(key) { try { return new ethers.Wallet(key).address.toLowerCase() } catch { return null } }
+
+// master address (lower) -> agent address (lower) that controls its bots.
+const botOwner = new Map()
+function claimOwner(address, agentKey) {
+  const a = agentAddrFromKey(agentKey)
+  if (address && a) botOwner.set(String(address).toLowerCase(), a)
+}
+
+// { signer, admin } or null. `explicitToken` supports EventSource (SSE), which can't
+// send an Authorization header, so the token arrives as a ?token= query param instead.
+function getAuth(req, explicitToken) {
+  let tok = explicitToken
+  if (!tok) { const m = /^Bearer\s+(.+)$/i.exec(req.headers['authorization'] || ''); if (m) tok = m[1].trim() }
+  if (!tok) return null
+  if (ADMIN_TOKEN && tok === ADMIN_TOKEN) return { signer: null, admin: true }
+  const p = verifyToken(tok)
+  return p ? { signer: p.s, admin: false } : null
+}
+
+// Gate an operation on `address`'s bots. On failure, writes the response and returns false.
+function requireOwner(req, res, address, explicitToken) {
+  const auth = getAuth(req, explicitToken)
+  if (!auth) { json(res, 401, { error: 'authentication required' }); return false }
+  if (auth.admin) return true
+  const owner = botOwner.get(String(address).toLowerCase())
+  if (!owner || owner !== auth.signer) { json(res, 403, { error: 'not authorized for this account' }); return false }
+  return true
+}
+
 let shuttingDown = false
 
 // ─── WIN DETECTION ────────────────────────────────────────────────────────────
@@ -183,6 +274,8 @@ function startStrategy(type, extraArgs = [], agentKey = '', address = '', instan
 
   // Persist (encrypted) so a restart/reboot auto-resumes this bot with no prompt.
   persistBot(type, address, instance, extraArgs, envKey)
+  // Bind this account to the agent key controlling it, for the auth gate.
+  claimOwner(address, envKey)
 
   let outBuf = ''
   let errBuf = ''
@@ -258,6 +351,7 @@ function resumeBots() {
   for (const r of entries) {
     let agentKey
     try { agentKey = decryptKey(r.key) } catch (e) { console.error(`  ✗ decrypt failed for ${r.type}:${r.instance} — ${e.message}`); continue }
+    claimOwner(r.address, agentKey)   // know the owner even if the spawn below fails
     try {
       startStrategy(r.type, r.extraArgs ?? [], agentKey, r.address ?? '', r.instance ?? '', true)
       console.log(`  ✓ resumed ${r.type}${r.instance ? ':' + r.instance : ''} (${r.address})`)
@@ -352,6 +446,26 @@ function getStatus(address) {
       }
     }
   }
+  // Profit Stack (accumulator) live buffer + lifetime, so the UI can show "buffer $X/$Y"
+  // instead of the user guessing why no buy fired. Keyed by "addr:ASSET" in its state file.
+  try {
+    const accFile = join(__dirname, '.accumulator-state.json')
+    if (existsSync(accFile)) {
+      const all = JSON.parse(readFileSync(accFile, 'utf8'))
+      for (const [k, v] of Object.entries(all)) {
+        const i = k.lastIndexOf(':')
+        if (i < 0) continue
+        if (k.slice(0, i).toLowerCase() !== addrL) continue
+        out._accum = out._accum || {}
+        out._accum[k.slice(i + 1)] = {
+          buffer:        parseFloat(v?.toBuyUsd) || 0,
+          lifetimeQty:   parseFloat(v?.lifetimeQty) || 0,
+          lifetimeSpent: parseFloat(v?.lifetimeSpent) || 0,
+          daySkimmed:    parseFloat(v?.daySkimmed) || 0,
+        }
+      }
+    }
+  } catch {}
   return out
 }
 
@@ -403,6 +517,488 @@ function json(res, status, data) {
   res.end(JSON.stringify(data))
 }
 
+// ─── LEADERBOARD ──────────────────────────────────────────────────────────────
+// The board used to be computed in every visitor's browser: ~7 Hyperliquid calls
+// per address, serially. That is fine for a hand-curated list and hopeless once
+// accounts auto-join. So the server now fetches once, caches, and hands browsers
+// one pre-computed JSON.
+
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+const isAddr = a => typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a)
+
+// Cache for the proxied real liquidation-heatmap feed (HyperPerps). Their endpoint has
+// no CORS header, so the browser can't call it directly — we proxy + cache here.
+const _heatmapCache = {}
+
+async function hlInfo(payload) {
+  const r = await fetch(HL_INFO, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (r.status === 429) throw Object.assign(new Error('HL 429'), { rateLimited: true })
+  if (!r.ok) throw new Error('HL ' + r.status)
+  return r.json()
+}
+
+function lbReadList() {
+  if (!existsSync(LEADERBOARD_FILE)) return []
+  try {
+    const raw = JSON.parse(readFileSync(LEADERBOARD_FILE, 'utf8'))
+    // legacy files stored bare strings
+    return raw.map(x => (typeof x === 'string' ? { addr: x, label: '' } : x)).filter(e => isAddr(e.addr))
+  } catch { return [] }
+}
+function lbWriteList(list) { writeFileSync(LEADERBOARD_FILE, JSON.stringify(list)) }
+
+// Accounts that were explicitly removed. Auto-join (on wallet connect) skips these so
+// a removed account can't silently re-enter; only an explicit re-add (join force:true)
+// clears the flag. Lowercased addresses.
+const LB_REMOVED_FILE = join(__dirname, 'leaderboard-removed.json')
+function lbReadRemoved() {
+  if (!existsSync(LB_REMOVED_FILE)) return []
+  try { const a = JSON.parse(readFileSync(LB_REMOVED_FILE, 'utf8')); return Array.isArray(a) ? a.map(x => String(x).toLowerCase()) : [] }
+  catch { return [] }
+}
+function lbWriteRemoved(list) { writeFileSync(LB_REMOVED_FILE, JSON.stringify([...new Set(list.map(x => String(x).toLowerCase()))])) }
+function lbMarkRemoved(addr)  { const k = addr.toLowerCase(); const s = lbReadRemoved(); if (!s.includes(k)) { s.push(k); lbWriteRemoved(s) } }
+function lbClearRemoved(addr) { const k = addr.toLowerCase(); const s = lbReadRemoved(); if (s.includes(k)) lbWriteRemoved(s.filter(x => x !== k)) }
+function lbIsRemoved(addr)    { return lbReadRemoved().includes(addr.toLowerCase()) }
+
+// ─── PAPER LEADERBOARD ────────────────────────────────────────────────────────
+// Deliberately SEPARATE from the real board. Real entries are computed server-side
+// from Hyperliquid, so they cannot be faked; paper entries are simulated on the
+// user's device and SUBMITTED by the client, so the server has no way to verify
+// them. Keeping the two files apart is what stops unverifiable numbers from
+// contaminating a ranking that is otherwise trustworthy.
+//
+// Identity is a chosen name (no wallet). To stop one person overwriting another's
+// entry, the first submit mints a secret that the client stores; later updates to
+// that name must present it. That is anti-griefing, NOT proof of honesty — a
+// determined user can still submit invented figures, which is why the board is
+// labelled self-reported in the UI.
+const LB_PAPER_FILE = join(__dirname, 'leaderboard-paper.json')
+const LB_PAPER_MAX  = 300
+
+function lbPaperRead() {
+  if (!existsSync(LB_PAPER_FILE)) return []
+  try {
+    const raw = JSON.parse(readFileSync(LB_PAPER_FILE, 'utf8'))
+    return Array.isArray(raw) ? raw : []
+  } catch { return [] }
+}
+function lbPaperWrite(list) {
+  try { writeFileSync(LB_PAPER_FILE, JSON.stringify(list)) } catch (e) { console.error('paper lb write:', e.message) }
+}
+
+// Same character policy as the real board's display names.
+function lbCleanName(s) {
+  return String(s ?? '')
+    .split('').filter(ch => ch.charCodeAt(0) >= 32 && ch.charCodeAt(0) !== 127).join('')
+    .replace(/\s+/g, ' ').trim().slice(0, 24)
+}
+
+function lbReadStats() {
+  if (!existsSync(LB_STATS_FILE)) return { updatedAt: 0, rows: {} }
+  try { return JSON.parse(readFileSync(LB_STATS_FILE, 'utf8')) } catch { return { updatedAt: 0, rows: {} } }
+}
+function lbWriteStats(s) { writeFileSync(LB_STATS_FILE, JSON.stringify(s)) }
+
+// Pull every fill newer than `since`, following HL's 2000-row page limit.
+async function hlFillsSince(addr, since) {
+  const out = []
+  let start = since + 1
+  for (let page = 0; page < 25; page++) {
+    const batch = await hlInfo({ type: 'userFillsByTime', user: addr, startTime: start })
+    if (!Array.isArray(batch) || !batch.length) break
+    out.push(...batch)
+    if (batch.length < 2000) break
+    const maxT = Math.max(...batch.map(f => +f.time))
+    if (maxT < start) break
+    start = maxT + 1
+  }
+  return out
+}
+
+// Refresh one account. Fills/funding accumulate incrementally so we never re-pull
+// an account's entire history after the first sync.
+// HIP-3 dex names, cached for an hour — the list changes rarely and this is called
+// once per account per refresh cycle.
+let _dexNames = { at: 0, names: [] }
+async function lbPerpDexNames() {
+  if (Date.now() - _dexNames.at < 60 * 60 * 1000 && _dexNames.names.length) return _dexNames.names
+  try {
+    const d = await hlInfo({ type: 'perpDexs' })
+    const names = (Array.isArray(d) ? d : []).filter(Boolean).map(x => x?.name).filter(Boolean)
+    if (names.length) _dexNames = { at: Date.now(), names }
+  } catch (_) { /* keep whatever we had */ }
+  return _dexNames.names
+}
+
+async function lbRefreshOne(addr, label, prev) {
+  const st = prev ?? {
+    realizedPnl: 0, fees: 0, volume: 0, funding: 0,
+    lastFillTs: LB_GENESIS - 1, lastFundingTs: LB_GENESIS - 1, windows: {},
+  }
+
+  const [cs, portfolio, spot, openOrders] = await Promise.all([
+    hlInfo({ type: 'clearinghouseState', user: addr }),
+    hlInfo({ type: 'portfolio', user: addr }).catch(() => []),
+    hlInfo({ type: 'spotClearinghouseState', user: addr }).catch(() => ({ balances: [] })),
+    hlInfo({ type: 'frontendOpenOrders', user: addr }).catch(() => []),
+  ])
+
+  // HIP-3 (builder-deployed) markets live on separate dexes and are INVISIBLE to the
+  // plain clearinghouseState above. Without this the board under-reports anyone
+  // holding one — an account with 5 positions showed 4, and its unrealized PnL was
+  // short by that position's PnL, disagreeing with every other view in the app.
+  //
+  // Fanning all 9 dexes for all accounts every cycle would be ~4,500 extra calls and
+  // would rate-limit us, so: normally query only the dexes this account is KNOWN to
+  // use (almost always none), and re-discover the full set about once an hour.
+  const dexAll     = await lbPerpDexNames()
+  const lastSweep  = st.dexSweepAt ?? 0
+  const doSweep    = Date.now() - lastSweep > 55 * 60 * 1000
+  const dexToCheck = doSweep ? dexAll : (st.dexes ?? []).filter(d => dexAll.includes(d))
+
+  const hip3Pos = []
+  const dexesWithPos = []
+  for (const dex of dexToCheck) {
+    try {
+      const dcs = await hlInfo({ type: 'clearinghouseState', user: addr, dex })
+      const ps  = (dcs?.assetPositions ?? []).filter(ap => parseFloat(ap.position?.szi ?? 0) !== 0)
+      if (ps.length) { hip3Pos.push(...ps); dexesWithPos.push(dex) }
+    } catch (e) {
+      if (e.rateLimited) throw e          // let the caller back off
+      // otherwise treat this dex as empty for now
+    }
+    if (doSweep) await sleep(120)         // pace the hourly sweep
+  }
+
+  // Win-rate buckets: closing fills grouped per coin per hour, carried across
+  // refreshes so a window that gains fills later still resolves correctly.
+  const windows = { ...(st.windows ?? {}) }
+  const fills = await hlFillsSince(addr, st.lastFillTs)
+  let { realizedPnl, fees, volume, lastFillTs } = st
+  for (const f of fills) {
+    const pnl = parseFloat(f.closedPnl ?? 0)
+    const fee = parseFloat(f.fee ?? 0)
+    realizedPnl += pnl
+    fees        += fee
+    volume      += parseFloat(f.sz ?? 0) * parseFloat(f.px ?? 0)
+    if (pnl !== 0) {
+      const k = `${f.coin}_${Math.floor(+f.time / 3600000)}`
+      windows[k] = (windows[k] ?? 0) + pnl - fee
+    }
+    if (+f.time > lastFillTs) lastFillTs = +f.time
+  }
+
+  let { funding, lastFundingTs } = st
+  const fund = await hlInfo({ type: 'userFunding', user: addr, startTime: lastFundingTs + 1 }).catch(() => [])
+  for (const f of (Array.isArray(fund) ? fund : [])) {
+    funding += parseFloat(f.delta?.usdc ?? 0)
+    if (+f.time > lastFundingTs) lastFundingTs = +f.time
+  }
+
+  // Main-dex positions plus any HIP-3 ones found above, so the count and the
+  // unrealized total both cover the whole account.
+  const rawPos = [
+    ...(cs.assetPositions ?? []).filter(ap => parseFloat(ap.position?.szi ?? 0) !== 0),
+    ...hip3Pos,
+  ]
+  const unrealizedPnl = rawPos.reduce((s, ap) => s + parseFloat(ap.position.unrealizedPnl ?? 0), 0)
+  // Keep HL's `{ position: {...} }` wrapper — the client's _lbPosHtml reads p.position.
+  const positions = rawPos.map(ap => ({
+    position: {
+      coin: ap.position.coin,
+      szi: ap.position.szi,
+      entryPx: ap.position.entryPx,
+      positionValue: ap.position.positionValue,
+      unrealizedPnl: ap.position.unrealizedPnl,
+      liquidationPx: ap.position.liquidationPx,
+      leverage: ap.position.leverage,
+      returnOnEquity: ap.position.returnOnEquity,
+    },
+  }))
+
+  const perpAcctVal   = parseFloat(cs.marginSummary?.accountValue ?? 0)
+  const spotUSDCTotal = parseFloat((spot?.balances ?? []).find(b => b.coin === 'USDC')?.total ?? 0)
+  const avHist        = (portfolio ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory ?? []
+  const accountValue  = avHist.length ? parseFloat(avHist.at(-1)[1]) : perpAcctVal + spotUSDCTotal
+
+  // Health = 100 − HL's Unified Account Ratio (maint margin / unified USDC balance)
+  const maintMargin = parseFloat(cs.crossMaintenanceMarginUsed ?? 0)
+  const marginBase  = spotUSDCTotal > 0 ? spotUSDCTotal : perpAcctVal
+  const healthPct   = marginBase > 0 ? Math.max(0, (1 - maintMargin / marginBase) * 100) : 0
+  const healthCls   = healthPct > 60 ? 'pos' : healthPct > 30 ? 'warn' : 'neg'
+
+  const allW = Object.values(windows)
+
+  return {
+    addr, label,
+    accountValue,
+    unrealizedPnl,
+    realizedPnl,
+    // fees are summed in the token they were charged in; HYPE-denominated fees are
+    // a small approximation here rather than converted at the mid.
+    netPnl: realizedPnl + unrealizedPnl + funding - fees,
+    positions,
+    openOrders: Array.isArray(openOrders) ? openOrders : [],
+    outcomes: [],                 // prediction-market marks aren't computed server-side yet
+    maintMargin, healthPct, healthCls,
+    totalVolume: volume,
+    winCount: allW.filter(n => n > 0).length,
+    totalWindows: allW.length,
+    totalFees: fees,
+    allTimeFunding: funding,
+    // internal accumulators (stripped before the row is served)
+    fees, volume, funding, lastFillTs, lastFundingTs, windows,
+    // which HIP-3 dexes this account uses, so later refreshes skip the other 8
+    dexes: dexesWithPos,
+    dexSweepAt: doSweep ? Date.now() : (st.dexSweepAt ?? 0),
+    updatedAt: Date.now(),
+    error: null,
+  }
+}
+
+let _lbRefreshing = false
+async function lbRefreshAll() {
+  if (_lbRefreshing) return
+  _lbRefreshing = true
+  try {
+    const list  = lbReadList()
+    const stats = lbReadStats()
+
+    // Drop cached rows for accounts that are no longer on the board, otherwise a
+    // removed address keeps showing up (its row is never overwritten again).
+    const listed = new Set(list.map(e => e.addr.toLowerCase()))
+    for (const key of Object.keys(stats.rows ?? {})) {
+      if (!listed.has(key)) delete stats.rows[key]
+    }
+
+    for (const { addr, label } of list) {
+      const key = addr.toLowerCase()
+      try {
+        stats.rows[key] = await lbRefreshOne(addr, label ?? '', stats.rows[key])
+      } catch (e) {
+        if (e.rateLimited) { console.warn('[lb] HL 429 — backing off 60s'); await sleep(60_000) }
+        else console.warn('[lb] refresh failed', addr, e.message)
+        // keep the previous row rather than dropping the account from the board
+      }
+      await sleep(300)
+    }
+    stats.updatedAt = Date.now()
+    lbWriteStats(stats)
+  } finally { _lbRefreshing = false }
+}
+
+// Cheap spam gate for the public join endpoint.
+const _lbJoinHits = new Map()   // ip -> [timestamps]
+// Paper submissions are re-sent whenever a score changes, so they need a looser
+// budget than the once-ever real-board join.
+const _lbPaperHits = new Map()
+function lbPaperAllowed(ip) {
+  const now = Date.now(), win = 3600_000
+  const hits = (_lbPaperHits.get(ip) ?? []).filter(t => now - t < win)
+  if (hits.length >= 30) { _lbPaperHits.set(ip, hits); return false }
+  hits.push(now); _lbPaperHits.set(ip, hits)
+  return true
+}
+
+function lbJoinAllowed(ip) {
+  const now = Date.now(), win = 3600_000
+  const hits = (_lbJoinHits.get(ip) ?? []).filter(t => now - t < win)
+  if (hits.length >= 5) { _lbJoinHits.set(ip, hits); return false }
+  hits.push(now); _lbJoinHits.set(ip, hits)
+  return true
+}
+
+// Early-beta bug-report inbox (see POST /api/bug-report). Rate-limited so a bad actor
+// can't flood the file; 10 reports/hour/IP is plenty for genuine feedback.
+const BUG_FILE = join(__dirname, 'bug-reports.json')
+const _bugHits = new Map()
+function bugReportAllowed(ip) {
+  const now = Date.now(), win = 3600_000
+  const hits = (_bugHits.get(ip) ?? []).filter(t => now - t < win)
+  if (hits.length >= 10) { _bugHits.set(ip, hits); return false }
+  hits.push(now); _bugHits.set(ip, hits)
+  return true
+}
+
+// Uncaught-error telemetry (see POST /api/error). Deduped by message so the file stays small
+// even under a crash loop; per-IP rate-limited so it can't be used to flood the disk.
+const ERR_FILE = join(__dirname, 'client-errors.json')
+const _errHits = new Map()
+function errAllowed(ip) {
+  const now = Date.now(), win = 60_000
+  const hits = (_errHits.get(ip) ?? []).filter(t => now - t < win)
+  if (hits.length >= 30) { _errHits.set(ip, hits); return false }
+  hits.push(now); _errHits.set(ip, hits)
+  return true
+}
+function recordError(entry) {
+  let map = {}
+  try { if (existsSync(ERR_FILE)) map = JSON.parse(readFileSync(ERR_FILE, 'utf8')) } catch {}
+  if (!map || typeof map !== 'object') map = {}
+  const key = (entry.message || '').slice(0, 140)
+  const prev = map[key] || { count: 0, first: entry.at }
+  map[key] = { ...entry, count: prev.count + 1, first: prev.first, last: entry.at }
+  // Keep the 500 most-recently-seen distinct errors.
+  const keys = Object.keys(map)
+  if (keys.length > 500) {
+    const trimmed = {}
+    for (const k of keys.sort((a, b) => (map[b].last || 0) - (map[a].last || 0)).slice(0, 500)) trimmed[k] = map[k]
+    map = trimmed
+  }
+  try { writeFileSync(ERR_FILE, JSON.stringify(map, null, 2)) } catch (e) { console.error('[err] save failed:', e.message) }
+}
+
+// ── Global chat (POST/GET /api/chat) ─────────────────────────────────────────
+// Simple file-backed global chatroom. Poll-based (no WS) — fine at this scale. Rate-limited
+// per IP and length-capped so it can't flood the disk; last 300 messages retained.
+const CHAT_FILE = join(__dirname, 'chat.json')
+const _chatHits = new Map()
+function chatAllowed(ip) {
+  const now = Date.now(), win = 60_000
+  const hits = (_chatHits.get(ip) ?? []).filter(t => now - t < win)
+  if (hits.length >= 15) { _chatHits.set(ip, hits); return false }   // 15 msgs/min/IP
+  hits.push(now); _chatHits.set(ip, hits)
+  return true
+}
+function loadChat() { try { const a = JSON.parse(readFileSync(CHAT_FILE, 'utf8')); return Array.isArray(a) ? a : [] } catch { return [] } }
+function saveChat(a) { try { writeFileSync(CHAT_FILE, JSON.stringify(a)) } catch (e) { console.error('[chat] save failed:', e.message) } }
+const _chatClean = s => String(s ?? '').split('').filter(c => { const n = c.charCodeAt(0); return n >= 32 && n !== 127 }).join('').replace(/\s+/g, ' ').trim()
+
+// Referral attribution: { code → { addrs: [...] } }. Recorded when a referred wallet joins the
+// leaderboard (deduped by addr). No addresses in the URL — only opaque per-device codes.
+const REF_FILE = join(__dirname, 'referrals.json')
+const REF_CODE_RE = /^[a-z0-9]{4,16}$/i
+function loadRefs()  { try { const d = JSON.parse(readFileSync(REF_FILE, 'utf8')); return (d && typeof d === 'object') ? d : {} } catch { return {} } }
+function saveRefs(d) { try { writeFileSync(REF_FILE, JSON.stringify(d, null, 2)) } catch (e) { console.error('[ref] save failed:', e.message) } }
+function recordReferral(code, addr) {
+  if (!REF_CODE_RE.test(String(code || '')) || !isAddr(addr)) return
+  const refs = loadRefs()
+  const key  = String(code)
+  const a    = String(addr).toLowerCase()
+  const list = Array.isArray(refs[key]?.addrs) ? refs[key].addrs : []
+  if (list.includes(a)) return                  // one credit per referred wallet
+  list.push(a)
+  refs[key] = { addrs: list, updatedAt: new Date().toISOString() }
+  saveRefs(refs)
+  console.log(`[ref] ${a.slice(0, 8)}… credited to code ${key} (total ${list.length})`)
+}
+
+// ─── PAPER-TRADING CHALLENGE ──────────────────────────────────────────────────
+// Time-boxed contest: everyone starts with $1000 paper (deposits disabled, enforced client
+// side), highest net PnL at the deadline wins the prize. Anyone can play; a wallet is only
+// needed to CLAIM. Paper scores are self-reported (client-computed) and unverifiable — the
+// board is for fun/competition; the owner pays the winner manually after sanity-checking.
+//
+// >>> EDIT THESE to run / extend / end a round: <<<
+const CHALLENGE = {
+  start:  1000,
+  target: 500,                                   // headline goal (progress bar); winner = highest at deadline
+  prize:  '$100 USDC',
+  end:    Date.parse('2026-08-31T23:59:59Z'),    // deadline (UTC). Change to open a new round.
+}
+const CHAL_FILE = join(__dirname, 'challenge.json')
+const CHAL_NAME_RE = /^.{1,24}$/
+const _chalHits = new Map()
+function chalAllowed(ip) {
+  const now = Date.now(), win = 60_000
+  const hits = (_chalHits.get(ip) ?? []).filter(t => now - t < win)
+  if (hits.length >= 20) { _chalHits.set(ip, hits); return false }
+  hits.push(now); _chalHits.set(ip, hits)
+  return true
+}
+function loadChal()  { try { const d = JSON.parse(readFileSync(CHAL_FILE, 'utf8')); return (d && typeof d === 'object') ? d : {} } catch { return {} } }
+function saveChal(d) { try { writeFileSync(CHAL_FILE, JSON.stringify(d, null, 2)) } catch (e) { console.error('[chal] save failed:', e.message) } }
+function chalBoard(store) {
+  return Object.entries(store)
+    .map(([id, e]) => {
+      const s = e.snap || {}
+      return {
+        id, name: e.name, netPnl: Number(e.netPnl) || 0, claimed: !!e.addr,
+        // Live snapshot for the expandable row (watch positions / PnL breakdown).
+        equity:        Number(s.equity),
+        unrealizedPnl: Number(s.unrealizedPnl) || 0,
+        realizedPnl:   Number(s.realizedPnl)   || 0,
+        volume:        Number(s.volume)        || 0,
+        healthPct:     Number(s.healthPct)     || 0,
+        trades:        Number(s.trades)        || 0,
+        wins:          Number(s.wins)          || 0,
+        positions:     Array.isArray(s.positions) ? s.positions : [],
+      }
+    })
+    .sort((a, b) => b.netPnl - a.netPnl)
+}
+
+// ── Challenge audit trail (winner verification) ───────────────────────────────
+// Players submit their full paper fill log; it's stored privately (never served on the
+// public board) so a winning run can be reviewed: the claimed PnL is reconciled against
+// the fills, and each fill's price is cross-checked against real Hyperliquid candles.
+const CHAL_AUDIT_FILE = join(__dirname, 'challenge-audit.json')
+function loadChalAudit()  { try { const d = JSON.parse(readFileSync(CHAL_AUDIT_FILE, 'utf8')); return (d && typeof d === 'object') ? d : {} } catch { return {} } }
+function saveChalAudit(d) { try { writeFileSync(CHAL_AUDIT_FILE, JSON.stringify(d)) } catch (e) { console.error('[chal] audit save failed:', e.message) } }
+const _cNum = (v, lo, hi) => { const n = parseFloat(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : 0 }
+function chalSanitizeFills(arr) {
+  if (!Array.isArray(arr)) return []
+  return arr.slice(0, 400).map(f => {
+    const coin = String(f.coin ?? '').slice(0, 24)
+    if (!/^[A-Za-z0-9:#+._-]{1,24}$/.test(coin)) return null
+    return {
+      coin,
+      px:        _cNum(f.px, 0, 1e12),
+      sz:        _cNum(f.sz, 0, 1e12),
+      side:      f.side === 'B' ? 'B' : 'A',
+      time:      Math.round(_cNum(f.time, 0, 1e15)),
+      closedPnl: _cNum(f.closedPnl, -1e12, 1e12),
+      dir:       String(f.dir ?? '').slice(0, 24),
+      fee:       _cNum(f.fee, 0, 1e9),
+    }
+  }).filter(Boolean)
+}
+const _IVL_MS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 86400e3 }
+// Pick the finest interval that keeps a coin's whole fill span under ~800 candles per request.
+function _chalInterval(spanMs) {
+  for (const k of ['1m', '5m', '15m', '1h', '4h', '1d']) if (spanMs / _IVL_MS[k] <= 800) return k
+  return '1d'
+}
+// Cross-check each fill's price against the real HL candle covering its timestamp. Best-effort:
+// coins we can't fetch (HIP-3 dex coins, prediction outcomes, API errors) are marked 'unverified'
+// rather than failed. A fill whose price sits outside the real [low,high] (±1% for slippage) is
+// flagged — that's the tell of a fabricated "bought the exact bottom at a price that never traded".
+async function chalPriceCheck(fills) {
+  const TOL = 0.01
+  const byCoin = new Map()
+  for (const f of fills) { if (!byCoin.has(f.coin)) byCoin.set(f.coin, []); byCoin.get(f.coin).push(f) }
+  const out = new Map()   // fill -> { ok, market }
+  let checked = 0, flagged = 0, unverified = 0
+  for (const [coin, cfills] of byCoin) {
+    // Skip coins HL candles can't answer for: HIP-3 dex-qualified ("dex:SYM") and outcomes ("#..").
+    if (coin.includes(':') || coin.startsWith('#') || byCoin.size > 20) {
+      for (const f of cfills) { out.set(f, { ok: null, reason: 'unverifiable market' }); unverified++ }
+      continue
+    }
+    const times = cfills.map(f => f.time)
+    const lo = Math.min(...times), hi = Math.max(...times)
+    const ivl = _chalInterval(Math.max(_IVL_MS['1m'], hi - lo))
+    try {
+      const candles = await hlInfo({ type: 'candleSnapshot', req: { coin, interval: ivl, startTime: lo - _IVL_MS[ivl], endTime: hi + _IVL_MS[ivl] } })
+      const cs = (Array.isArray(candles) ? candles : []).map(c => ({ t: +c.t, T: +c.T, l: parseFloat(c.l), h: parseFloat(c.h) })).sort((a, b) => a.t - b.t)
+      if (!cs.length) { for (const f of cfills) { out.set(f, { ok: null, reason: 'no candles' }); unverified++ }; continue }
+      for (const f of cfills) {
+        const c = cs.find(c => f.time >= c.t && f.time <= (c.T || c.t + _IVL_MS[ivl]))
+              || cs.reduce((best, c) => Math.abs(c.t - f.time) < Math.abs(best.t - f.time) ? c : best, cs[0])
+        const ok = f.px >= c.l * (1 - TOL) && f.px <= c.h * (1 + TOL)
+        out.set(f, { ok, market: [c.l, c.h] })
+        if (ok) checked++; else flagged++
+      }
+    } catch { for (const f of cfills) { out.set(f, { ok: null, reason: 'candle fetch failed' }); unverified++ } }
+  }
+  return { out, checked, flagged, unverified }
+}
+
 function text(res, status, data) {
   res.writeHead(status, { ...CORS, 'Content-Type': 'text/plain' })
   res.end(data)
@@ -416,35 +1012,68 @@ const server = createServer(async (req, res) => {
 
   if (method === 'OPTIONS') { res.writeHead(204, CORS); return res.end() }
 
+  // ── GET /api/auth/nonce → { nonce } to be signed by the account's agent key ──
+  if (method === 'GET' && path === '/api/auth/nonce') {
+    return json(res, 200, { nonce: issueNonce(), ttl: NONCE_TTL_MS })
+  }
+
+  // ── POST /api/auth/login { address, nonce, signature } → { token, exp } ──────
+  // The client signs authMsg(address, nonce) with the account's agent key. The
+  // recovered signer becomes the session identity; ownership is checked per-route.
+  if (method === 'POST' && path === '/api/auth/login') {
+    const b = await body(req)
+    if (!isAddr(b.address) || !b.nonce || !b.signature) return json(res, 400, { error: 'bad request' })
+    if (!consumeNonce(b.nonce)) return json(res, 400, { error: 'nonce expired or unknown' })
+    let signer
+    try { signer = ethers.verifyMessage(authMsg(b.address, b.nonce), b.signature).toLowerCase() }
+    catch { return json(res, 400, { error: 'bad signature' }) }
+    const exp = Date.now() + TOKEN_TTL_MS
+    return json(res, 200, { token: signToken({ s: signer, e: exp }), exp })
+  }
+
   // ── POST /api/start ───────────────────────────────────────────────────────
   if (method === 'POST' && path === '/api/start') {
-    const b      = await body(req)
+    const b = await body(req)
+    // Must present a token whose signer == the agent key being submitted (proves you
+    // hold the key), and the account must be unclaimed or already yours. Admin bypasses.
+    const auth = getAuth(req)
+    if (!auth) return json(res, 401, { error: 'authentication required' })
+    if (!auth.admin) {
+      const agentAddr = agentAddrFromKey(b.agentKey ?? '')
+      if (!agentAddr || agentAddr !== auth.signer) return json(res, 403, { error: 'start with your own agent key' })
+      const owner = botOwner.get(String(b.address ?? '').toLowerCase())
+      if (owner && owner !== auth.signer)          return json(res, 403, { error: 'account controlled by another key' })
+    }
     const result = await startStrategy(b.type, b.args ?? [], b.agentKey ?? '', b.address ?? '', b.instance ?? '')
     return json(res, result.ok ? 200 : 400, result)
   }
 
   // ── POST /api/stop ────────────────────────────────────────────────────────
   if (method === 'POST' && path === '/api/stop') {
-    const b      = await body(req)
+    const b = await body(req)
+    if (!requireOwner(req, res, b.address ?? '')) return
     const result = stopStrategy(b.type, b.address ?? '', b.instance ?? '')
     return json(res, result.ok ? 200 : 400, result)
   }
 
   // ── POST /api/restart ─────────────────────────────────────────────────────
   if (method === 'POST' && path === '/api/restart') {
-    const b      = await body(req)
+    const b = await body(req)
+    if (!requireOwner(req, res, b.address ?? '')) return
     const result = await restartStrategy(b.type, b.address ?? '', b.instance ?? '')
     return json(res, result.ok ? 200 : 400, result)
   }
 
   if (method === 'POST' && path === '/api/pause') {
     const b = await body(req)
+    if (!requireOwner(req, res, b.address ?? '')) return
     const r = pauseStrategy(b.type, b.address ?? '', b.instance ?? '')
     return json(res, r.ok ? 200 : 400, r)
   }
 
   if (method === 'POST' && path === '/api/resume') {
     const b = await body(req)
+    if (!requireOwner(req, res, b.address ?? '')) return
     const r = resumeStrategy(b.type, b.address ?? '', b.instance ?? '')
     return json(res, r.ok ? 200 : 400, r)
   }
@@ -470,6 +1099,7 @@ const server = createServer(async (req, res) => {
   // ── GET /api/wins/:type?address=0x...    → one strategy ───────────────────
   if (method === 'GET' && path.startsWith('/api/wins')) {
     const addr  = url.searchParams.get('address') || ''
+    if (!requireOwner(req, res, addr)) return
     const parts = path.split('/').filter(Boolean)   // ['api','wins','type'?]
     if (parts.length >= 3) return json(res, 200, readWins(parts[2], addr))
     return json(res, 200, readAllWins(addr))
@@ -479,6 +1109,7 @@ const server = createServer(async (req, res) => {
   // ── GET /api/history/:type/:filename?address=0x...         → read one file ──
   if (method === 'GET' && path.startsWith('/api/history/')) {
     const addr  = url.searchParams.get('address') || ''
+    if (!requireOwner(req, res, addr)) return
     const parts = path.split('/').filter(Boolean)   // ['api','history','type','file'?]
     const type  = parts[2]
     if (!type) return json(res, 400, { error: 'missing type' })
@@ -496,6 +1127,7 @@ const server = createServer(async (req, res) => {
     const addr = url.searchParams.get('address') || ''
     const inst = url.searchParams.get('instance') || ''
     if (!type) return json(res, 400, { error: 'missing type' })
+    if (!requireOwner(req, res, addr, url.searchParams.get('token'))) return
 
     res.writeHead(200, {
       ...CORS,
@@ -519,6 +1151,87 @@ const server = createServer(async (req, res) => {
   }
 
   // ── GET /api/leaderboard  → return saved extra addresses ─────────────────
+  // ── GET /api/leaderboard/paper → the simulated board ─────────────────────
+  if (method === 'GET' && path === '/api/leaderboard/paper') {
+    const rows = lbPaperRead()
+      .map(({ secret, ...pub }) => pub)          // never leak the update secrets
+      .sort((a, b) => (b.pnl ?? 0) - (a.pnl ?? 0))
+    return json(res, 200, { rows, simulated: true, updatedAt: Date.now() })
+  }
+
+  // ── POST /api/leaderboard/paper { name, secret?, equity, pnl, trades, wins } ──
+  // Self-reported simulated results. Clamped to sane ranges so a bad payload
+  // can't wreck the board's rendering, but the figures are NOT verifiable.
+  if (method === 'POST' && path === '/api/leaderboard/paper') {
+    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    if (!lbPaperAllowed(ip)) return json(res, 429, { error: 'too many submissions, try later' })
+
+    const b    = await body(req)
+    const name = lbCleanName(b.name)
+    if (name.length < 2) return json(res, 400, { error: 'name must be at least 2 characters' })
+    if (/^0x[0-9a-fA-F]{6,}/.test(name)) return json(res, 400, { error: 'name cannot look like an address' })
+
+    const num = (v, lo, hi) => {
+      const n = parseFloat(v)
+      return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : 0
+    }
+    // Sanitize the open-position list so the board's expandable detail can render
+    // the same way the real one does. Everything is clamped and re-stringified —
+    // nothing the client sends is echoed back raw.
+    const positions = Array.isArray(b.positions) ? b.positions.slice(0, 20).map(ap => {
+      const p = ap?.position ?? {}
+      const coin = String(p.coin ?? '').slice(0, 24)
+      if (!/^[A-Za-z0-9:#+._-]{1,24}$/.test(coin)) return null
+      return { position: {
+        coin,
+        szi:            String(num(p.szi, -1e12, 1e12)),
+        entryPx:        String(num(p.entryPx, 0, 1e12)),
+        positionValue:  String(num(p.positionValue, 0, 1e12)),
+        unrealizedPnl:  String(num(p.unrealizedPnl, -1e12, 1e12)),
+        liquidationPx:  p.liquidationPx == null ? null : String(num(p.liquidationPx, 0, 1e12)),
+        returnOnEquity: String(num(p.returnOnEquity, -1e6, 1e6)),
+        leverage: { type: p.leverage?.type === 'isolated' ? 'isolated' : 'cross',
+                    value: Math.round(num(p.leverage?.value, 1, 100)) || 1 },
+      } }
+    }).filter(Boolean) : []
+
+    const row = {
+      name,
+      equity:  num(b.equity, 0, 1e12),
+      pnl:     num(b.pnl,   -1e12, 1e12),
+      trades:  Math.round(num(b.trades, 0, 1e6)),
+      wins:    Math.round(num(b.wins,   0, 1e6)),
+      unrealizedPnl: num(b.unrealizedPnl, -1e12, 1e12),
+      realizedPnl:   num(b.realizedPnl,   -1e12, 1e12),
+      volume:        num(b.volume, 0, 1e12),
+      healthPct:     num(b.healthPct, 0, 100),
+      positions,
+      updated: Date.now(),
+    }
+    if (row.wins > row.trades) row.wins = row.trades
+
+    const list = lbPaperRead()
+    const i    = list.findIndex(e => e.name.toLowerCase() === name.toLowerCase())
+
+    if (i >= 0) {
+      // Existing name — only the holder of the original secret may update it.
+      const given = String(b.secret ?? '')
+      const want  = String(list[i].secret ?? '')
+      const ok = given.length === want.length && given.length > 0 &&
+        timingSafeEqual(Buffer.from(given), Buffer.from(want))
+      if (!ok) return json(res, 403, { error: 'that name is taken — pick another' })
+      list[i] = { ...list[i], ...row }
+      lbPaperWrite(list)
+      return json(res, 200, { ok: true, updated: true })
+    }
+
+    if (list.length >= LB_PAPER_MAX) return json(res, 507, { error: 'paper board full' })
+    const secret = randomBytes(16).toString('hex')
+    list.push({ ...row, secret, created: Date.now() })
+    lbPaperWrite(list)
+    return json(res, 200, { ok: true, added: true, secret })
+  }
+
   if (method === 'GET' && path === '/api/leaderboard') {
     const addrs = existsSync(LEADERBOARD_FILE)
       ? JSON.parse(readFileSync(LEADERBOARD_FILE, 'utf8'))
@@ -526,21 +1239,409 @@ const server = createServer(async (req, res) => {
     return json(res, 200, addrs)
   }
 
-  // ── POST /api/leaderboard → save extra addresses { addrs: string[] } ──────
+  // ── GET /api/leaderboard/stats → pre-computed rows (no client fan-out) ────
+  if (method === 'GET' && path === '/api/leaderboard/stats') {
+    const s = lbReadStats()
+    const listed = new Set(lbReadList().map(e => e.addr.toLowerCase()))
+    const rows = Object.values(s.rows ?? {})
+      .filter(r => listed.has(r.addr.toLowerCase()))   // never serve a de-listed account
+      // drop internal accumulators/cursors — `windows` in particular is large
+      .map(({ lastFillTs, lastFundingTs, windows, fees, volume, funding, dexes, dexSweepAt, ...row }) => row)
+      .sort((a, b) => b.accountValue - a.accountValue)
+    return json(res, 200, { updatedAt: s.updatedAt ?? 0, rows })
+  }
+
+  // ── POST /api/bug-report { message, diag } → append to bug-reports.json ────
+  // Public (no auth): early-beta feedback channel from the in-app "Report a Bug"
+  // sheet. Rate-limited per IP, size-capped, and it stores no keys/addresses —
+  // only the lightweight diagnostics the client chose to attach.
+  // ── POST /api/error → record an uncaught client error (telemetry) ────────────
+  if (method === 'POST' && path === '/api/error') {
+    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    if (!errAllowed(ip)) return json(res, 200, { ok: true })   // silently drop floods
+    const b = await body(req)
+    const message = String(b.message ?? '').trim().slice(0, 500)
+    if (!message) return json(res, 400, { error: 'empty' })
+    recordError({
+      message,
+      kind:   String(b.kind ?? 'error').slice(0, 20),
+      stack:  String(b.stack ?? '').slice(0, 2000),
+      url:    String(b.url ?? '').slice(0, 200),
+      ua:     String(b.ua ?? '').slice(0, 300),
+      screen: String(b.screen ?? '').slice(0, 20),
+      lang:   String(b.lang ?? '').slice(0, 8),
+      at:     Date.now(),
+    })
+    return json(res, 200, { ok: true })
+  }
+
+  if (method === 'POST' && path === '/api/bug-report') {
+    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    if (!bugReportAllowed(ip)) return json(res, 429, { error: 'too many reports, try later' })
+    const b = await body(req)
+    const message = String(b.message ?? '').trim().slice(0, 4000)
+    if (!message) return json(res, 400, { error: 'empty message' })
+    const diag = (b && typeof b.diag === 'object' && b.diag) ? b.diag : {}
+    const entry = { message, diag, ip, receivedAt: new Date().toISOString() }
+    try {
+      let list = []
+      try { if (existsSync(BUG_FILE)) list = JSON.parse(readFileSync(BUG_FILE, 'utf8')) } catch {}
+      if (!Array.isArray(list)) list = []
+      list.push(entry)
+      if (list.length > 2000) list = list.slice(-2000)
+      writeFileSync(BUG_FILE, JSON.stringify(list, null, 2))
+      console.log(`[bug] report received (${message.length} chars) tab=${diag.tab || '?'} lang=${diag.lang || '?'}`)
+      return json(res, 200, { ok: true })
+    } catch (e) {
+      console.error('[bug] save failed:', e.message)
+      return json(res, 500, { error: 'save failed' })
+    }
+  }
+
+  // ── GET /api/chat?since=<ts> → recent global-chat messages (or new ones since ts) ──
+  if (method === 'GET' && path === '/api/chat') {
+    const since = parseInt(url.searchParams.get('since') || '0') || 0
+    const all   = loadChat()
+    const messages = since ? all.filter(m => m.ts > since) : all.slice(-80)
+    return json(res, 200, { messages, now: Date.now() })
+  }
+  // ── POST /api/chat { name, text, addr? } → append a global-chat message ──
+  if (method === 'POST' && path === '/api/chat') {
+    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    if (!chatAllowed(ip)) return json(res, 429, { error: 'slow down — too many messages' })
+    const b    = await body(req)
+    const text = _chatClean(b.text).slice(0, 280)
+    if (!text) return json(res, 400, { error: 'empty message' })
+    const name = _chatClean(b.name).slice(0, 24) || 'anon'
+    const addr = isAddr(b.addr) ? String(b.addr).toLowerCase() : null
+    const msg  = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, addr, text, ts: Date.now() }
+    let list = loadChat()
+    list.push(msg)
+    if (list.length > 300) list = list.slice(-300)
+    saveChat(list)
+    return json(res, 200, { ok: true, message: msg })
+  }
+
+  // ── GET /api/referral/count?code=XXXX → how many wallets joined via this code ──
+  if (method === 'GET' && path === '/api/referral/count') {
+    const code = url.searchParams.get('code') || ''
+    if (!REF_CODE_RE.test(code)) return json(res, 200, { count: 0 })
+    const refs = loadRefs()
+    const n = Array.isArray(refs[code]?.addrs) ? refs[code].addrs.length : 0
+    return json(res, 200, { count: n })
+  }
+
+  // ── GET /api/challenge → config + board (+ winner once the deadline passes) ──
+  if (method === 'GET' && path === '/api/challenge') {
+    const now   = Date.now()
+    const board = chalBoard(loadChal())
+    const ended = now > CHALLENGE.end
+    const winner = ended && board.length ? board[0] : null
+    return json(res, 200, { config: CHALLENGE, now, ended, board: board.slice(0, 100), winner })
+  }
+  // ── POST /api/challenge/submit { id, name, netPnl } → keep this player's score ──
+  if (method === 'POST' && path === '/api/challenge/submit') {
+    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    if (!chalAllowed(ip)) return json(res, 429, { error: 'slow down' })
+    if (Date.now() > CHALLENGE.end) return json(res, 200, { ok: true, ended: true })
+    const b = await body(req)
+    const id = String(b.id || '')
+    if (!REF_CODE_RE.test(id)) return json(res, 400, { error: 'bad id' })
+    const name   = CHAL_NAME_RE.test(String(b.name || '')) ? String(b.name) : ('Player-' + id.slice(0, 4))
+    const netPnl = Number(b.netPnl)
+    // Scores are client-reported (paper is simulated) — keep them in a sane band so the board
+    // can't be trivially blown up. Real anti-fraud is manual review before paying the winner.
+    if (!Number.isFinite(netPnl) || netPnl > 1_000_000 || netPnl < -CHALLENGE.start) return json(res, 400, { error: 'implausible score' })
+    // Live snapshot so the standings can show each player's positions + PnL breakdown when a
+    // row is expanded — sanitized/clamped exactly like the paper leaderboard (nothing echoed raw).
+    const num = (v, lo, hi) => { const n = parseFloat(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : 0 }
+    const positions = Array.isArray(b.positions) ? b.positions.slice(0, 20).map(ap => {
+      const p = ap?.position ?? {}
+      const coin = String(p.coin ?? '').slice(0, 24)
+      if (!/^[A-Za-z0-9:#+._-]{1,24}$/.test(coin)) return null
+      return { position: {
+        coin,
+        szi:            String(num(p.szi, -1e12, 1e12)),
+        entryPx:        String(num(p.entryPx, 0, 1e12)),
+        positionValue:  String(num(p.positionValue, 0, 1e12)),
+        unrealizedPnl:  String(num(p.unrealizedPnl, -1e12, 1e12)),
+        liquidationPx:  p.liquidationPx == null ? null : String(num(p.liquidationPx, 0, 1e12)),
+        returnOnEquity: String(num(p.returnOnEquity, -1e6, 1e6)),
+        leverage: { type: p.leverage?.type === 'isolated' ? 'isolated' : 'cross',
+                    value: Math.round(num(p.leverage?.value, 1, 100)) || 1 },
+      } }
+    }).filter(Boolean) : []
+    const snap = {
+      equity:        num(b.equity, 0, 1e12),
+      unrealizedPnl: num(b.unrealizedPnl, -1e12, 1e12),
+      realizedPnl:   num(b.realizedPnl,   -1e12, 1e12),
+      volume:        num(b.volume, 0, 1e12),
+      healthPct:     num(b.healthPct, 0, 100),
+      trades:        Math.round(num(b.trades, 0, 1e6)),
+      wins:          Math.round(num(b.wins,   0, 1e6)),
+      positions,
+    }
+    if (snap.wins > snap.trades) snap.wins = snap.trades
+    const store = loadChal()
+    const prev  = store[id] || {}
+    // Store the player's CURRENT net PnL (live board) — ranking and the row must match what the
+    // player sees in their own card, so this is the latest value, not a best-ever peak.
+    store[id] = { ...prev, name, netPnl, snap, updatedAt: new Date().toISOString() }
+    saveChal(store)
+    // Private audit trail: the full fill log (sent only when it changed) + total funding, kept
+    // out of the public board and used to verify a winning run. See GET /api/challenge/audit.
+    if (Array.isArray(b.fills)) {
+      const audit = loadChalAudit()
+      audit[id] = { name, funding: _cNum(b.funding, -1e12, 1e12), fills: chalSanitizeFills(b.fills), updatedAt: new Date().toISOString() }
+      saveChalAudit(audit)
+    }
+    return json(res, 200, { ok: true })
+  }
+  // ── POST /api/challenge/claim { id, addr } → record a wallet to be paid ──────
+  if (method === 'POST' && path === '/api/challenge/claim') {
+    const b = await body(req)
+    const id = String(b.id || '')
+    if (!REF_CODE_RE.test(id)) return json(res, 400, { error: 'bad id' })
+    if (!isAddr(b.addr))       return json(res, 400, { error: 'invalid address' })
+    const store = loadChal()
+    if (!store[id]) return json(res, 404, { error: 'no entry for this player' })
+    store[id] = { ...store[id], addr: String(b.addr).toLowerCase(), claimedAt: new Date().toISOString() }
+    saveChal(store)
+    console.log(`[chal] claim: ${id} → ${String(b.addr).slice(0, 8)}… (netPnl ${store[id].netPnl})`)
+    return json(res, 200, { ok: true })
+  }
+
+  // ── GET /api/challenge/audit?id=..&pin=..[&prices=0] → verify a player's run ──
+  // OWNER-ONLY (LB_PIN header/query, or ADMIN_TOKEN bearer). Returns the player's full fill
+  // log, a PnL reconciliation (does the claimed net PnL follow from the fills + funding +
+  // unrealized?), and a per-fill price cross-check against real Hyperliquid candles. This is
+  // the tool for reviewing a winner before paying — it can't PROVE simulated results, but it
+  // catches fabricated numbers and impossible fill prices.
+  if (method === 'GET' && path === '/api/challenge/audit') {
+    const tok    = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '')
+    const pin    = req.headers['x-lb-pin'] || url.searchParams.get('pin') || ''
+    const authed = (ADMIN_TOKEN && tok === ADMIN_TOKEN) || (LB_PIN && pin === LB_PIN)
+    if (!authed) return json(res, 403, { error: 'forbidden' })
+    const id = String(url.searchParams.get('id') || '')
+    if (!REF_CODE_RE.test(id)) return json(res, 400, { error: 'bad id' })
+    const store = loadChal(), audit = loadChalAudit()
+    const entry = store[id]
+    if (!entry) return json(res, 404, { error: 'no entry for this player' })
+    const a = audit[id] || {}
+    const fills = Array.isArray(a.fills) ? a.fills : []
+    const snap  = entry.snap || {}
+
+    // Reconcile: net PnL should equal realized(Σ closedPnl) − fees(Σ fee) + funding + unrealized.
+    const realized = fills.reduce((s, f) => s + (Number(f.closedPnl) || 0), 0)
+    const fees     = fills.reduce((s, f) => s + (Number(f.fee) || 0), 0)
+    const funding  = Number(a.funding) || 0
+    const unreal   = Number(snap.unrealizedPnl) || 0
+    const reconciled = realized - fees + funding + unreal
+    const claimed    = Number(entry.netPnl) || 0
+    const gap        = claimed - reconciled
+    const reconcileOk = Math.abs(gap) <= Math.max(1, Math.abs(claimed) * 0.02)   // ±$1 or 2%
+
+    // Per-fill price cross-check (skip with ?prices=0 to avoid the HL calls).
+    let priceSummary = { checked: 0, flagged: 0, unverified: 0, skipped: true }
+    let fillsOut = fills
+    if (url.searchParams.get('prices') !== '0' && fills.length) {
+      try {
+        const { out, checked, flagged, unverified } = await chalPriceCheck(fills)
+        priceSummary = { checked, flagged, unverified, skipped: false }
+        fillsOut = fills.map(f => ({ ...f, price: out.get(f) || { ok: null } }))
+      } catch (e) { priceSummary = { checked: 0, flagged: 0, unverified: fills.length, skipped: false, error: e.message } }
+    }
+
+    return json(res, 200, {
+      id, name: entry.name, claimed, wallet: entry.addr || null, updatedAt: entry.updatedAt,
+      reconcile: { claimed, reconciled, realized, fees, funding, unrealized: unreal, gap, ok: reconcileOk },
+      prices: priceSummary,
+      fillCount: fills.length,
+      fills: fillsOut,
+    })
+  }
+
+  // ── POST /api/leaderboard/join { addr } → self-serve add ──────────────────
+  // Called by the client only after a wallet connect. The server can't verify
+  // ownership without a signed message, so it also rate-limits per IP, caps the
+  // list, and rejects addresses with no Hyperliquid account.
+  if (method === 'POST' && path === '/api/leaderboard/join') {
+    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    if (!lbJoinAllowed(ip)) return json(res, 429, { error: 'too many joins, try later' })
+
+    const b = await body(req)
+    if (!isAddr(b.addr)) return json(res, 400, { error: 'invalid address' })
+    if (b.refBy) recordReferral(b.refBy, b.addr)   // attribute the invite that brought this wallet
+
+    const list  = lbReadList()
+    const key   = b.addr.toLowerCase()
+    const force = !!b.force   // explicit "add me back" (user-prompted) — overrides removal
+    if (list.some(e => e.addr.toLowerCase() === key)) { if (force) lbClearRemoved(key); return json(res, 200, { ok: true, already: true }) }
+    // A previously-removed account does NOT silently re-enter on the next connect.
+    if (!force && lbIsRemoved(key)) return json(res, 200, { ok: true, blocked: true })
+    if (list.length >= LB_MAX) return json(res, 507, { error: 'leaderboard full' })
+    if (force) lbClearRemoved(key)
+
+    // Must be a funded HL account — blocks junk, burner and dusted addresses.
+    try {
+      const cs = await hlInfo({ type: 'clearinghouseState', user: b.addr })
+      const equity = parseFloat(cs?.marginSummary?.accountValue ?? 0)
+      if (!(equity >= LB_MIN_EQUITY)) return json(res, 400, { error: `needs at least $${LB_MIN_EQUITY} on Hyperliquid` })
+    } catch { return json(res, 503, { error: 'could not verify account' }) }
+
+    list.push({ addr: b.addr, label: (b.label ?? '').toString().slice(0, 24) })
+    lbWriteList(list)
+    lbRefreshAll().catch(() => {})   // pick the newcomer up right away
+    return json(res, 200, { ok: true, added: true })
+  }
+
+  // ── POST /api/leaderboard/name { addr, name, ts, signature } ──────────────
+  // Set the public display name shown on the board instead of the address. Ownership is
+  // proven by a personal_sign from that address, so only the owner can rename their entry
+  // (the address itself is public, so a signature is the only real proof).
+  if (method === 'POST' && path === '/api/leaderboard/name') {
+    const b = await body(req)
+    if (!isAddr(b.addr)) return json(res, 400, { error: 'invalid address' })
+
+    // Strip control chars, collapse whitespace, cap length. Reject names that could be
+    // mistaken for an address.
+    const name = (b.name ?? '').toString()
+      .split('').filter(ch => ch.charCodeAt(0) >= 32 && ch.charCodeAt(0) !== 127).join('')
+      .replace(/\s+/g, ' ').trim().slice(0, 24)
+    if (/^0x[0-9a-fA-F]{6,}/.test(name)) return json(res, 400, { error: 'name cannot look like an address' })
+
+    const ts = Number(b.ts ?? 0)
+    if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > 10 * 60 * 1000)
+      return json(res, 400, { error: 'stale request — try again' })
+
+    const msg = `Insolvent Trade — set leaderboard name\naddress: ${b.addr.toLowerCase()}\nname: ${name}\nts: ${ts}`
+    let signer
+    try { signer = ethers.verifyMessage(msg, b.signature ?? '') }
+    catch { return json(res, 400, { error: 'bad signature' }) }
+    if (signer.toLowerCase() !== b.addr.toLowerCase())
+      return json(res, 403, { error: 'signature does not match that address' })
+
+    const list = lbReadList()
+    const i = list.findIndex(e => e.addr.toLowerCase() === b.addr.toLowerCase())
+    if (i < 0) return json(res, 404, { error: 'address is not on the leaderboard' })
+    list[i].label = name
+    lbWriteList(list)
+    // Reflect it in the pre-computed rows straight away, so the board shows the new name
+    // without waiting for the next refresh cycle.
+    try {
+      const s = lbReadStats()
+      const row = s.rows?.[b.addr.toLowerCase()]
+      if (row) { row.label = name; lbWriteStats(s) }
+    } catch {}
+    return json(res, 200, { ok: true, label: name })
+  }
+
+  // ── GET /api/heatmap/:coin → proxied REAL on-chain liquidation clusters ───
+  // Source: HyperPerps free market-wide feed (real positions, not a model). Cached 60s;
+  // serves stale on upstream failure so the tab never hard-fails.
+  if (method === 'GET' && path.startsWith('/api/heatmap/')) {
+    const coin = (path.split('/')[3] || '').toUpperCase().replace(/[^A-Z0-9.]/g, '')
+    if (!coin) return json(res, 400, { error: 'missing coin' })
+    const cached = _heatmapCache[coin]
+    if (cached && Date.now() - cached.ts < 60_000) return json(res, 200, cached.data)
+    try {
+      const r = await fetch(`https://trade.hyperperps.app/api/public/heatmap/${coin}`, { signal: AbortSignal.timeout(8000) })
+      const data = await r.json()
+      _heatmapCache[coin] = { ts: Date.now(), data }
+      return json(res, 200, data)
+    } catch (e) {
+      if (_heatmapCache[coin]) return json(res, 200, _heatmapCache[coin].data)
+      return json(res, 502, { error: 'heatmap upstream unavailable' })
+    }
+  }
+
+  // ── POST /api/leaderboard/verify-pin → non-destructive dev-PIN check ───────
+  // Dev mode used to "test" the PIN by overwriting the whole board, which was
+  // destructive and left the client in a half-activated state. This just checks it.
+  if (method === 'POST' && path === '/api/leaderboard/verify-pin') {
+    if (!LB_PIN) return json(res, 503, { error: 'LB_PIN not configured on server' })
+    if ((req.headers['x-lb-pin'] ?? '') !== LB_PIN) return json(res, 403, { error: 'forbidden' })
+    return json(res, 200, { ok: true })
+  }
+
+  // ── POST /api/leaderboard → replace the whole list (admin) ────────────────
   if (method === 'POST' && path === '/api/leaderboard') {
+    // This endpoint overwrites the public board. It previously accepted any
+    // request — the x-lb-pin header the client sent was never checked.
+    if (!LB_PIN) return json(res, 503, { error: 'LB_PIN not configured on server' })
+    if ((req.headers['x-lb-pin'] ?? '') !== LB_PIN) return json(res, 403, { error: 'forbidden' })
+
     const b = await body(req)
     if (!Array.isArray(b.addrs)) return json(res, 400, { error: 'addrs must be array' })
     writeFileSync(LEADERBOARD_FILE, JSON.stringify(b.addrs))
     return json(res, 200, { ok: true })
   }
 
+  // ── POST /api/leaderboard/remove { addr, ts, signature } — self-serve remove ──
+  // Owner proves control with a personal_sign (same as /name); a dev/operator may
+  // override with the LB_PIN header to remove ANY account.
+  if (method === 'POST' && path === '/api/leaderboard/remove') {
+    const b = await body(req)
+    if (!isAddr(b.addr)) return json(res, 400, { error: 'invalid address' })
+    const key = b.addr.toLowerCase()
+
+    const pinOk = !!LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN
+    if (!pinOk) {
+      const ts = Number(b.ts ?? 0)
+      if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > 10 * 60 * 1000)
+        return json(res, 400, { error: 'stale request — try again' })
+      const msg = `Insolvent Trade — remove from leaderboard\naddress: ${key}\nts: ${ts}`
+      let signer
+      try { signer = ethers.verifyMessage(msg, b.signature ?? '') }
+      catch { return json(res, 400, { error: 'bad signature' }) }
+      if (signer.toLowerCase() !== key)
+        return json(res, 403, { error: 'signature does not match that address' })
+    }
+
+    const list = lbReadList()
+    const next = list.filter(e => e.addr.toLowerCase() !== key)
+    if (next.length === list.length) return json(res, 404, { error: 'address is not on the leaderboard' })
+    lbWriteList(next)
+    lbMarkRemoved(key)   // block silent auto-rejoin on the next wallet connect
+    try { const s = lbReadStats(); if (s.rows?.[key]) { delete s.rows[key]; lbWriteStats(s) } } catch {}
+    return json(res, 200, { ok: true, removed: true })
+  }
+
+  // ── POST /api/leaderboard/paper/remove { name, secret } — self-serve remove ──
+  // Owner proves control with the row's secret; a dev/operator may override with
+  // the LB_PIN header to remove ANY paper entry.
+  if (method === 'POST' && path === '/api/leaderboard/paper/remove') {
+    const b = await body(req)
+    const name = lbCleanName(b.name)
+    if (!name) return json(res, 400, { error: 'name required' })
+    const list = lbPaperRead()
+    const i = list.findIndex(e => (e.name ?? '').toLowerCase() === name.toLowerCase())
+    if (i < 0) return json(res, 404, { error: 'not on the paper board' })
+
+    const pinOk = !!LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN
+    if (!pinOk) {
+      const given = String(b.secret ?? ''), want = String(list[i].secret ?? '')
+      const ok = given.length === want.length && given.length > 0 &&
+        timingSafeEqual(Buffer.from(given), Buffer.from(want))
+      if (!ok) return json(res, 403, { error: 'wrong secret for that name' })
+    }
+    list.splice(i, 1)
+    lbPaperWrite(list)
+    return json(res, 200, { ok: true, removed: true })
+  }
+
   json(res, 404, { error: 'not found' })
 })
 
 server.listen(PORT, () => {
-  console.log(`\n  Insolvent Terminal — Strategy Server`)
+  console.log(`\n  Insolvent Trade — Strategy Server`)
   console.log(`  Listening on http://localhost:${PORT}`)
   console.log(`  WALLET_KEY: ${process.env.WALLET_KEY ? '✓ set' : '✗ not set (bots use per-account keys)'}`)
+  console.log(`  LB_PIN:     ${LB_PIN ? '✓ set' : '✗ not set (leaderboard overwrite disabled)'}`)
+  console.log(`  ADMIN_TOKEN: ${ADMIN_TOKEN ? '✓ set (operator bypass enabled)' : '✗ not set (owner-only auth)'}`)
   resumeBots()
+  // Keep the cached leaderboard warm so browsers never fan out to HL themselves.
+  setTimeout(() => lbRefreshAll().catch(e => console.warn('[lb]', e.message)), 5000)
+  setInterval(() => lbRefreshAll().catch(e => console.warn('[lb]', e.message)), 5 * 60 * 1000)
   console.log('')
 })
