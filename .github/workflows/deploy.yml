@@ -33,9 +33,28 @@ jobs:
           rsync -avz vite.config.js    "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/vite.config.js"
           rsync -avz serve-prod.js     "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/serve-prod.js"
 
+      # server.js is a DIFFERENT pm2 process (hliq-strat — bots and strategies), not the
+      # frontend. Ship it every deploy, but bounce that process only when the file really
+      # changed: a UI-only deploy must never interrupt a running strategy. `rsync -i` prints
+      # one "<f…" line per file it actually transferred, so no such line means no change.
+      - name: Sync strategy server
+        id: syncstrat
+        run: |
+          out=$(rsync -az -i server.js "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/server.js")
+          echo "${out:-(no changes)}"
+          if echo "$out" | grep -q '^<f'; then
+            echo "changed=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=no"  >> "$GITHUB_OUTPUT"
+          fi
+
       # pm2 runs serve-prod.js, which serves dist/ — source changes have no
       # effect until the bundle is rebuilt on the server.
       - name: Build and restart app
         run: |
           ssh "$DEPLOY_USER@$DEPLOY_HOST" \
             "cd $DEPLOY_PATH && npm run build && pm2 restart hliq-v2"
+
+      - name: Restart strategy server
+        if: steps.syncstrat.outputs.changed == 'yes'
+        run: ssh "$DEPLOY_USER@$DEPLOY_HOST" "pm2 restart hliq-strat"
