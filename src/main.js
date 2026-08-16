@@ -21367,11 +21367,13 @@ function _ocCoinLabel(coin) {
     // "Market question · Side" — without the separator the side reads as a
     // duplicated word ("…Switzerland vs Colombia Colombia").
     if (t && t.name) return t.side ? `${t.name} · ${t.side}` : t.name
-    // Settled outcomes drop out of the live outcomeMeta, but HL keeps their
-    // spec behind {type:'settledOutcome'}. Fire a one-shot lazy fetch to pull
-    // the real title (e.g. "World Cup Round of 16: Brazil vs Norway · Norway")
-    // and re-render; until it lands, show a readable decoded placeholder.
+    // A title goes missing two different ways, so try both. Settled questions drop
+    // out of the live outcomeMeta but HL keeps their spec behind
+    // {type:'settledOutcome'}; a newly listed question is simply absent from a
+    // cached map and only a fresh outcomeMeta carries it. Until one lands, show a
+    // readable decoded placeholder.
     _lazyResolveSettledOutcome(coin)
+    _refreshOcMetaForMiss()
     return _ocFallbackLabel(coin)
   }
   return coinLabel(coin)
@@ -21396,6 +21398,38 @@ function _ocFallbackLabel(coin) {
 // and re-render the trades/positions views so the title appears in place.
 const _settledOcSeen = new Set()   // outcome ids already fetched (ok/failed) — never refetch
 let _settledOcRerender = null
+
+// Re-render every view that renders an outcome label, debounced so a page full of
+// unresolved outcomes rerenders once. Includes the positions section — an outcome
+// you still hold is exactly where a missing title is most visible.
+function _ocRerenderLabels() {
+  clearTimeout(_settledOcRerender)
+  _settledOcRerender = setTimeout(() => {
+    try { _refreshVisitedSection('trades') } catch {}
+    try { if (state.fills) renderTrades(state.fills) } catch {}
+    try { if (typeof _mobVRenderContent === 'function') _mobVRenderContent() } catch {}
+    try { renderPositionSection() } catch {}
+  }, 150)
+}
+
+// A LIVE question missing from ocTokenMap never recovers on its own: the
+// settledOutcome probe below returns no spec for one that hasn't resolved, and every
+// path that rebuilds the map — _hydrateOcTokenMap, _lbEnsureMetas — only fires when
+// the map is *empty*, never when it is merely missing this id. So a question listed
+// after the cached map was written stays "Prediction #N" until a hard reload.
+// Refetch the live meta on a miss, throttled so a list of misses costs one request.
+let _ocMetaMissAt   = 0
+let _ocMetaMissBusy = false
+function _refreshOcMetaForMiss() {
+  const now = Date.now()
+  if (_ocMetaMissBusy || now - _ocMetaMissAt < 60_000) return
+  _ocMetaMissBusy = true
+  _ocMetaMissAt   = now
+  infoClient.outcomeMeta()
+    .then(m => { if (m) { _buildOcTokenMap(m); _ocRerenderLabels() } })
+    .catch(() => {})
+    .finally(() => { _ocMetaMissBusy = false })
+}
 function _lazyResolveSettledOutcome(coin) {
   const n = parseInt(String(coin).slice(1), 10)
   if (!Number.isFinite(n)) return
@@ -21424,13 +21458,7 @@ function _lazyResolveSettledOutcome(coin) {
       try {
         localStorage.setItem('hliq_oc_token_map', JSON.stringify(state.ocTokenMap))
       } catch {}
-      // Debounce re-renders so a page full of settled outcomes rerenders once.
-      clearTimeout(_settledOcRerender)
-      _settledOcRerender = setTimeout(() => {
-        try { _refreshVisitedSection('trades') } catch {}
-        try { if (state.fills) renderTrades(state.fills) } catch {}
-        try { if (typeof _mobVRenderContent === 'function') _mobVRenderContent() } catch {}
-      }, 150)
+      _ocRerenderLabels()
     })
     .catch(() => {})
 }
