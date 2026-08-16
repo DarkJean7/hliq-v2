@@ -2,6 +2,20 @@
 window.__build = typeof __HLIQ_BUILD__ !== 'undefined' ? __HLIQ_BUILD__ : ''
 const _il = document.getElementById('init-loader')
 if (_il) _il.remove()
+
+// ── TEMPORARY deploy-pipeline test banner — safe to delete this whole block ──
+{
+  const _b = document.createElement('div')
+  _b.id = 'deploy-test-banner'
+  _b.textContent = `deploy test OK — build ${window.__build}`
+  _b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;'
+    + 'background:#16c784;color:#06121a;font:600 13px/1.4 system-ui,sans-serif;'
+    + 'text-align:center;padding:8px 12px;cursor:pointer'
+  _b.title = 'Tap to dismiss'
+  _b.onclick = () => _b.remove()
+  document.addEventListener('DOMContentLoaded', () => document.body.prepend(_b))
+  if (document.readyState !== 'loading') document.body.prepend(_b)
+}
 import { InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { updateGameMode as _updateGameMode, gmOrdersInvalidate } from './game.js'
 import { initOnboarding } from './onboard.js'   // also registers window.__glossary/__openLearn/__startMainTour/__term
