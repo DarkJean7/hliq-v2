@@ -21944,57 +21944,24 @@ function _ocChartDecor() {
     afterDatasetsDraw(chart) {
       const { ctx, chartArea: area, scales } = chart
       if (!area || !scales?.y) return
-      const font = "600 9px 'JetBrains Mono', ui-monospace, monospace"
-
-      // ── 50/50 reference line
-      const y50 = scales.y.getPixelForValue(50)
+      // ── 50/50 reference line, marking the yes/no boundary the odds trade around.
+      //
+      // It used to carry its own "50%" text, and the live odds used to ride the last point in
+      // a floating pill. Both were workarounds for having no axes at 118px. The chart is tall
+      // enough for real ones now, so the y-axis states the percentages and the CHANCE stat
+      // card directly above the chart already shows the current number — leaving the plot
+      // itself clean instead of stacking labels on top of the line.
       ctx.save()
+      const y50 = scales.y.getPixelForValue(50)
       ctx.setLineDash([3, 4])
       ctx.strokeStyle = 'rgba(255,255,255,0.16)'
       ctx.lineWidth = 1
       ctx.beginPath(); ctx.moveTo(area.left, y50); ctx.lineTo(area.right, y50); ctx.stroke()
       ctx.setLineDash([])
-      ctx.font = font
-      ctx.fillStyle = 'rgba(255,255,255,0.34)'
-      ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'
-      ctx.fillText('50%', area.left + 3, y50 - 3)
-
-      // ── Current-odds pill, anchored to the last real point. Value and colour are read from
-      // the dataset at DRAW time, not captured at creation, so the 30s price refresh
-      // (chart.update) moves the badge and re-tints it instead of leaving a stale number.
-      const pts  = chart.getDatasetMeta(0)?.data ?? []
-      const data = chart.data.datasets[0]?.data ?? []
-      let anchor = null, pct = null
-      for (let i = pts.length - 1; i >= 0; i--) {
-        if (data[i] != null) { anchor = pts[i]; pct = data[i]; break }
-      }
-      if (anchor && pct != null) {
-        const c = pct >= 50 ? '#00e5a0' : '#ff4d6d'
-        const label = `${Math.round(pct)}%`
-        ctx.font = "700 10px 'JetBrains Mono', ui-monospace, monospace"
-        const w = ctx.measureText(label).width + 12
-        const h = 16
-        // Keep the pill inside the plot area so it can't clip at the card edge.
-        let x = Math.min(anchor.x + 8, area.right - w - 2)
-        if (x < area.left + 2) x = area.left + 2
-        let y = anchor.y - h / 2
-        if (y < area.top + 2) y = area.top + 2
-        if (y + h > area.bottom - 2) y = area.bottom - 2 - h
-        ctx.beginPath()
-        // roundRect is unsupported on older WebKit — fall back to a plain rect rather than throw.
-        if (ctx.roundRect) ctx.roundRect(x, y, w, h, 8)
-        else ctx.rect(x, y, w, h)
-        ctx.fillStyle = c
-        ctx.globalAlpha = 0.16; ctx.fill(); ctx.globalAlpha = 1
-        ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.stroke()
-        ctx.fillStyle = c
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-        ctx.fillText(label, x + w / 2, y + h / 2 + 0.5)
-      }
 
       // ── Scrub crosshair. At this height the tooltip alone leaves you guessing which point
       // your finger is actually on. Read from the active tooltip element so it tracks touch
-      // and mouse identically, and drawn last so it sits above the line and the pill.
+      // and mouse identically, and drawn last so it sits above the line.
       const active = chart.tooltip?.getActiveElements?.() ?? []
       const hit    = active[0]?.element
       if (hit && Number.isFinite(hit.x)) {
@@ -22113,7 +22080,9 @@ async function _initOcCharts(outcomes) {
       options: {
         animation: false, responsive: true, maintainAspectRatio: false,
         // Room for the odds pill at the line's end without it touching the card edge.
-        layout: { padding: { top: 10, right: 6, bottom: 4, left: 2 } },
+        // Right padding keeps the live end-point dot off the plot border instead of half
+        // clipped against it; the axes supply their own spacing on the other sides.
+        layout: { padding: { top: 10, right: 10, bottom: 2, left: 2 } },
         // Touch is included so the line can be scrubbed on a phone, which is where this is
         // actually used. The old mouse-only list existed because touch events let the chart
         // swallow vertical drags and made the sheet feel stuck; `touch-action: pan-y` on the
@@ -22136,11 +22105,39 @@ async function _initOcCharts(outcomes) {
           },
           zoom: { zoom: { wheel: { enabled: false }, drag: { enabled: false } }, pan: { enabled: false } },
         },
-        // No tick labels: a numeric axis crowds a ~118px card and reads like a spreadsheet.
-        // The odds are conveyed by the dashed 50/50 line and the live badge drawn below.
+        // Real axes. They were off because a numeric axis crowds a ~118px card, but the chart
+        // is 260px now and the labels are what stop the plot needing text drawn on top of the
+        // line. The x labels also settle what the right-hand end MEANS: the line stops at the
+        // last candle, so without times a fresh market's dot at the right edge read as "about
+        // to close" when it had just opened.
         scales: {
-          x: { display: false },
-          y: { display: false, min: 0, max: 100, grace: 0 },
+          x: {
+            display: true,
+            grid: { display: false },
+            border: { color: 'rgba(255,255,255,0.10)' },
+            ticks: {
+              color: 'rgba(255,255,255,0.40)',
+              font: { size: 9, family: "'JetBrains Mono', ui-monospace, monospace" },
+              maxRotation: 0, autoSkip: true, maxTicksLimit: 4, padding: 4,
+              callback(value) {
+                const t = Number(this.getLabelForValue(value))
+                return Number.isFinite(t)
+                  ? new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+                  : ''
+              },
+            },
+          },
+          y: {
+            display: true, min: 0, max: 100, grace: 0,
+            grid: { color: 'rgba(255,255,255,0.05)', drawTicks: false },
+            border: { display: false },
+            ticks: {
+              color: 'rgba(255,255,255,0.40)',
+              font: { size: 9, family: "'JetBrains Mono', ui-monospace, monospace" },
+              stepSize: 25, padding: 6,
+              callback: v => v + '%',
+            },
+          },
         },
       },
       plugins: [_ocChartDecor()],
