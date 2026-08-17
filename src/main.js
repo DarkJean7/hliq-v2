@@ -22389,6 +22389,38 @@ const _OC_SECTIONS = [
   ['culture','🎬','Culture'], ['weather','⛅','Weather'], ['other','🔮','More Markets'],
 ]
 
+// TEMPORARY diagnostic — delete this block once the missing range market is settled.
+//
+// The list shows four crypto binaries, but HL also runs a multi-outcome BTC range market
+// (Below/Range/Above) that never appears. Nothing filters outcomes on the way in, so it is
+// being hidden here: a question whose name matches the template regex below has ALL of its
+// member outcomes hidden, and these markets are recurring dailies. Whether HL actually names
+// that question "Recurring" cannot be checked from a phone or from the deploy session, and
+// loosening the regex on a guess risks filling the list with real placeholder legs.
+//
+// So report what arrived, through the telemetry endpoint that already exists, and read it at
+// /api/errors?pin=…&kind=ocdiag — one post per session, deduped server-side by message.
+let _ocDiagSent = false
+function _ocDiagReport(hidden, grouped) {
+  if (_ocDiagSent) return
+  _ocDiagSent = true
+  try {
+    const qs = (_ocLiveQuestions ?? []).map(q =>
+      `${(q.name || '?').slice(0, 40)}[n=${(q.namedOutcomes ?? []).length}${q.fallbackOutcome != null ? ',fb' : ''}]`)
+    const os = (_ocLiveOutcomes ?? []).map(o =>
+      `${o.outcome}:${_parseOutcomeDesc(o.description || '').class || '-'}:sides=${(o.sideSpecs ?? []).length}`)
+    fetch('/api/error', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        kind: 'ocdiag',
+        message: `outcomes=${os.length} questions=${qs.length} hidden=${hidden.size} grouped=${grouped.size}`,
+        stack: `Q: ${qs.join(' | ')}\nO: ${os.join(' ')}`.slice(0, 1900),
+        url: location.pathname, ua: '', screen: '', lang: '',
+      }),
+    }).catch(() => {})
+  } catch {}
+}
+
 // Group the flat card list into emoji sections + a Trending hero strip.
 // Mobile predictions sheet only — the desktop grid stays flat.
 function _ocSectionize() {
@@ -22458,6 +22490,8 @@ function _ocSectionize() {
     const d = _parseOutcomeDesc(o.description || '')
     if (!d.class && /\b(fallback|recurring|named outcome|template)\b/i.test(o.name || '')) hidden.add(id)
   }
+
+  _ocDiagReport(hidden, grouped)
 
   // ── Compose the new grid ────────────────────────────────────────────────────
   const frag  = document.createDocumentFragment()
