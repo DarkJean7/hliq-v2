@@ -22024,16 +22024,42 @@ function _ocSetCurrentPx(outcome, mid, targetPrice) {
   el.className = 'oc-price-current' + (Number.isFinite(t) && t > 0 ? (mid >= t ? ' oc-above' : ' oc-below') : '')
 }
 
+// Market lifetime from the description's period tag ("1H", "1D", "7D"), in ms. `M` is read
+// as minutes — these tags describe short trading windows, never months.
+function _ocPeriodMs(period) {
+  const m = /^(\d+)\s*([MHDW])$/i.exec(String(period ?? '').trim())
+  if (!m) return 0
+  const n = +m[1]
+  return n * ({ M: 60e3, H: 3600e3, D: 86400e3, W: 604800e3 }[m[2].toUpperCase()] ?? 0)
+}
+
+// Candle interval sized to the market, because a fixed 1h was wrong for short-dated ones: a
+// 1D market that opened 30 minutes ago has exactly ONE hourly candle, so the "line" was a
+// single dot pinned to x=0 with 23 empty slots padding out to expiry — which is what stacked
+// the dot, the odds pill and the 50% label on top of each other in the left corner.
+function _ocCandleInterval(periodMs) {
+  if (!periodMs)                 return '1h'   // unknown duration — keep the old behaviour
+  if (periodMs <= 6 * 3600e3)    return '1m'
+  if (periodMs <= 36 * 3600e3)   return '5m'
+  return '1h'
+}
+const _OC_STEP_MS = { '1m': 60e3, '5m': 300e3, '1h': 3600e3 }
+
 async function _initOcCharts(outcomes) {
-  const sevenDaysAgo = Date.now() - 7 * 24 * 3600 * 1000
   await Promise.all(outcomes.map(async o => {
     const canvas = document.getElementById('oc-chart-' + o.outcome)
     if (!canvas) return
     const pairIdx = o.outcome * 10
     const d       = _parseOutcomeDesc(o.description)
 
+    const periodMs = _ocPeriodMs(d.period)
+    const interval = _ocCandleInterval(periodMs)
+    // Look back over the market's own lifetime rather than a flat 7 days: for a 1D market
+    // that is all the data there is, and it keeps the finer intervals from over-fetching.
+    const lookback = periodMs ? Math.min(periodMs * 1.3, 7 * 24 * 3600e3) : 7 * 24 * 3600e3
+
     let candles = []
-    try { candles = await fetchCandles('#' + pairIdx, '1h', sevenDaysAgo) } catch {}
+    try { candles = await fetchCandles('#' + pairIdx, interval, Date.now() - lookback) } catch {}
 
     if (!canvas.isConnected) return
     const wrap = canvas.parentElement
@@ -22047,16 +22073,24 @@ async function _initOcCharts(outcomes) {
     if (emptyEl) emptyEl.remove()
 
     // Build full timeline: past candles + null slots up to expiry
-    const HOUR   = 3600 * 1000
+    const STEP   = _OC_STEP_MS[interval] ?? 3600e3   // slot spacing must match the candles
     const now    = Date.now()
     const expiry = (_expiryDate(d.expiry) ?? new Date(now)).getTime()
     const lastTs = candles[candles.length - 1].t
 
-    // Pad future with null data points so the line ends at "now" and
-    // empty space to the right represents time remaining to close
-    const futureHours = Math.max(0, Math.round((expiry - lastTs) / HOUR))
-    const futureLabels = Array.from({ length: futureHours }, (_, i) => lastTs + (i + 1) * HOUR)
-    const futureNulls  = Array(futureHours).fill(null)
+    // Trailing empty space shows time remaining to close. Left unbounded it can dwarf the
+    // line itself — a market minutes old had one real slot against twenty-three empty ones,
+    // squashing everything into the left edge. Hold it to roughly a third of the plot so the
+    // line always owns the majority, however young the market is.
+    // With a single candle there is no line to draw at all, only a point — padding would just
+    // pin it to a corner again. Drop the trailing space entirely so Chart.js centres it and
+    // the odds pill stays readable.
+    const rawFuture  = Math.max(0, Math.round((expiry - lastTs) / STEP))
+    const futureLen  = candles.length < 2
+      ? 0
+      : Math.min(rawFuture, Math.max(2, Math.round(candles.length * 0.5)))
+    const futureLabels = Array.from({ length: futureLen }, (_, i) => lastTs + (i + 1) * STEP)
+    const futureNulls  = Array(futureLen).fill(null)
 
     const labels = [...candles.map(c => c.t), ...futureLabels]
     const pcts   = [...candles.map(c => parseFloat(c.c) * 100), ...futureNulls]
@@ -22070,7 +22104,7 @@ async function _initOcCharts(outcomes) {
     // Gradient must span the real canvas height. It was hardcoded to 90px, which matched the
     // old short card by luck — at the current height that fades the fill out partway down and
     // leaves the bottom of the area transparent.
-    const grad = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 200)
+    const grad = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 260)
     grad.addColorStop(0, winning ? 'rgba(0,229,160,0.18)' : 'rgba(255,77,109,0.18)')
     grad.addColorStop(1, 'rgba(0,0,0,0)')
 
