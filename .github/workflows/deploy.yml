@@ -32,6 +32,7 @@ jobs:
           rsync -avz index.html        "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/index.html"
           rsync -avz vite.config.js    "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/vite.config.js"
           rsync -avz serve-prod.js     "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/serve-prod.js"
+          rsync -avz ecosystem.config.cjs "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/ecosystem.config.cjs"
 
       # server.js is a DIFFERENT pm2 process (hliq-strat — bots and strategies), not the
       # frontend. Ship it every deploy, but bounce that process only when the file really
@@ -57,12 +58,40 @@ jobs:
             echo "changed=no"  >> "$GITHUB_OUTPUT"
           fi
 
-      # pm2 runs serve-prod.js, which serves dist/ — source changes have no
-      # effect until the bundle is rebuilt on the server.
-      - name: Build and restart app
+      # pm2 runs serve-prod.js, which serves dist/ — source changes have no effect until the
+      # bundle is rebuilt on the server.
+      #
+      # `pm2 reload`, not `restart`: restart stops the process before starting its replacement,
+      # so every deploy left a 1–2s window with nothing on 5175 and nginx served its own 502.
+      # Reload cycles the cluster workers one at a time while the master keeps the socket.
+      #
+      # exec_mode cannot be changed on a running process, so a fork-mode hliq-v2 has to be
+      # replaced once. That single migration is the last deploy that drops requests; every
+      # deploy after it takes the reload path. Checked on substring so a pm2 version that
+      # words exec_mode differently cannot silently pick the destructive branch.
+      - name: Build and reload app
         run: |
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
-            "cd $DEPLOY_PATH && npm run build && pm2 restart hliq-v2"
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" bash -se <<'REMOTE'
+          set -e
+          cd /root/hliq-v2
+          npm run build
+          mode=$(pm2 jlist | python3 -c "import json,sys; a=[p for p in json.load(sys.stdin) if p.get('name')=='hliq-v2']; print(a[0]['pm2_env'].get('exec_mode','') if a else 'missing')")
+          echo "hliq-v2 current exec_mode: ${mode:-unknown}"
+          case "$mode" in
+            *cluster*)
+              echo "reloading (zero downtime)"
+              pm2 reload ecosystem.config.cjs --update-env
+              ;;
+            *)
+              echo "one-time migration to cluster mode — this deploy briefly drops requests"
+              pm2 delete hliq-v2 || true
+              pm2 start ecosystem.config.cjs
+              ;;
+          esac
+          # Persist so a reboot resurrects cluster mode rather than the old fork definition.
+          pm2 save
+          pm2 describe hliq-v2 | grep -E 'exec mode|instances|status' || true
+          REMOTE
 
       - name: Restart strategy server
         if: steps.syncstrat.outputs.changed == 'yes'
