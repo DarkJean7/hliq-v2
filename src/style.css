@@ -3957,7 +3957,13 @@ body.oc-card-open #mobPredictBody { overflow: hidden !important; }
 
 /* Chart */
 .oc-chart-wrap {
-  height: 260px; position: relative; border-radius: 10px; overflow: hidden;
+  /* flex-shrink:0 is what actually makes the height stick on a phone. .oc-card is a flex
+     column, and when expanded on mobile it is position:fixed; inset:0 — pinned to the
+     viewport. Its content is taller than that, so every flex item gets shrunk to try to fit
+     and the chart collapsed to a sliver. Desktop viewports are tall enough that nothing
+     shrank, which is why it looked correct in devtools and wrong on the device. Refusing to
+     shrink keeps the height and lets the card scroll, which is what overflow-y:auto is for. */
+  height: 260px; flex-shrink: 0; position: relative; border-radius: 10px; overflow: hidden;
   background: linear-gradient(180deg, rgba(255,255,255,.022), rgba(255,255,255,0) 60%), var(--panel-2);
   border: 1px solid var(--rule); margin-bottom: 10px;
   /* Chart.js draws its own inner padding (layout.padding) — extra padding here shrinks the
