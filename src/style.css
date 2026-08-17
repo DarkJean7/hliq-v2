@@ -3957,7 +3957,7 @@ body.oc-card-open #mobPredictBody { overflow: hidden !important; }
 
 /* Chart */
 .oc-chart-wrap {
-  height: 200px; position: relative; border-radius: 10px; overflow: hidden;
+  height: 260px; position: relative; border-radius: 10px; overflow: hidden;
   background: linear-gradient(180deg, rgba(255,255,255,.022), rgba(255,255,255,0) 60%), var(--panel-2);
   border: 1px solid var(--rule); margin-bottom: 10px;
   /* Chart.js draws its own inner padding (layout.padding) — extra padding here shrinks the
