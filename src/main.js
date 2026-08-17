@@ -21991,6 +21991,23 @@ function _ocChartDecor() {
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
         ctx.fillText(label, x + w / 2, y + h / 2 + 0.5)
       }
+
+      // ── Scrub crosshair. At this height the tooltip alone leaves you guessing which point
+      // your finger is actually on. Read from the active tooltip element so it tracks touch
+      // and mouse identically, and drawn last so it sits above the line and the pill.
+      const active = chart.tooltip?.getActiveElements?.() ?? []
+      const hit    = active[0]?.element
+      if (hit && Number.isFinite(hit.x)) {
+        ctx.setLineDash([2, 3])
+        ctx.strokeStyle = 'rgba(255,255,255,0.30)'
+        ctx.lineWidth = 1
+        ctx.beginPath(); ctx.moveTo(hit.x, area.top); ctx.lineTo(hit.x, area.bottom); ctx.stroke()
+        ctx.setLineDash([])
+        ctx.beginPath(); ctx.arc(hit.x, hit.y, 3.5, 0, Math.PI * 2)
+        ctx.fillStyle = '#fff'
+        ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1
+        ctx.fill(); ctx.stroke()
+      }
       ctx.restore()
     },
   }
@@ -22050,7 +22067,10 @@ async function _initOcCharts(outcomes) {
     const col     = winning ? '#00e5a0' : '#ff4d6d'
 
     const ctx  = canvas.getContext('2d')
-    const grad = ctx.createLinearGradient(0, 0, 0, 90)
+    // Gradient must span the real canvas height. It was hardcoded to 90px, which matched the
+    // old short card by luck — at the current height that fades the fill out partway down and
+    // leaves the bottom of the area transparent.
+    const grad = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 200)
     grad.addColorStop(0, winning ? 'rgba(0,229,160,0.18)' : 'rgba(255,77,109,0.18)')
     grad.addColorStop(1, 'rgba(0,0,0,0)')
 
@@ -22074,9 +22094,12 @@ async function _initOcCharts(outcomes) {
         animation: false, responsive: true, maintainAspectRatio: false,
         // Room for the odds pill at the line's end without it touching the card edge.
         layout: { padding: { top: 10, right: 6, bottom: 4, left: 2 } },
-        // Mouse only — including touch events here would let the chart swallow vertical
-        // drags and make the predictions sheet feel stuck when scrolling past a card.
-        events: ['mousemove', 'mouseout', 'click'],
+        // Touch is included so the line can be scrubbed on a phone, which is where this is
+        // actually used. The old mouse-only list existed because touch events let the chart
+        // swallow vertical drags and made the sheet feel stuck; `touch-action: pan-y` on the
+        // canvas is what fixes that properly — the browser keeps vertical scrolling and only
+        // horizontal gestures reach the chart. Removing that CSS reintroduces the stuck sheet.
+        events: ['mousemove', 'mouseout', 'click', 'touchstart', 'touchmove'],
         plugins: {
           legend: { display: false },
           // Scrub the line to read the odds at any past moment.
