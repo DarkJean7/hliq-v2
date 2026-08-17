@@ -22043,7 +22043,6 @@ function _ocCandleInterval(periodMs) {
   if (periodMs <= 36 * 3600e3)   return '5m'
   return '1h'
 }
-const _OC_STEP_MS = { '1m': 60e3, '5m': 300e3, '1h': 3600e3 }
 
 async function _initOcCharts(outcomes) {
   await Promise.all(outcomes.map(async o => {
@@ -22072,28 +22071,16 @@ async function _initOcCharts(outcomes) {
     }
     if (emptyEl) emptyEl.remove()
 
-    // Build full timeline: past candles + null slots up to expiry
-    const STEP   = _OC_STEP_MS[interval] ?? 3600e3   // slot spacing must match the candles
-    const now    = Date.now()
-    const expiry = (_expiryDate(d.expiry) ?? new Date(now)).getTime()
-    const lastTs = candles[candles.length - 1].t
-
-    // Trailing empty space shows time remaining to close. Left unbounded it can dwarf the
-    // line itself — a market minutes old had one real slot against twenty-three empty ones,
-    // squashing everything into the left edge. Hold it to roughly a third of the plot so the
-    // line always owns the majority, however young the market is.
-    // With a single candle there is no line to draw at all, only a point — padding would just
-    // pin it to a corner again. Drop the trailing space entirely so Chart.js centres it and
-    // the odds pill stays readable.
-    const rawFuture  = Math.max(0, Math.round((expiry - lastTs) / STEP))
-    const futureLen  = candles.length < 2
-      ? 0
-      : Math.min(rawFuture, Math.max(2, Math.round(candles.length * 0.5)))
-    const futureLabels = Array.from({ length: futureLen }, (_, i) => lastTs + (i + 1) * STEP)
-    const futureNulls  = Array(futureLen).fill(null)
-
-    const labels = [...candles.map(c => c.t), ...futureLabels]
-    const pcts   = [...candles.map(c => parseFloat(c.c) * 100), ...futureNulls]
+    // The line fills the width and ends at now. No null padding out to expiry.
+    //
+    // That padding used to make the empty right-hand side stand for time remaining, but it
+    // made the x-axis mean two things at once and got it wrong both ways: on a market minutes
+    // old the real line was a 4% sliver at the left edge, and capping the padding to fix that
+    // put the live dot two-thirds across while 23 hours still remained — reading as "about to
+    // close" on a market that had just opened. Time left is already stated exactly, in the
+    // CLOSES IN countdown directly above the chart, so the axis does not need to encode it.
+    const labels = candles.map(c => c.t)
+    const pcts   = candles.map(c => parseFloat(c.c) * 100)
 
     const last    = candles[candles.length - 1]
     const lastPct = parseFloat(last.c) * 100
@@ -22110,7 +22097,6 @@ async function _initOcCharts(outcomes) {
 
     if (_ocCharts[o.outcome]) { try { _ocCharts[o.outcome].destroy() } catch {} }
     const dataLen  = candles.length
-    const totalLen = labels.length
 
     _ocCharts[o.outcome] = new Chart(ctx, {
       type: 'line',
