@@ -11477,7 +11477,7 @@ function _mobVRenderContent(tick = false) {
       const oid   = Math.floor(n / 10), side = n % 10
       const entry = total > 0 ? cost / total : 0
       const fromBook  = _ocMarkCache[b.coin] || 0
-      const fromPanel = _ocPrices?.[oid] ? (side === 0 ? _ocPrices[oid].yes : _ocPrices[oid].no) : 0
+      const fromPanel = _ocSidePrice(oid, side)
       const mark  = fromBook > 0 ? fromBook : (fromPanel > 0 ? fromPanel : entry)
       const value = total * mark
       const pnl   = (mark - entry) * total
@@ -21488,7 +21488,11 @@ window.__closePredictions = () => _predictSettle(false)
 let _ocCharts          = {}
 let _ocCountdownInterval = null
 let _ocRefreshInterval = null
-let _ocPrices          = {}   // { [outcomeId]: { yes: number, no: number } }
+// { [outcomeId]: { px: number[], yes: number, no: number } }
+// `px` is indexed by side and is the authority; `yes`/`no` are kept as readable aliases for
+// the binary case. Read it through _ocSidePrice — never index the aliases by side, which is
+// what limited this to two outcomes in the first place.
+let _ocPrices          = {}
 let _ocMarkCache       = {}   // { [spotCoin '+N']: mark price } — last live mid for held outcomes
 let _ocPendingClose    = {}   // "digits@acctAddr" → { total: expected shares after close, ts } — masks HL spot-balance lag
 
@@ -21801,38 +21805,68 @@ function _fmtOcQuestionTime(raw) {
   return utc.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 }
 
+// Price for one side of a market, or 0 when we do not have a real one.
+//
+// Returning 0 rather than a guess is the point. This feeds _ocEffPx, which is the price a
+// MARKET order fills against, so a fabricated number here becomes a mispriced trade. The old
+// shape stored only { yes, no } and every caller did `side === 0 ? yes : no`, which silently
+// handed side 2 of a three-way market the price of side 1 — wrong, and wrong in a way nothing
+// would have flagged. An unknown side now reads as 0 and the UI shows no price.
+function _ocSidePrice(outcomeId, side) {
+  const p = _ocPrices?.[outcomeId]
+  if (!p) return 0
+  const i = Number(side)
+  if (Array.isArray(p.px) && Number.isFinite(p.px[i])) return p.px[i]
+  return 0
+}
+
+// Mid for one outcome side from its L2 book, falling back to the last 1m close.
+async function _ocSideMid(pairIdx, info) {
+  try {
+    const book = await info.l2Book({ coin: '#' + pairIdx })
+    const bid  = parseFloat(book.levels?.[0]?.[0]?.px ?? 0)
+    const ask  = parseFloat(book.levels?.[1]?.[0]?.px ?? 0)
+    const mid  = bid > 0 && ask > 0 ? (bid + ask) / 2 : (bid || ask)
+    if (mid > 0 && mid < 1) return mid
+  } catch {}
+  try {
+    const cs = await fetchCandles('#' + pairIdx, '1m', Date.now() - 5 * 60 * 1000)
+    const c  = cs.length ? parseFloat(cs[cs.length - 1].c) : 0
+    if (c > 0 && c < 1) return c
+  } catch {}
+  return 0
+}
+
+// Build the per-side price array for one market.
+//
+// Two sides are complements, so side 1 is derived exactly from side 0 — no second request.
+// That matters: this polls every open market, and fetching a book per side would multiply the
+// weight of the busiest loop in the app for markets whose second price is already implied.
+// Three or more sides have no such identity (Below + Range + Above sum to 1, so no side is
+// 1 - another), so those are fetched per side. Any side we cannot price stays 0.
+async function _ocBuildPrices(o, info) {
+  const base   = o.outcome * 10
+  const nSides = Math.max(2, o.sideSpecs?.length ?? 2)
+  if (nSides === 2) {
+    const p0 = await _ocSideMid(base, info)
+    return p0 > 0 && p0 < 1 ? [p0, 1 - p0] : null
+  }
+  const px = await hlPool(
+    Array.from({ length: nSides }, (_, i) => base + i),
+    idx => _ocSideMid(idx, info),
+  )
+  return px.some(p => p > 0) ? px.map(p => (p > 0 && p < 1 ? p : 0)) : null
+}
+
 // Fetch YES price via L2 book (#N coin format). NO = 1 - YES for binary markets.
 async function _loadOcPrices(outcomes, info) {
   await Promise.all(outcomes.map(async o => {
-    const yesPairIdx = o.outcome * 10
-    let yesPx = 0
-
-    // Primary: L2 book with order-coin format
-    try {
-      const book  = await info.l2Book({ coin: '#' + yesPairIdx })
-      const bids  = book.levels?.[0] ?? []
-      const asks  = book.levels?.[1] ?? []
-      const bid   = parseFloat(bids[0]?.px ?? 0)
-      const ask   = parseFloat(asks[0]?.px ?? 0)
-      if (bid > 0 && ask > 0) yesPx = (bid + ask) / 2
-      else yesPx = bid || ask
-
-    } catch {}
-
-    // Fallback: 1m candle last close (use #N outcome coin format)
-    if (!yesPx) {
-      try {
-        const cs = await fetchCandles('#' + yesPairIdx, '1m', Date.now() - 5 * 60 * 1000)
-        if (cs.length) yesPx = parseFloat(cs[cs.length - 1].c)
-      } catch {}
-    }
-
-    if (!yesPx || yesPx <= 0 || yesPx >= 1) return
-
-    const noPx = 1 - yesPx
+    const px = await _ocBuildPrices(o, info)
+    if (!px) return
+    const yesPx = px[0], noPx = px[1]
 
     // Store in dedicated price map — avoids allMids race condition
-    _ocPrices[o.outcome] = { yes: yesPx, no: noPx }
+    _ocPrices[o.outcome] = { px, yes: yesPx, no: noPx }
 
     // Update DOM: YES/NO side buttons
     const updBtn = (id, px) => {
@@ -22166,16 +22200,11 @@ async function _refreshOcPrices() {
   const inSheet = document.getElementById('mobPredictBody')?.contains(grid)
   if (inSheet ? !_predictOpen : !grid?.offsetParent) return
   await Promise.all(outcomes.map(async o => {
-    const yesPairIdx = o.outcome * 10
     try {
-      const book = await info.l2Book({ coin: '#' + yesPairIdx })
-      const bid  = parseFloat(book.levels?.[0]?.[0]?.px ?? 0)
-      const ask  = parseFloat(book.levels?.[1]?.[0]?.px ?? 0)
-      if (!bid && !ask) return
-      const yesPx = bid > 0 && ask > 0 ? (bid + ask) / 2 : (bid || ask)
-      if (yesPx <= 0 || yesPx >= 1) return
-      const noPx = 1 - yesPx
-      _ocPrices[o.outcome] = { yes: yesPx, no: noPx }
+      const px = await _ocBuildPrices(o, info)
+      if (!px) return
+      const yesPx = px[0], noPx = px[1]
+      _ocPrices[o.outcome] = { px, yes: yesPx, no: noPx }
       // Keep the open card's avg-price/preview in sync with the live mid.
       if (String(o.outcome) === String(_ocExpandedId)) window.__ocUpdCalc(o.outcome)
 
@@ -22315,7 +22344,7 @@ window.__ocBotSetSide = function(side) {
 
 window.__ocBotPreview = function() {
   const c = state.ocBotCfg; if (!c) return
-  const px  = _ocPrices?.[c.outcome] ? (c.side === 0 ? _ocPrices[c.outcome].yes : _ocPrices[c.outcome].no) : 0
+  const px  = _ocSidePrice(c.outcome, c.side)
   const lbl = c.side === 0 ? c.yesLabel : c.noLabel
   const el  = document.getElementById('ocBotPxVal')
   if (el) el.textContent = px > 0 ? `${esc(lbl)} ${(px * 100).toFixed(1)}¢` : '—'
@@ -22884,8 +22913,7 @@ function _ocSyncLimitPx(id, force = false) {
   if (!force && pxEl.value) return
   const panel  = document.getElementById('oc-panel-' + id)
   const side   = parseInt(panel?.dataset.side ?? 0)
-  const prices = _ocPrices[id]
-  const mid    = prices ? (side === 0 ? prices.yes : prices.no) : 0
+  const mid    = _ocSidePrice(id, side)
   if (mid > 0) pxEl.value = (mid * 100).toFixed(1)
 }
 
@@ -22895,8 +22923,7 @@ function _ocEffPx(id) {
   const panel = document.getElementById('oc-panel-' + id)
   if (!panel) return 0
   const side   = parseInt(panel.dataset.side ?? 0)
-  const prices = _ocPrices[id]
-  const mid    = prices ? (side === 0 ? prices.yes : prices.no) : 0
+  const mid    = _ocSidePrice(id, side)
   if ((panel.dataset.otype || 'market') === 'limit') {
     const cents = parseFloat(document.getElementById('oc-px-' + id)?.value)
     if (cents > 0) return Math.min(0.999, Math.max(0.001, cents / 100))
@@ -23561,7 +23588,7 @@ function _ovOcRow(b, id) {
   const oid   = Math.floor(n / 10), side = n % 10
   const entry = total > 0 ? cost / total : 0
   const fromBook  = _ocMarkCache[b.coin] || 0
-  const fromPanel = _ocPrices?.[oid] ? (side === 0 ? _ocPrices[oid].yes : _ocPrices[oid].no) : 0
+  const fromPanel = _ocSidePrice(oid, side)
   const mark  = fromBook > 0 ? fromBook : (fromPanel > 0 ? fromPanel : entry)
   const value = total * mark
   const pnl   = (mark - entry) * total
