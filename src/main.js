@@ -6746,6 +6746,9 @@ async function loadAllAccountsDashboard() {
   // Live account state over WebSocket (all dexes → main + HIP-3, zero REST weight). The 12s
   // poll above stays as a fallback for any wallet the socket isn't delivering. Fire-and-forget.
   _startAllAcctWs(entries).catch(() => {})
+  // Keeps the persisted history store current between fans. Fire-and-forget like the one
+  // above: a socket that never connects just leaves the REST delta doing the work.
+  _startHistWs(entries).catch(() => {})
 }
 
 // Authoritative value refresh: one clearinghouseState per wallet (weight 2, pooled).
@@ -6859,6 +6862,83 @@ async function _stopAllAcctWs() {
   for (const sub of _acctWsSubs.values()) { try { await sub?.unsubscribe?.() } catch {} }
   _acctWsSubs.clear(); _acctWsLast.clear()
   if (_acctWsPaintT) { clearTimeout(_acctWsPaintT); _acctWsPaintT = null }
+  await _stopHistWs()
+}
+
+// ── LIVE HISTORY APPEND (WebSocket) ───────────────────────────────────────────
+// The persisted store removed the all-time re-walk; this keeps it CURRENT without asking.
+// HL streams both halves of the history, so a fill lands in the store the moment it
+// happens instead of waiting for a fan to go looking for it.
+//
+// Shape warning, and the reason this is not a two-line change: userFills events carry the
+// same row shape as the REST userFills response, so they merge as-is — but userFundings
+// does NOT. The socket sends flat rows ({time, coin, usdc, …}) while REST nests them under
+// `delta`. Everything downstream reads f.delta.usdc (see the all-time funding total in
+// _lbFetchResults), and `f.delta?.usdc ?? 0` scores a flat row as ZERO rather than
+// throwing — so an un-normalised append would quietly understate funding instead of
+// failing loudly. Normalise on the way in.
+const _histWsSubs = new Map()   // addr(lower) -> ISubscription[]
+
+function _histNormFunding(row) {
+  if (!row) return null
+  if (row.delta) return row   // already REST-shaped
+  return {
+    time: row.time,
+    hash: row.hash ?? '0x0',
+    delta: { type: 'funding', coin: row.coin, usdc: row.usdc, szi: row.szi, fundingRate: row.fundingRate },
+  }
+}
+
+// Merge arrivals into one wallet's stored history. Returns true only when something new
+// actually landed, so a snapshot replaying what we already hold costs no repaint.
+//
+// `ts` is deliberately NOT bumped: it gates the PORTFOLIO snapshot's freshness too, and the
+// socket does not refresh that. Marking the entry fresh here would leave a stale snapshot
+// looking current and starve the chart.
+function _histAppend(key, { fills, fundings } = {}) {
+  const cur = _maHistCache2.get(key)
+  if (!cur) return false   // nothing stored yet — let the REST path establish the baseline
+  let next = cur, changed = false
+  if (Array.isArray(fills) && fills.length) {
+    const merged = _histMerge(cur.fills, fills, _histFillKey)
+    if (merged.length !== (cur.fills?.length ?? 0)) { next = { ...next, fills: merged }; changed = true }
+  }
+  if (Array.isArray(fundings) && fundings.length) {
+    const norm   = fundings.map(_histNormFunding).filter(Boolean)
+    const merged = _histMerge(cur.funding, norm, _histFundKey)
+    if (merged.length !== (cur.funding?.length ?? 0)) { next = { ...next, funding: merged }; changed = true }
+  }
+  if (changed) _histSet(key, next)
+  return changed
+}
+
+async function _startHistWs(entries) {
+  await _stopHistWs()
+  const hidden = _maHiddenLoad()
+  for (const e of entries) {
+    if (hidden.has(e.addr)) continue
+    const addr = e.addr, key = addr.toLowerCase()
+    const subs = []
+    try {
+      subs.push(await subsClient().userFills({ user: addr }, (ev) => {
+        if (!state.isAllAccounts || !Array.isArray(ev?.fills)) return
+        if (_histAppend(key, { fills: ev.fills })) _acctWsSchedulePaint()
+      }))
+    } catch (err) { console.warn('[ws] userFills subscribe failed for', addr, err?.message) }
+    try {
+      subs.push(await subsClient().userFundings({ user: addr }, (ev) => {
+        if (!state.isAllAccounts || !Array.isArray(ev?.fundings)) return
+        if (_histAppend(key, { fundings: ev.fundings })) _acctWsSchedulePaint()
+      }))
+    } catch (err) { console.warn('[ws] userFundings subscribe failed for', addr, err?.message) }
+    if (subs.length) _histWsSubs.set(key, subs)
+  }
+}
+async function _stopHistWs() {
+  for (const subs of _histWsSubs.values()) {
+    for (const s of subs) { try { await s?.unsubscribe?.() } catch {} }
+  }
+  _histWsSubs.clear()
 }
 
 // Repaint only the value UI — the per-account cards, the equity card, and the portfolio
