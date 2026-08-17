@@ -1370,6 +1370,8 @@ window.__retryRefresh = async function(btn) {
   // Clear render caches so everything is force-redrawn on next tick
   _lastPosHash = null; _lastOrdHash = null; _lastAcctHash = null
   // A manual reload must force-fresh history too, not reuse the 8-min combined-view cache.
+  // Only the in-memory copy is dropped: the persisted store stays deliberately, so the forced
+  // refetch is a delta off what we already hold instead of the all-time walk this used to mean.
   try { _maHistCache2.clear(); _maLedgerCache.clear() } catch {}
   _updateRetryBtn('retrying')
   updateRefreshBanner()
@@ -20021,6 +20023,108 @@ const _MA_HIST_TTL2 = 480_000
 // Set after a user action (place/close/cancel) to force fresh FILLS on the next fan WITHOUT
 // discarding the cached portfolio-snapshot/perp-anchor pair — see __refreshAfterAction.
 let _maFillsStale = false
+
+// ── PERSISTENT HISTORY STORE ──────────────────────────────────────────────────
+// _maHistCache2 above is an in-memory Map, so it dies with the page. Every reload made
+// all wallets miss at once and re-walk all-time fills + funding from GENESIS (2022) —
+// paginated weight-20 calls, ~670 weight across 8 wallets, landing ~55s after open.
+// That burst was the dominant 429 cause in the client-429 telemetry.
+//
+// Backing the Map with IndexedDB fixes it twice over: history survives the reload, AND a
+// stored copy becomes the baseline for a delta fetch, so even an EXPIRED entry saves the
+// whole walk. localStorage was not an option — all-time fills across 8 wallets pass its
+// ~5MB cap, and its synchronous writes would stutter the main thread.
+//
+// Every DB call is optional: any failure (private mode, blocked storage, quota) falls
+// back to exactly today's behaviour rather than breaking the view.
+const _HIST_GENESIS = 1667260800000
+const _HIST_DB = 'hliq_hist', _HIST_STORE = 'hist', _HIST_DB_V = 1
+let _histDbPromise = null
+function _histDb() {
+  if (_histDbPromise) return _histDbPromise
+  _histDbPromise = new Promise((resolve, reject) => {
+    let rq
+    try { rq = indexedDB.open(_HIST_DB, _HIST_DB_V) } catch (e) { return reject(e) }
+    rq.onupgradeneeded = () => {
+      const db = rq.result
+      if (!db.objectStoreNames.contains(_HIST_STORE)) db.createObjectStore(_HIST_STORE)
+    }
+    rq.onsuccess = () => resolve(rq.result)
+    rq.onerror   = () => reject(rq.error)
+  }).catch(e => { _histDbPromise = null; throw e })   // let a later call retry the open
+  return _histDbPromise
+}
+function _histTx(mode, fn) {
+  return _histDb().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(_HIST_STORE, mode)
+    const rq = fn(tx.objectStore(_HIST_STORE))
+    tx.oncomplete = () => resolve(rq ? rq.result : undefined)
+    tx.onerror    = () => reject(tx.error)
+    tx.onabort    = () => reject(tx.error)
+  }))
+}
+const _histDbGet = (key)    => _histTx('readonly',  s => s.get(key)).catch(() => undefined)
+const _histDbPut = (key, v) => _histTx('readwrite', s => s.put(v, key)).catch(() => {})
+
+// Write through: memory for this tick, disk for the next page load. The put is
+// fire-and-forget — a failed write only costs a delta refetch later, never correctness.
+function _histSet(key, val) {
+  _maHistCache2.set(key, val)
+  _histDbPut(key, val)
+}
+// Pull a wallet's stored history into memory before the freshness check reads it. Costs
+// one DB read per address per session; after that the Map answers.
+async function _histEnsure(key) {
+  if (_maHistCache2.has(key)) return _maHistCache2.get(key)
+  const stored = await _histDbGet(key)
+  // Re-check: a concurrent wallet in the same fan may have filled this slot while we waited.
+  if (stored && !_maHistCache2.has(key)) _maHistCache2.set(key, stored)
+  return _maHistCache2.get(key)
+}
+// Escape hatch for debugging a suspect store.
+window.__hliqClearHist = () => {
+  _maHistCache2.clear()
+  return _histTx('readwrite', s => s.clear()).then(() => 'history store cleared').catch(e => 'failed: ' + e)
+}
+
+// Fills and funding are append-only — a trade that happened never un-happens — so with a
+// stored copy we only need what landed after the newest row we already hold. That makes the
+// fetch inherently gap-safe: the cursor is always our own high-water mark, so a device that
+// slept through fills still asks from where it left off. The small overlap covers rows
+// sharing a millisecond with that mark; the merge dedupes on the same keys the fetchers use.
+const _HIST_OVERLAP_MS = 60_000
+const _histFillKey = f => f.tid ?? `${f.time}_${f.oid}_${f.px}_${f.sz}_${f.dir}`
+const _histFundKey = f => `${f.time}_${f.delta?.coin}_${f.delta?.usdc}`
+function _histNewest(rows) {
+  let m = 0
+  for (const r of rows || []) if (r && r.time > m) m = r.time
+  return m
+}
+function _histMerge(prior, fresh, keyOf) {
+  const seen = new Set(), out = []
+  for (const row of [...(fresh || []), ...(prior || [])]) {
+    if (!row) continue
+    const k = keyOf(row)
+    if (seen.has(k)) continue
+    seen.add(k); out.push(row)
+  }
+  return out.sort((a, b) => (b.time || 0) - (a.time || 0))
+}
+function _histCursor(prior) {
+  const newest = _histNewest(prior)
+  return newest ? Math.max(_HIST_GENESIS, newest - _HIST_OVERLAP_MS) : 0
+}
+async function _histFillsFrom(addr, prior, info) {
+  const from = _histCursor(prior)
+  if (!from) return fetchAllFills(addr, { startTime: _HIST_GENESIS, info })   // nothing stored
+  return _histMerge(prior, await fetchAllFills(addr, { startTime: from, info }), _histFillKey)
+}
+async function _histFundingFrom(addr, prior, info) {
+  const from = _histCursor(prior)
+  if (!from) return fetchAllFunding(addr, _HIST_GENESIS, { info })
+  return _histMerge(prior, await fetchAllFunding(addr, from, { info }), _histFundKey)
+}
+
 async function _lbFetchResults(entries) {
   const GENESIS = 1667260800000
   const info    = new InfoClient({ transport: _transport })
@@ -20054,7 +20158,7 @@ async function _lbFetchResults(entries) {
       info.spotClearinghouseState({ user: entry.addr }).catch(() => null),
       hip3Pending.catch(() => ({ positions: [], orders: [] })),
     ])
-    const _hc = _maHistCache2.get(key)
+    const _hc = await _histEnsure(key)   // memory, else the persisted store from a past session
     let portfolio, fills, funding, _perpAtHist
     // Perp state used for BOTH the anchor and the live value. Starts as the parallel read
     // above, but on a cache miss it's re-read AFTER the portfolio snapshot (see below).
@@ -20065,20 +20169,25 @@ async function _lbFetchResults(entries) {
       // it's internally consistent, and the live perp delta already carries the close.
       ;({ portfolio, perpAtHist: _perpAtHist } = _hc)
       const [f2, fu2] = await Promise.all([
-        fetchAllFills(entry.addr, { startTime: GENESIS, info })
+        _histFillsFrom(entry.addr, _hc.fills, info)
           .catch(() => info.userFills({ user: entry.addr }).catch(() => _hc.fills ?? [])),
-        fetchAllFunding(entry.addr, GENESIS, { info }).catch(() => _hc.funding ?? []),
+        _histFundingFrom(entry.addr, _hc.funding, info).catch(() => _hc.funding ?? []),
       ])
       fills = f2; funding = fu2
-      _maHistCache2.set(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: _hc.ts })
+      _histSet(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: _hc.ts })
     } else if (_histFresh) {
       ({ portfolio, fills, funding, perpAtHist: _perpAtHist } = _hc)
     } else {
+      // The portfolio snapshot is a point-in-time value, not a log, so it is always re-read
+      // (weight 2). Fills and funding are append-only, so a stored copy — even an expired one
+      // — still spares the whole GENESIS walk; only a wallet never seen on this device pays
+      // full price, and only once. On error keep what we already had rather than dropping to
+      // an empty array, which would throw away good history over a transient failure.
       ;[portfolio, fills, funding] = await Promise.all([
         info.portfolio({ user: entry.addr }).catch(() => []),
-        fetchAllFills(entry.addr, { startTime: GENESIS, info })
-          .catch(() => info.userFills({ user: entry.addr }).catch(() => [])),
-        fetchAllFunding(entry.addr, GENESIS, { info }).catch(() => []),
+        _histFillsFrom(entry.addr, _hc?.fills, info)
+          .catch(() => info.userFills({ user: entry.addr }).catch(() => _hc?.fills ?? [])),
+        _histFundingFrom(entry.addr, _hc?.funding, info).catch(() => _hc?.funding ?? []),
       ])
       // Perp account value AT the moment this portfolio snapshot was taken — the anchor that
       // keeps the (now-cached) snapshot time-aligned with the live perp delta below.
@@ -20092,7 +20201,9 @@ async function _lbFetchResults(entries) {
       // only on a cache miss.
       try { csNow = await info.clearinghouseState({ user: entry.addr }) } catch { csNow = cs }
       _perpAtHist = parseFloat(csNow.marginSummary?.accountValue ?? 0)
-      _maHistCache2.set(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: Date.now() })
+      // Snapshot and anchor are written together, never one without the other — that pairing
+      // is what the double-counting note above depends on, and it must hold on disk too.
+      _histSet(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: Date.now() })
     }
     const positions        = csNow.assetPositions ?? []
     const allTimePort      = (portfolio ?? []).find(p => p[0] === 'allTime')
