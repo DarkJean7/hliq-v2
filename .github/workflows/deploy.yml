@@ -35,14 +35,23 @@ jobs:
 
       # server.js is a DIFFERENT pm2 process (hliq-strat — bots and strategies), not the
       # frontend. Ship it every deploy, but bounce that process only when the file really
-      # changed: a UI-only deploy must never interrupt a running strategy. `rsync -i` prints
-      # one "<f…" line per file it actually transferred, so no such line means no change.
+      # changed: a UI-only deploy must never interrupt a running strategy.
+      #
+      # -c (checksum) is load-bearing, not a nicety. rsync's default quick-check compares
+      # size + mtime, and actions/checkout rewrites every file with a fresh mtime on each
+      # run — so an untouched server.js looked modified and restarted the bots on EVERY
+      # deploy. Comparing content instead makes "unchanged" actually mean unchanged.
+      #
+      # rsync -i prints one itemized line per file it acted on. The first character is the
+      # direction ('<' pushing to a remote, '>' on a local copy) and it only appears when
+      # data is really transferred; an attributes-only touch is reported as '.f..t…', which
+      # must NOT count as a change.
       - name: Sync strategy server
         id: syncstrat
         run: |
-          out=$(rsync -az -i server.js "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/server.js")
-          echo "${out:-(no changes)}"
-          if echo "$out" | grep -q '^<f'; then
+          out=$(rsync -azc -i server.js "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/server.js")
+          echo "${out:-(unchanged)}"
+          if echo "$out" | grep -qE '^[<>]f'; then
             echo "changed=yes" >> "$GITHUB_OUTPUT"
           else
             echo "changed=no"  >> "$GITHUB_OUTPUT"
