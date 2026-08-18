@@ -8496,13 +8496,39 @@ function _attrSeries(winMs) {
 function _attrEquityRange(windowStart, winMs) {
   const hist = _attrSeries(winMs)
   if (!hist.length) return { start: null, now: NaN, coarse: false }
-  const nowTs = hist.at(-1)[0], now = parseFloat(hist.at(-1)[1])
+
+  // The "now" edge is LIVE equity — the same number the balance card shows — not the last
+  // sample in HL's history. HL samples even its finest ('day') series only ~every 2.3h, so
+  // anything that moved since that sample was invisible here: the header measured
+  // live − 24h ago while this measured lastSample − 24h ago, and the two disagreed by the
+  // entire recent move (a −$211 day reported as −$2.80). It also quietly corrupted the
+  // reconciliation, because `attributed` runs right up to now while this stopped hours short,
+  // so the whole gap was dumped into the "Other" residual.
+  //
+  // In the combined view read _comboEqLast rather than re-running _comboEqFilter: that filter
+  // mutates its own state machine, and calling it a second time per paint would let the header
+  // accept a spike sooner than it should.
+  let now = NaN, nowTs = Date.now()
+  try {
+    const live = state.isAllAccounts
+      ? _comboEqLast
+      : computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids)?.accountValue
+    if (Number.isFinite(live) && live > 0) now = live
+  } catch {}
+  if (!Number.isFinite(now)) { now = parseFloat(hist.at(-1)[1]); nowTs = hist.at(-1)[0] }
+
   if (windowStart == null) return { start: parseFloat(hist[0][1]), now, coarse: false }  // ALL → first point
   let v = null, vTs = null
   for (const [ts, val] of hist) { if (ts <= windowStart) { v = parseFloat(val); vTs = ts } else break }
   const start   = v != null ? v : parseFloat(hist[0][1])
   const startTs = vTs != null ? vTs : hist[0][0]
   // Sampling is too coarse when either edge is off by more than one whole window.
+  //
+  // Known gap, deliberately left alone: this only catches a start sample that is too OLD. A
+  // series that BEGINS after the window start measures a shorter span than the label claims
+  // and is not flagged — but startTs can never exceed now, so no symmetric distance test can
+  // catch it either; it needs a "covered fraction" rule, which would also start suppressing
+  // the figure for genuinely new accounts. Separate decision, not folded into this fix.
   const coarse = (windowStart - startTs) > winMs || (Date.now() - nowTs) > winMs
   return { start, now, coarse }
 }
