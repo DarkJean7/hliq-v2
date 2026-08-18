@@ -25,8 +25,25 @@ jobs:
       - name: Trust server host key
         run: ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
+      # Build HERE, not on the server. The server ran `npm run build` in place, and vite
+      # defaults to emptyOutDir:true — so it DELETED the live dist/ before writing the new
+      # one, with serve-prod.js serving out of that same directory. A build that died midway
+      # left the site serving a half-written bundle, which is what an OOM kill did: vite needs
+      # well over a gigabyte, the box also runs hliq-strat and hliq-notify, and the kernel
+      # killed the build at exit 137. The next attempt spent minutes swapping instead of
+      # building. Running a multi-gigabyte build next to live trading bots risks the OOM
+      # killer choosing one of THEM, so the build belongs on the runner, which has the memory
+      # to spare and nothing to lose.
+      - name: Install and build
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
       - name: Sync files to server
         run: |
+          # --delay-updates stages every file and renames them in at the end, so the served
+          # dist/ is never a mix of old and new while the copy is in flight.
+          rsync -avz --delete --delay-updates dist/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/dist/"
           rsync -avz --delete src/     "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/src/"
           rsync -avz --delete public/  "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/public/"
           rsync -avz index.html        "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/index.html"
@@ -58,8 +75,8 @@ jobs:
             echo "changed=no"  >> "$GITHUB_OUTPUT"
           fi
 
-      # pm2 runs serve-prod.js, which serves dist/ — source changes have no effect until the
-      # bundle is rebuilt on the server.
+      # pm2 runs serve-prod.js, which serves the dist/ shipped by the sync step above — the
+      # server no longer builds anything.
       #
       # `pm2 reload`, not `restart`: restart stops the process before starting its replacement,
       # so every deploy left a 1–2s window with nothing on 5175 and nginx served its own 502.
@@ -69,12 +86,11 @@ jobs:
       # replaced once. That single migration is the last deploy that drops requests; every
       # deploy after it takes the reload path. Checked on substring so a pm2 version that
       # words exec_mode differently cannot silently pick the destructive branch.
-      - name: Build and reload app
+      - name: Reload app
         run: |
           ssh "$DEPLOY_USER@$DEPLOY_HOST" bash -se <<'REMOTE'
           set -e
           cd /root/hliq-v2
-          npm run build
           mode=$(pm2 jlist | python3 -c "import json,sys; a=[p for p in json.load(sys.stdin) if p.get('name')=='hliq-v2']; print(a[0]['pm2_env'].get('exec_mode','') if a else 'missing')")
           echo "hliq-v2 current exec_mode: ${mode:-unknown}"
           case "$mode" in
