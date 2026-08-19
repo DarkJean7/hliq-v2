@@ -21847,7 +21847,12 @@ function _ocSidePrice(outcomeId, side) {
 }
 
 // Mid for one outcome side from its L2 book, falling back to the last 1m close.
-async function _ocSideMid(pairIdx, info) {
+// `candleFallback` is OFF by default, and that default is load-bearing. _refreshOcPrices runs
+// every 5 SECONDS; the code it replaced made exactly one l2Book call per market and bailed on
+// an empty book. Routing that poll through a helper that also fetches candles on a thin book
+// doubled the request count of the hottest loop in the app and re-triggered HL's rate limit.
+// The fallback belongs only to the one-shot initial load, which is where it started.
+async function _ocSideMid(pairIdx, info, candleFallback = false) {
   try {
     const book = await info.l2Book({ coin: '#' + pairIdx })
     const bid  = parseFloat(book.levels?.[0]?.[0]?.px ?? 0)
@@ -21855,6 +21860,7 @@ async function _ocSideMid(pairIdx, info) {
     const mid  = bid > 0 && ask > 0 ? (bid + ask) / 2 : (bid || ask)
     if (mid > 0 && mid < 1) return mid
   } catch {}
+  if (!candleFallback) return 0
   try {
     const cs = await fetchCandles('#' + pairIdx, '1m', Date.now() - 5 * 60 * 1000)
     const c  = cs.length ? parseFloat(cs[cs.length - 1].c) : 0
@@ -21870,24 +21876,26 @@ async function _ocSideMid(pairIdx, info) {
 // weight of the busiest loop in the app for markets whose second price is already implied.
 // Three or more sides have no such identity (Below + Range + Above sum to 1, so no side is
 // 1 - another), so those are fetched per side. Any side we cannot price stays 0.
-async function _ocBuildPrices(o, info) {
+async function _ocBuildPrices(o, info, candleFallback = false) {
   const base   = o.outcome * 10
   const nSides = Math.max(2, o.sideSpecs?.length ?? 2)
   if (nSides === 2) {
-    const p0 = await _ocSideMid(base, info)
+    const p0 = await _ocSideMid(base, info, candleFallback)
     return p0 > 0 && p0 < 1 ? [p0, 1 - p0] : null
   }
   const px = await hlPool(
     Array.from({ length: nSides }, (_, i) => base + i),
-    idx => _ocSideMid(idx, info),
+    idx => _ocSideMid(idx, info, candleFallback),
   )
   return px.some(p => p > 0) ? px.map(p => (p > 0 && p < 1 ? p : 0)) : null
 }
 
 // Fetch YES price via L2 book (#N coin format). NO = 1 - YES for binary markets.
+// One-shot initial load, so it may fall back to candles when a book is empty — unlike the 5s
+// poll, which must stay at one request per market.
 async function _loadOcPrices(outcomes, info) {
   await Promise.all(outcomes.map(async o => {
-    const px = await _ocBuildPrices(o, info)
+    const px = await _ocBuildPrices(o, info, true)
     if (!px) return
     const yesPx = px[0], noPx = px[1]
 
