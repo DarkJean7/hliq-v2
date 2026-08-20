@@ -3060,6 +3060,24 @@ function _selectedAcctAvail() {
 // Donut of how the account's margin is split across open positions: each asset's slice is
 // sized by the margin backing it. Grouped by coin, so the same asset held on several accounts
 // (combined view) reads as one allocation.
+// Free margin = USDC that is not backing any position: HL's withdrawable (perp side)
+// plus any spot USDC that isn't on hold. This is the same figure computeAcctStats
+// reports as `withdrawable`, so the wheel agrees with the Available readout instead of
+// inventing a second number for the same thing. Works in the combined view too — the
+// synthetic perpState carries a summed `withdrawable`.
+function _freeMarginUsd() {
+  const perpFree = parseFloat(state.perpState?.withdrawable ?? 0)
+  const usdc     = (state.spotState?.balances ?? []).find(b => b.coin === 'USDC')
+  const spotFree = usdc ? Math.max(0, parseFloat(usdc.total ?? 0) - parseFloat(usdc.hold ?? 0)) : 0
+  return Math.max(0, perpFree + spotFree)
+}
+
+// Free margin is drawn in a neutral tone rather than a hashed coin colour so it reads as
+// "not deployed" at a glance instead of looking like one more asset.
+const _ALLOC_FREE_COLOR = 'var(--muted)'
+const _allocColor = s => s.isFree ? _ALLOC_FREE_COLOR : _coinColor(s.coin)
+const _allocLabel = s => s.isFree ? _T('Free margin', 'Margen libre') : _ocCoinLabel(s.coin)
+
 function _allocationSlices() {
   const byCoin = new Map()
   for (const ap of (state.perpState?.assetPositions ?? [])) {
@@ -3082,8 +3100,19 @@ function _allocationSlices() {
     byCoin.set(key, cur)
   }
   const slices = [...byCoin.values()].sort((a, b) => b.margin - a.margin)
-  const total  = slices.reduce((s, x) => s + x.margin, 0)
-  return { slices, total }
+  const used   = slices.reduce((s, x) => s + x.margin, 0)
+  const free   = _freeMarginUsd()
+  // Ride free margin along as its own slice so the ring describes the whole account and
+  // not just the deployed part — an account sitting mostly in cash used to draw a full
+  // ring and read as fully committed. Pinned last rather than sorted in: it is not a
+  // position, and keeping it at the end stops it reshuffling the assets as cash moves.
+  if (free > 0) slices.push({
+    coin: 'USDC', isFree: true, margin: free,
+    notional: 0, uPnl: 0, longs: 0, shorts: 0, accts: new Set(),
+  })
+  // hasPositions gates the empty state: free margin on its own must not turn "no open
+  // positions" into a ring that is 100% one grey slice.
+  return { slices, total: used + free, used, free, hasPositions: byCoin.size > 0 }
 }
 
 // Hover/tap state for the allocation wheel: the slice list plus the default centre readout to
@@ -3104,15 +3133,20 @@ window.__allocHover = function(i) {
     r.style.background = r.dataset.allocRow === String(i) ? 'var(--panel-2)' : ''
   })
   const c = document.getElementById('allocCenter')
+  // Cash has no notional and no PnL — rendering "$0.00 position value / +$0.00" for it
+  // would read as a broken position rather than as uncommitted margin.
+  const detail = s.isFree
+    ? `<div style="font-size:12px;color:var(--muted)">${_T('Available to trade', 'Disponible para operar')}</div>`
+    : `<div style="font-size:12px;color:var(--muted)">${_prv(fmtUSD(s.notional, 2))} position value</div>
+       <div style="font-size:12px;font-weight:600;margin-top:1px" class="${s.uPnl >= 0 ? 'pos' : 'neg'}">${s.uPnl >= 0 ? '+' : '-'}${fmtUSD(Math.abs(s.uPnl))}</div>`
   if (c) c.innerHTML = `
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
-      <span style="width:9px;height:9px;border-radius:3px;background:${_coinColor(s.coin)}"></span>
-      <span style="font-size:13px;font-weight:700;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_ocCoinLabel(s.coin))}</span>
+      <span style="width:9px;height:9px;border-radius:3px;background:${_allocColor(s)}"></span>
+      <span style="font-size:13px;font-weight:700;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_allocLabel(s))}</span>
     </div>
-    <div style="font-size:26px;font-weight:800;font-family:var(--font-mono);line-height:1.15">$${_prv(fmtUSD(s.margin, 2))}</div>
+    <div style="font-size:26px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv(fmtUSD(s.margin, 2))}</div>
     <div style="font-size:12px;color:var(--muted)">${s.pct.toFixed(1)}% of margin</div>
-    <div style="font-size:12px;color:var(--muted)">$${_prv(fmtUSD(s.notional, 2))} position value</div>
-    <div style="font-size:12px;font-weight:600;margin-top:1px" class="${s.uPnl >= 0 ? 'pos' : 'neg'}">${s.uPnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(s.uPnl))}</div>`
+    ${detail}`
 }
 
 // Back to the totals view.
@@ -3129,8 +3163,8 @@ window.__allocLeave = function() {
 function _mobVRenderAllocation(el) {
   if (_allocView === 'movers') { _mobVRenderAttribution(el); return }
   const header = _allocViewHeader()
-  const { slices, total } = _allocationSlices()
-  if (!slices.length || total <= 0) {
+  const { slices, total, used, free, hasPositions } = _allocationSlices()
+  if (!hasPositions || !slices.length || total <= 0) {
     _allocSlices = []
     el.innerHTML = `${header}<div class="mob-v-empty">${_T('No open positions to allocate.', 'Sin posiciones abiertas para asignar.')}</div>`
     return
@@ -3160,7 +3194,7 @@ function _mobVRenderAllocation(el) {
   })
   const arcs = geo.map((g, i) =>
     `<circle data-alloc-arc="${i}" cx="${CX}" cy="${CX}" r="${R}" fill="none"
-      stroke="${_coinColor(g.s.coin)}" stroke-width="${_ALLOC_SW}"
+      stroke="${_allocColor(g.s)}" stroke-width="${_ALLOC_SW}"
       stroke-dasharray="${g.dash}" stroke-dashoffset="${g.off}"
       transform="rotate(-90 ${CX} ${CX})" stroke-linecap="butt"
       style="pointer-events:none;transition:stroke-width .12s ease,opacity .12s ease"></circle>`
@@ -3174,10 +3208,14 @@ function _mobVRenderAllocation(el) {
   ).join('')
 
   const totalNotional = slices.reduce((s, x) => s + x.notional, 0)
+  const assetCount    = slices.filter(x => !x.isFree).length
+  // The ring totals deployed + free now, so the headline has to be that same total or the
+  // centre and the ring would be describing two different things. Split spelled out under it.
   _allocCenterHtml = `
-    <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Margin used</div>
-    <div style="font-size:28px;font-weight:800;font-family:var(--font-mono);line-height:1.15">$${_prv(fmtUSD(total, 2))}</div>
-    <div style="font-size:12px;color:var(--muted)">${slices.length} asset${slices.length === 1 ? '' : 's'} · $${_prv(fmtUSD(totalNotional))} position value</div>`
+    <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${free > 0 ? _T('Total margin', 'Margen total') : _T('Margin used', 'Margen usado')}</div>
+    <div style="font-size:28px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv(fmtUSD(total, 2))}</div>
+    ${free > 0 ? `<div style="font-size:12px;color:var(--muted)">${_prv(fmtUSD(used))} ${_T('deployed', 'desplegado')} · ${_prv(fmtUSD(free))} ${_T('free', 'libre')}</div>` : ''}
+    <div style="font-size:12px;color:var(--muted)">${assetCount} asset${assetCount === 1 ? '' : 's'} · ${_prv(fmtUSD(totalNotional))} position value</div>`
 
   const wheel = `
     <div style="display:flex;justify-content:center;padding:18px 12px 6px">
@@ -3200,23 +3238,31 @@ function _mobVRenderAllocation(el) {
                 : s.shorts ? `${s.shorts > 1 ? s.shorts + ' ' : ''}Short`
                 : `${s.longs > 1 ? s.longs + ' ' : ''}Long`
     const acctTxt = s.accts.size ? ` · <span style="color:var(--accent)">${esc([...s.accts].join(', '))}</span>` : ''
+    const sub   = s.isFree ? _T('Available to trade', 'Disponible para operar')
+                           : `${sides} · Value ${_prv(fmtUSD(s.notional, 2))}${acctTxt}`
+    // No PnL for cash — the right-hand column is share-of-margin only.
+    const right = s.isFree ? `<div class="mob-v-row-pct" style="color:var(--muted)">${s.pct.toFixed(1)}%</div>`
+                           : `<div class="mob-v-row-pct ${cls}">${s.pct.toFixed(1)}% · ${pnl >= 0 ? '+' : '-'}${fmtUSD(Math.abs(pnl))}</div>`
     // Rows drive the same highlight — the arcs are thin to hit accurately on a phone.
     return `<div class="mob-v-row" data-alloc-row="${i}" style="cursor:pointer;transition:background .12s ease">
-      <span style="width:10px;height:10px;border-radius:3px;background:${_coinColor(s.coin)};flex-shrink:0;margin-right:10px"></span>
+      <span style="width:10px;height:10px;border-radius:3px;background:${_allocColor(s)};flex-shrink:0;margin-right:10px"></span>
       <div style="width:28px;height:28px;border-radius:50%;overflow:hidden;background:var(--panel-2);flex-shrink:0;margin-right:10px">${_coinIconHtml(s.coin)}</div>
       <div class="mob-v-row-info">
-        <div class="mob-v-row-name">${esc(_ocCoinLabel(s.coin))}</div>
-        <div class="mob-v-row-sub">${sides} · Value $${_prv(fmtUSD(s.notional, 2))}${acctTxt}</div>
+        <div class="mob-v-row-name">${esc(_allocLabel(s))}</div>
+        <div class="mob-v-row-sub">${sub}</div>
       </div>
       <div class="mob-v-row-right">
-        <div class="mob-v-row-val">$${_prv(fmtUSD(s.margin, 2))}</div>
-        <div class="mob-v-row-pct ${cls}">${s.pct.toFixed(1)}% · ${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}</div>
+        <div class="mob-v-row-val">${_prv(fmtUSD(s.margin, 2))}</div>
+        ${right}
       </div>
     </div>`
   }).join('')
 
   el.innerHTML = `${header}${wheel}
-    <div style="padding:10px 16px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">Breakdown</div>
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:10px 16px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">
+      <span>${_T('Breakdown', 'Desglose')}</span>
+      <span>${_T('Margin', 'Margen')}</span>
+    </div>
     <div style="padding-bottom:calc(90px + env(safe-area-inset-bottom))">${rows}</div>`
 
   // Wire hover/tap in JS rather than inline attributes: onmouseenter/onmouseleave are NOT SVG
