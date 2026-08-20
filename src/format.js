@@ -117,6 +117,14 @@ export function esc(s) {
 /**
  * Derive clean fill records from raw userFills response.
  */
+// Stable identity for a fill, for deduping. HL returns hash = 0x0…0 for a large share
+// of fills, so hash can NOT be used as a key; tid is unique per fill, with an oid-based
+// composite as the last resort. fetchAllFills dedups its pages with this same formula —
+// keep the two in sync so a fill can't be counted once by one path and twice by the other.
+export function fillKey(f) {
+  return f.tid ?? `${f.time}_${f.oid}_${f.px}_${f.sz}_${f.dir}`
+}
+
 export function parseFills(rawFills) {
   return rawFills.map(f => ({
     time:      f.time,

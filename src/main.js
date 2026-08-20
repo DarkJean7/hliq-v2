@@ -202,7 +202,7 @@ import {
   paperDeposit, paperWithdraw, paperLedger, paperPnl, paperDeposited, setPaperAssets, paperSpotValue,
   paperSettleOutcomes, paperFundingHistory, paperAccrueFunding, setPaperFundingRates, PAPER_COSTS,
 } from './paper.js'
-import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding } from './format.js'
+import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey } from './format.js'
 import { ES_DICT } from './i18n-es.js'
 
 /**
@@ -877,7 +877,9 @@ async function loadDashboard() {
   // Point the wallet layer at this account so getMainSigner()/isMainWalletConnected()
   // resolve to the wallet that controls IT, not to whichever connected last.
   setActiveWallet(addr)
-  resetLiveAccountValue()   // don't carry the previous account's value into this one
+  // Pass addr so the cold-start fallback seeds from this account's last known good
+  // value instead of the double-counted perp+spot sum (which spiked the card on open).
+  resetLiveAccountValue(addr)   // don't carry the previous account's value into this one
 
   // Seed state with safe empty defaults so renders don't crash before data arrives
   state = {
@@ -1711,23 +1713,32 @@ async function refreshLive(force = false) {
     // transfer — and `_lastPerpCash` deliberately does NOT advance, so the next
     // fills tick compares against the right baseline and sees every fill in between.
     if (_fillsTick) {
-      const _uPnl    = (perpState.assetPositions ?? []).reduce((s, p) => s + parseFloat(p.position?.unrealizedPnl ?? 0), 0)
+      // marginSummary.accountValue is MAIN-DEX ONLY, but assetPositions has HIP-3
+      // positions merged into it (see fetchClearinghouseState). Summing uPnL across
+      // both subtracts HIP-3 unrealized from a main-only equity figure, so ordinary
+      // HIP-3 price drift read as a "transfer" and nudged the anchor every fills
+      // tick. Count main-dex positions only, matching the scope of _perpVal.
+      const _uPnl    = (perpState.assetPositions ?? [])
+        .filter(p => !String(p.position?.coin ?? '').includes(':'))
+        .reduce((s, p) => s + parseFloat(p.position?.unrealizedPnl ?? 0), 0)
       const _perpVal = parseFloat(perpState.marginSummary?.accountValue ?? 0)
       const _perpCash = _perpVal - _uPnl
       if (_lastPerpCash != null && Math.abs(_perpCash - _lastPerpCash) > 0.01) {
-        // The only LEGIT account-value change on a tick is realized PnL − fees from any
-        // new fills. Anything beyond that — isolated margin moving into/out of a bucket,
-        // a spot↔perp transfer, or HL transiently mis-reporting equity right after an
-        // order — is a reshuffle that must NOT move the displayed value. Shift the anchor
-        // by that spurious part so opening/editing/closing a position doesn't spike.
-        const _legit    = newRawFills.reduce((s, f) => s + parseFloat(f.closedPnl ?? 0) - parseFloat(f.fee ?? 0), 0)
-        const _spurious = (_perpCash - _lastPerpCash) - _legit
-        if (Math.abs(_spurious) > 0.01 && state.portfolio && state.portfolio._perpAnchor != null) {
-          state.portfolio._perpAnchor += _spurious
-        }
-        // Re-baseline exactly from HL in the background. On a fill the block below already
-        // refetches the portfolio, so only do it here for the no-fill (transfer) case.
+        // Reconcile ONLY on ticks with no fills — that's a genuine transfer/deposit.
+        // On a tick that HAD fills, the difference is dominated by ordinary trading
+        // noise: uPnL is marked at mark price while closedPnl realizes at fill price,
+        // plus funding, and fees charged in HYPE rather than USDC. Shifting the anchor
+        // by that noise is what spiked the value on every close — it moved the number,
+        // then the authoritative refetch below yanked it back a second later. Fills
+        // already trigger that refetch, which re-baselines snapshot AND anchor exactly
+        // (absorbing any real transfer landing on the same tick), so leave the anchor
+        // alone and let it settle. The value then stays continuous across a close.
         if (newRawFills.length === 0) {
+          const _spurious = _perpCash - _lastPerpCash
+          if (Math.abs(_spurious) > 0.01 && state.portfolio && state.portfolio._perpAnchor != null) {
+            state.portfolio._perpAnchor += _spurious
+          }
+          // Re-baseline exactly from HL in the background.
           const _a = state.addr
           info.portfolio({ user: _a }).catch(() => null).then(p => {
             if (p && state.addr === _a) { state.portfolio = _anchorPortfolio(p, state.perpState); renderAccountSection() }
@@ -1770,7 +1781,13 @@ async function refreshLive(force = false) {
     // Merge new fills if any arrived (null = fills weren't fetched this tick)
     if (newRawFills && newRawFills.length > 0) {
       const newFills = parseFills(newRawFills).map(f => ({ ...f, coin: hip3Rename(f.coin) }))
-      state.fills = [...newFills, ...state.fills]
+      // userFillsByTime is keyed on a timestamp and many fills share the same ms, so a
+      // boundary re-serve can hand back a fill we already hold. Appending it blind would
+      // double-count its closedPnl and fee in computeAcctStats — inflating realized and
+      // net PnL permanently, since nothing later re-derives state.fills from scratch.
+      const _have  = new Set(state.fills.map(fillKey))
+      const _fresh = newFills.filter(f => !_have.has(fillKey(f)))
+      state.fills = [..._fresh, ...state.fills]
       computeLossStreak(state.fills)
       _refreshVisitedSection('trades')
       if (_activeTab === 'tokens') renderMarkets({ fills: state.fills, allMids, perpState })

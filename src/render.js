@@ -188,18 +188,50 @@ function liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal) {
     // `perp + spot` double-counts on a unified account (the USDC balance already
     // holds perp equity) — measured $69–$237 too high on real wallets. Falling back
     // to it mid-session is what made the value spike and snap back, so prefer the
-    // last good reading and use the sum only when there has never been one.
+    // last good reading.
+    //
+    // On a COLD START there is no in-memory reading yet: the account card paints in
+    // phase 1, but the portfolio snapshot only lands in phase 2b, so every app open
+    // showed the double-counted sum for a second or two before settling. Seed from
+    // the value persisted for this address last session instead, and if even that is
+    // missing fall back to perp equity alone — low rather than inflated, since an
+    // over-reported balance is the one that misleads.
     if (_lastGoodAcctVal != null) return _lastGoodAcctVal
-    return perpAcctVal + spotUSDCTotal
+    return perpAcctVal
   }
   const anchor = portfolio?._perpAnchor
   const val = anchor != null ? snap + (perpAcctVal - anchor) : snap
   _lastGoodAcctVal = val
+  _persistAcctVal(val)
   return val
 }
 
+const _acctKey = a => 'hliq_lastacct_' + String(a || '').toLowerCase()
+let _acctAddr = null
+let _acctAt   = 0
+
+// Throttled so a 5s refresh loop isn't writing localStorage on every tick.
+function _persistAcctVal(val) {
+  if (!_acctAddr || !Number.isFinite(val)) return
+  const now = Date.now()
+  if (now - _acctAt < 10000) return
+  _acctAt = now
+  try { localStorage.setItem(_acctKey(_acctAddr), String(val)) } catch {}
+}
+
 // A different account is being shown — drop the cached value so it can't leak across.
-export function resetLiveAccountValue() { _lastGoodAcctVal = null }
+// Pass the address being loaded to seed the cold-start fallback from its last known
+// good value; called with no address (paper, combined view) it just clears.
+export function resetLiveAccountValue(addr = null) {
+  _lastGoodAcctVal = null
+  _acctAddr = addr
+  _acctAt   = 0
+  if (!addr) return
+  try {
+    const c = parseFloat(localStorage.getItem(_acctKey(addr)))
+    if (Number.isFinite(c) && c > 0) _lastGoodAcctVal = c
+  } catch {}
+}
 
 // ─── ACCOUNT STATS ───────────────────────────────────────────────────────────
 export function computeAcctStats(perpState, spotState, fills, portfolio = [], funding = [], allMids = {}) {
