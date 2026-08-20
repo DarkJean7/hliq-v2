@@ -17,12 +17,15 @@
  *        perp → spot, then market-buy (IOC) the accumulation token.
  *
  * Cursor + buffer persist so a deploy/reboot --resume can't re-skim old fills.
- * A FRESH arm (no --resume) starts the cursor at "now" and the buffer at 0 — i.e.
- * deactivating discards any sub-threshold buffer (USDC just stays in the perp acct).
+ * A FRESH arm (no --resume) restarts the CURSOR at "now" so history is never
+ * re-skimmed, but CARRIES the buffer over: it is profit already skimmed, and
+ * discarding it meant editing any setting silently reset progress toward the
+ * threshold. Pass --reset-buffer to deliberately start the buffer at $0.
  *
  * Usage:
  *   node strategies/accumulator.js --address 0xMASTER \
  *     --asset HYPE --cut-pct 10 --threshold 15 [--max-daily 0] [--dry-run]
+ *     [--reset-buffer]
  */
 
 import { ExchangeClient, InfoClient, HttpTransport } from '@nktkas/hyperliquid'
@@ -45,6 +48,7 @@ const { values: args } = parseArgs({
     interval:    { type: 'string', default: '60'  },   // scan cycle, seconds
     'dry-run':   { type: 'boolean', default: false },
     resume:      { type: 'boolean', default: false },  // restore persisted cursor + buffer
+    'reset-buffer': { type: 'boolean', default: false }, // fresh arm: also throw away the buffer
   },
   allowPositionals: false,
   strict: false,   // tolerate unknown flags from older UIs
@@ -61,6 +65,7 @@ const MAX_DAILY = Math.max(0, parseFloat(args['max-daily']) || 0)
 const CHECK_MS  = Math.max(15, parseInt(args.interval) || 60) * 1000
 const DRY_RUN   = !!args['dry-run']
 const RESUME    = !!args.resume
+const RESET_BUFFER = !!args['reset-buffer']
 // HL rejects spot orders below $10 notional. After the 0.3% fee headroom and the
 // size round-DOWN (one tick can be ~$0.60 on HYPE), a $10 buffer produces a ~$9.4
 // order that HL bounces. $11 is the smallest buffer that reliably clears $10 — this
@@ -122,8 +127,8 @@ function roundSz(n, szDecimals = 6) {
 
 // ─── STATE PERSISTENCE ──────────────────────────────────────────────────────────
 // Cursor + buffer survive restarts so an auto-resume (deploy/reboot) can't re-scan
-// old fills and double-skim. Keyed by master+asset. A fresh arm (no --resume) clears
-// the key, restarting the cursor at "now" — which discards any sub-threshold buffer.
+// old fills and double-skim. Keyed by master+asset. A fresh arm (no --resume) resets
+// the cursor to "now" but keeps the buffer; --reset-buffer clears the key outright.
 const STATE_FILE = path.join(process.cwd(), '.accumulator-state.json')
 function _stateKey() { return `${(QUERY_ADDR || '').toLowerCase()}:${ASSET_SYM}` }
 function _readAllState() { try { return JSON.parse(readFileSync(STATE_FILE, 'utf8')) } catch { return {} } }
@@ -297,8 +302,27 @@ async function tick() {
       daySkimmed    = parseFloat(st.daySkimmed) || 0
       log('RESUME', `Restored — cursor ${new Date(lastFillScan).toISOString()} | buffer $${toBuyUsd.toFixed(2)} | lifetime ${lifetimeQty} ${ASSET_SYM}`)
     }
+  } else if (RESET_BUFFER) {
+    clearState()                 // explicit reset — throw the buffer away
+    lastFillScan = Date.now()
+    saveState()
+    log('RESET', 'Buffer reset to $0.00 (--reset-buffer)')
   } else {
-    clearState()                 // fresh arm — discard any prior buffer
+    // A fresh arm must never re-skim history, so the cursor still starts at "now".
+    // The BUFFER is different: it is money already skimmed out of realized PnL, and
+    // wiping it meant that editing any setting — cut %, threshold, dry-run — silently
+    // reset progress toward the threshold. Carry it (and the lifetime totals) across
+    // the re-arm and reset only the cursor. Pass --reset-buffer to start from zero.
+    const st = loadState()
+    if (st) {
+      toBuyUsd      = parseFloat(st.toBuyUsd) || 0
+      lifetimeSpent = parseFloat(st.lifetimeSpent) || 0
+      lifetimeQty   = parseFloat(st.lifetimeQty) || 0
+      // Only carry today's skim total, so the daily cap can't be bypassed by re-arming
+      // — but a re-arm tomorrow still starts the day clean.
+      if (st.dayKey === _today()) { dayKey = st.dayKey; daySkimmed = parseFloat(st.daySkimmed) || 0 }
+      if (toBuyUsd > 0) log('KEEP', `Carried buffer $${toBuyUsd.toFixed(2)} over from the previous arm — cursor reset to now`)
+    }
     lastFillScan = Date.now()    // only count profit from now forward
     saveState()
   }
