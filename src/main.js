@@ -16444,6 +16444,14 @@ function _mobExpandStrat(type) {
   if (type === 'grid' && _mobExpandedStrat === 'grid' && !_mobEditing) {
     setTimeout(() => _applyGridDefaults('m-grid-coin', 'm-grid-lower', 'm-grid-upper'), 0)
   }
+  // Profit Stack is one-per-account, so opening its card while one is running can only
+  // mean editing that one. Enter edit mode automatically — otherwise the card shows a
+  // "▶ Run" button that the server rejects with "already running", which is what made
+  // changing a setting mid-run look like it silently did nothing.
+  if (type === 'accumulator' && _mobExpandedStrat === 'accumulator' && !_mobEditing
+      && serverStatus?._configs?.['accumulator:']) {
+    setTimeout(() => _mobEditStratInstance('accumulator', ''), 0)
+  }
 }
 
 // ─── EDIT A RUNNING BOT'S CONFIG IN-PLACE ───────────────────────────────────────
@@ -16466,7 +16474,30 @@ function _mobEditStratInstance(type, instance) {
   const cfg = serverStatus?._configs?.[`${type}:${instance}`]
   if (!cfg) { alert('Config not available yet — wait a second and try again.'); return }
   const p = _parseStratArgs(cfg.args)
-  if (type === 'grid') _mobEditGridInstance(instance, p)
+  if (type === 'grid')             _mobEditGridInstance(instance, p)
+  else if (type === 'accumulator') _mobEditAccumInstance(instance, p)
+}
+
+// Profit Stack edit. Without this the card had no edit path at all: expanding it and
+// hitting the button ran runStrategyMob(), which the server rejects with "already
+// running" — so changing a setting mid-run appeared to do nothing. One instance per
+// account, so `instance` is always ''.
+function _mobEditAccumInstance(instance, p) {
+  // Toggle state must be set BEFORE the card renders (it drives the field HTML), same
+  // rule as the grid editor.
+  _mobAccumDryRun   = !!p['dry-run']
+  _mobEditing       = { type: 'accumulator', instance }
+  _mobExpandedStrat = 'accumulator'
+  const el = document.getElementById('mobVContent')
+  if (el) _mobVRenderStrategies(el)
+  // Inputs exist only after that render — fill them next tick.
+  setTimeout(() => {
+    const set = (id, v) => { const e = document.getElementById(id); if (e && v != null && v !== true) e.value = v }
+    set('m-accum-asset',     p.asset)
+    set('m-accum-cut',       p['cut-pct'])
+    set('m-accum-threshold', p.threshold)
+    set('m-accum-maxdaily',  p['max-daily'])
+  }, 0)
 }
 
 function _mobEditGridInstance(instance, p) {
@@ -16912,7 +16943,7 @@ function _mobVRenderStrategies(el) {
             <span style="width:8px;height:8px;border-radius:50%;background:${paused ? 'var(--orange)' : 'var(--green)'};flex-shrink:0"></span>
             <span style="font-size:13px;font-weight:700">${esc(i || 'default')}${paused ? ' <span style="font-size:10px;color:var(--orange);font-weight:600">paused</span>' : ''}</span>
             <span style="flex:1"></span>
-            ${s.type === 'grid' ? `<button onclick="window._mobEditStratInstance('${s.type}','${esc(i)}')" style="${sb};border:1px solid var(--accent);background:transparent;color:var(--accent)">✎ Edit</button>` : ''}
+            ${(s.type === 'grid' || s.type === 'accumulator') ? `<button onclick="window._mobEditStratInstance('${s.type}','${esc(i)}')" style="${sb};border:1px solid var(--accent);background:transparent;color:var(--accent)">✎ Edit</button>` : ''}
             <button onclick="window.restartStrategyMob('${s.type}','${esc(i)}',this)" style="${sb};border:1px solid var(--accent);background:transparent;color:var(--accent)"><span style="display:inline-block">⟳</span> Restart</button>
             ${pr}
             <button onclick="window.stopStrategyMob('${s.type}','${esc(i)}')" style="${sb};border:none;background:var(--red);color:#fff">■ Stop</button>
