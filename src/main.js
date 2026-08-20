@@ -1372,6 +1372,8 @@ window.__retryRefresh = async function(btn) {
   // Clear render caches so everything is force-redrawn on next tick
   _lastPosHash = null; _lastOrdHash = null; _lastAcctHash = null
   // A manual reload must force-fresh history too, not reuse the 8-min combined-view cache.
+  // Only the in-memory copy is dropped: the persisted store stays deliberately, so the forced
+  // refetch is a delta off what we already hold instead of the all-time walk this used to mean.
   try { _maHistCache2.clear(); _maLedgerCache.clear() } catch {}
   _updateRetryBtn('retrying')
   updateRefreshBanner()
@@ -6761,6 +6763,9 @@ async function loadAllAccountsDashboard() {
   // Live account state over WebSocket (all dexes → main + HIP-3, zero REST weight). The 12s
   // poll above stays as a fallback for any wallet the socket isn't delivering. Fire-and-forget.
   _startAllAcctWs(entries).catch(() => {})
+  // Keeps the persisted history store current between fans. Fire-and-forget like the one
+  // above: a socket that never connects just leaves the REST delta doing the work.
+  _startHistWs(entries).catch(() => {})
 }
 
 // Authoritative value refresh: one clearinghouseState per wallet (weight 2, pooled).
@@ -6874,6 +6879,83 @@ async function _stopAllAcctWs() {
   for (const sub of _acctWsSubs.values()) { try { await sub?.unsubscribe?.() } catch {} }
   _acctWsSubs.clear(); _acctWsLast.clear()
   if (_acctWsPaintT) { clearTimeout(_acctWsPaintT); _acctWsPaintT = null }
+  await _stopHistWs()
+}
+
+// ── LIVE HISTORY APPEND (WebSocket) ───────────────────────────────────────────
+// The persisted store removed the all-time re-walk; this keeps it CURRENT without asking.
+// HL streams both halves of the history, so a fill lands in the store the moment it
+// happens instead of waiting for a fan to go looking for it.
+//
+// Shape warning, and the reason this is not a two-line change: userFills events carry the
+// same row shape as the REST userFills response, so they merge as-is — but userFundings
+// does NOT. The socket sends flat rows ({time, coin, usdc, …}) while REST nests them under
+// `delta`. Everything downstream reads f.delta.usdc (see the all-time funding total in
+// _lbFetchResults), and `f.delta?.usdc ?? 0` scores a flat row as ZERO rather than
+// throwing — so an un-normalised append would quietly understate funding instead of
+// failing loudly. Normalise on the way in.
+const _histWsSubs = new Map()   // addr(lower) -> ISubscription[]
+
+function _histNormFunding(row) {
+  if (!row) return null
+  if (row.delta) return row   // already REST-shaped
+  return {
+    time: row.time,
+    hash: row.hash ?? '0x0',
+    delta: { type: 'funding', coin: row.coin, usdc: row.usdc, szi: row.szi, fundingRate: row.fundingRate },
+  }
+}
+
+// Merge arrivals into one wallet's stored history. Returns true only when something new
+// actually landed, so a snapshot replaying what we already hold costs no repaint.
+//
+// `ts` is deliberately NOT bumped: it gates the PORTFOLIO snapshot's freshness too, and the
+// socket does not refresh that. Marking the entry fresh here would leave a stale snapshot
+// looking current and starve the chart.
+function _histAppend(key, { fills, fundings } = {}) {
+  const cur = _maHistCache2.get(key)
+  if (!cur) return false   // nothing stored yet — let the REST path establish the baseline
+  let next = cur, changed = false
+  if (Array.isArray(fills) && fills.length) {
+    const merged = _histMerge(cur.fills, fills, _histFillKey)
+    if (merged.length !== (cur.fills?.length ?? 0)) { next = { ...next, fills: merged }; changed = true }
+  }
+  if (Array.isArray(fundings) && fundings.length) {
+    const norm   = fundings.map(_histNormFunding).filter(Boolean)
+    const merged = _histMerge(cur.funding, norm, _histFundKey)
+    if (merged.length !== (cur.funding?.length ?? 0)) { next = { ...next, funding: merged }; changed = true }
+  }
+  if (changed) _histSet(key, next)
+  return changed
+}
+
+async function _startHistWs(entries) {
+  await _stopHistWs()
+  const hidden = _maHiddenLoad()
+  for (const e of entries) {
+    if (hidden.has(e.addr)) continue
+    const addr = e.addr, key = addr.toLowerCase()
+    const subs = []
+    try {
+      subs.push(await subsClient().userFills({ user: addr }, (ev) => {
+        if (!state.isAllAccounts || !Array.isArray(ev?.fills)) return
+        if (_histAppend(key, { fills: ev.fills })) _acctWsSchedulePaint()
+      }))
+    } catch (err) { console.warn('[ws] userFills subscribe failed for', addr, err?.message) }
+    try {
+      subs.push(await subsClient().userFundings({ user: addr }, (ev) => {
+        if (!state.isAllAccounts || !Array.isArray(ev?.fundings)) return
+        if (_histAppend(key, { fundings: ev.fundings })) _acctWsSchedulePaint()
+      }))
+    } catch (err) { console.warn('[ws] userFundings subscribe failed for', addr, err?.message) }
+    if (subs.length) _histWsSubs.set(key, subs)
+  }
+}
+async function _stopHistWs() {
+  for (const subs of _histWsSubs.values()) {
+    for (const s of subs) { try { await s?.unsubscribe?.() } catch {} }
+  }
+  _histWsSubs.clear()
 }
 
 // Repaint only the value UI — the per-account cards, the equity card, and the portfolio
@@ -8431,13 +8513,39 @@ function _attrSeries(winMs) {
 function _attrEquityRange(windowStart, winMs) {
   const hist = _attrSeries(winMs)
   if (!hist.length) return { start: null, now: NaN, coarse: false }
-  const nowTs = hist.at(-1)[0], now = parseFloat(hist.at(-1)[1])
+
+  // The "now" edge is LIVE equity — the same number the balance card shows — not the last
+  // sample in HL's history. HL samples even its finest ('day') series only ~every 2.3h, so
+  // anything that moved since that sample was invisible here: the header measured
+  // live − 24h ago while this measured lastSample − 24h ago, and the two disagreed by the
+  // entire recent move (a −$211 day reported as −$2.80). It also quietly corrupted the
+  // reconciliation, because `attributed` runs right up to now while this stopped hours short,
+  // so the whole gap was dumped into the "Other" residual.
+  //
+  // In the combined view read _comboEqLast rather than re-running _comboEqFilter: that filter
+  // mutates its own state machine, and calling it a second time per paint would let the header
+  // accept a spike sooner than it should.
+  let now = NaN, nowTs = Date.now()
+  try {
+    const live = state.isAllAccounts
+      ? _comboEqLast
+      : computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids)?.accountValue
+    if (Number.isFinite(live) && live > 0) now = live
+  } catch {}
+  if (!Number.isFinite(now)) { now = parseFloat(hist.at(-1)[1]); nowTs = hist.at(-1)[0] }
+
   if (windowStart == null) return { start: parseFloat(hist[0][1]), now, coarse: false }  // ALL → first point
   let v = null, vTs = null
   for (const [ts, val] of hist) { if (ts <= windowStart) { v = parseFloat(val); vTs = ts } else break }
   const start   = v != null ? v : parseFloat(hist[0][1])
   const startTs = vTs != null ? vTs : hist[0][0]
   // Sampling is too coarse when either edge is off by more than one whole window.
+  //
+  // Known gap, deliberately left alone: this only catches a start sample that is too OLD. A
+  // series that BEGINS after the window start measures a shorter span than the label claims
+  // and is not flagged — but startTs can never exceed now, so no symmetric distance test can
+  // catch it either; it needs a "covered fraction" rule, which would also start suppressing
+  // the figure for genuinely new accounts. Separate decision, not folded into this fix.
   const coarse = (windowStart - startTs) > winMs || (Date.now() - nowTs) > winMs
   return { start, now, coarse }
 }
@@ -11412,7 +11520,7 @@ function _mobVRenderContent(tick = false) {
       const oid   = Math.floor(n / 10), side = n % 10
       const entry = total > 0 ? cost / total : 0
       const fromBook  = _ocMarkCache[b.coin] || 0
-      const fromPanel = _ocPrices?.[oid] ? (side === 0 ? _ocPrices[oid].yes : _ocPrices[oid].no) : 0
+      const fromPanel = _ocSidePrice(oid, side)
       const mark  = fromBook > 0 ? fromBook : (fromPanel > 0 ? fromPanel : entry)
       const value = total * mark
       const pnl   = (mark - entry) * total
@@ -20038,6 +20146,108 @@ const _MA_HIST_TTL2 = 480_000
 // Set after a user action (place/close/cancel) to force fresh FILLS on the next fan WITHOUT
 // discarding the cached portfolio-snapshot/perp-anchor pair — see __refreshAfterAction.
 let _maFillsStale = false
+
+// ── PERSISTENT HISTORY STORE ──────────────────────────────────────────────────
+// _maHistCache2 above is an in-memory Map, so it dies with the page. Every reload made
+// all wallets miss at once and re-walk all-time fills + funding from GENESIS (2022) —
+// paginated weight-20 calls, ~670 weight across 8 wallets, landing ~55s after open.
+// That burst was the dominant 429 cause in the client-429 telemetry.
+//
+// Backing the Map with IndexedDB fixes it twice over: history survives the reload, AND a
+// stored copy becomes the baseline for a delta fetch, so even an EXPIRED entry saves the
+// whole walk. localStorage was not an option — all-time fills across 8 wallets pass its
+// ~5MB cap, and its synchronous writes would stutter the main thread.
+//
+// Every DB call is optional: any failure (private mode, blocked storage, quota) falls
+// back to exactly today's behaviour rather than breaking the view.
+const _HIST_GENESIS = 1667260800000
+const _HIST_DB = 'hliq_hist', _HIST_STORE = 'hist', _HIST_DB_V = 1
+let _histDbPromise = null
+function _histDb() {
+  if (_histDbPromise) return _histDbPromise
+  _histDbPromise = new Promise((resolve, reject) => {
+    let rq
+    try { rq = indexedDB.open(_HIST_DB, _HIST_DB_V) } catch (e) { return reject(e) }
+    rq.onupgradeneeded = () => {
+      const db = rq.result
+      if (!db.objectStoreNames.contains(_HIST_STORE)) db.createObjectStore(_HIST_STORE)
+    }
+    rq.onsuccess = () => resolve(rq.result)
+    rq.onerror   = () => reject(rq.error)
+  }).catch(e => { _histDbPromise = null; throw e })   // let a later call retry the open
+  return _histDbPromise
+}
+function _histTx(mode, fn) {
+  return _histDb().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(_HIST_STORE, mode)
+    const rq = fn(tx.objectStore(_HIST_STORE))
+    tx.oncomplete = () => resolve(rq ? rq.result : undefined)
+    tx.onerror    = () => reject(tx.error)
+    tx.onabort    = () => reject(tx.error)
+  }))
+}
+const _histDbGet = (key)    => _histTx('readonly',  s => s.get(key)).catch(() => undefined)
+const _histDbPut = (key, v) => _histTx('readwrite', s => s.put(v, key)).catch(() => {})
+
+// Write through: memory for this tick, disk for the next page load. The put is
+// fire-and-forget — a failed write only costs a delta refetch later, never correctness.
+function _histSet(key, val) {
+  _maHistCache2.set(key, val)
+  _histDbPut(key, val)
+}
+// Pull a wallet's stored history into memory before the freshness check reads it. Costs
+// one DB read per address per session; after that the Map answers.
+async function _histEnsure(key) {
+  if (_maHistCache2.has(key)) return _maHistCache2.get(key)
+  const stored = await _histDbGet(key)
+  // Re-check: a concurrent wallet in the same fan may have filled this slot while we waited.
+  if (stored && !_maHistCache2.has(key)) _maHistCache2.set(key, stored)
+  return _maHistCache2.get(key)
+}
+// Escape hatch for debugging a suspect store.
+window.__hliqClearHist = () => {
+  _maHistCache2.clear()
+  return _histTx('readwrite', s => s.clear()).then(() => 'history store cleared').catch(e => 'failed: ' + e)
+}
+
+// Fills and funding are append-only — a trade that happened never un-happens — so with a
+// stored copy we only need what landed after the newest row we already hold. That makes the
+// fetch inherently gap-safe: the cursor is always our own high-water mark, so a device that
+// slept through fills still asks from where it left off. The small overlap covers rows
+// sharing a millisecond with that mark; the merge dedupes on the same keys the fetchers use.
+const _HIST_OVERLAP_MS = 60_000
+const _histFillKey = f => f.tid ?? `${f.time}_${f.oid}_${f.px}_${f.sz}_${f.dir}`
+const _histFundKey = f => `${f.time}_${f.delta?.coin}_${f.delta?.usdc}`
+function _histNewest(rows) {
+  let m = 0
+  for (const r of rows || []) if (r && r.time > m) m = r.time
+  return m
+}
+function _histMerge(prior, fresh, keyOf) {
+  const seen = new Set(), out = []
+  for (const row of [...(fresh || []), ...(prior || [])]) {
+    if (!row) continue
+    const k = keyOf(row)
+    if (seen.has(k)) continue
+    seen.add(k); out.push(row)
+  }
+  return out.sort((a, b) => (b.time || 0) - (a.time || 0))
+}
+function _histCursor(prior) {
+  const newest = _histNewest(prior)
+  return newest ? Math.max(_HIST_GENESIS, newest - _HIST_OVERLAP_MS) : 0
+}
+async function _histFillsFrom(addr, prior, info) {
+  const from = _histCursor(prior)
+  if (!from) return fetchAllFills(addr, { startTime: _HIST_GENESIS, info })   // nothing stored
+  return _histMerge(prior, await fetchAllFills(addr, { startTime: from, info }), _histFillKey)
+}
+async function _histFundingFrom(addr, prior, info) {
+  const from = _histCursor(prior)
+  if (!from) return fetchAllFunding(addr, _HIST_GENESIS, { info })
+  return _histMerge(prior, await fetchAllFunding(addr, from, { info }), _histFundKey)
+}
+
 async function _lbFetchResults(entries) {
   const GENESIS = 1667260800000
   const info    = new InfoClient({ transport: _transport })
@@ -20071,7 +20281,7 @@ async function _lbFetchResults(entries) {
       info.spotClearinghouseState({ user: entry.addr }).catch(() => null),
       hip3Pending.catch(() => ({ positions: [], orders: [] })),
     ])
-    const _hc = _maHistCache2.get(key)
+    const _hc = await _histEnsure(key)   // memory, else the persisted store from a past session
     let portfolio, fills, funding, _perpAtHist
     // Perp state used for BOTH the anchor and the live value. Starts as the parallel read
     // above, but on a cache miss it's re-read AFTER the portfolio snapshot (see below).
@@ -20082,20 +20292,25 @@ async function _lbFetchResults(entries) {
       // it's internally consistent, and the live perp delta already carries the close.
       ;({ portfolio, perpAtHist: _perpAtHist } = _hc)
       const [f2, fu2] = await Promise.all([
-        fetchAllFills(entry.addr, { startTime: GENESIS, info })
+        _histFillsFrom(entry.addr, _hc.fills, info)
           .catch(() => info.userFills({ user: entry.addr }).catch(() => _hc.fills ?? [])),
-        fetchAllFunding(entry.addr, GENESIS, { info }).catch(() => _hc.funding ?? []),
+        _histFundingFrom(entry.addr, _hc.funding, info).catch(() => _hc.funding ?? []),
       ])
       fills = f2; funding = fu2
-      _maHistCache2.set(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: _hc.ts })
+      _histSet(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: _hc.ts })
     } else if (_histFresh) {
       ({ portfolio, fills, funding, perpAtHist: _perpAtHist } = _hc)
     } else {
+      // The portfolio snapshot is a point-in-time value, not a log, so it is always re-read
+      // (weight 2). Fills and funding are append-only, so a stored copy — even an expired one
+      // — still spares the whole GENESIS walk; only a wallet never seen on this device pays
+      // full price, and only once. On error keep what we already had rather than dropping to
+      // an empty array, which would throw away good history over a transient failure.
       ;[portfolio, fills, funding] = await Promise.all([
         info.portfolio({ user: entry.addr }).catch(() => []),
-        fetchAllFills(entry.addr, { startTime: GENESIS, info })
-          .catch(() => info.userFills({ user: entry.addr }).catch(() => [])),
-        fetchAllFunding(entry.addr, GENESIS, { info }).catch(() => []),
+        _histFillsFrom(entry.addr, _hc?.fills, info)
+          .catch(() => info.userFills({ user: entry.addr }).catch(() => _hc?.fills ?? [])),
+        _histFundingFrom(entry.addr, _hc?.funding, info).catch(() => _hc?.funding ?? []),
       ])
       // Perp account value AT the moment this portfolio snapshot was taken — the anchor that
       // keeps the (now-cached) snapshot time-aligned with the live perp delta below.
@@ -20109,7 +20324,9 @@ async function _lbFetchResults(entries) {
       // only on a cache miss.
       try { csNow = await info.clearinghouseState({ user: entry.addr }) } catch { csNow = cs }
       _perpAtHist = parseFloat(csNow.marginSummary?.accountValue ?? 0)
-      _maHistCache2.set(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: Date.now() })
+      // Snapshot and anchor are written together, never one without the other — that pairing
+      // is what the double-counting note above depends on, and it must hold on disk too.
+      _histSet(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: Date.now() })
     }
     const positions        = csNow.assetPositions ?? []
     const allTimePort      = (portfolio ?? []).find(p => p[0] === 'allTime')
@@ -21314,7 +21531,11 @@ window.__closePredictions = () => _predictSettle(false)
 let _ocCharts          = {}
 let _ocCountdownInterval = null
 let _ocRefreshInterval = null
-let _ocPrices          = {}   // { [outcomeId]: { yes: number, no: number } }
+// { [outcomeId]: { px: number[], yes: number, no: number } }
+// `px` is indexed by side and is the authority; `yes`/`no` are kept as readable aliases for
+// the binary case. Read it through _ocSidePrice — never index the aliases by side, which is
+// what limited this to two outcomes in the first place.
+let _ocPrices          = {}
 let _ocMarkCache       = {}   // { [spotCoin '+N']: mark price } — last live mid for held outcomes
 let _ocPendingClose    = {}   // "digits@acctAddr" → { total: expected shares after close, ts } — masks HL spot-balance lag
 
@@ -21384,11 +21605,13 @@ function _ocCoinLabel(coin) {
     // "Market question · Side" — without the separator the side reads as a
     // duplicated word ("…Switzerland vs Colombia Colombia").
     if (t && t.name) return t.side ? `${t.name} · ${t.side}` : t.name
-    // Settled outcomes drop out of the live outcomeMeta, but HL keeps their
-    // spec behind {type:'settledOutcome'}. Fire a one-shot lazy fetch to pull
-    // the real title (e.g. "World Cup Round of 16: Brazil vs Norway · Norway")
-    // and re-render; until it lands, show a readable decoded placeholder.
+    // A title goes missing two different ways, so try both. Settled questions drop
+    // out of the live outcomeMeta but HL keeps their spec behind
+    // {type:'settledOutcome'}; a newly listed question is simply absent from a
+    // cached map and only a fresh outcomeMeta carries it. Until one lands, show a
+    // readable decoded placeholder.
     _lazyResolveSettledOutcome(coin)
+    _refreshOcMetaForMiss()
     return _ocFallbackLabel(coin)
   }
   return coinLabel(coin)
@@ -21413,11 +21636,49 @@ function _ocFallbackLabel(coin) {
 // and re-render the trades/positions views so the title appears in place.
 const _settledOcSeen = new Set()   // outcome ids already fetched (ok/failed) — never refetch
 let _settledOcRerender = null
+
+// Re-render every view that renders an outcome label, debounced so a page full of
+// unresolved outcomes rerenders once. Includes the positions section — an outcome
+// you still hold is exactly where a missing title is most visible.
+function _ocRerenderLabels() {
+  clearTimeout(_settledOcRerender)
+  _settledOcRerender = setTimeout(() => {
+    try { _refreshVisitedSection('trades') } catch {}
+    try { if (state.fills) renderTrades(state.fills) } catch {}
+    try { if (typeof _mobVRenderContent === 'function') _mobVRenderContent() } catch {}
+    try { renderPositionSection() } catch {}
+  }, 150)
+}
+
+// A LIVE question missing from ocTokenMap never recovers on its own: the
+// settledOutcome probe below returns no spec for one that hasn't resolved, and every
+// path that rebuilds the map — _hydrateOcTokenMap, _lbEnsureMetas — only fires when
+// the map is *empty*, never when it is merely missing this id. So a question listed
+// after the cached map was written stays "Prediction #N" until a hard reload.
+// Refetch the live meta on a miss, throttled so a list of misses costs one request.
+let _ocMetaMissAt   = 0
+let _ocMetaMissBusy = false
+function _refreshOcMetaForMiss() {
+  const now = Date.now()
+  // Respect the global 429 breaker. A cosmetic label refresh is the least urgent
+  // request in the app — it must never spend weight while HL is throttling us.
+  if (_hlLimited() || _ocMetaMissBusy || now - _ocMetaMissAt < 60_000) return
+  _ocMetaMissBusy = true
+  _ocMetaMissAt   = now
+  infoClient.outcomeMeta()
+    .then(m => { if (m) { _buildOcTokenMap(m); _ocRerenderLabels() } })
+    .catch(e => { _hl429(e) })
+    .finally(() => { _ocMetaMissBusy = false })
+}
 function _lazyResolveSettledOutcome(coin) {
   const n = parseInt(String(coin).slice(1), 10)
   if (!Number.isFinite(n)) return
   const outcome = Math.floor(n / 10)
   if (_settledOcSeen.has(outcome)) return
+  // Respect the global 429 breaker, and check it BEFORE marking the id seen —
+  // bailing after the add would blacklist the title for the whole session over a
+  // transient pause, since this set is never cleared.
+  if (_hlLimited()) return
   _settledOcSeen.add(outcome)
   fetch('https://api.hyperliquid.xyz/info', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -21441,15 +21702,9 @@ function _lazyResolveSettledOutcome(coin) {
       try {
         localStorage.setItem('hliq_oc_token_map', JSON.stringify(state.ocTokenMap))
       } catch {}
-      // Debounce re-renders so a page full of settled outcomes rerenders once.
-      clearTimeout(_settledOcRerender)
-      _settledOcRerender = setTimeout(() => {
-        try { _refreshVisitedSection('trades') } catch {}
-        try { if (state.fills) renderTrades(state.fills) } catch {}
-        try { if (typeof _mobVRenderContent === 'function') _mobVRenderContent() } catch {}
-      }, 150)
+      _ocRerenderLabels()
     })
-    .catch(() => {})
+    .catch(e => { _hl429(e) })
 }
 window._ocCoinLabel = _ocCoinLabel   // reused by render.js (history, overview, manage tables)
 
@@ -21593,38 +21848,76 @@ function _fmtOcQuestionTime(raw) {
   return utc.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 }
 
+// Price for one side of a market, or 0 when we do not have a real one.
+//
+// Returning 0 rather than a guess is the point. This feeds _ocEffPx, which is the price a
+// MARKET order fills against, so a fabricated number here becomes a mispriced trade. The old
+// shape stored only { yes, no } and every caller did `side === 0 ? yes : no`, which silently
+// handed side 2 of a three-way market the price of side 1 — wrong, and wrong in a way nothing
+// would have flagged. An unknown side now reads as 0 and the UI shows no price.
+function _ocSidePrice(outcomeId, side) {
+  const p = _ocPrices?.[outcomeId]
+  if (!p) return 0
+  const i = Number(side)
+  if (Array.isArray(p.px) && Number.isFinite(p.px[i])) return p.px[i]
+  return 0
+}
+
+// Mid for one outcome side from its L2 book, falling back to the last 1m close.
+// `candleFallback` is OFF by default, and that default is load-bearing. _refreshOcPrices runs
+// every 5 SECONDS; the code it replaced made exactly one l2Book call per market and bailed on
+// an empty book. Routing that poll through a helper that also fetches candles on a thin book
+// doubled the request count of the hottest loop in the app and re-triggered HL's rate limit.
+// The fallback belongs only to the one-shot initial load, which is where it started.
+async function _ocSideMid(pairIdx, info, candleFallback = false) {
+  try {
+    const book = await info.l2Book({ coin: '#' + pairIdx })
+    const bid  = parseFloat(book.levels?.[0]?.[0]?.px ?? 0)
+    const ask  = parseFloat(book.levels?.[1]?.[0]?.px ?? 0)
+    const mid  = bid > 0 && ask > 0 ? (bid + ask) / 2 : (bid || ask)
+    if (mid > 0 && mid < 1) return mid
+  } catch {}
+  if (!candleFallback) return 0
+  try {
+    const cs = await fetchCandles('#' + pairIdx, '1m', Date.now() - 5 * 60 * 1000)
+    const c  = cs.length ? parseFloat(cs[cs.length - 1].c) : 0
+    if (c > 0 && c < 1) return c
+  } catch {}
+  return 0
+}
+
+// Build the per-side price array for one market.
+//
+// Two sides are complements, so side 1 is derived exactly from side 0 — no second request.
+// That matters: this polls every open market, and fetching a book per side would multiply the
+// weight of the busiest loop in the app for markets whose second price is already implied.
+// Three or more sides have no such identity (Below + Range + Above sum to 1, so no side is
+// 1 - another), so those are fetched per side. Any side we cannot price stays 0.
+async function _ocBuildPrices(o, info, candleFallback = false) {
+  const base   = o.outcome * 10
+  const nSides = Math.max(2, o.sideSpecs?.length ?? 2)
+  if (nSides === 2) {
+    const p0 = await _ocSideMid(base, info, candleFallback)
+    return p0 > 0 && p0 < 1 ? [p0, 1 - p0] : null
+  }
+  const px = await hlPool(
+    Array.from({ length: nSides }, (_, i) => base + i),
+    idx => _ocSideMid(idx, info, candleFallback),
+  )
+  return px.some(p => p > 0) ? px.map(p => (p > 0 && p < 1 ? p : 0)) : null
+}
+
 // Fetch YES price via L2 book (#N coin format). NO = 1 - YES for binary markets.
+// One-shot initial load, so it may fall back to candles when a book is empty — unlike the 5s
+// poll, which must stay at one request per market.
 async function _loadOcPrices(outcomes, info) {
   await Promise.all(outcomes.map(async o => {
-    const yesPairIdx = o.outcome * 10
-    let yesPx = 0
-
-    // Primary: L2 book with order-coin format
-    try {
-      const book  = await info.l2Book({ coin: '#' + yesPairIdx })
-      const bids  = book.levels?.[0] ?? []
-      const asks  = book.levels?.[1] ?? []
-      const bid   = parseFloat(bids[0]?.px ?? 0)
-      const ask   = parseFloat(asks[0]?.px ?? 0)
-      if (bid > 0 && ask > 0) yesPx = (bid + ask) / 2
-      else yesPx = bid || ask
-
-    } catch {}
-
-    // Fallback: 1m candle last close (use #N outcome coin format)
-    if (!yesPx) {
-      try {
-        const cs = await fetchCandles('#' + yesPairIdx, '1m', Date.now() - 5 * 60 * 1000)
-        if (cs.length) yesPx = parseFloat(cs[cs.length - 1].c)
-      } catch {}
-    }
-
-    if (!yesPx || yesPx <= 0 || yesPx >= 1) return
-
-    const noPx = 1 - yesPx
+    const px = await _ocBuildPrices(o, info, true)
+    if (!px) return
+    const yesPx = px[0], noPx = px[1]
 
     // Store in dedicated price map — avoids allMids race condition
-    _ocPrices[o.outcome] = { yes: yesPx, no: noPx }
+    _ocPrices[o.outcome] = { px, yes: yesPx, no: noPx }
 
     // Update DOM: YES/NO side buttons
     const updBtn = (id, px) => {
@@ -21736,52 +22029,36 @@ function _ocChartDecor() {
     afterDatasetsDraw(chart) {
       const { ctx, chartArea: area, scales } = chart
       if (!area || !scales?.y) return
-      const font = "600 9px 'JetBrains Mono', ui-monospace, monospace"
-
-      // ── 50/50 reference line
-      const y50 = scales.y.getPixelForValue(50)
+      // ── 50/50 reference line, marking the yes/no boundary the odds trade around.
+      //
+      // It used to carry its own "50%" text, and the live odds used to ride the last point in
+      // a floating pill. Both were workarounds for having no axes at 118px. The chart is tall
+      // enough for real ones now, so the y-axis states the percentages and the CHANCE stat
+      // card directly above the chart already shows the current number — leaving the plot
+      // itself clean instead of stacking labels on top of the line.
       ctx.save()
+      const y50 = scales.y.getPixelForValue(50)
       ctx.setLineDash([3, 4])
       ctx.strokeStyle = 'rgba(255,255,255,0.16)'
       ctx.lineWidth = 1
       ctx.beginPath(); ctx.moveTo(area.left, y50); ctx.lineTo(area.right, y50); ctx.stroke()
       ctx.setLineDash([])
-      ctx.font = font
-      ctx.fillStyle = 'rgba(255,255,255,0.34)'
-      ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'
-      ctx.fillText('50%', area.left + 3, y50 - 3)
 
-      // ── Current-odds pill, anchored to the last real point. Value and colour are read from
-      // the dataset at DRAW time, not captured at creation, so the 30s price refresh
-      // (chart.update) moves the badge and re-tints it instead of leaving a stale number.
-      const pts  = chart.getDatasetMeta(0)?.data ?? []
-      const data = chart.data.datasets[0]?.data ?? []
-      let anchor = null, pct = null
-      for (let i = pts.length - 1; i >= 0; i--) {
-        if (data[i] != null) { anchor = pts[i]; pct = data[i]; break }
-      }
-      if (anchor && pct != null) {
-        const c = pct >= 50 ? '#00e5a0' : '#ff4d6d'
-        const label = `${Math.round(pct)}%`
-        ctx.font = "700 10px 'JetBrains Mono', ui-monospace, monospace"
-        const w = ctx.measureText(label).width + 12
-        const h = 16
-        // Keep the pill inside the plot area so it can't clip at the card edge.
-        let x = Math.min(anchor.x + 8, area.right - w - 2)
-        if (x < area.left + 2) x = area.left + 2
-        let y = anchor.y - h / 2
-        if (y < area.top + 2) y = area.top + 2
-        if (y + h > area.bottom - 2) y = area.bottom - 2 - h
-        ctx.beginPath()
-        // roundRect is unsupported on older WebKit — fall back to a plain rect rather than throw.
-        if (ctx.roundRect) ctx.roundRect(x, y, w, h, 8)
-        else ctx.rect(x, y, w, h)
-        ctx.fillStyle = c
-        ctx.globalAlpha = 0.16; ctx.fill(); ctx.globalAlpha = 1
-        ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.stroke()
-        ctx.fillStyle = c
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-        ctx.fillText(label, x + w / 2, y + h / 2 + 0.5)
+      // ── Scrub crosshair. At this height the tooltip alone leaves you guessing which point
+      // your finger is actually on. Read from the active tooltip element so it tracks touch
+      // and mouse identically, and drawn last so it sits above the line.
+      const active = chart.tooltip?.getActiveElements?.() ?? []
+      const hit    = active[0]?.element
+      if (hit && Number.isFinite(hit.x)) {
+        ctx.setLineDash([2, 3])
+        ctx.strokeStyle = 'rgba(255,255,255,0.30)'
+        ctx.lineWidth = 1
+        ctx.beginPath(); ctx.moveTo(hit.x, area.top); ctx.lineTo(hit.x, area.bottom); ctx.stroke()
+        ctx.setLineDash([])
+        ctx.beginPath(); ctx.arc(hit.x, hit.y, 3.5, 0, Math.PI * 2)
+        ctx.fillStyle = '#fff'
+        ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1
+        ctx.fill(); ctx.stroke()
       }
       ctx.restore()
     },
@@ -21799,16 +22076,41 @@ function _ocSetCurrentPx(outcome, mid, targetPrice) {
   el.className = 'oc-price-current' + (Number.isFinite(t) && t > 0 ? (mid >= t ? ' oc-above' : ' oc-below') : '')
 }
 
+// Market lifetime from the description's period tag ("1H", "1D", "7D"), in ms. `M` is read
+// as minutes — these tags describe short trading windows, never months.
+function _ocPeriodMs(period) {
+  const m = /^(\d+)\s*([MHDW])$/i.exec(String(period ?? '').trim())
+  if (!m) return 0
+  const n = +m[1]
+  return n * ({ M: 60e3, H: 3600e3, D: 86400e3, W: 604800e3 }[m[2].toUpperCase()] ?? 0)
+}
+
+// Candle interval sized to the market, because a fixed 1h was wrong for short-dated ones: a
+// 1D market that opened 30 minutes ago has exactly ONE hourly candle, so the "line" was a
+// single dot pinned to x=0 with 23 empty slots padding out to expiry — which is what stacked
+// the dot, the odds pill and the 50% label on top of each other in the left corner.
+function _ocCandleInterval(periodMs) {
+  if (!periodMs)                 return '1h'   // unknown duration — keep the old behaviour
+  if (periodMs <= 6 * 3600e3)    return '1m'
+  if (periodMs <= 36 * 3600e3)   return '5m'
+  return '1h'
+}
+
 async function _initOcCharts(outcomes) {
-  const sevenDaysAgo = Date.now() - 7 * 24 * 3600 * 1000
   await Promise.all(outcomes.map(async o => {
     const canvas = document.getElementById('oc-chart-' + o.outcome)
     if (!canvas) return
     const pairIdx = o.outcome * 10
     const d       = _parseOutcomeDesc(o.description)
 
+    const periodMs = _ocPeriodMs(d.period)
+    const interval = _ocCandleInterval(periodMs)
+    // Look back over the market's own lifetime rather than a flat 7 days: for a 1D market
+    // that is all the data there is, and it keeps the finer intervals from over-fetching.
+    const lookback = periodMs ? Math.min(periodMs * 1.3, 7 * 24 * 3600e3) : 7 * 24 * 3600e3
+
     let candles = []
-    try { candles = await fetchCandles('#' + pairIdx, '1h', sevenDaysAgo) } catch {}
+    try { candles = await fetchCandles('#' + pairIdx, interval, Date.now() - lookback) } catch {}
 
     if (!canvas.isConnected) return
     const wrap = canvas.parentElement
@@ -21821,20 +22123,16 @@ async function _initOcCharts(outcomes) {
     }
     if (emptyEl) emptyEl.remove()
 
-    // Build full timeline: past candles + null slots up to expiry
-    const HOUR   = 3600 * 1000
-    const now    = Date.now()
-    const expiry = (_expiryDate(d.expiry) ?? new Date(now)).getTime()
-    const lastTs = candles[candles.length - 1].t
-
-    // Pad future with null data points so the line ends at "now" and
-    // empty space to the right represents time remaining to close
-    const futureHours = Math.max(0, Math.round((expiry - lastTs) / HOUR))
-    const futureLabels = Array.from({ length: futureHours }, (_, i) => lastTs + (i + 1) * HOUR)
-    const futureNulls  = Array(futureHours).fill(null)
-
-    const labels = [...candles.map(c => c.t), ...futureLabels]
-    const pcts   = [...candles.map(c => parseFloat(c.c) * 100), ...futureNulls]
+    // The line fills the width and ends at now. No null padding out to expiry.
+    //
+    // That padding used to make the empty right-hand side stand for time remaining, but it
+    // made the x-axis mean two things at once and got it wrong both ways: on a market minutes
+    // old the real line was a 4% sliver at the left edge, and capping the padding to fix that
+    // put the live dot two-thirds across while 23 hours still remained — reading as "about to
+    // close" on a market that had just opened. Time left is already stated exactly, in the
+    // CLOSES IN countdown directly above the chart, so the axis does not need to encode it.
+    const labels = candles.map(c => c.t)
+    const pcts   = candles.map(c => parseFloat(c.c) * 100)
 
     const last    = candles[candles.length - 1]
     const lastPct = parseFloat(last.c) * 100
@@ -21842,13 +22140,15 @@ async function _initOcCharts(outcomes) {
     const col     = winning ? '#00e5a0' : '#ff4d6d'
 
     const ctx  = canvas.getContext('2d')
-    const grad = ctx.createLinearGradient(0, 0, 0, 90)
+    // Gradient must span the real canvas height. It was hardcoded to 90px, which matched the
+    // old short card by luck — at the current height that fades the fill out partway down and
+    // leaves the bottom of the area transparent.
+    const grad = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 260)
     grad.addColorStop(0, winning ? 'rgba(0,229,160,0.18)' : 'rgba(255,77,109,0.18)')
     grad.addColorStop(1, 'rgba(0,0,0,0)')
 
     if (_ocCharts[o.outcome]) { try { _ocCharts[o.outcome].destroy() } catch {} }
     const dataLen  = candles.length
-    const totalLen = labels.length
 
     _ocCharts[o.outcome] = new Chart(ctx, {
       type: 'line',
@@ -21865,10 +22165,15 @@ async function _initOcCharts(outcomes) {
       options: {
         animation: false, responsive: true, maintainAspectRatio: false,
         // Room for the odds pill at the line's end without it touching the card edge.
-        layout: { padding: { top: 10, right: 6, bottom: 4, left: 2 } },
-        // Mouse only — including touch events here would let the chart swallow vertical
-        // drags and make the predictions sheet feel stuck when scrolling past a card.
-        events: ['mousemove', 'mouseout', 'click'],
+        // Right padding keeps the live end-point dot off the plot border instead of half
+        // clipped against it; the axes supply their own spacing on the other sides.
+        layout: { padding: { top: 10, right: 10, bottom: 2, left: 2 } },
+        // Touch is included so the line can be scrubbed on a phone, which is where this is
+        // actually used. The old mouse-only list existed because touch events let the chart
+        // swallow vertical drags and made the sheet feel stuck; `touch-action: pan-y` on the
+        // canvas is what fixes that properly — the browser keeps vertical scrolling and only
+        // horizontal gestures reach the chart. Removing that CSS reintroduces the stuck sheet.
+        events: ['mousemove', 'mouseout', 'click', 'touchstart', 'touchmove'],
         plugins: {
           legend: { display: false },
           // Scrub the line to read the odds at any past moment.
@@ -21885,11 +22190,39 @@ async function _initOcCharts(outcomes) {
           },
           zoom: { zoom: { wheel: { enabled: false }, drag: { enabled: false } }, pan: { enabled: false } },
         },
-        // No tick labels: a numeric axis crowds a ~118px card and reads like a spreadsheet.
-        // The odds are conveyed by the dashed 50/50 line and the live badge drawn below.
+        // Real axes. They were off because a numeric axis crowds a ~118px card, but the chart
+        // is 260px now and the labels are what stop the plot needing text drawn on top of the
+        // line. The x labels also settle what the right-hand end MEANS: the line stops at the
+        // last candle, so without times a fresh market's dot at the right edge read as "about
+        // to close" when it had just opened.
         scales: {
-          x: { display: false },
-          y: { display: false, min: 0, max: 100, grace: 0 },
+          x: {
+            display: true,
+            grid: { display: false },
+            border: { color: 'rgba(255,255,255,0.10)' },
+            ticks: {
+              color: 'rgba(255,255,255,0.40)',
+              font: { size: 9, family: "'JetBrains Mono', ui-monospace, monospace" },
+              maxRotation: 0, autoSkip: true, maxTicksLimit: 4, padding: 4,
+              callback(value) {
+                const t = Number(this.getLabelForValue(value))
+                return Number.isFinite(t)
+                  ? new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+                  : ''
+              },
+            },
+          },
+          y: {
+            display: true, min: 0, max: 100, grace: 0,
+            grid: { color: 'rgba(255,255,255,0.05)', drawTicks: false },
+            border: { display: false },
+            ticks: {
+              color: 'rgba(255,255,255,0.40)',
+              font: { size: 9, family: "'JetBrains Mono', ui-monospace, monospace" },
+              stepSize: 25, padding: 6,
+              callback: v => v + '%',
+            },
+          },
         },
       },
       plugins: [_ocChartDecor()],
@@ -21918,16 +22251,11 @@ async function _refreshOcPrices() {
   const inSheet = document.getElementById('mobPredictBody')?.contains(grid)
   if (inSheet ? !_predictOpen : !grid?.offsetParent) return
   await Promise.all(outcomes.map(async o => {
-    const yesPairIdx = o.outcome * 10
     try {
-      const book = await info.l2Book({ coin: '#' + yesPairIdx })
-      const bid  = parseFloat(book.levels?.[0]?.[0]?.px ?? 0)
-      const ask  = parseFloat(book.levels?.[1]?.[0]?.px ?? 0)
-      if (!bid && !ask) return
-      const yesPx = bid > 0 && ask > 0 ? (bid + ask) / 2 : (bid || ask)
-      if (yesPx <= 0 || yesPx >= 1) return
-      const noPx = 1 - yesPx
-      _ocPrices[o.outcome] = { yes: yesPx, no: noPx }
+      const px = await _ocBuildPrices(o, info)
+      if (!px) return
+      const yesPx = px[0], noPx = px[1]
+      _ocPrices[o.outcome] = { px, yes: yesPx, no: noPx }
       // Keep the open card's avg-price/preview in sync with the live mid.
       if (String(o.outcome) === String(_ocExpandedId)) window.__ocUpdCalc(o.outcome)
 
@@ -22067,7 +22395,7 @@ window.__ocBotSetSide = function(side) {
 
 window.__ocBotPreview = function() {
   const c = state.ocBotCfg; if (!c) return
-  const px  = _ocPrices?.[c.outcome] ? (c.side === 0 ? _ocPrices[c.outcome].yes : _ocPrices[c.outcome].no) : 0
+  const px  = _ocSidePrice(c.outcome, c.side)
   const lbl = c.side === 0 ? c.yesLabel : c.noLabel
   const el  = document.getElementById('ocBotPxVal')
   if (el) el.textContent = px > 0 ? `${esc(lbl)} ${(px * 100).toFixed(1)}¢` : '—'
@@ -22141,6 +22469,38 @@ const _OC_SECTIONS = [
   ['culture','🎬','Culture'], ['weather','⛅','Weather'], ['other','🔮','More Markets'],
 ]
 
+// TEMPORARY diagnostic — delete this block once the missing range market is settled.
+//
+// The list shows four crypto binaries, but HL also runs a multi-outcome BTC range market
+// (Below/Range/Above) that never appears. Nothing filters outcomes on the way in, so it is
+// being hidden here: a question whose name matches the template regex below has ALL of its
+// member outcomes hidden, and these markets are recurring dailies. Whether HL actually names
+// that question "Recurring" cannot be checked from a phone or from the deploy session, and
+// loosening the regex on a guess risks filling the list with real placeholder legs.
+//
+// So report what arrived, through the telemetry endpoint that already exists, and read it at
+// /api/errors?pin=…&kind=ocdiag — one post per session, deduped server-side by message.
+let _ocDiagSent = false
+function _ocDiagReport(hidden, grouped) {
+  if (_ocDiagSent) return
+  _ocDiagSent = true
+  try {
+    const qs = (_ocLiveQuestions ?? []).map(q =>
+      `${(q.name || '?').slice(0, 40)}[n=${(q.namedOutcomes ?? []).length}${q.fallbackOutcome != null ? ',fb' : ''}]`)
+    const os = (_ocLiveOutcomes ?? []).map(o =>
+      `${o.outcome}:${_parseOutcomeDesc(o.description || '').class || '-'}:sides=${(o.sideSpecs ?? []).length}`)
+    fetch('/api/error', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        kind: 'ocdiag',
+        message: `outcomes=${os.length} questions=${qs.length} hidden=${hidden.size} grouped=${grouped.size}`,
+        stack: `Q: ${qs.join(' | ')}\nO: ${os.join(' ')}`.slice(0, 1900),
+        url: location.pathname, ua: '', screen: '', lang: '',
+      }),
+    }).catch(() => {})
+  } catch {}
+}
+
 // Group the flat card list into emoji sections + a Trending hero strip.
 // Mobile predictions sheet only — the desktop grid stays flat.
 function _ocSectionize() {
@@ -22210,6 +22570,8 @@ function _ocSectionize() {
     const d = _parseOutcomeDesc(o.description || '')
     if (!d.class && /\b(fallback|recurring|named outcome|template)\b/i.test(o.name || '')) hidden.add(id)
   }
+
+  _ocDiagReport(hidden, grouped)
 
   // ── Compose the new grid ────────────────────────────────────────────────────
   const frag  = document.createDocumentFragment()
@@ -22329,7 +22691,11 @@ async function renderOutcomes() {
       root.innerHTML = '<div class="ma-empty">No prediction markets available</div>'
       return
     }
-    _buildOcTokenMap(outcomes)
+    // Pass the raw response, not the outcomes array: _buildOcTokenMap reads
+    // `questions` off the object to fill ocQuestionMap (the grouped market title),
+    // and an array argument makes it skip that half entirely. It derives the same
+    // outcome list from `raw.outcomes`, so nothing else changes.
+    _buildOcTokenMap(raw)
     // Combined view: "can trade" is per selected account's agent key, not a single client.
     const connected = window.__canTradeUI()
     const expiryMap = {}
@@ -22598,8 +22964,7 @@ function _ocSyncLimitPx(id, force = false) {
   if (!force && pxEl.value) return
   const panel  = document.getElementById('oc-panel-' + id)
   const side   = parseInt(panel?.dataset.side ?? 0)
-  const prices = _ocPrices[id]
-  const mid    = prices ? (side === 0 ? prices.yes : prices.no) : 0
+  const mid    = _ocSidePrice(id, side)
   if (mid > 0) pxEl.value = (mid * 100).toFixed(1)
 }
 
@@ -22609,8 +22974,7 @@ function _ocEffPx(id) {
   const panel = document.getElementById('oc-panel-' + id)
   if (!panel) return 0
   const side   = parseInt(panel.dataset.side ?? 0)
-  const prices = _ocPrices[id]
-  const mid    = prices ? (side === 0 ? prices.yes : prices.no) : 0
+  const mid    = _ocSidePrice(id, side)
   if ((panel.dataset.otype || 'market') === 'limit') {
     const cents = parseFloat(document.getElementById('oc-px-' + id)?.value)
     if (cents > 0) return Math.min(0.999, Math.max(0.001, cents / 100))
@@ -23275,7 +23639,7 @@ function _ovOcRow(b, id) {
   const oid   = Math.floor(n / 10), side = n % 10
   const entry = total > 0 ? cost / total : 0
   const fromBook  = _ocMarkCache[b.coin] || 0
-  const fromPanel = _ocPrices?.[oid] ? (side === 0 ? _ocPrices[oid].yes : _ocPrices[oid].no) : 0
+  const fromPanel = _ocSidePrice(oid, side)
   const mark  = fromBook > 0 ? fromBook : (fromPanel > 0 ? fromPanel : entry)
   const value = total * mark
   const pnl   = (mark - entry) * total

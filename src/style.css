@@ -3957,14 +3957,24 @@ body.oc-card-open #mobPredictBody { overflow: hidden !important; }
 
 /* Chart */
 .oc-chart-wrap {
-  height: 118px; position: relative; border-radius: 10px; overflow: hidden;
+  /* flex-shrink:0 is what actually makes the height stick on a phone. .oc-card is a flex
+     column, and when expanded on mobile it is position:fixed; inset:0 — pinned to the
+     viewport. Its content is taller than that, so every flex item gets shrunk to try to fit
+     and the chart collapsed to a sliver. Desktop viewports are tall enough that nothing
+     shrank, which is why it looked correct in devtools and wrong on the device. Refusing to
+     shrink keeps the height and lets the card scroll, which is what overflow-y:auto is for. */
+  height: 260px; flex-shrink: 0; position: relative; border-radius: 10px; overflow: hidden;
   background: linear-gradient(180deg, rgba(255,255,255,.022), rgba(255,255,255,0) 60%), var(--panel-2);
   border: 1px solid var(--rule); margin-bottom: 10px;
   /* Chart.js draws its own inner padding (layout.padding) — extra padding here shrinks the
      canvas and clipped the edge labels, which is what made the chart look cut-off/cheap. */
   padding: 0;
 }
-.oc-chart-wrap canvas { width: 100% !important; height: 100% !important; }
+/* pan-y is what makes the chart scrubbable on touch WITHOUT trapping the sheet: the browser
+   keeps vertical panning (so a swipe past the card still scrolls), while horizontal gestures
+   go to the canvas for scrubbing. Without it, enabling touch events in Chart.js made the
+   predictions sheet feel stuck — see the events list in the chart config. */
+.oc-chart-wrap canvas { width: 100% !important; height: 100% !important; touch-action: pan-y; }
 .oc-chart-empty {
   height: 100%; display: flex; align-items: center; justify-content: center;
   font-size: 10px; color: var(--muted); font-family: var(--font-mono);

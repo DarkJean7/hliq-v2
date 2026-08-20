@@ -4,7 +4,7 @@
 // and forwards /api/* to the strategy server on port 3001.
 
 import { createServer, request as httpRequest } from 'node:http'
-import { createReadStream, statSync, existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { createReadStream, statSync, existsSync, writeFileSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -49,6 +49,22 @@ const HASH_RE = /[-.][A-Za-z0-9_-]{8,}\.(js|css)$/
 // Self-hosted font files never change under a given name; fonts.css stays
 // revalidated so it can point at new filenames if the families are regenerated.
 const FONT_RE = /\.(woff2?|ttf)$/
+
+// Write via a temp file + rename, because this process now runs as TWO cluster workers.
+// writeFileSync truncates before it writes, so a plain write leaves a window where the other
+// worker can read a half-written icon or a truncated meta JSON while serving the same coin.
+// rename(2) is atomic within a filesystem, so a reader sees either the old file or the new
+// one and never a partial. The temp name carries the pid so two workers cannot collide on it.
+function writeAtomic(path, data) {
+  const tmp = `${path}.${process.pid}.tmp`
+  try {
+    writeFileSync(tmp, data)
+    renameSync(tmp, path)
+  } catch (e) {
+    try { unlinkSync(tmp) } catch {}   // don't leave debris behind on a failed write
+    throw e
+  }
+}
 
 function serveFile(res, filePath, allowIndexFallback = true) {
   const ext      = extname(filePath).toLowerCase()
@@ -121,7 +137,7 @@ createServer((req, res) => {
           const { dataUrl } = JSON.parse(body)
           if (!dataUrl?.startsWith('data:image/')) { res.writeHead(400).end(); return }
           mkdirSync(pfpDir, { recursive: true })
-          writeFileSync(imgPath, Buffer.from(dataUrl.split(',')[1], 'base64'))
+          writeAtomic(imgPath, Buffer.from(dataUrl.split(',')[1], 'base64'))
           res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}')
         } catch { res.writeHead(500).end() }
       })
@@ -164,7 +180,9 @@ createServer((req, res) => {
       }
       return null
     }
-    const store = r => { mkdirSync(iconDir, { recursive: true }); writeFileSync(join(iconDir, safe + r.ext), r.buf); writeFileSync(metaPath, JSON.stringify({ ct: r.ct, ext: r.ext, src: r.src })) }
+    // Artwork first, then meta. Meta is what a reader trusts to decide the file is there, so
+    // it must never land before the image it points at.
+    const store = r => { mkdirSync(iconDir, { recursive: true }); writeAtomic(join(iconDir, safe + r.ext), r.buf); writeAtomic(metaPath, JSON.stringify({ ct: r.ct, ext: r.ext, src: r.src })) }
     const serve = r => res.writeHead(200, { 'Content-Type': r.ct, 'Cache-Control': 'public, max-age=86400' }).end(r.buf)
     ;(async () => {
       if (existsSync(metaPath)) {
@@ -192,7 +210,7 @@ createServer((req, res) => {
       if (got) { store(got); serve(got); return }
       // Nothing worked — remember the miss (so we don't re-probe every request) and return a
       // transparent 200 (not a 404) so the client's letter base shows with no console error.
-      try { mkdirSync(iconDir, { recursive: true }); writeFileSync(metaPath, JSON.stringify({ miss: true, at: Date.now() })) } catch {}
+      try { mkdirSync(iconDir, { recursive: true }); writeAtomic(metaPath, JSON.stringify({ miss: true, at: Date.now() })) } catch {}
       sendIconMiss(res)
     })()
     return
