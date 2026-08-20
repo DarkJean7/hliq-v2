@@ -3072,9 +3072,10 @@ function _freeMarginUsd() {
   return Math.max(0, perpFree + spotFree)
 }
 
-// Free margin is drawn in a neutral tone rather than a hashed coin colour so it reads as
-// "not deployed" at a glance instead of looking like one more asset.
-const _ALLOC_FREE_COLOR = 'var(--muted)'
+// Free margin is drawn in USDC's brand blue rather than a hashed coin colour, so the slice
+// names what it is (cash) instead of looking like one more traded asset. Fixed hex, not a
+// theme token: it is a brand colour and reads the same in light and dark.
+const _ALLOC_FREE_COLOR = '#2775CA'
 const _allocColor = s => s.isFree ? _ALLOC_FREE_COLOR : _coinColor(s.coin)
 const _allocLabel = s => s.isFree ? _T('Free margin', 'Margen libre') : _ocCoinLabel(s.coin)
 
