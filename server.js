@@ -206,14 +206,59 @@ function getAuth(req, explicitToken) {
   return p ? { signer: p.s, admin: false } : null
 }
 
+// Hyperliquid is the authority on who may sign for a wallet — ask it.
+//
+// botOwner is in-memory and first-write-wins, so a claim made by a key that is no longer
+// the account's agent (rotated since, or persisted from before a restart) locked the real
+// owner out of their own bots with "account controlled by another key". Every route that
+// could fix it is itself gated, so the only escape was restarting hliq-strat. An agent key
+// is rotatable by design, so binding ownership to one agent address forever was wrong.
+//
+// If the caller's agent address is CURRENTLY approved for that master wallet on HL, it
+// genuinely controls the account and may take the claim over. This only ever widens access
+// to a key HL itself vouches for — an unapproved key still gets nothing.
+const _agentOkCache = new Map()   // `${master}|${agent}` -> { ok, exp }
+async function agentApprovedFor(address, agentAddr) {
+  const master = String(address ?? '').toLowerCase()
+  const agent  = String(agentAddr ?? '').toLowerCase()
+  if (!/^0x[0-9a-f]{40}$/.test(master) || !/^0x[0-9a-f]{40}$/.test(agent)) return false
+  const ck = `${master}|${agent}`
+  const hit = _agentOkCache.get(ck)
+  if (hit && hit.exp > Date.now()) return hit.ok
+  let ok = false
+  try {
+    const r = await fetch(HL_INFO, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'extraAgents', user: master }),
+      signal: AbortSignal.timeout(5000),
+    })
+    if (r.ok) {
+      const list = await r.json()
+      const now  = Date.now()
+      ok = Array.isArray(list) && list.some(a =>
+        String(a?.address ?? '').toLowerCase() === agent &&
+        (!a?.validUntil || Number(a.validUntil) > now))
+    }
+  } catch { ok = false }
+  // Cache a positive far longer than a negative: a rejection may just be a network blip,
+  // and caching that would keep the real owner locked out for the whole window.
+  _agentOkCache.set(ck, { ok, exp: Date.now() + (ok ? 300_000 : 15_000) })
+  return ok
+}
+
 // Gate an operation on `address`'s bots. On failure, writes the response and returns false.
-function requireOwner(req, res, address, explicitToken) {
+async function requireOwner(req, res, address, explicitToken) {
   const auth = getAuth(req, explicitToken)
   if (!auth) { json(res, 401, { error: 'authentication required' }); return false }
   if (auth.admin) return true
   const owner = botOwner.get(String(address).toLowerCase())
-  if (!owner || owner !== auth.signer) { json(res, 403, { error: 'not authorized for this account' }); return false }
-  return true
+  if (owner && owner === auth.signer) return true
+  if (await agentApprovedFor(address, auth.signer)) {
+    botOwner.set(String(address).toLowerCase(), auth.signer)   // HL vouches for it — re-claim
+    return true
+  }
+  json(res, 403, { error: owner ? 'not authorized for this account' : 'no bots claimed for this account' })
+  return false
 }
 
 let shuttingDown = false
@@ -1041,8 +1086,10 @@ const server = createServer(async (req, res) => {
     if (!auth.admin) {
       const agentAddr = agentAddrFromKey(b.agentKey ?? '')
       if (!agentAddr || agentAddr !== auth.signer) return json(res, 403, { error: 'start with your own agent key' })
+      // A stale claim must not lock the real owner out — see agentApprovedFor.
       const owner = botOwner.get(String(b.address ?? '').toLowerCase())
-      if (owner && owner !== auth.signer)          return json(res, 403, { error: 'account controlled by another key' })
+      if (owner && owner !== auth.signer && !(await agentApprovedFor(b.address ?? '', auth.signer)))
+        return json(res, 403, { error: 'account controlled by another key' })
     }
     const result = await startStrategy(b.type, b.args ?? [], b.agentKey ?? '', b.address ?? '', b.instance ?? '')
     return json(res, result.ok ? 200 : 400, result)
@@ -1051,7 +1098,7 @@ const server = createServer(async (req, res) => {
   // ── POST /api/stop ────────────────────────────────────────────────────────
   if (method === 'POST' && path === '/api/stop') {
     const b = await body(req)
-    if (!requireOwner(req, res, b.address ?? '')) return
+    if (!await requireOwner(req, res, b.address ?? '')) return
     const result = stopStrategy(b.type, b.address ?? '', b.instance ?? '')
     return json(res, result.ok ? 200 : 400, result)
   }
@@ -1059,21 +1106,21 @@ const server = createServer(async (req, res) => {
   // ── POST /api/restart ─────────────────────────────────────────────────────
   if (method === 'POST' && path === '/api/restart') {
     const b = await body(req)
-    if (!requireOwner(req, res, b.address ?? '')) return
+    if (!await requireOwner(req, res, b.address ?? '')) return
     const result = await restartStrategy(b.type, b.address ?? '', b.instance ?? '')
     return json(res, result.ok ? 200 : 400, result)
   }
 
   if (method === 'POST' && path === '/api/pause') {
     const b = await body(req)
-    if (!requireOwner(req, res, b.address ?? '')) return
+    if (!await requireOwner(req, res, b.address ?? '')) return
     const r = pauseStrategy(b.type, b.address ?? '', b.instance ?? '')
     return json(res, r.ok ? 200 : 400, r)
   }
 
   if (method === 'POST' && path === '/api/resume') {
     const b = await body(req)
-    if (!requireOwner(req, res, b.address ?? '')) return
+    if (!await requireOwner(req, res, b.address ?? '')) return
     const r = resumeStrategy(b.type, b.address ?? '', b.instance ?? '')
     return json(res, r.ok ? 200 : 400, r)
   }
@@ -1099,7 +1146,7 @@ const server = createServer(async (req, res) => {
   // ── GET /api/wins/:type?address=0x...    → one strategy ───────────────────
   if (method === 'GET' && path.startsWith('/api/wins')) {
     const addr  = url.searchParams.get('address') || ''
-    if (!requireOwner(req, res, addr)) return
+    if (!await requireOwner(req, res, addr)) return
     const parts = path.split('/').filter(Boolean)   // ['api','wins','type'?]
     if (parts.length >= 3) return json(res, 200, readWins(parts[2], addr))
     return json(res, 200, readAllWins(addr))
@@ -1109,7 +1156,7 @@ const server = createServer(async (req, res) => {
   // ── GET /api/history/:type/:filename?address=0x...         → read one file ──
   if (method === 'GET' && path.startsWith('/api/history/')) {
     const addr  = url.searchParams.get('address') || ''
-    if (!requireOwner(req, res, addr)) return
+    if (!await requireOwner(req, res, addr)) return
     const parts = path.split('/').filter(Boolean)   // ['api','history','type','file'?]
     const type  = parts[2]
     if (!type) return json(res, 400, { error: 'missing type' })
@@ -1127,7 +1174,7 @@ const server = createServer(async (req, res) => {
     const addr = url.searchParams.get('address') || ''
     const inst = url.searchParams.get('instance') || ''
     if (!type) return json(res, 400, { error: 'missing type' })
-    if (!requireOwner(req, res, addr, url.searchParams.get('token'))) return
+    if (!await requireOwner(req, res, addr, url.searchParams.get('token'))) return
 
     res.writeHead(200, {
       ...CORS,
