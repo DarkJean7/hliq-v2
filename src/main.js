@@ -20335,16 +20335,39 @@ async function _lbFetchResults(entries) {
     let csNow = cs
     const _histFresh = _hc && Date.now() - _hc.ts < _MA_HIST_TTL2
     if (_histFresh && _maFillsStale) {
-      // Post-action: refresh only the activity log. KEEP the cached snapshot+anchor pair —
-      // it's internally consistent, and the live perp delta already carries the close.
-      ;({ portfolio, perpAtHist: _perpAtHist } = _hc)
-      const [f2, fu2] = await Promise.all([
+      // Post-action: refresh the activity log AND re-anchor the snapshot+anchor pair.
+      //
+      // This used to keep the cached pair, on the reasoning that the live perp delta
+      // already carries the close. That holds for a close, where realized PnL is a real
+      // equity change — but NOT for opening a position, which can move USDC spot→perp to
+      // fund the margin (HL does it automatically, and a bot's top-up does it too). That
+      // transfer lifts main-dex perp equity without changing the unified account value,
+      // so `_portVal + (perpNow − _perpBase)` counted it as profit. Against a stale
+      // anchor the inflated figure never washed out: every later tick re-derived it from
+      // the same bad pair, so the spike persisted until the history TTL expired.
+      //
+      // Re-reading both puts the wallet back on HL's own number. One weight-2 portfolio
+      // call, and only for the wallet that was just acted on.
+      const [p2, f2, fu2] = await Promise.all([
+        info.portfolio({ user: entry.addr }).catch(() => null),
         _histFillsFrom(entry.addr, _hc.fills, info)
           .catch(() => info.userFills({ user: entry.addr }).catch(() => _hc.fills ?? [])),
         _histFundingFrom(entry.addr, _hc.funding, info).catch(() => _hc.funding ?? []),
       ])
       fills = f2; funding = fu2
-      _histSet(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: _hc.ts })
+      if (p2) {
+        // Anchor is read AFTER the snapshot and stored with it — same pairing rule the
+        // cache-miss branch below depends on. Never one without the other.
+        portfolio = p2
+        try { csNow = await info.clearinghouseState({ user: entry.addr }) } catch { csNow = cs }
+        _perpAtHist = parseFloat(csNow.marginSummary?.accountValue ?? 0)
+        _histSet(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: Date.now() })
+      } else {
+        // Snapshot fetch failed — keep the cached pair rather than mixing a fresh anchor
+        // with a stale snapshot, which is the exact mismatch this branch exists to avoid.
+        ;({ portfolio, perpAtHist: _perpAtHist } = _hc)
+        _histSet(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: _hc.ts })
+      }
     } else if (_histFresh) {
       ({ portfolio, fills, funding, perpAtHist: _perpAtHist } = _hc)
     } else {
