@@ -204,6 +204,7 @@ import {
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey } from './format.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
+import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread } from './compare.js'
 import { ES_DICT } from './i18n-es.js'
 
 /**
@@ -13062,7 +13063,10 @@ function _mobVRenderContent(tick = false) {
           />
           <div id="mobWatchSearchResults" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--panel-2);border:1px solid var(--border);border-radius:8px;margin-top:4px;overflow:hidden;z-index:20;box-shadow:0 4px 16px rgba(0,0,0,.4)"></div>
         </div>
-      </div>
+        <button onclick="window.__openWatchAdvanced()" style="margin-top:8px;width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px;border-radius:9px;border:1px solid var(--accent);background:rgba(0,229,160,0.08);color:var(--accent);font-size:12.5px;font-weight:700;cursor:pointer;touch-action:manipulation">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="13" height="13"><path d="M3 17l6-6 4 4 7-7"/><path d="M14 8h6v6"/></svg>
+          ${_T('Advanced · compare charts', 'Avanzado · comparar gráficos')}
+        </button>
       ${!list.length
         ? `<div class="mob-v-empty" style="padding:26px 16px 18px">No coins yet — search above to add.</div>`
         : list.map(coin => {
@@ -19524,6 +19528,146 @@ const WATCH_TF_CONFIG = {
 
 // Cache: { 'BTC_1D': { ts, candles } }
 const _watchCandleCache = {}
+
+// ─── WATCH: ADVANCED / COMPARE ────────────────────────────────────────────────
+// Full-screen overlay over the Watch tab. Pick several coins and see them on ONE chart,
+// normalised to % change so the shapes are comparable — the whole point, since raw prices
+// on a shared axis would flatten everything against BTC.
+//
+// Reuses the Watch tab's own candle cache and timeframe config, so opening this costs no
+// extra requests for anything already fetched, and its numbers cannot disagree with the
+// sparklines it sits behind.
+const _CMP_OVERLAY = 'watchAdvOverlay'
+let _cmpSel = new Set()      // coins plotted
+let _cmpTf  = '1W'
+let _cmpLoading = false
+
+function _cmpEnsureOverlay() {
+  let el = document.getElementById(_CMP_OVERLAY)
+  if (el) return el
+  el = document.createElement('div')
+  el.id = _CMP_OVERLAY
+  // Same layer as the other full-screen sheets (Global Chat is 100055). overflow-x is
+  // explicit so an over-wide child cannot make the whole sheet pan sideways.
+  el.style.cssText = 'display:none;position:fixed;inset:0;z-index:100055;background:var(--bg);'
+                   + 'flex-direction:column;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch'
+  document.body.appendChild(el)
+  return el
+}
+
+window.__closeWatchAdvanced = function() {
+  const el = document.getElementById(_CMP_OVERLAY)
+  if (el) el.style.display = 'none'
+}
+
+window.__cmpSetTf = function(tf) { _cmpTf = tf; _cmpRender(); _cmpFetch() }
+
+window.__cmpToggle = function(coin) {
+  if (_cmpSel.has(coin)) _cmpSel.delete(coin); else _cmpSel.add(coin)
+  _cmpRender(); _cmpFetch()
+}
+
+// Pull candles for the selected coins at the current timeframe, reusing anything already
+// cached and fresh. Fetching ONLY what is missing keeps this from becoming a burst that
+// trips the shared rate limiter.
+async function _cmpFetch() {
+  if (_cmpLoading || _hlLimited()) return
+  const cfg  = WATCH_TF_CONFIG[_cmpTf]
+  const now  = Date.now()
+  const need = [..._cmpSel].filter(c => {
+    const x = _watchCandleCache[`${c}_${_cmpTf}`]
+    return !x || (now - x.ts) >= WATCH_CACHE_TTL
+  })
+  if (!need.length) return
+  _cmpLoading = true
+  _cmpRender()
+  try {
+    const info = new InfoClient({ transport: _transport })
+    await Promise.all(need.map(async coin => {
+      try {
+        const candles = await info.candleSnapshot({ coin, interval: cfg.interval, startTime: cfg.startFn() })
+        if (candles?.length) _watchCandleCache[`${coin}_${_cmpTf}`] = { ts: now, candles }
+      } catch (e) { if (e.name !== 'AbortError') console.warn('compare candles', coin, e.message) }
+    }))
+  } finally { _cmpLoading = false; _cmpRender() }
+}
+
+function _cmpRender() {
+  const el = document.getElementById(_CMP_OVERLAY)
+  if (!el || el.style.display === 'none') return
+  const list = loadWatchlist()
+  const sel  = [..._cmpSel].filter(c => list.includes(c))
+  const byCoin = {}
+  for (const c of sel) {
+    const hit = _watchCandleCache[`${c}_${_cmpTf}`]
+    if (hit?.candles) byCoin[c] = hit.candles
+  }
+  const d  = computeCompare(byCoin, sel)
+  const sp = compareSpread(d)
+  const T  = (en, es) => _T(en, es ?? en)
+
+  const tfPills = Object.keys(WATCH_TF_CONFIG).map(tf =>
+    `<button onclick="window.__cmpSetTf('${tf}')" class="mob-pill${tf === _cmpTf ? ' active' : ''}">${tf}</button>`).join('')
+
+  const picker = list.length ? list.map(c => {
+    const on = _cmpSel.has(c)
+    return `<button onclick="window.__cmpToggle('${esc(c)}')" class="mob-pill${on ? ' active' : ''}" style="gap:6px">
+      <span style="width:8px;height:8px;border-radius:3px;background:${on ? _coinColor(c) : 'var(--border2)'}"></span>
+      ${esc(watchCoinLabel(c))}
+    </button>`
+  }).join('') : `<span style="font-size:12px;color:var(--muted)">${T('Add coins in Watch first.')}</span>`
+
+  const chart = sel.length === 0
+    ? `<div style="padding:38px 18px;text-align:center;color:var(--muted);font-size:13px">${T('Select two or more coins to compare.')}</div>`
+    : !d.series.length
+      ? `<div style="padding:38px 18px;text-align:center;color:var(--muted);font-size:13px">${_cmpLoading ? T('Loading…') : T('No candle data for this window.')}</div>`
+      : `<div style="padding:4px 14px 0">${compareChartSvg(d, { width: 340, height: 200 })}</div>
+         <div style="display:flex;justify-content:space-between;padding:2px 16px 0;font-size:10px;color:var(--muted)">
+           <span>${d.max >= 0 ? '+' : ''}${d.max.toFixed(1)}%</span><span>${d.min >= 0 ? '+' : ''}${d.min.toFixed(1)}%</span>
+         </div>
+         <div style="padding:10px 16px 0">${compareLegendHtml(d, { label: watchCoinLabel })}</div>`
+
+  const spreadRow = sp ? `
+    <div style="margin:12px 14px 0;padding:10px 12px;border-radius:11px;border:1px solid var(--border2);background:var(--panel-2)">
+      <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">${T('Spread over')} ${_cmpTf}</div>
+      <div style="font-size:13px;margin-top:3px">
+        <b>${esc(watchCoinLabel(sp.best.coin))}</b> ${T('beat')} <b>${esc(watchCoinLabel(sp.worst.coin))}</b>
+        ${T('by')} <b style="color:var(--accent)">${sp.spread.toFixed(2)}%</b>
+      </div>
+    </div>` : ''
+
+  el.innerHTML = `
+    <div style="flex-shrink:0;position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:10px;
+                padding:14px 14px 11px;border-bottom:1px solid var(--border);background:var(--bg)">
+      <span style="font-size:15px;font-weight:800">${T('Compare')}</span>
+      ${sel.length ? `<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;background:rgba(0,229,160,0.12);color:var(--accent)">${sel.length}</span>` : ''}
+      <span style="flex:1"></span>
+      <button onclick="window.__closeWatchAdvanced()" aria-label="Close"
+        style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);color:var(--fg);
+               border-radius:8px;padding:6px 11px;font-size:12px;font-weight:600;cursor:pointer">${T('Close')}</button>
+    </div>
+    <div style="display:flex;gap:5px;overflow-x:auto;padding:10px 14px 2px;scrollbar-width:none">${tfPills}</div>
+    ${chart}
+    ${spreadRow}
+    <div style="padding:16px 14px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">${T('Assets')}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;padding:0 14px">${picker}</div>
+    <div style="padding:14px;font-size:10.5px;color:var(--muted);line-height:1.5">
+      ${T('Every line is percent change from the start of the window, not price — that is what makes assets at different prices comparable. The axis is always %.')}
+    </div>
+    <div style="height:calc(70px + env(safe-area-inset-bottom))"></div>`
+}
+
+window.__openWatchAdvanced = function() {
+  const el = _cmpEnsureOverlay()
+  // Default to whatever is already on the watchlist, capped so the first open is readable
+  // rather than a tangle of ten lines.
+  if (!_cmpSel.size) _cmpSel = new Set(loadWatchlist().slice(0, 4))
+  el.style.display = 'flex'
+  el.scrollTop = 0
+  _cmpRender()
+  _cmpFetch()
+}
+
 const WATCH_CACHE_TTL   = 3 * 60_000  // 3 min
 let _watchFetchCtrl     = null
 let _watchData          = {}   // { coin: { tf: candles } }
