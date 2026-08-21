@@ -2811,9 +2811,16 @@ function _iconImg(coin, src, alt, style = '') {
     }
     _cgIconMap = map
     window.__cgIconMap = () => _cgIconMap
-    localStorage.setItem('cg_icon_map', JSON.stringify(map))
-    localStorage.setItem('cg_icon_map_at', Date.now().toString())
-    localStorage.setItem('cg_icon_map_ver_v3', '3')
+    // Only persist a map that actually has entries. Every fetch above swallows its error
+    // into [], so if CoinGecko throttles or is down, `map` is {} — and caching THAT stamps
+    // a fresh 24h timestamp, locking the whole app to letter avatars for a full day with no
+    // retry. An empty result is a failure, not an answer: leave the cache alone so the next
+    // load tries again (this run still shows letter avatars, which is the correct fallback).
+    if (Object.keys(map).length) {
+      localStorage.setItem('cg_icon_map', JSON.stringify(map))
+      localStorage.setItem('cg_icon_map_at', Date.now().toString())
+      localStorage.setItem('cg_icon_map_ver_v3', '3')
+    }
     // The map loads async; icons that rendered before it were requested without a CoinGecko
     // candidate (so the server cached HL). Re-render the on-screen icons now that the map is
     // ready — the new requests carry the CoinGecko URL, and the server upgrades those coins to
