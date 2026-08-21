@@ -19490,10 +19490,29 @@ async function ensureSpotMeta() {
       const meta = await infoClient.spotMeta()
       _watchSpotNameMap = {}
       _watchSpotKeyMap  = {}
+      // HL only gives the CORE pairs a friendly name; everything else comes back with
+      // name === "@N" (pair 107 is literally called "@107"). The readable label lives in
+      // the pair's tokens — [150, 0] means token 150 (HYPE) quoted in token 0 (USDC) — so
+      // resolve through those. Without this a HYPE spot buy showed as "@107" in History,
+      // Calendar and every other surface, because the map faithfully returned "@107".
+      const tokById = new Map((meta.tokens ?? []).map(t => [t.index, t.name]))
+      const nameFor = (u) => {
+        if (u.name && !/^@\d+$/.test(u.name)) return u.name
+        const base  = tokById.get(u.tokens?.[0])
+        const quote = tokById.get(u.tokens?.[1])
+        if (!base) return u.name
+        // USDC is the default quote; naming it adds noise. Anything else is worth showing.
+        return (quote && quote !== 'USDC') ? `${base}/${quote}` : base
+      }
       for (const u of (meta.universe ?? [])) {
-        const key = `@${u.index}`
-        _watchSpotNameMap[key]   = u.name
-        _watchSpotKeyMap[u.name] = key
+        const key  = `@${u.index}`
+        const name = nameFor(u)
+        _watchSpotNameMap[key] = name
+        // A token can appear in several pairs; the first (USDC-quoted) one wins so a
+        // search for "HYPE" resolves to the pair people actually mean.
+        if (name && _watchSpotKeyMap[name] === undefined) _watchSpotKeyMap[name] = key
+        // Keep the raw id addressable too — existing callers may hold "@107".
+        if (u.name && _watchSpotKeyMap[u.name] === undefined) _watchSpotKeyMap[u.name] = key
       }
     } catch (e) {
       console.warn('spotMeta fetch failed:', e.message)
@@ -22245,6 +22264,17 @@ function _ocCoinLabel(coin) {
     _lazyResolveSettledOutcome(coin)
     _refreshOcMetaForMiss()
     return _ocFallbackLabel(coin)
+  }
+  // Spot fills and balances identify the market by pair index ("@107"). This is the label
+  // resolver every surface goes through — History, Calendar, Positions, Spot — so resolving
+  // it here fixes all of them at once rather than at each call site.
+  if (typeof coin === 'string' && /^@\d+$/.test(coin)) {
+    const nm = _watchSpotNameMap?.[coin]
+    if (nm) return nm
+    // The map is lazy. Kick the fetch so the NEXT paint has it, and show the raw id until
+    // then rather than blocking a render on a network call.
+    if (!_watchSpotNameMap) { try { ensureSpotMeta() } catch {} }
+    return coin
   }
   return coinLabel(coin)
 }
