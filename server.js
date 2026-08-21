@@ -673,6 +673,24 @@ function lbIsRemoved(addr)    { return lbReadRemoved().includes(addr.toLowerCase
 // that name must present it. That is anti-griefing, NOT proof of honesty — a
 // determined user can still submit invented figures, which is why the board is
 // labelled self-reported in the UI.
+// HIDDEN is deliberately NOT the same as REMOVED. Removed drops the account from the
+// tracked list entirely and blocks silent re-entry. Hidden keeps it tracked and keeps its
+// stats fresh, but withholds it from the public board — for curating what the leaderboard
+// shows without losing the account or its history. Only a PIN-holder can see or set it.
+const LB_HIDDEN_FILE = join(__dirname, 'leaderboard-hidden.json')
+function lbReadHidden() {
+  if (!existsSync(LB_HIDDEN_FILE)) return []
+  try { const a = JSON.parse(readFileSync(LB_HIDDEN_FILE, 'utf8')); return Array.isArray(a) ? a.map(x => String(x).toLowerCase()) : [] }
+  catch { return [] }
+}
+function lbWriteHidden(list) { writeFileSync(LB_HIDDEN_FILE, JSON.stringify([...new Set(list.map(x => String(x).toLowerCase()))])) }
+function lbSetHidden(addr, on) {
+  const k = String(addr).toLowerCase()
+  const cur = lbReadHidden()
+  if (on && !cur.includes(k)) lbWriteHidden([...cur, k])
+  if (!on && cur.includes(k)) lbWriteHidden(cur.filter(x => x !== k))
+}
+
 const LB_PAPER_FILE = join(__dirname, 'leaderboard-paper.json')
 const LB_PAPER_MAX  = 300
 
@@ -1334,15 +1352,28 @@ const server = createServer(async (req, res) => {
     const addrs = existsSync(LEADERBOARD_FILE)
       ? JSON.parse(readFileSync(LEADERBOARD_FILE, 'utf8'))
       : []
-    return json(res, 200, addrs)
+    // Hidden accounts are withheld from everyone EXCEPT a PIN-holder, who gets them
+    // flagged so the dev UI can show and un-hide them. Filtering client-side instead
+    // would leave the addresses sitting in a public response, which is not hidden.
+    const hidden = new Set(lbReadHidden())
+    if (!hidden.size) return json(res, 200, addrs)
+    const isAdmin = LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN
+    if (isAdmin) return json(res, 200, addrs.map(e => hidden.has(String(e.addr).toLowerCase()) ? { ...e, hidden: true } : e))
+    return json(res, 200, addrs.filter(e => !hidden.has(String(e.addr).toLowerCase())))
   }
 
   // ── GET /api/leaderboard/stats → pre-computed rows (no client fan-out) ────
   if (method === 'GET' && path === '/api/leaderboard/stats') {
     const s = lbReadStats()
     const listed = new Set(lbReadList().map(e => e.addr.toLowerCase()))
+    const hidden  = new Set(lbReadHidden())
+    const isAdmin = LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN
     const rows = Object.values(s.rows ?? {})
       .filter(r => listed.has(r.addr.toLowerCase()))   // never serve a de-listed account
+      // Hidden rows are withheld unless the caller holds the PIN, in which case they come
+      // back flagged so the dev board can render them as hidden rather than omit them.
+      .filter(r => isAdmin || !hidden.has(r.addr.toLowerCase()))
+      .map(r => hidden.has(r.addr.toLowerCase()) ? { ...r, hidden: true } : r)
       // drop internal accumulators/cursors — `windows` in particular is large
       .map(({ lastFillTs, lastFundingTs, windows, fees, volume, funding, dexes, dexSweepAt, ...row }) => row)
       .sort((a, b) => b.accountValue - a.accountValue)
@@ -1613,6 +1644,18 @@ const server = createServer(async (req, res) => {
     lbWriteList(list)
     lbRefreshAll().catch(() => {})   // pick the newcomer up right away
     return json(res, 200, { ok: true, added: true })
+  }
+
+  // ── POST /api/leaderboard/hide { addr, hidden } → dev-only visibility toggle ──
+  // PIN-gated and fails closed when LB_PIN is unset, matching the admin-overwrite route:
+  // an unset PIN must never mean "anyone may curate the public board".
+  if (method === 'POST' && path === '/api/leaderboard/hide') {
+    if (!LB_PIN) return json(res, 503, { error: 'admin PIN not configured' })
+    if ((req.headers['x-lb-pin'] ?? '') !== LB_PIN) return json(res, 403, { error: 'forbidden' })
+    const b = await body(req)
+    if (!isAddr(b.addr)) return json(res, 400, { error: 'invalid address' })
+    lbSetHidden(b.addr, !!b.hidden)
+    return json(res, 200, { ok: true, addr: String(b.addr).toLowerCase(), hidden: !!b.hidden })
   }
 
   // ── POST /api/leaderboard/name { addr, name, ts, signature } ──────────────

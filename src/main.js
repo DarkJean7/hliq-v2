@@ -19938,9 +19938,15 @@ window.toggleDevMode = async function(wantOn) {
 // ─── LEADERBOARD ──────────────────────────────────────────────────────────────
 const _LB_LS_KEY = 'hliq_lb_extra'
 
+// Dev mode passes the PIN here too, so hidden entries appear in the management list.
+function _lbAuthHeaders() {
+  const pin = isDev() ? _lbGetPin() : ''
+  return pin ? { 'x-lb-pin': pin } : undefined
+}
+
 async function _lbLoad() {
   try {
-    const r = await fetch('/api/leaderboard')
+    const r = await fetch('/api/leaderboard', { headers: _lbAuthHeaders() ?? {} })
     if (!r.ok) throw new Error()
     const data = await r.json()
     // normalize: server may store plain strings (legacy) or {addr,label} objects
@@ -19957,7 +19963,10 @@ async function _lbLoad() {
 const _LB_STATS_MAX_AGE = 15 * 60 * 1000
 async function _lbFetchRows(entries) {
   try {
-    const r = await fetch('/api/leaderboard/stats')
+    // In dev mode send the PIN: the server withholds hidden rows from everyone else, and
+    // without it the dev board could not show — or un-hide — what it just hid.
+    const pin = isDev() ? _lbGetPin() : ''
+    const r = await fetch('/api/leaderboard/stats', pin ? { headers: { 'x-lb-pin': pin } } : undefined)
     if (r.ok) {
       const { updatedAt, rows } = await r.json()
       const fresh = Array.isArray(rows) && rows.length && (Date.now() - updatedAt) < _LB_STATS_MAX_AGE
@@ -20149,6 +20158,7 @@ function _lbRowHtml(entry, rank) {
             </div>
           </div>
           ${isDev() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbRename('${esc(entry.addr)}')">✎ Rename</button>` : ''}
+          ${isDev() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbToggleHide('${esc(entry.addr)}',${entry.hidden ? 'false' : 'true'})">${entry.hidden ? '👁 Unhide' : '🙈 Hide'}</button>` : ''}
           ${(() => { const own = _lbMyActiveAddr() && entry.addr.toLowerCase() === _lbMyActiveAddr(); if (!isDev() && !own) return ''; return `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbRemove('${esc(entry.addr)}','${isDev() ? 'dev' : 'owner'}')">🗑 Remove</button>` })()}
         </div>
         ${entry.error ? `<div class="lb-err">${entry.error}</div>` : `
@@ -20728,9 +20738,10 @@ function _lbFormEl(entries) {
     <div class="lb-form-title">Tracked Addresses</div>
     <div class="lb-extras" id="lbExtrasList">
       ${entries.length ? entries.map(e => `
-        <div class="lb-extra-row">
-          <span class="lb-extra-name notranslate">${esc(e.label || e.addr.slice(0, 8) + '…' + e.addr.slice(-5))}</span>
+        <div class="lb-extra-row"${e.hidden ? ' style="opacity:.55"' : ''}>
+          <span class="lb-extra-name notranslate">${esc(e.label || e.addr.slice(0, 8) + '…' + e.addr.slice(-5))}${e.hidden ? ' <span style="font-size:9px;font-weight:800;padding:1px 5px;border-radius:8px;background:rgba(255,159,10,0.15);color:var(--orange)">HIDDEN</span>' : ''}</span>
           <span class="lb-extra-addr-sub">${e.label ? e.addr.slice(0, 6) + '…' + e.addr.slice(-4) : ''}</span>
+          <button class="lb-edit" title="${e.hidden ? 'Show on the public board' : 'Hide from the public board'}" onclick="window.__lbToggleHide('${esc(e.addr)}',${e.hidden ? 'false' : 'true'})">${e.hidden ? '👁' : '🙈'}</button>
           <button class="lb-edit" onclick="window.__lbRename('${esc(e.addr)}')">✎</button>
           <button class="lb-remove" onclick="window.__lbAdminRemove('${esc(e.addr)}')">✕</button>
         </div>`).join('') : '<div class="lb-extras-empty">None added yet</div>'}
@@ -20801,6 +20812,33 @@ window.__lbAdminRemove = async function(addr) {
     await _lbSave(entries.filter(e => e.addr.toLowerCase() !== addr.toLowerCase()))
     renderLeaderboard()
   })
+}
+
+// Dev-only visibility toggle. Distinct from Remove: the account stays tracked and its
+// stats stay fresh, it just stops appearing on the public board. Reversible from the same
+// button, which is the point — Remove is not.
+window.__lbToggleHide = async function(addr, hide) {
+  const pin = await _lbAdminPin()
+  if (!pin) return
+  const send = p => fetch('/api/leaderboard/hide', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-lb-pin': p },
+    body: JSON.stringify({ addr, hidden: !!hide }),
+  })
+  try {
+    let r = await send(pin)
+    // A stale stored PIN should re-prompt once rather than silently failing, matching
+    // the remove flow.
+    if (r.status === 403) {
+      localStorage.removeItem('hliq_lb_pin')
+      const p2 = await _lbAdminPin(true)
+      if (!p2) return
+      r = await send(p2)
+    }
+    if (!r.ok) { _paperToast((await r.json().catch(() => ({}))).error || 'Could not update', 'err'); return }
+    _paperToast(hide ? 'Hidden from the public board' : 'Visible again', 'ok')
+    renderLeaderboard()
+  } catch { _paperToast('Server unreachable', 'err') }
 }
 
 window.__lbRename = async function(addr) {
