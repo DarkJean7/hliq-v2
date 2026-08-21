@@ -6877,6 +6877,10 @@ function _applyAcctLiveCs(r, cs, hip3Override) {
   // still yields a correct delta from the same anchor.
   if (_acctEqFilter(r.addr, cand) !== cand) return false
   r.accountValue  = cand
+  // The live main-dex perp equity this row was just bridged from. The server-anchored total
+  // needs the SUM of these, and recomputing it later from cached rows would reintroduce the
+  // per-device anchor this is meant to remove.
+  r._perpLive     = perpNow
   const hip3Unreal = hip3.reduce((s, ap) => s + parseFloat((ap.position ?? ap)?.unrealizedPnl ?? 0), 0)
   r._mainUnreal   = liveUnreal
   r.unrealizedPnl = liveUnreal + hip3Unreal
@@ -7145,6 +7149,64 @@ async function _allAcctRefreshOne(addr) {
 // Per-account cards (the same ones the Accounts tab shows), rendered inside the
 // combined view's Portfolio tab. Driven by the results we already have cached, so
 // this costs no extra Hyperliquid requests.
+// ─── SERVER-ANCHORED COMBINED TOTAL ───────────────────────────────────────────
+//
+// The combined headline used to be the SUM of eight per-wallet values, each bridged from
+// that DEVICE's cached snapshot+anchor. Two browsers therefore disagreed on the same eight
+// wallets — $3,432.46 vs $3,417.08 at the same instant, "today" $85 apart — because there
+// was no shared number to agree on. Every live clearinghouse figure matched; only the ones
+// derived from accountValue did not.
+//
+// /api/combined returns ONE snapshot and the perp anchor read with it. Both devices bridge
+// from that same pair, so the only remaining difference is the live perp delta, which comes
+// from Hyperliquid and is identical on both within a tick.
+let _combinedSnap   = null   // { accountValue, perpBase, dayAgo, updatedAt, wallets, missing }
+let _combinedAt     = 0
+let _combinedFetching = false
+const _COMBINED_REFRESH_MS = 60_000
+
+async function _fetchCombinedSnap(force = false) {
+  if (!state.isAllAccounts || _combinedFetching) return
+  if (!force && Date.now() - _combinedAt < _COMBINED_REFRESH_MS) return
+  const hidden = _maHiddenLoad()
+  const addrs  = (_allAcctLastResults ?? [])
+    .filter(r => r && !r.error && !hidden.has(r.addr))
+    .map(r => r.addr)
+  if (!addrs.length) return
+  _combinedFetching = true
+  try {
+    const r = await fetch('/api/combined', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ addrs }),
+    })
+    if (r.ok) {
+      const d = await r.json()
+      // Only adopt a snapshot that covers EVERY wallet. A partial one would understate the
+      // total and read as a real loss — the same trap the per-wallet merge already guards.
+      if (d && d.wallets === addrs.length && d.accountValue > 0) { _combinedSnap = d; _combinedAt = Date.now() }
+    }
+  } catch {} finally { _combinedFetching = false }
+}
+
+// Combined equity from the shared pair, or null when no usable snapshot is held yet (the
+// caller then falls back to the old per-device sum rather than showing nothing).
+function _combinedServerValue() {
+  if (!state.isAllAccounts || !_combinedSnap) return null
+  const hidden = _maHiddenLoad()
+  const rows = (_allAcctLastResults ?? []).filter(r => r && !r.error && !hidden.has(r.addr))
+  // The snapshot covers a specific set of wallets; if the visible set has changed since,
+  // the anchor no longer corresponds to it.
+  if (rows.length !== _combinedSnap.wallets) return null
+  let livePerp = 0
+  for (const r of rows) {
+    const p = parseFloat(r._perpLive)
+    if (!Number.isFinite(p)) return null   // a row hasn't had a live tick yet — don't guess
+    livePerp += p
+  }
+  return _combinedSnap.accountValue + (livePerp - _combinedSnap.perpBase)
+}
+
 function _allAcctCardsHtml() {
   return _allAcctLastResults
     .slice()
@@ -10461,7 +10523,11 @@ function _mobVRenderBalance() {
   const { accountValue: _rawVal, healthStr, healthCls, healthPct, accountLeverage, withdrawable, maintMargin, unrealizedPnl, netPnl } = computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids)
   // Combined view: filter transient glitch spikes (a single bad poll shouldn't flash a huge
   // fake equity). Single accounts are already smooth (one authoritative source).
-  const val = state.isAllAccounts ? _comboEqFilter(_rawVal) : _rawVal
+  // Prefer the server-anchored total in the combined view so every device agrees. Falls
+  // back to the per-device sum only until the first snapshot lands.
+  const _srvVal = _combinedServerValue()
+  const val = state.isAllAccounts ? _comboEqFilter(_srvVal ?? _rawVal) : _rawVal
+  if (state.isAllAccounts) _fetchCombinedSnap()
   _mobVRenderPet(healthPct, _petHasPos)
 
   // Format: $XX,XXX.XX — split cents dim
@@ -10483,7 +10549,11 @@ function _mobVRenderBalance() {
       // from a different moment on each device: the same account at the same instant read
       // +$70 (2.09%) on desktop and +$155 (4.77%) on mobile. Interpolating at a fixed
       // timestamp asks both devices the same question, so the grid only affects resolution.
-      const prev = _seriesValueAt(hist, todayStart)
+      // Same reasoning as the headline: when the shared snapshot is present its dayAgo is
+      // the one baseline both devices hold. The local series is the fallback.
+      const prev = (state.isAllAccounts && _combinedSnap && _srvVal != null && _combinedSnap.dayAgo > 0)
+        ? _combinedSnap.dayAgo
+        : _seriesValueAt(hist, todayStart)
       const diff = val - parseFloat(prev)
       const pct  = parseFloat(prev) > 0 ? diff / parseFloat(prev) * 100 : 0
       const up   = diff >= 0

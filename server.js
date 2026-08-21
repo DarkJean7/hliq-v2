@@ -691,6 +691,64 @@ function lbSetHidden(addr, on) {
   if (!on && cur.includes(k)) lbWriteHidden(cur.filter(x => x !== k))
 }
 
+// ─── COMBINED ACCOUNT VALUE (All Accounts) ────────────────────────────────────
+//
+// Why this is server-side. The combined view used to rebuild its total on each device from
+// that device's OWN cached snapshot+anchor per wallet, so two browsers showing the same
+// eight wallets produced different equity — measured at $3,432.46 on desktop against
+// $3,417.08 on mobile at the same instant, with "today" $85 apart. Every figure taken
+// straight from live clearinghouse data (positions, maintenance margin, free margin, net
+// PnL) matched; only the three derived from accountValue disagreed. There was no
+// authoritative number to agree ON.
+//
+// So compute the snapshot ONCE, here, and let every client bridge from the same pair:
+//     equity = accountValue + (liveTotalPerp − perpBase)
+// accountValue and perpBase are read together for each wallet and returned together, so a
+// client never mixes a snapshot from one moment with an anchor from another — the same
+// pairing rule the single-account path follows. What remains device-dependent is only the
+// live perp delta, which comes from HL and is identical on both within a tick.
+const COMBINED_TTL_MS = 60_000
+const _combinedCache = new Map()   // key(sorted addrs) -> { at, data }
+
+// Value of an HL [ts, "value"] series at an instant, by linear interpolation. Clamped: a
+// baseline has nothing to extrapolate from before the first sample.
+function _hlSeriesAt(hist, ts) {
+  if (!Array.isArray(hist) || !hist.length) return 0
+  const v = i => parseFloat(hist[i][1]) || 0
+  if (ts <= +hist[0][0]) return v(0)
+  if (ts >= +hist[hist.length - 1][0]) return v(hist.length - 1)
+  let lo = 0, hi = hist.length - 1
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (+hist[m][0] <= ts) lo = m; else hi = m }
+  const t0 = +hist[lo][0], t1 = +hist[hi][0]
+  return t1 === t0 ? v(lo) : v(lo) + (v(hi) - v(lo)) * ((ts - t0) / (t1 - t0))
+}
+
+async function computeCombined(addrs) {
+  const now = Date.now()
+  let accountValue = 0, perpBase = 0, dayAgo = 0
+  const missing = []
+  for (const addr of addrs) {
+    try {
+      // Portfolio FIRST, then the anchor — never the other way round. Reading the anchor
+      // before the (slower) portfolio call would pair a snapshot with a perp value from
+      // before it, and every later bridge would re-apply that gap.
+      const port = await hlInfo({ type: 'portfolio', user: addr })
+      const cs   = await hlInfo({ type: 'clearinghouseState', user: addr })
+      const hist = (port ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory ?? []
+      if (!hist.length) { missing.push(addr); continue }
+      accountValue += parseFloat(hist[hist.length - 1][1]) || 0
+      dayAgo       += _hlSeriesAt(hist, now - 86_400_000)
+      perpBase     += parseFloat(cs?.marginSummary?.accountValue ?? 0)
+    } catch (e) {
+      // A wallet that fails is reported, not silently dropped — dropping it would shrink
+      // the total and read as a real loss.
+      missing.push(addr)
+      if (e.rateLimited) { console.warn('[combined] HL 429 — serving what we have'); break }
+    }
+  }
+  return { updatedAt: now, accountValue, perpBase, dayAgo, wallets: addrs.length - missing.length, missing }
+}
+
 const LB_PAPER_FILE = join(__dirname, 'leaderboard-paper.json')
 const LB_PAPER_MAX  = 300
 
@@ -1644,6 +1702,33 @@ const server = createServer(async (req, res) => {
     lbWriteList(list)
     lbRefreshAll().catch(() => {})   // pick the newcomer up right away
     return json(res, 200, { ok: true, added: true })
+  }
+
+  // ── POST /api/combined { addrs } → one authoritative combined snapshot ───────
+  // Public and read-only: it returns aggregate figures for addresses the caller already
+  // knows, and every input is a public Hyperliquid address whose data anyone can query
+  // directly. Cached per address-set so N devices polling cost one upstream refresh.
+  if (method === 'POST' && path === '/api/combined') {
+    const b = await body(req)
+    const addrs = [...new Set((Array.isArray(b.addrs) ? b.addrs : [])
+      .filter(a => isAddr(a)).map(a => String(a).toLowerCase()))].sort()
+    if (!addrs.length) return json(res, 400, { error: 'no valid addresses' })
+    if (addrs.length > 50) return json(res, 400, { error: 'too many addresses' })
+
+    const key = addrs.join(',')
+    const hit = _combinedCache.get(key)
+    if (hit && (Date.now() - hit.at) < COMBINED_TTL_MS) return json(res, 200, { ...hit.data, cached: true })
+
+    try {
+      const data = await computeCombined(addrs)
+      // Never cache a fully-failed refresh: that would pin an empty total for the TTL.
+      if (data.wallets > 0) _combinedCache.set(key, { at: Date.now(), data })
+      else if (hit) return json(res, 200, { ...hit.data, stale: true })
+      return json(res, 200, data)
+    } catch (e) {
+      if (hit) return json(res, 200, { ...hit.data, stale: true })
+      return json(res, 503, { error: 'could not compute' })
+    }
   }
 
   // ── POST /api/leaderboard/hide { addr, hidden } → dev-only visibility toggle ──
