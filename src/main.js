@@ -8355,6 +8355,15 @@ const _ORD_SORTS = [
   ['px',   'Price', ['High → Low', 'Low → High']],
   ['sz',   'Size',  ['Large → Small', 'Small → Large']],
 ]
+// One arrow, rotated. The ▲/▼ text glyphs sat on their own baseline and rendered at a
+// different weight to everything around them; an inline stroke arrow inherits currentColor
+// and lines up with the text it follows.
+function _ordDirIcon(dir, px = 11) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"
+    stroke-linecap="round" stroke-linejoin="round" width="${px}" height="${px}"
+    style="flex-shrink:0;transition:transform .15s${dir === 1 ? '' : ';transform:rotate(180deg)'}"><path d="M12 19V5M6 11l6-6 6 6"/></svg>`
+}
+
 function _ordSortMeta() {
   const e = _ORD_SORTS.find(x => x[0] === _mobVOrdSortBy) ?? _ORD_SORTS[0]
   return { key: e[0], label: e[1], dirLabel: e[2][_mobVOrdSortDir === 1 ? 0 : 1] }
@@ -8371,19 +8380,19 @@ window._mobVOrdSortSheet = function() {
     // Tapping the active row flips its direction, so it advertises where that tap leads
     // rather than repeating the state above it.
     const sub = on ? dirs[_mobVOrdSortDir === 1 ? 0 : 1] + ' · ' + _T('tap to reverse', 'toca para invertir') : dirs[0]
-    return `<button data-k="${key}" style="display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:none;cursor:pointer;
-        background:${on ? 'rgba(0,229,160,0.10)' : 'transparent'};border-radius:12px;padding:13px 14px;margin-bottom:4px">
-      <span style="width:18px;flex-shrink:0;color:var(--accent);font-size:14px;font-weight:800">${on ? '✓' : ''}</span>
+    return `<button data-k="${key}" style="display:flex;align-items:center;gap:9px;width:100%;text-align:left;border:none;cursor:pointer;
+        background:${on ? 'rgba(0,229,160,0.10)' : 'transparent'};border-radius:9px;padding:8px 11px;margin-bottom:2px">
+      <span style="width:13px;flex-shrink:0;color:var(--accent);font-size:12px;font-weight:800;line-height:1">${on ? '✓' : ''}</span>
       <span style="flex:1;min-width:0">
-        <span style="display:block;font-size:15px;font-weight:700;color:${on ? 'var(--accent)' : 'var(--fg)'}">${_T(label, label)}</span>
-        <span style="display:block;font-size:12px;color:var(--muted);margin-top:2px">${sub}</span>
+        <span style="display:block;font-size:13.5px;font-weight:700;line-height:1.25;color:${on ? 'var(--accent)' : 'var(--fg)'}">${_T(label, label)}</span>
+        <span style="display:block;font-size:11px;line-height:1.3;color:var(--muted);margin-top:1px">${sub}</span>
       </span>
-      ${on ? `<span style="color:var(--accent);font-size:12px">${_mobVOrdSortDir === 1 ? '▲' : '▼'}</span>` : ''}
+      ${on ? `<span style="color:var(--accent);display:flex">${_ordDirIcon(_mobVOrdSortDir, 12)}</span>` : ''}
     </button>`
   }).join('')
-  ov.innerHTML = `<div style="background:var(--panel-2);border:1px solid var(--border2);border-radius:20px 20px 0 0;padding:18px 14px calc(14px + env(safe-area-inset-bottom))">
-    <div style="width:38px;height:4px;border-radius:2px;background:var(--border2);margin:-6px auto 14px"></div>
-    <div style="font-size:16px;font-weight:800;padding:0 4px 12px">${_T('Sort orders by', 'Ordenar órdenes por')}</div>
+  ov.innerHTML = `<div style="background:var(--panel-2);border:1px solid var(--border2);border-radius:16px 16px 0 0;padding:10px 10px calc(10px + env(safe-area-inset-bottom))">
+    <div style="width:32px;height:3px;border-radius:2px;background:var(--border2);margin:-2px auto 9px"></div>
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:0 3px 7px">${_T('Sort orders by', 'Ordenar órdenes por')}</div>
     ${rows}
   </div>`
   document.body.appendChild(ov)
@@ -12262,7 +12271,7 @@ function _mobVRenderContent(tick = false) {
               const m = _ordSortMeta()
               return `<button class="mob-pill active" onclick="window._mobVOrdSortSheet()" style="gap:6px">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="12" height="12" style="flex-shrink:0"><path d="M3 6h11M3 12h8M3 18h5"/><path d="M16.5 9.5L19.5 6l3 3.5M19.5 6.5v11"/></svg>
-                ${esc(m.label)}<span class="mob-pill-arrow">${_mobVOrdSortDir === 1 ? '▲' : '▼'}</span>
+                ${esc(m.label)}${_ordDirIcon(_mobVOrdSortDir, 10)}
               </button>`
             })()}
             <span style="font-size:11px;color:var(--muted);align-self:center;white-space:nowrap">${esc(_ordSortMeta().dirLabel)}</span>
