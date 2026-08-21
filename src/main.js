@@ -203,7 +203,7 @@ import {
   paperSettleOutcomes, paperFundingHistory, paperAccrueFunding, setPaperFundingRates, PAPER_COSTS,
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey } from './format.js'
-import { computeExposure, exposureHtml } from './exposure.js'
+import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { ES_DICT } from './i18n-es.js'
 
 /**
@@ -8609,9 +8609,30 @@ function _exposureRows() {
   }]
 }
 
+// Coins that have a live TP or STOP trigger order standing. Same detection the chart uses:
+// HL reports these as an orderType of "Take Profit…"/"Stop…", or a triggerCondition. A plain
+// limit order is NOT protection — it is an entry, and counting it would mark risky positions
+// as covered.
+function _protectedCoins() {
+  const out = new Set()
+  for (const o of (state.openOrders ?? [])) {
+    const ot = String(o?.orderType ?? '')
+    const isTp = ot.startsWith('Take Profit') || o?.triggerCondition === 'tp'
+    const isSl = ot.startsWith('Stop')        || o?.triggerCondition === 'sl'
+    if ((isTp || isSl) && o?.coin) out.add(String(o.coin).toUpperCase())
+  }
+  return out
+}
+
 function _mobVRenderExposure(el) {
-  const d = computeExposure(_exposureRows())
-  el.innerHTML = _allocViewHeader() + exposureHtml(d, fmtUSD, (en, es) => _T(en, es ?? en))
+  const rows = _exposureRows()
+  const T    = (en, es) => _T(en, es ?? en)
+  const d    = computeExposure(rows)
+  const st   = computeStress(rows)
+  const unp  = computeUnprotected(rows, _protectedCoins())
+  el.innerHTML = _allocViewHeader()
+    + exposureHtml(d, fmtUSD, T)
+    + stressHtml(st, unp, fmtUSD, T)
 }
 
 // Kept so anything still calling it lands on the right screen, mirroring __openMovers.
@@ -9269,13 +9290,38 @@ function _mobVGid(coin, side) { return `${String(coin).replace(/[^a-z0-9]/gi, ''
 // merge. Expands to the individual per-account cards (passed in as `members[].html`).
 // Small badge shown under a position's MARK price when a server-side guard is armed for that
 // coin — 🛡 Liq Guard and/or 🛑 Lev Brake — so the user sees at a glance that it's protected.
+// Unfired price alerts per coin. Memoised for a second because the badge is rendered once
+// per position card — with ~19 positions that would otherwise be 19 localStorage reads and
+// JSON parses on every repaint.
+let _paCoinCounts = null, _paCoinCountsAt = 0
+function _alertCountByCoin() {
+  if (_paCoinCounts && Date.now() - _paCoinCountsAt < 1000) return _paCoinCounts
+  const m = new Map()
+  for (const a of _paLoad()) {
+    // A fired alert is history — it is no longer watching anything, so it must not make the
+    // card look armed.
+    if (a?.fired || !a?.coin) continue
+    const k = String(a.coin).toUpperCase()
+    m.set(k, (m.get(k) ?? 0) + 1)
+  }
+  _paCoinCounts = m; _paCoinCountsAt = Date.now()
+  return m
+}
+
 function _mobVGuardBadge(coin) {
   const c   = String(coin).toUpperCase()
   const liq = !!serverStatus?._instances?.[`liqguard:${c}`]
   const brk = !!serverStatus?._instances?.[`levbrake:${c}`]
-  if (!liq && !brk) return ''
-  const tip = [liq ? '🛡 Liq Guard' : '', brk ? '🛑 Lev Brake' : ''].filter(Boolean).join(' · ') + ' active'
-  return `<div style="display:flex;gap:4px;justify-content:center;margin-top:3px;line-height:1;font-size:11px" title="${tip}">${liq ? '🛡' : ''}${brk ? '🛑' : ''}</div>`
+  // Price alerts live client-side while the two guards are server bots, but from the card's
+  // point of view they are the same fact: something is armed and watching this coin.
+  const alerts = _alertCountByCoin().get(c) ?? 0
+  if (!liq && !brk && !alerts) return ''
+  const tip = [
+    liq ? '🛡 Liq Guard' : '',
+    brk ? '🛑 Lev Brake' : '',
+    alerts ? `🔔 ${alerts} ${alerts === 1 ? _T('price alert', 'alerta de precio') : _T('price alerts', 'alertas de precio')}` : '',
+  ].filter(Boolean).join(' · ') + ' ' + _T('active', 'activo')
+  return `<div style="display:flex;gap:4px;justify-content:center;margin-top:3px;line-height:1;font-size:11px" title="${esc(tip)}">${liq ? '🛡' : ''}${brk ? '🛑' : ''}${alerts ? '🔔' : ''}</div>`
 }
 
 function _mobVMergedPosCard(members) {
@@ -18866,7 +18912,9 @@ window.__muteNotifs = async function(minutes = 1440, btn = null) {
 // ─── PRICE ALERTS ─────────────────────────────────────────────────────────────
 const _PA_KEY = 'hliq_price_alerts'
 function _paLoad() { try { return JSON.parse(localStorage.getItem(_PA_KEY) || '[]') } catch { return [] } }
-function _paSave(a) { localStorage.setItem(_PA_KEY, JSON.stringify(a)) }
+// Drop the badge memo so a newly set or cleared alert shows on the card immediately rather
+// than up to a second later.
+function _paSave(a) { localStorage.setItem(_PA_KEY, JSON.stringify(a)); _paCoinCounts = null }
 
 let _paDir = 'above'
 window.__paDirSelect = function(dir, btn) {

@@ -132,6 +132,98 @@ export function exposureFindings(d, fmtUSD) {
   return out
 }
 
+// ─── STRESS TEST ──────────────────────────────────────────────────────────────
+//
+// The question no screen answers: if the market moves against me, WHICH wallets break, and
+// at what move? Per-position liquidation prices are shown one card at a time, so the picture
+// across eight wallets never assembles.
+//
+// Model: shock every mark by the same percentage and ask which positions cross their own
+// liquidation price. Longs are hurt by a fall, shorts by a rise, so each direction is a
+// separate sweep. Deliberately simple and stated as such in the UI — this is a "how close am
+// I" gauge, not a margin engine. It does NOT model cross-margin cascades (one liquidation
+// freeing or consuming collateral and moving the others), correlation, or funding.
+const STRESS_STEPS = [5, 10, 20, 30]
+
+function _stressLegs(rows) {
+  const legs = []
+  for (const r of (rows ?? [])) {
+    if (r?.error) continue
+    const who = r?.label || (r?.addr ? r.addr.slice(0, 6) + '…' : '—')
+    for (const ap of (r?.positions ?? [])) {
+      const p = ap?.position ?? ap
+      const szi = parseFloat(p?.szi ?? 0)
+      const liq = parseFloat(p?.liquidationPx ?? 0)
+      const ntl = Math.abs(parseFloat(p?.positionValue ?? 0))
+      if (!szi || !(ntl > 0)) continue
+      // Mark comes from the position itself (notional / size) so this needs no price feed
+      // and cannot disagree with what the card shows.
+      const mark = ntl / Math.abs(szi)
+      if (!(mark > 0)) continue
+      // A position with no liquidation price (isolated fully-funded, or HL not reporting one)
+      // is skipped rather than assumed safe — and counted, so the UI can say so.
+      legs.push({ who, coin: String(p.coin), long: szi > 0, mark, liq: liq > 0 ? liq : null, ntl })
+    }
+  }
+  return legs
+}
+
+// Percentage move against a leg before it reaches liquidation. null when HL reports no
+// liquidation price for it.
+function _distToLiq(leg) {
+  if (!leg.liq) return null
+  const d = leg.long ? (leg.mark - leg.liq) / leg.mark : (leg.liq - leg.mark) / leg.mark
+  return d * 100
+}
+
+export function computeStress(rows) {
+  const legs = _stressLegs(rows)
+  const priced = legs.filter(l => l.liq != null)
+  const unpriced = legs.length - priced.length
+
+  const scenarios = []
+  for (const pct of STRESS_STEPS) {
+    for (const dir of [-1, 1]) {
+      // A drop only threatens longs, a rise only threatens shorts.
+      const hit = priced.filter(l => (dir < 0 ? l.long : !l.long) && (_distToLiq(l) ?? Infinity) <= pct)
+      if (!hit.length) continue
+      scenarios.push({
+        pct, dir,
+        coins:   [...new Set(hit.map(h => h.coin))],
+        wallets: [...new Set(hit.map(h => h.who))],
+        notional: hit.reduce((s, h) => s + h.ntl, 0),
+        count: hit.length,
+      })
+    }
+  }
+
+  // Closest leg to liquidation in each direction — the headline risk.
+  const withDist = priced.map(l => ({ ...l, dist: _distToLiq(l) })).sort((a, b) => a.dist - b.dist)
+  return { legs: legs.length, unpriced, scenarios, nearest: withDist.slice(0, 3), worst: withDist[0] ?? null }
+}
+
+/**
+ * Positions with no take-profit or stop-loss trigger order protecting them.
+ * openOrdersByCoin: Map<coinUpper, true> for coins that HAVE a trigger order.
+ */
+export function computeUnprotected(rows, protectedCoins) {
+  const out = []
+  for (const r of (rows ?? [])) {
+    if (r?.error) continue
+    const who = r?.label || (r?.addr ? r.addr.slice(0, 6) + '…' : '—')
+    for (const ap of (r?.positions ?? [])) {
+      const p = ap?.position ?? ap
+      const szi = parseFloat(p?.szi ?? 0)
+      const ntl = Math.abs(parseFloat(p?.positionValue ?? 0))
+      if (!szi || !(ntl > 0)) continue
+      if (protectedCoins?.has?.(String(p.coin).toUpperCase())) continue
+      out.push({ who, coin: String(p.coin), long: szi > 0, ntl })
+    }
+  }
+  out.sort((a, b) => b.ntl - a.ntl)
+  return { positions: out, notional: out.reduce((s, x) => s + x.ntl, 0) }
+}
+
 // ─── RENDER ───────────────────────────────────────────────────────────────────
 const _esc = s => String(s).replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
@@ -213,4 +305,59 @@ export function exposureHtml(d, fmtUSD, T = (en) => en) {
         + 'they offset in a real move.')}
     </div>
     <div style="height:calc(80px + env(safe-area-inset-bottom))"></div>`
+}
+export function stressHtml(st, unp, fmtUSD, T = (en) => en) {
+  const $ = v => '$' + fmtUSD(Math.abs(v), 2)
+  if (!st.legs) return ''
+
+  const worst = st.worst
+  const head = worst ? `
+    <div style="padding:10px 14px 2px">
+      <div style="padding:10px 12px;border-radius:10px;border:1px solid var(--border2);background:var(--panel-2)">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">${T('Closest to liquidation')}</div>
+        <div style="font-size:13px;margin-top:3px">
+          <b>${_esc(worst.coin)}</b> ${worst.long ? T('long') : T('short')} · ${_esc(worst.who)} —
+          <b style="color:${worst.dist <= 10 ? 'var(--red)' : worst.dist <= 25 ? 'var(--orange)' : 'var(--fg)'}">${worst.dist.toFixed(1)}%</b>
+          ${T('move away')}
+        </div>
+      </div>
+    </div>` : ''
+
+  const rows = st.scenarios.map(sc => {
+    const label = (sc.dir < 0 ? '▼ −' : '▲ +') + sc.pct + '%'
+    const tone  = sc.dir < 0 ? 'var(--red)' : 'var(--green)'
+    return `
+      <div style="display:flex;align-items:baseline;gap:10px;padding:9px 14px;border-top:1px solid var(--border2)">
+        <span style="font-size:12px;font-weight:800;font-family:var(--font-mono);color:${tone};min-width:60px">${label}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px">${sc.count} ${sc.count === 1 ? T('position') : T('positions')} ${T('liquidate')} · <span style="color:var(--muted)">${_esc(sc.coins.join(', '))}</span></div>
+          <div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sc.wallets.length} ${sc.wallets.length === 1 ? T('wallet') : T('wallets')}: ${_esc(sc.wallets.join(', '))}</div>
+        </div>
+        <span style="font-size:12px;font-family:var(--font-mono);color:var(--muted);white-space:nowrap">${$(sc.notional)}</span>
+      </div>`
+  }).join('')
+
+  const scenarioBlock = st.scenarios.length ? `
+    <div style="padding:16px 14px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700;display:flex;justify-content:space-between">
+      <span>${T('If the market moves')}</span><span>${T('Notional')}</span>
+    </div>
+    <div>${rows}</div>`
+    : `<div style="padding:12px 14px;font-size:12px;color:var(--muted)">${T('No position liquidates within a 30% move either way.')}</div>`
+
+  const unprotectedBlock = unp.positions.length ? `
+    <div style="padding:16px 14px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700;display:flex;justify-content:space-between">
+      <span>${T('No stop or take-profit')}</span><span>${$(unp.notional)}</span>
+    </div>
+    <div style="padding:0 14px 4px;display:flex;flex-wrap:wrap;gap:6px">
+      ${unp.positions.slice(0, 12).map(p => `<span style="font-size:11px;padding:3px 8px;border-radius:9px;background:rgba(255,159,10,0.12);color:var(--orange);white-space:nowrap">${_esc(p.coin)} ${p.long ? 'L' : 'S'} · ${_esc(p.who)}</span>`).join('')}
+      ${unp.positions.length > 12 ? `<span style="font-size:11px;color:var(--muted);padding:3px 4px">+${unp.positions.length - 12} ${T('more')}</span>` : ''}
+    </div>` : ''
+
+  const caveat = `
+    <div style="padding:12px 14px;font-size:10.5px;color:var(--muted);line-height:1.5">
+      ${T('Shocks every mark by the same percentage and checks each position against its own liquidation price. It does not model cross-margin cascades, correlation between coins, or funding — treat it as a "how close am I" gauge, not a margin engine.')}
+      ${st.unpriced ? '<br>' + st.unpriced + ' ' + T('position(s) have no liquidation price reported and are excluded.') : ''}
+    </div>`
+
+  return head + scenarioBlock + unprotectedBlock + caveat
 }
