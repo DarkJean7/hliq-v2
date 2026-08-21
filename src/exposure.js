@@ -222,9 +222,14 @@ function _ensureOverlay() {
   if (el) return el
   el = document.createElement('div')
   el.id = OVERLAY_ID
+  // z-index must sit in the same band as the other full-screen mobile sheets (Global Chat
+  // is 100055). The first version used 60, which put it UNDER #mobileView and the More
+  // drawer — on desktop it happened to show, on mobile the panel opened behind everything
+  // and the feature looked dead.
+  //
   // overflow-x is set EXPLICITLY: with only overflow-y:auto, CSS resolves the other axis
   // from `visible` to `auto`, and any over-wide child makes the whole sheet pan sideways.
-  el.style.cssText = 'display:none;position:fixed;inset:0;z-index:60;background:var(--bg);'
+  el.style.cssText = 'display:none;position:fixed;inset:0;z-index:100055;background:var(--bg);'
                    + 'flex-direction:column;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch'
   document.body.appendChild(el)
   return el
@@ -241,6 +246,11 @@ export function closeExposure() {
  * T         — translator
  */
 export function openExposure({ rows, fmtUSD, T = (en) => en }) {
+  // Close the More drawer first. It is what launched this, and leaving it open left it
+  // sitting over the panel — the other drawer entries (__openChat, __mobMoreTab) all do
+  // the same thing.
+  document.getElementById('mobMoreDrawer')?.classList.remove('open')
+  document.getElementById('mobMoreBackdrop')?.classList.remove('open')
   const el = _ensureOverlay()
   const d  = computeExposure(rows)
   el.innerHTML = `
