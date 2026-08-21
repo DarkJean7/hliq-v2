@@ -27,11 +27,27 @@ function _norm(ap) {
   // positionValue is HL's |szi| × mark. Fall back to unsigned zero rather than guessing.
   const ntl = Math.abs(parseFloat(p.positionValue ?? 0))
   if (!(ntl > 0)) return null
+  const entry = parseFloat(p.entryPx ?? 0)
+  const liq   = parseFloat(p.liquidationPx ?? 0)
+  // Mark is derived from the position itself (notional / size) rather than a price feed, so
+  // an expanded row can never show a price the card it came from disagrees with.
+  const mark  = ntl / Math.abs(szi)
+  const long  = szi > 0
+  // Same formula the home position card uses: how far through the entry->liquidation span
+  // the mark has travelled. Null when HL gives us nothing to measure against.
+  let health = null
+  if (entry > 0 && liq > 0) {
+    if (long  && entry > liq) health = Math.max(0, Math.min(100, (mark - liq) / (entry - liq) * 100))
+    if (!long && liq > entry) health = Math.max(0, Math.min(100, (liq - mark) / (liq - entry) * 100))
+  }
   return {
     coin: String(p.coin),
-    dir:  szi > 0 ? 1 : -1,
+    dir:  long ? 1 : -1,
     ntl,
     uPnl: parseFloat(p.unrealizedPnl ?? 0),
+    szi:  Math.abs(szi),
+    entry, mark, liq, health,
+    lev: parseFloat(p.leverage?.value ?? 0) || null,
   }
 }
 
@@ -53,7 +69,7 @@ export function computeExposure(rows) {
       const cur = byCoin.get(p.coin) ?? { coin: p.coin, longNtl: 0, shortNtl: 0, uPnl: 0, legs: [] }
       if (p.dir > 0) cur.longNtl += p.ntl; else cur.shortNtl += p.ntl
       cur.uPnl += p.uPnl
-      cur.legs.push({ who, dir: p.dir, ntl: p.ntl })
+      cur.legs.push({ who, dir: p.dir, ntl: p.ntl, uPnl: p.uPnl, szi: p.szi, entry: p.entry, mark: p.mark, liq: p.liq, health: p.health, lev: p.lev })
       byCoin.set(p.coin, cur)
     }
   }
@@ -228,7 +244,11 @@ export function computeUnprotected(rows, protectedCoins) {
 const _esc = s => String(s).replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
-export function exposureHtml(d, fmtUSD, T = (en) => en) {
+export function exposureHtml(d, fmtUSD, T = (en) => en, opts = {}) {
+  // expanded: Set of coin names whose legs are open. Held by the caller so it survives the
+  // re-render that toggling triggers.
+  const expanded = opts.expanded ?? new Set()
+  const fmtPx    = opts.fmtPrice ?? (v => String(v))
   const $ = v => '$' + fmtUSD(Math.abs(v), 2)
   const findings = exposureFindings(d, fmtUSD)
 
@@ -267,29 +287,71 @@ export function exposureHtml(d, fmtUSD, T = (en) => en) {
         </div>`).join('')}
     </div>` : ''
 
+  // One expanded leg, in the same visual language as a home position card — side pill,
+  // signed PnL, entry -> mark, and the entry-to-liquidation health bar — but without the
+  // trade actions, guards and account routing those cards carry. This is a read-only
+  // inspection of what makes up the net above it, not a second place to trade from.
+  const legCard = (l) => {
+    const long = l.dir > 0
+    const tone = l.uPnl >= 0 ? 'var(--green)' : 'var(--red)'
+    const bar  = l.health == null ? '' : `
+      <div style="margin-top:7px">
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:3px">
+          <span>${T('HEALTH')}</span><span style="color:${l.health > 70 ? 'var(--green)' : l.health > 40 ? '#f59e0b' : l.health > 20 ? '#ff9444' : 'var(--red)'}">${l.health.toFixed(1)}%</span>
+        </div>
+        <div style="height:4px;border-radius:3px;background:rgba(255,255,255,.07);overflow:hidden">
+          <div style="height:100%;width:${l.health.toFixed(1)}%;border-radius:3px;background:${l.health > 70 ? 'var(--green)' : l.health > 40 ? '#f59e0b' : l.health > 20 ? '#ff9444' : 'var(--red)'}"></div>
+        </div>
+      </div>`
+    const kv = (k, v) => `<div style="min-width:0"><div style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${k}</div><div style="font-size:11.5px;font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis">${v}</div></div>`
+    return `
+      <div style="margin:7px 0 0;padding:10px 11px;border-radius:10px;background:var(--panel-2);border:1px solid var(--border2)">
+        <div style="display:flex;align-items:center;gap:7px">
+          <span style="font-size:9px;font-weight:800;padding:2px 6px;border-radius:6px;background:${long ? 'rgba(0,229,160,.15)' : 'rgba(255,77,109,.15)'};color:${long ? 'var(--green)' : 'var(--red)'}">${long ? T('LONG') : T('SHORT')}</span>
+          <span style="font-size:12px;font-weight:700;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(l.who)}</span>
+          ${l.lev ? `<span style="font-size:10px;color:var(--muted)">${l.lev}×</span>` : ''}
+          <span style="flex:1"></span>
+          <span style="font-size:12.5px;font-weight:800;font-family:var(--font-mono);color:${tone}">${l.uPnl >= 0 ? '+' : '−'}${$(l.uPnl)}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px">
+          ${kv(T('Size'),  fmtPx(l.szi))}
+          ${kv(T('Entry'), l.entry > 0 ? '$' + fmtPx(l.entry) : '—')}
+          ${kv(T('Mark'),  '$' + fmtPx(l.mark))}
+          ${kv(T('Value'), $(l.ntl))}
+        </div>
+        ${bar}
+        ${l.liq > 0 ? `<div style="font-size:10.5px;color:var(--muted);margin-top:6px">${T('Liq')} <span style="color:var(--red);font-family:var(--font-mono)">$${fmtPx(l.liq)}</span></div>` : ''}
+      </div>`
+  }
+
   const rows = d.coins.map(c => {
     const netTone2 = c.net >= 0 ? 'var(--green)' : 'var(--red)'
-    const legs = c.legs
-      .slice()
-      .sort((a, b) => b.ntl - a.ntl)
+    const open = expanded.has(c.coin)
+    const sorted = c.legs.slice().sort((a, b) => b.ntl - a.ntl)
+    const summary = sorted
       .map(l => `<span style="white-space:nowrap;color:${l.dir > 0 ? 'var(--green)' : 'var(--red)'}">
                    ${l.dir > 0 ? 'L' : 'S'} ${_esc(l.who)}</span>`)
       .join('<span style="color:var(--muted)"> · </span>')
+    const chev = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${open ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>`
     return `
-      <div style="padding:10px 14px;border-top:1px solid var(--border2)">
-        <div style="display:flex;align-items:baseline;gap:8px">
-          <span style="font-size:13px;font-weight:800">${_esc(c.coin)}</span>
-          ${c.hedged > 0 ? `<span style="font-size:9px;font-weight:800;padding:2px 6px;border-radius:9px;
-             background:rgba(255,159,10,0.15);color:var(--orange)">${T('SELF-HEDGED')} ${$(c.hedged)}</span>` : ''}
-          <span style="flex:1"></span>
-          <span style="font-size:13px;font-weight:800;font-family:var(--font-mono);color:${netTone2}">
-            ${c.net >= 0 ? '+' : '−'}${$(c.net)}</span>
+      <div style="border-top:1px solid var(--border2)">
+        <div onclick="window.__expToggleAsset('${_esc(c.coin)}')" style="padding:10px 14px;cursor:pointer;touch-action:manipulation">
+          <div style="display:flex;align-items:center;gap:8px">
+            ${chev}
+            <span style="font-size:13px;font-weight:800">${_esc(c.coin)}</span>
+            ${c.hedged > 0 ? `<span style="font-size:9px;font-weight:800;padding:2px 6px;border-radius:9px;
+               background:rgba(255,159,10,0.15);color:var(--orange)">${T('SELF-HEDGED')} ${$(c.hedged)}</span>` : ''}
+            <span style="flex:1"></span>
+            <span style="font-size:13px;font-weight:800;font-family:var(--font-mono);color:${netTone2}">
+              ${c.net >= 0 ? '+' : '−'}${$(c.net)}</span>
+          </div>
+          <div style="display:flex;align-items:baseline;gap:8px;margin-top:2px;padding-left:20px">
+            <div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${summary}</div>
+            <span style="flex:1"></span>
+            <span style="font-size:11px;color:var(--muted);white-space:nowrap">${T('gross')} ${$(c.gross)}</span>
+          </div>
         </div>
-        <div style="display:flex;align-items:baseline;gap:8px;margin-top:2px">
-          <div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${legs}</div>
-          <span style="flex:1"></span>
-          <span style="font-size:11px;color:var(--muted);white-space:nowrap">${T('gross')} ${$(c.gross)}</span>
-        </div>
+        ${open ? `<div style="padding:0 14px 12px">${sorted.map(legCard).join('')}</div>` : ''}
       </div>`
   }).join('')
 

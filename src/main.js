@@ -8624,15 +8624,28 @@ function _protectedCoins() {
   return out
 }
 
+// Which asset rows are expanded. Held here rather than in exposure.js so it survives the
+// full re-render that toggling causes — the module stays a pure function of its inputs.
+const _expExpanded = new Set()
+window.__expToggleAsset = function(coin) {
+  if (_expExpanded.has(coin)) _expExpanded.delete(coin); else _expExpanded.add(coin)
+  const el = document.getElementById('mobVContent')
+  if (el && _mobVActiveTab === 'allocation' && _allocView === 'exposure') _mobVRenderExposure(el)
+}
+
 function _mobVRenderExposure(el) {
   const rows = _exposureRows()
   const T    = (en, es) => _T(en, es ?? en)
   const d    = computeExposure(rows)
   const st   = computeStress(rows)
   const unp  = computeUnprotected(rows, _protectedCoins())
+  const prevScroll = el.scrollTop
   el.innerHTML = _allocViewHeader()
-    + exposureHtml(d, fmtUSD, T)
+    + exposureHtml(d, fmtUSD, T, { expanded: _expExpanded, fmtPrice })
     + stressHtml(st, unp, fmtUSD, T)
+  // Expanding re-renders the whole view; without this the list jumps back to the top and
+  // the row you just tapped scrolls out from under your finger.
+  el.scrollTop = prevScroll
 }
 
 // Kept so anything still calling it lands on the right screen, mirroring __openMovers.
