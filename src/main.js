@@ -204,7 +204,8 @@ import {
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey } from './format.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
-import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread } from './compare.js'
+import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
+         compareAxisHtml, attachCompareScrub, compareReadoutHtml, assignCompareColors } from './compare.js'
 import { ES_DICT } from './i18n-es.js'
 
 /**
@@ -11815,6 +11816,7 @@ function _mobVRenderContent(tick = false) {
           ${chev}
         </div>
         <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${_mobVDetailGrid([
+          ...(b._acct ? [['Account', esc(b._acct)]] : []),
           ['Available', fmtSize(avail) + ' ' + esc(_ocCoinLabel(b.coin))],
           ['In Orders', hold > 0 ? fmtSize(hold) + ' ' + esc(_ocCoinLabel(b.coin)) : '—'],
           ['Price', px > 0 ? '$' + fmtPrice(px) : '—'],
@@ -11938,19 +11940,24 @@ function _mobVRenderContent(tick = false) {
       const xp    = _mobVExpandedIds.has(id)
       const chev  = `<svg id="mrc-${id}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>`
       const sub   = items.length > 1
-        ? `${fmtSize(total)} · ${items.length} accounts`
+        ? `${fmtSize(total)} · ×${items.length} accounts`
         : `${fmtSize(total)} ${esc(_ocCoinLabel(coin))}${items[0]._acct ? ` · <span class="notranslate" style="color:var(--accent)">${esc(items[0]._acct)}</span>` : ''}`
       const subRows = items
         .slice().sort((a, b) => usdOf(parseFloat(b.total ?? 0)) - usdOf(parseFloat(a.total ?? 0)))
         .map(b => {
           const t = parseFloat(b.total ?? 0), u = usdOf(t)
+          const hd = parseFloat(b.hold ?? 0)
+          // Held-in-orders is the one fact that changes what you can DO with a balance, so
+          // it belongs on the per-account row rather than only in the single-account grid.
+          const av = t - hd
           return `<div class="mob-v-row" style="padding-left:52px;background:var(--panel-2)">
             <div class="mob-v-row-info">
               <div class="mob-v-row-name notranslate" style="font-size:13px;color:var(--accent)">${esc(b._acct ?? '—')}</div>
-              <div class="mob-v-row-sub">${fmtSize(t)} ${esc(_ocCoinLabel(coin))}</div>
+              <div class="mob-v-row-sub">${fmtSize(t)} ${esc(_ocCoinLabel(coin))}${hd > 0 ? ` · ${fmtSize(av)} free` : ''}</div>
             </div>
             <div class="mob-v-row-right" style="width:86px;flex-shrink:0;flex-grow:0">
               <div class="mob-v-row-val">${u > 0 ? '$' + fmtUSD(u) : '—'}</div>
+              ${hd > 0 ? `<div class="mob-v-row-pct" style="color:var(--muted)">${fmtSize(hd)} held</div>` : ''}
             </div>
           </div>`
         }).join('')
@@ -19591,7 +19598,10 @@ function _cmpEnsureOverlay() {
   return el
 }
 
+let _cmpDetach = null
 window.__closeWatchAdvanced = function() {
+  try { _cmpDetach?.() } catch {}
+  _cmpDetach = null
   const el = document.getElementById(_CMP_OVERLAY)
   if (el) el.style.display = 'none'
 }
@@ -19641,6 +19651,9 @@ function _cmpRender() {
   const d  = computeCompare(byCoin, sel)
   const sp = compareSpread(d)
   const T  = (en, es) => _T(en, es ?? en)
+  // One map for the chart, the legend and the picker chips, so a coin is the same colour
+  // in all three. Built from the SELECTED set, which is what determines collisions.
+  const _cmpColors = assignCompareColors(sel)
 
   const tfPills = Object.keys(WATCH_TF_CONFIG).map(tf =>
     `<button onclick="window.__cmpSetTf('${tf}')" class="mob-pill${tf === _cmpTf ? ' active' : ''}">${tf}</button>`).join('')
@@ -19648,7 +19661,7 @@ function _cmpRender() {
   const picker = list.length ? list.map(c => {
     const on = _cmpSel.has(c)
     return `<button onclick="window.__cmpToggle('${esc(c)}')" class="mob-pill${on ? ' active' : ''}" style="gap:6px">
-      <span style="width:8px;height:8px;border-radius:3px;background:${on ? _coinColor(c) : 'var(--border2)'}"></span>
+      <span style="width:8px;height:8px;border-radius:3px;background:${on ? (_cmpColors[c] ?? 'var(--muted)') : 'var(--border2)'}"></span>
       ${esc(watchCoinLabel(c))}
     </button>`
   }).join('') : `<span style="font-size:12px;color:var(--muted)">${T('Add coins in Watch first.')}</span>`
@@ -19657,11 +19670,13 @@ function _cmpRender() {
     ? `<div style="padding:38px 18px;text-align:center;color:var(--muted);font-size:13px">${T('Select two or more coins to compare.')}</div>`
     : !d.series.length
       ? `<div style="padding:38px 18px;text-align:center;color:var(--muted);font-size:13px">${_cmpLoading ? T('Loading…') : T('No candle data for this window.')}</div>`
-      : `<div style="padding:4px 14px 0">${compareChartSvg(d, { width: 340, height: 200 })}</div>
-         <div style="display:flex;justify-content:space-between;padding:2px 16px 0;font-size:10px;color:var(--muted)">
+      : `<div style="display:flex;justify-content:space-between;padding:2px 16px 0;font-size:10px;color:var(--muted)">
            <span>${d.max >= 0 ? '+' : ''}${d.max.toFixed(1)}%</span><span>${d.min >= 0 ? '+' : ''}${d.min.toFixed(1)}%</span>
          </div>
-         <div style="padding:10px 16px 0">${compareLegendHtml(d, { label: watchCoinLabel })}</div>`
+         <div id="cmpChartWrap" style="padding:2px 14px 0">${compareChartSvg(d, { width: 340, height: 200, colors: _cmpColors })}</div>
+         ${compareAxisHtml(d)}
+         <div id="cmpReadout" style="min-height:17px;padding:6px 16px 0"></div>
+         <div style="padding:6px 16px 0">${compareLegendHtml(d, { label: watchCoinLabel, colors: _cmpColors })}</div>`
 
   const spreadRow = sp ? `
     <div style="margin:12px 14px 0;padding:10px 12px;border-radius:11px;border:1px solid var(--border2);background:var(--panel-2)">
@@ -19691,6 +19706,19 @@ function _cmpRender() {
       ${T('Every line is percent change from the start of the window, not price — that is what makes assets at different prices comparable. The axis is always %.')}
     </div>
     <div style="height:calc(70px + env(safe-area-inset-bottom))"></div>`
+
+  // Scrubbing is bound AFTER innerHTML, and the previous binding is detached first —
+  // every timeframe or asset change re-renders, and without this each one would leave
+  // another set of pointer listeners on a discarded SVG.
+  try { _cmpDetach?.() } catch {}
+  _cmpDetach = null
+  if (d.series.length) {
+    const out = document.getElementById('cmpReadout')
+    _cmpDetach = attachCompareScrub(document.getElementById('cmpChartWrap'), d, {
+      colors: _cmpColors,
+      onReadout: r => { if (out) out.innerHTML = r ? compareReadoutHtml(r, watchCoinLabel) : '' },
+    })
+  }
 }
 
 window.__openWatchAdvanced = function() {
