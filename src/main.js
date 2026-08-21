@@ -3039,10 +3039,19 @@ window._tcsSelect = function(coin) {
 
 // ─── AVAILABLE BALANCE DISPLAY ────────────────────────────────────────────────
 // Available = accountValue − totalMarginUsed (initial margin + open-order reservations).
-// activeAssetData.availableToTrade is [min, max]:
-//   min = available when adding to / opening in the same direction as existing position
-//   max = available when going opposing (freed margin from reducing existing position included)
-let _availCache = { min: 0, max: 0, coin: null }
+//
+// activeAssetData.availableToTrade is ordered BY SIDE — [buy, sell] — not by magnitude.
+// It was read as [min, max] and then paired with a hand-rolled "is this side opposing?"
+// check, which inverted the two numbers whenever a position was open: holding a short,
+// the Long panel showed the (smaller) sell figure and Short showed the (larger) buy one,
+// exactly backwards, since buying is what REDUCES a short and frees its margin.
+//
+// Verified live on a short PUMP position: availableToTrade came back
+// ["967.898889", "431.866961"] — larger first, and buying is the reducing side.
+//
+// HL already accounts for the open position in both figures, so the side selects the
+// value directly and there is no opposing-side inference left to get wrong.
+let _availCache = { long: 0, short: 0, coin: null }
 let _availFetching = false
 let _availTimer   = null
 
@@ -3310,17 +3319,12 @@ function _availEffective() {
   // until it does, fall back to that account's snapshot free margin.
   if (state.isAllAccounts && _availCache.coin !== coin) return _selectedAcctAvail()
   if (coin && (state.isAllAccounts || _canAct())) {
-    // Opening OPPOSITE an existing position frees the margin backing it, so HL reports a
-    // larger availableToTrade for that direction (max) than for adding to it (min).
-    const selPos  = _tradePositions().find(ap => ap.position?.coin === coin)?.position
-    const selSzi  = parseFloat(selPos?.szi ?? 0)
-    const opposing = selSzi !== 0 && (
-      (state.tradeSide === 'short' && selSzi > 0) ||
-      (state.tradeSide === 'long'  && selSzi < 0)
-    )
-    if (opposing) return _availCache.max
+    // HL reports the reducing side as larger all by itself (closing frees that margin),
+    // so just pick the side. No position lookup: duplicating that reasoning here is what
+    // inverted the numbers.
+    return state.tradeSide === 'short' ? _availCache.short : _availCache.long
   }
-  return _availCache.min
+  return _availCache.long
 }
 
 function _updateAvailEl() {
@@ -3335,17 +3339,19 @@ async function _fetchAvail() {
   if (isPaper()) {
     const coin = state.selectedCoin
     if (!coin) return
-    // Mirror HL's activeAssetData.availableToTrade [min, max]:
-    //   min = free collateral
-    //   max = free + the margin an EXISTING position would release when closed
-    // Both are side-independent — _availEffective() decides which applies from the
-    // selected side. Baking the side check in here meant the number never changed
-    // when flipping long→short, because the cache only refreshes on a 5s timer.
+    // Mirror HL's activeAssetData.availableToTrade, which is [buy, sell]: each side gets
+    // free collateral, plus the margin an OPPOSING position would release when reduced.
+    // Buying frees a short's margin; selling frees a long's.
     const free = paperWithdrawable()
     const p    = (state.perpState?.assetPositions ?? [])
       .find(ap => ap.position?.coin === coin)?.position
-    const held = parseFloat(p?.szi ?? 0) !== 0 ? Math.abs(parseFloat(p?.marginUsed ?? 0)) : 0
-    _availCache = { min: free, max: free + held, coin }
+    const szi  = parseFloat(p?.szi ?? 0)
+    const held = szi !== 0 ? Math.abs(parseFloat(p?.marginUsed ?? 0)) : 0
+    _availCache = {
+      long:  free + (szi < 0 ? held : 0),
+      short: free + (szi > 0 ? held : 0),
+      coin,
+    }
     _updateAvailEl()
     _updateAvailDisplay()
     return
@@ -3359,10 +3365,11 @@ async function _fetchAvail() {
   if (!addr || !coin) return
   _availFetching = true
   try {
-    const data = await infoClient.activeAssetData({ user: addr, coin })
-    const min  = Math.max(0, parseFloat(data.availableToTrade?.[0] ?? 0))
-    const max  = Math.max(0, parseFloat(data.availableToTrade?.[1] ?? 0))
-    _availCache = { min, max, coin }
+    const data  = await infoClient.activeAssetData({ user: addr, coin })
+    // [0] = buy/long, [1] = sell/short. Ordered by side, NOT by size.
+    const long  = Math.max(0, parseFloat(data.availableToTrade?.[0] ?? 0))
+    const short = Math.max(0, parseFloat(data.availableToTrade?.[1] ?? 0))
+    _availCache = { long, short, coin }
     _updateAvailEl()
     _updateAvailDisplay()
   } catch {} finally { _availFetching = false }
@@ -6477,7 +6484,7 @@ window.__pickTradeAcct = function(addr) {
     b.style.color       = on ? 'var(--accent)' : 'var(--fg)'
   })
   // Refresh "Available" for the newly selected account (avoid showing the previous one's).
-  _availCache = { min: 0, max: 0, coin: null }
+  _availCache = { long: 0, short: 0, coin: null }
   try { _updateAvailEl(); _updateAvailDisplay() } catch {}
   try { _fetchAvail() } catch {}
   // Outcomes panels spend this account's USDC (buy) / shares (sell) — repoint them too.
