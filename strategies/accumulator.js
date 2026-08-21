@@ -13,8 +13,10 @@
  *   Flow each cycle:
  *     1. Pull fills newer than the cursor; net them (Σ closedPnl − Σ fees).
  *     2. If the window is net-positive, buffer  cut% × netPnl.
- *     3. When the buffer ≥ threshold (and ≥ HL's $10 min): transfer that USDC
- *        perp → spot, then market-buy (IOC) the accumulation token.
+ *     3. When the buffer ≥ threshold (and ≥ HL's $10 min): market-buy (IOC) the
+ *        accumulation token with SPOT USDC. Tops up perp→spot only if spot is
+ *        short — and an agent key cannot do that transfer at all (it signs for an
+ *        address with no account), so keep USDC in the spot wallet.
  *
  * Cursor + buffer persist so a deploy/reboot --resume can't re-skim old fills.
  * A FRESH arm (no --resume) restarts the CURSOR at "now" so history is never
@@ -71,6 +73,8 @@ const RESET_BUFFER = !!args['reset-buffer']
 // order that HL bounces. $11 is the smallest buffer that reliably clears $10 — this
 // is the floor the buy fires at, so profit buys happen as soon as the minimum stacks.
 const HL_MIN_ORDER = 11
+// HL rejects a spot order under $10 notional outright.
+const HL_MIN_NOTIONAL = 10
 
 if (CUT_PCT <= 0)   { console.error('ERROR: --cut-pct must be > 0'); process.exit(1) }
 if (THRESHOLD <= 0) { console.error('ERROR: --threshold must be > 0'); process.exit(1) }
@@ -104,6 +108,19 @@ function log(tag, msg) {
   console.log(`[${ts}] [${tag.padEnd(8)}] ${m}`)
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms))
+
+// Log a recurring condition ONCE per distinct message. A stuck state that re-evaluates every
+// cycle would otherwise write the same line every 60 seconds and bury the run's real history
+// — which is exactly what the perp→spot failure did. Re-logs if the message itself changes,
+// so a different cause is never swallowed.
+const _saidOnce = new Map()
+function logOnce(key, tag, msg) {
+  if (_saidOnce.get(key) === msg) return
+  _saidOnce.set(key, msg)
+  log(tag, msg)
+}
+// A successful buy clears the latches, so a condition that recurs later is reported again.
+function clearOnce() { _saidOnce.clear() }
 function _today() { return new Date().toISOString().slice(0, 10) }
 
 // HL price tick: ≤5 significant figures AND ≤(MAX_DEC - szDecimals) decimals, where
@@ -211,18 +228,43 @@ async function buy(usd) {
     return true
   }
 
-  // Move the skim into the spot wallet (inverse of grid.js's margin top-up).
-  try { await exchange.usdClassTransfer({ amount: usd.toFixed(2), toPerp: false }) }
-  catch (e) { log('ERROR', `perp→spot transfer failed: ${e.message} — buffer kept, retry next cycle`); return false }
-  await sleep(1500)
+  // Spend spot USDC that is ALREADY there before trying to move any.
+  //
+  // usdClassTransfer acts on the SIGNER's own account, and this bot signs with an agent
+  // key — which has no account of its own. Every attempt failed with "Must deposit before
+  // performing actions. User: <agent address>", once a minute, forever, while the master
+  // wallet sat on plenty of spot USDC the whole time. Agent keys can trade but cannot move
+  // funds; that is a Hyperliquid restriction, not something to retry around.
+  //
+  // So: if spot already covers the buy, no transfer is needed at all. Only reach for one
+  // when it does not, and treat its failure as a condition to report rather than an error
+  // to repeat — the buy can still go ahead on whatever spot USDC exists.
+  let freeUsdc = await getFreeSpotUsdc()
+  if (freeUsdc < usd) {
+    try {
+      await exchange.usdClassTransfer({ amount: (usd - freeUsdc).toFixed(2), toPerp: false })
+      await sleep(1500)
+      freeUsdc = await getFreeSpotUsdc()
+    } catch (e) {
+      const agentBlocked = /must deposit|does not exist/i.test(e.message ?? '')
+      if (freeUsdc >= HL_MIN_NOTIONAL) {
+        logOnce('transfer-fallback', 'WARN', agentBlocked
+          ? `Agent keys cannot move funds perp→spot — buying with the $${freeUsdc.toFixed(2)} USDC already in spot instead.`
+          : `perp→spot transfer failed (${e.message}) — buying with the $${freeUsdc.toFixed(2)} USDC already in spot.`)
+      } else {
+        logOnce('transfer-blocked', 'ERROR', agentBlocked
+          ? `Agent keys cannot move funds perp→spot, and spot only holds $${freeUsdc.toFixed(2)}. Move at least $${HL_MIN_NOTIONAL} of USDC to your SPOT wallet and the buffer will spend itself.`
+          : `perp→spot transfer failed: ${e.message} — buffer kept, retry next cycle`)
+        return false
+      }
+    }
+  }
 
-  // Size against the USDC that actually landed; keep a small headroom for fees.
-  const freeUsdc = await getFreeSpotUsdc()
-  const spend    = Math.min(usd, freeUsdc)
+  // Size against the USDC actually available; keep a small headroom for fees.
+  const spend = Math.min(usd, freeUsdc)
   let   sz       = roundSz((spend * 0.997) / px, spot.szDecimals)
   // Rounding down can drop the order below HL's $10 notional min. Bump up to the
   // smallest size that clears $10, but only if the landed USDC can still afford it.
-  const HL_MIN_NOTIONAL = 10
   if (sz * px < HL_MIN_NOTIONAL) {
     const tick  = 1 / Math.pow(10, spot.szDecimals)
     const minSz = Math.ceil((HL_MIN_NOTIONAL / px) / tick) * tick
@@ -249,6 +291,7 @@ async function buy(usd) {
   lifetimeSpent += gotSz * avgPx
   lifetimeQty   += gotSz
   log('WIN', `Accumulated ${gotSz} ${ASSET_SYM} for $${(gotSz * avgPx).toFixed(2)} (avg $${avgPx}) | lifetime ${lifetimeQty.toFixed(spot.szDecimals)} ${ASSET_SYM}`)
+  clearOnce()
   return true
 }
 

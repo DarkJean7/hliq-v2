@@ -19116,8 +19116,40 @@ function _initLongPressAlerts() {
   document.addEventListener('contextmenu', (e) => { if (e.target?.closest?.('[data-lp-coin]')) e.preventDefault() })
 }
 
+// A position:fixed sheet is pinned to the LAYOUT viewport, which iOS does not shrink when
+// the keyboard opens — so a bottom-anchored sheet ends up underneath it and you have to
+// scroll the page to see what you are typing. visualViewport reports the region actually
+// visible; lifting the sheet by the covered amount keeps the input above the keyboard.
+//
+// Returns a detach function: the listeners outlive the element otherwise, and every reopen
+// would add another pair.
+function _liftAboveKeyboard(el) {
+  const vv = window.visualViewport
+  if (!vv || !el) return () => {}
+  const apply = () => {
+    // How much of the layout viewport the keyboard (and any browser chrome) covers.
+    const covered = Math.max(0, window.innerHeight - vv.height - vv.offsetTop)
+    el.style.transform = covered > 0 ? `translateY(-${covered}px)` : ''
+  }
+  vv.addEventListener('resize', apply)
+  vv.addEventListener('scroll', apply)
+  apply()
+  return () => {
+    vv.removeEventListener('resize', apply)
+    vv.removeEventListener('scroll', apply)
+  }
+}
+
+let _qaDetach = null
+window.__qaClose = function() {
+  try { _qaDetach?.() } catch {}
+  _qaDetach = null
+  const m = document.getElementById('quickAlertModal')
+  if (m) m.remove()
+}
+
 window.__quickPriceAlert = function(coin, px) {
-  document.getElementById('quickAlertModal')?.remove()
+  window.__qaClose()
   window._qaDir = 'above'
   const isOc  = _lbIsOutcome(coin)
   const cur   = parseFloat(state.allMids?.[coin] ?? px ?? 0) || px || 0
@@ -19127,11 +19159,11 @@ window.__quickPriceAlert = function(coin, px) {
   const wrap = document.createElement('div')
   wrap.id = 'quickAlertModal'
   wrap.innerHTML = `
-    <div onclick="document.getElementById('quickAlertModal').remove()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100060"></div>
-    <div style="position:fixed;bottom:0;left:0;right:0;z-index:100061;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-width:520px;margin:0 auto">
+    <div onclick="window.__qaClose()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100060"></div>
+    <div id="qaSheet" style="position:fixed;bottom:0;left:0;right:0;z-index:100061;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-width:520px;margin:0 auto;transition:transform .18s ease-out;will-change:transform">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px 12px;border-bottom:1px solid var(--border)">
         <span style="font-size:16px;font-weight:700">🔔 ${_T('Price alert', 'Alerta de precio')} · <span class="notranslate">${esc(label)}</span></span>
-        <button onclick="document.getElementById('quickAlertModal').remove()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:0 4px">×</button>
+        <button onclick="window.__qaClose()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:0 4px">×</button>
       </div>
       <div style="padding:16px 18px 22px">
         <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${_T('Notify me when the price is', 'Avísame cuando el precio esté')}:</div>
@@ -19151,6 +19183,10 @@ window.__quickPriceAlert = function(coin, px) {
       </div>
     </div>`
   document.body.appendChild(wrap)
+  _qaDetach = _liftAboveKeyboard(document.getElementById('qaSheet'))
+  // Focus the price field directly: the point of the sheet is to type a number, and
+  // focusing it is also what triggers the keyboard the lift above compensates for.
+  setTimeout(() => { try { document.getElementById('qaPrice')?.focus() } catch {} }, 60)
 }
 
 window.__qaSetDir = function(dir) {
@@ -19172,7 +19208,7 @@ window.__qaSave = function(coin, isOc) {
   alerts.push({ id: Date.now().toString(36), coin, dir, price, fired: false })
   _paSave(alerts)
   if (notifPermission() !== 'granted') { try { requestNotifications() } catch {} }
-  document.getElementById('quickAlertModal')?.remove()
+  window.__qaClose()
   _paperToast('🔔 ' + _T('Alert set', 'Alerta creada'))
   try { _renderPriceAlerts() } catch {}
 }
