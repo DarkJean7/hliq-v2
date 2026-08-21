@@ -8299,7 +8299,7 @@ let _mobVActiveTab     = 'positions'
 let _mobVPickerType    = 'all'  // 'all' | 'crypto' | 'tradfi'
 let _mobVPosSortBy     = localStorage.getItem('mobPosSortBy')  || 'unrl'
 let _mobVPosSortDir    = parseInt(localStorage.getItem('mobPosSortDir') ?? '-1', 10) || -1
-let _mobVOrdSortBy     = 'coin'   // 'coin' | 'px' | 'sz'
+let _mobVOrdSortBy     = 'coin'   // 'coin' | 'side' | 'px' | 'sz'
 let _mobVOrdSortDir    = 1
 let _mobVOrdSelMode    = false        // multi-select mode for bulk-cancelling orders
 let _mobVOrdSel        = new Set()    // selected order oids while in select mode
@@ -12185,6 +12185,12 @@ function _mobVRenderContent(tick = false) {
         return _mobVOrdSortDir * (pxb - pxa)
       } else if (_mobVOrdSortBy === 'sz') {
         return _mobVOrdSortDir * (parseFloat(b.sz ?? 0) - parseFloat(a.sz ?? 0))
+      } else if (_mobVOrdSortBy === 'side') {
+        // Buys first ascending. Within a side fall back to coin, otherwise the two blocks
+        // come out in arbitrary order and are harder to scan than no sort at all.
+        const sa = a.side === 'B' ? 0 : 1, sb = b.side === 'B' ? 0 : 1
+        if (sa !== sb) return _mobVOrdSortDir * (sa - sb)
+        return a.coin.localeCompare(b.coin)
       }
       return _mobVOrdSortDir * a.coin.localeCompare(b.coin)
     })
@@ -12209,6 +12215,7 @@ function _mobVRenderContent(tick = false) {
       : `<div class="mob-sortbar">
           <div class="mob-sortbar-scroll">
             ${_mobVSortOrdPill('coin','Coin')}
+            ${_mobVSortOrdPill('side','Side')}
             ${_mobVSortOrdPill('px','Price')}
             ${_mobVSortOrdPill('sz','Size')}
           </div>
@@ -12236,7 +12243,7 @@ function _mobVRenderContent(tick = false) {
           ${_mobVOrdSelMode ? checkbox : _mobVCoinIcon(o.coin)}
           <div class="mob-v-row-info">
             <div class="mob-v-row-name">${esc(_ocCoinLabel(o.coin))}</div>
-            <div class="mob-v-row-sub ${sideCls}">${side} · ${esc(o.orderType ?? 'Limit')}</div>
+            <div class="mob-v-row-sub ${sideCls}">${side} · ${esc(o.orderType ?? 'Limit')}${o._acct ? `<span style="color:var(--accent)"> · ${esc(o._acct)}</span>` : ''}</div>
           </div>
           <div style="flex-shrink:0;width:74px;display:flex;flex-direction:column">
             <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;line-height:1.2;text-align:center">Price</div>
@@ -12283,9 +12290,22 @@ function _mobVRenderContent(tick = false) {
               const _roe    = _margin > 0 ? (_pnl / _margin) * 100 : null
               expRows = [['Expected PnL', `${_pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(_pnl))}${_roe != null ? ` (${_roe >= 0 ? '+' : ''}${_roe.toFixed(1)}% on margin)` : ''}`, _pnl >= 0 ? 'var(--green)' : 'var(--red)']]
             }
+            // Margin this order would tie up if it filled. Only derivable when a position
+            // in the same coin already tells us the leverage in force — for a first entry
+            // HL has not fixed one yet, so show nothing rather than guess. Reduce-only
+            // orders RELEASE margin, so an estimate there would be actively misleading.
+            const _ordLev = _pos ? parseFloat(_pos.leverage?.value ?? 0) : 0
+            const _estMargin = (!o.reduceOnly && _ordLev > 0 && notional > 0) ? notional / _ordLev : null
+            // How far the mark has to travel for this to fill.
+            const _dMark = parseFloat(state.allMids?.[o.coin] ?? 0)
+            const _away  = (_dispPx > 0 && _dMark > 0) ? (_dispPx - _dMark) / _dMark * 100 : null
             return _mobVDetailGrid([
+              ...(o._acct ? [['Account', esc(o._acct)]] : []),
               ['Size', fmtSize(parseFloat(o.sz ?? 0)) + ' ' + esc(_ocCoinLabel(o.coin))],
               ['Value', '$' + fmtUSD(notional)],
+              ...(_estMargin != null ? [['Margin (est.)', '$' + fmtUSD(_estMargin) + ' at ' + _ordLev + '×']] : []),
+              ...(_away != null ? [['Distance to fill', (Math.abs(_away) < 0.005 ? 'at mark' : (_away > 0 ? '+' : '') + _away.toFixed(2) + '%')]] : []),
+              ...(_pos ? [['Existing position', (_szi > 0 ? 'Long ' : 'Short ') + fmtSize(Math.abs(_szi)) + ' @ $' + fmtPrice(_entry)]] : []),
               ...expRows,
               ...(tpslType ? [['TP / SL', tpslType]] : []),
               ...(triggerCondStr ? [['Trigger Condition', triggerCondStr]] : []),
