@@ -203,6 +203,7 @@ import {
   paperSettleOutcomes, paperFundingHistory, paperAccrueFunding, setPaperFundingRates, PAPER_COSTS,
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey } from './format.js'
+import { openExposure, closeExposure } from './exposure.js'
 import { ES_DICT } from './i18n-es.js'
 
 /**
@@ -8502,6 +8503,29 @@ window.__openMovers = function() {
   _allocView = 'movers'
   window.__mobMoreTab('allocation')
 }
+
+// ─── EXPOSURE REPORT (More → Exposure) ────────────────────────────────────────
+// Feeds src/exposure.js the same rows every other surface reads, so its figures cannot
+// disagree with the account cards. In the combined view that is the per-wallet result set
+// (where cross-wallet netting is the whole point); in a single account it is that account
+// alone, which still shows net-vs-gross and per-coin concentration.
+window.__openExposure = function() {
+  let rows
+  if (state.isAllAccounts) {
+    rows = (_allAcctLastResults ?? [])
+      .filter(r => r && !r.error && !_maHiddenLoad().has(r.addr))
+      .map(r => ({ label: r.label, addr: r.addr, accountValue: r.accountValue, positions: r.positions }))
+  } else {
+    rows = [{
+      label: _T('This account', 'Esta cuenta'),
+      addr: state.addr,
+      accountValue: computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids).accountValue,
+      positions: state.perpState?.assetPositions ?? [],
+    }]
+  }
+  openExposure({ rows, fmtUSD, T: (en, es) => _T(en, es ?? en) })
+}
+window.__closeExposure = closeExposure
 
 // Shared header for the Allocation screen: an Allocation ⇄ What-moved segmented toggle + close.
 function _allocViewHeader() {
