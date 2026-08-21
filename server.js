@@ -314,7 +314,7 @@ function startStrategy(type, extraArgs = [], agentKey = '', address = '', instan
 
   // Keep the spawn inputs so /api/restart can relaunch with the exact same
   // config (incl. agent key, which lives only in memory) without the UI re-sending.
-  const entry = { proc, buffer: [], address, instance: (instance || '').toUpperCase(), lastError: '', agentKey: envKey, extraArgs }
+  const entry = { proc, buffer: [], address, instance: (instance || '').toUpperCase(), lastError: '', agentKey: envKey, extraArgs, startedAt: Date.now() }
   procs[key] = entry
 
   // Persist (encrypted) so a restart/reboot auto-resumes this bot with no prompt.
@@ -348,10 +348,32 @@ function startStrategy(type, extraArgs = [], agentKey = '', address = '', instan
   proc.on('exit', code => {
     const ts  = new Date().toISOString().replace('T', ' ').slice(0, 19)
     handleLine(type, address, `[${ts}] [EXIT    ] Process exited — code ${code ?? '?'}`, instance)
+    const ranMs = Date.now() - (entry.startedAt || 0)
     delete procs[key]
     // A bot that exits on its own (boundary stop, crash) should NOT auto-resume.
     // But if hliq-strat is shutting down, keep the record so the next boot revives it.
-    if (!shuttingDown) unpersistBot(type, address, instance)
+    //
+    // Exception: dying to a 429 within the startup window is not the bot deciding to
+    // stop, it is HL's IP budget being exhausted — usually by the resume storm this very
+    // restart caused. Unpersisting on that silently deleted grid bots that had been
+    // running for days, and nothing ever brought them back. Keep the registry entry and
+    // retry with a widening backoff instead. Bounded, so a genuinely broken config still
+    // gives up rather than looping forever.
+    const rateLimited = RATE_LIMIT_RE.test(entry.lastError || '')
+    if (!shuttingDown && rateLimited && ranMs < STARTUP_WINDOW_MS && (resumeRetries.get(key) ?? 0) < MAX_RESUME_RETRIES) {
+      const n     = (resumeRetries.get(key) ?? 0) + 1
+      resumeRetries.set(key, n)
+      const delay = RESUME_RETRY_BASE_MS * n
+      handleLine(type, address, `[${ts}] [RETRY   ] Rate-limited during startup — retrying in ${Math.round(delay / 1000)}s (attempt ${n}/${MAX_RESUME_RETRIES})`, instance)
+      setTimeout(() => {
+        if (shuttingDown || procs[key]) return
+        try { startStrategy(type, extraArgs, envKey, address, instance, true) }
+        catch (e) { console.error(`  ✗ retry failed for ${type}:${instance} — ${e.message}`) }
+      }, delay).unref?.()
+    } else if (!shuttingDown) {
+      unpersistBot(type, address, instance)
+      resumeRetries.delete(key)
+    }
     const exit = `data: ${JSON.stringify({ exit: code ?? -1 })}\n\n`
     for (const res of (subs[key] ?? [])) {
       try { res.write(exit) } catch (_) {}
@@ -388,20 +410,49 @@ function stopStrategy(type, address, instance = '') {
 
 // On boot, decrypt the persisted registry and relaunch every bot that was running
 // (deploy / pm2 restart / server reboot) — fully automatic, no user interaction.
-function resumeBots() {
+// Boot used to launch every persisted bot in one tight loop. Each bot's startup is
+// request-heavy — a grid alone pulls meta, clearinghouse state and open orders, then
+// cancels and places — and HL's 1200 weight/min budget is per IP, shared across all of
+// them. With ~68 bots that blew the budget in seconds: two grids that had been running
+// for days died to "Fatal: 429 Too Many Requests" moments after resuming, and the
+// exit handler then unpersisted them, so they were gone until noticed by hand.
+//
+// Spacing the launches spreads the same work across several rate-limit windows. Boot
+// takes longer, which is fine — a bot that starts a minute late still works, one that
+// gets 429'd out of the registry does not.
+const RESUME_STAGGER_MS   = 1500
+const STARTUP_WINDOW_MS   = 120_000   // "died during startup" cutoff for the 429 retry
+const RESUME_RETRY_BASE_MS = 30_000   // 30s, 60s, 90s
+const MAX_RESUME_RETRIES  = 3
+const RATE_LIMIT_RE = /\b429\b|too many requests|rate limit/i
+const resumeRetries = new Map()   // procKey -> consecutive rate-limited startup deaths
+
+async function resumeBots() {
   const reg = loadRegistry()
   const entries = Object.values(reg)
   if (!entries.length) return
-  console.log(`  Resuming ${entries.length} persisted bot(s)…`)
+  const eta = Math.round((entries.length * RESUME_STAGGER_MS) / 1000)
+  console.log(`  Resuming ${entries.length} persisted bot(s), ${RESUME_STAGGER_MS}ms apart (~${eta}s)…`)
+  // Claim ownership for ALL of them up front. This is local work, and doing it before
+  // the staggered spawns means an owner-gated API call during the boot window is not
+  // rejected just because that bot's turn to launch has not come round yet.
+  const ready = []
   for (const r of entries) {
     let agentKey
     try { agentKey = decryptKey(r.key) } catch (e) { console.error(`  ✗ decrypt failed for ${r.type}:${r.instance} — ${e.message}`); continue }
-    claimOwner(r.address, agentKey)   // know the owner even if the spawn below fails
+    claimOwner(r.address, agentKey)
+    ready.push({ r, agentKey })
+  }
+  for (let i = 0; i < ready.length; i++) {
+    if (shuttingDown) { console.log('  … resume aborted (shutting down)'); return }
+    const { r, agentKey } = ready[i]
     try {
       startStrategy(r.type, r.extraArgs ?? [], agentKey, r.address ?? '', r.instance ?? '', true)
       console.log(`  ✓ resumed ${r.type}${r.instance ? ':' + r.instance : ''} (${r.address})`)
     } catch (e) { console.error(`  ✗ resume failed for ${r.type}:${r.instance} — ${e.message}`) }
+    if (i < ready.length - 1) await new Promise(res => setTimeout(res, RESUME_STAGGER_MS))
   }
+  console.log('  Resume complete.')
 }
 
 // Shutdown: mark so child 'exit' handlers KEEP the registry (for auto-resume),
