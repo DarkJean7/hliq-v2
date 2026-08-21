@@ -8343,6 +8343,55 @@ window._mobVSortOrd = function(by) {
   _mobVRenderContent()
 }
 
+// Orders sort lives behind ONE button instead of four pills: with Select and Cancel All
+// beside them the strip was six controls wide and scrolled horizontally on a phone.
+// Positions keeps its pills — it has fewer of them and no action buttons competing.
+//
+// Each key states what its two directions actually mean. "▲/▼" is ambiguous on a price or a
+// size (ascending by which end?), so the sheet spells it out.
+const _ORD_SORTS = [
+  ['coin', 'Coin',  ['A → Z', 'Z → A']],
+  ['side', 'Side',  ['Buys first', 'Sells first']],
+  ['px',   'Price', ['High → Low', 'Low → High']],
+  ['sz',   'Size',  ['Large → Small', 'Small → Large']],
+]
+function _ordSortMeta() {
+  const e = _ORD_SORTS.find(x => x[0] === _mobVOrdSortBy) ?? _ORD_SORTS[0]
+  return { key: e[0], label: e[1], dirLabel: e[2][_mobVOrdSortDir === 1 ? 0 : 1] }
+}
+
+window._mobVOrdSortSheet = function() {
+  const cur = _ordSortMeta()
+  const ov = document.createElement('div')
+  ov.style.cssText = 'position:fixed;inset:0;z-index:100080;background:rgba(0,0,0,.6);display:flex;flex-direction:column;justify-content:flex-end'
+  const close = () => ov.remove()
+  ov.onclick = e => { if (e.target === ov) close() }
+  const rows = _ORD_SORTS.map(([key, label, dirs]) => {
+    const on = key === cur.key
+    // Tapping the active row flips its direction, so it advertises where that tap leads
+    // rather than repeating the state above it.
+    const sub = on ? dirs[_mobVOrdSortDir === 1 ? 0 : 1] + ' · ' + _T('tap to reverse', 'toca para invertir') : dirs[0]
+    return `<button data-k="${key}" style="display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:none;cursor:pointer;
+        background:${on ? 'rgba(0,229,160,0.10)' : 'transparent'};border-radius:12px;padding:13px 14px;margin-bottom:4px">
+      <span style="width:18px;flex-shrink:0;color:var(--accent);font-size:14px;font-weight:800">${on ? '✓' : ''}</span>
+      <span style="flex:1;min-width:0">
+        <span style="display:block;font-size:15px;font-weight:700;color:${on ? 'var(--accent)' : 'var(--fg)'}">${_T(label, label)}</span>
+        <span style="display:block;font-size:12px;color:var(--muted);margin-top:2px">${sub}</span>
+      </span>
+      ${on ? `<span style="color:var(--accent);font-size:12px">${_mobVOrdSortDir === 1 ? '▲' : '▼'}</span>` : ''}
+    </button>`
+  }).join('')
+  ov.innerHTML = `<div style="background:var(--panel-2);border:1px solid var(--border2);border-radius:20px 20px 0 0;padding:18px 14px calc(14px + env(safe-area-inset-bottom))">
+    <div style="width:38px;height:4px;border-radius:2px;background:var(--border2);margin:-6px auto 14px"></div>
+    <div style="font-size:16px;font-weight:800;padding:0 4px 12px">${_T('Sort orders by', 'Ordenar órdenes por')}</div>
+    ${rows}
+  </div>`
+  document.body.appendChild(ov)
+  ov.querySelectorAll('button[data-k]').forEach(b => {
+    b.onclick = () => { close(); window._mobVSortOrd(b.dataset.k) }
+  })
+}
+
 let _mobVLbResults     = []   // cached leaderboard result objects
 let _mobVLbSortBy      = 'value'  // 'value' | 'net' — Rankings sort key
 let _mobVMaResults     = []   // cached multi-account result objects
@@ -12194,11 +12243,6 @@ function _mobVRenderContent(tick = false) {
       }
       return _mobVOrdSortDir * a.coin.localeCompare(b.coin)
     })
-    const _mobVSortOrdPill = (by, label) => {
-      const active = _mobVOrdSortBy === by
-      const arrow  = active ? `<span class="mob-pill-arrow">${_mobVOrdSortDir === 1 ? '▲' : '▼'}</span>` : ''
-      return `<button class="mob-pill${active ? ' active' : ''}" onclick="window._mobVSortOrd('${by}')">${label}${arrow}</button>`
-    }
     const _pill = (txt, cb, color) =>
       `<button class="mob-pill${color === '#ff4d6d' ? ' mob-pill-danger' : ''}" onclick="${cb}"${color === '#ff4d6d' ? '' : ` style="border-color:${color}55;background:${color}14;color:${color}"`}>${txt}</button>`
     const ordSortBar = _mobVOrdSelMode
@@ -12214,10 +12258,14 @@ function _mobVRenderContent(tick = false) {
         </div>`
       : `<div class="mob-sortbar">
           <div class="mob-sortbar-scroll">
-            ${_mobVSortOrdPill('coin','Coin')}
-            ${_mobVSortOrdPill('side','Side')}
-            ${_mobVSortOrdPill('px','Price')}
-            ${_mobVSortOrdPill('sz','Size')}
+            ${(() => {
+              const m = _ordSortMeta()
+              return `<button class="mob-pill active" onclick="window._mobVOrdSortSheet()" style="gap:6px">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="12" height="12" style="flex-shrink:0"><path d="M3 6h11M3 12h8M3 18h5"/><path d="M16.5 9.5L19.5 6l3 3.5M19.5 6.5v11"/></svg>
+                ${esc(m.label)}<span class="mob-pill-arrow">${_mobVOrdSortDir === 1 ? '▲' : '▼'}</span>
+              </button>`
+            })()}
+            <span style="font-size:11px;color:var(--muted);align-self:center;white-space:nowrap">${esc(_ordSortMeta().dirLabel)}</span>
           </div>
           <div class="mob-sortbar-actions">
             ${_pill('Select', 'window._mobVOrdToggleSelMode()', '#9aa0ab')}
