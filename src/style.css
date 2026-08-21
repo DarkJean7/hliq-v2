@@ -5495,7 +5495,7 @@ body.layout-mobile .nav-tabs { display: none !important; }
   flex: 1;
   min-width: 0;
   display: flex;
-  gap: 6px;
+  gap: 5px;
   overflow-x: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -5510,40 +5510,55 @@ body.layout-mobile .nav-tabs { display: none !important; }
   flex-shrink: 0;
 }
 
+/* Sort/action pills.
+   Previously every pill carried its own 1px outline, so a four-way sort next to two action
+   buttons put six competing rectangles in one strip, and the "active" state was another
+   outline in a slightly different colour — hard to pick out at a glance. Inactive pills are
+   now borderless on a subtle fill, and the selected one is a solid accent chip with dark
+   text, matching the Allocation segmented control and the Trade button. One filled shape
+   reads as selected instantly; the rest recede. */
 .mob-pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  height: 26px;
-  padding: 0 11px;
-  border-radius: 13px;
-  border: 1px solid var(--border2);
-  background: transparent;
+  gap: 5px;
+  height: 30px;
+  padding: 0 13px;
+  border-radius: 15px;
+  border: 1px solid transparent;
+  background: var(--panel-3);
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .01em;
   line-height: 1;
-  white-space: nowrap;      /* the fix: label + arrow stay on one line */
+  white-space: nowrap;      /* label + arrow stay on one line */
   flex-shrink: 0;
   cursor: pointer;
   touch-action: manipulation;
-  transition: border-color .15s, background .15s, color .15s;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .15s, color .15s, border-color .15s, transform .08s;
 }
-.mob-pill:hover { color: var(--text); }
+.mob-pill:hover { background: var(--rule); color: var(--fg); }
+/* Touch feedback: these are small targets, so a press needs to register visibly. */
+.mob-pill:active { transform: scale(.96); }
 .mob-pill.active {
+  background: var(--accent);
   border-color: var(--accent);
-  background: rgba(0, 229, 160, 0.12);
-  color: var(--accent);
+  color: var(--accent-fg);
+  box-shadow: 0 1px 6px rgba(0, 229, 160, .22);
 }
-.mob-pill-arrow { font-size: 9px; opacity: .85; }
-.mob-pill-icon { width: 26px; padding: 0; }        /* square icon-only variant */
+.mob-pill.active:hover { background: var(--accent); color: var(--accent-fg); }
+/* Inherits the chip's colour rather than fixing its own, so it stays legible on the dark
+   text of an active pill as well as the muted text of an inactive one. */
+.mob-pill-arrow { font-size: 8.5px; opacity: .75; line-height: 1; }
+.mob-pill-icon { width: 30px; padding: 0; }        /* square icon-only variant */
 .mob-pill-danger {
-  border-color: rgba(255, 77, 109, 0.40);
-  background: rgba(255, 77, 109, 0.08);
-  color: #ff4d6d;
+  background: rgba(255, 77, 109, 0.10);
+  border-color: rgba(255, 77, 109, 0.28);
+  color: #ff6b85;
 }
-.mob-pill-danger:hover { color: #ff8fa3; }
+.mob-pill-danger:hover { background: rgba(255, 77, 109, 0.16); color: #ff8fa3; }
 
 .mob-v-tabs {
   display: flex;
