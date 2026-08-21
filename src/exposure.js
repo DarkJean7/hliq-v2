@@ -14,8 +14,9 @@
 // is narrated, and no number is re-derived from a different source than the rest of the app
 // uses — a report that invents its own figures is worse than no report.
 //
-// Self-contained on purpose: it owns its overlay and pulls formatters in through openExposure,
-// so removing the feature is deleting this file plus its two call sites.
+// Self-contained on purpose: pure computation plus an HTML string, with formatters passed in.
+// It renders INTO the Allocation screen as a third segmented view, so it owns no overlay and no
+// z-index of its own — removing the feature is deleting this file plus its call sites in main.js.
 
 // One position, normalised out of either shape the app stores them in.
 function _norm(ap) {
@@ -212,60 +213,4 @@ export function exposureHtml(d, fmtUSD, T = (en) => en) {
         + 'they offset in a real move.')}
     </div>
     <div style="height:calc(80px + env(safe-area-inset-bottom))"></div>`
-}
-
-// ─── OVERLAY ──────────────────────────────────────────────────────────────────
-const OVERLAY_ID = 'exposureOverlay'
-
-function _ensureOverlay() {
-  let el = document.getElementById(OVERLAY_ID)
-  if (el) return el
-  el = document.createElement('div')
-  el.id = OVERLAY_ID
-  // z-index must sit in the same band as the other full-screen mobile sheets (Global Chat
-  // is 100055). The first version used 60, which put it UNDER #mobileView and the More
-  // drawer — on desktop it happened to show, on mobile the panel opened behind everything
-  // and the feature looked dead.
-  //
-  // overflow-x is set EXPLICITLY: with only overflow-y:auto, CSS resolves the other axis
-  // from `visible` to `auto`, and any over-wide child makes the whole sheet pan sideways.
-  el.style.cssText = 'display:none;position:fixed;inset:0;z-index:100055;background:var(--bg);'
-                   + 'flex-direction:column;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch'
-  document.body.appendChild(el)
-  return el
-}
-
-export function closeExposure() {
-  const el = document.getElementById(OVERLAY_ID)
-  if (el) el.style.display = 'none'
-}
-
-/**
- * rows      — [{ label, addr, accountValue, positions }]
- * fmtUSD    — the app's formatter, so figures match every other screen
- * T         — translator
- */
-export function openExposure({ rows, fmtUSD, T = (en) => en }) {
-  // Close the More drawer first. It is what launched this, and leaving it open left it
-  // sitting over the panel — the other drawer entries (__openChat, __mobMoreTab) all do
-  // the same thing.
-  document.getElementById('mobMoreDrawer')?.classList.remove('open')
-  document.getElementById('mobMoreBackdrop')?.classList.remove('open')
-  const el = _ensureOverlay()
-  const d  = computeExposure(rows)
-  el.innerHTML = `
-    <div style="flex-shrink:0;position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:10px;
-                padding:16px 14px 12px;border-bottom:1px solid var(--border);background:var(--bg)">
-      <span style="font-size:16px;font-weight:800">${T('Exposure')}</span>
-      <span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;
-                   background:rgba(0,229,160,0.12);color:var(--accent)">
-        ${d.accounts} ${d.accounts === 1 ? T('account') : T('accounts')}</span>
-      <button onclick="window.__closeExposure()" aria-label="Close"
-        style="margin-left:auto;display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.07);
-               border:1px solid rgba(255,255,255,0.12);color:var(--fg);border-radius:8px;padding:6px 11px;
-               font-size:12px;font-weight:600;cursor:pointer">${T('Close')}</button>
-    </div>
-    ${exposureHtml(d, fmtUSD, T)}`
-  el.style.display = 'flex'
-  el.scrollTop = 0
 }

@@ -203,7 +203,7 @@ import {
   paperSettleOutcomes, paperFundingHistory, paperAccrueFunding, setPaperFundingRates, PAPER_COSTS,
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey } from './format.js'
-import { openExposure, closeExposure } from './exposure.js'
+import { computeExposure, exposureHtml } from './exposure.js'
 import { ES_DICT } from './i18n-es.js'
 
 /**
@@ -3179,7 +3179,8 @@ window.__allocLeave = function() {
 }
 
 function _mobVRenderAllocation(el) {
-  if (_allocView === 'movers') { _mobVRenderAttribution(el); return }
+  if (_allocView === 'movers')   { _mobVRenderAttribution(el); return }
+  if (_allocView === 'exposure') { _mobVRenderExposure(el); return }
   const header = _allocViewHeader()
   const { slices, total, used, free, hasPositions } = _allocationSlices()
   if (!hasPositions || !slices.length || total <= 0) {
@@ -8584,34 +8585,46 @@ window.__openMovers = function() {
   window.__mobMoreTab('allocation')
 }
 
-// ─── EXPOSURE REPORT (More → Exposure) ────────────────────────────────────────
+// ─── EXPOSURE (Allocation → Exposure) ─────────────────────────────────────────
 // Feeds src/exposure.js the same rows every other surface reads, so its figures cannot
 // disagree with the account cards. In the combined view that is the per-wallet result set
 // (where cross-wallet netting is the whole point); in a single account it is that account
 // alone, which still shows net-vs-gross and per-coin concentration.
-window.__openExposure = function() {
-  let rows
+//
+// Renders INTO the Allocation screen as a third segmented view rather than owning an
+// overlay. The standalone overlay had to reproduce the layering and drawer-dismiss that
+// this screen already handles, and got both wrong on mobile.
+function _exposureRows() {
   if (state.isAllAccounts) {
-    rows = (_allAcctLastResults ?? [])
-      .filter(r => r && !r.error && !_maHiddenLoad().has(r.addr))
+    const hidden = _maHiddenLoad()
+    return (_allAcctLastResults ?? [])
+      .filter(r => r && !r.error && !hidden.has(r.addr))
       .map(r => ({ label: r.label, addr: r.addr, accountValue: r.accountValue, positions: r.positions }))
-  } else {
-    rows = [{
-      label: _T('This account', 'Esta cuenta'),
-      addr: state.addr,
-      accountValue: computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids).accountValue,
-      positions: state.perpState?.assetPositions ?? [],
-    }]
   }
-  openExposure({ rows, fmtUSD, T: (en, es) => _T(en, es ?? en) })
+  return [{
+    label: _T('This account', 'Esta cuenta'),
+    addr: state.addr,
+    accountValue: computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids).accountValue,
+    positions: state.perpState?.assetPositions ?? [],
+  }]
 }
-window.__closeExposure = closeExposure
+
+function _mobVRenderExposure(el) {
+  const d = computeExposure(_exposureRows())
+  el.innerHTML = _allocViewHeader() + exposureHtml(d, fmtUSD, (en, es) => _T(en, es ?? en))
+}
+
+// Kept so anything still calling it lands on the right screen, mirroring __openMovers.
+window.__openExposure = function() {
+  _allocView = 'exposure'
+  window.__mobMoreTab('allocation')
+}
 
 // Shared header for the Allocation screen: an Allocation ⇄ What-moved segmented toggle + close.
 function _allocViewHeader() {
   const tab = (k, lbl) => `<button onclick="window.__allocSetView('${k}')" style="padding:6px 15px;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;background:${_allocView === k ? 'var(--accent)' : 'transparent'};color:${_allocView === k ? '#000' : 'var(--muted)'};transition:background .15s">${lbl}</button>`
   return `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 12px 10px;background:var(--bg);border-bottom:1px solid var(--border)">
-    <div style="display:flex;gap:3px;background:var(--panel-1);border-radius:10px;padding:3px">${tab('allocation', _T('Allocation', 'Asignación'))}${tab('movers', _T('What moved', 'Qué movió'))}</div>
+    <div style="display:flex;gap:3px;background:var(--panel-1);border-radius:10px;padding:3px">${tab('allocation', _T('Allocation', 'Asignación'))}${tab('exposure', _T('Exposure', 'Exposición'))}${tab('movers', _T('What moved', 'Qué movió'))}</div>
     <button onclick="window.mobVHome()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
   </div>`
 }
