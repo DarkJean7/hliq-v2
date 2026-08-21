@@ -7265,6 +7265,24 @@ function _sampleAt(s, t, pre) {
   return t1 === t0 ? v1 : v0 + (v1 - v0) * ((t - t0) / (t1 - t0))
 }
 
+// Value of a [ts, value] series at an arbitrary instant, by linear interpolation between the
+// two samples that straddle it. Clamped at both ends: before the first sample there is nothing
+// to extrapolate from, and after the last the latest reading is the best answer.
+//
+// This exists so a baseline can be pinned to a REAL timestamp instead of to whichever sample
+// happens to sit nearest in that device's grid — sample positions differ per device, an
+// instant does not.
+// Interpolation itself is _sampleAt's job — this only adapts the public series shape to it.
+// accountValueHistory stores values as STRINGS, and _sampleAt does arithmetic on them, so
+// handing it raw entries would concatenate rather than add ("100" + 50 → "10050"). Coerce
+// first, and clamp before the first sample to that sample rather than to a caller-supplied
+// `pre`, since a baseline has nothing sensible to extrapolate from.
+function _seriesValueAt(hist, ts) {
+  if (!Array.isArray(hist) || !hist.length) return 0
+  const s = hist.map(([t, v]) => [+t, parseFloat(v) || 0])
+  return _sampleAt(s, ts, s[0][1])
+}
+
 function _mergeSeries(results, period, key, backfill = false) {
   const series = []
   for (const r of results) {
@@ -10457,7 +10475,15 @@ function _mobVRenderBalance() {
   if (changeEl) {
     if (hist.length >= 2) {
       const todayStart = Date.now() - 86400000
-      const prev = hist.find(([ts]) => ts >= todayStart)?.[1] ?? hist[0][1]
+      // Read the baseline AT the cutoff, never at "the first sample after it".
+      //
+      // _mergeSeries resamples onto a grid whose start, end and point count all come from
+      // whatever that DEVICE has cached, and an all-time series is capped at 240 points — so
+      // one step can be well over a day. Snapping to the next grid point therefore measured
+      // from a different moment on each device: the same account at the same instant read
+      // +$70 (2.09%) on desktop and +$155 (4.77%) on mobile. Interpolating at a fixed
+      // timestamp asks both devices the same question, so the grid only affects resolution.
+      const prev = _seriesValueAt(hist, todayStart)
       const diff = val - parseFloat(prev)
       const pct  = parseFloat(prev) > 0 ? diff / parseFloat(prev) * 100 : 0
       const up   = diff >= 0
