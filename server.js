@@ -723,9 +723,61 @@ function _hlSeriesAt(hist, ts) {
   return t1 === t0 ? v(lo) : v(lo) + (v(hi) - v(lo)) * ((ts - t0) / (t1 - t0))
 }
 
+// ─── Combined realized PnL / fees / funding, accrued once and kept ────────────
+//
+// Net PnL was being derived on each DEVICE from that device's own cached fill history, so
+// a phone and a desktop reported different numbers for the same nine wallets (-$25 against
+// -$168) and each jumped as its cache filled. Realized PnL, fees and funding are facts
+// about the past; they should be computed once, here, exactly like the combined equity.
+//
+// Accrued INCREMENTALLY and persisted: the whole history is paged once per wallet, then
+// only fills newer than the last cursor are added. Re-pulling all-time history for nine
+// wallets every refresh would be both slow and a rate-limit hazard.
+const PNL_FILE = join(__dirname, 'combined-pnl.json')
+
+function pnlRead() {
+  if (!existsSync(PNL_FILE)) return {}
+  try { const o = JSON.parse(readFileSync(PNL_FILE, 'utf8')); return (o && typeof o === 'object') ? o : {} }
+  catch { return {} }
+}
+function pnlWrite(o) {
+  try { writeFileSync(PNL_FILE, JSON.stringify(o)) }
+  catch (e) { console.error('[pnl] save failed:', e.message) }
+}
+
+const PNL_GENESIS = 1667260800000
+
+// Bring one address up to date and return { realizedPnl, fees, funding }.
+async function pnlAccrue(addr) {
+  const all = pnlRead()
+  const k   = String(addr).toLowerCase()
+  const st  = all[k] ?? { realizedPnl: 0, fees: 0, funding: 0, lastFillTs: PNL_GENESIS - 1, lastFundingTs: PNL_GENESIS - 1 }
+
+  const fills = await hlFillsSince(addr, st.lastFillTs)
+  for (const f of fills) {
+    st.realizedPnl += parseFloat(f.closedPnl ?? 0)
+    st.fees        += parseFloat(f.fee ?? 0)
+    if (+f.time > st.lastFillTs) st.lastFillTs = +f.time
+  }
+
+  const fund = await hlInfo({ type: 'userFunding', user: addr, startTime: st.lastFundingTs + 1 }).catch(() => [])
+  for (const f of (Array.isArray(fund) ? fund : [])) {
+    st.funding += parseFloat(f.delta?.usdc ?? 0)
+    if (+f.time > st.lastFundingTs) st.lastFundingTs = +f.time
+  }
+
+  all[k] = st
+  pnlWrite(all)
+  return st
+}
+
 async function computeCombined(addrs) {
   const now = Date.now()
   let accountValue = 0, perpBase = 0, dayAgo = 0
+  // Net PnL travels with the same snapshot as the equity, and for the same reason: one
+  // authoritative source that every device bridges from, instead of nine per-device sums.
+  let realizedPnl = 0, fees = 0, funding = 0, unrealBase = 0
+  let pnlWallets = 0
   const missing = []
   for (const addr of addrs) {
     try {
@@ -739,6 +791,24 @@ async function computeCombined(addrs) {
       accountValue += parseFloat(hist[hist.length - 1][1]) || 0
       dayAgo       += _hlSeriesAt(hist, now - 86_400_000)
       perpBase     += parseFloat(cs?.marginSummary?.accountValue ?? 0)
+
+      // Realized side from the persisted accrual; unrealized from the state just read, so
+      // the pair is consistent and the client can bridge live unrealized off unrealBase.
+      // A PnL failure must not lose the wallet its equity contribution, so it is caught
+      // separately and only pnlWallets goes short — the client then declines the figure
+      // rather than showing one that is missing a wallet.
+      try {
+        const acc = await pnlAccrue(addr)
+        realizedPnl += acc.realizedPnl
+        fees        += acc.fees
+        funding     += acc.funding
+        unrealBase  += (cs?.assetPositions ?? [])
+          .reduce((t, ap) => t + parseFloat(ap.position?.unrealizedPnl ?? 0), 0)
+        pnlWallets++
+      } catch (e) {
+        if (e.rateLimited) throw e
+        console.warn('[pnl]', addr, e.message)
+      }
     } catch (e) {
       // A wallet that fails is reported, not silently dropped — dropping it would shrink
       // the total and read as a real loss.
@@ -746,7 +816,14 @@ async function computeCombined(addrs) {
       if (e.rateLimited) { console.warn('[combined] HL 429 — serving what we have'); break }
     }
   }
-  return { updatedAt: now, accountValue, perpBase, dayAgo, wallets: addrs.length - missing.length, missing }
+  return {
+    updatedAt: now, accountValue, perpBase, dayAgo,
+    wallets: addrs.length - missing.length, missing,
+    // netPnl is the value AT the snapshot; unrealBase is the unrealized inside it, so a
+    // client can carry it forward as `netPnl + (liveUnrealized - unrealBase)`.
+    netPnl: realizedPnl + unrealBase + funding - fees,
+    realizedPnl, fees, funding, unrealBase, pnlWallets,
+  }
 }
 
 // ─── STRATEGY SUBSCRIPTIONS ───────────────────────────────────────────────────

@@ -10629,13 +10629,38 @@ function _comboPnlSums() {
   const hidden = _maHiddenLoad()
   const rows = (_allAcctLastResults ?? []).filter(r => r && !r.error && !hidden.has(r.addr))
   if (!rows.length) return null
-  let net = 0, unreal = 0
+
+  let unreal = 0
+  let haveUnreal = true
+  for (const r of rows) {
+    const u = Number(r.unrealizedPnl)
+    if (!Number.isFinite(u)) { haveUnreal = false; break }
+    unreal += u
+  }
+
+  // Preferred: the server's figure, bridged live off the unrealized it was built with.
+  //
+  // Realized PnL, fees and funding are facts about the past, and deriving them on each
+  // DEVICE from that device's own cached fill history is why a phone said -$25 and a
+  // desktop -$168 for the same nine wallets. The server accrues them once, so every device
+  // now bridges from the same number and can only differ by live unrealized.
+  const snap = _combinedSnap
+  if (haveUnreal && snap && Number.isFinite(Number(snap.netPnl))
+      && snap.pnlWallets === rows.length && snap.wallets === rows.length) {
+    const net = Number(snap.netPnl) + (unreal - Number(snap.unrealBase ?? 0))
+    _comboPnlLast = { net, unreal, wallets: rows.length }
+    return { net, unreal }
+  }
+
+  // Fallback until that snapshot lands: sum the per-wallet figures. Still far better than
+  // recomputing from the merged fills, but it is per-device, so it is second choice.
+  let net = 0
   for (const r of rows) {
     // One wallet without a figure would understate the total, which is the whole bug.
     if (!Number.isFinite(Number(r.netPnl))) return _comboPnlHeld(rows.length)
-    net    += Number(r.netPnl)
-    unreal += Number(r.unrealizedPnl) || 0
+    net += Number(r.netPnl)
   }
+  if (!haveUnreal) return _comboPnlHeld(rows.length)
   _comboPnlLast = { net, unreal, wallets: rows.length }
   return { net, unreal }
 }
