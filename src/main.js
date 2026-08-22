@@ -10610,6 +10610,43 @@ function _mobVStatUSD(v) {
 // combined equity in ~12s never happens for real, so this can't hide genuine movement.
 let _comboEqLast = null, _comboEqPending = null, _comboEqHolds = 0
 function _comboEqReset() { _comboEqLast = null; _comboEqPending = null; _comboEqHolds = 0 }
+// Combined PnL, summed from the per-wallet figures rather than recomputed.
+//
+// Each row already carries a netPnl built from THAT wallet's complete fill history, its
+// all-time funding and its fees, and the WebSocket tick keeps it current. The balance card
+// used to ignore all of that and re-derive Net PnL from state.fills — which in the combined
+// view is every visible row's fills flattened together. A wallet whose history has not been
+// fetched yet contributes no fills, so its realized PnL and fees silently drop out of the
+// total, and Net PnL steps by that wallet's lifetime result as each one lands. It also read
+// state.funding, which the combined view sets to [], so funding was missing entirely.
+//
+// Summing the rows fixes both, and makes this agree with the combined summary sheet, which
+// already sums the same fields.
+let _comboPnlLast = null   // { net, unreal, wallets }
+
+function _comboPnlSums() {
+  if (!state.isAllAccounts) return null
+  const hidden = _maHiddenLoad()
+  const rows = (_allAcctLastResults ?? []).filter(r => r && !r.error && !hidden.has(r.addr))
+  if (!rows.length) return null
+  let net = 0, unreal = 0
+  for (const r of rows) {
+    // One wallet without a figure would understate the total, which is the whole bug.
+    if (!Number.isFinite(Number(r.netPnl))) return _comboPnlHeld(rows.length)
+    net    += Number(r.netPnl)
+    unreal += Number(r.unrealizedPnl) || 0
+  }
+  _comboPnlLast = { net, unreal, wallets: rows.length }
+  return { net, unreal }
+}
+
+// Hold the last complete total while a wallet is between refreshes, but only while it still
+// describes the same number of wallets.
+function _comboPnlHeld(nRows) {
+  if (!_comboPnlLast || _comboPnlLast.wallets !== nRows) return null
+  return { net: _comboPnlLast.net, unreal: _comboPnlLast.unreal }
+}
+
 function _comboEqFilter(val) {
   if (!Number.isFinite(val) || val <= 0) return _comboEqLast ?? val
   if (_comboEqLast == null) { _comboEqLast = val; return val }
@@ -10766,12 +10803,18 @@ function _mobVRenderBalance() {
   // Stats row — leverage is a ratio (not masked); free margin + maint respect privacy.
   // The Unreal/Net PnL stat is tappable — toggles which of the two it shows (__mobVTogglePnlStat)
   const _pnlNet = _mobVPnlStatMode() === 'net'
-  const _pnlVal = _pnlNet ? netPnl : unrealizedPnl
+  // Combined view: sum the per-wallet figures. Single account: the computed ones.
+  const _cp = _comboPnlSums()
+  const _pnlVal = _pnlNet
+    ? (_cp ? _cp.net : netPnl)
+    : (_cp ? _cp.unreal : unrealizedPnl)
   const upEl = document.getElementById('mobVUnrealPnl')
   // Net PnL needs the ALL-TIME fills; unrealized does not. While only the 14-day window is
   // loaded, leave whatever is already on screen rather than flashing a wrong all-time total
   // and correcting it a beat later. Nothing on screen yet → a dash, which is at least true.
-  const _pnlReady = !_pnlNet || state.fillsFull !== false
+  // The combined view has its own completeness check above, so this gate is for the single
+  // account only — state.fillsFull is set by that load path and would otherwise leak across.
+  const _pnlReady = !_pnlNet || state.isAllAccounts || state.fillsFull !== false
   if (upEl && _pnlReady) {
     upEl.textContent = _privacyMode ? '•••' : (_pnlVal >= 0 ? '+' : '') + _mobVStatUSD(_pnlVal)
     upEl.style.color = _pnlVal > 0 ? 'var(--green)' : _pnlVal < 0 ? 'var(--red)' : ''
