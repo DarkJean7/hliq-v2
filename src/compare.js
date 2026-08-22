@@ -222,16 +222,27 @@ export function compareReadoutHtml(r, label = c => c) {
   </div>`
 }
 
-export function compareLegendHtml(d, { label = c => c, colors = null } = {}) {
+/**
+ * `sub` adds a second figure under the percentage. Off by default: for the asset comparison
+ * this legend was written for, the absolute move is a price change per unit and comparing
+ * those across coins is meaningless. For a wallet comparison it is the dollars gained, which
+ * is the thing the percentage cannot tell you — +991% on a small wallet and +25% on a large
+ * one can be the same money.
+ */
+export function compareLegendHtml(d, { label = c => c, colors = null, sub = null } = {}) {
   const col = colors ?? assignCompareColors(d.series.map(s => s.coin))
   return d.series.map(s => {
     const tone = s.change >= 0 ? 'var(--green)' : 'var(--red)'
+    const extra = sub ? sub(s) : ''
     return `<div style="display:flex;align-items:center;gap:7px;padding:5px 0;min-width:0">
       <span style="width:9px;height:9px;border-radius:3px;flex-shrink:0;background:${col[s.coin]}"></span>
       <span style="font-size:12.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(label(s.coin))}</span>
       <span style="flex:1"></span>
-      <span style="font-size:12.5px;font-weight:800;font-family:var(--font-mono);color:${tone};white-space:nowrap">
-        ${s.change >= 0 ? '+' : ''}${s.change.toFixed(2)}%</span>
+      <span style="text-align:right;white-space:nowrap">
+        <span style="font-size:12.5px;font-weight:800;font-family:var(--font-mono);color:${tone}">
+          ${s.change >= 0 ? '+' : ''}${s.change.toFixed(2)}%</span>
+        ${extra ? `<span style="display:block;font-size:11px;font-family:var(--font-mono);color:var(--muted);margin-top:1px">${extra}</span>` : ''}
+      </span>
     </div>`
   }).join('')
 }

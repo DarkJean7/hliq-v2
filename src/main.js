@@ -11158,6 +11158,47 @@ function _portSeries(period, type) {
   return { hist, baseRef }
 }
 
+// The percentage alone hides the thing that matters most: +991% on a small wallet and +25%
+// on a large one can be the same money. computeCompare keeps each series' first and last
+// value, so the dollar move is just the difference.
+function _splitUsdSub(s) {
+  const usd = (s.last ?? 0) - (s.base ?? 0)
+  if (!Number.isFinite(usd)) return ''
+  return `${usd >= 0 ? '+' : '−'}$${fmtUSD(Math.abs(usd))}`
+}
+
+// One renderer for both the inline chart and the Advanced overlay: same series, same
+// colours, same legend — only the host element and the width differ.
+function _renderSplitInto(host, { period, width, height, heroEl }) {
+  const { byWallet, labels } = _splitSeriesByWallet(period)
+  const d = computeCompare(byWallet, labels)
+
+  if (!d.series.length) {
+    host.innerHTML = `<div style="padding:18px 16px;color:var(--muted);font-size:13px">${
+      _T('No per-wallet history for this period', 'Sin historial por cartera en este periodo')}</div>`
+    if (heroEl) heroEl.innerHTML = ''
+    return null
+  }
+
+  const colors = assignCompareColors(d.series.map(x => x.coin))
+  host.innerHTML = `
+    <div style="padding:0 16px">${compareChartSvg(d, { width, height, colors })}</div>
+    ${compareAxisHtml(d)}
+    <div style="padding:6px 16px 2px">${compareLegendHtml(d, { colors, sub: _splitUsdSub })}</div>`
+
+  if (heroEl) {
+    const best  = d.series[0]
+    const worst = d.series[d.series.length - 1]
+    const fmt = (x) => `${x.change >= 0 ? '+' : ''}${x.change.toFixed(2)}%`
+    const tone = (x) => x.change >= 0 ? 'var(--green)' : 'var(--red)'
+    heroEl.innerHTML = `<div style="font-size:12px;color:var(--muted)">
+      ${_T('Top', 'Mejor')} <b style="color:${tone(best)}">${esc(best.coin)} ${fmt(best)}</b>
+      ${d.series.length > 1 ? ` · ${_T('lowest', 'menor')} <b style="color:${tone(worst)}">${esc(worst.coin)} ${fmt(worst)}</b>` : ''}
+    </div>`
+  }
+  return { d, colors }
+}
+
 // ─── ALL ACCOUNTS: ONE LINE PER WALLET ────────────────────────────────────────
 //
 // The combined chart answers "how am I doing"; it cannot answer "which wallet is doing it".
@@ -11175,8 +11216,11 @@ window.mobVTogglePortSplit = function() {
 }
 
 // Per-wallet history for the selected period, shaped like the candles computeCompare wants.
-function _splitSeriesByWallet() {
-  const periodKey = { '1D': 'day', '7D': 'week', '1M': 'month', 'allTime': 'allTime' }[_mobVPortPeriod] ?? 'allTime'
+function _splitSeriesByWallet(period = _mobVPortPeriod) {
+  // Advanced offers 1H and 8H, which Hyperliquid's portfolio history does not have — its
+  // finest bucket is 'day'. Map them onto that rather than silently falling back to
+  // all-time, which would answer a completely different question from the one asked.
+  const periodKey = { '1H': 'day', '8H': 'day', '1D': 'day', '7D': 'week', '1M': 'month', 'allTime': 'allTime' }[period] ?? 'allTime'
   const histKey   = _mobVPortChartType === 'pnl' ? 'pnlHistory' : 'accountValueHistory'
   const hidden    = _maHiddenLoad()
   const byWallet  = {}
@@ -11200,45 +11244,14 @@ function _mobVDrawPortSplit() {
   try { _mobVSplitDetach?.() } catch {}
   _mobVSplitDetach = null
 
-  const { byWallet, labels } = _splitSeriesByWallet()
-  // computeCompare divides by each series' first value, so a wallet whose history starts at
-  // zero (funded mid-period) is dropped there rather than producing an infinite percentage.
-  const d = computeCompare(byWallet, labels)
   const heroEl = document.getElementById('mobVPortHero')
-
-  if (!d.series.length) {
-    host.innerHTML = `<div style="padding:18px 16px;color:var(--muted);font-size:13px">${
-      _T('No per-wallet history for this period', 'Sin historial por cartera en este periodo')}</div>`
-    if (heroEl) heroEl.innerHTML = ''
-    return
-  }
-
-  const colors = assignCompareColors(d.series.map(s => s.coin))
   const width  = Math.max(240, (host.clientWidth || 340) - 32)
-  host.innerHTML = `
-    <div style="padding:0 16px">${compareChartSvg(d, { width, height: 150, colors })}</div>
-    ${compareAxisHtml(d)}
-    <div style="padding:6px 16px 2px">${compareLegendHtml(d, { colors })}</div>`
+  const res = _renderSplitInto(host, { period: _mobVPortPeriod, width, height: 150, heroEl })
+  if (!res) return
 
-  if (heroEl) {
-    const best  = d.series[0]
-    const worst = d.series[d.series.length - 1]
-    const fmt = (x) => `${x.change >= 0 ? '+' : ''}${x.change.toFixed(2)}%`
-    // Colour by SIGN, not by rank. The bottom wallet of three winners is still up, and
-    // painting +285% red because it came last says the opposite of what happened.
-    const tone = (x) => x.change >= 0 ? 'var(--green)' : 'var(--red)'
-    heroEl.innerHTML = `<div style="font-size:12px;color:var(--muted)">
-      ${_T('Top', 'Mejor')} <b style="color:${tone(best)}">${esc(best.coin)} ${fmt(best)}</b>
-      ${d.series.length > 1 ? ` · ${_T('lowest', 'menor')} <b style="color:${tone(worst)}">${esc(worst.coin)} ${fmt(worst)}</b>` : ''}
-    </div>`
-  }
-
-  _mobVSplitDetach = attachCompareScrub(host, d, {
-    colors,
-    onReadout: (r) => {
-      if (!heroEl) return
-      heroEl.innerHTML = r ? compareReadoutHtml(r) : heroEl.innerHTML
-    },
+  _mobVSplitDetach = attachCompareScrub(host, res.d, {
+    colors: res.colors,
+    onReadout: (r) => { if (heroEl && r) heroEl.innerHTML = compareReadoutHtml(r) },
   })
 }
 
@@ -11433,6 +11446,38 @@ function _advRebuild() {
   _advDraw()
 }
 
+let _advSplitDetach = null
+
+function _advDrawSplit() {
+  const host = document.getElementById('advSplit')
+  if (!host) return
+  try { _advSplitDetach?.() } catch {}
+  _advSplitDetach = null
+  // Zoom, pan and candles are single-series ideas; hide the canvas rather than leave a dead
+  // one behind it.
+  const wrapEl = document.querySelector('#advChartOverlay .adv-canvas-wrap')
+  if (wrapEl) wrapEl.style.display = 'none'
+  host.style.display = 'block'
+
+  const heroEl = document.getElementById('advHero')
+  const width  = Math.max(240, (host.clientWidth || 360) - 32)
+  const res = _renderSplitInto(host, { period: _adv.periodSel, width, height: 220, heroEl })
+  if (!res) return
+
+  _advSplitDetach = attachCompareScrub(host, res.d, {
+    colors: res.colors,
+    onReadout: (r) => { if (heroEl && r) heroEl.innerHTML = compareReadoutHtml(r) },
+  })
+}
+
+window.advToggleSplit = function() {
+  _mobVPortSplit = !_mobVPortSplit
+  // Keep the inline chart in step — the two toggles are one setting, not two.
+  if (_mobVActiveTab === 'portfolio') _mobVRenderContent()
+  _advSyncControls()
+  _advDraw()
+}
+
 function _advSyncControls() {
   document.querySelectorAll('#advChartOverlay [data-adv-type]').forEach(btn =>
     btn.style.cssText = _mobVPortBtnStyle(btn.dataset.advType === _mobVPortChartType))
@@ -11442,9 +11487,29 @@ function _advSyncControls() {
   if (mk) { mk.style.borderColor = _mobVPortMarkers ? '#00e5a0' : ''; mk.style.color = _mobVPortMarkers ? 'var(--fg)' : '' }
   const sb = document.getElementById('advStyleBtn')
   if (sb) { sb.textContent = _adv.style === 'candle' ? '📈 Line' : '🕯 Candles'; sb.style.borderColor = _adv.style === 'candle' ? '#00e5a0' : ''; sb.style.color = _adv.style === 'candle' ? 'var(--fg)' : '' }
+  const split = _mobVPortSplit && state.isAllAccounts
+  const spb = document.getElementById('advSplitBtn')
+  if (spb) { spb.textContent = split ? '⇢ Combined' : '⇉ Per wallet'; spb.style.borderColor = split ? '#00e5a0' : ''; spb.style.color = split ? 'var(--fg)' : '' }
+  // Candles and zoom mean nothing across eight normalised series; dim them rather than
+  // leaving controls that appear to work and do not.
+  for (const id of ['advStyleBtn', 'advMarkersBtn']) {
+    const b = document.getElementById(id)
+    if (b) { b.disabled = split; b.style.opacity = split ? '.35' : '' }
+  }
+  const hint = document.querySelector('#advChartOverlay .adv-hint-line')
+  if (hint) hint.textContent = split
+    ? 'Each wallet as % from the start of the period · drag to read a point'
+    : 'Drag to pan · pinch / scroll to zoom · tap a point or marker'
 }
 
 function _advDraw() {
+  // Split owns the chart area — and unlike the canvas view it needs no _adv.data, so this
+  // must come before the guard below or the overlay stays blank.
+  if (_mobVPortSplit && state.isAllAccounts) { _advDrawSplit(); return }
+  const splitHost = document.getElementById('advSplit')
+  if (splitHost) { splitHost.style.display = 'none'; splitHost.innerHTML = '' }
+  const wrapEl = document.querySelector('#advChartOverlay .adv-canvas-wrap')
+  if (wrapEl) wrapEl.style.display = ''
   const canvas = document.getElementById('advChart')
   const d = _adv.data
   if (!canvas || !d) return
@@ -11753,12 +11818,14 @@ window.mobVOpenAdvChart = function() {
         <canvas id="advChart"></canvas>
         <div id="advTip" class="adv-tip"></div>
       </div>
+      <div id="advSplit" style="display:none;overflow-y:auto"></div>
       <div class="adv-foot">
         <button onclick="window.advZoom(0.6)" aria-label="Zoom in">＋</button>
         <button onclick="window.advZoom(1.6667)" aria-label="Zoom out">－</button>
         <button onclick="window.advReset()">Reset</button>
         <button id="advStyleBtn" onclick="window.advToggleStyle()">🕯 Candles</button>
         <button id="advMarkersBtn" onclick="window.advToggleMarkers()">📍 Markers</button>
+        ${state.isAllAccounts ? `<button id="advSplitBtn" onclick="window.advToggleSplit()">⇉ Per wallet</button>` : ''}
       </div>
       <div class="adv-hint-line">Drag to pan · pinch / scroll to zoom · tap a point or marker</div>`
     document.body.appendChild(ov)
