@@ -17070,65 +17070,139 @@ function _stratRunStatus(type) {
 // This gate is COSMETIC. The real one is in server.js at /api/start, because that is where
 // a strategy actually spawns — hiding the tab would stop nobody who can open devtools. What
 // lives here is the explanation and the purchase flow, not the enforcement.
-let _subStatus = null      // { active, until, trialAvailable, ... }
+//
+// Paying is a plain Hyperliquid Send. Nothing is asked of the user afterwards: the server
+// watches the treasury's ledger and credits the sending wallet, so there is no transaction
+// hash to copy and no form to fill in.
+let _subStatus = null      // { active, until, trialAvailable, treasury, ... }
 let _subFetchAt = 0
 let _subFetching = false
+let _subWatchUntil = 0     // ms — poll hard while the user is mid-payment
+let _subWatchTimer = null
 
 async function _subRefresh(force = false) {
   const addr = _botApiAddr()
   if (!addr || _subFetching) return
   if (!force && Date.now() - _subFetchAt < 60_000) return
   _subFetching = true
+  const was = _stratsUnlocked()
   try {
     const r = await fetch(`/api/sub/status?address=${encodeURIComponent(addr)}`)
     if (r.ok) { _subStatus = await r.json(); _subFetchAt = Date.now() }
   } catch {} finally {
     _subFetching = false
-    if (_mobVActiveTab === 'strategies') _mobVRenderContent()
+    // Only rebuild when the answer actually changed. A blind re-render every minute would
+    // wipe whatever the user is typing into the strategy config forms.
+    if (_mobVActiveTab === 'strategies' && _stratsUnlocked() !== was) _mobVRenderContent()
   }
 }
 
 // Dev mode is a local override for the owner; a paid subscription is the real entitlement.
 function _stratsUnlocked() { return isDev() || !!_subStatus?.active }
 
+// ── payment watching ─────────────────────────────────────────────────────────
+// Once the user says they have sent it we poke the server every few seconds. The server
+// polls Hyperliquid on its own timer anyway; this just shortens the wait from ~30s to
+// ~5s while someone is staring at the screen. Survives a reload.
+function _subWatchRestore() {
+  const t = Number(localStorage.getItem('hliq_sub_watch') ?? 0)
+  if (t > Date.now()) { _subWatchUntil = t; _subWatchStart() }
+}
+function _subWatchStart() {
+  if (_subWatchTimer) return
+  _subWatchTimer = setInterval(_subWatchTick, 6000)
+  _subWatchTick()
+}
+function _subWatchStop() {
+  if (_subWatchTimer) { clearInterval(_subWatchTimer); _subWatchTimer = null }
+  _subWatchUntil = 0
+  try { localStorage.removeItem('hliq_sub_watch') } catch {}
+}
+async function _subWatchTick() {
+  const addr = _botApiAddr()
+  if (!addr || Date.now() > _subWatchUntil) { _subWatchStop(); _subPaintWatch(); return }
+  try {
+    const r = await fetch('/api/sub/check', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address: addr }),
+    })
+    const j = await r.json().catch(() => ({}))
+    if (j.active) {
+      _subWatchStop()
+      await _subRefresh(true)
+      _paperToast(_T('Subscription active — strategies unlocked', 'Suscripción activa'), 'ok')
+      _mobVRenderContent()
+      return
+    }
+    // Partial payment: tell them exactly what is missing rather than leaving them staring
+    // at a spinner that will never resolve.
+    if (Number(j.credit) > 0 && _subStatus) _subStatus.credit = Number(j.credit)
+  } catch {}
+  _subPaintWatch()
+}
+// Repaint just the status line. Re-rendering the whole pane would collapse the "paid from
+// another wallet" disclosure and drop focus out of its input.
+function _subPaintWatch() {
+  const el = document.getElementById('subWatchLine')
+  if (el) el.innerHTML = _subWatchHtml()
+}
+function _subWatchHtml() {
+  const price = _subStatus?.priceUsdc ?? 10
+  const credit = Number(_subStatus?.credit) || 0
+  if (credit > 0) {
+    return `<span style="color:#ff9f43">${_T('Received', 'Recibido')} $${credit.toFixed(2)} — ${_T('send', 'envía')} $${(price - credit).toFixed(2)} ${_T('more to activate', 'más para activar')}</span>`
+  }
+  if (_subWatchUntil > Date.now()) {
+    return `<span class="sub-watching">${_T('Watching for your payment…', 'Esperando tu pago…')}</span>`
+  }
+  return `<span style="color:var(--muted)">${_T('Activation is automatic, usually within a minute.', 'La activación es automática, normalmente en un minuto.')}</span>`
+}
+
+window.__subSent = function() {
+  if (!_botApiAddr()) { _paperToast(_T('Load a wallet first', 'Carga una cuenta primero'), 'err'); return }
+  _subWatchUntil = Date.now() + 10 * 60_000
+  try { localStorage.setItem('hliq_sub_watch', String(_subWatchUntil)) } catch {}
+  _subWatchStart()
+  _subPaintWatch()
+}
+
 window.__subStartTrial = async function() {
   const addr = _botApiAddr()
-  if (!addr) { _paperToast('Load a wallet first', 'err'); return }
+  if (!addr) { _paperToast(_T('Load a wallet first', 'Carga una cuenta primero'), 'err'); return }
   try {
     const r = await fetch('/api/sub/trial', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address: addr }),
     })
     const j = await r.json().catch(() => ({}))
-    if (!r.ok) { _paperToast(j.error || 'Could not start the trial', 'err'); return }
-    _paperToast('Trial started', 'ok')
+    if (!r.ok) { _paperToast(j.error || _T('Could not start the trial', 'No se pudo iniciar la prueba'), 'err'); return }
+    _paperToast(_T('Trial started', 'Prueba iniciada'), 'ok')
     await _subRefresh(true)
-  } catch { _paperToast('Server unreachable', 'err') }
+    _mobVRenderContent()
+  } catch { _paperToast(_T('Server unreachable', 'Servidor no disponible'), 'err') }
 }
 
-window.__subClaim = async function() {
-  const addr = document.getElementById('subAddr')?.value?.trim() || _botApiAddr()
-  const tx   = document.getElementById('subTx')?.value?.trim()
-  if (!/^0x[0-9a-fA-F]{40}$/.test(addr || '')) { _paperToast('Enter the wallet to enable', 'err'); return }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(tx || ''))   { _paperToast('Enter the payment transaction hash', 'err'); return }
-  const btn = document.getElementById('subClaimBtn')
-  if (btn) { btn.disabled = true; btn.textContent = _T('Verifying on Arbitrum…', 'Verificando en Arbitrum…') }
+// Nominate the wallet the payment will come from, when it is not the one being enabled.
+window.__subPayFrom = async function() {
+  const payer = document.getElementById('subPayer')?.value?.trim()
+  const addr = _botApiAddr()
+  if (!/^0x[0-9a-fA-F]{40}$/.test(payer || '')) { _paperToast(_T('Enter the paying wallet', 'Introduce la cartera que paga'), 'err'); return }
   try {
-    const r = await fetch('/api/sub/claim', {
+    const r = await fetch('/api/sub/payfrom', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address: addr, txHash: tx }),
+      body: JSON.stringify({ address: addr, payer }),
     })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) { _paperToast(j.error || 'Could not verify that payment', 'err'); return }
-    _paperToast(`Activated until ${new Date(j.until).toLocaleDateString()}`, 'ok')
-    await _subRefresh(true)
-  } catch { _paperToast('Server unreachable', 'err') }
-  finally { if (btn) { btn.disabled = false; btn.textContent = _T('Activate', 'Activar') } }
+    if (!r.ok) { _paperToast(_T('Could not save that', 'No se pudo guardar'), 'err'); return }
+    _paperToast(_T('Saved — send from that wallet', 'Guardado — envía desde esa cartera'), 'ok')
+  } catch { _paperToast(_T('Server unreachable', 'Servidor no disponible'), 'err') }
 }
 
 window.__subCopyTreasury = function(btn) {
   const a = _subStatus?.treasury ?? ''
-  try { navigator.clipboard.writeText(a); if (btn) { btn.textContent = '✓'; setTimeout(() => { btn.textContent = '⎘' }, 1200) } } catch {}
+  try {
+    navigator.clipboard.writeText(a)
+    if (btn) { const o = btn.innerHTML; btn.innerHTML = _T('Copied', 'Copiado'); setTimeout(() => { btn.innerHTML = o }, 1400) }
+  } catch {}
 }
 
 function _subPaywallHtml() {
@@ -17139,51 +17213,63 @@ function _subPaywallHtml() {
   const price = st?.priceUsdc ?? 10
   const days  = st?.periodDays ?? 30
   const trial = st?.trialAvailable && (st?.trialDays > 0)
-  return `
-    <div style="padding:18px 16px 8px;text-align:center">
-      <div style="font-size:34px;line-height:1">🤖</div>
-      <div style="font-size:18px;font-weight:800;margin-top:8px">${T('Automated strategies')}</div>
-      <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-top:6px">
-        ${T('Grid, DCA, Trend, Profit Stack and the rest run on our server around the clock — they keep trading while the app is closed.')}
-      </div>
-      <div style="font-size:22px;font-weight:800;margin-top:14px">$${price}<span style="font-size:13px;color:var(--muted);font-weight:600"> / ${days} ${T('days')}</span></div>
+  const short = (a) => a ? a.slice(0, 6) + '…' + a.slice(-4) : '—'
+
+  const feature = (text) => `<div class="sub-feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" width="13" height="13"><path d="M20 6 9 17l-5-5"/></svg><span>${text}</span></div>`
+  const step = (n, html) => `<div class="sub-step"><span class="sub-step-n">${n}</span><div class="sub-step-b">${html}</div></div>`
+
+  return `<div class="sub-wrap">
+    <div class="sub-hero">
+      <div class="sub-kicker">${T('Automated strategies')}</div>
+      <div class="sub-title">${T('Let the bots trade while you sleep')}</div>
+      <div class="sub-sub">${T('Grid, DCA, Trend and Profit Stack run on our servers around the clock — they keep working with the app closed.')}</div>
+      <div class="sub-price"><span class="sub-price-n">$${price}</span><span class="sub-price-u">/ ${days} ${T('days')}</span></div>
     </div>
 
-    ${trial ? `<div style="padding:6px 16px 0">
-      <button onclick="window.__subStartTrial()" style="width:100%;padding:13px;border:none;border-radius:12px;background:var(--accent);color:var(--accent-fg);font-size:15px;font-weight:800;cursor:pointer">
-        ${T('Start free trial')} · ${st.trialDays} ${T('days')}
-      </button>
-      <div style="font-size:11px;color:var(--muted);text-align:center;margin-top:6px">${T('One trial per wallet. No card, no payment.')}</div>
-    </div>` : ''}
-
-    <div style="padding:16px 16px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">${T('Pay with USDC')}</div>
-    <div style="margin:0 16px;padding:12px;border:1px solid var(--border2);border-radius:12px;background:var(--panel-2)">
-      <div style="font-size:12px;color:var(--muted)">${T('Send')} <b style="color:var(--fg)">${price} USDC</b> ${T('on')} <b style="color:var(--fg)">${esc(st?.chain ?? 'Arbitrum One')}</b> ${T('to')}:</div>
-      <div style="display:flex;align-items:center;gap:8px;margin-top:7px">
-        <code style="flex:1;min-width:0;font-size:11px;word-break:break-all;color:var(--fg)">${esc(treasury)}</code>
-        <button onclick="window.__subCopyTreasury(this)" style="flex-shrink:0;background:rgba(255,255,255,.07);border:1px solid var(--border2);color:var(--fg);border-radius:7px;padding:5px 9px;font-size:12px;cursor:pointer">⎘</button>
-      </div>
-      <div style="font-size:11px;color:#ff9f43;margin-top:8px;line-height:1.45">
-        ${T('Arbitrum One only. Sending on another network, or sending a different token, loses the funds — we cannot recover them.')}
-      </div>
+    <div class="sub-feats">
+      ${feature(T('Unlimited bots, on every account you own'))}
+      ${feature(T('Runs server-side — no browser left open'))}
+      ${feature(T('Stop any bot at any time. No lock-in.'))}
     </div>
 
-    <div style="padding:14px 16px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">${T('Then activate')}</div>
-    <div style="padding:0 16px">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${T('Wallet to enable')}</div>
-      <input id="subAddr" value="${esc(addr)}" placeholder="0x…" spellcheck="false"
-        style="width:100%;box-sizing:border-box;padding:11px;background:var(--panel-2);border:1px solid var(--border);border-radius:10px;font-size:12px;color:var(--fg);outline:none">
-      <div style="font-size:11px;color:var(--muted);margin:9px 0 4px">${T('Payment transaction hash')}</div>
-      <input id="subTx" placeholder="0x…" spellcheck="false" inputmode="text"
-        style="width:100%;box-sizing:border-box;padding:11px;background:var(--panel-2);border:1px solid var(--border);border-radius:10px;font-size:12px;color:var(--fg);outline:none">
-      <button id="subClaimBtn" onclick="window.__subClaim()" style="width:100%;margin-top:11px;padding:13px;border:none;border-radius:12px;background:var(--accent);color:var(--accent-fg);font-size:15px;font-weight:800;cursor:pointer">
-        ${T('Activate')}
-      </button>
-      <div style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px;line-height:1.45">
-        ${T('The paying wallet and the wallet you enable do not have to match. Each transaction can be claimed once.')}
+    ${trial ? `
+      <button class="sub-cta" onclick="window.__subStartTrial()">${T('Start free trial')} · ${st.trialDays} ${T('days')}</button>
+      <div class="sub-fine">${T('One per wallet. No card, nothing to cancel.')}</div>
+      <div class="sub-or"><span>${T('or pay now')}</span></div>
+    ` : ''}
+
+    <div class="sub-card">
+      <div class="sub-card-head">
+        <span class="sub-chip">${price} USDC</span>
+        <span class="sub-card-on">${T('on')} ${esc(st?.chain ?? 'Hyperliquid')}</span>
       </div>
+      ${step(1, T('Open Hyperliquid and tap <b>Send</b>.'))}
+      ${step(2, `${T('Send')} <b>${price} USDC</b> ${T('to')}
+        <div class="sub-addr"><code>${esc(treasury)}</code><button onclick="window.__subCopyTreasury(this)">${T('Copy')}</button></div>`)}
+      ${step(3, T('That is it — we watch for the transfer and unlock automatically.'))}
+      <div class="sub-btn-row">
+        <a class="sub-btn ghost" href="https://app.hyperliquid.xyz/portfolio" target="_blank" rel="noopener">${T('Open Hyperliquid')}</a>
+        <button class="sub-btn solid" onclick="window.__subSent()">${T('I sent it')}</button>
+      </div>
+      <div id="subWatchLine" class="sub-watchline">${_subWatchHtml()}</div>
     </div>
-    <div style="height:calc(80px + env(safe-area-inset-bottom))"></div>`
+
+    <div class="sub-foot">
+      <div class="sub-foot-row"><span>${T('Enabling')}</span><code title="${esc(addr)}">${esc(short(addr))}</code></div>
+      <details class="sub-details">
+        <summary>${T('Paying from a different wallet?')}</summary>
+        <div class="sub-details-body">
+          <div>${T('By default the wallet that sends the USDC is the one enabled. Name the wallet that will pay and we will credit this one instead.')}</div>
+          <div class="sub-details-row">
+            <input id="subPayer" placeholder="0x…" spellcheck="false" autocomplete="off">
+            <button onclick="window.__subPayFrom()">${T('Save')}</button>
+          </div>
+        </div>
+      </details>
+      <div class="sub-fine">${T('Hyperliquid only. Sending on another chain loses the funds — we cannot recover them.')}</div>
+    </div>
+    <div style="height:calc(80px + env(safe-area-inset-bottom))"></div>
+  </div>`
 }
 
 // Full-screen toggle for the Strats tab. The config forms are tall — several inputs plus a
@@ -17216,7 +17302,7 @@ function _mobVRenderStrategies(el) {
   // mode bypasses locally; the server bypasses for admin. Anyone else hits 402 at
   // /api/start regardless of what this renders, which is the point.
   _subRefresh()
-  if (!_stratsUnlocked()) { el.innerHTML = _subPaywallHtml(); return }
+  if (!_stratsUnlocked()) { el.innerHTML = _subPaywallHtml(); _subWatchRestore(); return }
   // Preserve in-progress edits across re-renders. This view rebuilds via innerHTML on a
   // server-status poll or any toggle (Cross/Isolated, Long/Short, %/$, size unit). The
   // config inputs carry no value= attribute, so without this a re-render mid-typing wipes

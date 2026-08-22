@@ -755,24 +755,19 @@ async function computeCombined(addrs) {
 // So the paywall lives here too. Hiding the tab in the client would stop nobody: a POST to
 // /api/start would still launch a bot. The client gate is cosmetic; THIS is the gate.
 //
-// Payment is USDC on Arbitrum One to the treasury below. The user pays from any wallet,
-// then submits the transaction hash and the wallet they want enabled — those need not be
-// the same, which is why the flow is claim-by-hash rather than matching on the sender.
-// Verification reads the receipt straight from an Arbitrum RPC: no indexer, no webhook, and
-// nothing to trust but the chain. Each hash can be claimed once.
-const SUBS_FILE   = join(__dirname, 'subscriptions.json')
-const SUB_TREASURY = '0x8fe3c39057b6348a27d912423a9770b242911c5d'   // lowercase for comparison
-const SUB_PRICE_USDC = 10        // per period
+// Payment is a plain Hyperliquid USDC send to the treasury below — the same "Send" dialog
+// people already use, no bridge, no gas, no second chain to explain. Nothing is asked of
+// the user afterwards: a watcher polls the treasury's own ledger and credits the SENDER.
+// That is the whole reason to pay on HyperCore rather than Arbitrum — the sender is in the
+// ledger entry, so a transaction hash never has to be copied anywhere.
+const SUBS_FILE      = join(__dirname, 'subscriptions.json')
+const SUB_PAY_FILE   = join(__dirname, 'sub-payments.json')
+const SUB_TREASURY   = '0x8fe3c39057b6348a27d912423a9770b242911c5d'   // lowercase for comparison
+const SUB_PRICE_USDC  = 10        // per period
 const SUB_PERIOD_DAYS = 30
-const SUB_TRIAL_DAYS  = 7        // 0 disables the free trial
-const ARB_RPC = 'https://arb1.arbitrum.io/rpc'
-// Native USDC and the older bridged USDC.e — people hold both, and refusing one would look
-// like the payment silently failed.
-const USDC_ARB = new Set([
-  '0xaf88d065e77c8cc2239327c5edb3a432268e5831',
-  '0xff970a61a04b1ca14834a43f5de4533ebddb5cc8',
-])
-const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
+const SUB_TRIAL_DAYS  = 7         // 0 disables the free trial
+const SUB_POLL_MS     = 30_000
+const SUB_POKE_MS     = 5_000     // floor between user-triggered "check now" polls
 
 function subsRead() {
   if (!existsSync(SUBS_FILE)) return {}
@@ -790,43 +785,110 @@ function subActive(addr) {
 function subExtend(addr, days, patch = {}) {
   const all = subsRead()
   const k = String(addr).toLowerCase()
-  const cur = all[k] ?? { until: 0, trialUsed: false, txs: [] }
+  const cur = all[k] ?? { until: 0, trialUsed: false, credit: 0 }
   const from = Math.max(Date.now(), Number(cur.until) || 0)
   all[k] = { ...cur, ...patch, until: from + days * 86400_000 }
   subsWrite(all)
   return all[k]
 }
 
-async function arbRpc(method, params) {
-  const r = await fetch(ARB_RPC, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-    signal: AbortSignal.timeout(12_000),
-  })
-  if (!r.ok) throw new Error('RPC ' + r.status)
-  const j = await r.json()
-  if (j.error) throw new Error(j.error.message ?? 'RPC error')
-  return j.result
+// Watcher bookkeeping: how far we have read, and which ledger entries were already
+// applied. Kept out of subscriptions.json so that file stays a clean wallet → entitlement
+// map that a human can read and edit.
+function subPayRead() {
+  if (!existsSync(SUB_PAY_FILE)) return { floor: 0, since: 0, seen: [], binds: {} }
+  try {
+    const o = JSON.parse(readFileSync(SUB_PAY_FILE, 'utf8'))
+    return {
+      floor: Number(o.floor) || 0,
+      since: Number(o.since) || 0,
+      seen: Array.isArray(o.seen) ? o.seen : [],
+      binds: o.binds ?? {},
+    }
+  } catch { return { floor: 0, since: 0, seen: [], binds: {} } }
+}
+function subPayWrite(o) {
+  try { writeFileSync(SUB_PAY_FILE, JSON.stringify({ ...o, seen: o.seen.slice(-500) }, null, 2)) }
+  catch (e) { console.error('[subs] payments save failed:', e.message) }
 }
 
-// Returns { ok, usdc } — how much USDC the tx actually delivered to the treasury.
-// Reads the RECEIPT's logs, not the tx input: a transfer can happen through a router or a
-// multicall, and only the emitted Transfer event proves what arrived.
-async function verifyUsdcPayment(txHash) {
-  const rc = await arbRpc('eth_getTransactionReceipt', [txHash])
-  if (!rc) return { ok: false, error: 'transaction not found or not yet mined' }
-  if (String(rc.status).toLowerCase() !== '0x1') return { ok: false, error: 'transaction failed on-chain' }
-  const padded = '0x' + '0'.repeat(24) + SUB_TREASURY.slice(2)
-  let total = 0
-  for (const lg of (rc.logs ?? [])) {
-    if (!USDC_ARB.has(String(lg.address).toLowerCase())) continue
-    const [topic0, , to] = lg.topics ?? []
-    if (String(topic0).toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
-    if (String(to).toLowerCase() !== padded) continue
-    total += Number(BigInt(lg.data)) / 1e6        // USDC has 6 decimals
+// A send can be identified by nonce alone, but hash+time+nonce costs nothing and survives
+// a nonce reset. Never key on hash by itself: Hyperliquid returns 0x0…0 for some entries.
+const subPayKey = (e) => `${e.time}:${e.hash}:${e.delta?.nonce ?? ''}`
+
+let _subPollAt = 0
+let _subPolling = false
+
+// Reads the treasury's own ledger and credits whoever sent USDC to it. Runs on a timer and
+// on demand from /api/sub/check. Never throws — a Hyperliquid hiccup must not take the
+// process down, and skipping a poll costs nothing because the next one re-reads the window.
+async function subPollPayments() {
+  if (_subPolling) return
+  _subPolling = true
+  _subPollAt = Date.now()
+  try {
+    const st = subPayRead()
+    // First ever run: start the clock now. Sends that predate the feature are not
+    // subscriptions and must not retroactively grant anyone anything. `floor` is written
+    // once and never moves; `since` is just how far we have read.
+    if (!st.floor) { st.floor = st.since = Date.now(); subPayWrite(st); return }
+
+    // Re-read a small overlap so an entry that lands out of order is still picked up. The
+    // dedupe below makes re-reading free, and `floor` keeps the overlap from ever
+    // reaching back past the install.
+    const from = Math.max(st.floor, st.since - 10 * 60_000)
+    const rows = await hlInfo({ type: 'userNonFundingLedgerUpdates', user: SUB_TREASURY, startTime: from })
+    if (!Array.isArray(rows)) return
+
+    const seen = new Set(st.seen)
+    let newest = st.since
+    let changed = false
+
+    for (const e of rows) {
+      const d = e?.delta ?? {}
+      if (Number(e.time) > newest) newest = Number(e.time)
+      if (d.type !== 'send') continue
+      if (String(d.destination ?? '').toLowerCase() !== SUB_TREASURY) continue   // outgoing sends live here too
+      if (String(d.token ?? '') !== 'USDC') continue                             // pricing another token is a mess we do not need
+      if (Number(e.time) < st.floor) continue
+      const key = subPayKey(e)
+      if (seen.has(key)) continue
+
+      const usdc = Number(d.usdcValue ?? d.amount ?? 0)
+      const payer = String(d.user ?? '').toLowerCase()
+      seen.add(key); changed = true
+      if (!isAddr(payer) || !(usdc > 0)) continue
+
+      // A wallet may nominate a different wallet to enable before paying, for people
+      // running several accounts off one funded address.
+      const target = isAddr(st.binds?.[payer]) ? String(st.binds[payer]).toLowerCase() : payer
+
+      // Underpayment is banked rather than swallowed: two $5 sends buy a month. Anything
+      // left over after whole periods stays on the account toward the next one.
+      const cur = subGet(target)
+      const pot = (Number(cur?.credit) || 0) + usdc
+      const periods = Math.floor(pot / SUB_PRICE_USDC)
+      const credit = +(pot - periods * SUB_PRICE_USDC).toFixed(6)
+
+      if (periods > 0) {
+        subExtend(target, periods * SUB_PERIOD_DAYS, { credit, lastPayment: e.time })
+        console.log(`[subs] ${target} +${periods * SUB_PERIOD_DAYS}d from ${payer} ($${usdc})`)
+      } else {
+        const all = subsRead()
+        all[target] = { ...(all[target] ?? { until: 0, trialUsed: false }), credit, lastPayment: e.time }
+        subsWrite(all)
+        console.log(`[subs] ${target} banked $${usdc} (credit $${credit}, needs $${SUB_PRICE_USDC})`)
+      }
+      if (st.binds?.[payer]) { delete st.binds[payer]; }
+    }
+
+    if (changed || newest > st.since) subPayWrite({ ...st, since: newest, seen: [...seen] })
+  } catch (e) {
+    console.warn('[subs] poll failed:', e.message)
+  } finally {
+    _subPolling = false
+    _subPollAt = Date.now()
   }
-  if (total <= 0) return { ok: false, error: 'no USDC transfer to the subscription address in that transaction' }
-  return { ok: true, usdc: total }
 }
 
 const LB_PAPER_FILE = join(__dirname, 'leaderboard-paper.json')
@@ -1791,19 +1853,22 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true, added: true })
   }
 
-  // ── Subscription status / trial / claim ──────────────────────────────────────
+  // ── Subscription: status / trial / check-now / pay-from ──────────────────────
   if (method === 'GET' && path === '/api/sub/status') {
     const addr = url.searchParams.get('address') ?? ''
     const r = isAddr(addr) ? subGet(addr) : null
     return json(res, 200, {
       active: !!(r && Number(r.until) > Date.now()),
       until: r?.until ?? 0,
+      credit: Number(r?.credit) || 0,          // banked from an underpayment
+      lastPayment: r?.lastPayment ?? 0,
       trialAvailable: SUB_TRIAL_DAYS > 0 && !(r?.trialUsed),
       trialDays: SUB_TRIAL_DAYS,
       priceUsdc: SUB_PRICE_USDC,
       periodDays: SUB_PERIOD_DAYS,
       treasury: SUB_TREASURY,
-      chain: 'Arbitrum One',
+      chain: 'Hyperliquid',
+      token: 'USDC',
     })
   }
 
@@ -1818,38 +1883,31 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true, until: r.until, trial: true })
   }
 
-  if (method === 'POST' && path === '/api/sub/claim') {
+  // "I sent it" — poll the treasury ledger right now instead of waiting for the timer.
+  // Throttled globally so a page full of impatient taps cannot hammer Hyperliquid.
+  if (method === 'POST' && path === '/api/sub/check') {
     const b = await body(req)
-    if (!isAddr(b.address)) return json(res, 400, { error: 'invalid address' })
-    const tx = String(b.txHash ?? '').trim().toLowerCase()
-    if (!/^0x[0-9a-f]{64}$/.test(tx)) return json(res, 400, { error: 'invalid transaction hash' })
-
-    // One claim per hash, globally — not per wallet, or the same payment would enable
-    // as many wallets as it was submitted against.
-    const all = subsRead()
-    for (const [k, v] of Object.entries(all)) {
-      if ((v.txs ?? []).includes(tx)) {
-        return json(res, 400, { error: k === String(b.address).toLowerCase()
-          ? 'that transaction is already applied to this wallet'
-          : 'that transaction has already been claimed' })
-      }
-    }
-
-    let v
-    try { v = await verifyUsdcPayment(tx) }
-    catch (e) { return json(res, 503, { error: 'could not reach Arbitrum to verify — try again shortly' }) }
-    if (!v.ok) return json(res, 400, { error: v.error })
-    if (v.usdc + 1e-9 < SUB_PRICE_USDC)
-      return json(res, 400, { error: `that transaction sent $${v.usdc.toFixed(2)} USDC; $${SUB_PRICE_USDC} is required` })
-
-    // Overpaying buys proportionally more time rather than being pocketed.
-    const periods = Math.max(1, Math.floor(v.usdc / SUB_PRICE_USDC))
-    const cur = subGet(b.address)
-    const r = subExtend(b.address, periods * SUB_PERIOD_DAYS, { txs: [...(cur?.txs ?? []), tx] })
-    console.log(`[subs] ${b.address} +${periods * SUB_PERIOD_DAYS}d from ${tx} ($${v.usdc})`)
-    return json(res, 200, { ok: true, until: r.until, periods, usdc: v.usdc })
+    if (Date.now() - _subPollAt >= SUB_POKE_MS) await subPollPayments()
+    const r = isAddr(b.address) ? subGet(b.address) : null
+    return json(res, 200, {
+      active: !!(r && Number(r.until) > Date.now()),
+      until: r?.until ?? 0,
+      credit: Number(r?.credit) || 0,
+    })
   }
 
+  // Optional: nominate a different wallet to enable before sending. Without this the
+  // sender is credited, which is what almost everyone wants; this covers the person
+  // funding several accounts from one address.
+  if (method === 'POST' && path === '/api/sub/payfrom') {
+    const b = await body(req)
+    if (!isAddr(b.address) || !isAddr(b.payer)) return json(res, 400, { error: 'invalid address' })
+    const st = subPayRead()
+    st.binds = st.binds ?? {}
+    st.binds[String(b.payer).toLowerCase()] = String(b.address).toLowerCase()
+    subPayWrite(st)
+    return json(res, 200, { ok: true })
+  }
   // ── POST /api/combined { addrs } → one authoritative combined snapshot ───────
   // Public and read-only: it returns aggregate figures for addresses the caller already
   // knows, and every input is a public Hyperliquid address whose data anyone can query
@@ -2034,6 +2092,10 @@ server.listen(PORT, () => {
   console.log(`  LB_PIN:     ${LB_PIN ? '✓ set' : '✗ not set (leaderboard overwrite disabled)'}`)
   console.log(`  ADMIN_TOKEN: ${ADMIN_TOKEN ? '✓ set (operator bypass enabled)' : '✗ not set (owner-only auth)'}`)
   resumeBots()
+  // Watch the treasury for subscription payments. First tick seeds the watermark, so
+  // sends that predate this deploy are never credited to anyone.
+  setTimeout(() => subPollPayments(), 3000)
+  setInterval(() => subPollPayments(), SUB_POLL_MS)
   // Keep the cached leaderboard warm so browsers never fan out to HL themselves.
   setTimeout(() => lbRefreshAll().catch(e => console.warn('[lb]', e.message)), 5000)
   setInterval(() => lbRefreshAll().catch(e => console.warn('[lb]', e.message)), 5 * 60 * 1000)

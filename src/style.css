@@ -6835,3 +6835,121 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
   -webkit-overflow-scrolling: touch;
   padding: 8px 0 calc(88px + env(safe-area-inset-bottom));
 }
+
+/* ─── Strategy paywall ─────────────────────────────────────────────────────── */
+.sub-wrap { padding: 4px 16px 0; }
+
+.sub-hero { text-align: center; padding: 20px 4px 18px; }
+.sub-kicker {
+  display: inline-block; font-size: 10px; font-weight: 800; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 999px; padding: 4px 11px;
+}
+.sub-title { font-size: 21px; font-weight: 800; line-height: 1.25; margin-top: 12px; letter-spacing: -.01em; }
+.sub-sub   { font-size: 13px; line-height: 1.55; color: var(--muted); margin-top: 8px; max-width: 34ch; margin-inline: auto; }
+.sub-price { display: flex; align-items: baseline; justify-content: center; gap: 6px; margin-top: 16px; }
+.sub-price-n { font-size: 32px; font-weight: 800; letter-spacing: -.02em; }
+.sub-price-u { font-size: 13px; font-weight: 600; color: var(--muted); }
+
+.sub-feats { display: grid; gap: 9px; padding: 2px 6px 18px; }
+.sub-feat  { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--fg); }
+.sub-feat svg { flex-shrink: 0; color: var(--accent); }
+
+.sub-cta {
+  width: 100%; padding: 14px; border: none; border-radius: 13px;
+  background: var(--accent); color: var(--accent-fg);
+  font-size: 15px; font-weight: 800; cursor: pointer; letter-spacing: -.01em;
+}
+.sub-cta:active { transform: translateY(1px); }
+.sub-fine { font-size: 11px; line-height: 1.5; color: var(--muted); text-align: center; margin-top: 8px; }
+
+/* "or pay now" rule */
+.sub-or { display: flex; align-items: center; gap: 12px; margin: 20px 0 14px; color: var(--muted); }
+.sub-or::before, .sub-or::after { content: ''; flex: 1; height: 1px; background: var(--border2); }
+.sub-or span { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 700; }
+
+.sub-card {
+  border: 1px solid var(--border2); border-radius: 14px;
+  background: var(--panel-2); padding: 14px;
+}
+.sub-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.sub-chip {
+  font-size: 13px; font-weight: 800; color: var(--fg);
+  background: rgba(255,255,255,.07); border: 1px solid var(--border2);
+  border-radius: 8px; padding: 4px 9px;
+}
+.sub-card-on { font-size: 12px; color: var(--muted); }
+
+.sub-step { display: flex; gap: 10px; padding: 7px 0; }
+.sub-step-n {
+  flex-shrink: 0; width: 19px; height: 19px; border-radius: 50%;
+  display: grid; place-items: center; margin-top: 1px;
+  font-size: 10px; font-weight: 800;
+  background: rgba(255,255,255,.08); color: var(--muted); border: 1px solid var(--border2);
+}
+.sub-step-b { font-size: 13px; line-height: 1.5; color: var(--fg); min-width: 0; }
+.sub-step-b b { font-weight: 700; }
+
+/* The button sits UNDER the address, not beside it: a 42-character address next to a
+   button wraps into a ragged "…c5 / d", which reads like a typo in the thing you are
+   about to paste money into. Full width, it fits on one line. */
+.sub-addr {
+  margin-top: 7px; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 9px 10px;
+}
+.sub-addr code {
+  display: block; font-size: 11px; line-height: 1.45; letter-spacing: -.1px;
+  word-break: break-all; color: var(--fg);
+}
+.sub-addr button {
+  width: 100%; margin-top: 8px; font-size: 11px; font-weight: 700; cursor: pointer;
+  background: rgba(255,255,255,.08); border: 1px solid var(--border2); color: var(--fg);
+  border-radius: 7px; padding: 7px 10px;
+}
+
+.sub-btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 13px; }
+.sub-btn {
+  display: grid; place-items: center; text-align: center; text-decoration: none;
+  padding: 12px 8px; border-radius: 11px; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.sub-btn.ghost { background: rgba(255,255,255,.06); border: 1px solid var(--border2); color: var(--fg); }
+.sub-btn.solid { background: var(--accent); border: none; color: var(--accent-fg); }
+.sub-btn:active { transform: translateY(1px); }
+
+.sub-watchline { font-size: 11.5px; line-height: 1.5; text-align: center; margin-top: 11px; }
+.sub-watching { color: var(--accent); }
+.sub-watching::before {
+  content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor; margin-right: 6px; vertical-align: middle;
+  animation: sub-pulse 1.3s ease-in-out infinite;
+}
+@keyframes sub-pulse { 0%, 100% { opacity: .25 } 50% { opacity: 1 } }
+
+.sub-foot { padding: 16px 0 0; }
+.sub-foot-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  font-size: 12px; color: var(--muted); padding: 9px 11px;
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--panel-2);
+}
+.sub-foot-row code { font-size: 11.5px; color: var(--fg); }
+
+.sub-details { margin-top: 9px; }
+.sub-details summary {
+  list-style: none; cursor: pointer; font-size: 12px; color: var(--muted);
+  padding: 8px 2px; text-align: center;
+}
+.sub-details summary::-webkit-details-marker { display: none; }
+.sub-details summary::after { content: ' ▾'; }
+.sub-details[open] summary::after { content: ' ▴'; }
+.sub-details-body { font-size: 11.5px; line-height: 1.55; color: var(--muted); padding: 2px 2px 4px; }
+.sub-details-row { display: flex; gap: 8px; margin-top: 9px; }
+.sub-details-row input {
+  flex: 1; min-width: 0; padding: 10px; font-size: 12px; color: var(--fg);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 9px; outline: none;
+}
+.sub-details-row button {
+  flex-shrink: 0; padding: 10px 14px; font-size: 12px; font-weight: 700; cursor: pointer;
+  background: rgba(255,255,255,.08); border: 1px solid var(--border2); color: var(--fg); border-radius: 9px;
+}
