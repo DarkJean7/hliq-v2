@@ -11743,6 +11743,12 @@ function _mobVRenderContent(tick = false) {
   const el = document.getElementById('mobVContent')
   if (!el) return
 
+  // Full-screen Strats is a class on #mobileView, and only the Exit button used to take it
+  // off. Leaving the tab any other way — Home, the bottom nav, the More drawer — left every
+  // other tab rendering inside a fixed, z-index-120 pane stuck over the app. Every one of
+  // those routes lands here, so this is the one place that can undo it for all of them.
+  if (_stratsFull && _mobVActiveTab !== 'strategies') _stratsExitFull()
+
   // On a real (non-tick) render, harvest this tab's strings after it's in the DOM so a later
   // language switch can pre-warm from them. Deferred + non-tick only, so it's cheap.
   if (!tick) setTimeout(() => _i18nHarvest(el), 0)
@@ -17402,10 +17408,18 @@ function _subPaywallHtml() {
 // running-bot list — and on a phone they sat in the short area under the header with the
 // price strip and tab bar eating most of the viewport.
 let _stratsFull = false
+function _stratsApplyFull() {
+  document.getElementById('mobileView')?.classList.toggle('mob-strats-full', _stratsFull)
+}
+// Drop full screen WITHOUT re-rendering: the caller is already mid-render, and re-entering
+// _mobVRenderContent from inside itself would recurse.
+function _stratsExitFull() {
+  _stratsFull = false
+  _stratsApplyFull()
+}
 window.__stratsToggleFull = function() {
   _stratsFull = !_stratsFull
-  const host = document.getElementById('mobileView')
-  if (host) host.classList.toggle('mob-strats-full', _stratsFull)
+  _stratsApplyFull()
   _mobVRenderContent()
 }
 
