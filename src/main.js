@@ -22683,7 +22683,69 @@ function _lazyResolveSettledOutcome(coin) {
 }
 window._ocCoinLabel = _ocCoinLabel   // reused by render.js (history, overview, manage tables)
 
+// ─── HIP-4 multi-outcome (price bucket) markets ───────────────────────────────
+//
+// A "Bitcoin Multi Outcomes Daily" market is not one outcome, it is a QUESTION with several
+// member outcomes. Hyperliquid describes it in two halves and neither half is usable alone:
+//
+//   question 182 : class:priceBucket|underlying:BTC|expiry:20260822-0600|priceThresholds:73937,76954
+//   outcome 1142 : index:0        ← name is literally "Recurring Named Outcome"
+//   outcome 1143 : index:1
+//   outcome 1144 : index:2
+//
+// So every member arrived with no underlying, no expiry, no category and a placeholder
+// name — which is why they were being filtered out as template junk and the whole market
+// was missing from the app. Rather than special-case each consumer, we push the question's
+// spec down onto its members once, on load, and let everything downstream keep reading
+// `_parseOutcomeDesc(o.description)` exactly as it does for a binary market.
+//
+// N thresholds make N+1 buckets: index 0 is below the first, index N is above the last.
+// Verified against live mids — for thresholds 73937,76954 the three Yes prices came back
+// 0.06 / 0.25 / 0.77, matching "below / between / above" in that order.
+function _ocNormalizeBuckets(meta) {
+  if (!meta || Array.isArray(meta)) return meta
+  const byId = {}
+  for (const o of (meta.outcomes ?? [])) byId[o.outcome] = o
+  for (const q of (meta.questions ?? [])) {
+    const qd = _parseOutcomeDesc(q.description || '')
+    if (qd.class !== 'priceBucket') continue
+    const th = String(qd.priceThresholds ?? '').split(',')
+      .map(Number).filter(n => Number.isFinite(n)).sort((a, b) => a - b)
+    if (!th.length) continue
+    for (const id of (q.namedOutcomes ?? [])) {
+      const o = byId[id]
+      if (!o) continue
+      const od = _parseOutcomeDesc(o.description || '')
+      const i  = Number(od.index)
+      if (!Number.isInteger(i) || i < 0 || i > th.length) continue
+      o.description = [
+        'class:priceBucket',
+        qd.underlying ? 'underlying:' + qd.underlying : null,
+        qd.expiry     ? 'expiry:'     + qd.expiry     : null,
+        qd.period     ? 'period:'     + qd.period     : null,
+        'bucket:' + i,
+        i > 0         ? 'bucketLo:' + th[i - 1] : null,
+        i < th.length ? 'bucketHi:' + th[i]     : null,
+      ].filter(Boolean).join('|')
+    }
+  }
+  return meta
+}
+
+// "Below $73,937" / "$73,937 – $76,954" / "Above $76,954". `short` trims to k-notation for
+// the places that have a single narrow line to work with (history rows, position labels).
+function _ocBucketLabel(d, short = false) {
+  const has = (v) => v !== undefined && v !== null && v !== ''
+  const fmt = (n) => short ? '$' + _fmtOcK(Number(n)) : '$' + Number(n).toLocaleString()
+  if (!has(d.bucketLo)) return (short ? '<' : 'Below ') + fmt(d.bucketHi)
+  if (!has(d.bucketHi)) return (short ? '>' : 'Above ') + fmt(d.bucketLo)
+  return fmt(d.bucketLo) + (short ? '–' : ' – ') + fmt(d.bucketHi)
+}
+
 function _buildOcTokenMap(meta) {
+  // Every outcomeMeta fetch in the app funnels through here, so this is the one place
+  // bucket members need flattening for the whole app to see them.
+  _ocNormalizeBuckets(meta)
   // ACCUMULATE, don't reset. Settled/expired outcomes drop out of the active
   // outcomeMeta, but their names must still resolve in History/positions (e.g. a
   // closed "#7391"). Start from the persisted union and merge the current meta in.
@@ -22693,14 +22755,24 @@ function _buildOcTokenMap(meta) {
   const list = Array.isArray(meta) ? meta : (meta?.outcomes ?? [])
   // outcomeId → question name (e.g. 217 → "2026 World Cup Champion") for labels
   const questions = Array.isArray(meta) ? [] : (meta?.questions ?? [])
-  for (const q of questions) for (const oid of (q.namedOutcomes ?? [])) state.ocQuestionMap[oid] = q.name
+  for (const q of questions) {
+    const qd = _parseOutcomeDesc(q.description || '')
+    // Bucket questions are all named "Recurring" — useless as a grouping label.
+    const qName = qd.class === 'priceBucket' && qd.underlying
+      ? `${qd.underlying} closing price${qd.expiry ? ' · ' + _fmtOutcomeExpiry(qd.expiry) : ''}`
+      : q.name
+    for (const oid of (q.namedOutcomes ?? [])) state.ocQuestionMap[oid] = qName
+  }
   for (const o of list) {
     try {
       const d           = _parseOutcomeDesc(o.description)
       const underlying  = d.underlying || o.name
+      // A bucket member's "name" is the placeholder "Recurring Named Outcome"; what
+      // identifies it is the price range, so that is what the label has to carry.
+      const bucketStr   = d.class === 'priceBucket' ? ' ' + _ocBucketLabel(d, true) : ''
       const target      = d.targetPrice ? ` >$${parseFloat(d.targetPrice).toLocaleString()}` : ''
       const expiry      = d.expiry ? ` (${_fmtOutcomeExpiry(d.expiry)})` : ''
-      const displayName = underlying + target + expiry
+      const displayName = underlying + target + bucketStr + expiry
       for (let i = 0; i < (o.sideSpecs?.length ?? 0); i++) {
         state.ocTokenMap['#' + (o.outcome * 10 + i)] = { name: displayName, side: o.sideSpecs[i].name }
       }
@@ -22804,6 +22876,15 @@ function _buildFullQuestion(d, name) {
     const line1  = `Will ${d.underlying} close above ${target}`
     const line2  = when ? `on ${when}?` : '?'
     return { line1, line2 }
+  }
+  if (d.class === 'priceBucket' && d.underlying) {
+    const when = d.expiry ? _fmtOcQuestionTime(d.expiry) : null
+    const has  = (v) => v !== undefined && v !== null && v !== ''
+    const m    = (n) => '$' + Number(n).toLocaleString()
+    const line1 = !has(d.bucketLo) ? `Will ${d.underlying} close below ${m(d.bucketHi)}`
+                : !has(d.bucketHi) ? `Will ${d.underlying} close above ${m(d.bucketLo)}`
+                : `Will ${d.underlying} close between ${m(d.bucketLo)} and ${m(d.bucketHi)}`
+    return { line1, line2: when ? `on ${when}?` : '?' }
   }
   return { line1: name, line2: null }
 }
@@ -23292,7 +23373,7 @@ async function _refreshOcPrices() {
 }
 
 function _ocGetCategory(o, d) {
-  if (d.class === 'priceBinary') return 'crypto'
+  if (d.class === 'priceBinary' || d.class === 'priceBucket') return 'crypto'
   // Word-boundary matching over name + description — substring matching put
   // "nETHerlands" in crypto and "spAIn" in tech.
   const name = ((o.name || '') + ' ' + (o.description || '')).toLowerCase()
@@ -23495,30 +23576,45 @@ function _ocSectionize() {
   for (const q of (_ocLiveQuestions ?? [])) {
     if (q.fallbackOutcome != null) hidden.add(String(q.fallbackOutcome))
     const members = (q.namedOutcomes ?? []).map(i => outById[i]).filter(o => o && cardById[String(o.outcome)])
-    // Template questions ("Recurring") hold placeholder legs — hide them all
-    if (/\b(recurring|fallback|template)\b/i.test(q.name || '') || members.length < 2) {
+    // Template questions hold placeholder legs — hide them all. Matching on the NAME
+    // alone used to swallow the daily BTC price-bucket market, whose question is also
+    // called "Recurring" but carries a real, parseable spec. A description that parses
+    // to a known class is a real market whatever it is called.
+    const qd = _parseOutcomeDesc(q.description || '')
+    if ((!qd.class && /\b(recurring|fallback|template)\b/i.test(q.name || '')) || members.length < 2) {
       for (const i of (q.namedOutcomes ?? [])) hidden.add(String(i))
       continue
     }
     members.forEach(o => grouped.add(String(o.outcome)))
 
     let sub = null, title = q.name || 'Event'
-    const mm = title.match(/^([^:]{2,28}):\s*(.+)$/)
-    if (mm) { sub = mm[1]; title = mm[2] }
+    if (qd.class === 'priceBucket' && qd.underlying) {
+      sub   = qd.underlying
+      title = qd.expiry ? `Closing price on ${_fmtOcQuestionTime(qd.expiry)}` : 'Closing price'
+    } else {
+      const mm = title.match(/^([^:]{2,28}):\s*(.+)$/)
+      if (mm) { sub = mm[1]; title = mm[2] }
+    }
+    // A bucket member is named "Recurring Named Outcome"; the range is its identity.
+    const rowName = (o) => {
+      const od = _parseOutcomeDesc(o.description || '')
+      return od.class === 'priceBucket' ? _ocBucketLabel(od) : o.name
+    }
     let cat = _ocGetCategory({ name: q.name || '', description: '' }, {})
     if (cat === 'other') cat = cardById[String(members[0].outcome)]?.dataset.cat || 'other'
 
     const evId = 'evt-' + (q.question ?? members[0].outcome)
     const rows = members.map(o => `
-      <div class="oc-evt-row" data-name="${esc((o.name || '').toLowerCase())}" data-p="0" onclick="window.__ocExpandCard(${o.outcome})">
-        <span class="oc-evt-name">${esc(o.name)}</span>
+      <div class="oc-evt-row" data-name="${esc(rowName(o).toLowerCase())}" data-p="0" onclick="window.__ocExpandCard(${o.outcome})">
+        <span class="oc-evt-name">${esc(rowName(o))}</span>
         <span class="oc-evt-pct" id="oc-evt-pct-${o.outcome}">—</span>
         <span class="oc-evt-chev">›</span>
       </div>`).join('')
     const card = document.createElement('div')
     card.className = 'oc-card oc-event'
     card.dataset.cat = cat
-    card.dataset.q = ((q.name || '') + ' ' + members.map(o => o.name).join(' ')).toLowerCase()
+    card.dataset.q = ((qd.underlying ? qd.underlying + ' ' : '') + (q.name || '') + ' ' +
+      members.map(o => rowName(o)).join(' ')).toLowerCase()
     card.id = 'oc-card-' + evId
     card.innerHTML = `
       <div class="oc-evt-head">
@@ -23712,7 +23808,8 @@ async function renderOutcomes() {
           <div class="oc-card-head-right">
             <span class="oc-status-tag oc-active">Active</span>
             <div class="oc-card-pills">
-              ${cls === 'priceBinary' ? '<span class="oc-meta-pill">Binary</span>' : ''}
+              ${cls === 'priceBinary' ? '<span class="oc-meta-pill">Binary</span>'
+                : cls === 'priceBucket' ? '<span class="oc-meta-pill">Range</span>' : ''}
               ${period ? `<span class="oc-meta-pill">${esc(period)}</span>` : ''}
             </div>
           </div>
