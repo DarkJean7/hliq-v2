@@ -749,6 +749,86 @@ async function computeCombined(addrs) {
   return { updatedAt: now, accountValue, perpBase, dayAgo, wallets: addrs.length - missing.length, missing }
 }
 
+// ─── STRATEGY SUBSCRIPTIONS ───────────────────────────────────────────────────
+//
+// Strategies run HERE — /api/start spawns a process that trades with the user's agent key.
+// So the paywall lives here too. Hiding the tab in the client would stop nobody: a POST to
+// /api/start would still launch a bot. The client gate is cosmetic; THIS is the gate.
+//
+// Payment is USDC on Arbitrum One to the treasury below. The user pays from any wallet,
+// then submits the transaction hash and the wallet they want enabled — those need not be
+// the same, which is why the flow is claim-by-hash rather than matching on the sender.
+// Verification reads the receipt straight from an Arbitrum RPC: no indexer, no webhook, and
+// nothing to trust but the chain. Each hash can be claimed once.
+const SUBS_FILE   = join(__dirname, 'subscriptions.json')
+const SUB_TREASURY = '0x8fe3c39057b6348a27d912423a9770b242911c5d'   // lowercase for comparison
+const SUB_PRICE_USDC = 10        // per period
+const SUB_PERIOD_DAYS = 30
+const SUB_TRIAL_DAYS  = 7        // 0 disables the free trial
+const ARB_RPC = 'https://arb1.arbitrum.io/rpc'
+// Native USDC and the older bridged USDC.e — people hold both, and refusing one would look
+// like the payment silently failed.
+const USDC_ARB = new Set([
+  '0xaf88d065e77c8cc2239327c5edb3a432268e5831',
+  '0xff970a61a04b1ca14834a43f5de4533ebddb5cc8',
+])
+const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
+
+function subsRead() {
+  if (!existsSync(SUBS_FILE)) return {}
+  try { const o = JSON.parse(readFileSync(SUBS_FILE, 'utf8')); return (o && typeof o === 'object') ? o : {} }
+  catch { return {} }
+}
+function subsWrite(o) { try { writeFileSync(SUBS_FILE, JSON.stringify(o, null, 2)) } catch (e) { console.error('[subs] save failed:', e.message) } }
+function subGet(addr) { return subsRead()[String(addr).toLowerCase()] ?? null }
+function subActive(addr) {
+  const r = subGet(addr)
+  return !!(r && Number(r.until) > Date.now())
+}
+// Extend from whatever is later — paying early tops up rather than throwing away the
+// remainder of the current period.
+function subExtend(addr, days, patch = {}) {
+  const all = subsRead()
+  const k = String(addr).toLowerCase()
+  const cur = all[k] ?? { until: 0, trialUsed: false, txs: [] }
+  const from = Math.max(Date.now(), Number(cur.until) || 0)
+  all[k] = { ...cur, ...patch, until: from + days * 86400_000 }
+  subsWrite(all)
+  return all[k]
+}
+
+async function arbRpc(method, params) {
+  const r = await fetch(ARB_RPC, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    signal: AbortSignal.timeout(12_000),
+  })
+  if (!r.ok) throw new Error('RPC ' + r.status)
+  const j = await r.json()
+  if (j.error) throw new Error(j.error.message ?? 'RPC error')
+  return j.result
+}
+
+// Returns { ok, usdc } — how much USDC the tx actually delivered to the treasury.
+// Reads the RECEIPT's logs, not the tx input: a transfer can happen through a router or a
+// multicall, and only the emitted Transfer event proves what arrived.
+async function verifyUsdcPayment(txHash) {
+  const rc = await arbRpc('eth_getTransactionReceipt', [txHash])
+  if (!rc) return { ok: false, error: 'transaction not found or not yet mined' }
+  if (String(rc.status).toLowerCase() !== '0x1') return { ok: false, error: 'transaction failed on-chain' }
+  const padded = '0x' + '0'.repeat(24) + SUB_TREASURY.slice(2)
+  let total = 0
+  for (const lg of (rc.logs ?? [])) {
+    if (!USDC_ARB.has(String(lg.address).toLowerCase())) continue
+    const [topic0, , to] = lg.topics ?? []
+    if (String(topic0).toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
+    if (String(to).toLowerCase() !== padded) continue
+    total += Number(BigInt(lg.data)) / 1e6        // USDC has 6 decimals
+  }
+  if (total <= 0) return { ok: false, error: 'no USDC transfer to the subscription address in that transaction' }
+  return { ok: true, usdc: total }
+}
+
 const LB_PAPER_FILE = join(__dirname, 'leaderboard-paper.json')
 const LB_PAPER_MAX  = 300
 
@@ -1217,6 +1297,13 @@ const server = createServer(async (req, res) => {
       const owner = botOwner.get(String(b.address ?? '').toLowerCase())
       if (owner && owner !== auth.signer && !(await agentApprovedFor(b.address ?? '', auth.signer)))
         return json(res, 403, { error: 'account controlled by another key' })
+    }
+    // The paywall. Enforced here because this is where a strategy actually starts —
+    // the client-side gate only hides the UI. Admin bypasses; a resume (deploy/reboot)
+    // does not come through this route, so an expiring subscription never kills a bot
+    // mid-flight, it just stops new ones being armed.
+    if (!auth.admin && !subActive(b.address ?? '')) {
+      return json(res, 402, { error: 'subscription required', subscribe: true })
     }
     const result = await startStrategy(b.type, b.args ?? [], b.agentKey ?? '', b.address ?? '', b.instance ?? '')
     return json(res, result.ok ? 200 : 400, result)
@@ -1702,6 +1789,65 @@ const server = createServer(async (req, res) => {
     lbWriteList(list)
     lbRefreshAll().catch(() => {})   // pick the newcomer up right away
     return json(res, 200, { ok: true, added: true })
+  }
+
+  // ── Subscription status / trial / claim ──────────────────────────────────────
+  if (method === 'GET' && path === '/api/sub/status') {
+    const addr = url.searchParams.get('address') ?? ''
+    const r = isAddr(addr) ? subGet(addr) : null
+    return json(res, 200, {
+      active: !!(r && Number(r.until) > Date.now()),
+      until: r?.until ?? 0,
+      trialAvailable: SUB_TRIAL_DAYS > 0 && !(r?.trialUsed),
+      trialDays: SUB_TRIAL_DAYS,
+      priceUsdc: SUB_PRICE_USDC,
+      periodDays: SUB_PERIOD_DAYS,
+      treasury: SUB_TREASURY,
+      chain: 'Arbitrum One',
+    })
+  }
+
+  if (method === 'POST' && path === '/api/sub/trial') {
+    const b = await body(req)
+    if (!isAddr(b.address)) return json(res, 400, { error: 'invalid address' })
+    if (!SUB_TRIAL_DAYS)    return json(res, 400, { error: 'no trial available' })
+    const cur = subGet(b.address)
+    // One trial per wallet, ever — otherwise it is not a trial, it is a free product.
+    if (cur?.trialUsed) return json(res, 400, { error: 'trial already used for this wallet' })
+    const r = subExtend(b.address, SUB_TRIAL_DAYS, { trialUsed: true })
+    return json(res, 200, { ok: true, until: r.until, trial: true })
+  }
+
+  if (method === 'POST' && path === '/api/sub/claim') {
+    const b = await body(req)
+    if (!isAddr(b.address)) return json(res, 400, { error: 'invalid address' })
+    const tx = String(b.txHash ?? '').trim().toLowerCase()
+    if (!/^0x[0-9a-f]{64}$/.test(tx)) return json(res, 400, { error: 'invalid transaction hash' })
+
+    // One claim per hash, globally — not per wallet, or the same payment would enable
+    // as many wallets as it was submitted against.
+    const all = subsRead()
+    for (const [k, v] of Object.entries(all)) {
+      if ((v.txs ?? []).includes(tx)) {
+        return json(res, 400, { error: k === String(b.address).toLowerCase()
+          ? 'that transaction is already applied to this wallet'
+          : 'that transaction has already been claimed' })
+      }
+    }
+
+    let v
+    try { v = await verifyUsdcPayment(tx) }
+    catch (e) { return json(res, 503, { error: 'could not reach Arbitrum to verify — try again shortly' }) }
+    if (!v.ok) return json(res, 400, { error: v.error })
+    if (v.usdc + 1e-9 < SUB_PRICE_USDC)
+      return json(res, 400, { error: `that transaction sent $${v.usdc.toFixed(2)} USDC; $${SUB_PRICE_USDC} is required` })
+
+    // Overpaying buys proportionally more time rather than being pocketed.
+    const periods = Math.max(1, Math.floor(v.usdc / SUB_PRICE_USDC))
+    const cur = subGet(b.address)
+    const r = subExtend(b.address, periods * SUB_PERIOD_DAYS, { txs: [...(cur?.txs ?? []), tx] })
+    console.log(`[subs] ${b.address} +${periods * SUB_PERIOD_DAYS}d from ${tx} ($${v.usdc})`)
+    return json(res, 200, { ok: true, until: r.until, periods, usdc: v.usdc })
   }
 
   // ── POST /api/combined { addrs } → one authoritative combined snapshot ───────

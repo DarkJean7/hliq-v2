@@ -17065,11 +17065,158 @@ function _stratRunStatus(type) {
   return parts.join(' · ')
 }
 
+// ─── STRATEGY SUBSCRIPTION (client side) ──────────────────────────────────────
+//
+// This gate is COSMETIC. The real one is in server.js at /api/start, because that is where
+// a strategy actually spawns — hiding the tab would stop nobody who can open devtools. What
+// lives here is the explanation and the purchase flow, not the enforcement.
+let _subStatus = null      // { active, until, trialAvailable, ... }
+let _subFetchAt = 0
+let _subFetching = false
+
+async function _subRefresh(force = false) {
+  const addr = _botApiAddr()
+  if (!addr || _subFetching) return
+  if (!force && Date.now() - _subFetchAt < 60_000) return
+  _subFetching = true
+  try {
+    const r = await fetch(`/api/sub/status?address=${encodeURIComponent(addr)}`)
+    if (r.ok) { _subStatus = await r.json(); _subFetchAt = Date.now() }
+  } catch {} finally {
+    _subFetching = false
+    if (_mobVActiveTab === 'strategies') _mobVRenderContent()
+  }
+}
+
+// Dev mode is a local override for the owner; a paid subscription is the real entitlement.
+function _stratsUnlocked() { return isDev() || !!_subStatus?.active }
+
+window.__subStartTrial = async function() {
+  const addr = _botApiAddr()
+  if (!addr) { _paperToast('Load a wallet first', 'err'); return }
+  try {
+    const r = await fetch('/api/sub/trial', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address: addr }),
+    })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok) { _paperToast(j.error || 'Could not start the trial', 'err'); return }
+    _paperToast('Trial started', 'ok')
+    await _subRefresh(true)
+  } catch { _paperToast('Server unreachable', 'err') }
+}
+
+window.__subClaim = async function() {
+  const addr = document.getElementById('subAddr')?.value?.trim() || _botApiAddr()
+  const tx   = document.getElementById('subTx')?.value?.trim()
+  if (!/^0x[0-9a-fA-F]{40}$/.test(addr || '')) { _paperToast('Enter the wallet to enable', 'err'); return }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(tx || ''))   { _paperToast('Enter the payment transaction hash', 'err'); return }
+  const btn = document.getElementById('subClaimBtn')
+  if (btn) { btn.disabled = true; btn.textContent = _T('Verifying on Arbitrum…', 'Verificando en Arbitrum…') }
+  try {
+    const r = await fetch('/api/sub/claim', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address: addr, txHash: tx }),
+    })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok) { _paperToast(j.error || 'Could not verify that payment', 'err'); return }
+    _paperToast(`Activated until ${new Date(j.until).toLocaleDateString()}`, 'ok')
+    await _subRefresh(true)
+  } catch { _paperToast('Server unreachable', 'err') }
+  finally { if (btn) { btn.disabled = false; btn.textContent = _T('Activate', 'Activar') } }
+}
+
+window.__subCopyTreasury = function(btn) {
+  const a = _subStatus?.treasury ?? ''
+  try { navigator.clipboard.writeText(a); if (btn) { btn.textContent = '✓'; setTimeout(() => { btn.textContent = '⎘' }, 1200) } } catch {}
+}
+
+function _subPaywallHtml() {
+  const st = _subStatus
+  const T  = (en, es) => _T(en, es ?? en)
+  const addr = _botApiAddr() ?? ''
+  const treasury = st?.treasury ?? ''
+  const price = st?.priceUsdc ?? 10
+  const days  = st?.periodDays ?? 30
+  const trial = st?.trialAvailable && (st?.trialDays > 0)
+  return `
+    <div style="padding:18px 16px 8px;text-align:center">
+      <div style="font-size:34px;line-height:1">🤖</div>
+      <div style="font-size:18px;font-weight:800;margin-top:8px">${T('Automated strategies')}</div>
+      <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-top:6px">
+        ${T('Grid, DCA, Trend, Profit Stack and the rest run on our server around the clock — they keep trading while the app is closed.')}
+      </div>
+      <div style="font-size:22px;font-weight:800;margin-top:14px">$${price}<span style="font-size:13px;color:var(--muted);font-weight:600"> / ${days} ${T('days')}</span></div>
+    </div>
+
+    ${trial ? `<div style="padding:6px 16px 0">
+      <button onclick="window.__subStartTrial()" style="width:100%;padding:13px;border:none;border-radius:12px;background:var(--accent);color:var(--accent-fg);font-size:15px;font-weight:800;cursor:pointer">
+        ${T('Start free trial')} · ${st.trialDays} ${T('days')}
+      </button>
+      <div style="font-size:11px;color:var(--muted);text-align:center;margin-top:6px">${T('One trial per wallet. No card, no payment.')}</div>
+    </div>` : ''}
+
+    <div style="padding:16px 16px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">${T('Pay with USDC')}</div>
+    <div style="margin:0 16px;padding:12px;border:1px solid var(--border2);border-radius:12px;background:var(--panel-2)">
+      <div style="font-size:12px;color:var(--muted)">${T('Send')} <b style="color:var(--fg)">${price} USDC</b> ${T('on')} <b style="color:var(--fg)">${esc(st?.chain ?? 'Arbitrum One')}</b> ${T('to')}:</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:7px">
+        <code style="flex:1;min-width:0;font-size:11px;word-break:break-all;color:var(--fg)">${esc(treasury)}</code>
+        <button onclick="window.__subCopyTreasury(this)" style="flex-shrink:0;background:rgba(255,255,255,.07);border:1px solid var(--border2);color:var(--fg);border-radius:7px;padding:5px 9px;font-size:12px;cursor:pointer">⎘</button>
+      </div>
+      <div style="font-size:11px;color:#ff9f43;margin-top:8px;line-height:1.45">
+        ${T('Arbitrum One only. Sending on another network, or sending a different token, loses the funds — we cannot recover them.')}
+      </div>
+    </div>
+
+    <div style="padding:14px 16px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">${T('Then activate')}</div>
+    <div style="padding:0 16px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${T('Wallet to enable')}</div>
+      <input id="subAddr" value="${esc(addr)}" placeholder="0x…" spellcheck="false"
+        style="width:100%;box-sizing:border-box;padding:11px;background:var(--panel-2);border:1px solid var(--border);border-radius:10px;font-size:12px;color:var(--fg);outline:none">
+      <div style="font-size:11px;color:var(--muted);margin:9px 0 4px">${T('Payment transaction hash')}</div>
+      <input id="subTx" placeholder="0x…" spellcheck="false" inputmode="text"
+        style="width:100%;box-sizing:border-box;padding:11px;background:var(--panel-2);border:1px solid var(--border);border-radius:10px;font-size:12px;color:var(--fg);outline:none">
+      <button id="subClaimBtn" onclick="window.__subClaim()" style="width:100%;margin-top:11px;padding:13px;border:none;border-radius:12px;background:var(--accent);color:var(--accent-fg);font-size:15px;font-weight:800;cursor:pointer">
+        ${T('Activate')}
+      </button>
+      <div style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px;line-height:1.45">
+        ${T('The paying wallet and the wallet you enable do not have to match. Each transaction can be claimed once.')}
+      </div>
+    </div>
+    <div style="height:calc(80px + env(safe-area-inset-bottom))"></div>`
+}
+
+// Full-screen toggle for the Strats tab. The config forms are tall — several inputs plus a
+// running-bot list — and on a phone they sat in the short area under the header with the
+// price strip and tab bar eating most of the viewport.
+let _stratsFull = false
+window.__stratsToggleFull = function() {
+  _stratsFull = !_stratsFull
+  const host = document.getElementById('mobileView')
+  if (host) host.classList.toggle('mob-strats-full', _stratsFull)
+  _mobVRenderContent()
+}
+
+function _stratsFullBtn() {
+  return `<button onclick="window.__stratsToggleFull()" title="${_stratsFull ? 'Exit full screen' : 'Full screen'}"
+    style="flex-shrink:0;background:rgba(255,255,255,.06);border:1px solid var(--border2);color:var(--muted);
+           border-radius:8px;padding:5px 9px;font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:5px">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="12" height="12">${
+      _stratsFull ? '<path d="M9 3v6H3M15 21v-6h6"/>' : '<path d="M3 9V3h6M21 15v6h-6"/>'
+    }</svg>${_stratsFull ? _T('Exit', 'Salir') : _T('Expand', 'Ampliar')}
+  </button>`
+}
+
 function _mobVRenderStrategies(el) {
   // Combined view: the launch UI targets one account, so instead show a read-only list
   // of every bot running across all accounts in the view. Starting/configuring new bots
   // is done by switching to a single account.
   if (state.isAllAccounts) { _mobVRenderAllAcctStrats(el); return }
+  // Kick a status refresh (throttled) and show the paywall until it says otherwise. Dev
+  // mode bypasses locally; the server bypasses for admin. Anyone else hits 402 at
+  // /api/start regardless of what this renders, which is the point.
+  _subRefresh()
+  if (!_stratsUnlocked()) { el.innerHTML = _subPaywallHtml(); return }
   // Preserve in-progress edits across re-renders. This view rebuilds via innerHTML on a
   // server-status poll or any toggle (Cross/Isolated, Long/Short, %/$, size unit). The
   // config inputs carry no value= attribute, so without this a re-render mid-typing wipes
@@ -17266,7 +17413,9 @@ function _mobVRenderStrategies(el) {
     <div class="mob-v-setting-group" style="margin-bottom:14px">
       <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:8px">
         <div style="display:flex;justify-content:space-between;align-items:center">
-          <span style="font-size:13px;font-weight:600">Agent Key</span>${serverBadge}
+          <span style="font-size:13px;font-weight:600">Agent Key</span>
+          <span style="flex:1"></span>
+          ${_stratsFullBtn()}${serverBadge}
         </div>
         <input type="password" id="m-agentKey" class="mob-strat-input" placeholder="0x private key…"
           value="${esc(savedKey)}"
@@ -17388,7 +17537,11 @@ async function runStrategyMob(type) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type, agentKey, args: argv, address: state.addr, instance: _argvInstance(argv) }),
     })
-    if (!r.ok) { alert(`Could not start: ${r.error}`); return }
+    if (!r.ok) {
+      // The server enforces the paywall; a client reaching here has a stale gate.
+      if (r.subscribe) { _subRefresh(true); _paperToast(_T('Subscription required to run strategies', 'Se requiere suscripción para usar estrategias'), 'err'); return }
+      alert(`Could not start: ${r.error}`); return
+    }
     serverStatus[type] = true
     updateAllStrategyButtons()
     _verifyStarted(type, _argvInstance(argv))
@@ -17838,7 +17991,11 @@ async function runStrategy(type) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type, agentKey, args: argv, script, address: state.addr, instance: _argvInstance(argv) }),
     })
-    if (!r.ok) { alert(`Could not start: ${r.error}`); return }
+    if (!r.ok) {
+      // The server enforces the paywall; a client reaching here has a stale gate.
+      if (r.subscribe) { _subRefresh(true); _paperToast(_T('Subscription required to run strategies', 'Se requiere suscripción para usar estrategias'), 'err'); return }
+      alert(`Could not start: ${r.error}`); return
+    }
     serverStatus[type] = true
     updateAllStrategyButtons()
     renderWinsPanel()
