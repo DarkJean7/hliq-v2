@@ -6957,3 +6957,54 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
   flex-shrink: 0; padding: 10px 14px; font-size: 12px; font-weight: 700; cursor: pointer;
   background: rgba(255,255,255,.08); border: 1px solid var(--border2); color: var(--fg); border-radius: 9px;
 }
+
+/* ─── Strategy lock strip + paywall sheet ──────────────────────────────────── */
+/* The bots stay on screen when locked; this sits above them and explains why the
+   Run buttons do not run. */
+.sub-lock {
+  margin: 0 0 14px; padding: 13px 14px; border-radius: 13px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel-2));
+}
+.sub-lock-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sub-lock-badge {
+  font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--accent);
+}
+.sub-lock-price { font-size: 15px; font-weight: 800; color: var(--fg); }
+.sub-lock-price span { font-size: 11px; font-weight: 600; color: var(--muted); }
+.sub-lock-txt { font-size: 12px; line-height: 1.55; color: var(--muted); margin-top: 7px; }
+.sub-lock-credit { font-size: 11.5px; line-height: 1.5; color: #ff9f43; margin-top: 7px; }
+.sub-lock-btns { display: flex; gap: 8px; margin-top: 11px; }
+.sub-lock-b {
+  flex: 1; padding: 10px 8px; border-radius: 10px; font-size: 12.5px; font-weight: 700;
+  cursor: pointer; background: rgba(255,255,255,.07); border: 1px solid var(--border2); color: var(--fg);
+}
+.sub-lock-b.primary { background: var(--accent); border: none; color: var(--accent-fg); font-weight: 800; }
+.sub-lock-b:active { transform: translateY(1px); }
+
+/* Locked Run button. Deliberately NOT `disabled` — it has to stay tappable so the tap
+   goes somewhere useful (the pitch) instead of doing nothing. */
+.mob-strat-locked {
+  display: flex; flex: 1; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 0; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer;
+  border: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+}
+.mob-strat-locked:active { transform: translateY(1px); }
+
+.sub-sheet {
+  position: fixed; inset: 0; z-index: 9999; display: none;
+  flex-direction: column; background: var(--bg);
+}
+.sub-sheet-head {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  padding: 16px 16px 12px; border-bottom: 1px solid var(--border);
+}
+.sub-sheet-head button {
+  background: none; border: none; color: var(--fg);
+  font-size: 22px; line-height: 1; padding: 0; cursor: pointer;
+}
+.sub-sheet-head span { font-size: 15px; font-weight: 700; }
+.sub-sheet-body { flex: 1; overflow-y: auto; overflow-x: hidden; }

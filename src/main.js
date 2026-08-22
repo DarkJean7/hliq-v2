@@ -17132,6 +17132,7 @@ async function _subWatchTick() {
       _subWatchStop()
       await _subRefresh(true)
       _paperToast(_T('Subscription active — strategies unlocked', 'Suscripción activa'), 'ok')
+      window.__subClosePaywall()
       _mobVRenderContent()
       return
     }
@@ -17243,6 +17244,7 @@ window.__subStartTrial = async function() {
     if (!r.ok) { _paperToast(j.error || _T('Could not start the trial', 'No se pudo iniciar la prueba'), 'err'); return }
     _paperToast(_T('Trial started', 'Prueba iniciada'), 'ok')
     await _subRefresh(true)
+    window.__subClosePaywall()
     _mobVRenderContent()
   } catch { _paperToast(_T('Server unreachable', 'Servidor no disponible'), 'err') }
 }
@@ -17268,6 +17270,54 @@ window.__subCopyTreasury = function(btn) {
     navigator.clipboard.writeText(a)
     if (btn) { const o = btn.innerHTML; btn.innerHTML = _T('Copied', 'Copiado'); setTimeout(() => { btn.innerHTML = o }, 1400) }
   } catch {}
+}
+
+// The compact lock strip that sits above the bot list. It has to answer "what am I
+// buying?" on its own, because the full pitch is now one tap away rather than in the way.
+function _subLockBanner() {
+  const st = _subStatus
+  const T = (en, es) => _T(en, es ?? en)
+  const price = st?.priceUsdc ?? 10
+  const days  = st?.periodDays ?? 30
+  const trial = st?.trialAvailable && (st?.trialDays > 0)
+  const credit = Number(st?.credit) || 0
+  return `<div class="sub-lock">
+    <div class="sub-lock-top">
+      <span class="sub-lock-badge">🔒 ${T('Locked')}</span>
+      <span class="sub-lock-price">$${price}<span> / ${days} ${T('days')}</span></span>
+    </div>
+    <div class="sub-lock-txt">${T('Browse and configure any bot below. Running one needs a subscription — they trade on our servers around the clock, with the app closed.')}</div>
+    ${credit > 0 ? `<div class="sub-lock-credit">${T('Received')} $${credit.toFixed(2)} — ${T('send')} $${(price - credit).toFixed(2)} ${T('more to activate')}</div>` : ''}
+    <div class="sub-lock-btns">
+      ${trial ? `<button class="sub-lock-b primary" onclick="window.__subStartTrial()">${T('Start free trial')} · ${st.trialDays}d</button>` : ''}
+      <button class="sub-lock-b ${trial ? '' : 'primary'}" onclick="window.__subOpenPaywall()">${trial ? T('Subscribe') : `${T('Subscribe')} · $${price}`}</button>
+    </div>
+  </div>`
+}
+
+// The full pitch, as a sheet over the bot list rather than instead of it.
+window.__subOpenPaywall = function() {
+  let ov = document.getElementById('subPaywallOverlay')
+  if (!ov) {
+    ov = document.createElement('div')
+    ov.id = 'subPaywallOverlay'
+    ov.className = 'sub-sheet'
+    document.body.appendChild(ov)
+  }
+  ov.innerHTML = `
+    <div class="sub-sheet-head">
+      <button onclick="window.__subClosePaywall()" aria-label="Close">✕</button>
+      <span>${_T('Automated strategies', 'Estrategias automáticas')}</span>
+    </div>
+    <div class="sub-sheet-body">${_subPaywallHtml()}</div>`
+  ov.style.display = 'flex'
+  _subRefresh(true)
+  _subWatchRestore()
+}
+
+window.__subClosePaywall = function() {
+  const ov = document.getElementById('subPaywallOverlay')
+  if (ov) ov.style.display = 'none'
 }
 
 function _subPaywallHtml() {
@@ -17374,11 +17424,18 @@ function _mobVRenderStrategies(el) {
   // of every bot running across all accounts in the view. Starting/configuring new bots
   // is done by switching to a single account.
   if (state.isAllAccounts) { _mobVRenderAllAcctStrats(el); return }
-  // Kick a status refresh (throttled) and show the paywall until it says otherwise. Dev
-  // mode bypasses locally; the server bypasses for admin. Anyone else hits 402 at
-  // /api/start regardless of what this renders, which is the point.
+  // Kick a status refresh (throttled). Dev mode bypasses locally; the server bypasses for
+  // admin; everyone else hits 402 at /api/start whatever this renders.
+  //
+  // The bots stay VISIBLE when locked. Hiding them behind the paywall meant nobody could
+  // see what the $10 actually buys — the page asked for money to unlock a list of names.
+  // So the cards, their descriptions and every config field stay browsable, and only the
+  // two controls that would call /api/start are locked. Stop, Pause, Resume, Restart and
+  // Logs stay live: those endpoints are not gated server-side either, because a lapsed
+  // subscription must not strand someone's running position.
   _subRefresh()
-  if (!_stratsUnlocked()) { el.innerHTML = _subPaywallHtml(); _subWatchRestore(); return }
+  const locked = !_stratsUnlocked()
+  if (locked) _subWatchRestore()
   // Preserve in-progress edits across re-renders. This view rebuilds via innerHTML on a
   // server-status poll or any toggle (Cross/Isolated, Long/Short, %/$, size unit). The
   // config inputs carry no value= attribute, so without this a re-render mid-typing wipes
@@ -17525,8 +17582,10 @@ function _mobVRenderStrategies(el) {
       bodyHtml += `
         ${_editing ? `<div style="font-size:11px;color:var(--accent);font-weight:700;margin-top:10px">✎ Editing ${esc(_mobEditing.instance || 'default')} — change fields, then Update</div>` : ''}
         <div style="display:flex;gap:8px;margin-top:${_editing ? '6' : '14'}px">
-          <button id="m-run-btn-exp-${s.type}" onclick="window.${_editing ? 'updateStrategyMob' : 'runStrategyMob'}('${s.type}')"
-            style="display:flex;flex:1;align-items:center;justify-content:center;padding:8px 0;border-radius:8px;border:none;background:var(--accent);color:#000;font-size:13px;font-weight:700;cursor:pointer">${_editing ? '✓ Update ' + esc(_mobEditing.instance || '') : '▶ Run'}</button>
+          ${locked
+            ? `<button class="mob-strat-locked" onclick="window.__subOpenPaywall()">🔒 ${_T('Subscribe to run', 'Suscríbete para usar')}</button>`
+            : `<button id="m-run-btn-exp-${s.type}" onclick="window.${_editing ? 'updateStrategyMob' : 'runStrategyMob'}('${s.type}')"
+            style="display:flex;flex:1;align-items:center;justify-content:center;padding:8px 0;border-radius:8px;border:none;background:var(--accent);color:#000;font-size:13px;font-weight:700;cursor:pointer">${_editing ? '✓ Update ' + esc(_mobEditing.instance || '') : '▶ Run'}</button>`}
           ${_editing
             ? `<button onclick="window._mobCancelEdit()" style="display:flex;flex:1;align-items:center;justify-content:center;padding:8px 0;border-radius:8px;border:1px solid var(--muted);background:transparent;color:var(--muted);font-size:13px;font-weight:700;cursor:pointer">Cancel</button>`
             : `<button id="m-stop-btn-exp-${s.type}" onclick="window.stopStrategyMob('${s.type}')"
@@ -17591,6 +17650,7 @@ function _mobVRenderStrategies(el) {
         ${autoGenBtn}
       </div>
     </div>
+    ${locked ? _subLockBanner() : ''}
     <div class="mob-v-setting-group">${cards}</div>
   </div>`
 
@@ -17952,6 +18012,9 @@ function updateServerBadge() {
 
 // ── Inject Run/Stop row into a strategy command output area ──────────────────
 function updateAllStrategyButtons() {
+  // The desktop panel has no render pass of its own, so this poll is where it learns the
+  // subscription state. Throttled inside _subRefresh, so calling it here is cheap.
+  _subRefresh()
   const labels  = { insolvent:'Insolvent', dca:'DCA', grid:'Grid', trend:'Trend', longer:'Longer', shorter:'Shorter' }
   const running = []
   for (const type of ['insolvent','dca','grid','trend','longer','shorter']) {
@@ -17964,8 +18027,14 @@ function updateAllStrategyButtons() {
     if (stopBtn) stopBtn.style.display = isRunning ? 'inline-block' : 'none'
     // Ensure each card always has its Run/Stop row + instance list, even if the user
     // never clicked "Generate Command" — otherwise running bots have no visible controls.
-    if (serverOnline && _deskEditing?.type !== type
-        && document.getElementById(`cmd-${type}`) && !document.getElementById(`inst-list-${type}`)) {
+    // Re-inject when the row is missing, and also when its lock state has gone stale —
+    // otherwise activating a subscription leaves a "Subscribe to run" button sitting there
+    // until the page is reloaded.
+    const _row = document.getElementById(`cmd-${type}`)?.querySelector('.strategy-run-row')
+    const _rowLocked = !!_row?.querySelector('.mob-strat-locked')
+    if (serverOnline && _deskEditing?.type !== type && document.getElementById(`cmd-${type}`)
+        && (!document.getElementById(`inst-list-${type}`) || (_row && _rowLocked === _stratsUnlocked()))) {
+      _row?.remove()
       injectRunButtons(type)
     }
     const instList = document.getElementById(`inst-list-${type}`)
@@ -18032,10 +18101,16 @@ function injectRunButtons(type) {
 
   const div = document.createElement('div')
   div.className = 'strategy-run-row'
+  // Same rule as the mobile tab: the card and its config stay usable, only the control
+  // that calls /api/start is locked. Without this the desktop panel would let someone
+  // fill the whole form and then hand them a raw 402.
+  const locked = !_stratsUnlocked()
   div.innerHTML = `
-    <button class="btn-run-strategy"  id="run-btn-${type}"
+    ${locked
+      ? `<button class="mob-strat-locked" style="display:inline-flex;flex:0 0 auto;padding:8px 14px" onclick="window.__subOpenPaywall()">🔒 ${_T('Subscribe to run', 'Suscríbete para usar')}</button>`
+      : `<button class="btn-run-strategy"  id="run-btn-${type}"
       style="display:inline-block"
-      onclick="runStrategy('${type}')">▶ Run</button>
+      onclick="runStrategy('${type}')">▶ Run</button>`}
     <button class="btn-stop-strategy" id="stop-btn-${type}"
       style="display:${running ? 'inline-block' : 'none'}"
       onclick="stopStrategy('${type}')">■ Stop All</button>
