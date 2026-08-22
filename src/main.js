@@ -17970,14 +17970,24 @@ function _mobVRenderStrategies(el) {
   const _preserved = {}
   el.querySelectorAll('input[id]').forEach(i => { _preserved[i.id] = { v: i.value, mode: i.dataset.mode } })
   const _focusedId = (document.activeElement && el.contains(document.activeElement)) ? document.activeElement.id : null
-  const savedKey = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null) || ''   // this account's own key ONLY
+  // The key belongs to the TARGET account, not to state.addr — which in the combined view
+  // is the "__all_accounts__" sentinel and owns no key. Reading it there showed an empty
+  // box and "Not connected" for accounts whose keys were already saved and already signing
+  // closes, and asked the user to paste all nine again.
+  const savedKey = _stratTargetKey() || ''
   const serverBadge = serverOnline
     ? `<span style="font-size:11px;color:var(--green)">server ● online</span>`
     : `<span style="font-size:11px;color:var(--red)">server ○ offline</span>`
-  const agentAddr   = isConnected() ? getWalletAddress() : null
+  // isConnected()/getWalletAddress() describe the ONE globally-connected client, which in
+  // the combined view is whichever account happened to connect last — not the one selected.
+  // hasAgentFor asks the per-account registry instead.
+  const _tgt        = _stratTargetAddr()
+  const _hasKey     = !!savedKey
+  const agentAddr   = _hasKey ? (() => { try { return agentAddressOf(savedKey) } catch { return null } })()
+                    : (isConnected() ? getWalletAddress() : null)
   const agentStatus = agentAddr
-    ? `<span style="color:var(--green)">✓ Connected: ${agentAddr.slice(0,6)}...${agentAddr.slice(-4)}</span>`
-    : `<span style="color:var(--muted)">Not connected</span>`
+    ? `<span style="color:var(--green)">✓ ${_T('Saved for this account', 'Guardada para esta cuenta')}: ${agentAddr.slice(0,6)}...${agentAddr.slice(-4)}</span>`
+    : `<span style="color:var(--muted)">${_T('No key saved for this account', 'Sin clave guardada para esta cuenta')}</span>`
 
   const stratsConfig = [
     { type: 'accumulator', label: _T('🪙 Profit Stack', '🪙 Pila de ganancias'), desc: _T('Skim a % of winning trades into spot', 'Aparta un % de las operaciones ganadoras en spot') },
@@ -18170,16 +18180,33 @@ function _mobVRenderStrategies(el) {
           <span style="flex:1"></span>
           ${_stratsWhyUnlocked()}${_stratsFullBtn()}${serverBadge}
         </div>
-        <input type="password" id="m-agentKey" class="mob-strat-input" placeholder="0x private key…"
-          value="${esc(savedKey)}"
-          oninput="window.__saveAgentKey(this.value);const dk=document.getElementById('agentKey');if(dk)dk.value=this.value"
-          autocomplete="off" style="font-family:monospace;font-size:12px">
         <div id="m-agentKeyStatus" style="font-size:11px">${agentStatus}</div>
-        <div style="display:flex;gap:6px">
-          <button onclick="window.__mobConnectAgentKey()" style="flex:1;padding:8px 0;border-radius:8px;border:none;background:var(--accent);color:#000;font-size:12px;font-weight:700;cursor:pointer">Connect</button>
-          <button onclick="window.__clearAgentKey()" style="padding:8px 14px;border-radius:8px;border:1px solid var(--panel-3);background:transparent;color:var(--muted);font-size:12px;cursor:pointer">Clear</button>
-        </div>
-        ${autoGenBtn}
+        ${_hasKey ? `
+          <!-- A key is already saved for this account and is what signs its closes. Asking
+               for it again — nine times, once per wallet — was the complaint. Keep the
+               controls, behind a disclosure. -->
+          <details>
+            <summary style="list-style:none;cursor:pointer;font-size:11px;color:var(--muted);padding:2px 0">${_T('Replace or clear this key', 'Reemplazar o borrar esta clave')} ▾</summary>
+            <input type="password" id="m-agentKey" class="mob-strat-input" placeholder="0x private key…"
+              value="${esc(savedKey)}"
+              oninput="window.__saveAgentKey(this.value);const dk=document.getElementById('agentKey');if(dk)dk.value=this.value"
+              autocomplete="off" style="font-family:monospace;font-size:12px;margin-top:6px">
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <button onclick="window.__mobConnectAgentKey()" style="flex:1;padding:8px 0;border-radius:8px;border:none;background:var(--accent);color:#000;font-size:12px;font-weight:700;cursor:pointer">Connect</button>
+              <button onclick="window.__clearAgentKey()" style="padding:8px 14px;border-radius:8px;border:1px solid var(--panel-3);background:transparent;color:var(--muted);font-size:12px;cursor:pointer">Clear</button>
+            </div>
+          </details>
+        ` : `
+          <input type="password" id="m-agentKey" class="mob-strat-input" placeholder="0x private key…"
+            value=""
+            oninput="window.__saveAgentKey(this.value);const dk=document.getElementById('agentKey');if(dk)dk.value=this.value"
+            autocomplete="off" style="font-family:monospace;font-size:12px">
+          <div style="display:flex;gap:6px">
+            <button onclick="window.__mobConnectAgentKey()" style="flex:1;padding:8px 0;border-radius:8px;border:none;background:var(--accent);color:#000;font-size:12px;font-weight:700;cursor:pointer">Connect</button>
+            <button onclick="window.__clearAgentKey()" style="padding:8px 14px;border-radius:8px;border:1px solid var(--panel-3);background:transparent;color:var(--muted);font-size:12px;cursor:pointer">Clear</button>
+          </div>
+          ${autoGenBtn}
+        `}
       </div>
     </div>
     ${locked ? _subLockBanner() : ''}
@@ -19356,8 +19383,12 @@ function _updateAutoGenBtnVisibility() {
   }
 }
 window.__saveAgentKey = function(val) {
-  if (val && state.addr) {
-    localStorage.setItem(_agentKeyForAddr(state.addr), val)
+  // Target, not state.addr: in the combined view state.addr is "__all_accounts__", so this
+  // was writing keys to hliq_agent_key___all_accounts__ — a junk entry no account ever
+  // reads. Identical outside the combined view, where target IS state.addr.
+  const _a = (typeof _stratTargetAddr === 'function' ? _stratTargetAddr() : null) ?? state.addr
+  if (val && _a) {
+    localStorage.setItem(_agentKeyForAddr(_a), val)
     _updateAutoGenBtnVisibility()
   }
 }
@@ -19689,7 +19720,7 @@ window.__regenAgentKey = async function() {
 }
 
 window.__clearAgentKey = async function() {
-  const acct  = state.addr
+  const acct  = (typeof _stratTargetAddr === 'function' ? _stratTargetAddr() : null) ?? state.addr
   const label = acct === PAPER_ADDR ? 'the paper account'
     : (acct && acct.startsWith('0x')) ? (WM.getLabel(acct) || acct.slice(0, 6) + '…' + acct.slice(-4))
     : 'this account'
