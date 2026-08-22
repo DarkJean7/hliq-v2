@@ -359,12 +359,19 @@ function startStrategy(type, extraArgs = [], agentKey = '', address = '', instan
     // running for days, and nothing ever brought them back. Keep the registry entry and
     // retry with a widening backoff instead. Bounded, so a genuinely broken config still
     // gives up rather than looping forever.
-    const rateLimited = RATE_LIMIT_RE.test(entry.lastError || '')
-    if (!shuttingDown && rateLimited && ranMs < STARTUP_WINDOW_MS && (resumeRetries.get(key) ?? 0) < MAX_RESUME_RETRIES) {
+    // Within the startup window we no longer try to CLASSIFY the failure — we just keep the
+    // entry and retry. The previous version only spared a 429. On 2026-08-22 Hyperliquid
+    // answered 500/502 for a couple of minutes during a resume, every one of 60 bots exited,
+    // none matched the 429 pattern, and all 60 were unpersisted — the registry went to `{}`
+    // and there was nothing left to resume. Enumerating which upstream errors deserve mercy
+    // is the bug: an exit seconds after launch is never the bot deciding to stop, whatever
+    // the message says. MAX_RESUME_RETRIES still bounds a genuinely broken config.
+    const earlyExit = ranMs < STARTUP_WINDOW_MS
+    if (!shuttingDown && earlyExit && (resumeRetries.get(key) ?? 0) < MAX_RESUME_RETRIES) {
       const n     = (resumeRetries.get(key) ?? 0) + 1
       resumeRetries.set(key, n)
       const delay = RESUME_RETRY_BASE_MS * n
-      handleLine(type, address, `[${ts}] [RETRY   ] Rate-limited during startup — retrying in ${Math.round(delay / 1000)}s (attempt ${n}/${MAX_RESUME_RETRIES})`, instance)
+      handleLine(type, address, `[${ts}] [RETRY   ] Exited during startup (${entry.lastError || 'code ' + code}) — keeping it registered, retrying in ${Math.round(delay / 1000)}s (attempt ${n}/${MAX_RESUME_RETRIES})`, instance)
       setTimeout(() => {
         if (shuttingDown || procs[key]) return
         try { startStrategy(type, extraArgs, envKey, address, instance, true) }
@@ -424,7 +431,6 @@ const RESUME_STAGGER_MS   = 1500
 const STARTUP_WINDOW_MS   = 120_000   // "died during startup" cutoff for the 429 retry
 const RESUME_RETRY_BASE_MS = 30_000   // 30s, 60s, 90s
 const MAX_RESUME_RETRIES  = 3
-const RATE_LIMIT_RE = /\b429\b|too many requests|rate limit/i
 const resumeRetries = new Map()   // procKey -> consecutive rate-limited startup deaths
 
 async function resumeBots() {
