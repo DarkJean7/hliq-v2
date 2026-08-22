@@ -17608,6 +17608,18 @@ window.__stratsToggleFull = function() {
   _mobVRenderContent()
 }
 
+// Why is Strats unlocked? Without saying so, a running trial is indistinguishable from dev
+// mode: turning dev mode OFF changed nothing visible, the toggle read off, and the tab
+// stayed unlocked — because a 7-day trial was active on that wallet the whole time. State
+// the reason so that is never a guessing game again.
+function _stratsWhyUnlocked() {
+  if (isDev()) return `<span class="strat-ent strat-ent-dev">${_T('Dev mode', 'Modo dev')}</span>`
+  const st = _subStatus
+  if (!st?.active || !(st.until > Date.now())) return ''
+  const days = Math.ceil((st.until - Date.now()) / 86_400_000)
+  return `<span class="strat-ent">${_T('Active', 'Activa')} · ${days}${_T('d left', 'd restantes')}</span>`
+}
+
 function _stratsFullBtn() {
   return `<button onclick="window.__stratsToggleFull()" title="${_stratsFull ? 'Exit full screen' : 'Full screen'}"
     style="flex-shrink:0;background:rgba(255,255,255,.06);border:1px solid var(--border2);color:var(--muted);
@@ -17863,7 +17875,7 @@ function _mobVRenderStrategies(el) {
         <div style="display:flex;justify-content:space-between;align-items:center">
           <span style="font-size:13px;font-weight:600">Agent Key</span>
           <span style="flex:1"></span>
-          ${_stratsFullBtn()}${serverBadge}
+          ${_stratsWhyUnlocked()}${_stratsFullBtn()}${serverBadge}
         </div>
         <input type="password" id="m-agentKey" class="mob-strat-input" placeholder="0x private key…"
           value="${esc(savedKey)}"

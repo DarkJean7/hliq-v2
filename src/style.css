@@ -7086,3 +7086,11 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
   background: var(--accent); color: var(--accent-fg);
   font-size: 17px; font-weight: 800; cursor: pointer;
 }
+
+/* Why Strats is unlocked — dev mode and a running trial look identical without this. */
+.strat-ent {
+  flex-shrink: 0; font-size: 10px; font-weight: 700; letter-spacing: .02em;
+  padding: 3px 8px; border-radius: 999px;
+  background: color-mix(in srgb, var(--pos) 16%, transparent); color: var(--pos);
+}
+.strat-ent-dev { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
