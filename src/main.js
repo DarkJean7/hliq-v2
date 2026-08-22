@@ -17351,7 +17351,7 @@ async function updateStrategy(type) {
     const r = await serverFetch('/api/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, agentKey, args: argv, address: state.addr, instance: newInst }),
+      body: JSON.stringify({ type, agentKey, args: argv, address: _stratTargetAddr(), instance: newInst }),
     })
     if (!r.ok) { alert(`Could not update: ${r.error}`); return }
     _deskEditing = null
@@ -17369,7 +17369,7 @@ window.updateStrategy = updateStrategy
 async function updateStrategyMob(type) {
   const ed = _mobEditing
   if (!ed || ed.type !== type) return runStrategyMob(type)
-  const agentKey = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null)
+  const agentKey = _stratTargetKey()
                 || document.getElementById('m-agentKey')?.value?.trim()
                 || document.getElementById('agentKey')?.value?.trim()
   if (!agentKey) { alert('Enter your Agent Private Key above.'); return }
@@ -17383,7 +17383,7 @@ async function updateStrategyMob(type) {
     const r = await serverFetch('/api/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, agentKey, args: argv, address: state.addr, instance: newInst }),
+      body: JSON.stringify({ type, agentKey, args: argv, address: _stratTargetAddr(), instance: newInst }),
     })
     if (!r.ok) { alert(`Could not update: ${r.error}`); return }
     _mobEditing = null
@@ -17450,7 +17450,11 @@ function _mobToggleSizeMode(inputId, coinId, btn) {
 }
 
 // Read-only list of every bot running across the combined view's accounts.
-function _mobVRenderAllAcctStrats(el) {
+// Returns the list rather than painting it, so the combined Strategies tab can show the
+// running bots ABOVE the launch UI instead of choosing between them.
+function _mobVRenderAllAcctStrats(el) { el.innerHTML = `<div style="padding:14px 12px calc(90px + env(safe-area-inset-bottom))">${_allAcctRunningHtml()}</div>` }
+
+function _allAcctRunningHtml() {
   const labels = { dca: 'DCA Bot', grid: 'Grid Bot', trend: 'Trend Follower', longer: 'Longer Bot', shorter: 'Shorter Bot', accumulator: '🪙 Profit Stack', liqguard: '🛡 Liq Guard', levbrake: '🛑 Lev Brake', insolvent: 'Manager', twap: 'TWAP', ocgrid: 'Outcome Grid' }
   const wallets  = _maLoad()
   const hidden   = _maHiddenLoad()
@@ -17465,9 +17469,12 @@ function _mobVRenderAllAcctStrats(el) {
     }
   }
   rows.sort((a, b) => a.label.localeCompare(b.label) || a.type.localeCompare(b.type))
-  el.innerHTML = `<div style="padding:14px 12px calc(90px + env(safe-area-inset-bottom))">
-    <div style="font-size:16px;font-weight:700;margin-bottom:3px">Running Bots · All Accounts</div>
-    <div style="font-size:11.5px;color:var(--muted);margin-bottom:14px;line-height:1.5">Every bot running across the accounts in this view. To start or configure bots, switch to a single account from the wallet switcher.</div>
+  // The old copy told the user to switch to a single account to start a bot. That is no
+  // longer true — the launch UI below arms on whichever account the picker names.
+  return `
+    <div style="font-size:16px;font-weight:700;margin-bottom:3px">${_T('Running Bots · All Accounts', 'Bots activos · Todas las cuentas')}</div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:14px;line-height:1.5">${
+      _T('Every bot running across the accounts in this view.', 'Todos los bots activos en las cuentas de esta vista.')}</div>
     ${rows.length ? rows.map(r => `
       <div class="mob-v-row" style="align-items:center">
         <span style="width:9px;height:9px;border-radius:50%;background:var(--green);flex-shrink:0;margin-right:11px;box-shadow:0 0 6px var(--green)"></span>
@@ -17476,8 +17483,8 @@ function _mobVRenderAllAcctStrats(el) {
           <div class="mob-v-row-sub"><span class="notranslate" style="color:var(--accent)">${esc(r.label)}</span></div>
         </div>
         <button class="mob-v-setting-btn" onclick="window._mobShowStratLogs('${esc(r.type)}','${esc(r.inst)}','${esc(r.addr)}')">Logs</button>
-      </div>`).join('') : `<div class="mob-v-empty">No bots running on any account in this view.</div>`}
-  </div>`
+      </div>`).join('') : `<div class="mob-v-empty">${
+        _T('No bots running on any account in this view.', 'Ningún bot activo en las cuentas de esta vista.')}</div>`}`
 }
 
 // Read a "--flag value" pair out of a persisted bot's launch args.
@@ -17894,11 +17901,55 @@ window._mobSetAccumDryRun = function(dry) {
   _mobPaintAccumMode()
 }
 
+// Which account a new bot is armed on, in the combined view. Deliberately the same
+// selection the trade tab uses — one "which account am I acting as" for the whole view.
+function _stratAcctPickerHtml() {
+  const cur = String(_stratTargetAddr() ?? '').toLowerCase()
+  const rows = _maLoad().map(w => {
+    const on  = w.addr.toLowerCase() === cur
+    const key = !!localStorage.getItem(_agentKeyForAddr(w.addr))
+    const lbl = w.label || (w.addr.slice(0, 6) + '…' + w.addr.slice(-4))
+    // An account with no agent key cannot run anything; say so rather than let it be
+    // picked and fail at the server.
+    return `<button data-strat-acct="${esc(w.addr)}" ${key ? '' : 'disabled'}
+      onclick="window.__pickStratAcct('${esc(w.addr)}')"
+      style="padding:6px 11px;border-radius:9px;font-size:12px;font-weight:700;cursor:${key ? 'pointer' : 'not-allowed'};
+             white-space:nowrap;opacity:${key ? '1' : '.4'};
+             border:1px solid ${on ? 'var(--accent)' : 'var(--border2)'};
+             background:${on ? 'color-mix(in oklch,var(--accent) 15%,transparent)' : 'var(--panel-2)'};
+             color:${on ? 'var(--accent)' : 'var(--fg)'}">${esc(lbl)}${key ? '' : ' 🔑'}</button>`
+  }).join('')
+  return `<div class="mob-v-setting-group" style="margin-bottom:14px">
+    <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:8px">
+      <div style="font-size:13px;font-weight:600">${_T('Run bots on', 'Ejecutar bots en')}</div>
+      <div id="stratAcctPills" style="display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px">${rows}</div>
+      <div style="font-size:11px;color:var(--muted)">${
+        _T('Bots are armed on this account and signed with its agent key. 🔑 means no key saved yet.',
+           'Los bots se activan en esta cuenta y se firman con su clave de agente. 🔑 significa que aún no hay clave guardada.')}</div>
+    </div>
+  </div>`
+}
+
+window.__pickStratAcct = function(addr) {
+  window.__setTradeAcct(addr)
+  // A full re-render would wipe half-typed config; repaint the pills in place, like the
+  // trade tab does.
+  const cur = String(addr).toLowerCase()
+  document.querySelectorAll('#stratAcctPills [data-strat-acct]').forEach(b => {
+    const on = b.dataset.stratAcct.toLowerCase() === cur
+    b.style.borderColor = on ? 'var(--accent)' : 'var(--border2)'
+    b.style.background  = on ? 'color-mix(in oklch,var(--accent) 15%,transparent)' : 'var(--panel-2)'
+    b.style.color       = on ? 'var(--accent)' : 'var(--fg)'
+  })
+}
+
 function _mobVRenderStrategies(el) {
   // Combined view: the launch UI targets one account, so instead show a read-only list
   // of every bot running across all accounts in the view. Starting/configuring new bots
   // is done by switching to a single account.
-  if (state.isAllAccounts) { _mobVRenderAllAcctStrats(el); return }
+  // Combined view used to be read-only here. It no longer is: the running-bot list stays,
+  // and the launch UI below it arms bots on whichever account the picker names.
+  if (state.isAllAccounts && !_stratTargetAddr()) { _mobVRenderAllAcctStrats(el); return }
   // Kick a status refresh (throttled). Dev mode bypasses locally; the server bypasses for
   // admin; everyone else hits 402 at /api/start whatever this renders.
   //
@@ -18111,6 +18162,7 @@ function _mobVRenderStrategies(el) {
     `<button class="auto-gen-agent-btn" onclick="window.__quickConnectAgent()" style="width:100%;padding:10px;border-radius:9px;border:none;background:rgba(255,138,42,0.14);color:var(--accent);font-size:13px;font-weight:700;cursor:pointer">${isMainWalletConnected() ? '⚡ Auto-generate Agent Key' : '🔗 Connect wallet'}</button>`
 
   el.innerHTML = `<div style="padding:4px 0 80px">
+    ${state.isAllAccounts ? `<div style="padding:2px 12px 10px">${_allAcctRunningHtml()}</div>` + _stratAcctPickerHtml() : ''}
     <div class="mob-v-setting-group" style="margin-bottom:14px">
       <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:8px">
         <div style="display:flex;justify-content:space-between;align-items:center">
@@ -18225,9 +18277,32 @@ function buildArgvMob(type) {
   return argv
 }
 
+// Which wallet a strategy is armed on.
+//
+// Everything else in the combined view already routes per account — orders, closes,
+// cancels, margin all take an `acct` and use that wallet's agent key. Strategies were the
+// only holdout, and only because runStrategyMob read state.addr, which is
+// "__all_accounts__" there and matches no key. The restriction was historical, not
+// structural, so this reuses the SAME selection the trade tab uses rather than introducing
+// a second "which account" concept for the user to keep in sync.
+function _stratTargetAddr() {
+  return state.isAllAccounts ? (window.__getTradeAcct?.() ?? null) : state.addr
+}
+
+function _stratTargetKey() {
+  const a = _stratTargetAddr()
+  return a ? localStorage.getItem(_agentKeyForAddr(a)) : null
+}
+
 async function runStrategyMob(type) {
-  if (!state.addr) { alert('Load a wallet address first.'); return }
-  const agentKey = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null)
+  const _target = _stratTargetAddr()
+  if (!_target) {
+    alert(state.isAllAccounts
+      ? 'Pick which account to run this bot on first.'
+      : 'Load a wallet address first.')
+    return
+  }
+  const agentKey = _stratTargetKey()
                 || document.getElementById('m-agentKey')?.value?.trim()
                 || document.getElementById('agentKey')?.value?.trim()
   if (!agentKey) { alert('Enter your Agent Private Key above.'); return }
@@ -18237,7 +18312,7 @@ async function runStrategyMob(type) {
     const r = await serverFetch('/api/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, agentKey, args: argv, address: state.addr, instance: _argvInstance(argv) }),
+      body: JSON.stringify({ type, agentKey, args: argv, address: _target, instance: _argvInstance(argv) }),
     })
     if (!r.ok) {
       // The server enforces the paywall; a client reaching here has a stale gate.
