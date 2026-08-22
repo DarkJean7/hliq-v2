@@ -7055,3 +7055,34 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 }
 .sub-sheet-head span { font-size: 15px; font-weight: 700; }
 .sub-sheet-body { flex: 1; overflow-y: auto; overflow-x: hidden; }
+
+/* ─── Wake alarm ───────────────────────────────────────────────────────────── */
+.pa-alarm { display: flex; align-items: center; gap: 12px; padding: 11px 0 9px; }
+.pa-alarm-l { flex: 1; min-width: 0; }
+.pa-alarm-t { font-size: 13px; font-weight: 600; color: var(--fg); }
+.pa-alarm-s { font-size: 11px; line-height: 1.45; color: var(--muted); margin-top: 2px; }
+.pa-alarm-test {
+  width: 100%; margin-bottom: 8px; padding: 7px; border-radius: 8px; cursor: pointer;
+  font-size: 11.5px; font-weight: 700;
+  background: rgba(255,255,255,.06); border: 1px solid var(--border2); color: var(--muted);
+}
+
+/* Ringing: the whole screen is the dismiss target, because it is 4am. */
+.alarm-ov {
+  position: fixed; inset: 0; z-index: 100000;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  background: var(--bg); text-align: center; padding: 24px;
+  animation: alarm-flash 1s steps(1) infinite;
+}
+@keyframes alarm-flash {
+  0%, 49%   { background: var(--bg); }
+  50%, 100% { background: color-mix(in srgb, var(--neg) 22%, var(--bg)); }
+}
+.alarm-ov-icon { font-size: 56px; line-height: 1; }
+.alarm-ov-t { font-size: 24px; font-weight: 800; }
+.alarm-ov-s { font-size: 13px; color: var(--muted); }
+.alarm-ov-btn {
+  margin-top: 18px; padding: 16px 48px; border: none; border-radius: 14px;
+  background: var(--accent); color: var(--accent-fg);
+  font-size: 17px; font-weight: 800; cursor: pointer;
+}

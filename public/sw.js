@@ -1,10 +1,18 @@
-const CACHE = 'hliq-v2-assets-v12'
+const CACHE = 'hliq-v2-assets-v13'
 
 // ─── PUSH NOTIFICATIONS ───────────────────────────────────────────────────────
 
 self.addEventListener('push', event => {
   const data = event.data?.json?.() ?? {}
-  event.waitUntil(
+  // Tell any live page that a price alert landed, so the wake alarm can sound. The page is
+  // kept alive by its silent audio loop with the screen off — a notification on its own
+  // plays the OS notification sound, which a phone on silent will not make.
+  const wake = String(data.tag || '').startsWith('hliq-price-')
+    ? self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+        .then(cs => cs.forEach(c => { try { c.postMessage({ type: 'price-alert', tag: data.tag, title: data.title }) } catch (_) {} }))
+        .catch(() => {})
+    : Promise.resolve()
+  event.waitUntil(Promise.all([wake,
     self.registration.showNotification(data.title || 'Insolvent Trade', {
       body:  data.body  || '',
       tag:   data.tag   || 'hliq-notif',
@@ -12,8 +20,11 @@ self.addEventListener('push', event => {
       badge: '/pwa-192x192.png',
       // Action buttons show on Android/desktop; iOS ignores them
       actions: [{ action: 'mute-24h', title: '🔕 Mute 24h' }],
-    })
-  )
+      // Keep a price alert on screen until acknowledged; it is the one the user asked for.
+      requireInteraction: String(data.tag || '').startsWith('hliq-price-'),
+      vibrate: [400, 200, 400],
+    }),
+  ]))
 })
 
 self.addEventListener('notificationclick', event => {

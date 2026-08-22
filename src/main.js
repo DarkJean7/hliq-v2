@@ -179,6 +179,7 @@ import {
   fetchApprovedAgents,
   invalidateApprovedAgents,
 } from './trading.js'
+import { createAlarm } from './alarm.js'
 import {
   getDiscoveredWallets,
   getMainAddress,
@@ -19698,6 +19699,7 @@ window.__resetPriceAlert = function(id) {
 }
 
 function _renderPriceAlerts() {
+  try { _renderAlarmRow() } catch {}
   const el = document.getElementById('priceAlertsList')
   if (!el) return
   const alerts = _paLoad()
@@ -19729,6 +19731,7 @@ function _checkPriceAlerts(allMids) {
       body: `${a.coin} is now at $${fmtUSD(mid)}`,
       tag:  'hliq-price-' + a.id,
     })
+    _alarmOnPriceAlert()
   }
   if (changed) { _paSave(alerts); _renderPriceAlerts() }
 }
@@ -19875,6 +19878,87 @@ function _urlBase64ToUint8Array(b64) {
   const pad = '='.repeat((4 - b64.length % 4) % 4)
   const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'))
   return Uint8Array.from([...raw].map(c => c.charCodeAt(0)))
+}
+
+// ─── WAKE ALARM ───────────────────────────────────────────────────────────────
+// See src/alarm.js for why this is a media element looping silence rather than a Wake Lock.
+const _ALARM_KEY = 'hliq_wake_alarm'
+const _alarm = createAlarm({
+  vibrate: (p) => navigator.vibrate?.(p),
+  onChange: () => { try { _renderAlarmRow(); _renderAlarmOverlay() } catch {} },
+})
+
+window.__alarmToggle = async function(on) {
+  if (!on) {
+    _alarm.disarm()
+    localStorage.removeItem(_ALARM_KEY)
+    _renderAlarmRow()
+    return
+  }
+  // arm() has to run inside this click: the autoplay policy refuses audio started any other
+  // way, and an alarm that quietly failed to arm is worse than no alarm at all.
+  const ok = await _alarm.arm()
+  if (!ok) {
+    localStorage.removeItem(_ALARM_KEY)
+    _renderAlarmRow()
+    alert('Your browser would not let the alarm start its audio.\n\nTap the toggle again, and keep this tab open — the alarm needs a sound already playing to be able to make noise later with the screen off.')
+    return
+  }
+  localStorage.setItem(_ALARM_KEY, '1')
+  _renderAlarmRow()
+}
+
+window.__alarmTest = function() { if (!_alarm.fire()) alert('Arm the alarm first.') }
+window.__alarmStop = function() { _alarm.stop() }
+
+// Sound the alarm for a price alert, wherever the trigger came from.
+function _alarmOnPriceAlert() {
+  if (!_alarm.isArmed()) return
+  _alarm.fire()
+}
+
+// The service worker forwards a pushed price alert here. That is the path that matters:
+// screen off, tab backgrounded, the page still alive because of the silent loop.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type === 'price-alert') _alarmOnPriceAlert()
+  })
+}
+
+function _renderAlarmRow() {
+  const el = document.getElementById('wakeAlarmRow')
+  if (!el) return
+  const on = _alarm.isArmed()
+  el.innerHTML = `
+    <div class="pa-alarm">
+      <div class="pa-alarm-l">
+        <div class="pa-alarm-t">${_T('Wake alarm', 'Alarma')}</div>
+        <div class="pa-alarm-s">${on
+          ? _T('Armed — keep this tab open. Screen can be off.', 'Activada — deja esta pestaña abierta. La pantalla puede estar apagada.')
+          : _T('Ring a loud alarm when an alert fires, even on silent.', 'Suena una alarma fuerte cuando salta una alerta, incluso en silencio.')}</div>
+      </div>
+      <label class="pin-toggle" style="flex-shrink:0">
+        <input type="checkbox" ${on ? 'checked' : ''} onchange="window.__alarmToggle(this.checked)">
+        <span class="pin-toggle-slider"></span>
+      </label>
+    </div>
+    ${on ? `<button class="pa-alarm-test" onclick="window.__alarmTest()">${_T('Test the sound', 'Probar el sonido')}</button>` : ''}`
+}
+
+// Full-screen takeover while ringing — at 4am the dismiss target should be the whole screen.
+function _renderAlarmOverlay() {
+  let ov = document.getElementById('alarmOverlay')
+  if (!_alarm.isRinging()) { ov?.remove(); return }
+  if (ov) return
+  ov = document.createElement('div')
+  ov.id = 'alarmOverlay'
+  ov.className = 'alarm-ov'
+  ov.innerHTML = `
+    <div class="alarm-ov-icon">🔔</div>
+    <div class="alarm-ov-t">${_T('Price alert', 'Alerta de precio')}</div>
+    <div class="alarm-ov-s">${_T('One of your alerts triggered', 'Se activó una de tus alertas')}</div>
+    <button class="alarm-ov-btn" onclick="window.__alarmStop()">${_T('Stop', 'Detener')}</button>`
+  document.body.appendChild(ov)
 }
 
 // ─── PRICE ALERTS WHILE THE APP IS CLOSED ─────────────────────────────────────
