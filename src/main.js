@@ -12079,6 +12079,63 @@ function _mobVRenderHeatmap() {
 window._mobVRenderContent = () => _mobVRenderContent()
 // tick=true → a background refresh that may be skipped when the list's visible data is
 // unchanged (see _mobVTickSkip). Default false = a forced render (tab switch / user action).
+// A loss used to render as "$724.70" in red with no sign at all: the template prefixed only
+// the positive case and then printed Math.abs of the value. Red alone carried the meaning,
+// which a screenshot or a colour-blind reader loses entirely.
+function _scPnl(v) {
+  return `${v >= 0 ? '+' : '−'}$${fmtUSD(Math.abs(v))}`
+}
+
+// The closing trades behind a Scoreboard row. Only fills that CLOSED something have a
+// realized number — an opening fill has closedPnl 0 and listing it as a $0.00 trade would
+// double the rows and imply a break-even trade that never happened.
+const SC_TRADE_LIMIT = 60
+
+function _scTradesHtml(fills) {
+  const closes = (fills ?? [])
+    .filter(f => Number(f.closedPnl) !== 0)
+    .sort((a, b) => (b.time ?? 0) - (a.time ?? 0))
+  if (!closes.length) {
+    return `<div style="padding:10px 16px 12px;font-size:11.5px;color:var(--muted)">${
+      _T('No closed trades yet — every fill here opened a position.',
+         'Aún no hay operaciones cerradas — cada ejecución aquí abrió una posición.')}</div>`
+  }
+  const shown = closes.slice(0, SC_TRADE_LIMIT)
+  const rows = shown.map(f => {
+    const pnl  = Number(f.closedPnl)
+    const fee  = Number(f.fee ?? 0)
+    const net  = pnl - fee
+    const when = new Date(f.time ?? 0).toLocaleString(undefined,
+      { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    // `dir` is HL's own wording — "Close Long" / "Close Short" — so the side shown is the
+    // position that was closed, not the side of this fill, which is the opposite.
+    const side = /short/i.test(f.dir ?? '') ? 'Short' : 'Long'
+    const tone = net >= 0 ? 'var(--green)' : 'var(--red)'
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 16px;font-size:11.5px">
+      <span style="color:${side === 'Short' ? 'var(--red)' : 'var(--green)'};font-weight:700;width:38px;flex-shrink:0">${side}</span>
+      <span style="color:var(--muted);white-space:nowrap">${esc(when)}</span>
+      <span style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">@ $${fmtPrice(parseFloat(f.px ?? 0))}</span>
+      <span style="flex:1"></span>
+      <span style="font-family:var(--font-mono);font-weight:700;color:${tone};white-space:nowrap">${_scPnl(net)}</span>
+    </div>`
+  }).join('')
+  // Net of fees, so the total here reconciles with what the account actually kept.
+  const net = closes.reduce((a, f) => a + Number(f.closedPnl) - Number(f.fee ?? 0), 0)
+  const wins = closes.filter(f => Number(f.closedPnl) - Number(f.fee ?? 0) > 0).length
+  return `<div style="background:var(--panel-2);border-top:1px solid var(--border2)">
+    <div style="display:flex;gap:8px;padding:8px 16px 4px;font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">
+      <span>${closes.length} ${_T('closed', 'cerradas')} · ${wins}/${closes.length} ${_T('won', 'ganadas')}</span>
+      <span style="flex:1"></span>
+      <span>${_T('net of fees', 'neto de comisiones')} ${_scPnl(net)}</span>
+    </div>
+    ${rows}
+    ${closes.length > shown.length
+      ? `<div style="padding:6px 16px 10px;font-size:11px;color:var(--muted)">${
+          _T('Showing the latest', 'Mostrando las últimas')} ${shown.length} ${_T('of', 'de')} ${closes.length}</div>`
+      : '<div style="height:6px"></div>'}
+  </div>`
+}
+
 function _mobVRenderContent(tick = false) {
   const el = document.getElementById('mobVContent')
   if (!el) return
@@ -13396,16 +13453,25 @@ function _mobVRenderContent(tick = false) {
       const cls = s.totalPnl >= 0 ? 'pos' : 'neg'
       const wl  = s.longs + s.shorts
       const wr  = wl > 0 ? Math.round((s.longsWon + s.shortsWon) / wl * 100) : 0
-      return `<div class="mob-v-row">
-        ${_mobVCoinIcon(s.coin)}
-        <div class="mob-v-row-info">
-          <div class="mob-v-row-name">${esc(_ocCoinLabel(s.coin))}</div>
-          <div class="mob-v-row-sub">${s.fills} trades · ${wr}% win</div>
+      // A coin id can carry characters that are not valid in an element id or inside a
+      // single-quoted inline handler ("#11420", "xyz:SPCX", "@107"), so index instead.
+      const id = 'sc' + allStats.indexOf(s)
+      const xp = _mobVExpandedIds.has(id)
+      return `<div>
+        <div class="mob-v-row" style="cursor:pointer" onclick="window._mobVToggleRow('${id}')">
+          ${_mobVCoinIcon(s.coin)}
+          <div class="mob-v-row-info">
+            <div class="mob-v-row-name">${esc(_ocCoinLabel(s.coin))}</div>
+            <div class="mob-v-row-sub">${s.fills} trades · ${wr}% win</div>
+          </div>
+          <div class="mob-v-row-right">
+            <div class="mob-v-row-val ${cls}">${_scPnl(s.totalPnl)}</div>
+            <div class="mob-v-row-pct" style="color:var(--muted)">$${fmtUSD(s.volume)} vol</div>
+          </div>
+          <svg id="mrc-${id}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12"
+            style="color:var(--muted);flex-shrink:0;margin-left:6px;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>
         </div>
-        <div class="mob-v-row-right">
-          <div class="mob-v-row-val ${cls}">${s.totalPnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(s.totalPnl))}</div>
-          <div class="mob-v-row-pct" style="color:var(--muted)">$${fmtUSD(s.volume)} vol</div>
-        </div>
+        <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${_scTradesHtml(coinMap[s.coin] ?? [])}</div>
       </div>`
     }).join('')
     return
