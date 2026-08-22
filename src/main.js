@@ -12594,8 +12594,8 @@ function _mobVRenderContent(tick = false) {
     const newsKw       = document.getElementById('newsKeywords')?.value || 'war, attack, sanctions, hack, exploit, ban, seized, collapse, default'
     const devOn        = !!localStorage.getItem('hliq_dev')
     const bioEnabled   = !!localStorage.getItem('hliq_biometric_cred')
-    const tog = (checked, fn) =>
-      `<label class="pin-toggle" style="flex-shrink:0"><input type="checkbox" ${checked ? 'checked' : ''} onchange="${fn}"><span class="pin-toggle-slider"></span></label>`
+    const tog = (checked, fn, id = '') =>
+      `<label class="pin-toggle" style="flex-shrink:0"><input type="checkbox"${id ? ` id="${id}"` : ''} ${checked ? 'checked' : ''} onchange="${fn}"><span class="pin-toggle-slider"></span></label>`
     const segBtn = (active, label, fn) =>
       `<button onclick="${fn}" style="padding:5px 14px;border:none;font-size:12px;font-weight:600;cursor:pointer;background:${active ? 'var(--accent)' : 'var(--panel-2)'};color:${active ? '#000' : 'var(--muted)'}">${label}</button>`
     el.innerHTML = `<div style="margin:10px 8px calc(82px + env(safe-area-inset-bottom));border:1px solid var(--border2);border-radius:18px;background:var(--bg2);overflow:hidden">
@@ -12866,7 +12866,7 @@ function _mobVRenderContent(tick = false) {
       <div class="mob-v-setting-group">
         <div class="mob-v-setting-row">
           <div><div>Dev Mode</div><div style="font-size:11px;color:var(--muted)">Unlock leaderboard management</div></div>
-          ${tog(devOn, 'window.toggleDevMode(this.checked)')}
+          ${tog(devOn, 'window.toggleDevMode(this.checked)', 'mobDevModeToggle')}
         </div>
       </div>
 
@@ -20836,10 +20836,21 @@ function _applyDevMode() {
   const desc = document.getElementById('devModeDesc')
   const on   = isDev()
   if (chk)  chk.checked = on
+  // The MOBILE switch is a separate element rendered into the settings tab, and it was not
+  // being resynced. Cancelling the PIN prompt (or failing it) left that switch sitting in
+  // the ON position while dev mode was actually off — so the Strats tab kept showing the
+  // paywall to someone who could see a lit "Dev Mode" toggle. Whatever the outcome, both
+  // switches must end up showing the truth.
+  const mchk = document.getElementById('mobDevModeToggle')
+  if (mchk) mchk.checked = on
   if (desc) desc.textContent = on
     ? 'Dev mode active — leaderboard management, bot strategies, and profile pic editing unlocked'
     : 'Unlock leaderboard management, bot strategies, and profile pic editing. Requires PIN.'
   document.querySelectorAll('.dev-only').forEach(el => { el.style.display = on ? '' : 'none' })
+  // Dev mode gates the Strats paywall, so a change has to repaint that tab. Without this
+  // the unlock only appeared after a reload.
+  if (_isMobView() && _mobVActiveTab === 'strategies') _mobVRenderContent()
+  if (typeof updateAllStrategyButtons === 'function') { try { updateAllStrategyButtons() } catch {} }
 }
 
 window.toggleDevMode = async function(wantOn) {
@@ -20853,7 +20864,13 @@ window.toggleDevMode = async function(wantOn) {
     desc:  'Enter the leaderboard PIN to unlock management controls.',
     confirmText: 'Activate',
   })
-  if (pin === null || pin === '') { _applyDevMode(); return }   // cancelled
+  if (pin === null || pin === '') {
+    // Silently reverting looked identical to succeeding, which is how someone ends up
+    // staring at a paywall convinced dev mode is on.
+    _applyDevMode()
+    try { _paperToast(_T('Dev mode not activated', 'Modo dev no activado'), 'err') } catch {}
+    return
+  }
   // Non-destructive check — no longer overwrites the board just to test the PIN.
   let status = 0
   try {
