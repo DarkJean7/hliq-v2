@@ -6086,15 +6086,62 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
   padding: 14px 16px; cursor: pointer; user-select: none;
 }
 .mob-strat-header:active { opacity: 0.8; }
-.mob-strat-body { padding: 0 16px 16px; border-top: 1px solid rgba(255,255,255,0.08); }
-.mob-strat-field { margin-bottom: 0; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.08); }
-.mob-strat-field:last-of-type { border-bottom: none; }
-.mob-strat-label { font-size: 11px; color: var(--fg); margin-bottom: 6px; display: block; }
+/* Two columns, because almost every field is a short number and one-per-row turned a
+   six-field bot into a page of scrolling. Short numeric fields pair up; anything with text,
+   a toggle, or two inputs side by side keeps the full width. `:has()` does the sorting, so
+   no strategy's markup had to change to get it. */
+.mob-strat-body {
+  padding: 12px 16px 16px; border-top: 1px solid rgba(255,255,255,0.08);
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px 10px; align-items: start;
+}
+.mob-strat-body > * { grid-column: 1 / -1; min-width: 0; }
+.mob-strat-field:has(> input[type="number"]) { grid-column: span 1; }
+.mob-strat-field--full { grid-column: 1 / -1 !important; }
+.mob-strat-field { margin: 0; padding: 0; border-bottom: none; min-width: 0; }
+.mob-strat-label {
+  display: block; margin-bottom: 5px; font-size: 10.5px; font-weight: 600;
+  letter-spacing: .02em; color: var(--fg-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mob-strat-hint { font-size: 10.5px; line-height: 1.45; color: var(--fg-3); margin-top: 6px; }
 .mob-strat-input {
-  width: 100%; background: var(--bg3); border: 1px solid var(--border2);
-  border-radius: 10px; padding: 11px 13px; font-size: 14px; color: var(--fg);
+  /* --bg3 IS --panel-2, the same colour as the card, so the old inputs read as bare text
+     on a rule. A darker well plus a real border makes them look like fields. */
+  width: 100%; background: var(--panel); border: 1px solid var(--rule);
+  border-radius: 9px; padding: 9px 11px; font-size: 13.5px; color: var(--fg);
   box-sizing: border-box; outline: none; font-family: inherit;
   transition: border-color .15s, box-shadow .15s, background .15s;
+}
+
+/* Segmented control — used for the Profit Stack Live/Dry-run switch, where a single
+   toggling word left it ambiguous which state you were looking at. */
+.mob-seg {
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 3px;
+  padding: 3px; border-radius: 10px; background: var(--panel); border: 1px solid var(--rule);
+}
+.mob-seg-b {
+  padding: 8px 6px; border: none; border-radius: 7px; background: transparent;
+  color: var(--fg-3); font-size: 12px; font-weight: 700; font-family: inherit;
+  cursor: pointer; transition: background .15s, color .15s;
+}
+.mob-seg-b.on { background: var(--panel-3); color: var(--fg); }
+.mob-seg--live .mob-seg-b.on {
+  background: color-mix(in srgb, var(--pos) 20%, transparent); color: var(--pos);
+}
+
+/* Some toggle fields wrap the label and the chip in their own flex row, others just put
+   the chip after a block label, so Side sat under its label while Mode sat beside it. This
+   puts every bare label+chip field on one line, matching the ones that already were. */
+.mob-strat-field:has(> .btn-size-unit) {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+}
+.mob-strat-field:has(> .btn-size-unit) > .mob-strat-label { margin-bottom: 0; }
+
+/* The inline TKN/USD, Long/Short, Time/Drop toggles sit inside these forms too and were
+   a 10px monospace chip — too small to hit reliably on a phone. */
+.mob-strat-body .btn-size-unit {
+  padding: 4px 10px; border-radius: 7px; font-size: 10.5px;
+  background: var(--panel); border-color: var(--rule);
 }
 .mob-strat-input:focus { border-color: var(--accent); background: var(--bg2); box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 16%, transparent); }
 .mob-strat-input::placeholder { color: var(--muted); }

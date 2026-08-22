@@ -16632,7 +16632,9 @@ let _mobDcaMode        = 'time'
 let _mobDcaSide        = 'long'
 let _mobLongerTrigger  = 'always'
 let _mobShorterTrigger = 'always'
-let _mobAccumDryRun    = true   // Profit Stack: default to dry-run (no real transfers/buys) until the user opts in
+let _mobAccumDryRun    = false  // Profit Stack: LIVE by default. Dry-run first meant the common
+                                // case was arming a bot that quietly did nothing — the mode is a
+                                // segmented control now, so which one is selected is unmissable.
 let _mobEditing        = null   // { type, instance } when editing a running bot's config in-place
 let _mobExpandedStrat  = null
 let _mobLogStream      = null
@@ -17001,9 +17003,7 @@ function _mobToggleShorterTrigger(btn) {
 
 function _mobToggleAccumDryRun(btn) {
   _mobAccumDryRun = !_mobAccumDryRun
-  btn.textContent = _mobAccumDryRun ? 'Dry-run' : 'LIVE'
-  btn.classList.toggle('active', !_mobAccumDryRun)
-  btn.style.color = _mobAccumDryRun ? 'var(--muted)' : 'var(--green)'
+  _mobPaintAccumMode()
 }
 window._mobToggleAccumDryRun = _mobToggleAccumDryRun
 
@@ -17419,6 +17419,29 @@ function _stratsFullBtn() {
   </button>`
 }
 
+// Spelled out rather than left to the label, because this switch decides whether the bot
+// spends real money and "Dry-run" alone does not say that to a first-time reader.
+const _ACCUM_MODE_HINT = {
+  live: 'Places real transfers and spot buys.',
+  dry:  'Logs what it would buy. No funds move.',
+}
+
+// Repaint the Mode control in place. A full re-render would wipe whatever the user has
+// half-typed into the fields above it.
+function _mobPaintAccumMode() {
+  document.querySelectorAll('.mob-seg[data-seg="accum-mode"]').forEach(seg => {
+    seg.classList.toggle('mob-seg--live', !_mobAccumDryRun)
+    seg.querySelectorAll('.mob-seg-b').forEach((b, i) => b.classList.toggle('on', (i === 0) !== _mobAccumDryRun))
+    const hint = seg.parentElement?.querySelector('.mob-strat-hint')
+    if (hint) hint.textContent = _mobAccumDryRun ? _ACCUM_MODE_HINT.dry : _ACCUM_MODE_HINT.live
+  })
+}
+
+window._mobSetAccumDryRun = function(dry) {
+  _mobAccumDryRun = !!dry
+  _mobPaintAccumMode()
+}
+
 function _mobVRenderStrategies(el) {
   // Combined view: the launch UI targets one account, so instead show a read-only list
   // of every bot running across all accounts in the view. Starting/configuring new bots
@@ -17476,8 +17499,13 @@ function _mobVRenderStrategies(el) {
           <div class="mob-strat-field"><span class="mob-strat-label" title="% of net realized profit skimmed each window">Cut %</span><input class="mob-strat-input" id="m-accum-cut" type="number" placeholder="25"></div>
           <div class="mob-strat-field"><span class="mob-strat-label" title="Buffer up to this USD before each spot buy. ~$11 is the floor — it fires as soon as that stacks, clearing HL's $10 min after fees. Set higher to batch bigger buys.">Buy at ($)</span><input class="mob-strat-input" id="m-accum-threshold" type="number" placeholder="11"></div>
           <div class="mob-strat-field"><span class="mob-strat-label" title="Optional cap on USD skimmed per day (0 = no cap)">Max / day ($)</span><input class="mob-strat-input" id="m-accum-maxdaily" type="number" placeholder="0"></div>
-          <div class="mob-strat-field">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px"><span class="mob-strat-label" style="margin:0" title="Dry-run logs what it WOULD buy without moving funds. Switch to LIVE to place real transfers + spot buys.">Mode</span><button class="btn-size-unit" style="color:var(--muted)" onclick="window._mobToggleAccumDryRun(this)">${_mobAccumDryRun ? 'Dry-run' : 'LIVE'}</button></div>
+          <div class="mob-strat-field mob-strat-field--full">
+            <span class="mob-strat-label">${_T('Mode', 'Modo')}</span>
+            <div class="mob-seg${_mobAccumDryRun ? '' : ' mob-seg--live'}" data-seg="accum-mode">
+              <button class="mob-seg-b${_mobAccumDryRun ? '' : ' on'}" onclick="window._mobSetAccumDryRun(false, this)">${_T('Live', 'En vivo')}</button>
+              <button class="mob-seg-b${_mobAccumDryRun ? ' on' : ''}" onclick="window._mobSetAccumDryRun(true, this)">${_T('Dry-run', 'Simulación')}</button>
+            </div>
+            <div class="mob-strat-hint">${_mobAccumDryRun ? _ACCUM_MODE_HINT.dry : _ACCUM_MODE_HINT.live}</div>
           </div>`
       } else if (s.type === 'dca') {
         bodyHtml = `
