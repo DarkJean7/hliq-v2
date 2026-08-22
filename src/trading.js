@@ -234,35 +234,38 @@ export async function sendUsdcOnCore({ from, destination, amount, signer }) {
   const spotFree = Number(usdcRow?.total ?? 0) - Number(usdcRow?.hold ?? 0)
 
   if (perpFree < amt && spotFree < amt) {
+    // Deliberately not split across both pockets: that would be two signatures for one
+    // payment. Someone holding enough in total just needs to consolidate first, so say so
+    // rather than leaving them staring at a balance that looks sufficient.
+    const enoughTogether = perpFree + spotFree >= amt
     throw new Error(
-      `Not enough free USDC. Trading account has $${perpFree.toFixed(2)}, spot has $${spotFree.toFixed(2)}, ` +
-      `and this needs $${amt.toFixed(2)} in one of them.`)
+      `Not enough free USDC in one place. Trading account has $${perpFree.toFixed(2)}, ` +
+      `spot has $${spotFree.toFixed(2)}, and this needs $${amt.toFixed(2)}.` +
+      (enoughTogether ? ' Move some between Spot and your Trading account first.' : ''))
   }
 
   const transport = new HttpTransport({ timeout: 60_000 })
   const client = new ExchangeClient({ transport, wallet: signer })
   const value = String(amt)
 
-  const trySpot = async () => {
-    // The token id is "SYMBOL:0x…" and is NOT stable enough to hardcode — read it from
-    // spotMeta so a token-index change cannot silently send to the wrong asset.
-    const meta = await infoClient.spotMeta()
-    const tok = (meta?.tokens ?? []).find(t => String(t.name).toUpperCase() === 'USDC')
-    if (!tok) throw new Error('Could not resolve the USDC token on Hyperliquid')
-    return client.spotSend({ destination, token: `${tok.name}:${tok.tokenId}`, amount: value })
-  }
+  // ONE tap must mean at most ONE signature request, so the route is decided here, from
+  // balances we already have, and never retried after a prompt has been shown.
+  //
+  // This used to try usdSend and fall back to spotSend on failure, guarded by a check for
+  // "rejected" in the error message. That guard never fired: the SDK reports a declined
+  // signature as `AbstractWalletError: Failed to sign typed data with ethers wallet` and
+  // hangs the real "user rejected" error off `.cause`. So cancelling in the wallet threw a
+  // message that matched nothing, fell into the fallback, and immediately asked the user to
+  // sign again — and on mobile the second request arrived with no deep-link nudge, so the
+  // app looked frozen and got tapped again. Declining has to mean declined.
+  if (perpFree >= amt) return client.usdSend({ destination, amount: value })
 
-  if (perpFree >= amt) {
-    try {
-      return await client.usdSend({ destination, amount: value })
-    } catch (e) {
-      const msg = e?.message ?? String(e)
-      // A rejected signature is the user's decision — do not re-prompt them for a second one.
-      if (/rejected|denied|cancel/i.test(msg) || spotFree < amt) throw e
-      return await trySpot()
-    }
-  }
-  return await trySpot()
+  // The token id is "SYMBOL:0x…" and is NOT stable enough to hardcode — read it from
+  // spotMeta so a token-index change cannot silently send to the wrong asset.
+  const meta = await infoClient.spotMeta()
+  const tok = (meta?.tokens ?? []).find(t => String(t.name).toUpperCase() === 'USDC')
+  if (!tok) throw new Error('Could not resolve the USDC token on Hyperliquid')
+  return client.spotSend({ destination, token: `${tok.name}:${tok.tokenId}`, amount: value })
 }
 
 export async function approveAgentKey(mainSigner, agentAddress) {

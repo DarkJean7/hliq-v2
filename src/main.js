@@ -17204,11 +17204,17 @@ window.__subPayNow = async function() {
     // see it in the treasury's ledger. Start the watcher rather than claiming success.
     window.__subSent()
   } catch (e) {
-    const top = e?.message || String(e)
-    const cause = e?.cause?.message || e?.cause?.cause?.message || ''
-    const full = cause && cause !== top ? `${top}\n\n${cause}` : top
+    // Walk the whole cause chain. The SDK's top-level message is always the generic
+    // "Failed to sign typed data with ethers wallet" — the reason the user actually cares
+    // about (and the word "rejected") is nested underneath, sometimes more than one deep.
+    const parts = []
+    for (let cur = e, n = 0; cur && n < 6; cur = cur.cause, n++) {
+      const m = cur?.message || (n === 0 ? String(cur) : '')
+      if (m && !parts.includes(m)) parts.push(m)
+    }
+    const full = parts.join(' · ')
     let msg = full
-    if (/rejected|denied|cancel/i.test(full)) msg = _T('Signature rejected in your wallet.', 'Firma rechazada en tu billetera.')
+    if (/rejected|denied|cancel|user ?abort/i.test(full)) msg = _T('Payment cancelled.', 'Pago cancelado.')
     else if (/must deposit|does not exist/i.test(full)) msg = _T('This wallet has no funds on Hyperliquid yet.', 'Esta cartera aún no tiene fondos en Hyperliquid.')
     _paperToast(msg.split('\n')[0].slice(0, 120), 'err')
     console.error('subscription payment failed:', e)
