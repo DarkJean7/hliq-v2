@@ -7062,7 +7062,12 @@ function _allAcctLightPaint() {
     // _mobVRenderBalance already ran the spike filter this paint, so reuse its accepted value
     // (falling back to liveTotal) instead of re-filtering (which would double-advance it).
     // Skip while a wallet is still missing — liveTotal would be understated (see _allAcctIncomplete).
-    if (_mobVActiveTab === 'portfolio' && _mobVPortChartType === 'value' && liveTotal > 0 && !_allAcctIncomplete) {
+    // Not in split view: there the hero carries the per-wallet summary (and the scrub
+    // readout), and overwriting its first child with the combined total wiped both — the
+    // "Top … · lowest …" line lasted until the next tick and then became a bare dollar
+    // figure, and a scrub readout vanished a moment after your finger lifted.
+    if (_mobVActiveTab === 'portfolio' && _mobVPortChartType === 'value' && liveTotal > 0
+        && !_allAcctIncomplete && !(_mobVPortSplit && state.isAllAccounts)) {
       const valDiv = document.getElementById('mobVPortHero')?.firstElementChild
       if (valDiv) valDiv.textContent = _prv('$' + fmtUSD(_comboEqLast ?? liveTotal))
     }
