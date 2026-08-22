@@ -7225,13 +7225,17 @@ function _combinedServerValue() {
     livePerp += p
   }
   const val = _combinedSnap.accountValue + (livePerp - _combinedSnap.perpBase)
-  _comboSrvLast = { val, wallets: rows.length }
+  _comboSrvLast = { val, wallets: rows.length, at: Date.now() }
   return val
 }
 
 // The held value, but only while it still describes the wallet set on screen.
 function _combinedHeldValue() {
   if (!state.isAllAccounts || !_comboSrvLast) return null
+  // Same age cap Net PnL uses. Unlike the live bridge, this value does not move at all —
+  // it is a frozen number. Holding it across a brief gap is the point; holding it for ten
+  // minutes would show an equity that stopped tracking the market without saying so.
+  if (Date.now() - (_comboSrvLast.at ?? 0) > COMBO_SNAP_MAX_AGE_MS) return null
   const hidden = _maHiddenLoad()
   const rows = (_allAcctLastResults ?? []).filter(r => r && !r.error && !hidden.has(r.addr))
   return rows.length === _comboSrvLast.wallets ? _comboSrvLast.val : null
