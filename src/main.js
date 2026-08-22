@@ -10651,8 +10651,13 @@ function _comboPnlSums() {
     // Nothing has to line up: there is no shared base to disagree about, and Net PnL now
     // moves exactly as much as the Unrealized figure beside it.
     const net = Number(snap.settledPnl) + unreal
-    _comboPnlLast = { net, unreal, wallets: rows.length }
-    return { net, unreal }
+    const parts = {
+      realized: Number(snap.realizedPnl),
+      funding:  Number(snap.funding),
+      fees:     Number(snap.fees),
+    }
+    _comboPnlLast = { net, unreal, wallets: rows.length, parts }
+    return { net, unreal, parts }
   }
 
   // No fallback to the per-wallet row sum. Measured on the live app: entering the combined
@@ -10671,7 +10676,7 @@ function _comboPnlSums() {
 // describes the same number of wallets.
 function _comboPnlHeld(nRows) {
   if (!_comboPnlLast || _comboPnlLast.wallets !== nRows) return null
-  return { net: _comboPnlLast.net, unreal: _comboPnlLast.unreal }
+  return { net: _comboPnlLast.net, unreal: _comboPnlLast.unreal, parts: _comboPnlLast.parts }
 }
 
 function _comboEqFilter(val) {
@@ -13012,7 +13017,17 @@ function _mobVRenderContent(tick = false) {
     // Net PnL = realized + unrealized + funding − fees — the same full formula the
     // desktop overview and the All-Accounts cards use (computeAcctStats returns only
     // realized+unrealized, which made this tab disagree with the account cards).
-    const netPnl        = realizedPnl + unrealizedPnl + netFunding - totalFees
+    let netPnl          = realizedPnl + unrealizedPnl + netFunding - totalFees
+    // Combined view: take the authoritative figures rather than re-deriving them here.
+    // This tab was the last surface still computing its own, off the merged per-device
+    // fills — and in the combined view state.funding is [], so its Net PnL was also missing
+    // funding entirely. That is how this read +$45.92 while the header read -$283.
+    const _cpP = state.isAllAccounts ? _comboPnlSums() : null
+    if (_cpP) netPnl = _cpP.net
+    // realizedPnl arrives destructured from stats, so the displayed values are their own
+    // bindings rather than reassignments.
+    const dispRealized = _cpP?.parts ? _cpP.parts.realized : realizedPnl
+    const dispFunding  = _cpP?.parts ? _cpP.parts.funding  : netFunding
     const totalVol      = fills.reduce((s, f) => s + (f.notional ?? 0), 0)
     const ONE_HOUR = 3600000
     const windows  = {}
@@ -13085,9 +13100,9 @@ function _mobVRenderContent(tick = false) {
       <div class="mob-v-setting-group" style="margin-top:8px">
         <div class="mob-v-setting-row"><span>Account Value</span><span style="font-weight:600;font-size:14px">${_acctValueReady() ? _prv('$' + fmtUSD(accountValue)) : '<span style="color:var(--muted)">—</span>'}</span></div>
         <div class="mob-v-setting-row"><span>Unrealized PnL</span><span class="${pnlCls(unrealizedPnl)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(unrealizedPnl))}</span></div>
-        <div class="mob-v-setting-row"><span>Realized PnL</span><span class="${pnlCls(realizedPnl)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(realizedPnl))}</span></div>
+        <div class="mob-v-setting-row"><span>Realized PnL</span><span class="${pnlCls(dispRealized)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(dispRealized))}</span></div>
         <div class="mob-v-setting-row"><span>Net PnL</span><span class="${pnlCls(netPnl)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(netPnl))}</span></div>
-        ${netFunding !== 0 ? `<div class="mob-v-setting-row"><span>Net Funding</span><span class="${pnlCls(netFunding)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(netFunding))}</span></div>` : ''}
+        ${dispFunding !== 0 ? `<div class="mob-v-setting-row"><span>Net Funding</span><span class="${pnlCls(dispFunding)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(dispFunding))}</span></div>` : ''}
         <div class="mob-v-setting-row"><span>Health</span><span class="${healthCls}" style="font-weight:600;font-size:14px">${healthStr}</span></div>
         <div class="mob-v-setting-row"><span>Withdrawable</span><span style="font-weight:600;font-size:14px">$${fmtUSD(withdrawable)}</span></div>
         <!-- These are two DIFFERENT numbers and this row used to show maintenance
