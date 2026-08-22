@@ -10652,17 +10652,16 @@ function _comboPnlSums() {
     return { net, unreal }
   }
 
-  // Fallback until that snapshot lands: sum the per-wallet figures. Still far better than
-  // recomputing from the merged fills, but it is per-device, so it is second choice.
-  let net = 0
-  for (const r of rows) {
-    // One wallet without a figure would understate the total, which is the whole bug.
-    if (!Number.isFinite(Number(r.netPnl))) return _comboPnlHeld(rows.length)
-    net += Number(r.netPnl)
-  }
-  if (!haveUnreal) return _comboPnlHeld(rows.length)
-  _comboPnlLast = { net, unreal, wallets: rows.length }
-  return { net, unreal }
+  // No fallback to the per-wallet row sum. Measured on the live app: entering the combined
+  // view walked Net PnL -$450 → -$393 → -$501 inside seven seconds while equity moved less
+  // than $6 — three bases in a row, ending on the server one. The row sum is built from each
+  // DEVICE's cached fill history, which is the same thing that made a phone say -$25 and a
+  // desktop -$168, so it is not a lesser version of the server figure, it is a different and
+  // less trustworthy number. Offering it "until the real one lands" just guarantees a step
+  // change a few seconds later.
+  //
+  // So: the server figure, or the last one we held, or nothing. The caller renders a dash.
+  return _comboPnlHeld(rows.length)
 }
 
 // Hold the last complete total while a wallet is between refreshes, but only while it still
@@ -10828,8 +10827,12 @@ function _mobVRenderBalance() {
   // Stats row — leverage is a ratio (not masked); free margin + maint respect privacy.
   // The Unreal/Net PnL stat is tappable — toggles which of the two it shows (__mobVTogglePnlStat)
   const _pnlNet = _mobVPnlStatMode() === 'net'
-  // Combined view: sum the per-wallet figures. Single account: the computed ones.
+  // Combined view: the server figure. Single account: the computed one. In the combined view
+  // `netPnl` from computeAcctStats is yet another basis — it re-derives realized and fees
+  // from the merged fills and sees no funding at all — so falling back to it would reinstate
+  // the very step this removes. With nothing authoritative to show, show nothing.
   const _cp = _comboPnlSums()
+  const _pnlMissing = _pnlNet && state.isAllAccounts && !_cp
   const _pnlVal = _pnlNet
     ? (_cp ? _cp.net : netPnl)
     : (_cp ? _cp.unreal : unrealizedPnl)
@@ -10839,7 +10842,7 @@ function _mobVRenderBalance() {
   // and correcting it a beat later. Nothing on screen yet → a dash, which is at least true.
   // The combined view has its own completeness check above, so this gate is for the single
   // account only — state.fillsFull is set by that load path and would otherwise leak across.
-  const _pnlReady = !_pnlNet || state.isAllAccounts || state.fillsFull !== false
+  const _pnlReady = !_pnlMissing && (!_pnlNet || state.isAllAccounts || state.fillsFull !== false)
   if (upEl && _pnlReady) {
     upEl.textContent = _privacyMode ? '•••' : (_pnlVal >= 0 ? '+' : '') + _mobVStatUSD(_pnlVal)
     upEl.style.color = _pnlVal > 0 ? 'var(--green)' : _pnlVal < 0 ? 'var(--red)' : ''
