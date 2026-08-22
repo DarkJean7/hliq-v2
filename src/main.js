@@ -8442,6 +8442,7 @@ let _mobVMaLastFetch   = 0
 let _mobVExpandedIds   = new Set()
 let _mobVPortPeriod    = 'allTime'
 let _mobVPortChartType = 'value'  // 'value' | 'pnl' | 'realized'
+let _mobVPortSplit = false        // All Accounts: one line per wallet instead of the total
 let _mobVPortMarkers   = localStorage.getItem('mobPortMarkers') === '1'  // overlay buy/sell/deposit/withdraw dots
 let _mobVLastPosHash   = ''
 let _mobVLastFillsHash = ''   // History/Calendar re-render only when fills/ledger actually change (no scroll-jump)
@@ -11157,7 +11158,93 @@ function _portSeries(period, type) {
   return { hist, baseRef }
 }
 
+// ─── ALL ACCOUNTS: ONE LINE PER WALLET ────────────────────────────────────────
+//
+// The combined chart answers "how am I doing"; it cannot answer "which wallet is doing it".
+// This reuses the Watch comparison module rather than growing a second charting path.
+//
+// Every series is normalised to percent change from its own first point, which is the whole
+// reason this is readable: plotted in dollars a $50 wallet next to a $3,700 one is a flat
+// line at the bottom of the chart. Percent puts them on one axis and makes the comparison
+// the point rather than the scale.
+let _mobVSplitDetach = null
+
+window.mobVTogglePortSplit = function() {
+  _mobVPortSplit = !_mobVPortSplit
+  _mobVRenderContent()
+}
+
+// Per-wallet history for the selected period, shaped like the candles computeCompare wants.
+function _splitSeriesByWallet() {
+  const periodKey = { '1D': 'day', '7D': 'week', '1M': 'month', 'allTime': 'allTime' }[_mobVPortPeriod] ?? 'allTime'
+  const histKey   = _mobVPortChartType === 'pnl' ? 'pnlHistory' : 'accountValueHistory'
+  const hidden    = _maHiddenLoad()
+  const byWallet  = {}
+  const labels    = []
+  for (const r of (_allAcctLastResults ?? [])) {
+    if (!r || r.error || hidden.has(r.addr)) continue
+    const hist = (r.portfolio ?? []).find(x => x[0] === periodKey)?.[1]?.[histKey] ?? []
+    if (hist.length < 2) continue
+    const label = r.label || (r.addr.slice(0, 6) + '…' + r.addr.slice(-4))
+    // Two wallets can carry the same label; the series are keyed by it, so keep them apart.
+    const key = byWallet[label] ? `${label} (${r.addr.slice(2, 6)})` : label
+    byWallet[key] = hist.map(([t, v]) => ({ t: +t, c: parseFloat(v) }))
+    labels.push(key)
+  }
+  return { byWallet, labels }
+}
+
+function _mobVDrawPortSplit() {
+  const host = document.getElementById('mobVPortSplit')
+  if (!host) return
+  try { _mobVSplitDetach?.() } catch {}
+  _mobVSplitDetach = null
+
+  const { byWallet, labels } = _splitSeriesByWallet()
+  // computeCompare divides by each series' first value, so a wallet whose history starts at
+  // zero (funded mid-period) is dropped there rather than producing an infinite percentage.
+  const d = computeCompare(byWallet, labels)
+  const heroEl = document.getElementById('mobVPortHero')
+
+  if (!d.series.length) {
+    host.innerHTML = `<div style="padding:18px 16px;color:var(--muted);font-size:13px">${
+      _T('No per-wallet history for this period', 'Sin historial por cartera en este periodo')}</div>`
+    if (heroEl) heroEl.innerHTML = ''
+    return
+  }
+
+  const colors = assignCompareColors(d.series.map(s => s.coin))
+  const width  = Math.max(240, (host.clientWidth || 340) - 32)
+  host.innerHTML = `
+    <div style="padding:0 16px">${compareChartSvg(d, { width, height: 150, colors })}</div>
+    ${compareAxisHtml(d)}
+    <div style="padding:6px 16px 2px">${compareLegendHtml(d, { colors })}</div>`
+
+  if (heroEl) {
+    const best  = d.series[0]
+    const worst = d.series[d.series.length - 1]
+    const fmt = (x) => `${x.change >= 0 ? '+' : ''}${x.change.toFixed(2)}%`
+    // Colour by SIGN, not by rank. The bottom wallet of three winners is still up, and
+    // painting +285% red because it came last says the opposite of what happened.
+    const tone = (x) => x.change >= 0 ? 'var(--green)' : 'var(--red)'
+    heroEl.innerHTML = `<div style="font-size:12px;color:var(--muted)">
+      ${_T('Top', 'Mejor')} <b style="color:${tone(best)}">${esc(best.coin)} ${fmt(best)}</b>
+      ${d.series.length > 1 ? ` · ${_T('lowest', 'menor')} <b style="color:${tone(worst)}">${esc(worst.coin)} ${fmt(worst)}</b>` : ''}
+    </div>`
+  }
+
+  _mobVSplitDetach = attachCompareScrub(host, d, {
+    colors,
+    onReadout: (r) => {
+      if (!heroEl) return
+      heroEl.innerHTML = r ? compareReadoutHtml(r) : heroEl.innerHTML
+    },
+  })
+}
+
 function _mobVDrawPortChart() {
+  // Split view owns the whole chart area, so bail before touching the canvas.
+  if (_mobVPortSplit && state.isAllAccounts) { _mobVDrawPortSplit(); return }
   const canvas = document.getElementById('mobVPortChart')
   if (!canvas) return
   const heroEl = document.getElementById('mobVPortHero')
@@ -13125,10 +13212,16 @@ function _mobVRenderContent(tick = false) {
         ${periods.map(([lbl,val]) => `<button data-port-period="${val}" onclick="window.mobVSetPortPeriod('${val}')"
           style="${btnStyle(val === _mobVPortPeriod)}">${lbl}</button>`).join('')}
       </div>
+      ${state.isAllAccounts ? `<div style="padding:8px 16px 0">
+        <button onclick="window.mobVTogglePortSplit()" style="${btnStyle(_mobVPortSplit)}">
+          ${_mobVPortSplit ? '⇢ ' + _T('Combined', 'Combinado') : '⇉ ' + _T('Per wallet', 'Por cartera')}
+        </button>
+      </div>` : ''}
       <div id="mobVPortHero" style="padding:8px 16px 4px;min-height:44px"></div>
-      <div style="padding:0 16px 8px">
+      <div style="padding:0 16px 8px;display:${_mobVPortSplit && state.isAllAccounts ? 'none' : 'block'}">
         <canvas id="mobVPortChart" height="120" style="width:100%;display:block"></canvas>
       </div>
+      <div id="mobVPortSplit" style="padding:0 0 8px;display:${_mobVPortSplit && state.isAllAccounts ? 'block' : 'none'}"></div>
       <div style="padding:0 16px 6px;display:flex;align-items:center;gap:8px">
         <button id="mobVPortMarkersBtn" data-port-markers onclick="window.mobVTogglePortMarkers()"
           style="${_mobVPortBtnStyle(_mobVPortMarkers)}">📍 Markers</button>
