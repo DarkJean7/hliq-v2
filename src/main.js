@@ -23238,12 +23238,22 @@ function _ocSidePrice(outcomeId, side) {
 // an empty book. Routing that poll through a helper that also fetches candles on a thin book
 // doubled the request count of the hottest loop in the app and re-triggered HL's rate limit.
 // The fallback belongs only to the one-shot initial load, which is where it started.
+// The DISPLAYED odds for one side. Not the price a trade fills at — that is _ocEffPx, which
+// must keep reading the book.
 async function _ocSideMid(pairIdx, info, candleFallback = false) {
+  // Hyperliquid's own mark first. These books are routinely one-sided — a bucket leg can
+  // show a lone 0.061 bid with no ask at all — and taking that lone side as the price is
+  // what made a market Hyperliquid marks at 0.3755 read as 6% here while outcome.xyz showed
+  // 38%. A lone bid understates and a lone ask overstates, always. allMids carries a real
+  // mark for these markets, so use it and keep the book for the fill price only.
+  const mm = parseFloat(state.allMids?.['#' + pairIdx] ?? 0)
+  if (mm > 0 && mm < 1) return mm
   try {
     const book = await info.l2Book({ coin: '#' + pairIdx })
     const bid  = parseFloat(book.levels?.[0]?.[0]?.px ?? 0)
     const ask  = parseFloat(book.levels?.[1]?.[0]?.px ?? 0)
-    const mid  = bid > 0 && ask > 0 ? (bid + ask) / 2 : (bid || ask)
+    // Two-sided only. A one-sided book gives no honest midpoint; fall through instead.
+    const mid  = bid > 0 && ask > 0 ? (bid + ask) / 2 : 0
     if (mid > 0 && mid < 1) return mid
   } catch {}
   if (!candleFallback) return 0
