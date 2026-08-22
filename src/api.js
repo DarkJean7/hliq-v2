@@ -75,15 +75,27 @@ export async function fetchClearinghouseState(address, allMetas) {
   }
   // HIP-3 clearinghouseState returns coin names WITHOUT the "dex:" prefix (e.g. "CL" not "xyz:CL").
   // Prefix them so they match allMids keys and fills (which do use the "dex:coin" convention).
-  const extraPositions = hip3States.flatMap((s, i) => {
-    if (!s) return []
-    const dex = dexes[i]
-    return (s.assetPositions ?? []).map(ap => {
+  //
+  // Cached PER DEX, and a failed dex falls back to its own last-known positions.
+  //
+  // This is the HIP-3 flicker. Each dex is a separate call every 5s, they share HL's 1200
+  // weight/min budget with everything else, and one of them 429ing or timing out returned
+  // null — which flatMap turned into "no positions on that dex", identical to genuinely
+  // holding none. The row vanished, and the old single `positions` cache was then
+  // overwritten with the incomplete set, so there was nothing to fall back to either. Next
+  // tick it came back. Only a dex that ANSWERS can retire its cached positions; one that
+  // could not be reached keeps them.
+  if (_hip3Cache.addr !== address) { _hip3Cache.addr = address; _hip3Cache.byDex = {} }
+  const extraPositions = dexes.flatMap((dex, i) => {
+    const s = hip3States[i]
+    if (!s) return _hip3Cache.byDex[dex] ?? []
+    const mapped = (s.assetPositions ?? []).map(ap => {
       const prefixed = ap.position.coin.includes(':') ? ap.position.coin : `${dex}:${ap.position.coin}`
       return { ...ap, position: { ...ap.position, coin: _hip3Rename(prefixed) } }
     })
+    _hip3Cache.byDex[dex] = mapped
+    return mapped
   })
-  _hip3Cache.addr = address
   _hip3Cache.positions = extraPositions
   if (!extraPositions.length) return mainState
   return { ...mainState, assetPositions: [...(mainState.assetPositions ?? []), ...extraPositions] }
@@ -92,7 +104,7 @@ export async function fetchClearinghouseState(address, allMetas) {
 // Fetch frontendOpenOrders for main DEX + all HIP-3 DEXes, merged into one array.
 // HIP-3 failures are silently skipped; main DEX errors propagate to caller.
 // Cache of the last HIP-3 fan-out results, reused on ticks that skip the fan-out
-const _hip3Cache = { addr: null, positions: [], orders: [] }
+const _hip3Cache = { addr: null, positions: [], orders: [], byDex: {} }
 
 export async function fetchFrontendOpenOrders(address, allMetas) {
   const mainOrders = await infoClient.frontendOpenOrders({ user: address })

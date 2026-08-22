@@ -1010,10 +1010,20 @@ async function loadDashboard() {
     // 2c. Fills: a recent window first for a fast first paint, then the full
     //     history in the background so all-time totals/calendar fill in without
     //     blocking the initial render (this was the heaviest call on load).
-    const applyFills = (rawFills) => {
+    // `full` distinguishes the all-time history from the fast 14-day first paint. Net PnL
+    // sums realized PnL and fees over whatever is in state.fills, so a 14-day window
+    // produces a real-looking but wrong all-time figure that jumps when the full history
+    // lands ~600ms later. Callers that show it consult state.fillsFull rather than
+    // printing the partial number.
+    state.fillsFull = false
+    const applyFills = (rawFills, full = false) => {
       if (state.addr !== addr) return
+      // Never let the short window overwrite a history that already landed — on a reload
+      // the recent fetch can resolve after the full one.
+      if (state.fillsFull && !full) return
       const fills = parseFills(rawFills).map(f => ({ ...f, coin: hip3Rename(f.coin) }))
       state.fills = fills
+      state.fillsFull = full
       const FIRST_FILL_KEY = 'hliq_first_fill_' + addr
       if (fills.length > 0) localStorage.setItem(FIRST_FILL_KEY, fills[fills.length - 1].time)
       const cachedFirstFill = localStorage.getItem(FIRST_FILL_KEY)
@@ -1037,7 +1047,7 @@ async function loadDashboard() {
         setTimeout(() => {
           fetchAllFills(addr, { startTime: GENESIS })
             .catch(() => infoClient.userFills({ user: addr }).catch(() => []))
-            .then(full => { if (Array.isArray(full) && full.length) applyFills(full) })
+            .then(full => { if (Array.isArray(full) && full.length) applyFills(full, true) })
         }, 600)
       })
       .catch(e => { console.warn('Phase 2 fills failed:', e.message); document.body.classList.remove('is-data-loading'); _hideBootSplash() })
@@ -10277,7 +10287,9 @@ window._mobVHandlePfp = function(input) {
         _pfpForget(state.addr)
         const bust = `/pfp/${state.addr.toLowerCase()}?v=${ts}`
         const avatarEl = document.getElementById('mobVAvatar')
-        if (avatarEl) { const img = avatarEl.querySelector('img'); if (img) img.src = bust }
+        // Clear the cache key too, or the next render sees "same address, already drawn"
+        // and never re-requests the photo that was just uploaded.
+        if (avatarEl) { delete avatarEl.dataset.avatarKey; const img = avatarEl.querySelector('img'); if (img) img.src = bust }
         const drawerAvatar = document.getElementById('mobVDrawerAvatar')
         if (drawerAvatar) { const img = drawerAvatar.querySelector('img'); if (img) img.src = bust }
         document.querySelectorAll(`img[src^="/pfp/${state.addr.toLowerCase()}"]`).forEach(img => { img.src = bust })
@@ -10349,6 +10361,20 @@ function _mobVAvatarImgHtml(addr, size) {
 }
 window._mobVAvatarHtml = _mobVAvatarHtml   // reused by the desktop overview (render.js)
 
+// Writing innerHTML destroys the <img> and builds a new one, which paints its empty
+// container before the image decodes — even straight from cache. _mobVRenderHeader runs on
+// every renderMobileView, including the 5s poll, so the avatar blinked on a timer. Worse for
+// an address with no photo: the new <img> 404s, onerror swaps in the fallback badge, and the
+// next render puts the <img> back to 404 again. Only rewrite when the identity really
+// changed.
+function _avatarSet(el, addr, size) {
+  if (!el) return
+  const key = `${addr}|${size}`
+  if (el.dataset.avatarKey === key) return
+  el.dataset.avatarKey = key
+  el.innerHTML = _mobVAvatarHtml(addr, size)
+}
+
 function _mobVRenderHeader() {
   if (!state.addr) return
   const avatarEl = document.getElementById('mobVAvatar')
@@ -10356,21 +10382,21 @@ function _mobVRenderHeader() {
   const addrEl   = document.getElementById('mobVAddr')
   if (state.isAllAccounts) {
     const n = _maLoad().length
-    if (avatarEl) avatarEl.innerHTML = _mobVAvatarHtml('__all_accounts__', 50)
+    _avatarSet(avatarEl, '__all_accounts__', 50)
     if (nameEl) { nameEl.textContent = 'All Accounts'; nameEl.classList.remove('notranslate') }  // UI label — translate
     if (addrEl)   addrEl.textContent = n + ' wallets combined'
     return
   }
   if (isPaper()) {
     const _chal = paperSlot() === 'challenge'
-    if (avatarEl) avatarEl.innerHTML = _mobVAvatarHtml(PAPER_ADDR, 50)
+    _avatarSet(avatarEl, PAPER_ADDR, 50)
     if (nameEl) { nameEl.textContent = (_chal ? '🏆 ' : '') + _paperName(); nameEl.classList.add('notranslate') }   // user-named — keep verbatim
     if (addrEl)   addrEl.textContent = _chal ? 'Challenge · $1,000 paper' : 'Paper · simulated funds'
     return
   }
   const saved = WM.load().find(w => w.addr.toLowerCase() === state.addr.toLowerCase())
   const label = saved?.label || ''
-  if (avatarEl) avatarEl.innerHTML = _mobVAvatarHtml(state.addr, 50)
+  _avatarSet(avatarEl, state.addr, 50)
   // An address that was just pasted (not saved, nothing connected) isn't "My
   // Wallet" — it's someone's account being watched.
   if (nameEl) {
@@ -10723,9 +10749,15 @@ function _mobVRenderBalance() {
   const _pnlNet = _mobVPnlStatMode() === 'net'
   const _pnlVal = _pnlNet ? netPnl : unrealizedPnl
   const upEl = document.getElementById('mobVUnrealPnl')
-  if (upEl) {
+  // Net PnL needs the ALL-TIME fills; unrealized does not. While only the 14-day window is
+  // loaded, leave whatever is already on screen rather than flashing a wrong all-time total
+  // and correcting it a beat later. Nothing on screen yet → a dash, which is at least true.
+  const _pnlReady = !_pnlNet || state.fillsFull !== false
+  if (upEl && _pnlReady) {
     upEl.textContent = _privacyMode ? '•••' : (_pnlVal >= 0 ? '+' : '') + _mobVStatUSD(_pnlVal)
     upEl.style.color = _pnlVal > 0 ? 'var(--green)' : _pnlVal < 0 ? 'var(--red)' : ''
+  } else if (upEl && !upEl.textContent.trim()) {
+    upEl.textContent = '—'
   }
   const upLbl = document.getElementById('mobVUnrealPnlLbl')
   if (upLbl) upLbl.innerHTML = `${_pnlNet ? 'Net PnL' : 'Unreal. PnL'} <span style="opacity:.45;font-size:9px">⇄</span>`
