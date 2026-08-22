@@ -164,6 +164,7 @@ import {
   parseOrderResult,
   approveBuilderFee,
   approveAgentKey,
+  sendUsdcOnCore,
   setBuilderFeeEnabled,
   isBuilderFeeEnabled,
   applyReferrer,
@@ -17158,6 +17159,64 @@ function _subWatchHtml() {
   return `<span style="color:var(--muted)">${_T('Activation is automatic, usually within a minute.', 'La activación es automática, normalmente en un minuto.')}</span>`
 }
 
+// Pay from inside the app. The whole point of the terminal is that a normal user never
+// has to open Hyperliquid itself, and sending them there to copy an address was exactly
+// the thing this app exists to avoid. One signature, no bridge, no chain switch.
+//
+// It needs the MAIN wallet connected, not just an agent key: Hyperliquid API wallets can
+// trade but cannot move funds. When there is no wallet to sign with we fall back to
+// showing the address, which is the only thing left that can work.
+window.__subPayNow = async function() {
+  const st = _subStatus
+  const dest = st?.treasury
+  const amount = st?.priceUsdc ?? 10
+  if (!dest) { _paperToast(_T('Loading…', 'Cargando…'), 'err'); return }
+
+  if (!isMainWalletConnected()) {
+    if (_isMobView()) window.__mobConnectWallet?.(); else openWalletPicker()
+    return
+  }
+  const main = getMainAddress()?.toLowerCase()
+  const target = _botApiAddr()?.toLowerCase()
+  // The wallet that signs is the wallet that gets credited, because that is what the
+  // server sees in the ledger. Say so plainly instead of enabling the wrong account.
+  if (main && target && main !== target) {
+    const ok = confirm(_T(
+      `Your connected wallet is ${main.slice(0,6)}…${main.slice(-4)}, but you are viewing ${target.slice(0,6)}…${target.slice(-4)}.\n\n` +
+      `The subscription is credited to the wallet that pays, so this would enable ${main.slice(0,6)}…${main.slice(-4)}.\n\nContinue?`,
+      `Tu cartera conectada es ${main.slice(0,6)}…${main.slice(-4)}, pero estás viendo ${target.slice(0,6)}…${target.slice(-4)}.\n\n` +
+      `La suscripción se acredita a la cartera que paga, así que esto activaría ${main.slice(0,6)}…${main.slice(-4)}.\n\n¿Continuar?`))
+    if (!ok) return
+  }
+
+  const btn = document.getElementById('subPayBtn')
+  const set = (txt, dis) => { if (btn) { btn.disabled = dis; btn.textContent = txt } }
+  set(_T('Check your wallet…', 'Revisa tu billetera…'), true)
+  try {
+    // Mobile WalletConnect relays the prompt to the wallet app without switching to it,
+    // so the signature screen never surfaces — same deep-link nudge the agent-key flow uses.
+    const send = sendUsdcOnCore({ from: main, destination: dest, amount, signer: getHlSigner() })
+    setTimeout(() => { try { wakeWallet() } catch {} }, 350)
+    await send
+
+    _paperToast(_T('Sent — activating…', 'Enviado — activando…'), 'ok')
+    // The transfer settles on HyperCore in about a second, but the server still has to
+    // see it in the treasury's ledger. Start the watcher rather than claiming success.
+    window.__subSent()
+  } catch (e) {
+    const top = e?.message || String(e)
+    const cause = e?.cause?.message || e?.cause?.cause?.message || ''
+    const full = cause && cause !== top ? `${top}\n\n${cause}` : top
+    let msg = full
+    if (/rejected|denied|cancel/i.test(full)) msg = _T('Signature rejected in your wallet.', 'Firma rechazada en tu billetera.')
+    else if (/must deposit|does not exist/i.test(full)) msg = _T('This wallet has no funds on Hyperliquid yet.', 'Esta cartera aún no tiene fondos en Hyperliquid.')
+    _paperToast(msg.split('\n')[0].slice(0, 120), 'err')
+    console.error('subscription payment failed:', e)
+  } finally {
+    set(`${_T('Pay')} $${amount} USDC`, false)
+  }
+}
+
 window.__subSent = function() {
   if (!_botApiAddr()) { _paperToast(_T('Load a wallet first', 'Carga una cuenta primero'), 'err'); return }
   _subWatchUntil = Date.now() + 10 * 60_000
@@ -17214,9 +17273,9 @@ function _subPaywallHtml() {
   const days  = st?.periodDays ?? 30
   const trial = st?.trialAvailable && (st?.trialDays > 0)
   const short = (a) => a ? a.slice(0, 6) + '…' + a.slice(-4) : '—'
+  const canPay = isMainWalletConnected()
 
   const feature = (text) => `<div class="sub-feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" width="13" height="13"><path d="M20 6 9 17l-5-5"/></svg><span>${text}</span></div>`
-  const step = (n, html) => `<div class="sub-step"><span class="sub-step-n">${n}</span><div class="sub-step-b">${html}</div></div>`
 
   return `<div class="sub-wrap">
     <div class="sub-hero">
@@ -17243,15 +17302,26 @@ function _subPaywallHtml() {
         <span class="sub-chip">${price} USDC</span>
         <span class="sub-card-on">${T('on')} ${esc(st?.chain ?? 'Hyperliquid')}</span>
       </div>
-      ${step(1, T('Open Hyperliquid and tap <b>Send</b>.'))}
-      ${step(2, `${T('Send')} <b>${price} USDC</b> ${T('to')}
-        <div class="sub-addr"><code>${esc(treasury)}</code><button onclick="window.__subCopyTreasury(this)">${T('Copy')}</button></div>`)}
-      ${step(3, T('That is it — we watch for the transfer and unlock automatically.'))}
-      <div class="sub-btn-row">
-        <a class="sub-btn ghost" href="https://app.hyperliquid.xyz/portfolio" target="_blank" rel="noopener">${T('Open Hyperliquid')}</a>
-        <button class="sub-btn solid" onclick="window.__subSent()">${T('I sent it')}</button>
-      </div>
+      ${canPay ? `
+        <div class="sub-paynow">${T('Paid straight from your Hyperliquid balance. One signature — no bridge, no gas.')}</div>
+        <button id="subPayBtn" class="sub-cta" onclick="window.__subPayNow()">${T('Pay')} $${price} USDC</button>
+      ` : `
+        <div class="sub-paynow">${T('Connect your wallet to pay in one tap, or send the USDC yourself on Hyperliquid.')}</div>
+        <button id="subPayBtn" class="sub-cta" onclick="window.__subPayNow()">${T('Connect wallet to pay')}</button>
+      `}
       <div id="subWatchLine" class="sub-watchline">${_subWatchHtml()}</div>
+
+      <details class="sub-details">
+        <summary>${T('Rather send it yourself?')}</summary>
+        <div class="sub-details-body">
+          <div>${T('Send')} <b>${price} USDC</b> ${T('on Hyperliquid to this address. We watch for it and unlock automatically.')}</div>
+          <div class="sub-addr"><code>${esc(treasury)}</code><button onclick="window.__subCopyTreasury(this)">${T('Copy')}</button></div>
+          <div class="sub-details-row" style="margin-top:9px">
+            <a class="sub-btn ghost" style="flex:1" href="https://app.hyperliquid.xyz/portfolio" target="_blank" rel="noopener">${T('Open Hyperliquid')}</a>
+            <button class="sub-btn ghost" style="flex:1" onclick="window.__subSent()">${T('I sent it')}</button>
+          </div>
+        </div>
+      </details>
     </div>
 
     <div class="sub-foot">

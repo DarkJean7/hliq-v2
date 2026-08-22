@@ -6909,6 +6909,10 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
   border-radius: 7px; padding: 7px 10px;
 }
 
+.sub-paynow { font-size: 12.5px; line-height: 1.55; color: var(--muted); margin-bottom: 12px; }
+.sub-card .sub-cta { padding: 13px; font-size: 14.5px; }
+.sub-card .sub-details { margin-top: 4px; }
+
 .sub-btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 13px; }
 .sub-btn {
   display: grid; place-items: center; text-align: center; text-decoration: none;

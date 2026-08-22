@@ -204,6 +204,67 @@ export async function approveBuilderFee(signer) {
   })
 }
 
+// Send USDC on HyperCore to another address, signed by the user's CONNECTED WALLET.
+//
+// It has to be the main wallet, not the agent key: Hyperliquid's API wallets can trade but
+// cannot move funds, so an agent-signed transfer is rejected outright. This is the one
+// money-moving action in the app, and it is exactly one signature — no bridge, no chain
+// switch, no gas.
+//
+// USDC lives in two places on HyperCore and the two have different actions:
+//   perp / "Trading Account" → usdSend      (the balance shown as `withdrawable`)
+//   spot                     → spotSend     (needs the token id, e.g. "USDC:0x…")
+// We look at both, spend from whichever can cover it, and prefer perp because that is where
+// a trader's USDC actually sits. If the perp send fails for a reason that is not a rejected
+// signature and spot could have covered it, we fall back rather than making the user work
+// out which pocket their money is in.
+export async function sendUsdcOnCore({ from, destination, amount, signer }) {
+  const amt = Number(amount)
+  if (!(amt > 0)) throw new Error('Amount must be greater than zero')
+  if (!/^0x[0-9a-fA-F]{40}$/.test(destination ?? '')) throw new Error('Invalid destination address')
+  if (!signer) throw new Error('Connect your wallet first')
+
+  const [perpState, spotState] = await Promise.all([
+    infoClient.clearinghouseState({ user: from }).catch(() => null),
+    infoClient.spotClearinghouseState({ user: from }).catch(() => null),
+  ])
+  const perpFree = Number(perpState?.withdrawable ?? 0)
+  const spotBal  = spotState?.balances ?? []
+  const usdcRow  = spotBal.find(b => String(b.coin).toUpperCase() === 'USDC')
+  const spotFree = Number(usdcRow?.total ?? 0) - Number(usdcRow?.hold ?? 0)
+
+  if (perpFree < amt && spotFree < amt) {
+    throw new Error(
+      `Not enough free USDC. Trading account has $${perpFree.toFixed(2)}, spot has $${spotFree.toFixed(2)}, ` +
+      `and this needs $${amt.toFixed(2)} in one of them.`)
+  }
+
+  const transport = new HttpTransport({ timeout: 60_000 })
+  const client = new ExchangeClient({ transport, wallet: signer })
+  const value = String(amt)
+
+  const trySpot = async () => {
+    // The token id is "SYMBOL:0x…" and is NOT stable enough to hardcode — read it from
+    // spotMeta so a token-index change cannot silently send to the wrong asset.
+    const meta = await infoClient.spotMeta()
+    const tok = (meta?.tokens ?? []).find(t => String(t.name).toUpperCase() === 'USDC')
+    if (!tok) throw new Error('Could not resolve the USDC token on Hyperliquid')
+    return client.spotSend({ destination, token: `${tok.name}:${tok.tokenId}`, amount: value })
+  }
+
+  if (perpFree >= amt) {
+    try {
+      return await client.usdSend({ destination, amount: value })
+    } catch (e) {
+      const msg = e?.message ?? String(e)
+      // A rejected signature is the user's decision — do not re-prompt them for a second one.
+      if (/rejected|denied|cancel/i.test(msg) || spotFree < amt) throw e
+      return await trySpot()
+    }
+  }
+  return await trySpot()
+}
+
 export async function approveAgentKey(mainSigner, agentAddress) {
   const transport = new HttpTransport({ timeout: 60_000 })
   const client    = new ExchangeClient({ transport, wallet: mainSigner })

@@ -847,14 +847,20 @@ async function subPollPayments() {
     for (const e of rows) {
       const d = e?.delta ?? {}
       if (Number(e.time) > newest) newest = Number(e.time)
-      if (d.type !== 'send') continue
-      if (String(d.destination ?? '').toLowerCase() !== SUB_TREASURY) continue   // outgoing sends live here too
-      if (String(d.token ?? '') !== 'USDC') continue                             // pricing another token is a mess we do not need
+      // Deliberately NOT matched on delta.type. Hyperliquid reports a HyperCore transfer
+      // as `send`, `internalTransfer` or `spotTransfer` depending on which pocket it left
+      // and which API version answered — and the in-app button uses usdSend (perp) while a
+      // manual send from the Hyperliquid UI is usually spot. Keying on the type would mean
+      // one of those two silently never activating. What actually matters is: money, in
+      // USDC, addressed to us. Deposits and withdrawals carry no `destination`, so they
+      // fall out here on their own.
+      if (String(d.destination ?? '').toLowerCase() !== SUB_TREASURY) continue
+      if (d.token !== undefined && String(d.token) !== 'USDC') continue   // pricing another token is a mess we do not need
       if (Number(e.time) < st.floor) continue
       const key = subPayKey(e)
       if (seen.has(key)) continue
 
-      const usdc = Number(d.usdcValue ?? d.amount ?? 0)
+      const usdc = Number(d.usdcValue ?? d.usdc ?? d.amount ?? 0)
       const payer = String(d.user ?? '').toLowerCase()
       seen.add(key); changed = true
       if (!isAddr(payer) || !(usdc > 0)) continue
