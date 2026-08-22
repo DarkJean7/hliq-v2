@@ -819,9 +819,21 @@ async function computeCombined(addrs) {
   return {
     updatedAt: now, accountValue, perpBase, dayAgo,
     wallets: addrs.length - missing.length, missing,
-    // netPnl is the value AT the snapshot; unrealBase is the unrealized inside it, so a
-    // client can carry it forward as `netPnl + (liveUnrealized - unrealBase)`.
-    netPnl: realizedPnl + unrealBase + funding - fees,
+    // settledPnl is the part that does NOT move with price: realized, funding, fees. The
+    // client adds its own live unrealized and gets Net PnL.
+    //
+    // It used to send netPnl plus the unrealized inside it and have the client bridge
+    // `netPnl + (liveUnrealized - unrealBase)`. That only holds if both unrealized figures
+    // cover the same positions, and they never did: unrealBase comes from a plain
+    // clearinghouseState, which excludes HIP-3 dexes, while the client's figure includes
+    // them. So whenever a HIP-3 position appeared, moved or briefly dropped out of a row,
+    // Net PnL swung by its unrealized — hundreds of dollars — while equity, which is
+    // anchored on main-dex perp value, barely moved. That is the reported symptom exactly.
+    //
+    // A settled total has no such base to disagree about. Net PnL now moves precisely as
+    // much as the Unrealized figure next to it, which is the only self-consistent answer.
+    settledPnl: realizedPnl + funding - fees,
+    netPnl: realizedPnl + unrealBase + funding - fees,   // retained for older clients
     realizedPnl, fees, funding, unrealBase, pnlWallets,
   }
 }

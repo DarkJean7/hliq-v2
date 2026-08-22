@@ -10645,9 +10645,12 @@ function _comboPnlSums() {
   // desktop -$168 for the same nine wallets. The server accrues them once, so every device
   // now bridges from the same number and can only differ by live unrealized.
   const snap = _combinedSnap
-  if (haveUnreal && snap && Number.isFinite(Number(snap.netPnl))
+  if (haveUnreal && snap && Number.isFinite(Number(snap.settledPnl))
       && snap.pnlWallets === rows.length && snap.wallets === rows.length) {
-    const net = Number(snap.netPnl) + (unreal - Number(snap.unrealBase ?? 0))
+    // Settled (realized + funding - fees) from the server, live unrealized from here.
+    // Nothing has to line up: there is no shared base to disagree about, and Net PnL now
+    // moves exactly as much as the Unrealized figure beside it.
+    const net = Number(snap.settledPnl) + unreal
     _comboPnlLast = { net, unreal, wallets: rows.length }
     return { net, unreal }
   }
@@ -13436,7 +13439,11 @@ function _mobVBuildAccountsHtml(results) {
   // Aggregate bar
   const totalValue  = vis.reduce((s, r) => s + (r.error ? 0 : r.accountValue  ?? 0), 0)
   const totalUnreal = vis.reduce((s, r) => s + (r.error ? 0 : r.unrealizedPnl ?? 0), 0)
-  const totalNet    = vis.reduce((s, r) => s + (r.error ? 0 : r.netPnl        ?? 0), 0)
+  // Take the same figure the headline shows. This sheet used to sum r.netPnl, which is a
+  // per-device basis — so the header could read -$167 while this said -$31.43 on the same
+  // screen. Falls back to the sum only until the server figure lands.
+  const totalNet    = _comboPnlSums()?.net
+    ?? vis.reduce((s, r) => s + (r.error ? 0 : r.netPnl ?? 0), 0)
   const totalReal   = vis.reduce((s, r) => s + (r.error ? 0 : r.realizedPnl   ?? 0), 0)
   const totalDep    = vis.reduce((s, r) => s + (r.error ? 0 : r.totalDeposited ?? 0), 0)
   const totalWith   = vis.reduce((s, r) => s + (r.error ? 0 : r.totalWithdrawn ?? 0), 0)
