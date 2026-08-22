@@ -11166,10 +11166,20 @@ function _portSeries(period, type) {
 // The percentage alone hides the thing that matters most: +991% on a small wallet and +25%
 // on a large one can be the same money. computeCompare keeps each series' first and last
 // value, so the dollar move is just the difference.
+//
+// Show the VALUE first and the change in brackets. A bare "+$13.28" under a chart headed
+// "Value", beside a wallet the account cards list at $105.16, reads as the wallet being
+// worth thirteen dollars — it was read exactly that way. The sign alone was not enough of
+// a hint that one number is a total and the other a delta.
 function _splitUsdSub(s) {
-  const usd = (s.last ?? 0) - (s.base ?? 0)
+  const now = Number(s.last)
+  const usd = now - Number(s.base ?? 0)
   if (!Number.isFinite(usd)) return ''
-  return `${usd >= 0 ? '+' : '−'}$${fmtUSD(Math.abs(usd))}`
+  const delta = `${usd >= 0 ? '+' : '−'}$${fmtUSD(Math.abs(usd))}`
+  // On the PnL charts `last` is a cumulative PnL, not an account value, so calling it a
+  // value would be its own lie. There, the change is the only honest figure.
+  if (_mobVPortChartType !== 'value' || !Number.isFinite(now)) return delta
+  return `$${fmtUSD(now)} (${delta})`
 }
 
 // One renderer for both the inline chart and the Advanced overlay: same series, same
