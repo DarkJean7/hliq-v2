@@ -10624,6 +10624,25 @@ function _comboEqReset() { _comboEqLast = null; _comboEqPending = null; _comboEq
 // already sums the same fields.
 let _comboPnlLast = null   // { net, unreal, wallets }
 
+// A new fill invalidates the settled half of Net PnL, so refetch instead of waiting out the
+// 60s throttle. Throttled itself, because a grid filling several levels at once would
+// otherwise fire a burst of identical requests.
+const COMBO_SNAP_MAX_AGE_MS = 150_000   // beyond this the settled half is not worth showing
+const COMBO_FILL_REFRESH_MS = 8_000
+let _comboFillSig  = null
+let _comboFillAt   = 0
+
+function _comboRefreshOnFills() {
+  if (!state.isAllAccounts) return
+  const sig = (state.fills?.length ?? 0) + ':' + (state.fills?.[0]?.time ?? 0)
+  if (_comboFillSig === null) { _comboFillSig = sig; return }
+  if (sig === _comboFillSig) return
+  if (Date.now() - _comboFillAt < COMBO_FILL_REFRESH_MS) return
+  _comboFillSig = sig
+  _comboFillAt  = Date.now()
+  _fetchCombinedSnap(true).catch(() => {})
+}
+
 function _comboPnlSums() {
   if (!state.isAllAccounts) return null
   const hidden = _maHiddenLoad()
@@ -10645,6 +10664,23 @@ function _comboPnlSums() {
   // desktop -$168 for the same nine wallets. The server accrues them once, so every device
   // now bridges from the same number and can only differ by live unrealized.
   const snap = _combinedSnap
+  // The settled half and the unrealized half MUST describe the same instant.
+  //
+  // Unrealized is live; settled only moves when the snapshot refreshes, at most every 60s.
+  // So the moment a grid closes a level, unrealized drops by that position and the matching
+  // rise in realized has not arrived yet — Net PnL is understated by the realized amount
+  // until the next refresh. With three grids cycling levels that happens constantly, each
+  // close digs the hole deeper, and the result is a Net PnL sliding monotonically away
+  // while equity, which bridges on perp account value and already nets both halves, goes
+  // wherever the market goes. That is the reported symptom exactly.
+  //
+  // Two guards. First: a fill means the settled half is out of date, so go and get it.
+  _comboRefreshOnFills()
+  // Second: if it is stale anyway, show nothing. A number drifting further from the truth
+  // every second is worse than a dash.
+  if (snap && Date.now() - Number(snap.updatedAt ?? 0) > COMBO_SNAP_MAX_AGE_MS) {
+    return _comboPnlHeld(rows.length)
+  }
   if (haveUnreal && snap && Number.isFinite(Number(snap.settledPnl))
       && snap.pnlWallets === rows.length && snap.wallets === rows.length) {
     // Settled (realized + funding - fees) from the server, live unrealized from here.
