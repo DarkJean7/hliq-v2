@@ -17897,7 +17897,16 @@ async function runStrategyMob(type) {
     })
     if (!r.ok) {
       // The server enforces the paywall; a client reaching here has a stale gate.
-      if (r.subscribe) { _subRefresh(true); _paperToast(_T('Subscription required to run strategies', 'Se requiere suscripción para usar estrategias'), 'err'); return }
+      if (r.subscribe) {
+        _subRefresh(true)
+        // In dev mode the server should have accepted the PIN. Getting here means we do not
+        // hold one — dev mode was enabled in a session before it was cached, or it was
+        // cleared. Say that, rather than asking the owner to buy their own product.
+        _paperToast(isDev()
+          ? _T('Dev mode has no saved PIN — turn Dev Mode off and on to re-enter it', 'El modo dev no tiene PIN guardado — apaga y enciende Modo Dev para reintroducirlo')
+          : _T('Subscription required to run strategies', 'Se requiere suscripción para usar estrategias'), 'err')
+        return
+      }
       alert(`Could not start: ${r.error}`); return
     }
     serverStatus[type] = true
@@ -18094,6 +18103,12 @@ async function serverFetch(path, opts = {}) {
   if (addr) {
     const tok = await _ensureBotToken(addr)
     if (tok) opts = { ...opts, headers: { ...(opts.headers ?? {}), Authorization: 'Bearer ' + tok } }
+  }
+  // Dev mode is a local flag; the server only recognises the PIN that earned it. Send it on
+  // the one route that checks it, so the unlocked Run button and the server actually agree.
+  if (path === '/api/start' && isDev()) {
+    const pin = _lbGetPin()
+    if (pin) opts = { ...opts, headers: { ...(opts.headers ?? {}), 'x-lb-pin': pin } }
   }
   const r = await fetch(path, opts)
   const ct = r.headers.get('content-type') ?? ''
@@ -18366,7 +18381,16 @@ async function runStrategy(type) {
     })
     if (!r.ok) {
       // The server enforces the paywall; a client reaching here has a stale gate.
-      if (r.subscribe) { _subRefresh(true); _paperToast(_T('Subscription required to run strategies', 'Se requiere suscripción para usar estrategias'), 'err'); return }
+      if (r.subscribe) {
+        _subRefresh(true)
+        // In dev mode the server should have accepted the PIN. Getting here means we do not
+        // hold one — dev mode was enabled in a session before it was cached, or it was
+        // cleared. Say that, rather than asking the owner to buy their own product.
+        _paperToast(isDev()
+          ? _T('Dev mode has no saved PIN — turn Dev Mode off and on to re-enter it', 'El modo dev no tiene PIN guardado — apaga y enciende Modo Dev para reintroducirlo')
+          : _T('Subscription required to run strategies', 'Se requiere suscripción para usar estrategias'), 'err')
+        return
+      }
       alert(`Could not start: ${r.error}`); return
     }
     serverStatus[type] = true

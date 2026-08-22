@@ -1367,10 +1367,17 @@ const server = createServer(async (req, res) => {
         return json(res, 403, { error: 'account controlled by another key' })
     }
     // The paywall. Enforced here because this is where a strategy actually starts —
-    // the client-side gate only hides the UI. Admin bypasses; a resume (deploy/reboot)
-    // does not come through this route, so an expiring subscription never kills a bot
-    // mid-flight, it just stops new ones being armed.
-    if (!auth.admin && !subActive(b.address ?? '')) {
+    // the client-side gate only hides the UI. A resume (deploy/reboot) does not come
+    // through this route, so an expiring subscription never kills a bot mid-flight, it
+    // just stops new ones being armed.
+    //
+    // Dev mode used to bypass the gate in the CLIENT only — the server had never heard of
+    // it — so the owner got an unlocked Run button and a 402 the moment they pressed it.
+    // Dev mode is already earned by verifying LB_PIN against this server, so the same PIN
+    // is what proves it here. Deliberately scoped to the paywall alone: it is an
+    // entitlement, not a key, and the agent-key ownership checks above still apply in full.
+    const _operator = auth.admin || (!!LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN)
+    if (!_operator && !subActive(b.address ?? '')) {
       return json(res, 402, { error: 'subscription required', subscribe: true })
     }
     const result = await startStrategy(b.type, b.args ?? [], b.agentKey ?? '', b.address ?? '', b.instance ?? '')
