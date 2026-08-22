@@ -19659,7 +19659,12 @@ const _PA_KEY = 'hliq_price_alerts'
 function _paLoad() { try { return JSON.parse(localStorage.getItem(_PA_KEY) || '[]') } catch { return [] } }
 // Drop the badge memo so a newly set or cleared alert shows on the card immediately rather
 // than up to a second later.
-function _paSave(a) { localStorage.setItem(_PA_KEY, JSON.stringify(a)); _paCoinCounts = null }
+function _paSave(a) {
+  localStorage.setItem(_PA_KEY, JSON.stringify(a)); _paCoinCounts = null
+  // Mirror the change to the notify server, or an alert added on the phone would
+  // never be watched while that phone is asleep.
+  try { _registerPushDebounced() } catch {}
+}
 
 let _paDir = 'above'
 window.__paDirSelect = function(dir, btn) {
@@ -19872,6 +19877,54 @@ function _urlBase64ToUint8Array(b64) {
   return Uint8Array.from([...raw].map(c => c.charCodeAt(0)))
 }
 
+// ─── PRICE ALERTS WHILE THE APP IS CLOSED ─────────────────────────────────────
+//
+// _checkPriceAlerts only runs in an open tab, so a closed app meant an alert simply never
+// arrived. The alerts are mirrored to the notify server, which watches them and pushes.
+//
+// Both sides could fire the same alert, so the device tells the server it is awake: while
+// the heartbeat is recent the server stands down and the open app fires instantly as it
+// always did. Once the tab is gone the heartbeat lapses and the server takes over.
+let _pushEndpoint  = null
+let _paBeatTimer   = null
+const PA_BEAT_MS   = 60_000
+
+function _paHeartbeatStart() {
+  if (_paBeatTimer || !_pushEndpoint) return
+  _paBeatTimer = setInterval(_paHeartbeat, PA_BEAT_MS)
+  _paHeartbeat()
+}
+
+async function _paHeartbeat() {
+  if (!_pushEndpoint) return
+  // A hidden tab is not watching prices — let the server cover it.
+  if (document.visibilityState !== 'visible') return
+  try {
+    const r = await fetch('/notify/seen', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: _pushEndpoint, ackFired: _paPendingAck }),
+    })
+    const j = await r.json().catch(() => ({}))
+    _paPendingAck = []
+    _paMarkFired(j?.firedIds)
+  } catch {}
+}
+
+// Alerts the SERVER fired while this device was away. Mark them locally so the list shows
+// them as triggered rather than still armed — otherwise the app would re-notify for an
+// alert the user was already told about.
+let _paPendingAck = []
+function _paMarkFired(ids) {
+  if (!Array.isArray(ids) || !ids.length) return
+  const alerts = _paLoad()
+  let changed = false
+  for (const a of alerts) {
+    if (!a.fired && ids.includes(a.id)) { a.fired = true; changed = true }
+  }
+  _paPendingAck = [...new Set([..._paPendingAck, ...ids])]
+  if (changed) { _paSave(alerts); try { _renderPriceAlerts() } catch {} }
+}
+
 // Debounced sync — slider oninput fires continuously while dragging; without
 // this every drag tick would POST /notify/subscribe.
 let _registerPushTimer = null
@@ -19921,11 +19974,20 @@ async function _registerPush() {
     const liqEnabled   = localStorage.getItem('hliq_liq_alert_enabled') === '1'
     const liqThreshold = parseInt(localStorage.getItem('hliq_liq_alert_threshold') || '20')
     const cooldownMin  = parseInt(localStorage.getItem('hliq_notif_cooldown_min') || '60')
-    await fetch('/notify/subscribe', {
+    // Send the ARMED alerts so the server can watch them while this device is asleep.
+    // Only unfired ones: the server replaces its list wholesale, which is how deleting an
+    // alert here also stops it there.
+    const priceAlerts = _paLoad().filter(a => a && !a.fired && a.coin)
+      .map(a => ({ id: a.id, coin: a.coin, dir: a.dir, price: a.price }))
+    const r = await fetch('/notify/subscribe', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ subscription: sub.toJSON(), wallets: watchList, healthEnabled, threshold, liqEnabled, liqThreshold, cooldownMin }),
+      body:    JSON.stringify({ subscription: sub.toJSON(), wallets: watchList, healthEnabled, threshold, liqEnabled, liqThreshold, cooldownMin, priceAlerts }),
     })
+    _pushEndpoint = sub.endpoint
+    const j = await r.json().catch(() => ({}))
+    _paMarkFired(j?.firedIds)
+    _paHeartbeatStart()
   } catch (e) {
     console.warn('[push] registration failed:', e.message)
   }

@@ -86,6 +86,21 @@ jobs:
       # replaced once. That single migration is the last deploy that drops requests; every
       # deploy after it takes the reload path. Checked on substring so a pm2 version that
       # words exec_mode differently cannot silently pick the destructive branch.
+      # notify-server.js (hliq-notify — push alerts) was never in the pipeline at all; it
+      # had only ever been copied by hand, so the repo and the box could drift apart with
+      # nothing to notice. Same checksum gate as server.js: shipped every run, restarted
+      # only when the content really changed, so a UI deploy does not drop push alerts.
+      - name: Sync notify server
+        id: syncnotify
+        run: |
+          out=$(rsync -azc -i notify-server.js "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/notify-server.js")
+          echo "${out:-(unchanged)}"
+          if echo "$out" | grep -qE '^[<>]f'; then
+            echo "changed=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=no"  >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Reload app
         run: |
           ssh "$DEPLOY_USER@$DEPLOY_HOST" bash -se <<'REMOTE'
@@ -112,3 +127,8 @@ jobs:
       - name: Restart strategy server
         if: steps.syncstrat.outputs.changed == 'yes'
         run: ssh "$DEPLOY_USER@$DEPLOY_HOST" "pm2 restart hliq-strat"
+
+      # hliq-notify holds no bots, so bouncing it costs at most one poll cycle.
+      - name: Restart notify server
+        if: steps.syncnotify.outputs.changed == 'yes'
+        run: ssh "$DEPLOY_USER@$DEPLOY_HOST" "pm2 restart hliq-notify"

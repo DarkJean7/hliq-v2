@@ -68,6 +68,28 @@ function hlPost(type, addr) {
   })
 }
 
+// hlPost only ever sends { type, user }. allMids takes no user at all, and sending one
+// makes Hyperliquid reject it, so price checks need the general form.
+function hlInfo(body) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body)
+    const req = https.request({
+      hostname: 'api.hyperliquid.xyz',
+      path:     '/info',
+      method:   'POST',
+      headers:  { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+    }, res => {
+      let data = ''
+      res.on('data', d => data += d)
+      res.on('end', () => { try { resolve(JSON.parse(data)) } catch { reject(new Error('parse')) } })
+    })
+    req.on('error', reject)
+    req.setTimeout(15_000, () => { req.destroy(); reject(new Error('timeout')) })
+    req.write(payload)
+    req.end()
+  })
+}
+
 async function fetchClearinghouse(addr) {
   const parsed = await hlPost('clearinghouseState', addr)
   if (parsed?.error || (!parsed?.crossMarginSummary && !parsed?.marginSummary)) throw new Error('bad response')
@@ -167,9 +189,95 @@ const CONFIRM_LIQ   = 2         // liquidation is urgent — confirm faster
 // Per-subscription cooldown (user-selected "alert frequency"); default 60 min
 const subCooldownMs = sub => Math.max(5, parseInt(sub.cooldownMin) || 60) * 60 * 1000
 
+// ─── PRICE ALERTS ─────────────────────────────────────────────────────────────
+//
+// These used to be checked only in the browser: _checkPriceAlerts ran off the app's own
+// price poll and raised a local notification. So an alert did not fire late when the app
+// was closed — it did not fire at all, which is precisely when someone wants to be told.
+//
+// The device tells us it is awake with a heartbeat. While it is, the app raises the alert
+// itself the instant it sees the price, and we stay out of the way; once it goes quiet we
+// take over. That avoids the same alert arriving twice without needing to reconcile two
+// notifications after the fact.
+const PA_DEVICE_AWAKE_MS = 150_000       // no heartbeat for this long → the app is not watching
+const PA_MAX_PER_SUB     = 50
+const COIN_RE = /^[A-Za-z0-9:@#+._/-]{1,32}$/
+
+function sanitizeAlerts(list) {
+  if (!Array.isArray(list)) return []
+  return list.slice(0, PA_MAX_PER_SUB).flatMap(a => {
+    const id    = String(a?.id ?? '').slice(0, 40)
+    const coin  = String(a?.coin ?? '')
+    const dir   = a?.dir === 'below' ? 'below' : 'above'
+    const price = Number(a?.price)
+    if (!id || !COIN_RE.test(coin) || !Number.isFinite(price) || price <= 0) return []
+    return [{ id, coin, dir, price }]
+  })
+}
+
+async function checkPriceAlerts(subs) {
+  const watching = subs.filter(s => (s.priceAlerts ?? []).length)
+  if (!watching.length) return
+
+  let mids
+  try { mids = await hlInfo({ type: 'allMids' }) } catch (e) {
+    console.warn('[price] allMids failed:', e.message)
+    return
+  }
+  if (!mids || typeof mids !== 'object') return
+
+  const now = Date.now()
+  let dirty = false
+
+  for (const sub of watching) {
+    if ((sub.mutedUntil ?? 0) > now) continue
+    // The app is open and polling prices itself — it will fire first and instantly.
+    if (now - (sub.seenAt ?? 0) < PA_DEVICE_AWAKE_MS) continue
+
+    const keep = []
+    for (const a of sub.priceAlerts) {
+      const mid = parseFloat(mids[a.coin])
+      if (!Number.isFinite(mid)) { keep.push(a); continue }
+      const hit = a.dir === 'above' ? mid >= a.price : mid <= a.price
+      if (!hit) { keep.push(a); continue }
+
+      const payload = JSON.stringify({
+        title: `Price Alert: ${a.coin} ${a.dir === 'above' ? '↑' : '↓'} $${a.price}`,
+        body:  `${a.coin} is now at $${mid}`,
+        tag:   'hliq-price-' + a.id,
+      })
+      try {
+        await webpush.sendNotification(sub.subscription, payload)
+        console.log(`[price] ${a.coin} ${a.dir} ${a.price} → hit at ${mid}`)
+      } catch (err) {
+        if (err.statusCode === 410 || err.statusCode === 404) {
+          // Dead endpoint. Leave the alert in place; the sweep in checkAndNotify removes
+          // the whole subscription.
+          keep.push(a)
+          continue
+        }
+        console.warn('[price] send error:', err.message)
+        keep.push(a)          // failed to deliver → do not consider it fired
+        continue
+      }
+      // Fired: drop it from the watch list and remember, so the app can show it as
+      // triggered next time it syncs instead of re-arming an alert that already went off.
+      sub.paFired = [...(sub.paFired ?? []), a.id].slice(-100)
+      dirty = true
+    }
+    if (keep.length !== sub.priceAlerts.length) { sub.priceAlerts = keep; dirty = true }
+  }
+
+  if (dirty) saveSubs(subs)
+}
+
 async function checkAndNotify() {
   const subs = loadSubs()
   if (!subs.length) return
+
+  // Price alerts first: one allMids call, no per-wallet fan-out, and they are the
+  // time-sensitive ones. Never let a price failure skip the health checks below.
+  try { await checkPriceAlerts(subs) } catch (e) { console.warn('[price] check failed:', e.message) }
 
   const allAddrs = [...new Set(subs.flatMap(s => (s.wallets ?? []).map(w => w.addr)))]
   const healthMap = {}
@@ -334,17 +442,24 @@ app.post('/api/leaderboard', (req, res) => {
 })
 
 app.post('/notify/subscribe', (req, res) => {
-  const { subscription, wallets, healthEnabled, threshold, liqEnabled, liqThreshold, cooldownMin } = req.body
+  const { subscription, wallets, healthEnabled, threshold, liqEnabled, liqThreshold, cooldownMin, priceAlerts } = req.body
   if (!subscription?.endpoint || !Array.isArray(wallets) || !wallets.length) {
     return res.status(400).json({ error: 'Missing fields' })
   }
   if (!wallets.every(w => typeof w?.addr === 'string' && ADDR_RE.test(w.addr))) {
     return res.status(400).json({ error: 'Invalid wallet address' })
   }
+  const prev = loadSubs().find(s => s.subscription.endpoint === subscription.endpoint)
   const subs = loadSubs().filter(s => s.subscription.endpoint !== subscription.endpoint)
   subs.push({
     subscription,
     wallets,
+    // The client sends only its UNFIRED alerts, so this replaces rather than merges — that
+    // is how deleting one on the phone takes effect here.
+    priceAlerts: sanitizeAlerts(priceAlerts),
+    // Carry the fired list across; it is handed back below and cleared once acknowledged.
+    paFired:     prev?.paFired ?? [],
+    seenAt:      Date.now(),
     // Default true so older clients that don't send the flag keep getting health alerts.
     healthEnabled: healthEnabled !== false,
     threshold:    parseInt(threshold) || 50,
@@ -354,8 +469,29 @@ app.post('/notify/subscribe', (req, res) => {
     updatedAt:    new Date().toISOString(),
   })
   saveSubs(subs)
-  console.log(`[notify] subscribed ${wallets.length} wallet(s), health=${healthEnabled !== false ? '≤' + threshold + '%' : 'off'} liq=${liqEnabled ? '≤' + liqThreshold + '%' : 'off'} every≥${parseInt(cooldownMin) || 60}min`)
-  res.json({ ok: true })
+  const nPa = sanitizeAlerts(priceAlerts).length
+  console.log(`[notify] subscribed ${wallets.length} wallet(s), health=${healthEnabled !== false ? '≤' + threshold + '%' : 'off'} liq=${liqEnabled ? '≤' + liqThreshold + '%' : 'off'} price=${nPa} every≥${parseInt(cooldownMin) || 60}min`)
+  // Hand back anything that fired while the app was closed so it can be shown as
+  // triggered rather than sitting there looking armed.
+  res.json({ ok: true, firedIds: prev?.paFired ?? [] })
+})
+
+// Heartbeat: "this device is open and watching prices itself". Deliberately tiny — it runs
+// every couple of minutes from an open tab and does nothing but move a timestamp.
+app.post('/notify/seen', (req, res) => {
+  const { endpoint, ackFired } = req.body ?? {}
+  if (!endpoint) return res.status(400).json({ error: 'Missing endpoint' })
+  const subs = loadSubs()
+  const sub  = subs.find(s => s.subscription.endpoint === endpoint)
+  if (!sub) return res.json({ ok: true, unknown: true })
+  sub.seenAt = Date.now()
+  const fired = sub.paFired ?? []
+  // The app confirms it has marked them, so they are not replayed forever.
+  if (Array.isArray(ackFired) && ackFired.length) {
+    sub.paFired = fired.filter(id => !ackFired.includes(id))
+  }
+  saveSubs(subs)
+  res.json({ ok: true, firedIds: fired })
 })
 
 // Mute all alerts for this device for N minutes (from the notification's
