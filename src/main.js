@@ -7205,6 +7205,12 @@ async function _fetchCombinedSnap(force = false) {
 
 // Combined equity from the shared pair, or null when no usable snapshot is held yet (the
 // caller then falls back to the old per-device sum rather than showing nothing).
+// Last value this returned, with the wallet count it was built for. Once the app has a
+// server-anchored total, it must not drop back to the per-device sum: the two are anchored
+// differently and differ by hundreds of dollars, so switching between them reads as a real
+// gain or loss. Holding the last good one keeps the headline on ONE basis.
+let _comboSrvLast = null   // { val, wallets }
+
 function _combinedServerValue() {
   if (!state.isAllAccounts || !_combinedSnap) return null
   const hidden = _maHiddenLoad()
@@ -7218,7 +7224,17 @@ function _combinedServerValue() {
     if (!Number.isFinite(p)) return null   // a row hasn't had a live tick yet — don't guess
     livePerp += p
   }
-  return _combinedSnap.accountValue + (livePerp - _combinedSnap.perpBase)
+  const val = _combinedSnap.accountValue + (livePerp - _combinedSnap.perpBase)
+  _comboSrvLast = { val, wallets: rows.length }
+  return val
+}
+
+// The held value, but only while it still describes the wallet set on screen.
+function _combinedHeldValue() {
+  if (!state.isAllAccounts || !_comboSrvLast) return null
+  const hidden = _maHiddenLoad()
+  const rows = (_allAcctLastResults ?? []).filter(r => r && !r.error && !hidden.has(r.addr))
+  return rows.length === _comboSrvLast.wallets ? _comboSrvLast.val : null
 }
 
 function _allAcctCardsHtml() {
@@ -10685,7 +10701,10 @@ function _mobVRenderBalance() {
   // Prefer the server-anchored total in the combined view so every device agrees. Falls
   // back to the per-device sum only until the first snapshot lands.
   const _srvVal = _combinedServerValue()
-  const val = state.isAllAccounts ? _comboEqFilter(_srvVal ?? _rawVal) : _rawVal
+  // Server value → last server value → per-device sum. The local sum is a COLD-START
+  // fallback only; once a server-anchored figure exists, falling back to the other
+  // anchor would show a step change that no position actually made.
+  const val = state.isAllAccounts ? _comboEqFilter(_srvVal ?? _combinedHeldValue() ?? _rawVal) : _rawVal
   if (state.isAllAccounts) _fetchCombinedSnap()
   _mobVRenderPet(healthPct, _petHasPos)
 
@@ -21524,7 +21543,12 @@ async function _lbFetchResults(entries) {
     // Snapshot baselines for the fast value tick: it recomputes accountValue as
     // _portVal + (liveMainUnreal − _unrealAtSnap) each tick (NON-cumulative, self-correcting),
     // instead of accumulating deltas — which drifted and diverged between devices.
-    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, error: null }
+    // _perpLive is what the server-anchored combined total sums. A row rebuilt by this
+    // heavy path used to arrive without it, so _combinedServerValue() bailed and the
+    // headline silently fell back to the per-device sum — a DIFFERENT anchor, hundreds of
+    // dollars away. Closing a position triggers exactly this rebuild, which is why the
+    // equity stepped on a close and stayed there until every wallet had had a WS tick.
+    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, error: null }
   }
 
   for (let i = 0; i < entries.length; i++) {
