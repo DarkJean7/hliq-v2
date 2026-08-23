@@ -12280,6 +12280,9 @@ function _mobVRenderContent(tick = false) {
   // other tab rendering inside a fixed, z-index-120 pane stuck over the app. Every one of
   // those routes lands here, so this is the one place that can undo it for all of them.
   if (_stratsFull && _mobVActiveTab !== 'strategies') _stratsExitFull()
+  // Same for Pulse's permanent lift — without this every other tab would render inside a
+  // fixed pane stuck over the app, which is exactly the bug the Strats guard exists for.
+  if (_mobVActiveTab !== 'pulse') document.getElementById('mobileView')?.classList.remove('mob-tab-full')
 
   // On a real (non-tick) render, harvest this tab's strings after it's in the DOM so a later
   // language switch can pre-warm from them. Deferred + non-tick only, so it's cheap.
@@ -13693,6 +13696,10 @@ function _mobVRenderContent(tick = false) {
   }
 
   if (_mobVActiveTab === 'pulse') {
+    // Full page, always. Pulse is exchange-wide, so the account card, price strip and tab
+    // row above it are not context — they are just something to scroll past. Reuses the
+    // lift built for full-screen Strats rather than a second mechanism.
+    document.getElementById('mobileView')?.classList.add('mob-tab-full')
     if (!_pulseData) el.innerHTML = `<div class="mob-v-empty">${_T('Loading…', 'Cargando…')}</div>`
     _pulseRender(el)
     return

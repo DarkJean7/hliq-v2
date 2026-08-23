@@ -6872,7 +6872,11 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
    siblings, so nothing else has to know the mode exists.
    z-index sits below the bottom nav (201) so Home/Trade stay reachable, and below the
    full-screen sheets (100055) so Compare and the alert sheet still open over it. */
-#mobileView.mob-strats-full .mob-v-content {
+/* Pulse uses the same lift, but permanently rather than by a toggle: it is an
+   exchange-wide dashboard, so the account card and its own tab strip above are not
+   context for it, they are just something to scroll past. */
+#mobileView.mob-strats-full .mob-v-content,
+#mobileView.mob-tab-full .mob-v-content {
   position: fixed;
   inset: 0;
   z-index: 120;
