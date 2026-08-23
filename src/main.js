@@ -180,6 +180,7 @@ import {
   invalidateApprovedAgents,
 } from './trading.js'
 import { createAlarm } from './alarm.js'
+import { computeEcosystem, oiConcentration } from './ecosystem.js'
 import {
   getDiscoveredWallets,
   getMainAddress,
@@ -6290,7 +6291,7 @@ window.__mobMoreTab = function(name) {
   const backdrop = document.getElementById('mobMoreBackdrop')
   drawer?.classList.remove('open')
   backdrop?.classList.remove('open')
-  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'news', 'allocation', 'heatmap'])
+  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'pulse', 'allocation', 'heatmap'])
   if (mobileTabs.has(name)) {
     _mobVActiveTab = name
     document.querySelectorAll('.mob-v-tab').forEach(b => b.classList.remove('active'))
@@ -8636,7 +8637,7 @@ function _mobSwipeCloseMore() {
 // Direction comes from the tab's position in the nav order so a forward move enters from
 // the right, a back move from the left.
 let _mobVLastTab = null
-const _MOBV_NAV_ORDER = ['trades', 'positions', 'orders', 'outcomes', 'spot', 'strategies', 'watch', 'trade', 'settings', 'leaderboard', 'transfers', 'portfolio', 'calendar', 'tokens', 'news', 'performance', 'allocation']
+const _MOBV_NAV_ORDER = ['trades', 'positions', 'orders', 'outcomes', 'spot', 'strategies', 'watch', 'trade', 'settings', 'leaderboard', 'transfers', 'portfolio', 'calendar', 'tokens', 'pulse', 'performance', 'allocation']
 
 // Tabs that take the WHOLE mobile screen: the home chrome (hero / actions / watch
 // strip / sub-tabs) is hidden and the view renders its own sticky header + × back
@@ -12136,6 +12137,115 @@ function _scTradesHtml(fills) {
   </div>`
 }
 
+// ─── PULSE ────────────────────────────────────────────────────────────────────
+// Exchange-wide metrics from Hyperliquid's own API. See src/ecosystem.js for why this is
+// computed here rather than read off someone else's dashboard.
+let _pulseData = null
+let _pulseAt   = 0
+let _pulseBusy = false
+const PULSE_TTL_MS = 60_000
+
+async function _pulseFetch(force = false) {
+  if (_pulseBusy) return
+  if (!force && _pulseData && Date.now() - _pulseAt < PULSE_TTL_MS) return
+  _pulseBusy = true
+  try {
+    const pair = await infoClient.metaAndAssetCtxs()
+    const d = computeEcosystem(pair)
+    if (d.ok) { _pulseData = d; _pulseAt = Date.now() }
+  } catch (e) {
+    console.warn('[pulse]', e.message)
+  } finally {
+    _pulseBusy = false
+    if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
+  }
+}
+
+const _pulseUsd = (n) => n >= 1e9 ? '$' + (n / 1e9).toFixed(2) + 'B'
+                       : n >= 1e6 ? '$' + (n / 1e6).toFixed(1) + 'M'
+                       : n >= 1e3 ? '$' + (n / 1e3).toFixed(0) + 'k'
+                       : '$' + n.toFixed(0)
+
+// Funding runs to four figures in a squeeze (MOVE was -3018% APR). Showing "-3018.42%" in a
+// narrow row is noise, so round hard and let the sign and scale carry it.
+const _pulseApr = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v) >= 100 ? Math.round(Math.abs(v)) : Math.abs(v).toFixed(1)}%`
+
+function _pulseRow(r, right, tone) {
+  return `<div class="mob-v-row" style="cursor:pointer" onclick="window.__watchOpenTrade?.('${esc(r.coin)}')">
+    ${_mobVCoinIcon(r.coin)}
+    <div class="mob-v-row-info">
+      <div class="mob-v-row-name">${esc(_ocCoinLabel(r.coin))}</div>
+      <div class="mob-v-row-sub">${_pulseUsd(r.vol)} ${_T('24h vol', 'vol 24h')}</div>
+    </div>
+    <div class="mob-v-row-right">
+      <div class="mob-v-row-val" style="color:${tone}">${right}</div>
+    </div>
+  </div>`
+}
+
+function _pulseSection(title, note, rows) {
+  return `<div style="padding:14px 16px 4px">
+    <div style="font-size:12px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)">${title}</div>
+    ${note ? `<div style="font-size:11px;color:var(--fg-3);margin-top:3px;line-height:1.45">${note}</div>` : ''}
+  </div>${rows}`
+}
+
+function _pulseRender(el) {
+  if (!el) return
+  _pulseFetch()
+  const d = _pulseData
+  if (!d) return
+
+  const conc = oiConcentration(d, 3)
+  const stat = (label, val, sub) => `<div style="flex:1;min-width:0">
+    <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">${label}</div>
+    <div style="font-size:19px;font-weight:800;margin-top:2px">${val}</div>
+    ${sub ? `<div style="font-size:10.5px;color:var(--fg-3);margin-top:1px">${sub}</div>` : ''}
+  </div>`
+
+  const green = 'var(--green)', red = 'var(--red)'
+  el.innerHTML = `<div style="padding:2px 0 90px">
+    <div style="padding:14px 16px 6px">
+      <div style="font-size:17px;font-weight:800">${_T('Hyperliquid Pulse', 'Pulso de Hyperliquid')}</div>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.45">${
+        _T('The whole exchange, not just your account. Updates every minute.',
+           'Todo el exchange, no solo tu cuenta. Se actualiza cada minuto.')}</div>
+    </div>
+    <div class="mob-v-setting-group" style="margin:6px 12px 2px">
+      <div class="mob-v-setting-row" style="gap:12px">
+        ${stat(_T('Open interest', 'Interés abierto'), _pulseUsd(d.totalOi), `${d.coins} ${_T('markets', 'mercados')}`)}
+        ${stat(_T('24h volume', 'Volumen 24h'), _pulseUsd(d.totalVol),
+               `${(d.totalVol / Math.max(1, d.totalOi)).toFixed(2)}× ${_T('of OI', 'del IA')}`)}
+        ${stat(_T('Top 3 share', 'Top 3'), conc.toFixed(0) + '%', _T('of open interest', 'del interés abierto'))}
+      </div>
+    </div>
+
+    ${_pulseSection(_T('Where the money sits', 'Dónde está el dinero'),
+      _T('Largest markets by open interest — the positions actually at risk right now.',
+         'Mayores mercados por interés abierto — las posiciones realmente en riesgo ahora.'),
+      d.topOi.map(r => _pulseRow(r, _pulseUsd(r.oi), 'var(--fg)')).join(''))}
+
+    ${_pulseSection(_T('Longs are paying most', 'Los largos pagan más'),
+      _T('Highest funding, annualised. A crowded long side pays shorts to stay in.',
+         'Financiación más alta, anualizada. Un lado largo saturado paga a los cortos.'),
+      d.fundingHigh.map(r => _pulseRow(r, _pulseApr(r.apr), green)).join(''))}
+
+    ${_pulseSection(_T('Shorts are paying most', 'Los cortos pagan más'),
+      _T('Most negative funding — the squeeze side. Shorts pay longs here.',
+         'Financiación más negativa — el lado del squeeze. Los cortos pagan a los largos.'),
+      d.fundingLow.map(r => _pulseRow(r, _pulseApr(r.apr), red)).join(''))}
+
+    ${_pulseSection(_T('Biggest movers · 24h', 'Mayores movimientos · 24h'), '',
+      [...d.gainers.map(r => _pulseRow(r, `+${r.chg.toFixed(1)}%`, green)),
+       ...d.losers.map(r  => _pulseRow(r, `${r.chg.toFixed(1)}%`,  red))].join(''))}
+
+    <div style="padding:14px 16px;font-size:10.5px;color:var(--fg-3);line-height:1.5">
+      ${_T('Computed from Hyperliquid\'s public API. Funding rates are annualised from the hourly rate. Extremes exclude markets under $100k of 24h volume, so a market that barely traded cannot top a list.',
+           'Calculado desde la API pública de Hyperliquid. Las tasas de financiación están anualizadas. Los extremos excluyen mercados con menos de $100k de volumen en 24h.')}
+    </div>
+  </div>`
+}
+
 function _mobVRenderContent(tick = false) {
   const el = document.getElementById('mobVContent')
   if (!el) return
@@ -13557,12 +13667,9 @@ function _mobVRenderContent(tick = false) {
     return
   }
 
-  if (_mobVActiveTab === 'news') {
-    el.innerHTML = `<div style="padding:90px 20px;text-align:center;color:var(--muted)">
-      <div style="font-size:42px;margin-bottom:14px">📰</div>
-      <div style="font-size:17px;font-weight:700;color:var(--fg);margin-bottom:6px">News</div>
-      <div style="font-size:13px">Coming soon</div>
-    </div>`
+  if (_mobVActiveTab === 'pulse') {
+    if (!_pulseData) el.innerHTML = `<div class="mob-v-empty">${_T('Loading…', 'Cargando…')}</div>`
+    _pulseRender(el)
     return
   }
 
@@ -16778,7 +16885,7 @@ window.mobVGoTab = function(tabName) {
   if (tabName === 'trades') _mobVTradesPage = 0   // start History at the latest page
   if (tabName === 'allocation') _allocView = 'allocation'   // the donut pill always opens the donut
   document.querySelectorAll('.mob-v-bottom-btn').forEach(b => b.classList.remove('active'))
-  const _mobTabs = new Set(['trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'news', 'allocation'])
+  const _mobTabs = new Set(['trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'pulse', 'allocation'])
   if (_mobTabs.has(tabName)) {
     _mobVActiveTab = tabName
     document.querySelectorAll('.mob-v-tab').forEach(b => b.classList.remove('active'))
