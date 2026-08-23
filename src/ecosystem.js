@@ -96,3 +96,74 @@ export function oiConcentration(d, n = 3) {
     .reduce((s, r) => s + r.oi, 0)
   return (t / d.totalOi) * 100
 }
+
+// ─── BUILDER DEXES (HIP-3) AND THE RWA SPLIT ──────────────────────────────────
+//
+// perpCategories only covers HIP-3 markets — every entry it returns is prefixed with a dex
+// name. Run against the main dex all 232 coins come back uncategorised, which is correct:
+// the main dex is entirely crypto, and the stocks, commodities and FX markets live on
+// builder dexes. So an RWA-versus-crypto figure is not a main-dex question at all.
+const TRADFI = new Set(['stocks', 'commodities', 'indices', 'fx', 'metals', 'energy', 'preipo', 'rates'])
+
+export function isTradFi(cat) { return TRADFI.has(String(cat ?? '').toLowerCase()) }
+
+/**
+ * @param {Array<{dex:string, pair:[object,object[]]}>} fetched  per-dex metaAndAssetCtxs
+ * @param {object} cats  coin → category, from perpCategories
+ * @param {object} main  the main-dex result from computeEcosystem, all of it crypto
+ */
+export function computeDexes(fetched, cats, main) {
+  const catOf = (c) => String(cats?.[c] ?? '').toLowerCase()
+  const dexes = []
+  let rwaVol = 0, rwaOi = 0, cryptoVol = 0, cryptoOi = 0
+
+  for (const { dex, pair } of (fetched ?? [])) {
+    const universe = pair?.[0]?.universe
+    const ctxs = pair?.[1]
+    if (!Array.isArray(universe) || !Array.isArray(ctxs)) continue
+    let vol = 0, oi = 0
+    universe.forEach((u, i) => {
+      const c = ctxs[i]
+      if (!c) return
+      const v = parseFloat(c.dayNtlVlm ?? 0)
+      const o = parseFloat(c.openInterest ?? 0) * parseFloat(c.markPx ?? 0)
+      if (!Number.isFinite(v) || !Number.isFinite(o)) return
+      vol += v; oi += o
+      if (isTradFi(catOf(u.name))) { rwaVol += v; rwaOi += o } else { cryptoVol += v; cryptoOi += o }
+    })
+    dexes.push({ dex, vol, oi, markets: universe.length })
+  }
+
+  // The main dex is crypto by definition, so it belongs on the crypto side of the split.
+  cryptoVol += main?.totalVol ?? 0
+  cryptoOi  += main?.totalOi  ?? 0
+
+  dexes.sort((a, b) => b.vol - a.vol)
+  const totalVol = rwaVol + cryptoVol
+  return {
+    dexes,
+    live: dexes.filter(d => d.vol > 0),
+    rwaVol, rwaOi, cryptoVol, cryptoOi,
+    rwaVolShare: totalVol > 0 ? (rwaVol / totalVol) * 100 : 0,
+    builderVol: dexes.reduce((s, d) => s + d.vol, 0),
+    builderOi:  dexes.reduce((s, d) => s + d.oi,  0),
+  }
+}
+
+/** Spot totals. Volume only — spot has no open interest to speak of. */
+export function computeSpot(pair) {
+  const ctxs = pair?.[1]
+  const universe = pair?.[0]?.universe
+  if (!Array.isArray(ctxs)) return { ok: false, vol: 0, pairs: 0, top: [] }
+  const rows = []
+  let vol = 0
+  ctxs.forEach((c, i) => {
+    const v = parseFloat(c?.dayNtlVlm ?? 0)
+    if (!Number.isFinite(v)) return
+    vol += v
+    const name = universe?.[i]?.name
+    if (name) rows.push({ coin: name, vol: v })
+  })
+  rows.sort((a, b) => b.vol - a.vol)
+  return { ok: rows.length > 0, vol, pairs: ctxs.length, top: rows.slice(0, 5) }
+}

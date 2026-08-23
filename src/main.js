@@ -180,7 +180,7 @@ import {
   invalidateApprovedAgents,
 } from './trading.js'
 import { createAlarm } from './alarm.js'
-import { computeEcosystem, oiConcentration } from './ecosystem.js'
+import { computeEcosystem, oiConcentration, computeDexes, computeSpot } from './ecosystem.js'
 import {
   getDiscoveredWallets,
   getMainAddress,
@@ -12170,14 +12170,46 @@ let _pulseAt   = 0
 let _pulseBusy = false
 const PULSE_TTL_MS = 60_000
 
+// The builder-dex breakdown costs one call PER dex (ten of them). That is the expensive
+// half, so it refreshes on a slower clock than the main figures and never blocks them.
+let _pulseDex = null
+let _pulseDexAt = 0
+const PULSE_DEX_TTL_MS = 5 * 60_000
+
+async function _pulseFetchDexes(main) {
+  if (Date.now() - _pulseDexAt < PULSE_DEX_TTL_MS) return
+  try {
+    const [names, cats] = await Promise.all([
+      infoClient.perpDexs(),
+      infoClient.perpCategories().catch(() => []),
+    ])
+    const dexes = (names ?? []).filter(Boolean).map(d => d.name).filter(Boolean)
+    const fetched = []
+    for (const dex of dexes) {
+      try { fetched.push({ dex, pair: await infoClient.metaAndAssetCtxs({ dex }) }) } catch {}
+    }
+    _pulseDex = computeDexes(fetched, Object.fromEntries(cats ?? []), main)
+    _pulseDexAt = Date.now()
+  } catch (e) { console.warn('[pulse dex]', e.message) }
+}
+
+let _pulseSpot = null
+
 async function _pulseFetch(force = false) {
   if (_pulseBusy) return
   if (!force && _pulseData && Date.now() - _pulseAt < PULSE_TTL_MS) return
   _pulseBusy = true
   try {
-    const pair = await infoClient.metaAndAssetCtxs()
+    const [pair, spotPair] = await Promise.all([
+      infoClient.metaAndAssetCtxs(),
+      infoClient.spotMetaAndAssetCtxs().catch(() => null),
+    ])
     const d = computeEcosystem(pair)
     if (d.ok) { _pulseData = d; _pulseAt = Date.now() }
+    if (spotPair) { const sp = computeSpot(spotPair); if (sp.ok) _pulseSpot = sp }
+    if (d.ok) _pulseFetchDexes(d).then(() => {
+      if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
+    })
   } catch (e) {
     console.warn('[pulse]', e.message)
   } finally {
@@ -12263,6 +12295,37 @@ function _pulseRender(el) {
     ${_pulseSection(_T('Biggest movers · 24h', 'Mayores movimientos · 24h'), '',
       [...d.gainers.map(r => _pulseRow(r, `+${r.chg.toFixed(1)}%`, green)),
        ...d.losers.map(r  => _pulseRow(r, `${r.chg.toFixed(1)}%`,  red))].join(''))}
+
+    ${_pulseSpot ? _pulseSection(_T('Spot', 'Spot'),
+      `${_pulseUsd(_pulseSpot.vol)} ${_T('traded across', 'negociado en')} ${_pulseSpot.pairs} ${_T('pairs in 24h', 'pares en 24h')}`,
+      _pulseSpot.top.map(r => _pulseRow({ coin: r.coin, vol: r.vol }, _pulseUsd(r.vol), 'var(--fg)')).join('')) : ''}
+
+    ${_pulseDex ? _pulseSection(_T('Builder dexes · HIP-3', 'Dexes de constructores · HIP-3'),
+      _T('Markets deployed by builders on Hyperliquid, separate from the main exchange.',
+         'Mercados desplegados por constructores en Hyperliquid, aparte del exchange principal.'),
+      _pulseDex.live.map(x => `<div class="mob-v-row">
+        <div class="mob-v-row-info">
+          <div class="mob-v-row-name">${esc(x.dex)}</div>
+          <div class="mob-v-row-sub">${x.markets} ${_T('markets', 'mercados')} · ${_pulseUsd(x.oi)} ${_T('OI', 'IA')}</div>
+        </div>
+        <div class="mob-v-row-right"><div class="mob-v-row-val">${_pulseUsd(x.vol)}</div></div>
+      </div>`).join('')) : ''}
+
+    ${_pulseDex && _pulseDex.rwaVol > 0 ? `<div style="padding:14px 16px 4px">
+      <div style="font-size:12px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)">${
+        _T('Real-world assets vs crypto', 'Activos del mundo real vs cripto')}</div>
+      <div style="font-size:11px;color:var(--fg-3);margin-top:3px;line-height:1.45">${
+        _T('Stocks, commodities, FX and rates all trade on builder dexes — the main exchange is crypto only.',
+           'Acciones, materias primas, divisas y tipos se negocian en dexes de constructores.')}</div>
+      <div style="display:flex;height:26px;border-radius:8px;overflow:hidden;margin-top:10px;font-size:10.5px;font-weight:800">
+        <div style="width:${Math.max(_pulseDex.rwaVolShare, 2).toFixed(1)}%;background:var(--accent);color:var(--accent-fg);display:grid;place-items:center;min-width:44px">RWA</div>
+        <div style="flex:1;background:var(--panel-3);color:var(--fg);display:grid;place-items:center">${_T('Crypto', 'Cripto')}</div>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:11.5px">
+        <span style="color:var(--accent);font-weight:700">${_pulseUsd(_pulseDex.rwaVol)} · ${_pulseDex.rwaVolShare.toFixed(1)}%</span>
+        <span style="color:var(--muted)">${_pulseUsd(_pulseDex.cryptoVol)}</span>
+      </div>
+    </div>` : ''}
 
     <div style="padding:14px 16px;font-size:10.5px;color:var(--fg-3);line-height:1.5">
       ${_T('Computed from Hyperliquid\'s public API. Funding rates are annualised from the hourly rate. Extremes exclude markets under $100k of 24h volume, so a market that barely traded cannot top a list.',
