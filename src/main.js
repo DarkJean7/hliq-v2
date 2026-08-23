@@ -9527,7 +9527,7 @@ function _mobVMergedPosCard(members) {
         [_T('Avg Entry', 'Entrada prom.'), '$' + fmtPrice(avgEntry)],
         ['Margin Used', _prv('$' + fmtUSD(totMrg))],
         ['Real Leverage', totMrg > 0 ? (totVal / totMrg).toFixed(2) + 'x' : '—'],
-        ['Funding', _prv((totFund >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(totFund))), totFund >= 0 ? 'var(--green)' : 'var(--red)'],
+        _fundingCell(coin, totFund),
       ])}
       <div style="padding:9px 16px 4px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;background:var(--panel-2)">${n} ${_T('accounts', 'cuentas')} · ${_T('tap any to manage', 'toca cualquiera para gestionar')}</div>
       ${members.map(c => c.html).join('')}
@@ -9904,6 +9904,31 @@ function _emptyTeach(title, body) {
       ${state.isAllAccounts || isPaper() ? '' : `<button onclick="window.__openLearn()" style="border:none;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;background:var(--panel-2);color:var(--fg)">Learn how</button>`}
     </div>
   </div>`
+}
+
+// Funding cell for a position: the cumulative funding paid/received, plus the live hourly rate
+// in parentheses — the same figure the trade panel shows, from the same _mktCtxMap entry.
+//
+// That map already stores the rate multiplied by 100 (see _buildCtxEntry), so it is a
+// PERCENTAGE and must not be scaled again — doing so would print a plausible-looking number
+// that is wrong by two orders of magnitude.
+//
+// The amount is wrapped in _prv (it is account data and hides under privacy mode); the rate is
+// public market data, so it stays visible.
+function _fundingCell(coin, funding) {
+  const raw  = String(coin ?? '')
+  // HIP-3 positions carry a "dex:COIN" prefix that _mktCtxMap may key either way.
+  const ctx  = _mktCtxMap[raw] ?? _mktCtxMap[raw.split(':').pop()]
+  const rate = ctx?.funding
+  const amt  = _prv((funding >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(funding)))
+  const col  = funding >= 0 ? 'var(--green)' : 'var(--red)'
+  if (!Number.isFinite(rate)) return ['Funding', amt, col]
+  const rateStr = (rate >= 0 ? '+' : '-') + Math.abs(rate).toFixed(4) + '%'
+  return [
+    `Funding <span style="opacity:.55">· rate</span>`,
+    `${amt} <span style="font-weight:500;opacity:.7">(${rateStr})</span>`,
+    col,
+  ]
 }
 
 function _mobVDetailGrid(items) {
@@ -12720,7 +12745,7 @@ function _mobVRenderContent(tick = false) {
             // Effective leverage = notional ÷ margin. Unlike the leverage SETTING shown in
             // the header (e.g. 20x), this drops as margin is added — the real current ratio.
             ['Real Leverage', margin > 0 ? (posVal / margin).toFixed(2) + 'x' : '—'],
-            ['Funding', _prv((funding >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(funding))), funding >= 0 ? 'var(--green)' : 'var(--red)'],
+            _fundingCell(p.coin, funding),
           ])}
           ${guardsRow}
           ${actions}
