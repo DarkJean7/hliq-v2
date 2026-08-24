@@ -644,6 +644,77 @@ async function hlInfo(payload) {
   return r.json()
 }
 
+// ─── EXCHANGE VOLUME HISTORY (for the Pulse fee chart) ────────────────────────
+//
+// Hyperliquid publishes no historical exchange volume — metaAndAssetCtxs gives the
+// trailing 24h and nothing before it. Fees are volume times a rate, so a fee chart needs
+// a volume series that does not exist.
+//
+// Reconstructing one from candles was the obvious shortcut and it is wrong: it would mean
+// summing a handful of top markets and scaling them by TODAY's share of total volume,
+// and Hyperliquid's coin mix a year ago was nothing like today's. That distorts exactly
+// the part of the chart people would read most.
+//
+// So the server records it instead. One reading an hour, kept here rather than in each
+// browser, which means every user shares one series and the client costs one cheap call.
+// The history starts the day this shipped and fills in from there; the endpoint reports
+// `since` so the UI can say so instead of implying it goes back further.
+const VOL_FILE   = join(__dirname, 'pulse-volume.json')
+const VOL_POLL_MS = 60 * 60 * 1000
+const VOL_MAX    = 2000
+
+function volRead() {
+  try { const j = JSON.parse(readFileSync(VOL_FILE, 'utf8')); return Array.isArray(j) ? j : [] }
+  catch { return [] }
+}
+
+/**
+ * Hourly detail is only interesting while it is recent. Past two weeks one point per day
+ * is the same chart at a fraction of the size, and it keeps the file bounded without
+ * throwing away the long history the 1y and all-time views are for.
+ */
+function volCompact(points) {
+  const cutoff = Date.now() - 14 * 24 * 3600e3
+  const out = [], seenDay = new Set()
+  for (const pt of points) {
+    if (pt[0] >= cutoff) { out.push(pt); continue }
+    const day = Math.floor(pt[0] / 86400e3)
+    if (seenDay.has(day)) continue
+    seenDay.add(day)
+    out.push(pt)
+  }
+  return out.slice(-VOL_MAX)
+}
+
+async function volPoll() {
+  try {
+    const [perp, spot] = await Promise.all([
+      hlInfo({ type: 'metaAndAssetCtxs' }),
+      hlInfo({ type: 'spotMetaAndAssetCtxs' }).catch(() => null),
+    ])
+    const sum = (ctxs) => (ctxs ?? []).reduce((a, c) => {
+      const v = parseFloat(c?.dayNtlVlm ?? 0)
+      return a + (Number.isFinite(v) ? v : 0)
+    }, 0)
+    const perpVol = sum(perp?.[1])
+    const spotVol = sum(spot?.[1])
+    if (!(perpVol > 0)) return   // a bad read must not land as a zero and dent the chart
+
+    const points = volRead()
+    const last = points[points.length - 1]
+    // dayNtlVlm is a TRAILING 24h figure, so consecutive readings overlap. That is the
+    // right thing to chart — "fees earned in the 24h up to this moment" — but it means a
+    // duplicate timestamp would draw a flat step, so a reading inside the same hour
+    // replaces the previous one rather than appending.
+    const hour = Math.floor(Date.now() / VOL_POLL_MS)
+    if (last && Math.floor(last[0] / VOL_POLL_MS) === hour) points.pop()
+    points.push([Date.now(), Math.round(perpVol), Math.round(spotVol)])
+    writeFileSync(VOL_FILE, JSON.stringify(volCompact(points)))
+  } catch (e) {
+    if (!e.rateLimited) console.warn('[vol]', e.message)
+  }
+}
+
 function lbReadList() {
   if (!existsSync(LEADERBOARD_FILE)) return []
   try {
@@ -1696,6 +1767,14 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { updatedAt: s.updatedAt ?? 0, rows })
   }
 
+  // ── GET /api/pulse/volume → recorded exchange volume, for the fee chart ────
+  // Public and cheap: one file read. `since` lets the UI say how far back the record
+  // actually goes rather than implying the chart covers all of Hyperliquid's history.
+  if (method === 'GET' && path === '/api/pulse/volume') {
+    const points = volRead()
+    return json(res, 200, { since: points[0]?.[0] ?? 0, points })
+  }
+
   // ── POST /api/bug-report { message, diag } → append to bug-reports.json ────
   // Public (no auth): early-beta feedback channel from the in-app "Report a Bug"
   // sheet. Rate-limited per IP, size-capped, and it stores no keys/addresses —
@@ -2208,5 +2287,9 @@ server.listen(PORT, () => {
   // Keep the cached leaderboard warm so browsers never fan out to HL themselves.
   setTimeout(() => lbRefreshAll().catch(e => console.warn('[lb]', e.message)), 5000)
   setInterval(() => lbRefreshAll().catch(e => console.warn('[lb]', e.message)), 5 * 60 * 1000)
+  // Record exchange volume so the Pulse fee chart has a history to draw. Seeded on boot
+  // so a fresh install has a point immediately instead of an empty chart for an hour.
+  setTimeout(() => volPoll(), 8000)
+  setInterval(() => volPoll(), VOL_POLL_MS)
   console.log('')
 })

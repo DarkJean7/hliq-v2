@@ -180,7 +180,7 @@ import {
   invalidateApprovedAgents,
 } from './trading.js'
 import { createAlarm } from './alarm.js'
-import { computeEcosystem, oiConcentration, computeDexes, computeSpot, computeProtocol } from './ecosystem.js'
+import { computeEcosystem, oiConcentration, computeDexes, computeSpot, computeProtocol , sparkPath, windowSeries, feeSeries } from './ecosystem.js'
 import {
   getDiscoveredWallets,
   getMainAddress,
@@ -12204,8 +12204,19 @@ const PULSE_DEX_TTL_MS = 5 * 60_000
 // slow clock beside the dex fan-out — it moves on the scale of days, not seconds.
 const HL_ASSISTANCE_FUND = '0xfefefefefefefefefefefefefefefefefefefefe'
 let _pulseProto = null
+let _pulseProtoAt = 0
+const PULSE_PROTO_TTL_MS = 10 * 60_000
 
 async function _pulseFetchProto(main, spot) {
+  // Only the fee bounds move minute to minute, and those are computed from figures we
+  // already have. Re-reading the fund itself every minute was two wasted requests.
+  if (_pulseProto && Date.now() - _pulseProtoAt < PULSE_PROTO_TTL_MS) {
+    _pulseProto = { ..._pulseProto, ...computeProtocol({
+      afBalances: _pulseAfBalances, afPortfolio: _pulseAfPf,
+      hypeMid: state.allMids?.HYPE, perpVol: main?.totalVol, spotVol: spot?.vol,
+    }) }
+    return
+  }
   try {
     const [af, afPf] = await Promise.all([
       infoClient.spotClearinghouseState({ user: HL_ASSISTANCE_FUND }),
@@ -12215,12 +12226,18 @@ async function _pulseFetchProto(main, spot) {
       afBalances: af?.balances, afPortfolio: afPf,
       hypeMid: state.allMids?.HYPE, perpVol: main?.totalVol, spotVol: spot?.vol,
     })
-    if (pr.ok) _pulseProto = pr
+    if (pr.ok) { _pulseProto = pr; _pulseProtoAt = Date.now(); _pulseAfBalances = af?.balances; _pulseAfPf = afPf }
   } catch (e) { console.warn('[pulse proto]', e.message) }
 }
 
+// Kept so the cheap recompute above (fee bounds against fresh volume) does not have to
+// re-read the fund.
+let _pulseAfBalances = null
+let _pulseAfPf = null
+
 async function _pulseFetchDexes(main) {
   if (Date.now() - _pulseDexAt < PULSE_DEX_TTL_MS) return
+  if (_hlLimited()) return   // ten weight-20 calls is the last thing a backoff needs
   try {
     const [names, cats] = await Promise.all([
       infoClient.perpDexs(),
@@ -12240,6 +12257,9 @@ let _pulseSpot = null
 
 async function _pulseFetch(force = false) {
   if (_pulseBusy) return
+  // Every render calls this. Pushing more requests while HL is already refusing them
+  // only lengthens the backoff — the banner in the screenshot was partly self-inflicted.
+  if (_hlLimited()) return
   if (!force && _pulseData && Date.now() - _pulseAt < PULSE_TTL_MS) return
   _pulseBusy = true
   try {
@@ -12283,7 +12303,28 @@ const _pulseApr = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v) >= 100 ? Math.rou
 // The multi-timeframe numbers need candles, and candles are one call PER COIN. Fetching
 // them for every row would be dozens of calls for rows nobody opened, so they are fetched
 // lazily on expand and cached for the session. One 1h series covers 1h, 24h, 7d and 30d.
-const _pulseCandles = {}      // coin → { pts } | 'loading' | 'error'
+const _pulseCandles = {}      // "coin|interval" → points | 'loading' | 'error'
+
+// Candles are one request per coin per interval, and an expanded card wants two. Fired
+// straight at HL they arrive as a burst on top of everything else the app polls — which
+// is how the rate-limit banner showed up while browsing this tab. One at a time, and
+// never while the app is already backed off.
+const _pulseQ = []
+let _pulseQBusy = false
+
+async function _pulseQRun() {
+  if (_pulseQBusy) return
+  _pulseQBusy = true
+  while (_pulseQ.length) {
+    if (_hlLimited()) { await new Promise(r => setTimeout(r, 2000)); continue }
+    const job = _pulseQ.shift()
+    try { await job() } catch {}
+    await new Promise(r => setTimeout(r, 250))
+  }
+  _pulseQBusy = false
+}
+
+function _pulseQueue(job) { _pulseQ.push(job); _pulseQRun() }
 
 function _pulseChangeFrom(pts, msAgo) {
   if (!Array.isArray(pts) || pts.length < 2) return null
@@ -12298,14 +12339,64 @@ function _pulseChangeFrom(pts, msAgo) {
   return (last / base - 1) * 100
 }
 
-async function _pulseLoadCandles(coin) {
-  if (_pulseCandles[coin] && _pulseCandles[coin] !== 'error') return
-  _pulseCandles[coin] = 'loading'
+// 1h candles cover the short windows; a year of them would be 8,760 points and HL caps a
+// snapshot at 5,000, so the long windows come from a daily series instead. Two requests,
+// both cached for the session, both queued.
+const _PULSE_TF = [
+  ['1h',  '1h',  3600e3],
+  ['24h', '1h',  24 * 3600e3],
+  ['7d',  '1h',  7 * 24 * 3600e3],
+  ['30d', '1h',  30 * 24 * 3600e3],
+  ['3M',  '1d',  90 * 24 * 3600e3],
+  ['1y',  '1d',  365 * 24 * 3600e3],
+  ['All', '1d',  0],
+]
+
+// Market cap needs ONE figure — circulatingSupply — and spotMetaAndAssetCtxs carries it
+// alongside the price in a single response. _ensureMarketData() would have done instead,
+// but it also kicks off the HIP-3 loader: one weight-20 metaAndAssetCtxs PER builder dex,
+// ten of them, to fill in a number this card does not show. That fan-out was a large part
+// of what tipped the rate limiter while browsing this tab.
+let _pulseCapsAt = 0
+
+async function _pulseEnsureCaps() {
+  if (Object.keys(_mktCapByName).length) return          // the markets tab already built it
+  if (Date.now() - _pulseCapsAt < 10 * 60_000) return
+  if (_hlLimited()) return
+  _pulseCapsAt = Date.now()
   try {
-    const pts = await fetchCandles(coin, '1h', Date.now() - 31 * 24 * 3600e3)
-    _pulseCandles[coin] = Array.isArray(pts) && pts.length ? pts : 'error'
-  } catch { _pulseCandles[coin] = 'error' }
-  if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
+    const [meta, ctxs] = await fetchSpotMarketCtxs()
+    const byCoin = {}
+    for (const u of (meta?.universe ?? [])) {
+      const tok = meta.tokens?.[u.tokens?.[0]]
+      if (tok?.name) byCoin[u.name] = tok.name
+    }
+    for (const c of (ctxs ?? [])) {
+      const name = byCoin[c?.coin]
+      const cap  = parseFloat(c?.circulatingSupply ?? 0) * parseFloat(c?.markPx ?? 0)
+      // Several spot tokens share a display name; the biggest is the real one.
+      if (name && cap > (_mktCapByName[name] ?? 0)) _mktCapByName[name] = cap
+    }
+    if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
+  } catch {}
+}
+
+function _pulseLoadCandles(coin) {
+  _pulseQueue(() => _pulseEnsureCaps())
+  for (const [iv, lookbackMs] of [['1h', 31 * 24 * 3600e3], ['1d', 0]]) {
+    const key = coin + '|' + iv
+    if (_pulseCandles[key] && _pulseCandles[key] !== 'error') continue
+    _pulseCandles[key] = 'loading'
+    _pulseQueue(async () => {
+      try {
+        // Hyperliquid's own launch is the floor for "all time" — a 0 start is rejected.
+        const start = lookbackMs ? Date.now() - lookbackMs : Date.UTC(2023, 0, 1)
+        const pts = await fetchCandles(coin, iv, start)
+        _pulseCandles[key] = Array.isArray(pts) && pts.length ? pts : 'error'
+      } catch { _pulseCandles[key] = 'error' }
+      if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
+    })
+  }
 }
 
 window.__pulseToggle = function(coin, id) {
@@ -12326,9 +12417,18 @@ const _pulsePct = (v) => v == null ? '—'
   : `<span style="color:${v >= 0 ? 'var(--green)' : 'var(--red)'}">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>`
 
 function _pulseCardHtml(r) {
-  const c = _pulseCandles[r.coin]
-  const pts = Array.isArray(c) ? c : null
-  const tf = (ms) => pts ? _pulsePct(_pulseChangeFrom(pts, ms)) : (c === 'loading' ? '…' : '—')
+  const series = (iv) => {
+    const v = _pulseCandles[r.coin + '|' + iv]
+    return Array.isArray(v) ? v : null
+  }
+  const loading = (iv) => _pulseCandles[r.coin + '|' + iv] === 'loading'
+  const tf = (iv, ms) => {
+    const pts = series(iv)
+    if (!pts) return loading(iv) ? '…' : '—'
+    // "All" has no cutoff — measure from the first candle we were given.
+    const v = ms ? _pulseChangeFrom(pts, ms) : _pulseChangeFrom(pts, Date.now() - (+pts[0]?.t || 0))
+    return _pulsePct(v)
+  }
   // Market cap only exists for a token that also trades spot; a perp on its own has none.
   const mkt = _mktCapByName[r.coin] ?? 0
 
@@ -12341,9 +12441,7 @@ function _pulseCardHtml(r) {
         r.apr >= 0 ? 'var(--green)' : 'var(--red)')}
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-      ${_pulseCell('1h',  tf(3600e3))}
-      ${_pulseCell('7d',  tf(7 * 24 * 3600e3))}
-      ${_pulseCell('30d', tf(30 * 24 * 3600e3))}
+      ${_PULSE_TF.filter(x => x[0] !== '24h').map(([label, iv, ms]) => _pulseCell(label, tf(iv, ms))).join('')}
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
       ${_pulseCell(_T('Open interest', 'Interés abierto'), _pulseUsd(r.oi))}
@@ -12399,9 +12497,124 @@ function _pulseSection(title, note, rows) {
   </div>${rows}`
 }
 
+// ─── PULSE: PROTOCOL CHARTS ───────────────────────────────────────────────────
+//
+// Two figures in the Protocol block are worth a shape rather than a number, and each
+// gets its history from a different place because Hyperliquid only publishes one of them.
+//
+// The Assistance Fund is an ACCOUNT, so its value history comes free with the portfolio
+// call already being made — real data, four windows, no extra request.
+//
+// Fees are NOT published, historically or otherwise. There is no endpoint for exchange
+// volume before this moment, so the server records it hourly and the chart draws what has
+// been recorded (see /api/pulse/volume in server.js). It starts the day this shipped and
+// fills in; the caption says so rather than implying more.
+let _pulseAfPeriod  = 'allTime'
+let _pulseFeePeriod = 0            // ms window, 0 = everything recorded
+let _pulseVol       = null         // { since, points } from our own server
+let _pulseVolAt     = 0
+
+async function _pulseFetchVolume() {
+  if (_pulseVol && Date.now() - _pulseVolAt < 5 * 60_000) return
+  try {
+    const r = await fetch('/api/pulse/volume')
+    if (!r.ok) return
+    const j = await r.json()
+    if (Array.isArray(j?.points)) { _pulseVol = j; _pulseVolAt = Date.now() }
+  } catch {}
+}
+
+window.__pulseAfPeriod = function(pd) {
+  _pulseAfPeriod = pd
+  _pulseRender(document.getElementById('mobVContent'))
+}
+window.__pulseFeePeriod = function(ms) {
+  _pulseFeePeriod = +ms
+  _pulseRender(document.getElementById('mobVContent'))
+}
+
+function _pulseChartChips(active, opts, handler) {
+  return `<div style="display:flex;gap:5px;margin-top:9px;flex-wrap:wrap">${opts.map(([val, label]) => {
+    const on = String(val) === String(active)
+    return `<button onclick="window.${handler}('${val}')" style="padding:3px 9px;border-radius:12px;font-size:10.5px;font-weight:700;cursor:pointer;
+      border:1px solid ${on ? 'var(--accent)' : 'var(--border2)'};background:${on ? 'var(--accent)' : 'transparent'};color:${on ? '#000' : 'var(--muted)'}">${label}</button>`
+  }).join('')}</div>`
+}
+
+/**
+ * @param band  a second series drawn as a filled range between the two — the maker/taker
+ *              spread on fees is genuinely a range, and drawing one line inside it would
+ *              be inventing the mix Hyperliquid does not publish.
+ */
+function _pulseChartSvg(points, { color = 'var(--accent)', band = null, h = 64 } = {}) {
+  const W = 300
+  const sp = sparkPath(points, W, h)
+  if (!sp) return `<div style="height:${h}px;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--fg-3)">${
+    _T('Not enough history yet', 'Aún no hay suficiente historial')}</div>`
+  // The band shares the low series' scale so the two are directly comparable.
+  let bandPath = ''
+  if (band) {
+    const all = [...points, ...band]
+    const lo = sparkPath(points, W, h), hi = sparkPath(band, W, h)
+    const spAll = sparkPath(all.sort((a, b) => a[0] - b[0]), W, h)
+    if (spAll) {
+      // Re-project both onto the combined range, or the "high" line would sit on top of
+      // the "low" one and the range would read as a single line.
+      const ys = all.map(x => +x[1]), y0 = Math.min(...ys), y1 = Math.max(...ys)
+      const xs = all.map(x => +x[0]), x0 = Math.min(...xs), x1 = Math.max(...xs)
+      const px = (t) => 3 + ((t - x0) / ((x1 - x0) || 1)) * (W - 6)
+      const py = (v) => (y1 - y0) === 0 ? h / 2 : h - 3 - ((v - y0) / (y1 - y0)) * (h - 6)
+      const up = band.map(pt => `${px(+pt[0]).toFixed(1)},${py(+pt[1]).toFixed(1)}`)
+      const dn = [...points].reverse().map(pt => `${px(+pt[0]).toFixed(1)},${py(+pt[1]).toFixed(1)}`)
+      bandPath = `<polygon points="${[...up, ...dn].join(' ')}" fill="${color}" opacity="0.18"/>
+        <polyline points="${up.join(' ')}" fill="none" stroke="${color}" stroke-width="1.6"/>
+        <polyline points="${dn.join(' ')}" fill="none" stroke="${color}" stroke-width="1.6" opacity="0.55"/>`
+    }
+  }
+  return `<svg viewBox="0 0 ${W} ${h}" preserveAspectRatio="none" style="width:100%;height:${h}px;display:block;margin-top:8px">
+    ${bandPath || `<path d="${sp.area}" fill="${color}" opacity="0.13"/>
+      <path d="${sp.line}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round"/>`}
+  </svg>`
+}
+
+function _pulseAfChartHtml() {
+  const hist = (_pulseAfPf ?? []).find(x => x[0] === _pulseAfPeriod)?.[1]?.accountValueHistory ?? []
+  const pts  = hist.map(x => [+x[0], parseFloat(x[1])]).filter(x => Number.isFinite(x[1]))
+  const sp   = sparkPath(pts, 300, 64)
+  const chg  = sp?.changePct
+  return `${_pulseChartSvg(pts)}
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:5px">
+      <span style="font-size:10.5px;color:var(--fg-3)">${sp ? _pulseUsd(sp.min) + ' – ' + _pulseUsd(sp.max) : ''}</span>
+      ${chg == null ? '' : `<span style="font-size:11.5px;font-weight:700;color:${chg >= 0 ? 'var(--green)' : 'var(--red)'}">${chg >= 0 ? '+' : ''}${chg.toFixed(1)}%</span>`}
+    </div>
+    ${_pulseChartChips(_pulseAfPeriod, [['day', '24h'], ['week', '7d'], ['month', '30d'], ['allTime', _T('All', 'Todo')]], '__pulseAfPeriod')}`
+}
+
+function _pulseFeeChartHtml() {
+  const all = _pulseVol?.points ?? []
+  const fs  = feeSeries(windowSeries(all, _pulseFeePeriod))
+  const svg = fs.low.length >= 2
+    ? _pulseChartSvg(fs.low, { color: 'var(--orange,#f59e0b)', band: fs.high })
+    : `<div style="height:64px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:11px;color:var(--fg-3);line-height:1.45;padding:0 8px">${
+        _T('Recording started — the chart fills in from here. Hyperliquid publishes no historical volume, so there is nothing to backfill from.',
+           'Grabación iniciada — el gráfico se llena desde aquí. Hyperliquid no publica volumen histórico, así que no hay nada que rellenar.')}</div>`
+  const since = _pulseVol?.since
+  return `${svg}
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:5px">
+      <span style="font-size:10.5px;color:var(--fg-3)">${
+        since ? _T('recorded since', 'registrado desde') + ' ' + new Date(since).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : ''}</span>
+      <span style="font-size:10.5px;color:var(--fg-3)">${_T('maker → taker', 'maker → taker')}</span>
+    </div>
+    ${_pulseChartChips(_pulseFeePeriod, [
+      [7 * 24 * 3600e3, '7d'], [30 * 24 * 3600e3, '30d'], [90 * 24 * 3600e3, '3M'],
+      [365 * 24 * 3600e3, '1y'], [0, _T('All', 'Todo')],
+    ], '__pulseFeePeriod')}`
+}
+
 function _pulseRender(el) {
   if (!el) return
   _pulseFetch()
+  _pulseFetchVolume()   // our own server, not Hyperliquid — no rate-limit budget spent
   const d = _pulseData
   if (!d) return
 
@@ -12463,6 +12676,10 @@ function _pulseRender(el) {
         <div style="font-size:11px;color:var(--fg-3)">${
           _pulseProto.afHype.toLocaleString(undefined, { maximumFractionDigits: 0 })} HYPE${
           _pulseProto.since ? ' · ' + _T('since', 'desde') + ' ' + new Date(_pulseProto.since).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }) : ''}</div>
+        ${_pulseAfChartHtml()}
+        <div style="font-size:10.5px;color:var(--fg-3);line-height:1.45;margin-top:7px">${
+          _T('Fund <b>value</b>, not revenue — it moves with the HYPE price as well as with inflows.',
+             'Valor del fondo, no ingresos — se mueve con el precio de HYPE además de con las entradas.')}</div>
       </div>
       <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:3px">
         <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">${
@@ -12471,6 +12688,7 @@ function _pulseRender(el) {
         <div style="font-size:11px;color:var(--fg-3);line-height:1.45">${
           _T('Every trade a maker, versus every trade a taker. Hyperliquid does not publish the mix, so this is bounds rather than a figure.',
              'Todo maker frente a todo taker. Hyperliquid no publica la mezcla, así que esto son límites, no una cifra.')}</div>
+        ${_pulseFeeChartHtml()}
       </div>
     </div>` : ''}
 
@@ -13941,9 +14159,6 @@ function _mobVRenderContent(tick = false) {
     // row above it are not context — they are just something to scroll past. Reuses the
     // lift built for full-screen Strats rather than a second mechanism.
     document.getElementById('mobileView')?.classList.add('mob-tab-full')
-    // Market caps come from the spot context map the markets tab builds; warm it so an
-    // expanded card is not permanently showing a dash for cap.
-    try { _ensureMarketData() } catch {}
     if (!_pulseData) el.innerHTML = `<div class="mob-v-empty">${_T('Loading…', 'Cargando…')}</div>`
     _pulseRender(el)
     return
@@ -14793,7 +15008,9 @@ function _lbSocialHtml(r) {
   return `<div style="display:flex;gap:7px;padding:11px 16px;background:var(--panel-2);border-bottom:1px solid rgba(255,255,255,0.04)">
     ${btn(`window.__lbVisitWallet('${a}')`, '👁', _T('Visit', 'Ver'))}
     ${btn(`window.__lbCopyAddr('${a}')`, '⧉', _T('Copy', 'Copiar'))}
-    ${btn(`window.__lbCopyTrade('${a}','${nm}')`, '⇄', _T('Copy trade', 'Copiar ops'), true)}
+    ${_stratsUnlocked()
+      ? btn(`window.__lbCopyTrade('${a}','${nm}')`, '⇄', _T('Copy trade', 'Copiar ops'), true)
+      : btn(`window.__subOpenPaywall()`, '🔒', _T('Copy trade', 'Copiar ops'))}
   </div>`
 }
 
@@ -14860,6 +15077,9 @@ function _visitBannerSync() {
 // account at a scale. It is a real bot on the strategy server, so it survives closing
 // the app, shows up in Strategies with the rest, and is stopped the same way.
 window.__lbCopyTrade = function(addr = '', name = '') {
+  // Reachable from the Strategies Run button too, so the gate lives here rather than
+  // only on the leaderboard button. The server refuses either way (402 at /api/start).
+  if (!_stratsUnlocked()) { window.__subOpenPaywall?.(); return }
   const target = String(addr || '')
   const tgt    = _stratTargetAddr()
   const key    = _stratTargetKey()

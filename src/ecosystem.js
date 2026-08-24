@@ -208,3 +208,63 @@ export function computeProtocol({ afBalances, afPortfolio, hypeMid, perpVol, spo
     vol,
   }
 }
+
+// ─── SERIES → CHART ───────────────────────────────────────────────────────────
+//
+// Kept here with the rest of the arithmetic so the tests can drive it with real payloads;
+// main.js only turns the result into SVG.
+
+/** Trim a [ts, value] series to a trailing window. `ms = 0` means everything. */
+export function windowSeries(points, ms) {
+  if (!Array.isArray(points)) return []
+  if (!ms) return points
+  const cutoff = Date.now() - ms
+  return points.filter(p => +p[0] >= cutoff)
+}
+
+/**
+ * Normalise a series into SVG coordinates.
+ *
+ * The y-range is the data's own min→max, not 0→max. A fund that moved between $2.6B and
+ * $3.7B is a chart with shape; anchored at zero it is a flat line near the top, which
+ * says nothing. `pad` keeps the extremes off the edges so the stroke is not clipped.
+ */
+export function sparkPath(points, w = 300, h = 60, pad = 3) {
+  const pts = (points ?? []).filter(p => Number.isFinite(+p[1]))
+  if (pts.length < 2) return null
+  const xs = pts.map(p => +p[0])
+  const ys = pts.map(p => +p[1])
+  const x0 = Math.min(...xs), x1 = Math.max(...xs)
+  const y0 = Math.min(...ys), y1 = Math.max(...ys)
+  const xSpan = x1 - x0 || 1
+  // A dead-flat series would divide by zero; centring it is the honest picture.
+  const ySpan = y1 - y0
+  const X = (x) => pad + ((x - x0) / xSpan) * (w - pad * 2)
+  const Y = (y) => ySpan === 0 ? h / 2 : h - pad - ((y - y0) / ySpan) * (h - pad * 2)
+  const coords = pts.map(p => [X(+p[0]), Y(+p[1])])
+  const line = coords.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join('')
+  const area = `${line}L${coords[coords.length - 1][0].toFixed(1)},${h}L${coords[0][0].toFixed(1)},${h}Z`
+  return {
+    line, area, w, h,
+    min: y0, max: y1,
+    first: ys[0], last: ys[ys.length - 1],
+    from: x0, to: x1,
+    changePct: ys[0] > 0 ? (ys[ys.length - 1] / ys[0] - 1) * 100 : null,
+  }
+}
+
+/**
+ * Recorded volume readings → the fee series to chart.
+ *
+ * Returns BOTH bounds. The maker/taker mix is not published, so a single fee line would
+ * be a made-up number inside a range we can actually state — the chart draws the range.
+ * @param {Array<[number, number, number]>} points [ts, perpVol, spotVol]
+ */
+export function feeSeries(points) {
+  const rows = (points ?? []).filter(p => Array.isArray(p) && Number.isFinite(+p[1]))
+  return {
+    low:  rows.map(p => [+p[0], (+p[1] + (+p[2] || 0)) * HL_FEE_MAKER]),
+    high: rows.map(p => [+p[0], (+p[1] + (+p[2] || 0)) * HL_FEE_TAKER]),
+    vol:  rows.map(p => [+p[0], +p[1] + (+p[2] || 0)]),
+  }
+}
