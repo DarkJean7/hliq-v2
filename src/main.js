@@ -180,7 +180,7 @@ import {
   invalidateApprovedAgents,
 } from './trading.js'
 import { createAlarm } from './alarm.js'
-import { computeEcosystem, oiConcentration, computeDexes, computeSpot } from './ecosystem.js'
+import { computeEcosystem, oiConcentration, computeDexes, computeSpot, computeProtocol } from './ecosystem.js'
 import {
   getDiscoveredWallets,
   getMainAddress,
@@ -12189,6 +12189,25 @@ let _pulseDex = null
 let _pulseDexAt = 0
 const PULSE_DEX_TTL_MS = 5 * 60_000
 
+// The Assistance Fund is just another account, so this is two ordinary reads. Put on the
+// slow clock beside the dex fan-out — it moves on the scale of days, not seconds.
+const HL_ASSISTANCE_FUND = '0xfefefefefefefefefefefefefefefefefefefefe'
+let _pulseProto = null
+
+async function _pulseFetchProto(main, spot) {
+  try {
+    const [af, afPf] = await Promise.all([
+      infoClient.spotClearinghouseState({ user: HL_ASSISTANCE_FUND }),
+      infoClient.portfolio({ user: HL_ASSISTANCE_FUND }).catch(() => null),
+    ])
+    const pr = computeProtocol({
+      afBalances: af?.balances, afPortfolio: afPf,
+      hypeMid: state.allMids?.HYPE, perpVol: main?.totalVol, spotVol: spot?.vol,
+    })
+    if (pr.ok) _pulseProto = pr
+  } catch (e) { console.warn('[pulse proto]', e.message) }
+}
+
 async function _pulseFetchDexes(main) {
   if (Date.now() - _pulseDexAt < PULSE_DEX_TTL_MS) return
   try {
@@ -12220,6 +12239,9 @@ async function _pulseFetch(force = false) {
     const d = computeEcosystem(pair)
     if (d.ok) { _pulseData = d; _pulseAt = Date.now() }
     if (spotPair) { const sp = computeSpot(spotPair); if (sp.ok) _pulseSpot = sp }
+    if (d.ok) _pulseFetchProto(d, _pulseSpot).then(() => {
+      if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
+    })
     if (d.ok) _pulseFetchDexes(d).then(() => {
       if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
     })
@@ -12309,6 +12331,32 @@ function _pulseRender(el) {
       [...d.gainers.map(r => _pulseRow(r, `+${r.chg.toFixed(1)}%`, green)),
        ...d.losers.map(r  => _pulseRow(r, `${r.chg.toFixed(1)}%`,  red))].join(''))}
 
+    ${_pulseProto ? `<div style="padding:14px 16px 4px">
+      <div style="font-size:12px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)">${
+        _T('Protocol', 'Protocolo')}</div>
+      <div style="font-size:11px;color:var(--fg-3);margin-top:3px;line-height:1.45">${
+        _T('Hyperliquid buys HYPE with its fee revenue. The Assistance Fund holds it.',
+           'Hyperliquid compra HYPE con sus comisiones. El Fondo de Asistencia lo custodia.')}</div>
+    </div>
+    <div class="mob-v-setting-group" style="margin:6px 12px 2px">
+      <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:3px">
+        <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">${
+          _T('Assistance Fund', 'Fondo de Asistencia')}</div>
+        <div style="font-size:19px;font-weight:800">${_pulseUsd(_pulseProto.afUsd)}</div>
+        <div style="font-size:11px;color:var(--fg-3)">${
+          _pulseProto.afHype.toLocaleString(undefined, { maximumFractionDigits: 0 })} HYPE${
+          _pulseProto.since ? ' · ' + _T('since', 'desde') + ' ' + new Date(_pulseProto.since).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }) : ''}</div>
+      </div>
+      <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:3px">
+        <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">${
+          _T('Fees today · estimated range', 'Comisiones hoy · rango estimado')}</div>
+        <div style="font-size:19px;font-weight:800">${_pulseUsd(_pulseProto.feesLow)} – ${_pulseUsd(_pulseProto.feesHigh)}</div>
+        <div style="font-size:11px;color:var(--fg-3);line-height:1.45">${
+          _T('Every trade a maker, versus every trade a taker. Hyperliquid does not publish the mix, so this is bounds rather than a figure.',
+             'Todo maker frente a todo taker. Hyperliquid no publica la mezcla, así que esto son límites, no una cifra.')}</div>
+      </div>
+    </div>` : ''}
+
     ${_pulseSpot ? _pulseSection(_T('Spot', 'Spot'),
       `${_pulseUsd(_pulseSpot.vol)} ${_T('traded across', 'negociado en')} ${_pulseSpot.pairs} ${_T('pairs in 24h', 'pares en 24h')}`,
       _pulseSpot.top.map(r => _pulseRow({ coin: r.coin, vol: r.vol }, _pulseUsd(r.vol), 'var(--fg)')).join('')) : ''}
@@ -12341,7 +12389,7 @@ function _pulseRender(el) {
     </div>` : ''}
 
     <div style="padding:14px 16px;font-size:10.5px;color:var(--fg-3);line-height:1.5">
-      ${_T('Computed from Hyperliquid\'s public API. Funding rates are annualised from the hourly rate. Extremes exclude markets under $100k of 24h volume, so a market that barely traded cannot top a list.',
+      ${_T('Computed from Hyperliquid\'s public API. The Assistance Fund figure is its HYPE holding at the current price — a balance, not a revenue total, and its dollar value moves with HYPE. Funding rates are annualised from the hourly rate. Extremes exclude markets under $100k of 24h volume, so a market that barely traded cannot top a list.',
            'Calculado desde la API pública de Hyperliquid. Las tasas de financiación están anualizadas. Los extremos excluyen mercados con menos de $100k de volumen en 24h.')}
     </div>
   </div>`

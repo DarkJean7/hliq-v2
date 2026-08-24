@@ -167,3 +167,44 @@ export function computeSpot(pair) {
   rows.sort((a, b) => b.vol - a.vol)
   return { ok: rows.length > 0, vol, pairs: ctxs.length, top: rows.slice(0, 5) }
 }
+
+// ─── PROTOCOL: THE ASSISTANCE FUND, AND WHAT FEES CAN HONESTLY BE SAID ────────
+//
+// Hyperliquid publishes no exchange-wide revenue figure — there is no endpoint for it, and
+// userFees only ever describes the caller's own schedule. Two things CAN be stated exactly,
+// and one thing cannot, so this keeps them apart.
+//
+// EXACT: the Assistance Fund. Hyperliquid routes fee revenue into buying HYPE, and the fund
+// address is public and queryable like any other account. Its HYPE balance is a fact.
+//
+// NOT REVENUE: the fund's dollar VALUE, or the change in it. Its value moved $990M in a
+// week while HYPE moved with it — that is mark-to-market on a 46.7M HYPE position, not a
+// week of fees, and presenting it as revenue would overstate by an order of magnitude.
+//
+// ESTIMATED, AS A RANGE: fees are volume times a rate, and the maker/taker mix is not
+// published. So this returns bounds — every trade a maker, every trade a taker — rather
+// than a made-up point estimate inside them.
+export const HL_FEE_TAKER = 0.00045   // published base tier; VIPs and stakers pay less,
+export const HL_FEE_MAKER = 0.00015   // so the upper bound really is an upper bound
+
+export function computeProtocol({ afBalances, afPortfolio, hypeMid, perpVol, spotVol } = {}) {
+  const hype = (afBalances ?? []).find(b => String(b.coin).toUpperCase() === 'HYPE')
+  const qty  = parseFloat(hype?.total ?? 0)
+  const px   = parseFloat(hypeMid ?? 0)
+  const afUsd = Number.isFinite(qty) && Number.isFinite(px) ? qty * px : 0
+
+  const hist = (afPortfolio ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory ?? []
+  const since = hist.length ? Number(hist[0][0]) : 0
+
+  const vol = (Number(perpVol) || 0) + (Number(spotVol) || 0)
+  return {
+    ok: qty > 0,
+    afHype: qty,
+    afUsd,
+    since,
+    // Bounds, not an estimate. The gap between them is the honest uncertainty.
+    feesLow:  vol * HL_FEE_MAKER,
+    feesHigh: vol * HL_FEE_TAKER,
+    vol,
+  }
+}
