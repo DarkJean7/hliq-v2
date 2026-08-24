@@ -12370,7 +12370,9 @@ async function _pulseEnsureCaps() {
     const byCoin = {}
     for (const u of (meta?.universe ?? [])) {
       const tok = meta.tokens?.[u.tokens?.[0]]
-      if (tok?.name) byCoin[u.name] = tok.name
+      // The same alias the rest of the app uses: BTC's spot market is the Unit-wrapped
+      // UBTC, and a perp row looking up "BTC" has to find it or the card shows no cap.
+      if (tok?.name) byCoin[u.name] = _spotDisplayAlias(tok.name)
     }
     for (const c of (ctxs ?? [])) {
       const name = byCoin[c?.coin]
@@ -12417,43 +12419,67 @@ function _pulseCell(label, value, tone) {
 const _pulsePct = (v) => v == null ? '—'
   : `<span style="color:${v >= 0 ? 'var(--green)' : 'var(--red)'}">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>`
 
-function _pulseCardHtml(r) {
+function _pulseCardHtml(r, id) {
   const series = (iv) => {
     const v = _pulseCandles[r.coin + '|' + iv]
     return Array.isArray(v) ? v : null
   }
   const loading = (iv) => _pulseCandles[r.coin + '|' + iv] === 'loading'
-  const tf = (iv, ms) => {
+  const changeFor = ([, iv, ms]) => {
     const pts = series(iv)
-    if (!pts) return loading(iv) ? '…' : '—'
+    if (!pts) return undefined
     // "All" has no cutoff — measure from the first candle we were given.
-    const v = ms ? _pulseChangeFrom(pts, ms) : _pulseChangeFrom(pts, Date.now() - (+pts[0]?.t || 0))
-    return _pulsePct(v)
+    return ms ? _pulseChangeFrom(pts, ms) : _pulseChangeFrom(pts, Date.now() - (+pts[0]?.t || 0))
   }
-  // Market cap only exists for a token that also trades spot; a perp on its own has none.
-  const mkt = _mktCapByName[r.coin] ?? 0
+  const tfCell = (row) => {
+    const [label, iv] = row
+    const pts = series(iv)
+    const txt = !pts ? (loading(iv) ? '…' : '—') : _pulsePct(changeFor(row))
+    const on  = label === (_pulseTfFor[id] ?? PULSE_TF_DEFAULT)
+    // The percentages double as the chart's window picker: the number you are reading is
+    // the span the chart is drawing, so there is no second control to keep in sync.
+    return `<button onclick="event.stopPropagation();window.__pulseSetTf('${id}','${label}')"
+      style="flex:1;min-width:74px;text-align:left;cursor:pointer;background:${on ? 'rgba(255,255,255,.07)' : 'transparent'};
+             border:1px solid ${on ? 'var(--border2)' : 'transparent'};border-radius:8px;padding:4px 6px;color:inherit;font:inherit">
+      <div style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">${label}</div>
+      <div style="font-size:13px;font-weight:700;margin-top:2px">${txt}</div>
+    </button>`
+  }
 
+  const num = (v) => Number.isFinite(v) ? v : null
+  const mkt = num(r.marketCap) ?? _mktCapByName[r.coin] ?? 0
+  const oi  = num(r.oi)
+  const prem = num(r.premium)
+  const apr = num(r.apr)
+  // Spot has no funding, open interest or premium. A dash says "not a thing here"; a zero
+  // would claim the market is flat, which is a different and false statement.
+  const dash = '—'
+
+  const rows = _PULSE_TF.filter(x => x[0] !== '24h')
   return `<div style="background:var(--panel-2);border-top:1px solid var(--border2);padding:10px 16px 12px">
     <div style="display:flex;gap:10px;flex-wrap:wrap">
-      ${_pulseCell(_T('Mark', 'Precio'), '$' + fmtPrice(r.mark))}
-      ${_pulseCell(_T('24h', '24h'), _pulsePct(r.chg))}
+      ${_pulseCell(_T('Mark', 'Precio'), num(r.mark) ? '$' + fmtPrice(r.mark) : dash)}
+      ${_pulseCell(_T('24h', '24h'), r.chg == null ? dash : _pulsePct(r.chg))}
       ${_pulseCell(_T('Funding / 8h', 'Financiación / 8h'),
-        `${r.apr >= 0 ? '+' : '−'}${Math.abs(r.apr / 365 / 3).toFixed(4)}%`,
-        r.apr >= 0 ? 'var(--green)' : 'var(--red)')}
+        apr == null ? dash : `${apr >= 0 ? '+' : '−'}${Math.abs(apr / 365 / 3).toFixed(4)}%`,
+        apr == null ? null : apr >= 0 ? 'var(--green)' : 'var(--red)')}
+    </div>
+
+    ${_pulseAssetChartHtml(r, id)}
+
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${rows.slice(0, 3).map(tfCell).join('')}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">${rows.slice(3).map(tfCell).join('')}</div>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+      ${_pulseCell(_T('Open interest', 'Interés abierto'), oi == null ? dash : _pulseUsd(oi))}
+      ${_pulseCell(_T('24h volume', 'Volumen 24h'), _pulseUsd(num(r.vol) ?? 0))}
+      ${_pulseCell(_T('Market cap', 'Capitalización'), mkt > 0 ? _pulseUsd(mkt) : dash)}
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-      ${_PULSE_TF.filter(x => x[0] !== '24h').map(([label, iv, ms]) => _pulseCell(label, tf(iv, ms))).join('')}
-    </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-      ${_pulseCell(_T('Open interest', 'Interés abierto'), _pulseUsd(r.oi))}
-      ${_pulseCell(_T('24h volume', 'Volumen 24h'), _pulseUsd(r.vol))}
-      ${_pulseCell(_T('Market cap', 'Capitalización'), mkt > 0 ? _pulseUsd(mkt) : '—')}
-    </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-      ${_pulseCell(_T('Funding APR', 'Financiación APR'), _pulseApr(r.apr),
-        r.apr >= 0 ? 'var(--green)' : 'var(--red)')}
-      ${_pulseCell(_T('Premium', 'Prima'), `${r.premium >= 0 ? '+' : ''}${r.premium.toFixed(3)}%`)}
-      ${_pulseCell(_T('OI / volume', 'IA / volumen'), r.vol > 0 ? (r.oi / r.vol).toFixed(2) + '×' : '—')}
+      ${_pulseCell(_T('Funding APR', 'Financiación APR'), apr == null ? dash : _pulseApr(apr),
+        apr == null ? null : apr >= 0 ? 'var(--green)' : 'var(--red)')}
+      ${_pulseCell(_T('Premium', 'Prima'), prem == null ? dash : `${prem >= 0 ? '+' : ''}${prem.toFixed(3)}%`)}
+      ${_pulseCell(_T('OI / volume', 'IA / volumen'), oi != null && num(r.vol) > 0 ? (oi / r.vol).toFixed(2) + '×' : dash)}
     </div>
     <button onclick="event.stopPropagation();window.__watchOpenTrade?.('${esc(r.coin)}')"
       style="width:100%;margin-top:12px;padding:9px;border:1px solid var(--border2);border-radius:9px;
@@ -12461,6 +12487,32 @@ function _pulseCardHtml(r) {
       ${_T('Open in Trade', 'Abrir en Trade')}
     </button>
   </div>`
+}
+
+// Which window each open card is charting. Keyed by card id so two open cards do not
+// fight over one setting.
+const _pulseTfFor = {}
+const PULSE_TF_DEFAULT = '30d'   // must match a _PULSE_TF label exactly
+
+window.__pulseSetTf = function(id, label) {
+  _pulseTfFor[id] = label
+  _pulseRender(document.getElementById('mobVContent'))
+}
+
+function _pulseAssetChartHtml(r, id) {
+  const label = _pulseTfFor[id] ?? PULSE_TF_DEFAULT
+  const row = _PULSE_TF.find(x => x[0] === label) ?? _PULSE_TF[3]
+  const [, iv, ms] = row
+  const raw = _pulseCandles[r.coin + '|' + iv]
+  if (!Array.isArray(raw)) {
+    return `<div style="height:96px;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--fg-3);margin-top:10px">${
+      raw === 'loading' ? _T('Loading chart…', 'Cargando gráfico…') : _T('No price history for this market', 'Sin historial de precios para este mercado')}</div>`
+  }
+  const pts = (ms ? raw.filter(k => +k.t >= Date.now() - ms) : raw).map(k => [+k.t, parseFloat(k.c)])
+  const up  = pts.length > 1 && pts[pts.length - 1][1] >= pts[0][1]
+  return _pulseInteractiveChart(pts, {
+    key: 'a' + id, color: up ? 'var(--green)' : 'var(--red)', h: 96, money: false,
+  })
 }
 
 function _pulseRow(r, right, tone, key = '') {
@@ -12487,7 +12539,7 @@ function _pulseRow(r, right, tone, key = '') {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12"
         style="color:var(--muted);flex-shrink:0;margin-left:6px;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>
     </div>
-    ${xp ? _pulseCardHtml(r) : ''}
+    ${xp ? _pulseCardHtml(r, id) : ''}
   </div>`
 }
 
@@ -12578,12 +12630,133 @@ function _pulseChartSvg(points, { color = 'var(--accent)', band = null, h = 64 }
   </svg>`
 }
 
+// ─── AN INTERACTIVE CHART ─────────────────────────────────────────────────────
+//
+// One component for every chart in Pulse: the asset price, the Assistance Fund, and the
+// fee range. Drag across it and it reports the value under your finger and the date it
+// belongs to; let go and it returns to showing the latest.
+//
+// Built as inline SVG plus one pointer handler rather than a charting library, because a
+// library would be a large dependency for three sparklines and would still need this much
+// wiring to read the theme's colours.
+const _pulseChartData = {}   // key → { pts, band, money }
+
+/** Dates that read at a glance and stay unambiguous across a 3-year window. */
+function _pulseDateLabel(ts, span) {
+  const d = new Date(ts)
+  if (!Number.isFinite(ts) || !ts) return ''
+  // Inside a day the date is not the interesting part; past a year the year is.
+  if (span <= 2 * 86400e3) return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+  if (span <= 300 * 86400e3) return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+  return d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+}
+
+/**
+ * @param opts.band  a second series; the gap between the two is filled. Used by the fee
+ *                   chart, where the honest answer is a range and a single line would
+ *                   invent the maker/taker mix Hyperliquid does not publish.
+ */
+function _pulseInteractiveChart(pts, { key, color = 'var(--accent)', h = 96, band = null, money = true } = {}) {
+  const W = 300
+  const clean = (pts ?? []).filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
+  if (clean.length < 2) {
+    return `<div style="height:${h}px;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--fg-3)">${
+      _T('Not enough history yet', 'Aún no hay suficiente historial')}</div>`
+  }
+  const all = band ? [...clean, ...band] : clean
+  const ys = all.map(p => +p[1]), xs = clean.map(p => +p[0])
+  const y0 = Math.min(...ys), y1 = Math.max(...ys)
+  const x0 = Math.min(...xs), x1 = Math.max(...xs)
+  const span = x1 - x0
+  _pulseChartData[key] = { pts: clean, band, money, x0, x1, y0, y1, span, W, h }
+
+  const px = (t) => 3 + ((t - x0) / (span || 1)) * (W - 6)
+  const py = (v) => (y1 - y0) === 0 ? h / 2 : h - 3 - ((v - y0) / (y1 - y0)) * (h - 6)
+  const line = clean.map((p, i) => `${i ? 'L' : 'M'}${px(+p[0]).toFixed(1)},${py(+p[1]).toFixed(1)}`).join('')
+
+  let body
+  if (band) {
+    const up = band.map(p => `${px(+p[0]).toFixed(1)},${py(+p[1]).toFixed(1)}`)
+    const dn = [...clean].reverse().map(p => `${px(+p[0]).toFixed(1)},${py(+p[1]).toFixed(1)}`)
+    body = `<polygon points="${[...up, ...dn].join(' ')}" fill="${color}" opacity="0.18"/>
+      <polyline points="${up.join(' ')}" fill="none" stroke="${color}" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+      <polyline points="${dn.join(' ')}" fill="none" stroke="${color}" stroke-width="1.6" opacity="0.55" vector-effect="non-scaling-stroke"/>`
+  } else {
+    body = `<path d="${line}L${px(x1).toFixed(1)},${h}L${px(x0).toFixed(1)},${h}Z" fill="${color}" opacity="0.13"/>
+      <path d="${line}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
+  }
+
+  const last = clean[clean.length - 1][1]
+  const fmt = money ? (v) => _pulseUsd(v) : (v) => '$' + fmtPrice(v)
+  return `<div style="position:relative;margin-top:8px">
+    <div id="rd-${key}" style="display:flex;justify-content:space-between;align-items:baseline;font-size:11px;min-height:15px">
+      <span id="rdv-${key}" style="font-weight:700;color:var(--fg)">${fmt(last)}</span>
+      <span id="rdt-${key}" style="color:var(--fg-3)">${_pulseDateLabel(x1, span)}</span>
+    </div>
+    <svg id="sv-${key}" viewBox="0 0 ${W} ${h}" preserveAspectRatio="none"
+      style="width:100%;height:${h}px;display:block;touch-action:pan-y;cursor:crosshair"
+      onpointerdown="window.__pulseScrub(event,'${key}')"
+      onpointermove="window.__pulseScrub(event,'${key}')"
+      onpointerup="window.__pulseScrubEnd('${key}')"
+      onpointercancel="window.__pulseScrubEnd('${key}')"
+      onpointerleave="window.__pulseScrubEnd('${key}')">
+      ${body}
+      <line id="cx-${key}" x1="0" y1="0" x2="0" y2="${h}" stroke="var(--fg-3)" stroke-width="1" opacity="0" vector-effect="non-scaling-stroke"/>
+      <circle id="cd-${key}" r="3" cx="0" cy="0" fill="${color}" opacity="0"/>
+    </svg>
+    <div style="display:flex;justify-content:space-between;font-size:9.5px;color:var(--fg-3);margin-top:3px">
+      <span>${_pulseDateLabel(x0, span)}</span><span>${_pulseDateLabel(x1, span)}</span>
+    </div>
+  </div>`
+}
+
+window.__pulseScrub = function(ev, key) {
+  // pointermove fires with no button held after a tap; only track an actual drag/press.
+  if (ev.type === 'pointermove' && !ev.buttons) return
+  const d = _pulseChartData[key]
+  const svg = document.getElementById('sv-' + key)
+  if (!d || !svg) return
+  ev.preventDefault()
+  const box = svg.getBoundingClientRect()
+  if (!box.width) return
+  const frac = Math.min(1, Math.max(0, (ev.clientX - box.left) / box.width))
+  const t = d.x0 + frac * d.span
+  // Nearest point, not the one before: on a sparse series the label should follow the
+  // finger rather than lag a step behind it.
+  let best = d.pts[0], bestD = Infinity
+  for (const p of d.pts) { const g = Math.abs(+p[0] - t); if (g < bestD) { bestD = g; best = p } }
+
+  const px = 3 + ((+best[0] - d.x0) / (d.span || 1)) * (d.W - 6)
+  const py = (d.y1 - d.y0) === 0 ? d.h / 2 : d.h - 3 - ((+best[1] - d.y0) / (d.y1 - d.y0)) * (d.h - 6)
+  const cx = document.getElementById('cx-' + key)
+  const cd = document.getElementById('cd-' + key)
+  if (cx) { cx.setAttribute('x1', px); cx.setAttribute('x2', px); cx.setAttribute('opacity', '0.5') }
+  if (cd) { cd.setAttribute('cx', px); cd.setAttribute('cy', py); cd.setAttribute('opacity', '1') }
+  const v = document.getElementById('rdv-' + key)
+  const l = document.getElementById('rdt-' + key)
+  if (v) v.textContent = d.money ? _pulseUsd(+best[1]) : '$' + fmtPrice(+best[1])
+  if (l) l.textContent = new Date(+best[0]).toLocaleString(undefined,
+    d.span <= 2 * 86400e3 ? { hour: 'numeric', minute: '2-digit' }
+      : { day: 'numeric', month: 'short', year: d.span > 300 * 86400e3 ? 'numeric' : undefined })
+}
+
+window.__pulseScrubEnd = function(key) {
+  const d = _pulseChartData[key]
+  if (!d) return
+  for (const p of ['cx-', 'cd-']) document.getElementById(p + key)?.setAttribute('opacity', '0')
+  const last = d.pts[d.pts.length - 1]
+  const v = document.getElementById('rdv-' + key)
+  const l = document.getElementById('rdt-' + key)
+  if (v) v.textContent = d.money ? _pulseUsd(+last[1]) : '$' + fmtPrice(+last[1])
+  if (l) l.textContent = _pulseDateLabel(+last[0], d.span)
+}
+
 function _pulseAfChartHtml() {
   const hist = (_pulseAfPf ?? []).find(x => x[0] === _pulseAfPeriod)?.[1]?.accountValueHistory ?? []
   const pts  = hist.map(x => [+x[0], parseFloat(x[1])]).filter(x => Number.isFinite(x[1]))
   const sp   = sparkPath(pts, 300, 64)
   const chg  = sp?.changePct
-  return `${_pulseChartSvg(pts)}
+  return `${_pulseInteractiveChart(pts, { key: 'af', h: 72 })}
     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:5px">
       <span style="font-size:10.5px;color:var(--fg-3)">${sp ? _pulseUsd(sp.min) + ' – ' + _pulseUsd(sp.max) : ''}</span>
       ${chg == null ? '' : `<span style="font-size:11.5px;font-weight:700;color:${chg >= 0 ? 'var(--green)' : 'var(--red)'}">${chg >= 0 ? '+' : ''}${chg.toFixed(1)}%</span>`}
@@ -12595,7 +12768,7 @@ function _pulseFeeChartHtml() {
   const all = _pulseVol?.points ?? []
   const fs  = feeSeries(windowSeries(all, _pulseFeePeriod))
   const svg = fs.low.length >= 2
-    ? _pulseChartSvg(fs.low, { color: 'var(--orange,#f59e0b)', band: fs.high })
+    ? _pulseInteractiveChart(fs.low, { key: 'fee', color: 'var(--orange,#f59e0b)', band: fs.high, h: 72 })
     : `<div style="height:64px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:11px;color:var(--fg-3);line-height:1.45;padding:0 8px">${
         _T('Recording started — the chart fills in from here. Hyperliquid publishes no historical volume, so there is nothing to backfill from.',
            'Grabación iniciada — el gráfico se llena desde aquí. Hyperliquid no publica volumen histórico, así que no hay nada que rellenar.')}</div>`
@@ -12614,6 +12787,18 @@ function _pulseFeeChartHtml() {
 
 function _pulseRender(el) {
   if (!el) return
+  try { _pulseRenderInner(el) } catch (e) {
+    // A throw here used to leave innerHTML unassigned with the row still marked expanded,
+    // so every later render threw too and the whole tab stopped responding to taps. That
+    // is what a spot row did: it has no open interest or premium, and the card called
+    // .toFixed on undefined. Collapse everything and paint, rather than freeze.
+    console.warn('[pulse render]', e.message)
+    _mobVExpandedIds.clear()
+    try { _pulseRenderInner(el) } catch { el.innerHTML = `<div class="mob-v-empty">${_T('Could not draw this view.', 'No se pudo dibujar esta vista.')}</div>` }
+  }
+}
+
+function _pulseRenderInner(el) {
   _pulseFetch()
   _pulseFetchVolume()   // our own server, not Hyperliquid — no rate-limit budget spent
   const d = _pulseData
@@ -12695,7 +12880,7 @@ function _pulseRender(el) {
 
     ${_pulseSpot ? _pulseSection(_T('Spot', 'Spot'),
       `${_pulseUsd(_pulseSpot.vol)} ${_T('traded across', 'negociado en')} ${_pulseSpot.pairs} ${_T('pairs in 24h', 'pares en 24h')}`,
-      _pulseSpot.top.map(r => _pulseRow({ coin: r.coin, vol: r.vol, apr: NaN }, _pulseUsd(r.vol), 'var(--fg)', 'sp')).join('')) : ''}
+      _pulseSpot.top.map(r => _pulseRow(r, _pulseUsd(r.vol), 'var(--fg)', 'sp')).join('')) : ''}
 
     ${_pulseDex ? _pulseSection(_T('Builder dexes · HIP-3', 'Dexes de constructores · HIP-3'),
       _T('Markets deployed by builders on Hyperliquid, separate from the main exchange.',

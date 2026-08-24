@@ -155,14 +155,30 @@ export function computeSpot(pair) {
   const ctxs = pair?.[1]
   const universe = pair?.[0]?.universe
   if (!Array.isArray(ctxs)) return { ok: false, vol: 0, pairs: 0, top: [] }
+  // spotMetaAndAssetCtxs does NOT return ctxs index-parallel to universe — the pairing is
+  // by c.coin. Zipping them by index silently attributed one market's price, supply and
+  // volume to another: the "WOW" row was showing HYPE's $80 mark and $24B cap.
+  const known = new Set((universe ?? []).map(u => u?.name).filter(Boolean))
   const rows = []
   let vol = 0
-  ctxs.forEach((c, i) => {
+  ctxs.forEach((c) => {
     const v = parseFloat(c?.dayNtlVlm ?? 0)
     if (!Number.isFinite(v)) return
     vol += v
-    const name = universe?.[i]?.name
-    if (name) rows.push({ coin: name, vol: v })
+    const name = known.has(c?.coin) ? c.coin : null
+    if (!name) return
+    // A spot market has no open interest, funding or premium — those belong to perps, and
+    // a card that showed 0 for them would be stating something false rather than absent.
+    // It does have a price, a 24h move and a supply, so carry those.
+    const mark = parseFloat(c?.markPx ?? 0) || parseFloat(c?.midPx ?? 0)
+    const prev = parseFloat(c?.prevDayPx ?? 0)
+    const supply = parseFloat(c?.circulatingSupply ?? 0)
+    rows.push({
+      coin: name, vol: v, spot: true,
+      mark: Number.isFinite(mark) ? mark : 0,
+      chg:  prev > 0 && mark > 0 ? (mark / prev - 1) * 100 : null,
+      marketCap: supply > 0 && mark > 0 ? supply * mark : 0,
+    })
   })
   rows.sort((a, b) => b.vol - a.vol)
   return { ok: rows.length > 0, vol, pairs: ctxs.length, top: rows.slice(0, 5) }
