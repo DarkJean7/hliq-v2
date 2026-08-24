@@ -165,6 +165,7 @@ import {
   approveBuilderFee,
   approveAgentKey,
   sendUsdcOnCore,
+  sendValidate,
   setBuilderFeeEnabled,
   isBuilderFeeEnabled,
   applyReferrer,
@@ -17732,6 +17733,261 @@ window.__mobDepDest = function(dest) {
   if (pp) { pp.style.background = dest === 'perps' ? 'var(--accent)' : 'var(--panel-1)'; pp.style.color = dest === 'perps' ? '#000' : 'var(--fg)' }
   if (ps) { ps.style.background = dest === 'spot'  ? 'var(--accent)' : 'var(--panel-1)'; ps.style.color = dest === 'spot'  ? '#000' : 'var(--fg)' }
   window.__updateDepositPreview()
+}
+
+// ─── SEND USDC ON HYPERCORE ───────────────────────────────────────────────────
+//
+// Hyperliquid's own "Send" moves USDC between two accounts' HyperCore balances — perp to
+// perp, or spot to spot. It settles in about a second and costs no gas, which makes it the
+// right way to move money between your own accounts, and the reason the subscription
+// flow already uses it (see sendUsdcOnCore).
+//
+// It needs the MAIN wallet to sign. An agent key can place and cancel orders but cannot
+// move funds — Hyperliquid rejects a transfer signed by an API wallet — so this sheet asks
+// for a wallet connection rather than silently failing at the signature.
+let _sendSource = 'perp'      // 'perp' | 'spot'
+let _sendPerpFree = 0
+let _sendSpotFree = 0
+
+window.mobVSend = function() {
+  if (isPaper()) {
+    _paperToast(_T('Send moves real USDC — switch to a real account first.',
+                   'Enviar mueve USDC real — cambia a una cuenta real primero.'), 'err')
+    return
+  }
+  _mobSendModal()
+}
+
+function _mobSendModal() {
+  document.getElementById('mobSendModal')?.remove()
+  _sendPerpFree = 0
+  _sendSpotFree = 0
+
+  const connected = isMainWalletConnected()
+  const from = getMainAddress()
+  const banner = !connected ? `
+    <div style="background:rgba(var(--accent-rgb,99,202,183),.08);border:1px solid rgba(var(--accent-rgb,99,202,183),.25);border-radius:10px;padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:12px">
+      <div>
+        <div style="font-size:13px;font-weight:600;margin-bottom:2px">${_T('Wallet not connected', 'Cartera no conectada')}</div>
+        <div style="font-size:12px;color:var(--muted)">${
+          _T('Sending needs your main wallet — an agent key cannot move funds.',
+             'Enviar requiere tu cartera principal — una clave de agente no puede mover fondos.')}</div>
+      </div>
+      <button onclick="window.__mobConnectWallet()" style="flex-shrink:0;padding:9px 16px;border-radius:8px;border:none;background:var(--accent);color:#000;font-size:13px;font-weight:700;cursor:pointer">${_T('Connect', 'Conectar')}</button>
+    </div>` : `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:14px">${
+      _T('Sending from', 'Enviando desde')} <span style="font-family:monospace;color:var(--fg)">${from.slice(0, 6)}…${from.slice(-4)}</span></div>`
+
+  const pocket = (id, label) =>
+    `<button id="sendSrc-${id}" onclick="window.__sendSetSource('${id}')" style="flex:1;min-width:0;padding:10px 8px;border-radius:9px;border:1px solid var(--border);cursor:pointer;
+       background:${_sendSource === id ? 'var(--accent)' : 'var(--panel-1)'};color:${_sendSource === id ? '#000' : 'var(--fg)'}">
+      <div style="font-size:12.5px;font-weight:700">${label}</div>
+      <div id="sendBal-${id}" style="font-size:11px;opacity:.75;margin-top:1px">—</div>
+    </button>`
+
+  const wrap = document.createElement('div')
+  wrap.id = 'mobSendModal'
+  wrap.innerHTML = `
+    <div onclick="window.__closeSendModal()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:8999"></div>
+    <div style="position:fixed;bottom:0;left:0;right:0;z-index:9000;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-height:90vh;overflow-y:auto">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 18px 14px;border-bottom:1px solid var(--border)">
+        <span style="font-size:17px;font-weight:700">${_T('Send USDC', 'Enviar USDC')}</span>
+        <button onclick="window.__closeSendModal()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1;padding:0 4px">×</button>
+      </div>
+      <div style="padding:18px">
+        ${banner}
+        <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">${_T('From', 'Desde')}</div>
+        <div style="display:flex;gap:8px;margin-bottom:14px">
+          ${pocket('perp', _T('Trading account', 'Cuenta de trading'))}
+          ${pocket('spot', _T('Spot', 'Spot'))}
+        </div>
+
+        <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">${_T('Destination address', 'Dirección de destino')}</div>
+        <input id="sendDest" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="0x…" oninput="window.__sendPreview()"
+          style="width:100%;box-sizing:border-box;background:var(--panel-1);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--fg);outline:none;font-family:monospace"/>
+        <div id="sendAcctPicks" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px"></div>
+
+        <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin:14px 0 8px">${_T('Amount (USDC)', 'Cantidad (USDC)')}</div>
+        <div style="display:flex;gap:8px">
+          <input id="sendAmount" type="number" min="0" step="any" placeholder="0.00" oninput="window.__sendPreview()"
+            style="flex:1;min-width:0;background:var(--panel-1);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:15px;color:var(--fg);outline:none"/>
+          <button onclick="window.__sendSetMax()" style="padding:10px 14px;background:var(--panel-1);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0">MAX</button>
+        </div>
+
+        <div id="sendWarning" style="display:none;font-size:12px;border-radius:8px;padding:10px 12px;margin-top:12px;line-height:1.45"></div>
+        <div id="sendStatus" style="font-size:13px;min-height:16px;margin:10px 0"></div>
+        <button id="sendBtn" disabled onclick="window.__sendExecute()"
+          style="width:100%;padding:14px;border-radius:10px;border:none;background:var(--accent);color:#000;font-size:15px;font-weight:700;cursor:pointer">${_T('Enter an amount', 'Introduce una cantidad')}</button>
+        <div style="font-size:11px;color:var(--fg-3);line-height:1.5;margin-top:12px">${
+          _T('Goes to a Hyperliquid account, not an Arbitrum address. Transfers are instant and cannot be reversed — check the address. To move money to an exchange or a wallet off Hyperliquid, use Withdraw instead.',
+             'Va a una cuenta de Hyperliquid, no a una dirección de Arbitrum. Las transferencias son instantáneas e irreversibles — revisa la dirección. Para mover dinero fuera de Hyperliquid, usa Retirar.')}</div>
+      </div>
+    </div>`
+  document.body.appendChild(wrap)
+
+  const picker = document.getElementById('walletPickerModal')
+  if (picker) picker.style.zIndex = '9001'
+
+  _sendRenderAcctPicks()
+  _sendLoadBalances()
+  window.__sendPreview()
+}
+
+window.__closeSendModal = function() {
+  document.getElementById('mobSendModal')?.remove()
+  const picker = document.getElementById('walletPickerModal')
+  if (picker) picker.style.zIndex = ''
+}
+
+/**
+ * Your other accounts as one-tap destinations. Moving money between your own wallets is
+ * the main reason to use this, and retyping a 42-character address to do it is how people
+ * send funds to the wrong place.
+ */
+function _sendRenderAcctPicks() {
+  const el = document.getElementById('sendAcctPicks')
+  if (!el) return
+  const me = (getMainAddress() ?? '').toLowerCase()
+  const mine = WM.load().filter(w => /^0x[0-9a-fA-F]{40}$/.test(w.addr ?? '') && w.addr.toLowerCase() !== me)
+  el.innerHTML = mine.slice(0, 6).map(w => {
+    const lbl = w.label || (w.addr.slice(0, 6) + '…' + w.addr.slice(-4))
+    return `<button onclick="window.__sendPickAddr('${esc(w.addr)}')" style="padding:5px 10px;border-radius:12px;border:1px solid var(--border2);background:var(--panel-1);color:var(--muted);font-size:11px;font-weight:600;cursor:pointer">${esc(lbl)}</button>`
+  }).join('')
+}
+
+window.__sendPickAddr = function(a) {
+  const el = document.getElementById('sendDest')
+  if (el) { el.value = a; window.__sendPreview() }
+}
+
+async function _sendLoadBalances() {
+  const from = getMainAddress()
+  if (!from) return
+  try {
+    const [perp, spot] = await Promise.all([
+      infoClient.clearinghouseState({ user: from }).catch(() => null),
+      infoClient.spotClearinghouseState({ user: from }).catch(() => null),
+    ])
+    _sendPerpFree = Number(perp?.withdrawable ?? 0)
+    const usdc = (spot?.balances ?? []).find(b => String(b.coin).toUpperCase() === 'USDC')
+    _sendSpotFree = Number(usdc?.total ?? 0) - Number(usdc?.hold ?? 0)
+  } catch { /* the preview just shows what it has */ }
+
+  const set = (id, v) => { const e = document.getElementById('sendBal-' + id); if (e) e.textContent = '$' + fmtUSD(Math.max(0, v)) }
+  set('perp', _sendPerpFree)
+  set('spot', _sendSpotFree)
+  // Start on whichever pocket can actually pay, so MAX is not 0 on the common case of
+  // an account whose USDC all sits on one side.
+  if (_sendPerpFree <= 0 && _sendSpotFree > 0) window.__sendSetSource('spot')
+  window.__sendPreview()
+}
+
+window.__sendSetSource = function(src) {
+  _sendSource = src
+  for (const id of ['perp', 'spot']) {
+    const b = document.getElementById('sendSrc-' + id)
+    if (!b) continue
+    b.style.background = id === src ? 'var(--accent)' : 'var(--panel-1)'
+    b.style.color      = id === src ? '#000' : 'var(--fg)'
+  }
+  window.__sendPreview()
+}
+
+const _sendFree = () => _sendSource === 'perp' ? _sendPerpFree : _sendSpotFree
+
+window.__sendSetMax = function() {
+  const el = document.getElementById('sendAmount')
+  // Floor rather than round: rounding up produces an amount the account cannot cover,
+  // and the rejection arrives only after the signature prompt.
+  if (el) { el.value = Math.floor(Math.max(0, _sendFree()) * 100) / 100; window.__sendPreview() }
+}
+
+window.__sendPreview = function() {
+  const dest = (document.getElementById('sendDest')?.value ?? '').trim()
+  const amt  = parseFloat(document.getElementById('sendAmount')?.value ?? '')
+  const btn  = document.getElementById('sendBtn')
+  const warn = document.getElementById('sendWarning')
+  if (!btn || !warn) return
+
+  // The decision is a pure function (sendValidate) so it can be tested without a wallet;
+  // everything here is wording.
+  const v = sendValidate({
+    connected: isMainWalletConnected(), dest, amount: amt,
+    perpFree: _sendPerpFree, spotFree: _sendSpotFree, source: _sendSource,
+    self: getMainAddress() ?? '',
+  })
+  const free = _sendFree()
+  const pocket = _sendSource === 'perp' ? _T('your trading account', 'tu cuenta de trading') : 'spot'
+  const LABEL = {
+    connect:  _T('Connect your wallet', 'Conecta tu cartera'),
+    nodest:   _T('Enter a destination', 'Introduce un destino'),
+    baddest:  _T('Invalid address', 'Dirección inválida'),
+    selfdest: _T('That is this account', 'Esa es esta cuenta'),
+    noamt:    _T('Enter an amount', 'Introduce una cantidad'),
+    nofunds:  _T('Not enough USDC', 'USDC insuficiente'),
+    send:     `${_T('Send', 'Enviar')} $${fmtUSD(amt || 0)}`,
+  }
+  const MSG = {
+    badformat: _T('A Hyperliquid address is 0x followed by 40 characters.',
+                  'Una dirección de Hyperliquid es 0x seguido de 40 caracteres.'),
+    self:      _T('The destination is the wallet you are sending from.',
+                  'El destino es la misma cartera desde la que envías.'),
+    short:     `${_T('Free in', 'Libre en')} ${pocket}: $${fmtUSD(Math.max(0, free))}.`,
+    switch:    `${_T('Free in', 'Libre en')} ${pocket}: $${fmtUSD(Math.max(0, free))}. ` +
+               (_sendSource === 'perp'
+                 ? _T('Spot has enough — switch above.', 'Spot tiene suficiente — cambia arriba.')
+                 : _T('Your trading account has enough — switch above.', 'Tu cuenta de trading tiene suficiente — cambia arriba.')),
+    irreversible: _T('Transfers on Hyperliquid are instant and cannot be reversed.',
+                     'Las transferencias en Hyperliquid son instantáneas e irreversibles.'),
+  }
+  const msg = MSG[v.msg] ?? ''
+  warn.style.display    = msg ? '' : 'none'
+  warn.textContent      = msg
+  warn.style.color      = v.danger ? 'var(--red)' : 'var(--fg-2)'
+  warn.style.background = v.danger ? 'rgba(255,77,109,.08)' : 'var(--panel-1)'
+  btn.disabled          = !v.ok
+  btn.textContent       = LABEL[v.label]
+  btn.style.opacity     = v.ok ? '1' : '.55'
+}
+
+window.__sendExecute = async function() {
+  const dest = (document.getElementById('sendDest')?.value ?? '').trim()
+  const amt  = parseFloat(document.getElementById('sendAmount')?.value ?? '')
+  const btn  = document.getElementById('sendBtn')
+  const st   = document.getElementById('sendStatus')
+  const from = getMainAddress()
+  if (!from || !(amt > 0)) return
+
+  const set = (t, dis) => { if (btn) { btn.disabled = dis; btn.textContent = t } }
+  if (st) st.innerHTML = ''
+  set(_T('Check your wallet…', 'Revisa tu billetera…'), true)
+  try {
+    // One tap, one signature — never retried after a prompt has been shown. See
+    // sendUsdcOnCore for why a fallback here is worse than an honest failure.
+    const p = sendUsdcOnCore({ from, destination: dest, amount: amt, signer: getHlSigner(), source: _sendSource })
+    setTimeout(() => { try { wakeWallet() } catch {} }, 350)
+    await p
+    if (st) st.innerHTML = `<span style="color:var(--green)">✓ ${_T('Sent', 'Enviado')} $${fmtUSD(amt)} → ${dest.slice(0, 6)}…${dest.slice(-4)}</span>`
+    _paperToast(_T('Sent', 'Enviado'), 'ok')
+    _sendLoadBalances()
+    const amtEl = document.getElementById('sendAmount'); if (amtEl) amtEl.value = ''
+    set(_T('Send', 'Enviar'), true)
+    // The balance the dashboard shows came from before this transfer.
+    setTimeout(() => { try { refreshLive(true) } catch {} }, 1200)
+  } catch (e) {
+    // The SDK's top-level message is always the generic signing error; the reason the
+    // user cares about is nested on .cause, sometimes more than one deep.
+    const parts = []
+    for (let cur = e, n = 0; cur && n < 6; cur = cur.cause, n++) {
+      const m = cur?.message || (n === 0 ? String(cur) : '')
+      if (m && !parts.includes(m)) parts.push(m)
+    }
+    const all = parts.join(' — ')
+    const rejected = /reject|denied|cancell?ed|user refused/i.test(all)
+    if (st) st.innerHTML = `<span style="color:var(--red)">${esc(rejected ? _T('Cancelled in your wallet.', 'Cancelado en tu cartera.') : (parts[parts.length - 1] || all || 'Send failed'))}</span>`
+    set(_T('Send', 'Enviar'), false)
+    window.__sendPreview()
+  }
 }
 
 // In paper mode these move simulated money instead of opening the real bridge flow —

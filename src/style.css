@@ -5428,11 +5428,13 @@ body.layout-mobile .nav-tabs { display: none !important; }
 }
 .mob-v-act-pill svg { flex-shrink: 0; opacity: 0.9; width: 16px; height: 16px; }
 .mob-v-act-pill span { overflow: hidden; text-overflow: ellipsis; }
-/* On the narrowest phones the arrow is decoration — drop it (and the gap it leaves
-   behind) so the label breathes instead of spilling past the pill edge. */
-@media (max-width: 380px) {
+/* Three labelled pills now share the row with two icon squares. The squares and gaps
+   are fixed cost (~110px), so on a 390px phone each pill gets ~87px while "Withdraw"
+   needs ~109px with its arrow. The arrow is decoration — drop it early enough that the
+   labels never have to ellipsis, rather than only on the narrowest phones. */
+@media (max-width: 460px) {
   .mob-v-act-pill svg { display: none; }
-  .mob-v-act-pill { gap: 0; padding: 0 8px; }
+  .mob-v-act-pill { gap: 0; padding: 0 6px; font-size: 13px; }
 }
 .mob-v-act-pill.primary {
   background: var(--accent);

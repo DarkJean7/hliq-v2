@@ -218,7 +218,7 @@ export async function approveBuilderFee(signer) {
 // a trader's USDC actually sits. If the perp send fails for a reason that is not a rejected
 // signature and spot could have covered it, we fall back rather than making the user work
 // out which pocket their money is in.
-export async function sendUsdcOnCore({ from, destination, amount, signer }) {
+export async function sendUsdcOnCore({ from, destination, amount, signer, source = 'auto' }) {
   const amt = Number(amount)
   if (!(amt > 0)) throw new Error('Amount must be greater than zero')
   if (!/^0x[0-9a-fA-F]{40}$/.test(destination ?? '')) throw new Error('Invalid destination address')
@@ -233,7 +233,14 @@ export async function sendUsdcOnCore({ from, destination, amount, signer }) {
   const usdcRow  = spotBal.find(b => String(b.coin).toUpperCase() === 'USDC')
   const spotFree = Number(usdcRow?.total ?? 0) - Number(usdcRow?.hold ?? 0)
 
-  if (perpFree < amt && spotFree < amt) {
+  // `source` lets the Send sheet honour an explicit pocket choice. 'auto' keeps the
+  // subscription flow's behaviour: whichever pocket can cover it, perp first.
+  if (source === 'perp' && perpFree < amt)
+    throw new Error(`Trading account has $${perpFree.toFixed(2)} free, and this needs $${amt.toFixed(2)}.`)
+  if (source === 'spot' && spotFree < amt)
+    throw new Error(`Spot has $${spotFree.toFixed(2)} free, and this needs $${amt.toFixed(2)}.`)
+
+  if (source === 'auto' && perpFree < amt && spotFree < amt) {
     // Deliberately not split across both pockets: that would be two signatures for one
     // payment. Someone holding enough in total just needs to consolidate first, so say so
     // rather than leaving them staring at a balance that looks sufficient.
@@ -258,7 +265,8 @@ export async function sendUsdcOnCore({ from, destination, amount, signer }) {
   // message that matched nothing, fell into the fallback, and immediately asked the user to
   // sign again — and on mobile the second request arrived with no deep-link nudge, so the
   // app looked frozen and got tapped again. Declining has to mean declined.
-  if (perpFree >= amt) return client.usdSend({ destination, amount: value })
+  if (source === 'perp' || (source === 'auto' && perpFree >= amt))
+    return client.usdSend({ destination, amount: value })
 
   // The token id is "SYMBOL:0x…" and is NOT stable enough to hardcode — read it from
   // spotMeta so a token-index change cannot silently send to the wrong asset.
@@ -594,4 +602,28 @@ export function parseOrderResult(result) {
     waiting,
     raw:     result,
   }
+}
+/**
+ * What the Send sheet should say, as a pure decision — the sheet only paints the result.
+ *
+ * Order matters and is not alphabetical: it walks the blockers in the order the user can
+ * actually clear them. Typing a bad address while disconnected must say "connect", not
+ * "invalid address", because connecting is the step in front of them.
+ *
+ * @returns {{ok: boolean, label: string, msg: string, danger: boolean}}
+ */
+export function sendValidate({ connected, dest = '', amount, perpFree = 0, spotFree = 0, source = 'perp', self = '' }) {
+  const amt   = Number(amount)
+  const free  = source === 'perp' ? perpFree : spotFree
+  const other = source === 'perp' ? spotFree : perpFree
+  const valid = /^0x[0-9a-fA-F]{40}$/.test(dest)
+  const isSelf = valid && !!self && dest.toLowerCase() === self.toLowerCase()
+
+  if (!connected)  return { ok: false, label: 'connect',  msg: '',           danger: false }
+  if (!dest)       return { ok: false, label: 'nodest',   msg: '',           danger: false }
+  if (!valid)      return { ok: false, label: 'baddest',  msg: 'badformat',  danger: true }
+  if (isSelf)      return { ok: false, label: 'selfdest', msg: 'self',       danger: true }
+  if (!(amt > 0))  return { ok: false, label: 'noamt',    msg: '',           danger: false }
+  if (amt > free)  return { ok: false, label: 'nofunds',  msg: other >= amt ? 'switch' : 'short', danger: true }
+  return { ok: true, label: 'send', msg: 'irreversible', danger: false }
 }
