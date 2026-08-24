@@ -67,9 +67,15 @@ jobs:
       - name: Sync strategy server
         id: syncstrat
         run: |
-          out=$(rsync -azc -i server.js "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/server.js")
-          echo "${out:-(unchanged)}"
-          if echo "$out" | grep -qE '^[<>]f'; then
+          srv=$(rsync -azc -i server.js "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/server.js")
+          # strategies/ had never been in the pipeline — a new or edited bot script reached
+          # prod only if someone remembered to scp it, and nothing reported the drift. It
+          # shares this step's gate because a strategy script is read when hliq-strat spawns
+          # a child, so shipping one without the restart below deploys nothing.
+          bots=$(rsync -azc -i --exclude='*.json' strategies/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/strategies/")
+          echo "${srv:-(server.js unchanged)}"
+          echo "${bots:-(strategies unchanged)}"
+          if { echo "$srv"; echo "$bots"; } | grep -qE '^[<>]f'; then
             echo "changed=yes" >> "$GITHUB_OUTPUT"
           else
             echo "changed=no"  >> "$GITHUB_OUTPUT"

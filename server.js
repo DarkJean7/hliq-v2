@@ -60,6 +60,7 @@ const SCRIPTS = {
   trend:     'strategies/trend.js',
   accumulator: 'strategies/accumulator.js',
   volbreak:  'strategies/volbreak.js',
+  copytrade: 'strategies/copytrade.js',
   // Per-position risk guards (share one script; mode comes from --mode in args)
   liqguard:  'strategies/guardian.js',
   levbrake:  'strategies/guardian.js',

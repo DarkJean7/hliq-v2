@@ -2384,6 +2384,10 @@ function populateCoinDropdown() {
 let _mktCtxMap     = {}   // coin → { oi, volume, change24h, funding, markPx, ... }
 let _mktCatMap     = {}   // coin → category string
 let _spotNameMap   = {}   // @N / 'TOKEN/USDC' → display name
+// name → market cap. _mktCtxMap is keyed by '@N' and 'TOKEN/USDC', but everywhere outside
+// the markets list a coin is known by its plain name (Pulse rows, positions), so the lookup
+// has to go through the name. Several keys can share one name; the biggest is the real token.
+let _mktCapByName  = {}
 let _spotPairToAt  = {}   // 'TOKEN/USDC' → '@N'  (used to deduplicate allMids entries)
 let _spotCommunityKeys = new Set()  // @N keys with deployerTradingFeeShare == 0 (real community tokens)
 let _spotProtocolKeys  = new Set()  // @N keys that are protocol-deployed spot (BTC/ETH/stocks/ETFs) — feeShare != 0
@@ -2500,6 +2504,13 @@ async function _doEnsureMarketData() {
         _mktCtxMap[key] = entry
         const atKey = _spotPairToAt[key]   // if key is 'PURR/USDC', also set '@0'
         if (atKey && atKey !== key) _mktCtxMap[atKey] = entry
+      }
+
+      _mktCapByName = {}
+      for (const [k, v] of Object.entries(_mktCtxMap)) {
+        const name = _spotNameMap[k]
+        const cap  = v?.marketCap ?? 0
+        if (name && cap > (_mktCapByName[name] ?? 0)) _mktCapByName[name] = cap
       }
 
       // Deduplicate _spotCommunityKeys: multiple @N keys can share the same display name
@@ -12253,7 +12264,8 @@ async function _pulseFetch(force = false) {
   }
 }
 
-const _pulseUsd = (n) => n >= 1e9 ? '$' + (n / 1e9).toFixed(2) + 'B'
+const _pulseUsd = (n) => n >= 1e12 ? '$' + (n / 1e12).toFixed(2) + 'T'
+                       : n >= 1e9 ? '$' + (n / 1e9).toFixed(2) + 'B'
                        : n >= 1e6 ? '$' + (n / 1e6).toFixed(1) + 'M'
                        : n >= 1e3 ? '$' + (n / 1e3).toFixed(0) + 'k'
                        : '$' + n.toFixed(0)
@@ -12262,16 +12274,121 @@ const _pulseUsd = (n) => n >= 1e9 ? '$' + (n / 1e9).toFixed(2) + 'B'
 // narrow row is noise, so round hard and let the sign and scale carry it.
 const _pulseApr = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v) >= 100 ? Math.round(Math.abs(v)) : Math.abs(v).toFixed(1)}%`
 
-function _pulseRow(r, right, tone) {
-  return `<div class="mob-v-row" style="cursor:pointer" onclick="window.__watchOpenTrade?.('${esc(r.coin)}')">
-    ${_mobVCoinIcon(r.coin)}
-    <div class="mob-v-row-info">
-      <div class="mob-v-row-name">${esc(_ocCoinLabel(r.coin))}</div>
-      <div class="mob-v-row-sub">${_pulseUsd(r.vol)} ${_T('24h vol', 'vol 24h')}</div>
+// ─── PULSE: THE ASSET CARD ────────────────────────────────────────────────────
+//
+// Tapping a row used to jump to the Trade tab, which threw away the context you tapped
+// from. Pulse is where you go to READ a market, so a row expands in place instead — the
+// same pattern positions and orders already use.
+//
+// The multi-timeframe numbers need candles, and candles are one call PER COIN. Fetching
+// them for every row would be dozens of calls for rows nobody opened, so they are fetched
+// lazily on expand and cached for the session. One 1h series covers 1h, 24h, 7d and 30d.
+const _pulseCandles = {}      // coin → { pts } | 'loading' | 'error'
+
+function _pulseChangeFrom(pts, msAgo) {
+  if (!Array.isArray(pts) || pts.length < 2) return null
+  const last = parseFloat(pts[pts.length - 1]?.c ?? 0)
+  if (!(last > 0)) return null
+  const cutoff = Date.now() - msAgo
+  // The candle AT or before the cutoff, not the first one after it — snapping forward
+  // would measure a different window per coin depending on where its history starts.
+  let base = null
+  for (const k of pts) { if (+(k.t ?? 0) <= cutoff) base = parseFloat(k.c ?? 0); else break }
+  if (!(base > 0)) return null
+  return (last / base - 1) * 100
+}
+
+async function _pulseLoadCandles(coin) {
+  if (_pulseCandles[coin] && _pulseCandles[coin] !== 'error') return
+  _pulseCandles[coin] = 'loading'
+  try {
+    const pts = await fetchCandles(coin, '1h', Date.now() - 31 * 24 * 3600e3)
+    _pulseCandles[coin] = Array.isArray(pts) && pts.length ? pts : 'error'
+  } catch { _pulseCandles[coin] = 'error' }
+  if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
+}
+
+window.__pulseToggle = function(coin, id) {
+  const open = _mobVExpandedIds.has(id)
+  if (open) _mobVExpandedIds.delete(id)
+  else { _mobVExpandedIds.add(id); _pulseLoadCandles(coin) }
+  _pulseRender(document.getElementById('mobVContent'))
+}
+
+function _pulseCell(label, value, tone) {
+  return `<div style="flex:1;min-width:74px">
+    <div style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">${label}</div>
+    <div style="font-size:13px;font-weight:700;margin-top:2px;color:${tone || 'var(--fg)'}">${value}</div>
+  </div>`
+}
+
+const _pulsePct = (v) => v == null ? '—'
+  : `<span style="color:${v >= 0 ? 'var(--green)' : 'var(--red)'}">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>`
+
+function _pulseCardHtml(r) {
+  const c = _pulseCandles[r.coin]
+  const pts = Array.isArray(c) ? c : null
+  const tf = (ms) => pts ? _pulsePct(_pulseChangeFrom(pts, ms)) : (c === 'loading' ? '…' : '—')
+  // Market cap only exists for a token that also trades spot; a perp on its own has none.
+  const mkt = _mktCapByName[r.coin] ?? 0
+
+  return `<div style="background:var(--panel-2);border-top:1px solid var(--border2);padding:10px 16px 12px">
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      ${_pulseCell(_T('Mark', 'Precio'), '$' + fmtPrice(r.mark))}
+      ${_pulseCell(_T('24h', '24h'), _pulsePct(r.chg))}
+      ${_pulseCell(_T('Funding / 8h', 'Financiación / 8h'),
+        `${r.apr >= 0 ? '+' : '−'}${Math.abs(r.apr / 365 / 3).toFixed(4)}%`,
+        r.apr >= 0 ? 'var(--green)' : 'var(--red)')}
     </div>
-    <div class="mob-v-row-right">
-      <div class="mob-v-row-val" style="color:${tone}">${right}</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      ${_pulseCell('1h',  tf(3600e3))}
+      ${_pulseCell('7d',  tf(7 * 24 * 3600e3))}
+      ${_pulseCell('30d', tf(30 * 24 * 3600e3))}
     </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      ${_pulseCell(_T('Open interest', 'Interés abierto'), _pulseUsd(r.oi))}
+      ${_pulseCell(_T('24h volume', 'Volumen 24h'), _pulseUsd(r.vol))}
+      ${_pulseCell(_T('Market cap', 'Capitalización'), mkt > 0 ? _pulseUsd(mkt) : '—')}
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      ${_pulseCell(_T('Funding APR', 'Financiación APR'), _pulseApr(r.apr),
+        r.apr >= 0 ? 'var(--green)' : 'var(--red)')}
+      ${_pulseCell(_T('Premium', 'Prima'), `${r.premium >= 0 ? '+' : ''}${r.premium.toFixed(3)}%`)}
+      ${_pulseCell(_T('OI / volume', 'IA / volumen'), r.vol > 0 ? (r.oi / r.vol).toFixed(2) + '×' : '—')}
+    </div>
+    <button onclick="event.stopPropagation();window.__watchOpenTrade?.('${esc(r.coin)}')"
+      style="width:100%;margin-top:12px;padding:9px;border:1px solid var(--border2);border-radius:9px;
+             background:rgba(255,255,255,.06);color:var(--fg);font-size:12.5px;font-weight:700;cursor:pointer">
+      ${_T('Open in Trade', 'Abrir en Trade')}
+    </button>
+  </div>`
+}
+
+function _pulseRow(r, right, tone, key = '') {
+  // The id has to survive being an element id AND a single-quoted handler argument, and a
+  // coin here can be "xyz:SPCX" or "@107". The section key keeps the same coin distinct
+  // when it appears in two lists.
+  const id = 'pl' + key + '-' + [...String(r.coin)].map(ch => ch.charCodeAt(0).toString(36)).join('')
+  const xp = _mobVExpandedIds.has(id)
+  // Funding on every row, not just the funding sections — it is the number that says
+  // whether a crowded position is costing you to hold, and it belongs beside the volume.
+  const fund = Number.isFinite(r.apr)
+    ? `<span style="color:${r.apr >= 0 ? 'var(--green)' : 'var(--red)'}">${_pulseApr(r.apr)} ${_T('APR', 'APR')}</span>`
+    : ''
+  return `<div>
+    <div class="mob-v-row" style="cursor:pointer" onclick="window.__pulseToggle('${esc(r.coin)}','${id}')">
+      ${_mobVCoinIcon(r.coin)}
+      <div class="mob-v-row-info">
+        <div class="mob-v-row-name">${esc(_ocCoinLabel(r.coin))}</div>
+        <div class="mob-v-row-sub">${_pulseUsd(r.vol)} ${_T('24h vol', 'vol 24h')}${fund ? ' · ' + fund : ''}</div>
+      </div>
+      <div class="mob-v-row-right">
+        <div class="mob-v-row-val" style="color:${tone}">${right}</div>
+      </div>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12"
+        style="color:var(--muted);flex-shrink:0;margin-left:6px;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>
+    </div>
+    ${xp ? _pulseCardHtml(r) : ''}
   </div>`
 }
 
@@ -12315,21 +12432,21 @@ function _pulseRender(el) {
     ${_pulseSection(_T('Where the money sits', 'Dónde está el dinero'),
       _T('Largest markets by open interest — the positions actually at risk right now.',
          'Mayores mercados por interés abierto — las posiciones realmente en riesgo ahora.'),
-      d.topOi.map(r => _pulseRow(r, _pulseUsd(r.oi), 'var(--fg)')).join(''))}
+      d.topOi.map(r => _pulseRow(r, _pulseUsd(r.oi), 'var(--fg)', 'oi')).join(''))}
 
     ${_pulseSection(_T('Longs are paying most', 'Los largos pagan más'),
       _T('Highest funding, annualised. A crowded long side pays shorts to stay in.',
          'Financiación más alta, anualizada. Un lado largo saturado paga a los cortos.'),
-      d.fundingHigh.map(r => _pulseRow(r, _pulseApr(r.apr), green)).join(''))}
+      d.fundingHigh.map(r => _pulseRow(r, _pulseApr(r.apr), green, 'fh')).join(''))}
 
     ${_pulseSection(_T('Shorts are paying most', 'Los cortos pagan más'),
       _T('Most negative funding — the squeeze side. Shorts pay longs here.',
          'Financiación más negativa — el lado del squeeze. Los cortos pagan a los largos.'),
-      d.fundingLow.map(r => _pulseRow(r, _pulseApr(r.apr), red)).join(''))}
+      d.fundingLow.map(r => _pulseRow(r, _pulseApr(r.apr), red, 'fl')).join(''))}
 
     ${_pulseSection(_T('Biggest movers · 24h', 'Mayores movimientos · 24h'), '',
-      [...d.gainers.map(r => _pulseRow(r, `+${r.chg.toFixed(1)}%`, green)),
-       ...d.losers.map(r  => _pulseRow(r, `${r.chg.toFixed(1)}%`,  red))].join(''))}
+      [...d.gainers.map(r => _pulseRow(r, `+${r.chg.toFixed(1)}%`, green, 'up')),
+       ...d.losers.map(r  => _pulseRow(r, `${r.chg.toFixed(1)}%`,  red,  'dn'))].join(''))}
 
     ${_pulseProto ? `<div style="padding:14px 16px 4px">
       <div style="font-size:12px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)">${
@@ -12359,7 +12476,7 @@ function _pulseRender(el) {
 
     ${_pulseSpot ? _pulseSection(_T('Spot', 'Spot'),
       `${_pulseUsd(_pulseSpot.vol)} ${_T('traded across', 'negociado en')} ${_pulseSpot.pairs} ${_T('pairs in 24h', 'pares en 24h')}`,
-      _pulseSpot.top.map(r => _pulseRow({ coin: r.coin, vol: r.vol }, _pulseUsd(r.vol), 'var(--fg)')).join('')) : ''}
+      _pulseSpot.top.map(r => _pulseRow({ coin: r.coin, vol: r.vol, apr: NaN }, _pulseUsd(r.vol), 'var(--fg)', 'sp')).join('')) : ''}
 
     ${_pulseDex ? _pulseSection(_T('Builder dexes · HIP-3', 'Dexes de constructores · HIP-3'),
       _T('Markets deployed by builders on Hyperliquid, separate from the main exchange.',
@@ -13824,6 +13941,9 @@ function _mobVRenderContent(tick = false) {
     // row above it are not context — they are just something to scroll past. Reuses the
     // lift built for full-screen Strats rather than a second mechanism.
     document.getElementById('mobileView')?.classList.add('mob-tab-full')
+    // Market caps come from the spot context map the markets tab builds; warm it so an
+    // expanded card is not permanently showing a dash for cap.
+    try { _ensureMarketData() } catch {}
     if (!_pulseData) el.innerHTML = `<div class="mob-v-empty">${_T('Loading…', 'Cargando…')}</div>`
     _pulseRender(el)
     return
@@ -14637,6 +14757,205 @@ window.__lbPaperOptOut = function() {
  * and Net PnL columns, and the same expandable detail. `opts.paper` only swaps
  * the header controls and the row id source.
  */
+// ─── LEADERBOARD: THE SOCIAL LAYER ────────────────────────────────────────────
+//
+// A board of names and numbers is a scoreboard. What makes it social is being able to
+// act on the person: go look at what they hold, take their address somewhere else, or
+// put your own money behind them. Those three live in the row.
+
+/**
+ * A sub-section inside an expanded leaderboard row, COLLAPSED by default.
+ *
+ * A trader with eleven open orders used to push everything below them — including the
+ * actions and the next person on the board — off the screen. The counts are the useful
+ * part at a glance; the rows are for when you actually want them.
+ */
+function _lbCollapse(id, title, rowsHtml) {
+  const xp = _mobVExpandedIds.has(id)
+  return `<div style="border-bottom:1px solid rgba(255,255,255,0.04)">
+    <div style="display:flex;align-items:center;gap:6px;padding:9px 16px;cursor:pointer;background:var(--panel-2)" onclick="window._mobVToggleRow('${id}')">
+      <span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;font-weight:700">${title}</span>
+      <span style="flex:1"></span>
+      <svg id="mrc-${id}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>
+    </div>
+    <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${rowsHtml}</div>
+  </div>`
+}
+
+function _lbSocialHtml(r) {
+  const a  = esc(r.addr)
+  const nm = esc(r.label || (r.addr.slice(0, 6) + '…' + r.addr.slice(-4)))
+  const btn = (onclick, icon, label, accent) => `<button onclick="event.stopPropagation();${onclick}"
+    style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;border-radius:10px;
+           border:1px solid ${accent ? 'var(--accent)' : 'var(--border2)'};background:${accent ? 'rgba(0,255,204,0.08)' : 'transparent'};
+           color:${accent ? 'var(--accent)' : 'var(--fg)'};font-size:10.5px;font-weight:700;cursor:pointer">
+    <span style="font-size:15px;line-height:1">${icon}</span><span>${label}</span></button>`
+  return `<div style="display:flex;gap:7px;padding:11px 16px;background:var(--panel-2);border-bottom:1px solid rgba(255,255,255,0.04)">
+    ${btn(`window.__lbVisitWallet('${a}')`, '👁', _T('Visit', 'Ver'))}
+    ${btn(`window.__lbCopyAddr('${a}')`, '⧉', _T('Copy', 'Copiar'))}
+    ${btn(`window.__lbCopyTrade('${a}','${nm}')`, '⇄', _T('Copy trade', 'Copiar ops'), true)}
+  </div>`
+}
+
+window.__lbCopyAddr = function(addr) {
+  navigator.clipboard?.writeText(addr).then(
+    () => _paperToast(_T('Address copied', 'Dirección copiada')),
+    () => _paperToast(_T('Could not copy', 'No se pudo copiar'), 'error'))
+}
+
+// ─── VISITING SOMEONE ELSE'S ACCOUNT ──────────────────────────────────────────
+//
+// The whole dashboard is address-driven and every write needs an agent key, so pointing
+// it at a stranger's wallet is already a read-only view of their account — no separate
+// mode to build. The one hazard is that loadDashboard() persists walletAddr, so without
+// a way back the user's own account is quietly replaced on the next reload. Hence the
+// return address and the banner: the visit is always reversible.
+window.__lbVisitWallet = async function(addr) {
+  const cur = localStorage.getItem('walletAddr') || ''
+  if (cur && cur.toLowerCase() !== String(addr).toLowerCase()) {
+    try { sessionStorage.setItem('hliq_visit_return', cur) } catch {}
+  }
+  const input = document.getElementById('walletInput')
+  if (!input) return
+  input.value = addr
+  try { window.mobVHome?.() } catch {}
+  await loadDashboard()
+  _visitBannerSync()
+}
+
+window.__lbEndVisit = async function() {
+  let back = ''
+  try { back = sessionStorage.getItem('hliq_visit_return') || '' } catch {}
+  try { sessionStorage.removeItem('hliq_visit_return') } catch {}
+  _visitBannerSync()
+  if (!back) return
+  if (back === '__all_accounts__') { await loadAllAccountsDashboard(); return }
+  const input = document.getElementById('walletInput')
+  if (!input) return
+  input.value = back
+  await loadDashboard()
+}
+
+function _visitBannerSync() {
+  let back = ''
+  try { back = sessionStorage.getItem('hliq_visit_return') || '' } catch {}
+  const cur = localStorage.getItem('walletAddr') || ''
+  const visiting = !!back && back.toLowerCase() !== cur.toLowerCase()
+  const el = document.getElementById('visitBanner')
+  if (!visiting) { el?.remove(); return }
+  let b = el
+  if (!b) {
+    b = document.createElement('div')
+    b.id = 'visitBanner'
+    b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:100001;background:rgba(0,255,204,0.94);color:#00201b;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:10px;padding:calc(6px + env(safe-area-inset-top,0px)) 12px 6px;box-shadow:0 2px 8px rgba(0,0,0,.35)'
+    document.body.appendChild(b)
+  }
+  b.innerHTML = `<span>👁 ${_T('Viewing', 'Viendo')} ${esc(cur.slice(0, 6) + '…' + cur.slice(-4))} — ${_T('read only', 'solo lectura')}</span>
+    <button onclick="window.__lbEndVisit()" style="border:none;border-radius:6px;padding:3px 9px;background:#00201b;color:#00ffcc;font-size:11px;font-weight:800;cursor:pointer">← ${_T('Back to mine', 'Volver a la mía')}</button>`
+}
+
+// ─── COPY TRADE ───────────────────────────────────────────────────────────────
+//
+// Starts strategies/copytrade.js, which mirrors the target's NEW perp fills onto this
+// account at a scale. It is a real bot on the strategy server, so it survives closing
+// the app, shows up in Strategies with the rest, and is stopped the same way.
+window.__lbCopyTrade = function(addr = '', name = '') {
+  const target = String(addr || '')
+  const tgt    = _stratTargetAddr()
+  const key    = _stratTargetKey()
+  const ov = document.createElement('div')
+  ov.style.cssText = 'position:fixed;inset:0;z-index:100080;background:rgba(0,0,0,.6);display:flex;flex-direction:column;justify-content:flex-end'
+  const close = () => ov.remove()
+  ov.onclick = e => { if (e.target === ov) close() }
+  const fld = (id, label, val, ph, hint) => `<div style="margin-bottom:11px">
+    <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">${label}</div>
+    <input id="${id}" value="${esc(val)}" placeholder="${esc(ph)}"
+      style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid var(--border2);background:var(--panel-3,#12151c);color:var(--fg);font-size:14px;font-weight:600">
+    ${hint ? `<div style="font-size:10.5px;color:var(--fg-3);margin-top:3px;line-height:1.4">${hint}</div>` : ''}
+  </div>`
+
+  ov.innerHTML = `<div style="background:var(--panel-2,#1a1d24);border:1px solid var(--border2,#2a2e39);border-radius:20px 20px 0 0;padding:20px 18px calc(18px + env(safe-area-inset-bottom));max-height:88vh;overflow-y:auto">
+    <div style="width:38px;height:4px;border-radius:2px;background:var(--border2,#2a2e39);margin:-8px auto 15px"></div>
+    <div style="font-size:18px;font-weight:800;margin-bottom:3px">⇄ ${_T('Copy trade', 'Copiar operaciones')}${name ? ' ' + esc(name) : ''}</div>
+    <div style="font-size:12.5px;line-height:1.5;color:var(--fg-2,#c9cdd6);margin-bottom:16px">${
+      _T('Mirrors every new perp trade they make onto your account, scaled down. Their existing positions are <b>not</b> bought — you follow what they do from now on.',
+         'Refleja cada nueva operación de perps que hagan en tu cuenta, a escala. Sus posiciones actuales <b>no</b> se compran — sigues lo que hagan desde ahora.')}</div>
+    ${fld('ct-target', _T('Trader address', 'Dirección del trader'), target, '0x…')}
+    ${fld('ct-scale', _T('Size, % of theirs', 'Tamaño, % del suyo'), '25', '25',
+      _T('They trade $1,000 → you trade $250.', 'Ellos operan $1,000 → tú operas $250.'))}
+    ${fld('ct-max', _T('Max per trade ($)', 'Máx. por operación ($)'), '250', '250',
+      _T('Hard cap, whatever they size. Orders under $10 stack up until they clear Hyperliquid\'s minimum.',
+         'Tope fijo. Las órdenes bajo $10 se acumulan hasta superar el mínimo de Hyperliquid.'))}
+    ${fld('ct-coins', _T('Only these coins', 'Solo estas monedas'), '', _T('all', 'todas'),
+      _T('Comma separated, e.g. BTC,HYPE. Blank follows everything they trade.',
+         'Separadas por comas, p. ej. BTC,HYPE. En blanco sigue todo.'))}
+    ${fld('ct-maxpos', _T('Max position per coin ($)', 'Posición máx. por moneda ($)'), '0', '0',
+      _T('0 = no cap. Closes are never blocked by this.', '0 = sin tope. Nunca bloquea los cierres.'))}
+    <div style="font-size:11.5px;line-height:1.5;color:var(--orange,#f59e0b);background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:10px;padding:10px 12px;margin:4px 0 14px">
+      ${_T('This places <b>real orders with real money</b> and keeps running until you stop it. You are trusting their judgement, not a track record — a leaderboard rank is not a guarantee.',
+           'Esto coloca <b>órdenes reales con dinero real</b> y sigue hasta que lo detengas. Confías en su criterio, no en un historial.')}
+    </div>
+    <div id="ct-err" style="display:none;font-size:12px;font-weight:700;color:var(--red);margin-bottom:10px"></div>
+    <button id="ct-go" style="border:none;border-radius:12px;padding:14px;font-size:15px;font-weight:800;cursor:pointer;width:100%;background:var(--accent);color:#000;margin-bottom:8px">${_T('Start following', 'Empezar a seguir')}</button>
+    <button id="ct-no" style="border:none;border-radius:12px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;width:100%;background:transparent;color:var(--muted,#8a90a0)">${_T('Cancel', 'Cancelar')}</button>
+  </div>`
+  document.body.appendChild(ov)
+  ov.querySelector('#ct-no').onclick = close
+
+  const err = (m) => {
+    const e = ov.querySelector('#ct-err')
+    e.textContent = m; e.style.display = ''
+  }
+
+  ov.querySelector('#ct-go').onclick = async () => {
+    const v  = (id) => ov.querySelector('#' + id).value.trim()
+    const to = v('ct-target')
+    if (!/^0x[0-9a-fA-F]{40}$/.test(to)) return err(_T('That is not a wallet address.', 'Esa no es una dirección de billetera.'))
+    if (!tgt) return err(state.isAllAccounts
+      ? _T('Pick which of your accounts should do the copying first.', 'Elige primero cuál de tus cuentas copiará.')
+      : _T('Load your wallet first.', 'Carga tu billetera primero.'))
+    if (to.toLowerCase() === tgt.toLowerCase()) return err(_T('That is this account — it cannot follow itself.', 'Esa es esta cuenta — no puede seguirse a sí misma.'))
+    if (!key) return err(_T('This account has no agent key saved. Add one in Strategies.', 'Esta cuenta no tiene clave de agente guardada. Añade una en Estrategias.'))
+    const scale = parseFloat(v('ct-scale'))
+    if (!(scale > 0)) return err(_T('Size must be above 0%.', 'El tamaño debe ser mayor que 0%.'))
+
+    const argv = [
+      '--target', to,
+      '--scale', String(scale),
+      '--max-usd', String(parseFloat(v('ct-max')) || 0),
+      '--max-position', String(parseFloat(v('ct-maxpos')) || 0),
+    ]
+    const coins = v('ct-coins')
+    if (coins) argv.push('--coins', coins.toUpperCase())
+
+    const btn = ov.querySelector('#ct-go')
+    btn.disabled = true
+    btn.textContent = _T('Starting…', 'Iniciando…')
+    try {
+      const r = await serverFetch('/api/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // The target is the instance, so one account can follow several traders at once
+        // and each shows up as its own stoppable bot.
+        body: JSON.stringify({ type: 'copytrade', agentKey: key, args: argv, address: tgt, instance: to }),
+      })
+      if (!r.ok) {
+        if (r.subscribe) { close(); window.__subOpenPaywall?.(); return }
+        btn.disabled = false
+        btn.textContent = _T('Start following', 'Empezar a seguir')
+        return err(r.error || _T('Could not start.', 'No se pudo iniciar.'))
+      }
+      close()
+      _paperToast(_T('Now copying ', 'Ahora copiando ') + (name || to.slice(0, 6) + '…' + to.slice(-4)))
+      checkServer()
+    } catch {
+      btn.disabled = false
+      btn.textContent = _T('Start following', 'Empezar a seguir')
+      err(_T('Strategy server unreachable.', 'Servidor de estrategias inaccesible.'))
+    }
+  }
+}
+
 function _mobVBuildLbHtml(results, opts = {}) {
   const RANK_BADGE = [
     { bg: 'linear-gradient(135deg,#FFD700,#FFA500)', color: '#7a4800', label: '👑' },
@@ -14707,26 +15026,23 @@ function _mobVBuildLbHtml(results, opts = {}) {
         ['Win Rate',   winRate],
         ['Volume',     '$' + fmtCompact(r.totalVolume ?? 0)],
       ])
+      // The actions come before the holdings: acting on the person is the point of the
+      // row, and it must not sit below eleven orders.
+      if (r.addr && !opts.paper) expandHtml += _lbSocialHtml(r)
       const openPos = (r.positions ?? []).filter(ap => parseFloat(ap.position?.szi ?? 0) !== 0)
       if (openPos.length) {
-        expandHtml += `<div style="border-bottom:1px solid rgba(255,255,255,0.04)">
-          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;padding:8px 16px 4px;background:var(--panel-2)">${openPos.length} Open Position${openPos.length !== 1 ? 's' : ''}</div>
-          ${openPos.map((ap, pi) => _mobVSubPosRow(ap, `${id}-p${pi}`)).join('')}
-        </div>`
+        expandHtml += _lbCollapse(`${id}-pos`, `${openPos.length} Open Position${openPos.length !== 1 ? 's' : ''}`,
+          openPos.map((ap, pi) => _mobVSubPosRow(ap, `${id}-p${pi}`)).join(''))
       }
       const outcomes = _ocClampPending((r.outcomes ?? []).map(o => ({ ...o, _acctAddr: r.addr })))
       if (outcomes.length) {
-        expandHtml += `<div style="border-bottom:1px solid rgba(255,255,255,0.04)">
-          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;padding:8px 16px 4px;background:var(--panel-2)">${outcomes.length} Outcome${outcomes.length !== 1 ? 's' : ''}</div>
-          ${outcomes.map((b, ci) => _mobVSubOcRow(b, `${id}-c${ci}`)).join('')}
-        </div>`
+        expandHtml += _lbCollapse(`${id}-oc`, `${outcomes.length} Outcome${outcomes.length !== 1 ? 's' : ''}`,
+          outcomes.map((b, ci) => _mobVSubOcRow(b, `${id}-c${ci}`)).join(''))
       }
       const openOrders = r.openOrders ?? []
       if (openOrders.length) {
-        expandHtml += `<div style="border-bottom:1px solid rgba(255,255,255,0.04)">
-          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;padding:8px 16px 4px;background:var(--panel-2)">${openOrders.length} Open Order${openOrders.length !== 1 ? 's' : ''}</div>
-          ${openOrders.map((o, oi) => _mobVSubOrdRow(o, `${id}-o${oi}`)).join('')}
-        </div>`
+        expandHtml += _lbCollapse(`${id}-ord`, `${openOrders.length} Open Order${openOrders.length !== 1 ? 's' : ''}`,
+          openOrders.map((o, oi) => _mobVSubOrdRow(o, `${id}-o${oi}`)).join(''))
       }
     }
     // Remove control — shown on your own row (signature / secret) or on ANY row in dev mode (PIN).
@@ -18259,6 +18575,7 @@ function _mobVRenderStrategies(el) {
     { type: 'trend',   label: _T('Trend Follower', 'Seguidor de tendencia'), desc: _T('EMA crossover trend following', 'Seguimiento por cruce de EMA')          },
     { type: 'longer',  label: _T('Longer Bot', 'Bot Largo'),         desc: _T('Long bias with take-profit / stop-loss', 'Sesgo largo con toma de ganancias / stop de pérdida') },
     { type: 'shorter', label: _T('Shorter Bot', 'Bot Corto'),        desc: _T('Short bias with take-profit / stop-loss', 'Sesgo corto con toma de ganancias / stop de pérdida')},
+    { type: 'copytrade', label: _T('⇄ Copy Trade', '⇄ Copiar operaciones'), desc: _T('Mirror another wallet\'s trades', 'Refleja las operaciones de otra billetera') },
   ]
 
   const cards = stratsConfig.map(s => {
@@ -18380,6 +18697,11 @@ function _mobVRenderStrategies(el) {
           </div>
           <div class="mob-strat-field"><span class="mob-strat-label">Take Profit %</span><input class="mob-strat-input" id="m-shorter-tp" type="number" placeholder="3"></div>
           <div class="mob-strat-field"><span class="mob-strat-label">Stop Loss %</span><input class="mob-strat-input" id="m-shorter-sl" type="number" placeholder="2"></div>`
+      }
+      if (s.type === 'copytrade') {
+        bodyHtml = `<div style="font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:4px">${_T(
+          'Follows a wallet and mirrors every <b>new</b> perp trade it makes onto this account, scaled down. Its current positions are not bought. Start one from any row on the <b>Leaderboard</b>, or with ▶ Run below.',
+          'Sigue una billetera y refleja cada <b>nueva</b> operación de perps en esta cuenta, a escala. No compra sus posiciones actuales. Inícialo desde cualquier fila del <b>Ranking</b>, o con ▶ Run.')}</div>`
       }
       const _insts = Object.keys(serverStatus?._instances ?? {}).filter(k => k.startsWith(s.type + ':')).map(k => k.slice(s.type.length + 1))
       const _editing = _mobEditing && _mobEditing.type === s.type
@@ -18585,6 +18907,9 @@ function _stratTargetKey() {
 }
 
 async function runStrategyMob(type) {
+  // Copy trade is armed against a person, not a coin, so it has its own sheet — reached
+  // from a leaderboard row, or from here with the address left blank.
+  if (type === 'copytrade') { window.__lbCopyTrade(''); return }
   const _target = _stratTargetAddr()
   if (!_target) {
     alert(state.isAllAccounts
@@ -19857,6 +20182,9 @@ const _savedAddr = localStorage.getItem('walletAddr')
 if (_savedAddr && _savedAddr !== '__all_accounts__') { const el = document.getElementById('walletInput'); if (el) el.value = _savedAddr }
 renderSavedWallets()
 renderRecentAddrs()
+// A visit survives a reload — walletAddr now points at someone else's account, so the way
+// back has to be painted at boot too, not only at the moment of tapping Visit.
+_visitBannerSync()
 
 // Restore which paper account (practice vs Challenge) was last selected, BEFORE any paper
 // load, so we never briefly paint the wrong one. Only honor 'challenge' if still enrolled;
