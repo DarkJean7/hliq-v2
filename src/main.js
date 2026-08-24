@@ -10843,23 +10843,36 @@ function _mobVRenderBalance() {
   // Prefer the server-anchored total in the combined view so every device agrees. Falls
   // back to the per-device sum only until the first snapshot lands.
   const _srvVal = _combinedServerValue()
-  // Server value → last server value → per-device sum. The local sum is a COLD-START
-  // fallback only; once a server-anchored figure exists, falling back to the other
-  // anchor would show a step change that no position actually made.
-  const val = state.isAllAccounts ? _comboEqFilter(_srvVal ?? _combinedHeldValue() ?? _rawVal) : _rawVal
+  // Server value, or the last one held, or NOTHING. The per-device sum used to sit at the
+  // end of this chain as a "cold start only" fallback, and it was still the third basis:
+  // measured live, equity stepped from $2,772.43 to $2,973.80 and straight back — +$201.37,
+  // almost exactly the spot HYPE across those wallets — with leverage, maintenance margin
+  // and free margin unmoved throughout. An excursion up and back is a basis switch, not a
+  // market move, and the same removal is what stopped Net PnL doing this.
+  //
+  // The honest cost is a dash for the second or two before the first snapshot lands.
+  const _combo = state.isAllAccounts ? (_srvVal ?? _combinedHeldValue()) : null
+  const val = state.isAllAccounts ? (_combo != null ? _comboEqFilter(_combo) : null) : _rawVal
   if (state.isAllAccounts) _fetchCombinedSnap()
   _mobVRenderPet(healthPct, _petHasPos)
 
   // Format: $XX,XXX.XX — split cents dim
-  const whole = Math.floor(val)
-  const cents = (val % 1).toFixed(2).slice(1) // ".XX"
-  balEl.innerHTML = _privacyMode
-    ? `<span style="letter-spacing:4px;color:var(--muted)">•••••</span>`
-    : `$${fmtUSD(whole, 0)}<span style="color:var(--muted)">${cents}</span>`
+  if (val == null) {
+    // Combined view with no authoritative figure yet. A dash beats a number from a basis
+    // that disagrees with the one replacing it a second later.
+    balEl.innerHTML = `<span style="color:var(--muted)">—</span>`
+  } else {
+    const whole = Math.floor(val)
+    const cents = (val % 1).toFixed(2).slice(1) // ".XX"
+    balEl.innerHTML = _privacyMode
+      ? `<span style="letter-spacing:4px;color:var(--muted)">•••••</span>`
+      : `$${fmtUSD(whole, 0)}<span style="color:var(--muted)">${cents}</span>`
+  }
 
   // Today's change → colored pill ( ▲/▼  $X · Y% today )
   if (changeEl) {
-    if (hist.length >= 2) {
+    // No headline value means no honest "today" figure either.
+    if (hist.length >= 2 && val != null) {
       const todayStart = Date.now() - 86400000
       // Read the baseline AT the cutoff, never at "the first sample after it".
       //
@@ -10874,7 +10887,7 @@ function _mobVRenderBalance() {
       const prev = (state.isAllAccounts && _combinedSnap && _srvVal != null && _combinedSnap.dayAgo > 0)
         ? _combinedSnap.dayAgo
         : _seriesValueAt(hist, todayStart)
-      const diff = val - parseFloat(prev)
+      const diff = (val ?? 0) - parseFloat(prev)
       const pct  = parseFloat(prev) > 0 ? diff / parseFloat(prev) * 100 : 0
       const up   = diff >= 0
       changeEl.style.cssText = `display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:8px;font-size:12px;font-weight:600;margin-top:7px;background:${up ? 'rgba(0,229,160,0.12)' : 'rgba(255,77,109,0.14)'};color:${up ? 'var(--green)' : 'var(--red)'}`
