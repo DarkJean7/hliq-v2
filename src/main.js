@@ -6193,6 +6193,8 @@ async function renderPerformance() {
     <div class="perf-table-wrap">
       <div class="section-title" style="margin-bottom:8px">Per-Bot Breakdown</div>
       <div style="font-size:10px;color:var(--muted);margin-bottom:14px">Trades are attributed to a bot by the coins it runs on — a coin traded by multiple bots (or manually) may overlap.</div>
+      <!-- No data-dragscroll here on purpose: this wraps a min-width:760px desktop table,
+           which is exactly the case the !important rule exists to flatten on mobile. -->
       <div style="overflow-x:auto">
       <table style="width:100%;min-width:760px">
         <thead><tr>
@@ -14435,7 +14437,7 @@ function _mobVRenderContent(tick = false) {
     el.innerHTML = `<div style="padding:0 0 24px">
       ${portHeader}
       ${acctCardsHtml}
-      <div style="display:flex;gap:4px;padding:12px 16px 0;overflow-x:auto;scrollbar-width:none">
+      <div data-dragscroll style="display:flex;gap:4px;padding:12px 16px 0;overflow-x:auto;scrollbar-width:none">
         ${chartTypes.map(([lbl,t]) => `<button data-port-type="${t}" onclick="window.mobVSetPortChartType('${t}')"
           style="${btnStyle(t === _mobVPortChartType)}">${lbl}</button>`).join('')}
         <span style="flex:1"></span>
@@ -14914,7 +14916,7 @@ function _mobVBuildAccountsHtml(results) {
     </div>
 
     ${sectionHdr('Combined Chart')}
-    <div style="display:flex;gap:4px;padding:8px 16px 0;overflow-x:auto;scrollbar-width:none">
+    <div data-dragscroll style="display:flex;gap:4px;padding:8px 16px 0;overflow-x:auto;scrollbar-width:none">
       ${chartTypes.map(([lbl,t]) => `<button data-ma-type="${t}" onclick="window.mobVSetMaChartType('${t}')" style="${_mobVMaBtnStyle(t === _mobVMaChartType)}">${lbl}</button>`).join('')}
       <span style="flex:1"></span>
       ${periods.map(([lbl,val]) => `<button data-ma-period="${val}" onclick="window.mobVSetMaPeriod('${val}')" style="${_mobVMaBtnStyle(val === _mobVMaPeriod)}">${lbl}</button>`).join('')}
@@ -16043,7 +16045,7 @@ window._mobVTradeToggleCoinPicker = function() {
           <input id="mobCoinPickerSearch" placeholder="Search markets…" oninput="window._mobVTradeSearch(this.value)"
             style="flex:1;background:var(--panel-2);border:none;border-radius:10px;padding:9px 13px;color:var(--fg);font-size:16px;outline:none;-webkit-text-size-adjust:none">
         </div>
-        <div id="mobCoinPickerPills" style="display:flex;gap:6px;padding:0 14px 10px;overflow-x:auto;-webkit-overflow-scrolling:touch;touch-action:pan-x;scrollbar-width:none"></div>
+        <div id="mobCoinPickerPills" data-dragscroll style="display:flex;gap:6px;padding:0 14px 10px;overflow-x:auto;-webkit-overflow-scrolling:touch;touch-action:pan-x;scrollbar-width:none"></div>
       </div>
       <div id="mobCoinPickerList" style="flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch"></div>`
     document.body.appendChild(ov)
@@ -19727,7 +19729,7 @@ function _stratAcctPickerHtml() {
   return `<div class="mob-v-setting-group" style="margin-bottom:14px">
     <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:8px">
       <div style="font-size:13px;font-weight:600">${_T('Run bots on', 'Ejecutar bots en')}</div>
-      <div id="stratAcctPills" style="display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px">${rows}</div>
+      <div id="stratAcctPills" data-dragscroll style="display:flex;gap:6px;min-width:0;overflow-x:auto;scrollbar-width:none;padding-bottom:2px">${rows}</div>
       <div style="font-size:11px;color:var(--muted)">${
         _T('Bots are armed on this account and signed with its agent key. 🔑 means no key saved yet.',
            'Los bots se activan en esta cuenta y se firman con su clave de agente. 🔑 significa que aún no hay clave guardada.')}</div>
@@ -22685,7 +22687,7 @@ function _cmpRender() {
         style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);color:var(--fg);
                border-radius:8px;padding:6px 11px;font-size:12px;font-weight:600;cursor:pointer">${T('Close')}</button>
     </div>
-    <div style="display:flex;gap:5px;overflow-x:auto;padding:10px 14px 2px;scrollbar-width:none">${tfPills}</div>
+    <div data-dragscroll style="display:flex;gap:5px;overflow-x:auto;padding:10px 14px 2px;scrollbar-width:none">${tfPills}</div>
     ${chart}
     ${spreadRow}
     <div style="padding:16px 14px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">${T('Assets')}</div>

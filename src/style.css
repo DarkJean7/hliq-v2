@@ -4727,6 +4727,16 @@ body.layout-mobile .nav-tabs { display: none !important; }
   [style*="overflow-x:auto"]:not([data-dragscroll]),
   [style*="overflow-x: auto"]:not([data-dragscroll]) { overflow-x: visible !important; }
 
+  /* The escape hatch above only works if a strip actually carries the attribute. For a
+     long time nothing did, so every inline pill strip was silently flattened. Give the
+     opted-in ones real touch scrolling rather than relying on the JS handler alone. */
+  [data-dragscroll] {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  [data-dragscroll]::-webkit-scrollbar { display: none; }
+
   /* Positions: keep Coin(1), Side(2), Mark(5), PnL(7), Actions(13) — Entry moves to expand row */
   #positionsTable thead th:nth-child(3),
   #positionsTable thead th:nth-child(4),
