@@ -13263,6 +13263,14 @@ function _mobVRenderContent(tick = false) {
       const px    = parseFloat(state.allMids?.[coin] ?? 0)
       const usdOf = t => px > 0 ? t * px : (coin === 'USDC' ? t : 0)
       const usd   = usdOf(total)
+      // What the holding cost. HL reports it per balance as entryNtl, so ROI is real
+      // rather than inferred from fills — and it survives a token that was bought across
+      // several orders. It is 0 for USDC (the quote asset never has a cost basis) and for
+      // anything that arrived by transfer rather than purchase, so those show no ROI at
+      // all instead of a fabricated 0%.
+      const cost  = items.reduce((s, b) => s + parseFloat(b.entryNtl ?? 0), 0)
+      const roi   = cost > 0 && usd > 0 ? (usd - cost) / cost * 100 : null
+      const pnl   = cost > 0 && usd > 0 ? usd - cost : null
       const xp    = _mobVExpandedIds.has(id)
       const chev  = `<svg id="mrc-${id}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>`
       const sub   = items.length > 1
@@ -13273,6 +13281,8 @@ function _mobVRenderContent(tick = false) {
         .map(b => {
           const t = parseFloat(b.total ?? 0), u = usdOf(t)
           const hd = parseFloat(b.hold ?? 0)
+          const c  = parseFloat(b.entryNtl ?? 0)
+          const rr = c > 0 && u > 0 ? (u - c) / c * 100 : null
           // Held-in-orders is the one fact that changes what you can DO with a balance, so
           // it belongs on the per-account row rather than only in the single-account grid.
           const av = t - hd
@@ -13283,7 +13293,9 @@ function _mobVRenderContent(tick = false) {
             </div>
             <div class="mob-v-row-right" style="width:86px;flex-shrink:0;flex-grow:0">
               <div class="mob-v-row-val">${u > 0 ? '$' + fmtUSD(u) : '—'}</div>
-              ${hd > 0 ? `<div class="mob-v-row-pct" style="color:var(--muted)">${fmtSize(hd)} held</div>` : ''}
+              ${rr != null
+                ? `<div class="mob-v-row-pct" style="color:${rr >= 0 ? 'var(--green)' : 'var(--red)'}">${rr >= 0 ? '+' : ''}${rr.toFixed(2)}%</div>`
+                : hd > 0 ? `<div class="mob-v-row-pct" style="color:var(--muted)">${fmtSize(hd)} held</div>` : ''}
             </div>
           </div>`
         }).join('')
@@ -13300,10 +13312,19 @@ function _mobVRenderContent(tick = false) {
           </div>
           <div class="mob-v-row-right" style="width:86px;flex-shrink:0;flex-grow:0">
             <div class="mob-v-row-val">${usd > 0 ? '$' + fmtUSD(usd) : '—'}</div>
+            ${roi == null ? '' : `<div class="mob-v-row-pct" style="color:${roi >= 0 ? 'var(--green)' : 'var(--red)'}">${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%</div>`}
           </div>
           ${chev}
         </div>
-        <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${subRows}</div>
+        <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${
+          cost > 0 ? _mobVDetailGrid([
+            ['Cost', '$' + fmtUSD(cost)],
+            ['Value', '$' + fmtUSD(usd)],
+            ['Avg buy', total > 0 ? '$' + fmtPrice(cost / total) : '—'],
+            ['Now', px > 0 ? '$' + fmtPrice(px) : '—'],
+            ['Profit', `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}`, pnl >= 0 ? 'var(--green)' : 'var(--red)'],
+            ['ROI', `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`, roi >= 0 ? 'var(--green)' : 'var(--red)'],
+          ]) : ''}${subRows}</div>
       </div>`
     }
 
@@ -13312,7 +13333,7 @@ function _mobVRenderContent(tick = false) {
       if (_mobVTickSkip(tick, 'spot:' + spots.map(b => {
         const px = parseFloat(state.allMids?.[b.coin] ?? 0)
         const usd = px > 0 ? parseFloat(b.total) * px : (b.coin === 'USDC' ? parseFloat(b.total) : 0)
-        return `${b.coin}:${b._acct ?? ''}:${usd.toFixed(2)}`
+        return `${b.coin}:${b._acct ?? ''}:${usd.toFixed(2)}:${parseFloat(b.entryNtl ?? 0).toFixed(2)}`
       }).join('|'))) return
       if (state.isAllAccounts) {
         const groups = {}
