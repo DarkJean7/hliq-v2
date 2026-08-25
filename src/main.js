@@ -18837,6 +18837,72 @@ function _previewChartHtml(plan) {
   </div>`
 }
 
+/**
+ * The position the grid is about to be started on top of.
+ *
+ * Direction is the part that changes what the bot does, so it leads. A grid pointing the
+ * SAME way adds to the position and its exits take profit against the average entry. A
+ * grid pointing the other way spends its entries reducing what is already open before it
+ * holds anything of its own — and its exits find no inventory at all, because grid.js only
+ * counts a position as inventory when it points the same way.
+ */
+function _previewPositionHtml(plan) {
+  const raw = plan.position
+  if (!raw) return ''
+  // The page and strategies/ deploy separately, so a freshly-loaded UI can meet a plan
+  // from the previous bot build for a few minutes. Every field below is optional and a
+  // missing one renders as a dash — one absent number must not blank the whole sheet.
+  const n = (v) => Number.isFinite(+v) ? +v : null
+  const p = {
+    ...raw,
+    szi: n(raw.szi) ?? 0,
+    side: raw.side ?? (n(raw.szi) < 0 ? 'short' : 'long'),
+    entryPx: n(raw.entryPx), value: n(raw.value), uPnl: n(raw.uPnl), roe: n(raw.roe),
+    marginUsed: n(raw.marginUsed), liqPx: n(raw.liqPx), funding: n(raw.funding),
+    aligned: raw.aligned !== false,
+  }
+  const long = p.side === 'long'
+  const tone = long ? 'var(--green)' : 'var(--red)'
+  const pnlTone = p.uPnl == null ? 'var(--fg)' : p.uPnl >= 0 ? 'var(--green)' : 'var(--red)'
+  const bit = (label, value, col) => `<div style="flex:1;min-width:78px">
+    <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">${label}</div>
+    <div style="font-size:12.5px;font-weight:700;margin-top:1px;color:${col || 'var(--fg)'}">${value}</div>
+  </div>`
+
+  return `<div style="margin-top:10px;background:var(--panel-1);border:1px solid ${p.aligned ? 'var(--border2)' : 'var(--red)'};border-radius:9px;padding:11px 12px">
+    <div style="display:flex;align-items:center;gap:7px;margin-bottom:9px">
+      <span style="font-size:9.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#000;background:${tone};border-radius:4px;padding:2px 6px">${
+        long ? _T('Long', 'Largo') : _T('Short', 'Corto')}</span>
+      <span style="font-size:12.5px;font-weight:700">${fmtSize(Math.abs(p.szi))} ${esc(_ocCoinLabel(plan.coin))}</span>
+      <span style="flex:1"></span>
+      <span style="font-size:10.5px;color:var(--muted)">${_T('open now', 'abierta ahora')}</span>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${bit(_T('Entry', 'Entrada'), p.entryPx == null ? '—' : '$' + fmtPrice(p.entryPx))}
+      ${bit(_T('Value', 'Valor'), p.value == null ? '—' : '$' + fmtUSD(p.value))}
+      ${bit(_T('Unrealized', 'No realizado'), p.uPnl == null ? '—' : `${p.uPnl >= 0 ? '+' : '−'}$${fmtUSD(Math.abs(p.uPnl))}`, pnlTone)}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:9px">
+      ${bit(_T('Return', 'Retorno'), p.roe == null ? '—' : `${p.roe >= 0 ? '+' : ''}${p.roe.toFixed(1)}%`, pnlTone)}
+      ${bit(_T('Margin used', 'Margen usado'), p.marginUsed == null ? '—' : '$' + fmtUSD(p.marginUsed))}
+      ${bit(_T('Liquidation', 'Liquidación'), p.liqPx > 0 ? '$' + fmtPrice(p.liqPx) : '—', p.liqPx > 0 ? 'var(--orange,#f59e0b)' : null)}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:9px">
+      ${bit(_T('Leverage', 'Apalancamiento'), p.leverage ? p.leverage + '× ' + esc(p.levType ?? '') : '—')}
+      ${bit(_T('Funding paid', 'Financiación'), p.funding == null ? '—' : `${p.funding <= 0 ? '+' : '−'}$${fmtUSD(Math.abs(p.funding))}`, p.funding == null || p.funding <= 0 ? 'var(--green)' : 'var(--red)')}
+      ${bit(_T('vs this grid', 'vs este grid'), p.aligned ? _T('same way', 'misma dirección') : _T('opposite', 'opuesta'), p.aligned ? 'var(--green)' : 'var(--red)')}
+    </div>
+    <div style="font-size:10.5px;line-height:1.5;margin-top:9px;color:${p.aligned ? 'var(--fg-3)' : 'var(--red)'}">
+      ${p.aligned
+        ? _T('The grid adds to this position, and its sells take profit against your average entry — it will not close below it.',
+             'El grid añade a esta posición, y sus ventas toman beneficio contra tu entrada media — nunca cierra por debajo.') +
+          (plan.autoRange ? ' ' + _T('The range was anchored to that entry.', 'El rango se ancló a esa entrada.') : '')
+        : _T('Your position points the other way. The grid\'s entries will reduce it before opening anything of its own, and its exits find no inventory to sell until it does.',
+             'Tu posición va en sentido contrario. Las entradas del grid la reducirán antes de abrir nada propio, y sus salidas no encuentran inventario que vender hasta entonces.')}
+    </div>
+  </div>`
+}
+
 function _botPreviewSheet(type, plan, loading) {
   document.getElementById('botPreviewSheet')?.remove()
   const cell = (label, value, tone) => `<div style="flex:1;min-width:86px">
@@ -18899,9 +18965,7 @@ function _botPreviewSheet(type, plan, loading) {
         </div>`
       })()}
 
-      ${plan.position ? `<div style="margin-top:10px;font-size:11.5px;color:var(--fg-2);background:var(--panel-1);border-radius:8px;padding:10px 12px;line-height:1.5">${
-        _T('You already hold', 'Ya tienes')} ${fmtSize(Math.abs(plan.position.szi))} ${esc(_ocCoinLabel(plan.coin))} ${
-        _T('at', 'a')} $${fmtPrice(plan.position.entryPx)}${plan.autoRange ? ' — ' + _T('the range was anchored to it.', 'el rango se ancló a eso.') : '.'}</div>` : ''}
+      ${_previewPositionHtml(plan)}
 
       ${_previewChartHtml(plan)}
 

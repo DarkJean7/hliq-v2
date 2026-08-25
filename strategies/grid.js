@@ -865,7 +865,26 @@ async function run() {
       autoSize:  !(parseFloat(args.size) > 0),
       fits: requiredMargin <= capital,
       minOrder: HL_MIN_ORDER,
-      position: _sz ? { szi: _sz, entryPx: parseFloat(_pp.position.entryPx ?? 0) } : null,
+      // The whole position, not just its size. A grid started on top of one behaves very
+      // differently depending on which way it points: same direction and it adds to the
+      // position while its exits take profit against the average entry; opposite and its
+      // entries reduce what is already there before opening anything new. The preview
+      // cannot say that without knowing the side.
+      position: _szi0 ? {
+        szi:        _szi0,
+        side:       _szi0 > 0 ? 'long' : 'short',
+        entryPx:    _avg0,
+        value:      parseFloat(_pp.position.positionValue ?? 0),
+        uPnl:       parseFloat(_pp.position.unrealizedPnl ?? 0),
+        roe:        parseFloat(_pp.position.returnOnEquity ?? 0) * 100,
+        marginUsed: parseFloat(_pp.position.marginUsed ?? 0),
+        liqPx:      parseFloat(_pp.position.liquidationPx ?? 0),
+        leverage:   _pp.position.leverage?.value ?? null,
+        levType:    _pp.position.leverage?.type ?? null,
+        funding:    parseFloat(_pp.position.cumFunding?.sinceOpen ?? 0),
+        // Does the grid point the same way as what is already open?
+        aligned:    IS_SHORT ? _szi0 < 0 : _szi0 > 0,
+      } : null,
     }))
     process.exit(0)
   }
