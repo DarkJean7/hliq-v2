@@ -12142,7 +12142,7 @@ function _scPnl(v) {
 // double the rows and imply a break-even trade that never happened.
 const SC_TRADE_LIMIT = 60
 
-function _scTradesHtml(fills) {
+function _scTradesHtml(fills, funding = []) {
   const closes = (fills ?? [])
     .filter(f => Number(f.closedPnl) !== 0)
     .sort((a, b) => (b.time ?? 0) - (a.time ?? 0))
@@ -12170,14 +12170,29 @@ function _scTradesHtml(fills) {
       <span style="font-family:var(--font-mono);font-weight:700;color:${tone};white-space:nowrap">${_scPnl(net)}</span>
     </div>`
   }).join('')
-  // Net of fees, so the total here reconciles with what the account actually kept.
-  const net = closes.reduce((a, f) => a + Number(f.closedPnl) - Number(f.fee ?? 0), 0)
+  // Hyperliquid charges on the way IN as well as on the way out, so subtracting only the
+  // closing fill's fee overstated what was kept. This counts every fee on the coin —
+  // the opening fills carry closedPnl 0 but a real fee, and they were being skipped.
+  const realized = closes.reduce((a, f) => a + Number(f.closedPnl), 0)
+  const fees     = (fills ?? []).reduce((a, f) => a + Number(f.fee ?? 0), 0)
+  const net      = realized - fees
+  // Funding is not a fee — it is a payment between traders — so it gets its own figure
+  // rather than being folded into one number that would then mean neither thing.
+  const fund = (funding ?? [])
+    .filter(x => String(x.coin ?? '').toUpperCase() === String(fills?.[0]?.coin ?? '').toUpperCase())
+    .reduce((a, x) => a + Number(x.usdc ?? 0), 0)
+  // A win is judged on the trade's own fees, which is all that can be attributed to it.
   const wins = closes.filter(f => Number(f.closedPnl) - Number(f.fee ?? 0) > 0).length
   return `<div style="background:var(--panel-2);border-top:1px solid var(--border2)">
     <div style="display:flex;gap:8px;padding:8px 16px 4px;font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">
       <span>${closes.length} ${_T('closed', 'cerradas')} · ${wins}/${closes.length} ${_T('won', 'ganadas')}</span>
       <span style="flex:1"></span>
-      <span>${_T('net of fees', 'neto de comisiones')} ${_scPnl(net)}</span>
+      <span>${_T('after fees', 'tras comisiones')} ${_scPnl(net)}</span>
+    </div>
+    <div style="display:flex;gap:10px;padding:0 16px 6px;font-size:10.5px;color:var(--fg-3)">
+      <span>${_T('realized', 'realizado')} ${_scPnl(realized)}</span>
+      <span>${_T('fees', 'comisiones')} −$${fmtUSD(fees)}</span>
+      ${fund !== 0 ? `<span>${_T('funding', 'financiación')} ${_scPnl(fund)}</span>` : ''}
     </div>
     ${rows}
     ${closes.length > shown.length
@@ -13612,6 +13627,7 @@ function _mobVRenderContent(tick = false) {
       // their settlement fills carry dir="Settlement" (no long/short word), so the
       // old regex mis-read them as short → wrong entry (e.g. 1.68 for a 0–1 token).
       const _sz       = parseFloat(f.sz) || 0
+      const _ntl      = Number(f.notional ?? 0) || (_sz * (parseFloat(f.px) || 0))
       const _isOc     = typeof f.coin === 'string' && (f.coin[0] === '#' || f.coin[0] === '+')
       const _sideLong = _isOc ? true
                       : /long/i.test(dir)  ? true
@@ -13634,9 +13650,10 @@ function _mobVRenderContent(tick = false) {
           </div>
           <div class="mob-v-row-right">
             <div class="mob-v-row-val">${fmtSize(f.sz)} @ $${fmtPrice(f.px)}</div>
-            <div class="mob-v-row-pct ${pnl !== 0 ? pnlCls : ''}" style="display:flex;align-items:center;gap:6px;justify-content:flex-end;${pnl === 0 ? 'color:var(--muted)' : ''}">
-              <span>${pnl !== 0 ? (pnl >= 0 ? '+' : '') + '$' + fmtUSD(Math.abs(pnl)) : '—'}</span>
-              ${pnl !== 0 ? `<button class="trade-share-btn" title="Share PnL" onclick="event.stopPropagation();${_shareCall}" style="padding:1px 6px;font-size:12px">↗</button>` : ''}
+            <div class="mob-v-row-pct" style="display:flex;align-items:center;gap:6px;justify-content:flex-end">
+              <span style="color:var(--muted)">$${fmtUSD(_ntl)}</span>
+              ${pnl !== 0 ? `<span class="${pnlCls}">${(pnl >= 0 ? '+' : '') + '$' + fmtUSD(Math.abs(pnl))}</span>
+              <button class="trade-share-btn" title="Share PnL" onclick="event.stopPropagation();${_shareCall}" style="padding:1px 6px;font-size:12px">↗</button>` : ''}
             </div>
           </div>
           ${chev}
@@ -14254,7 +14271,7 @@ function _mobVRenderContent(tick = false) {
           <svg id="mrc-${id}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12"
             style="color:var(--muted);flex-shrink:0;margin-left:6px;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>
         </div>
-        <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${_scTradesHtml(coinMap[s.coin] ?? [])}</div>
+        <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${_scTradesHtml(coinMap[s.coin] ?? [], state.funding ?? [])}</div>
       </div>`
     }).join('')
     return
