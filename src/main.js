@@ -9355,8 +9355,19 @@ async function _chatPoll(full) {
     const msgs = j.messages ?? []
     if (full) _chatMsgs = msgs
     else if (msgs.length) _chatMsgs = [..._chatMsgs, ...msgs].slice(-200)
+    // A removal has to travel on the same poll. Without this the message stays on every
+    // screen that already had it until a full reload, so it would look like the delete
+    // silently failed for everyone but the person who pressed it.
+    const gone = j.deleted ?? []
+    if (gone.length) {
+      const drop = new Set(gone)
+      _chatMsgs = _chatMsgs.filter(m => !drop.has(m.id))
+    }
     if (msgs.length) _chatLastTs = Math.max(_chatLastTs, msgs[msgs.length - 1].ts)
-    if (full || msgs.length) _chatRender(full)
+    // The clock has to move even on a poll that only carried deletions, or the same
+    // tombstones arrive again on every tick for the next day.
+    else if (gone.length && j.now) _chatLastTs = Math.max(_chatLastTs, Number(j.now))
+    if (full || msgs.length || gone.length) _chatRender(full)
   } catch {}
 }
 
@@ -9364,10 +9375,18 @@ function _chatRender(forceBottom) {
   const el = document.getElementById('chatScroll'); if (!el) return
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 90
   if (!_chatMsgs.length) { el.innerHTML = `<div class="mob-v-empty">${_T('No messages yet — say hi 👋', 'Sin mensajes aún — saluda 👋')}</div>`; return }
-  el.innerHTML = _chatMsgs.map(m => `<div style="display:flex;flex-direction:column;gap:2px">
+  // Moderation is dev-mode only, and the button is only useful on a message the server
+  // actually knows about — an optimistic 'tmp…' row has no id to delete yet.
+  const _mod = isDev()
+  el.innerHTML = _chatMsgs.map(m => `<div id="chatMsg-${esc(m.id)}" style="display:flex;flex-direction:column;gap:2px">
       <div style="display:flex;align-items:baseline;gap:7px">
         <span class="notranslate" style="font-size:12px;font-weight:700;color:${_chatColor(m.name)}">${esc(m.name || 'anon')}</span>
         <span style="font-size:10px;color:var(--muted)">${_chatAgo(m.ts)}</span>
+        <span style="flex:1"></span>
+        ${_mod && m.id && !String(m.id).startsWith('tmp') ? `<button onclick="window.__chatDelete('${esc(m.id)}', this)"
+          title="${_T('Delete this message', 'Eliminar este mensaje')}"
+          style="flex-shrink:0;padding:1px 7px;border-radius:6px;border:1px solid var(--red);background:transparent;color:var(--red);font-size:10px;font-weight:700;cursor:pointer;line-height:1.5">${
+          _T('Delete', 'Eliminar')}</button>` : ''}
       </div>
       <div class="notranslate" style="font-size:14px;color:var(--fg);word-break:break-word;line-height:1.35">${esc(m.text)}</div>
     </div>`).join('')
@@ -9388,6 +9407,44 @@ window.__chatSend = async function() {
     if (j.ok && j.message) _chatLastTs = Math.max(_chatLastTs, j.message.ts)
     else if (j.error) _paperToast('⚠ ' + j.error)
   } catch { _paperToast('⚠ ' + _T('Could not send', 'No se pudo enviar')) }
+}
+
+/**
+ * Remove one message from the global chat. Dev mode only, and the server checks the PIN
+ * again - this button is convenience, not the gate.
+ *
+ * Chat has no accounts, so there is no "my own message" to authorise against: whatever
+ * name the client claims is the only identity involved. Moderation is therefore the
+ * operator's alone.
+ */
+window.__chatDelete = async function(id, btn) {
+  if (!isDev()) return
+  if (!await _appConfirm({
+    title: _T('Delete this message?', 'Eliminar este mensaje?'),
+    body:  _T('It disappears for everyone within a few seconds. This cannot be undone.',
+              'Desaparece para todos en unos segundos. No se puede deshacer.'),
+    confirmText: _T('Delete', 'Eliminar'), danger: true,
+  })) return
+  const was = btn?.textContent
+  if (btn) { btn.disabled = true; btn.textContent = '...' }
+  try {
+    const r = await fetch('/api/chat/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-lb-pin': _lbGetPin() },
+      body: JSON.stringify({ id }),
+    })
+    const j = await r.json()
+    if (!j.ok) throw new Error(j.error || 'failed')
+    // Drop it here rather than waiting for the next poll to say so.
+    _chatMsgs = _chatMsgs.filter(m => m.id !== id)
+    _chatRender(false)
+    _paperToast('✓ ' + _T('Message deleted', 'Mensaje eliminado'), 'ok')
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = was }
+    _paperToast('⚠ ' + (e.message === 'forbidden'
+      ? _T('Dev PIN rejected', 'PIN de dev rechazado')
+      : _T('Could not delete', 'No se pudo eliminar')))
+  }
 }
 
 window.__chatSetName = async function() {

@@ -15,3 +15,5 @@ dev-dist/
 logs/
 pulse-volume.json
 sub-payments.json
+chat-deleted.json
+chat.json

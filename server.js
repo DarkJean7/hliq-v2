@@ -1380,6 +1380,22 @@ function loadChat() { try { const a = JSON.parse(readFileSync(CHAT_FILE, 'utf8')
 function saveChat(a) { try { writeFileSync(CHAT_FILE, JSON.stringify(a)) } catch (e) { console.error('[chat] save failed:', e.message) } }
 const _chatClean = s => String(s ?? '').split('').filter(c => { const n = c.charCodeAt(0); return n >= 32 && n !== 127 }).join('').replace(/\s+/g, ' ').trim()
 
+// Deleted-message tombstones. The poll is incremental — a client asks for messages newer
+// than what it holds — so simply dropping a message from the file would leave it on every
+// screen that already had it until the next full reload. Recording the id with the time it
+// went lets the same poll carry the removal. Kept for a day, which is far longer than any
+// client's polling gap, then discarded so the file cannot grow without bound.
+const CHAT_TOMB_FILE = join(__dirname, 'chat-deleted.json')
+const CHAT_TOMB_TTL  = 24 * 3600e3
+function loadChatTombs() {
+  try {
+    const a = JSON.parse(readFileSync(CHAT_TOMB_FILE, 'utf8'))
+    const now = Date.now()
+    return Array.isArray(a) ? a.filter(x => x && now - Number(x.ts ?? 0) < CHAT_TOMB_TTL) : []
+  } catch { return [] }
+}
+function saveChatTombs(a) { try { writeFileSync(CHAT_TOMB_FILE, JSON.stringify(a)) } catch (e) { console.error('[chat] tomb save failed:', e.message) } }
+
 // Referral attribution: { code → { addrs: [...] } }. Recorded when a referred wallet joins the
 // leaderboard (deduped by addr). No addresses in the URL — only opaque per-device codes.
 const REF_FILE = join(__dirname, 'referrals.json')
@@ -1918,7 +1934,10 @@ const server = createServer(async (req, res) => {
     const since = parseInt(url.searchParams.get('since') || '0') || 0
     const all   = loadChat()
     const messages = since ? all.filter(m => m.ts > since) : all.slice(-80)
-    return json(res, 200, { messages, now: Date.now() })
+    // Only deletions the caller has not already applied. A full load needs none: the
+    // messages are simply absent from the file it just received.
+    const deleted = since ? loadChatTombs().filter(x => Number(x.ts) > since).map(x => x.id) : []
+    return json(res, 200, { messages, deleted, now: Date.now() })
   }
   // ── POST /api/chat { name, text, addr? } → append a global-chat message ──
   if (method === 'POST' && path === '/api/chat') {
@@ -1935,6 +1954,29 @@ const server = createServer(async (req, res) => {
     if (list.length > 300) list = list.slice(-300)
     saveChat(list)
     return json(res, 200, { ok: true, message: msg })
+  }
+
+  // ── POST /api/chat/remove { id } → delete one message (OPERATOR ONLY) ──────
+  // Same gate as the other moderation routes: the LB_PIN that dev mode is already earned
+  // with, or an ADMIN_TOKEN bearer. Deliberately not something a message's own author can
+  // do — chat has no accounts, so "mine" would mean whatever name the client claimed.
+  if (method === 'POST' && path === '/api/chat/remove') {
+    const tok    = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '')
+    const pin    = req.headers['x-lb-pin'] || ''
+    const authed = (ADMIN_TOKEN && tok === ADMIN_TOKEN) || (LB_PIN && pin === LB_PIN)
+    if (!authed) return json(res, 403, { error: 'forbidden' })
+    const b  = await body(req)
+    const id = String(b.id ?? '').slice(0, 40)
+    if (!id) return json(res, 400, { error: 'missing id' })
+    const list = loadChat()
+    const keep = list.filter(m => m.id !== id)
+    if (keep.length === list.length) return json(res, 200, { ok: true, removed: 0 })
+    saveChat(keep)
+    const tombs = loadChatTombs()
+    tombs.push({ id, ts: Date.now() })
+    saveChatTombs(tombs)
+    console.log(`[chat] removed message ${id}`)
+    return json(res, 200, { ok: true, removed: 1 })
   }
 
   // ── GET /api/referral/count?code=XXXX → how many wallets joined via this code ──
