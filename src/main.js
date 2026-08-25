@@ -13123,6 +13123,11 @@ function _mobVRenderContent(tick = false) {
       const avail = total - hold
       const px    = parseFloat(state.allMids?.[b.coin] ?? 0)
       const usd   = px > 0 ? total * px : (b.coin === 'USDC' ? total : 0)
+      // Same cost basis the combined view uses (HL's entryNtl). 0 for USDC and for
+      // anything transferred in rather than bought, which shows no ROI at all.
+      const cost  = parseFloat(b.entryNtl ?? 0)
+      const roi   = cost > 0 && usd > 0 ? (usd - cost) / cost * 100 : null
+      const pnl   = cost > 0 && usd > 0 ? usd - cost : null
       const xp    = _mobVExpandedIds.has(id)
       const chev  = `<svg id="mrc-${id}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>`
       return `<div>
@@ -13136,13 +13141,21 @@ function _mobVRenderContent(tick = false) {
             <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;line-height:1.2;text-align:center">Price</div>
             <div style="font-size:13px;font-weight:500;color:var(--fg);line-height:1.3;margin-top:2px;white-space:nowrap;text-align:center;overflow:hidden;text-overflow:ellipsis">${px > 0 ? '$' + fmtPrice(px) : b.coin === 'USDC' ? '$1.00' : '—'}</div>
           </div>
-          <div class="mob-v-row-right" style="width:86px;flex-shrink:0;flex-grow:0">
+          <div class="mob-v-row-right" style="width:104px;flex-shrink:0;flex-grow:0">
             <div class="mob-v-row-val">${usd > 0 ? '$' + fmtUSD(usd) : '—'}</div>
+            ${roi == null ? '' : `<div class="mob-v-row-pct" style="color:${roi >= 0 ? 'var(--green)' : 'var(--red)'};white-space:nowrap">${
+              pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} · ${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%</div>`}
           </div>
           ${chev}
         </div>
         <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${_mobVDetailGrid([
           ...(b._acct ? [['Account', esc(b._acct)]] : []),
+          ...(cost > 0 ? [
+            ['Cost', '$' + fmtUSD(cost)],
+            ['Avg buy', total > 0 ? '$' + fmtPrice(cost / total) : '—'],
+            ['Profit', `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}`, pnl >= 0 ? 'var(--green)' : 'var(--red)'],
+            ['ROI', `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`, roi >= 0 ? 'var(--green)' : 'var(--red)'],
+          ] : []),
           ['Available', fmtSize(avail) + ' ' + esc(_ocCoinLabel(b.coin))],
           ['In Orders', hold > 0 ? fmtSize(hold) + ' ' + esc(_ocCoinLabel(b.coin)) : '—'],
           ['Price', px > 0 ? '$' + fmtPrice(px) : '—'],
@@ -13283,6 +13296,7 @@ function _mobVRenderContent(tick = false) {
           const hd = parseFloat(b.hold ?? 0)
           const c  = parseFloat(b.entryNtl ?? 0)
           const rr = c > 0 && u > 0 ? (u - c) / c * 100 : null
+          const rp = c > 0 && u > 0 ? u - c : null
           // Held-in-orders is the one fact that changes what you can DO with a balance, so
           // it belongs on the per-account row rather than only in the single-account grid.
           const av = t - hd
@@ -13291,10 +13305,11 @@ function _mobVRenderContent(tick = false) {
               <div class="mob-v-row-name notranslate" style="font-size:13px;color:var(--accent)">${esc(b._acct ?? '—')}</div>
               <div class="mob-v-row-sub">${fmtSize(t)} ${esc(_ocCoinLabel(coin))}${hd > 0 ? ` · ${fmtSize(av)} free` : ''}</div>
             </div>
-            <div class="mob-v-row-right" style="width:86px;flex-shrink:0;flex-grow:0">
+            <div class="mob-v-row-right" style="width:104px;flex-shrink:0;flex-grow:0">
               <div class="mob-v-row-val">${u > 0 ? '$' + fmtUSD(u) : '—'}</div>
               ${rr != null
-                ? `<div class="mob-v-row-pct" style="color:${rr >= 0 ? 'var(--green)' : 'var(--red)'}">${rr >= 0 ? '+' : ''}${rr.toFixed(2)}%</div>`
+                ? `<div class="mob-v-row-pct" style="color:${rr >= 0 ? 'var(--green)' : 'var(--red)'};white-space:nowrap">${
+                    rp >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(rp))} · ${rr >= 0 ? '+' : ''}${rr.toFixed(2)}%</div>`
                 : hd > 0 ? `<div class="mob-v-row-pct" style="color:var(--muted)">${fmtSize(hd)} held</div>` : ''}
             </div>
           </div>`
@@ -13310,9 +13325,10 @@ function _mobVRenderContent(tick = false) {
             <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;line-height:1.2;text-align:center">Price</div>
             <div style="font-size:13px;font-weight:500;color:var(--fg);line-height:1.3;margin-top:2px;white-space:nowrap;text-align:center;overflow:hidden;text-overflow:ellipsis">${px > 0 ? '$' + fmtPrice(px) : coin === 'USDC' ? '$1.00' : '—'}</div>
           </div>
-          <div class="mob-v-row-right" style="width:86px;flex-shrink:0;flex-grow:0">
+          <div class="mob-v-row-right" style="width:104px;flex-shrink:0;flex-grow:0">
             <div class="mob-v-row-val">${usd > 0 ? '$' + fmtUSD(usd) : '—'}</div>
-            ${roi == null ? '' : `<div class="mob-v-row-pct" style="color:${roi >= 0 ? 'var(--green)' : 'var(--red)'}">${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%</div>`}
+            ${roi == null ? '' : `<div class="mob-v-row-pct" style="color:${roi >= 0 ? 'var(--green)' : 'var(--red)'};white-space:nowrap">${
+              pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} · ${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%</div>`}
           </div>
           ${chev}
         </div>
