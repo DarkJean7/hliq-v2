@@ -12142,6 +12142,21 @@ function _scPnl(v) {
 // double the rows and imply a break-even trade that never happened.
 const SC_TRADE_LIMIT = 60
 
+// Is this fill a SPOT trade? Hyperliquid reports spot fills under the market id — '@107'
+// or a pair name like 'PURR/USDC' — while a perp comes through as the bare coin ('HYPE').
+// The two can share a display name, so the id is the only thing that separates them.
+//
+// _spotNameMap is authoritative but only populated once market data has loaded, so the
+// shape checks carry it before then. They are safe on their own: that map is keyed by
+// '@N' and 'TOKEN/USDC' and never by a bare perp name, so a perp cannot match by accident.
+function _isSpotFill(coin) {
+  const c = String(coin ?? '')
+  if (!c) return false
+  if (c[0] === '#' || c[0] === '+') return false   // outcome market, not spot
+  if (c.includes(':')) return false                // HIP-3 builder perp, e.g. 'xyz:SPCX'
+  return c[0] === '@' || c.includes('/') || !!_spotNameMap[c]
+}
+
 function _scTradesHtml(fills, funding = []) {
   const closes = (fills ?? [])
     .filter(f => Number(f.closedPnl) !== 0)
@@ -13627,6 +13642,7 @@ function _mobVRenderContent(tick = false) {
       // their settlement fills carry dir="Settlement" (no long/short word), so the
       // old regex mis-read them as short → wrong entry (e.g. 1.68 for a 0–1 token).
       const _sz       = parseFloat(f.sz) || 0
+      const _isSpot   = _isSpotFill(f.coin)
       const _ntl      = Number(f.notional ?? 0) || (_sz * (parseFloat(f.px) || 0))
       const _isOc     = typeof f.coin === 'string' && (f.coin[0] === '#' || f.coin[0] === '+')
       const _sideLong = _isOc ? true
@@ -13650,10 +13666,11 @@ function _mobVRenderContent(tick = false) {
           </div>
           <div class="mob-v-row-right">
             <div class="mob-v-row-val">${fmtSize(f.sz)} @ $${fmtPrice(f.px)}</div>
-            <div class="mob-v-row-pct" style="display:flex;align-items:center;gap:6px;justify-content:flex-end">
-              <span style="color:var(--muted)">$${fmtUSD(_ntl)}</span>
-              ${pnl !== 0 ? `<span class="${pnlCls}">${(pnl >= 0 ? '+' : '') + '$' + fmtUSD(Math.abs(pnl))}</span>
-              <button class="trade-share-btn" title="Share PnL" onclick="event.stopPropagation();${_shareCall}" style="padding:1px 6px;font-size:12px">↗</button>` : ''}
+            <div class="mob-v-row-pct ${pnl !== 0 ? pnlCls : ''}" style="display:flex;align-items:center;gap:6px;justify-content:flex-end;${pnl === 0 ? 'color:var(--muted)' : ''}">
+              <span>${_isSpot ? '$' + fmtUSD(_ntl)
+                              : pnl !== 0 ? (pnl >= 0 ? '+' : '') + '$' + fmtUSD(Math.abs(pnl))
+                              : '—'}</span>
+              ${pnl !== 0 ? `<button class="trade-share-btn" title="Share PnL" onclick="event.stopPropagation();${_shareCall}" style="padding:1px 6px;font-size:12px">↗</button>` : ''}
             </div>
           </div>
           ${chev}
