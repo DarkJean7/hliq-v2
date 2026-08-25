@@ -10718,6 +10718,36 @@ function _comboRefreshOnFills() {
   _fetchCombinedSnap(true).catch(() => {})
 }
 
+/**
+ * ONE wallet's Net PnL, built exactly the way the combined total is: the server's settled
+ * half (realized + funding - fees) plus this device's live unrealized for that wallet.
+ *
+ * Every card used to show r.netPnl instead, derived from whatever fill history THIS device
+ * had cached. Nine of those never summed to the header and drifted independently of it,
+ * which is the disagreement being reported. Same source and same construction means they
+ * add up by definition: header = SUM(settled) + SUM(unrealized), card = settled + unreal.
+ *
+ * Returns null when the server half is missing or stale for this wallet. The caller shows
+ * a dash - a per-device guess sitting next to an authoritative total is how the two bases
+ * got mixed up to begin with.
+ */
+function _comboPnlForWallet(addr) {
+  if (!state.isAllAccounts) return null
+  const snap = _combinedSnap
+  const key  = String(addr ?? '').toLowerCase()
+  const pw   = snap?.perWallet?.[key]
+  if (!pw || !Number.isFinite(Number(pw.settledPnl))) return null
+  if (Date.now() - Number(snap.updatedAt ?? 0) > COMBO_SNAP_MAX_AGE_MS) return null
+  const row = (_allAcctLastResults ?? []).find(r => String(r.addr ?? '').toLowerCase() === key)
+  const u   = Number(row?.unrealizedPnl)
+  if (!Number.isFinite(u)) return null
+  return {
+    net: Number(pw.settledPnl) + u,
+    settled: Number(pw.settledPnl), realized: Number(pw.realizedPnl),
+    fees: Number(pw.fees), funding: Number(pw.funding), unreal: u,
+  }
+}
+
 function _comboPnlSums() {
   if (!state.isAllAccounts) return null
   const hidden = _maHiddenLoad()
@@ -14636,13 +14666,17 @@ function _mobVBuildAccountsHtml(results) {
   // Take the same figure the headline shows. This sheet used to sum r.netPnl, which is a
   // per-device basis — so the header could read -$167 while this said -$31.43 on the same
   // screen. Falls back to the sum only until the server figure lands.
-  const totalNet    = _comboPnlSums()?.net
-    ?? vis.reduce((s, r) => s + (r.error ? 0 : r.netPnl ?? 0), 0)
-  const totalReal   = vis.reduce((s, r) => s + (r.error ? 0 : r.realizedPnl   ?? 0), 0)
+  // No row-sum fallback. _comboPnlSums refuses one deliberately (see its closing comment):
+  // the per-device sum is a DIFFERENT basis, not a rougher version of the same one, so
+  // offering it "until the real figure lands" guarantees a step change a few seconds later
+  // - which is the flicker. Server figure or a dash.
+  const _cpAll      = _comboPnlSums()
+  const totalNet    = _cpAll?.net ?? null
+  const totalReal   = _cpAll?.parts ? _cpAll.parts.realized : null
   const totalDep    = vis.reduce((s, r) => s + (r.error ? 0 : r.totalDeposited ?? 0), 0)
   const totalWith   = vis.reduce((s, r) => s + (r.error ? 0 : r.totalWithdrawn ?? 0), 0)
   const totalVol    = vis.reduce((s, r) => s + (r.error ? 0 : r.totalVolume    ?? 0), 0)
-  const totalFees   = vis.reduce((s, r) => s + (r.error ? 0 : r.totalFees      ?? 0), 0)
+  const totalFees   = _cpAll?.parts ? _cpAll.parts.fees : null
   const winCount    = vis.reduce((s, r) => s + (r.error ? 0 : r.winCount       ?? 0), 0)
   const totalWin    = vis.reduce((s, r) => s + (r.error ? 0 : r.totalWindows   ?? 0), 0)
   const winRate     = totalWin > 0 ? (winCount / totalWin * 100).toFixed(1) + '%' : '—'
@@ -14662,10 +14696,11 @@ function _mobVBuildAccountsHtml(results) {
     const actPos = (r.positions ?? []).filter(ap => parseFloat(ap.position?.szi ?? 0) !== 0)
 
     const actOrders = r.openOrders ?? []
+    const _rw = _comboPnlForWallet(r.addr)   // same source as the header, or a dash
     const expandHtml = _mobVDetailGrid([
       ['Unrealized', pnlFmt(r.unrealizedPnl), r.unrealizedPnl >= 0 ? 'var(--green)' : 'var(--red)'],
-      ['Realized',   pnlFmt(r.realizedPnl),   r.realizedPnl   >= 0 ? 'var(--green)' : 'var(--red)'],
-      ['Net PnL',    pnlFmt(r.netPnl),        r.netPnl        >= 0 ? 'var(--green)' : 'var(--red)'],
+      ['Realized',   _rw ? pnlFmt(_rw.realized) : '—', _rw ? (_rw.realized >= 0 ? 'var(--green)' : 'var(--red)') : ''],
+      ['Net PnL',    _rw ? pnlFmt(_rw.net)      : '—', _rw ? (_rw.net      >= 0 ? 'var(--green)' : 'var(--red)') : ''],
       ['Health',     hStr,                    hCls === 'pos' ? 'var(--green)' : hCls === 'warn' ? 'var(--orange)' : 'var(--red)'],
       ['Withdrawable', '$' + fmtUSD(r.withdrawable ?? 0)],
     ]) +
@@ -14703,13 +14738,13 @@ function _mobVBuildAccountsHtml(results) {
     <div class="mob-v-setting-group" style="margin:12px 0 4px">
       <div class="mob-v-setting-row"><span>Total Value</span><span style="font-weight:600;font-size:14px">$${fmtUSD(totalValue)}</span></div>
       <div class="mob-v-setting-row"><span>Unrealized PnL</span><span class="${pnlCls(totalUnreal)}" style="font-weight:600;font-size:14px">${pnlFmt(totalUnreal)}</span></div>
-      <div class="mob-v-setting-row"><span>Realized PnL</span><span class="${pnlCls(totalReal)}" style="font-weight:600;font-size:14px">${pnlFmt(totalReal)}</span></div>
-      <div class="mob-v-setting-row"><span>Net PnL</span><span class="${pnlCls(totalNet)}" style="font-weight:600;font-size:14px">${pnlFmt(totalNet)}</span></div>
+      <div class="mob-v-setting-row"><span>Realized PnL</span><span class="${totalReal == null ? '' : pnlCls(totalReal)}" style="font-weight:600;font-size:14px">${totalReal == null ? '—' : pnlFmt(totalReal)}</span></div>
+      <div class="mob-v-setting-row"><span>Net PnL</span><span class="${totalNet == null ? '' : pnlCls(totalNet)}" style="font-weight:600;font-size:14px">${totalNet == null ? '—' : pnlFmt(totalNet)}</span></div>
       ${totalDep > 0 ? `<div class="mob-v-setting-row"><span>Total Deposited</span><span style="font-weight:600;font-size:14px">$${fmtUSD(totalDep)}</span></div>` : ''}
       ${totalWith > 0 ? `<div class="mob-v-setting-row"><span>Total Withdrawn</span><span style="font-weight:600;font-size:14px">$${fmtUSD(totalWith)}</span></div>` : ''}
       ${(totalDep > 0 || totalWith > 0) ? `<div class="mob-v-setting-row"><span>Net Deposited</span><span class="${totalValue >= netDep ? 'pos' : 'neg'}" style="font-weight:600;font-size:14px">${pnlFmt(netDep)}</span></div>` : ''}
       <div class="mob-v-setting-row"><span>Total Volume</span><span style="font-weight:600;font-size:14px">$${fmtCompact(totalVol)}</span></div>
-      <div class="mob-v-setting-row"><span>Total Fees</span><span class="neg" style="font-weight:600;font-size:14px">-$${fmtUSD(totalFees)}</span></div>
+      <div class="mob-v-setting-row"><span>Total Fees</span><span class="${totalFees == null ? '' : 'neg'}" style="font-weight:600;font-size:14px">${totalFees == null ? '—' : '-$' + fmtUSD(totalFees)}</span></div>
       <div class="mob-v-setting-row"><span>Win Rate</span><span style="font-weight:600;font-size:14px">${winRate}</span></div>
     </div>
 
@@ -24210,9 +24245,10 @@ function _maCardHtml(r) {
   // r.unrealizedPnl / r.netPnl now cover the whole account (main dex + HIP-3), fixed
   // at the source in _allAcctFastValue — so this reads them directly and Net PnL keeps
   // its funding and fees.
+  const _w       = _comboPnlForWallet(r.addr)   // same source as the header, or a dash
   const unreal   = fmtPnL(r.unrealizedPnl)
-  const real     = fmtPnL(r.realizedPnl)
-  const net      = fmtPnL(r.netPnl)
+  const real     = _w ? fmtPnL(_w.realized) : '—'
+  const net      = _w ? fmtPnL(_w.net)      : '—'
   const hPct     = r.healthPct ?? 0
   const hCls     = r.healthCls ?? 'pos'
   const hStr     = r.accountValue > 0 ? hPct.toFixed(1) + '%' : '—'
@@ -24303,11 +24339,12 @@ function _maAggregateHtml(results) {
   const vis    = results.filter(r => !hidden.has(r.addr))
   const totalValue  = vis.reduce((s, r) => s + (r.accountValue  ?? 0), 0)
   const totalUnreal = vis.reduce((s, r) => s + (r.unrealizedPnl ?? 0), 0)
-  const totalNet    = vis.reduce((s, r) => s + (r.netPnl        ?? 0), 0)
-  const totalReal   = vis.reduce((s, r) => s + (r.realizedPnl   ?? 0), 0)
+  // This strip was summing r.netPnl and never consulting the server figure at all, so it
+  // could sit on screen contradicting the header by hundreds of dollars.
+  const _cp    = _comboPnlSums()
   const unreal = fmtPnL(totalUnreal)
-  const net    = fmtPnL(totalNet)
-  const real   = fmtPnL(totalReal)
+  const net    = _cp ? fmtPnL(_cp.net) : '—'
+  const real   = _cp?.parts ? fmtPnL(_cp.parts.realized) : '—'
   return `
     <div class="stat-card"><div class="stat-label">Combined Value</div><div class="stat-value neu">$${fmtUSD(totalValue)}</div><div class="stat-sub">Sum of all visible accounts</div></div>
     <div class="stat-card"><div class="stat-label">Unrealized PnL</div><div class="stat-value ${unreal.cls}">${unreal.text}</div><div class="stat-sub">Combined open positions</div></div>

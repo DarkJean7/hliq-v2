@@ -872,6 +872,11 @@ async function computeCombined(addrs) {
   let realizedPnl = 0, fees = 0, funding = 0, unrealBase = 0
   let pnlWallets = 0
   const missing = []
+  // Per wallet as well as summed. The account cards used to derive their own Net PnL from
+  // each DEVICE's cached fill history, so nine cards never added up to the header — the
+  // same split that had a phone reading -$25 against a desktop's -$168. Handing back the
+  // pieces lets every surface build its figure the one way, from the one source.
+  const perWallet = {}
   for (const addr of addrs) {
     try {
       // Portfolio FIRST, then the anchor — never the other way round. Reading the anchor
@@ -897,6 +902,10 @@ async function computeCombined(addrs) {
         funding     += acc.funding
         unrealBase  += (cs?.assetPositions ?? [])
           .reduce((t, ap) => t + parseFloat(ap.position?.unrealizedPnl ?? 0), 0)
+        perWallet[String(addr).toLowerCase()] = {
+          settledPnl: acc.realizedPnl + acc.funding - acc.fees,
+          realizedPnl: acc.realizedPnl, fees: acc.fees, funding: acc.funding,
+        }
         pnlWallets++
       } catch (e) {
         if (e.rateLimited) throw e
@@ -927,7 +936,7 @@ async function computeCombined(addrs) {
     // much as the Unrealized figure next to it, which is the only self-consistent answer.
     settledPnl: realizedPnl + funding - fees,
     netPnl: realizedPnl + unrealBase + funding - fees,   // retained for older clients
-    realizedPnl, fees, funding, unrealBase, pnlWallets,
+    realizedPnl, fees, funding, unrealBase, pnlWallets, perWallet,
   }
 }
 
