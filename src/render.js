@@ -1,4 +1,4 @@
-import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc } from './format.js'
+import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
 import { aggregateFillsByCoin, coinLabel } from './api.js'
 import { renderOverviewChart } from './charts.js'
 
@@ -2008,12 +2008,21 @@ export function calDayClick(key, rootId) {
       <div class="cal-detail-section-title">Trades</div>
       ${trades.map(t => {
         const netPnl  = t.closedPnl - t.fee
+        // Buying spot is a purchase, so what it cost is the figure worth the slot — and it
+        // is the only one there is, since spot fills carry no closed PnL. A perp keeps its
+        // PnL there, and a dash when it opened rather than closed. Same rule as History.
+        const isSpot = isSpotCoin(t.coin)
+        const right = isSpot
+          ? `<span class="cal-detail-pnl" style="color:var(--muted)">$${fmtUSD(t.notional ?? 0)}</span>`
+          : t.closedPnl !== 0
+            ? `<span class="${netPnl >= 0 ? 'pos' : 'neg'} cal-detail-pnl">${netPnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(netPnl))}</span>`
+            : '<span class="cal-detail-pnl" style="color:var(--muted)">—</span>'
         return `<div class="cal-detail-trade">
           <span class="cal-detail-coin">${esc(_lbl(t.coin))}</span>
           <span class="dir-badge ${_dirBadgeCls(t.dir)}">${esc(t.dir || '')}</span>
           ${t._acct ? `<span class="acct-pill">${esc(t._acct)}</span>` : ''}
           <span class="cal-detail-meta">${fmtSize(t.sz)} @ $${fmtPrice(t.px)}</span>
-          ${t.closedPnl !== 0 ? `<span class="${netPnl >= 0 ? 'pos' : 'neg'} cal-detail-pnl">${netPnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(netPnl))}</span>` : '<span class="cal-detail-pnl" style="color:var(--muted)">—</span>'}
+          ${right}
         </div>`
       }).join('')}
     </div>` : ''

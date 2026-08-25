@@ -206,7 +206,7 @@ import {
   paperDeposit, paperWithdraw, paperLedger, paperPnl, paperDeposited, setPaperAssets, paperSpotValue,
   paperSettleOutcomes, paperFundingHistory, paperAccrueFunding, setPaperFundingRates, PAPER_COSTS,
 } from './paper.js'
-import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey } from './format.js'
+import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
          compareAxisHtml, attachCompareScrub, compareReadoutHtml, assignCompareColors } from './compare.js'
@@ -6929,6 +6929,19 @@ function _applyAcctLiveCs(r, cs, hip3Override) {
 // stays as a fallback for any wallet the socket isn't delivering (see _acctWsOk gate).
 const _acctWsSubs = new Map()   // addr → ISubscription
 const _acctWsLast = new Map()   // addr → last push timestamp
+
+// addr(lower) → { dexes, positions, ts } from the All-Accounts WebSocket. One event
+// carries every dex's state, so it already knows which builder dexes a wallet trades on —
+// that is what lets _lbFetchHip3 skip asking all ten. Only fresh readings are trusted: a
+// stale one could hide a position opened since, and the fan is the right answer to "we do
+// not know".
+//
+// Declared HERE, beside the rest of the socket state, and not next to its reader. It was
+// down there, and _stopAllAcctWs — which clears it — runs from loadDashboard during module
+// evaluation, before a `const` that far down the file exists. Every boot with a saved
+// wallet threw "Cannot access '_hip3WsDexes' before initialization".
+const _hip3WsDexes = new Map()
+const _HIP3_WS_TTL = 90_000
 let   _acctWsPaintT = null
 function _acctWsOk(addr) { return Date.now() - (_acctWsLast.get(String(addr).toLowerCase()) ?? 0) < 30_000 }
 function _acctWsSchedulePaint() {
@@ -12155,20 +12168,9 @@ function _scPnl(v) {
 // double the rows and imply a break-even trade that never happened.
 const SC_TRADE_LIMIT = 60
 
-// Is this fill a SPOT trade? Hyperliquid reports spot fills under the market id — '@107'
-// or a pair name like 'PURR/USDC' — while a perp comes through as the bare coin ('HYPE').
-// The two can share a display name, so the id is the only thing that separates them.
-//
-// _spotNameMap is authoritative but only populated once market data has loaded, so the
-// shape checks carry it before then. They are safe on their own: that map is keyed by
-// '@N' and 'TOKEN/USDC' and never by a bare perp name, so a perp cannot match by accident.
-function _isSpotFill(coin) {
-  const c = String(coin ?? '')
-  if (!c) return false
-  if (c[0] === '#' || c[0] === '+') return false   // outcome market, not spot
-  if (c.includes(':')) return false                // HIP-3 builder perp, e.g. 'xyz:SPCX'
-  return c[0] === '@' || c.includes('/') || !!_spotNameMap[c]
-}
+// Bound to the spot map this module keeps loaded. The rule itself lives in format.js so
+// the calendar, which renders from another module, decides identically.
+const _isSpotFill = (coin) => isSpotCoin(coin, _spotNameMap)
 
 function _scTradesHtml(fills, funding = []) {
   const closes = (fills ?? [])
@@ -23209,13 +23211,6 @@ async function _lbEnsureMetas() {
 // Cached per address with a 60s TTL so the 30s leaderboard poll doesn't multiply
 // API load by the dex count on every tick.
 const _lbHip3ByAddr = {}
-
-// addr(lower) → { dexes, positions, ts } from the All-Accounts WebSocket. See the handler
-// above: one event carries every dex's state, so it already knows which ones a wallet
-// trades on. Only fresh readings are trusted — a stale one could hide a position opened
-// since, and the ten-call fan is the correct answer to "we do not know".
-const _hip3WsDexes = new Map()
-const _HIP3_WS_TTL = 90_000
 
 function _hip3KnownDexes(addr) {
   const v = _hip3WsDexes.get(String(addr).toLowerCase())

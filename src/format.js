@@ -159,3 +159,25 @@ export function parseFunding(rawFunding) {
   }))
 }
 
+
+/**
+ * Is this fill a SPOT trade?
+ *
+ * Hyperliquid reports a spot fill under its MARKET id — '@107', or a pair name like
+ * 'PURR/USDC' — while a perp arrives as the bare coin ('HYPE'). HYPE trades as both, so
+ * the display name cannot decide it and the id is the only thing that separates them.
+ *
+ * Outcome markets ('#N' / '+N') and HIP-3 builder perps ('dex:COIN') are perps, not spot.
+ *
+ * @param spotNames optional coin→name map, when the caller has one loaded. It is keyed by
+ *   '@N' and 'TOKEN/USDC' and never by a bare perp name, so it cannot mislabel a perp. The
+ *   shape checks stand alone without it — every spot market in HL's universe is named in
+ *   one of those two forms — so it is a belt-and-braces pass, not a requirement.
+ */
+export function isSpotCoin(coin, spotNames = null) {
+  const c = String(coin ?? '')
+  if (!c) return false
+  if (c[0] === '#' || c[0] === '+') return false   // outcome market
+  if (c.includes(':')) return false                // HIP-3 builder perp
+  return c[0] === '@' || c.includes('/') || !!(spotNames && spotNames[c])
+}
