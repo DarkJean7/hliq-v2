@@ -1,4 +1,4 @@
-﻿import './style.css'
+import './style.css'
 window.__build = typeof __HLIQ_BUILD__ !== 'undefined' ? __HLIQ_BUILD__ : ''
 const _il = document.getElementById('init-loader')
 if (_il) _il.remove()
@@ -6951,14 +6951,23 @@ async function _startAllAcctWs(entries) {
         // exactly like the REST fetch does, then rename to HL's display tickers.
         let mainSt = null
         const hip3Pos = []
+        const hip3Dexes = []
         for (const [dex, st] of states) {
           if (!dex) { mainSt = st; continue }
+          let has = false
           for (const ap of (st?.assetPositions ?? [])) {
+            if (parseFloat(ap.position?.szi ?? 0) === 0) continue
+            has = true
             const bare = ap.position?.coin ?? ''
             const prefixed = String(bare).includes(':') ? bare : `${dex}:${bare}`
             hip3Pos.push({ ...ap, position: { ...ap.position, coin: hip3Rename(prefixed) } })
           }
+          if (has) hip3Dexes.push(dex)
         }
+        // This event covers EVERY builder dex, so it has already answered the question the
+        // REST fan was asking ten times per wallet: which of them does this wallet use?
+        // Recording it here is what lets _lbFetchHip3 skip the discovery fan entirely.
+        _hip3WsDexes.set(key, { dexes: hip3Dexes, positions: hip3Pos, ts: Date.now() })
         if (!mainSt) return   // couldn't identify main dex — let the REST fallback handle it
         const r = _allAcctLastResults.find(x => String(x.addr).toLowerCase() === key)
         if (!r || r.error) return
@@ -6972,6 +6981,10 @@ async function _startAllAcctWs(entries) {
 async function _stopAllAcctWs() {
   for (const sub of _acctWsSubs.values()) { try { await sub?.unsubscribe?.() } catch {} }
   _acctWsSubs.clear(); _acctWsLast.clear()
+  // Nothing is updating these any more, so they must stop being treated as the live
+  // answer — the ten-call fan is correct again the moment the feed is gone. The TTL
+  // would expire them anyway; this makes it immediate rather than up to 90s late.
+  _hip3WsDexes.clear()
   if (_acctWsPaintT) { clearTimeout(_acctWsPaintT); _acctWsPaintT = null }
   await _stopHistWs()
 }
@@ -23196,7 +23209,48 @@ async function _lbEnsureMetas() {
 // Cached per address with a 60s TTL so the 30s leaderboard poll doesn't multiply
 // API load by the dex count on every tick.
 const _lbHip3ByAddr = {}
+
+// addr(lower) → { dexes, positions, ts } from the All-Accounts WebSocket. See the handler
+// above: one event carries every dex's state, so it already knows which ones a wallet
+// trades on. Only fresh readings are trusted — a stale one could hide a position opened
+// since, and the ten-call fan is the correct answer to "we do not know".
+const _hip3WsDexes = new Map()
+const _HIP3_WS_TTL = 90_000
+
+function _hip3KnownDexes(addr) {
+  const v = _hip3WsDexes.get(String(addr).toLowerCase())
+  return v && Date.now() - v.ts < _HIP3_WS_TTL ? v : null
+}
+
 async function _lbFetchHip3(addr) {
+  // The discovery fan asked all ten builder dexes "does this wallet hold anything here?"
+  // — 10 calls per wallet, ~90 per refresh for nine wallets, and nearly every answer was
+  // no. In All Accounts the WebSocket streams all ten states continuously, so the answer
+  // is already in hand and the fan is pure duplication. Orders still need REST (the socket
+  // does not carry them), but only for the dexes that actually have something.
+  const known = _hip3KnownDexes(addr)
+  if (known) {
+    const out = { ts: Date.now(), positions: known.positions ?? [], orders: [] }
+    if (!known.dexes.length) return out          // nothing anywhere — no calls at all
+    const info = new InfoClient({ transport: _transport })
+    const arrays = await hlPool(known.dexes, dex =>
+      info.frontendOpenOrders({ user: addr, dex }).catch(() => []))
+    arrays.forEach((oo, i) => {
+      const dex = known.dexes[i]
+      for (const o of (oo ?? [])) {
+        const c = o.coin.includes(':') ? o.coin : `${dex}:${o.coin}`
+        out.orders.push({ ...o, coin: hip3Rename(c) })
+      }
+    })
+    return out
+  }
+  return _lbFetchHip3Fan(addr)
+}
+
+// The original ten-dex fan, kept for every case the socket cannot answer: the leaderboard
+// (no WS at all), a single account, and All Accounts before the first event lands or after
+// the connection drops.
+async function _lbFetchHip3Fan(addr) {
   const dexes = [...new Set((state.allMetas || []).slice(1)
     .map(m => (m.universe?.[0]?.name || '').split(':')[0].toLowerCase()).filter(Boolean))]
   const out = { ts: Date.now(), positions: [], orders: [] }
