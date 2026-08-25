@@ -77,6 +77,12 @@ const SIZE_PCT     = Math.min(1, Math.max(0.01, (parseFloat(args['size-pct']) ||
 const LEVERAGE     = parseInt(args.leverage)
 const PCT_INTERVAL = parseFloat(args['pct-interval'] ?? '0')
 const PCT_SPACING  = PCT_INTERVAL > 0
+// Preview mode. The UI asks the bot what it WOULD do rather than recomputing the ladder
+// itself, because the answer depends on live account state — the range can anchor to an
+// open position's average entry, and the per-level size is derived from the capital
+// actually available to trade. A second implementation in the browser would drift from
+// this one and quietly show a plan the bot was never going to follow.
+const PLAN_ONLY    = !!args.plan
 const CHECK_MS     = Math.max(5, parseInt(args.interval) || 15) * 1000
 const HL_MIN_ORDER = 10          // USD — HL rejects orders below this notional
 const MAX_PLACE_PER_CYCLE = 8    // be gentle with the API / avoid bursts
@@ -731,6 +737,46 @@ async function run() {
   // transfer the shortfall to perps automatically (runs for explicit --size too).
   // HIP-3 dexes have their own collateral that spot USDC can't auto-fund — skip.
   const requiredMargin = ORDER_USD * buyLevelCnt / LEVERAGE
+
+  // ── PREVIEW: everything above this point is a READ. Stop here. ─────────────
+  // Deliberately before the margin top-up below, which moves spot USDC to perps — a
+  // preview must not move money any more than it places orders. Nothing after this line
+  // runs, so there is no path from --plan to an order.
+  if (PLAN_ONLY) {
+    const orders = PRICES.map(px => ({
+      px,
+      // Below the mark the grid buys and above it sells; a short grid is the mirror.
+      side: (IS_SHORT ? px > markPx : px < markPx) ? 'buy' : 'sell',
+      sz:   roundSz(ORDER_USD / px, _levelSzDec, px),
+      usd:  ORDER_USD,
+      type: 'limit',
+    }))
+    const entries = orders.filter(o => (IS_SHORT ? o.side === 'sell' : o.side === 'buy'))
+    const _pp = (acct0.assetPositions ?? []).find(x => x.position.coin === COIN)
+    const _sz = parseFloat(_pp?.position?.szi ?? 0)
+    console.log('__PLAN__' + JSON.stringify({
+      ok: true,
+      coin: COIN, dex: DEX || null, side: IS_SHORT ? 'short' : 'long',
+      markPx, lower: LOWER, upper: UPPER, levels: LEVELS,
+      spacing: PCT_SPACING ? PCT_INTERVAL + '%' : roundPx((UPPER - LOWER) / (LEVELS - 1)),
+      orders,
+      orderUsd: ORDER_USD,
+      leverage: LEVERAGE,
+      margin: IS_ISOLATED ? 'isolated' : 'cross',
+      // What the sizing was actually derived from, so the preview shows the user their own
+      // capital rather than a number with no provenance.
+      capital, capitalSource: capSrc, freeMargin,
+      requiredMargin,
+      entryLevels: entries.length,
+      autoRange: !(parseFloat(args.lower) > 0) && !(parseFloat(args.upper) > 0),
+      autoSize:  !(parseFloat(args.size) > 0),
+      fits: requiredMargin <= capital,
+      minOrder: HL_MIN_ORDER,
+      position: _sz ? { szi: _sz, entryPx: parseFloat(_pp.position.entryPx ?? 0) } : null,
+    }))
+    process.exit(0)
+  }
+
   if (IS_HIP3) {
     if (freeMargin < requiredMargin) {
       log('WARN', `HIP-3 dex "${DEX}" free margin $${freeMargin.toFixed(2)} < ~$${requiredMargin.toFixed(2)} needed. Deposit USDC into the ${DEX} dex (spot USDC can't auto-fund it) or orders may fail.`)

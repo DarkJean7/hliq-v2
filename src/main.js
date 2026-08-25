@@ -18746,6 +18746,161 @@ async function updateStrategyMob(type) {
   } catch { alert('Server unreachable. Is hliq-strat running?') }
 }
 
+// ─── BOT PREVIEW ──────────────────────────────────────────────────────────────
+//
+// What the bot would do the moment you press Run, drawn on the price it would do it at.
+//
+// The plan is NOT recomputed here. The server runs the real strategy with --plan, which
+// performs its own setup — resolving the range (it can anchor to an open position's
+// average entry), reading how much capital is actually available, deriving the per-level
+// size from it — then prints the orders and exits before placing any of them. A second
+// implementation in the browser would drift from the bot and show a plan it was never
+// going to follow, which is worse than no preview at all.
+//
+// Only bots whose opening move is knowable up front are listed. A trigger-based bot has
+// no orders to show until its condition fires.
+const PREVIEWABLE = new Set(['grid'])
+
+window.__botPreview = async function(type) {
+  const agentKey = _stratTargetKey()
+                || document.getElementById('m-agentKey')?.value?.trim()
+                || document.getElementById('agentKey')?.value?.trim()
+  const target = _stratTargetAddr()
+  if (!target)   { _paperToast(_T('Pick which account to preview on first', 'Elige primero en qué cuenta'), 'err'); return }
+  if (!agentKey) { _paperToast(_T('Connect an agent key first', 'Conecta una clave de agente primero'), 'err'); return }
+
+  _botPreviewSheet(type, null, true)
+  try {
+    await ensureAllMids()
+    const argv = buildArgvMob(type)
+    const r = await serverFetch('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, agentKey, args: argv, address: target }),
+    })
+    _botPreviewSheet(type, r, false)
+  } catch (e) {
+    _botPreviewSheet(type, { ok: false, error: e.message || 'Server unreachable' }, false)
+  }
+}
+
+window.__closeBotPreview = function() { document.getElementById('botPreviewSheet')?.remove() }
+
+/**
+ * The ladder, drawn against price. Levels are placed by PRICE, not by index, so uneven
+ * spacing (percentage grids) shows as uneven rungs rather than being flattened into an
+ * evenly-spaced picture the bot is not going to trade.
+ */
+function _previewChartHtml(plan) {
+  const orders = (plan.orders ?? []).filter(o => Number.isFinite(+o.px))
+  if (orders.length < 2) return ''
+  const pxs = orders.map(o => +o.px).concat(+plan.markPx)
+  const lo = Math.min(...pxs), hi = Math.max(...pxs)
+  const span = (hi - lo) || 1
+  const H = Math.max(190, orders.length * 26)
+  const y = (px) => 14 + (1 - (px - lo) / span) * (H - 28)
+
+  const rung = (o) => {
+    const yy = y(+o.px)
+    const buy = o.side === 'buy'
+    const col = buy ? 'var(--green)' : 'var(--red)'
+    return `<div style="position:absolute;left:0;right:0;top:${yy - 9}px;height:18px;display:flex;align-items:center;gap:6px">
+      <span style="width:38px;flex-shrink:0;text-align:right;font-size:9.5px;font-weight:800;color:${col};text-transform:uppercase">${buy ? _T('Buy', 'Compra') : _T('Sell', 'Venta')}</span>
+      <span style="flex:1;height:0;border-top:1.5px ${buy ? 'solid' : 'dashed'} ${col};opacity:.75"></span>
+      <span style="flex-shrink:0;font-size:10.5px;font-family:var(--font-mono);color:var(--fg-2)">${fmtSize(o.sz)} @ $${fmtPrice(o.px)}</span>
+    </div>`
+  }
+  const markY = y(+plan.markPx)
+  return `<div style="position:relative;height:${H}px;margin:10px 0 4px">
+    ${orders.map(rung).join('')}
+    <div style="position:absolute;left:0;right:0;top:${markY - 9}px;height:18px;display:flex;align-items:center;gap:6px">
+      <span style="width:38px;flex-shrink:0;text-align:right;font-size:9.5px;font-weight:800;color:var(--fg)">${_T('Mark', 'Precio')}</span>
+      <span style="flex:1;height:0;border-top:2px solid var(--fg)"></span>
+      <span style="flex-shrink:0;font-size:11px;font-weight:800;font-family:var(--font-mono)">$${fmtPrice(plan.markPx)}</span>
+    </div>
+  </div>`
+}
+
+function _botPreviewSheet(type, plan, loading) {
+  document.getElementById('botPreviewSheet')?.remove()
+  const cell = (label, value, tone) => `<div style="flex:1;min-width:86px">
+    <div style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">${label}</div>
+    <div style="font-size:13.5px;font-weight:700;margin-top:2px;color:${tone || 'var(--fg)'}">${value}</div>
+  </div>`
+
+  let body
+  if (loading) {
+    body = `<div style="padding:40px 16px;text-align:center;font-size:12.5px;color:var(--muted)">${
+      _T('Asking the bot what it would do…', 'Preguntando al bot qué haría…')}</div>`
+  } else if (!plan?.ok) {
+    // The bot's own refusal is the answer — it is what Run would have said too.
+    body = `<div style="padding:22px 16px">
+      <div style="font-size:12.5px;color:var(--red);line-height:1.5">${esc(plan?.error || 'Could not build a preview')}</div>
+      <div style="font-size:11px;color:var(--fg-3);margin-top:10px;line-height:1.5">${
+        _T('This is what the bot itself said when asked to set up with these settings — pressing Run would hit the same thing.',
+           'Esto es lo que dijo el propio bot con esta configuración — pulsar Run daría lo mismo.')}</div>
+    </div>`
+  } else {
+    const buys  = plan.orders.filter(o => o.side === 'buy').length
+    const sells = plan.orders.length - buys
+    // Capital first: the size per level is derived from it, so a plan that does not fit
+    // is the single most useful thing this screen can tell you.
+    const fitTone = plan.fits ? 'var(--green)' : 'var(--red)'
+    body = `<div style="padding:14px 16px 18px">
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        ${cell(_T('Orders', 'Órdenes'), `${plan.orders.length}`, 'var(--fg)')}
+        ${cell(_T('Buy / Sell', 'Compra / Venta'), `<span style="color:var(--green)">${buys}</span> / <span style="color:var(--red)">${sells}</span>`)}
+        ${cell(_T('Per level', 'Por nivel'), '$' + fmtUSD(plan.orderUsd))}
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+        ${cell(_T('Margin needed', 'Margen necesario'), '$' + fmtUSD(plan.requiredMargin), fitTone)}
+        ${cell(_T('Your capital', 'Tu capital'), '$' + fmtUSD(plan.capital), 'var(--fg)')}
+        ${cell(_T('Leverage', 'Apalancamiento'), plan.leverage + '× ' + plan.margin)}
+      </div>
+      <div style="font-size:10.5px;color:var(--fg-3);margin-top:8px;line-height:1.5">${
+        _T('Sizing comes from', 'El tamaño sale de')} ${esc(plan.capitalSource || '')}${
+        plan.autoSize ? ' · ' + _T('size chosen automatically', 'tamaño elegido automáticamente') : ''}${
+        plan.autoRange ? ' · ' + _T('range chosen automatically', 'rango elegido automáticamente') : ''}</div>
+
+      ${plan.fits ? '' : `<div style="margin-top:10px;font-size:11.5px;color:var(--red);background:rgba(255,77,109,.08);border-radius:8px;padding:10px 12px;line-height:1.5">${
+        _T('This needs more margin than the account has free. The bot would still start — it places what it can and adds the rest as margin frees.',
+           'Esto necesita más margen del que hay libre. El bot arrancaría igualmente: coloca lo que puede y añade el resto cuando se libere margen.')}</div>`}
+
+      ${plan.position ? `<div style="margin-top:10px;font-size:11.5px;color:var(--fg-2);background:var(--panel-1);border-radius:8px;padding:10px 12px;line-height:1.5">${
+        _T('You already hold', 'Ya tienes')} ${fmtSize(Math.abs(plan.position.szi))} ${esc(_ocCoinLabel(plan.coin))} ${
+        _T('at', 'a')} $${fmtPrice(plan.position.entryPx)}${plan.autoRange ? ' — ' + _T('the range was anchored to it.', 'el rango se ancló a eso.') : '.'}</div>` : ''}
+
+      ${_previewChartHtml(plan)}
+
+      <div style="font-size:10.5px;color:var(--fg-3);margin-top:8px;line-height:1.5">${
+        _T('Every one is a resting limit order. Nothing has been placed — this ran the bot\'s own setup and stopped before it could.',
+           'Todas son órdenes límite en espera. No se ha colocado nada — esto ejecutó la preparación del propio bot y se detuvo antes de poder hacerlo.')}</div>
+    </div>`
+  }
+
+  const wrap = document.createElement('div')
+  wrap.id = 'botPreviewSheet'
+  wrap.innerHTML = `
+    <div onclick="window.__closeBotPreview()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:8999"></div>
+    <div style="position:fixed;bottom:0;left:0;right:0;z-index:9000;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-height:88vh;overflow-y:auto">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 16px 12px;border-bottom:1px solid var(--border)">
+        <div>
+          <div style="font-size:16px;font-weight:700">${_T('Preview', 'Vista previa')}${plan?.ok ? ' · ' + esc(_ocCoinLabel(plan.coin)) : ''}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:1px">${
+            plan?.ok ? `${esc(plan.side)} ${_T('grid', 'grid')} · $${fmtPrice(plan.lower)} – $${fmtPrice(plan.upper)}`
+                     : _T('Nothing is placed', 'No se coloca nada')}</div>
+        </div>
+        <button onclick="window.__closeBotPreview()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1;padding:0 4px">×</button>
+      </div>
+      ${body}
+      ${plan?.ok ? `<div style="display:flex;gap:8px;padding:0 16px 18px">
+        <button onclick="window.__closeBotPreview();window.runStrategyMob('${type}')" style="flex:1;padding:12px;border-radius:10px;border:none;background:var(--accent);color:#000;font-size:14px;font-weight:700;cursor:pointer">▶ ${_T('Run it', 'Ejecutar')}</button>
+        <button onclick="window.__closeBotPreview()" style="flex:1;padding:12px;border-radius:10px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:14px;font-weight:700;cursor:pointer">${_T('Back', 'Volver')}</button>
+      </div>` : ''}
+    </div>`
+  document.body.appendChild(wrap)
+}
+
 function _mobToggleGridSpacing(btn) {
   _mobGridSpacing = _mobGridSpacing === 'pct' ? 'usd' : 'pct'
   btn.textContent = _mobGridSpacing === 'pct' ? '%' : '$'
@@ -19490,6 +19645,9 @@ function _mobVRenderStrategies(el) {
             ? `<button onclick="window._mobCancelEdit()" style="display:flex;flex:1;align-items:center;justify-content:center;padding:8px 0;border-radius:8px;border:1px solid var(--muted);background:transparent;color:var(--muted);font-size:13px;font-weight:700;cursor:pointer">Cancel</button>`
             : `<button id="m-stop-btn-exp-${s.type}" onclick="window.stopStrategyMob('${s.type}')"
             style="display:${running ? 'flex' : 'none'};flex:1;align-items:center;justify-content:center;padding:8px 0;border-radius:8px;border:1px solid var(--red);background:transparent;color:var(--red);font-size:13px;font-weight:700;cursor:pointer">■ Stop All</button>`}
+          ${PREVIEWABLE.has(s.type)
+            ? `<button class="mob-strat-logs-btn" onclick="window.__botPreview('${s.type}')" title="${_T('See what it would do, without doing it', 'Ver qué haría, sin hacerlo')}">👁 ${_T('Preview', 'Vista previa')}</button>`
+            : ''}
           <button class="mob-strat-logs-btn" onclick="window._mobShowStratLogs('${s.type}')">Logs</button>
         </div>
         ${_insts.length ? `<div style="margin-top:12px;display:flex;flex-direction:column;gap:7px">

@@ -1566,6 +1566,51 @@ const server = createServer(async (req, res) => {
     return json(res, result.ok ? 200 : 400, result)
   }
 
+  // ── POST /api/plan → what the bot WOULD do, without doing any of it ───────
+  // Runs the real strategy with --plan: it performs its own setup (range resolution,
+  // capital lookup, per-level sizing) and prints the resulting orders, then exits before
+  // placing anything or moving any funds. The preview is the bot's own arithmetic, which
+  // is the only version that cannot drift from what Run actually does.
+  //
+  // Same ownership check as /api/start, and deliberately NOT behind the paywall: it
+  // places no orders, and someone deciding whether to subscribe should be able to see
+  // what they would be getting.
+  if (method === 'POST' && path === '/api/plan') {
+    const b = await body(req)
+    const auth = getAuth(req)
+    if (!auth) return json(res, 401, { error: 'authentication required' })
+    if (!auth.admin) {
+      const agentAddr = agentAddrFromKey(b.agentKey ?? '')
+      if (!agentAddr || agentAddr !== auth.signer) return json(res, 403, { error: 'preview with your own agent key' })
+    }
+    const script = SCRIPTS[b.type]
+    if (!script) return json(res, 400, { error: 'unknown strategy' })
+    const envKey = b.agentKey || process.env.WALLET_KEY
+    if (!envKey) return json(res, 400, { error: 'Agent key not provided' })
+
+    const argv = [script, ...(b.address ? ['--address', b.address] : []), ...(b.args ?? []), '--plan']
+    const plan = await new Promise((resolve) => {
+      const proc = spawn('node', argv, { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey } })
+      let out = '', err = ''
+      // A preview is something a person is waiting on, so it gets a short leash — and the
+      // process is killed rather than left running if it overruns.
+      const t = setTimeout(() => { try { proc.kill('SIGKILL') } catch (_) {} resolve({ ok: false, error: 'preview timed out' }) }, 30_000)
+      proc.stdout.on('data', c => { out += c.toString() })
+      proc.stderr.on('data', c => { err += c.toString() })
+      proc.on('close', () => {
+        clearTimeout(t)
+        const line = out.split('\n').find(l => l.startsWith('__PLAN__'))
+        if (line) { try { return resolve(JSON.parse(line.slice(8))) } catch (_) {} }
+        // The bot refuses some configs outright (capital too low, bad range). That refusal
+        // IS the preview's answer, so surface its own words rather than a generic failure.
+        const said = (out + err).split('\n').filter(l => /\[ERROR|^ERROR/.test(l)).pop()
+        resolve({ ok: false, error: (said || 'could not build a preview').replace(/^\[[^\]]+\]\s*\[[^\]]+\]\s*/, '').slice(0, 300) })
+      })
+      proc.on('error', e => { clearTimeout(t); resolve({ ok: false, error: e.message }) })
+    })
+    return json(res, 200, plan)
+  }
+
   // ── POST /api/stop ────────────────────────────────────────────────────────
   if (method === 'POST' && path === '/api/stop') {
     const b = await body(req)
