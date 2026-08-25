@@ -114,9 +114,27 @@ export async function registerAgentKey(masterAddr, privateKey) {
   return wallet.address
 }
 export function hasAgentFor(masterAddr) {
-  return !!masterAddr && _agentClients.has(String(masterAddr).toLowerCase())
+  if (!masterAddr) return false
+  if (_agentClients.has(String(masterAddr).toLowerCase())) return true
+  // A stored key counts: _client() will install it on demand. Without this the UI could
+  // disable an action for an account that can in fact sign, purely on registration timing.
+  return !!(_agentKeyResolver && _agentKeyResolver(masterAddr))
 }
 export function clearAgentKeys() { _agentClients.clear() }
+
+/** Drop every registered client EXCEPT these addresses. Used to refresh the combined
+ *  view's set without ever emptying it — see _allAcctRegisterAgents. */
+export function pruneAgentKeys(keep) {
+  const want = new Set((keep ?? []).map(a => String(a).toLowerCase()))
+  for (const k of [..._agentClients.keys()]) if (!want.has(k)) _agentClients.delete(k)
+}
+
+// Last-resort lookup for an account whose client is not registered yet. The combined view
+// installs one that reads the per-address key out of localStorage, so an action fired
+// during a re-registration (or before one finished) heals itself instead of failing with
+// "No agent key" for a wallet whose key is sitting right there.
+let _agentKeyResolver = null
+export function setAgentKeyResolver(fn) { _agentKeyResolver = typeof fn === 'function' ? fn : null }
 
 // While the combined view is active there is no meaningful "current" account, so an
 // unrouted action must fail loudly instead of signing as whoever last connected.
@@ -127,7 +145,19 @@ export function setMultiAcctStrict(on) { _strictAcct = !!on }
 // by the combined view. Falls back to the single connected client otherwise.
 function _client(acct) {
   if (acct) {
-    const c = _agentClients.get(String(acct).toLowerCase())
+    const key = String(acct).toLowerCase()
+    let c = _agentClients.get(key)
+    if (!c && _agentKeyResolver) {
+      // Not registered — but the key may simply not have been installed yet. Register it
+      // now rather than refusing an action the account is perfectly able to sign.
+      const pk = _agentKeyResolver(acct)
+      if (pk) {
+        try {
+          _agentClients.set(key, new ExchangeClient({ transport: new HttpTransport({ timeout: 60_000 }), wallet: new ethers.Wallet(pk) }))
+          c = _agentClients.get(key)
+        } catch (_) { /* a malformed key falls through to the error below */ }
+      }
+    }
     if (!c) throw new Error(`No agent key for ${String(acct).slice(0, 6)}…${String(acct).slice(-4)}`)
     return c
   }

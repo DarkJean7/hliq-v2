@@ -146,6 +146,8 @@ Chart.register(_candlePlugin, _markDotPlugin, _yPriceBoxPlugin)
 import {
   connectAgentKey,
   registerAgentKey,
+  pruneAgentKeys,
+  setAgentKeyResolver,
   hasAgentFor,
   clearAgentKeys,
   setMultiAcctStrict,
@@ -5585,6 +5587,40 @@ window.__guardDisarm = async function () {
  * last. Confirming then cancelled that rung and left the others in place next to the
  * replacement. Showing them makes both the state and the consequence visible.
  */
+/**
+ * Cancel one resting trigger without leaving the editor.
+ *
+ * Editing a ladder often means removing a rung rather than replacing the lot, and the only
+ * way to do that used to be closing this sheet and hunting the order down in the Orders
+ * tab. The row is removed on success and the state behind Confirm is updated with it, so
+ * Confirm cannot then try to cancel an oid that is already gone.
+ */
+window.__tpslCancelOne = async function(oid, btn) {
+  const pos = state.editingPos
+  if (!pos) return
+  const acct = pos.acct ?? null
+  if (!window.__acctCanTrade(acct)) {
+    showTradeStatus(document.getElementById('editModalStatus'), 'error',
+      acct ? 'No agent key for that account.' : 'Connect agent key first.')
+    return
+  }
+  const was = btn?.textContent
+  if (btn) { btn.disabled = true; btn.textContent = '…' }
+  try {
+    await cancelOrder({ coin: pos.coin, oid, acct })
+    pos.tps = (pos.tps ?? []).filter(o => o.oid !== oid)
+    pos.sls = (pos.sls ?? []).filter(o => o.oid !== oid)
+    // Whatever was pre-filled from this order no longer refers to anything.
+    if (pos.tpOid === oid) pos.tpOid = 0
+    if (pos.slOid === oid) pos.slOid = 0
+    _tpslRenderExisting(pos.coin, Math.abs(pos.szi ?? 0), pos.tps, pos.sls)
+    window.__refreshAfterAction(1200, acct)
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = was }
+    showTradeStatus(document.getElementById('editModalStatus'), 'error', '✗ ' + (e.message || 'Cancel failed'))
+  }
+}
+
 function _tpslRenderExisting(coin, fullSz, tps, sls) {
   const box = document.getElementById('tpslExisting')
   if (!box) return
@@ -5594,11 +5630,14 @@ function _tpslRenderExisting(coin, fullSz, tps, sls) {
     const part = fullSz > 0 && o.sz > 0 && o.sz < fullSz * 0.995
       ? `${Math.round(o.sz / fullSz * 100)}%`
       : _T('full', 'total')
-    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:11.5px">
+    return `<div id="tpslEx-${o.oid}" style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:11.5px">
       <span style="font-weight:800;width:22px;flex-shrink:0;color:${o.kind === 'tp' ? 'var(--green)' : 'var(--red)'}">${o.kind === 'tp' ? 'TP' : 'SL'}</span>
       <span style="font-family:var(--font-mono)">$${fmtPrice(o.px)}</span>
       <span style="flex:1"></span>
       <span style="color:var(--muted)">${fmtSize(o.sz)} ${esc(coinLabel(coin))} · ${part}</span>
+      <button onclick="window.__tpslCancelOne(${o.oid}, this)" title="${_T('Cancel this order', 'Cancelar esta orden')}"
+        style="flex-shrink:0;padding:2px 8px;border-radius:6px;border:1px solid var(--red);background:transparent;color:var(--red);font-size:10.5px;font-weight:700;cursor:pointer">${
+        _T('Cancel', 'Cancelar')}</button>
     </div>`
   }
   const n = all.length
@@ -6495,14 +6534,27 @@ let _allAcctRetries    = 0
 // legacy global `hliq_agent_key` belongs to whichever account approved it, so trusting
 // it here would sign as the wrong wallet.
 async function _allAcctRegisterAgents() {
-  clearAgentKeys()
+  // Register FIRST, prune after. Clearing up front emptied the registry and then refilled
+  // it one awaited key at a time, so for the length of that loop every account reported
+  // "No agent key" - a close fired in that window failed, and the same close succeeded on
+  // a retry once the loop had finished. Never leave the registry empty.
+  const done = []
   for (const w of _maLoad()) {
     const key = localStorage.getItem(_agentKeyForAddr(w.addr))
     if (!key) continue
-    try { await registerAgentKey(w.addr, key) }
+    try { await registerAgentKey(w.addr, key); done.push(w.addr) }
     catch (e) { console.warn('[allAcct] agent key rejected for', w.addr, e.message) }
   }
+  // Now drop anything that is no longer one of this view's wallets.
+  pruneAgentKeys(done)
 }
+
+// So an action can install a key on demand instead of failing while registration is still
+// in flight. Only exact per-address keys - the legacy global `hliq_agent_key` belongs to
+// whichever account approved it and must never be used to sign for another wallet.
+setAgentKeyResolver(addr => {
+  try { return localStorage.getItem(_agentKeyForAddr(addr)) || null } catch { return null }
+})
 
 // Which wallet new orders are placed from while the combined view is active.
 // There is no "current" account there, so the user must pick one explicitly.
