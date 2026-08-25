@@ -284,3 +284,23 @@ export function feeSeries(points) {
     vol:  rows.map(p => [+p[0], +p[1] + (+p[2] || 0)]),
   }
 }
+
+/**
+ * The recorded exchange readings, split into the series the header stats chart.
+ *
+ * Rows are [ts, perpVol, spotVol, oi, top3Pct]. Readings taken before open interest was
+ * recorded are only 3 long — those are skipped for OI rather than read as a zero, which
+ * would draw a cliff up from nothing on the day recording started.
+ */
+export function pulseSeries(points) {
+  const rows = (points ?? []).filter(p => Array.isArray(p) && Number.isFinite(+p[0]))
+  const num = (v) => Number.isFinite(+v) ? +v : null
+  const pick = (i) => rows.map(p => [+p[0], num(p[i])]).filter(p => p[1] !== null)
+  return {
+    volume: rows
+      .filter(p => Number.isFinite(+p[1]))
+      .map(p => [+p[0], +p[1] + (Number.isFinite(+p[2]) ? +p[2] : 0)]),
+    oi:   pick(3).filter(p => p[1] > 0),
+    top3: pick(4).filter(p => p[1] > 0),
+  }
+}

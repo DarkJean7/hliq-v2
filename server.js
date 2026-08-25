@@ -700,6 +700,18 @@ async function volPoll() {
     const spotVol = sum(spot?.[1])
     if (!(perpVol > 0)) return   // a bad read must not land as a zero and dent the chart
 
+    // Open interest is published per coin in BASE units, so it needs the mark price to be
+    // comparable — the same conversion computeEcosystem does for the live figure. Recorded
+    // here because Hyperliquid has no historical OI endpoint either.
+    const ois = (perp?.[1] ?? []).map(c => {
+      const o = parseFloat(c?.openInterest ?? 0) * parseFloat(c?.markPx ?? 0)
+      return Number.isFinite(o) ? o : 0
+    })
+    const oi = ois.reduce((a, v) => a + v, 0)
+    // How top-heavy the exchange is: the share of OI held by the three largest markets.
+    const top3 = ois.slice().sort((a, b) => b - a).slice(0, 3).reduce((a, v) => a + v, 0)
+    const top3Pct = oi > 0 ? (top3 / oi) * 100 : 0
+
     const points = volRead()
     const last = points[points.length - 1]
     // dayNtlVlm is a TRAILING 24h figure, so consecutive readings overlap. That is the
@@ -708,7 +720,10 @@ async function volPoll() {
     // replaces the previous one rather than appending.
     const hour = Math.floor(Date.now() / VOL_POLL_MS)
     if (last && Math.floor(last[0] / VOL_POLL_MS) === hour) points.pop()
-    points.push([Date.now(), Math.round(perpVol), Math.round(spotVol)])
+    // Appended, not restructured: rows recorded before this shipped are 3 long and stay
+    // valid — they simply carry no OI, and the OI chart skips them rather than reading a
+    // zero as a real reading.
+    points.push([Date.now(), Math.round(perpVol), Math.round(spotVol), Math.round(oi), +top3Pct.toFixed(2)])
     writeFileSync(VOL_FILE, JSON.stringify(volCompact(points)))
   } catch (e) {
     if (!e.rateLimited) console.warn('[vol]', e.message)

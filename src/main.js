@@ -181,7 +181,7 @@ import {
   invalidateApprovedAgents,
 } from './trading.js'
 import { createAlarm } from './alarm.js'
-import { computeEcosystem, oiConcentration, computeDexes, computeSpot, computeProtocol , sparkPath, windowSeries, feeSeries } from './ecosystem.js'
+import { computeEcosystem, oiConcentration, computeDexes, computeSpot, computeProtocol , sparkPath, windowSeries, feeSeries, pulseSeries } from './ecosystem.js'
 import {
   getDiscoveredWallets,
   getMainAddress,
@@ -12686,7 +12686,7 @@ function _pulseDateLabel(ts, span) {
  *                   chart, where the honest answer is a range and a single line would
  *                   invent the maker/taker mix Hyperliquid does not publish.
  */
-function _pulseInteractiveChart(pts, { key, color = 'var(--accent)', h = 96, band = null, money = true } = {}) {
+function _pulseInteractiveChart(pts, { key, color = 'var(--accent)', h = 96, band = null, money = true, pct = false } = {}) {
   const W = 300
   const clean = (pts ?? []).filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
   if (clean.length < 2) {
@@ -12698,7 +12698,7 @@ function _pulseInteractiveChart(pts, { key, color = 'var(--accent)', h = 96, ban
   const y0 = Math.min(...ys), y1 = Math.max(...ys)
   const x0 = Math.min(...xs), x1 = Math.max(...xs)
   const span = x1 - x0
-  _pulseChartData[key] = { pts: clean, band, money, x0, x1, y0, y1, span, W, h }
+  _pulseChartData[key] = { pts: clean, band, money, pct, x0, x1, y0, y1, span, W, h }
 
   const px = (t) => 3 + ((t - x0) / (span || 1)) * (W - 6)
   const py = (v) => (y1 - y0) === 0 ? h / 2 : h - 3 - ((v - y0) / (y1 - y0)) * (h - 6)
@@ -12717,7 +12717,7 @@ function _pulseInteractiveChart(pts, { key, color = 'var(--accent)', h = 96, ban
   }
 
   const last = clean[clean.length - 1][1]
-  const fmt = money ? (v) => _pulseUsd(v) : (v) => '$' + fmtPrice(v)
+  const fmt = pct ? (v) => v.toFixed(1) + '%' : money ? (v) => _pulseUsd(v) : (v) => '$' + fmtPrice(v)
   return `<div style="position:relative;margin-top:8px">
     <div id="rd-${key}" style="display:flex;justify-content:space-between;align-items:baseline;font-size:11px;min-height:15px">
       <span id="rdv-${key}" style="font-weight:700;color:var(--fg)">${fmt(last)}</span>
@@ -12764,7 +12764,7 @@ window.__pulseScrub = function(ev, key) {
   if (cd) { cd.setAttribute('cx', px); cd.setAttribute('cy', py); cd.setAttribute('opacity', '1') }
   const v = document.getElementById('rdv-' + key)
   const l = document.getElementById('rdt-' + key)
-  if (v) v.textContent = d.money ? _pulseUsd(+best[1]) : '$' + fmtPrice(+best[1])
+  if (v) v.textContent = d.pct ? (+best[1]).toFixed(1) + '%' : d.money ? _pulseUsd(+best[1]) : '$' + fmtPrice(+best[1])
   if (l) l.textContent = new Date(+best[0]).toLocaleString(undefined,
     d.span <= 2 * 86400e3 ? { hour: 'numeric', minute: '2-digit' }
       : { day: 'numeric', month: 'short', year: d.span > 300 * 86400e3 ? 'numeric' : undefined })
@@ -12777,8 +12777,67 @@ window.__pulseScrubEnd = function(key) {
   const last = d.pts[d.pts.length - 1]
   const v = document.getElementById('rdv-' + key)
   const l = document.getElementById('rdt-' + key)
-  if (v) v.textContent = d.money ? _pulseUsd(+last[1]) : '$' + fmtPrice(+last[1])
+  if (v) v.textContent = d.pct ? (+last[1]).toFixed(1) + '%' : d.money ? _pulseUsd(+last[1]) : '$' + fmtPrice(+last[1])
   if (l) l.textContent = _pulseDateLabel(+last[0], d.span)
+}
+
+// ─── THE HEADER STATS, CHARTED ────────────────────────────────────────────────
+//
+// The three figures at the top of Pulse are the exchange's vital signs, and a single
+// number cannot say whether $9.96B of open interest is a build-up or an unwind. Tapping
+// one opens its history underneath.
+//
+// The history is our own recording (see /api/pulse/volume in server.js). Hyperliquid has
+// no historical endpoint for open interest any more than it does for volume, so this fills
+// in from the day it started rather than reaching back — and says so instead of implying
+// otherwise.
+let _pulseStat = ''          // '' | 'oi' | 'volume' | 'top3'
+let _pulseStatWin = 0        // ms window, 0 = everything recorded
+
+window.__pulseStatPick = function(which) {
+  _pulseStat = _pulseStat === which ? '' : which   // tapping the open one closes it
+  _pulseRender(document.getElementById('mobVContent'))
+}
+window.__pulseStatWin = function(ms) {
+  _pulseStatWin = +ms
+  _pulseRender(document.getElementById('mobVContent'))
+}
+
+const _PULSE_STAT_META = {
+  oi:     { key: 'soi',  color: 'var(--accent)', money: true,  label: () => _T('Open interest', 'Interés abierto') },
+  volume: { key: 'svol', color: 'var(--green)',  money: true,  label: () => _T('24h volume', 'Volumen 24h') },
+  top3:   { key: 'st3',  color: 'var(--orange,#f59e0b)', money: false, label: () => _T('Top 3 share', 'Top 3') },
+}
+
+function _pulseStatChartHtml() {
+  if (!_pulseStat) return ''
+  const meta = _PULSE_STAT_META[_pulseStat]
+  if (!meta) return ''
+  const all = pulseSeries(_pulseVol?.points ?? [])[_pulseStat] ?? []
+  const pts = windowSeries(all, _pulseStatWin)
+  const since = _pulseVol?.since
+
+  const body = pts.length >= 2
+    ? _pulseInteractiveChart(pts, { key: meta.key, color: meta.color, h: 78, money: meta.money, pct: !meta.money })
+    : `<div style="height:78px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:11px;color:var(--fg-3);line-height:1.45;padding:0 6px">${
+        _T('Recording started — this fills in from here. Hyperliquid publishes no history for it, so there is nothing to backfill.',
+           'Grabación iniciada — se llena desde aquí. Hyperliquid no publica historial, así que no hay nada que rellenar.')}</div>`
+
+  const chip = (ms, lbl) => {
+    const on = String(ms) === String(_pulseStatWin)
+    return `<button onclick="window.__pulseStatWin('${ms}')" style="padding:3px 9px;border-radius:12px;font-size:10.5px;font-weight:700;cursor:pointer;
+      border:1px solid ${on ? 'var(--accent)' : 'var(--border2)'};background:${on ? 'var(--accent)' : 'transparent'};color:${on ? '#000' : 'var(--muted)'}">${lbl}</button>`
+  }
+  return `<div style="padding:2px 14px 12px">
+    <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">${meta.label()}</div>
+    ${body}
+    <div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap;align-items:center">
+      ${[[24 * 3600e3, '24h'], [7 * 24 * 3600e3, '7d'], [30 * 24 * 3600e3, '30d'], [0, _T('All', 'Todo')]].map(x => chip(x[0], x[1])).join('')}
+      <span style="flex:1"></span>
+      <span style="font-size:9.5px;color:var(--fg-3)">${
+        since ? _T('recorded since', 'registrado desde') + ' ' + new Date(since).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : ''}</span>
+    </div>
+  </div>`
 }
 
 function _pulseAfChartHtml() {
@@ -12835,11 +12894,15 @@ function _pulseRenderInner(el) {
   if (!d) return
 
   const conc = oiConcentration(d, 3)
-  const stat = (label, val, sub) => `<div style="flex:1;min-width:0">
-    <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">${label}</div>
-    <div style="font-size:19px;font-weight:800;margin-top:2px">${val}</div>
-    ${sub ? `<div style="font-size:10.5px;color:var(--fg-3);margin-top:1px">${sub}</div>` : ''}
-  </div>`
+  const stat = (which, label, val, sub) => {
+    const on = _pulseStat === which
+    return `<button onclick="window.__pulseStatPick('${which}')" style="flex:1;min-width:0;text-align:left;cursor:pointer;font:inherit;color:inherit;
+      background:${on ? 'rgba(255,255,255,.07)' : 'transparent'};border:1px solid ${on ? 'var(--border2)' : 'transparent'};border-radius:9px;padding:4px 6px">
+      <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">${label}</div>
+      <div style="font-size:19px;font-weight:800;margin-top:2px">${val}</div>
+      ${sub ? `<div style="font-size:10.5px;color:var(--fg-3);margin-top:1px">${sub}</div>` : ''}
+    </button>`
+  }
 
   const green = 'var(--green)', red = 'var(--red)'
   el.innerHTML = `<div style="padding:2px 0 90px">
@@ -12850,12 +12913,13 @@ function _pulseRenderInner(el) {
            'Todo el exchange, no solo tu cuenta. Se actualiza cada minuto.')}</div>
     </div>
     <div class="mob-v-setting-group" style="margin:6px 12px 2px">
-      <div class="mob-v-setting-row" style="gap:12px">
-        ${stat(_T('Open interest', 'Interés abierto'), _pulseUsd(d.totalOi), `${d.coins} ${_T('markets', 'mercados')}`)}
-        ${stat(_T('24h volume', 'Volumen 24h'), _pulseUsd(d.totalVol),
+      <div class="mob-v-setting-row" style="gap:8px">
+        ${stat('oi', _T('Open interest', 'Interés abierto'), _pulseUsd(d.totalOi), `${d.coins} ${_T('markets', 'mercados')}`)}
+        ${stat('volume', _T('24h volume', 'Volumen 24h'), _pulseUsd(d.totalVol),
                `${(d.totalVol / Math.max(1, d.totalOi)).toFixed(2)}× ${_T('of OI', 'del IA')}`)}
-        ${stat(_T('Top 3 share', 'Top 3'), conc.toFixed(0) + '%', _T('of open interest', 'del interés abierto'))}
+        ${stat('top3', _T('Top 3 share', 'Top 3'), conc.toFixed(0) + '%', _T('of open interest', 'del interés abierto'))}
       </div>
+      ${_pulseStatChartHtml()}
     </div>
 
     ${_pulseSection(_T('Where the money sits', 'Dónde está el dinero'),
