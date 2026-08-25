@@ -743,15 +743,100 @@ async function run() {
   // preview must not move money any more than it places orders. Nothing after this line
   // runs, so there is no path from --plan to an order.
   if (PLAN_ONLY) {
-    const orders = PRICES.map(px => ({
-      px,
-      // Below the mark the grid buys and above it sells; a short grid is the mirror.
-      side: (IS_SHORT ? px > markPx : px < markPx) ? 'buy' : 'sell',
-      sz:   roundSz(ORDER_USD / px, _levelSzDec, px),
-      usd:  ORDER_USD,
-      type: 'limit',
-    }))
-    const entries = orders.filter(o => (IS_SHORT ? o.side === 'sell' : o.side === 'buy'))
+    // Walk the SAME two loops the tick does, in the same order, with the same helpers —
+    // so the preview reports what will actually rest, not an idealised ladder.
+    //
+    // Two things make those differ, and both were being drawn wrongly before:
+    //
+    //  • EXITS are backed by inventory, not by the lot size. A grid holding 3 tokens
+    //    cannot rest four sells of ~2 each; it fills the nearest levels until the
+    //    position runs out and the remainder falls under HL's $10 minimum.
+    //  • ENTRIES are placed cheapest-first (the loop runs low → high). For a long grid
+    //    that means the levels nearest the mark are the ones margin runs out on — the
+    //    opposite of what the ladder's shape suggests.
+    const _exitSide  = IS_SHORT ? 'buy'  : 'sell'
+    const _entrySide = IS_SHORT ? 'sell' : 'buy'
+    const _p0    = (acct0.assetPositions ?? []).find(x => x.position.coin === COIN)
+    const _szi0  = parseFloat(_p0?.position?.szi ?? 0)
+    const _avg0  = parseFloat(_p0?.position?.entryPx ?? 0)
+    const _inv   = (IS_SHORT ? _szi0 < 0 : _szi0 > 0) ? Math.abs(_szi0) : 0
+
+    const _isExitLvl  = (i) => IS_SHORT ? PRICES[i] < markPx - gapAt(i) * 0.5 : PRICES[i] > markPx + gapAt(i) * 0.5
+    const _isEntryLvl = (i) => IS_SHORT ? PRICES[i] > markPx + gapAt(i) * 0.5 : PRICES[i] < markPx - gapAt(i) * 0.5
+
+    const planned = new Map()   // level idx → { side, sz, blocked }
+    const blockedAt = (i, why) => planned.set(i, { ...(planned.get(i) ?? {}), blocked: why })
+
+    // Orders already resting are ADOPTED by the tick, not replaced — it maps each one to
+    // its nearest level and leaves it alone. Without this the preview double-counts: it
+    // would report levels as unaffordable when the margin is already committed to the very
+    // orders sitting on them, which is exactly what a re-run of a live grid looks like.
+    const _restingLvl = new Map()
+    for (const o of ((await info.openOrders(Q(QUERY_ADDR)).catch(() => [])) ?? []).filter(o => o.coin === COIN)) {
+      const px = parseFloat(o.limitPx)
+      let best = -1, bestDist = Infinity
+      for (let i = 0; i < PRICES.length; i++) {
+        const d = Math.abs(PRICES[i] - px)
+        if (d < bestDist) { bestDist = d; best = i }
+      }
+      if (best === -1 || bestDist > gapAt(best) * 0.4) continue   // foreign order, not this grid
+      if (!_restingLvl.has(best)) _restingLvl.set(best, { side: o.side === 'B' ? 'buy' : 'sell', sz: parseFloat(o.sz) })
+    }
+    for (const [i, e] of _restingLvl) planned.set(i, { side: e.side, sz: e.sz, blocked: 'resting' })
+
+    // ── exits, mirroring the exit loop ──
+    const _exitIdxs = [...PRICES.keys()]
+    if (IS_SHORT) _exitIdxs.reverse()
+    const _eligibleExitCount = _exitIdxs.filter(i => _isExitLvl(i) && exitProfitable(PRICES[i], _avg0)).length
+    // Inventory already covered by a resting exit cannot be sold twice.
+    let _uncovered = Math.max(0, _inv - [..._restingLvl.values()].filter(e => e.side === _exitSide).reduce((a, e) => a + e.sz, 0))
+    const _share = _eligibleExitCount > 0 ? _uncovered / _eligibleExitCount : 0
+    for (const i of _exitIdxs) {
+      if (!_isExitLvl(i)) continue
+      if (_restingLvl.has(i)) continue                      // already there — adopted, not re-placed
+      if (!exitProfitable(PRICES[i], _avg0)) { blockedAt(i, 'losing'); continue }
+      if (_uncovered * PRICES[i] < HL_MIN_ORDER) { blockedAt(i, 'inventory'); continue }
+      const sz = roundSz(Math.min(Math.max(exitSzAt(i, _levelSzDec), _share), _uncovered), _levelSzDec, PRICES[i])
+      if (sz * PRICES[i] < HL_MIN_ORDER) { blockedAt(i, 'inventory'); continue }
+      planned.set(i, { side: _exitSide, sz, blocked: null })
+      _uncovered -= sz
+    }
+
+    // ── entries, mirroring the entry loop: low index → high, on a margin budget ──
+    // Each entry reserves ORDER_USD / LEVERAGE of margin. When the budget is gone the
+    // remaining levels are real orders the bot wants but cannot afford yet — it retries
+    // them as margin frees, which is why they are marked rather than dropped.
+    let _budget = capital
+    const _perOrder = ORDER_USD / LEVERAGE
+    for (let i = 0; i < PRICES.length; i++) {
+      if (!_isEntryLvl(i)) continue
+      if (_restingLvl.has(i)) continue                      // adopted; its margin is already spent
+      if (planned.has(i) && planned.get(i).side) continue
+      const sz = entrySzAt(i, _levelSzDec)
+      if (_budget + 1e-9 < _perOrder) { planned.set(i, { side: _entrySide, sz, blocked: 'margin' }); continue }
+      _budget -= _perOrder
+      planned.set(i, { side: _entrySide, sz, blocked: null })
+    }
+
+    const orders = [...PRICES.keys()].map(i => {
+      const pl = planned.get(i)
+      const side = pl?.side ?? ((IS_SHORT ? PRICES[i] > markPx : PRICES[i] < markPx) ? 'buy' : 'sell')
+      return {
+        px: PRICES[i],
+        side,
+        sz: pl?.sz ?? roundSz(ORDER_USD / PRICES[i], _levelSzDec, PRICES[i]),
+        usd: ORDER_USD,
+        type: 'limit',
+        // null = placed on the first cycle. Otherwise why not:
+        //   'margin'    — wanted, unaffordable right now, retried as margin frees
+        //   'inventory' — nothing left to sell; appears once the position grows
+        //   'losing'    — would close below the average entry; the bot never does that
+        //   'resting'   — an order is already sitting there; the tick adopts it
+        //   'near'      — inside the half-gap dead zone around the mark, not yet eligible
+        blocked: pl?.blocked ?? (pl ? null : 'near'),
+      }
+    })
+    const entries = orders.filter(o => o.side === _entrySide)
     const _pp = (acct0.assetPositions ?? []).find(x => x.position.coin === COIN)
     const _sz = parseFloat(_pp?.position?.szi ?? 0)
     console.log('__PLAN__' + JSON.stringify({
@@ -768,6 +853,14 @@ async function run() {
       capital, capitalSource: capSrc, freeMargin,
       requiredMargin,
       entryLevels: entries.length,
+      // What the first cycle actually rests, and what it holds back.
+      willPlace: orders.filter(o => !o.blocked).length,
+      resting:   orders.filter(o => o.blocked === 'resting').length,
+      heldBack:  orders.filter(o => o.blocked === 'margin' || o.blocked === 'inventory').length,
+      inventory: _inv, avgEntry: _avg0,
+      // Margin the orders it CAN place will actually consume.
+      marginUsed: orders.filter(o => !o.blocked && o.side === _entrySide).length * (ORDER_USD / LEVERAGE),
+      perOrderMargin: ORDER_USD / LEVERAGE,
       autoRange: !(parseFloat(args.lower) > 0) && !(parseFloat(args.upper) > 0),
       autoSize:  !(parseFloat(args.size) > 0),
       fits: requiredMargin <= capital,

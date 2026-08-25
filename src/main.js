@@ -18800,14 +18800,30 @@ function _previewChartHtml(plan) {
   const H = Math.max(190, orders.length * 26)
   const y = (px) => 14 + (1 - (px - lo) / span) * (H - 28)
 
+  // Why a level is not going on the book this cycle. 'margin' and 'inventory' are the two
+  // that mean "wanted but cannot" — they get the loud treatment. 'resting' and 'near' are
+  // ordinary states, so they are merely quiet.
+  const WHY = {
+    margin:    { txt: () => _T('no margin', 'sin margen'),      loud: true },
+    inventory: { txt: () => _T('no inventory', 'sin inventario'), loud: true },
+    losing:    { txt: () => _T('would lose', 'cerraría en pérdida'), loud: true },
+    resting:   { txt: () => _T('already there', 'ya está'),      loud: false },
+    near:      { txt: () => _T('too near mark', 'muy cerca'),    loud: false },
+  }
   const rung = (o) => {
     const yy = y(+o.px)
     const buy = o.side === 'buy'
-    const col = buy ? 'var(--green)' : 'var(--red)'
-    return `<div style="position:absolute;left:0;right:0;top:${yy - 9}px;height:18px;display:flex;align-items:center;gap:6px">
+    const why = o.blocked ? WHY[o.blocked] : null
+    const live = !o.blocked
+    const col = why?.loud ? 'var(--red)' : buy ? 'var(--green)' : 'var(--red)'
+    // A held-back level is drawn faint and struck through, so the ladder still shows the
+    // shape the grid is aiming for while making clear which rungs are not on the book.
+    const dim = live ? '1' : why?.loud ? '.62' : '.34'
+    return `<div style="position:absolute;left:0;right:0;top:${yy - 9}px;height:18px;display:flex;align-items:center;gap:6px;opacity:${dim}">
       <span style="width:38px;flex-shrink:0;text-align:right;font-size:9.5px;font-weight:800;color:${col};text-transform:uppercase">${buy ? _T('Buy', 'Compra') : _T('Sell', 'Venta')}</span>
-      <span style="flex:1;height:0;border-top:1.5px ${buy ? 'solid' : 'dashed'} ${col};opacity:.75"></span>
-      <span style="flex-shrink:0;font-size:10.5px;font-family:var(--font-mono);color:var(--fg-2)">${fmtSize(o.sz)} @ $${fmtPrice(o.px)}</span>
+      <span style="flex:1;height:0;border-top:1.5px ${live ? (buy ? 'solid' : 'dashed') : 'dotted'} ${col};opacity:.75"></span>
+      ${why ? `<span style="flex-shrink:0;font-size:8.5px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;color:${why.loud ? 'var(--red)' : 'var(--fg-3)'};white-space:nowrap">${why.txt()}</span>` : ''}
+      <span style="flex-shrink:0;font-size:10.5px;font-family:var(--font-mono);color:var(--fg-2)${live ? '' : ';text-decoration:line-through'}">${fmtSize(o.sz)} @ $${fmtPrice(o.px)}</span>
     </div>`
   }
   const markY = y(+plan.markPx)
@@ -18848,9 +18864,14 @@ function _botPreviewSheet(type, plan, loading) {
     const fitTone = plan.fits ? 'var(--green)' : 'var(--red)'
     body = `<div style="padding:14px 16px 18px">
       <div style="display:flex;gap:10px;flex-wrap:wrap">
-        ${cell(_T('Orders', 'Órdenes'), `${plan.orders.length}`, 'var(--fg)')}
+        ${cell(_T('Placing now', 'Coloca ahora'), `${plan.willPlace ?? plan.orders.length}`, 'var(--green)')}
+        ${cell(_T('Held back', 'Retenidas'), `${plan.heldBack ?? 0}`, (plan.heldBack ?? 0) > 0 ? 'var(--red)' : 'var(--fg)')}
+        ${cell(_T('Already there', 'Ya puestas'), `${plan.resting ?? 0}`)}
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
         ${cell(_T('Buy / Sell', 'Compra / Venta'), `<span style="color:var(--green)">${buys}</span> / <span style="color:var(--red)">${sells}</span>`)}
         ${cell(_T('Per level', 'Por nivel'), '$' + fmtUSD(plan.orderUsd))}
+        ${cell(_T('Margin each', 'Margen c/u'), '$' + fmtUSD(plan.perOrderMargin ?? (plan.orderUsd / plan.leverage)))}
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
         ${cell(_T('Margin needed', 'Margen necesario'), '$' + fmtUSD(plan.requiredMargin), fitTone)}
@@ -18862,9 +18883,21 @@ function _botPreviewSheet(type, plan, loading) {
         plan.autoSize ? ' · ' + _T('size chosen automatically', 'tamaño elegido automáticamente') : ''}${
         plan.autoRange ? ' · ' + _T('range chosen automatically', 'rango elegido automáticamente') : ''}</div>
 
-      ${plan.fits ? '' : `<div style="margin-top:10px;font-size:11.5px;color:var(--red);background:rgba(255,77,109,.08);border-radius:8px;padding:10px 12px;line-height:1.5">${
-        _T('This needs more margin than the account has free. The bot would still start — it places what it can and adds the rest as margin frees.',
-           'Esto necesita más margen del que hay libre. El bot arrancaría igualmente: coloca lo que puede y añade el resto cuando se libere margen.')}</div>`}
+      ${(() => {
+        const short = (plan.orders ?? []).filter(o => o.blocked === 'margin')
+        const inv   = (plan.orders ?? []).filter(o => o.blocked === 'inventory')
+        if (!short.length && !inv.length) return ''
+        const money = (n) => '$' + fmtPrice(n)
+        return `<div style="margin-top:10px;font-size:11.5px;color:var(--red);background:rgba(255,77,109,.08);border-radius:8px;padding:10px 12px;line-height:1.55">
+          ${short.length ? `<div><b>${short.length} ${short.length === 1 ? _T('level', 'nivel') : _T('levels', 'niveles')}</b> ${
+            _T('will not go on the book — not enough margin', 'no se colocarán — falta margen')}: ${short.map(o => money(o.px)).join(', ')}.
+            ${_T('The bot keeps retrying them as margin frees.', 'El bot los reintenta cuando se libera margen.')}</div>` : ''}
+          ${inv.length ? `<div style="${short.length ? 'margin-top:6px' : ''}"><b>${inv.length} ${inv.length === 1 ? _T('level', 'nivel') : _T('levels', 'niveles')}</b> ${
+            (inv.length === 1 ? _T('has nothing left to sell', 'no tiene nada que vender')
+                              : _T('have nothing left to sell', 'no tienen nada que vender'))}: ${inv.map(o => money(o.px)).join(', ')}.
+            ${_T('Exits are backed by the position, so these appear as it grows.', 'Las salidas se respaldan con la posición, así que aparecen cuando crece.')}</div>` : ''}
+        </div>`
+      })()}
 
       ${plan.position ? `<div style="margin-top:10px;font-size:11.5px;color:var(--fg-2);background:var(--panel-1);border-radius:8px;padding:10px 12px;line-height:1.5">${
         _T('You already hold', 'Ya tienes')} ${fmtSize(Math.abs(plan.position.szi))} ${esc(_ocCoinLabel(plan.coin))} ${
