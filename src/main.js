@@ -5577,7 +5577,46 @@ window.__guardDisarm = async function () {
 }
 
 // ─── EDIT MODAL ───────────────────────────────────────────────────────────────
-window.__openEditModal = function (coin, side, szi, entryPx, existingTpPx = 0, existingSlPx = 0, existingTpOid = 0, existingSlOid = 0, leverage = 1, acct = null) {
+/**
+ * The triggers already resting on this position, listed inside the editor.
+ *
+ * Without this the form looked like a fresh one that happened to be carrying a price, so
+ * a ladder of partial take-profits read as a single order at whatever rung the loop saw
+ * last. Confirming then cancelled that rung and left the others in place next to the
+ * replacement. Showing them makes both the state and the consequence visible.
+ */
+function _tpslRenderExisting(coin, fullSz, tps, sls) {
+  const box = document.getElementById('tpslExisting')
+  if (!box) return
+  const all = [...tps.map(o => ({ ...o, kind: 'tp' })), ...sls.map(o => ({ ...o, kind: 'sl' }))]
+  if (!all.length) { box.style.display = 'none'; box.innerHTML = ''; return }
+  const row = (o) => {
+    const part = fullSz > 0 && o.sz > 0 && o.sz < fullSz * 0.995
+      ? `${Math.round(o.sz / fullSz * 100)}%`
+      : _T('full', 'total')
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:11.5px">
+      <span style="font-weight:800;width:22px;flex-shrink:0;color:${o.kind === 'tp' ? 'var(--green)' : 'var(--red)'}">${o.kind === 'tp' ? 'TP' : 'SL'}</span>
+      <span style="font-family:var(--font-mono)">$${fmtPrice(o.px)}</span>
+      <span style="flex:1"></span>
+      <span style="color:var(--muted)">${fmtSize(o.sz)} ${esc(coinLabel(coin))} · ${part}</span>
+    </div>`
+  }
+  const n = all.length
+  box.style.display = ''
+  box.innerHTML = `<div style="background:var(--panel-1);border:1px solid var(--border2);border-radius:9px;padding:9px 11px">
+    <div style="font-size:9.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:3px">${
+      _T('Already on this position', 'Ya en esta posicion')}</div>
+    ${all.map(row).join('')}
+    <div style="font-size:10.5px;color:${n > 1 ? 'var(--orange,#f59e0b)' : 'var(--fg-3)'};line-height:1.45;margin-top:6px">${
+      n > 1
+        ? _T(`Confirming cancels all ${n} and places what you set below.`,
+             `Confirmar cancela las ${n} y coloca lo que definas abajo.`)
+        : _T('Confirming replaces it with what you set below.',
+             'Confirmar la reemplaza por lo que definas abajo.')}</div>
+  </div>`
+}
+
+window.__openEditModal = function (coin, side, szi, entryPx, existingTpPx = 0, existingSlPx = 0, existingTpOid = 0, existingSlOid = 0, leverage = 1, acct = null, existingTps = [], existingSls = []) {
   const entry  = parseFloat(entryPx)
   const isLong = side === 'LONG'
   const sz     = Math.abs(parseFloat(szi))
@@ -5585,6 +5624,9 @@ window.__openEditModal = function (coin, side, szi, entryPx, existingTpPx = 0, e
     coin, side, szi: parseFloat(szi), entryPx: entry, isLong, acct,
     leverage: parseFloat(leverage) || 1,
     tpOid: existingTpOid || 0, slOid: existingSlOid || 0,
+    // Every resting trigger, so Confirm can clear what it replaces instead of leaving
+    // orphans beside the new order.
+    tps: existingTps ?? [], sls: existingSls ?? [],
     tpMode: 'pct', slMode: 'pct', tpType: 'market', slType: 'market',
     tpSzPct: 100, slSzPct: 100, activeTab: 'entire',
   }
@@ -5615,6 +5657,10 @@ window.__openEditModal = function (coin, side, szi, entryPx, existingTpPx = 0, e
   ;['tpslTpPnl','tpslSlPnl'].forEach(id => { const el = document.getElementById(id); if (el) { el.textContent = '—'; el.style.color = '' } })
   ;['tpslTpPctEcho','tpslSlPctEcho'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '0.00' })
 
+  // What is already resting, listed before anything is pre-filled - "edit" should start
+  // from what exists rather than from a blank form that happens to carry one price.
+  _tpslRenderExisting(coin, sz, existingTps ?? [], existingSls ?? [])
+
   // Pre-fill from existing TP/SL
   const tpPx = parseFloat(existingTpPx) || 0
   if (tpPx > 0) {
@@ -5626,6 +5672,20 @@ window.__openEditModal = function (coin, side, szi, entryPx, existingTpPx = 0, e
     document.getElementById('tpslSlUsd').value = slPx.toFixed(5)
     window.__tpslSync('sl', 'usd')
   }
+  // A single existing trigger that covers only PART of the position must open on the
+  // Partial tab with its own size, or confirming would quietly widen it to the whole
+  // position - the opposite of editing it.
+  const _lone = ((existingTps ?? []).length === 1 && (existingSls ?? []).length === 0) ? (existingTps ?? [])[0]
+              : ((existingSls ?? []).length === 1 && (existingTps ?? []).length === 0) ? (existingSls ?? [])[0]
+              : null
+  if (_lone && sz > 0 && _lone.sz > 0 && _lone.sz < sz * 0.995) {
+    const pct = Math.max(1, Math.min(100, Math.round(_lone.sz / sz * 100)))
+    window.__tpslTab('partial')
+    for (const k of ['Tp', 'Sl']) {
+      const slider = document.getElementById(`tpsl${k}SzSlider`)
+      if (slider) { slider.value = pct; slider.dispatchEvent(new Event('input', { bubbles: true })) }
+    }
+  }
 
   document.getElementById('editModalStatus').className = 'trade-status'
   document.getElementById('editModalConfirm').disabled = false
@@ -5634,7 +5694,7 @@ window.__openEditModal = function (coin, side, szi, entryPx, existingTpPx = 0, e
 
 window.__confirmEditPosition = async function () {
   if (!state.editingPos) return
-  const { coin, side, szi, tpOid, slOid, tpSzPct, slSzPct, activeTab, acct: _eAcct } = state.editingPos
+  const { coin, side, szi, tpOid, slOid, tpSzPct, slSzPct, activeTab, acct: _eAcct, tps: _tps = [], sls: _sls = [] } = state.editingPos
   if (!window.__acctCanTrade(_eAcct ?? null)) {
     showTradeStatus(document.getElementById('editModalStatus'), 'error', _eAcct ? 'No agent key for that account.' : 'Connect agent key first.')
     return
@@ -5655,8 +5715,15 @@ window.__confirmEditPosition = async function () {
 
   try {
     const _a = _eAcct ?? null
-    if (tpOid && tpPx) { try { await cancelOrder({ coin, oid: tpOid, acct: _a }) } catch (_) {} }
-    if (slOid && slPx) { try { await cancelOrder({ coin, oid: slOid, acct: _a }) } catch (_) {} }
+    // Cancel every trigger of the kind being replaced, not only the one that was
+    // pre-filled. Cancelling one of three left the other two resting against a brand-new
+    // order, so the position ended up with more triggers than before the edit.
+    const _oids = (list, oneOid) => {
+      const ids = (list ?? []).map(o => o.oid).filter(Boolean)
+      return ids.length ? ids : (oneOid ? [oneOid] : [])
+    }
+    if (tpPx) for (const oid of _oids(_tps, tpOid)) { try { await cancelOrder({ coin, oid, acct: _a }) } catch (_) {} }
+    if (slPx) for (const oid of _oids(_sls, slOid)) { try { await cancelOrder({ coin, oid, acct: _a }) } catch (_) {} }
     if (tpPx && tpSz > 0) { const r = await placeTriggerOrder({ coin, isBuy, sz: tpSz, triggerPx: tpPx, tpsl: 'tp', acct: _a }); if (!parseOrderResult(r).ok) throw new Error('TP failed') }
     if (slPx && slSz > 0) { const r = await placeTriggerOrder({ coin, isBuy, sz: slSz, triggerPx: slPx, tpsl: 'sl', acct: _a }); if (!parseOrderResult(r).ok) throw new Error('SL failed') }
     const parts = []
@@ -5817,16 +5884,24 @@ window.__openEditOrderModal = function (coin, oid, isBuy, sz, currentPx, tpsl, i
       const side     = parseFloat(posEntry.szi) > 0 ? 'LONG' : 'SHORT'
       const leverage = posEntry.leverage?.value ?? 1
       let tpPx = 0, slPx = 0, tpOid = 0, slOid = 0
+      // Same collect-them-all rule as the positions-tab entry point.
+      const tps2 = [], sls2 = []
       for (const o of (state.openOrders ?? [])) {
         if (o.coin !== coin) continue
         const type  = o.orderType ?? ''
         const isTp2 = type.startsWith('Take Profit') || o.triggerCondition === 'tp'
         const isSl2 = type.startsWith('Stop')        || o.triggerCondition === 'sl'
         const px    = parseFloat(o.triggerPx ?? 0) > 0 ? parseFloat(o.triggerPx) : parseFloat(o.limitPx ?? 0)
-        if (isTp2) { tpPx = px; tpOid = o.oid }
-        if (isSl2) { slPx = px; slOid = o.oid }
+        if (!(px > 0)) continue
+        const row = { px, oid: o.oid, sz: Math.abs(parseFloat(o.sz ?? 0)), whole: !!o.isPositionTpsl }
+        if (isTp2) tps2.push(row); else if (isSl2) sls2.push(row)
       }
-      window.__openEditModal(coin, side, posEntry.szi, posEntry.entryPx, tpPx, slPx, tpOid, slOid, leverage, acct)
+      const _e2 = parseFloat(posEntry.entryPx ?? 0)
+      const _d2 = (a, b) => Math.abs(a.px - _e2) - Math.abs(b.px - _e2)
+      tps2.sort(_d2); sls2.sort(_d2)
+      tpPx = tps2.length === 1 ? tps2[0].px : 0;  tpOid = tps2.length === 1 ? tps2[0].oid : 0
+      slPx = sls2.length === 1 ? sls2[0].px : 0;  slOid = sls2.length === 1 ? sls2[0].oid : 0
+      window.__openEditModal(coin, side, posEntry.szi, posEntry.entryPx, tpPx, slPx, tpOid, slOid, leverage, acct, tps2, sls2)
       return
     }
   }
@@ -10000,22 +10075,36 @@ window._mobVEditPosTpSl = function(coin, acct = null) {
     const sz      = parseFloat(p.szi ?? 0)
     const apiSide = sz > 0 ? 'LONG' : 'SHORT'
     const levVal  = p.leverage?.value ?? 1
-    let tpPx = 0, slPx = 0, tpOid = 0, slOid = 0
+    // Every trigger order on this position, not just the last one the loop happened to
+    // see. A ladder of partial take-profits is normal, and the old code kept overwriting
+    // until only one survived - so "edit" opened on an arbitrary rung, and confirming
+    // cancelled that one while leaving the others resting beside the replacement.
+    const tps = [], sls = []
     for (const o of (state.openOrders ?? [])) {
       if (o.coin !== p.coin || !o.isTrigger) continue
       if (acct && (o._acctAddr ?? '').toLowerCase() !== acct.toLowerCase()) continue
       const isTp = o.orderType?.startsWith('Take Profit') || o.triggerCondition === 'tp'
       const isSl = o.orderType?.startsWith('Stop') || o.triggerCondition === 'sl'
       const opx  = parseFloat(o.triggerPx ?? 0)
-      if (isTp && opx > 0) { tpPx = opx; tpOid = o.oid }
-      if (isSl && opx > 0) { slPx = opx; slOid = o.oid }
+      if (opx <= 0) continue
+      const row = { px: opx, oid: o.oid, sz: Math.abs(parseFloat(o.sz ?? 0)), whole: !!o.isPositionTpsl }
+      if (isTp) tps.push(row); else if (isSl) sls.push(row)
     }
+    // Nearest the entry first, so the list reads in the order it would trigger.
+    const _byDist = (a, b) => Math.abs(a.px - parseFloat(p.entryPx ?? 0)) - Math.abs(b.px - parseFloat(p.entryPx ?? 0))
+    tps.sort(_byDist); sls.sort(_byDist)
+    // Only pre-fill when there is ONE, so the field always means the order it came from.
+    // With several, picking one silently would be the same bug in a different disguise.
+    const tpPx = tps.length === 1 ? tps[0].px : 0
+    const slPx = sls.length === 1 ? sls[0].px : 0
+    const tpOid = tps.length === 1 ? tps[0].oid : 0
+    const slOid = sls.length === 1 ? sls[0].oid : 0
     const overlay = document.getElementById('editModal')
     // Move to end of body so iOS Safari paints it above the mobile view
     if (overlay && overlay.parentNode !== document.body || overlay?.nextSibling) {
       document.body.appendChild(overlay)
     }
-    window.__openEditModal(p.coin, apiSide, p.szi, p.entryPx, tpPx, slPx, tpOid, slOid, levVal, acct)
+    window.__openEditModal(p.coin, apiSide, p.szi, p.entryPx, tpPx, slPx, tpOid, slOid, levVal, acct, tps, sls)
     if (overlay) {
       overlay.style.zIndex     = '99999'
       overlay.style.alignItems = 'flex-start'
@@ -13454,19 +13543,6 @@ function _mobVRenderContent(tick = false) {
       // userFunding cashflow for HYPE is −9.67.
       const funding = -parseFloat(p.cumFunding?.sinceOpen ?? 0)
       const levType = p.leverage?.type ?? ''
-      // Find TP/SL orders for this position. In the combined view orders from every account
-      // are pooled, so match the owning account too — otherwise another wallet's TP/SL on the
-      // same coin would show on (and be edited/cancelled from) this position.
-      let tpPx = 0, slPx = 0, tpOid = 0, slOid = 0
-      for (const o of (state.openOrders ?? [])) {
-        if (o.coin !== p.coin || !o.isTrigger) continue
-        if (String(o._acctAddr ?? '').toLowerCase() !== String(p._acctAddr ?? '').toLowerCase()) continue
-        const isTp = o.orderType?.startsWith('Take Profit') || o.triggerCondition === 'tp'
-        const isSl = o.orderType?.startsWith('Stop') || o.triggerCondition === 'sl'
-        const opx  = parseFloat(o.triggerPx ?? 0)
-        if (isTp && opx > 0) { tpPx = opx; tpOid = o.oid }
-        if (isSl && opx > 0) { slPx = opx; slOid = o.oid }
-      }
       const levVal  = p.leverage?.value ?? 1
       const isLong  = sz > 0
       const entryPx = parseFloat(p.entryPx ?? 0)
