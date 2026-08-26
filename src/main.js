@@ -11021,7 +11021,9 @@ function _comboPnlSums() {
       funding:  Number(snap.funding),
       fees:     Number(snap.fees),
     }
-    _comboPnlLast = { net, unreal, wallets: rows.length, parts }
+    _comboPnlLast = { net, unreal, wallets: rows.length, parts, at: Date.now() }
+    _comboPnlWatch(net, { settled: Number(snap.settledPnl), unreal, rows: rows.length,
+      pnlWallets: snap.pnlWallets, wallets: snap.wallets, age: Date.now() - Number(snap.updatedAt ?? 0) })
     return { net, unreal, parts }
   }
 
@@ -11039,9 +11041,48 @@ function _comboPnlSums() {
 
 // Hold the last complete total while a wallet is between refreshes, but only while it still
 // describes the same number of wallets.
+// How long a previously-computed figure may stand in for one we cannot compute now.
+// Short on purpose: a held value is a reading from an earlier moment, and its error grows
+// with every cent the market moves. Long enough to ride out one failed poll, not long
+// enough to drift.
+const COMBO_PNL_HOLD_MS = 20_000
+
+// A step this large is not the market moving - it is the two halves of the figure coming
+// from different moments. Report it with both halves and the snapshot's age so the next
+// occurrence identifies its own cause instead of needing another round of guessing.
+let _pnlStepLast = null
+let _pnlStepAt   = 0
+function _comboPnlWatch(net, ctx) {
+  const prev = _pnlStepLast
+  _pnlStepLast = net
+  if (prev == null || !Number.isFinite(net)) return
+  const step = Math.abs(net - prev)
+  if (step < 25) return
+  if (Date.now() - _pnlStepAt < 60_000) return       // one report a minute is plenty
+  _pnlStepAt = Date.now()
+  try {
+    fetch('/api/error', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        kind: 'pnlstep',
+        message: `netPnl step ${step.toFixed(2)} (${prev.toFixed(2)} -> ${net.toFixed(2)})`,
+        stack: `settled=${ctx.settled?.toFixed?.(2)} unreal=${ctx.unreal?.toFixed?.(2)} ` +
+               `rows=${ctx.rows} pnlWallets=${ctx.pnlWallets} wallets=${ctx.wallets} snapAge=${Math.round(ctx.age / 1000)}s`,
+        url: location.pathname,
+      }),
+    }).catch(() => {})
+  } catch {}
+}
+
 function _comboPnlHeld(nRows) {
   if (!_comboPnlLast || _comboPnlLast.wallets !== nRows) return null
-  return { net: _comboPnlLast.net, unreal: _comboPnlLast.unreal, parts: _comboPnlLast.parts }
+  // This used to have no age limit at all, while the comment above its call site claimed
+  // it showed nothing. So whenever the guard failed - a stale snapshot, a wallet whose
+  // accrual did not land - the headline quietly reverted to a number from an arbitrarily
+  // earlier moment, then snapped back when the guard passed again. Two readings from two
+  // different instants, alternating: exactly the reported flicker, and unbounded in size.
+  if (Date.now() - Number(_comboPnlLast.at ?? 0) > COMBO_PNL_HOLD_MS) return null
+  return { net: _comboPnlLast.net, unreal: _comboPnlLast.unreal, parts: _comboPnlLast.parts, held: true }
 }
 
 function _comboEqFilter(val) {
