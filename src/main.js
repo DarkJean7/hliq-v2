@@ -1551,7 +1551,14 @@ function _hlReportLimit() {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
       body: JSON.stringify({
         kind: 'ratelimit',
-        message: `client 429 · all=${state.isAllAccounts ? 1 : 0} · wallets=${n} · tab=${_activeTab}`,
+        // Records dedupe by message, so anything that distinguishes one episode from
+        // another has to be IN the message. `sinceLoad` lived in the stack, which keeps
+        // only the first occurrence's value - so 51 later episodes all reported the age of
+        // the first one and there was no way to tell an on-entry trip from a slow leak.
+        // Bucketed rather than exact, or every episode would be its own record.
+        message: `client 429 · all=${state.isAllAccounts ? 1 : 0} · wallets=${n} · tab=${_activeTab}` +
+                 ` · age=${secSinceLoad < 60 ? '<1m' : secSinceLoad < 300 ? '1-5m' : secSinceLoad < 1800 ? '5-30m' : '>30m'}` +
+                 ` · ${_hlLastTripReason}`,
         stack: `sinceLoad=${secSinceLoad}s`,
         url: location.pathname, ua: navigator.userAgent, screen: `${window.innerWidth}x${window.innerHeight}`, lang,
       }),
@@ -1596,9 +1603,16 @@ function _hlOk() {
 // error with no "429" text — meaning the old check never tripped, the breaker never
 // backed off, and the app kept hammering HL, flooding the console. Treating the
 // network-failure shape as a limit lets it pause and recover.
+// HL returns 429s WITHOUT CORS headers, so the browser reports them as a generic network
+// failure — which is why the breaker has to treat that shape as a limit. But it means a
+// genuine connectivity blip, or a wallet extension breaking the page, shows the same
+// banner. Recording which pattern matched is the only way to tell them apart later.
+let _hlLastTripReason = 'unknown'
 function _hl429(e) {
   const m = String(e?.message ?? e)
-  if (/429|too many|failed to fetch|load failed|networkerror|err_failed|cors|access-control/i.test(m)) {
+  if (/429|too many/i.test(m)) { _hlLastTripReason = 'real-429'; _hlTrip(); return true }
+  if (/failed to fetch|load failed|networkerror|err_failed|cors|access-control/i.test(m)) {
+    _hlLastTripReason = 'network-shaped'   // could be a 429, could be the network
     _hlTrip(); return true
   }
   return false
@@ -2323,6 +2337,36 @@ window.__executeDeposit = async function() {
   }
 }
 
+/**
+ * What a signing failure actually means.
+ *
+ * The SDK's top-level text is always "Failed to sign typed data with ethers v6 wallet" -
+ * the reason lives on .cause, sometimes several deep. Two of those reasons are worth
+ * naming rather than passing through:
+ *
+ *  - a declined prompt, which is not an error at all;
+ *  - a broken injected provider. Telemetry recorded "Cannot redefine property: ethereum"
+ *    25 times, which is what happens when two wallet extensions both try to install
+ *    window.ethereum. Signing then fails no matter what the app does, and the generic
+ *    message sends people looking for a bug in the withdrawal.
+ */
+function _signErrorText(e) {
+  const parts = []
+  for (let cur = e, n = 0; cur && n < 6; cur = cur.cause, n++) {
+    const m = cur?.message || (n === 0 ? String(cur) : '')
+    if (m && !parts.includes(m)) parts.push(m)
+  }
+  const all = parts.join(' — ')
+  if (/reject|denied|cancell?ed|user refused/i.test(all)) {
+    return _T('Cancelled in your wallet.', 'Cancelado en tu cartera.')
+  }
+  if (/redefine property: ethereum|only a getter|provider is disconnected|no ethereum provider/i.test(all)) {
+    return _T('Your browser has more than one wallet extension fighting over the page, so it cannot sign. Disable the extras (or open the site in a browser with just one) and try again.',
+              'Tu navegador tiene más de una extensión de cartera compitiendo por la página y no puede firmar. Desactiva las demás e inténtalo de nuevo.')
+  }
+  return parts[parts.length - 1] || all || _T('Signing failed', 'Falló la firma')
+}
+
 window.__executeWithdraw = async function() {
   const amount   = parseFloat(_defiEl('withdrawAmount').value)
   const dest     = _defiEl('withdrawDest').value.trim()
@@ -2337,7 +2381,7 @@ window.__executeWithdraw = async function() {
     window.__updateWithdrawPreview()
     refreshDefiBalances()
   } catch (e) {
-    statusEl.innerHTML = `<span style="color:var(--red)">✗ ${e.message}</span>`
+    statusEl.innerHTML = `<span style="color:var(--red)">✗ ${esc(_signErrorText(e))}</span>`
     btn.disabled = false
     window.__updateWithdrawPreview()
   }
