@@ -6890,10 +6890,24 @@ function _allAcctMerge(fresh, prev) {
   return out
 }
 
+// How old a persisted snapshot may be and still be painted as a live balance.
+//
+// The cache exists so leaving and re-entering the combined view is instant. It was NOT
+// meant to survive a cold start: the stored `ts` was written and never read, so opening
+// the app after any gap painted equity and Net PnL from whenever the tab was last closed -
+// hours or days - and they jumped to the truth a few seconds later. That is the cold-start
+// spike, and it is exactly the "old data shown as current" this view is supposed to refuse.
+//
+// Past this age the cache is treated as absent: the loader shows, the figures stay dashed,
+// and nothing is claimed until a live fetch lands.
+const _ALLACCT_CACHE_MAX_AGE_MS = 90_000
+
 function _allAcctCacheLoad() {
   try {
     const o = JSON.parse(localStorage.getItem(_ALLACCT_CACHE_KEY) || 'null')
-    return (o && Array.isArray(o.results) && o.results.length) ? o.results : null
+    if (!o || !Array.isArray(o.results) || !o.results.length) return null
+    if (Date.now() - Number(o.ts ?? 0) > _ALLACCT_CACHE_MAX_AGE_MS) return null
+    return o.results
   } catch { return null }
 }
 
