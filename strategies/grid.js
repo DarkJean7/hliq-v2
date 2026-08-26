@@ -676,15 +676,30 @@ async function run() {
 
   // Prefer availableToTrade. Only fall back to withdrawable + spot USDC (legacy,
   // non-unified) when activeAssetData is unavailable.
-  let freeMargin, capital, capSrc
+  //
+  // WHAT availableToTrade ACTUALLY IS: spendable COLLATERAL, not openable notional.
+  // Measured on a live account at 20x: availableToTrade 430.31, maxTradeSzs 88.64 SOL,
+  // mark 97.091 -> 88.64 x 97.091 = $8,605 of notional, and 430.31 x 20 = $8,606. The
+  // notional figure is maxTradeSzs; availableToTrade is the margin behind it. It also
+  // tracked the account's free spot USDC ($428.75) almost exactly, which collateral does
+  // and notional does not.
+  //
+  // `capital` below is therefore NOT margin - it is margin/LEVERAGE, a quantity that only
+  // makes sense because the auto-size line multiplies LEVERAGE straight back in. Anything
+  // else comparing it against a real margin figure is out by the leverage factor. That is
+  // what made the preview report "your capital $11.91" against $238.27 available and hold
+  // back orders the account could easily afford. Margin questions use marginAvail.
+  let freeMargin, capital, capSrc, marginAvail
   if (availNtl > 0) {
-    freeMargin = LEVERAGE > 0 ? availNtl / LEVERAGE : availNtl
-    capital    = freeMargin
-    capSrc     = `$${availNtl.toFixed(2)} available to trade${IS_HIP3 ? ` on ${DEX}` : ''}`
+    freeMargin  = LEVERAGE > 0 ? availNtl / LEVERAGE : availNtl
+    capital     = freeMargin
+    marginAvail = availNtl
+    capSrc      = `$${availNtl.toFixed(2)} available to trade${IS_HIP3 ? ` on ${DEX}` : ''}`
   } else {
-    freeMargin = withdrawable
-    capital    = freeMargin + spotFree
-    capSrc     = `capital $${capital.toFixed(2)} ($${freeMargin.toFixed(2)} perp + $${spotFree.toFixed(2)} spot USDC)`
+    freeMargin  = withdrawable
+    capital     = freeMargin + spotFree
+    marginAvail = capital     // this branch's capital IS margin, unlike the one above
+    capSrc      = `capital $${capital.toFixed(2)} ($${freeMargin.toFixed(2)} perp + $${spotFree.toFixed(2)} spot USDC)`
   }
   const buyLevelCnt = (IS_SHORT ? PRICES.filter(p => p > markPx) : PRICES.filter(p => p < markPx)).length || 1
 
@@ -806,7 +821,7 @@ async function run() {
     // Each entry reserves ORDER_USD / LEVERAGE of margin. When the budget is gone the
     // remaining levels are real orders the bot wants but cannot afford yet — it retries
     // them as margin frees, which is why they are marked rather than dropped.
-    let _budget = capital
+    let _budget = marginAvail
     const _perOrder = ORDER_USD / LEVERAGE
     for (let i = 0; i < PRICES.length; i++) {
       if (!_isEntryLvl(i)) continue
@@ -850,7 +865,7 @@ async function run() {
       margin: IS_ISOLATED ? 'isolated' : 'cross',
       // What the sizing was actually derived from, so the preview shows the user their own
       // capital rather than a number with no provenance.
-      capital, capitalSource: capSrc, freeMargin,
+      capital: marginAvail, capitalSource: capSrc, freeMargin,
       requiredMargin,
       entryLevels: entries.length,
       // What the first cycle actually rests, and what it holds back.
@@ -860,10 +875,11 @@ async function run() {
       inventory: _inv, avgEntry: _avg0,
       // Margin the orders it CAN place will actually consume.
       marginUsed: orders.filter(o => !o.blocked && o.side === _entrySide).length * (ORDER_USD / LEVERAGE),
+      marginAvail,
       perOrderMargin: ORDER_USD / LEVERAGE,
       autoRange: !(parseFloat(args.lower) > 0) && !(parseFloat(args.upper) > 0),
       autoSize:  !(parseFloat(args.size) > 0),
-      fits: requiredMargin <= capital,
+      fits: requiredMargin <= marginAvail,
       minOrder: HL_MIN_ORDER,
       // The whole position, not just its size. A grid started on top of one behaves very
       // differently depending on which way it points: same direction and it adds to the
