@@ -19091,7 +19091,7 @@ function _previewChartHtml(plan) {
     inventory: { txt: () => _T('no inventory', 'sin inventario'), loud: true },
     losing:    { txt: () => _T('would lose', 'cerraría en pérdida'), loud: true },
     resting:   { txt: () => _T('already there', 'ya está'),      loud: false },
-    near:      { txt: () => _T('too near mark', 'muy cerca'),    loud: false },
+    near:      { txt: () => _T('waits for price', 'espera precio'), loud: false, soon: true },
   }
   const rung = (o) => {
     const yy = y(+o.px)
@@ -19102,11 +19102,14 @@ function _previewChartHtml(plan) {
     // A held-back level is drawn faint and struck through, so the ladder still shows the
     // shape the grid is aiming for while making clear which rungs are not on the book.
     const dim = live ? '1' : why?.loud ? '.62' : '.34'
+    // A level waiting on price is a normal, momentary state - it goes on the book the
+    // instant the mark moves off it. Striking it through like a refusal said otherwise.
+    const strike = live || why?.soon ? '' : ';text-decoration:line-through'
     return `<div style="position:absolute;left:0;right:0;top:${yy - 9}px;height:18px;display:flex;align-items:center;gap:6px;opacity:${dim}">
       <span style="width:38px;flex-shrink:0;text-align:right;font-size:9.5px;font-weight:800;color:${col};text-transform:uppercase">${buy ? _T('Buy', 'Compra') : _T('Sell', 'Venta')}</span>
       <span style="flex:1;height:0;border-top:1.5px ${live ? (buy ? 'solid' : 'dashed') : 'dotted'} ${col};opacity:.75"></span>
       ${why ? `<span style="flex-shrink:0;font-size:8.5px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;color:${why.loud ? 'var(--red)' : 'var(--fg-3)'};white-space:nowrap">${why.txt()}</span>` : ''}
-      <span style="flex-shrink:0;font-size:10.5px;font-family:var(--font-mono);color:var(--fg-2)${live ? '' : ';text-decoration:line-through'}">${fmtSize(o.sz)} @ $${fmtPrice(o.px)}</span>
+      <span style="flex-shrink:0;font-size:10.5px;font-family:var(--font-mono);color:var(--fg-2)${strike}">${fmtSize(o.sz)} @ $${fmtPrice(o.px)}</span>
     </div>`
   }
   const markY = y(+plan.markPx)
@@ -19235,9 +19238,11 @@ function _botPreviewSheet(type, plan, loading) {
       ${(() => {
         const short = (plan.orders ?? []).filter(o => o.blocked === 'margin')
         const inv   = (plan.orders ?? []).filter(o => o.blocked === 'inventory')
-        if (!short.length && !inv.length) return ''
+        const near  = (plan.orders ?? []).filter(o => o.blocked === 'near')
+        if (!short.length && !inv.length && !near.length) return ''
         const money = (n) => '$' + fmtPrice(n)
-        return `<div style="margin-top:10px;font-size:11.5px;color:var(--red);background:rgba(255,77,109,.08);border-radius:8px;padding:10px 12px;line-height:1.55">
+        const bad = short.length || inv.length
+        return `<div style="margin-top:10px;font-size:11.5px;color:${bad ? 'var(--red)' : 'var(--fg-2)'};background:${bad ? 'rgba(255,77,109,.08)' : 'var(--panel-1)'};border-radius:8px;padding:10px 12px;line-height:1.55">
           ${short.length ? `<div><b>${short.length} ${short.length === 1 ? _T('level', 'nivel') : _T('levels', 'niveles')}</b> ${
             _T('will not go on the book — not enough margin', 'no se colocarán — falta margen')}: ${short.map(o => money(o.px)).join(', ')}.
             ${_T('The bot keeps retrying them as margin frees.', 'El bot los reintenta cuando se libera margen.')}</div>` : ''}
@@ -19245,6 +19250,11 @@ function _botPreviewSheet(type, plan, loading) {
             (inv.length === 1 ? _T('has nothing left to sell', 'no tiene nada que vender')
                               : _T('have nothing left to sell', 'no tienen nada que vender'))}: ${inv.map(o => money(o.px)).join(', ')}.
             ${_T('Exits are backed by the position, so these appear as it grows.', 'Las salidas se respaldan con la posición, así que aparecen cuando crece.')}</div>` : ''}
+          ${near.length ? `<div style="${short.length || inv.length ? 'margin-top:6px' : ''};color:var(--fg-2)">${
+            _T('One level sits too close to the mark to be an entry yet', 'Un nivel está demasiado cerca del precio para ser entrada aún')}: ${
+            near.map(o => money(o.px)).join(', ')}. ${
+            _T('The grid leaves half a level of clearance around the mark so a level cannot flip between entry and exit on ordinary noise. An auto-chosen range centres the mark exactly between two levels, so the nearest one starts right on that line and goes on the book as soon as price moves off it.',
+               'El grid deja medio nivel de holgura alrededor del precio para que un nivel no cambie entre entrada y salida por ruido normal. Un rango automático centra el precio justo entre dos niveles, así que el más cercano empieza en esa línea y se coloca en cuanto el precio se mueve.')}</div>` : ''}
         </div>`
       })()}
 

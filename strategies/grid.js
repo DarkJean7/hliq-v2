@@ -871,7 +871,9 @@ async function run() {
       // What the first cycle actually rests, and what it holds back.
       willPlace: orders.filter(o => !o.blocked).length,
       resting:   orders.filter(o => o.blocked === 'resting').length,
-      heldBack:  orders.filter(o => o.blocked === 'margin' || o.blocked === 'inventory').length,
+      // Everything not going on the book this cycle, so the counts add up to the ladder.
+      heldBack:  orders.filter(o => o.blocked && o.blocked !== 'resting').length,
+      nearMark:  orders.filter(o => o.blocked === 'near').length,
       inventory: _inv, avgEntry: _avg0,
       // Margin the orders it CAN place will actually consume.
       marginUsed: orders.filter(o => !o.blocked && o.side === _entrySide).length * (ORDER_USD / LEVERAGE),
