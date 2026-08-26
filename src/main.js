@@ -1754,17 +1754,31 @@ async function refreshLive(force = false) {
         // already trigger that refetch, which re-baselines snapshot AND anchor exactly
         // (absorbing any real transfer landing on the same tick), so leave the anchor
         // alone and let it settle. The value then stays continuous across a close.
+        // Shifting the anchor by the raw delta is only safe with no fills this tick: with
+        // fills the difference is dominated by trading noise (uPnL marked at mark vs
+        // closedPnl realized at fill, funding, HYPE-denominated fees).
         if (newRawFills.length === 0) {
           const _spurious = _perpCash - _lastPerpCash
           if (Math.abs(_spurious) > 0.01 && state.portfolio && state.portfolio._perpAnchor != null) {
             state.portfolio._perpAnchor += _spurious
           }
-          // Re-baseline exactly from HL in the background.
-          const _a = state.addr
-          info.portfolio({ user: _a }).catch(() => null).then(p => {
-            if (p && state.addr === _a) { state.portfolio = _anchorPortfolio(p, state.perpState); renderAccountSection() }
-          })
         }
+        // But the RE-BASELINE has to happen either way, and it did not.
+        //
+        // Opening a position makes Hyperliquid move USDC spot -> perp to fund the margin.
+        // That lifts perp equity without changing the unified account value, so the bridge
+        // (snapshot + perpNow - anchor) reads high by the transfer. The reconcile above was
+        // skipped because the same tick carried the opening fill, no refetch was scheduled
+        // because that lived inside the same branch, and _lastPerpCash advanced regardless
+        // - so the jump was baked in and never revisited. A $18.80 margin transfer is
+        // exactly how $690 showed as $709 until something else forced a refresh.
+        //
+        // Re-reading the portfolio pairs a fresh snapshot with a fresh anchor, which
+        // absorbs the transfer without trusting the noisy delta.
+        const _a = state.addr
+        info.portfolio({ user: _a }).catch(() => null).then(p => {
+          if (p && state.addr === _a) { state.portfolio = _anchorPortfolio(p, state.perpState); renderAccountSection() }
+        })
       }
       _lastPerpCash = _perpCash
     }
@@ -7094,8 +7108,17 @@ async function _startAllAcctWs(entries) {
         let mainSt = null
         const hip3Pos = []
         const hip3Dexes = []
+        // Did this event describe the builder dexes at all? "No HIP-3 positions" and "this
+        // event did not mention HIP-3" look identical once both are an empty array, and
+        // _applyAcctLiveCs takes an empty array as authoritative — so an event carrying
+        // only the main dex silently erased every HIP-3 position's unrealized from the row.
+        // Equity is anchored on perp account value and did not move with it, which is
+        // exactly the shape of the reported flicker: Net PnL swinging by hundreds while
+        // equity drifts by cents.
+        let sawHip3 = false
         for (const [dex, st] of states) {
           if (!dex) { mainSt = st; continue }
+          sawHip3 = true
           let has = false
           for (const ap of (st?.assetPositions ?? [])) {
             if (parseFloat(ap.position?.szi ?? 0) === 0) continue
@@ -7114,7 +7137,8 @@ async function _startAllAcctWs(entries) {
         const r = _allAcctLastResults.find(x => String(x.addr).toLowerCase() === key)
         if (!r || r.error) return
         _acctWsLast.set(key, Date.now())
-        if (_applyAcctLiveCs(r, mainSt, hip3Pos)) _acctWsSchedulePaint()
+        // null = "unknown, keep what the row already has"; [] = "genuinely none right now".
+        if (_applyAcctLiveCs(r, mainSt, sawHip3 ? hip3Pos : null)) _acctWsSchedulePaint()
       })
       _acctWsSubs.set(key, sub)
     } catch (err) { console.warn('[ws] allDexsClearinghouseState subscribe failed for', addr, err?.message) }
