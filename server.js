@@ -700,6 +700,24 @@ async function volPoll() {
     const spotVol = sum(spot?.[1])
     if (!(perpVol > 0)) return   // a bad read must not land as a zero and dent the chart
 
+    // Builder (HIP-3) dexes too. The Pulse headline counts them - $2.26B of daily volume
+    // and $3.67B of open interest against the main dex's $7.41B / $9.38B - so a chart that
+    // measured only the main dex would sit under a headline it no longer matched. Ten
+    // extra calls an hour.
+    let hip3Vol = 0, hip3Oi = 0
+    try {
+      const names = (await hlInfo({ type: 'perpDexs' }) ?? []).map(d => d?.name).filter(Boolean)
+      for (const dex of names) {
+        const pair = await hlInfo({ type: 'metaAndAssetCtxs', dex }).catch(() => null)
+        for (const c of (pair?.[1] ?? [])) {
+          const v = parseFloat(c?.dayNtlVlm ?? 0)
+          const o = parseFloat(c?.openInterest ?? 0) * parseFloat(c?.markPx ?? 0)
+          if (Number.isFinite(v)) hip3Vol += v
+          if (Number.isFinite(o)) hip3Oi  += o
+        }
+      }
+    } catch (e) { if (e.rateLimited) throw e }
+
     // Open interest is published per coin in BASE units, so it needs the mark price to be
     // comparable — the same conversion computeEcosystem does for the live figure. Recorded
     // here because Hyperliquid has no historical OI endpoint either.
@@ -723,7 +741,12 @@ async function volPoll() {
     // Appended, not restructured: rows recorded before this shipped are 3 long and stay
     // valid — they simply carry no OI, and the OI chart skips them rather than reading a
     // zero as a real reading.
-    points.push([Date.now(), Math.round(perpVol), Math.round(spotVol), Math.round(oi), +top3Pct.toFixed(2)])
+    // Appended again rather than restructured: readings taken before builder dexes were
+    // counted stay valid at their own length, and the series simply steps once where the
+    // basis widened. Backfilling is impossible - Hyperliquid publishes no history for any
+    // of this (see the note above the file constants).
+    points.push([Date.now(), Math.round(perpVol), Math.round(spotVol), Math.round(oi), +top3Pct.toFixed(2),
+                 Math.round(hip3Vol), Math.round(hip3Oi)])
     writeFileSync(VOL_FILE, JSON.stringify(volCompact(points)))
   } catch (e) {
     if (!e.rateLimited) console.warn('[vol]', e.message)

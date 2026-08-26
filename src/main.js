@@ -183,7 +183,7 @@ import {
   invalidateApprovedAgents,
 } from './trading.js'
 import { createAlarm } from './alarm.js'
-import { computeEcosystem, oiConcentration, computeDexes, computeSpot, computeProtocol , sparkPath, windowSeries, feeSeries, pulseSeries } from './ecosystem.js'
+import { computeEcosystem, oiConcentration, computeDexes, computeSpot, computeProtocol , sparkPath, windowSeries, feeSeries, pulseSeries, computeEcosystemAll } from './ecosystem.js'
 import {
   getDiscoveredWallets,
   getMainAddress,
@@ -12605,10 +12605,29 @@ async function _pulseFetchDexes(main) {
     }
     _pulseDex = computeDexes(fetched, Object.fromEntries(cats ?? []), main)
     _pulseDexAt = Date.now()
+    // The same responses feed the per-asset lists. Without this the page said "the whole
+    // exchange" while showing only the main dex - 271 builder markets, $3.7B of open
+    // interest, missing entirely.
+    _pulseDexPairs = fetched
+    _pulseRecompute()
   } catch (e) { console.warn('[pulse dex]', e.message) }
 }
 
 let _pulseSpot = null
+// Per-dex metaAndAssetCtxs from the last builder-dex fan (5-min clock). Held so the asset
+// lists can be rebuilt without re-fetching.
+let _pulseDexPairs = null
+let _pulseMainPair = null
+
+// Rank every market together - main dex plus every builder dex - or just the main one until
+// the dex fan has landed. Called on both clocks so whichever arrives last wins.
+function _pulseRecompute() {
+  if (!_pulseMainPair) return
+  const d = _pulseDexPairs?.length
+    ? computeEcosystemAll(_pulseMainPair, _pulseDexPairs)
+    : computeEcosystem(_pulseMainPair)
+  if (d.ok) { _pulseData = d; _pulseAt = Date.now() }
+}
 
 async function _pulseFetch(force = false) {
   if (_pulseBusy) return
@@ -12622,8 +12641,9 @@ async function _pulseFetch(force = false) {
       infoClient.metaAndAssetCtxs(),
       infoClient.spotMetaAndAssetCtxs().catch(() => null),
     ])
-    const d = computeEcosystem(pair)
-    if (d.ok) { _pulseData = d; _pulseAt = Date.now() }
+    _pulseMainPair = pair
+    _pulseRecompute()
+    const d = _pulseData ?? { ok: false }
     if (spotPair) { const sp = computeSpot(spotPair); if (sp.ok) _pulseSpot = sp }
     if (d.ok) _pulseFetchProto(d, _pulseSpot).then(() => {
       if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
@@ -12884,7 +12904,7 @@ function _pulseRow(r, right, tone, key = '') {
     <div class="mob-v-row" style="cursor:pointer" onclick="window.__pulseToggle('${esc(r.coin)}','${id}')">
       ${_mobVCoinIcon(r.coin)}
       <div class="mob-v-row-info">
-        <div class="mob-v-row-name">${esc(_ocCoinLabel(r.coin))}</div>
+        <div class="mob-v-row-name">${esc(_ocCoinLabel(r.coin))}${r.dex ? `<span style="margin-left:5px;font-size:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);border:1px solid var(--accent);border-radius:4px;padding:0 4px;vertical-align:middle">${esc(r.dex)}</span>` : ''}</div>
         <div class="mob-v-row-sub">${_pulseUsd(r.vol)} ${_T('24h vol', 'vol 24h')}${fund ? ' · ' + fund : ''}</div>
       </div>
       <div class="mob-v-row-right">
@@ -13233,8 +13253,8 @@ function _pulseRenderInner(el) {
     <div style="padding:14px 16px 6px">
       <div style="font-size:17px;font-weight:800">${_T('Hyperliquid Pulse', 'Pulso de Hyperliquid')}</div>
       <div style="font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.45">${
-        _T('The whole exchange, not just your account. Updates every minute.',
-           'Todo el exchange, no solo tu cuenta. Se actualiza cada minuto.')}</div>
+        _T('The whole exchange, not just your account — main dex and builder dexes together. Updates every minute.',
+           'Todo el exchange, no solo tu cuenta — dex principal y dexes de constructores juntos. Se actualiza cada minuto.')}</div>
     </div>
     <div class="mob-v-setting-group" style="margin:6px 12px 2px">
       <div class="mob-v-setting-row" style="gap:8px">

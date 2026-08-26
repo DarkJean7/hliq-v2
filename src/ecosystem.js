@@ -25,7 +25,7 @@ export function fundingApr(hourly) {
  *                              Deliberately low: MOVE at -3000% APR on $1.7M of volume is
  *                              a real squeeze, not noise, and must survive.
  */
-export function computeEcosystem(pair, { minVol = 100_000, top = 5 } = {}) {
+export function computeEcosystem(pair, { minVol = 100_000, top = 5, dex = null } = {}) {
   const meta = pair?.[0]
   const ctxs = pair?.[1]
   const universe = Array.isArray(meta?.universe) ? meta.universe : []
@@ -46,6 +46,7 @@ export function computeEcosystem(pair, { minVol = 100_000, top = 5 } = {}) {
     if (!Number.isFinite(mark) || mark <= 0) return
     rows.push({
       coin: u.name,
+      dex,
       mark,
       oi:   Number.isFinite(oi)  ? oi  : 0,
       vol:  Number.isFinite(vol) ? vol : 0,
@@ -72,6 +73,54 @@ export function computeEcosystem(pair, { minVol = 100_000, top = 5 } = {}) {
     topVol: by(rows, 'vol', -1),
     // Funding is where the crowding shows: a high positive rate means longs are paying
     // shorts to stay long, which is the market telling you the trade is busy.
+    fundingHigh: by(liquid, 'apr', -1),
+    fundingLow:  by(liquid, 'apr',  1),
+    gainers: by(liquid, 'chg', -1),
+    losers:  by(liquid, 'chg',  1),
+  }
+}
+
+/**
+ * Every perp market on Hyperliquid: the main dex AND the builder (HIP-3) dexes.
+ *
+ * The lists used to be main-dex only, because computeEcosystem is fed one metaAndAssetCtxs
+ * response and there is one per dex. That left 271 markets out of a page whose subtitle
+ * says "the whole exchange" - and not marginal ones: measured live, the builder dexes carry
+ * $3.66B of open interest and $2.26B of daily volume against the main dex's $9.38B and
+ * $7.41B. xyz:SP500 alone ranks above ZEC by open interest, and four builder markets were
+ * funding higher than the main dex's top payer.
+ *
+ * @param dexPairs [{ dex, pair }] as computeDexes already fetches them
+ */
+export function computeEcosystemAll(mainPair, dexPairs, opts = {}) {
+  const main = computeEcosystem(mainPair, opts)
+  const rows = [...main.rows]
+  let totalOi = main.totalOi, totalVol = main.totalVol
+  for (const { dex, pair } of (dexPairs ?? [])) {
+    // Each dex is scored by the same arithmetic; only the tag differs. minVol/top are not
+    // passed on - the per-dex slices are thrown away, the rows are what matter.
+    const d = computeEcosystem(pair, { dex })
+    if (!d.ok) continue
+    rows.push(...d.rows)
+    totalOi  += d.totalOi
+    totalVol += d.totalVol
+  }
+  return { ...rankEcosystem(rows, opts), totalOi, totalVol, hip3Oi: totalOi - main.totalOi, hip3Vol: totalVol - main.totalVol }
+}
+
+/** The top/funding/mover slices, over whatever set of rows it is given. */
+export function rankEcosystem(rows, { minVol = 100_000, top = 5 } = {}) {
+  const liquid = rows.filter(r => r.vol >= minVol)
+  const by = (list, key, dir) => [...list].sort((a, b) => (a[key] - b[key]) * dir).slice(0, top)
+  return {
+    ok: rows.length > 0,
+    coins: rows.length,
+    liquidCoins: liquid.length,
+    totalOi:  rows.reduce((s, r) => s + r.oi, 0),
+    totalVol: rows.reduce((s, r) => s + r.vol, 0),
+    rows,
+    topOi:  by(rows, 'oi',  -1),
+    topVol: by(rows, 'vol', -1),
     fundingHigh: by(liquid, 'apr', -1),
     fundingLow:  by(liquid, 'apr',  1),
     gainers: by(liquid, 'chg', -1),
@@ -296,11 +345,14 @@ export function pulseSeries(points) {
   const rows = (points ?? []).filter(p => Array.isArray(p) && Number.isFinite(+p[0]))
   const num = (v) => Number.isFinite(+v) ? +v : null
   const pick = (i) => rows.map(p => [+p[0], num(p[i])]).filter(p => p[1] !== null)
+  // Fields 5 and 6 are builder-dex volume and open interest, recorded from the day the
+  // Pulse headline started counting them. Older readings simply lack them, so the series
+  // steps once where the basis widened rather than pretending it always did.
   return {
     volume: rows
       .filter(p => Number.isFinite(+p[1]))
-      .map(p => [+p[0], +p[1] + (Number.isFinite(+p[2]) ? +p[2] : 0)]),
-    oi:   pick(3).filter(p => p[1] > 0),
+      .map(p => [+p[0], +p[1] + (Number.isFinite(+p[2]) ? +p[2] : 0) + (Number.isFinite(+p[5]) ? +p[5] : 0)]),
+    oi:   rows.map(p => [+p[0], (num(p[3]) ?? 0) + (Number.isFinite(+p[6]) ? +p[6] : 0)]).filter(p => p[1] > 0),
     top3: pick(4).filter(p => p[1] > 0),
   }
 }
