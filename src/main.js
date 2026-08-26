@@ -24153,7 +24153,20 @@ async function _lbFetchResults(entries) {
     // Denominator of HL's Unified Account Ratio = the Portfolio Value (unified account
     // value), NOT the perp-only account value. Cached for the light refresh.
     const _marginBase      = accountValue
-    const unrealizedPnl    = positions.reduce((s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0)
+    // Main dex AND the builder dexes. `positions` here comes from a plain
+    // clearinghouseState, which is main-dex only - HIP-3 arrives separately in hip3Res and
+    // was merged into the row's POSITIONS list further down but never into this figure.
+    //
+    // _applyAcctLiveCs (the WebSocket and the 12s poll) always included HIP-3, so the two
+    // writers disagreed by exactly the HIP-3 unrealized and took turns: the 5-minute
+    // fan-out dropped it, the next live tick put it back. Net PnL flipped between two
+    // values while equity - anchored on perp account value, which never reads this array -
+    // did not move at all. Telemetry across 39 recorded steps shows the settled half flat
+    // to the cent (1507.52-1507.64) while unreal alternated by ~$180, which is what these
+    // accounts hold on builder dexes.
+    const _hip3Unreal      = (hip3Res?.positions ?? [])
+      .reduce((s, ap) => s + parseFloat((ap.position ?? ap)?.unrealizedPnl ?? 0), 0)
+    const unrealizedPnl    = positions.reduce((s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0) + _hip3Unreal
     const realizedPnl      = fills.reduce((s, f) => s + parseFloat(f.closedPnl ?? 0), 0)
     const totalFees        = fills.reduce((s, f) => s + parseFloat(f.fee ?? 0), 0)
     const allTimeFunding   = funding.reduce((s, f) => s + parseFloat(f.delta?.usdc ?? 0), 0)
