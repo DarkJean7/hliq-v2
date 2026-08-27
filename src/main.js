@@ -11099,19 +11099,27 @@ function _comboPnlSums() {
       fees:     Number(snap.fees),
     }
     _comboPnlLast = { net, unreal, wallets: rows.length, parts, at: Date.now() }
-    // Split unrealized into its main-dex and HIP-3 halves for the watcher. Each row keeps
-    // the main-dex figure it was bridged from (_mainUnreal), so the remainder is the HIP-3
-    // share -- the exact quantity that vanished and came back in the last two flickers.
-    let hip3Sum = 0, hip3Rows = 0
+    // Split unrealized into its main-dex and HIP-3 halves for the watcher.
+    //
+    // Derived from the POSITIONS, not from r._mainUnreal. _mainUnreal is only set by
+    // _applyAcctLiveCs, so rows written by the heavy fetch have none and were all being
+    // skipped -- the record then read "hip3=0.00 hip3Rows=0", which read as proof that
+    // HIP-3 was not involved at the exact moment it was the entire cause. A measurement
+    // that cannot tell "none" from "not measured" is worse than no measurement.
+    let hip3Sum = 0, hip3Rows = 0, noPos = 0
     for (const r of rows) {
-      const m = Number(r._mainUnreal)
-      if (!Number.isFinite(m)) continue
-      const h = Number(r.unrealizedPnl) - m
+      const ps = r.positions ?? []
+      if (!ps.length) { noPos++; continue }
+      const h = ps.filter(x => String((x?.position ?? x)?.coin ?? '').includes(':'))
+        .reduce((a, x) => a + parseFloat((x.position ?? x)?.unrealizedPnl ?? 0), 0)
       if (Math.abs(h) > 0.005) { hip3Sum += h; hip3Rows++ }
     }
     _comboPnlWatch(net, { settled: Number(snap.settledPnl), unreal, rows: rows.length,
       pnlWallets: snap.pnlWallets, wallets: snap.wallets, age: Date.now() - Number(snap.updatedAt ?? 0),
-      hip3: hip3Sum, hip3Rows })
+      hip3: hip3Sum, hip3Rows, noPos,
+      // Which writer last touched these rows. _applyAcctLiveCs stamps _mainUnreal; the
+      // heavy fetch does not. That single bit is what identifies the disagreeing pair.
+      liveRows: rows.filter(r => Number.isFinite(Number(r._mainUnreal))).length })
     return { net, unreal, parts }
   }
 
@@ -11156,6 +11164,7 @@ function _comboPnlWatch(net, ctx) {
         message: `netPnl step ${step.toFixed(2)} (${prev.toFixed(2)} -> ${net.toFixed(2)})`,
         stack: `settled=${ctx.settled?.toFixed?.(2)} unreal=${ctx.unreal?.toFixed?.(2)} ` +
                `hip3=${ctx.hip3?.toFixed?.(2)} hip3Rows=${ctx.hip3Rows} ` +
+               `noPos=${ctx.noPos} liveRows=${ctx.liveRows} ` +
                `rows=${ctx.rows} pnlWallets=${ctx.pnlWallets} wallets=${ctx.wallets} snapAge=${Math.round(ctx.age / 1000)}s`,
         url: location.pathname,
       }),
@@ -24584,8 +24593,27 @@ async function _lbFetchResults(entries) {
     // inline fan. HIP-3 positions/orders change rarely, so cache for 15 min once fetched.
     const _coldHip3 = !hip3
     if (state.isAllAccounts && _coldHip3) _deferredHip3.push(entry.addr)
+    // A cold miss means we have NOT LOOKED at the builder dexes. It does not mean there is
+    // nothing on them, and resolving it as an empty array said exactly that: the row got
+    // rebuilt with its HIP-3 unrealized missing, Net PnL dropped by that amount, and the
+    // next WebSocket push (which always includes HIP-3) put it back. A square wave the
+    // width of the HIP-3 half, with equity — anchored on perp account value, which never
+    // reads this array — not moving at all.
+    //
+    // This is the third place the same empty-vs-unknown confusion has caused this exact
+    // symptom (see _applyAcctLiveCs's hip3Override and the sawHip3 guard in the socket
+    // handler). The rule, everywhere: [] is only ever an answer we went and got.
+    //
+    // So carry over whatever HIP-3 the row already holds — the socket streams it live, so
+    // it is current, and it is the same carry-over _applyAcctLiveCs already does on the
+    // REST path. The deferred pass replaces it with a fresh read moments later.
+    const _isHip3   = (x) => String((x?.position ?? x)?.coin ?? '').includes(':')
+    const _keptHip3 = {
+      positions: (prevRow?.positions  ?? []).filter(_isHip3),
+      orders:    (prevRow?.openOrders ?? []).filter(_isHip3),
+    }
     const hip3Pending = (state.isAllAccounts && _coldHip3)
-      ? Promise.resolve({ positions: [], orders: [] })
+      ? Promise.resolve(_keptHip3)
       : ((!hip3 || Date.now() - hip3.ts > 900_000)
           ? _lbFetchHip3(entry.addr).then(h => { _lbHip3ByAddr[key] = h; return h })
           : Promise.resolve(hip3))
@@ -24836,6 +24864,17 @@ function _scheduleDeferredHip3(addrs) {
             const newOrders = (h.orders ?? []).filter(o => !haveOids.has(o.oid))
             if (newPos.length)    { row.positions  = [...(row.positions ?? []),  ...newPos];    changed = true }
             if (newOrders.length) { row.openOrders = [...(row.openOrders ?? []), ...newOrders]; changed = true }
+            // Recompute the row's own figures from the positions it now holds. Adding to
+            // row.positions used to be the whole update, but nothing downstream derives
+            // unrealized from that array — _allAcctReaggregate sums the ROWS — so the
+            // positions appeared while the number they belong to stayed main-dex-only
+            // until the next socket push happened to recompute it.
+            if (newPos.length) {
+              row.unrealizedPnl = (row.positions ?? [])
+                .reduce((a, p) => a + parseFloat((p.position ?? p)?.unrealizedPnl ?? 0), 0)
+              row.netPnl = parseFloat(row.realizedPnl ?? 0) + row.unrealizedPnl
+                         + parseFloat(row.allTimeFunding ?? 0) - parseFloat(row.totalFees ?? 0)
+            }
           }
         } catch (_) {}
         await new Promise(r => setTimeout(r, 900))  // wide gap — stay off the burst bucket
