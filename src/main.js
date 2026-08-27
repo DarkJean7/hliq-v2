@@ -7192,7 +7192,21 @@ async function _startAllAcctWs(entries) {
         // This event covers EVERY builder dex, so it has already answered the question the
         // REST fan was asking ten times per wallet: which of them does this wallet use?
         // Recording it here is what lets _lbFetchHip3 skip the discovery fan entirely.
-        _hip3WsDexes.set(key, { dexes: hip3Dexes, positions: hip3Pos, ts: Date.now() })
+        //
+        // ONLY when the event actually described the builder dexes. This used to record
+        // unconditionally, and that is the second door the same ambiguity walked through:
+        // an event carrying only the main dex wrote { dexes: [], positions: [] } with a
+        // FRESH timestamp, which _lbFetchHip3 reads as an authoritative "this wallet holds
+        // nothing on any builder dex" and answers without making a single call. The next
+        // heavy refresh then rebuilt the row without its HIP-3 half, Net PnL fell by that
+        // amount, and the following complete event put it back — a constant-sized square
+        // wave (~$166 on nine wallets) with settled flat to the cent and every wallet count
+        // unchanged, which is exactly what the pnlstep log showed.
+        //
+        // Leaving the previous entry alone is the right failure mode: it keeps its old
+        // timestamp, so it ages out on its own and the ten-call fan — correct, just
+        // chattier — takes over. Never trade correctness for the call saving here.
+        if (sawHip3) _hip3WsDexes.set(key, { dexes: hip3Dexes, positions: hip3Pos, ts: Date.now() })
         if (!mainSt) return   // couldn't identify main dex — let the REST fallback handle it
         const r = _allAcctLastResults.find(x => String(x.addr).toLowerCase() === key)
         if (!r || r.error) return
@@ -11085,8 +11099,19 @@ function _comboPnlSums() {
       fees:     Number(snap.fees),
     }
     _comboPnlLast = { net, unreal, wallets: rows.length, parts, at: Date.now() }
+    // Split unrealized into its main-dex and HIP-3 halves for the watcher. Each row keeps
+    // the main-dex figure it was bridged from (_mainUnreal), so the remainder is the HIP-3
+    // share -- the exact quantity that vanished and came back in the last two flickers.
+    let hip3Sum = 0, hip3Rows = 0
+    for (const r of rows) {
+      const m = Number(r._mainUnreal)
+      if (!Number.isFinite(m)) continue
+      const h = Number(r.unrealizedPnl) - m
+      if (Math.abs(h) > 0.005) { hip3Sum += h; hip3Rows++ }
+    }
     _comboPnlWatch(net, { settled: Number(snap.settledPnl), unreal, rows: rows.length,
-      pnlWallets: snap.pnlWallets, wallets: snap.wallets, age: Date.now() - Number(snap.updatedAt ?? 0) })
+      pnlWallets: snap.pnlWallets, wallets: snap.wallets, age: Date.now() - Number(snap.updatedAt ?? 0),
+      hip3: hip3Sum, hip3Rows })
     return { net, unreal, parts }
   }
 
@@ -11130,6 +11155,7 @@ function _comboPnlWatch(net, ctx) {
         kind: 'pnlstep',
         message: `netPnl step ${step.toFixed(2)} (${prev.toFixed(2)} -> ${net.toFixed(2)})`,
         stack: `settled=${ctx.settled?.toFixed?.(2)} unreal=${ctx.unreal?.toFixed?.(2)} ` +
+               `hip3=${ctx.hip3?.toFixed?.(2)} hip3Rows=${ctx.hip3Rows} ` +
                `rows=${ctx.rows} pnlWallets=${ctx.pnlWallets} wallets=${ctx.wallets} snapAge=${Math.round(ctx.age / 1000)}s`,
         url: location.pathname,
       }),
