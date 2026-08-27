@@ -8813,7 +8813,10 @@ function mobVShow() {
 // Horizontally-scrolling children must be excluded from page swipes, or dragging one also
 // fires the navigation gesture (jumping to Trade / opening the More drawer). `[data-dragscroll]`
 // covers every strip that opts into manual horizontal scrolling, so new ones are safe by default.
-const _SWIPE_BLOCKED_SEL = 'canvas, input, textarea, select, .mob-v-tabs, .mob-watch-rotator, .mob-more-drawer, .no-swipe, [data-dragscroll]'
+// `iframe` is here for the TradingView charts in Analysis. They are pannable surfaces
+// exactly like our own `canvas` ones, but nothing matched them, so a horizontal drag
+// across a chart navigated to Trade instead of scrubbing the time axis.
+const _SWIPE_BLOCKED_SEL = 'canvas, iframe, input, textarea, select, .mob-v-tabs, .mob-watch-rotator, .mob-more-drawer, .no-swipe, [data-dragscroll]'
 const _swipeBlocked = t => !!(t && t.closest && t.closest(_SWIPE_BLOCKED_SEL))
 
 let _mobVSwipeInit = false
@@ -23529,6 +23532,19 @@ const _ANA_IVS = [
   { v: 'D',  l: '1D' },  { v: 'W',  l: '1W' },
 ]
 
+// TradingView's style ids. Exposed in our own header because the widget's toolbar is
+// wider than a phone: at 420px the style dropdown and Indicators are cut off the right
+// edge, so from inside the embed there is no way to reach them at all.
+//
+// Line matters more than it looks. A comparison overlay is always drawn as a line, so
+// against a candle series you are reading two different kinds of mark on one percent
+// scale. Putting the main series on Line too makes the pair actually comparable.
+const _ANA_STYLES = [
+  { v: '1', l: 'Candles', es: 'Velas',  d: 'M4 5v14M4 8h5v8H4zM15 3v18M13 7h5v10h-5z' },
+  { v: '2', l: 'Line',    es: 'Línea',  d: 'M3 17l5-6 4 3 3-5 6 4' },
+  { v: '3', l: 'Area',    es: 'Área',   d: 'M3 17l5-6 4 3 3-5 6 4v6H3z' },
+]
+
 // [{ id, sym, iv, cmp: [] }] — index 0 is the big one.
 function _anaLoad() {
   let list
@@ -23538,8 +23554,8 @@ function _anaLoad() {
     // meaningful rather than an empty page or an arbitrary default.
     const coin = String(state.selectedCoin || 'BTC').replace(/[^A-Z0-9]/gi, '').toUpperCase() || 'BTC'
     list = [
-      { sym: `HYPERLIQUID:${coin}USDC.P`, iv: '60', cmp: [] },
-      { sym: 'CAPITALCOM:DXY',            iv: '60', cmp: [] },
+      { sym: `HYPERLIQUID:${coin}USDC.P`, iv: '60', st: '1', cmp: [] },
+      { sym: 'CAPITALCOM:DXY',            iv: '60', st: '1', cmp: [] },
     ]
   }
   let minted = false
@@ -23549,6 +23565,7 @@ function _anaLoad() {
       id:  c.id || 'a' + i + '_' + Math.random().toString(36).slice(2, 7),
       sym: String(c.sym || ''),
       iv:  _ANA_IVS.some(x => x.v === c.iv) ? c.iv : '60',
+      st:  _ANA_STYLES.some(x => x.v === c.st) ? c.st : '1',
       cmp: Array.isArray(c.cmp) ? c.cmp.slice(0, 4) : [],
     }
   }).filter(c => c.sym)
@@ -23565,14 +23582,16 @@ function _anaSave(list) { try { localStorage.setItem(ANALYSIS_KEY, JSON.stringif
 // (position in the list, card height) is handled by moving the existing node instead —
 // re-injecting a TradingView iframe costs a full reload and a visible flash, and the tab
 // re-renders on every price tick.
-function _anaSig(c) { return `${c.sym}|${c.iv}|${c.cmp.join(',')}|${_tvTheme()}|${window.innerWidth < 700 ? 'n' : 'w'}` }
+function _anaSig(c) { return `${c.sym}|${c.iv}|${c.st}|${c.cmp.join(',')}|${_tvTheme()}|${window.innerWidth < 700 ? 'n' : 'w'}` }
 
-function _anaMount(el, c, hero) {
+function _anaMount(el, c, hero, full = false) {
   _tvInject(el, 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js', {
-    symbol: c.sym, interval: c.iv, timezone: 'Etc/UTC', theme: _tvTheme(), style: '1',
+    symbol: c.sym, interval: c.iv, timezone: 'Etc/UTC', theme: _tvTheme(), style: c.st,
     locale: 'en', autosize: true, allow_symbol_change: true,
-    hide_side_toolbar: !hero || window.innerWidth < 700,
-    hide_top_toolbar: false, withdateranges: hero, details: false,
+    // Full screen has room for the drawing rail; a phone-width card does not.
+    hide_side_toolbar: full ? false : (!hero || window.innerWidth < 700),
+    hide_top_toolbar: false, withdateranges: hero || full, details: false,
+    save_image: full,
     // The widget's own compare overlay. Passing it as a study is what makes it survive
     // the embed — the documented `compare_symbols` option is ignored here.
     studies: c.cmp.map(s => ({ id: 'Compare@tv-basicstudies', inputs: { symbol: s } })),
@@ -23583,27 +23602,79 @@ function _anaMount(el, c, hero) {
 function _anaCardHtml(c, hero) {
   const iv = _ANA_IVS.map(x =>
     `<button onclick="window.__anaSetIv('${c.id}','${x.v}')" style="background:${c.iv === x.v ? 'var(--accent)' : 'transparent'};color:${c.iv === x.v ? '#000' : 'var(--muted)'};border:none;border-radius:6px;padding:3px 7px;font-size:11px;font-weight:700;cursor:pointer">${x.l}</button>`).join('')
+  const st = _ANA_STYLES.map(x => _anaStyleBtn(c, x, 13)).join('')
   const chips = c.cmp.map(s =>
     `<button onclick="window.__anaCmpRemove('${c.id}','${esc(s)}')" title="${_T('Remove comparison', 'Quitar comparación')}"
-      style="background:var(--panel-2);border:1px solid var(--border);border-radius:999px;padding:2px 8px;font-size:10.5px;color:var(--fg-2);cursor:pointer;white-space:nowrap">${esc(_anaShort(s))} ×</button>`).join('')
+      style="background:var(--panel-2);border:1px solid var(--border);border-radius:999px;padding:3px 9px;font-size:10.5px;color:var(--fg-2);cursor:pointer;white-space:nowrap;flex-shrink:0">${esc(_anaShort(s))} ×</button>`).join('')
   return `
     <div style="display:flex;align-items:center;gap:7px;padding:8px 8px 2px 11px">
       <span style="font-size:${hero ? 14 : 13}px;font-weight:800;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_anaShort(c.sym))}</span>
       <span style="font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">${esc(c.sym.split(':')[0])}</span>
       <span style="flex:1"></span>
+      <button onclick="window.__anaFull('${c.id}')" title="${_T('Open full screen', 'Pantalla completa')}" aria-label="${_T('Open full screen', 'Pantalla completa')}"
+        style="background:transparent;border:none;color:var(--muted);cursor:pointer;padding:0 4px;flex-shrink:0;display:flex;align-items:center">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 15v5h-5M20 9V4h-5M4 15v5h5"/></svg>
+      </button>
       ${hero ? '' : `<button onclick="window.__anaPromote('${c.id}')" title="${_T('Make this the big chart', 'Hacerlo el gráfico grande')}"
         style="background:transparent;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:0 4px;flex-shrink:0">&#8607;</button>`}
       <button onclick="window.__anaRemove('${c.id}')" aria-label="Remove"
         style="background:transparent;border:none;color:var(--muted);font-size:19px;line-height:1;cursor:pointer;padding:0 4px;flex-shrink:0">&times;</button>
     </div>
-    <div style="display:flex;align-items:center;gap:7px;padding:0 10px 7px 11px">
+    <div style="display:flex;align-items:center;gap:6px;padding:0 10px 6px 11px">
       <span style="display:flex;gap:1px;background:var(--panel-2);border-radius:8px;padding:2px">${iv}</span>
       <span style="flex:1"></span>
-      <button onclick="window.__anaCompare('${c.id}')" title="${_T('Overlay another market', 'Superponer otro mercado')}"
-        style="background:transparent;border:1px solid var(--border2);border-radius:7px;color:var(--fg-2);font-size:11px;font-weight:700;padding:4px 9px;cursor:pointer;flex-shrink:0;white-space:nowrap">+ ${_T('Compare', 'Comparar')}</button>
+      <span style="display:flex;gap:1px;background:var(--panel-2);border-radius:8px;padding:2px">${st}</span>
     </div>
-    ${chips ? `<div data-dragscroll style="display:flex;gap:5px;padding:0 11px 7px;overflow-x:auto">${chips}</div>` : ''}
+    <div data-dragscroll style="display:flex;align-items:center;gap:5px;padding:0 11px 7px;overflow-x:auto">
+      ${chips}
+      <button onclick="window.__anaCompare('${c.id}')" title="${_T('Overlay another market', 'Superponer otro mercado')}"
+        style="background:transparent;border:1px dashed var(--border2);border-radius:999px;color:var(--fg-2);font-size:10.5px;font-weight:700;padding:3px 10px;cursor:pointer;flex-shrink:0;white-space:nowrap">+ ${_T('Compare', 'Comparar')}</button>
+    </div>
     <div id="anamount-${c.id}" style="flex:1;min-height:0"></div>`
+}
+
+// One style button. Area is the only one that reads better filled when selected.
+function _anaStyleBtn(c, x, px) {
+  const on = c.st === x.v
+  return `<button onclick="window.__anaSetStyle('${c.id}','${x.v}')" title="${_T(x.l, x.es)}" aria-label="${_T(x.l, x.es)}"
+      style="display:flex;align-items:center;background:${on ? 'var(--accent)' : 'transparent'};border:none;border-radius:6px;padding:4px 7px;cursor:pointer">
+      <svg viewBox="0 0 24 24" width="${px}" height="${px}" fill="${x.v === '3' && on ? '#000' : 'none'}" stroke="${on ? '#000' : 'var(--muted)'}" stroke-width="2" stroke-linejoin="round"><path d="${x.d}"/></svg>
+    </button>`
+}
+
+// Full screen, with every TradingView control reachable.
+//
+// The card view is the compromise one: at phone width the widget's own toolbar overflows,
+// so its style menu, indicators and drawing tools sit off the right edge where nothing can
+// reach them -- and a 300px chart inside a scrolling page fights that page for vertical
+// drags. Here the chart owns the viewport, so both problems go away at once.
+window.__anaFull = function(id) {
+  const c = _anaLoad().find(x => x.id === id)
+  if (!c) return
+  let ov = document.getElementById('anaFull')
+  if (!ov) {
+    ov = document.createElement('div')
+    ov.id = 'anaFull'
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:var(--bg);display:flex;flex-direction:column'
+    document.body.appendChild(ov)
+  }
+  ov.dataset.anaId = id
+  ov.style.display = 'flex'
+  ov.innerHTML = `
+    <div style="flex-shrink:0;display:flex;align-items:center;gap:8px;padding:11px 12px;border-bottom:1px solid var(--border)">
+      <span style="font-size:14.5px;font-weight:800;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_anaShort(c.sym))}</span>
+      <span style="font-size:10px;color:var(--muted);white-space:nowrap">${esc(c.sym.split(':')[0])}</span>
+      <span style="flex:1"></span>
+      <span style="display:flex;gap:1px;background:var(--panel-2);border-radius:8px;padding:2px;flex-shrink:0">${
+        _ANA_STYLES.map(x => _anaStyleBtn(c, x, 14)).join('')}</span>
+      <button onclick="window.__anaCloseFull()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:26px;line-height:1;cursor:pointer;padding:0 4px;flex-shrink:0">&times;</button>
+    </div>
+    <div id="anaFullMount" style="flex:1;min-height:0"></div>`
+  _anaMount(document.getElementById('anaFullMount'), c, true, true)
+}
+window.__anaCloseFull = function() {
+  const ov = document.getElementById('anaFull')
+  if (ov) { ov.style.display = 'none'; ov.innerHTML = ''; delete ov.dataset.anaId }
 }
 
 // "HYPERLIQUID:BTCUSDC.P" → "BTC perp"; "CAPITALCOM:DXY" → "DXY".
@@ -23678,6 +23749,14 @@ window.__anaSetIv = function(id, iv) {
   const list = _anaLoad().map(c => c.id === id ? { ...c, iv } : c)
   _anaSave(list); _anaRender(document.getElementById('mobVContent'))
 }
+window.__anaSetStyle = function(id, st) {
+  _anaSave(_anaLoad().map(c => c.id === id ? { ...c, st } : c))
+  _anaRender(document.getElementById('mobVContent'))
+  // A style press can come from the card OR from the fullscreen header; refresh the
+  // fullscreen only when it is actually showing this chart.
+  const ov = document.getElementById('anaFull')
+  if (ov && ov.style.display !== 'none' && ov.dataset.anaId === id) window.__anaFull(id)
+}
 window.__anaRemove = function(id) {
   _anaSave(_anaLoad().filter(c => c.id !== id))
   _anaRender(document.getElementById('mobVContent'))
@@ -23716,7 +23795,7 @@ window.__anaPick = async function(sym) {
     if (c.cmp.length >= 4) { _paperToast(_T('Up to 4 comparisons per chart', 'Hasta 4 comparaciones por gráfico'), 'err'); return }
     c.cmp = [...c.cmp, sym]
   } else {
-    list.push({ id: 'a' + Date.now().toString(36), sym, iv: '60', cmp: [] })
+    list.push({ id: 'a' + Date.now().toString(36), sym, iv: '60', st: '1', cmp: [] })
   }
   _anaSave(list)
   window.__anaClosePicker()
