@@ -6934,23 +6934,25 @@ function _allAcctMerge(fresh, prev) {
   return out
 }
 
-// How old a persisted snapshot may be and still be painted as a live balance.
+// The persisted snapshot is used REGARDLESS of age, deliberately.
 //
-// The cache exists so leaving and re-entering the combined view is instant. It was NOT
-// meant to survive a cold start: the stored `ts` was written and never read, so opening
-// the app after any gap painted equity and Net PnL from whenever the tab was last closed -
-// hours or days - and they jumped to the truth a few seconds later. That is the cold-start
-// spike, and it is exactly the "old data shown as current" this view is supposed to refuse.
+// An age gate lived here for one release, on the theory that a stale cache was painting the
+// cold-start equity spike. Tested directly, it was not: seeded with a three-hour-old cache
+// carrying $9,999 equity and +$7,777 Net PnL, both figures stay dashed with or without the
+// gate. The money figures are already protected by a stricter rule — the combined equity
+// and Net PnL come from the server snapshot or show nothing (see _combinedServerValue and
+// _comboPnlSums), and that snapshot is fetched fresh on entry. Cached ROWS cannot produce
+// either number, because the anchors they would need (_comboSrvLast, _comboPnlLast) are
+// module state and start empty on every page load.
 //
-// Past this age the cache is treated as absent: the loader shows, the figures stay dashed,
-// and nothing is claimed until a live fetch lands.
-const _ALLACCT_CACHE_MAX_AGE_MS = 90_000
-
+// What the gate did do was throw the cache away, which meant a full-screen "Combining all
+// accounts" loader and a cold nine-wallet fan-out on EVERY entry rather than the first —
+// slower to use and enough extra requests to trip the rate limiter. Structure from cache,
+// figures from the server: the two concerns are separate and only the second needs guarding.
 function _allAcctCacheLoad() {
   try {
     const o = JSON.parse(localStorage.getItem(_ALLACCT_CACHE_KEY) || 'null')
     if (!o || !Array.isArray(o.results) || !o.results.length) return null
-    if (Date.now() - Number(o.ts ?? 0) > _ALLACCT_CACHE_MAX_AGE_MS) return null
     return o.results
   } catch { return null }
 }
