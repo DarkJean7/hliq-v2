@@ -17,3 +17,6 @@ pulse-volume.json
 sub-payments.json
 chat-deleted.json
 chat.json
+
+# Runtime caches written by serve-prod.js (icons, profile pictures)
+data/

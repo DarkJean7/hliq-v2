@@ -14,6 +14,10 @@ const PORT        = 5175
 const API_PORT    = 3002
 const NOTIFY_PORT = 3001
 
+// TradingView symbol search (see the /tvsearch route). query|exchange → { at, body }.
+const tvSearchCache = new Map()
+const TV_SEARCH_TTL = 10 * 60_000
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js':   'application/javascript; charset=utf-8',
@@ -212,6 +216,62 @@ createServer((req, res) => {
       // transparent 200 (not a 404) so the client's letter base shows with no console error.
       try { mkdirSync(iconDir, { recursive: true }); writeAtomic(metaPath, JSON.stringify({ miss: true, at: Date.now() })) } catch {}
       sendIconMiss(res)
+    })()
+    return
+  }
+
+  // ── TradingView symbol search proxy ──────────────────────────────────────────
+  // The Analysis tab lets you chart any market TradingView carries, which needs a
+  // symbol search. TradingView's search endpoint gates on Referer and answers a
+  // browser on our origin with 403, so the lookup has to happen here. Only the
+  // query text leaves the box — no wallet, no account, nothing user-identifying.
+  // Answers are memoised for TV_SEARCH_TTL because the same handful of queries
+  // ("dxy", "btc") come back constantly and the symbol list barely moves.
+  if (url === '/tvsearch') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const qs   = new URLSearchParams(req.url.split('?')[1] || '')
+    const text = (qs.get('q') || '').trim().slice(0, 64)
+    // Exchange filter is an id like HYPERLIQUID; keep it to the shape TV uses so a
+    // crafted value can't reach anything but the search endpoint's own parameter.
+    const exch = (qs.get('exchange') || '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 24)
+    if (!text) { res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"symbols":[]}'); return }
+
+    const key = text.toLowerCase() + '|' + exch
+    const hit = tvSearchCache.get(key)
+    if (hit && Date.now() - hit.at < TV_SEARCH_TTL) {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' }).end(hit.body)
+      return
+    }
+    ;(async () => {
+      try {
+        const u = 'https://symbol-search.tradingview.com/symbol_search/v3/?text=' + encodeURIComponent(text) +
+                  '&hl=0&lang=en&domain=production' + (exch ? '&exchange=' + exch : '')
+        const r = await fetch(u, {
+          headers: { 'Referer': 'https://www.tradingview.com/', 'Origin': 'https://www.tradingview.com',
+                     'User-Agent': 'Mozilla/5.0' },
+          signal: AbortSignal.timeout(8000),
+        })
+        if (!r.ok) { res.writeHead(502, { 'Content-Type': 'application/json' }).end('{"symbols":[]}'); return }
+        const j = await r.json()
+        // Hand the client only what it draws. The raw record carries a dozen logo and
+        // provider fields that would triple the payload for nothing.
+        const body = JSON.stringify({
+          symbols: (j.symbols ?? []).slice(0, 40).map(s => ({
+            // `prefix` wins when present: it is the id the widget wants, and it differs
+            // from `source_id` on the broker feeds (Capital.com, Tickmill, …).
+            full: (s.prefix || s.source_id || '') + ':' + String(s.symbol || '').replace(/<[^>]*>/g, ''),
+            sym:  String(s.symbol || '').replace(/<[^>]*>/g, ''),
+            ex:   s.exchange || s.source_id || '',
+            desc: s.description || '',
+            type: s.type || '',
+          })).filter(s => s.full.includes(':') && !s.full.startsWith(':')),
+        })
+        if (tvSearchCache.size > 500) tvSearchCache.clear()
+        tvSearchCache.set(key, { at: Date.now(), body })
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' }).end(body)
+      } catch {
+        res.writeHead(502, { 'Content-Type': 'application/json' }).end('{"symbols":[]}')
+      }
     })()
     return
   }

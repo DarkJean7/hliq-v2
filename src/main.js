@@ -6477,7 +6477,7 @@ window.__mobMoreTab = function(name) {
   const backdrop = document.getElementById('mobMoreBackdrop')
   drawer?.classList.remove('open')
   backdrop?.classList.remove('open')
-  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'pulse', 'allocation', 'heatmap'])
+  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'pulse', 'allocation', 'heatmap', 'analysis'])
   if (mobileTabs.has(name)) {
     _mobVActiveTab = name
     document.querySelectorAll('.mob-v-tab').forEach(b => b.classList.remove('active'))
@@ -8888,13 +8888,13 @@ function _mobSwipeCloseMore() {
 // Direction comes from the tab's position in the nav order so a forward move enters from
 // the right, a back move from the left.
 let _mobVLastTab = null
-const _MOBV_NAV_ORDER = ['trades', 'positions', 'orders', 'outcomes', 'spot', 'strategies', 'watch', 'trade', 'settings', 'leaderboard', 'transfers', 'portfolio', 'calendar', 'tokens', 'pulse', 'performance', 'allocation']
+const _MOBV_NAV_ORDER = ['trades', 'positions', 'orders', 'outcomes', 'spot', 'strategies', 'watch', 'trade', 'settings', 'leaderboard', 'transfers', 'portfolio', 'calendar', 'tokens', 'pulse', 'performance', 'allocation', 'analysis']
 
 // Tabs that take the WHOLE mobile screen: the home chrome (hero / actions / watch
 // strip / sub-tabs) is hidden and the view renders its own sticky header + × back
 // button instead of sitting in the bottom half. Shared by the chrome-hide logic and
 // the watch-strip visibility check so they never drift apart.
-const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 'transfers', 'trades', 'tokens', 'leaderboard', 'allocation'])
+const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 'transfers', 'trades', 'tokens', 'leaderboard', 'allocation', 'analysis'])
 
 // Sticky full-page header with a × that returns to the home view. Used by every
 // full-screen tab so they share one look.
@@ -14862,6 +14862,11 @@ function _mobVRenderContent(tick = false) {
     return
   }
 
+  if (_mobVActiveTab === 'analysis') {
+    _anaRender(el)
+    return
+  }
+
   if (_mobVActiveTab === 'heatmap') {
     _mobVRenderHeatmap()
     if (!_heatmapTimer) {
@@ -18280,7 +18285,7 @@ window.mobVGoTab = function(tabName) {
   if (tabName === 'trades') _mobVTradesPage = 0   // start History at the latest page
   if (tabName === 'allocation') _allocView = 'allocation'   // the donut pill always opens the donut
   document.querySelectorAll('.mob-v-bottom-btn').forEach(b => b.classList.remove('active'))
-  const _mobTabs = new Set(['trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'pulse', 'allocation'])
+  const _mobTabs = new Set(['trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'pulse', 'allocation', 'analysis'])
   if (_mobTabs.has(tabName)) {
     _mobVActiveTab = tabName
     document.querySelectorAll('.mob-v-tab').forEach(b => b.classList.remove('active'))
@@ -23347,24 +23352,45 @@ window.__mobWatchAdd = function(coin) {
 // of the HL price / candle / ticker paths ever touch these. Entries are TradingView
 // symbols like "TVC:DXY". View-only; only the symbol is sent to TradingView.
 const TV_WATCH_KEY = 'hliq_tv_watch'
+
+// Every symbol here was checked by actually mounting it in an embed. That matters more
+// than it sounds: TradingView's *index* feeds (TVC:DXY, SP:SPX, TVC:NDX, DJ:DJI,
+// TVC:US10Y, TVC:VIX) are licensed for tradingview.com only, and a third-party embed
+// gets a "This symbol is only available on TradingView" panel instead of a chart —
+// which is what half of this list used to do. The CFD/broker feeds below carry the same
+// instruments and DO embed. Re-verify before adding to this list; a plausible-looking
+// ticker is not evidence.
 const _TV_MARKETS = [
-  { s: 'TVC:DXY',         n: 'US Dollar Index' },
-  { s: 'SP:SPX',          n: 'S&P 500' },
-  { s: 'TVC:NDX',         n: 'Nasdaq 100' },
-  { s: 'DJ:DJI',          n: 'Dow Jones' },
-  { s: 'TVC:GOLD',        n: 'Gold · spot' },
-  { s: 'TVC:SILVER',      n: 'Silver · spot' },
-  { s: 'TVC:USOIL',       n: 'Crude Oil · WTI' },
-  { s: 'TVC:US10Y',       n: 'US 10Y Yield' },
-  { s: 'TVC:VIX',         n: 'Volatility · VIX' },
-  { s: 'CRYPTOCAP:BTC.D', n: 'BTC Dominance' },
-  { s: 'CRYPTOCAP:TOTAL', n: 'Total Crypto Cap' },
-  { s: 'FX:EURUSD',       n: 'EUR / USD' },
-  { s: 'FX:GBPUSD',       n: 'GBP / USD' },
-  { s: 'FX:USDJPY',       n: 'USD / JPY' },
+  { s: 'CAPITALCOM:DXY',        n: 'US Dollar Index' },
+  { s: 'CAPITALCOM:US500',      n: 'S&P 500' },
+  { s: 'CAPITALCOM:US100',      n: 'Nasdaq 100' },
+  { s: 'CAPITALCOM:US30',       n: 'Dow Jones' },
+  { s: 'CAPITALCOM:VIX',        n: 'Volatility · VIX' },
+  { s: 'TVC:GOLD',              n: 'Gold · spot' },
+  { s: 'TVC:SILVER',            n: 'Silver · spot' },
+  { s: 'TVC:USOIL',             n: 'Crude Oil · WTI' },
+  { s: 'CAPITALCOM:NATURALGAS', n: 'Natural Gas' },
+  { s: 'FRED:DGS10',            n: 'US 10Y Yield' },
+  { s: 'CRYPTOCAP:BTC.D',       n: 'BTC Dominance' },
+  { s: 'CRYPTOCAP:TOTAL',       n: 'Total Crypto Cap' },
+  { s: 'FX:EURUSD',             n: 'EUR / USD' },
+  { s: 'FX:GBPUSD',             n: 'GBP / USD' },
+  { s: 'FX:USDJPY',             n: 'USD / JPY' },
 ]
+
+// Symbols saved before the check above. Rewritten on read so an existing watchlist
+// stops showing the licence panel without anyone having to re-add anything.
+const _TV_RETIRED = {
+  'TVC:DXY': 'CAPITALCOM:DXY', 'SP:SPX': 'CAPITALCOM:US500', 'TVC:NDX': 'CAPITALCOM:US100',
+  'DJ:DJI': 'CAPITALCOM:US30', 'TVC:US10Y': 'FRED:DGS10',    'TVC:VIX': 'CAPITALCOM:VIX',
+}
 const _tvLabelMap = Object.fromEntries(_TV_MARKETS.map(m => [m.s, m.n]))
-function loadTvWatch() { try { return JSON.parse(localStorage.getItem(TV_WATCH_KEY)) || [] } catch { return [] } }
+function loadTvWatch() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TV_WATCH_KEY)) || []
+    return [...new Set(raw.map(s => _TV_RETIRED[s] || s))]
+  } catch { return [] }
+}
 function saveTvWatch(list) { localStorage.setItem(TV_WATCH_KEY, JSON.stringify(list)) }
 function _tvLabel(sym) { return _tvLabelMap[sym] || String(sym).replace(/.*:/, '') }
 function _tvId(sym) { return String(sym).replace(/[^a-z0-9]/gi, '_') }
@@ -23482,6 +23508,356 @@ window.__tvMarketsPicker = function() {
 window.__tvClosePicker = function() {
   const ov = document.getElementById('tvPicker')
   if (ov) { ov.style.display = 'none'; ov.innerHTML = '' }
+}
+
+// ─── ANALYSIS ─────────────────────────────────────────────────────────────────
+// A workbench of TradingView charts: one big one on top, as many as you like stacked
+// below, each able to overlay other symbols for comparison.
+//
+// Everything here goes through TradingView rather than our own candle stack, because the
+// whole point is the markets Hyperliquid does not have — DXY, the indices, gold, yields —
+// side by side with the ones it does. TradingView lists Hyperliquid natively
+// (HYPERLIQUID:BTCUSDC.P and friends), so one provider covers both sides and a comparison
+// is drawn from a single, consistent source instead of stitched together from two.
+//
+// ONE THING IT CANNOT DO: HIP-3 builder markets (SP500, GOLD, SPCX on the builder dexes)
+// are not listed on TradingView. Those live in Pulse, which reads them from Hyperliquid
+// directly. The picker says so rather than letting you add a symbol that renders empty.
+const ANALYSIS_KEY = 'hliq_analysis'
+const _ANA_IVS = [
+  { v: '15', l: '15m' }, { v: '60', l: '1H' }, { v: '240', l: '4H' },
+  { v: 'D',  l: '1D' },  { v: 'W',  l: '1W' },
+]
+
+// [{ id, sym, iv, cmp: [] }] — index 0 is the big one.
+function _anaLoad() {
+  let list
+  try { list = JSON.parse(localStorage.getItem(ANALYSIS_KEY)) } catch { list = null }
+  if (!Array.isArray(list) || !list.length) {
+    // Seed from whatever the user is already looking at, so the tab opens on something
+    // meaningful rather than an empty page or an arbitrary default.
+    const coin = String(state.selectedCoin || 'BTC').replace(/[^A-Z0-9]/gi, '').toUpperCase() || 'BTC'
+    list = [
+      { sym: `HYPERLIQUID:${coin}USDC.P`, iv: '60', cmp: [] },
+      { sym: 'CAPITALCOM:DXY',            iv: '60', cmp: [] },
+    ]
+  }
+  let minted = false
+  const out = list.map((c, i) => {
+    if (!c.id) minted = true
+    return {
+      id:  c.id || 'a' + i + '_' + Math.random().toString(36).slice(2, 7),
+      sym: String(c.sym || ''),
+      iv:  _ANA_IVS.some(x => x.v === c.iv) ? c.iv : '60',
+      cmp: Array.isArray(c.cmp) ? c.cmp.slice(0, 4) : [],
+    }
+  }).filter(c => c.sym)
+  // The id is the handle every action uses to find its chart again, so a freshly minted
+  // one has to be written back immediately. Without this the seeded list got new random
+  // ids on every load, and Compare / Promote — which capture an id from the DOM and then
+  // re-load — silently matched nothing.
+  if (minted) _anaSave(out)
+  return out
+}
+function _anaSave(list) { try { localStorage.setItem(ANALYSIS_KEY, JSON.stringify(list)) } catch {} }
+
+// Everything that, if it changes, means the embed must be rebuilt. Anything NOT in here
+// (position in the list, card height) is handled by moving the existing node instead —
+// re-injecting a TradingView iframe costs a full reload and a visible flash, and the tab
+// re-renders on every price tick.
+function _anaSig(c) { return `${c.sym}|${c.iv}|${c.cmp.join(',')}|${_tvTheme()}|${window.innerWidth < 700 ? 'n' : 'w'}` }
+
+function _anaMount(el, c, hero) {
+  _tvInject(el, 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js', {
+    symbol: c.sym, interval: c.iv, timezone: 'Etc/UTC', theme: _tvTheme(), style: '1',
+    locale: 'en', autosize: true, allow_symbol_change: true,
+    hide_side_toolbar: !hero || window.innerWidth < 700,
+    hide_top_toolbar: false, withdateranges: hero, details: false,
+    // The widget's own compare overlay. Passing it as a study is what makes it survive
+    // the embed — the documented `compare_symbols` option is ignored here.
+    studies: c.cmp.map(s => ({ id: 'Compare@tv-basicstudies', inputs: { symbol: s } })),
+    support_host: 'https://www.tradingview.com',
+  })
+}
+
+function _anaCardHtml(c, hero) {
+  const iv = _ANA_IVS.map(x =>
+    `<button onclick="window.__anaSetIv('${c.id}','${x.v}')" style="background:${c.iv === x.v ? 'var(--accent)' : 'transparent'};color:${c.iv === x.v ? '#000' : 'var(--muted)'};border:none;border-radius:6px;padding:3px 7px;font-size:11px;font-weight:700;cursor:pointer">${x.l}</button>`).join('')
+  const chips = c.cmp.map(s =>
+    `<button onclick="window.__anaCmpRemove('${c.id}','${esc(s)}')" title="${_T('Remove comparison', 'Quitar comparación')}"
+      style="background:var(--panel-2);border:1px solid var(--border);border-radius:999px;padding:2px 8px;font-size:10.5px;color:var(--fg-2);cursor:pointer;white-space:nowrap">${esc(_anaShort(s))} ×</button>`).join('')
+  return `
+    <div style="display:flex;align-items:center;gap:7px;padding:8px 8px 2px 11px">
+      <span style="font-size:${hero ? 14 : 13}px;font-weight:800;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_anaShort(c.sym))}</span>
+      <span style="font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">${esc(c.sym.split(':')[0])}</span>
+      <span style="flex:1"></span>
+      ${hero ? '' : `<button onclick="window.__anaPromote('${c.id}')" title="${_T('Make this the big chart', 'Hacerlo el gráfico grande')}"
+        style="background:transparent;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:0 4px;flex-shrink:0">&#8607;</button>`}
+      <button onclick="window.__anaRemove('${c.id}')" aria-label="Remove"
+        style="background:transparent;border:none;color:var(--muted);font-size:19px;line-height:1;cursor:pointer;padding:0 4px;flex-shrink:0">&times;</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:7px;padding:0 10px 7px 11px">
+      <span style="display:flex;gap:1px;background:var(--panel-2);border-radius:8px;padding:2px">${iv}</span>
+      <span style="flex:1"></span>
+      <button onclick="window.__anaCompare('${c.id}')" title="${_T('Overlay another market', 'Superponer otro mercado')}"
+        style="background:transparent;border:1px solid var(--border2);border-radius:7px;color:var(--fg-2);font-size:11px;font-weight:700;padding:4px 9px;cursor:pointer;flex-shrink:0;white-space:nowrap">+ ${_T('Compare', 'Comparar')}</button>
+    </div>
+    ${chips ? `<div data-dragscroll style="display:flex;gap:5px;padding:0 11px 7px;overflow-x:auto">${chips}</div>` : ''}
+    <div id="anamount-${c.id}" style="flex:1;min-height:0"></div>`
+}
+
+// "HYPERLIQUID:BTCUSDC.P" → "BTC perp"; "CAPITALCOM:DXY" → "DXY".
+function _anaShort(sym) {
+  const [, right = sym] = String(sym).split(':')
+  if (String(sym).startsWith('HYPERLIQUID:')) {
+    const perp = right.endsWith('.P')
+    const base = right.replace(/\.P$/, '').replace(/(USDC|USDH|USD)$/, '')
+    return base + (perp ? ' perp' : ' spot')
+  }
+  return right
+}
+
+/**
+ * Reconciles the DOM against the saved list instead of rebuilding it.
+ *
+ * This tab re-renders on every price tick like every other one, and each card owns a
+ * TradingView iframe that takes seconds to load. Rebuilding the markup would restart all
+ * of them several times a minute. So: the shell is built once, each card is keyed by id,
+ * and a card is only re-injected when its own signature changes. Reordering (promote) and
+ * resizing (hero vs stack) move the existing node, which the widget's autosize handles
+ * without a reload.
+ */
+function _anaRender(el) {
+  const list = _anaLoad()
+  let host = document.getElementById('anaList')
+  if (!host) {
+    el.innerHTML = _mobVFullHeader(_T('Analysis', 'Análisis')) + `
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 14px 4px">
+        <span style="font-size:11.5px;color:var(--muted);flex:1;line-height:1.4">${
+          _T('Charts by TradingView — Hyperliquid markets and everything it does not list.',
+             'Gráficos de TradingView — mercados de Hyperliquid y todo lo que no lista.')}</span>
+        <button onclick="window.__anaAdd()" style="flex-shrink:0;background:var(--accent);color:#000;border:none;border-radius:9px;padding:7px 12px;font-size:12.5px;font-weight:700;cursor:pointer">+ ${_T('Chart', 'Gráfico')}</button>
+      </div>
+      <div id="anaList" style="padding:6px 10px 26px"></div>`
+    host = document.getElementById('anaList')
+  }
+
+  if (!list.length) {
+    host.innerHTML = `<div class="mob-v-empty" style="line-height:1.6">${
+      _T('No charts yet. Tap <b>+ Chart</b> to add one.', 'Sin gráficos. Pulsa <b>+ Gráfico</b> para añadir uno.')}</div>`
+    return
+  }
+  if (host.firstElementChild?.classList?.contains('mob-v-empty')) host.innerHTML = ''
+
+  const want = new Set(list.map(c => c.id))
+  for (const node of [...host.children]) if (!want.has(node.dataset.anaId)) node.remove()
+
+  list.forEach((c, i) => {
+    const hero = i === 0
+    let card = host.querySelector(`[data-ana-id="${c.id}"]`)
+    const sig = _anaSig(c)
+    if (!card) {
+      card = document.createElement('div')
+      card.dataset.anaId = c.id
+      card.style.cssText = 'background:var(--panel-1);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:10px;display:flex;flex-direction:column'
+      host.appendChild(card)
+    }
+    if (card.dataset.anaSig !== sig || card.dataset.anaHero !== String(hero)) {
+      card.dataset.anaSig  = sig
+      card.dataset.anaHero = String(hero)
+      card.innerHTML = _anaCardHtml(c, hero)
+      _anaMount(document.getElementById('anamount-' + c.id), c, hero)
+    }
+    // Height and order are pure layout — never a reason to reload an iframe.
+    card.style.height = hero ? 'min(62vh, 560px)' : '300px'
+    if (host.children[i] !== card) host.insertBefore(card, host.children[i] || null)
+  })
+}
+
+window.__anaSetIv = function(id, iv) {
+  const list = _anaLoad().map(c => c.id === id ? { ...c, iv } : c)
+  _anaSave(list); _anaRender(document.getElementById('mobVContent'))
+}
+window.__anaRemove = function(id) {
+  _anaSave(_anaLoad().filter(c => c.id !== id))
+  _anaRender(document.getElementById('mobVContent'))
+}
+window.__anaPromote = function(id) {
+  const list = _anaLoad()
+  const i = list.findIndex(c => c.id === id)
+  if (i <= 0) return
+  list.unshift(list.splice(i, 1)[0])
+  _anaSave(list); _anaRender(document.getElementById('mobVContent'))
+  document.getElementById('mobVContent')?.scrollTo({ top: 0, behavior: 'smooth' })
+}
+window.__anaCmpRemove = function(id, sym) {
+  _anaSave(_anaLoad().map(c => c.id === id ? { ...c, cmp: c.cmp.filter(s => s !== sym) } : c))
+  _anaRender(document.getElementById('mobVContent'))
+}
+
+// ── the symbol picker, shared by "+ Chart" and "Compare" ─────────────────────
+// mode 'add' appends a new chart; mode 'cmp' overlays onto _anaPickTarget.
+let _anaPickMode = 'add', _anaPickTarget = null, _anaPickSrc = '', _anaSearchSeq = 0
+window.__anaAdd = function() { _anaPickMode = 'add'; _anaPickTarget = null; _anaOpenPicker() }
+window.__anaCompare = function(id) { _anaPickMode = 'cmp'; _anaPickTarget = id; _anaOpenPicker() }
+
+window.__anaPick = async function(sym) {
+  sym = String(sym || '').trim().toUpperCase()
+  if (!sym) return
+  if (!sym.includes(':')) { _paperToast(_T('Include the exchange, e.g. NASDAQ:AAPL', 'Incluye el mercado, p. ej. NASDAQ:AAPL'), 'err'); return }
+  sym = _TV_RETIRED[sym] || sym
+  const list = _anaLoad()
+  if (_anaPickMode === 'cmp') {
+    const c = list.find(x => x.id === _anaPickTarget)
+    if (!c) return
+    if (c.sym === sym || c.cmp.includes(sym)) { _paperToast(_T('Already on this chart', 'Ya está en este gráfico')); return }
+    // TradingView stops drawing overlays past a handful, and the legend stops being
+    // readable well before that.
+    if (c.cmp.length >= 4) { _paperToast(_T('Up to 4 comparisons per chart', 'Hasta 4 comparaciones por gráfico'), 'err'); return }
+    c.cmp = [...c.cmp, sym]
+  } else {
+    list.push({ id: 'a' + Date.now().toString(36), sym, iv: '60', cmp: [] })
+  }
+  _anaSave(list)
+  window.__anaClosePicker()
+  _anaRender(document.getElementById('mobVContent'))
+}
+
+// A Hyperliquid coin the user already holds or watches may still not be listed on
+// TradingView. Ask before adding, so a dead chart never appears — the answer says which
+// it is instead of leaving a blank panel to interpret.
+window.__anaPickHl = async function(coin, btn) {
+  if (btn) { btn.disabled = true; btn.style.opacity = '.5' }
+  try {
+    const r = await fetch(`/tvsearch?q=${encodeURIComponent(coin + 'USDC.P')}&exchange=HYPERLIQUID`)
+    const j = await r.json()
+    const hit = (j.symbols ?? []).find(s => s.full === `HYPERLIQUID:${coin}USDC.P`)
+    if (!hit) { _paperToast(_T(`TradingView doesn't list ${coin}`, `TradingView no lista ${coin}`), 'err'); return }
+    await window.__anaPick(hit.full)
+  } catch {
+    _paperToast(_T('Could not reach the symbol search', 'No se pudo consultar la búsqueda'), 'err')
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = '' }
+  }
+}
+
+window.__anaSearch = function(text) {
+  const q = String(text || '').trim()
+  const out = document.getElementById('anaResults')
+  const pre = document.getElementById('anaPresets')
+  if (!out) return
+  if (pre) pre.style.display = q ? 'none' : ''
+  if (!q) { out.innerHTML = ''; return }
+  const seq = ++_anaSearchSeq
+  clearTimeout(window._anaSearchT)
+  window._anaSearchT = setTimeout(async () => {
+    out.innerHTML = `<div style="padding:14px;font-size:12px;color:var(--muted)">${_T('Searching…', 'Buscando…')}</div>`
+    let syms = []
+    try {
+      const r = await fetch(`/tvsearch?q=${encodeURIComponent(q)}${_anaPickSrc ? '&exchange=' + _anaPickSrc : ''}`)
+      syms = (await r.json()).symbols ?? []
+    } catch {}
+    if (seq !== _anaSearchSeq) return   // a later keystroke already won
+    // TradingView ranks its own index feeds first, and those are precisely the ones an
+    // embed is not licensed to draw (see _TV_RETIRED). Searching "DXY" would otherwise
+    // put the one broken result at the top. Swap it for the feed that works, then dedupe
+    // against the real entry for that feed further down the list.
+    const seen = new Set()
+    syms = syms.map(x => {
+      const sub = _TV_RETIRED[x.full]
+      if (!sub) return x
+      const [ex, sym] = sub.split(':')
+      return { ...x, full: sub, sym, ex }
+    }).filter(x => !seen.has(x.full) && seen.add(x.full))
+    if (!syms.length) {
+      out.innerHTML = `<div style="padding:14px;font-size:12px;color:var(--muted);line-height:1.5">${
+        _T('Nothing found. Try the ticker on its own, e.g. <b>DXY</b> or <b>AAPL</b>.',
+           'Sin resultados. Prueba el ticker solo, p. ej. <b>DXY</b> o <b>AAPL</b>.')}</div>`
+      return
+    }
+    out.innerHTML = syms.map(s => `
+      <button onclick="window.__anaPick('${esc(s.full)}')" style="display:block;width:100%;text-align:left;background:var(--panel-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;margin-bottom:6px;cursor:pointer">
+        <div style="font-size:13px;font-weight:700;color:var(--fg)">${esc(s.sym)}
+          <span style="font-size:10.5px;font-weight:600;color:var(--muted);margin-left:5px">${esc(s.ex)}</span></div>
+        <div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.desc)}</div>
+      </button>`).join('')
+  }, 260)
+}
+
+window.__anaSetSrc = function(src) {
+  _anaPickSrc = src
+  document.querySelectorAll('[data-anasrc]').forEach(b => {
+    const on = b.dataset.anasrc === src
+    b.style.background = on ? 'var(--accent)' : 'var(--panel-2)'
+    b.style.color      = on ? '#000' : 'var(--fg-2)'
+  })
+  window.__anaSearch(document.getElementById('anaSymInput')?.value)
+}
+
+function _anaOpenPicker() {
+  _anaPickSrc = ''
+  let ov = document.getElementById('anaPicker')
+  if (!ov) {
+    ov = document.createElement('div')
+    ov.id = 'anaPicker'
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100001;background:rgba(0,0,0,.6);display:flex;align-items:flex-end'
+    ov.onclick = e => { if (e.target === ov) window.__anaClosePicker() }
+    document.body.appendChild(ov)
+  }
+  // The coins this user actually cares about, as one-tap chips.
+  const mine = [...new Set([
+    ...(state.perpState?.assetPositions ?? [])
+      .filter(p => parseFloat(p.position?.szi ?? 0) !== 0).map(p => p.position.coin),
+    ...loadWatchlist(),
+  ])].filter(c => c && !String(c).includes(':') && !String(c).startsWith('@')).slice(0, 14)
+
+  const cmp = _anaPickMode === 'cmp'
+  ov.style.display = 'flex'
+  ov.innerHTML = `
+    <div style="width:100%;max-height:88vh;display:flex;flex-direction:column;background:var(--panel-1);border-radius:16px 16px 0 0;padding:16px 16px 24px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="font-size:16px;font-weight:800">${cmp ? _T('Compare with', 'Comparar con') : _T('Add chart', 'Añadir gráfico')}</span>
+        <button onclick="window.__anaClosePicker()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">&times;</button>
+      </div>
+      <div style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.4">${
+        cmp ? _T('Overlays on the same chart, scaled to percent.', 'Se superpone en el mismo gráfico, escalado a porcentaje.')
+            : _T('Anything TradingView carries — including Hyperliquid.', 'Cualquier cosa que tenga TradingView — incluido Hyperliquid.')}</div>
+
+      <input id="anaSymInput" placeholder="${_T('Search: DXY, AAPL, HYPE…', 'Buscar: DXY, AAPL, HYPE…')}" autocomplete="off"
+        oninput="window.__anaSearch(this.value)"
+        style="width:100%;box-sizing:border-box;background:var(--panel-2);border:1px solid var(--border);border-radius:9px;padding:10px 12px;font-size:13.5px;color:var(--fg);outline:none">
+      <div style="display:flex;gap:6px;margin:9px 0 4px">
+        <button data-anasrc="" onclick="window.__anaSetSrc('')" style="background:var(--accent);color:#000;border:none;border-radius:999px;padding:4px 12px;font-size:11.5px;font-weight:700;cursor:pointer">${_T('All markets', 'Todos')}</button>
+        <button data-anasrc="HYPERLIQUID" onclick="window.__anaSetSrc('HYPERLIQUID')" style="background:var(--panel-2);color:var(--fg-2);border:none;border-radius:999px;padding:4px 12px;font-size:11.5px;font-weight:700;cursor:pointer">Hyperliquid</button>
+      </div>
+
+      <div style="flex:1;min-height:0;overflow-y:auto;margin-top:8px">
+        <div id="anaResults"></div>
+        <div id="anaPresets">
+          ${mine.length ? `<div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700;margin:2px 0 7px">${_T('Your Hyperliquid markets', 'Tus mercados de Hyperliquid')}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
+            ${mine.map(c => `<button onclick="window.__anaPickHl('${esc(c)}', this)" style="background:var(--panel-2);border:1px solid var(--border);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--fg);cursor:pointer">${esc(_ocCoinLabel(c))}</button>`).join('')}
+          </div>` : ''}
+
+          <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700;margin:2px 0 7px">${_T('Popular markets', 'Mercados populares')}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
+            ${_TV_MARKETS.map(m => `<button onclick="window.__anaPick('${esc(m.s)}')" style="text-align:left;background:var(--panel-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;cursor:pointer">
+              <div style="font-size:12.5px;font-weight:700;color:var(--fg)">${esc(m.n)}</div>
+              <div style="font-size:10.5px;color:var(--muted)">${esc(m.s)}</div>
+            </button>`).join('')}
+          </div>
+          <div style="font-size:10.5px;color:var(--fg-3);margin-top:14px;line-height:1.5">${
+            _T('HIP-3 builder markets (SP500, GOLD, SPCX on builder dexes) are not listed on TradingView and cannot be charted here — see Pulse for those.',
+               'Los mercados HIP-3 (SP500, GOLD, SPCX en dexes de builders) no están en TradingView y no se pueden graficar aquí — míralos en Pulse.')}</div>
+        </div>
+      </div>
+    </div>`
+  setTimeout(() => document.getElementById('anaSymInput')?.focus(), 60)
+}
+window.__anaClosePicker = function() {
+  const ov = document.getElementById('anaPicker')
+  if (ov) { ov.style.display = 'none'; ov.innerHTML = '' }
+  clearTimeout(window._anaSearchT); _anaSearchSeq++
 }
 
 window.__mobWatchRemove = function(coin) {
