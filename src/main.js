@@ -19134,6 +19134,71 @@ function _deskCancelEdit() {
 }
 window._deskCancelEdit = _deskCancelEdit
 
+// An edit stops the running bot and starts it again with the new settings. If the start
+// is refused, the stop has already happened — so without these two the bot is simply gone,
+// which is what a "subscription required" on a dev-mode phone actually did: silently
+// killed a live bot on an account the operator owns.
+//
+// Two independent protections, because they fail for different reasons.
+
+/**
+ * Is a start going to be ALLOWED, before we stop anything?
+ *
+ * Mirrors the server's rule (see POST /api/start): an active subscription for that
+ * address, OR operator rights proven by the dev PIN. Dev mode is a local flag and the
+ * server has only ever recognised the PIN that earned it, so a device where the two
+ * drifted apart — dev mode on, PIN missing or rotated — unlocked every button and then
+ * got a 402 on the press. Now the PIN is re-verified (and re-prompted if needed) BEFORE
+ * anything is stopped, which is the thing dev mode was supposed to give in the first place.
+ */
+async function _canStartBot(addr) {
+  if (_subStatus?.active) return true
+  if (!isDev()) return false
+  // Prompt-and-verify self-heals a stale or missing PIN; _lbAdminPin caches on success.
+  let pin = _lbGetPin()
+  if (pin) {
+    try {
+      const r = await fetch('/api/leaderboard/verify-pin', { method: 'POST', headers: { 'x-lb-pin': pin } })
+      if (r.ok) return true
+    } catch { return true }   // offline: don't block on a check we cannot make
+    localStorage.removeItem('hliq_lb_pin')   // rotated or wrong — stop sending it
+  }
+  pin = await _lbAdminPin(true)
+  return !!pin
+}
+
+/**
+ * Put back what the edit took away.
+ *
+ * The last-resort net for every OTHER reason a restart can fail — a dropped connection,
+ * a rejected agent key, the server restarting mid-edit. The instance's original argv is
+ * still in serverStatus._configs, so the previous bot can be started again exactly as it
+ * was. Reported honestly either way: the user must never be left believing a bot is
+ * running when it is not.
+ */
+async function _restoreBotAfterFailedEdit(type, instance, agentKey, origArgs, why) {
+  if (!Array.isArray(origArgs) || !origArgs.length) {
+    alert(`Could not update: ${why}\n\nThe previous bot was stopped and could not be restored automatically — please start it again.`)
+    return
+  }
+  try {
+    const back = await serverFetch('/api/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, agentKey, args: origArgs, address: _stratTargetAddr(), instance }),
+    })
+    if (back?.ok) {
+      serverStatus[type] = true
+      checkServer()
+      alert(`Could not update: ${why}\n\nYour previous settings are still running — nothing was lost.`)
+      return
+    }
+    alert(`Could not update: ${why}\n\nThe previous bot was stopped and could not be restarted (${back?.error ?? 'unknown error'}) — please start it again.`)
+  } catch {
+    alert(`Could not update: ${why}\n\nThe previous bot was stopped and the server is unreachable — please start it again.`)
+  }
+}
+
 // Apply a desktop edit: stop the edited instance, relaunch with the new args.
 async function updateStrategy(type) {
   const ed = _deskEditing
@@ -19145,6 +19210,9 @@ async function updateStrategy(type) {
   await ensureAllMids()
   const argv    = buildArgv(type)
   const newInst = _argvInstance(argv)
+  // Checked BEFORE the stop, so a refusal costs nothing.
+  if (!(await _canStartBot(_stratTargetAddr()))) { alert(_stratLockedMsg()); return }
+  const origArgs = serverStatus?._configs?.[`${type}:${ed.instance}`]?.args
   try {
     await _postStop(type, ed.instance)               // stop the instance being edited
     await new Promise(r => setTimeout(r, 600))
@@ -19153,7 +19221,7 @@ async function updateStrategy(type) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type, agentKey, args: argv, address: _stratTargetAddr(), instance: newInst }),
     })
-    if (!r.ok) { alert(`Could not update: ${r.error}`); return }
+    if (!r.ok) { await _restoreBotAfterFailedEdit(type, ed.instance, agentKey, origArgs, r.error); return }
     _deskEditing = null
     const out = document.getElementById('cmd-' + type); if (out) out.innerHTML = ''
     serverStatus[type] = true
@@ -19177,6 +19245,9 @@ async function updateStrategyMob(type) {
   const argv    = buildArgvMob(type)
   const newInst = _argvInstance(argv)
   if (type === 'accumulator' || type === 'liqguard' || type === 'levbrake') argv.push('--resume')
+  // Checked BEFORE the stop, so a refusal costs nothing.
+  if (!(await _canStartBot(_stratTargetAddr()))) { _paperToast(_stratLockedMsg(), 'err'); return }
+  const origArgs = serverStatus?._configs?.[`${type}:${ed.instance}`]?.args
   try {
     await _postStop(type, ed.instance)               // stop the instance being edited
     await new Promise(r => setTimeout(r, 600))
@@ -19185,7 +19256,7 @@ async function updateStrategyMob(type) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type, agentKey, args: argv, address: _stratTargetAddr(), instance: newInst }),
     })
-    if (!r.ok) { alert(`Could not update: ${r.error}`); return }
+    if (!r.ok) { await _restoreBotAfterFailedEdit(type, ed.instance, agentKey, origArgs, r.error); return }
     _mobEditing = null
     serverStatus[type] = true
     checkServer()
@@ -19601,6 +19672,10 @@ async function _subRefresh(force = false) {
 
 // Dev mode is a local override for the owner; a paid subscription is the real entitlement.
 function _stratsUnlocked() { return isDev() || !!_subStatus?.active }
+function _stratLockedMsg() {
+  return _T('Running a bot needs a subscription. Nothing was changed and your bot is untouched.',
+            'Ejecutar un bot requiere suscripción. No se cambió nada y tu bot sigue igual.')
+}
 
 // ── payment watching ─────────────────────────────────────────────────────────
 // Once the user says they have sent it we poke the server every few seconds. The server
