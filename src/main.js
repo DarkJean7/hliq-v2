@@ -16861,6 +16861,52 @@ function _hlTradeUrl(coin) {
   return `https://app.hyperliquid.xyz/trade/${coin}`
 }
 
+// ─── HYPERLIQUID'S OWN CHART, EMBEDDED ────────────────────────────────────────
+//
+// Hyperliquid runs a licensed TradingView charting library over its OWN data feed, so it
+// draws every market HL lists — main dex, spot, and the HIP-3 builder markets that
+// TradingView's public symbol universe does not carry — with drawing tools and indicators,
+// at prices that match HL exactly because they ARE HL's prices.
+//
+// The route is /trade/<coin> using HL's own coin names, which is the same string this app
+// already uses internally: "BTC" on the main dex, "xyz:SPCX" on a builder dex. Verified:
+// /trade/xyz%3ASPCX loads SPCX-USDC. A name HL does not recognise silently falls back to
+// HYPE rather than erroring, so only send coins that came from HL's own metadata.
+//
+// TRADE-OFFS, because this embeds someone else's whole application:
+//  • It is their full app in there — nav, a Connect button, an order ticket. The crop
+//    below hides that chrome so only the chart shows, but it is still loaded.
+//  • The crop is measured, not structural. If HL changes its layout the offsets drift and
+//    this needs re-measuring. That is the main reason it is a toggle and not a rewrite.
+//  • It is a whole SPA per chart view — heavier than our own canvas.
+// Falls back to the built-in chart with one flag, which is why the old chart stays.
+const HL_CHART_KEY = 'hliq_trade_chart_src'
+function _hlChartSrc() { try { return localStorage.getItem(HL_CHART_KEY) || 'hl' } catch { return 'hl' } }
+function _hlChartUse() { return _hlChartSrc() === 'hl' }
+window.__hlChartToggle = function() {
+  try { localStorage.setItem(HL_CHART_KEY, _hlChartUse() ? 'builtin' : 'hl') } catch {}
+  _mobTradeDetailCoin = null            // force a full rebuild, not a background repaint
+  const el = document.getElementById('mobVContent')
+  if (el) _mobRenderTradeDetail(el)
+}
+
+// How much of HL's page to cut off the top (their header + market row + Chart/Order Book
+// tabs) and how tall the strip we keep is. Measured at mobile width; see the caveat above.
+// The bottom edge is chosen to end just past the volume pane and before HL's own
+// Balances/Positions tab bar -- their chrome inside our card reads as a broken layout.
+// It cannot be made exact: the page is responsive and we cannot measure across origins.
+const _HL_CROP_TOP = 144
+const _HL_CROP_H   = 362
+
+function _hlChartHtml(coin) {
+  const url = `https://app.hyperliquid.xyz/trade/${encodeURIComponent(coin)}`
+  return `<div style="position:relative;height:${_HL_CROP_H}px;overflow:hidden;background:#0b0e11">
+      <iframe id="hlChartFrame" src="${esc(url)}" loading="lazy" referrerpolicy="no-referrer"
+        title="Hyperliquid chart"
+        style="position:absolute;left:0;top:-${_HL_CROP_TOP}px;width:100%;height:${_HL_CROP_H + _HL_CROP_TOP + 60}px;border:0"></iframe>
+    </div>`
+}
+
 function _mobRenderTradeDetail(el) {
   el.style.overflow      = 'hidden'
   el.style.padding       = '0'
@@ -16878,6 +16924,7 @@ function _mobRenderTradeDetail(el) {
   destroyMobTradeChart()
 
   const coin    = state.selectedCoin || 'BTC'
+  const _useHlChart = _hlChartUse()
   const display = _spotNameMap[coin] ?? _mktDisplay(coin) ?? coin.replace(/.*:/, '')
   const coinFav = loadFavCoins().includes(coin)
   const isSpot  = coin.startsWith('@') || !!_spotNameMap[coin]
@@ -17035,6 +17082,15 @@ function _mobRenderTradeDetail(el) {
       </div>
 
       <!-- Chart -->
+      ${_useHlChart ? `
+      <div style="position:relative;border:1px solid var(--border);border-radius:16px;overflow:hidden;background:var(--panel)">
+        ${_hlChartHtml(coin)}
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-top:1px solid var(--border)">
+          <span style="font-size:10.5px;color:var(--fg-3)">${_T('Chart by Hyperliquid', 'Gráfico de Hyperliquid')}</span>
+          <span style="flex:1"></span>
+          <button onclick="window.__hlChartToggle()" style="background:transparent;border:1px solid var(--border2);border-radius:7px;color:var(--fg-2);font-size:11px;font-weight:700;padding:4px 9px;cursor:pointer">${_T('Use built-in chart', 'Usar gráfico propio')}</button>
+        </div>
+      </div>` : `
       <div style="position:relative;border:1px solid var(--border);border-radius:16px;overflow:hidden;background:var(--panel)">
         <div id="mobChartHero" style="position:absolute;top:8px;left:11px;z-index:2;font-size:12px;pointer-events:none"></div>
         <button id="mobChartTypeBtn" onclick="window._mobChartToggleType()" title="Toggle candlesticks" style="position:absolute;top:6px;right:42px;z-index:3;display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--muted);cursor:pointer;padding:0">
@@ -17048,7 +17104,11 @@ function _mobRenderTradeDetail(el) {
           ${TFS.map(tf => `<button class="mob-detail-tf" data-tf="${tf}" onclick="window._mobDetailSetTf('${tf}')"
             style="flex:1;padding:6px 0;border-radius:7px;border:none;background:${_mobChartTf===tf?'var(--panel-3)':'transparent'};color:${_mobChartTf===tf?'var(--fg)':'var(--muted)'};font-size:11px;font-weight:700;cursor:pointer">${tf.toUpperCase()}</button>`).join('')}
         </div>
-      </div>
+        <div style="display:flex;align-items:center;padding:0 10px 8px">
+          <span style="flex:1"></span>
+          <button onclick="window.__hlChartToggle()" style="background:transparent;border:1px solid var(--border2);border-radius:7px;color:var(--fg-2);font-size:11px;font-weight:700;padding:4px 9px;cursor:pointer">${_T('Use Hyperliquid chart', 'Usar gráfico de Hyperliquid')}</button>
+        </div>
+      </div>`}
 
       ${!isSpot ? `
       <!-- Funding / next / OI strip -->
@@ -17085,8 +17145,11 @@ function _mobRenderTradeDetail(el) {
       </button>
     </div>`
 
-  // Interactive Chart.js price chart (crosshair, axes, pan/zoom) + overlays
-  _mobRenderTradeChart(coin, _mobChartTf)
+  // Interactive Chart.js price chart (crosshair, axes, pan/zoom) + overlays.
+  // Skipped entirely when HL's own chart is showing: there is no canvas to draw on, and
+  // starting it would open a candle WebSocket and fetch a snapshot for a chart nobody
+  // can see.
+  if (!_useHlChart) _mobRenderTradeChart(coin, _mobChartTf)
 
   // Market context (funding / OI / 24h volume / 24h change) can be un-loaded when the detail is
   // opened straight from a position/watch link, or after a 429 cleared the cache — that's the
