@@ -26208,7 +26208,7 @@ function _lazyResolveSettledOutcome(coin) {
       const expiry     = d.expiry ? ` (${_fmtOutcomeExpiry(d.expiry)})` : ''
       const displayName = underlying + target + expiry
       for (let i = 0; i < spec.sideSpecs.length; i++) {
-        state.ocTokenMap['#' + (outcome * 10 + i)] = { name: displayName, side: spec.sideSpecs[i].name }
+        state.ocTokenMap['#' + (outcome * 10 + i)] = { name: displayName, side: _ocSideName(spec.sideSpecs[i].name, 'Yes') }
       }
       try {
         localStorage.setItem('hliq_oc_token_map', JSON.stringify(state.ocTokenMap))
@@ -26310,7 +26310,7 @@ function _buildOcTokenMap(meta) {
       const expiry      = d.expiry ? ` (${_fmtOutcomeExpiry(d.expiry)})` : ''
       const displayName = underlying + target + bucketStr + expiry
       for (let i = 0; i < (o.sideSpecs?.length ?? 0); i++) {
-        state.ocTokenMap['#' + (o.outcome * 10 + i)] = { name: displayName, side: o.sideSpecs[i].name }
+        state.ocTokenMap['#' + (o.outcome * 10 + i)] = { name: displayName, side: _ocSideName(o.sideSpecs[i].name, 'Yes') }
       }
     } catch (e) {
       console.warn('_buildOcTokenMap entry error:', e.message)
@@ -26638,13 +26638,21 @@ async function _loadOcPrices(outcomes, info) {
     }
     const hotPct = document.getElementById('oc-hot-pct-' + o.outcome)
     if (hotPct) hotPct.textContent = (yesPx * 100).toFixed(0) + '%'
-    const s0 = esc(o.sideSpecs?.[0]?.name || 'Yes'), s1 = esc(o.sideSpecs?.[1]?.name || 'No')
+    const s0 = esc(_ocSideName(o.sideSpecs?.[0]?.name, 'Yes')), s1 = esc(_ocSideName(o.sideSpecs?.[1]?.name, 'No'))
     const miniY = document.getElementById('oc-mini-yes-' + o.outcome)
     if (miniY) miniY.innerHTML = _ocBetFace(s0, yesPx)
     const miniN = document.getElementById('oc-mini-no-' + o.outcome)
     if (miniN) miniN.innerHTML = _ocBetFace(s1, noPx)
   }))
   _ocEvtResortAll()
+}
+
+// HL names the legs of a new-template market "template:Yes" / "template:No". That prefix
+// is its template machinery leaking through; the side is the part after it.
+function _ocSideName(raw, fallback) {
+  const t = String(raw ?? '').trim()
+  if (!t) return fallback
+  return t.startsWith('template:') ? (t.slice('template:'.length) || fallback) : t
 }
 
 // A share priced at 0.13 pays 1.00 if it lands — that is 7.7x your money, and "7.7x" is
@@ -26986,7 +26994,7 @@ async function _refreshOcPrices() {
         compactPct2.textContent = (yesPx * 100).toFixed(0) + '%'
         compactPct2.className   = 'oc-compact-pct ' + (yesPx > 0.5 ? 'pos' : 'neg')
       }
-      const s0 = esc(o.sideSpecs?.[0]?.name || 'Yes'), s1 = esc(o.sideSpecs?.[1]?.name || 'No')
+      const s0 = esc(_ocSideName(o.sideSpecs?.[0]?.name, 'Yes')), s1 = esc(_ocSideName(o.sideSpecs?.[1]?.name, 'No'))
       const miniY2 = document.getElementById('oc-mini-yes-' + o.outcome)
       // Same face as the first updater -- this one runs on every refresh, so leaving it
       // on the old cent form would repaint the buttons back a second later.
@@ -27181,10 +27189,15 @@ window.__ocFilter = function() {
   })
 }
 
+// Every category _ocGetCategory can return MUST have a row here. Cards are appended to
+// the page by walking this list, so a category with no entry is not merely unsorted —
+// its cards are built and then silently dropped. That is how the gold/silver/oil markets
+// disappeared the moment "commodities" was introduced.
 const _OC_SECTIONS = [
-  ['crypto','🪙','Crypto'], ['sports','🏆','Sports'], ['politics','🏛️','Politics'],
-  ['economy','📈','Economy'], ['tech','🤖','Tech'], ['business','💼','Business'],
-  ['culture','🎬','Culture'], ['weather','⛅','Weather'], ['other','🔮','More Markets'],
+  ['crypto','🪙','Crypto'], ['commodities','🛢️','Commodities'], ['sports','🏆','Sports'],
+  ['politics','🏛️','Politics'], ['economy','📈','Economy'], ['tech','🤖','Tech'],
+  ['business','💼','Business'], ['culture','🎬','Culture'], ['weather','⛅','Weather'],
+  ['other','🔮','More Markets'],
 ]
 
 // TEMPORARY diagnostic — delete this block once the missing range market is settled.
@@ -27243,7 +27256,12 @@ function _ocSectionize() {
     // called "Recurring" but carries a real, parseable spec. A description that parses
     // to a known class is a real market whatever it is called.
     const qd = _parseOutcomeDesc(q.description || '')
-    if ((!qd.class && /\b(recurring|fallback|template)\b/i.test(q.name || '')) || members.length < 2) {
+    // A question is a placeholder only when its description says NOTHING. The old test was
+    // "no class: key", which was true of every new-template question — they identify
+    // themselves by name (template:policyRateDecision) and put their spec in other keys —
+    // so the name regex below then hid all of their legs. That is what removed the Fed
+    // decision market from the list entirely.
+    if ((!Object.keys(qd).length && /\b(recurring|fallback|template)\b/i.test(q.name || '')) || members.length < 2) {
       for (const i of (q.namedOutcomes ?? [])) hidden.add(String(i))
       continue
     }
@@ -27251,8 +27269,15 @@ function _ocSectionize() {
 
     let sub = null, title = q.name || 'Event'
     if (qd.class === 'priceBucket' && qd.underlying) {
-      sub   = qd.underlying
+      sub   = _ocUnderLabel(qd.underlying)
       title = qd.expiry ? `Closing price on ${_fmtOcQuestionTime(qd.expiry)}` : 'Closing price'
+    } else if (String(q.name || '').startsWith('template:policyRateDecision')) {
+      // The spec lives in the question: which body, which meeting.
+      sub   = qd.institution ? qd.institution.replace(/'s Open Market Committee$/, '') : 'Federal Reserve'
+      title = qd.decisionLabel ? `Rate decision · ${qd.decisionLabel}` : 'Rate decision'
+    } else if (String(q.name || '').startsWith('template:')) {
+      title = q.name.slice('template:'.length).replace(/([a-z])([A-Z])/g, '$1 $2')
+      title = title.charAt(0).toUpperCase() + title.slice(1)
     } else {
       const mm = title.match(/^([^:]{2,28}):\s*(.+)$/)
       if (mm) { sub = mm[1]; title = mm[2] }
@@ -27260,7 +27285,19 @@ function _ocSectionize() {
     // A bucket member is named "Recurring Named Outcome"; the range is its identity.
     const rowName = (o) => {
       const od = _ocDesc(o)
-      return od.class === 'priceBucket' ? _ocBucketLabel(od) : o.name
+      if (od.class === 'priceBucket') return _ocBucketLabel(od)
+      // A leg of a new-template event is named for its template, not for itself:
+      // "template:policyRateIncrease". The leg IS the answer, so say the answer.
+      const n = String(o.name ?? '')
+      if (n.startsWith('template:policyRate')) {
+        return { Increase: 'Increase', Decrease: 'Decrease', NoChange: 'No change' }[n.slice('template:policyRate'.length)]
+             ?? n.slice('template:policyRate'.length)
+      }
+      if (n.startsWith('template:')) {
+        const w = n.slice('template:'.length).replace(/([a-z])([A-Z])/g, '$1 $2')
+        return w.charAt(0).toUpperCase() + w.slice(1)
+      }
+      return n
     }
     let cat = _ocGetCategory({ name: q.name || '', description: '' }, {})
     if (cat === 'other') cat = cardById[String(members[0].outcome)]?.dataset.cat || 'other'
@@ -27270,8 +27307,12 @@ function _ocSectionize() {
       <div class="oc-evt-row" data-name="${esc(rowName(o).toLowerCase())}" data-p="0" onclick="window.__ocExpandCard(${o.outcome})">
         <span class="oc-evt-name">${esc(rowName(o))}</span>
         <span class="oc-evt-pct" id="oc-evt-pct-${o.outcome}">—</span>
-        <span class="oc-evt-chev">›</span>
       </div>`).join('')
+    // Same identity cues the single-market cards get: the underlying's logo, and a live
+    // marker. An event was the only card type still reading as a plain table.
+    const evtIcon = qd.underlying ? _coinIconHtml(qd.underlying) : ''
+    const evtWhen = qd.expiry ? _fmtOutcomeExpiry(qd.expiry)
+                  : qd.decisionDeadline ? _fmtOutcomeExpiry(qd.decisionDeadline) : ''
     const card = document.createElement('div')
     card.className = 'oc-card oc-event'
     card.dataset.cat = cat
@@ -27280,6 +27321,7 @@ function _ocSectionize() {
     card.id = 'oc-card-' + evId
     card.innerHTML = `
       <div class="oc-evt-head">
+        ${evtIcon ? `<span class="oc-compact-icon">${evtIcon}</span>` : ''}
         <div class="oc-evt-head-l">
           ${sub ? `<div class="oc-evt-sub">${esc(sub)}</div>` : ''}
           <div class="oc-evt-title">${esc(title)}</div>
@@ -27290,6 +27332,10 @@ function _ocSectionize() {
         </div>
       </div>
       <div class="oc-evt-rows" id="oc-evt-rows-${evId}" data-sort="odds">${rows}</div>
+      <div class="oc-compact-foot">
+        <span class="oc-live"><i class="oc-live-dot"></i>Live</span>
+        <span class="oc-compact-when">${esc(evtWhen)}</span>
+      </div>
       ${members.length > 5 ? `<button class="oc-evt-more" onclick="this.previousElementSibling.classList.toggle('oc-evt-open');this.textContent=this.previousElementSibling.classList.contains('oc-evt-open')?'Show less':'Show all ${members.length}'">Show all ${members.length}</button>` : ''}`
     _ocEvtApplySort(card.querySelector('.oc-evt-rows'))
     eventCards.push(card)
@@ -27445,8 +27491,8 @@ async function renderOutcomes() {
 
       const targetPrice = d.targetPrice ? parseFloat(d.targetPrice) : null
       const targetStr   = targetPrice ? '$' + targetPrice.toLocaleString() : '—'
-      const s0          = o.sideSpecs?.[0]?.name || 'Yes'
-      const s1          = o.sideSpecs?.[1]?.name || 'No'
+      const s0          = _ocSideName(o.sideSpecs?.[0]?.name, 'Yes')
+      const s1          = _ocSideName(o.sideSpecs?.[1]?.name, 'No')
       const searchQ     = (line1 + ' ' + (line2 || '') + ' ' + (o.name || '') + ' ' + s0 + ' ' + s1).toLowerCase()
 
       return `<div class="oc-card" id="oc-card-${o.outcome}" data-cat="${cat}" data-q="${esc(searchQ)}" onclick="window.__ocExpandCard(${o.outcome})">

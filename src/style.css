@@ -7135,3 +7135,22 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 .oc-bet-top b { font-weight: 800; }
 .oc-bet-sub { font-size: 10.5px; font-weight: 600; opacity: .72; font-family: var(--font-mono); }
 .oc-card.oc-expanded .oc-compact-foot { display: none; }
+
+
+/* Multi-outcome (event) cards: give each leg's odds a pill, so the numbers read as
+   the tappable thing rather than as a column of text, and let the head carry the
+   underlying's logo like every other card. */
+.oc-evt-head { display: flex; align-items: flex-start; gap: 12px; }
+.oc-evt-head .oc-compact-icon { margin-top: 1px; }
+.oc-evt-head-l { flex: 1; min-width: 0; }
+.oc-evt-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; cursor: pointer; }
+.oc-evt-name { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; }
+.oc-evt-pct {
+  flex: 0 0 auto; min-width: 56px; text-align: center;
+  padding: 7px 10px; border-radius: 10px;
+  background: var(--panel-3, rgba(255,255,255,.06));
+  border: 1px solid var(--border2);
+  font-size: 14px; font-weight: 800; font-family: var(--font-mono);
+}
+.oc-evt-row + .oc-evt-row { border-top: 1px solid var(--border); }
+.oc-event .oc-compact-foot { margin-top: 6px; }
