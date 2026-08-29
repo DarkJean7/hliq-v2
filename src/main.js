@@ -207,6 +207,7 @@ import {
   paperPerpState, paperOpenOrders, paperSpotState, paperPortfolio, paperFills, paperWithdrawable, paperStore, paperEquity,
   paperDeposit, paperWithdraw, paperLedger, paperPnl, paperDeposited, setPaperAssets, paperSpotValue,
   paperSettleOutcomes, paperFundingHistory, paperAccrueFunding, setPaperFundingRates, PAPER_COSTS,
+  paperMark, paperOrder, paperCancelMany,
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
@@ -7842,6 +7843,162 @@ async function _paperLoadFundingRates() {
 }
 
 /** Rebuild state from the paper store and repaint. */
+// ─── PAPER BOTS ───────────────────────────────────────────────────────────────
+//
+// A real bot is a server process holding an agent key and sending orders to Hyperliquid.
+// A paper account has neither — no key, and a sentinel address that HL has never heard of
+// — so the normal Run path could only ever fail on it. Unlocking the paywall alone would
+// have produced a button that errors, which is worse than a locked one.
+//
+// So the paper account runs its own bot, against the paper engine, using the same resting
+// limit orders a person placing them by hand would use. paperTick already fills a resting
+// order when the mark reaches it, at the limit price with a maker fee — which is exactly
+// what a grid needs, so the simulation is the engine's, not a second pretend one.
+//
+// GRID ONLY, deliberately. Its mechanics are a ladder of resting orders, which the paper
+// engine models honestly. The trigger-driven bots (trend, liqguard, levbrake…) would need
+// their signal loops reimplemented in the browser, and a half-faithful copy that drifts
+// from the real bot teaches the wrong thing. Those say so instead of pretending.
+const PAPER_BOTS_KEY = 'hliq_paper_bots'
+const PAPER_BOT_TYPES = new Set(['grid'])
+
+function _paperBotsLoad() {
+  try { return JSON.parse(localStorage.getItem(PAPER_BOTS_KEY)) || {} } catch { return {} }
+}
+function _paperBotsSave(m) {
+  try { localStorage.setItem(PAPER_BOTS_KEY, JSON.stringify(m)) } catch {}
+}
+function _paperBotRunning(type) { return !!_paperBotsLoad()[type] }
+
+// The ladder, from the same arguments the real bot is launched with — so what runs here
+// and what would run on the server come from one set of inputs, not two.
+function _paperGridPlan(cfg) {
+  const mark = paperMark(cfg.coin)
+  if (!(mark > 0)) return null
+  // Empty range = "auto", same as the real bot: a band around the current price.
+  const lower = cfg.lower > 0 ? cfg.lower : mark * 0.95
+  const upper = cfg.upper > 0 ? cfg.upper : mark * 1.05
+  if (!(upper > lower)) return null
+  const n = Math.max(2, Math.min(40, Math.round(cfg.levels || 10)))
+  const step = (upper - lower) / (n - 1)
+  const prices = Array.from({ length: n }, (_, i) => lower + step * i)
+  return { mark, lower, upper, step, prices }
+}
+
+/**
+ * One reconcile pass: what SHOULD be resting, given where the mark is now.
+ *
+ * Mirrors the real grid's rule (see strategies/grid.js --plan): a level below the mark is
+ * a buy, above it a sell, with a half-gap dead band around the mark so a level that just
+ * filled is not immediately re-placed at the price it filled at. That dead band is what
+ * turns "replace what vanished" into an actual grid — a buy fills, the mark is now at that
+ * level, and the levels above it become the sells that take the profit.
+ *
+ * Sells are capped by inventory: a paper sell with no position opens a short, and a long
+ * grid must never do that.
+ */
+function _paperGridReconcile(type, cfg) {
+  const plan = _paperGridPlan(cfg)
+  if (!plan) return
+  const { mark, step, prices } = plan
+  const short = cfg.side === 'short'
+  const band  = step * 0.5
+
+  const resting = paperOpenOrders().filter(o => o.coin === cfg.coin && !o.isTrigger)
+  const have    = new Set(resting.map(o => Math.round(parseFloat(o.limitPx) * 1e6)))
+  const pos     = (paperPerpState().assetPositions ?? []).find(x => x.position.coin === cfg.coin)
+  const szi     = parseFloat(pos?.position?.szi ?? 0)
+  const inv     = short ? Math.max(0, -szi) : Math.max(0, szi)
+
+  // Size per level, from the configured order value (or an auto split of paper equity).
+  const perUsd = cfg.orderUsd > 0 ? cfg.orderUsd
+               : Math.max(12, (paperEquity() * (cfg.leverage || 1) * 0.5) / prices.length)
+
+  // Exit capacity left after the sells already resting.
+  let exitLeft = inv - resting
+    .filter(o => (short ? o.isBuy : !o.isBuy))
+    .reduce((a, o) => a + Math.abs(parseFloat(o.sz) || 0), 0)
+
+  for (const px of prices) {
+    if (have.has(Math.round(px * 1e6))) continue          // already resting here
+    const isExit  = short ? px < mark - band : px > mark + band
+    const isEntry = short ? px > mark + band : px < mark - band
+    if (!isExit && !isEntry) continue                     // inside the dead band
+
+    let sz = perUsd / px
+    if (isExit) {
+      if (!(exitLeft > 0)) continue                       // nothing to sell
+      sz = Math.min(sz, exitLeft)
+      if (sz * px < 10) continue                          // below HL's minimum, as the real bot skips
+      exitLeft -= sz
+    }
+    const isBuy = short ? isExit : isEntry
+    const r = paperOrder({ orders: [{ b: isBuy, p: px, s: sz, r: isExit, t: { limit: { tif: 'Gtc' } } }] }, cfg.coin)
+    // A rejection here is the paper engine refusing on margin — expected as the grid
+    // fills out, and the next tick simply tries again.
+    if (r?.response?.data?.statuses?.[0]?.error) break
+  }
+}
+
+// Driven by the paper loop, so a paper bot advances exactly when the paper account does.
+function _paperBotTick() {
+  if (!isPaper()) return
+  const bots = _paperBotsLoad()
+  for (const [type, cfg] of Object.entries(bots)) {
+    if (type !== 'grid') continue
+    try { _paperGridReconcile(type, cfg) } catch (e) { console.warn('[paper bot]', type, e?.message) }
+  }
+}
+
+// Read the launch argv the real bot would get, so the paper run is configured identically.
+function _paperBotCfgFromArgv(argv) {
+  const a = _parseStratArgs(argv)
+  const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0 }
+  return {
+    coin:     a.coin || state.selectedCoin || 'BTC',
+    lower:    num(a.lower),
+    upper:    num(a.upper),
+    levels:   num(a['pct-interval']) || num(a.levels) || 10,
+    orderUsd: num(a.size),
+    leverage: num(a.leverage) || 10,
+    side:     a.side === 'short' ? 'short' : 'long',
+    startedAt: Date.now(),
+  }
+}
+
+window.__paperBotStart = function(type) {
+  if (!PAPER_BOT_TYPES.has(type)) {
+    _paperToast(_T('This bot does not simulate on the paper account yet — grid does.',
+                   'Este bot aún no se simula en la cuenta de práctica — el grid sí.'), 'err')
+    return false
+  }
+  const cfg = _paperBotCfgFromArgv(buildArgvMob(type))
+  if (!(paperMark(cfg.coin) > 0)) {
+    _paperToast(_T(`No live price for ${cfg.coin} yet — try again in a moment.`,
+                   `Aún no hay precio para ${cfg.coin} — inténtalo en un momento.`), 'err')
+    return false
+  }
+  const bots = _paperBotsLoad(); bots[type] = cfg; _paperBotsSave(bots)
+  _paperGridReconcile(type, cfg)
+  _paperRefresh()
+  _paperToast(_T('📝 Paper grid running — simulated orders only', '📝 Grid de práctica activo — órdenes simuladas'), 'success')
+  return true
+}
+
+window.__paperBotStop = function(type) {
+  const bots = _paperBotsLoad()
+  const cfg  = bots[type]
+  delete bots[type]; _paperBotsSave(bots)
+  // Take its resting orders with it, or the ladder outlives the bot that placed it.
+  if (cfg) {
+    const mine = paperOpenOrders().filter(o => o.coin === cfg.coin && !o.isTrigger)
+    if (mine.length) paperCancelMany(mine.map(o => ({ a: 0, o: o.oid })))
+  }
+  _paperRefresh()
+  _paperToast(_T('Paper bot stopped', 'Bot de práctica detenido'))
+  return true
+}
+
 function _paperRefresh() {
   setPaperMarks(state.allMids)
   // Real per-asset limits (maxLeverage) so maintenance margin and liquidation
@@ -7850,6 +8007,9 @@ function _paperRefresh() {
   setPaperFundingRates(_paperFundRates)
   const events = paperTick()
   for (const e of events) _paperToast(`📝 ${e}`, e.includes('LIQUIDATED') ? 'error' : 'success')
+  // After the fills, before the state below is read: a filled level should be replaced in
+  // the same pass that filled it, or the Orders tab shows a gap until the next tick.
+  _paperBotTick()
 
   state.perpState  = paperPerpState()
   state.openOrders = paperOpenOrders()
@@ -19152,6 +19312,7 @@ window._deskCancelEdit = _deskCancelEdit
  * anything is stopped, which is the thing dev mode was supposed to give in the first place.
  */
 async function _canStartBot(addr) {
+  if (isPaper()) return true          // simulated account, simulated orders — nothing to gate
   if (_subStatus?.active) return true
   if (!isDev()) return false
   // Prompt-and-verify self-heals a stale or missing PIN; _lbAdminPin caches on success.
@@ -19671,7 +19832,9 @@ async function _subRefresh(force = false) {
 }
 
 // Dev mode is a local override for the owner; a paid subscription is the real entitlement.
-function _stratsUnlocked() { return isDev() || !!_subStatus?.active }
+// Paper is unlocked because there is nothing to sell there: no real orders, no real money,
+// and the whole point of a practice account is to try the product before paying for it.
+function _stratsUnlocked() { return isPaper() || isDev() || !!_subStatus?.active }
 function _stratLockedMsg() {
   return _T('Running a bot needs a subscription. Nothing was changed and your bot is untouched.',
             'Ejecutar un bot requiere suscripción. No se cambió nada y tu bot sigue igual.')
@@ -20478,6 +20641,13 @@ async function runStrategyMob(type) {
       : 'Load a wallet address first.')
     return
   }
+  // The paper account never reaches the server: no agent key exists for it, and its
+  // address is a sentinel HL has never heard of.
+  if (isPaper()) {
+    await ensureAllMids()
+    if (window.__paperBotStart(type)) { checkServer(); _mobVRenderContent() }
+    return
+  }
   const agentKey = _stratTargetKey()
                 || document.getElementById('m-agentKey')?.value?.trim()
                 || document.getElementById('agentKey')?.value?.trim()
@@ -20715,6 +20885,20 @@ async function serverFetch(path, opts = {}) {
 let _lastStatusHash = ''
 async function checkServer() {
   if (!state.addr) return
+  // Paper has no server process to poll; its bots are in localStorage. Synthesising the
+  // same shape here is what makes the Strats UI show Running / Stop without every call
+  // site needing to know where the bot actually lives.
+  if (isPaper()) {
+    const bots = _paperBotsLoad()
+    serverStatus = { ok: true, _configs: {} }
+    for (const [t, cfg] of Object.entries(bots)) {
+      serverStatus[t] = true
+      serverStatus._configs[`${t}:`] = { args: ['--coin', cfg.coin] }
+    }
+    serverOnline = true
+    updateAllStrategyButtons()
+    return
+  }
   try {
     serverStatus = await serverFetch(`/api/status?address=${encodeURIComponent(_botApiAddr() ?? state.addr)}`)
     const justCameOnline = !serverOnline
@@ -21023,6 +21207,8 @@ function _typeInstances(type) {
 }
 
 async function _postStop(type, instance, addr) {
+  // Paper bots live in this browser, not on the server.
+  if (isPaper()) { window.__paperBotStop(type); return }
   await serverFetch('/api/stop', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
