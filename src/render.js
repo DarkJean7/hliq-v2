@@ -2073,6 +2073,19 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
     byDay[key].trades += 1
   }
 
+  // Traded notional per day. Every fill counts, not just the closing ones — an entry is
+  // volume the moment it happens. Kept OUT of byDay on purpose: that map drives
+  // best/worst/green/red, and adding zero-PnL days to it would change what those mean.
+  const volByDay = {}
+  for (const f of fills) {
+    const sz  = Math.abs(parseFloat(f.sz) || 0)
+    const ntl = Number(f.notional ?? 0) || (sz * (parseFloat(f.px) || 0))
+    if (!ntl) continue
+    const d   = new Date(f.time)
+    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+    volByDay[key] = (volByDay[key] || 0) + ntl
+  }
+
   // Aggregate deposits & withdrawals per day
   for (const e of ledger) {
     const t = e.delta.type
@@ -2110,6 +2123,14 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
   const worstDay   = monthKeys.reduce((w, k) => byDay[k].pnl < (byDay[w]?.pnl ?? Infinity) ? k : w, monthKeys[0])
   const monthDeposited = monthKeys.reduce((s, k) => s + (byDay[k].deposited || 0), 0)
   const monthWithdrawn = monthKeys.reduce((s, k) => s + (byDay[k].withdrawn || 0), 0)
+  const monthVolume    = Object.keys(volByDay).reduce((s, k) => {
+    const [y, m] = k.split('-').map(Number)
+    return (y === year && m === month + 1) ? s + volByDay[k] : s
+  }, 0)
+  // Averaged over days that actually traded, not over the calendar. Dividing by 31 would
+  // report a number no day resembles and would shrink every time the month got longer.
+  const tradedDays = greenDays + redDays
+  const avgDayPnl  = tradedDays > 0 ? monthPnl / tradedDays : null
 
   const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
   const DOWS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
@@ -2181,6 +2202,16 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
         <div class="stat-label">Worst Day</div>
         <div class="stat-value neg">${worstDay && byDay[worstDay].pnl < 0 ? '-$' + fmtUSD(Math.abs(byDay[worstDay].pnl)) : '—'}</div>
         ${worstDay && byDay[worstDay].pnl < 0 ? `<div class="stat-sub">${fmtDayLabel(worstDay)}</div>` : ''}
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Avg / Trading Day</div>
+        <div class="stat-value ${avgDayPnl == null ? 'neu' : avgDayPnl >= 0 ? 'pos' : 'neg'}">${
+          avgDayPnl == null ? '—' : (avgDayPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(avgDayPnl))}</div>
+        ${tradedDays ? `<div class="stat-sub">over ${tradedDays} day${tradedDays !== 1 ? 's' : ''}</div>` : ''}
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Month Volume</div>
+        <div class="stat-value neu">${monthVolume > 0 ? '$' + fmtCompact(monthVolume) : '$0'}</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Deposited</div>
