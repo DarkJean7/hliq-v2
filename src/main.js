@@ -26647,6 +26647,33 @@ async function _loadOcPrices(outcomes, info) {
   _ocEvtResortAll()
 }
 
+// An event with no underlying coin still needs a face. The Fed rate decision is the live
+// example: it is a real market about a real institution, and _coinIconHtml has nothing to
+// work with, so the card sat there logo-less next to cards that all had one.
+//
+// Same visual language as the letter avatar (round, gradient, deterministic hue) with a
+// glyph instead of a ticker. No network, so it cannot blink or 404.
+function _ocGlyphAvatar(glyph, seed, hue) {
+  const raw = String(seed ?? '')
+  let h = hue
+  if (h == null) { h = 0; for (let i = 0; i < raw.length; i++) h = (h * 31 + raw.charCodeAt(i)) % 360 }
+  return `<span style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;border-radius:50%;`
+    + `background:linear-gradient(145deg,hsl(${h} 58% 46%),hsl(${(h + 22) % 360} 62% 32%));`
+    + `box-shadow:inset 0 1px 1px rgba(255,255,255,.20),inset 0 -2px 3px rgba(0,0,0,.22);`
+    + `font-size:.62em;line-height:1">${glyph}</span>`
+}
+
+// The face for a grouped event: the underlying's logo when there is one, otherwise a
+// glyph chosen from what the question is actually about.
+function _ocEventIcon(q, qd) {
+  if (qd.underlying) return _coinIconHtml(qd.underlying)
+  const name = String(q?.name ?? '')
+  // 218 = a muted institutional blue, so the Fed card reads as officialdom rather than as
+  // another randomly-hued token.
+  if (name.startsWith('template:policyRate')) return _ocGlyphAvatar('&#127963;&#65039;', 'fed', 218)
+  return _ocGlyphAvatar('&#128302;', name)   // crystal ball, matching the "More Markets" section
+}
+
 // HL names the legs of a new-template market "template:Yes" / "template:No". That prefix
 // is its template machinery leaking through; the side is the part after it.
 function _ocSideName(raw, fallback) {
@@ -27310,7 +27337,7 @@ function _ocSectionize() {
       </div>`).join('')
     // Same identity cues the single-market cards get: the underlying's logo, and a live
     // marker. An event was the only card type still reading as a plain table.
-    const evtIcon = qd.underlying ? _coinIconHtml(qd.underlying) : ''
+    const evtIcon = _ocEventIcon(q, qd)
     const evtWhen = qd.expiry ? _fmtOutcomeExpiry(qd.expiry)
                   : qd.decisionDeadline ? _fmtOutcomeExpiry(qd.decisionDeadline) : ''
     const card = document.createElement('div')
@@ -27321,7 +27348,7 @@ function _ocSectionize() {
     card.id = 'oc-card-' + evId
     card.innerHTML = `
       <div class="oc-evt-head">
-        ${evtIcon ? `<span class="oc-compact-icon">${evtIcon}</span>` : ''}
+        <span class="oc-compact-icon">${evtIcon}</span>
         <div class="oc-evt-head-l">
           ${sub ? `<div class="oc-evt-sub">${esc(sub)}</div>` : ''}
           <div class="oc-evt-title">${esc(title)}</div>
