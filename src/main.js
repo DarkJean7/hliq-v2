@@ -26202,8 +26202,8 @@ function _lazyResolveSettledOutcome(coin) {
       if (!state.ocTokenMap) state.ocTokenMap = {}
       // Match the live _buildOcTokenMap display: prefer the parsed underlying,
       // fall back to the raw settled name (the full question text).
-      const d          = _parseOutcomeDesc(spec.description)
-      const underlying = d.underlying || spec.name
+      const d          = _ocNormalizeDesc(spec, _parseOutcomeDesc(spec.description))
+      const underlying = d.underlying ? _ocUnderLabel(d.underlying) : spec.name
       const target     = d.targetPrice ? ` >$${parseFloat(d.targetPrice).toLocaleString()}` : ''
       const expiry     = d.expiry ? ` (${_fmtOutcomeExpiry(d.expiry)})` : ''
       const displayName = underlying + target + expiry
@@ -26233,7 +26233,7 @@ window._ocCoinLabel = _ocCoinLabel   // reused by render.js (history, overview, 
 // name — which is why they were being filtered out as template junk and the whole market
 // was missing from the app. Rather than special-case each consumer, we push the question's
 // spec down onto its members once, on load, and let everything downstream keep reading
-// `_parseOutcomeDesc(o.description)` exactly as it does for a binary market.
+// `_ocDesc(o)` exactly as it does for a binary market.
 //
 // N thresholds make N+1 buckets: index 0 is below the first, index N is above the last.
 // Verified against live mids — for thresholds 73937,76954 the three Yes prices came back
@@ -26251,7 +26251,7 @@ function _ocNormalizeBuckets(meta) {
     for (const id of (q.namedOutcomes ?? [])) {
       const o = byId[id]
       if (!o) continue
-      const od = _parseOutcomeDesc(o.description || '')
+      const od = _ocDesc(o)
       const i  = Number(od.index)
       if (!Number.isInteger(i) || i < 0 || i > th.length) continue
       o.description = [
@@ -26301,7 +26301,7 @@ function _buildOcTokenMap(meta) {
   }
   for (const o of list) {
     try {
-      const d           = _parseOutcomeDesc(o.description)
+      const d           = _ocDesc(o)
       const underlying  = d.underlying || o.name
       // A bucket member's "name" is the placeholder "Recurring Named Outcome"; what
       // identifies it is the price range, so that is what the label has to carry.
@@ -26348,9 +26348,71 @@ function _hydrateOcTokenMap() {
 function _parseOutcomeDesc(desc) {
   const p = {}
   if (!desc) return p
-  desc.split('|').forEach(part => { const [k, v] = part.split(':'); if (k && v !== undefined) p[k] = v })
+  // Split on the FIRST colon only. The value can contain colons of its own: HIP-3 backed
+  // outcomes name their underlying "perp:xyz:CL", and the old two-part split turned that
+  // into perp="xyz", silently losing the market. Every commodity and equity outcome HL
+  // added is of that shape, so they all resolved to the wrong (or no) underlying.
+  desc.split('|').forEach(part => {
+    const i = part.indexOf(':')
+    if (i <= 0) return
+    p[part.slice(0, i)] = part.slice(i + 1)
+  })
   return p
 }
+
+// ─── HIP-4 TEMPLATES ──────────────────────────────────────────────────────────
+//
+// HL ships outcome markets under two different description schemas, and new ones use the
+// second. The old series are name="Recurring" with
+//   class:priceBinary|underlying:BTC|expiry:20260830-0600|targetPrice:77610|period:1d
+// while everything added since is name="template:<kind>" with
+//   perp:xyz:CL|priceDescription:...|seconds:1|threshold:83.196|time:20260929-2100
+//
+// Same idea, different key names — so rather than teach every consumer both, normalise
+// the new shape onto the old field names once, here. Anything that already read
+// `class` / `underlying` / `targetPrice` / `expiry` keeps working untouched.
+//
+// Kinds seen live: priceTouch ("touches T by then"), binaryPrice ("above T at then"),
+// policyRate{Increase,Decrease,NoChange} (Fed, described by their parent question), and
+// bare "fallback"/"other" entries for the none-of-the-above leg of a bucket question.
+function _ocNormalizeDesc(o, d) {
+  const kind = String(o?.name ?? '').startsWith('template:')
+    ? String(o.name).slice('template:'.length)
+    : null
+  if (!kind) return d
+  const out = { ...d, template: kind }
+  // The underlying is a coin string like "BTC" or "xyz:CL" — keep it whole; callers that
+  // want a label run it through _ocUnderLabel.
+  if (!out.underlying && d.perp) out.underlying = d.perp
+  if (!out.expiry && d.time)     out.expiry     = d.time
+  if (!out.targetPrice) {
+    // priceTouch calls it `target`, binaryPrice calls it `threshold`.
+    if (d.target !== undefined)    out.targetPrice = d.target
+    else if (d.threshold !== undefined) out.targetPrice = d.threshold
+  }
+  if (!out.class) {
+    if (kind === 'priceTouch')  out.class = 'priceTouch'
+    else if (kind === 'binaryPrice') out.class = 'binaryPrice'
+    else if (kind.startsWith('policyRate')) out.class = 'policyRate'
+  }
+  return out
+}
+
+// Parse + normalise in one step. Every site that has the outcome object should use this
+// rather than _parseOutcomeDesc, so a new template can never be half-understood.
+function _ocDesc(o) { return _ocNormalizeDesc(o, _parseOutcomeDesc(o?.description || '')) }
+
+// "xyz:SP500" → "SP500", "BTC" → "BTC". The dex prefix is plumbing, not a market name.
+function _ocUnderLabel(u) { return coinLabel(String(u ?? '')) || String(u ?? '') }
+
+// A threshold reads as money for everything HL currently lists (crypto, indices, metals,
+// equities), but index levels look wrong with cents.
+function _ocMoney(v) {
+  const n = parseFloat(v)
+  if (!Number.isFinite(n)) return '?'
+  return '$' + n.toLocaleString(undefined, { maximumFractionDigits: n >= 1000 ? 0 : 2 })
+}
+
 
 function _fmtOutcomeExpiry(raw) {
   if (!raw || raw.length < 8) return raw
@@ -26406,10 +26468,32 @@ function _fmtOcK(n) {
 
 // Returns { line1, line2 } for two-row question display
 function _buildFullQuestion(d, name) {
+  // New-template markets. Without these every one of them rendered its raw internal name
+  // — users saw the literal string "template:binaryPrice" as the question.
+  if (d.class === 'priceTouch' && d.underlying) {
+    const when = d.expiry ? _fmtOcQuestionTime(d.expiry) : null
+    return {
+      line1: `Will ${_ocUnderLabel(d.underlying)} touch ${_ocMoney(d.targetPrice)}`,
+      line2: when ? `by ${when}?` : '?',
+    }
+  }
+  if (d.class === 'binaryPrice' && d.underlying) {
+    const when = d.expiry ? _fmtOcQuestionTime(d.expiry) : null
+    return {
+      line1: `Will ${_ocUnderLabel(d.underlying)} be above ${_ocMoney(d.targetPrice)}`,
+      line2: when ? `at ${when}?` : '?',
+    }
+  }
+  if (d.class === 'policyRate') {
+    // These carry no description of their own; the question they belong to holds the
+    // institution and the decision date. The leg is all that distinguishes them.
+    const leg = { policyRateIncrease: 'raise', policyRateDecrease: 'cut', policyRateNoChange: 'hold' }[d.template]
+    if (leg) return { line1: `Will the Fed ${leg} rates`, line2: 'at the next meeting?' }
+  }
   if (d.class === 'priceBinary' && d.underlying) {
     const target = d.targetPrice ? `$${parseFloat(d.targetPrice).toLocaleString()}` : '?'
     const when   = d.expiry ? _fmtOcQuestionTime(d.expiry) : null
-    const line1  = `Will ${d.underlying} close above ${target}`
+    const line1  = `Will ${_ocUnderLabel(d.underlying)} close above ${target}`
     const line2  = when ? `on ${when}?` : '?'
     return { line1, line2 }
   }
@@ -26417,9 +26501,10 @@ function _buildFullQuestion(d, name) {
     const when = d.expiry ? _fmtOcQuestionTime(d.expiry) : null
     const has  = (v) => v !== undefined && v !== null && v !== ''
     const m    = (n) => '$' + Number(n).toLocaleString()
-    const line1 = !has(d.bucketLo) ? `Will ${d.underlying} close below ${m(d.bucketHi)}`
-                : !has(d.bucketHi) ? `Will ${d.underlying} close above ${m(d.bucketLo)}`
-                : `Will ${d.underlying} close between ${m(d.bucketLo)} and ${m(d.bucketHi)}`
+    const u = _ocUnderLabel(d.underlying)
+    const line1 = !has(d.bucketLo) ? `Will ${u} close below ${m(d.bucketHi)}`
+                : !has(d.bucketHi) ? `Will ${u} close above ${m(d.bucketLo)}`
+                : `Will ${u} close between ${m(d.bucketLo)} and ${m(d.bucketHi)}`
     return { line1, line2: when ? `on ${when}?` : '?' }
   }
   return { line1: name, line2: null }
@@ -26703,7 +26788,7 @@ async function _initOcCharts(outcomes) {
     const canvas = document.getElementById('oc-chart-' + o.outcome)
     if (!canvas) return
     const pairIdx = o.outcome * 10
-    const d       = _parseOutcomeDesc(o.description)
+    const d       = _ocDesc(o)
 
     const periodMs = _ocPeriodMs(d.period)
     const interval = _ocCandleInterval(periodMs)
@@ -26911,7 +26996,7 @@ async function _refreshOcPrices() {
       }
 
       // Update current underlying price from allMids (see _ocSetCurrentPx).
-      const d = _parseOutcomeDesc(o.description)
+      const d = _ocDesc(o)
       if (d.underlying) _ocSetCurrentPx(o.outcome, parseFloat(state.allMids?.[d.underlying] ?? 0), d.targetPrice)
     } catch {}
   }))
@@ -26920,6 +27005,18 @@ async function _refreshOcPrices() {
 
 function _ocGetCategory(o, d) {
   if (d.class === 'priceBinary' || d.class === 'priceBucket') return 'crypto'
+  // The new templates carry their subject in `underlying`, which is far more reliable
+  // than word-matching a description that is mostly machine plumbing. HIP-3 underlyings
+  // are commodities, indices and equities — filing them all under "crypto" (or worse,
+  // "other") is what the keyword pass below would have done.
+  if (d.underlying) {
+    const u = _ocUnderLabel(d.underlying).toUpperCase()
+    if (/^(BTC|ETH|SOL|HYPE|XRP|DOGE|BNB|SUI|AVAX|LTC|LINK|PUMP|ZEC)$/.test(u)) return 'crypto'
+    if (/^(GOLD|SILVER|CL|WTIOIL|BRENTOIL|NATGAS|COPPER|PLATINUM)$/.test(u))    return 'commodities'
+    if (/^(SP500|XYZ100|US100|US500|US30|NDX|DJI|VIX)$/.test(u))                return 'economy'
+    if (/^(SNDK|SKHX|SKHYNIX|NBIS|DRAM|SPCX|TSLA|NVDA|AAPL|MSFT)$/.test(u))     return 'tech'
+  }
+  if (d.class === 'policyRate') return 'economy'
   // Word-boundary matching over name + description — substring matching put
   // "nETHerlands" in crypto and "spAIn" in tech.
   const name = ((o.name || '') + ' ' + (o.description || '')).toLowerCase()
@@ -27090,7 +27187,7 @@ function _ocDiagReport(hidden, grouped) {
     const qs = (_ocLiveQuestions ?? []).map(q =>
       `${(q.name || '?').slice(0, 40)}[n=${(q.namedOutcomes ?? []).length}${q.fallbackOutcome != null ? ',fb' : ''}]`)
     const os = (_ocLiveOutcomes ?? []).map(o =>
-      `${o.outcome}:${_parseOutcomeDesc(o.description || '').class || '-'}:sides=${(o.sideSpecs ?? []).length}`)
+      `${o.outcome}:${_ocDesc(o).class || '-'}:sides=${(o.sideSpecs ?? []).length}`)
     fetch('/api/error', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
       body: JSON.stringify({
@@ -27143,7 +27240,7 @@ function _ocSectionize() {
     }
     // A bucket member is named "Recurring Named Outcome"; the range is its identity.
     const rowName = (o) => {
-      const od = _parseOutcomeDesc(o.description || '')
+      const od = _ocDesc(o)
       return od.class === 'priceBucket' ? _ocBucketLabel(od) : o.name
     }
     let cat = _ocGetCategory({ name: q.name || '', description: '' }, {})
@@ -27184,7 +27281,7 @@ function _ocSectionize() {
   for (const o of (_ocLiveOutcomes ?? [])) {
     const id = String(o.outcome)
     if (!cardById[id] || hidden.has(id) || grouped.has(id)) continue
-    const d = _parseOutcomeDesc(o.description || '')
+    const d = _ocDesc(o)
     if (!d.class && /\b(fallback|recurring|named outcome|template)\b/i.test(o.name || '')) hidden.add(id)
   }
 
@@ -27319,7 +27416,7 @@ async function renderOutcomes() {
     const balStr    = connected ? '$' + fmtUSD(_ocAvailBalance()) : 'N/A'
 
     const cardsHtml = outcomes.map(o => {
-      const d      = _parseOutcomeDesc(o.description)
+      const d      = _ocDesc(o)
       const { line1, line2 } = _buildFullQuestion(d, o.name)
       const period = d.period || null
       const cls    = d.class || ''
@@ -27472,6 +27569,7 @@ async function renderOutcomes() {
         <div class="oc-cats no-swipe" id="ocCats">
           <button class="oc-cat oc-cat-active" data-cat="all" onclick="window.__ocSetCat('all',this)">All</button>
           <button class="oc-cat" data-cat="crypto" onclick="window.__ocSetCat('crypto',this)">Crypto</button>
+          <button class="oc-cat" data-cat="commodities" onclick="window.__ocSetCat('commodities',this)">Commodities</button>
           <button class="oc-cat" data-cat="sports" onclick="window.__ocSetCat('sports',this)">Sports</button>
           <button class="oc-cat" data-cat="politics" onclick="window.__ocSetCat('politics',this)">Politics</button>
           <button class="oc-cat" data-cat="culture" onclick="window.__ocSetCat('culture',this)">Culture</button>
