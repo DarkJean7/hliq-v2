@@ -20,3 +20,6 @@ chat.json
 
 # Runtime caches written by serve-prod.js (icons, profile pictures)
 data/
+
+# Playwright screenshots from local verification runs
+/*.png
