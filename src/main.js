@@ -26640,11 +26640,28 @@ async function _loadOcPrices(outcomes, info) {
     if (hotPct) hotPct.textContent = (yesPx * 100).toFixed(0) + '%'
     const s0 = esc(o.sideSpecs?.[0]?.name || 'Yes'), s1 = esc(o.sideSpecs?.[1]?.name || 'No')
     const miniY = document.getElementById('oc-mini-yes-' + o.outcome)
-    if (miniY) miniY.innerHTML = s0 + ' <b>' + (yesPx * 100).toFixed(0) + '¢</b>'
+    if (miniY) miniY.innerHTML = _ocBetFace(s0, yesPx)
     const miniN = document.getElementById('oc-mini-no-' + o.outcome)
-    if (miniN) miniN.innerHTML = s1 + ' <b>' + (noPx * 100).toFixed(0) + '¢</b>'
+    if (miniN) miniN.innerHTML = _ocBetFace(s1, noPx)
   }))
   _ocEvtResortAll()
+}
+
+// A share priced at 0.13 pays 1.00 if it lands — that is 7.7x your money, and "7.7x" is
+// what a person is deciding on. The cent price is the same fact stated in the form the
+// exchange needs rather than the form the reader does, so show both: the multiple large,
+// what $100 turns into underneath.
+function _ocOdds(px) {
+  const p = Number(px)
+  if (!Number.isFinite(p) || p <= 0 || p >= 1) return null
+  return 1 / p
+}
+function _ocBetFace(label, px) {
+  const m = _ocOdds(px)
+  if (m == null) return label + ' <b>—</b>'
+  const mult = m >= 10 ? m.toFixed(0) : m.toFixed(2)
+  return `<span class="oc-bet-top">${label} <b>&times;${mult}</b></span>` +
+         `<span class="oc-bet-sub">$100 &rarr; $${Math.round(100 * m).toLocaleString()}</span>`
 }
 
 // Per-outcome stats, loaded lazily when a card is expanded (never in bulk — that
@@ -26971,9 +26988,11 @@ async function _refreshOcPrices() {
       }
       const s0 = esc(o.sideSpecs?.[0]?.name || 'Yes'), s1 = esc(o.sideSpecs?.[1]?.name || 'No')
       const miniY2 = document.getElementById('oc-mini-yes-' + o.outcome)
-      if (miniY2) miniY2.innerHTML = s0 + ' <b>' + (yesPx * 100).toFixed(0) + '¢</b>'
+      // Same face as the first updater -- this one runs on every refresh, so leaving it
+      // on the old cent form would repaint the buttons back a second later.
+      if (miniY2) miniY2.innerHTML = _ocBetFace(s0, yesPx)
       const miniN2 = document.getElementById('oc-mini-no-' + o.outcome)
-      if (miniN2) miniN2.innerHTML = s1 + ' <b>' + ((1 - yesPx) * 100).toFixed(0) + '¢</b>'
+      if (miniN2) miniN2.innerHTML = _ocBetFace(s1, 1 - yesPx)
       const evtPct2 = document.getElementById('oc-evt-pct-' + o.outcome)
       if (evtPct2) {
         evtPct2.textContent = (yesPx * 100).toFixed(0) + '%'
@@ -27432,6 +27451,7 @@ async function renderOutcomes() {
 
       return `<div class="oc-card" id="oc-card-${o.outcome}" data-cat="${cat}" data-q="${esc(searchQ)}" onclick="window.__ocExpandCard(${o.outcome})">
         <div class="oc-compact-info">
+          ${d.underlying ? `<span class="oc-compact-icon">${_coinIconHtml(d.underlying)}</span>` : ''}
           <div class="oc-compact-q">${esc(line1)}${line2 ? ' ' + esc(line2) : ''}</div>
           <div class="oc-compact-right">
             <span class="oc-compact-pct" id="oc-compact-pct-${o.outcome}">—</span>
@@ -27441,6 +27461,10 @@ async function renderOutcomes() {
         <div class="oc-mini-row">
           <button class="oc-mini-btn oc-mini-yes" id="oc-mini-yes-${o.outcome}">${esc(s0)} —</button>
           <button class="oc-mini-btn oc-mini-no"  id="oc-mini-no-${o.outcome}">${esc(s1)} —</button>
+        </div>
+        <div class="oc-compact-foot">
+          <span class="oc-live"><i class="oc-live-dot"></i>Live</span>
+          <span class="oc-compact-when">${esc(d.expiry ? _fmtOutcomeExpiry(d.expiry) : '')}</span>
         </div>
         <button class="oc-card-close" onclick="event.stopPropagation();window.__ocCloseExpanded()">✕</button>
         <div class="oc-card-head">
