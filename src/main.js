@@ -162,6 +162,7 @@ import {
   adjustIsolatedMargin,
   cancelOrder,
   cancelOrders,
+  exchangeAction,
   modifyOrderPrice,
   parseOrderResult,
   approveBuilderFee,
@@ -20953,6 +20954,34 @@ function _devBotSnapshot(def) {
     candles: Array.isArray(raw) ? raw.slice(-200).map(k => ({
       t: +k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v,
     })) : [],
+
+    // The whole account, for a bot that manages more than the one market it was filed
+    // under. `coin` above stays the bot's home market — it is what the simple intent path
+    // and the limits key off — but nothing here is restricted to it any more, because a
+    // bot that has to be told about only one market is not a bot, it is a widget.
+    //
+    // Still absent, and staying absent: the wallet address and the agent key. A bot signs
+    // by asking (api.exchange), so it has no use for either.
+    mids: { ...(state.allMids ?? {}) },
+    positions: (state.perpState?.assetPositions ?? []).map(x => ({
+      coin: x.position.coin,
+      szi: parseFloat(x.position.szi ?? 0),
+      entryPx: parseFloat(x.position.entryPx ?? 0),
+      unrealizedPnl: parseFloat(x.position.unrealizedPnl ?? 0),
+      leverage: parseFloat(x.position.leverage?.value ?? 0),
+      liquidationPx: parseFloat(x.position.liquidationPx ?? 0),
+      marginUsed: parseFloat(x.position.marginUsed ?? 0),
+    })),
+    orders: (state.openOrders ?? []).map(o => ({
+      oid: o.oid, coin: o.coin, isBuy: !!o.isBuy,
+      sz: parseFloat(o.sz ?? 0), limitPx: parseFloat(o.limitPx ?? 0),
+    })),
+    margin: {
+      accountValue: parseFloat(state.perpState?.marginSummary?.accountValue ?? 0),
+      totalMarginUsed: parseFloat(state.perpState?.marginSummary?.totalMarginUsed ?? 0),
+      withdrawable: parseFloat(state.perpState?.withdrawable ?? 0),
+    },
+    paper: isPaper(),
   }
 }
 
@@ -20998,12 +21027,78 @@ async function _devBotExecute(def, it) {
   return { ok: true }
 }
 
+/**
+ * Trading actions a device bot may ask the app to sign.
+ *
+ * Everything here places, changes or cancels an order, or adjusts margin on a position
+ * the account already has — the same surface the app's own buttons use.
+ *
+ * What is NOT here matters more. `approveAgent` would let a bot install a SECOND agent
+ * key for the account and then act outside this sandbox entirely; that is the one
+ * escalation that would undo the whole design. The fund-moving actions (withdraw3,
+ * usdSend, spotSend, usdClassTransfer, vaultTransfer, subAccountTransfer) are absent too.
+ * An agent key cannot perform those anyway — the app says so in three places — so this
+ * costs a bot nothing and closes the door if that ever changes.
+ */
+const _DEVBOT_METHODS = new Set([
+  'order', 'cancel', 'cancelByCloid', 'modify', 'batchModify',
+  'updateLeverage', 'updateIsolatedMargin', 'scheduleCancel',
+  'twapOrder', 'twapCancel',
+])
+// Methods that create orders, and so must count against the bot's rate limit.
+const _DEVBOT_PLACING = new Set(['order', 'batchModify', 'modify', 'twapOrder'])
+
+async function _devBotRequest(def, kind, payload, bot) {
+  if (kind === 'info') {
+    // Public market data. No key, no account, nothing to gate — the same endpoint any
+    // browser tab can call.
+    const r = await fetch('https://api.hyperliquid.xyz/info', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload ?? {}),
+    })
+    if (!r.ok) throw new Error('info request failed: ' + r.status)
+    return r.json()
+  }
+
+  if (kind === 'exchange') {
+    const method = String(payload?.method ?? '')
+    const args = payload?.args ?? {}
+    if (!_DEVBOT_METHODS.has(method)) throw new Error(`"${method}" is not available to bots`)
+    if (_DEVBOT_PLACING.has(method) && bot?.rateBlocked()) {
+      throw new Error(`rate limit: ${def.maxPerMin} orders/min reached`)
+    }
+    if (isPaper()) {
+      // The paper engine models orders and cancels, not the whole exchange API.
+      if (method === 'order')  { const r = paperOrder(args, args?.orders?.[0]?.__coin ?? def.coin); _paperRefresh(); return r }
+      if (method === 'cancel') { paperCancelMany(args?.cancels ?? []); _paperRefresh(); return { status: 'ok' } }
+      throw new Error(`"${method}" is not simulated on the paper account`)
+    }
+    const acct = _stratTargetAddr()
+    if (!acct) throw new Error('no account selected')
+    const res = await exchangeAction(acct, method, args)
+    if (_DEVBOT_PLACING.has(method)) bot?.noteSend()
+    return res
+  }
+  throw new Error('unknown request: ' + kind)
+}
+
 const _devBotDeps = {
   snapshot: _devBotSnapshot,
   execute:  _devBotExecute,
+  request:  _devBotRequest,
   onChange: () => { if (_mobVActiveTab === 'strategies') _mobVRenderStrategies(document.getElementById('mobVContent')) },
 }
 
+// NOT behind the subscription gate, deliberately.
+//
+// The paywall exists because the built-in bots run on our servers around the clock, with
+// the app closed — that is the thing being paid for. A device bot runs in the user's own
+// browser, on their own machine, and costs us nothing to have running. Charging for it
+// would be charging for the privilege of using their own computer.
+//
+// So __devBotStart never consults _stratsUnlocked() or _canStartBot(), and the section is
+// rendered outside the `locked` branch. This comment exists because that was previously
+// true only by omission, which is the kind of thing a later edit silently undoes.
 window.__devBotStart = function(id) {
   const def = devBotsLoad().find(b => b.id === id)
   if (!def) return
@@ -21064,6 +21159,39 @@ window.__devBotNew = function() {
   _devBotDraft = { code: DEVBOT_TEMPLATE, name: '' }
   _devBotInstallSheet()
 }
+
+// Editing reopens the same sheet with the bot's own values, so there is one form to learn
+// rather than two that can drift apart.
+window.__devBotEdit = function(id) {
+  const def = devBotsLoad().find(b => b.id === id)
+  if (!def) return
+  _devBotDraft = { ...def }
+  _devBotInstallSheet(def)
+}
+
+/**
+ * Save an edit, and put the bot back the way it was running.
+ *
+ * A bot that was running when you opened Edit is restarted with the new file, because the
+ * worker holds the OLD code — leaving it running would show updated settings next to
+ * behaviour from the previous version, which is worse than a brief stop. One that was
+ * stopped stays stopped; pressing Update should not start something.
+ */
+window.__devBotUpdate = function(id) {
+  const def = _devBotRead(id)
+  if (!def) return
+  const was = _devBots.get(id)
+  const wasRunning = !!(was && was.worker && !was.stopped)
+  was?.stop()
+  devBotsSave(devBotsLoad().map(b => b.id === id ? { ...def, id } : b))
+  document.getElementById('devBotSheet')?.remove()
+  _devBotDraft = null
+  if (wasRunning) window.__devBotStart(id)
+  else _mobVRenderStrategies(document.getElementById('mobVContent'))
+  _paperToast(wasRunning
+    ? _T('Updated and restarted', 'Actualizado y reiniciado')
+    : _T('Updated', 'Actualizado'), 'success')
+}
 window.__devBotPickFile = function(input) {
   const f = input.files?.[0]
   if (!f) return
@@ -21076,25 +21204,47 @@ window.__devBotPickFile = function(input) {
   r.readAsText(f)
 }
 
-window.__devBotInstall = function() {
+/**
+ * Read and validate the sheet. Shared by Add and Update so the two cannot drift — an edit
+ * that skipped a check the install did would be a hole that only opens later.
+ * Returns null (having said why) if the form is not usable.
+ */
+function _devBotRead(existingId) {
   const g = id => document.getElementById(id)?.value?.trim() ?? ''
   const code = g('devBotCode')
-  if (!code) { _paperToast(_T('The file is empty', 'El archivo está vacío'), 'err'); return }
-  if (!/onTick/.test(code)) { _paperToast(_T('No onTick(ctx) found in this file', 'No se encontró onTick(ctx)'), 'err'); return }
+  if (!code) { _paperToast(_T('The file is empty', 'El archivo está vacío'), 'err'); return null }
+  if (!/onTick/.test(code)) { _paperToast(_T('No onTick(ctx) found in this file', 'No se encontró onTick(ctx)'), 'err'); return null }
   if (!document.getElementById('devBotAck')?.checked) {
-    _paperToast(_T('Please confirm you understand what this runs', 'Confirma que entiendes qué se ejecuta'), 'err'); return
+    _paperToast(_T('Please confirm you understand what this runs', 'Confirma que entiendes qué se ejecuta'), 'err'); return null
   }
-  const def = {
-    id: 'd' + Date.now().toString(36),
+  // 0 on a cap means "no limit" — a deliberate choice, so these floor at 0 rather than 1.
+  //
+  // An EMPTY field is not that. Number('') is 0, so a naive read turns a field the user
+  // cleared (or never filled) into an unlimited one — the most dangerous possible default,
+  // arrived at by accident. Empty falls back to the default; only a typed 0 removes a cap.
+  const cap = (v, dflt, max) => {
+    const s = String(v ?? '').trim()
+    if (s === '') return dflt
+    const n = Number(s)
+    if (!Number.isFinite(n)) return dflt
+    return Math.max(0, Math.min(max, n))
+  }
+  return {
+    id: existingId ?? ('d' + Date.now().toString(36)),
     name: g('devBotName') || 'My bot',
     coin: g('devBotCoin') || 'BTC',
-    maxUsd: Math.max(1, Number(g('devBotMaxUsd')) || 25),
-    maxPerMin: Math.max(1, Math.min(60, Number(g('devBotMaxMin')) || 4)),
-    maxOpen: Math.max(1, Math.min(100, Number(g('devBotMaxOpen')) || 10)),
+    maxUsd: cap(g('devBotMaxUsd'), 25, 1e9),
+    maxPerMin: cap(g('devBotMaxMin'), 4, 600),
+    maxOpen: cap(g('devBotMaxOpen'), 10, 1000),
     everySec: Math.max(5, Number(g('devBotEvery')) || 15),
     leverage: Math.max(1, Number(g('devBotLev')) || 3),
     code,
   }
+}
+
+window.__devBotInstall = function() {
+  const def = _devBotRead(null)
+  if (!def) return
   devBotsSave([...devBotsLoad(), def])
   document.getElementById('devBotSheet')?.remove()
   _devBotDraft = null
@@ -21102,8 +21252,104 @@ window.__devBotInstall = function() {
   _paperToast(_T('Bot added — press Run when you are ready', 'Bot añadido — pulsa Ejecutar cuando quieras'), 'success')
 }
 
-function _devBotInstallSheet() {
+/**
+ * The file format, written out in full.
+ *
+ * Kept in the app rather than in a README because the person writing the file is often not
+ * the person who has the repo — a friend hands you a .js and never sees this codebase. If
+ * the contract only existed in a comment next to the runner, they would be guessing.
+ */
+window.__devBotSpec = function() {
+  const h = (txt) => `<div style="font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:16px 0 6px">${txt}</div>`
+  const p = (txt) => `<p style="font-size:12px;line-height:1.6;color:var(--fg-2);margin:0 0 8px">${txt}</p>`
+  const pre = (txt) => `<pre style="background:var(--panel-1);border:1px solid var(--border);border-radius:9px;padding:10px 11px;font-family:var(--font-mono);font-size:11px;line-height:1.55;overflow-x:auto;margin:0 0 8px;color:var(--fg-2)">${esc(txt)}</pre>`
+
+  _devBotSheet(_T('Bot file format', 'Formato del archivo'), `
+    ${p(_T('A plain <b>.js</b> file. No imports, no exports, no build step — paste it or upload it as it is.',
+           'Un archivo <b>.js</b> normal. Sin imports, sin exports, sin compilación — pégalo o súbelo tal cual.'))}
+
+    ${h(_T('The one thing it must have', 'Lo único obligatorio'))}
+    ${p(_T('A function called <b>onTick</b>. Nothing else is required, and nothing else is looked for.',
+           'Una función llamada <b>onTick</b>. Nada más es obligatorio ni se busca.'))}
+    ${pre('function onTick(ctx) {\n  // your logic\n}')}
+    ${p(_T('It may be <b>async</b>. It is called once every N seconds, where N is the interval you set when adding the bot.',
+           'Puede ser <b>async</b>. Se llama cada N segundos, según el intervalo que definas al añadir el bot.'))}
+
+    ${h(_T('What you get: ctx', 'Lo que recibes: ctx'))}
+    ${pre(`ctx = {
+  coin:      "BTC",        // the market you chose for this bot
+  mark:      78123.5,      // its current mark price
+  tick:      1735600000000,// ms timestamp of this tick
+  paper:     true,         // true on a practice account
+  equity:    1042.11,      // account value, USDC
+
+  position:  { szi, entryPx, unrealizedPnl } | null,   // in ctx.coin
+  openOrders:[ { oid, isBuy, sz, limitPx } ],          // in ctx.coin
+  candles:   [ { t, o, h, l, c, v } ],   // ~200 recent 1h, oldest first
+
+  // the whole account, if you want more than one market
+  mids:      { BTC: "78123.5", ETH: "2431.0", ... },
+  positions: [ { coin, szi, entryPx, unrealizedPnl,
+                 leverage, liquidationPx, marginUsed } ],
+  orders:    [ { oid, coin, isBuy, sz, limitPx } ],
+  margin:    { accountValue, totalMarginUsed, withdrawable },
+}`)}
+    ${p(_T('Numbers are numbers, except <b>mids</b>, which Hyperliquid gives as strings.',
+           'Los números son números, salvo <b>mids</b>, que Hyperliquid entrega como cadenas.'))}
+
+    ${h(_T('The simple way to act: return an intent', 'La forma simple de actuar: devuelve una intención'))}
+    ${p(_T('Return one object, an array of them, or nothing at all.', 'Devuelve un objeto, un array, o nada.'))}
+    ${pre(`{ type: "market", isBuy: true,  usd: 25 }
+{ type: "limit",  isBuy: false, usd: 25, px: 80000 }
+{ type: "cancel", oid: 123456789 }
+{ type: "close" }`)}
+    ${p(_T('Sizes are in <b>USD</b>, not coins — the app converts at the price it sends at. Every intent is checked against the limits you set; a refusal is logged and dropped.',
+           'Los tamaños van en <b>USD</b>, no en monedas — la app convierte al precio de envío. Cada intención se comprueba contra tus límites; un rechazo se registra y se descarta.'))}
+
+    ${h(_T('The full way: api', 'La forma completa: api'))}
+    ${pre(`await api.info({ type: "l2Book", coin: "BTC" })   // any public /info
+await api.candles("ETH", "15m", Date.now() - 86400000)
+await api.order({ orders: [ ... ], grouping: "na" })
+await api.cancel({ cancels: [ { a: 0, o: 123 } ] })
+await api.exchange("updateLeverage",
+  { asset: 0, isCross: true, leverage: 5 })`)}
+    ${p(_T('These are signed by the app, not by your file — your key is never inside the sandbox. Anything that moves funds, or approves another agent, is refused.',
+           'La app las firma, no tu archivo — tu clave nunca está en el entorno aislado. Todo lo que mueva fondos, o apruebe otro agente, se rechaza.'))}
+
+    ${h(_T('Logging', 'Registro'))}
+    ${pre('log("anything", 123, obj)')}
+    ${p(_T('Writes to the Log panel for this bot. <b>console.log</b> goes nowhere you can see.',
+           'Escribe en el panel de Registro de este bot. <b>console.log</b> no se ve en ningún sitio.'))}
+
+    ${h(_T('Names you can use', 'Nombres que puedes usar'))}
+    ${p(_T('All of them. Your file runs in its own scope, so declaring your own <b>log</b>, <b>api</b> or anything else will not clash with the app — it only shadows the helper for your file.',
+           'Todos. Tu archivo corre en su propio ámbito, así que declarar tu propio <b>log</b>, <b>api</b> o cualquier otro no choca con la app — solo oculta la ayuda para tu archivo.'))}
+
+    ${h(_T('What is not available', 'Lo que no está disponible'))}
+    ${p(_T('<b>window</b>, <b>document</b>, <b>localStorage</b>, and <b>import</b> / <b>require</b>. This is a Web Worker, so there is no page and no module loader — put everything in the one file. <b>fetch</b> does work.',
+           '<b>window</b>, <b>document</b>, <b>localStorage</b> e <b>import</b> / <b>require</b>. Es un Web Worker: no hay página ni cargador de módulos — todo en un solo archivo. <b>fetch</b> sí funciona.'))}
+
+    ${h(_T('Errors', 'Errores'))}
+    ${p(_T('A throw inside one tick is logged and the bot keeps running. A file with no <b>onTick</b>, or one that fails to parse, is refused at install with the reason.',
+           'Un error en un tick se registra y el bot sigue. Un archivo sin <b>onTick</b>, o que no compila, se rechaza al instalar indicando el motivo.'))}
+
+    ${h(_T('A complete example', 'Un ejemplo completo'))}
+    ${pre(`function onTick(ctx) {
+  if (!ctx.candles || ctx.candles.length < 20) return
+
+  const closes = ctx.candles.map(k => Number(k.c))
+  const sma20  = closes.slice(-20).reduce((a, b) => a + b, 0) / 20
+  const long   = ctx.position && Number(ctx.position.szi) > 0
+
+  if (ctx.mark > sma20 && !long)  return { type: "market", isBuy: true, usd: 20 }
+  if (ctx.mark < sma20 && long)   return { type: "close" }
+}`)}
+  `)
+}
+
+function _devBotInstallSheet(existing = null) {
   const d = _devBotDraft ?? { code: DEVBOT_TEMPLATE, name: '' }
+  const ed = !!existing
   const inp = 'width:100%;box-sizing:border-box;background:var(--panel-1);border:1px solid var(--border);border-radius:9px;padding:8px 10px;font-size:13px;color:var(--fg);outline:none'
   const lbl = 'font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;display:block'
   const coins = [...new Set([
@@ -21111,7 +21357,7 @@ function _devBotInstallSheet() {
     'BTC', 'ETH', 'SOL', 'HYPE',
   ])].filter(c => c && !String(c).startsWith('@')).slice(0, 20)
 
-  _devBotSheet(_T('Add a bot', 'Añadir un bot'), `
+  _devBotSheet(ed ? _T('Edit bot', 'Editar bot') : _T('Add a bot', 'Añadir un bot'), `
     <div style="font-size:12px;line-height:1.6;color:var(--fg-2)">
       ${_T('This runs on your device, in a sandbox with no access to your keys — it cannot sign anything. It asks this app to place orders, and this app checks every request against the limits you set below.',
            'Se ejecuta en tu dispositivo, en un entorno aislado sin acceso a tus claves — no puede firmar nada. Pide a la app que coloque órdenes, y la app comprueba cada petición contra los límites que definas.')}
@@ -21124,15 +21370,22 @@ function _devBotInstallSheet() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:14px">
       <div><label style="${lbl}">${_T('Name', 'Nombre')}</label><input id="devBotName" style="${inp}" value="${esc(d.name)}" placeholder="My bot"></div>
       <div><label style="${lbl}">${_T('Market', 'Mercado')}</label>
-        <select id="devBotCoin" style="${inp}">${coins.map(c => `<option value="${esc(c)}">${esc(_ocCoinLabel(c))}</option>`).join('')}</select></div>
-      <div><label style="${lbl}">${_T('Max per order', 'Máx. por orden')} ($)</label><input id="devBotMaxUsd" type="number" min="1" style="${inp}" value="25"></div>
-      <div><label style="${lbl}">${_T('Max orders / min', 'Máx. órdenes/min')}</label><input id="devBotMaxMin" type="number" min="1" max="60" style="${inp}" value="4"></div>
-      <div><label style="${lbl}">${_T('Max resting orders', 'Máx. órdenes en espera')}</label><input id="devBotMaxOpen" type="number" min="1" max="100" style="${inp}" value="10"></div>
-      <div><label style="${lbl}">${_T('Run every (s)', 'Ejecutar cada (s)')}</label><input id="devBotEvery" type="number" min="5" style="${inp}" value="15"></div>
-      <div><label style="${lbl}">${_T('Leverage', 'Apalancamiento')}</label><input id="devBotLev" type="number" min="1" style="${inp}" value="3"></div>
+        <select id="devBotCoin" style="${inp}">${coins.map(c => `<option value="${esc(c)}"${c === d.coin ? ' selected' : ''}>${esc(_ocCoinLabel(c))}</option>`).join('')}</select></div>
+      <div><label style="${lbl}">${_T('Max per order', 'Máx. por orden')} ($)</label><input id="devBotMaxUsd" type="number" min="0" style="${inp}" value="${d.maxUsd ?? 25}"></div>
+      <div><label style="${lbl}">${_T('Max orders / min', 'Máx. órdenes/min')}</label><input id="devBotMaxMin" type="number" min="0" max="600" style="${inp}" value="${d.maxPerMin ?? 4}"></div>
+      <div><label style="${lbl}">${_T('Max resting orders', 'Máx. órdenes en espera')}</label><input id="devBotMaxOpen" type="number" min="0" max="1000" style="${inp}" value="${d.maxOpen ?? 10}"></div>
+      <div><label style="${lbl}">${_T('Run every (s)', 'Ejecutar cada (s)')}</label><input id="devBotEvery" type="number" min="5" style="${inp}" value="${d.everySec ?? 15}"></div>
+      <div><label style="${lbl}">${_T('Leverage', 'Apalancamiento')}</label><input id="devBotLev" type="number" min="1" style="${inp}" value="${d.leverage ?? 3}"></div>
+    </div>
+    <div style="font-size:10.5px;color:var(--fg-3);margin-top:7px;line-height:1.5">${
+      _T('Set any of the three caps to 0 to turn that limit off.', 'Pon cualquiera de los tres límites a 0 para desactivarlo.')}
     </div>
 
-    <label style="${lbl};margin-top:12px">${_T('Bot file', 'Archivo del bot')}</label>
+    <div style="display:flex;align-items:center;margin-top:12px">
+      <label style="${lbl};margin:0">${_T('Bot file', 'Archivo del bot')}</label>
+      <span style="flex:1"></span>
+      <button onclick="window.__devBotSpec()" style="background:transparent;border:1px solid var(--border2);border-radius:7px;color:var(--fg-2);font-size:11px;font-weight:700;padding:3px 9px;cursor:pointer">${_T('File format', 'Formato')}</button>
+    </div>
     <textarea id="devBotCode" rows="12" spellcheck="false" style="${inp};font-family:var(--font-mono);font-size:11.5px;line-height:1.5;resize:vertical">${esc(d.code)}</textarea>
 
     <label style="display:flex;align-items:flex-start;gap:9px;margin-top:12px;font-size:12px;line-height:1.5;color:var(--fg-2);cursor:pointer">
@@ -21140,7 +21393,11 @@ function _devBotInstallSheet() {
       <span>${_T('I wrote this file or I have read it, and I understand it will place real orders within the limits above.',
                  'Escribí este archivo o lo he leído, y entiendo que colocará órdenes reales dentro de los límites anteriores.')}</span>
     </label>
-    <button onclick="window.__devBotInstall()" style="width:100%;margin-top:12px;background:var(--accent);color:#000;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:700;cursor:pointer">${_T('Add bot', 'Añadir bot')}</button>
+    <button onclick="${ed ? `window.__devBotUpdate('${existing.id}')` : 'window.__devBotInstall()'}" style="width:100%;margin-top:12px;background:var(--accent);color:#000;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:700;cursor:pointer">${
+      ed ? _T('Update bot', 'Actualizar bot') : _T('Add bot', 'Añadir bot')}</button>
+    ${ed ? `<div style="font-size:10.5px;color:var(--fg-3);margin-top:8px;line-height:1.5;text-align:center">${
+      _T('If it is running it will be restarted, so the new file is what actually runs.',
+         'Si está activo se reiniciará, para que el archivo nuevo sea el que corre.')}</div>` : ''}
   `)
 }
 
@@ -21160,11 +21417,13 @@ function _devBotsHtml() {
         ${running
           ? `<button onclick="window.__devBotStop('${b.id}')" style="${sb};border:1px solid var(--red);background:transparent;color:var(--red)">■ ${_T('Stop', 'Parar')}</button>`
           : `<button onclick="window.__devBotStart('${b.id}')" style="${sb};border:none;background:var(--accent);color:#000">▶ ${_T('Run', 'Ejecutar')}</button>`}
+        <button onclick="window.__devBotEdit('${b.id}')" style="${sb};border:1px solid var(--accent);background:transparent;color:var(--accent)">✎ ${_T('Edit', 'Editar')}</button>
         <button onclick="window.__devBotLogs('${b.id}')" style="${sb};border:1px solid var(--border2);background:transparent;color:var(--muted)">${_T('Log', 'Registro')}</button>
         <button onclick="window.__devBotDelete('${b.id}')" aria-label="Delete" style="${sb};border:none;background:transparent;color:var(--muted);font-size:16px">&times;</button>
       </div>
       <div style="font-size:10.5px;color:var(--fg-3);margin-top:6px">
-        ${_T('max', 'máx')} $${b.maxUsd}/${_T('order', 'orden')} · ${b.maxPerMin}/${_T('min', 'min')} · ${_T('every', 'cada')} ${b.everySec}s${
+        ${b.maxUsd > 0 ? `${_T('max', 'máx')} $${b.maxUsd}/${_T('order', 'orden')}` : _T('no size cap', 'sin límite de tamaño')} · ${
+          b.maxPerMin > 0 ? `${b.maxPerMin}/${_T('min', 'min')}` : _T('no rate cap', 'sin límite de ritmo')} · ${_T('every', 'cada')} ${b.everySec}s${
           bot?.blocked ? ` · <span style="color:var(--orange,#f59e0b)">${bot.blocked} ${_T('blocked', 'bloqueadas')}</span>` : ''}
       </div>
     </div>`
@@ -21177,7 +21436,9 @@ function _devBotsHtml() {
       </div>
       <div style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:5px">${
         _T('A file you wrote, running in this browser rather than on our servers. It stops when you close the app.',
-           'Un archivo tuyo, ejecutándose en este navegador y no en nuestros servidores. Se detiene al cerrar la app.')}</div>
+           'Un archivo tuyo, ejecutándose en este navegador y no en nuestros servidores. Se detiene al cerrar la app.')}
+        <button onclick="window.__devBotSpec()" style="background:none;border:none;padding:0;color:var(--accent);font-size:11.5px;font-weight:700;cursor:pointer;text-decoration:underline">${_T('File format', 'Formato del archivo')}</button>
+      </div>
     </div>
     <div style="padding:10px 12px 12px">
       ${list.map(row).join('')}

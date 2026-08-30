@@ -23,6 +23,19 @@
  * running a file they did not write should know that much, so the install screen says it
  * rather than burying it.
  *
+ * FULL CAPABILITY WITHOUT THE KEY
+ * -------------------------------
+ * A bot can do everything a built-in one can. It reads any public Hyperliquid /info
+ * endpoint through api.info(), and it places any trading action through api.exchange() —
+ * order, cancel, modify, updateLeverage, twapOrder. Those are SIGNED BY THE MAIN THREAD:
+ * the bot writes the action, the app holds the key.
+ *
+ * That is deliberately better than handing the key over, not a lesser version of it. An
+ * agent key can trade but cannot withdraw or transfer, so signing-on-request gives up
+ * nothing a bot could otherwise do — and it leaves nothing in the sandbox worth stealing.
+ * The one thing it blocks that a raw key would allow is approving ANOTHER agent for the
+ * account, which is an escalation no bot has a reason to want.
+ *
  * THE LIMITS ARE THE REAL SAFETY
  * ------------------------------
  * Isolation stops key theft. It does not stop a buggy loop from placing four hundred
@@ -54,19 +67,67 @@ const RUNNER = `
 'use strict'
 let __onTick = null
 let __ticks = 0
+let __seq = 0
+const __waiting = new Map()
 
 function log(...a) {
   self.postMessage({ t: 'log', level: 'info', msg: a.map(String).join(' ') })
 }
 
+// Ask the main thread for something and wait for the answer. This is the whole reason a
+// bot can be as capable as a built-in one without ever holding a key: it does not sign,
+// it asks, and the side that holds the key decides.
+function __req(kind, payload) {
+  const id = ++__seq
+  return new Promise((resolve, reject) => {
+    __waiting.set(id, { resolve, reject })
+    self.postMessage({ t: 'req', id, kind, payload })
+  })
+}
+
+const api = {
+  // Any read-only Hyperliquid /info request. Public data; no key involved.
+  info: (payload) => __req('info', payload),
+  candles: (coin, interval, startTime, endTime) => __req('info', {
+    type: 'candleSnapshot',
+    req: { coin, interval, startTime, endTime: endTime ?? Date.now() },
+  }),
+  // Any trading action the exchange client supports — order, cancel, modify,
+  // updateLeverage, twapOrder and so on. Signed by the app, not here.
+  exchange: (method, args) => __req('exchange', { method, args }),
+  order:    (args) => __req('exchange', { method: 'order', args }),
+  cancel:   (args) => __req('exchange', { method: 'cancel', args }),
+  modify:   (args) => __req('exchange', { method: 'modify', args }),
+}
+self.api = api
+
 self.onmessage = (e) => {
   const m = e.data
+  if (m.t === 'res') {
+    const w = __waiting.get(m.id)
+    if (!w) return
+    __waiting.delete(m.id)
+    if (m.error) w.reject(new Error(m.error)); else w.resolve(m.value)
+    return
+  }
   if (m.t === 'load') {
     try {
-      // The file runs once, here, to define its handler.
-      ;(0, eval)(m.code)
-      __onTick = (typeof onTick === 'function') ? onTick
-               : (typeof self.onTick === 'function') ? self.onTick : null
+      // The file is run inside a FUNCTION scope, not the worker's global one, and \`api\`
+      // and \`log\` are passed in as arguments rather than left lying around as globals.
+      //
+      // That is what makes the format collision-proof. Evaluated globally, a file that
+      // declared its own \`log\` would silently replace ours, and one that declared
+      // \`const api\` would die on "Identifier 'api' has already been declared" — an error
+      // pointing at our harness for something the author did nothing wrong to cause. Here
+      // a bot may declare any name it likes; the worst it can do is shadow a helper it
+      // then chose not to use.
+      //
+      // The trailing return is separated by a real newline, not a semicolon: a file whose
+      // last line is a // comment would otherwise swallow it.
+      const factory = new Function('api', 'log',
+        m.code + String.fromCharCode(10) +
+        ';return typeof onTick === "function" ? onTick : (typeof self.onTick === "function" ? self.onTick : null)')
+      __onTick = factory(api, log)
       if (!__onTick) {
         self.postMessage({ t: 'fatal', msg: 'No onTick(ctx) function found. Define: function onTick(ctx) { ... }' })
         return
@@ -80,16 +141,19 @@ self.onmessage = (e) => {
   if (m.t === 'tick') {
     if (!__onTick) return
     __ticks++
-    let out
-    try {
-      out = __onTick(m.ctx)
-    } catch (err) {
-      // A throw is a bug in one tick, not a reason to stop the bot.
-      self.postMessage({ t: 'log', level: 'error', msg: 'tick ' + __ticks + ' threw: ' + (err && err.message ? err.message : String(err)) })
-      return
-    }
-    const intents = out == null ? [] : (Array.isArray(out) ? out : [out])
-    self.postMessage({ t: 'intents', intents, tick: __ticks })
+    const n = __ticks
+    // onTick may be async — a bot that awaits api.info() or api.order() is the normal
+    // case now, not an exotic one. A rejected promise is reported like a throw.
+    Promise.resolve()
+      .then(() => __onTick(m.ctx))
+      .then((out) => {
+        const intents = out == null ? [] : (Array.isArray(out) ? out : [out])
+        self.postMessage({ t: 'intents', intents, tick: n })
+      })
+      .catch((err) => {
+        // A throw is a bug in one tick, not a reason to stop the bot.
+        self.postMessage({ t: 'log', level: 'error', msg: 'tick ' + n + ' threw: ' + (err && err.message ? err.message : String(err)) })
+      })
   }
 }
 `
@@ -99,18 +163,34 @@ export const DEVBOT_TEMPLATE = `// Runs on YOUR device, in a sandbox with no acc
 // Called once per tick with the current state of the one market you chose.
 //
 // ctx = {
-//   coin, mark, tick,          // market you selected + its mark price
-//   position: { szi, entryPx, unrealizedPnl } | null,
-//   openOrders: [ { oid, isBuy, sz, limitPx } ],
-//   equity,                    // account value in USDC
-//   candles: [ { t, o, h, l, c, v } ]   // recent 1h candles, oldest first
+//   coin, mark, tick,          // your home market + its mark price
+//   position: { szi, entryPx, unrealizedPnl } | null,   // in the home market
+//   openOrders: [ { oid, isBuy, sz, limitPx } ],        // in the home market
+//   equity, paper,
+//   candles: [ { t, o, h, l, c, v } ],  // recent 1h candles, oldest first
+//
+//   // the whole account, if you want more than one market:
+//   mids:      { BTC: '78000', ... },
+//   positions: [ { coin, szi, entryPx, unrealizedPnl, leverage, liquidationPx, marginUsed } ],
+//   orders:    [ { oid, coin, isBuy, sz, limitPx } ],
+//   margin:    { accountValue, totalMarginUsed, withdrawable },
 // }
 //
-// Return an intent, an array of them, or nothing:
+// THE EASY WAY — return an intent, an array of them, or nothing:
 //   { type: 'market', isBuy: true,  usd: 25 }
 //   { type: 'limit',  isBuy: false, usd: 25, px: 70000 }
 //   { type: 'cancel', oid: 12345 }
 //   { type: 'close' }
+//
+// THE FULL WAY — onTick can be async, and api.* gives you the whole exchange:
+//   await api.info({ type: 'l2Book', coin: 'BTC' })     any public /info request
+//   await api.candles('ETH', '15m', Date.now() - 864e5)
+//   await api.order({ orders: [...], grouping: 'na' })  any order the SDK accepts
+//   await api.cancel({ cancels: [{ a: 0, o: 123 }] })
+//   await api.exchange('updateLeverage', { asset: 0, isCross: true, leverage: 5 })
+//
+// api.* is signed by the app, not by this file — your key is never in here. Actions that
+// move funds, and approving another agent, are refused; an agent key cannot do them anyway.
 //
 // log(...) writes to this bot's log panel.
 
@@ -197,8 +277,17 @@ export class DeviceBot {
     this.say('info', 'Stopped')
   }
 
-  _onMessage(m) {
+  async _onMessage(m) {
     if (!m || this.stopped) return
+    if (m.t === 'req') {
+      // The bot asked for something. The answer comes from the main thread, which is the
+      // only side that can read a key or reach the exchange.
+      let value = null, error = null
+      try { value = await this.deps.request(this.def, m.kind, m.payload, this) }
+      catch (e) { error = e?.message ?? String(e) }
+      if (!this.stopped && this.worker) this.worker.postMessage({ t: 'res', id: m.id, value, error })
+      return
+    }
     if (m.t === 'fatal') { this.say('error', m.msg); this.stop(); return }
     if (m.t === 'log')   { this.say(m.level === 'error' ? 'error' : 'info', m.msg); return }
     if (m.t === 'ready') {
@@ -219,6 +308,12 @@ export class DeviceBot {
     if (!ctx) return
     this.worker.postMessage({ t: 'tick', ctx })
   }
+
+  // Called by the bridge when a raw api.exchange() call places orders, so the rate cap
+  // governs BOTH routes. Without this a bot could sidestep it entirely by using
+  // api.order() instead of returning an intent — which would make the cap decorative.
+  noteSend() { this.sentAt.push(Date.now()) }
+  rateBlocked() { return this.def.maxPerMin > 0 && this._recentSends() >= this.def.maxPerMin }
 
   // How many orders were sent in the last 60s.
   _recentSends() {
@@ -243,12 +338,15 @@ export class DeviceBot {
 
     const usd = Number(it.usd)
     if (!Number.isFinite(usd) || usd <= 0) return 'order needs a positive usd amount'
-    if (usd > this.def.maxUsd) return `order $${usd.toFixed(2)} over the $${this.def.maxUsd} per-order limit you set`
+    // 0 means the user deliberately switched a limit off, which is different from a
+    // missing value meaning "use the default".
+    if (this.def.maxUsd > 0 && usd > this.def.maxUsd) return `order $${usd.toFixed(2)} over the $${this.def.maxUsd} per-order limit you set`
 
-    if (this._recentSends() >= this.def.maxPerMin) return `rate limit: ${this.def.maxPerMin} orders/min reached`
+    if (this.rateBlocked()) return `rate limit: ${this.def.maxPerMin} orders/min reached`
 
     const resting = (ctx?.openOrders?.length ?? 0)
-    if (type === 'limit' && resting >= (this.def.maxOpen ?? 20)) return `already ${resting} resting orders, limit ${this.def.maxOpen ?? 20}`
+    const cap = this.def.maxOpen ?? 20
+    if (type === 'limit' && cap > 0 && resting >= cap) return `already ${resting} resting orders, limit ${cap}`
 
     if (type === 'limit') {
       const px = Number(it.px)

@@ -562,6 +562,26 @@ export async function modifyOrderPrice({ coin, oid, isBuy, sz, newPx, tpsl, isTr
 }
 
 /**
+ * Sign and send one exchange action on behalf of a device bot.
+ *
+ * This is the whole reason a user's own bot can be as capable as a built-in one without
+ * ever holding a key. The bot composes the action; this signs it with the account's agent
+ * key and sends it. The key stays in this module, in the main thread, exactly where it
+ * already was — nothing new is exposed by this function that a button could not already do.
+ *
+ * `method` is checked against a whitelist by the CALLER (_DEVBOT_METHODS in main.js), which
+ * is where the policy about what a bot may do belongs. This deliberately does not accept an
+ * arbitrary string blindly: an unknown method would land on a client that does not have it
+ * and throw a confusing TypeError, so it is named plainly instead.
+ */
+export async function exchangeAction(acct, method, args) {
+  const client = _client(acct)
+  if (!client) throw new Error('No signing key for this account')
+  if (typeof client[method] !== 'function') throw new Error(`Exchange has no "${method}" action`)
+  return client[method](args)
+}
+
+/**
  * Cancel an open order
  */
 export async function cancelOrder({ coin, oid, acct = null }) {
