@@ -13529,8 +13529,339 @@ function _pulseFeeChartHtml() {
     ], '__pulseFeePeriod')}`
 }
 
+// ─── SIGNALS ──────────────────────────────────────────────────────────────────
+//
+// Pulse answers "what is the exchange doing". Signals answers "what is THIS market doing",
+// for one coin you pick: how it has performed over each window, what a chosen indicator
+// currently reads, and whatever you wrote down about it last time.
+//
+// A word on what this is NOT. Every reading below states what an indicator SAYS — "RSI is
+// 71, which is the overbought end of its range" — and never what to do about it. An
+// indicator is a summary of past prices; dressing one up as a recommendation would be
+// inventing a confidence nothing here has earned. The notes exist because your own reason
+// for watching a market is worth more than any of these numbers, and it is the one thing
+// the app cannot compute for you.
+const SIG_KEY_COIN  = 'hliq_sig_coin'
+const SIG_KEY_CMP   = 'hliq_sig_cmp'
+const SIG_KEY_IND   = 'hliq_sig_ind'
+const SIG_KEY_NOTES = 'hliq_sig_notes'
+
+let _sigCoin = null, _sigCmp = null, _sigInd = 'rsi', _sigTf = PULSE_TF_DEFAULT
+try {
+  _sigCoin = localStorage.getItem(SIG_KEY_COIN) || null
+  _sigCmp  = localStorage.getItem(SIG_KEY_CMP)  || null
+  _sigInd  = localStorage.getItem(SIG_KEY_IND)  || 'rsi'
+  _sigTf   = localStorage.getItem('hliq_sig_tf') || PULSE_TF_DEFAULT
+} catch {}
+
+function _sigNotesLoad() { try { return JSON.parse(localStorage.getItem(SIG_KEY_NOTES)) || {} } catch { return {} } }
+function _sigNotesSave(m) { try { localStorage.setItem(SIG_KEY_NOTES, JSON.stringify(m)) } catch {} }
+
+// ── maths, on plain close arrays ────────────────────────────────────────────
+// Each returns null rather than a wrong number when there is not enough history — a
+// 14-period RSI over 9 candles is not a weak signal, it is not an RSI.
+function _sma(a, n) { return a.length < n ? null : a.slice(-n).reduce((x, y) => x + y, 0) / n }
+function _ema(a, n) {
+  if (a.length < n) return null
+  const k = 2 / (n + 1)
+  let e = a.slice(0, n).reduce((x, y) => x + y, 0) / n
+  for (let i = n; i < a.length; i++) e = a[i] * k + e * (1 - k)
+  return e
+}
+function _rsi(a, n = 14) {
+  if (a.length < n + 1) return null
+  let gain = 0, loss = 0
+  for (let i = a.length - n; i < a.length; i++) {
+    const d = a[i] - a[i - 1]
+    if (d >= 0) gain += d; else loss -= d
+  }
+  if (loss === 0) return gain === 0 ? 50 : 100
+  const rs = (gain / n) / (loss / n)
+  return 100 - 100 / (1 + rs)
+}
+function _stdev(a) {
+  if (a.length < 2) return null
+  const m = a.reduce((x, y) => x + y, 0) / a.length
+  return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - 1))
+}
+
+// Closes for a coin over a window, from the candles Pulse already caches.
+function _sigCloses(coin, iv, ms) {
+  const raw = _pulseCandles[coin + '|' + iv]
+  if (!Array.isArray(raw)) return null
+  const cut = ms ? raw.filter(k => +k.t >= Date.now() - ms) : raw
+  return cut.map(k => parseFloat(k.c)).filter(Number.isFinite)
+}
+
+// Percentage move across a window. Null when the window has no history yet, which is
+// different from 0% and must read differently.
+function _sigPerf(coin, label) {
+  const row = _PULSE_TF.find(x => x[0] === label)
+  if (!row) return null
+  const c = _sigCloses(coin, row[1], row[2])
+  if (!c || c.length < 2) return null
+  return (c[c.length - 1] - c[0]) / c[0] * 100
+}
+
+// ── the indicators ──────────────────────────────────────────────────────────
+// Each reports { head, body, tone }. `tone` colours the reading; it is a description of
+// where the number sits in its own range, NOT a view on the market.
+const _SIG_INDICATORS = {
+  rsi: {
+    label: () => 'RSI (14)',
+    blurb: () => _T('How one-sided recent moves have been, 0–100.', 'Cómo de unilaterales han sido los movimientos, 0–100.'),
+    run(c) {
+      const v = _rsi(c, 14)
+      if (v == null) return null
+      const tone = v >= 70 ? 'warn' : v <= 30 ? 'warn' : 'neu'
+      const where = v >= 70 ? _T('the overbought end of its range', 'el extremo de sobrecompra')
+                  : v <= 30 ? _T('the oversold end of its range', 'el extremo de sobreventa')
+                  : _T('the middle of its range', 'la zona media')
+      return { head: v.toFixed(1), tone,
+        body: _T(`Recent candles have been ${v >= 50 ? 'more up than down' : 'more down than up'}, putting RSI at ${where}. RSI can sit at an extreme for a long time in a trending market.`,
+                 `Las velas recientes han sido ${v >= 50 ? 'más al alza que a la baja' : 'más a la baja que al alza'}, dejando el RSI en ${where}. El RSI puede quedarse en un extremo mucho tiempo en tendencia.`) }
+    },
+  },
+  ema: {
+    label: () => _T('EMA cross (9 / 21)', 'Cruce EMA (9 / 21)'),
+    blurb: () => _T('Where the fast average sits against the slow one.', 'Dónde está la media rápida frente a la lenta.'),
+    run(c) {
+      const f = _ema(c, 9), sl = _ema(c, 21)
+      if (f == null || sl == null) return null
+      const gap = (f - sl) / sl * 100
+      return { head: (gap >= 0 ? '+' : '') + gap.toFixed(2) + '%', tone: gap >= 0 ? 'pos' : 'neg',
+        body: _T(`The 9-period average is ${Math.abs(gap).toFixed(2)}% ${gap >= 0 ? 'above' : 'below'} the 21-period one. Crossovers describe a move that has already happened — they lag by construction.`,
+                 `La media de 9 está un ${Math.abs(gap).toFixed(2)}% ${gap >= 0 ? 'por encima' : 'por debajo'} de la de 21. Los cruces describen un movimiento ya ocurrido — van con retraso por construcción.`) }
+    },
+  },
+  sma: {
+    label: () => _T('Distance from SMA 50', 'Distancia a la SMA 50'),
+    blurb: () => _T('How stretched price is from its own average.', 'Cuánto se aleja el precio de su media.'),
+    run(c) {
+      const m = _sma(c, 50)
+      if (m == null) return null
+      const last = c[c.length - 1]
+      const gap = (last - m) / m * 100
+      return { head: (gap >= 0 ? '+' : '') + gap.toFixed(2) + '%', tone: Math.abs(gap) > 10 ? 'warn' : 'neu',
+        body: _T(`Price is ${Math.abs(gap).toFixed(2)}% ${gap >= 0 ? 'above' : 'below'} its 50-period average. A large distance says the move is extended relative to its own recent history, not that it must revert.`,
+                 `El precio está un ${Math.abs(gap).toFixed(2)}% ${gap >= 0 ? 'por encima' : 'por debajo'} de su media de 50. Una distancia grande dice que el movimiento está extendido, no que deba revertir.`) }
+    },
+  },
+  boll: {
+    label: () => _T('Bollinger %B (20)', 'Bollinger %B (20)'),
+    blurb: () => _T('Where price sits inside its volatility band.', 'Dónde está el precio dentro de su banda.'),
+    run(c) {
+      if (c.length < 20) return null
+      const win = c.slice(-20)
+      const m = win.reduce((x, y) => x + y, 0) / 20
+      const sd = _stdev(win)
+      if (!sd) return null
+      const last = c[c.length - 1]
+      const pb = (last - (m - 2 * sd)) / (4 * sd) * 100
+      const tone = pb > 100 || pb < 0 ? 'warn' : 'neu'
+      return { head: pb.toFixed(0) + '%', tone,
+        body: _T(`Price sits ${pb > 100 ? 'above the upper band' : pb < 0 ? 'below the lower band' : `${pb.toFixed(0)}% of the way up the band`}. The bands are two standard deviations of the last 20 candles — they widen when the market gets noisier, so a touch is common in a fast move.`,
+                 `El precio está ${pb > 100 ? 'por encima de la banda superior' : pb < 0 ? 'por debajo de la inferior' : `al ${pb.toFixed(0)}% de la banda`}. Las bandas son dos desviaciones típicas de las últimas 20 velas — se ensanchan con el ruido, así que tocarlas es común.`) }
+    },
+  },
+  vol: {
+    label: () => _T('Realised volatility', 'Volatilidad realizada'),
+    blurb: () => _T('How much this market has actually been moving.', 'Cuánto se ha movido realmente este mercado.'),
+    run(c, iv) {
+      if (c.length < 21) return null
+      const rets = []
+      for (let i = c.length - 20; i < c.length; i++) rets.push(Math.log(c[i] / c[i - 1]))
+      const sd = _stdev(rets)
+      if (sd == null) return null
+      const perYear = iv === '1d' ? 365 : 24 * 365
+      const ann = sd * Math.sqrt(perYear) * 100
+      return { head: ann.toFixed(0) + '%', tone: ann > 100 ? 'warn' : 'neu',
+        body: _T(`Annualised from the last 20 candles. It measures size of movement, not direction — a market falling steadily and one rallying steadily can read the same.`,
+                 `Anualizada desde las últimas 20 velas. Mide el tamaño del movimiento, no la dirección — una caída y una subida sostenidas pueden leer igual.`) }
+    },
+  },
+}
+
+window.__sigSetCoin = function(c) { _sigCoin = c || null; try { localStorage.setItem(SIG_KEY_COIN, _sigCoin ?? '') } catch {}; if (_sigCoin) _pulseLoadCandles(_sigCoin); _pulseRender(_viewHost('deskPulse')) }
+window.__sigSetCmp  = function(c) {
+  _sigCmp = (c && c !== _sigCoin) ? c : null
+  try { localStorage.setItem(SIG_KEY_CMP, _sigCmp ?? '') } catch {}
+  if (_sigCmp) _pulseLoadCandles(_sigCmp)
+  _pulseRender(_viewHost('deskPulse'))
+}
+window.__sigSetTf   = function(l) { _sigTf = l; try { localStorage.setItem('hliq_sig_tf', l) } catch {}; _pulseRender(_viewHost('deskPulse')) }
+window.__sigSetInd  = function(k) { _sigInd = k; try { localStorage.setItem(SIG_KEY_IND, k) } catch {}; _pulseRender(_viewHost('deskPulse')) }
+
+window.__sigAddNote = function() {
+  const ta = document.getElementById('sigNoteInput')
+  const txt = (ta?.value ?? '').trim()
+  if (!txt || !_sigCoin) return
+  const all = _sigNotesLoad()
+  ;(all[_sigCoin] ??= []).unshift({ ts: Date.now(), text: txt.slice(0, 600) })
+  all[_sigCoin] = all[_sigCoin].slice(0, 50)
+  _sigNotesSave(all)
+  if (ta) ta.value = ''
+  _pulseRender(_viewHost('deskPulse'))
+}
+window.__sigDelNote = function(ts) {
+  const all = _sigNotesLoad()
+  if (all[_sigCoin]) all[_sigCoin] = all[_sigCoin].filter(n => n.ts !== ts)
+  _sigNotesSave(all)
+  _pulseRender(_viewHost('deskPulse'))
+}
+
+function _sigPerfCell(coin, label) {
+  const v = _sigPerf(coin, label)
+  if (v == null) return `<span style="color:var(--fg-3)">—</span>`
+  return `<span style="color:${v >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:700">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>`
+}
+
+function _sigRenderHtml() {
+  // Signals skips _pulseRenderInner, which is where the exchange data is normally
+  // requested — without this the market list never loads and the view sits on
+  // "Loading markets…" forever. _pulseFetch is cached and throttled, so asking here is free.
+  _pulseFetch()
+  // Candidate markets, ranked by open interest. Ranking the FULL row set rather than
+  // reusing _pulseData.topOi, which is a short leaderboard slice — the picker should offer
+  // a real choice of markets rather than the same five.
+  const rows = [...(_pulseData?.rows ?? [])]
+    .sort((a, b) => (b.oi ?? 0) - (a.oi ?? 0))
+    .slice(0, 24)
+  const coins = [...new Set(rows.map(r => r.coin))]
+  if (!_sigCoin && coins.length) _sigCoin = coins[0]
+  if (_sigCoin) _pulseLoadCandles(_sigCoin)
+  if (_sigCmp)  _pulseLoadCandles(_sigCmp)
+
+  if (!coins.length) return `<div class="mob-v-empty">${_T('Loading markets…', 'Cargando mercados…')}</div>`
+
+  const chip = (c, sel, fn) => `<button onclick="window.${fn}('${esc(c)}')" style="flex-shrink:0;padding:6px 12px;border-radius:999px;border:1px solid ${sel ? 'var(--accent)' : 'var(--border2)'};background:${sel ? 'var(--accent)' : 'transparent'};color:${sel ? '#000' : 'var(--fg-2)'};font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">${esc(_ocCoinLabel(c))}</button>`
+
+  const tfs = _PULSE_TF.map(x => x[0])
+  const perfRow = (coin) => `<tr>
+    <td style="padding:7px 8px 7px 0;font-size:12.5px;font-weight:700;white-space:nowrap">${esc(_ocCoinLabel(coin))}</td>
+    ${tfs.map(l => `<td style="padding:7px 4px;text-align:right;font-size:12px;font-family:var(--font-mono)">${_sigPerfCell(coin, l)}</td>`).join('')}
+  </tr>`
+
+  // The indicator runs on the window the user is looking at, so its reading and the
+  // performance column above it describe the same stretch of time.
+  const tfLabel = _sigTf
+  const tfRow = _PULSE_TF.find(x => x[0] === tfLabel) ?? _PULSE_TF[3]
+  const ind = _SIG_INDICATORS[_sigInd] ?? _SIG_INDICATORS.rsi
+  const closes = _sigCloses(_sigCoin, tfRow[1], tfRow[2])
+  const reading = closes ? ind.run(closes, tfRow[1]) : null
+  const cmpReading = (_sigCmp && closes) ? ind.run(_sigCloses(_sigCmp, tfRow[1], tfRow[2]) ?? [], tfRow[1]) : null
+  const toneCol = t => t === 'pos' ? 'var(--green)' : t === 'neg' ? 'var(--red)' : t === 'warn' ? 'var(--orange,#f59e0b)' : 'var(--fg)'
+
+  const notes = (_sigNotesLoad()[_sigCoin] ?? [])
+
+  return `<div style="padding:10px 12px 26px">
+    <div style="font-size:11.5px;color:var(--muted);line-height:1.45;margin-bottom:10px">${
+      _T('Pick a market, read how it has moved, and see what one indicator currently says about it.',
+         'Elige un mercado, mira cómo se ha movido y qué dice un indicador sobre él.')}</div>
+
+    <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">${_T('Market', 'Mercado')}</div>
+    <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${
+      coins.map(c => chip(c, c === _sigCoin, '__sigSetCoin')).join('')}</div>
+
+    <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:6px 0">${_T('Compare with', 'Comparar con')}</div>
+    <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">
+      <button onclick="window.__sigSetCmp('')" style="flex-shrink:0;padding:6px 12px;border-radius:999px;border:1px solid ${!_sigCmp ? 'var(--accent)' : 'var(--border2)'};background:${!_sigCmp ? 'var(--accent)' : 'transparent'};color:${!_sigCmp ? '#000' : 'var(--fg-2)'};font-size:12px;font-weight:700;cursor:pointer">${_T('None', 'Ninguno')}</button>
+      ${coins.filter(c => c !== _sigCoin).map(c => chip(c, c === _sigCmp, '__sigSetCmp')).join('')}
+    </div>
+
+    <div style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;margin-top:12px;overflow-x:auto">
+      <div style="font-size:12.5px;font-weight:800;margin-bottom:4px">${_T('Performance', 'Rendimiento')}</div>
+      <table style="width:100%;border-collapse:collapse;min-width:340px">
+        <tr><td></td>${tfs.map(l => `<td style="padding:0 4px;text-align:right;font-size:9.5px;color:var(--muted);text-transform:uppercase;font-weight:700">${l}</td>`).join('')}</tr>
+        ${perfRow(_sigCoin)}
+        ${_sigCmp ? perfRow(_sigCmp) : ''}
+      </table>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:8px;margin:14px 0 7px">
+      <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${_T('Indicator', 'Indicador')}</span>
+      <span style="flex:1"></span>
+      ${_pulseChartChips(tfLabel, _PULSE_TF.map(x => [x[0], x[0]]), '__sigSetTf')}
+    </div>
+    <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${
+      Object.entries(_SIG_INDICATORS).map(([k, v]) => `<button onclick="window.__sigSetInd('${k}')" style="flex-shrink:0;padding:6px 12px;border-radius:999px;border:1px solid ${k === _sigInd ? 'var(--accent)' : 'var(--border2)'};background:${k === _sigInd ? 'var(--accent)' : 'transparent'};color:${k === _sigInd ? '#000' : 'var(--fg-2)'};font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">${esc(v.label())}</button>`).join('')}</div>
+
+    <div style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:13px 14px">
+      <div style="font-size:10.5px;color:var(--muted);margin-bottom:8px">${esc(ind.blurb())} · ${esc(tfLabel)}</div>
+      ${reading ? `
+        <div style="display:flex;align-items:baseline;gap:10px">
+          <span style="font-size:26px;font-weight:800;font-family:var(--font-mono);color:${toneCol(reading.tone)}">${esc(reading.head)}</span>
+          <span style="font-size:12px;font-weight:700;color:var(--fg-2)">${esc(_ocCoinLabel(_sigCoin))}</span>
+          ${cmpReading ? `<span style="flex:1"></span><span style="font-size:15px;font-weight:800;font-family:var(--font-mono);color:${toneCol(cmpReading.tone)}">${esc(cmpReading.head)}</span><span style="font-size:11px;color:var(--muted)">${esc(_ocCoinLabel(_sigCmp))}</span>` : ''}
+        </div>
+        <p style="font-size:12px;line-height:1.55;color:var(--fg-2);margin:9px 0 0">${esc(reading.body)}</p>`
+      : `<div style="font-size:12px;color:var(--fg-3);line-height:1.5">${
+          closes === null ? _T('Loading price history…', 'Cargando historial…')
+                          : _T('Not enough history in this window to compute it. Try a longer timeframe.', 'No hay suficiente historial en esta ventana. Prueba un plazo más largo.')}</div>`}
+      <div style="font-size:10.5px;color:var(--fg-3);margin-top:10px;line-height:1.5;border-top:1px solid var(--border);padding-top:9px">${
+        _T('An indicator summarises past prices. This says what it currently reads, not what to do about it.',
+           'Un indicador resume precios pasados. Esto dice lo que marca, no qué hacer.')}</div>
+    </div>
+
+    <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:16px 0 7px">${_T('Your notes on', 'Tus notas sobre')} ${esc(_ocCoinLabel(_sigCoin))}</div>
+    <textarea id="sigNoteInput" rows="2" placeholder="${_T('Why are you watching this market?', '¿Por qué sigues este mercado?')}"
+      style="width:100%;box-sizing:border-box;background:var(--panel-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;font-size:13px;color:var(--fg);outline:none;resize:vertical;font-family:inherit"></textarea>
+    <button onclick="window.__sigAddNote()" style="margin-top:7px;background:var(--accent);color:#000;border:none;border-radius:9px;padding:7px 14px;font-size:12.5px;font-weight:700;cursor:pointer">${_T('Save note', 'Guardar nota')}</button>
+    ${notes.length ? `<div style="margin-top:11px;display:flex;flex-direction:column;gap:7px">${
+      notes.map(n => `<div style="border:1px solid var(--border);border-radius:10px;background:var(--panel-2);padding:9px 11px">
+        <div style="display:flex;align-items:baseline;gap:8px">
+          <span style="font-size:10px;color:var(--muted)">${new Date(n.ts).toLocaleString(undefined, { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' })}</span>
+          <span style="flex:1"></span>
+          <button onclick="window.__sigDelNote(${n.ts})" style="background:none;border:none;color:var(--muted);font-size:15px;line-height:1;cursor:pointer;padding:0 2px">&times;</button>
+        </div>
+        <div style="font-size:12.5px;line-height:1.5;color:var(--fg-2);margin-top:3px;white-space:pre-wrap">${esc(n.text)}</div>
+      </div>`).join('')}</div>`
+    : `<div style="font-size:11.5px;color:var(--fg-3);margin-top:9px;line-height:1.5">${
+        _T('Nothing yet. A note about why you are watching a market outlasts any reading above it.',
+           'Nada aún. Una nota sobre por qué sigues un mercado dura más que cualquier lectura.')}</div>`}
+  </div>`
+}
+
+// ── the three sections ──────────────────────────────────────────────────────
+let _pulseSeg = 'pulse'
+try { _pulseSeg = localStorage.getItem('hliq_pulse_seg') || 'pulse' } catch {}
+window.__pulseSetSeg = function(v) {
+  _pulseSeg = v
+  try { localStorage.setItem('hliq_pulse_seg', v) } catch {}
+  const host = _viewHost('deskPulse')
+  // Analysis owns its container (it reconciles iframes rather than redrawing), so hand it
+  // a clean one when switching in, and let Pulse rebuild from scratch when switching away.
+  if (host) host.innerHTML = ''
+  _pulseRender(host)
+}
+
+function _pulseSegHeader() {
+  const tab = (k, lbl) => `<button onclick="window.__pulseSetSeg('${k}')" style="flex:1;padding:6px 10px;border:none;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap;background:${_pulseSeg === k ? 'var(--accent)' : 'transparent'};color:${_pulseSeg === k ? '#000' : 'var(--muted)'};transition:background .15s">${lbl}</button>`
+  return `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:8px;padding:11px 12px 9px;background:var(--bg);border-bottom:1px solid var(--border)">
+    <div style="flex:1;display:flex;gap:3px;background:var(--panel-1);border-radius:10px;padding:3px">${
+      tab('signals', _T('Signals', 'Señales'))}${tab('pulse', 'Pulse')}${tab('analysis', _T('Analysis', 'Análisis'))}</div>
+    <button onclick="window.mobVHome()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+  </div>`
+}
+
 function _pulseRender(el) {
   if (!el) return
+  // Analysis reconciles its own DOM (it must not tear down live chart iframes), so it is
+  // handed the container rather than drawn into a rebuilt one.
+  if (_pulseSeg === 'analysis') {
+    let host = el.querySelector('#pulseSegBody')
+    if (!host) {
+      el.innerHTML = _pulseSegHeader() + '<div id="pulseSegBody"></div>'
+      host = el.querySelector('#pulseSegBody')
+    }
+    _anaRender(host)
+    return
+  }
+  if (_pulseSeg === 'signals') {
+    try { el.innerHTML = _pulseSegHeader() + _sigRenderHtml() }
+    catch (e) { console.warn('[signals]', e.message); el.innerHTML = _pulseSegHeader() + `<div class="mob-v-empty">${_T('Could not draw this view.', 'No se pudo dibujar esta vista.')}</div>` }
+    return
+  }
   try { _pulseRenderInner(el) } catch (e) {
     // A throw here used to leave innerHTML unassigned with the row still marked expanded,
     // so every later render threw too and the whole tab stopped responding to taps. That
@@ -13560,7 +13891,7 @@ function _pulseRenderInner(el) {
   }
 
   const green = 'var(--green)', red = 'var(--red)'
-  el.innerHTML = `<div style="padding:2px 0 90px">
+  el.innerHTML = _pulseSegHeader() + `<div style="padding:2px 0 90px">
     <div style="padding:14px 16px 6px">
       <div style="font-size:17px;font-weight:800">${_T('Hyperliquid Pulse', 'Pulso de Hyperliquid')}</div>
       <div style="font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.45">${
