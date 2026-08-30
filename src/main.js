@@ -7610,7 +7610,7 @@ function _allAcctReaggregate() {
     }))) },
     fills:       visible.flatMap(r => (r.fills ?? []).map(f => ({ ...f, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr }))),
     openOrders:  visible.flatMap(r => (r.openOrders ?? []).map(o => ({ ...o, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr }))),
-    funding:     [],
+    funding:     visible.flatMap(r => (r.funding ?? []).map(f => ({ ...f, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr }))),
     portfolio:   _mergePortfolio(visible),
     ledger:      visible.flatMap(r => (r.ledgerEntries ?? []).map(e => ({ ...e, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr }))),
     webData:     { cumLedger: visible.reduce((s, r) => s + (r.totalDeposited || 0) - (r.totalWithdrawn || 0), 0) },
@@ -13593,6 +13593,26 @@ function _sigCloses(coin, iv, ms) {
   return cut.map(k => parseFloat(k.c)).filter(Number.isFinite)
 }
 
+// Weekly closes, bucketed from the daily series by UTC week. A 200-week average needs
+// ~3.8 years of history and Hyperliquid's own data starts in 2023, so for most markets
+// this will not be computable yet — which the indicator says rather than quietly averaging
+// whatever it happens to have.
+function _sigWeeklyCloses(coin) {
+  const raw = _pulseCandles[coin + '|1d']
+  if (!Array.isArray(raw)) return null
+  const byWeek = new Map()
+  for (const k of raw) {
+    const t = +k.t
+    const c = parseFloat(k.c)
+    if (!Number.isFinite(t) || !Number.isFinite(c)) continue
+    // Monday-anchored week index; the last close in a bucket wins, so each entry is that
+    // week's closing price rather than an average of it.
+    const wk = Math.floor((t - 345600000) / 604800000)
+    byWeek.set(wk, c)
+  }
+  return [...byWeek.entries()].sort((a, b) => a[0] - b[0]).map(e => e[1])
+}
+
 // Percentage move across a window. Null when the window has no history yet, which is
 // different from 0% and must read differently.
 function _sigPerf(coin, label) {
@@ -13621,6 +13641,22 @@ const _SIG_INDICATORS = {
         body: _T(`Recent candles have been ${v >= 50 ? 'more up than down' : 'more down than up'}, putting RSI at ${where}. RSI can sit at an extreme for a long time in a trending market.`,
                  `Las velas recientes han sido ${v >= 50 ? 'más al alza que a la baja' : 'más a la baja que al alza'}, dejando el RSI en ${where}. El RSI puede quedarse en un extremo mucho tiempo en tendencia.`) }
     },
+    detail(c) {
+      const v = _rsi(c, 14)
+      let up = 0, dn = 0
+      for (let i = Math.max(1, c.length - 14); i < c.length; i++) (c[i] >= c[i - 1] ? up++ : dn++)
+      return {
+        how: _T('Average gain against average loss over the last 14 candles, mapped onto 0–100.',
+                'Ganancia media frente a pérdida media en las últimas 14 velas, mapeado a 0–100.'),
+        rows: [
+          [_T('Reading', 'Lectura'), v == null ? '—' : v.toFixed(1)],
+          [_T('Up / down candles', 'Velas al alza / baja'), `${up} / ${dn}`],
+          [_T('Conventional bands', 'Bandas habituales'), '30 / 70'],
+        ],
+        note: _T('70 and 30 are conventions, not thresholds the market respects. A strong trend can hold RSI above 70 for weeks.',
+                 '70 y 30 son convenciones, no umbrales que el mercado respete. Una tendencia fuerte puede mantener el RSI sobre 70 durante semanas.'),
+      }
+    },
   },
   ema: {
     label: () => _T('EMA cross (9 / 21)', 'Cruce EMA (9 / 21)'),
@@ -13632,6 +13668,20 @@ const _SIG_INDICATORS = {
       return { head: (gap >= 0 ? '+' : '') + gap.toFixed(2) + '%', tone: gap >= 0 ? 'pos' : 'neg',
         body: _T(`The 9-period average is ${Math.abs(gap).toFixed(2)}% ${gap >= 0 ? 'above' : 'below'} the 21-period one. Crossovers describe a move that has already happened — they lag by construction.`,
                  `La media de 9 está un ${Math.abs(gap).toFixed(2)}% ${gap >= 0 ? 'por encima' : 'por debajo'} de la de 21. Los cruces describen un movimiento ya ocurrido — van con retraso por construcción.`) }
+    },
+    detail(c) {
+      const f = _ema(c, 9), sl = _ema(c, 21)
+      return {
+        how: _T('Two exponentially weighted averages, one over 9 candles and one over 21, compared as a percentage.',
+                'Dos medias exponenciales, de 9 y 21 velas, comparadas en porcentaje.'),
+        rows: [
+          [_T('Fast (9)', 'Rápida (9)'), f == null ? '—' : '$' + fmtPrice(f)],
+          [_T('Slow (21)', 'Lenta (21)'), sl == null ? '—' : '$' + fmtPrice(sl)],
+          [_T('Last price', 'Último precio'), c.length ? '$' + fmtPrice(c[c.length - 1]) : '—'],
+        ],
+        note: _T('The cross itself is the signal people quote, but it happens after the move that caused it. Treat it as a description, not a warning.',
+                 'El cruce es lo que todo el mundo cita, pero ocurre después del movimiento que lo causó. Es una descripción, no un aviso.'),
+      }
     },
   },
   sma: {
@@ -13645,6 +13695,21 @@ const _SIG_INDICATORS = {
       return { head: (gap >= 0 ? '+' : '') + gap.toFixed(2) + '%', tone: Math.abs(gap) > 10 ? 'warn' : 'neu',
         body: _T(`Price is ${Math.abs(gap).toFixed(2)}% ${gap >= 0 ? 'above' : 'below'} its 50-period average. A large distance says the move is extended relative to its own recent history, not that it must revert.`,
                  `El precio está un ${Math.abs(gap).toFixed(2)}% ${gap >= 0 ? 'por encima' : 'por debajo'} de su media de 50. Una distancia grande dice que el movimiento está extendido, no que deba revertir.`) }
+    },
+    detail(c) {
+      const m = _sma(c, 50)
+      const last = c.length ? c[c.length - 1] : null
+      return {
+        how: _T('The mean of the last 50 closes, and how far price has travelled from it.',
+                'La media de los últimos 50 cierres y cuánto se ha alejado el precio.'),
+        rows: [
+          [_T('SMA 50', 'SMA 50'), m == null ? '—' : '$' + fmtPrice(m)],
+          [_T('Last price', 'Último precio'), last == null ? '—' : '$' + fmtPrice(last)],
+          [_T('Gap', 'Diferencia'), (m == null || last == null) ? '—' : '$' + fmtPrice(Math.abs(last - m))],
+        ],
+        note: _T('A moving average is a lagging summary. Distance from it measures how unusual the current price is against its own recent history, nothing more.',
+                 'Una media móvil es un resumen retrasado. La distancia mide lo inusual del precio frente a su propio historial, nada más.'),
+      }
     },
   },
   boll: {
@@ -13663,6 +13728,24 @@ const _SIG_INDICATORS = {
         body: _T(`Price sits ${pb > 100 ? 'above the upper band' : pb < 0 ? 'below the lower band' : `${pb.toFixed(0)}% of the way up the band`}. The bands are two standard deviations of the last 20 candles — they widen when the market gets noisier, so a touch is common in a fast move.`,
                  `El precio está ${pb > 100 ? 'por encima de la banda superior' : pb < 0 ? 'por debajo de la inferior' : `al ${pb.toFixed(0)}% de la banda`}. Las bandas son dos desviaciones típicas de las últimas 20 velas — se ensanchan con el ruido, así que tocarlas es común.`) }
     },
+    detail(c) {
+      const win = c.slice(-20)
+      const m = win.length === 20 ? win.reduce((x, y) => x + y, 0) / 20 : null
+      const sd = win.length === 20 ? _stdev(win) : null
+      const last = c.length ? c[c.length - 1] : null
+      return {
+        how: _T('A 20-candle average with a band two standard deviations either side; %B is where price sits across that band.',
+                'Media de 20 velas con una banda de dos desviaciones típicas a cada lado; %B es dónde está el precio en esa banda.'),
+        rows: [
+          [_T('Upper band', 'Banda superior'), (m == null || sd == null) ? '—' : '$' + fmtPrice(m + 2 * sd)],
+          [_T('Middle (SMA 20)', 'Media (SMA 20)'), m == null ? '—' : '$' + fmtPrice(m)],
+          [_T('Lower band', 'Banda inferior'), (m == null || sd == null) ? '—' : '$' + fmtPrice(m - 2 * sd)],
+          [_T('Last price', 'Último precio'), last == null ? '—' : '$' + fmtPrice(last)],
+        ],
+        note: _T('The band width IS the volatility — it stretches in fast markets, so touching the edge is ordinary rather than extreme.',
+                 'El ancho de la banda ES la volatilidad — se estira en mercados rápidos, así que tocar el borde es normal, no extremo.'),
+      }
+    },
   },
   vol: {
     label: () => _T('Realised volatility', 'Volatilidad realizada'),
@@ -13679,6 +13762,61 @@ const _SIG_INDICATORS = {
         body: _T(`Annualised from the last 20 candles. It measures size of movement, not direction — a market falling steadily and one rallying steadily can read the same.`,
                  `Anualizada desde las últimas 20 velas. Mide el tamaño del movimiento, no la dirección — una caída y una subida sostenidas pueden leer igual.`) }
     },
+    detail(c, iv) {
+      const rets = []
+      for (let i = Math.max(1, c.length - 20); i < c.length; i++) rets.push(Math.log(c[i] / c[i - 1]))
+      const sd = _stdev(rets)
+      const perYear = iv === '1d' ? 365 : 24 * 365
+      const daily = sd == null ? null : sd * Math.sqrt(iv === '1d' ? 1 : 24) * 100
+      return {
+        how: _T('Standard deviation of the last 20 log returns, scaled to a year.',
+                'Desviación típica de los últimos 20 retornos logarítmicos, escalada a un año.'),
+        rows: [
+          [_T('Per candle', 'Por vela'), sd == null ? '—' : (sd * 100).toFixed(2) + '%'],
+          [_T('Per day', 'Por día'), daily == null ? '—' : daily.toFixed(2) + '%'],
+          [_T('Candles used', 'Velas usadas'), String(rets.length)],
+        ],
+        note: _T('A 60% annualised reading implies a typical day of roughly 3%. It says nothing about which way.',
+                 'Un 60% anualizado implica un día típico de ~3%. No dice en qué dirección.'),
+      }
+    },
+  },
+  // A long-horizon anchor. Deliberately the last one: it needs about 3.8 years of history,
+  // which Hyperliquid's own data does not yet reach for most markets.
+  ma200w: {
+    label: () => _T('200-week average', 'Media de 200 semanas'),
+    blurb: () => _T('Price against its long-run average.', 'Precio frente a su media de largo plazo.'),
+    weekly: true,
+    run(w) {
+      if (!Array.isArray(w)) return null
+      if (w.length < 200) {
+        return { head: `${w.length}/200`, tone: 'neu', partial: true,
+          body: _T(`Only ${w.length} weeks of history exist for this market — a 200-week average needs 200. Hyperliquid's own price data starts in 2023, so this fills in over time rather than being computable today.`,
+                   `Solo hay ${w.length} semanas de historial — una media de 200 semanas necesita 200. Los datos de Hyperliquid empiezan en 2023, así que esto se completará con el tiempo.`) }
+      }
+      const ma = _sma(w, 200)
+      const last = w[w.length - 1]
+      const gap = (last - ma) / ma * 100
+      return { head: (gap >= 0 ? '+' : '') + gap.toFixed(1) + '%', tone: gap >= 0 ? 'pos' : 'neg',
+        body: _T(`Price is ${Math.abs(gap).toFixed(1)}% ${gap >= 0 ? 'above' : 'below'} its 200-week average of $${fmtPrice(ma)}. This is the slowest average here — it moves in months, so it describes the long-run trend rather than anything about this week.`,
+                 `El precio está un ${Math.abs(gap).toFixed(1)}% ${gap >= 0 ? 'por encima' : 'por debajo'} de su media de 200 semanas ($${fmtPrice(ma)}). Es la media más lenta — se mueve en meses, así que describe la tendencia de fondo.`) }
+    },
+    detail(w) {
+      const have = Array.isArray(w) ? w.length : 0
+      const ma = have >= 200 ? _sma(w, 200) : null
+      const last = have ? w[have - 1] : null
+      return {
+        how: _T('Mean of the last 200 weekly closes, bucketed from daily candles by UTC week.',
+                'Media de los últimos 200 cierres semanales, agrupados por semana UTC desde velas diarias.'),
+        rows: [
+          [_T('Weeks available', 'Semanas disponibles'), `${have} / 200`],
+          [_T('200w average', 'Media 200s'), ma == null ? '—' : '$' + fmtPrice(ma)],
+          [_T('Latest weekly close', 'Último cierre semanal'), last == null ? '—' : '$' + fmtPrice(last)],
+        ],
+        note: _T('Unlike the others this one ignores the timeframe you picked — a 200-week average is the same number whichever chart you are looking at.',
+                 'A diferencia de los demás, este ignora el plazo elegido — una media de 200 semanas es la misma cifra en cualquier gráfico.'),
+      }
+    },
   },
 }
 
@@ -13688,6 +13826,12 @@ window.__sigSetCmp  = function(c) {
   try { localStorage.setItem(SIG_KEY_CMP, _sigCmp ?? '') } catch {}
   if (_sigCmp) _pulseLoadCandles(_sigCmp)
   _pulseRender(_viewHost('deskPulse'))
+}
+// Not persisted: the back of the card is something you read once, not a mode to sit in.
+let _sigFlipped = false
+window.__sigFlip = function(on) {
+  _sigFlipped = !!on
+  document.getElementById('sigIndCard')?.classList.toggle('sig-flipped', _sigFlipped)
 }
 window.__sigSetTf   = function(l) { _sigTf = l; try { localStorage.setItem('hliq_sig_tf', l) } catch {}; _pulseRender(_viewHost('deskPulse')) }
 window.__sigSetInd  = function(k) { _sigInd = k; try { localStorage.setItem(SIG_KEY_IND, k) } catch {}; _pulseRender(_viewHost('deskPulse')) }
@@ -13747,9 +13891,14 @@ function _sigRenderHtml() {
   const tfLabel = _sigTf
   const tfRow = _PULSE_TF.find(x => x[0] === tfLabel) ?? _PULSE_TF[3]
   const ind = _SIG_INDICATORS[_sigInd] ?? _SIG_INDICATORS.rsi
-  const closes = _sigCloses(_sigCoin, tfRow[1], tfRow[2])
-  const reading = closes ? ind.run(closes, tfRow[1]) : null
-  const cmpReading = (_sigCmp && closes) ? ind.run(_sigCloses(_sigCmp, tfRow[1], tfRow[2]) ?? [], tfRow[1]) : null
+  // A 200-week average is the same number whatever chart you are on, so that one is fed
+  // weekly closes and ignores the selected timeframe. The rest run on the window in view.
+  const series    = ind.weekly ? _sigWeeklyCloses(_sigCoin) : _sigCloses(_sigCoin, tfRow[1], tfRow[2])
+  const cmpSeries = !_sigCmp ? null
+    : ind.weekly ? _sigWeeklyCloses(_sigCmp) : _sigCloses(_sigCmp, tfRow[1], tfRow[2])
+  const reading    = series ? ind.run(series, tfRow[1]) : null
+  const cmpReading = cmpSeries ? ind.run(cmpSeries, tfRow[1]) : null
+  const detail     = (series && ind.detail) ? ind.detail(series, tfRow[1]) : null
   const toneCol = t => t === 'pos' ? 'var(--green)' : t === 'neg' ? 'var(--red)' : t === 'warn' ? 'var(--orange,#f59e0b)' : 'var(--fg)'
 
   const notes = (_sigNotesLoad()[_sigCoin] ?? [])
@@ -13769,7 +13918,7 @@ function _sigRenderHtml() {
       ${coins.filter(c => c !== _sigCoin).map(c => chip(c, c === _sigCmp, '__sigSetCmp')).join('')}
     </div>
 
-    <div style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;margin-top:12px;overflow-x:auto">
+    <div data-dragscroll style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;margin-top:12px;overflow-x:auto">
       <div style="font-size:12.5px;font-weight:800;margin-bottom:4px">${_T('Performance', 'Rendimiento')}</div>
       <table style="width:100%;border-collapse:collapse;min-width:340px">
         <tr><td></td>${tfs.map(l => `<td style="padding:0 4px;text-align:right;font-size:9.5px;color:var(--muted);text-transform:uppercase;font-weight:700">${l}</td>`).join('')}</tr>
@@ -13786,21 +13935,44 @@ function _sigRenderHtml() {
     <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${
       Object.entries(_SIG_INDICATORS).map(([k, v]) => `<button onclick="window.__sigSetInd('${k}')" style="flex-shrink:0;padding:6px 12px;border-radius:999px;border:1px solid ${k === _sigInd ? 'var(--accent)' : 'var(--border2)'};background:${k === _sigInd ? 'var(--accent)' : 'transparent'};color:${k === _sigInd ? '#000' : 'var(--fg-2)'};font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">${esc(v.label())}</button>`).join('')}</div>
 
-    <div style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:13px 14px">
-      <div style="font-size:10.5px;color:var(--muted);margin-bottom:8px">${esc(ind.blurb())} · ${esc(tfLabel)}</div>
-      ${reading ? `
-        <div style="display:flex;align-items:baseline;gap:10px">
-          <span style="font-size:26px;font-weight:800;font-family:var(--font-mono);color:${toneCol(reading.tone)}">${esc(reading.head)}</span>
-          <span style="font-size:12px;font-weight:700;color:var(--fg-2)">${esc(_ocCoinLabel(_sigCoin))}</span>
-          ${cmpReading ? `<span style="flex:1"></span><span style="font-size:15px;font-weight:800;font-family:var(--font-mono);color:${toneCol(cmpReading.tone)}">${esc(cmpReading.head)}</span><span style="font-size:11px;color:var(--muted)">${esc(_ocCoinLabel(_sigCmp))}</span>` : ''}
+    <div id="sigIndCard" class="sig-card${_sigFlipped ? ' sig-flipped' : ''}">
+      <div class="sig-flip">
+        <div class="sig-face sig-front">
+          <div style="display:flex;align-items:flex-start;gap:8px">
+            <div style="flex:1;font-size:10.5px;color:var(--muted);margin-bottom:8px">${esc(ind.blurb())} · ${esc(tfLabel)}</div>
+            ${detail ? `<button class="sig-info" aria-label="${_T('How this works', 'Cómo funciona')}" title="${_T('How this works', 'Cómo funciona')}"
+              onclick="window.__sigFlip(true)">?</button>` : ''}
+          </div>
+          ${reading ? `
+            <div style="display:flex;align-items:baseline;gap:10px">
+              <span style="font-size:26px;font-weight:800;font-family:var(--font-mono);color:${toneCol(reading.tone)}">${esc(reading.head)}</span>
+              <span style="font-size:12px;font-weight:700;color:var(--fg-2)">${esc(_ocCoinLabel(_sigCoin))}</span>
+              ${cmpReading ? `<span style="flex:1"></span><span style="font-size:15px;font-weight:800;font-family:var(--font-mono);color:${toneCol(cmpReading.tone)}">${esc(cmpReading.head)}</span><span style="font-size:11px;color:var(--muted)">${esc(_ocCoinLabel(_sigCmp))}</span>` : ''}
+            </div>
+            <p style="font-size:12px;line-height:1.55;color:var(--fg-2);margin:9px 0 0">${esc(reading.body)}</p>`
+          : `<div style="font-size:12px;color:var(--fg-3);line-height:1.5">${
+              series === null ? _T('Loading price history…', 'Cargando historial…')
+                              : _T('Not enough history in this window to compute it. Try a longer timeframe.', 'No hay suficiente historial en esta ventana. Prueba un plazo más largo.')}</div>`}
+          <div style="font-size:10.5px;color:var(--fg-3);margin-top:10px;line-height:1.5;border-top:1px solid var(--border);padding-top:9px">${
+            _T('An indicator summarises past prices. This says what it currently reads, not what to do about it.',
+               'Un indicador resume precios pasados. Esto dice lo que marca, no qué hacer.')}</div>
         </div>
-        <p style="font-size:12px;line-height:1.55;color:var(--fg-2);margin:9px 0 0">${esc(reading.body)}</p>`
-      : `<div style="font-size:12px;color:var(--fg-3);line-height:1.5">${
-          closes === null ? _T('Loading price history…', 'Cargando historial…')
-                          : _T('Not enough history in this window to compute it. Try a longer timeframe.', 'No hay suficiente historial en esta ventana. Prueba un plazo más largo.')}</div>`}
-      <div style="font-size:10.5px;color:var(--fg-3);margin-top:10px;line-height:1.5;border-top:1px solid var(--border);padding-top:9px">${
-        _T('An indicator summarises past prices. This says what it currently reads, not what to do about it.',
-           'Un indicador resume precios pasados. Esto dice lo que marca, no qué hacer.')}</div>
+        ${detail ? `<div class="sig-face sig-back">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px">
+            <span style="font-size:13px;font-weight:800">${esc(ind.label())}</span>
+            <span style="flex:1"></span>
+            <button class="sig-info" aria-label="${_T('Back', 'Volver')}" onclick="window.__sigFlip(false)">&times;</button>
+          </div>
+          <p class="sig-about"><b>${_T('How it is worked out', 'Cómo se calcula')}</b> ${esc(detail.how)}</p>
+          <div style="display:flex;flex-direction:column;gap:5px;margin:10px 0">
+            ${detail.rows.map(([k, v]) => `<div style="display:flex;align-items:baseline;gap:8px;font-size:12px">
+              <span style="color:var(--muted)">${esc(k)}</span><span style="flex:1;border-bottom:1px dotted var(--border2);min-width:10px"></span>
+              <span style="font-weight:700;font-family:var(--font-mono)">${esc(v)}</span></div>`).join('')}
+          </div>
+          <p class="sig-about"><b>${_T('Where it sits now', 'Dónde está ahora')}</b> ${reading ? esc(reading.body) : esc(_T('Not computable in this window yet.', 'Aún no calculable en esta ventana.'))}</p>
+          <p class="sig-about sig-caveat"><b>${_T('Worth knowing', 'Conviene saber')}</b> ${esc(detail.note)}</p>
+        </div>` : ''}
+      </div>
     </div>
 
     <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:16px 0 7px">${_T('Your notes on', 'Tus notas sobre')} ${esc(_ocCoinLabel(_sigCoin))}</div>
@@ -25596,7 +25768,7 @@ async function _lbFetchResults(entries) {
     // headline silently fell back to the per-device sum — a DIFFERENT anchor, hundreds of
     // dollars away. Closing a position triggers exactly this rebuild, which is why the
     // equity stepped on a close and stayed there until every wallet had had a WS tick.
-    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, error: null }
+    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
   }
 
   for (let i = 0; i < entries.length; i++) {

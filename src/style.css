@@ -7221,3 +7221,30 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 /* The failure mode gets its own colour: it is the line that saves money. */
 .strat-risk { color: var(--fg-2); }
 .strat-risk b { color: var(--red, #ff4d6d); }
+
+
+/* ── Signals: the indicator card, with the explanation on its back ───────────
+   Same only-the-visible-face-sizes-the-card rule as the bot cards: stacking
+   both in one grid cell would make the short reading as tall as its long
+   explanation. */
+.sig-card { position: relative; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
+.sig-flip { position: relative; display: grid; transform-style: preserve-3d; transition: transform .48s cubic-bezier(.4,.15,.2,1); }
+.sig-face { grid-area: 1 / 1; backface-visibility: hidden; -webkit-backface-visibility: hidden; min-width: 0; padding: 13px 14px; }
+.sig-back { transform: rotateY(180deg); position: absolute; inset: 0; overflow: hidden; }
+.sig-card.sig-flipped .sig-flip  { transform: rotateY(180deg); }
+.sig-card.sig-flipped .sig-back  { position: relative; inset: auto; overflow: visible; }
+.sig-card.sig-flipped .sig-front { position: absolute; inset: 0; }
+@media (prefers-reduced-motion: reduce) { .sig-flip { transition: none; } }
+
+.sig-info {
+  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%;
+  border: 1px solid var(--border2); background: transparent; color: var(--muted);
+  font-size: 12px; font-weight: 800; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; padding: 0;
+}
+.sig-info:active { background: var(--panel-3); }
+.sig-about { margin: 0 0 9px; font-size: 12px; line-height: 1.55; color: var(--fg-2); }
+.sig-about:last-child { margin-bottom: 0; }
+.sig-about b { display: block; font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); font-weight: 800; margin-bottom: 2px; }
+.sig-caveat b { color: var(--orange, #f59e0b); }
