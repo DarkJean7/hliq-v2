@@ -284,6 +284,37 @@ export class DeviceBot {
     this.say('info', 'Loading ' + this.def.name)
   }
 
+  /**
+   * Run exactly one tick, collect what the bot decided, and stop.
+   *
+   * The built-in bots answer "what would you do?" with a sheet you read and dismiss. A dry
+   * run left going in the background answers the same question but hides the answer in a
+   * log, which is not the same thing at all. This gives the question a return value.
+   *
+   * Resolves once the worker reports the tick's intents — including an empty list, which
+   * is a real answer ("nothing right now") and must not look like a hang.
+   */
+  previewOnce(ms = 15000) {
+    return new Promise((resolve) => {
+      this._previewIntents = []
+      this._previewDone = false
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        clearInterval(poll)
+        const out = { intents: this._previewIntents, log: this.log.slice(), timedOut: !this._previewDone }
+        this.stop()
+        resolve(out)
+      }
+      const started = Date.now()
+      const poll = setInterval(() => {
+        if (this._previewDone || this.stopped || Date.now() - started > ms) finish()
+      }, 150)
+      this.start(true)
+    })
+  }
+
   stop() {
     this.stopped = true
     if (this.timer) { clearInterval(this.timer); this.timer = null }
@@ -314,7 +345,12 @@ export class DeviceBot {
       this._tick()
       return
     }
-    if (m.t === 'intents') this._execute(m.intents ?? [])
+    if (m.t === 'intents') {
+      // An empty list is a real answer — "nothing this tick" — so a preview must settle on
+      // it rather than sit there looking like it hung.
+      if (this._previewIntents) { this._previewIntents.push(...(m.intents ?? [])); this._previewDone = true }
+      this._execute(m.intents ?? [])
+    }
   }
 
   _tick() {

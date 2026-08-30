@@ -21117,8 +21117,90 @@ window.__devBotStart = function(id, dry = false) {
   bot.start(dry)
   _mobVRenderStrategies(document.getElementById('mobVContent'))
 }
-// A preview is the same bot, on the same live data, with every route out disabled.
-window.__devBotPreview = function(id) { window.__devBotStart(id, true) }
+/**
+ * Preview: ask the bot what it would do, and SHOW the answer.
+ *
+ * Same shape as the built-in bots' preview — press it, read a sheet, then either run it or
+ * back out. It runs one real tick against live data with every route to the exchange shut,
+ * so what you read is what your file actually decided, not a description of it.
+ */
+window.__devBotPreview = async function(id) {
+  const def = devBotsLoad().find(b => b.id === id)
+  if (!def) return
+  if (!isPaper() && !_stratTargetAddr()) { _paperToast(_T('Open an account first', 'Abre una cuenta primero'), 'err'); return }
+  _pulseLoadCandles(def.coin)
+  _devBotPreviewSheet(def, null)
+
+  // A throwaway instance: previewing must never disturb a copy of this bot that is
+  // already running, and must not leave one behind either.
+  const probe = new DeviceBot(def, { ..._devBotDeps, onChange: () => {} })
+  let res
+  try { res = await probe.previewOnce() }
+  catch (e) { res = { intents: [], log: [{ ts: Date.now(), level: 'error', msg: e?.message ?? String(e) }], timedOut: false } }
+  _devBotPreviewSheet(def, res)
+}
+
+function _devBotPreviewSheet(def, res) {
+  const money = v => '$' + Number(v).toFixed(2)
+  const describe = (it) => {
+    const t = String(it?.type ?? '?')
+    if (t === 'close')  return _T('Close the whole position', 'Cerrar toda la posición')
+    if (t === 'cancel') return _T('Cancel order', 'Cancelar orden') + ' #' + esc(String(it.oid ?? '?'))
+    const side = it.isBuy ? _T('Buy', 'Comprar') : _T('Sell', 'Vender')
+    if (t === 'limit')  return `${side} ${money(it.usd)} ${_T('as a limit at', 'como límite a')} $${fmtPrice(it.px)}`
+    return `${side} ${money(it.usd)} ${_T('at market', 'a mercado')}`
+  }
+
+  let body
+  if (!res) {
+    body = `<div style="padding:34px 16px;text-align:center;font-size:12.5px;color:var(--muted)">${
+      _T('Running one tick of your bot…', 'Ejecutando un tick de tu bot…')}</div>`
+  } else {
+    const lines = res.log.filter(l => !/^Loading |^DRY RUN|^Stopped$/.test(l.msg))
+    const col = l => l === 'error' ? 'var(--red)' : l === 'warn' ? 'var(--orange,#f59e0b)' : 'var(--fg-2)'
+    const failed = res.log.some(l => l.level === 'error')
+    // _devBotSheet already pads its body, so this adds none of its own.
+    body = `<div>
+      <div style="font-size:11.5px;color:var(--fg-3);line-height:1.5;margin-bottom:12px">${
+        _T('One tick, on live prices, with nothing sent. This is what your file decided.',
+           'Un tick, con precios reales y sin enviar nada. Esto es lo que decidió tu archivo.')}</div>
+
+      <div style="font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">${
+        _T('It would place', 'Colocaría')}</div>
+      ${res.intents.length
+        ? res.intents.map(it => `<div style="display:flex;align-items:center;gap:9px;border:1px solid var(--border2);border-radius:10px;background:var(--panel-2);padding:10px 12px;margin-bottom:6px">
+            <span style="width:7px;height:7px;border-radius:50%;background:${it.type === 'close' || it.type === 'cancel' ? 'var(--orange,#f59e0b)' : it.isBuy ? 'var(--green)' : 'var(--red)'};flex-shrink:0"></span>
+            <span style="font-size:13px;font-weight:700">${esc(describe(it))}</span>
+            <span style="flex:1"></span>
+            <span style="font-size:10.5px;color:var(--muted)">${esc(_ocCoinLabel(def.coin))}</span>
+          </div>`).join('')
+        : `<div style="border:1px dashed var(--border2);border-radius:10px;padding:13px;font-size:12.5px;color:var(--fg-3);line-height:1.5">${
+            res.timedOut
+              ? _T('It did not finish a tick in time. If it awaits something slow, that is expected — press Run and watch the Log instead.',
+                   'No terminó un tick a tiempo. Si espera algo lento, es normal — pulsa Ejecutar y mira el Registro.')
+              : _T('Nothing, right now. Its conditions were not met on this tick — which is a normal answer, not a failure.',
+                   'Nada, ahora mismo. No se cumplieron sus condiciones en este tick — es una respuesta normal, no un fallo.')}</div>`}
+
+      ${lines.length ? `<div style="font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:16px 0 6px">${
+        _T('What it said', 'Lo que dijo')}</div>
+        <div style="display:flex;flex-direction:column;gap:4px;font-family:var(--font-mono);font-size:11px;line-height:1.5">${
+          lines.slice().reverse().map(l => `<div style="color:${col(l.level)};word-break:break-word">${esc(l.msg)}</div>`).join('')}</div>` : ''}
+
+      <div style="font-size:10.5px;color:var(--fg-3);margin-top:14px;line-height:1.5;border-top:1px solid var(--border);padding-top:10px">${
+        failed
+          ? _T('Something errored above. Fix it with Edit before running this for real.',
+               'Algo falló arriba. Corrígelo con Editar antes de ejecutarlo de verdad.')
+          : _T('Nothing was placed and nothing is running — this bot is still stopped.',
+               'No se colocó nada y nada está activo — este bot sigue detenido.')}</div>
+    </div>`
+  }
+
+  _devBotSheet(_T('Preview', 'Vista previa') + ' · ' + esc(def.name), body + (res ? `
+    <div style="display:flex;gap:8px;padding:14px 0 0">
+      <button onclick="document.getElementById('devBotSheet')?.remove();window.__devBotStart('${def.id}')" style="flex:1;padding:12px;border-radius:10px;border:none;background:var(--accent);color:#000;font-size:14px;font-weight:700;cursor:pointer">▶ ${_T('Run it', 'Ejecutar')}</button>
+      <button onclick="document.getElementById('devBotSheet')?.remove()" style="flex:1;padding:12px;border-radius:10px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:14px;font-weight:700;cursor:pointer">${_T('Back', 'Volver')}</button>
+    </div>` : ''))
+}
 window.__devBotStop = function(id) {
   _devBots.get(id)?.stop()
   _mobVRenderStrategies(document.getElementById('mobVContent'))
@@ -21413,6 +21495,94 @@ function _devBotInstallSheet(existing = null) {
 }
 
 // ── the section in Strats ───────────────────────────────────────────────────
+/**
+ * A device bot rendered as one of the ordinary bot cards.
+ *
+ * Same markup as the built-ins — the flip, the badge, the accent, the expanding body — so
+ * a bot you wrote sits in the list as a peer rather than in a bolt-on section underneath.
+ * The only honest difference is the "on this device" chip, which is information, not status.
+ *
+ * The back of the card shows the file's own opening comment. A bot author documents at the
+ * top of the file whether anyone asked them to or not, so that text already exists; this
+ * just puts it where a reader looks.
+ */
+function _devBotHeaderDoc(code) {
+  const lines = String(code ?? '').split(String.fromCharCode(10))
+  const out = []
+  for (const raw of lines) {
+    const l = raw.trim()
+    if (!l) { if (out.length) break; continue }
+    if (l.startsWith('//')) {
+      const t = l.replace(/^\/+\s?/, '').trim()
+      if (/^[-─=]{3,}$/.test(t)) continue          // rule lines, not prose
+      out.push(t)
+      if (out.join(' ').length > 400) break
+    } else break                                    // first line of real code ends the doc
+  }
+  return out.join(' ').trim()
+}
+
+function _devBotCardHtml(b) {
+  const bot = _devBots.get(b.id)
+  const running = !!(bot && bot.worker && !bot.stopped)
+  const dry = running && bot.dry
+  const accent = dry ? 'var(--orange,#f59e0b)' : '#8b5cf6'
+  const expanded = _mobExpandedStrat === 'dev-' + b.id
+  const doc = _devBotHeaderDoc(b.code)
+  const sb = 'padding:6px 10px;border-radius:8px;font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap'
+
+  const body = `
+    <div style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:11.5px;color:var(--fg-2);margin-bottom:11px">
+      <span>${_T('Market', 'Mercado')} <b>${esc(_ocCoinLabel(b.coin))}</b></span>
+      <span>${b.maxUsd > 0 ? `${_T('max', 'máx')} <b>$${b.maxUsd}</b>/${_T('order', 'orden')}` : `<b>${_T('no size cap', 'sin límite')}</b>`}</span>
+      <span>${b.maxPerMin > 0 ? `<b>${b.maxPerMin}</b>/${_T('min', 'min')}` : `<b>${_T('no rate cap', 'sin límite')}</b>`}</span>
+      <span>${_T('every', 'cada')} <b>${b.everySec}s</b></span>
+      <span>${_T('leverage', 'apalanc.')} <b>${b.leverage}×</b></span>
+      ${bot?.blocked ? `<span style="color:var(--orange,#f59e0b)"><b>${bot.blocked}</b> ${_T('blocked', 'bloqueadas')}</span>` : ''}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${running
+        ? `<button onclick="window.__devBotStop('${b.id}')" style="${sb};flex:1;border:1px solid var(--red);background:transparent;color:var(--red)">■ ${_T('Stop', 'Parar')}</button>`
+        : `<button onclick="window.__devBotStart('${b.id}')" style="${sb};flex:1;border:none;background:var(--accent);color:#000">▶ ${_T('Run', 'Ejecutar')}</button>`}
+      <button class="mob-strat-logs-btn" onclick="window.__devBotPreview('${b.id}')" title="${_T('See what it would do, without doing it', 'Ver qué haría, sin hacerlo')}">👁 ${_T('Preview', 'Vista previa')}</button>
+      <button class="mob-strat-logs-btn" onclick="window.__devBotEdit('${b.id}')">✎ ${_T('Edit', 'Editar')}</button>
+      <button class="mob-strat-logs-btn" onclick="window.__devBotLogs('${b.id}')">${_T('Log', 'Registro')}</button>
+      <button class="mob-strat-logs-btn" onclick="window.__devBotDelete('${b.id}')">${_T('Delete', 'Borrar')}</button>
+    </div>`
+
+  return `<div class="mob-strat-card${running ? ' mob-strat-running' : ''}" id="strat-card-dev-${b.id}" style="--strat-accent:${accent}">
+    <div class="strat-flip">
+      <div class="strat-face strat-front">
+        <div class="mob-strat-header" onclick="window._mobExpandStrat('dev-${b.id}')">
+          <span class="strat-badge">🧩</span>
+          <div style="flex:1;min-width:0">
+            <div class="strat-name">${esc(b.name)}${
+              running ? `<span class="strat-live"><i></i>${dry ? _T('Dry run', 'Simulación') : _T('Running', 'Activo')}</span>` : ''}</div>
+            <div class="strat-tag">${running ? esc(_stratRunStatus ? _ocCoinLabel(b.coin) : b.coin) + ' · ' + (dry ? _T('sending nothing', 'sin enviar nada') : _T('live', 'en vivo'))
+              : _T('Your file', 'Tu archivo') + ' · ' + esc(_ocCoinLabel(b.coin))}</div>
+          </div>
+          ${doc ? `<button class="strat-info" title="${_T('What does this do?', '¿Qué hace esto?')}" aria-label="${_T('What does this do?', '¿Qué hace esto?')}"
+            onclick="event.stopPropagation();window.__stratFlip('dev-${b.id}',true)">?</button>` : ''}
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color:var(--muted);flex-shrink:0;transform:rotate(${expanded ? 180 : 0}deg);transition:transform .2s"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+      </div>
+      ${doc ? `<div class="strat-face strat-back">
+        <div class="strat-back-head">
+          <span class="strat-badge">🧩</span>
+          <span class="strat-name">${esc(b.name)}</span>
+          <span style="flex:1"></span>
+          <button class="strat-info" aria-label="${_T('Back', 'Volver')}" onclick="event.stopPropagation();window.__stratFlip('dev-${b.id}',false)">&times;</button>
+        </div>
+        <p class="strat-about"><b>${_T('From the file', 'Del archivo')}</b> ${esc(doc)}</p>
+        <p class="strat-about sig-caveat"><b>${_T('Runs where', 'Dónde corre')}</b> ${
+          _T('In this browser, on your machine. It stops when you close the app, and it is not covered by a subscription.',
+             'En este navegador, en tu máquina. Se detiene al cerrar la app y no requiere suscripción.')}</p>
+      </div>` : ''}
+    </div>
+    ${expanded ? `<div class="mob-strat-body">${body}</div>` : ''}
+  </div>`
+}
+
 function _devBotsHtml() {
   const list = devBotsLoad()
   const row = (b) => {
@@ -21445,28 +21615,19 @@ function _devBotsHtml() {
       </div>
     </div>`
   }
-  return `<div class="mob-v-setting-group" style="margin-bottom:14px">
-    <div style="padding:12px 14px 4px">
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="font-size:14px;font-weight:700">${_T('Your own bots', 'Tus propios bots')}</span>
-        <span style="font-size:9.5px;font-weight:800;color:var(--accent);border:1px solid var(--accent);border-radius:5px;padding:1px 5px">${_T('ON THIS DEVICE', 'EN ESTE DISPOSITIVO')}</span>
-      </div>
-      <div style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:5px">${
-        _T('A file you wrote, running in this browser rather than on our servers. It stops when you close the app.',
-           'Un archivo tuyo, ejecutándose en este navegador y no en nuestros servidores. Se detiene al cerrar la app.')}
-        <button onclick="window.__devBotSpec()" style="background:none;border:none;padding:0;color:var(--accent);font-size:11.5px;font-weight:700;cursor:pointer;text-decoration:underline">${_T('File format', 'Formato del archivo')}</button>
-      </div>
+  // Device bots are rendered as ordinary bot cards, in the same list as the built-ins —
+  // this returns only the "add one" affordance that follows them.
+  return `<div style="display:flex;gap:8px;margin:2px 0 6px">
+      <button onclick="window.__devBotNew()" style="flex:1;background:transparent;border:1px dashed var(--border2);border-radius:10px;color:var(--fg-2);font-size:12.5px;font-weight:700;padding:11px;cursor:pointer">+ ${_T('Write your own bot', 'Escribe tu propio bot')}</button>
+      <label style="flex:1;background:transparent;border:1px dashed var(--border2);border-radius:10px;color:var(--fg-2);font-size:12.5px;font-weight:700;padding:11px;cursor:pointer;text-align:center">
+        ${_T('Upload .js', 'Subir .js')}<input type="file" accept=".js,.txt,text/javascript" style="display:none" onchange="window.__devBotPickFile(this)">
+      </label>
     </div>
-    <div style="padding:10px 12px 12px">
-      ${list.map(row).join('')}
-      <div style="display:flex;gap:8px;margin-top:2px">
-        <button onclick="window.__devBotNew()" style="flex:1;background:transparent;border:1px dashed var(--border2);border-radius:9px;color:var(--fg-2);font-size:12.5px;font-weight:700;padding:9px;cursor:pointer">+ ${_T('Write one', 'Escribir uno')}</button>
-        <label style="flex:1;background:transparent;border:1px dashed var(--border2);border-radius:9px;color:var(--fg-2);font-size:12.5px;font-weight:700;padding:9px;cursor:pointer;text-align:center">
-          ${_T('Upload .js', 'Subir .js')}<input type="file" accept=".js,.txt,text/javascript" style="display:none" onchange="window.__devBotPickFile(this)">
-        </label>
-      </div>
-    </div>
-  </div>`
+    <div style="font-size:11px;color:var(--fg-3);line-height:1.5;margin:0 2px 4px">${
+      _T('Your own bots run in this browser, not on our servers — they stop when you close the app, and need no subscription.',
+         'Tus bots corren en este navegador, no en nuestros servidores — se detienen al cerrar la app y no requieren suscripción.')}
+      <button onclick="window.__devBotSpec()" style="background:none;border:none;padding:0;color:var(--accent);font-size:11px;font-weight:700;cursor:pointer;text-decoration:underline">${_T('File format', 'Formato del archivo')}</button>
+    </div>`
 }
 
 function _mobVRenderStrategies(el) {
@@ -21726,7 +21887,6 @@ function _mobVRenderStrategies(el) {
 
   el.innerHTML = `<div style="padding:4px 0 80px">
     ${state.isAllAccounts ? `<div style="padding:2px 12px 10px">${_allAcctRunningHtml()}</div>` + _stratAcctPickerHtml() : ''}
-    ${_devBotsHtml()}
     <div class="mob-v-setting-group" style="margin-bottom:14px">
       <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:8px">
         <div style="display:flex;justify-content:space-between;align-items:center">
@@ -21764,7 +21924,8 @@ function _mobVRenderStrategies(el) {
       </div>
     </div>
     ${locked ? _subLockBanner() : ''}
-    <div class="mob-v-setting-group">${cards}</div>
+    <div class="mob-v-setting-group">${cards}${devBotsLoad().map(_devBotCardHtml).join('')}</div>
+    <div style="padding:10px 12px 0">${_devBotsHtml()}</div>
   </div>`
 
   // Restore the snapshotted edits onto the freshly-rendered inputs (skip the agent key —
