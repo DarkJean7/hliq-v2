@@ -21067,6 +21067,13 @@ async function _devBotRequest(def, kind, payload, bot) {
     if (_DEVBOT_PLACING.has(method) && bot?.rateBlocked()) {
       throw new Error(`rate limit: ${def.maxPerMin} orders/min reached`)
     }
+    // A dry run must close BOTH routes. Stopping only the intent path would let a bot that
+    // trades via api.order() place real orders during a preview — the one outcome a
+    // preview must never have.
+    if (bot?.dry) {
+      bot.say('info', 'Would call api.' + method + ' ' + JSON.stringify(args ?? {}).slice(0, 160))
+      return { status: 'ok', dryRun: true }
+    }
     if (isPaper()) {
       // The paper engine models orders and cancels, not the whole exchange API.
       if (method === 'order')  { const r = paperOrder(args, args?.orders?.[0]?.__coin ?? def.coin); _paperRefresh(); return r }
@@ -21099,7 +21106,7 @@ const _devBotDeps = {
 // So __devBotStart never consults _stratsUnlocked() or _canStartBot(), and the section is
 // rendered outside the `locked` branch. This comment exists because that was previously
 // true only by omission, which is the kind of thing a later edit silently undoes.
-window.__devBotStart = function(id) {
+window.__devBotStart = function(id, dry = false) {
   const def = devBotsLoad().find(b => b.id === id)
   if (!def) return
   if (!isPaper() && !_stratTargetAddr()) { _paperToast(_T('Open an account first', 'Abre una cuenta primero'), 'err'); return }
@@ -21107,9 +21114,11 @@ window.__devBotStart = function(id) {
   let bot = _devBots.get(id)
   if (!bot) { bot = new DeviceBot(def, _devBotDeps); _devBots.set(id, bot) }
   bot.def = def
-  bot.start()
+  bot.start(dry)
   _mobVRenderStrategies(document.getElementById('mobVContent'))
 }
+// A preview is the same bot, on the same live data, with every route out disabled.
+window.__devBotPreview = function(id) { window.__devBotStart(id, true) }
 window.__devBotStop = function(id) {
   _devBots.get(id)?.stop()
   _mobVRenderStrategies(document.getElementById('mobVContent'))
@@ -21409,16 +21418,22 @@ function _devBotsHtml() {
   const row = (b) => {
     const bot = _devBots.get(b.id)
     const running = !!(bot && bot.worker && !bot.stopped)
+    const dry = running && bot.dry
+    // The dangerous confusion is believing a live bot is a preview, so a running bot always
+    // states which it is — in its own colour, on the card, not only in the log.
+    const tone = !running ? 'var(--border2)' : dry ? 'var(--orange,#f59e0b)' : 'var(--green)'
     const sb = 'padding:5px 9px;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap'
-    return `<div style="border:1px solid ${running ? 'var(--green)' : 'var(--border2)'};border-radius:12px;background:var(--panel-2);padding:11px 12px;margin-bottom:8px">
+    return `<div style="border:1px solid ${tone};border-radius:12px;background:var(--panel-2);padding:11px 12px;margin-bottom:8px">
       <div style="display:flex;align-items:center;gap:8px">
-        <span style="width:8px;height:8px;border-radius:50%;background:${running ? 'var(--green)' : 'var(--border2)'};flex-shrink:0"></span>
+        <span style="width:8px;height:8px;border-radius:50%;background:${tone};flex-shrink:0"></span>
         <span style="font-size:13.5px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.name)}</span>
+        ${dry ? `<span style="font-size:9px;font-weight:800;color:var(--orange,#f59e0b);border:1px solid var(--orange,#f59e0b);border-radius:4px;padding:1px 4px;white-space:nowrap">${_T('DRY RUN', 'SIMULACIÓN')}</span>` : ''}
         <span style="font-size:10.5px;color:var(--muted);white-space:nowrap">${esc(_ocCoinLabel(b.coin))}</span>
         <span style="flex:1"></span>
         ${running
           ? `<button onclick="window.__devBotStop('${b.id}')" style="${sb};border:1px solid var(--red);background:transparent;color:var(--red)">■ ${_T('Stop', 'Parar')}</button>`
-          : `<button onclick="window.__devBotStart('${b.id}')" style="${sb};border:none;background:var(--accent);color:#000">▶ ${_T('Run', 'Ejecutar')}</button>`}
+          : `<button onclick="window.__devBotPreview('${b.id}')" title="${_T('Run it for real, but send nothing', 'Ejecútalo de verdad, sin enviar nada')}" style="${sb};border:1px solid var(--orange,#f59e0b);background:transparent;color:var(--orange,#f59e0b)">👁 ${_T('Preview', 'Vista previa')}</button>
+             <button onclick="window.__devBotStart('${b.id}')" style="${sb};border:none;background:var(--accent);color:#000">▶ ${_T('Run', 'Ejecutar')}</button>`}
         <button onclick="window.__devBotEdit('${b.id}')" style="${sb};border:1px solid var(--accent);background:transparent;color:var(--accent)">✎ ${_T('Edit', 'Editar')}</button>
         <button onclick="window.__devBotLogs('${b.id}')" style="${sb};border:1px solid var(--border2);background:transparent;color:var(--muted)">${_T('Log', 'Registro')}</button>
         <button onclick="window.__devBotDelete('${b.id}')" aria-label="Delete" style="${sb};border:none;background:transparent;color:var(--muted);font-size:16px">&times;</button>

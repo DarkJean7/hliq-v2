@@ -248,8 +248,20 @@ export class DeviceBot {
     this.deps.onChange?.()
   }
 
-  start() {
+  /**
+   * `dry` runs the bot for real against live data, with every route to the exchange
+   * disabled: intents are logged as "would send" instead of executed, and api.exchange()
+   * answers with a fake acknowledgement instead of signing. Reads stay real, because a
+   * preview fed fake market data would be previewing a different bot.
+   *
+   * This is a truer dry run than the built-in bots get. Theirs re-runs the strategy on the
+   * server with --plan and reports the orders it would open with; this runs the actual
+   * file, on the actual account state, and shows what it actually decides — the only thing
+   * that differs is that nothing leaves the machine.
+   */
+  start(dry = false) {
     if (this.worker) return
+    this.dry = !!dry
     this.stopped = false
     let url
     try {
@@ -295,7 +307,8 @@ export class DeviceBot {
     if (m.t === 'log')   { this.say(m.level === 'error' ? 'error' : 'info', m.msg); return }
     if (m.t === 'ready') {
       this.ready = true
-      this.say('info', 'Running · ' + this.def.coin + ' · max $' + this.def.maxUsd + '/order · ' + this.def.maxPerMin + ' orders/min')
+      this.say('info', (this.dry ? 'DRY RUN — nothing will be sent · ' : 'Running · ')
+        + this.def.coin + ' · max $' + this.def.maxUsd + '/order · ' + this.def.maxPerMin + ' orders/min')
       const period = Math.max(5, Number(this.def.everySec) || 15) * 1000
       this.timer = setInterval(() => this._tick(), period)
       this._tick()
@@ -365,6 +378,13 @@ export class DeviceBot {
     for (const it of intents.slice(0, 10)) {          // one tick cannot fire more than 10
       const why = this._check(it, ctx)
       if (why) { this.blocked++; this.say('warn', 'Blocked — ' + why); continue }
+      if (this.dry) {
+        // Checked first, THEN reported — so a preview also shows you which intents your
+        // limits would have refused, not just the ones that would have gone through.
+        this.say('info', 'Would send ' + it.type + (it.isBuy != null ? (it.isBuy ? ' buy' : ' sell') : '') +
+          (it.usd ? ' $' + Number(it.usd).toFixed(2) : '') + (it.px ? ' @ ' + it.px : ''))
+        continue
+      }
       try {
         const r = await this.deps.execute(this.def, it)
         if (r?.ok === false) { this.say('error', 'Rejected: ' + (r.error ?? 'unknown')); continue }
