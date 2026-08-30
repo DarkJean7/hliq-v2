@@ -6118,6 +6118,46 @@ else _injectModalCloseButtons()
 const PERF_TYPES  = ['insolvent', 'dca', 'grid', 'trend', 'longer', 'shorter']
 const PERF_LABELS = { insolvent: 'Insolvent', dca: 'DCA Bot', grid: 'Grid Bot', trend: 'Trend Follower', longer: 'Longer Bot', shorter: 'Shorter Bot' }
 
+/**
+ * The win log behind Bot Performance, for whichever accounts are in view.
+ *
+ * Both renderers used to take _botApiAddr() and give up when it was null, which is exactly
+ * what All Accounts returns — so the combined view told you to go and switch to a single
+ * account. There was never a reason to: _computeBotPerformance reads state.fills and
+ * state.funding, and in All Accounts those are ALREADY the combined set. Only this one
+ * call was single-address.
+ *
+ * So fan it across the wallets in view and merge by bot type. Hidden wallets are excluded,
+ * matching every other total in that view. A wallet whose fetch fails is skipped rather
+ * than failing the screen — a partial answer with a stated wallet count beats no answer.
+ */
+async function _perfFetchWins() {
+  const single = _botApiAddr()
+  if (!state.isAllAccounts && single) {
+    try { return { wins: await serverFetch(`/api/wins?address=${encodeURIComponent(single)}`), wallets: 1, missing: 0 } }
+    catch { return null }
+  }
+  if (!state.isAllAccounts) return null
+
+  const hidden = _maHiddenLoad()
+  const addrs  = _maLoad().map(w => w.addr).filter(a => a && !hidden.has(a))
+  if (!addrs.length) return null
+
+  const parts = await hlPool(addrs, a =>
+    serverFetch(`/api/wins?address=${encodeURIComponent(a)}`).catch(() => null))
+  const wins = {}
+  let missing = 0
+  for (const part of parts) {
+    if (!part || typeof part !== 'object') { missing++; continue }
+    for (const [type, list] of Object.entries(part)) {
+      if (!Array.isArray(list)) continue
+      ;(wins[type] ??= []).push(...list)
+    }
+  }
+  if (missing === addrs.length) return null       // nothing answered — that IS a failure
+  return { wins, wallets: addrs.length - missing, missing }
+}
+
 function _computeBotPerformance(wins) {
   const fills   = state.fills ?? []
   const funding = state.funding ?? []
@@ -6189,17 +6229,16 @@ async function renderPerformance() {
     return
   }
 
-  const _wAddr = _botApiAddr()
-  if (!_wAddr) {
-    el.innerHTML = `<div style="text-align:center;padding:60px 20px;color:var(--muted)">Open a single account to see bot performance.</div>`
-    return
-  }
-  let wins
-  try { wins = await serverFetch(`/api/wins?address=${encodeURIComponent(_wAddr)}`) }
-  catch {
+  // Same fan-out as the mobile view: All Accounts has the data, so it gets the screen.
+  const _res = await _perfFetchWins()
+  if (!_res) {
     el.innerHTML = `<div style="text-align:center;padding:60px 20px;color:var(--muted)">Failed to load performance data.</div>`
     return
   }
+  const wins = _res.wins
+  const _note = _res.missing
+    ? `<div style="padding:0 0 10px;font-size:12px;color:var(--orange,#f59e0b)">${_res.missing} wallet${_res.missing === 1 ? '' : 's'} did not respond — totals below exclude ${_res.missing === 1 ? 'it' : 'them'}.</div>`
+    : ''
 
   const fills   = state.fills ?? []
   const funding = state.funding ?? []
@@ -6225,7 +6264,7 @@ async function renderPerformance() {
   const idSafe  = c => c.replace(/[^A-Za-z0-9]/g, '_')
 
   destroyPerfCharts()   // clear any instances from a prior render (coins may have changed)
-  el.innerHTML = `
+  el.innerHTML = _note + `
     <div class="perf-summary-grid">
       <div class="stat-card">
         <div class="stat-label">Net Bot P&amp;L</div>
@@ -16260,20 +16299,20 @@ async function _mobVFetchPerformance(el) {
   // Reached from the More menu now, so it has to say what it is. Every state below lands
   // in the lower half of the home screen, where nothing else names the view.
   const _hd = `<div style="padding:12px 16px 4px;font-size:16px;font-weight:700">${_T('Bot Performance', 'Rendimiento de bots')}</div>`
-  const _wAddr = _botApiAddr()
-  if (!_wAddr) {
-    el.innerHTML = _hd + `<div class="mob-v-empty">Open a single account to see bot performance.</div>`
-    return
-  }
-  let wins
-  try { wins = await serverFetch(`/api/wins?address=${encodeURIComponent(_wAddr)}`) }
-  catch {
+  const _res = await _perfFetchWins()
+  if (!_res) {
     el.innerHTML = _hd + `<div class="mob-v-empty">Performance data unavailable.<br>Start the strategy server to see bot performance.</div>`
     return
   }
-  const stats = _computeBotPerformance(wins)
+  // Say when a wallet did not answer, rather than quietly reporting a smaller number.
+  const _note = _res.missing
+    ? `<div style="padding:0 16px 6px;font-size:11px;color:var(--orange,#f59e0b)">${
+        _T(`${_res.missing} wallet${_res.missing === 1 ? '' : 's'} did not respond — totals below exclude ${_res.missing === 1 ? 'it' : 'them'}.`,
+           `${_res.missing} cartera${_res.missing === 1 ? '' : 's'} sin respuesta — los totales no ${_res.missing === 1 ? 'la' : 'las'} incluyen.`)}</div>`
+    : ''
+  const stats = _computeBotPerformance(_res.wins)
   if (!stats.botStats.length) {
-    el.innerHTML = _hd + `<div class="mob-v-empty">No bot activity yet.<br>Run a strategy bot — its trades, PnL, fees and funding appear here.</div>`
+    el.innerHTML = _hd + _note + `<div class="mob-v-empty">No bot activity yet.<br>Run a strategy bot — its trades, PnL, fees and funding appear here.</div>`
     return
   }
   const { botStats, totals, best, allBotCoins } = stats
@@ -16281,7 +16320,7 @@ async function _mobVFetchPerformance(el) {
   const cls    = v => v >= 0 ? 'pos' : 'neg'
   const idSafe = c => c.replace(/[^A-Za-z0-9]/g, '_')
   const { coinNet, marketCoins } = _perfBuildData(allBotCoins)
-  el.innerHTML = _hd + `<div style="padding:4px 0 24px">
+  el.innerHTML = _hd + _note + `<div style="padding:4px 0 24px">
     <div class="mob-v-setting-group">
       <div class="mob-v-setting-row"><span>Net Bot P&amp;L</span><span class="${cls(totals.net)}" style="font-weight:700">${money(totals.net)}</span></div>
       <div class="mob-v-setting-row"><span>Realized PnL</span><span class="${cls(totals.realized)}" style="font-weight:700">${money(totals.realized)}</span></div>
