@@ -119,6 +119,18 @@
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="5"/><line x1="14" y1="14" x2="10.35" y2="10.35"/></svg>
       <span>Watch</span>
     </div>
+    <div class="sidebar-item" data-tab="pulse" onclick="switchTab('pulse',null);setSidebarActive(this)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="15 8 12 8 10 14 6 2 4 8 1 8"/></svg>
+      <span>Pulse</span>
+    </div>
+    <div class="sidebar-item" data-tab="analysis" onclick="switchTab('analysis',null);setSidebarActive(this)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2v12h12"/><polyline points="4.5 10 7 6.5 9 8.5 13.5 3.5"/></svg>
+      <span>Analysis</span>
+    </div>
+    <div class="sidebar-item" data-tab="performance" onclick="switchTab('performance',null);setSidebarActive(this)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 13a6 6 0 1 1 12 0"/><line x1="8" y1="13" x2="11" y2="7.5"/></svg>
+      <span>Performance</span>
+    </div>
     <div class="sidebar-section dev-only">Bot Agents</div>
     <div class="sidebar-item dev-only" data-tab="strategies" onclick="switchTab('strategies',null);setSidebarActive(this)">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="4" height="4" rx="1"/><rect x="10" y="2" width="4" height="4" rx="1"/><rect x="2" y="10" width="4" height="4" rx="1"/><path d="M10 10h4M12 10v4"/></svg>
@@ -239,6 +251,9 @@
       <button class="nav-tab" onclick="switchTab('tokens',this)"><svg viewBox="0 0 20 20" width="11" height="11" fill="currentColor"><rect x="0" y="13" width="4" height="7" rx="1"/><rect x="5.5" y="8" width="4" height="12" rx="1"/><rect x="11" y="4" width="4" height="16" rx="1"/><rect x="16.5" y="0" width="3.5" height="20" rx="1"/></svg>Scoreboard</button>
       <button class="nav-tab" onclick="switchTab('leaderboard',this)">Leaderboard</button>
       <button class="nav-tab" onclick="switchTab('watch',this)">Watch</button>
+      <button class="nav-tab" onclick="switchTab('pulse',this)">Pulse</button>
+      <button class="nav-tab" onclick="switchTab('analysis',this)">Analysis</button>
+      <button class="nav-tab" onclick="switchTab('performance',this)">Performance</button>
       <button class="nav-tab dev-only" onclick="switchTab('strategies',this)"><svg viewBox="0 0 20 22" width="11" height="11" fill="currentColor"><rect x="1" y="0" width="4" height="5" rx="1"/><rect x="8" y="0" width="4" height="5" rx="1"/><rect x="15" y="0" width="4" height="5" rx="1"/><rect x="2" y="5" width="16" height="11" rx="1"/><rect x="0" y="16" width="20" height="5" rx="1"/></svg>Strategies</button>
       <button class="nav-tab" onclick="switchTab('settings',this)">Settings</button>
     </div>
@@ -854,6 +869,16 @@
     <!-- end tab-strategies -->
 
     <!-- PERFORMANCE -->
+    <!-- Exchange-wide stats. Same renderer as the mobile Pulse tab. -->
+    <div class="tab-panel" id="tab-pulse">
+      <div id="deskPulse"></div>
+    </div>
+
+    <!-- TradingView charting workbench. Same renderer as the mobile Analysis tab. -->
+    <div class="tab-panel" id="tab-analysis">
+      <div id="deskAnalysis"></div>
+    </div>
+
     <div class="tab-panel" id="tab-performance">
       <div id="perfContent"></div>
     </div>

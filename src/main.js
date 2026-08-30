@@ -6435,6 +6435,13 @@ function switchTab(name, btn) {
   if (name === 'tokens')    renderMarkets({ fills: state.fills, allMids: state.allMids, perpState: state.perpState })
   if (name === 'trade')     { try { renderManageTables(state.perpState, state.openOrders, state.allMids); populateCoinDropdown(); updateTradeBalance(); _updateAvailDisplay() } catch (e) { console.error(e) } }
   if (name === 'performance') renderPerformance()
+  // Same renderers the mobile shell uses, mounted in their own desktop panes.
+  if (name === 'pulse') {
+    const _ph = _viewHost('deskPulse')
+    if (!_pulseData && _ph) _ph.innerHTML = `<div class="mob-v-empty">${_T('Loading…', 'Cargando…')}</div>`
+    _pulseRender(_ph)
+  }
+  if (name === 'analysis')   _anaRender(_viewHost('deskAnalysis'))
   if (name === 'settings') { _syncSettingsTab(); _applyDevMode() }
   if (name === 'leaderboard') {
     const root = document.getElementById('leaderboardRoot')
@@ -9079,6 +9086,23 @@ const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 't
 
 // Sticky full-page header with a × that returns to the home view. Used by every
 // full-screen tab so they share one look.
+// Which container is a shared view currently rendered into?
+//
+// Pulse, Analysis and friends were written for the mobile shell, so every one of their
+// handlers repainted #mobVContent by name. Mounting the same renderer in a desktop tab
+// then half-worked: the first paint landed in the desktop pane, and every button after
+// that redrew the hidden mobile one. This asks the page instead of assuming.
+// "Is this view on screen?" — true for the mobile tab OR the desktop pane. The repaint
+// after an async load was gated on the MOBILE tab alone, so on desktop Pulse kicked off
+// its fetch, the data arrived, and nothing ever drew it: a permanent "Loading…".
+function _viewOpen(name) { return _mobVActiveTab === name || _activeTab === name }
+
+function _viewHost(deskId) {
+  const d = deskId && document.getElementById(deskId)
+  if (d && d.offsetParent !== null) return d          // desktop pane is the visible one
+  return document.getElementById('mobVContent')
+}
+
 function _mobVFullHeader(title) {
   return `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:14px 16px 11px;background:var(--bg);border-bottom:1px solid var(--border)">
     <span style="font-size:18px;font-weight:700">${esc(title)}</span>
@@ -12894,16 +12918,16 @@ async function _pulseFetch(force = false) {
     const d = _pulseData ?? { ok: false }
     if (spotPair) { const sp = computeSpot(spotPair); if (sp.ok) _pulseSpot = sp }
     if (d.ok) _pulseFetchProto(d, _pulseSpot).then(() => {
-      if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
+      if (_viewOpen('pulse')) _pulseRender(_viewHost('deskPulse'))
     })
     if (d.ok) _pulseFetchDexes(d).then(() => {
-      if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
+      if (_viewOpen('pulse')) _pulseRender(_viewHost('deskPulse'))
     })
   } catch (e) {
     console.warn('[pulse]', e.message)
   } finally {
     _pulseBusy = false
-    if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
+    if (_viewOpen('pulse')) _pulseRender(_viewHost('deskPulse'))
   }
 }
 
@@ -13002,7 +13026,7 @@ async function _pulseEnsureCaps() {
       // Several spot tokens share a display name; the biggest is the real one.
       if (name && cap > (_mktCapByName[name] ?? 0)) _mktCapByName[name] = cap
     }
-    if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
+    if (_viewOpen('pulse')) _pulseRender(_viewHost('deskPulse'))
   } catch {}
 }
 
@@ -13019,7 +13043,7 @@ function _pulseLoadCandles(coin) {
         const pts = await fetchCandles(coin, iv, start)
         _pulseCandles[key] = Array.isArray(pts) && pts.length ? pts : 'error'
       } catch { _pulseCandles[key] = 'error' }
-      if (_mobVActiveTab === 'pulse') _pulseRender(document.getElementById('mobVContent'))
+      if (_viewOpen('pulse')) _pulseRender(_viewHost('deskPulse'))
     })
   }
 }
@@ -13028,7 +13052,7 @@ window.__pulseToggle = function(coin, id) {
   const open = _mobVExpandedIds.has(id)
   if (open) _mobVExpandedIds.delete(id)
   else { _mobVExpandedIds.add(id); _pulseLoadCandles(coin) }
-  _pulseRender(document.getElementById('mobVContent'))
+  _pulseRender(_viewHost('deskPulse'))
 }
 
 function _pulseCell(label, value, tone) {
@@ -13118,7 +13142,7 @@ const PULSE_TF_DEFAULT = '30d'   // must match a _PULSE_TF label exactly
 
 window.__pulseSetTf = function(id, label) {
   _pulseTfFor[id] = label
-  _pulseRender(document.getElementById('mobVContent'))
+  _pulseRender(_viewHost('deskPulse'))
 }
 
 function _pulseAssetChartHtml(r, id) {
@@ -13201,11 +13225,11 @@ async function _pulseFetchVolume() {
 
 window.__pulseAfPeriod = function(pd) {
   _pulseAfPeriod = pd
-  _pulseRender(document.getElementById('mobVContent'))
+  _pulseRender(_viewHost('deskPulse'))
 }
 window.__pulseFeePeriod = function(ms) {
   _pulseFeePeriod = +ms
-  _pulseRender(document.getElementById('mobVContent'))
+  _pulseRender(_viewHost('deskPulse'))
 }
 
 function _pulseChartChips(active, opts, handler) {
@@ -13388,11 +13412,11 @@ let _pulseStatWin = 0        // ms window, 0 = everything recorded
 
 window.__pulseStatPick = function(which) {
   _pulseStat = _pulseStat === which ? '' : which   // tapping the open one closes it
-  _pulseRender(document.getElementById('mobVContent'))
+  _pulseRender(_viewHost('deskPulse'))
 }
 window.__pulseStatWin = function(ms) {
   _pulseStatWin = +ms
-  _pulseRender(document.getElementById('mobVContent'))
+  _pulseRender(_viewHost('deskPulse'))
 }
 
 const _PULSE_STAT_META = {
@@ -21167,6 +21191,8 @@ function injectRunButtons(type) {
     <button class="btn-stop-strategy" id="stop-btn-${type}"
       style="display:${running ? 'inline-block' : 'none'}"
       onclick="stopStrategy('${type}')">■ Stop All</button>
+    ${PREVIEWABLE.has(type) ? `<button class="btn-show-logs" title="${_T('See what it would do, without doing it', 'Ver qué haría, sin hacerlo')}"
+      onclick="window.__botPreview('${type}')">👁 ${_T('Preview', 'Vista previa')}</button>` : ''}
     <button class="btn-show-logs" onclick="showStrategyLogs('${type}')">Logs</button>
     <span id="inst-list-${type}"></span>`
   outputEl.appendChild(div)
@@ -21266,6 +21292,13 @@ function buildArgv(type) {
 }
 
 async function runStrategy(type) {
+  // Paper has no agent key and a sentinel address, exactly as on mobile — without this the
+  // desktop Run button demanded a key the practice account can never have.
+  if (isPaper()) {
+    await ensureAllMids()
+    if (window.__paperBotStart(type)) { checkServer(); updateAllStrategyButtons() }
+    return
+  }
   const agentKey = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null)
                 || document.getElementById('agentKey')?.value?.trim()
   if (!agentKey) { alert('Enter your Agent Private Key in the Strategies tab before running.'); return }
@@ -24121,7 +24154,13 @@ function _anaRender(el) {
   const list = _anaLoad()
   let host = document.getElementById('anaList')
   if (!host) {
-    el.innerHTML = _mobVFullHeader(_T('Analysis', 'Análisis')) + `
+    // The full-page header's x means "back to the mobile home". In a desktop pane there is
+    // no such thing — the tab bar is the way out — so it would be a button that does
+    // something surprising. Desktop gets a plain title instead.
+    const _desk = el.id === 'deskAnalysis'
+    el.innerHTML = (_desk
+      ? `<div style="display:flex;align-items:center;padding:14px 16px 11px;border-bottom:1px solid var(--border)"><span style="font-size:18px;font-weight:700">${_T('Analysis', 'Análisis')}</span></div>`
+      : _mobVFullHeader(_T('Analysis', 'Análisis'))) + `
       <div style="display:flex;align-items:center;gap:8px;padding:8px 14px 4px">
         <span style="font-size:11.5px;color:var(--muted);flex:1;line-height:1.4">${
           _T('Charts by TradingView — Hyperliquid markets and everything it does not list.',
@@ -24166,11 +24205,11 @@ function _anaRender(el) {
 
 window.__anaSetIv = function(id, iv) {
   const list = _anaLoad().map(c => c.id === id ? { ...c, iv } : c)
-  _anaSave(list); _anaRender(document.getElementById('mobVContent'))
+  _anaSave(list); _anaRender(_viewHost('deskAnalysis'))
 }
 window.__anaSetStyle = function(id, st) {
   _anaSave(_anaLoad().map(c => c.id === id ? { ...c, st } : c))
-  _anaRender(document.getElementById('mobVContent'))
+  _anaRender(_viewHost('deskAnalysis'))
   // A style press can come from the card OR from the fullscreen header; refresh the
   // fullscreen only when it is actually showing this chart.
   const ov = document.getElementById('anaFull')
@@ -24178,19 +24217,19 @@ window.__anaSetStyle = function(id, st) {
 }
 window.__anaRemove = function(id) {
   _anaSave(_anaLoad().filter(c => c.id !== id))
-  _anaRender(document.getElementById('mobVContent'))
+  _anaRender(_viewHost('deskAnalysis'))
 }
 window.__anaPromote = function(id) {
   const list = _anaLoad()
   const i = list.findIndex(c => c.id === id)
   if (i <= 0) return
   list.unshift(list.splice(i, 1)[0])
-  _anaSave(list); _anaRender(document.getElementById('mobVContent'))
+  _anaSave(list); _anaRender(_viewHost('deskAnalysis'))
   document.getElementById('mobVContent')?.scrollTo({ top: 0, behavior: 'smooth' })
 }
 window.__anaCmpRemove = function(id, sym) {
   _anaSave(_anaLoad().map(c => c.id === id ? { ...c, cmp: c.cmp.filter(s => s !== sym) } : c))
-  _anaRender(document.getElementById('mobVContent'))
+  _anaRender(_viewHost('deskAnalysis'))
 }
 
 // ── the symbol picker, shared by "+ Chart" and "Compare" ─────────────────────
@@ -24218,7 +24257,7 @@ window.__anaPick = async function(sym) {
   }
   _anaSave(list)
   window.__anaClosePicker()
-  _anaRender(document.getElementById('mobVContent'))
+  _anaRender(_viewHost('deskAnalysis'))
 }
 
 // A Hyperliquid coin the user already holds or watches may still not be listed on
