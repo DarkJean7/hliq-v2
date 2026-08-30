@@ -167,7 +167,10 @@ export const DEVBOT_TEMPLATE = `// Runs on YOUR device, in a sandbox with no acc
 //   position: { szi, entryPx, unrealizedPnl } | null,   // in the home market
 //   openOrders: [ { oid, isBuy, sz, limitPx } ],        // in the home market
 //   equity, paper,
-//   candles: [ { t, o, h, l, c, v } ],  // recent 1h candles, oldest first
+//   candles: [ { t, o, h, l, c, v } ],  // recent 1h candles, oldest first.
+//                                       // OFTEN EMPTY on the first few ticks while
+//                                       // history loads — check .length, or use
+//                                       // api.candles() below, which always fetches.
 //
 //   // the whole account, if you want more than one market:
 //   mids:      { BTC: '78000', ... },

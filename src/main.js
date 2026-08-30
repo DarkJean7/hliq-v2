@@ -21296,6 +21296,8 @@ window.__devBotSpec = function() {
 }`)}
     ${p(_T('Numbers are numbers, except <b>mids</b>, which Hyperliquid gives as strings.',
            'Los números son números, salvo <b>mids</b>, que Hyperliquid entrega como cadenas.'))}
+    ${p(_T('<b>ctx.candles</b> is a convenience and is often <b>empty on the first few ticks</b> while history loads — always check its length. When you need history you can rely on, ask for it directly with <b>api.candles()</b>, which fetches on the spot.',
+           '<b>ctx.candles</b> es una comodidad y suele estar <b>vacío en los primeros ticks</b> mientras carga el historial — comprueba siempre su longitud. Si necesitas historial fiable, pídelo con <b>api.candles()</b>, que lo trae al momento.'))}
 
     ${h(_T('The simple way to act: return an intent', 'La forma simple de actuar: devuelve una intención'))}
     ${p(_T('Return one object, an array of them, or nothing at all.', 'Devuelve un objeto, un array, o nada.'))}
