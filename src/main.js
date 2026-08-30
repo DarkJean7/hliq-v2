@@ -16257,20 +16257,23 @@ async function _mobVFetchLeaderboard(el) {
 }
 
 async function _mobVFetchPerformance(el) {
+  // Reached from the More menu now, so it has to say what it is. Every state below lands
+  // in the lower half of the home screen, where nothing else names the view.
+  const _hd = `<div style="padding:12px 16px 4px;font-size:16px;font-weight:700">${_T('Bot Performance', 'Rendimiento de bots')}</div>`
   const _wAddr = _botApiAddr()
   if (!_wAddr) {
-    el.innerHTML = `<div class="mob-v-empty">Open a single account to see bot performance.</div>`
+    el.innerHTML = _hd + `<div class="mob-v-empty">Open a single account to see bot performance.</div>`
     return
   }
   let wins
   try { wins = await serverFetch(`/api/wins?address=${encodeURIComponent(_wAddr)}`) }
   catch {
-    el.innerHTML = `<div class="mob-v-empty">Performance data unavailable.<br>Start the strategy server to see bot performance.</div>`
+    el.innerHTML = _hd + `<div class="mob-v-empty">Performance data unavailable.<br>Start the strategy server to see bot performance.</div>`
     return
   }
   const stats = _computeBotPerformance(wins)
   if (!stats.botStats.length) {
-    el.innerHTML = `<div class="mob-v-empty">No bot activity yet.<br>Run a strategy bot — its trades, PnL, fees and funding appear here.</div>`
+    el.innerHTML = _hd + `<div class="mob-v-empty">No bot activity yet.<br>Run a strategy bot — its trades, PnL, fees and funding appear here.</div>`
     return
   }
   const { botStats, totals, best, allBotCoins } = stats
@@ -16278,7 +16281,7 @@ async function _mobVFetchPerformance(el) {
   const cls    = v => v >= 0 ? 'pos' : 'neg'
   const idSafe = c => c.replace(/[^A-Za-z0-9]/g, '_')
   const { coinNet, marketCoins } = _perfBuildData(allBotCoins)
-  el.innerHTML = `<div style="padding:4px 0 24px">
+  el.innerHTML = _hd + `<div style="padding:4px 0 24px">
     <div class="mob-v-setting-group">
       <div class="mob-v-setting-row"><span>Net Bot P&amp;L</span><span class="${cls(totals.net)}" style="font-weight:700">${money(totals.net)}</span></div>
       <div class="mob-v-setting-row"><span>Realized PnL</span><span class="${cls(totals.realized)}" style="font-weight:700">${money(totals.realized)}</span></div>
