@@ -6480,6 +6480,10 @@ window.__mobMoreTab = function(name) {
   backdrop?.classList.remove('open')
   const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'pulse', 'allocation', 'heatmap', 'analysis'])
   if (mobileTabs.has(name)) {
+    // Reached deliberately from the menu, Strats opens full screen. It is the densest view
+    // in the app — a bot list, a config form and a running-instance list — and half a
+    // screen was never enough for it.
+    if (name === 'strategies') { _stratsFull = true; _stratsApplyFull() }
     _mobVActiveTab = name
     document.querySelectorAll('.mob-v-tab').forEach(b => b.classList.remove('active'))
     _mobVRenderContent()
@@ -20140,6 +20144,93 @@ function _subPaywallHtml() {
 // Full-screen toggle for the Strats tab. The config forms are tall — several inputs plus a
 // running-bot list — and on a phone they sat in the short area under the header with the
 // price strip and tab bar eating most of the viewport.
+// What each bot actually does, in the words of someone deciding whether to run it.
+//
+// Written from the strategy files' own headers rather than invented, because a description
+// that flatters a bot is worse than none: the reader finds out the truth from their
+// balance. Each carries the mechanism, then the condition it does BADLY in — that second
+// line is the one that saves money, and it is the one marketing copy always leaves out.
+const _STRAT_ABOUT = {
+  accumulator: {
+    icon: '🪙', accent: '#f0b90b',
+    tag:  () => _T('Bank profits into spot', 'Guarda ganancias en spot'),
+    what: () => _T('Watches every closed trade on this account, skims a percentage of the NET realised profit, and batches it into spot buys of a token you choose.',
+                   'Observa cada operación cerrada, aparta un porcentaje del beneficio neto realizado y lo agrupa en compras spot del token que elijas.'),
+    why:  () => _T('On Hyperliquid only USDC is perp collateral, so a spot stack is ring-fenced from perp risk — profit that leaves the trading balance stops being able to fund a loss.',
+                   'En Hyperliquid solo USDC es colateral de perps, así que el spot queda fuera del riesgo — la ganancia que sale del saldo ya no puede financiar una pérdida.'),
+    risk: () => _T('It only acts on WINS, so a losing stretch accumulates nothing. The token you stack can itself fall.',
+                   'Solo actúa con ganancias, así que una racha perdedora no acumula nada. El token que acumulas puede caer.'),
+  },
+  dca: {
+    icon: '📉', accent: '#4ea1ff',
+    tag:  () => _T('Average into a position', 'Promedia una posición'),
+    what: () => _T('Buys a fixed dollar amount at a fixed interval, or each time price moves against the position by a set step.',
+                   'Compra un importe fijo a intervalos fijos, o cada vez que el precio se mueve en contra un paso definido.'),
+    why:  () => _T('Splitting an entry over time removes the need to pick the bottom, and lowers the average price paid while a market keeps sliding.',
+                   'Dividir la entrada en el tiempo evita tener que acertar el suelo y baja el precio medio mientras el mercado sigue cayendo.'),
+    risk: () => _T('Averaging down adds size to a losing position. In a market that keeps falling it buys the whole way down — set a total cap.',
+                   'Promediar a la baja añade tamaño a una posición perdedora. Si el mercado sigue cayendo compra durante toda la caída — pon un límite total.'),
+  },
+  grid: {
+    icon: '▦', accent: '#00e5a0',
+    tag:  () => _T('Earn from chop', 'Gana con el rango'),
+    what: () => _T('Places buy orders on a ladder below price and reduce-only sells above it. A buy that fills arms the sell one level up; that sell filling re-arms the buy.',
+                   'Coloca compras en escalera bajo el precio y ventas reduce-only encima. Una compra ejecutada arma la venta del nivel superior; esa venta rearma la compra.'),
+    why:  () => _T('Every completed round trip banks the gap between two levels, so a market that goes nowhere but moves a lot still pays.',
+                   'Cada ida y vuelta completa cobra la diferencia entre dos niveles, así que un mercado lateral pero movido sigue pagando.'),
+    risk: () => _T('A market that leaves the range in one direction stops cycling and leaves you holding the losing side. It profits from movement, not from direction.',
+                   'Si el mercado sale del rango deja de ciclar y te quedas con el lado perdedor. Gana con el movimiento, no con la dirección.'),
+  },
+  trend: {
+    icon: '📈', accent: '#a78bfa',
+    tag:  () => _T('Follow the direction', 'Sigue la dirección'),
+    what: () => _T('Goes long when the fast EMA crosses above the slow one, then closes and flips short on the opposite cross. The live position is the source of truth, so it never stacks entries.',
+                   'Se pone largo cuando la EMA rápida cruza sobre la lenta, y cierra e invierte a corto en el cruce opuesto. La posición viva manda, así que nunca acumula entradas.'),
+    why:  () => _T('One position at a time, in the direction the market is already going, with the exit decided by the same rule as the entry.',
+                   'Una posición a la vez, en la dirección que ya lleva el mercado, con la salida decidida por la misma regla que la entrada.'),
+    risk: () => _T('Crossovers lag by design, and a sideways market produces repeated false flips that each cost the spread and fees.',
+                   'Los cruces van con retraso por diseño, y un mercado lateral produce giros falsos que cuestan spread y comisiones.'),
+  },
+  longer: {
+    icon: '🟢', accent: '#00e5a0',
+    tag:  () => _T('Systematic longs', 'Largos sistemáticos'),
+    what: () => _T('Opens long positions across a list of coins on a trigger you configure, and manages a stop-loss and take-profit for each one independently.',
+                   'Abre posiciones largas en una lista de monedas según un disparador configurable y gestiona stop-loss y take-profit por separado.'),
+    why:  () => _T('The exits are decided before the entry, so a position cannot become a decision made in a hurry.',
+                   'Las salidas se deciden antes de la entrada, así que una posición no se convierte en una decisión apresurada.'),
+    risk: () => _T('Directional and one-sided: a broad sell-off hits every open position at once.',
+                   'Direccional y de un solo lado: una caída general golpea todas las posiciones a la vez.'),
+  },
+  shorter: {
+    icon: '🔴', accent: '#ff4d6d',
+    tag:  () => _T('Systematic shorts', 'Cortos sistemáticos'),
+    what: () => _T('The mirror of Longer: shorts a list of coins on a configurable trigger, with an independent stop-loss and take-profit per position.',
+                   'El espejo de Largo: vende en corto una lista de monedas con disparador configurable y stop-loss / take-profit independientes.'),
+    why:  () => _T('A way to run a bearish view with the exits fixed in advance rather than argued with mid-move.',
+                   'Una forma de operar a la baja con las salidas fijadas de antemano en lugar de discutirlas a mitad del movimiento.'),
+    risk: () => _T('A short loses without a floor — a rally has no ceiling the way a fall has zero. The stop is not optional.',
+                   'Un corto pierde sin suelo: una subida no tiene techo como una caída tiene el cero. El stop no es opcional.'),
+  },
+  copytrade: {
+    icon: '⇄', accent: '#4ea1ff',
+    tag:  () => _T('Mirror another wallet', 'Copia otra billetera'),
+    what: () => _T('Follows a wallet you name and mirrors its perp trades onto yours, scaled down to the size you set.',
+                   'Sigue a una billetera que elijas y replica sus operaciones de perps en la tuya, a la escala que definas.'),
+    why:  () => _T('Track a trader you rate without watching the screen, at a size you choose rather than theirs.',
+                   'Sigue a alguien que valoras sin mirar la pantalla, al tamaño que tú eliges y no al suyo.'),
+    risk: () => _T('You inherit their judgement and their timing, and you always fill after they do. Past results on a leaderboard are not a forecast.',
+                   'Heredas su criterio y su momento, y siempre entras después. Los resultados pasados de una tabla no son un pronóstico.'),
+  },
+}
+
+// Flip state is per bot and deliberately NOT persisted: the back of a card is something
+// you read once, not a mode to be left in.
+const _stratFlipped = new Set()
+window.__stratFlip = function(type, on) {
+  if (on) _stratFlipped.add(type); else _stratFlipped.delete(type)
+  document.getElementById('strat-card-' + type)?.classList.toggle('strat-flipped', !!on)
+}
+
 let _stratsFull = false
 function _stratsApplyFull() {
   document.getElementById('mobileView')?.classList.toggle('mob-strats-full', _stratsFull)
@@ -20166,6 +20257,20 @@ function _stratsWhyUnlocked() {
   if (!st?.active || !(st.until > Date.now())) return ''
   const days = Math.ceil((st.until - Date.now()) / 86_400_000)
   return `<span class="strat-ent">${_T('Active', 'Activa')} · ${days}${_T('d left', 'd restantes')}</span>`
+}
+
+// Full screen hides the app's own chrome, so without this the only way back was the
+// bottom nav — which is easy to miss when the view fills the screen.
+function _stratsCloseBtn() {
+  return `<button onclick="window.__stratsClose()" title="${_T('Close', 'Cerrar')}" aria-label="${_T('Close', 'Cerrar')}"
+    style="flex-shrink:0;background:rgba(255,255,255,.06);border:1px solid var(--border2);color:var(--muted);
+           border-radius:8px;padding:5px 9px;font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:5px">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" width="12" height="12"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>${_T('Back', 'Volver')}
+  </button>`
+}
+window.__stratsClose = function() {
+  _stratsExitFull()
+  window.mobVHome()
 }
 
 function _stratsFullBtn() {
@@ -20463,15 +20568,33 @@ function _mobVRenderStrategies(el) {
           </div>`}).join('')}</div>` : ''}`
     }
 
-    return `<div class="mob-strat-card${running ? ' mob-strat-running' : ''}">
-      <div class="mob-strat-header" onclick="window._mobExpandStrat('${s.type}')">
-        <div style="display:flex;align-items:center">${dot}<div>
-          <div style="font-size:14px;font-weight:600">${esc(s.label)}</div>
-          <div style="font-size:11px;color:${running ? 'var(--green)' : 'var(--muted)'};margin-top:1px">${running ? esc(_stratRunStatus(s.type)) : esc(s.desc)}</div>
-        </div></div>
-        <div style="display:flex;align-items:center;gap:8px">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color:var(--muted);flex-shrink:0;transform:rotate(${expanded ? 180 : 0}deg);transition:transform .2s"><polyline points="6 9 12 15 18 9"/></svg>
+    const meta = _STRAT_ABOUT[s.type]
+    const tag  = meta ? meta.tag() : s.desc
+    return `<div class="mob-strat-card${running ? ' mob-strat-running' : ''}${_stratFlipped.has(s.type) ? ' strat-flipped' : ''}" id="strat-card-${s.type}" style="--strat-accent:${meta?.accent || 'var(--accent)'}">
+      <div class="strat-flip">
+        <div class="strat-face strat-front">
+          <div class="mob-strat-header" onclick="window._mobExpandStrat('${s.type}')">
+            <span class="strat-badge">${meta?.icon || '🤖'}</span>
+            <div style="flex:1;min-width:0">
+              <div class="strat-name">${esc(s.label)}${running ? `<span class="strat-live"><i></i>${_T('Running', 'Activo')}</span>` : ''}</div>
+              <div class="strat-tag">${running ? esc(_stratRunStatus(s.type)) : esc(tag)}</div>
+            </div>
+            ${meta ? `<button class="strat-info" title="${_T('What does this do?', '¿Qué hace esto?')}" aria-label="${_T('What does this do?', '¿Qué hace esto?')}"
+              onclick="event.stopPropagation();window.__stratFlip('${s.type}',true)">?</button>` : ''}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color:var(--muted);flex-shrink:0;transform:rotate(${expanded ? 180 : 0}deg);transition:transform .2s"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
         </div>
+        ${meta ? `<div class="strat-face strat-back">
+          <div class="strat-back-head">
+            <span class="strat-badge">${meta.icon}</span>
+            <span class="strat-name">${esc(s.label)}</span>
+            <span style="flex:1"></span>
+            <button class="strat-info" aria-label="${_T('Back', 'Volver')}" onclick="event.stopPropagation();window.__stratFlip('${s.type}',false)">&times;</button>
+          </div>
+          <p class="strat-about"><b>${_T('What it does', 'Qué hace')}</b> ${esc(meta.what())}</p>
+          <p class="strat-about"><b>${_T('Why', 'Por qué')}</b> ${esc(meta.why())}</p>
+          <p class="strat-about strat-risk"><b>${_T('Watch out', 'Cuidado')}</b> ${esc(meta.risk())}</p>
+        </div>` : ''}
       </div>
       ${expanded ? `<div class="mob-strat-body">${bodyHtml}</div>` : ''}
     </div>`
@@ -20487,7 +20610,7 @@ function _mobVRenderStrategies(el) {
         <div style="display:flex;justify-content:space-between;align-items:center">
           <span style="font-size:13px;font-weight:600">Agent Key</span>
           <span style="flex:1"></span>
-          ${_stratsWhyUnlocked()}${_stratsFullBtn()}${serverBadge}
+          ${_stratsWhyUnlocked()}${_stratsFullBtn()}${_stratsCloseBtn()}${serverBadge}
         </div>
         <div id="m-agentKeyStatus" style="font-size:11px">${agentStatus}</div>
         ${_hasKey ? `

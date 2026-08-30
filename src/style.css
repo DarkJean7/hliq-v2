@@ -7154,3 +7154,70 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 }
 .oc-evt-row + .oc-evt-row { border-top: 1px solid var(--border); }
 .oc-event .oc-compact-foot { margin-top: 6px; }
+
+
+/* ── Bot cards ───────────────────────────────────────────────────────────────
+   The list was a row of names and a chevron: it told you a bot existed and
+   nothing about whether you wanted it. Each is now a card carrying its own
+   colour and mark, with the explanation on the back rather than crammed under
+   the title or hidden in a manual nobody opens. */
+.mob-strat-card {
+  border: 1px solid var(--border2); border-radius: 14px; background: var(--panel-2);
+  margin: 0 0 10px; overflow: hidden; border-bottom: 1px solid var(--border2);
+  position: relative;
+}
+.mob-strat-card:last-child { border-bottom: 1px solid var(--border2); }
+/* A running bot is tinted with its own accent rather than a single green, so the
+   colour identifies WHICH bot is running at a glance down the list. */
+.mob-strat-card.mob-strat-running { border-color: color-mix(in oklch, var(--strat-accent) 55%, transparent); }
+.mob-strat-card.mob-strat-running > .strat-flip .strat-front {
+  background: linear-gradient(180deg, color-mix(in oklch, var(--strat-accent) 11%, transparent), transparent 62%);
+}
+
+/* Only the face you can SEE gives the card its height. Stacking both in one grid cell
+   made every collapsed card as tall as its own description — a screen of mostly empty
+   boxes. So the hidden face is taken out of flow and the visible one sizes the card. */
+.strat-flip { position: relative; display: grid; transform-style: preserve-3d; transition: transform .48s cubic-bezier(.4,.15,.2,1); }
+.strat-face { grid-area: 1 / 1; backface-visibility: hidden; -webkit-backface-visibility: hidden; min-width: 0; }
+.strat-back { transform: rotateY(180deg); padding: 13px 14px 15px; position: absolute; inset: 0; overflow: hidden; }
+.mob-strat-card.strat-flipped .strat-back  { position: relative; inset: auto; overflow: visible; }
+.mob-strat-card.strat-flipped .strat-front { position: absolute; inset: 0; }
+.mob-strat-card.strat-flipped .strat-flip { transform: rotateY(180deg); }
+/* A turn is decorative; someone who asked for less motion still gets the content. */
+@media (prefers-reduced-motion: reduce) { .strat-flip { transition: none; } }
+
+.mob-strat-header { display: flex; align-items: center; gap: 11px; padding: 13px 14px; cursor: pointer; }
+.strat-badge {
+  flex: 0 0 auto; width: 38px; height: 38px; border-radius: 11px;
+  display: flex; align-items: center; justify-content: center; font-size: 18px; line-height: 1;
+  background: color-mix(in oklch, var(--strat-accent) 15%, transparent);
+  border: 1px solid color-mix(in oklch, var(--strat-accent) 34%, transparent);
+}
+.strat-name { display: flex; align-items: center; gap: 7px; font-size: 14.5px; font-weight: 700; }
+.strat-tag { font-size: 11.5px; color: var(--muted); margin-top: 2px; line-height: 1.35;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mob-strat-running .strat-tag { color: var(--strat-accent); }
+
+.strat-live { display: inline-flex; align-items: center; gap: 4px; font-size: 9.5px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: .05em; color: var(--strat-accent); }
+.strat-live i { width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  animation: stratPulse 1.8s ease-in-out infinite; }
+@keyframes stratPulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
+@media (prefers-reduced-motion: reduce) { .strat-live i { animation: none } }
+
+.strat-info {
+  flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%;
+  border: 1px solid var(--border2); background: transparent; color: var(--muted);
+  font-size: 13px; font-weight: 800; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; padding: 0;
+}
+.strat-info:active { background: var(--panel-3); }
+
+.strat-back-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.strat-about { margin: 0 0 9px; font-size: 12px; line-height: 1.55; color: var(--fg-2); }
+.strat-about:last-child { margin-bottom: 0; }
+.strat-about b { display: block; font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); font-weight: 800; margin-bottom: 2px; }
+/* The failure mode gets its own colour: it is the line that saves money. */
+.strat-risk { color: var(--fg-2); }
+.strat-risk b { color: var(--red, #ff4d6d); }
