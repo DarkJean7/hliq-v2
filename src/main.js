@@ -207,10 +207,11 @@ import {
   paperPerpState, paperOpenOrders, paperSpotState, paperPortfolio, paperFills, paperWithdrawable, paperStore, paperEquity,
   paperDeposit, paperWithdraw, paperLedger, paperPnl, paperDeposited, setPaperAssets, paperSpotValue,
   paperSettleOutcomes, paperFundingHistory, paperAccrueFunding, setPaperFundingRates, PAPER_COSTS,
-  paperMark, paperOrder, paperCancelMany,
+  paperMark, paperOrder, paperCancelMany, paperCancel,
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
+import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
          compareAxisHtml, attachCompareScrub, compareReadoutHtml, assignCompareColors } from './compare.js'
 import { ES_DICT } from './i18n-es.js'
@@ -20917,6 +20918,279 @@ window.__pickStratAcct = function(addr) {
   })
 }
 
+// ─── DEVICE BOTS: the glue ────────────────────────────────────────────────────
+//
+// src/devicebot.js owns the sandbox and the limits. This owns everything that touches
+// money: building the snapshot a bot is allowed to see, and turning an approved intent
+// into a real order through the same trading path the buttons use.
+//
+// The split is the point. The worker cannot read localStorage, so it never holds the agent
+// key; and the functions below are not reachable from inside it. A bot asks; this decides.
+const _devBots = new Map()   // id → DeviceBot
+
+// Everything a bot is given. Deliberately narrow: the one market it was installed for,
+// its own position and resting orders, account equity, and recent candles. It is not
+// handed the wallet address, the key, other markets, or the rest of the portfolio.
+function _devBotSnapshot(def) {
+  const coin = def.coin
+  const mark = _livePx(coin)
+  if (!(mark > 0)) return null
+  const pos = (state.perpState?.assetPositions ?? []).find(p => p.position.coin === coin)
+  const raw = _pulseCandles[coin + '|1h']
+  return {
+    coin,
+    mark,
+    tick: Date.now(),
+    equity: parseFloat(state.perpState?.marginSummary?.accountValue ?? 0),
+    position: pos ? {
+      szi: parseFloat(pos.position.szi ?? 0),
+      entryPx: parseFloat(pos.position.entryPx ?? 0),
+      unrealizedPnl: parseFloat(pos.position.unrealizedPnl ?? 0),
+    } : null,
+    openOrders: (state.openOrders ?? []).filter(o => o.coin === coin).map(o => ({
+      oid: o.oid, isBuy: !!o.isBuy, sz: parseFloat(o.sz ?? 0), limitPx: parseFloat(o.limitPx ?? 0),
+    })),
+    candles: Array.isArray(raw) ? raw.slice(-200).map(k => ({
+      t: +k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v,
+    })) : [],
+  }
+}
+
+// An approved intent becomes an order. Paper accounts go through the paper engine, so a
+// device bot can be tried out with no money at risk and no key at all.
+async function _devBotExecute(def, it) {
+  const coin = def.coin
+  const mark = _livePx(coin)
+  if (!(mark > 0)) return { ok: false, error: 'no mark price' }
+  const acct = isPaper() ? null : _stratTargetAddr()
+
+  if (it.type === 'cancel') {
+    if (isPaper()) { paperCancel(Number(it.oid)); _paperRefresh(); return { ok: true } }
+    await cancelOrder({ coin, oid: Number(it.oid), acct })
+    return { ok: true }
+  }
+  if (it.type === 'close') {
+    const pos = (state.perpState?.assetPositions ?? []).find(p => p.position.coin === coin)
+    const szi = parseFloat(pos?.position?.szi ?? 0)
+    if (!szi) return { ok: false, error: 'no position to close' }
+    if (isPaper()) {
+      paperOrder({ orders: [{ b: szi < 0, p: mark, s: Math.abs(szi), r: true, t: { limit: { tif: 'Ioc' } } }] }, coin)
+      _paperRefresh(); return { ok: true }
+    }
+    await closePosition({ coin, isBuy: szi < 0, sz: Math.abs(szi), markPrice: mark, acct })
+    return { ok: true }
+  }
+
+  const px = it.type === 'limit' ? Number(it.px) : mark
+  const sz = Number(it.usd) / px
+  if (!(sz > 0)) return { ok: false, error: 'size worked out to zero' }
+
+  if (isPaper()) {
+    const r = paperOrder({ orders: [{ b: !!it.isBuy, p: px, s: sz,
+      t: { limit: { tif: it.type === 'limit' ? 'Gtc' : 'Ioc' } } }] }, coin)
+    _paperRefresh()
+    const err = r?.response?.data?.statuses?.[0]?.error
+    return err ? { ok: false, error: err } : { ok: true }
+  }
+  const lev = Number(def.leverage) || 3
+  if (it.type === 'limit') await placeLimitOrder({ coin, isBuy: !!it.isBuy, sz, limitPx: px, leverage: lev, isIsolated: false, acct })
+  else                     await placeMarketOrder({ coin, isBuy: !!it.isBuy, sz, markPrice: mark, leverage: lev, isIsolated: false, acct })
+  return { ok: true }
+}
+
+const _devBotDeps = {
+  snapshot: _devBotSnapshot,
+  execute:  _devBotExecute,
+  onChange: () => { if (_mobVActiveTab === 'strategies') _mobVRenderStrategies(document.getElementById('mobVContent')) },
+}
+
+window.__devBotStart = function(id) {
+  const def = devBotsLoad().find(b => b.id === id)
+  if (!def) return
+  if (!isPaper() && !_stratTargetAddr()) { _paperToast(_T('Open an account first', 'Abre una cuenta primero'), 'err'); return }
+  _pulseLoadCandles(def.coin)              // the snapshot's candles come from Pulse's cache
+  let bot = _devBots.get(id)
+  if (!bot) { bot = new DeviceBot(def, _devBotDeps); _devBots.set(id, bot) }
+  bot.def = def
+  bot.start()
+  _mobVRenderStrategies(document.getElementById('mobVContent'))
+}
+window.__devBotStop = function(id) {
+  _devBots.get(id)?.stop()
+  _mobVRenderStrategies(document.getElementById('mobVContent'))
+}
+window.__devBotDelete = async function(id) {
+  if (!(await _appConfirm({ title: _T('Delete this bot?', '¿Borrar este bot?'),
+    body: _T('Its file and its log are removed from this device. Anything it has already placed stays open.',
+             'Su archivo y su registro se borran de este dispositivo. Lo que ya haya colocado sigue abierto.'),
+    confirmText: _T('Delete', 'Borrar'), danger: true }))) return
+  _devBots.get(id)?.stop()
+  _devBots.delete(id)
+  devBotsSave(devBotsLoad().filter(b => b.id !== id))
+  _mobVRenderStrategies(document.getElementById('mobVContent'))
+}
+window.__devBotLogs = function(id) {
+  const bot = _devBots.get(id)
+  const def = devBotsLoad().find(b => b.id === id)
+  const lines = bot?.log ?? []
+  const col = l => l === 'error' ? 'var(--red)' : l === 'warn' ? 'var(--orange,#f59e0b)' : 'var(--fg-2)'
+  _devBotSheet(_T('Log', 'Registro') + ' · ' + esc(def?.name ?? ''), lines.length
+    ? `<div style="display:flex;flex-direction:column;gap:5px;font-family:var(--font-mono);font-size:11.5px">${
+        lines.map(l => `<div style="display:flex;gap:8px"><span style="color:var(--fg-3);flex-shrink:0">${
+          new Date(l.ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span><span style="color:${col(l.level)};word-break:break-word">${esc(l.msg)}</span></div>`).join('')}</div>`
+    : `<div class="mob-v-empty">${_T('Nothing logged yet.', 'Nada registrado aún.')}</div>`)
+}
+
+function _devBotSheet(title, body) {
+  document.getElementById('devBotSheet')?.remove()
+  const wrap = document.createElement('div')
+  wrap.id = 'devBotSheet'
+  wrap.innerHTML = `
+    <div onclick="document.getElementById('devBotSheet')?.remove()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:8999"></div>
+    <div style="position:fixed;bottom:0;left:0;right:0;z-index:9000;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-height:88vh;overflow-y:auto">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 16px 11px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--panel-2)">
+        <span style="font-size:15.5px;font-weight:800">${title}</span>
+        <button onclick="document.getElementById('devBotSheet')?.remove()" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+      </div>
+      <div style="padding:14px 16px 22px">${body}</div>
+    </div>`
+  document.body.appendChild(wrap)
+}
+
+// ── installing one ──────────────────────────────────────────────────────────
+let _devBotDraft = null
+
+window.__devBotNew = function() {
+  _devBotDraft = { code: DEVBOT_TEMPLATE, name: '' }
+  _devBotInstallSheet()
+}
+window.__devBotPickFile = function(input) {
+  const f = input.files?.[0]
+  if (!f) return
+  if (f.size > 200_000) { _paperToast(_T('That file is over 200 KB', 'Ese archivo supera 200 KB'), 'err'); return }
+  const r = new FileReader()
+  r.onload = () => {
+    _devBotDraft = { code: String(r.result ?? ''), name: f.name.replace(/\.[jt]s$/, '') }
+    _devBotInstallSheet()
+  }
+  r.readAsText(f)
+}
+
+window.__devBotInstall = function() {
+  const g = id => document.getElementById(id)?.value?.trim() ?? ''
+  const code = g('devBotCode')
+  if (!code) { _paperToast(_T('The file is empty', 'El archivo está vacío'), 'err'); return }
+  if (!/onTick/.test(code)) { _paperToast(_T('No onTick(ctx) found in this file', 'No se encontró onTick(ctx)'), 'err'); return }
+  if (!document.getElementById('devBotAck')?.checked) {
+    _paperToast(_T('Please confirm you understand what this runs', 'Confirma que entiendes qué se ejecuta'), 'err'); return
+  }
+  const def = {
+    id: 'd' + Date.now().toString(36),
+    name: g('devBotName') || 'My bot',
+    coin: g('devBotCoin') || 'BTC',
+    maxUsd: Math.max(1, Number(g('devBotMaxUsd')) || 25),
+    maxPerMin: Math.max(1, Math.min(60, Number(g('devBotMaxMin')) || 4)),
+    maxOpen: Math.max(1, Math.min(100, Number(g('devBotMaxOpen')) || 10)),
+    everySec: Math.max(5, Number(g('devBotEvery')) || 15),
+    leverage: Math.max(1, Number(g('devBotLev')) || 3),
+    code,
+  }
+  devBotsSave([...devBotsLoad(), def])
+  document.getElementById('devBotSheet')?.remove()
+  _devBotDraft = null
+  _mobVRenderStrategies(document.getElementById('mobVContent'))
+  _paperToast(_T('Bot added — press Run when you are ready', 'Bot añadido — pulsa Ejecutar cuando quieras'), 'success')
+}
+
+function _devBotInstallSheet() {
+  const d = _devBotDraft ?? { code: DEVBOT_TEMPLATE, name: '' }
+  const inp = 'width:100%;box-sizing:border-box;background:var(--panel-1);border:1px solid var(--border);border-radius:9px;padding:8px 10px;font-size:13px;color:var(--fg);outline:none'
+  const lbl = 'font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;display:block'
+  const coins = [...new Set([
+    ...(state.perpState?.assetPositions ?? []).map(p => p.position.coin),
+    'BTC', 'ETH', 'SOL', 'HYPE',
+  ])].filter(c => c && !String(c).startsWith('@')).slice(0, 20)
+
+  _devBotSheet(_T('Add a bot', 'Añadir un bot'), `
+    <div style="font-size:12px;line-height:1.6;color:var(--fg-2)">
+      ${_T('This runs on your device, in a sandbox with no access to your keys — it cannot sign anything. It asks this app to place orders, and this app checks every request against the limits you set below.',
+           'Se ejecuta en tu dispositivo, en un entorno aislado sin acceso a tus claves — no puede firmar nada. Pide a la app que coloque órdenes, y la app comprueba cada petición contra los límites que definas.')}
+    </div>
+    <div style="font-size:11.5px;line-height:1.6;color:var(--fg-2);background:rgba(255,138,42,.10);border:1px solid rgba(255,138,42,.28);border-radius:10px;padding:10px 12px;margin-top:10px">
+      ${_T('It <b>can</b> still send what it is given — the market it runs on, your position in it, your equity — to any server it likes. It <b>cannot</b> read your private key, your other markets, or the rest of your portfolio. Only run a file you wrote or have read.',
+           'Sí <b>puede</b> enviar lo que recibe — el mercado, tu posición en él, tu capital — a cualquier servidor. <b>No puede</b> leer tu clave privada, tus otros mercados ni el resto de tu cartera. Ejecuta solo un archivo que hayas escrito o leído.')}
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:14px">
+      <div><label style="${lbl}">${_T('Name', 'Nombre')}</label><input id="devBotName" style="${inp}" value="${esc(d.name)}" placeholder="My bot"></div>
+      <div><label style="${lbl}">${_T('Market', 'Mercado')}</label>
+        <select id="devBotCoin" style="${inp}">${coins.map(c => `<option value="${esc(c)}">${esc(_ocCoinLabel(c))}</option>`).join('')}</select></div>
+      <div><label style="${lbl}">${_T('Max per order', 'Máx. por orden')} ($)</label><input id="devBotMaxUsd" type="number" min="1" style="${inp}" value="25"></div>
+      <div><label style="${lbl}">${_T('Max orders / min', 'Máx. órdenes/min')}</label><input id="devBotMaxMin" type="number" min="1" max="60" style="${inp}" value="4"></div>
+      <div><label style="${lbl}">${_T('Max resting orders', 'Máx. órdenes en espera')}</label><input id="devBotMaxOpen" type="number" min="1" max="100" style="${inp}" value="10"></div>
+      <div><label style="${lbl}">${_T('Run every (s)', 'Ejecutar cada (s)')}</label><input id="devBotEvery" type="number" min="5" style="${inp}" value="15"></div>
+      <div><label style="${lbl}">${_T('Leverage', 'Apalancamiento')}</label><input id="devBotLev" type="number" min="1" style="${inp}" value="3"></div>
+    </div>
+
+    <label style="${lbl};margin-top:12px">${_T('Bot file', 'Archivo del bot')}</label>
+    <textarea id="devBotCode" rows="12" spellcheck="false" style="${inp};font-family:var(--font-mono);font-size:11.5px;line-height:1.5;resize:vertical">${esc(d.code)}</textarea>
+
+    <label style="display:flex;align-items:flex-start;gap:9px;margin-top:12px;font-size:12px;line-height:1.5;color:var(--fg-2);cursor:pointer">
+      <input type="checkbox" id="devBotAck" style="margin-top:2px;flex-shrink:0">
+      <span>${_T('I wrote this file or I have read it, and I understand it will place real orders within the limits above.',
+                 'Escribí este archivo o lo he leído, y entiendo que colocará órdenes reales dentro de los límites anteriores.')}</span>
+    </label>
+    <button onclick="window.__devBotInstall()" style="width:100%;margin-top:12px;background:var(--accent);color:#000;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:700;cursor:pointer">${_T('Add bot', 'Añadir bot')}</button>
+  `)
+}
+
+// ── the section in Strats ───────────────────────────────────────────────────
+function _devBotsHtml() {
+  const list = devBotsLoad()
+  const row = (b) => {
+    const bot = _devBots.get(b.id)
+    const running = !!(bot && bot.worker && !bot.stopped)
+    const sb = 'padding:5px 9px;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap'
+    return `<div style="border:1px solid ${running ? 'var(--green)' : 'var(--border2)'};border-radius:12px;background:var(--panel-2);padding:11px 12px;margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="width:8px;height:8px;border-radius:50%;background:${running ? 'var(--green)' : 'var(--border2)'};flex-shrink:0"></span>
+        <span style="font-size:13.5px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.name)}</span>
+        <span style="font-size:10.5px;color:var(--muted);white-space:nowrap">${esc(_ocCoinLabel(b.coin))}</span>
+        <span style="flex:1"></span>
+        ${running
+          ? `<button onclick="window.__devBotStop('${b.id}')" style="${sb};border:1px solid var(--red);background:transparent;color:var(--red)">■ ${_T('Stop', 'Parar')}</button>`
+          : `<button onclick="window.__devBotStart('${b.id}')" style="${sb};border:none;background:var(--accent);color:#000">▶ ${_T('Run', 'Ejecutar')}</button>`}
+        <button onclick="window.__devBotLogs('${b.id}')" style="${sb};border:1px solid var(--border2);background:transparent;color:var(--muted)">${_T('Log', 'Registro')}</button>
+        <button onclick="window.__devBotDelete('${b.id}')" aria-label="Delete" style="${sb};border:none;background:transparent;color:var(--muted);font-size:16px">&times;</button>
+      </div>
+      <div style="font-size:10.5px;color:var(--fg-3);margin-top:6px">
+        ${_T('max', 'máx')} $${b.maxUsd}/${_T('order', 'orden')} · ${b.maxPerMin}/${_T('min', 'min')} · ${_T('every', 'cada')} ${b.everySec}s${
+          bot?.blocked ? ` · <span style="color:var(--orange,#f59e0b)">${bot.blocked} ${_T('blocked', 'bloqueadas')}</span>` : ''}
+      </div>
+    </div>`
+  }
+  return `<div class="mob-v-setting-group" style="margin-bottom:14px">
+    <div style="padding:12px 14px 4px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:14px;font-weight:700">${_T('Your own bots', 'Tus propios bots')}</span>
+        <span style="font-size:9.5px;font-weight:800;color:var(--accent);border:1px solid var(--accent);border-radius:5px;padding:1px 5px">${_T('ON THIS DEVICE', 'EN ESTE DISPOSITIVO')}</span>
+      </div>
+      <div style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:5px">${
+        _T('A file you wrote, running in this browser rather than on our servers. It stops when you close the app.',
+           'Un archivo tuyo, ejecutándose en este navegador y no en nuestros servidores. Se detiene al cerrar la app.')}</div>
+    </div>
+    <div style="padding:10px 12px 12px">
+      ${list.map(row).join('')}
+      <div style="display:flex;gap:8px;margin-top:2px">
+        <button onclick="window.__devBotNew()" style="flex:1;background:transparent;border:1px dashed var(--border2);border-radius:9px;color:var(--fg-2);font-size:12.5px;font-weight:700;padding:9px;cursor:pointer">+ ${_T('Write one', 'Escribir uno')}</button>
+        <label style="flex:1;background:transparent;border:1px dashed var(--border2);border-radius:9px;color:var(--fg-2);font-size:12.5px;font-weight:700;padding:9px;cursor:pointer;text-align:center">
+          ${_T('Upload .js', 'Subir .js')}<input type="file" accept=".js,.txt,text/javascript" style="display:none" onchange="window.__devBotPickFile(this)">
+        </label>
+      </div>
+    </div>
+  </div>`
+}
+
 function _mobVRenderStrategies(el) {
   // Combined view: the launch UI targets one account, so instead show a read-only list
   // of every bot running across all accounts in the view. Starting/configuring new bots
@@ -21174,6 +21448,7 @@ function _mobVRenderStrategies(el) {
 
   el.innerHTML = `<div style="padding:4px 0 80px">
     ${state.isAllAccounts ? `<div style="padding:2px 12px 10px">${_allAcctRunningHtml()}</div>` + _stratAcctPickerHtml() : ''}
+    ${_devBotsHtml()}
     <div class="mob-v-setting-group" style="margin-bottom:14px">
       <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:8px">
         <div style="display:flex;justify-content:space-between;align-items:center">
