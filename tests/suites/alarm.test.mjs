@@ -1,7 +1,7 @@
 // The wake alarm, driven for real against a stub audio element.
 import fs from 'fs'
 import { encodeWav, silenceSamples, alarmSamples, createAlarm }
-  from 'file:///C:/Users/jeank/OneDrive/Desktop/hliq-v2/src/alarm.js'
+  from '../../src/alarm.js'
 
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 const sw  = fs.readFileSync('public/sw.js', 'utf8').replace(/\r\n/g, '\n')

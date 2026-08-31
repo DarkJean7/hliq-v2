@@ -1,6 +1,6 @@
 // The paywall on copy trade, the rate-limit throttle, the long timeframes, and the charts.
 import fs from 'fs'
-import { sparkPath, windowSeries, feeSeries, HL_FEE_MAKER, HL_FEE_TAKER } from 'file:///C:/Users/jeank/OneDrive/Desktop/hliq-v2/src/ecosystem.js'
+import { sparkPath, windowSeries, feeSeries, HL_FEE_MAKER, HL_FEE_TAKER } from '../../src/ecosystem.js'
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 const srv = fs.readFileSync('server.js', 'utf8').replace(/\r\n/g, '\n')
 

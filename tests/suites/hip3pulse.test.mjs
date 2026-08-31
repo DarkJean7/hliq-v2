@@ -1,6 +1,6 @@
 // Pulse covers every perp market, not just the main dex.
 import fs from 'fs'
-import { computeEcosystem, computeEcosystemAll, rankEcosystem, pulseSeries } from 'file:///C:/Users/jeank/OneDrive/Desktop/hliq-v2/src/ecosystem.js'
+import { computeEcosystem, computeEcosystemAll, rankEcosystem, pulseSeries } from '../../src/ecosystem.js'
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 const srv = fs.readFileSync('server.js', 'utf8').replace(/\r\n/g, '\n')
 let pass = 0, fail = 0

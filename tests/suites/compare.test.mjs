@@ -1,6 +1,6 @@
 import fs from 'fs'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread, compareColor }
-  from 'file:///c:/Users/jeank/OneDrive/Desktop/hliq-v2/src/compare.js'
+  from '../../src/compare.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, x))

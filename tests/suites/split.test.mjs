@@ -1,7 +1,7 @@
 // Per-wallet chart lines in All Accounts, driven against REAL Hyperliquid portfolio history.
 import fs from 'fs'
 import { computeCompare, assignCompareColors, compareChartSvg, compareLegendHtml }
-  from 'file:///C:/Users/jeank/OneDrive/Desktop/hliq-v2/src/compare.js'
+  from '../../src/compare.js'
 
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 let pass = 0, fail = 0

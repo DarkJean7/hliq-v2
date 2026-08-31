@@ -1,6 +1,6 @@
 // The spot-card crash, the spot pairing bug it exposed, and the interactive charts.
 import fs from 'fs'
-import { computeSpot } from 'file:///C:/Users/jeank/OneDrive/Desktop/hliq-v2/src/ecosystem.js'
+import { computeSpot } from '../../src/ecosystem.js'
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 
 let pass = 0, fail = 0
