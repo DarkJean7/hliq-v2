@@ -77,7 +77,13 @@ t('the More drawer links it', htm.includes("window.__mobMoreTab('performance')")
 // The heading was dev-only, so for a non-dev user the section's only visible item would
 // have had no title and read as a stray row in the list above.
 t('the heading is no longer dev-gated', htm.includes('<div class="mob-more-section">Bot Agents</div>'))
-t('but Strategies still is', htm.includes(`<button class="dev-only" onclick="window.__mobMoreTab('strategies')"`))
+// Strategies was dev-gated too, which meant nobody but the owner could reach the bot
+// section -- and the only way in was the LB_PIN, an admin credential that also manages the
+// leaderboard. The paywall already does the gating the dev flag was standing in for
+// (built-in bots render visible-but-locked when unpaid), so the flag was pure lockout.
+t('Strategies is reachable without dev mode', !/class="[^"]*dev-only[^"]*"[^>]*__mobMoreTab\('strategies'\)/.test(htm))
+t('on desktop too, both entry points', !/dev-only[^>]*(data-tab="strategies"|switchTab\('strategies')/.test(htm))
+t('no dev-only gate is left anywhere', !htm.includes('dev-only'))
 t('Bot Performance is readable without dev mode', !/class="dev-only"[^>]*__mobMoreTab\('performance'\)/.test(htm))
 t('the mobile dispatch already accepted it', cli.includes("'watch', 'strategies', 'performance'"))
 t('every remaining state names the view', (cli.match(/el\.innerHTML = _hd/g) || []).length === 3)

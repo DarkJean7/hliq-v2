@@ -22347,10 +22347,22 @@ function updateServerBadge() {
 }
 
 // ── Inject Run/Stop row into a strategy command output area ──────────────────
+let _deskDevSig = ''
+
 function updateAllStrategyButtons() {
   // The desktop panel has no render pass of its own, so this poll is where it learns the
   // subscription state. Throttled inside _subRefresh, so calling it here is cheap.
   _subRefresh()
+
+  // Device bots, on desktop. Same two renderers the mobile tab uses, so the two layouts
+  // cannot drift. Two guards, because this is a poll rather than an event: skip while the
+  // focus is inside (an innerHTML swap would eat the keystroke), and skip when nothing
+  // changed (it would close an open <details> and drop the caret every second otherwise).
+  const dvHost = document.getElementById('deskDevBots')
+  if (dvHost && !dvHost.contains(document.activeElement)) {
+    const html = devBotsLoad().map(_devBotCardHtml).join('') + _devBotsHtml()
+    if (html !== _deskDevSig) { _deskDevSig = html; dvHost.innerHTML = html }
+  }
   const labels  = { insolvent:'Insolvent', dca:'DCA', grid:'Grid', trend:'Trend', longer:'Longer', shorter:'Shorter' }
   const running = []
   for (const type of ['insolvent','dca','grid','trend','longer','shorter']) {
