@@ -211,6 +211,7 @@ import {
   paperMark, paperOrder, paperCancelMany, paperCancel,
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
+import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -1148,6 +1149,7 @@ function _refreshVisitedSection(name) {
 function renderAll() {
   renderWalletStrip(state.addr)
   restoreAssetLists(state.addr)
+  _fxCheck()
 
   if (state.fills.length > 0 || state.webData) {
     renderAccountSection()
@@ -1231,6 +1233,130 @@ function _updateSidebarAccount() {
 
 function totalPerpEquity(perpState) {
   return computeAcctStats(perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids).accountValue
+}
+
+// --- CELEBRATIONS ------------------------------------------------------------
+// Moments worth marking. The animation was the easy half; the hard half is never firing
+// on a reading that is not real. Each guard below exists for a specific way this could
+// otherwise lie to someone about their own money:
+//
+//   - a partial load reads as a crash to zero, then as a miraculous recovery
+//   - a first-ever load has nothing to compare against, so everything is a record
+//   - the All Accounts total moves when you hide an account, which is not a gain
+//   - paper money and real money are not the same money and never share a high
+
+const ATH_KEY  = 'hliq_ath'
+const _athLoad = () => { try { return JSON.parse(localStorage.getItem(ATH_KEY)) || {} } catch { return {} } }
+const _athSave = (m) => { try { localStorage.setItem(ATH_KEY, JSON.stringify(m)) } catch {} }
+
+// One record per account; paper is keyed by slot so each practice account keeps its own.
+function _fxKey() {
+  if (isPaper()) return 'paper:' + paperSlot()
+  return state.addr ? 'w:' + String(state.addr).toLowerCase() : null
+}
+
+let _fxLastFire = 0
+let _fxWinSeen  = null   // newest fill time already considered; null means "not seeded yet"
+let _fxWinKey   = null   // the account that seed belongs to
+
+// Never two banners at once, and never a stream of them.
+function _fxGate(ms) {
+  if (Date.now() - _fxLastFire < ms) return false
+  _fxLastFire = Date.now()
+  return true
+}
+
+// The account value the UI is showing -- or null when we do not actually know it yet.
+// Returning null rather than 0 is the entire point. An empty read means "we did not look",
+// and treating that as "you have nothing" is the bug that has hit Net PnL three times.
+function _fxEquity() {
+  // No margin summary means no reading at all, on either kind of account.
+  if (!state.perpState?.marginSummary) return null
+  // A real account also has to have loaded its history, since computeAcctStats folds fills
+  // and portfolio into the value it returns. Paper needs no such wait: its balance is
+  // whole from the first tick, and requiring a fill would mean a fresh practice account
+  // could never record the high it started at.
+  if (!isPaper() && !(state.fills?.length > 0 || state.webData)) return null
+  const v = computeAcctStats(state.perpState, state.spotState, state.fills,
+                             state.portfolio, state.funding, state.allMids)?.accountValue
+  return Number.isFinite(v) && v > 0 ? v : null
+}
+
+function _fxCheckAth(key, eq) {
+  const map  = _athLoad()
+  const prev = map[key]
+
+  // First sighting seeds silently, or everyone's first load is an all-time high.
+  if (!prev || !Number.isFinite(prev.v)) { map[key] = { v: eq, t: Date.now() }; _athSave(map); return }
+  if (eq <= prev.v) return
+
+  // Record the new peak whether or not it is worth celebrating. Otherwise a value that
+  // creeps up in sub-threshold steps eventually fires on a total that was never news.
+  const gain = eq - prev.v
+  map[key] = { v: eq, t: Date.now() }
+  _athSave(map)
+
+  // Beating your old peak by a cent is not a moment; a moving mark price does that every
+  // few seconds. Ask for a real move before interrupting anyone.
+  if (gain < 1 || gain / prev.v < 0.0025) return
+  if (!_fxGate(300000)) return
+  celebrate('ath', _T('New all-time high', 'Nuevo maximo historico'), '$' + fmtUSD(eq),
+    _T('The most your account has ever been worth', 'Lo mas que ha valido tu cuenta'))
+}
+
+// A closed trade that actually made money, sized against equity -- $20 is a great day on a
+// $200 account and a rounding error on a $200,000 one.
+function _fxCheckWin(key, eq) {
+  const fills = state.fills ?? []
+  if (!fills.length) return
+  const newest = fills.reduce((m, f) => Math.max(m, f.time ?? 0), 0)
+
+  // Seed on the first look at an account, so loading a year of history is silent.
+  if (_fxWinKey !== key || _fxWinSeen === null) { _fxWinKey = key; _fxWinSeen = newest; return }
+  if (newest <= _fxWinSeen) return
+
+  // One position usually closes across several fills. Sum per coin, so a scaled-out exit
+  // is one celebration rather than five.
+  const byCoin = new Map()
+  for (const f of fills) {
+    if ((f.time ?? 0) <= _fxWinSeen) continue
+    const pnl = parseFloat(f.closedPnl ?? 0)
+    if (!Number.isFinite(pnl) || pnl === 0) continue
+    byCoin.set(f.coin, (byCoin.get(f.coin) ?? 0) + pnl)
+  }
+  _fxWinSeen = newest
+  if (!byCoin.size) return
+
+  let bestCoin = null, best = 0
+  for (const [coin, pnl] of byCoin) if (pnl > best) { best = pnl; bestCoin = coin }
+  if (!bestCoin || best < 1 || best / eq < 0.01) return
+  if (!_fxGate(60000)) return
+  celebrate('win', _T('Closed in profit', 'Cerrado en ganancia'), '+$' + fmtUSD(best),
+    esc(bestCoin) + ' - ' + (best / eq * 100).toFixed(1) + '% ' + _T('of your account', 'de tu cuenta'))
+}
+
+// Called from renderAll, i.e. after any refresh that produced something worth drawing.
+function _fxCheck() {
+  if (!fxEnabled() || state.isAllAccounts) return
+  const key = _fxKey()
+  if (!key) return
+  const eq = _fxEquity()
+  if (eq === null) return
+  // A thrown celebration must never take the render down with it.
+  try { _fxCheckAth(key, eq); _fxCheckWin(key, eq) } catch {}
+}
+
+window.__toggleCelebrate = function (on) { setFxEnabled(on) }
+
+// Shows what the setting actually does. A toggle labelled "Celebrations" tells you nothing
+// about how intrusive it is, and the honest answer is "watch it once and decide".
+// Deliberately ignores the setting -- you asked for this one.
+window.__celebratePreview = function () {
+  const wasOn = fxEnabled()
+  if (!wasOn) setFxEnabled(true)
+  celebrate('ath', _T('New all-time high', 'Nuevo maximo historico'), '$12,480.00',
+    _T('This is a preview', 'Esto es una vista previa'))
+  if (!wasOn) setFxEnabled(false)
 }
 
 // ─── RISK UI ──────────────────────────────────────────────────────────────────
@@ -23619,6 +23745,11 @@ function _syncSettingsTab() {
   // UI mode
   const fmToggle = document.getElementById('forceMobileToggle')
   if (fmToggle) fmToggle.checked = localStorage.getItem('hliq_force_mobile') === '1'
+
+  // Celebrations default ON, so this reads the stored value through fxEnabled() rather
+  // than testing the key for '1' -- an unset key means on here, not off.
+  const fxToggle = document.getElementById('celebrateToggle')
+  if (fxToggle) fxToggle.checked = fxEnabled()
 }
 
 window.__switchSettingsPanel = function(name, btn) {

@@ -1443,6 +1443,23 @@
                   <span class="pin-toggle-slider"></span>
                 </label>
               </div>
+
+              <!-- Opt-out, not opt-in: the celebrations are part of the app's character,
+                   but nobody should have to watch confetti over a real account if they
+                   would rather not. Reduced-motion is honoured separately and always. -->
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Celebrations</div>
+                  <div class="settings-desc">Confetti on a new all-time high and on a big winning trade</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <button class="btn-sm" onclick="window.__celebratePreview()">Preview</button>
+                  <label class="pin-toggle">
+                    <input type="checkbox" id="celebrateToggle" checked onchange="window.__toggleCelebrate(this.checked)">
+                    <span class="pin-toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
             </div>
           </div>
 
