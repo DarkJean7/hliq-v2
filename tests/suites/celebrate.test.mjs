@@ -30,8 +30,16 @@ t('and is order-independent, so a reorder is not a new account', cli.includes(".
 t('a hidden wallet is out of both the key and the sum', cli.includes('.filter(r => r && !r.error && !hidden.has(r.addr))'))
 t('a partial load is not a total', cli.includes('if (_allAcctIncomplete) return null'))
 t('nor is one with a failed wallet in it', cli.includes('if (!rows.length || rows.some(r => r.error)) return null'))
-t('the combined view gets the high but not the per-trade win',
-  cli.includes('try { _fxCheckAth(key, eq); if (!all) _fxCheckWin(key, eq) } catch {}'))
+t('the combined view gets BOTH checks', cli.includes('try { _fxCheckAth(key, eq); _fxCheckWin(key, eq) } catch {}'))
+// Merged fills already carry the wallet that made them, so a win in the combined view is
+// attributed and scaled to that wallet. Against a nine-wallet total, a great trade on a
+// small account could never clear the threshold.
+t('a win is keyed by wallet as well as coin, so two wallets do not merge',
+  cli.includes("const k = (f._acctAddr ?? '') + SEP + (f._acct ?? '') + SEP + f.coin"))
+t('and measured against the wallet that made it', cli.includes('const base = wAddr ? (_fxAcctEquity(wAddr) ?? eq) : eq'))
+t('matched on address, not on a display label', cli.includes('String(r.addr).toLowerCase() !== String(addr).toLowerCase()'))
+t('an unmatched wallet falls back rather than reading as zero', cli.includes('return Number.isFinite(v) && v > 0 ? v : null'))
+t('the banner names the wallet', cli.includes("(wLabel ? ' - ' + esc(wLabel) : '')"))
 
 console.log(String.fromCharCode(10) + '-- paper money and real money never mix --')
 t('the key separates them', cli.includes("if (isPaper()) return 'paper:' + paperSlot()"))
@@ -45,8 +53,8 @@ t('the peak is recorded even when not celebrated',
   cli.indexOf('_athSave(map)\n\n  // Beating your old peak') > 0)
 t('an all-time high holds a five-minute cooldown', cli.includes('if (!_fxGate(300000)) return'))
 t('one banner at a time', cli.includes('function _fxGate(ms)') && cli.includes('_fxLastFire = Date.now()'))
-t('a win is sized against equity, not a flat number', cli.includes("if (!bestCoin || best < 1 || best / eq < 0.01) return"))
-t('a scaled-out exit is one celebration', cli.includes('byCoin.set(f.coin, (byCoin.get(f.coin) ?? 0) + pnl)'))
+t('a win is sized against equity, not a flat number', cli.includes('if (best < 1 || best / base < 0.01) return'))
+t('a scaled-out exit is one celebration', cli.includes('byPos.set(k, (byPos.get(k) ?? 0) + pnl)'))
 
 console.log(String.fromCharCode(10) + '-- it cannot break the app --')
 t('a throw cannot take down the render', /try \{ _fxCheckAth\(key, eq\);.*\} catch \{\}/.test(cli))

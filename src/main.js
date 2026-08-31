@@ -1304,8 +1304,25 @@ function _fxCheckAth(key, eq) {
     _T('The most your account has ever been worth', 'Lo mas que ha valido tu cuenta'))
 }
 
-// A closed trade that actually made money, sized against equity -- $20 is a great day on a
-// $200 account and a rounding error on a $200,000 one.
+// The value of one wallet inside the combined view, matched on the address that
+// _allAcctReaggregate stamps onto every fill it merges. null when we cannot match it,
+// which the caller treats as "fall back", never as zero.
+function _fxAcctEquity(addr) {
+  for (const r of _allAcctLastResults ?? []) {
+    if (!r || r.error || String(r.addr).toLowerCase() !== String(addr).toLowerCase()) continue
+    const v = parseFloat(r.accountValue ?? 0)
+    return Number.isFinite(v) && v > 0 ? v : null
+  }
+  return null
+}
+
+// A closed trade that actually made money, sized against the equity of the account that
+// made it -- $20 is a great day on a $200 wallet and a rounding error on a $200,000 one.
+//
+// That distinction is the whole reason this works in the combined view. Every fill merged
+// there already carries the wallet it came from, so a win is attributed to that wallet and
+// measured against that wallet's own value. Measuring against the nine-wallet total would
+// bury a great trade on a small account under a threshold it could never reach.
 function _fxCheckWin(key, eq) {
   const fills = state.fills ?? []
   if (!fills.length) return
@@ -1315,24 +1332,34 @@ function _fxCheckWin(key, eq) {
   if (_fxWinKey !== key || _fxWinSeen === null) { _fxWinKey = key; _fxWinSeen = newest; return }
   if (newest <= _fxWinSeen) return
 
-  // One position usually closes across several fills. Sum per coin, so a scaled-out exit
-  // is one celebration rather than five.
-  const byCoin = new Map()
+  // One position usually closes across several fills. Sum per wallet and coin, so a
+  // scaled-out exit is one celebration -- and so two wallets holding the same coin do not
+  // get merged into a win neither of them made.
+  const SEP = String.fromCharCode(0)
+  const byPos = new Map()
   for (const f of fills) {
     if ((f.time ?? 0) <= _fxWinSeen) continue
     const pnl = parseFloat(f.closedPnl ?? 0)
     if (!Number.isFinite(pnl) || pnl === 0) continue
-    byCoin.set(f.coin, (byCoin.get(f.coin) ?? 0) + pnl)
+    const k = (f._acctAddr ?? '') + SEP + (f._acct ?? '') + SEP + f.coin
+    byPos.set(k, (byPos.get(k) ?? 0) + pnl)
   }
   _fxWinSeen = newest
-  if (!byCoin.size) return
+  if (!byPos.size) return
 
-  let bestCoin = null, best = 0
-  for (const [coin, pnl] of byCoin) if (pnl > best) { best = pnl; bestCoin = coin }
-  if (!bestCoin || best < 1 || best / eq < 0.01) return
+  let bestK = null, best = 0
+  for (const [k, pnl] of byPos) if (pnl > best) { best = pnl; bestK = k }
+  if (!bestK) return
+  const [wAddr, wLabel, coin] = bestK.split(SEP)
+
+  // Against the wallet that made it when we know which one that was; against the value we
+  // were handed otherwise, which is the single-account case.
+  const base = wAddr ? (_fxAcctEquity(wAddr) ?? eq) : eq
+  if (best < 1 || best / base < 0.01) return
   if (!_fxGate(60000)) return
   celebrate('win', _T('Closed in profit', 'Cerrado en ganancia'), '+$' + fmtUSD(best),
-    esc(bestCoin) + ' - ' + (best / eq * 100).toFixed(1) + '% ' + _T('of your account', 'de tu cuenta'))
+    esc(coin) + (wLabel ? ' - ' + esc(wLabel) : '') + ' - ' +
+    (best / base * 100).toFixed(1) + '% ' + _T('of that account', 'de esa cuenta'))
 }
 
 // All Accounts is a real account value too, and for anyone running several wallets it is
@@ -1369,11 +1396,8 @@ function _fxCheck() {
   if (!key) return
   const eq = all ? _fxAllEquity() : _fxEquity()
   if (eq === null) return
-  // The combined view gets the high but not the per-trade win: the fills behind a
-  // nine-wallet total do not belong to one account, and saying "you closed this" across
-  // them is a claim this cannot make honestly.
-  // A thrown celebration must never take the render down with it.
-  try { _fxCheckAth(key, eq); if (!all) _fxCheckWin(key, eq) } catch {}
+  // Both checks run in both views. A thrown celebration must never take down the render.
+  try { _fxCheckAth(key, eq); _fxCheckWin(key, eq) } catch {}
 }
 
 window.__toggleCelebrate = function (on) { setFxEnabled(on) }
