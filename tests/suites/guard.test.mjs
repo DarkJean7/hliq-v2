@@ -11,7 +11,14 @@ const t = (name, cond) => { cond ? (pass++, console.log('  PASS', name)) : (fail
 
 // The bit git silently needs. This is not pedantry: it was 100644 for the hook's whole
 // life and every push to main went unguarded.
-t('hook is executable', (statSync('.githooks/pre-push').mode & 0o111) !== 0)
+//
+// Asked of git's index, not the filesystem. NTFS has no execute bit, so statSync().mode
+// reports 666 on Windows however the file is stored -- the original check passed on the
+// phone and could never pass on the desktop, which is precisely the split this suite is
+// meant to catch rather than create. The index mode is also the thing that actually
+// matters: it is what a fresh Linux clone checks out.
+const mode = execFileSync('git', ['ls-files', '-s', '.githooks/pre-push'], { encoding: 'utf8' }).split(' ')[0]
+t('hook is executable in the index', mode === '100755', mode)
 
 // Scope: it must stay out of the way on feature branches.
 t('only fires on main', /branch=\$\(git rev-parse --abbrev-ref HEAD\)/.test(hook) && /\[ "\$branch" = "main" \] \|\| exit 0/.test(hook))
