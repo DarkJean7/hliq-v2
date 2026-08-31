@@ -1335,15 +1335,45 @@ function _fxCheckWin(key, eq) {
     esc(bestCoin) + ' - ' + (best / eq * 100).toFixed(1) + '% ' + _T('of your account', 'de tu cuenta'))
 }
 
+// All Accounts is a real account value too, and for anyone running several wallets it is
+// the only number they look at -- so leaving it out meant the feature never fired for the
+// people most likely to want it. It only has to be keyed by WHICH wallets are in the
+// total: hiding one changes the number without anything having been lost, and a changed
+// set is simply a different key, which seeds silently instead of celebrating.
+function _fxAllKey() {
+  const hidden = _maHiddenLoad()
+  const addrs = (_allAcctLastResults ?? [])
+    .filter(r => r && !r.error && !hidden.has(r.addr))
+    .map(r => String(r.addr).toLowerCase()).sort()
+  return addrs.length ? 'all:' + addrs.join(',') : null
+}
+
+function _fxAllEquity() {
+  // A wallet that has not landed yet leaves the total short by that wallet. Seeding on a
+  // partial sum would fire a fake record the instant the rest arrived -- the same
+  // empty-is-not-unknown trap as _fxEquity, one level up. _allAcctIncomplete already
+  // tracks exactly this, and the portfolio chart skips on it for the same reason.
+  if (_allAcctIncomplete) return null
+  const hidden = _maHiddenLoad()
+  const rows = (_allAcctLastResults ?? []).filter(r => r && !hidden.has(r.addr))
+  if (!rows.length || rows.some(r => r.error)) return null
+  const total = rows.reduce((s, r) => s + parseFloat(r.accountValue ?? 0), 0)
+  return Number.isFinite(total) && total > 0 ? total : null
+}
+
 // Called from renderAll, i.e. after any refresh that produced something worth drawing.
 function _fxCheck() {
-  if (!fxEnabled() || state.isAllAccounts) return
-  const key = _fxKey()
+  if (!fxEnabled()) return
+  const all = state.isAllAccounts
+  const key = all ? _fxAllKey() : _fxKey()
   if (!key) return
-  const eq = _fxEquity()
+  const eq = all ? _fxAllEquity() : _fxEquity()
   if (eq === null) return
+  // The combined view gets the high but not the per-trade win: the fills behind a
+  // nine-wallet total do not belong to one account, and saying "you closed this" across
+  // them is a claim this cannot make honestly.
   // A thrown celebration must never take the render down with it.
-  try { _fxCheckAth(key, eq); _fxCheckWin(key, eq) } catch {}
+  try { _fxCheckAth(key, eq); if (!all) _fxCheckWin(key, eq) } catch {}
 }
 
 window.__toggleCelebrate = function (on) { setFxEnabled(on) }
@@ -15223,6 +15253,13 @@ function _mobVRenderContent(tick = false) {
           <div><div>Brightness</div><div style="font-size:11px;color:var(--muted)" id="mobVBrightLbl">${brightness}%</div></div>
           <input type="range" style="width:100%;margin-top:2px" min="50" max="150" step="5" value="${brightness}"
             oninput="window.__onBrightnessChange(this.value);document.getElementById('mobVBrightLbl').textContent=this.value+'%'">
+        </div>
+        <div class="mob-v-setting-row">
+          <div><div>Celebrations</div><div style="font-size:11px;color:var(--muted)">Confetti on a new all-time high and on a big winning trade</div></div>
+          <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
+            <button class="mob-v-setting-btn" onclick="window.__celebratePreview()">Preview</button>
+            ${tog(fxEnabled(), 'window.__toggleCelebrate(this.checked)')}
+          </div>
         </div>
         <div class="mob-v-setting-row" style="flex-direction:column;align-items:flex-start;gap:8px">
           <div>Language</div>

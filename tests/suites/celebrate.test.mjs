@@ -20,7 +20,18 @@ t('an unknown equity returns null, not zero', cli.includes('function _fxEquity()
 t('a real account also waits for its history',
   cli.includes("if (!isPaper() && !(state.fills?.length > 0 || state.webData)) return null"))
 t('and a zero or NaN value is not a value', cli.includes('return Number.isFinite(v) && v > 0 ? v : null'))
-t('the All Accounts total is not a high', cli.includes("if (!fxEnabled() || state.isAllAccounts) return"))
+
+console.log(String.fromCharCode(10) + '-- the combined total counts, but is keyed by what is in it --')
+// Excluding All Accounts meant the feature never fired for anyone running several wallets,
+// which is most of the people who would want it. Including it needs the key to say WHICH
+// wallets, or hiding one reads as a loss and unhiding it reads as a record.
+t('the key names every visible wallet', cli.includes("return addrs.length ? 'all:' + addrs.join(',') : null"))
+t('and is order-independent, so a reorder is not a new account', cli.includes(".map(r => String(r.addr).toLowerCase()).sort()"))
+t('a hidden wallet is out of both the key and the sum', cli.includes('.filter(r => r && !r.error && !hidden.has(r.addr))'))
+t('a partial load is not a total', cli.includes('if (_allAcctIncomplete) return null'))
+t('nor is one with a failed wallet in it', cli.includes('if (!rows.length || rows.some(r => r.error)) return null'))
+t('the combined view gets the high but not the per-trade win',
+  cli.includes('try { _fxCheckAth(key, eq); if (!all) _fxCheckWin(key, eq) } catch {}'))
 
 console.log(String.fromCharCode(10) + '-- paper money and real money never mix --')
 t('the key separates them', cli.includes("if (isPaper()) return 'paper:' + paperSlot()"))
@@ -38,7 +49,7 @@ t('a win is sized against equity, not a flat number', cli.includes("if (!bestCoi
 t('a scaled-out exit is one celebration', cli.includes('byCoin.set(f.coin, (byCoin.get(f.coin) ?? 0) + pnl)'))
 
 console.log(String.fromCharCode(10) + '-- it cannot break the app --')
-t('a throw cannot take down the render', cli.includes('try { _fxCheckAth(key, eq); _fxCheckWin(key, eq) } catch {}'))
+t('a throw cannot take down the render', /try \{ _fxCheckAth\(key, eq\);.*\} catch \{\}/.test(cli))
 t('the canvas never eats a click', fx.includes('pointer-events:none'))
 t('the canvas removes itself', fx.includes("cv.remove(); return"))
 t('a second burst replaces the first', fx.includes("document.getElementById('fxCanvas')?.remove()") &&
@@ -51,6 +62,9 @@ t('but keeps the banner, which carries the message', fx.indexOf('banner(title, b
   fx.indexOf('if (!reducedMotion())'))
 t('celebrations are opt-out, so an unset key means on', fx.includes("localStorage.getItem(FX_KEY) !== '0'"))
 t('the setting exists in Settings', htm.includes('id="celebrateToggle"'))
+// Mobile is the primary surface; a setting that only exists on desktop does not exist.
+t('and on mobile, which is the primary surface', cli.includes("${tog(fxEnabled(), 'window.__toggleCelebrate(this.checked)')}"))
+t('with the preview there too', cli.includes(`onclick="window.__celebratePreview()">Preview</button>`))
 t('and its state is restored from fxEnabled, not from a truthy key',
   cli.includes('if (fxToggle) fxToggle.checked = fxEnabled()'))
 t('every entry point honours the setting', fx.includes('if (!fxEnabled()) return false'))
