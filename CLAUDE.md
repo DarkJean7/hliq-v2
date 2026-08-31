@@ -18,7 +18,7 @@ git config core.hooksPath .githooks    # once per clone — see "The guard" belo
 ```
 
 **More than one device edits this repo.** A phone session and a desktop session both work
-on `src/main.js`, which is ~25,000 lines. If you start from a stale copy you will not get a
+on `src/main.js`, which is ~30,000 lines. If you start from a stale copy you will not get a
 clean conflict — you will get a silent revert of someone's work.
 
 ---
@@ -86,7 +86,17 @@ thing that already failed.
 
 ## Things that will bite you
 
-- **`src/main.js` is huge.** Prefer `Edit` with a unique anchor over rewriting regions.
+- **`src/main.js` is huge** — ~30,000 lines, about 75% of all the source in `src/`. Prefer
+  `Edit` with a unique anchor over rewriting regions.
+- **New features go in their own module by default.** This file got to 30,000 lines one
+  reasonable decision at a time: an anchored edit into `main.js` is the cheapest possible
+  change, so it kept winning, and nobody ever added up the total. `celebrate.js`,
+  `devicebot.js`, `paper.js`, `charts.js` are what it looks like when that choice goes the
+  other way.
+  The test is dependencies, not size: code that needs `state` and a dozen internal helpers
+  belongs where they are — threading nine arguments through a new interface is worse than
+  the thing it replaced. But if the answer keeps coming out "main.js", say so out loud
+  before writing, rather than noticing five features later.
   Heredocs mangle `\n`, backticks and `$` — if you script an edit, write the script to a
   file rather than piping it through a shell.
 - **A build passing does not mean an identifier exists.** vite will happily bundle a call
