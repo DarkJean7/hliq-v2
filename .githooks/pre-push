@@ -1,20 +1,40 @@
 #!/bin/sh
-# Refuse a push that would build on a stale base.
+# Refuse a push to main that is unsafe.
 #
 # The failure this exists for actually happened: a session working from an old copy pushed
-# over eighteen commits of main.js. Two devices editing one 25,000-line file is exactly the
-# situation where "I'll just remember to pull" is not good enough, so the check is here
+# over eighteen commits of main.js. Two devices editing one 30,000-line file is exactly the
+# situation where "I'll just remember to pull" is not good enough, so the checks are here
 # rather than in someone's head.
 #
-# It fetches, then refuses if origin/main has commits this branch does not. The fix it
-# prints is the fix: pull with rebase, re-run the tests, push again.
+# Four checks, in cheapest-first order. Each prints the fix it wants.
 #
 # Enable it with:  git config core.hooksPath .githooks
-# (It lives in the repo so every clone — including a phone session — gets it.)
+# (.claude/hooks/session-start.sh does that for you on every Claude Code session.)
+#
+# Emergency override, for when prod is down and you know what you are doing:
+#     INSOLVENT_FORCE=1 git push
 
 branch=$(git rev-parse --abbrev-ref HEAD)
 [ "$branch" = "main" ] || exit 0
 
+if [ -n "$INSOLVENT_FORCE" ]; then
+  echo "pre-push: INSOLVENT_FORCE set — skipping every check. Be right."
+  exit 0
+fi
+
+refuse() {
+  echo ""
+  echo "  REFUSED — $1"
+  echo ""
+  shift
+  for l in "$@"; do echo "  $l"; done
+  echo ""
+  echo "  Override only if prod is down:  INSOLVENT_FORCE=1 git push"
+  echo ""
+  exit 1
+}
+
+# ---- 1. stale base --------------------------------------------------------
 echo "pre-push: checking main is up to date…"
 git fetch origin main --quiet 2>/dev/null || {
   echo "pre-push: could not reach origin — pushing anyway, but you are flying blind."
@@ -22,17 +42,62 @@ git fetch origin main --quiet 2>/dev/null || {
 }
 
 behind=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
-[ "$behind" -eq 0 ] && exit 0
+if [ "$behind" -ne 0 ]; then
+  refuse "origin/main has $behind commit(s) you do not have." \
+    "Pushing now would build your work on a stale base, and a later force or a" \
+    "bad merge is how eighteen commits were lost once already." \
+    "" \
+    "Do this instead:" \
+    "    git pull --rebase origin main" \
+    "    npm test" \
+    "    git push"
+fi
 
-echo ""
-echo "  REFUSED — origin/main has $behind commit(s) you do not have."
-echo ""
-echo "  Pushing now would build your work on a stale base, and a later force or a"
-echo "  bad merge is how eighteen commits were lost once already."
-echo ""
-echo "  Do this instead:"
-echo "      git pull --rebase origin main"
-echo "      npm test"
-echo "      git push"
-echo ""
-exit 1
+# ---- 2. conflict markers --------------------------------------------------
+# A botched merge leaves these in the tree. They pass a build and break at runtime.
+echo "pre-push: checking for conflict markers…"
+markers=$(git grep -l -E '^(<<<<<<<|>>>>>>>) ' HEAD -- src strategies tests server.js notify-server.js index.html 2>/dev/null)
+if [ -n "$markers" ]; then
+  refuse "unresolved conflict markers are committed." \
+    "$markers" \
+    "" \
+    "You resolved a merge halfway. Finish it, re-run npm test, then push."
+fi
+
+# ---- 3. silent revert -----------------------------------------------------
+# The eighteen-commit loss looked exactly like this: a push where a source file
+# suddenly gets much shorter, because someone's work was resolved away.
+echo "pre-push: checking nothing large disappeared…"
+shrunk=$(git diff --numstat origin/main..HEAD -- src strategies 2>/dev/null \
+  | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && ($2 - $1) > 500 { printf "%s loses %d net lines\n", $3, $2 - $1 }')
+if [ -n "$shrunk" ]; then
+  refuse "this push deletes a lot of code." \
+    "$shrunk" \
+    "" \
+    "That is the shape of a merge that resolved someone else's work away." \
+    "If the deletion is deliberate, override. If you are not sure, it is not."
+fi
+
+# ---- 4. the suite ---------------------------------------------------------
+# CLAUDE.md says run npm test before pushing. This is that, enforced.
+echo "pre-push: running the suite…"
+out=$(npm test 2>&1)
+verdict=$(printf '%s\n' "$out" | grep -E '[0-9]+ passing · [0-9]+ known-failing · [0-9]+ broken' | tail -1)
+broken=$(printf '%s\n' "$verdict" | sed -n 's/.*· \([0-9][0-9]*\) broken.*/\1/p')
+
+if [ -z "$broken" ]; then
+  refuse "the suite did not report a verdict, so it did not run." \
+    "$(printf '%s\n' "$out" | tail -12)" \
+    "" \
+    "Usually node_modules is missing. Run npm install, then push."
+fi
+
+if [ "$broken" -ne 0 ]; then
+  refuse "$verdict" \
+    "$(printf '%s\n' "$out" | sed -n '/FAILED/,$p' | head -20)" \
+    "" \
+    "broken must be 0. Known-failing is fine; broken is not."
+fi
+
+echo "pre-push: $verdict"
+exit 0
