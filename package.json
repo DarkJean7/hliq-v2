@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "watch": "powershell -ExecutionPolicy Bypass -File watch.ps1"
+    "watch": "powershell -ExecutionPolicy Bypass -File watch.ps1",
+    "test": "node tests/run.mjs"
   },
   "dependencies": {
     "@nktkas/hyperliquid": "^0.32.2",

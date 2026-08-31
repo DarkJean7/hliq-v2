@@ -1,0 +1,38 @@
+#!/bin/sh
+# Refuse a push that would build on a stale base.
+#
+# The failure this exists for actually happened: a session working from an old copy pushed
+# over eighteen commits of main.js. Two devices editing one 25,000-line file is exactly the
+# situation where "I'll just remember to pull" is not good enough, so the check is here
+# rather than in someone's head.
+#
+# It fetches, then refuses if origin/main has commits this branch does not. The fix it
+# prints is the fix: pull with rebase, re-run the tests, push again.
+#
+# Enable it with:  git config core.hooksPath .githooks
+# (It lives in the repo so every clone — including a phone session — gets it.)
+
+branch=$(git rev-parse --abbrev-ref HEAD)
+[ "$branch" = "main" ] || exit 0
+
+echo "pre-push: checking main is up to date…"
+git fetch origin main --quiet 2>/dev/null || {
+  echo "pre-push: could not reach origin — pushing anyway, but you are flying blind."
+  exit 0
+}
+
+behind=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+[ "$behind" -eq 0 ] && exit 0
+
+echo ""
+echo "  REFUSED — origin/main has $behind commit(s) you do not have."
+echo ""
+echo "  Pushing now would build your work on a stale base, and a later force or a"
+echo "  bad merge is how eighteen commits were lost once already."
+echo ""
+echo "  Do this instead:"
+echo "      git pull --rebase origin main"
+echo "      npm test"
+echo "      git push"
+echo ""
+exit 1
