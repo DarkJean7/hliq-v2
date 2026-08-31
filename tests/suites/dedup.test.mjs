@@ -1,4 +1,4 @@
-import { fillKey, parseFills } from 'file:///c:/Users/jeank/OneDrive/Desktop/hliq-v2/src/format.js'
+import { fillKey, parseFills } from '../../src/format.js'
 
 const merge = (existing, incoming) => {
   const have = new Set(existing.map(fillKey))

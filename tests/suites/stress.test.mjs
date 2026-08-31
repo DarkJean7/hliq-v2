@@ -1,5 +1,5 @@
 import fs from 'fs'
-import { computeStress, computeUnprotected, stressHtml } from 'file:///c:/Users/jeank/OneDrive/Desktop/hliq-v2/src/exposure.js'
+import { computeStress, computeUnprotected, stressHtml } from '../../src/exposure.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, x))

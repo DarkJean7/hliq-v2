@@ -1,6 +1,6 @@
 // The spot rule, shared by History and the Calendar.
 import fs from 'fs'
-import { isSpotCoin } from 'file:///C:/Users/jeank/OneDrive/Desktop/hliq-v2/src/format.js'
+import { isSpotCoin } from '../../src/format.js'
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 const rnd = fs.readFileSync('src/render.js', 'utf8').replace(/\r\n/g, '\n')
 

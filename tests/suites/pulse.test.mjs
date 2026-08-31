@@ -1,7 +1,7 @@
 // Exchange metrics, driven against the REAL metaAndAssetCtxs payload.
 import fs from 'fs'
 import { computeEcosystem, oiConcentration, oiShare, fundingApr, computeDexes, computeSpot, isTradFi, computeProtocol, HL_FEE_TAKER, HL_FEE_MAKER }
-  from 'file:///C:/Users/jeank/OneDrive/Desktop/hliq-v2/src/ecosystem.js'
+  from '../../src/ecosystem.js'
 
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 const html = fs.readFileSync('index.html', 'utf8')

@@ -1,6 +1,6 @@
 // Send USDC on HyperCore — the routing, the validation, and the button.
 import fs from 'fs'
-import { sendValidate } from 'file:///C:/Users/jeank/OneDrive/Desktop/hliq-v2/src/trading.js'
+import { sendValidate } from '../../src/trading.js'
 const cli  = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 const trd  = fs.readFileSync('src/trading.js', 'utf8').replace(/\r\n/g, '\n')
 const html = fs.readFileSync('index.html', 'utf8').replace(/\r\n/g, '\n')
