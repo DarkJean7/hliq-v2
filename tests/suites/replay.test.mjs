@@ -60,7 +60,7 @@ t('and is clamped to the series', frameTime(pts, 99) === 30 && frameTime(pts, -5
 t('an empty series has no time', frameTime([], 0) === 0)
 
 console.log(String.fromCharCode(10) + '-- drawn only as far as the playhead --')
-t('the chart is cut at the current frame', cli.includes('from: 0, to: i + 1,'))
+t('the chart is cut at the current frame', cli.includes('to: i + 1,'))
 t('and the reason is recorded', cli.includes('the replay cannot hint at where it is going'))
 t('markers are only those that have landed', cli.includes('markersUpto(d.steps, t)'))
 t('a price marker sits at the fill price, an equity one on the line',
@@ -82,15 +82,18 @@ t('pressing play at the end starts over', cli.includes('if (_repFrame >= n - 1) 
 t('only the stage repaints per frame, never the view', cli.includes('function _repPaint()') &&
   cli.includes("el.innerHTML = _repStageHtml()"))
 // A timer against a detached stage keeps waking the page for a screen nobody is on.
-t('leaving stops the clock', (cli.match(/_repStop\(\)/g) || []).length >= 4 &&
-  cli.includes("if (name !== 'replay') _repStop()"))
+t('leaving stops the clock', (cli.match(/_repStop\(\)/g) || []).length >= 3 &&
+  cli.includes("if (name !== 'replay') _repLeave()"))
 t('a new subject rewinds rather than keeping a stale frame', cli.includes('function _repReset()'))
 // Candles in flight are UNKNOWN, not absent -- the mistake this app has shipped three times.
 t('loading is not reported as "no history"', cli.includes("_T('Loading market history…', 'Cargando historial…')"))
-t('the transport tracks the frame, not just the render', cli.includes("pos.textContent = n ? `${_repFrame + 1}/${n}` : ''"))
+t('the transport tracks the frame, not just the render', cli.includes('pos.textContent = n ?'))
 
 console.log(String.fromCharCode(10) + '-- the ledger row --')
 const led = summarise(steps, 4, 130)
+t('bought and sold carry token amounts as well as dollars',
+  led.boughtSz === 4 && led.soldSz === 5, [led.boughtSz, led.soldSz])
+t('and the view leads with the tokens', cli.includes("stat(_T('Bought', 'Comprado'), tok(s.boughtSz), 'var(--green)', money(s.bought))"))
 t('bought and sold are running totals at the prices paid',
   Math.abs(led.bought - (2 * 100 + 2 * 110)) < 1e-9 && Math.abs(led.sold - (1 * 120 + 4 * 130)) < 1e-9, [led.bought, led.sold])
 t('they count only what has happened by then', summarise(steps, 1, 100).bought === 200)
@@ -110,8 +113,9 @@ t('comparing two markets stays a line', chart.includes('(candles && !comparing)'
 t('the app can switch between them', cli.includes("window.__repStyle") && cli.includes("_repStyle === 'candle'"))
 
 console.log(String.fromCharCode(10) + '-- markers say what they were --')
-t('the last few are labelled', cli.includes('k >= marks.length - 4'))
-t('and the label carries side and size', cli.includes("`${m.buy ? 'BUY' : 'SELL'} $${fmtUSD(m.px * m.sz)}`"))
+t('the last few are labelled', cli.includes("k < marks.length - 4 ? ''"))
+t('and no longer states the notional, which was never the question',
+  !cli.includes('$${fmtUSD(m.px * m.sz)}'))
 // Trades cluster; four labels on the same pixels is a smudge rather than four facts.
 t('colliding labels step clear of each other', chart.includes('placed.some(q => Math.abs(q.x - x) < 52'))
 t('and are dropped rather than run off the chart', chart.includes('if (ly > 8 && ly < height - 2 && tries < 4)'))
@@ -136,6 +140,36 @@ t('and a background redraw gives the keyboard back', cli.includes("const _hadSea
 t('the account offers equity, cumulative and realized', cli.includes("_portSeries('allTime', _repSeries)") &&
   cli.includes("['value', 'pnl', 'realized'].includes(s.series)"))
 t('an account value never marks a position', cli.includes("_repMode === 'market' ? mark : null"))
+
+console.log(String.fromCharCode(10) + '-- a window that slides rather than grows --')
+// Growing from the first frame squeezes every candle thinner as it plays, so the chart is
+// least readable exactly when there is most to see.
+t('a fixed number of candles stays on screen', cli.includes('const REP_SPAN = 64'))
+t('the window ends at the playhead and starts a span back',
+  cli.includes('from: Math.max(0, i + 1 - span), to: i + 1,'))
+t('and never runs past it', !cli.includes('to: i + 2') && cli.includes('to: i + 1,'))
+t('the expanded chart shows more of the same', cli.includes('const span = big ? Math.round(REP_SPAN * 1.6) : REP_SPAN'))
+
+console.log(String.fromCharCode(10) + '-- a marker says what the trade made --')
+// Notional says how much was moved, which is not what a replay is watched to answer.
+t('a close is labelled with its realised PnL', cli.includes("`${m.net >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(m.net))}`"))
+t('an open has no PnL to state, so it says which way it went',
+  cli.includes("(m.buy ? _T('BUY', 'COMPRA') : _T('SELL', 'VENTA'))"))
+t('and the marker carries the netted figure', fs.readFileSync('src/replay.js', 'utf8').includes('net: s.closedPnl - s.fee'))
+
+console.log(String.fromCharCode(10) + '-- the chart opens --')
+t('there is a way to open it', cli.includes('window.__repExpand'))
+t('it is the same stage at a larger size', cli.includes('_repStageHtml(true)'))
+t('and the same clock, not a second player', cli.includes("const btn2 = document.getElementById('repPlayBtn2')"))
+// _repStop also runs when playback reaches the end; finishing must not close the chart
+// you were watching it on.
+t('finishing a replay does not close it', !/function _repStop\(\)[\s\S]{0,120}repFullSheet/.test(cli))
+t('but leaving the view does', cli.includes('function _repLeave()') && cli.includes("if (name !== 'replay') _repLeave()"))
+
+console.log(String.fromCharCode(10) + '-- the counter cannot exceed its own total --')
+// Reported as 168/167: the frame is held across a rebuild, and a shorter series left the
+// counter reading one past the end.
+t('the displayed frame is clamped', cli.includes('`${Math.min(_repFrame + 1, n)}/${n}`'))
 
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

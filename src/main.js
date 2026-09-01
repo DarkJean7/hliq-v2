@@ -6776,7 +6776,7 @@ function _stopTabTimers() {
 
 function switchTab(name, btn) {
   if (_activeTab === 'outcomes' && name !== 'outcomes') _stopOcCountdown()
-  if (name !== 'replay') _repStop()
+  if (name !== 'replay') _repLeave()
   _stopTabTimers()
   _activeTab = name
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'))
@@ -14544,6 +14544,13 @@ let _repData   = null       // { points, steps, candles }
 let _repStyle  = 'candle'   // 'candle' | 'line'
 let _repSeries = 'value'    // account mode: 'value' | 'pnl' | 'realized' -- same three as Portfolio
 let _repQuery  = ''         // market search; not persisted, it is a way of finding one
+let _repFull   = false      // chart opened to fill the screen
+
+// How many candles stay on screen. A window that grows from the first frame squeezes every
+// candle thinner as it plays, so the chart is least readable exactly when there is most to
+// see. A fixed count slides instead: the playhead stays at the right edge and the past
+// scrolls off the left, which is how a chart is read anywhere else.
+const REP_SPAN = 64
 
 try {
   const s = JSON.parse(localStorage.getItem(REP_KEY) || '{}')
@@ -14626,11 +14633,52 @@ function _repStop() {
 /** A new subject is a new replay: rewind and stop rather than carrying a stale frame. */
 function _repReset() { _repStop(); _repFrame = 0; _repData = null }
 
+/** Leaving the view: stop the clock AND take the expanded chart with it. */
+function _repLeave() {
+  _repStop()
+  if (_repFull) { _repFull = false; document.getElementById('repFullSheet')?.remove() }
+}
+
 window.__repSetMode = function(m) { _repMode = m; _repSave(); _repReset(); _repRender() }
 window.__repSetCoin = function(c) { _repCoin = c || null; _repSave(); _repReset(); _repRender() }
 window.__repSetTf   = function(t) { _repTf = t; _repSave(); _repReset(); _repRender() }
 window.__repSpeed   = function(s) { _repSpeed = s; if (_repPlay) { _repStop(); window.__repPlay(true) }; _repPaint() }
 window.__repStyle   = function(v) { _repStyle = v; _repSave(); _repPaint(); _repChrome() }
+
+/**
+ * Open the chart over the whole screen, or close it again.
+ *
+ * The same stage renderer at a larger size, and the same transport underneath, so the
+ * replay carries on from exactly where it was rather than restarting in a second player.
+ * There is only ever one clock.
+ */
+window.__repExpand = function(on) {
+  _repFull = on !== false
+  document.getElementById('repFullSheet')?.remove()
+  if (!_repFull) { _repPaint(); return }
+  const wrap = document.createElement('div')
+  wrap.id = 'repFullSheet'
+  wrap.innerHTML = `
+    <div style="position:fixed;inset:0;z-index:9400;background:var(--bg,#0b0d11);display:flex;flex-direction:column">
+      <div style="display:flex;align-items:center;gap:10px;padding:14px 16px 10px;border-bottom:1px solid var(--border2)">
+        <span style="font-size:15px;font-weight:800">${_T('Replay', 'Repetición')}</span>
+        <span style="flex:1"></span>
+        <button onclick="window.__repExpand(false)" aria-label="${_T('Close', 'Cerrar')}"
+          style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer">&times;</button>
+      </div>
+      <div id="repFullStage" style="flex:1;overflow:auto;padding:12px 14px 4px">${_repStageHtml(true)}</div>
+      <div style="padding:8px 14px calc(14px + env(safe-area-inset-bottom));border-top:1px solid var(--border2)">
+        <div style="display:flex;align-items:center;gap:9px">
+          <button id="repPlayBtn2" onclick="window.__repPlay()"
+            style="width:44px;height:44px;border-radius:50%;border:none;background:var(--accent);color:#000;font-size:16px;font-weight:800;cursor:pointer;flex-shrink:0">${_repPlay ? '❚❚' : '▶'}</button>
+          <input id="repScrub2" type="range" min="0" max="${Math.max(0, (_repData?.points?.length ?? 1) - 1)}"
+            value="${_repFrame}" oninput="window.__repSeek(this.value)" style="flex:1;accent-color:var(--accent)">
+        </div>
+      </div>
+    </div>`
+  document.body.appendChild(wrap)
+  _repPaint()
+}
 window.__repSetSeries = function(v) { _repSeries = v; _repSave(); _repReset(); _repRender() }
 
 window.__repPlay = function(on) {
@@ -14668,6 +14716,14 @@ window.__repRestart = function() { _repFrame = 0; _repPaint() }
 function _repPaint() {
   const el = document.getElementById('repStage')
   if (el) el.innerHTML = _repStageHtml()
+  // The expanded chart is the same stage at a larger size. Both are painted, because the
+  // small one is still behind it and must not be left showing an older frame.
+  const big = document.getElementById('repFullStage')
+  if (big) big.innerHTML = _repStageHtml(true)
+  const sc2 = document.getElementById('repScrub2')
+  if (sc2) sc2.value = String(_repFrame)
+  const btn2 = document.getElementById('repPlayBtn2')
+  if (btn2) btn2.textContent = _repPlay ? '❚❚' : '▶'
   const sc = document.getElementById('repScrub')
   if (sc) sc.value = String(_repFrame)
   // The transport belongs to the frame too. These used to be written only by the full
@@ -14675,15 +14731,19 @@ function _repPaint() {
   // play something that was already playing.
   const n = _repData?.points?.length ?? 0
   const pos = document.getElementById('repPos')
-  if (pos) pos.textContent = n ? `${_repFrame + 1}/${n}` : ''
+  // Clamped for display. The frame is held across a rebuild -- switching style or series
+  // keeps your place -- and a series that comes back shorter left the counter reading one
+  // past its own total, which is the sort of number that makes everything near it suspect.
+  if (pos) pos.textContent = n ? `${Math.min(_repFrame + 1, n)}/${n}` : ''
   const btn = document.getElementById('repPlayBtn')
   if (btn) btn.textContent = _repPlay ? '❚❚' : '▶'
   _repChrome()
 }
 
-function _repStageHtml() {
+function _repStageHtml(big = false) {
   const d = _repData
   if (!d || d.points.length < 3) {
+    void big
     // Three different situations, and saying the wrong one is a lie about the account.
     // Candles still in flight are UNKNOWN, not absent -- reporting "no history" while a
     // fetch is open is the same mistake as an empty array standing in for "we did not
@@ -14713,32 +14773,47 @@ function _repStageHtml() {
   const tone = (v) => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--fg-2)'
 
   const useCandles = _repMode === 'market' && _repStyle === 'candle' && !!d.candles
+  const span = big ? Math.round(REP_SPAN * 1.6) : REP_SPAN
   const chart = signalChartSvg({
     main: d.points,
     candles: useCandles ? d.candles : null,
     grid: true,
-    // Only as far as the playhead: the axis then scales to what has been revealed, and
-    // the replay cannot hint at where it is going.
-    from: 0, to: i + 1,
+    // Ends at the playhead and starts a fixed number of candles back, so the frame is
+    // always the same width. Never past the playhead: the axis scales to what has been
+    // revealed, and the replay cannot hint at where it is going.
+    from: Math.max(0, i + 1 - span), to: i + 1,
     mainLabel: _repMode === 'account' ? _T('Account', 'Cuenta') : esc(_ocCoinLabel(d.coin)),
     fmtPrice: (v) => '$' + fmtUSD(v),
-    height: 168,
+    height: big ? 330 : 168,
     // Only the last few are labelled. Every trade labelled is a wall of text over the
     // candles, and the ones worth naming are the ones that just happened.
+    //
+    // The label is what the trade MADE, not what it was worth. Notional says how much was
+    // moved, which is not the question a replay is watched to answer -- and on a close it
+    // is the least interesting number on screen. A trade that realised nothing (an open)
+    // has no PnL to state, so it says which way it went instead.
     markers: marks.map((m, k) => ({
       t: m.t, buy: m.buy,
       v: _repMode === 'market' ? m.px : null,
-      label: k >= marks.length - 4 ? `${m.buy ? 'BUY' : 'SELL'} $${fmtUSD(m.px * m.sz)}` : '',
+      label: k < marks.length - 4 ? ''
+        : m.closedPnl !== 0
+          ? `${m.net >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(m.net))}`
+          : (m.buy ? _T('BUY', 'COMPRA') : _T('SELL', 'VENTA')),
     })),
   })
 
   const when = new Date(t).toLocaleString(undefined,
     { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 
-  const stat = (label, value, colour = '') => `<div style="min-width:70px">
+  const stat = (label, value, colour = '', sub = '') => `<div style="min-width:70px">
     <div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em">${label}</div>
     <div style="font-size:13.5px;font-weight:800;margin-top:2px;font-family:var(--font-mono);${colour ? `color:${colour}` : ''}">${value}</div>
+    ${sub ? `<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-top:1px">${sub}</div>` : ''}
   </div>`
+  // Bought and sold lead with the token amount: how much of the thing was moved is the
+  // fact, and the dollars are what it cost. A market whose price ran during the session
+  // makes those two tell different stories, and both are worth having.
+  const tok = (n) => fmtSize(n) + ' ' + esc(_ocCoinLabel(d.coin ?? ''))
 
   const pos = _repMode === 'market' && s.szi !== 0
     ? `${s.szi > 0 ? _T('Long', 'Largo') : _T('Short', 'Corto')} ${fmtSize(Math.abs(s.szi))} @ $${fmtPrice(s.entry)}`
@@ -14767,8 +14842,8 @@ function _repStageHtml() {
       <span>${_repMode === 'account' ? money(mark) : '$' + fmtPrice(mark)}</span>
     </div>
     <div style="display:flex;flex-wrap:wrap;gap:9px 12px;margin-top:10px;padding-top:9px;border-top:1px solid var(--border)">
-      ${_repMode === 'market' ? stat(_T('Bought', 'Comprado'), money(s.bought), 'var(--green)') : ''}
-      ${_repMode === 'market' ? stat(_T('Sold', 'Vendido'), money(s.sold), 'var(--red)') : ''}
+      ${_repMode === 'market' ? stat(_T('Bought', 'Comprado'), tok(s.boughtSz), 'var(--green)', money(s.bought)) : ''}
+      ${_repMode === 'market' ? stat(_T('Sold', 'Vendido'), tok(s.soldSz), 'var(--red)', money(s.sold)) : ''}
       ${stat(_T('Realized', 'Realizado'), signed(s.realized), tone(s.realized))}
       ${_repMode === 'market' ? stat(_T('Unrealized', 'No realizado'), signed(s.unrealized), tone(s.unrealized)) : ''}
       ${_repMode === 'market' ? stat(_T('Holding', 'En posición'), money(s.holding)) : ''}
@@ -14860,7 +14935,12 @@ function _repRender(el) {
               _repSeries === k ? 'var(--accent)' : 'var(--border2)'};background:${_repSeries === k ? 'var(--accent)' : 'transparent'};color:${
               _repSeries === k ? '#000' : 'var(--fg-2)'};font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap">${lbl}</button>`).join('')}</div>`}
 
-      <div id="repStage" style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;min-height:300px">${_repStageHtml()}</div>
+      <div style="position:relative">
+        <div id="repStage" style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;min-height:300px">${_repStageHtml()}</div>
+        <button onclick="window.__repExpand(true)" aria-label="${_T('Open chart', 'Abrir gráfico')}"
+          title="${_T('Open chart', 'Abrir gráfico')}"
+          style="position:absolute;top:8px;right:8px;width:28px;height:28px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg-2);font-size:13px;line-height:1;cursor:pointer">⤢</button>
+      </div>
 
       <div style="display:flex;align-items:center;gap:9px;margin-top:11px">
         <button id="repPlayBtn" onclick="window.__repPlay()" aria-label="${_T('Play or pause', 'Reproducir o pausar')}"
@@ -16742,7 +16822,7 @@ function _mobVRenderContent(tick = false) {
     return
   }
   // Any other mobile view means the player is off screen; its clock must not outlive it.
-  _repStop()
+  _repLeave()
 
   if (_mobVActiveTab === 'heatmap') {
     _mobVRenderHeatmap()
@@ -20150,7 +20230,7 @@ window.mobVTab = function(name) {
 // Leaving any view stops the replay clock -- a timer running against a stage that is no
 // longer on screen is a leak, and it would carry on burning battery behind another tab.
 window.mobVHome = function() {
-  _repStop()
+  _repLeave()
   _mobVActiveTab = 'positions'
   document.querySelectorAll('.mob-v-bottom-btn').forEach(b => b.classList.remove('active'))
   document.getElementById('mobVBotHome')?.classList.add('active')

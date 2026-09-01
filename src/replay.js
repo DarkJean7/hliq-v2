@@ -88,7 +88,8 @@ export function markersUpto(steps, t) {
   const out = []
   for (const s of steps ?? []) {
     if (s.time > t) break
-    out.push({ t: s.time, px: s.px, buy: s.buy, sz: s.sz, closedPnl: s.closedPnl })
+    out.push({ t: s.time, px: s.px, buy: s.buy, sz: s.sz, closedPnl: s.closedPnl,
+      net: s.closedPnl - s.fee })
   }
   return out
 }
@@ -119,10 +120,10 @@ export function summarise(steps, t, mark) {
   // What was spent and what came back, in dollars at the prices actually paid. Both are
   // running totals, so they read the way a ledger does rather than as a net figure that
   // hides how much was put at risk to get it.
-  let bought = 0, sold = 0
+  let bought = 0, sold = 0, boughtSz = 0, soldSz = 0
   for (const x of seen) {
     const notional = x.px * x.sz
-    if (x.buy) bought += notional; else sold += notional
+    if (x.buy) { bought += notional; boughtSz += x.sz } else { sold += notional; soldSz += x.sz }
   }
   return {
     ...s,
@@ -132,6 +133,8 @@ export function summarise(steps, t, mark) {
     winRate: closes.length ? (wins / closes.length) * 100 : null,
     bought,
     sold,
+    boughtSz,
+    soldSz,
     // What the open position is worth at the price on screen. Zero when flat, and null
     // would be wrong here -- flat is a known state, not an unknown one.
     holding: (s.szi !== 0 && Number.isFinite(+mark)) ? Math.abs(s.szi) * +mark : 0,
