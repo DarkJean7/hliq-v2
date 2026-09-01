@@ -208,5 +208,28 @@ t('it is inline in the header, not floating over it', !cli.includes('position:ab
   cli.includes("${big ? '' : `<button onclick=\"window.__repExpand(true)\""))
 t('and is hidden once the chart is already open', cli.includes("${big ? '' :"))
 
+console.log(String.fromCharCode(10) + '-- the headline describes the chart --')
+// Reported: it read +$897 then +$1,323 while the line fell. Both figures were correct and
+// neither belonged there -- the headline came from the fills (realised, net of fees) while
+// the chart drew the account mark-to-market PnL. Closing winners while open positions
+// bleed lifts one and drops the other, so they genuinely diverge. Portfolio said +$531.87,
+// the replay's own axis said $531.87, and the headline said +$1,981.35.
+t('account mode reads the series at the playhead, not the fills',
+  cli.includes("_repSeries === 'value'") && cli.includes('{ value: signed(mark), tone: tone(mark),'))
+t('and never s.net, which is a different measure', !/color:\$\{tone\(s\.net\)\}[\s\S]{0,80}signed\(s\.net\)/.test(cli))
+t('market mode keeps realised plus open, which is what its chart means',
+  cli.includes("? { value: signed(s.net), tone: tone(s.net), label: _T('PnL so far'"))
+t('each series is labelled for what it is', cli.includes("_T('Account value', 'Valor de la cuenta')") &&
+  cli.includes("_T('Acc. PnL so far'") && cli.includes("_T('Realized so far'"))
+// An account value is a balance, not a profit; calling it "PnL so far" would be a lie.
+t('equity is not called a PnL', cli.includes("{ value: money(mark), tone: 'var(--fg)', label: _T('Account value'"))
+
+console.log(String.fromCharCode(10) + '-- a minus sign belongs outside the dollars --')
+// An account PnL chart spends half its life below zero, and every axis label read
+// "$-2,148.07".
+t('the chart formatter signs before the symbol',
+  cli.includes("fmtPrice: (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v)),"))
+t('as does the stat formatter', cli.includes("const money = (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v))"))
+
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

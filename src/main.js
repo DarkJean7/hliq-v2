@@ -14788,7 +14788,7 @@ function _repStageHtml(big = false) {
     // revealed, and the replay cannot hint at where it is going.
     from: Math.max(0, i + 1 - span), to: i + 1,
     mainLabel: _repMode === 'account' ? _T('Account', 'Cuenta') : esc(_ocCoinLabel(d.coin)),
-    fmtPrice: (v) => '$' + fmtUSD(v),
+    fmtPrice: (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v)),
     height: big ? 330 : 168,
     // Only the last few are labelled. Every trade labelled is a wall of text over the
     // candles, and the ones worth naming are the ones that just happened.
@@ -14820,6 +14820,24 @@ function _repStageHtml(big = false) {
   // makes those two tell different stories, and both are worth having.
   const tok = (n) => fmtSize(n) + ' ' + esc(_ocCoinLabel(d.coin ?? ''))
 
+  // THE HEADLINE DESCRIBES THE CHART, not a second measure of the same account.
+  //
+  // Reported: it read +$897 and then +$1,323 while the line was falling. Both figures were
+  // right and neither belonged there -- the number came from the fills (realised, netted of
+  // fees) while the chart drew the account's mark-to-market PnL. Those genuinely diverge:
+  // closing winners while open positions bleed lifts one and drops the other. A number
+  // contradicting the line beneath it is unreadable whichever of them is correct.
+  //
+  // So in account mode it is the value of the series on screen, at the playhead. Market
+  // mode keeps realised plus open, which IS what its price chart plus position mean.
+  const head = _repMode !== 'account'
+    ? { value: signed(s.net), tone: tone(s.net), label: _T('PnL so far', 'PnL hasta aquí') }
+    : _repSeries === 'value'
+      ? { value: money(mark), tone: 'var(--fg)', label: _T('Account value', 'Valor de la cuenta') }
+      : { value: signed(mark), tone: tone(mark),
+          label: _repSeries === 'pnl' ? _T('Acc. PnL so far', 'PnL acum. hasta aquí')
+                                      : _T('Realized so far', 'Realizado hasta aquí') }
+
   const pos = _repMode === 'market' && s.szi !== 0
     ? `${s.szi > 0 ? _T('Long', 'Largo') : _T('Short', 'Corto')} ${fmtSize(Math.abs(s.szi))} @ $${fmtPrice(s.entry)}`
     : _T('Flat', 'Sin posición')
@@ -14837,8 +14855,8 @@ function _repStageHtml(big = false) {
         title="${_T('Open chart', 'Abrir grafico')}"
         style="align-self:center;width:28px;height:28px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg-2);font-size:13px;line-height:1;cursor:pointer;flex-shrink:0">&#10530;</button>`}
       <div style="text-align:right">
-        <div style="font-size:21px;font-weight:800;line-height:1.05;font-family:var(--font-mono);color:${tone(s.net)}">${signed(s.net)}</div>
-        <div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">${_T('PnL so far', 'PnL hasta aquí')}</div>
+        <div style="font-size:21px;font-weight:800;line-height:1.05;font-family:var(--font-mono);color:${head.tone}">${head.value}</div>
+        <div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">${head.label}</div>
       </div>
     </div>
     <div style="display:flex;align-items:baseline;font-size:9.5px;color:var(--muted);margin-bottom:2px">
