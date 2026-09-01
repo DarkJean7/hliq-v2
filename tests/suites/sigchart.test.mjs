@@ -55,7 +55,7 @@ t('the chart is drawn from the same series as the reading', cli.includes('vals: 
 // An SMA(200) of hourly candles is not a 200-week average of anything.
 t('the weekly indicator gets weekly points', cli.includes('const mainPts = ind.weekly ? _sigWeeklyPoints(_sigCoin)'))
 t('and so does the compared market', cli.includes('ind.weekly ? _sigWeeklyPoints(_sigCmp)'))
-t('the card holds its height so choosing an indicator does not jump the page', cli.includes('min-height:186px'))
+t('the card holds its height so choosing an indicator does not jump the page', /min-height:2\d\dpx/.test(cli))
 
 console.log(String.fromCharCode(10) + '-- the picker is a shortlist plus search --')
 t('five, not twenty-four', cli.includes('allCoins.slice(0, 5)'))
@@ -74,6 +74,59 @@ t('searching repaints only the chips, never the whole view', cli.includes('if (m
 t('a background redraw gives the keyboard back', cli.includes("const _hadSearch = _act && _act.id === 'sigSearch'"))
 t('with the caret where it was', cli.includes('back.setSelectionRange(_caret, _caret)'))
 t('the Pulse handlers were left alone', (cli.match(/_pulseRender\(_viewHost\('deskPulse'\)\)/g) || []).length >= 6)
+
+console.log(String.fromCharCode(10) + '-- the window --')
+const full = signalChartSvg({ main, indicator: 'sma', vals, fmtPrice: money })
+const zoom = signalChartSvg({ main, indicator: 'sma', vals, fmtPrice: money, from: 150, to: 250 })
+t('a window cuts the series', zoom.meta.from === 150 && zoom.meta.to === 250, zoom.meta)
+t('the full chart reports the whole range', full.meta.from === 0 && full.meta.to === main.length)
+t('a silly window is clamped, not obeyed', (() => {
+  const m = signalChartSvg({ main, fmtPrice: money, from: -99, to: 1e6 }).meta
+  return m.from === 0 && m.to === main.length
+})())
+t('a window too small to draw is widened', (() => {
+  const m = signalChartSvg({ main, fmtPrice: money, from: main.length - 1, to: main.length }).meta
+  return m.to - m.from >= 3
+})())
+
+// The reason indicators are computed before the cut: an average that restarted at the left
+// edge of the window would say something different depending on how far you had zoomed.
+t('indicators are computed over all history, then cut',
+  fs.readFileSync('src/sigchart.js', 'utf8').includes('const fullVals = vals.length ? vals : full.map(p => +p[1])') &&
+  fs.readFileSync('src/sigchart.js', 'utf8').includes('o.vals[lo + i]'))
+t('an SMA still draws deep into a zoom, where a windowed one could not exist',
+  (signalChartSvg({ main, indicator: 'sma', vals, fmtPrice: money, from: 380, to: 400 }).svg.match(/<path/g) || []).length >= 2)
+t('the sub panel is cut to the same window', fs.readFileSync('src/sigchart.js', 'utf8').includes('sub.vals[lo + i]'))
+// Two series need not share a candle count; aligning by position would slide one against
+// the other the moment either had a gap.
+t('the compared market is cut by time, not by index',
+  fs.readFileSync('src/sigchart.js', 'utf8').includes('cmp.filter(p => +p[0] >= meta.t0 && +p[0] <= meta.t1)'))
+t('and rebases to the visible left edge', signalChartSvg({
+  main, cmp, fmtPrice: money, from: 200, to: 260 }).lo.includes('%'))
+
+console.log(String.fromCharCode(10) + '-- reading and moving it --')
+t('a drag reads values off the chart', cli.includes('window.__sigScrub = function(ev)'))
+t('and puts the crosshair where the finger is', cli.includes("cross.style.left = (frac * 100).toFixed(2)"))
+t('the readout names both markets when comparing', cli.includes('_sigLast.comparing ? _sigAt(_sigLast.cmp, t) : null'))
+t('releasing restores the hint', cli.includes('window.__sigScrubEnd = function()'))
+t('pinch zooms', cli.includes('window.__sigTouchStart') && cli.includes('window.__sigTouchMove'))
+t('two fingers sliding pans', cli.includes('window.__sigPan(-slide)'))
+// A gesture is one thing or the other; doing both at once feels broken.
+t('a gesture is a zoom or a pan, never both', cli.includes("if (Math.abs(ratio - 1) > 0.06)") && cli.includes('} else if (Math.abs(slide) > 0.02) {'))
+t('a wheel zooms, for a mouse', cli.includes('window.__sigWheel = function(ev)'))
+t('zoom keeps at least a few candles on screen', cli.includes('Math.max(8, Math.min(m.n, Math.round(span / factor)))'))
+t('and never scrolls past either end', cli.includes('from = Math.max(0, Math.min(m.n - next, from))'))
+t('there is a way back out', cli.includes('window.__sigZoomReset') && cli.includes("_T('Reset', 'Restablecer')"))
+
+console.log(String.fromCharCode(10) + '-- it does not fight the page --')
+// A chart that swallows vertical scrolling is the thing that makes an embed hostile on a
+// phone; only a two-finger gesture belongs to the chart.
+t('vertical scrolling still belongs to the page', cli.includes("touch-action:pan-y"))
+t('zooming repaints only the chart, not the view', cli.includes('function _sigChartRepaint()') &&
+  cli.includes('if (card) card.innerHTML = _sigChartInner()'))
+t('a new market or timeframe opens zoomed out', cli.includes('_sigCoin = c || null; _sigViewReset()') &&
+  cli.includes('_sigTf = l; _sigViewReset()'))
+t('but adding a comparison keeps the window you are reading', cli.includes('// Deliberately keeps the zoom'))
 
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

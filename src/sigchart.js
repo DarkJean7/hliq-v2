@@ -137,20 +137,40 @@ const path = (pts, px, py) => {
 export function signalChartSvg({
   main, cmp = null, mainLabel = '', cmpLabel = '', indicator = null, vals = [],
   height = 132, subHeight = 46, fmtPrice = (v) => String(v),
+  from = 0, to = null,
 } = {}) {
   const W = 320, PAD = 4
-  const clean = (main ?? []).filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
-  if (clean.length < 3) return { svg: '', legend: '', hi: '', lo: '', empty: true }
+  const full = (main ?? []).filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
+  if (full.length < 3) return { svg: '', legend: '', hi: '', lo: '', empty: true, meta: null }
 
-  const layers = indicator ? indicatorLayers(indicator, vals.length ? vals : clean.map(p => +p[1])) : {}
-  const comparing = !!(cmp && cmp.length > 2)
+  // Indicators are computed over ALL the history and only then cut to the visible window.
+  // Computing them from the window instead would restart every average at the left edge,
+  // so zooming in would silently change what the indicator says -- the number would depend
+  // on how far you happened to be zoomed, which is not a property any of these have.
+  const fullVals = vals.length ? vals : full.map(p => +p[1])
+  const layers = indicator ? indicatorLayers(indicator, fullVals) : {}
 
+  const n = full.length
+  const lo = Math.max(0, Math.min(n - 3, Math.floor(from)))
+  const hi = Math.max(lo + 3, Math.min(n, Math.ceil(to ?? n)))
+  const clean = full.slice(lo, hi)
+  const meta = { from: lo, to: hi, n, W, PAD, height, t0: +clean[0][0], t1: +clean[clean.length - 1][0] }
+
+  // The compared market is cut by TIME, not by index: the two series need not have the
+  // same number of candles, and lining them up by position would slide one against the
+  // other the moment either had a gap.
+  const cmpWin = cmp ? cmp.filter(p => +p[0] >= meta.t0 && +p[0] <= meta.t1) : null
+  const comparing = !!(cmpWin && cmpWin.length > 2)
+
+  // Rebased to the left edge OF THE WINDOW, so zooming in re-reads the percentages against
+  // where the visible stretch began. Any other choice makes the number on screen refer to
+  // a point that is no longer on it.
   const base = +clean[0][1]
   const toY = comparing ? (v) => (v / base - 1) * 100 : (v) => v
   const series = clean.map(([t, v]) => [t, toY(+v)])
-  const cmpSeries = comparing ? rebase(cmp) : []
+  const cmpSeries = comparing ? rebase(cmpWin) : []
   const overlays = (layers.overlays ?? []).map(o => ({
-    ...o, pts: clean.map(([t], i) => [t, o.vals[i] == null ? null : toY(o.vals[i])]),
+    ...o, pts: clean.map(([t], i) => [t, o.vals[lo + i] == null ? null : toY(o.vals[lo + i])]),
   }))
 
   const xs = clean.map(p => +p[0])
@@ -161,7 +181,7 @@ export function signalChartSvg({
     ...overlays.flatMap(o => o.pts.map(p => p[1])),
   ].filter(v => v != null && Number.isFinite(v))
   let y0 = Math.min(...allY), y1 = Math.max(...allY)
-  if (!Number.isFinite(y0) || !Number.isFinite(y1)) return { svg: '', legend: '', hi: '', lo: '', empty: true }
+  if (!Number.isFinite(y0) || !Number.isFinite(y1)) return { svg: '', legend: '', hi: '', lo: '', empty: true, meta: null }
   if (y0 === y1) { y0 -= 1; y1 += 1 }
 
   const px = (t) => PAD + ((t - x0) / ((x1 - x0) || 1)) * (W - PAD * 2)
@@ -194,7 +214,7 @@ export function signalChartSvg({
   // The sub panel keeps its own scale; sharing the price axis would flatten it to nothing.
   const sub = layers.sub
   if (sub) {
-    const sPts = clean.map(([t], i) => [t, sub.vals[i]])
+    const sPts = clean.map(([t], i) => [t, sub.vals[lo + i]])
     const vs = sPts.map(p => p[1]).filter(v => v != null && Number.isFinite(v))
     if (vs.length > 2) {
       const s0 = sub.min ?? Math.min(...vs), s1 = sub.max ?? Math.max(...vs)
@@ -213,5 +233,5 @@ export function signalChartSvg({
     ...overlays.map(o => `${dot(o.color)} <span>${o.label}</span>`),
   ].filter(Boolean).join('<span style="width:10px;display:inline-block"></span>')
 
-  return { svg, legend, hi: fmtV(y1), lo: fmtV(y0), empty: false }
+  return { svg, legend, hi: fmtV(y1), lo: fmtV(y0), empty: false, meta }
 }

@@ -14199,8 +14199,10 @@ const _SIG_INDICATORS = {
   },
 }
 
-window.__sigSetCoin = function(c) { _sigCoin = c || null; try { localStorage.setItem(SIG_KEY_COIN, _sigCoin ?? '') } catch {}; if (_sigCoin) _pulseLoadCandles(_sigCoin); _pulseRender(_viewHost('deskPulse')) }
+window.__sigSetCoin = function(c) { _sigCoin = c || null; _sigViewReset(); try { localStorage.setItem(SIG_KEY_COIN, _sigCoin ?? '') } catch {}; if (_sigCoin) _pulseLoadCandles(_sigCoin); _pulseRender(_viewHost('deskPulse')) }
 window.__sigSetCmp  = function(c) {
+  // Deliberately keeps the zoom: adding a comparison is a question about the stretch you
+  // are already looking at, and throwing the window away would answer a different one.
   _sigCmp = (c && c !== _sigCoin) ? c : null
   try { localStorage.setItem(SIG_KEY_CMP, _sigCmp ?? '') } catch {}
   if (_sigCmp) _pulseLoadCandles(_sigCmp)
@@ -14255,7 +14257,7 @@ window.__sigFlip = function(on) {
   _sigFlipped = !!on
   document.getElementById('sigIndCard')?.classList.toggle('sig-flipped', _sigFlipped)
 }
-window.__sigSetTf   = function(l) { _sigTf = l; try { localStorage.setItem('hliq_sig_tf', l) } catch {}; _sigRerender() }
+window.__sigSetTf   = function(l) { _sigTf = l; _sigViewReset(); try { localStorage.setItem('hliq_sig_tf', l) } catch {}; _sigRerender() }
 window.__sigSetInd  = function(k) { _sigInd = k; try { localStorage.setItem(SIG_KEY_IND, k) } catch {}; _sigRerender() }
 
 window.__sigAddNote = function() {
@@ -14284,6 +14286,238 @@ function _sigPerfCell(coin, label) {
 
 // The markets on offer, and the chips for them. Shared by the full render and by the
 // search box, so what a search shows can never drift from what a fresh render shows.
+// ── the Signals chart: window, scrub, zoom ────────────────────────────────────
+//
+// The window is a pair of indices into the market's full candle series. Everything that
+// draws reads it, so the SVG, the crosshair readout and the axis labels can never be
+// describing different stretches of time.
+let _sigView = { from: 0, to: null }
+// What was last drawn, so a pointer x can be turned back into a point without re-deriving
+// the series on every move.
+let _sigLast = { main: null, cmp: null, meta: null, comparing: false }
+
+/** A fresh market, timeframe or indicator is a different chart; show all of it. */
+function _sigViewReset() { _sigView = { from: 0, to: null } }
+
+function _sigZoomed() {
+  const m = _sigLast.meta
+  return !!m && (m.from > 0 || m.to < m.n)
+}
+
+/**
+ * Zoom by `factor` about `frac` (0..1 across the visible window). Keeps at least a handful
+ * of candles on screen -- below that the line stops being a line -- and never scrolls past
+ * either end of the history.
+ */
+window.__sigZoom = function(factor, frac = 0.5) {
+  const m = _sigLast.meta
+  if (!m) return
+  const span = m.to - m.from
+  const next = Math.max(8, Math.min(m.n, Math.round(span / factor)))
+  if (next === span && (next === m.n || next === 8)) return
+  const anchorIdx = m.from + span * Math.min(1, Math.max(0, frac))
+  let from = Math.round(anchorIdx - next * frac)
+  from = Math.max(0, Math.min(m.n - next, from))
+  _sigView = { from, to: from + next }
+  _sigChartRepaint()
+}
+
+/** Slide the window without changing its width. `dFrac` is a fraction of the window. */
+window.__sigPan = function(dFrac) {
+  const m = _sigLast.meta
+  if (!m) return
+  const span = m.to - m.from
+  let from = Math.round(m.from + span * dFrac)
+  from = Math.max(0, Math.min(m.n - span, from))
+  if (from === m.from) return
+  _sigView = { from, to: from + span }
+  _sigChartRepaint()
+}
+
+window.__sigZoomReset = function() { _sigViewReset(); _sigChartRepaint() }
+
+/**
+ * Repaint the chart card only.
+ *
+ * Zooming must not re-render the view: that would refetch, rebuild every chip, and lose
+ * the pointer mid-gesture. Only this card depends on the window.
+ */
+function _sigChartRepaint() {
+  const card = document.getElementById('sigChartCard')
+  if (card) card.innerHTML = _sigChartInner()
+}
+
+// ── pointer handling ──────────────────────────────────────────────────────────
+// One finger reads the chart (crosshair + values). Two fingers move it: pinch to zoom,
+// slide to pan. A wheel zooms, for a mouse. Vertical scrolling is deliberately left to the
+// page -- touch-action: pan-y -- so the chart never traps the scroll, which is the failure
+// mode that makes an embedded chart hostile on a phone.
+let _sigDrag = null
+
+function _sigPlotFrac(ev, el) {
+  const r = el.getBoundingClientRect()
+  return r.width ? Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)) : 0
+}
+
+/** Nearest point in a [t, v] series to a timestamp. */
+function _sigAt(series, t) {
+  if (!series?.length) return null
+  let best = series[0], bd = Infinity
+  for (const p of series) { const d = Math.abs(+p[0] - t); if (d < bd) { bd = d; best = p } }
+  return best
+}
+
+window.__sigScrub = function(ev) {
+  const plot = document.getElementById('sigPlot')
+  const m = _sigLast.meta
+  if (!plot || !m) return
+  if (ev.pointerType !== 'mouse' && ev.type === 'pointerdown') { try { plot.setPointerCapture(ev.pointerId) } catch {} }
+  const frac = _sigPlotFrac(ev, plot)
+  const t = m.t0 + (m.t1 - m.t0) * frac
+  const mp = _sigAt(_sigLast.main, t)
+  if (!mp) return
+  const cross = document.getElementById('sigCross')
+  if (cross) { cross.style.display = 'block'; cross.style.left = (frac * 100).toFixed(2) + '%' }
+  const read = document.getElementById('sigRead')
+  if (!read) return
+  const cp = _sigLast.comparing ? _sigAt(_sigLast.cmp, t) : null
+  const when = new Date(+mp[0]).toLocaleString(undefined,
+    { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const pct = (p, series) => {
+    const b = series?.[0]?.[1]
+    if (!Number.isFinite(+b) || +b === 0) return ''
+    const d = (+p[1] / +b - 1) * 100
+    return `<span style="color:${d >= 0 ? 'var(--green)' : 'var(--red)'}">${d >= 0 ? '+' : ''}${d.toFixed(2)}%</span>`
+  }
+  read.innerHTML = `<span style="color:var(--fg-3)">${esc(when)}</span>` +
+    `<span style="flex:1"></span>` +
+    `<b>$${fmtPrice(+mp[1])}</b> ${pct(mp, _sigLast.main)}` +
+    (cp ? ` <span style="color:var(--fg-3)">·</span> <b>$${fmtPrice(+cp[1])}</b> ${pct(cp, _sigLast.cmp)}` : '')
+}
+
+window.__sigScrubEnd = function() {
+  const cross = document.getElementById('sigCross')
+  if (cross) cross.style.display = 'none'
+  const read = document.getElementById('sigRead')
+  if (read) read.innerHTML = _sigReadDefault()
+}
+
+window.__sigWheel = function(ev) {
+  const plot = document.getElementById('sigPlot')
+  if (!plot) return
+  ev.preventDefault()
+  window.__sigZoom(ev.deltaY < 0 ? 1.25 : 1 / 1.25, _sigPlotFrac(ev, plot))
+}
+
+const _touchSpread = (t) => Math.abs(t[0].clientX - t[1].clientX)
+const _touchMid = (t, el) => {
+  const r = el.getBoundingClientRect()
+  return r.width ? Math.min(1, Math.max(0, ((t[0].clientX + t[1].clientX) / 2 - r.left) / r.width)) : 0.5
+}
+
+window.__sigTouchStart = function(ev) {
+  if (ev.touches.length !== 2) { _sigDrag = null; return }
+  const plot = document.getElementById('sigPlot')
+  if (!plot) return
+  // Two fingers down means the gesture is the chart's, not the page's.
+  ev.preventDefault()
+  window.__sigScrubEnd()
+  _sigDrag = { spread: _touchSpread(ev.touches), mid: _touchMid(ev.touches, plot) }
+}
+
+window.__sigTouchMove = function(ev) {
+  if (!_sigDrag || ev.touches.length !== 2) return
+  const plot = document.getElementById('sigPlot')
+  if (!plot) return
+  ev.preventDefault()
+  const spread = _touchSpread(ev.touches)
+  const mid = _touchMid(ev.touches, plot)
+  // Pinch and slide arrive together; apply whichever dominates so the chart does not both
+  // zoom and pan on a gesture the user meant as one of them.
+  const ratio = _sigDrag.spread > 8 ? spread / _sigDrag.spread : 1
+  const slide = mid - _sigDrag.mid
+  if (Math.abs(ratio - 1) > 0.06) {
+    window.__sigZoom(ratio, mid)
+    _sigDrag = { spread, mid }
+  } else if (Math.abs(slide) > 0.02) {
+    window.__sigPan(-slide)
+    _sigDrag = { spread, mid }
+  }
+}
+
+window.__sigTouchEnd = function() { _sigDrag = null }
+
+function _sigReadDefault() {
+  const m = _sigLast.meta
+  if (!m) return ''
+  const shown = m.to - m.from
+  const all = shown >= m.n
+  return `<span style="color:var(--fg-3)">${all
+    ? _T('Drag to read · pinch to zoom', 'Arrastra para leer · pellizca para ampliar')
+    : _T('Showing', 'Mostrando') + ` ${shown}/${m.n} ` + _T('candles', 'velas')}</span>` +
+    `<span style="flex:1"></span>` +
+    (all ? '' : `<button onclick="window.__sigZoomReset()" style="padding:2px 8px;border-radius:6px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:10px;font-weight:700;cursor:pointer">${_T('Reset', 'Restablecer')}</button>`)
+}
+
+/**
+ * The chart card's contents. Separate from the view render because zooming repaints only
+ * this -- a full render would refetch and rebuild every chip mid-gesture.
+ */
+function _sigChartInner() {
+  const ind = _SIG_INDICATORS[_sigInd] ?? _SIG_INDICATORS.rsi
+  const tfRow = _PULSE_TF.find(x => x[0] === _sigTf) ?? _PULSE_TF[3]
+  const mainPts = ind.weekly ? _sigWeeklyPoints(_sigCoin) : _sigPoints(_sigCoin, tfRow[1], tfRow[2])
+  const cmpPts  = !_sigCmp ? null
+    : ind.weekly ? _sigWeeklyPoints(_sigCmp) : _sigPoints(_sigCmp, tfRow[1], tfRow[2])
+  const series = ind.weekly ? _sigWeeklyCloses(_sigCoin) : _sigCloses(_sigCoin, tfRow[1], tfRow[2])
+
+  const chart = signalChartSvg({
+    main: mainPts, cmp: cmpPts,
+    mainLabel: esc(_ocCoinLabel(_sigCoin)),
+    cmpLabel: _sigCmp ? esc(_ocCoinLabel(_sigCmp)) : '',
+    indicator: _sigInd,
+    vals: series ?? [],
+    fmtPrice: (v) => '$' + fmtPrice(v),
+    from: _sigView.from, to: _sigView.to,
+  })
+
+  if (chart.empty) {
+    _sigLast = { main: null, cmp: null, meta: null, comparing: false }
+    return `<div style="height:160px;display:flex;align-items:center;justify-content:center;font-size:11.5px;color:var(--muted);text-align:center">${
+      _T('Not enough history for this window yet.', 'Aún no hay suficiente historial para esta ventana.')}</div>`
+  }
+
+  // Remember exactly what is on screen, so a pointer x maps back to a real point rather
+  // than to a recomputed guess.
+  const m = chart.meta
+  const win = (mainPts ?? []).slice(m.from, m.to)
+  _sigLast = {
+    main: win,
+    cmp: cmpPts ? cmpPts.filter(p => +p[0] >= m.t0 && +p[0] <= m.t1) : null,
+    meta: m,
+    comparing: !!(cmpPts && cmpPts.filter(p => +p[0] >= m.t0 && +p[0] <= m.t1).length > 2),
+  }
+
+  return `<div style="display:flex;align-items:baseline;gap:8px;font-size:9.5px;color:var(--muted);margin-bottom:2px">
+      <span>${esc(chart.hi)}</span><span style="flex:1"></span>
+      <span>${_sigCmp ? _T('% change since the left edge', '% de cambio desde el inicio') : esc(_sigTf)}</span>
+    </div>
+    <div id="sigPlot" style="position:relative;touch-action:pan-y;cursor:crosshair"
+      onpointerdown="window.__sigScrub(event)"
+      onpointermove="if(event.buttons||event.pointerType!=='mouse')window.__sigScrub(event)"
+      onpointerup="window.__sigScrubEnd()" onpointercancel="window.__sigScrubEnd()"
+      onpointerleave="window.__sigScrubEnd()"
+      ontouchstart="window.__sigTouchStart(event)" ontouchmove="window.__sigTouchMove(event)"
+      ontouchend="window.__sigTouchEnd()" onwheel="window.__sigWheel(event)">
+      ${chart.svg}
+      <div id="sigCross" style="position:absolute;top:0;bottom:0;width:1px;background:var(--fg-3,#98a2b3);opacity:.55;pointer-events:none;display:none"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;font-size:9.5px;color:var(--muted);margin-top:3px">
+      <span>${esc(chart.lo)}</span><span style="flex:1"></span><span>${chart.legend}</span>
+    </div>
+    <div id="sigRead" style="display:flex;align-items:center;gap:6px;font-size:10.5px;margin-top:5px;min-height:19px">${_sigReadDefault()}</div>`
+}
+
 function _sigMarketSets() {
   const ranked = [...(_pulseData?.rows ?? [])]
     .sort((a, b) => (b.oi ?? 0) - (a.oi ?? 0))
@@ -14369,22 +14603,6 @@ function _sigRenderHtml() {
   const detail     = (series && ind.detail) ? ind.detail(series, tfRow[1]) : null
   const toneCol = t => t === 'pos' ? 'var(--green)' : t === 'neg' ? 'var(--red)' : t === 'warn' ? 'var(--orange,#f59e0b)' : 'var(--fg)'
 
-  // The chart draws the same series the reading is computed from, and the indicator on
-  // top of it -- a moving average over the price it is an average OF, an oscillator in its
-  // own panel underneath. A 200-week average is fed weekly points for the same reason its
-  // reading is: an SMA(200) of hourly candles is not a 200-week average of anything.
-  const mainPts = ind.weekly ? _sigWeeklyPoints(_sigCoin) : _sigPoints(_sigCoin, tfRow[1], tfRow[2])
-  const cmpPts  = !_sigCmp ? null
-    : ind.weekly ? _sigWeeklyPoints(_sigCmp) : _sigPoints(_sigCmp, tfRow[1], tfRow[2])
-  const chart = signalChartSvg({
-    main: mainPts, cmp: cmpPts,
-    mainLabel: esc(_ocCoinLabel(_sigCoin)),
-    cmpLabel: _sigCmp ? esc(_ocCoinLabel(_sigCmp)) : '',
-    indicator: _sigInd,
-    vals: series ?? [],
-    fmtPrice: (v) => '$' + fmtPrice(v),
-  })
-
   const notes = (_sigNotesLoad()[_sigCoin] ?? [])
 
   return `<div id="sigRoot" style="padding:10px 12px 26px">
@@ -14423,19 +14641,7 @@ function _sigRenderHtml() {
     <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${
       Object.entries(_SIG_INDICATORS).map(([k, v]) => `<button onclick="window.__sigSetInd('${k}')" style="flex-shrink:0;padding:6px 12px;border-radius:999px;border:1px solid ${k === _sigInd ? 'var(--accent)' : 'var(--border2)'};background:${k === _sigInd ? 'var(--accent)' : 'transparent'};color:${k === _sigInd ? '#000' : 'var(--fg-2)'};font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">${esc(v.label())}</button>`).join('')}</div>
 
-    <div id="sigChartCard" style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:10px 11px 9px;margin-bottom:10px;min-height:186px">
-      ${chart.empty
-        ? `<div style="height:160px;display:flex;align-items:center;justify-content:center;font-size:11.5px;color:var(--muted);text-align:center">${
-            _T('Not enough history for this window yet.', 'Aún no hay suficiente historial para esta ventana.')}</div>`
-        : `<div style="display:flex;align-items:baseline;gap:8px;font-size:9.5px;color:var(--muted);margin-bottom:2px">
-             <span>${esc(chart.hi)}</span><span style="flex:1"></span>
-             <span>${_sigCmp ? _T('% change since the left edge', '% de cambio desde el inicio') : esc(tfLabel)}</span>
-           </div>
-           ${chart.svg}
-           <div style="display:flex;align-items:center;gap:6px;font-size:9.5px;color:var(--muted);margin-top:3px">
-             <span>${esc(chart.lo)}</span><span style="flex:1"></span><span>${chart.legend}</span>
-           </div>`}
-    </div>
+    <div id="sigChartCard" style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:10px 11px 9px;margin-bottom:10px;min-height:208px">${_sigChartInner()}</div>
 
     <div id="sigIndCard" class="sig-card${_sigFlipped ? ' sig-flipped' : ''}">
       <div class="sig-flip">
