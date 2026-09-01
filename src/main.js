@@ -212,6 +212,7 @@ import {
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
+import { historyHtml } from './perfhistory.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -310,6 +311,7 @@ window.__getState = () => state
 let _perfType   = 'accum'   // 'accum' (net: realized − fees + funding) | 'realized' (gross closed PnL)
 let _perfPeriod = 'All'     // '1D' | '1W' | '1M' | 'All'
 let _perfData   = null      // { coins, marketCoins, fillsByCoin, fundByCoin }
+let _perfLastBotStats = []   // last computed per-bot stats, for the trade-history sheet
 
 // ─── STEP LABELS ─────────────────────────────────────────────────────────────
 const STEP_LABELS = [
@@ -6397,6 +6399,8 @@ function _computeBotPerformance(wins) {
   const totals = statsForCoins(allBotCoins)
   const best   = botStats.reduce((b, s) => s.net > (b?.net ?? -Infinity) ? s : b, null)
 
+  // Kept for the trade-history sheet, which needs to say which bot runs a market.
+  _perfLastBotStats = botStats
   return { botStats, totals, best, allBotCoins }
 }
 
@@ -6529,7 +6533,7 @@ async function renderPerformance() {
     <div class="section-title" style="margin:24px 0 14px">Per-Market P&amp;L <span style="font-size:11px;color:var(--muted);font-weight:400">— sorted by net ▾</span></div>
     <div class="perf-market-grid">
       ${marketCoins.map(c => `
-        <div class="perf-market-card">
+        <div class="perf-market-card" onclick="window.__perfCoinTrades('${esc(c)}')" style="cursor:pointer" title="Trade history">
           <div class="perf-market-head">
             <div class="perf-market-name">${esc(c)}</div>
             <div class="perf-market-net ${clsOf(coinNet[c])}">${money(coinNet[c])}</div>
@@ -6590,6 +6594,27 @@ function _perfBuildData(allBotCoins) {
   const marketCoins = [...allBotCoins].filter(c => (fillsByCoin[c] ?? []).length).sort((a, b) => coinNet[b] - coinNet[a])
   _perfData = { coins: [...allBotCoins], marketCoins, fillsByCoin, fundByCoin }
   return { coinNet, marketCoins }
+}
+
+// Every trade this bot made in one market. _perfData holds the fills already grouped by
+// coin -- the same set the card's number is computed from -- so the sheet and the card can
+// never disagree. Rendering lives in perfhistory.js; this only answers "whose fills".
+window.__perfCoinTrades = function (coin) {
+  const c = String(coin ?? '').toUpperCase()
+  const fills = _perfData?.fillsByCoin?.[c]
+  // No entry means we have not built the data yet; an empty array means we looked and this
+  // market has none. Only the second is worth a sheet saying so.
+  if (!fills) return
+  const labels = (_perfLastBotStats ?? [])
+    .filter(s => (s.coins ?? []).includes(c))
+    .map(s => esc(s.label))
+  _sheet('perfTradesSheet', esc(c) + ' · ' + _T('Trade history', 'Historial'),
+    historyHtml(c, fills, labels, {
+      money: v => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v)),
+      size:  v => fmtSize(v),
+      price: v => '$' + fmtPrice(v),
+      t:     _T,
+    }), false)
 }
 
 // Render the combined + per-market charts for one view. `prefix` namespaces the
@@ -9303,7 +9328,7 @@ const _MOBV_NAV_ORDER = ['trades', 'positions', 'orders', 'outcomes', 'spot', 's
 // strip / sub-tabs) is hidden and the view renders its own sticky header + × back
 // button instead of sitting in the bottom half. Shared by the chrome-hide logic and
 // the watch-strip visibility check so they never drift apart.
-const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 'transfers', 'trades', 'tokens', 'leaderboard', 'allocation', 'analysis'])
+const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 'transfers', 'trades', 'tokens', 'leaderboard', 'allocation', 'analysis', 'performance'])
 
 // Sticky full-page header with a × that returns to the home view. Used by every
 // full-screen tab so they share one look.
@@ -16990,7 +17015,9 @@ async function _mobVFetchLeaderboard(el) {
 async function _mobVFetchPerformance(el) {
   // Reached from the More menu now, so it has to say what it is. Every state below lands
   // in the lower half of the home screen, where nothing else names the view.
-  const _hd = `<div style="padding:12px 16px 4px;font-size:16px;font-weight:700">${_T('Bot Performance', 'Rendimiento de bots')}</div>`
+  // A full page now, so it needs the standard sticky header -- it is the only way back to
+  // the home screen once the tab bar is hidden.
+  const _hd = _mobVFullHeader(_T('Bot Performance', 'Rendimiento de bots'))
   const _res = await _perfFetchWins()
   if (!_res) {
     el.innerHTML = _hd + `<div class="mob-v-empty">Performance data unavailable.<br>Start the strategy server to see bot performance.</div>`
@@ -17038,7 +17065,7 @@ async function _mobVFetchPerformance(el) {
 
     <div style="font-size:13px;font-weight:700;padding:18px 4px 8px">Per-Market P&amp;L <span style="font-size:11px;color:var(--muted);font-weight:400">— sorted by net ▾</span></div>
     ${marketCoins.map(c => `
-      <div class="perf-market-card" style="margin:0 4px 10px">
+      <div class="perf-market-card" onclick="window.__perfCoinTrades('${esc(c)}')" style="margin:0 4px 10px;cursor:pointer">
         <div class="perf-market-head"><div class="perf-market-name">${esc(c)}</div><div class="perf-market-net ${cls(coinNet[c])}">${money(coinNet[c])}</div></div>
         <div id="mperfHero-${idSafe(c)}" class="portfolio-pnl-hero" style="min-height:24px;padding:2px 0 4px"></div>
         <div style="position:relative;height:120px"><canvas id="mperfChart-${idSafe(c)}" style="cursor:crosshair"></canvas></div>
@@ -21414,21 +21441,28 @@ window.__devBotLogs = function(id) {
     : `<div class="mob-v-empty">${_T('Nothing logged yet.', 'Nada registrado aún.')}</div>`)
 }
 
-function _devBotSheet(title, body) {
-  document.getElementById('devBotSheet')?.remove()
+// One bottom sheet, used by anything that needs one. `pad` is off for a body that brings
+// its own padding -- a list that must run edge to edge, for instance.
+function _sheet(id, title, body, pad = true) {
+  document.getElementById(id)?.remove()
   const wrap = document.createElement('div')
-  wrap.id = 'devBotSheet'
+  wrap.id = id
+  const close = `document.getElementById('${id}')?.remove()`
   wrap.innerHTML = `
-    <div onclick="document.getElementById('devBotSheet')?.remove()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:8999"></div>
-    <div style="position:fixed;bottom:0;left:0;right:0;z-index:9000;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-height:88vh;overflow-y:auto">
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 16px 11px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--panel-2)">
+    <div onclick="${close}" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:8999"></div>
+    <div style="position:fixed;bottom:0;left:0;right:0;z-index:9000;background:var(--panel-2);border-radius:20px 20px 0 0;border-top:1px solid var(--border2);max-height:86vh;overflow:auto;-webkit-overflow-scrolling:touch;padding-bottom:env(safe-area-inset-bottom)">
+      <div style="position:sticky;top:0;background:var(--panel-2);display:flex;align-items:center;justify-content:space-between;padding:15px 16px 11px;border-bottom:1px solid var(--border2)">
         <span style="font-size:15.5px;font-weight:800">${title}</span>
-        <button onclick="document.getElementById('devBotSheet')?.remove()" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+        <button onclick="${close}" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer">&times;</button>
       </div>
-      <div style="padding:14px 16px 22px">${body}</div>
+      <div style="${pad ? 'padding:14px 16px 22px' : ''}">${body}</div>
     </div>`
   document.body.appendChild(wrap)
 }
+
+// Kept as its own name because every device-bot caller passes this id, and the id is what
+// their inline onclick handlers close.
+function _devBotSheet(title, body) { _sheet('devBotSheet', title, body) }
 
 // ── installing one ──────────────────────────────────────────────────────────
 let _devBotDraft = null

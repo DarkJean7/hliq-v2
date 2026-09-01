@@ -9,7 +9,9 @@ const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, co
 
 console.log('\n-- the tab is reachable --')
 t('listed in the nav order', cli.includes("'allocation', 'analysis']"))
-t('renders full-screen', cli.includes("'leaderboard', 'allocation', 'analysis'])"))
+// Asks whether analysis is IN the set, not what the set ends with -- pinning the tail
+// made this fail the moment another view joined it, which is not a regression in analysis.
+t('renders full-screen', /_MOBV_FULLPAGE = new Set\(\[[^\]]*'analysis'/.test(cli))
 t('the More drawer routes it', cli.includes("'heatmap', 'analysis'])"))
 t('and so does mobVGoTab', cli.includes("'pulse', 'allocation', 'analysis'])"))
 t('the render dispatch calls it', cli.includes("if (_mobVActiveTab === 'analysis') {\n    _anaRender(el)"))
