@@ -14875,13 +14875,7 @@ function _repStageHtml(big = false) {
     from: Math.max(0, i + 1 - span), to: i + 1,
     mainLabel: _repMode === 'account' ? _T('Account', 'Cuenta') : esc(_ocCoinLabel(d.coin)),
     fmtPrice: (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v)),
-    height: big ? 380 : 272,
-    axis: true,
-    dotMarkers: true,
-    fmtAxis: (v) => (v < 0 ? '-$' : '$') + fmtCompact(Math.abs(v)),
-    // Where the open position was entered. Every price on the chart is being judged
-    // against it, and reading that off the candles is guesswork.
-    entry: _repMode === 'market' && s.szi !== 0 ? s.entry : null,
+    height: big ? 330 : 168,
     // Only the last few are labelled. Every trade labelled is a wall of text over the
     // candles, and the ones worth naming are the ones that just happened.
     //
@@ -14902,19 +14896,15 @@ function _repStageHtml(big = false) {
   const when = new Date(t).toLocaleString(undefined,
     { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 
-  const stat = (label, value, colour = '', sub = '') => `<div>
-    <div style="font-family:var(--font-mono);font-size:8.5px;color:var(--fg-3);text-transform:uppercase;letter-spacing:.09em">${label}</div>
-    <div style="font-size:14px;font-weight:800;margin-top:3px;font-family:var(--font-mono);letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${colour ? `color:${colour}` : ''}">${value}</div>
-    ${sub ? `<div style="font-size:9.5px;color:var(--fg-3);font-family:var(--font-mono);margin-top:2px">${sub}</div>` : ''}
+  const stat = (label, value, colour = '', sub = '') => `<div style="min-width:70px">
+    <div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em">${label}</div>
+    <div style="font-size:13.5px;font-weight:800;margin-top:2px;font-family:var(--font-mono);${colour ? `color:${colour}` : ''}">${value}</div>
+    ${sub ? `<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-top:1px">${sub}</div>` : ''}
   </div>`
   // Bought and sold lead with the token amount: how much of the thing was moved is the
   // fact, and the dollars are what it cost. A market whose price ran during the session
   // makes those two tell different stories, and both are worth having.
-  const tok = (v) => {
-    const s = String(fmtSize(v))
-    const trimmed = s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s
-    return trimmed + ' ' + esc(_ocCoinLabel(d.coin ?? ''))
-  }
+  const tok = (n) => fmtSize(n) + ' ' + esc(_ocCoinLabel(d.coin ?? ''))
 
   // THE HEADLINE DESCRIBES THE CHART, not a second measure of the same account.
   //
@@ -14934,45 +14924,36 @@ function _repStageHtml(big = false) {
           label: _repSeries === 'pnl' ? _T('Acc. PnL so far', 'PnL acum. hasta aquí')
                                       : _T('Realized so far', 'Realizado hasta aquí') }
 
-  // What you are looking at, in one line: which market, what kind of bars, how much of it,
-  // and the position if there is one. It answers the questions a reader asks before they
-  // can read anything else off the chart.
-  const spanMs = (d.points[d.points.length - 1]?.[0] ?? t) - (d.points[0]?.[0] ?? t)
-  const spanTxt = spanMs >= 86400e3 ? Math.round(spanMs / 86400e3) + 'D SPAN'
-                : Math.max(1, Math.round(spanMs / 3600e3)) + 'H SPAN'
-  const metaBits = _repMode === 'account'
-    ? [esc(_repSeries === 'value' ? _T('EQUITY', 'VALOR') : _repSeries === 'pnl' ? _T('ACC. PNL', 'PNL ACUM.') : _T('REALIZED', 'REALIZADO')),
-       spanTxt, `${s.trades} ${_T('TRADES', 'OPS')}`]
-    : [esc(String(_ocCoinLabel(d.coin) ?? '')), _T('PERP', 'PERP'),
-       esc(_repTf.toUpperCase()) + ' ' + _T('BARS', 'VELAS'), spanTxt,
-       s.szi !== 0 ? `${s.szi > 0 ? _T('LONG', 'LARGO') : _T('SHORT', 'CORTO')} ${fmtSize(Math.abs(s.szi))}` : _T('FLAT', 'SIN POSICIÓN'),
-       s.szi !== 0 ? `${_T('ENTRY', 'ENTRADA')} $${fmtPrice(s.entry)}` : ''].filter(Boolean)
-
   const pos = _repMode === 'market' && s.szi !== 0
     ? `${s.szi > 0 ? _T('Long', 'Largo') : _T('Short', 'Corto')} ${fmtSize(Math.abs(s.szi))} @ $${fmtPrice(s.entry)}`
     : _T('Flat', 'Sin posición')
 
   return `
-    <div style="display:flex;align-items:flex-end;gap:10px;margin-bottom:3px">
+    <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
       <div style="min-width:0">
-        <div style="font-size:19px;font-weight:800;line-height:1.1;letter-spacing:-.01em">${
+        <div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">${
+          _repMode === 'account' ? _T('Account replay', 'Repetición de cuenta') : _T('Market replay', 'Repetición de mercado')}</div>
+        <div style="font-size:14px;font-weight:800;margin-top:1px">${
           _repMode === 'account' ? _T('My account', 'Mi cuenta') : esc(_ocCoinLabel(d.coin))}</div>
       </div>
       <div style="flex:1"></div>
-      <div style="text-align:right;min-width:0">
-        <div style="font-size:25px;font-weight:800;line-height:1;font-family:var(--font-mono);letter-spacing:-.02em;color:${head.tone}">${head.value}</div>
-        <div style="font-family:var(--font-mono);font-size:8.5px;color:var(--fg-3);text-transform:uppercase;letter-spacing:.09em;margin-top:3px">${head.label}</div>
+      ${big ? '' : `<button onclick="window.__repExpand(true)" aria-label="${_T('Open chart', 'Abrir grafico')}"
+        title="${_T('Open chart', 'Abrir grafico')}"
+        style="align-self:center;width:28px;height:28px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg-2);font-size:13px;line-height:1;cursor:pointer;flex-shrink:0">&#10530;</button>`}
+      <div style="text-align:right">
+        <div style="font-size:21px;font-weight:800;line-height:1.05;font-family:var(--font-mono);color:${head.tone}">${head.value}</div>
+        <div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">${head.label}</div>
       </div>
     </div>
-    </div>
-    <div style="display:flex;align-items:baseline;gap:8px;margin:0 0 8px">
-      <div style="font-family:var(--font-mono);font-size:8.5px;color:var(--fg-3);letter-spacing:.05em;text-transform:uppercase;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${
-        metaBits.join(' <span style="opacity:.4">·</span> ')}</div>
-      <span style="flex:1"></span>
-      <span style="font-family:var(--font-mono);font-size:8.5px;color:var(--fg-3);white-space:nowrap;flex-shrink:0">${esc(when)}</span>
+    <div style="display:flex;align-items:baseline;font-size:9.5px;color:var(--muted);margin-bottom:2px">
+      <span>${esc(chart.hi)}</span><span style="flex:1"></span><span>${esc(when)}</span>
     </div>
     ${chart.svg}
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:13px 10px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+    <div style="display:flex;align-items:center;font-size:9.5px;color:var(--muted);margin-top:2px">
+      <span>${esc(chart.lo)}</span><span style="flex:1"></span>
+      <span>${_repMode === 'account' ? money(mark) : '$' + fmtPrice(mark)}</span>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:9px 12px;margin-top:10px;padding-top:9px;border-top:1px solid var(--border)">
       ${_repMode === 'market' ? stat(_T('Bought', 'Comprado'), tok(s.boughtSz), 'var(--green)', money(s.bought)) : ''}
       ${_repMode === 'market' ? stat(_T('Sold', 'Vendido'), tok(s.soldSz), 'var(--red)', money(s.sold)) : ''}
       ${stat(_T('Realized', 'Realizado'), signed(s.realized), tone(s.realized))}
@@ -14987,7 +14968,7 @@ function _repStageHtml(big = false) {
       ${stat(_T('Profit factor', 'Factor'), s.profitFactor == null ? '—' : s.profitFactor.toFixed(2),
              s.profitFactor == null ? '' : s.profitFactor >= 1 ? 'var(--green)' : 'var(--red)')}
     </div>
-`
+    ${_repMode === 'market' ? `<div style="font-size:10.5px;color:var(--fg-2);margin-top:7px">${esc(pos)}</div>` : ''}`
 }
 
 /**
@@ -15060,58 +15041,58 @@ function _repRender(el) {
   const coins = _repCoins()
   if (_repMode === 'market' && !_repCoin && coins.length) { _repCoin = coins[0]; _repData = _repBuild() }
 
-  // One quiet line of controls, then the chart. The old layout stacked a paragraph, a mode
-  // toggle, a market row and a timeframe row above a chart in a bordered card -- five bands
-  // of chrome before the thing anyone opened the screen to look at, which then got whatever
-  // height was left. The chart is the page now; everything else is a line.
-  const pill = (on) => `flex-shrink:0;padding:4px 10px;border-radius:7px;border:1px solid ${
-    on ? 'var(--accent)' : 'transparent'};background:${on ? 'var(--accent)' : 'var(--panel-2)'};color:${
-    on ? '#000' : 'var(--fg-3)'};font-family:var(--font-mono);font-size:10.5px;font-weight:700;cursor:pointer;white-space:nowrap;letter-spacing:.02em`
+  const seg = (k, lbl) => `<button onclick="window.__repSetMode('${k}')" style="flex:1;padding:7px 10px;border:none;font-size:12px;font-weight:700;cursor:pointer;background:${
+    _repMode === k ? 'var(--accent)' : 'transparent'};color:${_repMode === k ? '#000' : 'var(--fg-2)'}">${lbl}</button>`
+  const chip = (c, sel, fn, lbl) => `<button onclick="window.${fn}('${esc(c)}')" style="flex-shrink:0;padding:5px 11px;border-radius:999px;border:1px solid ${
+    sel ? 'var(--accent)' : 'var(--border2)'};background:${sel ? 'var(--accent)' : 'transparent'};color:${
+    sel ? '#000' : 'var(--fg-2)'};font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap">${esc(lbl ?? c)}</button>`
 
-  const modeBtn = (k, lbl) => `<button onclick="window.__repSetMode('${k}')" style="${pill(_repMode === k)}">${lbl}</button>`
-  const tfBtn   = (v) => `<button onclick="window.__repSetTf('${v}')" style="${pill(v === _repTf)}">${esc(v)}</button>`
-  const serBtn  = (k, lbl) => `<button onclick="window.__repSetSeries('${k}')" style="${pill(_repSeries === k)}">${lbl}</button>`
-
-  host.innerHTML = `
-    <div style="display:flex;align-items:center;gap:10px;padding:13px 14px 10px;border-bottom:1px solid var(--border)">
-      <button onclick="window.__replayBack()" aria-label="${_T('Back', 'Atrás')}"
-        style="background:none;border:none;color:var(--fg-3);font-size:17px;line-height:1;cursor:pointer;padding:0;flex-shrink:0">←</button>
-      <span style="font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:.14em;color:var(--fg-2);text-transform:uppercase">${_T('Replay', 'Repetición')}</span>
-      <span style="flex:1"></span>
-      <button onclick="window.__repExpand(true)" aria-label="${_T('Open chart', 'Abrir gráfico')}"
-        style="background:none;border:none;color:var(--fg-3);font-size:14px;line-height:1;cursor:pointer;padding:0;flex-shrink:0">&#10530;</button>
+  host.innerHTML = `${_mobVFullHeader(_T('Replay', 'Repetición'))}
+    <div style="padding:8px 12px 0">
+      <button onclick="window.__replayBack()" style="display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:8px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:11.5px;font-weight:700;cursor:pointer">← ${_T('Portfolio', 'Cartera')}</button>
     </div>
+    <div style="padding:10px 12px 26px">
+      <div style="font-size:11.5px;color:var(--muted);line-height:1.45;margin-bottom:10px">${
+        _T('Play a market or your account forward and watch the trades land as they happened.',
+           'Reproduce un mercado o tu cuenta y mira las operaciones caer como ocurrieron.')}</div>
 
-    <div data-dragscroll style="display:flex;align-items:center;gap:5px;padding:9px 14px;overflow-x:auto">
-      ${modeBtn('account', _T('ACCOUNT', 'CUENTA'))}${modeBtn('market', _T('MARKET', 'MERCADO'))}
-      <span style="width:1px;height:15px;background:var(--border2);flex-shrink:0;margin:0 3px"></span>
-      ${_repMode === 'account'
-        ? `${serBtn('value', _T('EQUITY', 'VALOR'))}${serBtn('pnl', _T('ACC. PNL', 'PNL ACUM.'))}${serBtn('realized', _T('REALIZED', 'REALIZADO'))}`
-        : `${_repCoinChips()}<span style="width:1px;height:15px;background:var(--border2);flex-shrink:0;margin:0 3px"></span>${_PULSE_TF.map(x => tfBtn(x[0])).join('')}`}
-    </div>
-    ${_repMode === 'market' ? `<div style="padding:0 14px 8px"><input id="repSearch" type="search" value="${esc(_repQuery)}"
-      placeholder="${_T('Search your markets', 'Busca tus mercados')}" oninput="window.__repSearch(this.value)"
-      autocomplete="off" autocorrect="off" spellcheck="false"
-      style="width:100%;padding:5px 9px;border-radius:7px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:11px"></div>` : ''}
+      <div style="display:flex;border:1px solid var(--border2);border-radius:9px;overflow:hidden;margin-bottom:10px">
+        ${seg('account', _T('My account', 'Mi cuenta'))}${seg('market', _T('A market', 'Un mercado'))}
+      </div>
 
-    <div id="repStage" style="padding:2px 14px 0;min-height:330px">${_repStageHtml()}</div>
+      ${_repMode === 'market' ? `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+          <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${_T('Market', 'Mercado')}</span>
+          <span style="flex:1"></span>
+          <input id="repSearch" type="search" value="${esc(_repQuery)}" placeholder="${_T('Search your markets', 'Busca tus mercados')}"
+            oninput="window.__repSearch(this.value)" autocomplete="off" autocorrect="off" spellcheck="false"
+            style="width:150px;max-width:52%;padding:5px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:11.5px">
+        </div>
+        <div id="repCoinRow" data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px">${_repCoinChips()}</div>
+        <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${
+          _PULSE_TF.map(x => chip(x[0], x[0] === _repTf, '__repSetTf')).join('')}</div>`
+      : `<div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${
+          [['value', _T('Equity', 'Valor')], ['pnl', _T('Acc. PnL', 'PnL acum.')], ['realized', _T('Realized', 'Realizado')]]
+            .map(([k, lbl]) => `<button onclick="window.__repSetSeries('${k}')" style="flex-shrink:0;padding:5px 11px;border-radius:999px;border:1px solid ${
+              _repSeries === k ? 'var(--accent)' : 'var(--border2)'};background:${_repSeries === k ? 'var(--accent)' : 'transparent'};color:${
+              _repSeries === k ? '#000' : 'var(--fg-2)'};font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap">${lbl}</button>`).join('')}</div>`}
 
-    <div style="padding:12px 14px calc(20px + env(safe-area-inset-bottom))">
-      <div style="display:flex;align-items:center;gap:10px">
+      <div id="repStage" style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;min-height:300px">${_repStageHtml()}</div>
+
+      <div style="display:flex;align-items:center;gap:9px;margin-top:11px">
         <button id="repPlayBtn" onclick="window.__repPlay()" aria-label="${_T('Play or pause', 'Reproducir o pausar')}"
-          style="width:42px;height:42px;border-radius:50%;border:none;background:var(--accent);color:#000;font-size:15px;font-weight:800;cursor:pointer;flex-shrink:0">${_repPlay ? '❚❚' : '▶'}</button>
+          style="width:46px;height:46px;border-radius:50%;border:none;background:var(--accent);color:#000;font-size:17px;font-weight:800;cursor:pointer;flex-shrink:0">${_repPlay ? '❚❚' : '▶'}</button>
         <input id="repScrub" type="range" min="0" max="${Math.max(0, n - 1)}" value="${_repFrame}"
           oninput="window.__repSeek(this.value)" style="flex:1;accent-color:var(--accent)">
-        <span id="repPos" style="font-family:var(--font-mono);font-size:10px;color:var(--fg-3);flex-shrink:0;min-width:44px;text-align:right">${n ? `${Math.min(_repFrame + 1, n)}/${n}` : ''}</span>
         <button onclick="window.__repRestart()" aria-label="${_T('Restart', 'Reiniciar')}"
-          style="background:none;border:none;color:var(--fg-3);font-size:15px;cursor:pointer;flex-shrink:0;padding:0 2px">↺</button>
+          style="width:36px;height:36px;border-radius:9px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:14px;cursor:pointer;flex-shrink:0">↺</button>
       </div>
-      <div data-dragscroll style="display:flex;align-items:center;gap:5px;margin-top:11px;overflow-x:auto">
-        <span id="repSpeeds" style="display:flex;gap:5px;flex-shrink:0">${_repSpeedChips()}</span>
-        <span style="width:1px;height:15px;background:var(--border2);flex-shrink:0;margin:0 3px"></span>
-        <span id="repStyles" style="display:flex;gap:5px;flex-shrink:0">${_repStyleChips()}</span>
-
+      <div data-dragscroll style="display:flex;align-items:center;gap:6px;margin-top:9px;overflow-x:auto">
+        <span id="repSpeeds" style="display:flex;gap:6px;flex-shrink:0">${_repSpeedChips()}</span>
+        <span style="flex:1;min-width:6px"></span>
+        <span id="repPos" style="font-size:10.5px;color:var(--muted);align-self:center;flex-shrink:0">${n ? `${_repFrame + 1}/${n}` : ''}</span>
       </div>
+      <div id="repStyles" style="display:flex;gap:6px;margin-top:8px">${_repStyleChips()}</div>
     </div>`
 }
 

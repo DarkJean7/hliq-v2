@@ -138,12 +138,8 @@ export function signalChartSvg({
   main, cmp = null, mainLabel = '', cmpLabel = '', indicator = null, vals = [],
   height = 132, subHeight = 46, fmtPrice = (v) => String(v),
   from = 0, to = null, markers = null, candles = null, grid = false,
-  axis = false, entry = null, dotMarkers = false, fmtAxis = null,
 } = {}) {
   const W = 320, PAD = 4
-  const AX_W = axis ? 42 : 0        // right gutter: price ticks
-  const AX_H = axis ? 13 : 0        // bottom gutter: dates
-  const plotW = W - AX_W
   const full = (main ?? []).filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
   if (full.length < 3) return { svg: '', legend: '', hi: '', lo: '', empty: true, meta: null }
 
@@ -194,9 +190,8 @@ export function signalChartSvg({
   if (!Number.isFinite(y0) || !Number.isFinite(y1)) return { svg: '', legend: '', hi: '', lo: '', empty: true, meta: null }
   if (y0 === y1) { y0 -= 1; y1 += 1 }
 
-  const plotH = height - AX_H
-  const px = (t) => PAD + ((t - x0) / ((x1 - x0) || 1)) * (plotW - PAD * 2)
-  const py = (v) => plotH - PAD - ((v - y0) / ((y1 - y0) || 1)) * (plotH - PAD * 2)
+  const px = (t) => PAD + ((t - x0) / ((x1 - x0) || 1)) * (W - PAD * 2)
+  const py = (v) => height - PAD - ((v - y0) / ((y1 - y0) || 1)) * (height - PAD * 2)
 
   const up = series[series.length - 1][1] >= series[0][1]
   const mainColor = comparing ? '#22d3ee' : (up ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)')
@@ -205,8 +200,8 @@ export function signalChartSvg({
   if (grid) {
     // Four faint rules. Enough to read a level off, few enough not to compete with the data.
     for (let g = 1; g <= 4; g++) {
-      const yy = R(PAD + (plotH - PAD * 2) * (g / 5))
-      body += `<line x1="${PAD}" x2="${plotW - PAD}" y1="${yy}" y2="${yy}" stroke="var(--border,#222)" stroke-width="0.5" opacity="0.5"/>`
+      const yy = R(PAD + (height - PAD * 2) * (g / 5))
+      body += `<line x1="${PAD}" x2="${W - PAD}" y1="${yy}" y2="${yy}" stroke="var(--border,#222)" stroke-width="0.5" opacity="0.5"/>`
     }
   }
   if (candleWin) {
@@ -227,7 +222,7 @@ export function signalChartSvg({
         `<rect x="${R(cx - bw / 2)}" y="${top}" width="${R(bw)}" height="${R(hgt)}" fill="${col}"/>`
     }
   } else if (!comparing) {
-    body += `<path d="${path(series, px, py)}L${R(px(x1))},${plotH}L${R(px(x0))},${plotH}Z" fill="${mainColor}" opacity="0.10"/>`
+    body += `<path d="${path(series, px, py)}L${R(px(x1))},${height}L${R(px(x0))},${height}Z" fill="${mainColor}" opacity="0.10"/>`
   }
   for (const o of overlays) {
     body += `<path d="${path(o.pts, px, py)}" fill="none" stroke="${o.color}" stroke-width="1.2" ${
@@ -241,7 +236,7 @@ export function signalChartSvg({
     // With two rebased lines, "flat since the left edge" is the reference the eye needs;
     // without it neither line means much on its own.
     if (y0 < 0 && y1 > 0) {
-      body += `<line x1="${PAD}" x2="${plotW - PAD}" y1="${R(py(0))}" y2="${R(py(0))}" stroke="var(--border2,#2a2f3a)" stroke-width="1" stroke-dasharray="2 3"/>`
+      body += `<line x1="${PAD}" x2="${W - PAD}" y1="${R(py(0))}" y2="${R(py(0))}" stroke="var(--border2,#2a2f3a)" stroke-width="1" stroke-dasharray="2 3"/>`
     }
   }
 
@@ -265,23 +260,16 @@ export function signalChartSvg({
       const c = mk.buy ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)'
       // Buys point up from below the price, sells point down from above, so a cluster
       // still reads as a direction rather than a smudge.
-      if (dotMarkers) {
-        // A dot sits ON the price it happened at. A triangle points at it from beside it,
-        // which reads well when trades are sparse and turns into a hedge of arrows when
-        // they are not.
-        body += `<circle cx="${x}" cy="${y}" r="2.6" fill="${c}" stroke="var(--panel,#111)" stroke-width="0.7"/>`
-      } else {
-        const tri = mk.buy ? `${x},${y - 3} ${x - 4},${y + 4} ${x + 4},${y + 4}`
-                           : `${x},${y + 3} ${x - 4},${y - 4} ${x + 4},${y - 4}`
-        body += `<polygon points="${tri}" fill="${c}" stroke="var(--panel,#111)" stroke-width="0.6"/>`
-      }
+      const tri = mk.buy ? `${x},${y - 3} ${x - 4},${y + 4} ${x + 4},${y + 4}`
+                         : `${x},${y + 3} ${x - 4},${y - 4} ${x + 4},${y - 4}`
+      body += `<polygon points="${tri}" fill="${c}" stroke="var(--panel,#111)" stroke-width="0.6"/>`
       // A label, when one is asked for and there is room. Buys read below the marker and
       // sells above, matching the direction the triangle points, and the anchor flips near
       // either edge so a label never runs off the chart.
       if (mk.label) {
-        const near0 = x < 46, near1 = x > plotW - 46
+        const near0 = x < 46, near1 = x > W - 46
         const anchor = near0 ? 'start' : near1 ? 'end' : 'middle'
-        let ly = mk.buy ? Math.min(plotH - 3, y + 15) : Math.max(9, y - 11)
+        let ly = mk.buy ? Math.min(height - 3, y + 15) : Math.max(9, y - 11)
         // Trades cluster, and four labels on the same few pixels is a smudge rather than
         // four facts. Step a colliding one clear of the last, and give up rather than run
         // off the chart -- an unreadable label is worse than none.
@@ -290,48 +278,10 @@ export function signalChartSvg({
           ly += mk.buy ? 10 : -10
           tries++
         }
-        if (ly > 8 && ly < plotH - 2 && tries < 4) {
+        if (ly > 8 && ly < height - 2 && tries < 4) {
           placed.push({ x, y: ly })
           body += `<text x="${x}" y="${R(ly)}" text-anchor="${anchor}" font-size="7.5" font-weight="700" fill="${c}" opacity="0.95">${mk.label}</text>`
         }
-      }
-    }
-  }
-
-  // ── axes ──────────────────────────────────────────────────────────────────
-  // Drawn last so they sit over the data, and inside the same viewBox as it: a separate
-  // element would have to re-derive the scale and would drift the moment either resized.
-  if (axis) {
-    const fmtAx = comparing ? (v) => (v >= 0 ? '+' : '') + v.toFixed(1) + '%' : (fmtAxis ?? fmtPrice)
-    for (let g = 0; g <= 4; g++) {
-      const v = y0 + (y1 - y0) * (g / 4)
-      const yy = R(py(v))
-      body += `<text x="${plotW + 4}" y="${Math.min(plotH - 1, Math.max(7, yy + 2.5))}" font-size="6.5" fill="var(--fg-3,#98a2b3)" opacity="0.85">${fmtAx(v)}</text>`
-    }
-    // Three dates: the ends and the middle. More would crowd a phone; fewer would leave
-    // the span unreadable, which is the one thing the x axis is for here.
-    const span = meta.t1 - meta.t0
-    const dfmt = (t) => span <= 2 * 86400e3
-      ? new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
-      : new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
-    for (const [frac, anchor] of [[0, 'start'], [0.5, 'middle'], [1, 'end']]) {
-      const t = meta.t0 + span * frac
-      body += `<text x="${R(px(t))}" y="${height - 3}" text-anchor="${anchor}" font-size="6.5" fill="var(--fg-3,#98a2b3)" opacity="0.85">${dfmt(t)}</text>`
-    }
-  }
-
-  // ── the entry line ────────────────────────────────────────────────────────
-  // Where the open position was entered, with its price tagged on the axis. It is the line
-  // every other price on the chart is being judged against, and reading it off the candles
-  // is guesswork.
-  if (entry != null && Number.isFinite(+entry) && !comparing) {
-    const ey = +toY(+entry)
-    if (ey >= y0 && ey <= y1) {
-      const yy = R(py(ey))
-      body += `<line x1="${PAD}" x2="${plotW - PAD}" y1="${yy}" y2="${yy}" stroke="var(--orange,#f59e0b)" stroke-width="0.9" stroke-dasharray="3 3" opacity="0.9"/>`
-      if (axis) {
-        body += `<rect x="${plotW + 1}" y="${yy - 5}" width="${AX_W - 2}" height="10" rx="2" fill="var(--orange,#f59e0b)" opacity="0.9"/>` +
-          `<text x="${plotW + 3}" y="${yy + 2.5}" font-size="6.5" font-weight="700" fill="#000">${(fmtAxis ?? fmtPrice)(+entry)}</text>`
       }
     }
   }
