@@ -14535,7 +14535,7 @@ function _sigChartInner() {
 // exactly the thing you came to watch.
 
 const REP_KEY = 'hliq_replay'
-let _repMode   = 'market'   // 'market' | 'account'
+let _repMode   = 'account'  // 'account' | 'market' -- your own account is the default
 let _repCoin   = null
 let _repTf     = '7d'
 let _repFrame  = 0
@@ -14975,7 +14975,7 @@ function _repRender(el) {
            'Reproduce un mercado o tu cuenta y mira las operaciones caer como ocurrieron.')}</div>
 
       <div style="display:flex;border:1px solid var(--border2);border-radius:9px;overflow:hidden;margin-bottom:10px">
-        ${seg('market', _T('A market', 'Un mercado'))}${seg('account', _T('My account', 'Mi cuenta'))}
+        ${seg('account', _T('My account', 'Mi cuenta'))}${seg('market', _T('A market', 'Un mercado'))}
       </div>
 
       ${_repMode === 'market' ? `
