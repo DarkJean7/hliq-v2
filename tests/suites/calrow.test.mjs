@@ -14,6 +14,16 @@ t('so do deposits and withdrawals', rnd.includes('<span class="cal-detail-time">
 t('time only, not the date again', rnd.includes("{ hour: '2-digit', minute: '2-digit' })") &&
   !/_calTime[\s\S]{0,220}month:/.test(rnd))
 t('a missing timestamp renders nothing, not "Invalid Date"', rnd.includes("!ms ? '' :"))
+// Six things do not fit across a phone's ~380px of panel, and what got clipped was the
+// PnL -- the one number a reader came for. The size/price moved to a line a tap reveals.
+t('size and price hide behind a tap on a phone', /\.cal-detail-meta  \{[^}]*display: none/.test(css))
+t('and come back when expanded', css.includes('.cal-detail-trade.cal-expanded .cal-detail-meta  { display: block; }'))
+t('the class is the state, so a re-render starts collapsed', rnd.includes(`onclick="this.classList.toggle('cal-expanded')"`))
+t('indented with padding, not margin -- 100% plus a margin overruns the row',
+  /\.cal-detail-meta  \{[^}]*padding-left: 54px[^}]*\}/.test(css) && !/\.cal-detail-meta  \{[^}]*margin-left: 54px/.test(css))
+t('the caret is pinned, so the PnL auto-margin cannot squeeze it out',
+  /\.cal-detail-caret \{[^}]*position: absolute/.test(css))
+t('desktop keeps one line and hides the caret', css.includes('@media (min-width: 621px) { .cal-detail-caret { display: none; } }'))
 t('the column is fixed width so the list scans straight',
   /\.cal-detail-time \{[^}]*min-width: 46px/.test(css) && /\.cal-detail-time \{[^}]*tabular-nums/.test(css))
 

@@ -1935,6 +1935,33 @@ tbody td {
 .cal-detail-coin { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; min-width: 60px; }
 .cal-detail-meta { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); flex: 1; }
 .cal-detail-pnl  { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; text-align: right; }
+
+/* On a phone the row carries six things -- time, coin, direction, account, size at price,
+   and PnL -- and they do not fit across ~380px of panel. Adding the time pushed it over,
+   and what got clipped was the PnL on the right: the one number a reader came for.
+   So the size and price move to an extended line that tapping reveals. The list stays
+   scannable -- when, what, which way, whose, how much -- and the detail is one tap away.
+   Desktop has the width, so there it stays on one line and the caret is hidden. */
+@media (max-width: 620px) {
+  .cal-detail-trade {
+    flex-wrap: wrap; gap: 6px 8px; padding: 8px 14px 8px 0; cursor: pointer; position: relative;
+  }
+  .cal-detail-coin  { min-width: 0; }
+  .cal-detail-pnl   { order: 5; margin-left: auto; }
+  .cal-detail-caret {
+    position: absolute; right: 0; top: 9px; color: var(--fg-3, var(--muted));
+    font-size: 13px; line-height: 1; transition: transform .15s ease; display: inline-block;
+  }
+  .cal-detail-meta  {
+    order: 9; flex: 0 0 100%; box-sizing: border-box; padding-left: 54px; margin-left: 0;
+    font-size: 10.5px; display: none; word-break: break-word;
+  }
+  .cal-detail-trade.cal-expanded .cal-detail-meta  { display: block; }
+  .cal-detail-trade.cal-expanded .cal-detail-caret { transform: rotate(90deg); }
+  .cal-detail-tx    { flex-wrap: wrap; gap: 6px 8px; }
+}
+@media (min-width: 621px) { .cal-detail-caret { display: none; } }
+
 .cal-detail-tx {
   display: flex; align-items: center; gap: 12px; padding: 6px 0;
   border-bottom: 1px solid rgba(255,255,255,0.04);

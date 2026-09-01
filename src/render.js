@@ -2030,13 +2030,17 @@ export function calDayClick(key, rootId) {
           : t.closedPnl !== 0
             ? `<span class="${netPnl >= 0 ? 'pos' : 'neg'} cal-detail-pnl">${netPnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(netPnl))}</span>`
             : '<span class="cal-detail-pnl" style="color:var(--muted)">—</span>'
-        return `<div class="cal-detail-trade">
+        // Tapping expands the size/price line. No handler and no state: the class is the
+        // state, which also means a re-render of the day starts collapsed again, as it
+        // should. On desktop the line is always visible and the toggle does nothing.
+        return `<div class="cal-detail-trade" onclick="this.classList.toggle('cal-expanded')">
           <span class="cal-detail-time">${_calTime(t.time)}</span>
           <span class="cal-detail-coin">${esc(_lbl(t.coin))}</span>
           <span class="dir-badge ${_dirBadgeCls(t.dir)}">${esc(t.dir || '')}</span>
           ${t._acct ? `<span class="acct-pill">${esc(t._acct)}</span>` : ''}
           <span class="cal-detail-meta">${fmtSize(t.sz)} @ $${fmtPrice(t.px)}</span>
           ${right}
+          <span class="cal-detail-caret" aria-hidden="true">›</span>
         </div>`
       }).join('')}
     </div>` : ''
