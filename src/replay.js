@@ -113,13 +113,27 @@ export function frameTime(points, i) {
  */
 export function summarise(steps, t, mark) {
   const s = stateAt(steps, t, mark)
-  const closes = (steps ?? []).filter(x => x.time <= t && x.closedPnl !== 0)
+  const seen = (steps ?? []).filter(x => x.time <= t)
+  const closes = seen.filter(x => x.closedPnl !== 0)
   const wins = closes.filter(x => x.closedPnl - x.fee > 0).length
+  // What was spent and what came back, in dollars at the prices actually paid. Both are
+  // running totals, so they read the way a ledger does rather than as a net figure that
+  // hides how much was put at risk to get it.
+  let bought = 0, sold = 0
+  for (const x of seen) {
+    const notional = x.px * x.sz
+    if (x.buy) bought += notional; else sold += notional
+  }
   return {
     ...s,
     net: s.realized + s.unrealized,
     closes: closes.length,
     wins,
     winRate: closes.length ? (wins / closes.length) * 100 : null,
+    bought,
+    sold,
+    // What the open position is worth at the price on screen. Zero when flat, and null
+    // would be wrong here -- flat is a known state, not an unknown one.
+    holding: (s.szi !== 0 && Number.isFinite(+mark)) ? Math.abs(s.szi) * +mark : 0,
   }
 }

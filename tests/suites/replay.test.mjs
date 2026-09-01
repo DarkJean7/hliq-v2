@@ -8,6 +8,7 @@ import { walkFills, stateAt, markersUpto, summarise, frameTime } from '../../src
 
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 const htm = fs.readFileSync('index.html', 'utf8').replace(/\r\n/g, '\n')
+const chart = fs.readFileSync('src/sigchart.js', 'utf8').replace(/\r\n/g, '\n')
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
 
@@ -87,6 +88,54 @@ t('a new subject rewinds rather than keeping a stale frame', cli.includes('funct
 // Candles in flight are UNKNOWN, not absent -- the mistake this app has shipped three times.
 t('loading is not reported as "no history"', cli.includes("_T('Loading market history…', 'Cargando historial…')"))
 t('the transport tracks the frame, not just the render', cli.includes("pos.textContent = n ? `${_repFrame + 1}/${n}` : ''"))
+
+console.log(String.fromCharCode(10) + '-- the ledger row --')
+const led = summarise(steps, 4, 130)
+t('bought and sold are running totals at the prices paid',
+  Math.abs(led.bought - (2 * 100 + 2 * 110)) < 1e-9 && Math.abs(led.sold - (1 * 120 + 4 * 130)) < 1e-9, [led.bought, led.sold])
+t('they count only what has happened by then', summarise(steps, 1, 100).bought === 200)
+t('holding is the open position at the price on screen',
+  Math.abs(summarise(steps, 2, 115).holding - 4 * 115) < 1e-9)
+t('a short position still counts as holding', Math.abs(led.holding - 130) < 1e-9, led.holding)
+t('flat holds nothing -- a known zero, not an unknown',
+  summarise(walkFills([F(1, 'BUY', 2, 100), F(2, 'SELL', 2, 110, 20)]), 2, 110).holding === 0)
+
+console.log(String.fromCharCode(10) + '-- candles, and the axis that fits them --')
+t('candles are cut to the same window as the line', chart.includes('candles.slice(lo, hi)'))
+// Fitting the axis to closes alone clips the very highs and lows a candle chart is for.
+t('the range covers the wicks', chart.includes('...(candleWin ?? []).flatMap(c => [+c.h, +c.l])'))
+t('a doji still draws', chart.includes('const hgt = Math.max(1, Math.abs(yC - yO))'))
+t('the line is dropped when candles are on', chart.includes('if (!candleWin) {'))
+t('comparing two markets stays a line', chart.includes('(candles && !comparing)'))
+t('the app can switch between them', cli.includes("window.__repStyle") && cli.includes("_repStyle === 'candle'"))
+
+console.log(String.fromCharCode(10) + '-- markers say what they were --')
+t('the last few are labelled', cli.includes('k >= marks.length - 4'))
+t('and the label carries side and size', cli.includes("`${m.buy ? 'BUY' : 'SELL'} $${fmtUSD(m.px * m.sz)}`"))
+// Trades cluster; four labels on the same pixels is a smudge rather than four facts.
+t('colliding labels step clear of each other', chart.includes('placed.some(q => Math.abs(q.x - x) < 52'))
+t('and are dropped rather than run off the chart', chart.includes('if (ly > 8 && ly < height - 2 && tries < 4)'))
+// +null is 0, and 0 is finite -- which drew every equity marker along the bottom edge.
+t('a marker with no price sits on the line, not at zero', chart.includes('const hasV = mk.v != null && Number.isFinite(+mk.v)'))
+
+console.log(String.fromCharCode(10) + '-- the controls agree with the player --')
+t('slower gears exist', cli.includes('[0.25, 0.5, 1, 2, 4, 8]'))
+t('1x is a readable five steps a second', cli.includes('Math.round(1000 / (5 * _repSpeed))'))
+// Reported: the lit chip stayed on the old speed while playback changed.
+t('the speed chips are built by a shared function', cli.includes('function _repSpeedChips()'))
+t('and every frame repaints the chrome, so a lit chip cannot go stale',
+  cli.includes('function _repChrome()') && (cli.match(/_repChrome\(\)/g) || []).length >= 3)
+t('so is the style toggle', cli.includes('function _repStyleChips()'))
+
+console.log(String.fromCharCode(10) + '-- picking what to replay --')
+t('markets are a shortlist of five', cli.includes('[...all.slice(0, 5), _repCoin]'))
+t('with a search for the rest', cli.includes('window.__repSearch'))
+t('searching repaints only the chips', cli.includes('if (row) row.innerHTML = _repCoinChips()'))
+t('and a background redraw gives the keyboard back', cli.includes("const _hadSearch = _a && _a.id === 'repSearch'"))
+// The same three series Portfolio offers, from the same builder, so they cannot disagree.
+t('the account offers equity, cumulative and realized', cli.includes("_portSeries('allTime', _repSeries)") &&
+  cli.includes("['value', 'pnl', 'realized'].includes(s.series)"))
+t('an account value never marks a position', cli.includes("_repMode === 'market' ? mark : null"))
 
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

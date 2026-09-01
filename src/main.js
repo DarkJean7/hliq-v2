@@ -14540,27 +14540,49 @@ let _repFrame  = 0
 let _repPlay   = false
 let _repSpeed  = 1
 let _repTimer  = null
-let _repData   = null       // { points, steps, markersAll }
+let _repData   = null       // { points, steps, candles }
+let _repStyle  = 'candle'   // 'candle' | 'line'
+let _repSeries = 'value'    // account mode: 'value' | 'pnl' | 'realized' -- same three as Portfolio
+let _repQuery  = ''         // market search; not persisted, it is a way of finding one
 
 try {
   const s = JSON.parse(localStorage.getItem(REP_KEY) || '{}')
   if (s.mode === 'account' || s.mode === 'market') _repMode = s.mode
   if (typeof s.coin === 'string') _repCoin = s.coin || null
   if (typeof s.tf === 'string') _repTf = s.tf
+  if (s.style === 'line' || s.style === 'candle') _repStyle = s.style
+  if (['value', 'pnl', 'realized'].includes(s.series)) _repSeries = s.series
 } catch {}
 function _repSave() {
-  try { localStorage.setItem(REP_KEY, JSON.stringify({ mode: _repMode, coin: _repCoin, tf: _repTf })) } catch {}
+  try { localStorage.setItem(REP_KEY, JSON.stringify({
+    mode: _repMode, coin: _repCoin, tf: _repTf, style: _repStyle, series: _repSeries })) } catch {}
 }
 
 /** Markets this wallet has actually traded. Replaying one it never touched shows nothing. */
-function _repCoins() {
+function _repAllCoins() {
   const seen = new Map()
   for (const f of state.fills ?? []) {
     const c = f.coin
     if (!c) continue
     seen.set(c, (seen.get(c) ?? 0) + 1)
   }
-  return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]).slice(0, 12)
+  return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0])
+}
+
+/** Five most-traded, or whatever a search matches. The selection always stays visible. */
+function _repCoins() {
+  const all = _repAllCoins()
+  const q = _repQuery.trim().toUpperCase()
+  if (q) return all.filter(c => String(_ocCoinLabel(c) ?? c).toUpperCase().includes(q) || c.toUpperCase().includes(q)).slice(0, 14)
+  return [...new Set([...all.slice(0, 5), _repCoin].filter(Boolean))].filter(c => all.includes(c))
+}
+
+window.__repSearch = function(v) {
+  _repQuery = String(v ?? '')
+  // Only the chip strip depends on the query. Re-rendering the view would rebuild the
+  // player and take the keyboard away after the first character.
+  const row = document.getElementById('repCoinRow')
+  if (row) row.innerHTML = _repCoinChips()
 }
 
 /**
@@ -14572,18 +14594,28 @@ function _repCoins() {
  */
 function _repBuild() {
   if (_repMode === 'account') {
-    const hist = (state.portfolio ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory ?? []
-    const points = hist.map(([t, v]) => [+t, parseFloat(v)]).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]))
+    // The same three series Portfolio offers, from the same builder, so the two screens
+    // cannot disagree about what "Acc. PnL" means.
+    const { hist } = _portSeries('allTime', _repSeries)
+    const points = (hist ?? []).map(([t, v]) => [+t, parseFloat(v)])
+      .filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]))
     const steps = walkFills(state.fills ?? [])
-    return { points, steps, coin: null }
+    return { points, steps, candles: null, coin: null }
   }
   const coin = _repCoin
   if (!coin) return { points: [], steps: [], coin: null }
   _pulseLoadCandles(coin)
   const row = _PULSE_TF.find(x => x[0] === _repTf) ?? _PULSE_TF[2]
   const points = _sigPoints(coin, row[1], row[2]) ?? []
+  // Candles for the same window, aligned to `points` by index so the chart can cut both
+  // together. Derived from the same cached candles, never fetched twice.
+  const rawK = _pulseCandles[coin + '|' + row[1]]
+  const cut = Array.isArray(rawK)
+    ? (row[2] ? rawK.filter(k => +k.t >= Date.now() - row[2]) : rawK)
+    : null
+  const candles = cut ? cut.map(k => ({ t: +k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c })) : null
   const steps = walkFills((state.fills ?? []).filter(f => f.coin === coin))
-  return { points, steps, coin }
+  return { points, steps, candles, coin }
 }
 
 function _repStop() {
@@ -14598,6 +14630,8 @@ window.__repSetMode = function(m) { _repMode = m; _repSave(); _repReset(); _repR
 window.__repSetCoin = function(c) { _repCoin = c || null; _repSave(); _repReset(); _repRender() }
 window.__repSetTf   = function(t) { _repTf = t; _repSave(); _repReset(); _repRender() }
 window.__repSpeed   = function(s) { _repSpeed = s; if (_repPlay) { _repStop(); window.__repPlay(true) }; _repPaint() }
+window.__repStyle   = function(v) { _repStyle = v; _repSave(); _repPaint(); _repChrome() }
+window.__repSetSeries = function(v) { _repSeries = v; _repSave(); _repReset(); _repRender() }
 
 window.__repPlay = function(on) {
   const n = _repData?.points?.length ?? 0
@@ -14608,7 +14642,10 @@ window.__repPlay = function(on) {
   _repPlay = true
   // Twelve steps a second at 1x: fast enough to feel like motion, slow enough that a fill
   // landing is something you see rather than something you find afterwards.
-  const ms = Math.max(16, Math.round(1000 / (12 * _repSpeed)))
+  // 1x is five steps a second. The old 12 was faster than a fill could be noticed, which
+  // is the whole point of watching -- and the slow gears below it exist for the moment a
+  // position turns, where one candle at a time is the interesting speed.
+  const ms = Math.max(16, Math.round(1000 / (5 * _repSpeed)))
   _repTimer = setInterval(() => {
     _repFrame += 1
     if (_repFrame >= n - 1) { _repFrame = n - 1; _repStop() }
@@ -14641,6 +14678,7 @@ function _repPaint() {
   if (pos) pos.textContent = n ? `${_repFrame + 1}/${n}` : ''
   const btn = document.getElementById('repPlayBtn')
   if (btn) btn.textContent = _repPlay ? '❚❚' : '▶'
+  _repChrome()
 }
 
 function _repStageHtml() {
@@ -14664,28 +14702,42 @@ function _repStageHtml() {
   const i = Math.max(0, Math.min(n - 1, _repFrame))
   const t = frameTime(d.points, i)
   const mark = +d.points[i][1]
+  // Unrealised only means something against a price. The account series is a value, not a
+  // price, so it is never used to mark a position -- that would multiply a position size
+  // by an account balance and print the result as money.
   const s = summarise(d.steps, t, _repMode === 'market' ? mark : null)
   const marks = markersUpto(d.steps, t)
 
+  const money = (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v))
+  const signed = (v) => (v < 0 ? '-$' : '+$') + fmtUSD(Math.abs(v))
+  const tone = (v) => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--fg-2)'
+
+  const useCandles = _repMode === 'market' && _repStyle === 'candle' && !!d.candles
   const chart = signalChartSvg({
     main: d.points,
+    candles: useCandles ? d.candles : null,
+    grid: true,
     // Only as far as the playhead: the axis then scales to what has been revealed, and
     // the replay cannot hint at where it is going.
     from: 0, to: i + 1,
     mainLabel: _repMode === 'account' ? _T('Account', 'Cuenta') : esc(_ocCoinLabel(d.coin)),
     fmtPrice: (v) => '$' + fmtUSD(v),
-    height: 150,
-    markers: marks.map(m => ({ t: m.t, buy: m.buy, v: _repMode === 'market' ? m.px : null })),
+    height: 168,
+    // Only the last few are labelled. Every trade labelled is a wall of text over the
+    // candles, and the ones worth naming are the ones that just happened.
+    markers: marks.map((m, k) => ({
+      t: m.t, buy: m.buy,
+      v: _repMode === 'market' ? m.px : null,
+      label: k >= marks.length - 4 ? `${m.buy ? 'BUY' : 'SELL'} $${fmtUSD(m.px * m.sz)}` : '',
+    })),
   })
 
-  const money = (v) => (v < 0 ? '-$' : '+$') + fmtUSD(Math.abs(v))
-  const tone  = (v) => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--fg-2)'
-  const when  = new Date(t).toLocaleString(undefined,
+  const when = new Date(t).toLocaleString(undefined,
     { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 
-  const stat = (label, value, colour = '') => `<div style="min-width:74px">
-    <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${label}</div>
-    <div style="font-size:14px;font-weight:800;margin-top:1px;${colour ? `color:${colour}` : ''}">${value}</div>
+  const stat = (label, value, colour = '') => `<div style="min-width:70px">
+    <div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em">${label}</div>
+    <div style="font-size:13.5px;font-weight:800;margin-top:2px;font-family:var(--font-mono);${colour ? `color:${colour}` : ''}">${value}</div>
   </div>`
 
   const pos = _repMode === 'market' && s.szi !== 0
@@ -14693,22 +14745,77 @@ function _repStageHtml() {
     : _T('Flat', 'Sin posición')
 
   return `
-    <div style="display:flex;align-items:baseline;gap:8px;font-size:10px;color:var(--muted);margin-bottom:3px">
+    <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
+      <div style="min-width:0">
+        <div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">${
+          _repMode === 'account' ? _T('Account replay', 'Repetición de cuenta') : _T('Market replay', 'Repetición de mercado')}</div>
+        <div style="font-size:14px;font-weight:800;margin-top:1px">${
+          _repMode === 'account' ? _T('My account', 'Mi cuenta') : esc(_ocCoinLabel(d.coin))}</div>
+      </div>
+      <div style="flex:1"></div>
+      <div style="text-align:right">
+        <div style="font-size:21px;font-weight:800;line-height:1.05;font-family:var(--font-mono);color:${tone(s.net)}">${signed(s.net)}</div>
+        <div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">${_T('PnL so far', 'PnL hasta aquí')}</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:baseline;font-size:9.5px;color:var(--muted);margin-bottom:2px">
       <span>${esc(chart.hi)}</span><span style="flex:1"></span><span>${esc(when)}</span>
     </div>
     ${chart.svg}
-    <div style="display:flex;align-items:center;font-size:10px;color:var(--muted);margin-top:2px">
+    <div style="display:flex;align-items:center;font-size:9.5px;color:var(--muted);margin-top:2px">
       <span>${esc(chart.lo)}</span><span style="flex:1"></span>
-      <span>${_repMode === 'account' ? `$${fmtUSD(mark)}` : `$${fmtPrice(mark)}`}</span>
+      <span>${_repMode === 'account' ? money(mark) : '$' + fmtPrice(mark)}</span>
     </div>
-    <div style="display:flex;flex-wrap:wrap;gap:10px 14px;margin-top:9px">
-      ${stat(_T('Realized', 'Realizado'), money(s.realized), tone(s.realized))}
-      ${_repMode === 'market' ? stat(_T('Open', 'Abierto'), money(s.unrealized), tone(s.unrealized)) : ''}
-      ${stat(_T('Net', 'Neto'), money(s.net), tone(s.net))}
+    <div style="display:flex;flex-wrap:wrap;gap:9px 12px;margin-top:10px;padding-top:9px;border-top:1px solid var(--border)">
+      ${_repMode === 'market' ? stat(_T('Bought', 'Comprado'), money(s.bought), 'var(--green)') : ''}
+      ${_repMode === 'market' ? stat(_T('Sold', 'Vendido'), money(s.sold), 'var(--red)') : ''}
+      ${stat(_T('Realized', 'Realizado'), signed(s.realized), tone(s.realized))}
+      ${_repMode === 'market' ? stat(_T('Unrealized', 'No realizado'), signed(s.unrealized), tone(s.unrealized)) : ''}
+      ${_repMode === 'market' ? stat(_T('Holding', 'En posición'), money(s.holding)) : ''}
       ${stat(_T('Trades', 'Operaciones'), String(s.trades))}
       ${stat(_T('Win rate', 'Aciertos'), s.winRate == null ? '—' : s.winRate.toFixed(0) + '%')}
     </div>
-    ${_repMode === 'market' ? `<div style="font-size:11px;color:var(--fg-2);margin-top:7px">${esc(pos)}</div>` : ''}`
+    ${_repMode === 'market' ? `<div style="font-size:10.5px;color:var(--fg-2);margin-top:7px">${esc(pos)}</div>` : ''}`
+}
+
+/**
+ * The chip rows that sit outside the stage. Repainted on their own when a style or speed
+ * changes, so a highlight follows the choice without rebuilding the player.
+ */
+function _repCoinChips() {
+  const coins = _repCoins()
+  if (!coins.length) {
+    return `<span style="font-size:11px;color:var(--muted)">${
+      _repQuery ? _T('No market matches that name.', 'Ningún mercado coincide.')
+                : _T('No trades to replay yet.', 'Aún no hay operaciones.')}</span>`
+  }
+  return coins.map(c => `<button onclick="window.__repSetCoin('${esc(c)}')" style="flex-shrink:0;padding:5px 11px;border-radius:999px;border:1px solid ${
+    c === _repCoin ? 'var(--accent)' : 'var(--border2)'};background:${c === _repCoin ? 'var(--accent)' : 'transparent'};color:${
+    c === _repCoin ? '#000' : 'var(--fg-2)'};font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap">${esc(_ocCoinLabel(c))}</button>`).join('')
+}
+
+function _repSpeedChips() {
+  // The highlight used to be written only by the full render, so picking a speed changed
+  // the playback and left the old chip lit -- the control disagreed with the player.
+  return [0.25, 0.5, 1, 2, 4, 8].map(sp => `<button onclick="window.__repSpeed(${sp})" style="padding:4px 9px;border-radius:8px;border:1px solid ${
+    _repSpeed === sp ? 'var(--accent)' : 'var(--border2)'};background:transparent;color:${
+    _repSpeed === sp ? 'var(--accent)' : 'var(--fg-2)'};font-size:11px;font-weight:700;cursor:pointer">${sp}x</button>`).join('')
+}
+
+function _repStyleChips() {
+  if (_repMode !== 'market') return ''
+  return ['candle', 'line'].map(v => `<button onclick="window.__repStyle('${v}')" style="padding:4px 11px;border-radius:8px;border:1px solid ${
+    _repStyle === v ? 'var(--accent)' : 'var(--border2)'};background:transparent;color:${
+    _repStyle === v ? 'var(--accent)' : 'var(--fg-2)'};font-size:11px;font-weight:700;cursor:pointer">${
+    v === 'candle' ? _T('Candles', 'Velas') : _T('Line', 'Línea')}</button>`).join('')
+}
+
+/** Repaint the controls whose highlight depends on state the stage does not own. */
+function _repChrome() {
+  const sp = document.getElementById('repSpeeds')
+  if (sp) sp.innerHTML = _repSpeedChips()
+  const st = document.getElementById('repStyles')
+  if (st) st.innerHTML = _repStyleChips()
 }
 
 function _repRender(el) {
@@ -14737,11 +14844,21 @@ function _repRender(el) {
       </div>
 
       ${_repMode === 'market' ? `
-        <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px">${
-          coins.length ? coins.map(c => chip(c, c === _repCoin, '__repSetCoin', _ocCoinLabel(c))).join('')
-            : `<span style="font-size:11px;color:var(--muted)">${_T('No trades to replay yet.', 'Aún no hay operaciones.')}</span>`}</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+          <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${_T('Market', 'Mercado')}</span>
+          <span style="flex:1"></span>
+          <input id="repSearch" type="search" value="${esc(_repQuery)}" placeholder="${_T('Search your markets', 'Busca tus mercados')}"
+            oninput="window.__repSearch(this.value)" autocomplete="off" autocorrect="off" spellcheck="false"
+            style="width:150px;max-width:52%;padding:5px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:11.5px">
+        </div>
+        <div id="repCoinRow" data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px">${_repCoinChips()}</div>
         <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${
-          _PULSE_TF.map(x => chip(x[0], x[0] === _repTf, '__repSetTf')).join('')}</div>` : ''}
+          _PULSE_TF.map(x => chip(x[0], x[0] === _repTf, '__repSetTf')).join('')}</div>`
+      : `<div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${
+          [['value', _T('Equity', 'Valor')], ['pnl', _T('Acc. PnL', 'PnL acum.')], ['realized', _T('Realized', 'Realizado')]]
+            .map(([k, lbl]) => `<button onclick="window.__repSetSeries('${k}')" style="flex-shrink:0;padding:5px 11px;border-radius:999px;border:1px solid ${
+              _repSeries === k ? 'var(--accent)' : 'var(--border2)'};background:${_repSeries === k ? 'var(--accent)' : 'transparent'};color:${
+              _repSeries === k ? '#000' : 'var(--fg-2)'};font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap">${lbl}</button>`).join('')}</div>`}
 
       <div id="repStage" style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;min-height:300px">${_repStageHtml()}</div>
 
@@ -14753,13 +14870,12 @@ function _repRender(el) {
         <button onclick="window.__repRestart()" aria-label="${_T('Restart', 'Reiniciar')}"
           style="width:36px;height:36px;border-radius:9px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:14px;cursor:pointer;flex-shrink:0">↺</button>
       </div>
-      <div style="display:flex;gap:6px;margin-top:9px">${
-        [1, 2, 4, 8].map(s => `<button onclick="window.__repSpeed(${s})" style="padding:4px 11px;border-radius:8px;border:1px solid ${
-          _repSpeed === s ? 'var(--accent)' : 'var(--border2)'};background:transparent;color:${
-          _repSpeed === s ? 'var(--accent)' : 'var(--fg-2)'};font-size:11px;font-weight:700;cursor:pointer">${s}x</button>`).join('')}
-        <span style="flex:1"></span>
-        <span id="repPos" style="font-size:10.5px;color:var(--muted);align-self:center">${n ? `${_repFrame + 1}/${n}` : ''}</span>
+      <div data-dragscroll style="display:flex;align-items:center;gap:6px;margin-top:9px;overflow-x:auto">
+        <span id="repSpeeds" style="display:flex;gap:6px;flex-shrink:0">${_repSpeedChips()}</span>
+        <span style="flex:1;min-width:6px"></span>
+        <span id="repPos" style="font-size:10.5px;color:var(--muted);align-self:center;flex-shrink:0">${n ? `${_repFrame + 1}/${n}` : ''}</span>
       </div>
+      <div id="repStyles" style="display:flex;gap:6px;margin-top:8px">${_repStyleChips()}</div>
     </div>`
 }
 
@@ -16610,7 +16726,19 @@ function _mobVRenderContent(tick = false) {
     return
   }
   if (_mobVActiveTab === 'replay') {
+    // A redraw from elsewhere would replace the search box mid-word and take the keyboard
+    // with it, so put focus back where it was -- the same fix Signals needed.
+    const _a = document.activeElement
+    const _hadSearch = _a && _a.id === 'repSearch'
+    const _caret = _hadSearch && typeof _a.selectionStart === 'number' ? _a.selectionStart : null
     _repRender(el)
+    if (_hadSearch) {
+      const back = document.getElementById('repSearch')
+      if (back) {
+        back.focus({ preventScroll: true })
+        if (_caret != null && back.setSelectionRange) { try { back.setSelectionRange(_caret, _caret) } catch {} }
+      }
+    }
     return
   }
   // Any other mobile view means the player is off screen; its clock must not outlive it.

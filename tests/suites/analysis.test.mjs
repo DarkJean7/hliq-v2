@@ -113,7 +113,8 @@ t('the chip strip can actually be dragged',
 // Compare moved INTO the chip strip: it is the "add another" affordance sitting right
 // after the existing chips, and it stays visible when a chart has no comparisons yet.
 t('and Compare sits inside that strip, so it is always reachable',
-  cli.slice(cli.indexOf('data-dragscroll style="display:flex;align-items:center')).slice(0, 800).includes('__anaCompare'))
+  cli.slice(cli.indexOf('<div data-dragscroll style="display:flex;align-items:center;gap:5px;padding:0 11px 7px;overflow-x:auto">'))
+     .slice(0, 800).includes('__anaCompare'))
 
 console.log('\n-- the picker --')
 t('search goes through our own proxy', cli.includes("fetch(`/tvsearch?q=${encodeURIComponent(q)}"))

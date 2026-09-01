@@ -137,7 +137,7 @@ const path = (pts, px, py) => {
 export function signalChartSvg({
   main, cmp = null, mainLabel = '', cmpLabel = '', indicator = null, vals = [],
   height = 132, subHeight = 46, fmtPrice = (v) => String(v),
-  from = 0, to = null, markers = null,
+  from = 0, to = null, markers = null, candles = null, grid = false,
 } = {}) {
   const W = 320, PAD = 4
   const full = (main ?? []).filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
@@ -173,9 +173,15 @@ export function signalChartSvg({
     ...o, pts: clean.map(([t], i) => [t, o.vals[lo + i] == null ? null : toY(o.vals[lo + i])]),
   }))
 
+  // Candles are aligned to `main` by index, so they take the same cut. Drawing them means
+  // the range has to cover the WICKS: fitting the axis to closes alone would clip the very
+  // highs and lows a candle chart exists to show.
+  const candleWin = (candles && !comparing) ? candles.slice(lo, hi) : null
+
   const xs = clean.map(p => +p[0])
   const x0 = Math.min(...xs), x1 = Math.max(...xs)
   const allY = [
+    ...(candleWin ?? []).flatMap(c => [+c.h, +c.l]).filter(Number.isFinite),
     ...series.map(p => p[1]),
     ...cmpSeries.map(p => p[1]),
     ...overlays.flatMap(o => o.pts.map(p => p[1])),
@@ -191,14 +197,40 @@ export function signalChartSvg({
   const mainColor = comparing ? '#22d3ee' : (up ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)')
 
   let body = ''
-  if (!comparing) {
+  if (grid) {
+    // Four faint rules. Enough to read a level off, few enough not to compete with the data.
+    for (let g = 1; g <= 4; g++) {
+      const yy = R(PAD + (height - PAD * 2) * (g / 5))
+      body += `<line x1="${PAD}" x2="${W - PAD}" y1="${yy}" y2="${yy}" stroke="var(--border,#222)" stroke-width="0.5" opacity="0.5"/>`
+    }
+  }
+  if (candleWin) {
+    const step = (W - PAD * 2) / Math.max(1, candleWin.length)
+    const bw = Math.max(1.2, Math.min(9, step * 0.66))
+    for (let i = 0; i < candleWin.length; i++) {
+      const c = candleWin[i]
+      const o = +c.o, hi2 = +c.h, lo2 = +c.l, cl = +c.c
+      if (![o, hi2, lo2, cl].every(Number.isFinite)) continue
+      const cx = R(px(+clean[i][0]))
+      const up2 = cl >= o
+      const col = up2 ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)'
+      const yO = py(o), yC = py(cl)
+      const top = R(Math.min(yO, yC))
+      // A doji has no body to draw; give it a line so the candle does not vanish.
+      const hgt = Math.max(1, Math.abs(yC - yO))
+      body += `<line x1="${cx}" x2="${cx}" y1="${R(py(hi2))}" y2="${R(py(lo2))}" stroke="${col}" stroke-width="1" opacity="0.85"/>` +
+        `<rect x="${R(cx - bw / 2)}" y="${top}" width="${R(bw)}" height="${R(hgt)}" fill="${col}"/>`
+    }
+  } else if (!comparing) {
     body += `<path d="${path(series, px, py)}L${R(px(x1))},${height}L${R(px(x0))},${height}Z" fill="${mainColor}" opacity="0.10"/>`
   }
   for (const o of overlays) {
     body += `<path d="${path(o.pts, px, py)}" fill="none" stroke="${o.color}" stroke-width="1.2" ${
       o.dash ? `stroke-dasharray="${o.dash}"` : ''} opacity="0.9" vector-effect="non-scaling-stroke"/>`
   }
-  body += `<path d="${path(series, px, py)}" fill="none" stroke="${mainColor}" stroke-width="1.9" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
+  if (!candleWin) {
+    body += `<path d="${path(series, px, py)}" fill="none" stroke="${mainColor}" stroke-width="1.9" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
+  }
   if (comparing) {
     body += `<path d="${path(cmpSeries, px, py)}" fill="none" stroke="#f472b6" stroke-width="1.7" stroke-linejoin="round" opacity="0.95" vector-effect="non-scaling-stroke"/>`
     // With two rebased lines, "flat since the left edge" is the reference the eye needs;
@@ -218,9 +250,11 @@ export function signalChartSvg({
       for (const p of series) { const d = Math.abs(+p[0] - t); if (d < bd) { bd = d; best = p } }
       return best
     }
+    const placed = []
     for (const mk of markers) {
       if (+mk.t < meta.t0 || +mk.t > meta.t1) continue
-      const yv = Number.isFinite(+mk.v) ? toY(+mk.v) : nearest(+mk.t)?.[1]
+      const hasV = mk.v != null && Number.isFinite(+mk.v)
+      const yv = hasV ? toY(+mk.v) : nearest(+mk.t)?.[1]
       if (yv == null || !Number.isFinite(yv)) continue
       const x = R(px(+mk.t)), y = R(py(yv))
       const c = mk.buy ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)'
@@ -229,6 +263,26 @@ export function signalChartSvg({
       const tri = mk.buy ? `${x},${y - 3} ${x - 4},${y + 4} ${x + 4},${y + 4}`
                          : `${x},${y + 3} ${x - 4},${y - 4} ${x + 4},${y - 4}`
       body += `<polygon points="${tri}" fill="${c}" stroke="var(--panel,#111)" stroke-width="0.6"/>`
+      // A label, when one is asked for and there is room. Buys read below the marker and
+      // sells above, matching the direction the triangle points, and the anchor flips near
+      // either edge so a label never runs off the chart.
+      if (mk.label) {
+        const near0 = x < 46, near1 = x > W - 46
+        const anchor = near0 ? 'start' : near1 ? 'end' : 'middle'
+        let ly = mk.buy ? Math.min(height - 3, y + 15) : Math.max(9, y - 11)
+        // Trades cluster, and four labels on the same few pixels is a smudge rather than
+        // four facts. Step a colliding one clear of the last, and give up rather than run
+        // off the chart -- an unreadable label is worse than none.
+        let tries = 0
+        while (tries < 4 && placed.some(q => Math.abs(q.x - x) < 52 && Math.abs(q.y - ly) < 9)) {
+          ly += mk.buy ? 10 : -10
+          tries++
+        }
+        if (ly > 8 && ly < height - 2 && tries < 4) {
+          placed.push({ x, y: ly })
+          body += `<text x="${x}" y="${R(ly)}" text-anchor="${anchor}" font-size="7.5" font-weight="700" fill="${c}" opacity="0.95">${mk.label}</text>`
+        }
+      }
     }
   }
 
