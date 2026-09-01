@@ -213,6 +213,7 @@ import {
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
 import { historyHtml, collapseFills } from './perfhistory.js'
+import { gzipToString, gunzipFromString } from './gzstore.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -7144,6 +7145,7 @@ function _hideAllAcctLoader() {
 // We keep the last successful fetch (in memory, and in localStorage so it survives
 // a reload) and paint from it instantly, then refresh in the background.
 const _ALLACCT_CACHE_KEY = 'hliq_allacct_v1'
+const _ALLACCT_CACHE_KEY_Z = 'hliq_allacct_v2z'  // same payload, gzipped + base64
 const _ALLACCT_MAX_BYTES = 4_000_000   // stay clear of the ~5MB localStorage quota
 
 // Only reuse a snapshot that covers exactly today's wallet set — otherwise the
@@ -7217,11 +7219,24 @@ function _allAcctMerge(fresh, prev) {
 // accounts" loader and a cold nine-wallet fan-out on EVERY entry rather than the first —
 // slower to use and enough extra requests to trip the rate limiter. Structure from cache,
 // figures from the server: the two concerns are separate and only the second needs guarding.
-function _allAcctCacheLoad() {
+async function _allAcctCacheLoad() {
+  const parse = (json) => {
+    try {
+      const o = JSON.parse(json || 'null')
+      return (o && Array.isArray(o.results) && o.results.length) ? o.results : null
+    } catch { return null }
+  }
   try {
-    const o = JSON.parse(localStorage.getItem(_ALLACCT_CACHE_KEY) || 'null')
-    if (!o || !Array.isArray(o.results) || !o.results.length) return null
-    return o.results
+    const z = localStorage.getItem(_ALLACCT_CACHE_KEY_Z)
+    if (z) {
+      const json = await gunzipFromString(z)
+      // A value we cannot decompress is damaged, not empty. Drop it so the next write
+      // has the room, and report a miss rather than an empty account list.
+      if (!json) { try { localStorage.removeItem(_ALLACCT_CACHE_KEY_Z) } catch {} ; return null }
+      return parse(json)
+    }
+    // Anything written before compression shipped.
+    return parse(localStorage.getItem(_ALLACCT_CACHE_KEY))
   } catch { return null }
 }
 
@@ -7239,12 +7254,26 @@ function _allAcctCacheWhy(reason, detail) {
   } catch {}
 }
 
-function _allAcctCachePersist() {
+async function _allAcctCachePersist() {
   if (Date.now() - _allAcctLastPersist < 60_000) return   // don't re-serialise every tick
   try {
     const json = JSON.stringify({ ts: Date.now(), results: _allAcctLastResults })
-    if (json.length > _ALLACCT_MAX_BYTES) {               // too big to store
-      _allAcctCacheWhy('too-big', `${(json.length / 1e6).toFixed(2)}MB over ${_ALLACCT_MAX_BYTES / 1e6}MB`)
+    // Nine wallets serialise to ~4.3MB of very repetitive JSON, which did not fit and so
+    // was silently dropped -- every cold entry then paid for the blocking loader and a
+    // fresh nine-wallet fan-out. Gzipped it is roughly a twentieth of that. Compressing
+    // rather than trimming is deliberate: a trimmed row would have history that is absent
+    // rather than empty, and this app has already shipped that bug three times.
+    const z = await gzipToString(json)
+    if (z && z.length <= _ALLACCT_MAX_BYTES) {
+      localStorage.setItem(_ALLACCT_CACHE_KEY_Z, z)
+      try { localStorage.removeItem(_ALLACCT_CACHE_KEY) } catch {}   // reclaim the old copy
+      _allAcctLastPersist = Date.now()
+      return
+    }
+    // No CompressionStream, or still too big even compressed.
+    if (json.length > _ALLACCT_MAX_BYTES) {
+      _allAcctCacheWhy(z ? 'too-big-compressed' : 'too-big',
+        `${((z ? z.length : json.length) / 1e6).toFixed(2)}MB over ${_ALLACCT_MAX_BYTES / 1e6}MB`)
       return
     }
     localStorage.setItem(_ALLACCT_CACHE_KEY, json)
@@ -7302,7 +7331,7 @@ async function loadAllAccountsDashboard() {
   setMultiAcctStrict(true)   // any unrouted signed action now throws instead of mis-signing
 
   if (!_allAcctCovers(_allAcctLastResults, entries)) {
-    const cached = _allAcctCacheLoad()
+    const cached = await _allAcctCacheLoad()
     _allAcctLastResults = _allAcctCovers(cached, entries) ? cached : []
   }
 

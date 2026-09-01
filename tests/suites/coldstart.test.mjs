@@ -18,16 +18,23 @@ console.log(String.fromCharCode(10) + '-- the cache is kept, whatever its age --
 // $9,999 equity and +$7,777 Net PnL, both figures stay dashed WITH or WITHOUT the gate.
 // What the gate did do was throw the cache away, forcing a full-screen loader and a cold
 // nine-wallet fan-out on every entry - measured 81 HL calls against 11 once removed.
-const load = new Function('raw', `
+// Built as an AsyncFunction: the loader decompresses, so its body contains `await` and
+// plain `new Function` will not parse it. The stubs give it a store holding only the old
+// uncompressed key, which is also the migration path for anyone whose cache predates
+// compression -- so this exercises that fallback as well as the age question.
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+const load = new AsyncFunction('raw', `
   const _ALLACCT_CACHE_KEY = 'k'
-  const localStorage = { getItem: () => raw }
+  const _ALLACCT_CACHE_KEY_Z = 'kz'
+  const localStorage = { getItem: (k) => k === 'k' ? raw : null, removeItem: () => {} }
+  const gunzipFromString = async () => null
   ${grab(cli, 'function _allAcctCacheLoad()').replace('function _allAcctCacheLoad() {', '').slice(0, -1)}
 `)
 const mk = (ts) => JSON.stringify({ ts, results: [{ addr: '0xa', accountValue: 9999 }] })
-t('a three-hour-old snapshot is still used for structure', load(mk(Date.now() - 3 * 3600e3))?.length === 1)
-t('so re-entry paints from it instead of showing the loader', load(mk(Date.now()))?.length === 1)
-t('an empty result set is still refused', load(JSON.stringify({ ts: Date.now(), results: [] })) === null)
-t('junk does not throw', load('not json') === null && load(null) === null)
+t('a three-hour-old snapshot is still used for structure', (await load(mk(Date.now() - 3 * 3600e3)))?.length === 1)
+t('so re-entry paints from it instead of showing the loader', (await load(mk(Date.now())))?.length === 1)
+t('an empty result set is still refused', (await load(JSON.stringify({ ts: Date.now(), results: [] }))) === null)
+t('junk does not throw', (await load('not json')) === null && (await load(null)) === null)
 t('the age gate is gone', !cli.includes('_ALLACCT_CACHE_MAX_AGE_MS'))
 t('and why it was wrong is recorded rather than just deleted',
   cli.includes('Tested directly, it was not') && cli.includes('Structure from cache'))
