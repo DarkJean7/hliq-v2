@@ -75,6 +75,12 @@ t('it is reached from the portfolio chart, beside Markers and Advanced',
   cli.includes('window.__openReplay()') && cli.includes('▶ Replay'))
 t('on both shells, from one opener', cli.includes('window.__openReplay = function()') &&
   cli.includes("if (_isMobView()) { window.__mobMoreTab('replay'); return }"))
+// The button sits on the portfolio chart, so pressing it means "replay THIS". A saved
+// mode of 'market' was winning over that and landing people on a market picker.
+t('the button opens on the account whatever was last chosen',
+  cli.slice(cli.indexOf('window.__openReplay = function()')).slice(0, 200).includes("_repMode = 'account'"))
+t('and rewinds, so it starts at the beginning',
+  cli.slice(cli.indexOf('window.__openReplay = function()')).slice(0, 200).includes('_repReset()'))
 t('and is no longer a More-list destination', !htm.includes("window.__mobMoreTab('replay')"))
 t('but the view itself is still a full page', /_MOBV_FULLPAGE = new Set\(\[[^\]]*'replay'/.test(cli))
 t('desktop has the tab and a pane', htm.includes('id="tab-replay"') && htm.includes('id="deskReplay"') &&

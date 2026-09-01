@@ -15025,6 +15025,9 @@ window.__replayBack = function() {
 }
 
 window.__openReplay = function() {
+  _repMode = 'account'
+  _repSave()
+  _repReset()
   if (_isMobView()) { window.__mobMoreTab('replay'); return }
   switchTab('replay', null)
 }
