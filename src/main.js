@@ -14875,7 +14875,13 @@ function _repStageHtml(big = false) {
     from: Math.max(0, i + 1 - span), to: i + 1,
     mainLabel: _repMode === 'account' ? _T('Account', 'Cuenta') : esc(_ocCoinLabel(d.coin)),
     fmtPrice: (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v)),
-    height: big ? 330 : 168,
+    height: big ? 330 : 190,
+    axis: true,
+    dotMarkers: true,
+    fmtAxis: (v) => (v < 0 ? '-$' : '$') + fmtCompact(Math.abs(v)),
+    // Where the open position was entered. Every price on the chart is being judged
+    // against it, and reading that off the candles is guesswork.
+    entry: _repMode === 'market' && s.szi !== 0 ? s.entry : null,
     // Only the last few are labelled. Every trade labelled is a wall of text over the
     // candles, and the ones worth naming are the ones that just happened.
     //
@@ -14924,6 +14930,20 @@ function _repStageHtml(big = false) {
           label: _repSeries === 'pnl' ? _T('Acc. PnL so far', 'PnL acum. hasta aquí')
                                       : _T('Realized so far', 'Realizado hasta aquí') }
 
+  // What you are looking at, in one line: which market, what kind of bars, how much of it,
+  // and the position if there is one. It answers the questions a reader asks before they
+  // can read anything else off the chart.
+  const spanMs = (d.points[d.points.length - 1]?.[0] ?? t) - (d.points[0]?.[0] ?? t)
+  const spanTxt = spanMs >= 86400e3 ? Math.round(spanMs / 86400e3) + 'D SPAN'
+                : Math.max(1, Math.round(spanMs / 3600e3)) + 'H SPAN'
+  const metaBits = _repMode === 'account'
+    ? [esc(_repSeries === 'value' ? _T('EQUITY', 'VALOR') : _repSeries === 'pnl' ? _T('ACC. PNL', 'PNL ACUM.') : _T('REALIZED', 'REALIZADO')),
+       spanTxt, `${s.trades} ${_T('TRADES', 'OPS')}`]
+    : [esc(String(_ocCoinLabel(d.coin) ?? '')), _T('PERP', 'PERP'),
+       esc(_repTf.toUpperCase()) + ' ' + _T('BARS', 'VELAS'), spanTxt,
+       s.szi !== 0 ? `${s.szi > 0 ? _T('LONG', 'LARGO') : _T('SHORT', 'CORTO')} ${fmtSize(Math.abs(s.szi))}` : _T('FLAT', 'SIN POSICIÓN'),
+       s.szi !== 0 ? `${_T('ENTRY', 'ENTRADA')} $${fmtPrice(s.entry)}` : ''].filter(Boolean)
+
   const pos = _repMode === 'market' && s.szi !== 0
     ? `${s.szi > 0 ? _T('Long', 'Largo') : _T('Short', 'Corto')} ${fmtSize(Math.abs(s.szi))} @ $${fmtPrice(s.entry)}`
     : _T('Flat', 'Sin posición')
@@ -14945,14 +14965,9 @@ function _repStageHtml(big = false) {
         <div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">${head.label}</div>
       </div>
     </div>
-    <div style="display:flex;align-items:baseline;font-size:9.5px;color:var(--muted);margin-bottom:2px">
-      <span>${esc(chart.hi)}</span><span style="flex:1"></span><span>${esc(when)}</span>
-    </div>
+    <div style="font-family:var(--font-mono);font-size:9px;color:var(--muted);letter-spacing:.04em;margin:2px 0 6px;text-transform:uppercase;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${
+      metaBits.join(' <span style="opacity:.45">·</span> ')}</div>
     ${chart.svg}
-    <div style="display:flex;align-items:center;font-size:9.5px;color:var(--muted);margin-top:2px">
-      <span>${esc(chart.lo)}</span><span style="flex:1"></span>
-      <span>${_repMode === 'account' ? money(mark) : '$' + fmtPrice(mark)}</span>
-    </div>
     <div style="display:flex;flex-wrap:wrap;gap:9px 12px;margin-top:10px;padding-top:9px;border-top:1px solid var(--border)">
       ${_repMode === 'market' ? stat(_T('Bought', 'Comprado'), tok(s.boughtSz), 'var(--green)', money(s.bought)) : ''}
       ${_repMode === 'market' ? stat(_T('Sold', 'Vendido'), tok(s.soldSz), 'var(--red)', money(s.sold)) : ''}
@@ -14968,7 +14983,7 @@ function _repStageHtml(big = false) {
       ${stat(_T('Profit factor', 'Factor'), s.profitFactor == null ? '—' : s.profitFactor.toFixed(2),
              s.profitFactor == null ? '' : s.profitFactor >= 1 ? 'var(--green)' : 'var(--red)')}
     </div>
-    ${_repMode === 'market' ? `<div style="font-size:10.5px;color:var(--fg-2);margin-top:7px">${esc(pos)}</div>` : ''}`
+    ${_repMode === 'market' && s.szi !== 0 ? `<div style="font-size:10.5px;color:var(--fg-2);margin-top:7px">${esc(pos)}</div>` : ''}`
 }
 
 /**

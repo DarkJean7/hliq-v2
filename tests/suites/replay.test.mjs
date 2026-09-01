@@ -129,7 +129,7 @@ t('and no longer states the notional, which was never the question',
   !cli.includes('$${fmtUSD(m.px * m.sz)}'))
 // Trades cluster; four labels on the same pixels is a smudge rather than four facts.
 t('colliding labels step clear of each other', chart.includes('placed.some(q => Math.abs(q.x - x) < 52'))
-t('and are dropped rather than run off the chart', chart.includes('if (ly > 8 && ly < height - 2 && tries < 4)'))
+t('and are dropped rather than run off the chart', chart.includes('if (ly > 8 && ly < plotH - 2 && tries < 4)'))
 // +null is 0, and 0 is finite -- which drew every equity marker along the bottom edge.
 t('a marker with no price sits on the line, not at zero', chart.includes('const hasV = mk.v != null && Number.isFinite(+mk.v)'))
 
@@ -280,6 +280,39 @@ t('it returns to the portfolio, where Replay is opened from',
   cli.includes("if (_isMobView()) { window.__mobMoreTab('portfolio'); return }"))
 t('and stops the player on the way out', cli.includes('window.__replayBack = function() {') &&
   cli.slice(cli.indexOf('window.__replayBack')).slice(0, 120).includes('_repLeave()'))
+
+console.log(String.fromCharCode(10) + '-- it reads like a chart --')
+// A price axis, dates, and the line every other price is judged against.
+t('the plot gives up a strip for each axis', chart.includes('const AX_W = axis ? 42 : 0') &&
+  chart.includes('const AX_H = axis ? 13 : 0'))
+t('and the scales use what is left', chart.includes('const plotH = height - AX_H') &&
+  chart.includes('(plotW - PAD * 2)'))
+t('five price ticks down the right', chart.includes('for (let g = 0; g <= 4; g++)'))
+// More would crowd a phone; fewer leaves the span unreadable, which is what the axis is for.
+t('three dates along the bottom', chart.includes("[[0, 'start'], [0.5, 'middle'], [1, 'end']]"))
+// toLocaleDateString with hour options prints the whole date AND the time.
+t('a short span shows times, not a full datetime', chart.includes('new Date(t).toLocaleTimeString(undefined, { hour:'))
+// "$78,240.00" does not fit a 42px gutter and spilled back over the candles.
+t('the axis can take a compact formatter', chart.includes('(fmtAxis ?? fmtPrice)') &&
+  cli.includes('fmtAxis:') && cli.includes('fmtCompact(Math.abs(v))'))
+
+console.log(String.fromCharCode(10) + '-- the entry line --')
+t('the open position gets a line and a tag', chart.includes("stroke=\"var(--orange,#f59e0b)\" stroke-width=\"0.9\" stroke-dasharray=\"3 3\""))
+t('drawn only when it is actually in view', chart.includes('if (ey >= y0 && ey <= y1)'))
+t('and never on a percent chart, where a price means nothing',
+  chart.includes('if (entry != null && Number.isFinite(+entry) && !comparing)'))
+t('the app passes the entry only while a position is open',
+  cli.includes("entry: _repMode === 'market' && s.szi !== 0 ? s.entry : null,"))
+
+console.log(String.fromCharCode(10) + '-- markers and the strip --')
+// A triangle points at a price from beside it, which becomes a hedge of arrows when trades
+// cluster; a dot sits on the price it happened at.
+t('trades are dots here', chart.includes('if (dotMarkers)') && cli.includes('dotMarkers: true,'))
+t('but Signals keeps its triangles', chart.includes('const tri = mk.buy ?'))
+t('a strip says what is on screen before you read it',
+  cli.includes('const metaBits = ') && cli.includes("_T('PERP', 'PERP')") && cli.includes("' SPAN'") === false)
+t('including the span, in whole days or hours', cli.includes("spanMs >= 86400e3 ? Math.round(spanMs / 86400e3) + 'D SPAN'"))
+t('and the position, when there is one', cli.includes("s.szi !== 0 ? `${s.szi > 0 ? _T('LONG', 'LARGO')"))
 
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
