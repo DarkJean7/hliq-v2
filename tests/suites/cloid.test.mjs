@@ -49,7 +49,17 @@ for (const f of files) {
 }
 
 console.log(String.fromCharCode(10) + '-- the type reaches the bot, and the id reaches the client --')
-t('server passes HLIQ_BOT when spawning', (srv.match(/HLIQ_BOT: type/g) || []).length === 2)
+// Two spawn sites, and they do NOT name the strategy the same way. startStrategy takes
+// `type` as a parameter; /api/plan reads it off the request body as `b.type`. A blanket
+// edit gave both the same text, so the plan handler referenced an identifier that does not
+// exist there -- it threw, the request died, and the browser said "Failed to fetch".
+// Nothing in a build or a lint catches that, which is why it is asserted here.
+t('the runner spawn names the strategy from its parameter',
+  srv.includes('HLIQ_BOT: type }'))
+t('the preview spawn names it from the request body', srv.includes('HLIQ_BOT: b.type'))
+t('and neither site uses a bare `type` where the body is the source',
+  !/path === '\/api\/plan'[\s\S]{0,3000}HLIQ_BOT: type/.test(srv))
+t('both spawns pass it', (srv.match(/HLIQ_BOT:/g) || []).length === 2)
 t('parseFills carries cloid through', fmt.includes('cloid:     f.cloid ?? null,'))
 t('and says absent means unknown', fmt.includes('absent means UNKNOWN here'))
 

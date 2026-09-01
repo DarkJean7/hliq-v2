@@ -1638,7 +1638,7 @@ const server = createServer(async (req, res) => {
 
     const argv = [script, ...(b.address ? ['--address', b.address] : []), ...(b.args ?? []), '--plan']
     const plan = await new Promise((resolve) => {
-      const proc = spawn('node', argv, { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey, HLIQ_BOT: type } })
+      const proc = spawn('node', argv, { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey, HLIQ_BOT: b.type } })
       let out = '', err = ''
       // A preview is something a person is waiting on, so it gets a short leash — and the
       // process is killed rather than left running if it overruns.
