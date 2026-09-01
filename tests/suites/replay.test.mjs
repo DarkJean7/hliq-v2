@@ -171,5 +171,42 @@ console.log(String.fromCharCode(10) + '-- the counter cannot exceed its own tota
 // counter reading one past the end.
 t('the displayed frame is clamped', cli.includes('`${Math.min(_repFrame + 1, n)}/${n}`'))
 
+console.log(String.fromCharCode(10) + '-- a null mark is not a price of zero --')
+// Reported: "PnL so far" read +$45,854 beside a realised figure of +$1,981. Account mode
+// passes mark = null precisely because an account VALUE cannot mark a position -- and
+// +null is 0, which is finite, so unrealised became szi * (0 - entry): the whole position
+// valued at nothing. On a short that is a large POSITIVE number.
+const openShort = walkFills([F(1, 'BUY', 2, 100, 0, 0.1), F(2, 'SELL', 5, 110, 20, 0.1)])
+const acct = summarise(openShort, 2, null)
+t('with no mark there is no unrealised', acct.unrealized === 0)
+t('so net is exactly realised', Math.abs(acct.net - acct.realized) < 1e-9, [acct.net, acct.realized])
+t('and nothing is held at a price of nothing', acct.holding === 0)
+t('a real mark still marks', Math.abs(summarise(openShort, 2, 120).unrealized - (-3 * (120 - 110))) < 1e-9)
+t('and a genuine zero price is still honoured', summarise(openShort, 2, 0).unrealized !== 0)
+t('the check asks whether a mark was given', fs.readFileSync('src/replay.js', 'utf8').includes('const hasMark = mark != null && Number.isFinite(+mark)'))
+
+console.log(String.fromCharCode(10) + '-- volume, fees and funding, profit factor --')
+const full = walkFills([F(1, 'BUY', 1, 100), F(2, 'SELL', 1, 110, 10), F(3, 'BUY', 1, 100), F(4, 'SELL', 1, 95, -5)])
+const fs2 = summarise(full, 4, 95, [{ time: 2, usdc: -1.5 }, { time: 9, usdc: -99 }])
+t('volume is everything moved, either way', fs2.volume === 405, fs2.volume)
+t('funding counts only what has been paid by now', fs2.funding === -1.5, fs2.funding)
+// Funding is charged on a position over time, so it cannot come from the fills at all.
+t('funding not loaded is unknown, not zero', summarise(full, 4, 95).funding === null)
+t('and the view dashes it rather than printing $0.00', cli.includes("_T('funding —', 'financ. —')"))
+t('the app passes null when it has not loaded', cli.includes('Array.isArray(state.funding) ? state.funding : null'))
+t('profit factor is gross won over gross lost', fs2.profitFactor === 2, fs2.profitFactor)
+// A ratio with nothing underneath is not infinity, it is a question that cannot be answered.
+t('nothing lost yet is unknown, not infinity', summarise(full, 2, 110).profitFactor === null)
+t('it is netted of fees, like every other figure here',
+  summarise(walkFills([F(1, 'BUY', 1, 100), F(2, 'SELL', 1, 110, 10, 20)]), 2, 110).profitFactor === 0)
+t('all three are on screen', ['Volume', 'Fees', 'Profit factor'].every(k => cli.includes(`_T('${k}'`)))
+
+console.log(String.fromCharCode(10) + '-- the expand control has its own space --')
+// Floating it in the top-right corner put it on top of the PnL, which is the number the
+// screen exists to show.
+t('it is inline in the header, not floating over it', !cli.includes('position:absolute;top:8px;right:8px') &&
+  cli.includes("${big ? '' : `<button onclick=\"window.__repExpand(true)\""))
+t('and is hidden once the chart is already open', cli.includes("${big ? '' :"))
+
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

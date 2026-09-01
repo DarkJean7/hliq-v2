@@ -14607,7 +14607,9 @@ function _repBuild() {
     const points = (hist ?? []).map(([t, v]) => [+t, parseFloat(v)])
       .filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]))
     const steps = walkFills(state.fills ?? [])
-    return { points, steps, candles: null, coin: null }
+    // null, not [], when it has not loaded: a funding figure of $0.00 for an account
+    // that pays funding every hour is a wrong answer, and a dash is the right one.
+    return { points, steps, candles: null, coin: null, funding: Array.isArray(state.funding) ? state.funding : null }
   }
   const coin = _repCoin
   if (!coin) return { points: [], steps: [], coin: null }
@@ -14622,7 +14624,10 @@ function _repBuild() {
     : null
   const candles = cut ? cut.map(k => ({ t: +k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c })) : null
   const steps = walkFills((state.fills ?? []).filter(f => f.coin === coin))
-  return { points, steps, candles, coin }
+  const funding = Array.isArray(state.funding)
+    ? state.funding.filter(f => (f.coin ?? '').toUpperCase() === String(coin).toUpperCase())
+    : null
+  return { points, steps, candles, coin, funding }
 }
 
 function _repStop() {
@@ -14765,7 +14770,7 @@ function _repStageHtml(big = false) {
   // Unrealised only means something against a price. The account series is a value, not a
   // price, so it is never used to mark a position -- that would multiply a position size
   // by an account balance and print the result as money.
-  const s = summarise(d.steps, t, _repMode === 'market' ? mark : null)
+  const s = summarise(d.steps, t, _repMode === 'market' ? mark : null, d.funding ?? null)
   const marks = markersUpto(d.steps, t)
 
   const money = (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v))
@@ -14828,6 +14833,9 @@ function _repStageHtml(big = false) {
           _repMode === 'account' ? _T('My account', 'Mi cuenta') : esc(_ocCoinLabel(d.coin))}</div>
       </div>
       <div style="flex:1"></div>
+      ${big ? '' : `<button onclick="window.__repExpand(true)" aria-label="${_T('Open chart', 'Abrir grafico')}"
+        title="${_T('Open chart', 'Abrir grafico')}"
+        style="align-self:center;width:28px;height:28px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg-2);font-size:13px;line-height:1;cursor:pointer;flex-shrink:0">&#10530;</button>`}
       <div style="text-align:right">
         <div style="font-size:21px;font-weight:800;line-height:1.05;font-family:var(--font-mono);color:${tone(s.net)}">${signed(s.net)}</div>
         <div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">${_T('PnL so far', 'PnL hasta aquí')}</div>
@@ -14849,6 +14857,12 @@ function _repStageHtml(big = false) {
       ${_repMode === 'market' ? stat(_T('Holding', 'En posición'), money(s.holding)) : ''}
       ${stat(_T('Trades', 'Operaciones'), String(s.trades))}
       ${stat(_T('Win rate', 'Aciertos'), s.winRate == null ? '—' : s.winRate.toFixed(0) + '%')}
+      ${stat(_T('Volume', 'Volumen'), money(s.volume))}
+      ${stat(_T('Fees', 'Comisiones'), s.fees ? '-' + money(s.fees) : money(0), s.fees ? 'var(--red)' : '',
+             s.funding == null ? _T('funding —', 'financ. —')
+               : `${_T('funding', 'financ.')} ${s.funding >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(s.funding))}`)}
+      ${stat(_T('Profit factor', 'Factor'), s.profitFactor == null ? '—' : s.profitFactor.toFixed(2),
+             s.profitFactor == null ? '' : s.profitFactor >= 1 ? 'var(--green)' : 'var(--red)')}
     </div>
     ${_repMode === 'market' ? `<div style="font-size:10.5px;color:var(--fg-2);margin-top:7px">${esc(pos)}</div>` : ''}`
 }
@@ -14935,12 +14949,7 @@ function _repRender(el) {
               _repSeries === k ? 'var(--accent)' : 'var(--border2)'};background:${_repSeries === k ? 'var(--accent)' : 'transparent'};color:${
               _repSeries === k ? '#000' : 'var(--fg-2)'};font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap">${lbl}</button>`).join('')}</div>`}
 
-      <div style="position:relative">
-        <div id="repStage" style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;min-height:300px">${_repStageHtml()}</div>
-        <button onclick="window.__repExpand(true)" aria-label="${_T('Open chart', 'Abrir gráfico')}"
-          title="${_T('Open chart', 'Abrir gráfico')}"
-          style="position:absolute;top:8px;right:8px;width:28px;height:28px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg-2);font-size:13px;line-height:1;cursor:pointer">⤢</button>
-      </div>
+      <div id="repStage" style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;min-height:300px">${_repStageHtml()}</div>
 
       <div style="display:flex;align-items:center;gap:9px;margin-top:11px">
         <button id="repPlayBtn" onclick="window.__repPlay()" aria-label="${_T('Play or pause', 'Reproducir o pausar')}"

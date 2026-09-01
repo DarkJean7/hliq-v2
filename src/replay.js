@@ -79,7 +79,8 @@ export function stateAt(steps, t, mark = null) {
   }
   if (found < 0) return base
   const s = steps[found]
-  const unreal = (s.szi !== 0 && Number.isFinite(+mark)) ? s.szi * (+mark - s.entry) : 0
+  const hasMark = mark != null && Number.isFinite(+mark)
+  const unreal = (s.szi !== 0 && hasMark) ? s.szi * (+mark - s.entry) : 0
   return { ...base, ...s, unrealized: unreal, last: s }
 }
 
@@ -112,7 +113,7 @@ export function frameTime(points, i) {
  * A summary of the whole replay, for the panel under the player. Everything here is
  * "so far", never the final total.
  */
-export function summarise(steps, t, mark) {
+export function summarise(steps, t, mark, funding = null) {
   const s = stateAt(steps, t, mark)
   const seen = (steps ?? []).filter(x => x.time <= t)
   const closes = seen.filter(x => x.closedPnl !== 0)
@@ -135,8 +136,25 @@ export function summarise(steps, t, mark) {
     sold,
     boughtSz,
     soldSz,
+    // Turnover: everything moved, in either direction. It is the size of the activity, not
+    // its result, and a big number here beside a small realised one is the useful thing to
+    // see -- it says the account worked hard for very little.
+    volume: bought + sold,
+    // Funding is paid on a position over time, not on an order, so it cannot come from the
+    // fills. Null when none was passed: not knowing is not the same as none, and a dash is
+    // the honest rendering of the first.
+    funding: funding == null ? null
+      : funding.reduce((a, f) => a + ((+f.time <= t) ? (+(f.usdc ?? 0) || 0) : 0), 0),
+    // Gross won over gross lost. Above 1 means the winners paid for the losers. Null when
+    // nothing has lost yet -- a ratio with nothing underneath is not infinity, it is a
+    // question that cannot be answered yet.
+    profitFactor: (() => {
+      let won = 0, lost = 0
+      for (const x of closes) { const v = x.closedPnl - x.fee; if (v > 0) won += v; else lost -= v }
+      return lost > 0 ? won / lost : null
+    })(),
     // What the open position is worth at the price on screen. Zero when flat, and null
     // would be wrong here -- flat is a known state, not an unknown one.
-    holding: (s.szi !== 0 && Number.isFinite(+mark)) ? Math.abs(s.szi) * +mark : 0,
+    holding: (s.szi !== 0 && mark != null && Number.isFinite(+mark)) ? Math.abs(s.szi) * +mark : 0,
   }
 }
