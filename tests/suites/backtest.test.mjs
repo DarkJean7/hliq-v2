@@ -111,5 +111,41 @@ t('the whole form is read at once, so a run cannot mix old and new values',
   cli.includes('function _simCollect()'))
 t('settings survive a reload', cli.includes("localStorage.setItem(SIM_KEY"))
 
+console.log(String.fromCharCode(10) + '-- a result cannot pretend to be current --')
+// Reported as "I change the direction and all three give the same output". All three give
+// DIFFERENT outputs; what was on screen was the previous run, with nothing saying so.
+t('touching a box marks the result stale', cli.includes('window.__simTouch = function()'))
+t('every box reports being touched',
+  (cli.match(/oninput="window\.__simTouch\(\)"/g) || []).length >= 3 &&
+  cli.includes('onchange="window.__simTouch()"'))
+t('the stale result is dimmed and labelled', cli.includes("res.style.opacity = '0.45'") &&
+  cli.includes("_T('Settings changed since this run."))
+t('running clears it', cli.includes('_simStale = false'))
+// A panel that does not say what it ran is indistinguishable from one ignoring the form.
+t('the result states the settings that produced it', cli.includes('const usedBits = [') &&
+  cli.includes("_T('long only', 'solo largos')"))
+t('and only the notice is repainted, so a keystroke is not swallowed',
+  !/window\.__simTouch = function\(\)[\s\S]{0,300}_simRender\(/.test(cli))
+
+// The engine was never the problem, but assert it anyway so it stays that way.
+const dirRows = (() => {
+  const out = []; let px = 100, t0 = Date.now() - 900 * 3600e3
+  for (let i = 0; i < 900; i++) {
+    const big = i % 40 === 0 && i > 100
+    const d = (i / 40) % 2 < 1 ? 1 : -1
+    const o = px, c = px + (big ? 2.4 * d : Math.sin(i / 5) * 0.15)
+    out.push({ t: t0 + i * 3600e3, o, h: Math.max(o, c) + (big ? 0.5 : 0.08), l: Math.min(o, c) - (big ? 0.5 : 0.08), c })
+    px = c
+  }
+  return out
+})()
+const three = ['both', 'long', 'short'].map(d => runBacktest(dirRows, { direction: d }))
+t('the three directions really do differ',
+  new Set(three.map(x => x.balance.toFixed(4))).size === 3, three.map(x => +x.balance.toFixed(2)))
+t('long-only takes only longs', three[1].trades.every(x => x.side === 'long'))
+t('short-only takes only shorts', three[2].trades.every(x => x.side === 'short'))
+t('both never takes more than the two halves',
+  three[0].tradesMade <= three[1].tradesMade + three[2].tradesMade)
+
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

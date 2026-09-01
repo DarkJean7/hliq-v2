@@ -15040,6 +15040,11 @@ let _simParams = { ...BT_DEFAULTS }
 let _simResult = null
 let _simBusy = false
 let _simError = null
+// True when a box has been touched since the run that produced what is on screen. Without
+// it, changing a setting and reading the numbers still displayed looks exactly like a
+// setting that does nothing -- which is how "all three directions give the same output"
+// happens with three correct results sitting one keystroke apart.
+let _simStale = false
 
 try {
   const s = JSON.parse(localStorage.getItem(SIM_KEY) || '{}')
@@ -15070,7 +15075,20 @@ function _simCollect() {
   _simSave()
 }
 
-window.__simSetIv = function(v) { _simIv = v; _simSave(); _simRender() }
+window.__simSetIv = function(v) { _simIv = v; _simSave(); _simStale = !!_simResult; _simRender() }
+
+/**
+ * A box changed. Only the staleness notice is repainted -- a full render would take the
+ * keyboard away mid-number, which is the other way a form fights its user.
+ */
+window.__simTouch = function() {
+  if (!_simResult || _simStale) return
+  _simStale = true
+  const el = document.getElementById('simStale')
+  if (el) el.style.display = ''
+  const res = document.getElementById('simResult')
+  if (res) res.style.opacity = '0.45'
+}
 
 window.__simReset = function() {
   _simParams = { ...BT_DEFAULTS }
@@ -15086,6 +15104,7 @@ window.__simRun = async function() {
   _simBusy = true
   _simError = null
   _simResult = null
+  _simStale = false
   _simRender()
   try {
     // Ask for the window the candle count implies, with room to spare -- Hyperliquid caps a
@@ -15114,7 +15133,7 @@ function _simFieldHtml(f) {
       <span style="font-size:11px;font-weight:700;color:var(--fg-2)">${esc(f.label)}</span>
       <span style="font-size:10px;color:var(--muted)">${esc(f.unit)}</span>
     </div>
-    <input id="sim_${f.key}" type="number" step="${f.step}" value="${v}"
+    <input id="sim_${f.key}" type="number" step="${f.step}" value="${v}" oninput="window.__simTouch()"
       style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">
     <div style="font-size:10px;color:var(--muted);margin-top:3px;line-height:1.35">${esc(f.hint)}</div>
   </label>`
@@ -15123,7 +15142,7 @@ function _simFieldHtml(f) {
 function _simChoiceHtml(c) {
   return `<label style="display:block">
     <div style="font-size:11px;font-weight:700;color:var(--fg-2)">${esc(c.label)}</div>
-    <select id="sim_${c.key}"
+    <select id="sim_${c.key}" onchange="window.__simTouch()"
       style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:12.5px">
       ${c.options.map(([k, lbl]) => `<option value="${k}"${_simParams[c.key] === k ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}
     </select>
@@ -15161,8 +15180,28 @@ function _simResultHtml() {
       : '',
   ].filter(Boolean)
 
+  // The settings that produced these numbers, stated on the result itself. A panel that
+  // does not say what it ran is indistinguishable from one that ignored the settings.
+  const dirLbl = { both: _T('both ways', 'ambos'), long: _T('long only', 'solo largos'), short: _T('short only', 'solo cortos') }[r.params.direction]
+  const usedBits = [
+    `${_T('cat', 'cat')} ≥${r.params.entryCategory}`,
+    dirLbl,
+    `${_T('TP', 'TP')} ${r.params.takeProfitPct}% / ${_T('SL', 'SL')} ${r.params.stopLossPct}%`,
+    `${_T('cooldown', 'espera')} ${r.params.cooldownCandles}`,
+    r.params.baselineLookback === 0 ? _T('whole-sample baseline', 'base total') : `${_T('baseline', 'base')} ${r.params.baselineLookback}`,
+    r.params.ambiguous === 'win' ? _T('ties → target', 'empates → objetivo') : _T('ties → stop', 'empates → stop'),
+  ]
+
   return `
-    <div style="font-size:11px;font-weight:800;color:var(--fg-2);text-transform:uppercase;letter-spacing:.08em;margin:18px 0 8px">${_T('Result', 'Resultado')}</div>
+    <div style="display:flex;align-items:baseline;gap:8px;margin:18px 0 8px">
+      <span style="font-size:11px;font-weight:800;color:var(--fg-2);text-transform:uppercase;letter-spacing:.08em">${_T('Result', 'Resultado')}</span>
+    </div>
+    <div id="simStale" style="display:${_simStale ? '' : 'none'};margin-bottom:8px;border:1px solid var(--orange,#f59e0b);border-radius:9px;padding:8px 10px;font-size:11.5px;color:var(--orange,#f59e0b);line-height:1.4">${
+      _T('Settings changed since this run. Press Run backtest to see what they do.',
+         'Los ajustes cambiaron desde esta ejecución. Pulsa Ejecutar para verlos.')}</div>
+    <div id="simResult" style="opacity:${_simStale ? '0.45' : '1'}">
+    <div style="font-family:var(--font-mono);font-size:10px;color:var(--muted);margin-bottom:7px;line-height:1.5">${
+      usedBits.map(esc).join(' <span style="opacity:.45">·</span> ')}</div>
     <div style="border:1px solid var(--border2);border-radius:12px;padding:10px 12px;background:var(--panel)">
       ${row(_T('Market', 'Mercado'), `${esc(_simCoin)} · ${esc(_simIv)}`)}
       ${row(_T('Candles', 'Velas'), `${r.candles}`)}
@@ -15184,7 +15223,8 @@ function _simResultHtml() {
     </div>` : ''}
     ${r.tradesMade === 0 ? `<div style="margin-top:10px;font-size:11.5px;color:var(--muted);line-height:1.45">${
       _T('No candle reached that entry category. Lower it, or use a longer baseline window.',
-         'Ninguna vela alcanzó esa categoría. Baja el umbral o alarga la ventana base.')}</div>` : ''}`
+         'Ninguna vela alcanzó esa categoría. Baja el umbral o alarga la ventana base.')}</div>` : ''}
+    </div>`
 }
 
 function _simRender(el) {
@@ -15199,12 +15239,12 @@ function _simRender(el) {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <label style="display:block">
           <div style="font-size:11px;font-weight:700;color:var(--fg-2)">${_T('Market', 'Mercado')}</div>
-          <input id="sim_coin" type="text" value="${esc(_simCoin)}" autocapitalize="characters" spellcheck="false"
+          <input id="sim_coin" type="text" value="${esc(_simCoin)}" autocapitalize="characters" spellcheck="false" oninput="window.__simTouch()"
             style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">
         </label>
         <label style="display:block">
           <div style="font-size:11px;font-weight:700;color:var(--fg-2)">${_T('Candles', 'Velas')}</div>
-          <input id="sim_count" type="number" step="100" value="${_simCount}"
+          <input id="sim_count" type="number" step="100" value="${_simCount}" oninput="window.__simTouch()"
             style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">
         </label>
       </div>
