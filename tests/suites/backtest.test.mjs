@@ -4,7 +4,7 @@
 // than none, because it gets believed -- so most of what is asserted here is the ways this
 // refuses to flatter the result.
 import fs from 'fs'
-import { runBacktest, classify, normalise, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES }
+import { runBacktest, classify, normalise, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW }
   from '../../src/backtest.js'
 
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
@@ -146,6 +146,26 @@ t('long-only takes only longs', three[1].trades.every(x => x.side === 'long'))
 t('short-only takes only shorts', three[2].trades.every(x => x.side === 'short'))
 t('both never takes more than the two halves',
   three[0].tradesMade <= three[1].tradesMade + three[2].tradesMade)
+
+console.log(String.fromCharCode(10) + '-- every parameter explains itself --')
+t('each box has an explanation', BT_FIELDS.every(f => f.help && f.help.length > 80))
+t('so does each choice', BT_CHOICES.every(c => c.help && c.help.length > 80))
+// The text lives beside the parameter, so changing the model and changing its explanation
+// is one edit rather than two that can disagree.
+t('the copy sits with the definitions', bt.includes("key: 'winPct'") && bt.includes('NOT derived from the take profit'))
+t('there is an overview of the whole model', BT_OVERVIEW.length >= 5 &&
+  BT_OVERVIEW.every(([title, body]) => title && body.length > 60))
+// The trap that prompted this: the target decides IF you win, the gain decides HOW MUCH.
+t('the overview states that the price move does not size the result',
+  BT_OVERVIEW.some(([, body]) => body.includes('does NOT set the size')))
+t('and that a result is an upper bound', BT_OVERVIEW.some(([, body]) => body.includes('upper bound')))
+
+t('a ? opens each one', cli.includes('function _simQ(key)') && cli.includes("window.__simHelp('${key}')"))
+t('it toggles rather than re-rendering, so half-typed numbers survive',
+  cli.includes('window.__simHelp = function(key)') &&
+  !/window\.__simHelp = function\(key\)[\s\S]{0,400}_simRender\(/.test(cli))
+t('the overview has its own toggle', cli.includes('window.__simOverview = function()'))
+t('and every field renders one', cli.includes('${_simQ(f.key)}') && cli.includes('${_simQ(c.key)}'))
 
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

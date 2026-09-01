@@ -217,7 +217,7 @@ import { gzipToString, gunzipFromString } from './gzstore.js'
 import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
 import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
-import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES } from './backtest.js'
+import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -15075,6 +15075,34 @@ function _simCollect() {
   _simSave()
 }
 
+/**
+ * Show or hide one parameter's explanation.
+ *
+ * Toggles a class rather than re-rendering: the form holds half-typed numbers, and
+ * rebuilding it to open a help panel would throw them away and take the keyboard with them.
+ */
+window.__simHelp = function(key) {
+  const el = document.getElementById('simHelp_' + key)
+  const btn = document.getElementById('simQ_' + key)
+  if (!el) return
+  const open = el.style.display === 'none' || !el.style.display
+  el.style.display = open ? 'block' : 'none'
+  if (btn) {
+    btn.style.background = open ? 'var(--accent)' : 'transparent'
+    btn.style.color = open ? '#000' : 'var(--fg-3)'
+    btn.style.borderColor = open ? 'var(--accent)' : 'var(--border2)'
+  }
+}
+
+window.__simOverview = function() {
+  const el = document.getElementById('simOverview')
+  if (!el) return
+  const open = el.style.display === 'none' || !el.style.display
+  el.style.display = open ? 'block' : 'none'
+  const btn = document.getElementById('simOverviewBtn')
+  if (btn) btn.textContent = open ? _T('Hide', 'Ocultar') : _T('How this works', 'Cómo funciona')
+}
+
 window.__simSetIv = function(v) { _simIv = v; _simSave(); _simStale = !!_simResult; _simRender() }
 
 /**
@@ -15126,26 +15154,45 @@ window.__simRun = async function() {
   _simRender()
 }
 
+/** The little round "?" that opens an explanation. Same control everywhere. */
+function _simQ(key) {
+  return `<button id="simQ_${key}" type="button" onclick="window.__simHelp('${key}')"
+    aria-label="${_T('What is this?', '¿Qué es esto?')}" title="${_T('What is this?', '¿Qué es esto?')}"
+    style="width:16px;height:16px;flex-shrink:0;border-radius:50%;border:1px solid var(--border2);background:transparent;color:var(--fg-3);font-size:10px;font-weight:800;line-height:1;cursor:pointer;padding:0">?</button>`
+}
+
+function _simHelpHtml(key, text) {
+  return `<div id="simHelp_${key}" style="display:none;margin-top:6px;padding:8px 10px;border-radius:8px;background:var(--panel-2);border:1px solid var(--border2);font-size:11px;color:var(--fg-2);line-height:1.5">${esc(text)}</div>`
+}
+
 function _simFieldHtml(f) {
   const v = _simParams[f.key]
   return `<label style="display:block">
-    <div style="display:flex;align-items:baseline;gap:5px">
+    <div style="display:flex;align-items:center;gap:5px">
       <span style="font-size:11px;font-weight:700;color:var(--fg-2)">${esc(f.label)}</span>
       <span style="font-size:10px;color:var(--muted)">${esc(f.unit)}</span>
+      <span style="flex:1"></span>
+      ${_simQ(f.key)}
     </div>
     <input id="sim_${f.key}" type="number" step="${f.step}" value="${v}" oninput="window.__simTouch()"
       style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">
     <div style="font-size:10px;color:var(--muted);margin-top:3px;line-height:1.35">${esc(f.hint)}</div>
+    ${_simHelpHtml(f.key, f.help ?? '')}
   </label>`
 }
 
 function _simChoiceHtml(c) {
   return `<label style="display:block">
-    <div style="font-size:11px;font-weight:700;color:var(--fg-2)">${esc(c.label)}</div>
+    <div style="display:flex;align-items:center;gap:5px">
+      <span style="font-size:11px;font-weight:700;color:var(--fg-2)">${esc(c.label)}</span>
+      <span style="flex:1"></span>
+      ${_simQ(c.key)}
+    </div>
     <select id="sim_${c.key}" onchange="window.__simTouch()"
       style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:12.5px">
       ${c.options.map(([k, lbl]) => `<option value="${k}"${_simParams[c.key] === k ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}
     </select>
+    ${_simHelpHtml(c.key, c.help ?? '')}
   </label>`
 }
 
@@ -15232,9 +15279,22 @@ function _simRender(el) {
   if (!host) return
   host.innerHTML = `${_mobVFullHeader(_T('Trade Simulator', 'Simulador'))}
     <div style="padding:10px 14px 30px">
-      <div style="font-size:11.5px;color:var(--muted);line-height:1.45;margin-bottom:12px">${
-        _T('Replay a rule over past Hyperliquid candles. A candle is classified by how large its range is against a rolling baseline; a big enough one opens a trade in its own direction.',
-           'Prueba una regla sobre velas pasadas de Hyperliquid. Cada vela se clasifica por su rango frente a una base móvil.')}</div>
+      <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:10px">
+        <div style="font-size:11.5px;color:var(--muted);line-height:1.45;flex:1">${
+          _T('Replay a rule over past Hyperliquid candles. Nothing is placed and no money moves.',
+             'Prueba una regla sobre velas pasadas de Hyperliquid. No se coloca nada ni se mueve dinero.')}</div>
+        <button id="simOverviewBtn" type="button" onclick="window.__simOverview()"
+          style="flex-shrink:0;padding:5px 10px;border-radius:8px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:11px;font-weight:700;cursor:pointer">${
+          _T('How this works', 'Cómo funciona')}</button>
+      </div>
+      <div id="simOverview" style="display:none;margin-bottom:14px;border:1px solid var(--border2);border-radius:10px;padding:10px 12px;background:var(--panel)">
+        ${BT_OVERVIEW.map(([title, body]) => `<div style="margin-bottom:9px">
+          <div style="font-size:11px;font-weight:800;color:var(--fg-2);margin-bottom:2px">${esc(title)}</div>
+          <div style="font-size:11px;color:var(--muted);line-height:1.5">${esc(body)}</div>
+        </div>`).join('')}
+        <div style="font-size:10.5px;color:var(--fg-3);line-height:1.5;border-top:1px solid var(--border);padding-top:8px">${
+          _T('Every box below has a ? that explains what it does.', 'Cada casilla tiene un ? que la explica.')}</div>
+      </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <label style="display:block">

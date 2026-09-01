@@ -184,22 +184,67 @@ export function runBacktest(candles, params = {}) {
 // parameters the engine reads cannot drift apart: every box here is a key of BT_DEFAULTS.
 
 export const BT_FIELDS = [
-  { key: 'startBalance',    label: 'Starting balance', unit: '$',  step: '1',    hint: 'What the run begins with.' },
-  { key: 'entryCategory',   label: 'Entry category',   unit: '×',  step: '1',    hint: 'Trade when a candle is this many times the baseline range. 1-6.' },
-  { key: 'takeProfitPct',   label: 'Take profit',      unit: '%',  step: '0.05', hint: 'Percent of entry price, so it means the same on any market.' },
-  { key: 'stopLossPct',     label: 'Stop loss',        unit: '%',  step: '0.05', hint: 'Percent of entry price.' },
-  { key: 'winPct',          label: 'Gain per win',     unit: '%',  step: '0.5',  hint: 'Percent of the balance at the time. Compounds.' },
-  { key: 'lossPct',         label: 'Loss per stop',    unit: '%',  step: '0.5',  hint: 'Percent of the balance at the time.' },
-  { key: 'feePct',          label: 'Cost per trade',   unit: '%',  step: '0.005', hint: 'Round trip, percent of balance. Charged on every trade taken.' },
-  { key: 'cooldownCandles', label: 'Cooldown',         unit: 'candles', step: '1', hint: 'Candles to sit out after entering.' },
+  { key: 'startBalance', label: 'Starting balance', unit: '$', step: '1',
+    hint: 'What the run begins with.',
+    help: 'Every gain and loss is a percentage of the balance at the time, so this scales the money but not the shape of the result. Doubling it doubles the profit and leaves the win rate and the drawdown percentage exactly where they were.' },
+
+  { key: 'entryCategory', label: 'Entry category', unit: '×', step: '1',
+    hint: 'How unusual a candle must be. 1-6.',
+    help: 'Each candle is measured by its high-to-low range, divided by the average range of the candles before it. A category of 3 means "three times the recent normal". This is the trigger: any candle at or above it opens a trade, in the direction the candle closed. Higher is rarer and trades less; if a run reports no trades at all, this is usually why.' },
+
+  { key: 'takeProfitPct', label: 'Take profit', unit: '%', step: '0.05',
+    hint: 'How far price must move your way to win.',
+    help: 'Measured from the entry price, as a percentage. A long entered at $100 with 1% wins if any later candle trades at $101. Percent rather than a fixed amount so the same setting means the same thing on a $78,000 market and a $0.004 one.' },
+
+  { key: 'stopLossPct', label: 'Stop loss', unit: '%', step: '0.05',
+    hint: 'How far against you before it is a loss.',
+    help: 'The mirror of the target. Whichever level the price touches FIRST ends the trade, checked candle by candle after the entry. If neither is ever touched before the data runs out, the trade is reported as unresolved: not a win, not a loss.' },
+
+  { key: 'winPct', label: 'Gain per win', unit: '%', step: '0.5',
+    hint: 'What a win adds to the balance.',
+    help: 'IMPORTANT, and the thing most people miss here: this is NOT derived from the take profit. The target decides WHETHER you win; this decides HOW MUCH. They are separate numbers and it is on you to keep them consistent. The defaults are (1% target, 0.5% stop) against (4% gain, 2% loss) -- both two-to-one, so they agree. Set the target to 5% and leave this at 4% and the money stops describing the trade.' },
+
+  { key: 'lossPct', label: 'Loss per stop', unit: '%', step: '0.5',
+    hint: 'What a stop takes off the balance.',
+    help: 'Same idea as the gain, in reverse, and it assumes the stop filled exactly at its price. A candle that gapped straight through it would have cost more in reality, so a run with violent markets in it reads slightly kinder than the truth.' },
+
+  { key: 'feePct', label: 'Cost per trade', unit: '%', step: '0.005',
+    hint: 'Charged on every trade taken.',
+    help: 'A round-trip cost, as a percentage of the balance. Charged whether the trade won, lost, or never resolved -- the position was opened either way. Hyperliquid taker fees come to roughly 0.045% in and out together, which is the default.' },
+
+  { key: 'cooldownCandles', label: 'Cooldown', unit: 'candles', step: '1',
+    hint: 'Candles to sit out after entering.',
+    help: 'After a trade opens, this many candles are skipped before another can. Without it one violent stretch opens a cluster of near-identical trades and the result becomes a report on that single hour rather than on the rule.' },
+
   { key: 'baselineLookback', label: 'Baseline window', unit: 'candles', step: '10',
-    hint: 'Candles of PAST range the baseline averages. 0 uses the whole sample, which no trader could have known at the time.' },
+    hint: 'How much history counts as "normal".',
+    help: 'The number of PAST candles whose ranges are averaged to decide what a normal candle looks like. Shorter reacts faster and calls more candles unusual; longer is steadier. Setting it to 0 averages the whole sample INCLUDING candles from after each trade -- a number nobody could have had at the time, which flatters the result. It is offered only so you can measure how much that assumption was worth.' },
 ]
 
 export const BT_CHOICES = [
-  { key: 'direction', label: 'Direction', options: [['both', 'Both'], ['long', 'Long only'], ['short', 'Short only']] },
+  { key: 'direction', label: 'Direction', options: [['both', 'Both'], ['long', 'Long only'], ['short', 'Short only']],
+    help: 'Green candles open longs and red ones open shorts. Restricting to one side is how you find out whether a rule actually has an edge or was carried by a market that only went one way. Note that "both" usually takes FEWER trades than long-only and short-only added together: a trade on one side starts the cooldown, which can block one on the other.' },
+
   { key: 'ambiguous', label: 'If one candle hits both levels',
-    options: [['loss', 'Count the stop'], ['win', 'Count the target']] },
+    options: [['loss', 'Count the stop'], ['win', 'Count the target']],
+    help: 'Sometimes a single candle is wide enough to touch the target AND the stop. Its high, low, open and close cannot say which came first, so this is a guess either way. Counting the stop is the pessimistic reading and the default; counting the target is the optimistic one. On tight levels the difference is enormous -- the same rule can go from every trade winning to every trade losing.' },
+]
+
+/**
+ * How the whole thing works, for the panel above the form. Kept here beside the parameters
+ * it describes, so a change to the model and a change to the explanation are one edit.
+ */
+export const BT_OVERVIEW = [
+  ['What it does',
+   'It walks through past candles one at a time and applies a rule, opening and closing trades exactly as that rule would have. Nothing is placed and no money moves; it is a report on history.'],
+  ['When it opens a trade',
+   'Every candle is scored by how large its high-to-low range is against the recent average. A candle at or above the entry category opens a trade in the direction it closed -- green goes long, red goes short.'],
+  ['How a trade ends',
+   'A target and a stop are set as percentages of the entry price. Each later candle is checked in turn; whichever level is touched first ends the trade. A trade that touches neither before the data ends is reported as unresolved.'],
+  ['How the money is counted',
+   'A win adds a fixed percentage of the balance, a loss subtracts one, and every trade pays a cost. The size of the price move does NOT set the size of the result -- the target and stop decide whether you won, the gain and loss settings decide by how much.'],
+  ['What it cannot tell you',
+   'It assumes you were filled at the closing price, that the stop filled exactly at its level, and that nothing gapped past it. Real fills are worse than all three. Treat a result as an upper bound, not a forecast.'],
 ]
 
 /** Merge user input over the defaults, dropping anything that is not a number. */
