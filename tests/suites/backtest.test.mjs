@@ -4,7 +4,8 @@
 // than none, because it gets believed -- so most of what is asserted here is the ways this
 // refuses to flatter the result.
 import fs from 'fs'
-import { runBacktest, classify, normalise, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW }
+import { runBacktest, classify, normalise, coerceParams, signals,
+         BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW, BT_STRATEGIES, BT_MODULES }
   from '../../src/backtest.js'
 
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
@@ -70,8 +71,7 @@ t('every trade taken is counted', r.tradesMade === r.trades.length)
 t('won + lost + unresolved is every trade', r.won + r.lost + r.unresolved === r.tradesMade)
 // A trade the data never resolved is not a win, not a loss, and not swept away.
 t('unresolved trades are reported, not dropped', runBacktest(rows.slice(0, 320)).unresolved >= 0)
-t('costs are charged even on an unresolved trade', bt.includes('// position was opened, so it was paid for') ||
-  bt.includes('the position was opened, so it was paid for'))
+t('costs are charged even on an unresolved trade', bt.includes('the position was opened either way'))
 t('a cost makes the result worse', runBacktest(rows, { feePct: 0 }).balance > r.balance)
 t('drawdown is measured from the peak', r.maxDrawdown >= 0)
 t('with no resolved trade the win rate is unknown, not zero', (() => {
@@ -139,7 +139,7 @@ const dirRows = (() => {
   }
   return out
 })()
-const three = ['both', 'long', 'short'].map(d => runBacktest(dirRows, { direction: d }))
+const three = ['both', 'long', 'short'].map(d => runBacktest(dirRows, { useDirection: true, direction: d }))
 t('the three directions really do differ',
   new Set(three.map(x => x.balance.toFixed(4))).size === 3, three.map(x => +x.balance.toFixed(2)))
 t('long-only takes only longs', three[1].trades.every(x => x.side === 'long'))
@@ -157,7 +157,9 @@ t('there is an overview of the whole model', BT_OVERVIEW.length >= 5 &&
   BT_OVERVIEW.every(([title, body]) => title && body.length > 60))
 // The trap that prompted this: the target decides IF you win, the gain decides HOW MUCH.
 t('the overview states that the price move does not size the result',
-  BT_OVERVIEW.some(([, body]) => body.includes('does NOT set the size')))
+  BT_OVERVIEW.some(([, body]) => body.includes('the size of the price move does not affect the result')))
+t('and that the side filter must be switched on to apply',
+  BT_MODULES.some(m => m.key === 'useDirection'))
 t('and that a result is an upper bound', BT_OVERVIEW.some(([, body]) => body.includes('upper bound')))
 
 t('a ? opens each one', cli.includes('function _simQ(key)') && cli.includes("window.__simHelp('${key}')"))
@@ -166,6 +168,74 @@ t('it toggles rather than re-rendering, so half-typed numbers survive',
   !/window\.__simHelp = function\(key\)[\s\S]{0,400}_simRender\(/.test(cli))
 t('the overview has its own toggle', cli.includes('window.__simOverview = function()'))
 t('and every field renders one', cli.includes('${_simQ(f.key)}') && cli.includes('${_simQ(c.key)}'))
+
+console.log(String.fromCharCode(10) + '-- a strategy, plus modules that switch off --')
+// The useful question is rarely "did this work" but "which part was doing the work", and
+// that can only be answered by turning pieces off one at a time.
+const wave = (() => {
+  const out = []; let px = 100, t0 = Date.now() - 1200 * 3600e3
+  for (let i = 0; i < 1200; i++) {
+    const big = i % 37 === 0 && i > 120
+    const d = (i / 37) % 2 < 1 ? 1 : -1
+    const o = px, c = px + (big ? 2.2 * d : Math.sin(i / 6) * 0.3 + Math.cos(i / 23) * 0.2)
+    out.push({ t: t0 + i * 3600e3, o, h: Math.max(o, c) + (big ? 0.6 : 0.12), l: Math.min(o, c) - (big ? 0.6 : 0.12), c })
+    px = c
+  }
+  return out
+})()
+for (const [k] of BT_STRATEGIES) {
+  const rr = runBacktest(wave, { strategy: k })
+  t(`${k} produces signals and trades`, rr.signalsSeen > 0 && rr.tradesMade > 0, [rr.signalsSeen, rr.tradesMade])
+}
+t('the three strategies do different things',
+  new Set(BT_STRATEGIES.map(([k]) => runBacktest(wave, { strategy: k }).tradesMade)).size === 3)
+// Every indicator reads only candles at or before the one it judges.
+t('no strategy sees a candle it could not have', bt.includes('for (let k = i - n; k < i; k++)') &&
+  bt.includes('const was = f[i - 1] - s[i - 1], now = f[i] - s[i]'))
+t('signals are counted before the modules filter them', bt.includes('signalsSeen: sig.filter(v => v).length'))
+
+const base2 = runBacktest(wave)
+t('the trend filter removes trades', runBacktest(wave, { useTrendFilter: true }).tradesMade < base2.tradesMade)
+// An average with no value yet is not permission to trade.
+t('and refuses when the trend is unknown', bt.includes('an unknown trend is not an uptrend'))
+t('the side filter removes trades', runBacktest(wave, { useDirection: true, direction: 'long' }).tradesMade < base2.tradesMade)
+t('the time exit resolves trades that would have hung open',
+  runBacktest(wave, { useTimeExit: true, timeExitCandles: 3 }).timedOut > 0)
+t('the trailing stop changes outcomes', runBacktest(wave, { useTrailing: true }).won !== base2.won)
+// The trail is extended only after a candle failed to stop the trade.
+t('and never moves out of the way of a hit already made', bt.includes('failed to stop the trade'))
+t('a losing streak can halt the run', runBacktest(wave, { useMaxLosses: true, maxConsecLosses: 2 }).halted === true)
+t('and the result says it halted', 'halted' in base2)
+t('fees can be turned off to see what they cost',
+  runBacktest(wave, { useFees: false }).balance > base2.balance)
+t('every module switch is a real parameter', BT_MODULES.every(m => m.key in BT_DEFAULTS))
+
+console.log(String.fromCharCode(10) + '-- two ways to size a result --')
+// Fixed cannot react to the levels; that is the trap the help text warns about.
+const fx = (tp) => runBacktest(wave, { pnlModel: 'fixed', takeProfitPct: tp })
+const rk = (tp) => runBacktest(wave, { pnlModel: 'risk', takeProfitPct: tp })
+t('risk-based pays more as the target widens', rk(4).balance > rk(1).balance)
+t('fixed pays the same per win whatever the target', fx(1).params.winPct === fx(4).params.winPct)
+t('risk is derived from the stop distance', bt.includes('p.takeProfitPct / p.stopLossPct'))
+t('and the model is selectable', cli.includes('window.__simSetModel'))
+
+console.log(String.fromCharCode(10) + '-- the form follows the configuration --')
+t('fields belonging to another strategy are hidden', cli.includes("if (f.strategy && f.strategy !== _simParams.strategy) return false"))
+t('so are fields behind an off module', cli.includes("if (f.group && f.group.startsWith('use')) return !!_simParams[f.group]"))
+t('and the money fields swap with the model', cli.includes("if (f.group === 'riskModel') return _simParams.pnlModel === 'risk'"))
+t('a module shows its own settings only when on', cli.includes('${_simParams[m.key] ? `<div style="margin-top:9px">'))
+// A structural change rebuilds the form, so what was typed has to be read first.
+t('typed values are collected before a rebuild', cli.includes('window.__simStructural = function(fn)') &&
+  cli.slice(cli.indexOf('window.__simStructural')).slice(0, 200).includes('_simCollect()'))
+// The checkbox has already flipped when onchange fires; flipping again undid the click.
+t('a module switch is not toggled twice', cli.includes('window.__simToggleModule = function() { window.__simStructural(() => {}) }'))
+// Reading a missing checkbox as false would switch a module off whenever it was off-screen.
+t('a switch that is not on screen leaves its value alone', cli.includes('if (el) raw[m.key] = !!el.checked'))
+t('unknown strategies and models are ignored',
+  coerceParams({ strategy: 'nope', pnlModel: 'nope' }).strategy === 'range' &&
+  coerceParams({ pnlModel: 'nope' }).pnlModel === 'fixed')
+t('modules coerce only from booleans', coerceParams({ useCooldown: 'yes' }).useCooldown === BT_DEFAULTS.useCooldown &&
+  coerceParams({ useCooldown: false }).useCooldown === false)
 
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

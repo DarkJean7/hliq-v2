@@ -217,7 +217,8 @@ import { gzipToString, gunzipFromString } from './gzstore.js'
 import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
 import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
-import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW } from './backtest.js'
+import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW,
+         BT_STRATEGIES, BT_MODULES } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -15067,6 +15068,15 @@ function _simCollect() {
   const raw = {}
   for (const f of BT_FIELDS) raw[f.key] = document.getElementById('sim_' + f.key)?.value
   for (const c of BT_CHOICES) raw[c.key] = document.getElementById('sim_' + c.key)?.value
+  raw.strategy = document.getElementById('sim_strategy')?.value
+  raw.pnlModel = document.getElementById('sim_pnlModel')?.value
+  // A missing switch means the field was not on screen, so the value in state stands --
+  // reading a missing checkbox as false would silently turn a module off every time its
+  // section happened to be hidden.
+  for (const m of BT_MODULES) {
+    const el = document.getElementById('sim_' + m.key)
+    if (el) raw[m.key] = !!el.checked
+  }
   _simParams = coerceParams(raw)
   const cnt = parseInt(document.getElementById('sim_count')?.value ?? '', 10)
   if (Number.isFinite(cnt)) _simCount = Math.max(50, Math.min(5000, cnt))
@@ -15104,6 +15114,22 @@ window.__simOverview = function() {
 }
 
 window.__simSetIv = function(v) { _simIv = v; _simSave(); _simStale = !!_simResult; _simRender() }
+
+/**
+ * Choosing a strategy, a money model or a module changes WHICH boxes exist, so these
+ * re-render rather than toggling. Everything typed is collected first, so a half-filled
+ * form survives the switch.
+ */
+window.__simStructural = function(fn) {
+  _simCollect()
+  fn()
+  _simStale = !!_simResult
+  _simSave()
+  _simRender()
+}
+window.__simSetStrategy = function(v) { window.__simStructural(() => { _simParams.strategy = v }) }
+window.__simSetModel = function(v) { window.__simStructural(() => { _simParams.pnlModel = v }) }
+window.__simToggleModule = function() { window.__simStructural(() => {}) }
 
 /**
  * A box changed. Only the staleness notice is repainted -- a full render would take the
@@ -15194,6 +15220,80 @@ function _simChoiceHtml(c) {
     </select>
     ${_simHelpHtml(c.key, c.help ?? '')}
   </label>`
+}
+
+/** A field belongs here if it is not tied to another strategy or to an off module. */
+function _simFieldVisible(f) {
+  if (f.strategy && f.strategy !== _simParams.strategy) return false
+  if (f.group === 'riskModel') return _simParams.pnlModel === 'risk'
+  if (f.group === 'fixedModel') return _simParams.pnlModel === 'fixed'
+  if (f.group && f.group.startsWith('use')) return !!_simParams[f.group]
+  return true
+}
+
+const _simHead = (txt) =>
+  `<div style="font-size:11px;font-weight:800;color:var(--fg-2);text-transform:uppercase;letter-spacing:.08em;margin:18px 0 8px">${txt}</div>`
+
+const _simGrid = (inner) =>
+  inner ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 10px">${inner}</div>` : ''
+
+function _simSectionsHtml() {
+  const strat = BT_STRATEGIES.find(s => s[0] === _simParams.strategy) ?? BT_STRATEGIES[0]
+  const fields = (pred) => BT_FIELDS.filter(f => _simFieldVisible(f) && pred(f)).map(_simFieldHtml).join('')
+
+  // A module is a switch plus whatever it reveals, so the thing it configures cannot be
+  // set while it is off and quietly ignored.
+  const moduleRow = (m) => `<div style="border:1px solid ${_simParams[m.key] ? 'var(--accent)' : 'var(--border2)'};border-radius:10px;padding:9px 11px;margin-bottom:8px">
+    <label style="display:flex;align-items:center;gap:9px;cursor:pointer">
+      <input id="sim_${m.key}" type="checkbox" ${_simParams[m.key] ? 'checked' : ''}
+        onchange="window.__simToggleModule()" style="width:15px;height:15px;accent-color:var(--accent);flex-shrink:0">
+      <span style="min-width:0;flex:1">
+        <span style="font-size:12px;font-weight:700;color:var(--fg)">${esc(m.label)}</span>
+        <span style="display:block;font-size:10px;color:var(--muted);margin-top:1px">${esc(m.blurb)}</span>
+      </span>
+    </label>
+    ${_simParams[m.key] ? `<div style="margin-top:9px">${_simGrid(
+      BT_FIELDS.filter(f => f.group === m.key).map(_simFieldHtml).join('') +
+      BT_CHOICES.filter(c => c.group === m.key).map(_simChoiceHtml).join(''))}</div>` : ''}
+  </div>`
+
+  return `
+    ${_simHead(_T('Strategy', 'Estrategia'))}
+    <select id="sim_strategy" onchange="window.__simSetStrategy(this.value)"
+      style="width:100%;padding:8px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:13px;font-weight:700">
+      ${BT_STRATEGIES.map(([k, lbl]) => `<option value="${k}"${_simParams.strategy === k ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}
+    </select>
+    <div style="font-size:11px;color:var(--muted);line-height:1.45;margin-top:6px">${esc(strat[2])}</div>
+    <div style="margin-top:11px">${_simGrid(fields(f => f.strategy))}</div>
+
+    ${_simHead(_T('Entry and exit', 'Entrada y salida'))}
+    ${_simGrid(fields(f => !f.strategy && !f.group && f.key !== 'startBalance'))}
+    <div style="margin-top:12px">${_simGrid(BT_CHOICES.filter(c => !c.group).map(_simChoiceHtml).join(''))}</div>
+
+    ${_simHead(_T('Money', 'Dinero'))}
+    ${_simGrid(fields(f => f.key === 'startBalance'))}
+    <div style="margin-top:12px">
+      <div style="display:flex;align-items:center;gap:5px">
+        <span style="font-size:11px;font-weight:700;color:var(--fg-2)">${_T('How a result is sized', 'Cómo se dimensiona')}</span>
+        <span style="flex:1"></span>
+        ${_simQ('pnlModel')}
+      </div>
+      <select id="sim_pnlModel" onchange="window.__simSetModel(this.value)"
+        style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:12.5px">
+        <option value="fixed"${_simParams.pnlModel === 'fixed' ? ' selected' : ''}>${_T('Fixed percentage of balance', 'Porcentaje fijo del balance')}</option>
+        <option value="risk"${_simParams.pnlModel === 'risk' ? ' selected' : ''}>${_T('Risk-based, from the stop distance', 'Por riesgo, según la distancia al stop')}</option>
+      </select>
+      ${_simHelpHtml('pnlModel', _T(
+        'Fixed adds or subtracts a flat percentage of the balance, so the size of the price move does not affect the result -- the levels decide whether you won, these settings decide by how much, and keeping them consistent is on you. Risk-based sets what a stop costs and pays a win that multiplied by the reward-to-risk the levels imply, so changing the target changes the payout by itself.',
+        'Fijo suma o resta un porcentaje del balance. Por riesgo dimensiona según la distancia al stop, así que cambiar el objetivo cambia el pago.'))}
+    </div>
+    <div style="margin-top:12px">${_simGrid(fields(f => f.group === 'riskModel' || f.group === 'fixedModel'))}</div>
+
+    ${_simHead(_T('Modules', 'Módulos'))}
+    <div style="font-size:11px;color:var(--muted);line-height:1.45;margin-bottom:9px">${
+      _T('Switch one off and run again to see what it was contributing.',
+         'Apaga uno y vuelve a ejecutar para ver qué aportaba.')}</div>
+    ${BT_MODULES.map(moduleRow).join('')}`
 }
 
 function _simResultHtml() {
@@ -15315,13 +15415,7 @@ function _simRender(el) {
           v === _simIv ? 'var(--accent)' : 'var(--border2)'};background:${v === _simIv ? 'var(--accent)' : 'transparent'};color:${
           v === _simIv ? '#000' : 'var(--fg-2)'};font-size:11.5px;font-weight:700;cursor:pointer">${v}</button>`).join('')}</div>
 
-      <div style="font-size:11px;font-weight:800;color:var(--fg-2);text-transform:uppercase;letter-spacing:.08em;margin:18px 0 8px">${_T('The rule', 'La regla')}</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 10px">
-        ${BT_FIELDS.map(_simFieldHtml).join('')}
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 10px;margin-top:12px">
-        ${BT_CHOICES.map(_simChoiceHtml).join('')}
-      </div>
+      ${_simSectionsHtml()}
 
       <div style="display:flex;gap:8px;margin-top:16px">
         <button onclick="window.__simRun()" ${_simBusy ? 'disabled' : ''}
