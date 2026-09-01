@@ -216,6 +216,7 @@ import { historyHtml, collapseFills } from './perfhistory.js'
 import { gzipToString, gunzipFromString } from './gzstore.js'
 import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
+import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -6775,6 +6776,7 @@ function _stopTabTimers() {
 
 function switchTab(name, btn) {
   if (_activeTab === 'outcomes' && name !== 'outcomes') _stopOcCountdown()
+  if (name !== 'replay') _repStop()
   _stopTabTimers()
   _activeTab = name
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'))
@@ -6794,6 +6796,7 @@ function switchTab(name, btn) {
     _pulseRender(_ph)
   }
   if (name === 'analysis')   _anaRender(_viewHost('deskAnalysis'))
+  if (name === 'replay')     _repRender(_viewHost('deskReplay'))
   if (name === 'settings') { _syncSettingsTab(); _applyDevMode() }
   if (name === 'leaderboard') {
     const root = document.getElementById('leaderboardRoot')
@@ -6837,7 +6840,7 @@ window.__mobMoreTab = function(name) {
   const backdrop = document.getElementById('mobMoreBackdrop')
   drawer?.classList.remove('open')
   backdrop?.classList.remove('open')
-  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'pulse', 'allocation', 'heatmap', 'analysis'])
+  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'pulse', 'allocation', 'heatmap', 'analysis', 'replay'])
   if (mobileTabs.has(name)) {
     // Reached deliberately from the menu, Strats opens full screen. It is the densest view
     // in the app — a bot list, a config form and a running-instance list — and half a
@@ -9479,7 +9482,7 @@ const _MOBV_NAV_ORDER = ['trades', 'positions', 'orders', 'outcomes', 'spot', 's
 // strip / sub-tabs) is hidden and the view renders its own sticky header + × back
 // button instead of sitting in the bottom half. Shared by the chrome-hide logic and
 // the watch-strip visibility check so they never drift apart.
-const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 'transfers', 'trades', 'tokens', 'leaderboard', 'allocation', 'analysis', 'performance'])
+const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 'transfers', 'trades', 'tokens', 'leaderboard', 'allocation', 'analysis', 'performance', 'replay'])
 
 // Sticky full-page header with a × that returns to the home view. Used by every
 // full-screen tab so they share one look.
@@ -14518,6 +14521,248 @@ function _sigChartInner() {
     <div id="sigRead" style="display:flex;align-items:center;gap:6px;font-size:10.5px;margin-top:5px;min-height:19px">${_sigReadDefault()}</div>`
 }
 
+// ── REPLAY ────────────────────────────────────────────────────────────────────
+//
+// Watch a market, or the whole account, play forward with the trades landing as they
+// happened. The arithmetic lives in replay.js; this owns the clock, the controls and the
+// data, because all three need app state.
+//
+// The rule the whole feature rests on: a replay must never show the future. The chart is
+// drawn only up to the current frame, so the axis scales to what has been revealed -- an
+// axis fitted to the whole range would give away that a big move is coming, which is
+// exactly the thing you came to watch.
+
+const REP_KEY = 'hliq_replay'
+let _repMode   = 'market'   // 'market' | 'account'
+let _repCoin   = null
+let _repTf     = '7d'
+let _repFrame  = 0
+let _repPlay   = false
+let _repSpeed  = 1
+let _repTimer  = null
+let _repData   = null       // { points, steps, markersAll }
+
+try {
+  const s = JSON.parse(localStorage.getItem(REP_KEY) || '{}')
+  if (s.mode === 'account' || s.mode === 'market') _repMode = s.mode
+  if (typeof s.coin === 'string') _repCoin = s.coin || null
+  if (typeof s.tf === 'string') _repTf = s.tf
+} catch {}
+function _repSave() {
+  try { localStorage.setItem(REP_KEY, JSON.stringify({ mode: _repMode, coin: _repCoin, tf: _repTf })) } catch {}
+}
+
+/** Markets this wallet has actually traded. Replaying one it never touched shows nothing. */
+function _repCoins() {
+  const seen = new Map()
+  for (const f of state.fills ?? []) {
+    const c = f.coin
+    if (!c) continue
+    seen.set(c, (seen.get(c) ?? 0) + 1)
+  }
+  return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]).slice(0, 12)
+}
+
+/**
+ * The series and the trades for the current selection.
+ *
+ * Account mode plays the portfolio's own value history, which is the only series that
+ * answers "what was the account worth then" -- recomputing it from fills would miss
+ * deposits, funding and everything else that moves it.
+ */
+function _repBuild() {
+  if (_repMode === 'account') {
+    const hist = (state.portfolio ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory ?? []
+    const points = hist.map(([t, v]) => [+t, parseFloat(v)]).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]))
+    const steps = walkFills(state.fills ?? [])
+    return { points, steps, coin: null }
+  }
+  const coin = _repCoin
+  if (!coin) return { points: [], steps: [], coin: null }
+  _pulseLoadCandles(coin)
+  const row = _PULSE_TF.find(x => x[0] === _repTf) ?? _PULSE_TF[2]
+  const points = _sigPoints(coin, row[1], row[2]) ?? []
+  const steps = walkFills((state.fills ?? []).filter(f => f.coin === coin))
+  return { points, steps, coin }
+}
+
+function _repStop() {
+  _repPlay = false
+  if (_repTimer) { clearInterval(_repTimer); _repTimer = null }
+}
+
+/** A new subject is a new replay: rewind and stop rather than carrying a stale frame. */
+function _repReset() { _repStop(); _repFrame = 0; _repData = null }
+
+window.__repSetMode = function(m) { _repMode = m; _repSave(); _repReset(); _repRender() }
+window.__repSetCoin = function(c) { _repCoin = c || null; _repSave(); _repReset(); _repRender() }
+window.__repSetTf   = function(t) { _repTf = t; _repSave(); _repReset(); _repRender() }
+window.__repSpeed   = function(s) { _repSpeed = s; if (_repPlay) { _repStop(); window.__repPlay(true) }; _repPaint() }
+
+window.__repPlay = function(on) {
+  const n = _repData?.points?.length ?? 0
+  if (!n) return
+  if (on === false || (on == null && _repPlay)) { _repStop(); _repPaint(); return }
+  // Restarting from the end is what a viewer means by pressing play there.
+  if (_repFrame >= n - 1) _repFrame = 0
+  _repPlay = true
+  // Twelve steps a second at 1x: fast enough to feel like motion, slow enough that a fill
+  // landing is something you see rather than something you find afterwards.
+  const ms = Math.max(16, Math.round(1000 / (12 * _repSpeed)))
+  _repTimer = setInterval(() => {
+    _repFrame += 1
+    if (_repFrame >= n - 1) { _repFrame = n - 1; _repStop() }
+    _repPaint()
+  }, ms)
+  _repPaint()
+}
+
+window.__repSeek = function(v) {
+  const n = _repData?.points?.length ?? 0
+  if (!n) return
+  _repStop()
+  _repFrame = Math.max(0, Math.min(n - 1, Math.round(+v)))
+  _repPaint()
+}
+
+window.__repRestart = function() { _repFrame = 0; _repPaint() }
+
+/** Repaint the player only. A full render would refetch and stutter every frame. */
+function _repPaint() {
+  const el = document.getElementById('repStage')
+  if (el) el.innerHTML = _repStageHtml()
+  const sc = document.getElementById('repScrub')
+  if (sc) sc.value = String(_repFrame)
+  // The transport belongs to the frame too. These used to be written only by the full
+  // render, so after a seek the counter still read 1/24 and the button still offered to
+  // play something that was already playing.
+  const n = _repData?.points?.length ?? 0
+  const pos = document.getElementById('repPos')
+  if (pos) pos.textContent = n ? `${_repFrame + 1}/${n}` : ''
+  const btn = document.getElementById('repPlayBtn')
+  if (btn) btn.textContent = _repPlay ? '❚❚' : '▶'
+}
+
+function _repStageHtml() {
+  const d = _repData
+  if (!d || d.points.length < 3) {
+    // Three different situations, and saying the wrong one is a lie about the account.
+    // Candles still in flight are UNKNOWN, not absent -- reporting "no history" while a
+    // fetch is open is the same mistake as an empty array standing in for "we did not
+    // look", which this app has shipped three times.
+    const row = _PULSE_TF.find(x => x[0] === _repTf) ?? _PULSE_TF[2]
+    const pending = _repMode === 'market' && _repCoin &&
+      ['loading', undefined, null].includes(_pulseCandles[_repCoin + '|' + row[1]])
+    const msg = _repMode === 'market' && !_repCoin
+      ? _T('Pick a market you have traded.', 'Elige un mercado que hayas operado.')
+      : pending
+        ? _T('Loading market history…', 'Cargando historial…')
+        : _T('No history to replay for this selection yet.', 'Aún no hay historial para reproducir.')
+    return `<div style="height:210px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:12px;color:var(--muted);padding:0 20px">${msg}</div>`
+  }
+  const n = d.points.length
+  const i = Math.max(0, Math.min(n - 1, _repFrame))
+  const t = frameTime(d.points, i)
+  const mark = +d.points[i][1]
+  const s = summarise(d.steps, t, _repMode === 'market' ? mark : null)
+  const marks = markersUpto(d.steps, t)
+
+  const chart = signalChartSvg({
+    main: d.points,
+    // Only as far as the playhead: the axis then scales to what has been revealed, and
+    // the replay cannot hint at where it is going.
+    from: 0, to: i + 1,
+    mainLabel: _repMode === 'account' ? _T('Account', 'Cuenta') : esc(_ocCoinLabel(d.coin)),
+    fmtPrice: (v) => '$' + fmtUSD(v),
+    height: 150,
+    markers: marks.map(m => ({ t: m.t, buy: m.buy, v: _repMode === 'market' ? m.px : null })),
+  })
+
+  const money = (v) => (v < 0 ? '-$' : '+$') + fmtUSD(Math.abs(v))
+  const tone  = (v) => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--fg-2)'
+  const when  = new Date(t).toLocaleString(undefined,
+    { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+
+  const stat = (label, value, colour = '') => `<div style="min-width:74px">
+    <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${label}</div>
+    <div style="font-size:14px;font-weight:800;margin-top:1px;${colour ? `color:${colour}` : ''}">${value}</div>
+  </div>`
+
+  const pos = _repMode === 'market' && s.szi !== 0
+    ? `${s.szi > 0 ? _T('Long', 'Largo') : _T('Short', 'Corto')} ${fmtSize(Math.abs(s.szi))} @ $${fmtPrice(s.entry)}`
+    : _T('Flat', 'Sin posición')
+
+  return `
+    <div style="display:flex;align-items:baseline;gap:8px;font-size:10px;color:var(--muted);margin-bottom:3px">
+      <span>${esc(chart.hi)}</span><span style="flex:1"></span><span>${esc(when)}</span>
+    </div>
+    ${chart.svg}
+    <div style="display:flex;align-items:center;font-size:10px;color:var(--muted);margin-top:2px">
+      <span>${esc(chart.lo)}</span><span style="flex:1"></span>
+      <span>${_repMode === 'account' ? `$${fmtUSD(mark)}` : `$${fmtPrice(mark)}`}</span>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px 14px;margin-top:9px">
+      ${stat(_T('Realized', 'Realizado'), money(s.realized), tone(s.realized))}
+      ${_repMode === 'market' ? stat(_T('Open', 'Abierto'), money(s.unrealized), tone(s.unrealized)) : ''}
+      ${stat(_T('Net', 'Neto'), money(s.net), tone(s.net))}
+      ${stat(_T('Trades', 'Operaciones'), String(s.trades))}
+      ${stat(_T('Win rate', 'Aciertos'), s.winRate == null ? '—' : s.winRate.toFixed(0) + '%')}
+    </div>
+    ${_repMode === 'market' ? `<div style="font-size:11px;color:var(--fg-2);margin-top:7px">${esc(pos)}</div>` : ''}`
+}
+
+function _repRender(el) {
+  const host = el ?? _viewHost('deskReplay')
+  if (!host) return
+  _repData = _repBuild()
+  const n = _repData.points.length
+
+  const coins = _repCoins()
+  if (_repMode === 'market' && !_repCoin && coins.length) { _repCoin = coins[0]; _repData = _repBuild() }
+
+  const seg = (k, lbl) => `<button onclick="window.__repSetMode('${k}')" style="flex:1;padding:7px 10px;border:none;font-size:12px;font-weight:700;cursor:pointer;background:${
+    _repMode === k ? 'var(--accent)' : 'transparent'};color:${_repMode === k ? '#000' : 'var(--fg-2)'}">${lbl}</button>`
+  const chip = (c, sel, fn, lbl) => `<button onclick="window.${fn}('${esc(c)}')" style="flex-shrink:0;padding:5px 11px;border-radius:999px;border:1px solid ${
+    sel ? 'var(--accent)' : 'var(--border2)'};background:${sel ? 'var(--accent)' : 'transparent'};color:${
+    sel ? '#000' : 'var(--fg-2)'};font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap">${esc(lbl ?? c)}</button>`
+
+  host.innerHTML = `${_mobVFullHeader(_T('Replay', 'Repetición'))}
+    <div style="padding:10px 12px 26px">
+      <div style="font-size:11.5px;color:var(--muted);line-height:1.45;margin-bottom:10px">${
+        _T('Play a market or your account forward and watch the trades land as they happened.',
+           'Reproduce un mercado o tu cuenta y mira las operaciones caer como ocurrieron.')}</div>
+
+      <div style="display:flex;border:1px solid var(--border2);border-radius:9px;overflow:hidden;margin-bottom:10px">
+        ${seg('market', _T('A market', 'Un mercado'))}${seg('account', _T('My account', 'Mi cuenta'))}
+      </div>
+
+      ${_repMode === 'market' ? `
+        <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px">${
+          coins.length ? coins.map(c => chip(c, c === _repCoin, '__repSetCoin', _ocCoinLabel(c))).join('')
+            : `<span style="font-size:11px;color:var(--muted)">${_T('No trades to replay yet.', 'Aún no hay operaciones.')}</span>`}</div>
+        <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${
+          _PULSE_TF.map(x => chip(x[0], x[0] === _repTf, '__repSetTf')).join('')}</div>` : ''}
+
+      <div id="repStage" style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;min-height:300px">${_repStageHtml()}</div>
+
+      <div style="display:flex;align-items:center;gap:9px;margin-top:11px">
+        <button id="repPlayBtn" onclick="window.__repPlay()" aria-label="${_T('Play or pause', 'Reproducir o pausar')}"
+          style="width:46px;height:46px;border-radius:50%;border:none;background:var(--accent);color:#000;font-size:17px;font-weight:800;cursor:pointer;flex-shrink:0">${_repPlay ? '❚❚' : '▶'}</button>
+        <input id="repScrub" type="range" min="0" max="${Math.max(0, n - 1)}" value="${_repFrame}"
+          oninput="window.__repSeek(this.value)" style="flex:1;accent-color:var(--accent)">
+        <button onclick="window.__repRestart()" aria-label="${_T('Restart', 'Reiniciar')}"
+          style="width:36px;height:36px;border-radius:9px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:14px;cursor:pointer;flex-shrink:0">↺</button>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:9px">${
+        [1, 2, 4, 8].map(s => `<button onclick="window.__repSpeed(${s})" style="padding:4px 11px;border-radius:8px;border:1px solid ${
+          _repSpeed === s ? 'var(--accent)' : 'var(--border2)'};background:transparent;color:${
+          _repSpeed === s ? 'var(--accent)' : 'var(--fg-2)'};font-size:11px;font-weight:700;cursor:pointer">${s}x</button>`).join('')}
+        <span style="flex:1"></span>
+        <span id="repPos" style="font-size:10.5px;color:var(--muted);align-self:center">${n ? `${_repFrame + 1}/${n}` : ''}</span>
+      </div>
+    </div>`
+}
+
 function _sigMarketSets() {
   const ranked = [...(_pulseData?.rows ?? [])]
     .sort((a, b) => (b.oi ?? 0) - (a.oi ?? 0))
@@ -16364,6 +16609,12 @@ function _mobVRenderContent(tick = false) {
     _anaRender(el)
     return
   }
+  if (_mobVActiveTab === 'replay') {
+    _repRender(el)
+    return
+  }
+  // Any other mobile view means the player is off screen; its clock must not outlive it.
+  _repStop()
 
   if (_mobVActiveTab === 'heatmap') {
     _mobVRenderHeatmap()
@@ -19768,7 +20019,10 @@ window.mobVTab = function(name) {
   _mobVAnimateTo(name)
 }
 
+// Leaving any view stops the replay clock -- a timer running against a stage that is no
+// longer on screen is a leak, and it would carry on burning battery behind another tab.
 window.mobVHome = function() {
+  _repStop()
   _mobVActiveTab = 'positions'
   document.querySelectorAll('.mob-v-bottom-btn').forEach(b => b.classList.remove('active'))
   document.getElementById('mobVBotHome')?.classList.add('active')
@@ -19788,7 +20042,7 @@ window.mobVGoTab = function(tabName) {
   if (tabName === 'trades') _mobVTradesPage = 0   // start History at the latest page
   if (tabName === 'allocation') _allocView = 'allocation'   // the donut pill always opens the donut
   document.querySelectorAll('.mob-v-bottom-btn').forEach(b => b.classList.remove('active'))
-  const _mobTabs = new Set(['trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'pulse', 'allocation', 'analysis'])
+  const _mobTabs = new Set(['trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'pulse', 'allocation', 'analysis', 'replay'])
   if (_mobTabs.has(tabName)) {
     _mobVActiveTab = tabName
     document.querySelectorAll('.mob-v-tab').forEach(b => b.classList.remove('active'))

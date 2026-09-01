@@ -12,8 +12,10 @@ t('listed in the nav order', cli.includes("'allocation', 'analysis']"))
 // Asks whether analysis is IN the set, not what the set ends with -- pinning the tail
 // made this fail the moment another view joined it, which is not a regression in analysis.
 t('renders full-screen', /_MOBV_FULLPAGE = new Set\(\[[^\]]*'analysis'/.test(cli))
-t('the More drawer routes it', cli.includes("'heatmap', 'analysis'])"))
-t('and so does mobVGoTab', cli.includes("'pulse', 'allocation', 'analysis'])"))
+// Membership, not the tail of the list: appending another view is not a regression in
+// analysis, and pinning the last entry made it look like one.
+t('the More drawer routes it', /mobileTabs = new Set\(\[[^\]]*'analysis'/.test(cli))
+t('and so does mobVGoTab', /_mobTabs = new Set\(\[[^\]]*'analysis'/.test(cli))
 t('the render dispatch calls it', cli.includes("if (_mobVActiveTab === 'analysis') {\n    _anaRender(el)"))
 t('there is a button for it', htm.includes(`window.__mobMoreTab('analysis')`))
 

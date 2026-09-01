@@ -137,7 +137,7 @@ const path = (pts, px, py) => {
 export function signalChartSvg({
   main, cmp = null, mainLabel = '', cmpLabel = '', indicator = null, vals = [],
   height = 132, subHeight = 46, fmtPrice = (v) => String(v),
-  from = 0, to = null,
+  from = 0, to = null, markers = null,
 } = {}) {
   const W = 320, PAD = 4
   const full = (main ?? []).filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
@@ -205,6 +205,30 @@ export function signalChartSvg({
     // without it neither line means much on its own.
     if (y0 < 0 && y1 > 0) {
       body += `<line x1="${PAD}" x2="${W - PAD}" y1="${R(py(0))}" y2="${R(py(0))}" stroke="var(--border2,#2a2f3a)" stroke-width="1" stroke-dasharray="2 3"/>`
+    }
+  }
+
+  // Trade markers. `v` is where to plant one: the fill price in a price chart, since you
+  // bought at your price and not at the candle close. Without a `v` it sits on the line
+  // itself, which is what an equity chart needs -- a fill price means nothing on an axis
+  // measured in account value.
+  if (markers?.length) {
+    const nearest = (t) => {
+      let best = null, bd = Infinity
+      for (const p of series) { const d = Math.abs(+p[0] - t); if (d < bd) { bd = d; best = p } }
+      return best
+    }
+    for (const mk of markers) {
+      if (+mk.t < meta.t0 || +mk.t > meta.t1) continue
+      const yv = Number.isFinite(+mk.v) ? toY(+mk.v) : nearest(+mk.t)?.[1]
+      if (yv == null || !Number.isFinite(yv)) continue
+      const x = R(px(+mk.t)), y = R(py(yv))
+      const c = mk.buy ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)'
+      // Buys point up from below the price, sells point down from above, so a cluster
+      // still reads as a direction rather than a smudge.
+      const tri = mk.buy ? `${x},${y - 3} ${x - 4},${y + 4} ${x + 4},${y + 4}`
+                         : `${x},${y + 3} ${x - 4},${y - 4} ${x + 4},${y - 4}`
+      body += `<polygon points="${tri}" fill="${c}" stroke="var(--panel,#111)" stroke-width="0.6"/>`
     }
   }
 
