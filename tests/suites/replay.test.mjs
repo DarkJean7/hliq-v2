@@ -248,5 +248,32 @@ t('without a full render, which would take the keyboard away',
   !/function _repCandlesArrived\(\)[\s\S]{0,400}_repRender\(/.test(cli))
 t('and does nothing when the player is not on screen', cli.includes("if (!document.getElementById('repStage')) return"))
 
+console.log(String.fromCharCode(10) + '-- candles for the account, honestly derived --')
+// A market has real OHLC from the exchange. An account has a SAMPLED VALUE, and there is
+// no open, high or low hiding inside one sample -- so they are grouped, and each group
+// reports the range the account actually reached.
+t('account candles are grouped from samples', cli.includes('function _repAcctCandles(points, target = 80)'))
+t('open and close come from the ends of a group',
+  cli.includes('candles.push({ t, o: vs[0], c: vs[vs.length - 1], h: Math.max(...vs), l: Math.min(...vs) })'))
+t('the line is the candle closes, so the two views cannot drift',
+  cli.includes('line.push([t, vs[vs.length - 1]])') && cli.includes('points: grouped ? grouped.points : points,'))
+t('too little history falls back to the line', cli.includes('return candles.length >= 3 ? { candles, points: line } : null'))
+t('grouping happens only in candle mode, so the line keeps every sample',
+  cli.includes("const grouped = _repStyle === 'candle' ? _repAcctCandles(points) : null"))
+t('and the toggle is offered in both modes', !cli.includes("if (_repMode !== 'market') return ''"))
+t('candles no longer require market mode', cli.includes("const useCandles = _repStyle === 'candle' && !!d.candles"))
+// Grouping changes the frame count, so an index would land somewhere else entirely.
+t('switching style holds the position in time, not in frames',
+  cli.includes('const at = _repData?.points?.[_repFrame]?.[0] ?? null') &&
+  cli.includes('for (let i = 0; i < pts.length; i++) if (+pts[i][0] <= at) best = i'))
+
+console.log(String.fromCharCode(10) + '-- and a way back --')
+// The header close drops to the home screen, which is not where you came from.
+t('there is a back button', cli.includes('window.__replayBack') && cli.includes("← ${_T('Portfolio', 'Cartera')}"))
+t('it returns to the portfolio, where Replay is opened from',
+  cli.includes("if (_isMobView()) { window.__mobMoreTab('portfolio'); return }"))
+t('and stops the player on the way out', cli.includes('window.__replayBack = function() {') &&
+  cli.slice(cli.indexOf('window.__replayBack')).slice(0, 120).includes('_repLeave()'))
+
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

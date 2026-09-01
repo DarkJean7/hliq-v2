@@ -14568,6 +14568,36 @@ function _repSave() {
 }
 
 /** Markets this wallet has actually traded. Replaying one it never touched shows nothing. */
+/**
+ * Candles for the account.
+ *
+ * A market has real OHLC from the exchange. An account has a SAMPLED VALUE -- a series of
+ * "it was worth this, then this" -- and there is no open, high or low hiding inside a
+ * single sample. So candles here are derived: consecutive samples are grouped, and each
+ * group reports the first value as its open, the last as its close, and the extremes it
+ * actually reached in between.
+ *
+ * That is an honest reading (the account really did range over that in the period) but it
+ * is a coarser one: grouping trades resolution for shape. The line keeps every sample, so
+ * the two views are the same history at two grain sizes, and the caller uses the returned
+ * points rather than the originals so the candles and the line can never drift apart.
+ */
+function _repAcctCandles(points, target = 80) {
+  const n = points?.length ?? 0
+  if (n < 6) return null
+  const k = Math.max(2, Math.ceil(n / target))
+  const candles = [], line = []
+  for (let i = 0; i < n; i += k) {
+    const grp = points.slice(i, i + k)
+    const vs = grp.map(pt => +pt[1]).filter(Number.isFinite)
+    if (!vs.length) continue
+    const t = +grp[grp.length - 1][0]
+    candles.push({ t, o: vs[0], c: vs[vs.length - 1], h: Math.max(...vs), l: Math.min(...vs) })
+    line.push([t, vs[vs.length - 1]])
+  }
+  return candles.length >= 3 ? { candles, points: line } : null
+}
+
 function _repAllCoins() {
   const seen = new Map()
   for (const f of state.fills ?? []) {
@@ -14609,9 +14639,18 @@ function _repBuild() {
     const points = (hist ?? []).map(([t, v]) => [+t, parseFloat(v)])
       .filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]))
     const steps = walkFills(state.fills ?? [])
+    // Grouped only when candles are being shown. The line view keeps every sample, so
+    // switching style changes the grain of the chart and nothing about the history.
+    const grouped = _repStyle === 'candle' ? _repAcctCandles(points) : null
     // null, not [], when it has not loaded: a funding figure of $0.00 for an account
     // that pays funding every hour is a wrong answer, and a dash is the right one.
-    return { points, steps, candles: null, coin: null, funding: Array.isArray(state.funding) ? state.funding : null }
+    return {
+      points: grouped ? grouped.points : points,
+      steps,
+      candles: grouped ? grouped.candles : null,
+      coin: null,
+      funding: Array.isArray(state.funding) ? state.funding : null,
+    }
   }
   const coin = _repCoin
   if (!coin) return { points: [], steps: [], coin: null }
@@ -14650,7 +14689,27 @@ window.__repSetMode = function(m) { _repMode = m; _repSave(); _repReset(); _repR
 window.__repSetCoin = function(c) { _repCoin = c || null; _repSave(); _repReset(); _repRender() }
 window.__repSetTf   = function(t) { _repTf = t; _repSave(); _repReset(); _repRender() }
 window.__repSpeed   = function(s) { _repSpeed = s; if (_repPlay) { _repStop(); window.__repPlay(true) }; _repPaint() }
-window.__repStyle   = function(v) { _repStyle = v; _repSave(); _repPaint(); _repChrome() }
+window.__repStyle   = function(v) {
+  _repStyle = v
+  _repSave()
+  // Account candles group the samples, so the series itself changes with the style and the
+  // frame count with it. Hold the position in TIME rather than the index, or switching
+  // style would jump the playhead somewhere else in the replay.
+  const at = _repData?.points?.[_repFrame]?.[0] ?? null
+  _repData = _repBuild()
+  const pts = _repData?.points ?? []
+  if (at != null && pts.length) {
+    let best = 0
+    for (let i = 0; i < pts.length; i++) if (+pts[i][0] <= at) best = i
+    _repFrame = best
+  }
+  for (const id of ['repScrub', 'repScrub2']) {
+    const sc = document.getElementById(id)
+    if (sc) { sc.max = String(Math.max(0, pts.length - 1)); sc.value = String(_repFrame) }
+  }
+  _repPaint()
+  _repChrome()
+}
 
 /**
  * Open the chart over the whole screen, or close it again.
@@ -14796,7 +14855,7 @@ function _repStageHtml(big = false) {
   const signed = (v) => (v < 0 ? '-$' : '+$') + fmtUSD(Math.abs(v))
   const tone = (v) => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--fg-2)'
 
-  const useCandles = _repMode === 'market' && _repStyle === 'candle' && !!d.candles
+  const useCandles = _repStyle === 'candle' && !!d.candles
   const span = big ? Math.round(REP_SPAN * 1.6) : REP_SPAN
   const chart = signalChartSvg({
     main: d.points,
@@ -14929,7 +14988,6 @@ function _repSpeedChips() {
 }
 
 function _repStyleChips() {
-  if (_repMode !== 'market') return ''
   return ['candle', 'line'].map(v => `<button onclick="window.__repStyle('${v}')" style="padding:4px 11px;border-radius:8px;border:1px solid ${
     _repStyle === v ? 'var(--accent)' : 'var(--border2)'};background:transparent;color:${
     _repStyle === v ? 'var(--accent)' : 'var(--fg-2)'};font-size:11px;font-weight:700;cursor:pointer">${
@@ -14948,6 +15006,16 @@ function _repChrome() {
  * Open Replay. It lives beside the portfolio chart rather than in the More list, because
  * it is a thing you do TO the chart you are looking at, not a separate destination.
  */
+/**
+ * Back to the portfolio chart. Replay is opened from there, so "back" means that -- the
+ * header's close button drops to the home screen, which is not where you were.
+ */
+window.__replayBack = function() {
+  _repLeave()
+  if (_isMobView()) { window.__mobMoreTab('portfolio'); return }
+  switchTab('portfolio', null)
+}
+
 window.__openReplay = function() {
   if (_isMobView()) { window.__mobMoreTab('replay'); return }
   switchTab('replay', null)
@@ -14969,6 +15037,9 @@ function _repRender(el) {
     sel ? '#000' : 'var(--fg-2)'};font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap">${esc(lbl ?? c)}</button>`
 
   host.innerHTML = `${_mobVFullHeader(_T('Replay', 'Repetición'))}
+    <div style="padding:8px 12px 0">
+      <button onclick="window.__replayBack()" style="display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:8px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:11.5px;font-weight:700;cursor:pointer">← ${_T('Portfolio', 'Cartera')}</button>
+    </div>
     <div style="padding:10px 12px 26px">
       <div style="font-size:11.5px;color:var(--muted);line-height:1.45;margin-bottom:10px">${
         _T('Play a market or your account forward and watch the trades land as they happened.',
