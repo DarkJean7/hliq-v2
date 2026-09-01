@@ -34,12 +34,12 @@ t('the combined view gets BOTH checks', cli.includes('try { _fxCheckAth(key, eq)
 // Merged fills already carry the wallet that made them, so a win in the combined view is
 // attributed and scaled to that wallet. Against a nine-wallet total, a great trade on a
 // small account could never clear the threshold.
-t('a win is keyed by wallet as well as coin, so two wallets do not merge',
-  cli.includes("const k = (f._acctAddr ?? '') + SEP + (f._acct ?? '') + SEP + f.coin"))
-t('and measured against the wallet that made it', cli.includes('const base = wAddr ? (_fxAcctEquity(wAddr) ?? eq) : eq'))
+t('a win carries the wallet that made it',
+  fs.readFileSync('src/perfhistory.js', 'utf8').includes("acctAddr: f._acctAddr ?? '',"))
+t('and measured against the wallet that made it', cli.includes('const base = best.acctAddr ? (_fxAcctEquity(best.acctAddr) ?? eq) : eq'))
 t('matched on address, not on a display label', cli.includes('String(r.addr).toLowerCase() !== String(addr).toLowerCase()'))
 t('an unmatched wallet falls back rather than reading as zero', cli.includes('return Number.isFinite(v) && v > 0 ? v : null'))
-t('the banner names the wallet', cli.includes("(wLabel ? ' - ' + esc(wLabel) : '')"))
+t('the banner names the wallet', cli.includes("(best.acct ? ' - ' + esc(best.acct) : '')"))
 
 console.log(String.fromCharCode(10) + '-- paper money and real money never mix --')
 t('the key separates them', cli.includes("if (isPaper()) return 'paper:' + paperSlot()"))
@@ -53,8 +53,17 @@ t('the peak is recorded even when not celebrated',
   cli.indexOf('_athSave(map)\n\n  // Beating your old peak') > 0)
 t('an all-time high holds a five-minute cooldown', cli.includes('if (!_fxGate(300000)) return'))
 t('one banner at a time', cli.includes('function _fxGate(ms)') && cli.includes('_fxLastFire = Date.now()'))
-t('a win is sized against equity, not a flat number', cli.includes('if (best < 1 || best / base < 0.01) return'))
-t('a scaled-out exit is one celebration', cli.includes('byPos.set(k, (byPos.get(k) ?? 0) + pnl)'))
+t('a win is sized against equity, not a flat number', cli.includes('if (best.net < 1 || best.net / base < 0.01) return'))
+
+// Reported from a real phone: opening the app produced a $28 celebration that was several
+// trades summed, from hours earlier. Both halves of that were wrong.
+t('one trade, not a session summed', cli.includes('collapseFills(fills.filter(f => (f.time ?? 0) > since))'))
+t('and it is the SAME grouping the history sheet uses', cli.includes("import { historyHtml, collapseFills } from './perfhistory.js'"))
+t('only a trade that just closed', cli.includes('now - r.time <= FX_WIN_FRESH_MS'))
+t('the window is minutes, not hours', /FX_WIN_FRESH_MS = 10 \* 60 \* 1000/.test(cli))
+t('the best single trade, never a total', cli.includes('rows.reduce((b, r) => r.net > (b?.net ?? -Infinity) ? r : b, null)'))
+t('an order is scoped to its wallet before it is merged',
+  fs.readFileSync('src/perfhistory.js', 'utf8').includes("const key = (f._acctAddr ?? '') + '|' + (f.oid != null"))
 
 console.log(String.fromCharCode(10) + '-- it cannot break the app --')
 t('a throw cannot take down the render', /try \{ _fxCheckAth\(key, eq\);.*\} catch \{\}/.test(cli))

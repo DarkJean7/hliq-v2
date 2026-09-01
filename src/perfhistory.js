@@ -21,12 +21,16 @@ export function collapseFills(fills) {
   for (const f of fills ?? []) {
     // tid is the last-resort key: unique per fill, so an order without an oid stays its
     // own row rather than every such fill merging into one.
-    const key = f.oid != null ? 'o' + f.oid : 't' + (f.tid ?? f.time)
+    // Scoped to the wallet as well as the order. In the combined view these fills come
+    // from several wallets, and an oid is only unique within one of them -- keying on the
+    // order alone would merge two wallets' trades into one that neither of them made.
+    const key = (f._acctAddr ?? '') + '|' + (f.oid != null ? 'o' + f.oid : 't' + (f.tid ?? f.time))
     const prev = byOrder.get(key)
     if (!prev) {
       byOrder.set(key, {
         time: f.time, timeStr: f.timeStr, coin: f.coin, side: f.side, dir: f.dir,
         sz: f.sz, pxNotional: f.px * f.sz, closedPnl: f.closedPnl, fee: f.fee, n: 1,
+        acct: f._acct ?? '', acctAddr: f._acctAddr ?? '',
       })
       continue
     }

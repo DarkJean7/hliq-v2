@@ -212,7 +212,7 @@ import {
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
-import { historyHtml } from './perfhistory.js'
+import { historyHtml, collapseFills } from './perfhistory.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -1318,6 +1318,17 @@ function _fxAcctEquity(addr) {
   return null
 }
 
+// How recently a trade must have closed for it to still be worth announcing. A
+// celebration is meant to land at the moment it happens; one that arrives hours later,
+// when you happen to reopen the app, is not a celebration but a report -- and the first
+// version of this did exactly that, because a seed taken while the fills were still
+// arriving made every trade that landed afterwards look new.
+//
+// This is the guard that makes that whole class of mistake harmless: however the seed
+// goes wrong, an old trade can no longer fire. Missing one because the app was closed is
+// the intended trade-off, not a gap.
+const FX_WIN_FRESH_MS = 10 * 60 * 1000
+
 // A closed trade that actually made money, sized against the equity of the account that
 // made it -- $20 is a great day on a $200 wallet and a rounding error on a $200,000 one.
 //
@@ -1325,6 +1336,12 @@ function _fxAcctEquity(addr) {
 // there already carries the wallet it came from, so a win is attributed to that wallet and
 // measured against that wallet's own value. Measuring against the nine-wallet total would
 // bury a great trade on a small account under a threshold it could never reach.
+//
+// ONE TRADE, not a session's worth. Grouping is by order -- collapseFills, the same
+// function the trade-history sheet uses, so the two can never disagree about what counts
+// as a single trade. Partial fills of one order still merge, because that is one trade;
+// separate orders stay separate, because they are not. Summing them by market, as this
+// first did, invents a number the user never saw on any single trade.
 function _fxCheckWin(key, eq) {
   const fills = state.fills ?? []
   if (!fills.length) return
@@ -1334,34 +1351,27 @@ function _fxCheckWin(key, eq) {
   if (_fxWinKey !== key || _fxWinSeen === null) { _fxWinKey = key; _fxWinSeen = newest; return }
   if (newest <= _fxWinSeen) return
 
-  // One position usually closes across several fills. Sum per wallet and coin, so a
-  // scaled-out exit is one celebration -- and so two wallets holding the same coin do not
-  // get merged into a win neither of them made.
-  const SEP = String.fromCharCode(0)
-  const byPos = new Map()
-  for (const f of fills) {
-    if ((f.time ?? 0) <= _fxWinSeen) continue
-    const pnl = parseFloat(f.closedPnl ?? 0)
-    if (!Number.isFinite(pnl) || pnl === 0) continue
-    const k = (f._acctAddr ?? '') + SEP + (f._acct ?? '') + SEP + f.coin
-    byPos.set(k, (byPos.get(k) ?? 0) + pnl)
-  }
+  const since = _fxWinSeen
   _fxWinSeen = newest
-  if (!byPos.size) return
+  const now = Date.now()
+  const rows = collapseFills(fills.filter(f => (f.time ?? 0) > since))
+    .filter(r => r.closedPnl !== 0 && now - r.time <= FX_WIN_FRESH_MS)
+  if (!rows.length) return
 
-  let bestK = null, best = 0
-  for (const [k, pnl] of byPos) if (pnl > best) { best = pnl; bestK = k }
-  if (!bestK) return
-  const [wAddr, wLabel, coin] = bestK.split(SEP)
+  // The best single trade. With the freshness window and the shared cooldown this is
+  // almost always the only candidate anyway; when two land together, announcing the
+  // larger one beats announcing both or inventing their total.
+  const best = rows.reduce((b, r) => r.net > (b?.net ?? -Infinity) ? r : b, null)
+  if (!best || best.net <= 0) return
 
   // Against the wallet that made it when we know which one that was; against the value we
   // were handed otherwise, which is the single-account case.
-  const base = wAddr ? (_fxAcctEquity(wAddr) ?? eq) : eq
-  if (best < 1 || best / base < 0.01) return
+  const base = best.acctAddr ? (_fxAcctEquity(best.acctAddr) ?? eq) : eq
+  if (best.net < 1 || best.net / base < 0.01) return
   if (!_fxGate(60000)) return
-  celebrate('win', _T('Closed in profit', 'Cerrado en ganancia'), '+$' + fmtUSD(best),
-    esc(coin) + (wLabel ? ' - ' + esc(wLabel) : '') + ' - ' +
-    (best / base * 100).toFixed(1) + '% ' + _T('of that account', 'de esa cuenta'))
+  celebrate('win', _T('Closed in profit', 'Cerrado en ganancia'), '+$' + fmtUSD(best.net),
+    esc(best.coin) + (best.acct ? ' - ' + esc(best.acct) : '') + ' - ' +
+    (best.net / base * 100).toFixed(1) + '% ' + _T('of that account', 'de esa cuenta'))
 }
 
 // All Accounts is a real account value too, and for anyone running several wallets it is
@@ -7215,14 +7225,31 @@ function _allAcctCacheLoad() {
   } catch { return null }
 }
 
+// When this cache never lands, every cold entry into All Accounts shows the blocking
+// "Combining all accounts" loader and re-fans every wallet -- which is exactly the symptom
+// reported from a nine-wallet phone. Skipping silently made a broken cache and a working
+// one look identical from the outside, so say which it was. Once per session: the point is
+// to learn the cause, not to generate traffic.
+let _allAcctCacheLogged = false
+function _allAcctCacheWhy(reason, detail) {
+  if (_allAcctCacheLogged) return
+  _allAcctCacheLogged = true
+  try {
+    window.__reportError?.(`allacct cache ${reason}: ${detail} (${_allAcctLastResults.length} wallets)`)
+  } catch {}
+}
+
 function _allAcctCachePersist() {
   if (Date.now() - _allAcctLastPersist < 60_000) return   // don't re-serialise every tick
   try {
     const json = JSON.stringify({ ts: Date.now(), results: _allAcctLastResults })
-    if (json.length > _ALLACCT_MAX_BYTES) return          // too big to store; memory cache still works
+    if (json.length > _ALLACCT_MAX_BYTES) {               // too big to store
+      _allAcctCacheWhy('too-big', `${(json.length / 1e6).toFixed(2)}MB over ${_ALLACCT_MAX_BYTES / 1e6}MB`)
+      return
+    }
     localStorage.setItem(_ALLACCT_CACHE_KEY, json)
     _allAcctLastPersist = Date.now()
-  } catch { /* quota / private mode — caching is best-effort */ }
+  } catch (e) { _allAcctCacheWhy('write-failed', String(e?.name || e).slice(0, 80)) }
 }
 
 async function loadAllAccountsDashboard() {
