@@ -36,6 +36,7 @@ import { parseArgs } from 'node:util'
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { isPaused, onPause, onResume } from './_pause.js'
+import { botCloid } from '../src/cloid.js'
 
 // ─── CLI ARGS ─────────────────────────────────────────────────────────────────
 const { values: args } = parseArgs({
@@ -275,7 +276,7 @@ async function buy(usd) {
   let result
   try {
     result = await exchange.order({
-      orders: [{ a: spot.asset, b: true, p: px.toString(), s: sz.toString(), r: false, t: { limit: { tif: 'Ioc' } } }],
+      orders: [{ c: botCloid(process.env.HLIQ_BOT), a: spot.asset, b: true, p: px.toString(), s: sz.toString(), r: false, t: { limit: { tif: 'Ioc' } } }],
       grouping: 'na',
     })
   } catch (e) { log('ERROR', `Spot buy threw: ${e.message} — USDC sits in spot, retry next cycle`); return false }

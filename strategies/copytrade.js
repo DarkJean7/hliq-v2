@@ -30,6 +30,7 @@ import { ExchangeClient, InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { ethers }    from 'ethers'
 import { parseArgs } from 'node:util'
 import { isPaused } from './_pause.js'
+import { botCloid } from '../src/cloid.js'
 
 // ─── CLI ARGS ─────────────────────────────────────────────────────────────────
 const { values: args } = parseArgs({
@@ -154,6 +155,7 @@ async function applyDelta(coin, delta, markPx, ourSzi) {
   const limitPx = isBuy ? markPx * (1 + SLIPPAGE) : markPx * (1 - SLIPPAGE)
   const result  = await exchange.order({
     orders: [{
+      c: botCloid(process.env.HLIQ_BOT),
       a: index,
       b: isBuy,
       p: roundPx(limitPx, szDecimals).toString(),

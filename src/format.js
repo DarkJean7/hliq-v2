@@ -141,7 +141,11 @@ export function parseFills(rawFills) {
     dir:       f.dir ?? '',
     hash:      f.hash ?? '',
     oid:       f.oid ?? null,   // unique per order — used to collapse partial fills (hash is 0x0…0 for many HL fills)
-    tid:       f.tid ?? null,   // unique per fill — last-resort key
+    tid:       f.tid ?? null,
+    // Which bot placed the order, when one did. Undefined for everything placed before
+    // bots started stamping it, and for anything placed by hand or from another client --
+    // absent means UNKNOWN here, never "a human did it".
+    cloid:     f.cloid ?? null,   // unique per fill — last-resort key
   }))
 }
 

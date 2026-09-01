@@ -21,6 +21,7 @@ import { ExchangeClient, InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { ethers }    from 'ethers'
 import { parseArgs } from 'node:util'
 import { isPaused } from './_pause.js'
+import { botCloid } from '../src/cloid.js'
 
 // ─── CLI ARGS ─────────────────────────────────────────────────────────────────
 const { values: args } = parseArgs({
@@ -151,6 +152,7 @@ async function placeOrder(markPx) {
 
   const result = await exchange.order({
     orders: [{
+      c: botCloid(process.env.HLIQ_BOT),
       a: index,
       b: IS_BUY,
       p: roundPx(limitPx, szDecimals).toString(),

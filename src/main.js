@@ -214,6 +214,7 @@ import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFu
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
 import { historyHtml, collapseFills } from './perfhistory.js'
 import { gzipToString, gunzipFromString } from './gzstore.js'
+import { cloidBot } from './cloid.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -6357,6 +6358,8 @@ function _computeBotPerformance(wins) {
   const fills   = state.fills ?? []
   const funding = state.funding ?? []
 
+  const _perfExact = _perfExactMode(fills)
+
   const botCoins = {}
   for (const t of PERF_TYPES) botCoins[t] = new Set()
   for (const k of Object.keys(serverStatus?._instances ?? {})) {
@@ -6378,9 +6381,27 @@ function _computeBotPerformance(wins) {
   }
 
   const ONE_HOUR = 3600000
-  const statsForCoins = coinSet => {
-    const fl       = coinSet ? fills.filter(f => coinSet.has((f.coin ?? '').toUpperCase())) : fills
-    const fu       = coinSet ? funding.filter(f => coinSet.has((f.coin ?? '').toUpperCase())) : funding
+
+  // Which fills belong to a bot.
+  //
+  // TAGGED: the order carried a client order id naming the bot that placed it, so this is
+  // exact -- a manual trade in the same market is not counted, which coin-matching could
+  // never manage.
+  //
+  // COIN: everything in a market the bot runs on. That is what this always did, and it
+  // mixes in the account owner's own trades in those markets. It stays because every fill
+  // from before bots started tagging has no cloid, and dropping them would empty the
+  // screen's whole history.
+  //
+  // A fill with no cloid is UNKNOWN, never "manual" -- it may be a bot trade from before
+  // tagging, or a hand-placed one, and nothing here can tell which.
+  const _fillsForBot = (t, coinSet) => {
+    if (_perfExact) return fills.filter(f => cloidBot(f.cloid) === t)
+    return coinSet ? fills.filter(f => coinSet.has((f.coin ?? '').toUpperCase())) : fills
+  }
+  // The numbers, from whatever set of fills it is handed. Split out so exact mode and
+  // coin mode compute identically and can only differ in what they select.
+  const statsFrom = (fl, fu) => {
     const realized = fl.reduce((s, f) => s + (f.closedPnl ?? 0), 0)
     const fees     = fl.reduce((s, f) => s + (f.fee ?? 0), 0)
     const vol      = fl.reduce((s, f) => s + (f.notional ?? 0), 0)
@@ -6396,8 +6417,18 @@ function _computeBotPerformance(wins) {
     return { trades: fl.length, realized, fees, fund, vol, net: realized - fees + fund, winRate, wins: 0, lastTs }
   }
 
+  const statsForCoins = (coinSet, t = null) => {
+    const byCoin = (arr) => coinSet ? arr.filter(f => coinSet.has((f.coin ?? '').toUpperCase())) : arr
+    if (_perfExact && t) {
+      // Funding is charged on a position, not an order, so it carries no cloid and cannot
+      // be attributed. In exact mode it is left out rather than guessed at.
+      return statsFrom(_fillsForBot(t, coinSet), [])
+    }
+    return statsFrom(byCoin(fills), byCoin(funding))
+  }
+
   const botStats = PERF_TYPES.map(t => {
-    const s = statsForCoins(botCoins[t])
+    const s = statsForCoins(botCoins[t], t)
     s.type  = t
     s.label = PERF_LABELS[t]
     s.coins = [...botCoins[t]]
@@ -6407,7 +6438,11 @@ function _computeBotPerformance(wins) {
 
   const allBotCoins = new Set()
   for (const t of PERF_TYPES) for (const c of botCoins[t]) allBotCoins.add(c)
-  const totals = statsForCoins(allBotCoins)
+  // In exact mode the total is every tagged fill, whichever bot: summing per-bot stats
+  // would double-count a market two bots both traded.
+  const totals = _perfExact
+    ? statsFrom(fills.filter(f => cloidBot(f.cloid) !== null), [])
+    : statsForCoins(allBotCoins)
   const best   = botStats.reduce((b, s) => s.net > (b?.net ?? -Infinity) ? s : b, null)
 
   // Kept for the trade-history sheet, which needs to say which bot runs a market.
@@ -6487,7 +6522,7 @@ async function renderPerformance() {
 
     <div class="perf-table-wrap">
       <div class="section-title" style="margin-bottom:8px">Per-Bot Breakdown</div>
-      <div style="font-size:10px;color:var(--muted);margin-bottom:14px">Trades are attributed to a bot by the coins it runs on — a coin traded by multiple bots (or manually) may overlap.</div>
+      ${_perfModeBar('0 0 10px')}
       <!-- No data-dragscroll here on purpose: this wraps a min-width:760px desktop table,
            which is exactly the case the !important rule exists to flatten on mobile. -->
       <div style="overflow-x:auto">
@@ -6583,15 +6618,74 @@ function _perfSeries(coins) {
 
 // Bucket attributed fills/funding per coin + rank markets by net. Shared by the
 // desktop (#perfContent) and mobile (mobVContent) performance views.
+// Exact attribution, or the old coin-matching.
+//
+// Exact counts only fills whose order carried a bot's client order id, so a manual trade
+// in a market a bot runs on is no longer counted as the bot's. It can only see trades
+// placed after bots started tagging -- everything older has no cloid, and there is no way
+// to tell a pre-tagging bot trade from a hand-placed one.
+//
+// Auto by default: exact the moment there is anything tagged to show, coin-matching until
+// then, so the screen is never empty while waiting for the first tagged trade. The user
+// can pin either.
+const PERF_EXACT_KEY = 'hliq_perf_exact'
+function _perfExactMode(fills) {
+  let pref = null
+  try { pref = localStorage.getItem(PERF_EXACT_KEY) } catch {}
+  if (pref === '1') return true
+  if (pref === '0') return false
+  return (fills ?? []).some(f => cloidBot(f.cloid) !== null)
+}
+/** True when there is any tagged fill at all -- i.e. whether exact is even offerable. */
+function _perfHasTagged() { return (state.fills ?? []).some(f => cloidBot(f.cloid) !== null) }
+
+/**
+ * The mode control, and a sentence saying what the numbers above it actually mean.
+ *
+ * It says which of the two it is doing rather than leaving the reader to assume, because
+ * the difference is the whole question: one of them counts the account owner's own trades
+ * as the bot's, and the other cannot see anything from before bots started tagging.
+ */
+function _perfModeBar(pad) {
+  const exact  = _perfExactMode(state.fills ?? [])
+  const tagged = _perfHasTagged()
+  const btn = (on, label, val) =>
+    `<button onclick="window.__perfSetExact(${val})" style="padding:4px 11px;border:none;font-size:11px;font-weight:700;cursor:pointer;background:${on ? 'var(--accent)' : 'transparent'};color:${on ? '#000' : 'var(--fg-2)'}">${label}</button>`
+  const note = exact
+    ? _T('Only trades a bot placed. Trades from before bots began tagging their orders are not counted — they cannot be told apart from manual ones.',
+         'Solo operaciones colocadas por un bot. Las anteriores al etiquetado no se cuentan: no se pueden distinguir de las manuales.')
+    : _T('Attributed by the coins each bot runs on — your own manual trades in those markets are counted too.',
+         'Atribuido por las monedas de cada bot: tus operaciones manuales en esos mercados también cuentan.')
+  return `
+    <div style="padding:${pad};display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+      <div style="display:inline-flex;border:1px solid var(--border2);border-radius:7px;overflow:hidden">
+        ${btn(exact, _T('Bot only', 'Solo bots'), true)}${btn(!exact, _T('All activity', 'Toda la actividad'), false)}
+      </div>
+      ${!tagged ? `<span style="font-size:10px;color:var(--muted)">${_T('No tagged trades yet', 'Aún sin operaciones etiquetadas')}</span>` : ''}
+    </div>
+    <div style="font-size:10px;color:var(--muted);padding:${pad}">${note}</div>`
+}
+
+window.__perfSetExact = function (on) {
+  try { localStorage.setItem(PERF_EXACT_KEY, on ? '1' : '0') } catch {}
+  if (_isMobView()) _mobVRenderContent(); else renderPerformance()
+}
+
 function _perfBuildData(allBotCoins) {
-  const fills = state.fills ?? [], funding = state.funding ?? []
+  const all = state.fills ?? [], funding = state.funding ?? []
+  // In exact mode a market's card shows only what a bot did there, so the number on the
+  // card and the trades in its history sheet stay the same statement.
+  const exact = _perfExactMode(all)
+  const fills = exact ? all.filter(f => cloidBot(f.cloid) !== null) : all
   const fillsByCoin = {}, fundByCoin = {}
   for (const f of fills) {
     const c = (f.coin ?? '').toUpperCase()
     if (!allBotCoins.has(c)) continue
     ;(fillsByCoin[c] ||= []).push(f)
   }
-  for (const f of funding) {
+  // Funding is charged on a position, not an order, so it carries no cloid. Excluded in
+  // exact mode rather than attributed by guesswork.
+  for (const f of (exact ? [] : funding)) {
     const c = (f.coin ?? '').toUpperCase()
     if (!allBotCoins.has(c)) continue
     ;(fundByCoin[c] ||= []).push(f)
@@ -17127,7 +17221,7 @@ async function _mobVFetchPerformance(el) {
         <div style="position:relative;height:120px"><canvas id="mperfChart-${idSafe(c)}" style="cursor:crosshair"></canvas></div>
       </div>`).join('')}
 
-    <div style="font-size:10px;color:var(--muted);padding:8px 4px">Trades are attributed to a bot by the coins it runs on — a coin traded by multiple bots (or manually) may overlap.</div>
+    ${_perfModeBar('8px 4px')}
     <div class="mob-v-setting-group">
       ${botStats.map(s => `<div class="mob-v-setting-row">
         <div>

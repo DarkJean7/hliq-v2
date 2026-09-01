@@ -25,6 +25,7 @@ import { ExchangeClient, InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { ethers }    from 'ethers'
 import { parseArgs } from 'node:util'
 import { isPaused, onPause, onResume } from './_pause.js'
+import { botCloid } from '../src/cloid.js'
 
 // ─── CLI ARGS ─────────────────────────────────────────────────────────────────
 const { values: args } = parseArgs({
@@ -181,7 +182,7 @@ async function detectFills(levelOrders) {
 async function placeOrder(levelIdx, side, sz) {
   const px = PRICES[levelIdx]
   const result = await exchange.order({
-    orders: [{ a: ASSET, b: side === 'buy', p: px.toString(), s: sz.toString(), r: false, t: { limit: { tif: 'Alo' } } }],
+    orders: [{ c: botCloid(process.env.HLIQ_BOT), a: ASSET, b: side === 'buy', p: px.toString(), s: sz.toString(), r: false, t: { limit: { tif: 'Alo' } } }],
     grouping: 'na',
   })
   const statuses = result?.response?.data?.statuses ?? []

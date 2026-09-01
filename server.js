@@ -311,7 +311,7 @@ function startStrategy(type, extraArgs = [], agentKey = '', address = '', instan
   const resumeArgs = (resume && (type === 'liqguard' || type === 'levbrake' || type === 'accumulator')) ? ['--resume'] : []
   // Key is passed via env (AGENT_KEY), NOT argv — so it never shows in `ps aux`.
   const argv = [SCRIPTS[type], ...addressArgs, ...extraArgs, ...resumeArgs]
-  const proc = spawn('node', argv, { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey } })
+  const proc = spawn('node', argv, { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey, HLIQ_BOT: type } })
 
   // Keep the spawn inputs so /api/restart can relaunch with the exact same
   // config (incl. agent key, which lives only in memory) without the UI re-sending.
@@ -1638,7 +1638,7 @@ const server = createServer(async (req, res) => {
 
     const argv = [script, ...(b.address ? ['--address', b.address] : []), ...(b.args ?? []), '--plan']
     const plan = await new Promise((resolve) => {
-      const proc = spawn('node', argv, { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey } })
+      const proc = spawn('node', argv, { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey, HLIQ_BOT: type } })
       let out = '', err = ''
       // A preview is something a person is waiting on, so it gets a short leash — and the
       // process is killed rather than left running if it overruns.

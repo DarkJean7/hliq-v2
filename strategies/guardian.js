@@ -39,6 +39,7 @@ import { parseArgs } from 'node:util'
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { isPaused, onPause, onResume } from './_pause.js'
+import { botCloid } from '../src/cloid.js'
 
 // ─── CLI ARGS ─────────────────────────────────────────────────────────────────
 const { values: args } = parseArgs({
@@ -322,7 +323,7 @@ async function fireLevBrake(pos, markPx) {
     log('DRY-RUN', `Would REDUCE ${sz} ${COIN} (${(REDUCE_PCT * 100).toFixed(0)}%) reduce-only @ ~$${px} (mark $${markPx}, liq $${oldLiq})`)
   } else {
     const result   = await exchange.order({
-      orders: [{ a: index, b: isBuy, p: px.toString(), s: sz.toString(), r: true, t: { limit: { tif: 'Ioc' } } }],
+      orders: [{ c: botCloid(process.env.HLIQ_BOT), a: index, b: isBuy, p: px.toString(), s: sz.toString(), r: true, t: { limit: { tif: 'Ioc' } } }],
       grouping: 'na',
     })
     const statuses = result?.response?.data?.statuses ?? []

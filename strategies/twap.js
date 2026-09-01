@@ -17,6 +17,7 @@ import { ExchangeClient, InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { ethers }    from 'ethers'
 import { parseArgs } from 'node:util'
 import './_pause.js'   // installs SIGUSR1/2 handlers so pause/resume can't kill this process
+import { botCloid } from '../src/cloid.js'
 
 // ─── CLI ARGS ─────────────────────────────────────────────────────────────────
 const { values: args } = parseArgs({
@@ -140,6 +141,7 @@ async function placeSlice(markPx, sliceUsd) {
 
   const result = await exchange.order({
     orders: [{
+      c: botCloid(process.env.HLIQ_BOT),
       a: index,
       b: IS_BUY,
       p: roundPx(limitPx, szDecimals).toString(),

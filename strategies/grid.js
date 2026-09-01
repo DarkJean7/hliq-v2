@@ -26,6 +26,7 @@ import { ExchangeClient, InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { ethers }    from 'ethers'
 import { parseArgs } from 'node:util'
 import { isPaused, onPause, onResume } from './_pause.js'
+import { botCloid } from '../src/cloid.js'
 
 // ─── CLI ARGS ─────────────────────────────────────────────────────────────────
 const { values: args } = parseArgs({
@@ -312,6 +313,7 @@ async function placeOrder(levelIdx, side, sz, reduceOnly) {
 
   const result = await exchange.order({
     orders: [{
+      c: botCloid(process.env.HLIQ_BOT),
       a: index,
       b: side === 'buy',
       p: px.toString(),
@@ -368,7 +370,7 @@ async function closeAtBoundary(markPx, levelOrders) {
   log('CLOSE', `${bound} hit (mark $${markPx}) — closing ${IS_SHORT ? 'short' : 'long'} ${openSz} ${COIN} @ $${closePx} (IOC)`)
   try {
     const result   = await exchange.order({
-      orders: [{ a: index, b: IS_SHORT, p: closePx.toString(), s: closeSz.toString(), r: true, t: { limit: { tif: 'Ioc' } } }],
+      orders: [{ c: botCloid(process.env.HLIQ_BOT), a: index, b: IS_SHORT, p: closePx.toString(), s: closeSz.toString(), r: true, t: { limit: { tif: 'Ioc' } } }],
       grouping: 'na',
     })
     const statuses = result?.response?.data?.statuses ?? []
