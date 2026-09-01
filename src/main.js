@@ -217,6 +217,7 @@ import { gzipToString, gunzipFromString } from './gzstore.js'
 import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
 import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
+import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -6801,6 +6802,7 @@ function switchTab(name, btn) {
   }
 
   if (name === 'replay')     _repRender(_viewHost('deskReplay'))
+  if (name === 'simulator')  _simRender(_viewHost('deskSim'))
   if (name === 'settings') { _syncSettingsTab(); _applyDevMode() }
   if (name === 'leaderboard') {
     const root = document.getElementById('leaderboardRoot')
@@ -6848,7 +6850,7 @@ window.__mobMoreTab = function(name) {
   const backdrop = document.getElementById('mobMoreBackdrop')
   drawer?.classList.remove('open')
   backdrop?.classList.remove('open')
-  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'pulse', 'allocation', 'heatmap', 'analysis', 'replay'])
+  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'pulse', 'allocation', 'heatmap', 'analysis', 'replay', 'simulator'])
   if (mobileTabs.has(name)) {
     // Reached deliberately from the menu, Strats opens full screen. It is the densest view
     // in the app — a bot list, a config form and a running-instance list — and half a
@@ -9490,7 +9492,7 @@ const _MOBV_NAV_ORDER = ['trades', 'positions', 'orders', 'outcomes', 'spot', 's
 // strip / sub-tabs) is hidden and the view renders its own sticky header + × back
 // button instead of sitting in the bottom half. Shared by the chrome-hide logic and
 // the watch-strip visibility check so they never drift apart.
-const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 'transfers', 'trades', 'tokens', 'leaderboard', 'allocation', 'analysis', 'performance', 'replay'])
+const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 'transfers', 'trades', 'tokens', 'leaderboard', 'allocation', 'analysis', 'performance', 'replay', 'simulator'])
 
 // Sticky full-page header with a × that returns to the home view. Used by every
 // full-screen tab so they share one look.
@@ -15024,6 +15026,215 @@ window.__replayBack = function() {
   switchTab('portfolio', null)
 }
 
+// ── TRADE SIMULATOR ───────────────────────────────────────────────────────────
+//
+// A backtest over Hyperliquid candles: set the rule, run it, read what it would have done.
+// The arithmetic is all in backtest.js -- this fetches the candles, collects the form and
+// prints the answer. Deliberately plain: it is a report, not a dashboard.
+
+const SIM_KEY = 'hliq_sim'
+let _simCoin = 'BTC'
+let _simIv   = '1h'
+let _simCount = 2000
+let _simParams = { ...BT_DEFAULTS }
+let _simResult = null
+let _simBusy = false
+let _simError = null
+
+try {
+  const s = JSON.parse(localStorage.getItem(SIM_KEY) || '{}')
+  if (typeof s.coin === 'string' && s.coin) _simCoin = s.coin
+  if (typeof s.iv === 'string' && s.iv) _simIv = s.iv
+  if (Number.isFinite(+s.count)) _simCount = +s.count
+  if (s.params && typeof s.params === 'object') _simParams = coerceParams(s.params)
+} catch {}
+function _simSave() {
+  try {
+    localStorage.setItem(SIM_KEY, JSON.stringify({
+      coin: _simCoin, iv: _simIv, count: _simCount, params: _simParams }))
+  } catch {}
+}
+
+const SIM_IVS = ['1m', '5m', '15m', '1h', '4h', '1d']
+
+/** Read every box at once, so one run cannot use a mix of old and new values. */
+function _simCollect() {
+  const raw = {}
+  for (const f of BT_FIELDS) raw[f.key] = document.getElementById('sim_' + f.key)?.value
+  for (const c of BT_CHOICES) raw[c.key] = document.getElementById('sim_' + c.key)?.value
+  _simParams = coerceParams(raw)
+  const cnt = parseInt(document.getElementById('sim_count')?.value ?? '', 10)
+  if (Number.isFinite(cnt)) _simCount = Math.max(50, Math.min(5000, cnt))
+  const coin = String(document.getElementById('sim_coin')?.value ?? '').trim().toUpperCase()
+  if (coin) _simCoin = coin
+  _simSave()
+}
+
+window.__simSetIv = function(v) { _simIv = v; _simSave(); _simRender() }
+
+window.__simReset = function() {
+  _simParams = { ...BT_DEFAULTS }
+  _simResult = null
+  _simError = null
+  _simSave()
+  _simRender()
+}
+
+window.__simRun = async function() {
+  if (_simBusy) return
+  _simCollect()
+  _simBusy = true
+  _simError = null
+  _simResult = null
+  _simRender()
+  try {
+    // Ask for the window the candle count implies, with room to spare -- Hyperliquid caps a
+    // response at 5000 bars, and asking from a start time is the only way to choose which.
+    const ms = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 4 * 3600e3, '1d': 86400e3 }[_simIv] ?? 3600e3
+    const start = Date.now() - _simCount * ms * 1.2
+    const raw = await fetchCandles(_simCoin, _simIv, start)
+    if (!Array.isArray(raw) || raw.length < 60) {
+      // Distinguishable from a bad rule: too little data is not a result.
+      _simError = _T('Not enough candle history for that market and interval.',
+                     'No hay suficiente historial para ese mercado e intervalo.')
+    } else {
+      _simResult = runBacktest(raw.slice(-_simCount), _simParams)
+    }
+  } catch (e) {
+    _simError = String(e?.message ?? e).slice(0, 160)
+  }
+  _simBusy = false
+  _simRender()
+}
+
+function _simFieldHtml(f) {
+  const v = _simParams[f.key]
+  return `<label style="display:block">
+    <div style="display:flex;align-items:baseline;gap:5px">
+      <span style="font-size:11px;font-weight:700;color:var(--fg-2)">${esc(f.label)}</span>
+      <span style="font-size:10px;color:var(--muted)">${esc(f.unit)}</span>
+    </div>
+    <input id="sim_${f.key}" type="number" step="${f.step}" value="${v}"
+      style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">
+    <div style="font-size:10px;color:var(--muted);margin-top:3px;line-height:1.35">${esc(f.hint)}</div>
+  </label>`
+}
+
+function _simChoiceHtml(c) {
+  return `<label style="display:block">
+    <div style="font-size:11px;font-weight:700;color:var(--fg-2)">${esc(c.label)}</div>
+    <select id="sim_${c.key}"
+      style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:12.5px">
+      ${c.options.map(([k, lbl]) => `<option value="${k}"${_simParams[c.key] === k ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}
+    </select>
+  </label>`
+}
+
+function _simResultHtml() {
+  if (_simBusy) return `<div style="padding:22px 4px;font-size:12px;color:var(--muted)">${_T('Running…', 'Ejecutando…')}</div>`
+  if (_simError) return `<div style="padding:14px 12px;border:1px solid var(--red);border-radius:10px;font-size:12px;color:var(--red)">${esc(_simError)}</div>`
+  if (!_simResult) return ''
+  const r = _simResult
+  const money = (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v))
+  const signed = (v) => (v < 0 ? '-$' : '+$') + fmtUSD(Math.abs(v))
+  const when = (t) => t ? new Date(t).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
+  const row = (label, value, colour = '') =>
+    `<div style="display:flex;gap:10px;padding:5px 0;border-bottom:1px solid var(--border)">
+      <span style="font-size:11.5px;color:var(--muted);flex:1">${label}</span>
+      <span style="font-family:var(--font-mono);font-size:12.5px;font-weight:700;${colour ? `color:${colour}` : ''}">${value}</span>
+    </div>`
+  const tone = (v) => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : ''
+
+  // Stated, not buried: both change the result more than most of the boxes above do.
+  const caveats = [
+    r.params.baselineLookback === 0
+      ? _T('Baseline uses the whole sample, including candles after each trade. Not a result anyone could have traded.',
+           'La base usa toda la muestra, incluidas velas posteriores a cada operación.')
+      : '',
+    r.params.ambiguous === 'win'
+      ? _T('Candles that covered both levels were counted as wins. The order inside a candle is unknowable.',
+           'Las velas que tocaron ambos niveles cuentan como ganadas.')
+      : '',
+    r.unresolved > 0
+      ? _T(`${r.unresolved} trade${r.unresolved === 1 ? '' : 's'} never hit either level before the data ended.`,
+           `${r.unresolved} operación(es) no alcanzaron ningún nivel antes del final.`)
+      : '',
+  ].filter(Boolean)
+
+  return `
+    <div style="font-size:11px;font-weight:800;color:var(--fg-2);text-transform:uppercase;letter-spacing:.08em;margin:18px 0 8px">${_T('Result', 'Resultado')}</div>
+    <div style="border:1px solid var(--border2);border-radius:12px;padding:10px 12px;background:var(--panel)">
+      ${row(_T('Market', 'Mercado'), `${esc(_simCoin)} · ${esc(_simIv)}`)}
+      ${row(_T('Candles', 'Velas'), `${r.candles}`)}
+      ${row(_T('Period', 'Periodo'), `${esc(when(r.from))} → ${esc(when(r.to))}`)}
+      ${row(_T('Starting balance', 'Balance inicial'), money(r.startBalance))}
+      ${row(_T('Ending balance', 'Balance final'), money(r.balance))}
+      ${row(_T('Net PnL', 'PnL neto'), signed(r.netPnl), tone(r.netPnl))}
+      ${row(_T('Return', 'Retorno'), r.roe == null ? '—' : (r.roe >= 0 ? '+' : '') + r.roe.toFixed(2) + '%', tone(r.roe ?? 0))}
+      ${row(_T('Peak balance', 'Balance máximo'), money(r.peak))}
+      ${row(_T('Max drawdown', 'Caída máxima'), '-' + r.maxDrawdown.toFixed(2) + '%', r.maxDrawdown > 0 ? 'var(--red)' : '')}
+      ${row(_T('Trades', 'Operaciones'), `${r.tradesMade}`)}
+      ${row(_T('Won / lost', 'Ganadas / perdidas'), `${r.won} / ${r.lost}`)}
+      ${row(_T('Unresolved', 'Sin resolver'), `${r.unresolved}`)}
+      ${row(_T('Win rate', 'Aciertos'), r.winRate == null ? '—' : r.winRate.toFixed(1) + '%')}
+      ${row(_T('Avg per trade', 'Media por operación'), r.tradesMade ? signed(r.avgPerTrade) : '—', tone(r.avgPerTrade))}
+    </div>
+    ${caveats.length ? `<div style="margin-top:10px;border:1px solid var(--orange,#f59e0b);border-radius:10px;padding:9px 11px">
+      ${caveats.map(c => `<div style="font-size:11px;color:var(--orange,#f59e0b);line-height:1.45">${esc(c)}</div>`).join('')}
+    </div>` : ''}
+    ${r.tradesMade === 0 ? `<div style="margin-top:10px;font-size:11.5px;color:var(--muted);line-height:1.45">${
+      _T('No candle reached that entry category. Lower it, or use a longer baseline window.',
+         'Ninguna vela alcanzó esa categoría. Baja el umbral o alarga la ventana base.')}</div>` : ''}`
+}
+
+function _simRender(el) {
+  const host = el ?? _viewHost('deskSim')
+  if (!host) return
+  host.innerHTML = `${_mobVFullHeader(_T('Trade Simulator', 'Simulador'))}
+    <div style="padding:10px 14px 30px">
+      <div style="font-size:11.5px;color:var(--muted);line-height:1.45;margin-bottom:12px">${
+        _T('Replay a rule over past Hyperliquid candles. A candle is classified by how large its range is against a rolling baseline; a big enough one opens a trade in its own direction.',
+           'Prueba una regla sobre velas pasadas de Hyperliquid. Cada vela se clasifica por su rango frente a una base móvil.')}</div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <label style="display:block">
+          <div style="font-size:11px;font-weight:700;color:var(--fg-2)">${_T('Market', 'Mercado')}</div>
+          <input id="sim_coin" type="text" value="${esc(_simCoin)}" autocapitalize="characters" spellcheck="false"
+            style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">
+        </label>
+        <label style="display:block">
+          <div style="font-size:11px;font-weight:700;color:var(--fg-2)">${_T('Candles', 'Velas')}</div>
+          <input id="sim_count" type="number" step="100" value="${_simCount}"
+            style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">
+        </label>
+      </div>
+
+      <div style="font-size:11px;font-weight:700;color:var(--fg-2);margin:12px 0 5px">${_T('Interval', 'Intervalo')}</div>
+      <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:4px">${
+        SIM_IVS.map(v => `<button onclick="window.__simSetIv('${v}')" style="flex-shrink:0;padding:5px 12px;border-radius:999px;border:1px solid ${
+          v === _simIv ? 'var(--accent)' : 'var(--border2)'};background:${v === _simIv ? 'var(--accent)' : 'transparent'};color:${
+          v === _simIv ? '#000' : 'var(--fg-2)'};font-size:11.5px;font-weight:700;cursor:pointer">${v}</button>`).join('')}</div>
+
+      <div style="font-size:11px;font-weight:800;color:var(--fg-2);text-transform:uppercase;letter-spacing:.08em;margin:18px 0 8px">${_T('The rule', 'La regla')}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 10px">
+        ${BT_FIELDS.map(_simFieldHtml).join('')}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 10px;margin-top:12px">
+        ${BT_CHOICES.map(_simChoiceHtml).join('')}
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button onclick="window.__simRun()" ${_simBusy ? 'disabled' : ''}
+          style="flex:1;padding:11px;border-radius:10px;border:none;background:var(--accent);color:#000;font-size:14px;font-weight:800;cursor:${_simBusy ? 'default' : 'pointer'};opacity:${_simBusy ? '.6' : '1'}">${
+          _simBusy ? _T('Running…', 'Ejecutando…') : _T('Run backtest', 'Ejecutar')}</button>
+        <button onclick="window.__simReset()"
+          style="padding:11px 14px;border-radius:10px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:13px;font-weight:700;cursor:pointer">${_T('Defaults', 'Predeterminado')}</button>
+      </div>
+
+      ${_simResultHtml()}
+    </div>`
+}
+
 window.__openReplay = function() {
   _repMode = 'account'
   _repSave()
@@ -16942,6 +17153,10 @@ function _mobVRenderContent(tick = false) {
 
   if (_mobVActiveTab === 'analysis') {
     _anaRender(el)
+    return
+  }
+  if (_mobVActiveTab === 'simulator') {
+    _simRender(el)
     return
   }
   if (_mobVActiveTab === 'replay') {
@@ -20389,7 +20604,7 @@ window.mobVGoTab = function(tabName) {
   if (tabName === 'trades') _mobVTradesPage = 0   // start History at the latest page
   if (tabName === 'allocation') _allocView = 'allocation'   // the donut pill always opens the donut
   document.querySelectorAll('.mob-v-bottom-btn').forEach(b => b.classList.remove('active'))
-  const _mobTabs = new Set(['trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'pulse', 'allocation', 'analysis', 'replay'])
+  const _mobTabs = new Set(['trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'pulse', 'allocation', 'analysis', 'replay', 'simulator'])
   if (_mobTabs.has(tabName)) {
     _mobVActiveTab = tabName
     document.querySelectorAll('.mob-v-tab').forEach(b => b.classList.remove('active'))
