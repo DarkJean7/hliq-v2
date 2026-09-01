@@ -15,7 +15,9 @@ t('pulse has a pane', htm.includes('id="tab-pulse"') && htm.includes('id="deskPu
 t('analysis has a pane', htm.includes('id="tab-analysis"') && htm.includes('id="deskAnalysis"'))
 t('performance already had one', htm.includes('id="tab-performance"'))
 t('switchTab draws pulse', cli.includes("if (name === 'pulse') {") && cli.includes("_pulseRender(_ph)"))
-t('and analysis', cli.includes("if (name === 'analysis')   _anaRender(_viewHost('deskAnalysis'))"))
+t('and analysis routes into the Pulse view, so it keeps the segment header',
+  cli.includes("if (name === 'analysis') { _pulseSeg = 'analysis'; name = 'pulse' }"))
+t('on mobile too, from the same rewrite', (cli.match(/_pulseSeg = 'analysis'; name = 'pulse'/g) || []).length === 2)
 t('pulse shows a placeholder until its first load lands', cli.includes("if (!_pulseData && _ph) _ph.innerHTML"))
 
 console.log(String.fromCharCode(10) + '-- a view repaints the container it is actually in --')

@@ -6775,6 +6775,10 @@ function _stopTabTimers() {
 }
 
 function switchTab(name, btn) {
+  // Analysis is a SEGMENT of Pulse, not a tab of its own. Sending it to the Pulse pane
+  // rather than the Analysis one is what makes the three-segment header work: __pulseSetSeg
+  // renders into deskPulse, and from a hidden Analysis pane that host does not exist.
+  if (name === 'analysis') { _pulseSeg = 'analysis'; name = 'pulse' }
   if (_activeTab === 'outcomes' && name !== 'outcomes') _stopOcCountdown()
   if (name !== 'replay') _repLeave()
   _stopTabTimers()
@@ -6795,7 +6799,7 @@ function switchTab(name, btn) {
     if (!_pulseData && _ph) _ph.innerHTML = `<div class="mob-v-empty">${_T('Loading…', 'Cargando…')}</div>`
     _pulseRender(_ph)
   }
-  if (name === 'analysis')   _anaRender(_viewHost('deskAnalysis'))
+
   if (name === 'replay')     _repRender(_viewHost('deskReplay'))
   if (name === 'settings') { _syncSettingsTab(); _applyDevMode() }
   if (name === 'leaderboard') {
@@ -6836,6 +6840,10 @@ window.__mobMore = function() {
   backdrop?.classList.toggle('open', open)
 }
 window.__mobMoreTab = function(name) {
+  // Analysis is one of the three segments of the Pulse view, not a separate place. Opening
+  // it from the menu used to render the bare Analysis screen, which left the reader inside
+  // a set of three tabs with no way to see the other two. Same view, segment preselected.
+  if (name === 'analysis') { _pulseSeg = 'analysis'; name = 'pulse' }
   const drawer = document.getElementById('mobMoreDrawer')
   const backdrop = document.getElementById('mobMoreBackdrop')
   drawer?.classList.remove('open')
