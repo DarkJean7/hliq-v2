@@ -28213,6 +28213,14 @@ function _lazyResolveSettledOutcome(coin) {
     .catch(e => { _hl429(e) })
 }
 window._ocCoinLabel = _ocCoinLabel   // reused by render.js (history, overview, manage tables)
+// Spot markets come back from HL as an index -- "@107" -- and only this file holds the
+// map that turns one into a ticker. render.js needs it for the calendar, where a spot buy
+// was showing as "@107" with no way to tell which token it was.
+window._spotLabel = (coin) => _spotNameMap[coin] ?? null
+// The map is only filled when something opens a coin picker, so a session that goes
+// straight to the Calendar has nothing to resolve "@107" with. This lets a view ask for
+// it and repaint once it lands, rather than showing an index forever.
+window._ensureSpotNames = () => _ensureMarketData()
 
 // ─── HIP-4 multi-outcome (price bucket) markets ───────────────────────────────
 //

@@ -1925,6 +1925,13 @@ tbody td {
   border-bottom: 1px solid rgba(255,255,255,0.04);
 }
 .cal-detail-trade:last-child { border-bottom: none; }
+/* Time of day, first in the row. Fixed width and tabular figures so the column stays
+   straight down the list -- a ragged left edge is what makes a timestamped list hard to
+   scan. It is the least important thing in the row, so it is the quietest. */
+.cal-detail-time {
+  font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--fg-3, var(--muted));
+  font-variant-numeric: tabular-nums; min-width: 46px; flex-shrink: 0; white-space: nowrap;
+}
 .cal-detail-coin { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; min-width: 60px; }
 .cal-detail-meta { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); flex: 1; }
 .cal-detail-pnl  { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; text-align: right; }

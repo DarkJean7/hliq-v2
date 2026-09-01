@@ -6,8 +6,21 @@ import { renderOverviewChart } from './charts.js'
 // market name + side via main.js's ocTokenMap (window._ocCoinLabel). Falls back to
 // the plain HIP-3-stripped label. Use this for any user-facing coin name.
 function _lbl(coin) {
+  // Spot markets arrive as an index, "@107", which names nothing to a reader. Only
+  // main.js holds the map that resolves one to a ticker, so ask it rather than keeping a
+  // second copy of that table here. Falls through when it cannot answer -- an index is
+  // still better than a blank.
+  if (typeof coin === 'string' && coin.charCodeAt(0) === 64 && typeof window !== 'undefined') {
+    const spot = window._spotLabel?.(coin)
+    if (spot) return spot
+  }
   return (typeof window !== 'undefined' && window._ocCoinLabel) ? window._ocCoinLabel(coin) : coinLabel(coin)
 }
+
+// Time of day for a calendar row. The day is already known from the cell that was
+// clicked, so the date would be noise -- the hour and minute are the new information.
+const _calTime = (ms) => !ms ? '' : new Date(ms).toLocaleTimeString(undefined,
+  { hour: '2-digit', minute: '2-digit' })
 // Escape for a single-quoted JS string inside a double-quoted HTML onclick attr.
 const _jss = s => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;')
 
@@ -2018,6 +2031,7 @@ export function calDayClick(key, rootId) {
             ? `<span class="${netPnl >= 0 ? 'pos' : 'neg'} cal-detail-pnl">${netPnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(netPnl))}</span>`
             : '<span class="cal-detail-pnl" style="color:var(--muted)">—</span>'
         return `<div class="cal-detail-trade">
+          <span class="cal-detail-time">${_calTime(t.time)}</span>
           <span class="cal-detail-coin">${esc(_lbl(t.coin))}</span>
           <span class="dir-badge ${_dirBadgeCls(t.dir)}">${esc(t.dir || '')}</span>
           ${t._acct ? `<span class="acct-pill">${esc(t._acct)}</span>` : ''}
@@ -2035,6 +2049,7 @@ export function calDayClick(key, rootId) {
         const isDeposit = t === 'deposit' || (t === 'send' && e.delta.token === 'USDC')
         const amt       = parseFloat(isDeposit ? (t === 'deposit' ? e.delta.usdc : e.delta.usdcValue) : e.delta.usdc) || 0
         return `<div class="cal-detail-tx">
+          <span class="cal-detail-time">${_calTime(e.time)}</span>
           <span class="badge ${isDeposit ? 'badge-deposit' : 'badge-withdraw'}">${isDeposit ? 'Deposit' : 'Withdrawal'}</span>
           ${e._acct ? `<span class="acct-pill">${esc(e._acct)}</span>` : ''}
           <span class="${isDeposit ? 'pos' : 'neg'}" style="font-family:'JetBrains Mono',monospace;font-weight:700">${isDeposit ? '+' : '-'}$${fmtUSD(amt)} USDC</span>
@@ -2043,6 +2058,25 @@ export function calDayClick(key, rootId) {
     </div>` : ''
 
   const dayPnl = data?.pnl ?? 0
+
+  // A spot fill names its market by index. If any are still unresolved, ask for the map
+  // and repaint this day when it arrives -- but only if the same day is still open, so a
+  // late answer cannot overwrite a day the user has since moved to.
+  if (trades.some(t => typeof t.coin === 'string' && t.coin.charCodeAt(0) === 64 &&
+                       !(typeof window !== 'undefined' && window._spotLabel?.(t.coin)))) {
+    try {
+      window._ensureSpotNames?.()?.then(() => {
+        if (detail.dataset.activeKey !== key) return
+        // Clear both guards: activeKey so the call re-opens rather than toggling shut, and
+        // the double-tap guard, which would otherwise swallow this as a repeat click when
+        // the map was already loading and the promise resolves quickly.
+        detail.dataset.activeKey = ''
+        _calClickGuard = { key: null, ts: 0 }
+        calDayClick(key, rootId)
+      })
+    } catch {}
+  }
+
   detail.innerHTML = `
     <div class="cal-detail-header">
       <div class="cal-detail-date">${dateLabel}</div>
