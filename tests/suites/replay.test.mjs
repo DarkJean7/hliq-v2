@@ -213,11 +213,13 @@ t('it is netted of fees, like every other figure here',
 t('all three are on screen', ['Volume', 'Fees', 'Profit factor'].every(k => cli.includes(`_T('${k}'`)))
 
 console.log(String.fromCharCode(10) + '-- the expand control has its own space --')
-// Floating it in the top-right corner put it on top of the PnL, which is the number the
-// screen exists to show.
-t('it is inline in the header, not floating over it', !cli.includes('position:absolute;top:8px;right:8px') &&
-  cli.includes("${big ? '' : `<button onclick=\"window.__repExpand(true)\""))
-t('and is hidden once the chart is already open', cli.includes("${big ? '' :"))
+// It floated in a corner of the stage, over the PnL. It lives in the view's own header now,
+// with the back button and the title, where it competes with nothing.
+t('it is in the view header, not floating over the chart',
+  !cli.includes('position:absolute;top:8px;right:8px') &&
+  cli.slice(cli.indexOf('function _repRender')).slice(0, 2600).includes('window.__repExpand(true)'))
+t('and the stage no longer draws one of its own',
+  !cli.slice(cli.indexOf('function _repStageHtml')).slice(0, 4000).includes('__repExpand'))
 
 console.log(String.fromCharCode(10) + '-- the headline describes the chart --')
 // Reported: it read +$897 then +$1,323 while the line fell. Both figures were correct and
@@ -275,7 +277,8 @@ t('switching style holds the position in time, not in frames',
 
 console.log(String.fromCharCode(10) + '-- and a way back --')
 // The header close drops to the home screen, which is not where you came from.
-t('there is a back button', cli.includes('window.__replayBack') && cli.includes("← ${_T('Portfolio', 'Cartera')}"))
+t('there is a back button', cli.includes('window.__replayBack') &&
+  cli.slice(cli.indexOf('function _repRender(el)')).slice(0, 3000).includes('window.__replayBack()'))
 t('it returns to the portfolio, where Replay is opened from',
   cli.includes("if (_isMobView()) { window.__mobMoreTab('portfolio'); return }"))
 t('and stops the player on the way out', cli.includes('window.__replayBack = function() {') &&
