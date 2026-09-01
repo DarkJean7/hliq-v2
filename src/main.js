@@ -215,6 +215,7 @@ import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
 import { historyHtml, collapseFills } from './perfhistory.js'
 import { gzipToString, gunzipFromString } from './gzstore.js'
 import { cloidBot } from './cloid.js'
+import { signalChartSvg } from './sigchart.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -13970,6 +13971,27 @@ function _sigWeeklyCloses(coin) {
   return [...byWeek.entries()].sort((a, b) => a[0] - b[0]).map(e => e[1])
 }
 
+// The same series as _sigCloses and _sigWeeklyCloses, but keeping the timestamps -- a
+// chart needs an x axis, a reading does not.
+function _sigPoints(coin, iv, ms) {
+  const rawK = _pulseCandles[coin + '|' + iv]
+  if (!Array.isArray(rawK)) return null
+  const cut = ms ? rawK.filter(k => +k.t >= Date.now() - ms) : rawK
+  return cut.map(k => [+k.t, parseFloat(k.c)]).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]))
+}
+
+function _sigWeeklyPoints(coin) {
+  const rawK = _pulseCandles[coin + '|1d']
+  if (!Array.isArray(rawK)) return null
+  const byWeek = new Map()
+  for (const k of rawK) {
+    const t = +k.t, c = parseFloat(k.c)
+    if (!Number.isFinite(t) || !Number.isFinite(c)) continue
+    byWeek.set(Math.floor((t - 345600000) / 604800000), [t, c])
+  }
+  return [...byWeek.entries()].sort((a, b) => a[0] - b[0]).map(e => e[1])
+}
+
 // Percentage move across a window. Null when the window has no history yet, which is
 // different from 0% and must read differently.
 function _sigPerf(coin, label) {
@@ -14182,16 +14204,59 @@ window.__sigSetCmp  = function(c) {
   _sigCmp = (c && c !== _sigCoin) ? c : null
   try { localStorage.setItem(SIG_KEY_CMP, _sigCmp ?? '') } catch {}
   if (_sigCmp) _pulseLoadCandles(_sigCmp)
-  _pulseRender(_viewHost('deskPulse'))
+  _sigRerender()
 }
+// Changing an indicator re-renders the whole view, which threw away where you were: the
+// page jumped to the top, the horizontal chip strips snapped back to the left, and typing
+// in the search box lost focus after the first character. Nothing about picking an
+// indicator should move the page, so put all three back.
+function _sigRerender() {
+  const scroller = document.getElementById('mobVContent') ?? document.scrollingElement
+  const vy   = scroller?.scrollTop ?? 0
+  const lefts = [...document.querySelectorAll('#sigRoot [data-dragscroll]')].map(e => e.scrollLeft)
+  const el   = document.activeElement
+  const focusId = el?.id || null
+  const caret   = (focusId && typeof el.selectionStart === 'number') ? el.selectionStart : null
+
+  _pulseRender(_viewHost('deskPulse'))
+
+  requestAnimationFrame(() => {
+    if (scroller) scroller.scrollTop = vy
+    const strips = [...document.querySelectorAll('#sigRoot [data-dragscroll]')]
+    strips.forEach((e, i) => { if (lefts[i] != null) e.scrollLeft = lefts[i] })
+    if (!focusId) return
+    const back = document.getElementById(focusId)
+    if (!back) return
+    back.focus({ preventScroll: true })
+    if (caret != null && back.setSelectionRange) { try { back.setSelectionRange(caret, caret) } catch {} }
+  })
+}
+
+// Typed into the market search. Not persisted: it is a way of finding one market, not a
+// setting -- reopening Signals should show the usual shortlist, not yesterday's query.
+let _sigQuery = ''
+window.__sigSearch = function(v) {
+  _sigQuery = String(v ?? '')
+  // Only the two chip strips change, so only they are repainted. A full re-render would
+  // take the keyboard away after the first character -- _sigRenderHtml starts fetches that
+  // render again when they land, so even restoring focus afterwards loses the race.
+  const rows = _sigChipRows()
+  const mk = document.getElementById('sigMarketRow')
+  const cm = document.getElementById('sigCmpRow')
+  if (mk) mk.innerHTML = rows.market
+  if (cm) cm.innerHTML = rows.compare
+  const none = document.getElementById('sigNoMatch')
+  if (none) none.style.display = rows.any ? 'none' : ''
+}
+
 // Not persisted: the back of the card is something you read once, not a mode to sit in.
 let _sigFlipped = false
 window.__sigFlip = function(on) {
   _sigFlipped = !!on
   document.getElementById('sigIndCard')?.classList.toggle('sig-flipped', _sigFlipped)
 }
-window.__sigSetTf   = function(l) { _sigTf = l; try { localStorage.setItem('hliq_sig_tf', l) } catch {}; _pulseRender(_viewHost('deskPulse')) }
-window.__sigSetInd  = function(k) { _sigInd = k; try { localStorage.setItem(SIG_KEY_IND, k) } catch {}; _pulseRender(_viewHost('deskPulse')) }
+window.__sigSetTf   = function(l) { _sigTf = l; try { localStorage.setItem('hliq_sig_tf', l) } catch {}; _sigRerender() }
+window.__sigSetInd  = function(k) { _sigInd = k; try { localStorage.setItem(SIG_KEY_IND, k) } catch {}; _sigRerender() }
 
 window.__sigAddNote = function() {
   const ta = document.getElementById('sigNoteInput')
@@ -14202,19 +14267,68 @@ window.__sigAddNote = function() {
   all[_sigCoin] = all[_sigCoin].slice(0, 50)
   _sigNotesSave(all)
   if (ta) ta.value = ''
-  _pulseRender(_viewHost('deskPulse'))
+  _sigRerender()
 }
 window.__sigDelNote = function(ts) {
   const all = _sigNotesLoad()
   if (all[_sigCoin]) all[_sigCoin] = all[_sigCoin].filter(n => n.ts !== ts)
   _sigNotesSave(all)
-  _pulseRender(_viewHost('deskPulse'))
+  _sigRerender()
 }
 
 function _sigPerfCell(coin, label) {
   const v = _sigPerf(coin, label)
   if (v == null) return `<span style="color:var(--fg-3)">—</span>`
   return `<span style="color:${v >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:700">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>`
+}
+
+// The markets on offer, and the chips for them. Shared by the full render and by the
+// search box, so what a search shows can never drift from what a fresh render shows.
+function _sigMarketSets() {
+  const ranked = [...(_pulseData?.rows ?? [])]
+    .sort((a, b) => (b.oi ?? 0) - (a.oi ?? 0))
+    .map(r => r.coin)
+  // Two markets can render under one name -- a HIP-3 listing beside the main-dex one --
+  // and two identical chips are a choice the user cannot make. Keep the first, which is
+  // the larger by open interest, since that is the one a search for the name means.
+  const seen = new Set()
+  const allCoins = [...new Set(ranked)].filter(c => {
+    const lbl = String(_ocCoinLabel(c) ?? c).toUpperCase()
+    if (seen.has(lbl)) return false
+    seen.add(lbl)
+    return true
+  })
+  const q = _sigQuery.trim().toUpperCase()
+  // Twenty-four chips in a side-scroller is a list nobody reads to the end of. Show the
+  // five biggest, and let search reach the rest -- which is also the only way to a market
+  // that was never going to make a top-anything list.
+  const matches = q
+    ? allCoins.filter(c => String(_ocCoinLabel(c) ?? c).toUpperCase().includes(q) || c.toUpperCase().includes(q)).slice(0, 14)
+    : []
+  // Whatever is selected stays on screen even when it is not in the top five, or picking a
+  // market from search would make it vanish the moment the box was cleared.
+  const coins = q ? matches
+    : [...new Set([...allCoins.slice(0, 5), _sigCoin, _sigCmp].filter(Boolean))].filter(c => allCoins.includes(c))
+  return { allCoins, coins, q }
+}
+
+function _sigChip(c, sel, fn) {
+  return `<button onclick="window.${fn}('${esc(c)}')" style="flex-shrink:0;padding:6px 12px;border-radius:999px;border:1px solid ${
+    sel ? 'var(--accent)' : 'var(--border2)'};background:${sel ? 'var(--accent)' : 'transparent'};color:${
+    sel ? '#000' : 'var(--fg-2)'};font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">${esc(_ocCoinLabel(c))}</button>`
+}
+
+function _sigChipRows() {
+  const { allCoins, coins, q } = _sigMarketSets()
+  const cmpPool = q ? coins : [...new Set([...allCoins.slice(0, 5), _sigCmp].filter(Boolean))]
+  return {
+    market: coins.map(c => _sigChip(c, c === _sigCoin, '__sigSetCoin')).join(''),
+    compare: `<button onclick="window.__sigSetCmp('')" style="flex-shrink:0;padding:6px 12px;border-radius:999px;border:1px solid ${
+      !_sigCmp ? 'var(--accent)' : 'var(--border2)'};background:${!_sigCmp ? 'var(--accent)' : 'transparent'};color:${
+      !_sigCmp ? '#000' : 'var(--fg-2)'};font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">${_T('None', 'Ninguno')}</button>` +
+      cmpPool.filter(c => c !== _sigCoin).map(c => _sigChip(c, c === _sigCmp, '__sigSetCmp')).join(''),
+    any: coins.length > 0,
+  }
 }
 
 function _sigRenderHtml() {
@@ -14225,17 +14339,14 @@ function _sigRenderHtml() {
   // Candidate markets, ranked by open interest. Ranking the FULL row set rather than
   // reusing _pulseData.topOi, which is a short leaderboard slice — the picker should offer
   // a real choice of markets rather than the same five.
-  const rows = [...(_pulseData?.rows ?? [])]
-    .sort((a, b) => (b.oi ?? 0) - (a.oi ?? 0))
-    .slice(0, 24)
-  const coins = [...new Set(rows.map(r => r.coin))]
-  if (!_sigCoin && coins.length) _sigCoin = coins[0]
+  const { allCoins, coins, q } = _sigMarketSets()
+  if (!_sigCoin && allCoins.length) _sigCoin = allCoins[0]
   if (_sigCoin) _pulseLoadCandles(_sigCoin)
   if (_sigCmp)  _pulseLoadCandles(_sigCmp)
 
-  if (!coins.length) return `<div class="mob-v-empty">${_T('Loading markets…', 'Cargando mercados…')}</div>`
+  if (!allCoins.length) return `<div class="mob-v-empty">${_T('Loading markets…', 'Cargando mercados…')}</div>`
 
-  const chip = (c, sel, fn) => `<button onclick="window.${fn}('${esc(c)}')" style="flex-shrink:0;padding:6px 12px;border-radius:999px;border:1px solid ${sel ? 'var(--accent)' : 'var(--border2)'};background:${sel ? 'var(--accent)' : 'transparent'};color:${sel ? '#000' : 'var(--fg-2)'};font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">${esc(_ocCoinLabel(c))}</button>`
+  const chip = _sigChip   // one definition, shared with the search box
 
   const tfs = _PULSE_TF.map(x => x[0])
   const perfRow = (coin) => `<tr>
@@ -14258,22 +14369,42 @@ function _sigRenderHtml() {
   const detail     = (series && ind.detail) ? ind.detail(series, tfRow[1]) : null
   const toneCol = t => t === 'pos' ? 'var(--green)' : t === 'neg' ? 'var(--red)' : t === 'warn' ? 'var(--orange,#f59e0b)' : 'var(--fg)'
 
+  // The chart draws the same series the reading is computed from, and the indicator on
+  // top of it -- a moving average over the price it is an average OF, an oscillator in its
+  // own panel underneath. A 200-week average is fed weekly points for the same reason its
+  // reading is: an SMA(200) of hourly candles is not a 200-week average of anything.
+  const mainPts = ind.weekly ? _sigWeeklyPoints(_sigCoin) : _sigPoints(_sigCoin, tfRow[1], tfRow[2])
+  const cmpPts  = !_sigCmp ? null
+    : ind.weekly ? _sigWeeklyPoints(_sigCmp) : _sigPoints(_sigCmp, tfRow[1], tfRow[2])
+  const chart = signalChartSvg({
+    main: mainPts, cmp: cmpPts,
+    mainLabel: esc(_ocCoinLabel(_sigCoin)),
+    cmpLabel: _sigCmp ? esc(_ocCoinLabel(_sigCmp)) : '',
+    indicator: _sigInd,
+    vals: series ?? [],
+    fmtPrice: (v) => '$' + fmtPrice(v),
+  })
+
   const notes = (_sigNotesLoad()[_sigCoin] ?? [])
 
-  return `<div style="padding:10px 12px 26px">
+  return `<div id="sigRoot" style="padding:10px 12px 26px">
     <div style="font-size:11.5px;color:var(--muted);line-height:1.45;margin-bottom:10px">${
       _T('Pick a market, read how it has moved, and see what one indicator currently says about it.',
          'Elige un mercado, mira cómo se ha movido y qué dice un indicador sobre él.')}</div>
 
-    <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">${_T('Market', 'Mercado')}</div>
-    <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${
-      coins.map(c => chip(c, c === _sigCoin, '__sigSetCoin')).join('')}</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+      <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${_T('Market', 'Mercado')}</span>
+      <span style="flex:1"></span>
+      <input id="sigSearch" type="search" value="${esc(_sigQuery)}" placeholder="${_T('Search all markets', 'Buscar mercados')}"
+        oninput="window.__sigSearch(this.value)" autocomplete="off" autocorrect="off" spellcheck="false"
+        style="width:150px;max-width:52%;padding:5px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:11.5px">
+    </div>
+    <div id="sigNoMatch" style="font-size:11px;color:var(--muted);padding:2px 0 8px;display:${q && !coins.length ? '' : 'none'}">${
+      _T('No market matches that name.', 'Ningún mercado coincide con ese nombre.')}</div>
+    <div id="sigMarketRow" data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${_sigChipRows().market}</div>
 
     <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:6px 0">${_T('Compare with', 'Comparar con')}</div>
-    <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">
-      <button onclick="window.__sigSetCmp('')" style="flex-shrink:0;padding:6px 12px;border-radius:999px;border:1px solid ${!_sigCmp ? 'var(--accent)' : 'var(--border2)'};background:${!_sigCmp ? 'var(--accent)' : 'transparent'};color:${!_sigCmp ? '#000' : 'var(--fg-2)'};font-size:12px;font-weight:700;cursor:pointer">${_T('None', 'Ninguno')}</button>
-      ${coins.filter(c => c !== _sigCoin).map(c => chip(c, c === _sigCmp, '__sigSetCmp')).join('')}
-    </div>
+    <div id="sigCmpRow" data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${_sigChipRows().compare}</div>
 
     <div data-dragscroll style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;margin-top:12px;overflow-x:auto">
       <div style="font-size:12.5px;font-weight:800;margin-bottom:4px">${_T('Performance', 'Rendimiento')}</div>
@@ -14291,6 +14422,20 @@ function _sigRenderHtml() {
     </div>
     <div data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${
       Object.entries(_SIG_INDICATORS).map(([k, v]) => `<button onclick="window.__sigSetInd('${k}')" style="flex-shrink:0;padding:6px 12px;border-radius:999px;border:1px solid ${k === _sigInd ? 'var(--accent)' : 'var(--border2)'};background:${k === _sigInd ? 'var(--accent)' : 'transparent'};color:${k === _sigInd ? '#000' : 'var(--fg-2)'};font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">${esc(v.label())}</button>`).join('')}</div>
+
+    <div id="sigChartCard" style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:10px 11px 9px;margin-bottom:10px;min-height:186px">
+      ${chart.empty
+        ? `<div style="height:160px;display:flex;align-items:center;justify-content:center;font-size:11.5px;color:var(--muted);text-align:center">${
+            _T('Not enough history for this window yet.', 'Aún no hay suficiente historial para esta ventana.')}</div>`
+        : `<div style="display:flex;align-items:baseline;gap:8px;font-size:9.5px;color:var(--muted);margin-bottom:2px">
+             <span>${esc(chart.hi)}</span><span style="flex:1"></span>
+             <span>${_sigCmp ? _T('% change since the left edge', '% de cambio desde el inicio') : esc(tfLabel)}</span>
+           </div>
+           ${chart.svg}
+           <div style="display:flex;align-items:center;gap:6px;font-size:9.5px;color:var(--muted);margin-top:3px">
+             <span>${esc(chart.lo)}</span><span style="flex:1"></span><span>${chart.legend}</span>
+           </div>`}
+    </div>
 
     <div id="sigIndCard" class="sig-card${_sigFlipped ? ' sig-flipped' : ''}">
       <div class="sig-flip">
@@ -14387,8 +14532,23 @@ function _pulseRender(el) {
     return
   }
   if (_pulseSeg === 'signals') {
+    // Signals is redrawn by things the user did not ask for -- a candle fetch landing, the
+    // market poll returning -- and each one replaced the search box mid-word, taking the
+    // keyboard with it. Remember whether it had focus and put it back after the swap.
+    // Recorded here rather than in the search handler because these renders come from
+    // somewhere else entirely.
+    const _act = document.activeElement
+    const _hadSearch = _act && _act.id === 'sigSearch'
+    const _caret = _hadSearch && typeof _act.selectionStart === 'number' ? _act.selectionStart : null
     try { el.innerHTML = _pulseSegHeader() + _sigRenderHtml() }
     catch (e) { console.warn('[signals]', e.message); el.innerHTML = _pulseSegHeader() + `<div class="mob-v-empty">${_T('Could not draw this view.', 'No se pudo dibujar esta vista.')}</div>` }
+    if (_hadSearch) {
+      const back = document.getElementById('sigSearch')
+      if (back) {
+        back.focus({ preventScroll: true })
+        if (_caret != null && back.setSelectionRange) { try { back.setSelectionRange(_caret, _caret) } catch {} }
+      }
+    }
     return
   }
   try { _pulseRenderInner(el) } catch (e) {
