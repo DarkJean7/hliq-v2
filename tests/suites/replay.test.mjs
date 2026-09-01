@@ -71,7 +71,12 @@ t('market and account modes exist', cli.includes("window.__repSetMode") && cli.i
 // Recomputing account value from fills would miss deposits, funding and everything else.
 t('account mode plays the portfolio history, not a reconstruction', cli.includes("accountValueHistory"))
 t('market mode offers only markets actually traded', cli.includes('function _repCoins()'))
-t('mobile has the tab', htm.includes("window.__mobMoreTab('replay')") && /_MOBV_FULLPAGE = new Set\(\[[^\]]*'replay'/.test(cli))
+t('it is reached from the portfolio chart, beside Markers and Advanced',
+  cli.includes('window.__openReplay()') && cli.includes('▶ Replay'))
+t('on both shells, from one opener', cli.includes('window.__openReplay = function()') &&
+  cli.includes("if (_isMobView()) { window.__mobMoreTab('replay'); return }"))
+t('and is no longer a More-list destination', !htm.includes("window.__mobMoreTab('replay')"))
+t('but the view itself is still a full page', /_MOBV_FULLPAGE = new Set\(\[[^\]]*'replay'/.test(cli))
 t('desktop has the tab and a pane', htm.includes('id="tab-replay"') && htm.includes('id="deskReplay"') &&
   cli.includes("if (name === 'replay')     _repRender(_viewHost('deskReplay'))"))
 
@@ -230,6 +235,18 @@ console.log(String.fromCharCode(10) + '-- a minus sign belongs outside the dolla
 t('the chart formatter signs before the symbol',
   cli.includes("fmtPrice: (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v)),"))
 t('as does the stat formatter', cli.includes("const money = (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v))"))
+
+console.log(String.fromCharCode(10) + '-- it loads on its own --')
+// Reported: the chart sat on "Loading market history" until you switched to My account and
+// back. The candle fetch told only Pulse it had finished, so nothing repainted the player.
+t('the fetch tells the replay too', cli.includes("if (_viewOpen('replay')) _repCandlesArrived()"))
+t('which rebuilds the series and repaints', cli.includes('function _repCandlesArrived()') &&
+  cli.includes('_repData = _repBuild()'))
+// The frame count only exists once the data does.
+t('and moves the scrub range with it', cli.includes("for (const id of ['repScrub', 'repScrub2'])"))
+t('without a full render, which would take the keyboard away',
+  !/function _repCandlesArrived\(\)[\s\S]{0,400}_repRender\(/.test(cli))
+t('and does nothing when the player is not on screen', cli.includes("if (!document.getElementById('repStage')) return"))
 
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

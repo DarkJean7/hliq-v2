@@ -12898,6 +12898,7 @@ window.mobVOpenAdvChart = function() {
         <button onclick="window.advReset()">Reset</button>
         <button id="advStyleBtn" onclick="window.advToggleStyle()">🕯 Candles</button>
         <button id="advMarkersBtn" onclick="window.advToggleMarkers()">📍 Markers</button>
+        <button onclick="window.__openReplay()">▶ Replay</button>
         ${state.isAllAccounts ? `<button id="advSplitBtn" onclick="window.advToggleSplit()">⇉ Per wallet</button>` : ''}
       </div>
       <div class="adv-hint-line">Drag to pan · pinch / scroll to zoom · tap a point or marker</div>`
@@ -13444,6 +13445,7 @@ function _pulseLoadCandles(coin) {
         _pulseCandles[key] = Array.isArray(pts) && pts.length ? pts : 'error'
       } catch { _pulseCandles[key] = 'error' }
       if (_viewOpen('pulse')) _pulseRender(_viewHost('deskPulse'))
+      if (_viewOpen('replay')) _repCandlesArrived()
     })
   }
 }
@@ -14717,6 +14719,23 @@ window.__repSeek = function(v) {
 
 window.__repRestart = function() { _repFrame = 0; _repPaint() }
 
+/**
+ * Candles finished loading while the player was open. Rebuild the series and repaint, and
+ * move the scrub's range with it -- the frame count only exists once the data does.
+ * Deliberately not a full render: that would rebuild the chips and take the search
+ * keyboard away for something the user did not do.
+ */
+function _repCandlesArrived() {
+  if (!document.getElementById('repStage')) return
+  _repData = _repBuild()
+  const n = _repData?.points?.length ?? 0
+  for (const id of ['repScrub', 'repScrub2']) {
+    const sc = document.getElementById(id)
+    if (sc) sc.max = String(Math.max(0, n - 1))
+  }
+  _repPaint()
+}
+
 /** Repaint the player only. A full render would refetch and stutter every frame. */
 function _repPaint() {
   const el = document.getElementById('repStage')
@@ -14923,6 +14942,15 @@ function _repChrome() {
   if (sp) sp.innerHTML = _repSpeedChips()
   const st = document.getElementById('repStyles')
   if (st) st.innerHTML = _repStyleChips()
+}
+
+/**
+ * Open Replay. It lives beside the portfolio chart rather than in the More list, because
+ * it is a thing you do TO the chart you are looking at, not a separate destination.
+ */
+window.__openReplay = function() {
+  if (_isMobView()) { window.__mobMoreTab('replay'); return }
+  switchTab('replay', null)
 }
 
 function _repRender(el) {
@@ -16627,6 +16655,8 @@ function _mobVRenderContent(tick = false) {
           style="${_mobVPortBtnStyle(_mobVPortMarkers)}">📍 Markers</button>
         <button onclick="window.mobVOpenAdvChart()"
           style="${_mobVPortBtnStyle(false)}">⛶ Advanced</button>
+        <button onclick="window.__openReplay()"
+          style="${_mobVPortBtnStyle(false)}">▶ Replay</button>
         ${_mobVPortMarkers ? `<span style="display:flex;gap:8px;font-size:9.5px;color:var(--muted);font-weight:600;margin-left:auto;flex-wrap:wrap;justify-content:flex-end">
           <span style="color:#00e5a0">● Buy</span><span style="color:#ff4d6d">● Sell</span><span style="color:#4aa3ff">● Deposit</span><span style="color:#f5a623">● Withdraw</span>
         </span>` : ''}
