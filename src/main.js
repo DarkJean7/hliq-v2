@@ -10553,6 +10553,7 @@ function _mobVMergedPosCard(members) {
             <span style="font-size:9.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:${sideBg};color:${sideColor};text-transform:uppercase;letter-spacing:0.5px;flex-shrink:0">${side}</span>
           </div>
           <div style="font-size:11px;color:var(--muted);margin-top:2px"><span class="notranslate">×${n}</span> ${_T('accounts', 'cuentas')}</div>
+          ${_botBadgeGroupHtml(coin, members)}
         </div>
         <div style="text-align:center;flex-shrink:0">
           <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
@@ -10588,6 +10589,86 @@ function _mobVMergedPosCard(members) {
       ${members.map(c => c.html).join('')}
     </div>
   </div>`
+}
+
+/**
+ * The badge for a grouped card: the union across the accounts in the group, with a count
+ * when the bot is not on all of them. Four wallets holding the same coin and one grid bot
+ * running is "Grid Bot 1/4", not "Grid Bot" -- the second reads as all four being managed.
+ */
+function _botBadgeGroupHtml(coin, members) {
+  const counts = new Map()
+  for (const m of members ?? []) {
+    for (const t of _botsOnCoin(coin, m.acctAddr)) {
+      if (t === 'liqguard' || t === 'levbrake') continue
+      counts.set(t, (counts.get(t) ?? 0) + 1)
+    }
+  }
+  if (!counts.size) return ''
+  const n = (members ?? []).length
+  return `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${[...counts].map(([t, c]) => `
+    <span class="notranslate" style="display:inline-flex;align-items:center;gap:3px;font-size:9.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:rgba(0,229,160,0.14);color:var(--accent);white-space:nowrap">
+      <span style="width:5px;height:5px;border-radius:50%;background:var(--accent);flex-shrink:0"></span>${esc(_BOT_LABELS[t] ?? t)}${c < n ? ` ${c}/${n}` : ''}</span>`).join('')}</div>`
+}
+
+const _BOT_LABELS = { dca: 'DCA Bot', grid: 'Grid Bot', trend: 'Trend Follower', longer: 'Longer Bot', shorter: 'Shorter Bot', accumulator: '🪙 Profit Stack', liqguard: '🛡 Liq Guard', levbrake: '🛑 Lev Brake', insolvent: 'Manager', twap: 'TWAP', ocgrid: 'Outcome Grid' }
+
+/**
+ * Which server bots are running on a coin, for the account that holds it.
+ *
+ * The account matters. In the combined view four wallets can hold the same coin and a bot
+ * runs on ONE of them; labelling all four from whichever account happens to be selected
+ * would put a badge on three positions nothing is managing. So a position with an owner
+ * is answered from that owner's row in the all-accounts status, and only a single-account
+ * view falls back to serverStatus.
+ *
+ * Matched by INSTANCE, which is the coin for every bot that takes one, and otherwise by
+ * the --coin in its launch arguments where those are known. A bot whose market cannot be
+ * determined either way is not claimed for any position: it might be trading this coin or
+ * another, and a badge that is right by luck is worse than no badge.
+ */
+function _botsOnCoin(coin, acctAddr) {
+  const want = String(coin ?? '').toUpperCase()
+  if (!want) return []
+  const keys = acctAddr
+    ? (_maBotStatus?.[String(acctAddr).toLowerCase()] ?? [])
+    : Object.keys(serverStatus?._instances ?? {})
+  const bare = want.split(':').pop()
+  const out = []
+  const add = (t) => { if (t && !out.includes(t)) out.push(t) }
+  for (const k of keys) {
+    const i = String(k).indexOf(':')
+    if (i < 0) continue                                  // no instance: see the configs below
+    const type = String(k).slice(0, i)
+    const inst = String(k).slice(i + 1).toUpperCase()
+    // "xyz:SPCX" as an instance would split on its own colon, so compare the last segment.
+    if (!inst || inst.split(':').pop() !== bare) continue
+    add(type)
+  }
+  // Bots that carry no instance keep their market in their launch arguments, and that is
+  // the ONLY shape a paper bot has -- checkServer synthesises _configs['type:'] with
+  // --coin and no _instances at all, so without this a paper bot never badges its own
+  // position. Only consulted for the account whose status this is.
+  if (!acctAddr) {
+    for (const [k, cfg] of Object.entries(serverStatus?._configs ?? {})) {
+      const type = String(k).split(':')[0]
+      const args = cfg?.args ?? []
+      const ci = args.indexOf('--coin')
+      if (ci < 0 || !args[ci + 1]) continue
+      if (String(args[ci + 1]).toUpperCase().split(':').pop() !== bare) continue
+      add(type)
+    }
+  }
+  return out
+}
+
+/** The badge itself, or nothing. Guards get their own row already, so they are left out. */
+function _botBadgeHtml(coin, acctAddr) {
+  const types = _botsOnCoin(coin, acctAddr).filter(t => t !== 'liqguard' && t !== 'levbrake')
+  if (!types.length) return ''
+  return `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${types.map(t => `
+    <span class="notranslate" style="display:inline-flex;align-items:center;gap:3px;font-size:9.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:rgba(0,229,160,0.14);color:var(--accent);white-space:nowrap">
+      <span style="width:5px;height:5px;border-radius:50%;background:var(--accent);flex-shrink:0"></span>${esc(_BOT_LABELS[t] ?? t)}</span>`).join('')}</div>`
 }
 
 function _mobVSlideIn(dir) {
@@ -16715,6 +16796,7 @@ function _mobVRenderContent(tick = false) {
                 <span class="notranslate">${lev}</span>${levType ? ` <span>${levType}</span>` : ''}
               </div>
               ${p._acct ? `<div class="notranslate" style="font-size:11px;font-weight:700;color:var(--accent);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p._acct)}</div>` : ''}
+              ${_botBadgeHtml(p.coin, p._acctAddr)}
             </div>
             <div style="text-align:center;flex-shrink:0">
               <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
@@ -16753,7 +16835,7 @@ function _mobVRenderContent(tick = false) {
           ${actions}
         </div>
       </div>`
-      return { coin: p.coin, side: apiSide, healthPct, acct: p._acct || '', lev: levVal, isIso, absSz: Math.abs(sz), entryPx, posVal, uPnl, margin, funding, markPx, html: _cardHtml }
+      return { coin: p.coin, side: apiSide, healthPct, acct: p._acct || '', acctAddr: p._acctAddr ?? null, lev: levVal, isIso, absSz: Math.abs(sz), entryPx, posVal, uPnl, margin, funding, markPx, html: _cardHtml }
     })
     // Combined view: collapse multiple accounts holding the SAME coin + SAME direction into
     // one summary card (additive exposure/PnL + worst-case health) that expands to the
@@ -22537,7 +22619,7 @@ function _mobToggleSizeMode(inputId, coinId, btn) {
 function _mobVRenderAllAcctStrats(el) { el.innerHTML = `<div style="padding:14px 12px calc(90px + env(safe-area-inset-bottom))">${_allAcctRunningHtml()}</div>` }
 
 function _allAcctRunningHtml() {
-  const labels = { dca: 'DCA Bot', grid: 'Grid Bot', trend: 'Trend Follower', longer: 'Longer Bot', shorter: 'Shorter Bot', accumulator: '🪙 Profit Stack', liqguard: '🛡 Liq Guard', levbrake: '🛑 Lev Brake', insolvent: 'Manager', twap: 'TWAP', ocgrid: 'Outcome Grid' }
+  const labels = _BOT_LABELS
   const wallets  = _maLoad()
   const hidden   = _maHiddenLoad()
   const labelFor = a => wallets.find(w => w.addr.toLowerCase() === a.toLowerCase())?.label || (a.slice(0, 6) + '…' + a.slice(-4))
