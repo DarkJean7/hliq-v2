@@ -15314,7 +15314,7 @@ function _simSave() {
   } catch {}
 }
 
-const SIM_IVS = ['1m', '5m', '15m', '1h', '4h', '1d']
+const SIM_IVS = ['1m', '5m', '15m', '1h', '4h', '8h', '1d']
 
 /** Read every box at once, so one run cannot use a mix of old and new values. */
 function _simCollect() {
@@ -15449,7 +15449,7 @@ window.__simSetStrategy = function(v) {
     // The rule is about the hour of the day, so a 4h or daily candle cannot express it:
     // one candle would span most of a window. Switch to hourly rather than run something
     // that looks like an answer.
-    if (['4h', '1d'].includes(_simIv)) _simIv = '1h'
+    if (['4h', '8h', '1d'].includes(_simIv)) _simIv = '1h'
     _simTokyoPrefill()
   })
 }
@@ -15461,7 +15461,7 @@ window.__simSetStrategy = function(v) {
 window.__simLoadPortfolio = function() {
   window.__simStructural(() => {
     _simCoin = tokyoMarkets().join(', ')
-    if (['4h', '1d'].includes(_simIv)) _simIv = '1h'
+    if (['4h', '8h', '1d'].includes(_simIv)) _simIv = '1h'
   })
 }
 
@@ -15510,7 +15510,7 @@ window.__simRun = async function() {
   try {
     // Ask for the window the candle count implies, with room to spare -- Hyperliquid caps a
     // response at 5000 bars, and asking from a start time is the only way to choose which.
-    const ms = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 4 * 3600e3, '1d': 86400e3 }[_simIv] ?? 3600e3
+    const ms = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 4 * 3600e3, '8h': 8 * 3600e3, '1d': 86400e3 }[_simIv] ?? 3600e3
     const start = Date.now() - _simCount * ms * 1.2
     const coins = _simCoinList()
 
@@ -15994,20 +15994,19 @@ function _simRender(el) {
           _T('Every box below has a ? that explains what it does.', 'Cada casilla tiene un ? que la explica.')}</div>
       </div>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:start">
         <label style="display:block">
-          <div style="display:flex;align-items:baseline;gap:6px">
-            <span style="font-size:11px;font-weight:700;color:var(--fg-2)">${
-              _T('Markets', 'Mercados')}</span>
+          <div style="font-size:11px;font-weight:700;color:var(--fg-2)">${_T('Markets', 'Mercados')}</div>
+          <input id="sim_coin" type="text" value="${esc(_simCoin)}" autocapitalize="characters" spellcheck="false" oninput="window.__simTouch()" onchange="window.__simCoinChanged()"
+            style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">
+          <div style="display:flex;align-items:baseline;gap:6px;margin-top:4px">
             <span style="font-size:10px;color:var(--muted)">${_T('comma separated', 'separados por comas')}</span>
             <span style="flex:1"></span>
             ${_simParams.strategy === 'tokyo'
-              ? `<button onclick="window.__simLoadPortfolio()" style="border:none;background:transparent;color:var(--accent);font-size:10.5px;font-weight:700;cursor:pointer;padding:0">${
+              ? `<button onclick="window.__simLoadPortfolio()" style="border:none;background:transparent;color:var(--accent);font-size:10.5px;font-weight:700;cursor:pointer;padding:0;white-space:nowrap">${
                   _T('load all 15', 'cargar los 15')}</button>`
               : ''}
           </div>
-          <input id="sim_coin" type="text" value="${esc(_simCoin)}" autocapitalize="characters" spellcheck="false" oninput="window.__simTouch()" onchange="window.__simCoinChanged()"
-            style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">
         </label>
         <label style="display:block">
           <div style="font-size:11px;font-weight:700;color:var(--fg-2)">${_T('Candles', 'Velas')}</div>

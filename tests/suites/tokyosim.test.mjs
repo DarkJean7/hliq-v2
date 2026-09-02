@@ -178,8 +178,13 @@ t('a single market with no row is not nagged about',
 t('why silence is right there is recorded', cli.includes('nothing hidden to warn about'))
 t('but several markets still warn about the ones being skipped',
   grab(cli, 'function _simTokyoNote').includes('will be skipped'))
-t('a daily candle cannot express an hourly rule, so the interval is moved',
-  grab(cli, 'window.__simSetStrategy = function').includes("['4h', '1d'].includes(_simIv)"))
+t('a coarse candle cannot express an hourly rule, so the interval is moved',
+  grab(cli, 'window.__simSetStrategy = function').includes("['4h', '8h', '1d'].includes(_simIv)"))
+t('every interval coarser than an hour is covered',
+  ['4h', '8h', '1d'].every(iv => cli.includes(`'${iv}', `) || cli.includes(`'${iv}'].includes`)))
+t('8h is offered at all', cli.includes("const SIM_IVS = ['1m', '5m', '15m', '1h', '4h', '8h', '1d']"))
+t('and its window length is known, so the fetch asks for enough history',
+  cli.includes("'8h': 8 * 3600e3"))
 t('and that is explained', cli.includes('one candle would span most of a window'))
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
