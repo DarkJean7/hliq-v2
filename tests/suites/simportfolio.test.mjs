@@ -94,8 +94,25 @@ t('but still counted and reported', port.unresolved >= 0 && 'unresolved' in port
 console.log(nl + '-- the market box takes a list --')
 t('it splits on commas and spaces', grab(cli, 'function _simCoinList').includes('.split(/[,\\s]+/)'))
 t('duplicates collapse', grab(cli, 'function _simCoinList').includes('new Set'))
-t('a builder-dex prefix survives', grab(cli, 'function _simCoinList').includes("s.split(':')[0].toLowerCase()"))
+t('a builder-dex prefix survives',
+  grab(cli, 'function _simResolveMarket').includes("s.split(':')[0].toLowerCase()"))
 t('why it is not simply uppercased is recorded', cli.includes('"xyz:SPCX" is not "XYZ:SPCX"'))
+
+// Every entry goes through the resolver, because "SMSN" is not a market -- "xyz:SMSN" is
+// -- and it can be typed that way from the table, from Hyperliquid's own list, or by a
+// list saved before the ids existed. Fixing only the "load all 15" button left all three
+// broken, which is what shipped.
+const resolve = grab(cli, 'function _simResolveMarket')
+t('the list resolves every entry', grab(cli, 'function _simCoinList').includes('.map(_simResolveMarket)'))
+t('a portfolio row supplies its own id', resolve.includes('if (row?.market) return row.market'))
+t('and needs no market data loaded to do it', resolve.includes('needs no market data loaded'))
+t('anything else falls back to the resolver the bot fields use',
+  resolve.includes('_resolveGridCoin(up)'))
+t('a full id is left alone', resolve.includes("if (s.includes(':'))"))
+t('it resolves at use time rather than migrating what was saved',
+  cli.includes('Resolved at USE time rather than migrated'))
+t('why fixing only the button was not enough is recorded',
+  cli.includes('left all three still broken, which is what shipped'))
 t('the label says a list is allowed', cli.includes("_T('comma separated', 'separados por comas')"))
 t('the whole Tokyo table loads in one tap', cli.includes('window.__simLoadPortfolio'))
 // It loaded the table's KEYS, which are bare tickers -- so nine builder-dex markets were

@@ -15336,7 +15336,33 @@ function _simCoinList() {
     .split(/[,\s]+/)
     .map(s => s.trim())
     .filter(Boolean)
-    .map(s => s.includes(':') ? s.split(':')[0].toLowerCase() + ':' + s.split(':')[1].toUpperCase() : s.toUpperCase()))]
+    .map(_simResolveMarket)
+    .filter(Boolean))]
+}
+
+/**
+ * A typed name to the id the exchange actually has.
+ *
+ * "SMSN" is not a market -- "xyz:SMSN" is -- and there are three ways to end up typing the
+ * bare one: reading it off the portfolio table, copying it from Hyperliquid's own market
+ * list, or having a saved list from before the ids were stored. Fixing only what the
+ * "load all 15" button inserts left all three still broken, which is what shipped.
+ *
+ * Resolved at USE time rather than migrated, so a list saved months ago works without
+ * anyone having to re-load it, and so typing the short name by hand simply works.
+ */
+function _simResolveMarket(name) {
+  const s = String(name ?? '').trim()
+  if (!s) return ''
+  // Already a full id: normalise the case of each half and leave it alone.
+  if (s.includes(':')) return s.split(':')[0].toLowerCase() + ':' + s.split(':').slice(1).join(':').toUpperCase()
+  const up = s.toUpperCase()
+  // A portfolio row knows its own market id, and needs no market data loaded to say so.
+  const row = tokyoWindowsFor(up)
+  if (row?.market) return row.market
+  // Otherwise the same resolution the bot coin fields use: a HIP-3 key whose suffix
+  // matches, or a name Hyperliquid displays differently to its ticker.
+  try { return _resolveGridCoin(up) } catch { return up }
 }
 
 /** The first market, which is what the single-market parts of the form still speak about. */
