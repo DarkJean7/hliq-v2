@@ -108,9 +108,9 @@ console.log(nl + '-- the review queue is dev-mode only --')
 const strat = grab(cli, 'function _devBotsHtml')
 t('the button is behind isDev()',
   /isDev\(\) \? `<div[^`]*__openBotSubmissions/s.test(cli))
-t('the queue sends the PIN it has', grab(cli, 'window.__openBotSubmissions').includes("'x-lb-pin': pin"))
+t('the queue sends the PIN it has', grab(cli, 'window.__openBotSubmissions = async function').includes("'x-lb-pin': pin"))
 t('a 403 says so plainly rather than looking empty',
-  grab(cli, 'window.__openBotSubmissions').includes("_botSubsRender('forbidden')") &&
+  grab(cli, 'window.__openBotSubmissions = async function').includes("_botSubsRender('forbidden')") &&
   cli.includes('The server did not accept the dev PIN.'))
 t('an empty queue and a failed load do not look alike',
   cli.includes('Nothing submitted yet.') && cli.includes('Could not load submissions.'))

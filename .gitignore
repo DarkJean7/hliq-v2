@@ -19,6 +19,8 @@ chat-deleted.json
 chat.json
 # Inbox for community bot submissions. Holds submitters' IP addresses; never commit it.
 bot-submissions.json
+# Inbox for user bug reports. Same reason: it holds reporters' IP addresses.
+bug-reports.json
 
 # Runtime caches written by serve-prod.js (icons, profile pictures)
 data/

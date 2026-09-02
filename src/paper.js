@@ -24,21 +24,106 @@
 export const PAPER_ADDR  = '__paper__'
 export const PAPER_START = 1000         // opening balance, also the reset target
 const PAPER_START_LEGACY = 10000        // what accounts created before the change began with
-// Two independent paper stores. The regular practice account ('main') and the Challenge
-// account ('challenge') never touch each other — entering the Challenge swaps to its own
-// fresh $1,000 without wiping the practice account you were building up.
+// Independent paper stores, one per account. Two are built in: the practice account
+// ('main') and the Challenge account ('challenge'), which never touch each other —
+// entering the Challenge swaps to its own fresh $1,000 without wiping the practice
+// account you were building up.
+//
+// Beyond those, a user can make as many as they like. Each is its own $1,000, its own
+// positions, its own history, so one idea per account is possible without them
+// contaminating each other's numbers.
 const PAPER_KEYS = { main: 'hliq_paper_v2', challenge: 'hliq_paper_chal_v2' }
+const PAPER_EXTRA_PREFIX = 'hliq_paper_s_'
+const PAPER_LIST_KEY = 'hliq_paper_accts'
+// Not a policy about how many accounts is reasonable — it is what localStorage can hold.
+// Each store keeps up to 400 fills and 2,000 equity points, and the whole origin shares a
+// quota of a few MB. Past this the writes start failing, and a paper account that silently
+// stops saving is worse than one you were not allowed to create.
+export const PAPER_MAX_ACCTS = 12
+
 let _slot = 'main'
-function paperKey() { return PAPER_KEYS[_slot] || PAPER_KEYS.main }
+
+/** The user-made accounts: [{ slot, name, createdAt }]. The two built-ins are not in here. */
+export function paperAcctList() {
+  try {
+    const d = JSON.parse(localStorage.getItem(PAPER_LIST_KEY) ?? 'null')
+    return Array.isArray(d) ? d.filter(a => a && typeof a.slot === 'string') : []
+  } catch { return [] }
+}
+function paperAcctSave(list) {
+  try { localStorage.setItem(PAPER_LIST_KEY, JSON.stringify(list)); return true } catch { return false }
+}
+function extraKey(slot) { return PAPER_EXTRA_PREFIX + slot }
+export function paperSlotKnown(slot) {
+  return slot === 'main' || slot === 'challenge' || paperAcctList().some(a => a.slot === slot)
+}
+// An unknown slot falls back to the practice account rather than opening a store of its
+// own: that is what makes deleting the account you are standing in survivable.
+function keyFor(slot) {
+  if (PAPER_KEYS[slot]) return PAPER_KEYS[slot]
+  return paperSlotKnown(slot) ? extraKey(slot) : PAPER_KEYS.main
+}
+function paperKey() { return keyFor(_slot) }
 export function paperSlot() { return _slot }
 // Switch which store backs the paper account. Flushes the current in-memory state to its
 // own key first, then forces the next paperStore() to load the other slot from scratch.
 export function setPaperSlot(slot) {
-  const next = slot === 'challenge' ? 'challenge' : 'main'
+  const next = paperSlotKnown(slot) ? slot : 'main'
   if (next === _slot) return
   if (_s) { try { localStorage.setItem(paperKey(), JSON.stringify(_s)) } catch {} }
   _slot = next
   _s = null
+}
+
+/**
+ * Make another paper account. Returns its slot id, or null with a reason:
+ *   'limit'  — already at PAPER_MAX_ACCTS
+ *   'quota'  — the registry write failed, so the account would not survive a reload
+ * The store itself is not created here; the first paperStore() on the new slot opens a
+ * fresh one at PAPER_START, which is the same path a first-time user takes.
+ */
+export function paperAcctCreate(name) {
+  const list = paperAcctList()
+  if (list.length >= PAPER_MAX_ACCTS) return { slot: null, error: 'limit' }
+  const slot = 'a' + Math.random().toString(36).slice(2, 8) + Date.now().toString(36)
+  list.push({ slot, name: String(name ?? '').trim().slice(0, 24) || 'Paper ' + (list.length + 2), createdAt: Date.now() })
+  if (!paperAcctSave(list)) return { slot: null, error: 'quota' }
+  return { slot, error: null }
+}
+
+export function paperAcctRename(slot, name) {
+  const list = paperAcctList()
+  const row = list.find(a => a.slot === slot)
+  if (!row) return false
+  row.name = String(name ?? '').trim().slice(0, 24) || row.name
+  return paperAcctSave(list)
+}
+
+/**
+ * Delete a user-made account and its store. The built-ins are not deletable — 'main' is
+ * where an unknown slot lands, and the Challenge account belongs to the contest, not to
+ * whoever is looking at the list.
+ */
+export function paperAcctDelete(slot) {
+  if (slot === 'main' || slot === 'challenge') return false
+  const list = paperAcctList()
+  if (!list.some(a => a.slot === slot)) return false
+  // Leave the account we are standing in before erasing it, or the in-memory state would
+  // be flushed straight back into the key we just removed.
+  if (_slot === slot) { _slot = 'main'; _s = null }
+  try { localStorage.removeItem(extraKey(slot)) } catch {}
+  return paperAcctSave(list.filter(a => a.slot !== slot))
+}
+
+/** Every selectable paper account, in display order. */
+export function paperAccounts() {
+  return [
+    { slot: 'main', name: null, builtin: true },
+    ...paperAcctList().map(a => ({ slot: a.slot, name: a.name, builtin: false })),
+  ]
+}
+export function paperAcctName(slot) {
+  return paperAcctList().find(a => a.slot === slot)?.name ?? null
 }
 const DEFAULT_MAX_LEV = 50
 
@@ -135,8 +220,17 @@ export function paperStore() {
   return _s
 }
 
+// A failed save used to be swallowed silently, which was survivable while there was one
+// paper account and no way to fill the quota. With several it is reachable, and the
+// failure looks exactly like nothing happening: you trade, the numbers move, and the next
+// reload has none of it. So it is recorded, and the app says so.
+let _saveFailed = false
+export function paperSaveFailed() { return _saveFailed }
+export function clearPaperSaveFailed() { _saveFailed = false }
+
 export function paperSave() {
-  try { localStorage.setItem(paperKey(), JSON.stringify(_s)) } catch {}
+  try { localStorage.setItem(paperKey(), JSON.stringify(_s)); _saveFailed = false; return true }
+  catch (e) { _saveFailed = true; return false }
 }
 
 export function paperReset() {

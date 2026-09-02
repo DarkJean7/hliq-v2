@@ -1973,6 +1973,51 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  // ── GET /api/bug-reports → the bug inbox, operator only ───────────────────
+  // Reports used to be write-only: they landed in bug-reports.json and the only way to
+  // read one was to SSH into the box. Seven of them sat unread.
+  if (method === 'GET' && path === '/api/bug-reports') {
+    const isAdmin = LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN
+    if (!isAdmin) return json(res, 403, { error: 'forbidden' })
+    try {
+      let list = []
+      try { if (existsSync(BUG_FILE)) list = JSON.parse(readFileSync(BUG_FILE, 'utf8')) } catch {}
+      if (!Array.isArray(list)) list = []
+      // Reports predate having an id. Backfill once so a status can name one — an index
+      // would not survive the 2,000-report trim, which shifts every entry along.
+      let added = false
+      for (const e of list) {
+        if (e && !e.id) { e.id = Math.random().toString(36).slice(2, 10) + Date.parse(e.receivedAt ?? 0).toString(36); added = true }
+      }
+      if (added) { try { writeFileSync(BUG_FILE, JSON.stringify(list, null, 2)) } catch {} }
+      // The reporter's IP is not part of reading a bug, same as for bot submissions.
+      return json(res, 200, list.map(({ ip, ...rest }) => rest).reverse())
+    } catch (e) {
+      return json(res, 500, { error: 'read failed' })
+    }
+  }
+
+  // ── POST /api/bug-report-status { id, status } → mark one handled ─────────
+  if (method === 'POST' && path === '/api/bug-report-status') {
+    const isAdmin = LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN
+    if (!isAdmin) return json(res, 403, { error: 'forbidden' })
+    const b = await body(req)
+    const status = ['new', 'done'].includes(b.status) ? b.status : null
+    if (!status || !b.id) return json(res, 400, { error: 'bad request' })
+    try {
+      let list = []
+      try { if (existsSync(BUG_FILE)) list = JSON.parse(readFileSync(BUG_FILE, 'utf8')) } catch {}
+      if (!Array.isArray(list)) list = []
+      const row = list.find(x => x && x.id === b.id)
+      if (!row) return json(res, 404, { error: 'not found' })
+      row.status = status
+      writeFileSync(BUG_FILE, JSON.stringify(list, null, 2))
+      return json(res, 200, { ok: true })
+    } catch (e) {
+      return json(res, 500, { error: 'save failed' })
+    }
+  }
+
   // ── POST /api/bot-submit { name, code, config, author } → offer a device bot ──
   // Open to anyone, rate-limited, and capped: a bot file that will not fit in 64KB is not
   // a bot file. The code is never parsed, imported or executed here.

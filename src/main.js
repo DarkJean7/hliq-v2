@@ -209,6 +209,8 @@ import {
   paperDeposit, paperWithdraw, paperLedger, paperPnl, paperDeposited, setPaperAssets, paperSpotValue,
   paperSettleOutcomes, paperFundingHistory, paperAccrueFunding, setPaperFundingRates, PAPER_COSTS,
   paperMark, paperOrder, paperCancelMany, paperCancel,
+  paperAccounts, paperAcctCreate, paperAcctRename, paperAcctDelete, paperAcctName,
+  paperSlotKnown, paperSaveFailed, PAPER_MAX_ACCTS,
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
@@ -695,9 +697,13 @@ function renderWalletStrip(addr) {
                 </button>
               </div>` : ''}
             <div class="ws-panel-section">
-              <button class="ws-all-accounts-btn" style="color:#ff9f43"
-                onclick="window.__toggleWalletPanel();window.__goPaper('main')">
-                📝 ${esc(_paperName())} <span style="opacity:.6">· Paper</span>
+              ${paperAccounts().map((a, i) => `<button class="ws-all-accounts-btn" style="color:#ff9f43${i ? ';margin-top:6px' : ''}"
+                onclick="window.__toggleWalletPanel();window.__goPaper('${esc(a.slot)}')">
+                📝 ${esc(_paperName(a.slot))} <span style="opacity:.6">· Paper</span>
+              </button>`).join('')}
+              <button class="ws-all-accounts-btn" style="color:var(--fg-2);margin-top:6px"
+                onclick="window.__paperAcctNew()">
+                ＋ New paper account <span style="opacity:.6">· separate $${PAPER_START.toLocaleString()}</span>
               </button>
               ${_chalActive() ? `<button class="ws-all-accounts-btn" style="color:#f5c518;margin-top:6px"
                 onclick="window.__toggleWalletPanel();window.__goPaper('challenge')">
@@ -707,6 +713,8 @@ function renderWalletStrip(addr) {
                 <div style="display:flex;gap:6px;margin-top:6px">
                   <button class="ws-btn" style="flex:1" onclick="window.__paperRename()">✎ Rename</button>
                   <button class="ws-btn" style="flex:1" onclick="window.__paperResetAcct()">↺ Reset</button>
+                  ${paperSlot() !== 'main' && paperSlot() !== 'challenge'
+                    ? `<button class="ws-btn" style="flex:1" onclick="window.__paperAcctDelete('${esc(paperSlot())}')">🗑 Delete</button>` : ''}
                 </div>` : ''}
             </div>
             ${list.length ? `
@@ -8430,6 +8438,7 @@ window.__paperBotStop = function(type) {
   return true
 }
 
+let _paperQuotaWarned = false
 function _paperRefresh() {
   setPaperMarks(state.allMids)
   // Real per-asset limits (maxLeverage) so maintenance margin and liquidation
@@ -8438,6 +8447,13 @@ function _paperRefresh() {
   setPaperFundingRates(_paperFundRates)
   const events = paperTick()
   for (const e of events) _paperToast(`📝 ${e}`, e.includes('LIQUIDATED') ? 'error' : 'success')
+  // A store that cannot be written looks exactly like one that works: the numbers move on
+  // screen and none of it is there after a reload. Say it once, rather than let the user
+  // find out by losing an afternoon of practice trades.
+  if (paperSaveFailed() && !_paperQuotaWarned) {
+    _paperQuotaWarned = true
+    _paperToast('Out of browser storage — this paper account is no longer being saved. Delete a paper account to free space.', 'error')
+  }
   // After the fills, before the state below is read: a filled level should be replaced in
   // the same pass that filled it, or the Orders tab shows a gap until the next tick.
   _paperBotTick()
@@ -8477,10 +8493,11 @@ function _paperRefresh() {
 }
 
 window.__goPaper = async function(which) {
-  // Paper has two selectable accounts backed by separate stores: the regular practice
-  // account ('main') and the Challenge account ('challenge'). Pass which to pick one;
-  // omit to keep whatever slot is active. See setPaperSlot in paper.js.
-  if (which === 'challenge' || which === 'main') { try { setPaperSlot(which) } catch {} }
+  // Every paper account is a separate store: the practice account ('main'), the Challenge
+  // account ('challenge'), and however many the user has made. Pass a slot to pick one;
+  // omit to keep whatever is active. An unknown slot is ignored rather than obeyed, so a
+  // stale link to a deleted account leaves you where you were. See setPaperSlot.
+  if (which && paperSlotKnown(which)) { try { setPaperSlot(which) } catch {} }
   // Tear down whatever view is running so its pollers don't fight the paper one.
   if (liveTimer)         { clearInterval(liveTimer); liveTimer = null }
   if (_allAcctTimer)     { clearInterval(_allAcctTimer); _allAcctTimer = null }
@@ -8569,7 +8586,15 @@ window.__goPaper = async function(which) {
  * Auto-generated on first use with a random suffix so shared-board names collide
  * as little as possible.
  */
-function _paperName() {
+/**
+ * The name of a paper account. The practice account and the Challenge account share one
+ * name because it is the user's identity on the paper leaderboard; the extra accounts each
+ * carry their own, and none of them post to the board (see _lbPaperSync) — one person with
+ * eight practice accounts should still be one row there, not eight.
+ */
+function _paperName(slot) {
+  const s = slot ?? paperSlot()
+  if (s !== 'main' && s !== 'challenge') return paperAcctName(s) ?? 'Paper'
   let n = localStorage.getItem('hliq_paper_name')
   if (!n) {
     n = localStorage.getItem('hliq_paper_lb_name')          // migrate the old key
@@ -8580,16 +8605,29 @@ function _paperName() {
 }
 
 window.__paperRename = async function() {
-  const cur  = _paperName()
-  const name = await _appPrompt({
+  const slot  = paperSlot()
+  const extra = slot !== 'main' && slot !== 'challenge'
+  const cur   = _paperName()
+  const name  = await _appPrompt({
     title: '✎ Name your account',
-    body: 'This is the name shown on the paper leaderboard. 2–24 characters.',
-    placeholder: 'e.g. MoonTrader',
+    // An extra account is never on the board, so promising it will be shown there would
+    // be a lie — and it is also why renaming one cannot fail on a name someone else took.
+    body: extra
+      ? 'A name for this paper account, so you can tell your accounts apart. 2–24 characters.'
+      : 'This is the name shown on the paper leaderboard. 2–24 characters.',
+    placeholder: extra ? 'e.g. Grid experiments' : 'e.g. MoonTrader',
     value: cur,
     confirmText: 'Save name',
     validate: v => !v ? 'Please enter a name.' : (v.length < 2 ? 'Name must be at least 2 characters.' : (v.length > 24 ? 'Name must be 24 characters or fewer.' : null)),
   })
   if (!name || name === cur) return
+
+  if (extra) {
+    if (!paperAcctRename(slot, name)) return _paperToast('Could not save the name', 'error')
+    renderWalletStrip(PAPER_ADDR)
+    if (_isMobView()) { _mobVRenderHeader(); window._mobVOpenWalletSwitch?.() }
+    return _paperToast('Renamed to ' + name, 'success')
+  }
 
   // The board's update secret is bound to the old name, so a rename starts a new
   // entry. Drop the secret and re-post; restore the old name if it's taken.
@@ -8665,10 +8703,53 @@ window.__paperFundSubmit = function(mode) {
 }
 
 window.__paperResetAcct = function() {
-  if (!confirm('Reset the paper account?\n\nAll simulated positions, orders and history are erased and the balance returns to $' + PAPER_START.toLocaleString() + '.')) return
+  if (!confirm('Reset ' + _paperName() + '?\n\nAll simulated positions, orders and history are erased and the balance returns to $' + PAPER_START.toLocaleString() + '.')) return
   paperReset()
   _paperRefresh()
   _paperToast('Paper account reset', 'success')
+}
+
+/**
+ * Another paper account, with its own $1,000 and its own history. Nothing is shared with
+ * the others — that is the point: an idea you want to test does not have to be mixed into
+ * the balance you have been building up.
+ */
+window.__paperAcctNew = async function() {
+  const n = paperAccounts().length
+  const name = await _appPrompt({
+    title: '＋ New paper account',
+    body: 'A separate practice account with its own $' + PAPER_START.toLocaleString()
+      + ', its own positions and its own history. It does not affect your other accounts, and it is not ranked on the paper leaderboard.',
+    placeholder: 'e.g. Grid experiments',
+    value: 'Paper ' + (n + 1),
+    confirmText: 'Create',
+    validate: v => !v ? 'Please enter a name.' : (v.length < 2 ? 'Name must be at least 2 characters.' : (v.length > 24 ? 'Name must be 24 characters or fewer.' : null)),
+  })
+  if (!name) return
+
+  const { slot, error } = paperAcctCreate(name)
+  if (error === 'limit') return _paperToast('That is the ' + PAPER_MAX_ACCTS + '-account limit — delete one first', 'error')
+  // A registry write that failed means the account would vanish on reload, so it is not
+  // opened: better to say the storage is full than to hand over an account that is not there
+  // the next time the app starts.
+  if (error || !slot) return _paperToast('Out of browser storage — delete a paper account first', 'error')
+
+  window._mobVCloseWalletSwitch?.()
+  document.getElementById('wsPanel')?.classList.remove('open')
+  await window.__goPaper(slot)
+  _paperToast(name + ' created — $' + PAPER_START.toLocaleString() + ' to practice with', 'success')
+}
+
+window.__paperAcctDelete = function(slot) {
+  const name = _paperName(slot)
+  if (!confirm('Delete ' + name + '?\n\nThis paper account and everything in it — positions, orders, history — is erased. Your other paper accounts are untouched.\n\nThis cannot be undone.')) return
+  const wasHere = paperSlot() === slot
+  if (!paperAcctDelete(slot)) return _paperToast('Could not delete that account', 'error')
+  // Deleting the account you are standing in drops you back to the practice account, which
+  // is where paper.js has already moved the slot.
+  if (wasHere) { try { localStorage.setItem('hliq_paper_slot', 'main') } catch {}; window.__goPaper('main') }
+  else { renderWalletStrip(state.addr); if (_isMobView()) { _mobVRenderHeader(); window._mobVOpenWalletSwitch?.() } }
+  _paperToast(name + ' deleted', 'success')
 }
 
 /**
@@ -11450,19 +11531,38 @@ window._mobVOpenWalletSwitch = function() {
   // the separate Challenge account, each selectable and highlighted by which slot is live.
   const _paperOn   = isPaper()
   const _chalOn    = _chalActive() && _CHALLENGE_ENABLED   // Challenge hidden — see _CHALLENGE_ENABLED
-  const _mainSel   = _paperOn && paperSlot() !== 'challenge'
   const _chalSel   = _paperOn && paperSlot() === 'challenge'
-  const paperRow = `
-    <div class="mob-wallet-list-item${_mainSel ? ' selected' : ''}" onclick="window._mobVCloseWalletSwitch();window.__goPaper('main')">
+  const _accts     = paperAccounts()
+  // Each paper account is its own store, so each gets its own row. The controls only
+  // appear on the one you are standing in: renaming or resetting an account you are not
+  // looking at is how you reset the wrong one.
+  const _acctRow = (a, i) => {
+    const sel = _paperOn && paperSlot() === a.slot
+    return `
+    <div class="mob-wallet-list-item${sel ? ' selected' : ''}" onclick="window._mobVCloseWalletSwitch();window.__goPaper('${esc(a.slot)}')">
       ${_mobVAvatarHtml(PAPER_ADDR, 40)}
       <div class="mob-wallet-list-info">
-        <div class="mob-wallet-list-name notranslate">${esc(_paperName())}</div>
-        <div class="mob-wallet-list-addr">Paper · practice with simulated funds</div>
+        <div class="mob-wallet-list-name notranslate">${esc(_paperName(a.slot))}</div>
+        <div class="mob-wallet-list-addr">${a.builtin
+          ? 'Paper · practice with simulated funds'
+          : 'Paper · a separate $' + PAPER_START.toLocaleString() + ', separate history'}</div>
       </div>
-      ${_mainSel ? `
+      ${sel ? `
         <button class="mob-wallet-icon-btn" onclick="event.stopPropagation();window.__paperRename()" title="Rename paper account">✎</button>
         <button class="mob-wallet-icon-btn" onclick="event.stopPropagation();window.__paperResetAcct()" title="Reset paper account">↺</button>` : ''}
-    </div>${_chalOn ? `
+      ${a.builtin ? '' : `
+        <button class="mob-wallet-icon-btn" onclick="event.stopPropagation();window.__paperAcctDelete('${esc(a.slot)}')" title="Delete this paper account">🗑</button>`}
+    </div>`
+  }
+  const _newAcctRow = _accts.length < PAPER_MAX_ACCTS + 1 ? `
+    <div class="mob-wallet-list-item" onclick="window.__paperAcctNew()">
+      <div class="mob-wallet-list-avatar" style="width:40px;height:40px;border-radius:50%;background:var(--panel-2);border:1px dashed var(--border2);color:var(--fg-2);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0">+</div>
+      <div class="mob-wallet-list-info">
+        <div class="mob-wallet-list-name">New paper account</div>
+        <div class="mob-wallet-list-addr">A fresh $${PAPER_START.toLocaleString()} that does not touch the others</div>
+      </div>
+    </div>` : ''
+  const paperRow = _accts.map(_acctRow).join('') + `${_chalOn ? `
     <div class="mob-wallet-list-item${_chalSel ? ' selected' : ''}" onclick="window._mobVCloseWalletSwitch();window.__goPaper('challenge')">
       <div class="mob-wallet-list-avatar" style="width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#f5c518,#ff9f43);color:#000;display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0">🏆</div>
       <div class="mob-wallet-list-info">
@@ -11470,7 +11570,7 @@ window._mobVOpenWalletSwitch = function() {
         <div class="mob-wallet-list-addr">Challenge · $1,000 · compete for the prize</div>
       </div>
       ${_chalSel ? `<button class="mob-wallet-icon-btn" onclick="event.stopPropagation();window.__openChallenge()" title="Challenge details">🏆</button>` : ''}
-    </div>` : ''}`
+    </div>` : ''}` + _newAcctRow
 
   const rowWallets = _isAll ? allWallets : allWallets.filter(w => w.addr.toLowerCase() !== state.addr.toLowerCase())
   const walletRows = rowWallets.map(w => {
@@ -17052,6 +17152,15 @@ function _mobVRenderContent(tick = false) {
           <div><div>Dev Mode</div><div style="font-size:11px;color:var(--muted)">Unlock leaderboard management</div></div>
           ${tog(devOn, 'window.toggleDevMode(this.checked)', 'mobDevModeToggle')}
         </div>
+        ${devOn ? `
+        <div class="mob-v-setting-row">
+          <div><div>Bug reports</div><div style="font-size:11px;color:var(--muted)">What users have sent in</div></div>
+          <button class="mob-v-setting-btn" onclick="window.__openBugReports()">Open</button>
+        </div>
+        <div class="mob-v-setting-row">
+          <div><div>Bot submissions</div><div style="font-size:11px;color:var(--muted)">Device bots offered for the app</div></div>
+          <button class="mob-v-setting-btn" onclick="window.__openBotSubmissions()">Open</button>
+        </div>` : ''}
       </div>
 
       <!-- Sign Out -->
@@ -18167,7 +18276,10 @@ function _paperHealthPct() {
 
 async function _lbPaperSync(force = false) {
   if (!isPaper() || _lbPaperSyncing) return
-  if (paperSlot() === 'challenge') return   // the Challenge account has its OWN board (standings), not the paper one
+  // Only the practice account is ranked. The Challenge has its OWN board (standings), and
+  // the extra accounts are scratch space — one person running eight ideas should be one
+  // row on the board, not eight, and certainly not eight under the same name.
+  if (paperSlot() !== 'main') return
   if (localStorage.getItem('hliq_paper_lb_optout') === '1') return
 
   const s      = paperStore()
@@ -23270,6 +23382,85 @@ function _botSubsRender(state) {
          'Guardar solo lo marca para revisarlo. Nada aquí instala ni ejecuta un archivo enviado.')}</div>`)
 }
 
+// ── the bug inbox, dev mode only ──────────────────────────────────────────────
+// Reports were write-only until now: they landed in bug-reports.json on the server and
+// reading one meant SSHing in, so nobody did.
+let _bugsCache = null
+
+window.__openBugReports = async function() {
+  _sheet('bugRepSheet', _T('Bug reports', 'Reportes de fallos'),
+    `<div style="padding:18px 4px;font-size:12px;color:var(--muted)">${_T('Loading…', 'Cargando…')}</div>`)
+  try {
+    const pin = _lbGetPin()
+    const r = await fetch('/api/bug-reports', { headers: pin ? { 'x-lb-pin': pin } : {} })
+    if (r.status === 403) { _bugsCache = null; return _bugsRender('forbidden') }
+    _bugsCache = await r.json()
+    _bugsRender()
+  } catch {
+    _bugsCache = null
+    _bugsRender('error')
+  }
+}
+
+window.__bugStatus = async function(id, status) {
+  try {
+    const pin = _lbGetPin()
+    await fetch('/api/bug-report-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(pin ? { 'x-lb-pin': pin } : {}) },
+      body: JSON.stringify({ id, status }),
+    })
+    const row = (_bugsCache ?? []).find(x => x.id === id)
+    if (row) row.status = status
+    _bugsRender()
+  } catch {}
+}
+
+function _bugsRender(state) {
+  const title = _T('Bug reports', 'Reportes de fallos')
+  if (state === 'forbidden') {
+    return _sheet('bugRepSheet', title, `<div style="font-size:12px;color:var(--red)">${
+      _T('The server did not accept the dev PIN.', 'El servidor no aceptó el PIN.')}</div>`)
+  }
+  if (state === 'error' || !Array.isArray(_bugsCache)) {
+    return _sheet('bugRepSheet', title, `<div style="font-size:12px;color:var(--red)">${
+      _T('Could not load reports.', 'No se pudieron cargar.')}</div>`)
+  }
+  if (!_bugsCache.length) {
+    return _sheet('bugRepSheet', title, `<div style="font-size:12px;color:var(--muted)">${
+      _T('No reports yet.', 'Ningún reporte todavía.')}</div>`)
+  }
+  const open = _bugsCache.filter(b => b.status !== 'done').length
+  // Every field here is a stranger's text typed into a form. One report in the live inbox
+  // is an <img onerror> that posts document.cookie to someone's domain — it is inert only
+  // because it goes through esc() and lands in text, never in markup.
+  const row = (b) => {
+    const done = b.status === 'done'
+    const d = b.diag ?? {}
+    const bits = [d.tab, d.lang, d.screen, d.url].filter(Boolean).map(x => esc(String(x).slice(0, 60)))
+    return `
+    <div style="border:1px solid ${done ? 'var(--border2)' : 'var(--accent)'};border-radius:11px;padding:10px 11px;margin-bottom:9px;opacity:${done ? '.55' : '1'}">
+      <div style="display:flex;align-items:baseline;gap:8px">
+        <span style="font-size:10.5px;color:var(--muted)">${esc(String(b.receivedAt ?? '').replace('T', ' ').slice(0, 16))}</span>
+        <span style="flex:1"></span>
+        <span style="font-size:9.5px;color:${done ? 'var(--muted)' : 'var(--accent)'};text-transform:uppercase;letter-spacing:.06em;font-weight:800">${done ? _T('done', 'hecho') : _T('new', 'nuevo')}</span>
+      </div>
+      <div style="font-size:12.5px;color:var(--fg);margin-top:6px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(b.message ?? '')}</div>
+      ${bits.length ? `<div style="font-size:10px;color:var(--muted);margin-top:6px;word-break:break-all">${bits.join(' · ')}</div>` : ''}
+      ${d.ua ? `<div style="font-size:9.5px;color:var(--muted);margin-top:3px;word-break:break-all;opacity:.75">${esc(String(d.ua).slice(0, 140))}</div>` : ''}
+      <div style="display:flex;gap:6px;margin-top:9px">
+        <button onclick="window.__bugStatus('${esc(b.id)}','${done ? 'new' : 'done'}')"
+          style="padding:5px 10px;border-radius:7px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:11px;font-weight:700;cursor:pointer">${
+          done ? _T('Reopen', 'Reabrir') : _T('Mark done', 'Marcar hecho')}</button>
+      </div>
+    </div>`
+  }
+  _sheet('bugRepSheet', title,
+    `<div style="font-size:11px;color:var(--muted);margin-bottom:9px">${
+      open} ${_T('open', 'abiertos')} · ${_bugsCache.length} ${_T('total', 'en total')}</div>` +
+    _bugsCache.map(row).join(''))
+}
+
 window.__devBotInstall = function() {
   const def = _devBotRead(null)
   if (!def) return
@@ -25306,7 +25497,12 @@ _visitBannerSync()
 // load, so we never briefly paint the wrong one. Only honor 'challenge' if still enrolled;
 // the two accounts live in separate stores (see setPaperSlot / paper.js).
 try {
-  if (localStorage.getItem('hliq_paper_slot') === 'challenge' && localStorage.getItem('hliq_chal_active') === '1') setPaperSlot('challenge')
+  const _wantSlot = localStorage.getItem('hliq_paper_slot')
+  if (_wantSlot === 'challenge') {
+    if (localStorage.getItem('hliq_chal_active') === '1') setPaperSlot('challenge')
+  } else if (_wantSlot && _wantSlot !== 'main' && paperSlotKnown(_wantSlot)) {
+    setPaperSlot(_wantSlot)               // a user-made account, if it still exists
+  }
 } catch {}
 
 // Auto-load last used view. If the user was in the combined "All Accounts" view,
