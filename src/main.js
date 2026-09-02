@@ -218,7 +218,7 @@ import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
 import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
 import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW,
-         BT_STRATEGIES, BT_MODULES } from './backtest.js'
+         BT_STRATEGIES, BT_MODULES, BT_UNSIMULATABLE } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -15225,6 +15225,7 @@ function _simChoiceHtml(c) {
 /** A field belongs here if it is not tied to another strategy or to an off module. */
 function _simFieldVisible(f) {
   if (f.strategy && f.strategy !== _simParams.strategy) return false
+  if (f.notFor?.includes(_simParams.strategy)) return false
   if (f.group === 'riskModel') return _simParams.pnlModel === 'risk'
   if (f.group === 'fixedModel') return _simParams.pnlModel === 'fixed'
   if (f.group && f.group.startsWith('use')) return !!_simParams[f.group]
@@ -15268,7 +15269,8 @@ function _simSectionsHtml() {
 
     ${_simHead(_T('Entry and exit', 'Entrada y salida'))}
     ${_simGrid(fields(f => !f.strategy && !f.group && f.key !== 'startBalance'))}
-    <div style="margin-top:12px">${_simGrid(BT_CHOICES.filter(c => !c.group).map(_simChoiceHtml).join(''))}</div>
+    <div style="margin-top:12px">${_simGrid(BT_CHOICES
+      .filter(c => !c.group && !c.notFor?.includes(_simParams.strategy)).map(_simChoiceHtml).join(''))}</div>
 
     ${_simHead(_T('Money', 'Dinero'))}
     ${_simGrid(fields(f => f.key === 'startBalance'))}
@@ -15288,6 +15290,15 @@ function _simSectionsHtml() {
         'Fijo suma o resta un porcentaje del balance. Por riesgo dimensiona según la distancia al stop, así que cambiar el objetivo cambia el pago.'))}
     </div>
     <div style="margin-top:12px">${_simGrid(fields(f => f.group === 'riskModel' || f.group === 'fixedModel'))}</div>
+
+    ${_simHead(_T('Bots this cannot simulate', 'Bots que no se pueden simular'))}
+    <div style="font-size:11px;color:var(--muted);line-height:1.45;margin-bottom:8px">${
+      _T('Listed rather than left out, so the strategies above do not read as the whole set.',
+         'Listados en vez de omitidos, para que los de arriba no parezcan todos.')}</div>
+    ${BT_UNSIMULATABLE.map(([name, why]) => `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+      <span style="font-size:11.5px;font-weight:700;color:var(--fg-2);flex:0 0 40%">${esc(name)}</span>
+      <span style="font-size:10.5px;color:var(--muted);line-height:1.45;flex:1">${esc(why)}</span>
+    </div>`).join('')}
 
     ${_simHead(_T('Modules', 'Módulos'))}
     <div style="font-size:11px;color:var(--muted);line-height:1.45;margin-bottom:9px">${

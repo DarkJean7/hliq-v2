@@ -27,11 +27,21 @@
 
 export const BT_DEFAULTS = {
   // ── what opens a trade ──────────────────────────────────────────────────
-  strategy: 'range',      // 'range' | 'emacross' | 'breakout'
+  strategy: 'range',      // see BT_STRATEGIES
   entryCategory: 3,       // range: candle must be this many times the baseline
   baselineLookback: 200,  // range: candles of PAST history for the baseline; 0 = whole sample
-  emaFast: 9,             // emacross
+
+  // volbreak -- the Volatility Breakout bot's own flags, same names and defaults
+  vbLookback: 20,         // candles in the rolling average
+  vbThreshold: 3,         // |category| needed to fire
+  vbTpMult: 2,            // take profit, multiples of the rolling average RANGE
+  vbSlMult: 1,            // stop, multiples of the rolling average range
+
+  // trend -- the Trend bot
+  emaFast: 9,
   emaSlow: 21,
+  trendStopPct: 2,        // it only closes a losing side when this is hit
+
   breakoutLookback: 20,   // breakout: prior candles whose high/low must be cleared
 
   // ── what closes it ──────────────────────────────────────────────────────
@@ -69,9 +79,28 @@ export const BT_DEFAULTS = {
 }
 
 export const BT_STRATEGIES = [
-  ['range',    'Range category', 'A candle whose high-to-low range is unusually large against recent history opens a trade in the direction it closed.'],
-  ['emacross', 'EMA cross',      'A fast average crossing a slow one opens a trade in the direction of the cross. The same idea as the Trend bot.'],
-  ['breakout', 'Breakout',       'A close beyond the highest high or lowest low of the previous N candles opens a trade that way. The same idea as the Volatility Breakout bot.'],
+  ['volbreak', 'Volatility Breakout (bot)',
+   'The real bot. A closed candle whose range is a large multiple of the rolling average opens a trade in its direction, with the target and stop set as multiples of that same average range -- so both scale with volatility instead of being fixed percentages.'],
+  ['trend', 'Trend (bot)',
+   'The real bot. It is ALWAYS in a position: long while the fast EMA is above the slow one, short while it is below, flipping when that changes. It refuses to flip out of a losing position unless its stop is hit, which is the behaviour that most shapes its results.'],
+  ['range', 'Range category (original script)',
+   'The rule from the Python simulator this screen came from: an unusually large candle opens a trade its way, with the target and stop as percentages of the entry price.'],
+  ['breakout', 'Channel breakout',
+   'A close beyond the highest high or lowest low of the previous N candles opens a trade that way. Not one of the deployed bots -- a plain comparison rule.'],
+]
+
+/**
+ * Bots this engine cannot honestly simulate, and why. Listed rather than omitted: a
+ * missing name reads as an oversight, and someone would reasonably assume the ones shown
+ * are all there are.
+ */
+export const BT_UNSIMULATABLE = [
+  ['Grid / Outcome Grid', 'Holds many resting orders at once. This engine follows one position at a time, so it cannot represent a grid at all.'],
+  ['DCA', 'Averages into a position over several entries with no per-entry stop. The trade lifecycle here is one entry, one exit.'],
+  ['TWAP', 'An execution algorithm -- it splits an order over time rather than deciding when to trade. There is no win or loss to measure.'],
+  ['Accumulator', 'Buys spot on a schedule. Nothing here opens or closes against a target.'],
+  ['Copy Trade', 'Mirrors another wallet, so its results depend on the fills of that wallet rather than on candles.'],
+  ['Liq Guard / Leverage Brake', 'Risk guards. They never open a position, only reduce one.'],
 ]
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : NaN }
@@ -119,6 +148,25 @@ export function classify(rows, { baselineLookback = 200 } = {}) {
   return out
 }
 
+/**
+ * Rolling average of the RANGE of the n candles strictly before each one. Null until there
+ * are that many. The Volatility Breakout bot uses this for both jobs -- deciding a candle
+ * is unusual, and setting the levels -- so it is computed once and shared, exactly as the
+ * bot does it.
+ */
+export function avgRangeSeries(rows, n) {
+  const out = new Array(rows.length).fill(null)
+  let sum = 0
+  for (let i = 0; i < rows.length; i++) {
+    if (i >= n) {
+      out[i] = sum / n
+      sum -= rows[i - n].range
+    }
+    sum += rows[i].range
+  }
+  return out
+}
+
 /** EMA over closes, aligned; null until the period is filled. */
 function ema(rows, n) {
   const out = new Array(rows.length).fill(null)
@@ -152,13 +200,25 @@ function sma(rows, n) {
  */
 export function signals(rows, p) {
   const out = new Array(rows.length).fill(null)
-  if (p.strategy === 'emacross') {
+  if (p.strategy === 'volbreak') {
+    // The bot's own rule: bucket the candle range against the rolling average, fire when
+    // the bucket reaches the threshold, direction from the candle colour.
+    const avg = avgRangeSeries(rows, Math.max(2, Math.round(p.vbLookback)))
+    for (let i = 0; i < rows.length; i++) {
+      if (avg[i] == null || !(avg[i] > 0)) continue
+      const cat = Math.floor(rows[i].range / avg[i])
+      out[i] = cat >= Math.max(1, Math.round(p.vbThreshold)) ? (rows[i].red ? -1 : 1) : 0
+    }
+    return out
+  }
+  if (p.strategy === 'trend') {
+    // A STATE, not a crossing: the bot is long whenever fast is above slow. The lifecycle
+    // below is what turns that into trades.
     const f = ema(rows, Math.max(2, Math.round(p.emaFast)))
     const s = ema(rows, Math.max(2, Math.round(p.emaSlow)))
-    for (let i = 1; i < rows.length; i++) {
-      if (f[i] == null || s[i] == null || f[i - 1] == null || s[i - 1] == null) continue
-      const was = f[i - 1] - s[i - 1], now = f[i] - s[i]
-      out[i] = (was <= 0 && now > 0) ? 1 : (was >= 0 && now < 0) ? -1 : 0
+    for (let i = 0; i < rows.length; i++) {
+      if (f[i] == null || s[i] == null) continue
+      out[i] = f[i] > s[i] ? 1 : -1
     }
     return out
   }
@@ -190,18 +250,103 @@ export function signals(rows, p) {
  * and not excluded -- it is counted and reported, because a rule that opens trades nothing
  * ever closes is a fact about the rule.
  */
+/**
+ * The Trend bot has a different SHAPE of life to everything else here, so it gets its own
+ * walk rather than being bent into the entry-and-target loop.
+ *
+ * It is always in a position. It is long while the fast EMA is above the slow one and
+ * short while it is below, and it flips when that changes -- except that it REFUSES to
+ * close a losing side unless its stop has been hit. That refusal is the single behaviour
+ * that most shapes what the bot does, so modelling it as a normal signal strategy would
+ * report on something the bot is not.
+ */
+function runTrendBot(rows, p, sig) {
+  const stopFrac = Math.max(0, p.trendStopPct) / 100
+  let balance = p.startBalance, peak = p.startBalance, maxDD = 0
+  let won = 0, lost = 0
+  let pos = null
+  const trades = []
+
+  const book = (entry, exit, side, outcome, openedAt, closedAt, heldFor) => {
+    const long = side > 0
+    const moved = long ? exit - entry : entry - exit
+    const slDist = entry * stopFrac
+    const cost = p.useFees ? balance * (p.feePct / 100) : 0
+    let delta = -cost
+    if (p.pnlModel === 'risk' && slDist > 0) {
+      delta += balance * (p.riskPct / 100) * (moved / slDist)
+    } else if (outcome === 'win') delta += balance * (p.winPct / 100)
+    else if (outcome === 'loss') delta -= balance * (p.lossPct / 100)
+    balance += delta
+    if (outcome === 'win') won++
+    else if (outcome === 'loss') lost++
+    peak = Math.max(peak, balance)
+    if (peak > 0) maxDD = Math.max(maxDD, (peak - balance) / peak * 100)
+    trades.push({ i: openedAt, time: rows[openedAt].t, side: long ? 'long' : 'short',
+      entry, tp: null, sl: slDist > 0 ? (long ? entry - slDist : entry + slDist) : null,
+      outcome, exitAt: closedAt, exitPx: exit, heldFor, balance })
+  }
+
+  for (let i = 0; i < rows.length; i++) {
+    const want = sig[i]
+    if (want == null) continue
+    const px = rows[i].c
+
+    // The stop is checked against the candle's extreme, before anything else -- a stop that
+    // was hit during the candle cannot be undone by where the candle happened to close.
+    if (pos && stopFrac > 0) {
+      const long = pos.side > 0
+      const stopPx = long ? pos.entry * (1 - stopFrac) : pos.entry * (1 + stopFrac)
+      if (long ? rows[i].l <= stopPx : rows[i].h >= stopPx) {
+        book(pos.entry, stopPx, pos.side, 'loss', pos.i, rows[i].t, i - pos.i)
+        pos = null
+      }
+    }
+
+    if (pos && want !== pos.side) {
+      const long = pos.side > 0
+      const losing = (long ? pos.entry - px : px - pos.entry) > 0
+      // Losing and not stopped: the bot holds. The signal is simply ignored this candle.
+      if (losing) continue
+      book(pos.entry, px, pos.side, 'win', pos.i, rows[i].t, i - pos.i)
+      pos = null
+    }
+
+    if (!pos) pos = { side: want, entry: px, i }
+  }
+
+  // Whatever it was still holding when the data ended. Counted, never scored.
+  const openTrade = pos
+    ? [{ i: pos.i, time: rows[pos.i].t, side: pos.side > 0 ? 'long' : 'short', entry: pos.entry,
+         tp: null, sl: null, outcome: 'open', exitAt: null, exitPx: null,
+         heldFor: rows.length - 1 - pos.i, balance }]
+    : []
+
+  return { trades: [...trades, ...openTrade], balance, peak, maxDD, won, lost }
+}
+
 export function runBacktest(candles, params = {}) {
   const p = { ...BT_DEFAULTS, ...params }
   const rows = normalise(candles)
   const sig = signals(rows, p)
   const trend = p.useTrendFilter ? sma(rows, Math.max(2, Math.round(p.trendMa))) : null
+  const avgRange = p.strategy === 'volbreak' ? avgRangeSeries(rows, Math.max(2, Math.round(p.vbLookback))) : null
 
   let balance = p.startBalance
   let peak = p.startBalance, maxDD = 0
   let won = 0, lost = 0, cooldown = 0, streak = 0, halted = false
-  const trades = []
+  let trades = []
 
-  for (let i = 0; i < rows.length && !halted; i++) {
+  // The Trend bot is always in a position, so it runs its own walk and rejoins here for
+  // the reporting. Modules that describe entries -- cooldown, side, trend filter -- have
+  // nothing to act on in a strategy that never sits out, and are simply not applied.
+  if (p.strategy === 'trend') {
+    const t = runTrendBot(rows, p, sig)
+    trades = t.trades
+    balance = t.balance; peak = t.peak; maxDD = t.maxDD; won = t.won; lost = t.lost
+  }
+
+  for (let i = 0; i < rows.length && !halted && p.strategy !== 'trend'; i++) {
     if (cooldown > 0) { cooldown--; continue }
     const s = sig[i]
     if (!s) continue
@@ -217,8 +362,14 @@ export function runBacktest(candles, params = {}) {
     }
 
     const entry = rows[i].c
-    const tp = long ? entry * (1 + p.takeProfitPct / 100) : entry * (1 - p.takeProfitPct / 100)
-    const sl0 = long ? entry * (1 - p.stopLossPct / 100) : entry * (1 + p.stopLossPct / 100)
+    // The bot sets both levels as multiples of the rolling average RANGE, so they widen
+    // and narrow with volatility instead of being a fixed percentage of price. Using
+    // percentages here would be a different strategy wearing its name.
+    const vbAvg = p.strategy === 'volbreak' ? avgRange?.[i] : null
+    const tpDist = vbAvg != null ? vbAvg * p.vbTpMult : entry * (p.takeProfitPct / 100)
+    const slDist = vbAvg != null ? vbAvg * p.vbSlMult : entry * (p.stopLossPct / 100)
+    const tp = long ? entry + tpDist : entry - tpDist
+    const sl0 = long ? entry - slDist : entry + slDist
     if (p.useCooldown) cooldown = p.cooldownCandles
 
     let stop = sl0, best = entry
@@ -260,13 +411,15 @@ export function runBacktest(candles, params = {}) {
       // Sized from the actual distance to the stop: risking `riskPct` of the balance, a
       // win pays that times the reward-to-risk the levels imply. Change the target and the
       // payout follows, which the fixed model cannot do.
-      const rr = p.stopLossPct > 0 ? p.takeProfitPct / p.stopLossPct : 0
+      // From the distances actually used, so a volatility-scaled pair is priced by its own
+      // ratio rather than by percentage boxes the strategy ignored.
+      const rr = slDist > 0 ? tpDist / slDist : 0
       if (outcome === 'win') { delta += balance * (p.riskPct / 100) * rr; won++ }
       else if (outcome === 'loss') { delta -= balance * (p.riskPct / 100); lost++ }
       else if (outcome === 'timeout' && exitPx != null) {
         // Closed where it stood, not at either level, so it is valued by how far it got.
-        const moved = (long ? exitPx - entry : entry - exitPx) / entry * 100
-        delta += balance * (p.riskPct / 100) * (p.stopLossPct > 0 ? moved / p.stopLossPct : 0)
+        const moved = long ? exitPx - entry : entry - exitPx
+        delta += balance * (p.riskPct / 100) * (slDist > 0 ? moved / slDist : 0)
         if (moved > 0) won++
         else if (moved < 0) lost++
       }
@@ -347,23 +500,43 @@ export const BT_FIELDS = [
     hint: 'How much history counts as "normal".',
     help: 'The number of PAST candles whose ranges are averaged to decide what a normal candle looks like. Shorter reacts faster and calls more candles unusual; longer is steadier. Setting it to 0 averages the whole sample INCLUDING candles from after each trade -- a number nobody could have had at the time, which flatters the result. It is offered only so you can measure what that assumption was worth.' },
 
-  { key: 'emaFast', label: 'Fast EMA', unit: 'candles', step: '1', strategy: 'emacross',
-    hint: 'The quicker average.',
-    help: 'The shorter exponential moving average. A trade opens on the candle where it crosses the slow one: upward for a long, downward for a short. Shorter means more crosses and more noise.' },
-
-  { key: 'emaSlow', label: 'Slow EMA', unit: 'candles', step: '1', strategy: 'emacross',
-    hint: 'The slower average.',
-    help: 'The longer exponential moving average, the one being crossed. It should be meaningfully longer than the fast one; two similar lengths cross constantly and produce trades with no information in them.' },
-
   { key: 'breakoutLookback', label: 'Breakout window', unit: 'candles', step: '1', strategy: 'breakout',
     hint: 'Candles whose extreme must be cleared.',
     help: 'A close above the highest high of this many previous candles opens a long; a close below the lowest low opens a short. Longer windows fire rarely and on bigger moves.' },
 
-  { key: 'takeProfitPct', label: 'Take profit', unit: '%', step: '0.05',
+  { key: 'vbLookback', label: 'Rolling window', unit: 'candles', step: '1', strategy: 'volbreak',
+    hint: 'Candles in the average the bot compares against.',
+    help: 'The bot averages the range of this many candles STRICTLY BEFORE the one it is judging, and that average does two jobs: it decides whether a candle is unusual, and it sets how far the target and stop sit. This is the bot default of 20.' },
+
+  { key: 'vbThreshold', label: 'Threshold', unit: 'x', step: '1', strategy: 'volbreak',
+    hint: 'Range multiple needed to fire. 1-6.',
+    help: 'How many times the rolling average a candle range must reach before the bot acts. Its default is 3. Raising it trades less and on bigger candles; the result also reports how many signals existed before the modules filtered them, so you can see what the threshold cost.' },
+
+  { key: 'vbTpMult', label: 'Target', unit: 'x avg range', step: '0.25', strategy: 'volbreak',
+    hint: 'Multiples of the rolling average range.',
+    help: 'The distinctive part of this bot: the target is a multiple of the SAME rolling average range, not a percentage of price. It widens when the market is moving and tightens when it is quiet, which a fixed percentage cannot do. The percentage boxes elsewhere on this form are ignored while this strategy is selected.' },
+
+  { key: 'vbSlMult', label: 'Stop', unit: 'x avg range', step: '0.25', strategy: 'volbreak',
+    hint: 'Multiples of the rolling average range.',
+    help: 'The stop, on the same scale as the target. Target over stop is the reward-to-risk, so the bot defaults of 2 and 1 are two-to-one, and the win rate needed to break even is stop / (target + stop) -- one third at those settings.' },
+
+  { key: 'emaFast', label: 'Fast EMA', unit: 'candles', step: '1', strategy: 'trend',
+    hint: 'The quicker average.',
+    help: 'The bot is long whenever this average is above the slow one. Note it is a STATE, not a crossing event: the bot does not wait for a cross, it simply holds whichever side the two averages currently imply.' },
+
+  { key: 'emaSlow', label: 'Slow EMA', unit: 'candles', step: '1', strategy: 'trend',
+    hint: 'The slower average.',
+    help: 'The longer average. It must be meaningfully longer than the fast one, or the two swap constantly and the bot flips on noise.' },
+
+  { key: 'trendStopPct', label: 'Stop loss', unit: '%', step: '0.25', strategy: 'trend',
+    hint: 'The only thing that closes a losing side.',
+    help: 'This bot refuses to close a position that is underwater. When the averages flip against an open trade it HOLDS, and the only thing that gets it out at a loss is this stop. That single rule shapes its results more than the averages do -- set it to 0 and the bot will hold a loser indefinitely, which the run will show as very few, very long trades.' },
+
+  { key: 'takeProfitPct', notFor: ['volbreak', 'trend'], label: 'Take profit', unit: '%', step: '0.05',
     hint: 'How far price must move your way to win.',
     help: 'Measured from the entry price, as a percentage. A long entered at $100 with 1% wins if any later candle trades at $101. Percent rather than a fixed amount so the same setting means the same on a $78,000 market and a $0.004 one.' },
 
-  { key: 'stopLossPct', label: 'Stop loss', unit: '%', step: '0.05',
+  { key: 'stopLossPct', notFor: ['volbreak', 'trend'], label: 'Stop loss', unit: '%', step: '0.05',
     hint: 'How far against you before it is a loss.',
     help: 'The mirror of the target. Whichever level the price touches FIRST ends the trade, checked candle by candle after entry. If neither is ever touched before the data runs out, the trade is reported as unresolved: not a win, not a loss.' },
 
@@ -409,7 +582,7 @@ export const BT_CHOICES = [
     options: [['both', 'Both'], ['long', 'Long only'], ['short', 'Short only']],
     help: 'Green candles open longs and red ones open shorts. Restricting to one side is how you find out whether a rule has an edge or was carried by a market that only went one way. Note that "both" usually takes FEWER trades than long-only and short-only added together: a trade on one side starts the cooldown, which can block one on the other.' },
 
-  { key: 'ambiguous', label: 'If one candle hits both levels',
+  { key: 'ambiguous', notFor: ['trend'], label: 'If one candle hits both levels',
     options: [['loss', 'Count the stop'], ['win', 'Count the target']],
     help: 'Sometimes a single candle is wide enough to touch the target AND the stop. Its high, low, open and close cannot say which came first, so this is a guess either way. Counting the stop is the pessimistic reading and the default. On tight levels the difference is enormous -- the same rule can go from every trade winning to every trade losing.' },
 ]

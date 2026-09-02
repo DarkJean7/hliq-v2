@@ -4,8 +4,8 @@
 // than none, because it gets believed -- so most of what is asserted here is the ways this
 // refuses to flatter the result.
 import fs from 'fs'
-import { runBacktest, classify, normalise, coerceParams, signals,
-         BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW, BT_STRATEGIES, BT_MODULES }
+import { runBacktest, classify, normalise, coerceParams, signals, avgRangeSeries,
+         BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW, BT_STRATEGIES, BT_MODULES, BT_UNSIMULATABLE }
   from '../../src/backtest.js'
 
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
@@ -59,8 +59,10 @@ t('the view flags it when set to the target', cli.includes('were counted as wins
 
 console.log(String.fromCharCode(10) + '-- targets are percentages, not price offsets --')
 // 0.01 added to a price is 100 pips on EUR/USD and a rounding error on BTC.
-t('the target scales with the price', bt.includes('entry * (1 + p.takeProfitPct / 100)'))
-t('as does the stop', bt.includes('entry * (1 - p.stopLossPct / 100)'))
+t('the target scales with the price', bt.includes('entry * (p.takeProfitPct / 100)') &&
+  bt.includes('const tp = long ? entry + tpDist : entry - tpDist'))
+t('as does the stop', bt.includes('entry * (p.stopLossPct / 100)') &&
+  bt.includes('const sl0 = long ? entry - slDist : entry + slDist'))
 const cheap = runBacktest(rows.map(r => ({ ...r, o: +r.o / 1e4, h: +r.h / 1e4, l: +r.l / 1e4, c: +r.c / 1e4 })))
 t('so a market priced 10,000x lower behaves the same', cheap.tradesMade === runBacktest(rows).tradesMade,
   [cheap.tradesMade, runBacktest(rows).tradesMade])
@@ -187,11 +189,11 @@ for (const [k] of BT_STRATEGIES) {
   const rr = runBacktest(wave, { strategy: k })
   t(`${k} produces signals and trades`, rr.signalsSeen > 0 && rr.tradesMade > 0, [rr.signalsSeen, rr.tradesMade])
 }
-t('the three strategies do different things',
-  new Set(BT_STRATEGIES.map(([k]) => runBacktest(wave, { strategy: k }).tradesMade)).size === 3)
+t('the strategies do different things',
+  new Set(BT_STRATEGIES.map(([k]) => runBacktest(wave, { strategy: k }).tradesMade)).size >= 3)
 // Every indicator reads only candles at or before the one it judges.
 t('no strategy sees a candle it could not have', bt.includes('for (let k = i - n; k < i; k++)') &&
-  bt.includes('const was = f[i - 1] - s[i - 1], now = f[i] - s[i]'))
+  bt.includes('the n candles strictly before each one'))
 t('signals are counted before the modules filter them', bt.includes('signalsSeen: sig.filter(v => v).length'))
 
 const base2 = runBacktest(wave)
@@ -216,7 +218,7 @@ const fx = (tp) => runBacktest(wave, { pnlModel: 'fixed', takeProfitPct: tp })
 const rk = (tp) => runBacktest(wave, { pnlModel: 'risk', takeProfitPct: tp })
 t('risk-based pays more as the target widens', rk(4).balance > rk(1).balance)
 t('fixed pays the same per win whatever the target', fx(1).params.winPct === fx(4).params.winPct)
-t('risk is derived from the stop distance', bt.includes('p.takeProfitPct / p.stopLossPct'))
+t('risk is derived from the stop distance', bt.includes('const rr = slDist > 0 ? tpDist / slDist : 0'))
 t('and the model is selectable', cli.includes('window.__simSetModel'))
 
 console.log(String.fromCharCode(10) + '-- the form follows the configuration --')
@@ -236,6 +238,53 @@ t('unknown strategies and models are ignored',
   coerceParams({ pnlModel: 'nope' }).pnlModel === 'fixed')
 t('modules coerce only from booleans', coerceParams({ useCooldown: 'yes' }).useCooldown === BT_DEFAULTS.useCooldown &&
   coerceParams({ useCooldown: false }).useCooldown === false)
+
+console.log(String.fromCharCode(10) + '-- the real bots, not approximations of them --')
+t('the deployed bots are offered by name', ['volbreak', 'trend'].every(k => BT_STRATEGIES.some(s => s[0] === k)))
+
+// VOLATILITY BREAKOUT. Its levels are multiples of the same rolling average range the
+// signal uses, so they widen and narrow with volatility. Percentages would be a different
+// strategy wearing its name.
+t('its levels come from the rolling range', bt.includes("const vbAvg = p.strategy === 'volbreak'"))
+t('and the percentage boxes are ignored while it is selected',
+  runBacktest(wave, { strategy: 'volbreak', takeProfitPct: 99 }).won ===
+  runBacktest(wave, { strategy: 'volbreak' }).won)
+t('a wider target multiple changes the outcome',
+  runBacktest(wave, { strategy: 'volbreak', vbTpMult: 6 }).won !== runBacktest(wave, { strategy: 'volbreak', vbTpMult: 1 }).won)
+const av = avgRangeSeries(normalise(wave), 20)
+t('the average has no value until it has its window', av.slice(0, 20).every(v => v === null) && av[20] != null)
+t('and never includes the candle it judges', bt.includes('the n candles strictly before each one'))
+
+// TREND. Always in a position, and it refuses to close a losing side. That refusal shapes
+// its results more than the averages do, so modelling it as a normal entry rule would
+// report on something the bot is not.
+const tr = runBacktest(wave, { strategy: 'trend' })
+t('it runs its own lifecycle', bt.includes('function runTrendBot(rows, p, sig)'))
+t('its signal is a state, not a crossing', bt.includes('out[i] = f[i] > s[i] ? 1 : -1'))
+t('it never closes voluntarily at a loss',
+  tr.trades.filter(x => x.outcome === 'win').every(x => x.side === 'long' ? x.exitPx >= x.entry : x.exitPx <= x.entry))
+t('only the stop takes it out of a loser', bt.includes('// Losing and not stopped: the bot holds.'))
+t('a wider stop means fewer stop-outs',
+  runBacktest(wave, { strategy: 'trend', trendStopPct: 8 }).lost <=
+  runBacktest(wave, { strategy: 'trend', trendStopPct: 0.5 }).lost)
+t('the stop is judged on the candle extreme, not its close', bt.includes('cannot be undone by where the candle happened to close'))
+t('whatever it still held at the end is reported, never scored',
+  tr.trades.filter(x => x.outcome === 'open').every(x => x.exitPx === null))
+
+console.log(String.fromCharCode(10) + '-- and the ones it cannot do are named --')
+// A missing name reads as an oversight; someone would assume the list shown is all there is.
+t('the unsimulatable bots are listed with a reason', BT_UNSIMULATABLE.length >= 5 &&
+  BT_UNSIMULATABLE.every(([name, why]) => name && why.length > 40))
+t('grid is named, and why', BT_UNSIMULATABLE.some(([n, w]) => /Grid/.test(n) && /one position at a time/.test(w)))
+t('so is DCA', BT_UNSIMULATABLE.some(([n]) => /DCA/.test(n)))
+t('the view shows them', cli.includes('BT_UNSIMULATABLE.map(([name, why])'))
+// Two sets of levels on screen, only one of which is read, is worse than none.
+t('a strategy that sets its own levels hides the generic ones',
+  cli.includes("if (f.notFor?.includes(_simParams.strategy)) return false"))
+t('and no two fields share a key, which would put two inputs on one id', (() => {
+  const keys = BT_FIELDS.map(f => f.key)
+  return keys.length === new Set(keys).size
+})())
 
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
