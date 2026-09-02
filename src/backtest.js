@@ -136,26 +136,36 @@ export const BT_UNSIMULATABLE = [
  * Held here so the simulator can prefill the windows for a market that is in it. The
  * numbers are the strategy; typing them by hand for the wrong market is how you simulate
  * something nobody proposed.
+ *
+ * `market` is the id the EXCHANGE uses, which is not the key. Nine of these live on the
+ * xyz builder dex, where the bare ticker is not a market at all -- asking for candles for
+ * "SMSN" is a 500 and "xyz:SMSN" is the market. The key stays bare so a row can be found
+ * by ticker however it is typed; anything that goes to the API must use `market`.
  */
 export const BT_TOKYO_TABLE = {
-  ZEC:     { long: ['07:00', '21:00'], short: ['21:00', '07:00'], weight: 11.06 },
-  CASHCAT: { long: ['02:00', '19:00'], short: ['19:00', '07:00'], weight:  9.93 },
-  SMSN:    { long: ['23:00', '18:00'], short: ['18:00', '23:00'], weight:  8.72 },
-  SKHX:    { long: ['04:00', '17:00'], short: ['17:00', '23:00'], weight:  8.27 },
-  LIT:     { long: ['00:00', '18:00'], short: ['19:00', '00:00'], weight:  7.84 },
-  XMR:     { long: ['16:00', '06:00'], short: ['06:00', '16:00'], weight:  7.50 },
-  SNDK:    { long: ['23:00', '21:00'], short: ['21:00', '23:00'], weight:  7.40 },
-  EWY:     { long: ['23:00', '19:00'], short: ['19:00', '23:00'], weight:  6.20 },
-  MU:      { long: ['23:00', '21:00'], short: ['21:00', '23:00'], weight:  6.13 },
-  NEAR:    { long: ['20:00', '17:00'], short: ['17:00', '20:00'], weight:  5.76 },
-  DRAM:    { long: ['23:00', '19:00'], short: ['19:00', '23:00'], weight:  5.31 },
-  PUMP:    { long: ['20:00', '18:00'], short: ['18:00', '20:00'], weight:  4.99 },
-  INTC:    { long: ['09:00', '05:00'], short: ['05:00', '09:00'], weight:  4.67 },
-  SPCX:    { long: ['23:00', '03:00'], short: ['03:00', '23:00'], weight:  3.35 },
-  SOXL:    { long: ['14:00', '03:00'], short: ['03:00', '15:00'], weight:  2.86 },
+  ZEC:     { market: 'ZEC', long: ['07:00', '21:00'], short: ['21:00', '07:00'], weight: 11.06 },
+  CASHCAT: { market: 'CASHCAT', long: ['02:00', '19:00'], short: ['19:00', '07:00'], weight:  9.93 },
+  SMSN:    { market: 'xyz:SMSN', long: ['23:00', '18:00'], short: ['18:00', '23:00'], weight:  8.72 },
+  SKHX:    { market: 'xyz:SKHX', long: ['04:00', '17:00'], short: ['17:00', '23:00'], weight:  8.27 },
+  LIT:     { market: 'LIT', long: ['00:00', '18:00'], short: ['19:00', '00:00'], weight:  7.84 },
+  XMR:     { market: 'XMR', long: ['16:00', '06:00'], short: ['06:00', '16:00'], weight:  7.50 },
+  SNDK:    { market: 'xyz:SNDK', long: ['23:00', '21:00'], short: ['21:00', '23:00'], weight:  7.40 },
+  EWY:     { market: 'xyz:EWY', long: ['23:00', '19:00'], short: ['19:00', '23:00'], weight:  6.20 },
+  MU:      { market: 'xyz:MU', long: ['23:00', '21:00'], short: ['21:00', '23:00'], weight:  6.13 },
+  NEAR:    { market: 'NEAR', long: ['20:00', '17:00'], short: ['17:00', '20:00'], weight:  5.76 },
+  DRAM:    { market: 'xyz:DRAM', long: ['23:00', '19:00'], short: ['19:00', '23:00'], weight:  5.31 },
+  PUMP:    { market: 'PUMP', long: ['20:00', '18:00'], short: ['18:00', '20:00'], weight:  4.99 },
+  INTC:    { market: 'xyz:INTC', long: ['09:00', '05:00'], short: ['05:00', '09:00'], weight:  4.67 },
+  SPCX:    { market: 'xyz:SPCX', long: ['23:00', '03:00'], short: ['03:00', '23:00'], weight:  3.35 },
+  SOXL:    { market: 'xyz:SOXL', long: ['14:00', '03:00'], short: ['03:00', '15:00'], weight:  2.86 },
 }
 
 /** The table row for a market id, with or without its builder-dex prefix. */
+/** Every market in the portfolio, as the exchange names them. */
+export function tokyoMarkets() {
+  return Object.values(BT_TOKYO_TABLE).map(r => r.market)
+}
+
 export function tokyoWindowsFor(coin) {
   const base = String(coin ?? '').split(':').pop().toUpperCase()
   return BT_TOKYO_TABLE[base] ?? null

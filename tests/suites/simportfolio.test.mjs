@@ -98,6 +98,12 @@ t('a builder-dex prefix survives', grab(cli, 'function _simCoinList').includes("
 t('why it is not simply uppercased is recorded', cli.includes('"xyz:SPCX" is not "XYZ:SPCX"'))
 t('the label says a list is allowed', cli.includes("_T('comma separated', 'separados por comas')"))
 t('the whole Tokyo table loads in one tap', cli.includes('window.__simLoadPortfolio'))
+// It loaded the table's KEYS, which are bare tickers -- so nine builder-dex markets were
+// sent to the API as names it does not have, and came back as 500s in the "left out" list.
+t('and loads the ids the exchange knows, not the bare keys',
+  cli.includes('_simCoin = tokyoMarkets().join') && !cli.includes('_simCoin = Object.keys(BT_TOKYO_TABLE)'))
+t('a 500 is translated into something actionable',
+  cli.includes('no such market — a builder-dex market needs its prefix'))
 
 console.log(nl + '-- each market runs its own Tokyo windows --')
 // Running ZEC's hours against XMR is not a portfolio, it is the same rule fifteen times.

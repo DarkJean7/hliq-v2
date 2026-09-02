@@ -221,7 +221,8 @@ import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
 import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
 import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW,
-         BT_STRATEGIES, BT_MODULES, BT_TOKYO_TABLE, tokyoWindowsFor, runPortfolio } from './backtest.js'
+         BT_STRATEGIES, BT_MODULES, BT_TOKYO_TABLE, tokyoWindowsFor, tokyoMarkets,
+         runPortfolio } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams, botCoins } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -15329,7 +15330,7 @@ window.__simSetStrategy = function(v) {
 // time, so this is a list of names rather than a setting.
 window.__simLoadPortfolio = function() {
   window.__simStructural(() => {
-    _simCoin = Object.keys(BT_TOKYO_TABLE).join(', ')
+    _simCoin = tokyoMarkets().join(', ')
     if (['4h', '1d'].includes(_simIv)) _simIv = '1h'
   })
 }
@@ -15398,7 +15399,17 @@ window.__simRun = async function() {
                 tokyoShortFrom: row.short[0], tokyoShortTo: row.short[1] }
       }
       let bars = null
-      try { bars = await fetchCandles(coin, _simIv, start) } catch (e) { skipped.push(coin + ' (' + String(e?.message ?? e).slice(0, 40) + ')'); return }
+      try { bars = await fetchCandles(coin, _simIv, start) }
+      catch (e) {
+        // Hyperliquid answers 500 for a coin it does not have, which as an error message
+        // tells you nothing you can act on. A builder-dex market needs its prefix.
+        const msg = String(e?.message ?? e)
+        skipped.push(coin + (/500/.test(msg)
+          ? _T(' (no such market — a builder-dex market needs its prefix, e.g. xyz:SMSN)',
+               ' (no existe — un mercado de dex necesita su prefijo, p. ej. xyz:SMSN)')
+          : ' (' + msg.slice(0, 40) + ')'))
+        return
+      }
       if (!Array.isArray(bars) || bars.length < 60) { skipped.push(coin + ' (not enough history)'); return }
       runs.push({ coin, result: runBacktest(bars.slice(-_simCount), par) })
     }, 3)

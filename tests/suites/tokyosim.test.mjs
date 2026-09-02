@@ -6,8 +6,8 @@
 // perfectly plausible-looking result for a strategy nobody is running.
 import fs from 'fs'
 import { BT_STRATEGIES, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_TOKYO_TABLE, BT_TOKYO_ZONE,
-         tokyoWindowsFor, hhmmToMinutes, inWindow, signals, normalise, runBacktest,
-         coerceParams } from '../../src/backtest.js'
+         tokyoWindowsFor, tokyoMarkets, hhmmToMinutes, inWindow, signals, normalise,
+         runBacktest, coerceParams } from '../../src/backtest.js'
 
 const eng = fs.readFileSync('src/backtest.js', 'utf8').replace(/\r\n/g, '\n')
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
@@ -33,6 +33,24 @@ console.log(nl + '-- the portfolio table --')
 t('all fifteen markets are in it', Object.keys(BT_TOKYO_TABLE).length === 15)
 t('each has both windows and a weight',
   Object.values(BT_TOKYO_TABLE).every(r => r.long?.length === 2 && r.short?.length === 2 && r.weight > 0))
+
+// The key is a bare ticker so a row can be found however it is typed. The exchange id is
+// NOT the key: nine of these live on the xyz builder dex, where asking for candles for
+// "SMSN" is a 500 and "xyz:SMSN" is the market. Loading the portfolio with the keys asked
+// the API for nine markets that do not exist.
+t('every row carries the id the exchange uses',
+  Object.values(BT_TOKYO_TABLE).every(r => typeof r.market === 'string' && r.market))
+t('the builder-dex rows carry their prefix',
+  BT_TOKYO_TABLE.SMSN.market === 'xyz:SMSN' && BT_TOKYO_TABLE.SOXL.market === 'xyz:SOXL' &&
+  BT_TOKYO_TABLE.SNDK.market === 'xyz:SNDK' && BT_TOKYO_TABLE.EWY.market === 'xyz:EWY')
+t('the main-dex rows do not', BT_TOKYO_TABLE.ZEC.market === 'ZEC' && BT_TOKYO_TABLE.XMR.market === 'XMR')
+t('nine of the fifteen are on a builder dex',
+  Object.values(BT_TOKYO_TABLE).filter(r => r.market.includes(':')).length === 9)
+t('tokyoMarkets returns those ids, not the keys',
+  tokyoMarkets().includes('xyz:SMSN') && !tokyoMarkets().includes('SMSN'))
+t('and all fifteen of them', tokyoMarkets().length === 15)
+t('why the key is not the id is recorded',
+  fs.readFileSync('src/backtest.js', 'utf8').includes('the bare ticker is not a market at all'))
 t('every window is a real time',
   Object.values(BT_TOKYO_TABLE).every(r => [...r.long, ...r.short].every(w => Number.isFinite(hhmmToMinutes(w)))))
 t('the weights add up to about 100', Math.abs(Object.values(BT_TOKYO_TABLE).reduce((a, r) => a + r.weight, 0) - 100) < 0.5)
