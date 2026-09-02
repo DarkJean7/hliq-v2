@@ -151,9 +151,15 @@ t('but only on a committed change, not every keystroke', cli.includes('onchange=
 t('the prefill never runs on a plain render',
   grab(cli, 'function _simTokyoPrefill').includes('return false') &&
   cli.includes('would overwrite windows the user had just typed'))
-t('a market outside the table is called out', cli.includes('function _simTokyoNote'))
-t('and the note lists what the table does cover', cli.includes('Object.keys(BT_TOKYO_TABLE).join'))
-t('why running the wrong windows matters is recorded', cli.includes('is a simulation of nothing'))
+// One market with no table row says nothing: the windows are on screen and editable, so
+// there is nothing hidden. The note is for what the form CANNOT show -- several markets,
+// where each runs its own row and any without one are skipped without appearing anywhere.
+t('the note exists', cli.includes('function _simTokyoNote'))
+t('a single market with no row is not nagged about',
+  /nothing to say[\s\S]*return ''\s*\}/.test(grab(cli, 'function _simTokyoNote')))
+t('why silence is right there is recorded', cli.includes('nothing hidden to warn about'))
+t('but several markets still warn about the ones being skipped',
+  grab(cli, 'function _simTokyoNote').includes('will be skipped'))
 t('a daily candle cannot express an hourly rule, so the interval is moved',
   grab(cli, 'window.__simSetStrategy = function').includes("['4h', '1d'].includes(_simIv)"))
 t('and that is explained', cli.includes('one candle would span most of a window'))

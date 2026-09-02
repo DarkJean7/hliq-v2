@@ -15490,11 +15490,15 @@ const _simGrid = (inner) =>
   inner ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 10px">${inner}</div>` : ''
 
 /**
- * Whether the market being simulated has a row in the portfolio table.
+ * What to say about the markets being simulated, if anything.
  *
- * Worth saying plainly: the windows ARE the strategy, and running the table's ZEC hours
- * against a market they were never fitted to is a simulation of nothing. The form cannot
- * stop you, so it should at least not let it pass silently.
+ * Speaks up in exactly two cases: one market that HAS a table row, to say the windows on
+ * screen are that market's own; and several markets, where each runs its own row and any
+ * without one are silently skipped -- which is the case worth interrupting for, because
+ * what happened is not visible in the form.
+ *
+ * One market with no row says nothing. The windows are on screen and editable, so there
+ * is nothing hidden to warn about.
  */
 function _simTokyoNote() {
   const list = _simCoinList()
@@ -15514,9 +15518,11 @@ function _simTokyoNote() {
       _T(`Windows below are ${esc(base)}'s own row from the portfolio table (weight ${row.weight}%).`,
          `Las ventanas son la fila de ${esc(base)} en la cartera (peso ${row.weight}%).`)}</div>`
   }
-  return `<div style="font-size:11px;color:var(--orange,#f59e0b);line-height:1.45;margin-top:6px">${
-    _T(`${esc(base || 'This market')} is not in the portfolio table, so the windows below are whatever was last set — they were not fitted to it. The table covers: ${Object.keys(BT_TOKYO_TABLE).join(', ')}.`,
-       `${esc(base || 'Este mercado')} no está en la cartera, así que las ventanas de abajo no se ajustaron a él. La cartera cubre: ${Object.keys(BT_TOKYO_TABLE).join(', ')}.`)}</div>`
+  // One market with no row in the table: nothing to say. The windows are right there,
+  // editable, and a paragraph naming all fifteen every time you type a market that is not
+  // one of them is noise. The multi-market case above still warns, because there the
+  // markets are silently SKIPPED rather than run on the windows you can see.
+  return ''
 }
 
 function _simSectionsHtml() {
