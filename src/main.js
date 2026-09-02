@@ -2748,8 +2748,14 @@ async function _doEnsureMarketData() {
       _spotCommunityKeys = new Set()
       _spotProtocolKeys  = new Set()
       const { tokens = [], universe = [] } = spotR.value ?? {}
+      // A token's INDEX is not its position in this array. Delistings have left gaps: 498
+      // tokens carrying indices up to 871, so tokens[845] is undefined where token 845 is
+      // NVDAX. Reading it positionally silently lost 24 of 326 spot markets -- each one
+      // named "@702" instead of its ticker (so unsearchable) and filed as community
+      // because an undefined deployerTradingFeeShare parses to 0.
+      const tokByIdx = new Map(tokens.map(t => [t.index, t]))
       for (const u of universe) {
-        const base    = tokens[u.tokens?.[0]]
+        const base    = tokByIdx.get(u.tokens?.[0])
         // Alias baked in HERE (not just in the market-list row) so every consumer — trade
         // detail header, chart title, position/order labels — shows "BTC" not "UBTC".
         const display = _spotDisplayAlias(base?.name ?? u.name)
@@ -13657,8 +13663,11 @@ async function _pulseEnsureCaps() {
   try {
     const [meta, ctxs] = await fetchSpotMarketCtxs()
     const byCoin = {}
+    // By index, not by array position -- see the note in _doEnsureMarketData. Positional
+    // lookup dropped the market cap for every token whose index outran the array.
+    const tokByIdx = new Map((meta?.tokens ?? []).map(t => [t.index, t]))
     for (const u of (meta?.universe ?? [])) {
-      const tok = meta.tokens?.[u.tokens?.[0]]
+      const tok = tokByIdx.get(u.tokens?.[0])
       // The same alias the rest of the app uses: BTC's spot market is the Unit-wrapped
       // UBTC, and a perp row looking up "BTC" has to find it or the card shows no cap.
       if (tok?.name) byCoin[u.name] = _spotDisplayAlias(tok.name)
