@@ -44,6 +44,16 @@ export const BT_DEFAULTS = {
 
   breakoutLookback: 20,   // breakout: prior candles whose high/low must be cleared
 
+  // grid -- the Grid bot's own flags
+  gridLower: 0,           // 0 = auto, from the first candle
+  gridUpper: 0,
+  gridRangePct: 10,       // auto range: first close +/- this
+  gridLevels: 10,
+  gridUsdPerLevel: 50,
+  gridGeometric: false,   // even % gaps instead of even price gaps
+  gridShort: false,       // sell first and buy back lower
+  gridSameCandle: 'skip', // 'skip' | 'allow' -- a round trip inside one candle
+
   // ── what closes it ──────────────────────────────────────────────────────
   takeProfitPct: 1.0,
   stopLossPct: 0.5,
@@ -85,6 +95,8 @@ export const BT_STRATEGIES = [
    'The real bot. It is ALWAYS in a position: long while the fast EMA is above the slow one, short while it is below, flipping when that changes. It refuses to flip out of a losing position unless its stop is hit, which is the behaviour that most shapes its results.'],
   ['range', 'Range category (original script)',
    'The rule from the Python simulator this screen came from: an unusually large candle opens a trade its way, with the target and stop as percentages of the entry price.'],
+  ['grid', 'Grid (bot)',
+   'The real bot. A ladder of resting buys across a price range: when one fills, a sell is armed one level up, and when THAT fills the buy is re-armed. It earns the gap between levels every time price crosses back and forth, and accumulates a position when price leaves the range.'],
   ['breakout', 'Channel breakout',
    'A close beyond the highest high or lowest low of the previous N candles opens a trade that way. Not one of the deployed bots -- a plain comparison rule.'],
 ]
@@ -95,7 +107,7 @@ export const BT_STRATEGIES = [
  * are all there are.
  */
 export const BT_UNSIMULATABLE = [
-  ['Grid / Outcome Grid', 'Holds many resting orders at once. This engine follows one position at a time, so it cannot represent a grid at all.'],
+  ['Outcome Grid', 'A grid over prediction-market outcomes, which settle to 0 or 1 rather than trading continuously. The price series this reads does not describe them.'],
   ['DCA', 'Averages into a position over several entries with no per-entry stop. The trade lifecycle here is one entry, one exit.'],
   ['TWAP', 'An execution algorithm -- it splits an order over time rather than deciding when to trade. There is no win or loss to measure.'],
   ['Accumulator', 'Buys spot on a schedule. Nothing here opens or closes against a target.'],
@@ -325,6 +337,121 @@ function runTrendBot(rows, p, sig) {
   return { trades: [...trades, ...openTrade], balance, peak, maxDD, won, lost }
 }
 
+/** The ladder of prices, spaced evenly in price or evenly in percent. */
+export function gridLevels(lower, upper, n, geometric) {
+  const k = Math.max(2, Math.round(n))
+  if (!(lower > 0) || !(upper > lower)) return []
+  if (geometric) {
+    const ratio = Math.pow(upper / lower, 1 / (k - 1))
+    return Array.from({ length: k }, (_, i) => lower * Math.pow(ratio, i))
+  }
+  const step = (upper - lower) / (k - 1)
+  return Array.from({ length: k }, (_, i) => lower + i * step)
+}
+
+/**
+ * The Grid bot.
+ *
+ * Its life is nothing like the other strategies here -- it holds a whole ladder of resting
+ * orders at once rather than one position -- so it gets its own walk and its own numbers.
+ *
+ * The rule, from the bot: a buy rests at every level. When the buy at level i fills, a sell
+ * is armed at level i+1. When that sell fills, the profit is the gap between the two and
+ * the buy at level i is re-armed. A level is never re-bought while its sell is still open.
+ *
+ * TWO THINGS A GRID BACKTEST MUST NOT DO, because both turn its characteristic failure
+ * into a flattering result:
+ *
+ *   1. COUNT A ROUND TRIP INSIDE ONE CANDLE. A candle whose range spans two levels touched
+ *      both prices, but OHLC cannot say it went down then up rather than up then down.
+ *      Allowing it manufactures free cycles out of volatility that may never have crossed.
+ *      Default is to make the sell wait for a later candle.
+ *   2. REPORT A WIN RATE. Every completed cycle is profitable BY CONSTRUCTION -- that is
+ *      what a grid is -- so a win rate is always 100% and says nothing. The loss lives
+ *      entirely in the inventory left behind when price leaves the range, which is why
+ *      that is reported first and the win rate is not reported at all.
+ */
+export function runGridBacktest(rows, p) {
+  const ref = rows[0]?.c ?? 0
+  const lower = p.gridLower > 0 ? p.gridLower : ref * (1 - p.gridRangePct / 100)
+  const upper = p.gridUpper > 0 ? p.gridUpper : ref * (1 + p.gridRangePct / 100)
+  const prices = gridLevels(lower, upper, p.gridLevels, p.gridGeometric)
+  const short = !!p.gridShort
+  const fee = p.useFees ? p.feePct / 100 / 2 : 0   // the flag is a round trip; each fill pays half
+
+  // One slot per level that can hold a position: a long grid buys at i and sells at i+1,
+  // so the top level has nothing to sell into. A short grid is the mirror.
+  const slots = prices.map(() => null)
+  let realized = 0, fees = 0, cycles = 0, buys = 0, sells = 0
+  let inRange = 0, maxInventory = 0
+  const trades = []
+
+  for (const row of rows) {
+    if (row.h >= lower && row.l <= upper) inRange++
+
+    for (let i = 0; i < prices.length - 1; i++) {
+      const openPx = short ? prices[i + 1] : prices[i]
+      const closePx = short ? prices[i] : prices[i + 1]
+      // Long: buy when the candle trades down to the level. Short: sell into a rise.
+      const openTouched = short ? row.h >= openPx : row.l <= openPx
+      const closeTouched = short ? row.l <= closePx : row.h >= closePx
+
+      if (slots[i] == null && openTouched) {
+        const sz = p.gridUsdPerLevel / openPx
+        slots[i] = { px: openPx, sz, at: row.t, openedOn: row }
+        fees += openPx * sz * fee
+        buys++
+        // Same candle: the close level was touched too, but OHLC cannot order the two.
+        if (closeTouched && p.gridSameCandle !== 'allow') continue
+      }
+
+      if (slots[i] != null && closeTouched) {
+        // A slot opened on THIS candle can only close now if same-candle trips are allowed.
+        if (slots[i].openedOn === row && p.gridSameCandle !== 'allow') continue
+        const { px, sz } = slots[i]
+        const gain = short ? (px - closePx) * sz : (closePx - px) * sz
+        realized += gain
+        fees += closePx * sz * fee
+        cycles++
+        sells++
+        trades.push({ i, time: slots[i].at, side: short ? 'short' : 'long', entry: px,
+          tp: closePx, sl: null, outcome: 'win', exitAt: row.t, exitPx: closePx, heldFor: 0,
+          balance: p.startBalance + realized - fees })
+        slots[i] = null
+      }
+    }
+    const held = slots.reduce((a, s) => a + (s ? s.sz : 0), 0)
+    if (held > maxInventory) maxInventory = held
+  }
+
+  // What the grid was still holding when the data ended, valued at the last price. This is
+  // where a grid loses, and it is the first number reported for that reason.
+  const last = rows[rows.length - 1]?.c ?? 0
+  const open = slots.filter(Boolean)
+  const invSz = open.reduce((a, s) => a + s.sz, 0)
+  const invCost = open.reduce((a, s) => a + s.px * s.sz, 0)
+  const unrealized = invSz > 0
+    ? (short ? invCost - invSz * last : invSz * last - invCost)
+    : 0
+
+  const balance = p.startBalance + realized - fees + unrealized
+  return {
+    grid: {
+      lower, upper, levels: prices.length, prices,
+      cycles, buys, sells,
+      realized, fees, unrealized,
+      inventorySize: invSz, inventoryCost: invCost, inventoryValue: invSz * last,
+      maxInventory,
+      inRangePct: rows.length ? (inRange / rows.length) * 100 : null,
+      openSlots: open.length,
+    },
+    trades, balance,
+    peak: Math.max(p.startBalance, balance),
+    maxDD: 0,
+    won: cycles, lost: 0,
+  }
+}
+
 export function runBacktest(candles, params = {}) {
   const p = { ...BT_DEFAULTS, ...params }
   const rows = normalise(candles)
@@ -340,6 +467,26 @@ export function runBacktest(candles, params = {}) {
   // The Trend bot is always in a position, so it runs its own walk and rejoins here for
   // the reporting. Modules that describe entries -- cooldown, side, trend filter -- have
   // nothing to act on in a strategy that never sits out, and are simply not applied.
+  if (p.strategy === 'grid') {
+    const g = runGridBacktest(rows, p)
+    const netG = g.balance - p.startBalance
+    return {
+      params: p, candles: rows.length,
+      from: rows[0]?.t ?? null, to: rows[rows.length - 1]?.t ?? null,
+      trades: g.trades, tradesMade: g.trades.length,
+      won: g.won, lost: 0, unresolved: g.grid.openSlots, timedOut: 0, halted: false,
+      // Deliberately null. Every completed cycle profits by construction, so a win rate
+      // here is always 100% and would read as a perfect strategy.
+      winRate: null,
+      startBalance: p.startBalance, balance: g.balance, netPnl: netG,
+      roe: p.startBalance > 0 ? (netG / p.startBalance) * 100 : null,
+      peak: g.peak, maxDrawdown: g.maxDD,
+      avgPerTrade: g.trades.length ? netG / g.trades.length : 0,
+      avgHeld: 0, signalsSeen: g.grid.buys,
+      grid: g.grid,
+    }
+  }
+
   if (p.strategy === 'trend') {
     const t = runTrendBot(rows, p, sig)
     trades = t.trades
@@ -532,11 +679,31 @@ export const BT_FIELDS = [
     hint: 'The only thing that closes a losing side.',
     help: 'This bot refuses to close a position that is underwater. When the averages flip against an open trade it HOLDS, and the only thing that gets it out at a loss is this stop. That single rule shapes its results more than the averages do -- set it to 0 and the bot will hold a loser indefinitely, which the run will show as very few, very long trades.' },
 
-  { key: 'takeProfitPct', notFor: ['volbreak', 'trend'], label: 'Take profit', unit: '%', step: '0.05',
+  { key: 'gridRangePct', label: 'Range', unit: '% either side', step: '1', strategy: 'grid',
+    hint: 'Used when lower and upper are left at 0.',
+    help: 'The ladder is built this far above and below the first candle of the run. The bot does the same from the mark price when you do not give it a range, defaulting to 10% each way. Set an explicit lower and upper below to override it.' },
+
+  { key: 'gridLower', label: 'Lower price', unit: '0 = auto', step: '1', strategy: 'grid',
+    hint: 'Bottom of the ladder.',
+    help: 'The lowest level. Price below this means every buy has filled and the grid is fully loaded with nothing left to catch a further fall -- which is where a grid does its losing.' },
+
+  { key: 'gridUpper', label: 'Upper price', unit: '0 = auto', step: '1', strategy: 'grid',
+    hint: 'Top of the ladder.',
+    help: 'The highest level. Price above this means every position has been sold and the grid sits idle in cash, earning nothing until price comes back.' },
+
+  { key: 'gridLevels', label: 'Levels', unit: 'rungs', step: '1', strategy: 'grid',
+    hint: 'How many rungs the ladder has.',
+    help: 'More rungs means smaller gaps: more cycles, each worth less, and more fees. Fewer means rarer but larger cycles. The profit per cycle is the gap between two rungs, so this and the range together decide what a cycle is worth.' },
+
+  { key: 'gridUsdPerLevel', label: 'Size per level', unit: '$', step: '10', strategy: 'grid',
+    hint: 'Bought at each rung.',
+    help: 'The dollars committed at each rung. Multiply it by the number of rungs to see what the grid can end up holding if price leaves the bottom of the range -- that total, not the size per level, is what is actually at risk.' },
+
+  { key: 'takeProfitPct', notFor: ['volbreak', 'trend', 'grid'], label: 'Take profit', unit: '%', step: '0.05',
     hint: 'How far price must move your way to win.',
     help: 'Measured from the entry price, as a percentage. A long entered at $100 with 1% wins if any later candle trades at $101. Percent rather than a fixed amount so the same setting means the same on a $78,000 market and a $0.004 one.' },
 
-  { key: 'stopLossPct', notFor: ['volbreak', 'trend'], label: 'Stop loss', unit: '%', step: '0.05',
+  { key: 'stopLossPct', notFor: ['volbreak', 'trend', 'grid'], label: 'Stop loss', unit: '%', step: '0.05',
     hint: 'How far against you before it is a loss.',
     help: 'The mirror of the target. Whichever level the price touches FIRST ends the trade, checked candle by candle after entry. If neither is ever touched before the data runs out, the trade is reported as unresolved: not a win, not a loss.' },
 
@@ -578,11 +745,23 @@ export const BT_FIELDS = [
 ]
 
 export const BT_CHOICES = [
+  { key: 'gridSameCandle', label: 'Round trip inside one candle', strategy: 'grid',
+    options: [['skip', 'Make the sell wait'], ['allow', 'Allow it']],
+    help: 'A candle wide enough to touch two levels touched both prices, but its high, low, open and close cannot say it went down and then up rather than up and then down. Allowing the pair manufactures cycles out of volatility that may never have crossed -- on a volatile market it is the difference between 263 completed cycles and 400. Making the sell wait for a later candle is the honest reading and the default.' },
+
+  { key: 'gridShort', label: 'Direction', strategy: 'grid',
+    options: [['false', 'Long grid'], ['true', 'Short grid']],
+    help: 'A long grid buys the dips and sells the rallies, ending up holding coins if price falls out of the range. A short grid does the mirror, ending up short if price rises out of it.' },
+
+  { key: 'gridGeometric', label: 'Level spacing', strategy: 'grid',
+    options: [['false', 'Even price gaps'], ['true', 'Even percent gaps']],
+    help: 'Even price gaps put the rungs the same number of dollars apart. Even percent gaps put them the same percentage apart, so the lower rungs sit closer together -- which keeps the profit per cycle proportional across a wide range instead of shrinking at the bottom.' },
+
   { key: 'direction', label: 'Which side', group: 'useDirection',
     options: [['both', 'Both'], ['long', 'Long only'], ['short', 'Short only']],
     help: 'Green candles open longs and red ones open shorts. Restricting to one side is how you find out whether a rule has an edge or was carried by a market that only went one way. Note that "both" usually takes FEWER trades than long-only and short-only added together: a trade on one side starts the cooldown, which can block one on the other.' },
 
-  { key: 'ambiguous', notFor: ['trend'], label: 'If one candle hits both levels',
+  { key: 'ambiguous', notFor: ['trend', 'grid'], label: 'If one candle hits both levels',
     options: [['loss', 'Count the stop'], ['win', 'Count the target']],
     help: 'Sometimes a single candle is wide enough to touch the target AND the stop. Its high, low, open and close cannot say which came first, so this is a guess either way. Counting the stop is the pessimistic reading and the default. On tight levels the difference is enormous -- the same rule can go from every trade winning to every trade losing.' },
 ]
@@ -621,7 +800,9 @@ export function coerceParams(raw = {}) {
     if (Number.isFinite(v)) out[f.key] = v
   }
   for (const c of BT_CHOICES) {
-    if (c.options.some(o => o[0] === raw[c.key])) out[c.key] = raw[c.key]
+    if (!c.options.some(o => o[0] === raw[c.key])) continue
+    // A select carries strings; two of these are flags the engine reads as booleans.
+    out[c.key] = (c.key === 'gridShort' || c.key === 'gridGeometric') ? raw[c.key] === 'true' : raw[c.key]
   }
   if (BT_STRATEGIES.some(s => s[0] === raw.strategy)) out.strategy = raw.strategy
   if (raw.pnlModel === 'risk' || raw.pnlModel === 'fixed') out.pnlModel = raw.pnlModel

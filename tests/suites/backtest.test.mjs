@@ -4,7 +4,7 @@
 // than none, because it gets believed -- so most of what is asserted here is the ways this
 // refuses to flatter the result.
 import fs from 'fs'
-import { runBacktest, classify, normalise, coerceParams, signals, avgRangeSeries,
+import { runBacktest, classify, normalise, coerceParams, signals, avgRangeSeries, gridLevels,
          BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW, BT_STRATEGIES, BT_MODULES, BT_UNSIMULATABLE }
   from '../../src/backtest.js'
 
@@ -275,7 +275,7 @@ console.log(String.fromCharCode(10) + '-- and the ones it cannot do are named --
 // A missing name reads as an oversight; someone would assume the list shown is all there is.
 t('the unsimulatable bots are listed with a reason', BT_UNSIMULATABLE.length >= 5 &&
   BT_UNSIMULATABLE.every(([name, why]) => name && why.length > 40))
-t('grid is named, and why', BT_UNSIMULATABLE.some(([n, w]) => /Grid/.test(n) && /one position at a time/.test(w)))
+t('the outcome grid is named, and why', BT_UNSIMULATABLE.some(([n, w]) => /Outcome Grid/.test(n) && w.length > 40))
 t('so is DCA', BT_UNSIMULATABLE.some(([n]) => /DCA/.test(n)))
 t('the view shows them', cli.includes('BT_UNSIMULATABLE.map(([name, why])'))
 // Two sets of levels on screen, only one of which is read, is worse than none.
@@ -285,6 +285,67 @@ t('and no two fields share a key, which would put two inputs on one id', (() => 
   const keys = BT_FIELDS.map(f => f.key)
   return keys.length === new Set(keys).size
 })())
+
+console.log(String.fromCharCode(10) + '-- the grid --')
+// Wide candles so one can span two rungs, drifting down so it both books cycles and ends
+// holding -- the two things a grid does that a single-position engine cannot show.
+const gridRows = (() => {
+  const out = []; const t0 = Date.now() - 900 * 3600e3
+  for (let i = 0; i < 900; i++) {
+    const c = 100 + Math.sin(i / 4) * 5 - i * 0.02
+    const o = 100 + Math.sin((i - 1) / 4) * 5 - (i - 1) * 0.02
+    out.push({ t: t0 + i * 3600e3, o, h: Math.max(o, c) + 1.6, l: Math.min(o, c) - 1.6, c })
+  }
+  return out
+})()
+t('levels are evenly spaced in price', (() => {
+  const L = gridLevels(90, 110, 5, false)
+  return Math.abs((L[1] - L[0]) - (L[4] - L[3])) < 1e-9
+})())
+t('or evenly in percent', (() => {
+  const L = gridLevels(90, 110, 5, true)
+  return Math.abs((L[1] / L[0]) - (L[4] / L[3])) < 1e-9
+})())
+t('an impossible range makes no ladder', gridLevels(110, 90, 5, false).length === 0)
+
+const gr = runBacktest(gridRows, { strategy: 'grid' })
+t('it completes cycles', gr.grid.cycles > 0)
+t('a cycle earns the gap between two rungs', gr.grid.realized > 0)
+t('what it is left holding is reported', gr.grid.inventorySize >= 0 && 'inventoryCost' in gr.grid)
+t('and valued at the last price', gr.grid.inventoryValue >= 0)
+t('the net includes that open position', Math.abs(
+  gr.netPnl - (gr.grid.realized - gr.grid.fees + gr.grid.unrealized)) < 1e-6)
+t('time inside the range is reported', gr.grid.inRangePct > 0 && gr.grid.inRangePct <= 100)
+
+// A grid's cycles are profitable BY CONSTRUCTION, so a win rate is always 100% and would
+// read as a perfect strategy. The loss lives in the inventory.
+t('no win rate is claimed', gr.winRate === null)
+t('and the view does not render one for a grid', cli.includes("${r.grid ? '' : row(_T('Win rate'"))
+t('holding a position at the end is flagged', cli.includes('That is where a grid loses'))
+
+// A candle spanning two rungs touched both prices, but cannot say in which order.
+const strict = runBacktest(gridRows, { strategy: 'grid' })
+const loose = runBacktest(gridRows, { strategy: 'grid', gridSameCandle: 'allow' })
+t('a round trip inside one candle is refused by default', strict.grid.cycles < loose.grid.cycles,
+  [strict.grid.cycles, loose.grid.cycles])
+t('and allowing it flatters the result', loose.netPnl > strict.netPnl)
+t('which the result says out loud', cli.includes('may never have happened'))
+
+t('more rungs means more cycles', runBacktest(gridRows, { strategy: 'grid', gridLevels: 30 }).grid.cycles > gr.grid.cycles)
+t('a narrower range spends less time in range',
+  runBacktest(gridRows, { strategy: 'grid', gridRangePct: 2 }).grid.inRangePct < gr.grid.inRangePct)
+t('a short grid is the mirror', (() => {
+  const rise = gridRows.map((r, i) => ({ ...r, o: 100 + i * 0.03, h: 100 + i * 0.03 + 1, l: 100 + i * 0.03 - 1, c: 100 + i * 0.03 }))
+  return runBacktest(rise, { strategy: 'grid', gridShort: true }).grid.inventorySize > 0
+})())
+t('fees are charged per fill, not per round trip', runBacktest(gridRows, { strategy: 'grid', useFees: false }).netPnl > gr.netPnl)
+t('an empty series is a result, not a crash', runBacktest([], { strategy: 'grid' }).tradesMade === 0)
+// The select carries strings; two of these are booleans in the engine.
+t('the boolean choices coerce from their select', coerceParams({ gridShort: 'true' }).gridShort === true &&
+  coerceParams({ gridGeometric: 'false' }).gridGeometric === false)
+t('grid no longer sits in the cannot-simulate list', !BT_UNSIMULATABLE.some(([n]) => /^Grid/.test(n)))
+t('but the outcome grid still does, with its own reason',
+  BT_UNSIMULATABLE.some(([n, w]) => /Outcome Grid/.test(n) && /settle to 0 or 1/.test(w)))
 
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

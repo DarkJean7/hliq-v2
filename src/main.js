@@ -15225,7 +15225,8 @@ function _simChoiceHtml(c) {
     </div>
     <select id="sim_${c.key}" onchange="window.__simTouch()"
       style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:12.5px">
-      ${c.options.map(([k, lbl]) => `<option value="${k}"${_simParams[c.key] === k ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}
+      ${c.options.map(([k, lbl]) => `<option value="${k}"${
+        String(_simParams[c.key]) === k ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}
     </select>
     ${_simHelpHtml(c.key, c.help ?? '')}
   </label>`
@@ -15279,7 +15280,9 @@ function _simSectionsHtml() {
     ${_simHead(_T('Entry and exit', 'Entrada y salida'))}
     ${_simGrid(fields(f => !f.strategy && !f.group && f.key !== 'startBalance'))}
     <div style="margin-top:12px">${_simGrid(BT_CHOICES
-      .filter(c => !c.group && !c.notFor?.includes(_simParams.strategy)).map(_simChoiceHtml).join(''))}</div>
+      .filter(c => !c.group && !c.notFor?.includes(_simParams.strategy) &&
+                   (!c.strategy || c.strategy === _simParams.strategy))
+      .map(_simChoiceHtml).join(''))}</div>
 
     ${_simHead(_T('Money', 'Dinero'))}
     ${_simGrid(fields(f => f.key === 'startBalance'))}
@@ -15333,6 +15336,14 @@ function _simResultHtml() {
 
   // Stated, not buried: both change the result more than most of the boxes above do.
   const caveats = [
+    r.grid && r.grid.inventorySize > 0
+      ? _T('The grid ended holding a position. That is where a grid loses -- the cycles above are all profitable by construction, so read the net, not the count.',
+           'La cuadrícula terminó con posición abierta. Ahí es donde pierde: los ciclos son rentables por construcción.')
+      : '',
+    r.grid && r.params.gridSameCandle === 'allow'
+      ? _T('Round trips inside one candle were counted. A candle cannot say whether it went down then up, so some of those cycles may never have happened.',
+           'Se contaron ciclos dentro de una misma vela, cuyo orden no se puede conocer.')
+      : '',
     r.params.baselineLookback === 0
       ? _T('Baseline uses the whole sample, including candles after each trade. Not a result anyone could have traded.',
            'La base usa toda la muestra, incluidas velas posteriores a cada operación.')
@@ -15379,10 +15390,22 @@ function _simResultHtml() {
       ${row(_T('Return', 'Retorno'), r.roe == null ? '—' : (r.roe >= 0 ? '+' : '') + r.roe.toFixed(2) + '%', tone(r.roe ?? 0))}
       ${row(_T('Peak balance', 'Balance máximo'), money(r.peak))}
       ${row(_T('Max drawdown', 'Caída máxima'), '-' + r.maxDrawdown.toFixed(2) + '%', r.maxDrawdown > 0 ? 'var(--red)' : '')}
-      ${row(_T('Trades', 'Operaciones'), `${r.tradesMade}`)}
+      ${r.grid ? `
+      ${row(_T('Range', 'Rango'), `${money(r.grid.lower)} - ${money(r.grid.upper)}`)}
+      ${row(_T('Levels', 'Niveles'), `${r.grid.levels}`)}
+      ${row(_T('Time in range', 'Tiempo en rango'), r.grid.inRangePct == null ? '—' : r.grid.inRangePct.toFixed(0) + '%')}
+      ${row(_T('Cycles completed', 'Ciclos completados'), `${r.grid.cycles}`)}
+      ${row(_T('Earned from cycles', 'Ganado en ciclos'), signed(r.grid.realized), tone(r.grid.realized))}
+      ${row(_T('Fees', 'Comisiones'), r.grid.fees ? '-' + money(r.grid.fees) : money(0), r.grid.fees ? 'var(--red)' : '')}
+      ${row(_T('Still holding', 'Aún en posición'), r.grid.inventorySize > 0
+        ? `${r.grid.inventorySize.toFixed(4)} @ ${money(r.grid.inventoryCost / r.grid.inventorySize)}`
+        : _T('nothing', 'nada'))}
+      ${row(_T('Worth now', 'Valor actual'), money(r.grid.inventoryValue))}
+      ${row(_T('Open position PnL', 'PnL de la posición'), signed(r.grid.unrealized), tone(r.grid.unrealized))}
+      ` : `${row(_T('Trades', 'Operaciones'), `${r.tradesMade}`)}`}
       ${row(_T('Won / lost', 'Ganadas / perdidas'), `${r.won} / ${r.lost}`)}
       ${row(_T('Unresolved', 'Sin resolver'), `${r.unresolved}`)}
-      ${row(_T('Win rate', 'Aciertos'), r.winRate == null ? '—' : r.winRate.toFixed(1) + '%')}
+      ${r.grid ? '' : row(_T('Win rate', 'Aciertos'), r.winRate == null ? '—' : r.winRate.toFixed(1) + '%')}
       ${row(_T('Avg per trade', 'Media por operación'), r.tradesMade ? signed(r.avgPerTrade) : '—', tone(r.avgPerTrade))}
     </div>
     ${caveats.length ? `<div style="margin-top:10px;border:1px solid var(--orange,#f59e0b);border-radius:10px;padding:9px 11px">
