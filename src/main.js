@@ -182,6 +182,7 @@ import {
   agentAddressOf,
   fetchApprovedAgents,
   invalidateApprovedAgents,
+  assetIdFor,
 } from './trading.js'
 import { createAlarm } from './alarm.js'
 import { computeEcosystem, oiConcentration, computeDexes, computeSpot, computeProtocol , sparkPath, windowSeries, feeSeries, pulseSeries, computeEcosystemAll } from './ecosystem.js'
@@ -23149,6 +23150,103 @@ const _DEVBOT_METHODS = new Set([
 // Methods that create orders, and so must count against the bot's rate limit.
 const _DEVBOT_PLACING = new Set(['order', 'batchModify', 'modify', 'twapOrder'])
 
+/**
+ * The same limits, on the other route to the exchange.
+ *
+ * A bot has two ways to place an order: return an intent, which DeviceBot._check measures
+ * against the card, or call api.order() directly. Only the first was checked. The method
+ * allow-list and the rate cap applied to both, but the market, the order size and the
+ * resting-order cap did not -- so a bot on a card reading "BTC, ETH, max $40" could place
+ * $5,000 of anything through api.order() and the app would sign it.
+ *
+ * That is not a way to steal a key (the worker never has one) but it is a way to lose an
+ * account, and it made two of the three caps on the install screen decorative. This closes
+ * it: the raw path now answers to the same card the intent path does.
+ *
+ * Throws with a reason naming what was refused. Returns nothing when the call is fine.
+ */
+async function _devBotCheckRaw(def, method, args, bot) {
+  const allowed = botCoins(def)
+  if (!allowed.length) throw new Error('this bot has no markets on its card')
+
+  // Forward, not reverse: resolve the FEW coins on the card to their asset ids and look
+  // the order's id up in that. A reverse map over the whole exchange would need the same
+  // three id encodings and would be wrong for HIP-3 the moment one drifted.
+  const byId = new Map()
+  const unresolved = []
+  for (const c of allowed) {
+    try { byId.set(await assetIdFor(c), c) } catch { unresolved.push(c) }
+  }
+  const coinOf = (a) => byId.get(Number(a)) ?? null
+  // Refusing is right when the id resolved and did not match. It is NOT the same as being
+  // unable to look the market up at all -- a network blip must not be reported as the bot
+  // having tried to trade something it was not allowed to, or the log sends you hunting a
+  // rule violation that never happened.
+  const refuse = (a) => {
+    if (unresolved.length) {
+      throw new Error(`could not look up ${unresolved.join(', ')} to check asset ${a} against this bot's markets — not sent`)
+    }
+    throw new Error(`asset ${a} is not one of this bot's markets (${allowed.join(', ')})`)
+  }
+
+  // Every shape of argument these methods take, and which part of it names a market.
+  // `orders` covers order and batchModify; the rest each carry a single asset.
+  const orders =
+    method === 'order' ? (args?.orders ?? [])
+    // batchModify is { modifies: [{ oid, order }] } -- NOT { orders }. Reading it as the
+    // latter checks nothing and passes everything, which is worse than not checking at all
+    // because it looks checked.
+    : method === 'batchModify' ? (args?.modifies ?? []).map(m => m?.order).filter(Boolean)
+    : method === 'modify' ? [args?.order].filter(Boolean)
+    : method === 'twapOrder' ? [args?.twap].filter(Boolean)
+    : []
+
+  for (const o of orders) {
+    const coin = coinOf(o?.a)
+    if (!coin) refuse(o?.a)
+    // Notional from the order's own price, falling back to the mark for a market order
+    // that carries none. A size the app cannot price is not waved through -- it is exactly
+    // the case where a cap would matter most.
+    const px = Number(o?.p) > 0 ? Number(o.p) : _livePx(coin)
+    const sz = Math.abs(Number(o?.s) || 0)
+    if (def.maxUsd > 0) {
+      if (!(px > 0)) throw new Error(`cannot price ${coin} to check it against the $${def.maxUsd} per-order limit`)
+      const usd = sz * px
+      if (usd > def.maxUsd) {
+        throw new Error(`order $${usd.toFixed(2)} of ${coin} is over the $${def.maxUsd} per-order limit you set`)
+      }
+    }
+  }
+
+  // A resting order is one that can sit on the book. An IOC/market order cannot, so it is
+  // not counted against a cap on how many may rest.
+  const cap = def.maxOpen ?? 0
+  if (cap > 0 && (method === 'order' || method === 'batchModify')) {   // both place resting orders
+    const resting = orders.filter(o => o?.t?.limit && o.t.limit.tif !== 'Ioc').length
+    if (resting > 0) {
+      const mine = new Set(allowed)
+      const already = (state.openOrders ?? []).filter(o => mine.has(o.coin)).length
+      if (already + resting > cap) {
+        throw new Error(`already ${already} resting orders, limit ${cap}`)
+      }
+    }
+  }
+
+  // The methods that name one asset without placing anything. Checked for the market only:
+  // setting leverage or margin on a market the user never listed is still reaching into a
+  // market the user never listed.
+  const single =
+    method === 'updateLeverage' || method === 'updateIsolatedMargin' ? args?.asset
+    : method === 'twapCancel' ? args?.a
+    : undefined
+  if (single !== undefined && !coinOf(single)) refuse(single)
+
+  for (const c of (args?.cancels ?? [])) {
+    const a = c?.a ?? c?.asset
+    if (a !== undefined && !coinOf(a)) refuse(a)
+  }
+}
+
 async function _devBotRequest(def, kind, payload, bot) {
   if (kind === 'info') {
     // Public market data. No key, no account, nothing to gate — the same endpoint any
@@ -23168,6 +23266,9 @@ async function _devBotRequest(def, kind, payload, bot) {
     if (_DEVBOT_PLACING.has(method) && bot?.rateBlocked()) {
       throw new Error(`rate limit: ${def.maxPerMin} orders/min reached`)
     }
+    // Before the dry-run branch, so a preview also reports what your limits would have
+    // refused -- the same order _execute uses for intents, and for the same reason.
+    await _devBotCheckRaw(def, method, args, bot)
     // A dry run must close BOTH routes. Stopping only the intent path would let a bot that
     // trades via api.order() place real orders during a preview — the one outcome a
     // preview must never have.

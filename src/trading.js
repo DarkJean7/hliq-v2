@@ -55,6 +55,16 @@ async function getAssetInfo(coin) {
   return info
 }
 
+/**
+ * The asset id the exchange will see for a coin.
+ *
+ * Exported so the device-bot bridge can check a raw api.order() against the markets on the
+ * bot's card. It has to be THIS function and not a reimplementation: the three id
+ * encodings here (main dex, HIP-3 offset, outcome offset) are the whole difficulty, and a
+ * second copy would drift and start refusing legitimate HIP-3 orders.
+ */
+export async function assetIdFor(coin) { return (await getAssetInfo(coin)).index }
+
 export function getWalletAddress() { return walletAddress }
 export function isConnected()      { return exchangeClient !== null }
 
