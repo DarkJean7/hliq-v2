@@ -63,7 +63,7 @@ t('it carries the card fields',
    'everySec: def.everySec', 'leverage: def.leverage'].every(x => snap.includes(x)))
 t('and the parsed settings', snap.includes('params: parseBotParams(def.params'))
 t('a bot can tell it is a dry run', snap.includes('dry: !!'))
-t('the parser is imported, not redefined', cli.includes('parseBotParams } from \'./devicebot.js\''))
+t('the parser is imported, not redefined', /parseBotParams[^\n]*from '\.\/devicebot\.js'/.test(cli))
 
 console.log(nl + '-- reading a cap is not the same as being allowed to widen it --')
 // The caps are in ctx so a bot can size an order that will pass. They are still checked
@@ -71,8 +71,7 @@ console.log(nl + '-- reading a cap is not the same as being allowed to widen it 
 t('why the caps are readable is recorded', snap.includes('as information, not as permission'))
 t('the check still runs in the main thread', bot.includes('_check(') && bot.includes('over the'))
 t('and the limits are not reachable from the worker',
-  bot.includes('A bot cannot widen its own limits — they are not in') ||
-  bot.includes('they are not in' + nl + ' * the worker'))
+  bot.includes('A bot cannot widen its own') && bot.includes('limits — they are not in the worker'))
 
 console.log(nl + '-- the field is on the card --')
 t('the editor has a settings box', cli.includes('id="devBotParams"'))

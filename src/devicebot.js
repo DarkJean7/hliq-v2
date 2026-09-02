@@ -18,7 +18,7 @@
  * WHAT THE BOX DOES NOT STOP
  * --------------------------
  * A Worker can still call fetch(). A hostile file could send whatever it is given to a
- * server of its choosing — that is market data, your position on the one coin it runs on,
+ * server of its choosing — that is market data, your positions in the markets it runs on,
  * and your account equity. It cannot send your key, because it never has it. Anyone
  * running a file they did not write should know that much, so the install screen says it
  * rather than burying it.
@@ -40,9 +40,9 @@
  * ------------------------------
  * Isolation stops key theft. It does not stop a buggy loop from placing four hundred
  * orders. Every intent is checked here, in the main thread, against limits the user set
- * when installing the bot: one coin, a maximum order value, a maximum number of orders per
- * minute, and a cap on resting orders. A bot cannot widen its own limits — they are not in
- * the worker.
+ * when installing the bot: which markets it may touch, a maximum order value, a maximum
+ * number of orders per minute, and a cap on resting orders. A bot cannot widen its own
+ * limits — they are not in the worker.
  */
 
 // One bot's saved definition. `code` is the file's text, verbatim.
@@ -91,6 +91,21 @@ export function parseBotParams(text) {
     out[key] = Number.isFinite(n) ? n : val
   }
   return out
+}
+
+/**
+ * The markets a bot is allowed to touch.
+ *
+ * A bot used to be pinned to exactly one, which made a portfolio strategy — the same rule
+ * applied to fifteen markets — fifteen separate installs to start, stop and watch. Now the
+ * card carries a list, and an intent may name any market on it.
+ *
+ * `coin` is still the home market: it is what the card is titled with, what candles are
+ * loaded for, and what an intent that names no market means. Bots saved before the list
+ * existed have only `coin`, so that is the list.
+ */
+export function botCoins(def) {
+  return DeviceBot.coinsOf(def)
 }
 
 export function devBotsLoad() {
@@ -209,6 +224,8 @@ export const DEVBOT_TEMPLATE = `// Runs on YOUR device, in a sandbox with no acc
 //
 // ctx = {
 //   coin, mark, tick,          // your home market + its mark price
+//   coins: ['ZEC', 'XMR'],     // every market this bot may trade, from its card
+//   marks: { ZEC: 512.4, ... },// the mark for each of them
 //   position: { szi, entryPx, unrealizedPnl } | null,   // in the home market
 //   openOrders: [ { oid, isBuy, sz, limitPx } ],        // in the home market
 //   equity, paper,
@@ -234,6 +251,10 @@ export const DEVBOT_TEMPLATE = `// Runs on YOUR device, in a sandbox with no acc
 //   { type: 'limit',  isBuy: false, usd: 25, px: 70000 }
 //   { type: 'cancel', oid: 12345 }
 //   { type: 'close' }
+//
+// Add a 'coin' to send one to another of your markets; leave it out for the home market:
+//   { type: 'market', coin: 'XMR', isBuy: true, usd: 25 }
+// Anything not on the card's list is refused — that list is the guardrail.
 //
 // THE FULL WAY — onTick can be async, and api.* gives you the whole exchange:
 //   await api.info({ type: 'l2Book', coin: 'BTC' })     any public /info request
@@ -283,6 +304,16 @@ function onTick(ctx) {
  * None of those are reachable from inside the worker.
  */
 export class DeviceBot {
+  /**
+   * The markets a definition allows. A static, not a module-level helper, so that the
+   * limit checks depend on nothing outside the class that enforces them.
+   */
+  static coinsOf(def) {
+    const list = Array.isArray(def?.coins) ? def.coins.filter(c => typeof c === 'string' && c) : []
+    if (list.length) return [...new Set(list)]
+    return def?.coin ? [def.coin] : []
+  }
+
   constructor(def, deps) {
     this.def = def
     this.deps = deps
@@ -391,8 +422,10 @@ export class DeviceBot {
     if (m.t === 'log')   { this.say(m.level === 'error' ? 'error' : 'info', m.msg); return }
     if (m.t === 'ready') {
       this.ready = true
+      const mkts = DeviceBot.coinsOf(this.def)
       this.say('info', (this.dry ? 'DRY RUN — nothing will be sent · ' : 'Running · ')
-        + this.def.coin + ' · max $' + this.def.maxUsd + '/order · ' + this.def.maxPerMin + ' orders/min')
+        + (mkts.length > 1 ? mkts.length + ' markets: ' + mkts.join(', ') : this.def.coin)
+        + ' · max $' + this.def.maxUsd + '/order · ' + this.def.maxPerMin + ' orders/min')
       const period = Math.max(5, Number(this.def.everySec) || 15) * 1000
       this.timer = setInterval(() => this._tick(), period)
       this._tick()
@@ -439,6 +472,17 @@ export class DeviceBot {
     const type = String(it.type ?? '')
     if (!['market', 'limit', 'cancel', 'close'].includes(type)) return `unknown intent "${type}"`
 
+    // The market list is the guardrail that replaced "one coin per bot". A bot may name any
+    // market ON ITS CARD and no other — including on the intents that reduce risk, because
+    // closing a position in a market the user never listed is still trading a market the
+    // user never listed.
+    const allowed = DeviceBot.coinsOf(this.def)
+    const coin = it.coin ?? this.def.coin
+    if (it.coin != null && typeof it.coin !== 'string') return 'intent coin must be a market name'
+    if (!allowed.includes(coin)) {
+      return `"${coin}" is not one of this bot's markets (${allowed.join(', ') || 'none'})`
+    }
+
     if (type === 'cancel' || type === 'close') return null   // reducing risk is never capped
 
     const usd = Number(it.usd)
@@ -449,7 +493,12 @@ export class DeviceBot {
 
     if (this.rateBlocked()) return `rate limit: ${this.def.maxPerMin} orders/min reached`
 
-    const resting = (ctx?.openOrders?.length ?? 0)
+    // Across ALL the bot's markets, not just the home one: a cap of ten that each of
+    // fifteen markets could reach independently is a cap of a hundred and fifty.
+    const mine = new Set(DeviceBot.coinsOf(this.def))
+    const resting = Array.isArray(ctx?.orders)
+      ? ctx.orders.filter(o => mine.has(o.coin)).length
+      : (ctx?.openOrders?.length ?? 0)
     const cap = this.def.maxOpen ?? 20
     if (type === 'limit' && cap > 0 && resting >= cap) return `already ${resting} resting orders, limit ${cap}`
 
@@ -464,13 +513,22 @@ export class DeviceBot {
     if (this.stopped || !intents.length) return
     let ctx = null
     try { ctx = this.deps.snapshot(this.def, this) } catch {}
-    for (const it of intents.slice(0, 10)) {          // one tick cannot fire more than 10
+    // One tick used to be capped at ten intents, which was ample for a bot on one market
+    // and silently wrong for one on fifteen: at a shared window boundary every market can
+    // want to turn over at once, and the eleventh onwards would vanish without a word.
+    // Two per market covers a close plus the open that replaces it.
+    const perTick = Math.max(10, DeviceBot.coinsOf(this.def).length * 2)
+    if (intents.length > perTick) {
+      this.say('warn', `${intents.length} intents this tick, only the first ${perTick} will run`)
+    }
+    for (const it of intents.slice(0, perTick)) {
       const why = this._check(it, ctx)
       if (why) { this.blocked++; this.say('warn', 'Blocked — ' + why); continue }
       if (this.dry) {
         // Checked first, THEN reported — so a preview also shows you which intents your
         // limits would have refused, not just the ones that would have gone through.
-        this.say('info', 'Would send ' + it.type + (it.isBuy != null ? (it.isBuy ? ' buy' : ' sell') : '') +
+        this.say('info', 'Would send ' + it.type + ' ' + (it.coin ?? this.def.coin) +
+          (it.isBuy != null ? (it.isBuy ? ' buy' : ' sell') : '') +
           (it.usd ? ' $' + Number(it.usd).toFixed(2) : '') + (it.px ? ' @ ' + it.px : ''))
         continue
       }
@@ -478,7 +536,8 @@ export class DeviceBot {
         const r = await this.deps.execute(this.def, it)
         if (r?.ok === false) { this.say('error', 'Rejected: ' + (r.error ?? 'unknown')); continue }
         if (it.type === 'market' || it.type === 'limit') this.sentAt.push(Date.now())
-        this.say('info', 'Sent ' + it.type + (it.isBuy != null ? (it.isBuy ? ' buy' : ' sell') : '') +
+        this.say('info', 'Sent ' + it.type + ' ' + (it.coin ?? this.def.coin) +
+          (it.isBuy != null ? (it.isBuy ? ' buy' : ' sell') : '') +
           (it.usd ? ' $' + Number(it.usd).toFixed(2) : '') + (it.px ? ' @ ' + it.px : ''))
       } catch (e) {
         this.say('error', 'Failed: ' + (e?.message ?? String(e)))

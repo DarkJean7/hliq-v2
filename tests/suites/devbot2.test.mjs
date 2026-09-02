@@ -63,7 +63,9 @@ t('the bot class exposes both to the bridge', bot.includes('noteSend() {') && bo
 t('why is recorded', bot.includes('which would make the cap decorative'))
 
 const mk = (def) => new Function('def', `${grab(bot, 'class DeviceBot')}\n return new DeviceBot(def, {})`)(def)
-const b2 = mk({ maxUsd: 0, maxPerMin: 2, maxOpen: 0 })
+// `coin` is required now: the market list is checked before the caps are, and a bot with
+// no markets may trade nothing. These cases are about the caps, so give it one.
+const b2 = mk({ coin: 'BTC', maxUsd: 0, maxPerMin: 2, maxOpen: 0 })
 t('a 0 per-order limit means no cap', b2._check({ type: 'market', usd: 1e9 }, { openOrders: [] }) === null)
 t('a 0 resting limit means no cap', b2._check({ type: 'limit', usd: 5, px: 1 }, { openOrders: new Array(500) }) === null)
 b2.noteSend(); b2.noteSend()

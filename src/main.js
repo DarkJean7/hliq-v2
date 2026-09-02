@@ -222,7 +222,7 @@ import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
 import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW,
          BT_STRATEGIES, BT_MODULES, BT_UNSIMULATABLE } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
-import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams } from './devicebot.js'
+import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams, botCoins } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
          compareAxisHtml, attachCompareScrub, compareReadoutHtml, assignCompareColors } from './compare.js'
 import { ES_DICT } from './i18n-es.js'
@@ -22857,6 +22857,11 @@ function _devBotSnapshot(def, bot) {
     //
     // Still absent, and staying absent: the wallet address and the agent key. A bot signs
     // by asking (api.exchange), so it has no use for either.
+    // Every market this bot may trade, and the mark for each — so a portfolio bot does not
+    // have to parse `mids` (strings, whole exchange) to price the fifteen it cares about.
+    coins: botCoins(def),
+    marks: Object.fromEntries(botCoins(def).map(c => [c, _livePx(c)]).filter(([, p]) => p > 0)),
+
     mids: { ...(state.allMids ?? {}) },
     positions: (state.perpState?.assetPositions ?? []).map(x => ({
       coin: x.position.coin,
@@ -22887,6 +22892,7 @@ function _devBotSnapshot(def, bot) {
     // every one bounce.
     config: {
       coin: def.coin,
+      coins: botCoins(def),
       maxUsd: def.maxUsd,
       maxPerMin: def.maxPerMin,
       maxOpen: def.maxOpen,
@@ -22901,9 +22907,14 @@ function _devBotSnapshot(def, bot) {
 // An approved intent becomes an order. Paper accounts go through the paper engine, so a
 // device bot can be tried out with no money at risk and no key at all.
 async function _devBotExecute(def, it) {
-  const coin = def.coin
+  // An intent may name any market on the bot's card; naming none means the home market.
+  // DeviceBot._check has already refused anything off the list — this repeats the check
+  // because execute is the thing that actually sends an order, and a guard that lives only
+  // in the caller is one refactor away from not existing.
+  const coin = it.coin ?? def.coin
+  if (!botCoins(def).includes(coin)) return { ok: false, error: `"${coin}" is not one of this bot's markets` }
   const mark = _livePx(coin)
-  if (!(mark > 0)) return { ok: false, error: 'no mark price' }
+  if (!(mark > 0)) return { ok: false, error: 'no mark price for ' + coin }
   const acct = isPaper() ? null : _stratTargetAddr()
 
   if (it.type === 'cancel') {
@@ -23220,6 +23231,53 @@ window.__devBotPickFile = function(input) {
  * that skipped a check the install did would be a hole that only opens later.
  * Returns null (having said why) if the form is not usable.
  */
+/** The markets on a draft, falling back to its single coin for a bot saved before lists. */
+function _devBotCoinsOf(d) {
+  const list = botCoins(d)
+  return list.length ? list : [d?.coin ?? 'BTC']
+}
+
+function _devBotChipsHtml(list) {
+  // The home market is first and cannot be removed while it is the only one — a bot with
+  // no markets could not place an order and would only look broken.
+  return list.map((c, i) => `
+    <span style="display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:8px;font-size:11.5px;font-weight:700;
+      border:1px solid ${i === 0 ? 'var(--accent)' : 'var(--border2)'};color:${i === 0 ? 'var(--accent)' : 'var(--fg-2)'}">
+      ${i === 0 ? '<span style="opacity:.7;font-size:9.5px;letter-spacing:.05em">HOME</span>' : ''}
+      <span class="notranslate">${esc(_ocCoinLabel(c))}</span>
+      ${list.length > 1 ? `<button onclick="window.__devBotRemoveCoin('${esc(c)}')" title="${_T('Remove', 'Quitar')}"
+        style="border:none;background:transparent;color:inherit;font-size:14px;line-height:1;cursor:pointer;padding:0 1px;opacity:.65">&times;</button>` : ''}
+    </span>`).join('')
+}
+
+function _devBotCoinsGet() {
+  try { const v = JSON.parse(document.getElementById('devBotCoins')?.value ?? '[]'); return Array.isArray(v) ? v : [] }
+  catch { return [] }
+}
+
+function _devBotCoinsSet(list) {
+  const el = document.getElementById('devBotCoins')
+  const chips = document.getElementById('devBotCoinChips')
+  if (el) el.value = JSON.stringify(list)
+  // Only the chip row is repainted. Re-rendering the sheet would throw away the file the
+  // user has pasted into the code box, which is the last thing they want on a mis-tap.
+  if (chips) chips.innerHTML = _devBotChipsHtml(list)
+}
+
+window.__devBotAddCoin = function(sel) {
+  const c = sel?.value
+  if (!c) return
+  const list = _devBotCoinsGet()
+  if (list.includes(c)) return _paperToast(_T('Already on the list', 'Ya está en la lista'), 'err')
+  _devBotCoinsSet([...list, c])
+}
+
+window.__devBotRemoveCoin = function(c) {
+  const list = _devBotCoinsGet().filter(x => x !== c)
+  if (!list.length) return
+  _devBotCoinsSet(list)
+}
+
 function _devBotRead(existingId) {
   const g = id => document.getElementById(id)?.value?.trim() ?? ''
   const code = g('devBotCode')
@@ -23240,10 +23298,20 @@ function _devBotRead(existingId) {
     if (!Number.isFinite(n)) return dflt
     return Math.max(0, Math.min(max, n))
   }
+  // The list is the truth; `coin` is its first entry. An empty list would be a bot allowed
+  // to trade nothing, which is a confusing way to say "the market in the picker", so the
+  // picker fills in.
+  let coinList = []
+  try { coinList = JSON.parse(document.getElementById('devBotCoins')?.value ?? '[]') } catch {}
+  if (!Array.isArray(coinList)) coinList = []
+  coinList = [...new Set(coinList.filter(c => typeof c === 'string' && c))]
+  if (!coinList.length) coinList = [g('devBotCoin') || 'BTC']
+
   return {
     id: existingId ?? ('d' + Date.now().toString(36)),
     name: g('devBotName') || 'My bot',
-    coin: g('devBotCoin') || 'BTC',
+    coin: coinList[0],
+    coins: coinList,
     maxUsd: cap(g('devBotMaxUsd'), 25, 1e9),
     maxPerMin: cap(g('devBotMaxMin'), 4, 600),
     maxOpen: cap(g('devBotMaxOpen'), 10, 1000),
@@ -23612,14 +23680,24 @@ function _devBotInstallSheet(existing = null) {
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:14px">
       <div><label style="${lbl}">${_T('Name', 'Nombre')}</label><input id="devBotName" style="${inp}" value="${esc(d.name)}" placeholder="My bot"></div>
-      <div><label style="${lbl}">${_T('Market', 'Mercado')}</label>
-        <select id="devBotCoin" style="${inp}">${coins.map(c => `<option value="${esc(c)}"${c === d.coin ? ' selected' : ''}>${esc(_ocCoinLabel(c))}</option>`).join('')}</select></div>
+      <div><label style="${lbl}">${_T('Add a market', 'Añadir mercado')}</label>
+        <select id="devBotCoin" onchange="window.__devBotAddCoin(this)" style="${inp}">${coins.map(c => `<option value="${esc(c)}"${c === d.coin ? ' selected' : ''}>${esc(_ocCoinLabel(c))}</option>`).join('')}</select></div>
       <div><label style="${lbl}">${_T('Max per order', 'Máx. por orden')} ($)</label><input id="devBotMaxUsd" type="number" min="0" style="${inp}" value="${d.maxUsd ?? 25}"></div>
       <div><label style="${lbl}">${_T('Max orders / min', 'Máx. órdenes/min')}</label><input id="devBotMaxMin" type="number" min="0" max="600" style="${inp}" value="${d.maxPerMin ?? 4}"></div>
       <div><label style="${lbl}">${_T('Max resting orders', 'Máx. órdenes en espera')}</label><input id="devBotMaxOpen" type="number" min="0" max="1000" style="${inp}" value="${d.maxOpen ?? 10}"></div>
       <div><label style="${lbl}">${_T('Run every (s)', 'Ejecutar cada (s)')}</label><input id="devBotEvery" type="number" min="5" style="${inp}" value="${d.everySec ?? 15}"></div>
       <div><label style="${lbl}">${_T('Leverage', 'Apalancamiento')}</label><input id="devBotLev" type="number" min="1" style="${inp}" value="${d.leverage ?? 3}"></div>
     </div>
+    <input type="hidden" id="devBotCoins" value="${esc(JSON.stringify(_devBotCoinsOf(d)))}">
+    <div style="margin-top:10px">
+      <label style="${lbl}">${_T('Markets this bot may trade', 'Mercados que este bot puede operar')}</label>
+      <div id="devBotCoinChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:5px">${_devBotChipsHtml(_devBotCoinsOf(d))}</div>
+      <div style="font-size:10.5px;color:var(--fg-3);margin-top:6px;line-height:1.5">${
+        _T('The bot can only touch these. The first is its home market — the one its candles are loaded for, and the one an order that names no market goes to.',
+           'El bot solo puede tocar estos. El primero es su mercado principal: aquel del que se cargan las velas y al que va una orden que no nombre mercado.')}
+      </div>
+    </div>
+
     <div style="font-size:10.5px;color:var(--fg-3);margin-top:7px;line-height:1.5">${
       _T('Set any of the three caps to 0 to turn that limit off.', 'Pon cualquiera de los tres límites a 0 para desactivarlo.')}
     </div>
@@ -23693,7 +23771,10 @@ function _devBotCardHtml(b) {
 
   const body = `
     <div style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:11.5px;color:var(--fg-2);margin-bottom:11px">
-      <span>${_T('Market', 'Mercado')} <b>${esc(_ocCoinLabel(b.coin))}</b></span>
+      <span>${(() => { const m = botCoins(b)
+        return m.length > 1
+          ? `${_T('Markets', 'Mercados')} <b>${m.length}</b> · ${esc(m.map(_ocCoinLabel).join(', '))}`
+          : `${_T('Market', 'Mercado')} <b>${esc(_ocCoinLabel(b.coin))}</b>` })()}</span>
       <span>${b.maxUsd > 0 ? `${_T('max', 'máx')} <b>$${b.maxUsd}</b>/${_T('order', 'orden')}` : `<b>${_T('no size cap', 'sin límite')}</b>`}</span>
       <span>${b.maxPerMin > 0 ? `<b>${b.maxPerMin}</b>/${_T('min', 'min')}` : `<b>${_T('no rate cap', 'sin límite')}</b>`}</span>
       <span>${_T('every', 'cada')} <b>${b.everySec}s</b></span>
@@ -23719,8 +23800,12 @@ function _devBotCardHtml(b) {
           <div style="flex:1;min-width:0">
             <div class="strat-name">${esc(b.name)}${
               running ? `<span class="strat-live"><i></i>${dry ? _T('Dry run', 'Simulación') : _T('Running', 'Activo')}</span>` : ''}</div>
-            <div class="strat-tag">${running ? esc(_stratRunStatus ? _ocCoinLabel(b.coin) : b.coin) + ' · ' + (dry ? _T('sending nothing', 'sin enviar nada') : _T('live', 'en vivo'))
-              : _T('Your file', 'Tu archivo') + ' · ' + esc(_ocCoinLabel(b.coin))}</div>
+            <div class="strat-tag">${(() => {
+              const m = botCoins(b)
+              const where = m.length > 1 ? m.length + ' ' + _T('markets', 'mercados') : esc(_ocCoinLabel(b.coin))
+              return running
+                ? where + ' · ' + (dry ? _T('sending nothing', 'sin enviar nada') : _T('live', 'en vivo'))
+                : _T('Your file', 'Tu archivo') + ' · ' + where })()}</div>
           </div>
           ${doc ? `<button class="strat-info" title="${_T('What does this do?', '¿Qué hace esto?')}" aria-label="${_T('What does this do?', '¿Qué hace esto?')}"
             onclick="event.stopPropagation();window.__stratFlip('dev-${b.id}',true)">?</button>` : ''}

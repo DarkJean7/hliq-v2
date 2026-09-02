@@ -64,7 +64,7 @@ t('the flag reaches the bridge via the bot instance', cli.includes('async functi
 // Drive the branch itself.
 const mk = (dry) => {
   const b = new Function('dry', `${grab(bot, 'class DeviceBot')}
-    const b = new DeviceBot({ maxUsd: 25, maxPerMin: 4, maxOpen: 10 }, { onChange(){} })
+    const b = new DeviceBot({ coin: 'BTC', maxUsd: 25, maxPerMin: 4, maxOpen: 10 }, { onChange(){} })
     b.dry = dry
     return b`)(dry)
   return b

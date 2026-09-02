@@ -57,7 +57,11 @@ t('a limit order must carry a real price', check.includes('limit order needs a p
 t('cancel and close are never rate-limited', check.includes("if (type === 'cancel' || type === 'close') return null"))
 t('why that exemption exists is stated', check.includes('reducing risk is never capped'))
 t('a refused intent is dropped, not queued', bot.includes('never queued'))
-t('one tick cannot fire more than ten orders', bot.includes('intents.slice(0, 10)'))
+// Was a flat ten. A bot on fifteen markets can legitimately want a close and an open in
+// each at a shared window boundary, and the eleventh onwards used to vanish unannounced.
+t('a tick is capped at two intents per market, never under ten',
+  bot.includes('Math.max(10, DeviceBot.coinsOf(this.def).length * 2)') && bot.includes('intents.slice(0, perTick)'))
+t('and going over is reported rather than silently truncated', bot.includes('only the first'))
 
 // Drive the limit logic directly.
 const mkBot = (def) => {
@@ -67,7 +71,9 @@ const mkBot = (def) => {
     return b`)
   return B(def)
 }
-const b1 = mkBot({ maxUsd: 25, maxPerMin: 2, maxOpen: 3 })
+// A market is required: the list is checked before the caps, and a definition with no
+// markets is a bot that may trade nothing. These cases are about the caps.
+const b1 = mkBot({ coin: 'BTC', maxUsd: 25, maxPerMin: 2, maxOpen: 3 })
 t('a good order passes', b1._check({ type: 'market', isBuy: true, usd: 10 }, { openOrders: [] }) === null)
 t('an oversized order is refused', /over the \$25/.test(b1._check({ type: 'market', usd: 9999 }, { openOrders: [] })))
 t('a zero-size order is refused', /positive usd/.test(b1._check({ type: 'market', usd: 0 }, { openOrders: [] })))
@@ -101,7 +107,8 @@ t('real accounts use the same order calls the buttons use',
   exec.includes('placeLimitOrder({') && exec.includes('placeMarketOrder({'))
 t('close uses the real close path', exec.includes('closePosition({'))
 t('cancel uses the real cancel path', exec.includes('cancelOrder({'))
-t('a market order with no mark is refused', exec.includes("return { ok: false, error: 'no mark price' }"))
+t('a market order with no mark is refused, and says for which market',
+  exec.includes("error: 'no mark price for ' + coin"))
 t('a zero size is refused before it is sent', exec.includes("size worked out to zero"))
 t('closing with no position says so', exec.includes("no position to close"))
 
