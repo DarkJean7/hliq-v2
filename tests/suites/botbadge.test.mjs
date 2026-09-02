@@ -88,7 +88,15 @@ t('the label map is shared, not a second copy',
   cli.includes('const _BOT_LABELS = {') && cli.includes('const labels = _BOT_LABELS'))
 t('the name is escaped', badge.includes('esc(_BOT_LABELS[t] ?? t)'))
 t('and marked notranslate, being a product name', badge.includes('class="notranslate"'))
-t('it is on the position card', cli.includes('${_botBadgeHtml(p.coin, p._acctAddr)}'))
+t('it is on the position card', cli.includes('_botBadgeHtml(p.coin, p._acctAddr, true)'))
+t('and sits on the same row as the account name',
+  cli.includes('Account name and running-bot badge share one row'))
+t('the inline form drops the margin that would start a new line',
+  grab(cli, 'function _botBadgeHtml').includes("inline ? '' : ';margin-top:4px'"))
+t('a long account name truncates instead of pushing the badge off',
+  cli.includes('eats its own ellipsis rather than pushing the badge off'))
+t('the badge does not shrink', grab(cli, 'function _botBadgeHtml').includes('flex-shrink:0'))
+t('the row is skipped entirely when there is neither', cli.includes('if (!p._acct && !_bb)'))
 
 console.log(nl + '-- the grouped card counts them --')
 // Four wallets holding a coin with one grid bot running is "Grid Bot 1/4". Plain

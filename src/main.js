@@ -10663,10 +10663,10 @@ function _botsOnCoin(coin, acctAddr) {
 }
 
 /** The badge itself, or nothing. Guards get their own row already, so they are left out. */
-function _botBadgeHtml(coin, acctAddr) {
+function _botBadgeHtml(coin, acctAddr, inline = false) {
   const types = _botsOnCoin(coin, acctAddr).filter(t => t !== 'liqguard' && t !== 'levbrake')
   if (!types.length) return ''
-  return `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${types.map(t => `
+  return `<div style="display:flex;flex-wrap:wrap;gap:4px;flex-shrink:0${inline ? '' : ';margin-top:4px'}">${types.map(t => `
     <span class="notranslate" style="display:inline-flex;align-items:center;gap:3px;font-size:9.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:rgba(0,229,160,0.14);color:var(--accent);white-space:nowrap">
       <span style="width:5px;height:5px;border-radius:50%;background:var(--accent);flex-shrink:0"></span>${esc(_BOT_LABELS[t] ?? t)}</span>`).join('')}</div>`
 }
@@ -16821,8 +16821,17 @@ function _mobVRenderContent(tick = false) {
               <div style="font-size:11px;color:var(--muted);margin-top:2px;display:flex;align-items:center;gap:6px">
                 <span class="notranslate">${lev}</span>${levType ? ` <span>${levType}</span>` : ''}
               </div>
-              ${p._acct ? `<div class="notranslate" style="font-size:11px;font-weight:700;color:var(--accent);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p._acct)}</div>` : ''}
-              ${_botBadgeHtml(p.coin, p._acctAddr)}
+              ${(() => {
+                // Account name and running-bot badge share one row. The name truncates
+                // (min-width:0) and the badge does not shrink, so a long account label
+                // eats its own ellipsis rather than pushing the badge off the card.
+                const _bb = _botBadgeHtml(p.coin, p._acctAddr, true)
+                if (!p._acct && !_bb) return ''
+                return `<div style="display:flex;align-items:center;gap:6px;margin-top:3px;min-width:0">
+                  ${p._acct ? `<span class="notranslate" style="font-size:11px;font-weight:700;color:var(--accent);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p._acct)}</span>` : ''}
+                  ${_bb}
+                </div>`
+              })()}
             </div>
             <div style="text-align:center;flex-shrink:0">
               <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
