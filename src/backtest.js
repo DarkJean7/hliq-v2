@@ -86,6 +86,14 @@ export const BT_DEFAULTS = {
 
   useMaxLosses: false,    // stop the whole run after a losing streak
   maxConsecLosses: 3,
+
+  // Tokyo Partners. The defaults are ZEC's row from the portfolio table -- a real pair of
+  // windows rather than placeholder hours, so a first run says something.
+  tokyoLongFrom:  '07:00',
+  tokyoLongTo:    '21:00',
+  tokyoShortFrom: '21:00',
+  tokyoShortTo:   '07:00',
+  tokyoStopPct:   0,      // the deployed bot has none; 0 is off
 }
 
 export const BT_STRATEGIES = [
@@ -97,6 +105,8 @@ export const BT_STRATEGIES = [
    'The rule from the Python simulator this screen came from: an unusually large candle opens a trade its way, with the target and stop as percentages of the entry price.'],
   ['grid', 'Grid (bot)',
    'The real bot. A ladder of resting buys across a price range: when one fills, a sell is armed one level up, and when THAT fills the buy is re-armed. It earns the gap between levels every time price crosses back and forth, and accumulates a position when price leaves the range.'],
+  ['tokyo', 'Tokyo Partners (hourly windows)',
+   'Two fixed windows on the clock per market: long inside one, short inside the other, flat if they overlap. It is ALWAYS in a position outside those gaps and never looks at price to decide -- only at the hour, in New York time. The windows come from the portfolio table when the market is in it, and can be typed for anything else.'],
   ['breakout', 'Channel breakout',
    'A close beyond the highest high or lowest low of the previous N candles opens a trade that way. Not one of the deployed bots -- a plain comparison rule.'],
 ]
@@ -114,6 +124,76 @@ export const BT_UNSIMULATABLE = [
   ['Copy Trade', 'Mirrors another wallet, so its results depend on the fills of that wallet rather than on candles.'],
   ['Liq Guard / Leverage Brake', 'Risk guards. They never open a position, only reduce one.'],
 ]
+
+/**
+ * The Tokyo Partners portfolio: two windows per market, found by sweeping every entry and
+ * exit hour over ~200 days of 1h candles and keeping the pair with the best net PnL.
+ *
+ * Held here so the simulator can prefill the windows for a market that is in it. The
+ * numbers are the strategy; typing them by hand for the wrong market is how you simulate
+ * something nobody proposed.
+ */
+export const BT_TOKYO_TABLE = {
+  ZEC:     { long: ['07:00', '21:00'], short: ['21:00', '07:00'], weight: 11.06 },
+  CASHCAT: { long: ['02:00', '19:00'], short: ['19:00', '07:00'], weight:  9.93 },
+  SMSN:    { long: ['23:00', '18:00'], short: ['18:00', '23:00'], weight:  8.72 },
+  SKHX:    { long: ['04:00', '17:00'], short: ['17:00', '23:00'], weight:  8.27 },
+  LIT:     { long: ['00:00', '18:00'], short: ['19:00', '00:00'], weight:  7.84 },
+  XMR:     { long: ['16:00', '06:00'], short: ['06:00', '16:00'], weight:  7.50 },
+  SNDK:    { long: ['23:00', '21:00'], short: ['21:00', '23:00'], weight:  7.40 },
+  EWY:     { long: ['23:00', '19:00'], short: ['19:00', '23:00'], weight:  6.20 },
+  MU:      { long: ['23:00', '21:00'], short: ['21:00', '23:00'], weight:  6.13 },
+  NEAR:    { long: ['20:00', '17:00'], short: ['17:00', '20:00'], weight:  5.76 },
+  DRAM:    { long: ['23:00', '19:00'], short: ['19:00', '23:00'], weight:  5.31 },
+  PUMP:    { long: ['20:00', '18:00'], short: ['18:00', '20:00'], weight:  4.99 },
+  INTC:    { long: ['09:00', '05:00'], short: ['05:00', '09:00'], weight:  4.67 },
+  SPCX:    { long: ['23:00', '03:00'], short: ['03:00', '23:00'], weight:  3.35 },
+  SOXL:    { long: ['14:00', '03:00'], short: ['03:00', '15:00'], weight:  2.86 },
+}
+
+/** The table row for a market id, with or without its builder-dex prefix. */
+export function tokyoWindowsFor(coin) {
+  const base = String(coin ?? '').split(':').pop().toUpperCase()
+  return BT_TOKYO_TABLE[base] ?? null
+}
+
+// The windows are New York hours and the daylight-saving shift is part of them: they were
+// found in that zone, so applying them at a fixed UTC offset would put them half an hour
+// out for half the year. One formatter, reused -- building one per candle is the
+// difference between a run that takes a moment and one that takes a minute.
+export const BT_TOKYO_ZONE = 'America/New_York'
+let _tzFmt = null, _tzFmtFor = null
+function zoneMinute(ms, zone) {
+  if (_tzFmtFor !== zone) {
+    try {
+      _tzFmt = new Intl.DateTimeFormat('en-US', { timeZone: zone, hour: '2-digit', minute: '2-digit', hour12: false })
+      _tzFmtFor = zone
+    } catch { _tzFmt = null; _tzFmtFor = zone }
+  }
+  if (!_tzFmt) return null
+  const parts = _tzFmt.formatToParts(new Date(ms))
+  // Some engines report midnight as "24". % 24 keeps it at the start of the day.
+  const hh = Number(parts.find(x => x.type === 'hour')?.value) % 24
+  const mm = Number(parts.find(x => x.type === 'minute')?.value)
+  return Number.isFinite(hh) && Number.isFinite(mm) ? hh * 60 + mm : null
+}
+
+/** "07:00" -> 420. NaN for anything that is not a time. */
+export function hhmmToMinutes(s) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(s ?? '').trim())
+  if (!m) return NaN
+  const hh = Number(m[1]), mm = Number(m[2])
+  if (hh > 23 || mm > 59) return NaN
+  return hh * 60 + mm
+}
+
+/** Inside [from, to), where a `to` earlier than `from` crosses midnight. */
+export function inWindow(min, from, to) {
+  const a = hhmmToMinutes(from), b = hhmmToMinutes(to)
+  if (!Number.isFinite(a) || !Number.isFinite(b) || min == null) return false
+  if (a === b) return false                 // a zero-width window is closed, not always-open
+  return b > a ? (min >= a && min < b) : (min >= a || min < b)
+}
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : NaN }
 
@@ -234,6 +314,21 @@ export function signals(rows, p) {
     }
     return out
   }
+  if (p.strategy === 'tokyo') {
+    // A STATE from the clock alone: which side the windows say to hold at this candle.
+    // Price is never consulted -- that is the whole strategy, and the reason it can be
+    // simulated at all without knowing anything about the market.
+    for (let i = 0; i < rows.length; i++) {
+      const min = zoneMinute(rows[i].t, BT_TOKYO_ZONE)
+      if (min == null) continue
+      const enL = inWindow(min, p.tokyoLongFrom, p.tokyoLongTo)
+      const enS = inWindow(min, p.tokyoShortFrom, p.tokyoShortTo)
+      // Overlapping windows would be long and short at once, which nets to nothing while
+      // paying two sets of fees and funding. The bot goes flat; so does this.
+      out[i] = (enL && enS) ? 0 : enL ? 1 : enS ? -1 : 0
+    }
+    return out
+  }
   if (p.strategy === 'breakout') {
     const n = Math.max(2, Math.round(p.breakoutLookback))
     for (let i = n; i < rows.length; i++) {
@@ -328,6 +423,86 @@ function runTrendBot(rows, p, sig) {
   }
 
   // Whatever it was still holding when the data ended. Counted, never scored.
+  const openTrade = pos
+    ? [{ i: pos.i, time: rows[pos.i].t, side: pos.side > 0 ? 'long' : 'short', entry: pos.entry,
+         tp: null, sl: null, outcome: 'open', exitAt: null, exitPx: null,
+         heldFor: rows.length - 1 - pos.i, balance }]
+    : []
+
+  return { trades: [...trades, ...openTrade], balance, peak, maxDD, won, lost }
+}
+
+/**
+ * The Tokyo Partners walk.
+ *
+ * Same shape of life as the Trend bot -- always in a position, flipping when the signal
+ * changes -- with two differences that matter, both taken from the deployed file:
+ *
+ *   It has NO stop. It holds whatever the clock says to hold, so a position is closed by
+ *   the window ending and never by a price level. A stop percentage is offered anyway,
+ *   defaulting to off, because the risk-based money model needs a distance to size
+ *   against; turning it on simulates a bot that is not quite this one, which is the point
+ *   of being able to turn it on.
+ *
+ *   It does not refuse to close a loser. The Trend bot holds a losing side until its stop;
+ *   this one closes on the clock regardless, and modelling it otherwise would report on a
+ *   strategy nobody is running.
+ *
+ * A zero signal is FLAT, not "no opinion": it is what the bot does when both windows are
+ * open at once, and skipping it would leave a position on that the bot would have closed.
+ */
+function runTokyoBot(rows, p, sig) {
+  const stopFrac = Math.max(0, p.tokyoStopPct ?? 0) / 100
+  let balance = p.startBalance, peak = p.startBalance, maxDD = 0
+  let won = 0, lost = 0
+  let pos = null
+  const trades = []
+
+  const book = (entry, exit, side, openedAt, closedAt, heldFor, stopped) => {
+    const long = side > 0
+    const moved = long ? exit - entry : entry - exit
+    const outcome = stopped ? 'loss' : moved > 0 ? 'win' : moved < 0 ? 'loss' : 'flat'
+    const slDist = entry * stopFrac
+    const cost = p.useFees ? balance * (p.feePct / 100) : 0
+    let delta = -cost
+    if (p.pnlModel === 'risk' && slDist > 0) {
+      delta += balance * (p.riskPct / 100) * (moved / slDist)
+    } else if (outcome === 'win') delta += balance * (p.winPct / 100)
+    else if (outcome === 'loss') delta -= balance * (p.lossPct / 100)
+    balance += delta
+    if (outcome === 'win') won++
+    else if (outcome === 'loss') lost++
+    peak = Math.max(peak, balance)
+    if (peak > 0) maxDD = Math.max(maxDD, (peak - balance) / peak * 100)
+    trades.push({ i: openedAt, time: rows[openedAt].t, side: long ? 'long' : 'short',
+      entry, tp: null, sl: slDist > 0 ? (long ? entry - slDist : entry + slDist) : null,
+      outcome, exitAt: closedAt, exitPx: exit, heldFor, balance })
+  }
+
+  for (let i = 0; i < rows.length; i++) {
+    const want = sig[i]
+    if (want == null) continue          // the clock could not be read for this candle
+    const px = rows[i].c
+
+    // Checked against the candle's extreme and before anything else: a stop touched inside
+    // the candle cannot be undone by where it happened to close.
+    if (pos && stopFrac > 0) {
+      const long = pos.side > 0
+      const stopPx = long ? pos.entry * (1 - stopFrac) : pos.entry * (1 + stopFrac)
+      if (long ? rows[i].l <= stopPx : rows[i].h >= stopPx) {
+        book(pos.entry, stopPx, pos.side, pos.i, rows[i].t, i - pos.i, true)
+        pos = null
+      }
+    }
+
+    if (pos && want !== pos.side) {
+      book(pos.entry, px, pos.side, pos.i, rows[i].t, i - pos.i, false)
+      pos = null
+    }
+    if (!pos && want !== 0) pos = { side: want, entry: px, i }
+  }
+
+  // Whatever was still held when the candles ran out. Counted, never scored.
   const openTrade = pos
     ? [{ i: pos.i, time: rows[pos.i].t, side: pos.side > 0 ? 'long' : 'short', entry: pos.entry,
          tp: null, sl: null, outcome: 'open', exitAt: null, exitPx: null,
@@ -493,7 +668,14 @@ export function runBacktest(candles, params = {}) {
     balance = t.balance; peak = t.peak; maxDD = t.maxDD; won = t.won; lost = t.lost
   }
 
-  for (let i = 0; i < rows.length && !halted && p.strategy !== 'trend'; i++) {
+  if (p.strategy === 'tokyo') {
+    const t = runTokyoBot(rows, p, sig)
+    trades = t.trades
+    balance = t.balance; peak = t.peak; maxDD = t.maxDD; won = t.won; lost = t.lost
+  }
+
+  const ownWalk = p.strategy === 'trend' || p.strategy === 'tokyo'
+  for (let i = 0; i < rows.length && !halted && !ownWalk; i++) {
     if (cooldown > 0) { cooldown--; continue }
     const s = sig[i]
     if (!s) continue
@@ -675,6 +857,26 @@ export const BT_FIELDS = [
     hint: 'The slower average.',
     help: 'The longer average. It must be meaningfully longer than the fast one, or the two swap constantly and the bot flips on noise.' },
 
+  { key: 'tokyoLongFrom', label: 'Long window opens', unit: 'NY', type: 'time', strategy: 'tokyo',
+    hint: 'When the long side starts.',
+    help: 'New York time, because that is the zone the windows were found in -- daylight saving moves them with it, which is deliberate. A window whose close is EARLIER than its open crosses midnight and the position is carried into the next day.' },
+
+  { key: 'tokyoLongTo', label: 'Long window closes', unit: 'NY', type: 'time', strategy: 'tokyo',
+    hint: 'When the long side ends.',
+    help: 'The candle at this time is already outside the window, so the position is closed at its close. Set the open and the close to the same time to switch the long side off entirely.' },
+
+  { key: 'tokyoShortFrom', label: 'Short window opens', unit: 'NY', type: 'time', strategy: 'tokyo',
+    hint: 'When the short side starts.',
+    help: 'Independent of the long window. If the two overlap the bot goes FLAT for the overlap rather than holding both, since a long and a short of the same size net to nothing while paying two sets of fees and funding.' },
+
+  { key: 'tokyoShortTo', label: 'Short window closes', unit: 'NY', type: 'time', strategy: 'tokyo',
+    hint: 'When the short side ends.',
+    help: 'Set the open and the close to the same time to switch the short side off and simulate a long-only version of the same table.' },
+
+  { key: 'tokyoStopPct', label: 'Stop loss', unit: '%', step: '0.25', strategy: 'tokyo',
+    hint: '0 = none, which is the real bot.',
+    help: 'The deployed bot has NO stop: it holds whatever the clock says to hold and closes when the window ends, at whatever price that is. Leave this at 0 to simulate that. Setting it simulates a different bot -- which is worth doing, because the answer to "what would a stop have cost or saved here" is one of the few things this screen can settle. Note the risk-based money model needs a stop distance to size against, so with 0 it falls back to the fixed percentages.' },
+
   { key: 'trendStopPct', label: 'Stop loss', unit: '%', step: '0.25', strategy: 'trend',
     hint: 'The only thing that closes a losing side.',
     help: 'This bot refuses to close a position that is underwater. When the averages flip against an open trade it HOLDS, and the only thing that gets it out at a loss is this stop. That single rule shapes its results more than the averages do -- set it to 0 and the bot will hold a loser indefinitely, which the run will show as very few, very long trades.' },
@@ -699,11 +901,11 @@ export const BT_FIELDS = [
     hint: 'Bought at each rung.',
     help: 'The dollars committed at each rung. Multiply it by the number of rungs to see what the grid can end up holding if price leaves the bottom of the range -- that total, not the size per level, is what is actually at risk.' },
 
-  { key: 'takeProfitPct', notFor: ['volbreak', 'trend', 'grid'], label: 'Take profit', unit: '%', step: '0.05',
+  { key: 'takeProfitPct', notFor: ['volbreak', 'trend', 'grid', 'tokyo'], label: 'Take profit', unit: '%', step: '0.05',
     hint: 'How far price must move your way to win.',
     help: 'Measured from the entry price, as a percentage. A long entered at $100 with 1% wins if any later candle trades at $101. Percent rather than a fixed amount so the same setting means the same on a $78,000 market and a $0.004 one.' },
 
-  { key: 'stopLossPct', notFor: ['volbreak', 'trend', 'grid'], label: 'Stop loss', unit: '%', step: '0.05',
+  { key: 'stopLossPct', notFor: ['volbreak', 'trend', 'grid', 'tokyo'], label: 'Stop loss', unit: '%', step: '0.05',
     hint: 'How far against you before it is a loss.',
     help: 'The mirror of the target. Whichever level the price touches FIRST ends the trade, checked candle by candle after entry. If neither is ever touched before the data runs out, the trade is reported as unresolved: not a win, not a loss.' },
 
@@ -761,7 +963,7 @@ export const BT_CHOICES = [
     options: [['both', 'Both'], ['long', 'Long only'], ['short', 'Short only']],
     help: 'Green candles open longs and red ones open shorts. Restricting to one side is how you find out whether a rule has an edge or was carried by a market that only went one way. Note that "both" usually takes FEWER trades than long-only and short-only added together: a trade on one side starts the cooldown, which can block one on the other.' },
 
-  { key: 'ambiguous', notFor: ['trend', 'grid'], label: 'If one candle hits both levels',
+  { key: 'ambiguous', notFor: ['trend', 'grid', 'tokyo'], label: 'If one candle hits both levels',
     options: [['loss', 'Count the stop'], ['win', 'Count the target']],
     help: 'Sometimes a single candle is wide enough to touch the target AND the stop. Its high, low, open and close cannot say which came first, so this is a guess either way. Counting the stop is the pessimistic reading and the default. On tight levels the difference is enormous -- the same rule can go from every trade winning to every trade losing.' },
 ]
@@ -794,6 +996,9 @@ export const BT_OVERVIEW = [
 export function coerceParams(raw = {}) {
   const out = { ...BT_DEFAULTS }
   for (const f of BT_FIELDS) {
+    // A time is not a number, and parseFloat is happy to say '07:00' is 7 and '99:99' is
+    // 99 -- a silently different window instead of a rejected one. Handled below.
+    if (f.type === 'time') continue
     const v = parseFloat(raw[f.key])
     // An empty box means "use the default", never 0 -- the distinction that turns a
     // cleared cooldown into no cooldown and a cleared baseline into whole-sample lookahead.
@@ -803,6 +1008,11 @@ export function coerceParams(raw = {}) {
     if (!c.options.some(o => o[0] === raw[c.key])) continue
     // A select carries strings; two of these are flags the engine reads as booleans.
     out[c.key] = (c.key === 'gridShort' || c.key === 'gridGeometric') ? raw[c.key] === 'true' : raw[c.key]
+  }
+  // The window fields are times, not numbers: parseFloat('07:00') is 7, which would be a
+  // silently different window rather than a rejected one.
+  for (const k of ['tokyoLongFrom', 'tokyoLongTo', 'tokyoShortFrom', 'tokyoShortTo']) {
+    if (Number.isFinite(hhmmToMinutes(raw[k]))) out[k] = String(raw[k]).trim()
   }
   if (BT_STRATEGIES.some(s => s[0] === raw.strategy)) out.strategy = raw.strategy
   if (raw.pnlModel === 'risk' || raw.pnlModel === 'fixed') out.pnlModel = raw.pnlModel
@@ -818,5 +1028,6 @@ export function coerceParams(raw = {}) {
   out.trendMa = Math.max(2, Math.round(out.trendMa))
   out.timeExitCandles = Math.max(1, Math.round(out.timeExitCandles))
   out.maxConsecLosses = Math.max(1, Math.round(out.maxConsecLosses))
+  out.tokyoStopPct = Math.max(0, out.tokyoStopPct)
   return out
 }

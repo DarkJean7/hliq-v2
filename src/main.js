@@ -220,7 +220,7 @@ import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
 import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
 import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW,
-         BT_STRATEGIES, BT_MODULES } from './backtest.js'
+         BT_STRATEGIES, BT_MODULES, BT_TOKYO_TABLE, tokyoWindowsFor } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams, botCoins } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -15234,6 +15234,21 @@ function _simCollect() {
 }
 
 /**
+ * Load a market's windows from the Tokyo portfolio table.
+ *
+ * Only ever on an explicit action -- choosing the strategy, or changing the market while it
+ * is chosen. Doing it on every render would overwrite windows the user had just typed.
+ */
+function _simTokyoPrefill() {
+  const row = tokyoWindowsFor(_simCoin)
+  if (!row) return false
+  _simParams = { ...(_simParams ?? {}),
+    tokyoLongFrom: row.long[0],  tokyoLongTo: row.long[1],
+    tokyoShortFrom: row.short[0], tokyoShortTo: row.short[1] }
+  return true
+}
+
+/**
  * Show or hide one parameter's explanation.
  *
  * Toggles a class rather than re-rendering: the form holds half-typed numbers, and
@@ -15275,7 +15290,26 @@ window.__simStructural = function(fn) {
   _simSave()
   _simRender()
 }
-window.__simSetStrategy = function(v) { window.__simStructural(() => { _simParams.strategy = v }) }
+window.__simSetStrategy = function(v) {
+  window.__simStructural(() => {
+    _simParams.strategy = v
+    if (v !== 'tokyo') return
+    // The rule is about the hour of the day, so a 4h or daily candle cannot express it:
+    // one candle would span most of a window. Switch to hourly rather than run something
+    // that looks like an answer.
+    if (['4h', '1d'].includes(_simIv)) _simIv = '1h'
+    _simTokyoPrefill()
+  })
+}
+
+// The market box is free text, so this runs when it is committed rather than on each
+// keystroke -- prefilling mid-word would fight the typing.
+window.__simCoinChanged = function() {
+  const before = _simCoin
+  _simCollect()
+  if (_simParams.strategy !== 'tokyo' || _simCoin === before) return
+  window.__simStructural(() => { _simTokyoPrefill() })
+}
 window.__simSetModel = function(v) { window.__simStructural(() => { _simParams.pnlModel = v }) }
 window.__simToggleModule = function() { window.__simStructural(() => {}) }
 
@@ -15348,8 +15382,11 @@ function _simFieldHtml(f) {
       <span style="flex:1"></span>
       ${_simQ(f.key)}
     </div>
-    <input id="sim_${f.key}" type="number" step="${f.step}" value="${v}" oninput="window.__simTouch()"
-      style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">
+    ${f.type === 'time'
+      ? `<input id="sim_${f.key}" type="time" value="${esc(String(v))}" oninput="window.__simTouch()"
+          style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">`
+      : `<input id="sim_${f.key}" type="number" step="${f.step}" value="${v}" oninput="window.__simTouch()"
+          style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">`}
     <div style="font-size:10px;color:var(--muted);margin-top:3px;line-height:1.35">${esc(f.hint)}</div>
     ${_simHelpHtml(f.key, f.help ?? '')}
   </label>`
@@ -15387,6 +15424,26 @@ const _simHead = (txt) =>
 const _simGrid = (inner) =>
   inner ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 10px">${inner}</div>` : ''
 
+/**
+ * Whether the market being simulated has a row in the portfolio table.
+ *
+ * Worth saying plainly: the windows ARE the strategy, and running the table's ZEC hours
+ * against a market they were never fitted to is a simulation of nothing. The form cannot
+ * stop you, so it should at least not let it pass silently.
+ */
+function _simTokyoNote() {
+  const row = tokyoWindowsFor(_simCoin)
+  const base = String(_simCoin || '').split(':').pop().toUpperCase()
+  if (row) {
+    return `<div style="font-size:11px;color:var(--accent);line-height:1.45;margin-top:6px">${
+      _T(`Windows below are ${esc(base)}'s own row from the portfolio table (weight ${row.weight}%).`,
+         `Las ventanas son la fila de ${esc(base)} en la cartera (peso ${row.weight}%).`)}</div>`
+  }
+  return `<div style="font-size:11px;color:var(--orange,#f59e0b);line-height:1.45;margin-top:6px">${
+    _T(`${esc(base || 'This market')} is not in the portfolio table, so the windows below are whatever was last set — they were not fitted to it. The table covers: ${Object.keys(BT_TOKYO_TABLE).join(', ')}.`,
+       `${esc(base || 'Este mercado')} no está en la cartera, así que las ventanas de abajo no se ajustaron a él. La cartera cubre: ${Object.keys(BT_TOKYO_TABLE).join(', ')}.`)}</div>`
+}
+
 function _simSectionsHtml() {
   const strat = BT_STRATEGIES.find(s => s[0] === _simParams.strategy) ?? BT_STRATEGIES[0]
   const fields = (pred) => BT_FIELDS.filter(f => _simFieldVisible(f) && pred(f)).map(_simFieldHtml).join('')
@@ -15414,6 +15471,7 @@ function _simSectionsHtml() {
       ${BT_STRATEGIES.map(([k, lbl]) => `<option value="${k}"${_simParams.strategy === k ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}
     </select>
     <div style="font-size:11px;color:var(--muted);line-height:1.45;margin-top:6px">${esc(strat[2])}</div>
+    ${_simParams.strategy === 'tokyo' ? _simTokyoNote() : ''}
     <div style="margin-top:11px">${_simGrid(fields(f => f.strategy))}</div>
 
     ${_simHead(_T('Entry and exit', 'Entrada y salida'))}
@@ -15572,7 +15630,7 @@ function _simRender(el) {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <label style="display:block">
           <div style="font-size:11px;font-weight:700;color:var(--fg-2)">${_T('Market', 'Mercado')}</div>
-          <input id="sim_coin" type="text" value="${esc(_simCoin)}" autocapitalize="characters" spellcheck="false" oninput="window.__simTouch()"
+          <input id="sim_coin" type="text" value="${esc(_simCoin)}" autocapitalize="characters" spellcheck="false" oninput="window.__simTouch()" onchange="window.__simCoinChanged()"
             style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">
         </label>
         <label style="display:block">
