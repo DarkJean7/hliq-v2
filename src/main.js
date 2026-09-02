@@ -15779,10 +15779,21 @@ function _simMarketsHtml(r) {
  * thousand of them and rendering that at once locks the phone for seconds.
  */
 let _simTradePage = 1
+// 'new' = newest first, 'old' = oldest first. Not a sort on a chosen timestamp: it keeps
+// or reverses the order the engine produced, which is the order the trades ACTED on the
+// balance. Sorting by open time instead would put the deltas out of sequence, so the
+// running result they describe would stop adding up down the page.
+let _simTradeOrder = 'new'
 const _SIM_TRADES_PER_PAGE = 50
 
 window.__simMoreTrades = function() {
   _simTradePage++
+  _simRender()
+}
+// Flipping the order keeps however many rows are already loaded, so it shows the same
+// number from the other end rather than collapsing back to the first page.
+window.__simTradeOrder = function() {
+  _simTradeOrder = _simTradeOrder === 'new' ? 'old' : 'new'
   _simRender()
 }
 window.__simToggleTrades = function() {
@@ -15808,8 +15819,8 @@ function _simTradesHtml(r) {
     </div>`
   }
 
-  // Newest first: the end of a run is what you are usually checking.
-  const ordered = [...all].reverse()
+  // Newest first by default: the end of a run is what you are usually checking.
+  const ordered = _simTradeOrder === 'old' ? [...all] : [...all].reverse()
   const shown = ordered.slice(0, _simTradePage * _SIM_TRADES_PER_PAGE)
   const multi = Array.isArray(r.byMarket) && r.byMarket.length > 1
 
@@ -15838,6 +15849,8 @@ function _simTradesHtml(r) {
       <span style="font-size:11px;font-weight:800;color:var(--fg-2);text-transform:uppercase;letter-spacing:.08em">${
         _T('Every trade', 'Cada operación')}</span>
       <span style="flex:1"></span>
+      <button onclick="window.__simTradeOrder()" style="border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:10.5px;font-weight:700;cursor:pointer;padding:3px 8px;border-radius:7px">${
+        _simTradeOrder === 'old' ? _T('Oldest first ↑', 'Más antiguas ↑') : _T('Newest first ↓', 'Más recientes ↓')}</button>
       <button onclick="window.__simToggleTrades()" style="border:none;background:transparent;color:var(--accent);font-size:11px;font-weight:700;cursor:pointer;padding:0">${_T('Hide', 'Ocultar')}</button>
     </div>
     <div style="border:1px solid var(--border2);border-radius:10px;overflow:hidden">
@@ -15852,8 +15865,8 @@ function _simTradesHtml(r) {
       _T(`Show ${Math.min(_SIM_TRADES_PER_PAGE, ordered.length - shown.length)} more · ${shown.length} of ${ordered.length}`,
          `Ver ${Math.min(_SIM_TRADES_PER_PAGE, ordered.length - shown.length)} más · ${shown.length} de ${ordered.length}`)}</button>` : ''}
     <div style="font-size:10px;color:var(--muted);line-height:1.45;margin-top:6px">${
-      _T('Newest first. The result column is what each trade did to the balance at the time, so the same rule pays more when the balance is bigger.',
-         'Más recientes primero. El resultado es lo que cada operación hizo al balance en ese momento.')}</div>
+      _T('The result column is what each trade did to the balance at the time, so the same rule pays more when the balance is bigger.',
+         'El resultado es lo que cada operación hizo al balance en ese momento, así que la misma regla paga más cuando el balance es mayor.')}</div>
   </div>`
 }
 

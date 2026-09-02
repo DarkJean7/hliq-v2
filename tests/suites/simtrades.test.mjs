@@ -58,8 +58,23 @@ t('there is a trade list', view.length > 400)
 t('it is on the result panel', cli.includes('${_simTradesHtml(r)}'))
 t('it starts collapsed behind a count', view.includes('Show every trade ('))
 t('nothing renders when there are no trades', view.includes("if (!all.length) return ''"))
-t('newest first', view.includes('[...all].reverse()'))
-t('why newest first is recorded', cli.includes('the end of a run is what you are usually checking'))
+t('newest first by default', view.includes("_simTradeOrder === 'old' ? [...all] : [...all].reverse()"))
+t('why newest first is the default is recorded', cli.includes('the end of a run is what you are usually checking'))
+
+console.log(nl + '-- and it can be read the other way --')
+t('there is an order toggle', cli.includes('window.__simTradeOrder'))
+t('it flips between the two', grab(cli, 'window.__simTradeOrder = function').includes("_simTradeOrder === 'new' ? 'old' : 'new'"))
+t('the button says which way it is reading',
+  view.includes("_T('Oldest first ↑'") && view.includes("_T('Newest first ↓'"))
+// Reversing the array keeps the sequence the deltas were applied in. Sorting on a chosen
+// timestamp instead would put them out of order, and the running result down the page
+// would stop adding up.
+t('it reverses the engine order rather than sorting on a timestamp',
+  !view.includes('.sort(') && view.includes('[...all].reverse()'))
+t('why that matters is recorded', cli.includes('would stop adding up down the page'))
+t('flipping keeps the rows already loaded', cli.includes('it shows the same'))
+t('and the footnote no longer claims one direction',
+  !cli.includes("_T('Newest first. The result column"))
 
 console.log(nl + '-- it does not try to draw two thousand rows --')
 // A fifteen-market portfolio run produces a couple of thousand trades.
