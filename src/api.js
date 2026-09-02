@@ -47,6 +47,7 @@ async function _pool(items, fn, limit = HL_FAN_CONCURRENCY) {
 export function coinLabel(coin) { return _hip3Rename(String(coin ?? '')).replace(/.*:/, '') }
 
 // Extract HIP-3 DEX names from allPerpMetas array (index 0 = main DEX, rest = HIP-3)
+export function hip3DexNames(allMetas) { return _hip3DexNames(allMetas) }
 function _hip3DexNames(allMetas) {
   const dexes = new Set()
   for (let i = 1; i < allMetas.length; i++) {

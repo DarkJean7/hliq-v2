@@ -5,7 +5,7 @@ if (_il) _il.remove()
 import { InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { updateGameMode as _updateGameMode, gmOrdersInvalidate } from './game.js'
 import { initOnboarding } from './onboard.js'   // also registers window.__glossary/__openLearn/__startMainTour/__term
-import { loadAccountData, loadFundingData, buildAssetMap, infoClient, fetchAllMids, fetchHip3Mids, fetchFrontendOpenOrders, fetchClearinghouseState, hip3Rename, coinLabel, hlPool, subsClient, fetchAllFills, fetchAllFunding } from './api.js'
+import { loadAccountData, loadFundingData, buildAssetMap, infoClient, fetchAllMids, fetchHip3Mids, hip3DexNames, fetchFrontendOpenOrders, fetchClearinghouseState, hip3Rename, coinLabel, hlPool, subsClient, fetchAllFills, fetchAllFunding } from './api.js'
 const _transport = new HttpTransport({ timeout: 30_000 })
 import {
   renderOverview,
@@ -220,7 +220,7 @@ import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
 import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
 import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW,
-         BT_STRATEGIES, BT_MODULES, BT_UNSIMULATABLE } from './backtest.js'
+         BT_STRATEGIES, BT_MODULES } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams, botCoins } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -2833,6 +2833,7 @@ async function _doEnsureMarketData() {
 // incrementally and repainting the markets list as each lands. Dexes the user holds or
 // watches are fetched first. Spreads the weight so it never trips the limiter, and always
 // finishes — a rate-limited dex is requeued, not dropped.
+let _hip3MetaTried   = false  // one attempt to fetch metas when the loader runs before a wallet
 let _hip3CtxQueue    = null   // remaining dex names, or null when idle
 let _hip3CtxTimer    = null
 let _hip3CtxLoadedAt = 0
@@ -2848,7 +2849,24 @@ function _startHip3CtxLoader(force = false) {
     const ci = coin.indexOf(':')
     if (ci > 0) dexes.add(coin.slice(0, ci))
   }
-  if (!dexes.size) { _mktHip3Ready = true; return }           // no HIP-3 dexes on this deployment
+  // perpCategories is NOT the list of dexes — it is the list of dexes that bothered to
+  // categorise their markets. Deriving the queue from it alone meant three whole builder
+  // dexes (25 markets on one of them) never had their ctx fetched, so their markets did
+  // not exist anywhere in this app: not in the picker, not in search, not to a bot.
+  // allPerpMetas is the authority on which dexes exist.
+  for (const d of hip3DexNames(state.allMetas ?? [])) dexes.add(d)
+  if (!dexes.size) {
+    // No metas yet (the markets tab is reachable before any wallet loads). Fetch them once
+    // and come back, rather than concluding the deployment has no builder dexes.
+    if (!state.allMetas?.length && !_hip3MetaTried) {
+      _hip3MetaTried = true
+      infoClient.allPerpMetas()
+        .then(m => { state.allMetas = m; _startHip3CtxLoader(true) })
+        .catch(e => _hl429(e))
+      return
+    }
+    _mktHip3Ready = true; return                              // no HIP-3 dexes on this deployment
+  }
   // Priority: dexes the wallet holds positions/orders in, then watchlisted, then the rest.
   const priority = new Set([
     ...(state.perpState?.assetPositions ?? []).map(ap => String(ap.position?.coin ?? '').split(':')[0]),
@@ -3027,8 +3045,18 @@ const _HIP3_DEX_DOMAINS = {
 
 // Market display name overrides: bare ticker (no prefix) → user-facing name.
 // Looked up after stripping any dex: prefix so it works regardless of key case/format.
-const _MKT_DISPLAY = { 'CL': 'WTIOIL' }
+// HIP-3 tickers HL's own UI shows under a different name. The ticker is what the exchange
+// accepts in an order; this is only what a human is shown and can search for. Someone who
+// saw "GOPRO" on Hyperliquid and typed it here got "No price for GOPRO", because the market
+// is io:GPRO — the app was right and useless at the same time.
+const _MKT_DISPLAY = { 'CL': 'WTIOIL', 'GPRO': 'GOPRO' }
 function _mktDisplay(coin) { return _MKT_DISPLAY[coin.replace(/.*:/, '')] ?? null }
+// Shown name → real ticker, so a market can be found by the name the user was shown.
+const _MKT_DISPLAY_REV = Object.fromEntries(Object.entries(_MKT_DISPLAY).map(([k, v]) => [v, k]))
+
+// Builder-dex prefix as shown on a tab. HL labels these with the bare prefix (xyz, io,
+// para), so this does too — a fuller name would not match what the user just read there.
+function _dexLabel(dex) { return String(dex ?? '') }
 
 // Forex currency → ISO 3166-1 alpha-2 country code for flagcdn.com
 const _FOREX_FLAGS = {
@@ -3786,16 +3814,27 @@ function renderCoinDropdownItems(query) {
   if (_dropType === 'hip3')      entries = entries.filter(([k]) => k.includes(':'))
   if (_dropType === 'prelaunch') entries = entries.filter(([k]) => _mktCatMap[k]?.toLowerCase() === 'preipo')
 
-  // Category sub-tabs — derived from filtered entries
-  const availCats = [...new Set(entries.map(([k]) => _mktCatMap[k]).filter(Boolean))].sort()
+  // Sub-tabs, derived from what actually made it through the filter above.
+  //
+  // Under HIP-3 they are the BUILDER DEXES, not the categories. Every HIP-3 market is a
+  // stock or an index, so categorising them again says nothing; which dex listed it is the
+  // question worth asking, since that is who set the oracle, the fees and the leverage.
+  const byDex = _dropType === 'hip3'
+  const availCats = byDex
+    ? [...new Set(entries.map(([k]) => k.split(':')[0]).filter(k => k))].sort()
+    : [...new Set(entries.map(([k]) => _mktCatMap[k]).filter(Boolean))].sort()
   if (catTabsEl) {
     catTabsEl.innerHTML = ['all', ...availCats].map(c =>
-      `<button class="mkt-cat-btn ${_dropCat===c?'active':''}" onclick="window.__dropCat('${esc(c)}')">${c==='all'?'All':esc(c)}</button>`
+      `<button class="mkt-cat-btn ${_dropCat===c?'active':''}" onclick="window.__dropCat('${esc(c)}')">${c==='all'?'All':esc(_dexLabel(c))}</button>`
     ).join('')
   }
 
-  // Category filter
-  if (_dropCat !== 'all') entries = entries.filter(([k]) => _mktCatMap[k] === _dropCat)
+  // Sub-tab filter
+  if (_dropCat !== 'all') {
+    entries = byDex
+      ? entries.filter(([k]) => k.split(':')[0] === _dropCat)
+      : entries.filter(([k]) => _mktCatMap[k] === _dropCat)
+  }
 
   // Sort
   const sortVal = ([coin, px]) => {
@@ -15403,15 +15442,6 @@ function _simSectionsHtml() {
     </div>
     <div style="margin-top:12px">${_simGrid(fields(f => f.group === 'riskModel' || f.group === 'fixedModel'))}</div>
 
-    ${_simHead(_T('Bots this cannot simulate', 'Bots que no se pueden simular'))}
-    <div style="font-size:11px;color:var(--muted);line-height:1.45;margin-bottom:8px">${
-      _T('Listed rather than left out, so the strategies above do not read as the whole set.',
-         'Listados en vez de omitidos, para que los de arriba no parezcan todos.')}</div>
-    ${BT_UNSIMULATABLE.map(([name, why]) => `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
-      <span style="font-size:11.5px;font-weight:700;color:var(--fg-2);flex:0 0 40%">${esc(name)}</span>
-      <span style="font-size:10.5px;color:var(--muted);line-height:1.45;flex:1">${esc(why)}</span>
-    </div>`).join('')}
-
     ${_simHead(_T('Modules', 'Módulos'))}
     <div style="font-size:11px;color:var(--muted);line-height:1.45;margin-bottom:9px">${
       _T('Switch one off and run again to see what it was contributing.',
@@ -18829,7 +18859,10 @@ function _mobVTradeCoinList(q = '') {
   if (lq) entries = entries.filter(([k]) => k.toLowerCase().includes(lq) || k.replace(/.*:/, '').toLowerCase().includes(lq) || (_mktDisplay(k) ?? '').toLowerCase().includes(lq))
   if (_mobVPickerType === 'crypto')    entries = entries.filter(([k]) => !_isTradFiCat(_mktCatMap[k]))
   if (_mobVPickerType === 'tradfi')    entries = entries.filter(([k]) =>  _isTradFiCat(_mktCatMap[k]))
-  if (_mobVPickerType === 'hip3')      entries = entries.filter(([k]) => k.includes(':'))
+  if (_mobVPickerType === 'hip3') {
+    entries = entries.filter(([k]) => k.includes(':'))
+    if (_mobVPickerDex !== 'all') entries = entries.filter(([k]) => k.split(':')[0] === _mobVPickerDex)
+  }
   if (_mobVPickerType === 'prelaunch') entries = entries.filter(([k]) => _mktCatMap[k]?.toLowerCase() === 'preipo')
 
   // Sort
@@ -18846,21 +18879,64 @@ function _mobVTradeCoinList(q = '') {
   const favEntries  = entries.filter(([k]) => favs.includes(k))
   const restEntries = entries.filter(([k]) => !favs.includes(k))
 
-  // Group by category with section headers
+  // Group by category with section headers — except under HIP-3, where every market is a
+  // stock or an index and the category says nothing. There the heading is the dex that
+  // listed it, which is who set its oracle, fees and leverage.
   const grouped = {}
+  const byDex = _mobVPickerType === 'hip3'
   for (const [c] of restEntries) {
-    const cat = _mktCatMap[c] || 'crypto'
+    const cat = byDex ? (c.split(':')[0] || 'other') : (_mktCatMap[c] || 'crypto')
     ;(grouped[cat] = grouped[cat] ?? []).push(c)
   }
-  const catOrder = ['crypto', ...Object.keys(grouped).filter(k => k !== 'crypto').sort()]
+  const catOrder = byDex
+    ? Object.keys(grouped).sort()
+    : ['crypto', ...Object.keys(grouped).filter(k => k !== 'crypto').sort()]
 
   let html = favEntries.length ? sectionHdr('⭐ Favorites') + favEntries.map(([c]) => rowHtml(c)).join('') : ''
   for (const cat of catOrder) {
     if (!grouped[cat]?.length) continue
-    if (Object.keys(grouped).length > 1 || favEntries.length) html += sectionHdr(_CAT_LABEL[cat] ?? cat)
+    if (Object.keys(grouped).length > 1 || favEntries.length) html += sectionHdr(byDex ? _dexLabel(cat) : (_CAT_LABEL[cat] ?? cat))
     html += grouped[cat].map(c => rowHtml(c)).join('')
   }
   return html || `<div style="padding:40px;text-align:center;color:var(--muted)">No markets available</div>`
+}
+
+// Every builder dex with at least one market we can price. Derived from the data rather
+// than a list, so a dex that launches tomorrow appears without a release.
+function _hip3DexesAvailable() {
+  const seen = new Set()
+  for (const k of Object.keys(state.allMids ?? {})) {
+    const i = k.indexOf(':')
+    if (i > 0) seen.add(k.slice(0, i))
+  }
+  for (const k of Object.keys(_mktCtxMap ?? {})) {
+    const i = k.indexOf(':')
+    if (i > 0) seen.add(k.slice(0, i))
+  }
+  return [...seen].sort()
+}
+
+function _mobVRenderPickerDexes() {
+  const el = document.getElementById('mobCoinPickerDexes')
+  if (!el) return
+  if (_mobVPickerType !== 'hip3') { el.style.display = 'none'; el.innerHTML = ''; return }
+  const dexes = _hip3DexesAvailable()
+  // One dex is not a choice — showing a row with a single option would be furniture.
+  if (dexes.length < 2) { el.style.display = 'none'; el.innerHTML = ''; return }
+  el.style.display = 'flex'
+  const chip = (label, dex) => {
+    const active = _mobVPickerDex === dex
+    return `<button onclick="window._mobVSetPickerDex('${esc(dex)}')" style="flex-shrink:0;padding:4px 12px;border-radius:20px;border:1px solid ${active ? 'var(--accent)' : 'var(--border)'};background:${active ? 'color-mix(in oklch,var(--accent) 12%,transparent)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};font-size:11.5px;font-weight:600;cursor:pointer">${esc(label)}</button>`
+  }
+  el.innerHTML = chip('All', 'all') + dexes.map(d => chip(_dexLabel(d), d)).join('')
+}
+
+window._mobVSetPickerDex = function(dex) {
+  _mobVPickerDex = dex
+  _mobVRenderPickerDexes()
+  const list = document.getElementById('mobCoinPickerList')
+  const q    = document.getElementById('mobCoinPickerSearch')?.value ?? ''
+  if (list) list.innerHTML = _mobVTradeCoinList(q)
 }
 
 function _mobVRenderPickerPills() {
@@ -18882,9 +18958,12 @@ function _mobVRenderPickerPills() {
   ].map(([l, t]) => pill(l, t)).join('')
 }
 
+let _mobVPickerDex = 'all'      // which builder dex, when the HIP-3 pill is active
 window._mobVSetPickerType = function(type) {
   _mobVPickerType = type
+  _mobVPickerDex = 'all'          // a dex chosen under HIP-3 means nothing under Spot
   _mobVRenderPickerPills()
+  _mobVRenderPickerDexes()
   const list = document.getElementById('mobCoinPickerList')
   const q    = document.getElementById('mobCoinPickerSearch')?.value ?? ''
   if (list) list.innerHTML = _mobVTradeCoinList(q)
@@ -18918,15 +18997,17 @@ window._mobVTradeToggleCoinPicker = function() {
             style="flex:1;background:var(--panel-2);border:none;border-radius:10px;padding:9px 13px;color:var(--fg);font-size:16px;outline:none;-webkit-text-size-adjust:none">
         </div>
         <div id="mobCoinPickerPills" data-dragscroll style="display:flex;gap:6px;padding:0 14px 10px;overflow-x:auto;-webkit-overflow-scrolling:touch;touch-action:pan-x;scrollbar-width:none"></div>
+        <div id="mobCoinPickerDexes" data-dragscroll style="display:none;gap:6px;padding:0 14px 10px;overflow-x:auto;-webkit-overflow-scrolling:touch;touch-action:pan-x;scrollbar-width:none"></div>
       </div>
       <div id="mobCoinPickerList" style="flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch"></div>`
     document.body.appendChild(ov)
     // Manually drive horizontal scroll — CSS overflow-x scroll is unreliable on iOS fixed overlays
-    const pillsEl = ov.querySelector('#mobCoinPickerPills')
-    if (pillsEl) {
+    for (const id of ['#mobCoinPickerPills', '#mobCoinPickerDexes']) {
+      const rowEl = ov.querySelector(id)
+      if (!rowEl) continue
       let tx = 0, sl = 0
-      pillsEl.addEventListener('touchstart', e => { tx = e.touches[0].clientX; sl = pillsEl.scrollLeft }, { passive: true })
-      pillsEl.addEventListener('touchmove',  e => { pillsEl.scrollLeft = sl + (tx - e.touches[0].clientX); e.stopPropagation() }, { passive: true })
+      rowEl.addEventListener('touchstart', e => { tx = e.touches[0].clientX; sl = rowEl.scrollLeft }, { passive: true })
+      rowEl.addEventListener('touchmove',  e => { rowEl.scrollLeft = sl + (tx - e.touches[0].clientX); e.stopPropagation() }, { passive: true })
     }
   } else {
     ov.style.display = 'flex'
@@ -18934,6 +19015,7 @@ window._mobVTradeToggleCoinPicker = function() {
   const search = document.getElementById('mobCoinPickerSearch')
   if (search) { search.value = ''; search.focus() }
   _mobVRenderPickerPills()
+  _mobVRenderPickerDexes()
   const list = document.getElementById('mobCoinPickerList')
   if (_mktCtxReady) {
     if (list) list.innerHTML = _mobVTradeCoinList('')
@@ -18943,6 +19025,7 @@ window._mobVTradeToggleCoinPicker = function() {
       const l = document.getElementById('mobCoinPickerList')
       const q = document.getElementById('mobCoinPickerSearch')?.value ?? ''
       if (l) l.innerHTML = _mobVTradeCoinList(q)
+      _mobVRenderPickerDexes()      // the dex list is derived from the data that just landed
     })
   }
 }
@@ -19154,8 +19237,34 @@ window._mobTradeGoBack = function() {
   _mobVRenderContent()
 }
 
+let _mobTradeDex = 'all'        // which builder dex, while the HIP-3 filter is active
+window._mobTradeSetDex = function(dex) {
+  _mobTradeDex = dex
+  _mobRenderMktDexRow()
+  const rows = document.getElementById('mobMktRows')
+  if (rows) rows.innerHTML = _mobBuildMarketRows()
+}
+
+// The builder-dex row under the category pills. Only meaningful while HIP-3 is the active
+// filter — under Perps or Spot there is no dex to choose.
+function _mobRenderMktDexRow() {
+  const el = document.getElementById('mobMktDexRow')
+  if (!el) return
+  const dexes = _hip3DexesAvailable()
+  if (_mobTradeMainFilter !== 'hip3' || dexes.length < 2) { el.style.display = 'none'; el.innerHTML = ''; return }
+  el.style.display = 'block'
+  const chip = (label, dex) => {
+    const active = _mobTradeDex === dex
+    return `<button onclick="window._mobTradeSetDex('${esc(dex)}')"
+      style="display:inline-block;padding:4px 12px;border-radius:20px;border:1px solid ${active?'var(--accent)':'var(--border)'};background:${active?'color-mix(in oklch,var(--accent) 12%,transparent)':'transparent'};color:${active?'var(--accent)':'var(--muted)'};font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap;vertical-align:middle;margin-right:6px"><span class="notranslate">${esc(label)}</span></button>`
+  }
+  el.innerHTML = chip('All', 'all') + dexes.map(d => chip(_dexLabel(d), d)).join('')
+}
+
 window._mobTradeSetFilter = function(type) {
   _mobTradeMainFilter = type
+  _mobTradeDex = 'all'            // a dex chosen under HIP-3 means nothing under Spot
+  _mobRenderMktDexRow()
   // Sensible default sort per tab: Spot → Volume (BTC/ETH lead like HL; the stock synthetics
   // carry REAL company market caps — MSFT ~$3.7T — which otherwise bury crypto). Others → OI.
   _mobTradeSort = type === 'spot' ? 'volume' : 'oi'
@@ -19271,6 +19380,7 @@ function _mobBuildMarketRows() {
   if (lq) entries = entries.filter(([k]) => {
     const d = (_spotNameMap[k] ?? k.replace(/.*:/, '')).toLowerCase()
     return k.toLowerCase().includes(lq) || d.includes(lq)
+      || (_mktDisplay(k) ?? '').toLowerCase().includes(lq)
   })
 
   const f = _mobTradeMainFilter
@@ -19285,7 +19395,10 @@ function _mobBuildMarketRows() {
   // volume for a quiet stretch — requiring it live would flicker them in and out of the list.
   else if (f === 'spot')        entries = entries.filter(([k]) =>
     (_spotProtocolKeys.has(k) && (_mktCtxMap[k]?.volume ?? 0) > 0) || _spotCommunityKeys.has(k))
-  else if (f === 'hip3')        entries = entries.filter(([k]) => k.includes(':'))
+  else if (f === 'hip3') {
+    entries = entries.filter(([k]) => k.includes(':'))
+    if (_mobTradeDex !== 'all') entries = entries.filter(([k]) => k.split(':')[0] === _mobTradeDex)
+  }
   else if (f === 'crypto')      entries = entries.filter(([k]) => !_isTradFiCat(_mktCatMap[k]) && !k.includes(':') && !k.startsWith('@'))
   else if (f === 'tradfi')      entries = entries.filter(([k]) => _isTradFiCat(_mktCatMap[k]))
   else if (f === 'stocks')      entries = entries.filter(([k]) => (_mktCatMap[k] ?? '').toLowerCase() === 'stocks')
@@ -19442,6 +19555,7 @@ function _mobRenderTradeList(el) {
       <div style="overflow-x:scroll;-webkit-overflow-scrolling:touch;touch-action:pan-x;scrollbar-width:none;-ms-overflow-style:none;border-bottom:1px solid var(--border);padding:8px 12px;white-space:nowrap">
         ${fp('All','all')} ${fp('★ Favs','favorites')} ${fp('Perps','perps',true)} ${fp('Spot','spot',true)} ${fp('Crypto','crypto')} ${fp('TradFi','tradfi',true)} ${fp('Stocks','stocks')} ${fp('Indices','indices')} ${fp('Commod.','commodities')} ${fp('FX','fx',true)} ${fp('Metals','metals')} ${fp('Energy','energy')} ${fp('Pre-IPO','preipo',true)} ${fp('HIP-3','hip3',true)} ${fp('Trending','trending')}
       </div>
+      <div id="mobMktDexRow" data-dragscroll style="display:none;overflow-x:scroll;-webkit-overflow-scrolling:touch;touch-action:pan-x;scrollbar-width:none;-ms-overflow-style:none;border-bottom:1px solid var(--border);padding:7px 12px;white-space:nowrap"></div>
       <div style="display:flex;align-items:center;padding:0 12px 0 52px;border-bottom:2px solid var(--border);background:var(--panel-2);min-height:42px;gap:4px">
         <div style="flex:1;font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:0.06em">Symbol</div>
         <div style="display:flex;align-items:center">${sb('Vol','volume')}${sb('Chg%','change')}${sb('Price','price')}${sb('OI','oi')}</div>
@@ -19455,6 +19569,7 @@ function _mobRenderTradeList(el) {
 
   // Double-RAF: first frame lets browser apply flex/display:none changes,
   // second frame measures after layout has fully resolved.
+  _mobRenderMktDexRow()
   requestAnimationFrame(() => requestAnimationFrame(() => {
     const topBar = document.getElementById('mobMktTopBar')
     const list   = document.getElementById('mobMktList')
@@ -19472,6 +19587,7 @@ function _mobRenderTradeList(el) {
     _ensureMarketData().then(() => {
       const rows = document.getElementById('mobMktRows')
       if (rows && _mobTradeView === 'list') rows.innerHTML = _mobBuildMarketRows()
+      _mobRenderMktDexRow()          // the dex list comes from the data that just landed
     })
   }
 }
@@ -21518,7 +21634,10 @@ function _applyGridDefaults(coinId, lowerId, upperId) {
   }
   const coinEl = document.getElementById(coinId)
   if (coinEl && !coinEl.value) coinEl.placeholder = state.selectedCoin || 'BTC'
-  const coin = (coinEl?.value?.trim() || coinEl?.placeholder || 'BTC').toUpperCase()
+  // Resolve the same way the launch path does. Looking the raw text up in allMids meant a
+  // HIP-3 market typed the way it is displayed — "SPCX", "GOPRO" — found no price, so the
+  // auto lower/upper bounds silently stayed empty for every builder-dex market.
+  const coin = _resolveGridCoin(coinEl?.value?.trim() || coinEl?.placeholder || 'BTC')
   const px = parseFloat(state.allMids?.[coin] ?? 0)
   const lowerEl = document.getElementById(lowerId)
   const upperEl = document.getElementById(upperId)
@@ -24874,7 +24993,17 @@ function _resolveGridCoin(raw) {
   const up = c.toUpperCase()
   if (state.allMids?.[up] != null) return up      // a main-dex coin
   const hit = Object.keys(state.allMids || {}).find(k => k.includes(':') && k.split(':').pop().toUpperCase() === up)
-  return hit || up                                // HIP-3 full key, else leave as typed
+  if (hit) return hit                             // HIP-3 full key
+  // The name Hyperliquid SHOWS is not always the ticker it accepts: their UI lists io:GPRO
+  // as GOPRO. Someone who read the name there and typed it here got "No price for GOPRO",
+  // which is true and useless — the market exists, under a name they were never shown.
+  const alias = _MKT_DISPLAY_REV[up]
+  if (alias) {
+    const aliasHit = Object.keys(state.allMids || {})
+      .find(k => k.split(':').pop().toUpperCase() === alias)
+    if (aliasHit) return aliasHit
+  }
+  return up                                       // leave as typed
 }
 
 function _typeInstances(type) {

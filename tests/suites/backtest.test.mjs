@@ -277,7 +277,8 @@ t('the unsimulatable bots are listed with a reason', BT_UNSIMULATABLE.length >= 
   BT_UNSIMULATABLE.every(([name, why]) => name && why.length > 40))
 t('the outcome grid is named, and why', BT_UNSIMULATABLE.some(([n, w]) => /Outcome Grid/.test(n) && w.length > 40))
 t('so is DCA', BT_UNSIMULATABLE.some(([n]) => /DCA/.test(n)))
-t('the view shows them', cli.includes('BT_UNSIMULATABLE.map(([name, why])'))
+t('the list stays in the engine even though the view no longer prints it',
+  BT_UNSIMULATABLE.length >= 5 && !cli.includes('BT_UNSIMULATABLE'))
 // Two sets of levels on screen, only one of which is read, is worse than none.
 t('a strategy that sets its own levels hides the generic ones',
   cli.includes("if (f.notFor?.includes(_simParams.strategy)) return false"))
