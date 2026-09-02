@@ -210,7 +210,7 @@ import {
   paperDeposit, paperWithdraw, paperLedger, paperPnl, paperDeposited, setPaperAssets, paperSpotValue,
   paperSettleOutcomes, paperFundingHistory, paperAccrueFunding, setPaperFundingRates, PAPER_COSTS,
   paperMark, paperOrder, paperCancelMany, paperCancel,
-  paperAccounts, paperAcctCreate, paperAcctRename, paperAcctDelete, paperAcctName,
+  paperAccounts, paperAcctCreate, paperAcctRename, paperAcctDelete, paperAcctName, paperAcctList,
   paperSlotKnown, paperSaveFailed, PAPER_MAX_ACCTS,
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
@@ -622,7 +622,7 @@ function renderWalletStrip(addr) {
   const _chalCur = addr === PAPER_ADDR && paperSlot() === 'challenge'
   const short   = addr === '__all_accounts__'
     ? _maLoad().length + ' wallets combined'
-    : addr === PAPER_ADDR ? (_chalCur ? 'Challenge · $1,000 paper' : 'Paper · simulated funds, no real orders')
+    : addr === PAPER_ADDR ? _paperKindLabel()
     : addr.slice(0, 8) + '...' + addr.slice(-6)
   const label   = addr === '__all_accounts__' ? 'All Accounts'
     : addr === PAPER_ADDR ? (_paperName() + (_chalCur ? ' (Challenge)' : '')) : WM.getLabel(addr)
@@ -8650,6 +8650,24 @@ window.__goPaper = async function(which) {
  * carry their own, and none of them post to the board (see _lbPaperSync) — one person with
  * eight practice accounts should still be one row there, not eight.
  */
+/**
+ * Which paper account this is, for the line under its name.
+ *
+ * Two accounts can carry the same name -- a user renamed the practice account "tokyo" and
+ * created another called "tokyo" -- and every paper account showed the identical subtitle,
+ * so the only difference on screen was the balance. That reads as one account whose
+ * equity keeps changing. The kind of account is the thing that tells them apart.
+ */
+function _paperKindLabel(slot) {
+  const s = slot ?? paperSlot()
+  if (s === 'challenge') return _T('Challenge · $1,000 paper', 'Desafío · $1,000 en papel')
+  if (s === 'main') return _T('Paper · practice account', 'Papel · cuenta de práctica')
+  const list = paperAcctList()
+  const i = list.findIndex(a => a.slot === s)
+  return i < 0 ? _T('Paper · simulated funds', 'Papel · fondos simulados')
+    : _T(`Paper · account ${i + 2} of ${list.length + 1}`, `Papel · cuenta ${i + 2} de ${list.length + 1}`)
+}
+
 function _paperName(slot) {
   const s = slot ?? paperSlot()
   if (s !== 'main' && s !== 'challenge') return paperAcctName(s) ?? 'Paper'
@@ -11613,7 +11631,7 @@ function _mobVRenderHeader() {
     const _chal = paperSlot() === 'challenge'
     _avatarSet(avatarEl, PAPER_ADDR, 50)
     if (nameEl) { nameEl.textContent = (_chal ? '🏆 ' : '') + _paperName(); nameEl.classList.add('notranslate') }   // user-named — keep verbatim
-    if (addrEl)   addrEl.textContent = _chal ? 'Challenge · $1,000 paper' : 'Paper · simulated funds'
+    if (addrEl)   addrEl.textContent = _paperKindLabel()
     return
   }
   const saved = WM.load().find(w => w.addr.toLowerCase() === state.addr.toLowerCase())
@@ -11642,7 +11660,7 @@ window._mobVOpenWalletSwitch = function() {
     : _isPaperCur ? (_paperName() + (_chalCur ? ' (Challenge)' : ''))
     : (current?.label || (current || isConnected() ? 'My Wallet' : 'Watching'))
   const short      = _isAll ? allWallets.length + ' wallets combined'
-    : _isPaperCur ? (_chalCur ? 'Challenge · $1,000 paper' : 'Paper · simulated funds, no real orders')
+    : _isPaperCur ? _paperKindLabel()
     : state.addr.slice(0, 10) + '…' + state.addr.slice(-8)
   // A real user-chosen name (paper or a saved label) must stay verbatim; the "All Accounts" /
   // "My Wallet" / "Watching" fallbacks are UI labels and should translate.

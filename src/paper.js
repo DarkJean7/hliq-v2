@@ -86,16 +86,41 @@ export function paperAcctCreate(name) {
   const list = paperAcctList()
   if (list.length >= PAPER_MAX_ACCTS) return { slot: null, error: 'limit' }
   const slot = 'a' + Math.random().toString(36).slice(2, 8) + Date.now().toString(36)
-  list.push({ slot, name: String(name ?? '').trim().slice(0, 24) || 'Paper ' + (list.length + 2), createdAt: Date.now() })
+  const want = paperUniqueName(name) || 'Paper ' + (list.length + 2)
+  list.push({ slot, name: paperUniqueName(want), createdAt: Date.now() })
   if (!paperAcctSave(list)) return { slot: null, error: 'quota' }
   return { slot, error: null }
+}
+
+/**
+ * A name no other paper account is already using.
+ *
+ * Two accounts called "tokyo" are two accounts a person cannot tell apart -- the header
+ * shows the name, and the balance is the only other thing that differs. Rather than refuse
+ * the name, take it and number it, which is what a person would have done anyway.
+ */
+export function paperUniqueName(name, exceptSlot = null) {
+  const want = String(name ?? '').trim().slice(0, 24)
+  if (!want) return want
+  const taken = new Set()
+  for (const a of paperAcctList()) if (a.slot !== exceptSlot) taken.add(String(a.name).toLowerCase())
+  // The practice account's name lives outside the registry, so it has to be added by hand.
+  if (exceptSlot !== 'main') {
+    try { const n = localStorage.getItem('hliq_paper_name'); if (n) taken.add(n.toLowerCase()) } catch {}
+  }
+  if (!taken.has(want.toLowerCase())) return want
+  for (let i = 2; i < 100; i++) {
+    const tryName = `${want} ${i}`.slice(0, 24)
+    if (!taken.has(tryName.toLowerCase())) return tryName
+  }
+  return want
 }
 
 export function paperAcctRename(slot, name) {
   const list = paperAcctList()
   const row = list.find(a => a.slot === slot)
   if (!row) return false
-  row.name = String(name ?? '').trim().slice(0, 24) || row.name
+  row.name = paperUniqueName(name, slot) || row.name
   return paperAcctSave(list)
 }
 
