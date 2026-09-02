@@ -15504,6 +15504,7 @@ window.__simRun = async function() {
   _simError = null
   _simResult = null
   _simSkipped = []
+  _simTradePage = 1        // a new run starts at the top of its own list
   _simStale = false
   _simRender()
   try {
@@ -15766,6 +15767,96 @@ function _simMarketsHtml(r) {
     </div>`
 }
 
+/**
+ * Every trade the run took, so a result can be checked rather than believed.
+ *
+ * A summary says a rule won 47% of the time; it cannot say whether the entries were where
+ * you would have taken them, or whether one outlier carried the whole number. This is the
+ * ledger behind the figures: when it opened, at what price, when and where it closed, and
+ * what that did to the balance.
+ *
+ * Newest first, in pages, because a fifteen-market portfolio run produces a couple of
+ * thousand of them and rendering that at once locks the phone for seconds.
+ */
+let _simTradePage = 1
+const _SIM_TRADES_PER_PAGE = 50
+
+window.__simMoreTrades = function() {
+  _simTradePage++
+  _simRender()
+}
+window.__simToggleTrades = function() {
+  _simTradesOpen = !_simTradesOpen
+  if (!_simTradesOpen) _simTradePage = 1
+  _simRender()
+}
+let _simTradesOpen = false
+
+function _simTradesHtml(r) {
+  const all = (r?.trades ?? [])
+  if (!all.length) return ''
+  const money  = (v) => (v < 0 ? '-$' : '+$') + fmtUSD(Math.abs(v))
+  const when   = (t) => t ? new Date(t).toLocaleString(undefined,
+    { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'
+  const tone   = (v) => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--fg-2)'
+  const outCol = { win: 'var(--green)', loss: 'var(--red)', open: 'var(--orange,#f59e0b)' }
+
+  if (!_simTradesOpen) {
+    return `<div style="margin-top:14px">
+      <button onclick="window.__simToggleTrades()" style="width:100%;padding:10px;border-radius:10px;border:1px dashed var(--border2);background:transparent;color:var(--fg-2);font-size:12.5px;font-weight:700;cursor:pointer">${
+        _T(`Show every trade (${all.length})`, `Ver todas las operaciones (${all.length})`)}</button>
+    </div>`
+  }
+
+  // Newest first: the end of a run is what you are usually checking.
+  const ordered = [...all].reverse()
+  const shown = ordered.slice(0, _simTradePage * _SIM_TRADES_PER_PAGE)
+  const multi = Array.isArray(r.byMarket) && r.byMarket.length > 1
+
+  const row = (t) => {
+    const held = t.heldFor != null ? `${t.heldFor}${_T('c', 'v')}` : ''
+    return `<div style="display:flex;align-items:baseline;gap:6px;padding:7px 9px;border-top:1px solid var(--border);font-size:11.5px">
+      <span style="width:11px;flex-shrink:0;color:${t.side === 'long' ? 'var(--green)' : 'var(--red)'};font-weight:800">${t.side === 'long' ? '↑' : '↓'}</span>
+      <span style="min-width:0;flex:1">
+        <span style="font-family:var(--font-mono)">${fmtPrice(t.entry)}</span>
+        <span style="color:var(--muted)"> → </span>
+        <span style="font-family:var(--font-mono)">${t.exitPx != null ? fmtPrice(t.exitPx) : '—'}</span>
+        ${multi ? `<span class="notranslate" style="color:var(--accent);font-weight:700;margin-left:5px">${esc(_ocCoinLabel(t.coin ?? ''))}</span>` : ''}
+        <span style="display:block;color:var(--muted);font-size:10px;margin-top:2px">${
+          esc(when(t.time))}${t.exitAt ? ' → ' + esc(when(t.exitAt)) : ''}${held ? ' · ' + held : ''}</span>
+      </span>
+      <span style="flex-shrink:0;text-align:right">
+        <span style="font-family:var(--font-mono);font-weight:700;color:${tone(t.delta ?? 0)}">${
+          Number.isFinite(t.delta) ? money(t.delta) : '—'}</span>
+        <span style="display:block;font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:${outCol[t.outcome] ?? 'var(--muted)'}">${esc(t.outcome)}</span>
+      </span>
+    </div>`
+  }
+
+  return `<div style="margin-top:14px">
+    <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px">
+      <span style="font-size:11px;font-weight:800;color:var(--fg-2);text-transform:uppercase;letter-spacing:.08em">${
+        _T('Every trade', 'Cada operación')}</span>
+      <span style="flex:1"></span>
+      <button onclick="window.__simToggleTrades()" style="border:none;background:transparent;color:var(--accent);font-size:11px;font-weight:700;cursor:pointer;padding:0">${_T('Hide', 'Ocultar')}</button>
+    </div>
+    <div style="border:1px solid var(--border2);border-radius:10px;overflow:hidden">
+      <div style="display:flex;gap:6px;padding:6px 9px;background:var(--panel-2);font-size:9.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">
+        <span style="width:11px;flex-shrink:0"></span>
+        <span style="flex:1">${_T('Entry → exit', 'Entrada → salida')}</span>
+        <span style="flex-shrink:0">${_T('Result', 'Resultado')}</span>
+      </div>
+      ${shown.map(row).join('')}
+    </div>
+    ${shown.length < ordered.length ? `<button onclick="window.__simMoreTrades()" style="width:100%;margin-top:8px;padding:9px;border-radius:9px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:12px;font-weight:700;cursor:pointer">${
+      _T(`Show ${Math.min(_SIM_TRADES_PER_PAGE, ordered.length - shown.length)} more · ${shown.length} of ${ordered.length}`,
+         `Ver ${Math.min(_SIM_TRADES_PER_PAGE, ordered.length - shown.length)} más · ${shown.length} de ${ordered.length}`)}</button>` : ''}
+    <div style="font-size:10px;color:var(--muted);line-height:1.45;margin-top:6px">${
+      _T('Newest first. The result column is what each trade did to the balance at the time, so the same rule pays more when the balance is bigger.',
+         'Más recientes primero. El resultado es lo que cada operación hizo al balance en ese momento.')}</div>
+  </div>`
+}
+
 function _simResultHtml() {
   if (_simBusy) return `<div style="padding:22px 4px;font-size:12px;color:var(--muted)">${_T('Running…', 'Ejecutando…')}</div>`
   if (_simError) return `<div style="padding:14px 12px;border:1px solid var(--red);border-radius:10px;font-size:12px;color:var(--red)">${esc(_simError)}</div>`
@@ -15859,6 +15950,7 @@ function _simResultHtml() {
       ${caveats.map(c => `<div style="font-size:11px;color:var(--orange,#f59e0b);line-height:1.45">${esc(c)}</div>`).join('')}
     </div>` : ''}
     ${_simMarketsHtml(r)}
+    ${_simTradesHtml(r)}
     ${_simSkipped.length ? `<div style="margin-top:10px;border:1px solid var(--orange,#f59e0b);border-radius:10px;padding:9px 11px;font-size:11px;color:var(--orange,#f59e0b);line-height:1.45">${
       _T('Left out: ', 'Omitidos: ')}${esc(_simSkipped.join(', '))}</div>` : ''}
     ${r.tradesMade === 0 ? `<div style="margin-top:10px;font-size:11.5px;color:var(--muted);line-height:1.45">${

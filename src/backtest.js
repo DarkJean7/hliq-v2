@@ -405,7 +405,7 @@ function runTrendBot(rows, p, sig) {
     if (peak > 0) maxDD = Math.max(maxDD, (peak - balance) / peak * 100)
     trades.push({ i: openedAt, time: rows[openedAt].t, side: long ? 'long' : 'short',
       entry, tp: null, sl: slDist > 0 ? (long ? entry - slDist : entry + slDist) : null,
-      outcome, exitAt: closedAt, exitPx: exit, heldFor, balance })
+      outcome, exitAt: closedAt, exitPx: exit, heldFor, balance, delta })
   }
 
   for (let i = 0; i < rows.length; i++) {
@@ -490,7 +490,7 @@ function runTokyoBot(rows, p, sig) {
     if (peak > 0) maxDD = Math.max(maxDD, (peak - balance) / peak * 100)
     trades.push({ i: openedAt, time: rows[openedAt].t, side: long ? 'long' : 'short',
       entry, tp: null, sl: slDist > 0 ? (long ? entry - slDist : entry + slDist) : null,
-      outcome, exitAt: closedAt, exitPx: exit, heldFor, balance })
+      outcome, exitAt: closedAt, exitPx: exit, heldFor, balance, delta })
   }
 
   for (let i = 0; i < rows.length; i++) {
@@ -605,7 +605,7 @@ export function runGridBacktest(rows, p) {
         sells++
         trades.push({ i, time: slots[i].at, side: short ? 'short' : 'long', entry: px,
           tp: closePx, sl: null, outcome: 'win', exitAt: row.t, exitPx: closePx, heldFor: 0,
-          balance: p.startBalance + realized - fees })
+          balance: p.startBalance + realized - fees, delta: gain })
         slots[i] = null
       }
     }
@@ -788,7 +788,7 @@ export function runBacktest(candles, params = {}) {
 
     trades.push({
       i, time: rows[i].t, side: long ? 'long' : 'short', entry, tp, sl: sl0,
-      outcome, exitAt, exitPx, heldFor, balance,
+      outcome, exitAt, exitPx, heldFor, balance, delta,
     })
   }
 
