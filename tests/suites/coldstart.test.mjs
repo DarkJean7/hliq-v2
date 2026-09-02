@@ -55,5 +55,17 @@ t('and a held Net PnL cannot be older than 20s', cli.includes('const COMBO_PNL_H
 t('Net PnL waits for the FULL fill history, not the 14-day window',
   cli.includes('state.fillsFull !== false'))
 
+// -- an empty account is not a loading one --
+// Reported as "the desktop overview is not loading". It was: a fresh account has no fills
+// and no webData, so the skeleton condition never became true and the placeholders stayed
+// up forever. The skeleton is for "we have not looked yet"; an account we HAVE looked at
+// which genuinely has nothing is a known state, and showing it as loading is a lie.
+t('paper renders straight away, and a wallet once its history lands',
+  cli.includes('state.fills.length > 0 || state.webData || isPaper() || _acctValueReady()'))
+// perpState can arrive before the fills, and rendering then would flash zeros for every
+// figure derived from history -- so a real wallet still waits for its history.
+t('the skeleton is kept for a wallet that has not answered yet', cli.includes('Nothing has come back yet'))
+t('and why it used to stick is recorded', cli.includes('is not loading'))
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

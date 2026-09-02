@@ -1159,10 +1159,19 @@ function renderAll() {
   restoreAssetLists(state.addr)
   _fxCheck()
 
-  if (state.fills.length > 0 || state.webData) {
+  // The skeleton is for "we have not looked yet". An account that HAS been looked at and
+  // genuinely has no trades is a known state, and holding the placeholders up for it is how
+  // a new user comes to believe the screen is broken -- reported as "the desktop overview
+  // is not loading", from a fresh paper account that would have sat there forever.
+  //
+  // Paper is complete from its first tick, so it never needs the wait. A real wallet still
+  // does: perpState can arrive before the fills, and rendering then would flash zeros for
+  // every figure derived from history. Portfolio history landing is the signal that the
+  // fetch actually finished.
+  if (state.fills.length > 0 || state.webData || isPaper() || _acctValueReady()) {
     renderAccountSection()
   } else {
-    // Fills not loaded yet — show skeleton to avoid flash of zeros
+    // Nothing has come back yet — show skeleton rather than a screen full of zeros.
     const el = document.getElementById('overviewStats')
     if (el) el.innerHTML =
       `<div class="overview-hero-row">${skeletonStatCards(4)}</div>` +
