@@ -105,7 +105,8 @@ t('it is a tab in More called Trade Simulator', htm.includes("window.__mobMoreTa
 t('with a desktop pane and route', htm.includes('id="tab-simulator"') && htm.includes('id="deskSim"') &&
   cli.includes("if (name === 'simulator')  _simRender(_viewHost('deskSim'))"))
 t('and a full page on mobile', /_MOBV_FULLPAGE = new Set\(\[[^\]]*'simulator'/.test(cli))
-t('it fetches real Hyperliquid candles', cli.includes('await fetchCandles(_simCoin, _simIv, start)'))
+t('it fetches real Hyperliquid candles, one market at a time',
+  cli.includes('await fetchCandles(coin, _simIv, start)') && cli.includes('await hlPool(coins,'))
 // Too little history is not a result, and must not read as a rule that never fired.
 t('too little history says so instead of reporting zero trades',
   cli.includes("_T('Not enough candle history"))

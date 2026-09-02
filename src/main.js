@@ -221,7 +221,7 @@ import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
 import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
 import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW,
-         BT_STRATEGIES, BT_MODULES, BT_TOKYO_TABLE, tokyoWindowsFor } from './backtest.js'
+         BT_STRATEGIES, BT_MODULES, BT_TOKYO_TABLE, tokyoWindowsFor, runPortfolio } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams, botCoins } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
@@ -15229,7 +15229,9 @@ function _simCollect() {
   _simParams = coerceParams(raw)
   const cnt = parseInt(document.getElementById('sim_count')?.value ?? '', 10)
   if (Number.isFinite(cnt)) _simCount = Math.max(50, Math.min(5000, cnt))
-  const coin = String(document.getElementById('sim_coin')?.value ?? '').trim().toUpperCase()
+  // Kept as typed: _simCoinList does the splitting and normalising, and uppercasing here
+  // would destroy a builder-dex prefix ("xyz:SPCX" is not "XYZ:SPCX").
+  const coin = String(document.getElementById('sim_coin')?.value ?? '').trim()
   if (coin) _simCoin = coin
   _simSave()
 }
@@ -15240,8 +15242,26 @@ function _simCollect() {
  * Only ever on an explicit action -- choosing the strategy, or changing the market while it
  * is chosen. Doing it on every render would overwrite windows the user had just typed.
  */
+/**
+ * The markets to simulate, from the box.
+ *
+ * Comma or space separated, so "ZEC, XMR NEAR" all mean the same thing -- people type both
+ * and neither is wrong. Case is normalised but a builder-dex prefix is not: "xyz:SPCX" has
+ * to survive intact or it names nothing.
+ */
+function _simCoinList() {
+  return [...new Set(String(_simCoin ?? '')
+    .split(/[,\s]+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(s => s.includes(':') ? s.split(':')[0].toLowerCase() + ':' + s.split(':')[1].toUpperCase() : s.toUpperCase()))]
+}
+
+/** The first market, which is what the single-market parts of the form still speak about. */
+function _simFirstCoin() { return _simCoinList()[0] ?? 'BTC' }
+
 function _simTokyoPrefill() {
-  const row = tokyoWindowsFor(_simCoin)
+  const row = tokyoWindowsFor(_simFirstCoin())
   if (!row) return false
   _simParams = { ...(_simParams ?? {}),
     tokyoLongFrom: row.long[0],  tokyoLongTo: row.long[1],
@@ -15305,6 +15325,15 @@ window.__simSetStrategy = function(v) {
 
 // The market box is free text, so this runs when it is committed rather than on each
 // keystroke -- prefilling mid-word would fight the typing.
+// The whole Tokyo portfolio in one tap. Each market still uses its own windows at run
+// time, so this is a list of names rather than a setting.
+window.__simLoadPortfolio = function() {
+  window.__simStructural(() => {
+    _simCoin = Object.keys(BT_TOKYO_TABLE).join(', ')
+    if (['4h', '1d'].includes(_simIv)) _simIv = '1h'
+  })
+}
+
 window.__simCoinChanged = function() {
   const before = _simCoin
   _simCollect()
@@ -15335,12 +15364,15 @@ window.__simReset = function() {
   _simRender()
 }
 
+let _simSkipped = []      // markets left out of the last run, and why
+
 window.__simRun = async function() {
   if (_simBusy) return
   _simCollect()
   _simBusy = true
   _simError = null
   _simResult = null
+  _simSkipped = []
   _simStale = false
   _simRender()
   try {
@@ -15348,14 +15380,46 @@ window.__simRun = async function() {
     // response at 5000 bars, and asking from a start time is the only way to choose which.
     const ms = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 4 * 3600e3, '1d': 86400e3 }[_simIv] ?? 3600e3
     const start = Date.now() - _simCount * ms * 1.2
-    const raw = await fetchCandles(_simCoin, _simIv, start)
-    if (!Array.isArray(raw) || raw.length < 60) {
+    const coins = _simCoinList()
+
+    // Fetched a few at a time, not all at once. Fifteen candleSnapshot calls in one burst
+    // is exactly the shape that trips the per-IP limiter, and a rate-limited run reports
+    // "not enough history" for markets that have plenty.
+    const runs = []
+    const skipped = []
+    await hlPool(coins, async (coin) => {
+      // Each market gets ITS OWN windows for Tokyo. Running one market's hours against
+      // another is not a portfolio, it is the same rule fifteen times.
+      let par = _simParams
+      if (_simParams.strategy === 'tokyo') {
+        const row = tokyoWindowsFor(coin)
+        if (!row) { skipped.push(coin + ' (not in the portfolio table)'); return }
+        par = { ..._simParams, tokyoLongFrom: row.long[0], tokyoLongTo: row.long[1],
+                tokyoShortFrom: row.short[0], tokyoShortTo: row.short[1] }
+      }
+      let bars = null
+      try { bars = await fetchCandles(coin, _simIv, start) } catch (e) { skipped.push(coin + ' (' + String(e?.message ?? e).slice(0, 40) + ')'); return }
+      if (!Array.isArray(bars) || bars.length < 60) { skipped.push(coin + ' (not enough history)'); return }
+      runs.push({ coin, result: runBacktest(bars.slice(-_simCount), par) })
+    }, 3)
+
+    // Keep the order the user typed; hlPool resolves out of order.
+    runs.sort((a, b) => coins.indexOf(a.coin) - coins.indexOf(b.coin))
+
+    if (!runs.length) {
       // Distinguishable from a bad rule: too little data is not a result.
-      _simError = _T('Not enough candle history for that market and interval.',
-                     'No hay suficiente historial para ese mercado e intervalo.')
+      _simError = (skipped.length
+        ? _T('Nothing could be simulated: ', 'No se pudo simular nada: ') + skipped.join(', ')
+        : _T('Not enough candle history for that market and interval.',
+             'No hay suficiente historial para ese mercado e intervalo.'))
+    } else if (runs.length === 1 && coins.length === 1) {
+      _simResult = runs[0].result
     } else {
-      _simResult = runBacktest(raw.slice(-_simCount), _simParams)
+      // Several markets are one account, so the trades are replayed against one balance in
+      // the order they closed rather than the per-market results being added up.
+      _simResult = runPortfolio(runs, _simParams)
     }
+    _simSkipped = skipped
   } catch (e) {
     _simError = String(e?.message ?? e).slice(0, 160)
   }
@@ -15433,8 +15497,18 @@ const _simGrid = (inner) =>
  * stop you, so it should at least not let it pass silently.
  */
 function _simTokyoNote() {
-  const row = tokyoWindowsFor(_simCoin)
-  const base = String(_simCoin || '').split(':').pop().toUpperCase()
+  const list = _simCoinList()
+  // With several markets the windows in the form apply to ALL of them, which is only right
+  // for one. Say so rather than let a portfolio run quietly use ZEC's hours for XMR.
+  if (list.length > 1) {
+    const inTable = list.filter(c => tokyoWindowsFor(c))
+    return `<div style="font-size:11px;color:${inTable.length === list.length ? 'var(--accent)' : 'var(--orange,#f59e0b)'};line-height:1.45;margin-top:6px">${
+      _T(`${list.length} markets — each one uses ITS OWN row from the portfolio table, not the windows below. ${
+            inTable.length === list.length ? 'All of them are in it.' : `${esc(list.filter(c => !tokyoWindowsFor(c)).join(', '))} ${list.length - inTable.length === 1 ? 'is' : 'are'} not in the table and will be skipped.`}`,
+         `${list.length} mercados — cada uno usa su propia fila de la cartera.`)}</div>`
+  }
+  const row = tokyoWindowsFor(_simFirstCoin())
+  const base = String(_simFirstCoin() || '').split(':').pop().toUpperCase()
   if (row) {
     return `<div style="font-size:11px;color:var(--accent);line-height:1.45;margin-top:6px">${
       _T(`Windows below are ${esc(base)}'s own row from the portfolio table (weight ${row.weight}%).`,
@@ -15506,6 +15580,43 @@ function _simSectionsHtml() {
       _T('Switch one off and run again to see what it was contributing.',
          'Apaga uno y vuelve a ejecutar para ver qué aportaba.')}</div>
     ${BT_MODULES.map(moduleRow).join('')}`
+}
+
+/**
+ * Per-market rows under a portfolio result.
+ *
+ * The numbers come from the SHARED run, not from each market's own -- so they add up to
+ * the total above them. Rows taken from separate single-market runs would each describe a
+ * different hypothetical account and sum to something that never happened.
+ */
+function _simMarketsHtml(r) {
+  if (!Array.isArray(r.byMarket) || r.byMarket.length < 2) return ''
+  const signed = (v) => (v < 0 ? '-$' : '+$') + fmtUSD(Math.abs(v))
+  const tone = (v) => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--fg-2)'
+  return `
+    <div style="margin-top:14px">
+      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:7px">
+        <span style="font-size:11px;font-weight:800;color:var(--fg-2);text-transform:uppercase;letter-spacing:.08em">${
+          _T('By market', 'Por mercado')}</span>
+        <span style="flex:1"></span>
+        <span style="font-size:10px;color:var(--muted)">${r.splitRisk
+          ? _T('risk split ' + r.byMarket.length + ' ways', 'riesgo repartido entre ' + r.byMarket.length)
+          : _T('each at full risk', 'cada uno a riesgo completo')}</span>
+      </div>
+      <div style="border:1px solid var(--border2);border-radius:10px;overflow:hidden">
+        ${r.byMarket.map((m, i) => `
+          <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;${i ? 'border-top:1px solid var(--border)' : ''}">
+            <span class="notranslate" style="font-size:12px;font-weight:700;min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_ocCoinLabel(m.coin))}</span>
+            <span style="font-size:10.5px;color:var(--muted);white-space:nowrap">${m.trades} ${_T('trades', 'ops')}</span>
+            <span style="font-size:10.5px;color:var(--muted);white-space:nowrap;min-width:44px;text-align:right">${
+              m.winRate == null ? '—' : m.winRate.toFixed(0) + '%'}</span>
+            <span style="font-size:12px;font-weight:700;font-family:var(--font-mono);color:${tone(m.netPnl)};white-space:nowrap;min-width:70px;text-align:right">${signed(m.netPnl)}</span>
+          </div>`).join('')}
+      </div>
+      <div style="font-size:10px;color:var(--muted);line-height:1.45;margin-top:6px">${
+        _T('One account, not one per market: every trade was applied to the same balance in the order it closed, so these add up to the total above.',
+           'Una sola cuenta: cada operación se aplicó al mismo balance en el orden en que cerró, así que estas filas suman el total de arriba.')}</div>
+    </div>`
 }
 
 function _simResultHtml() {
@@ -15600,6 +15711,9 @@ function _simResultHtml() {
     ${caveats.length ? `<div style="margin-top:10px;border:1px solid var(--orange,#f59e0b);border-radius:10px;padding:9px 11px">
       ${caveats.map(c => `<div style="font-size:11px;color:var(--orange,#f59e0b);line-height:1.45">${esc(c)}</div>`).join('')}
     </div>` : ''}
+    ${_simMarketsHtml(r)}
+    ${_simSkipped.length ? `<div style="margin-top:10px;border:1px solid var(--orange,#f59e0b);border-radius:10px;padding:9px 11px;font-size:11px;color:var(--orange,#f59e0b);line-height:1.45">${
+      _T('Left out: ', 'Omitidos: ')}${esc(_simSkipped.join(', '))}</div>` : ''}
     ${r.tradesMade === 0 ? `<div style="margin-top:10px;font-size:11.5px;color:var(--muted);line-height:1.45">${
       _T('No candle reached that entry category. Lower it, or use a longer baseline window.',
          'Ninguna vela alcanzó esa categoría. Baja el umbral o alarga la ventana base.')}</div>` : ''}
@@ -15630,7 +15744,16 @@ function _simRender(el) {
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <label style="display:block">
-          <div style="font-size:11px;font-weight:700;color:var(--fg-2)">${_T('Market', 'Mercado')}</div>
+          <div style="display:flex;align-items:baseline;gap:6px">
+            <span style="font-size:11px;font-weight:700;color:var(--fg-2)">${
+              _T('Markets', 'Mercados')}</span>
+            <span style="font-size:10px;color:var(--muted)">${_T('comma separated', 'separados por comas')}</span>
+            <span style="flex:1"></span>
+            ${_simParams.strategy === 'tokyo'
+              ? `<button onclick="window.__simLoadPortfolio()" style="border:none;background:transparent;color:var(--accent);font-size:10.5px;font-weight:700;cursor:pointer;padding:0">${
+                  _T('load all 15', 'cargar los 15')}</button>`
+              : ''}
+          </div>
           <input id="sim_coin" type="text" value="${esc(_simCoin)}" autocapitalize="characters" spellcheck="false" oninput="window.__simTouch()" onchange="window.__simCoinChanged()"
             style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">
         </label>

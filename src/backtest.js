@@ -94,6 +94,10 @@ export const BT_DEFAULTS = {
   tokyoShortFrom: '21:00',
   tokyoShortTo:   '07:00',
   tokyoStopPct:   0,      // the deployed bot has none; 0 is off
+
+  // Several markets on one account: divide each stake by how many, the way the deployed
+  // portfolio bot does. Off answers a different question, and a much louder one.
+  splitRisk: true,
 }
 
 export const BT_STRATEGIES = [
@@ -963,6 +967,10 @@ export const BT_CHOICES = [
     options: [['both', 'Both'], ['long', 'Long only'], ['short', 'Short only']],
     help: 'Green candles open longs and red ones open shorts. Restricting to one side is how you find out whether a rule has an edge or was carried by a market that only went one way. Note that "both" usually takes FEWER trades than long-only and short-only added together: a trade on one side starts the cooldown, which can block one on the other.' },
 
+  { key: 'splitRisk', label: 'With several markets',
+    options: [['true', 'Split the risk between them'], ['false', 'Each at full risk']],
+    help: 'Several markets share ONE account here, so this decides what adding a market means. Splitting divides each stake by how many markets are running, which is what the deployed portfolio bot does: adding markets spreads the account rather than multiplying what it can lose. Full risk gives every market the whole stake, which answers a different question -- what each would have done with the account to itself -- and produces a much louder number. It has no effect on a single market.' },
+
   { key: 'ambiguous', notFor: ['trend', 'grid', 'tokyo'], label: 'If one candle hits both levels',
     options: [['loss', 'Count the stop'], ['win', 'Count the target']],
     help: 'Sometimes a single candle is wide enough to touch the target AND the stop. Its high, low, open and close cannot say which came first, so this is a guess either way. Counting the stop is the pessimistic reading and the default. On tight levels the difference is enormous -- the same rule can go from every trade winning to every trade losing.' },
@@ -993,6 +1001,99 @@ export const BT_OVERVIEW = [
 ]
 
 /** Merge user input over the defaults, dropping anything that is not a number. */
+/**
+ * Several markets, one account.
+ *
+ * Running a rule on ZEC and then on XMR gives two results that cannot be added: each was
+ * measured against its own starting balance, so their percentages overlap in time and
+ * their drawdowns are not the drawdown of holding both. A portfolio is one balance, so the
+ * trades have to be replayed against it IN THE ORDER THEY CLOSED.
+ *
+ * That is what this does. It takes the per-market runs for their trade lifecycles -- when
+ * each opened, when it closed, whether it won and by how much relative to its stop -- and
+ * re-books every one of them against a single running balance.
+ *
+ * `splitRisk` divides each trade's stake by the number of markets, which is what the
+ * deployed portfolio bot does: adding markets should spread one account's risk, not
+ * multiply it. Turning it off answers the other question -- what each market would have
+ * done with the whole account behind it -- and the two are very different numbers.
+ *
+ * A trade still open when its market's candles ran out is skipped, exactly as it is in a
+ * single-market run: counted there, never scored.
+ */
+export function runPortfolio(runs, params = {}) {
+  const p = { ...BT_DEFAULTS, ...params }
+  const live = (runs ?? []).filter(r => r && r.result && Array.isArray(r.result.trades))
+  const split = p.splitRisk === false ? 1 : Math.max(1, live.length)
+
+  const all = []
+  for (const { coin, result } of live) {
+    for (const t of result.trades) {
+      if (t.outcome === 'open') continue
+      // A trade acts on the balance when it CLOSES, not when it opened -- that is the
+      // ordering that makes a shared balance mean anything.
+      all.push({ ...t, coin, closedAt: t.exitAt ?? t.time })
+    }
+  }
+  all.sort((a, b) => (a.closedAt ?? 0) - (b.closedAt ?? 0))
+
+  let balance = p.startBalance, peak = p.startBalance, maxDD = 0
+  let won = 0, lost = 0
+  const trades = []
+  for (const t of all) {
+    const long = t.side === 'long'
+    const moved = t.exitPx != null ? (long ? t.exitPx - t.entry : t.entry - t.exitPx) : 0
+    const slDist = t.sl != null ? Math.abs(t.entry - t.sl) : 0
+    const cost = p.useFees ? balance * (p.feePct / 100) / split : 0
+    let delta = -cost
+    if (p.pnlModel === 'risk' && slDist > 0) {
+      delta += balance * (p.riskPct / 100 / split) * (moved / slDist)
+    } else if (t.outcome === 'win') delta += balance * (p.winPct / 100 / split)
+    else if (t.outcome === 'loss') delta -= balance * (p.lossPct / 100 / split)
+    balance += delta
+    if (t.outcome === 'win') won++
+    else if (t.outcome === 'loss') lost++
+    peak = Math.max(peak, balance)
+    if (peak > 0) maxDD = Math.max(maxDD, (peak - balance) / peak * 100)
+    trades.push({ ...t, delta, balance })
+  }
+
+  // Per market, from the SHARED run rather than from its own -- so the rows add up to the
+  // total instead of each describing a different hypothetical account.
+  const byMarket = live.map(({ coin, result }) => {
+    const mine = trades.filter(t => t.coin === coin)
+    const net = mine.reduce((a, t) => a + t.delta, 0)
+    const w = mine.filter(t => t.outcome === 'win').length
+    const l = mine.filter(t => t.outcome === 'loss').length
+    return {
+      coin, trades: mine.length, won: w, lost: l,
+      winRate: (w + l) > 0 ? (w / (w + l)) * 100 : null,
+      netPnl: net,
+      candles: result.candles,
+      unresolved: result.trades.filter(t => t.outcome === 'open').length,
+    }
+  }).sort((a, b) => b.netPnl - a.netPnl)
+
+  const net = balance - p.startBalance
+  const resolved = won + lost
+  return {
+    params: p, markets: live.map(r => r.coin), splitRisk: split > 1,
+    from: all.length ? Math.min(...all.map(t => t.time)) : null,
+    to: all.length ? Math.max(...all.map(t => t.closedAt)) : null,
+    candles: live.reduce((a, r) => a + (r.result.candles ?? 0), 0),
+    trades, tradesMade: trades.length, won, lost,
+    unresolved: live.reduce((a, r) => a + r.result.trades.filter(t => t.outcome === 'open').length, 0),
+    timedOut: 0, halted: false,
+    winRate: resolved > 0 ? (won / resolved) * 100 : null,
+    startBalance: p.startBalance, balance, netPnl: net,
+    roe: p.startBalance > 0 ? (net / p.startBalance) * 100 : null,
+    peak, maxDrawdown: maxDD,
+    avgPerTrade: trades.length ? net / trades.length : 0,
+    avgHeld: trades.length ? trades.reduce((a, t) => a + (t.heldFor ?? 0), 0) / trades.length : 0,
+    byMarket,
+  }
+}
+
 export function coerceParams(raw = {}) {
   const out = { ...BT_DEFAULTS }
   for (const f of BT_FIELDS) {
@@ -1007,7 +1108,8 @@ export function coerceParams(raw = {}) {
   for (const c of BT_CHOICES) {
     if (!c.options.some(o => o[0] === raw[c.key])) continue
     // A select carries strings; two of these are flags the engine reads as booleans.
-    out[c.key] = (c.key === 'gridShort' || c.key === 'gridGeometric') ? raw[c.key] === 'true' : raw[c.key]
+    out[c.key] = (c.key === 'gridShort' || c.key === 'gridGeometric' || c.key === 'splitRisk')
+      ? raw[c.key] === 'true' : raw[c.key]
   }
   // The window fields are times, not numbers: parseFloat('07:00') is 7, which would be a
   // silently different window rather than a rejected one.
@@ -1016,6 +1118,7 @@ export function coerceParams(raw = {}) {
   }
   if (BT_STRATEGIES.some(s => s[0] === raw.strategy)) out.strategy = raw.strategy
   if (raw.pnlModel === 'risk' || raw.pnlModel === 'fixed') out.pnlModel = raw.pnlModel
+  if (typeof raw.splitRisk === 'boolean') out.splitRisk = raw.splitRisk
   for (const m of BT_MODULES) {
     if (typeof raw[m.key] === 'boolean') out[m.key] = raw[m.key]
   }
