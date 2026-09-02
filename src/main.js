@@ -23823,6 +23823,10 @@ function _devBotCoinsSet(list) {
 
 window.__devBotAddCoin = function(sel) {
   const c = sel?.value
+  // Snap back to the placeholder either way. A select that KEEPS the market it just added
+  // reads as "this bot trades BTC" -- which is how a bot carded for fifteen markets looked
+  // like a BTC bot. The chips below are the list; this is only the way to add to it.
+  if (sel) sel.value = ''
   if (!c) return
   const list = _devBotCoinsGet()
   if (list.includes(c)) return _paperToast(_T('Already on the list', 'Ya está en la lista'), 'err')
@@ -23862,7 +23866,10 @@ function _devBotRead(existingId) {
   try { coinList = JSON.parse(document.getElementById('devBotCoins')?.value ?? '[]') } catch {}
   if (!Array.isArray(coinList)) coinList = []
   coinList = [...new Set(coinList.filter(c => typeof c === 'string' && c))]
-  if (!coinList.length) coinList = [g('devBotCoin') || 'BTC']
+  // The picker now sits on a placeholder, so it is no longer a sensible fallback. A bot
+  // saved with no markets keeps the one it already had rather than silently becoming BTC.
+  if (!coinList.length) coinList = [existingId ? (devBotsLoad().find(b => b.id === existingId)?.coin) : null].filter(Boolean)
+  if (!coinList.length) coinList = ['BTC']
 
   return {
     id: existingId ?? ('d' + Date.now().toString(36)),
@@ -24238,7 +24245,10 @@ function _devBotInstallSheet(existing = null) {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:14px">
       <div><label style="${lbl}">${_T('Name', 'Nombre')}</label><input id="devBotName" style="${inp}" value="${esc(d.name)}" placeholder="My bot"></div>
       <div><label style="${lbl}">${_T('Add a market', 'Añadir mercado')}</label>
-        <select id="devBotCoin" onchange="window.__devBotAddCoin(this)" style="${inp}">${coins.map(c => `<option value="${esc(c)}"${c === d.coin ? ' selected' : ''}>${esc(_ocCoinLabel(c))}</option>`).join('')}</select></div>
+        <select id="devBotCoin" onchange="window.__devBotAddCoin(this)" style="${inp}">
+          <option value="">${_T('— pick one to add —', '— elige uno para añadir —')}</option>
+          ${coins.map(c => `<option value="${esc(c)}">${esc(_ocCoinLabel(c))}</option>`).join('')}
+        </select></div>
       <div><label style="${lbl}">${_T('Max per order', 'Máx. por orden')} ($)</label><input id="devBotMaxUsd" type="number" min="0" style="${inp}" value="${d.maxUsd ?? 25}"></div>
       <div><label style="${lbl}">${_T('Max orders / min', 'Máx. órdenes/min')}</label><input id="devBotMaxMin" type="number" min="0" max="600" style="${inp}" value="${d.maxPerMin ?? 4}"></div>
       <div><label style="${lbl}">${_T('Max resting orders', 'Máx. órdenes en espera')}</label><input id="devBotMaxOpen" type="number" min="0" max="1000" style="${inp}" value="${d.maxOpen ?? 10}"></div>

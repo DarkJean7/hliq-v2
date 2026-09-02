@@ -109,8 +109,15 @@ t('removing repaints only the chips, not the sheet',
   grab(cli, 'function _devBotCoinsSet').includes('chips.innerHTML'))
 t('why not the whole sheet is recorded', cli.includes('throw away the file the'))
 t('the saved coin is the first of the list', cli.includes('coin: coinList[0],'))
-t('an empty list falls back to the picker rather than saving a bot that can trade nothing',
-  cli.includes("if (!coinList.length) coinList = [g('devBotCoin') || 'BTC']"))
+t('the picker is an action, not a selection',
+  cli.includes("_T('— pick one to add —'"))
+t('it resets after each add', grab(cli, 'window.__devBotAddCoin = function').includes("if (sel) sel.value = ''"))
+t('why a sticky picker was confusing is recorded',
+  cli.includes('reads as "this bot trades BTC"'))
+t('an empty list keeps the market the bot already had, rather than becoming BTC',
+  cli.includes("coinList = [existingId ? (devBotsLoad().find(b => b.id === existingId)?.coin) : null]"))
+t('and only a bot with no history at all defaults to BTC',
+  cli.includes("if (!coinList.length) coinList = ['BTC']"))
 t('the docs tell the next author how to name a market',
   bot.includes("Add a 'coin' to send one to another of your markets"))
 t('and that the list is the limit', bot.includes('that list is the guardrail'))

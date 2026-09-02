@@ -25,7 +25,11 @@ t('why one form and not two is recorded', cli.includes('one form to learn'))
 for (const [id, prop] of [['devBotMaxUsd', 'maxUsd'], ['devBotMaxMin', 'maxPerMin'],
                           ['devBotMaxOpen', 'maxOpen'], ['devBotEvery', 'everySec'], ['devBotLev', 'leverage']])
   t(`${id} is prefilled from ${prop}`, cli.includes(`d.${prop} ??`), id)
-t('the market is preselected too', cli.includes("${c === d.coin ? ' selected' : ''}"))
+t('the markets come back as chips, which is where they now live',
+  cli.includes('_devBotChipsHtml(_devBotCoinsOf(d))') &&
+  cli.includes('value="${esc(JSON.stringify(_devBotCoinsOf(d)))}"'))
+t('and the picker deliberately preselects nothing',
+  !cli.includes("${c === d.coin ? ' selected' : ''}"))
 t('the button becomes Update', cli.includes("_T('Update bot', 'Actualizar bot')"))
 
 console.log(String.fromCharCode(10) + '-- update restarts a running bot --')
