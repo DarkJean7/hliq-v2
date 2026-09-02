@@ -8348,11 +8348,22 @@ async function _paperLoadFundingRates() {
 const PAPER_BOTS_KEY = 'hliq_paper_bots'
 const PAPER_BOT_TYPES = new Set(['grid'])
 
+// Per paper ACCOUNT, not per browser. Each paper account is its own balance and its own
+// positions, so a bot running on one is not running on another -- sharing one key made a
+// bot started on the practice account appear as running on every account made afterwards,
+// managing a position that account does not hold.
+//
+// The practice account keeps the original key so an already-running bot survives.
+function _paperBotsKey() {
+  const s = paperSlot()
+  return s === 'main' ? PAPER_BOTS_KEY : `${PAPER_BOTS_KEY}_${s}`
+}
+
 function _paperBotsLoad() {
-  try { return JSON.parse(localStorage.getItem(PAPER_BOTS_KEY)) || {} } catch { return {} }
+  try { return JSON.parse(localStorage.getItem(_paperBotsKey())) || {} } catch { return {} }
 }
 function _paperBotsSave(m) {
-  try { localStorage.setItem(PAPER_BOTS_KEY, JSON.stringify(m)) } catch {}
+  try { localStorage.setItem(_paperBotsKey(), JSON.stringify(m)) } catch {}
 }
 function _paperBotRunning(type) { return !!_paperBotsLoad()[type] }
 
@@ -8792,6 +8803,8 @@ window.__paperAcctDelete = function(slot) {
   if (!confirm('Delete ' + name + '?\n\nThis paper account and everything in it — positions, orders, history — is erased. Your other paper accounts are untouched.\n\nThis cannot be undone.')) return
   const wasHere = paperSlot() === slot
   if (!paperAcctDelete(slot)) return _paperToast('Could not delete that account', 'error')
+  // Its bots go with it. paper.js removes the store; the bot config lives here.
+  try { localStorage.removeItem(`${PAPER_BOTS_KEY}_${slot}`) } catch {}
   // Deleting the account you are standing in drops you back to the practice account, which
   // is where paper.js has already moved the slot.
   if (wasHere) { try { localStorage.setItem('hliq_paper_slot', 'main') } catch {}; window.__goPaper('main') }
@@ -25228,7 +25241,13 @@ function updateAllStrategyButtons() {
   if (mobStrat && !state.isAllAccounts) {
     const isGuard = k => k.startsWith('liqguard:') || k.startsWith('levbrake:')
     const inst  = Object.keys(serverStatus?._instances ?? {}).filter(k => !isGuard(k)).length
-    const count = inst || Object.keys(serverStatus ?? {}).filter(k => k !== '_instances' && k !== '_paused' && k !== '_guards' && k !== 'liqguard' && k !== 'levbrake' && serverStatus[k] === true).length
+    // The fallback counts keys that are `true`, which is every strategy type -- and ALSO
+    // `ok`, the online flag. On a paper account the synthesised status is exactly
+    // { ok: true, _configs: {} }, so a brand-new paper account with no bots at all
+    // reported one running. Bookkeeping keys are not strategies.
+    const notABot = new Set(['ok', 'liqguard', 'levbrake'])
+    const count = inst || Object.keys(serverStatus ?? {})
+      .filter(k => !k.startsWith('_') && !notABot.has(k) && serverStatus[k] === true).length
     mobStrat.textContent = count
     mobStrat.style.display = count > 0 ? '' : 'none'
   }
