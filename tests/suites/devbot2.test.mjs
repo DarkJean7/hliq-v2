@@ -74,7 +74,7 @@ t('a 0 rate limit switches that cap off as well', b3.rateBlocked() === false)
 t('0 is a deliberate off switch, not a missing value', bot.includes('deliberately switched a limit off'))
 
 console.log(String.fromCharCode(10) + '-- a bot now sees the whole account --')
-const snap = grab(cli, 'function _devBotSnapshot(def)')
+const snap = grab(cli, 'function _devBotSnapshot(def, bot)')
 for (const k of ['mids:', 'positions:', 'orders:', 'margin:', 'paper:'])
   t(`snapshot carries ${k}`, snap.includes(k), k)
 t('positions include leverage and liquidation price', snap.includes('liquidationPx:') && snap.includes('leverage:'))

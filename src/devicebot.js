@@ -48,6 +48,51 @@
 // One bot's saved definition. `code` is the file's text, verbatim.
 export const DEVBOT_KEY = 'hliq_device_bots'
 
+/**
+ * The bot's own settings, written in the app rather than edited into the file.
+ *
+ * A file full of `const RIESGO = 0.03` at the top means changing the risk is a code edit,
+ * and a code edit on a running bot is a re-install. So a bot declares its knobs, the user
+ * fills them in on the card, and they arrive as ctx.config.params.
+ *
+ * The format is one `key = value` per line, because that is what people type without being
+ * taught a format. JSON was the obvious alternative and was rejected: a missing brace turns
+ * the whole settings block into nothing, silently, and the bot falls back to its defaults
+ * without saying why.
+ *
+ *   riesgo = 0.03            → 0.03      (number)
+ *   usarPesos = false        → false     (boolean)
+ *   entrada = 07:00          → '07:00'   (string — only a finite number becomes a number)
+ *   # a comment, ignored
+ *
+ * Nothing here can widen a limit. The caps live in the main thread and are checked after
+ * the bot has spoken; params are the bot's own settings, not the app's.
+ */
+export function parseBotParams(text) {
+  const out = {}
+  for (const raw of String(text ?? '').split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#') || line.startsWith('//')) continue
+    // Split on the FIRST separator only, or `entrada = 07:00` would lose its minutes.
+    let i = line.indexOf('=')
+    if (i < 0) i = line.indexOf(':')
+    if (i <= 0) continue
+    const key = line.slice(0, i).trim()
+    let val = line.slice(i + 1).trim()
+    if (!key) continue
+    // A trailing comment is what someone writes when they are explaining a number to
+    // themselves; it should not end up as part of the value.
+    const c = val.search(/\s+(?:#|\/\/)/)
+    if (c >= 0) val = val.slice(0, c).trim()
+    if (/^".*"$/.test(val) || /^'.*'$/.test(val)) { out[key] = val.slice(1, -1); continue }
+    if (val === 'true' || val === 'false') { out[key] = val === 'true'; continue }
+    if (val === '') { out[key] = ''; continue }
+    const n = Number(val)
+    out[key] = Number.isFinite(n) ? n : val
+  }
+  return out
+}
+
 export function devBotsLoad() {
   try { return JSON.parse(localStorage.getItem(DEVBOT_KEY)) || [] } catch { return [] }
 }
@@ -177,6 +222,11 @@ export const DEVBOT_TEMPLATE = `// Runs on YOUR device, in a sandbox with no acc
 //   positions: [ { coin, szi, entryPx, unrealizedPnl, leverage, liquidationPx, marginUsed } ],
 //   orders:    [ { oid, coin, isBuy, sz, limitPx } ],
 //   margin:    { accountValue, totalMarginUsed, withdrawable },
+//
+//   // your settings from the bot's card, so a knob is a form field, not a code edit:
+//   config: { coin, maxUsd, maxPerMin, maxOpen, everySec, leverage, dry,
+//             params: { ... }   // whatever you typed in Settings, as key = value lines
+//           }
 // }
 //
 // THE EASY WAY — return an intent, an array of them, or nothing:
@@ -221,7 +271,10 @@ function onTick(ctx) {
  * A running bot: its worker, its limits, its log, and the rate state the limits need.
  *
  * `deps` is how the main thread keeps control of everything that touches money:
- *   deps.snapshot()        → the ctx handed to the bot each tick
+ *   deps.snapshot(def, bot) → the ctx handed to the bot each tick. The instance is passed
+ *                            because a preview runs on a THROWAWAY bot that is not in the
+ *                            app's registry, so looking one up by id there would report a
+ *                            preview as a live run.
  *   deps.market(intent)    → place a market order
  *   deps.limit(intent)     → place a limit order
  *   deps.cancel(oid)       → cancel one order
@@ -356,7 +409,7 @@ export class DeviceBot {
   _tick() {
     if (!this.worker || !this.ready) return
     let ctx
-    try { ctx = this.deps.snapshot(this.def) } catch (e) { this.say('error', 'No market data: ' + e.message); return }
+    try { ctx = this.deps.snapshot(this.def, this) } catch (e) { this.say('error', 'No market data: ' + e.message); return }
     if (!ctx) return
     this.worker.postMessage({ t: 'tick', ctx })
   }
@@ -410,7 +463,7 @@ export class DeviceBot {
   async _execute(intents) {
     if (this.stopped || !intents.length) return
     let ctx = null
-    try { ctx = this.deps.snapshot(this.def) } catch {}
+    try { ctx = this.deps.snapshot(this.def, this) } catch {}
     for (const it of intents.slice(0, 10)) {          // one tick cannot fire more than 10
       const why = this._check(it, ctx)
       if (why) { this.blocked++; this.say('warn', 'Blocked — ' + why); continue }

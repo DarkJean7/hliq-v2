@@ -31,7 +31,7 @@ t('the install screen repeats it rather than burying it',
   cli.includes('to any server it likes') && cli.includes('cannot</b> read your private key'))
 
 console.log(String.fromCharCode(10) + '-- what a bot is allowed to see --')
-const snap = grab(cli, 'function _devBotSnapshot(def)')
+const snap = grab(cli, 'function _devBotSnapshot(def, bot)')
 t('one market only', snap.includes('const coin = def.coin'))
 t('its own position', snap.includes('position: pos ?'))
 t('its own resting orders', snap.includes("openOrders: (state.openOrders ?? []).filter(o => o.coin === coin)"))

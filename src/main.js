@@ -222,7 +222,7 @@ import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
 import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW,
          BT_STRATEGIES, BT_MODULES, BT_UNSIMULATABLE } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
-import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE } from './devicebot.js'
+import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams } from './devicebot.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
          compareAxisHtml, attachCompareScrub, compareReadoutHtml, assignCompareColors } from './compare.js'
 import { ES_DICT } from './i18n-es.js'
@@ -22827,7 +22827,7 @@ const _devBots = new Map()   // id → DeviceBot
 // Everything a bot is given. Deliberately narrow: the one market it was installed for,
 // its own position and resting orders, account equity, and recent candles. It is not
 // handed the wallet address, the key, other markets, or the rest of the portfolio.
-function _devBotSnapshot(def) {
+function _devBotSnapshot(def, bot) {
   const coin = def.coin
   const mark = _livePx(coin)
   if (!(mark > 0)) return null
@@ -22877,6 +22877,24 @@ function _devBotSnapshot(def) {
       withdrawable: parseFloat(state.perpState?.withdrawable ?? 0),
     },
     paper: isPaper(),
+
+    // The bot's own card, handed back to it. A bot whose risk lives in `const RIESGO =`
+    // needs a re-install to change it; one that reads ctx.config.params needs a form field.
+    //
+    // The caps are in here as information, not as permission: they are enforced in this
+    // thread after the bot has spoken, so a bot that lies to itself about maxUsd still gets
+    // refused. Reading them lets a bot size an order it knows will pass instead of watching
+    // every one bounce.
+    config: {
+      coin: def.coin,
+      maxUsd: def.maxUsd,
+      maxPerMin: def.maxPerMin,
+      maxOpen: def.maxOpen,
+      everySec: def.everySec,
+      leverage: def.leverage,
+      dry: !!(bot ? bot.dry : _devBots.get(def.id)?.dry),
+      params: parseBotParams(def.params ?? ''),
+    },
   }
 }
 
@@ -23231,6 +23249,10 @@ function _devBotRead(existingId) {
     maxOpen: cap(g('devBotMaxOpen'), 10, 1000),
     everySec: Math.max(5, Number(g('devBotEvery')) || 15),
     leverage: Math.max(1, Number(g('devBotLev')) || 3),
+    // Stored as the TEXT the user typed, not as the parsed object: comments, order and
+    // blank lines are how a settings block stays readable, and re-serialising from a
+    // parsed map would quietly throw all three away on the next edit.
+    params: document.getElementById('devBotParams')?.value ?? '',
     code,
   }
 }
@@ -23600,6 +23622,16 @@ function _devBotInstallSheet(existing = null) {
     </div>
     <div style="font-size:10.5px;color:var(--fg-3);margin-top:7px;line-height:1.5">${
       _T('Set any of the three caps to 0 to turn that limit off.', 'Pon cualquiera de los tres límites a 0 para desactivarlo.')}
+    </div>
+
+    <div style="margin-top:14px">
+      <label style="${lbl}">${_T('Settings', 'Ajustes')}</label>
+      <div style="font-size:10.5px;color:var(--fg-3);margin:2px 0 5px;line-height:1.5">${
+        _T('The knobs this bot declares, one <b>name = value</b> per line. They reach it as <b>ctx.config.params</b>, so changing one is a form field rather than an edit to the file.',
+           'Los ajustes del bot, uno por línea como <b>nombre = valor</b>. Llegan como <b>ctx.config.params</b>, así que cambiar uno no obliga a editar el archivo.')}
+      </div>
+      <textarea id="devBotParams" rows="4" spellcheck="false" placeholder="riesgo = 0.03&#10;usarPesos = false"
+        style="${inp};font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.6;resize:vertical;white-space:pre">${esc(d.params ?? '')}</textarea>
     </div>
 
     <div style="display:flex;align-items:center;margin-top:12px">
