@@ -23285,7 +23285,41 @@ const _devBots = new Map()   // id → DeviceBot
 // Everything a bot is given. Deliberately narrow: the one market it was installed for,
 // its own position and resting orders, account equity, and recent candles. It is not
 // handed the wallet address, the key, other markets, or the rest of the portfolio.
+/**
+ * The account a device bot is trading, as an id that tells two of them apart.
+ *
+ * Every paper account shares the address `__paper__`, so the address alone cannot
+ * distinguish them -- the slot is what does. A real wallet is its own address.
+ */
+function _botAcctId() {
+  if (isPaper()) return 'paper:' + paperSlot()
+  return _stratTargetAddr() ?? null
+}
+
+/**
+ * A running bot belongs to the account it was STARTED on.
+ *
+ * Nothing used to hold it there. The order path asks for "the current account" every time,
+ * so switching accounts handed the running bot to whichever one you had just opened: on
+ * paper, two accounts filling with the same bot's trades and reading as one account with
+ * mixed data; on a real wallet, a bot armed for one wallet quietly trading another.
+ *
+ * It cannot follow you, and it must not keep running against an account you have left, so
+ * it stops and says so.
+ */
+function _devBotAcctChanged(bot) {
+  if (!bot || bot.stopped || !bot.acctId) return false
+  if (_botAcctId() === bot.acctId) return false
+  bot.say('warn', 'Stopped — the account changed. A bot runs on the account it was started on; start it again here to run it on this one.')
+  try { bot.stop() } catch {}
+  try { _mobVRenderStrategies(document.getElementById('mobVContent')) } catch {}
+  return true
+}
+
 function _devBotSnapshot(def, bot) {
+  // First: with no ctx the bot never ticks, so it cannot form an intent against an
+  // account it was not started on.
+  if (_devBotAcctChanged(bot)) return null
   const coin = def.coin
   const mark = _livePx(coin)
   if (!(mark > 0)) return null
@@ -23546,6 +23580,9 @@ async function _devBotRequest(def, kind, payload, bot) {
     if (_DEVBOT_PLACING.has(method) && bot?.rateBlocked()) {
       throw new Error(`rate limit: ${def.maxPerMin} orders/min reached`)
     }
+    // Same guard as the tick path: api.order() must not reach an account the bot was not
+    // started on either.
+    if (_devBotAcctChanged(bot)) throw new Error('the account changed — this bot has been stopped')
     // Before the dry-run branch, so a preview also reports what your limits would have
     // refused -- the same order _execute uses for intents, and for the same reason.
     await _devBotCheckRaw(def, method, args, bot)
@@ -23596,6 +23633,7 @@ window.__devBotStart = function(id, dry = false) {
   let bot = _devBots.get(id)
   if (!bot) { bot = new DeviceBot(def, _devBotDeps); _devBots.set(id, bot) }
   bot.def = def
+  bot.acctId = _botAcctId()      // the account it is now bound to
   bot.start(dry)
   _mobVRenderStrategies(document.getElementById('mobVContent'))
 }
