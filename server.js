@@ -1359,6 +1359,27 @@ function bugReportAllowed(ip) {
   return true
 }
 
+// Community bot submissions (see POST /api/bot-submit). A user who wrote a device bot can
+// offer it for inclusion; the operator reads them in dev mode.
+//
+// NOTHING HERE EVER RUNS THE SUBMITTED CODE. It is stored as text and displayed as text.
+// Shipping one is a person reading it and committing it through the normal path -- there
+// is deliberately no button that turns a stranger's file into something this server
+// executes, because that is a remote code execution hole with a friendly label on it.
+const SUBMIT_FILE = join(__dirname, 'bot-submissions.json')
+const _submitHits = new Map()
+function submitAllowed(ip) {
+  const now = Date.now(), win = 3600_000
+  const hits = (_submitHits.get(ip) ?? []).filter(t => now - t < win)
+  if (hits.length >= 5) { _submitHits.set(ip, hits); return false }
+  hits.push(now); _submitHits.set(ip, hits)
+  return true
+}
+function loadSubmissions() {
+  try { if (existsSync(SUBMIT_FILE)) { const d = JSON.parse(readFileSync(SUBMIT_FILE, 'utf8')); return Array.isArray(d) ? d : [] } } catch (_) {}
+  return []
+}
+
 // Uncaught-error telemetry (see POST /api/error). Deduped by message so the file stays small
 // even under a crash loop; per-IP rate-limited so it can't be used to flood the disk.
 const ERR_FILE = join(__dirname, 'client-errors.json')
@@ -1948,6 +1969,67 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true })
     } catch (e) {
       console.error('[bug] save failed:', e.message)
+      return json(res, 500, { error: 'save failed' })
+    }
+  }
+
+  // ── POST /api/bot-submit { name, code, config, author } → offer a device bot ──
+  // Open to anyone, rate-limited, and capped: a bot file that will not fit in 64KB is not
+  // a bot file. The code is never parsed, imported or executed here.
+  if (method === 'POST' && path === '/api/bot-submit') {
+    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    if (!submitAllowed(ip)) return json(res, 429, { error: 'too many submissions, try later' })
+    const b = await body(req)
+    const code = String(b.code ?? '')
+    if (!code.trim()) return json(res, 400, { error: 'no code' })
+    if (code.length > 64_000) return json(res, 413, { error: 'file too large' })
+    const entry = {
+      id: Math.random().toString(36).slice(2, 10) + Date.now().toString(36),
+      name: String(b.name ?? 'Untitled').trim().slice(0, 80),
+      note: String(b.note ?? '').trim().slice(0, 1000),
+      author: String(b.author ?? '').trim().slice(0, 64),
+      config: (b && typeof b.config === 'object' && b.config) ? b.config : {},
+      code,
+      status: 'new',
+      ip,
+      receivedAt: new Date().toISOString(),
+    }
+    try {
+      const list = loadSubmissions()
+      list.push(entry)
+      writeFileSync(SUBMIT_FILE, JSON.stringify(list.slice(-500), null, 2))
+      console.log(`[submit] bot "${entry.name}" from ${entry.author || 'anon'} (${code.length} chars)`)
+      return json(res, 200, { ok: true, id: entry.id })
+    } catch (e) {
+      console.error('[submit] save failed:', e.message)
+      return json(res, 500, { error: 'save failed' })
+    }
+  }
+
+  // ── GET /api/bot-submissions → the queue, operator only ───────────────────
+  if (method === 'GET' && path === '/api/bot-submissions') {
+    const isAdmin = LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN
+    if (!isAdmin) return json(res, 403, { error: 'forbidden' })
+    // The IP is kept for rate limiting, not for reading: it is somebody's address and the
+    // review does not need it.
+    return json(res, 200, loadSubmissions().map(({ ip, ...rest }) => rest).reverse())
+  }
+
+  // ── POST /api/bot-submission-status { id, status } → mark one reviewed ────
+  if (method === 'POST' && path === '/api/bot-submission-status') {
+    const isAdmin = LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN
+    if (!isAdmin) return json(res, 403, { error: 'forbidden' })
+    const b = await body(req)
+    const status = ['new', 'kept', 'declined'].includes(b.status) ? b.status : null
+    if (!status || !b.id) return json(res, 400, { error: 'bad request' })
+    try {
+      const list = loadSubmissions()
+      const row = list.find(x => x.id === b.id)
+      if (!row) return json(res, 404, { error: 'not found' })
+      row.status = status
+      writeFileSync(SUBMIT_FILE, JSON.stringify(list, null, 2))
+      return json(res, 200, { ok: true })
+    } catch (e) {
       return json(res, 500, { error: 'save failed' })
     }
   }

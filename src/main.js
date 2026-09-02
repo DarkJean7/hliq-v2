@@ -23123,6 +23123,153 @@ function _devBotRead(existingId) {
   }
 }
 
+/**
+ * Offer a device bot for inclusion in the app.
+ *
+ * It sends the file's text and its settings. Nothing about this makes the bot run anywhere
+ * but in the browser it already runs in -- a submission is a message, and shipping one is
+ * a person reading it and committing it.
+ */
+window.__devBotSubmit = function(id) {
+  const def = devBotsLoad().find(b => b.id === id)
+  if (!def) return
+  _sheet('devSubmitSheet', _T('Submit this bot', 'Enviar este bot'), `
+    <div style="font-size:12px;color:var(--fg-2);line-height:1.5;margin-bottom:12px">${
+      _T('This sends the file and its settings so it can be considered for the app. It keeps running on your device either way, and sending it does not run it anywhere else.',
+         'Esto envía el archivo y su configuración para que se considere incluirlo. Sigue ejecutándose en tu dispositivo igualmente.')}</div>
+    <label style="display:block;font-size:11px;font-weight:700;color:var(--fg-2)">${_T('Your name or handle', 'Tu nombre')}
+      <input id="devSubAuthor" type="text" maxlength="64" placeholder="${_T('optional', 'opcional')}"
+        style="width:100%;margin-top:4px;padding:8px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:13px"></label>
+    <label style="display:block;font-size:11px;font-weight:700;color:var(--fg-2);margin-top:10px">${_T('What does it do?', '¿Qué hace?')}
+      <textarea id="devSubNote" rows="3" maxlength="1000" placeholder="${_T('A sentence or two helps.', 'Una o dos frases ayudan.')}"
+        style="width:100%;margin-top:4px;padding:8px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:13px;font-family:inherit;resize:vertical"></textarea></label>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button onclick="window.__devBotSubmitSend('${esc(id)}')"
+        style="flex:1;padding:11px;border-radius:10px;border:none;background:var(--accent);color:#000;font-size:14px;font-weight:800;cursor:pointer">${_T('Send', 'Enviar')}</button>
+      <button onclick="document.getElementById('devSubmitSheet')?.remove()"
+        style="padding:11px 14px;border-radius:10px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:13px;font-weight:700;cursor:pointer">${_T('Cancel', 'Cancelar')}</button>
+    </div>`)
+}
+
+window.__devBotSubmitSend = async function(id) {
+  const def = devBotsLoad().find(b => b.id === id)
+  if (!def) return
+  const author = document.getElementById('devSubAuthor')?.value ?? ''
+  const note = document.getElementById('devSubNote')?.value ?? ''
+  document.getElementById('devSubmitSheet')?.remove()
+  try {
+    const r = await fetch('/api/bot-submit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: def.name, code: def.code, author, note,
+        // The settings it was running with, which say as much about the bot as the code.
+        config: { coin: def.coin, maxUsd: def.maxUsd, maxPerMin: def.maxPerMin,
+                  maxOpen: def.maxOpen, everySec: def.everySec, leverage: def.leverage },
+      }),
+    })
+    const j = await r.json().catch(() => ({}))
+    if (r.ok && j.ok) _paperToast(_T('Sent — thank you', 'Enviado — gracias'), 'success')
+    else _paperToast(j.error || _T('Could not send', 'No se pudo enviar'), 'err')
+  } catch {
+    _paperToast(_T('Could not send', 'No se pudo enviar'), 'err')
+  }
+}
+
+// ── the review queue, dev mode only ───────────────────────────────────────────
+let _subsCache = null
+
+window.__openBotSubmissions = async function() {
+  _sheet('botSubsSheet', _T('Bot submissions', 'Bots enviados'),
+    `<div style="padding:18px 4px;font-size:12px;color:var(--muted)">${_T('Loading…', 'Cargando…')}</div>`)
+  try {
+    const pin = _lbGetPin()
+    const r = await fetch('/api/bot-submissions', { headers: pin ? { 'x-lb-pin': pin } : {} })
+    if (r.status === 403) { _subsCache = null; return _botSubsRender('forbidden') }
+    _subsCache = await r.json()
+    _botSubsRender()
+  } catch {
+    _subsCache = null
+    _botSubsRender('error')
+  }
+}
+
+window.__botSubStatus = async function(id, status) {
+  try {
+    const pin = _lbGetPin()
+    await fetch('/api/bot-submission-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(pin ? { 'x-lb-pin': pin } : {}) },
+      body: JSON.stringify({ id, status }),
+    })
+    const row = (_subsCache ?? []).find(x => x.id === id)
+    if (row) row.status = status
+    _botSubsRender()
+  } catch {}
+}
+
+/** Show one submission's code. Escaped and read-only -- it is a stranger's file. */
+window.__botSubCode = function(id) {
+  const row = (_subsCache ?? []).find(x => x.id === id)
+  if (!row) return
+  _sheet('botSubCodeSheet', esc(row.name), `
+    <div style="font-size:10.5px;color:var(--muted);margin-bottom:8px">${
+      _T('Read it before running it anywhere. It is somebody else\'s code.',
+         'Léelo antes de ejecutarlo en cualquier sitio. Es código de otra persona.')}</div>
+    <pre style="max-height:52vh;overflow:auto;background:var(--panel-2);border:1px solid var(--border2);border-radius:8px;padding:10px;font-size:11px;line-height:1.5;white-space:pre;-webkit-overflow-scrolling:touch">${esc(row.code)}</pre>
+    <button onclick="window.__botSubCopy()"
+      style="width:100%;margin-top:10px;padding:10px;border-radius:9px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:13px;font-weight:700;cursor:pointer">${_T('Copy', 'Copiar')}</button>`)
+}
+
+/** Copies from the rendered element, so the code never has to survive a trip through an
+ *  inline attribute -- which is where quoting bugs and injection both live. */
+window.__botSubCopy = function() {
+  const pre = document.querySelector('#botSubCodeSheet pre')
+  if (!pre) return
+  try {
+    navigator.clipboard?.writeText(pre.textContent ?? '')
+    _paperToast(_T('Copied', 'Copiado'), 'success')
+  } catch { _paperToast(_T('Could not copy', 'No se pudo copiar'), 'err') }
+}
+
+/** Rebuilds the whole sheet. Simpler than reaching into it, and there is nothing in it
+ *  worth preserving between renders. */
+function _botSubsRender(state) {
+  const title = _T('Bot submissions', 'Bots enviados')
+  if (state === 'forbidden') {
+    return _sheet('botSubsSheet', title, `<div style="font-size:12px;color:var(--red)">${
+      _T('The server did not accept the dev PIN.', 'El servidor no aceptó el PIN.')}</div>`)
+  }
+  if (state === 'error' || !Array.isArray(_subsCache)) {
+    return _sheet('botSubsSheet', title, `<div style="font-size:12px;color:var(--red)">${
+      _T('Could not load submissions.', 'No se pudieron cargar.')}</div>`)
+  }
+  if (!_subsCache.length) {
+    return _sheet('botSubsSheet', title, `<div style="font-size:12px;color:var(--muted)">${
+      _T('Nothing submitted yet.', 'Nada enviado todavía.')}</div>`)
+  }
+  const tone = { new: 'var(--accent)', kept: 'var(--green)', declined: 'var(--muted)' }
+  _sheet('botSubsSheet', title, _subsCache.map(s => `
+    <div style="border:1px solid ${tone[s.status] ?? 'var(--border2)'};border-radius:11px;padding:10px 11px;margin-bottom:9px">
+      <div style="display:flex;align-items:baseline;gap:8px">
+        <span style="font-size:13px;font-weight:800;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.name)}</span>
+        <span style="flex:1"></span>
+        <span style="font-size:9.5px;color:${tone[s.status] ?? 'var(--muted)'};text-transform:uppercase;letter-spacing:.06em;font-weight:800">${esc(s.status)}</span>
+      </div>
+      <div style="font-size:10.5px;color:var(--muted);margin-top:2px">${
+        esc(s.author || _T('anonymous', 'anónimo'))} · ${esc(String(s.receivedAt ?? '').slice(0, 10))} · ${
+        esc(String(s.config?.coin ?? '?'))} · ${(s.code ?? '').length} ${_T('chars', 'car.')}</div>
+      ${s.note ? `<div style="font-size:11.5px;color:var(--fg-2);margin-top:6px;line-height:1.45">${esc(s.note)}</div>` : ''}
+      <div style="display:flex;gap:6px;margin-top:9px;flex-wrap:wrap">
+        <button onclick="window.__botSubCode('${esc(s.id)}')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:11px;font-weight:700;cursor:pointer">${_T('Read code', 'Ver código')}</button>
+        <button onclick="window.__botSubStatus('${esc(s.id)}','kept')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--green);background:transparent;color:var(--green);font-size:11px;font-weight:700;cursor:pointer">${_T('Keep', 'Guardar')}</button>
+        <button onclick="window.__botSubStatus('${esc(s.id)}','declined')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border2);background:transparent;color:var(--muted);font-size:11px;font-weight:700;cursor:pointer">${_T('Decline', 'Descartar')}</button>
+      </div>
+    </div>`).join('') + `
+    <div style="font-size:10.5px;color:var(--muted);line-height:1.5;margin-top:4px;border-top:1px solid var(--border);padding-top:9px">${
+      _T('Keeping one marks it for you to ship through the normal path. Nothing here installs or runs a submitted file.',
+         'Guardar solo lo marca para revisarlo. Nada aquí instala ni ejecuta un archivo enviado.')}</div>`)
+}
+
 window.__devBotInstall = function() {
   const def = _devBotRead(null)
   if (!def) return
@@ -23337,6 +23484,7 @@ function _devBotCardHtml(b) {
       <button class="mob-strat-logs-btn" onclick="window.__devBotPreview('${b.id}')" title="${_T('See what it would do, without doing it', 'Ver qué haría, sin hacerlo')}">👁 ${_T('Preview', 'Vista previa')}</button>
       <button class="mob-strat-logs-btn" onclick="window.__devBotEdit('${b.id}')">✎ ${_T('Edit', 'Editar')}</button>
       <button class="mob-strat-logs-btn" onclick="window.__devBotLogs('${b.id}')">${_T('Log', 'Registro')}</button>
+      <button class="mob-strat-logs-btn" onclick="window.__devBotSubmit('${b.id}')">${_T('Submit', 'Enviar')}</button>
       <button class="mob-strat-logs-btn" onclick="window.__devBotDelete('${b.id}')">${_T('Delete', 'Borrar')}</button>
     </div>`
 
@@ -23715,6 +23863,10 @@ function _mobVRenderStrategies(el) {
     </div>
     ${locked ? _subLockBanner() : ''}
     <div class="mob-v-setting-group">${cards}${devBotsLoad().map(_devBotCardHtml).join('')}</div>
+    ${isDev() ? `<div style="padding:10px 12px 0">
+      <button onclick="window.__openBotSubmissions()" style="width:100%;padding:9px;border-radius:9px;border:1px dashed var(--border2);background:transparent;color:var(--fg-2);font-size:12px;font-weight:700;cursor:pointer">${
+        _T('Bot submissions', 'Bots enviados')}</button>
+    </div>` : ''}
     <div style="padding:10px 12px 0">${_devBotsHtml()}</div>
   </div>`
 
