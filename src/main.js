@@ -15358,12 +15358,13 @@ function _simCoinList() {
     .split(/[,\s]+/)
     .map(s => s.trim())
     .filter(Boolean)
-    .map(_simResolveMarket)
+    .map(_resolveMarketId)
     .filter(Boolean))]
 }
 
 /**
- * A typed name to the id the exchange actually has.
+ * A typed name to the id the exchange actually has. Shared by the Trade Simulator's
+ * market box and a bot card's market list.
  *
  * "SMSN" is not a market -- "xyz:SMSN" is -- and there are three ways to end up typing the
  * bare one: reading it off the portfolio table, copying it from Hyperliquid's own market
@@ -15373,7 +15374,7 @@ function _simCoinList() {
  * Resolved at USE time rather than migrated, so a list saved months ago works without
  * anyone having to re-load it, and so typing the short name by hand simply works.
  */
-function _simResolveMarket(name) {
+function _resolveMarketId(name) {
   const s = String(name ?? '').trim()
   if (!s) return ''
   // Already a full id: normalise the case of each half and leave it alone.
@@ -23833,6 +23834,37 @@ window.__devBotAddCoin = function(sel) {
   _devBotCoinsSet([...list, c])
 }
 
+/**
+ * Add several markets at once.
+ *
+ * Fifteen trips through a dropdown to card a portfolio bot is not a workflow, and it is
+ * how a bot ends up carded for one market and quietly trading nothing. Takes what the
+ * portfolio table or Hyperliquid's own list would give you -- comma or space separated,
+ * bare tickers resolved to real market ids, so "SMSN" becomes "xyz:SMSN".
+ */
+window.__devBotAddCoinList = function() {
+  const el = document.getElementById('devBotCoinPaste')
+  const raw = String(el?.value ?? '').trim()
+  if (!raw) return
+  const list = _devBotCoinsGet()
+  const added = [], already = [], unknown = []
+  for (const part of raw.split(/[,\s]+/).map(s => s.trim()).filter(Boolean)) {
+    const id = _resolveMarketId(part)
+    // Resolution falls back to the name as typed, so a market the app has never heard of
+    // comes back unchanged. Adding it would card the bot for something that cannot trade.
+    if (!id || (!state.allMids?.[id] && !_mktCtxMap?.[id])) { unknown.push(part); continue }
+    if (list.includes(id) || added.includes(id)) { already.push(id); continue }
+    added.push(id)
+  }
+  if (added.length) _devBotCoinsSet([...list, ...added])
+  if (el) el.value = ''
+  const bits = []
+  if (added.length)   bits.push(_T(`added ${added.length}`, `añadidos ${added.length}`))
+  if (already.length) bits.push(_T(`${already.length} already there`, `${already.length} ya estaban`))
+  if (unknown.length) bits.push(_T(`not a market: ${unknown.join(', ')}`, `no existe: ${unknown.join(', ')}`))
+  _paperToast(bits.join(' · ') || _T('Nothing to add', 'Nada que añadir'), unknown.length ? 'err' : 'success')
+}
+
 window.__devBotRemoveCoin = function(c) {
   const list = _devBotCoinsGet().filter(x => x !== c)
   if (!list.length) return
@@ -24259,6 +24291,13 @@ function _devBotInstallSheet(existing = null) {
     <div style="margin-top:10px">
       <label style="${lbl}">${_T('Markets this bot may trade', 'Mercados que este bot puede operar')}</label>
       <div id="devBotCoinChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:5px">${_devBotChipsHtml(_devBotCoinsOf(d))}</div>
+      <div style="display:flex;gap:6px;margin-top:7px">
+        <input id="devBotCoinPaste" type="text" spellcheck="false" autocapitalize="characters"
+          placeholder="${_T('or paste a list: ZEC, XMR, SMSN…', 'o pega una lista: ZEC, XMR, SMSN…')}"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();window.__devBotAddCoinList()}"
+          style="${inp};flex:1;font-size:12px">
+        <button onclick="window.__devBotAddCoinList()" style="padding:0 14px;border-radius:8px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">${_T('Add', 'Añadir')}</button>
+      </div>
       <div style="font-size:10.5px;color:var(--fg-3);margin-top:6px;line-height:1.5">${
         _T('The bot can only touch these. The first is its home market — the one its candles are loaded for, and the one an order that names no market goes to.',
            'El bot solo puede tocar estos. El primero es su mercado principal: aquel del que se cargan las velas y al que va una orden que no nombre mercado.')}

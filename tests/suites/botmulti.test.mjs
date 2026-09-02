@@ -103,6 +103,17 @@ console.log(nl + '-- the card --')
 t('the editor keeps a list', cli.includes('id="devBotCoins"'))
 t('markets show as chips', cli.includes('function _devBotChipsHtml'))
 t('one can be added', cli.includes('window.__devBotAddCoin'))
+// Fifteen trips through a dropdown is how a portfolio bot ends up carded for one market
+// and quietly trading nothing -- which is exactly what happened.
+t('or a whole list pasted', cli.includes('window.__devBotAddCoinList'))
+t('the list resolves bare tickers to real market ids', cli.includes('_resolveMarketId(part)'))
+t('a name that is not a market is refused, not carded',
+  grab(cli, 'window.__devBotAddCoinList = function').includes('unknown.push(part)'))
+t('why refusing matters is recorded', cli.includes('card the bot for something that cannot trade'))
+t('duplicates are reported rather than silently dropped',
+  grab(cli, 'window.__devBotAddCoinList = function').includes('already.push(id)'))
+t('and the result says what happened to each',
+  grab(cli, 'window.__devBotAddCoinList = function').includes('bits.join'))
 t('and removed', cli.includes('window.__devBotRemoveCoin'))
 t('but never all of them', grab(cli, 'window.__devBotRemoveCoin = function').includes('if (!list.length) return'))
 t('removing repaints only the chips, not the sheet',

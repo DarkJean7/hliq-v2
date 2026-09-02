@@ -95,15 +95,17 @@ console.log(nl + '-- the market box takes a list --')
 t('it splits on commas and spaces', grab(cli, 'function _simCoinList').includes('.split(/[,\\s]+/)'))
 t('duplicates collapse', grab(cli, 'function _simCoinList').includes('new Set'))
 t('a builder-dex prefix survives',
-  grab(cli, 'function _simResolveMarket').includes("s.split(':')[0].toLowerCase()"))
+  grab(cli, 'function _resolveMarketId').includes("s.split(':')[0].toLowerCase()"))
 t('why it is not simply uppercased is recorded', cli.includes('"xyz:SPCX" is not "XYZ:SPCX"'))
 
 // Every entry goes through the resolver, because "SMSN" is not a market -- "xyz:SMSN" is
 // -- and it can be typed that way from the table, from Hyperliquid's own list, or by a
 // list saved before the ids existed. Fixing only the "load all 15" button left all three
 // broken, which is what shipped.
-const resolve = grab(cli, 'function _simResolveMarket')
-t('the list resolves every entry', grab(cli, 'function _simCoinList').includes('.map(_simResolveMarket)'))
+const resolve = grab(cli, 'function _resolveMarketId')
+t('the list resolves every entry', grab(cli, 'function _simCoinList').includes('.map(_resolveMarketId)'))
+t('and the resolver is shared with the bot card, not copied',
+  cli.includes("Shared by the Trade Simulator's") && cli.includes('_resolveMarketId(part)'))
 t('a portfolio row supplies its own id', resolve.includes('if (row?.market) return row.market'))
 t('and needs no market data loaded to do it', resolve.includes('needs no market data loaded'))
 t('anything else falls back to the resolver the bot fields use',
