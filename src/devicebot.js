@@ -426,6 +426,18 @@ export class DeviceBot {
       this.say('info', (this.dry ? 'DRY RUN — nothing will be sent · ' : 'Running · ')
         + (mkts.length > 1 ? mkts.length + ' markets: ' + mkts.join(', ') : this.def.coin)
         + ' · max $' + this.def.maxUsd + '/order · ' + this.def.maxPerMin + ' orders/min')
+
+      // A portfolio bot opens its whole book in ONE tick, so it needs one order per market
+      // in that tick. The per-minute cap drops what it cannot pass -- it never queues -- and
+      // it drops in the order the intents arrived, so a cap below the market count does not
+      // look like a cap. It looks like a bot that only trades the first few markets on its
+      // card, which is precisely how it was reported.
+      const cap = Number(this.def.maxPerMin) || 0
+      if (cap > 0 && mkts.length > cap) {
+        this.say('warn', `${mkts.length} markets but only ${cap} orders/min. A tick that acts on `
+          + `all of them will send ${cap} and refuse ${mkts.length - cap} — raise "Max orders / min" `
+          + `to at least ${mkts.length} on this bot's card, or it will trade the first ${cap} only.`)
+      }
       const period = Math.max(5, Number(this.def.everySec) || 15) * 1000
       this.timer = setInterval(() => this._tick(), period)
       this._tick()

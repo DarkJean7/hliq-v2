@@ -163,5 +163,28 @@ t('the note is translated', cli.includes('permisos que no usa')),
 t('why it is a likely cause and not a verdict is recorded',
   cli.includes('rather than a verdict')),
 
+
+console.log(nl + '-- a cap below the market count is called out where it is set --')
+// A fifteen-market bot on a four-orders-a-minute cap sent four and had eleven refused,
+// in arrival order, which reads as 'it only trades the first few markets on its card'.
+// Both numbers looked fine alone; nothing read them together.
+t('the sheet works out whether the cap can cover the list',
+  cli.includes('function _devBotCapWarnHtml(n, cap)'))
+t('it only fires when the cap actually bites',
+  cli.includes('if (!(cap > 0 && n > cap)) return')),
+t('it says how many get refused', cli.includes('${n - cap} refused')),
+t('and names the symptom, not just the rule',
+  cli.includes('only trades the first ${cap}')),
+t('there is a one-tap fix', cli.includes('window.__devBotCapFix(${n})')),
+t('which sets the cap to the market count', grab(cli, 'window.__devBotCapFix = function(n)').includes('el.value = n')),
+t('the warning repaints when the markets change',
+  grab(cli, 'function _devBotCoinsSet').includes('window.__devBotCapWarn()')),
+t('and when the cap itself is typed',
+  cli.includes('oninput="window.__devBotCapWarn()"')),
+t('the running bot says it too, for a card nobody opened',
+  bot.includes('markets but only ${cap} orders/min')),
+t('why a cap below the count does not look like a cap is recorded',
+  bot.includes('does not' + nl + '      // look like a cap')),
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

@@ -24010,6 +24010,42 @@ function _devBotCoinsSet(list) {
   // Only the chip row is repainted. Re-rendering the sheet would throw away the file the
   // user has pasted into the code box, which is the last thing they want on a mis-tap.
   if (chips) chips.innerHTML = _devBotChipsHtml(list)
+  window.__devBotCapWarn()
+}
+
+/**
+ * The market list and the per-minute cap only make sense read together.
+ *
+ * A portfolio bot opens its whole book in one tick, so it asks for one order per market at
+ * once. The cap drops what it cannot pass -- it never queues -- and it drops in arrival
+ * order, so a cap below the market count does not present as a cap. It presents as a bot
+ * that only trades the first few markets on its card, and both numbers look perfectly
+ * reasonable on their own. Hence saying it where they are set, next to each other.
+ */
+function _devBotCapWarnHtml(n, cap) {
+  if (!(cap > 0 && n > cap)) return ''
+  return `<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;border:1px solid var(--orange,#f59e0b);border-radius:9px;padding:9px 11px;margin-top:7px;font-size:11px;line-height:1.5;color:var(--fg-2)">
+    <span style="flex:1;min-width:190px">${_T(
+      `<b>${n} markets, ${cap} orders/min.</b> A tick that acts on all of them sends ${cap} and has ${n - cap} refused — it will look like it only trades the first ${cap}.`,
+      `<b>${n} mercados, ${cap} órdenes/min.</b> Un tick que actúe sobre todos envía ${cap} y ${n - cap} son rechazadas — parecerá que solo opera los ${cap} primeros.`)}</span>
+    <button onclick="window.__devBotCapFix(${n})" style="padding:6px 11px;border-radius:8px;border:1px solid var(--orange,#f59e0b);background:transparent;color:var(--orange,#f59e0b);font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap">${
+      _T('Set it to ' + n, 'Ponlo en ' + n)}</button>
+  </div>`
+}
+
+// Repainted on every change to either number, so the warning cannot outlive its cause.
+window.__devBotCapWarn = function() {
+  const box = document.getElementById('devBotCapWarn')
+  if (!box) return
+  box.innerHTML = _devBotCapWarnHtml(_devBotCoinsGet().length,
+    Number(document.getElementById('devBotMaxMin')?.value ?? 0))
+}
+
+window.__devBotCapFix = function(n) {
+  const el = document.getElementById('devBotMaxMin')
+  if (!el) return
+  el.value = n
+  window.__devBotCapWarn()
 }
 
 window.__devBotAddCoin = function(sel) {
@@ -24526,7 +24562,7 @@ function _devBotInstallSheet(existing = null) {
           ${coins.map(c => `<option value="${esc(c)}">${esc(_ocCoinLabel(c))}</option>`).join('')}
         </select></div>
       <div><label style="${lbl}">${_T('Max per order', 'Máx. por orden')} ($)</label><input id="devBotMaxUsd" type="number" min="0" style="${inp}" value="${d.maxUsd ?? 25}"></div>
-      <div><label style="${lbl}">${_T('Max orders / min', 'Máx. órdenes/min')}</label><input id="devBotMaxMin" type="number" min="0" max="600" style="${inp}" value="${d.maxPerMin ?? 4}"></div>
+      <div><label style="${lbl}">${_T('Max orders / min', 'Máx. órdenes/min')}</label><input id="devBotMaxMin" type="number" min="0" max="600" oninput="window.__devBotCapWarn()" style="${inp}" value="${d.maxPerMin ?? 4}"></div>
       <div><label style="${lbl}">${_T('Max resting orders', 'Máx. órdenes en espera')}</label><input id="devBotMaxOpen" type="number" min="0" max="1000" style="${inp}" value="${d.maxOpen ?? 10}"></div>
       <div><label style="${lbl}">${_T('Run every (s)', 'Ejecutar cada (s)')}</label><input id="devBotEvery" type="number" min="5" style="${inp}" value="${d.everySec ?? 15}"></div>
       <div><label style="${lbl}">${_T('Leverage', 'Apalancamiento')}</label><input id="devBotLev" type="number" min="1" style="${inp}" value="${d.leverage ?? 3}"></div>
@@ -24546,6 +24582,7 @@ function _devBotInstallSheet(existing = null) {
         _T('The bot can only touch these. The first is its home market — the one its candles are loaded for, and the one an order that names no market goes to.',
            'El bot solo puede tocar estos. El primero es su mercado principal: aquel del que se cargan las velas y al que va una orden que no nombre mercado.')}
       </div>
+      <div id="devBotCapWarn">${_devBotCapWarnHtml(_devBotCoinsOf(d).length, Number(d.maxPerMin ?? 4))}</div>
     </div>
 
     <div style="font-size:10.5px;color:var(--fg-3);margin-top:7px;line-height:1.5">${
