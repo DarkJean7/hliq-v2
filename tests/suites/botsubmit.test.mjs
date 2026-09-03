@@ -128,6 +128,24 @@ t('nothing interpolates raw code into an attribute', !codeSheet.includes('onclic
 t('every field in a row is escaped',
   ['esc(s.name)', 'esc(s.author', 'esc(s.status)', 'esc(s.note)', 'esc(s.id)'].every(x => cli.includes(x)))
 
+console.log(nl + '-- a submission can be installed on THIS device --')
+// Not the server running a stranger's file -- that is still refused. This is the operator,
+// having read the code, choosing to run it in their own browser inside the sandbox and the
+// caps they set, as an ordinary device bot: Run, Stop, Edit, Preview.
+const inst = grab(cli, 'window.__botSubInstall = function')
+t('there is an Install button on each row', cli.includes("window.__botSubInstall('${esc(s.id)}')"))
+t('the handler exists', inst.length > 200)
+t('the code is copied verbatim', inst.includes('code: row.code'))
+t('why verbatim matters is recorded', cli.includes('you are reviewing one file and running another'))
+t('its settings come across too', inst.includes('maxUsd: c.maxUsd') && inst.includes('coins: c.coins'))
+t('params only when they are text', inst.includes("typeof c.params === 'string' ? c.params : ''"))
+t('it opens the ordinary install sheet', inst.includes('_devBotInstallSheet(null)'))
+t('as a NEW bot, so the submission is not consumed', inst.includes('creates a NEW bot rather than editing'))
+t('and the sheet still makes you acknowledge what you are running',
+  cli.includes('id="devBotAck"'))
+t('the distinction from server execution is recorded',
+  cli.includes('not the server executing a'))
+
 console.log(nl + '-- keeping one is a note to self, not an install --')
 // The operator marks a submission; shipping it is still a person reading the file and
 // committing it. Nothing in the app installs a submitted bot.

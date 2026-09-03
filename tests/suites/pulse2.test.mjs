@@ -133,7 +133,7 @@ const compact = new Function('points', `
   const VOL_MAX = 2000
   ${grab(srv, 'function volCompact(points)').replace('function volCompact(points) {', '').slice(0, -1)}
 `)
-const hourly = Array.from({ length: 24 * 40 }, (_, i) => [now - (24 * 40 - 1 - i) * 3600e3, i, 0])
+const hourly = Array.from({ length: 24 * 40 }, (_, i) => [now - (24 * 40 - 1 - i) * 3600e3 - 1800e3, i, 0])
 const kept = compact(hourly)
 t('recent hours are kept at full detail', kept.filter(p => p[0] >= now - 14 * D).length === 14 * 24)
 t('older readings collapse to one a day', kept.filter(p => p[0] < now - 14 * D).length <= 27, String(kept.length))

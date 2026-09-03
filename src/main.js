@@ -24151,6 +24151,36 @@ window.__openBotSubmissions = async function() {
   }
 }
 
+/**
+ * Install a submitted bot on THIS device.
+ *
+ * It opens the ordinary install sheet with the file and its settings filled in, so it
+ * becomes a normal device bot: Run, Stop, Edit, Preview, all the same. The code is copied
+ * VERBATIM -- a submission you install should behave exactly as its author wrote it, or
+ * you are reviewing one file and running another.
+ *
+ * This is not the server executing a stranger's code. It is you, having read it, choosing
+ * to run it in your own browser inside the sandbox and the caps you set. The install sheet
+ * still carries its warning and still makes you tick the box.
+ */
+window.__botSubInstall = function(id) {
+  const row = (_subsCache ?? []).find(x => x.id === id)
+  if (!row) return
+  const c = row.config ?? {}
+  _devBotDraft = {
+    name: row.name,
+    code: row.code,
+    coin: c.coin, coins: c.coins,
+    maxUsd: c.maxUsd, maxPerMin: c.maxPerMin, maxOpen: c.maxOpen,
+    everySec: c.everySec, leverage: c.leverage,
+    params: typeof c.params === 'string' ? c.params : '',
+  }
+  document.getElementById('botSubsSheet')?.remove()
+  // null, not the submission: this creates a NEW bot rather than editing one, so the
+  // sheet offers Install and the submission itself is left untouched in the queue.
+  _devBotInstallSheet(null)
+}
+
 window.__botSubStatus = async function(id, status) {
   try {
     const pin = _lbGetPin()
@@ -24219,6 +24249,7 @@ function _botSubsRender(state) {
       ${s.note ? `<div style="font-size:11.5px;color:var(--fg-2);margin-top:6px;line-height:1.45">${esc(s.note)}</div>` : ''}
       <div style="display:flex;gap:6px;margin-top:9px;flex-wrap:wrap">
         <button onclick="window.__botSubCode('${esc(s.id)}')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:11px;font-weight:700;cursor:pointer">${_T('Read code', 'Ver código')}</button>
+        <button onclick="window.__botSubInstall('${esc(s.id)}')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:11px;font-weight:700;cursor:pointer">${_T('Install', 'Instalar')}</button>
         <button onclick="window.__botSubStatus('${esc(s.id)}','kept')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--green);background:transparent;color:var(--green);font-size:11px;font-weight:700;cursor:pointer">${_T('Keep', 'Guardar')}</button>
         <button onclick="window.__botSubStatus('${esc(s.id)}','declined')" style="padding:5px 10px;border-radius:7px;border:1px solid var(--border2);background:transparent;color:var(--muted);font-size:11px;font-weight:700;cursor:pointer">${_T('Decline', 'Descartar')}</button>
       </div>
