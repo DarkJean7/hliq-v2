@@ -133,5 +133,15 @@ t('the docs tell the next author how to name a market',
   bot.includes("Add a 'coin' to send one to another of your markets"))
 t('and that the list is the limit', bot.includes('that list is the guardrail'))
 
+
+console.log(nl + '-- the preview says which market each order is for --')
+// A fifteen-market bot's preview listed fifteen rows all labelled with the home market,
+// which reads as 'it only trades one coin' -- the exact thing a preview is asked.
+t('each row is labelled with its own market',
+  cli.includes('_ocCoinLabel(it.coin ?? def.coin)'))
+t('and not with the home market regardless',
+  !cli.includes('${esc(_ocCoinLabel(def.coin))}'))
+t('why is recorded', cli.includes('reading as fifteen orders on one coin'))
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

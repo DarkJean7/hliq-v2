@@ -23810,11 +23810,14 @@ function _devBotPreviewSheet(def, res) {
       <div style="font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">${
         _T('It would place', 'Colocaría')}</div>
       ${res.intents.length
+        // Each row is labelled with ITS market, not the bot's home one. A multi-market
+        // bot that opens fifteen positions was reading as fifteen orders on one coin,
+        // which is exactly the question a preview exists to answer.
         ? res.intents.map(it => `<div style="display:flex;align-items:center;gap:9px;border:1px solid var(--border2);border-radius:10px;background:var(--panel-2);padding:10px 12px;margin-bottom:6px">
             <span style="width:7px;height:7px;border-radius:50%;background:${it.type === 'close' || it.type === 'cancel' ? 'var(--orange,#f59e0b)' : it.isBuy ? 'var(--green)' : 'var(--red)'};flex-shrink:0"></span>
             <span style="font-size:13px;font-weight:700">${esc(describe(it))}</span>
             <span style="flex:1"></span>
-            <span style="font-size:10.5px;color:var(--muted)">${esc(_ocCoinLabel(def.coin))}</span>
+            <span style="font-size:10.5px;color:var(--muted)">${esc(_ocCoinLabel(it.coin ?? def.coin))}</span>
           </div>`).join('')
         : `<div style="border:1px dashed var(--border2);border-radius:10px;padding:13px;font-size:12.5px;color:var(--fg-3);line-height:1.5">${
             res.timedOut
