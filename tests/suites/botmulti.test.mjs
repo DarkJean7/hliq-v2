@@ -139,9 +139,29 @@ console.log(nl + '-- the preview says which market each order is for --')
 // which reads as 'it only trades one coin' -- the exact thing a preview is asked.
 t('each row is labelled with its own market',
   cli.includes('_ocCoinLabel(it.coin ?? def.coin)'))
-t('and not with the home market regardless',
-  !cli.includes('${esc(_ocCoinLabel(def.coin))}'))
+// The home market is named in the note below the rows now, so its absence is no longer
+// the test -- the row itself is.
+t('the row reads the intent, not the bot',
+  /\$\{esc\(describe\(it\)\)\}[\s\S]{0,240}_ocCoinLabel\(it\.coin \?\? def\.coin\)/.test(cli))
 t('why is recorded', cli.includes('reading as fifteen orders on one coin'))
+
+
+console.log(nl + '-- a card wider than its file is called out --')
+// The list is a permission, not an instruction, and a file that ignores it used to look
+// identical to one that honours it. Three conditions, so this stays a cause and not a guess.
+t('the preview works out whether the file can see the list',
+  cli.includes('const _pvBlindToList = !/\bcoins\b/.test(def.code')),
+t('it only fires when every order was for the home market',
+  cli.includes('res.intents.every(it => (it.coin ?? def.coin) === def.coin)')),
+t('and only when the card lists more than one market',
+  cli.includes('_pvMkts.length > 1 && _pvHomeOnly && _pvBlindToList')),
+t('it says which markets are going unused',
+  cli.includes('permissions it does not use')),
+t('and what the list actually is',
+  cli.includes('not a list of what to trade')),
+t('the note is translated', cli.includes('permisos que no usa')),
+t('why it is a likely cause and not a verdict is recorded',
+  cli.includes('rather than a verdict')),
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

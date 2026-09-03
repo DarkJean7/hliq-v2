@@ -23793,6 +23793,17 @@ function _devBotPreviewSheet(def, res) {
     return `${side} ${money(it.usd)} ${_T('at market', 'a mercado')}`
   }
 
+  // A card can list fifteen markets while its file only ever names one, and nothing said
+  // so -- the list is a permission, not an instruction. All three of these have to hold
+  // before it is worth saying: more than one market on the card, every order this tick
+  // for the home market, and a file that never reads ctx.coins. A file that hardcodes
+  // another market would fail the third, which is why this is worded as a likely cause
+  // rather than a verdict.
+  const _pvMkts = botCoins(def)
+  const _pvHomeOnly = res && res.intents.length > 0 &&
+    res.intents.every(it => (it.coin ?? def.coin) === def.coin)
+  const _pvBlindToList = !/coins/.test(def.code ?? '')
+  const _pvOneMarket = _pvMkts.length > 1 && _pvHomeOnly && _pvBlindToList
   let body
   if (!res) {
     body = `<div style="padding:34px 16px;text-align:center;font-size:12.5px;color:var(--muted)">${
@@ -23825,6 +23836,9 @@ function _devBotPreviewSheet(def, res) {
                    'No terminó un tick a tiempo. Si espera algo lento, es normal — pulsa Ejecutar y mira el Registro.')
               : _T('Nothing, right now. Its conditions were not met on this tick — which is a normal answer, not a failure.',
                    'Nada, ahora mismo. No se cumplieron sus condiciones en este tick — es una respuesta normal, no un fallo.')}</div>`}
+
+      ${_pvOneMarket ? `<div style="border:1px solid var(--orange,#f59e0b);border-radius:10px;padding:11px 12px;margin-top:8px;font-size:11.5px;color:var(--fg-2);line-height:1.55">${
+        _T(`Every order above is for ${esc(_ocCoinLabel(def.coin))}, and this file never mentions <b>ctx.coins</b> — so the other ${_pvMkts.length - 1} markets on this card are permissions it does not use. The list is a limit on where it may trade, not a list of what to trade. If you meant it to trade all of them, the code below has to read them.`,`Todas las órdenes de arriba son de ${esc(_ocCoinLabel(def.coin))}, y este archivo nunca menciona <b>ctx.coins</b> — así que los otros ${_pvMkts.length - 1} mercados de esta tarjeta son permisos que no usa. La lista limita dónde puede operar, no dice qué operar. Si querías que operara todos, el código tiene que leerlos.`)}</div>` : ''}
 
       ${lines.length ? `<div style="font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:16px 0 6px">${
         _T('What it said', 'Lo que dijo')}</div>
