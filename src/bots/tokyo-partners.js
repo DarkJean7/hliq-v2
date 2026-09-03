@@ -57,6 +57,43 @@
 //    fijarApalancamiento = true false deja el apalancamiento de la cuenta
 //    soloLargos     = false     true ignora las ventanas cortas
 //    soloCortos     = false     true ignora las ventanas largas
+//  ── TU PROPIA CARTERA: DOS LISTAS EN PARALELO ───────────────────────────
+//  El mercado numero i usa el horario numero i. La barra separa las entradas.
+//
+//    activos  = ZEC | XMR | xyz:SPCX
+//    horarios = 07:00-21:00, 21:00-07:00 | 16:00-06:00, 06:00-16:00 | 23:00-03:00, 03:00-23:00
+//
+//  Dentro de cada entrada van las cuatro horas de siempre: larga desde, larga
+//  hasta, corta desde, corta hasta.
+//
+//  Escribir activos DEFINE la cartera: solo se operan esos, aunque la tabla de
+//  arriba tenga quince. Si las dos listas no miden lo mismo no se opera NADA y se
+//  dice por que -- emparejar hasta donde alcance es como el octavo mercado acaba
+//  con el horario del septimo sin que nadie lo note.
+//
+//  ── SALIR POR PRECIO: TP Y SL ───────────────────────────────────────────
+//    tp = 2        cierra cuando el precio se mueve un 2% A FAVOR
+//    sl = 1.5      cierra cuando se mueve un 1.5% en contra
+//    tp.ZEC = 3    lo mismo para un solo mercado
+//    sl.XMR = 1
+//
+//  Son porcentaje de MOVIMIENTO DEL PRECIO, no de retorno sobre el margen: con
+//  apalancamiento 3, un tp de 2 se cobra cuando el precio hace un 2% y el margen
+//  ha hecho un 6%. Se dice asi porque el precio es lo que se puede mirar en el
+//  grafico y comprobar. En 0 (por defecto) no hay tp ni sl y solo se sale por hora.
+//
+//  Tras salir por precio NO se vuelve a entrar hasta que cambie la ventana. Sin
+//  eso el tick siguiente ve la ventana abierta y reabre el trade que el stop
+//  acababa de cerrar, cada treinta segundos.
+//
+//  ── CUANTO SE ARRIESGA ──────────────────────────────────────────────────
+//    margen = 50            USD de margen fijo por posicion. Manda sobre riesgo
+//    margen.ZEC = 100       y sobre repartir, y NO se divide entre mercados:
+//                           "50 por posicion" ya dice cuanto va en cada una.
+//    apalancamiento.ZEC = 5 apalancamiento de un mercado concreto
+//
+//  Con margen = 50 y apalancamiento = 3 cada posicion son 150 USD de nocional.
+//
 //  ── VENTANAS DE CUALQUIER MERCADO ───────────────────────────────────────
 //  No hace falta que un mercado este en la tabla de arriba. Se le dan sus horas
 //  y ya opera, sean quince mercados o cuarenta.
@@ -165,6 +202,71 @@ function ventanasPorMercado(p) {
   return out
 }
 
+// Un numero escrito mercado a mercado: "apalancamiento.ZEC = 5", "tp.XMR = 2.5".
+// Como en ventana.X, la clave se compara sin el prefijo del dex, asi que tp.SPCX
+// vale para xyz:SPCX.
+function numsPorMercado(p, prefijo) {
+  const out = {}
+  const re = new RegExp("^" + prefijo + "\.(.+)$", "i")
+  for (const k of Object.keys(p || {})) {
+    const m = re.exec(k)
+    if (!m) continue
+    const v = Number(p[k])
+    if (Number.isFinite(v)) out[String(m[1]).split(":").pop().toUpperCase()] = v
+  }
+  return out
+}
+
+// El apalancamiento de un mercado. Se escribe "apalancamiento.ZEC = 5" para uno solo,
+// "apalancamiento = 3" para todos, y si no se escribe nada sale de la tarjeta.
+function apalDe(clave, a) {
+  const v = paraMercado(a.apalPorMercado, clave, a.apalancamiento)
+  return v > 0 ? v : a.apalancamiento
+}
+
+// El valor que le toca a un mercado: el suyo si lo tiene, y si no el general.
+function paraMercado(mapa, clave, general) {
+  const v = mapa[clave]
+  return Number.isFinite(v) ? v : general
+}
+
+// Las dos listas en paralelo: el mercado numero i usa el horario numero i.
+//
+//   activos  = ZEC | XMR | xyz:SPCX
+//   horarios = 07:00-21:00, 21:00-07:00 | 16:00-06:00, 06:00-16:00 | 23:00-03:00, 03:00-23:00
+//
+// La barra separa las entradas y dentro de cada una van las cuatro horas de
+// siempre: larga desde, larga hasta, corta desde, corta hasta.
+//
+// Si las dos listas no miden lo mismo NO se empareja nada. Emparejar hasta donde
+// alcance es como el mercado numero ocho acaba operando el horario del siete sin
+// que nadie lo note; es mejor no operar y decir por que.
+function paresPorLista(p) {
+  const A = typeof p.activos === "string" ? p.activos.trim() : ""
+  const H = typeof p.horarios === "string" ? p.horarios.trim() : ""
+  if (!A && !H) return { pares: {}, error: null, tiene: false }
+  if (!A || !H) {
+    return { pares: {}, tiene: false, error: "falta " + (A ? "horarios" : "activos") +
+      ": las dos listas van juntas, una entrada de horarios por cada activo" }
+  }
+  const act = A.split("|").map(x => x.trim()).filter(Boolean)
+  const hor = H.split("|").map(x => x.trim()).filter(Boolean)
+  if (act.length !== hor.length) {
+    return { pares: {}, tiene: false, error: "activos tiene " + act.length + " y horarios tiene " +
+      hor.length + "; los indices tienen que cuadrar, asi que no empareja ninguno" }
+  }
+  const out = {}
+  for (let i = 0; i < act.length; i++) {
+    const par = ventanaPar(hor[i])
+    if (!par) {
+      return { pares: {}, tiene: false, error: 'horarios #' + (i + 1) + ' ("' + hor[i] + '") para ' +
+        act[i] + " no son cuatro horas HH:MM; ejemplo: 07:00-21:00, 21:00-07:00" }
+    }
+    out[String(act[i]).split(":").pop().toUpperCase()] = par
+  }
+  return { pares: out, error: null, tiene: true }
+}
+
 function ajustes(ctx) {
   const c = (ctx && ctx.config) || {}
   const p = c.params || {}
@@ -183,7 +285,26 @@ function ajustes(ctx) {
     largo:          ventanaDe(p.largo),
     corto:          ventanaDe(p.corto),
     porMercado:     ventanasPorMercado(p),
+    lista:          paresPorLista(p),
     mercado:        typeof p.mercado === "string" && p.mercado ? p.mercado : null,
+
+    // Salidas por precio. 0 en cualquiera de las dos las apaga, que es como estaba
+    // antes: la ventana horaria era la unica manera de salir. Son porcentaje de
+    // MOVIMIENTO DEL PRECIO desde la entrada, no de retorno sobre el margen -- con
+    // apalancamiento 3, un tp de 2 se cobra cuando el precio se mueve un 2% y el
+    // margen ha hecho un 6%. Se dice asi porque el precio es lo que se puede mirar
+    // en el grafico y comprobar.
+    tp:             Math.max(0, num(p, "tp", 0)),
+    sl:             Math.max(0, num(p, "sl", 0)),
+    tpPorMercado:   numsPorMercado(p, "tp"),
+    slPorMercado:   numsPorMercado(p, "sl"),
+
+    // Margen fijo por posicion, en USD. Manda sobre riesgo y sobre repartir: quien
+    // escribe "margen = 50" esta diciendo cuanto quiere comprometer, y calcularlo
+    // ademas a partir del equity seria contestarle. 0 lo deja apagado.
+    margen:         Math.max(0, num(p, "margen", 0)),
+    margenPorMercado: numsPorMercado(p, "margen"),
+    apalPorMercado: numsPorMercado(p, "apalancamiento"),
     // 0 en la tarjeta significa "sin tope", que aqui es un tope infinito.
     tope:           Number(c.maxUsd) > 0 ? Number(c.maxUsd) : Infinity,
   }
@@ -203,11 +324,23 @@ function filaDe(coin, a) {
   const propio = a.porMercado[clave]
   if (propio) return { clave, largo: propio.largo, corto: propio.corto, peso: pesoDe(), fuente: "ajuste" }
 
-  // 2. Su fila de la cartera, si la tiene. Estas horas salen del barrido sobre ~200
+  // 2. Las dos listas en paralelo. Van por debajo de ventana.X, que apunta a un solo
+  //    mercado y por tanto es lo mas concreto que se puede escribir, y por encima de
+  //    la tabla, porque quien escribe las listas esta redefiniendo la cartera entera.
+  const enLista = a.lista.pares[clave]
+  if (enLista) return { clave, largo: enLista.largo, corto: enLista.corto, peso: pesoDe(), fuente: "lista" }
+
+  // Y si hay listas, DEFINEN la cartera: lo que no aparece en activos no se opera,
+  // aunque este en la tabla de arriba. Escribir tres mercados y que operase quince
+  // seria contestar a otra pregunta -- el que quiera añadir uno a la tabla tiene
+  // ventana.X, que sigue funcionando porque se mira antes que esto.
+  if (a.lista.tiene) return null
+
+  // 3. Su fila de la cartera, si la tiene. Estas horas salen del barrido sobre ~200
   //    dias, que es lo que hace que la estrategia sea una estrategia.
   if (fila) return { clave, largo: fila.largo, corto: fila.corto, peso: fila.peso, fuente: "cartera" }
 
-  // 3. Y si no, las ventanas por defecto. Antes largo/corto pisaban TODOS los mercados,
+  // 4. Y si no, las ventanas por defecto. Antes largo/corto pisaban TODOS los mercados,
   //    asi que no se podia añadir uno sin retocar los quince; ahora solo se usan donde
   //    no hay nada mejor, que es justo el mercado nuevo.
   if (a.largo && a.corto) return { clave, largo: a.largo, corto: a.corto, peso: 100 / CARTERA_N, fuente: "defecto" }
@@ -224,7 +357,14 @@ function filaDe(coin, a) {
 // la vez son quince veces la exposicion que tenia el archivo de un solo mercado,
 // que es la manera silenciosa de acabar liquidado por haber añadido mercados.
 function tamanoUsd(ctx, fila, a, n) {
-  const base = (ctx.equity * a.riesgo * a.apalancamiento) / Math.max(1, n)
+  const apal = apalDe(fila.clave, a)
+  // Margen fijo: el nocional es margen x apalancamiento y nada mas. No se reparte
+  // entre mercados ni se escala por peso, porque "50 por posicion" ya es la
+  // respuesta a cuanto va en cada una -- dividirlo entre quince seria ignorarla.
+  const fijo = paraMercado(a.margenPorMercado, fila.clave, a.margen)
+  if (fijo > 0) return fijo * apal
+
+  const base = (ctx.equity * a.riesgo * apal) / Math.max(1, n)
   const esc  = a.usarPesos ? (fila.peso / 100) * CARTERA_N : 1
   // Sin suelo y sin tope: el que llama los aplica, porque necesita saber CUANTO
   // los aplico. Un suelo invisible es como se gasta el doble de lo que se pidio.
@@ -294,15 +434,44 @@ function fijarApalancamiento(mercados, a) {
       return Promise.all(pendientes.map(c => {
         const i = uni.findIndex(x => x.name === c)
         if (i < 0) { log("apalancamiento: no encuentro", c, "en meta; queda el de la cuenta"); return null }
-        return api.exchange("updateLeverage", { asset: i, isCross: true, leverage: a.apalancamiento })
-          .then(() => log("apalancamiento x" + a.apalancamiento + " fijado en", c))
+        // El de ESTE mercado, que puede no ser el general: apalancamiento.ZEC = 5
+        // no serviria de nada si aqui se fijara el mismo numero en los quince.
+        const apal = apalDe(String(c).split(":").pop().toUpperCase(), a)
+        return api.exchange("updateLeverage", { asset: i, isCross: true, leverage: apal })
+          .then(() => log("apalancamiento x" + apal + " fijado en", c))
           .catch(e => log("no se pudo fijar el apalancamiento en", c + ":", String(e)))
       }))
     })
     .catch(e => log("no se pudo leer meta:", String(e), "- se opera con el apalancamiento de la cuenta"))
 }
 
+// El precio de un mercado: marks lo trae ya en numero para los mercados de la
+// tarjeta; mids es de todo el exchange y viene en cadenas.
+function precioDe(ctx, coin) {
+  const m = ctx.marks && ctx.marks[coin]
+  if (Number.isFinite(m) && m > 0) return m
+  const v = Number(ctx.mids && ctx.mids[coin])
+  return Number.isFinite(v) && v > 0 ? v : 0
+}
+
+// Cuanto se ha movido el precio A FAVOR de la posicion, en porcentaje. Devuelve
+// null si falta la entrada o el precio: sin uno de los dos no se sabe, y 0 diria
+// que no se ha movido, que es otra cosa.
+function movimientoPct(ctx, coin, pos, lado) {
+  const entrada = Number(pos && pos.entryPx)
+  const marca = precioDe(ctx, coin)
+  if (!(entrada > 0) || !(marca > 0)) return null
+  const pct = ((marca - entrada) / entrada) * 100
+  return lado > 0 ? pct : -pct
+}
+
 let avisoFuera = false   // el aviso de mercados fuera de la cartera se da una vez
+let avisoLista = false   // el de las listas descuadradas, tambien una sola vez
+
+// Mercados de los que se ha salido por tp o sl, con la ventana en la que se salio.
+// Sin esto el tick siguiente ve la ventana todavia abierta y vuelve a entrar, que
+// convierte un stop en una manera cara de pagar comisiones cada quince segundos.
+const salido = new Map()
 
 // --- ciclo -------------------------------------------------------------------
 // No es async a proposito: no espera ninguna promesa, y devolver una Promise
@@ -313,6 +482,18 @@ let avisoFuera = false   // el aviso de mercados fuera de la cartera se da una v
 // vacia y solo en los cambios de ventana devuelve algo.
 function onTick(ctx) {
   const a = ajustes(ctx)
+
+  // Las listas descuadradas no emparejan nada, asi que decirlo es lo unico que
+  // separa "no opero porque me lo pediste mal" de "no opero y no se sabe".
+  if (a.lista.error) {
+    if (!avisoLista) {
+      avisoLista = true
+      log("activos/horarios:", a.lista.error, "- NO se opera nada hasta arreglarlo")
+    }
+    // Y no se opera. Caer a la tabla seria operar quince mercados con unas horas que
+    // no son las que se pidieron, mientras el aviso se pierde entre los demas.
+    return
+  }
 
   // Los mercados de la tarjeta que ademas estan en la tabla.
   const enTarjeta = (ctx.coins && ctx.coins.length ? ctx.coins : [ctx.coin])
@@ -367,6 +548,37 @@ function onTick(ctx) {
     // sobre el historico: mismo resultado que el backtest, mismo turnover.
     const objetivo = (enL && enS) ? 0 : enL ? 1 : enS ? -1 : 0
     const actual = ladoActual(posiciones.get(coin))
+
+    // La ventana en la que estamos, como una cadena. Es lo que hace caducar el
+    // bloqueo de tp/sl: cuando la ventana cambia, la firma cambia con ella.
+    const firma = objetivo + "@" +
+      (objetivo > 0 ? fila.largo : objetivo < 0 ? fila.corto : ["", ""]).join("-")
+    if (salido.has(coin) && salido.get(coin) !== firma) salido.delete(coin)
+
+    // Salidas por precio. Van antes de comparar objetivo y posicion: mientras la
+    // ventana sigue abierta los dos coinciden, y ahi es justamente donde hay que
+    // mirar el precio. Apagadas (tp = sl = 0) esto no hace nada y el bot se
+    // comporta como siempre: se sale por hora y por nada mas.
+    const posActual = posiciones.get(coin)
+    if (actual !== 0) {
+      const tp = paraMercado(a.tpPorMercado, fila.clave, a.tp)
+      const sl = paraMercado(a.slPorMercado, fila.clave, a.sl)
+      if (tp > 0 || sl > 0) {
+        const mov = movimientoPct(ctx, coin, posActual, actual)
+        if (mov === null) {
+          log(hhmm, "·", fila.clave, "sin precio o sin entrada: no puedo medir tp/sl este tick")
+        } else if ((tp > 0 && mov >= tp) || (sl > 0 && mov <= -sl)) {
+          log(hhmm, "·", fila.clave, mov >= 0 ? "TP" : "SL", mov.toFixed(2) + "%",
+              "· cierro", actual > 0 ? "largo" : "corto",
+              "· pnl", Number(posActual && posActual.unrealizedPnl).toFixed(2))
+          intenciones.push({ type: "close", coin: coin })
+          salido.set(coin, actual + "@" +
+            (actual > 0 ? fila.largo : fila.corto).join("-"))
+          continue
+        }
+      }
+    }
+
     if (objetivo === actual) continue
 
     // cerrar antes de darse la vuelta: una posicion neta no admite los dos lados
@@ -377,6 +589,10 @@ function onTick(ctx) {
       intenciones.push({ type: "close", coin: coin })
       continue
     }
+
+    // Salimos por precio en ESTA misma ventana: no se vuelve a entrar hasta que la
+    // ventana cambie. Lo contrario es reabrir el trade que el stop acababa de cerrar.
+    if (salido.get(coin) === firma) continue
 
     if (!ctx.equity) {
       log(hhmm, "·", fila.clave, "sin equity para abrir")
