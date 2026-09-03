@@ -8476,7 +8476,24 @@ window.__paperBotStart = function(type) {
                    `Aún no hay precio para ${cfg.coin} — inténtalo en un momento.`), 'err')
     return false
   }
-  const bots = _paperBotsLoad(); bots[type] = cfg; _paperBotsSave(bots)
+  // One grid is stored per TYPE, not per coin, so starting one on a new coin used to
+  // overwrite the old config and leave the previous coin's ladder resting and its position
+  // open, managed by nothing. That is how a paper account ends up holding a position no bot
+  // claims and the owner does not remember opening. Retire the old one first, explicitly.
+  const bots = _paperBotsLoad()
+  const prev = bots[type]
+  if (prev && prev.coin !== cfg.coin) {
+    const stale = paperOpenOrders().filter(o => o.coin === prev.coin && !o.isTrigger)
+    if (stale.length) paperCancelMany(stale.map(o => ({ a: 0, o: o.oid })))
+    const held = (paperPerpState().assetPositions ?? [])
+      .find(x => x.position.coin === prev.coin && parseFloat(x.position.szi ?? 0) !== 0)
+    _paperToast(held
+      ? _T(`Grid moved to ${cfg.coin} — ${prev.coin}'s orders were cancelled, and its position is now yours to close.`,
+           `El grid pasó a ${cfg.coin} — se cancelaron las órdenes de ${prev.coin}, y su posición queda a tu cargo.`)
+      : _T(`Grid moved to ${cfg.coin} — ${prev.coin}'s orders were cancelled.`,
+           `El grid pasó a ${cfg.coin} — se cancelaron las órdenes de ${prev.coin}.`))
+  }
+  bots[type] = cfg; _paperBotsSave(bots)
   _paperGridReconcile(type, cfg)
   _paperRefresh()
   _paperToast(_T('📝 Paper grid running — simulated orders only', '📝 Grid de práctica activo — órdenes simuladas'), 'success')

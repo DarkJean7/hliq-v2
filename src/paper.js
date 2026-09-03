@@ -43,12 +43,26 @@ export const PAPER_MAX_ACCTS = 12
 
 let _slot = 'main'
 
-/** The user-made accounts: [{ slot, name, createdAt }]. The two built-ins are not in here. */
+/**
+ * The user-made accounts: [{ slot, name, createdAt }]. The two built-ins are not in here.
+ *
+ * Empty is not the same as unknown, and here the difference decides which account's money
+ * you are looking at. No key at all means no extra accounts, which is a real answer. A
+ * THROW means localStorage would not answer -- iOS under memory pressure, storage being
+ * cleared, a private window -- and answering "none" to that used to make every account
+ * look unknown for one call, which is all keyFor needs to send it to the practice account.
+ * So a failed read replays the last good answer instead of inventing an empty one.
+ */
+let _acctCache = []
 export function paperAcctList() {
+  let raw
+  try { raw = localStorage.getItem(PAPER_LIST_KEY) }
+  catch { return _acctCache }                       // could not look ≠ there are none
   try {
-    const d = JSON.parse(localStorage.getItem(PAPER_LIST_KEY) ?? 'null')
-    return Array.isArray(d) ? d.filter(a => a && typeof a.slot === 'string') : []
-  } catch { return [] }
+    const d = JSON.parse(raw ?? 'null')
+    _acctCache = Array.isArray(d) ? d.filter(a => a && typeof a.slot === 'string') : []
+    return _acctCache
+  } catch { return _acctCache }                     // present but unreadable: same reasoning
 }
 function paperAcctSave(list) {
   try { localStorage.setItem(PAPER_LIST_KEY, JSON.stringify(list)); return true } catch { return false }
@@ -57,11 +71,23 @@ function extraKey(slot) { return PAPER_EXTRA_PREFIX + slot }
 export function paperSlotKnown(slot) {
   return slot === 'main' || slot === 'challenge' || paperAcctList().some(a => a.slot === slot)
 }
-// An unknown slot falls back to the practice account rather than opening a store of its
-// own: that is what makes deleting the account you are standing in survivable.
+/**
+ * A slot's own store, always.
+ *
+ * This used to send an unknown slot to the practice account, so that deleting the account
+ * you were standing in was survivable. But paperKey() runs on every load AND every save,
+ * and "unknown" was decided by a localStorage read that can fail. One failed read and an
+ * ordinary account resolved to hliq_paper_v2: it displayed the practice account's
+ * positions -- trades the owner had never made -- and the next save wrote its own book
+ * over the practice account's. Intermittent, in either direction, in any account.
+ *
+ * Deleting the account you are standing in is handled where it happens: paperAcctDelete
+ * moves _slot to 'main' before erasing anything. It never needed this fallback, and no
+ * fallback is worth a path that shows one account another account's money.
+ */
 function keyFor(slot) {
   if (PAPER_KEYS[slot]) return PAPER_KEYS[slot]
-  return paperSlotKnown(slot) ? extraKey(slot) : PAPER_KEYS.main
+  return extraKey(slot)
 }
 function paperKey() { return keyFor(_slot) }
 export function paperSlot() { return _slot }
