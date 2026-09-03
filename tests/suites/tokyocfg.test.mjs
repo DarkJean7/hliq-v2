@@ -170,5 +170,28 @@ for (const [what, needle] of [
   ['per-market leverage', 'apalancamiento.ZEC = 5'],
 ]) t('the header documents ' + what, SRC.includes(needle))
 
+
+console.log(nl + '-- and the card offers them without opening the file --')
+// The Settings box existed and read as empty, which to the person looking at it is the
+// same thing as missing. It now arrives pre-filled and entirely commented out, so every
+// knob is on screen and using one means deleting a #.
+const PRESET = fs.readFileSync('src/botpresets.js', 'utf8')
+const seedM = PRESET.match(/params: \[([\s\S]*?)\]\.join/)
+t('the preset seeds the Settings box', !!seedM)
+const seed = seedM ? seedM[1] : ''
+for (const knob of ['activos', 'horarios', 'tp =', 'sl =', 'margen =', 'riesgo =', 'apalancamiento.ZEC']) {
+  t('the seed offers ' + knob.replace(' =', ''), seed.includes(knob), seed.slice(0, 90))
+}
+const seedLines = seed.split(nl).map(l => l.trim()).filter(l => l.startsWith("'"))
+t('every seeded line is commented out', seedLines.length > 0 && seedLines.every(l => l.startsWith("'#")),
+  seedLines.find(l => !l.startsWith("'#")) ?? '')
+// Proof, not assertion: the real parser must read nothing out of it, or adding the bot
+// would quietly configure it.
+const { parseBotParams } = await import('../../src/devicebot.js')
+const parsed = parseBotParams(seedLines.map(l => l.replace(/^'|',?$/g, '')).join(nl))
+t('so the parser reads nothing out of it', Object.keys(parsed).length === 0, JSON.stringify(parsed))
+t('and the box is tall enough to show it',
+  /id="devBotParams" rows="([7-9]|[1-9][0-9])"/.test(fs.readFileSync('src/main.js', 'utf8')))
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

@@ -43,7 +43,21 @@ export const BOT_PRESETS = [
     maxOpen: 20,
     everySec: 30,       // the file's own note: turning a window over takes two ticks
     leverage: 3,
-    params: '',
+    // The Settings box, pre-filled and entirely commented out. parseBotParams drops
+    // anything starting with # so this changes no behaviour -- but a knob nobody can see
+    // is a knob nobody has. The box was there all along and read as empty, which is the
+    // same thing as missing to the person looking at it.
+    params: [
+      '# Borra el # de la linea que quieras usar.',
+      '# El mercado numero i usa el horario numero i:',
+      '# activos  = ZEC | XMR | xyz:SPCX',
+      '# horarios = 07:00-21:00, 21:00-07:00 | 16:00-06:00, 06:00-16:00 | 23:00-03:00, 03:00-23:00',
+      '# tp = 2                    % de movimiento del precio a favor',
+      '# sl = 1.5                  % en contra',
+      '# margen = 50               USD por posicion, manda sobre riesgo',
+      '# riesgo = 0.03             o fraccion del equity, si no hay margen',
+      '# apalancamiento.ZEC = 5    apalancamiento de un solo mercado',
+    ].join(String.fromCharCode(10)),
     // Not a suggestion about markets, a fact about arithmetic: the risk fraction is split
     // across the markets, and below roughly this the split lands under the exchange minimum,
     // so every order gets rounded up and the book risks more than it was told to.

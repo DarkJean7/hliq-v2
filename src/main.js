@@ -24668,7 +24668,7 @@ function _devBotInstallSheet(existing = null) {
         _T('The knobs this bot declares, one <b>name = value</b> per line. They reach it as <b>ctx.config.params</b>, so changing one is a form field rather than an edit to the file.',
            'Los ajustes del bot, uno por línea como <b>nombre = valor</b>. Llegan como <b>ctx.config.params</b>, así que cambiar uno no obliga a editar el archivo.')}
       </div>
-      <textarea id="devBotParams" rows="4" spellcheck="false" placeholder="riesgo = 0.03&#10;usarPesos = false"
+      <textarea id="devBotParams" rows="7" spellcheck="false" placeholder="riesgo = 0.03&#10;usarPesos = false"
         style="${inp};font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.6;resize:vertical;white-space:pre">${esc(d.params ?? '')}</textarea>
     </div>
 
