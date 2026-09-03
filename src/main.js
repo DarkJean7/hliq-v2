@@ -225,6 +225,7 @@ import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERV
          runPortfolio } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams, botCoins } from './devicebot.js'
+import { BOT_PRESETS, botPreset } from './botpresets.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
          compareAxisHtml, attachCompareScrub, compareReadoutHtml, assignCompareColors } from './compare.js'
 import { ES_DICT } from './i18n-es.js'
@@ -23930,6 +23931,57 @@ window.__devBotNew = function() {
   _devBotInstallSheet()
 }
 
+/**
+ * A ready-made bot: the file and the card it needs, in one tap.
+ *
+ * It goes through _devBotInstallSheet like anything else, so the code is on screen and the
+ * acknowledgement still has to be ticked. A preset is a filled-in form, not a shortcut past
+ * the part where you decide to run it.
+ */
+window.__devBotPresets = function() {
+  const rows = BOT_PRESETS.map(b => `
+    <div style="border:1px solid var(--border2);border-radius:11px;padding:12px 13px;margin-bottom:9px;background:var(--panel-2)">
+      <div style="font-size:14px;font-weight:800;color:var(--fg)">${esc(b.name)}</div>
+      <div style="font-size:11px;color:var(--accent);font-weight:700;margin-top:2px">${esc(_T(b.tagline[0], b.tagline[1]))}</div>
+      <div style="font-size:11.5px;color:var(--fg-2);line-height:1.55;margin-top:7px">${esc(_T(b.blurb[0], b.blurb[1]))}</div>
+      <div style="font-size:10.5px;color:var(--fg-3);line-height:1.5;margin-top:7px">${
+        b.coins.length} ${_T('markets', 'mercados')} · ${_T('max', 'máx')} $${b.maxUsd}/${_T('order', 'orden')} · ${
+        _T('every', 'cada')} ${b.everySec}s · ${b.leverage}x</div>
+      ${b.minEquity ? `<div style="font-size:10.5px;color:var(--orange,#f59e0b);line-height:1.5;margin-top:6px">${
+        _T(`Built for an account of about $${b.minEquity} or more — it splits its risk across ${b.coins.length} markets, and below that the split lands under the exchange minimum and each order is rounded up.`,
+           `Pensado para una cuenta de unos $${b.minEquity} o más — reparte el riesgo entre ${b.coins.length} mercados, y por debajo el reparto queda bajo el mínimo del exchange y cada orden se redondea hacia arriba.`)}</div>` : ''}
+      <div style="display:flex;gap:8px;margin-top:11px">
+        <button onclick="window.__devBotPresetCode('${esc(b.id)}')" style="flex:1;padding:9px;border-radius:9px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:12px;font-weight:700;cursor:pointer">${_T('Read the code', 'Ver el código')}</button>
+        <button onclick="window.__devBotPresetAdd('${esc(b.id)}')" style="flex:1;padding:9px;border-radius:9px;border:none;background:var(--accent);color:#000;font-size:12px;font-weight:700;cursor:pointer">${_T('Add it', 'Añadirlo')}</button>
+      </div>
+    </div>`).join('')
+
+  _devBotSheet(_T('Ready-made bots', 'Bots listos'), `
+    <div style="font-size:11.5px;color:var(--fg-3);line-height:1.55;margin-bottom:11px">${
+      _T('These ship with the app and run on your device like any other. Read one before you run it — the code is right there.',
+         'Vienen con la app y corren en tu dispositivo como cualquier otro. Léelo antes de ejecutarlo — el código está ahí.')}</div>
+    ${rows}`)
+}
+
+window.__devBotPresetCode = function(id) {
+  const b = botPreset(id)
+  if (!b) return
+  _devBotSheet(esc(b.name), `<pre style="background:var(--panel-1);border:1px solid var(--border);border-radius:9px;padding:11px;font-family:var(--font-mono);font-size:10.5px;line-height:1.5;overflow-x:auto;white-space:pre;color:var(--fg-2);margin:0">${esc(b.code)}</pre>`)
+}
+
+window.__devBotPresetAdd = function(id) {
+  const b = botPreset(id)
+  if (!b) return
+  // Its own caps, not the form defaults. The defaults suit a one-market bot, and a
+  // fifteen-market bot on them trades the first four markets and looks broken.
+  _devBotDraft = {
+    name: b.name, code: b.code, coin: b.coins[0], coins: [...b.coins],
+    maxUsd: b.maxUsd, maxPerMin: b.maxPerMin, maxOpen: b.maxOpen,
+    everySec: b.everySec, leverage: b.leverage, params: b.params ?? '',
+  }
+  _devBotInstallSheet(null)
+}
+
 // Editing reopens the same sheet with the bot's own values, so there is one form to learn
 // rather than two that can drift apart.
 window.__devBotEdit = function(id) {
@@ -24098,6 +24150,10 @@ window.__devBotRemoveCoin = function(c) {
 }
 
 function _devBotRead(existingId) {
+  // The trim is the ONLY thing done to a file between the box and storage, and it only
+  // touches whitespace at the ends -- nothing inside it is rewritten, reformatted or
+  // rewrapped. That limit is the point: a bot you read is the bot that runs, and a review
+  // means nothing if the thing reviewed and the thing executed are not the same text.
   const g = id => document.getElementById(id)?.value?.trim() ?? ''
   const code = g('devBotCode')
   if (!code) { _paperToast(_T('The file is empty', 'El archivo está vacío'), 'err'); return null }
@@ -24751,6 +24807,7 @@ function _devBotsHtml() {
   // Device bots are rendered as ordinary bot cards, in the same list as the built-ins —
   // this returns only the "add one" affordance that follows them.
   return `<div style="display:flex;gap:8px;margin:2px 0 6px">
+      <button onclick="window.__devBotPresets()" style="flex:1;background:transparent;border:1px solid var(--accent);border-radius:10px;color:var(--accent);font-size:12.5px;font-weight:700;padding:11px;cursor:pointer">${_T('Ready-made', 'Bots listos')}</button>
       <button onclick="window.__devBotNew()" style="flex:1;background:transparent;border:1px dashed var(--border2);border-radius:10px;color:var(--fg-2);font-size:12.5px;font-weight:700;padding:11px;cursor:pointer">+ ${_T('Write your own bot', 'Escribe tu propio bot')}</button>
       <label style="flex:1;background:transparent;border:1px dashed var(--border2);border-radius:10px;color:var(--fg-2);font-size:12.5px;font-weight:700;padding:11px;cursor:pointer;text-align:center">
         ${_T('Upload .js', 'Subir .js')}<input type="file" accept=".js,.txt,text/javascript" style="display:none" onchange="window.__devBotPickFile(this)">
