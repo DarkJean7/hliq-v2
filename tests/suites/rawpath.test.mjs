@@ -109,5 +109,22 @@ t('a dry run still closes this route', bridge.includes("bot.say('info', 'Would c
 const bot = fs.readFileSync('src/devicebot.js', 'utf8').replace(/\r\n/g, '\n')
 t('the intent path keeps its own checks', bot.includes('const why = this._check(it, ctx)'))
 
+
+console.log(nl + '-- a practice account is for finding out whether it works --')
+// A bot that sets its leverage used to run on a real account and fail on a paper one,
+// which inverts what a paper account is for. The no-ops are accepted; everything the
+// paper engine genuinely cannot model still throws with its reason.
+t('the no-ops are named once, next to the other method sets',
+  cli.includes("const _DEVBOT_PAPER_NOOP = new Set(['updateLeverage', 'updateIsolatedMargin', 'scheduleCancel'])"))
+t('paper accepts them', bridge.includes('_DEVBOT_PAPER_NOOP.has(method)'))
+t('and says they did nothing, rather than pretending',
+  bridge.includes("does nothing on a paper account"))
+t('anything it cannot model still throws',
+  bridge.includes('is not simulated on the paper account'))
+t('the no-op check comes after the caps, not before',
+  bridge.indexOf('_devBotCheckRaw') < bridge.indexOf('_DEVBOT_PAPER_NOOP'))
+t('why paper has no leverage to set is recorded',
+  cli.includes('sizes every order by its notional'))
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

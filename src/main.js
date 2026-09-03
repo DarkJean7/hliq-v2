@@ -23586,6 +23586,15 @@ const _DEVBOT_METHODS = new Set([
 // Methods that create orders, and so must count against the bot's rate limit.
 const _DEVBOT_PLACING = new Set(['order', 'batchModify', 'modify', 'twapOrder'])
 
+// Methods a paper account accepts and ignores.
+//
+// Paper sizes every order by its notional, so there is no per-market leverage or isolated
+// margin to set -- these would be setting a number nothing reads. They used to throw, which
+// made a bot that works on a real account look broken on a practice one, and a practice
+// account exists precisely so you can find out whether it works. So: accepted, ignored, and
+// said in the log, because silently succeeding at nothing is its own kind of lie.
+const _DEVBOT_PAPER_NOOP = new Set(['updateLeverage', 'updateIsolatedMargin', 'scheduleCancel'])
+
 /**
  * The same limits, on the other route to the exchange.
  *
@@ -23719,6 +23728,10 @@ async function _devBotRequest(def, kind, payload, bot) {
       // The paper engine models orders and cancels, not the whole exchange API.
       if (method === 'order')  { const r = paperOrder(args, args?.orders?.[0]?.__coin ?? def.coin); _paperRefresh(); return r }
       if (method === 'cancel') { paperCancelMany(args?.cancels ?? []); _paperRefresh(); return { status: 'ok' } }
+      if (_DEVBOT_PAPER_NOOP.has(method)) {
+        bot?.say('info', 'api.' + method + ' does nothing on a paper account — accepted, not applied')
+        return { status: 'ok', paperNoop: true }
+      }
       throw new Error(`"${method}" is not simulated on the paper account`)
     }
     const acct = _stratTargetAddr()
@@ -24390,8 +24403,10 @@ window.__devBotSpec = function() {
 
     ${h(_T('What you get: ctx', 'Lo que recibes: ctx'))}
     ${pre(`ctx = {
-  coin:      "BTC",        // the market you chose for this bot
-  mark:      78123.5,      // its current mark price
+  coin:      "BTC",        // this bot's HOME market
+  coins:     ["BTC","ETH"],// EVERY market it may trade - its card's list
+  marks:     { BTC: 78123.5, ETH: 2431.0 },   // a mark for each of them
+  mark:      78123.5,      // the home market's mark = marks[ctx.coin]
   tick:      1735600000000,// ms timestamp of this tick
   paper:     true,         // true on a practice account
   equity:    1042.11,      // account value, USDC
@@ -24406,6 +24421,10 @@ window.__devBotSpec = function() {
                  leverage, liquidationPx, marginUsed } ],
   orders:    [ { oid, coin, isBuy, sz, limitPx } ],
   margin:    { accountValue, totalMarginUsed, withdrawable },
+
+  // the card's own settings, so a knob is a form field and not a code edit
+  config: { coin, coins, maxUsd, maxPerMin, maxOpen, everySec,
+            leverage, dry, params: { ... } },
 }`)}
     ${p(_T('Numbers are numbers, except <b>mids</b>, which Hyperliquid gives as strings.',
            'Los números son números, salvo <b>mids</b>, que Hyperliquid entrega como cadenas.'))}
@@ -24417,7 +24436,12 @@ window.__devBotSpec = function() {
     ${pre(`{ type: "market", isBuy: true,  usd: 25 }
 { type: "limit",  isBuy: false, usd: 25, px: 80000 }
 { type: "cancel", oid: 123456789 }
-{ type: "close" }`)}
+{ type: "close" }
+
+// name a market to act on one that is not the home one:
+{ type: "market", coin: "ETH", isBuy: true, usd: 25 }`)}
+    ${p(_T('A market you do not name is <b>ctx.coin</b>. A market that is not on the card is refused — that list is a ceiling on where this bot may trade, <b>not</b> a list of what to trade. A file that never reads <b>ctx.coins</b> only ever touches its home market, however many you add.',
+           'Un mercado que no nombres es <b>ctx.coin</b>. Uno que no esté en la tarjeta se rechaza — esa lista es un límite de dónde puede operar, <b>no</b> una lista de qué operar. Un archivo que nunca lee <b>ctx.coins</b> solo toca su mercado principal, por muchos que añadas.'))}
     ${p(_T('Sizes are in <b>USD</b>, not coins — the app converts at the price it sends at. Every intent is checked against the limits you set; a refusal is logged and dropped.',
            'Los tamaños van en <b>USD</b>, no en monedas — la app convierte al precio de envío. Cada intención se comprueba contra tus límites; un rechazo se registra y se descarta.'))}
 
@@ -24430,6 +24454,18 @@ await api.exchange("updateLeverage",
   { asset: 0, isCross: true, leverage: 5 })`)}
     ${p(_T('These are signed by the app, not by your file — your key is never inside the sandbox. Anything that moves funds, or approves another agent, is refused.',
            'La app las firma, no tu archivo — tu clave nunca está en el entorno aislado. Todo lo que mueva fondos, o apruebe otro agente, se rechaza.'))}
+
+    ${h(_T('On a practice account', 'En una cuenta de práctica'))}
+    ${p(_T('The same file, unchanged. <b>ctx.paper</b> tells you which one you are on, but you rarely need it — the app decides where an order lands, not your file.',
+           'El mismo archivo, sin cambios. <b>ctx.paper</b> te dice en cuál estás, pero rara vez hace falta — la app decide dónde acaba una orden, no tu archivo.'))}
+    ${pre(`intents (market/limit/cancel/close)   simulated
+api.info(...) · api.candles(...)        real exchange, read-only
+api.order(...) · api.cancel(...)        simulated
+updateLeverage · updateIsolatedMargin   accepted, does nothing
+scheduleCancel                          accepted, does nothing
+anything else                           throws, and says so`)}
+    ${p(_T('Leverage is accepted and ignored because a practice account sizes every order by its notional — there is no per-market leverage for it to set. Use <b>usd</b> to control exposure and it behaves the same on both.',
+           'El apalancamiento se acepta y se ignora porque una cuenta de práctica dimensiona cada orden por su nocional — no hay apalancamiento por mercado que fijar. Usa <b>usd</b> para controlar la exposición y se comporta igual en ambas.'))}
 
     ${h(_T('Logging', 'Registro'))}
     ${pre('log("anything", 123, obj)')}
