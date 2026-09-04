@@ -175,8 +175,16 @@ t('an unknown template leg is de-camel-cased rather than shown raw',
 
 console.log(String.fromCharCode(10) + '-- event cards carry the same identity cues as single ones --')
 t('an event shows an icon', cli.includes('const evtIcon = _ocEventIcon(q, qd)'))
-t('and a live marker with its date', cli.includes('const evtWhen = qd.expiry ? _fmtOutcomeExpiry(qd.expiry)'))
-t('a rate decision falls back to its deadline', cli.includes('qd.decisionDeadline ? _fmtOutcomeExpiry(qd.decisionDeadline)'))
+// The date used to be read only from expiry, falling back to decisionDeadline. That left
+// every sports event with no date at all -- theirs is resolutionDeadline -- and put a rate
+// market's date at the last day the decision could be PUBLISHED rather than the meeting it
+// is decided at. One list now, most specific first.
+t('and a live marker with its date',
+  cli.includes('const evtDeadline = qd.expiry || qd.scheduledDecision || qd.resolutionDeadline || qd.decisionDeadline'))
+t('a rate decision uses the meeting, not the publication deadline',
+  cli.indexOf('qd.scheduledDecision') < cli.indexOf('qd.decisionDeadline'))
+t('and a sports event uses its resolution deadline',
+  cli.includes('qd.resolutionDeadline'))
 t('the bucket subtitle is labelled, not dex-prefixed', cli.includes('sub   = _ocUnderLabel(qd.underlying)'))
 t('odds sit in a pill', css.includes('.oc-evt-pct {'))
 

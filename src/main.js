@@ -31936,6 +31936,39 @@ async function _refreshOcPrices() {
   _ocEvtResortAll()
 }
 
+// A leg's parent question. A sports leg's own description is just "participant:Arsenal" --
+// the competition, the season and the closing date all live on the event, so anything that
+// reads only the leg has to come here for the rest.
+function _ocQuestionFor(outcomeId) {
+  const id = Number(outcomeId)
+  for (const q of (_ocLiveQuestions ?? [])) {
+    if ((q.namedOutcomes ?? []).some(x => Number(x) === id)) return q
+  }
+  return null
+}
+
+// The leg's spec with its question's underneath it, the leg winning any key they share.
+function _ocFullDesc(o, d) {
+  const q = _ocQuestionFor(o?.outcome)
+  if (!q) return d ?? {}
+  return { ..._parseOutcomeDesc(q.description || ''), ...(d ?? {}) }
+}
+
+// When this market stops trading, wherever that is written down. Reading only the leg's own
+// `expiry` is why every sports and rate market showed "Closes in -": those dates are on the
+// question. scheduledDecision comes before decisionDeadline because a rate market stops at
+// the meeting, not at the last date the decision could be published.
+function _ocDeadlineOf(o, d) {
+  const f = _ocFullDesc(o, d)
+  return f.expiry || f.scheduledDecision || f.resolutionDeadline || f.decisionDeadline || null
+}
+
+// "football/soccer" -> "Football / Soccer"
+function _ocSportLabel(sport) {
+  return String(sport ?? '').split('/').map(w => w.trim())
+    .filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' / ')
+}
+
 function _ocGetCategory(o, d) {
   if (d.class === 'priceBinary' || d.class === 'priceBucket') return 'crypto'
   // The new templates carry their subject in `underlying`, which is far more reliable
@@ -31950,6 +31983,11 @@ function _ocGetCategory(o, d) {
     if (/^(SNDK|SKHX|SKHYNIX|NBIS|DRAM|SPCX|TSLA|NVDA|AAPL|MSFT)$/.test(u))     return 'tech'
   }
   if (d.class === 'policyRate') return 'economy'
+  // The sports templates put their subject in `sport`, `competition` and `participant`.
+  // Their NAME is only "template:sportsTournamentWinner", and the word-boundary pass below
+  // cannot read that -- there is no boundary after "sport" inside "sportstournamentwinner".
+  // Every sports event was landing in More Markets because of it.
+  if (d.sport || d.competition || d.participant) return 'sports'
   // Word-boundary matching over name + description — substring matching put
   // "nETHerlands" in crypto and "spAIn" in tech.
   const name = ((o.name || '') + ' ' + (o.description || '')).toLowerCase()
@@ -32086,6 +32124,60 @@ window.__ocSetCat = function(cat, btn) {
   window.__ocFilter()
 }
 
+/**
+ * Reorder the grid.
+ *
+ * Sections and their headings are a curated order, so any sort other than Featured has to
+ * put the cards in one flat run -- exactly what search and a category filter already do.
+ * _ocSectionVis hides the headings; this moves the cards.
+ *
+ * Chance and volume are read off the RENDERED cards rather than from state, because they
+ * arrive per-card from separate live fetches and a card whose numbers have not landed yet
+ * has none to sort by. Reading the DOM sorts what the user can actually see, and a card
+ * with nothing yet sorts last instead of sorting as zero.
+ */
+window.__ocSort = function() {
+  const grid = document.getElementById('ocGrid')
+  const mode = document.getElementById('ocSortSel')?.value || 'default'
+  if (!grid) return
+  if (mode !== 'default' && !grid.dataset.ocOrder) {
+    // Remember the curated order once, so Featured can put it back exactly.
+    grid.dataset.ocOrder = [...grid.children].map((el, i) => { el.dataset.ocIdx = i; return i }).join(',')
+  }
+  if (mode === 'default') {
+    if (grid.dataset.ocOrder) {
+      [...grid.children]
+        .sort((a, b) => Number(a.dataset.ocIdx ?? 0) - Number(b.dataset.ocIdx ?? 0))
+        .forEach(el => grid.appendChild(el))
+    }
+    try { _ocSectionVis() } catch {}
+    return
+  }
+  const num = (el, sel) => {
+    const t = el.querySelector(sel)?.textContent ?? ''
+    const n = parseFloat(t.replace(/[^0-9.]/g, ''))
+    if (!Number.isFinite(n)) return null
+    return /k\b/i.test(t) ? n * 1000 : /m\b/i.test(t) ? n * 1e6 : n
+  }
+  const keyOf = (el) => {
+    if (mode === 'soon' || mode === 'late') {
+      const t = Number(el.dataset.ocClose)
+      return Number.isFinite(t) && t > 0 ? t : null
+    }
+    if (mode === 'chance') return num(el, '.oc-compact-pct, .oc-evt-pct, [id^="oc-chance-"]')
+    return num(el, '.oc-compact-vol, [id^="oc-vol-"]')
+  }
+  const dir = mode === 'soon' ? 1 : -1
+  const cards = [...grid.querySelectorAll('.oc-card')]
+  cards.map(el => ({ el, k: keyOf(el) }))
+    // Unknown last, whichever way round the sort runs: a market with no closing time is not
+    // the soonest OR the latest, and letting it fall in as 0 put every one of them first.
+    .sort((a, b) => a.k === null ? 1 : b.k === null ? -1 : (a.k - b.k) * dir)
+    .forEach(x => grid.appendChild(x.el))
+  // Headings would now sit above whatever happened to land under them.
+  grid.querySelectorAll('.oc-sec-head, .oc-hot-scroll').forEach(el => { el.style.display = 'none' })
+}
+
 window.__ocFilter = function() {
   const q = (document.getElementById('ocSearchInput')?.value || '').toLowerCase().trim()
   document.querySelectorAll('#ocGrid .oc-card').forEach(card => {
@@ -32093,6 +32185,10 @@ window.__ocFilter = function() {
     const matchQ   = !q || (card.dataset.q || '').includes(q)
     card.style.display = (matchCat && matchQ) ? '' : 'none'
   })
+  // A category change rebuilds nothing, so the chosen order has to be re-applied over it.
+  if ((document.getElementById('ocSortSel')?.value || 'default') !== 'default') {
+    try { window.__ocSort() } catch {}
+  }
 }
 
 // Every category _ocGetCategory can return MUST have a row here. Cards are appended to
@@ -32181,6 +32277,11 @@ function _ocSectionize() {
       // The spec lives in the question: which body, which meeting.
       sub   = qd.institution ? qd.institution.replace(/'s Open Market Committee$/, '') : 'Federal Reserve'
       title = qd.decisionLabel ? `Rate decision · ${qd.decisionLabel}` : 'Rate decision'
+    } else if (String(q.name || '').startsWith('template:sportsTournament')) {
+      // "2026/2027 English Premier League", which is what the competition calls itself --
+      // not "Sports Tournament Winner", which is what our template calls it.
+      sub   = qd.sport ? _ocSportLabel(qd.sport) : 'Sports'
+      title = [qd.season, qd.competition].filter(Boolean).join(' ') || 'Tournament winner'
     } else if (String(q.name || '').startsWith('template:')) {
       title = q.name.slice('template:'.length).replace(/([a-z])([A-Z])/g, '$1 $2')
       title = title.charAt(0).toUpperCase() + title.slice(1)
@@ -32192,6 +32293,10 @@ function _ocSectionize() {
     const rowName = (o) => {
       const od = _ocDesc(o)
       if (od.class === 'priceBucket') return _ocBucketLabel(od)
+      // The team, the driver, the candidate. The leg's name is only its template
+      // ("template:sportsTournamentParticipant") -- the answer is in its description, and
+      // reading the name is why six rows all said "Sports Tournament Participant".
+      if (od.participant) return od.participant
       // A leg of a new-template event is named for its template, not for itself:
       // "template:policyRateIncrease". The leg IS the answer, so say the answer.
       const n = String(o.name ?? '')
@@ -32205,7 +32310,9 @@ function _ocSectionize() {
       }
       return n
     }
-    let cat = _ocGetCategory({ name: q.name || '', description: '' }, {})
+    // The parsed spec, not an empty object: everything that says what this event IS lives
+    // in the description, so passing nothing made every template question uncategorisable.
+    let cat = _ocGetCategory({ name: q.name || '', description: q.description || '' }, qd)
     if (cat === 'other') cat = cardById[String(members[0].outcome)]?.dataset.cat || 'other'
 
     const evId = 'evt-' + (q.question ?? members[0].outcome)
@@ -32217,11 +32324,15 @@ function _ocSectionize() {
     // Same identity cues the single-market cards get: the underlying's logo, and a live
     // marker. An event was the only card type still reading as a plain table.
     const evtIcon = _ocEventIcon(q, qd)
-    const evtWhen = qd.expiry ? _fmtOutcomeExpiry(qd.expiry)
-                  : qd.decisionDeadline ? _fmtOutcomeExpiry(qd.decisionDeadline) : ''
+    const evtDeadline = qd.expiry || qd.scheduledDecision || qd.resolutionDeadline || qd.decisionDeadline
+    const evtWhen = evtDeadline ? _fmtOutcomeExpiry(evtDeadline) : ''
     const card = document.createElement('div')
     card.className = 'oc-card oc-event'
     card.dataset.cat = cat
+    // Sorting by time reads this rather than the countdown text, which is a moving target
+    // and is "-" until the first tick.
+    const evtCloseMs = evtDeadline ? _expiryDate(evtDeadline)?.getTime() : null
+    if (evtCloseMs) card.dataset.ocClose = String(evtCloseMs)
     card.dataset.q = ((qd.underlying ? qd.underlying + ' ' : '') + (q.name || '') + ' ' +
       members.map(o => rowName(o)).join(' ')).toLowerCase()
     card.id = 'oc-card-' + evId
@@ -32242,7 +32353,7 @@ function _ocSectionize() {
         <span class="oc-live"><i class="oc-live-dot"></i>Live</span>
         <span class="oc-compact-when">${esc(evtWhen)}</span>
       </div>
-      ${members.length > 5 ? `<button class="oc-evt-more" onclick="this.previousElementSibling.classList.toggle('oc-evt-open');this.textContent=this.previousElementSibling.classList.contains('oc-evt-open')?'Show less':'Show all ${members.length}'">Show all ${members.length}</button>` : ''}`
+      ${members.length > 5 ? `<button class="oc-evt-more" onclick="window.__ocEvtToggle('${evId}',this,${members.length})">Show all ${members.length}</button>` : ''}`
     _ocEvtApplySort(card.querySelector('.oc-evt-rows'))
     eventCards.push(card)
   }
@@ -32352,6 +32463,17 @@ function _ocEvtResortAll() {
   })
 }
 
+// The button used to toggle oc-evt-open on `this.previousElementSibling`, which is the
+// footer, not the row list. The CSS keys on `.oc-evt-rows.oc-evt-open`, so nothing expanded
+// -- and because the label was read back off that same wrong element, it still flipped to
+// "Show less". It looked like it worked and did nothing.
+window.__ocEvtToggle = function(evId, btn, total) {
+  const rows = document.getElementById('oc-evt-rows-' + evId)
+  if (!rows) return
+  const open = rows.classList.toggle('oc-evt-open')
+  btn.textContent = open ? 'Show less' : 'Show all ' + total
+}
+
 function _ocSectionVis() {
   const grid = document.getElementById('ocGrid')
   if (!grid) return
@@ -32392,7 +32514,7 @@ async function renderOutcomes() {
       const period = d.period || null
       const cls    = d.class || ''
       const cat    = _ocGetCategory(o, d)
-      expiryMap[o.outcome] = _expiryDate(d.expiry)
+      expiryMap[o.outcome] = _expiryDate(_ocDeadlineOf(o, d))
       const disAttr = connected ? '' : 'disabled'
 
       const targetPrice = d.targetPrice ? parseFloat(d.targetPrice) : null
@@ -32401,7 +32523,11 @@ async function renderOutcomes() {
       const s1          = _ocSideName(o.sideSpecs?.[1]?.name, 'No')
       const searchQ     = (line1 + ' ' + (line2 || '') + ' ' + (o.name || '') + ' ' + s0 + ' ' + s1).toLowerCase()
 
-      return `<div class="oc-card" id="oc-card-${o.outcome}" data-cat="${cat}" data-q="${esc(searchQ)}" onclick="window.__ocExpandCard(${o.outcome})">
+      // Falls back to the parent question's deadline: a leg of an event carries no expiry
+      // of its own, and without this every one of them sorted as "no closing time".
+      const closeMs = _expiryDate(_ocDeadlineOf(o, d))?.getTime()
+      return `<div class="oc-card" id="oc-card-${o.outcome}" data-cat="${cat}" data-q="${esc(searchQ)}"${
+        closeMs ? ` data-oc-close="${closeMs}"` : ''} onclick="window.__ocExpandCard(${o.outcome})">
         <div class="oc-compact-info">
           ${d.underlying ? `<span class="oc-compact-icon">${_coinIconHtml(d.underlying)}</span>` : ''}
           <div class="oc-compact-q">${esc(line1)}${line2 ? ' ' + esc(line2) : ''}</div>
@@ -32542,6 +32668,13 @@ async function renderOutcomes() {
           <svg class="oc-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="5"/><line x1="14" y1="14" x2="10.35" y2="10.35"/></svg>
           <input class="oc-search" id="ocSearchInput" placeholder="Search markets…" oninput="window.__ocFilter()">
         </div>
+        <select class="oc-sort" id="ocSortSel" onchange="window.__ocSort()" aria-label="Sort markets">
+          <option value="default">Featured</option>
+          <option value="soon">Closing soonest</option>
+          <option value="late">Closing latest</option>
+          <option value="chance">Highest chance</option>
+          <option value="vol">Most traded</option>
+        </select>
         <div class="oc-cats no-swipe" id="ocCats">
           <button class="oc-cat oc-cat-active" data-cat="all" onclick="window.__ocSetCat('all',this)">All</button>
           <button class="oc-cat" data-cat="crypto" onclick="window.__ocSetCat('crypto',this)">Crypto</button>
