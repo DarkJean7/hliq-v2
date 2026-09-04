@@ -6863,19 +6863,37 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 #outcomesRoot .oc-evt-row.oc-evt-extra { display: none; }
 #outcomesRoot .oc-evt-rows.oc-evt-open .oc-evt-row.oc-evt-extra { display: flex; }
 
-/* Sort control — sits beside the search box and matches its height and chrome. */
-.oc-sort {
-  flex: 0 0 auto; height: 34px; padding: 0 26px 0 10px;
-  background: var(--panel-2); color: var(--fg-2);
-  border: 1px solid var(--border); border-radius: 9px;
-  font-family: inherit; font-size: 12px; font-weight: 600;
-  cursor: pointer; outline: none; appearance: none;
-  /* The arrow is drawn here because appearance:none removes the native one. */
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%236b7384' stroke-width='1.5'/></svg>");
-  background-repeat: no-repeat; background-position: right 9px center; background-size: 10px 6px;
+/* Sort control — shares a row with the search box and borrows its chrome, so the two
+   read as one control strip rather than as a stray dropdown under the header. */
+.oc-search-row { display: flex; align-items: stretch; gap: 8px; }
+.oc-search-row .oc-search-wrap { flex: 1 1 auto; min-width: 0; }
+.oc-sort-wrap {
+  position: relative; display: flex; align-items: center; flex: 0 0 auto;
+  background: var(--panel-2); border: 1px solid var(--border2); border-radius: 12px;
 }
-.oc-sort:focus { border-color: var(--accent); color: var(--fg); }
-.oc-header { align-items: center; }
+.oc-sort-icon {
+  position: absolute; left: 11px; width: 14px; height: 14px;
+  color: var(--fg-3); pointer-events: none;
+}
+.oc-sort {
+  appearance: none; -webkit-appearance: none;
+  background: transparent; border: 0; outline: none;
+  color: var(--fg-2); font-family: inherit; font-size: 13px; font-weight: 600;
+  padding: 11px 26px 11px 31px; cursor: pointer;
+  /* The chevron is drawn here because appearance:none removes the native one. */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%236b7384' stroke-width='1.6'/></svg>");
+  background-repeat: no-repeat; background-position: right 10px center; background-size: 9px 6px;
+}
+.oc-sort-wrap:focus-within { border-color: var(--accent); }
+.oc-sort:focus-visible { color: var(--fg); }
+.oc-sort option { background: var(--panel); color: var(--fg); }
+/* On a phone the row would squeeze the search box to nothing, so the sort sits under it
+   at full width instead of being cropped. */
+@media (max-width: 430px) {
+  .oc-search-row { flex-wrap: wrap; }
+  .oc-sort-wrap { flex: 1 1 100%; }
+  .oc-sort { width: 100%; }
+}
 #outcomesRoot .oc-evt-name { flex: 1; font-size: 13px; font-weight: 600; }
 #outcomesRoot .oc-evt-pct { font-size: 14px; font-weight: 800; font-family: var(--font-mono); }
 #outcomesRoot .oc-evt-chev { color: var(--muted); font-size: 16px; }

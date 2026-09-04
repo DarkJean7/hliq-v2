@@ -32664,17 +32664,23 @@ async function renderOutcomes() {
     root.innerHTML = `
       <div class="oc-expand-backdrop" id="ocExpandBackdrop" onclick="window.__ocCloseExpanded()"></div>
       <div class="oc-header">
-        <div class="oc-search-wrap">
-          <svg class="oc-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="5"/><line x1="14" y1="14" x2="10.35" y2="10.35"/></svg>
-          <input class="oc-search" id="ocSearchInput" placeholder="Search markets…" oninput="window.__ocFilter()">
+        <div class="oc-search-row">
+          <div class="oc-search-wrap">
+            <svg class="oc-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="5"/><line x1="14" y1="14" x2="10.35" y2="10.35"/></svg>
+            <input class="oc-search" id="ocSearchInput" placeholder="Search markets…" oninput="window.__ocFilter()">
+          </div>
+          <div class="oc-sort-wrap">
+            <svg class="oc-sort-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+              <path d="M3 4h10M4.5 8h7M6.5 12h3"/></svg>
+            <select class="oc-sort" id="ocSortSel" onchange="window.__ocSort()" aria-label="Sort markets">
+              <option value="default">Featured</option>
+              <option value="soon">Closing soonest</option>
+              <option value="late">Closing latest</option>
+              <option value="chance">Highest chance</option>
+              <option value="vol">Most traded</option>
+            </select>
+          </div>
         </div>
-        <select class="oc-sort" id="ocSortSel" onchange="window.__ocSort()" aria-label="Sort markets">
-          <option value="default">Featured</option>
-          <option value="soon">Closing soonest</option>
-          <option value="late">Closing latest</option>
-          <option value="chance">Highest chance</option>
-          <option value="vol">Most traded</option>
-        </select>
         <div class="oc-cats no-swipe" id="ocCats">
           <button class="oc-cat oc-cat-active" data-cat="all" onclick="window.__ocSetCat('all',this)">All</button>
           <button class="oc-cat" data-cat="crypto" onclick="window.__ocSetCat('crypto',this)">Crypto</button>
