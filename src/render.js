@@ -1,4 +1,5 @@
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
+import { pairTrades, drawdownFor } from './drawdown.js'
 import { aggregateFillsByCoin, coinLabel } from './api.js'
 import { renderOverviewChart } from './charts.js'
 
@@ -1302,10 +1303,53 @@ export function aggregateByHash(fills) {
   return Array.from(groups.values()).map(g => ({ ...g, px: g.sz > 0 ? g.notional / g.sz : 0 }))
 }
 
+/**
+ * Trades whose worst point has been asked for, keyed by the row that asked.
+ *
+ * Nothing is fetched until a row is opened AND the button is pressed. A page of history is
+ * twenty rows; fetching a candle window for each on render would be twenty requests against
+ * an IP budget shared with the price feed, the book and every bot.
+ */
+const _ddTrips = new Map()
+
+// Public /info, the same endpoint any browser tab can call. No key, no account.
+async function _ddCandles(coin, interval, startTime, endTime) {
+  const r = await fetch('https://api.hyperliquid.xyz/info', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval, startTime, endTime } }),
+  })
+  if (!r.ok) throw new Error('candles ' + r.status)
+  return r.json()
+}
+
+window.__ddShow = async function(eid) {
+  const el = document.getElementById('dd-' + eid)
+  const trip = _ddTrips.get(eid)
+  if (!el || !trip) return
+  el.textContent = '…'
+  const d = await drawdownFor(trip, _ddCandles)
+  if (!d) {
+    // Could not read the price path. Saying "-$0.00" here would claim the trade never went
+    // against you, which is the one thing we do not know.
+    el.textContent = '—'
+    el.title = 'Could not load the price history for this trade'
+    return
+  }
+  el.className = d.usd < 0 ? 'neg' : 'neu'
+  el.textContent = (d.usd < 0 ? '-$' + fmtUSD(Math.abs(d.usd)) : '$0.00') +
+    ' (' + d.pct.toFixed(2) + '%)'
+  el.title = 'Worst unrealised point: $' + fmtPrice(d.px) +
+    (d.at ? ' at ' + fmtTime(d.at) : '')
+}
+
 export function renderTrades(fills) {
   const tbody = document.getElementById('tradesTbody')
 
   let trades = aggregateByHash(fills)
+  // Round trips for the whole fill history, so a closing fill can be traced back to the
+  // entry it belongs to. Pure and cheap -- it is the candle fetch that costs, and that only
+  // happens when a row asks.
+  const _trips = pairTrades(fills)
 
   // Optional date-range filter (History tab header inputs)
   const _from = document.getElementById('fillDateFrom')?.value
@@ -1354,6 +1398,12 @@ export function renderTrades(fills) {
     const _sideStr  = _isOc ? '' : (_sideLong ? 'LONG' : 'SHORT')
     const _shareCall = `window.__shareTrade('${_jss(t.coin)}',{title:'${_jss(_lbl(t.coin))}',side:'${_sideStr}',roePct:${_priceRet.toFixed(2)},entry:'${_entryStr}',mark:'${_markStr}'})`
     const shareBtn  = hasPnl ? ` <button class="trade-share-btn" title="Share this trade" onclick="event.stopPropagation();${_shareCall}">↗</button>` : ''
+    // The round trip this fill CLOSED, matched on the market and the moment. A fill that
+    // opened or added to a position did not end a trade, so it has no drawdown of its own.
+    const _trip = hasPnl
+      ? _trips.find(x => x.coin === t.coin && !x.open && Math.abs((x.exitTime ?? 0) - t.time) < 1000)
+      : null
+    if (_trip) _ddTrips.set(eid, _trip)
     const tapExpand = isMobile ? `onclick="window.__toggleRowExpand('${eid}')" style="cursor:pointer"` : ''
     const mainRow  = `<tr ${tapExpand}>
       <td style="color:var(--muted);white-space:nowrap;font-size:11px">
@@ -1378,6 +1428,10 @@ export function renderTrades(fills) {
           <div class="row-expand-item"><span>Fee</span><span class="neg">-$${fmtUSD(t.fee)} ${esc(t.feeToken ?? 'USDC')}</span></div>
           <div class="row-expand-item"><span>Net PnL</span><span class="${fmtPnL(netPnl).cls}">${hasPnl ? fmtPnL(netPnl).text : '—'}</span></div>
           <div class="row-expand-item"><span>Direction</span><span class="dir-badge ${_dirBadgeCls(dir)}">${esc(dir)}</span></div>
+          <div class="row-expand-item"><span>Max drawdown</span><span id="dd-${eid}" class="neu">${
+            _trip
+              ? `<button class="dd-btn" onclick="event.stopPropagation();window.__ddShow('${eid}')">Show</button>`
+              : '—'}</span></div>
         </div>
         ${hasPnl ? `<button class="trade-share-btn-full" onclick="event.stopPropagation();${_shareCall}">↗ Share this trade</button>` : ''}
       </td>

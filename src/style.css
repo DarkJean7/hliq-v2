@@ -6863,6 +6863,15 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 #outcomesRoot .oc-evt-row.oc-evt-extra { display: none; }
 #outcomesRoot .oc-evt-rows.oc-evt-open .oc-evt-row.oc-evt-extra { display: flex; }
 
+/* Ask-for-it button on a trade row: the worst point of a trade needs a candle fetch, so
+   it is never loaded for a whole page of history at once. */
+.dd-btn {
+  background: var(--panel-3); border: 1px solid var(--border2); border-radius: 6px;
+  color: var(--fg-2); font-family: inherit; font-size: 10.5px; font-weight: 700;
+  padding: 2px 8px; cursor: pointer;
+}
+.dd-btn:hover { color: var(--fg); border-color: var(--accent); }
+
 /* A market with no price shows who settles it instead of two empty dashes. */
 .oc-price-block--wide { flex: 1 1 auto; min-width: 0; }
 .oc-price-source {
