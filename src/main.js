@@ -31602,8 +31602,14 @@ async function _loadOcStats(outcomes, info) {
       for (const sideLevels of (book?.levels ?? []))
         for (const lvl of (sideLevels || [])) liq += parseFloat(lvl.px ?? 0) * parseFloat(lvl.sz ?? 0)
       const oiEl = document.getElementById('oc-oi-' + o.outcome)
-      if (oiEl) oiEl.textContent = liq > 0 ? '$' + _fmtOcK(liq) : '—'
-    } catch {}
+      // $0 and — are different answers. An empty book means nobody is quoting, which is
+      // worth knowing on a thin market; a dash used to mean that AND "the request failed",
+      // so the one thing you wanted to tell apart was the one thing you could not.
+      if (oiEl) oiEl.textContent = liq > 0 ? '$' + _fmtOcK(liq) : '$0'
+    } catch {
+      const oiEl = document.getElementById('oc-oi-' + o.outcome)
+      if (oiEl) { oiEl.textContent = '—'; oiEl.title = 'Could not load the order book' }
+    }
   }))
 }
 
@@ -32517,8 +32523,24 @@ async function renderOutcomes() {
       expiryMap[o.outcome] = _expiryDate(_ocDeadlineOf(o, d))
       const disAttr = connected ? '' : 'disabled'
 
-      const targetPrice = d.targetPrice ? parseFloat(d.targetPrice) : null
-      const targetStr   = targetPrice ? '$' + targetPrice.toLocaleString() : '—'
+      // A range market's target is its two thresholds, and they live on the question --
+      // the leg's own description is just "index:0". Reading only targetPrice is why the
+      // BTC range market showed "Target —" while naming both numbers in its own title.
+      const full        = _ocFullDesc(o, d)
+      const targetPrice = full.targetPrice ? parseFloat(full.targetPrice) : null
+      const bands       = String(full.priceThresholds ?? '').split(',')
+        .map(x => parseFloat(x)).filter(Number.isFinite)
+      const targetStr   = targetPrice ? '$' + targetPrice.toLocaleString()
+                        : bands.length === 2 ? '$' + bands[0].toLocaleString() + ' – $' + bands[1].toLocaleString()
+                        : bands.length === 1 ? '$' + bands[0].toLocaleString()
+                        : '—'
+      // Whether a price is even the subject. A tournament winner and a rate decision have
+      // no target and no current price -- showing two dashes said "we could not fetch it"
+      // when the truth is "there is no such number". Those get what they DO have: who
+      // settles it, and when.
+      const isPriced    = !!(full.underlying || targetPrice || bands.length)
+      const resolver    = full.officialSource || full.institution || ''
+      const resolveOn   = _ocDeadlineOf(o, d)
       const s0          = _ocSideName(o.sideSpecs?.[0]?.name, 'Yes')
       const s1          = _ocSideName(o.sideSpecs?.[1]?.name, 'No')
       const searchQ     = (line1 + ' ' + (line2 || '') + ' ' + (o.name || '') + ' ' + s0 + ' ' + s1).toLowerCase()
@@ -32574,6 +32596,7 @@ async function renderOutcomes() {
           </div>
         </div>
         <div class="oc-price-row">
+          ${isPriced ? `
           <div class="oc-price-block">
             <div class="oc-price-label">Target</div>
             <div class="oc-price-target">${esc(targetStr)}</div>
@@ -32581,7 +32604,15 @@ async function renderOutcomes() {
           <div class="oc-price-block">
             <div class="oc-price-label">Current</div>
             <div class="oc-price-current" id="oc-current-${o.outcome}">—</div>
+          </div>` : `
+          <div class="oc-price-block oc-price-block--wide">
+            <div class="oc-price-label">Settled by</div>
+            <div class="oc-price-source">${esc(resolver || 'The market\'s official source')}</div>
           </div>
+          ${resolveOn ? `<div class="oc-price-block">
+            <div class="oc-price-label">Resolves</div>
+            <div class="oc-price-source">${esc(_fmtOutcomeExpiry(resolveOn))}</div>
+          </div>` : ''}`}
           <div class="oc-price-block oc-price-block--cd">
             <div class="oc-price-label">Closes in</div>
             <div class="oc-countdown" id="oc-cd-${o.outcome}">—</div>

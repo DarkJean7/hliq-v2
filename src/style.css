@@ -6863,6 +6863,13 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 #outcomesRoot .oc-evt-row.oc-evt-extra { display: none; }
 #outcomesRoot .oc-evt-rows.oc-evt-open .oc-evt-row.oc-evt-extra { display: flex; }
 
+/* A market with no price shows who settles it instead of two empty dashes. */
+.oc-price-block--wide { flex: 1 1 auto; min-width: 0; }
+.oc-price-source {
+  font-size: 13px; font-weight: 600; color: var(--fg-2);
+  line-height: 1.35; overflow: hidden; text-overflow: ellipsis;
+}
+
 /* Sort control — shares a row with the search box and borrows its chrome, so the two
    read as one control strip rather than as a stray dropdown under the header. */
 .oc-search-row { display: flex; align-items: stretch; gap: 8px; }

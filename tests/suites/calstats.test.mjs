@@ -75,7 +75,15 @@ t('Avg / Trading Day is a card', sum.includes('Avg / Trading Day'))
 t('Month Volume is a card', sum.includes('Month Volume'))
 t('the existing six are untouched',
   ['Month PnL', 'Green / Red Days', 'Best Day', 'Worst Day', 'Deposited', 'Withdrawn'].every(l => sum.includes(l)))
-t('there are eight cards now', (sum.match(/class="stat-card"/g) || []).length === 8)
+t('Max Drawdown is a card', sum.includes('Max Drawdown'))
+t('Trades Made is a card', sum.includes('Trades Made'))
+// Was eight; the month's worst peak-to-trough run and its fill count joined them. The
+// count is asserted so a card cannot be dropped in a refactor without this going red.
+t('there are ten cards now', (sum.match(/class="stat-card"/g) || []).length === 10)
+t('drawdown is a RUN, not the worst single day',
+  src.includes('ddPeak - ddRun') && src.includes('This is the run'))
+t('and it is the month PnL curve, not account equity, and says so',
+  src.includes('not of account equity'))
 
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

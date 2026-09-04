@@ -2169,6 +2169,27 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
   // report a number no day resembles and would shrink every time the month got longer.
   const tradedDays = greenDays + redDays
   const avgDayPnl  = tradedDays > 0 ? monthPnl / tradedDays : null
+  const monthFills = monthKeys.reduce((s, k) => s + (byDay[k].trades || 0), 0)
+
+  /**
+   * Worst peak-to-trough run of the month, walking the days in order.
+   *
+   * This is the drawdown of the month's own PnL curve, not of account equity: it starts
+   * each month from zero, so it answers "how far did this month give back from its own best
+   * point", which is what sits next to Month PnL and Best Day. An equity drawdown would be a
+   * different number and would need a balance history the calendar does not have.
+   *
+   * Worst Day already reports the worst SINGLE day. This is the run: three -$20 days in a
+   * row is -$60 here and -$20 there, and the difference is the whole reason to show it.
+   */
+  const ordered = monthKeys.slice().sort()
+  let ddPeak = 0, ddRun = 0, maxDD = 0, ddFrom = null, ddTo = null, ddPeakKey = null
+  for (const k of ordered) {
+    ddRun += byDay[k].pnl
+    if (ddRun > ddPeak) { ddPeak = ddRun; ddPeakKey = k }
+    const gap = ddPeak - ddRun
+    if (gap > maxDD) { maxDD = gap; ddFrom = ddPeakKey; ddTo = k }
+  }
 
   const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
   const DOWS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
@@ -2245,6 +2266,20 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
         <div class="stat-label">Avg / Trading Day</div>
         <div class="stat-value ${avgDayPnl == null ? 'neu' : avgDayPnl >= 0 ? 'pos' : 'neg'}">${
           avgDayPnl == null ? '—' : (avgDayPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(avgDayPnl))}</div>
+        ${tradedDays ? `<div class="stat-sub">over ${tradedDays} day${tradedDays !== 1 ? 's' : ''}</div>` : ''}
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Max Drawdown</div>
+        <div class="stat-value ${maxDD > 0 ? 'neg' : 'neu'}">${maxDD > 0 ? '-$' + fmtUSD(maxDD) : '$0'}</div>
+        ${maxDD > 0 && ddTo
+          ? `<div class="stat-sub">${ddFrom && ddFrom !== ddTo
+              ? fmtDayLabel(ddFrom) + ' → ' + fmtDayLabel(ddTo)
+              : fmtDayLabel(ddTo)}</div>`
+          : '<div class="stat-sub">never gave any back</div>'}
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Trades Made</div>
+        <div class="stat-value neu">${monthFills}</div>
         ${tradedDays ? `<div class="stat-sub">over ${tradedDays} day${tradedDays !== 1 ? 's' : ''}</div>` : ''}
       </div>
       <div class="stat-card">
