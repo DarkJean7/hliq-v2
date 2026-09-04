@@ -3451,9 +3451,14 @@ function _allocationSlices() {
     const margin = Math.abs(parseFloat(p.marginUsed ?? 0)) || (notional / lev)
     if (!(margin > 0)) continue
     const key = p.coin
-    const cur = byCoin.get(key) ?? { coin: key, margin: 0, notional: 0, uPnl: 0, longs: 0, shorts: 0, accts: new Set() }
+    const cur = byCoin.get(key) ?? { coin: key, margin: 0, notional: 0, size: 0, uPnl: 0, longs: 0, shorts: 0, accts: new Set() }
     cur.margin   += margin
     cur.notional += notional
+    // GROSS, like notional above: a coin held long on one account and short on another has
+    // margin posted against both, and netting the size to zero next to a non-zero margin and
+    // a non-zero value would be the odd number out. Which way each leg points is already on
+    // the row, as "1L / 5S".
+    cur.size     += Math.abs(sz)
     cur.uPnl     += parseFloat(p.unrealizedPnl ?? 0)
     if (sz > 0) cur.longs++; else cur.shorts++
     if (p._acct) cur.accts.add(p._acct)
@@ -3468,11 +3473,18 @@ function _allocationSlices() {
   // position, and keeping it at the end stops it reshuffling the assets as cash moves.
   if (free > 0) slices.push({
     coin: 'USDC', isFree: true, margin: free,
-    notional: 0, uPnl: 0, longs: 0, shorts: 0, accts: new Set(),
+    notional: 0, size: 0, uPnl: 0, longs: 0, shorts: 0, accts: new Set(),
   })
   // hasPositions gates the empty state: free margin on its own must not turn "no open
   // positions" into a ring that is 100% one grey slice.
   return { slices, total: used + free, used, free, hasPositions: byCoin.size > 0 }
+}
+
+// How much of the coin a slice is: "41.83 HYPE". Empty for free margin, which is already
+// dollars -- "1,234.00 USDC" under $1,234.00 is the same number twice.
+function _allocSizeTxt(s) {
+  if (s.isFree || !(s.size > 0)) return ''
+  return fmtSize(s.size) + ' ' + _ocCoinLabel(s.coin)
 }
 
 // Hover/tap state for the allocation wheel: the slice list plus the default centre readout to
@@ -3497,15 +3509,16 @@ window.__allocHover = function(i) {
   // would read as a broken position rather than as uncommitted margin.
   const detail = s.isFree
     ? `<div style="font-size:12px;color:var(--muted)">${_T('Available to trade', 'Disponible para operar')}</div>`
-    : `<div style="font-size:12px;color:var(--muted)">${_prv(fmtUSD(s.notional, 2))} position value</div>
-       <div style="font-size:12px;font-weight:600;margin-top:1px" class="${s.uPnl >= 0 ? 'pos' : 'neg'}">${s.uPnl >= 0 ? '+' : '-'}${fmtUSD(Math.abs(s.uPnl))}</div>`
+    : `<div style="font-size:12px;color:var(--muted)">${_prv(_allocSizeTxt(s))}</div>
+       <div style="font-size:12px;color:var(--muted)">${_prv('$' + fmtUSD(s.notional, 2))} position value</div>
+       <div style="font-size:12px;font-weight:600;margin-top:1px" class="${s.uPnl >= 0 ? 'pos' : 'neg'}">${s.uPnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(s.uPnl))}</div>`
   if (c) c.innerHTML = `
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
       <span style="width:9px;height:9px;border-radius:3px;background:${_allocColor(s)}"></span>
       <span style="font-size:13px;font-weight:700;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_allocLabel(s))}</span>
     </div>
-    <div style="font-size:26px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv(fmtUSD(s.margin, 2))}</div>
-    <div style="font-size:12px;color:var(--muted)">${s.pct.toFixed(1)}% of margin</div>
+    <div style="font-size:26px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv('$' + fmtUSD(s.margin, 2))}</div>
+    <div style="font-size:12px;color:var(--muted)">${s.pct.toFixed(1)}% ${_T('of margin', 'del margen')}</div>
     ${detail}`
 }
 
@@ -3574,9 +3587,9 @@ function _mobVRenderAllocation(el) {
   // centre and the ring would be describing two different things. Split spelled out under it.
   _allocCenterHtml = `
     <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${free > 0 ? _T('Total margin', 'Margen total') : _T('Margin used', 'Margen usado')}</div>
-    <div style="font-size:28px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv(fmtUSD(total, 2))}</div>
-    ${free > 0 ? `<div style="font-size:12px;color:var(--muted)">${_prv(fmtUSD(used))} ${_T('deployed', 'desplegado')} · ${_prv(fmtUSD(free))} ${_T('free', 'libre')}</div>` : ''}
-    <div style="font-size:12px;color:var(--muted)">${assetCount} asset${assetCount === 1 ? '' : 's'} · ${_prv(fmtUSD(totalNotional))} position value</div>`
+    <div style="font-size:28px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv('$' + fmtUSD(total, 2))}</div>
+    ${free > 0 ? `<div style="font-size:12px;color:var(--muted)">${_prv('$' + fmtUSD(used))} ${_T('deployed', 'desplegado')} · ${_prv('$' + fmtUSD(free))} ${_T('free', 'libre')}</div>` : ''}
+    <div style="font-size:12px;color:var(--muted)">${assetCount} asset${assetCount === 1 ? '' : 's'} · ${_prv('$' + fmtUSD(totalNotional))} position value</div>`
 
   const wheel = `
     <div style="display:flex;justify-content:center;padding:18px 12px 6px">
@@ -3598,12 +3611,13 @@ function _mobVRenderAllocation(el) {
     const sides = s.longs && s.shorts ? `${s.longs}L / ${s.shorts}S`
                 : s.shorts ? `${s.shorts > 1 ? s.shorts + ' ' : ''}Short`
                 : `${s.longs > 1 ? s.longs + ' ' : ''}Long`
+    const sizeTxt = _allocSizeTxt(s)
     const acctTxt = s.accts.size ? ` · <span style="color:var(--accent)">${esc([...s.accts].join(', '))}</span>` : ''
     const sub   = s.isFree ? _T('Available to trade', 'Disponible para operar')
-                           : `${sides} · Value ${_prv(fmtUSD(s.notional, 2))}${acctTxt}`
+                           : `${sides} · Value ${_prv('$' + fmtUSD(s.notional, 2))}${acctTxt}`
     // No PnL for cash — the right-hand column is share-of-margin only.
     const right = s.isFree ? `<div class="mob-v-row-pct" style="color:var(--muted)">${s.pct.toFixed(1)}%</div>`
-                           : `<div class="mob-v-row-pct ${cls}">${s.pct.toFixed(1)}% · ${pnl >= 0 ? '+' : '-'}${fmtUSD(Math.abs(pnl))}</div>`
+                           : `<div class="mob-v-row-pct ${cls}">${s.pct.toFixed(1)}% · ${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}</div>`
     // Rows drive the same highlight — the arcs are thin to hit accurately on a phone.
     return `<div class="mob-v-row" data-alloc-row="${i}" style="cursor:pointer;transition:background .12s ease">
       <span style="width:10px;height:10px;border-radius:3px;background:${_allocColor(s)};flex-shrink:0;margin-right:10px"></span>
@@ -3613,7 +3627,8 @@ function _mobVRenderAllocation(el) {
         <div class="mob-v-row-sub">${sub}</div>
       </div>
       <div class="mob-v-row-right">
-        <div class="mob-v-row-val">${_prv(fmtUSD(s.margin, 2))}</div>
+        <div class="mob-v-row-val">${_prv('$' + fmtUSD(s.margin, 2))}</div>
+        ${sizeTxt ? `<div style="font-size:11px;color:var(--muted);font-family:var(--font-mono);white-space:nowrap">${_prv(sizeTxt)}</div>` : ''}
         ${right}
       </div>
     </div>`
