@@ -123,6 +123,21 @@
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="15 8 12 8 10 14 6 2 4 8 1 8"/></svg>
       <span>Pulse</span>
     </div>
+    <!-- Tabs the mobile shell already had and desktop did not. Replay and Simulator were
+         the odd case: switchTab already rendered them and the panes already existed, so
+         they were reachable by URL and by nothing a user could click. -->
+    <div class="sidebar-item" data-tab="allocation" onclick="switchTab('allocation',null);setSidebarActive(this)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 2 A6 6 0 0 1 14 8 L8 8 Z" fill="currentColor" stroke="none"/></svg>
+      <span>Allocation</span>
+    </div>
+    <div class="sidebar-item" data-tab="replay" onclick="switchTab('replay',null);setSidebarActive(this)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="6 4 12 8 6 12"/><line x1="3" y1="3" x2="3" y2="13"/></svg>
+      <span>Replay</span>
+    </div>
+    <div class="sidebar-item" data-tab="simulator" onclick="switchTab('simulator',null);setSidebarActive(this)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="9" rx="1"/><line x1="5" y1="15" x2="11" y2="15"/></svg>
+      <span>Simulator</span>
+    </div>
     <div class="sidebar-item" data-tab="analysis" onclick="switchTab('analysis',null);setSidebarActive(this)">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2v12h12"/><polyline points="4.5 10 7 6.5 9 8.5 13.5 3.5"/></svg>
       <span>Analysis</span>
@@ -877,6 +892,11 @@
     <!-- Exchange-wide stats. Same renderer as the mobile Pulse tab. -->
     <div class="tab-panel" id="tab-pulse">
       <div id="deskPulse"></div>
+    </div>
+
+    <!-- Allocation. Same renderer as the mobile tab, mounted in its own desktop pane. -->
+    <div class="tab-panel" id="tab-allocation">
+      <div id="deskAlloc"></div>
     </div>
 
     <!-- TradingView charting workbench. Same renderer as the mobile Analysis tab. -->
@@ -2207,7 +2227,7 @@
     </div>
 
     <!-- Health -->
-    <div id="mobVHealthBlock" style="margin-top:16px;display:none">
+    <div id="mobVHealthBlock" class="health-open" title="See where this margin is deployed" onclick="window.__openAllocation()" style="margin-top:16px;display:none">
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
         <span style="font-size:12px;color:var(--muted)">Health</span>
         <span><span id="mobVHealthPct" style="font-size:13px;font-weight:700"></span> <span id="mobVHealthRisk" style="font-size:11px;color:var(--muted);margin-left:3px"></span></span>

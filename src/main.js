@@ -6891,6 +6891,7 @@ function switchTab(name, btn) {
     _pulseRender(_ph)
   }
 
+  if (name === 'allocation') _mobVRenderAllocation(_viewHost('deskAlloc'))
   if (name === 'replay')     _repRender(_viewHost('deskReplay'))
   if (name === 'simulator')  _simRender(_viewHost('deskSim'))
   if (name === 'settings') { _syncSettingsTab(); _applyDevMode() }
@@ -9717,6 +9718,25 @@ const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 't
 // after an async load was gated on the MOBILE tab alone, so on desktop Pulse kicked off
 // its fetch, the data arrived, and nothing ever drew it: a permanent "Loading…".
 function _viewOpen(name) { return _mobVActiveTab === name || _activeTab === name }
+
+/**
+ * Health is a number about margin; Allocation is the picture of where that margin went.
+ * Pressing one to get the other is the obvious move and there was no way to do it.
+ *
+ * Routed here rather than hard-coded to a tab call because the two shells switch tabs
+ * differently -- switchTab on desktop, _mobVActiveTab on mobile -- and the health block is
+ * shared markup, so the handler has to pick.
+ */
+window.__openAllocation = function() {
+  const desk = document.getElementById('tab-allocation')
+  if (desk && document.getElementById('deskAlloc')?.closest('.tab-panel')) {
+    const item = document.querySelector('.sidebar-item[data-tab="allocation"]')
+    if (typeof switchTab === 'function' && item && item.offsetParent !== null) {
+      switchTab('allocation', null); setSidebarActive(item); return
+    }
+  }
+  if (typeof window.mobVGoTab === 'function') window.mobVGoTab('allocation')
+}
 
 function _viewHost(deskId) {
   const d = deskId && document.getElementById(deskId)

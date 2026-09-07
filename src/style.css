@@ -7330,3 +7330,11 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 .sig-about b { display: block; font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em;
   color: var(--muted); font-weight: 800; margin-bottom: 2px; }
 .sig-caveat b { color: var(--orange, #f59e0b); }
+
+
+/* The health block opens Allocation. It reads as a static readout, so it needs to say
+   it is pressable -- without becoming a button, which would fight the numbers in it. */
+.health-open { cursor: pointer; border-radius: 10px; margin-left: -8px; margin-right: -8px;
+  padding: 6px 8px; transition: background .12s ease; }
+.health-open:hover { background: var(--panel-2); }
+.health-open:active { background: var(--panel-3); }
