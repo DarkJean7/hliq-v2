@@ -6892,7 +6892,10 @@ function switchTab(name, btn) {
   }
 
   if (name === 'allocation') _mobVRenderAllocation(_viewHost('deskAlloc'))
-  if (name === 'replay')     _repRender(_viewHost('deskReplay'))
+  // Replay has no tab of its own on desktop any more -- it renders inside Portfolio,
+  // which is the thing it replays. The mobile shell still routes 'replay' as a tab, so
+  // both names are honoured here.
+  if (name === 'replay' || name === 'portfolio') _repRender(_viewHost('deskReplay'))
   if (name === 'simulator')  _simRender(_viewHost('deskSim'))
   if (name === 'settings') { _syncSettingsTab(); _applyDevMode() }
   if (name === 'leaderboard') {

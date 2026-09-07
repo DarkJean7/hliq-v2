@@ -7338,3 +7338,12 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
   padding: 6px 8px; transition: background .12s ease; }
 .health-open:hover { background: var(--panel-2); }
 .health-open:active { background: var(--panel-3); }
+
+/* The health ring is the way into Allocation, so it has to read as pressable and say
+   where it goes -- a bare donut that happens to be clickable is a secret. */
+.ov-ring-wrap.health-open { position: relative; cursor: pointer; border-radius: 12px;
+  transition: background .12s ease; }
+.ov-ring-wrap.health-open:hover { background: var(--panel-2); }
+.ov-ring-cta { text-align: center; font-size: 11px; font-weight: 700; color: var(--fg-3);
+  margin-top: 4px; opacity: 0; transition: opacity .12s ease; }
+.ov-ring-wrap.health-open:hover .ov-ring-cta { opacity: 1; color: var(--accent); }

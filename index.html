@@ -126,14 +126,8 @@
     <!-- Tabs the mobile shell already had and desktop did not. Replay and Simulator were
          the odd case: switchTab already rendered them and the panes already existed, so
          they were reachable by URL and by nothing a user could click. -->
-    <div class="sidebar-item" data-tab="allocation" onclick="switchTab('allocation',null);setSidebarActive(this)">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 2 A6 6 0 0 1 14 8 L8 8 Z" fill="currentColor" stroke="none"/></svg>
-      <span>Allocation</span>
-    </div>
-    <div class="sidebar-item" data-tab="replay" onclick="switchTab('replay',null);setSidebarActive(this)">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="6 4 12 8 6 12"/><line x1="3" y1="3" x2="3" y2="13"/></svg>
-      <span>Replay</span>
-    </div>
+    <!-- allocation: reached from the Account Health ring, not a sidebar row -->
+    <!-- replay: reached from Portfolio, not a sidebar row -->
     <div class="sidebar-item" data-tab="simulator" onclick="switchTab('simulator',null);setSidebarActive(this)">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="9" rx="1"/><line x1="5" y1="15" x2="11" y2="15"/></svg>
       <span>Simulator</span>
@@ -906,9 +900,7 @@
 
     <!-- REPLAY -->
     <!-- Same renderer as the mobile Replay tab. -->
-    <div class="tab-panel" id="tab-replay">
-      <div id="deskReplay"></div>
-    </div>
+    <!-- tab-replay removed: Replay now sits inside Portfolio. -->
 
     <!-- TRADE SIMULATOR -->
     <!-- Same renderer as the mobile tab. -->
@@ -922,6 +914,15 @@
 
     <!-- PORTFOLIO -->
     <div class="tab-panel" id="tab-portfolio">
+      <!-- Replay lives here rather than in the sidebar: it replays THIS portfolio, so it
+           belongs with it. #deskReplay keeps its id, so the switchTab hook that already
+           renders it needs no change -- only the pane it sits in moved. -->
+      <details id="deskReplayWrap" style="margin:0 0 16px">
+        <summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--fg-2);padding:8px 0">
+          &#9654; Replay this portfolio
+        </summary>
+        <div id="deskReplay" style="margin-top:10px"></div>
+      </details>
       <div class="portfolio-stats-sticky">
         <div class="stats-row" id="portfolioStats"></div>
       </div>

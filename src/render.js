@@ -629,8 +629,13 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
 
           <div class="ov-card ov-health">
             <div class="ov-health-head"><span class="ov-label">Account Health</span></div>
-            <div class="ov-ring-wrap">
+            <!-- Health is a number about margin; Allocation is the picture of where that
+                 margin went. The ring is the obvious way in, so it is the way in -- rather
+                 than a sidebar row for something you only want after looking at this. -->
+            <div class="ov-ring-wrap health-open" title="See where this margin is deployed"
+                 onclick="window.__openAllocation()">
               ${_ovRing(health, ringColor)}
+              <div class="ov-ring-cta">Allocation →</div>
             </div>
             <div class="ov-health-rows">
               <div class="ov-hr"><span>Leverage</span><b>${(accountValue > 0 ? totalNtl / accountValue : 0).toFixed(2)}×</b></div>

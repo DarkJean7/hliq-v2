@@ -83,8 +83,14 @@ t('and rewinds, so it starts at the beginning',
   cli.slice(cli.indexOf('window.__openReplay = function()')).slice(0, 200).includes('_repReset()'))
 t('and is no longer a More-list destination', !htm.includes("window.__mobMoreTab('replay')"))
 t('but the view itself is still a full page', /_MOBV_FULLPAGE = new Set\(\[[^\]]*'replay'/.test(cli))
-t('desktop has the tab and a pane', htm.includes('id="tab-replay"') && htm.includes('id="deskReplay"') &&
-  cli.includes("if (name === 'replay')     _repRender(_viewHost('deskReplay'))"))
+// WAS: desktop had its own #tab-replay. It does not any more -- Replay renders inside
+// Portfolio, which is the thing it replays, and the sidebar row is gone. The pane id is
+// unchanged, so the renderer did not have to move; only its host did.
+t('desktop mounts Replay inside Portfolio', htm.includes('id="deskReplay"') &&
+  htm.includes('id="deskReplayWrap"') && !htm.includes('id="tab-replay"'))
+t('and opening Portfolio renders it',
+  cli.includes("if (name === 'replay' || name === 'portfolio') _repRender(_viewHost('deskReplay'))"))
+t('with no sidebar row of its own', !htm.includes('data-tab="replay"'))
 
 console.log(String.fromCharCode(10) + '-- the player behaves --')
 t('play, pause, seek, restart and speed all exist',
