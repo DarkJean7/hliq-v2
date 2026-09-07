@@ -730,8 +730,23 @@ async function run() {
   // Auto-size: when --size isn't provided, allocate --size-pct of the budget
   // (× leverage) across the buy levels so the grid always fits.
   if (!(ORDER_USD > 0)) {
-    ORDER_USD = Math.floor(capital * LEVERAGE * SIZE_PCT / buyLevelCnt * 100) / 100
-    log('INIT', `Auto-size: ${(SIZE_PCT * 100).toFixed(0)}% of ${capSrc} × ${LEVERAGE}x ÷ ${buyLevelCnt} buy levels → $${ORDER_USD.toFixed(2)}/level`)
+    // An explicit --total-margin is a statement of intent and outranks the heuristic.
+    //
+    // It used to be a ceiling only: auto-size took 50% of whatever was available, the cap
+    // reduced that if it was higher, and it never was -- so "Max Margin $200" on an
+    // account with $42 free produced a $21 grid and looked ignored. A number the user
+    // typed should size the grid, not merely fail to bind against it.
+    //
+    // Still bounded by what the account actually has: the budget is what you asked for OR
+    // what is there, whichever is smaller. Asking for $200 against $42 of free margin
+    // deploys $42, not an order the exchange will reject.
+    const budget = TOTAL_MARGIN > 0 ? Math.min(TOTAL_MARGIN, capital) : capital * SIZE_PCT
+    ORDER_USD = Math.floor(budget * LEVERAGE / buyLevelCnt * 100) / 100
+    log('INIT', TOTAL_MARGIN > 0
+      ? `Auto-size: margin budget $${budget.toFixed(2)}` +
+        `${TOTAL_MARGIN > capital ? ` (asked $${TOTAL_MARGIN.toFixed(2)}, only $${capital.toFixed(2)} free)` : ''}` +
+        ` × ${LEVERAGE}x ÷ ${buyLevelCnt} buy levels → $${ORDER_USD.toFixed(2)}/level`
+      : `Auto-size: ${(SIZE_PCT * 100).toFixed(0)}% of ${capSrc} × ${LEVERAGE}x ÷ ${buyLevelCnt} buy levels → $${ORDER_USD.toFixed(2)}/level`)
   }
 
   // Per-position margin cap (--total-margin): the grid's entry margin = ORDER_USD ×

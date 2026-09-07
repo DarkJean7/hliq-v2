@@ -39,8 +39,17 @@ t('the measurement is on the record so the comment cannot drift back',
 console.log('\n-- live sizing is deliberately untouched --')
 // capital x LEVERAGE cancels the division, so auto-size produces the same orders it did
 // before. Changing that would resize every auto-sized grid, which is not a preview fix.
-t('auto-size still uses `capital`, not marginAvail',
-  grid.includes('ORDER_USD = Math.floor(capital * LEVERAGE * SIZE_PCT / buyLevelCnt * 100) / 100'))
+// WAS: auto-size deliberately untouched, using capital x LEVERAGE x SIZE_PCT. That made
+// --total-margin a ceiling that could only reduce a number it never exceeded, so a typed
+// "Max Margin $200" produced a $21 grid and read as ignored. An explicit budget now sizes
+// the grid; the heuristic is what runs when there is no budget to honour.
+t('an explicit margin budget sizes the grid',
+  grid.includes('const budget = TOTAL_MARGIN > 0 ? Math.min(TOTAL_MARGIN, capital) : capital * SIZE_PCT'))
+t('and it is turned into notional by the leverage',
+  grid.includes('ORDER_USD = Math.floor(budget * LEVERAGE / buyLevelCnt * 100) / 100'))
+t('the budget cannot exceed what the account has', grid.includes('Math.min(TOTAL_MARGIN, capital)'))
+t('and the log says when it was clipped', grid.includes('only $') && grid.includes('free)'))
+t('with no budget, the old percentage heuristic still runs', grid.includes('capital * SIZE_PCT'))
 t('capital is still availableToTrade / leverage in that branch',
   grid.includes('capital     = freeMargin') && grid.includes('freeMargin  = LEVERAGE > 0 ? availNtl / LEVERAGE : availNtl'))
 t('so capital x leverage is exactly availableToTrade again',
