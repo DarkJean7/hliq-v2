@@ -671,7 +671,29 @@ async function run() {
   // reads ~0 on a unified account or when funds are in an isolated position). It bakes
   // in leverage, so /LEVERAGE gives a margin-equiv the ×LEVERAGE auto-size restores.
   const availVals = (aad0?.availableToTrade ?? []).map(x => Math.max(0, parseFloat(x) || 0)).filter(v => v > 0)
-  const availNtl  = availVals.length ? Math.min(...availVals) : 0
+  let   availNtl  = availVals.length ? Math.min(...availVals) : 0
+
+  // availableToTrade is quoted by HL against the leverage the ACCOUNT currently has set
+  // for this asset -- NOT the leverage this bot was told to use. run() does call
+  // updateLeverage, but only at START, long after this fetch; and a Preview never sets it
+  // at all, because a preview must not change account state to draw a picture.
+  //
+  // So the two disagree whenever the user has not set that asset's leverage by hand, and
+  // the gap is a straight multiple. A grid told 20x on an asset sitting at 1x budgeted a
+  // twentieth of what it should: $353 of notional against $353 of free margin. The
+  // --total-margin cap never came near binding because the auto-size was already far
+  // below it, which is what made it look like the cap was being ignored.
+  //
+  // Rescaled rather than fixed by setting leverage earlier: this is the number the run
+  // WILL have once it sets 20x, it is right for the preview and the live run alike, and
+  // it costs no exchange call on a path that already fans out per wallet.
+  const curLev = Math.max(0, parseFloat(aad0?.leverage?.value ?? 0) || 0)
+  if (availNtl > 0 && curLev > 0 && LEVERAGE > 0 && Math.abs(curLev - LEVERAGE) > 1e-9) {
+    const was = availNtl
+    availNtl  = availNtl * (LEVERAGE / curLev)
+    log('INIT', `availableToTrade $${was.toFixed(2)} is quoted at ${curLev}x; this grid runs at ` +
+                `${LEVERAGE}x → budget $${availNtl.toFixed(2)}`)
+  }
   const usdcBal      = (spot0?.balances ?? []).find(b => b.coin === 'USDC')
   const spotFree     = (!IS_HIP3 && usdcBal) ? Math.max(0, parseFloat(usdcBal.total ?? 0) - parseFloat(usdcBal.hold ?? 0)) : 0
   const withdrawable = parseFloat(acct0.withdrawable ?? 0)
