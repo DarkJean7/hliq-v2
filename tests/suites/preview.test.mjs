@@ -82,7 +82,14 @@ t('an existing position is surfaced, since it can move the range', sheet.include
 t('Run is one tap from the preview', sheet.includes('window.runStrategyMob('))
 t('and closing the sheet first, so it cannot double-fire', sheet.includes("window.__closeBotPreview();window.runStrategyMob("))
 
-const chart = grab(cli, 'function _previewChartHtml(plan)')
+// Signature gained a `full` flag when the ladder learned to render whole-screen.
+//
+// Sliced to the next top-level function rather than brace-matched: the ladder is
+// mostly nested template literals, and counting braces through those truncated the
+// region silently -- nine assertions went red while the code they check was fine.
+const _cs = cli.indexOf('function _previewChartHtml(plan, full')
+const _ce = cli.indexOf(String.fromCharCode(10) + 'function ', _cs + 10)
+const chart = _cs < 0 ? '' : cli.slice(_cs, _ce < 0 ? cli.length : _ce)
 t('levels are positioned by PRICE, not by index', chart.includes('(1 - (px - lo) / span)'))
 t('so uneven (percentage) spacing is not flattened into even rungs', chart.includes('const span = (hi - lo) || 1'))
 t('the mark is drawn among them', chart.includes("_T('Mark', 'Precio')"))
@@ -114,7 +121,7 @@ t('heldBack covers every level not being placed now', pb.includes("o.blocked && 
 t('and near-mark levels get their own tally', pb.includes("nearMark:  orders.filter(o => o.blocked === 'near').length"))
 
 console.log(String.fromCharCode(10) + '-- and the UI marks them --')
-const chart2 = grab(cli, 'function _previewChartHtml(plan)')
+const chart2 = chart          // same region, sliced once above
 for (const k of ['margin', 'inventory', 'losing', 'resting', 'near'])
   t(k + ' has a label', chart2.includes(k + ':'))
 t('the two that mean "wanted but cannot" are the loud ones',

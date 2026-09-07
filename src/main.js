@@ -22553,13 +22553,46 @@ window.__closeBotPreview = function() { document.getElementById('botPreviewSheet
  * spacing (percentage grids) shows as uneven rungs rather than being flattened into an
  * evenly-spaced picture the bot is not going to trade.
  */
-function _previewChartHtml(plan) {
+/**
+ * Maker fee, per side. A grid rests limit orders, so both legs of a rotation are makers.
+ * Used only to net the per-level figure; it is an estimate, and named here rather than
+ * buried as 0.00015 three lines down.
+ */
+const _GRID_MAKER_FEE = 0.00015
+
+/**
+ * What ONE completed rotation between a rung and the next one up is worth.
+ *
+ * A grid does not make money per level, it makes money per ROUND TRIP between two
+ * adjacent levels: buy the lower, sell the upper, keep the difference. That is the number
+ * a grid is actually configured around, and the preview never showed it -- you could set a
+ * range and a level count with no idea whether each cycle earned 40 cents or four.
+ *
+ * Attached to the LOWER rung of each pair, which is true whichever direction the grid runs
+ * and needs no assumption about its side. The topmost rung has no pair above it and gets
+ * nothing, which is correct rather than a gap.
+ */
+function _rungCycle(o, up) {
+  if (!o || !up) return null
+  const sz = Number(o.sz) || 0, lo = Number(o.px) || 0, hi = Number(up.px) || 0
+  if (!(sz > 0) || !(lo > 0) || !(hi > lo)) return null
+  const gross = sz * (hi - lo)
+  const fees  = sz * (lo + hi) * _GRID_MAKER_FEE
+  return { gross, net: gross - fees, pct: (hi - lo) / lo * 100 }
+}
+
+function _previewChartHtml(plan, full = false) {
   const orders = (plan.orders ?? []).filter(o => Number.isFinite(+o.px))
   if (orders.length < 2) return ''
+  // Each rung's partner is the next level UP in price, not the next by index: a
+  // percentage grid's levels are unevenly spaced and index order is not price order.
+  const _byPx = orders.slice().sort((a, b) => (+a.px) - (+b.px))
+  const _up = new Map()
+  for (let i = 0; i < _byPx.length - 1; i++) _up.set(_byPx[i], _byPx[i + 1])
   const pxs = orders.map(o => +o.px).concat(+plan.markPx)
   const lo = Math.min(...pxs), hi = Math.max(...pxs)
   const span = (hi - lo) || 1
-  const H = Math.max(190, orders.length * 26)
+  const H = Math.max(full ? 320 : 190, orders.length * (full ? 40 : 26))
   const y = (px) => 14 + (1 - (px - lo) / span) * (H - 28)
 
   // Why a level is not going on the book this cycle. 'margin' and 'inventory' are the two
@@ -22574,6 +22607,7 @@ function _previewChartHtml(plan) {
   }
   const rung = (o) => {
     const yy = y(+o.px)
+    const cyc = _rungCycle(o, _up.get(o))
     const buy = o.side === 'buy'
     const why = o.blocked ? WHY[o.blocked] : null
     const live = !o.blocked
@@ -22589,8 +22623,24 @@ function _previewChartHtml(plan) {
       <span style="flex:1;height:0;border-top:1.5px ${live ? (buy ? 'solid' : 'dashed') : 'dotted'} ${col};opacity:.75"></span>
       ${why ? `<span style="flex-shrink:0;font-size:8.5px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;color:${why.loud ? 'var(--red)' : 'var(--fg-3)'};white-space:nowrap">${why.txt()}</span>` : ''}
       <span style="flex-shrink:0;font-size:10.5px;font-family:var(--font-mono);color:var(--fg-2)${strike}">${fmtSize(o.sz)} @ $${fmtPrice(o.px)}</span>
+      ${cyc ? `<span style="flex-shrink:0;width:${full ? 96 : 62}px;text-align:right;font-size:${full ? 11 : 9.5}px;font-family:var(--font-mono);font-weight:700;color:var(--green)" title="${
+        _T('One rotation between this level and the next one up, after maker fees',
+           'Una rotación entre este nivel y el siguiente, tras comisiones')}">+$${
+        cyc.net >= 1 ? fmtUSD(cyc.net) : cyc.net.toFixed(3)}${
+        full ? ` <span style="color:var(--fg-3);font-weight:500">${cyc.pct.toFixed(2)}%</span>` : ''}</span>` : ''}
     </div>`
   }
+  // Every rotation on the board at once: what the grid earns for one full sweep of the
+  // range. The per-rung figures answer "is a level worth it"; this answers "is the grid".
+  const _sweep = _byPx.slice(0, -1).reduce((a, o) => {
+    const c = _rungCycle(o, _up.get(o)); return a + (c ? c.net : 0)
+  }, 0)
+  const _foot = `<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:6px;font-size:10.5px;color:var(--fg-3);line-height:1.5">
+      <span>${_T('One full sweep of the range', 'Un barrido completo del rango')}: <b style="color:var(--green)">+$${fmtUSD(_sweep)}</b></span>
+      ${full ? '' : `<button onclick="event.stopPropagation();window.__gridLadderExpand()" style="flex-shrink:0;background:var(--panel-3);border:1px solid var(--border2);border-radius:7px;color:var(--fg-2);font-family:inherit;font-size:10.5px;font-weight:700;padding:3px 9px;cursor:pointer">${
+        _T('Full screen', 'Pantalla completa')} ⤢</button>`}
+    </div>`
+
   const markY = y(+plan.markPx)
   return `<div style="position:relative;height:${H}px;margin:10px 0 4px">
     ${orders.map(rung).join('')}
@@ -22599,7 +22649,39 @@ function _previewChartHtml(plan) {
       <span style="flex:1;height:0;border-top:2px solid var(--fg)"></span>
       <span style="flex-shrink:0;font-size:11px;font-weight:800;font-family:var(--font-mono)">$${fmtPrice(plan.markPx)}</span>
     </div>
-  </div>`
+  </div>${_foot}`
+}
+
+// The plan the ladder was last drawn from, so the full-screen view can redraw the SAME
+// one. Re-deriving it would ask the bot API for a fresh plan and could show a different
+// ladder than the one the button was pressed on.
+let _gridLadderPlan = null
+
+window.__gridLadderExpand = function() {
+  if (!_gridLadderPlan) return
+  document.getElementById('gridLadderFull')?.remove()
+  const el = document.createElement('div')
+  el.id = 'gridLadderFull'
+  el.style.cssText = 'position:fixed;inset:0;z-index:100000;background:var(--bg);display:flex;flex-direction:column'
+  el.innerHTML = `
+    <div style="flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px 11px;border-bottom:1px solid var(--border)">
+      <div style="min-width:0">
+        <div style="font-size:17px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${
+          esc(_ocCoinLabel(_gridLadderPlan.coin ?? ''))} ${_T('grid', 'grid')}</div>
+        <div style="font-size:11px;color:var(--fg-3);margin-top:1px">${
+          (_gridLadderPlan.orders ?? []).length} ${_T('levels', 'niveles')} · ${
+          _T('mark', 'precio')} $${fmtPrice(_gridLadderPlan.markPx)}</div>
+      </div>
+      <button onclick="window.__gridLadderClose()" aria-label="Close" style="flex-shrink:0;background:none;border:none;color:var(--muted);font-size:26px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+    </div>
+    <div data-dragscroll style="flex:1;overflow:auto;-webkit-overflow-scrolling:touch;padding:6px 16px calc(28px + env(safe-area-inset-bottom))">
+      ${_previewChartHtml(_gridLadderPlan, true)}
+    </div>`
+  document.body.appendChild(el)
+}
+
+window.__gridLadderClose = function() {
+  document.getElementById('gridLadderFull')?.remove()
 }
 
 /**
@@ -22804,7 +22886,7 @@ function _botPreviewSheet(type, plan, loading) {
 
       ${_previewPositionHtml(plan)}
 
-      ${_previewChartHtml(plan)}
+      ${(_gridLadderPlan = plan, _previewChartHtml(plan))}
 
       <div style="font-size:10.5px;color:var(--fg-3);margin-top:8px;line-height:1.5">${
         _T('Every one is a resting limit order. Nothing has been placed — this ran the bot\'s own setup and stopped before it could.',
