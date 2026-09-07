@@ -22693,6 +22693,70 @@ function _botPreviewSheet(type, plan, loading) {
     // Capital first: the size per level is derived from it, so a plan that does not fit
     // is the single most useful thing this screen can tell you.
     const fitTone = plan.fits ? 'var(--green)' : 'var(--red)'
+
+    // ── If every entry level fills ──────────────────────────────────────────────
+    //
+    // The numbers above are per level. A grid's actual risk is the other end of the
+    // ladder: price runs through every rung, and you are holding all of them at once at
+    // an average well below where you started. That position, and where it liquidates,
+    // is the thing worth knowing BEFORE pressing Run -- it is what the account has to be
+    // able to sit through, and nothing on this screen was saying it.
+    // The plan does not name its direction, so read it off the ladder: a long grid's
+    // entries are the buys BELOW the mark, a short grid's are the sells above it.
+    // Inferred here rather than added to strategies/grid.js, which would need its own
+    // bots deploy for a number this screen can already work out.
+    const _mk = Number(plan.markPx) || 0
+    const _buysBelow  = (plan.orders ?? []).filter(o => o.side === 'buy'  && o.px < _mk).length
+    const _sellsAbove = (plan.orders ?? []).filter(o => o.side === 'sell' && o.px > _mk).length
+    const _entrySide = _sellsAbove > _buysBelow ? 'sell' : 'buy'
+    const _legs = (plan.orders ?? []).filter(o => o.side === _entrySide && o.sz > 0 && o.px > 0)
+    const _fullSz  = _legs.reduce((a, o) => a + o.sz, 0)
+    const _fullNot = _legs.reduce((a, o) => a + o.sz * o.px, 0)
+    const _fullEntry  = _fullSz > 0 ? _fullNot / _fullSz : 0
+    const _fullMargin = plan.leverage > 0 ? _fullNot / plan.leverage : 0
+    // The same maintenance rate and the same formula the order ticket uses, so the two
+    // screens cannot disagree about the same position.
+    const _MMR = 0.005
+    // Cross is backed by the whole account; isolated only by what this position posts.
+    // Capital is used rather than account equity because that is what this bot was told
+    // it may spend -- a liq price quoted against money the grid is not allowed to touch
+    // would read safer than the position actually is.
+    const _backing = plan.margin === 'isolated' ? _fullMargin : Math.max(Number(plan.capital) || 0, _fullMargin)
+    let _fullLiq = 0
+    if (_fullSz > 0 && _backing > 0 && _fullNot > 0) {
+      _fullLiq = _entrySide === 'buy'
+        ? (_fullNot - _backing) / (_fullSz * (1 - _MMR))
+        : (_fullNot + _backing) / (_fullSz * (1 + _MMR))
+      if (!(_fullLiq > 0)) _fullLiq = 0
+    }
+    const _liqGapPct = _fullLiq > 0 && _fullEntry > 0
+      ? Math.abs(_fullLiq - _fullEntry) / _fullEntry * 100 : null
+    const _fullBlock = _legs.length < 2 ? '' : `
+      <div style="margin-top:14px;border:1px solid var(--border);border-radius:11px;padding:11px 12px">
+        <div style="font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px">${
+          _T('If every level fills', 'Si se llenan todos los niveles')}</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          ${cell(_T('Position', 'Posición'), fmtSize(_fullSz) + ' ' + esc(_ocCoinLabel(plan.coin ?? '')))}
+          ${cell(_T('Avg entry', 'Entrada media'), '$' + fmtPrice(_fullEntry))}
+          ${cell(_T('Notional', 'Nocional'), '$' + fmtUSD(_fullNot))}
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+          ${cell(_T('Margin used', 'Margen usado'), '$' + fmtUSD(_fullMargin),
+                 _fullMargin > (Number(plan.capital) || 0) ? 'var(--red)' : 'var(--fg)')}
+          ${cell(_T('Est. liq price', 'Precio liq. est.'),
+                 _fullLiq > 0 ? '$' + fmtPrice(_fullLiq) : '—', 'var(--orange,#f59e0b)')}
+          ${cell(_T('Liq is', 'La liq. está a'),
+                 _liqGapPct == null ? '—' : _liqGapPct.toFixed(1) + '% ' + _T('away', 'de distancia'))}
+        </div>
+        <div style="font-size:10.5px;color:var(--fg-3);margin-top:9px;line-height:1.5">${
+          _T(`Holding all ${_legs.length} entry levels at once needs <b>$${fmtUSD(_fullMargin)}</b> of margin against the <b>$${fmtUSD(Number(plan.capital) || 0)}</b> this bot may use. `,
+             `Sostener los ${_legs.length} niveles a la vez necesita <b>$${fmtUSD(_fullMargin)}</b> de margen frente a los <b>$${fmtUSD(Number(plan.capital) || 0)}</b> que este bot puede usar. `)}${
+          plan.margin === 'isolated'
+            ? _T('Isolated, so only that margin backs it.', 'Aislado, así que solo ese margen lo respalda.')
+            : _T('Cross, so the rest of the account backs it too — the real liquidation sits further out than this, and moves as your other positions do.',
+                 'Cruzado, así que el resto de la cuenta también lo respalda — la liquidación real queda más lejos y se mueve con tus otras posiciones.')}</div>
+      </div>`
+
     body = `<div style="padding:14px 16px 18px">
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         ${cell(_T('Placing now', 'Coloca ahora'), `${plan.willPlace ?? plan.orders.length}`, 'var(--green)')}
@@ -22709,6 +22773,7 @@ function _botPreviewSheet(type, plan, loading) {
         ${cell(_T('Your capital', 'Tu capital'), '$' + fmtUSD(plan.capital), 'var(--fg)')}
         ${cell(_T('Leverage', 'Apalancamiento'), plan.leverage + '× ' + plan.margin)}
       </div>
+      ${_fullBlock}
       <div style="font-size:10.5px;color:var(--fg-3);margin-top:8px;line-height:1.5">${
         _T('Sizing comes from', 'El tamaño sale de')} ${esc(plan.capitalSource || '')}${
         plan.autoSize ? ' · ' + _T('size chosen automatically', 'tamaño elegido automáticamente') : ''}${
