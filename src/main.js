@@ -6515,7 +6515,16 @@ function _computeBotPerformance(wins) {
     const s = statsForCoins(botCoins[t], t)
     s.type  = t
     s.label = PERF_LABELS[t]
-    s.coins = [...botCoins[t]]
+    // In Bot-only mode the coin list has to come from fills the bot ACTUALLY placed.
+    // botCoins is built from every configured instance in serverStatus._instances plus
+    // whatever the win messages name, so it lists markets a bot was merely pointed at --
+    // which is how a column describing 323 trades ended up naming a dozen coins the bot
+    // had never filled. In All-activity mode the configured set is still the right answer,
+    // because that mode is deliberately showing everything on those markets.
+    s.coins = _perfExact
+      ? [...new Set(_fillsForBot(t, botCoins[t])
+          .map(f => String(f.coin ?? '').split(':').pop().toUpperCase()).filter(Boolean))]
+      : [...botCoins[t]]
     s.wins  = (wins?.[t] ?? []).length
     return s
   }).filter(s => s.coins.length > 0 || s.wins > 0)
