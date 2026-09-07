@@ -10577,10 +10577,41 @@ function _alertCountByCoin() {
   return m
 }
 
+/**
+ * Every guard armed on this coin, from BOTH places the app records them.
+ *
+ * serverStatus._instances describes the ONE account currently selected. In All Accounts
+ * that is not the account the card belongs to -- the per-wallet lists in _maBotStatus are
+ * the only record there -- so a guard armed on wallet four was invisible on a card the
+ * combined view was showing. The badge read "nothing is watching this" while something was.
+ *
+ * Matched case-insensitively: instance keys carry the market as it is written, so a HIP-3
+ * coin arrives as `liqguard:xyz:SMSN` and an uppercased lookup would miss it.
+ */
+let _armedKeys = null, _armedKeysAt = 0
+function _armedGuardKeys() {
+  // Memoised for a second, for the same reason _alertCountByCoin is: this runs once per
+  // position card, and with ~21 positions it would otherwise walk every wallet's bot list
+  // twenty-one times per repaint.
+  if (_armedKeys && Date.now() - _armedKeysAt < 1000) return _armedKeys
+  const out = new Set()
+  for (const k of Object.keys(serverStatus?._instances ?? {})) out.add(String(k).toLowerCase())
+  if (state.isAllAccounts) {
+    const hidden = _maHiddenLoad()
+    for (const [addr, bots] of Object.entries(_maBotStatus || {})) {
+      if (!Array.isArray(bots) || hidden.has(addr)) continue
+      for (const b of bots) out.add(String(b).toLowerCase())
+    }
+  }
+  _armedKeys = out; _armedKeysAt = Date.now()
+  return out
+}
+
 function _mobVGuardBadge(coin) {
   const c   = String(coin).toUpperCase()
-  const liq = !!serverStatus?._instances?.[`liqguard:${c}`]
-  const brk = !!serverStatus?._instances?.[`levbrake:${c}`]
+  const _armed = _armedGuardKeys()
+  const liq = _armed.has(`liqguard:${c}`.toLowerCase())
+  const brk = _armed.has(`levbrake:${c}`.toLowerCase())
   // Price alerts live client-side while the two guards are server bots, but from the card's
   // point of view they are the same fact: something is armed and watching this coin.
   const alerts = _alertCountByCoin().get(c) ?? 0
