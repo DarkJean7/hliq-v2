@@ -17875,10 +17875,6 @@ function _mobVRenderContent(tick = false) {
         <canvas id="mobVPortChart" height="120" style="width:100%;display:block"></canvas>
       </div>
       <div id="mobVPortSplit" style="padding:0 0 8px;display:${_mobVPortSplit && state.isAllAccounts ? 'block' : 'none'}"></div>
-      <!-- Accounts sit UNDER the chart: they are the breakdown of the line above them, and
-           at the top they were a wall to scroll past before reaching the thing the tab is
-           named for. -->
-      ${acctCardsHtml}
       <div style="padding:0 16px 6px;display:flex;align-items:center;gap:8px">
         <button id="mobVPortMarkersBtn" data-port-markers onclick="window.mobVTogglePortMarkers()"
           style="${_mobVPortBtnStyle(_mobVPortMarkers)}">📍 Markers</button>
@@ -17890,6 +17886,10 @@ function _mobVRenderContent(tick = false) {
           <span style="color:#00e5a0">● Buy</span><span style="color:#ff4d6d">● Sell</span><span style="color:#4aa3ff">● Deposit</span><span style="color:#f5a623">● Withdraw</span>
         </span>` : ''}
       </div>
+      <!-- Accounts sit under the WHOLE chart block -- graph and the buttons that drive it.
+           Dropping them in above the buttons separated Markers/Advanced/Replay from the
+           thing they act on, which is the same mistake as putting the cards on top. -->
+      ${acctCardsHtml}
       <div class="mob-v-setting-group" style="margin-top:8px">
         <div class="mob-v-setting-row"><span>Account Value</span><span style="font-weight:600;font-size:14px">${_acctValueReady() ? _prv('$' + fmtUSD(accountValue)) : '<span style="color:var(--muted)">—</span>'}</span></div>
         <div class="mob-v-setting-row"><span>Unrealized PnL</span><span class="${pnlCls(unrealizedPnl)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(unrealizedPnl))}</span></div>
@@ -25321,12 +25321,7 @@ function _mobVRenderStrategies(el) {
     `<button class="auto-gen-agent-btn" onclick="window.__quickConnectAgent()" style="width:100%;padding:10px;border-radius:9px;border:none;background:rgba(255,138,42,0.14);color:var(--accent);font-size:13px;font-weight:700;cursor:pointer">${isMainWalletConnected() ? '⚡ Auto-generate Agent Key' : '🔗 Connect wallet'}</button>`
 
   el.innerHTML = `<div style="padding:4px 0 80px">
-    ${state.isAllAccounts
-      // Picker first, then what is running. The picker is the control -- it decides which
-      // account a bot arms on -- and the list is the consequence of it, so reading downward
-      // now goes choose-then-see instead of see-then-scroll-back-up-to-choose.
-      ? _stratAcctPickerHtml() + `<div style="padding:2px 12px 10px">${_allAcctRunningHtml()}</div>`
-      : ''}
+    ${state.isAllAccounts ? _stratAcctPickerHtml() : ''}
     <div class="mob-v-setting-group" style="margin-bottom:14px">
       <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:8px">
         <div style="display:flex;justify-content:space-between;align-items:center">
@@ -25369,6 +25364,7 @@ function _mobVRenderStrategies(el) {
       <button onclick="window.__openBotSubmissions()" style="width:100%;padding:9px;border-radius:9px;border:1px dashed var(--border2);background:transparent;color:var(--fg-2);font-size:12px;font-weight:700;cursor:pointer">${
         _T('Bot submissions', 'Bots enviados')}</button>
     </div>` : ''}
+    ${state.isAllAccounts ? `<div style="padding:16px 12px 0">${_allAcctRunningHtml()}</div>` : ''}
     <div style="padding:10px 12px 0">${_devBotsHtml()}</div>
   </div>`
 
