@@ -60,9 +60,15 @@ t('combined view no longer dead-ends into the read-only list',
   strat.includes('if (state.isAllAccounts && !_stratTargetAddr()) { _mobVRenderAllAcctStrats(el); return }'))
 t('but still falls back to it when no account can be targeted',
   strat.includes('_mobVRenderAllAcctStrats(el); return'))
+// Both assertions pinned the ORDER as a side effect of matching the markup: the picker
+// used to come after the running list. It now comes first -- the picker is the control
+// and the list is its consequence -- so they match on the guard and the call instead.
 t('the picker is rendered in the combined view only',
-  strat.includes('_stratAcctPickerHtml()') && strat.includes("state.isAllAccounts ? `<div"))
-t('and a single account never sees it', /state\.isAllAccounts \?[\s\S]{0,200}_stratAcctPickerHtml\(\) : ''/.test(strat))
+  strat.includes('_stratAcctPickerHtml()') && strat.includes('state.isAllAccounts'))
+t('and a single account never sees it',
+  /state\.isAllAccounts[\s\S]{0,400}_stratAcctPickerHtml\(\)[\s\S]{0,200}: ''/.test(strat))
+t('the picker comes before what is running, not after',
+  strat.indexOf('_stratAcctPickerHtml()') < strat.indexOf('_allAcctRunningHtml()'))
 
 const pick = grab(cli, 'function _stratAcctPickerHtml()')
 t('an account with no agent key cannot be picked', pick.includes("${key ? '' : 'disabled'}"))

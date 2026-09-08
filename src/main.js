@@ -17858,7 +17858,6 @@ function _mobVRenderContent(tick = false) {
       </div>` : ''
     el.innerHTML = `<div style="padding:0 0 24px">
       ${portHeader}
-      ${acctCardsHtml}
       <div data-dragscroll style="display:flex;gap:4px;padding:12px 16px 0;overflow-x:auto;scrollbar-width:none">
         ${chartTypes.map(([lbl,t]) => `<button data-port-type="${t}" onclick="window.mobVSetPortChartType('${t}')"
           style="${btnStyle(t === _mobVPortChartType)}">${lbl}</button>`).join('')}
@@ -17876,6 +17875,10 @@ function _mobVRenderContent(tick = false) {
         <canvas id="mobVPortChart" height="120" style="width:100%;display:block"></canvas>
       </div>
       <div id="mobVPortSplit" style="padding:0 0 8px;display:${_mobVPortSplit && state.isAllAccounts ? 'block' : 'none'}"></div>
+      <!-- Accounts sit UNDER the chart: they are the breakdown of the line above them, and
+           at the top they were a wall to scroll past before reaching the thing the tab is
+           named for. -->
+      ${acctCardsHtml}
       <div style="padding:0 16px 6px;display:flex;align-items:center;gap:8px">
         <button id="mobVPortMarkersBtn" data-port-markers onclick="window.mobVTogglePortMarkers()"
           style="${_mobVPortBtnStyle(_mobVPortMarkers)}">📍 Markers</button>
@@ -25318,7 +25321,12 @@ function _mobVRenderStrategies(el) {
     `<button class="auto-gen-agent-btn" onclick="window.__quickConnectAgent()" style="width:100%;padding:10px;border-radius:9px;border:none;background:rgba(255,138,42,0.14);color:var(--accent);font-size:13px;font-weight:700;cursor:pointer">${isMainWalletConnected() ? '⚡ Auto-generate Agent Key' : '🔗 Connect wallet'}</button>`
 
   el.innerHTML = `<div style="padding:4px 0 80px">
-    ${state.isAllAccounts ? `<div style="padding:2px 12px 10px">${_allAcctRunningHtml()}</div>` + _stratAcctPickerHtml() : ''}
+    ${state.isAllAccounts
+      // Picker first, then what is running. The picker is the control -- it decides which
+      // account a bot arms on -- and the list is the consequence of it, so reading downward
+      // now goes choose-then-see instead of see-then-scroll-back-up-to-choose.
+      ? _stratAcctPickerHtml() + `<div style="padding:2px 12px 10px">${_allAcctRunningHtml()}</div>`
+      : ''}
     <div class="mob-v-setting-group" style="margin-bottom:14px">
       <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:8px">
         <div style="display:flex;justify-content:space-between;align-items:center">
