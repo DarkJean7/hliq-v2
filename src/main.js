@@ -25804,9 +25804,21 @@ function updateAllStrategyButtons() {
     if (html !== _deskDevSig) { _deskDevSig = html; dvHost.innerHTML = html }
   }
   const labels  = { insolvent:'Insolvent', dca:'DCA', grid:'Grid', trend:'Trend', longer:'Longer', shorter:'Shorter' }
+
+  // serverStatus describes the account the bot API was last queried for. In All Accounts
+  // that is not the account the picker names, so every card read "not running" even with
+  // the picked wallet's grid live -- the only way to see it was the Running Bots list at
+  // the bottom, which cannot be edited or stopped. The per-wallet lists in _maBotStatus
+  // are the record there, so the picked wallet's row is what the cards key off.
+  const _pick    = state.isAllAccounts ? _stratTargetAddr() : null
+  const _pickRow = _pick
+    ? (Object.entries(_maBotStatus || {}).find(([a]) => a.toLowerCase() === _pick.toLowerCase())?.[1] ?? [])
+    : null
   const running = []
   for (const type of ['insolvent','dca','grid','trend','longer','shorter']) {
-    const isRunning = !!serverStatus[type]
+    const isRunning = _pickRow
+      ? _pickRow.some(b => String(b).split(':')[0] === type)
+      : !!serverStatus[type]
 
     // Desktop buttons
     const runBtn  = document.getElementById(`run-btn-${type}`)
@@ -25852,7 +25864,12 @@ function updateAllStrategyButtons() {
     if (mCard) mCard.classList.toggle('mob-strat-running', isRunning)
 
     if (isRunning) {
-      const insts = _typeInstances(type).filter(Boolean)
+      // Same source as isRunning, or the summary would name a running bot and then list
+      // the coins of whichever account serverStatus happens to describe.
+      const insts = (_pickRow
+        ? _pickRow.filter(b => String(b).split(':')[0] === type)
+                  .map(b => String(b).split(':').slice(1).join(':'))
+        : _typeInstances(type)).filter(Boolean)
       running.push(labels[type] + (insts.length ? ` (${insts.join(', ')})` : ''))
     }
   }
