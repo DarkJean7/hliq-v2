@@ -41,7 +41,11 @@ function blockAt(marker) {
 }
 
 // The shells: cleared, so body::before shows through them.
-const shells = blockAt('html.has-bg-image, html.has-bg-image body,')
+// The root used to be first in this list. It is not any more, and that is the point of the
+// assertion below: html is the CANVAS, and iOS paints the canvas wherever no element reaches
+// -- the safe area under the status bar, and the rubber-band past either end. Cleared, that
+// fell through to the browser default, which is white.
+const shells = blockAt('html.has-bg-image body,')
 // The overlays: they paint the photo on themselves. Two blocks — an expanded outcome card
 // is only an overlay on mobile, so it is scoped, and above 768px it is an ordinary card.
 const overlays = blockAt('html.has-bg-image #mobPredictOverlay,') +
@@ -50,15 +54,27 @@ const covered = shells + overlays
 
 console.log(nl + '-- the photo layer is still wired --')
 t('there is a rule that clears the shells', shells.length > 0)
-t('html and body are cleared', shells.includes('html.has-bg-image body,'))
+t('body is cleared', shells.includes('html.has-bg-image body,'))
 t('and it really does clear them', /background:\s*transparent\s*!important/.test(shells))
+// The root is the exception, and it has to stay one: an opaque canvas is the only thing
+// standing between a photo and a white strip under the status bar.
+t('the root is NOT cleared — it is the canvas',
+  /html\.has-bg-image\s*\{[^}]*background-color:\s*var\(--bg\)\s*!important/.test(CSS))
+t('and why is written down', CSS.includes('It is the canvas'))
 
 console.log(nl + '-- overlays paint the photo instead of being cleared --')
 t('there is an overlay rule', overlays.length > 0)
 t('it paints the picture', overlays.includes('var(--app-bg-image)'))
 t('dimmed the same as the shell behind it', overlays.includes('var(--app-bg-dim'))
+// `fixed` is only half the truth now, and the missing half was a real bug: iOS WebKit does
+// not honour fixed attachment. It sizes `cover` against the document rather than the viewport,
+// so on a long page the picture came out visibly ZOOMED against the wallpaper behind it when
+// Predictions opened. Both halves have to be present -- fixed for the 769px+ phone-frame
+// simulation, scroll on real phones, where inset:0 already makes the box the viewport.
 t('anchored to the viewport, so it lines up with that shell',
   overlays.includes('background-attachment: fixed'))
+t('and phones override that, because iOS ignores fixed attachment',
+  /html\.has-bg-image #mobPredictOverlay,[\s\S]{0,220}background-attachment:\s*scroll/.test(CSS))
 t('and it is OPAQUE — an overlay that is cleared shows the tab underneath it',
   !/background:\s*transparent/.test(overlays) && overlays.includes('background-color: var(--bg)'))
 // The expanded outcome card is full-screen only below 768px. Painting the viewport-aligned

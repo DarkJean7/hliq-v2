@@ -5306,6 +5306,13 @@ body.layout-mobile .nav-tabs { display: none !important; }
   z-index: 200;
   flex-direction: column;
   overflow: hidden;
+  /* The shell now starts at the true top of the screen (viewport-fit=cover), so something has
+     to hold its contents clear of the status bar. It goes HERE, on the one container, rather
+     than on the header: the first child is #mobPredictHandle, not .mob-v-header, and the
+     handle carries its padding inline where a stylesheet rule cannot reach it. Putting the
+     inset on each candidate would also double it whenever both were present.
+     Zero on anything without a notch, so nothing moves on desktop or an older phone. */
+  padding-top: env(safe-area-inset-top);
 }
 @media (max-width: 768px) {
   .mob-view.mob-view-active { display: flex; }
@@ -7170,6 +7177,18 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
   position: fixed; inset: 0; z-index: 9999; display: none;
   flex-direction: column; background: var(--bg);
 }
+/* These overlays are inset:0, so with viewport-fit=cover they now start ABOVE the status bar
+   and their headers need the same clearance the shell header takes. .adv-overlay already had
+   max(8px, env(safe-area-inset-top)) and needs nothing -- it was simply never getting a
+   non-zero value before. Predictions carries its padding inline, hence !important.
+   Phones only: at 769px+ both sit inside the simulated phone frame, which has no system
+   status bar to clear and sets its own top padding. */
+@media (max-width: 768px) {
+  #mobPredictOverlay > div:first-child {
+    padding-top: calc(16px + env(safe-area-inset-top)) !important;
+  }
+  .sub-sheet-head { padding-top: calc(16px + env(safe-area-inset-top)); }
+}
 .sub-sheet-head {
   display: flex; align-items: center; gap: 10px; flex-shrink: 0;
   padding: 16px 16px 12px; border-bottom: 1px solid var(--border);
@@ -7396,7 +7415,13 @@ html.has-bg-image body::after {
    desktop, and the mobile full-tab view is another. Only the STRUCTURAL surfaces are
    cleared -- inputs, code blocks and pills also fill with var(--bg) and are meant to,
    so blanket-clearing every use of it would make them vanish into the picture. */
-html.has-bg-image, html.has-bg-image body,
+/* The ROOT is the exception: it keeps an opaque ground. It is the canvas, which is what
+   gets painted in any region no element covers -- the safe area under the status bar, and
+   the rubber-band overscroll past either end. Cleared to transparent it fell through to the
+   browser default, which is WHITE, and that was the band above the wallpaper on iPhone.
+   The photo is unaffected: body::before sits at z-index -2, above the root's background. */
+html.has-bg-image { background-color: var(--bg) !important; }
+html.has-bg-image body,
 html.has-bg-image .main,
 /* .mob-view is the mobile shell's OWN ground and covers the whole screen -- clearing
    only the full-tab view left the photo visible on desktop and invisible on the
@@ -7425,6 +7450,20 @@ html.has-bg-image .sub-sheet {
   background-position: center center !important;
   background-repeat: no-repeat !important;
   background-attachment: fixed !important;
+}
+/* ...except on iOS, which does not honour `fixed` attachment. WebKit sizes `cover` against
+   the document instead of the viewport, so on a long page the picture is scaled far bigger
+   than the wallpaper behind it -- which is why opening Predictions visibly ZOOMED the photo.
+   All three of these are position:fixed;inset:0, so the element's own box already IS the
+   viewport: plain `scroll` attachment measures `cover` against exactly the rectangle
+   body::before uses, and the two line up again.
+   Scoped to phones on purpose. At 769px+ the desktop simulation makes #mobPredictOverlay a
+   393x852 frame rather than the viewport, and there `fixed` is still what matches it to the
+   wallpaper behind. */
+@media (max-width: 768px) {
+  html.has-bg-image #mobPredictOverlay,
+  html.has-bg-image .adv-overlay,
+  html.has-bg-image .sub-sheet { background-attachment: scroll !important; }
 }
 /* A bottom sheet is an overlay too, and the same mistake reaches it by a different route.
    Its ground is --panel-2, which theme.js makes translucent while a photo is set -- right for
@@ -7460,7 +7499,9 @@ html.has-bg-image .sheet-over {
     background-size: cover !important;
     background-position: center center !important;
     background-repeat: no-repeat !important;
-    background-attachment: fixed !important;
+    /* scroll, not fixed, for the iOS reason above: this rule only applies at <=768px, where
+       the card is inset:0 and its box is already the viewport. */
+    background-attachment: scroll !important;
   }
 }
 

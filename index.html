@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <!-- viewport-fit=cover is what lets the page reach under the status bar and home indicator.
+       Without it iOS shrinks the layout viewport to the safe area, so the fixed wallpaper layer
+       stopped short of the top and the uncovered strip fell back to the canvas. It is also what
+       makes env(safe-area-inset-*) return anything but 0 -- this stylesheet already used it in
+       19 places, all of them dead until now, which is why the header carried a hardcoded 52px. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
   <style>
     html,body{background:#0a0c10;margin:0}
     #init-loader{
