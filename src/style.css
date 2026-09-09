@@ -7371,6 +7371,11 @@ html.has-bg-image body::after {
    so blanket-clearing every use of it would make them vanish into the picture. */
 html.has-bg-image, html.has-bg-image body,
 html.has-bg-image .main,
+/* .mob-view is the mobile shell's OWN ground and covers the whole screen -- clearing
+   only the full-tab view left the photo visible on desktop and invisible on the
+   surface that matters most. */
+html.has-bg-image .mob-view,
+html.has-bg-image #mobileView.mob-strats-full .mob-v-content,
 html.has-bg-image #mobileView.mob-tab-full .mob-v-content { background: transparent !important; }
 /* Panels stay readable but let the picture through, which is the point of using one. */
 html.has-bg-image .ov-card,

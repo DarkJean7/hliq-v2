@@ -88,7 +88,11 @@ t('it is fixed, not scrolling with the content', /has-bg-image body::before[\s\S
 t('why a scrolling one is unusable is recorded', CSS.includes('sliding') && CSS.includes('unreadable'))
 t('a scrim sits over it', /has-bg-image body::after[\s\S]{0,160}--app-bg-dim/.test(CSS))
 t('the shell surfaces get out of its way', CSS.includes('html.has-bg-image .main'))
-t('including the mobile full-tab view', CSS.includes('#mobileView.mob-tab-full .mob-v-content { background: transparent'))
+t('including the mobile shell itself', CSS.includes('html.has-bg-image .mob-view,')),
+// .mob-view covers the whole mobile screen. Clearing only the full-tab view left the
+// photo visible on desktop and invisible on the surface that matters most.
+t('and its full-tab views', CSS.includes('mob-tab-full .mob-v-content { background: transparent') &&
+  CSS.includes('mob-strats-full .mob-v-content'))
 t('but not every use of --bg, which would erase inputs',
   CSS.includes('would make them vanish into the picture'))
 
