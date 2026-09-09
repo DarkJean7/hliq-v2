@@ -8001,6 +8001,7 @@ async function _fetchCombinedSnap(force = false) {
 // differently and differ by hundreds of dollars, so switching between them reads as a real
 // gain or loss. Holding the last good one keeps the headline on ONE basis.
 let _comboSrvLast = null   // { val, wallets }
+let _comboSrvParts = null  // the halves behind the last computed total, for _comboEqWatch
 
 function _combinedServerValue() {
   if (!state.isAllAccounts || !_combinedSnap) return null
@@ -8017,6 +8018,13 @@ function _combinedServerValue() {
   }
   const val = _combinedSnap.accountValue + (livePerp - _combinedSnap.perpBase)
   _comboSrvLast = { val, wallets: rows.length, at: Date.now() }
+  // Kept for the step watcher: it must report the halves that produced the number ON
+  // SCREEN, not a fresh recomputation that may already disagree with it.
+  _comboSrvParts = {
+    snapVal: _combinedSnap.accountValue, perpBase: _combinedSnap.perpBase,
+    livePerp, rows: rows.length, wallets: _combinedSnap.wallets,
+    snapAt: Number(_combinedSnap.updatedAt ?? 0), rowsArr: rows,
+  }
   return val
 }
 
@@ -12138,6 +12146,70 @@ function _comboPnlWatch(net, ctx) {
   } catch {}
 }
 
+/**
+ * Equity steps, reported with the halves that produced them.
+ *
+ * Net PnL has had a watcher since the last time this happened; equity never did -- and
+ * equity is what is stepping now. Reported: $5,383.69 -> $5,156.10 in two minutes with
+ * Net PnL up $4, free margin inside the same $2.0K band, maintenance margin flat to the
+ * dollar and every position unmoved. Nothing that moves with real equity moved, so the
+ * headline is the number that is wrong.
+ *
+ * The combined figure is `snap.accountValue + (SUM(_perpLive) - snap.perpBase)`, so there
+ * are exactly two ways it can step without the market moving:
+ *
+ *   1. The SNAPSHOT re-anchored. A new accountValue/perpBase pair arrived and the two
+ *      halves disagree with the old pair by the drift between them.
+ *   2. A ROW's _perpLive moved on its own -- one wallet's perp equity arriving from a
+ *      different basis, or a stale row being counted.
+ *
+ * Those need opposite fixes, and from the outside they look identical. So this records
+ * whether the snapshot changed since the previous sample, and which single wallet moved
+ * most -- the next occurrence names its own cause instead of costing another round of
+ * screenshots.
+ */
+let _eqStepLast = null, _eqStepAt = 0, _eqSnapAtLast = 0
+const _eqPerpLast = new Map()
+function _comboEqWatch(val, ctx) {
+  const prev = _eqStepLast
+  _eqStepLast = val
+  // Which wallet moved most since the last sample, before this sample overwrites it.
+  let worstAddr = '', worstDelta = 0
+  for (const r of (ctx.rowsArr ?? [])) {
+    const now = parseFloat(r._perpLive)
+    if (!Number.isFinite(now)) continue
+    const was = _eqPerpLast.get(r.addr)
+    if (Number.isFinite(was) && Math.abs(now - was) > Math.abs(worstDelta)) {
+      worstDelta = now - was; worstAddr = String(r.addr).slice(0, 8)
+    }
+    _eqPerpLast.set(r.addr, now)
+  }
+  const snapMoved = ctx.snapAt !== _eqSnapAtLast
+  _eqSnapAtLast = ctx.snapAt
+
+  if (prev == null || !Number.isFinite(val)) return
+  const step = Math.abs(val - prev)
+  if (step < 25) return
+  if (Date.now() - _eqStepAt < 60_000) return       // one report a minute is plenty
+  _eqStepAt = Date.now()
+  try {
+    fetch('/api/error', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        kind: 'eqstep',
+        // Bucketed source + whether the snapshot re-anchored: those two answer which of
+        // the two causes above it was, which is the whole point of the record.
+        message: `equity step ${step.toFixed(2)} (${prev.toFixed(2)} -> ${val.toFixed(2)}) ` +
+                 `src=${ctx.src} snapMoved=${snapMoved ? 1 : 0}`,
+        stack: `snapVal=${ctx.snapVal} perpBase=${ctx.perpBase} livePerp=${ctx.livePerp} ` +
+               `rows=${ctx.rows} wallets=${ctx.wallets} snapAge=${Math.round(ctx.age / 1000)}s ` +
+               `worstWallet=${worstAddr} worstDelta=${worstDelta.toFixed(2)}`,
+        url: location.pathname,
+      }),
+    }).catch(() => {})
+  } catch {}
+}
+
 function _comboPnlHeld(nRows) {
   if (!_comboPnlLast || _comboPnlLast.wallets !== nRows) return null
   // This used to have no age limit at all, while the comment above its call site claimed
@@ -12250,6 +12322,17 @@ function _mobVRenderBalance() {
   // The honest cost is a dash for the second or two before the first snapshot lands.
   const _combo = state.isAllAccounts ? (_srvVal ?? _combinedHeldValue()) : null
   const val = state.isAllAccounts ? (_combo != null ? _comboEqFilter(_combo) : null) : _rawVal
+  // Watch the number that is actually shown, after the filter -- a step the filter absorbed
+  // is not a step the user saw, and one it let through is.
+  if (state.isAllAccounts && val != null) {
+    try {
+      _comboEqWatch(val, {
+        src: _srvVal != null ? 'srv' : 'held',
+        ...( _comboSrvParts ?? { snapVal: 0, perpBase: 0, livePerp: 0, rows: 0, wallets: 0, snapAt: 0, rowsArr: [] }),
+        age: Date.now() - Number(_combinedSnap?.updatedAt ?? 0),
+      })
+    } catch {}
+  }
   if (state.isAllAccounts) _fetchCombinedSnap()
   _mobVRenderPet(healthPct, _petHasPos)
 
