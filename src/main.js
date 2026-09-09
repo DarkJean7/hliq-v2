@@ -224,11 +224,12 @@ import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERV
          BT_STRATEGIES, BT_MODULES, BT_TOKYO_TABLE, tokyoWindowsFor, tokyoMarkets,
          runPortfolio } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
-import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams, botCoins } from './devicebot.js'
+import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams, botCoins } from './devicebot.js'
 import { BACKDROPS, backdropById, loadBackdrop, saveBackdrop, applyBackdrop,
          loadBackdropImage, saveBackdropImage, applyBackdropImage,
          loadBackdropDim, saveBackdropDim, readBackdropFile, restoreTheme } from './theme.js'
 import { BOT_PRESETS, botPreset } from './botpresets.js'
+import { aggregatePosGroup, groupPositions, posHealthPct } from './posgroup.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
          compareAxisHtml, attachCompareScrub, compareReadoutHtml, assignCompareColors } from './compare.js'
 import { ES_DICT } from './i18n-es.js'
@@ -10550,15 +10551,7 @@ function _posMarkPx(p) {
 // relative to entry (100% at entry → 0% at liq). Same metric the position card
 // renders; extracted so the sort comparator can rank by it too.
 function _mobVPosHealth(p) {
-  const sz      = parseFloat(p.szi ?? 0)
-  const liqPx   = parseFloat(p.liquidationPx ?? 0)
-  const entryPx = parseFloat(p.entryPx ?? 0)
-  const markPx  = _posMarkPx(p)
-  if (liqPx > 0 && entryPx > 0 && markPx > 0) {
-    if (sz > 0 && entryPx > liqPx) return Math.max(0, Math.min(100, (markPx - liqPx) / (entryPx - liqPx) * 100))
-    if (sz < 0 && liqPx > entryPx) return Math.max(0, Math.min(100, (liqPx - markPx) / (liqPx - entryPx) * 100))
-  }
-  return 100
+  return posHealthPct(p.szi, p.entryPx, p.liquidationPx, _posMarkPx(p))
 }
 // Stable id for a merged position group (coin + direction). Must match the id the live
 // updater targets so per-tick PnL/health patches land on the right summary card.
@@ -10645,23 +10638,20 @@ function _mobVMergedPosCard(members) {
   const cardBg    = isLong
     ? 'linear-gradient(160deg, rgba(0,229,160,0.10), rgba(255,255,255,0.012) 60%)'
     : 'linear-gradient(160deg, rgba(255,77,109,0.10), rgba(255,255,255,0.012) 60%)'
-  const n       = members.length
-  const totSz   = members.reduce((s, c) => s + c.absSz, 0)
-  const totVal  = members.reduce((s, c) => s + c.posVal, 0)
-  const totUPnl = members.reduce((s, c) => s + c.uPnl, 0)
-  const totMrg  = members.reduce((s, c) => s + c.margin, 0)
-  const totFund = members.reduce((s, c) => s + c.funding, 0)
-  const avgEntry = totSz > 0 ? members.reduce((s, c) => s + c.entryPx * c.absSz, 0) / totSz : 0
-  const roe     = totMrg > 0 ? totUPnl / totMrg * 100 : 0
-  const markPx  = first.markPx
-  let worst = members[0]; for (const c of members) if (c.healthPct < worst.healthPct) worst = c
-  const healthPct = worst.healthPct
+  // The arithmetic lives in posgroup.js so the desktop table folds these the same way. It
+  // used to live here, and desktop -- which had no grouping at all -- was the proof that a
+  // calculation buried inside one shell's card builder is a calculation the other shell
+  // does not have.
+  const g = aggregatePosGroup(members)
+  const { n, totSz, totVal, totUPnl, totMrg, totFund, avgEntry, roe, markPx, healthPct, mixed } = g
+  const worst     = g.worst
   const worstAcct = worst.acct || '—'
   const barColor  = healthPct > 70 ? '#00e5a0' : healthPct > 40 ? '#f59e0b' : healthPct > 20 ? '#ff9444' : '#ff4d6d'
   // "mixed" = the merged accounts don't share one leverage / margin mode, so their risk
-  // settings (and thus per-account liq) genuinely differ — flag it so the summary isn't read
-  // as uniform.
-  const mixed   = !(members.every(c => c.lev === first.lev) && members.every(c => c.isIso === first.isIso))
+  // settings (and thus per-account liq) genuinely differ — say so, or the header reads as
+  // one uniform position when the members can be liquidated at very different prices.
+  const levLine = mixed ? _T('mixed leverage', 'apalancamiento mixto')
+                        : `${first.lev}× ${first.isIso ? 'iso' : 'cross'}`
   const pnlCls  = totUPnl >= 0 ? 'pos' : 'neg'
   // The bottom summary follows the active sort. Direction matches the list: ▲ (dir=+1) =
   // biggest first → feature the MAX account ("Top"); ▼ (dir=-1) = the MIN ("Lowest").
@@ -10696,7 +10686,7 @@ function _mobVMergedPosCard(members) {
             <span style="font-size:15px;font-weight:700">${esc(_ocCoinLabel(coin))}</span>
             <span style="font-size:9.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:${sideBg};color:${sideColor};text-transform:uppercase;letter-spacing:0.5px;flex-shrink:0">${side}</span>
           </div>
-          <div style="font-size:11px;color:var(--muted);margin-top:2px"><span class="notranslate">×${n}</span> ${_T('accounts', 'cuentas')}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px"><span class="notranslate">×${n}</span> ${_T('accounts', 'cuentas')} · <span class="notranslate">${esc(levLine)}</span></div>
           ${_botBadgeGroupHtml(coin, members)}
         </div>
         <div style="text-align:center;flex-shrink:0">
@@ -10814,6 +10804,11 @@ function _botBadgeHtml(coin, acctAddr, inline = false) {
     <span class="notranslate" style="display:inline-flex;align-items:center;gap:3px;font-size:9.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:rgba(0,229,160,0.14);color:var(--accent);white-space:nowrap">
       <span style="width:5px;height:5px;border-radius:50%;background:var(--accent);flex-shrink:0"></span>${esc(_BOT_LABELS[t] ?? t)}</span>`).join('')}</div>`
 }
+
+// The desktop overview (render.js) draws the same badges on its position rows. Only main.js
+// holds the per-wallet bot status, so it answers rather than keeping a second copy there.
+window._botBadgeHtml      = _botBadgeHtml
+window._botBadgeGroupHtml = _botBadgeGroupHtml
 
 function _mobVSlideIn(dir) {
   const c = document.getElementById('mobVContent')
@@ -17219,16 +17214,8 @@ function _mobVRenderContent(tick = false) {
     if (!state.isAllAccounts) {
       el.innerHTML = sortBar + _posCards.map(c => c.html).join('')
     } else {
-      const groups = new Map()
-      for (const c of _posCards) { const k = c.coin + '|' + c.side; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(c) }
-      const seen = new Set(), out = []
-      for (const c of _posCards) {
-        const k = c.coin + '|' + c.side
-        if (seen.has(k)) continue
-        seen.add(k)
-        const g = groups.get(k)
-        out.push(g.length > 1 ? _mobVMergedPosCard(g) : g[0].html)
-      }
+      const out = groupPositions(_posCards)
+        .map(g => g.length > 1 ? _mobVMergedPosCard(g) : g[0].html)
       el.innerHTML = sortBar + out.join('')
     }
     return

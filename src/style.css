@@ -5827,7 +5827,11 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 .ov-postab.active { color: var(--fg); border-bottom-color: var(--accent); }
 
 /* Open positions */
-.ov-pos-head, .ov-pos-row { display: grid; grid-template-columns: minmax(150px, 1.4fr) 60px repeat(8, 1fr) 44px; gap: 7px; align-items: center; }
+/* Every row is its own grid, so the columns only line up while each row's tracks resolve to
+   the same widths. A bare `1fr` is minmax(AUTO, 1fr): one row with wider content in a cell
+   grows that track and only that row, and the numbers stop lining up under their headers.
+   minmax(0, 1fr) pins them, so content is clipped instead of shoving the column. */
+.ov-pos-head, .ov-pos-row { display: grid; grid-template-columns: minmax(140px, 1.3fr) 54px repeat(7, minmax(0, 1fr)) minmax(0, 1.25fr) 40px; gap: 7px; align-items: center; }
 .ov-pos-size b { font-weight: 700; font-family: var(--font-mono); display: block; font-size: 13px; }
 .ov-pos-size i { font-style: normal; font-size: 11px; color: var(--muted); font-family: var(--font-mono); }
 /* Open orders table */
@@ -5857,6 +5861,9 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 .ov-sort-arr.ov-sort-idle { color: var(--muted); opacity: 0.4; }
 .ov-sort:hover .ov-sort-idle { opacity: 0.8; }
 .ov-pos-row { padding: 11px 4px; cursor: pointer; font-size: 13px; }
+/* Pinned tracks clip rather than push (see the grid above), so a value too wide for its
+   column must end in an ellipsis instead of running over the number beside it. */
+.ov-pos-row > .mono, .ov-pos-row > .ov-pos-size { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ov-pos-item { border-bottom: 1px solid var(--border); }
 .ov-pos-row:hover { background: var(--panel-2); }
 .ov-pos-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; padding: 4px 4px 12px; }
@@ -5875,7 +5882,27 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 .ov-hp-bar { width: 42px; height: 5px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
 .ov-hp-bar i { display: block; height: 100%; border-radius: 3px; }
 .ov-hp em { font-style: normal; font-size: 11px; color: var(--muted); font-family: var(--font-mono); min-width: 30px; text-align: right; }
-.ov-roe { display: block; font-style: normal; font-size: 10.5px; opacity: 0.8; }
+.ov-roe { display: block; font-style: normal; font-size: 10.5px; opacity: 0.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Which wallet holds a position, and what is running on it. `.ov-pos-mkt span` turns every
+   nested span into a flex column, which would stack the pill and the bot badge on top of
+   each other — hence the more specific rule rather than styling .acct-pill alone. */
+.ov-pos-mkt .ov-pos-meta { display: flex; flex-direction: row; align-items: center; gap: 4px; margin-top: 3px; min-width: 0; font-style: normal; }
+.ov-pos-mkt .ov-pos-meta .acct-pill { display: inline-block; max-width: 88px; }
+.ov-pos-mkt .ov-pos-meta > div { flex-shrink: 0; }
+
+/* One position held on several accounts: a merged summary row that opens to its members. */
+.ov-pos-grouprow { background: color-mix(in oklch, var(--accent) 5%, transparent); }
+/* "×3 accounts · mixed leverage" is longer than a market name, and the market column is the
+   one column that cannot grow without squeezing the prices. Let this one subtitle wrap
+   rather than lose the half that says the accounts do not share a leverage. */
+.ov-pos-grouprow .ov-pos-mkt i:first-of-type { white-space: normal; line-height: 1.25; }
+.ov-group-chev { display: block; text-align: center; font-style: normal; font-size: 15px; line-height: 1; color: var(--accent); }
+/* Nested via an inset shadow, not padding or a margin — an indent would shift the member
+   rows out of the grid and stop their numbers lining up with the column headers. */
+.ov-pos-group-body { background: var(--panel-2); box-shadow: inset 3px 0 0 var(--accent); }
+.ov-group-note { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding: 7px 4px 4px 12px; }
+.ov-pos-group-body .ov-pos-item:last-child { border-bottom: none; }
 .ov-viewall { text-align: center; padding: 12px 0 2px; font-size: 12px; color: var(--accent); cursor: pointer; }
 
 /* Side column */

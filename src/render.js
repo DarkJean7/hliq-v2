@@ -2,6 +2,7 @@ import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, is
 import { pairTrades, drawdownFor } from './drawdown.js'
 import { aggregateFillsByCoin, coinLabel } from './api.js'
 import { renderOverviewChart } from './charts.js'
+import { aggregatePosGroup, groupPositions, posHealthPct, posSideOf } from './posgroup.js'
 
 // Outcome-aware coin label: resolves prediction-market "#N"/"+N" codes to their
 // market name + side via main.js's ocTokenMap (window._ocCoinLabel). Falls back to
@@ -768,6 +769,37 @@ function _ovCoinIcon(coin) {
 // "All Accounts" view are often missing from allMids — fall back to the position's own
 // notional, since HL computes positionValue = |szi| × mark, so the division recovers it
 // exactly. Without this the Mark column (and liq-distance health) read 0 / "—".
+/**
+ * A price for the positions table, where eleven columns share the width.
+ *
+ * fmtPrice pads sub-cent prices to eight decimals, so PUMP reads "$0.00299900" — wider than
+ * the column, and the trailing zeros carry no information. Trimmed to the last significant
+ * digit (never below two decimals) it fits, and nothing true is lost. Only this table
+ * trims: fmtPrice itself is used by the order forms, where a padded price lines up with the
+ * tick size the user is typing against.
+ */
+function _ovPx(n) {
+  const f = parseFloat(n) || 0
+  // Sub-cent coins get eight decimals from fmtPrice, and a weighted average entry produces
+  // all eight as noise ("$0.00299687" for a group whose members are at $0.0029–$0.0031).
+  // Four significant figures is 0.03% resolution on a $0.003 coin — finer than any decision
+  // taken from this table, and it fits the column.
+  const s = (f !== 0 && Math.abs(f) < 0.01) ? Number(f.toPrecision(4)).toFixed(8) : fmtPrice(n)
+  if (!s.includes('.')) return s
+  const [i, d] = s.split('.')
+  const kept = d.replace(/0+$/, '')
+  return i + '.' + (kept.length >= 2 ? kept : d.slice(0, 2))
+}
+
+/** Size for the table. A million-unit position does not need two decimal places, and the
+ *  ".00" is what pushes it past the column. */
+function _ovSz(n) {
+  const f = parseFloat(n) || 0
+  return Math.abs(f) >= 1000
+    ? Math.round(f).toLocaleString('en-US')
+    : fmtSize(f)
+}
+
 function _posMark(p, allMids) {
   const m = parseFloat(allMids?.[p.coin] ?? 0)
   if (m > 0) return m
@@ -776,7 +808,21 @@ function _posMark(p, allMids) {
   return sz > 0 && pv > 0 ? pv / sz : 0
 }
 
-function _ovPositionRow(p, allMids, tpslMap = {}) {
+/**
+ * The account that holds a position and the bots managing it, as one line under the market
+ * name. Both come from main.js: the bot list is per-wallet in the combined view, and only
+ * main.js has it.
+ */
+function _ovPosMeta(p) {
+  const pill = p._acct
+    ? `<span class="acct-pill notranslate">${esc(p._acct)}</span>` : ''
+  const bots = (typeof window !== 'undefined' && window._botBadgeHtml)
+    ? window._botBadgeHtml(p.coin, p._acctAddr ?? null, true) : ''
+  if (!pill && !bots) return ''
+  return `<i class="ov-pos-meta">${pill}${bots}</i>`
+}
+
+function _ovPositionRow(p, allMids, tpslMap = {}, member = false) {
   const szi    = parseFloat(p.szi ?? 0)
   const isLong = szi > 0
   const mark   = _posMark(p, allMids)
@@ -792,39 +838,49 @@ function _ovPositionRow(p, allMids, tpslMap = {}) {
   const notional = parseFloat(p.positionValue ?? 0) || Math.abs(szi) * mark
   const margin   = parseFloat(p.marginUsed ?? 0)
   const funding  = -parseFloat(p.cumFunding?.sinceOpen ?? 0)   // positive = received
-  // Health: liq-distance (100% at entry → 0% at liq)
-  let hp = 100
-  if (liq > 0 && entry > 0 && mark > 0) {
-    if (isLong && entry > liq)       hp = Math.max(0, Math.min(100, (mark - liq) / (entry - liq) * 100))
-    else if (!isLong && liq > entry) hp = Math.max(0, Math.min(100, (liq - mark) / (liq - entry) * 100))
-  }
+  // Health: liq-distance (100% at entry → 0% at liq). Shared with mobile and with the
+  // merged group row, so all three rank a position's risk identically.
+  const hp = posHealthPct(szi, entry, liq, mark)
   const hpColor = hp > 70 ? 'var(--green)' : hp > 40 ? 'var(--yellow)' : hp > 20 ? '#ff9444' : 'var(--red)'
   const pnlCls  = uPnl >= 0 ? 'pos' : 'neg'
-  const sid = String(p.coin).replace(/[^a-z0-9]/gi, '_')
+  // In the combined view two wallets hold the same coin, so the id must carry the owner or
+  // both rows answer to one expand toggle — and the second one silently opens the first.
+  const sid = String(p.coin + (p._acctAddr ? '_' + p._acctAddr.slice(2, 8) : '')).replace(/[^a-z0-9]/gi, '_')
   const t   = tpslMap[p.coin] ?? {}
   const px  = mark || entry
   const open = _ovExpanded.has(sid)
+  // Every action is routed to the wallet that OWNS this position. Desktop used to pass no
+  // account at all, so in All Accounts a Close on wallet four was signed by whichever
+  // account happened to be selected — the modals have taken an owner all along.
+  const acct    = p._acctAddr ?? null
+  const acctArg = acct ? `'${esc(acct)}'` : 'null'
+  const canAct  = typeof window !== 'undefined' && window.__acctCanTrade ? window.__acctCanTrade(acct) : true
+  const dis     = canAct ? '' : ` disabled title="No agent key for ${esc(p._acct ?? 'this account')}"`
   const actions = `
     <div class="ov-pos-actions" id="ovpa-${sid}" style="display:${open ? 'flex' : 'none'}">
-      <button class="manage-btn" onclick="event.stopPropagation();window.__openEditModal('${esc(p.coin)}','${side}','${p.szi}','${p.entryPx}',${t.tpPx ?? 0},${t.slPx ?? 0},${t.tpOid ?? 0},${t.slOid ?? 0},${lev})">✏ TP/SL · Leverage</button>
+      <button class="manage-btn"${dis} onclick="event.stopPropagation();window.__openEditModal('${esc(p.coin)}','${side}','${p.szi}','${p.entryPx}',${t.tpPx ?? 0},${t.slPx ?? 0},${t.tpOid ?? 0},${t.slOid ?? 0},${lev},${acctArg})">✏ TP/SL · Leverage</button>
       <button class="manage-btn" onclick="event.stopPropagation();window.__openShareCard({coin:'${esc(p.coin)}',title:'${esc(_lbl(p.coin))}',side:'${side}',lev:${lev},roePct:${roe.toFixed(2)},entry:'$${fmtPrice(entry)}',mark:'$${fmtPrice(mark)}'})">↗ Share PnL</button>
-      ${isIso ? `<button class="manage-btn margin" onclick="event.stopPropagation();window.__openAdjustMarginModal('${esc(p.coin)}','${side}',${margin},${notional},${lev})">⊕ Margin</button>
-      <button class="manage-btn" onclick="event.stopPropagation();window.__openGuardModal('liqguard','${esc(p.coin)}','${side}')">🛡 Liq Guard</button>
-      <button class="manage-btn" onclick="event.stopPropagation();window.__openGuardModal('levbrake','${esc(p.coin)}','${side}')">🛑 Lev Brake</button>` : ''}
+      ${isIso ? `<button class="manage-btn margin"${dis} onclick="event.stopPropagation();window.__openAdjustMarginModal('${esc(p.coin)}','${side}',${margin},${notional},${lev},${acctArg})">⊕ Margin</button>
+      <button class="manage-btn"${dis} onclick="event.stopPropagation();window.__openGuardModal('liqguard','${esc(p.coin)}','${side}',${acctArg})">🛡 Liq Guard</button>
+      <button class="manage-btn"${dis} onclick="event.stopPropagation();window.__openGuardModal('levbrake','${esc(p.coin)}','${side}',${acctArg})">🛑 Lev Brake</button>` : ''}
     </div>`
-  return `<div class="ov-pos-item">
+  // Who holds it and what is managing it. Mobile has shown both on every card since the
+  // combined view shipped; desktop showed neither, so a bot-run position and a hand-held one
+  // looked identical and there was no way to tell four wallets' rows apart.
+  const meta = _ovPosMeta(p)
+  return `<div class="ov-pos-item${member ? ' ov-pos-member' : ''}">
     <div class="ov-pos-row" onclick="window.__ovTogglePos('${sid}')">
-      <span class="ov-pos-mkt">${_ovCoinIcon(p.coin)}<span class="ov-pos-info"><b>${esc(_lbl(p.coin))}</b><i>${lev}× ${levT}</i></span></span>
+      <span class="ov-pos-mkt">${_ovCoinIcon(p.coin)}<span class="ov-pos-info"><b>${esc(_lbl(p.coin))}</b><i>${lev}× ${levT}</i>${meta}</span></span>
       <span class="ov-side-badge ${sideCls}">${side}</span>
-      <span class="ov-r ov-pos-size"><b>${fmtSize(Math.abs(szi))}</b><i>$${fmtUSD(notional)}</i></span>
-      <span class="ov-r mono">$${fmtPrice(entry)}</span>
-      <span class="ov-r mono">$${fmtPrice(mark)}</span>
-      <span class="ov-r mono neg">${liq > 0 ? '$' + fmtPrice(liq) : '—'}</span>
+      <span class="ov-r ov-pos-size"><b>${_ovSz(Math.abs(szi))}</b><i>$${fmtUSD(notional)}</i></span>
+      <span class="ov-r mono">$${_ovPx(entry)}</span>
+      <span class="ov-r mono">$${_ovPx(mark)}</span>
+      <span class="ov-r mono neg">${liq > 0 ? '$' + _ovPx(liq) : '—'}</span>
       <span class="ov-r mono">$${fmtUSD(margin)}</span>
       <span class="ov-r mono ${funding >= 0 ? 'pos' : 'neg'}">${funding >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(funding))}</span>
       <span class="ov-r ov-hp"><span class="ov-hp-bar"><i style="width:${hp.toFixed(0)}%;background:${hpColor}"></i></span><em>${hp.toFixed(0)}%</em></span>
       <span class="ov-r mono ${pnlCls}">${fmtPnL(uPnl).text}<i class="ov-roe">${roe >= 0 ? '+' : ''}${roe.toFixed(2)}%</i></span>
-      <span class="ov-r"><button class="ov-close-x" title="Close position" onclick="event.stopPropagation();window.__openCloseModal('${esc(p.coin)}','${side}','${p.szi}',${px})">✕</button></span>
+      <span class="ov-r"><button class="ov-close-x"${dis || ' title="Close position"'} onclick="event.stopPropagation();window.__openCloseModal('${esc(p.coin)}','${side}','${p.szi}',${px},${acctArg})">✕</button></span>
     </div>
     ${actions}
   </div>`
@@ -859,32 +915,132 @@ function _ovPosSortVal(ap, key, allMids) {
     case 'liq':     return liq
     case 'margin':  return parseFloat(p.marginUsed ?? 0)
     case 'funding': return -parseFloat(p.cumFunding?.sinceOpen ?? 0)
-    case 'health': {
-      const isLong = szi > 0; let hp = 100
-      if (liq > 0 && entry > 0 && mark > 0) {
-        if (isLong && entry > liq)       hp = Math.max(0, Math.min(100, (mark - liq) / (entry - liq) * 100))
-        else if (!isLong && liq > entry) hp = Math.max(0, Math.min(100, (liq - mark) / (liq - entry) * 100))
-      }
-      return hp
-    }
+    case 'health': return posHealthPct(szi, entry, liq, mark)
     case 'pnl':     return parseFloat(p.unrealizedPnl ?? 0)
     default:        return Math.abs(parseFloat(p.positionValue ?? 0))
   }
 }
 
+// The normalised shape posgroup.js folds. Built from a raw HL position so the desktop and
+// the mobile card add the same numbers up — the grouping arithmetic lives in one place now.
+function _ovPosMember(ap, allMids) {
+  const p     = ap.position
+  const szi   = parseFloat(p.szi ?? 0)
+  const mark  = _posMark(p, allMids)
+  const entry = parseFloat(p.entryPx ?? 0)
+  const liq   = parseFloat(p.liquidationPx ?? 0)
+  return {
+    ap, p,
+    coin: p.coin, side: posSideOf(szi),
+    absSz: Math.abs(szi), entryPx: entry, liqPx: liq, markPx: mark,
+    posVal:  parseFloat(p.positionValue ?? 0) || Math.abs(szi) * mark,
+    uPnl:    parseFloat(p.unrealizedPnl ?? 0),
+    margin:  parseFloat(p.marginUsed ?? 0),
+    funding: -parseFloat(p.cumFunding?.sinceOpen ?? 0),   // positive = received
+    healthPct: posHealthPct(szi, entry, liq, mark),
+    lev:   p.leverage?.value ?? 1,
+    isIso: (p.leverage?.type ?? 'cross') === 'isolated',
+    acct: p._acct || '', acctAddr: p._acctAddr ?? null,
+  }
+}
+
+// Sorting a GROUP by the column the user clicked. The group's value for a column is the
+// value it displays in that column — total margin, worst health, average entry — so the
+// order on screen matches the numbers on screen.
+function _ovGroupSortVal(g, key) {
+  switch (key) {
+    case 'market':  return String(_lbl(g.coin)).toUpperCase()
+    case 'side':    return g.side === 'LONG' ? 1 : 0
+    case 'size':    return g.totVal
+    case 'entry':   return g.avgEntry
+    case 'mark':    return g.markPx
+    case 'liq':     return parseFloat(g.worst?.liqPx ?? 0)
+    case 'margin':  return g.totMrg
+    case 'funding': return g.totFund
+    case 'health':  return g.healthPct
+    case 'pnl':     return g.totUPnl
+    default:        return Math.abs(g.totVal)
+  }
+}
+
+const _ovGroupExpanded = new Set()   // group ids whose member rows are open (survives re-render)
+const _ovGid = (coin, side) => `${String(coin).replace(/[^a-z0-9]/gi, '_')}-${side}`
+
+window.__ovToggleGroup = function(gid) {
+  const el = document.getElementById('ovgb-' + gid)
+  const open = !_ovGroupExpanded.has(gid)
+  if (open) _ovGroupExpanded.add(gid); else _ovGroupExpanded.delete(gid)
+  if (el) el.style.display = open ? 'block' : 'none'
+  const chev = document.getElementById('ovgc-' + gid)
+  if (chev) chev.textContent = open ? '▾' : '▸'
+}
+
+/**
+ * One row for a position held on several accounts.
+ *
+ * Every column shows the merged figure EXCEPT liquidation and health, which are per-account
+ * and do not merge: those show the worst member and name the account carrying it. An
+ * averaged liq price would describe no wallet and no risk anyone actually holds.
+ */
+function _ovMergedPosRow(g, allMids, tpslMap) {
+  const gid     = _ovGid(g.coin, g.side)
+  const open    = _ovGroupExpanded.has(gid)
+  const isLong  = g.side === 'LONG'
+  const sideCls = isLong ? 'pos' : 'neg'
+  const hpColor = g.healthPct > 70 ? 'var(--green)' : g.healthPct > 40 ? 'var(--yellow)' : g.healthPct > 20 ? '#ff9444' : 'var(--red)'
+  const pnlCls  = g.totUPnl >= 0 ? 'pos' : 'neg'
+  const worstLiq = parseFloat(g.worst?.liqPx ?? 0)
+  // "mixed" = the merged accounts don't share one leverage / margin mode, so their risk
+  // settings genuinely differ and the header must not read as uniform.
+  const levLine = g.mixed
+    ? 'mixed leverage'
+    : `${g.members[0]?.lev ?? 1}× ${g.members[0]?.isIso ? 'iso' : 'cross'}`
+  const bots = (typeof window !== 'undefined' && window._botBadgeGroupHtml)
+    ? window._botBadgeGroupHtml(g.coin, g.members) : ''
+  return `<div class="ov-pos-item ov-pos-group">
+    <div class="ov-pos-row ov-pos-grouprow" onclick="window.__ovToggleGroup('${gid}')">
+      <span class="ov-pos-mkt">${_ovCoinIcon(g.coin)}<span class="ov-pos-info"><b>${esc(_lbl(g.coin))}</b><i>×${g.n} accounts · ${levLine}</i>${bots ? `<i class="ov-pos-meta">${bots}</i>` : ''}</span></span>
+      <span class="ov-side-badge ${sideCls}">${g.side}</span>
+      <span class="ov-r ov-pos-size"><b>${_ovSz(g.totSz)}</b><i>$${fmtUSD(g.totVal)}</i></span>
+      <span class="ov-r mono">$${_ovPx(g.avgEntry)}</span>
+      <span class="ov-r mono">${g.markPx > 0 ? '$' + _ovPx(g.markPx) : '—'}</span>
+      <span class="ov-r mono neg" title="Nearest liquidation across the ${g.n} accounts${g.worst?.acct ? ` — ${esc(g.worst.acct)}` : ''}">${worstLiq > 0 ? '$' + _ovPx(worstLiq) : '—'}<i class="ov-roe">${g.worst?.acct ? esc(g.worst.acct) : 'nearest'}</i></span>
+      <span class="ov-r mono">$${fmtUSD(g.totMrg)}</span>
+      <span class="ov-r mono ${g.totFund >= 0 ? 'pos' : 'neg'}">${g.totFund >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(g.totFund))}</span>
+      <span class="ov-r ov-hp"><span class="ov-hp-bar"><i style="width:${g.healthPct.toFixed(0)}%;background:${hpColor}"></i></span><em>${g.healthPct.toFixed(0)}%</em></span>
+      <span class="ov-r mono ${pnlCls}">${fmtPnL(g.totUPnl).text}<i class="ov-roe">${g.roe >= 0 ? '+' : ''}${g.roe.toFixed(2)}%</i></span>
+      <span class="ov-r"><i class="ov-group-chev" id="ovgc-${gid}">${open ? '▾' : '▸'}</i></span>
+    </div>
+    <div class="ov-pos-group-body" id="ovgb-${gid}" style="display:${open ? 'block' : 'none'}">
+      <div class="ov-group-note">${g.n} accounts · liquidation is per account, so the nearest one is shown above</div>
+      ${g.members.map(m => _ovPositionRow(m.p, allMids, tpslMap, true)).join('')}
+    </div>
+  </div>`
+}
+
 function _ovBuildPosBody(positions, allMids, tpslMap) {
   if (!positions.length) return `<div class="ov-empty">No open positions</div>`
+  const cmp = (av, bv) => typeof av === 'string' ? av.localeCompare(bv) * _ovPosSortDir : (av - bv) * _ovPosSortDir
   const sorted = [...positions].sort((a, b) => {
     if (!_ovPosSortKey) return Math.abs(parseFloat(b.position.positionValue ?? 0)) - Math.abs(parseFloat(a.position.positionValue ?? 0))
-    const av = _ovPosSortVal(a, _ovPosSortKey, allMids), bv = _ovPosSortVal(b, _ovPosSortKey, allMids)
-    if (typeof av === 'string') return av.localeCompare(bv) * _ovPosSortDir
-    return (av - bv) * _ovPosSortDir
+    return cmp(_ovPosSortVal(a, _ovPosSortKey, allMids), _ovPosSortVal(b, _ovPosSortKey, allMids))
   })
+  // Collapse the same coin + same direction held on several accounts into one row, as the
+  // mobile cards have always done. In a single account HL holds one position per coin, so
+  // every group has one member and this renders exactly what it rendered before.
+  const groups = groupPositions(sorted.map(ap => _ovPosMember(ap, allMids)))
+    .map(ms => aggregatePosGroup(ms))
+  if (_ovPosSortKey) {
+    groups.sort((a, b) => cmp(_ovGroupSortVal(a, _ovPosSortKey), _ovGroupSortVal(b, _ovPosSortKey)))
+  }
   const head = `<div class="ov-pos-head">
     ${_OV_SORT_COLS.map(([k, l, r]) => `<span class="ov-sort${r ? ' ov-r' : ''}" onclick="window.__ovSortPos('${k}')">${l}${_ovSortArr(k, _ovPosSortKey, _ovPosSortDir)}</span>`).join('')}
     <span></span>
   </div>`
-  return `${head}<div class="ov-pos-scroll">${sorted.map(ap => _ovPositionRow(ap.position, allMids, tpslMap)).join('')}</div>`
+  const rows = groups.map(g => g.n > 1
+    ? _ovMergedPosRow(g, allMids, tpslMap)
+    : _ovPositionRow(g.members[0].p, allMids, tpslMap)).join('')
+  return `${head}<div class="ov-pos-scroll">${rows}</div>`
 }
 
 // Sort indicator: accent ▲/▼ on the active column, faint ⇅ on the rest so the
