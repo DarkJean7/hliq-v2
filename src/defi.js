@@ -1,10 +1,9 @@
 import { ethers } from 'ethers'
 import { ExchangeClient, HttpTransport } from '@nktkas/hyperliquid'
-import { getRawProvider, getMainSigner, wakeWallet } from './wallet.js'
+import { getRawProvider, getMainSigner, wakeWallet, ensureChain } from './wallet.js'
 
 const BRIDGE_ADDRESS    = '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7'
 const USDC_ADDRESS      = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831'
-const ARBITRUM_CHAIN_ID = 42161n
 
 const USDC_ABI = [
   'function transfer(address to, uint256 amount) returns (bool)',
@@ -16,57 +15,25 @@ const USDC_ABI = [
 // bridge rather than credited, so this is enforced before sending.
 const MIN_DEPOSIT_USDC = 5
 
+/**
+ * A signer guaranteed to be on Arbitrum.
+ *
+ * The switching logic lives in wallet.js and is shared with everything else that needs a
+ * chain. This function used to carry its own copy of it -- which is why "wrong network"
+ * kept coming back: fixes went into whichever of the two someone found first, and the
+ * deposit path was running the copy that had not been hardened.
+ */
 async function getArbitrumSigner() {
   const raw = getRawProvider()
   if (!raw) throw new Error('Main wallet not connected')
-  const isWC = !!raw.setDefaultChain   // WalletConnect (mobile/PWA)
-
-  const chainNow = async () => {
-    try { return BigInt(parseInt(await raw.request({ method: 'eth_chainId' }), 16)) }
-    catch { try { return (await new ethers.BrowserProvider(raw).getNetwork()).chainId } catch { return 0n } }
+  // wake: on mobile the switch prompt goes to the wallet app, which the browser will not
+  // bring forward on its own.
+  const r = await ensureChain('0xa4b1', null, { wake: true })
+  if (!r.ok) {
+    throw new Error(r.rejected
+      ? 'Network switch rejected — approve switching to Arbitrum One in your wallet'
+      : 'Wallet still on the wrong network — open your wallet, switch to Arbitrum One, then tap Deposit again')
   }
-
-  // WalletConnect: route the session to Arbitrum first — usually switches the active chain
-  // WITHOUT a prompt. Give it a beat to propagate before checking.
-  try { raw.setDefaultChain?.('eip155:42161') } catch {}
-  if (isWC) await new Promise(r => setTimeout(r, 300))
-
-  if (await chainNow() !== ARBITRUM_CHAIN_ID) {
-    // Ask the wallet to switch its ACTIVE chain. On mobile WalletConnect this prompt is
-    // relayed to the wallet APP, which the browser doesn't bring to the foreground — so the
-    // user never sees "switch to Arbitrum" and we used to time out and throw. Fire the
-    // request, then deep-link into the wallet so its prompt actually surfaces.
-    const switchReq = raw.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0xa4b1' }] })
-      .catch(async e => {
-        if (e?.code === 4902 || e?.code === -32603) {
-          return raw.request({
-            method: 'wallet_addEthereumChain',
-            params: [{
-              chainId: '0xa4b1',
-              chainName: 'Arbitrum One',
-              nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-              rpcUrls: ['https://arb1.arbitrum.io/rpc'],
-              blockExplorerUrls: ['https://arbiscan.io'],
-            }],
-          })
-        }
-        if (e?.code === 4001) throw new Error('Network switch rejected — approve switching to Arbitrum One in your wallet')
-        // Some mobile wallets reject the RPC but still switch when routed; swallow and re-check below.
-        return null
-      })
-    if (isWC) setTimeout(() => { try { wakeWallet() } catch {} }, 300)
-    await switchReq   // rethrows only the 4001 "rejected" case
-    try { raw.setDefaultChain?.('eip155:42161') } catch {}
-
-    // Mobile wallets report the switch a beat late — poll up to ~4.8s before giving up.
-    let ok = false
-    for (let i = 0; i < 12; i++) {
-      if (await chainNow() === ARBITRUM_CHAIN_ID) { ok = true; break }
-      await new Promise(r => setTimeout(r, 400))
-    }
-    if (!ok) throw new Error('Wallet still on the wrong network — open your wallet, switch to Arbitrum One, then tap Deposit again')
-  }
-
   return new ethers.BrowserProvider(raw).getSigner()
 }
 

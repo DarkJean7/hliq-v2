@@ -134,36 +134,75 @@ const ARBITRUM_HEX = '0xa4b1'   // 42161
 // active chain differs ("chainId must match the active chainId") — which the SDK then
 // re-wraps as the opaque "Failed to sign typed data with ethers v6 wallet". Confirming
 // the switch here lets the caller show a real "switch to Arbitrum" message instead.
-export async function ensureChain(chainIdHex = ARBITRUM_HEX, forAddr = null) {
+/**
+ * Make the wallet's ACTIVE chain match `chainIdHex`. THE only implementation.
+ *
+ * There used to be two: this one, and a copy inside defi.js's getArbitrumSigner. This one
+ * was imported by main.js and never called, so every deposit ran the copy -- and each time
+ * someone fixed "wrong network" they hardened whichever version they happened to open. That
+ * is why the bug kept coming back: it was never one bug, it was one fix applied to one of
+ * two places. Anything that needs a chain calls this.
+ *
+ * Returns { ok, rejected } rather than a bare boolean, because "the user declined the
+ * switch" and "the wallet never got there" need different things said to them, and a
+ * caller that cannot tell them apart has to guess.
+ *
+ * `wake` deep-links into the wallet app after firing the request. On mobile WalletConnect
+ * the switch prompt is relayed to the wallet, which the browser does not foreground -- so
+ * the user never sees it, and we time out while they stare at a spinner.
+ */
+export async function ensureChain(chainIdHex = ARBITRUM_HEX, forAddr = null, { wake = false } = {}) {
   const raw = _entry(forAddr)?.raw
-  if (!raw?.request) return true
+  if (!raw?.request) return { ok: true, rejected: false }
   const want = parseInt(chainIdHex, 16)
+  const isWC = !!raw.setDefaultChain
   const onChain = async () => {
     try { return parseInt(await raw.request({ method: 'eth_chainId' }), 16) === want }
     catch { return false }
   }
-  // WalletConnect: point its active session chain at Arbitrum so requests route there.
+
+  // WalletConnect: point the session at the chain first. This usually switches the active
+  // chain with no prompt at all, so it is worth a beat to let it propagate before asking.
   try { raw.setDefaultChain?.(`eip155:${want}`) } catch (_) {}
-  if (await onChain()) return true
-  try {
-    await raw.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainIdHex }] })
-  } catch (e) {
-    // 4902 = chain unknown to the wallet — add Arbitrum One then retry the switch.
-    if (e?.code === 4902 || /Unrecognized chain|not been added/i.test(e?.message || '')) {
-      try {
-        await raw.request({ method: 'wallet_addEthereumChain', params: [{
-          chainId: chainIdHex, chainName: 'Arbitrum One',
-          nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-          rpcUrls: ['https://arb1.arbitrum.io/rpc'],
-          blockExplorerUrls: ['https://arbiscan.io'],
-        }] })
-        await raw.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainIdHex }] }).catch(() => {})
-      } catch (_) {}
-    }
+  if (isWC) await new Promise(r => setTimeout(r, 300))
+  if (await onChain()) return { ok: true, rejected: false }
+
+  let rejected = false
+  const req = raw.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainIdHex }] })
+    .catch(async (e) => {
+      // 4902 (and -32603 from wallets that wrap it) = chain unknown; add it, then retry.
+      if (e?.code === 4902 || e?.code === -32603 ||
+          /Unrecognized chain|not been added/i.test(e?.message || '')) {
+        try {
+          await raw.request({ method: 'wallet_addEthereumChain', params: [{
+            chainId: chainIdHex, chainName: 'Arbitrum One',
+            nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+            rpcUrls: ['https://arb1.arbitrum.io/rpc'],
+            blockExplorerUrls: ['https://arbiscan.io'],
+          }] })
+          await raw.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainIdHex }] })
+            .catch(() => {})
+        } catch (_) {}
+        return null
+      }
+      if (e?.code === 4001) { rejected = true; return null }
+      // Some mobile wallets reject the RPC and switch anyway when routed. Swallow it and
+      // let the poll below decide, rather than failing on a wallet that actually complied.
+      return null
+    })
+  if (wake && isWC) setTimeout(() => { try { wakeWallet() } catch (_) {} }, 300)
+  await req
+  try { raw.setDefaultChain?.(`eip155:${want}`) } catch (_) {}
+  if (rejected) return { ok: false, rejected: true }
+
+  // Mobile wallets report the switch a beat late -- poll ~4.8s before giving up. The old
+  // copy in wallet.js polled 1s, which is where "wrong network" came from on a wallet that
+  // had already switched.
+  for (let i = 0; i < 12; i++) {
+    if (await onChain()) return { ok: true, rejected: false }
+    await new Promise(r => setTimeout(r, 400))
   }
-  // Some wallets report the switch a beat late — poll briefly before giving up.
-  for (let i = 0; i < 4; i++) { if (await onChain()) return true; await new Promise(r => setTimeout(r, 250)) }
-  return await onChain()
+  return { ok: await onChain(), rejected: false }
 }
 
 // A minimal "ethers-v6-shaped" signer the Hyperliquid SDK accepts, but which signs
