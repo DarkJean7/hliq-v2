@@ -91,7 +91,9 @@ t('the shell surfaces get out of its way', CSS.includes('html.has-bg-image .main
 t('including the mobile shell itself', CSS.includes('html.has-bg-image .mob-view,')),
 // .mob-view covers the whole mobile screen. Clearing only the full-tab view left the
 // photo visible on desktop and invisible on the surface that matters most.
-t('and its full-tab views', CSS.includes('mob-tab-full .mob-v-content { background: transparent') &&
+// These joined a longer group when the remaining full-screen overlays were added, so the
+// rule no longer ends right after them. backdrop.test.mjs owns the completeness check now.
+t('and its full-tab views', CSS.includes('mob-tab-full .mob-v-content') &&
   CSS.includes('mob-strats-full .mob-v-content'))
 t('but not every use of --bg, which would erase inputs',
   CSS.includes('would make them vanish into the picture'))
