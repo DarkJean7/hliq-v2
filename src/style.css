@@ -7426,6 +7426,26 @@ html.has-bg-image .sub-sheet {
   background-repeat: no-repeat !important;
   background-attachment: fixed !important;
 }
+/* A bottom sheet is an overlay too, and the same mistake reaches it by a different route.
+   Its ground is --panel-2, which theme.js makes translucent while a photo is set -- right for
+   a card sitting in the page, wrong for one that opens OVER the app. The bot list was reading
+   straight through the grid preview's numbers.
+
+   So the sheet gets a stack: the photo, viewport-aligned like every other surface, dimmed the
+   same, with --panel-2's own translucent tint over it and an opaque --bg underneath. The
+   picture still shows through exactly as it does elsewhere; the app behind does not. */
+html.has-bg-image .sheet-over {
+  background-color: var(--bg) !important;
+  background-image:
+    linear-gradient(var(--panel-2), var(--panel-2)),
+    linear-gradient(rgba(0, 0, 0, var(--app-bg-dim, .62)), rgba(0, 0, 0, var(--app-bg-dim, .62))),
+    var(--app-bg-image) !important;
+  background-size: auto, cover, cover !important;
+  background-position: center, center, center !important;
+  background-repeat: no-repeat, no-repeat, no-repeat !important;
+  background-attachment: scroll, fixed, fixed !important;
+}
+
 /* An expanded outcome card is only an OVERLAY on mobile, where it is inset:0 over the list.
    On desktop it is a 440px card centred over the page, and giving that the same
    viewport-aligned photo would align it exactly with the wallpaper behind and leave nothing

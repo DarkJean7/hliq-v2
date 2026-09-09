@@ -21971,7 +21971,7 @@ function _mobDefiModal(type) {
   wrap.id = 'mobDefiModal'
   wrap.innerHTML = `
     <div onclick="window._closeMobDefiModal()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:8999"></div>
-    <div style="position:fixed;bottom:0;left:0;right:0;z-index:9000;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-height:90vh;overflow-y:auto">
+    <div class="sheet-over" style="position:fixed;bottom:0;left:0;right:0;z-index:9000;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-height:90vh;overflow-y:auto">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 18px 14px;border-bottom:1px solid var(--border)">
         <span style="font-size:17px;font-weight:700">${isDeposit ? 'Deposit USDC' : 'Withdraw USDC'}</span>
         <button onclick="window._closeMobDefiModal()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1;padding:0 4px">×</button>
@@ -22068,7 +22068,7 @@ function _mobSendModal() {
   wrap.id = 'mobSendModal'
   wrap.innerHTML = `
     <div onclick="window.__closeSendModal()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:8999"></div>
-    <div style="position:fixed;bottom:0;left:0;right:0;z-index:9000;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-height:90vh;overflow-y:auto">
+    <div class="sheet-over" style="position:fixed;bottom:0;left:0;right:0;z-index:9000;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-height:90vh;overflow-y:auto">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 18px 14px;border-bottom:1px solid var(--border)">
         <span style="font-size:17px;font-weight:700">${_T('Send USDC', 'Enviar USDC')}</span>
         <button onclick="window.__closeSendModal()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1;padding:0 4px">×</button>
@@ -22886,7 +22886,12 @@ function _previewChartHtml(plan, full = false) {
   const pxs = orders.map(o => +o.px).concat(+plan.markPx)
   const lo = Math.min(...pxs), hi = Math.max(...pxs)
   const span = (hi - lo) || 1
-  const H = Math.max(full ? 320 : 190, orders.length * (full ? 40 : 26))
+  // Room for the per-rotation figure, which sits BETWEEN two rungs rather than on one, so
+  // consecutive rungs cannot be left touching.
+  // Room for the per-rotation figure, which sits BETWEEN two rungs rather than on one. An
+  // 18px rung and a 14px chip need ~32px of pitch before they touch; 36 leaves a margin at
+  // any level count, since the pitch tends to this number as the ladder grows.
+  const H = Math.max(full ? 320 : 190, orders.length * (full ? 50 : 36))
   const y = (px) => 14 + (1 - (px - lo) / span) * (H - 28)
 
   // Why a level is not going on the book this cycle. 'margin' and 'inventory' are the two
@@ -22901,7 +22906,6 @@ function _previewChartHtml(plan, full = false) {
   }
   const rung = (o) => {
     const yy = y(+o.px)
-    const cyc = _rungCycle(o, _up.get(o))
     const buy = o.side === 'buy'
     const why = o.blocked ? WHY[o.blocked] : null
     const live = !o.blocked
@@ -22917,11 +22921,37 @@ function _previewChartHtml(plan, full = false) {
       <span style="flex:1;height:0;border-top:1.5px ${live ? (buy ? 'solid' : 'dashed') : 'dotted'} ${col};opacity:.75"></span>
       ${why ? `<span style="flex-shrink:0;font-size:8.5px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;color:${why.loud ? 'var(--red)' : 'var(--fg-3)'};white-space:nowrap">${why.txt()}</span>` : ''}
       <span style="flex-shrink:0;font-size:10.5px;font-family:var(--font-mono);color:var(--fg-2)${strike}">${fmtSize(o.sz)} @ $${fmtPrice(o.px)}</span>
-      ${cyc ? `<span style="flex-shrink:0;width:${full ? 96 : 62}px;text-align:right;font-size:${full ? 11 : 9.5}px;font-family:var(--font-mono);font-weight:700;color:var(--green)" title="${
-        _T('One rotation between this level and the next one up, after maker fees',
-           'Una rotación entre este nivel y el siguiente, tras comisiones')}">+$${
-        cyc.net >= 1 ? fmtUSD(cyc.net) : cyc.net.toFixed(3)}${
-        full ? ` <span style="color:var(--fg-3);font-weight:500">${cyc.pct.toFixed(2)}%</span>` : ''}</span>` : ''}
+    </div>`
+  }
+
+  /**
+   * What a rotation is worth, drawn in the GAP between the two levels it spans.
+   *
+   * It used to sit on the lower rung, where it read as "this buy earns 24 cents" — which a
+   * buy never does, and which was reported as exactly that confusion. A grid earns on a
+   * ROUND TRIP: buy the lower level, sell the upper, keep the difference. Neither level owns
+   * that number.
+   *
+   * Nor does "put it on the sells only" work, which is the obvious next thought. The levels
+   * SWAP SIDES as the grid runs: the buy resting at $0.21030 becomes the sell at $0.21513 the
+   * moment it fills, and the sell above the mark becomes a buy on the way back. A figure
+   * pinned to whichever side a level happens to be showing right now would move around the
+   * ladder as the grid worked, describing the same rotation from a different rung each time.
+   *
+   * The pair is the thing that earns, so the figure sits between its two rungs.
+   */
+  const gapChip = (o) => {
+    const up  = _up.get(o)
+    const cyc = _rungCycle(o, up)
+    if (!cyc) return ''
+    const yy = (y(+o.px) + y(+up.px)) / 2
+    return `<div style="position:absolute;right:0;top:${yy - 7}px;height:14px;display:flex;align-items:center;justify-content:flex-end;gap:4px;pointer-events:none;white-space:nowrap" title="${
+      _T('One round trip between these two levels, after maker fees',
+         'Una rotación entre estos dos niveles, tras comisiones')}">
+      <span style="font-size:9px;color:var(--fg-3);font-weight:800;line-height:1">↕</span>
+      <span style="font-size:${full ? 11 : 9.5}px;font-family:var(--font-mono);font-weight:700;color:var(--green);line-height:1">+$${
+        cyc.net >= 1 ? fmtUSD(cyc.net) : cyc.net.toFixed(3)}</span>
+      ${full ? `<span style="font-size:10px;color:var(--fg-3);font-family:var(--font-mono);line-height:1">${cyc.pct.toFixed(2)}%</span>` : ''}
     </div>`
   }
   // Every rotation on the board at once: what the grid earns for one full sweep of the
@@ -22929,7 +22959,12 @@ function _previewChartHtml(plan, full = false) {
   const _sweep = _byPx.slice(0, -1).reduce((a, o) => {
     const c = _rungCycle(o, _up.get(o)); return a + (c ? c.net : 0)
   }, 0)
-  const _foot = `<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:6px;font-size:10.5px;color:var(--fg-3);line-height:1.5">
+  // Said in words, because a green number beside a buy order is read as PnL on that buy
+  // whatever it is positioned next to.
+  const _legend = `<div style="font-size:10px;color:var(--fg-3);line-height:1.5;margin-top:4px">${
+    _T('<b style="color:var(--green)">↕</b> is one round trip — buy the lower level, sell the upper, after fees. It belongs to the pair of levels, not to either one, so it sits between them.',
+       '<b style="color:var(--green)">↕</b> es una rotación — compra el nivel de abajo, vende el de arriba, tras comisiones. Pertenece al par de niveles, no a uno solo, por eso va entre ambos.')}</div>`
+  const _foot = _legend + `<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:6px;font-size:10.5px;color:var(--fg-3);line-height:1.5">
       <span>${_T('One full sweep of the range', 'Un barrido completo del rango')}: <b style="color:var(--green)">+$${fmtUSD(_sweep)}</b></span>
       ${full ? '' : `<button onclick="event.stopPropagation();window.__gridLadderExpand()" style="flex-shrink:0;background:var(--panel-3);border:1px solid var(--border2);border-radius:7px;color:var(--fg-2);font-family:inherit;font-size:10.5px;font-weight:700;padding:3px 9px;cursor:pointer">${
         _T('Full screen', 'Pantalla completa')} ⤢</button>`}
@@ -22938,10 +22973,19 @@ function _previewChartHtml(plan, full = false) {
   const markY = y(+plan.markPx)
   return `<div style="position:relative;height:${H}px;margin:10px 0 4px">
     ${orders.map(rung).join('')}
+    ${_byPx.slice(0, -1).map(gapChip).join('')}
     <div style="position:absolute;left:0;right:0;top:${markY - 9}px;height:18px;display:flex;align-items:center;gap:6px">
       <span style="width:38px;flex-shrink:0;text-align:right;font-size:9.5px;font-weight:800;color:var(--fg)">${_T('Mark', 'Precio')}</span>
-      <span style="flex:1;height:0;border-top:2px solid var(--fg)"></span>
+      <!-- The mark price reads on the LEFT, not in the price column with the rungs. An
+           auto-chosen range centres the mark exactly between two levels, so it lands half a
+           pitch from each — close enough that in the price column its label and the nearest
+           rung's were printed on top of each other. -->
       <span style="flex-shrink:0;font-size:11px;font-weight:800;font-family:var(--font-mono)">$${fmtPrice(plan.markPx)}</span>
+      <span style="flex:1;height:0;border-top:2px solid var(--fg)"></span>
+      <!-- And it stops short of the rotation column. An auto-chosen range puts the mark at
+           the exact midpoint of a gap, which is where that gap's figure is drawn, so a
+           full-width rule ran straight through it. -->
+      <span style="width:${full ? 112 : 78}px;flex-shrink:0"></span>
     </div>
   </div>${_foot}`
 }
@@ -23192,7 +23236,7 @@ function _botPreviewSheet(type, plan, loading) {
   wrap.id = 'botPreviewSheet'
   wrap.innerHTML = `
     <div onclick="window.__closeBotPreview()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:8999"></div>
-    <div style="position:fixed;bottom:0;left:0;right:0;z-index:9000;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-height:88vh;overflow-y:auto">
+    <div class="sheet-over" style="position:fixed;bottom:0;left:0;right:0;z-index:9000;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-height:88vh;overflow-y:auto">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 16px 12px;border-bottom:1px solid var(--border)">
         <div>
           <div style="font-size:16px;font-weight:700">${_T('Preview', 'Vista previa')}${plan?.ok ? ' · ' + esc(_ocCoinLabel(plan.coin)) : ''}</div>
@@ -24382,7 +24426,7 @@ function _sheet(id, title, body, pad = true) {
   const close = `document.getElementById('${id}')?.remove()`
   wrap.innerHTML = `
     <div onclick="${close}" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:8999"></div>
-    <div style="position:fixed;bottom:0;left:0;right:0;z-index:9000;background:var(--panel-2);border-radius:20px 20px 0 0;border-top:1px solid var(--border2);max-height:86vh;overflow:auto;-webkit-overflow-scrolling:touch;padding-bottom:env(safe-area-inset-bottom)">
+    <div class="sheet-over" style="position:fixed;bottom:0;left:0;right:0;z-index:9000;background:var(--panel-2);border-radius:20px 20px 0 0;border-top:1px solid var(--border2);max-height:86vh;overflow:auto;-webkit-overflow-scrolling:touch;padding-bottom:env(safe-area-inset-bottom)">
       <div style="position:sticky;top:0;background:var(--panel-2);display:flex;align-items:center;justify-content:space-between;padding:15px 16px 11px;border-bottom:1px solid var(--border2)">
         <span style="font-size:15.5px;font-weight:800">${title}</span>
         <button onclick="${close}" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer">&times;</button>
@@ -27737,7 +27781,7 @@ window.__quickPriceAlert = function(coin, px) {
   wrap.id = 'quickAlertModal'
   wrap.innerHTML = `
     <div onclick="window.__qaClose()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100060"></div>
-    <div id="qaSheet" style="position:fixed;bottom:0;left:0;right:0;z-index:100061;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-width:520px;margin:0 auto;transition:transform .18s ease-out;will-change:transform">
+    <div id="qaSheet" class="sheet-over" style="position:fixed;bottom:0;left:0;right:0;z-index:100061;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-width:520px;margin:0 auto;transition:transform .18s ease-out;will-change:transform">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px 12px;border-bottom:1px solid var(--border)">
         <span style="font-size:16px;font-weight:700">🔔 ${_T('Price alert', 'Alerta de precio')} · <span class="notranslate">${esc(label)}</span></span>
         <button onclick="window.__qaClose()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:0 4px">×</button>

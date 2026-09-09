@@ -177,5 +177,56 @@ t('and alignment defaults to the quiet reading, not a false alarm',
   pos.includes('aligned: raw.aligned !== false'))
 t('the deploy-order hazard is written down', pos.includes('deploy separately'))
 
+console.log('\n── what a rotation is worth belongs to the PAIR of levels ──')
+{
+  // Reported: "what means each buy level the green number — is it like the pnl? because if
+  // it is it should be only in the sell levels". Drawn on the rung it read as PnL on that
+  // one order, which a buy never earns on its own.
+  const lad = grab(cli, 'function _previewChartHtml(')
+  t('the ladder still exists', lad.length > 0)
+  t('the figure is drawn between the two rungs, not on one',
+    lad.includes('const gapChip = (o) =>') && lad.includes('const yy = (y(+o.px) + y(+up.px)) / 2'))
+  // Sliced, not matched: a lazy [\s\S]*? runs straight past the end of one function into the
+  // next, so "the rung does not mention _rungCycle" would be answered by gapChip instead.
+  const rungFn = lad.slice(lad.indexOf('const rung = (o) =>'), lad.indexOf('const gapChip = (o) =>'))
+  t('and the rung row no longer carries it',
+    rungFn.length > 200 && !rungFn.includes('_rungCycle') && !rungFn.includes('+$'), rungFn.slice(-70))
+  t('one chip per gap, so the top level correctly has none',
+    lad.includes('${_byPx.slice(0, -1).map(gapChip).join(\'\')}'))
+  // "Put it on the sells" does not work either: the levels swap sides as the grid runs.
+  t('why the sell side is not the answer is written down', lad.includes('SWAP SIDES as the grid runs'))
+  t('it is marked as spanning them', lad.includes('↕'))
+  t('and said in words under the ladder',
+    lad.includes('is one round trip') && lad.includes('belongs to the pair of levels'))
+  // The rungs have to be far enough apart for a figure to sit between them.
+  t('the ladder is spaced for it', lad.includes("orders.length * (full ? 50 : 36)"))
+  // An auto range centres the mark between two levels, which is exactly where that gap's
+  // figure is drawn — the mark's own label and rule both used to run through it.
+  // On the left means: after the "Mark" tag and BEFORE the rule, rather than at the end of
+  // the row where every rung prints its own price.
+  const iTag  = lad.indexOf("_T('Mark', 'Precio')")
+  const iPx   = lad.indexOf('fmtPrice(plan.markPx)')
+  const iRule = lad.indexOf('border-top:2px solid var(--fg)')
+  t('the mark price reads on the left, out of the rungs’ price column',
+    iTag > 0 && iTag < iPx && iPx < iRule, JSON.stringify({ iTag, iPx, iRule }))
+  t('and its rule stops short of the rotation column',
+    lad.includes('width:${full ? 112 : 78}px;flex-shrink:0'))
+}
+
+console.log('\n── the sheet does not show the app through itself ──')
+{
+  const css = fs.readFileSync('src/style.css', 'utf8')
+  // --panel-2 is translucent while a backdrop photo is set, which is right for a card in the
+  // page and wrong for a sheet that opens over one: the bot list read through the preview.
+  t('bottom sheets are tagged as over-content', (cli.match(/class="sheet-over"/g) ?? []).length >= 4)
+  t('every fixed bottom sheet carries the class',
+    (cli.match(/position:fixed;bottom:0;left:0;right:0;z-index:\d+;background:var\(--panel-2\)/g) ?? []).length ===
+    (cli.match(/sheet-over"[^>]*style="position:fixed;bottom:0/g) ?? []).length)
+  t('and the class makes them opaque over a photo',
+    css.includes('html.has-bg-image .sheet-over') && css.includes('background-color: var(--bg) !important'))
+  t('while still showing the wallpaper', /\.sheet-over \{[\s\S]{0,400}var\(--app-bg-image\)/.test(css))
+  t('the reason is recorded', css.includes('opens OVER the app'))
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
