@@ -105,5 +105,15 @@ t('and an upload that accepts images only', /accept="image\/\*"/.test(HTM))
 t('with a Remove and a Dim control', HTM.includes('id="backdropClearBtn"') && HTM.includes('id="backdropDimSlider"'))
 t('re-picking the same file still fires', CLI.includes("input.value = ''"))
 
+// Shipped desktop-only the first time. Mobile is the primary surface, so the presets
+// applied there and there was no way to change them -- worth its own assertion.
+t('the mobile settings has the swatches too',
+  CLI.includes("window.__onBackdropPick('${b.id}');_mobVRenderContent()"))
+t('and its own upload, remove and dim',
+  CLI.includes('window.__onBackdropFile(this).then') &&
+  CLI.includes("window.__onBackdropClear();_mobVRenderContent()") &&
+  CLI.includes('window.__onBackdropDim(this.value)'))
+t('the mobile row says when a preset is dormant', CLI.includes('_mobIsLight()'))
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

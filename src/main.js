@@ -17530,6 +17530,43 @@ function _mobVRenderContent(tick = false) {
             ).join('')}
           </div>
         </div>
+        <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:6px">
+          <div style="width:100%">
+            <div>Backdrop</div>
+            <div style="font-size:11px;color:var(--muted)">${
+              _mobIsLight() ? esc(backdropById(loadBackdrop()).name) + ' — applies in dark mode'
+                            : esc(backdropById(loadBackdrop()).hint)}</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;width:100%">
+            ${BACKDROPS.map(b => `<button onclick="window.__onBackdropPick('${b.id}');_mobVRenderContent()"
+              title="${esc(b.name)}" aria-pressed="${b.id === loadBackdrop()}"
+              style="width:30px;height:30px;border-radius:9px;flex-shrink:0;cursor:pointer;padding:0;
+                     background:linear-gradient(135deg, ${b.vars.bg} 0%, ${b.vars.bg} 45%, ${b.vars.p3} 100%);
+                     border:2px solid ${b.id === loadBackdrop() ? 'var(--accent)' : 'transparent'};
+                     box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)"></button>`).join('')}
+          </div>
+        </div>
+        <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:6px">
+          <div style="flex:1;min-width:0">
+            <div>Your own image</div>
+            <div style="font-size:11px;color:var(--muted)">${
+              loadBackdropImage() ? 'Stored on this device only' : 'Use a photo behind the app'}</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">
+            <label class="mob-v-setting-btn" style="cursor:pointer">Upload
+              <input type="file" accept="image/*" style="display:none"
+                     onchange="window.__onBackdropFile(this).then(()=>_mobVRenderContent())">
+            </label>
+            ${loadBackdropImage()
+              ? `<button class="mob-v-setting-btn" onclick="window.__onBackdropClear();_mobVRenderContent()">Remove</button>`
+              : ''}
+          </div>
+          ${loadBackdropImage() ? `<div style="width:100%">
+            <div style="font-size:11px;color:var(--muted)" id="mobVDimLbl">Dim ${loadBackdropDim()}% — keeps text readable</div>
+            <input type="range" style="width:100%;margin-top:2px" min="25" max="95" step="1" value="${loadBackdropDim()}"
+              oninput="window.__onBackdropDim(this.value);document.getElementById('mobVDimLbl').textContent='Dim '+this.value+'% — keeps text readable'">
+          </div>` : ''}
+        </div>
         <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:4px">
           <div><div>Brightness</div><div style="font-size:11px;color:var(--muted)" id="mobVBrightLbl">${brightness}%</div></div>
           <input type="range" style="width:100%;margin-top:2px" min="50" max="150" step="5" value="${brightness}"
@@ -26893,6 +26930,10 @@ setTimeout(() => { try { window.__chalMaybeAutoSubmit && window.__chalMaybeAutoS
   // under them, and inside this same block so there is one place that restores appearance.
   try { restoreTheme({ light: isLight }) } catch {}
 })()
+
+function _mobIsLight() {
+  return document.documentElement.getAttribute('data-theme') === 'light'
+}
 
 // ── Backdrop (surface palette + optional photo) ───────────────────────────────
 //
