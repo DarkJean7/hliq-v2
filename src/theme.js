@@ -67,22 +67,38 @@ export function loadBackdropDim() {
   } catch { return 62 }
 }
 
+// #rrggbb -> rgba(). Presets are written as hex because that is what anyone editing the
+// list wants to type; translucency is a rendering decision made here.
+function _rgba(hex, a) {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex ?? ''))
+  if (!m) return hex
+  const [r, g, bl] = [1, 2, 3].map(i => parseInt(m[i], 16))
+  return `rgba(${r}, ${g}, ${bl}, ${a})`
+}
+
 /**
  * Paint a preset.
  *
- * `light` is passed in rather than read here so this module never needs to know how the
- * colour scheme is stored -- it is the caller's fact, and it is already on the <html>
- * element by the time anything calls us.
+ * `photo` makes the PANEL surfaces translucent so an uploaded image reads through them.
+ * Done at the variable level rather than per card: every surface in the app already paints
+ * with these three, so one change reaches every tab on both shells -- and a card added
+ * next month inherits it without anyone remembering to add a rule.
+ *
+ * The three elevations get different alphas on purpose. --panel-3 is the raised surface
+ * (menus, popovers, things that open OVER content) and stays the most solid, because a
+ * dropdown you can read the table through is not a dropdown.
  */
-export function applyBackdrop(id, { light = false } = {}) {
+export function applyBackdrop(id, { light = false, photo = false } = {}) {
   const el = document.documentElement
   const b  = backdropById(id)
   const set = (k, v) => v ? el.style.setProperty(k, v) : el.style.removeProperty(k)
   // Light mode keeps its own palette. Clearing rather than skipping matters: toggling from
   // dark-with-a-preset to light would otherwise leave the dark ramp painted over it.
   const v = light ? {} : b.vars
-  set('--bg', v.bg);      set('--panel', v.panel)
-  set('--panel-2', v.p2); set('--panel-3', v.p3)
+  set('--bg', v.bg)
+  set('--panel',   photo ? _rgba(v.panel, .55) : v.panel)
+  set('--panel-2', photo ? _rgba(v.p2, .62)    : v.p2)
+  set('--panel-3', photo ? _rgba(v.p3, .78)    : v.p3)
   set('--rule', v.rule);  set('--rule-soft', v.soft)
   return b
 }
@@ -176,6 +192,7 @@ export function saveBackdropImage(dataUrl) {
 
 /** Everything, at startup. Called before first paint so nothing flashes the old surface. */
 export function restoreTheme({ light = false } = {}) {
-  applyBackdrop(loadBackdrop(), { light })
-  applyBackdropImage(loadBackdropImage(), loadBackdropDim())
+  const img = loadBackdropImage()
+  applyBackdrop(loadBackdrop(), { light, photo: !!img })
+  applyBackdropImage(img, loadBackdropDim())
 }

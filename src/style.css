@@ -7377,13 +7377,32 @@ html.has-bg-image .main,
 html.has-bg-image .mob-view,
 html.has-bg-image #mobileView.mob-strats-full .mob-v-content,
 html.has-bg-image #mobileView.mob-tab-full .mob-v-content { background: transparent !important; }
-/* Panels stay readable but let the picture through, which is the point of using one. */
+/* Panels let the picture through -- the translucency itself comes from the --panel
+   variables (see theme.js), so it reaches every tab and every card automatically.
+   What is left here is the blur, which cannot be expressed as a colour.
+
+   Listed by class rather than applied to everything with a background: backdrop-filter
+   creates a compositing layer per element, and putting one on every row of a 100-row
+   position table is a scroll-jank machine. These are the containers, not their rows. */
 html.has-bg-image .ov-card,
 html.has-bg-image .settings-card,
 html.has-bg-image .mob-v-setting-group,
 html.has-bg-image .stat-card,
-html.has-bg-image .chart-container { backdrop-filter: blur(7px); }
+html.has-bg-image .chart-container,
+html.has-bg-image .multi-acct-card,
+html.has-bg-image .ma-section-wrap,
+html.has-bg-image .mob-v-card,
+html.has-bg-image .oc-card,
+html.has-bg-image .strategy-card,
+html.has-bg-image .mob-strat-card,
+html.has-bg-image .lb-table,
+html.has-bg-image .data-table,
+html.has-bg-image .panel { backdrop-filter: blur(7px); }
 
+/* The sidebar and top bar are chrome, not content: they stay solid so the nav does not
+   swim over a photo while you are trying to read it. */
+html.has-bg-image .sidebar,
+html.has-bg-image .topbar { backdrop-filter: blur(12px); }
 /* Backdrop swatches in Settings. */
 .bd-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
 .bd-swatch {

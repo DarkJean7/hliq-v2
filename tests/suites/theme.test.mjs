@@ -100,7 +100,20 @@ console.log(nl + '-- it is wired into the app --')
 t('the module is imported', CLI.includes("from './theme.js'"))
 t('and restored at startup with the other appearance prefs',
   CLI.includes('restoreTheme({ light: isLight })'))
-t('switching colour scheme repaints it', CLI.includes('applyBackdrop(loadBackdrop(), { light: isLight })'))
+t('switching colour scheme repaints it',
+  CLI.includes('applyBackdrop(loadBackdrop(), { light: isLight, photo:'))
+// Panels are translucent only while a photo is set, so adding or removing one has to
+// repaint the ramp -- otherwise removing an image leaves see-through cards over a colour.
+t('and so does adding or removing a photo',
+  CLI.includes('photo: true })') && CLI.includes('photo: false })'))
+t('translucency is done at the variable level, not per card',
+  /--panel',   photo \?/.test(fs.readFileSync('src/theme.js', 'utf8')))
+t('so a card added later inherits it',
+  fs.readFileSync('src/theme.js', 'utf8').includes('without anyone remembering to add a rule'))
+t('the raised surface stays the most solid',
+  fs.readFileSync('src/theme.js', 'utf8').includes('is not a dropdown'))
+t('and blur is listed by container, not applied to every row',
+  CSS.includes('is a scroll-jank machine'))
 t('opening Settings builds the swatches', CLI.includes('_syncBackdropUI()'))
 t('the swatch row is generated from BACKDROPS, not written out twice',
   CLI.includes('BACKDROPS.map(b =>') && !HTM.includes('data-bd='))

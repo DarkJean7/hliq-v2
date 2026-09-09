@@ -27006,7 +27006,8 @@ function _syncBackdropUI() {
 
 window.__onBackdropPick = function(id) {
   saveBackdrop(id)
-  applyBackdrop(id, { light: document.documentElement.getAttribute('data-theme') === 'light' })
+  applyBackdrop(id, { light: document.documentElement.getAttribute('data-theme') === 'light',
+                      photo: !!loadBackdropImage() })
   _syncBackdropUI()
 }
 
@@ -27019,6 +27020,7 @@ window.__onBackdropFile = async function(input) {
   const saved = saveBackdropImage(r.dataUrl)
   if (!saved.ok) { _paperToast(saved.error, 'err'); return }
   applyBackdropImage(r.dataUrl, loadBackdropDim())
+  applyBackdrop(loadBackdrop(), { light: _mobIsLight(), photo: true })
   _syncBackdropUI()
   _paperToast('Backdrop set · ' + Math.round(r.bytes / 1024) + ' KB', 'success')
 }
@@ -27026,6 +27028,7 @@ window.__onBackdropFile = async function(input) {
 window.__onBackdropClear = function() {
   saveBackdropImage('')
   applyBackdropImage('')
+  applyBackdrop(loadBackdrop(), { light: _mobIsLight(), photo: false })
   _syncBackdropUI()
 }
 
@@ -27335,7 +27338,7 @@ window.__onThemeMode = function(mode) {
   document.querySelectorAll('#colorSchemeSeg .settings-seg-btn').forEach((b, i) => b.classList.toggle('active', i === (isLight ? 1 : 0)))
   // The backdrop ramp is dark-only, so switching schemes has to repaint it -- otherwise
   // going dark -> light leaves the dark greys sitting on top of the light palette.
-  try { applyBackdrop(loadBackdrop(), { light: isLight }); _syncBackdropUI() } catch {}
+  try { applyBackdrop(loadBackdrop(), { light: isLight, photo: !!loadBackdropImage() }); _syncBackdropUI() } catch {}
 }
 
 window.__onThemeStyle = function(style) {
