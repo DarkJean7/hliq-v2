@@ -128,5 +128,77 @@ t('a new market or timeframe opens zoomed out', cli.includes('_sigCoin = c || nu
   cli.includes('_sigTf = l; _sigViewReset()'))
 t('but adding a comparison keeps the window you are reading', cli.includes('// Deliberately keeps the zoom'))
 
+console.log(String.fromCharCode(10) + '-- candles get equal slots, not timestamps --')
+{
+  // Account history is NOT evenly spaced. Placed by timestamp, candles bunch into clumps
+  // with empty gaps between them, which is what "the replay looks so awful in candle mode"
+  // was a picture of.
+  const gaps = [0, 1, 1, 30, 31, 32, 33, 90, 91, 92, 150, 151, 152, 153, 154, 155]
+  const lumpy = gaps.map((h, i) => [t0 + h * 3600e3, 100 + i * 3])
+  const cnd = lumpy.map(([tt, v], i) => ({ t: tt, o: v - 1, c: v + 1, h: v + 3, l: v - 3 }))
+  const xOf = (svg) => [...svg.matchAll(/<rect x="([-\d.]+)"/g)].map(m => +m[1])
+
+  const byTime = xOf(signalChartSvg({ main: lumpy, candles: cnd, fmtPrice: money }).svg)
+  const bySlot = xOf(signalChartSvg({ main: lumpy, candles: cnd, fmtPrice: money, ordinal: true }).svg)
+  const spread = (xs) => { const d = xs.slice(1).map((x, i) => x - xs[i]); return Math.max(...d) - Math.min(...d) }
+  t('by timestamp the spacing is uneven', spread(byTime) > 5, JSON.stringify(spread(byTime)))
+  t('ordinal makes every gap the same', spread(bySlot) < 0.35, JSON.stringify(spread(bySlot)))
+  t('and it draws one candle per sample either way',
+    byTime.length === cnd.length && bySlot.length === cnd.length, `${byTime.length}/${bySlot.length}`)
+}
+
+console.log(String.fromCharCode(10) + '-- a replay four frames in is not four enormous blocks --')
+{
+  // The window is the number of slots ASKED for, not the number revealed. Clamping `from`
+  // to zero stretched four candles across the whole chart, and they shrank as it played.
+  const pts = Array.from({ length: 64 }, (_, i) => [t0 + i * 3600e3, 100 + i])
+  const cnd = pts.map(([tt, v]) => ({ t: tt, o: v, c: v + 1, h: v + 2, l: v - 2 }))
+  const widthOf = (svg) => { const m = /<rect x="[-\d.]+" y="[-\d.]+" width="([\d.]+)"/.exec(svg); return m ? +m[1] : null }
+  const early = signalChartSvg({ main: pts, candles: cnd, ordinal: true, from: 4 - 64, to: 4, fmtPrice: money })
+  const late  = signalChartSvg({ main: pts, candles: cnd, ordinal: true, from: 60 - 64, to: 60, fmtPrice: money })
+  t('a candle is the same width at frame 4 as at frame 60',
+    Math.abs(widthOf(early.svg) - widthOf(late.svg)) < 0.2, `${widthOf(early.svg)} vs ${widthOf(late.svg)}`)
+  t('and it is a candle, not a block', widthOf(early.svg) < 6, String(widthOf(early.svg)))
+  const xs = [...early.svg.matchAll(/<rect x="([-\d.]+)"/g)].map(m => +m[1])
+  t('the few revealed sit at the RIGHT, where the playhead is', Math.min(...xs) > 280, JSON.stringify(xs))
+  t('only the revealed ones are drawn', xs.length === 4, String(xs.length))
+  // The default window must still mean "all of it": `to` defaults to null and +null is 0.
+  t('no window still draws the whole series',
+    [...signalChartSvg({ main: pts, candles: cnd, ordinal: true, fmtPrice: money })
+      .svg.matchAll(/<rect x=/g)].length === 64)
+}
+
+console.log(String.fromCharCode(10) + '-- markers can be turned off, and land where they happened --')
+{
+  const pts = Array.from({ length: 40 }, (_, i) => [t0 + i * 3600e3, 100 + i])
+  const cnd = pts.map(([tt, v]) => ({ t: tt, o: v, c: v + 1, h: v + 2, l: v - 2 }))
+  const mk = [{ t: t0 + 10.5 * 3600e3, buy: true }, { t: t0 + 20 * 3600e3, buy: false }]
+  const on  = signalChartSvg({ main: pts, candles: cnd, ordinal: true, markers: mk, fmtPrice: money })
+  const off = signalChartSvg({ main: pts, candles: cnd, ordinal: true, markers: null, fmtPrice: money })
+  t('markers draw a triangle each', (on.svg.match(/<polygon/g) ?? []).length === 2)
+  t('null draws none', !off.svg.includes('<polygon'))
+  t('turning them off leaves the candles alone',
+    (off.svg.match(/<rect x=/g) ?? []).length === (on.svg.match(/<rect x=/g) ?? []).length)
+  // A fill between two samples belongs between the two candles, not snapped onto one --
+  // on a grouped account series that is a visible lie about when it happened.
+  const tri = [...on.svg.matchAll(/<polygon points="([-\d.]+),/g)].map(m => +m[1])
+  const rect = [...on.svg.matchAll(/<rect x="([-\d.]+)" y="[-\d.]+" width="([\d.]+)"/g)]
+    .map(m => +m[1] + +m[2] / 2)
+  t('a fill halfway between two samples sits between their candles',
+    tri[0] > rect[10] && tri[0] < rect[11], `${tri[0]} vs ${rect[10]}..${rect[11]}`)
+}
+
+console.log(String.fromCharCode(10) + '-- the replay asks for all of that --')
+t('candle mode uses the ordinal axis', cli.includes('ordinal: useCandles'))
+t('and an unclamped window, so the slot width is fixed', cli.includes('from: i + 1 - span, to: i + 1'))
+t('the trade markers have a switch', cli.includes('window.__repMarkers = function()') &&
+  cli.includes('markers: !_repMarkers ? null :'))
+t('it is remembered', cli.includes("if (typeof s.markers === 'boolean') _repMarkers = s.markers") &&
+  cli.includes('markers: _repMarkers }))'))
+t('toggling repaints rather than rebuilding', /__repMarkers = function\(\)[\s\S]{0,220}_repPaint\(\)/.test(cli) &&
+  !/__repMarkers = function\(\)[\s\S]{0,220}_repBuild\(\)/.test(cli))
+t('the chip is in both players', cli.includes("for (const id of ['repStyles', 'repStyles2'])") &&
+  cli.includes('id="repStyles2"'))
+
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

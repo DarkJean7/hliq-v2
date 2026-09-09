@@ -6,8 +6,15 @@
 // the set was being discovered by use rather than enumerated.
 //
 // So this suite enumerates it. Any rule that fills the viewport AND paints var(--bg) must
-// be one of two things: cleared when a photo is set, or listed below as deliberately solid
-// with a reason. A new overlay added next month is a red test, not a fourth report.
+// be one of three things: a SHELL that is cleared, an OVERLAY that paints the photo itself,
+// or listed below as deliberately solid with a reason.
+//
+// The shell/overlay split is the fourth report, and it is a distinction the first version of
+// this suite did not make. Nothing sits behind a shell, so clearing it reveals the photo. An
+// overlay sits on top of the app -- clearing it revealed the Portfolio tab through the
+// Advanced chart, two sets of controls and two copies of the equity figure stacked on each
+// other. An overlay has to be opaque to what is beneath it AND still show the wallpaper,
+// which means painting the picture on itself.
 import fs from 'fs'
 
 let pass = 0, fail = 0
@@ -24,16 +31,44 @@ const SOLID_ON_PURPOSE = {
   '.oc-card-close':   'a button, not a container — a see-through close control is a bad target',
 }
 
-// The block that clears surfaces when a photo is set.
-const cleared = (() => {
-  const i = CSS.indexOf('html.has-bg-image, html.has-bg-image body,')
+/** The declaration block whose selector list starts at `marker`, selectors included. */
+function blockAt(marker) {
+  const i = CSS.indexOf(marker)
   if (i < 0) return ''
-  return CSS.slice(i, CSS.indexOf('}', i) + 1) + CSS.slice(i, i + 3000)
-})()
+  const open = CSS.indexOf('{', i)
+  const close = CSS.indexOf('}', open)
+  return open < 0 || close < 0 ? '' : CSS.slice(i, close + 1)
+}
+
+// The shells: cleared, so body::before shows through them.
+const shells = blockAt('html.has-bg-image, html.has-bg-image body,')
+// The overlays: they paint the photo on themselves. Two blocks — an expanded outcome card
+// is only an overlay on mobile, so it is scoped, and above 768px it is an ordinary card.
+const overlays = blockAt('html.has-bg-image #mobPredictOverlay,') +
+                 blockAt('html.has-bg-image .oc-card.oc-expanded {')
+const covered = shells + overlays
 
 console.log(nl + '-- the photo layer is still wired --')
-t('there is a rule that clears surfaces for a photo', cleared.length > 0)
-t('html and body are cleared', cleared.includes('html.has-bg-image body,'))
+t('there is a rule that clears the shells', shells.length > 0)
+t('html and body are cleared', shells.includes('html.has-bg-image body,'))
+t('and it really does clear them', /background:\s*transparent\s*!important/.test(shells))
+
+console.log(nl + '-- overlays paint the photo instead of being cleared --')
+t('there is an overlay rule', overlays.length > 0)
+t('it paints the picture', overlays.includes('var(--app-bg-image)'))
+t('dimmed the same as the shell behind it', overlays.includes('var(--app-bg-dim'))
+t('anchored to the viewport, so it lines up with that shell',
+  overlays.includes('background-attachment: fixed'))
+t('and it is OPAQUE — an overlay that is cleared shows the tab underneath it',
+  !/background:\s*transparent/.test(overlays) && overlays.includes('background-color: var(--bg)'))
+// The expanded outcome card is full-screen only below 768px. Painting the viewport-aligned
+// photo on the desktop 440px card would line it up exactly with the wallpaper behind it and
+// leave nothing but a shadow to say a card was open.
+t('the outcome card gets it only where it is actually full-screen',
+  /@media \(max-width: 768px\) \{\s*html\.has-bg-image \.oc-card\.oc-expanded/.test(CSS))
+// The specific report: the Advanced chart drawn over Portfolio, with Portfolio's own
+// controls and figures showing through it.
+t('why is written down', CSS.includes('Nothing sits behind a SHELL'))
 
 console.log(nl + '-- every full-screen --bg surface is accounted for --')
 {
@@ -57,7 +92,7 @@ console.log(nl + '-- every full-screen --bg surface is accounted for --')
       const key = Object.keys(SOLID_ON_PURPOSE).find(k => n.includes(k))
       if (key) continue                                  // solid on purpose
       const bare = n.replace(/^.*\s/, '')                // last token of a descendant chain
-      if (cleared.includes(bare) || cleared.includes(n)) continue
+      if (covered.includes(bare) || covered.includes(n)) continue
       // has-bg-image's own rules paint --bg deliberately: that IS the scrim.
       if (n.includes('has-bg-image')) continue
       offenders.push(n.slice(0, 70))
@@ -68,14 +103,18 @@ console.log(nl + '-- every full-screen --bg surface is accounted for --')
 }
 
 console.log(nl + '-- the ones reported, one at a time, are all covered --')
-for (const [what, sel] of [
-  ['desktop content area', '.main'],
-  ['the mobile shell', '.mob-view'],
-  ['Predictions', '#mobPredictOverlay'],
-  ['an expanded outcome card', '.oc-card.oc-expanded'],
-  ['the advanced chart', '.adv-overlay'],
-  ['sub-sheets', '.sub-sheet'],
-]) t(`${what} shows the photo`, cleared.includes(sel), sel)
+// Which half each belongs in is the point. A shell in the overlay list would paint the
+// photo twice and come out double-dimmed; an overlay in the shell list is the Advanced-chart
+// bug all over again.
+for (const [what, sel, where] of [
+  ['desktop content area', '.main', shells],
+  ['the mobile shell', '.mob-view', shells],
+  ['the mobile full-tab view', 'mob-tab-full .mob-v-content', shells],
+  ['Predictions', '#mobPredictOverlay', overlays],
+  ['an expanded outcome card', '.oc-card.oc-expanded', overlays],
+  ['the advanced chart', '.adv-overlay', overlays],
+  ['sub-sheets', '.sub-sheet', overlays],
+]) t(`${what} shows the photo`, where.includes(sel), sel)
 
 console.log(nl + '-- and the deliberate exceptions carry their reason --')
 for (const [sel, why] of Object.entries(SOLID_ON_PURPOSE)) {

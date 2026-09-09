@@ -63,6 +63,11 @@ console.log(String.fromCharCode(10) + '-- drawn only as far as the playhead --')
 t('the chart is cut at the current frame', cli.includes('to: i + 1,'))
 t('and the reason is recorded', cli.includes('the replay cannot hint at where it is going'))
 t('markers are only those that have landed', cli.includes('markersUpto(d.steps, t)'))
+// One triangle per candle per direction. Three hundred fills over a sixty-four-candle frame
+// overlap into a solid band and bury the chart they annotate.
+t('and no finer than the candles they sit on', cli.includes('function _repThinMarks(marks, candles)') &&
+  cli.includes('_repThinMarks(markersUpto(d.steps, t), _useCandles ? d.candles : null)'))
+t('a grouped marker says how many it stands for', cli.includes('m.n > 1 ?'))
 t('a price marker sits at the fill price, an equity one on the line',
   cli.includes("v: _repMode === 'market' ? m.px : null"))
 
@@ -162,8 +167,14 @@ console.log(String.fromCharCode(10) + '-- a window that slides rather than grows
 // Growing from the first frame squeezes every candle thinner as it plays, so the chart is
 // least readable exactly when there is most to see.
 t('a fixed number of candles stays on screen', cli.includes('const REP_SPAN = 64'))
+// `from` is NOT clamped to zero any more. It was, and four frames in that made sigchart
+// resolve a four-slot window: four candles stretched across the whole chart as enormous
+// blocks that shrank as it played. The unclamped value keeps the frame sixty-four slots wide
+// from the first frame, and sigchart clamps the SLICE separately.
 t('the window ends at the playhead and starts a span back',
-  cli.includes('from: Math.max(0, i + 1 - span), to: i + 1,'))
+  cli.includes('from: i + 1 - span, to: i + 1,'))
+t('and it is not clamped, so the slot width never changes',
+  !cli.includes('from: Math.max(0, i + 1 - span)'))
 t('and never runs past it', !cli.includes('to: i + 2') && cli.includes('to: i + 1,'))
 t('the expanded chart shows more of the same', cli.includes('const span = big ? Math.round(REP_SPAN * 1.6) : REP_SPAN'))
 
@@ -273,7 +284,9 @@ t('too little history falls back to the line', cli.includes('return candles.leng
 t('grouping happens only in candle mode, so the line keeps every sample',
   cli.includes("const grouped = _repStyle === 'candle' ? _repAcctCandles(points) : null"))
 t('and the toggle is offered in both modes', !cli.includes("if (_repMode !== 'market') return ''"))
-t('candles no longer require market mode', cli.includes("const useCandles = _repStyle === 'candle' && !!d.candles"))
+// Computed earlier than it used to be: the markers are grouped to the candle they landed
+// in, and that has to know whether candles are on before it builds them.
+t('candles no longer require market mode', cli.includes("const _useCandles = _repStyle === 'candle' && !!d.candles"))
 // Grouping changes the frame count, so an index would land somewhere else entirely.
 t('switching style holds the position in time, not in frames',
   cli.includes('const at = _repData?.points?.[_repFrame]?.[0] ?? null') &&

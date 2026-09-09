@@ -15019,6 +15019,7 @@ let _repStyle  = 'candle'   // 'candle' | 'line'
 let _repSeries = 'value'    // account mode: 'value' | 'pnl' | 'realized' -- same three as Portfolio
 let _repQuery  = ''         // market search; not persisted, it is a way of finding one
 let _repFull   = false      // chart opened to fill the screen
+let _repMarkers = true      // draw the trade triangles, or leave the chart alone
 
 // How many candles stay on screen. A window that grows from the first frame squeezes every
 // candle thinner as it plays, so the chart is least readable exactly when there is most to
@@ -15033,10 +15034,12 @@ try {
   if (typeof s.tf === 'string') _repTf = s.tf
   if (s.style === 'line' || s.style === 'candle') _repStyle = s.style
   if (['value', 'pnl', 'realized'].includes(s.series)) _repSeries = s.series
+  if (typeof s.markers === 'boolean') _repMarkers = s.markers
 } catch {}
 function _repSave() {
   try { localStorage.setItem(REP_KEY, JSON.stringify({
-    mode: _repMode, coin: _repCoin, tf: _repTf, style: _repStyle, series: _repSeries })) } catch {}
+    mode: _repMode, coin: _repCoin, tf: _repTf, style: _repStyle, series: _repSeries,
+    markers: _repMarkers })) } catch {}
 }
 
 /** Markets this wallet has actually traded. Replaying one it never touched shows nothing. */
@@ -15068,6 +15071,30 @@ function _repAcctCandles(points, target = 80) {
     line.push([t, vs[vs.length - 1]])
   }
   return candles.length >= 3 ? { candles, points: line } : null
+}
+
+/**
+ * One triangle per candle per direction.
+ *
+ * A sixty-four-candle frame cannot show three hundred fills. Drawn one-to-one they overlap
+ * into a solid band and bury the chart they are supposed to annotate -- which is most of
+ * what "the replay looks awful in candle mode" was a picture of. Grouping them to the
+ * candle they landed in is the same compromise the candle already makes with the samples,
+ * so the markers are no coarser than the bars they sit on.
+ *
+ * Kept: the LAST trade in each slot, with a count of how many it stands for. A label then
+ * still names a real trade rather than an average of several.
+ */
+function _repThinMarks(marks, candles) {
+  if (!candles?.length || !marks?.length) return marks
+  const slot = new Map()
+  let i = 0
+  for (const m of marks) {
+    while (i < candles.length - 1 && +candles[i].t < +m.t) i++
+    const k = i + (m.buy ? 'b' : 's')
+    slot.set(k, { ...m, n: (slot.get(k)?.n ?? 0) + 1 })
+  }
+  return [...slot.values()].sort((a, b) => +a.t - +b.t)
 }
 
 function _repAllCoins() {
@@ -15161,6 +15188,16 @@ window.__repSetMode = function(m) { _repMode = m; _repSave(); _repReset(); _repR
 window.__repSetCoin = function(c) { _repCoin = c || null; _repSave(); _repReset(); _repRender() }
 window.__repSetTf   = function(t) { _repTf = t; _repSave(); _repReset(); _repRender() }
 window.__repSpeed   = function(s) { _repSpeed = s; if (_repPlay) { _repStop(); window.__repPlay(true) }; _repPaint() }
+/**
+ * Trade markers on or off. Only the drawing changes -- the frame, the series and the
+ * playhead are untouched, so this is a repaint and not a rebuild.
+ */
+window.__repMarkers = function() {
+  _repMarkers = !_repMarkers
+  _repSave()
+  _repPaint()
+}
+
 window.__repStyle   = function(v) {
   _repStyle = v
   _repSave()
@@ -15212,6 +15249,9 @@ window.__repExpand = function(on) {
           <input id="repScrub2" type="range" min="0" max="${Math.max(0, (_repData?.points?.length ?? 1) - 1)}"
             value="${_repFrame}" oninput="window.__repSeek(this.value)" style="flex:1;accent-color:var(--accent)">
         </div>
+        <!-- The same switches as the small player. Opening the chart to fill the screen is
+             when you most want to turn five hundred triangles off. -->
+        <div id="repStyles2" style="display:flex;gap:6px;margin-top:9px;justify-content:center">${_repStyleChips()}</div>
       </div>
     </div>`
   document.body.appendChild(wrap)
@@ -15321,22 +15361,34 @@ function _repStageHtml(big = false) {
   // price, so it is never used to mark a position -- that would multiply a position size
   // by an account balance and print the result as money.
   const s = summarise(d.steps, t, _repMode === 'market' ? mark : null, d.funding ?? null)
-  const marks = markersUpto(d.steps, t)
+  // Grouped to the candle they landed in when candles are on -- see _repThinMarks. In line
+  // mode every sample is its own point, so there is nothing to group them to.
+  const _useCandles = _repStyle === 'candle' && !!d.candles
+  const marks = _repThinMarks(markersUpto(d.steps, t), _useCandles ? d.candles : null)
 
   const money = (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v))
   const signed = (v) => (v < 0 ? '-$' : '+$') + fmtUSD(Math.abs(v))
   const tone = (v) => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--fg-2)'
 
-  const useCandles = _repStyle === 'candle' && !!d.candles
+  const useCandles = _useCandles
   const span = big ? Math.round(REP_SPAN * 1.6) : REP_SPAN
   const chart = signalChartSvg({
     main: d.points,
     candles: useCandles ? d.candles : null,
     grid: true,
+    // Candles get an ORDINAL axis: one equal slot each. Account samples are not evenly
+    // spaced in time, so placing them by timestamp clumped them together with gaps between,
+    // which is what made candle mode unreadable. The line keeps the time axis, where uneven
+    // spacing is information rather than noise.
+    ordinal: useCandles,
     // Ends at the playhead and starts a fixed number of candles back, so the frame is
-    // always the same width. Never past the playhead: the axis scales to what has been
-    // revealed, and the replay cannot hint at where it is going.
-    from: Math.max(0, i + 1 - span), to: i + 1,
+    // always the same width. NOT clamped to zero: the window is sixty-four slots wide from
+    // the very first frame, so early candles sit at the right at their true width instead of
+    // four of them being stretched across the whole chart. sigchart clamps the slice; the
+    // width comes from what was asked for.
+    // Never past the playhead: the axis scales to what has been revealed,
+    // and the replay cannot hint at where it is going.
+    from: i + 1 - span, to: i + 1,
     mainLabel: _repMode === 'account' ? _T('Account', 'Cuenta') : esc(_ocCoinLabel(d.coin)),
     fmtPrice: (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v)),
     height: big ? 330 : 168,
@@ -15347,13 +15399,19 @@ function _repStageHtml(big = false) {
     // moved, which is not the question a replay is watched to answer -- and on a close it
     // is the least interesting number on screen. A trade that realised nothing (an open)
     // has no PnL to state, so it says which way it went instead.
-    markers: marks.map((m, k) => ({
+    //
+    // And they can be turned off. Five hundred trades is five hundred triangles over the
+    // chart, and sometimes the shape of the account is the thing being looked at.
+    markers: !_repMarkers ? null : marks.map((m, k) => ({
       t: m.t, buy: m.buy,
       v: _repMode === 'market' ? m.px : null,
       label: k < marks.length - 4 ? ''
-        : m.closedPnl !== 0
-          ? `${m.net >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(m.net))}`
-          : (m.buy ? _T('BUY', 'COMPRA') : _T('SELL', 'VENTA')),
+        : (m.closedPnl !== 0
+            ? `${m.net >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(m.net))}`
+            : (m.buy ? _T('BUY', 'COMPRA') : _T('SELL', 'VENTA')))
+          // A grouped marker stands for more than one fill, and the label names the last of
+          // them. Say how many, or it reads as the only trade in that candle.
+          + (m.n > 1 ? ` ×${m.n}` : ''),
     })),
   })
 
@@ -15460,18 +15518,31 @@ function _repSpeedChips() {
 }
 
 function _repStyleChips() {
-  return ['candle', 'line'].map(v => `<button onclick="window.__repStyle('${v}')" style="padding:4px 11px;border-radius:8px;border:1px solid ${
-    _repStyle === v ? 'var(--accent)' : 'var(--border2)'};background:transparent;color:${
-    _repStyle === v ? 'var(--accent)' : 'var(--fg-2)'};font-size:11px;font-weight:700;cursor:pointer">${
-    v === 'candle' ? _T('Candles', 'Velas') : _T('Line', 'Línea')}</button>`).join('')
+  const chip = (on, onclick, label, title) =>
+    `<button onclick="${onclick}" title="${esc(title)}" style="padding:4px 11px;border-radius:8px;border:1px solid ${
+      on ? 'var(--accent)' : 'var(--border2)'};background:transparent;color:${
+      on ? 'var(--accent)' : 'var(--fg-2)'};font-size:11px;font-weight:700;cursor:pointer">${label}</button>`
+  return ['candle', 'line'].map(v => chip(_repStyle === v, `window.__repStyle('${v}')`,
+    v === 'candle' ? _T('Candles', 'Velas') : _T('Line', 'Línea'),
+    v === 'candle' ? _T('Grouped into candles', 'Agrupado en velas') : _T('Every sample, as a line', 'Cada muestra, como línea'))).join('')
+    // A separate switch, not a third style: it is orthogonal to how the series is drawn.
+    // Five hundred trades is five hundred triangles, and the shape underneath them is
+    // sometimes the thing being watched.
+    + `<span style="width:6px;display:inline-block"></span>`
+    + chip(_repMarkers, 'window.__repMarkers()',
+        `${_repMarkers ? '▲▼' : '▵▿'} ${_T('Trades', 'Operaciones')}`,
+        _repMarkers ? _T('Hide the buy and sell markers', 'Ocultar marcadores de compra y venta')
+                    : _T('Show the buy and sell markers', 'Mostrar marcadores de compra y venta'))
 }
 
 /** Repaint the controls whose highlight depends on state the stage does not own. */
 function _repChrome() {
   const sp = document.getElementById('repSpeeds')
   if (sp) sp.innerHTML = _repSpeedChips()
-  const st = document.getElementById('repStyles')
-  if (st) st.innerHTML = _repStyleChips()
+  for (const id of ['repStyles', 'repStyles2']) {
+    const st = document.getElementById(id)
+    if (st) st.innerHTML = _repStyleChips()
+  }
 }
 
 /**

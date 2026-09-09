@@ -137,7 +137,7 @@ const path = (pts, px, py) => {
 export function signalChartSvg({
   main, cmp = null, mainLabel = '', cmpLabel = '', indicator = null, vals = [],
   height = 132, subHeight = 46, fmtPrice = (v) => String(v),
-  from = 0, to = null, markers = null, candles = null, grid = false,
+  from = 0, to = null, markers = null, candles = null, grid = false, ordinal = false,
 } = {}) {
   const W = 320, PAD = 4
   const full = (main ?? []).filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
@@ -151,8 +151,14 @@ export function signalChartSvg({
   const layers = indicator ? indicatorLayers(indicator, fullVals) : {}
 
   const n = full.length
-  const lo = Math.max(0, Math.min(n - 3, Math.floor(from)))
-  const hi = Math.max(lo + 3, Math.min(n, Math.ceil(to ?? n)))
+  // The REQUESTED window, unclamped. It is what sets the slot width in ordinal mode, and a
+  // replay four frames in legitimately asks for slots nothing has been drawn into yet.
+  // `to` defaults to null, and +null is 0 — not "the whole series". Check for null before
+  // coercing or the default window collapses to nothing.
+  const fromRaw = (from == null || !Number.isFinite(+from)) ? 0 : +from
+  const toRaw   = (to   == null || !Number.isFinite(+to))   ? n : +to
+  const lo = Math.max(0, Math.min(n - 3, Math.floor(fromRaw)))
+  const hi = Math.max(lo + 3, Math.min(n, Math.ceil(toRaw)))
   const clean = full.slice(lo, hi)
   const meta = { from: lo, to: hi, n, W, PAD, height, t0: +clean[0][0], t1: +clean[clean.length - 1][0] }
 
@@ -162,15 +168,36 @@ export function signalChartSvg({
   const cmpWin = cmp ? cmp.filter(p => +p[0] >= meta.t0 && +p[0] <= meta.t1) : null
   const comparing = !!(cmpWin && cmpWin.length > 2)
 
+  /**
+   * ORDINAL x, which is what a candle chart has always used.
+   *
+   * Time on the axis is right for a line and wrong for candles. Account-history samples are
+   * not evenly spaced, so placing candles by timestamp bunches them into clumps with empty
+   * gaps between — reported as the replay looking awful in candle mode. Giving every candle
+   * an equal slot is what every candle chart does, and it is what this does now.
+   *
+   * The slot count comes from the REQUESTED window, not the revealed one. A replay four
+   * frames into a sixty-four-slot window used to stretch four candles across the whole
+   * frame as enormous blocks that shrank as it played. Keeping the requested width means
+   * candles grow in from the right at a constant size, which is what a replay looks like.
+   *
+   * Never with a compared market: two series are matched by time, and lining them up by
+   * position slides one against the other the moment either has a gap.
+   */
+  const ordinalOn = !!ordinal && !comparing
+  const slots = Math.max(3, Math.ceil(toRaw - fromRaw))
+  /** The x-domain value of the i-th visible point: its absolute index, or its timestamp. */
+  const dom = (i) => ordinalOn ? lo + i : +clean[i][0]
+
   // Rebased to the left edge OF THE WINDOW, so zooming in re-reads the percentages against
   // where the visible stretch began. Any other choice makes the number on screen refer to
   // a point that is no longer on it.
   const base = +clean[0][1]
   const toY = comparing ? (v) => (v / base - 1) * 100 : (v) => v
-  const series = clean.map(([t, v]) => [t, toY(+v)])
+  const series = clean.map(([, v], i) => [dom(i), toY(+v)])
   const cmpSeries = comparing ? rebase(cmpWin) : []
   const overlays = (layers.overlays ?? []).map(o => ({
-    ...o, pts: clean.map(([t], i) => [t, o.vals[lo + i] == null ? null : toY(o.vals[lo + i])]),
+    ...o, pts: clean.map((_, i) => [dom(i), o.vals[lo + i] == null ? null : toY(o.vals[lo + i])]),
   }))
 
   // Candles are aligned to `main` by index, so they take the same cut. Drawing them means
@@ -190,8 +217,13 @@ export function signalChartSvg({
   if (!Number.isFinite(y0) || !Number.isFinite(y1)) return { svg: '', legend: '', hi: '', lo: '', empty: true, meta: null }
   if (y0 === y1) { y0 -= 1; y1 += 1 }
 
-  const px = (t) => PAD + ((t - x0) / ((x1 - x0) || 1)) * (W - PAD * 2)
+  // In ordinal mode the argument is an absolute index, offset by half a slot so a candle
+  // sits in the middle of its own slot rather than on the boundary between two.
+  const px = ordinalOn
+    ? (d) => PAD + ((d - fromRaw + 0.5) / slots) * (W - PAD * 2)
+    : (t) => PAD + ((t - x0) / ((x1 - x0) || 1)) * (W - PAD * 2)
   const py = (v) => height - PAD - ((v - y0) / ((y1 - y0) || 1)) * (height - PAD * 2)
+  const dLeft = dom(0), dRight = dom(clean.length - 1)
 
   const up = series[series.length - 1][1] >= series[0][1]
   const mainColor = comparing ? '#22d3ee' : (up ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)')
@@ -205,13 +237,16 @@ export function signalChartSvg({
     }
   }
   if (candleWin) {
-    const step = (W - PAD * 2) / Math.max(1, candleWin.length)
-    const bw = Math.max(1.2, Math.min(9, step * 0.66))
+    // The slot, not the crowd: with ordinal x the width is set by the window that was asked
+    // for, so it does not change as more candles arrive.
+    const step = ordinalOn ? (W - PAD * 2) / slots
+                           : (W - PAD * 2) / Math.max(1, candleWin.length)
+    const bw = Math.max(1.4, Math.min(10, step * 0.7))
     for (let i = 0; i < candleWin.length; i++) {
       const c = candleWin[i]
       const o = +c.o, hi2 = +c.h, lo2 = +c.l, cl = +c.c
       if (![o, hi2, lo2, cl].every(Number.isFinite)) continue
-      const cx = R(px(+clean[i][0]))
+      const cx = R(px(dom(i)))
       const up2 = cl >= o
       const col = up2 ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)'
       const yO = py(o), yC = py(cl)
@@ -222,7 +257,7 @@ export function signalChartSvg({
         `<rect x="${R(cx - bw / 2)}" y="${top}" width="${R(bw)}" height="${R(hgt)}" fill="${col}"/>`
     }
   } else if (!comparing) {
-    body += `<path d="${path(series, px, py)}L${R(px(x1))},${height}L${R(px(x0))},${height}Z" fill="${mainColor}" opacity="0.10"/>`
+    body += `<path d="${path(series, px, py)}L${R(px(dRight))},${height}L${R(px(dLeft))},${height}Z" fill="${mainColor}" opacity="0.10"/>`
   }
   for (const o of overlays) {
     body += `<path d="${path(o.pts, px, py)}" fill="none" stroke="${o.color}" stroke-width="1.2" ${
@@ -245,24 +280,44 @@ export function signalChartSvg({
   // itself, which is what an equity chart needs -- a fill price means nothing on an axis
   // measured in account value.
   if (markers?.length) {
-    const nearest = (t) => {
+    const times = clean.map(p => +p[0])
+    // A marker carries a TIME, and the axis may be measured in slots. Interpolating between
+    // the two samples it fell between puts a fill where it happened rather than snapping it
+    // to the nearest candle, which on a grouped account series is a visible lie about when.
+    const domAt = (t) => {
+      if (!ordinalOn) return t
+      if (t <= times[0]) return lo
+      for (let i = 1; i < times.length; i++) {
+        const a = times[i - 1], b = times[i]
+        if (t <= b) return lo + (i - 1) + (b > a ? (t - a) / (b - a) : 0)
+      }
+      return lo + times.length - 1
+    }
+    const yNear = (t) => {
       let best = null, bd = Infinity
-      for (const p of series) { const d = Math.abs(+p[0] - t); if (d < bd) { bd = d; best = p } }
+      for (let i = 0; i < times.length; i++) {
+        const d = Math.abs(times[i] - t)
+        if (d < bd) { bd = d; best = series[i][1] }
+      }
       return best
     }
     const placed = []
     for (const mk of markers) {
       if (+mk.t < meta.t0 || +mk.t > meta.t1) continue
       const hasV = mk.v != null && Number.isFinite(+mk.v)
-      const yv = hasV ? toY(+mk.v) : nearest(+mk.t)?.[1]
+      const yv = hasV ? toY(+mk.v) : yNear(+mk.t)
       if (yv == null || !Number.isFinite(yv)) continue
-      const x = R(px(+mk.t)), y = R(py(yv))
+      const x = R(px(domAt(+mk.t))), y = R(py(yv))
       const c = mk.buy ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)'
+      // Sized to the slot, not fixed. A 4px triangle over a 3px candle covers the bar it is
+      // annotating, and sixty of them in a row are a solid band rather than sixty facts.
+      const w2 = ordinalOn ? Math.max(2.2, Math.min(4, ((W - PAD * 2) / slots) * 0.62)) : 4
+      const h2 = w2 * 0.75
       // Buys point up from below the price, sells point down from above, so a cluster
       // still reads as a direction rather than a smudge.
-      const tri = mk.buy ? `${x},${y - 3} ${x - 4},${y + 4} ${x + 4},${y + 4}`
-                         : `${x},${y + 3} ${x - 4},${y - 4} ${x + 4},${y - 4}`
-      body += `<polygon points="${tri}" fill="${c}" stroke="var(--panel,#111)" stroke-width="0.6"/>`
+      const tri = mk.buy ? `${x},${R(y - h2)} ${R(x - w2)},${R(y + w2)} ${R(x + w2)},${R(y + w2)}`
+                         : `${x},${R(y + h2)} ${R(x - w2)},${R(y - w2)} ${R(x + w2)},${R(y - w2)}`
+      body += `<polygon points="${tri}" fill="${c}" stroke="var(--panel,#111)" stroke-width="0.5" opacity="0.92"/>`
       // A label, when one is asked for and there is room. Buys read below the marker and
       // sells above, matching the direction the triangle points, and the anchor flips near
       // either edge so a label never runs off the chart.

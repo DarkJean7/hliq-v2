@@ -7403,16 +7403,46 @@ html.has-bg-image .main,
    surface that matters most. */
 html.has-bg-image .mob-view,
 html.has-bg-image #mobileView.mob-strats-full .mob-v-content,
-html.has-bg-image #mobileView.mob-tab-full .mob-v-content,
-/* Full-screen CONTENT surfaces. Each of these covers the viewport and paints the ground
-   colour, so each one hides the photo until it is listed here -- .main, then .mob-view,
-   then Predictions, reported one at a time. The set is now enumerated rather than
-   discovered: backdrop.test.mjs fails if a new full-screen --bg container appears that is
-   neither cleared here nor named as deliberately solid. */
+html.has-bg-image #mobileView.mob-tab-full .mob-v-content { background: transparent !important; }
+
+/* Full-screen OVERLAYS are the other half of that set, and they are not the same case.
+   Nothing sits behind a SHELL, so clearing it reveals the photo. An overlay sits on top of
+   the app -- clearing it revealed the Portfolio tab through the Advanced chart, its
+   controls and figures stacked on the overlay's own ("advanced mode is on top of the
+   portfolio tab data so it clusters").
+   So these paint the photo THEMSELVES, dimmed by the same --app-bg-dim. Opaque to
+   whatever is beneath, still showing the wallpaper. `fixed` attachment anchors the picture
+   to the viewport, so it matches the shell behind it and does not slide while the overlay
+   scrolls its own content. */
 html.has-bg-image #mobPredictOverlay,
-html.has-bg-image .oc-card.oc-expanded,
 html.has-bg-image .adv-overlay,
-html.has-bg-image .sub-sheet { background: transparent !important; }
+html.has-bg-image .sub-sheet {
+  background-color: var(--bg) !important;
+  background-image:
+    linear-gradient(rgba(0, 0, 0, var(--app-bg-dim, .62)), rgba(0, 0, 0, var(--app-bg-dim, .62))),
+    var(--app-bg-image) !important;
+  background-size: cover !important;
+  background-position: center center !important;
+  background-repeat: no-repeat !important;
+  background-attachment: fixed !important;
+}
+/* An expanded outcome card is only an OVERLAY on mobile, where it is inset:0 over the list.
+   On desktop it is a 440px card centred over the page, and giving that the same
+   viewport-aligned photo would align it exactly with the wallpaper behind and leave nothing
+   but a shadow to say a card was open. Above 768px it stays the translucent panel every
+   other card is. */
+@media (max-width: 768px) {
+  html.has-bg-image .oc-card.oc-expanded {
+    background-color: var(--bg) !important;
+    background-image:
+      linear-gradient(rgba(0, 0, 0, var(--app-bg-dim, .62)), rgba(0, 0, 0, var(--app-bg-dim, .62))),
+      var(--app-bg-image) !important;
+    background-size: cover !important;
+    background-position: center center !important;
+    background-repeat: no-repeat !important;
+    background-attachment: fixed !important;
+  }
+}
 
 /* Deliberately NOT cleared, and this is the reason:
      .mob-v-bottom  the bottom nav is chrome and must stay legible over any photo
