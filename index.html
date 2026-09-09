@@ -1441,6 +1441,40 @@
             <div class="settings-section">
               <div class="settings-row">
                 <div>
+                  <div class="settings-label">Backdrop</div>
+                  <div class="settings-desc" id="backdropDesc">The default — cool near-black</div>
+                </div>
+                <div class="bd-swatches" id="backdropSwatches"></div>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Your own image</div>
+                  <div class="settings-desc" id="backdropImgDesc">Use a photo behind the app</div>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label class="settings-seg-btn" style="cursor:pointer">Upload
+                    <input type="file" accept="image/*" style="display:none"
+                           onchange="window.__onBackdropFile(this)">
+                  </label>
+                  <button class="settings-seg-btn" id="backdropClearBtn"
+                          onclick="window.__onBackdropClear()" style="display:none">Remove</button>
+                </div>
+              </div>
+              <div class="settings-row" id="backdropDimRow" style="display:none">
+                <div>
+                  <div class="settings-label">Dim</div>
+                  <div class="settings-desc" id="backdropDimDesc">62% — keeps text readable over the photo</div>
+                </div>
+                <input type="range" class="settings-slider" id="backdropDimSlider"
+                       min="25" max="95" step="1" value="62"
+                       oninput="window.__onBackdropDim(this.value)">
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
                   <div class="settings-label">Brightness</div>
                   <div class="settings-desc" id="brightnessDesc">100%</div>
                 </div>

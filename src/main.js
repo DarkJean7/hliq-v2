@@ -224,7 +224,10 @@ import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERV
          BT_STRATEGIES, BT_MODULES, BT_TOKYO_TABLE, tokyoWindowsFor, tokyoMarkets,
          runPortfolio } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
-import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams, botCoins } from './devicebot.js'
+import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams, botCoins } from './devicebot.js'
+import { BACKDROPS, backdropById, loadBackdrop, saveBackdrop, applyBackdrop,
+         loadBackdropImage, saveBackdropImage, applyBackdropImage,
+         loadBackdropDim, saveBackdropDim, readBackdropFile, restoreTheme } from './theme.js'
 import { BOT_PRESETS, botPreset } from './botpresets.js'
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
          compareAxisHtml, attachCompareScrub, compareReadoutHtml, assignCompareColors } from './compare.js'
@@ -26886,7 +26889,78 @@ setTimeout(() => { try { window.__chalMaybeAutoSubmit && window.__chalMaybeAutoS
   if (accentH) document.documentElement.style.setProperty('--accent-h', accentH)
   const brightness = parseInt(localStorage.getItem('hliq_brightness') || '100')
   document.documentElement.style.setProperty('--ui-brightness', brightness / 100)
+  // Surface ramp and any uploaded photo. Last, so it paints over the defaults rather than
+  // under them, and inside this same block so there is one place that restores appearance.
+  try { restoreTheme({ light: isLight }) } catch {}
 })()
+
+// ── Backdrop (surface palette + optional photo) ───────────────────────────────
+//
+// The swatch row is built from BACKDROPS rather than written out in index.html, so adding a
+// preset is one entry in theme.js and not two files that can disagree about what exists.
+function _syncBackdropUI() {
+  const wrap = document.getElementById('backdropSwatches')
+  const cur  = loadBackdrop()
+  const light = document.documentElement.getAttribute('data-theme') === 'light'
+  if (wrap) {
+    wrap.innerHTML = BACKDROPS.map(b => `<button class="bd-swatch" data-bd="${b.id}"
+      aria-pressed="${b.id === cur}" title="${esc(b.name)} — ${esc(b.hint)}"
+      style="--sw:linear-gradient(135deg, ${b.vars.bg} 0%, ${b.vars.bg} 45%, ${b.vars.p3} 100%)"
+      onclick="window.__onBackdropPick('${b.id}')"></button>`).join('')
+  }
+  const desc = document.getElementById('backdropDesc')
+  if (desc) {
+    // Light mode wins further down the cascade, so a preset is stored but not painted.
+    // Saying so beats a control that visibly does nothing.
+    desc.textContent = light
+      ? backdropById(cur).name + ' — applies in dark mode'
+      : backdropById(cur).hint
+  }
+  const hasImg = !!loadBackdropImage()
+  const clr = document.getElementById('backdropClearBtn')
+  if (clr) clr.style.display = hasImg ? '' : 'none'
+  const dimRow = document.getElementById('backdropDimRow')
+  if (dimRow) dimRow.style.display = hasImg ? '' : 'none'
+  const dimSl = document.getElementById('backdropDimSlider')
+  if (dimSl) dimSl.value = String(loadBackdropDim())
+  const dimDesc = document.getElementById('backdropDimDesc')
+  if (dimDesc) dimDesc.textContent = loadBackdropDim() + '% — keeps text readable over the photo'
+  const imgDesc = document.getElementById('backdropImgDesc')
+  if (imgDesc) imgDesc.textContent = hasImg ? 'Stored on this device only' : 'Use a photo behind the app'
+}
+
+window.__onBackdropPick = function(id) {
+  saveBackdrop(id)
+  applyBackdrop(id, { light: document.documentElement.getAttribute('data-theme') === 'light' })
+  _syncBackdropUI()
+}
+
+window.__onBackdropFile = async function(input) {
+  const file = input?.files?.[0]
+  if (input) input.value = ''          // so re-picking the SAME file fires change again
+  if (!file) return
+  const r = await readBackdropFile(file)
+  if (!r.ok) { _paperToast(r.error || 'Could not read that image', 'err'); return }
+  const saved = saveBackdropImage(r.dataUrl)
+  if (!saved.ok) { _paperToast(saved.error, 'err'); return }
+  applyBackdropImage(r.dataUrl, loadBackdropDim())
+  _syncBackdropUI()
+  _paperToast('Backdrop set · ' + Math.round(r.bytes / 1024) + ' KB', 'success')
+}
+
+window.__onBackdropClear = function() {
+  saveBackdropImage('')
+  applyBackdropImage('')
+  _syncBackdropUI()
+}
+
+window.__onBackdropDim = function(v) {
+  const n = parseInt(v, 10) || 62
+  saveBackdropDim(n)
+  applyBackdropImage(loadBackdropImage(), n)
+  const d = document.getElementById('backdropDimDesc')
+  if (d) d.textContent = n + '% — keeps text readable over the photo'
+}
 
 // Auto-register push on load if notifications already granted
 if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
@@ -27003,6 +27077,8 @@ window.__clearAgentKey = async function() {
 
 // Sync toggle state whenever settings tab is opened
 function _syncSettingsTab() {
+  // Backdrop swatches are built from BACKDROPS at open time, not baked into index.html.
+  try { _syncBackdropUI() } catch {}
   // Language
   const savedLang = localStorage.getItem('hliq_lang') || 'en'
   document.querySelectorAll('.lang-chip').forEach(b => b.classList.toggle('active', b.dataset.lang === savedLang))
@@ -27182,6 +27258,9 @@ window.__onThemeMode = function(mode) {
   document.body.classList.toggle('light-mode', isLight)
   localStorage.setItem('hliq_light_mode', isLight ? '1' : '0')
   document.querySelectorAll('#colorSchemeSeg .settings-seg-btn').forEach((b, i) => b.classList.toggle('active', i === (isLight ? 1 : 0)))
+  // The backdrop ramp is dark-only, so switching schemes has to repaint it -- otherwise
+  // going dark -> light leaves the dark greys sitting on top of the light palette.
+  try { applyBackdrop(loadBackdrop(), { light: isLight }); _syncBackdropUI() } catch {}
 }
 
 window.__onThemeStyle = function(style) {

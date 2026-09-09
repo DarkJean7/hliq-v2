@@ -7347,3 +7347,43 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 .ov-ring-cta { text-align: center; font-size: 11px; font-weight: 700; color: var(--fg-3);
   margin-top: 4px; opacity: 0; transition: opacity .12s ease; }
 .ov-ring-wrap.health-open:hover .ov-ring-cta { opacity: 1; color: var(--accent); }
+
+/* ── Custom backdrop photo ───────────────────────────────────────────────────────
+   A FIXED layer behind everything. Not `body`, which scrolls: a picture sliding
+   under a table of numbers is the fastest way to make a terminal unreadable.
+   The scrim above it is what keeps text legible whatever was uploaded -- a photo
+   with a bright patch would otherwise put white text on white. */
+html.has-bg-image body::before {
+  content: ''; position: fixed; inset: 0; z-index: -2;
+  background-image: var(--app-bg-image); background-size: cover;
+  background-position: center; background-repeat: no-repeat;
+  pointer-events: none;
+}
+html.has-bg-image body::after {
+  content: ''; position: fixed; inset: 0; z-index: -1;
+  background: var(--bg); opacity: var(--app-bg-dim, .62);
+  pointer-events: none;
+}
+/* The app's own ground has to get out of the way, or it paints over the photo.
+   html and body are not enough: .main is an opaque pane over the whole content area on
+   desktop, and the mobile full-tab view is another. Only the STRUCTURAL surfaces are
+   cleared -- inputs, code blocks and pills also fill with var(--bg) and are meant to,
+   so blanket-clearing every use of it would make them vanish into the picture. */
+html.has-bg-image, html.has-bg-image body,
+html.has-bg-image .main,
+html.has-bg-image #mobileView.mob-tab-full .mob-v-content { background: transparent !important; }
+/* Panels stay readable but let the picture through, which is the point of using one. */
+html.has-bg-image .ov-card,
+html.has-bg-image .settings-card,
+html.has-bg-image .mob-v-setting-group,
+html.has-bg-image .stat-card,
+html.has-bg-image .chart-container { backdrop-filter: blur(7px); }
+
+/* Backdrop swatches in Settings. */
+.bd-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.bd-swatch {
+  width: 30px; height: 30px; border-radius: 8px; cursor: pointer;
+  border: 2px solid transparent; background: var(--sw); padding: 0;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+}
+.bd-swatch[aria-pressed='true'] { border-color: var(--accent); }
