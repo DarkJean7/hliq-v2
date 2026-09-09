@@ -17607,13 +17607,24 @@ function _mobVRenderContent(tick = false) {
                 <button class="mob-v-setting-btn" onclick="window._mobVSetPin()">Set PIN</button>
               </div>
             </div>`}
-        ${pinEnabled && window.PublicKeyCredential ? `
+        ${_bioAvail !== false ? `
         <div class="mob-v-setting-row">
-          <div><div>Face ID / Touch ID</div><div style="font-size:11px;color:var(--muted)">Unlock with biometrics instead of PIN</div></div>
+          <div>
+            <div>Face ID / Touch ID</div>
+            <div style="font-size:11px;color:${!pinEnabled ? 'var(--muted)' : 'var(--muted)'}">${
+              _bioAvail === null ? 'Checking this device…'
+              : !pinEnabled ? 'Set a PIN first — it is the way back in if a scan fails'
+              : bioEnabled ? 'Unlocks instead of the PIN'
+              : 'Unlock with biometrics instead of PIN'}</div>
+          </div>
           ${bioEnabled
             ? `<button class="mob-v-setting-btn" style="color:var(--neg);border-color:rgba(255,77,109,0.3)"
                 onclick="localStorage.removeItem('hliq_biometric_cred');_mobVRenderContent()">Remove</button>`
-            : `<button class="mob-v-setting-btn" onclick="window._mobVEnableBiometric()">Set Up</button>`}
+            // Shown but disabled without a PIN, rather than hidden. Hiding it is why this
+            // was reported as missing: it exists, it works, and there was no way to learn
+            // that from a screen with no PIN set yet.
+            : `<button class="mob-v-setting-btn" ${(!pinEnabled || _bioAvail === null) ? 'disabled style="opacity:.45"' : ''}
+                onclick="window._mobVEnableBiometric()">Set Up</button>`}
         </div>` : ''}
       </div>
 
@@ -21547,6 +21558,29 @@ window._mobVSetPin = function() {
 }
 
 const _BIO_KEY = 'hliq_biometric_cred'
+
+// Whether this device has a real biometric sensor, as opposed to merely knowing what
+// WebAuthn is. window.PublicKeyCredential exists in every modern browser -- a desktop
+// Chrome with no Touch Bar included -- so gating on it alone offers "Set Up" to people
+// whose only outcome is a dialog that cannot succeed.
+//
+// null while unknown, so the row can say "checking" rather than claim it is unsupported
+// before the answer is in. Empty is not the same as unknown.
+let _bioAvail = null
+async function _probeBiometric() {
+  if (!window.PublicKeyCredential?.isUserVerifyingPlatformAuthenticatorAvailable) {
+    _bioAvail = false; return false
+  }
+  try {
+    _bioAvail = await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
+  } catch { _bioAvail = false }
+  return _bioAvail
+}
+// Probed once at load, so the settings row is right the first time it is opened rather
+// than one render behind.
+_probeBiometric().then(() => {
+  try { if (_mobVActiveTab === 'settings') _mobVRenderContent() } catch {}
+})
 
 window._mobVEnableBiometric = async function() {
   if (!window.PublicKeyCredential) return
