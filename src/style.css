@@ -5760,7 +5760,10 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 .mob-v-content {
   flex: 1 0 auto;            /* grow with content — the .mob-view page scrolls */
   overflow-y: visible;
-  padding: 8px 0 80px;
+  /* 80px was sized for a 72px bar. The bar is now 72px plus the home-indicator inset, so the
+     clearance has to follow it or the last row sits behind the nav. The full-tab view below
+     already does exactly this with calc(88px + env(...)). */
+  padding: 8px 0 calc(80px + env(safe-area-inset-bottom));
 }
 
 /* Mobile order-sheet summary rows */
@@ -5975,7 +5978,12 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 .mob-v-bottom {
   position: fixed;
   bottom: 0; left: 0; right: 0;
-  height: 72px;
+  /* The inset is ADDED to the bar, not taken out of it. box-sizing is border-box globally,
+     so with a flat 72px the safe-area padding below came out of the same 72px: the row of
+     controls was squeezed into 38px and rode up the screen, which is what "the bottom moves"
+     looked like. The controls keep their 72px and the bar grows underneath them to cover the
+     home indicator. Every other bottom inset in this file is already written this way. */
+  height: calc(72px + env(safe-area-inset-bottom));
   background: var(--bg);
   border-top: 1px solid var(--border);
   /* Three equal columns, each item centered in its own third — a balanced
