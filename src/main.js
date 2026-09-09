@@ -12168,13 +12168,13 @@ function _comboPnlWatch(net, ctx) {
  * most -- the next occurrence names its own cause instead of costing another round of
  * screenshots.
  */
-let _eqStepLast = null, _eqStepAt = 0, _eqSnapAtLast = 0
+let _eqStepLast = null, _eqStepAt = 0, _eqSnapAtLast = 0, _eqSampleAt = 0
 const _eqPerpLast = new Map()
 function _comboEqWatch(val, ctx) {
   const prev = _eqStepLast
   _eqStepLast = val
   // Which wallet moved most since the last sample, before this sample overwrites it.
-  let worstAddr = '', worstDelta = 0
+  let worstAddr = '', worstDelta = 0, movedRows = 0
   for (const r of (ctx.rowsArr ?? [])) {
     const now = parseFloat(r._perpLive)
     if (!Number.isFinite(now)) continue
@@ -12182,16 +12182,28 @@ function _comboEqWatch(val, ctx) {
     if (Number.isFinite(was) && Math.abs(now - was) > Math.abs(worstDelta)) {
       worstDelta = now - was; worstAddr = String(r.addr).slice(0, 8)
     }
+    if (Number.isFinite(was) && Math.abs(now - was) > 0.005) movedRows++
     _eqPerpLast.set(r.addr, now)
   }
+  ctx.movedRows = movedRows
   const snapMoved = ctx.snapAt !== _eqSnapAtLast
   _eqSnapAtLast = ctx.snapAt
+
+  // How long since the PREVIOUS reading. This is what separates the two explanations: a
+  // $35 move spread over 30s is the market, the same move between consecutive renders is
+  // not. The first record had no way to say which, so it could not conclude anything.
+  const now = Date.now()
+  const dt  = _eqSampleAt ? now - _eqSampleAt : -1
+  _eqSampleAt = now
 
   if (prev == null || !Number.isFinite(val)) return
   const step = Math.abs(val - prev)
   if (step < 25) return
-  if (Date.now() - _eqStepAt < 60_000) return       // one report a minute is plenty
-  _eqStepAt = Date.now()
+  // One a minute is plenty for the small ones -- but a big step is the whole reason this
+  // exists, and throttling it away is how the reported $227 went unrecorded while a $35
+  // one got through.
+  if (step < 100 && now - _eqStepAt < 60_000) return
+  _eqStepAt = now
   try {
     fetch('/api/error', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
@@ -12203,7 +12215,8 @@ function _comboEqWatch(val, ctx) {
                  `src=${ctx.src} snapMoved=${snapMoved ? 1 : 0}`,
         stack: `snapVal=${ctx.snapVal} perpBase=${ctx.perpBase} livePerp=${ctx.livePerp} ` +
                `rows=${ctx.rows} wallets=${ctx.wallets} snapAge=${Math.round(ctx.age / 1000)}s ` +
-               `worstWallet=${worstAddr} worstDelta=${worstDelta.toFixed(2)}`,
+               `worstWallet=${worstAddr} worstDelta=${worstDelta.toFixed(2)} ` +
+               `dtMs=${dt} moved=${ctx.movedRows ?? '?'}`,
         url: location.pathname,
       }),
     }).catch(() => {})
