@@ -230,6 +230,24 @@ import { BACKDROPS, backdropById, loadBackdrop, saveBackdrop, applyBackdrop,
          loadBackdropDim, saveBackdropDim, readBackdropFile, restoreTheme } from './theme.js'
 import { BOT_PRESETS, botPreset } from './botpresets.js'
 import { aggregatePosGroup, groupPositions, posHealthPct } from './posgroup.js'
+import { probeNavGeometry } from './navprobe.js'
+
+/**
+ * The brightness filter, applied ONLY when it actually dims something.
+ *
+ * `filter` on <html> makes <html> the containing block for every position:fixed element in the
+ * app — so `bottom: 0` stops meaning "the bottom of the screen" and starts meaning "the bottom
+ * of the html box". At the default brightness the filter was brightness(1): a visual no-op that
+ * was still quietly redefining what fixed positioning refers to, for everyone, forever.
+ *
+ * Whether that is what put the tab bar in the wrong place on iOS is what navprobe.js is
+ * measuring. Either way a no-op filter should not be there.
+ */
+function _applyBrightnessFilter(v) {
+  const el = document.documentElement
+  const dim = Number.isFinite(+v) && Math.abs(+v - 1) > 0.001
+  el.classList.toggle('ui-dimmed', dim)
+}
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
          compareAxisHtml, attachCompareScrub, compareReadoutHtml, assignCompareColors } from './compare.js'
 import { ES_DICT } from './i18n-es.js'
@@ -9699,6 +9717,10 @@ function mobVShow() {
   const app = document.querySelector('.app')
   if (app) app.style.display = 'none'
   _mobVInitSwipe()
+  // Where the tab bar actually landed, from the real device. Twice now it has been diagnosed
+  // in a desktop browser and twice the phone still showed it wrong; this reports the geometry
+  // instead of a third guess. Once per session, after a frame so the bar has been laid out.
+  requestAnimationFrame(() => setTimeout(probeNavGeometry, 400))
 }
 
 // Horizontal swipe to move between the bottom-nav pages (like changing pages from the
@@ -27233,6 +27255,7 @@ setTimeout(() => { try { window.__chalMaybeAutoSubmit && window.__chalMaybeAutoS
   if (accentH) document.documentElement.style.setProperty('--accent-h', accentH)
   const brightness = parseInt(localStorage.getItem('hliq_brightness') || '100')
   document.documentElement.style.setProperty('--ui-brightness', brightness / 100)
+  _applyBrightnessFilter(brightness / 100)
   // Surface ramp and any uploaded photo. Last, so it paints over the defaults rather than
   // under them, and inside this same block so there is one place that restores appearance.
   try { restoreTheme({ light: isLight }) } catch {}
@@ -27631,6 +27654,7 @@ window.__onAccentChange = function(hue) {
 window.__onBrightnessChange = function(val) {
   const v = parseInt(val)
   document.documentElement.style.setProperty('--ui-brightness', v / 100)
+  _applyBrightnessFilter(v / 100)
   localStorage.setItem('hliq_brightness', v)
   const desc = document.getElementById('brightnessDesc')
   if (desc) desc.textContent = v + '%'

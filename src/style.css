@@ -76,7 +76,11 @@ body.light-mode {
 * { scrollbar-width: none; -ms-overflow-style: none; }
 *::-webkit-scrollbar { width: 0; height: 0; display: none; }
 
-html { filter: brightness(var(--ui-brightness, 1)); }
+/* Only while the brightness slider is actually off 100%. A filter on <html> makes <html> the
+   containing block for EVERY position:fixed element in the app, so `bottom: 0` stops meaning
+   the bottom of the screen. brightness(1) is a visual no-op that was doing that anyway.
+   main.js toggles .ui-dimmed; see _applyBrightnessFilter. */
+html.ui-dimmed { filter: brightness(var(--ui-brightness, 1)); }
 html, body {
   background:  var(--bg);
   color:       var(--fg);

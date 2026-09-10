@@ -90,5 +90,49 @@ console.log(nl + '-- and what floats ABOVE the bar follows it up --')
     !CLI.includes('transform:translateX(-50%);bottom:86px'))
 }
 
+console.log(nl + '-- a no-op filter must not redefine what fixed positioning means --')
+{
+  // `filter` on <html> makes <html> the containing block for EVERY position:fixed element in
+  // the app, so `bottom: 0` stops meaning the bottom of the screen. At the default brightness
+  // the filter was brightness(1) — a visual no-op doing that to the whole app anyway.
+  t('the filter is gated on actually being dimmed',
+    /html\.ui-dimmed\s*\{\s*filter:\s*brightness/.test(CSS))
+  t('and bare html no longer carries one',
+    !/^html\s*\{\s*filter:/m.test(CSS))
+  const CLI2 = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
+  t('the class is toggled from the one place that knows the value',
+    CLI2.includes('function _applyBrightnessFilter(v)') &&
+    CLI2.includes("el.classList.toggle('ui-dimmed', dim)"))
+  // Both the startup restore and the slider, or the two disagree after a reload.
+  t('applied on restore and on change', (CLI2.match(/_applyBrightnessFilter\(/g) ?? []).length === 3)
+  t('why it matters is written down', CSS.includes('containing block for EVERY position:fixed'))
+}
+
+console.log(nl + '-- and the real geometry is measured, not assumed --')
+{
+  // This bar has been diagnosed twice from a desktop browser and "fixed" twice while the phone
+  // still showed it wrong. Chromium has no safe area and does not reproduce iOS's containing
+  // block, so a third desktop-verified guess would be worth no more than the first two.
+  const PROBE = fs.readFileSync('src/navprobe.js', 'utf8')
+  const CLI2 = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
+  t('there is a probe', PROBE.length > 0)
+  t('it reports the gap between the bar and the bottom of the screen',
+    PROBE.includes('nav bottom is ') && PROBE.includes('above the viewport bottom'))
+  // The reading that actually distinguishes the causes.
+  t('and what, if anything, is containing the fixed element',
+    PROBE.includes('function containingBlockChain') && PROBE.includes('fixedContainedBy='))
+  t('every property that can capture a fixed descendant is checked',
+    ['transform', 'filter', 'backdropFilter', 'perspective', 'willChange', 'contain']
+      .every(k => PROBE.includes(k)))
+  t('the insets are measured rather than assumed', PROBE.includes('function readInsets'))
+  t('it sends once per session', PROBE.includes('if (sent) return'))
+  // Comments stripped first — the file's own header promises it sends no addresses or
+  // balances, and matching that promise would pass the test for saying the words.
+  t('and carries nothing from the account',
+    !/addr|balance|equity|wallet|privkey/i.test(PROBE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*/g, '')))
+  t('the mobile shell fires it', CLI2.includes("from './navprobe.js'") &&
+    CLI2.includes('setTimeout(probeNavGeometry, 400)'))
+}
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
