@@ -2,12 +2,24 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <!-- viewport-fit=cover is what lets the page reach under the status bar and home indicator.
-       Without it iOS shrinks the layout viewport to the safe area, so the fixed wallpaper layer
-       stopped short of the top and the uncovered strip fell back to the canvas. It is also what
-       makes env(safe-area-inset-*) return anything but 0 -- this stylesheet already used it in
-       19 places, all of them dead until now, which is why the header carried a hardcoded 52px. -->
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
+  <!-- NO viewport-fit=cover, and this is what it cost when there was.
+       It was added so the wallpaper could reach under the status bar. On an installed iOS web
+       app it did reach the top -- and iOS anchored the layout viewport at y=0 without growing
+       it, so the page ended 62px above the bottom of the screen. Measured on the phone:
+
+           screen=402x874  inner=402x812  shortBy=62  standalone=true
+           insets t=62 b=34   nav 706..812   0px above the viewport bottom
+
+       62 is the status-bar inset. The tab bar was flush with the bottom of the PAGE every
+       time; the page just stopped short of the screen, and nothing can paint outside it. On
+       top of that the now-live env(safe-area-inset-bottom) added 34px of empty padding inside
+       the bar for a home indicator that was no longer in the page's coordinate space -- the
+       two together are the 108px of dead black under the nav.
+       Without cover the viewport goes back to sitting between the safe areas, the insets
+       report 0, and the bar is 72px flush to the bottom, which is where it was yesterday.
+       The trade is real and it is the user's to make: the wallpaper stops at the status bar
+       again. Putting cover back means accepting the strip until the icon is reinstalled. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
   <style>
     html,body{background:#0a0c10;margin:0}
     #init-loader{

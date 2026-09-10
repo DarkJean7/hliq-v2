@@ -24,10 +24,20 @@ function blockAt(marker) {
   return open < 0 || close < 0 ? '' : CSS.slice(i, close + 1)
 }
 
-console.log(nl + '-- the insets are switched on at all --')
-// env() silently returns 0 without this, which is why 19 uses of it sat dead in this file and
-// the header carried a hardcoded 52px instead.
-t('viewport-fit=cover is set', /viewport-fit\s*=\s*cover/.test(HTML))
+console.log(nl + '-- viewport-fit=cover is OFF, and that is a decision --')
+// It was on for one day so the wallpaper could reach under the status bar. On an installed
+// iOS web app iOS anchored the viewport at y=0 without growing it, so the page ended 62px
+// above the bottom of the screen and the tab bar had nowhere to go:
+//
+//     screen=402x874  inner=402x812  shortBy=62  standalone=true
+//
+// Every env(safe-area-inset-*) in this stylesheet goes back to reporting 0 with it off, which
+// is the state all of them were written under. If it is ever switched back on, that dead strip
+// comes back with it -- so this assertion is a decision to re-make deliberately, not a rule.
+// Comments stripped: the one above the meta tag names the thing it is explaining.
+const HTML_TAGS = HTML.replace(/<!--[\s\S]*?-->/g, '')
+t('viewport-fit=cover is not set', !/viewport-fit\s*=\s*cover/.test(HTML_TAGS))
+t('and what it cost is recorded next to it', HTML.includes('shortBy=62'))
 // And it must be the ONLY mechanism. `black-translucent` is the legacy way to draw under the
 // status bar; with both, iOS starts the web view at y=0 but keeps its HEIGHT at screen minus
 // the status bar. Measured on the phone: screen=402x874 inner=402x812 shortBy=62, exactly the
