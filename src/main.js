@@ -5129,6 +5129,48 @@ function _closeColor() {
   return state.closingPos?.side === 'LONG' ? 'var(--green)' : 'var(--red)'
 }
 
+/**
+ * What closing this much of the position books, at the mark.
+ *
+ * PnL is linear in size, so a partial close realises exactly its share — the position's own
+ * unrealizedPnl scaled by the fraction being closed. Taken from HL's figure rather than
+ * recomputed from entry and mark so this modal and the position card cannot print two
+ * different numbers for the same position; entry × mark is the fallback for when the
+ * position cannot be found.
+ *
+ * Returns null when NEITHER is available. A close modal that cannot read the position must
+ * say so rather than print $0.00, which reads as "this trade is flat" — the one message that
+ * would be actively wrong at the moment someone is deciding whether to take a loss.
+ */
+function _closePnlEstimate(pos, pct) {
+  if (!pos) return null
+  const frac = Math.max(0, Math.min(100, pct)) / 100
+  const sz   = Math.abs(pos.szi) * frac
+  if (!(sz > 0)) return null
+  const p = _guardFindPos(pos.coin, pos.acct)
+
+  let gross = null
+  const u     = parseFloat(p?.unrealizedPnl ?? NaN)
+  const liveSz = Math.abs(parseFloat(p?.szi ?? NaN))
+  if (Number.isFinite(u) && liveSz > 0) {
+    // Scaled off the LIVE size, not the size captured when the modal opened: a fill in
+    // between would otherwise be counted at the old proportion.
+    gross = u * (sz / liveSz)
+  } else {
+    const entry = parseFloat(p?.entryPx ?? NaN)
+    if (Number.isFinite(entry) && entry > 0 && pos.mktPx > 0) {
+      gross = (pos.mktPx - entry) * sz * (pos.szi > 0 ? 1 : -1)
+    }
+  }
+  if (gross == null || !Number.isFinite(gross)) return null
+
+  // A close goes out as an aggressive IOC, so it pays the taker rate — the same one the
+  // order ticket quotes.
+  const fee = sz * pos.mktPx * 0.00045
+  const roe = parseFloat(p?.returnOnEquity ?? NaN)
+  return { gross, fee, net: gross - fee, roePct: Number.isFinite(roe) ? roe * 100 : null }
+}
+
 function _updateCloseDisplay() {
   const pos = state.closingPos
   if (!pos) return
@@ -5139,6 +5181,37 @@ function _updateCloseDisplay() {
   document.getElementById('closePctDisplay').style.color  = color
   document.getElementById('closeSzDisplay').textContent   = fmtSize(closeSz) + ' ' + coinLabel(pos.coin)
   document.getElementById('closeValDisplay').textContent  = '$' + fmtUSD(closeSz * pos.mktPx)
+
+  // What it books. The ROE is the position's and does not change with the fraction — half a
+  // winner is still the same percentage return, only half the money.
+  const est   = _closePnlEstimate(pos, pct)
+  const elVal = document.getElementById('closePnlDisplay')
+  const elPct = document.getElementById('closePnlPct')
+  const elFee = document.getElementById('closePnlFee')
+  const elRow = document.getElementById('closePnlRow')
+  if (elVal && elPct && elFee && elRow) {
+    if (!est) {
+      elVal.textContent = '—'
+      elVal.style.color = 'var(--muted)'
+      elPct.textContent = ''
+      elFee.textContent = ''
+      elRow.title = _T('Could not read this position — reopen the modal once it has refreshed.',
+                       'No se pudo leer esta posición — reabre la ventana cuando se actualice.')
+    } else {
+      const up = est.gross >= 0
+      elVal.textContent = (up ? '+$' : '-$') + fmtUSD(Math.abs(est.gross))
+      elVal.style.color = up ? 'var(--green)' : 'var(--red)'
+      elPct.textContent = est.roePct == null ? ''
+        : (est.roePct >= 0 ? '+' : '') + est.roePct.toFixed(2) + '%'
+      elPct.style.color = up ? 'var(--green)' : 'var(--red)'
+      // Named rather than folded in: the headline then matches the position card to the
+      // cent, and the fee is still on screen instead of being a surprise afterwards.
+      elFee.textContent = _T('after an estimated $', 'tras una comisión estimada de $') +
+        fmtUSD(est.fee) + _T(' taker fee: ', ': ') +
+        (est.net >= 0 ? '+$' : '-$') + fmtUSD(Math.abs(est.net))
+      elRow.title = ''
+    }
+  }
   document.querySelectorAll('.close-preset-btn').forEach(b => b.classList.toggle('active', parseInt(b.textContent) === pct))
   const slider = document.getElementById('closeSlider')
   slider.style.setProperty('--slider-color', color)
@@ -22866,6 +22939,21 @@ const _GRID_MAKER_FEE = 0.00015
  * and needs no assumption about its side. The topmost rung has no pair above it and gets
  * nothing, which is correct rather than a gap.
  */
+/**
+ * Which side of the ladder the grid ENTERS on, read off the plan.
+ *
+ * The plan does not name its direction, so it is inferred: a long grid's entries are the
+ * buys BELOW the mark, a short grid's are the sells above it. Shared by the ladder and the
+ * "if every level fills" block so the two cannot disagree about which way the bot is facing.
+ */
+function _gridEntrySide(plan) {
+  const mk = Number(plan?.markPx) || 0
+  const os = plan?.orders ?? []
+  const buysBelow  = os.filter(o => o.side === 'buy'  && o.px < mk).length
+  const sellsAbove = os.filter(o => o.side === 'sell' && o.px > mk).length
+  return sellsAbove > buysBelow ? 'sell' : 'buy'
+}
+
 function _rungCycle(o, up) {
   if (!o || !up) return null
   const sz = Number(o.sz) || 0, lo = Number(o.px) || 0, hi = Number(up.px) || 0
@@ -22881,17 +22969,30 @@ function _previewChartHtml(plan, full = false) {
   // Each rung's partner is the next level UP in price, not the next by index: a
   // percentage grid's levels are unevenly spaced and index order is not price order.
   const _byPx = orders.slice().sort((a, b) => (+a.px) - (+b.px))
-  const _up = new Map()
-  for (let i = 0; i < _byPx.length - 1; i++) _up.set(_byPx[i], _byPx[i + 1])
+  /**
+   * The take profit each level books when it fills, hung on the level that BOOKS it.
+   *
+   * A grid earns on a round trip between two adjacent levels, and the profit is realised at
+   * the EXIT: on a long grid you buy the lower and sell the upper, so the upper rung is the
+   * take profit; on a short grid it is the other way round. Hanging it there is what makes
+   * the figure a take profit rather than a band spanning two levels — drawn between them it
+   * read as an unrealised amount, which is what was reported.
+   *
+   * The far end of the ladder has no pair to book against and gets nothing, which is correct
+   * rather than a gap: the lowest level of a long grid is only ever an entry.
+   */
+  const _longGrid = _gridEntrySide(plan) === 'buy'
+  const _tpOn = new Map()
+  for (let i = 0; i < _byPx.length - 1; i++) {
+    const cyc = _rungCycle(_byPx[i], _byPx[i + 1])
+    if (cyc) _tpOn.set(_longGrid ? _byPx[i + 1] : _byPx[i], cyc)
+  }
   const pxs = orders.map(o => +o.px).concat(+plan.markPx)
   const lo = Math.min(...pxs), hi = Math.max(...pxs)
   const span = (hi - lo) || 1
   // Room for the per-rotation figure, which sits BETWEEN two rungs rather than on one, so
   // consecutive rungs cannot be left touching.
-  // Room for the per-rotation figure, which sits BETWEEN two rungs rather than on one. An
-  // 18px rung and a 14px chip need ~32px of pitch before they touch; 36 leaves a margin at
-  // any level count, since the pitch tends to this number as the ladder grows.
-  const H = Math.max(full ? 320 : 190, orders.length * (full ? 50 : 36))
+  const H = Math.max(full ? 320 : 190, orders.length * (full ? 40 : 26))
   const y = (px) => 14 + (1 - (px - lo) / span) * (H - 28)
 
   // Why a level is not going on the book this cycle. 'margin' and 'inventory' are the two
@@ -22904,8 +23005,12 @@ function _previewChartHtml(plan, full = false) {
     resting:   { txt: () => _T('already there', 'ya está'),      loud: false },
     near:      { txt: () => _T('waits for price', 'espera precio'), loud: false, soon: true },
   }
+  // The take-profit column. Reserved on every row, including the ones with no figure, so the
+  // prices beside it stay in one line down the ladder.
+  const TPW = full ? 104 : 70
   const rung = (o) => {
     const yy = y(+o.px)
+    const tp = _tpOn.get(o)
     const buy = o.side === 'buy'
     const why = o.blocked ? WHY[o.blocked] : null
     const live = !o.blocked
@@ -22921,49 +23026,24 @@ function _previewChartHtml(plan, full = false) {
       <span style="flex:1;height:0;border-top:1.5px ${live ? (buy ? 'solid' : 'dashed') : 'dotted'} ${col};opacity:.75"></span>
       ${why ? `<span style="flex-shrink:0;font-size:8.5px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;color:${why.loud ? 'var(--red)' : 'var(--fg-3)'};white-space:nowrap">${why.txt()}</span>` : ''}
       <span style="flex-shrink:0;font-size:10.5px;font-family:var(--font-mono);color:var(--fg-2)${strike}">${fmtSize(o.sz)} @ $${fmtPrice(o.px)}</span>
-    </div>`
-  }
-
-  /**
-   * What a rotation is worth, drawn in the GAP between the two levels it spans.
-   *
-   * It used to sit on the lower rung, where it read as "this buy earns 24 cents" — which a
-   * buy never does, and which was reported as exactly that confusion. A grid earns on a
-   * ROUND TRIP: buy the lower level, sell the upper, keep the difference. Neither level owns
-   * that number.
-   *
-   * Nor does "put it on the sells only" work, which is the obvious next thought. The levels
-   * SWAP SIDES as the grid runs: the buy resting at $0.21030 becomes the sell at $0.21513 the
-   * moment it fills, and the sell above the mark becomes a buy on the way back. A figure
-   * pinned to whichever side a level happens to be showing right now would move around the
-   * ladder as the grid worked, describing the same rotation from a different rung each time.
-   *
-   * The pair is the thing that earns, so the figure sits between its two rungs.
-   */
-  const gapChip = (o) => {
-    const up  = _up.get(o)
-    const cyc = _rungCycle(o, up)
-    if (!cyc) return ''
-    const yy = (y(+o.px) + y(+up.px)) / 2
-    return `<div style="position:absolute;right:0;top:${yy - 7}px;height:14px;display:flex;align-items:center;justify-content:flex-end;gap:4px;pointer-events:none;white-space:nowrap" title="${
-      _T('One round trip between these two levels, after maker fees',
-         'Una rotación entre estos dos niveles, tras comisiones')}">
-      <span style="font-size:9px;color:var(--fg-3);font-weight:800;line-height:1">↕</span>
-      <span style="font-size:${full ? 11 : 9.5}px;font-family:var(--font-mono);font-weight:700;color:var(--green);line-height:1">+$${
-        cyc.net >= 1 ? fmtUSD(cyc.net) : cyc.net.toFixed(3)}</span>
-      ${full ? `<span style="font-size:10px;color:var(--fg-3);font-family:var(--font-mono);line-height:1">${cyc.pct.toFixed(2)}%</span>` : ''}
+      ${tp ? `<span style="flex-shrink:0;width:${TPW}px;text-align:right;font-size:${full ? 11 : 9.5}px;font-family:var(--font-mono);font-weight:700;color:var(--green);white-space:nowrap" title="${
+        _T('What this level takes as profit when it fills — one round trip against the level it pairs with, after maker fees',
+           'Lo que este nivel toma como ganancia al ejecutarse — una rotación contra el nivel con el que se empareja, tras comisiones')}"><span style="font-size:8.5px;color:var(--fg-3);font-weight:800;letter-spacing:.03em">TP </span>+$${
+        tp.net >= 1 ? fmtUSD(tp.net) : tp.net.toFixed(3)}${
+        full ? ` <span style="color:var(--fg-3);font-weight:500">${tp.pct.toFixed(2)}%</span>` : ''}</span>` : ''}
     </div>`
   }
   // Every rotation on the board at once: what the grid earns for one full sweep of the
   // range. The per-rung figures answer "is a level worth it"; this answers "is the grid".
-  const _sweep = _byPx.slice(0, -1).reduce((a, o) => {
-    const c = _rungCycle(o, _up.get(o)); return a + (c ? c.net : 0)
-  }, 0)
-  // Said in words, because a green number beside a buy order is read as PnL on that buy
-  // whatever it is positioned next to.
+  const _sweep = [..._tpOn.values()].reduce((a, c) => a + c.net, 0)
+  // Said in words. A green number next to an order is read as that order's PnL unless the
+  // screen says otherwise, and this one is a round trip against a second level.
   const _legend = `<div style="font-size:10px;color:var(--fg-3);line-height:1.5;margin-top:4px">${
-    _T('<b style="color:var(--green)">↕</b> is one round trip — buy the lower level, sell the upper, after fees. It belongs to the pair of levels, not to either one, so it sits between them.',
-       '<b style="color:var(--green)">↕</b> es una rotación — compra el nivel de abajo, vende el de arriba, tras comisiones. Pertenece al par de niveles, no a uno solo, por eso va entre ambos.')}</div>`
+    _longGrid
+      ? _T('<b style="color:var(--green)">TP</b> is what that level takes when it fills — bought one level lower, sold here, after fees. The lowest level is only ever an entry, so it has none.',
+           '<b style="color:var(--green)">TP</b> es lo que toma ese nivel al ejecutarse — comprado un nivel más abajo y vendido aquí, tras comisiones. El nivel más bajo solo es entrada, así que no tiene.')
+      : _T('<b style="color:var(--green)">TP</b> is what that level takes when it fills — sold one level higher, bought back here, after fees. The highest level is only ever an entry, so it has none.',
+           '<b style="color:var(--green)">TP</b> es lo que toma ese nivel al ejecutarse — vendido un nivel más arriba y recomprado aquí, tras comisiones. El nivel más alto solo es entrada, así que no tiene.')}</div>`
   const _foot = _legend + `<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:6px;font-size:10.5px;color:var(--fg-3);line-height:1.5">
       <span>${_T('One full sweep of the range', 'Un barrido completo del rango')}: <b style="color:var(--green)">+$${fmtUSD(_sweep)}</b></span>
       ${full ? '' : `<button onclick="event.stopPropagation();window.__gridLadderExpand()" style="flex-shrink:0;background:var(--panel-3);border:1px solid var(--border2);border-radius:7px;color:var(--fg-2);font-family:inherit;font-size:10.5px;font-weight:700;padding:3px 9px;cursor:pointer">${
@@ -22973,7 +23053,6 @@ function _previewChartHtml(plan, full = false) {
   const markY = y(+plan.markPx)
   return `<div style="position:relative;height:${H}px;margin:10px 0 4px">
     ${orders.map(rung).join('')}
-    ${_byPx.slice(0, -1).map(gapChip).join('')}
     <div style="position:absolute;left:0;right:0;top:${markY - 9}px;height:18px;display:flex;align-items:center;gap:6px">
       <span style="width:38px;flex-shrink:0;text-align:right;font-size:9.5px;font-weight:800;color:var(--fg)">${_T('Mark', 'Precio')}</span>
       <!-- The mark price reads on the LEFT, not in the price column with the rungs. An
@@ -22982,10 +23061,9 @@ function _previewChartHtml(plan, full = false) {
            rung's were printed on top of each other. -->
       <span style="flex-shrink:0;font-size:11px;font-weight:800;font-family:var(--font-mono)">$${fmtPrice(plan.markPx)}</span>
       <span style="flex:1;height:0;border-top:2px solid var(--fg)"></span>
-      <!-- And it stops short of the rotation column. An auto-chosen range puts the mark at
-           the exact midpoint of a gap, which is where that gap's figure is drawn, so a
-           full-width rule ran straight through it. -->
-      <span style="width:${full ? 112 : 78}px;flex-shrink:0"></span>
+      <!-- And it stops where the rungs' lines stop, short of the take-profit column, so the
+           mark reads as one more line on the same ladder rather than a rule across it. -->
+      <span style="width:${TPW}px;flex-shrink:0"></span>
     </div>
   </div>${_foot}`
 }
@@ -23125,10 +23203,7 @@ function _botPreviewSheet(type, plan, loading) {
     // entries are the buys BELOW the mark, a short grid's are the sells above it.
     // Inferred here rather than added to strategies/grid.js, which would need its own
     // bots deploy for a number this screen can already work out.
-    const _mk = Number(plan.markPx) || 0
-    const _buysBelow  = (plan.orders ?? []).filter(o => o.side === 'buy'  && o.px < _mk).length
-    const _sellsAbove = (plan.orders ?? []).filter(o => o.side === 'sell' && o.px > _mk).length
-    const _entrySide = _sellsAbove > _buysBelow ? 'sell' : 'buy'
+    const _entrySide = _gridEntrySide(plan)
     const _legs = (plan.orders ?? []).filter(o => o.side === _entrySide && o.sz > 0 && o.px > 0)
     const _fullSz  = _legs.reduce((a, o) => a + o.sz, 0)
     const _fullNot = _legs.reduce((a, o) => a + o.sz * o.px, 0)

@@ -177,40 +177,83 @@ t('and alignment defaults to the quiet reading, not a false alarm',
   pos.includes('aligned: raw.aligned !== false'))
 t('the deploy-order hazard is written down', pos.includes('deploy separately'))
 
-console.log('\n── what a rotation is worth belongs to the PAIR of levels ──')
+console.log('\n── the figure is a TAKE PROFIT, on the level that books it ──')
 {
-  // Reported: "what means each buy level the green number — is it like the pnl? because if
-  // it is it should be only in the sell levels". Drawn on the rung it read as PnL on that
-  // one order, which a buy never earns on its own.
+  // Two reports, one after the other. First: "what means each buy level the green number —
+  // is it like the pnl? because if it is it should be only in the sell levels". It was drawn
+  // on the LOWER rung of each pair, where it read as PnL on that one order.
+  //
+  // Moving it into the gap between the two levels fixed that and caused the second: "it seems
+  // like it shows like the unrl price between levels, i just want the take profits". A figure
+  // spanning two rungs reads as an unrealised band across them.
+  //
+  // A grid books the round trip at its EXIT, so the figure hangs on the level that takes it.
   const lad = grab(cli, 'function _previewChartHtml(')
   t('the ladder still exists', lad.length > 0)
-  t('the figure is drawn between the two rungs, not on one',
-    lad.includes('const gapChip = (o) =>') && lad.includes('const yy = (y(+o.px) + y(+up.px)) / 2'))
-  // Sliced, not matched: a lazy [\s\S]*? runs straight past the end of one function into the
-  // next, so "the rung does not mention _rungCycle" would be answered by gapChip instead.
-  const rungFn = lad.slice(lad.indexOf('const rung = (o) =>'), lad.indexOf('const gapChip = (o) =>'))
-  t('and the rung row no longer carries it',
-    rungFn.length > 200 && !rungFn.includes('_rungCycle') && !rungFn.includes('+$'), rungFn.slice(-70))
-  t('one chip per gap, so the top level correctly has none',
-    lad.includes('${_byPx.slice(0, -1).map(gapChip).join(\'\')}'))
-  // "Put it on the sells" does not work either: the levels swap sides as the grid runs.
-  t('why the sell side is not the answer is written down', lad.includes('SWAP SIDES as the grid runs'))
-  t('it is marked as spanning them', lad.includes('↕'))
-  t('and said in words under the ladder',
-    lad.includes('is one round trip') && lad.includes('belongs to the pair of levels'))
-  // The rungs have to be far enough apart for a figure to sit between them.
-  t('the ladder is spaced for it', lad.includes("orders.length * (full ? 50 : 36)"))
-  // An auto range centres the mark between two levels, which is exactly where that gap's
-  // figure is drawn — the mark's own label and rule both used to run through it.
-  // On the left means: after the "Mark" tag and BEFORE the rule, rather than at the end of
-  // the row where every rung prints its own price.
+  t('the figure hangs on the level that books it', lad.includes('const _tpOn = new Map()'))
+  // Which end of the pair that is depends on the direction: buy low / sell high on a long
+  // grid, sell high / buy back low on a short one.
+  t('the exit end depends on which way the grid faces',
+    lad.includes('_tpOn.set(_longGrid ? _byPx[i + 1] : _byPx[i], cyc)'))
+  t('and the direction comes from a shared reading of the plan',
+    lad.includes("_gridEntrySide(plan) === 'buy'") &&
+    cli.includes('function _gridEntrySide(plan)'))
+  // Two CALL sites; the third match is the definition.
+  t('so the ladder and the "if every level fills" block cannot disagree',
+    (cli.match(/_gridEntrySide\(plan\)/g) ?? []).length - (cli.match(/function _gridEntrySide\(plan\)/g) ?? []).length === 2)
+  t('the rung row carries it again', lad.includes('const tp = _tpOn.get(o)'))
+  t('nothing is drawn between the rungs any more', !lad.includes('gapChip'))
+  t('it is labelled as a take profit', lad.includes('>TP </span>+$'))
+  t('the far end of the ladder correctly has none',
+    lad.includes('for (let i = 0; i < _byPx.length - 1; i++)') && lad.includes('is only ever an entry'))
+  t('and said in words under the ladder, both directions',
+    lad.includes('bought one level lower, sold here') && lad.includes('sold one level higher, bought back here'))
+  // The sweep total must come from the same map, or the rows and the total can drift.
+  t('the sweep total adds up the same figures', lad.includes('[..._tpOn.values()].reduce((a, c) => a + c.net, 0)'))
+  t('the ladder is back to its compact spacing', lad.includes("orders.length * (full ? 40 : 26)"))
+
+  // Kept from the previous round: an auto range centres the mark between two levels, so its
+  // label was printing on top of the nearest rung's price. On the left means after the "Mark"
+  // tag and BEFORE the rule, rather than at the end of the row.
   const iTag  = lad.indexOf("_T('Mark', 'Precio')")
   const iPx   = lad.indexOf('fmtPrice(plan.markPx)')
   const iRule = lad.indexOf('border-top:2px solid var(--fg)')
   t('the mark price reads on the left, out of the rungs’ price column',
     iTag > 0 && iTag < iPx && iPx < iRule, JSON.stringify({ iTag, iPx, iRule }))
-  t('and its rule stops short of the rotation column',
-    lad.includes('width:${full ? 112 : 78}px;flex-shrink:0'))
+  t('and its rule stops where the rungs’ lines stop',
+    lad.includes('width:${TPW}px;flex-shrink:0'))
+}
+
+console.log('\n── the close modal says what closing books ──')
+{
+  const fn = grab(cli, 'function _closePnlEstimate(')
+  t('there is an estimate', fn.length > 0)
+  // PnL is linear in size, so a partial close realises exactly its share.
+  t('it scales the position’s own PnL by the fraction closed', fn.includes('gross = u * (sz / liveSz)'))
+  t('off the LIVE size, not the one captured when the modal opened', fn.includes('liveSz'))
+  // Taken from HL's figure rather than recomputed, so the modal and the card agree.
+  t('entry × mark is the fallback, not the first answer',
+    fn.indexOf('unrealizedPnl') < fn.indexOf('entryPx'))
+  t('a taker fee is estimated, at the rate the order ticket quotes', fn.includes('0.00045'))
+  // Empty is not the same as unknown: $0.00 reads as "this trade is flat", which is the one
+  // message that would be actively wrong while someone decides whether to take a loss.
+  t('an unreadable position reports nothing rather than zero',
+    fn.includes('if (gross == null || !Number.isFinite(gross)) return null') &&
+    cli.includes("elVal.textContent = '—'"))
+  // The doc comment sits above the function, so grab() does not see it.
+  t('and why that matters is written down', cli.includes('reads as "this trade is flat"'))
+  t('the modal renders it', cli.includes('const est   = _closePnlEstimate(pos, pct)') &&
+    cli.includes("document.getElementById('closePnlDisplay')"))
+  t('coloured by direction', cli.includes("elVal.style.color = up ? 'var(--green)' : 'var(--red)'"))
+  t('with the position’s ROE, which a partial close does not change',
+    cli.includes('est.roePct') && cli.includes('does not change with the fraction'))
+  t('the fee is named rather than folded into the headline',
+    cli.includes('after an estimated $') && cli.includes('est.net'))
+  t('and it updates as the slider moves',
+    grab(cli, 'function _updateCloseDisplay(').includes('_closePnlEstimate(pos, pct)'))
+  const htm = fs.readFileSync('index.html', 'utf8')
+  t('the row exists in the modal', htm.includes('id="closePnlRow"') && htm.includes('id="closePnlDisplay"'))
+  t('and it is styled', fs.readFileSync('src/style.css', 'utf8').includes('.close-pnl-row'))
 }
 
 console.log('\n── the sheet does not show the app through itself ──')
