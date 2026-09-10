@@ -6907,10 +6907,21 @@ body.is-mob-view .mob-v-bottom { display: grid; }
 #mobPredictOverlay .oc-evt-more { width: 100%; margin-top: 4px; padding: 9px 0; border: none; border-top: 1px solid rgba(255,255,255,0.05); background: none; color: var(--accent); font-size: 12px; font-weight: 700; cursor: pointer; }
 
 /* ═══ Desktop Outcomes — grouped/compact cards (reuses the mobile structure) ═══ */
-/* Masonry via CSS multi-column so a tall event card doesn't leave gaps in its row. */
-#outcomesRoot .oc-grid { display: block; column-width: 330px; column-gap: 14px; }
-#outcomesRoot .oc-grid > .oc-card { break-inside: avoid; -webkit-column-break-inside: avoid; margin: 0 0 14px; width: 100%; }
-#outcomesRoot .oc-sec-head, #outcomesRoot .oc-hot-scroll { column-span: all; -webkit-column-span: all; }
+/* Masonry via CSS multi-column so a tall event card doesn't leave gaps in its row.
+ *
+ * SCOPED TO DESKTOP, and it has to be. On mobile #outcomesRoot is physically relocated into
+ * #mobPredictBody, so these unscoped rules also matched the phone — and being later in the
+ * file at equal specificity they beat `#mobPredictOverlay .oc-grid { display: flex }` above,
+ * turning the mobile list into a multi-column block nobody designed. Reported as the Trending
+ * strip sitting on top of a BTC market: the strip carries `column-span: all`, and a spanner in
+ * a multicol flow is exactly where WebKit paints over the content around it.
+ * This is the second time an unscoped #outcomesRoot rule has reached the phone this way; the
+ * expanded-card rule below carries the same warning. */
+@media (min-width: 769px) {
+  #outcomesRoot .oc-grid { display: block; column-width: 330px; column-gap: 14px; }
+  #outcomesRoot .oc-grid > .oc-card { break-inside: avoid; -webkit-column-break-inside: avoid; margin: 0 0 14px; width: 100%; }
+  #outcomesRoot .oc-sec-head, #outcomesRoot .oc-hot-scroll { column-span: all; -webkit-column-span: all; }
+}
 #outcomesRoot .oc-card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 16px; cursor: pointer; }
 #outcomesRoot .oc-card:not(.oc-expanded) .oc-card-head,
 #outcomesRoot .oc-card:not(.oc-expanded) .oc-stats-row,

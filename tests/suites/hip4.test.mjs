@@ -203,5 +203,36 @@ t('the glyph avatar needs no network', !grab('function _ocGlyphAvatar(glyph, see
 t('it is deterministic when no hue is given', grab('function _ocGlyphAvatar(glyph, seed, hue)').includes('h = (h * 31 + raw.charCodeAt(i)) % 360'))
 t('why it exists is recorded', cli.includes('still needs a face'))
 
+console.log(String.fromCharCode(10) + '-- the desktop masonry stays on the desktop --')
+{
+  // On mobile #outcomesRoot is physically relocated into #mobPredictBody, so an UNSCOPED
+  // `#outcomesRoot ...` rule also matches the phone -- and being later in the file at equal
+  // specificity it beats `#mobPredictOverlay .oc-grid { display: flex }`. That turned the
+  // mobile list into a CSS multi-column block, and `column-span: all` on the Trending strip
+  // made WebKit paint it over the market card beneath: reported as "the featured are on top
+  // of a btc multiple outcomes market".
+  //
+  // This is the second unscoped #outcomesRoot rule to reach the phone this way. The first was
+  // the expanded-card rule, which already carries the same warning.
+  // `css` at the top of this file is already CRLF-normalised; a newline in a needle would
+  // never match the raw file otherwise.
+  const CSS = css
+  // Every multicol declaration must live inside the desktop block. Checked by slicing that
+  // block out and requiring the whole set to be inside it — brace-counting across a 7,500
+  // line stylesheet is the kind of clever that quietly stops working.
+  const mq = CSS.indexOf('@media (min-width: 769px) {\n  #outcomesRoot .oc-grid { display: block;')
+  const desktopBlock = mq < 0 ? '' : CSS.slice(mq, CSS.indexOf('\n}', mq) + 2)
+  const stray = ['column-width: 330px', 'column-span: all', 'break-inside: avoid']
+    .filter(d => CSS.includes(d) && !desktopBlock.includes(d))
+  t('no multicol declaration is left outside the desktop block', stray.length === 0, stray.join(' | '))
+  t('the multi-column rules are behind a desktop media query',
+    /@media \(min-width: 769px\) \{[\s\S]{0,120}#outcomesRoot \.oc-grid \{ display: block; column-width/.test(CSS))
+  t('and the phone keeps the flex column it was written with',
+    CSS.includes('#mobPredictOverlay .oc-grid { display: flex'))
+  t('why the scope matters is written down', CSS.includes('SCOPED TO DESKTOP, and it has to be'))
+  // A contiguous fragment: the comment wraps, so the full sentence never appears on one line.
+  t('and it names the report', CSS.includes('strip sitting on top of a BTC market'))
+}
+
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
