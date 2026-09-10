@@ -2331,7 +2331,14 @@
   <!-- Content list -->
   <div class="mob-v-content" id="mobVContent"></div>
 
-  <!-- Bottom nav -->
+
+</div>
+
+<!-- Bottom nav — a SIBLING of the mobile shell, not a child of it.
+     .mob-view is the scroll container, and on iOS a position:fixed child of a
+     touch-scrolling element is laid out against that scroller rather than the viewport:
+     it lands wrong and drifts again as momentum settles. Outside it, `bottom: 0` means the
+     bottom of the screen. Visibility follows body.is-mob-view instead of the parent. -->
   <nav class="mob-v-bottom">
     <button class="mob-v-bottom-btn" id="mobVBotMore" onclick="window.mobVOpenMore()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="22" height="22"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
@@ -2346,8 +2353,6 @@
       Trade
     </button>
   </nav>
-
-</div>
 
 <!-- MOBILE MORE DRAWER -->
 <div class="mob-more-backdrop" id="mobMoreBackdrop" onclick="window.__mobMore()"></div>

@@ -76,11 +76,28 @@ body.light-mode {
 * { scrollbar-width: none; -ms-overflow-style: none; }
 *::-webkit-scrollbar { width: 0; height: 0; display: none; }
 
-/* Only while the brightness slider is actually off 100%. A filter on <html> makes <html> the
-   containing block for EVERY position:fixed element in the app, so `bottom: 0` stops meaning
-   the bottom of the screen. brightness(1) is a visual no-op that was doing that anyway.
-   main.js toggles .ui-dimmed; see _applyBrightnessFilter. */
-html.ui-dimmed { filter: brightness(var(--ui-brightness, 1)); }
+/* Brightness is a LAYER, not a filter on <html>.
+ *
+ * `filter` on an element makes it the containing block for every position:fixed descendant.
+ * On <html> that is the whole app, and the probe caught it on the phone:
+ *
+ *     fixedContainedBy=html.ui-dimmed[filter:brightness(1.15)] box=0..0
+ *
+ * A zero-height box. Everything fixed — the tab bar, the wallpaper layer, every overlay — was
+ * resolving `inset: 0` and `bottom: 0` against that instead of against the screen. It only
+ * became visible when viewport-fit=cover changed where the screen's edges are.
+ *
+ * backdrop-filter on a full-screen pass-through layer brightens everything painted beneath it
+ * and establishes a containing block for nothing, because it has no descendants. */
+.ui-bright-layer {
+  display: none;
+  position: fixed; inset: 0; pointer-events: none;
+  /* Above every overlay in the app, so the adjustment reaches modals and sheets too. */
+  z-index: 2147483000;
+  -webkit-backdrop-filter: brightness(var(--ui-brightness, 1));
+  backdrop-filter: brightness(var(--ui-brightness, 1));
+}
+html.ui-dimmed .ui-bright-layer { display: block; }
 html, body {
   background:  var(--bg);
   color:       var(--fg);
@@ -6014,7 +6031,9 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
   border-top: 1px solid var(--border);
   /* Three equal columns, each item centered in its own third — a balanced
      tab-bar (More · Home · Trade) with no empty gap. */
-  display: grid;
+  /* Hidden until the mobile shell is up. It used to inherit that from being INSIDE
+     #mobileView; it is a sibling now (see index.html) so it needs its own gate. */
+  display: none;
   grid-template-columns: repeat(3, 1fr);
   align-items: center;
   justify-items: center;
@@ -6022,6 +6041,7 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
   padding-bottom: env(safe-area-inset-bottom);
   z-index: 201;
 }
+body.is-mob-view .mob-v-bottom { display: grid; }
 .mob-v-bottom-btn {
   display: flex; flex-direction: column; align-items: center; gap: 4px;
   background: none; border: none; color: var(--muted);

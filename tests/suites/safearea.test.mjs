@@ -95,17 +95,45 @@ console.log(nl + '-- a no-op filter must not redefine what fixed positioning mea
   // `filter` on <html> makes <html> the containing block for EVERY position:fixed element in
   // the app, so `bottom: 0` stops meaning the bottom of the screen. At the default brightness
   // the filter was brightness(1) — a visual no-op doing that to the whole app anyway.
-  t('the filter is gated on actually being dimmed',
-    /html\.ui-dimmed\s*\{\s*filter:\s*brightness/.test(CSS))
-  t('and bare html no longer carries one',
-    !/^html\s*\{\s*filter:/m.test(CSS))
+  // Gating it on "actually dimmed" was not enough: the phone runs 115%, so the filter was
+  // still there and navprobe caught it holding a 0..0 box for every fixed element in the app.
+  // A plain `filter:` — not backdrop-filter, which contains nothing.
+  t('the brightness setting no longer paints a filter onto an ancestor',
+    !/(^|[^-])filter:\s*brightness\(var\(--ui-brightness/m.test(CSS.replace(/\/\*[\s\S]*?\*\//g, '')))
+  t('brightness is a pass-through layer instead',
+    /\.ui-bright-layer\s*\{[\s\S]{0,400}backdrop-filter:\s*brightness/.test(CSS))
+  t('it intercepts nothing', /\.ui-bright-layer\s*\{[\s\S]{0,400}pointer-events:\s*none/.test(CSS))
+  t('and sits above every overlay, so modals are adjusted too',
+    /\.ui-bright-layer\s*\{[\s\S]{0,400}z-index:\s*2147483000/.test(CSS))
   const CLI2 = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
   t('the class is toggled from the one place that knows the value',
     CLI2.includes('function _applyBrightnessFilter(v)') &&
     CLI2.includes("el.classList.toggle('ui-dimmed', dim)"))
   // Both the startup restore and the slider, or the two disagree after a reload.
   t('applied on restore and on change', (CLI2.match(/_applyBrightnessFilter\(/g) ?? []).length === 3)
-  t('why it matters is written down', CSS.includes('containing block for EVERY position:fixed'))
+  t('why it matters is written down, with the reading that proved it',
+    CSS.includes('containing block for every position:fixed descendant') &&
+    CSS.includes('box=0..0'))
+}
+
+console.log(nl + '-- the bar is not inside the thing that scrolls --')
+{
+  const HTM = fs.readFileSync('index.html', 'utf8')
+  // On iOS a position:fixed child of a touch-scrolling element is laid out against that
+  // scroller, not the viewport: it lands wrong and drifts again as momentum settles.
+  const shellStart = HTM.indexOf('id="mobileView"')
+  const navAt = HTM.indexOf('<nav class="mob-v-bottom"')
+  const shellEnd = HTM.indexOf('<!-- Bottom nav', shellStart)
+  t('the tab bar is a SIBLING of the mobile shell', navAt > shellStart && navAt > shellEnd)
+  t('and why is written down', HTM.includes('laid out against that scroller'))
+  // It used to inherit display:none from the shell; outside it, it needs its own gate or it
+  // shows up on desktop.
+  // Comments stripped: this rule carries several, and they push the declaration far enough
+  // down that a windowed match misses it.
+  const barDecls = blockAt('.mob-v-bottom {').replace(/\/\*[\s\S]*?\*\//g, '')
+  t('it is hidden until the mobile shell is up',
+    /display:\s*none/.test(barDecls) &&
+    CSS.includes('body.is-mob-view .mob-v-bottom { display: grid; }'), barDecls.slice(0, 90))
 }
 
 console.log(nl + '-- and the real geometry is measured, not assumed --')

@@ -233,20 +233,35 @@ import { aggregatePosGroup, groupPositions, posHealthPct } from './posgroup.js'
 import { probeNavGeometry } from './navprobe.js'
 
 /**
- * The brightness filter, applied ONLY when it actually dims something.
+ * Brightness, as a layer over the app rather than a filter on <html>.
  *
- * `filter` on <html> makes <html> the containing block for every position:fixed element in the
- * app — so `bottom: 0` stops meaning "the bottom of the screen" and starts meaning "the bottom
- * of the html box". At the default brightness the filter was brightness(1): a visual no-op that
- * was still quietly redefining what fixed positioning refers to, for everyone, forever.
+ * `filter` on an element makes it the containing block for every position:fixed descendant.
+ * On <html> that is the entire app, and navprobe caught it on the phone:
  *
- * Whether that is what put the tab bar in the wrong place on iOS is what navprobe.js is
- * measuring. Either way a no-op filter should not be there.
+ *     fixedContainedBy=html.ui-dimmed[filter:brightness(1.15)] box=0..0
+ *
+ * A zero-height box. The tab bar, the wallpaper layer and every overlay were resolving
+ * `bottom: 0` and `inset: 0` against that rather than against the screen — which is why the
+ * bar and the wallpaper stopped at the same line, 108px short of the bottom, and why it only
+ * showed up once viewport-fit=cover moved where the screen's edges are.
+ *
+ * The layer uses backdrop-filter, so it brightens what is painted beneath it and contains
+ * nothing. See .ui-bright-layer.
  */
 function _applyBrightnessFilter(v) {
   const el = document.documentElement
   const dim = Number.isFinite(+v) && Math.abs(+v - 1) > 0.001
   el.classList.toggle('ui-dimmed', dim)
+  if (!dim) return
+  // Created on first use: someone who never touches the slider never gets the layer, and a
+  // backdrop-filter over the whole screen is not free.
+  if (!document.getElementById('uiBrightLayer')) {
+    const d = document.createElement('div')
+    d.id = 'uiBrightLayer'
+    d.className = 'ui-bright-layer'
+    d.setAttribute('aria-hidden', 'true')
+    document.body.appendChild(d)
+  }
 }
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
          compareAxisHtml, attachCompareScrub, compareReadoutHtml, assignCompareColors } from './compare.js'
