@@ -230,7 +230,8 @@ import { BACKDROPS, backdropById, loadBackdrop, saveBackdrop, applyBackdrop,
          loadBackdropDim, saveBackdropDim, readBackdropFile, restoreTheme } from './theme.js'
 import { BOT_PRESETS, botPreset } from './botpresets.js'
 import { aggregatePosGroup, groupPositions, posHealthPct } from './posgroup.js'
-import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL } from './ordergroup.js'
+import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL,
+         expectedPnl, groupExpectedPnl } from './ordergroup.js'
 import { probeNavGeometry } from './navprobe.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows } from './comboequity.js'
 
@@ -10868,6 +10869,8 @@ function _mobVMergedOrdCard(members) {
     ORDER_KIND_LABEL[g.kind] ?? g.kind}`
   const mark    = parseFloat(state.allMids?.[g.coin] ?? 0)
   const away    = nearestAwayPct(g, mark)
+  const _gPos   = _guardFindPos(g.coin, members[0]?._acctAddr ?? null)
+  const _gExp   = groupExpectedPnl(members, _gPos)
   const gid     = _mobVGid(g.coin, g.side + '-' + g.kind)
   const id      = `ordg-${gid}`
   const xp      = _mobVExpandedIds.has(id)
@@ -10905,6 +10908,11 @@ function _mobVMergedOrdCard(members) {
         [_T('Total value', 'Valor total'), _prv('$' + fmtUSD(g.notional))],
         [_T('Avg price', 'Precio medio'), g.avgPx > 0 ? '$' + fmtPrice(g.avgPx) : '—'],
         ...(g.spread ? [[_T('Range', 'Rango'), `$${fmtPrice(g.loPx)} – $${fmtPrice(g.hiPx)}`]] : []),
+        // What the whole ladder books if every rung fills. Only the rungs that CLOSE count;
+        // an opening ladder has nothing to book and says so by its absence.
+        ...(_gExp == null ? [] : [[_T('If all fill', 'Si se llenan todas'),
+          `${_gExp >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(_gExp))}`,
+          _gExp >= 0 ? 'var(--green)' : 'var(--red)']]),
       ])}
       <div style="padding:9px 16px 4px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;background:var(--panel-2)">${
         g.n} ${_T('orders', 'órdenes')} · ${_T('tap any to manage', 'toca cualquiera para gestionar')}</div>
@@ -17588,18 +17596,31 @@ function _mobVRenderContent(tick = false) {
               : null
             // Expected PnL if this order fills — same math as the desktop table:
             // only meaningful for TP/SL/reduce-only orders tied to a position
-            const _pos    = (state.perpState?.assetPositions ?? []).find(ap => ap.position.coin === o.coin)?.position
+            // Matched by coin AND owner: in the combined view two wallets hold the same coin,
+            // and pricing an order against the wrong wallet's entry is a made-up number.
+            const _pos    = _guardFindPos(o.coin, o._acctAddr ?? null)
             const _entry  = _pos ? parseFloat(_pos.entryPx ?? 0) : 0
             const _szi    = _pos ? parseFloat(_pos.szi ?? 0) : 0
             const _dispPx = triggerPx > 0 ? triggerPx : limitPx
-            const _rawSz  = parseFloat(o.sz ?? 0)
-            const _effSz  = _rawSz > 0 ? _rawSz : Math.abs(_szi)   // sz=0 → closes whole position
+            // Whether it books anything is decided by what it DOES, not by what it is
+            // labelled: a grid's exit sells are plain limits with no flag on them, and they
+            // close a position exactly as a take profit does. See expectedPnl().
+            const _exp = expectedPnl(o, _pos)
             let expRows = []
-            if (_entry > 0 && _dispPx > 0 && _effSz > 0 && (tpslType || o.reduceOnly)) {
-              const _pnl    = _szi > 0 ? (_dispPx - _entry) * _effSz : (_entry - _dispPx) * _effSz
+            if (_exp) {
               const _margin = parseFloat(_pos.marginUsed ?? 0)
-              const _roe    = _margin > 0 ? (_pnl / _margin) * 100 : null
-              expRows = [['Expected PnL', `${_pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(_pnl))}${_roe != null ? ` (${_roe >= 0 ? '+' : ''}${_roe.toFixed(1)}% on margin)` : ''}`, _pnl >= 0 ? 'var(--green)' : 'var(--red)']]
+              const _roe    = _margin > 0 ? (_exp.pnl / _margin) * 100 : null
+              expRows = [['Expected PnL', `${_exp.pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(_exp.pnl))}${
+                _roe != null ? ` (${_roe >= 0 ? '+' : ''}${_roe.toFixed(1)}% on margin)` : ''}`,
+                _exp.pnl >= 0 ? 'var(--green)' : 'var(--red)']]
+              // Sell 10 against a long of 6 closes 6 and opens 4 the other way. Quoting the
+              // PnL for the whole size would be wrong, so say what the rest does.
+              if (_exp.opening > 0) {
+                expRows.push(['Closes / opens',
+                  `${fmtSize(_exp.closing)} closed · ${fmtSize(_exp.opening)} opens ${_szi > 0 ? 'short' : 'long'}`])
+              }
+            } else if (_pos) {
+              expRows = [['Expected PnL', _T('None — this adds to the position', 'Ninguno — suma a la posición'), 'var(--muted)']]
             }
             // Margin this order would tie up if it filled. Only derivable when a position
             // in the same coin already tells us the leverage in force — for a first entry

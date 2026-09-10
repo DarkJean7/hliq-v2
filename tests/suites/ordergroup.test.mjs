@@ -7,7 +7,8 @@
 // would report a ladder nobody placed and hide the one order that closes a losing trade.
 import fs from 'fs'
 import { groupOrders, aggregateOrderGroup, orderSide, orderKind, orderPx,
-         orderGroupKey, nearestAwayPct, ORDER_KIND_LABEL } from '../../src/ordergroup.js'
+         orderGroupKey, nearestAwayPct, ORDER_KIND_LABEL,
+         expectedPnl, groupExpectedPnl } from '../../src/ordergroup.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -96,6 +97,56 @@ console.log(nl + '-- the edges --')
     aggregateOrderGroup([o({ _acct: 'Dark' }), o({ _acct: 'Jon' }), o({ _acct: 'Dark' })]).accounts.length === 2)
 }
 
+console.log(nl + '-- what an order books is decided by what it DOES, not its label --')
+{
+  // Reported: an order that closes a position was showing no expected PnL. The old rule
+  // required a Take Profit / Stop / reduce-only FLAG, and a grid's exit sells carry none of
+  // them -- they are plain limits that close a position exactly as a take profit does.
+  const LONG  = { szi: '6', entryPx: '100', marginUsed: '60' }
+  const SHORT = { szi: '-6', entryPx: '100', marginUsed: '60' }
+
+  const sell = o({ side: 'A', sz: '6', limitPx: '110' })
+  t('a plain limit sell against a long books its profit',
+    near(expectedPnl(sell, LONG).pnl, 60), JSON.stringify(expectedPnl(sell, LONG)))
+  t('with no flag on it at all', orderKind(sell) === 'limit')
+  t('and below entry it books the loss',
+    near(expectedPnl(o({ side: 'A', sz: '6', limitPx: '90' }), LONG).pnl, -60))
+  t('a buy against a short is the mirror',
+    near(expectedPnl(o({ side: 'B', sz: '6', limitPx: '90' }), SHORT).pnl, 60))
+
+  // The other half of the report: some orders open, and an opening order has nothing to book.
+  t('a buy against a long books nothing — it adds', expectedPnl(o({ side: 'B', sz: '6' }), LONG) === null)
+  t('a sell against a short books nothing either', expectedPnl(o({ side: 'A', sz: '6' }), SHORT) === null)
+  t('and with no position at all there is nothing to close against',
+    expectedPnl(sell, null) === null && expectedPnl(sell, { szi: '0', entryPx: '100' }) === null)
+
+  // An order larger than the position closes part and opens the rest the other way. Quoting
+  // the PnL for the whole size would be wrong.
+  {
+    const big = expectedPnl(o({ side: 'A', sz: '10', limitPx: '110' }), LONG)
+    t('an oversized order books only the part that closes', near(big.pnl, 60), JSON.stringify(big))
+    t('and reports the part that opens', big.closing === 6 && big.opening === 4, JSON.stringify(big))
+  }
+  // HL's "close everything" order.
+  t('a size of zero means the whole position',
+    near(expectedPnl(o({ side: 'A', sz: '0', limitPx: '110' }), LONG).pnl, 60))
+  // A trigger order prices off its trigger, not its limit.
+  t('a take profit prices off the trigger',
+    near(expectedPnl(o({ side: 'A', sz: '6', limitPx: '0', triggerPx: '120',
+                         orderType: 'Take Profit Market' }), LONG).pnl, 120))
+  t('a missing entry price is refused rather than guessed',
+    expectedPnl(sell, { szi: '6', entryPx: '0' }) === null)
+
+  // The ladder as a whole.
+  const ladder = [110, 115, 120].map(px => o({ side: 'A', sz: '2', limitPx: String(px) }))
+  t('a ladder books the sum of its rungs',
+    near(groupExpectedPnl(ladder, LONG), 2 * 10 + 2 * 15 + 2 * 20), String(groupExpectedPnl(ladder, LONG)))
+  // Null, not zero: zero would read as "this breaks even".
+  t('an opening ladder books null, not zero',
+    groupExpectedPnl([o({ side: 'B' }), o({ side: 'B' })], LONG) === null)
+  t('and so does a ladder with no position behind it', groupExpectedPnl(ladder, null) === null)
+}
+
 console.log(nl + '-- both shells fold with it --')
 {
   const CLI = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
@@ -112,6 +163,17 @@ console.log(nl + '-- both shells fold with it --')
     RND.includes('groupOrders(sorted)'))
   t('expanding a group shows the real rows, so Cancel still reaches one order',
     RND.includes('_ovOrderRows(g.members, allMids)') && CLI.includes('members.map(m => m.__html)'))
+  // One implementation, or the two shells quote different numbers for the same order.
+  t('both price an order through the shared expectedPnl',
+    CLI.includes('const _exp = expectedPnl(o, _pos)') && RND.includes('expectedPnl(o, _ovPosFor(o))'))
+  t('and the desktop no longer demands a flag first',
+    !RND.includes("if (!isTp && !isSl && !o.reduceOnly) return null"))
+  t('the folded row says what the whole ladder books',
+    CLI.includes('groupExpectedPnl(members, _gPos)') && RND.includes('groupExpectedPnl(g.members'))
+  // In the combined view two wallets hold the same coin; pricing against the wrong one is a
+  // made-up number.
+  t('the position is matched by owner, not just by coin',
+    CLI.includes('_guardFindPos(o.coin, o._acctAddr ?? null)') && RND.includes('function _ovPosFor(o)'))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

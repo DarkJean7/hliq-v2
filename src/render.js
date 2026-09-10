@@ -3,7 +3,8 @@ import { pairTrades, drawdownFor } from './drawdown.js'
 import { aggregateFillsByCoin, coinLabel } from './api.js'
 import { renderOverviewChart } from './charts.js'
 import { aggregatePosGroup, groupPositions, posHealthPct, posSideOf } from './posgroup.js'
-import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL } from './ordergroup.js'
+import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL,
+         expectedPnl, groupExpectedPnl } from './ordergroup.js'
 
 // Outcome-aware coin label: resolves prediction-market "#N"/"+N" codes to their
 // market name + side via main.js's ocTokenMap (window._ocCoinLabel). Falls back to
@@ -1082,7 +1083,7 @@ function _ovOrdSortVal(o, key, allMids) {
     case 'size':  return sz
     case 'price': return px
     case 'value': return px * sz
-    case 'pnl':   return _ovOrderEstPnl(o, allMids) ?? -Infinity
+    case 'pnl':   return _ovOrderEstPnl(o) ?? -Infinity
     default:      return px * sz
   }
 }
@@ -1090,19 +1091,30 @@ function _ovOrdSortVal(o, key, allMids) {
 // Estimated PnL if this order fills, vs the current open position's entry. Mirrors
 // the mobile order detail: meaningful for TP/SL AND reduce-only orders (e.g. a limit
 // take-profit ladder) tied to a position. Returns null otherwise.
-function _ovOrderEstPnl(o, allMids) {
-  const ot = o.orderType ?? ''
-  const isTp = ot.startsWith('Take Profit') || o.triggerCondition === 'tp'
-  const isSl = ot.startsWith('Stop') || o.triggerCondition === 'sl'
-  if (!isTp && !isSl && !o.reduceOnly) return null
-  const pos = _ovPosData?.positions?.find(ap => ap.position.coin === o.coin)?.position
-  if (!pos) return null
-  const entry = parseFloat(pos.entryPx ?? 0)
-  const trig  = parseFloat(o.triggerPx ?? 0) || parseFloat(o.limitPx ?? 0)
-  const sz    = parseFloat(o.sz ?? 0) || Math.abs(parseFloat(pos.szi ?? 0))
-  if (!entry || !trig || !sz) return null
-  const isLong = parseFloat(pos.szi ?? 0) > 0
-  return (isLong ? (trig - entry) : (entry - trig)) * sz
+/** The position this order would act on: its coin, and in the combined view its own wallet. */
+function _ovPosFor(o) {
+  const list = _ovPosData?.positions ?? []
+  const a = String(o?._acctAddr ?? '').toLowerCase()
+  if (a) {
+    const m = list.find(ap => ap.position?.coin === o.coin &&
+      String(ap.position?._acctAddr ?? '').toLowerCase() === a)
+    if (m) return m.position
+  }
+  return list.find(ap => ap.position?.coin === o.coin)?.position ?? null
+}
+
+/**
+ * What this order books if it fills.
+ *
+ * It used to require a Take Profit / Stop / reduce-only FLAG, which misses the commonest
+ * closing order here: a grid's exit sells are plain limits carrying no flag, and they close a
+ * position exactly as a take profit does. What matters is whether the order reduces a position
+ * that exists — see expectedPnl() in ordergroup.js, shared with the mobile card so the two
+ * cannot quote different numbers for the same order.
+ */
+function _ovOrderEstPnl(o) {
+  const e = expectedPnl(o, _ovPosFor(o))
+  return e ? e.pnl : null
 }
 
 function _ovBuildOrdBody(orders, allMids) {
@@ -1145,6 +1157,9 @@ function _ovMergedOrdRow(g, allMids) {
   const cls  = g.kind === 'tp' ? 'pos' : g.kind === 'sl' ? 'neg' : (buy ? 'pos' : 'neg')
   const tag  = g.kind === 'tp' ? 'TP' : g.kind === 'sl' ? 'SL' : (buy ? 'BUY' : 'SELL')
   const away = nearestAwayPct(g, parseFloat(allMids?.[g.coin] ?? 0))
+  // What the whole ladder books. Null when none of its rungs close anything -- an opening
+  // ladder has nothing to book, and a zero there would read as "breaks even".
+  const _gp  = groupExpectedPnl(g.members, _ovPosFor(g.members[0]))
   const price = g.spread
     ? `$${fmtPrice(g.loPx)}<i class="ov-roe">to $${fmtPrice(g.hiPx)}</i>`
     : `$${fmtPrice(g.avgPx)}`
@@ -1156,8 +1171,10 @@ function _ovMergedOrdRow(g, allMids) {
       <span class="ov-r mono">${fmtSize(g.totSz)}</span>
       <span class="ov-r mono">${price}</span>
       <span class="ov-r mono">$${fmtUSD(g.notional)}</span>
-      <span class="ov-r mono" style="color:var(--muted)">${away == null ? '—'
-        : (Math.abs(away) < 0.005 ? 'at mark' : (away > 0 ? '+' : '') + away.toFixed(2) + '%')}</span>
+      ${_gp == null
+        ? `<span class="ov-r mono" style="color:var(--muted)">${away == null ? '—'
+            : (Math.abs(away) < 0.005 ? 'at mark' : (away > 0 ? '+' : '') + away.toFixed(2) + '%')}</span>`
+        : `<span class="ov-r mono ${_gp >= 0 ? 'pos' : 'neg'}">${fmtPnL(_gp).text}<i class="ov-roe">if all fill</i></span>`}
       <span class="ov-r"><i class="ov-group-chev" id="ovoc-${gid}">${open ? '▾' : '▸'}</i></span>
     </div>
     <div class="ov-pos-group-body" id="ovog-${gid}" style="display:${open ? 'block' : 'none'}">
@@ -1187,7 +1204,7 @@ function _ovOrderRows(orders, allMids) {
     const isSl  = ot.startsWith('Stop') || o.triggerCondition === 'sl'
     const typeLabel = isTp ? 'TP' : isSl ? 'SL' : (isBuy ? 'BUY' : 'SELL')
     const typeCls   = isTp ? 'pos' : isSl ? 'neg' : (isBuy ? 'pos' : 'neg')
-    const estPnl    = _ovOrderEstPnl(o, allMids)
+    const estPnl    = _ovOrderEstPnl(o)
     const pnlHtml   = estPnl == null
       ? `<span class="ov-r mono" style="color:var(--muted)">—</span>`
       : `<span class="ov-r mono ${estPnl >= 0 ? 'pos' : 'neg'}">${fmtPnL(estPnl).text}</span>`

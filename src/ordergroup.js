@@ -100,6 +100,58 @@ export function aggregateOrderGroup(members) {
 }
 
 /**
+ * What this order books if it fills — or null, because it opens rather than closes.
+ *
+ * The old rule was "only if it is flagged Take Profit, Stop, or reduce-only". That misses the
+ * commonest closing order in this app: a grid's exit sells are plain limits with no flag on
+ * them at all, and they were showing no PnL while doing exactly what a take profit does.
+ *
+ * The honest question is not what the order is LABELLED, it is whether it REDUCES a position
+ * that exists. A sell against a long reduces it; a buy against a short reduces it; anything
+ * else is opening, and an opening order has no PnL to state because there is nothing to close
+ * against yet.
+ *
+ * An order can be both: sell 10 against a long of 6 closes 6 and opens 4 short. Only the
+ * closing part has a PnL, and the opening part is reported separately so the caller can say so
+ * rather than quoting a figure for the whole size.
+ *
+ * `sz` of 0 is HL's "close the whole position".
+ */
+export function expectedPnl(o, pos) {
+  if (!o || !pos) return null
+  const szi = parseFloat(pos.szi ?? 0)
+  const entry = parseFloat(pos.entryPx ?? 0)
+  const px = orderPx(o)
+  if (!szi || !(entry > 0) || !(px > 0)) return null
+
+  const long = szi > 0
+  // Opposite side, or it is adding to the position rather than taking it off.
+  if (long ? orderSide(o) !== 'sell' : orderSide(o) !== 'buy') return null
+
+  const held = Math.abs(szi)
+  const raw = Math.abs(parseFloat(o.sz ?? 0))
+  const want = raw > 0 ? raw : held
+  const closing = Math.min(want, held)
+  const opening = Math.max(0, want - held)
+  return {
+    pnl: (long ? px - entry : entry - px) * closing,
+    closing, opening, entry, px,
+  }
+}
+
+/** The group's total, over the members that actually close something. */
+export function groupExpectedPnl(members, pos) {
+  let total = 0, any = false
+  for (const o of members ?? []) {
+    const e = expectedPnl(o, pos)
+    if (!e) continue
+    any = true
+    total += e.pnl
+  }
+  return any ? total : null
+}
+
+/**
  * How far the nearest rung is from the mark, as a percentage. The group's headline distance:
  * of a whole ladder, the one that matters is the one about to fill.
  */
