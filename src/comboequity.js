@@ -77,6 +77,61 @@ export function bridgeCombined(snap, rows) {
 }
 
 /**
+ * How far a single row's total may move away from its perp move before it is read as an
+ * artifact rather than as money. Generous on purpose: spot token holdings do drift with the
+ * market between ticks, and absorbing real drift would be worse than letting a small one
+ * through.
+ */
+export const ARTIFACT_TOL = 5
+
+/**
+ * Re-anchor for changes that are NOT profit and loss.
+ *
+ * Bridging on each row's total fixed the spot/perp transfer, and introduced a second
+ * sensitivity: a row's accountValue is itself derived from a cached portfolio snapshot, so it
+ * also steps when that cache fills or refreshes — and when a position closes and the row is
+ * rebuilt. Caught in eqstep straight after the first fix:
+ *
+ *     05:17  step +156.15  basis=total  acctBase=5563.45  snapVal=5722.48  worstDelta=-0.97
+ *     05:17  step -157.47  basis=total  acctBase=5722.72  (re-anchored, back where it started)
+ *
+ * The total moved 159 while the perp side moved under a dollar, and the next snapshot put it
+ * straight back. That is the tell, and it is what separates the two cases: REAL profit moves a
+ * wallet's total and its perp equity together, because the position lives on the perp side. A
+ * row settling, a cache refreshing, or a close rebuilding the row moves the total ALONE.
+ *
+ * So each row's total move is compared against its own perp move, and the unexplained part is
+ * folded into the anchor instead of being published as a gain. It reaches the headline on the
+ * next server snapshot, which is the authority for anything that is not a price move.
+ */
+export function reanchor(prev, rows, acctBase) {
+  const base = parseFloat(acctBase)
+  if (!Number.isFinite(base) || !prev) return { acctBase, absorbed: 0, worst: null }
+  let absorbed = 0, worst = null, worstAbs = 0
+  for (const r of rows ?? []) {
+    const p = prev.get(r.addr)
+    if (!p) continue
+    const acct = parseFloat(r.accountValue), perp = parseFloat(r._perpLive)
+    if (![acct, perp, p.acct, p.perp].every(Number.isFinite)) continue
+    // The part of this wallet's move that its own perp equity does not explain.
+    const gap = (acct - p.acct) - (perp - p.perp)
+    if (Math.abs(gap) <= ARTIFACT_TOL) continue
+    absorbed += gap
+    if (Math.abs(gap) > worstAbs) { worstAbs = Math.abs(gap); worst = { addr: r.addr, gap } }
+  }
+  return { acctBase: base + absorbed, absorbed, worst }
+}
+
+/** The per-wallet pair the next comparison needs. */
+export function snapshotRows(rows) {
+  const m = new Map()
+  for (const r of rows ?? []) {
+    m.set(r.addr, { acct: parseFloat(r.accountValue), perp: parseFloat(r._perpLive) })
+  }
+  return m
+}
+
+/**
  * The rows' summed total at snapshot-adoption time, to be stored on the snapshot.
  *
  * Returned separately rather than folded into the snapshot by the server: the server knows the

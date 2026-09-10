@@ -231,7 +231,7 @@ import { BACKDROPS, backdropById, loadBackdrop, saveBackdrop, applyBackdrop,
 import { BOT_PRESETS, botPreset } from './botpresets.js'
 import { aggregatePosGroup, groupPositions, posHealthPct } from './posgroup.js'
 import { probeNavGeometry } from './navprobe.js'
-import { bridgeCombined, acctBaseFrom } from './comboequity.js'
+import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows } from './comboequity.js'
 
 /**
  * Brightness, as a layer over the app rather than a filter on <html>.
@@ -8117,6 +8117,7 @@ async function _fetchCombinedSnap(force = false) {
 // gain or loss. Holding the last good one keeps the headline on ONE basis.
 let _comboSrvLast = null   // { val, wallets }
 let _comboSrvParts = null  // the halves behind the last computed total, for _comboEqWatch
+let _comboPrevRows = null  // addr -> { acct, perp } from the previous tick, for reanchor()
 
 function _combinedServerValue() {
   if (!state.isAllAccounts || !_combinedSnap) return null
@@ -8125,6 +8126,12 @@ function _combinedServerValue() {
   // The snapshot covers a specific set of wallets; if the visible set has changed since,
   // the anchor no longer corresponds to it.
   if (rows.length !== _combinedSnap.wallets) return null
+  // Fold away any per-wallet move its own perp equity does not explain -- a row settling, a
+  // portfolio cache refreshing, a close rebuilding the row. See reanchor() for the evidence.
+  const _re = reanchor(_comboPrevRows, rows, _combinedSnap.acctBase)
+  if (_re.absorbed) _combinedSnap = { ..._combinedSnap, acctBase: _re.acctBase }
+  _comboPrevRows = snapshotRows(rows)
+
   const bridged = bridgeCombined(_combinedSnap, rows)
   if (!bridged) return null              // a row hasn't had a live tick yet — don't guess
   const { val, basis } = bridged
@@ -8137,6 +8144,7 @@ function _combinedServerValue() {
     livePerp, rows: rows.length, wallets: _combinedSnap.wallets,
     snapAt: Number(_combinedSnap.updatedAt ?? 0), rowsArr: rows,
     basis, acctBase: _combinedSnap.acctBase,
+    absorbed: _re.absorbed, absorbedBy: _re.worst ? String(_re.worst.addr).slice(0, 8) : '',
   }
   return val
 }
@@ -12287,7 +12295,7 @@ function _comboEqWatch(val, ctx) {
   // Which wallet moved most since the last sample, before this sample overwrites it.
   let worstAddr = '', worstDelta = 0, movedRows = 0
   for (const r of (ctx.rowsArr ?? [])) {
-    const now = parseFloat(r._perpLive)
+    const now = parseFloat(r.accountValue)
     if (!Number.isFinite(now)) continue
     const was = _eqPerpLast.get(r.addr)
     if (Number.isFinite(was) && Math.abs(now - was) > Math.abs(worstDelta)) {
@@ -12324,10 +12332,11 @@ function _comboEqWatch(val, ctx) {
         // the two causes above it was, which is the whole point of the record.
         message: `equity step ${step.toFixed(2)} (${prev.toFixed(2)} -> ${val.toFixed(2)}) ` +
                  `src=${ctx.src} snapMoved=${snapMoved ? 1 : 0}`,
-        stack: `basis=${ctx.basis} acctBase=${ctx.acctBase} ` +
+        stack: `basis=${ctx.basis} acctBase=${ctx.acctBase} ` +
                `snapVal=${ctx.snapVal} perpBase=${ctx.perpBase} livePerp=${ctx.livePerp} ` +
                `rows=${ctx.rows} wallets=${ctx.wallets} snapAge=${Math.round(ctx.age / 1000)}s ` +
-               `worstWallet=${worstAddr} worstDelta=${worstDelta.toFixed(2)} ` +
+               `worstWallet=${worstAddr} worstAcctDelta=${worstDelta.toFixed(2)} ` +
+               `absorbed=${(ctx.absorbed ?? 0).toFixed(2)} absorbedBy=${ctx.absorbedBy ?? ''} ` +
                `dtMs=${dt} moved=${ctx.movedRows ?? '?'}`,
         url: location.pathname,
       }),

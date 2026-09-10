@@ -14,7 +14,7 @@
 // which is what placing a position does — read as a loss for as long as the snapshot was
 // stale. Measuring it on each wallet's TOTAL makes that transfer net to zero inside the row.
 import fs from 'fs'
-import { bridgeCombined, acctBaseFrom } from '../../src/comboequity.js'
+import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, ARTIFACT_TOL } from '../../src/comboequity.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -95,6 +95,63 @@ console.log(nl + '-- the base is measured the same way as the delta --')
   t('an empty set sums to zero, not null', acctBaseFrom([]) === 0)
 }
 
+console.log(nl + '-- a move the perp side does not explain is not profit --')
+{
+  // Bridging on totals fixed the transfer and exposed a second sensitivity: a row's
+  // accountValue is itself derived from a cached portfolio snapshot, so it also steps when
+  // that cache fills, and when a close rebuilds the row. From eqstep, right after the first
+  // fix: +156.15 on the total while the perp side moved -0.97, put straight back by the next
+  // snapshot. Real profit moves both together, because the position lives on the perp side.
+  const prev = snapshotRows([row(3500, 3000), row(3500, 3000)].map((r, i) => ({ ...r, addr: 'w' + i })))
+  const R = (i, acct, perp) => ({ addr: 'w' + i, accountValue: acct, _perpLive: perp })
+
+  // A row settles 159 higher with its perp unmoved: absorbed into the anchor, not published.
+  {
+    const r = reanchor(prev, [R(0, 3659, 3000), R(1, 3500, 3000)], 7000)
+    t('the unexplained move is folded into the anchor', near(r.acctBase, 7159), String(r.acctBase))
+    t('and it is reported, with the wallet', near(r.absorbed, 159) && r.worst?.addr === 'w0', JSON.stringify(r.worst))
+    // Which is the whole point: bridged against the new anchor, the headline does not move.
+    t('so the headline stays put',
+      near(bridgeCombined({ ...SNAP, acctBase: r.acctBase }, [R(0, 3659, 3000), R(1, 3500, 3000)]).val, 7000))
+  }
+
+  // Real profit: total and perp move together, so nothing is absorbed.
+  {
+    const r = reanchor(prev, [R(0, 3550, 3050), R(1, 3500, 3000)], 7000)
+    t('a genuine gain is left alone', r.absorbed === 0 && near(r.acctBase, 7000), JSON.stringify(r))
+    t('and reaches the headline',
+      near(bridgeCombined({ ...SNAP, acctBase: r.acctBase }, [R(0, 3550, 3050), R(1, 3500, 3000)]).val, 7050))
+  }
+
+  // A closed position: the perp side is continuous (unrealised becomes realised) while the
+  // row is rebuilt and its total jumps by the notional. Absorbed.
+  {
+    const r = reanchor(prev, [R(0, 3500 - 394, 3000), R(1, 3500, 3000)], 7000)
+    t('a close does not move the equity', near(r.absorbed, -394) &&
+      near(bridgeCombined({ ...SNAP, acctBase: r.acctBase }, [R(0, 3106, 3000), R(1, 3500, 3000)]).val, 7000))
+  }
+
+  // Spot tokens do drift with the market between ticks; absorbing that would be worse than
+  // letting a small one through.
+  {
+    const r = reanchor(prev, [R(0, 3500 + ARTIFACT_TOL - 0.5, 3000), R(1, 3500, 3000)], 7000)
+    t('a small unexplained drift is left alone', r.absorbed === 0, String(r.absorbed))
+    t('the tolerance is generous on purpose, and says why', ARTIFACT_TOL >= 5 &&
+      fs.readFileSync('src/comboequity.js', 'utf8').includes('spot token holdings do drift'))
+  }
+
+  // Nothing to compare against yet, and rows that cannot answer.
+  {
+    t('the first tick absorbs nothing', reanchor(null, [R(0, 9999, 1)], 7000).absorbed === 0)
+    t('an unknown wallet is skipped', reanchor(prev, [R(9, 9999, 1)], 7000).absorbed === 0)
+    t('a row with no numbers is skipped',
+      reanchor(prev, [R(0, undefined, 3000)], 7000).absorbed === 0)
+    t('no anchor means nothing to re-anchor', reanchor(prev, [R(0, 3659, 3000)], null).absorbed === 0)
+  }
+
+  t('snapshotRows keys by wallet', snapshotRows([R(0, 1, 2)]).get('w0').acct === 1)
+}
+
 console.log(nl + '-- it is wired in --')
 {
   const CLI = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
@@ -105,6 +162,15 @@ console.log(nl + '-- it is wired in --')
   t('a refusal holds rather than guessing', CLI.includes('if (!bridged) return null'))
   // The watcher already reports the halves; it should say which bridge produced them.
   t('the eqstep record names the basis', CLI.includes('basis=${ctx.basis}'))
+  t('the bridge re-anchors before it publishes',
+    CLI.includes('const _re = reanchor(_comboPrevRows, rows, _combinedSnap.acctBase)') &&
+    CLI.includes('_comboPrevRows = snapshotRows(rows)'))
+  // The watcher was reading _perpLive, which stopped being the quantity the bridge rides on
+  // the moment it moved to totals -- which is why the log said worstDelta=-0.97 while the
+  // headline moved 156.
+  t('and the watcher measures what the bridge actually uses',
+    CLI.includes('const now = parseFloat(r.accountValue)') &&
+    CLI.includes('worstAcctDelta=') && CLI.includes('absorbed='))
   t('the reason lives with the code', fs.readFileSync('src/comboequity.js', 'utf8').includes('worstDelta=-240.08'))
 }
 
