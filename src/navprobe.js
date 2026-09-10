@@ -68,6 +68,57 @@ const rect = (el) => {
 }
 
 /**
+ * Is the layout viewport actually the screen?
+ *
+ * This is the reading everything else has been standing in for. `screen.height` is the
+ * device's own CSS height; `innerHeight` is what the page was given. If the page is SHORTER,
+ * then `position: fixed; bottom: 0` cannot reach the bottom of the screen and no amount of
+ * CSS will make it — the fix would be in the viewport meta or the installed web-app metadata,
+ * not in a stylesheet. Three attempts have now assumed these are the same number.
+ */
+function screenFacts() {
+  const s = window.screen || {}
+  return `screen=${s.width}x${s.height} avail=${s.availWidth}x${s.availHeight}` +
+    ` inner=${window.innerWidth}x${window.innerHeight}` +
+    ` shortBy=${Math.round((s.height || 0) - window.innerHeight)}` +
+    ` orient=${(s.orientation && s.orientation.type) || '?'}`
+}
+
+/**
+ * The bar again, once the shell has settled and once more after the first scroll. Sent as its
+ * own record so the two can be read against the opening one.
+ */
+function scheduleLateSample(nav) {
+  let done = false
+  const send = (why) => {
+    if (done) return
+    done = true
+    try {
+      const r = rect(nav)
+      const gap = Math.round(window.innerHeight - (r?.b ?? 0))
+      fetch('/api/error', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+        body: JSON.stringify({
+          kind: KIND,
+          message: `LATE (${why}) nav ${r?.t}..${r?.b} h=${r?.h}, ${gap}px above viewport bottom`,
+          stack: `${screenFacts()} | navRect=${JSON.stringify(r)} | ` +
+                 `parent=${nav.parentElement?.tagName}#${nav.parentElement?.id || ''} | ` +
+                 `pos=${getComputedStyle(nav).position} | scrollY=${window.scrollY} | ` +
+                 `mobViewScrollTop=${document.querySelector('.mob-view')?.scrollTop ?? '-'} | ` +
+                 `contentScrollTop=${document.getElementById('mobVContent')?.scrollTop ?? '-'}`,
+          url: location.pathname,
+        }),
+      }).catch(() => {})
+    } catch {}
+  }
+  // Whichever comes first: a real scroll settling, or five seconds of sitting still.
+  const onScroll = () => { clearTimeout(t2); t2 = setTimeout(() => send('after scroll'), 700) }
+  let t2 = setTimeout(() => send('settled'), 5000)
+  window.addEventListener('scroll', onScroll, { passive: true, capture: true })
+  setTimeout(() => window.removeEventListener('scroll', onScroll, { capture: true }), 30000)
+}
+
+/**
  * Measure and send, once. Called after the mobile shell has painted; a second call is a no-op
  * so a re-render cannot spam the log.
  */
@@ -78,6 +129,11 @@ export function probeNavGeometry() {
     const nav = document.querySelector('.mob-v-bottom')
     if (!nav || !nav.offsetParent && getComputedStyle(nav).display === 'none') return null
     sent = true
+    // A second reading once things have settled, and a third after the first real scroll.
+    // The 400ms sample has said "flush with the bottom" twice while the phone showed a gap,
+    // so either the layout moves afterwards or the viewport is not the screen. Both readings
+    // go in one record rather than three, so they can be compared.
+    scheduleLateSample(nav)
 
     const ins = readInsets()
     const navR = rect(nav)
@@ -94,6 +150,7 @@ export function probeNavGeometry() {
       ` (nav ${navR?.t}..${navR?.b} h=${navR?.h}, vh=${Math.round(vv?.height ?? window.innerHeight)})`
 
     const stack = [
+      screenFacts(),
       `insets t=${ins.top} b=${ins.bottom} l=${ins.left} r=${ins.right}`,
       `innerH=${window.innerHeight} vvH=${Math.round(vv?.height ?? 0)} vvTop=${Math.round(vv?.offsetTop ?? 0)} vvScale=${(vv?.scale ?? 1).toFixed(2)}`,
       `docEl client=${de.clientHeight} scroll=${de.scrollHeight} rect=${Math.round(de.getBoundingClientRect().height)}`,
