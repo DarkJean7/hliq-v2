@@ -2,6 +2,7 @@
 // (server) and checks the property that matters: two devices with DIFFERENT local caches
 // must produce the SAME combined equity.
 import fs from 'fs'
+import { bridgeCombined } from '../../src/comboequity.js'
 
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 const srv = fs.readFileSync('server.js', 'utf8').replace(/\r\n/g, '\n')
@@ -21,14 +22,16 @@ const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, co
 const near = (a, b, e = 1e-6) => Math.abs(a - b) < e
 
 // ── client: _combinedServerValue ─────────────────────────────────────────────
-const mkClient = (snap, rows, hidden = []) => new Function('SNAP', 'ROWS', 'HIDDEN', `
+// bridgeCombined is a real dependency of _combinedServerValue now, so the sandbox is handed
+// the real one rather than a stand-in — a stub here would test the stub.
+const mkClient = (snap, rows, hidden = []) => new Function('SNAP', 'ROWS', 'HIDDEN', 'bridgeCombined', `
   const state = { isAllAccounts: true }
   let _combinedSnap = SNAP
   const _allAcctLastResults = ROWS
   const _maHiddenLoad = () => new Set(HIDDEN)
   ${grab(cli, 'function _combinedServerValue(')}
   return _combinedServerValue()
-`)(snap, rows, hidden)
+`)(snap, rows, hidden, bridgeCombined)
 
 const SNAP = { accountValue: 3400, perpBase: 3000, dayAgo: 3250, wallets: 3, updatedAt: 1 }
 const rows = (perps) => perps.map((p, i) => ({ addr: '0x' + i, error: null, _perpLive: p }))

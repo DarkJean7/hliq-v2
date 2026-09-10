@@ -231,6 +231,7 @@ import { BACKDROPS, backdropById, loadBackdrop, saveBackdrop, applyBackdrop,
 import { BOT_PRESETS, botPreset } from './botpresets.js'
 import { aggregatePosGroup, groupPositions, posHealthPct } from './posgroup.js'
 import { probeNavGeometry } from './navprobe.js'
+import { bridgeCombined, acctBaseFrom } from './comboequity.js'
 
 /**
  * Brightness, as a layer over the app rather than a filter on <html>.
@@ -8096,7 +8097,14 @@ async function _fetchCombinedSnap(force = false) {
       const d = await r.json()
       // Only adopt a snapshot that covers EVERY wallet. A partial one would understate the
       // total and read as a real loss — the same trap the per-wallet merge already guards.
-      if (d && d.wallets === addrs.length && d.accountValue > 0) { _combinedSnap = d; _combinedAt = Date.now() }
+      if (d && d.wallets === addrs.length && d.accountValue > 0) {
+        // What the rows themselves add up to RIGHT NOW. The bridge below carries the snapshot
+        // forward by the change in this, not by the change in perp equity alone -- see
+        // comboequity.js. Null when a row cannot answer yet, and then the perp bridge is used.
+        const visible = (_allAcctLastResults ?? []).filter(r => r && !r.error && !hidden.has(r.addr))
+        _combinedSnap = { ...d, acctBase: visible.length === addrs.length ? acctBaseFrom(visible) : null }
+        _combinedAt = Date.now()
+      }
     }
   } catch {} finally { _combinedFetching = false }
 }
@@ -8117,13 +8125,10 @@ function _combinedServerValue() {
   // The snapshot covers a specific set of wallets; if the visible set has changed since,
   // the anchor no longer corresponds to it.
   if (rows.length !== _combinedSnap.wallets) return null
-  let livePerp = 0
-  for (const r of rows) {
-    const p = parseFloat(r._perpLive)
-    if (!Number.isFinite(p)) return null   // a row hasn't had a live tick yet — don't guess
-    livePerp += p
-  }
-  const val = _combinedSnap.accountValue + (livePerp - _combinedSnap.perpBase)
+  const bridged = bridgeCombined(_combinedSnap, rows)
+  if (!bridged) return null              // a row hasn't had a live tick yet — don't guess
+  const { val, basis } = bridged
+  const livePerp = rows.reduce((a, r) => a + (parseFloat(r._perpLive) || 0), 0)
   _comboSrvLast = { val, wallets: rows.length, at: Date.now() }
   // Kept for the step watcher: it must report the halves that produced the number ON
   // SCREEN, not a fresh recomputation that may already disagree with it.
@@ -8131,6 +8136,7 @@ function _combinedServerValue() {
     snapVal: _combinedSnap.accountValue, perpBase: _combinedSnap.perpBase,
     livePerp, rows: rows.length, wallets: _combinedSnap.wallets,
     snapAt: Number(_combinedSnap.updatedAt ?? 0), rowsArr: rows,
+    basis, acctBase: _combinedSnap.acctBase,
   }
   return val
 }
@@ -12318,7 +12324,8 @@ function _comboEqWatch(val, ctx) {
         // the two causes above it was, which is the whole point of the record.
         message: `equity step ${step.toFixed(2)} (${prev.toFixed(2)} -> ${val.toFixed(2)}) ` +
                  `src=${ctx.src} snapMoved=${snapMoved ? 1 : 0}`,
-        stack: `snapVal=${ctx.snapVal} perpBase=${ctx.perpBase} livePerp=${ctx.livePerp} ` +
+        stack: `basis=${ctx.basis} acctBase=${ctx.acctBase} ` +
+               `snapVal=${ctx.snapVal} perpBase=${ctx.perpBase} livePerp=${ctx.livePerp} ` +
                `rows=${ctx.rows} wallets=${ctx.wallets} snapAge=${Math.round(ctx.age / 1000)}s ` +
                `worstWallet=${worstAddr} worstDelta=${worstDelta.toFixed(2)} ` +
                `dtMs=${dt} moved=${ctx.movedRows ?? '?'}`,
