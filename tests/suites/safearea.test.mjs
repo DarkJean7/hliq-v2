@@ -28,6 +28,14 @@ console.log(nl + '-- the insets are switched on at all --')
 // env() silently returns 0 without this, which is why 19 uses of it sat dead in this file and
 // the header carried a hardcoded 52px instead.
 t('viewport-fit=cover is set', /viewport-fit\s*=\s*cover/.test(HTML))
+// And it must be the ONLY mechanism. `black-translucent` is the legacy way to draw under the
+// status bar; with both, iOS starts the web view at y=0 but keeps its HEIGHT at screen minus
+// the status bar. Measured on the phone: screen=402x874 inner=402x812 shortBy=62, exactly the
+// top inset, so the bottom strip of the screen was outside the document and no stylesheet
+// could reach it. Three CSS fixes chased a bar that `bottom: 0` had placed correctly.
+t('and it is not fighting the legacy status-bar meta',
+  !/apple-mobile-web-app-status-bar-style/.test(HTML.replace(/<!--[\s\S]*?-->/g, '')))
+t('with the measurement that proved it recorded', HTML.includes('shortBy=62'))
 
 console.log(nl + '-- the bottom bar grows by the inset instead of eating it --')
 const bar = blockAt('.mob-v-bottom {')

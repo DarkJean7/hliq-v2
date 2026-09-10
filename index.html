@@ -42,7 +42,18 @@
   <meta name="theme-color" content="#0a0a0f"/>
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <!-- NO apple-mobile-web-app-status-bar-style here, and it must not come back.
+       `black-translucent` is the legacy way to draw under the status bar; viewport-fit=cover
+       above is the modern one. With BOTH, iOS starts the web view at y=0 — so the wallpaper
+       reaches the clock, which looked right — but keeps its HEIGHT at screen minus the status
+       bar. Measured on the phone (navprobe, kind=navgeom):
+
+           screen=402x874  inner=402x812  shortBy=62  standalone=true
+           insets t=62 b=34   nav 706..812   0px above the viewport bottom
+
+       The bar was exactly where `bottom: 0` put it. The page was 62px shorter than the screen,
+       62 being the status-bar inset, so the bottom strip was outside the document and no
+       stylesheet could reach it. Three CSS fixes chased a bar that was never misplaced. -->
   <meta name="apple-mobile-web-app-title" content="Insolvent Trade"/>
   <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=5"/>
   <link rel="icon" type="image/png" href="/favicon.png?v=5"/>
