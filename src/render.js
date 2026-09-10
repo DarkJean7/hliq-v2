@@ -3,6 +3,7 @@ import { pairTrades, drawdownFor } from './drawdown.js'
 import { aggregateFillsByCoin, coinLabel } from './api.js'
 import { renderOverviewChart } from './charts.js'
 import { aggregatePosGroup, groupPositions, posHealthPct, posSideOf } from './posgroup.js'
+import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL } from './ordergroup.js'
 
 // Outcome-aware coin label: resolves prediction-market "#N"/"+N" codes to their
 // market name + side via main.js's ocTokenMap (window._ocCoinLabel). Falls back to
@@ -1116,7 +1117,54 @@ function _ovBuildOrdBody(orders, allMids) {
     ${_OV_ORD_COLS.map(([k, l, r]) => `<span class="ov-sort${r ? ' ov-r' : ''}" onclick="window.__ovSortOrd('${k}')">${l}${_ovSortArr(k, _ovOrdSortKey, _ovOrdSortDir)}</span>`).join('')}
     <span class="ov-r"></span>
   </div>`
-  return `${head}<div class="ov-pos-scroll">${_ovOrderRows(sorted, allMids)}</div>`
+  // Fold a ladder: a grid's twelve buys on one coin are one thing to understand. Grouped by
+  // coin + side + KIND, so a take profit is never folded in with a resting limit.
+  const rows = groupOrders(sorted)
+    .map(g => g.length > 1 ? _ovMergedOrdRow(aggregateOrderGroup(g), allMids) : _ovOrderRows([g[0]], allMids))
+    .join('')
+  return `${head}<div class="ov-pos-scroll">${rows}</div>`
+}
+
+const _ovOrdOpen = new Set()      // group ids whose member rows are showing
+const _ovOgid = (g) => `${String(g.coin).replace(/[^a-z0-9]/gi, '_')}-${g.side}-${g.kind}`
+
+window.__ovToggleOrdGroup = function(gid) {
+  const el = document.getElementById('ovog-' + gid)
+  const open = !_ovOrdOpen.has(gid)
+  if (open) _ovOrdOpen.add(gid); else _ovOrdOpen.delete(gid)
+  if (el) el.style.display = open ? 'block' : 'none'
+  const chev = document.getElementById('ovoc-' + gid)
+  if (chev) chev.textContent = open ? '▾' : '▸'
+}
+
+/** One row for several orders of the same coin, side and kind. */
+function _ovMergedOrdRow(g, allMids) {
+  const gid  = _ovOgid(g)
+  const open = _ovOrdOpen.has(gid)
+  const buy  = g.side === 'buy'
+  const cls  = g.kind === 'tp' ? 'pos' : g.kind === 'sl' ? 'neg' : (buy ? 'pos' : 'neg')
+  const tag  = g.kind === 'tp' ? 'TP' : g.kind === 'sl' ? 'SL' : (buy ? 'BUY' : 'SELL')
+  const away = nearestAwayPct(g, parseFloat(allMids?.[g.coin] ?? 0))
+  const price = g.spread
+    ? `$${fmtPrice(g.loPx)}<i class="ov-roe">to $${fmtPrice(g.hiPx)}</i>`
+    : `$${fmtPrice(g.avgPx)}`
+  return `<div class="ov-pos-item ov-pos-group">
+    <div class="ov-ord-row ov-pos-grouprow" style="cursor:pointer" onclick="window.__ovToggleOrdGroup('${gid}')">
+      <span class="ov-pos-mkt">${_ovCoinIcon(g.coin)}<span class="ov-pos-info"><b>${esc(_lbl(g.coin))}</b><i>×${g.n} ${
+        (ORDER_KIND_LABEL[g.kind] ?? g.kind).toLowerCase()}${g.accounts.length > 1 ? ` · ${g.accounts.length} accounts` : ''}</i></span></span>
+      <span class="ov-side-badge ${cls}">${tag}</span>
+      <span class="ov-r mono">${fmtSize(g.totSz)}</span>
+      <span class="ov-r mono">${price}</span>
+      <span class="ov-r mono">$${fmtUSD(g.notional)}</span>
+      <span class="ov-r mono" style="color:var(--muted)">${away == null ? '—'
+        : (Math.abs(away) < 0.005 ? 'at mark' : (away > 0 ? '+' : '') + away.toFixed(2) + '%')}</span>
+      <span class="ov-r"><i class="ov-group-chev" id="ovoc-${gid}">${open ? '▾' : '▸'}</i></span>
+    </div>
+    <div class="ov-pos-group-body" id="ovog-${gid}" style="display:${open ? 'block' : 'none'}">
+      <div class="ov-group-note">${g.n} orders · ${g.spread ? 'a ladder from $' + fmtPrice(g.loPx) + ' to $' + fmtPrice(g.hiPx) : 'all at one price'}</div>
+      ${_ovOrderRows(g.members, allMids)}
+    </div>
+  </div>`
 }
 
 window.__ovSortOrd = function(key) {

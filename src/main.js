@@ -230,6 +230,7 @@ import { BACKDROPS, backdropById, loadBackdrop, saveBackdrop, applyBackdrop,
          loadBackdropDim, saveBackdropDim, readBackdropFile, restoreTheme } from './theme.js'
 import { BOT_PRESETS, botPreset } from './botpresets.js'
 import { aggregatePosGroup, groupPositions, posHealthPct } from './posgroup.js'
+import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL } from './ordergroup.js'
 import { probeNavGeometry } from './navprobe.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows } from './comboequity.js'
 
@@ -10850,6 +10851,69 @@ function _mobVMergedPosCard(members) {
 }
 
 /**
+ * Summary card for several ORDERS of the same coin, side and kind — a grid's ladder, folded.
+ *
+ * The headline figures are the ones you would work out by hand from twelve rows: how many,
+ * how much in total, and over what price range. The range is the shape of the ladder, so it
+ * leads; a stack of orders all at one price shows the single price instead, because
+ * "$0.21 – $0.21" reads as a bug rather than a fact.
+ *
+ * Expands to the individual order cards, unchanged, so Edit and Cancel still reach one order.
+ */
+function _mobVMergedOrdCard(members) {
+  const g       = aggregateOrderGroup(members)
+  const buy     = g.side === 'buy'
+  const sideCls = buy ? 'pos' : 'neg'
+  const label   = `${buy ? _T('Buy', 'Compra') : _T('Sell', 'Venta')} · ${
+    ORDER_KIND_LABEL[g.kind] ?? g.kind}`
+  const mark    = parseFloat(state.allMids?.[g.coin] ?? 0)
+  const away    = nearestAwayPct(g, mark)
+  const gid     = _mobVGid(g.coin, g.side + '-' + g.kind)
+  const id      = `ordg-${gid}`
+  const xp      = _mobVExpandedIds.has(id)
+  const chev    = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>`
+  const priceTxt = g.spread
+    ? `$${fmtPrice(g.loPx)} – $${fmtPrice(g.hiPx)}`
+    : (g.avgPx > 0 ? '$' + fmtPrice(g.avgPx) : '—')
+  return `<div>
+    <div class="mob-v-row" style="cursor:pointer" onclick="window._mobVToggleRow('${id}')">
+      ${_mobVCoinIcon(g.coin)}
+      <div class="mob-v-row-info">
+        <div class="mob-v-row-name">${esc(_ocCoinLabel(g.coin))}</div>
+        <div class="mob-v-row-sub ${sideCls}">${label} <span class="notranslate">×${g.n}</span>${
+          g.accounts.length > 1 ? `<span style="color:var(--accent)"> · ${g.accounts.length} ${_T('accounts', 'cuentas')}</span>`
+          : g.accounts.length === 1 ? `<span style="color:var(--accent)"> · ${esc(g.accounts[0])}</span>` : ''}</div>
+      </div>
+      <div style="flex-shrink:0;width:98px;display:flex;flex-direction:column">
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;line-height:1.2;text-align:center">${
+          g.spread ? _T('Range', 'Rango') : _T('Price', 'Precio')}</div>
+        <div style="font-size:12px;font-weight:500;color:var(--fg);line-height:1.3;margin-top:2px;white-space:nowrap;text-align:center;overflow:hidden;text-overflow:ellipsis">${priceTxt}</div>
+        ${away == null ? '' : `<div style="font-size:10px;color:var(--muted);line-height:1.3;text-align:center;white-space:nowrap">${
+          Math.abs(away) < 0.005 ? _T('at mark', 'en precio')
+            : (away > 0 ? '+' : '') + away.toFixed(Math.abs(away) < 1 ? 2 : 1) + _T('% nearest', '% el más cerca')}</div>`}
+      </div>
+      <div class="mob-v-row-right" style="width:86px;flex-shrink:0;flex-grow:0">
+        <div class="mob-v-row-val">${fmtSize(g.totSz)}</div>
+        <div class="mob-v-row-pct" style="color:var(--muted)">${esc(_ocCoinLabel(g.coin))}</div>
+      </div>
+      ${chev}
+    </div>
+    <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">
+      ${_mobVDetailGrid([
+        [_T('Orders', 'Órdenes'), String(g.n)],
+        [_T('Total size', 'Tamaño total'), fmtSize(g.totSz) + ' ' + esc(_ocCoinLabel(g.coin))],
+        [_T('Total value', 'Valor total'), _prv('$' + fmtUSD(g.notional))],
+        [_T('Avg price', 'Precio medio'), g.avgPx > 0 ? '$' + fmtPrice(g.avgPx) : '—'],
+        ...(g.spread ? [[_T('Range', 'Rango'), `$${fmtPrice(g.loPx)} – $${fmtPrice(g.hiPx)}`]] : []),
+      ])}
+      <div style="padding:9px 16px 4px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;background:var(--panel-2)">${
+        g.n} ${_T('orders', 'órdenes')} · ${_T('tap any to manage', 'toca cualquiera para gestionar')}</div>
+      ${members.map(m => m.__html).join('')}
+    </div>
+  </div>`
+}
+
+/**
  * The badge for a grouped card: the union across the accounts in the group, with a count
  * when the bot is not on all of them. Four wallets holding the same coin and one grid bot
  * running is "Grid Bot 1/4", not "Grid Bot" -- the second reads as all four being managed.
@@ -17471,7 +17535,7 @@ function _mobVRenderContent(tick = false) {
             ${_pill('Cancel All', 'window._mobVCancelAll()', '#ff4d6d')}
           </div>
         </div>`
-    el.innerHTML = ordSortBar + orders.map((o, i) => {
+    const _ordCards = orders.map((o, i) => {
       const side      = o.side === 'B' ? 'Buy' : 'Sell'
       const sideCls   = o.side === 'B' ? 'pos' : 'neg'
       const isTrigger = o.isTrigger || parseFloat(o.triggerPx ?? 0) > 0
@@ -17485,7 +17549,7 @@ function _mobVRenderContent(tick = false) {
       const sel       = _mobVOrdSel.has(o.oid)
       const checkbox  = `<span style="width:20px;height:20px;flex-shrink:0;border-radius:6px;border:2px solid ${sel ? 'var(--accent)' : 'var(--border2)'};background:${sel ? 'var(--accent)' : 'transparent'};display:flex;align-items:center;justify-content:center;color:#000;font-size:13px;font-weight:800">${sel ? '✓' : ''}</span>`
       const rowClick  = _mobVOrdSelMode ? `window._mobVToggleOrdSel(${o.oid})` : `window._mobVToggleRow('${id}')`
-      return `<div>
+      const __html = `<div>
         <div class="mob-v-row" style="cursor:pointer" onclick="${rowClick}">
           ${_mobVOrdSelMode ? checkbox : _mobVCoinIcon(o.coin)}
           <div class="mob-v-row-info">
@@ -17571,7 +17635,16 @@ function _mobVRenderContent(tick = false) {
           </div>
         </div>
       </div>`
-    }).join('')
+      return { ...o, __html }
+    })
+    // A grid rests a ladder: twelve buys on one coin at twelve prices. Folded, that is one
+    // thing to read instead of twelve. NOT while selecting, though -- select mode exists to
+    // tick individual orders, and a fold would put them out of reach.
+    el.innerHTML = ordSortBar + (_mobVOrdSelMode
+      ? _ordCards.map(c => c.__html).join('')
+      : groupOrders(_ordCards)
+          .map(g => g.length > 1 ? _mobVMergedOrdCard(g) : g[0].__html)
+          .join(''))
     return
   }
 
