@@ -7545,6 +7545,32 @@ html.has-bg-image .sheet-over {
   background-attachment: scroll, fixed, fixed !important;
 }
 
+/* The two DRAWERS — the wallet switcher and the More panel — reported as "too transparent
+   making the info difficult to read".
+   Both paint var(--bg2), and --bg2 is var(--panel), which theme.js drops to 55% alpha while a
+   photo is set. Right for a card sitting in the page; wrong for a drawer, which slides OVER
+   the app: the equity card, the position rows and their colours all read straight through the
+   menu items.
+   These are navigation chrome and their whole job is to be read, so they get the sheet stack
+   plus one more scrim. The wallpaper is still there underneath, at roughly a sixth of its
+   strength instead of a half. `scroll` throughout: neither box is the viewport (one is 72%
+   wide, the other 82vh tall) and iOS sizes `fixed` against the document. */
+html.has-bg-image .mob-wallet-drawer { --drawer-tint: var(--panel); }
+html.has-bg-image .mob-more-drawer   { --drawer-tint: var(--bg2); }
+html.has-bg-image .mob-wallet-drawer,
+html.has-bg-image .mob-more-drawer {
+  background-color: var(--bg) !important;
+  background-image:
+    linear-gradient(var(--drawer-tint), var(--drawer-tint)),
+    linear-gradient(rgba(0, 0, 0, .55), rgba(0, 0, 0, .55)),
+    linear-gradient(rgba(0, 0, 0, var(--app-bg-dim, .62)), rgba(0, 0, 0, var(--app-bg-dim, .62))),
+    var(--app-bg-image) !important;
+  background-size: auto, auto, cover, cover !important;
+  background-position: center, center, center, center !important;
+  background-repeat: no-repeat, no-repeat, no-repeat, no-repeat !important;
+  background-attachment: scroll, scroll, scroll, scroll !important;
+}
+
 /* An expanded outcome card is only an OVERLAY on mobile, where it is inset:0 over the list.
    On desktop it is a 440px card centred over the page, and giving that the same
    viewport-aligned photo would align it exactly with the wallpaper behind and leave nothing

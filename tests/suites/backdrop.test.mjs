@@ -132,6 +132,31 @@ for (const [what, sel, where] of [
   ['sub-sheets', '.sub-sheet', overlays],
 ]) t(`${what} shows the photo`, where.includes(sel), sel)
 
+console.log(nl + '-- drawers slide OVER the app, so they are heavier than a card --')
+{
+  // Reported: "this panel and side panel are too transparent making the info difficult to
+  // read". Both paint var(--bg2), which is var(--panel), which theme.js drops to 55% alpha
+  // while a photo is set -- right for a card in the page, wrong for navigation chrome sliding
+  // over it. The equity card and the position rows read straight through the menu items.
+  const drawers = blockAt('html.has-bg-image .mob-wallet-drawer,')
+  t('there is a drawer rule', drawers.length > 0)
+  t('it covers both of them',
+    drawers.includes('.mob-wallet-drawer') && drawers.includes('.mob-more-drawer'))
+  t('with an opaque ground', drawers.includes('background-color: var(--bg) !important'))
+  t('the wallpaper is still under there', drawers.includes('var(--app-bg-image)'))
+  // The extra scrim is what separates a drawer from a sheet: a sheet keeps the photo at half
+  // strength, a drawer knocks it down to roughly a sixth so the labels win.
+  t('and an EXTRA scrim a sheet does not have',
+    (drawers.match(/linear-gradient\(rgba\(0, 0, 0/g) ?? []).length === 2)
+  t('each keeps its own tint rather than being flattened to one colour',
+    CSS.includes('--drawer-tint: var(--panel)') && CSS.includes('--drawer-tint: var(--bg2)'))
+  // Neither box is the viewport, and iOS sizes `fixed` attachment against the document.
+  t('every layer scrolls with the box, for the iOS reason above',
+    /\.mob-more-drawer \{[\s\S]{0,700}background-attachment: scroll, scroll, scroll, scroll/.test(CSS) ||
+    drawers.includes('background-attachment: scroll, scroll, scroll, scroll'))
+  t('why is written down', CSS.includes('too transparent'))
+}
+
 console.log(nl + '-- and the deliberate exceptions carry their reason --')
 for (const [sel, why] of Object.entries(SOLID_ON_PURPOSE)) {
   if (sel === '.pin-modal-input' || sel === '.oc-card-close') continue   // controls, not containers
