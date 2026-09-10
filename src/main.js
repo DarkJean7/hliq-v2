@@ -23037,14 +23037,25 @@ function _previewChartHtml(plan, full = false) {
    * the figure a take profit rather than a band spanning two levels — drawn between them it
    * read as an unrealised amount, which is what was reported.
    *
-   * The far end of the ladder has no pair to book against and gets nothing, which is correct
-   * rather than a gap: the lowest level of a long grid is only ever an entry.
+   * And only on a level that is ACTUALLY AN EXIT RIGHT NOW. Hanging it on the exit rung of
+   * every pair put a TP on the buys below the mark, which is what the grid opens with -- a buy
+   * books nothing. It would earn that figure later, once it has filled and flipped to a sell,
+   * but a resting entry order labelled with a take profit reads as a promise it is not making.
+   * So the buys show none, the sells show what each one closes for, and the range's whole
+   * economics stay in the sweep total under the ladder.
+   *
+   * The far end has no pair to book against either, which is the same rule rather than an
+   * exception: the lowest level of a long grid is only ever an entry.
    */
   const _longGrid = _gridEntrySide(plan) === 'buy'
+  const _exitSide = _longGrid ? 'sell' : 'buy'
   const _tpOn = new Map()
   for (let i = 0; i < _byPx.length - 1; i++) {
     const cyc = _rungCycle(_byPx[i], _byPx[i + 1])
-    if (cyc) _tpOn.set(_longGrid ? _byPx[i + 1] : _byPx[i], cyc)
+    if (!cyc) continue
+    const booksIt = _longGrid ? _byPx[i + 1] : _byPx[i]
+    if (booksIt.side !== _exitSide) continue     // still an entry; it closes nothing yet
+    _tpOn.set(booksIt, cyc)
   }
   const pxs = orders.map(o => +o.px).concat(+plan.markPx)
   const lo = Math.min(...pxs), hi = Math.max(...pxs)
@@ -23099,10 +23110,10 @@ function _previewChartHtml(plan, full = false) {
   // screen says otherwise, and this one is a round trip against a second level.
   const _legend = `<div style="font-size:10px;color:var(--fg-3);line-height:1.5;margin-top:4px">${
     _longGrid
-      ? _T('<b style="color:var(--green)">TP</b> is what that level takes when it fills — bought one level lower, sold here, after fees. The lowest level is only ever an entry, so it has none.',
-           '<b style="color:var(--green)">TP</b> es lo que toma ese nivel al ejecutarse — comprado un nivel más abajo y vendido aquí, tras comisiones. El nivel más bajo solo es entrada, así que no tiene.')
-      : _T('<b style="color:var(--green)">TP</b> is what that level takes when it fills — sold one level higher, bought back here, after fees. The highest level is only ever an entry, so it has none.',
-           '<b style="color:var(--green)">TP</b> es lo que toma ese nivel al ejecutarse — vendido un nivel más arriba y recomprado aquí, tras comisiones. El nivel más alto solo es entrada, así que no tiene.')}</div>`
+      ? _T('<b style="color:var(--green)">TP</b> is what that <b>sell</b> books when it fills — bought one level lower, sold there, after fees. The buys open the position, so they book nothing and show none.',
+           '<b style="color:var(--green)">TP</b> es lo que cierra esa <b>venta</b> al ejecutarse — comprado un nivel más abajo y vendido ahí, tras comisiones. Las compras abren la posición, así que no cierran nada y no muestran ninguno.')
+      : _T('<b style="color:var(--green)">TP</b> is what that <b>buy</b> books when it fills — sold one level higher, bought back there, after fees. The sells open the position, so they book nothing and show none.',
+           '<b style="color:var(--green)">TP</b> es lo que cierra esa <b>compra</b> al ejecutarse — vendido un nivel más arriba y recomprado ahí, tras comisiones. Las ventas abren la posición, así que no cierran nada y no muestran ninguna.')}</div>`
   const _foot = _legend + `<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:6px;font-size:10.5px;color:var(--fg-3);line-height:1.5">
       <span>${_T('One full sweep of the range', 'Un barrido completo del rango')}: <b style="color:var(--green)">+$${fmtUSD(_sweep)}</b></span>
       ${full ? '' : `<button onclick="event.stopPropagation();window.__gridLadderExpand()" style="flex-shrink:0;background:var(--panel-3);border:1px solid var(--border2);border-radius:7px;color:var(--fg-2);font-family:inherit;font-size:10.5px;font-weight:700;padding:3px 9px;cursor:pointer">${

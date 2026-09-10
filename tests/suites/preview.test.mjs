@@ -194,7 +194,15 @@ console.log('\n── the figure is a TAKE PROFIT, on the level that books it �
   // Which end of the pair that is depends on the direction: buy low / sell high on a long
   // grid, sell high / buy back low on a short one.
   t('the exit end depends on which way the grid faces',
-    lad.includes('_tpOn.set(_longGrid ? _byPx[i + 1] : _byPx[i], cyc)'))
+    lad.includes('const booksIt = _longGrid ? _byPx[i + 1] : _byPx[i]'))
+  // Reported after the first move: "why the buy orders that appear below mark price also
+  // include for some reason tp, when in those is just opening a position". Hanging it on the
+  // exit rung of every PAIR still put a figure on the buys, because a buy below the mark is
+  // the upper rung of the pair beneath it — a TP it would only earn after filling and
+  // flipping. A resting entry labelled with a take profit promises something it is not doing.
+  t('and the level must be an exit RIGHT NOW, not one day',
+    lad.includes("const _exitSide = _longGrid ? 'sell' : 'buy'") &&
+    lad.includes('if (booksIt.side !== _exitSide) continue'))
   t('and the direction comes from a shared reading of the plan',
     lad.includes("_gridEntrySide(plan) === 'buy'") &&
     cli.includes('function _gridEntrySide(plan)'))
@@ -222,7 +230,10 @@ console.log('\n── the figure is a TAKE PROFIT, on the level that books it �
   t('the far end of the ladder correctly has none',
     lad.includes('for (let i = 0; i < _byPx.length - 1; i++)') && lad.includes('is only ever an entry'))
   t('and said in words under the ladder, both directions',
-    lad.includes('bought one level lower, sold here') && lad.includes('sold one level higher, bought back here'))
+    lad.includes('bought one level lower, sold there') && lad.includes('sold one level higher, bought back there'))
+  t('naming the side that books it and the side that does not',
+    lad.includes('is what that <b>sell</b> books') && lad.includes('is what that <b>buy</b> books') &&
+    (lad.match(/open the position, so they book nothing/g) ?? []).length === 2)
   // The sweep total must come from the same map, or the rows and the total can drift.
   t('the sweep total adds up the same figures', lad.includes('[..._tpOn.values()].reduce((a, c) => a + c.net, 0)'))
   t('the ladder is back to its compact spacing', lad.includes("orders.length * (full ? 40 : 26)"))
