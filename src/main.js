@@ -22984,6 +22984,28 @@ const _GRID_MAKER_FEE = 0.00015
  * "if every level fills" block so the two cannot disagree about which way the bot is facing.
  */
 function _gridEntrySide(plan) {
+  // The bot SAYS which way it faces -- `side: IS_SHORT ? 'short' : 'long'` has been in the
+  // plan all along. Reading the ladder's shape instead was the bug: a long grid that has
+  // already bought its whole range has every level sitting above the mark as an exit, so
+  // "more sells above than buys below" called it short and the block below quoted the SHORT
+  // liquidation formula -- $124.80 against an average entry of $108.58, on a long. A
+  // liquidation above the entry price on a long is not a rounding error, it is the wrong
+  // equation, and the answer was in the payload.
+  const s = String(plan?.side ?? '').toLowerCase()
+  if (s === 'short') return 'sell'
+  if (s === 'long')  return 'buy'
+  // An open position is the next best authority on which way this grid runs.
+  const pos = plan?.position
+  if (pos) {
+    const ps = String(pos.side ?? '').toLowerCase()
+    if (ps === 'short') return 'sell'
+    if (ps === 'long')  return 'buy'
+    const szi = Number(pos.szi)
+    if (Number.isFinite(szi) && szi !== 0) return szi > 0 ? 'buy' : 'sell'
+  }
+  // Only then the shape of the ladder. index.html ships on every push while strategies/
+  // deploys separately, so for a few minutes a fresh page can be handed a plan built by an
+  // older grid.js that predates the field.
   const mk = Number(plan?.markPx) || 0
   const os = plan?.orders ?? []
   const buysBelow  = os.filter(o => o.side === 'buy'  && o.px < mk).length
@@ -23263,7 +23285,22 @@ function _botPreviewSheet(type, plan, loading) {
     }
     const _liqGapPct = _fullLiq > 0 && _fullEntry > 0
       ? Math.abs(_fullLiq - _fullEntry) / _fullEntry * 100 : null
-    const _fullBlock = _legs.length < 2 ? '' : `
+    // A grid that has already bought its whole range has no entry levels left — every rung is
+    // an exit waiting on price. "If every level fills" is a projection about ENTRIES, so there
+    // is nothing to project; say that rather than let the block vanish and read as a bug, and
+    // point at the position card below, which is the real holding and the real liquidation.
+    const _emptyBlock = (plan.orders ?? []).length < 2 ? '' : `
+      <div style="margin-top:14px;border:1px solid var(--border);border-radius:11px;padding:11px 12px">
+        <div style="font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">${
+          _T('If every level fills', 'Si se llenan todos los niveles')}</div>
+        <div style="font-size:11.5px;color:var(--fg-2);line-height:1.55">${
+          _legs.length === 0
+            ? _T('No entry levels left on this side of the mark — every rung is an exit waiting on price. The position it is working out of is below.',
+                 'No quedan niveles de entrada de este lado del precio — cada nivel es una salida esperando precio. La posición sobre la que trabaja está abajo.')
+            : _T('Only one entry level, so there is no ladder of entries to add up. The position it is working out of is below.',
+                 'Solo un nivel de entrada, así que no hay escalera de entradas que sumar. La posición sobre la que trabaja está abajo.')}</div>
+      </div>`
+    const _fullBlock = _legs.length < 2 ? _emptyBlock : `
       <div style="margin-top:14px;border:1px solid var(--border);border-radius:11px;padding:11px 12px">
         <div style="font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px">${
           _T('If every level fills', 'Si se llenan todos los niveles')}</div>

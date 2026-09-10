@@ -198,6 +198,21 @@ console.log('\n── the figure is a TAKE PROFIT, on the level that books it �
   t('and the direction comes from a shared reading of the plan',
     lad.includes("_gridEntrySide(plan) === 'buy'") &&
     cli.includes('function _gridEntrySide(plan)'))
+  // Reported: a LONG grid quoting an estimated liquidation of $124.80 against an average entry
+  // of $108.58. Liquidation above entry on a long is the short formula, and the direction was
+  // being GUESSED from the ladder's shape — which inverts the moment a long grid has bought
+  // its whole range, because then every rung is an exit sitting above the mark.
+  {
+    const fn = grab(cli, 'function _gridEntrySide(plan)')
+    t('the direction is read off the plan, which states it', fn.includes("plan?.side"))
+    t('long and short both map to an entry side',
+      fn.includes("if (s === 'short') return 'sell'") && fn.includes("if (s === 'long')  return 'buy'"))
+    // An older strategies/ build can still be serving plans for a few minutes after a push.
+    t('an open position is the next authority', fn.includes('plan?.position') && fn.includes('szi > 0'))
+    t('and the ladder heuristic is last, for a plan that predates the field',
+      fn.indexOf('plan?.side') < fn.indexOf('buysBelow'))
+    t('why the heuristic was wrong is written down', fn.includes('already bought its whole range'))
+  }
   // Two CALL sites; the third match is the definition.
   t('so the ladder and the "if every level fills" block cannot disagree',
     (cli.match(/_gridEntrySide\(plan\)/g) ?? []).length - (cli.match(/function _gridEntrySide\(plan\)/g) ?? []).length === 2)
@@ -222,6 +237,25 @@ console.log('\n── the figure is a TAKE PROFIT, on the level that books it �
     iTag > 0 && iTag < iPx && iPx < iRule, JSON.stringify({ iTag, iPx, iRule }))
   t('and its rule stops where the rungs’ lines stop',
     lad.includes('width:${TPW}px;flex-shrink:0'))
+}
+
+console.log('\n── "if every level fills" projects ENTRIES, or says it cannot ──')
+{
+  const sh = grab(cli, 'function _botPreviewSheet(type, plan, loading)')
+  // Entry legs, not "every order": a grid holding its whole range has ten sell orders and no
+  // entries left, and adding those up produced a position and a liquidation out of the exits.
+  t('the legs are the ENTRY side only', sh.includes("o.side === _entrySide"))
+  t('fewer than two entry legs projects nothing', sh.includes('_legs.length < 2 ? _emptyBlock'))
+  // And it must not simply disappear — a block that vanishes reads as another bug.
+  t('it explains itself instead of vanishing',
+    sh.includes('No entry levels left on this side of the mark'))
+  t('pointing at the position card, which is the real holding',
+    sh.includes('The position it is working out of is below'))
+  // The formulas themselves: long liquidates below entry, short above.
+  t('a long subtracts its backing, a short adds it',
+    sh.includes("_entrySide === 'buy'") &&
+    sh.includes('(_fullNot - _backing) / (_fullSz * (1 - _MMR))') &&
+    sh.includes('(_fullNot + _backing) / (_fullSz * (1 + _MMR))'))
 }
 
 console.log('\n── the close modal says what closing books ──')
