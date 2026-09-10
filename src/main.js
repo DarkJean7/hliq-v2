@@ -4875,7 +4875,7 @@ function _showChartToast(msg) {
   if (!t) {
     t = document.createElement('div')
     t.id = '_chartToast'
-    t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1e222d;color:#e0e3eb;padding:7px 16px;border-radius:8px;font-size:13px;z-index:9999;pointer-events:none;opacity:0;transition:opacity .2s;white-space:nowrap;box-shadow:0 2px 12px rgba(0,0,0,.4)'
+    t.style.cssText = 'position:fixed;bottom:calc(80px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);background:#1e222d;color:#e0e3eb;padding:7px 16px;border-radius:8px;font-size:13px;z-index:9999;pointer-events:none;opacity:0;transition:opacity .2s;white-space:nowrap;box-shadow:0 2px 12px rgba(0,0,0,.4)'
     document.body.appendChild(t)
   }
   t.textContent = msg
@@ -8341,7 +8341,7 @@ function _paperToast(msg, kind = 'success') {
   if (!host) {
     host = document.createElement('div')
     host.id = 'paperToastHost'
-    host.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:86px;z-index:9999;display:flex;flex-direction:column;gap:7px;align-items:center;pointer-events:none;width:max-content;max-width:92vw'
+    host.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(86px + env(safe-area-inset-bottom));z-index:9999;display:flex;flex-direction:column;gap:7px;align-items:center;pointer-events:none;width:max-content;max-width:92vw'
     document.body.appendChild(host)
   }
   const el = document.createElement('div')

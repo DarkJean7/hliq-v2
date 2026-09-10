@@ -75,5 +75,20 @@ console.log(nl + '-- no fixed-height box quietly eats an inset --')
   t('every box taking a bottom inset is free to grow', offenders.length === 0, offenders.join(' | '))
 }
 
+console.log(nl + '-- and what floats ABOVE the bar follows it up --')
+{
+  // The bar grew by the inset; two toasts anchored at a flat 80px and 86px did not, so on a
+  // phone they land inside it. Same root cause as the bar itself, one file over: a number
+  // sized for a 72px bar, written before the bar could be taller than that.
+  const CLI = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
+  t('the price-alert toast clears the bar',
+    CLI.includes('position:fixed;bottom:calc(80px + env(safe-area-inset-bottom));left:50%'))
+  t('and the notification stack does too',
+    CLI.includes('bottom:calc(86px + env(safe-area-inset-bottom));z-index:9999'))
+  t('neither still anchors to a bare pixel value',
+    !CLI.includes('position:fixed;bottom:80px;left:50%') &&
+    !CLI.includes('transform:translateX(-50%);bottom:86px'))
+}
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
