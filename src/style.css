@@ -5306,17 +5306,24 @@ body.layout-mobile .nav-tabs { display: none !important; }
   z-index: 200;
   flex-direction: column;
   overflow: hidden;
-  /* The shell now starts at the true top of the screen (viewport-fit=cover), so something has
-     to hold its contents clear of the status bar. It goes HERE, on the one container, rather
-     than on the header: the first child is #mobPredictHandle, not .mob-v-header, and the
-     handle carries its padding inline where a stylesheet rule cannot reach it. Putting the
-     inset on each candidate would also double it whenever both were present.
-     Zero on anything without a notch, so nothing moves on desktop or an older phone. */
-  padding-top: env(safe-area-inset-top);
+  /* NO padding on this element, deliberately. .mob-view.mob-view-active is the scroll
+     container, and .mob-v-bottom is a position:fixed CHILD of it. On iOS a fixed child of a
+     -webkit-overflow-scrolling:touch scroller is laid out against the scroller's content box
+     rather than the viewport, so padding here moves the tab bar -- wrong on open, and again
+     as a scroll settles. The status-bar clearance goes on the first in-flow child instead
+     (#mobPredictHandle, below), which puts the same pixels on screen without touching the
+     box the bar is positioned against. */
 }
 @media (max-width: 768px) {
   .mob-view.mob-view-active { display: flex; }
   .mob-nav { display: none !important; }
+  /* Status-bar clearance for the whole mobile shell, on its FIRST IN-FLOW CHILD rather than on
+     .mob-view -- see the note there for why the scroll container must keep its padding at 0.
+     #mobPredictHandle is always that first child: it is the Predictions drag pill, and it is a
+     .mob-v-header too, so everything below it moves down with it. It carries `padding:7px 0 3px`
+     inline, which is why this needs !important. 7px + the inset lands the pill exactly where it
+     sat when iOS was still reserving the strip, and resolves to a bare 7px without a notch. */
+  #mobPredictHandle { padding-top: calc(7px + env(safe-area-inset-top)) !important; }
 }
 /* One continuous page: the whole view scrolls (header, equity card, tabs and
    list move together) instead of only the inner content area. The bottom nav

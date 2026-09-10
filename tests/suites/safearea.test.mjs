@@ -44,12 +44,20 @@ t('the scroll area clears the bar', /padding:[^;]*calc\([^;]*env\(safe-area-inse
   content.match(/padding:[^;]*/)?.[0])
 
 console.log(nl + '-- the shell holds its contents clear of the status bar --')
-// It goes on .mob-view, not the header: the shell's first child is #mobPredictHandle, which is
-// a .mob-v-header too and carries its padding inline where a stylesheet cannot reach it.
+// It deliberately does NOT go on .mob-view. That element is the scroll container
+// (.mob-view.mob-view-active sets overflow-y:auto), and .mob-v-bottom is a position:fixed
+// CHILD of it. On iOS a fixed child of a touch-scrolling container is laid out against the
+// scroller's content box, so padding here moved the tab bar -- it opened in the wrong place
+// and moved again as a scroll settled. This assertion is the reason that must not come back.
 const shell = blockAt('.mob-view {')
-t('the shell takes the top inset', /padding-top:\s*env\(safe-area-inset-top\)/.test(shell))
-t('and the handle really is the first child, which is why it goes there',
+const shellDecls = shell.replace(/\/\*[\s\S]*?\*\//g, '')
+t('the scroll container carries no padding of its own', !/\bpadding[a-z-]*\s*:/.test(shellDecls),
+  shellDecls.match(/\bpadding[a-z-]*\s*:[^;]*/)?.[0])
+t('the first in-flow child carries the top inset instead',
+  /#mobPredictHandle\s*\{[^}]*padding-top:\s*calc\([^)]*env\(safe-area-inset-top\)/.test(CSS))
+t('and the handle really is that first child, which is why it goes there',
   HTML.indexOf('id="mobPredictHandle"') < HTML.indexOf('<div class="mob-v-header">'))
+t('why is written down', CSS.includes('NO padding on this element'))
 
 console.log(nl + '-- no fixed-height box quietly eats an inset --')
 {
