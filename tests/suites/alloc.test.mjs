@@ -79,5 +79,38 @@ state = { perpState: { withdrawable: '0', assetPositions: [pos('X', 1, 50, 500, 
 r = _allocationSlices()
 t('held spot USDC is not free', r.free === 0)
 
+console.log('\n-- the health ring is the way in, and it has to work --')
+{
+  const CSS = fs.readFileSync('src/style.css', 'utf8').replace(/\r\n/g, '\n')
+  const RND = fs.readFileSync('src/render.js', 'utf8').replace(/\r\n/g, '\n')
+  const HTM = fs.readFileSync('index.html', 'utf8')
+  const at = src.indexOf('window.__openAllocation')
+  const fn = src.slice(at, src.indexOf('\n}', at) + 2)
+
+  // The dead click. It guarded on a visible `.sidebar-item[data-tab="allocation"]` before it
+  // would switch the desktop tab — and that row was DELETED when the sidebar was trimmed,
+  // because the ring became the way in. The guard could never pass, so every press fell
+  // through to the mobile navigator and did nothing at all.
+  t('there is no Allocation row in the sidebar any more', !/data-tab="allocation"/.test(HTM))
+  t('so opening it must not require one', !/item && item\.offsetParent !== null/.test(fn))
+  t('the tab panel is what it checks', fn.includes("document.getElementById('tab-allocation')"))
+  t('and it switches the desktop tab directly', fn.includes("switchTab('allocation', null)"))
+  t('highlighting a sidebar row only if one happens to exist',
+    fn.includes("if (item && typeof setSidebarActive === 'function')"))
+  t('mobile still has its own path', fn.includes("window.mobVGoTab('allocation')"))
+  t('why it was dead is written down', src.includes('the guard could never pass'))
+
+  // The caption sat inside a flex ROW, so it reserved width even at opacity 0 and pushed the
+  // donut off centre — then appeared beside it on hover rather than under it.
+  t('the ring has no caption beside it', !RND.includes('ov-ring-cta') && !CSS.includes('.ov-ring-cta'))
+  t('the wrap is still a centring flex box', /\.ov-ring-wrap \{[^}]*justify-content: center/.test(CSS))
+  t('the ring says it is pressable without words',
+    /\.ov-ring-wrap\.health-open:hover \{ background/.test(CSS) &&
+    RND.includes('role="button"') && RND.includes('tabindex="0"'))
+  t('and answers the keyboard, since it claims to be a button',
+    RND.includes("event.key==='Enter'") && RND.includes('window.__openAllocation()'))
+  t('why the caption went is written down', CSS.includes('reserved width even while'))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

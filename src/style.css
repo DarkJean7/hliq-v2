@@ -7450,14 +7450,14 @@ body.is-mob-view .mob-v-bottom { display: grid; }
 .health-open:hover { background: var(--panel-2); }
 .health-open:active { background: var(--panel-3); }
 
-/* The health ring is the way into Allocation, so it has to read as pressable and say
-   where it goes -- a bare donut that happens to be clickable is a secret. */
+/* The health ring is the way into Allocation. It says so by lighting up under the cursor,
+   not with a caption: the caption lived inside this flex ROW, so it reserved width even while
+   invisible and left the donut sitting off centre. */
 .ov-ring-wrap.health-open { position: relative; cursor: pointer; border-radius: 12px;
   transition: background .12s ease; }
 .ov-ring-wrap.health-open:hover { background: var(--panel-2); }
-.ov-ring-cta { text-align: center; font-size: 11px; font-weight: 700; color: var(--fg-3);
-  margin-top: 4px; opacity: 0; transition: opacity .12s ease; }
-.ov-ring-wrap.health-open:hover .ov-ring-cta { opacity: 1; color: var(--accent); }
+.ov-ring-wrap.health-open:active { background: var(--panel-3); }
+.ov-ring-wrap.health-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ── Custom backdrop photo ───────────────────────────────────────────────────────
    A FIXED layer behind everything. Not `body`, which scrolls: a picture sliding

@@ -635,10 +635,15 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
             <!-- Health is a number about margin; Allocation is the picture of where that
                  margin went. The ring is the obvious way in, so it is the way in -- rather
                  than a sidebar row for something you only want after looking at this. -->
+            <!-- No caption. .ov-ring-wrap is a flex ROW, so a label beside the ring took up
+                 width even at opacity 0 and pushed the donut off centre; on hover it then
+                 appeared to the right of it rather than under it. The hover background is
+                 enough to say the ring is pressable. -->
             <div class="ov-ring-wrap health-open" title="See where this margin is deployed"
-                 onclick="window.__openAllocation()">
+                 role="button" tabindex="0"
+                 onclick="window.__openAllocation()"
+                 onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.__openAllocation()}">
               ${_ovRing(health, ringColor)}
-              <div class="ov-ring-cta">Allocation →</div>
             </div>
             <div class="ov-health-rows">
               <div class="ov-hr"><span>Leverage</span><b>${(accountValue > 0 ? totalNtl / accountValue : 0).toFixed(2)}×</b></div>

@@ -9868,13 +9868,26 @@ function _viewOpen(name) { return _mobVActiveTab === name || _activeTab === name
  * differently -- switchTab on desktop, _mobVActiveTab on mobile -- and the health block is
  * shared markup, so the handler has to pick.
  */
+/**
+ * Open Allocation. The health ring is the way in, on both shells.
+ *
+ * It used to require a visible `.sidebar-item[data-tab="allocation"]` before it would switch
+ * the desktop tab — and that row was DELETED when the sidebar was trimmed, precisely because
+ * the ring became the way in. So the guard could never pass, the desktop branch never ran, and
+ * every press fell through to the mobile navigator and did nothing at all.
+ *
+ * The tab panel existing is the thing that actually matters. The sidebar row is highlighted
+ * only if one happens to be there.
+ */
 window.__openAllocation = function() {
   const desk = document.getElementById('tab-allocation')
-  if (desk && document.getElementById('deskAlloc')?.closest('.tab-panel')) {
+  const app  = document.querySelector('.app')
+  const onDesktop = !!desk && !!app && getComputedStyle(app).display !== 'none'
+  if (onDesktop && typeof switchTab === 'function') {
+    switchTab('allocation', null)
     const item = document.querySelector('.sidebar-item[data-tab="allocation"]')
-    if (typeof switchTab === 'function' && item && item.offsetParent !== null) {
-      switchTab('allocation', null); setSidebarActive(item); return
-    }
+    if (item && typeof setSidebarActive === 'function') setSidebarActive(item)
+    return
   }
   if (typeof window.mobVGoTab === 'function') window.mobVGoTab('allocation')
 }
