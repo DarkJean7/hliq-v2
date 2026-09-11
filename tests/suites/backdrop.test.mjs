@@ -48,7 +48,7 @@ function blockAt(marker) {
 const shells = blockAt('html.has-bg-image body,')
 // The overlays: they paint the photo on themselves. Two blocks — an expanded outcome card
 // is only an overlay on mobile, so it is scoped, and above 768px it is an ordinary card.
-const overlays = blockAt('html.has-bg-image #mobPredictOverlay,') +
+const overlays = blockAt('html.has-bg-image #mobileView.mob-strats-full .mob-v-content,') +
                  blockAt('html.has-bg-image .oc-card.oc-expanded {')
 const covered = shells + overlays
 
@@ -125,12 +125,24 @@ console.log(nl + '-- the ones reported, one at a time, are all covered --')
 for (const [what, sel, where] of [
   ['desktop content area', '.main', shells],
   ['the mobile shell', '.mob-view', shells],
-  ['the mobile full-tab view', 'mob-tab-full .mob-v-content', shells],
+  // It reads like a shell — it IS .mob-v-content, the mobile view's own content area — and
+  // it was in the cleared list for that reason. In this mode it is position:fixed;inset:0
+  // over the Home tab, which stays in the DOM behind it, so clearing it showed the account
+  // card and the positions list through Signals, Pulse and Analysis. An overlay.
+  ['the mobile full-tab view', 'mob-tab-full .mob-v-content', overlays],
+  ['the Strats full-screen view', 'mob-strats-full .mob-v-content', overlays],
   ['Predictions', '#mobPredictOverlay', overlays],
   ['an expanded outcome card', '.oc-card.oc-expanded', overlays],
   ['the advanced chart', '.adv-overlay', overlays],
   ['sub-sheets', '.sub-sheet', overlays],
 ]) t(`${what} shows the photo`, where.includes(sel), sel)
+
+// The half it lands in is not a detail. Being in BOTH lists, or in the wrong one, is exactly
+// how the full-tab view came to show the Home tab through it.
+for (const sel of ['mob-tab-full .mob-v-content', 'mob-strats-full .mob-v-content'])
+  t(`${sel} is not ALSO cleared`, !shells.includes(sel), sel)
+t('and the phone attachment override reaches it too',
+  /@media \(max-width: 768px\)[\s\S]{0,400}?mob-tab-full \.mob-v-content[\s\S]{0,200}?background-attachment:\s*scroll/.test(CSS))
 
 console.log(nl + '-- drawers slide OVER the app, so they are heavier than a card --')
 {

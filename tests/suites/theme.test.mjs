@@ -88,7 +88,10 @@ t('it is fixed, not scrolling with the content', /has-bg-image body::before[\s\S
 t('why a scrolling one is unusable is recorded', CSS.includes('sliding') && CSS.includes('unreadable'))
 t('a scrim sits over it', /has-bg-image body::after[\s\S]{0,160}--app-bg-dim/.test(CSS))
 t('the shell surfaces get out of its way', CSS.includes('html.has-bg-image .main'))
-t('including the mobile shell itself', CSS.includes('html.has-bg-image .mob-view,')),
+// No trailing comma: .mob-view is now the LAST selector in the cleared list. The full-tab
+// content pane used to follow it there, and that was the bug — it is an overlay over the Home
+// tab, not a shell, so it moved to the list that paints the photo on itself. See backdrop.test.
+t('including the mobile shell itself', /html\.has-bg-image \.mob-view\s*[,{]/.test(CSS)),
 // .mob-view covers the whole mobile screen. Clearing only the full-tab view left the
 // photo visible on desktop and invisible on the surface that matters most.
 // These joined a longer group when the remaining full-screen overlays were added, so the
