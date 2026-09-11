@@ -9898,26 +9898,62 @@ function _viewHost(deskId) {
   return document.getElementById('mobVContent')
 }
 
+/**
+ * Closing a full-screen pane, on whichever shell is showing.
+ *
+ * These panes are shared: the same renderer mounts in a desktop tab and in the mobile shell.
+ * Their close button called mobVHome(), which calls mobVShow() — so on DESKTOP pressing × did
+ * not close anything, it switched the whole app into the mobile shell, which at desktop widths
+ * renders as a phone mock-up. Reported as "it opens like a weird mobile app version".
+ */
+window.__paneClose = function(deskTab = 'overview') {
+  const app = document.querySelector('.app')
+  if (app && getComputedStyle(app).display !== 'none' && typeof switchTab === 'function') {
+    switchTab(deskTab, null)
+    const item = document.querySelector(`.sidebar-item[data-tab="${deskTab}"]`)
+    if (item && typeof setSidebarActive === 'function') setSidebarActive(item)
+    return
+  }
+  window.mobVHome()
+}
+
+/**
+ * Repaint the Allocation screen wherever it currently lives.
+ *
+ * Its controls all did `getElementById('mobVContent')` and then gated on
+ * `_mobVActiveTab === 'allocation'`. On desktop the pane is #deskAlloc and _mobVActiveTab is
+ * something else entirely, so the view state changed and NOTHING redrew — which is why
+ * Exposure and What-moved looked dead there while working on the phone.
+ */
+function _allocRepaint() {
+  const desk = document.getElementById('deskAlloc')
+  if (desk && desk.offsetParent !== null) {
+    desk.dataset.attrSig = ''
+    _mobVRenderAllocation(desk)
+    return
+  }
+  const el = document.getElementById('mobVContent')
+  if (!el) return
+  el.dataset.attrSig = ''
+  if (_mobVActiveTab === 'allocation' || _mobVActiveTab === 'attribution') _mobVRenderContent()
+}
+
 function _mobVFullHeader(title) {
   return `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:14px 16px 11px;background:var(--bg);border-bottom:1px solid var(--border)">
     <span style="font-size:18px;font-weight:700">${esc(title)}</span>
-    <button onclick="window.mobVHome()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+    <button onclick="window.__paneClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
   </div>`
 }
 
 // ─── PnL ATTRIBUTION compute + render ─────────────────────────────────────────
 window.__attrSetPeriod = function(p) {
   _attrPeriod = p
-  const el = document.getElementById('mobVContent')
-  if (el) el.dataset.attrSig = ''   // force a recompute for the new window
-  if (_mobVActiveTab === 'allocation' || _mobVActiveTab === 'attribution') _mobVRenderContent()
+  _allocRepaint()                    // forces a recompute for the new window
 }
 
 window.__attrSetMode = function(m) {
   _attrMode = m
-  const el = document.getElementById('mobVContent')
-  if (el) el.dataset.attrSig = ''   // re-render (same data, different slice)
-  if (_mobVActiveTab === 'allocation' || _mobVActiveTab === 'attribution') _mobVRenderContent()
+  _allocRepaint()                    // same data, different slice
 }
 
 // The Allocation screen hosts two interchangeable views, toggled from its header:
@@ -9925,9 +9961,7 @@ window.__attrSetMode = function(m) {
 let _allocView = 'allocation'
 window.__allocSetView = function(v) {
   _allocView = v
-  const el = document.getElementById('mobVContent')
-  if (el) el.dataset.attrSig = ''
-  if (_mobVActiveTab === 'allocation') _mobVRenderContent()
+  _allocRepaint()
 }
 // Entry point from the More drawer's "What moved" button — opens Allocation on the movers view.
 window.__openMovers = function() {
@@ -9979,8 +10013,7 @@ function _protectedCoins() {
 const _expExpanded = new Set()
 window.__expToggleAsset = function(coin) {
   if (_expExpanded.has(coin)) _expExpanded.delete(coin); else _expExpanded.add(coin)
-  const el = document.getElementById('mobVContent')
-  if (el && _mobVActiveTab === 'allocation' && _allocView === 'exposure') _mobVRenderExposure(el)
+  _allocRepaint()
 }
 
 function _mobVRenderExposure(el) {
@@ -10009,7 +10042,7 @@ function _allocViewHeader() {
   const tab = (k, lbl) => `<button onclick="window.__allocSetView('${k}')" style="padding:6px 15px;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;background:${_allocView === k ? 'var(--accent)' : 'transparent'};color:${_allocView === k ? '#000' : 'var(--muted)'};transition:background .15s">${lbl}</button>`
   return `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 12px 10px;background:var(--bg);border-bottom:1px solid var(--border)">
     <div style="display:flex;gap:3px;background:var(--panel-1);border-radius:10px;padding:3px">${tab('allocation', _T('Allocation', 'Asignación'))}${tab('exposure', _T('Exposure', 'Exposición'))}${tab('movers', _T('What moved', 'Qué movió'))}</div>
-    <button onclick="window.mobVHome()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+    <button onclick="window.__paneClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
   </div>`
 }
 
@@ -16799,7 +16832,7 @@ function _pulseSegHeader() {
   return `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:8px;padding:11px 12px 9px;background:var(--bg);border-bottom:1px solid var(--border)">
     <div style="flex:1;display:flex;gap:3px;background:var(--panel-1);border-radius:10px;padding:3px">${
       tab('signals', _T('Signals', 'Señales'))}${tab('pulse', 'Pulse')}${tab('analysis', _T('Analysis', 'Análisis'))}</div>
-    <button onclick="window.mobVHome()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+    <button onclick="window.__paneClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
   </div>`
 }
 
@@ -17694,7 +17727,7 @@ function _mobVRenderContent(tick = false) {
       <span style="font-size:18px;font-weight:700">History</span>
       ${all.length ? `<span style="font-size:11px;color:var(--muted)">${all.length} trade${all.length === 1 ? '' : 's'}</span>` : ''}
       ${all.length ? `<button onclick="window.__exportTradesCsv()" title="Export CSV" style="margin-left:auto;background:var(--panel-2);border:1px solid var(--border2);color:var(--fg-2);border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer">⬇ CSV</button>` : ''}
-      <button onclick="window.mobVHome()" aria-label="Close" style="${all.length ? '' : 'margin-left:auto;'}background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button></div>`
+      <button onclick="window.__paneClose()" aria-label="Close" style="${all.length ? '' : 'margin-left:auto;'}background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button></div>`
     if (!all.length) { el.innerHTML = header + `<div class="mob-v-empty">No trade history yet</div>`; return }
     const fills = all.slice(start, start + PER)
     const rows = fills.map((f, idx) => {
@@ -17855,7 +17888,7 @@ function _mobVRenderContent(tick = false) {
     el.innerHTML = `<div style="margin:10px 8px calc(82px + env(safe-area-inset-bottom));border:1px solid var(--border2);border-radius:18px;background:var(--bg2);overflow:hidden">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 16px 13px;border-bottom:1px solid var(--border)">
         <span style="font-size:18px;font-weight:700">Settings</span>
-        <button onclick="window.mobVHome()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+        <button onclick="window.__paneClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
       </div>
 
       <!-- Connections -->
@@ -18279,7 +18312,7 @@ function _mobVRenderContent(tick = false) {
     // pinned to the TOP in the combined view.
     const portHeader = `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:14px 16px 11px;background:var(--bg);border-bottom:1px solid var(--border)">
         <span style="font-size:18px;font-weight:700">Portfolio</span>
-        <button onclick="window.mobVHome()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+        <button onclick="window.__paneClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
       </div>`
     // "Expand All" if any card is collapsed, otherwise "Collapse All".
     const _visAccts   = _allAcctLastResults.filter(r => !_maHiddenLoad().has(r.addr))
@@ -18363,7 +18396,7 @@ function _mobVRenderContent(tick = false) {
     if (state.calYear  == null) state.calYear  = now.getFullYear()
     const calHeader = `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:14px 16px 11px;background:var(--bg);border-bottom:1px solid var(--border)">
         <span style="font-size:18px;font-weight:700">Calendar</span>
-        <button onclick="window.mobVHome()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+        <button onclick="window.__paneClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
       </div>`
     // The live refresh re-renders whatever tab is open. Rebuilding the calendar wipes
     // #mobCalDetail, so an open day's activity vanished mid-read every few seconds.

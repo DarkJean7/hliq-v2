@@ -112,5 +112,38 @@ console.log('\n-- the health ring is the way in, and it has to work --')
   t('why the caption went is written down', CSS.includes('reserved width even while'))
 }
 
+console.log('\n-- a shared pane has to know which shell it is in --')
+{
+  // Two reports from the desktop Allocation tab: pressing × "opens like a weird mobile app
+  // version", and Exposure / What moved do nothing.
+  //
+  // Same root. These renderers mount in a desktop tab AND in the mobile shell, but their
+  // controls all reached for #mobVContent and gated on _mobVActiveTab. On desktop the pane is
+  // #deskAlloc and _mobVActiveTab is something else, so the view state changed and nothing
+  // redrew. The close button called mobVHome(), which calls mobVShow() — so × did not close
+  // anything, it switched the app into the mobile shell, which at desktop widths renders as a
+  // phone mock-up.
+  t('closing is shell-aware', src.includes('window.__paneClose = function'))
+  t('and switches a desktop tab rather than showing the phone shell',
+    /__paneClose[\s\S]{0,420}switchTab\(deskTab, null\)/.test(src))
+  t('falling back to mobVHome only on the mobile shell',
+    /__paneClose[\s\S]{0,700}window\.mobVHome\(\)/.test(src))
+  t('no pane header still closes straight into the mobile shell',
+    !/aria-label="Close"[^>]*onclick="window\.mobVHome\(\)"/.test(src) &&
+    !/onclick="window\.mobVHome\(\)"[^>]*aria-label="Close"/.test(src))
+
+  t('repainting is shell-aware too', src.includes('function _allocRepaint()'))
+  t('it prefers the desktop pane when that is the one on screen',
+    /_allocRepaint\(\)[\s\S]{0,320}getElementById\('deskAlloc'\)/.test(src))
+  // Every control that changes what the Allocation screen shows.
+  for (const fn of ['__attrSetPeriod', '__attrSetMode', '__allocSetView', '__expToggleAsset']) {
+    const at = src.indexOf('window.' + fn)
+    const body = at < 0 ? '' : src.slice(at, src.indexOf('\n}', at) + 2)
+    t(`${fn} repaints through it`, body.includes('_allocRepaint()'), body.slice(0, 110))
+    t(`${fn} no longer hardcodes the mobile host`, !body.includes("getElementById('mobVContent')"))
+  }
+  t('why is written down', src.includes('renders as a phone mock-up'))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
