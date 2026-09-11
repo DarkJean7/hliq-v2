@@ -234,7 +234,7 @@ import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL,
          expectedPnl, groupExpectedPnl } from './ordergroup.js'
 import { probeNavGeometry } from './navprobe.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows } from './comboequity.js'
-import { armedGuardKey } from './guardkey.js'
+import { armedGuardKey, firedSummary } from './guardkey.js'
 
 /**
  * Brightness, as a layer over the app rather than a filter on <html>.
@@ -5691,6 +5691,98 @@ function _armedGuardKey(mode, coin, acct) {
   })
 }
 
+/**
+ * What an armed guard has already spent, written where the decision is made.
+ *
+ * Editing a guard is a decision about whether to give it more room, and that is unanswerable
+ * without knowing how much of its cap it has already committed and how many of its fires it
+ * has used. Null for either means NOT KNOWN, and says so — a dash, never a zero, because
+ * "it has never fired" and "this view cannot see how often it has" are different statements
+ * and only one of them is safe to act on.
+ */
+function _guardFiredSummary(cfg) {
+  const row = document.getElementById('guardFiredRow')
+  const val = document.getElementById('guardFiredVal')
+  if (!row || !val) return
+  if (!cfg?.running) { row.style.display = 'none'; return }
+  row.style.display = ''
+  // Against the limits currently IN THE FORM, not the ones it was armed with: the user may be
+  // raising them as they read this, and the line is what tells them raising them buys room.
+  const s = firedSummary(cfg.fires, cfg.added, {
+    maxFires: document.getElementById('guardMaxFires')?.value,
+    cap:      document.getElementById('guardMaxAdd')?.value,
+  })
+  if (!s) {
+    val.textContent = _T('loading…', 'cargando…')
+    val.style.color = 'var(--muted)'
+    return
+  }
+  val.style.color = s.exhausted ? 'var(--red)' : (s.used ? 'var(--fg)' : 'var(--muted)')
+  val.textContent = `${s.fires}${s.maxFires ? ' / ' + s.maxFires : ''} ${_T('fires', 'disparos')}` +
+    ` · $${fmtUSD(s.added)}${s.cap ? ' / $' + fmtUSD(s.cap) : ''} ${_T('added', 'agregado')}` +
+    // Armed but inert: it will not fire again until one of the two limits goes up.
+    (s.exhausted ? ` · ${_T('no room left', 'sin margen')}` : '')
+}
+
+/**
+ * Update must not be pressable while the live config is still unknown.
+ *
+ * An armed guard on a wallet this view does not hold the status for renders with DEFAULTS in
+ * every field. Pressing Update then would relaunch it with a trigger, a cap and a fire count
+ * the user never chose — silently rewriting a running guard's configuration with a form they
+ * never filled in.
+ */
+function _guardSetUpdateReady(ready) {
+  const btn = document.getElementById('guardConfirmBtn')
+  if (!btn) return
+  btn.disabled = !ready
+  btn.style.opacity = ready ? '' : '.45'
+  btn.style.cursor  = ready ? '' : 'not-allowed'
+  if (!ready) btn.textContent = _T('Loading…', 'Cargando…')
+}
+
+/** Fill the form from a guard's real config, once it has been fetched. */
+function _guardApplyLive(g) {
+  const cfg = state.guardCfg
+  if (!g || !cfg) return
+  const live = _parseGuardArgs(g.args)
+  cfg.added = parseFloat(g.added) || 0
+  cfg.fires = parseInt(g.fires) || 0
+  const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v }
+  set('guardTrigPct',  live['trigger-pct'])
+  set('guardMaxFires', live['max-fires'])
+  const dry = document.getElementById('guardDryRun')
+  if (dry) dry.checked = !!live['dry-run']
+  if (cfg.mode === 'liqguard') {
+    set('guardTargetLev', live['target-leverage'])
+    set('guardMaxAdd',    live['max-total-add'])
+    window.__guardSetMode(live['target-leverage'] ? 'target' : 'fixed')
+  } else {
+    set('guardReducePct', live['reduce-pct'])
+  }
+  _guardSetUpdateReady(true)
+  document.getElementById('guardConfirmBtn').textContent = _T('Update', 'Actualizar')
+  _guardFiredSummary(cfg)
+  window.__guardPreview()
+}
+
+/**
+ * Fetch the owning wallet's guard state.
+ *
+ * serverStatus only ever describes the SELECTED account, so in the combined view a guard on
+ * another wallet is known to be armed without its config or its counters being available.
+ * /api/status?address= answers for any wallet the user owns, and serverFetch reads that
+ * address out of the query to mint the right token.
+ */
+async function _guardFetchOwnerState(mode, coin, acct, armedKey) {
+  if (!_isRealAddr(acct)) return null
+  try {
+    const st = await serverFetch('/api/status?address=' + encodeURIComponent(acct))
+    const key = armedGuardKey(mode, coin, null, { instances: st?._instances }) || armedKey
+    return (key && st?._guards?.[key]) || null
+  } catch { return null }
+}
+
 window.__openGuardModal = function (mode, coin, apiSide, acct) {
   const p = _guardFindPos(coin, acct)
   if (!p) { alert('Position not found — refresh and try again.'); return }
@@ -5765,9 +5857,35 @@ window.__openGuardModal = function (mode, coin, apiSide, acct) {
   document.getElementById('guardConfirmBtn').classList.remove('btn-confirming')
   document.getElementById('guardDisarmBtn').classList.remove('btn-confirming')
   document.getElementById('guardConfirmBtn').textContent  = running ? 'Update' : 'Arm'
+  document.getElementById('guardConfirmBtn').disabled = false
+  document.getElementById('guardConfirmBtn').style.opacity = ''
+  document.getElementById('guardConfirmBtn').style.cursor = ''
+  _guardFiredSummary(state.guardCfg)
 
   window.__guardPreview()
   document.getElementById('guardModal').classList.add('open')
+
+  // Armed, but this view does not hold its config or its counters -- the guard runs on a
+  // wallet that is not the selected one. Every field is showing a DEFAULT, so Update is held
+  // shut until the real config arrives rather than letting it rewrite a running guard with a
+  // form the user never filled in.
+  if (running && !gStatus && _isRealAddr(guardAcct)) {
+    _guardSetUpdateReady(false)
+    const forCoin = coin, forMode = mode
+    _guardFetchOwnerState(mode, coin, guardAcct, armedKey).then(g => {
+      // The modal may have been closed or reopened on another position meanwhile.
+      if (state.guardCfg?.coin !== forCoin || state.guardCfg?.mode !== forMode) return
+      if (g) { _guardApplyLive(g); return }
+      // Could not read it. Say so and leave Update shut: a blank form is not a config.
+      _guardSetUpdateReady(false)
+      document.getElementById('guardConfirmBtn').textContent = _T('Unavailable', 'No disponible')
+      const v = document.getElementById('guardFiredVal')
+      if (v) { v.textContent = _T('could not read this wallet', 'no se pudo leer esta cartera'); v.style.color = 'var(--red)' }
+      showTradeStatus(document.getElementById('guardStatus'), 'error',
+        _T('Could not load this guard’s settings from its wallet. Disarm still works.',
+           'No se pudo cargar la configuración de este guardián. Desarmar sigue funcionando.'))
+    })
+  }
 }
 
 window.__guardSetMode = function (mode) {
@@ -5779,6 +5897,9 @@ window.__guardSetMode = function (mode) {
 
 window.__guardPreview = function () {
   const g = state.guardCfg; if (!g) return
+  // The fired line quotes what has been spent AGAINST the cap and the fire count in the form,
+  // so it has to be redrawn whenever those change, not only when the modal opens.
+  _guardFiredSummary(g)
   const pct  = (parseFloat(document.getElementById('guardTrigPct').value) || 0) / 100
   const prev = document.getElementById('guardTrigPreview')
   if (g.liq > 0 && pct > 0) {

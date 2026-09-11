@@ -1964,6 +1964,12 @@
 
     <div id="guardPlan" class="guard-plan" style="display:none"></div>
 
+    <!-- What this guard has ALREADY done. Editing one is a decision about whether to give it
+         more room, and that cannot be made without knowing how much of its cap it has spent
+         and how many of its fires it has used. Hidden until it is armed and the numbers are in. -->
+    <div class="margin-info-row" id="guardFiredRow" style="display:none">
+      <span>Fired so far</span><span id="guardFiredVal">—</span>
+    </div>
     <div class="margin-info-row"><span>Entry / Liquidation</span><span id="guardEntryLiq">—</span></div>
     <div class="margin-info-row"><span>Mark price</span><span id="guardMarkVal">—</span></div>
 
