@@ -234,6 +234,7 @@ import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL,
          expectedPnl, groupExpectedPnl } from './ordergroup.js'
 import { probeNavGeometry } from './navprobe.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows } from './comboequity.js'
+import { armedGuardKey } from './guardkey.js'
 
 /**
  * Brightness, as a layer over the app rather than a filter on <html>.
@@ -5667,6 +5668,29 @@ function _guardResetConfirm() {
   if (d) { d.textContent = 'Disarm'; d.classList.remove('btn-confirming') }
 }
 
+/**
+ * The instance key a guard is ACTUALLY armed under, or null.
+ *
+ * The modal used to look up `${mode}:${coin.toUpperCase()}` in serverStatus._instances, which
+ * misses an armed guard two different ways — and when it misses, the modal renders as if
+ * nothing were armed: no Edit title, no Disarm, no Logs, no prefilled config. Reported as
+ * being unable to cancel or edit a guard that is plainly running.
+ *
+ *   1. IN ALL ACCOUNTS, serverStatus._instances describes only the account currently
+ *      selected. The per-wallet record is _maBotStatus, keyed by address.
+ *   2. CASE. Instance keys carry the market as it is written, so a HIP-3 asset arrives as
+ *      `liqguard:hype2:CHIP` and an uppercased lookup never matches it.
+ *
+ * The position card's shield badge already got both of these right (_armedGuardKeys). The
+ * modal did not, so the badge said armed while the modal said not — which is how this was
+ * found. One resolver now, used for the running flag, the counters and the prefill.
+ */
+function _armedGuardKey(mode, coin, acct) {
+  return armedGuardKey(mode, coin, acct, {
+    instances: serverStatus?._instances, byWallet: _maBotStatus,
+  })
+}
+
 window.__openGuardModal = function (mode, coin, apiSide, acct) {
   const p = _guardFindPos(coin, acct)
   if (!p) { alert('Position not found — refresh and try again.'); return }
@@ -5689,10 +5713,21 @@ window.__openGuardModal = function (mode, coin, apiSide, acct) {
   const size    = Math.abs(parseFloat(p.szi ?? 0))
   const maxLev  = parseFloat(p.maxLeverage ?? p.leverage?.value ?? 1) || 1
   const uPnl    = parseFloat(p.unrealizedPnl ?? 0)
-  const running = !!serverStatus?._instances?.[`${mode}:${String(coin).toUpperCase()}`]
-  const gStatus = running ? serverStatus?._guards?.[`${mode}:${String(coin).toUpperCase()}`] : null
+  // Resolved once: the same key answers "is it armed", "how much has it added" and "what is
+  // it configured with". Looking each of those up separately is how they drifted apart.
+  const armedKey = _armedGuardKey(mode, coin, guardAcct)
+  const running  = !!armedKey
+  // The counters and the live args come from serverStatus, which only holds them for the
+  // SELECTED account. In the combined view a guard on another wallet is known to be armed
+  // (from _maBotStatus) without its numbers being known -- and an unknown count must not
+  // render as 0, which would read as "it has never fired".
+  const gStatus = armedKey ? serverStatus?._guards?.[armedKey] ?? null : null
   state.guardCfg = { mode, coin, acct: guardAcct, isLong, entry, liq, mark, posVal, margin, curLev, setLev, size, maxLev, uPnl, running,
-                     added: parseFloat(gStatus?.added) || 0, fires: parseInt(gStatus?.fires) || 0 }
+                     armedKey,
+                     // null, not 0, when the guard is armed on a wallet whose counters this
+                     // view does not hold. Zero would claim it has never fired.
+                     added: gStatus ? (parseFloat(gStatus.added) || 0) : null,
+                     fires: gStatus ? (parseInt(gStatus.fires) || 0) : null }
 
   const isLiq = mode === 'liqguard'
   document.getElementById('guardTitle').textContent = isLiq ? '🛡 Liq Guard' : '🛑 Lev Brake'
@@ -5703,7 +5738,7 @@ window.__openGuardModal = function (mode, coin, apiSide, acct) {
   document.getElementById('guardBrkSection').style.display = isLiq ? 'none' : ''
 
   // When editing an armed guard, pre-fill from its LIVE config; otherwise use defaults.
-  const live = running ? _parseGuardArgs(serverStatus?._guards?.[`${mode}:${String(coin).toUpperCase()}`]?.args) : null
+  const live = gStatus ? _parseGuardArgs(gStatus.args) : null
 
   document.getElementById('guardTrigPct').value   = live?.['trigger-pct'] ?? (isLiq ? 85 : 70)
   document.getElementById('guardMaxFires').value  = live?.['max-fires'] ?? 2
@@ -5800,6 +5835,18 @@ window.__guardPreview = function () {
 // Build a step-by-step projection of how the position evolves across the fires —
 // trigger price → action → resulting estimated liquidation price — so the user can
 // plan. Liq math mirrors HL's isolated model (linear in margin; size-scaled for brake).
+/**
+ * Said out loud when the fire count is not knowable from here, so the plan below is read as
+ * "from now" rather than "from the beginning". An armed guard on another wallet in the
+ * combined view is known to be running without its counters being available.
+ */
+function _guardFiresNote(unknown) {
+  if (!unknown) return ''
+  return `<div style="margin-top:6px;font-size:10.5px;color:var(--fg-3);line-height:1.5">${
+    _T('This guard runs on another wallet, so how many times it has already fired is not available here — the plan below counts from now.',
+       'Este guardián corre en otra cartera, así que cuántas veces ya se disparó no está disponible aquí — el plan de abajo cuenta desde ahora.')}</div>`
+}
+
 function _guardPlanHtml(g, rows, foot, firesUsed = 0, firedRows = []) {
   const sym = String(g.coin).replace(/.*:/, '')
   // Already-fired fires shown first (greyed, chronological), so the user sees #1/#2 done
@@ -5826,6 +5873,11 @@ function _guardRenderPlan() {
   if (!g || !box) return
   const pct      = (parseFloat(document.getElementById('guardTrigPct').value) || 0) / 100
   const maxFires = Math.max(1, parseInt(document.getElementById('guardMaxFires').value) || 1)
+  // null means ARMED BUT UNCOUNTED — the guard runs on another wallet and serverStatus only
+  // carries counters for the selected one. Projecting from zero is the right assumption (it
+  // shows the whole plan rather than hiding fires), but the plan must not also claim none
+  // have happened, so the footer says the count is unknown rather than implying it is zero.
+  const firesUnknown = g.running && g.fires == null
   const firesUsed = g.fires || 0
   if (!(g.liq > 0) || !(g.size > 0) || !(pct > 0)) { box.style.display = 'none'; box.innerHTML = ''; return }
   const long = g.isLong
@@ -5873,7 +5925,7 @@ function _guardRenderPlan() {
            `Agrega $${futureAdd.toFixed(2)}${firesUsed > 0 ? ' más' : ''} → margen de posición $${fmtUSD(g.margin)} → $${fmtUSD(g.margin + futureAdd)}`)
       + (firesUsed > 0 ? _T(` · $${fmtUSD(g.added || 0)} already added (${firesUsed}/${maxFires} fired)`, ` · $${fmtUSD(g.added || 0)} ya agregado (${firesUsed}/${maxFires} disparados)`) : '')
       + _T(`. Estimates — actual fills/fees vary slightly.`, `. Estimaciones — los llenados/comisiones reales varían ligeramente.`)
-    box.innerHTML = _guardPlanHtml(g, rows, foot, firesUsed, firedRows)
+    box.innerHTML = _guardPlanHtml(g, rows, foot + _guardFiresNote(firesUnknown), firesUsed, firedRows)
   } else {
     const r = (parseFloat(document.getElementById('guardReducePct').value) || 0) / 100
     if (!(r > 0)) { box.style.display = 'none'; box.innerHTML = ''; return }
@@ -5895,7 +5947,7 @@ function _guardRenderPlan() {
     const capReached = remainingFires <= 0 && firesUsed >= maxFires
     const foot = (capReached ? _T(`Max Fires reached (${firesUsed}/${maxFires}) — raise Max Fires to add more. `, `Máx disparos alcanzado (${firesUsed}/${maxFires}) — sube Disparos máx para agregar más. `) : firesUsed > 0 ? _T(`${firesUsed}/${maxFires} already fired. `, `${firesUsed}/${maxFires} ya disparados. `) : '')
       + _T('Liq estimate assumes freed margin stays on the position. Estimates — actual fills/fees vary slightly.', 'La estimación de liq asume que el margen liberado permanece en la posición. Estimaciones — los llenados/comisiones reales varían ligeramente.')
-    box.innerHTML = _guardPlanHtml(g, rows, foot, firesUsed, firedRows)
+    box.innerHTML = _guardPlanHtml(g, rows, foot + _guardFiresNote(firesUnknown), firesUsed, firedRows)
   }
   box.style.display = (rows.length || firesUsed) ? '' : 'none'
 }
