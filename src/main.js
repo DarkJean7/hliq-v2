@@ -3304,8 +3304,15 @@ function _coinIconHtml(coin, style = '') {
   if (coin.includes(':')) {
     // HIP-3 markets: HL hosts artwork under the full prefixed name (coins/xyz:TSLA.svg);
     // then TradFi map / CoinGecko / TV ticker guess.
+    // CoinGecko is offered only when we have NO curated real-world logo for this ticker.
+    // Tokenized-equity wrappers take their underlying's symbol, so CoinGecko's top-1000 answers
+    // `nvda` with "NVIDIA • Robinhood Token" — whose artwork is the ISSUER's logo. Offering it
+    // at all, even ranked third, is how Robinhood's icon ended up on "Will NVDA be above
+    // $218.33": the server would fall through to it, or (before the ranking fix in
+    // serve-prod.js) promote it over the artwork HL serves for this very market.
+    const tvLogo = _tradFiIconUrl(sym)
     cands = [`https://app.hyperliquid.xyz/coins/${encodeURIComponent(coin)}.svg`,
-             _tradFiIconUrl(sym), _cgIconMap?.[sym], `${_TV_BASE}${sym}--big.svg`]
+             tvLogo, tvLogo ? null : _cgIconMap?.[sym], `${_TV_BASE}${sym}--big.svg`]
   } else if (!isTradFi) {
     // Crypto: CoinGecko first — real brand artwork, collision-free (the CG map is market-cap
     // first-wins). Wait for that map before rendering, otherwise each icon shows the HL
@@ -3326,7 +3333,11 @@ function _coinIconHtml(coin, style = '') {
 // Cache-bust version for icon URLs. Bump this whenever the icon-resolution logic changes so
 // browsers holding a stale cached icon (e.g. the old wrong-project CoinGecko "HYPE") re-fetch
 // against the corrected server instead of serving their cached copy until it expires.
-const _ICON_V = '4'
+// It reaches the SERVER's disk cache too, which it did not used to: serve-prod.js stores this
+// number with each icon and re-probes any entry chosen under an older one. Without that half,
+// bumping this only made browsers re-ask for the same wrong picture (NVDA, cached from a
+// CoinGecko candidate this client no longer offers, would have stayed Robinhood forever).
+const _ICON_V = '5'
 
 // Build the first-party /icon/<coin> URL, passing the resolved external candidate URLs as
 // ?u= hints (in priority order) for the server-side cache to fetch and store.

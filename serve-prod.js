@@ -7,6 +7,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { createReadStream, statSync, existsSync, writeFileSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { coinGeckoUpgrade } from './src/iconpick.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DIST      = join(__dirname, 'dist')
@@ -167,6 +168,15 @@ createServer((req, res) => {
     // Client candidate URLs, in the order the client sent (crypto = CoinGecko first, HL
     // fallback; TradFi = TradingView). Whitelisted hosts only.
     const query = (req.url.split('?')[1] || '')
+    // Which generation of the client's icon-resolution logic asked. The client bumps its
+    // _ICON_V whenever that logic changes, and its comment has always said the bump makes
+    // stale icons re-fetch "against the corrected server" — but the bump only busted the
+    // BROWSER's cache. We answered from the same file, so a coin cached under the old,
+    // wrong resolution stayed wrong forever (NVDA held Robinhood's logo, from a CoinGecko
+    // entry the client no longer offers). Stored in the meta rather than in the filename so
+    // a bump re-probes each coin exactly once and overwrites in place, instead of orphaning
+    // the whole icon directory every time.
+    const iconVer = (query.match(/(?:^|&)v=(\d{1,4})(?:&|$)/) || [, '0'])[1]
     const cands = query.split('&').filter(p => p.startsWith('u=')).map(p => { try { return decodeURIComponent(p.slice(2)) } catch { return '' } }).filter(Boolean)
     const whitelisted = u => { try { const h = new URL(u).hostname; return ICON_HOSTS.some(x => h === x || h.endsWith('.' + x)) } catch { return false } }
     const fetchIcon = async (list) => {
@@ -186,13 +196,24 @@ createServer((req, res) => {
     }
     // Artwork first, then meta. Meta is what a reader trusts to decide the file is there, so
     // it must never land before the image it points at.
-    const store = r => { mkdirSync(iconDir, { recursive: true }); writeAtomic(join(iconDir, safe + r.ext), r.buf); writeAtomic(metaPath, JSON.stringify({ ct: r.ct, ext: r.ext, src: r.src })) }
+    const store = r => { mkdirSync(iconDir, { recursive: true }); writeAtomic(join(iconDir, safe + r.ext), r.buf); writeAtomic(metaPath, JSON.stringify({ ct: r.ct, ext: r.ext, src: r.src, v: iconVer })) }
     const serve = r => res.writeHead(200, { 'Content-Type': r.ct, 'Cache-Control': 'public, max-age=86400' }).end(r.buf)
     ;(async () => {
       if (existsSync(metaPath)) {
         try {
           const meta = JSON.parse(readFileSync(metaPath, 'utf8'))
-          if (meta.miss) {
+          // Cached under an older resolution than the client is running: what is on disk was
+          // chosen from a candidate list this client would no longer send. Re-probe with the
+          // list it did send. A miss is re-probed for the same reason — the old generation
+          // may simply have been asking the wrong sources.
+          const staleGen = String(meta.v ?? '') !== String(iconVer)
+          if (meta.miss || staleGen) {
+            if (staleGen) {
+              const got = await fetchIcon(cands)
+              if (got) { store(got); serve(got); return }
+              try { writeAtomic(metaPath, JSON.stringify({ miss: true, at: Date.now(), v: iconVer })) } catch {}
+              sendIconMiss(res); return
+            }
             if (Date.now() - meta.at < ICON_MISS_TTL) { sendIconMiss(res); return }
             // stale miss → fall through and re-probe
           } else {
@@ -200,8 +221,11 @@ createServer((req, res) => {
             // was first requested before the client's CoinGecko map had loaded) and a CoinGecko
             // candidate is now available, replace it with the real CoinGecko artwork. Fixes the
             // race where some cryptos stuck on the wrong/fallback icon.
-            const cgCand = cands.find(u => u.includes('coingecko'))
-            if (cgCand && !String(meta.src || '').includes('coingecko')) {
+            //
+            // Only when the client RANKED CoinGecko above what we have, though — see
+            // src/iconpick.js for why upgrading on mere presence put Robinhood's logo on NVDA.
+            const cgCand = coinGeckoUpgrade(cands, meta.src)
+            if (cgCand) {
               const up = await fetchIcon([cgCand])
               if (up) { store(up); serve(up); return }
             }
@@ -214,7 +238,9 @@ createServer((req, res) => {
       if (got) { store(got); serve(got); return }
       // Nothing worked — remember the miss (so we don't re-probe every request) and return a
       // transparent 200 (not a 404) so the client's letter base shows with no console error.
-      try { mkdirSync(iconDir, { recursive: true }); writeAtomic(metaPath, JSON.stringify({ miss: true, at: Date.now() })) } catch {}
+      // Stamped with the generation that failed. Without it a miss reads as stale on the very
+      // next request, and a logo-less coin would re-probe four external CDNs forever.
+      try { mkdirSync(iconDir, { recursive: true }); writeAtomic(metaPath, JSON.stringify({ miss: true, at: Date.now(), v: iconVer })) } catch {}
       sendIconMiss(res)
     })()
     return
