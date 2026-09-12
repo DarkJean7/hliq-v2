@@ -1853,10 +1853,19 @@ tbody td {
   transition: background 0.15s;
 }
 .cal-nav-btn:hover { background: var(--bg3); }
+/* Ten cards at three across was four rows of chrome before the month itself started. Five
+   across makes it two, and the cards below are compacted to match -- the calendar is the
+   point of this tab, the summary is the caption. */
 .cal-summary {
-  display: grid; grid-template-columns: repeat(3, 1fr);
-  gap: 12px; margin-bottom: 20px;
+  display: grid; grid-template-columns: repeat(5, 1fr);
+  gap: 8px; margin-bottom: 12px;
 }
+/* Scoped to the calendar on purpose: .stat-card is shared with the overview, portfolio and
+   account cards, which are sized for reading one at a time rather than ten in a block. */
+.cal-summary .stat-card { padding: 9px 11px; }
+.cal-summary .stat-label { margin-bottom: 4px; }
+.cal-summary .stat-value { font-size: 13px; }
+.cal-summary .stat-sub { font-size: 10px; margin-top: 3px; }
 .cal-dow-row {
   display: grid; grid-template-columns: repeat(7, 1fr);
   gap: 4px; margin-bottom: 4px;
@@ -1871,7 +1880,8 @@ tbody td {
   gap: 4px;
 }
 .cal-cell {
-  min-height: 72px; background: var(--bg2); border: 1px solid var(--border);
+  /* Was 72px. The two rows the summary gave back go here, where they are the whole point. */
+  min-height: 92px; background: var(--bg2); border: 1px solid var(--border);
   border-radius: 8px; padding: 8px 10px;
   display: flex; flex-direction: column;
 }
@@ -4978,13 +4988,23 @@ body.layout-mobile .nav-tabs { display: none !important; }
   .trade-order-col { order: 2; }
 
   /* ── Calendar ── */
-  .cal-summary { grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+  /* Two across meant FIVE rows of summary above a 38px month — the cards were taller than
+     the thing they describe. Three across is four rows, and the card itself is stripped down
+     to a label and a number so each row is a little over half what it was. */
+  .cal-summary { grid-template-columns: repeat(3, 1fr); gap: 5px; margin-bottom: 8px; }
+  .cal-summary .stat-card { padding: 6px 7px; min-width: 0; }
+  /* Tighter tracking so "Avg / Trading Day" and "Green / Red Days" still fit a narrow card. */
+  .cal-summary .stat-label { font-size: 8px; letter-spacing: 0.04em; margin-bottom: 2px; }
+  .cal-summary .stat-value { font-size: 12px; }
+  .cal-summary .stat-sub { font-size: 9px; margin-top: 2px; }
   .cal-month-label { font-size: 14px; }
   .cal-header-row { margin-bottom: 10px; }
   .cal-nav-btn { padding: 5px 12px; font-size: 10px; }
   .cal-grid, .cal-dow-row { gap: 3px; }
   .cal-grid { width: 100%; }
-  .cal-cell { min-height: 38px; padding: 3px 4px; border-radius: 4px; min-width: 0; overflow: hidden; }
+  /* Was 38px, which is smaller than a comfortable tap target and left the day's PnL clipped.
+     The rows the summary gave back go straight into the month. */
+  .cal-cell { min-height: 58px; padding: 4px 5px; border-radius: 5px; min-width: 0; overflow: hidden; }
   .cal-dow-row .cal-dow-cell { min-width: 0; overflow: hidden; }
   .cal-day-num { font-size: 10px; }
   .cal-day-pnl { font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
