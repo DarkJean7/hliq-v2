@@ -6113,6 +6113,16 @@ body.is-mob-view .mob-v-bottom { display: grid; }
   gap: 6px; padding: 16px 20px 20px;
 }
 .mob-wallet-current-name { font-size: 20px; font-weight: 700; color: var(--fg); }
+/* The pencil beside the name of the account you are in. Inline so it reads as part of the
+   name rather than as another control in the row, but with a 34px box so it is still a tap
+   target on a phone — the glyph alone is about 12px wide. */
+.mob-wallet-name-edit {
+  background: none; border: none; cursor: pointer;
+  color: var(--muted); font-size: 14px; line-height: 1;
+  min-width: 34px; min-height: 34px; padding: 0 6px;
+  vertical-align: middle;
+}
+.mob-wallet-name-edit:active { color: var(--fg); }
 .mob-wallet-current-addr {
   display: flex; align-items: center; gap: 6px;
   font-size: 13px; color: var(--muted);

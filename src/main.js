@@ -12297,6 +12297,7 @@ window._mobVOpenWalletSwitch = function() {
           <div class="mob-wallet-list-addr">${esc(w.addr.slice(0, 8) + '…' + w.addr.slice(-6))}</div>
         </div>
         ${_isAll ? `<button class="mob-wallet-icon-btn" onclick="window._mobVToggleHiddenAcct('${esc(w.addr)}',event)" title="${isHidden ? 'Show in All Accounts' : 'Hide from All Accounts'}">${isHidden ? _eyeOff : _eyeOpen}</button>` : ''}
+        <button class="mob-wallet-icon-btn" onclick="event.stopPropagation();window._mobVRenameWallet('${esc(w.addr)}')" title="Rename">✎</button>
         <button class="mob-wallet-icon-btn del" onclick="event.stopPropagation();window._mobVRemoveWallet('${esc(w.addr)}')" title="Remove">✕</button>
       </div>`
   }).join('')
@@ -12312,7 +12313,14 @@ window._mobVOpenWalletSwitch = function() {
              </button>`
           : ''}
       </div>
-      <div class="mob-wallet-current-name${_labelNt}">${esc(label)}</div>
+      <div class="mob-wallet-current-name${_labelNt}">${esc(label)}${
+        // The account you are STANDING IN is not in the list below — in single-account mode it
+        // is deliberately dropped from it — so without this there is no way to rename the one
+        // you are most likely to want to rename. All Accounts is not a wallet and has no name
+        // to change; paper keeps its own renamer, which also updates the paper board.
+        _isAll ? ''
+        : `<button class="mob-wallet-name-edit" title="Rename this account" onclick="${
+            _isPaperCur ? 'window.__paperRename()' : `window._mobVRenameWallet('${esc(state.addr)}')`}">✎</button>`}</div>
       <div class="mob-wallet-current-addr">
         ${esc(short)}
         ${(_isAll || _isPaperCur) ? '' : `<button class="mob-wallet-copy-btn" onclick="navigator.clipboard?.writeText('${esc(state.addr)}').catch(()=>{})">⧉</button>`}
@@ -12334,6 +12342,53 @@ window._mobVOpenWalletSwitch = function() {
 window._mobVCloseWalletSwitch = function() {
   document.getElementById('mobWalletDrawer')?.classList.remove('open')
   document.getElementById('mobWalletBackdrop')?.classList.remove('open')
+}
+
+/**
+ * Rename an account from the mobile wallet drawer.
+ *
+ * Mobile could name an account when ADDING it and never again: the drawer had a ✎ on paper
+ * accounts, an eye and a ✕ on real ones, and no way to fix a typo or rename a wallet whose job
+ * changed. Desktop has had this in the account panel (__panelRename) and the Accounts tab has
+ * __maRename; this is the missing third place, and it is the one people are actually looking at
+ * when they want it.
+ *
+ * The same bottom sheet paper renaming uses, so both kinds of account rename identically.
+ */
+window._mobVRenameWallet = async function(addr) {
+  if (!_isRealAddr(addr)) return
+  const cur   = WM.getLabel(addr) ?? ''
+  const saved = WM.load().some(w => w.addr.toLowerCase() === String(addr).toLowerCase())
+  const name  = await _appPrompt({
+    title: '✎ Name this account',
+    // Not "private": the label goes to the push server with the watch list, so an alert can
+    // say WHICH account is near liquidation. Claiming it never leaves the device would be a
+    // comfortable lie. Naming an address you are only watching also saves it, which is a
+    // change worth stating before it happens rather than after.
+    body: saved
+      ? 'Shown wherever this account appears, and in its push alerts. Stored on this device.'
+      : 'Naming this address also saves it to your accounts. Stored on this device.',
+    placeholder: 'e.g. Main, Degen…',
+    value: cur,
+    confirmText: 'Save name',
+    validate: v => !v.trim() ? 'Please enter a name.'
+      : v.trim().length > 24 ? 'Name must be 24 characters or fewer.' : null,
+  })
+  if (name === null) return                       // dismissed
+  const label = name.trim()
+  if (!label || label === cur) return
+  WM.upsert(addr, label)   // WM.save re-syncs the push subscription, so alerts use the new name
+  // The combined view caches labels on its rows, so patch them rather than refetching every
+  // wallet just to change a string.
+  for (const r of (_allAcctLastResults ?? [])) {
+    if (r.addr.toLowerCase() === String(addr).toLowerCase()) r.label = label
+  }
+  renderWalletStrip(state.addr)
+  renderSavedWallets()
+  _mobVRenderHeader()
+  if (state.isAllAccounts) { try { _allAcctReaggregate() } catch {} }
+  _paperToast('Renamed to ' + label)
+  window._mobVOpenWalletSwitch()   // redraw the drawer with the new name
 }
 
 window._mobVRemoveWallet = async function(addr) {
