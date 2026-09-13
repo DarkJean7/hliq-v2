@@ -235,6 +235,7 @@ import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL,
 import { probeNavGeometry } from './navprobe.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows } from './comboequity.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
+import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
 
 /**
  * Brightness, as a layer over the app rather than a filter on <html>.
@@ -3285,6 +3286,13 @@ function _coinIconHtml(coin, style = '') {
   }
   // Already known to have no artwork — skip the <img> entirely (no blink on re-render)
   if (_iconFailed.has(coin) || _iconResolved.get(coin) === 'letter') return _cgLetterAvatar(coin)
+  // An external market (DXY, gold, the S&P) is not on any coin CDN. Its artwork, when there
+  // is any, is the curated stock/metal/flag map — and CoinGecko is never asked, because its
+  // entry under a ticker like `gold` is a token that borrowed the name.
+  if (isExtMarket(coin)) {
+    const tv = _tradFiIconUrl(EXT_MARKETS[coin].short.toLowerCase())
+    return tv ? _iconImg(coin, _serverIconUrl(coin, [tv]), null, style) : _cgLetterAvatar(coin)
+  }
   const isTradFi = coin.includes(':') || _isTradFiCat(_mktCatMap[coin])
   let raw = coin.replace(/.*:/, '').replace(/[-/].*/, '')
   // Resolve @N spot index tokens and TOKEN/USDC pair names to the real token name
@@ -11279,14 +11287,21 @@ function _mobWatchRotatorStop()  { _mobWatchLastKey = '' }
 // both always format identically.
 function _mobWatchVals(coin) {
   const cached = _watchCandleCache[`${coin}_1D`]
-  const price  = _livePx(coin) || (cached?.candles?.length ? parseFloat(cached.candles.at(-1).c) : null)
-  const pct    = cached?.candles?.length ? (watchChgPct(cached.candles, price) ?? 0) : null
+  // An external market has no mid on Hyperliquid and its move is measured against the
+  // previous session's close, not against the start of the series — see extmarkets.js. The
+  // formatting below is shared, so a dollar index and a coin still read identically.
+  const ext    = _extQuotes[coin]
+  const price  = ext ? ext.price
+    : _livePx(coin) || (cached?.candles?.length ? parseFloat(cached.candles.at(-1).c) : null)
+  const pct    = ext ? ext.pct
+    : cached?.candles?.length ? (watchChgPct(cached.candles, price) ?? 0) : null
   const cls    = pct == null ? 'neu' : pct > 0 ? 'pos' : pct < 0 ? 'neg' : 'neu'
   const arr    = pct == null ? '' : pct > 0 ? '▲' : pct < 0 ? '▼' : '·'
   const chg    = pct == null ? '—' : `${arr} ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
   // Whole dollars for 4+ digit prices — the cell is narrow and a full "$64,380.50"
   // squeezes the body until the 24h% wraps, growing the box.
-  const pxStr = price == null ? '—'
+  const pxStr = ext ? extPriceStr(coin, price)
+    : price == null ? '—'
     : price >= 1000 ? '$' + Math.round(price).toLocaleString('en-US')
     : '$' + fmtPrice(price)
   return { chg, cls, pxStr }
@@ -11300,7 +11315,10 @@ function _mobWatchCell(coin) {
   // position card show two different numbers.
   const { chg, cls, pxStr } = _mobWatchVals(coin)
   const id = _mobWatchId(coin)
-  return `<button class="mob-watch-cell" onclick="window.__watchOpenTrade('${esc(coin)}')">
+  // An external market opens its chart instead of the trade screen — there is nothing to
+  // trade here. Everything else about the cell is the same, which is the point.
+  const open = isExtMarket(coin) ? 'window.__tvOpenChart' : 'window.__watchOpenTrade'
+  return `<button class="mob-watch-cell" onclick="${open}('${esc(coin)}')">
     <span class="mob-watch-cell-ic">${_mobVCoinIcon(coin)}</span>
     <span class="mob-watch-cell-body">
       <span class="mob-watch-cell-name">${esc(watchCoinLabel(coin))}</span>
@@ -11316,7 +11334,10 @@ function _mobWatchRender() {
   // Hide the strip on any full-page view — it's home-tab chrome, not something to sit
   // above a view that owns the whole screen.
   if (_MOBV_FULLPAGE.has(_mobVActiveTab)) { el.style.display = 'none'; return }
-  const list = loadWatchlist()
+  // Coins first, then the external markets. They were missing from this strip entirely —
+  // "dxy is not appearing above under the deposit/withdraw/send" — because it was built from
+  // the coin watchlist alone while they lived in a separate list.
+  const list = [...loadWatchlist(), ...loadTvWatch()]
   if (!list.length) { el.style.display = 'none'; return }
   el.style.display = 'flex'
 
@@ -18704,29 +18725,37 @@ function _mobVRenderContent(tick = false) {
       </div>
       ${!tvList.length
         ? `<div style="padding:2px 16px 22px;font-size:12px;color:var(--muted);line-height:1.5">Watch DXY, indices, gold, oil, yields & forex — charts via TradingView. Tap <b>+ Add market</b>.</div>`
-        // A CARD, not a row. The mini widget degrades by height and it degrades silently:
-        // in the 150x52 cell this used to be, DXY rendered as a name and a spinner — no
-        // price, no line, ever. Measured at four sizes against CAPITALCOM:DXY: 52px is the
-        // header alone, 80px adds the price, 110px adds the change and clips the chart,
-        // 160px is the whole card. Reported as the coins having cards and these not.
+        // The SAME row a coin gets — icon, name, sparkline, price — because that is what was
+        // asked for: "i want the dxy be just exactly as btc currently is". It is the same
+        // markup, the same canvas class and the same live-price attribute, so one set of
+        // renderers draws both; the quote behind it comes from /extquote instead of from
+        // Hyperliquid (src/extmarkets.js explains why it has to).
         //
-        // The widget draws its own icon, name, price and change, so the card is just the
-        // frame around it. It stays pointer-events:none — as it was in the row — with our
-        // own transparent button over it, so a tap opens the full chart here rather than
-        // navigating away to tradingview.com.
-        : tvList.map(sym => `<div class="mob-tv-card">
-              <div class="mob-tv-mini" id="tvmini-${_tvId(sym)}"></div>
-              <button class="mob-tv-open" onclick="window.__tvOpenChart('${esc(sym)}')"
-                aria-label="${esc(_tvLabel(sym))} — open chart"></button>
-              <button class="mob-tv-x" onclick="event.stopPropagation();window.__tvRemove('${esc(sym)}')"
-                aria-label="Remove ${esc(_tvLabel(sym))}">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        // A market with no quote yet (or one this server cannot price, like BTC dominance)
+        // still renders, with a dash where the number goes. It is watched either way.
+        : tvList.map(sym => {
+            const { pxStr } = _mobWatchVals(sym)
+            const cid = 'watchspark-' + _tvId(sym)
+            return `<div class="mob-v-row mob-watch-row">
+              ${_mobVCoinIcon(sym)}
+              <div class="mob-v-row-info" onclick="window.__tvOpenChart('${esc(sym)}')" style="cursor:pointer">
+                <div class="mob-v-row-name">${esc(_tvShort(sym))}</div>
+                <div class="mob-v-row-sub notranslate">${esc(_tvKind(sym))}</div>
+              </div>
+              <canvas class="mob-watch-spark" id="${cid}" data-coin="${esc(sym)}"
+                width="132" height="40" style="cursor:pointer"></canvas>
+              <div class="mob-watch-mid-px" data-wcoin="${esc(sym)}">${pxStr}</div>
+              <button onclick="window.__tvRemove('${esc(sym)}')" style="background:none;border:none;color:var(--muted);padding:8px 4px 8px 8px;cursor:pointer;flex-shrink:0;line-height:0">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
-            </div>`).join('')
+            </div>`
+          }).join('')
       }
     `
     if (list.length) { _mobWatchDrawSparks(); _ensureTickerCandles() }
-    if (tvList.length) _tvMountMinis()
+    // Force, rather than waiting out the one-minute throttle: the tab was just opened and an
+    // empty row is the thing being looked at. Draws the sparklines again when it lands.
+    if (tvList.length) _ensureExtQuotes(true).then(() => _mobWatchDrawSparks())
     return
   }
 
@@ -28836,6 +28865,9 @@ function watchMarketType(coin) {
 
 // Resolve @N → display name, or return perp coin name as-is
 function watchCoinLabel(coin) {
+  // An external market is named by its ticker, not by its TradingView feed: "DXY", never
+  // "CAPITALCOM:DXY".
+  if (isExtMarket(coin)) return _tvShort(coin)
   // HIP-3 markets are prefixed "dex:SYM" — strip the dex so it reads "SPCX", not "xyz:SPCX"
   if (typeof coin === 'string' && coin.includes(':')) return coinLabel(coin)
   return _watchSpotNameMap?.[coin] ?? coin
@@ -29210,7 +29242,47 @@ window.__watchSetTf = async function(tf) {
 // show the 24h % change — even before the Watch tab has been opened. Self-guarded
 // by TTL + an in-flight flag, and uses its own request (won't abort the Watch tab).
 let _tickerFetching = false
+/**
+ * Prices and series for the markets Hyperliquid does not carry.
+ *
+ * Every watched external market in one request to our own server, which holds the symbol
+ * whitelist and a one-minute cache (see /extquote in serve-prod.js and src/extmarkets.js).
+ *
+ * The result is written into `_watchCandleCache` under the same `<sym>_1D` key a coin uses,
+ * in the same `{ candles: [{ c }] }` shape. That is the whole trick behind DXY looking like
+ * BTC: the sparkline, the scrub, the ticker cell and the row are the coin renderers, reading
+ * the coin cache, and none of them needs to know what an external market is.
+ */
+const _extQuotes = {}          // TradingView symbol -> { price, pct, points }
+let _extFetchedAt = 0
+let _extFetching  = false
+async function _ensureExtQuotes(force = false) {
+  const list = loadTvWatch().filter(isExtMarket)
+  if (!list.length || _extFetching) return
+  if (!force && Date.now() - _extFetchedAt < 60_000) return
+  _extFetching = true
+  try {
+    const r = await fetch('/extquote?s=' + encodeURIComponent(list.join(',')))
+    if (!r.ok) return
+    const { quotes } = await r.json()
+    let got = false
+    for (const [sym, q] of Object.entries(quotes ?? {})) {
+      if (!q || !Array.isArray(q.points) || q.points.length < 2) continue
+      _extQuotes[sym] = q
+      _watchCandleCache[`${sym}_1D`] = { ts: Date.now(), candles: q.points.map(c => ({ c })) }
+      got = true
+    }
+    if (got) {
+      _extFetchedAt = Date.now()
+      _mobWatchRender()
+      if (_mobVActiveTab === 'watch') _mobWatchDrawSparks()
+    }
+  } catch { /* the row shows a dash until the next poll */ }
+  finally { _extFetching = false }
+}
+
 async function _ensureTickerCandles() {
+  _ensureExtQuotes()          // external markets ride the same refresh as the coins
   if (_hlLimited()) return   // global 429 breaker
   const list = loadWatchlist()
   if (!list.length || _tickerFetching) return
@@ -29232,7 +29304,9 @@ async function _ensureTickerCandles() {
 }
 
 function updateWatchTicker() {
-  const list   = loadWatchlist()
+  // The desktop half of the same strip, and the same omission: external markets were watched
+  // but appeared in neither. One watchlist, both shells.
+  const list   = [...loadWatchlist(), ...loadTvWatch()]
   const mids   = state.allMids ?? {}
   const ticker = document.getElementById('watchTicker')
   const track  = document.getElementById('watchTickerTrack')
@@ -29242,6 +29316,18 @@ function updateWatchTicker() {
   ticker.style.display = 'flex'
 
   track.innerHTML = list.map(coin => {
+    // An external market's price and change are already formatted for its units (an index
+    // level has no dollar sign, a yield is a percentage), so take them whole rather than
+    // reformatting them here as dollars.
+    if (isExtMarket(coin)) {
+      const { chg, cls, pxStr } = _mobWatchVals(coin)
+      return `<span class="watch-ticker-item" onclick="window.__tvOpenChart('${esc(coin)}')">
+        <span class="watch-ticker-ic">${_coinIconHtml(coin)}</span>
+        <span class="watch-ticker-coin">${esc(watchCoinLabel(coin))}</span>
+        <span class="watch-ticker-price">${pxStr}</span>
+        <span class="watch-ticker-chg ${cls}">${chg}</span>
+      </span>`
+    }
     const cached1D  = _watchCandleCache[`${coin}_1D`]
     const lastClose = cached1D?.candles?.length ? parseFloat(cached1D.candles[cached1D.candles.length - 1].c) : null
     const price     = mids[coin] ? parseFloat(mids[coin]) : lastClose
@@ -29468,6 +29554,11 @@ function loadTvWatch() {
 }
 function saveTvWatch(list) { localStorage.setItem(TV_WATCH_KEY, JSON.stringify(list)) }
 function _tvLabel(sym) { return _tvLabelMap[sym] || String(sym).replace(/.*:/, '') }
+// The ticker as it belongs in a row, and what kind of thing it is — the two lines a coin row
+// spends on "BTC" and "Perp". Falls back to the bare symbol for a market we carry no quote
+// for, so it still reads as a row rather than as a blank.
+function _tvShort(sym) { return EXT_MARKETS[sym]?.short ?? String(sym).replace(/.*:/, '') }
+function _tvKind(sym)  { return EXT_MARKETS[sym]?.kind  ?? 'Market' }
 function _tvId(sym) { return String(sym).replace(/[^a-z0-9]/gi, '_') }
 function _tvTheme() { return document.body.classList.contains('light-theme') ? 'light' : 'dark' }
 
@@ -29492,19 +29583,10 @@ function _tvInject(el, src, config) {
   el.appendChild(c)
 }
 
-// Mount a compact live mini-chart into each external market row.
-function _tvMountMinis() {
-  for (const sym of loadTvWatch()) {
-    const el = document.getElementById('tvmini-' + _tvId(sym))
-    if (el && !el.dataset.mounted) {
-      el.dataset.mounted = '1'
-      _tvInject(el, 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js', {
-        symbol: sym, width: '100%', height: '100%', locale: 'en', dateRange: '1M',
-        colorTheme: _tvTheme(), isTransparent: true, autosize: true,
-      })
-    }
-  }
-}
+// The mini-symbol-overview widget used to draw these rows. It is gone: it hid its own price
+// and chart at row height (a name and a spinner, silently, below ~160px) and it could never
+// have appeared in the home ticker strip, which is not an iframe. /extquote feeds the coin
+// renderers instead. The full-size TradingView chart is still what a tap opens.
 
 // Full-screen advanced chart overlay.
 window.__tvOpenChart = function(sym) {

@@ -5514,35 +5514,11 @@ body.layout-mobile .nav-tabs { display: none !important; }
   cursor: pointer;
 }
 
-/* A watched external market (DXY, gold, yields) is a CARD. Its chart comes from a
-   TradingView mini widget, which we cannot draw ourselves — HL has no feed for these — and
-   that widget hides content as it gets shorter, with no error: at the 52px of the row this
-   replaced it showed a name and a spinner and nothing else. 160px is the first height that
-   renders the whole thing (price, change, sparkline, axis), measured symbol by symbol. */
-.mob-tv-card {
-  position: relative; margin: 0 16px 10px;
-  background: var(--panel-2); border: 1px solid var(--border);
-  border-radius: 12px; overflow: hidden;
-}
-/* Not interactive on purpose: a tap inside the iframe would leave the app for
-   tradingview.com. .mob-tv-open sits over it and opens our own full chart instead. */
-.mob-tv-mini { height: 160px; pointer-events: none; }
-.mob-tv-open {
-  position: absolute; inset: 0; z-index: 1;
-  background: none; border: none; padding: 0; cursor: pointer;
-}
-/* Top-right but INSIDE of the widget's own TradingView badge, which sits at right:8 and is
-   ~28px across. That badge is the widget's attribution, so it is not ours to cover; the rest
-   of that strip is empty. Bottom-right was the other candidate and it sat on the end of the
-   sparkline — the newest part of the line, which is the part worth seeing. */
-.mob-tv-x {
-  position: absolute; top: 7px; right: 44px; z-index: 2;
-  display: flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; border-radius: 50%;
-  background: rgba(0, 0, 0, .45); border: 1px solid var(--border);
-  color: var(--muted); cursor: pointer; line-height: 0;
-}
-.mob-tv-x:hover { color: var(--fg); background: rgba(0, 0, 0, .65); }
+/* A watched external market (DXY, gold, yields) renders as the SAME row as a coin — same
+   icon, same sparkline canvas, same price cell — so there is nothing extra to style here.
+   It was briefly a 160px card wrapping a TradingView mini widget, because that widget needs
+   that height to draw anything at all; the card is gone because the widget is. Its quote now
+   comes from /extquote and the coin renderers draw it. */
 
 .mob-v-actions {
   display: flex;

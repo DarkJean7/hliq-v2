@@ -8,6 +8,7 @@ import { createReadStream, statSync, existsSync, writeFileSync, mkdirSync, readF
 import { join, extname, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coinGeckoUpgrade } from './src/iconpick.js'
+import { EXT_MARKETS, extYahoo, extChartUrl, parseChart } from './src/extmarkets.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DIST      = join(__dirname, 'dist')
@@ -18,6 +19,10 @@ const NOTIFY_PORT = 3001
 // TradingView symbol search (see the /tvsearch route). query|exchange → { at, body }.
 const tvSearchCache = new Map()
 const TV_SEARCH_TTL = 10 * 60_000
+
+// External market quotes (see the /extquote route). TradingView symbol -> { at, q }.
+const extQuoteCache = new Map()
+const EXT_QUOTE_TTL = 60_000
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -298,6 +303,43 @@ createServer((req, res) => {
       } catch {
         res.writeHead(502, { 'Content-Type': 'application/json' }).end('{"symbols":[]}')
       }
+    })()
+    return
+  }
+
+  // ── External market quotes (DXY, gold, yields, forex) ────────────────────────
+  // Hyperliquid has no feed for these, so the Watch tab used to draw them as a TradingView
+  // embed: a different shape from a coin row, and nothing the home ticker strip could read.
+  // This hands the client the same three things it has for a coin — a price, a change and a
+  // series — so one renderer draws both. src/extmarkets.js has the why and the symbol map.
+  //
+  // The client names a MARKET, never a URL: anything outside that map is rejected, so this
+  // cannot be turned into an open proxy. Answers are memoised for a minute because every
+  // client with DXY watched asks for the same row on the same poll, and the underlying quote
+  // does not move faster than that.
+  if (url === '/extquote') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const qs   = new URLSearchParams(req.url.split('?')[1] || '')
+    const want = (qs.get('s') || '').split(',').map(s => s.trim()).filter(s => EXT_MARKETS[s]).slice(0, 20)
+    if (!want.length) { res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"quotes":{}}'); return }
+    ;(async () => {
+      const quotes = {}
+      await Promise.all(want.map(async (sym) => {
+        const hit = extQuoteCache.get(sym)
+        if (hit && Date.now() - hit.at < EXT_QUOTE_TTL) { quotes[sym] = hit.q; return }
+        try {
+          const r = await fetch(extChartUrl(extYahoo(sym)), {
+            headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000),
+          })
+          if (!r.ok) return
+          const q = parseChart(await r.json())
+          // A symbol that answers with no series is left OUT of the reply rather than sent as
+          // a zero. The row then shows a dash, which is the truth: we do not know its price.
+          if (q) { extQuoteCache.set(sym, { at: Date.now(), q }); quotes[sym] = q }
+        } catch { /* leave it out */ }
+      }))
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' })
+         .end(JSON.stringify({ quotes }))
     })()
     return
   }
