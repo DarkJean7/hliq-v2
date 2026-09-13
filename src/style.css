@@ -1855,13 +1855,14 @@ tbody td {
 .cal-nav-btn:hover { background: var(--bg3); }
 /* Ten cards at three across was four rows of chrome before the month itself started. Five
    across makes it two, and the cards below are compacted to match -- the calendar is the
-   point of this tab, the summary is the caption. */
+   point of this tab, the summary is the caption. (Nine cards since Green / Red Days was
+   removed: still two rows here, four and five.) */
 .cal-summary {
   display: grid; grid-template-columns: repeat(5, 1fr);
   gap: 8px; margin-bottom: 12px;
 }
 /* Scoped to the calendar on purpose: .stat-card is shared with the overview, portfolio and
-   account cards, which are sized for reading one at a time rather than ten in a block. */
+   account cards, which are sized for reading one at a time rather than a block of nine. */
 .cal-summary .stat-card { padding: 9px 11px; }
 .cal-summary .stat-label { margin-bottom: 4px; }
 .cal-summary .stat-value { font-size: 13px; }
@@ -4989,11 +4990,12 @@ body.layout-mobile .nav-tabs { display: none !important; }
 
   /* ── Calendar ── */
   /* Two across meant FIVE rows of summary above a 38px month — the cards were taller than
-     the thing they describe. Three across is four rows, and the card itself is stripped down
-     to a label and a number so each row is a little over half what it was. */
+     the thing they describe. Three across is four rows (three, now that Green / Red Days is
+     gone), and the card itself is stripped down to a label and a number so each row is a
+     little over half what it was. */
   .cal-summary { grid-template-columns: repeat(3, 1fr); gap: 5px; margin-bottom: 8px; }
   .cal-summary .stat-card { padding: 6px 7px; min-width: 0; }
-  /* Tighter tracking so "Avg / Trading Day" and "Green / Red Days" still fit a narrow card. */
+  /* Tighter tracking so "Avg / Trading Day" — the longest label left — still fits a narrow card. */
   .cal-summary .stat-label { font-size: 8px; letter-spacing: 0.04em; margin-bottom: 2px; }
   .cal-summary .stat-value { font-size: 12px; }
   .cal-summary .stat-sub { font-size: 9px; margin-top: 2px; }
