@@ -2440,26 +2440,60 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
     return y === year && m === month + 1
   })
   const monthPnl   = monthKeys.reduce((s, k) => s + byDay[k].pnl, 0)
-  // Days that actually TRADED. byDay also holds deposit-only days (pnl 0, no fills), and a
-  // transfer is not a day's result: leaving them in would let a $0 deposit day take Worst Day
-  // away from the real answer. A day whose closing fills happen to net to zero is a trading
-  // day and stays in — that is a genuine $0 result, not an absence of one.
+  // Days that actually traded — what "277 trades over 11 days" counts.
   const tradedKeys = monthKeys.filter(k => byDay[k].trades > 0)
-  const bestDay    = tradedKeys.reduce((b, k) => byDay[k].pnl > (byDay[b]?.pnl ?? -Infinity) ? k : b, tradedKeys[0])
+
+  /**
+   * Every day of this month that has HAPPENED, traded or not.
+   *
+   * A day you did not trade is a $0 day, not a missing one — reported exactly that way: "the
+   * current worst day now should be day 12 which did not did a trade or profit so it should
+   * be $0". Best, Worst and the average all read from this, so a flat day competes with the
+   * traded ones and the average is diluted by it, which is what makes those three numbers
+   * describe the month rather than a subset of it.
+   *
+   * Bounded at both ends, because neither end is the calendar's:
+   *   START  the first day this account has any history for. A month that began before the
+   *          account did would otherwise open with a run of $0 days nobody lived through,
+   *          dragging the average down for a period the user was not even here.
+   *   END    today. Tomorrow has not happened, and counting the rest of the month as $0 days
+   *          would make every average shrink for the rest of the month.
+   */
+  const dayKeyOf   = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+  const midnightOf = (ts) => { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d }
+  // Spread would blow the stack on a long fill history, so reduce. Ledger counts too: funding
+  // an account is history, even before the first trade.
+  const earliest = [...fills, ...ledger].reduce((m, x) => (x?.time < m ? x.time : m), Infinity)
+  const elapsedKeys = []
+  if (Number.isFinite(earliest)) {
+    const histStart = midnightOf(earliest)
+    const from  = histStart > firstDay ? histStart : firstDay
+    const today = midnightOf(Date.now())
+    const to    = today < lastDay ? today : lastDay
+    for (const d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) elapsedKeys.push(dayKeyOf(d))
+  }
+  // An elapsed day with no entry in byDay traded nothing and moved nothing: $0.
+  const pnlOf      = (k) => byDay[k]?.pnl ?? 0
+  const bestDay    = elapsedKeys.reduce((b, k) => pnlOf(k) > pnlOf(b) ? k : b, elapsedKeys[0])
   // The LEAST profitable day, whatever its sign. This used to render '—' unless the day was
-  // negative, so a month with no red days showed nothing at all — the reported case: eleven
-  // green days and a blank Worst Day, when the answer was the smallest of those eleven.
-  const worstDay   = tradedKeys.reduce((w, k) => byDay[k].pnl < (byDay[w]?.pnl ?? Infinity) ? k : w, tradedKeys[0])
+  // negative, so a month with no red days showed nothing at all — eleven green days and a
+  // blank Worst Day, when the answer was the smallest of those eleven. Ties go to the
+  // earliest day, both here and above, because `>` and `<` are strict.
+  const worstDay   = elapsedKeys.reduce((w, k) => pnlOf(k) < pnlOf(w) ? k : w, elapsedKeys[0])
   const monthDeposited = monthKeys.reduce((s, k) => s + (byDay[k].deposited || 0), 0)
   const monthWithdrawn = monthKeys.reduce((s, k) => s + (byDay[k].withdrawn || 0), 0)
   const monthVolume    = Object.keys(volByDay).reduce((s, k) => {
     const [y, m] = k.split('-').map(Number)
     return (y === year && m === month + 1) ? s + volByDay[k] : s
   }, 0)
-  // Averaged over days that actually traded, not over the calendar. Dividing by 31 would
-  // report a number no day resembles and would shrink every time the month got longer.
-  const tradedDays = tradedKeys.length
-  const avgDayPnl  = tradedDays > 0 ? monthPnl / tradedDays : null
+  // Averaged over the days that have HAPPENED, not over the days that traded. The old
+  // denominator skipped flat days, so a month that made $1,053 across eleven trading days
+  // and two quiet ones reported $95.74/day for a stretch that actually returned $81.01/day —
+  // "avg. trading day pnl is also missing to calculate that day and the current".
+  // Still not the whole calendar: the days after today have not happened.
+  const tradedDays  = tradedKeys.length
+  const elapsedDays = elapsedKeys.length
+  const avgDayPnl   = elapsedDays > 0 ? monthPnl / elapsedDays : null
   const monthFills = monthKeys.reduce((s, k) => s + (byDay[k].trades || 0), 0)
 
   /**
@@ -2533,13 +2567,17 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
   // blank Worst Day, and a month of red ones would have shown Best Day as '+$-160.97'.
   const dayAmt = (key) => {
     if (!key) return '—'
-    const v = byDay[key].pnl
+    const v = pnlOf(key)
     return (v > 0 ? '+$' : v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v))
   }
   const dayCls = (key) => {
-    const v = key ? byDay[key].pnl : 0
+    const v = key ? pnlOf(key) : 0
     return v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu'
   }
+  // A quiet day can now win either card, and its cell in the grid below is blank — so the
+  // caption says why the number is $0 rather than leaving a date pointing at an empty square.
+  const daySub = (key) => !key ? ''
+    : fmtDayLabel(key) + (byDay[key]?.trades > 0 ? '' : ' · no trades')
 
   root.innerHTML = `
     <div class="cal-header-row">
@@ -2555,18 +2593,18 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
       <div class="stat-card">
         <div class="stat-label">Best Day</div>
         <div class="stat-value ${dayCls(bestDay)}">${dayAmt(bestDay)}</div>
-        ${bestDay ? `<div class="stat-sub">${fmtDayLabel(bestDay)}</div>` : ''}
+        ${bestDay ? `<div class="stat-sub">${daySub(bestDay)}</div>` : ''}
       </div>
       <div class="stat-card">
         <div class="stat-label">Worst Day</div>
         <div class="stat-value ${dayCls(worstDay)}">${dayAmt(worstDay)}</div>
-        ${worstDay ? `<div class="stat-sub">${fmtDayLabel(worstDay)}</div>` : ''}
+        ${worstDay ? `<div class="stat-sub">${daySub(worstDay)}</div>` : ''}
       </div>
       <div class="stat-card">
-        <div class="stat-label">Avg / Trading Day</div>
+        <div class="stat-label">Avg / Day</div>
         <div class="stat-value ${avgDayPnl == null ? 'neu' : avgDayPnl >= 0 ? 'pos' : 'neg'}">${
           avgDayPnl == null ? '—' : (avgDayPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(avgDayPnl))}</div>
-        ${tradedDays ? `<div class="stat-sub">over ${tradedDays} day${tradedDays !== 1 ? 's' : ''}</div>` : ''}
+        ${elapsedDays ? `<div class="stat-sub">over ${elapsedDays} day${elapsedDays !== 1 ? 's' : ''}</div>` : ''}
       </div>
       <div class="stat-card">
         <div class="stat-label">Max Drawdown</div>

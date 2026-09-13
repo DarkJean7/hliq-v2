@@ -4995,7 +4995,8 @@ body.layout-mobile .nav-tabs { display: none !important; }
      little over half what it was. */
   .cal-summary { grid-template-columns: repeat(3, 1fr); gap: 5px; margin-bottom: 8px; }
   .cal-summary .stat-card { padding: 6px 7px; min-width: 0; }
-  /* Tighter tracking so "Avg / Trading Day" — the longest label left — still fits a narrow card. */
+  /* Tighter tracking so the longest labels left — "Max Drawdown", "Month Volume" — still fit
+     a narrow card. */
   .cal-summary .stat-label { font-size: 8px; letter-spacing: 0.04em; margin-bottom: 2px; }
   .cal-summary .stat-value { font-size: 12px; }
   .cal-summary .stat-sub { font-size: 9px; margin-top: 2px; }

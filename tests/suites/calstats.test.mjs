@@ -1,4 +1,5 @@
-// Calendar month summary: average PnL per trading day, and traded volume.
+// Calendar month summary: which days count, what the best and worst of them are, and the
+// average and volume over them.
 import fs from 'fs'
 const src = fs.readFileSync('src/render.js', 'utf8').replace(/\r\n/g, '\n')
 
@@ -49,104 +50,172 @@ t('the month is filtered by year AND month', src.includes('return (y === year &&
 t('and rendered compactly', src.includes("'$' + fmtCompact(monthVolume)"))
 t('zero volume reads as $0, not a dash', src.includes("monthVolume > 0 ? '$' + fmtCompact(monthVolume) : '$0'"))
 
-console.log(String.fromCharCode(10) + '-- the average is per TRADING day --')
-// Dividing by the calendar would report a number no day resembles, and would shrink
-// purely because a month is longer.
-// Was green + red days counted separately, which existed only to feed the Green / Red Days
-// card. That card is gone and the denominator is now the one population the whole summary
-// uses: days that traded.
-t('the denominator is the days that traded', src.includes('const tradedDays = tradedKeys.length'))
-t('and a trading day is one with fills, not one with a non-zero result',
+console.log(String.fromCharCode(10) + '-- the average is per day ELAPSED, not per day traded --')
+// Reported: "avg. trading day pnl is also missing to calculate that day and the current".
+// $1,053.19 across eleven trading days read as $95.74/day while the month was thirteen days
+// old — a rate the account did not earn. A flat day is part of how the month went.
+t('the denominator is the days that have happened', src.includes('const elapsedDays = elapsedKeys.length'))
+t('and it is null, not zero, when the month has not started', src.includes('elapsedDays > 0 ? monthPnl / elapsedDays : null'))
+t('the card no longer claims to be per TRADING day', src.includes('<div class="stat-label">Avg / Day</div>'))
+t('days that traded are still counted, for Trades Made', src.includes('const tradedDays  = tradedKeys.length') &&
   src.includes('const tradedKeys = monthKeys.filter(k => byDay[k].trades > 0)'))
+t('and that card is the one that still says "over N days" of trading',
+  src.includes('${monthFills}') && src.includes('over ${tradedDays} day'))
 t('the Green / Red Days card is gone', !src.includes('Green / Red Days'))
 t('and nothing still counts green and red separately',
   !src.includes('greenDays') && !src.includes('redDays'))
-t('and it is null, not zero, when nothing traded', src.includes('tradedDays > 0 ? monthPnl / tradedDays : null'))
 t('no-trade months render a dash', src.includes("avgDayPnl == null ? '—'"))
 t('the sign is explicit', src.includes("(avgDayPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(avgDayPnl))"))
 t('the colour follows the sign', src.includes("avgDayPnl == null ? 'neu' : avgDayPnl >= 0 ? 'pos' : 'neg'"))
-t('the day count is shown so the figure can be checked', src.includes('over ${tradedDays} day'))
-t('and pluralised', src.includes("tradedDays !== 1 ? 's' : ''"))
-t('why the calendar is not the denominator is recorded', src.includes('report a number no day resembles'))
+t('the day count is shown so the figure can be checked', src.includes('over ${elapsedDays} day'))
+t('and pluralised', src.includes("elapsedDays !== 1 ? 's' : ''"))
+t('why the rest of the month is not counted is recorded', src.includes('Tomorrow has not happened'))
 
-const avg = new Function('monthPnl', 'tradedDays', `
-  return tradedDays > 0 ? monthPnl / tradedDays : null`)
+const avg = new Function('monthPnl', 'elapsedDays', `
+  return elapsedDays > 0 ? monthPnl / elapsedDays : null`)
 t('121.35 over 8 days is 15.17', Math.abs(avg(121.35, 8) - 15.16875) < 1e-6)
 t('a losing month averages negative', avg(-100, 5) === -20)
-t('a month with no trades is null', avg(0, 0) === null)
+t('a month that has not begun is null', avg(0, 0) === null)
+// The reported figures, end to end.
+t('the reported month averages 81.01, not 95.74', Math.abs(avg(1053.19, 13) - 81.0146) < 1e-3)
 
-console.log(String.fromCharCode(10) + '-- best and worst day are the best and worst day --')
-// Reported: eleven green days, zero red, and Worst Day showed a dash. It rendered only when
-// the day was negative, so a month that never lost money reported no worst day at all —
-// "make worst day be the less profitable day, it can be positive or 0, and of course
-// negative". The same hardcoded sign sat on Best Day, which would have printed '+$-160.97'
-// for a month where every day lost.
+console.log(String.fromCharCode(10) + '-- every day that HAPPENED is a day, traded or not --')
+// Reported: "the current worst day now should be day 12 which did not did a trade or profit
+// so it should be $0 not +13.56". Best and Worst used to run over the days that traded, so a
+// quiet day could not win either — the month's worst day was the smallest PROFIT rather than
+// the day nothing came in. A flat day is a $0 day, not a missing one.
 const day = (pnl, trades = 1, deposited = 0) => ({ pnl, trades, deposited, withdrawn: 0 })
-const pick = new Function('byDay', `
-  const monthKeys  = Object.keys(byDay)
+const SEP = (d) => '2026-09-' + String(d).padStart(2, '0')
+const at  = (y, m, d) => new Date(y, m, d, 12).getTime()
+
+// Mirrors the source: the elapsed window, the $0 default, the two reduces and the three
+// renderers. Each line is pinned to src by an assertion below, so a divergence shows up.
+const pick = new Function('byDay', 'year', 'month', 'earliest', 'nowTs', `
+  const firstDay  = new Date(year, month, 1)
+  const lastDay   = new Date(year, month + 1, 0)
+  const monthKeys = Object.keys(byDay).filter(k => {
+    const [y, m] = k.split('-').map(Number)
+    return y === year && m === month + 1
+  })
+  const monthPnl   = monthKeys.reduce((s, k) => s + byDay[k].pnl, 0)
   const tradedKeys = monthKeys.filter(k => byDay[k].trades > 0)
-  const bestDay    = tradedKeys.reduce((b, k) => byDay[k].pnl > (byDay[b]?.pnl ?? -Infinity) ? k : b, tradedKeys[0])
-  const worstDay   = tradedKeys.reduce((w, k) => byDay[k].pnl < (byDay[w]?.pnl ?? Infinity) ? k : w, tradedKeys[0])
+  const dayKeyOf   = (d) => d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0')
+  const midnightOf = (ts) => { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d }
+  const elapsedKeys = []
+  if (Number.isFinite(earliest)) {
+    const histStart = midnightOf(earliest)
+    const from  = histStart > firstDay ? histStart : firstDay
+    const today = midnightOf(nowTs)
+    const to    = today < lastDay ? today : lastDay
+    for (const d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) elapsedKeys.push(dayKeyOf(d))
+  }
+  const pnlOf    = (k) => byDay[k]?.pnl ?? 0
+  const bestDay  = elapsedKeys.reduce((b, k) => pnlOf(k) > pnlOf(b) ? k : b, elapsedKeys[0])
+  const worstDay = elapsedKeys.reduce((w, k) => pnlOf(k) < pnlOf(w) ? k : w, elapsedKeys[0])
   const amt = (key) => {
     if (!key) return '—'
-    const v = byDay[key].pnl
+    const v = pnlOf(key)
     return (v > 0 ? '+$' : v < 0 ? '-$' : '$') + Math.abs(v).toFixed(2)
   }
-  const cls = (key) => { const v = key ? byDay[key].pnl : 0; return v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu' }
+  const cls = (key) => { const v = key ? pnlOf(key) : 0; return v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu' }
+  const sub = (key) => !key ? '' : key + (byDay[key]?.trades > 0 ? '' : ' \\u00b7 no trades')
   return { bestDay, worstDay, best: amt(bestDay), worst: amt(worstDay),
-           bestCls: cls(bestDay), worstCls: cls(worstDay), tradedDays: tradedKeys.length }`)
+           bestCls: cls(bestDay), worstCls: cls(worstDay), worstSub: sub(worstDay),
+           elapsedDays: elapsedKeys.length, tradedDays: tradedKeys.length,
+           avg: elapsedKeys.length ? monthPnl / elapsedKeys.length : null }`)
 
 {
-  // The reported month: every day green.
-  const r = pick({ '2026-09-09': day(160.97), '2026-09-10': day(12.40), '2026-09-11': day(95.02) })
-  t('an all-green month still has a worst day', r.worstDay === '2026-09-10', r)
-  t('and it reads as the positive number it is', r.worst === '+$12.40', r)
-  t('coloured green, because it made money', r.worstCls === 'pos', r)
-  t('best day is unaffected', r.best === '+$160.97' && r.bestCls === 'pos', r)
+  // THE REPORTED MONTH. Eleven traded days, day 12 quiet, day 13 is today and has not traded.
+  // The reported figures: $1,053.19 over eleven days, best $160.97 on the 11th, and $13.56
+  // on the 7th — which was being shown as the worst day.
+  const byDay = {}
+  const pnls = [103.60, 94.29, 125.40, 95.08, 88.22, 127.30, 13.56, 35.01, 107.44, 102.32, 160.97]
+  pnls.forEach((v, i) => { byDay[SEP(i + 1)] = day(v, 20) })
+  const r = pick(byDay, 2026, 8, at(2026, 8, 1), at(2026, 8, 13))
+  t('the fixture is the reported month', Math.abs(pnls.reduce((s, x) => s + x, 0) - 1053.19) < 1e-9)
+  t('the worst day is the quiet one, not the smallest profit', r.worstDay === SEP(12), r)
+  t('and it reads $0.00', r.worst === '$0.00', r)
+  t('neutral, because nothing happened', r.worstCls === 'neu', r)
+  t('captioned so the blank cell in the grid is explained', r.worstSub.endsWith('· no trades'), r)
+  t('the best day is still the best traded day', r.bestDay === SEP(11) && r.best === '+$160.97', r)
+  t('thirteen days have happened, not eleven', r.elapsedDays === 13 && r.tradedDays === 11, r)
+  t('so the average is 81.01, not the 95.74 it showed', Math.abs(r.avg - 81.0146) < 0.01, r.avg)
 }
 {
-  // The mirror case, which would have printed '+$-5.00' before.
-  const r = pick({ '2026-09-01': day(-5), '2026-09-02': day(-120.5) })
-  t('an all-red month prints Best Day with a minus, not a plus', r.best === '-$5.00', r)
-  t('and colours it red', r.bestCls === 'neg', r)
-  t('worst is the deeper loss', r.worst === '-$120.50' && r.worstDay === '2026-09-02', r)
+  // Tomorrow is not a $0 day. Counting the whole month would shrink the average every day.
+  const r = pick({ [SEP(1)]: day(300, 4) }, 2026, 8, at(2026, 8, 1), at(2026, 8, 3))
+  t('the rest of the month is not counted', r.elapsedDays === 3, r)
+  t('and the average is over what has happened', r.avg === 100, r)
+  t('a future day cannot be the worst day', r.worstDay === SEP(2), r)
 }
 {
-  const r = pick({ '2026-09-01': day(40), '2026-09-02': day(0), '2026-09-03': day(-10) })
-  t('a break-even trading day can be neither best nor worst when both sides exist',
-    r.bestDay === '2026-09-01' && r.worstDay === '2026-09-03', r)
-  t('and it counts as a trading day', r.tradedDays === 3, r)
+  // A month that began before the account did must not open with $0 days nobody lived through.
+  const r = pick({ [SEP(7)]: day(50, 2), [SEP(9)]: day(-20, 3) },
+    2026, 8, at(2026, 8, 7), at(2026, 8, 10))
+  t('the window starts at the first day of history', r.elapsedDays === 4, r)
+  t('so days before the account existed are not $0 days', r.worstDay === SEP(9), r)
+  t('and the average divides by four, not ten', Math.abs(r.avg - 7.5) < 1e-9, r)
 }
 {
-  // Exactly zero is a result a day can have, and it must not print a sign.
-  const r = pick({ '2026-09-01': day(0), '2026-09-02': day(30) })
-  t('a zero day reads as $0.00, with no sign', r.worst === '$0.00', r)
-  t('and is coloured neutral', r.worstCls === 'neu', r)
+  // A whole past month counts to its last day, not to today.
+  const byDay = { '2026-08-04': day(-40, 2), '2026-08-20': day(10, 1) }
+  const r = pick(byDay, 2026, 7, at(2026, 7, 1), at(2026, 8, 13))
+  t('a past month counts every one of its days', r.elapsedDays === 31, r)
+  t('the worst day is still the losing one', r.worstDay === '2026-08-04' && r.worst === '-$40.00', r)
 }
 {
-  // A deposit is not a day's trading result. Counting it would hand Worst Day to a $0 day
-  // that never traded.
-  const r = pick({ '2026-09-01': day(0, 0, 5000), '2026-09-02': day(25), '2026-09-03': day(80) })
-  t('a deposit-only day cannot take Worst Day', r.worstDay === '2026-09-02', r)
-  t('nor pad the trading-day count', r.tradedDays === 2, r)
+  // Consistency: if every trading day lost, the best day is the day you did not trade.
+  const r = pick({ [SEP(1)]: day(-5, 1), [SEP(2)]: day(-120.5, 2) },
+    2026, 8, at(2026, 8, 1), at(2026, 8, 3))
+  t('a flat day can be the BEST day in a losing month', r.bestDay === SEP(3) && r.best === '$0.00', r)
+  t('worst is still the deeper loss', r.worst === '-$120.50' && r.worstCls === 'neg', r)
 }
 {
-  const r = pick({})
-  t('a month with nothing in it has no best or worst', r.bestDay === undefined && r.worstDay === undefined)
-  t('and renders a dash rather than throwing', r.best === '—' && r.worst === '—', r)
-  t('with a neutral colour', r.worstCls === 'neu')
+  // A deposit is not a trading result, but the day it happened is still a $0 day like any
+  // other quiet day — the distinction the caption carries.
+  const r = pick({ [SEP(1)]: day(0, 0, 5000), [SEP(2)]: day(25, 3) },
+    2026, 8, at(2026, 8, 1), at(2026, 8, 2))
+  t('a deposit-only day is a $0 day', r.worstDay === SEP(1) && r.worst === '$0.00', r)
+  t('and is captioned as untraded', r.worstSub.endsWith('· no trades'), r)
+  t('it does not count as a trading day', r.tradedDays === 1, r)
 }
-t('the renderer really is sign-aware', src.includes("(v > 0 ? '+$' : v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v))"))
+{
+  // Ties go to the earliest, both ways, so the cards do not swap day on an unrelated repaint.
+  const r = pick({ [SEP(2)]: day(10, 1) }, 2026, 8, at(2026, 8, 1), at(2026, 8, 4))
+  t('the first of several equal days wins', r.worstDay === SEP(1), r)
+}
+{
+  const future = pick({}, 2026, 11, at(2026, 8, 1), at(2026, 8, 13))
+  t('a month that has not happened has no days', future.elapsedDays === 0, future)
+  t('and renders a dash rather than $0', future.best === '—' && future.worst === '—', future)
+  t('with a null average', future.avg === null, future)
+  const before = pick({}, 2025, 0, at(2026, 8, 1), at(2026, 8, 13))
+  t('a month before the account existed is empty too', before.elapsedDays === 0, before)
+  const noHistory = pick({}, 2026, 8, Infinity, at(2026, 8, 13))
+  t('and an account with no history at all is not a crash', noHistory.worst === '—', noHistory)
+}
+
+// Pin the harness to the source it mirrors.
+t('the elapsed window is bounded by history at the start',
+  src.includes('const from  = histStart > firstDay ? histStart : firstDay'))
+t('and by today at the end', src.includes('const to    = today < lastDay ? today : lastDay'))
+t('history counts ledger entries, not just fills',
+  src.includes('const earliest = [...fills, ...ledger].reduce((m, x) => (x?.time < m ? x.time : m), Infinity)'))
+t('the walk is day by day', src.includes('for (const d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) elapsedKeys.push(dayKeyOf(d))'))
+t('a day with no entry is worth $0', src.includes('const pnlOf      = (k) => byDay[k]?.pnl ?? 0'))
+t('best and worst both read it',
+  src.includes('elapsedKeys.reduce((b, k) => pnlOf(k) > pnlOf(b) ? k : b, elapsedKeys[0])') &&
+  src.includes('elapsedKeys.reduce((w, k) => pnlOf(k) < pnlOf(w) ? k : w, elapsedKeys[0])'))
+t('the renderer is sign-aware', src.includes("(v > 0 ? '+$' : v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v))"))
 t('and colour-aware', src.includes("return v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu'"))
-t('both cards use it', src.includes('${dayCls(bestDay)}') && src.includes('${dayCls(worstDay)}') &&
-  src.includes('${dayAmt(bestDay)}') && src.includes('${dayAmt(worstDay)}'))
-t('the worst day is no longer gated on being negative',
-  !src.includes('byDay[worstDay].pnl < 0'))
-t('why is written down', src.includes('The LEAST profitable day, whatever its sign'))
+t('an untraded winner says so', src.includes("(byDay[key]?.trades > 0 ? '' : ' · no trades')"))
+t('both cards use the caption', src.includes('${daySub(bestDay)}') && src.includes('${daySub(worstDay)}'))
+t('the worst day is not gated on being negative', !src.includes('byDay[worstDay].pnl < 0'))
+t('why a quiet day counts is written down', src.includes('A day you did not trade is a $0 day, not a missing one'))
 
 console.log(String.fromCharCode(10) + '-- both cards are in the summary --')
 const sum = src.slice(src.indexOf('<div class="cal-summary">'), src.indexOf('<div style="overflow-x:auto'))
-t('Avg / Trading Day is a card', sum.includes('Avg / Trading Day'))
+t('Avg / Day is a card', sum.includes('>Avg / Day<'))
 t('Month Volume is a card', sum.includes('Month Volume'))
 t('the existing five are untouched',
   ['Month PnL', 'Best Day', 'Worst Day', 'Deposited', 'Withdrawn'].every(l => sum.includes(l)))
