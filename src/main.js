@@ -18704,14 +18704,23 @@ function _mobVRenderContent(tick = false) {
       </div>
       ${!tvList.length
         ? `<div style="padding:2px 16px 22px;font-size:12px;color:var(--muted);line-height:1.5">Watch DXY, indices, gold, oil, yields & forex — charts via TradingView. Tap <b>+ Add market</b>.</div>`
-        : tvList.map(sym => `<div class="mob-v-row mob-watch-row" onclick="window.__tvOpenChart('${esc(sym)}')" style="cursor:pointer">
-              <div class="mob-v-row-info">
-                <div class="mob-v-row-name">${esc(_tvLabel(sym))}</div>
-                <div class="mob-v-row-sub">${esc(sym)}</div>
-              </div>
-              <div id="tvmini-${_tvId(sym)}" style="width:150px;height:52px;flex-shrink:0;pointer-events:none"></div>
-              <button onclick="event.stopPropagation();window.__tvRemove('${esc(sym)}')" style="background:none;border:none;color:var(--muted);padding:8px 4px 8px 8px;cursor:pointer;flex-shrink:0;line-height:0">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        // A CARD, not a row. The mini widget degrades by height and it degrades silently:
+        // in the 150x52 cell this used to be, DXY rendered as a name and a spinner — no
+        // price, no line, ever. Measured at four sizes against CAPITALCOM:DXY: 52px is the
+        // header alone, 80px adds the price, 110px adds the change and clips the chart,
+        // 160px is the whole card. Reported as the coins having cards and these not.
+        //
+        // The widget draws its own icon, name, price and change, so the card is just the
+        // frame around it. It stays pointer-events:none — as it was in the row — with our
+        // own transparent button over it, so a tap opens the full chart here rather than
+        // navigating away to tradingview.com.
+        : tvList.map(sym => `<div class="mob-tv-card">
+              <div class="mob-tv-mini" id="tvmini-${_tvId(sym)}"></div>
+              <button class="mob-tv-open" onclick="window.__tvOpenChart('${esc(sym)}')"
+                aria-label="${esc(_tvLabel(sym))} — open chart"></button>
+              <button class="mob-tv-x" onclick="event.stopPropagation();window.__tvRemove('${esc(sym)}')"
+                aria-label="Remove ${esc(_tvLabel(sym))}">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>`).join('')
       }

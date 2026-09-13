@@ -152,8 +152,12 @@ console.log(nl + '-- drawers slide OVER the app, so they are heavier than a card
   // over it. The equity card and the position rows read straight through the menu items.
   const drawers = blockAt('html.has-bg-image .mob-wallet-drawer,')
   t('there is a drawer rule', drawers.length > 0)
-  t('it covers both of them',
-    drawers.includes('.mob-wallet-drawer') && drawers.includes('.mob-more-drawer'))
+  // Three now: the account dropdown is the same thing in a different shape — a 280px panel
+  // that opens OVER the header, painting the same --bg2, with the equity card and the market
+  // pills reading through the wallet rows. Reported the same way, fixed the same way.
+  t('it covers all three of them',
+    drawers.includes('.mob-wallet-drawer') && drawers.includes('.mob-more-drawer') &&
+    drawers.includes('.ws-panel'))
   t('with an opaque ground', drawers.includes('background-color: var(--bg) !important'))
   t('the wallpaper is still under there', drawers.includes('var(--app-bg-image)'))
   // The extra scrim is what separates a drawer from a sheet: a sheet keeps the photo at half
