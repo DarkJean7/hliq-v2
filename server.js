@@ -1339,10 +1339,15 @@ function lbPaperAllowed(ip) {
   return true
 }
 
+// 5/hr was sized for the only caller there used to be: one wallet connect per person. The
+// client now joins every address it LOOKS UP, so someone comparing a handful of traders used
+// to hit the wall within a minute and the rest of what they opened silently never landed.
+// 30/hr still makes filling the 500-cap from one IP a 17-hour job, and the real guard was
+// never this number — it is LB_MIN_EQUITY, which costs $10 of real funds per junk address.
 function lbJoinAllowed(ip) {
   const now = Date.now(), win = 3600_000
   const hits = (_lbJoinHits.get(ip) ?? []).filter(t => now - t < win)
-  if (hits.length >= 5) { _lbJoinHits.set(ip, hits); return false }
+  if (hits.length >= 30) { _lbJoinHits.set(ip, hits); return false }
   hits.push(now); _lbJoinHits.set(ip, hits)
   return true
 }
@@ -2269,9 +2274,12 @@ const server = createServer(async (req, res) => {
   }
 
   // ── POST /api/leaderboard/join { addr } → self-serve add ──────────────────
-  // Called by the client only after a wallet connect. The server can't verify
-  // ownership without a signed message, so it also rate-limits per IP, caps the
-  // list, and rejects addresses with no Hyperliquid account.
+  // Called for EVERY address the app looks up, not just for a wallet the caller owns — the
+  // search box, a recent address, a saved wallet, a connect. The server cannot verify
+  // ownership without a signed message and now cannot even assume it, so its own guards are
+  // the whole protection: per-IP rate limit, the 500 cap, the equity floor, and the
+  // removed-list below, which keeps an account that took itself off from being put back by
+  // someone else's search.
   if (method === 'POST' && path === '/api/leaderboard/join') {
     const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
     if (!lbJoinAllowed(ip)) return json(res, 429, { error: 'too many joins, try later' })

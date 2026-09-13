@@ -1026,6 +1026,11 @@ async function loadDashboard() {
     initRisk(totalPerpEquity(perpState))
     updateRiskUI()
 
+    // The address resolved and its equity is already in hand, so this is the cheapest place
+    // to put it on the public board — before any of the deferred fetches below. See _lbJoin
+    // for what the server still gets to veto.
+    _lbJoin(addr, totalPerpEquity(perpState))
+
     // ── Market metadata + mids: reuse the session cache, else fetch once ───────
     const metasReady = _metaCache
       ? Promise.resolve(_metaCache.allMetas)
@@ -30268,10 +30273,48 @@ async function _lbFetchRows(entries) {
   return _lbFetchResults(entries)
 }
 
-// Add a wallet the user just connected (and therefore owns) to the public board.
-// Best-effort and idempotent — the server dedupes, rate-limits and caps the list.
-function _lbJoin(addr) {
-  if (!addr || localStorage.getItem('hliq_lb_optout') === '1') return
+/**
+ * Every address this app looks up goes on the public board.
+ *
+ * Asked for directly: "make that any address that is being searched from my app is
+ * automatically added to the leaderboard". It runs from loadDashboard(), which is the one
+ * funnel every lookup goes through — the search box, a recent address, switching to a saved
+ * wallet, and connecting your own.
+ *
+ * Note what that means and does not mean. Hyperliquid balances are public on-chain, so
+ * nothing secret is being published; but the address being added is usually NOT the searcher's
+ * own, and its owner has never used this app. Two things therefore still hold:
+ *
+ *   SELF-REMOVAL WINS.  An account that took itself off the board stays off. The server keeps
+ *                       a removed-list and only `force: true` clears it, which only the
+ *                       owner-prompted ➕ Add me sends. A stranger searching you cannot put
+ *                       you back.
+ *   OPT-OUT WINS.       hliq_lb_optout on this device suppresses the post entirely.
+ *
+ * Best-effort and idempotent. The server is the authority on who actually gets added: it
+ * re-checks the equity floor, dedupes, rate-limits per IP and caps the list.
+ */
+const _LB_MIN_EQUITY = 10        // mirrors LB_MIN_EQUITY in server.js; the server re-checks
+const _LB_TRIED_KEY  = 'hliq_lb_autojoined'
+
+function _lbTriedSet() {
+  try { return new Set(JSON.parse(localStorage.getItem(_LB_TRIED_KEY)) || []) } catch { return new Set() }
+}
+
+function _lbJoin(addr, equity = null) {
+  if (!_isRealAddr(addr)) return                                   // paper, All Accounts, junk
+  if (localStorage.getItem('hliq_lb_optout') === '1') return
+  // Skip the obviously ineligible BEFORE spending a request: the server rejects anything under
+  // the floor anyway, and each attempt costs one of this IP's hourly join slots. An unknown
+  // equity (null) is not a small one — those still get asked.
+  if (equity != null && !(equity >= _LB_MIN_EQUITY)) return
+  // Asked once per address per device. Without this, every account switch and every reload
+  // re-posts the same wallets and burns the rate limit on addresses already on the board.
+  const key = addr.toLowerCase()
+  const tried = _lbTriedSet()
+  if (tried.has(key)) return
+  tried.add(key)
+  try { localStorage.setItem(_LB_TRIED_KEY, JSON.stringify([...tried].slice(-400))) } catch {}
   fetch('/api/leaderboard/join', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
