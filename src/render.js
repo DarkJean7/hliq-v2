@@ -2397,8 +2397,8 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
   }
 
   // Traded notional per day. Every fill counts, not just the closing ones — an entry is
-  // volume the moment it happens. Kept OUT of byDay on purpose: that map drives
-  // best/worst/green/red, and adding zero-PnL days to it would change what those mean.
+  // volume the moment it happens. Kept OUT of byDay on purpose: that map drives best/worst
+  // day and the average, and adding zero-PnL days to it would change what those mean.
   const volByDay = {}
   for (const f of fills) {
     const sz  = Math.abs(parseFloat(f.sz) || 0)
@@ -2440,10 +2440,16 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
     return y === year && m === month + 1
   })
   const monthPnl   = monthKeys.reduce((s, k) => s + byDay[k].pnl, 0)
-  const greenDays  = monthKeys.filter(k => byDay[k].pnl > 0).length
-  const redDays    = monthKeys.filter(k => byDay[k].pnl < 0).length
-  const bestDay    = monthKeys.reduce((b, k) => byDay[k].pnl > (byDay[b]?.pnl ?? -Infinity) ? k : b, monthKeys[0])
-  const worstDay   = monthKeys.reduce((w, k) => byDay[k].pnl < (byDay[w]?.pnl ?? Infinity) ? k : w, monthKeys[0])
+  // Days that actually TRADED. byDay also holds deposit-only days (pnl 0, no fills), and a
+  // transfer is not a day's result: leaving them in would let a $0 deposit day take Worst Day
+  // away from the real answer. A day whose closing fills happen to net to zero is a trading
+  // day and stays in — that is a genuine $0 result, not an absence of one.
+  const tradedKeys = monthKeys.filter(k => byDay[k].trades > 0)
+  const bestDay    = tradedKeys.reduce((b, k) => byDay[k].pnl > (byDay[b]?.pnl ?? -Infinity) ? k : b, tradedKeys[0])
+  // The LEAST profitable day, whatever its sign. This used to render '—' unless the day was
+  // negative, so a month with no red days showed nothing at all — the reported case: eleven
+  // green days and a blank Worst Day, when the answer was the smallest of those eleven.
+  const worstDay   = tradedKeys.reduce((w, k) => byDay[k].pnl < (byDay[w]?.pnl ?? Infinity) ? k : w, tradedKeys[0])
   const monthDeposited = monthKeys.reduce((s, k) => s + (byDay[k].deposited || 0), 0)
   const monthWithdrawn = monthKeys.reduce((s, k) => s + (byDay[k].withdrawn || 0), 0)
   const monthVolume    = Object.keys(volByDay).reduce((s, k) => {
@@ -2452,7 +2458,7 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
   }, 0)
   // Averaged over days that actually traded, not over the calendar. Dividing by 31 would
   // report a number no day resembles and would shrink every time the month got longer.
-  const tradedDays = greenDays + redDays
+  const tradedDays = tradedKeys.length
   const avgDayPnl  = tradedDays > 0 ? monthPnl / tradedDays : null
   const monthFills = monthKeys.reduce((s, k) => s + (byDay[k].trades || 0), 0)
 
@@ -2522,6 +2528,19 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
     return MONTHS[month].slice(0,3) + ' ' + parseInt(d)
   }
 
+  // Best and Worst Day print whatever the day actually was. Both used to hardcode their sign
+  // — Best always '+$', Worst rendered only when negative — so a month of green days showed a
+  // blank Worst Day, and a month of red ones would have shown Best Day as '+$-160.97'.
+  const dayAmt = (key) => {
+    if (!key) return '—'
+    const v = byDay[key].pnl
+    return (v > 0 ? '+$' : v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v))
+  }
+  const dayCls = (key) => {
+    const v = key ? byDay[key].pnl : 0
+    return v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu'
+  }
+
   root.innerHTML = `
     <div class="cal-header-row">
       <button class="cal-nav-btn" onclick="${navId || 'calNav'}(-1)">◀ Prev</button>
@@ -2534,18 +2553,14 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
         <div class="stat-value ${monthPnl >= 0 ? 'pos' : 'neg'}">${monthPnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(monthPnl))}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Green / Red Days</div>
-        <div class="stat-value neu"><span class="pos">${greenDays}</span> / <span class="neg">${redDays}</span></div>
-      </div>
-      <div class="stat-card">
         <div class="stat-label">Best Day</div>
-        <div class="stat-value pos">${bestDay ? '+$' + fmtUSD(byDay[bestDay].pnl) : '—'}</div>
+        <div class="stat-value ${dayCls(bestDay)}">${dayAmt(bestDay)}</div>
         ${bestDay ? `<div class="stat-sub">${fmtDayLabel(bestDay)}</div>` : ''}
       </div>
       <div class="stat-card">
         <div class="stat-label">Worst Day</div>
-        <div class="stat-value neg">${worstDay && byDay[worstDay].pnl < 0 ? '-$' + fmtUSD(Math.abs(byDay[worstDay].pnl)) : '—'}</div>
-        ${worstDay && byDay[worstDay].pnl < 0 ? `<div class="stat-sub">${fmtDayLabel(worstDay)}</div>` : ''}
+        <div class="stat-value ${dayCls(worstDay)}">${dayAmt(worstDay)}</div>
+        ${worstDay ? `<div class="stat-sub">${fmtDayLabel(worstDay)}</div>` : ''}
       </div>
       <div class="stat-card">
         <div class="stat-label">Avg / Trading Day</div>
