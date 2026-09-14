@@ -5284,6 +5284,9 @@ body.layout-mobile .nav-tabs { display: none !important; }
    account is that it is not on the public board — and a row that looks exactly like a public
    one gives no way to tell whether hiding worked. */
 .lb-row-hidden > td { opacity: .5; }
+/* Same state, other shell: the mobile board is a list of divs, not a table, so it dims the
+   row itself rather than its cells. The chip is shared. */
+.lb-row-hidden-m { opacity: .55; }
 .lb-hidden-chip {
   display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px;
   background: var(--panel-3, #222); border: 1px solid var(--border2, #333);

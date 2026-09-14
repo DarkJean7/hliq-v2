@@ -20482,14 +20482,26 @@ function _mobVBuildLbHtml(results, opts = {}) {
       const owner = _lbMyActiveAddr() && r.addr.toLowerCase() === _lbMyActiveAddr()
       if (dev || owner) {
         const via = dev ? 'dev' : 'owner'   // dev mode → PIN (works on any row); else owner signature
-        removeBtn = `<div style="padding:10px 16px 14px"><button onclick="event.stopPropagation();window.__lbRemove('${esc(r.addr)}','${via}')" style="width:100%;background:transparent;border:1px solid var(--red);color:var(--red);border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer">Remove from leaderboard</button></div>`
+        // Hiding is dev-only and was desktop-only with it: a PIN holder on a phone could see a
+        // hidden row and had no way to put it back. A chip describing a state you cannot change
+        // from the device you are holding is only half an answer.
+        const hideBtn = dev
+          ? `<button onclick="event.stopPropagation();window.__lbToggleHide('${esc(r.addr)}',${r.hidden ? 'false' : 'true'})" style="flex:1;background:transparent;border:1px solid var(--border2);color:var(--fg-2);border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer">${r.hidden ? _T('👁 Unhide', '👁 Mostrar') : _T('🙈 Hide', '🙈 Ocultar')}</button>`
+          : ''
+        removeBtn = `<div style="display:flex;gap:8px;padding:10px 16px 14px">${hideBtn}<button onclick="event.stopPropagation();window.__lbRemove('${esc(r.addr)}','${via}')" style="flex:1;background:transparent;border:1px solid var(--red);color:var(--red);border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer">Remove from leaderboard</button></div>`
       }
     }
+    // Hidden is a state the server enforces (these rows are withheld from the public board
+    // entirely) and only a PIN holder ever sees them at all. Marked here for the same reason as
+    // on desktop: a row that looks public gives no way to tell whether hiding worked. Asked
+    // directly — "are they also hidden in mobile?" — and they were, invisibly.
+    const isHidden = !!r.hidden
     return `<div>
-      <div class="mob-v-row" style="cursor:pointer" onclick="window._mobVToggleRow('${id}')">
+      <div class="mob-v-row${isHidden ? ' lb-row-hidden-m' : ''}" style="cursor:pointer" onclick="window._mobVToggleRow('${id}')">
         ${avatar}
         <div class="mob-v-row-info" style="margin-left:10px">
-          <div class="mob-v-row-name notranslate">${esc(label)}</div>
+          <div class="mob-v-row-name notranslate">${esc(label)}${isHidden
+            ? ` <span class="lb-hidden-chip">${_T('HIDDEN', 'OCULTA')}</span>` : ''}</div>
           <div class="mob-v-row-sub">${val}</div>
         </div>
         <div class="mob-v-row-right">

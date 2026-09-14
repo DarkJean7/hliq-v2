@@ -147,15 +147,28 @@ console.log(nl + '-- the bot holds the line too --')
   t('why the warning was not enough is written down', BOT.includes('carried straight past'))
 }
 
-console.log(nl + '-- a hidden leaderboard row looks hidden --')
+console.log(nl + '-- a hidden leaderboard row looks hidden, in BOTH shells --')
 {
   // The server withholds these from the public board entirely; a PIN holder gets them back so
   // they can be un-hidden, and the row it drew was identical to a public one.
-  t('the row is marked', CLI.includes("isHidden ? ' lb-row-hidden' : ''"))
-  t('and carries a chip saying so', CLI.includes('class="lb-hidden-chip"'))
   const CSS = fs.readFileSync('src/style.css', 'utf8')
+  t('the desktop row is marked', CLI.includes("isHidden ? ' lb-row-hidden' : ''"))
+  t('and carries a chip saying so', CLI.includes('class="lb-hidden-chip"'))
   t('which is dimmed', /\.lb-row-hidden > td \{[^}]*opacity/.test(CSS))
   t('why it is shown at all is written down', CLI.includes('so it can be un-hidden'))
+
+  // Asked straight out: "are they also hidden in mobile?" They were — the server does the
+  // withholding and does not care which shell asked — but the mobile row said nothing, which
+  // is indistinguishable from the hiding having failed.
+  t('the mobile row is marked too', CLI.includes("isHidden ? ' lb-row-hidden-m' : ''"))
+  t('with the same chip', /lb-row-hidden-m[\s\S]{0,400}lb-hidden-chip/.test(CLI))
+  t('dimmed as a row, since the mobile board is not a table',
+    /\.lb-row-hidden-m \{[^}]*opacity/.test(CSS))
+  // A chip describing a state you cannot change from the device you are holding is half an
+  // answer: hiding was dev-only AND desktop-only.
+  t('and a PIN holder can unhide from the phone', CLI.includes("window.__lbToggleHide('${esc(r.addr)}'"))
+  t('next to Remove, not instead of it',
+    /hideBtn[\s\S]{0,400}Remove from leaderboard/.test(CLI))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
