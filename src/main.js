@@ -3936,6 +3936,10 @@ function renderCoinDropdownItems(query) {
   // HIP-3 markets (ctx-only until held) show up too, not just coins present in state.allMids.
   const _uni = { ...Object.fromEntries(Object.keys(_mktCtxMap).map(k => [k, _mktCtxMap[k]?.markPx ?? 0])), ...state.allMids }
   let entries = Object.entries(_uni)
+    // Delisted, and markets with nothing in the book at all. Same rule as the mobile picker —
+    // this is the OTHER market list, and fixing one of them fixed one of them.
+    .filter(([k]) => !_isDelistedMkt(k))
+    .filter(([k]) => favs.includes(k) || !_isDeadMkt(k))
   if (q) entries = entries.filter(([k]) => k.toLowerCase().includes(q) || (k + '-USDC').toLowerCase().includes(q) || (_mktDisplay(k) ?? '').toLowerCase().includes(q))
 
   if (_dropType === 'spot') {
@@ -4015,6 +4019,12 @@ function renderCoinDropdownItems(query) {
         <div class="mkt-sym-icon" style="background:transparent;overflow:hidden">${_coinIconHtml(coin)}</div>
         <span class="mkt-sym-name">${_mktDisplay(coin) ?? hip3Rename(coin).replace(/.*:/, '')}-USDC</span>
         ${lev ? `<span class="mkt-sym-lev">${lev}x</span>` : ''}
+        ${(() => {
+          // Who listed it — the dex sets the oracle, the fees and the leverage, so the same
+          // underlying on two dexes is two different markets.
+          const dex = deployerOf(coin)
+          return dex ? `<span class="mkt-sym-dex" title="Deployed by ${esc(dex)}">${esc(_dexLabel(dex))}</span>` : ''
+        })()}
       </td>
       <td class="mkt-td-num">${_fmtTablePx(mark)}</td>
       <td class="mkt-td-num ${chCls}">${chSign}${_fmtTablePx(Math.abs(chAbs))} / ${chSign}${ch.toFixed(2)}%</td>
@@ -8672,7 +8682,7 @@ window.__searchMarketCard = function (query) {
   const q = query.trim().toLowerCase()
   if (!q) { results.innerHTML = ''; return }
   const matches = Object.entries(state.allMids)
-    .filter(([k]) => !_isDelistedMkt(k))
+    .filter(([k]) => !_isDelistedMkt(k) && !_isDeadMkt(k))
     .filter(([k]) => k.toLowerCase().startsWith(q) || (_mktDisplay(k) ?? '').toLowerCase().startsWith(q))
     .slice(0, 6)
   if (!matches.length) { results.innerHTML = '<div class="pokemon-search-no-results">No results</div>'; return }
@@ -21239,7 +21249,12 @@ function _mobBuildMarketRows() {
 
   // Exclude 'TOKEN/USDC' pair-name keys — they duplicate their '@N' counterparts in allMids.
   // The @N key always has ctx data (we populate both in _ensureMarketData).
-  let entries = Object.entries(src).filter(([k]) => !k.includes('/') && !k.startsWith('#'))
+  let entries = Object.entries(src)
+    .filter(([k]) => !k.includes('/') && !k.startsWith('#'))
+    // Delisted, and nothing in the book. This is the fifth market list in the app and the
+    // third to need saying: they do not share a renderer, only a data source.
+    .filter(([k]) => !_isDelistedMkt(k))
+    .filter(([k]) => favs.includes(k) || !_isDeadMkt(k))
   if (lq) entries = entries.filter(([k]) => {
     const d = (_spotNameMap[k] ?? k.replace(/.*:/, '')).toLowerCase()
     return k.toLowerCase().includes(lq) || d.includes(lq)
@@ -21358,6 +21373,10 @@ function _mobBuildMarketRows() {
         <div style="font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(display)}<span style="color:var(--muted);font-weight:400">/USDC</span></div>
         <div style="font-size:11px;color:var(--muted);margin-top:2px;display:flex;align-items:center;gap:5px">
           <span class="notranslate" style="background:var(--panel-2);padding:1px 5px;border-radius:3px;font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted)">${esc(catLabel)}</span>
+          ${(() => {
+            const dex = deployerOf(coin)
+            return dex ? `<span class="notranslate mkt-sym-dex" title="Deployed by ${esc(dex)}">${esc(_dexLabel(dex))}</span>` : ''
+          })()}
           <span>Vol $${_fmtK(vol)} · ${oiLbl} $${_fmtK(oiVal)}</span>
         </div>
       </div>

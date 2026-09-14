@@ -205,7 +205,12 @@ console.log(nl + '-- a market with an empty book is not offered --')
   t('and so are unreadable numbers', hasNoActivity({ oi: 'x', volume: 'y' }) === false)
   t('negatives cannot sneak past it', hasNoActivity({ oi: -1, volume: -1 }) === true)
 
-  t('the pickers drop them', CLI.includes('_isDeadMkt(k)') && CLI.includes('_isDeadMkt(c)'))
+  // FIVE market lists, none of which share a renderer — only a data source. Fixing them one at
+  // a time is how this came back twice.
+  t('every market list drops them',
+    (CLI.match(/_isDeadMkt\(/g) ?? []).length - 1 >= 5, (CLI.match(/_isDeadMkt\(/g) ?? []).length - 1)
+  t('and every one of them drops delisted markets too',
+    (CLI.match(/_isDelistedMkt\(/g) ?? []).length - 1 >= 7, (CLI.match(/_isDelistedMkt\(/g) ?? []).length - 1)
   // Never the market you are standing in, and never one someone chose to pin.
   t('but never a position you hold', CLI.includes('const held = (state.perpState?.assetPositions ?? [])'))
   t('nor a favourite', CLI.includes('favs.includes(k) || !_isDeadMkt(k)'))
@@ -220,10 +225,29 @@ console.log(nl + '-- and the row says who deployed it --')
   t('and another one names a different dex', deployerOf('vntl:OPENAI') === 'vntl')
   t("Hyperliquid's own markets have no prefix", deployerOf('BTC') === null)
   t('junk is not a deployer', deployerOf('') === null && deployerOf(null) === null && deployerOf(':X') === null)
-  t('the picker draws the badge', CLI.includes('const dex = deployerOf(c)') && CLI.includes('Deployed by ${esc(dex)}'))
+  t('all three market lists that show chips draw the badge',
+    (CLI.match(/deployerOf\(c(?:oin)?\)/g) ?? []).length >= 3, (CLI.match(/deployerOf\(c(?:oin)?\)/g) ?? []).length)
+  t('and it says who, on hover', CLI.includes('Deployed by ${esc(dex)}'))
   // It is not decoration: two dexes can list the same underlying on completely different terms,
   // which is the confusion the dead OPENAI caused in the first place.
   t('and why it matters is written down', CLI.includes('the deployer sets the oracle'))
+}
+
+console.log(nl + '-- the market panel does not show the chart through itself --')
+{
+  const CSS = fs.readFileSync('src/style.css', 'utf8')
+  // Reported: "make the search box not transparent". The box was fine — the panel under it
+  // paints --bg2, which theme.js makes translucent while a backdrop photo is set, so the
+  // candles read straight through the whole dropdown. Same fix as the drawers and the account
+  // panel: opaque ground, the photo on top of it, dimmed.
+  t('the market panel joins the over-app surfaces', /html\.has-bg-image \.mkt-panel \{/.test(CSS))
+  t('with an opaque ground',
+    /html\.has-bg-image \.mkt-panel \{[\s\S]{0,240}background-color: var\(--bg\) !important/.test(CSS))
+  // The inner bar painting --bg2 again over an already-tinted panel stacked two translucent
+  // layers and still read as see-through.
+  t('and the search bar takes the panel’s ground rather than painting its own',
+    CSS.includes('html.has-bg-image .mkt-panel-search { background: transparent; }'))
+  t('why is written down', CSS.includes('the box is fine, it is the panel'))
 }
 
 console.log(nl + '-- a hidden leaderboard row looks hidden, in BOTH shells --')
