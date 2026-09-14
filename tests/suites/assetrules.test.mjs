@@ -147,6 +147,45 @@ console.log(nl + '-- the bot holds the line too --')
   t('why the warning was not enough is written down', BOT.includes('carried straight past'))
 }
 
+console.log(nl + '-- a delisted market is not a market you can pick --')
+{
+  // Reported: "strats is missing the new openai perps market deployed by io. also the trade tab
+  // is showing the delisted version and not the new io one. also from watch tab. why we have
+  // that old one when even hyperliquid does not show it."
+  //
+  // Two separate causes, both confirmed against the live API:
+  //   1. `vntl:OPENAI` is delisted, and Hyperliquid KEEPS QUOTING IT — allMids still answers
+  //      1336.2 — so every list built from prices showed it as though it were live.
+  //   2. The new market is named `io:OAI`. HL's own UI shows it as OPENAI-USDC, so searching
+  //      "openai" matched the dead market and nothing else.
+  const { delistedNames } = await import('../../src/assetrules.js')
+  const set = delistedNames(METAS)
+  t('the delisted ones are collected', set.has('vntl:openai'))
+  t('and the live ones are not', !set.has('vvv') && !set.has('btc'))
+  t('lowercased, so a lookup does not depend on spelling', set.has('vntl:openai') && !set.has('vntl:OPENAI'))
+  t('no metas is an empty set, not a crash', delistedNames(null).size === 0)
+  // Rebuilt on every keystroke otherwise: eleven universes per search box.
+  t('the answer is cached against the metas it came from', delistedNames(METAS) === set)
+
+  t('every picker filters them out',
+    (CLI.match(/_isDelistedMkt\(/g) ?? []).length >= 6, (CLI.match(/_isDelistedMkt\(/g) ?? []).length)
+  // A position still open in a delisted market must still price and still show.
+  t('but a position you hold is not hidden', CLI.includes('hiding a position someone holds is worse'))
+}
+{
+  // The alias is what makes the live market reachable by the only name anyone has seen.
+  t('OAI is shown as OPENAI', CLI.includes("'OAI': 'OPENAI'"))
+  t('searches match the shown name as well as the stored one',
+    (CLI.match(/_mktDisplay\(c(?:oin)?\) \?\? ''\)\.to(?:Lower|Upper)Case\(\)\.(?:includes|startsWith)\(/g) ?? []).length >= 3)
+  t('and rows read as the shown name', CLI.includes('_mktDisplay(coin) ?? coin'))
+  // Typing OPENAI used to resolve to the dead market before the alias was ever consulted.
+  t('resolving a typed name skips delisted markets first',
+    CLI.includes('const live = (k) => !_isDelistedMkt(k)') &&
+    /const hit = Object\.keys\(state\.allMids \|\| \{\}\)[\s\S]{0,200}&& live\(k\)\)/.test(CLI))
+  t('and the alias path skips them too', /aliasHit[\s\S]{0,160}&& live\(k\)\)/.test(CLI))
+  t('why the alias exists is written down', CLI.includes('the market exists, under a name they'))
+}
+
 console.log(nl + '-- a hidden leaderboard row looks hidden, in BOTH shells --')
 {
   // The server withholds these from the public board entirely; a PIN holder gets them back so

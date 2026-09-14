@@ -90,6 +90,33 @@ export function clampLeverage(want, maxLeverage) {
   return Math.min(n, max)
 }
 
+/**
+ * Every delisted market, lowercased, as a Set.
+ *
+ * Hyperliquid keeps quoting a delisted market forever — `vntl:OPENAI` still answers allMids
+ * with 1336.2 — so a list built from prices cannot tell it apart from a live one. Its own UI
+ * does not show it; ours did, and it was the only OPENAI anyone could find here while the real
+ * one traded on another dex under a different ticker.
+ *
+ * Cached on the metas array itself: it is rebuilt on every market list, search keystroke and
+ * picker render, and walking eleven universes each time is work for an answer that only changes
+ * when the metas do.
+ */
+const _delistedCache = new WeakMap()
+export function delistedNames(allMetas) {
+  if (!Array.isArray(allMetas)) return new Set()
+  const hit = _delistedCache.get(allMetas)
+  if (hit) return hit
+  const out = new Set()
+  for (const m of allMetas) {
+    for (const u of (m?.universe ?? [])) {
+      if (u?.isDelisted) out.add(String(u.name).toLowerCase())
+    }
+  }
+  _delistedCache.set(allMetas, out)
+  return out
+}
+
 /** Cross unless the market forbids it. Returns 'isolated' | 'cross'. */
 export function marginModeFor(want, rules) {
   if (rules?.isolatedOnly) return 'isolated'

@@ -240,7 +240,7 @@ import { probeNavGeometry } from './navprobe.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows } from './comboequity.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
-import { rulesFor, clampLeverage, marginModeFor } from './assetrules.js'
+import { rulesFor, clampLeverage, marginModeFor, delistedNames } from './assetrules.js'
 
 /**
  * Brightness, as a layer over the app rather than a filter on <html>.
@@ -3115,8 +3115,26 @@ const _HIP3_DEX_DOMAINS = {
 // accepts in an order; this is only what a human is shown and can search for. Someone who
 // saw "GOPRO" on Hyperliquid and typed it here got "No price for GOPRO", because the market
 // is io:GPRO — the app was right and useless at the same time.
-const _MKT_DISPLAY = { 'CL': 'WTIOIL', 'GPRO': 'GOPRO' }
+// Ticker as HL's API names it -> name HL's own UI shows. Their market is "OPENAI-USDC";
+// the asset is `io:OAI`, so searching "openai" here found nothing but the dead vntl one.
+const _MKT_DISPLAY = { 'CL': 'WTIOIL', 'GPRO': 'GOPRO', 'OAI': 'OPENAI' }
 function _mktDisplay(coin) { return _MKT_DISPLAY[coin.replace(/.*:/, '')] ?? null }
+
+/**
+ * A market Hyperliquid has delisted, which it nonetheless keeps quoting.
+ *
+ * Reported: "the trade tab is showing the delisted version and not the new io one... why we
+ * have that old one when even hyperliquid does not show it." Every list here is built from
+ * allMids, and allMids still carries `vntl:OPENAI` at its final price — so the only way to tell
+ * is the meta's own isDelisted flag.
+ *
+ * Lists and searches drop these. A position still open in one does NOT: the mark it prices
+ * against is the last real trade, and hiding a position someone holds is worse than showing a
+ * stale price for it.
+ */
+function _isDelistedMkt(coin) {
+  return delistedNames(state.allMetas).has(String(coin ?? '').toLowerCase())
+}
 // Shown name → real ticker, so a market can be found by the name the user was shown.
 const _MKT_DISPLAY_REV = Object.fromEntries(Object.entries(_MKT_DISPLAY).map(([k, v]) => [v, k]))
 
@@ -3421,7 +3439,10 @@ window._tcsFilter = function(q = '') {
   const lq = q.toLowerCase()
   const mids = state.allMids ?? {}
   const entries = Object.entries(mids)
-    .filter(([c]) => !q || c.toLowerCase().includes(lq))
+    // A delisted market is not something you can open a position in — HL's own UI does not
+    // list it, and ours was offering the dead OPENAI as the only one there was.
+    .filter(([c]) => !_isDelistedMkt(c))
+    .filter(([c]) => !q || c.toLowerCase().includes(lq) || (_mktDisplay(c) ?? '').toLowerCase().includes(lq))
     .sort((a, b) => {
       const d = _mktCtxMap[b[0]]?.oi ?? 0
       return d - (_mktCtxMap[a[0]]?.oi ?? 0)
@@ -3434,7 +3455,7 @@ window._tcsFilter = function(q = '') {
     const cls = ch === null ? '' : ch >= 0 ? 'pos' : 'neg'
     const chStr = ch !== null ? `<span class="${cls}" style="font-size:10px">${ch >= 0 ? '+' : ''}${ch.toFixed(2)}%</span>` : ''
     return `<div class="tcs-result-item" onmousedown="window._tcsSelect('${coin}')">
-      <span class="tcs-ri-coin">${esc(coin)}</span>
+      <span class="tcs-ri-coin">${esc(_mktDisplay(coin) ?? coin)}</span>
       <span class="tcs-ri-px">${chStr}&nbsp;&nbsp;$${fmtPrice(parseFloat(px))}</span>
     </div>`
   }).join('')
@@ -8636,7 +8657,8 @@ window.__searchMarketCard = function (query) {
   const q = query.trim().toLowerCase()
   if (!q) { results.innerHTML = ''; return }
   const matches = Object.entries(state.allMids)
-    .filter(([k]) => k.toLowerCase().startsWith(q))
+    .filter(([k]) => !_isDelistedMkt(k))
+    .filter(([k]) => k.toLowerCase().startsWith(q) || (_mktDisplay(k) ?? '').toLowerCase().startsWith(q))
     .slice(0, 6)
   if (!matches.length) { results.innerHTML = '<div class="pokemon-search-no-results">No results</div>'; return }
   results.innerHTML = matches.map(([coin, px]) =>
@@ -20670,7 +20692,7 @@ function _mobVTradeCoinList(q = '') {
     `<div style="padding:7px 16px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;background:var(--panel-2);border-bottom:1px solid var(--border)">${label}</div>`
 
   // Apply type filter — same logic as desktop renderCoinDropdownItems
-  let entries = Object.entries(mids)
+  let entries = Object.entries(mids).filter(([k]) => !_isDelistedMkt(k))
   if (lq) entries = entries.filter(([k]) => k.toLowerCase().includes(lq) || k.replace(/.*:/, '').toLowerCase().includes(lq) || (_mktDisplay(k) ?? '').toLowerCase().includes(lq))
   if (_mobVPickerType === 'crypto')    entries = entries.filter(([k]) => !_isTradFiCat(_mktCatMap[k]))
   if (_mobVPickerType === 'tradfi')    entries = entries.filter(([k]) =>  _isTradFiCat(_mktCatMap[k]))
@@ -27540,15 +27562,21 @@ function _resolveGridCoin(raw) {
   if (!c || c.includes(':')) return c            // already a full dex:SYM (or empty)
   const up = c.toUpperCase()
   if (state.allMids?.[up] != null) return up      // a main-dex coin
-  const hit = Object.keys(state.allMids || {}).find(k => k.includes(':') && k.split(':').pop().toUpperCase() === up)
+  // Skipping delisted ones is what lets the alias below be reached at all: typing OPENAI
+  // matched the dead `vntl:OPENAI` here and returned it, so the live market — `io:OAI`, which
+  // HL shows as OPENAI — was unreachable by the only name anyone has seen for it.
+  const live = (k) => !_isDelistedMkt(k)
+  const hit = Object.keys(state.allMids || {})
+    .find(k => k.includes(':') && k.split(':').pop().toUpperCase() === up && live(k))
   if (hit) return hit                             // HIP-3 full key
   // The name Hyperliquid SHOWS is not always the ticker it accepts: their UI lists io:GPRO
-  // as GOPRO. Someone who read the name there and typed it here got "No price for GOPRO",
-  // which is true and useless — the market exists, under a name they were never shown.
+  // as GOPRO and io:OAI as OPENAI. Someone who read the name there and typed it here got
+  // "No price for GOPRO", which is true and useless — the market exists, under a name they
+  // were never shown.
   const alias = _MKT_DISPLAY_REV[up]
   if (alias) {
     const aliasHit = Object.keys(state.allMids || {})
-      .find(k => k.split(':').pop().toUpperCase() === alias)
+      .find(k => k.split(':').pop().toUpperCase() === alias && live(k))
     if (aliasHit) return aliasHit
   }
   return up                                       // leave as typed
@@ -29512,6 +29540,11 @@ function watchCoinLabel(coin) {
   // An external market is named by its ticker, not by its TradingView feed: "DXY", never
   // "CAPITALCOM:DXY".
   if (isExtMarket(coin)) return _tvShort(coin)
+  // A market HL displays under another name reads as that name here too — `io:OAI` is the
+  // OPENAI market on their own screen, and a watchlist saying OAI is a different market as
+  // far as anyone reading it is concerned.
+  const shown = _mktDisplay(coin)
+  if (shown) return shown
   // HIP-3 markets are prefixed "dex:SYM" — strip the dex so it reads "SPCX", not "xyz:SPCX"
   if (typeof coin === 'string' && coin.includes(':')) return coinLabel(coin)
   return _watchSpotNameMap?.[coin] ?? coin
@@ -30007,10 +30040,13 @@ window.__watchSearch = async function(q) {
 
   // Perp markets — use full meta list so TradFi (kXAU, kSPX…) are included
   const perpMatches = (_perpNames ?? Object.keys(mids).filter(k => !k.startsWith('@')))
-    .filter(coin => coin.toUpperCase().includes(q))
+    .filter(coin => !_isDelistedMkt(coin))
+    // Matched on the name HL SHOWS as well as the one it stores: their OPENAI-USDC is `io:OAI`,
+    // so typing "openai" matched nothing live and only the delisted market that spells it out.
+    .filter(coin => coin.toUpperCase().includes(q) || (_mktDisplay(coin) ?? '').toUpperCase().includes(q))
     .sort((a, b) => a.localeCompare(b))
     .slice(0, 7)
-    .map(coin => ({ coin, label: coin, px: parseFloat(mids[coin] ?? 0), isSpot: false }))
+    .map(coin => ({ coin, label: _mktDisplay(coin) ?? coin, px: parseFloat(mids[coin] ?? 0), isSpot: false }))
 
   // Spot markets — match against display name (e.g. "PURR/USDC" or base "PURR")
   const spotMatches = Object.entries(_watchSpotNameMap ?? {})
@@ -30106,10 +30142,11 @@ window.__mobWatchSearch = async function(q) {
   const mids = state.allMids ?? {}
 
   const perpMatches = (_perpNames ?? Object.keys(mids).filter(k => !k.startsWith('@')))
-    .filter(coin => coin.toUpperCase().includes(q))
+    .filter(coin => !_isDelistedMkt(coin))
+    .filter(coin => coin.toUpperCase().includes(q) || (_mktDisplay(coin) ?? '').toUpperCase().includes(q))
     .sort((a, b) => a.localeCompare(b))
     .slice(0, 7)
-    .map(coin => ({ coin, label: coin, px: parseFloat(mids[coin] ?? 0), isSpot: false }))
+    .map(coin => ({ coin, label: _mktDisplay(coin) ?? coin, px: parseFloat(mids[coin] ?? 0), isSpot: false }))
 
   const spotMatches = Object.entries(_watchSpotNameMap ?? {})
     .filter(([, name]) =>
