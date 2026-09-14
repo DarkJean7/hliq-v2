@@ -128,3 +128,71 @@ export function extChartUrl(yahooSym) {
   return 'https://query1.finance.yahoo.com/v8/finance/chart/' +
     encodeURIComponent(yahooSym) + '?range=5d&interval=15m'
 }
+
+/**
+ * The Watch tab's timeframes, in Yahoo's vocabulary.
+ *
+ * Keyed by the same labels as WATCH_TF_CONFIG in main.js, because the compare chart offers
+ * one set of pills and both kinds of market have to answer to them — a DXY that only had a
+ * 24h series would drop off the chart the moment anyone pressed 1M.
+ *
+ * `range` is always WIDER than `span`. The series is then cut down to the span. Asking Yahoo
+ * for exactly the window wanted answers with an empty series whenever the market is shut,
+ * which for the shorter windows is every weekend; asking wide and trimming always lands on
+ * real sessions. Intraday intervals are also capped by Yahoo (15m is only served for ~60
+ * days, 1h for ~730), which is why the longer windows step down to daily and weekly bars.
+ */
+export const EXT_TF = {
+  '1D': { range: '5d',  interval: '15m', span: 24 * 3600_000 },
+  '1W': { range: '1mo', interval: '1h',  span: 7 * 86400_000 },
+  '1M': { range: '3mo', interval: '1d',  span: 30 * 86400_000 },
+  '3M': { range: '6mo', interval: '1d',  span: 90 * 86400_000 },
+  '6M': { range: '1y',  interval: '1d',  span: 180 * 86400_000 },
+  '1Y': { range: '2y',  interval: '1wk', span: 365 * 86400_000 },
+  '5Y': { range: '10y', interval: '1mo', span: 5 * 365 * 86400_000 },
+}
+
+/** The Yahoo URL for one market over one timeframe. Unknown timeframe -> null, not a guess. */
+export function extChartUrlTf(yahooSym, tf) {
+  const cfg = EXT_TF[String(tf ?? '')]
+  if (!cfg || !yahooSym) return null
+  return 'https://query1.finance.yahoo.com/v8/finance/chart/' +
+    encodeURIComponent(yahooSym) + '?range=' + cfg.range + '&interval=' + cfg.interval
+}
+
+/**
+ * One Yahoo chart response -> `[{ t, c }, …]` inside a window ENDING NOW, or [].
+ *
+ * The timestamps are the point of this function, and the reason it is not parseChart.
+ *
+ * parseChart answers "how has this market moved", and anchors its window at the market's own
+ * last tick — over a weekend that is Friday's session, which is the right answer for a row
+ * that has to print a change while the market is shut.
+ *
+ * A comparison chart is a different question. Every series is drawn on ONE shared time axis
+ * against coins that trade continuously, so a point's position is its real timestamp. Anchor
+ * DXY at its last tick there and its line is drawn in the wrong place — shifted left by
+ * however long the market has been closed, describing Friday while BTC beside it describes
+ * today. So this window is `now - span` to now, always, and a shut market simply has no
+ * points in it.
+ *
+ * Which is why an empty return is a real answer and not a failure: over a weekend the dollar
+ * index genuinely has no ticks in the last 24 hours. The caller says so rather than drawing
+ * a flat line, because a flat line at Friday's close is a price nobody quoted.
+ */
+export function parseSeries(json, tf, now = Date.now()) {
+  const cfg = EXT_TF[String(tf ?? '')]
+  if (!cfg) return []
+  const r = json?.chart?.result?.[0]
+  if (!r) return []
+  const ts     = r.timestamp ?? []
+  const closes = r.indicators?.quote?.[0]?.close ?? []
+  const all = ts
+    .map((t, i) => ({ t: t * 1000, c: closes[i] }))
+    .filter(p => Number.isFinite(p.t) && p.t > 0 && Number.isFinite(p.c) && p.c > 0)
+  if (all.length < 2) return []
+  const cut = all.filter(p => p.t >= now - cfg.span)
+  // One point is not a series: it has nothing to be a percentage of, and computeCompare would
+  // drop it anyway. Say empty rather than sending a single point that reads as flat.
+  return cut.length >= 2 ? cut : []
+}

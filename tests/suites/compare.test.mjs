@@ -84,9 +84,16 @@ const mk = (closes, t0 = 1000, step = 100) => closes.map((c, i) => ({ t: t0 + i 
   t('overflow-x pinned (mobile scroll trap)', /_CMP_OVERLAY[\s\S]{0,600}overflow-x:hidden/.test(m))
   t('reuses the Watch candle cache', /_cmpFetch[\s\S]{0,900}_watchCandleCache/.test(m))
   t('only fetches what is missing or stale', /_cmpFetch[\s\S]{0,900}WATCH_CACHE_TTL/.test(m))
-  t('respects the global 429 breaker', /_cmpFetch[\s\S]{0,200}_hlLimited\(\)/.test(m))
+  // The breaker used to be the first line of _cmpFetch and stopped it dead. It now guards the
+  // Hyperliquid half only: external markets are fetched from our own origin, and blanking DXY
+  // during an HL rate limit it played no part in would be the breaker punishing the wrong
+  // request. Still asserted, just where it now lives — extcompare.test.mjs holds the split.
+  t('respects the global 429 breaker for the Hyperliquid half',
+    /_cmpFetch[\s\S]{0,1400}_hlLimited\(\) \? \[\] : sel\.filter/.test(m))
   t('reuses the Watch timeframe config', m.includes('WATCH_TF_CONFIG[_cmpTf]'))
-  t('default selection is capped', m.includes('loadWatchlist().slice(0, 4)'))
+  // Still four. The list it takes four FROM is now coins plus external markets, because the
+  // compare chart stopped being coin-only.
+  t('default selection is capped', /loadTvWatch\(\)\.filter\(isExtMarket\)\]\.slice\(0, 4\)/.test(m))
   t('close handler exported', m.includes('window.__closeWatchAdvanced'))
   t('states the %-not-price caveat in the UI', m.includes('percent change from the start of the window'))
 }

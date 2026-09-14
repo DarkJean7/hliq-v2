@@ -8,7 +8,7 @@ import { createReadStream, statSync, existsSync, writeFileSync, mkdirSync, readF
 import { join, extname, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coinGeckoUpgrade } from './src/iconpick.js'
-import { EXT_MARKETS, extYahoo, extChartUrl, parseChart } from './src/extmarkets.js'
+import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, parseSeries } from './src/extmarkets.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DIST      = join(__dirname, 'dist')
@@ -23,6 +23,14 @@ const TV_SEARCH_TTL = 10 * 60_000
 // External market quotes (see the /extquote route). TradingView symbol -> { at, q }.
 const extQuoteCache = new Map()
 const EXT_QUOTE_TTL = 60_000
+
+// Compare-chart series (see /extcandles). "SYMBOL|TF" -> { at, pts }.
+// A longer memory than the quote cache on purpose: a 1Y line built from weekly bars does not
+// change between two people opening the same chart, and the window it describes moves by a
+// day at a time. The 1D window is the only one that goes stale quickly.
+const extSeriesCache = new Map()
+const EXT_SERIES_TTL = { '1D': 60_000, '1W': 5 * 60_000 }
+const EXT_SERIES_TTL_DEFAULT = 30 * 60_000
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -340,6 +348,51 @@ createServer((req, res) => {
       }))
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' })
          .end(JSON.stringify({ quotes }))
+    })()
+    return
+  }
+
+  // ── External market series, for the compare chart ────────────────────────────
+  // /extquote hands back one window — the 24 hours the Watch row reports. The compare chart
+  // has seven timeframe pills, and a market that could only answer one of them dropped off
+  // the chart as soon as anyone pressed 1M. This answers any of them.
+  //
+  // Same shape as Hyperliquid's candleSnapshot rows, {t, c}, because that is what
+  // computeCompare reads: the client puts a coin and a market into the same map and the
+  // chart cannot tell which is which. Same whitelist too — the client names a market and a
+  // timeframe, never a URL.
+  if (url === '/extcandles') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const qs   = new URLSearchParams(req.url.split('?')[1] || '')
+    const tf   = (qs.get('tf') || '1D').trim()
+    const want = (qs.get('s') || '').split(',').map(s => s.trim()).filter(s => EXT_MARKETS[s]).slice(0, 20)
+    if (!want.length || !EXT_TF[tf]) {
+      res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"series":{}}'); return
+    }
+    ;(async () => {
+      const series = {}
+      const ttl = EXT_SERIES_TTL[tf] ?? EXT_SERIES_TTL_DEFAULT
+      await Promise.all(want.map(async (sym) => {
+        const key = sym + '|' + tf
+        const hit = extSeriesCache.get(key)
+        if (hit && Date.now() - hit.at < ttl) { series[sym] = hit.pts; return }
+        try {
+          const r = await fetch(extChartUrlTf(extYahoo(sym), tf), {
+            headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000),
+          })
+          if (!r.ok) return
+          const pts = parseSeries(await r.json(), tf)
+          // An EMPTY series is cached like any other: over a weekend the dollar index really
+          // has no ticks in the last 24 hours, and re-asking Yahoo every minute for an answer
+          // that cannot change until Monday is a fetch nobody needs. It is still sent, so the
+          // client can say "closed" rather than "loading" forever.
+          extSeriesCache.set(key, { at: Date.now(), pts })
+          series[sym] = pts
+        } catch { /* leave it out: absent means unknown, empty means shut */ }
+      }))
+      if (extSeriesCache.size > 400) extSeriesCache.clear()
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' })
+         .end(JSON.stringify({ series }))
     })()
     return
   }

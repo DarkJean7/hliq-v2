@@ -29649,41 +29649,95 @@ window.__cmpToggle = function(coin) {
   _cmpRender(); _cmpFetch()
 }
 
-// Pull candles for the selected coins at the current timeframe, reusing anything already
+/**
+ * Compare series for external markets: `{ 'CAPITALCOM:DXY_1M': { ts, candles } }`.
+ *
+ * Deliberately NOT _watchCandleCache, even though the key looks the same and the shape is the
+ * same. The row's `<sym>_1D` entry is the last 24 hours OF TRADING, anchored at the market's
+ * last tick so a shut market still prints a change. A compare series is anchored at NOW, so
+ * that a point's x position on a shared axis is its real time. Over a weekend those are two
+ * different windows for the same market and the same label, and one cache holding both would
+ * hand whichever was written last to both readers — a sparkline that empties out on Saturday,
+ * or a DXY line drawn a day to the left of the coins it is being compared against.
+ */
+const _extCmpCache = {}
+
+// Pull candles for the selected markets at the current timeframe, reusing anything already
 // cached and fresh. Fetching ONLY what is missing keeps this from becoming a burst that
 // trips the shared rate limiter.
+//
+// Two sources, one chart: coins come from Hyperliquid's candleSnapshot, external markets from
+// our own /extcandles. They are fetched together and land in the same shape, so everything
+// downstream — the normalising, the legend, the scrub readout — is written once.
 async function _cmpFetch() {
-  if (_cmpLoading || _hlLimited()) return
+  if (_cmpLoading) return
   const cfg  = WATCH_TF_CONFIG[_cmpTf]
   const now  = Date.now()
-  const need = [..._cmpSel].filter(c => {
+  const sel  = [..._cmpSel]
+  // The HL rate-limit breaker stops us asking Hyperliquid for anything. It is not a reason to
+  // stop asking OUR OWN server for DXY, so it gates the coin half only.
+  const coins = _hlLimited() ? [] : sel.filter(c => !isExtMarket(c)).filter(c => {
     const x = _watchCandleCache[`${c}_${_cmpTf}`]
     return !x || (now - x.ts) >= WATCH_CACHE_TTL
   })
-  if (!need.length) return
+  const exts = sel.filter(c => isExtMarket(c)).filter(s => {
+    const x = _extCmpCache[`${s}_${_cmpTf}`]
+    return !x || (now - x.ts) >= WATCH_CACHE_TTL
+  })
+  if (!coins.length && !exts.length) return
   _cmpLoading = true
   _cmpRender()
   try {
-    const info = new InfoClient({ transport: _transport })
-    await Promise.all(need.map(async coin => {
-      try {
-        const candles = await info.candleSnapshot({ coin, interval: cfg.interval, startTime: cfg.startFn() })
-        if (candles?.length) _watchCandleCache[`${coin}_${_cmpTf}`] = { ts: now, candles }
-      } catch (e) { if (e.name !== 'AbortError') console.warn('compare candles', coin, e.message) }
-    }))
+    const jobs = []
+    if (coins.length) {
+      const info = new InfoClient({ transport: _transport })
+      jobs.push(...coins.map(async coin => {
+        try {
+          const candles = await info.candleSnapshot({ coin, interval: cfg.interval, startTime: cfg.startFn() })
+          if (candles?.length) _watchCandleCache[`${coin}_${_cmpTf}`] = { ts: now, candles }
+        } catch (e) { if (e.name !== 'AbortError') console.warn('compare candles', coin, e.message) }
+      }))
+    }
+    if (exts.length) {
+      jobs.push((async () => {
+        try {
+          const r = await fetch(`/extcandles?tf=${encodeURIComponent(_cmpTf)}&s=${encodeURIComponent(exts.join(','))}`)
+          if (!r.ok) return
+          const { series } = await r.json()
+          for (const sym of exts) {
+            const pts = series?.[sym]
+            // An empty array is an ANSWER — the market was shut for this whole window — and it
+            // is cached as one. Leaving it uncached would re-ask on every render and leave the
+            // chart saying "Loading…" all weekend.
+            if (Array.isArray(pts)) _extCmpCache[`${sym}_${_cmpTf}`] = { ts: now, candles: pts }
+          }
+        } catch (e) { console.warn('compare ext series', e.message) }
+      })())
+    }
+    await Promise.all(jobs)
   } finally { _cmpLoading = false; _cmpRender() }
 }
 
 function _cmpRender() {
   const el = document.getElementById(_CMP_OVERLAY)
   if (!el || el.style.display === 'none') return
-  const list = loadWatchlist()
+  // Both halves of the Watch tab. A coin and a market are the same thing to everything below
+  // this line — which is the point: "make tradingview charts also be exactly like the other
+  // so they also can be compared".
+  const coinList = loadWatchlist()
+  const extList  = loadTvWatch().filter(isExtMarket)
+  const list = [...coinList, ...extList]
   const sel  = [..._cmpSel].filter(c => list.includes(c))
   const byCoin = {}
   for (const c of sel) {
-    const hit = _watchCandleCache[`${c}_${_cmpTf}`]
+    const hit = isExtMarket(c) ? _extCmpCache[`${c}_${_cmpTf}`] : _watchCandleCache[`${c}_${_cmpTf}`]
     if (hit?.candles) byCoin[c] = hit.candles
   }
+  // Fetched, and genuinely empty: no ticks in this window, because the market was shut for
+  // all of it. Distinct from "not fetched yet" — that is a missing entry, and it says
+  // Loading. A closed market is not drawn at all rather than drawn as a flat line, because a
+  // flat line at Friday's close is a price nobody was quoting.
+  const shut = sel.filter(c => _extCmpCache[`${c}_${_cmpTf}`]?.candles?.length === 0)
   const d  = computeCompare(byCoin, sel)
   const sp = compareSpread(d)
   const T  = (en, es) => _T(en, es ?? en)
@@ -29694,18 +29748,41 @@ function _cmpRender() {
   const tfPills = Object.keys(WATCH_TF_CONFIG).map(tf =>
     `<button onclick="window.__cmpSetTf('${tf}')" class="mob-pill${tf === _cmpTf ? ' active' : ''}">${tf}</button>`).join('')
 
-  const picker = list.length ? list.map(c => {
+  const chips = (arr) => arr.map(c => {
     const on = _cmpSel.has(c)
     return `<button onclick="window.__cmpToggle('${esc(c)}')" class="mob-pill${on ? ' active' : ''}" style="gap:6px">
       <span style="width:8px;height:8px;border-radius:3px;background:${on ? (_cmpColors[c] ?? 'var(--muted)') : 'var(--border2)'}"></span>
       ${esc(watchCoinLabel(c))}
     </button>`
-  }).join('') : `<span style="font-size:12px;color:var(--muted)">${T('Add coins in Watch first.')}</span>`
+  }).join('')
+  const groupHead = (t) =>
+    `<div style="padding:14px 14px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">${t}</div>`
+  // Grouped under the same two headings the Watch tab uses, so the chip for DXY is found where
+  // the row for DXY is. One flat list read as if the markets were coins nobody recognised.
+  const picker = !list.length
+    ? `<span style="font-size:12px;color:var(--muted)">${T('Add coins or markets in Watch first.')}</span>`
+    : (coinList.length ? groupHead(T('Coins')) + `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:0 14px">${chips(coinList)}</div>` : '')
+    + (extList.length  ? groupHead(T('Markets')) + `<div style="display:flex;flex-wrap:wrap;gap:6px;padding:0 14px">${chips(extList)}</div>` : '')
+
+  // Named, not counted: "DXY is closed" is actionable, "1 market unavailable" is not.
+  const shutNote = shut.length ? `
+    <div style="margin:10px 14px 0;padding:8px 11px;border-radius:10px;border:1px solid var(--border2);
+                background:var(--panel-2);font-size:11.5px;color:var(--muted);line-height:1.45">
+      ${shut.map(s => `<b style="color:var(--fg)">${esc(watchCoinLabel(s))}</b>`).join(', ')}
+      ${shut.length > 1 ? T('were closed for this whole window') : T('was closed for this whole window')} —
+      ${T('no ticks to plot. Try a longer timeframe.')}
+    </div>` : ''
 
   const chart = sel.length === 0
-    ? `<div style="padding:38px 18px;text-align:center;color:var(--muted);font-size:13px">${T('Select two or more coins to compare.')}</div>`
+    ? `<div style="padding:38px 18px;text-align:center;color:var(--muted);font-size:13px">${T('Select two or more markets to compare.')}</div>`
     : !d.series.length
-      ? `<div style="padding:38px 18px;text-align:center;color:var(--muted);font-size:13px">${_cmpLoading ? T('Loading…') : T('No candle data for this window.')}</div>`
+      // "Closed" and "no data" are different answers, and the shut note below says which
+      // markets were shut. Saying "no candle data" for a market that is simply not open at
+      // 3am reads as something being broken.
+      ? `<div style="padding:38px 18px;text-align:center;color:var(--muted);font-size:13px">${
+          _cmpLoading ? T('Loading…')
+          : shut.length === sel.length ? T('Nothing selected was open during this window.')
+          : T('No candle data for this window.')}</div>`
       : `<div style="display:flex;justify-content:space-between;padding:2px 16px 0;font-size:10px;color:var(--muted)">
            <span>${d.max >= 0 ? '+' : ''}${d.max.toFixed(1)}%</span><span>${d.min >= 0 ? '+' : ''}${d.min.toFixed(1)}%</span>
          </div>
@@ -29735,11 +29812,12 @@ function _cmpRender() {
     </div>
     <div data-dragscroll style="display:flex;gap:5px;overflow-x:auto;padding:10px 14px 2px;scrollbar-width:none">${tfPills}</div>
     ${chart}
+    ${shutNote}
     ${spreadRow}
-    <div style="padding:16px 14px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">${T('Assets')}</div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px;padding:0 14px">${picker}</div>
+    ${picker}
     <div style="padding:14px;font-size:10.5px;color:var(--muted);line-height:1.5">
       ${T('Every line is percent change from the start of the window, not price — that is what makes assets at different prices comparable. The axis is always %.')}
+      ${extList.length ? T('Coins trade around the clock; indices, metals and forex keep market hours, so their lines pause overnight and at weekends.') : ''}
     </div>
     <div style="height:calc(70px + env(safe-area-inset-bottom))"></div>`
 
@@ -29760,8 +29838,10 @@ function _cmpRender() {
 window.__openWatchAdvanced = function() {
   const el = _cmpEnsureOverlay()
   // Default to whatever is already on the watchlist, capped so the first open is readable
-  // rather than a tangle of ten lines.
-  if (!_cmpSel.size) _cmpSel = new Set(loadWatchlist().slice(0, 4))
+  // rather than a tangle of ten lines. Coins first, then markets — the same order as the tab,
+  // and it keeps the old behaviour for anyone with four or more coins.
+  if (!_cmpSel.size)
+    _cmpSel = new Set([...loadWatchlist(), ...loadTvWatch().filter(isExtMarket)].slice(0, 4))
   el.style.display = 'flex'
   el.scrollTop = 0
   _cmpRender()
