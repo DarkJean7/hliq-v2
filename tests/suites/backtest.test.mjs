@@ -228,8 +228,14 @@ t('so are fields behind an off module', cli.includes("if (f.group && f.group.sta
 t('and the money fields swap with the model', cli.includes("if (f.group === 'riskModel') return _simParams.pnlModel === 'risk'"))
 t('a module shows its own settings only when on', cli.includes('${_simParams[m.key] ? `<div style="margin-top:9px">'))
 // A structural change rebuilds the form, so what was typed has to be read first.
+// Anchored on the DEFINITION, not on the first mention: the interval buttons now route
+// through this too, and their call sits earlier in the file than the function itself.
 t('typed values are collected before a rebuild', cli.includes('window.__simStructural = function(fn)') &&
-  cli.slice(cli.indexOf('window.__simStructural')).slice(0, 200).includes('_simCollect()'))
+  cli.slice(cli.indexOf('window.__simStructural = function(fn)')).slice(0, 200).includes('_simCollect()'))
+// Which is the point of routing them through it: tapping an interval used to repaint straight
+// from state and throw away whatever was typed but not yet committed.
+t('and the interval buttons go through it',
+  cli.includes('window.__simSetIv = function(v) { window.__simStructural(() => { _simIv = v }) }'))
 // The checkbox has already flipped when onchange fires; flipping again undid the click.
 t('a module switch is not toggled twice', cli.includes('window.__simToggleModule = function() { window.__simStructural(() => {}) }'))
 // Reading a missing checkbox as false would switch a module off whenever it was off-screen.

@@ -220,9 +220,10 @@ import { gzipToString, gunzipFromString } from './gzstore.js'
 import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
 import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
+import { replayMarks, marksUpto, stateAt as simStateAt, openPnlAt as simOpenPnl } from './simreplay.js'
 import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW,
          BT_STRATEGIES, BT_MODULES, BT_TOKYO_TABLE, tokyoWindowsFor, tokyoMarkets,
-         runPortfolio } from './backtest.js'
+         runPortfolio, normalise } from './backtest.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams, botCoins } from './devicebot.js'
 import { BACKDROPS, backdropById, loadBackdrop, saveBackdrop, applyBackdrop,
@@ -16075,7 +16076,9 @@ window.__replayBack = function() {
 // prints the answer. Deliberately plain: it is a report, not a dashboard.
 
 const SIM_KEY = 'hliq_sim'
-let _simCoin = 'BTC'
+// One market to start with, not a basket: a first run should be the simplest thing the
+// screen can do, and the box takes a comma-separated list the moment anyone wants one.
+let _simCoin = 'HYPE'
 let _simIv   = '1h'
 let _simCount = 2000
 let _simParams = { ...BT_DEFAULTS }
@@ -16090,7 +16093,10 @@ let _simStale = false
 
 try {
   const s = JSON.parse(localStorage.getItem(SIM_KEY) || '{}')
-  if (typeof s.coin === 'string' && s.coin) _simCoin = s.coin
+  // An empty saved list is honoured, not treated as "nothing saved". Someone who cleared the
+  // box meant to clear it, and reopening the tab to find HYPE back in it is the same bug as
+  // the box refusing to clear in the first place.
+  if (typeof s.coin === 'string') _simCoin = s.coin
   if (typeof s.iv === 'string' && s.iv) _simIv = s.iv
   if (Number.isFinite(+s.count)) _simCount = +s.count
   if (s.params && typeof s.params === 'object') _simParams = coerceParams(s.params)
@@ -16123,8 +16129,13 @@ function _simCollect() {
   if (Number.isFinite(cnt)) _simCount = Math.max(50, Math.min(5000, cnt))
   // Kept as typed: _simCoinList does the splitting and normalising, and uppercasing here
   // would destroy a builder-dex prefix ("xyz:SPCX" is not "XYZ:SPCX").
-  const coin = String(document.getElementById('sim_coin')?.value ?? '').trim()
-  if (coin) _simCoin = coin
+  //
+  // An EMPTY box is a value. This used to be `if (coin) _simCoin = coin`, which ignored the
+  // empty case — so clearing the field left the old list in state and the next render put it
+  // straight back, which reads as the box refusing to be cleared. Only a missing element
+  // (the field is not on screen) leaves state alone.
+  const el = document.getElementById('sim_coin')
+  if (el) _simCoin = String(el.value ?? '').trim()
   _simSave()
 }
 
@@ -16216,7 +16227,11 @@ window.__simOverview = function() {
   if (btn) btn.textContent = open ? _T('Hide', 'Ocultar') : _T('How this works', 'Cómo funciona')
 }
 
-window.__simSetIv = function(v) { _simIv = v; _simSave(); _simStale = !!_simResult; _simRender() }
+// Collects first, like every other structural change. It used to re-render straight from
+// state, which threw away whatever was in the boxes but not yet committed — clear the market
+// list, tap an interval, and the old list is painted back. That reads as the field refusing to
+// be cleared, and it is really the interval button discarding the edit.
+window.__simSetIv = function(v) { window.__simStructural(() => { _simIv = v }) }
 
 /**
  * Choosing a strategy, a money model or a module changes WHICH boxes exist, so these
@@ -16285,14 +16300,42 @@ window.__simReset = function() {
 
 let _simSkipped = []      // markets left out of the last run, and why
 
+// ── Trade Simulator replay ────────────────────────────────────────────────────
+// The run, played back over the market's own candles with its imagined fills landing as they
+// happen. Same idea as the Portfolio replay, different subject: that one walks your real fills
+// over your account curve, this one walks a rule's decisions over the price it was reacting to.
+// The arithmetic is in src/simreplay.js; this is the playhead, the timer and the chrome.
+let _simBars   = {}       // coin -> normalised rows from the last run
+let _simRep    = null     // { coin, i, playing, speed } while the replay is open
+let _simRepTimer = null
+const SIM_REP_SPAN = 64   // candles visible at once — matches the Portfolio replay's frame
+
+function _simRepClose() {
+  if (_simRepTimer) { clearInterval(_simRepTimer); _simRepTimer = null }
+  _simRep = null
+}
+
 window.__simRun = async function() {
   if (_simBusy) return
   _simCollect()
+  // An empty box is allowed to stay empty, so a run can start with nothing to run. Checked
+  // BEFORE the busy flag goes up: the body below is a try/catch with no finally, so returning
+  // from inside it would leave _simBusy true and the panel stuck on "Running…" forever, with
+  // every later run refused by the guard on the line above.
+  if (!_simCoinList().length) {
+    _simError = _T('Add at least one market to simulate — e.g. HYPE, or BTC, ETH.',
+                   'Agrega al menos un mercado para simular — p. ej. HYPE, o BTC, ETH.')
+    _simResult = null
+    _simRender()
+    return
+  }
   _simBusy = true
   _simError = null
   _simResult = null
   _simSkipped = []
   _simTradePage = 1        // a new run starts at the top of its own list
+  _simBars = {}            // last run's candles, for the replay
+  _simRepClose()           // a replay of the previous run means nothing now
   _simStale = false
   _simRender()
   try {
@@ -16330,7 +16373,12 @@ window.__simRun = async function() {
         return
       }
       if (!Array.isArray(bars) || bars.length < 60) { skipped.push(coin + ' (not enough history)'); return }
-      runs.push({ coin, result: runBacktest(bars.slice(-_simCount), par) })
+      // Kept, normalised exactly as the backtest sees them, so the replay can draw the run
+      // over the same candles it was computed from. A trade's `i` indexes into THIS array;
+      // re-normalising later or slicing differently would slide every marker.
+      const rows = normalise(bars.slice(-_simCount))
+      _simBars[coin] = rows
+      runs.push({ coin, result: runBacktest(rows, par) })
     }, 3)
 
     // Keep the order the user typed; hlPool resolves out of order.
@@ -16658,6 +16706,233 @@ function _simTradesHtml(r) {
   </div>`
 }
 
+/**
+ * The trades belonging to one market.
+ *
+ * A portfolio run replays every market's trades against ONE balance, so its trade list is a
+ * single sequence with a `coin` on each row; a one-market run has no such field because there
+ * is nothing to tell apart. Filtering on a field that does not exist would return nothing and
+ * draw an empty replay over a run that made forty trades.
+ */
+function _simRepTrades(coin) {
+  const all = _simResult?.trades ?? []
+  return all.some(t => t?.coin) ? all.filter(t => t.coin === coin) : all
+}
+
+/** Markets from the last run that have candles kept for them. */
+function _simRepCoins() {
+  return Object.keys(_simBars).filter(c => (_simBars[c]?.length ?? 0) > 3)
+}
+
+window.__simReplayOpen = function(coin) {
+  const coins = _simRepCoins()
+  const pick = coins.includes(coin) ? coin : coins[0]
+  if (!pick) return
+  // Starts at the first frame and PAUSED. A replay that begins playing the moment it opens has
+  // already shown you something before you were looking at it.
+  _simRep = { coin: pick, i: 0, playing: false, speed: 1 }
+  _simRender()
+}
+
+window.__simReplayClose = function() { _simRepClose(); _simRender() }
+
+window.__simReplayMarket = function(coin) {
+  if (!_simRep) return
+  const was = _simRep.playing
+  _simRepStop()
+  _simRep = { ..._simRep, coin, i: 0, playing: false }
+  if (was) window.__simReplayPlay()
+  else _simRender()
+}
+
+function _simRepStop() {
+  if (_simRepTimer) { clearInterval(_simRepTimer); _simRepTimer = null }
+  if (_simRep) _simRep.playing = false
+}
+
+window.__simReplayPlay = function() {
+  if (!_simRep) return
+  if (_simRep.playing) { _simRepStop(); _simRender(); return }
+  const rows = _simBars[_simRep.coin] ?? []
+  // Restart from the beginning rather than sitting on the last frame doing nothing.
+  if (_simRep.i >= rows.length - 1) _simRep.i = 0
+  _simRep.playing = true
+  _simRepTimer = setInterval(() => {
+    if (!_simRep) return _simRepStop()
+    const n = (_simBars[_simRep.coin] ?? []).length
+    if (_simRep.i >= n - 1) { _simRepStop(); _simRepPaint(); return }
+    _simRep.i++
+    _simRepPaint()
+  }, Math.max(16, Math.round(90 / (_simRep.speed || 1))))
+  _simRender()
+}
+
+window.__simReplaySpeed = function(v) {
+  if (!_simRep) return
+  const playing = _simRep.playing
+  _simRepStop()
+  _simRep.speed = Math.max(0.25, Math.min(16, parseFloat(v) || 1))
+  if (playing) window.__simReplayPlay()
+  else _simRender()
+}
+
+window.__simReplaySeek = function(v) {
+  if (!_simRep) return
+  const rows = _simBars[_simRep.coin] ?? []
+  _simRep.i = Math.max(0, Math.min(rows.length - 1, parseInt(v, 10) || 0))
+  _simRepPaint()
+}
+
+window.__simReplayStep = function(d) {
+  if (!_simRep) return
+  _simRepStop()
+  const rows = _simBars[_simRep.coin] ?? []
+  _simRep.i = Math.max(0, Math.min(rows.length - 1, _simRep.i + (d | 0)))
+  _simRender()
+}
+
+/**
+ * Repaint just the replay, not the whole tab.
+ *
+ * A frame lands every ~90ms at 1×. Re-rendering the simulator from the top at that rate would
+ * rebuild every input on the screen thirty times a second, which throws away focus, closes the
+ * help popovers and makes the settings unusable while a replay is running.
+ */
+function _simRepPaint() {
+  const el = document.getElementById('simReplayBody')
+  if (!el) { _simRender(); return }
+  el.innerHTML = _simRepBodyHtml()
+  const sk = document.getElementById('simRepSeek')
+  if (sk && _simRep) sk.value = String(_simRep.i)
+  // The counter sits OUTSIDE the repainted body, next to the scrubber, so it has to be told
+  // as well — otherwise it reads "1/2000" while the playhead is three quarters of the way in.
+  const ct = document.getElementById('simRepCount')
+  if (ct && _simRep) ct.textContent = (_simRep.i + 1) + '/' + ((_simBars[_simRep.coin] ?? []).length || 1)
+}
+
+function _simRepBodyHtml() {
+  if (!_simRep) return ''
+  const rows = _simBars[_simRep.coin] ?? []
+  if (rows.length < 4) return `<div style="font-size:11.5px;color:var(--muted);padding:10px 2px">${
+    _T('No candles kept for this market.', 'No hay velas guardadas para este mercado.')}</div>`
+  const i     = Math.max(0, Math.min(rows.length - 1, _simRep.i))
+  const t     = +rows[i].t
+  const px    = +rows[i].c
+  const start = _simResult?.startBalance ?? 0
+  const trades = _simRepTrades(_simRep.coin)
+  const marks  = marksUpto(replayMarks(trades), t)
+  const st     = simStateAt(trades, t, start)
+
+  const money  = (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v))
+  const signed = (v) => (v < 0 ? '-$' : '+$') + fmtUSD(Math.abs(v))
+  const tone   = (v) => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--fg-2)'
+
+  const chart = signalChartSvg({
+    main: rows.map(r => [r.t, r.c]),
+    candles: rows,
+    grid: true,
+    // Ordinal, like the Portfolio replay: candles are one slot each, so a window that is
+    // partly in the future still draws the revealed ones at their true width instead of
+    // stretching four of them across the frame.
+    ordinal: true,
+    // Ends AT the playhead. The axis only ever scales to what has been revealed, so the
+    // chart cannot hint at where price is about to go.
+    from: i + 1 - SIM_REP_SPAN, to: i + 1,
+    mainLabel: esc(_ocCoinLabel(_simRep.coin)),
+    fmtPrice: (v) => '$' + fmtPrice(v),
+    height: 190,
+    // Only the last few are labelled: forty labels over sixty candles is a wall of text.
+    // An exit says what it made, an entry says which way it went.
+    markers: marks.map((m, k) => ({
+      t: m.t, v: m.v, buy: m.buy,
+      label: k < marks.length - 3 ? ''
+        : m.kind === 'exit'
+          ? `${(m.delta ?? 0) >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(m.delta ?? 0))}`
+          : (m.side === 'long' ? _T('LONG', 'LARGO') : _T('SHORT', 'CORTO')),
+    })),
+  })
+
+  const when = new Date(t).toLocaleString(undefined,
+    { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const stat = (label, value, colour = '') => `<div style="min-width:66px">
+    <div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em">${label}</div>
+    <div style="font-size:13px;font-weight:800;margin-top:2px;font-family:var(--font-mono);${colour ? `color:${colour}` : ''}">${value}</div>
+  </div>`
+
+  // What is open RIGHT NOW, marked to the revealed close. Unrealised on purpose: it is not in
+  // the balance beside it, and saying so is the difference between a replay and a highlight
+  // reel.
+  const op = st.open
+  const openPnl = op ? simOpenPnl(op, px, start, (_simResult?.params?.riskPct ?? 0) / 100) : null
+  const openTxt = !op ? '—'
+    : `${op.side === 'long' ? _T('LONG', 'LARGO') : _T('SHORT', 'CORTO')} @ $${fmtPrice(op.entry)}`
+
+  return `
+    <div style="border:1px solid var(--border2);border-radius:12px;background:var(--panel);overflow:hidden">
+      ${chart.svg
+        ? `<div style="padding:4px 2px 0">${chart.svg}</div>`
+        : `<div style="height:190px;display:flex;align-items:center;justify-content:center;font-size:11.5px;color:var(--muted)">${
+            _T('Not enough of this market to draw yet.', 'Aún no hay suficiente para dibujar.')}</div>`}
+      <div style="display:flex;flex-wrap:wrap;gap:14px;padding:9px 12px 11px;border-top:1px solid var(--border)">
+        ${stat(_T('At', 'En'), esc(when))}
+        ${stat(_T('Price', 'Precio'), '$' + fmtPrice(px))}
+        ${stat(_T('Balance', 'Balance'), money(st.balance), tone(st.netPnl))}
+        ${stat(_T('Net', 'Neto'), signed(st.netPnl), tone(st.netPnl))}
+        ${stat(_T('Closed', 'Cerradas'), `${st.closed}`)}
+        ${stat(_T('W / L', 'G / P'), `${st.won} / ${st.lost}`)}
+        ${stat(_T('Open', 'Abierta'), openTxt, op ? tone(openPnl ?? 0) : '')}
+        ${op && openPnl != null ? stat(_T('Unrealised', 'No realizado'), signed(openPnl), tone(openPnl)) : ''}
+      </div>
+    </div>`
+}
+
+/** The replay panel: the opener, or the player once it is open. */
+function _simReplayHtml() {
+  if (!_simResult) return ''
+  const coins = _simRepCoins()
+  if (!coins.length) return ''
+  if (!_simRep) {
+    return `<button onclick="window.__simReplayOpen('${esc(coins[0])}')"
+      style="width:100%;margin-top:12px;padding:11px;border-radius:11px;border:1px solid var(--accent);background:rgba(0,229,160,0.08);color:var(--accent);font-size:12.5px;font-weight:800;cursor:pointer">
+      ▶ ${_T('Replay this run', 'Reproducir esta ejecución')}</button>
+      <div style="font-size:10.5px;color:var(--muted);text-align:center;margin-top:5px;line-height:1.45">${
+        _T('Play the candles forward and watch where the rule would have bought and sold.',
+           'Reproduce las velas y observa dónde la regla habría comprado y vendido.')}</div>`
+  }
+  const rows = _simBars[_simRep.coin] ?? []
+  const last = Math.max(0, rows.length - 1)
+  const spd  = _simRep.speed
+  const spdBtn = (v) => `<button onclick="window.__simReplaySpeed(${v})"
+    style="border:1px solid ${spd === v ? 'var(--accent)' : 'var(--border2)'};background:${spd === v ? 'var(--accent)' : 'transparent'};color:${spd === v ? '#000' : 'var(--fg-2)'};border-radius:7px;padding:4px 8px;font-size:10.5px;font-weight:800;cursor:pointer">${v}×</button>`
+
+  return `
+    <div style="margin-top:14px;display:flex;align-items:center;gap:8px">
+      <span style="font-size:11px;font-weight:800;color:var(--fg-2);text-transform:uppercase;letter-spacing:.08em">${
+        _T('Replay', 'Reproducción')}</span>
+      ${coins.length > 1 ? `<select onchange="window.__simReplayMarket(this.value)"
+        style="border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:11.5px;padding:4px 8px">
+        ${coins.map(c => `<option value="${esc(c)}" ${c === _simRep.coin ? 'selected' : ''}>${esc(_ocCoinLabel(c))}</option>`).join('')}
+      </select>` : ''}
+      <span style="flex:1"></span>
+      <button onclick="window.__simReplayClose()" aria-label="${_T('Close replay', 'Cerrar')}"
+        style="background:none;border:none;color:var(--muted);font-size:18px;line-height:1;cursor:pointer;padding:2px 6px">×</button>
+    </div>
+    <div id="simReplayBody" style="margin-top:6px">${_simRepBodyHtml()}</div>
+    <div style="display:flex;align-items:center;gap:7px;margin-top:8px">
+      <button onclick="window.__simReplayStep(-1)" title="${_T('Back one candle', 'Una vela atrás')}"
+        style="border:1px solid var(--border2);background:transparent;color:var(--fg);border-radius:8px;padding:6px 9px;font-size:12px;cursor:pointer">◀</button>
+      <button onclick="window.__simReplayPlay()"
+        style="border:none;background:var(--accent);color:#000;border-radius:8px;padding:6px 14px;font-size:12px;font-weight:800;cursor:pointer">${
+        _simRep.playing ? '❚❚' : '▶'}</button>
+      <button onclick="window.__simReplayStep(1)" title="${_T('Forward one candle', 'Una vela adelante')}"
+        style="border:1px solid var(--border2);background:transparent;color:var(--fg);border-radius:8px;padding:6px 9px;font-size:12px;cursor:pointer">▶</button>
+      <input id="simRepSeek" type="range" min="0" max="${last}" value="${_simRep.i}"
+        oninput="window.__simReplaySeek(this.value)" style="flex:1;accent-color:var(--accent)">
+      <span id="simRepCount" style="font-family:var(--font-mono);font-size:10.5px;color:var(--muted);min-width:62px;text-align:right">${_simRep.i + 1}/${last + 1}</span>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:7px;justify-content:flex-end">${[0.5, 1, 2, 4, 8].map(spdBtn).join('')}</div>`
+}
+
 function _simResultHtml() {
   if (_simBusy) return `<div style="padding:22px 4px;font-size:12px;color:var(--muted)">${_T('Running…', 'Ejecutando…')}</div>`
   if (_simError) return `<div style="padding:14px 12px;border:1px solid var(--red);border-radius:10px;font-size:12px;color:var(--red)">${esc(_simError)}</div>`
@@ -16750,6 +17025,7 @@ function _simResultHtml() {
     ${caveats.length ? `<div style="margin-top:10px;border:1px solid var(--orange,#f59e0b);border-radius:10px;padding:9px 11px">
       ${caveats.map(c => `<div style="font-size:11px;color:var(--orange,#f59e0b);line-height:1.45">${esc(c)}</div>`).join('')}
     </div>` : ''}
+    ${_simReplayHtml()}
     ${_simMarketsHtml(r)}
     ${_simTradesHtml(r)}
     ${_simSkipped.length ? `<div style="margin-top:10px;border:1px solid var(--orange,#f59e0b);border-radius:10px;padding:9px 11px;font-size:11px;color:var(--orange,#f59e0b);line-height:1.45">${
