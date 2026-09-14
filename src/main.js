@@ -240,6 +240,7 @@ import { probeNavGeometry } from './navprobe.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows } from './comboequity.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
+import { rulesFor, clampLeverage, marginModeFor } from './assetrules.js'
 
 /**
  * Brightness, as a layer over the app rather than a filter on <html>.
@@ -9736,12 +9737,17 @@ function generateCommand(type) {
     const upper   = _gridRangeToPrice(get('grid-upper'), coin)
     const levVal  = parseFloat(get('grid-levels') || '10')
     const size    = getSizeUsd('grid-size', 'grid-coin')         // '' = auto-size
-    const lev     = get('grid-leverage') || '10'
+    // Never above what the market allows, and never cross where cross is refused. A blank box
+    // means "this market's maximum", which is why the placeholder can be the max without the
+    // value ever being pre-filled.
+    const _gr     = _coinRules(coin)
+    const lev     = String(clampLeverage(get('grid-leverage'), _gr.maxLeverage))
+    const _gMode  = marginModeFor(_gridMargin, _gr)
     const totMrg  = get('grid-totmargin')   // per-position margin cap — cross or isolated
     const levArg  = _gridSpacing !== 'usd'
       ? `--pct-interval ${levVal}`
       : `--levels ${levVal}`
-    cmd = `node strategies/grid.js --coin ${coin}${_gridSide === 'short' ? ' --side short' : ''}${_gridMargin === 'isolated' ? ' --margin isolated' : ''}${totMrg ? ` --total-margin ${totMrg}` : ''}${lower ? ` --lower ${lower}` : ''}${upper ? ` --upper ${upper}` : ''} ${levArg}${size ? ` --size ${size}` : ''} --leverage ${lev} --wallet $WALLET_KEY --address ${state.addr}${assetFlags ? ' ' + assetFlags : ''}`
+    cmd = `node strategies/grid.js --coin ${coin}${_gridSide === 'short' ? ' --side short' : ''}${_gMode === 'isolated' ? ' --margin isolated' : ''}${totMrg ? ` --total-margin ${totMrg}` : ''}${lower ? ` --lower ${lower}` : ''}${upper ? ` --upper ${upper}` : ''} ${levArg}${size ? ` --size ${size}` : ''} --leverage ${lev} --wallet $WALLET_KEY --address ${state.addr}${assetFlags ? ' ' + assetFlags : ''}`
   } else if (type === 'trend') {
     const coin     = get('trend-coin') || 'BTC'
     const fast     = get('trend-fast') || '9'
@@ -23486,8 +23492,88 @@ function _applyGridDefaults(coinId, lowerId, upperId) {
     if (lowerEl) lowerEl.placeholder = lo ? `auto ~${lo.toFixed(2)}${hasPos ? ' (avg)' : ''}` : 'auto'
     if (upperEl) upperEl.placeholder = up ? `auto ~${up.toFixed(2)}${hasPos ? ' (avg)' : ''}` : 'auto'
   }
+  _applyGridAssetRules(coin, coinId.startsWith('m-'))
 }
 window._applyGridDefaults = _applyGridDefaults
+
+/** What this market allows, from the metas already loaded. */
+function _coinRules(coin) { return rulesFor(state.allMetas, coin) }
+
+/**
+ * Make the form offer only what the market allows.
+ *
+ * Reported: "make the leverage automatically change based on the asset and set it to the max
+ * allowed for that asset. for example vvv max leverage is 3x not 10x, if i preview that it does
+ * lit at 10x even tho its not allowed. make the same apply to margin, by default cross but
+ * change to isolated if its the only mode allowed."
+ *
+ * The leverage box offered a flat 10× and the margin toggle offered cross on every market. On
+ * VVV (3×) and on vntl:OPENAI (3×, isolated-only) that is a configuration Hyperliquid refuses:
+ * `updateLeverage` throws, the bot logs a warning and keeps going, and every margin figure in
+ * the preview describes a trade that cannot be placed.
+ *
+ * Placeholder, not value: an empty box still means "whatever this market allows", which stays
+ * true when the coin changes. A number already typed is clamped instead, because silently
+ * leaving 10 in the box on a 3× market is the bug wearing a different hat.
+ */
+function _applyGridAssetRules(coin, mob) {
+  const r = _coinRules(coin)
+  const levEl = document.getElementById(mob ? 'm-grid-leverage' : 'grid-leverage')
+  if (levEl) {
+    levEl.placeholder = String(r.maxLeverage)
+    levEl.max = String(r.maxLeverage)
+    const typed = parseFloat(levEl.value)
+    if (Number.isFinite(typed) && typed > r.maxLeverage) levEl.value = String(r.maxLeverage)
+  }
+  // Cross is the default everywhere it is allowed; where it is not, the toggle is put on
+  // Isolated and locked, because a toggle offering a mode the exchange rejects is not a choice.
+  if (r.isolatedOnly && _gridMargin !== 'isolated') {
+    _gridMargin = 'isolated'
+    try { localStorage.setItem('hliq_grid_margin', _gridMargin) } catch {}
+  }
+  for (const id of ['tog-grid-margin', 'm-tog-grid-margin']) {
+    const el = document.getElementById(id)
+    if (!el) continue
+    el.textContent = _gridMargin === 'isolated' ? 'Isolated' : 'Cross'
+    el.classList.toggle('active', _gridMargin === 'cross')
+    el.disabled = r.isolatedOnly
+    el.style.opacity = r.isolatedOnly ? '.6' : ''
+    el.title = r.isolatedOnly ? _T('This market only allows isolated margin.',
+                                   'Este mercado solo permite margen aislado.') : ''
+  }
+  _gridNoteSet(mob, r, coin)
+}
+
+/**
+ * The line under the coin box that says what is unusual about this market.
+ *
+ * A delisted market is the one worth shouting about: it keeps quoting its last mid forever, so
+ * everything downstream — the auto range, the ladder, the preview's "mark" — is computed from a
+ * price that stopped moving. vntl:OPENAI still says 1336.2 and was read, reasonably, as the app
+ * being wrong about the price.
+ */
+function _gridNoteSet(mob, r, coin) {
+  const host = document.getElementById(mob ? 'm-grid-coin' : 'grid-coin')
+  if (!host) return
+  const id = (mob ? 'm' : 'd') + '-grid-asset-note'
+  let el = document.getElementById(id)
+  const bits = []
+  if (r.delisted) bits.push(['var(--red)', _T(
+    `${coin} is delisted on Hyperliquid — its price is frozen at the last trade, so a grid here cannot fill.`,
+    `${coin} está deslistado en Hyperliquid — su precio está congelado, así que una cuadrícula aquí no se ejecutará.`)])
+  else if (r.known && (r.maxLeverage < 10 || r.isolatedOnly)) bits.push(['var(--fg-3)', _T(
+    `${coin}: max ${r.maxLeverage}× leverage${r.isolatedOnly ? ', isolated margin only' : ''}.`,
+    `${coin}: apalancamiento máx. ${r.maxLeverage}×${r.isolatedOnly ? ', solo margen aislado' : ''}.`)])
+  if (!bits.length) { if (el) el.remove(); return }
+  if (!el) {
+    el = document.createElement('div')
+    el.id = id
+    el.style.cssText = 'font-size:10.5px;line-height:1.45;margin-top:4px'
+    host.parentElement?.appendChild(el)
+  }
+  el.style.color = bits[0][0]
+  el.textContent = bits[0][1]
+}
 
 // Convert grid lower/upper input to absolute price (handles both price and % mode)
 function _gridRangeToPrice(val, coin) {
@@ -26771,8 +26857,9 @@ function buildArgvMob(type) {
     if (_mobGridSpacing !== 'usd') push('--pct-interval', String(levVal))
     else                           push('--levels',       String(levVal))
     push('--size',      getSizeUsd('m-grid-size', 'm-grid-coin'))   // empty = auto-size from balance
-    push('--leverage',  get('m-grid-leverage') || '10')
-    if (_gridMargin === 'isolated') push('--margin', 'isolated')
+    const _mRules = _coinRules(_mCoin)
+    push('--leverage',  String(clampLeverage(get('m-grid-leverage'), _mRules.maxLeverage)))
+    if (marginModeFor(_gridMargin, _mRules) === 'isolated') push('--margin', 'isolated')
     push('--total-margin', get('m-grid-totmargin'))   // per-position margin cap — works in cross or isolated
     const mEntryGap = get('m-grid-entry-gap')
     if (mEntryGap) push('--entry-gap', mEntryGap)
@@ -27328,8 +27415,9 @@ function buildArgv(type) {
       push('--levels', String(gLevVal))
     }
     push('--size',      getSizeUsd('grid-size',  'grid-coin'))   // empty = auto-size from balance
-    push('--leverage',  get('grid-leverage') || '10')
-    if (_gridMargin === 'isolated') push('--margin', 'isolated')
+    const _gRules = _coinRules(_gCoin)
+    push('--leverage',  String(clampLeverage(get('grid-leverage'), _gRules.maxLeverage)))
+    if (marginModeFor(_gridMargin, _gRules) === 'isolated') push('--margin', 'isolated')
     push('--total-margin', get('grid-totmargin'))   // per-position margin cap — works in cross or isolated
     const gEntryGap = get('grid-entry-gap')
     if (gEntryGap) push('--entry-gap', gEntryGap)
@@ -31039,14 +31127,22 @@ function _lbRowHtml(entry, rank) {
     avatarHtml = `<div style="position:relative;flex-shrink:0;width:36px;height:36px">${_lbAvatarHtml(entry.addr, 36)}<div style="position:absolute;bottom:-3px;right:-3px;min-width:15px;height:15px;border-radius:8px;background:var(--panel-3);display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:var(--muted);padding:0 3px;border:1.5px solid var(--bg)">${rank}</div></div>`
   }
 
+  // A hidden account is withheld from the public board by the server; a PIN holder still gets
+  // it back so it can be un-hidden, and the row it drew was indistinguishable from a visible
+  // one. Reported as "hidden wallets are still visible" — they are not public, but there was
+  // nothing on screen to say so, which amounts to the same thing for whoever is looking.
+  const isHidden = !!entry.hidden
+
   return `
-    <tr class="lb-row" onclick="window.__lbToggle('${uid}', this)">
+    <tr class="lb-row${isHidden ? ' lb-row-hidden' : ''}" onclick="window.__lbToggle('${uid}', this)">
       <td class="lb-rank">${_lbRankHtml(rank)}</td>
       <td class="lb-identity">
         ${avatarHtml}
         <div>
           ${entry.label ? `<div class="lb-label notranslate">${esc(entry.label)}</div>` : ''}
-          <div class="lb-addr-short">${short}</div>
+          <div class="lb-addr-short">${short}${isHidden
+            ? ` <span class="lb-hidden-chip" title="${esc(_T('Hidden from the public board — only you can see this row',
+                'Oculta del tablero público — solo tú ves esta fila'))}">${_T('HIDDEN', 'OCULTA')}</span>` : ''}</div>
         </div>
       </td>
       <td class="lb-val">${valStr}</td>

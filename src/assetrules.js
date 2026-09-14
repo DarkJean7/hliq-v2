@@ -1,0 +1,97 @@
+/**
+ * INSOLVENT TERMINAL — what a market will actually let you do.
+ *
+ * Hyperliquid's per-asset metadata carries three constraints that the app was ignoring, and
+ * ignoring them produced configurations the exchange rejects and previews that describe a
+ * trade nobody could place:
+ *
+ *   MAX LEVERAGE   VVV allows 3×. The grid form offered 10× as its default, priced the whole
+ *                  ladder at 10×, and the preview reported "$14.75 margin each · 10× cross".
+ *                  `updateLeverage` at 10× is refused, the bot logs a warning and carries on,
+ *                  and every margin figure on that screen was for a trade that cannot exist.
+ *   ISOLATED ONLY  Some markets forbid cross entirely (`onlyIsolated`, or `marginMode` of
+ *                  "strictIsolated"/"noCross"). Offering cross there is the same class of lie.
+ *   DELISTED       A delisted market keeps its last mid forever. `vntl:OPENAI` still quotes
+ *                  1336.2 and has not traded in a long time — reported as "the preview shows a
+ *                  mark price of 1,336 which is false since its at 1,510 in reality". The
+ *                  number is Hyperliquid's own; what was missing is that it is frozen.
+ *
+ * Pure: a universe entry in, plain facts out. The client reads it to build the form, and the
+ * grid bot reads the same rules from its own meta fetch, so the two cannot disagree about what
+ * a market allows.
+ */
+
+/** Hyperliquid's default when an asset does not say. Nothing on HL exceeds it. */
+export const MAX_LEVERAGE_CAP = 50
+
+/**
+ * The constraints carried by one `universe[]` entry.
+ *
+ * Everything is defaulted rather than left undefined: a caller that cannot tell "no limit"
+ * from "not loaded yet" is how 10× got offered on a 3× market in the first place. `known` says
+ * which of the two this is.
+ */
+export function assetRules(u) {
+  const lev = Number(u?.maxLeverage)
+  return {
+    known: !!u,
+    maxLeverage: Number.isFinite(lev) && lev > 0 ? Math.floor(lev) : MAX_LEVERAGE_CAP,
+    // Three different spellings of the same rule, and a market only needs to fail one.
+    isolatedOnly: !!(u?.onlyIsolated || u?.marginMode === 'strictIsolated' || u?.marginMode === 'noCross'),
+    delisted: !!u?.isDelisted,
+  }
+}
+
+/**
+ * Find a market in an allPerpMetas array.
+ *
+ * HIP-3 universes carry their dex prefix in the name (`vntl:OPENAI`), the main dex does not
+ * (`VVV`), and a caller holds whichever spelling the rest of the app uses — so both are tried.
+ * Case-insensitively, because a market typed by hand is not typed the way HL writes it.
+ */
+export function findUniverse(allMetas, coin) {
+  const want = String(coin ?? '').toLowerCase()
+  if (!want) return null
+  const bare = want.includes(':') ? want.slice(want.lastIndexOf(':') + 1) : null
+  for (const m of (allMetas ?? [])) {
+    for (const u of (m?.universe ?? [])) {
+      const n = String(u?.name ?? '').toLowerCase()
+      if (n === want) return u
+    }
+  }
+  // Only after an exact match fails everywhere: a bare "OPENAI" must not win over a real
+  // `xyz:OPENAI` on another dex just because it was checked first.
+  if (bare) {
+    for (const m of (allMetas ?? [])) {
+      for (const u of (m?.universe ?? [])) {
+        if (String(u?.name ?? '').toLowerCase() === bare) return u
+      }
+    }
+  }
+  return null
+}
+
+/** The rules for a coin, looked up in an allPerpMetas array. Unknown market → unknown rules. */
+export function rulesFor(allMetas, coin) {
+  return assetRules(findUniverse(allMetas, coin))
+}
+
+/**
+ * A leverage the market will accept: a whole number, at least 1, never above its maximum.
+ *
+ * A blank or unparseable request means "give me what this market allows", which is what makes
+ * the form's default correct for every asset without the form knowing anything about assets.
+ */
+export function clampLeverage(want, maxLeverage) {
+  const max = Number.isFinite(+maxLeverage) && +maxLeverage > 0
+    ? Math.floor(+maxLeverage) : MAX_LEVERAGE_CAP
+  const n = Math.floor(Number(want))
+  if (!Number.isFinite(n) || n < 1) return max
+  return Math.min(n, max)
+}
+
+/** Cross unless the market forbids it. Returns 'isolated' | 'cross'. */
+export function marginModeFor(want, rules) {
+  if (rules?.isolatedOnly) return 'isolated'
+  return String(want ?? '').toLowerCase() === 'isolated' ? 'isolated' : 'cross'
+}

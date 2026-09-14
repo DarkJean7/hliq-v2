@@ -16,7 +16,10 @@ const grab = (s, sig) => {
 }
 
 console.log('\n── a preview can never place an order ──')
-const planIdx = grid.indexOf('if (PLAN_ONLY) {')
+// The PLAN_ONLY branch that ENDS the run, not merely the first one in the file: the asset-limit
+// check bails out early with a plan of its own for a delisted market, and anchoring on the
+// first occurrence pointed this whole section at the wrong place.
+const planIdx = grid.indexOf('  if (PLAN_ONLY) {' + String.fromCharCode(10))
 t('plan mode exists', planIdx > 0)
 t('and exits the process', grid.indexOf('process.exit(0)', planIdx) > planIdx)
 // What matters is the SETUP PATH — run() from its start to the exit. The order helpers are

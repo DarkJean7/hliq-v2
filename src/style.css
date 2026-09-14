@@ -5280,6 +5280,16 @@ body.layout-mobile .nav-tabs { display: none !important; }
    not declare it, which has silently made content unreachable three times now. */
 .lb-pos-wrap { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
 .lb-pos-wrap .lb-pos-table { min-width: 640px; }
+/* A row only a PIN holder can see. Dimmed and chipped, because the whole point of hiding an
+   account is that it is not on the public board — and a row that looks exactly like a public
+   one gives no way to tell whether hiding worked. */
+.lb-row-hidden > td { opacity: .5; }
+.lb-hidden-chip {
+  display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px;
+  background: var(--panel-3, #222); border: 1px solid var(--border2, #333);
+  color: var(--muted); font-size: 8.5px; font-weight: 800; letter-spacing: .08em;
+  vertical-align: middle;
+}
 .lb-pos-table { width: 100%; border-collapse: collapse; font-size: 11px; }
 .lb-pos-table td, .lb-pos-table th { white-space: nowrap; }
 .lb-pos-table th {

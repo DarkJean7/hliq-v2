@@ -71,11 +71,11 @@ let   COIN         = IS_HIP3 ? `${DEX}:${_rawCoin.split(':')[1].toUpperCase()}` 
 let   Q            = (addr) => DEX ? { user: addr, dex: DEX } : { user: addr }
 let   MIDS_ARG     = DEX ? { dex: DEX } : undefined
 const IS_SHORT     = String(args.side || 'long').toLowerCase() === 'short'
-const IS_ISOLATED  = String(args.margin || 'cross').toLowerCase() === 'isolated'
+let   IS_ISOLATED  = String(args.margin || 'cross').toLowerCase() === 'isolated'
 const TOTAL_MARGIN = parseFloat(args['total-margin']) || 0   // per-position margin cap (cross or isolated); 0 = off
 let   ORDER_USD    = parseFloat(args.size)   // 0 → auto-sized from balance in run()
 const SIZE_PCT     = Math.min(1, Math.max(0.01, (parseFloat(args['size-pct']) || 50) / 100))
-const LEVERAGE     = parseInt(args.leverage)
+let   LEVERAGE     = parseInt(args.leverage)
 const PCT_INTERVAL = parseFloat(args['pct-interval'] ?? '0')
 const PCT_SPACING  = PCT_INTERVAL > 0
 // Preview mode. The UI asks the bot what it WOULD do rather than recomputing the ladder
@@ -162,12 +162,12 @@ async function getAssetInfo(coin) {
       const dexIdx = (dexs ?? []).findIndex(d => d && d.name === DEX)
       if (dexIdx < 1) throw new Error(`Unknown perp dex: ${DEX}`)
       ;(meta.universe ?? []).forEach((u, i) => {
-        _meta[u.name] = { index: 100000 + dexIdx * 10000 + i, szDecimals: u.szDecimals ?? 6 }
+        _meta[u.name] = { index: 100000 + dexIdx * 10000 + i, szDecimals: u.szDecimals ?? 6, u }
       })
     } else {
       const meta = await info.meta()
       ;(meta.universe ?? []).forEach((u, i) => {
-        _meta[u.name] = { index: i, szDecimals: u.szDecimals ?? 6 }
+        _meta[u.name] = { index: i, szDecimals: u.szDecimals ?? 6, u }
       })
     }
   }
@@ -617,8 +617,41 @@ async function resolveCoin() {
   log('WARN', `Could not find "${_rawCoin}" on the main dex or any HIP-3 dex — orders may fail`)
 }
 
+/**
+ * Hold the run to what the market allows, before anything is sized against it.
+ *
+ * The UI clamps too, but the bot is what places orders and its args can outlive the form: a
+ * saved config, a hand-edited command, an asset whose maximum was lowered since. Asking for
+ * 10x on a 3x market makes `updateLeverage` throw, which used to be a logged warning the run
+ * carried straight past — sizing every level against a leverage the exchange had refused.
+ *
+ * Delisted is fatal rather than clamped. Such a market keeps quoting its last trade forever,
+ * so the range, the ladder and the plan are all computed from a price that stopped moving.
+ */
+async function applyAssetLimits() {
+  let u = null
+  try { u = (await getAssetInfo(COIN)).u } catch { return }
+  if (!u) return
+  if (u.isDelisted) {
+    log('ERROR', `${COIN} is delisted on Hyperliquid — its price is frozen and a grid cannot fill.`)
+    if (PLAN_ONLY) { console.log('__PLAN__' + JSON.stringify({ ok: false, error: `${COIN} is delisted on Hyperliquid — its price is frozen, so a grid here cannot fill.` })) }
+    process.exit(1)
+  }
+  const max = parseInt(u.maxLeverage)
+  if (Number.isFinite(max) && max > 0 && (!(LEVERAGE > 0) || LEVERAGE > max)) {
+    log('INIT', `Leverage ${LEVERAGE || '(unset)'} → ${max}x, the most ${COIN} allows`)
+    LEVERAGE = max
+  }
+  const isoOnly = !!(u.onlyIsolated || u.marginMode === 'strictIsolated' || u.marginMode === 'noCross')
+  if (isoOnly && !IS_ISOLATED) {
+    log('INIT', `${COIN} only allows isolated margin — switching from cross`)
+    IS_ISOLATED = true
+  }
+}
+
 async function run() {
   await resolveCoin()
+  await applyAssetLimits()
   const allMids = await info.allMids(MIDS_ARG)
   const markPx  = parseFloat(allMids[COIN] ?? 0)
   if (!markPx) { log('ERROR', `No price for ${COIN}`); process.exit(1) }
