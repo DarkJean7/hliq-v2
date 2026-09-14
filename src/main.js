@@ -172,6 +172,9 @@ import {
   setBuilderFeeEnabled,
   isBuilderFeeEnabled,
   applyReferrer,
+  applyReferrerWith,
+  referrerOf,
+  REFERRAL_CODE,
   fetchCandles,
   fetchMarketCtxs,
   fetchPerpCategories,
@@ -2263,7 +2266,7 @@ async function connectAgentKeyUI() {
     else localStorage.setItem('hliq_agent_key', keyVal)
     const stratInput = document.getElementById('agentKey')
     if (stratInput) stratInput.value = keyVal
-    applyReferrer().catch(() => {})
+    _ensureReferrer()
     updateSubmitBtn()
     updateTradeBalance()
   } catch (e) {
@@ -2387,6 +2390,11 @@ window.__pickWallet = async function(rdns) {
     // Privacy: joining the public leaderboard is OPT-IN. Connecting no longer auto-publishes
     // your address — the user adds themselves explicitly via the "➕ Add me" button, and can
     // remove themselves anytime (signature-proven). Never add an account without asking.
+    // A wallet that connects and never sets up trading was the gap: the referral only ever
+    // happened on the agent-key paths, so these accounts reached Hyperliquid with an empty
+    // referrer slot. Runs after the builder-fee approval above, so the two prompts do not
+    // arrive at once, and only if the slot really is empty.
+    _ensureReferrer(addr)
     _updateAutoGenBtnVisibility()   // wallet now connected → auto-gen buttons relabel
     _refreshWalletUI()              // repaint the Settings view so it shows Connected without a reopen
     window.__updateDepositPreview()
@@ -5665,6 +5673,75 @@ function _guardFindPos(coin, acct) {
   return list.find(x => x.position?.coin === coin)?.position || null
 }
 const _isRealAddr = a => /^0x[0-9a-fA-F]{40}$/.test(String(a ?? ''))
+
+/**
+ * Put the house referral code on any account that arrives here without one.
+ *
+ * Asked for: "make that anyone that connects to my app and does not have a referral code it
+ * uses mine." It used to happen on four agent-key paths only, so a wallet that connected and
+ * never set up trading was never referred — and each of those four fired blind, spending a
+ * signed request to be told the account was already referred.
+ *
+ * ONE FUNNEL, and every caller goes through it. What it guarantees:
+ *
+ *   IT ASKS FIRST.   Hyperliquid is the authority on whether the slot is empty, and a referrer
+ *                    cannot be changed once set. Reading the live state costs one info call
+ *                    and is the difference between "set it if empty" and "try it and see".
+ *   IT ASKS ONCE.    The outcome is recorded per address. A settled account (already referred,
+ *                    or now referred by us) is never asked about again — otherwise every
+ *                    account switch and every reload repeats the whole dance.
+ *   IT NEVER BLOCKS. Signed in the background off whichever signer exists, failing silently.
+ *                    A referral that did not stick is worth nothing either way, and nothing on
+ *                    screen should wait on it.
+ *
+ * WHO SIGNS: the agent key when one is connected, which is silent; otherwise the main wallet,
+ * which prompts. The prompt is not new behaviour bolted on — connecting already signs
+ * approveBuilderFee — but it is a signature the user did not ask for, so it happens at most
+ * once per account, is never retried after a refusal, and is disclosed on the Security page.
+ */
+const _REF_KEY = 'hliq_ref_state'          // { "0xaddr": { s: 'set'|'had'|'no', at } }
+const _REF_RETRY_MS = 24 * 60 * 60 * 1000  // only an inconclusive attempt is ever retried
+
+function _refState() {
+  try { return JSON.parse(localStorage.getItem(_REF_KEY) || '{}') } catch { return {} }
+}
+function _refRecord(addr, s) {
+  try {
+    const all = _refState()
+    all[String(addr).toLowerCase()] = { s, at: Date.now() }
+    localStorage.setItem(_REF_KEY, JSON.stringify(all))
+  } catch {}
+}
+
+async function _ensureReferrer(addr = state.addr) {
+  try {
+    if (!_isRealAddr(addr)) return                       // paper, All Accounts, junk
+    if (localStorage.getItem('hliq_no_ref') === '1') return
+    const rec = _refState()[String(addr).toLowerCase()]
+    // 'set' and 'had' are final — the slot is full either way and cannot be changed. Only an
+    // attempt that failed for an unknown reason is worth coming back to.
+    if (rec && (rec.s === 'set' || rec.s === 'had')) return
+    if (rec && Date.now() - (rec.at ?? 0) < _REF_RETRY_MS) return
+
+    if (await referrerOf(addr)) { _refRecord(addr, 'had'); return }
+
+    // Agent key first: it signs without a prompt, and anyone who trades here has one.
+    if (isConnected()) { await applyReferrer(); _refRecord(addr, 'set'); return }
+    // Otherwise the connected main wallet, if it is the one that owns this account.
+    const main = getMainAddress()
+    if (main && main.toLowerCase() === String(addr).toLowerCase()) {
+      const signer = getHlSigner()
+      if (signer) { await applyReferrerWith(signer); _refRecord(addr, 'set'); return }
+    }
+    // Nothing here can sign for this account — a watched address, or a wallet connected for a
+    // different one. Not recorded: the moment a key does show up, this runs again.
+  } catch (e) {
+    // Rejected in the wallet, already referred, not eligible, offline — all the same to us.
+    // Recorded so it is not retried today; the message is kept for the console only.
+    console.debug('[ref]', String(e?.message ?? e).slice(0, 80))
+    _refRecord(addr, 'no')
+  }
+}
 // Parse a flat ['--flag','value',...] argv (from a running guard) into an object.
 function _parseGuardArgs(args) {
   const o = {}
@@ -10840,6 +10917,21 @@ function _mobVSecurityHtml() {
     li(_T('Trading leveraged perpetuals is high-risk — you can lose your entire balance. Bots included.', 'Operar perpetuos apalancados es de alto riesgo — puedes perder todo tu saldo. Bots incluidos.'))
   )
 
+  // Said out loud, in the same place the key handling is. The app signs two things on connect
+  // that the user did not click a button for — the builder fee and this — and both put money
+  // on the table, so both belong on the page where we claim to be straight about it.
+  const fees = card(
+    h(_T('How Insolvent makes money', 'Cómo gana dinero Insolvent')) +
+    p(_T('Two ways, both on Hyperliquid\'s own rails, and neither can touch your balance:',
+         'Dos formas, ambas sobre los propios rieles de Hyperliquid, y ninguna toca tu saldo:')) +
+    li(_T(`<b>Referral code.</b> If your Hyperliquid account has no referrer yet, connecting here sets ours (<code>${esc(REFERRAL_CODE)}</code>). Hyperliquid then discounts <b>your</b> taker fees and pays us a share of what you do pay. An account that already has a referrer is never touched — a referrer cannot be changed once set.`,
+          `<b>Código de referido.</b> Si tu cuenta de Hyperliquid aún no tiene referidor, conectarte aquí establece el nuestro (<code>${esc(REFERRAL_CODE)}</code>). Hyperliquid descuenta <b>tus</b> comisiones y nos paga una parte de las que sí pagas. Una cuenta que ya tiene referidor nunca se toca — no se puede cambiar una vez fijado.`)) +
+    li(_T('<b>Builder fee.</b> A small fee approved when you connect your wallet, capped at the rate shown in that approval.',
+          '<b>Comisión de builder.</b> Una pequeña comisión aprobada al conectar tu billetera, limitada a la tasa mostrada en esa aprobación.')) +
+    li(_T('Want no referral set? Neither is required to use the app — say the word and we will turn it off for your account.',
+          '¿Prefieres sin referido? Ninguna es obligatoria para usar la app — dilo y lo desactivamos para tu cuenta.'))
+  )
+
   const who = card(
     h(_T('Who\'s behind Insolvent', 'Quién está detrás de Insolvent')) +
     p(_T('Insolvent is an independent project, built and maintained with care by one team — not affiliated with Hyperliquid. Questions, security reports, or feedback are welcome.', 'Insolvent es un proyecto independiente, construido y mantenido con cuidado por un solo equipo — no afiliado con Hyperliquid. Preguntas, reportes de seguridad o comentarios son bienvenidos.')) +
@@ -10887,7 +10979,7 @@ function _mobVSecurityHtml() {
     <span style="font-size:18px;font-weight:700">${_T('Security & Keys', 'Seguridad y claves')}</span>
     <button onclick="window.__closeSecurityInfo()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
   </div>`
-  return header + hero + storage + control + backup + honest + who + tos + privacy + footer
+  return header + hero + storage + control + backup + honest + fees + who + tos + privacy + footer
 }
 
 // Mark price for a position. Prefer the live mid from allMids; but HIP-3 dex
@@ -22502,7 +22594,7 @@ window._mobVConnectAgentKey = async function() {
     const agentInputDesktop = document.getElementById('agentKey')
     if (agentInputDesktop) agentInputDesktop.value = keyVal
     setStatus(`Connected: ${addr.slice(0, 6)}…${addr.slice(-4)}`, 'var(--green)')
-    applyReferrer().catch(() => {})
+    _ensureReferrer()
     updateSubmitBtn()
     _refreshWalletUI()   // repaint Settings so the "Connected" state shows without a reopen
   } catch {
@@ -27857,7 +27949,7 @@ window.__autoGenerateAgentKey = async function() {
     }
     _syncSettingsTab()
     _updateAutoGenBtnVisibility()
-    applyReferrer().catch(() => {})
+    _ensureReferrer()
     updateSubmitBtn()
     updateTradeBalance()
     if (_isMobView()) { try { _mobVRenderContent() } catch {} }
@@ -27943,7 +28035,7 @@ function restoreAgentKey(addr) {
       statusEl.innerHTML = `✓ Connected: <span style="color:var(--accent)">${connectedAddr.slice(0,6)}...${connectedAddr.slice(-4)}</span>`
       statusEl.style.color = 'var(--green)'
     }
-    applyReferrer().catch(() => {})
+    _ensureReferrer()
     updateSubmitBtn()
     updateTradeBalance()
   }).catch(() => {})

@@ -230,9 +230,45 @@ let builderFeeEnabled = false
 export function setBuilderFeeEnabled(val) { builderFeeEnabled = val }
 export function isBuilderFeeEnabled()     { return builderFeeEnabled }
 
+/**
+ * The house referral code. Set on any account that reaches this app without one.
+ *
+ * Hyperliquid pays a referrer a slice of the referred account's fees and gives the referred
+ * account a discount on its own — so this is not only ours to want, but it IS ours to want,
+ * and the account it is set on belongs to someone else. Three properties therefore hold, and
+ * `_ensureReferrer` in main.js is where they are enforced:
+ *
+ *   ONCE, AND ONLY WHEN EMPTY.  An account that already has a referrer is never touched. HL
+ *                               would reject the attempt anyway; asking first means we do not
+ *                               spend a signature to be told no.
+ *   IRREVERSIBLE, SO NEVER ON A GUESS.  A referrer cannot be changed once set. Everything here
+ *                               reads the live state first rather than trusting a local flag.
+ *   IT FAILS QUIETLY.           No banner, no retry storm, nothing blocked. A referral that did
+ *                               not stick is worth nothing to us and nothing to the user.
+ */
+export const REFERRAL_CODE = 'INSOLVENTSPARTAN'
+
+/** Who referred this account, if anyone. `null` means the slot is empty and settable. */
+export async function referrerOf(addr) {
+  const r = await infoClient.referral({ user: addr })
+  return r?.referredBy ?? null
+}
+
+/** Set it with the agent key already connected for the active account. */
 export async function applyReferrer() {
   if (!exchangeClient) throw new Error('Agent key not connected')
-  return exchangeClient.setReferrer({ code: 'INSOLVENTSPARTAN' })
+  return exchangeClient.setReferrer({ code: REFERRAL_CODE })
+}
+
+/**
+ * Set it with an arbitrary signer — the main wallet, for someone who connected one but has
+ * never set up an agent key. `setReferrer` is an L1 action, so either signer is accepted;
+ * this is the same shape as approveBuilderFee, which the connect flow already signs.
+ */
+export async function applyReferrerWith(signer) {
+  const transport = new HttpTransport({ timeout: 60_000 })
+  const client    = new ExchangeClient({ transport, wallet: signer })
+  return client.setReferrer({ code: REFERRAL_CODE })
 }
 
 export async function approveBuilderFee(signer) {
