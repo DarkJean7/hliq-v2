@@ -30152,12 +30152,12 @@ window.__watchOpenTrade = function(coin) {
     .find(b => b.getAttribute('onclick')?.includes("'trade'"))
   switchTab('trade', tradeBtn)
   setTimeout(() => {
-    if (state.allMids?.[coin]) {
-      state.selectedCoin = coin
-      updateCoinHeader(coin)
-      updateOrderSummary()
-      loadTradeChart(coin)
-    }
+    // __selectCoin, not a hand-rolled subset of it. This used to set the coin, the header, the
+    // summary and the chart — but not the submit button and not the leverage cap. So opening
+    // BTC from the watch strip after looking at another market left the button still saying
+    // "Buy / Long io:OAI" and the leverage slider still capped at that market's 6x, over a
+    // ticket that was otherwise all BTC. Reported exactly that way.
+    if (state.allMids?.[coin]) window.__selectCoin(coin)
   }, 80)
 }
 
