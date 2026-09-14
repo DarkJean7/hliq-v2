@@ -186,6 +186,46 @@ console.log(nl + '-- a delisted market is not a market you can pick --')
   t('why the alias exists is written down', CLI.includes('the market exists, under a name they'))
 }
 
+console.log(nl + '-- a market with an empty book is not offered --')
+{
+  // Asked for: "get rid of $0 open interest markets and $0 volume." Measured against the live
+  // API while writing this: 519 perp markets, 201 delisted, 201 with an empty book — and they
+  // are the SAME 201. So today this filter and the delisted one agree, and it is the one that
+  // keeps working if Hyperliquid ever leaves a listed market with nothing in it.
+  const { hasNoActivity, deployerOf } = await import('../../src/assetrules.js')
+  t('no interest and no volume is an empty book', hasNoActivity({ oi: 0, volume: 0 }) === true)
+  // Either alone is a quiet day. A market can hold real open interest without trading today,
+  // and can turn over without anyone carrying a position.
+  t('interest without volume is not', hasNoActivity({ oi: 1e6, volume: 0 }) === false)
+  t('volume without interest is not', hasNoActivity({ oi: 0, volume: 1e6 }) === false)
+  t('a real market is not', hasNoActivity({ oi: 7.1e6, volume: 7.2e6 }) === false)
+  // The one that would have emptied the whole list: the context map fills in after the first
+  // paint, and reading absent numbers as zeroes hides every market not yet measured.
+  t('a MISSING context is unknown, not empty', hasNoActivity(undefined) === false && hasNoActivity(null) === false)
+  t('and so are unreadable numbers', hasNoActivity({ oi: 'x', volume: 'y' }) === false)
+  t('negatives cannot sneak past it', hasNoActivity({ oi: -1, volume: -1 }) === true)
+
+  t('the pickers drop them', CLI.includes('_isDeadMkt(k)') && CLI.includes('_isDeadMkt(c)'))
+  // Never the market you are standing in, and never one someone chose to pin.
+  t('but never a position you hold', CLI.includes('const held = (state.perpState?.assetPositions ?? [])'))
+  t('nor a favourite', CLI.includes('favs.includes(k) || !_isDeadMkt(k)'))
+  t('why unknown is not zero is written down',
+    fs.readFileSync('src/assetrules.js', 'utf8').includes('empty is not unknown'))
+}
+
+console.log(nl + '-- and the row says who deployed it --')
+{
+  const { deployerOf } = await import('../../src/assetrules.js')
+  t('a builder market names its dex', deployerOf('io:OAI') === 'io')
+  t('and another one names a different dex', deployerOf('vntl:OPENAI') === 'vntl')
+  t("Hyperliquid's own markets have no prefix", deployerOf('BTC') === null)
+  t('junk is not a deployer', deployerOf('') === null && deployerOf(null) === null && deployerOf(':X') === null)
+  t('the picker draws the badge', CLI.includes('const dex = deployerOf(c)') && CLI.includes('Deployed by ${esc(dex)}'))
+  // It is not decoration: two dexes can list the same underlying on completely different terms,
+  // which is the confusion the dead OPENAI caused in the first place.
+  t('and why it matters is written down', CLI.includes('the deployer sets the oracle'))
+}
+
 console.log(nl + '-- a hidden leaderboard row looks hidden, in BOTH shells --')
 {
   // The server withholds these from the public board entirely; a PIN holder gets them back so

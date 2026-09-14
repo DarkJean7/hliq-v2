@@ -240,7 +240,7 @@ import { probeNavGeometry } from './navprobe.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows } from './comboequity.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
-import { rulesFor, clampLeverage, marginModeFor, delistedNames } from './assetrules.js'
+import { rulesFor, clampLeverage, marginModeFor, delistedNames, hasNoActivity, deployerOf } from './assetrules.js'
 
 /**
  * Brightness, as a layer over the app rather than a filter on <html>.
@@ -3135,6 +3135,21 @@ function _mktDisplay(coin) { return _MKT_DISPLAY[coin.replace(/.*:/, '')] ?? nul
 function _isDelistedMkt(coin) {
   return delistedNames(state.allMetas).has(String(coin ?? '').toLowerCase())
 }
+
+/**
+ * A market with an empty book — no open interest and no volume — that the user is not already
+ * involved with.
+ *
+ * A position you hold is never hidden, whatever its market is doing: not being able to find the
+ * thing you are standing in is worse than a cluttered list. Favourites are exempt at the call
+ * site that has them.
+ */
+function _isDeadMkt(coin) {
+  if (!hasNoActivity(_mktCtxMap[coin])) return false
+  const held = (state.perpState?.assetPositions ?? [])
+    .some(ap => ap.position?.coin === coin && parseFloat(ap.position?.szi ?? 0) !== 0)
+  return !held
+}
 // Shown name → real ticker, so a market can be found by the name the user was shown.
 const _MKT_DISPLAY_REV = Object.fromEntries(Object.entries(_MKT_DISPLAY).map(([k, v]) => [v, k]))
 
@@ -3441,7 +3456,7 @@ window._tcsFilter = function(q = '') {
   const entries = Object.entries(mids)
     // A delisted market is not something you can open a position in — HL's own UI does not
     // list it, and ours was offering the dead OPENAI as the only one there was.
-    .filter(([c]) => !_isDelistedMkt(c))
+    .filter(([c]) => !_isDelistedMkt(c) && !_isDeadMkt(c))
     .filter(([c]) => !q || c.toLowerCase().includes(lq) || (_mktDisplay(c) ?? '').toLowerCase().includes(lq))
     .sort((a, b) => {
       const d = _mktCtxMap[b[0]]?.oi ?? 0
@@ -20676,6 +20691,14 @@ function _mobVTradeCoinList(q = '') {
         <div style="display:flex;align-items:center;gap:5px">
           <span style="font-size:14px;font-weight:700">${esc(display)}</span>
           ${lev ? `<span style="font-size:9px;font-weight:700;padding:1px 4px;border-radius:3px;background:var(--panel-3);color:var(--muted)">${lev}x</span>` : ''}
+          ${(() => {
+            // Who listed it. Not decoration: the deployer sets the oracle, the fees and the
+            // leverage, so the same underlying on two dexes is two different markets — which is
+            // exactly the confusion the dead OPENAI caused. Hyperliquid badges these the same
+            // way, with the bare prefix.
+            const dex = deployerOf(c)
+            return dex ? `<span title="Deployed by ${esc(dex)}" style="font-size:9px;font-weight:700;padding:1px 4px;border-radius:3px;background:var(--accent-dim,rgba(0,229,160,.14));color:var(--accent)">${esc(_dexLabel(dex))}</span>` : ''
+          })()}
         </div>
         <div style="font-size:11px;color:var(--muted);margin-top:2px">
           Vol $${_fmtK(vol)} · <span class="${fundCls}">F ${fundSign}${Math.abs(fund).toFixed(4)}%</span>
@@ -20692,7 +20715,10 @@ function _mobVTradeCoinList(q = '') {
     `<div style="padding:7px 16px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;background:var(--panel-2);border-bottom:1px solid var(--border)">${label}</div>`
 
   // Apply type filter — same logic as desktop renderCoinDropdownItems
-  let entries = Object.entries(mids).filter(([k]) => !_isDelistedMkt(k))
+  let entries = Object.entries(mids)
+    .filter(([k]) => !_isDelistedMkt(k))
+    // A favourite stays even with an empty book: someone put it there on purpose.
+    .filter(([k]) => favs.includes(k) || !_isDeadMkt(k))
   if (lq) entries = entries.filter(([k]) => k.toLowerCase().includes(lq) || k.replace(/.*:/, '').toLowerCase().includes(lq) || (_mktDisplay(k) ?? '').toLowerCase().includes(lq))
   if (_mobVPickerType === 'crypto')    entries = entries.filter(([k]) => !_isTradFiCat(_mktCatMap[k]))
   if (_mobVPickerType === 'tradfi')    entries = entries.filter(([k]) =>  _isTradFiCat(_mktCatMap[k]))

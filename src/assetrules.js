@@ -117,6 +117,43 @@ export function delistedNames(allMetas) {
   return out
 }
 
+/**
+ * A market nobody is trading: no open interest AND no volume.
+ *
+ * Asked for: "get rid of $0 open interest markets and $0 volume." A market with neither is one
+ * you cannot get out of — the dead OPENAI listing reads "Vol $0 · OI $0" and is the obvious
+ * case, but it is not the only one, and hiding them by name would have fixed one row.
+ *
+ * BOTH, not either: a market can legitimately have no volume today while holding real open
+ * interest, and a market can turn over without anyone carrying a position. Either alone is a
+ * quiet day; neither is an empty book.
+ *
+ * And a MISSING context is not a zero one. `_mktCtxMap` fills in after the first paint, so
+ * reading absent numbers as zeroes would empty the whole list for a moment and hide every
+ * market that had not been measured yet — the same "empty is not unknown" mistake that has
+ * cost this codebase three separate bugs.
+ */
+export function hasNoActivity(ctx) {
+  if (!ctx) return false
+  const oi  = Number(ctx.oi)
+  const vol = Number(ctx.volume)
+  if (!Number.isFinite(oi) || !Number.isFinite(vol)) return false
+  return oi <= 0 && vol <= 0
+}
+
+/**
+ * Who deployed this market: the builder-dex prefix, or null for Hyperliquid's own.
+ *
+ * Asked for alongside the above — "include the deployer, in this case io is the deployer of
+ * openai". It is not decoration: the deployer sets the oracle, the fees and the leverage, and
+ * two dexes can list the same underlying on completely different terms.
+ */
+export function deployerOf(coin) {
+  const s = String(coin ?? '')
+  const i = s.indexOf(':')
+  return i > 0 ? s.slice(0, i) : null
+}
+
 /** Cross unless the market forbids it. Returns 'isolated' | 'cross'. */
 export function marginModeFor(want, rules) {
   if (rules?.isolatedOnly) return 'isolated'
