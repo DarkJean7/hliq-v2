@@ -5272,7 +5272,16 @@ body.layout-mobile .nav-tabs { display: none !important; }
 .lb-pnl-lbl { color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
 .lb-pnl-val { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 12px; }
 .lb-no-pos { color: var(--muted); font-size: 12px; padding: 8px 0; }
+/* Ten columns do not fit a narrow window — and .lb-table already hides two of its own under a
+   media query, so narrow is a width this board is expected to be read at. Squeezing them would
+   make every number unreadable rather than one column invisible, so the table scrolls sideways
+   inside its own box instead, and the page never does.
+   data-dragscroll on the wrapper because a global rule strips scrolling from anything that does
+   not declare it, which has silently made content unreachable three times now. */
+.lb-pos-wrap { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+.lb-pos-wrap .lb-pos-table { min-width: 640px; }
 .lb-pos-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.lb-pos-table td, .lb-pos-table th { white-space: nowrap; }
 .lb-pos-table th {
   text-align: left; color: var(--muted); font-size: 10px; letter-spacing: 0.8px;
   text-transform: uppercase; padding: 4px 8px; font-family: 'JetBrains Mono', monospace;

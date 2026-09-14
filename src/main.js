@@ -30878,26 +30878,66 @@ async function _lbSave(addrs) {
   }
 }
 
+/**
+ * A wallet's open positions, as the expanded leaderboard row shows them.
+ *
+ * Size alone does not say how big a position is: 0.0073 ETH and 132.3 ARB are the same
+ * sentence in different units, and neither tells you what is at stake. Asked for: "add more
+ * data like besides size we can include the value in $. also liq price, margin, etc."
+ *
+ * So the row now carries what the Accounts tab already showed for your own wallets — value,
+ * liquidation, leverage, margin and ROE. It is the same set deliberately: two tables of the
+ * same thing that disagree about which columns matter is a worse answer than either.
+ *
+ * Every figure here comes from the server's cached snapshot, which is a projection of HL's
+ * position object — so anything it does not carry has to be handled rather than assumed. The
+ * one that bites is margin, added to that projection with this change: rows cached before it
+ * shipped have no marginUsed, and a dash there would read as "no margin" on a live position.
+ * It is estimated from value / leverage instead, and marked as an estimate.
+ */
 function _lbPosHtml(positions) {
   if (!positions.length) return `<div class="lb-no-pos">No open positions</div>`
-  return `<table class="lb-pos-table">
-    <thead><tr><th>Coin</th><th>Side</th><th>Size</th><th>Entry</th><th>PnL</th></tr></thead>
+  return `<div class="lb-pos-wrap" data-dragscroll><table class="lb-pos-table">
+    <thead><tr><th>Coin</th><th>Side</th><th>Size</th><th>Value</th><th>Entry</th>
+      <th>Liq.</th><th>Lev.</th><th>Margin</th><th>PnL</th><th>ROE</th></tr></thead>
     <tbody>${positions.map(p => {
       const pos    = p.position
-      const isLong = parseFloat(pos.szi) > 0
+      const szi    = parseFloat(pos.szi ?? 0)
+      const isLong = szi > 0
       const side   = isLong ? 'LONG' : 'SHORT'
       const pnl    = parseFloat(pos.unrealizedPnl ?? 0)
+      const value  = parseFloat(pos.positionValue ?? 0)
+      const liqPx  = parseFloat(pos.liquidationPx ?? 0)
+      const levNum = parseFloat(pos.leverage?.value ?? 0)
+      const roe    = parseFloat(pos.returnOnEquity ?? 0) * 100
       const sideCls = isLong ? 'pos' : 'neg'
       const pnlCls  = pnl >= 0 ? 'pos' : 'neg'
+      const roeCls  = roe >= 0 ? 'pos' : 'neg'
+      // Real when the snapshot carries it; otherwise the initial margin implied by the
+      // leverage, which is what a cross position posts and close enough to read — but it is
+      // an inference, so it is drawn as one rather than passed off as the account's own number.
+      const marginRaw = parseFloat(pos.marginUsed ?? NaN)
+      const margin    = Number.isFinite(marginRaw) ? marginRaw
+        : (value > 0 && levNum > 0 ? value / levNum : null)
+      const marginEst = !Number.isFinite(marginRaw) && margin != null
+      // An isolated position says so: it changes what the liquidation price means, because
+      // only that margin stands behind it.
+      const isIso = pos.leverage?.type === 'isolated'
       return `<tr>
         <td><b>${esc(coinLabel(pos.coin))}</b></td>
         <td class="${sideCls}">${side}</td>
-        <td>${Math.abs(parseFloat(pos.szi))}</td>
+        <td>${fmtSize(Math.abs(szi))}</td>
+        <td>${value > 0 ? '$' + fmtUSD(value) : '—'}</td>
         <td>$${fmtPrice(parseFloat(pos.entryPx ?? 0))}</td>
+        <td${liqPx > 0 ? ' style="color:var(--red)"' : ''}>${liqPx > 0 ? '$' + fmtPrice(liqPx) : '—'}</td>
+        <td>${levNum ? levNum + 'x' + (isIso ? ' <span style="color:var(--muted)">iso</span>' : '') : '—'}</td>
+        <td${marginEst ? ' title="Estimated from value ÷ leverage"' : ''}>${
+          margin == null ? '—' : (marginEst ? '≈' : '') + '$' + fmtUSD(margin)}</td>
         <td class="${pnlCls}">${pnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(pnl))}</td>
+        <td class="${roeCls}">${(roe >= 0 ? '+' : '') + roe.toFixed(2)}%</td>
       </tr>`
     }).join('')}</tbody>
-  </table>`
+  </table></div>`
 }
 
 function _lbOutcomesHtml(outcomes) {

@@ -1252,6 +1252,10 @@ async function lbRefreshOne(addr, label, prev) {
       liquidationPx: ap.position.liquidationPx,
       leverage: ap.position.leverage,
       returnOnEquity: ap.position.returnOnEquity,
+      // The margin actually posted, which is not always value/leverage: an isolated position
+      // carries whatever was added to it, and a cross one is sized against the whole account.
+      // The client can derive an estimate without it and says so when it has to.
+      marginUsed: ap.position.marginUsed,
     },
   }))
 
