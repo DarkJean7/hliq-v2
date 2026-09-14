@@ -16170,7 +16170,24 @@ window.__replayBack = function() {
 const SIM_KEY = 'hliq_sim'
 // One market to start with, not a basket: a first run should be the simplest thing the
 // screen can do, and the box takes a comma-separated list the moment anyone wants one.
-let _simCoin = 'HYPE'
+const SIM_COIN_DEFAULT = 'HYPE'
+/**
+ * The market list is remembered PER STRATEGY, and there is one default behind them all.
+ *
+ * Reported: "why in trade simulator the default list keeps appearing... only make it appears
+ * in strategies that need it and just like an option to chose those as the default."
+ *
+ * The list used to be one global value. Tokyo needs its own fifteen markets — its rule is a
+ * table of per-market trading windows, and a market not in that table cannot be run at all —
+ * so loading them once left those fifteen in the box for every other strategy, every session,
+ * forever. They were not a default anyone chose; they were the last thing typed, kept.
+ *
+ * So: each strategy keeps its own list, and a strategy with no list of its own starts from the
+ * default, which is HYPE until someone presses "Set as default" on a list they like.
+ */
+let _simDefaultCoin = SIM_COIN_DEFAULT
+let _simCoinByStrat = {}          // strategy -> its own market list
+let _simCoin = SIM_COIN_DEFAULT   // the CURRENT strategy's list; what the box edits
 let _simIv   = '1h'
 let _simCount = 2000
 let _simParams = { ...BT_DEFAULTS }
@@ -16192,12 +16209,109 @@ try {
   if (typeof s.iv === 'string' && s.iv) _simIv = s.iv
   if (Number.isFinite(+s.count)) _simCount = +s.count
   if (s.params && typeof s.params === 'object') _simParams = coerceParams(s.params)
+  if (typeof s.defaultCoin === 'string' && s.defaultCoin) _simDefaultCoin = s.defaultCoin
+  if (s.coinByStrat && typeof s.coinByStrat === 'object') _simCoinByStrat = { ...s.coinByStrat }
+  // Older saves have one global list and no per-strategy map. Where it lands matters, because
+  // the reported symptom IS an old save: the fifteen Tokyo markets sitting in the box under the
+  // Range strategy, which is how they were being seen everywhere. A list that IS the Tokyo
+  // portfolio is filed under Tokyo — the only strategy it can be run with — and the strategy
+  // that happened to be selected goes back to the default. Any other list belongs to whichever
+  // strategy was open, because that is the only one it was ever used with.
+  if (!Object.keys(_simCoinByStrat).length && typeof s.coin === 'string') {
+    const isTokyoList = _simIsTokyoList(s.coin)
+    if (isTokyoList) _simCoinByStrat.tokyo = s.coin
+    else _simCoinByStrat[_simParams.strategy] = s.coin
+    if (isTokyoList && _simParams.strategy !== 'tokyo') _simCoin = _simDefaultCoin
+  }
 } catch {}
 function _simSave() {
   try {
+    _simCoinByStrat[_simParams.strategy] = _simCoin
     localStorage.setItem(SIM_KEY, JSON.stringify({
-      coin: _simCoin, iv: _simIv, count: _simCount, params: _simParams }))
+      coin: _simCoin, iv: _simIv, count: _simCount, params: _simParams,
+      defaultCoin: _simDefaultCoin, coinByStrat: _simCoinByStrat }))
   } catch {}
+}
+
+/**
+ * The market list a strategy should open with.
+ *
+ * Its own, if it has one — including an empty one, which is a choice someone made and not an
+ * absence. Otherwise the default. Tokyo is the exception and the reason this exists: its rule
+ * IS a table of per-market windows, so a market outside that table cannot be run, and the
+ * fifteen are what the strategy means rather than a preference about it.
+ */
+/**
+ * Is this saved list the Tokyo portfolio rather than a list someone chose?
+ *
+ * Used once, to file an old global save under the strategy it actually belongs to. Set
+ * equality, not string equality — the saved copy may be reordered or differently spaced, and
+ * it is the same fifteen markets either way. A single market that happens to appear in the
+ * table is NOT the portfolio: "ZEC" on its own is a choice, and moving it to Tokyo would take
+ * away the list someone was using.
+ */
+function _simIsTokyoList(v) {
+  const set = (x) => new Set(String(x ?? '').split(/[,\s]+/).map(s => s.trim()).filter(Boolean))
+  const mine = set(v), tok = set(tokyoMarkets().join(','))
+  return mine.size > 1 && mine.size === tok.size && [...mine].every(m => tok.has(m))
+}
+
+function _simCoinFor(strategy) {
+  if (Object.hasOwn(_simCoinByStrat, strategy)) return _simCoinByStrat[strategy]
+  if (strategy === 'tokyo') return tokyoMarkets().join(', ')
+  return _simDefaultCoin
+}
+
+/**
+ * The line under the market box: what it is, and what can be done with it.
+ *
+ * Its own function because it has to be repainted on its own. The box commits on blur without
+ * re-rendering the form (a rebuild mid-edit takes the keyboard away), so typing a new list
+ * would otherwise leave "set as default" hidden until something unrelated caused a render —
+ * an option you cannot see is not an option.
+ */
+function _simCoinCtlHtml() {
+  const btn = (fn, label, colour, title = '') =>
+    `<button onclick="${fn}"${title ? ` title="${esc(title)}"` : ''}
+      style="border:none;background:transparent;color:${colour};font-size:10.5px;font-weight:700;cursor:pointer;padding:0;white-space:nowrap">${label}</button>`
+  const differs = _simCoin !== _simDefaultCoin
+  return `<span style="font-size:10px;color:var(--muted)">${_T('comma separated', 'separados por comas')}</span>
+    <span style="flex:1"></span>
+    ${
+      // The list belongs to this STRATEGY, and one list is the default the others start from.
+      // Both are offered rather than assumed: the fifteen-market Tokyo list became everyone's
+      // by being loaded once, which is what "just like an option to chose those as the
+      // default" is asking not to happen.
+      _simCoin && differs
+        ? btn('window.__simSetDefaultCoins()', _T('set as default', 'fijar por defecto'), 'var(--accent)',
+              _T('Use this list for every strategy that has no list of its own',
+                 'Usar esta lista en cada estrategia sin lista propia')) : ''}
+    ${_simDefaultCoin && differs
+      ? btn('window.__simUseDefaultCoins()', _T('use default', 'usar por defecto'), 'var(--fg-3)', _simDefaultCoin) : ''}
+    ${_simParams.strategy === 'tokyo'
+      ? btn('window.__simLoadPortfolio()', _T('load all 15', 'cargar los 15'), 'var(--accent)') : ''}`
+}
+
+/** Repaint just that line — see why in _simCoinCtlHtml. */
+function _simCoinCtlPaint() {
+  const el = document.getElementById('simCoinCtl')
+  if (el) el.innerHTML = _simCoinCtlHtml()
+}
+
+/** Make the list in the box the one every strategy without its own list starts from. */
+window.__simSetDefaultCoins = function() {
+  _simCollect()
+  _simDefaultCoin = _simCoin
+  _simSave()
+  _simRender()
+  _paperToast(_simCoin
+    ? _T('Default markets: ', 'Mercados por defecto: ') + _simCoin
+    : _T('Default markets cleared', 'Mercados por defecto borrados'))
+}
+
+/** Put this strategy back on the default list. */
+window.__simUseDefaultCoins = function() {
+  window.__simStructural(() => { _simCoin = _simDefaultCoin })
 }
 
 const SIM_IVS = ['1m', '5m', '15m', '1h', '4h', '8h', '1d']
@@ -16339,7 +16453,13 @@ window.__simStructural = function(fn) {
 }
 window.__simSetStrategy = function(v) {
   window.__simStructural(() => {
+    // Park the list under the strategy being left, then pick up the one belonging to the
+    // strategy being entered. Without this, Tokyo's fifteen markets follow you into every
+    // other strategy and never leave — which is what "the default list keeps appearing" was.
+    // _simCollect has already run, so _simCoin holds what is actually in the box.
+    _simCoinByStrat[_simParams.strategy] = _simCoin
     _simParams.strategy = v
+    _simCoin = _simCoinFor(v)
     if (v !== 'tokyo') return
     // The rule is about the hour of the day, so a 4h or daily candle cannot express it:
     // one candle would span most of a window. Switch to hourly rather than run something
@@ -16363,6 +16483,9 @@ window.__simLoadPortfolio = function() {
 window.__simCoinChanged = function() {
   const before = _simCoin
   _simCollect()
+  // A new list may have just become worth making the default, or stopped differing from it.
+  // Only that line is repainted: rebuilding the form here would take the keyboard away.
+  _simCoinCtlPaint()
   if (_simParams.strategy !== 'tokyo' || _simCoin === before) return
   window.__simStructural(() => { _simTokyoPrefill() })
 }
@@ -17155,14 +17278,7 @@ function _simRender(el) {
           <div style="font-size:11px;font-weight:700;color:var(--fg-2)">${_T('Markets', 'Mercados')}</div>
           <input id="sim_coin" type="text" value="${esc(_simCoin)}" autocapitalize="characters" spellcheck="false" oninput="window.__simTouch()" onchange="window.__simCoinChanged()"
             style="width:100%;margin-top:4px;padding:7px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-family:var(--font-mono);font-size:12.5px">
-          <div style="display:flex;align-items:baseline;gap:6px;margin-top:4px">
-            <span style="font-size:10px;color:var(--muted)">${_T('comma separated', 'separados por comas')}</span>
-            <span style="flex:1"></span>
-            ${_simParams.strategy === 'tokyo'
-              ? `<button onclick="window.__simLoadPortfolio()" style="border:none;background:transparent;color:var(--accent);font-size:10.5px;font-weight:700;cursor:pointer;padding:0;white-space:nowrap">${
-                  _T('load all 15', 'cargar los 15')}</button>`
-              : ''}
-          </div>
+          <div id="simCoinCtl" style="display:flex;align-items:baseline;gap:6px;margin-top:4px;flex-wrap:wrap">${_simCoinCtlHtml()}</div>
         </label>
         <label style="display:block">
           <div style="font-size:11px;font-weight:700;color:var(--fg-2)">${_T('Candles', 'Velas')}</div>

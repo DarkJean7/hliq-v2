@@ -118,7 +118,9 @@ console.log(nl + '-- the market box keeps what you put in it, including nothing 
   // — clear the box, tap 4h, and the old list is painted back.
   t('changing the interval collects first, like every other control',
     CLI.includes('window.__simSetIv = function(v) { window.__simStructural(() => { _simIv = v }) }'))
-  t('the default is one market', /let _simCoin = 'HYPE'/.test(CLI))
+  // The constant moved when the list became per-strategy with a default behind it.
+  t('the default is one market', /const SIM_COIN_DEFAULT = 'HYPE'/.test(CLI) &&
+    /let _simDefaultCoin = SIM_COIN_DEFAULT/.test(CLI))
   t('but the box still takes a list', CLI.includes('.split(/[,\\s]+/)'))
   // "Not enough candle history" for an empty box sends someone looking for a data problem.
   t('running with nothing says so plainly', CLI.includes('Add at least one market to simulate'))
@@ -127,6 +129,79 @@ console.log(nl + '-- the market box keeps what you put in it, including nothing 
   t('and that check runs BEFORE the busy flag goes up',
     CLI.indexOf('Add at least one market to simulate') < CLI.indexOf('_simBusy = true'))
   t('why is written down', CLI.includes('stuck on "Running…" forever'))
+}
+
+console.log(nl + '-- the market list belongs to the strategy, not to the app --')
+{
+  // Reported: "why in trade simulator the default list keeps appearing... only make it appears
+  // in strategies that need it and just like an option to chose those as the default."
+  //
+  // Tokyo's rule IS a table of per-market trading windows, so a market outside that table
+  // cannot be run at all — its fifteen markets are what the strategy means. They were being
+  // kept as ONE global list, so loading them once left them in the box for every other
+  // strategy, in every session, forever. Nobody chose them as a default; they were the last
+  // thing typed, kept.
+  const grabFn = (sig) => {
+    const start = CLI.indexOf(sig)
+    let i = CLI.indexOf('{', start), depth = 0
+    for (; i < CLI.length; i++) {
+      if (CLI[i] === '{') depth++
+      else if (CLI[i] === '}') { depth--; if (depth === 0) return CLI.slice(start, i + 1) }
+    }
+    throw new Error('unbalanced')
+  }
+  const TOKYO = ['ZEC', 'CASHCAT', 'xyz:SMSN', 'xyz:SKHX', 'LIT', 'XMR', 'xyz:SNDK', 'xyz:EWY',
+                 'xyz:MU', 'NEAR', 'xyz:DRAM', 'PUMP', 'xyz:INTC', 'xyz:SPCX', 'xyz:SOXL']
+  const api = new Function('byStrat', 'def', 'TOKYO', `
+    const tokyoMarkets = () => TOKYO
+    const _simCoinByStrat = byStrat
+    const _simDefaultCoin = def
+    ${grabFn('function _simIsTokyoList(v)')}
+    ${grabFn('function _simCoinFor(strategy)')}
+    return { _simCoinFor, _simIsTokyoList }`)
+
+  {
+    const { _simCoinFor } = api({ range: 'BTC, ETH' }, 'HYPE', TOKYO)
+    t('a strategy with its own list gets it', _simCoinFor('range') === 'BTC, ETH')
+    t('one without falls back to the default', _simCoinFor('volbreak') === 'HYPE')
+    // Tokyo is the exception, and the only one: it cannot run a market outside its table.
+    t('tokyo brings its own fifteen', _simCoinFor('tokyo').split(', ').length === 15)
+    t('so the fifteen never become anyone else’s list', !_simCoinFor('range').includes('xyz:SMSN'))
+  }
+  {
+    // An empty list is a choice, not an absence — the same rule as the box itself.
+    const { _simCoinFor } = api({ range: '' }, 'HYPE', TOKYO)
+    t('a strategy cleared on purpose stays cleared', _simCoinFor('range') === '')
+    t('and tokyo still brings its own', _simCoinFor('tokyo').includes('xyz:SMSN'))
+  }
+  {
+    // The upgrade path IS the reported state: the fifteen sitting in the box under Range.
+    const { _simIsTokyoList } = api({}, 'HYPE', TOKYO)
+    t('a saved list that is the portfolio is recognised', _simIsTokyoList(TOKYO.join(', ')) === true)
+    t('however it was ordered or spaced',
+      _simIsTokyoList([...TOKYO].reverse().join(',')) === true &&
+      _simIsTokyoList(TOKYO.join('  ')) === true)
+    t('a shorter list of the same markets is not it', _simIsTokyoList(TOKYO.slice(0, 5).join(', ')) === false)
+    // Moving a one-market list to Tokyo would take away the list someone was actually using.
+    t('one market from the table is a choice, not the portfolio', _simIsTokyoList('ZEC') === false)
+    t('and an ordinary list is left where it was', _simIsTokyoList('BTC, ETH') === false)
+    t('as is nothing at all', _simIsTokyoList('') === false && _simIsTokyoList(null) === false)
+  }
+  t('switching strategy parks the old list and picks up the new one',
+    CLI.includes('_simCoinByStrat[_simParams.strategy] = _simCoin') &&
+    CLI.includes('_simCoin = _simCoinFor(v)'))
+  t('an old global save is filed under the strategy it belongs to',
+    CLI.includes('const isTokyoList = _simIsTokyoList(s.coin)') &&
+    CLI.includes('if (isTokyoList) _simCoinByStrat.tokyo = s.coin'))
+  t('and the strategy it was sitting on goes back to the default',
+    CLI.includes("if (isTokyoList && _simParams.strategy !== 'tokyo') _simCoin = _simDefaultCoin"))
+  // "just like an option to chose those as the default" — an option, not an assumption.
+  t('the default is something you set, not something that happens',
+    CLI.includes('window.__simSetDefaultCoins') && CLI.includes('window.__simUseDefaultCoins'))
+  t('both controls are offered next to the box',
+    CLI.includes("_T('set as default', 'fijar por defecto')") &&
+    CLI.includes("_T('use default', 'usar por defecto')"))
+  t('and both are saved', CLI.includes('defaultCoin: _simDefaultCoin, coinByStrat: _simCoinByStrat'))
 }
 
 console.log(nl + '-- and the replay is wired to the run it describes --')
