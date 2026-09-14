@@ -30367,7 +30367,7 @@ window.__tvMarketsPicker = function() {
   const have = new Set(loadTvWatch())
   ov.style.display = 'flex'
   ov.innerHTML = `
-    <div style="width:100%;max-height:82vh;overflow-y:auto;background:var(--panel-1);border-radius:16px 16px 0 0;padding:16px 16px 28px">
+    <div class="sheet-over" style="width:100%;max-height:82vh;overflow-y:auto;background:var(--panel-1);border-radius:16px 16px 0 0;padding:16px 16px 28px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <span style="font-size:16px;font-weight:800">Add market</span>
         <button onclick="window.__tvClosePicker()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">&times;</button>

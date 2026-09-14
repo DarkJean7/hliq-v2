@@ -7607,12 +7607,6 @@ html.has-bg-image .sub-sheet {
   html.has-bg-image #mobPredictOverlay,
   html.has-bg-image .adv-overlay,
   html.has-bg-image .sub-sheet { background-attachment: scroll !important; }
-  /* .sheet-over was written after this override and did not join it: its layers were
-     `scroll, fixed, fixed`, and the two fixed ones are exactly what iOS sizes against the
-     document instead of the viewport — the photo came out zoomed inside every bottom sheet.
-     A sheet is only part-height, so its box is not the viewport either way; `scroll` at least
-     measures `cover` against something the size of a phone rather than the whole page. */
-  html.has-bg-image .sheet-over { background-attachment: scroll, scroll, scroll !important; }
 }
 /* A bottom sheet is an overlay too, and the same mistake reaches it by a different route.
    Its ground is --panel-2, which theme.js makes translucent while a photo is set -- right for
@@ -7632,6 +7626,17 @@ html.has-bg-image .sheet-over {
   background-position: center, center, center !important;
   background-repeat: no-repeat, no-repeat, no-repeat !important;
   background-attachment: scroll, fixed, fixed !important;
+}
+/* iOS does not honour `fixed` attachment: it sizes `cover` against the document instead of the
+   viewport, so the photo came out visibly zoomed inside every bottom sheet. A sheet is only
+   part-height, so its box is not the viewport either way; `scroll` at least measures `cover`
+   against something the size of a phone rather than the whole page.
+   AFTER the rule it overrides, not before. This lived in the media block further up, where it
+   had the same specificity and the same !important as the block above — so the later one won
+   and this never applied to a single sheet. Measured, not assumed: the computed attachment on a
+   402px viewport read `scroll, fixed, fixed`. */
+@media (max-width: 768px) {
+  html.has-bg-image .sheet-over { background-attachment: scroll, scroll, scroll !important; }
 }
 
 /* The two DRAWERS — the wallet switcher and the More panel — reported as "too transparent

@@ -173,6 +173,32 @@ console.log(nl + '-- drawers slide OVER the app, so they are heavier than a card
   t('why is written down', CSS.includes('too transparent'))
 }
 
+console.log(nl + '-- a sheet that opens over the app is opaque, and its iOS fix is in reach --')
+{
+  const CLI = fs.readFileSync('src/main.js', 'utf8')
+  // Reported as "make this non-trasparent", about the Add-market sheet: it painted --panel-1,
+  // which the theme drops below full alpha, so the equity card and the PAPER watermark read
+  // straight through the market rows.
+  // The id is assigned in JS, not written as an attribute, so anchor on that.
+  t('the Add market sheet joins the sheet stack',
+    /ov\.id = 'tvPicker'[\s\S]{0,900}class="sheet-over"/.test(CLI))
+  t('and the stack has an opaque ground',
+    /\.sheet-over \{[\s\S]{0,600}background-color: var\(--bg\) !important/.test(CSS))
+
+  // The ordering IS the test. Both rules are `html.has-bg-image .sheet-over`, both are
+  // !important, so specificity and origin tie and the LATER one wins. The phone override was
+  // written above the rule it overrides and therefore never applied to a single sheet: the
+  // computed attachment on a 402px viewport read `scroll, fixed, fixed`. A passing build says
+  // nothing about this; only the order in the file does.
+  const base  = CSS.indexOf('background-attachment: scroll, fixed, fixed !important')
+  const phone = CSS.indexOf('background-attachment: scroll, scroll, scroll !important')
+  t('the sheet has a phone attachment override at all', base > 0 && phone > 0)
+  t('and it comes AFTER the rule it overrides, or it does nothing', phone > base, { base, phone })
+  t('inside a phone media query',
+    /@media \(max-width: 768px\) \{[\s\S]{0,300}?\.sheet-over \{ background-attachment: scroll, scroll, scroll/.test(CSS))
+  t('why is written down', CSS.includes('AFTER the rule it overrides, not before'))
+}
+
 console.log(nl + '-- and the deliberate exceptions carry their reason --')
 for (const [sel, why] of Object.entries(SOLID_ON_PURPOSE)) {
   if (sel === '.pin-modal-input' || sel === '.oc-card-close') continue   // controls, not containers
