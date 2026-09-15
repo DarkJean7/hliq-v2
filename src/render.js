@@ -53,6 +53,11 @@ let _ovOrdSortKey = null, _ovOrdSortDir = -1
 let _ovOrdData = null                          // { orders, allMids } for re-sort without full re-render
 const _ovExpanded = new Set()   // sanitized coin ids whose action row is open (survives re-renders)
 const _OV_PERIOD_KEY = { '1D': 'day', '1W': 'week', '1M': 'month', 'All': 'allTime' }
+// The hero's caption used to read "· today" whatever range was selected, and the range
+// DEFAULTS to a week — so the headline change was a week's and the line under it said today.
+// On a phone that is the same card the mobile view labels "today" for real, so rotating it
+// looked like the same period reporting two different numbers.
+const _OV_PERIOD_LABEL = { day: 'today', week: 'this week', month: 'this month', allTime: 'all time' }
 
 // ─── SORT / EXPAND STATE ─────────────────────────────────────────────────────
 let _tradesPage = 0
@@ -309,7 +314,7 @@ export function computeAcctStats(perpState, spotState, fills, portfolio = [], fu
 }
 
 // ─── OVERVIEW ────────────────────────────────────────────────────────────────
-export function renderOverview({ perpState, spotState, fills, funding = [], openOrders, allMids = {}, portfolio = [], webData = null, sessionStart = null, firstFillTime = null, addr = null, ledger = [] }) {
+export function renderOverview({ perpState, spotState, fills, funding = [], openOrders, allMids = {}, portfolio = [], webData = null, sessionStart = null, firstFillTime = null, addr = null, ledger = [], comboValue = null }) {
   const margin    = perpState.marginSummary ?? {}
   const positions = perpState.assetPositions ?? []
 
@@ -323,8 +328,16 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   const spotUSDCTotal    = spotUSDC ? parseFloat(spotUSDC.total ?? 0) : 0
   const withdrawable     = perpWithdrawable + spotUSDCFree
   const perpAcctVal      = parseFloat(margin.accountValue ?? 0)
-  // HL "Portfolio Value" — see liveAccountValue; unified USDC already contains perp equity
-  const accountValue     = liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal)
+  // HL "Portfolio Value" — see liveAccountValue; unified USDC already contains perp equity.
+  //
+  // In All Accounts the caller hands us the server-anchored combined figure instead, and it
+  // wins. This view has no idea it is showing nine wallets: it summed perpState like a single
+  // account, which is the PER-DEVICE SUM that comboequity.js and the mobile headline both
+  // discarded as a third basis. Rotating a phone past the breakpoint swapped the mobile shell
+  // for this one and so swapped the basis, and the headline changed with it.
+  // Null before the first snapshot lands, and then the old sum is still better than nothing.
+  const _localAcctVal    = liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal)
+  const accountValue     = Number.isFinite(comboValue) && comboValue > 0 ? comboValue : _localAcctVal
 
   const totalUnrPnl = positions.reduce((s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0)
   const totalVolume = fills.reduce((s, f) => s + f.notional, 0)
@@ -618,7 +631,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
                 <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
                   <span class="ov-chg ${chgCls}" id="ovChgPill">${chgFull}</span>
                 </div>
-                <div class="ov-eq-sub">${positions.length} open position${positions.length !== 1 ? 's' : ''} · cross + isolated · today</div>
+                <div class="ov-eq-sub" id="ovEqSub">${positions.length} open position${positions.length !== 1 ? 's' : ''} · cross + isolated · ${_OV_PERIOD_LABEL[_ovPeriod] ?? 'today'}</div>
                 </div>
               </div>
               <div class="ov-range" id="ovRange">${rangeBtns}</div>
@@ -1265,6 +1278,12 @@ window.__ovSetRange = function(label) {
     pill.className = 'ov-chg ' + (chg.diff >= 0 ? 'pos' : 'neg')
     pill.textContent = _ovChgText(chg)
   }
+  // The caption names the period the pill is measuring, so it has to move with it. This path
+  // repaints the pill without a full re-render, which is how it went stale in the first place.
+  const sub = document.getElementById('ovEqSub')
+  if (sub) sub.textContent = sub.textContent.replace(
+    /·\s*(today|this week|this month|all time)\s*$/,
+    '· ' + (_OV_PERIOD_LABEL[_ovPeriod] ?? 'today'))
   try { renderOverviewChart(_ovPortfolio, _ovPeriod, _ovChartType, _ovFills) } catch {}
 }
 
@@ -1685,11 +1704,15 @@ export function renderTrades(fills) {
 
 
 // ─── PORTFOLIO STATS ──────────────────────────────────────────────────────────
-export function renderPortfolioStats({ perpState, spotState, fills, funding, portfolio = [], webData = null }) {
+export function renderPortfolioStats({ perpState, spotState, fills, funding, portfolio = [], webData = null, comboValue = null }) {
   // HL "Portfolio Value" — the portfolio endpoint is HL's own unified account value
   const _perpVal      = parseFloat((perpState.marginSummary ?? {}).accountValue ?? 0)
   const _spotUSDCTot  = parseFloat((spotState?.balances ?? []).find(b => b.coin === 'USDC')?.total ?? 0)
-  const accountValue  = liveAccountValue(portfolio, _perpVal, _spotUSDCTot)
+  // Same rule as the overview hero: in All Accounts the caller's server-anchored figure wins,
+  // because summing perpState here is the per-device basis and this tab would otherwise
+  // disagree with the headline one tab over.
+  const _localVal     = liveAccountValue(portfolio, _perpVal, _spotUSDCTot)
+  const accountValue  = Number.isFinite(comboValue) && comboValue > 0 ? comboValue : _localVal
 
   const totalUnrPnl  = (perpState.assetPositions ?? []).reduce(
     (s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0

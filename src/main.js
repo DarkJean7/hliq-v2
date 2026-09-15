@@ -1164,8 +1164,11 @@ async function loadDashboard() {
 // ─── RENDER SECTIONS ──────────────────────────────────────────────────────────
 function renderAccountSection() {
   const { perpState, spotState, fills, funding, portfolio, allMids, openOrders, ledger } = state
-  renderOverview({ perpState, spotState, fills, funding, openOrders, allMids, portfolio, webData: state.webData, sessionStart: state.sessionStart, firstFillTime: state.firstFillTime ?? null, ledger: ledger ?? [], addr: state.addr })
-  renderPortfolioStats({ perpState, spotState, fills, funding, portfolio, webData: state.webData })
+  // ONCE per render, not once per card: _comboEqFilter is stateful, and calling it twice in
+  // the same pass would advance the spike filter twice for a single reading.
+  const comboValue = _comboDisplayEquity()
+  renderOverview({ perpState, spotState, fills, funding, openOrders, allMids, portfolio, webData: state.webData, sessionStart: state.sessionStart, firstFillTime: state.firstFillTime ?? null, ledger: ledger ?? [], addr: state.addr, comboValue })
+  renderPortfolioStats({ perpState, spotState, fills, funding, portfolio, webData: state.webData, comboValue })
   renderSummaryCards(fills, perpState, spotState, portfolio)
 }
 
@@ -12882,6 +12885,24 @@ function _comboPnlHeld(nRows) {
   // different instants, alternating: exactly the reported flicker, and unbounded in size.
   if (Date.now() - Number(_comboPnlLast.at ?? 0) > COMBO_PNL_HOLD_MS) return null
   return { net: _comboPnlLast.net, unreal: _comboPnlLast.unreal, parts: _comboPnlLast.parts, held: true }
+}
+
+/**
+ * The combined figure BOTH shells show, so a rotation cannot change it.
+ *
+ * The desktop overview used to compute its own from perpState — the per-device sum — while
+ * the mobile headline used the server-anchored bridge and had deliberately dropped that sum
+ * as a third basis. On a phone, turning sideways crosses the breakpoint and swaps one shell
+ * for the other, so the same account reported two different numbers seconds apart.
+ *
+ * Deliberately shares _comboEqFilter's state rather than filtering separately: only one shell
+ * is mounted at a time, and the spike filter SHOULD carry across a rotation — restarting it
+ * would let the first reading after turning the phone through unchallenged.
+ */
+function _comboDisplayEquity() {
+  if (!state.isAllAccounts) return null
+  const raw = _combinedServerValue() ?? _combinedHeldValue()
+  return raw == null ? null : _comboEqFilter(raw)
 }
 
 function _comboEqFilter(val) {
