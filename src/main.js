@@ -20256,6 +20256,110 @@ function _lbPaperRowsMapped() {
  *   Copy trade  shown, and explains itself: a simulated account's trades never leave its
  *               owner's device, so there is nothing a bot could follow.
  */
+/**
+ * A paper account, seen from outside: what it holds, what it has done, and how it has traded.
+ *
+ * Asked for: "lets make paper accounts visitable, able to copy trade them and everything that
+ * a real account can". A paper account trades only on its owner's device, so there is no
+ * address to point the dashboard at — what there IS is the snapshot and the trades its owner
+ * posts with its board row. This shows those, and it is read-only by nature rather than by
+ * restriction: there is nothing here anyone but the owner can change.
+ */
+window.__paperVisit = async function(name) {
+  let ov = document.getElementById('paperVisitOv')
+  if (!ov) {
+    ov = document.createElement('div')
+    ov.id = 'paperVisitOv'
+    ov.className = 'sheet-over'
+    ov.style.cssText = 'display:none;position:fixed;inset:0;z-index:100060;background:var(--bg);'
+                     + 'flex-direction:column;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch'
+    document.body.appendChild(ov)
+  }
+  ov.style.display = 'flex'
+  ov.scrollTop = 0
+  ov.innerHTML = `<div class="mob-v-empty" style="padding:40px 16px">${_T('Loading…', 'Cargando…')}</div>`
+  let data = null
+  try { data = await fetch('/api/leaderboard/paper/one?name=' + encodeURIComponent(name)).then(r => r.json()) } catch {}
+  if (!data?.ok) {
+    ov.innerHTML = `<div style="padding:14px 16px;display:flex;justify-content:space-between">
+      <span style="font-size:18px;font-weight:700">${esc(name)}</span>
+      <button onclick="window.__paperVisitClose()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">&times;</button></div>
+      <div class="mob-v-empty">${_T('That paper account is no longer on the board.', 'Esa cuenta de papel ya no está en el tablero.')}</div>`
+    return
+  }
+  const row = data.row ?? {}
+  const mine = _lbPaperMyNames().has(String(row.name ?? '').toLowerCase())
+  const slot = _lbPaperSlots().find(sl => _lbPaperName(sl).toLowerCase() === String(row.name ?? '').toLowerCase())
+  const pnlCls = (v) => v >= 0 ? 'var(--green)' : 'var(--red)'
+  const money  = (v) => (v >= 0 ? '+$' : '-$') + fmtUSD(Math.abs(v))
+  // The same row shape the board builds, so the track record and the sub-rows below are the
+  // very same renderers a real account gets.
+  const asRow = {
+    addr: PAPER_ADDR, _pname: row.name, _slot: slot ?? null, paper: true, track: row.track ?? null,
+    accountValue: row.equity ?? 0, netPnl: row.pnl ?? 0,
+    unrealizedPnl: row.unrealizedPnl ?? 0, realizedPnl: row.realizedPnl ?? 0,
+    totalVolume: row.volume ?? 0, healthPct: row.healthPct ?? 0,
+    positions: row.positions ?? [], openOrders: row.openOrders ?? [],
+  }
+  const pos = (row.positions ?? []).filter(ap => parseFloat((ap.position ?? ap)?.szi ?? 0) !== 0)
+  const ord = row.openOrders ?? []
+  const fills = (data.fills ?? []).slice(0, 40)
+  const age = row.updated ? _chatAgo(row.updated) + ' ' + _T('ago', 'atrás') : '—'
+  // Its own header: _mobVFullHeader's close button calls __paneClose, which would close the
+  // tab underneath instead of this sheet.
+  const head = (title) => `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:14px 16px 11px;background:var(--bg);border-bottom:1px solid var(--border)">
+    <span style="font-size:18px;font-weight:700">${title}</span>
+    <button onclick="window.__paperVisitClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+  </div>`
+  ov.innerHTML = head(esc(row.name ?? name)) + `
+    <div style="display:flex;align-items:center;gap:12px;padding:14px 16px 10px">
+      ${_mobVAvatarHtml(PAPER_ADDR, 46)}
+      <div style="min-width:0">
+        <div style="font-size:17px;font-weight:800">${esc(row.name ?? name)}${mine ? ' (' + _T('you', 'tú') + ')' : ''}</div>
+        <div style="font-size:11.5px;color:var(--muted)">${_T('Paper account · simulated, not verifiable', 'Cuenta de papel · simulada, no verificable')} · ${
+          _T('updated', 'actualizada')} ${age}</div>
+      </div>
+    </div>
+    ${_mobVDetailGrid([
+      [_T('Account value', 'Valor de cuenta'), '$' + fmtUSD(row.equity ?? 0)],
+      [_T('Net PnL', 'PnL neto'), money(row.pnl ?? 0), pnlCls(row.pnl ?? 0)],
+      [_T('Unrealized', 'No realizado'), money(row.unrealizedPnl ?? 0), pnlCls(row.unrealizedPnl ?? 0)],
+      [_T('Realized', 'Realizado'), money(row.realizedPnl ?? 0), pnlCls(row.realizedPnl ?? 0)],
+      [_T('Health', 'Salud'), (row.healthPct ?? 0).toFixed(1) + '%'],
+      [_T('Volume', 'Volumen'), '$' + fmtCompact(row.volume ?? 0)],
+    ])}
+    ${_lbTrackHtml(asRow)}
+    ${_lbPaperSocialHtml(asRow)}
+    ${pos.length ? _lbCollapse('pv-pos', `${pos.length} ${pos.length === 1 ? _T('Open Position', 'Posición abierta') : _T('Open Positions', 'Posiciones abiertas')}`,
+        pos.map((ap, i) => _mobVSubPosRow(ap, 'pv-p' + i)).join('')) : ''}
+    ${ord.length ? _lbCollapse('pv-ord', `${ord.length} ${ord.length === 1 ? _T('Open Order', 'Orden abierta') : _T('Open Orders', 'Órdenes abiertas')}`,
+        ord.map((o, i) => _mobVSubOrdRow(o, 'pv-o' + i)).join('')) : ''}
+    ${fills.length ? _lbCollapse('pv-fills', `${_T('Recent trades', 'Operaciones recientes')} (${fills.length})`,
+        fills.map(f => {
+          const pnl = parseFloat(f.closedPnl ?? 0)
+          const buy = f.side === 'B'
+          return `<div class="mob-v-row" style="cursor:default">
+            <div class="mob-v-row-info">
+              <div class="mob-v-row-name">${esc(coinLabel(f.coin))} <span style="font-size:10.5px;font-weight:700;color:${buy ? 'var(--green)' : 'var(--red)'}">${
+                buy ? _T('BUY', 'COMPRA') : _T('SELL', 'VENTA')}</span></div>
+              <div class="mob-v-row-sub">${fmtSize(f.sz)} @ $${fmtPrice(f.px)} · ${_chatAgo(f.time)}</div>
+            </div>
+            <div class="mob-v-row-right">
+              <div class="mob-v-row-val" style="color:${pnl === 0 ? 'var(--muted)' : pnlCls(pnl)}">${pnl === 0 ? '—' : money(pnl)}</div>
+              <div class="mob-v-row-pct" style="color:var(--muted)">${esc(f.dir ?? '')}</div>
+            </div>
+          </div>`
+        }).join('')) : ''}
+    <div style="padding:14px 16px 30px;font-size:10.5px;color:var(--muted);line-height:1.5">${_T(
+      'These figures are simulated on their owner\u2019s device and posted here — they are not verified by anyone. The snapshot refreshes when they trade.',
+      'Estas cifras se simulan en el dispositivo de su dueño y se publican aquí — nadie las verifica. La instantánea se actualiza cuando operan.')}</div>
+    <div style="height:calc(60px + env(safe-area-inset-bottom))"></div>`
+}
+window.__paperVisitClose = function() {
+  const ov = document.getElementById('paperVisitOv')
+  if (ov) ov.style.display = 'none'
+}
+
 function _lbPaperSocialHtml(r) {
   const nm  = esc(r._pname ?? '')
   const btn = (onclick, icon, label, accent, dim) => `<button onclick="event.stopPropagation();${onclick}"
@@ -20263,11 +20367,17 @@ function _lbPaperSocialHtml(r) {
            border:1px solid ${accent ? 'var(--accent)' : 'var(--border2)'};background:${accent ? 'rgba(0,255,204,0.08)' : 'transparent'};
            color:${accent ? 'var(--accent)' : 'var(--fg)'};font-size:10.5px;font-weight:700;cursor:pointer${dim ? ';opacity:.45' : ''}">
     <span style="font-size:15px;line-height:1">${icon}</span><span>${label}</span></button>`
+  const enc = encodeURIComponent(r._pname ?? '')
+  // Own account → open it for real. Anyone's → its profile: holdings, track record, trades.
   const visit = r._slot
     ? btn(`window.__goPaper('${esc(r._slot)}')`, '👁', _T('Visit', 'Ver'))
-    : btn(`_paperToast(_T('Paper accounts live on their owner\u2019s device — there is nothing to open.', 'Las cuentas de papel viven en el dispositivo de su dueño.'))`, '👁', _T('Visit', 'Ver'), false, true)
-  const copy = btn(`navigator.clipboard?.writeText(decodeURIComponent('${encodeURIComponent(r._pname ?? '')}')).then(()=>_paperToast(_T('Name copied','Nombre copiado')))`, '⧉', _T('Copy', 'Copiar'))
-  const ct = btn(`_paperToast(_T('Paper trades are simulated on their owner\u2019s device, so there is nothing to copy.', 'Las operaciones de papel se simulan en el dispositivo de su dueño; no hay nada que copiar.'))`, '⇄', _T('Copy trade', 'Copiar ops'), false, true)
+    : btn(`window.__paperVisit(decodeURIComponent('${enc}'))`, '👁', _T('Visit', 'Ver'))
+  const copy = btn(`navigator.clipboard?.writeText(decodeURIComponent('${enc}')).then(()=>_paperToast(_T('Name copied','Nombre copiado')))`, '⧉', _T('Copy', 'Copiar'))
+  // A paper account CAN be followed now: its owner posts its trades with its board row, and
+  // the bot reads them from there. The orders it places on your account are real.
+  const ct = _stratsUnlocked()
+    ? btn(`window.__lbCopyTrade('', decodeURIComponent('${enc}'), { paper: decodeURIComponent('${enc}') })`, '⇄', _T('Copy trade', 'Copiar ops'), true)
+    : btn(`window.__subOpenPaywall()`, '🔒', _T('Copy trade', 'Copiar ops'))
   return `<div style="display:flex;gap:7px;padding:11px 16px;background:var(--panel-2);border-bottom:1px solid rgba(255,255,255,0.04)" data-name="${nm}">
     ${visit}${copy}${ct}
   </div>`
@@ -20367,6 +20477,14 @@ function _lbPaperPayload(slot) {
       volume:        (s.fills ?? []).reduce((a, f) => a + Math.abs(parseFloat(f.sz ?? 0)) * parseFloat(f.px ?? 0), 0),
       healthPct:     _paperHealthPct(pos),
       positions:     pos,
+      // Its trades, so the account can be visited and followed. Newest first, and only the
+      // fields either of those needs — startPosition is what lets a copy bot tell an open
+      // from a close (src/copymirror.js).
+      fills: (s.fills ?? []).slice(0, 40).map(f => ({
+        coin: f.coin, tid: f.tid, time: f.time, side: f.side,
+        px: f.px, sz: f.sz, closedPnl: f.closedPnl, fee: f.fee,
+        startPosition: f.startPosition ?? null, dir: f.dir,
+      })),
     }
   })
 }
@@ -20658,7 +20776,11 @@ function _visitBannerSync() {
 // Starts strategies/copytrade.js, which mirrors the target's NEW perp fills onto this
 // account at a scale. It is a real bot on the strategy server, so it survives closing
 // the app, shows up in Strategies with the rest, and is stopped the same way.
-window.__lbCopyTrade = function(addr = '', name = '') {
+window.__lbCopyTrade = function(addr = '', name = '', opts = {}) {
+  // Following a PAPER account: there is no address, the target is its board name, and the
+  // trades come from our own leaderboard rather than Hyperliquid. Everything else — scale,
+  // caps, coin filter, dry run — is identical.
+  const paperName = String(opts.paper ?? '').trim()
   // Reachable from the Strategies Run button too, so the gate lives here rather than
   // only on the leaderboard button. The server refuses either way (402 at /api/start).
   if (!_stratsUnlocked()) { window.__subOpenPaywall?.(); return }
@@ -20691,8 +20813,18 @@ window.__lbCopyTrade = function(addr = '', name = '') {
     <div style="font-size:18px;font-weight:800;margin-bottom:3px">⇄ ${_T('Copy trade', 'Copiar operaciones')}${name ? ' ' + esc(name) : ''}</div>
     <div style="font-size:12.5px;line-height:1.5;color:var(--fg-2,#c9cdd6);margin-bottom:16px">${
       _T('Mirrors every new perp trade they make onto your account, scaled down. Their existing positions are <b>not</b> bought — you follow what they do from now on.',
-         'Refleja cada nueva operación de perps que hagan en tu cuenta, a escala. Sus posiciones actuales <b>no</b> se compran — sigues lo que hagan desde ahora.')}</div>
-    ${fld('ct-target', _T('Trader address', 'Dirección del trader'), target, '0x…')}
+         'Refleja cada nueva operación de perps que hagan en tu cuenta, a escala. Sus posiciones actuales <b>no</b> se compran — sigues lo que hagan desde ahora.')}${
+      paperName ? ' ' + _T('This trader is on paper — a simulated account with no money behind its decisions.',
+                           'Este trader opera en papel — una cuenta simulada sin dinero detrás de sus decisiones.') : ''}</div>
+    ${paperName
+      ? `<div style="margin-bottom:11px">
+           <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">${_T('Paper trader', 'Trader de papel')}</div>
+           <div style="padding:10px 12px;border-radius:10px;border:1px solid var(--border2);background:var(--panel-3,#12151c);font-size:14px;font-weight:700">📝 ${esc(paperName)}</div>
+           <div style="font-size:10.5px;color:var(--fg-3);margin-top:3px;line-height:1.4">${
+             _T('A simulated account. Its trades are posted by its owner\u2019s device; your orders are real.',
+                'Una cuenta simulada. Su dueño publica las operaciones; tus órdenes son reales.')}</div>
+         </div>`
+      : fld('ct-target', _T('Trader address', 'Dirección del trader'), target, '0x…')}
     ${fld('ct-scale', _T('Size, % of theirs', 'Tamaño, % del suyo'), '25', '25',
       _T('They trade $1,000 → you trade $250.', 'Ellos operan $1,000 → tú operas $250.'))}
     ${fld('ct-max', _T('Max per trade ($)', 'Máx. por operación ($)'), '250', '250',
@@ -20739,19 +20871,19 @@ window.__lbCopyTrade = function(addr = '', name = '') {
   }
 
   ov.querySelector('#ct-go').onclick = async () => {
-    const v  = (id) => ov.querySelector('#' + id).value.trim()
-    const to = v('ct-target')
-    if (!/^0x[0-9a-fA-F]{40}$/.test(to)) return err(_T('That is not a wallet address.', 'Esa no es una dirección de billetera.'))
+    const v  = (id) => ov.querySelector('#' + id)?.value.trim() ?? ''
+    const to = paperName || v('ct-target')
+    if (!paperName && !/^0x[0-9a-fA-F]{40}$/.test(to)) return err(_T('That is not a wallet address.', 'Esa no es una dirección de billetera.'))
     if (!tgt) return err(state.isAllAccounts
       ? _T('Pick which of your accounts should do the copying first.', 'Elige primero cuál de tus cuentas copiará.')
       : _T('Load your wallet first.', 'Carga tu billetera primero.'))
-    if (to.toLowerCase() === tgt.toLowerCase()) return err(_T('That is this account — it cannot follow itself.', 'Esa es esta cuenta — no puede seguirse a sí misma.'))
+    if (!paperName && to.toLowerCase() === tgt.toLowerCase()) return err(_T('That is this account — it cannot follow itself.', 'Esa es esta cuenta — no puede seguirse a sí misma.'))
     if (!key) return err(_T('This account has no agent key saved. Add one in Strategies.', 'Esta cuenta no tiene clave de agente guardada. Añade una en Estrategias.'))
     const scale = parseFloat(v('ct-scale'))
     if (!(scale > 0)) return err(_T('Size must be above 0%.', 'El tamaño debe ser mayor que 0%.'))
 
     const argv = [
-      '--target', to,
+      ...(paperName ? ['--paper-target', paperName] : ['--target', to]),
       '--scale', String(scale),
       '--max-usd', String(parseFloat(v('ct-max')) || 0),
       '--max-position', String(parseFloat(v('ct-maxpos')) || 0),
@@ -20761,7 +20893,9 @@ window.__lbCopyTrade = function(addr = '', name = '') {
     if (dry) argv.push('--dry-run')
     // Its own instance, so a dry run can shadow a live copy of the same trader side by side
     // instead of being refused as "already running".
-    const instance = dry ? to + '-DRY' : to
+    // A paper follow is keyed by name, prefixed so it can never collide with an address.
+    const base = paperName ? 'P:' + paperName : to
+    const instance = dry ? base + '-DRY' : base
 
     const btn = ov.querySelector('#ct-go')
     btn.disabled = true
@@ -20782,7 +20916,7 @@ window.__lbCopyTrade = function(addr = '', name = '') {
       }
       close()
       _paperToast((dry ? _T('Dry run: following ', 'Simulación: siguiendo ') : _T('Now copying ', 'Ahora copiando '))
-        + (name || to.slice(0, 6) + '…' + to.slice(-4)))
+        + (name || (paperName ? paperName : to.slice(0, 6) + '…' + to.slice(-4))))
       checkServer()
     } catch {
       btn.disabled = false

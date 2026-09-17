@@ -39,7 +39,7 @@ console.log('\n── identity: the one thing that must not double-fire ──')
 t('fills are deduped on tid', bot.includes('seen.has(f.tid)') && bot.includes('seen.add(f.tid)'))
 t('never on hash', !/\.hash/.test(bot))
 t('the re-ask window overlaps, because HL can surface a fill late',
-  bot.includes('startTime: cursor - 60_000'))
+  bot.includes('fetchTargetFills(cursor - 60_000)') && bot.includes('info.userFillsByTime({ user: TARGET, startTime })'))
 t('the seen set is bounded, or it grows for as long as the bot runs',
   bot.includes('if (seen.size > 4000)'))
 t('fills are applied oldest-first', bot.includes('.sort((a, b) => a.time - b.time)'))
@@ -52,7 +52,11 @@ t('history is NOT replayed — following someone does not buy their whole book',
 t('only a recent restart resumes the cursor',
   bot.includes('const RESUME_WINDOW_MS = 15 * 60 * 1000') && bot.includes('Date.now() - (saved.ts ?? 0) < RESUME_WINDOW_MS'))
 t('a wallet cannot follow itself', bot.includes('A wallet cannot follow itself'))
-t('the target must be an address', bot.includes("if (!/^0x[0-9a-fA-F]{40}$/.test(TARGET))"))
+// A wallet target must be an address. A paper account is named instead — it has none — and
+// the check knows the difference.
+t('the target must be an address', bot.includes("if (!PAPER_TARGET && !/^0x[0-9a-fA-F]{40}$/.test(TARGET))"))
+t('or a paper account by name',
+  bot.includes("'paper-target': { type: 'string' }") && bot.includes('/api/leaderboard/paper/one?name='))
 t('a 0% scale is refused rather than running forever doing nothing',
   bot.includes('Scale is 0% — nothing would ever be mirrored'))
 t('spot and builder-dex fills are skipped, not guessed at',
@@ -82,8 +86,11 @@ t('actions sit ABOVE the holdings, not below eleven orders',
 // no wallet, so its row is built by _lbPaperSocialHtml, which cannot start a copy trade.
 t('the paper board never gets the wallet action row',
   cli.includes('expandHtml += opts.paper ? _lbPaperSocialHtml(r) : _lbSocialHtml(r)'))
-t('and its Copy trade explains why there is nothing to copy instead of starting one',
-  grab(cli, 'function _lbPaperSocialHtml(r)').includes('there is nothing to copy') && !grab(cli, 'function _lbPaperSocialHtml(r)').includes('__lbCopyTrade'))
+// It CAN be copied now: the owner's device posts that account's fills with its board row, and
+// the bot reads them from our own server. Asked for: "able to copy trade them".
+t('and its Copy trade starts a real follow of that paper account',
+  grab(cli, 'function _lbPaperSocialHtml(r)').includes('{ paper: decodeURIComponent(')
+    && bot.includes("const PAPER_TARGET = String(args['paper-target'] ?? '').trim()"))
 
 console.log('\n── collapsed by default ──')
 const coll = grab(cli, 'function _lbCollapse(id, title, rowsHtml)')
@@ -112,8 +119,10 @@ t('the banner says read-only, because no agent key exists for a stranger',
   grab(cli, 'function _visitBannerSync()').includes("_T('read only'"))
 
 console.log('\n── the copy-trade sheet ──')
-const sheet = grab(cli, 'window.__lbCopyTrade = function(addr = \'\', name = \'\')')
-t('it refuses a non-address', sheet.includes("if (!/^0x[0-9a-fA-F]{40}$/.test(to))"))
+// Sliced, not brace-matched: the signature's own `opts = {}` ends a brace scan immediately.
+const _shI  = cli.indexOf("window.__lbCopyTrade = function(addr = '', name = '', opts = {})")
+const sheet = cli.slice(_shI, cli.indexOf('\nfunction _mobVBuildLbHtml', _shI))
+t('it refuses a non-address', sheet.includes("if (!paperName && !/^0x[0-9a-fA-F]{40}$/.test(to))"))
 t('it refuses following yourself before the server has to', sheet.includes('it cannot follow itself'))
 t('it refuses without an agent key rather than failing at the server',
   sheet.includes('has no agent key saved'))
@@ -122,8 +131,10 @@ t('in the combined view it asks WHICH of your accounts copies',
 t('it signs with that account\'s key, not whichever connected last',
   sheet.includes('const key    = _stratTargetKey()') && sheet.includes('agentKey: key'))
 // A dry run gets its own instance so it can shadow a live copy of the same trader.
+// The instance is the wallet address, or "P:<name>" for a paper account — so a follow of each
+// kind, live or dry, is four distinct bots that cannot collide.
 t('the target is the instance, so you can follow several traders at once',
-  sheet.includes("const instance = dry ? to + '-DRY' : to") && sheet.includes('address: tgt, instance }'))
+  sheet.includes("const base = paperName ? 'P:' + paperName : to") && sheet.includes('address: tgt, instance }'))
 t('a 402 opens the paywall instead of showing a raw error',
   sheet.includes('if (r.subscribe) { close(); window.__subOpenPaywall?.(); return }'))
 t('it warns that this is real money on a stranger\'s judgement',

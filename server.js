@@ -1125,6 +1125,45 @@ function lbPaperWrite(list) {
   try { writeFileSync(LB_PAPER_FILE, JSON.stringify(list)) } catch (e) { console.error('paper lb write:', e.message) }
 }
 
+/**
+ * A paper account's recent fills, one small file per account.
+ *
+ * Asked for: "lets make paper accounts visitable, able to copy trade them". Both need the
+ * TRADES, not just the snapshot the board row carries — a visitor wants to see what the
+ * account did, and a copy bot cannot follow an account whose decisions it never sees.
+ *
+ * One file each rather than a field on the board row: the row list is rewritten whole on
+ * every post (up to 120/hour per IP), and 300 rows × 40 fills would make that a multi-megabyte
+ * write every time. A per-account file is a few KB and only its owner's posts touch it.
+ *
+ * Capped and merged by `tid`: a client re-posts its last fills on every sync, so the same fill
+ * arrives many times and must not pile up.
+ */
+const PAPER_FILL_DIR = join(LOGS_DIR, 'paper-fills')
+const PAPER_FILL_MAX = 200
+const paperFillFile = (name) =>
+  join(PAPER_FILL_DIR, Buffer.from(String(name).toLowerCase()).toString('hex').slice(0, 96) + '.json')
+
+function paperFillsRead(name) {
+  try { return JSON.parse(readFileSync(paperFillFile(name), 'utf8')) ?? [] } catch { return [] }
+}
+function paperFillsMerge(name, incoming) {
+  if (!incoming?.length) return paperFillsRead(name)
+  const have = paperFillsRead(name)
+  const seen = new Set(have.map(f => f.tid))
+  const next = [...incoming.filter(f => !seen.has(f.tid)), ...have]
+    .sort((a, b) => b.time - a.time)
+    .slice(0, PAPER_FILL_MAX)
+  try {
+    if (!existsSync(PAPER_FILL_DIR)) mkdirSync(PAPER_FILL_DIR, { recursive: true })
+    writeFileSync(paperFillFile(name), JSON.stringify(next))
+  } catch (e) { console.error('paper fills write:', e.message) }
+  return next
+}
+function paperFillsDelete(name) {
+  try { unlinkSync(paperFillFile(name)) } catch {}
+}
+
 // Same character policy as the real board's display names.
 function lbCleanName(s) {
   return String(s ?? '')
@@ -1863,6 +1902,21 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true, name: list[i].name, hidden: !!b.hidden })
   }
 
+  // ── GET /api/leaderboard/paper/one?name=..[&since=ts] → one account + its trades ──
+  // What a visitor reads, and what a copy bot follows. `since` returns only newer fills, so a
+  // bot polling every 30s transfers almost nothing. Hidden accounts are withheld like any row.
+  if (method === 'GET' && path === '/api/leaderboard/paper/one') {
+    const name  = lbCleanName(url.searchParams.get('name') ?? '')
+    const since = Number(url.searchParams.get('since') ?? 0) || 0
+    if (!name) return json(res, 400, { error: 'name required' })
+    const isAdmin = !!LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN
+    const row = lbPaperRead().find(r => (r.name ?? '').toLowerCase() === name.toLowerCase())
+    if (!row || (row.hidden && !isAdmin)) return json(res, 404, { error: 'no such paper account' })
+    const { secret, ...pub } = row
+    const fills = paperFillsRead(row.name).filter(f => f.time > since)
+    return json(res, 200, { ok: true, row: pub, fills, simulated: true })
+  }
+
   // ── POST /api/leaderboard/paper { name, secret?, equity, pnl, trades, wins } ──
   // Self-reported simulated results. Clamped to sane ranges so a bad payload
   // can't wreck the board's rendering, but the figures are NOT verifiable.
@@ -1915,6 +1969,25 @@ const server = createServer(async (req, res) => {
         reduceOnly: !!o?.reduceOnly, timestamp: Math.round(num(o?.timestamp, 0, 1e14)),
       }
     }).filter(Boolean) : []
+    // The account's own trades, so it can be visited and followed. Same clamping rule as
+    // everything else here: re-typed field by field, nothing echoed back raw.
+    const fills = Array.isArray(b.fills) ? b.fills.slice(0, 60).map(f => {
+      const coin = String(f?.coin ?? '').slice(0, 24)
+      if (!/^[A-Za-z0-9:#@+._-]{1,24}$/.test(coin)) return null
+      const tid = String(f?.tid ?? '').slice(0, 32)
+      if (!/^[A-Za-z0-9_-]{1,32}$/.test(tid)) return null
+      const time = Math.round(num(f?.time, 0, 1e14))
+      if (!time) return null
+      return {
+        coin, tid, time,
+        side: f?.side === 'B' ? 'B' : 'A',
+        px: String(num(f?.px, 0, 1e12)), sz: String(num(f?.sz, 0, 1e12)),
+        closedPnl: String(num(f?.closedPnl, -1e12, 1e12)), fee: String(num(f?.fee, -1e9, 1e9)),
+        // Needed to tell an open from a close; null when the client did not send it.
+        startPosition: f?.startPosition == null ? null : String(num(f.startPosition, -1e12, 1e12)),
+        dir: String(f?.dir ?? '').slice(0, 24),
+      }
+    }).filter(Boolean) : []
     const tr = b.track && typeof b.track === 'object' ? b.track : null
     const optNum = (v, lo, hi) => (v == null || !Number.isFinite(parseFloat(v))) ? null : num(v, lo, hi)
     const track = tr ? {
@@ -1954,6 +2027,8 @@ const server = createServer(async (req, res) => {
     const list = lbPaperRead()
     const i    = list.findIndex(e => e.name.toLowerCase() === name.toLowerCase())
 
+    // Only after the ownership check below — a stranger must not be able to append trades to
+    // someone else's account. Done inside each branch.
     if (i >= 0) {
       // Existing name — only the holder of the original secret may update it.
       const given = String(b.secret ?? '')
@@ -1963,6 +2038,7 @@ const server = createServer(async (req, res) => {
       if (!ok) return json(res, 403, { error: 'that name is taken — pick another' })
       list[i] = { ...list[i], ...row }
       lbPaperWrite(list)
+      paperFillsMerge(name, fills)
       return json(res, 200, { ok: true, updated: true })
     }
 
@@ -1970,6 +2046,7 @@ const server = createServer(async (req, res) => {
     const secret = randomBytes(16).toString('hex')
     list.push({ ...row, secret, created: Date.now() })
     lbPaperWrite(list)
+    paperFillsMerge(name, fills)
     return json(res, 200, { ok: true, added: true, secret })
   }
 
@@ -2665,8 +2742,10 @@ const server = createServer(async (req, res) => {
         timingSafeEqual(Buffer.from(given), Buffer.from(want))
       if (!ok) return json(res, 403, { error: 'wrong secret for that name' })
     }
+    const gone = list[i].name
     list.splice(i, 1)
     lbPaperWrite(list)
+    paperFillsDelete(gone)
     return json(res, 200, { ok: true, removed: true })
   }
 

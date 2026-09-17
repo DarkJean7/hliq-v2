@@ -20,7 +20,9 @@ const social = grab(cli, 'function _lbSocialHtml(r)')
 t('an unsubscribed user sees a lock, not a live button', social.includes('_stratsUnlocked()') && social.includes("'🔒'"))
 t('and tapping it opens the paywall', social.includes('window.__subOpenPaywall()'))
 t('a subscriber gets the real action', social.includes('window.__lbCopyTrade('))
-const sheet = grab(cli, "window.__lbCopyTrade = function(addr = '', name = '')")
+// Sliced, not brace-matched: the signature's own `opts = {}` ends a brace scan immediately.
+const _shI  = cli.indexOf("window.__lbCopyTrade = function(addr = '', name = '', opts = {})")
+const sheet = cli.slice(_shI, cli.indexOf(String.fromCharCode(10) + 'function _mobVBuildLbHtml', _shI))
 t('the sheet itself refuses too — it is reachable from Strategies Run as well',
   sheet.includes('if (!_stratsUnlocked()) { window.__subOpenPaywall?.(); return }'))
 t('the gate is the FIRST thing it does, before building any form',

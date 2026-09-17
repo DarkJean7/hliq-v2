@@ -493,12 +493,17 @@ export function paperAccrueFunding(force = false) {
 }
 
 // ─── FILLS ────────────────────────────────────────────────────────────────────
-function recordFill(s, { coin, px, sz, isBuy, closedPnl, dir, oid, fee = 0 }) {
+function recordFill(s, { coin, px, sz, isBuy, closedPnl, dir, oid, fee = 0, startPosition = null }) {
   s.fills.unshift({
     coin, px: String(px), sz: String(Math.abs(sz)),
     side: isBuy ? 'B' : 'A',
     time: Date.now(),
     closedPnl: String(closedPnl ?? 0),
+    // The position BEFORE this fill, as Hyperliquid reports it. Every real fill carries it and
+    // anything reading fills as a stream of decisions needs it — a copy bot cannot tell an
+    // open from a close without it (src/copymirror.js). Paper fills had none, which is why a
+    // paper account could not be followed.
+    startPosition: startPosition == null ? null : String(startPosition),
     dir, oid: oid ?? null, tid: `p${s.nextOid++}`,
     hash: '', fee: String(fee), feeToken: 'USDC',
     crossed: true,
@@ -596,7 +601,7 @@ export function paperFill({ coin, isBuy, sz, px, leverage = 5, isIsolated = fals
   const fee = sz * px * bps(feeBps)
   s.balance -= fee
 
-  recordFill(s, { coin, px, sz, isBuy, closedPnl: realised, dir: dirLabel(prevSzi, newSzi), oid, fee })
+  recordFill(s, { coin, px, sz, isBuy, closedPnl: realised, dir: dirLabel(prevSzi, newSzi), oid, fee, startPosition: prevSzi })
   paperSave()
   return { ok: true, fee }
 }
@@ -936,6 +941,7 @@ export function paperTick() {
       recordFill(s, {
         coin: p.coin, px: liq, sz, isBuy: p.szi < 0,
         closedPnl: -p.margin, dir: p.szi > 0 ? 'Close Long' : 'Close Short', oid: null,
+        startPosition: p.szi,
       })
       s.orders = s.orders.filter(o => o.coin !== p.coin || !o.reduceOnly)
       events.push(`${p.coin} LIQUIDATED (isolated) — lost $${p.margin.toFixed(2)}`)
@@ -958,6 +964,7 @@ export function paperTick() {
         recordFill(s, {
           coin: p.coin, px: mark, sz, isBuy: p.szi < 0,
           closedPnl: pnl, dir: p.szi > 0 ? 'Close Long' : 'Close Short', oid: null,
+          startPosition: p.szi,
         })
         s.orders = s.orders.filter(o => o.coin !== p.coin || !o.reduceOnly)
       }

@@ -61,6 +61,7 @@ const { values: args } = parseArgs({
     leverage:       { type: 'string', default: '0'   },    // 0 = leave account setting alone
     interval:       { type: 'string', default: '30'  },    // seconds between polls
     'dry-run':      { type: 'boolean', default: false },   // simulate; place nothing
+    'paper-target': { type: 'string' },                    // follow a PAPER account by name
   },
   allowPositionals: false,
   strict: false,   // tolerate unknown flags from older/newer UIs
@@ -72,11 +73,25 @@ if (!walletKey) {
   process.exit(1)
 }
 
-const TARGET = String(args.target ?? '').trim()
-if (!/^0x[0-9a-fA-F]{40}$/.test(TARGET)) {
-  console.error('ERROR: --target must be a wallet address')
+/**
+ * Who is being followed: a wallet, or a PAPER account by name.
+ *
+ * A paper account trades only on its owner's device, so there is no address to query. What it
+ * does reach is our own leaderboard: the app posts each paper account's fills with its board
+ * row, so the bot reads the same trades from there in the same shape Hyperliquid returns —
+ * which is the whole reason planMirror needs no idea which kind of target this is.
+ *
+ * The orders it places are real either way. Following a simulated trader with real money is
+ * the user's call; the sheet says so plainly before it starts.
+ */
+const PAPER_TARGET = String(args['paper-target'] ?? '').trim()
+const TARGET = PAPER_TARGET || String(args.target ?? '').trim()
+if (!PAPER_TARGET && !/^0x[0-9a-fA-F]{40}$/.test(TARGET)) {
+  console.error('ERROR: --target must be a wallet address, or use --paper-target <name>')
   process.exit(1)
 }
+// Our own server, on the same box. HLIQ_API overrides it for a local run.
+const API_BASE = process.env.HLIQ_API ?? 'http://127.0.0.1:3002'
 
 const SCALE        = Math.max(0, parseFloat(args.scale) || 0) / 100
 const MAX_USD      = Math.max(0, parseFloat(args['max-usd']) || 0)
@@ -99,7 +114,7 @@ const etherWallet = new ethers.Wallet(walletKey)
 const exchange    = new ExchangeClient({ transport, wallet: etherWallet })
 const QUERY_ADDR  = args.address ?? etherWallet.address   // master wallet for reads
 
-if (QUERY_ADDR.toLowerCase() === TARGET.toLowerCase()) {
+if (!PAPER_TARGET && QUERY_ADDR.toLowerCase() === TARGET.toLowerCase()) {
   console.error('ERROR: --target is this account. A wallet cannot follow itself.')
   process.exit(1)
 }
@@ -117,7 +132,38 @@ function log(tag, msg) {
 }
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-const short = (a) => a.slice(0, 6) + '…' + a.slice(-4)
+const short = (a) => PAPER_TARGET ? `paper "${a}"` : a.slice(0, 6) + '…' + a.slice(-4)
+
+/**
+ * The target's fills since `startTime`, from Hyperliquid for a wallet or from our own
+ * leaderboard for a paper account. Same shape both ways (HL's), so nothing downstream cares.
+ */
+async function fetchTargetFills(startTime) {
+  if (!PAPER_TARGET) return await info.userFillsByTime({ user: TARGET, startTime })
+  const r = await fetch(`${API_BASE}/api/leaderboard/paper/one?name=${encodeURIComponent(PAPER_TARGET)}&since=${Math.max(0, startTime - 1)}`)
+  if (!r.ok) throw new Error(`paper feed ${r.status}`)
+  const j = await r.json()
+  return j?.fills ?? []
+}
+
+/** The target's open positions, for the exit retry. Paper positions come with its board row. */
+async function fetchTargetPositions() {
+  if (!PAPER_TARGET) {
+    const cs = await info.clearinghouseState({ user: TARGET })
+    const out = {}
+    for (const ap of (cs.assetPositions ?? [])) out[ap.position.coin] = parseFloat(ap.position.szi ?? 0)
+    return out
+  }
+  const r = await fetch(`${API_BASE}/api/leaderboard/paper/one?name=${encodeURIComponent(PAPER_TARGET)}`)
+  if (!r.ok) throw new Error(`paper feed ${r.status}`)
+  const j = await r.json()
+  const out = {}
+  for (const ap of (j?.row?.positions ?? [])) {
+    const pos = ap.position ?? ap
+    out[pos.coin] = parseFloat(pos.szi ?? 0)
+  }
+  return out
+}
 
 // ─── ROUNDING (same tick rules as the other bots) ─────────────────────────────
 function roundPx(n, szDecimals) {
@@ -155,7 +201,7 @@ async function loadMeta() {
 // Keyed by follower + target, and by mode: a paper copy must never be read as holding a real
 // position, or a live follow started later would try to close something that does not exist.
 const STATE_FILE = path.join(process.cwd(), '.copytrade-state.json')
-const STATE_KEY  = `${QUERY_ADDR.toLowerCase()}:${TARGET.toLowerCase()}${DRY_RUN ? ':dry' : ''}`
+const STATE_KEY  = `${QUERY_ADDR.toLowerCase()}:${PAPER_TARGET ? 'paper:' : ''}${TARGET.toLowerCase()}${DRY_RUN ? ':dry' : ''}`
 
 let mine     = {}   // coin → signed size this bot opened and still holds
 let carry    = {}   // coin → signed size of opens waiting to clear the $10 minimum
@@ -247,7 +293,7 @@ const levelled = new Set()
 async function run() {
   log('START', '═'.repeat(60))
   log('START', `Copy Trade Bot${DRY_RUN ? '  —  DRY RUN (no orders are placed)' : ''}`)
-  log('START', `Following: ${TARGET}`)
+  log('START', `Following: ${PAPER_TARGET ? `paper account "${PAPER_TARGET}" (simulated trader)` : TARGET}`)
   log('START', `Onto:      ${QUERY_ADDR}`)
   log('START', `Scale:     ${(SCALE * 100).toFixed(1)}% of their size  |  Max ${MAX_USD > 0 ? '$' + MAX_USD : 'unlimited'} per open`)
   log('START', `Coins:     ${ONLY.size ? [...ONLY].join(', ') : 'all perps'}  |  Max position: ${MAX_POSITION > 0 ? '$' + MAX_POSITION : 'unlimited'}`)
@@ -279,7 +325,7 @@ async function run() {
       // Re-ask from slightly before the cursor: HL can surface a fill a beat late, and the
       // tid set is what actually prevents a double-mirror (fill HASHES repeat and are
       // useless for identity).
-      const fills = await info.userFillsByTime({ user: TARGET, startTime: cursor - 60_000 })
+      const fills = await fetchTargetFills(cursor - 60_000)
       const fresh = (fills ?? []).filter(f => !seen.has(f.tid) && +f.time >= cursor - 60_000)
         .sort((a, b) => a.time - b.time)
 
@@ -395,11 +441,7 @@ async function retryExits() {
   const coins = Object.keys(pendingExit)
   if (!coins.length) return
   let theirs
-  try {
-    const cs = await info.clearinghouseState({ user: TARGET })
-    theirs = {}
-    for (const ap of (cs.assetPositions ?? [])) theirs[ap.position.coin] = parseFloat(ap.position.szi ?? 0)
-  } catch { return }
+  try { theirs = await fetchTargetPositions() } catch { return }
   const mids = await info.allMids()
   const ours = DRY_RUN ? null : await getPositions()
   for (const coin of coins) {

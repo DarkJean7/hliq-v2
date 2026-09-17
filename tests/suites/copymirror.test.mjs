@@ -186,7 +186,9 @@ console.log(nl + '-- the bot uses it, and keeps its record across a restart --')
   const sheet = cli.slice(cli.indexOf('window.__lbCopyTrade = function'), cli.indexOf('window.__lbCopyTrade = function') + 12000)
   t('the sheet offers a dry run', sheet.includes('id="ct-mode-dry"'))
   t('and passes it to the bot', sheet.includes("argv.push('--dry-run')"))
-  t('a dry run is its own instance, so it can run beside a live copy', sheet.includes("to + '-DRY'"))
+  // The instance is the address for a wallet, "P:<name>" for a paper account, and either with
+  // -DRY for a dry run — so none of the four can collide.
+  t('a dry run is its own instance, so it can run beside a live copy', sheet.includes("base + '-DRY' : base"))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
