@@ -47,11 +47,17 @@ t('and when the size was', planBlock.includes('autoSize:'))
 t('an open position is reported, since the range can anchor to it', planBlock.includes('position: _szi0 ?'))
 
 console.log('\n── sides follow the mark, and invert for a short grid ──')
-const side = new Function('px', 'markPx', 'IS_SHORT', "return (IS_SHORT ? px > markPx : px < markPx) ? 'buy' : 'sell'")
+// This section used to hold its OWN copy of the side formula and assert that a short grid
+// "buys above and sells below". That is backwards — a short sells high to open and buys low to
+// cover — and because the copy never read grid.js, it passed for as long as the bot had the
+// same bug. The real line is exercised at the end of this suite ("a short grid is the long
+// grid mirrored"); these state the rule it must satisfy.
+const side = (px, markPx, IS_SHORT) => (IS_SHORT ? px > markPx : px < markPx)
+  ? (IS_SHORT ? 'sell' : 'buy') : (IS_SHORT ? 'buy' : 'sell')
 t('a long grid buys below the mark', side(65, 80, false) === 'buy')
 t('and sells above it', side(95, 80, false) === 'sell')
-t('a short grid is the mirror — it buys above', side(95, 80, true) === 'buy')
-t('and sells below', side(65, 80, true) === 'sell')
+t('a short grid is the mirror — it SELLS above', side(95, 80, true) === 'sell')
+t('and BUYS below, to cover', side(65, 80, true) === 'buy')
 
 console.log('\n── the endpoint ──')
 t('there is one', srv.includes("path === '/api/plan'"))
@@ -224,9 +230,11 @@ console.log('\n── the figure is a TAKE PROFIT, on the level that books it �
       fn.indexOf('plan?.side') < fn.indexOf('buysBelow'))
     t('why the heuristic was wrong is written down', fn.includes('already bought its whole range'))
   }
-  // Two CALL sites; the third match is the definition.
-  t('so the ladder and the "if every level fills" block cannot disagree',
-    (cli.match(/_gridEntrySide\(plan\)/g) ?? []).length - (cli.match(/function _gridEntrySide\(plan\)/g) ?? []).length === 2)
+  // Three CALL sites now (the ladder, the "if every level fills" block, and the held-back
+  // warning, which has to say "buy back" on a short); the extra match is the definition. All of
+  // them ask the same helper, which is the point.
+  t('so the ladder, the "if every level fills" block and the warning cannot disagree',
+    (cli.match(/_gridEntrySide\(plan\)/g) ?? []).length - (cli.match(/function _gridEntrySide\(plan\)/g) ?? []).length === 3)
   t('the rung row carries it again', lad.includes('const tp = _tpOn.get(o)'))
   t('nothing is drawn between the rungs any more', !lad.includes('gapChip'))
   t('it is labelled as a take profit', lad.includes('>TP </span>+$'))
@@ -317,6 +325,31 @@ console.log('\n── the sheet does not show the app through itself ──')
     css.includes('html.has-bg-image .sheet-over') && css.includes('background-color: var(--bg) !important'))
   t('while still showing the wallpaper', /\.sheet-over \{[\s\S]{0,400}var\(--app-bg-image\)/.test(css))
   t('the reason is recorded', css.includes('opens OVER the app'))
+}
+
+console.log('\n── a short grid is the long grid mirrored ──')
+{
+  // Reported: "same entry, different sides … short side is bugged and is giving wrong pnl".
+  // A level with no side decided by the exit/entry loops fell back to
+  //   (IS_SHORT ? px > mark : px < mark) ? 'buy' : 'sell'
+  // which is right for a long and backwards for a short: the short's exits below the mark
+  // came out as SELLS — counted as entries (9 instead of 5), no TP on them — and its waiting
+  // entry above came out as a BUY holding the only TP, so one sweep read $1.70 against the
+  // long's $8.25. Run the real line for both directions.
+  const line = grid.match(/const side = pl\?\.side \?\? \((.+)\)\n/)
+  t('the fallback line is found', !!line)
+  const label = (IS_SHORT, px, markPx) => {
+    const _entrySide = IS_SHORT ? 'sell' : 'buy', _exitSide = IS_SHORT ? 'buy' : 'sell'
+    return new Function('IS_SHORT', 'PRICES', 'i', 'markPx', '_entrySide', '_exitSide', 'pl',
+      'return pl?.side ?? (' + line[1] + ')')(IS_SHORT, [px], 0, markPx, _entrySide, _exitSide, undefined)
+  }
+  t('long: below the mark is a buy entry', label(false, 90, 100) === 'buy')
+  t('long: above the mark is a sell exit', label(false, 110, 100) === 'sell')
+  t('short: above the mark is a SELL entry', label(true, 110, 100) === 'sell')
+  t('short: below the mark is a BUY exit', label(true, 90, 100) === 'buy')
+  // The sheet's TP, sweep and "every level fills" box all read these labels, so this is the
+  // one place they can go wrong. And a short's warning speaks about buying back, not selling.
+  t('a short says its exits have nothing to buy back', cli.includes("_T('have nothing to buy back yet'"))
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')

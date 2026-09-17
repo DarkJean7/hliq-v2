@@ -24837,16 +24837,23 @@ function _botPreviewSheet(type, plan, loading) {
         if (!short.length && !inv.length && !near.length) return ''
         const money = (n) => '$' + fmtPrice(n)
         const bad = short.length || inv.length
+        // A short's exits BUY BACK; "nothing left to sell" is the long's sentence.
+        const _shortGrid = _gridEntrySide(plan) === 'sell'
         return `<div style="margin-top:10px;font-size:11.5px;color:${bad ? 'var(--red)' : 'var(--fg-2)'};background:${bad ? 'rgba(255,77,109,.08)' : 'var(--panel-1)'};border-radius:8px;padding:10px 12px;line-height:1.55">
           ${short.length ? `<div><b>${short.length} ${short.length === 1 ? _T('level', 'nivel') : _T('levels', 'niveles')}</b> ${
             _T('will not go on the book — not enough margin', 'no se colocarán — falta margen')}: ${short.map(o => money(o.px)).join(', ')}.
             ${_T('The bot keeps retrying them as margin frees.', 'El bot los reintenta cuando se libera margen.')}</div>` : ''}
           ${inv.length ? `<div style="${short.length ? 'margin-top:6px' : ''}"><b>${inv.length} ${inv.length === 1 ? _T('level', 'nivel') : _T('levels', 'niveles')}</b> ${
-            (inv.length === 1 ? _T('has nothing left to sell', 'no tiene nada que vender')
-                              : _T('have nothing left to sell', 'no tienen nada que vender'))}: ${inv.map(o => money(o.px)).join(', ')}.
+            (_shortGrid
+              ? (inv.length === 1 ? _T('has nothing to buy back yet', 'aún no tiene nada que recomprar')
+                                  : _T('have nothing to buy back yet', 'aún no tienen nada que recomprar'))
+              : (inv.length === 1 ? _T('has nothing left to sell', 'no tiene nada que vender')
+                                  : _T('have nothing left to sell', 'no tienen nada que vender')))}: ${inv.map(o => money(o.px)).join(', ')}.
             ${_T('Exits are backed by the position, so these appear as it grows.', 'Las salidas se respaldan con la posición, así que aparecen cuando crece.')}</div>` : ''}
           ${near.length ? `<div style="${short.length || inv.length ? 'margin-top:6px' : ''};color:var(--fg-2)">${
-            _T('One level sits too close to the mark to be an entry yet', 'Un nivel está demasiado cerca del precio para ser entrada aún')}: ${
+            near.length === 1
+              ? _T('One level sits too close to the mark to go on the book yet', 'Un nivel está demasiado cerca del precio para colocarse aún')
+              : _T(`${near.length} levels sit too close to the mark to go on the book yet`, `${near.length} niveles están demasiado cerca del precio para colocarse aún`)}: ${
             near.map(o => money(o.px)).join(', ')}. ${
             _T('The grid leaves half a level of clearance around the mark so a level cannot flip between entry and exit on ordinary noise. An auto-chosen range centres the mark exactly between two levels, so the nearest one starts right on that line and goes on the book as soon as price moves off it.',
                'El grid deja medio nivel de holgura alrededor del precio para que un nivel no cambie entre entrada y salida por ruido normal. Un rango automático centra el precio justo entre dos niveles, así que el más cercano empieza en esa línea y se coloca en cuanto el precio se mueve.')}</div>` : ''}

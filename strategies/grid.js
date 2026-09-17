@@ -907,7 +907,13 @@ async function run() {
 
     const orders = [...PRICES.keys()].map(i => {
       const pl = planned.get(i)
-      const side = pl?.side ?? ((IS_SHORT ? PRICES[i] > markPx : PRICES[i] < markPx) ? 'buy' : 'sell')
+      // A level with no side decided above is labelled by where it sits: on the entry side of
+      // the mark it is an entry, otherwise an exit — for a short, entries are the SELLS above.
+      // This used to map "entry side" to 'buy' for both directions, so a short's exits below
+      // the mark came out as sells (counted as entries: 9 instead of 5, margin nearly
+      // doubled, and no TP on them) and its waiting entry above came out as a buy carrying
+      // the only TP — a one-sweep total of $1.70 where the long mirror showed $8.25.
+      const side = pl?.side ?? ((IS_SHORT ? PRICES[i] > markPx : PRICES[i] < markPx) ? _entrySide : _exitSide)
       return {
         px: PRICES[i],
         side,
