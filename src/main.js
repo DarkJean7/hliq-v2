@@ -12476,7 +12476,11 @@ window._mobVOpenWalletSwitch = function() {
         ${(_isAll || _isPaperCur) ? '' : `<button class="mob-wallet-copy-btn" onclick="navigator.clipboard?.writeText('${esc(state.addr)}').catch(()=>{})">⧉</button>`}
       </div>
     </div>
-    <button class="mob-wallet-settings-btn" onclick="window._mobVCloseWalletSwitch();_mobVActiveTab='settings';document.querySelectorAll('.mob-v-tab').forEach(b=>b.classList.remove('active'));_mobVRenderContent()">Wallet settings</button>
+    ${/* Through the same door the More menu uses. This used to assign _mobVActiveTab inline —
+         but inline handlers run at global scope and main.js is a module, so that created an
+         unrelated window._mobVActiveTab, the real tab never changed, and the button closed the
+         drawer and redrew whatever was already open. */ ''}
+    <button class="mob-wallet-settings-btn" onclick="window._mobVCloseWalletSwitch();window.__mobMoreTab('settings')">Wallet settings</button>
     ${allAcctsRow}
     ${paperRow}
     <div class="mob-wallet-list">${walletRows}</div>
@@ -23576,6 +23580,11 @@ window.togglePastLogs     = togglePastLogs
 window.loadPastLog        = loadPastLog
 window.flipCard           = flipCard
 window.toggleSizeMode     = toggleSizeMode
+// Both are called from inline onclick handlers, which run at global scope. Neither was here,
+// so desktop's Leaderboard "↻ Refresh" and the grid form's %/$ spacing toggle did nothing.
+// suites/inlineglobals.test.mjs now fails the build on any inline call to a name not exported.
+window.toggleGridSpacing  = toggleGridSpacing
+window.renderLeaderboard  = renderLeaderboard
 window.setSizeMode        = setSizeMode
 window.updateRiskUI       = updateRiskUI
 window.toggleDcaMode        = toggleDcaMode
