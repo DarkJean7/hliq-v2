@@ -115,10 +115,12 @@ console.log(nl + '-- one module, both data paths, both shells --')
   t('and `track` is not on it', !/\btrack\b/.test(stripped ?? 'track'))
   t('the browser fallback computes the same thing',
     cli.includes('const track        = trackRecord({ windows: _windows, portfolio,'))
+  // Paper rows now carry a track record too, so the builder no longer excludes them.
   t('mobile rows show it, before the Copy trade button',
-    /expandHtml \+= _lbTrackHtml\(r\)[\s\S]{0,300}expandHtml \+= _lbSocialHtml\(r\)/.test(cli))
+    /if \(r\.addr\) expandHtml \+= _lbTrackHtml\(r\)[\s\S]{0,300}expandHtml \+= opts\.paper \? _lbPaperSocialHtml\(r\) : _lbSocialHtml\(r\)/.test(cli))
   t('desktop rows show it', cli.includes('${_lbTrackHtml(entry)}'))
-  t('and desktop can finally copy a wallet from the board', /\$\{_lbTrackHtml\(entry\)\}[\s\S]{0,200}\$\{_lbSocialHtml\(entry\)\}/.test(cli))
+  t('and desktop can finally copy a wallet from the board',
+    /\$\{_lbTrackHtml\(entry\)\}[\s\S]{0,200}\$\{isP \? _lbPaperSocialHtml\(entry\) : _lbSocialHtml\(entry\)\}/.test(cli))
   t('the unit is explained on screen, since a "trade" here is not a fill',
     cli.includes('A trade is every close in one coin within an hour'))
 }

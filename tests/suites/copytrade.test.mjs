@@ -77,8 +77,13 @@ t('the buttons do not also collapse the row', (social.match(/event\.stopPropagat
 t('actions sit ABOVE the holdings, not below eleven orders',
   cli.indexOf('_lbSocialHtml(r)\n      const openPos') > 0 ||
   /expandHtml \+= _lbSocialHtml\(r\)[\s\S]{0,200}const openPos/.test(cli))
-t('the paper board gets no wallet actions — there is no wallet to visit',
-  cli.includes('if (r.addr && !opts.paper) expandHtml += _lbSocialHtml(r)'))
+// The paper board used to get no action row at all. Asked to be "exactly the same as the
+// real", it now gets the same three buttons — but never the WALLET actions: a paper row has
+// no wallet, so its row is built by _lbPaperSocialHtml, which cannot start a copy trade.
+t('the paper board never gets the wallet action row',
+  cli.includes('expandHtml += opts.paper ? _lbPaperSocialHtml(r) : _lbSocialHtml(r)'))
+t('and its Copy trade explains why there is nothing to copy instead of starting one',
+  grab(cli, 'function _lbPaperSocialHtml(r)').includes('there is nothing to copy') && !grab(cli, 'function _lbPaperSocialHtml(r)').includes('__lbCopyTrade'))
 
 console.log('\n── collapsed by default ──')
 const coll = grab(cli, 'function _lbCollapse(id, title, rowsHtml)')

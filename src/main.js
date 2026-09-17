@@ -20164,7 +20164,8 @@ async function _lbPaperFetch(el) {
     el.innerHTML = _mobVFullHeader('Leaderboard') + _lbModeBar() + `<div class="mob-v-empty">Loading…</div>`
   }
   try {
-    const r = await fetch('/api/leaderboard/paper').then(x => x.json())
+    const pin = isDev() ? _lbGetPin() : ''
+    const r = await fetch('/api/leaderboard/paper', pin ? { headers: { 'x-lb-pin': pin } } : undefined).then(x => x.json())
     _lbPaperRows   = r?.rows ?? []
     _lbPaperLoaded = Date.now()
   } catch { /* keep the rows we already have rather than blanking the board */ }
@@ -20209,16 +20210,27 @@ function _lbPaperHtml() {
       `<div class="mob-v-empty">No paper results yet.<br>Every paper account you create is listed here automatically.</div>`
   }
 
-  // Map into the SAME row shape the real board uses, then hand it to the same
-  // renderer — that's what makes the two boards identical rather than lookalikes.
-  const mine = _lbPaperMyNames()
-  const rows = _lbPaperRows.map((r, i) => ({
+  return _mobVBuildLbHtml(_lbPaperRowsMapped(), { paper: true })
+}
+
+/**
+ * Paper board rows in the real board's row shape — used by BOTH shells, so a paper row and a
+ * real row go through the same renderer and carry the same fields.
+ */
+function _lbPaperRowsMapped() {
+  const mine  = _lbPaperMyNames()
+  const slots = Object.fromEntries(_lbPaperSlots().map(sl => [_lbPaperName(sl).toLowerCase(), sl]))
+  return _lbPaperRows.map((r, i) => ({
     // Every paper entry draws the 📝 paper avatar; `_id` keeps row ids unique
     // since they'd otherwise all collide on the shared sentinel address.
     addr:  PAPER_ADDR,
     _id:   'p' + i + '-' + String(r.name ?? '').replace(/[^a-z0-9]/gi, '').slice(0, 8),
     _pname: r.name ?? '',
     label: (r.name ?? '') + (mine.has(String(r.name ?? '').toLowerCase()) ? ' (you)' : ''),
+    _slot: slots[String(r.name ?? '').toLowerCase()] ?? null,   // set only for this device's accounts
+    paper: true,
+    hidden: !!r.hidden,
+    track: r.track ?? null,
 
     accountValue:  r.equity ?? 0,
     netPnl:        r.pnl ?? 0,
@@ -20227,16 +20239,41 @@ function _lbPaperHtml() {
     totalVolume:   r.volume ?? 0,
     healthPct:     r.healthPct ?? 0,
     healthCls:     (r.healthPct ?? 0) >= 50 ? 'pos' : (r.healthPct ?? 0) >= 20 ? 'warn' : 'neg',
-    winCount:      r.wins ?? 0,
-    totalWindows:  r.trades ?? 0,
+    winCount:      r.track?.wins ?? r.wins ?? 0,
+    totalWindows:  r.track?.trades ?? r.trades ?? 0,
     positions:     r.positions ?? [],
     outcomes:      [],
-    openOrders:    [],
+    openOrders:    r.openOrders ?? [],
     error:         null,
   }))
-
-  return _mobVBuildLbHtml(rows, { paper: true })
 }
+
+/**
+ * The action row for a paper account — the same three buttons as a real row.
+ *   Visit       opens it, when it is one of THIS device's accounts. Anyone else's lives only
+ *               on their device, so there is nothing to open.
+ *   Copy        copies the name, which is what identifies a paper account.
+ *   Copy trade  shown, and explains itself: a simulated account's trades never leave its
+ *               owner's device, so there is nothing a bot could follow.
+ */
+function _lbPaperSocialHtml(r) {
+  const nm  = esc(r._pname ?? '')
+  const btn = (onclick, icon, label, accent, dim) => `<button onclick="event.stopPropagation();${onclick}"
+    style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;border-radius:10px;
+           border:1px solid ${accent ? 'var(--accent)' : 'var(--border2)'};background:${accent ? 'rgba(0,255,204,0.08)' : 'transparent'};
+           color:${accent ? 'var(--accent)' : 'var(--fg)'};font-size:10.5px;font-weight:700;cursor:pointer${dim ? ';opacity:.45' : ''}">
+    <span style="font-size:15px;line-height:1">${icon}</span><span>${label}</span></button>`
+  const visit = r._slot
+    ? btn(`window.__goPaper('${esc(r._slot)}')`, '👁', _T('Visit', 'Ver'))
+    : btn(`_paperToast(_T('Paper accounts live on their owner\u2019s device — there is nothing to open.', 'Las cuentas de papel viven en el dispositivo de su dueño.'))`, '👁', _T('Visit', 'Ver'), false, true)
+  const copy = btn(`navigator.clipboard?.writeText(decodeURIComponent('${encodeURIComponent(r._pname ?? '')}')).then(()=>_paperToast(_T('Name copied','Nombre copiado')))`, '⧉', _T('Copy', 'Copiar'))
+  const ct = btn(`_paperToast(_T('Paper trades are simulated on their owner\u2019s device, so there is nothing to copy.', 'Las operaciones de papel se simulan en el dispositivo de su dueño; no hay nada que copiar.'))`, '⇄', _T('Copy trade', 'Copiar ops'), false, true)
+  return `<div style="display:flex;gap:7px;padding:11px 16px;background:var(--panel-2);border-bottom:1px solid rgba(255,255,255,0.04)" data-name="${nm}">
+    ${visit}${copy}${ct}
+  </div>`
+}
+window._paperToast = (...a) => _paperToast(...a)
+window._T = (...a) => _T(...a)
 
 /**
  * Auto-sync the paper result to the board. Runs off the paper refresh loop, so
@@ -20303,13 +20340,28 @@ function _lbPaperPayload(slot) {
     const pos = paperPerpState().assetPositions
     if (s.positions.some(p => !(paperMark(p.coin) > 0))) return null
     const closed = (s.fills ?? []).filter(f => parseFloat(f.closedPnl ?? 0) !== 0)
+    // Trades in the SAME unit the real board uses — every close in one coin within an hour,
+    // net of its fees — and the same track record built from them. Win rate here used to
+    // count individual closing fills, so the two boards measured different things.
+    const windows = {}
+    for (const f of closed) {
+      const k = `${f.coin}_${Math.floor(+f.time / 3600000)}`
+      windows[k] = (windows[k] ?? 0) + parseFloat(f.closedPnl) - parseFloat(f.fee ?? 0)
+    }
+    const track = trackRecord({
+      windows, portfolio: paperPortfolio(),
+      lastFillAt: (s.fills ?? []).reduce((m, f) => Math.max(m, +f.time || 0), 0) || null,
+      openLoss: openLossOf(pos),
+    })
     return {
       equity:        paperEquity(),
       // Against net deposits, not the opening balance — otherwise anyone could top up with
       // paper money and climb the board without trading well.
       pnl:           paperPnl(),
-      trades:        closed.length,
-      wins:          closed.filter(f => parseFloat(f.closedPnl) > 0).length,
+      trades:        track.trades,
+      wins:          track.wins,
+      track,
+      openOrders:    paperOpenOrders(),
       unrealizedPnl: pos.reduce((a, ap) => a + parseFloat(ap.position?.unrealizedPnl ?? 0), 0),
       realizedPnl:   closed.reduce((a, f) => a + parseFloat(f.closedPnl ?? 0), 0),
       volume:        (s.fills ?? []).reduce((a, f) => a + Math.abs(parseFloat(f.sz ?? 0)) * parseFloat(f.px ?? 0), 0),
@@ -20754,13 +20806,16 @@ function _mobVBuildLbHtml(results, opts = {}) {
   }
   // Paper names are set in the account switcher, so its header offers the share
   // toggle instead of the signature-backed rename the real board uses.
+  // Both boards: "✏️ My name" on the left, and the one control that decides whether you are
+  // on the board beside it (➕ Add me for a wallet, share / stop sharing for paper — every
+  // paper account on this device posts automatically, so that is the switch it has).
+  const pill = 'flex-shrink:0;padding:5px 11px;border-radius:14px;border:1px solid var(--border2);background:var(--panel-2);color:var(--muted);font-size:11px;font-weight:700;cursor:pointer'
   const leftBtn = opts.paper
     ? (isPaper()
-        ? `<button onclick="window.__lbPaperOptOut()" title="Share or hide your paper result"
-             style="flex-shrink:0;padding:5px 11px;border-radius:14px;border:1px solid var(--border2);background:var(--panel-2);color:var(--muted);font-size:11px;font-weight:700;cursor:pointer">${localStorage.getItem('hliq_paper_lb_optout') === '1' ? '▶ Share mine' : '⏸ Stop sharing'}</button>`
-        : `<span style="flex-shrink:0;font-size:10px;color:var(--muted)">Open the Paper account to join</span>`)
-    : `<button onclick="window.__lbSetMyName()" title="Set your display name (signed by your wallet)"
-      style="flex-shrink:0;padding:5px 11px;border-radius:14px;border:1px solid var(--border2);background:var(--panel-2);color:var(--muted);font-size:11px;font-weight:700;cursor:pointer">✏️ My name</button>`
+        ? `<button onclick="window.__paperRename()" title="Rename the paper account you are in" style="${pill}">✏️ My name</button>`
+        : '')
+      + `<button onclick="window.__lbPaperOptOut()" title="Share or hide your paper results" style="${pill}">${localStorage.getItem('hliq_paper_lb_optout') === '1' ? '▶ Share mine' : '⏸ Stop sharing'}</button>`
+    : `<button onclick="window.__lbSetMyName()" title="Set your display name (signed by your wallet)" style="${pill}">✏️ My name</button>`
 
   // When your connected account isn't on the board (e.g. after removing it), offer an
   // explicit re-add. Auto-join never brings a removed account back on its own.
@@ -20811,11 +20866,11 @@ function _mobVBuildLbHtml(results, opts = {}) {
         ['Volume',     '$' + fmtCompact(r.totalVolume ?? 0)],
       ])
       // The track record sits between the numbers and the buttons: it is what someone reads
-      // BEFORE pressing Copy trade.
-      if (r.addr && !opts.paper) expandHtml += _lbTrackHtml(r)
+      // BEFORE pressing Copy trade. Paper rows carry one too.
+      if (r.addr) expandHtml += _lbTrackHtml(r)
       // The actions come before the holdings: acting on the person is the point of the
       // row, and it must not sit below eleven orders.
-      if (r.addr && !opts.paper) expandHtml += _lbSocialHtml(r)
+      if (r.addr) expandHtml += opts.paper ? _lbPaperSocialHtml(r) : _lbSocialHtml(r)
       const openPos = (r.positions ?? []).filter(ap => parseFloat(ap.position?.szi ?? 0) !== 0)
       if (openPos.length) {
         expandHtml += _lbCollapse(`${id}-pos`, `${openPos.length} Open Position${openPos.length !== 1 ? 's' : ''}`,
@@ -20839,10 +20894,14 @@ function _mobVBuildLbHtml(results, opts = {}) {
       removeBtn = ''   // the Challenge board has no self-remove — entries expire with the round
     } else if (opts.paper) {
       const pname = r._pname ?? ''
-      const owner = !!pname && isPaper() && pname.toLowerCase() === _paperName().toLowerCase()
+      const owner = !!pname && !!r._slot
       if (pname && (dev || owner)) {
         const via = dev ? 'dev' : 'owner'   // dev mode → PIN (works on any row); else owner secret
-        removeBtn = `<div style="padding:10px 16px 14px"><button onclick="event.stopPropagation();window.__lbPaperRemove('${encodeURIComponent(pname)}','${via}')" style="width:100%;background:transparent;border:1px solid var(--red);color:var(--red);border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer">Remove from leaderboard</button></div>`
+        // The same pair as a real row: Hide (dev only) beside Remove.
+        const hideBtn = dev
+          ? `<button onclick="event.stopPropagation();window.__lbPaperToggleHide('${encodeURIComponent(pname)}',${r.hidden ? 'false' : 'true'})" style="flex:1;background:transparent;border:1px solid var(--border2);color:var(--fg-2);border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer">${r.hidden ? _T('👁 Unhide', '👁 Mostrar') : _T('🙈 Hide', '🙈 Ocultar')}</button>`
+          : ''
+        removeBtn = `<div style="display:flex;gap:8px;padding:10px 16px 14px">${hideBtn}<button onclick="event.stopPropagation();window.__lbPaperRemove('${encodeURIComponent(pname)}','${via}')" style="flex:1;background:transparent;border:1px solid var(--red);color:var(--red);border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer">Remove from leaderboard</button></div>`
       }
     } else if (r.addr) {
       const owner = _lbMyActiveAddr() && r.addr.toLowerCase() === _lbMyActiveAddr()
@@ -31610,22 +31669,25 @@ function _lbAvatarHtml(addr, size) {
 }
 
 function _lbRowHtml(entry, rank) {
-  const short  = entry.addr.slice(0, 8) + '…' + entry.addr.slice(-5)
+  // A paper row has no address: its name is its identity, and it has its own id.
+  const isP    = !!entry.paper
+  const short  = isP ? 'Paper account' : entry.addr.slice(0, 8) + '…' + entry.addr.slice(-5)
   const valStr = entry.error ? '<span class="lb-err">Error</span>' : '$' + fmtUSD(entry.accountValue)
-  const uid    = 'lbx-' + entry.addr.slice(2, 10)
+  const uid    = isP ? 'lbx-' + entry._id : 'lbx-' + entry.addr.slice(2, 10)
+  const _av    = isP ? (_a, size) => _mobVAvatarHtml(PAPER_ADDR, size) : _lbAvatarHtml
   const uCls   = entry.unrealizedPnl >= 0 ? 'pos' : 'neg'
   const rCls   = entry.realizedPnl   >= 0 ? 'pos' : 'neg'
   const nCls   = entry.netPnl        >= 0 ? 'pos' : 'neg'
 
   let avatarHtml
   if (rank === 1) {
-    avatarHtml = `<div style="flex-shrink:0;width:36px;display:flex;flex-direction:column;align-items:center;gap:2px"><div style="font-size:16px;line-height:1">👑</div>${_lbAvatarHtml(entry.addr, 36)}</div>`
+    avatarHtml = `<div style="flex-shrink:0;width:36px;display:flex;flex-direction:column;align-items:center;gap:2px"><div style="font-size:16px;line-height:1">👑</div>${_av(entry.addr, 36)}</div>`
   } else if (rank === 2) {
-    avatarHtml = `<div style="position:relative;flex-shrink:0;width:36px;height:36px">${_lbAvatarHtml(entry.addr, 36)}<div style="position:absolute;bottom:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:linear-gradient(135deg,#D8D8D8,#A8A8A8);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#444;border:1.5px solid var(--bg)">2</div></div>`
+    avatarHtml = `<div style="position:relative;flex-shrink:0;width:36px;height:36px">${_av(entry.addr, 36)}<div style="position:absolute;bottom:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:linear-gradient(135deg,#D8D8D8,#A8A8A8);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#444;border:1.5px solid var(--bg)">2</div></div>`
   } else if (rank === 3) {
-    avatarHtml = `<div style="position:relative;flex-shrink:0;width:36px;height:36px">${_lbAvatarHtml(entry.addr, 36)}<div style="position:absolute;bottom:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:linear-gradient(135deg,#E8A96A,#B87333);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#5a2a00;border:1.5px solid var(--bg)">3</div></div>`
+    avatarHtml = `<div style="position:relative;flex-shrink:0;width:36px;height:36px">${_av(entry.addr, 36)}<div style="position:absolute;bottom:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:linear-gradient(135deg,#E8A96A,#B87333);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#5a2a00;border:1.5px solid var(--bg)">3</div></div>`
   } else {
-    avatarHtml = `<div style="position:relative;flex-shrink:0;width:36px;height:36px">${_lbAvatarHtml(entry.addr, 36)}<div style="position:absolute;bottom:-3px;right:-3px;min-width:15px;height:15px;border-radius:8px;background:var(--panel-3);display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:var(--muted);padding:0 3px;border:1.5px solid var(--bg)">${rank}</div></div>`
+    avatarHtml = `<div style="position:relative;flex-shrink:0;width:36px;height:36px">${_av(entry.addr, 36)}<div style="position:absolute;bottom:-3px;right:-3px;min-width:15px;height:15px;border-radius:8px;background:var(--panel-3);display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:var(--muted);padding:0 3px;border:1.5px solid var(--bg)">${rank}</div></div>`
   }
 
   // A hidden account is withheld from the public board by the server; a PIN holder still gets
@@ -31656,18 +31718,24 @@ function _lbRowHtml(entry, rank) {
       <td colspan="7"><div class="lb-expand-inner">
         <div class="lb-expand-header">
           <div style="display:flex;align-items:center;gap:12px">
-            ${_lbAvatarHtml(entry.addr, 44)}
+            ${_av(entry.addr, 44)}
             <div class="lb-expand-identity">
               ${entry.label ? `<span class="lb-expand-label notranslate">${esc(entry.label)}</span>` : ''}
               <span class="lb-expand-addr-row">
-                <span class="lb-expand-addr">${entry.addr.slice(0, 10)}…${entry.addr.slice(-6)}</span>
-                <button class="lb-copy-btn" onclick="event.stopPropagation();window.__lbCopy('${esc(entry.addr)}',this)">⎘ copy</button>
+                <span class="lb-expand-addr">${isP ? 'Simulated · not verifiable' : entry.addr.slice(0, 10) + '…' + entry.addr.slice(-6)}</span>
+                <button class="lb-copy-btn" onclick="event.stopPropagation();window.__lbCopy(decodeURIComponent('${encodeURIComponent(isP ? entry._pname : entry.addr)}'),this)">⎘ copy</button>
               </span>
             </div>
           </div>
+          ${isP ? `
+          ${entry._slot && isPaper() && entry._slot === paperSlot() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__paperRename()">✎ Rename</button>` : ''}
+          ${isDev() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbPaperToggleHide('${encodeURIComponent(entry._pname)}',${entry.hidden ? 'false' : 'true'})">${entry.hidden ? '👁 Unhide' : '🙈 Hide'}</button>` : ''}
+          ${(isDev() || entry._slot) ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbPaperRemove('${encodeURIComponent(entry._pname)}','${isDev() ? 'dev' : 'owner'}')">🗑 Remove</button>` : ''}
+          ` : `
           ${isDev() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbRename('${esc(entry.addr)}')">✎ Rename</button>` : ''}
           ${isDev() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbToggleHide('${esc(entry.addr)}',${entry.hidden ? 'false' : 'true'})">${entry.hidden ? '👁 Unhide' : '🙈 Hide'}</button>` : ''}
           ${(() => { const own = _lbMyActiveAddr() && entry.addr.toLowerCase() === _lbMyActiveAddr(); if (!isDev() && !own) return ''; return `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbRemove('${esc(entry.addr)}','${isDev() ? 'dev' : 'owner'}')">🗑 Remove</button>` })()}
+          `}
         </div>
         ${entry.error ? `<div class="lb-err">${entry.error}</div>` : `
           <div class="lb-pnl-breakdown">
@@ -31686,7 +31754,7 @@ function _lbRowHtml(entry, rank) {
           </div>
           ${_lbTrackHtml(entry)}
           ${/* Desktop had no way to copy a wallet from the board at all — only the phone did. */ ''}
-          ${_lbSocialHtml(entry)}
+          ${isP ? _lbPaperSocialHtml(entry) : _lbSocialHtml(entry)}
           ${_lbPosHtml(entry.positions)}
           ${_lbOutcomesHtml(entry.outcomes)}
           ${_lbOrdersHtml(entry.openOrders)}`}
@@ -32236,6 +32304,8 @@ function _scheduleDeferredHip3(addrs) {
 }
 
 async function _lbSilentUpdate() {
+  // It refreshes the REAL table; with Paper showing it would swap real rows into it.
+  if (_lbDeskMode !== 'real') return
   if (_lbFetching) return
   const root = document.getElementById('leaderboardRoot')
   if (!root) return
@@ -32255,6 +32325,7 @@ async function _lbSilentUpdate() {
 
     const results = await _lbFetchRows(entries)
     _lbLastFetch = Date.now()
+    if (_lbDeskMode !== 'real') return
 
     // Re-render tbody only if data changed
     const newLbKey = results.map(r => `${r.addr}:${r.accountValue.toFixed(2)}:${r.healthPct?.toFixed(1)}`).join('|')
@@ -32282,10 +32353,51 @@ async function _lbSilentUpdate() {
   }
 }
 
+// Desktop had no paper board at all. It now has the same Real / Paper switch as the phone,
+// and paper rows go through the same row renderer as real ones.
+let _lbDeskMode = 'real'
+window.__lbDeskMode = function(m) { _lbDeskMode = m === 'paper' ? 'paper' : 'real'; renderLeaderboard() }
+function _lbDeskModeBar() {
+  const tab = (m, label) => `<button class="btn-sm${_lbDeskMode === m ? ' active' : ''}" onclick="window.__lbDeskMode('${m}')"
+    style="${_lbDeskMode === m ? 'border-color:var(--accent);color:var(--accent)' : ''}">${label}</button>`
+  return `<div style="display:flex;gap:6px">${tab('real', 'Real')}${tab('paper', '📝 Paper')}</div>`
+}
+const _lbDeskHead = `<thead><tr>
+          <th>#</th>
+          <th>Wallet</th>
+          <th><span class="lb-col-full">Account Value</span><span class="lb-col-mob">Value</span></th>
+          <th><span class="lb-col-full">Unrealized PnL</span><span class="lb-col-mob">Unr. PnL</span></th>
+          <th class="lb-col-full"><span class="lb-col-full">Realized PnL</span></th>
+          <th class="lb-col-full"><span class="lb-col-full">Net PnL</span></th>
+          <th></th>
+        </tr></thead>`
+
+async function _lbRenderDeskPaper(root) {
+  root.innerHTML = `<div class="lb-loading">Fetching paper accounts…</div>`
+  await _lbPaperFetch(null)
+  const rows = _lbPaperRowsMapped().sort((a, b) => (b.accountValue ?? 0) - (a.accountValue ?? 0))
+  root.innerHTML = `
+    <div class="lb-toolbar">
+      ${_lbDeskModeBar()}
+      <div class="lb-count">${rows.length} paper account${rows.length !== 1 ? 's' : ''}</div>
+      <button class="btn-sm" onclick="window.__lbPaperOptOut()">${localStorage.getItem('hliq_paper_lb_optout') === '1' ? '▶ Share mine' : '⏸ Stop sharing'}</button>
+      <button class="btn-sm" onclick="renderLeaderboard()">↻ Refresh</button>
+    </div>
+    ${rows.length ? `<div class="table-wrap">
+      <table class="lb-table">
+        ${_lbDeskHead}
+        <tbody>${rows.map((r, i) => _lbRowHtml(r, i + 1)).join('')}</tbody>
+      </table>
+    </div>` : `<div class="lb-empty">No paper results yet. Every paper account you create is listed here automatically.</div>`}`
+}
+
 async function renderLeaderboard() {
-  if (_lbFetching) return
   const root = document.getElementById('leaderboardRoot')
   if (!root) return
+  // Before the busy check: that flag belongs to the REAL board's fetch, which opening the tab
+  // starts, and it used to swallow the switch to Paper entirely.
+  if (_lbDeskMode === 'paper') return _lbRenderDeskPaper(root)
+  if (_lbFetching) return
 
   root.innerHTML = `<div class="lb-loading">Fetching wallets…</div>`
   _lbFetching = true
@@ -32305,23 +32417,18 @@ async function renderLeaderboard() {
   } finally {
     _lbFetching = false
   }
+  // Switched to Paper while this was loading: the real board must not paint over it.
+  if (_lbDeskMode !== 'real') return
 
   root.innerHTML = `
     <div class="lb-toolbar">
+      ${_lbDeskModeBar()}
       <div class="lb-count">${results.length} wallet${results.length !== 1 ? 's' : ''}</div>
       <button class="btn-sm" onclick="renderLeaderboard()">↻ Refresh</button>
     </div>
     <div class="table-wrap">
       <table class="lb-table">
-        <thead><tr>
-          <th>#</th>
-          <th>Wallet</th>
-          <th><span class="lb-col-full">Account Value</span><span class="lb-col-mob">Value</span></th>
-          <th><span class="lb-col-full">Unrealized PnL</span><span class="lb-col-mob">Unr. PnL</span></th>
-          <th class="lb-col-full"><span class="lb-col-full">Realized PnL</span></th>
-          <th class="lb-col-full"><span class="lb-col-full">Net PnL</span></th>
-          <th></th>
-        </tr></thead>
+        ${_lbDeskHead}
         <tbody>${results.map((r, i) => _lbRowHtml(r, i + 1)).join('')}</tbody>
       </table>
     </div>`
@@ -32414,6 +32521,24 @@ window.__lbAdminRemove = async function(addr) {
 // Dev-only visibility toggle. Distinct from Remove: the account stays tracked and its
 // stats stay fresh, it just stops appearing on the public board. Reversible from the same
 // button, which is the point — Remove is not.
+window.__lbPaperToggleHide = async function(nameEnc, hide) {
+  const name = decodeURIComponent(nameEnc)
+  const pin = await _lbAdminPin()
+  if (!pin) return
+  const send = p => fetch('/api/leaderboard/paper/hide', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-lb-pin': p },
+    body: JSON.stringify({ name, hidden: !!hide }),
+  })
+  try {
+    let r = await send(pin)
+    if (r.status === 403) { localStorage.removeItem('hliq_lb_pin'); const p2 = await _lbAdminPin(true); if (!p2) return; r = await send(p2) }
+    if (!r.ok) { _paperToast((await r.json().catch(() => ({}))).error || 'Could not update', 'err'); return }
+    _paperToast(hide ? 'Hidden from the public board' : 'Visible again', 'ok')
+    _lbAfterRemove()
+    if (_lbDeskMode === 'paper') renderLeaderboard()
+  } catch { _paperToast('Server unreachable', 'err') }
+}
+
 window.__lbToggleHide = async function(addr, hide) {
   const pin = await _lbAdminPin()
   if (!pin) return

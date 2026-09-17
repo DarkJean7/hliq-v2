@@ -165,6 +165,35 @@ t('reloads do not re-post everything', cli.includes("const _LB_PAPER_SYNC_KEY = 
 t('the rename sheet no longer says extra accounts are off the board',
   !cli.includes('An extra account is never on the board'))
 
+console.log(nl + '-- the paper board is the real board, section for section --')
+{
+  // Asked: "make paper account leaderboard section exactly the same as the real". Checked in
+  // both shells against a real row: stats, track record, Visit / Copy / Copy trade, positions,
+  // open orders. Desktop had no paper board at all.
+  const srv = fs.readFileSync('server.js', 'utf8')
+  const pay = grab(cli, 'function _lbPaperPayload(slot)')
+  t('trades use the real board\u2019s unit (closes per coin per hour)', pay.includes('const k = `${f.coin}_${Math.floor(+f.time / 3600000)}`'))
+  t('each account posts a track record', pay.includes('const track = trackRecord({') && pay.includes('portfolio: paperPortfolio()'))
+  t('and its open orders', pay.includes('openOrders:    paperOpenOrders()'))
+  t('the server keeps both, cleaned', srv.includes('      openOrders,\n      track,\n') || (srv.includes('openOrders,') && srv.includes('      track,')))
+  t('orders are re-typed, not echoed', srv.includes("const type = ['Limit', 'Take Profit Market', 'Stop Market'].includes(o?.orderType) ? o.orderType : 'Limit'"))
+  t('track figures are clamped', srv.includes('profitFactor: optNum(tr.profitFactor, 0, 1e9)'))
+  t('paper rows can be hidden by a dev, like real ones',
+    srv.includes("path === '/api/leaderboard/paper/hide'") && srv.includes('.filter(r => isAdmin || !r.hidden)'))
+  t('one mapper feeds both shells', cli.includes('function _lbPaperRowsMapped()') && cli.includes('rows = _lbPaperRowsMapped().sort('))
+  t('desktop has the Real / Paper switch', cli.includes("window.__lbDeskMode = function(m)") && cli.includes('${_lbDeskModeBar()}'))
+  t('a real-board load cannot paint over the paper view',
+    grab(cli, 'async function renderLeaderboard()').includes("if (_lbDeskMode !== 'real') return")
+      && grab(cli, 'async function _lbSilentUpdate()').includes("if (_lbDeskMode !== 'real') return"))
+  t('and cannot swallow the switch to it',
+    grab(cli, 'async function renderLeaderboard()').indexOf("if (_lbDeskMode === 'paper')") < grab(cli, 'async function renderLeaderboard()').indexOf('if (_lbFetching) return'))
+  t('the header has My name, as the real one does', /opts\.paper[\s\S]{0,200}window\.__paperRename\(\)[\s\S]{0,100}✏️ My name/.test(cli))
+  const soc = grab(cli, 'function _lbPaperSocialHtml(r)')
+  t('Visit opens one of this device\u2019s accounts', soc.includes("window.__goPaper('${esc(r._slot)}')"))
+  t('the toasts those buttons call are reachable from an inline handler',
+    cli.includes('window._paperToast = (...a) => _paperToast(...a)') && cli.includes('window._T = (...a) => _T(...a)'))
+}
+
 console.log(nl + '-- the account you were in comes back after a reload --')
 t('the slot is remembered', cli.includes("localStorage.setItem('hliq_paper_slot', paperSlot())"))
 t('any account is restored, not just the Challenge', cli.includes('paperSlotKnown(_wantSlot)'))

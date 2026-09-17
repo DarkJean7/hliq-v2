@@ -1340,7 +1340,9 @@ async function lbRefreshAll() {
 }
 
 /**
- * What an address holds on Hyperliquid, in USDC — HL's own portfolio value, the same figure
+ * { equity, volume } for an address.
+ *
+ * equity is what it holds on Hyperliquid, in USDC — HL's own portfolio value, the same figure
  * the app shows as Account Equity.
  *
  * NOT perp + spot. On a unified account the USDC backing perp positions sits inside the spot
@@ -1349,12 +1351,19 @@ async function lbRefreshAll() {
  * unified value. If it fails, the larger of the two parts is used — it can only UNDERstate the
  * account, which for a $10 floor errs toward asking again later (the client retries in 6h).
  */
-async function lbAccountEquity(addr) {
+/*
+ * volume is its all-time traded volume, from the same portfolio call. It is what makes a $0
+ * wallet worth listing: "allow even $0 wallets … it can be an old forgotten wallet with good
+ * history data".
+ */
+async function lbAccountFacts(addr) {
   const pf = await hlInfo({ type: 'portfolio', user: addr }).catch(() => null)
-  const hist = (pf ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory ?? []
+  const all = (pf ?? []).find(p => p[0] === 'allTime')?.[1]
+  const volume = parseFloat(all?.vlm ?? 0) || 0
+  const hist = all?.accountValueHistory ?? []
   if (hist.length) {
     const v = parseFloat(hist.at(-1)[1])
-    if (Number.isFinite(v)) return v
+    if (Number.isFinite(v)) return { equity: v, volume }
   }
   const [cs, spot] = await Promise.all([
     hlInfo({ type: 'clearinghouseState', user: addr }),
@@ -1362,7 +1371,7 @@ async function lbAccountEquity(addr) {
   ])
   const perp = parseFloat(cs?.marginSummary?.accountValue ?? 0) || 0
   const usdc = parseFloat((spot?.balances ?? []).find(x => x.coin === 'USDC')?.total ?? 0) || 0
-  return Math.max(perp, usdc)
+  return { equity: Math.max(perp, usdc), volume }
 }
 
 // Cheap spam gate for the public join endpoint.
@@ -1384,7 +1393,8 @@ function lbPaperAllowed(ip) {
 // client now joins every address it LOOKS UP, so someone comparing a handful of traders used
 // to hit the wall within a minute and the rest of what they opened silently never landed.
 // 30/hr still makes filling the 500-cap from one IP a 17-hour job, and the real guard was
-// never this number — it is LB_MIN_EQUITY, which costs $10 of real funds per junk address.
+// never this number — it is the join's eligibility check: an address must have traded on
+// Hyperliquid (any balance) or hold $10, so a made-up address costs a real trade or real funds.
 function lbJoinAllowed(ip) {
   const now = Date.now(), win = 3600_000
   const hits = (_lbJoinHits.get(ip) ?? []).filter(t => now - t < win)
@@ -1831,10 +1841,26 @@ const server = createServer(async (req, res) => {
   // ── GET /api/leaderboard  → return saved extra addresses ─────────────────
   // ── GET /api/leaderboard/paper → the simulated board ─────────────────────
   if (method === 'GET' && path === '/api/leaderboard/paper') {
+    const isAdmin = !!LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN
     const rows = lbPaperRead()
+      .filter(r => isAdmin || !r.hidden)         // the same rule as the real board
       .map(({ secret, ...pub }) => pub)          // never leak the update secrets
       .sort((a, b) => (b.pnl ?? 0) - (a.pnl ?? 0))
     return json(res, 200, { rows, simulated: true, updatedAt: Date.now() })
+  }
+
+  // ── POST /api/leaderboard/paper/hide { name, hidden } → dev-only, like the real board ──
+  if (method === 'POST' && path === '/api/leaderboard/paper/hide') {
+    if (!LB_PIN) return json(res, 503, { error: 'admin PIN not configured' })
+    if ((req.headers['x-lb-pin'] ?? '') !== LB_PIN) return json(res, 403, { error: 'forbidden' })
+    const b = await body(req)
+    const name = lbCleanName(b.name)
+    const list = lbPaperRead()
+    const i = list.findIndex(e => (e.name ?? '').toLowerCase() === name.toLowerCase())
+    if (i < 0) return json(res, 404, { error: 'not on the paper board' })
+    list[i] = { ...list[i], hidden: !!b.hidden }
+    lbPaperWrite(list)
+    return json(res, 200, { ok: true, name: list[i].name, hidden: !!b.hidden })
   }
 
   // ── POST /api/leaderboard/paper { name, secret?, equity, pnl, trades, wins } ──
@@ -1873,6 +1899,41 @@ const server = createServer(async (req, res) => {
       } }
     }).filter(Boolean) : []
 
+    // The same detail a real row carries — asked for: "make paper account leaderboard section
+    // exactly the same as the real". Every field is clamped or re-typed; nothing the client
+    // sends is echoed back raw, and none of it is verifiable (it is simulated on the device).
+    const openOrders = Array.isArray(b.openOrders) ? b.openOrders.slice(0, 50).map(o => {
+      const coin = String(o?.coin ?? '').slice(0, 24)
+      if (!/^[A-Za-z0-9:#@+._-]{1,24}$/.test(coin)) return null
+      const type = ['Limit', 'Take Profit Market', 'Stop Market'].includes(o?.orderType) ? o.orderType : 'Limit'
+      return {
+        coin, side: o?.side === 'B' ? 'B' : 'A',
+        sz: String(num(o?.sz, 0, 1e12)), limitPx: String(num(o?.limitPx, 0, 1e12)),
+        orderType: type, tif: type === 'Limit' ? 'Gtc' : null,
+        triggerPx: String(num(o?.triggerPx, 0, 1e12)),
+        triggerCondition: type === 'Take Profit Market' ? 'Take Profit' : type === 'Stop Market' ? 'Stop Loss' : 'N/A',
+        reduceOnly: !!o?.reduceOnly, timestamp: Math.round(num(o?.timestamp, 0, 1e14)),
+      }
+    }).filter(Boolean) : []
+    const tr = b.track && typeof b.track === 'object' ? b.track : null
+    const optNum = (v, lo, hi) => (v == null || !Number.isFinite(parseFloat(v))) ? null : num(v, lo, hi)
+    const track = tr ? {
+      trades: Math.round(num(tr.trades, 0, 1e7)), wins: Math.round(num(tr.wins, 0, 1e7)), losses: Math.round(num(tr.losses, 0, 1e7)),
+      grossWin: num(tr.grossWin, 0, 1e12), grossLoss: num(tr.grossLoss, 0, 1e12),
+      profitFactor: optNum(tr.profitFactor, 0, 1e9), noLosses: !!tr.noLosses,
+      openLoss: num(tr.openLoss, 0, 1e12), profitFactorOpen: optNum(tr.profitFactorOpen, 0, 1e9),
+      avgWin: optNum(tr.avgWin, 0, 1e12), avgLoss: optNum(tr.avgLoss, 0, 1e12),
+      expectancy: optNum(tr.expectancy, -1e12, 1e12),
+      best: optNum(tr.best, -1e12, 1e12), worst: optNum(tr.worst, -1e12, 1e12),
+      tradingDays: Math.round(num(tr.tradingDays, 0, 1e5)),
+      firstTradeAt: optNum(tr.firstTradeAt, 0, 1e14), lastFillAt: optNum(tr.lastFillAt, 0, 1e14),
+      pnl7d: optNum(tr.pnl7d, -1e12, 1e12), pnl30d: optNum(tr.pnl30d, -1e12, 1e12),
+      maxDrawdown: tr.maxDrawdown && typeof tr.maxDrawdown === 'object' ? {
+        usd: num(tr.maxDrawdown.usd, 0, 1e12), pct: optNum(tr.maxDrawdown.pct, 0, 100),
+      } : null,
+    } : null
+    if (track && track.wins > track.trades) track.wins = track.trades
+
     const row = {
       name,
       equity:  num(b.equity, 0, 1e12),
@@ -1884,6 +1945,8 @@ const server = createServer(async (req, res) => {
       volume:        num(b.volume, 0, 1e12),
       healthPct:     num(b.healthPct, 0, 100),
       positions,
+      openOrders,
+      track,
       updated: Date.now(),
     }
     if (row.wins > row.trades) row.wins = row.trades
@@ -2340,13 +2403,18 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true, already: true, hidden: lbReadHidden().includes(key) })
     if (list.length >= LB_MAX) { jlog('refused: board full'); return json(res, 507, { error: 'leaderboard full' }) }
 
-    // Must be a funded HL account — blocks junk, burner and dusted addresses.
-    // WHOLE account, not perps. A unified account keeps its USDC in spot: one of the owner's
-    // own wallets held $494.69, all of it spot, read $0.00 here, and was refused as unfunded
-    // — reported as "i connected the wallet, reloaded, etc." and still could not join.
+    // A wallet joins if it has EVER TRADED — at any balance, $0 included — or holds at least
+    // $10 (funded, not traded yet). Asked for: "allow even $0 wallets, since it can be an old
+    // forgotten wallet with good history data". What is still refused is an address that has
+    // never done anything: its row would be empty, and with no check at all anyone could fill
+    // the 500-row cap with made-up addresses in an afternoon.
+    // WHOLE account, not perps — a unified account keeps its USDC in spot.
     try {
-      const equity = await lbAccountEquity(b.addr)
-      if (!(equity >= LB_MIN_EQUITY)) { jlog(`refused: $${equity.toFixed(2)} < $${LB_MIN_EQUITY}`); return json(res, 400, { error: `needs at least $${LB_MIN_EQUITY} on Hyperliquid` }) }
+      const { equity, volume } = await lbAccountFacts(b.addr)
+      if (!(volume > 0) && !(equity >= LB_MIN_EQUITY)) {
+        jlog(`refused: never traded and $${equity.toFixed(2)} < $${LB_MIN_EQUITY}`)
+        return json(res, 400, { error: `has never traded on Hyperliquid and holds under $${LB_MIN_EQUITY}` })
+      }
     } catch (e) { jlog(`refused: could not verify (${e?.message ?? e})`); return json(res, 503, { error: 'could not verify account' }) }
 
     list.push({ addr: b.addr, label: (b.label ?? '').toString().slice(0, 24) })

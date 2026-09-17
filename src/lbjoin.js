@@ -34,8 +34,8 @@ export const LB_MIN_EQUITY = 10
 // key means every device asks again, once — which is what brings those wallets back.
 export const JOINED_KEY    = 'hliq_lb_autojoined_v3'
 export const COOLDOWN_KEY  = 'hliq_lb_join_cooldown'
-// An address the server turned down for being unfunded is asked again later, not on every
-// load: each ask spends one of the IP's 30 hourly joins.
+// An address the server turned down (never traded, under $10) is asked again later, not on
+// every load: each ask spends one of the IP's 30 hourly joins.
 export const UNFUNDED_RETRY_MS = 6 * 60 * 60 * 1000
 export const THROTTLED_RETRY_MS = 10 * 60 * 1000
 
@@ -99,10 +99,10 @@ export function createJoiner({ storage, fetch, now = () => Date.now() }) {
    * Ask the server to list `addr`. Resolves to `{ status, hidden?, error? }`, status being:
    *   'added' | 'already' — settled, never asked again from this device
    *   'retry'   — not now; asked again later (error says why)
-   *   'skip' | 'optout' | 'dust' | 'known' | 'cooling' — nothing was sent
+   *   'skip' | 'optout' | 'known' | 'cooling' — nothing was sent
    *
-   * `equity` is the account's TOTAL value when the caller has it (perp + spot), or null.
-   * Unknown is not small: null is still asked.
+   * `equity` is accepted for older callers and ignored: the server decides eligibility, and a
+   * $0 wallet with a trading history is eligible now, so no balance is too small to ask about.
    *
    * `fresh` is a person pressing "Add me": ask even if this device already knows the answer
    * (they want to hear whether the row is hidden), and ignore the opt-out and cooldowns.
@@ -111,7 +111,6 @@ export function createJoiner({ storage, fetch, now = () => Date.now() }) {
     const done = (status, error, extra) => ({ status, ...(error ? { error } : {}), ...(extra ?? {}) })
     if (!isRealAddr(addr)) return done('skip')
     if (!fresh && storage.getItem('hliq_lb_optout') === '1') return done('optout')
-    if (equity != null && !(equity >= LB_MIN_EQUITY)) return done('dust')
     const key = String(addr).toLowerCase()
     if (!fresh && joined().has(key)) return done('known')
     if (!fresh && (cooldown()[key] ?? 0) > now()) return done('cooling')

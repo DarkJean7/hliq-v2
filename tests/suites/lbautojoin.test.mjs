@@ -85,18 +85,25 @@ console.log(nl + '-- an owner who left is not put back in view by someone else -
       && grab(CLI, 'async function _lbSetMyVisibility(addr, hidden)').includes('getMainSigner().signMessage(msg)'))
 }
 
-console.log(nl + '-- the $10 floor counts the whole account --')
+console.log(nl + '-- who may join: anyone who has traded, at any balance --')
 {
   // A unified account keeps its USDC in spot: an owner's wallet held $494.69, all of it spot,
   // read $0.00 in perps, and was refused. The first fix added spot USDC to perps — which
   // double-counts on a unified account, where the perp margin already sits inside the spot
   // USDC: a wallet showing $960.46 measured $1,058.76 ("if you have that number that is a
   // bug"). HL's portfolio value is the unified figure; without it, never the sum.
-  const eq = SRV.slice(SRV.indexOf('async function lbAccountEquity(addr)'), SRV.indexOf('// Cheap spam gate for the public join endpoint.'))
-  t('the join uses the whole-account check', SRV.includes('const equity = await lbAccountEquity(b.addr)'))
+  // "allow even $0 wallets, since it can be an old forgotten wallet with good history data".
+  // A wallet with ANY trading volume joins at any balance; one that never traded needs $10.
+  // An address that has never done anything is still refused — otherwise anyone could fill
+  // the 500-row cap with made-up addresses.
+  const eq = SRV.slice(SRV.indexOf('async function lbAccountFacts(addr)'), SRV.indexOf('// Cheap spam gate for the public join endpoint.'))
+  t('the join reads balance and volume together', SRV.includes('const { equity, volume } = await lbAccountFacts(b.addr)'))
+  t('volume is HL\u2019s all-time figure, from the same call', eq.includes("const volume = parseFloat(all?.vlm ?? 0) || 0"))
+  t('a wallet that has traded joins at $0', SRV.includes('if (!(volume > 0) && !(equity >= LB_MIN_EQUITY)) {'))
+  t('and the refusal says why', SRV.includes('has never traded on Hyperliquid and holds under $'))
   t('which is HL’s own portfolio value first',
     eq.indexOf("type: 'portfolio'") >= 0 && eq.indexOf("type: 'portfolio'") < eq.indexOf("type: 'clearinghouseState'"))
-  t('and never perp + spot', !/perp\s*\+\s*usdc/.test(eq) && eq.includes('return Math.max(perp, usdc)'))
+  t('and never perp + spot', !/perp\s*\+\s*usdc/.test(eq) && eq.includes('return { equity: Math.max(perp, usdc), volume }'))
   const row = grab(SRV, 'async function lbRefreshOne(addr, label, prev)')
   t('a board row without a snapshot holds its last value before summing',
     row.includes('(Number.isFinite(prevVal) && prevVal > 0 ? prevVal : perpAcctVal + spotUSDCTotal)'))
@@ -174,11 +181,12 @@ console.log(nl + '-- which lookups post, and how often --')
   }
   {
     const { join, posts } = mk()
-    // Below the floor the server would reject it anyway, and the attempt costs a slot.
-    t('a dust account is not even asked', (await join(A, 4)).status === 'dust' && posts.length === 0)
-    // Unknown is not small: those are still worth asking about.
+    // No balance is too small to ask about now: a $0 wallet with history is eligible, and only
+    // the server can see its history.
+    await join(A, 0)
+    t('a $0 account is asked', posts.length === 1, posts)
     await join(B, null)
-    t('an unknown balance is still asked', posts.length === 1, posts)
+    t('so is an unknown balance', posts.length === 2, posts)
   }
   {
     const { join, posts } = mk()
