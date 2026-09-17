@@ -1114,6 +1114,7 @@ async function subPollPayments() {
 
 const LB_PAPER_FILE = join(__dirname, 'leaderboard-paper.json')
 const LB_PAPER_MAX  = 300
+const LB_PAPER_PER_HOUR = 120
 
 function lbPaperRead() {
   if (!existsSync(LB_PAPER_FILE)) return []
@@ -1335,6 +1336,28 @@ async function lbRefreshAll() {
   } finally { _lbRefreshing = false }
 }
 
+/**
+ * What an address holds on Hyperliquid, in USDC: perp account value plus spot USDC, and —
+ * when that still falls short — HL's own portfolio value, which also prices spot tokens.
+ * The portfolio call is only made for the accounts that need it, since most clear the floor
+ * on the first two.
+ */
+async function lbAccountEquity(addr) {
+  const [cs, spot] = await Promise.all([
+    hlInfo({ type: 'clearinghouseState', user: addr }),
+    hlInfo({ type: 'spotClearinghouseState', user: addr }).catch(() => ({ balances: [] })),
+  ])
+  const perp = parseFloat(cs?.marginSummary?.accountValue ?? 0) || 0
+  const usdc = parseFloat((spot?.balances ?? []).find(x => x.coin === 'USDC')?.total ?? 0) || 0
+  let equity = perp + usdc
+  if (equity < LB_MIN_EQUITY) {
+    const pf = await hlInfo({ type: 'portfolio', user: addr }).catch(() => [])
+    const v  = parseFloat((pf ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory?.at(-1)?.[1] ?? 0) || 0
+    equity = Math.max(equity, v)
+  }
+  return equity
+}
+
 // Cheap spam gate for the public join endpoint.
 const _lbJoinHits = new Map()   // ip -> [timestamps]
 // Paper submissions are re-sent whenever a score changes, so they need a looser
@@ -1343,7 +1366,9 @@ const _lbPaperHits = new Map()
 function lbPaperAllowed(ip) {
   const now = Date.now(), win = 3600_000
   const hits = (_lbPaperHits.get(ip) ?? []).filter(t => now - t < win)
-  if (hits.length >= 30) { _lbPaperHits.set(ip, hits); return false }
+  // 120, not 30: every paper account on a device now posts (up to 13 of them), and the
+  // active one alone can post every 90s. The name secret, not this, is what protects rows.
+  if (hits.length >= LB_PAPER_PER_HOUR) { _lbPaperHits.set(ip, hits); return false }
   hits.push(now); _lbPaperHits.set(ip, hits)
   return true
 }
@@ -2307,9 +2332,11 @@ const server = createServer(async (req, res) => {
     if (force) lbClearRemoved(key)
 
     // Must be a funded HL account — blocks junk, burner and dusted addresses.
+    // WHOLE account, not perps. A unified account keeps its USDC in spot: one of the owner's
+    // own wallets held $494.69, all of it spot, read $0.00 here, and was refused as unfunded
+    // — reported as "i connected the wallet, reloaded, etc." and still could not join.
     try {
-      const cs = await hlInfo({ type: 'clearinghouseState', user: b.addr })
-      const equity = parseFloat(cs?.marginSummary?.accountValue ?? 0)
+      const equity = await lbAccountEquity(b.addr)
       if (!(equity >= LB_MIN_EQUITY)) return json(res, 400, { error: `needs at least $${LB_MIN_EQUITY} on Hyperliquid` })
     } catch { return json(res, 503, { error: 'could not verify account' }) }
 

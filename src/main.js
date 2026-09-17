@@ -214,7 +214,7 @@ import {
   paperSettleOutcomes, paperFundingHistory, paperAccrueFunding, setPaperFundingRates, PAPER_COSTS,
   paperMark, paperOrder, paperCancelMany, paperCancel,
   paperAccounts, paperAcctCreate, paperAcctRename, paperAcctDelete, paperAcctName, paperAcctList,
-  paperSlotKnown, paperSaveFailed, PAPER_MAX_ACCTS,
+  paperSlotKnown, paperSaveFailed, PAPER_MAX_ACCTS, paperPeek,
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
@@ -241,6 +241,7 @@ import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows } from './comboequ
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
 import { trackRecord, isSmallSample, openLossOf } from './trackrecord.js'
+import { createJoiner, ownedAddresses } from './lbjoin.js'
 import { rulesFor, clampLeverage, marginModeFor, delistedNames, hasNoActivity, deployerOf } from './assetrules.js'
 
 /**
@@ -1039,10 +1040,15 @@ async function loadDashboard() {
     initRisk(totalPerpEquity(perpState))
     updateRiskUI()
 
-    // The address resolved and its equity is already in hand, so this is the cheapest place
-    // to put it on the public board — before any of the deferred fetches below. See _lbJoin
-    // for what the server still gets to veto.
-    _lbJoin(addr, totalPerpEquity(perpState))
+    // The address resolved, so this is the cheapest place to put it on the public board —
+    // before any of the deferred fetches below. No equity is passed: the perp figure alone
+    // turned away accounts that keep their USDC in spot, and the server checks the whole
+    // account anyway. See src/lbjoin.js.
+    _lbJoin(addr, null)
+    // And every other wallet of this user's, once this load has had its requests — and every
+    // paper account on this device, which exist whether or not paper mode is open.
+    setTimeout(_lbJoinOwned, 8000)
+    setTimeout(_lbPaperSyncAll, 15000)
 
     // ── Market metadata + mids: reuse the session cache, else fetch once ───────
     const metasReady = _metaCache
@@ -2281,6 +2287,7 @@ async function connectAgentKeyUI() {
     statusEl.style.color = 'var(--green)'
     if (state.addr) localStorage.setItem(_agentKeyForAddr(state.addr), keyVal)
     else localStorage.setItem('hliq_agent_key', keyVal)
+    _lbJoinOwned()   // a wallet with a key is one of this user's: put it on the board
     const stratInput = document.getElementById('agentKey')
     if (stratInput) stratInput.value = keyVal
     _ensureReferrer()
@@ -2341,6 +2348,7 @@ window.__pickWallet = async function(rdns) {
     // hunting for an account that can't exist.
     const _want = /^0x[0-9a-fA-F]{40}$/.test(state.addr ?? '') ? state.addr : null
     const addr = await connectWallet(rdns, _want)
+    setTimeout(_lbJoinOwned, 1500)   // a connected wallet is one of this user's
     // Connecting is only needed to ACT on an account (deposit / withdraw / approve an
     // agent key) — all owner operations. Watching is free and never needs a wallet. So
     // the connected wallet MUST equal the address being viewed; otherwise we'd let one
@@ -7938,6 +7946,7 @@ async function loadAllAccountsDashboard() {
   _paperExit()   // leaving the simulated account
   const entries = _maLoad()
   if (!entries.length) { showError('No saved accounts yet — add wallets first.'); return }
+  setTimeout(_lbJoinOwned, 8000)
 
   // Remember that the combined view is the active one so a reload / app relaunch
   // restores it instead of dropping back to a single account. Cleared whenever a
@@ -9068,7 +9077,7 @@ function _paperRefresh() {
   }
 
   // Keep the paper board current without the user pressing anything. Self-throttling.
-  _lbPaperSync()
+  _lbPaperSyncAll()
   // Paper is invisible to the server-side alert service, so it checks its own risk.
   try { _paperRiskAlerts() } catch (e) { console.error('[paper] alert check failed:', e) }
 }
@@ -9209,11 +9218,8 @@ window.__paperRename = async function() {
   const cur   = _paperName()
   const name  = await _appPrompt({
     title: '✎ Name your account',
-    // An extra account is never on the board, so promising it will be shown there would
-    // be a lie — and it is also why renaming one cannot fail on a name someone else took.
-    body: extra
-      ? 'A name for this paper account, so you can tell your accounts apart. 2–24 characters.'
-      : 'This is the name shown on the paper leaderboard. 2–24 characters.',
+    // Every paper account is on the board now, extra ones included.
+    body: 'This is the name shown on the paper leaderboard. 2–24 characters.',
     placeholder: extra ? 'e.g. Grid experiments' : 'e.g. MoonTrader',
     value: cur,
     confirmText: 'Save name',
@@ -9221,25 +9227,31 @@ window.__paperRename = async function() {
   })
   if (!name || name === cur) return
 
-  if (extra) {
-    if (!paperAcctRename(slot, name)) return _paperToast('Could not save the name', 'error')
-    renderWalletStrip(PAPER_ADDR)
-    if (_isMobView()) { _mobVRenderHeader(); window._mobVOpenWalletSwitch?.() }
-    return _paperToast('Renamed to ' + name, 'success')
-  }
+  // The board's update secret is bound to the old name, so a rename starts a new entry.
+  // Drop the secret and re-post under the new name; put everything back if it is taken.
+  // Only once the new row exists is the old one removed — so a refused rename leaves the
+  // account exactly where it was, and an accepted one does not leave a ghost row behind.
+  const setLocal = (n) => extra ? paperAcctRename(slot, n) : (localStorage.setItem('hliq_paper_name', n), true)
+  if (!setLocal(name)) return _paperToast('Could not save the name', 'error')
+  const oldBoard   = localStorage.getItem(_lbPaperBoardKey(slot)) || cur
+  const prevSecret = localStorage.getItem(_lbPaperSecretKey(slot)) ?? ''
+  localStorage.removeItem(_lbPaperSecretKey(slot))
+  localStorage.removeItem(_lbPaperBoardKey(slot))
 
-  // The board's update secret is bound to the old name, so a rename starts a new
-  // entry. Drop the secret and re-post; restore the old name if it's taken.
-  localStorage.setItem('hliq_paper_name', name)
-  const prevSecret = localStorage.getItem('hliq_paper_lb_secret') ?? ''
-  localStorage.removeItem('hliq_paper_lb_secret')
-
-  const r = await _lbPaperSync(true)
+  const r = localStorage.getItem('hliq_paper_lb_optout') === '1' ? { ok: true } : await _lbPaperSync(true, slot)
   if (r && !r.ok) {
-    localStorage.setItem('hliq_paper_name', cur)
-    if (prevSecret) localStorage.setItem('hliq_paper_lb_secret', prevSecret)
+    setLocal(cur)
+    if (prevSecret) localStorage.setItem(_lbPaperSecretKey(slot), prevSecret)
+    if (oldBoard !== cur) localStorage.setItem(_lbPaperBoardKey(slot), oldBoard)
     _paperToast(r.error ?? 'That name is taken', 'error')
     return
+  }
+  if (prevSecret) {
+    const newSecret = localStorage.getItem(_lbPaperSecretKey(slot))
+    localStorage.setItem(_lbPaperSecretKey(slot), prevSecret)
+    await _lbPaperUnpost(slot, oldBoard)
+    if (newSecret) localStorage.setItem(_lbPaperSecretKey(slot), newSecret)
+    else localStorage.removeItem(_lbPaperSecretKey(slot))
   }
 
   renderWalletStrip(PAPER_ADDR)
@@ -9343,6 +9355,12 @@ window.__paperAcctDelete = function(slot) {
   const name = _paperName(slot)
   if (!confirm('Delete ' + name + '?\n\nThis paper account and everything in it — positions, orders, history — is erased. Your other paper accounts are untouched.\n\nThis cannot be undone.')) return
   const wasHere = paperSlot() === slot
+  // Its leaderboard row goes too — every account is listed now, and a deleted one would
+  // otherwise sit there forever with nothing left that can update or remove it.
+  const boardName = _lbPaperName(slot)
+  _lbPaperUnpost(slot, boardName).finally(() => {
+    try { localStorage.removeItem(_lbPaperSecretKey(slot)); localStorage.removeItem(_lbPaperBoardKey(slot)) } catch {}
+  })
   if (!paperAcctDelete(slot)) return _paperToast('Could not delete that account', 'error')
   // Its bots go with it. paper.js removes the store; the bot config lives here.
   try { localStorage.removeItem(`${PAPER_BOTS_KEY}_${slot}`) } catch {}
@@ -19991,6 +20009,13 @@ window.__lbSetMyName = async function() {
 // real wallet is connected — then only dev mode (PIN) can remove.
 function _lbMyActiveAddr() {
   try { if (isMainWalletConnected() && getMainAddress?.()) return getMainAddress().toLowerCase() } catch {}
+  // The account on screen, when this app holds its agent key. That is how most people here
+  // run bots, and "Add me" used to need a browser wallet connected on top — so an owner
+  // with a key and no wallet extension had no way to join at all.
+  try {
+    const a = String(state.addr ?? '').toLowerCase()
+    if (/^0x[0-9a-f]{40}$/.test(a) && localStorage.getItem(_agentKeyForAddr(a))) return a
+  } catch {}
   return null
 }
 function _lbAfterRemove() {
@@ -20078,16 +20103,11 @@ window.__lbAddMe = async function() {
   const addr = _lbMyActiveAddr()
   if (!addr) { _paperToast('Connect the account you want to add first.', 'error'); return }
   if (!(await _appConfirm({ title: 'Join the leaderboard?', body: 'Your account value and PnL become publicly visible on the board. You can remove yourself anytime.', confirmText: '➕ Add me' }))) return
-  try {
-    const r = await fetch('/api/leaderboard/join', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ addr, force: true }),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok || j.error) { _paperToast('Could not add: ' + (j.error ?? r.status), 'error'); return }
-    _lbAfterRemove()
-    _paperToast('You’re on the leaderboard ✓')
-  } catch (e) { _paperToast('Add failed: ' + (e?.message ?? e), 'error') }
+  // force: this is the owner asking in person, so it clears a previous removal.
+  const r = await _lbJoiner.join(addr, null, { force: true })
+  if (r.status === 'retry') { _paperToast('Could not add: ' + (r.error ?? 'try again'), 'error'); return }
+  _lbAfterRemove()
+  _paperToast('You’re on the leaderboard ✓')
 }
 
 // ─── PAPER LEADERBOARD ────────────────────────────────────────────────────────
@@ -20131,7 +20151,7 @@ async function _lbPaperFetch(el) {
   // server data lost, a submit that never landed), re-post instead of waiting for
   // the local numbers to change — otherwise a missing row stays missing forever.
   if (isPaper() && localStorage.getItem('hliq_paper_lb_optout') !== '1' && !_lbHealFailed) {
-    const mine = _paperName().toLowerCase()
+    const mine = _lbPaperName().toLowerCase()
     if (!_lbPaperRows.some(r => String(r.name ?? '').toLowerCase() === mine)) {
       const r = await _lbPaperSync(true)
       // A rejected re-post (name taken, rate limited) must not retry on every view.
@@ -20162,19 +20182,19 @@ function _lbModeBar() {
 function _lbPaperHtml() {
   if (!_lbPaperRows.length) {
     return _mobVFullHeader('Leaderboard') + _lbModeBar() +
-      `<div class="mob-v-empty">No paper results yet.${isPaper() ? '<br>Close a trade and yours posts automatically.' : '<br>Open the Paper account to join.'}</div>`
+      `<div class="mob-v-empty">No paper results yet.<br>Every paper account you create is listed here automatically.</div>`
   }
 
   // Map into the SAME row shape the real board uses, then hand it to the same
   // renderer — that's what makes the two boards identical rather than lookalikes.
-  const mine = _paperName().toLowerCase()
+  const mine = _lbPaperMyNames()
   const rows = _lbPaperRows.map((r, i) => ({
     // Every paper entry draws the 📝 paper avatar; `_id` keeps row ids unique
     // since they'd otherwise all collide on the shared sentinel address.
     addr:  PAPER_ADDR,
     _id:   'p' + i + '-' + String(r.name ?? '').replace(/[^a-z0-9]/gi, '').slice(0, 8),
     _pname: r.name ?? '',
-    label: (r.name ?? '') + (String(r.name ?? '').toLowerCase() === mine && isPaper() ? ' (you)' : ''),
+    label: (r.name ?? '') + (mine.has(String(r.name ?? '').toLowerCase()) ? ' (you)' : ''),
 
     accountValue:  r.equity ?? 0,
     netPnl:        r.pnl ?? 0,
@@ -20202,67 +20222,155 @@ function _lbPaperHtml() {
  * entirely when nothing changed, so an idle account never spends budget.
  * A name is generated on first use and can be changed from the paper board.
  */
-let _lbPaperSyncAt = 0, _lbPaperSyncKey = '', _lbPaperSyncing = false
+// Per account now: when each last posted, and what it posted. Kept across reloads — in
+// memory only, every page load re-posted every account, twelve requests a reload against an
+// hourly allowance of 120.
+const _LB_PAPER_SYNC_KEY = 'hliq_paper_lb_sync'
+const _lbPaperSyncState = (() => { try { return JSON.parse(localStorage.getItem(_LB_PAPER_SYNC_KEY)) || {} } catch { return {} } })()
+function _lbPaperSynced(slot, at, key) {
+  _lbPaperSyncState[slot] = { at, key }
+  try { localStorage.setItem(_LB_PAPER_SYNC_KEY, JSON.stringify(_lbPaperSyncState)) } catch {}
+}
+let   _lbPaperSyncing = false
 
-function _lbPaperName() { return _paperName() }
+/**
+ * Which paper accounts go on the board: the practice account and every one the user made.
+ * Not the Challenge account — it has its own standings.
+ *
+ * This used to be the practice account only, on the reasoning that one person running eight
+ * ideas should be one row. Asked for the opposite, plainly: "do the same for created paper
+ * accounts, show all". Each account is its own row, under its own name.
+ */
+function _lbPaperSlots() {
+  return paperAccounts().map(a => a.slot).filter(sl => sl !== 'challenge')
+}
 
-/** Worst position health in the paper account — matches the real board's column. */
-function _paperHealthPct() {
-  const pos = (state.perpState?.assetPositions ?? []).filter(ap => parseFloat(ap.position?.szi ?? 0) !== 0)
+// Each account proves ownership of its row with its own secret. There used to be ONE,
+// shared: posting a second account minted a new secret over the first account's, and the
+// first could never update its row again ("that name is taken").
+const _lbPaperSecretKey = (slot) => slot === 'main' ? 'hliq_paper_lb_secret' : 'hliq_paper_lb_secret_' + slot
+// The name the board knows the account by, when it had to differ from the local one because
+// another user already holds that name ("Paper 2" is not unique across everyone).
+const _lbPaperBoardKey  = (slot) => 'hliq_paper_lb_board_' + slot
+
+function _lbPaperName(slot = paperSlot()) {
+  try { return localStorage.getItem(_lbPaperBoardKey(slot)) || _paperName(slot) } catch { return _paperName(slot) }
+}
+/** Every board name that belongs to this device — for the "(you)" marker. */
+function _lbPaperMyNames() {
+  return new Set(_lbPaperSlots().map(sl => _lbPaperName(sl).toLowerCase()))
+}
+
+/** Worst position health in a paper account — matches the real board's column. */
+function _paperHealthPct(positions = state.perpState?.assetPositions ?? []) {
+  const pos = positions.filter(ap => parseFloat(ap.position?.szi ?? 0) !== 0)
   if (!pos.length) return 100
   return Math.min(...pos.map(ap => _mobVPosHealth(ap.position)))
 }
 
-async function _lbPaperSync(force = false) {
-  if (!isPaper() || _lbPaperSyncing) return
-  // Only the practice account is ranked. The Challenge has its OWN board (standings), and
-  // the extra accounts are scratch space — one person running eight ideas should be one
-  // row on the board, not eight, and certainly not eight under the same name.
-  if (paperSlot() !== 'main') return
+/**
+ * One account's board row, read from its own store — or null when it cannot be priced yet.
+ * An account with open positions in a market that has no mark here would post its cash as
+ * its equity, so it waits until the mark arrives.
+ */
+function _lbPaperPayload(slot) {
+  return paperPeek(slot, () => {
+    const s   = paperStore()
+    const pos = paperPerpState().assetPositions
+    if (s.positions.some(p => !(paperMark(p.coin) > 0))) return null
+    const closed = (s.fills ?? []).filter(f => parseFloat(f.closedPnl ?? 0) !== 0)
+    return {
+      equity:        paperEquity(),
+      // Against net deposits, not the opening balance — otherwise anyone could top up with
+      // paper money and climb the board without trading well.
+      pnl:           paperPnl(),
+      trades:        closed.length,
+      wins:          closed.filter(f => parseFloat(f.closedPnl) > 0).length,
+      unrealizedPnl: pos.reduce((a, ap) => a + parseFloat(ap.position?.unrealizedPnl ?? 0), 0),
+      realizedPnl:   closed.reduce((a, f) => a + parseFloat(f.closedPnl ?? 0), 0),
+      volume:        (s.fills ?? []).reduce((a, f) => a + Math.abs(parseFloat(f.sz ?? 0)) * parseFloat(f.px ?? 0), 0),
+      healthPct:     _paperHealthPct(pos),
+      positions:     pos,
+    }
+  })
+}
+
+/**
+ * Post one paper account. Runs off the paper loop and on every load, so there is nothing to
+ * press. Every account is shown — including one that has not traded yet ("show all").
+ *
+ * Throttled per account and skipped when nothing changed: the one being used every 90s, the
+ * others every 30 minutes (their equity only moves with price). The server allows 120 posts
+ * an hour per IP.
+ */
+async function _lbPaperSync(force = false, slot = paperSlot()) {
+  if (_lbPaperSyncing) return
+  if (!_lbPaperSlots().includes(slot)) return
   if (localStorage.getItem('hliq_paper_lb_optout') === '1') return
 
-  const s      = paperStore()
-  const closed = s.fills.filter(f => parseFloat(f.closedPnl ?? 0) !== 0)
-  // Nothing to rank until the account has actually closed a trade.
-  if (!closed.length) return
-
-  const equity = paperEquity()
-  const key    = `${closed.length}:${equity.toFixed(2)}`
-  if (!force && key === _lbPaperSyncKey) return                 // unchanged
-  if (!force && Date.now() - _lbPaperSyncAt < 90_000) return    // throttled
+  const body = _lbPaperPayload(slot)
+  if (!body) return
+  const key  = `${body.trades}:${body.equity.toFixed(2)}:${_lbPaperName(slot)}`
+  const live = isPaper() && slot === paperSlot()
+  const gap  = live ? 90_000 : 30 * 60_000
+  const last = _lbPaperSyncState[slot] ?? {}
+  if (!force && key === last.key) return
+  if (!force && Date.now() - (last.at ?? 0) < gap) return
 
   _lbPaperSyncing = true
   try {
-    const r = await fetch('/api/leaderboard/paper', {
+    const post = (name) => fetch('/api/leaderboard/paper', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name:   _lbPaperName(),
-        // Minted on first submit and kept locally — it's what stops someone else
-        // overwriting this name later. Not proof the figures are honest.
-        secret: localStorage.getItem('hliq_paper_lb_secret') ?? '',
-        equity,
-        // Against net deposits, not the opening balance — otherwise anyone could
-        // top up with paper money and climb the board without trading well.
-        pnl:    paperPnl(),
-        trades: closed.length,
-        wins:   closed.filter(f => parseFloat(f.closedPnl) > 0).length,
-        // The same detail the real board reveals when a row is expanded, so the
-        // paper board isn't a stripped-down imitation of it.
-        unrealizedPnl: (state.perpState?.assetPositions ?? [])
-          .reduce((a, ap) => a + parseFloat(ap.position?.unrealizedPnl ?? 0), 0),
-        realizedPnl:   closed.reduce((a, f) => a + parseFloat(f.closedPnl ?? 0), 0),
-        volume:        (s.fills ?? []).reduce((a, f) => a + Math.abs(parseFloat(f.sz ?? 0)) * parseFloat(f.px ?? 0), 0),
-        healthPct:     _paperHealthPct(),
-        positions:     state.perpState?.assetPositions ?? [],
-      }),
+      // The secret is minted on first submit and kept locally — it is what stops someone
+      // else overwriting this name later. Not proof the figures are honest.
+      body: JSON.stringify({ name, secret: localStorage.getItem(_lbPaperSecretKey(slot)) ?? '', ...body }),
     }).then(x => x.json())
 
-    if (r?.secret) localStorage.setItem('hliq_paper_lb_secret', r.secret)
-    if (r?.ok) { _lbPaperSyncAt = Date.now(); _lbPaperSyncKey = key }
+    let name = _lbPaperName(slot)
+    let r = await post(name)
+    // Taken by someone else, and this account has never held it: take a distinct board name
+    // once, rather than never appearing. Not for a rename — that is the user's choice and
+    // they are told instead.
+    if (!force && r?.error && /taken/i.test(r.error) && !localStorage.getItem(_lbPaperSecretKey(slot))) {
+      name = `${_paperName(slot)} ${Math.random().toString(36).slice(2, 5).toUpperCase()}`.slice(0, 24)
+      r = await post(name)
+      if (r?.ok) localStorage.setItem(_lbPaperBoardKey(slot), name)
+    }
+    if (r?.secret) localStorage.setItem(_lbPaperSecretKey(slot), r.secret)
+    if (r?.ok) _lbPaperSynced(slot, Date.now(), key)
     return r
   } catch { /* offline — the next tick retries */ }
   finally { _lbPaperSyncing = false }
+}
+
+/**
+ * Every paper account, one after another. Outside paper mode the paper marks are not being
+ * fed, so they are seeded from the live mids first — the same source the paper loop uses.
+ */
+let _lbPaperAllBusy = false
+async function _lbPaperSyncAll() {
+  if (_lbPaperAllBusy) return
+  _lbPaperAllBusy = true
+  try {
+    if (!isPaper() && state.allMids && Object.keys(state.allMids).length) setPaperMarks(state.allMids)
+    for (const slot of _lbPaperSlots()) {
+      const r = await _lbPaperSync(false, slot)
+      if (r) await new Promise(res => setTimeout(res, 2000))
+    }
+  } catch {} finally { _lbPaperAllBusy = false }
+}
+
+/** Take an account's row off the board, with its own secret. Used on delete and rename. */
+async function _lbPaperUnpost(slot, name) {
+  const secret = localStorage.getItem(_lbPaperSecretKey(slot)) ?? ''
+  if (!secret || !name) return
+  try {
+    await fetch('/api/leaderboard/paper/remove', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, secret }),
+    })
+  } catch {}
 }
 
 /** Stop or resume sharing this paper account's result on the board. */
@@ -22979,6 +23087,7 @@ window._mobVConnectAgentKey = async function() {
     const addr = await connectAgentKey(keyVal)
     if (state.addr) localStorage.setItem(_agentKeyForAddr(state.addr), keyVal)
     else localStorage.setItem('hliq_agent_key', keyVal)
+    _lbJoinOwned()   // a wallet with a key is one of this user's: put it on the board
     const agentInputDesktop = document.getElementById('agentKey')
     if (agentInputDesktop) agentInputDesktop.value = keyVal
     setStatus(`Connected: ${addr.slice(0, 6)}…${addr.slice(-4)}`, 'var(--green)')
@@ -31287,33 +31396,34 @@ async function _lbFetchRows(entries) {
  * Best-effort and idempotent. The server is the authority on who actually gets added: it
  * re-checks the equity floor, dedupes, rate-limits per IP and caps the list.
  */
-const _LB_MIN_EQUITY = 10        // mirrors LB_MIN_EQUITY in server.js; the server re-checks
-const _LB_TRIED_KEY  = 'hliq_lb_autojoined'
-
-function _lbTriedSet() {
-  try { return new Set(JSON.parse(localStorage.getItem(_LB_TRIED_KEY)) || []) } catch { return new Set() }
-}
+// The rules — which answers are final, what is retried and when — live in src/lbjoin.js.
+const _lbJoiner = createJoiner({ storage: localStorage, fetch: (...a) => fetch(...a) })
 
 function _lbJoin(addr, equity = null) {
-  if (!_isRealAddr(addr)) return                                   // paper, All Accounts, junk
-  if (localStorage.getItem('hliq_lb_optout') === '1') return
-  // Skip the obviously ineligible BEFORE spending a request: the server rejects anything under
-  // the floor anyway, and each attempt costs one of this IP's hourly join slots. An unknown
-  // equity (null) is not a small one — those still get asked.
-  if (equity != null && !(equity >= _LB_MIN_EQUITY)) return
-  // Asked once per address per device. Without this, every account switch and every reload
-  // re-posts the same wallets and burns the rate limit on addresses already on the board.
-  const key = addr.toLowerCase()
-  const tried = _lbTriedSet()
-  if (tried.has(key)) return
-  tried.add(key)
-  try { localStorage.setItem(_LB_TRIED_KEY, JSON.stringify([...tried].slice(-400))) } catch {}
-  fetch('/api/leaderboard/join', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ addr }),
-  }).catch(() => {})
+  return _lbJoiner.join(addr, equity)
 }
+
+/**
+ * Every wallet that is this user's in this app — an agent key saved here, or connected now —
+ * onto the board. Asked for directly: "all wallets addresses that are in my app connected
+ * or/and have agent keys … automatically add to the leaderboard".
+ *
+ * Called whenever that set can have changed: after any account or All Accounts loads, after
+ * an agent key is saved, after a wallet connects. Wallets the server has already answered
+ * for are skipped without a request, so calling it often costs nothing. Removal still wins —
+ * see src/lbjoin.js for why that matters most for exactly these wallets.
+ */
+let _lbJoinOwnedBusy = false
+async function _lbJoinOwned() {
+  if (_lbJoinOwnedBusy) return
+  _lbJoinOwnedBusy = true
+  try {
+    let connected = []
+    try { connected = getConnectedWallets() } catch {}
+    await _lbJoiner.joinAll(ownedAddresses(localStorage, connected))
+  } catch {} finally { _lbJoinOwnedBusy = false }
+}
+window.__lbJoinOwned = () => _lbJoinOwned()
 
 function _lbGetPin() {
   return localStorage.getItem('hliq_lb_pin') || ''

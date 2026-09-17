@@ -140,14 +140,30 @@ t('the next one is refused', over.slot === null && over.error === 'limit')
 t('and the list did not grow', P.paperAcctList().length === P.PAPER_MAX_ACCTS)
 t('the cap says it is about storage, not taste', src.includes('it is what localStorage can hold'))
 
-console.log(nl + '-- one person is still one row on the board --')
-// Eight practice accounts under one name would be eight entries competing with each other.
-t('only the practice account is ranked',
-  grab(cli, 'async function _lbPaperSync').includes("if (paperSlot() !== 'main') return"))
-t('why is recorded', cli.includes('should be one' + nl + '  // row on the board, not eight'))
+console.log(nl + '-- every paper account is its own row on the board --')
+// This section used to hold the opposite rule — "only the practice account is ranked" — on
+// the reasoning that one person should be one row. Reversed on request: "do the same for
+// created paper accounts, show all". Each is ranked under its own name, with its own secret.
+t('every account but the Challenge is listed',
+  cli.includes("return paperAccounts().map(a => a.slot).filter(sl => sl !== 'challenge')"))
+t('the practice-only gate is gone',
+  !grab(cli, 'async function _lbPaperSync').includes("if (paperSlot() !== 'main') return"))
+t('why is recorded', cli.includes('Asked for the opposite, plainly: "do the same for created paper'))
 t('extra accounts carry their own name', cli.includes('return paperAcctName(s) ?? '))
-t('and the rename sheet does not promise them a board place',
-  cli.includes('so you can tell your accounts apart'))
+// ONE shared secret meant posting a second account overwrote the first one's, and the first
+// could never update its row again.
+t('each account has its own board secret',
+  cli.includes("slot === 'main' ? 'hliq_paper_lb_secret' : 'hliq_paper_lb_secret_' + slot"))
+t('an account not being viewed is read without switching to it', cli.includes('return paperPeek(slot, () => {'))
+t('and waits for its marks rather than posting cash as equity',
+  cli.includes('if (s.positions.some(p => !(paperMark(p.coin) > 0))) return null'))
+t('a name someone else holds gets a distinct board name, once',
+  cli.includes('if (r?.ok) localStorage.setItem(_lbPaperBoardKey(slot), name)'))
+t('deleting an account removes its row', grab(cli, 'window.__paperAcctDelete = function(slot)').includes('_lbPaperUnpost(slot, boardName)'))
+t('renaming one moves its row instead of leaving a ghost', grab(cli, 'window.__paperRename = async function()').includes('await _lbPaperUnpost(slot, oldBoard)'))
+t('reloads do not re-post everything', cli.includes("const _LB_PAPER_SYNC_KEY = 'hliq_paper_lb_sync'"))
+t('the rename sheet no longer says extra accounts are off the board',
+  !cli.includes('An extra account is never on the board'))
 
 console.log(nl + '-- the account you were in comes back after a reload --')
 t('the slot is remembered', cli.includes("localStorage.setItem('hliq_paper_slot', paperSlot())"))

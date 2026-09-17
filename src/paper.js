@@ -102,6 +102,25 @@ export function setPaperSlot(slot) {
 }
 
 /**
+ * Run `fn` against another account's store WITHOUT switching to it, and return its result.
+ *
+ * For the leaderboard, which now lists every paper account on the device, not only the one
+ * being looked at. Everything the account's figures are built from — paperStore(),
+ * paperEquity(), paperPerpState() — reads the module's current slot, so the slot is swapped
+ * for the duration of one synchronous call and put back. Read-only by contract: `fn` must
+ * not save, or it would write this account's book under another account's key. An account
+ * that was created but never opened has no store yet and reads as a fresh $1,000, which is
+ * exactly what it is; nothing is written for it.
+ */
+export function paperPeek(slot, fn) {
+  if (!paperSlotKnown(slot)) return null
+  if (slot === _slot) return fn()
+  const prevSlot = _slot, prevS = _s
+  _slot = slot; _s = null
+  try { return fn() } finally { _slot = prevSlot; _s = prevS }
+}
+
+/**
  * Make another paper account. Returns its slot id, or null with a reason:
  *   'limit'  — already at PAPER_MAX_ACCTS
  *   'quota'  — the registry write failed, so the account would not survive a reload
