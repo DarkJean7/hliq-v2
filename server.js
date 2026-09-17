@@ -1262,7 +1262,12 @@ async function lbRefreshOne(addr, label, prev) {
   const perpAcctVal   = parseFloat(cs.marginSummary?.accountValue ?? 0)
   const spotUSDCTotal = parseFloat((spot?.balances ?? []).find(b => b.coin === 'USDC')?.total ?? 0)
   const avHist        = (portfolio ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory ?? []
-  const accountValue  = avHist.length ? parseFloat(avHist.at(-1)[1]) : perpAcctVal + spotUSDCTotal
+  // HL's portfolio value is the unified account value. perp + spot double-counts on a unified
+  // account (the perp margin is inside the spot USDC), so a missing snapshot holds the row's
+  // last known value — the rule the browser side follows — and the sum is only a cold start.
+  const prevVal       = parseFloat(prev?.accountValue)
+  const accountValue  = avHist.length ? parseFloat(avHist.at(-1)[1])
+    : (Number.isFinite(prevVal) && prevVal > 0 ? prevVal : perpAcctVal + spotUSDCTotal)
 
   // Health = 100 − HL's Unified Account Ratio (maint margin / unified USDC balance)
   const maintMargin = parseFloat(cs.crossMaintenanceMarginUsed ?? 0)
@@ -1335,25 +1340,29 @@ async function lbRefreshAll() {
 }
 
 /**
- * What an address holds on Hyperliquid, in USDC: perp account value plus spot USDC, and —
- * when that still falls short — HL's own portfolio value, which also prices spot tokens.
- * The portfolio call is only made for the accounts that need it, since most clear the floor
- * on the first two.
+ * What an address holds on Hyperliquid, in USDC — HL's own portfolio value, the same figure
+ * the app shows as Account Equity.
+ *
+ * NOT perp + spot. On a unified account the USDC backing perp positions sits inside the spot
+ * USDC balance (as `hold`), so the sum counts it twice: a wallet showing $960.46 was measured
+ * here as $1,058.76, another at $1,872 against a real $1,553. Only the portfolio call knows the
+ * unified value. If it fails, the larger of the two parts is used — it can only UNDERstate the
+ * account, which for a $10 floor errs toward asking again later (the client retries in 6h).
  */
 async function lbAccountEquity(addr) {
+  const pf = await hlInfo({ type: 'portfolio', user: addr }).catch(() => null)
+  const hist = (pf ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory ?? []
+  if (hist.length) {
+    const v = parseFloat(hist.at(-1)[1])
+    if (Number.isFinite(v)) return v
+  }
   const [cs, spot] = await Promise.all([
     hlInfo({ type: 'clearinghouseState', user: addr }),
     hlInfo({ type: 'spotClearinghouseState', user: addr }).catch(() => ({ balances: [] })),
   ])
   const perp = parseFloat(cs?.marginSummary?.accountValue ?? 0) || 0
   const usdc = parseFloat((spot?.balances ?? []).find(x => x.coin === 'USDC')?.total ?? 0) || 0
-  let equity = perp + usdc
-  if (equity < LB_MIN_EQUITY) {
-    const pf = await hlInfo({ type: 'portfolio', user: addr }).catch(() => [])
-    const v  = parseFloat((pf ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory?.at(-1)?.[1] ?? 0) || 0
-    equity = Math.max(equity, v)
-  }
-  return equity
+  return Math.max(perp, usdc)
 }
 
 // Cheap spam gate for the public join endpoint.

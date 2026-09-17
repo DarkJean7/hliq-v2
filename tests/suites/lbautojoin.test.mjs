@@ -88,12 +88,18 @@ console.log(nl + '-- an owner who left is not put back in view by someone else -
 console.log(nl + '-- the $10 floor counts the whole account --')
 {
   // A unified account keeps its USDC in spot: an owner's wallet held $494.69, all of it spot,
-  // read $0.00 in perps, and was refused. The join check reads perp + spot USDC, then HL's own
-  // portfolio value if that still falls short.
+  // read $0.00 in perps, and was refused. The first fix added spot USDC to perps — which
+  // double-counts on a unified account, where the perp margin already sits inside the spot
+  // USDC: a wallet showing $960.46 measured $1,058.76 ("if you have that number that is a
+  // bug"). HL's portfolio value is the unified figure; without it, never the sum.
   const eq = SRV.slice(SRV.indexOf('async function lbAccountEquity(addr)'), SRV.indexOf('// Cheap spam gate for the public join endpoint.'))
   t('the join uses the whole-account check', SRV.includes('const equity = await lbAccountEquity(b.addr)'))
-  t('which adds spot USDC to perps', eq.includes("type: 'spotClearinghouseState'") && eq.includes('let equity = perp + usdc'))
-  t('and falls back to the portfolio value', eq.includes("type: 'portfolio'") && eq.includes('equity = Math.max(equity, v)'))
+  t('which is HL’s own portfolio value first',
+    eq.indexOf("type: 'portfolio'") >= 0 && eq.indexOf("type: 'portfolio'") < eq.indexOf("type: 'clearinghouseState'"))
+  t('and never perp + spot', !/perp\s*\+\s*usdc/.test(eq) && eq.includes('return Math.max(perp, usdc)'))
+  const row = grab(SRV, 'async function lbRefreshOne(addr, label, prev)')
+  t('a board row without a snapshot holds its last value before summing',
+    row.includes('(Number.isFinite(prevVal) && prevVal > 0 ? prevVal : perpAcctVal + spotUSDCTotal)'))
   const join = SRV.slice(SRV.indexOf("path === '/api/leaderboard/join'"), SRV.indexOf("path === '/api/leaderboard/join'") + 2500)
   t('the perp-only read is gone from the join', !join.includes("marginSummary?.accountValue"))
   // Every paper account on a device posts now, up to 13.
