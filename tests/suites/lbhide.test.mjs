@@ -58,7 +58,7 @@ try { fs.unlinkSync(tmp) } catch {}
 // ── the visibility rules, read off the real handlers ─────────────────────────
 const listH  = src.slice(src.indexOf("path === '/api/leaderboard'"), src.indexOf("GET /api/leaderboard/stats"))
 const statsH = src.slice(src.indexOf("path === '/api/leaderboard/stats'"), src.indexOf("path === '/api/leaderboard/stats'") + 1400)
-const hideH  = src.slice(src.indexOf("path === '/api/leaderboard/hide'"), src.indexOf("path === '/api/leaderboard/hide'") + 800)
+const hideH  = src.slice(src.indexOf("path === '/api/leaderboard/hide'"), src.indexOf("path === '/api/leaderboard/hide'") + 1800)
 
 t('address list filters hidden for the public', listH.includes('addrs.filter(e => !hidden.has'))
 t('address list flags hidden for a PIN holder', listH.includes('{ ...e, hidden: true }'))
@@ -68,16 +68,22 @@ t('admin is decided by the PIN header, not a query flag',
   listH.includes("(req.headers['x-lb-pin'] ?? '') === LB_PIN"))
 t('an unset LB_PIN cannot make someone admin', listH.includes('LB_PIN && '))
 
-t('hide route fails closed with no PIN configured', hideH.includes("if (!LB_PIN) return json(res, 503"))
-t('hide route rejects a wrong PIN', hideH.includes("!== LB_PIN) return json(res, 403"))
+// The route now also takes the OWNER's signature — leaving the board is a hide, and coming
+// back is showing your own row. Still fails closed: no PIN and no signature is a refusal.
+t('hide route fails closed with no PIN and no signature',
+  hideH.includes("if (!b.signature) return json(res, LB_PIN ? 403 : 503"))
+t('hide route checks the PIN before anything else is trusted',
+  hideH.includes("const pinOk = !!LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN"))
+t('an owner signature must be fresh', hideH.includes('Math.abs(Date.now() - ts) > 10 * 60 * 1000'))
+t('and from that address, over that exact choice',
+  hideH.includes('const msg = lbVisibilityMessage(b.addr, !!b.hidden, ts)')
+    && hideH.includes("if (signer.toLowerCase() !== String(b.addr).toLowerCase())"))
 t('hide route validates the address', hideH.includes('if (!isAddr(b.addr))'))
 t('hide route coerces to boolean', hideH.includes('!!b.hidden'))
 
-// ── hidden must stay distinct from removed ───────────────────────────────────
-t('hidden list is a separate file from removed',
-  src.includes("LB_HIDDEN_FILE = join(__dirname, 'leaderboard-hidden.json')") &&
-  src.includes("LB_REMOVED_FILE = join(__dirname, 'leaderboard-removed.json')"))
-t('hiding does not touch the removed list', !grab('function lbSetHidden(').includes('Removed'))
+// ── hidden replaced removed ──────────────────────────────────────────────────
+t('the hidden list has its own file', src.includes("LB_HIDDEN_FILE = join(__dirname, 'leaderboard-hidden.json')"))
+t('and there is no removed list beside it', !src.includes('LB_REMOVED_FILE'))
 t('hiding does not drop the account from the tracked list', !grab('function lbSetHidden(').includes('lbWriteList'))
 
 console.log(`\n${pass} passed, ${fail} failed`)

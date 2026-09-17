@@ -63,17 +63,26 @@ console.log(nl + '-- the per-IP rate limit, as the server actually runs it --')
     /const LB_MAX\s+= 500/.test(SRV) && /const LB_MIN_EQUITY = 10/.test(SRV))
 }
 
-console.log(nl + '-- a self-removed account is not put back by someone else --')
+console.log(nl + '-- an owner who left is not put back in view by someone else --')
 {
-  // The single most important line here. `force` comes only from the owner-prompted ➕ Add me;
-  // the automatic join must never send it, or a search would silently undo a removal.
-  t('the server blocks a removed address unless forced',
-    SRV.includes('if (!force && lbIsRemoved(key)) return json(res, 200, { ok: true, blocked: true })'))
-  t('force comes from the request, not from a default', SRV.includes('const force = !!b.force'))
-  const auto = grab(CLI, 'function _lbJoin(addr, equity = null)')
-  t('the automatic join never forces', !auto.includes('force'))
-  t('only the prompted Add me does', CLI.includes('_lbJoiner.join(addr, null, { force: true })'))
-  t('and it is still behind a confirmation', CLI.includes("title: 'Join the leaderboard?'"))
+  // This section used to guard a "removed" list: an address once taken off could not rejoin
+  // unless forced. That list is gone — it kept one of the owner's own bot wallets off the
+  // board with nothing saying why ("i just want to know why that wallet is not automatically
+  // joining"). Leaving is a HIDE now, and only the owner's signature shows the row again.
+  t('the removed list is gone', !/lbIsRemoved|lbMarkRemoved|lbClearRemoved|LB_REMOVED_FILE/.test(SRV))
+  t('and its stale file is cleaned up', SRV.includes("unlinkSync(join(__dirname, 'leaderboard-removed.json'))"))
+  const join = SRV.slice(SRV.indexOf("path === '/api/leaderboard/join'"), SRV.indexOf("path === '/api/leaderboard/join'") + 1500)
+  t('the join has no force and no block', !/force|blocked/.test(join))
+  t('it tells an already-listed caller whether the row is hidden',
+    join.includes('return json(res, 200, { ok: true, already: true, hidden: lbReadHidden().includes(key) })'))
+  const rm = SRV.slice(SRV.indexOf("path === '/api/leaderboard/remove'"), SRV.indexOf("path === '/api/leaderboard/paper/remove'"))
+  t('an owner removing themselves is hidden, not deleted', /if \(!pinOk\) \{\s*lbSetHidden\(key, true\)/.test(rm))
+  t('a dev removal deletes the row', rm.includes('lbWriteList(list.filter(e => e.addr.toLowerCase() !== key))'))
+  t('nothing sends force any more', !CLI.includes('force: true') && !/force/.test(fs.readFileSync('src/lbjoin.js', 'utf8').replace(/\/\/.*|\*.*$/gm, '')))
+  t('Add me is still behind a confirmation', CLI.includes("title: 'Join the leaderboard?'"))
+  t('and shows a hidden row only with the owner\u2019s signature',
+    CLI.includes('if (r.hidden && !(await _lbSetMyVisibility(addr, false))) return')
+      && grab(CLI, 'async function _lbSetMyVisibility(addr, hidden)').includes('getMainSigner().signMessage(msg)'))
 }
 
 console.log(nl + '-- the $10 floor counts the whole account --')
@@ -184,15 +193,26 @@ console.log(nl + '-- which lookups post, and how often --')
     t('the old "tried" memory is not honoured', posts.length === 1 && JOINED_KEY !== 'hliq_lb_autojoined')
   }
   {
-    // Removal wins for automatic joins; the owner in person can undo it.
-    const { join, posts } = mk((b) => b.force ? [200, { ok: true, added: true }] : [200, { ok: true, blocked: true }])
-    t('a removed account is answered "blocked"', (await join(A)).status === 'blocked')
-    t('and never asked again automatically', (await join(A)).status === 'known' && posts.length === 1)
-    t('Add me still goes, and says force', (await join(A, null, { force: true })).status === 'added' && posts[1].body.force === true)
-    t('the automatic path never sends force', posts[0].body.force === undefined)
+    // The bug behind "why is that wallet not automatically joining": v2 took the removed
+    // list's "blocked" as a final answer and never asked again.
+    let n = 0
+    const { join, posts, store } = mk(() => (++n === 1 ? [200, { ok: true, blocked: true }] : [200, { ok: true, added: true }]))
+    store.set('hliq_lb_autojoined_v2', JSON.stringify([A]))
+    t('what v2 remembered is not honoured', JOINED_KEY === 'hliq_lb_autojoined_v3')
+    t('"blocked" is not a final answer', (await join(A)).status === 'retry')
+    t('so the wallet is asked again, and joins', (await join(A)).status === 'added' && posts.length === 2)
+  }
+  {
+    // Add me asks even when the device already knows, to learn whether the row is hidden.
+    const { join, posts } = mk(() => [200, { ok: true, already: true, hidden: true }])
+    await join(A)
+    t('an automatic join does not ask twice', (await join(A)).status === 'known' && posts.length === 1)
+    const r = await join(A, null, { fresh: true })
+    t('Add me asks anyway, and hears it is hidden', posts.length === 2 && r.status === 'already' && r.hidden === true, r)
+    t('without telling the server anything new', Object.keys(posts[1].body).join() === 'addr')
   }
   t('settled means the server decided', isSettled(200, { added: true }) && isSettled(200, { already: true })
-    && isSettled(200, { blocked: true }) && isSettled(400, { error: 'invalid address' })
+    && !isSettled(200, { ok: true, blocked: true }) && isSettled(400, { error: 'invalid address' })
     && !isSettled(400, { error: 'needs at least $10 on Hyperliquid' }) && !isSettled(503, { error: 'x' }) && !isSettled(429, {}))
   {
     const { storage, store } = mk()

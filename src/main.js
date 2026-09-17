@@ -20042,7 +20042,9 @@ async function _lbAdminPin(force = false) {
 
 // Remove a real-board account. via 'owner' → wallet signature; via 'dev' → LB PIN.
 window.__lbRemove = async function(addr, via) {
-  if (!(await _appConfirm({ title: 'Remove from leaderboard?', body: 'Your account will no longer appear on the public board. You can add yourself back anytime.', confirmText: 'Remove', danger: true }))) return
+  // For an owner this HIDES the row: every wallet with a key here joins automatically, so a
+  // deleted row would be back on the next load. A dev removal (PIN) still deletes it.
+  if (!(await _appConfirm({ title: 'Remove from leaderboard?', body: 'Your account will no longer appear on the public board. You can add yourself back anytime with ➕ Add me.', confirmText: 'Remove', danger: true }))) return
   try {
     if (via === 'owner') {
       const a = getMainAddress?.()
@@ -20056,7 +20058,7 @@ window.__lbRemove = async function(addr, via) {
       const r = await fetch('/api/leaderboard/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ addr, ts, signature }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok || j.error) { _paperToast('Could not remove: ' + (j.error ?? r.status), 'error'); return }
-      _lbAfterRemove(); _paperToast('Removed from the leaderboard'); return
+      _lbAfterRemove(); _paperToast(j.hidden ? 'Hidden from the leaderboard' : 'Removed from the leaderboard'); return
     }
     // dev / PIN path — self-heals a stale or missing cached PIN with one retry.
     const send = p => fetch('/api/leaderboard/remove', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-lb-pin': p }, body: JSON.stringify({ addr }) })
@@ -20096,18 +20098,40 @@ window.__lbPaperRemove = async function(nameEnc, via) {
   } catch (e) { alert('Remove failed: ' + (e?.message ?? e)) }
 }
 
-// Explicit, user-prompted re-add of the connected account (force:true clears the
-// server's "removed" flag). This is the ONLY way a removed account gets back on —
-// auto-join on connect stays blocked.
+// ➕ Add me. Joins the account, and — if the owner hid it earlier — shows it again. Showing a
+// hidden row needs the owner's own signature, so nobody else can reverse someone's choice to
+// leave; without the wallet connected, the owner is told what is missing instead.
 window.__lbAddMe = async function() {
   const addr = _lbMyActiveAddr()
   if (!addr) { _paperToast('Connect the account you want to add first.', 'error'); return }
   if (!(await _appConfirm({ title: 'Join the leaderboard?', body: 'Your account value and PnL become publicly visible on the board. You can remove yourself anytime.', confirmText: '➕ Add me' }))) return
-  // force: this is the owner asking in person, so it clears a previous removal.
-  const r = await _lbJoiner.join(addr, null, { force: true })
+  const r = await _lbJoiner.join(addr, null, { fresh: true })
   if (r.status === 'retry') { _paperToast('Could not add: ' + (r.error ?? 'try again'), 'error'); return }
+  if (r.hidden && !(await _lbSetMyVisibility(addr, false))) return
   _lbAfterRemove()
   _paperToast('You’re on the leaderboard ✓')
+}
+
+/** Owner-signed show/hide of their own row. Mirrors lbVisibilityMessage in server.js. */
+async function _lbSetMyVisibility(addr, hidden) {
+  const a = getMainAddress?.()
+  if (!isMainWalletConnected() || !a || a.toLowerCase() !== String(addr).toLowerCase()) {
+    _paperToast(hidden ? 'Connect this wallet to hide it.' : 'Your account is on the board but hidden — connect this wallet to show it again.', 'error')
+    return false
+  }
+  try {
+    const ts  = Date.now()
+    const msg = `Insolvent Trade — ${hidden ? 'hide from' : 'show on'} leaderboard\naddress: ${String(addr).toLowerCase()}\nts: ${ts}`
+    _paperToast('Approve the signature in your wallet…')
+    const signature = await getMainSigner().signMessage(msg)
+    const res = await fetch('/api/leaderboard/hide', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ addr, hidden, ts, signature }) })
+    const j = await res.json().catch(() => ({}))
+    if (!res.ok || j.error) { _paperToast('Could not update: ' + (j.error ?? res.status), 'error'); return false }
+    return true
+  } catch (e) {
+    _paperToast(/reject|denied|cancel/i.test(e?.message ?? '') ? 'Signature cancelled' : 'Failed: ' + (e?.message ?? e), 'error')
+    return false
+  }
 }
 
 // ─── PAPER LEADERBOARD ────────────────────────────────────────────────────────
@@ -31387,10 +31411,9 @@ async function _lbFetchRows(entries) {
  * nothing secret is being published; but the address being added is usually NOT the searcher's
  * own, and its owner has never used this app. Two things therefore still hold:
  *
- *   SELF-REMOVAL WINS.  An account that took itself off the board stays off. The server keeps
- *                       a removed-list and only `force: true` clears it, which only the
- *                       owner-prompted ➕ Add me sends. A stranger searching you cannot put
- *                       you back.
+ *   LEAVING WINS.       An owner who removes themselves is HIDDEN, not deleted, so a stranger
+ *                       searching them re-lists nothing anyone can see. Only the owner's own
+ *                       signature shows the row again (➕ Add me).
  *   OPT-OUT WINS.       hliq_lb_optout on this device suppresses the post entirely.
  *
  * Best-effort and idempotent. The server is the authority on who actually gets added: it
@@ -31410,8 +31433,8 @@ function _lbJoin(addr, equity = null) {
  *
  * Called whenever that set can have changed: after any account or All Accounts loads, after
  * an agent key is saved, after a wallet connects. Wallets the server has already answered
- * for are skipped without a request, so calling it often costs nothing. Removal still wins —
- * see src/lbjoin.js for why that matters most for exactly these wallets.
+ * for are skipped without a request, so calling it often costs nothing. An owner who left the
+ * board is hidden rather than deleted, so this cannot put them back in view.
  */
 let _lbJoinOwnedBusy = false
 async function _lbJoinOwned() {

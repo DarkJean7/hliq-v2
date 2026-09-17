@@ -17,20 +17,22 @@
  *   ONE WALLET.        Only the account being viewed was ever posted. Wallets that run bots
  *                      from this app, but are not the one on screen, were never asked about.
  *
- * What still holds, on purpose:
+ * And one more, found when a bot wallet of the owner's still would not join:
+
+ *   THE REMOVED LIST.  The server refused automatic joins for any address ever taken off the
+ *                      board, and this module then remembered that refusal as final. The list
+ *                      is gone — hiding replaced it (server.js): an owner who leaves is HIDDEN,
+ *                      which a rejoin cannot undo, and a dev removal just deletes the row.
  *
- *   REMOVAL WINS.      An account that removed itself stays off. Its owner holds its agent key
- *                      in this app, so auto-joining "every wallet with a key" without this
- *                      rule would put it straight back on the next reload — "Remove me" could
- *                      never work for the very people it exists for. ➕ Add me clears it.
- *   OPT-OUT WINS.      hliq_lb_optout on this device suppresses every automatic post.
+ * What still holds: hliq_lb_optout on this device suppresses every automatic post.
  *
  * Pure apart from the `storage` and `fetch` it is handed, so the suite can drive it.
  */
 
 export const LB_MIN_EQUITY = 10
-// v2: v1 recorded failures as done. A new key means every device asks again, once.
-export const JOINED_KEY    = 'hliq_lb_autojoined_v2'
+// v3: v1 recorded failures as done; v2 recorded "blocked" (the removed list) as done. A new
+// key means every device asks again, once — which is what brings those wallets back.
+export const JOINED_KEY    = 'hliq_lb_autojoined_v3'
 export const COOLDOWN_KEY  = 'hliq_lb_join_cooldown'
 // An address the server turned down for being unfunded is asked again later, not on every
 // load: each ask spends one of the IP's 30 hourly joins.
@@ -42,13 +44,13 @@ export const isRealAddr = (a) => ADDR.test(String(a ?? ''))
 
 /**
  * Has the server decided? Only then is the address remembered.
- *   added / already  — it is on the board
- *   blocked          — it removed itself; asking again changes nothing
+ *   added / already  — it is on the board (possibly hidden, which is its owner's choice)
  *   invalid address  — it never will be
+ * "blocked" is not an answer any more; an old server that still sends it is asked again.
  * Everything else (429, 5xx, a network error, "needs $10") is a "not now".
  */
 export function isSettled(status, body) {
-  if (status === 200 && body && (body.added || body.already || body.blocked)) return true
+  if (status === 200 && body && (body.added || body.already)) return true
   if (status === 400 && /invalid address/i.test(String(body?.error ?? ''))) return true
   return false
 }
@@ -94,38 +96,40 @@ export function createJoiner({ storage, fetch, now = () => Date.now() }) {
   }
 
   /**
-   * Ask the server to list `addr`. Resolves to `{ status, error? }`, status being:
-   *   'added' | 'already' | 'blocked' — settled, never asked again from this device
+   * Ask the server to list `addr`. Resolves to `{ status, hidden?, error? }`, status being:
+   *   'added' | 'already' — settled, never asked again from this device
    *   'retry'   — not now; asked again later (error says why)
    *   'skip' | 'optout' | 'dust' | 'known' | 'cooling' — nothing was sent
    *
    * `equity` is the account's TOTAL value when the caller has it (perp + spot), or null.
    * Unknown is not small: null is still asked.
+   *
+   * `fresh` is a person pressing "Add me": ask even if this device already knows the answer
+   * (they want to hear whether the row is hidden), and ignore the opt-out and cooldowns.
    */
-  async function join(addr, equity = null, { force = false } = {}) {
-    const done = (status, error) => (error ? { status, error } : { status })
+  async function join(addr, equity = null, { fresh = false } = {}) {
+    const done = (status, error, extra) => ({ status, ...(error ? { error } : {}), ...(extra ?? {}) })
     if (!isRealAddr(addr)) return done('skip')
-    if (!force && storage.getItem('hliq_lb_optout') === '1') return done('optout')
+    if (!fresh && storage.getItem('hliq_lb_optout') === '1') return done('optout')
     if (equity != null && !(equity >= LB_MIN_EQUITY)) return done('dust')
     const key = String(addr).toLowerCase()
-    if (!force && joined().has(key)) return done('known')
-    if (!force && (cooldown()[key] ?? 0) > now()) return done('cooling')
+    if (!fresh && joined().has(key)) return done('known')
+    if (!fresh && (cooldown()[key] ?? 0) > now()) return done('cooling')
     if (inflight.has(key)) return done('known')
     inflight.add(key)
     try {
       const r = await fetch('/api/leaderboard/join', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(force ? { addr, force: true } : { addr }),
+        body: JSON.stringify({ addr }),
       })
       const body = await r.json().catch(() => null)
       if (isSettled(r.status, body)) {
         remember(key)
-        return done(body.added ? 'added' : body.blocked ? 'blocked' : 'already')
+        return done(body.added ? 'added' : 'already', null, { hidden: !!body.hidden })
       }
-      // A forced add is the user asking in person: tell them, but do not lock them out of
-      // pressing it again.
-      if (!force) {
+      // A person asking in person is told, but not locked out of pressing it again.
+      if (!fresh) {
         if (r.status === 429) coolFor(key, THROTTLED_RETRY_MS)
         else if (r.status === 400) coolFor(key, UNFUNDED_RETRY_MS)
       }
@@ -144,7 +148,7 @@ export function createJoiner({ storage, fetch, now = () => Date.now() }) {
       const res = await join(a)
       out[String(a).toLowerCase()] = res
       // Only pause after a real request; skipped addresses cost nothing to walk past.
-      const sent = ['added', 'already', 'blocked', 'retry'].includes(res.status)
+      const sent = ['added', 'already', 'retry'].includes(res.status)
       if (sent && gapMs) await sleep(gapMs)
     }
     return out

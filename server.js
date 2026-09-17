@@ -764,19 +764,13 @@ function lbReadList() {
 }
 function lbWriteList(list) { writeFileSync(LEADERBOARD_FILE, JSON.stringify(list)) }
 
-// Accounts that were explicitly removed. Auto-join (on wallet connect) skips these so
-// a removed account can't silently re-enter; only an explicit re-add (join force:true)
-// clears the flag. Lowercased addresses.
-const LB_REMOVED_FILE = join(__dirname, 'leaderboard-removed.json')
-function lbReadRemoved() {
-  if (!existsSync(LB_REMOVED_FILE)) return []
-  try { const a = JSON.parse(readFileSync(LB_REMOVED_FILE, 'utf8')); return Array.isArray(a) ? a.map(x => String(x).toLowerCase()) : [] }
-  catch { return [] }
-}
-function lbWriteRemoved(list) { writeFileSync(LB_REMOVED_FILE, JSON.stringify([...new Set(list.map(x => String(x).toLowerCase()))])) }
-function lbMarkRemoved(addr)  { const k = addr.toLowerCase(); const s = lbReadRemoved(); if (!s.includes(k)) { s.push(k); lbWriteRemoved(s) } }
-function lbClearRemoved(addr) { const k = addr.toLowerCase(); const s = lbReadRemoved(); if (s.includes(k)) lbWriteRemoved(s.filter(x => x !== k)) }
-function lbIsRemoved(addr)    { return lbReadRemoved().includes(addr.toLowerCase()) }
+// There is no "removed" list any more. It blocked automatic joins for any address that had
+// ever been taken off the board, and every wallet a user holds a key for now joins on its own
+// — so one of the owner's own bot wallets sat off the board with nothing saying why. Hiding
+// (leaderboard-hidden.json) does the job instead: an owner who leaves is hidden, which
+// automatic joining cannot undo, and a dev removal simply deletes the row.
+// The old file is deleted once at startup so nothing stale is left lying next to the live one.
+try { unlinkSync(join(__dirname, 'leaderboard-removed.json')) } catch {}
 
 // ─── PAPER LEADERBOARD ────────────────────────────────────────────────────────
 // Deliberately SEPARATE from the real board. Real entries are computed server-side
@@ -801,6 +795,10 @@ function lbReadHidden() {
   catch { return [] }
 }
 function lbWriteHidden(list) { writeFileSync(LB_HIDDEN_FILE, JSON.stringify([...new Set(list.map(x => String(x).toLowerCase()))])) }
+/** What an owner signs to show or hide their own row. The client builds the same string. */
+function lbVisibilityMessage(addr, hidden, ts) {
+  return `Insolvent Trade — ${hidden ? 'hide from' : 'show on'} leaderboard\naddress: ${String(addr).toLowerCase()}\nts: ${ts}`
+}
 function lbSetHidden(addr, on) {
   const k = String(addr).toLowerCase()
   const cur = lbReadHidden()
@@ -2324,12 +2322,14 @@ const server = createServer(async (req, res) => {
 
     const list  = lbReadList()
     const key   = b.addr.toLowerCase()
-    const force = !!b.force   // explicit "add me back" (user-prompted) — overrides removal
-    if (list.some(e => e.addr.toLowerCase() === key)) { if (force) lbClearRemoved(key); return json(res, 200, { ok: true, already: true }) }
-    // A previously-removed account does NOT silently re-enter on the next connect.
-    if (!force && lbIsRemoved(key)) return json(res, 200, { ok: true, blocked: true })
-    if (list.length >= LB_MAX) return json(res, 507, { error: 'leaderboard full' })
-    if (force) lbClearRemoved(key)
+    // Already listed. Say whether it is hidden: an owner pressing "Add me" on a row they hid
+    // earlier needs to know it is there but not shown, not a bare "ok".
+    // Every outcome is logged. "Why is this wallet not joining" had to be answered by reading
+    // state files; this answers it from the pm2 log.
+    const jlog = (what) => console.log(`[lb] join ${key.slice(0, 10)}… ${what}`)
+    if (list.some(e => e.addr.toLowerCase() === key))
+      return json(res, 200, { ok: true, already: true, hidden: lbReadHidden().includes(key) })
+    if (list.length >= LB_MAX) { jlog('refused: board full'); return json(res, 507, { error: 'leaderboard full' }) }
 
     // Must be a funded HL account — blocks junk, burner and dusted addresses.
     // WHOLE account, not perps. A unified account keeps its USDC in spot: one of the owner's
@@ -2337,11 +2337,12 @@ const server = createServer(async (req, res) => {
     // — reported as "i connected the wallet, reloaded, etc." and still could not join.
     try {
       const equity = await lbAccountEquity(b.addr)
-      if (!(equity >= LB_MIN_EQUITY)) return json(res, 400, { error: `needs at least $${LB_MIN_EQUITY} on Hyperliquid` })
-    } catch { return json(res, 503, { error: 'could not verify account' }) }
+      if (!(equity >= LB_MIN_EQUITY)) { jlog(`refused: $${equity.toFixed(2)} < $${LB_MIN_EQUITY}`); return json(res, 400, { error: `needs at least $${LB_MIN_EQUITY} on Hyperliquid` }) }
+    } catch (e) { jlog(`refused: could not verify (${e?.message ?? e})`); return json(res, 503, { error: 'could not verify account' }) }
 
     list.push({ addr: b.addr, label: (b.label ?? '').toString().slice(0, 24) })
     lbWriteList(list)
+    jlog('added')
     lbRefreshAll().catch(() => {})   // pick the newcomer up right away
     return json(res, 200, { ok: true, added: true })
   }
@@ -2428,14 +2429,26 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  // ── POST /api/leaderboard/hide { addr, hidden } → dev-only visibility toggle ──
-  // PIN-gated and fails closed when LB_PIN is unset, matching the admin-overwrite route:
-  // an unset PIN must never mean "anyone may curate the public board".
+  // ── POST /api/leaderboard/hide { addr, hidden, ts?, signature? } → visibility toggle ──
+  // A dev with the PIN may hide or show any row. An owner may hide or show THEIR OWN row with
+  // a personal_sign — that is how "Remove me" and "Add me" work now that removal is a hide,
+  // and why nobody else can un-hide someone who left. Fails closed: no PIN and no valid
+  // signature is a refusal, never "anyone may curate the public board".
   if (method === 'POST' && path === '/api/leaderboard/hide') {
-    if (!LB_PIN) return json(res, 503, { error: 'admin PIN not configured' })
-    if ((req.headers['x-lb-pin'] ?? '') !== LB_PIN) return json(res, 403, { error: 'forbidden' })
     const b = await body(req)
     if (!isAddr(b.addr)) return json(res, 400, { error: 'invalid address' })
+    const pinOk = !!LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN
+    if (!pinOk) {
+      if (!b.signature) return json(res, LB_PIN ? 403 : 503, { error: LB_PIN ? 'forbidden' : 'admin PIN not configured' })
+      const ts = Number(b.ts ?? 0)
+      if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > 10 * 60 * 1000)
+        return json(res, 400, { error: 'stale request — try again' })
+      const msg = lbVisibilityMessage(b.addr, !!b.hidden, ts)
+      let signer
+      try { signer = ethers.verifyMessage(msg, b.signature) } catch { return json(res, 400, { error: 'bad signature' }) }
+      if (signer.toLowerCase() !== String(b.addr).toLowerCase())
+        return json(res, 403, { error: 'signature does not match that address' })
+    }
     lbSetHidden(b.addr, !!b.hidden)
     return json(res, 200, { ok: true, addr: String(b.addr).toLowerCase(), hidden: !!b.hidden })
   }
@@ -2544,10 +2557,15 @@ const server = createServer(async (req, res) => {
     }
 
     const list = lbReadList()
-    const next = list.filter(e => e.addr.toLowerCase() !== key)
-    if (next.length === list.length) return json(res, 404, { error: 'address is not on the leaderboard' })
-    lbWriteList(next)
-    lbMarkRemoved(key)   // block silent auto-rejoin on the next wallet connect
+    if (!list.some(e => e.addr.toLowerCase() === key)) return json(res, 404, { error: 'address is not on the leaderboard' })
+    // The OWNER leaving is a hide. Deleting their row would last until their app next loaded,
+    // because every wallet a user holds a key for joins automatically.
+    if (!pinOk) {
+      lbSetHidden(key, true)
+      return json(res, 200, { ok: true, hidden: true })
+    }
+    // A dev removal deletes the row. It is not a block: the wallet can join again.
+    lbWriteList(list.filter(e => e.addr.toLowerCase() !== key))
     try { const s = lbReadStats(); if (s.rows?.[key]) { delete s.rows[key]; lbWriteStats(s) } } catch {}
     return json(res, 200, { ok: true, removed: true })
   }
