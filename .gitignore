@@ -1,5 +1,8 @@
 # Encrypted bot registry (agent keys)
 .bots.enc.json
+# Bot runtime state (cursors, buffers, what a copy bot holds). Written to the working dir.
+.accumulator-state.json
+.copytrade-state.json
 
 # Dependencies — reinstalled from package-lock.json
 node_modules/

@@ -240,6 +240,7 @@ import { probeNavGeometry } from './navprobe.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows } from './comboequity.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
+import { trackRecord, isSmallSample } from './trackrecord.js'
 import { rulesFor, clampLeverage, marginModeFor, delistedNames, hasNoActivity, deployerOf } from './assetrules.js'
 
 /**
@@ -20266,6 +20267,74 @@ function _lbCollapse(id, title, rowsHtml) {
   </div>`
 }
 
+/**
+ * The copier's view of a wallet: how big its wins and losses are, how deep it has fallen, how
+ * long the record is, and whether it still trades. Win rate stays in the grid above; on its
+ * own it is the number most likely to mislead — a wallet on this board wins 84.6% of its
+ * trades with an average win of $12 and an average loss of $47.
+ *
+ * `r.track` comes from src/trackrecord.js, on the server or here. Rows without it (paper, the
+ * Challenge, a server that has not refreshed since deploy) render nothing rather than dashes.
+ */
+function _lbTrackHtml(r) {
+  const tr = r?.track
+  if (!tr || !tr.trades) return ''
+  const G = 'var(--green)', R = 'var(--red)'
+  const money = (v, sign = true) => v == null ? '—'
+    : (sign ? (v >= 0 ? '+' : '−') : '') + '$' + fmtUSD(Math.abs(v))
+  const tone  = (v) => v == null ? '' : v >= 0 ? G : R
+  const pf = tr.profitFactor != null
+    ? [tr.profitFactor.toFixed(2), tr.profitFactor >= 1 ? G : R]
+    : [tr.noLosses ? _T('No losses yet', 'Sin pérdidas aún') : '—', '']
+  const dd = tr.maxDrawdown
+  const ddStr = !dd ? '—' : dd.usd > 0
+    ? '−$' + fmtUSD(dd.usd) + (dd.pct != null ? ` (${dd.pct.toFixed(1)}%)` : '')
+    : '$0'
+  const since = tr.firstTradeAt
+    ? new Date(tr.firstTradeAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+    : '—'
+  const last = tr.lastFillAt ? _chatAgo(tr.lastFillAt) + ' ' + _T('ago', 'atrás') : '—'
+  // A wallet that stopped trading weeks ago cannot be copied at all — nothing will happen.
+  const stale = tr.lastFillAt && Date.now() - tr.lastFillAt > 14 * 86_400_000
+
+  const grid = _mobVDetailGrid([
+    [_T('Profit factor', 'Factor de beneficio'), pf[0], pf[1]],
+    [_T('Avg win / loss', 'Gan. / pérd. media'),
+      `<span style="color:${G}">${money(tr.avgWin)}</span> / <span style="color:${R}">${tr.avgLoss == null ? '—' : '−$' + fmtUSD(tr.avgLoss)}</span>`],
+    [_T('7D PnL', 'PnL 7D'),   money(tr.pnl7d),  tone(tr.pnl7d)],
+    [_T('30D PnL', 'PnL 30D'), money(tr.pnl30d), tone(tr.pnl30d)],
+    [_T('Per trade', 'Por operación'), money(tr.expectancy), tone(tr.expectancy)],
+    [_T('Max drawdown', 'Caída máx.'), ddStr, dd?.usd > 0 ? R : ''],
+    [_T('Best / worst', 'Mejor / peor'),
+      `<span style="color:${G}">${money(tr.best)}</span> / <span style="color:${R}">${money(tr.worst)}</span>`],
+    [_T('Trades', 'Operaciones'), `${tr.trades.toLocaleString()} · ${tr.tradingDays} ${_T('days', 'días')}`],
+    [_T('Trading since', 'Opera desde'), since],
+    [_T('Last trade', 'Última operación'), last, stale ? 'var(--orange)' : ''],
+  ])
+
+  const notes = []
+  if (isSmallSample(tr)) notes.push(_T(
+    'Small sample — too few trades or too short a record for these ratios to mean much yet.',
+    'Muestra pequeña: pocas operaciones o historial corto para que estas cifras signifiquen mucho.'))
+  if (stale) notes.push(_T(
+    'Has not traded in over two weeks. A copy only acts when they trade.',
+    'No opera desde hace más de dos semanas. Una copia solo actúa cuando operan.'))
+  const warn = notes.map(n => `<div style="margin:0 16px 8px;padding:7px 10px;border-radius:8px;border:1px solid rgba(245,158,11,0.3);
+      background:rgba(245,158,11,0.08);color:var(--orange,#f59e0b);font-size:11px;line-height:1.45">${n}</div>`).join('')
+
+  return `<div class="lb-track">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;padding:10px 16px 0;background:var(--panel-2)">
+      <span style="font-size:10.5px;font-weight:800;color:var(--fg-2,var(--fg));text-transform:uppercase;letter-spacing:.06em">${_T('Track record', 'Historial')}</span>
+      <span style="font-size:10px;color:var(--muted)">${_T('perps · after fees', 'perps · tras comisiones')}</span>
+    </div>
+    ${grid}
+    <div style="background:var(--panel-2);padding-top:${notes.length ? '8px' : '0'}">${warn}</div>
+    <div style="padding:0 16px 10px;background:var(--panel-2);font-size:10px;line-height:1.45;color:var(--muted)">${_T(
+      'A trade is every close in one coin within an hour, net of its fees — the same unit as win rate. 7D, 30D and drawdown are Hyperliquid’s own perp P&L history. Past results do not predict future ones.',
+      'Una operación es cada cierre en una moneda dentro de una hora, neto de comisiones (la misma unidad que la tasa de acierto). 7D, 30D y la caída son el historial de PnL de perps de Hyperliquid. Los resultados pasados no predicen los futuros.')}</div>
+  </div>`
+}
+
 function _lbSocialHtml(r) {
   const a  = esc(r.addr)
   const nm = esc(r.label || (r.addr.slice(0, 6) + '…' + r.addr.slice(-4)))
@@ -20362,6 +20431,16 @@ window.__lbCopyTrade = function(addr = '', name = '') {
       style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid var(--border2);background:var(--panel-3,#12151c);color:var(--fg);font-size:14px;font-weight:600">
     ${hint ? `<div style="font-size:10.5px;color:var(--fg-3);margin-top:3px;line-height:1.4">${hint}</div>` : ''}
   </div>`
+  // Dry run is the honest way to judge a wallet before money is behind it: the bot follows
+  // them for real and fills every copy on paper at the mark, logging what it would have made.
+  let dry = false
+  const modeBtn = (on) => `flex:1;padding:9px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;`
+    + (on ? 'border:1px solid var(--accent);background:rgba(0,229,160,0.12);color:var(--accent)'
+          : 'border:1px solid var(--border2);background:transparent;color:var(--muted)')
+  const modeHint = (d) => d
+    ? _T('Places nothing. Copies are filled on paper and the logs show what following them would have made.',
+         'No coloca nada. Las copias se simulan y los registros muestran lo que habrías ganado.')
+    : _T('Places real orders on this account.', 'Coloca órdenes reales en esta cuenta.')
 
   ov.innerHTML = `<div style="background:var(--panel-2,#1a1d24);border:1px solid var(--border2,#2a2e39);border-radius:20px 20px 0 0;padding:20px 18px calc(18px + env(safe-area-inset-bottom));max-height:88vh;overflow-y:auto">
     <div style="width:38px;height:4px;border-radius:2px;background:var(--border2,#2a2e39);margin:-8px auto 15px"></div>
@@ -20380,7 +20459,15 @@ window.__lbCopyTrade = function(addr = '', name = '') {
          'Separadas por comas, p. ej. BTC,HYPE. En blanco sigue todo.'))}
     ${fld('ct-maxpos', _T('Max position per coin ($)', 'Posición máx. por moneda ($)'), '0', '0',
       _T('0 = no cap. Closes are never blocked by this.', '0 = sin tope. Nunca bloquea los cierres.'))}
-    <div style="font-size:11.5px;line-height:1.5;color:var(--orange,#f59e0b);background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:10px;padding:10px 12px;margin:4px 0 14px">
+    <div style="margin-bottom:11px">
+      <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">${_T('Mode', 'Modo')}</div>
+      <div style="display:flex;gap:6px">
+        <button id="ct-mode-live" type="button" style="${modeBtn(true)}">${_T('Live', 'Real')}</button>
+        <button id="ct-mode-dry"  type="button" style="${modeBtn(false)}">${_T('Dry-run', 'Simulación')}</button>
+      </div>
+      <div id="ct-mode-hint" style="font-size:10.5px;color:var(--fg-3);margin-top:3px;line-height:1.4">${modeHint(false)}</div>
+    </div>
+    <div id="ct-warn" style="font-size:11.5px;line-height:1.5;color:var(--orange,#f59e0b);background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:10px;padding:10px 12px;margin:4px 0 14px">
       ${_T('This places <b>real orders with real money</b> and keeps running until you stop it. You are trusting their judgement, not a track record — a leaderboard rank is not a guarantee.',
            'Esto coloca <b>órdenes reales con dinero real</b> y sigue hasta que lo detengas. Confías en su criterio, no en un historial.')}
     </div>
@@ -20390,6 +20477,17 @@ window.__lbCopyTrade = function(addr = '', name = '') {
   </div>`
   document.body.appendChild(ov)
   ov.querySelector('#ct-no').onclick = close
+  const setMode = (d) => {
+    dry = d
+    ov.querySelector('#ct-mode-live').style.cssText = modeBtn(!d)
+    ov.querySelector('#ct-mode-dry').style.cssText  = modeBtn(d)
+    ov.querySelector('#ct-mode-hint').innerHTML = modeHint(d)
+    // The real-money warning is exactly wrong for a run that places nothing.
+    ov.querySelector('#ct-warn').style.display = d ? 'none' : ''
+    ov.querySelector('#ct-go').textContent = d ? _T('Start dry run', 'Iniciar simulación') : _T('Start following', 'Empezar a seguir')
+  }
+  ov.querySelector('#ct-mode-live').onclick = () => setMode(false)
+  ov.querySelector('#ct-mode-dry').onclick  = () => setMode(true)
 
   const err = (m) => {
     const e = ov.querySelector('#ct-err')
@@ -20416,6 +20514,10 @@ window.__lbCopyTrade = function(addr = '', name = '') {
     ]
     const coins = v('ct-coins')
     if (coins) argv.push('--coins', coins.toUpperCase())
+    if (dry) argv.push('--dry-run')
+    // Its own instance, so a dry run can shadow a live copy of the same trader side by side
+    // instead of being refused as "already running".
+    const instance = dry ? to + '-DRY' : to
 
     const btn = ov.querySelector('#ct-go')
     btn.disabled = true
@@ -20426,16 +20528,17 @@ window.__lbCopyTrade = function(addr = '', name = '') {
         headers: { 'Content-Type': 'application/json' },
         // The target is the instance, so one account can follow several traders at once
         // and each shows up as its own stoppable bot.
-        body: JSON.stringify({ type: 'copytrade', agentKey: key, args: argv, address: tgt, instance: to }),
+        body: JSON.stringify({ type: 'copytrade', agentKey: key, args: argv, address: tgt, instance }),
       })
       if (!r.ok) {
         if (r.subscribe) { close(); window.__subOpenPaywall?.(); return }
         btn.disabled = false
-        btn.textContent = _T('Start following', 'Empezar a seguir')
+        btn.textContent = dry ? _T('Start dry run', 'Iniciar simulación') : _T('Start following', 'Empezar a seguir')
         return err(r.error || _T('Could not start.', 'No se pudo iniciar.'))
       }
       close()
-      _paperToast(_T('Now copying ', 'Ahora copiando ') + (name || to.slice(0, 6) + '…' + to.slice(-4)))
+      _paperToast((dry ? _T('Dry run: following ', 'Simulación: siguiendo ') : _T('Now copying ', 'Ahora copiando '))
+        + (name || to.slice(0, 6) + '…' + to.slice(-4)))
       checkServer()
     } catch {
       btn.disabled = false
@@ -20515,6 +20618,9 @@ function _mobVBuildLbHtml(results, opts = {}) {
         ['Win Rate',   winRate],
         ['Volume',     '$' + fmtCompact(r.totalVolume ?? 0)],
       ])
+      // The track record sits between the numbers and the buttons: it is what someone reads
+      // BEFORE pressing Copy trade.
+      if (r.addr && !opts.paper) expandHtml += _lbTrackHtml(r)
       // The actions come before the holdings: acting on the person is the point of the
       // row, and it must not sit below eleven orders.
       if (r.addr && !opts.paper) expandHtml += _lbSocialHtml(r)
@@ -31216,7 +31322,9 @@ function _lbPosHtml(positions) {
         <td>${levNum ? levNum + 'x' + (isIso ? ' <span style="color:var(--muted)">iso</span>' : '') : '—'}</td>
         <td${marginEst ? ' title="Estimated from value ÷ leverage"' : ''}>${
           margin == null ? '—' : (marginEst ? '≈' : '') + '$' + fmtUSD(margin)}</td>
-        <td class="${pnlCls}">${pnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(pnl))}</td>
+        ${/* The sign is the whole point of this cell. The prefix used to be '' for a loss and the
+             value went through Math.abs, so a -$36 position read "$36.26" in red. */ ''}
+        <td class="${pnlCls}">${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}</td>
         <td class="${roeCls}">${(roe >= 0 ? '+' : '') + roe.toFixed(2)}%</td>
       </tr>`
     }).join('')}</tbody>
@@ -31378,6 +31486,9 @@ function _lbRowHtml(entry, rank) {
               <span class="lb-pnl-val ${nCls}">${_lbPnl(entry.netPnl, null)}</span>
             </div>
           </div>
+          ${_lbTrackHtml(entry)}
+          ${/* Desktop had no way to copy a wallet from the board at all — only the phone did. */ ''}
+          ${_lbSocialHtml(entry)}
           ${_lbPosHtml(entry.positions)}
           ${_lbOutcomesHtml(entry.outcomes)}
           ${_lbOrdersHtml(entry.openOrders)}`}
@@ -31810,6 +31921,9 @@ async function _lbFetchResults(entries) {
     const _allW        = Object.values(_windows)
     const winCount     = _allW.filter(n => n > 0).length
     const totalWindows = _allW.length
+    // Same module and same windows as the server's rows, so a board built here reads the same.
+    const track        = trackRecord({ windows: _windows, portfolio,
+      lastFillAt: fills.reduce((m, f) => Math.max(m, +f.time || 0), 0) || null })
     // Full canonical fill shape (adds side/timeStr/oid/tid/feeToken over the old
     // reduced form) so the combined view's History/Calendar render like a normal account.
     const chartFills   = parseFills(fills)
@@ -31838,7 +31952,7 @@ async function _lbFetchResults(entries) {
     // headline silently fell back to the per-device sum — a DIFFERENT anchor, hundreds of
     // dollars away. Closing a position triggers exactly this rebuild, which is why the
     // equity stepped on a close and stayed there until every wallet had had a WS tick.
-    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
+    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, track, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
   }
 
   for (let i = 0; i < entries.length; i++) {

@@ -15,78 +15,24 @@ const grab = (s, sig) => {
   return ''
 }
 
-console.log('\n── mirroring by signed delta ──')
-// Every trade shape has to fall out of one rule, or the bot needs to classify trades and
-// will eventually classify one wrong.
-const SCALE = 0.25
-const mirror = (fills) => {
-  const net = {}
-  for (const f of fills) {
-    const signed = (f.side === 'B' ? 1 : -1) * parseFloat(f.sz)
-    net[f.coin] = (net[f.coin] ?? 0) + signed
-  }
-  return net
-}
-t('they open a long → we buy a quarter of it',
-  mirror([{ coin: 'BTC', side: 'B', sz: '10' }]).BTC * SCALE === 2.5)
-t('they add → we add',
-  mirror([{ coin: 'BTC', side: 'B', sz: '10' }, { coin: 'BTC', side: 'B', sz: '6' }]).BTC * SCALE === 4)
-t('they half-close → we half-close, no special case needed',
-  mirror([{ coin: 'BTC', side: 'A', sz: '5' }]).BTC * SCALE === -1.25)
-t('they flip long→short in one fill → the delta crosses zero on its own',
-  mirror([{ coin: 'BTC', side: 'A', sz: '20' }]).BTC * SCALE === -5)
-t('a burst nets to ONE order rather than three sub-minimum ones',
-  Object.keys(mirror([
-    { coin: 'BTC', side: 'A', sz: '3' }, { coin: 'BTC', side: 'A', sz: '3' }, { coin: 'BTC', side: 'A', sz: '4' },
-  ])).length === 1)
-t('and that net is the sum, not the last fill',
-  mirror([{ coin: 'BTC', side: 'A', sz: '3' }, { coin: 'BTC', side: 'A', sz: '3' }, { coin: 'BTC', side: 'A', sz: '4' }]).BTC === -10)
-t('offsetting fills inside one poll net to nothing and place no order',
-  mirror([{ coin: 'BTC', side: 'B', sz: '5' }, { coin: 'BTC', side: 'A', sz: '5' }]).BTC === 0)
-t('two coins in one burst stay separate',
-  Object.keys(mirror([{ coin: 'BTC', side: 'B', sz: '1' }, { coin: 'HYPE', side: 'B', sz: '9' }])).length === 2)
-t('the loop skips a netted zero instead of sending a 0-size order',
-  bot.includes('if (theirDelta === 0) continue'))
-
-console.log('\n── reduce-only: the guard that stops an accidental reversal ──')
-const reducing = (delta, ourSzi, sz) => ourSzi !== 0 && Math.sign(delta) !== Math.sign(ourSzi) && sz <= Math.abs(ourSzi)
-t('selling while long, within our size, is reduce-only', reducing(-2, 5, 2) === true)
-t('buying while short, within our size, is reduce-only', reducing(2, -5, 2) === true)
-t('adding to a long is NOT reduce-only', reducing(2, 5, 2) === false)
-t('opening from flat is NOT reduce-only', reducing(2, 0, 2) === false)
-t('a sell bigger than our long is not reduce-only, so a real flip can go through',
-  reducing(-9, 5, 9) === false)
-t('the order actually carries the flag', grab(bot, 'async function applyDelta(').includes('r: reducing,'))
-
-console.log('\n── the $10 minimum, which would otherwise eat a small trader ──')
-const MIN = 10
-const decide = (delta, px, ourSzi) => {
-  const notional = Math.abs(delta) * px
-  const closing = ourSzi !== 0 && Math.sign(delta) !== Math.sign(ourSzi)
-  return notional < MIN && !closing ? 'carry' : 'place'
-}
-t('a $4 mirrored open is carried, not dropped', decide(0.04, 100, 0) === 'carry')
-t('once it stacks past $10 it fires', decide(0.11, 100, 0) === 'place')
-t('a $4 CLOSE is placed anyway — we must always be able to get out',
-  decide(-0.04, 100, 5) === 'place')
-t('the bot carries rather than silently skipping', bot.includes("carry[coin] = delta"))
-t('a filled order clears the carry', grab(bot, 'async function run()').includes('carry[coin] = 0'))
-t('a missed IOC keeps the carry so we do not fall behind their book',
-  bot.includes("log('MISS'") && /carry\[coin\] = delta\s*\n\s*log\('MISS'/.test(bot))
-
-console.log('\n── caps ──')
-const capped = (delta, px, maxUsd) =>
-  maxUsd > 0 && Math.abs(delta) * px > maxUsd ? Math.sign(delta) * (maxUsd / px) : delta
-t('a whale trade is clamped to the per-trade cap', capped(10, 100, 250) === 2.5)
-t('clamping keeps the direction', capped(-10, 100, 250) === -2.5)
-t('a trade under the cap is untouched', capped(1, 100, 250) === 1)
-t('cap 0 means no cap', capped(10, 100, 0) === 10)
-t('the clamped excess is NOT carried — a whale trade must not leak out for hours after',
-  /log\('CAP'[\s\S]{0,200}delta = Math\.sign\(delta\) \* \(MAX_USD \/ markPx\)/.test(bot))
-t('the position cap never blocks a close',
-  bot.includes('// Position cap applies to opening only — never block someone getting out.'))
-t('and it is applied as remaining room, not all-or-nothing',
-  bot.includes('const room = (MAX_POSITION - have) / markPx'))
+// ── The mirror arithmetic lives in copymirror.test.mjs now ──
+// This suite used to re-implement "apply scale% of every signed delta" in its own arithmetic
+// and assert that. Those assertions passed and described the rule that lost money: it opened
+// a short when the target closed a position we never copied, and under the per-trade cap a
+// partial close emptied us while a full close left most of the copy open. The rules moved to
+// src/copymirror.js, and copymirror.test.mjs runs the REAL planner for every case that used
+// to be simulated here — opens, adds, trims, closes, flips, the $10 minimum and both caps.
+// What stays here is the bot's wiring.
+console.log('\n── the bot uses the shared planner ──')
+t('orders come from planMirror', bot.includes('planMirror({'))
+t('the carry is whatever the plan left', bot.includes('carry[coin] = plan.carry'))
+t('reduce-only comes from the plan, per order', bot.includes('r: reduceOnly,'))
+t('a netted zero places nothing', bot.includes('if (Math.abs(theirDelta) < 1e-12) continue'))
+// Changed on purpose: a missed OPEN used to be carried and retried. Buying it on a later poll
+// is buying at a price the trader never paid, so it is now let go. A missed EXIT is the one
+// that must not be dropped, and is retried until the copy is flat or they re-enter.
+t('a missed open is let go, not chased', bot.includes('open skipped'))
+t('a missed exit is retried', bot.includes('pendingExit[coin] = true') && bot.includes('await retryExits()'))
 
 console.log('\n── identity: the one thing that must not double-fire ──')
 // HL returns hash=0x0…0 on many fills, so hashes cannot identify a fill.
@@ -100,7 +46,11 @@ t('fills are applied oldest-first', bot.includes('.sort((a, b) => a.time - b.tim
 
 console.log('\n── what it refuses to do ──')
 t('history is NOT replayed — following someone does not buy their whole book',
-  bot.includes('let cursor = Date.now()') && bot.includes('Past trades are not copied'))
+  bot.includes('cursor = Date.now()') && bot.includes('Past trades are not copied'))
+// The one exception, and it is bounded: a restart within minutes picks up where it stopped,
+// so a deploy does not skip trades. Stopping and starting tomorrow still starts from now.
+t('only a recent restart resumes the cursor',
+  bot.includes('const RESUME_WINDOW_MS = 15 * 60 * 1000') && bot.includes('Date.now() - (saved.ts ?? 0) < RESUME_WINDOW_MS'))
 t('a wallet cannot follow itself', bot.includes('A wallet cannot follow itself'))
 t('the target must be an address', bot.includes("if (!/^0x[0-9a-fA-F]{40}$/.test(TARGET))"))
 t('a 0% scale is refused rather than running forever doing nothing',
@@ -109,7 +59,8 @@ t('spot and builder-dex fills are skipped, not guessed at',
   bot.includes('not a main-dex perp'))
 t('the coin allowlist is honoured', bot.includes('if (ONLY.size && !ONLY.has(coin)) continue'))
 t('leverage is left alone when 0, rather than forced to 1x',
-  bot.includes('if (LEVERAGE > 0 && !levelled.has(coin))'))
+  bot.includes('LEVERAGE > 0 && !levelled.has(coin)'))
+t('and never touched for an exit', bot.includes('if (!o.reduceOnly && LEVERAGE > 0'))
 t('and set once per coin, not on every order', bot.includes('levelled.add(coin)'))
 t('it honours the shared pause switch', bot.includes('if (isPaused())'))
 t('the agent key comes from env, never argv', bot.includes('process.env.AGENT_KEY'))
@@ -165,12 +116,15 @@ t('in the combined view it asks WHICH of your accounts copies',
   sheet.includes('Pick which of your accounts should do the copying first'))
 t('it signs with that account\'s key, not whichever connected last',
   sheet.includes('const key    = _stratTargetKey()') && sheet.includes('agentKey: key'))
+// A dry run gets its own instance so it can shadow a live copy of the same trader.
 t('the target is the instance, so you can follow several traders at once',
-  sheet.includes('instance: to'))
+  sheet.includes("const instance = dry ? to + '-DRY' : to") && sheet.includes('address: tgt, instance }'))
 t('a 402 opens the paywall instead of showing a raw error',
   sheet.includes('if (r.subscribe) { close(); window.__subOpenPaywall?.(); return }'))
 t('it warns that this is real money on a stranger\'s judgement',
   sheet.includes('real orders with real money'))
+t('and hides that warning only for a dry run, which places nothing',
+  sheet.includes("ov.querySelector('#ct-warn').style.display = d ? 'none' : ''"))
 t('and states plainly that existing positions are not bought',
   sheet.includes('Their existing positions are <b>not</b> bought'))
 t('the button cannot be double-fired', sheet.includes('btn.disabled = true'))
