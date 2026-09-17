@@ -87,8 +87,10 @@ function drawdown(portfolio) {
  * @param {Object<string, number>} p.windows  `COIN_hourIndex` → net P&L of that hour's closes
  * @param {Array} [p.portfolio]  HL `portfolio` response
  * @param {number} [p.lastFillAt] time of the most recent fill of any kind (opens included)
+ * @param {number} [p.openLoss]   sum of the LOSING open positions' unrealized P&L, as a
+ *                                positive number (see openLossOf). Omit when unknown.
  */
-export function trackRecord({ windows, portfolio, lastFillAt } = {}) {
+export function trackRecord({ windows, portfolio, lastFillAt, openLoss } = {}) {
   const entries = Object.entries(windows ?? {})
     .map(([k, v]) => [Number(String(k).slice(String(k).lastIndexOf('_') + 1)), Number(v)])
     .filter(([h, v]) => Number.isFinite(h) && Number.isFinite(v))
@@ -114,6 +116,14 @@ export function trackRecord({ windows, portfolio, lastFillAt } = {}) {
     // UI says that in words. Null when there is nothing to divide at all.
     profitFactor: grossLoss > 0 ? grossWin / grossLoss : null,
     noLosses: trades > 0 && losses === 0 && wins > 0,
+    // Profit factor only sees CLOSED trades, and a grid bot never closes a losing level — it
+    // holds it. A real wallet read 914 on $555.53 won against $0.61 lost, while $76 sat in
+    // two losing open positions. Counting those as if closed now, the same wallet is ~7.
+    // Reported beside the closed figure, not instead of it: both are true, and the gap
+    // between them is the thing a copier needs to see.
+    openLoss: Number(openLoss) > 0 ? Number(openLoss) : 0,
+    profitFactorOpen: Number(openLoss) > 0 && grossWin > 0
+      ? grossWin / (grossLoss + Number(openLoss)) : null,
     avgWin:  wins   ? grossWin  / wins   : null,
     avgLoss: losses ? grossLoss / losses : null,
     // Per trade, after fees: what following every one of its trades averaged.
@@ -126,6 +136,22 @@ export function trackRecord({ windows, portfolio, lastFillAt } = {}) {
     pnl30d: seriesLast(portfolio, ['perpMonth', 'month']),
     maxDrawdown: drawdown(portfolio),
   }
+}
+
+/**
+ * The open positions that are losing, summed as a positive number.
+ *
+ * Only the losers: a winning open position does not offset a losing one here, because the
+ * question is "how much loss is being held instead of taken", and netting would hide it.
+ * Accepts Hyperliquid's `{ position: {...} }` wrapper or the bare position.
+ */
+export function openLossOf(positions) {
+  let loss = 0
+  for (const ap of (positions ?? [])) {
+    const u = parseFloat((ap?.position ?? ap)?.unrealizedPnl ?? 0)
+    if (Number.isFinite(u) && u < 0) loss -= u
+  }
+  return loss
 }
 
 /** True when the record is too thin for the ratios above to be read as skill. */

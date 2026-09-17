@@ -240,7 +240,7 @@ import { probeNavGeometry } from './navprobe.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows } from './comboequity.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
-import { trackRecord, isSmallSample } from './trackrecord.js'
+import { trackRecord, isSmallSample, openLossOf } from './trackrecord.js'
 import { rulesFor, clampLeverage, marginModeFor, delistedNames, hasNoActivity, deployerOf } from './assetrules.js'
 
 /**
@@ -358,7 +358,7 @@ const INITIAL_STATE = () => ({
   editingPos:     null,
   closingPos:     null,
   currentPeriod:  'day',
-  ledger:         [],
+  ledger:         null,   // not loaded yet — see the account seed in loadDashboard
   calMonth:       new Date().getMonth(),
   calYear:        new Date().getFullYear(),
   transferFilter: 'all',
@@ -970,6 +970,13 @@ async function loadDashboard() {
     openOrders:  [], fills: [], funding: [],
     portfolio:   null, allMids: {}, assetMap: {}, allMetas: [],
     webData:     null, sessionStart: Date.now(),
+    // Not carried over. `...state` above kept the previous account's ledger, so switching
+    // from All Accounts to one wallet showed all ten wallets' deposits and withdrawals on it
+    // until its own ledger landed — and forever, if that fetch was rate-limited. null means
+    // "not loaded"; readers treat it as empty or show a dash.
+    ledger:      null,
+    // Same reasoning for funding, which lands in the background: [] would print "+$0.00".
+    fundingLoaded: false,
   }
   _lastPerpCash = null   // reset transfer detector — a switch isn't a transfer
 
@@ -1145,6 +1152,7 @@ async function loadDashboard() {
     loadFundingData(addr, { mobile: isMobile }).then(({ funding, webData }) => {
       if (state.addr !== addr) return
       state.funding = parseFunding(funding)
+      state.fundingLoaded = true
       state.webData = webData ?? null
       renderAccountSection()
     }).catch(e => console.warn('Background funding load failed:', e.message))
@@ -1182,8 +1190,8 @@ function renderPositionSection() {
 
 function renderHistorySection() {
   renderTrades(state.fills)
-  renderPnLCalendar(state.fills, state.calMonth, state.calYear, state.ledger)
-  renderTransfers(state.ledger, state.transferFilter, state.addr)
+  renderPnLCalendar(state.fills, state.calMonth, state.calYear, state.ledger ?? [])
+  renderTransfers(state.ledger ?? [], state.transferFilter, state.addr)
 }
 
 function renderMarketSection() {
@@ -1203,8 +1211,8 @@ const _renderedTabs = new Set(['overview', 'positions'])
 function _renderLazyTab(name) {
   switch (name) {
     case 'trades':    renderTrades(state.fills); break
-    case 'calendar':  renderPnLCalendar(state.fills, state.calMonth, state.calYear, state.ledger); break
-    case 'transfers': renderTransfers(state.ledger, state.transferFilter, state.addr); break
+    case 'calendar':  renderPnLCalendar(state.fills, state.calMonth, state.calYear, state.ledger ?? []); break
+    case 'transfers': renderTransfers(state.ledger ?? [], state.transferFilter, state.addr); break
   }
 }
 
@@ -1750,7 +1758,7 @@ function tickSessionUptime() {
 // history, so renderOverview computes all-time Total Volume from it directly —
 // no separate fetch, and no hash-dedup bug (HL's 0x0…0 hashes made it undercount).
 
-async function fetchLedger(addr) {
+async function fetchLedger(addr, attempt = 0) {
   // Show skeleton while the ledger loads
   const summaryEl = document.getElementById('transfersSummary')
   const cardsEl   = document.getElementById('transfersCards')
@@ -1760,6 +1768,7 @@ async function fetchLedger(addr) {
   try {
     const info   = new InfoClient({ transport: _transport })
     const ledger = await info.userNonFundingLedgerUpdates({ user: addr, startTime: 1667260800000 })
+    if (state.addr !== addr || state.isAllAccounts) return   // the user moved on meanwhile
     state.ledger = ledger ?? []
     _refreshVisitedSection('transfers')
     _refreshVisitedSection('calendar')
@@ -1767,6 +1776,9 @@ async function fetchLedger(addr) {
   } catch (e) {
     console.warn('Ledger fetch failed:', e.message)
     renderTransfers([], state.transferFilter)
+    // It fails mostly on 429s. One more try, later — otherwise Deposited/Withdrawn stay a
+    // dash for the whole session.
+    if (attempt < 1) setTimeout(() => { if (state.addr === addr && !state.isAllAccounts) fetchLedger(addr, attempt + 1) }, 20_000)
   }
 }
 
@@ -8537,7 +8549,11 @@ function _allAcctReaggregate() {
     openOrders:  visible.flatMap(r => (r.openOrders ?? []).map(o => ({ ...o, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr }))),
     funding:     visible.flatMap(r => (r.funding ?? []).map(f => ({ ...f, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr }))),
     portfolio:   _mergePortfolio(visible),
-    ledger:      visible.flatMap(r => (r.ledgerEntries ?? []).map(e => ({ ...e, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr }))),
+    // null until EVERY wallet's ledger has arrived (it is fetched in a later pass). A partial
+    // sum reads as a real, smaller total.
+    ledger:      visible.every(r => r.error || Array.isArray(r.ledgerEntries))
+      ? visible.flatMap(r => (r.ledgerEntries ?? []).map(e => ({ ...e, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr })))
+      : null,
     webData:     { cumLedger: visible.reduce((s, r) => s + (r.totalDeposited || 0) - (r.totalWithdrawn || 0), 0) },
     ocTokenMap:  state.ocTokenMap,
   }
@@ -19077,6 +19093,9 @@ function _mobVRenderContent(tick = false) {
     const { accountValue, unrealizedPnl, realizedPnl, healthStr, healthCls, maintMargin, marginUsed, withdrawable } = stats
     const fills    = state.fills ?? []
     const funding  = state.funding ?? []
+    // null = not loaded yet (a fresh account, or the fetch failed). Shown as a dash: "$0
+    // withdrawn" is a claim, and before the ledger lands it would be a false one.
+    const ledgerKnown = Array.isArray(state.ledger)
     const ledger   = state.ledger ?? []
     let totalDeposited = 0, totalWithdrawn = 0
     for (const e of ledger) {
@@ -19118,12 +19137,14 @@ function _mobVRenderContent(tick = false) {
     }
     const allW    = Object.values(windows)
     const winRate = allW.length > 0 ? (allW.filter(n => n > 0).length / allW.length * 100).toFixed(1) + '%' : '—'
-    // Profit factor = gross wins ÷ gross losses (matches the desktop overview strip)
-    const grossWin  = fills.reduce((s, f) => f.closedPnl > 0 ? s + f.closedPnl : s, 0)
-    const grossLoss = fills.reduce((s, f) => f.closedPnl < 0 ? s + Math.abs(f.closedPnl) : s, 0)
-    const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : 0)
-    const pfStr = profitFactor === Infinity ? '∞' : profitFactor > 0 ? profitFactor.toFixed(2) : '—'
-    const pfCls = profitFactor >= 1 ? 'pos' : profitFactor > 0 ? 'neg' : ''
+    // Profit factor from the SAME windows as the win rate beside it, through the same module
+    // the leaderboard uses. It used to be per fill and before fees, so this row and the board
+    // disagreed about the same wallet (940 here, 914 there) and this row disagreed with the
+    // win rate directly above it.
+    const _pfTrack = trackRecord({ windows,
+      openLoss: openLossOf(state.perpState?.assetPositions ?? []) })
+    const [pfStr, _pfColor] = _pfCell(_pfTrack)
+    const pfCls = _pfColor === 'var(--green)' ? 'pos' : _pfColor === 'var(--red)' ? 'neg' : ''
     // Member since = earliest activity. Combined view concatenates several accounts'
     // (each descending) fill lists, so scan for the min rather than taking the last.
     const earliestTs = state.firstFillTime
@@ -19194,7 +19215,14 @@ function _mobVRenderContent(tick = false) {
         <div class="mob-v-setting-row"><span>Unrealized PnL</span><span class="${pnlCls(unrealizedPnl)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(unrealizedPnl))}</span></div>
         <div class="mob-v-setting-row"><span>Realized PnL</span><span class="${pnlCls(dispRealized)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(dispRealized))}</span></div>
         <div class="mob-v-setting-row"><span>Net PnL</span><span class="${pnlCls(netPnl)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(netPnl))}</span></div>
-        ${dispFunding !== 0 ? `<div class="mob-v-setting-row"><span>Net Funding</span><span class="${pnlCls(dispFunding)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(dispFunding))}</span></div>` : ''}
+        ${/* Every row below is shown in both modes, including at $0. They used to vanish
+             when zero, so a wallet that never withdrew had no "Total Withdrawn" row while
+             All Accounts - ten wallets summed - did: "single accounts are missing total
+             withdrawn". Same data, different layout. */ ''}
+        <div class="mob-v-setting-row"><span>Net Funding</span>${
+          (_cpP?.parts || state.fundingLoaded || isPaper())
+            ? `<span class="${pnlCls(dispFunding)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(dispFunding))}</span>`
+            : '<span style="font-weight:600;font-size:14px;color:var(--muted)">—</span>'}</div>
         <div class="mob-v-setting-row"><span>Health</span><span class="${healthCls}" style="font-weight:600;font-size:14px">${healthStr}</span></div>
         <div class="mob-v-setting-row"><span>Withdrawable</span><span style="font-weight:600;font-size:14px">$${fmtUSD(withdrawable)}</span></div>
         <!-- These are two DIFFERENT numbers and this row used to show maintenance
@@ -19203,13 +19231,16 @@ function _mobVRenderContent(tick = false) {
              $1,499 of collateral. Show both, each named for what it actually is. -->
         <div class="mob-v-setting-row"><span>Margin Used</span><span style="font-weight:600;font-size:14px">$${fmtUSD(marginUsed)}</span></div>
         <div class="mob-v-setting-row"><span>Maintenance Margin</span><span style="font-weight:600;font-size:14px">$${fmtUSD(maintMargin)}</span></div>
-        ${totalFees > 0 ? `<div class="mob-v-setting-row"><span>Total Fees</span><span class="neg" style="font-weight:600;font-size:14px">-$${fmtUSD(totalFees)}</span></div>` : ''}
-        ${totalVol > 0 ? `<div class="mob-v-setting-row"><span>Total Volume</span><span style="font-weight:600;font-size:14px">$${fmtCompact(totalVol)}</span></div>` : ''}
+        ${/* No fills yet reads as a dash, not $0: in the first seconds they have not arrived. */ ''}
+        <div class="mob-v-setting-row"><span>Total Fees</span><span class="${totalFees > 0 ? 'neg' : ''}" style="font-weight:600;font-size:14px">${
+          !fills.length ? '—' : (totalFees > 0 ? '-' : '') + '$' + fmtUSD(totalFees)}</span></div>
+        <div class="mob-v-setting-row"><span>Total Volume</span><span style="font-weight:600;font-size:14px">${
+          !fills.length ? '—' : '$' + fmtCompact(totalVol)}</span></div>
         <div class="mob-v-setting-row"><span>Win Rate</span><span style="font-weight:600;font-size:14px">${winRate}</span></div>
-        <div class="mob-v-setting-row"><span>Profit Factor</span><span class="${pfCls}" style="font-weight:600;font-size:14px">${pfStr}</span></div>
-        ${totalDeposited > 0 ? `<div class="mob-v-setting-row"><span>Total Deposited</span><span style="font-weight:600;font-size:14px">$${fmtUSD(totalDeposited)}</span></div>` : ''}
-        ${totalWithdrawn > 0 ? `<div class="mob-v-setting-row"><span>Total Withdrawn</span><span style="font-weight:600;font-size:14px">$${fmtUSD(totalWithdrawn)}</span></div>` : ''}
-        ${(totalDeposited > 0 || totalWithdrawn > 0) ? `<div class="mob-v-setting-row"><span>Net Deposited</span><span class="${accountValue >= netDeposited ? 'pos' : 'neg'}" style="font-weight:600;font-size:14px">${pnlFmt(netDeposited)}</span></div>` : ''}
+        <div class="mob-v-setting-row"><span>Profit Factor</span><span class="${pfCls}" style="font-weight:600;font-size:14px;text-align:right">${pfStr}</span></div>
+        <div class="mob-v-setting-row"><span>Total Deposited</span><span style="font-weight:600;font-size:14px">${ledgerKnown ? '$' + fmtUSD(totalDeposited) : '—'}</span></div>
+        <div class="mob-v-setting-row"><span>Total Withdrawn</span><span style="font-weight:600;font-size:14px">${ledgerKnown ? '$' + fmtUSD(totalWithdrawn) : '—'}</span></div>
+        <div class="mob-v-setting-row"><span>Net Deposited</span><span class="${ledgerKnown ? (accountValue >= netDeposited ? 'pos' : 'neg') : ''}" style="font-weight:600;font-size:14px">${ledgerKnown ? pnlFmt(netDeposited) : '—'}</span></div>
         <div class="mob-v-setting-row"><span>Member Since</span><span style="font-weight:600;font-size:14px">${esc(memberSince)}</span></div>
       </div>
     </div>`
@@ -19618,6 +19649,8 @@ function _mobVBuildAccountsHtml(results) {
   const totalWin    = vis.reduce((s, r) => s + (r.error ? 0 : r.totalWindows   ?? 0), 0)
   const winRate     = totalWin > 0 ? (winCount / totalWin * 100).toFixed(1) + '%' : '—'
   const netDep      = totalDep - totalWith
+  // totalDeposited is a placeholder 0 until the ledger pass fills it; ledgerEntries marks done.
+  const depKnown    = vis.every(r => r.error || Array.isArray(r.ledgerEntries))
 
   // Per-account rows
   const accountRows = vis.map((r, i) => {
@@ -19677,9 +19710,9 @@ function _mobVBuildAccountsHtml(results) {
       <div class="mob-v-setting-row"><span>Unrealized PnL</span><span class="${pnlCls(totalUnreal)}" style="font-weight:600;font-size:14px">${pnlFmt(totalUnreal)}</span></div>
       <div class="mob-v-setting-row"><span>Realized PnL</span><span class="${totalReal == null ? '' : pnlCls(totalReal)}" style="font-weight:600;font-size:14px">${totalReal == null ? '—' : pnlFmt(totalReal)}</span></div>
       <div class="mob-v-setting-row"><span>Net PnL</span><span class="${totalNet == null ? '' : pnlCls(totalNet)}" style="font-weight:600;font-size:14px">${totalNet == null ? '—' : pnlFmt(totalNet)}</span></div>
-      ${totalDep > 0 ? `<div class="mob-v-setting-row"><span>Total Deposited</span><span style="font-weight:600;font-size:14px">$${fmtUSD(totalDep)}</span></div>` : ''}
-      ${totalWith > 0 ? `<div class="mob-v-setting-row"><span>Total Withdrawn</span><span style="font-weight:600;font-size:14px">$${fmtUSD(totalWith)}</span></div>` : ''}
-      ${(totalDep > 0 || totalWith > 0) ? `<div class="mob-v-setting-row"><span>Net Deposited</span><span class="${totalValue >= netDep ? 'pos' : 'neg'}" style="font-weight:600;font-size:14px">${pnlFmt(netDep)}</span></div>` : ''}
+      <div class="mob-v-setting-row"><span>Total Deposited</span><span style="font-weight:600;font-size:14px">${depKnown ? '$' + fmtUSD(totalDep) : '—'}</span></div>
+      <div class="mob-v-setting-row"><span>Total Withdrawn</span><span style="font-weight:600;font-size:14px">${depKnown ? '$' + fmtUSD(totalWith) : '—'}</span></div>
+      <div class="mob-v-setting-row"><span>Net Deposited</span><span class="${depKnown ? (totalValue >= netDep ? 'pos' : 'neg') : ''}" style="font-weight:600;font-size:14px">${depKnown ? pnlFmt(netDep) : '—'}</span></div>
       <div class="mob-v-setting-row"><span>Total Volume</span><span style="font-weight:600;font-size:14px">$${fmtCompact(totalVol)}</span></div>
       <div class="mob-v-setting-row"><span>Total Fees</span><span class="${totalFees == null ? '' : 'neg'}" style="font-weight:600;font-size:14px">${totalFees == null ? '—' : '-$' + fmtUSD(totalFees)}</span></div>
       <div class="mob-v-setting-row"><span>Win Rate</span><span style="font-weight:600;font-size:14px">${winRate}</span></div>
@@ -20280,6 +20313,31 @@ function _lbCollapse(id, title, rowsHtml) {
  * `r.track` comes from src/trackrecord.js, on the server or here. Rows without it (paper, the
  * Challenge, a server that has not refreshed since deploy) render nothing rather than dashes.
  */
+/**
+ * Profit factor as [html, colour]: the closed-trade figure, and — when open positions are
+ * losing — the figure counting those losses as if taken now.
+ *
+ * Asked: "why this wallet has 914 profit factor". It was right about its closed trades
+ * ($555.53 won, $0.61 lost) and silent about $76 held in two losing grid positions; a grid
+ * never closes a losing level, so profit factor alone rates it close to perfect. Counting
+ * them, ~7. Only shown when it changes the picture (by more than 10%), so ordinary wallets
+ * are not cluttered with a second number that says the same thing.
+ */
+function _pfCell(tr) {
+  const G = 'var(--green)', R = 'var(--red)'
+  const fmt = (v) => v >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(2)
+  let main
+  if (tr?.profitFactor != null) main = [fmt(tr.profitFactor), tr.profitFactor >= 1 ? G : R]
+  else main = [tr?.noLosses ? _T('No losses yet', 'Sin pérdidas aún') : '—', '']
+  const po = tr?.profitFactorOpen
+  const base = tr?.profitFactor ?? Infinity
+  if (po != null && po < base * 0.9) {
+    main[0] += `<div style="font-size:10.5px;font-weight:600;color:var(--orange,#f59e0b);margin-top:1px">`
+      + `${fmt(po)} ${_T('counting open losses', 'contando pérdidas abiertas')} (−$${fmtUSD(tr.openLoss)})</div>`
+  }
+  return main
+}
+
 function _lbTrackHtml(r) {
   const tr = r?.track
   if (!tr || !tr.trades) return ''
@@ -20287,9 +20345,7 @@ function _lbTrackHtml(r) {
   const money = (v, sign = true) => v == null ? '—'
     : (sign ? (v >= 0 ? '+' : '−') : '') + '$' + fmtUSD(Math.abs(v))
   const tone  = (v) => v == null ? '' : v >= 0 ? G : R
-  const pf = tr.profitFactor != null
-    ? [tr.profitFactor.toFixed(2), tr.profitFactor >= 1 ? G : R]
-    : [tr.noLosses ? _T('No losses yet', 'Sin pérdidas aún') : '—', '']
+  const pf = _pfCell(tr)
   const dd = tr.maxDrawdown
   const ddStr = !dd ? '—' : dd.usd > 0
     ? '−$' + fmtUSD(dd.usd) + (dd.pct != null ? ` (${dd.pct.toFixed(1)}%)` : '')
@@ -23559,7 +23615,7 @@ window.calNav = function(dir) {
   if (state.calMonth > 11) { state.calMonth = 0;  state.calYear++ }
   if (state.calMonth < 0)  { state.calMonth = 11; state.calYear-- }
   if (isMob) renderPnLCalendar(state.fills ?? [], state.calMonth, state.calYear, state.ledger ?? [], 'mobCalRoot', 'mobCalNav', 'mobCalDetail')
-  else       renderPnLCalendar(state.fills, state.calMonth, state.calYear, state.ledger)
+  else       renderPnLCalendar(state.fills, state.calMonth, state.calYear, state.ledger ?? [])
 }
 
 window.filterTransfers = function(filter, btn) {
@@ -23567,7 +23623,7 @@ window.filterTransfers = function(filter, btn) {
   document.querySelectorAll('#transferFilterTabs .order-type-tab')
     .forEach(b => b.classList.remove('active'))
   if (btn) btn.classList.add('active')
-  renderTransfers(state.ledger, filter, state.addr)
+  renderTransfers(state.ledger ?? [], filter, state.addr)
 }
 window.filterCoinDropdown  = window.filterCoinDropdown
 window.generateCommand    = generateCommand
@@ -31932,7 +31988,8 @@ async function _lbFetchResults(entries) {
     const totalWindows = _allW.length
     // Same module and same windows as the server's rows, so a board built here reads the same.
     const track        = trackRecord({ windows: _windows, portfolio,
-      lastFillAt: fills.reduce((m, f) => Math.max(m, +f.time || 0), 0) || null })
+      lastFillAt: fills.reduce((m, f) => Math.max(m, +f.time || 0), 0) || null,
+      openLoss: openLossOf([...positions, ...(hip3Res?.positions ?? [])]) })
     // Full canonical fill shape (adds side/timeStr/oid/tid/feeToken over the old
     // reduced form) so the combined view's History/Calendar render like a normal account.
     const chartFills   = parseFills(fills)

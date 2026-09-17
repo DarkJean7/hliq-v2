@@ -19,7 +19,7 @@ import { fileURLToPath }                                      from 'node:url'
 import { homedir }                                            from 'node:os'
 import { randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual } from 'node:crypto'
 import { ethers }                                             from 'ethers'
-import { trackRecord }                                        from './src/trackrecord.js'
+import { trackRecord, openLossOf }                            from './src/trackrecord.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const PORT       = 3002
@@ -1290,7 +1290,8 @@ async function lbRefreshOne(addr, label, prev) {
     totalWindows: allW.length,
     // Profit factor, average win and loss, drawdown, 7D/30D, record length — what a copier
     // needs and win rate alone hides. From the same windows as win rate, so they agree.
-    track: trackRecord({ windows, portfolio, lastFillAt: lastFillTs >= LB_GENESIS ? lastFillTs : null }),
+    track: trackRecord({ windows, portfolio, lastFillAt: lastFillTs >= LB_GENESIS ? lastFillTs : null,
+                         openLoss: openLossOf(rawPos) }),
     totalFees: fees,
     allTimeFunding: funding,
     // internal accumulators (stripped before the row is served)

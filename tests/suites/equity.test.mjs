@@ -190,8 +190,12 @@ t('the Portfolio tab defers to the combined figure',
 t('its Realized and Net Funding rows come from the same place',
   cli.includes('const dispRealized = _cpP?.parts ? _cpP.parts.realized : realizedPnl')
     && cli.includes('const dispFunding  = _cpP?.parts ? _cpP.parts.funding  : netFunding'))
+// The row used to be conditional on dispFunding !== 0. It is now always present (every
+// Portfolio row is, in both modes), and dashes only while its figure is genuinely unknown —
+// the same rule, now enforced by the row itself instead of by hiding it.
 t('so the funding row is no longer hidden by the combined view emptying state.funding',
-  cli.includes('${dispFunding !== 0 ?'))
+  cli.includes('<span>Net Funding</span>${') && cli.includes('(_cpP?.parts || state.fundingLoaded || isPaper())')
+    && cli.includes('${_prv(pnlFmt(dispFunding))}'))
 t('the settled parts travel with the figure',
   (() => {
     const A = harness(); A.setSnap(SNAP9); A.setRows(wal(9))
