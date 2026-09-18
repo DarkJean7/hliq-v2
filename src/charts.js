@@ -115,7 +115,19 @@ export function renderOverviewChart(portfolioData, period = 'week', type = 'valu
       plugins: [crosshairPlugin, zeroLinePlugin],   // zeroLine draws a $0 baseline when 0 is in range
     })
   }
-  return { first: data[0].y, last: data[data.length - 1].y }
+  // What was drawn, so the caller can write the headline from the SAME series rather than
+  // computing its own. The two disagreeing is the bug this return value exists to prevent:
+  // switching to Acc. PnL changed the chart and left the equity figure above it.
+  //
+  // baseRef is the account value at the start of the window — the capital a PnL figure is a
+  // return ON. Null when the window has no usable start (an account funded inside it), and
+  // then no percentage is shown rather than a meaningless one.
+  const _avh  = entry?.[1]?.accountValueHistory ?? []
+  const _base = _avh.length ? parseFloat(_avh[0][1]) : NaN
+  return {
+    type, first: data[0].y, last: data[data.length - 1].y,
+    baseRef: Number.isFinite(_base) && _base > 1 ? _base : null,
+  }
 }
 
 // ── Performance tab charts ───────────────────────────────────────────────────

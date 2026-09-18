@@ -43,6 +43,7 @@ function _dirBadgeCls(dir) {
 // Overview hero chart period/type + cached data for the switchers
 let _ovPeriod = 'week'
 let _ovChartType = 'value'   // 'value' | 'accumulated' | 'realized'
+let _ovHead = null           // the Equity headline as rendered, so switching back restores it
 let _ovPortfolio = []
 let _ovFills = []
 let _ovPosTab = 'positions'   // 'positions' | 'orders' (shown one at a time)
@@ -749,7 +750,15 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   if (_ovPosTab === 'outcomes') _ovRefreshOcMarks()   // fetch live marks for the outcomes body
 
   // Draw / update the hero chart
-  try { renderOverviewChart(portfolio, _ovPeriod, _ovChartType, fills) } catch (e) { console.warn('overview chart', e) }
+  // The Equity headline as rendered, kept so switching back to it restores exactly this and
+  // not a re-derived approximation.
+  _ovHead = {
+    label: 'Account Value · Perp Equity',
+    value: '$' + fmtUSD(accountValue),
+    chg: chgFull, chgCls,
+    sub: `${positions.length} open position${positions.length !== 1 ? 's' : ''} · cross + isolated · ${_OV_PERIOD_LABEL[_ovPeriod] ?? 'today'}`,
+  }
+  try { _ovPaintHead(renderOverviewChart(portfolio, _ovPeriod, _ovChartType, fills)) } catch (e) { console.warn('overview chart', e) }
 
   const wrap = document.getElementById('overviewPositionsWrap')
   if (wrap) wrap.innerHTML = ''
@@ -1305,7 +1314,7 @@ window.__ovSetRange = function(label) {
   if (sub) sub.textContent = sub.textContent.replace(
     /·\s*(today|this week|this month|all time)\s*$/,
     '· ' + (_OV_PERIOD_LABEL[_ovPeriod] ?? 'today'))
-  try { renderOverviewChart(_ovPortfolio, _ovPeriod, _ovChartType, _ovFills) } catch {}
+  try { _ovPaintHead(renderOverviewChart(_ovPortfolio, _ovPeriod, _ovChartType, _ovFills)) } catch {}
 }
 
 // Outcome (prediction) holdings live in main.js — access via window bridges.
@@ -1341,7 +1350,54 @@ window.__ovPosAction = function() {
 window.__ovSetChartType = function(type) {
   _ovChartType = type
   document.querySelectorAll('#ovChartTabs .ov-ct-btn').forEach(b => b.classList.toggle('active', b.dataset.ct === type))
-  try { renderOverviewChart(_ovPortfolio, _ovPeriod, _ovChartType, _ovFills) } catch {}
+  try { _ovPaintHead(renderOverviewChart(_ovPortfolio, _ovPeriod, _ovChartType, _ovFills)) } catch {}
+}
+
+/**
+ * The big figure above the chart follows the chart.
+ *
+ * Reported as: "i changed to acc. pnl instead of equity but the amount displayed is still the
+ * equity. in mobile it works like its suppossed". The switcher only ever redrew the canvas, so
+ * the headline went on saying Account Value while the line below it plotted PnL — two numbers
+ * side by side describing different things, with only the chart's shape to tell you which.
+ *
+ * It is painted from the summary the chart RETURNS, not from a second calculation, so the two
+ * cannot drift apart again. Equity mode restores the header the page was built with.
+ */
+function _ovPaintHead(sum) {
+  const lblEl = document.querySelector('.ov-equity .ov-label')
+  const valEl = document.querySelector('.ov-equity .ov-eq-val')
+  const chgEl = document.getElementById('ovChgPill')
+  const subEl = document.getElementById('ovEqSub')
+  if (!lblEl || !valEl || !_ovHead) return
+
+  if (!sum || sum.type === 'value') {
+    lblEl.textContent = _ovHead.label
+    valEl.textContent = _ovHead.value
+    valEl.style.color = ''
+    if (chgEl) { chgEl.textContent = _ovHead.chg; chgEl.className = 'ov-chg ' + _ovHead.chgCls }
+    if (subEl) subEl.textContent = _ovHead.sub
+    return
+  }
+
+  const v    = sum.last
+  const sign = v >= 0 ? '+' : '-'
+  const cls  = v >= 0 ? 'pos' : 'neg'
+  const per  = _OV_PERIOD_LABEL[_ovPeriod] ?? 'today'
+  lblEl.textContent = (sum.type === 'realized' ? 'Realized PnL · ' : 'Accumulated PnL · ') + per
+  valEl.textContent = sign + '$' + fmtUSD(Math.abs(v))
+  valEl.style.color = v >= 0 ? 'var(--green)' : 'var(--red)'
+  // The same basis the mobile sheet divides by: the capital held when the window opened.
+  const pct = sum.baseRef ? (v / sum.baseRef) * 100 : null
+  if (chgEl) {
+    chgEl.textContent = pct == null ? '—' : (pct >= 0 ? '+' : '-') + Math.abs(pct).toFixed(2) + '%'
+    chgEl.className   = 'ov-chg ' + cls
+  }
+  if (subEl) {
+    subEl.textContent = sum.baseRef
+      ? 'on $' + fmtUSD(sum.baseRef) + ' at the start of ' + per
+      : 'no starting balance to measure against'
+  }
 }
 
 
