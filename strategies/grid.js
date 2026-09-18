@@ -705,16 +705,26 @@ async function run() {
        * gaps past the mark, and ONLY when it would otherwise be dead: a grid whose mark is
        * still inside its range is untouched, and keeps exactly the ladder it had before.
        */
-      // Two levels of clearance, not one: an entry needs px beyond mark ± gap/2, so the
-      // second level in from the end needs the end to sit a gap and a half past the mark.
+      // The entry side gets the SAME band the exit side has, measured from the mark.
       //
-      // Iterated rather than computed in one step, because widening the range over a FIXED
-      // level count also widens the gap — measure the headroom with the old gap and it buys
-      // barely one level. Two passes converge; the third is there so the loop cannot be the
-      // thing that breaks.
+      // Clearing the dead zone by a level or two is not enough: it un-sticks the grid but
+      // leaves it lopsided. On the reported INJ short that gave 2 sells against 7 buys — a
+      // ladder that can barely open, hung under a row of exits with no inventory behind them.
+      // Asked, correctly: "is not supposed to place 4 short orders, 5 buy orders?"
+      //
+      // mark × (1 ± band) is the same rule the no-position auto-range uses, so the two halves
+      // are measured the same way and the split comes out even: 4 sells, 5 buys, one rung in
+      // the dead zone. It also scales sanely when the position has run a long way against the
+      // grid — the exit end stays anchored near the average, so the level budget naturally
+      // tilts back towards closing rather than piling in.
       const _dead = () => IS_SHORT ? markPx >= UPPER : markPx <= LOWER
       if (_dead()) {
         const _before = IS_SHORT ? UPPER : LOWER
+        if (IS_SHORT) UPPER = roundPx(Math.max(UPPER, markPx * (1 + PROFIT_BAND)))
+        else          LOWER = roundPx(Math.min(LOWER, markPx * (1 - PROFIT_BAND)))
+        // A floor, for a band tight enough that the above still leaves nothing past the dead
+        // zone. Iterated because widening over a FIXED level count also widens the gap, so
+        // headroom measured with the old gap buys barely one level.
         for (let _pass = 0; _pass < 3; _pass++) {
           const _gap = (UPPER - LOWER) / Math.max(1, LEVELS - 1)
           if (IS_SHORT ? UPPER > markPx + _gap * 1.5 : LOWER < markPx - _gap * 1.5) break
@@ -722,8 +732,8 @@ async function run() {
           else          LOWER = roundPx(markPx - _gap * 2.5)
         }
         log('INIT', IS_SHORT
-          ? `Mark $${markPx} is above the anchored top $${_before} — opening the range to $${UPPER} so the grid still has sells to place`
-          : `Mark $${markPx} is below the anchored bottom $${_before} — opening the range to $${LOWER} so the grid still has buys to place`)
+          ? `Mark $${markPx} is above the anchored top $${_before} — opening the range to $${UPPER} so the grid has sells to place`
+          : `Mark $${markPx} is below the anchored bottom $${_before} — opening the range to $${LOWER} so the grid has buys to place`)
       }
     } else {
       if (!(LOWER > 0)) LOWER = roundPx(markPx * 0.90)

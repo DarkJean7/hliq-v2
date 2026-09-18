@@ -34,6 +34,8 @@ function plan({ short, avg, mark, levels = 10, band = 0.12 }) {
   const anchored = short ? UPPER : LOWER
   const dead = () => short ? mark >= UPPER : mark <= LOWER
   if (dead()) {
+    if (short) UPPER = roundPx(Math.max(UPPER, mark * (1 + band)))
+    else       LOWER = roundPx(Math.min(LOWER, mark * (1 - band)))
     for (let p = 0; p < 3; p++) {
       const g = (UPPER - LOWER) / Math.max(1, levels - 1)
       if (short ? UPPER > mark + g * 1.5 : LOWER < mark - g * 1.5) break
@@ -54,21 +56,30 @@ function plan({ short, avg, mark, levels = 10, band = 0.12 }) {
 
 console.log(nl + '-- the reported case --')
 {
-  // Exactly the numbers off the screenshot: 10 levels, $6.6512 average, $6.6582 mark.
-  const p = plan({ short: true, avg: 6.6512, mark: 6.6582 })
-  t('the short can open again', p.entries >= 2, p)
-  t('it still has exits to close what it holds', p.exits >= 5, p.exits)
-  t('and one rung sits in the dead zone, as it should', p.deadZone === 1, p.deadZone)
-  t('the range was opened above the mark', p.UPPER > 6.6582 && p.opened, p.UPPER)
+  // The numbers off the screenshot: 10 levels, $6.6512 average, $6.667 mark. Clearing the
+  // dead zone alone gave 2 sells against 7 buys, and the report was "is not supposed to place
+  // 4 short orders, 5 buy orders?" — correct: half the ladder should be able to open.
+  const p = plan({ short: true, avg: 6.6512, mark: 6.667 })
+  t('four sells, as expected', p.entries === 4, p)
+  t('five buys', p.exits === 5, p.exits)
+  t('and one rung in the dead zone', p.deadZone === 1, p.deadZone)
+  t('the ladder is no longer lopsided', Math.abs(p.entries - p.exits) <= 1, p)
+  t('the range was opened above the mark', p.UPPER > 6.667 && p.opened, p.UPPER)
   // The bottom is untouched: exits still close below the average, which is the whole point
   // of anchoring there.
   t('the bottom is still anchored under the average', p.LOWER < 6.6512, p.LOWER)
+  // ~4.6 INJ a rung at these prices, so the short it can build is ~18 INJ on top of the 5
+  // already held — the size the report expected, rather than the 9.7 the timid fix allowed.
+  const ORDER_USD = 33.1
+  let sz = 0
+  for (let i = 0; i < 10; i++) { const px = p.LOWER + i * p.gap; if (px > 6.667 + p.gap / 2) sz += ORDER_USD / px }
+  t('and it can build a real short, not a token one', sz > 15 && sz < 22, +sz.toFixed(1))
 }
 
 console.log(nl + '-- and the long, which had the same flaw mirrored --')
 {
   const p = plan({ short: false, avg: 6.6512, mark: 6.30 })
-  t('a long under water can open again', p.entries >= 2, p)
+  t('a long under water gets the same even split', p.entries === 4 && p.exits === 5, p)
   t('the range was opened below the mark', p.LOWER < 6.30 && p.opened, p.LOWER)
   t('the top is still anchored above the average', p.UPPER > 6.6512, p.UPPER)
 }
@@ -103,7 +114,10 @@ console.log(nl + '-- however far it has run --')
 console.log(nl + '-- it is the code that does this, not just this test --')
 {
   t('the dead-grid check exists', src.includes('const _dead = () => IS_SHORT ? markPx >= UPPER : markPx <= LOWER'))
-  t('it clears the dead zone by a level and a half',
+  t('the entry side gets the same band, measured from the mark',
+    src.includes('if (IS_SHORT) UPPER = roundPx(Math.max(UPPER, markPx * (1 + PROFIT_BAND)))') &&
+    src.includes('else          LOWER = roundPx(Math.min(LOWER, markPx * (1 - PROFIT_BAND)))'))
+  t('with a floor that clears the dead zone by a level and a half',
     src.includes('IS_SHORT ? UPPER > markPx + _gap * 1.5 : LOWER < markPx - _gap * 1.5'))
   t('and it iterates, because widening also widens the gap', src.includes('for (let _pass = 0; _pass < 3; _pass++)'))
   t('it only fires when the grid would otherwise be dead', src.includes('if (_dead()) {'))
@@ -112,7 +126,8 @@ console.log(nl + '-- it is the code that does this, not just this test --')
   t('exits are still refused past the average, independently',
     src.includes('if (!exitProfitable(PRICES[i], avgEntry)) continue'))
   t('why the cap was not the safety is written down', src.includes('exitProfitable() refuses to close past the'))
-  t('and the reported case is recorded with its numbers', src.includes('avg $6.6512, mark $6.6582'))
+  t('and the report is recorded in its own words',
+    src.includes('is not supposed to place 4 short orders, 5 buy orders?'))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
