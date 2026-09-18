@@ -8760,7 +8760,18 @@ function _seriesValueAt(hist, ts) {
 function _mergeSeries(results, period, key, backfill = false) {
   const series = []
   for (const r of results) {
-    const entry = (r.portfolio ?? []).find(p => p[0] === period)
+    if (!r || r.error) continue
+    // A wallet whose portfolio has not arrived yet was simply skipped, and the sum of
+    // whatever HAD arrived was published as the combined total. That is the spike: two
+    // renders seconds apart read $6,692.38 and $6,804.30 because one more wallet had
+    // answered in between, and the earliest sample moved with it — so the baseline, and the
+    // percentage hanging off it, jumped too.
+    //
+    // Not loaded is not the same as holds nothing. An absent `portfolio` means the fetch is
+    // still out and there is no honest total to show; an empty history for THIS period on a
+    // wallet that did answer really is zero, and is skipped as before.
+    if (!Array.isArray(r.portfolio) || !r.portfolio.length) return []
+    const entry = r.portfolio.find(p => p[0] === period)
     const hist  = entry?.[1]?.[key] ?? []
     if (hist.length) series.push(hist.map(([ts, v]) => [+ts, parseFloat(v) || 0]))
   }
@@ -18250,7 +18261,7 @@ function _mobVRenderContent(tick = false) {
     // showing the summed amount/value; tapping expands to each account's own holding.
     const renderSpotGroup = (coin, items, id) => {
       const total = items.reduce((s, b) => s + parseFloat(b.total ?? 0), 0)
-      const px    = parseFloat(state.allMids?.[coin] ?? 0)
+      const px    = _spotMid(coin)
       const usdOf = t => px > 0 ? t * px : (coin === 'USDC' ? t : 0)
       const usd   = usdOf(total)
       // What the holding cost. HL reports it per balance as entryNtl, so ROI is real
@@ -18310,13 +18321,20 @@ function _mobVRenderContent(tick = false) {
           ${chev}
         </div>
         <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${
+          // Guarded on roi, not on cost. Same fix as the single-account row: roi is null
+          // when the market is not quoting, and `cost > 0` let that null reach .toFixed()
+          // and take the tab down. This is the combined view's copy of it — the single
+          // account was fixed first and this one was missed, which is why All Accounts
+          // still could not open Spot.
           cost > 0 ? _mobVDetailGrid([
             ['Cost', '$' + fmtUSD(cost)],
-            ['Value', '$' + fmtUSD(usd)],
+            ['Value', usd > 0 ? '$' + fmtUSD(usd) : '—'],
             ['Avg buy', total > 0 ? '$' + fmtPrice(cost / total) : '—'],
             ['Now', px > 0 ? '$' + fmtPrice(px) : '—'],
-            ['Profit', `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}`, pnl >= 0 ? 'var(--green)' : 'var(--red)'],
-            ['ROI', `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`, roi >= 0 ? 'var(--green)' : 'var(--red)'],
+            ...(roi == null ? [['Profit', 'No price for this market yet']] : [
+              ['Profit', `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}`, pnl >= 0 ? 'var(--green)' : 'var(--red)'],
+              ['ROI', `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`, roi >= 0 ? 'var(--green)' : 'var(--red)'],
+            ]),
           ]) : ''}${subRows}</div>
       </div>`
     }

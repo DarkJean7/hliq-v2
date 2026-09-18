@@ -51,8 +51,12 @@ const grp = cli.slice(cli.indexOf('const renderSpotGroup = (coin, items, id)'), 
 t('the group row computes a cost from entryNtl', grp.includes("items.reduce((s, b) => s + parseFloat(b.entryNtl ?? 0), 0)"))
 t('and shows ROI beside the value', grp.includes("${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%"))
 t('only when there is a basis', grp.includes("roi == null ? '' :"))
+// Value is dashed rather than printed as $0.00 when the market is not quoting the coin —
+// the same reason ROI is withheld there. Cost is unconditional: the ledger knows it.
 t('expanding shows what it cost and what it is worth',
-  grp.includes("['Cost', '$' + fmtUSD(cost)]") && grp.includes("['Value', '$' + fmtUSD(usd)]"))
+  grp.includes("['Cost', '$' + fmtUSD(cost)]") && grp.includes("['Value', usd > 0 ? '$' + fmtUSD(usd) : '—']"))
+t('and an unpriceable holding says so instead of claiming a profit',
+  grp.includes("['Profit', 'No price for this market yet']"))
 t('plus the average buy price against the current one',
   grp.includes("['Avg buy'") && grp.includes("['Now'"))
 t('and the profit in dollars, not only a percentage', grp.includes("['Profit'"))

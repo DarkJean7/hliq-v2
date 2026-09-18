@@ -57,10 +57,10 @@ Grep for a **string literal**, not a function name — the minifier renames func
 ## Before you push
 
 ```bash
-npm test        # 124 suites, no browser or network needed, a few seconds
+npm test        # 126 suites, no browser or network needed, a few seconds
 ```
 
-Expect `121 passing · 3 known-failing · 0 broken`. The three are listed with reasons in
+Expect `122 passing · 3 known-failing · 0 broken`. The three are listed with reasons in
 `tests/run.mjs`; they fail for causes outside this repo. **`broken` must be 0.**
 
 Suites read the source and assert against it, so they catch a surprising amount: a handler
@@ -139,10 +139,15 @@ thing that already failed.
   nothing ever reads. `src/agentkeys.js` is the shape that prevents it — it cannot see
   `state`, so the mistake cannot be made inside it. Use `_agentUiAddr()` for "which account is
   the UI about".
-- **Empty is not the same as unknown.** This has caused the same user-visible bug three
-  separate times: an empty array meaning "we did not look" was treated as "there is none",
-  and HIP-3 positions vanished from Net PnL. If you cannot tell the difference, pass `null`
-  and say so.
+- **Empty is not the same as unknown.** The most expensive rule in this file — it has now
+  caused five separate user-visible bugs. An empty array meaning "we did not look" read as
+  "there is none" and HIP-3 positions vanished from Net PnL; a partial wallet sum published
+  as a total made the combined equity jump by hundreds between renders. If you cannot tell
+  the difference, pass `null` and say so.
+- **A renderer usually has a second copy for the combined view.** `renderSpotRow` has
+  `renderSpotGroup`, the single-account cancel has the All-Accounts one, and so on. Fixing one
+  and shipping it is how the same crash gets reported twice in a row. After any fix here,
+  grep for the pattern before you claim it is done.
 - **Hyperliquid rate-limits by IP**, 1200 weight/min shared across `/info` and `/exchange`.
   Fanning a request across nine wallets is how the limiter gets tripped. Batch or cache.
 - **Agent keys can trade but cannot move funds.** Anything that moves money needs the main

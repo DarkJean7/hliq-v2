@@ -136,6 +136,29 @@ console.log(NL + '-- the strip says HYPE, not @107 --')
   t('the icon resolves the pair to its token — HYP, not @10', /^(img:http|HYP)/.test(ic), true)
 }
 
+console.log(NL + '-- and the same tab in ALL ACCOUNTS --')
+{
+  // The combined view has its OWN copy of the spot renderer (renderSpotGroup). The
+  // single-account one was fixed first and this was missed, so "spot tab is not working in
+  // all accounts" was the same null .toFixed() all over again, one function along.
+  await p.evaluate(() => {
+    const w = [{ addr: '0xaa7Ad5Fa4D99D9BF3397232Df7F4523853538159', label: 'One' },
+               { addr: '0x84Ceb6127A07bf6c7234470F4ca8563DeEDc7c6F', label: 'Two' }]
+    localStorage.setItem('savedWallets', JSON.stringify(w))
+  })
+  await p.evaluate(() => window.__goAllAccounts())
+  await waitFor(p, 'the combined view', () => !!window.__getTradeAcct?.() || !!document.body.innerText.match(/All Accounts/i), 45000)
+  await p.waitForTimeout(2500)
+  const before = errs.length
+  await p.evaluate(() => window.mobVTab('spot'))
+  await p.waitForTimeout(2000)
+  t('the tab opens without throwing', errs.slice(before).filter(e => /toFixed/.test(e)), [])
+  const txt = await p.evaluate(() => document.getElementById('mobVContent')?.innerText ?? '')
+  t('and it drew something', txt.length > 0, true)
+  // Grouped rows price through the pair too, so KNTQ is not a dash here either.
+  if (/KNTQ/.test(txt)) t('KNTQ is priced in the combined view', /0\.264/.test(txt), true)
+}
+
 await browser.close()
 console.log('\nerrors: ' + (errs.length ? JSON.stringify(errs.slice(0, 3)) : 'none'))
 console.log(pass + ' passed, ' + (fail + errs.length) + ' failed')
