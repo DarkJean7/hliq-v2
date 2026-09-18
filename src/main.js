@@ -2292,8 +2292,13 @@ async function connectAgentKeyUI() {
     dotEl.classList.add('connected')
     statusEl.innerHTML = `✓ Connected: <span style="color:var(--accent)">${addr.slice(0, 6)}...${addr.slice(-4)}</span>`
     statusEl.style.color = 'var(--green)'
-    if (state.addr) localStorage.setItem(_agentKeyForAddr(state.addr), keyVal)
+    const _target = _agentUiAddr()
+    if (_target) localStorage.setItem(_agentKeyForAddr(_target), keyVal)
     else localStorage.setItem('hliq_agent_key', keyVal)
+    // Register it for THAT account so the combined view can sign with it immediately rather
+    // than waiting for the next re-registration pass.
+    if (_target) { try { await registerAgentKey(_target, keyVal) } catch {} }
+    _syncAgentKeyUI(_target)
     _lbJoinOwned()   // a wallet with a key is one of this user's: put it on the board
     const stratInput = document.getElementById('agentKey')
     if (stratInput) stratInput.value = keyVal
@@ -7556,7 +7561,12 @@ setAgentKeyResolver(addr => {
 // Which wallet new orders are placed from while the combined view is active.
 // There is no "current" account there, so the user must pick one explicitly.
 let _tradeAcct = null
-window.__setTradeAcct = function(v) { _tradeAcct = v || null }
+window.__setTradeAcct = function(v) {
+  _tradeAcct = v || null
+  // The key on screen follows the account you just picked. Without this the panel kept
+  // showing whichever account was loaded before the combined view opened.
+  try { _syncAgentKeyUI() } catch {}
+}
 window.__getTradeAcct = function() {
   if (!state.isAllAccounts) return null
   if (_tradeAcct) return _tradeAcct
@@ -7990,6 +8000,8 @@ async function loadAllAccountsDashboard() {
   // Load each wallet's agent key up front so per-position actions sign as their owning
   // account. Wallets without a key just get their action buttons disabled.
   await _allAcctRegisterAgents()
+  // Now that the registry knows which accounts can sign, show the selected one's key.
+  try { _syncAgentKeyUI() } catch {}
   // Powers the "Grid:HYPE" bot pills on the per-account cards.
   serverFetch('/api/status/all').then(st => {
     _maBotStatus = st ?? {}; _syncAllAcctCards()
@@ -18744,10 +18756,10 @@ function _mobVRenderContent(tick = false) {
     const mainConnected = isMainWalletConnected()
     const mainAddr     = getMainAddress?.() || state.addr || ''
     const walletStatus = mainConnected ? (mainAddr ? mainAddr.slice(0, 8) + '…' + mainAddr.slice(-5) : 'Connected') : 'Not connected'
-    const savedKey     = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null) || ''   // this account's own key ONLY (no global/other-account fallback)
+    const savedKey     = _agentKeyInView() || ''   // this account's own key ONLY (no global/other-account fallback)
     // A stored key HL no longer recognizes (replaced from another device / wrong account) —
     // say so here rather than letting it fail mid-order.
-    const agentBad     = !!savedKey && window.__agentKeyBad(state.addr)
+    const agentBad     = !!savedKey && window.__agentKeyBad(_agentUiAddr())
     const agentStatus  = agentBad ? 'Not valid on Hyperliquid'
                        : isConnected() ? 'Connected' : (savedKey ? 'Saved — not active' : 'Not connected')
     const agentCls     = agentBad ? 'var(--neg)' : isConnected() ? 'var(--green)' : 'var(--muted)'
@@ -23313,12 +23325,20 @@ window._mobVConnectAgentKey = async function() {
   setStatus('Connecting…', 'var(--muted)')
   try {
     const addr = await connectAgentKey(keyVal)
-    if (state.addr) localStorage.setItem(_agentKeyForAddr(state.addr), keyVal)
+    const _target = _agentUiAddr()
+    if (_target) localStorage.setItem(_agentKeyForAddr(_target), keyVal)
     else localStorage.setItem('hliq_agent_key', keyVal)
+    // Register it for THAT account so the combined view can sign with it immediately rather
+    // than waiting for the next re-registration pass.
+    if (_target) { try { await registerAgentKey(_target, keyVal) } catch {} }
+    _syncAgentKeyUI(_target)
     _lbJoinOwned()   // a wallet with a key is one of this user's: put it on the board
     const agentInputDesktop = document.getElementById('agentKey')
     if (agentInputDesktop) agentInputDesktop.value = keyVal
-    setStatus(`Connected: ${addr.slice(0, 6)}…${addr.slice(-4)}`, 'var(--green)')
+    const _label = _target ? (WM.getLabel(_target) || _target.slice(0, 6) + '…' + _target.slice(-4)) : ''
+    // Whose key it is. It used to print the AGENT's address, which matches no account the
+    // user has ever seen — the single most confusing thing about this panel.
+    setStatus(_label ? `Connected — signs for ${_label}` : `Connected: ${addr.slice(0, 6)}…${addr.slice(-4)}`, 'var(--green)')
     _ensureReferrer()
     updateSubmitBtn()
     _refreshWalletUI()   // repaint Settings so the "Connected" state shows without a reopen
@@ -24473,7 +24493,7 @@ async function _restoreBotAfterFailedEdit(type, instance, agentKey, origArgs, wh
 async function updateStrategy(type) {
   const ed = _deskEditing
   if (!ed || ed.type !== type) return runStrategy(type)
-  const agentKey = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null)
+  const agentKey = _agentKeyInView()
                 || document.getElementById('agentKey')?.value?.trim()
   if (!agentKey) { alert('Enter your Agent Private Key above.'); return }
   if (!state.addr) { alert('Load a wallet address before updating a strategy.'); return }
@@ -25667,11 +25687,13 @@ function _stratAcctPickerHtml() {
     const on  = w.addr.toLowerCase() === cur
     const key = !!localStorage.getItem(_agentKeyForAddr(w.addr))
     const lbl = w.label || (w.addr.slice(0, 6) + '…' + w.addr.slice(-4))
-    // An account with no agent key cannot run anything; say so rather than let it be
-    // picked and fail at the server.
-    return `<button data-strat-acct="${esc(w.addr)}" ${key ? '' : 'disabled'}
+    // An account with no agent key cannot run anything — but it stays PICKABLE, because
+    // picking it is how you get to its key: the agent-key panel above repaints for whichever
+    // account is selected here. Disabling it left the only wallet missing a key unreachable
+    // from the combined view.
+    return `<button data-strat-acct="${esc(w.addr)}"
       onclick="window.__pickStratAcct('${esc(w.addr)}')"
-      style="padding:6px 11px;border-radius:9px;font-size:12px;font-weight:700;cursor:${key ? 'pointer' : 'not-allowed'};
+      style="padding:6px 11px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;
              white-space:nowrap;opacity:${key ? '1' : '.4'};
              border:1px solid ${on ? 'var(--accent)' : 'var(--border2)'};
              background:${on ? 'color-mix(in oklch,var(--accent) 15%,transparent)' : 'var(--panel-2)'};
@@ -25682,16 +25704,23 @@ function _stratAcctPickerHtml() {
       <div style="font-size:13px;font-weight:600">${_T('Run bots on', 'Ejecutar bots en')}</div>
       <div id="stratAcctPills" data-dragscroll style="display:flex;gap:6px;min-width:0;overflow-x:auto;scrollbar-width:none;padding-bottom:2px">${rows}</div>
       <div style="font-size:11px;color:var(--muted)">${
-        _T('Bots are armed on this account and signed with its agent key. 🔑 means no key saved yet.',
-           'Los bots se activan en esta cuenta y se firman con su clave de agente. 🔑 significa que aún no hay clave guardada.')}</div>
+        _T('Bots are armed on this account and signed with its agent key. 🔑 means no key saved yet — pick it to add one.',
+           'Los bots se activan en esta cuenta y se firman con su clave de agente. 🔑 significa que aún no hay clave guardada — selecciónala para añadir una.')}</div>
     </div>
   </div>`
 }
 
 window.__pickStratAcct = function(addr) {
+  const hadKey = !!_agentKeyInView()
   window.__setTradeAcct(addr)
   // A full re-render would wipe half-typed config; repaint the pills in place, like the
-  // trade tab does.
+  // trade tab does. The exception is going from an account with a key to one without (or
+  // back): the key block is a different block entirely — input and "clear" versus the
+  // auto-generate button — and patching a value into it would leave the wrong controls up.
+  if (hadKey !== !!_agentKeyInView() && _mobVActiveTab === 'strategies') {
+    const el = document.getElementById('mobVContent')
+    if (el) { _mobVRenderStrategies(el); return }
+  }
   const cur = String(addr).toLowerCase()
   document.querySelectorAll('#stratAcctPills [data-strat-acct]').forEach(b => {
     const on = b.dataset.stratAcct.toLowerCase() === cur
@@ -27161,16 +27190,14 @@ function _mobVRenderStrategies(el) {
   const serverBadge = serverOnline
     ? `<span style="font-size:11px;color:var(--green)">server ● online</span>`
     : `<span style="font-size:11px;color:var(--red)">server ○ offline</span>`
-  // isConnected()/getWalletAddress() describe the ONE globally-connected client, which in
-  // the combined view is whichever account happened to connect last — not the one selected.
-  // hasAgentFor asks the per-account registry instead.
+  // This used to fall back to isConnected()/getWalletAddress() — the ONE globally-connected
+  // client, which in the combined view is whichever account connected last. A wallet with no
+  // key of its own therefore showed a green "saved" belonging to a different wallet. The
+  // status now comes from the same place the desktop panel gets it, keyed by account.
   const _tgt        = _stratTargetAddr()
   const _hasKey     = !!savedKey
-  const agentAddr   = _hasKey ? (() => { try { return agentAddressOf(savedKey) } catch { return null } })()
-                    : (isConnected() ? getWalletAddress() : null)
-  const agentStatus = agentAddr
-    ? `<span style="color:var(--green)">✓ ${_T('Saved for this account', 'Guardada para esta cuenta')}: ${agentAddr.slice(0,6)}...${agentAddr.slice(-4)}</span>`
-    : `<span style="color:var(--muted)">${_T('No key saved for this account', 'Sin clave guardada para esta cuenta')}</span>`
+  const _st         = _agentStatusFor(_tgt)
+  const agentStatus = `<span style="color:${_st.colour}">${_st.html}</span>`
 
   const stratsConfig = [
     { type: 'accumulator', label: _T('🪙 Profit Stack', '🪙 Pila de ganancias'), desc: _T('Skim a % of winning trades into spot', 'Aparta un % de las operaciones ganadoras en spot') },
@@ -28096,7 +28123,7 @@ async function runStrategy(type) {
     if (window.__paperBotStart(type)) { checkServer(); updateAllStrategyButtons() }
     return
   }
-  const agentKey = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null)
+  const agentKey = _agentKeyInView()
                 || document.getElementById('agentKey')?.value?.trim()
   if (!agentKey) { alert('Enter your Agent Private Key in the Strategies tab before running.'); return }
   if (!state.addr) { alert('Load a wallet address before running a strategy.'); return }
@@ -28654,29 +28681,23 @@ function _agentKeyForAddr(addr) {
 // the main wallet alone. Keep it only in the main wallet's slot; clear it from the rest so no
 // account shows or signs with a key that isn't its own. Deferred until the main wallet is
 // connected so we can identify which copy to keep (retries via restoreAgentKey each load).
-function _dedupeAgentKeys() {
-  try {
-    if (localStorage.getItem('hliq_agentkey_dedupe_v1') === '1') return
-    const main = (typeof getMainAddress === 'function' ? (getMainAddress() || '') : '').toLowerCase()
-    if (!main) return
-    const entries = []
-    for (let i = 0; i < localStorage.length; i++) {
-      const sk = localStorage.key(i)
-      if (sk && sk.startsWith('hliq_agent_key_') && sk !== 'hliq_agent_key') entries.push([sk, localStorage.getItem(sk)])
-    }
-    const counts = new Map()
-    for (const [, v] of entries) if (v) counts.set(v, (counts.get(v) || 0) + 1)
-    const mainSk = 'hliq_agent_key_' + main
-    for (const [sk, v] of entries) {
-      if (!v || (counts.get(v) || 0) < 2) continue   // unique value = a legit per-account key, keep
-      if (sk === mainSk) continue                     // keep the main wallet's copy
-      localStorage.removeItem(sk)                      // drop the mis-migrated duplicate from other accounts
-    }
-    localStorage.setItem('hliq_agentkey_dedupe_v1', '1')
-  } catch {}
-}
+/**
+ * THIS USED TO DELETE AGENT KEYS, and that is why they went missing.
+ *
+ * It assumed a key stored under two accounts had to be a mis-migration, and removed every
+ * copy but the connected main wallet's. But one agent wallet can legitimately be approved by
+ * SEVERAL master accounts — that is a normal Hyperliquid setup, and a common one for someone
+ * running bots on all their wallets from one key. Their other accounts simply lost it, with
+ * nothing on screen to say why.
+ *
+ * Nothing here removes a key any more. A key that does not work for an account is caught by
+ * the preflight sweep and SHOWN as not approved (_agentBadAccts), which is the honest way to
+ * handle it: the user decides what to do about it, and a wrong key can never be silently
+ * signed with because every action routes through the account's own registered client.
+ */
+function _dedupeAgentKeys() { /* intentionally does nothing — see above */ }
 function _updateAutoGenBtnVisibility() {
-  const hasKey    = !!(state.addr && localStorage.getItem(_agentKeyForAddr(state.addr)))
+  const hasKey    = !!_agentKeyInView()
   const connected = isMainWalletConnected()
   const label     = connected ? '⚡ Auto-generate' : '🔗 Connect wallet'
   for (const id of ['desktopAutoGenBtn', 'tradeAutoGenBtn']) {
@@ -28687,13 +28708,16 @@ function _updateAutoGenBtnVisibility() {
   }
 }
 window.__saveAgentKey = function(val) {
-  // Target, not state.addr: in the combined view state.addr is "__all_accounts__", so this
-  // was writing keys to hliq_agent_key___all_accounts__ — a junk entry no account ever
-  // reads. Identical outside the combined view, where target IS state.addr.
-  const _a = (typeof _stratTargetAddr === 'function' ? _stratTargetAddr() : null) ?? state.addr
+  // The account in view, not state.addr: in the combined view state.addr is
+  // "__all_accounts__", so this wrote keys to hliq_agent_key___all_accounts__ — a junk entry
+  // no account ever reads. Identical outside the combined view, where the two are the same.
+  const _a = _agentUiAddr()
   if (val && _a) {
     localStorage.setItem(_agentKeyForAddr(_a), val)
-    _updateAutoGenBtnVisibility()
+    if (val.length >= 66) { try { registerAgentKey(_a, val) } catch {} }
+    // Repaint the other mirrors (trade field, status, dot) from the account this was saved
+    // under. Never touches the field being typed in: the sync only writes a value that differs.
+    _syncAgentKeyUI(_a)
   }
 }
 
@@ -28714,7 +28738,7 @@ window.__mobConnectAgentKey = async function() {
 // auto-generate. Used by the trade buttons (and anywhere an agent key is required)
 // so the user never hits a dead "Connect agent key" wall.
 window.__quickConnectAgent = async function() {
-  const saved = state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null
+  const saved = _agentKeyInView()
   if (saved) {
     try { await connectAgentKey(saved); updateSubmitBtn(); updateTradeBalance(); if (_isMobView()) _mobVRenderContent() } catch {}
     return
@@ -28734,16 +28758,21 @@ window.__quickConnectAgent = async function() {
 }
 
 window.__autoGenerateAgentKey = async function() {
-  const existingKey = state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null
+  const existingKey = _agentKeyInView()
   if (existingKey) return
+  // The account this key will belong to — in the combined view, the one picked inside it.
+  const _acct = _agentUiAddr()
 
   if (!isMainWalletConnected()) {
     alert('Connect your wallet first.\n\nThis proves you own the address and lets the app approve the agent key on Hyperliquid on your behalf.')
     return
   }
   const mainAddr = getMainAddress()?.toLowerCase()
-  if (!state.addr || mainAddr !== state.addr.toLowerCase()) {
-    alert('Connected wallet (' + (mainAddr ? mainAddr.slice(0,6) + '…' + mainAddr.slice(-4) : '?') + ') does not match the address you\'re viewing.\n\nSwitch to this address in your wallet and reconnect.')
+  // Only the master wallet can approve an agent for itself, so the connected wallet has to BE
+  // the account we are generating for. Compared against the account in view rather than
+  // state.addr, so this works from inside the combined view too.
+  if (!_acct || mainAddr !== _acct.toLowerCase()) {
+    alert('Connected wallet (' + (mainAddr ? mainAddr.slice(0,6) + '…' + mainAddr.slice(-4) : '?') + ') does not match the account you\'re generating a key for.\n\nSwitch to that address in your wallet and reconnect.')
     return
   }
 
@@ -28761,23 +28790,14 @@ window.__autoGenerateAgentKey = async function() {
     setTimeout(() => { try { wakeWallet() } catch (_) {} }, 350)
     await _approval
 
-    window.__saveAgentKey(privateKey)
-    const connectedAddr = await connectAgentKey(privateKey)
+    localStorage.setItem(_agentKeyForAddr(_acct), privateKey)
+    try { await registerAgentKey(_acct, privateKey) } catch {}
+    await connectAgentKey(privateKey)
+    try { _agentBadAccts.delete(_acct.toLowerCase()) } catch {}
 
-    const stratInput = document.getElementById('agentKey')
-    if (stratInput) stratInput.value = privateKey
-    const mobInput = document.getElementById('m-agentKey')
-    if (mobInput) mobInput.value = privateKey
     const mobSet = document.getElementById('mobVAgentKeyInput')
     if (mobSet) mobSet.value = privateKey
-
-    const dotEl    = document.getElementById('apiStatusDot')
-    const statusEl = document.getElementById('apiConnectStatus')
-    if (dotEl)    dotEl.classList.add('connected')
-    if (statusEl) {
-      statusEl.innerHTML = `✓ Connected: <span style="color:var(--accent)">${connectedAddr.slice(0,6)}...${connectedAddr.slice(-4)}</span>`
-      statusEl.style.color = 'var(--green)'
-    }
+    _syncAgentKeyUI(_acct)
     _syncSettingsTab()
     _updateAutoGenBtnVisibility()
     _ensureReferrer()
@@ -28826,6 +28846,71 @@ function _disconnectAgentKeyUI() {
   disconnect()
   _updateAvailDisplay()
 }
+/**
+ * The account the agent-key UI is about: the one on screen, or — in the combined view, where
+ * `state.addr` is the "__all_accounts__" sentinel — whichever account is selected inside it.
+ *
+ * "if im in account 1, show and use agent key of wallet 1, if i change to account 2, display
+ * and use agent key of account 2. when in all accounts do the same behavior since in it you
+ * can also choose the account inside all accounts."
+ */
+function _agentUiAddr() {
+  const a = _stratTargetAddr() ?? state.addr
+  return _isRealAddr(a) ? a : null
+}
+
+/**
+ * Paint the agent-key inputs and status for ONE account — the single source of truth for
+ * both shells. Every path that can change which account is in view calls this, so the key on
+ * screen is always the key that will sign, and it always belongs to the account named beside
+ * it.
+ */
+/**
+ * Whose key it is, not just that there is one. With several accounts, "Connected" alone never
+ * said which wallet would sign — and in the combined view it was worse than silent: it
+ * reported the ONE globally-connected client, so an account with no key of its own showed a
+ * green "connected" borrowed from whichever account connected last.
+ */
+function _agentStatusFor(addr) {
+  const mut = 'var(--muted)'
+  if (addr === PAPER_ADDR) return { html: 'Practice account — no key needed', colour: mut }
+  if (!_isRealAddr(addr))  return { html: 'Not connected', colour: mut }
+  const label = esc(WM.getLabel(addr) || addr.slice(0, 6) + '…' + addr.slice(-4))
+  let key = null
+  try { key = localStorage.getItem(_agentKeyForAddr(addr)) } catch {}
+  if (!key) return { html: `No key saved for <span class="notranslate">${label}</span>`, colour: mut }
+  if (typeof window.__agentKeyBad === 'function' && window.__agentKeyBad(addr)) {
+    return { html: `⚠ Not approved for <span class="notranslate">${label}</span> — generate a new key`, colour: 'var(--neg)' }
+  }
+  return { html: `✓ Connected · signs for <span style="color:var(--accent)" class="notranslate">${label}</span>`, colour: 'var(--green)' }
+}
+
+function _syncAgentKeyUI(addr = _agentUiAddr()) {
+  const key = addr ? localStorage.getItem(_agentKeyForAddr(addr)) : null
+  const set = (id, v) => { const el = document.getElementById(id); if (el && el.value !== v) el.value = v }
+  for (const id of ['agentKey', 'privateKeyInput', 'm-agentKey']) set(id, key ?? '')
+  const dot = document.getElementById('apiStatusDot')
+  if (dot) dot.classList.toggle('connected', !!key)
+  const { html, colour } = _agentStatusFor(addr)
+  for (const id of ['apiConnectStatus', 'm-agentKeyStatus']) {
+    const el = document.getElementById(id)
+    if (el) { el.innerHTML = html; el.style.color = colour }
+  }
+  _updateAutoGenBtnVisibility()
+}
+window.__syncAgentKeyUI = (a) => _syncAgentKeyUI(a)
+
+/**
+ * The key belonging to the account in view — the only key any of this app's controls should
+ * read. Everything below used to ask for `state.addr`'s key, which in the combined view is the
+ * "__all_accounts__" sentinel: no key, so the panel looked empty and the buttons offered to
+ * generate one that already existed.
+ */
+function _agentKeyInView() {
+  const a = _agentUiAddr()
+  try { return a ? localStorage.getItem(_agentKeyForAddr(a)) : null } catch { return null }
+}
+
 function restoreAgentKey(addr) {
   const lookupAddr = addr || state.addr
   if (!lookupAddr) return
@@ -28844,28 +28929,14 @@ function restoreAgentKey(addr) {
     }
   }
   const savedKey = localStorage.getItem(_agentKeyForAddr(lookupAddr))   // this account's own key ONLY
-  const el = document.getElementById('agentKey')
-  const tradeInput = document.getElementById('privateKeyInput')
-  _updateAutoGenBtnVisibility()
-  if (!savedKey) {
-    if (el) el.value = ''
-    if (tradeInput) tradeInput.value = ''
-    return
-  }
-  if (el) el.value = savedKey
-  if (tradeInput) tradeInput.value = savedKey
-  connectAgentKey(savedKey).then(connectedAddr => {
-    // Account switched between kicking off this restore and it resolving — a
-    // later loadDashboard has already disconnected/reconnected the correct key,
-    // so don't paint this (now-stale) account's "Connected" status over it.
+  _syncAgentKeyUI(lookupAddr)
+  if (!savedKey) return
+  connectAgentKey(savedKey).then(() => {
+    // Account switched between kicking off this restore and it resolving — a later
+    // loadDashboard has already disconnected/reconnected the correct key, so don't paint this
+    // (now-stale) account's status over it.
     if (state.addr !== lookupAddr) return
-    const dotEl    = document.getElementById('apiStatusDot')
-    const statusEl = document.getElementById('apiConnectStatus')
-    if (dotEl) dotEl.classList.add('connected')
-    if (statusEl) {
-      statusEl.innerHTML = `✓ Connected: <span style="color:var(--accent)">${connectedAddr.slice(0,6)}...${connectedAddr.slice(-4)}</span>`
-      statusEl.style.color = 'var(--green)'
-    }
+    _syncAgentKeyUI(lookupAddr)
     _ensureReferrer()
     updateSubmitBtn()
     updateTradeBalance()
@@ -29094,7 +29165,7 @@ window.__pinShowPad = function() {
 // Replace an agent key HL no longer recognizes: drop the stale one, then run the normal
 // approve+store flow. Needs the owning wallet connected as the active account to sign.
 window.__regenAgentKey = async function() {
-  const acct = state.addr
+  const acct = _agentUiAddr()   // the account in view, which in the combined view is the picked one
   if (!_isRealAddr(acct)) { _paperToast('⚠ ' + _T('Open that account first', 'Abre esa cuenta primero')); return }
   const cur = (() => { try { return String(getMainAddress() ?? '').toLowerCase() } catch { return '' } })()
   if (!isMainWalletConnected() || cur !== acct.toLowerCase()) {
@@ -29111,7 +29182,7 @@ window.__regenAgentKey = async function() {
 }
 
 window.__clearAgentKey = async function() {
-  const acct  = (typeof _stratTargetAddr === 'function' ? _stratTargetAddr() : null) ?? state.addr
+  const acct  = _agentUiAddr()
   const label = acct === PAPER_ADDR ? 'the paper account'
     : (acct && acct.startsWith('0x')) ? (WM.getLabel(acct) || acct.slice(0, 6) + '…' + acct.slice(-4))
     : 'this account'
@@ -29130,15 +29201,9 @@ window.__clearAgentKey = async function() {
   if (stratInput) stratInput.value = ''
   if (mobInput)   mobInput.value   = ''
   disconnect()
-  const dotEl    = document.getElementById('apiStatusDot')
-  const statusEl = document.getElementById('apiConnectStatus')
-  if (dotEl) dotEl.classList.remove('connected')
-  if (statusEl) { statusEl.textContent = 'Not connected'; statusEl.style.color = '' }
+  _syncAgentKeyUI(acct)   // every field and status, from the one place that knows
   updateSubmitBtn?.()
   _syncSettingsTab()
-  _updateAutoGenBtnVisibility()
-  const mobStatus = document.getElementById('m-agentKeyStatus')
-  if (mobStatus) { mobStatus.innerHTML = '<span style="color:var(--muted)">Not connected</span>'; mobStatus.style.color = '' }
   if (_mobVActiveTab === 'strategies') {
     const mobEl = document.getElementById('mobVContent')
     if (mobEl) _mobVRenderStrategies(mobEl)
@@ -29159,10 +29224,16 @@ function _syncSettingsTab() {
   const langNameEl = document.getElementById('langCurrentName')
   if (langNameEl) langNameEl.textContent = _LANG_NAMES[savedLang] || 'English'
   // Agent key
-  const agentKey = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null) || localStorage.getItem('hliq_agent_key')
+  const agentKey = _agentKeyInView() || localStorage.getItem('hliq_agent_key')
   const statusEl = document.getElementById('agentKeySavedStatus')
   const clearBtn = document.getElementById('agentKeyClearBtn')
-  if (statusEl) statusEl.textContent = agentKey ? 'Saved — auto-connects on load' : 'Not saved'
+  // Name the account. With several wallets saved, "Saved" alone never said whose key this is,
+  // and Clear beside it looked like it would clear all of them.
+  const _agentAcct  = _agentUiAddr()
+  const _agentLabel = _agentAcct ? (WM.getLabel(_agentAcct) || _agentAcct.slice(0, 6) + '…' + _agentAcct.slice(-4)) : ''
+  if (statusEl) statusEl.textContent = agentKey
+    ? (_agentLabel ? 'Saved for ' + _agentLabel + ' — auto-connects on load' : 'Saved — auto-connects on load')
+    : (_agentLabel ? 'Not saved for ' + _agentLabel : 'Not saved')
   if (statusEl) statusEl.style.color = agentKey ? 'var(--green)' : 'var(--muted)'
   if (clearBtn) clearBtn.style.display = agentKey ? '' : 'none'
 
@@ -34828,7 +34899,7 @@ window.__ocBotPreview = function() {
 window.__ocBotStart = async function() {
   const c = state.ocBotCfg; if (!c) return
   const statusEl = document.getElementById('ocBotStatus')
-  const agentKey = (state.addr ? localStorage.getItem(_agentKeyForAddr(state.addr)) : null)
+  const agentKey = _agentKeyInView()
         || document.getElementById('m-agentKey')?.value?.trim()
         || document.getElementById('agentKey')?.value?.trim()
   if (!agentKey) { showTradeStatus(statusEl, 'error', 'Enter your Agent Private Key first (Strategies tab).'); return }

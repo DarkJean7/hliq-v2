@@ -71,8 +71,14 @@ t('the picker comes before what is running, not after',
   strat.indexOf('_stratAcctPickerHtml()') < strat.indexOf('_allAcctRunningHtml()'))
 
 const pick = grab(cli, 'function _stratAcctPickerHtml()')
-t('an account with no agent key cannot be picked', pick.includes("${key ? '' : 'disabled'}"))
+// This used to assert the opposite -- a keyless account was `disabled`. That made the one
+// wallet still missing a key the one wallet you could not reach: the agent-key panel above
+// paints whichever account is selected here, so selecting it IS how you give it a key.
+// It stays marked, and nothing can run on it until the key exists.
+t('a keyless account can still be picked, because that is how it gets a key',
+  !pick.includes('disabled'))
 t('and is marked, rather than silently failing at the server', pick.includes("' 🔑'"))
+t('the hint says what the mark means and what to do', pick.includes('pick it to add one'))
 t('it reuses the trade-tab selection rather than a second setting',
   grab(cli, 'window.__pickStratAcct = function(addr)').includes('window.__setTradeAcct(addr)'))
 t('picking repaints in place, so half-typed config is not wiped',
@@ -96,9 +102,16 @@ t('the copy no longer tells the user to switch accounts to start a bot',
 // ── the agent-key block must not ask for keys that already exist ─────────────
 t('the saved key is read from the TARGET, not the sentinel',
   strat.includes('const savedKey = _stratTargetKey()'))
-t('status comes from that key, not from whichever client connected last',
-  strat.includes('agentAddressOf(savedKey)'))
-t('and says it is saved for THIS account', strat.includes('Saved for this account'))
+// Both of these described a status line built here, from the agent wallet's address. It
+// named something the user has never seen (the agent, not the account) and, with no key
+// saved, fell back to isConnected()/getWalletAddress() -- the ONE globally-connected client
+// -- so a wallet with no key showed a green "saved" belonging to a different wallet. The
+// line now comes from _agentStatusFor, the same source the desktop panel uses, keyed by
+// account and naming it.
+t('status comes from the shared, per-account answer',
+  strat.includes('const _st         = _agentStatusFor(_tgt)'))
+t('and never from whichever client connected last',
+  !strat.includes('agentAddressOf(savedKey)') && !strat.includes('isConnected() ? getWalletAddress()'))
 t('when a key exists the paste box is collapsed behind a disclosure',
   strat.includes('Replace or clear this key'))
 t('and it is still reachable, not removed',
@@ -108,10 +121,13 @@ t('the auto-generate button only shows when there is genuinely no key',
 
 // Typing in that box used to write hliq_agent_key___all_accounts__ — a junk entry.
 const save = grab(cli, 'window.__saveAgentKey = function(val)')
-t('saving a key targets the selected account', save.includes('_stratTargetAddr()'))
+// _agentUiAddr is _stratTargetAddr with a real-address check, so the sentinel and the paper
+// address come back as null instead of being used as a storage key. One name for "the
+// account the key UI is about", used by every reader and writer.
+t('saving a key targets the account in view', save.includes('_agentUiAddr()'))
 t('and no longer writes under the sentinel', !save.includes('_agentKeyForAddr(state.addr)'))
 t('clearing targets it too',
-  grab(cli, 'window.__clearAgentKey = async function()').includes('_stratTargetAddr()'))
+  grab(cli, 'window.__clearAgentKey = async function()').includes('_agentUiAddr()'))
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
