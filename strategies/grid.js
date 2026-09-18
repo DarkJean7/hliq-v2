@@ -717,7 +717,14 @@ async function run() {
       // the dead zone. It also scales sanely when the position has run a long way against the
       // grid — the exit end stays anchored near the average, so the level budget naturally
       // tilts back towards closing rather than piling in.
-      const _dead = () => IS_SHORT ? markPx >= UPPER : markPx <= LOWER
+      // "Dead" means NO LEVEL CAN HOLD AN ENTRY — not "the mark crossed the bound", which is
+      // what this asked first and got wrong. An entry needs px beyond mark ± gap/2, so the
+      // ladder is dead whenever its entry END fails that test, and the mark does not have to
+      // be outside the range for that: at avg $6.6512 and mark $6.6324 the mark was INSIDE
+      // the range and the top level was still $0.0255 short of placeable. Zero sells, again.
+      const _endGap = () => (UPPER - LOWER) / Math.max(1, LEVELS - 1)
+      const _dead = () => IS_SHORT ? UPPER <= markPx + _endGap() * 0.5
+                                   : LOWER >= markPx - _endGap() * 0.5
       if (_dead()) {
         const _before = IS_SHORT ? UPPER : LOWER
         if (IS_SHORT) UPPER = roundPx(Math.max(UPPER, markPx * (1 + PROFIT_BAND)))

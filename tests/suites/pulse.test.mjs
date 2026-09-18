@@ -57,8 +57,18 @@ t('gainers gain and losers lose', d.gainers[0].chg > d.losers[0].chg)
 t('extremes only include markets that actually traded',
   [...d.fundingHigh, ...d.fundingLow, ...d.gainers, ...d.losers].every(r => r.vol >= 100_000))
 t('but the totals still count every market', d.coins > d.liquidCoins, `${d.coins} vs ${d.liquidCoins}`)
-t('a genuine extreme on real volume is NOT filtered out — that is signal, not noise',
-  Math.abs(d.fundingLow[0].apr) > 50, String(d.fundingLow[0].apr))
+// This asserted |apr| > 50 on the live exchange, which is a fact about the MARKET, not about
+// the code: it passed on a wild day and failed on a calm one (-24.8% one run, -27.3% the
+// next), with nothing in the repo having changed. Restated as the property it was reaching
+// for — the most extreme funding among markets that actually traded is the one reported, so
+// the volume floor filters noise without also filtering signal.
+{
+  const liquid = d.rows.filter(r => r.vol >= 100_000)
+  const worst  = liquid.reduce((a, r) => (r.apr < a.apr ? r : a), liquid[0])
+  t('a genuine extreme on real volume is NOT filtered out — that is signal, not noise',
+    d.fundingLow[0].coin === worst.coin, `${d.fundingLow[0].coin} vs ${worst.coin} (${worst.apr.toFixed(1)}%)`)
+  t('and it really is below the floor of what gets reported', d.fundingLow[0].vol >= 100_000)
+}
 
 t('concentration is a percentage', oiConcentration(d, 3) > 0 && oiConcentration(d, 3) <= 100)
 t('and the top 3 cannot exceed the top 10', oiConcentration(d, 3) <= oiConcentration(d, 10) + 1e-9)

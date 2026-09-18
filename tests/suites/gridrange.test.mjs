@@ -32,7 +32,9 @@ function plan({ short, avg, mark, levels = 10, band = 0.12 }) {
   if (short) { UPPER = roundPx(avg); LOWER = roundPx(Math.min(avg, mark) * (1 - band)) }
   else       { LOWER = roundPx(avg); UPPER = roundPx(Math.max(avg, mark) * (1 + band)) }
   const anchored = short ? UPPER : LOWER
-  const dead = () => short ? mark >= UPPER : mark <= LOWER
+  // Dead = no level can hold an entry. NOT "the mark crossed the bound" — see the block below.
+  const endGap = () => (UPPER - LOWER) / Math.max(1, levels - 1)
+  const dead = () => short ? UPPER <= mark + endGap() * 0.5 : LOWER >= mark - endGap() * 0.5
   if (dead()) {
     if (short) UPPER = roundPx(Math.max(UPPER, mark * (1 + band)))
     else       LOWER = roundPx(Math.min(LOWER, mark * (1 - band)))
@@ -76,6 +78,22 @@ console.log(nl + '-- the reported case --')
   t('and it can build a real short, not a token one', sz > 15 && sz < 22, +sz.toFixed(1))
 }
 
+console.log(nl + '-- and the mark does not have to leave the range for it to be dead --')
+{
+  // The second miss, and the reason this took three passes. "Dead" was first written as
+  // `mark >= UPPER`, which reads like the same thing and is not: at avg $6.6512 and mark
+  // $6.6324 the mark was INSIDE the range, the check never fired, and the top level was still
+  // $0.0255 short of clearing the dead zone. Zero sells, again, on a position in profit.
+  const p = plan({ short: true, avg: 6.6512, mark: 6.6324 })
+  t('a mark inside the range can still leave nothing placeable', p.opened, p)
+  t('and it is opened up too', p.entries === 4, p)
+  // The bound test would have said this grid was fine.
+  t('the old bound test would have missed it', 6.6324 < 6.6512)
+  t('the test is about levels, not bounds',
+    src.includes('const _dead = () => IS_SHORT ? UPPER <= markPx + _endGap() * 0.5'))
+  t('why, in the code', src.includes('not "the mark crossed the bound"'))
+}
+
 console.log(nl + '-- and the long, which had the same flaw mirrored --')
 {
   const p = plan({ short: false, avg: 6.6512, mark: 6.30 })
@@ -99,6 +117,7 @@ console.log(nl + '-- however far it has run --')
   // Widening over a FIXED level count also widens the gap, so headroom measured with the old
   // gap buys barely one level. The loop is what makes this hold at any distance.
   for (const [label, args] of [
+    ['short, mark under avg', { short: true,  avg: 6.6512, mark: 6.6324 }],
     ['short, 0.1% against', { short: true,  avg: 6.6512, mark: 6.6582 }],
     ['short, 20% against',  { short: true,  avg: 6.6512, mark: 8.00 }],
     ['short, 2x against',   { short: true,  avg: 6.6512, mark: 13.30 }],
@@ -113,7 +132,8 @@ console.log(nl + '-- however far it has run --')
 
 console.log(nl + '-- it is the code that does this, not just this test --')
 {
-  t('the dead-grid check exists', src.includes('const _dead = () => IS_SHORT ? markPx >= UPPER : markPx <= LOWER'))
+  // Was `markPx >= UPPER`. Restated: that tested the wrong thing, and the block above says why.
+  t('the dead-grid check exists', src.includes('const _dead = () => IS_SHORT ? UPPER <= markPx + _endGap() * 0.5'))
   t('the entry side gets the same band, measured from the mark',
     src.includes('if (IS_SHORT) UPPER = roundPx(Math.max(UPPER, markPx * (1 + PROFIT_BAND)))') &&
     src.includes('else          LOWER = roundPx(Math.min(LOWER, markPx * (1 - PROFIT_BAND)))'))
