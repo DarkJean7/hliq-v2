@@ -18085,12 +18085,20 @@ function _mobVRenderContent(tick = false) {
         </div>
         <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${_mobVDetailGrid([
           ...(b._acct ? [['Account', esc(b._acct)]] : []),
+          // What it cost is known from the ledger whether or not the market is quoting.
           ...(cost > 0 ? [
             ['Cost', '$' + fmtUSD(cost)],
             ['Avg buy', total > 0 ? '$' + fmtPrice(cost / total) : '—'],
+          ] : []),
+          // Profit and ROI need a LIVE price as well as a cost, and roi/pnl are null when
+          // there is no mid for the coin. The guard here only asked about cost, so a holding
+          // that could not be priced reached `roi.toFixed(2)` on a null and took the whole
+          // Spot tab down with "Cannot read properties of null". Guard on the value that was
+          // actually computed, and say plainly when it cannot be worked out.
+          ...(roi == null ? (cost > 0 ? [['Profit', 'No price for this market yet']] : []) : [
             ['Profit', `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}`, pnl >= 0 ? 'var(--green)' : 'var(--red)'],
             ['ROI', `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`, roi >= 0 ? 'var(--green)' : 'var(--red)'],
-          ] : []),
+          ]),
           ['Available', fmtSize(avail) + ' ' + esc(_ocCoinLabel(b.coin))],
           ['In Orders', hold > 0 ? fmtSize(hold) + ' ' + esc(_ocCoinLabel(b.coin)) : '—'],
           ['Price', px > 0 ? '$' + fmtPrice(px) : '—'],
@@ -30309,8 +30317,18 @@ let _watchSpotKeyMap  = null  // { 'PURR/USDC': '@1', ... }
 let _perpNames   = null  // string[] — all perp coin names from meta
 
 let _spotMetaPromise = null
+/**
+ * The map that turns "@107" into "HYPE".
+ *
+ * An EMPTY map counts as not loaded. It used to be `if (_watchSpotNameMap) return`, and the
+ * catch below set the map to {} — which is truthy, so one failed spotMeta call (a 429 is
+ * enough) left every spot holding, fill and watch row reading "@107" with no icon for the
+ * rest of the session, and nothing ever retried. Reported as "the hype card was replaced
+ * with @107 and no icon… this was fine".
+ */
+const _spotMetaLoaded = () => !!_watchSpotNameMap && Object.keys(_watchSpotNameMap).length > 0
 async function ensureSpotMeta() {
-  if (_watchSpotNameMap) return
+  if (_spotMetaLoaded()) return
   if (_spotMetaPromise) return _spotMetaPromise
   _spotMetaPromise = (async () => {
     try {
@@ -30341,10 +30359,16 @@ async function ensureSpotMeta() {
         // Keep the raw id addressable too — existing callers may hold "@107".
         if (u.name && _watchSpotKeyMap[u.name] === undefined) _watchSpotKeyMap[u.name] = key
       }
+      // Anything already on screen was drawn with raw ids. The lazy kick below says the NEXT
+      // paint will have the names — so make sure there is one, or a strip built before this
+      // landed keeps saying "@107" until something else happens to redraw it.
+      try { if (_isMobView()) _mobVRenderContent(); else renderAll() } catch {}
     } catch (e) {
+      // Left NULL, not {}: an empty map is indistinguishable from "the exchange has no spot
+      // pairs", and the whole point is that the next caller tries again.
       console.warn('spotMeta fetch failed:', e.message)
-      _watchSpotNameMap = {}
-      _watchSpotKeyMap  = {}
+      _watchSpotNameMap = null
+      _watchSpotKeyMap  = null
     } finally {
       _spotMetaPromise = null
     }
@@ -34031,7 +34055,7 @@ function _ocCoinLabel(coin) {
     if (nm) return nm
     // The map is lazy. Kick the fetch so the NEXT paint has it, and show the raw id until
     // then rather than blocking a render on a network call.
-    if (!_watchSpotNameMap) { try { ensureSpotMeta() } catch {} }
+    if (!_spotMetaLoaded()) { try { ensureSpotMeta() } catch {} }
     return coin
   }
   return coinLabel(coin)
