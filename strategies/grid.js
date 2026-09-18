@@ -676,72 +676,27 @@ async function run() {
     const _avg0 = parseFloat(_p0?.position?.entryPx ?? 0)
     const _hasPos = (IS_SHORT ? _szi0 < 0 : _szi0 > 0) && _avg0 > 0
     if (!(LOWER > 0) && !(UPPER > 0) && _hasPos) {
-      if (IS_SHORT) {
-        UPPER = roundPx(_avg0)
-        LOWER = roundPx(Math.min(_avg0, markPx) * (1 - PROFIT_BAND))
-      } else {
-        LOWER = roundPx(_avg0)
-        UPPER = roundPx(Math.max(_avg0, markPx) * (1 + PROFIT_BAND))
-      }
-      log('INIT', `Auto-range anchored to avg entry $${_avg0} (position open) → $${LOWER}–$${UPPER} (${(PROFIT_BAND * 100).toFixed(0)}% band)`)
-
       /**
-       * The entry side must clear the mark, or the grid has nothing to do.
+       * Centred on the MARK, not hung off the average entry.
        *
-       * The anchor above pins the ENTRY end of the ladder to the average entry: a short's
-       * UPPER, a long's LOWER. That guarantees every exit closes past the average — but the
-       * moment the mark drifts the wrong side of it, not one level is left where an entry
-       * could go. Entries need `px > mark + gap/2` for a short, `px < mark - gap/2` for a
-       * long, and the whole ladder now sits on the wrong side of the mark.
+       * This anchored the entry end of the ladder to the average entry — a short's UPPER, a
+       * long's LOWER — so that every exit was guaranteed to close past that average. It made
+       * the ladder lopsided the moment the mark was anywhere but the middle of the range, and
+       * three separate patches to the edge cases did not change that. Measured on the reported
+       * INJ short at three different marks: 0 sells / 9 buys, then 1 sell / 8 buys, against a
+       * ten-level grid. "is not supposed to place 4 short orders, 5 buy orders?" — yes.
        *
-       * Reported on an INJ short: avg $6.6512, mark $6.6582 — 0.1% against it. The plan came
-       * back with ZERO sells, nine buys and one rung parked in the dead zone. It could close
-       * the 5 INJ it held and then nothing, ever, unless price came back. Which is exactly
-       * when a grid is supposed to be working.
+       * The guarantee it was buying was never worth that, because it was already bought
+       * elsewhere: exitProfitable() refuses to place ANY close past the average entry, on
+       * every cycle, and is untouched by this. Anchoring the range as well only decided which
+       * levels existed, and it kept deciding badly.
        *
-       * The cap was never what kept exits safe — exitProfitable() refuses to close past the
-       * average on its own, and still does. And for a short, selling ABOVE the average
-       * improves the average; it is not the risky direction. So the entry end is pushed two
-       * gaps past the mark, and ONLY when it would otherwise be dead: a grid whose mark is
-       * still inside its range is untouched, and keeps exactly the ladder it had before.
+       * So the range is the band either side of the mark — the same rule the no-position case
+       * uses — and the ladder comes out even whatever the position has done.
        */
-      // The entry side gets the SAME band the exit side has, measured from the mark.
-      //
-      // Clearing the dead zone by a level or two is not enough: it un-sticks the grid but
-      // leaves it lopsided. On the reported INJ short that gave 2 sells against 7 buys — a
-      // ladder that can barely open, hung under a row of exits with no inventory behind them.
-      // Asked, correctly: "is not supposed to place 4 short orders, 5 buy orders?"
-      //
-      // mark × (1 ± band) is the same rule the no-position auto-range uses, so the two halves
-      // are measured the same way and the split comes out even: 4 sells, 5 buys, one rung in
-      // the dead zone. It also scales sanely when the position has run a long way against the
-      // grid — the exit end stays anchored near the average, so the level budget naturally
-      // tilts back towards closing rather than piling in.
-      // "Dead" means NO LEVEL CAN HOLD AN ENTRY — not "the mark crossed the bound", which is
-      // what this asked first and got wrong. An entry needs px beyond mark ± gap/2, so the
-      // ladder is dead whenever its entry END fails that test, and the mark does not have to
-      // be outside the range for that: at avg $6.6512 and mark $6.6324 the mark was INSIDE
-      // the range and the top level was still $0.0255 short of placeable. Zero sells, again.
-      const _endGap = () => (UPPER - LOWER) / Math.max(1, LEVELS - 1)
-      const _dead = () => IS_SHORT ? UPPER <= markPx + _endGap() * 0.5
-                                   : LOWER >= markPx - _endGap() * 0.5
-      if (_dead()) {
-        const _before = IS_SHORT ? UPPER : LOWER
-        if (IS_SHORT) UPPER = roundPx(Math.max(UPPER, markPx * (1 + PROFIT_BAND)))
-        else          LOWER = roundPx(Math.min(LOWER, markPx * (1 - PROFIT_BAND)))
-        // A floor, for a band tight enough that the above still leaves nothing past the dead
-        // zone. Iterated because widening over a FIXED level count also widens the gap, so
-        // headroom measured with the old gap buys barely one level.
-        for (let _pass = 0; _pass < 3; _pass++) {
-          const _gap = (UPPER - LOWER) / Math.max(1, LEVELS - 1)
-          if (IS_SHORT ? UPPER > markPx + _gap * 1.5 : LOWER < markPx - _gap * 1.5) break
-          if (IS_SHORT) UPPER = roundPx(markPx + _gap * 2.5)
-          else          LOWER = roundPx(markPx - _gap * 2.5)
-        }
-        log('INIT', IS_SHORT
-          ? `Mark $${markPx} is above the anchored top $${_before} — opening the range to $${UPPER} so the grid has sells to place`
-          : `Mark $${markPx} is below the anchored bottom $${_before} — opening the range to $${LOWER} so the grid has buys to place`)
-      }
+      LOWER = roundPx(markPx * (1 - PROFIT_BAND))
+      UPPER = roundPx(markPx * (1 + PROFIT_BAND))
+      log('INIT', `Auto-range centred on the mark $${markPx} → $${LOWER}–$${UPPER} (${(PROFIT_BAND * 100).toFixed(0)}% either side); exits are still held to avg entry $${_avg0} by exitProfitable`)
     } else {
       if (!(LOWER > 0)) LOWER = roundPx(markPx * 0.90)
       if (!(UPPER > 0)) UPPER = roundPx(markPx * 1.10)

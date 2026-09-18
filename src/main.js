@@ -3376,6 +3376,14 @@ const _ICON_OVERRIDE = {
 }
 
 function _coinIconHtml(coin, style = '') {
+  // A spot pair id carries no artwork of its own — "@107" is HYPE, and HYPE has a logo. Done
+  // here rather than at each call site so the strip, the watch list and the spot rows all get
+  // it. Falls through to the letter avatar until the name map lands, as before.
+  if (typeof coin === 'string' && /^@\d+$/.test(coin)) {
+    const nm = _watchSpotNameMap?.[coin]
+    // "HYPE/USDT0" is the pair; the artwork belongs to the base token.
+    if (nm) coin = String(nm).split('/')[0]
+  }
   // Prediction-market codes have no token artwork — return a static letter
   // avatar (no <img>) so the icon doesn't blink retrying a 404 image.
   // Orders use "#N", spot holdings of the outcome use "+N" (same number).
@@ -11668,7 +11676,12 @@ function _mobWatchRender() {
   // with placeholders and never rebuilt, leaving letter icons permanently on any device where
   // the map arrived after the first paint.
   const _iconsReady = !!(_cgIconMap && Object.keys(_cgIconMap).length)
-  const key = list.join('|') + (_iconsReady ? '|i1' : '|i0')
+  // The spot NAME map gets the same treatment, and for the same reason. Without it the strip
+  // built once with "@107", the list and the icon-readiness never changed again, and the chip
+  // said "@107" with a letter avatar for the rest of the session while every other surface
+  // said HYPE. Reported twice.
+  const _spotNamesReady = _spotMetaLoaded()
+  const key = list.join('|') + (_iconsReady ? '|i1' : '|i0') + (_spotNamesReady ? '|s1' : '|s0')
   if (key !== _mobWatchLastKey) {
     _mobWatchLastKey = key
     el.innerHTML = list.map(_mobWatchCell).join('')
@@ -11925,6 +11938,27 @@ function _mobVUpdateWatchLive() {
     const s    = px > 0 ? '$' + fmtPrice(px) : '—'
     if (elx.textContent !== s) elx.textContent = s
   })
+}
+
+/**
+ * The live price of a SPOT holding.
+ *
+ * Balances come back keyed by token name — "HYPE", "KNTQ" — while mids are keyed by PAIR,
+ * "@107" and "@334". Reading state.allMids[b.coin] therefore found the HYPE PERP (a different
+ * market that happened to look about right, $92.9235 against the spot pair's $92.881) and
+ * found nothing at all for KNTQ, which has no perp — reported as "in spot tab kntq is missing
+ * price and pnl". The pair is looked up first and the same-named perp is only a last resort.
+ */
+function _spotMid(coin) {
+  const mids = state.allMids ?? {}
+  const num  = (v) => { const n = parseFloat(v ?? 0); return Number.isFinite(n) && n > 0 ? n : 0 }
+  if (typeof coin === 'string' && /^@\d+$/.test(coin)) return num(mids[coin])
+  // The pair map is what turns a token name into the key its mid is under, so a holding that
+  // needs pricing is itself a reason to load it. Nothing else here would: the label resolver
+  // only kicks the fetch when it is handed a raw "@N", and a balance never is.
+  if (!_spotMetaLoaded()) { try { ensureSpotMeta() } catch {} }
+  const key = _watchSpotKeyMap?.[coin] ?? _watchSpotKeyMap?.[coin + '/USDC']
+  return (key && num(mids[key])) || num(mids[coin])
 }
 
 function _mobVCoinIcon(coin) {
@@ -18056,7 +18090,7 @@ function _mobVRenderContent(tick = false) {
       const total = parseFloat(b.total ?? 0)
       const hold  = parseFloat(b.hold ?? 0)
       const avail = total - hold
-      const px    = parseFloat(state.allMids?.[b.coin] ?? 0)
+      const px    = _spotMid(b.coin)
       const usd   = px > 0 ? total * px : (b.coin === 'USDC' ? total : 0)
       // Same cost basis the combined view uses (HL's entryNtl). 0 for USDC and for
       // anything transferred in rather than bought, which shows no ROI at all.
@@ -18290,7 +18324,7 @@ function _mobVRenderContent(tick = false) {
     if (_mobVActiveTab === 'spot') {
       // On a tick, only rebuild when a holding's displayed USD value actually changed.
       if (_mobVTickSkip(tick, 'spot:' + spots.map(b => {
-        const px = parseFloat(state.allMids?.[b.coin] ?? 0)
+        const px = _spotMid(b.coin)
         const usd = px > 0 ? parseFloat(b.total) * px : (b.coin === 'USDC' ? parseFloat(b.total) : 0)
         return `${b.coin}:${b._acct ?? ''}:${usd.toFixed(2)}:${parseFloat(b.entryNtl ?? 0).toFixed(2)}`
       }).join('|'))) return
@@ -30434,6 +30468,11 @@ function watchCoinLabel(coin) {
   if (shown) return shown
   // HIP-3 markets are prefixed "dex:SYM" — strip the dex so it reads "SPCX", not "xyz:SPCX"
   if (typeof coin === 'string' && coin.includes(':')) return coinLabel(coin)
+  // Same lazy kick _ocCoinLabel does. A watchlist holding a spot pair id is often the only
+  // thing on screen that needs this map, and without it the chip said "@107" forever.
+  if (typeof coin === 'string' && /^@\d+$/.test(coin) && !_spotMetaLoaded()) {
+    try { ensureSpotMeta() } catch {}
+  }
   return _watchSpotNameMap?.[coin] ?? coin
 }
 

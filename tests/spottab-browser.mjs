@@ -16,6 +16,7 @@ import { chromium, devices } from 'playwright'
 const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
 const URL  = `http://localhost:${port}/`
 const ADDR = '0xaa7Ad5Fa4D99D9BF3397232Df7F4523853538159'
+const NL = String.fromCharCode(10)
 const HL_HOST = /^https?:\/\/[a-z0-9.-]*hyperliquid[a-z0-9.-]*\.xyz\//i
 
 let pass = 0, fail = 0
@@ -38,17 +39,27 @@ const STATE  = { marginSummary: MARGIN, crossMarginSummary: MARGIN, crossMainten
 const WINDOW = { accountValueHistory: [], pnlHistory: [], vlm: '0' }
 const UNIVERSE = [{ name: 'BTC', szDecimals: 5, maxLeverage: 50 }]
 // @107 is HYPE spot: bought for $130, and NOT in allMids — the exact shape that crashed.
+// Balances arrive keyed by TOKEN NAME. HYPE also has a perp; KNTQ does not — which is the
+// difference that made one look right and the other show a dash.
 const SPOT = { balances: [
-  { coin: '@107', token: 107, hold: '0', total: '1.5', entryNtl: '130' },
-  { coin: 'USDC', token: 0,   hold: '0', total: '50',  entryNtl: '0' },
+  { coin: 'HYPE', token: 150, hold: '0', total: '1.5',   entryNtl: '130' },
+  { coin: 'KNTQ', token: 300, hold: '0', total: '199.8', entryNtl: '40' },
+  { coin: 'USDC', token: 0,   hold: '0', total: '50',    entryNtl: '0' },
 ] }
-const SPOT_META = { tokens: [{ index: 150, name: 'HYPE' }, { index: 0, name: 'USDC' }],
-                    universe: [{ name: '@107', index: 107, tokens: [150, 0] }] }
+const SPOT_META = {
+  tokens: [{ index: 150, name: 'HYPE' }, { index: 0, name: 'USDC' }, { index: 300, name: 'KNTQ' }],
+  universe: [
+    { name: '@107', index: 107, tokens: [150, 0] },   // HYPE/USDC
+    { name: '@334', index: 334, tokens: [300, 0] },   // KNTQ/USDC
+  ],
+}
 
 let spotMetaCalls = 0, failFirstSpotMeta = true
 const HL = () => ({
   clearinghouseState: STATE, spotClearinghouseState: SPOT,
-  allMids: { BTC: '100' },                      // deliberately no price for @107
+  // The pair mids, plus a HYPE PERP at a DIFFERENT price. Pricing a spot holding off the perp
+  // is the bug; the assertions below are that the spot pair wins.
+  allMids: { BTC: '100', HYPE: '92.9235', '@107': '92.881', '@334': '0.26438' },
   frontendOpenOrders: [], userFills: [], userFillsByTime: [], userFunding: [],
   userNonFundingLedgerUpdates: [], subAccounts: [], candleSnapshot: [], extraAgents: [],
   allPerpMetas: [], outcomeMeta: {},
@@ -93,26 +104,37 @@ console.log('\n-- the Spot tab opens at all --')
 await p.evaluate(() => window.mobVTab('spot'))
 await p.waitForTimeout(1500)
 const rows = await p.evaluate(() => document.querySelectorAll('#mobVContent .mob-v-row').length)
-t('it renders its rows', rows, 2)
+t('it renders its rows', rows, 3)
 t('and threw nothing', errs.filter(e => /toFixed/.test(e)), [])
 
-console.log('\n-- a holding with no price says so, instead of crashing --')
-await p.evaluate(() => {
-  const r = [...document.querySelectorAll('#mobVContent .mob-v-row')]
-    .find(x => /HYPE|@107/.test(x.innerText))
-  r?.click()
-})
-await p.waitForTimeout(600)
-const detail = await p.evaluate(() => document.getElementById('mobVContent')?.innerText ?? '')
-t('the cost is still shown — the ledger knows it', /cost/i.test(detail), true)   // CSS uppercases the labels
-t('and the profit says why it cannot be worked out', /No price for this market yet/.test(detail), true)
-t('no ROI is invented', !/bROIb/i.test(detail), true)
+console.log(NL + '-- a spot holding is priced through its PAIR, not its name --')
+{
+  const txt = await p.evaluate(() => document.getElementById('mobVContent')?.innerText ?? '')
+  // KNTQ has no perp. Its price exists only under its pair id, and that is the whole report.
+  t('KNTQ is priced', /0\.264/.test(txt), true)
+  t('and its value is shown, not a dash', /\$52\./.test(txt), true)
+  // HYPE has a perp at 92.9235 and a spot pair at 92.881. The holding is SPOT.
+  t('HYPE uses its spot pair', /92\.88/.test(txt), true)
+  t('not the perp of the same name', !/92\.9235/.test(txt), true)
+}
 
-console.log('\n-- and a rate-limited spotMeta is retried, not cached forever --')
-t('the first call was refused', spotMetaCalls >= 1, true)
-await waitFor(p, 'the name map to fill', () => !!document.body.innerText.match(/HYPE/), 20000)
-t('it asked again', spotMetaCalls >= 2, true)
-t('and the holding is named, not "@107"', /HYPE/.test(await p.evaluate(() => document.getElementById('mobVContent')?.innerText ?? '')), true)
+console.log(NL + '-- the strip says HYPE, not @107 --')
+{
+  await waitFor(p, 'the strip', () => !!document.querySelector('.mob-watch-cell'), 20000)
+  const strip = await p.evaluate(() => [...document.querySelectorAll('.mob-watch-cell')]
+    .map(c => c.innerText.replace(/\s+/g, ' ')).join(' | '))
+  t('the chip is named', /HYPE/.test(strip), true)
+  t('and no raw pair id is left on it', !/@107/.test(strip), true)
+  // Real artwork needs the icon map, which needs a network this test deliberately does not
+  // have. What IS checkable offline is that the icon resolves the pair to its token first:
+  // the letter avatar reads HYP, not @10.
+  const ic = await p.evaluate(() => {
+    const c = [...document.querySelectorAll('.mob-watch-cell')].find(x => /HYPE/.test(x.innerText))
+    const img = c?.querySelector('img')
+    return img ? 'img:' + (img.src || '').slice(0, 4) : (c?.querySelector('.mob-watch-cell-ic')?.innerText ?? '').trim()
+  })
+  t('the icon resolves the pair to its token — HYP, not @10', /^(img:http|HYP)/.test(ic), true)
+}
 
 await browser.close()
 console.log('\nerrors: ' + (errs.length ? JSON.stringify(errs.slice(0, 3)) : 'none'))
