@@ -13268,14 +13268,11 @@ function _mobVRenderBalance() {
     upEl.textContent = '—'
   }
   const upLbl = document.getElementById('mobVUnrealPnlLbl')
-  if (upLbl) {
-    // The dollar figure alone cannot say whether this was a good month: +$500 is excellent on
-    // $2,000 and poor on $200,000. The ROE rides on the label, where there is room for it.
-    const _roe = _pnlReady ? partRoe(_pnlVal, { accountValue: _rawVal, netPnl }) : null
-    upLbl.innerHTML = `${_pnlNet ? 'Net PnL' : 'Unreal. PnL'}${
-      _roe == null ? '' : ` <span class="notranslate" style="opacity:.6">${fmtRoe(_roe)}</span>`
-    } <span style="opacity:.45;font-size:9px">⇄</span>`
-  }
+  // No ROE here. It was tried on this label and taken off again: the equity card's four stat
+  // tiles are the smallest type in the app, and a percentage crowded against "Net PnL" made
+  // the row harder to read than the figure was worth. The ROE lives on the Portfolio tab and
+  // on the leaderboard, where there is room for it.
+  if (upLbl) upLbl.innerHTML = `${_pnlNet ? 'Net PnL' : 'Unreal. PnL'} <span style="opacity:.45;font-size:9px">⇄</span>`
   const levEl = document.getElementById('mobVLeverage')
   if (levEl) levEl.textContent = accountLeverage > 0 ? accountLeverage.toFixed(2) + 'x' : '—'
   const fmEl = document.getElementById('mobVFreeMargin')

@@ -109,8 +109,11 @@ console.log(nl + '-- and it is shown where a PnL is shown --')
     cli.includes('${_lbPnl(entry.unrealizedPnl, entry.error)}${_lbPct(entry.unrealizedPnl, entry.accountValue, entry.netPnl, entry.error)}'))
   t('the expanded row states it outright', cli.includes('<span class="lb-pnl-lbl">ROE</span>'))
   t('so does the mobile row', cli.includes("['ROE',        fmtRoe(accountRoe(r)), nCls],"))
-  t('the mobile equity card carries it on the PnL label', cli.includes('_pnlNet ? \'Net PnL\' : \'Unreal. PnL\'') &&
-    /const _roe = _pnlReady \? partRoe\(_pnlVal/.test(cli))
+  // Tried on the mobile equity card's PnL label and taken off on sight: those four tiles are
+  // the smallest type in the app, and a percentage crowded against "Net PnL" cost more
+  // legibility than the figure was worth. Asserted ABSENT so it cannot creep back in.
+  t('the mobile equity card does NOT carry it — deliberately',
+    !/const _roe = _pnlReady \? partRoe\(_pnlVal/.test(cli) && cli.includes('No ROE here.'))
   t('the Portfolio tab has an ROE row', cli.includes('<span>ROE</span>'))
   // The desktop tile divided by CURRENT equity, which understates every winner.
   t('the desktop tile no longer divides by current equity',
