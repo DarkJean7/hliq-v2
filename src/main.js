@@ -2010,11 +2010,19 @@ async function refreshLive(force = false) {
     // chatty poll loop doesn't just 429 the dashboard — it starves order placement.
     // frontendOpenOrders and userFillsByTime are weight-20 (most endpoints are 2),
     // so polling both every 5s tick burned ~480 weight/min on data that tolerates
-    // lag. Orders refresh every 2nd tick (~10s), fills every 3rd (~15s).
     // userFillsByTime is keyed off latestFillTs, so a fills tick still returns every
     // fill from the ticks it skipped — nothing is missed, only delayed.
-    const _ordTick   = _forced || _refreshTick === 1 || _refreshTick % 2 === 0
-    const _fillsTick = _forced || _refreshTick === 1 || _refreshTick % 3 === 0
+    //
+    // Measured (tests/hl-weight.mjs): ONE idle wallet spent 782 weight/min of the 1200, and
+    // these two were 300 of it. So the cadence now depends on whether anything on screen is
+    // actually reading them: the tab that shows the data polls at the old rate, and the rest
+    // of the app settles for a count that can be twenty seconds old. Any action you take
+    // still forces a refresh, so nothing you DO waits for a tick.
+    const _tabIs = (...names) => names.includes(_activeTab) || names.includes(_mobVActiveTab)
+    const _ordEvery   = _tabIs('orders') ? 2 : 4                                    // 10s : 20s
+    const _fillsEvery = _tabIs('history', 'trades', 'calendar', 'performance') ? 3 : 6   // 15s : 30s
+    const _ordTick   = _forced || _refreshTick === 1 || _refreshTick % _ordEvery === 0
+    const _fillsTick = _forced || _refreshTick === 1 || _refreshTick % _fillsEvery === 0
     const [perpState, openOrders, mainMids, hip3Mids, newRawFills, freshOutcomeMeta, freshSpot, freshPortfolio] = await Promise.all([
       fetchClearinghouseState(state.addr, _fanMeta),
       _ordTick ? fetchFrontendOpenOrders(state.addr, _fanMeta) : Promise.resolve(state.openOrders ?? []),
