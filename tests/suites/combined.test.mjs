@@ -73,13 +73,39 @@ t('server interpolation: empty is 0', _hlSeriesAt([], 5) === 0)
 t('server interpolation: equal timestamps safe', Number.isFinite(_hlSeriesAt([[5, '1'], [5, '2']], 5)))
 
 // ── server route guards, read off the source ─────────────────────────────────
-const route = srv.slice(srv.indexOf("path === '/api/combined'"), srv.indexOf("path === '/api/combined'") + 1600)
+const route = srv.slice(srv.indexOf("path === '/api/combined'"), srv.indexOf("path === '/api/combined'") + 2600)
 t('route dedupes and sorts addresses (stable cache key)', route.includes('new Set') && route.includes('.sort()'))
 t('route validates every address', route.includes('isAddr(a)'))
 t('route caps the address count', route.includes('addrs.length > 50'))
 t('route caches per address-set', route.includes('_combinedCache.get(key)'))
 t('route never caches a fully-failed refresh', route.includes('if (data.wallets > 0)'))
 t('route serves stale rather than nothing on failure', route.includes('stale: true'))
+
+// ── a partial snapshot must never displace a complete one ────────────────────
+// Reported as two devices showing different totals for the same wallets. The client can only
+// use a snapshot covering EVERY wallet; a partial one is refused, and it then keeps bridging
+// from whatever anchor it already held — telemetry has anchors 1.8 hours old. The headline is
+// that anchor plus a delta each device measures from its own rows since IT adopted the
+// anchor, so the longer one is held the further two devices drift apart.
+t('a completeness test exists, and it counts wallets AND missing',
+  srv.includes("const _isComplete = (d, addrs) => !!d && (d.missing?.length ?? 0) === 0 && d.wallets === addrs.length"))
+t('the last complete snapshot is kept apart from the latest one',
+  srv.includes('const _combinedComplete = new Map()'))
+t('and it is only offered while it is worth offering',
+  srv.includes('COMBINED_COMPLETE_MAX_MS') && route.includes("(Date.now() - c.at) < COMBINED_COMPLETE_MAX_MS"))
+t('a fresh-but-partial cache entry loses to an older complete one',
+  route.includes('if (_isComplete(hit.data, addrs)) return json(res, 200, { ...hit.data, cached: true })'))
+t('a partial compute hands back the complete one instead',
+  route.indexOf('Partial: a wallet 429') > 0 && route.includes('if (c) return json(res, 200, { ...c.data, stale: true })'))
+t('only a complete snapshot is remembered as complete',
+  route.includes('if (_isComplete(data, addrs)) {') && route.includes('_combinedComplete.set(key, { at: Date.now(), data })'))
+t('a partial is still served when there is no complete one to offer — something beats nothing',
+  route.includes('if (data.wallets > 0) return json(res, 200, data)'))
+
+// The client stopped asking on every render, too.
+t('the client throttles ATTEMPTS, not just adoptions',
+  cli.includes('// Count the ATTEMPT, not just a successful adoption.'))
+t('and it still refuses a partial snapshot', cli.includes('if (d && d.wallets === addrs.length && d.accountValue > 0)'))
 
 const comp = grab(srv, 'async function computeCombined(')
 t('portfolio is read BEFORE the anchor (pairing rule)',

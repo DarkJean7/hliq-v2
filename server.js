@@ -824,6 +824,26 @@ function lbSetHidden(addr, on) {
 // live perp delta, which comes from HL and is identical on both within a tick.
 const COMBINED_TTL_MS = 60_000
 const _combinedCache = new Map()   // key(sorted addrs) -> { at, data }
+/**
+ * The last snapshot that covered EVERY wallet, kept separately.
+ *
+ * A partial snapshot is useless to the client — it refuses anything that does not cover the
+ * whole set, because a missing wallet would understate the total and read as a loss. But a
+ * partial one was still cached here and served for the next minute, so with ten wallets and
+ * HL rate-limiting the fan-out, the client refused every snapshot it was offered and went on
+ * bridging from whatever anchor it happened to hold. Telemetry has anchors 1.8 HOURS old.
+ *
+ * That is what makes two devices disagree: the headline is the shared server anchor plus a
+ * delta each device measures from its OWN rows since IT adopted that anchor, so the longer an
+ * anchor is held, the further apart two devices that adopted at different moments drift.
+ *
+ * So a complete snapshot is never displaced by a partial one. Serving a slightly old complete
+ * snapshot keeps every client re-anchoring on the same number about once a minute; serving a
+ * partial one keeps them all anchor-less.
+ */
+const _combinedComplete = new Map()   // key -> { at, data }
+const COMBINED_COMPLETE_MAX_MS = 10 * 60_000
+const _isComplete = (d, addrs) => !!d && (d.missing?.length ?? 0) === 0 && d.wallets === addrs.length
 
 // Value of an HL [ts, "value"] series at an instant, by linear interpolation. Clamped: a
 // baseline has nothing to extrapolate from before the first sample.
@@ -2568,16 +2588,39 @@ const server = createServer(async (req, res) => {
     if (addrs.length > 50) return json(res, 400, { error: 'too many addresses' })
 
     const key = addrs.join(',')
+    // The last complete snapshot, while it is worth offering. A client can only use one that
+    // covers every wallet, so this is what it is served whenever the fresh answer does not.
+    const bestComplete = () => {
+      const c = _combinedComplete.get(key)
+      return c && (Date.now() - c.at) < COMBINED_COMPLETE_MAX_MS ? c : null
+    }
     const hit = _combinedCache.get(key)
-    if (hit && (Date.now() - hit.at) < COMBINED_TTL_MS) return json(res, 200, { ...hit.data, cached: true })
+    if (hit && (Date.now() - hit.at) < COMBINED_TTL_MS) {
+      if (_isComplete(hit.data, addrs)) return json(res, 200, { ...hit.data, cached: true })
+      // A fresh-but-partial cache entry is no use; prefer a complete one even if it is older.
+      const c = bestComplete()
+      if (c) return json(res, 200, { ...c.data, cached: true, stale: true })
+      return json(res, 200, { ...hit.data, cached: true })
+    }
 
     try {
       const data = await computeCombined(addrs)
       // Never cache a fully-failed refresh: that would pin an empty total for the TTL.
       if (data.wallets > 0) _combinedCache.set(key, { at: Date.now(), data })
-      else if (hit) return json(res, 200, { ...hit.data, stale: true })
+      if (_isComplete(data, addrs)) {
+        _combinedComplete.set(key, { at: Date.now(), data })
+        return json(res, 200, data)
+      }
+      // Partial: a wallet 429'd or errored. Hand back the last complete snapshot rather than
+      // a total the client must refuse — being refused is what leaves it on a stale anchor.
+      const c = bestComplete()
+      if (c) return json(res, 200, { ...c.data, stale: true })
+      if (data.wallets > 0) return json(res, 200, data)
+      if (hit) return json(res, 200, { ...hit.data, stale: true })
       return json(res, 200, data)
     } catch (e) {
+      const c = bestComplete()
+      if (c) return json(res, 200, { ...c.data, stale: true })
       if (hit) return json(res, 200, { ...hit.data, stale: true })
       return json(res, 503, { error: 'could not compute' })
     }

@@ -8459,6 +8459,12 @@ async function _fetchCombinedSnap(force = false) {
     .map(r => r.addr)
   if (!addrs.length) return
   _combinedFetching = true
+  // Count the ATTEMPT, not just a successful adoption. This only advanced when a snapshot was
+  // adopted, so a snapshot the client refuses — a partial one, which is what ten wallets and
+  // HL's rate limit produce — left the throttle open and refetched on every render. The server
+  // answers those from cache, but it is a request storm against the very budget that caused
+  // the partial in the first place.
+  _combinedAt = Date.now()
   try {
     const r = await fetch('/api/combined', {
       method: 'POST',
