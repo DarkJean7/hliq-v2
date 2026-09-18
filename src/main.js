@@ -237,8 +237,9 @@ import { aggregatePosGroup, groupPositions, posHealthPct } from './posgroup.js'
 import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL,
          expectedPnl, groupExpectedPnl } from './ordergroup.js'
 import { probeNavGeometry } from './navprobe.js'
+import { accountRoe, partRoe, positionRoe, fmtRoe, compareRoe } from './roe.js'
 import { ordersForCoin, byAccount, statusesFrom, classifyCancels, describeOrders,
-         isAlreadyGone, summarize as _cancelSummary } from './cancelbatch.js'
+         isAlreadyGone, sideOf as _ordSideOf, summarize as _cancelSummary } from './cancelbatch.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey } from './comboequity.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
@@ -6718,27 +6719,34 @@ async function _cancelBatch(orders) {
 }
 
 /**
- * Every order on one asset, gone in one tap.
+ * Every order on one asset and ONE SIDE, gone in one tap.
  *
- * Asked for: "add an option to be able to just close all orders from just one asset … currently
- * i can use the select feature but what if we also add what i say so the user dont need to
- * manually select all individual orders". A ten-rung grid took ten taps to select before this.
+ * Asked for: "add an option to be able to just close all orders from just one asset … the user
+ * dont need to manually select all individual orders", then "make it that it closes the whole
+ * asset but from the chosen side". A ten-rung grid took ten taps to select before this.
  *
- * Scoped to the ASSET, not to the group card it is offered from: a coin can have a buy ladder
- * and a sell ladder, and "cancel all HYPE orders" means both. The count in the label and the
- * breakdown in the confirm are the whole set, so it can never cancel more than it said.
+ * The side is the point. A ladder usually has a position resting against it on the other side,
+ * so clearing HYPE bids and clearing HYPE asks are different intentions and taking both would
+ * remove the exits along with the entries. It is still the whole SIDE of the asset, not just
+ * the group card it was pressed from: a side can hold limits and stops at once, and "all my
+ * HYPE buys" means all of them. The count in the label and the breakdown in the confirm are
+ * that exact set, so it can never cancel more than it said.
  */
-window.__cancelCoinOrders = async function(coin) {
-  const orders = ordersForCoin(state.openOrders ?? [], coin)
+window.__cancelCoinOrders = async function(coin, side = null) {
+  const orders = ordersForCoin(state.openOrders ?? [], coin, side)
   if (!orders.length) return
   if (!_canAct()) { _showChartToast('✗ ' + _T('Connect agent key first', 'Conecta la clave de agente primero')); return }
   const label = _ocCoinLabel(coin)
   const n     = orders.length
   const what  = describeOrders(orders, k => ORDER_KIND_LABEL[k] ?? k)
+  const sideW = side == null ? '' : (_ordSideOf({ side }) === 'buy' ? _T('buy', 'de compra') : _T('sell', 'de venta'))
+  const title = side == null
+    ? _T(`Cancel all ${label} orders?`, `¿Cancelar todas las órdenes de ${label}?`)
+    : _T(`Cancel all ${label} ${sideW} orders?`, `¿Cancelar todas las órdenes ${sideW} de ${label}?`)
   if (!(await _appConfirm({
-    title: '🗑 ' + _T(`Cancel all ${label} orders?`, `¿Cancelar todas las órdenes de ${label}?`),
-    body: _T(`This cancels <b>${n} order${n === 1 ? '' : 's'}</b> on ${esc(label)}${what ? ` — ${esc(what)}` : ''}. Positions are not touched.`,
-             `Esto cancela <b>${n} orden${n === 1 ? '' : 'es'}</b> en ${esc(label)}${what ? ` — ${esc(what)}` : ''}. Las posiciones no se tocan.`),
+    title: '🗑 ' + title,
+    body: _T(`This cancels <b>${n} order${n === 1 ? '' : 's'}</b> on ${esc(label)}${what ? ` — ${esc(what)}` : ''}. The other side and your positions are not touched.`,
+             `Esto cancela <b>${n} orden${n === 1 ? '' : 'es'}</b> en ${esc(label)}${what ? ` — ${esc(what)}` : ''}. El otro lado y tus posiciones no se tocan.`),
     confirmText: _T('Cancel orders', 'Cancelar órdenes'), danger: true,
   }))) return
   _showChartToast(_T(`Cancelling ${n} ${label} order${n === 1 ? '' : 's'}…`, `Cancelando ${n} orden${n === 1 ? '' : 'es'} de ${label}…`))
@@ -10092,7 +10100,13 @@ window._mobVOrdSortSheet = function() {
 }
 
 let _mobVLbResults     = []   // cached leaderboard result objects
-let _mobVLbSortBy      = 'value'  // 'value' | 'net' — Rankings sort key
+// The board's sort, shared by both shells so switching device does not switch order.
+// Not _mobV-prefixed any more: the desktop table had no sort control at all and now uses this.
+let _lbSortBy          = 'value'  // 'value' | 'net' | 'roe'
+// -1 is highest first, which is what a leaderboard means by default. Lowest-first was asked
+// for because the interesting end of a board is not always the top: it is how you find the
+// accounts bleeding, and on the paper board it is who to learn from not to copy.
+let _lbSortDir         = -1
 let _mobVMaResults     = []   // cached multi-account result objects
 let _mobVMaLastFetch   = 0
 let _mobVExpandedIds   = new Set()
@@ -11430,7 +11444,7 @@ function _mobVMergedOrdCard(members) {
           `${_gExp >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(_gExp))}`,
           _gExp >= 0 ? 'var(--green)' : 'var(--red)']]),
       ])}
-      ${_ordCancelCoinBtnHtml(g.coin)}
+      ${_ordCancelCoinBtnHtml(g.coin, g.side)}
       <div style="padding:9px 16px 4px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;background:var(--panel-2)">${
         g.n} ${_T('orders', 'órdenes')} · ${_T('tap any to manage', 'toca cualquiera para gestionar')}</div>
       ${members.map(m => m.__html).join('')}
@@ -11439,23 +11453,25 @@ function _mobVMergedOrdCard(members) {
 }
 
 /**
- * "Cancel all 10 HYPE orders" — the whole asset in one tap.
+ * "Cancel all 8 HYPE buys" — one side of one asset, in one tap.
  *
- * Asked for because clearing a ten-rung grid meant ten taps in Select mode. It is scoped to
- * the ASSET, not to the group card it sits in: a coin can have a buy ladder and a sell ladder,
- * and "all HYPE orders" means both. So the count here is every resting order on that coin,
- * which is also what the confirm spells out — it can never cancel more than it says.
+ * Clearing a ten-rung grid meant ten taps in Select mode. Scoped to the SIDE, because a ladder
+ * usually has a position resting against it on the other side and taking both out would remove
+ * the exits with the entries. Still the whole side of the asset rather than just the group this
+ * button sits in — a side can hold limits and stops at once — so the count here is every
+ * resting order on that coin and side, which is exactly what the confirm spells out.
  */
-function _ordCancelCoinBtnHtml(coin, pad = '10px 16px 2px') {
-  const all = ordersForCoin(state.openOrders ?? [], coin)
+function _ordCancelCoinBtnHtml(coin, side, pad = '10px 16px 2px') {
+  const all = ordersForCoin(state.openOrders ?? [], coin, side)
   if (all.length < 2) return ''   // one order already has its own Cancel button
   // Every account holding this coin must be able to sign, or the batch half-fails.
   const can = all.every(o => window.__acctCanTrade(o._acctAddr ?? null))
   const lbl = _ocCoinLabel(coin)
+  const sw  = _ordSideOf({ side }) === 'buy' ? _T('buys', 'compras') : _T('sells', 'ventas')
   return `<div style="padding:${pad};background:var(--panel-2)">
-    <button ${can ? '' : 'disabled'} onclick="event.stopPropagation();window.__cancelCoinOrders('${esc(coin)}')"
+    <button ${can ? '' : 'disabled'} onclick="event.stopPropagation();window.__cancelCoinOrders('${esc(coin)}','${esc(String(side))}')"
       style="${can ? '' : 'opacity:.4;cursor:not-allowed;'}width:100%;padding:9px;background:rgba(255,77,109,0.12);border:1px solid rgba(255,77,109,0.3);border-radius:9px;color:var(--red);font-size:12.5px;font-weight:700;cursor:pointer;touch-action:manipulation">
-      ${_T(`Cancel all ${all.length} ${esc(lbl)} orders`, `Cancelar las ${all.length} órdenes de ${esc(lbl)}`)}
+      ${_T(`Cancel all ${all.length} ${esc(lbl)} ${sw}`, `Cancelar las ${all.length} ${sw} de ${esc(lbl)}`)}
     </button>
   </div>`
 }
@@ -13252,7 +13268,14 @@ function _mobVRenderBalance() {
     upEl.textContent = '—'
   }
   const upLbl = document.getElementById('mobVUnrealPnlLbl')
-  if (upLbl) upLbl.innerHTML = `${_pnlNet ? 'Net PnL' : 'Unreal. PnL'} <span style="opacity:.45;font-size:9px">⇄</span>`
+  if (upLbl) {
+    // The dollar figure alone cannot say whether this was a good month: +$500 is excellent on
+    // $2,000 and poor on $200,000. The ROE rides on the label, where there is room for it.
+    const _roe = _pnlReady ? partRoe(_pnlVal, { accountValue: _rawVal, netPnl }) : null
+    upLbl.innerHTML = `${_pnlNet ? 'Net PnL' : 'Unreal. PnL'}${
+      _roe == null ? '' : ` <span class="notranslate" style="opacity:.6">${fmtRoe(_roe)}</span>`
+    } <span style="opacity:.45;font-size:9px">⇄</span>`
+  }
   const levEl = document.getElementById('mobVLeverage')
   if (levEl) levEl.textContent = accountLeverage > 0 ? accountLeverage.toFixed(2) + 'x' : '—'
   const fmEl = document.getElementById('mobVFreeMargin')
@@ -18666,7 +18689,7 @@ function _mobVRenderContent(tick = false) {
               <button ${window.__acctCanTrade(o._acctAddr ?? null) ? '' : 'disabled'} onclick="event.stopPropagation();window._mobVCancelOrd(this,'${esc(o.coin)}',${o.oid},${o._acctAddr ? `'${esc(o._acctAddr)}'` : 'null'})"
                 style="${window.__acctCanTrade(o._acctAddr ?? null) ? '' : 'opacity:.4;cursor:not-allowed;'}flex:1;padding:8px;background:rgba(255,77,109,0.1);border:none;border-radius:8px;color:var(--red);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Cancel</button>
             </div>
-            ${_ordCancelCoinBtnHtml(o.coin, '0')}
+            ${_ordCancelCoinBtnHtml(o.coin, o.side, '0')}
           </div>
         </div>
       </div>`
@@ -19339,6 +19362,7 @@ function _mobVRenderContent(tick = false) {
         <div class="mob-v-setting-row"><span>Unrealized PnL</span><span class="${pnlCls(unrealizedPnl)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(unrealizedPnl))}</span></div>
         <div class="mob-v-setting-row"><span>Realized PnL</span><span class="${pnlCls(dispRealized)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(dispRealized))}</span></div>
         <div class="mob-v-setting-row"><span>Net PnL</span><span class="${pnlCls(netPnl)}" style="font-weight:600;font-size:14px">${_prv(pnlFmt(netPnl))}</span></div>
+        <div class="mob-v-setting-row" title="Net PnL against what this account started with"><span>ROE</span><span class="${pnlCls(netPnl)}" style="font-weight:600;font-size:14px">${fmtRoe(accountRoe({ accountValue, netPnl }))}</span></div>
         ${/* Every row below is shown in both modes, including at $0. They used to vanish
              when zero, so a wallet that never withdrew had no "Total Withdrawn" row while
              All Accounts - ten wallets summed - did: "single accounts are missing total
@@ -20055,8 +20079,25 @@ window.mobVMaCalNav = function(dir) {
   renderPnLCalendar(allFills, _mobVMaCalMonth, _mobVMaCalYear, allLedger, 'mobMaCalRoot', 'mobVMaCalNav', 'mobMaCalDetail')
 }
 
+/**
+ * Sort the board. Pressing the key you are already on flips the direction, which is what every
+ * other sort control in this app does.
+ *
+ * Lowest-first was asked for, and it is not just the mirror image: the bottom of a board is
+ * where the accounts bleeding money are, which is the more useful end if you are about to copy
+ * somebody. See _lbSortRows for why the podium badges go away when the list points that way.
+ */
+window.__lbSort = function(by) {
+  if (_lbSortBy === by) _lbSortDir = -_lbSortDir
+  else _lbSortBy = by
+  try { _mobVRenderContent() } catch {}
+  try { if (!_isMobView()) renderLeaderboard() } catch {}
+}
 window._mobVLbSort = function(by) {
-  _mobVLbSortBy = by
+  // Pressing the key you are already on flips the direction, which is what a sort control does
+  // everywhere else in this app (see the orders sort).
+  if (_lbSortBy === by) { _lbSortDir = -_lbSortDir; _mobVRenderContent(); return }
+  _lbSortBy = by
   const el = document.getElementById('mobVContent')
   if (!el) return
   // The sort chips are shared by both boards. This always rebuilt the REAL board,
@@ -21032,17 +21073,55 @@ window.__lbCopyTrade = function(addr = '', name = '', opts = {}) {
   }
 }
 
+/**
+ * The board's order, in one place because two shells render it.
+ *
+ * A row that errored has no figure to rank by. It goes last whichever way the list points, so
+ * flipping to lowest-first does not parade broken rows at the top as though they were the
+ * losers — "we could not read this wallet" is not a result.
+ */
+function _lbSortRows(rows, sortBy = _lbSortBy, dir = _lbSortDir) {
+  return [...(rows ?? [])].sort((a, b) => {
+    if (a.error && b.error) return 0
+    if (a.error) return 1
+    if (b.error) return -1
+    if (sortBy === 'roe') return compareRoe(a, b, dir)
+    const key = sortBy === 'net' ? 'netPnl' : 'accountValue'
+    return ((b[key] ?? 0) - (a[key] ?? 0)) * (dir < 0 ? 1 : -1)
+  })
+}
+
+/** The sort chips for the desktop table, which had no sort control at all. */
+function _lbDeskSortBar() {
+  const arrow = _lbSortDir < 0 ? '↓' : '↑'
+  const one = (by, label) => {
+    const on = _lbSortBy === by
+    return `<button class="btn-sm${on ? ' active' : ''}" onclick="window.__lbSort('${by}')"
+      title="${on ? (_lbSortDir < 0 ? 'Highest first — click to flip' : 'Lowest first — click to flip') : 'Sort by ' + label}"
+      style="${on ? 'border-color:var(--accent);color:var(--accent);' : ''}">${label}${on ? ' ' + arrow : ''}</button>`
+  }
+  return `<div style="display:flex;gap:6px;align-items:center">
+    <span style="font-size:11px;color:var(--muted)">Sort</span>
+    ${one('value', 'Value')}${one('net', 'Net PnL')}${one('roe', 'ROE')}
+  </div>`
+}
+
 function _mobVBuildLbHtml(results, opts = {}) {
   const RANK_BADGE = [
     { bg: 'linear-gradient(135deg,#FFD700,#FFA500)', color: '#7a4800', label: '👑' },
     { bg: 'linear-gradient(135deg,#D8D8D8,#A8A8A8)', color: '#444',    label: '2' },
     { bg: 'linear-gradient(135deg,#E8A96A,#B87333)', color: '#5a2a00', label: '3' },
   ]
-  const key    = (opts.sortBy || _mobVLbSortBy) === 'net' ? 'netPnl' : 'accountValue'
-  const sorted = [...results].sort((a, b) => (b.error ? -Infinity : (b[key] ?? 0)) - (a.error ? -Infinity : (a[key] ?? 0)))
+  const sortBy = opts.sortBy || _lbSortBy
+  const dir    = opts.sortDir ?? _lbSortDir
+  const sorted = _lbSortRows(results, sortBy, dir)
+  // Ascending is not a ranking, so the crown and the podium badges are withheld — rank 1 of a
+  // lowest-first list is the worst account on the board, and crowning it would be a lie.
+  const podium = dir < 0
+  const arrow = dir < 0 ? '↓' : '↑'
   const chip = (by, label) => {
-    const on = _mobVLbSortBy === by
-    return `<button onclick="window._mobVLbSort('${by}')" style="padding:5px 11px;border-radius:14px;border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};background:${on ? 'var(--accent)' : 'transparent'};color:${on ? '#000' : 'var(--muted)'};font-size:11px;font-weight:700;cursor:pointer">${label}</button>`
+    const on = _lbSortBy === by
+    return `<button onclick="window._mobVLbSort('${by}')" title="${on ? (dir < 0 ? 'Highest first — tap to flip' : 'Lowest first — tap to flip') : 'Sort by ' + label}" style="padding:5px 11px;border-radius:14px;border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};background:${on ? 'var(--accent)' : 'transparent'};color:${on ? '#000' : 'var(--muted)'};font-size:11px;font-weight:700;cursor:pointer">${label}${on ? ' ' + arrow : ''}</button>`
   }
   // Paper names are set in the account switcher, so its header offers the share
   // toggle instead of the signature-backed rename the real board uses.
@@ -21067,7 +21146,7 @@ function _mobVBuildLbHtml(results, opts = {}) {
     : ''
   const header = `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px 8px;gap:8px">
     <div style="display:flex;gap:6px;align-items:center">${leftBtn}${addMeBtn}</div>
-    <div style="display:flex;gap:6px">${chip('value', 'Value')}${chip('net', 'Net PnL')}</div>
+    <div style="display:flex;gap:6px">${chip('value', 'Value')}${chip('net', 'Net PnL')}${chip('roe', 'ROE')}</div>
   </div>`
   // `bare` (used by the Challenge standings) drops the full-screen header, the Real/Paper
   // mode bar and the action row — the caller supplies its own chrome and just wants the rows.
@@ -21080,9 +21159,9 @@ function _mobVBuildLbHtml(results, opts = {}) {
     const netCls = !r.error && r.netPnl >= 0 ? 'pos' : 'neg'
     const label  = r.label || (r.addr.slice(0, 6) + '…' + r.addr.slice(-4))
     const chev   = `<svg id="mrc-${id}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>`
-    const badge  = RANK_BADGE[i]
+    const badge  = podium ? RANK_BADGE[i] : null
     let avatar
-    if (i === 0) {
+    if (i === 0 && podium) {
       avatar = `<div style="flex-shrink:0;width:40px;display:flex;flex-direction:column;align-items:center;gap:2px"><div style="font-size:18px;line-height:1">👑</div>${_mobVAvatarHtml(r.addr, 40)}</div>`
     } else {
       const rankBadge = badge
@@ -21101,6 +21180,7 @@ function _mobVBuildLbHtml(results, opts = {}) {
         ['Unrealized', _lbPnl(r.unrealizedPnl, null), uCls],
         ['Realized',   _lbPnl(r.realizedPnl,   null), rCls],
         ['Net PnL',    _lbPnl(r.netPnl,         null), nCls],
+        ['ROE',        fmtRoe(accountRoe(r)), nCls],
         ['Health',     r.healthPct > 0 ? r.healthPct.toFixed(1) + '%' : '—', hCls],
         ['Win Rate',   winRate],
         ['Volume',     '$' + fmtCompact(r.totalVolume ?? 0)],
@@ -32056,15 +32136,22 @@ function _lbPnl(val, err) {
 // % of the account's starting basis (current value minus net PnL ≈ what was put in),
 // not of current equity — dividing by what's LEFT gave absurd readings (-4997%) for
 // accounts that lost most of their stack.
+/**
+ * The percentage beside a PnL figure: what it returned on what the account started with. That
+ * is ROE, and it is now named as such in a tooltip — it was an unlabelled number in brackets,
+ * which readers reasonably took for "percent of account value".
+ *
+ * Nothing is printed when the basis is unusable. A fresh account has an UNKNOWN return, not a
+ * zero one, and "+0.0%" beside a real trader's number is worse than nothing.
+ */
 function _lbPct(val, acctVal, netPnl, err) {
-  if (err) return ''
-  const basis = acctVal - (netPnl ?? 0)
-  if (!(basis > 1)) return ''
-  const pct = (val / basis) * 100
-  return `<span style="font-size:10px;opacity:0.65;margin-left:4px">(${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)</span>`
+  const pct = partRoe(val, { accountValue: acctVal, netPnl, error: err })
+  if (pct == null) return ''
+  return `<span title="Return on equity — this against what the account started with" style="font-size:10px;opacity:0.65;margin-left:4px">(${fmtRoe(pct)})</span>`
 }
 
-function _lbRankHtml(rank) {
+function _lbRankHtml(rank, podium = true) {
+  if (!podium) return `<span class="lb-rank-num">${rank}</span>`
   if (rank === 1) return `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="#f0b429" stroke-width="1.5" stroke-linejoin="round"><path d="M2 12h12"/><path d="M3 12 2 5.5l3.5 2.5L8 2l2.5 6 3.5-2.5L13 12z"/></svg>`
   if (rank === 2) return `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="#a8a8be" stroke-width="1.5"><circle cx="8" cy="9.5" r="4.5"/><rect x="6" y="2" width="4" height="3" rx="0.5" stroke-linejoin="round"/><line x1="6" y1="5" x2="8" y2="5"/><line x1="10" y1="5" x2="8" y2="5"/></svg>`
   if (rank === 3) return `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="#c07a3a" stroke-width="1.5"><circle cx="8" cy="9.5" r="4.5"/><rect x="6" y="2" width="4" height="3" rx="0.5" stroke-linejoin="round"/><line x1="6" y1="5" x2="8" y2="5"/><line x1="10" y1="5" x2="8" y2="5"/></svg>`
@@ -32078,7 +32165,11 @@ function _lbAvatarHtml(addr, size) {
   return `<img src="/pfp/${addr.toLowerCase()}" width="${size}" height="${size}" style="border-radius:50%;object-fit:cover;display:block;flex-shrink:0" onerror="${fallback}">`
 }
 
-function _lbRowHtml(entry, rank) {
+/**
+ * `podium` is false when the board is sorted lowest-first: rank 1 of that list is the WORST
+ * account on it, and putting a crown on it would be a lie. The rows are still numbered.
+ */
+function _lbRowHtml(entry, rank, podium = true) {
   // A paper row has no address: its name is its identity, and it has its own id.
   const isP    = !!entry.paper
   const short  = isP ? 'Paper account' : entry.addr.slice(0, 8) + '…' + entry.addr.slice(-5)
@@ -32090,11 +32181,11 @@ function _lbRowHtml(entry, rank) {
   const nCls   = entry.netPnl        >= 0 ? 'pos' : 'neg'
 
   let avatarHtml
-  if (rank === 1) {
+  if (rank === 1 && podium) {
     avatarHtml = `<div style="flex-shrink:0;width:36px;display:flex;flex-direction:column;align-items:center;gap:2px"><div style="font-size:16px;line-height:1">👑</div>${_av(entry.addr, 36)}</div>`
-  } else if (rank === 2) {
+  } else if (rank === 2 && podium) {
     avatarHtml = `<div style="position:relative;flex-shrink:0;width:36px;height:36px">${_av(entry.addr, 36)}<div style="position:absolute;bottom:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:linear-gradient(135deg,#D8D8D8,#A8A8A8);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#444;border:1.5px solid var(--bg)">2</div></div>`
-  } else if (rank === 3) {
+  } else if (rank === 3 && podium) {
     avatarHtml = `<div style="position:relative;flex-shrink:0;width:36px;height:36px">${_av(entry.addr, 36)}<div style="position:absolute;bottom:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:linear-gradient(135deg,#E8A96A,#B87333);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#5a2a00;border:1.5px solid var(--bg)">3</div></div>`
   } else {
     avatarHtml = `<div style="position:relative;flex-shrink:0;width:36px;height:36px">${_av(entry.addr, 36)}<div style="position:absolute;bottom:-3px;right:-3px;min-width:15px;height:15px;border-radius:8px;background:var(--panel-3);display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:var(--muted);padding:0 3px;border:1.5px solid var(--bg)">${rank}</div></div>`
@@ -32108,7 +32199,7 @@ function _lbRowHtml(entry, rank) {
 
   return `
     <tr class="lb-row${isHidden ? ' lb-row-hidden' : ''}" onclick="window.__lbToggle('${uid}', this)">
-      <td class="lb-rank">${_lbRankHtml(rank)}</td>
+      <td class="lb-rank">${_lbRankHtml(rank, podium)}</td>
       <td class="lb-identity">
         ${avatarHtml}
         <div>
@@ -32119,7 +32210,7 @@ function _lbRowHtml(entry, rank) {
         </div>
       </td>
       <td class="lb-val">${valStr}</td>
-      <td class="lb-pnl ${uCls}">${_lbPnl(entry.unrealizedPnl, entry.error)}</td>
+      <td class="lb-pnl ${uCls}">${_lbPnl(entry.unrealizedPnl, entry.error)}${_lbPct(entry.unrealizedPnl, entry.accountValue, entry.netPnl, entry.error)}</td>
       <td class="lb-pnl ${rCls} lb-col-full">${_lbPnl(entry.realizedPnl, entry.error)}${_lbPct(entry.realizedPnl, entry.accountValue, entry.netPnl, entry.error)}</td>
       <td class="lb-pnl ${nCls} lb-col-full">${_lbPnl(entry.netPnl, entry.error)}${_lbPct(entry.netPnl, entry.accountValue, entry.netPnl, entry.error)}</td>
       <td class="lb-chev">▶</td>
@@ -32160,6 +32251,10 @@ function _lbRowHtml(entry, rank) {
             <div class="lb-pnl-item">
               <span class="lb-pnl-lbl">Net PnL</span>
               <span class="lb-pnl-val ${nCls}">${_lbPnl(entry.netPnl, null)}</span>
+            </div>
+            <div class="lb-pnl-item" title="Net PnL against what the account started with">
+              <span class="lb-pnl-lbl">ROE</span>
+              <span class="lb-pnl-val ${nCls}">${fmtRoe(accountRoe(entry))}</span>
             </div>
           </div>
           ${_lbTrackHtml(entry)}
@@ -32834,12 +32929,13 @@ async function renderLeaderboard() {
     <div class="lb-toolbar">
       ${_lbDeskModeBar()}
       <div class="lb-count">${results.length} wallet${results.length !== 1 ? 's' : ''}</div>
+      ${_lbDeskSortBar()}
       <button class="btn-sm" onclick="renderLeaderboard()">↻ Refresh</button>
     </div>
     <div class="table-wrap">
       <table class="lb-table">
         ${_lbDeskHead}
-        <tbody>${results.map((r, i) => _lbRowHtml(r, i + 1)).join('')}</tbody>
+        <tbody>${_lbSortRows(results).map((r, i) => _lbRowHtml(r, i + 1, _lbSortDir < 0)).join('')}</tbody>
       </table>
     </div>`
   if (isDev()) root.appendChild(_lbFormEl(entries))

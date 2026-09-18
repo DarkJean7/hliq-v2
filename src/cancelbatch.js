@@ -23,13 +23,29 @@
  * in the combined view at all.
  */
 
-/** Orders for one asset. Matched on the EXACT coin id, never the display label: HIP-3 coins are
- *  dex-prefixed ("xyz:SPCX") and renamed for display, so two different markets can show the
- *  same name, and cancelling by what is on screen could reach into the wrong one. */
-export function ordersForCoin(orders, coin) {
+/** 'buy' or 'sell' for an order, however the side arrived. */
+export function sideOf(o) {
+  const s = String(o?.side ?? '')
+  return (s === 'B' || /^buy$/i.test(s)) ? 'buy' : 'sell'
+}
+
+/**
+ * Orders for one asset, optionally on one side.
+ *
+ * Matched on the EXACT coin id, never the display label: HIP-3 coins are dex-prefixed
+ * ("xyz:SPCX") and renamed for display, so two different markets can show the same name, and
+ * cancelling by what is on screen could reach into the wrong one.
+ *
+ * The side is the point rather than a refinement: "clear my HYPE bids" is a different
+ * intention from "close out HYPE", and a ladder usually has a position resting against it on
+ * the other side. Cancelling both would take out the exits with the entries.
+ */
+export function ordersForCoin(orders, coin, side = null) {
   const c = String(coin ?? '')
   if (!c) return []
-  return (orders ?? []).filter(o => String(o?.coin ?? '') === c)
+  const want = side == null ? null : (side === 'B' ? 'buy' : side === 'A' || side === 'S' ? 'sell' : String(side).toLowerCase())
+  return (orders ?? []).filter(o =>
+    String(o?.coin ?? '') === c && (want == null || sideOf(o) === want))
 }
 
 /** Split a selection into one batch per owning account, since one payload is signed by one

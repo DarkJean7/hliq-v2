@@ -55,10 +55,10 @@ Grep for a **string literal**, not a function name — the minifier renames func
 ## Before you push
 
 ```bash
-npm test        # 122 suites, no browser or network needed, a few seconds
+npm test        # 123 suites, no browser or network needed, a few seconds
 ```
 
-Expect `119 passing · 3 known-failing · 0 broken`. The three are listed with reasons in
+Expect `120 passing · 3 known-failing · 0 broken`. The three are listed with reasons in
 `tests/run.mjs`; they fail for causes outside this repo. **`broken` must be 0.**
 
 Suites read the source and assert against it, so they catch a surprising amount: a handler

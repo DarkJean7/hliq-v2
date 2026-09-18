@@ -1,15 +1,19 @@
-// Cancelling every order on one asset, in one tap.
+// Cancelling every order on one asset and ONE SIDE, in one tap.
 //
-// Asked for: "add an option to be able to just close all orders from just one asset. lets say i
-// want to cancel all hype orders, currently i can use the select feature but what if we also add
-// what i say so the user dont need to manually select all individual orders" — a ten-rung grid
-// took ten taps in Select mode.
+// Asked for: "add an option to be able to just close all orders from just one asset … the user
+// dont need to manually select all individual orders" — a ten-rung grid took ten taps in Select
+// mode — then narrowed: "make it that it closes the whole asset but from the chosen side".
+//
+// The side matters rather than being a refinement. A ladder usually has a position resting
+// against it on the other side, so clearing HYPE bids and clearing HYPE asks are different
+// intentions, and taking both would remove the exits along with the entries. The assertions
+// that described the whole-asset version are restated below for that reason.
 //
 // The batching and response-reading below already existed THREE times (Cancel All on desktop,
 // Cancel All on mobile, Cancel Selected). Each carried its own copy of the two subtleties this
 // suite pins, which is how one copy gets fixed and the others do not.
 import fs from 'fs'
-import { ordersForCoin, byAccount, statusesFrom, classifyCancels, describeOrders, summarize }
+import { ordersForCoin, byAccount, statusesFrom, classifyCancels, describeOrders, summarize, sideOf }
   from '../../src/cancelbatch.js'
 
 const cli = fs.readFileSync('src/main.js', 'utf8')
@@ -20,10 +24,10 @@ const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, co
 const nl = String.fromCharCode(10)
 const o = (oid, coin, extra = {}) => ({ oid, coin, ...extra })
 
-console.log(nl + '-- picking the asset --')
+console.log(nl + '-- picking the asset, and the side --')
 {
   const orders = [o(1, 'HYPE'), o(2, 'HYPE'), o(3, 'BTC'), o(4, 'xyz:HYPE')]
-  t('every order on the coin', ordersForCoin(orders, 'HYPE').map(x => x.oid).join() === '1,2')
+  t('every order on the coin when no side is named', ordersForCoin(orders, 'HYPE').map(x => x.oid).join() === '1,2')
   // HIP-3 markets are dex-prefixed and renamed for display, so two markets can show the same
   // name. Matching on the label would reach into the wrong book.
   t('a HIP-3 market with the same label is a DIFFERENT asset',
@@ -31,6 +35,20 @@ console.log(nl + '-- picking the asset --')
   t('and it is matched on the exact id, not a prefix', ordersForCoin(orders, 'HY').length === 0)
   t('an unknown coin cancels nothing', ordersForCoin(orders, 'DOGE').length === 0)
   t('so does an empty one — never "everything"', ordersForCoin(orders, '').length === 0 && ordersForCoin(orders, null).length === 0)
+
+  // The side, in every spelling it arrives in: 'B'/'A' off the wire, 'buy'/'sell' from a group.
+  const sided = [
+    o(11, 'HYPE', { side: 'B' }), o(12, 'HYPE', { side: 'B' }),
+    o(13, 'HYPE', { side: 'A' }), o(14, 'BTC', { side: 'B' }),
+  ]
+  t('only that side', ordersForCoin(sided, 'HYPE', 'B').map(x => x.oid).join() === '11,12')
+  t('the other side is untouched — it is usually the exits',
+    ordersForCoin(sided, 'HYPE', 'A').map(x => x.oid).join() === '13')
+  t('a group card spells the side out in words', ordersForCoin(sided, 'HYPE', 'buy').map(x => x.oid).join() === '11,12')
+  t('and "sell" resolves the same as "A"', ordersForCoin(sided, 'HYPE', 'sell').map(x => x.oid).join() === '13')
+  t('sideOf reads every spelling', ['B', 'buy', 'Buy'].every(x => sideOf({ side: x }) === 'buy') &&
+    ['A', 'S', 'sell'].every(x => sideOf({ side: x }) === 'sell'))
+  t('and a side never leaks across assets', ordersForCoin(sided, 'BTC', 'B').map(x => x.oid).join() === '14')
 }
 
 console.log(nl + '-- one payload is signed by one account --')
@@ -96,26 +114,34 @@ console.log(nl + '-- wired into both shells --')
   t('and passes that account through, so it signs with the right key',
     cli.includes('acct || null)'))
 
-  t('the asset-wide cancel exists', cli.includes('window.__cancelCoinOrders = async function(coin)'))
+  // Was `(coin)`: the whole asset. It now takes the side, and a null side still means the lot.
+  t('the cancel takes an asset and a side', cli.includes('window.__cancelCoinOrders = async function(coin, side = null)'))
   t('it confirms before firing', /window\.__cancelCoinOrders[\s\S]{0,1400}_appConfirm/.test(cli))
   t('it needs a key first', /window\.__cancelCoinOrders[\s\S]{0,600}_canAct\(\)/.test(cli))
   // Scoped to the asset, not to the card it is offered from: a coin can have a buy ladder and
   // a sell ladder, and "all HYPE orders" means both.
-  t('it takes every order on the coin', /window\.__cancelCoinOrders[\s\S]{0,400}ordersForCoin\(state\.openOrders/.test(cli))
+  t('it takes every order on the coin and side', /window\.__cancelCoinOrders[\s\S]{0,400}ordersForCoin\(state\.openOrders \?\? \[\], coin, side\)/.test(cli))
+  t('and the confirm says which side is going',
+    cli.includes("const sideW = side == null ? '' : (_ordSideOf({ side }) === 'buy'"))
+  t('while promising the other side is not', cli.includes('The other side and your positions are not touched'))
 
-  t('mobile offers it on the group card', cli.includes('${_ordCancelCoinBtnHtml(g.coin)}'))
-  t('and on a lone order whose asset has others', cli.includes("${_ordCancelCoinBtnHtml(o.coin, '0')}"))
+  // Both were `(g.coin)` / `(o.coin, '0')` — the whole asset. They now carry the row's side.
+  t('mobile offers it on the group card, for that group’s side',
+    cli.includes('${_ordCancelCoinBtnHtml(g.coin, g.side)}'))
+  t('and on a lone order, for its own side', cli.includes("${_ordCancelCoinBtnHtml(o.coin, o.side, '0')}"))
   t('a single order does not get it — it already has Cancel',
     cli.includes('if (all.length < 2) return '))
   // A batch half-signs if one of the accounts cannot.
   t('every owning account must be able to sign',
     cli.includes('const can = all.every(o => window.__acctCanTrade(o._acctAddr ?? null))'))
-  t('the count in the label is the whole asset, so it cannot cancel more than it says',
-    cli.includes('Cancel all ${all.length} ${esc(lbl)} orders'))
+  // The count is that asset-and-side, not the group, so it can never cancel more than it says.
+  t('the label names the count and the side',
+    cli.includes('Cancel all ${all.length} ${esc(lbl)} ${sw}'))
 
-  t('desktop offers it in the orders table', rnd.includes("window.__cancelCoinOrders('${esc(o.coin)}')"))
-  t('only when the asset has more than one', rnd.includes('${(coinCounts[o.coin] ?? 0) > 1 ?'))
-  t('and the count is built from exact coin ids', rnd.includes('coinCounts[o.coin] = (coinCounts[o.coin] ?? 0) + 1'))
+  t('desktop offers it in the orders table', rnd.includes("window.__cancelCoinOrders('${esc(o.coin)}','${o.side}')"))
+  t('counted per asset AND side', rnd.includes("const sideKey    = (o) => o.coin + '|' + (o.side === 'B' ? 'buy' : 'sell')"))
+  t('only when that side has more than one', rnd.includes('${(coinCounts[sideKey(o)] ?? 0) > 1 ?'))
+  t('and the button says which side', rnd.includes("${o.side === 'B' ? 'buys' : 'sells'}"))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

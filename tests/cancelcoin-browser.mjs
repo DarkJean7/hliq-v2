@@ -1,4 +1,4 @@
-// "Cancel all HYPE orders" — driven in the real app, both shells.
+// "Cancel all 8 HYPE buys" — driven in the real app, both shells.
 //
 // The source suite (tests/suites/cancelcoin.test.mjs) proves the selection and the
 // response-reading. This proves the button exists where the user is looking, says the right
@@ -117,25 +117,26 @@ const errs = []
   await p.waitForTimeout(500)
 
   const btn = await p.evaluate(() => {
-    const b = [...document.querySelectorAll('button')].find(x => /Cancel all \d+ HYPE orders/.test(x.textContent))
+    const b = [...document.querySelectorAll('button')].find(x => /Cancel all \d+ HYPE (buys|sells)/.test(x.textContent))
     return b ? b.textContent.trim().replace(/\s+/g, ' ') : null
   })
-  // Ten, not eight: the group shown is the buy ladder, but the asset also has two sells and
-  // "all HYPE orders" means all of them. The label says so before it is pressed.
-  t('the button offers the whole asset, not just the group', btn, 'Cancel all 10 HYPE orders')
+  // Eight, not ten: the two HYPE sells are the other side of the book and stay. A ladder
+  // usually has a position resting against it, and taking both sides removes the exits.
+  t('the button offers that side of the asset', btn, 'Cancel all 8 HYPE buys')
 
   await p.evaluate(() => {
     const iv = setInterval(() => {
       const y = document.getElementById('_acY')   // _appConfirm's yes button
       if (y) { y.click(); clearInterval(iv) }
     }, 80)
-    const b = [...document.querySelectorAll('button')].find(x => /Cancel all \d+ HYPE orders/.test(x.textContent))
+    const b = [...document.querySelectorAll('button')].find(x => /Cancel all \d+ HYPE (buys|sells)/.test(x.textContent))
     b.click()
   })
   await p.waitForTimeout(2500)
 
   const sent = cancels.flat().sort((a, b) => a - b)
-  t('exactly the ten HYPE orders were cancelled', sent, [100, 101, 102, 103, 104, 105, 106, 107, 200, 201])
+  t('exactly the eight HYPE buys were cancelled', sent, [100, 101, 102, 103, 104, 105, 106, 107])
+  t('the two HYPE sells survived', sent.some(x => x === 200 || x === 201), false)
   t('and the BTC order was not touched', sent.includes(999), false)
 
   await ctx.close()
@@ -152,10 +153,12 @@ cancels.length = 0
 
   const labels = await p.evaluate(() => {
     const tb = document.getElementById('ordersTbody')
-    return [...(tb?.querySelectorAll('button') ?? [])].map(b => b.textContent.trim()).filter(x => x.startsWith('✕ All'))
+    return [...(tb?.querySelectorAll('button') ?? [])].map(b => b.textContent.trim().replace(/\s+/g,' ')).filter(x => x.startsWith('✕ All'))
   })
-  t('every HYPE row offers it, the BTC row does not', labels.length, 10)
-  t('and it names the count', [...new Set(labels)], ['✕ All 10'])
+  // The eight buys offer it (8 rows); the two sells offer it to each other (2 rows); the lone
+  // BTC order has no siblings on its side and gets nothing.
+  t('every row whose side has siblings offers it', labels.length, 10)
+  t('and each names its own side and count', [...new Set(labels)].sort(), ['✕ All 2 sells', '✕ All 8 buys'])
 
   await ctx.close()
 }

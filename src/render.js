@@ -1,5 +1,6 @@
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
 import { pairTrades, drawdownFor } from './drawdown.js'
+import { partRoe, fmtRoe } from './roe.js'
 import { aggregateFillsByCoin, coinLabel } from './api.js'
 import { renderOverviewChart } from './charts.js'
 import { aggregatePosGroup, groupPositions, posHealthPct, posSideOf } from './posgroup.js'
@@ -426,7 +427,19 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
 
 
   // ── Inline % helpers ─────────────────────────────────────────────────────
-  const pctEq  = (n) => accountValue > 0 ? '(' + (n / accountValue * 100).toFixed(2) + '%)' : ''
+  /**
+   * ROE, not "percent of account value".
+   *
+   * This divided by the CURRENT equity, which understates every winner: an account that
+   * doubled shows +$1,000 on $2,000 and reported 50% when the money returned 100%. The basis
+   * is what the account started with — its value today less everything it has made or lost.
+   * Empty when that basis is not knowable, because a fresh account's return is unknown, not
+   * zero.
+   */
+  const pctEq  = (n) => {
+    const r = partRoe(n, { accountValue, netPnl })
+    return r == null ? '' : '(' + fmtRoe(r, { decimals: 2 }) + ')'
+  }
 
   // ── Hero row: the 3 numbers that matter most ──────────────────────────────
   const heroStats = [
@@ -576,7 +589,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   const ringColor = health > 70 ? 'var(--green)' : health > 40 ? 'var(--yellow)' : health > 20 ? '#ff9444' : 'var(--red)'
   const strip = [
     { label: 'Unrealized PnL', value: fmtPnL(totalUnrPnl).text, sub: (accountValue > 0 ? (totalUnrPnl >= 0 ? '+' : '') + (totalUnrPnl / accountValue * 100).toFixed(2) + '% of equity' : 'open positions'), cls: fmtPnL(totalUnrPnl).cls },
-    { label: 'Net PnL',       value: fmtPnL(netPnl).text,       sub: pctEq(netPnl) || 'incl. funding', cls: fmtPnL(netPnl).cls },
+    { label: 'Net PnL',       value: fmtPnL(netPnl).text,       sub: pctEq(netPnl) ? 'ROE ' + pctEq(netPnl) : 'incl. funding', cls: fmtPnL(netPnl).cls },
     { label: 'Win Rate',      value: winRate + (closedTrades > 0 ? '%' : ''), sub: winningTrades + ' / ' + closedTrades, cls: 'neu' },
     { label: 'Profit Factor', value: profitFactor === Infinity ? '∞' : profitFactor > 0 ? profitFactor.toFixed(2) : '—', sub: 'wins ÷ losses', cls: profitFactor >= 1 ? 'pos' : profitFactor > 0 ? 'neg' : 'neu' },
     { label: 'Total Volume',  value: '$' + fmtCompact(totalVolume), sub: fills.length + ' fills', cls: 'neu', id: 'statTotalVolume' },
@@ -1416,11 +1429,13 @@ export function renderOrders(openOrders, perpState, ocTokenMap = {}) {
     })
   }
 
-  // How many orders rest on each asset, so a row can offer to clear the whole ladder.
-  // Counted on the EXACT coin id: HIP-3 markets are dex-prefixed and renamed for display, so
-  // two markets can share a label and counting by label would offer to cancel the wrong one.
+  // How many orders rest on each asset AND SIDE, so a row can offer to clear that whole side.
+  // Keyed on the EXACT coin id: HIP-3 markets are dex-prefixed and renamed for display, so two
+  // markets can share a label and counting by label would offer to cancel the wrong one.
+  // Per side because a ladder usually has a position resting against it on the other one.
+  const sideKey    = (o) => o.coin + '|' + (o.side === 'B' ? 'buy' : 'sell')
   const coinCounts = {}
-  for (const o of openOrders) coinCounts[o.coin] = (coinCounts[o.coin] ?? 0) + 1
+  for (const o of openOrders) coinCounts[sideKey(o)] = (coinCounts[sideKey(o)] ?? 0) + 1
 
   // Build a quick lookup: coin → position data
   const posMap = {}
@@ -1525,10 +1540,10 @@ export function renderOrders(openOrders, perpState, ocTokenMap = {}) {
         <button class="manage-btn close"
           onclick="window.__cancelOrder('${esc(o.coin)}', ${o.oid}, ${!!o.isPositionTpsl})">
           ✕ Cancel
-        </button>${(coinCounts[o.coin] ?? 0) > 1 ? `
-        <button class="manage-btn close" title="Cancel every resting order on this asset"
-          onclick="window.__cancelCoinOrders('${esc(o.coin)}')">
-          ✕ All ${coinCounts[o.coin]}
+        </button>${(coinCounts[sideKey(o)] ?? 0) > 1 ? `
+        <button class="manage-btn close" title="Cancel every resting ${o.side === 'B' ? 'buy' : 'sell'} order on this asset"
+          onclick="window.__cancelCoinOrders('${esc(o.coin)}','${o.side}')">
+          ✕ All ${coinCounts[sideKey(o)]} ${o.side === 'B' ? 'buys' : 'sells'}
         </button>` : ''}
       </td>
     </tr>
