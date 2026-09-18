@@ -13012,7 +13012,9 @@ window.__mobVFreeMarginBreakdown = function() {
       <span class="notranslate" style="font-weight:600;font-size:14px;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name)}</span>
       <span style="font-weight:700;font-size:14px;white-space:nowrap">${_prv('$' + fmtUSD(r.wd))}</span>
     </div>`).join('')
-  ov.innerHTML = `<div style="width:100%;max-width:520px;background:var(--panel);border-radius:16px 16px 0 0;padding:16px 18px calc(18px + env(safe-area-inset-bottom,0px));box-shadow:0 -8px 40px rgba(0,0,0,.5);max-height:80vh;overflow-y:auto">
+  // sheet-over, like the other bottom sheets: --panel drops to 55% alpha while a background
+  // photo is set, so the positions behind this read straight through the numbers.
+  ov.innerHTML = `<div class="sheet-over" style="width:100%;max-width:520px;background:var(--panel);border-radius:16px 16px 0 0;padding:16px 18px calc(18px + env(safe-area-inset-bottom,0px));box-shadow:0 -8px 40px rgba(0,0,0,.5);max-height:80vh;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
         <span style="font-size:16px;font-weight:700">Free margin by account</span>
         <button onclick="document.getElementById('fmBreakdown').remove()" style="background:none;border:none;color:var(--muted);font-size:24px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
