@@ -237,6 +237,8 @@ import { aggregatePosGroup, groupPositions, posHealthPct } from './posgroup.js'
 import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL,
          expectedPnl, groupExpectedPnl } from './ordergroup.js'
 import { probeNavGeometry } from './navprobe.js'
+import { ordersForCoin, byAccount, statusesFrom, classifyCancels, describeOrders,
+         isAlreadyGone, summarize as _cancelSummary } from './cancelbatch.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey } from './comboequity.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
@@ -6644,7 +6646,7 @@ window.__cancelOrder = async function (coin, oid, _isPositionTpsl, btn, acct = n
     }
   } catch (e) {
     console.error('[cancel]', coin, oid, e)
-    if (/never placed|already cancel|filled/i.test(e.message)) {
+    if (isAlreadyGone(e.message)) {
       showTradeStatus(statusEl, 'success', '✓ Already cancelled or filled.')
       _removeOrderFromUI(oid, acct)
     } else {
@@ -6686,6 +6688,66 @@ window.__closeAllPositions = async function (btn) {
   window.__refreshAfterAction(1500)
 }
 
+/**
+ * Cancel a set of orders and report honestly. The three Cancel buttons each had their own copy
+ * of this; see cancelbatch.js for the two subtleties they each had to get right separately.
+ *
+ * Split per account, because one payload is signed by one account — which is also what lets an
+ * asset-wide cancel work in the combined view, where a coin is often held on several wallets.
+ */
+async function _cancelBatch(orders) {
+  let ok = [], failed = []
+  for (const [acct, batch] of byAccount(orders)) {
+    try {
+      let statuses
+      try {
+        statuses = statusesFrom(await cancelOrders(batch.map(o => ({ coin: o.coin, oid: o.oid, _acctAddr: o._acctAddr })), acct || null))
+      } catch (e) {
+        statuses = statusesFrom(e)
+        if (!statuses.length) throw e
+      }
+      const r = classifyCancels(batch, statuses)
+      ok = ok.concat(r.ok); failed = failed.concat(r.failed)
+    } catch (e) {
+      console.error('[cancelBatch]', acct || '(single)', e)
+      failed = failed.concat(batch.map(o => ({ order: o, error: e?.message || String(e) })))
+    }
+  }
+  for (const o of ok) _removeOrderFromUI(o.oid)
+  return { ok, failed, msg: _cancelSummary(ok, failed) }
+}
+
+/**
+ * Every order on one asset, gone in one tap.
+ *
+ * Asked for: "add an option to be able to just close all orders from just one asset … currently
+ * i can use the select feature but what if we also add what i say so the user dont need to
+ * manually select all individual orders". A ten-rung grid took ten taps to select before this.
+ *
+ * Scoped to the ASSET, not to the group card it is offered from: a coin can have a buy ladder
+ * and a sell ladder, and "cancel all HYPE orders" means both. The count in the label and the
+ * breakdown in the confirm are the whole set, so it can never cancel more than it said.
+ */
+window.__cancelCoinOrders = async function(coin) {
+  const orders = ordersForCoin(state.openOrders ?? [], coin)
+  if (!orders.length) return
+  if (!_canAct()) { _showChartToast('✗ ' + _T('Connect agent key first', 'Conecta la clave de agente primero')); return }
+  const label = _ocCoinLabel(coin)
+  const n     = orders.length
+  const what  = describeOrders(orders, k => ORDER_KIND_LABEL[k] ?? k)
+  if (!(await _appConfirm({
+    title: '🗑 ' + _T(`Cancel all ${label} orders?`, `¿Cancelar todas las órdenes de ${label}?`),
+    body: _T(`This cancels <b>${n} order${n === 1 ? '' : 's'}</b> on ${esc(label)}${what ? ` — ${esc(what)}` : ''}. Positions are not touched.`,
+             `Esto cancela <b>${n} orden${n === 1 ? '' : 'es'}</b> en ${esc(label)}${what ? ` — ${esc(what)}` : ''}. Las posiciones no se tocan.`),
+    confirmText: _T('Cancel orders', 'Cancelar órdenes'), danger: true,
+  }))) return
+  _showChartToast(_T(`Cancelling ${n} ${label} order${n === 1 ? '' : 's'}…`, `Cancelando ${n} orden${n === 1 ? '' : 'es'} de ${label}…`))
+  const { ok, msg } = await _cancelBatch(orders)
+  _showChartToast(msg)
+  if (ok.length) window.__refreshAfterAction(1000)
+  if (_isMobView()) { try { _mobVRenderContent() } catch {} }
+}
+
 window.__cancelAllOrders = async function () {
   // Bulk actions span wallets in the combined view, where one tap would fire orders
   // across every account. Guard at the function so no UI path can slip through.
@@ -6704,26 +6766,8 @@ window.__cancelAllOrders = async function () {
   showTradeStatus(statusEl, 'pending', `Cancelling ${n} order${n > 1 ? 's' : ''}…`)
   _showChartToast(`Cancelling ${n} order${n > 1 ? 's' : ''}…`)
   try {
-    let statuses = []
-    try {
-      const result = await cancelOrders(orders.map(o => ({ coin: o.coin, oid: o.oid })))
-      statuses = result?.response?.data?.statuses ?? []
-    } catch (e) {
-      // SDK throws ApiRequestError if any individual cancel fails (e.g. already-filled order).
-      // Extract statuses from the error response so partial successes are counted correctly.
-      statuses = e?.response?.response?.data?.statuses ?? []
-      if (!statuses.length) throw e
-    }
-    let ok = 0, fail = 0
-    orders.forEach((o, i) => {
-      const s = statuses[i]
-      if (!s || s === 'success' || (s && s.success !== undefined)) { _removeOrderFromUI(o.oid); ok++ }
-      else if (s?.error && /never placed|already cancel|filled/i.test(s.error)) { _removeOrderFromUI(o.oid); ok++ }
-      else { fail++ }
-    })
-    if (!statuses.length) { orders.forEach(o => _removeOrderFromUI(o.oid)); ok = n }
-    const msg = fail === 0 ? `✓ Cancelled ${ok} order${ok > 1 ? 's' : ''}` : `${ok} cancelled, ${fail} failed`
-    showTradeStatus(statusEl, fail === 0 ? 'success' : ok > 0 ? 'success' : 'error', msg + '.')
+    const { ok, failed, msg } = await _cancelBatch(orders)
+    showTradeStatus(statusEl, ok.length ? 'success' : 'error', msg + '.')
     _showChartToast(msg)
     window.__refreshAfterAction(1500)
   } catch (e) {
@@ -11386,10 +11430,33 @@ function _mobVMergedOrdCard(members) {
           `${_gExp >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(_gExp))}`,
           _gExp >= 0 ? 'var(--green)' : 'var(--red)']]),
       ])}
+      ${_ordCancelCoinBtnHtml(g.coin)}
       <div style="padding:9px 16px 4px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;background:var(--panel-2)">${
         g.n} ${_T('orders', 'órdenes')} · ${_T('tap any to manage', 'toca cualquiera para gestionar')}</div>
       ${members.map(m => m.__html).join('')}
     </div>
+  </div>`
+}
+
+/**
+ * "Cancel all 10 HYPE orders" — the whole asset in one tap.
+ *
+ * Asked for because clearing a ten-rung grid meant ten taps in Select mode. It is scoped to
+ * the ASSET, not to the group card it sits in: a coin can have a buy ladder and a sell ladder,
+ * and "all HYPE orders" means both. So the count here is every resting order on that coin,
+ * which is also what the confirm spells out — it can never cancel more than it says.
+ */
+function _ordCancelCoinBtnHtml(coin, pad = '10px 16px 2px') {
+  const all = ordersForCoin(state.openOrders ?? [], coin)
+  if (all.length < 2) return ''   // one order already has its own Cancel button
+  // Every account holding this coin must be able to sign, or the batch half-fails.
+  const can = all.every(o => window.__acctCanTrade(o._acctAddr ?? null))
+  const lbl = _ocCoinLabel(coin)
+  return `<div style="padding:${pad};background:var(--panel-2)">
+    <button ${can ? '' : 'disabled'} onclick="event.stopPropagation();window.__cancelCoinOrders('${esc(coin)}')"
+      style="${can ? '' : 'opacity:.4;cursor:not-allowed;'}width:100%;padding:9px;background:rgba(255,77,109,0.12);border:1px solid rgba(255,77,109,0.3);border-radius:9px;color:var(--red);font-size:12.5px;font-weight:700;cursor:pointer;touch-action:manipulation">
+      ${_T(`Cancel all ${all.length} ${esc(lbl)} orders`, `Cancelar las ${all.length} órdenes de ${esc(lbl)}`)}
+    </button>
   </div>`
 }
 
@@ -12018,7 +12085,7 @@ window._mobVCancelOrd = async function(btn, coin, oid, acct = null) {
       _showChartToast('✗ ' + errors.join(', '))
     }
   } catch (e) {
-    if (/never placed|already cancel|filled/i.test(e.message)) {
+    if (isAlreadyGone(e.message)) {
       _removeOrderFromUI(oid, acct)
     } else {
       if (btn.isConnected) { btn.textContent = 'Cancel'; btn.disabled = false }
@@ -12038,24 +12105,9 @@ window._mobVCancelAll = async function() {
   if (!confirm(`Cancel all ${n} open order${n > 1 ? 's' : ''}?`)) return
   _showChartToast(`Cancelling ${n} order${n > 1 ? 's' : ''}…`)
   try {
-    let statuses = []
-    try {
-      const result = await cancelOrders(orders.map(o => ({ coin: o.coin, oid: o.oid })))
-      statuses = result?.response?.data?.statuses ?? []
-    } catch (e) {
-      statuses = e?.response?.response?.data?.statuses ?? []
-      if (!statuses.length) throw e
-    }
-    let ok = 0, fail = 0
-    orders.forEach((o, i) => {
-      const s = statuses[i]
-      if (!s || s === 'success' || (s && s.success !== undefined)) { _removeOrderFromUI(o.oid); ok++ }
-      else if (s?.error && /never placed|already cancel|filled/i.test(s.error)) { _removeOrderFromUI(o.oid); ok++ }
-      else { fail++ }
-    })
-    if (!statuses.length) { orders.forEach(o => _removeOrderFromUI(o.oid)); ok = n }
-    _showChartToast(fail === 0 ? `✓ Cancelled ${ok} order${ok > 1 ? 's' : ''}` : `${ok} cancelled, ${fail} failed`)
-    if (ok > 0) window.__refreshAfterAction(1000)
+    const { ok, msg } = await _cancelBatch(orders)
+    _showChartToast(msg)
+    if (ok.length) window.__refreshAfterAction(1000)
   } catch (e) {
     console.error('[mobCancelAll]', e)
     _showChartToast('✗ ' + (e.message || String(e)))
@@ -12214,27 +12266,13 @@ window._mobVCancelSelected = async function() {
   if (!confirm(`Cancel ${n} selected order${n > 1 ? 's' : ''}?`)) return
   _showChartToast(`Cancelling ${n} order${n > 1 ? 's' : ''}…`)
   try {
-    let statuses = []
-    try {
-      const result = await cancelOrders(orders.map(o => ({ coin: o.coin, oid: o.oid })))
-      statuses = result?.response?.data?.statuses ?? []
-    } catch (e) {
-      statuses = e?.response?.response?.data?.statuses ?? []
-      if (!statuses.length) throw e
-    }
-    let ok = 0, fail = 0
-    orders.forEach((o, i) => {
-      const s = statuses[i]
-      if (!s || s === 'success' || (s && s.success !== undefined)) { _removeOrderFromUI(o.oid); ok++ }
-      else if (s?.error && /never placed|already cancel|filled/i.test(s.error)) { _removeOrderFromUI(o.oid); ok++ }
-      else { fail++ }
-    })
-    if (!statuses.length) { orders.forEach(o => _removeOrderFromUI(o.oid)); ok = n }
-    _showChartToast(fail === 0 ? `✓ Cancelled ${ok} order${ok > 1 ? 's' : ''}` : `${ok} cancelled, ${fail} failed`)
+    const { ok, msg } = await _cancelBatch(orders)
+    _showChartToast(msg)
+    const _okN = ok.length
     _mobVOrdSelMode = false
     _mobVOrdSel.clear()
     _mobVRenderContent()
-    if (ok > 0) window.__refreshAfterAction(1000)
+    if (_okN > 0) window.__refreshAfterAction(1000)
   } catch (e) {
     console.error('[mobCancelSelected]', e)
     _showChartToast('✗ ' + (e.message || String(e)))
@@ -18628,6 +18666,7 @@ function _mobVRenderContent(tick = false) {
               <button ${window.__acctCanTrade(o._acctAddr ?? null) ? '' : 'disabled'} onclick="event.stopPropagation();window._mobVCancelOrd(this,'${esc(o.coin)}',${o.oid},${o._acctAddr ? `'${esc(o._acctAddr)}'` : 'null'})"
                 style="${window.__acctCanTrade(o._acctAddr ?? null) ? '' : 'opacity:.4;cursor:not-allowed;'}flex:1;padding:8px;background:rgba(255,77,109,0.1);border:none;border-radius:8px;color:var(--red);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Cancel</button>
             </div>
+            ${_ordCancelCoinBtnHtml(o.coin, '0')}
           </div>
         </div>
       </div>`

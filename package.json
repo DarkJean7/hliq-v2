@@ -8,7 +8,7 @@
     "preview": "vite preview",
     "watch": "powershell -ExecutionPolicy Bypass -File watch.ps1",
     "test": "node tests/run.mjs",
-    "test:browser": "node tests/agentkeys-browser.mjs",
+    "test:browser": "node tests/browser.mjs",
     "hl-weight": "node tests/hl-weight.mjs"
   },
   "dependencies": {

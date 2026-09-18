@@ -55,10 +55,10 @@ Grep for a **string literal**, not a function name — the minifier renames func
 ## Before you push
 
 ```bash
-npm test        # 121 suites, no browser or network needed, a few seconds
+npm test        # 122 suites, no browser or network needed, a few seconds
 ```
 
-Expect `118 passing · 3 known-failing · 0 broken`. The three are listed with reasons in
+Expect `119 passing · 3 known-failing · 0 broken`. The three are listed with reasons in
 `tests/run.mjs`; they fail for causes outside this repo. **`broken` must be 0.**
 
 Suites read the source and assert against it, so they catch a surprising amount: a handler
@@ -74,11 +74,16 @@ yourself when you touch agent keys, the account switcher or the combined view:
 
 ```bash
 npm run dev &                 # or leave one running
-npm run test:browser          # tests/agentkeys-browser.mjs, --port=NNNN if not 5175
+npm run test:browser          # tests/browser.mjs runs them all, --port=NNNN if not 5175
 ```
 
-It drives both shells and asserts the key on screen is the key that signs, for the account on
-screen — a thing no single function's source shows. It is hermetic: its own server and the
+They drive both shells and assert things no single function's source shows: that the key on
+screen is the key that signs for the account on screen, and that a bulk action sends exactly
+the orders it named.
+
+Match the exchange by HOST, not with a `**hyperliquid**` glob — that also matches the SDK's own
+module files, which a dev server serves per-file out of node_modules, and the page then gets
+JSON where it expected JavaScript and never boots. It is hermetic: its own server and the
 exchange are both stubbed, so it takes about fifteen seconds and cannot fail because
 Hyperliquid is having a bad morning. Keep it that way — fixtures live at the top of the file,
 and an unstubbed request type gets `{}`, which the app treats like a call that failed.

@@ -119,11 +119,16 @@ const HL = {
        oraclePx: '100', markPx: '100', midPx: '100', impactPxs: ['100', '100'] }],
   ],
 }
+// The exchange, matched on the HOST. A `**hyperliquid**` glob also matches the SDK's own
+// module files, which a dev server serves per-file out of node_modules — the page then gets
+// JSON where it expected JavaScript and never boots. It happened to work against a built
+// bundle, which is why this was latent until another test hit it.
+const HL_HOST = /^https?:\/\/[a-z0-9.-]*hyperliquid[a-z0-9.-]*\.xyz\//i
 const offline = async (ctx) => {
   // This app's own server.
   await ctx.route('**/api/**', r => r.fulfill({ status: 503, body: 'offline in test' }))
   // The exchange.
-  await ctx.route('**hyperliquid**', (route) => {
+  await ctx.route(HL_HOST, (route) => {
     let type = ''
     try { type = JSON.parse(route.request().postData() || '{}').type || '' } catch {}
     return route.fulfill({ status: 200, contentType: 'application/json', json: HL[type] ?? {} })

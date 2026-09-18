@@ -50,7 +50,8 @@ const counts = new Map()   // "type" or "type|dex" -> n
 const b = await chromium.launch()
 const ctx = await b.newContext({ viewport: { width: 1500, height: 950 } })
 await ctx.route('**/api/**', r => r.fulfill({ status: 503, body: 'offline' }))
-await ctx.route('**hyperliquid**', (route) => {
+// Host-matched: a `**hyperliquid**` glob also catches the SDK's own module files in dev.
+await ctx.route(/^https?:\/\/[a-z0-9.-]*hyperliquid[a-z0-9.-]*\.xyz\//i, (route) => {
   let body = {}
   try { body = JSON.parse(route.request().postData() || '{}') } catch {}
   const t = body.type || '(non-json)'

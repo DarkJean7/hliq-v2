@@ -1416,6 +1416,12 @@ export function renderOrders(openOrders, perpState, ocTokenMap = {}) {
     })
   }
 
+  // How many orders rest on each asset, so a row can offer to clear the whole ladder.
+  // Counted on the EXACT coin id: HIP-3 markets are dex-prefixed and renamed for display, so
+  // two markets can share a label and counting by label would offer to cancel the wrong one.
+  const coinCounts = {}
+  for (const o of openOrders) coinCounts[o.coin] = (coinCounts[o.coin] ?? 0) + 1
+
   // Build a quick lookup: coin → position data
   const posMap = {}
   for (const ap of (perpState?.assetPositions ?? [])) {
@@ -1519,7 +1525,11 @@ export function renderOrders(openOrders, perpState, ocTokenMap = {}) {
         <button class="manage-btn close"
           onclick="window.__cancelOrder('${esc(o.coin)}', ${o.oid}, ${!!o.isPositionTpsl})">
           ✕ Cancel
-        </button>
+        </button>${(coinCounts[o.coin] ?? 0) > 1 ? `
+        <button class="manage-btn close" title="Cancel every resting order on this asset"
+          onclick="window.__cancelCoinOrders('${esc(o.coin)}')">
+          ✕ All ${coinCounts[o.coin]}
+        </button>` : ''}
       </td>
     </tr>
     <tr class="row-expand-detail" id="${eid}">
