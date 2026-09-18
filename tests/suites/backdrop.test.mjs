@@ -182,8 +182,10 @@ console.log(nl + '-- a sheet that opens over the app is opaque, and its iOS fix 
   // The id is assigned in JS, not written as an attribute, so anchor on that.
   t('the Add market sheet joins the sheet stack',
     /ov\.id = 'tvPicker'[\s\S]{0,900}class="sheet-over"/.test(CLI))
+  // The rule now opens with a selector LIST — the popovers joined it — so `.sheet-over {`
+  // is no longer a literal in the file. Anchored on the last selector before the brace.
   t('and the stack has an opaque ground',
-    /\.sheet-over \{[\s\S]{0,600}background-color: var\(--bg\) !important/.test(CSS))
+    /html\.has-bg-image \.coin-dropdown \{[\s\S]{0,600}background-color: var\(--bg\) !important/.test(CSS))
 
   // The ordering IS the test. Both rules are `html.has-bg-image .sheet-over`, both are
   // !important, so specificity and origin tie and the LATER one wins. The phone override was
@@ -194,9 +196,37 @@ console.log(nl + '-- a sheet that opens over the app is opaque, and its iOS fix 
   const phone = CSS.indexOf('background-attachment: scroll, scroll, scroll !important')
   t('the sheet has a phone attachment override at all', base > 0 && phone > 0)
   t('and it comes AFTER the rule it overrides, or it does nothing', phone > base, { base, phone })
+  // Same reason: the phone override is now a selector list too.
   t('inside a phone media query',
-    /@media \(max-width: 768px\) \{[\s\S]{0,300}?\.sheet-over \{ background-attachment: scroll, scroll, scroll/.test(CSS))
+    /@media \(max-width: 768px\) \{[\s\S]{0,600}?html\.has-bg-image \.sheet-over,[\s\S]{0,400}?background-attachment: scroll, scroll, scroll/.test(CSS))
   t('why is written down', CSS.includes('AFTER the rule it overrides, not before'))
+}
+
+console.log(nl + '-- a popover you can read the page through is not a popover --')
+{
+  // Reported as "make this not transparent": the Watch search results sat on --panel-2, which
+  // theme.js drops to 62% alpha under a background photo, so the coin list behind them read
+  // straight through. theme.js already reserves --panel-3 for "menus, popovers, things that
+  // open OVER content"; four popovers were simply on the wrong elevation.
+  const POPOVERS = ['#mobWatchSearchResults', '.watch-search-results', '.mkt-panel', '.tcs-results', '.coin-dropdown']
+  // Each one is in the selector list — last in the list is followed by ' {', the rest by ','.
+  const listed = (block, sel) =>
+    block.includes('html.has-bg-image ' + sel + ',') || block.includes('html.has-bg-image ' + sel + ' {')
+  for (const sel of POPOVERS) t(`${sel} is solid when a photo is set`, listed(CSS, sel), sel)
+  const phoneBlock = CSS.slice(CSS.indexOf('@media (max-width: 768px)', CSS.indexOf('html.has-bg-image .coin-dropdown')))
+  t('and the phone attachment override covers them too',
+    POPOVERS.every(sel => listed(phoneBlock, sel)))
+  // Their own rules must carry the solid token for the no-photo case, or the fix only works
+  // for people who set a background.
+  for (const sel of ['.watch-search-results', '.mkt-panel', '.tcs-results', '.coin-dropdown']) {
+    const i = CSS.indexOf(sel + ' {')
+    const blk = i < 0 ? '' : CSS.slice(i, CSS.indexOf('}', i))
+    t(`${sel} paints the raised elevation, not a card one`,
+      blk.includes('var(--panel-3)') && !blk.includes('var(--bg2)') && !blk.includes('var(--panel-2)'), blk.slice(0, 80))
+  }
+  // CLI is scoped to the block above, so read it here rather than reaching into that one.
+  t('the mobile one too', fs.readFileSync('src/main.js', 'utf8').includes("id=\"mobWatchSearchResults\" style=\"display:none;position:absolute;top:100%;left:0;right:0;background:var(--panel-3)"))
+  t('the reason is written beside the rule', CSS.includes('a dropdown you can read the table through is not a dropdown'))
 }
 
 console.log(nl + '-- and the deliberate exceptions carry their reason --')

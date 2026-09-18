@@ -1149,7 +1149,7 @@ tbody td {
   display: none; position: absolute;
   top: calc(100% + 8px); left: 0;
   width: min(860px, calc(100vw - 40px));
-  background: var(--bg2); border: 1px solid var(--border2);
+  background: var(--panel-3); border: 1px solid var(--border2);
   border-radius: 12px; z-index: 300;
   box-shadow: 0 24px 60px rgba(0,0,0,0.7);
   overflow: hidden;
@@ -1319,7 +1319,7 @@ html.has-bg-image .mkt-panel-search { background: transparent; }
 .tcs-results {
   display: none;
   position: absolute; top: calc(100% + 6px); left: 0; right: 0;
-  background: var(--bg2); border: 1px solid var(--border2);
+  background: var(--panel-3); border: 1px solid var(--border2);
   border-radius: 10px; z-index: 200;
   max-height: 260px; overflow-y: auto;
   box-shadow: 0 8px 24px rgba(0,0,0,0.4);
@@ -1512,7 +1512,7 @@ html.has-bg-image .mkt-panel-search { background: transparent; }
 .coin-dropdown {
   display: none; position: absolute;
   top: calc(100% + 4px); left: 0; right: 0;
-  background: var(--bg2); border: 1px solid var(--border2);
+  background: var(--panel-3); border: 1px solid var(--border2);
   border-radius: 10px; z-index: 200;
   max-height: 420px; overflow-y: auto;
   box-shadow: 0 16px 40px rgba(0,0,0,0.5);
@@ -4589,9 +4589,13 @@ body.layout-mobile .nav-tabs { display: none !important; }
 .watch-market-badge.perp { color: var(--accent); background: rgba(0,255,204,0.08); }
 .watch-market-badge.spot { color: var(--yellow); background: rgba(255,209,102,0.1); }
 .watch-search-wrap { position: relative; }
+/* --panel-3, not --bg2 (which is --panel, dropped to 55% alpha under a background photo).
+   This list opens OVER the watch table and was readable straight through to the rows behind
+   it. theme.js already reserves --panel-3 for exactly this: "a dropdown you can read the
+   table through is not a dropdown". */
 .watch-search-results {
   position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
-  background: var(--bg2); border: 1px solid var(--border2);
+  background: var(--panel-3); border: 1px solid var(--border2);
   border-radius: 8px; overflow: hidden;
   max-height: 220px; overflow-y: auto;
   box-shadow: 0 8px 32px rgba(0,0,0,0.5);
@@ -7636,7 +7640,23 @@ html.has-bg-image .sub-sheet {
    So the sheet gets a stack: the photo, viewport-aligned like every other surface, dimmed the
    same, with --panel-2's own translucent tint over it and an opaque --bg underneath. The
    picture still shows through exactly as it does elsewhere; the app behind does not. */
-html.has-bg-image .sheet-over {
+/* POPOVERS - anything that opens OVER content - are solid, whatever is behind them.
+ *
+ * theme.js already says so: --panel-3 is "the raised surface (menus, popovers, things that
+ * open OVER content)... because a dropdown you can read the table through is not a dropdown."
+ * Four of them were on --panel-2 or --bg2 instead, which a background photo drops to 62% and
+ * 55% alpha - the watch list read straight through the search results sitting on top of it.
+ *
+ * Listed here rather than by adding a class at each site, because the next popover somebody
+ * writes will not remember the class either. Their own rules carry --panel-3 for the
+ * no-photo case; this covers the photo case, where the alpha is applied.
+ */
+html.has-bg-image .sheet-over,
+html.has-bg-image #mobWatchSearchResults,
+html.has-bg-image .watch-search-results,
+html.has-bg-image .mkt-panel,
+html.has-bg-image .tcs-results,
+html.has-bg-image .coin-dropdown {
   background-color: var(--bg) !important;
   background-image:
     linear-gradient(var(--panel-2), var(--panel-2)),
@@ -7656,7 +7676,12 @@ html.has-bg-image .sheet-over {
    and this never applied to a single sheet. Measured, not assumed: the computed attachment on a
    402px viewport read `scroll, fixed, fixed`. */
 @media (max-width: 768px) {
-  html.has-bg-image .sheet-over { background-attachment: scroll, scroll, scroll !important; }
+  html.has-bg-image .sheet-over,
+  html.has-bg-image #mobWatchSearchResults,
+  html.has-bg-image .watch-search-results,
+  html.has-bg-image .mkt-panel,
+  html.has-bg-image .tcs-results,
+  html.has-bg-image .coin-dropdown { background-attachment: scroll, scroll, scroll !important; }
 }
 
 /* The two DRAWERS — the wallet switcher and the More panel — reported as "too transparent

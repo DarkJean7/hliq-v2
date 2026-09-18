@@ -19492,7 +19492,11 @@ function _mobVRenderContent(tick = false) {
             oninput="window.__mobWatchSearch(this.value)"
             style="width:100%;box-sizing:border-box;background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:13px;color:var(--fg);outline:none"
           />
-          <div id="mobWatchSearchResults" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--panel-2);border:1px solid var(--border);border-radius:8px;margin-top:4px;overflow:hidden;z-index:20;box-shadow:0 4px 16px rgba(0,0,0,.4)"></div>
+          <!-- panel-3 and sheet-over, not panel-2: this opens OVER the watch rows, and
+               theme.js drops panel-2 to 62% alpha under a background photo — the coin list
+               behind it read straight through the results. The theme already says popovers
+               are the solid elevation; this one was simply on the wrong one. -->
+          <div id="mobWatchSearchResults" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--panel-3);border:1px solid var(--border);border-radius:8px;margin-top:4px;overflow:hidden;z-index:20;box-shadow:0 4px 16px rgba(0,0,0,.4)"></div>
         </div>
         <button onclick="window.__openWatchAdvanced()" style="margin-top:8px;width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px;border-radius:9px;border:1px solid var(--accent);background:rgba(0,229,160,0.08);color:var(--accent);font-size:12.5px;font-weight:700;cursor:pointer;touch-action:manipulation">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="13" height="13"><path d="M3 17l6-6 4 4 7-7"/><path d="M14 8h6v6"/></svg>

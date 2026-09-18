@@ -323,7 +323,10 @@ console.log('\n── the sheet does not show the app through itself ──')
     (cli.match(/sheet-over"[^>]*style="position:fixed;bottom:0/g) ?? []).length)
   t('and the class makes them opaque over a photo',
     css.includes('html.has-bg-image .sheet-over') && css.includes('background-color: var(--bg) !important'))
-  t('while still showing the wallpaper', /\.sheet-over \{[\s\S]{0,400}var\(--app-bg-image\)/.test(css))
+  // The rule now opens with a selector LIST — the search popovers joined the same stack — so
+  // `.sheet-over {` is no longer a literal. Anchored on the last selector before the brace.
+  t('while still showing the wallpaper',
+    /html\.has-bg-image \.coin-dropdown \{[\s\S]{0,400}var\(--app-bg-image\)/.test(css))
   t('the reason is recorded', css.includes('opens OVER the app'))
 }
 
