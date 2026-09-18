@@ -13,17 +13,12 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # A hung step must not sit on the runner for hours. Tests and build take about three
+    # minutes together; twenty is slack, not a target.
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Load SSH key
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
-
-      - name: Trust server host key
-        run: ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
       # Build HERE, not on the server. The server ran `npm run build` in place, and vite
       # defaults to emptyOutDir:true — so it DELETED the live dist/ before writing the new
@@ -38,6 +33,34 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
+
+      # Everything below this line runs BEFORE the SSH key is loaded and before anything
+      # reaches the server: a red test cannot deploy, and does not even hold a credential.
+      - name: Tests
+        run: npm test
+
+      # The browser test is the one that catches what reading the source cannot — several
+      # places disagreeing about which account the UI is showing. It was opt-in and therefore
+      # only ran when someone remembered; agent keys broke for a day in exactly the gap that
+      # leaves. It is hermetic (its own server and the exchange are both stubbed) and takes
+      # about fifteen seconds, which is what makes it cheap enough to gate on.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Served from dist/, not the dev server: this gates the artifact that is about to ship.
+      - name: Browser tests
+        run: |
+          npx vite preview --port 5175 --strictPort &
+          for i in $(seq 1 60); do curl -sfo /dev/null http://localhost:5175/ && break; sleep 1; done
+          npm run test:browser -- --port=5175
+
+      - name: Load SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Trust server host key
+        run: ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
       - name: Sync files to server
         run: |

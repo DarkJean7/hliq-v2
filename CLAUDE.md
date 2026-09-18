@@ -68,16 +68,23 @@ promising something the code no longer does.
 If you change behaviour a suite asserts, update the suite in the same commit and say in the
 message why the old assertion no longer describes the truth.
 
-There is also a browser test, opt-in because it needs a dev server and takes a minute:
+There is also a browser test. **CI runs both, and a failure blocks the deploy** — it is a
+step in `deploy.yml` before the SSH key is even loaded, so a red test cannot ship. Run it
+yourself when you touch agent keys, the account switcher or the combined view:
 
 ```bash
 npm run dev &                 # or leave one running
 npm run test:browser          # tests/agentkeys-browser.mjs, --port=NNNN if not 5175
 ```
 
-Run it when you touch agent keys, the account switcher or the combined view. It drives both
-shells and asserts the key on screen is the key that signs, for the account on screen — a
-thing no single function's source shows.
+It drives both shells and asserts the key on screen is the key that signs, for the account on
+screen — a thing no single function's source shows. It is hermetic: its own server and the
+exchange are both stubbed, so it takes about fifteen seconds and cannot fail because
+Hyperliquid is having a bad morning. Keep it that way — fixtures live at the top of the file,
+and an unstubbed request type gets `{}`, which the app treats like a call that failed.
+
+CI serves `dist/`, so the browser test gates the artifact that is about to ship, not a dev
+build of it.
 
 ---
 

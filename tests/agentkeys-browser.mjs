@@ -85,13 +85,58 @@ const enterAllAccounts = async (p) => {
   await waitFor(p, 'the combined view', () => !!window.__getTradeAcct?.(), 45000)
 }
 
+/**
+ * Nothing here may depend on a network, because this test gates the deploy. Left live, an
+ * exchange hiccup or a rate-limited runner IP would block a release — a worse failure than
+ * the bug being guarded. Every assertion is about which key the app shows and signs with,
+ * and that has the same answer whether or not the exchange answers.
+ *
+ * The fixtures are deliberately empty-but-valid: an account with no positions, no orders and
+ * no history. An unknown request type gets `{}`, which the app already treats the same way it
+ * treats a call that failed — so a new endpoint added later degrades instead of turning this
+ * red for an unrelated reason.
+ */
+const EMPTY_MARGIN = { accountValue: '0', totalNtlPos: '0', totalRawUsd: '0', totalMarginUsed: '0' }
+const EMPTY_STATE  = {
+  marginSummary: EMPTY_MARGIN, crossMarginSummary: EMPTY_MARGIN,
+  crossMaintenanceMarginUsed: '0', withdrawable: '0', assetPositions: [], time: Date.now(),
+}
+const EMPTY_WINDOW = { accountValueHistory: [], pnlHistory: [], vlm: '0' }
+const HL = {
+  clearinghouseState: EMPTY_STATE,
+  spotClearinghouseState: { balances: [] },
+  allMids: { BTC: '100', ETH: '100', SOL: '100' },
+  frontendOpenOrders: [], userFunding: [], userFills: [], userFillsByTime: [],
+  userNonFundingLedgerUpdates: [], subAccounts: [], candleSnapshot: [],
+  extraAgents: [], allPerpMetas: [], outcomeMeta: {},
+  portfolio: ['day', 'week', 'month', 'allTime'].map(w => [w, EMPTY_WINDOW]),
+  webData2: { clearinghouseState: EMPTY_STATE, openOrders: [], agentAddress: null },
+  meta: { universe: [{ name: 'BTC', szDecimals: 5, maxLeverage: 50 }] },
+  spotMeta: { tokens: [], universe: [] },
+  metaAndAssetCtxs: [
+    { universe: [{ name: 'BTC', szDecimals: 5, maxLeverage: 50 }] },
+    [{ funding: '0', openInterest: '0', prevDayPx: '100', dayNtlVlm: '0', premium: '0',
+       oraclePx: '100', markPx: '100', midPx: '100', impactPxs: ['100', '100'] }],
+  ],
+}
+const offline = async (ctx) => {
+  // This app's own server.
+  await ctx.route('**/api/**', r => r.fulfill({ status: 503, body: 'offline in test' }))
+  // The exchange.
+  await ctx.route('**hyperliquid**', (route) => {
+    let type = ''
+    try { type = JSON.parse(route.request().postData() || '{}').type || '' } catch {}
+    return route.fulfill({ status: 200, contentType: 'application/json', json: HL[type] ?? {} })
+  })
+}
+
 const browser = await chromium.launch()
 const errs = []
 
 // ─── desktop ──────────────────────────────────────────────────────────────────
 {
   const ctx = await browser.newContext({ viewport: { width: 1500, height: 950 } })
-  await ctx.route('**/api/**', r => r.fulfill({ status: 503, body: 'offline in test' }))
+  await offline(ctx)
   const p = await ctx.newPage()
   p.on('pageerror', e => errs.push('desktop: ' + e.message))
   await seed(p)
@@ -165,7 +210,7 @@ const errs = []
 // ─── mobile, the primary surface ──────────────────────────────────────────────
 {
   const ctx = await browser.newContext({ ...devices['iPhone 14 Pro'] })
-  await ctx.route('**/api/**', r => r.fulfill({ status: 503, body: 'offline in test' }))
+  await offline(ctx)
   const p = await ctx.newPage()
   p.on('pageerror', e => errs.push('mobile: ' + e.message))
   await seed(p)

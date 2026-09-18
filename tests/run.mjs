@@ -42,8 +42,12 @@ const fixed = []      // listed as failing, but passing now
 
 for (const f of run) {
   // cwd is the repo root: every suite reads src/... relative to it.
-  const r = spawnSync(process.execPath, [join(here, 'suites', f)], { cwd: root, encoding: 'utf8' })
+  // A timeout, because two suites reach the network and this now gates the deploy: a suite
+  // that hangs must become a failure you can read, not a job that sits there until the
+  // runner's own limit kills it with no output.
+  const r = spawnSync(process.execPath, [join(here, 'suites', f)], { cwd: root, encoding: 'utf8', timeout: 120_000 })
   const ok = r.status === 0
+  if (!ok && r.error?.code === 'ETIMEDOUT') r.stderr = (r.stderr || '') + ' — suite timed out after 120s'
   const known = KNOWN_FAILING[f]
   if (ok) {
     passed++
