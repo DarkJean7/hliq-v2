@@ -38,7 +38,10 @@ const M = new Function('infoClient', `
   ${grab(api, 'async function _pool(')}
   ${grab(api, 'function _hip3DexNames(')}
   ${grab(api, 'export async function fetchClearinghouseState(').replace('export ', '')}
-  const _hip3Cache = { addr: null, positions: [], orders: [], byDex: {} }
+  // The real cache and its accessor, not a stand-in: the bug WAS in the cache.
+  const _hip3Cache = new Map()
+  const HIP3_CACHE_MAX = 32
+  ${grab(api, 'function _hip3For(')}
   return { fetchClearinghouseState, _hip3Cache }
 `)(infoClient)
 
@@ -70,13 +73,46 @@ st = await M.fetchClearinghouseState(ADDR, metas)
 t('a dex that answers "no positions" DOES clear them — closing must stick',
   JSON.stringify(coins(st)) === JSON.stringify(['BTC', 'flx:GOLD']), JSON.stringify(coins(st)))
 
-// Switching account must not leak the previous one's positions.
-st = await M.fetchClearinghouseState('0x2222222222222222222222222222222222222222', metas)
-t('the cache is keyed to the address it was built for',
-  M._hip3Cache.addr === '0x2222222222222222222222222222222222222222')
+t('the cache is per dex, not one shared list', api.includes('entry.byDex[dex]'))
 
-t('the cache is per dex, not one shared list',
-  api.includes('_hip3Cache.byDex[dex]') && api.includes('byDex: {}'))
+// ── 1b. one wallet's fan-out evicting another's cache ────────────────────────
+// The reported "equity spikes randomly for a few seconds and fixes itself", in single
+// accounts as well as the combined view. The cache used to be ONE slot with an `addr`
+// field, so any call for a different wallet emptied it — the combined view fans ten
+// wallets through here, and a leaderboard row does it while a single account is open.
+// The next tick that skips the fan-out then found the slot belonging to someone else and
+// returned the main dex ALONE. That is not "no HIP-3 positions", it is "we did not look",
+// and the account value dropped by exactly the HIP-3 portion until the next fan-out.
+const WA = '0xAAAA000000000000000000000000000000000001'
+const WB = '0xBBBB000000000000000000000000000000000002'
+infoClient.clearinghouseState = async ({ user, dex }) => {
+  if (!dex) return { assetPositions: [{ position: { coin: 'BTC', szi: '1' } }] }
+  // Only wallet WA holds anything on a HIP-3 dex.
+  if (user !== WA) return { assetPositions: [] }
+  return { assetPositions: [{ position: { coin: dex === 'xyz' ? 'SPCX' : 'GOLD', szi: '2' } }] }
+}
+
+st = await M.fetchClearinghouseState(WA, metas)                    // WA fans, and is cached
+t('wallet A fans and holds two HIP-3 positions',
+  JSON.stringify(coins(st)) === JSON.stringify(['BTC', 'flx:GOLD', 'xyz:SPCX']), JSON.stringify(coins(st)))
+
+await M.fetchClearinghouseState(WB, metas)                         // WB fans — used to evict WA
+
+st = await M.fetchClearinghouseState(WA, null)                     // WA, on a tick that skips the fan
+t('a skipped fan-out still finds A’s own positions after B was fetched',
+  JSON.stringify(coins(st)) === JSON.stringify(['BTC', 'flx:GOLD', 'xyz:SPCX']), JSON.stringify(coins(st)))
+
+st = await M.fetchClearinghouseState(WB, null)
+t('and B, which genuinely holds none, is still told nothing',
+  JSON.stringify(coins(st)) === JSON.stringify(['BTC']), JSON.stringify(coins(st)))
+
+t('every wallet keeps its own entry', M._hip3Cache.has(WA.toLowerCase()) && M._hip3Cache.has(WB.toLowerCase()))
+t('and addresses are matched case-insensitively',
+  (await M.fetchClearinghouseState(WA.toLowerCase(), null)).assetPositions.length === 3)
+
+// Bounded, or a long session across many wallets grows it without limit.
+for (let i = 0; i < 40; i++) await M.fetchClearinghouseState('0xc' + String(i).padStart(39, '0'), null)
+t('the cache is capped', M._hip3Cache.size <= 32, M._hip3Cache.size)
 
 // ── 2. the account avatar rebuilt on every 5s render ─────────────────────────
 const A = new Function(`

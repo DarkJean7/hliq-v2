@@ -67,10 +67,11 @@ export async function fetchClearinghouseState(address, allMetas) {
   const hip3States = await _pool(dexes, dex =>
     infoClient.clearinghouseState({ user: address, dex }).catch(() => null))
   if (!dexes.length) {
-    // Caller skipped the HIP-3 fan-out this tick (rate-limit protection) —
-    // reuse the cached HIP-3 positions so they don't flicker out of the UI.
-    if (_hip3Cache.addr === address && _hip3Cache.positions.length) {
-      return { ...mainState, assetPositions: [...(mainState.assetPositions ?? []), ..._hip3Cache.positions] }
+    // Caller skipped the HIP-3 fan-out this tick (rate-limit protection) — reuse THIS
+    // wallet's cached HIP-3 positions so they don't flicker out of the UI.
+    const cached = _hip3For(address).positions
+    if (cached.length) {
+      return { ...mainState, assetPositions: [...(mainState.assetPositions ?? []), ...cached] }
     }
     return mainState
   }
@@ -86,32 +87,63 @@ export async function fetchClearinghouseState(address, allMetas) {
   // overwritten with the incomplete set, so there was nothing to fall back to either. Next
   // tick it came back. Only a dex that ANSWERS can retire its cached positions; one that
   // could not be reached keeps them.
-  if (_hip3Cache.addr !== address) { _hip3Cache.addr = address; _hip3Cache.byDex = {} }
+  const entry = _hip3For(address)
   const extraPositions = dexes.flatMap((dex, i) => {
     const s = hip3States[i]
-    if (!s) return _hip3Cache.byDex[dex] ?? []
+    if (!s) return entry.byDex[dex] ?? []
     const mapped = (s.assetPositions ?? []).map(ap => {
       const prefixed = ap.position.coin.includes(':') ? ap.position.coin : `${dex}:${ap.position.coin}`
       return { ...ap, position: { ...ap.position, coin: _hip3Rename(prefixed) } }
     })
-    _hip3Cache.byDex[dex] = mapped
+    entry.byDex[dex] = mapped
     return mapped
   })
-  _hip3Cache.positions = extraPositions
+  // Only the dexes that were actually fanned are represented here, so a PARTIAL fan (the
+  // active-dex tick) must not retire what a dex it never asked about is holding.
+  for (const [dex, held] of Object.entries(entry.byDex)) {
+    if (!dexes.includes(dex) && held.length) extraPositions.push(...held)
+  }
+  entry.positions = extraPositions
   if (!extraPositions.length) return mainState
   return { ...mainState, assetPositions: [...(mainState.assetPositions ?? []), ...extraPositions] }
 }
 
 // Fetch frontendOpenOrders for main DEX + all HIP-3 DEXes, merged into one array.
 // HIP-3 failures are silently skipped; main DEX errors propagate to caller.
-// Cache of the last HIP-3 fan-out results, reused on ticks that skip the fan-out
-const _hip3Cache = { addr: null, positions: [], orders: [], byDex: {} }
+/**
+ * The last HIP-3 fan-out per wallet, reused on ticks that skip the fan-out.
+ *
+ * KEYED BY ADDRESS, and that is the fix for "equity spikes randomly for a few seconds and
+ * fixes itself". This used to be ONE slot with an `addr` field, so any call for a different
+ * wallet evicted it — the combined view fans ten wallets through here, and a leaderboard row
+ * or a visited profile does it while a single account is open. The next skipped tick then
+ * found the slot belonging to someone else and returned the main dex ALONE, which is not
+ * "this wallet has no HIP-3 positions" but "we did not look". The account value dropped by
+ * exactly the HIP-3 portion until the next fan-out, up to twenty seconds later, and came
+ * back on its own — the same magnitude every time, because it is the same positions.
+ *
+ * Bounded so a long session over many wallets cannot grow it without limit; the oldest entry
+ * goes first, and losing one only costs that wallet one fan-out.
+ */
+const _hip3Cache = new Map()   // address(lowercase) -> { positions, orders, byDex }
+const HIP3_CACHE_MAX = 32
+function _hip3For(address) {
+  const k = String(address ?? '').toLowerCase()
+  let e = _hip3Cache.get(k)
+  if (!e) {
+    e = { positions: [], orders: [], byDex: {} }
+    _hip3Cache.set(k, e)
+    if (_hip3Cache.size > HIP3_CACHE_MAX) _hip3Cache.delete(_hip3Cache.keys().next().value)
+  }
+  return e
+}
 
 export async function fetchFrontendOpenOrders(address, allMetas) {
   const mainOrders = await infoClient.frontendOpenOrders({ user: address })
   const dexes = allMetas && allMetas.length > 1 ? _hip3DexNames(allMetas) : []
   if (!dexes.length) {
-    if (_hip3Cache.addr === address && _hip3Cache.orders.length) return [...mainOrders, ..._hip3Cache.orders]
+    const cached = _hip3For(address).orders
+    if (cached.length) return [...mainOrders, ...cached]
     return mainOrders
   }
   const hip3Arrays = await _pool(dexes, dex =>
@@ -121,9 +153,9 @@ export async function fetchFrontendOpenOrders(address, allMetas) {
         return { ...o, coin: _hip3Rename(prefixed) }
       })
     ))
-  _hip3Cache.addr = address
-  _hip3Cache.orders = hip3Arrays.flat()
-  return [...mainOrders, ..._hip3Cache.orders]
+  const entry = _hip3For(address)
+  entry.orders = hip3Arrays.flat()
+  return [...mainOrders, ...entry.orders]
 }
 
 // HIP-3 dex mids ONLY (main-dex mids come from the WS/allMids feed, which does not
