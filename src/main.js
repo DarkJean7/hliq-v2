@@ -639,14 +639,21 @@ const WM = {
     // accounts stop alerting and new ones start (no-op if notifs are off)
     try { _registerPushDebounced() } catch {}
   },
-  getLabel(addr)      { return this.load().find(w => w.addr === addr)?.label ?? null },
+  // Case-INSENSITIVE. Addresses are stored checksummed here but arrive lowercased from
+  // anything that normalises them, and an exact match quietly answered "no name" — which is
+  // how every owned wallet looked unnamed to the leaderboard publisher.
+  getLabel(addr)      { const k = String(addr ?? '').toLowerCase(); return this.load().find(w => String(w.addr).toLowerCase() === k)?.label ?? null },
+  // Case-insensitive for the same reason as getLabel: upsert on a lowercased copy of an
+  // address already saved checksummed used to ADD A SECOND ENTRY for the same wallet, and
+  // remove on the other casing removed nothing.
   upsert(addr, label) {
+    const k    = String(addr ?? '').toLowerCase()
     const list = this.load()
-    const ex   = list.find(w => w.addr === addr)
+    const ex   = list.find(w => String(w.addr).toLowerCase() === k)
     if (ex) ex.label = label; else list.push({ addr, label })
     this.save(list)
   },
-  remove(addr) { this.save(this.load().filter(w => w.addr !== addr)) },
+  remove(addr) { const k = String(addr ?? '').toLowerCase(); this.save(this.load().filter(w => String(w.addr).toLowerCase() !== k)) },
 }
 
 function renderSavedWallets() {
@@ -12553,9 +12560,12 @@ window._mobVRenameWallet = async function(addr) {
     // say WHICH account is near liquidation. Claiming it never leaves the device would be a
     // comfortable lie. Naming an address you are only watching also saves it, which is a
     // change worth stating before it happens rather than after.
-    body: saved
+    // Where the name goes is worth stating before it is typed, not after: for an account
+    // this app can prove is yours it becomes the public leaderboard name.
+    body: (saved
       ? 'Shown wherever this account appears, and in its push alerts. Stored on this device.'
-      : 'Naming this address also saves it to your accounts. Stored on this device.',
+      : 'Naming this address also saves it to your accounts. Stored on this device.')
+      + (_lbOwnsAddr(addr) ? ' Because this account is yours, it is also the name shown on the public leaderboard.' : ''),
     placeholder: 'e.g. Main, Degen…',
     value: cur,
     confirmText: 'Save name',
@@ -12566,6 +12576,7 @@ window._mobVRenameWallet = async function(addr) {
   const label = name.trim()
   if (!label || label === cur) return
   WM.upsert(addr, label)   // WM.save re-syncs the push subscription, so alerts use the new name
+  _lbPublishName(addr)     // your own wallet? then this is the name the board shows
   // The combined view caches labels on its rows, so patch them rather than refetching every
   // wallet just to change a string.
   for (const r of (_allAcctLastResults ?? [])) {
@@ -31642,6 +31653,59 @@ function _lbJoin(addr, equity = null) {
  * for are skipped without a request, so calling it often costs nothing. An owner who left the
  * board is hidden rather than deleted, so this cannot put them back in view.
  */
+/**
+ * The name YOU gave your own wallet, on the public board.
+ *
+ * Asked for: "store server side connected users wallet names so we then can have the named
+ * wallet in the leaderboard instead of just the address … what is the point of naming wallets
+ * of random users" — dev-naming strangers does not scale, and the owner already typed a name.
+ *
+ * ONLY for wallets this app can prove are yours: an agent key saved here (Hyperliquid itself
+ * confirms the key is approved for the account) or the connected wallet. The label you give
+ * someone ELSE's address is a private note about a stranger — "scammer", "whale I follow" —
+ * and publishing it under their row would be putting your words in their mouth.
+ *
+ * Sent once per name: the last published one is remembered per address, so a reload does not
+ * re-post it. The device opt-out silences this with everything else.
+ */
+/** Is this an account this app can prove belongs to the person using it? */
+function _lbOwnsAddr(addr) {
+  let connected = []
+  try { connected = getConnectedWallets() } catch {}
+  return ownedAddresses(localStorage, connected).includes(String(addr ?? '').toLowerCase())
+}
+const _LB_NAMED_KEY = 'hliq_lb_published_names'
+function _lbNamedMap() { try { return JSON.parse(localStorage.getItem(_LB_NAMED_KEY)) || {} } catch { return {} } }
+async function _lbPublishName(addr, { resend = false } = {}) {
+  const key = String(addr ?? '').toLowerCase()
+  if (!_isRealAddr(key)) return 'skip'
+  if (localStorage.getItem('hliq_lb_optout') === '1') return 'optout'
+  let connected = []
+  try { connected = getConnectedWallets() } catch {}
+  if (!ownedAddresses(localStorage, connected).includes(key)) return 'not-yours'
+  const name = _lbCleanName(WM.getLabel(addr) ?? '')
+  if (!name) return 'unnamed'
+  const map = _lbNamedMap()
+  if (!resend && map[key] === name) return 'known'
+  try {
+    // authAddr makes serverFetch attach this account's agent-key session; the server checks
+    // with Hyperliquid that the key is approved for it.
+    const r = await serverFetch('/api/leaderboard/name', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      authAddr: key, body: JSON.stringify({ addr: key, name }),
+    })
+    if (r?.ok || r?.label) {
+      map[key] = name
+      try { localStorage.setItem(_LB_NAMED_KEY, JSON.stringify(map)) } catch {}
+      // Show it without waiting for the next board refresh.
+      for (const row of (_mobVLbResults ?? [])) if (String(row.addr).toLowerCase() === key) row.label = name
+      return 'published'
+    }
+    return 'retry'
+  } catch { return 'retry' }
+}
+window.__lbPublishName = (a) => _lbPublishName(a, { resend: true })
+
 let _lbJoinOwnedBusy = false
 async function _lbJoinOwned() {
   if (_lbJoinOwnedBusy) return
@@ -31649,7 +31713,11 @@ async function _lbJoinOwned() {
   try {
     let connected = []
     try { connected = getConnectedWallets() } catch {}
-    await _lbJoiner.joinAll(ownedAddresses(localStorage, connected))
+    const owned = ownedAddresses(localStorage, connected)
+    await _lbJoiner.joinAll(owned)
+    // Then the names. A row has to exist before it can be named, which is why this comes
+    // after the joins rather than beside them.
+    for (const a of owned) await _lbPublishName(a)
   } catch {} finally { _lbJoinOwnedBusy = false }
 }
 window.__lbJoinOwned = () => _lbJoinOwned()
@@ -33455,6 +33523,7 @@ window.__maRename = async function(addr) {
   })
   if (name === null) return
   WM.upsert(addr, name.trim())
+  _lbPublishName(addr)     // your own wallet? then this is the name the board shows
   // Labels live on the cached results, so patch them rather than refetching.
   const _lbl = name.trim()
   for (const r of _allAcctLastResults) if (r.addr.toLowerCase() === addr.toLowerCase()) r.label = _lbl

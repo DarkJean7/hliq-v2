@@ -2607,10 +2607,18 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true, addr: String(b.addr).toLowerCase(), hidden: !!b.hidden })
   }
 
-  // ── POST /api/leaderboard/name { addr, name, ts, signature } ──────────────
-  // Set the public display name shown on the board instead of the address. Ownership is
-  // proven by a personal_sign from that address, so only the owner can rename their entry
-  // (the address itself is public, so a signature is the only real proof).
+  // ── POST /api/leaderboard/name { addr, name, ts?, signature? } ────────────
+  // Set the public display name shown on the board instead of the address.
+  //
+  // TWO proofs of ownership, because there are two kinds of owner here:
+  //   a personal_sign from the address itself, or
+  //   an agent-key session whose key Hyperliquid CURRENTLY lists as approved for it.
+  // The second is what lets the app publish the name someone gave their own wallet without
+  // a signature prompt — most people here run bots from an agent key and never connect a
+  // browser wallet. Asked for: "store server side connected users wallet names so we then
+  // can have the named wallet in the leaderboard instead of just the address … what is the
+  // point of naming wallets of random users" — the names should come from their owners.
+  // An unapproved key proves nothing and gets nothing, exactly as before.
   if (method === 'POST' && path === '/api/leaderboard/name') {
     const b = await body(req)
     if (!isAddr(b.addr)) return json(res, 400, { error: 'invalid address' })
@@ -2622,21 +2630,29 @@ const server = createServer(async (req, res) => {
       .replace(/\s+/g, ' ').trim().slice(0, 24)
     if (/^0x[0-9a-fA-F]{6,}/.test(name)) return json(res, 400, { error: 'name cannot look like an address' })
 
-    const ts = Number(b.ts ?? 0)
-    if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > 10 * 60 * 1000)
-      return json(res, 400, { error: 'stale request — try again' })
+    const auth = getAuth(req)
+    const byAgent = !!auth && (auth.admin || await agentApprovedFor(b.addr, auth.signer))
+    if (!byAgent) {
+      const ts = Number(b.ts ?? 0)
+      if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > 10 * 60 * 1000)
+        return json(res, 400, { error: 'stale request — try again' })
 
-    const msg = `Insolvent Trade — set leaderboard name\naddress: ${b.addr.toLowerCase()}\nname: ${name}\nts: ${ts}`
-    let signer
-    try { signer = ethers.verifyMessage(msg, b.signature ?? '') }
-    catch { return json(res, 400, { error: 'bad signature' }) }
-    if (signer.toLowerCase() !== b.addr.toLowerCase())
-      return json(res, 403, { error: 'signature does not match that address' })
+      const msg = `Insolvent Trade — set leaderboard name\naddress: ${b.addr.toLowerCase()}\nname: ${name}\nts: ${ts}`
+      let signer
+      try { signer = ethers.verifyMessage(msg, b.signature ?? '') }
+      catch { return json(res, 400, { error: 'bad signature' }) }
+      if (signer.toLowerCase() !== b.addr.toLowerCase())
+        return json(res, 403, { error: 'signature does not match that address' })
+    }
 
     const list = lbReadList()
     const i = list.findIndex(e => e.addr.toLowerCase() === b.addr.toLowerCase())
     if (i < 0) return json(res, 404, { error: 'address is not on the leaderboard' })
+    if (list[i].label !== name) console.log(`[lb] name ${b.addr.toLowerCase().slice(0, 10)}… "${name}"${byAgent ? ' (agent key)' : ''}`)
     list[i].label = name
+    // Who named it. A row named by its owner is never renamed by the automatic path again on
+    // someone else's behalf, and the UI can say which rows are self-named.
+    list[i].namedBy = byAgent ? 'agent' : 'owner'
     lbWriteList(list)
     // Reflect it in the pre-computed rows straight away, so the board shows the new name
     // without waiting for the next refresh cycle.
