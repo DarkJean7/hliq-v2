@@ -666,7 +666,8 @@ async function run() {
   // Range resolution:
   //   • Explicit --lower/--upper provided  → use them (skip auto).
   //   • No bounds + position OPEN in coin   → AUTO anchored to avg entry (profitable
-  //       ladder: long avg → avg+band, short avg−band → avg).
+  //       ladder: long avg → avg+band, short avg−band → avg), THEN opened up on the entry
+  //       side if the mark has already run past it — see below.
   //   • No bounds + no position             → AUTO mark ±10%.
   // (Restarts strip stored bounds server-side, so a restart always re-derives auto.)
   {
@@ -683,6 +684,47 @@ async function run() {
         UPPER = roundPx(Math.max(_avg0, markPx) * (1 + PROFIT_BAND))
       }
       log('INIT', `Auto-range anchored to avg entry $${_avg0} (position open) → $${LOWER}–$${UPPER} (${(PROFIT_BAND * 100).toFixed(0)}% band)`)
+
+      /**
+       * The entry side must clear the mark, or the grid has nothing to do.
+       *
+       * The anchor above pins the ENTRY end of the ladder to the average entry: a short's
+       * UPPER, a long's LOWER. That guarantees every exit closes past the average — but the
+       * moment the mark drifts the wrong side of it, not one level is left where an entry
+       * could go. Entries need `px > mark + gap/2` for a short, `px < mark - gap/2` for a
+       * long, and the whole ladder now sits on the wrong side of the mark.
+       *
+       * Reported on an INJ short: avg $6.6512, mark $6.6582 — 0.1% against it. The plan came
+       * back with ZERO sells, nine buys and one rung parked in the dead zone. It could close
+       * the 5 INJ it held and then nothing, ever, unless price came back. Which is exactly
+       * when a grid is supposed to be working.
+       *
+       * The cap was never what kept exits safe — exitProfitable() refuses to close past the
+       * average on its own, and still does. And for a short, selling ABOVE the average
+       * improves the average; it is not the risky direction. So the entry end is pushed two
+       * gaps past the mark, and ONLY when it would otherwise be dead: a grid whose mark is
+       * still inside its range is untouched, and keeps exactly the ladder it had before.
+       */
+      // Two levels of clearance, not one: an entry needs px beyond mark ± gap/2, so the
+      // second level in from the end needs the end to sit a gap and a half past the mark.
+      //
+      // Iterated rather than computed in one step, because widening the range over a FIXED
+      // level count also widens the gap — measure the headroom with the old gap and it buys
+      // barely one level. Two passes converge; the third is there so the loop cannot be the
+      // thing that breaks.
+      const _dead = () => IS_SHORT ? markPx >= UPPER : markPx <= LOWER
+      if (_dead()) {
+        const _before = IS_SHORT ? UPPER : LOWER
+        for (let _pass = 0; _pass < 3; _pass++) {
+          const _gap = (UPPER - LOWER) / Math.max(1, LEVELS - 1)
+          if (IS_SHORT ? UPPER > markPx + _gap * 1.5 : LOWER < markPx - _gap * 1.5) break
+          if (IS_SHORT) UPPER = roundPx(markPx + _gap * 2.5)
+          else          LOWER = roundPx(markPx - _gap * 2.5)
+        }
+        log('INIT', IS_SHORT
+          ? `Mark $${markPx} is above the anchored top $${_before} — opening the range to $${UPPER} so the grid still has sells to place`
+          : `Mark $${markPx} is below the anchored bottom $${_before} — opening the range to $${LOWER} so the grid still has buys to place`)
+      }
     } else {
       if (!(LOWER > 0)) LOWER = roundPx(markPx * 0.90)
       if (!(UPPER > 0)) UPPER = roundPx(markPx * 1.10)

@@ -36,8 +36,10 @@ whole procedure.
   kernel could as easily have picked a live bot. CI builds on the runner.
 - **You do not need to build before pushing.** `dist/` is gitignored and CI builds it.
   Build locally only to test locally.
-- `server.js` and `notify-server.js` restart only when their checksum changes, so a UI-only
-  push never interrupts a running bot. Changes under `strategies/` need `deploy.ps1 -Bots`.
+- `server.js`, `notify-server.js` and `strategies/` all ship on a push and restart only when
+  their checksum changes, so a UI-only push never interrupts a running bot. A bot script under
+  `strategies/` is read when `hliq-strat` spawns a child, so it needs that restart to take —
+  which the checksum gate does for you. `deploy.ps1 -Bots` is no longer needed for it.
 
 Deploys take ~2 minutes. Confirm by fetching the live bundle and grepping for a string your
 change introduced — the asset hash differs from a local build, so comparing hashes proves
@@ -55,10 +57,10 @@ Grep for a **string literal**, not a function name — the minifier renames func
 ## Before you push
 
 ```bash
-npm test        # 123 suites, no browser or network needed, a few seconds
+npm test        # 124 suites, no browser or network needed, a few seconds
 ```
 
-Expect `120 passing · 3 known-failing · 0 broken`. The three are listed with reasons in
+Expect `121 passing · 3 known-failing · 0 broken`. The three are listed with reasons in
 `tests/run.mjs`; they fail for causes outside this repo. **`broken` must be 0.**
 
 Suites read the source and assert against it, so they catch a surprising amount: a handler
