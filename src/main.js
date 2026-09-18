@@ -242,6 +242,9 @@ import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
 import { trackRecord, isSmallSample, openLossOf } from './trackrecord.js'
 import { createJoiner, ownedAddresses } from './lbjoin.js'
+import { readKey as _akRead, writeKey as _akWrite, removeKey as _akRemove,
+         migrateLegacy as _akMigrateLegacy, strayEntries as _akStrays,
+         onAgentKeyMisuse, LEGACY_KEY as _AK_LEGACY } from './agentkeys.js'
 import { rulesFor, clampLeverage, marginModeFor, delistedNames, hasNoActivity, deployerOf } from './assetrules.js'
 
 /**
@@ -2293,8 +2296,8 @@ async function connectAgentKeyUI() {
     statusEl.innerHTML = `✓ Connected: <span style="color:var(--accent)">${addr.slice(0, 6)}...${addr.slice(-4)}</span>`
     statusEl.style.color = 'var(--green)'
     const _target = _agentUiAddr()
-    if (_target) localStorage.setItem(_agentKeyForAddr(_target), keyVal)
-    else localStorage.setItem('hliq_agent_key', keyVal)
+    if (_target) _agentKeySet(_target, keyVal)
+    else localStorage.setItem(_AK_LEGACY, keyVal)
     // Register it for THAT account so the combined view can sign with it immediately rather
     // than waiting for the next re-registration pass.
     if (_target) { try { await registerAgentKey(_target, keyVal) } catch {} }
@@ -6283,7 +6286,7 @@ window.__guardArm = async function () {
   // The account that OWNS this position — not state.addr, which is '__all_accounts__' in the
   // combined view (yielding no agent key and a 401 "authentication required" from the bot API).
   const gAddr    = _isRealAddr(g.acct) ? g.acct : (_isRealAddr(state.addr) ? state.addr : null)
-  const agentKey = (gAddr ? localStorage.getItem(_agentKeyForAddr(gAddr)) : null)
+  const agentKey = (gAddr ? _agentKeyGet(gAddr) : null)
               || document.getElementById('m-agentKey')?.value?.trim()
               || document.getElementById('agentKey')?.value?.trim()
   if (!gAddr)    { showTradeStatus(statusEl, 'error', 'Open this guard from the specific account\'s position.'); return }
@@ -7542,7 +7545,7 @@ async function _allAcctRegisterAgents() {
   // a retry once the loop had finished. Never leave the registry empty.
   const done = []
   for (const w of _maLoad()) {
-    const key = localStorage.getItem(_agentKeyForAddr(w.addr))
+    const key = _agentKeyGet(w.addr)
     if (!key) continue
     try { await registerAgentKey(w.addr, key); done.push(w.addr) }
     catch (e) { console.warn('[allAcct] agent key rejected for', w.addr, e.message) }
@@ -7555,7 +7558,7 @@ async function _allAcctRegisterAgents() {
 // in flight. Only exact per-address keys - the legacy global `hliq_agent_key` belongs to
 // whichever account approved it and must never be used to sign for another wallet.
 setAgentKeyResolver(addr => {
-  try { return localStorage.getItem(_agentKeyForAddr(addr)) || null } catch { return null }
+  try { return _agentKeyGet(addr) || null } catch { return null }
 })
 
 // Which wallet new orders are placed from while the combined view is active.
@@ -7696,7 +7699,7 @@ async function _preflightAgent(acct) {
   if (isPaper()) return { ok: true }
   const master = _preflightAddrFor(acct)
   if (!master) return { ok: true }
-  const key = localStorage.getItem(_agentKeyForAddr(master))
+  const key = _agentKeyGet(master)
   if (!key) return { ok: true }            // no stored key — existing "connect key" paths handle it
   const agentAddr = agentAddressOf(key)
   if (!agentAddr) return { ok: true }
@@ -7730,7 +7733,7 @@ async function _agentInvalidPrompt(master, agentAddr) {
     _paperToast('⚠ ' + _T('Open that account and connect its wallet to regenerate', 'Abre esa cuenta y conecta su billetera para regenerar'))
     return
   }
-  try { localStorage.removeItem(_agentKeyForAddr(master)) } catch {}
+  try { _agentKeyDel(master) } catch {}
   _agentOkCache.clear(); invalidateApprovedAgents(master)
   await window.__autoGenerateAgentKey()
 }
@@ -7764,7 +7767,7 @@ async function _sweepAgentKeys() {
   if (_isRealAddr(state.addr) && !addrs.some(a => a.toLowerCase() === state.addr.toLowerCase())) addrs.push(state.addr)
   for (const a of addrs) {
     const key = String(a).toLowerCase()
-    if (!localStorage.getItem(_agentKeyForAddr(key))) { _agentBadAccts.delete(key); continue }
+    if (!_agentKeyGet(key)) { _agentBadAccts.delete(key); continue }
     if (_hlLimited()) return                       // back off entirely while limited
     const r = await _preflightAgent(key)
     if (r.ok) _agentBadAccts.delete(key)
@@ -8002,6 +8005,7 @@ async function loadAllAccountsDashboard() {
   await _allAcctRegisterAgents()
   // Now that the registry knows which accounts can sign, show the selected one's key.
   try { _syncAgentKeyUI() } catch {}
+  try { _reportStrayAgentKeys() } catch {}
   // Powers the "Grid:HYPE" bot pills on the per-account cards.
   serverFetch('/api/status/all').then(st => {
     _maBotStatus = st ?? {}; _syncAllAcctCards()
@@ -20037,7 +20041,7 @@ function _lbMyActiveAddr() {
   // with a key and no wallet extension had no way to join at all.
   try {
     const a = String(state.addr ?? '').toLowerCase()
-    if (/^0x[0-9a-f]{40}$/.test(a) && localStorage.getItem(_agentKeyForAddr(a))) return a
+    if (/^0x[0-9a-f]{40}$/.test(a) && _agentKeyGet(a)) return a
   } catch {}
   return null
 }
@@ -23326,8 +23330,8 @@ window._mobVConnectAgentKey = async function() {
   try {
     const addr = await connectAgentKey(keyVal)
     const _target = _agentUiAddr()
-    if (_target) localStorage.setItem(_agentKeyForAddr(_target), keyVal)
-    else localStorage.setItem('hliq_agent_key', keyVal)
+    if (_target) _agentKeySet(_target, keyVal)
+    else localStorage.setItem(_AK_LEGACY, keyVal)
     // Register it for THAT account so the combined view can sign with it immediately rather
     // than waiting for the next re-registration pass.
     if (_target) { try { await registerAgentKey(_target, keyVal) } catch {} }
@@ -25685,7 +25689,7 @@ function _stratAcctPickerHtml() {
   const cur = String(_stratTargetAddr() ?? '').toLowerCase()
   const rows = _maLoad().map(w => {
     const on  = w.addr.toLowerCase() === cur
-    const key = !!localStorage.getItem(_agentKeyForAddr(w.addr))
+    const key = !!_agentKeyGet(w.addr)
     const lbl = w.label || (w.addr.slice(0, 6) + '…' + w.addr.slice(-4))
     // An account with no agent key cannot run anything — but it stays PICKABLE, because
     // picking it is how you get to its key: the agent-key panel above repaints for whichever
@@ -27562,7 +27566,7 @@ function _stratTargetAddr() {
 
 function _stratTargetKey() {
   const a = _stratTargetAddr()
-  return a ? localStorage.getItem(_agentKeyForAddr(a)) : null
+  return a ? _agentKeyGet(a) : null
 }
 
 async function runStrategyMob(type) {
@@ -27746,7 +27750,7 @@ const _botTokens = {}   // addrLower -> { token, exp }
 
 function _botAgentKeyFor(address) {
   if (!address) return null
-  return localStorage.getItem(_agentKeyForAddr(address))   // strictly this account's own key
+  return _agentKeyGet(address)   // strictly this account's own key
 }
 
 async function _ensureBotToken(address) {
@@ -28671,9 +28675,34 @@ async function restoreWalletForAddr(addr) {
 }
 
 // ─── AGENT KEY (per-address) ──────────────────────────────────────────────────
-function _agentKeyForAddr(addr) {
-  return addr ? 'hliq_agent_key_' + addr.toLowerCase() : null
-}
+// Storage lives in agentkeys.js, which cannot see `state` — that is the whole point. Asking
+// it for the key of something that is not an account (the "__all_accounts__" sentinel, the
+// paper address, null) is refused and REPORTED rather than quietly writing to the wrong
+// place, which is exactly how the keys went missing.
+// Asking for a non-account's key is always a caller bug. It used to look like "no key saved"
+// and took a user report to notice; now it lands in /api/errors?kind=agentkey, once per
+// session per distinct call, so the next one is found by reading the log.
+const _akMisuseSeen = new Set()
+onAgentKeyMisuse((op, addr) => {
+  const sig = op + ':' + addr
+  if (_akMisuseSeen.has(sig) || _akMisuseSeen.size > 8) return
+  _akMisuseSeen.add(sig)
+  try {
+    fetch('/api/error', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        kind: 'agentkey',
+        message: `agent key ${op} for a non-account: ${addr.slice(0, 24) || '(empty)'}`,
+        stack: (new Error().stack || '').slice(0, 1200),
+        url: location.pathname, ua: '', screen: '', lang: '',
+      }),
+    }).catch(() => {})
+  } catch {}
+})
+
+const _agentKeyGet = (addr) => _akRead(localStorage, addr)
+const _agentKeySet = (addr, key) => _akWrite(localStorage, addr, key)
+const _agentKeyDel = (addr) => _akRemove(localStorage, addr)
 
 // One-time cleanup of pre-fix contamination: the old restoreAgentKey copied the SAME legacy
 // global key into every account visited. An agent key is approved per-master, so any
@@ -28696,6 +28725,26 @@ function _agentKeyForAddr(addr) {
  * signed with because every action routes through the account's own registered client.
  */
 function _dedupeAgentKeys() { /* intentionally does nothing — see above */ }
+
+/**
+ * An entry like `hliq_agent_key___all_accounts__` cannot have been written on purpose: it is
+ * a key saved against the combined view instead of an account, and the user's account looked
+ * empty because of it. Report it once so the bug that wrote it is findable, and leave it
+ * alone — it is someone's private key, and this file does not delete those any more.
+ */
+function _reportStrayAgentKeys() {
+  const stray = _akStrays(localStorage)
+  if (!stray.length) return
+  try {
+    fetch('/api/error', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        kind: 'agentkey', message: 'stray agent-key entries: ' + stray.join(', ').slice(0, 300),
+        stack: '', url: location.pathname, ua: '', screen: '', lang: '',
+      }),
+    }).catch(() => {})
+  } catch {}
+}
 function _updateAutoGenBtnVisibility() {
   const hasKey    = !!_agentKeyInView()
   const connected = isMainWalletConnected()
@@ -28713,7 +28762,7 @@ window.__saveAgentKey = function(val) {
   // no account ever reads. Identical outside the combined view, where the two are the same.
   const _a = _agentUiAddr()
   if (val && _a) {
-    localStorage.setItem(_agentKeyForAddr(_a), val)
+    _agentKeySet(_a, val)
     if (val.length >= 66) { try { registerAgentKey(_a, val) } catch {} }
     // Repaint the other mirrors (trade field, status, dot) from the account this was saved
     // under. Never touches the field being typed in: the sync only writes a value that differs.
@@ -28790,7 +28839,7 @@ window.__autoGenerateAgentKey = async function() {
     setTimeout(() => { try { wakeWallet() } catch (_) {} }, 350)
     await _approval
 
-    localStorage.setItem(_agentKeyForAddr(_acct), privateKey)
+    _agentKeySet(_acct, privateKey)
     try { await registerAgentKey(_acct, privateKey) } catch {}
     await connectAgentKey(privateKey)
     try { _agentBadAccts.delete(_acct.toLowerCase()) } catch {}
@@ -28877,7 +28926,7 @@ function _agentStatusFor(addr) {
   if (!_isRealAddr(addr))  return { html: 'Not connected', colour: mut }
   const label = esc(WM.getLabel(addr) || addr.slice(0, 6) + '…' + addr.slice(-4))
   let key = null
-  try { key = localStorage.getItem(_agentKeyForAddr(addr)) } catch {}
+  try { key = _agentKeyGet(addr) } catch {}
   if (!key) return { html: `No key saved for <span class="notranslate">${label}</span>`, colour: mut }
   if (typeof window.__agentKeyBad === 'function' && window.__agentKeyBad(addr)) {
     return { html: `⚠ Not approved for <span class="notranslate">${label}</span> — generate a new key`, colour: 'var(--neg)' }
@@ -28886,7 +28935,7 @@ function _agentStatusFor(addr) {
 }
 
 function _syncAgentKeyUI(addr = _agentUiAddr()) {
-  const key = addr ? localStorage.getItem(_agentKeyForAddr(addr)) : null
+  const key = addr ? _agentKeyGet(addr) : null
   const set = (id, v) => { const el = document.getElementById(id); if (el && el.value !== v) el.value = v }
   for (const id of ['agentKey', 'privateKeyInput', 'm-agentKey']) set(id, key ?? '')
   const dot = document.getElementById('apiStatusDot')
@@ -28908,7 +28957,7 @@ window.__syncAgentKeyUI = (a) => _syncAgentKeyUI(a)
  */
 function _agentKeyInView() {
   const a = _agentUiAddr()
-  try { return a ? localStorage.getItem(_agentKeyForAddr(a)) : null } catch { return null }
+  try { return a ? _agentKeyGet(a) : null } catch { return null }
 }
 
 function restoreAgentKey(addr) {
@@ -28920,15 +28969,11 @@ function restoreAgentKey(addr) {
   // delete it. It must NEVER be assigned to an arbitrary account being viewed: doing so
   // mis-showed (and could mis-sign with) another account's key. Each account uses strictly its
   // own `hliq_agent_key_<addr>`.
-  const globalKey = localStorage.getItem('hliq_agent_key')
-  if (globalKey && !localStorage.getItem(_agentKeyForAddr(lookupAddr))) {
-    const main = (typeof getMainAddress === 'function' ? (getMainAddress() || '') : '')
-    if (main && lookupAddr.toLowerCase() === main.toLowerCase()) {
-      localStorage.setItem(_agentKeyForAddr(lookupAddr), globalKey)
-      try { localStorage.removeItem('hliq_agent_key') } catch {}
-    }
+  const main = (typeof getMainAddress === 'function' ? (getMainAddress() || '') : '')
+  if (main && lookupAddr.toLowerCase() === main.toLowerCase()) {
+    if (_akMigrateLegacy(localStorage, lookupAddr)) { try { localStorage.removeItem(_AK_LEGACY) } catch {} }
   }
-  const savedKey = localStorage.getItem(_agentKeyForAddr(lookupAddr))   // this account's own key ONLY
+  const savedKey = _agentKeyGet(lookupAddr)   // this account's own key ONLY
   _syncAgentKeyUI(lookupAddr)
   if (!savedKey) return
   connectAgentKey(savedKey).then(() => {
@@ -29173,7 +29218,7 @@ window.__regenAgentKey = async function() {
     try { if (!isMainWalletConnected()) openWalletPicker() } catch {}
     return
   }
-  try { localStorage.removeItem(_agentKeyForAddr(acct)) } catch {}
+  try { _agentKeyDel(acct) } catch {}
   _agentBadAccts.delete(acct.toLowerCase())
   _agentOkCache.clear(); invalidateApprovedAgents(acct)
   await window.__autoGenerateAgentKey()
@@ -29192,8 +29237,8 @@ window.__clearAgentKey = async function() {
              `Elimina la clave de agente guardada para <b>${esc(label)}</b> de este dispositivo. Tus fondos no se ven afectados — puedes generar una nueva clave cuando quieras.`),
     confirmText: _T('Clear key', 'Borrar clave'), danger: true,
   }))) return
-  if (acct) localStorage.removeItem(_agentKeyForAddr(acct))
-  localStorage.removeItem('hliq_agent_key')
+  if (acct) _agentKeyDel(acct)
+  localStorage.removeItem(_AK_LEGACY)
   const tradeInput = document.getElementById('privateKeyInput')
   const stratInput = document.getElementById('agentKey')
   const mobInput   = document.getElementById('m-agentKey')
@@ -29224,7 +29269,7 @@ function _syncSettingsTab() {
   const langNameEl = document.getElementById('langCurrentName')
   if (langNameEl) langNameEl.textContent = _LANG_NAMES[savedLang] || 'English'
   // Agent key
-  const agentKey = _agentKeyInView() || localStorage.getItem('hliq_agent_key')
+  const agentKey = _agentKeyInView() || localStorage.getItem(_AK_LEGACY)
   const statusEl = document.getElementById('agentKeySavedStatus')
   const clearBtn = document.getElementById('agentKeyClearBtn')
   // Name the account. With several wallets saved, "Saved" alone never said whose key this is,
@@ -29337,7 +29382,7 @@ window.__exportSettings = function() {
   // This backup dumps ALL of localStorage — which INCLUDES your agent signing keys in
   // plain text. Anyone with the file can trade your accounts (they still can't withdraw).
   // Make that explicit before the file is created; silent "Export Settings" hid it.
-  const hasKeys = Object.keys(localStorage).some(k => k.startsWith('hliq_agent_key') || k === 'savedWallets')
+  const hasKeys = Object.keys(localStorage).some(k => k.startsWith(_AK_LEGACY) || k === 'savedWallets')
   if (hasKeys && !confirm(
     'This backup file will contain your AGENT SIGNING KEYS in plain text.\n\n' +
     'Anyone who gets this file can place trades on your accounts (they cannot withdraw your funds).\n\n' +

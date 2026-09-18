@@ -39,8 +39,8 @@ export const COOLDOWN_KEY  = 'hliq_lb_join_cooldown'
 export const UNFUNDED_RETRY_MS = 6 * 60 * 60 * 1000
 export const THROTTLED_RETRY_MS = 10 * 60 * 1000
 
-const ADDR = /^0x[0-9a-fA-F]{40}$/
-export const isRealAddr = (a) => ADDR.test(String(a ?? ''))
+import { keyedAddresses, isRealAddr } from './agentkeys.js'
+export { isRealAddr }
 
 /**
  * Has the server decided? Only then is the address remembered.
@@ -59,18 +59,13 @@ export function isSettled(status, body) {
  * The wallets that are this user's in this app: any address with an agent key saved here,
  * and any wallet connected right now. Lowercased, de-duplicated.
  *
- * Agent keys live under `hliq_agent_key_<address>`. The bare legacy `hliq_agent_key` names
- * no address and is ignored, as is `hliq_agent_key___all_accounts__`, a junk key an old
- * build wrote.
+ * Which addresses have a key is agentkeys.js's question, not this file's — it used to be
+ * answered here with a second copy of the storage layout, which is one more place to get it
+ * wrong. The bare legacy key names no address and is skipped there, as is anything stored
+ * against a non-account.
  */
 export function ownedAddresses(storage, connected = []) {
-  const out = new Set()
-  const n = Number(storage?.length) || 0
-  for (let i = 0; i < n; i++) {
-    const k = storage.key(i)
-    const m = /^hliq_agent_key_(0x[0-9a-fA-F]{40})$/.exec(k ?? '')
-    if (m && storage.getItem(k)) out.add(m[1].toLowerCase())
-  }
+  const out = new Set(keyedAddresses(storage))
   for (const a of connected ?? []) if (isRealAddr(a)) out.add(String(a).toLowerCase())
   return [...out]
 }

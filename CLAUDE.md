@@ -55,10 +55,10 @@ Grep for a **string literal**, not a function name — the minifier renames func
 ## Before you push
 
 ```bash
-npm test        # 63 suites, no browser or network needed, a few seconds
+npm test        # 120 suites, no browser or network needed, a few seconds
 ```
 
-Expect `60 passing · 3 known-failing · 0 broken`. The three are listed with reasons in
+Expect `117 passing · 3 known-failing · 0 broken`. The three are listed with reasons in
 `tests/run.mjs`; they fail for causes outside this repo. **`broken` must be 0.**
 
 Suites read the source and assert against it, so they catch a surprising amount: a handler
@@ -67,6 +67,17 @@ promising something the code no longer does.
 
 If you change behaviour a suite asserts, update the suite in the same commit and say in the
 message why the old assertion no longer describes the truth.
+
+There is also a browser test, opt-in because it needs a dev server and takes a minute:
+
+```bash
+npm run dev &                 # or leave one running
+npm run test:browser          # tests/agentkeys-browser.mjs, --port=NNNN if not 5175
+```
+
+Run it when you touch agent keys, the account switcher or the combined view. It drives both
+shells and asserts the key on screen is the key that signs, for the account on screen — a
+thing no single function's source shows.
 
 ---
 
@@ -106,6 +117,14 @@ thing that already failed.
   `GET /api/errors?pin=<LB_PIN>&kind=<kind>`. A Net PnL bug took three wrong guesses from
   screenshots and one read of the log to solve. Kinds: `ratelimit`, `pnlstep`, `rejection`,
   `error`.
+- **`state.addr` is not an account in the combined view.** It is the string
+  `__all_accounts__`, and the paper account is a sentinel too. Anything per-account — a key,
+  a balance, a setting — must take the address explicitly and reject a non-address rather
+  than build a storage key out of one. This wiped agent keys for a day: reads came back empty
+  so the panel looked cleared, and writes went to `hliq_agent_key___all_accounts__`, which
+  nothing ever reads. `src/agentkeys.js` is the shape that prevents it — it cannot see
+  `state`, so the mistake cannot be made inside it. Use `_agentUiAddr()` for "which account is
+  the UI about".
 - **Empty is not the same as unknown.** This has caused the same user-visible bug three
   separate times: an empty array meaning "we did not look" was treated as "there is none",
   and HIP-3 positions vanished from Net PnL. If you cannot tell the difference, pass `null`
@@ -124,8 +143,17 @@ thing that already failed.
 Playwright is installed. Drive the real app rather than assuming:
 
 ```bash
-npx playwright ... # see tests/ for the pattern, or write a throwaway script
+npx playwright ... # see tests/agentkeys-browser.mjs for the pattern
 ```
+
+**Put the harness in `tests/`, not a scratch directory.** Two harnesses that found real bugs
+were written in a temp folder and deleted with the session, so the next person re-derived
+them from nothing. If it was worth writing to prove a fix, it is worth keeping to prove the
+fix is still there.
+
+Wait on conditions, never on a fixed sleep. Entering the combined view takes as long as nine
+wallets take to answer; `waitForTimeout(13000)` passes on your machine and fails on a slower
+one, and a flaky test gets deleted rather than trusted.
 
 Mobile is the primary surface — check at 430×930 with `isMobile: true`. The app is a
 different shell on desktop (`switchTab`) and mobile (`_mobVActiveTab`); a change to a

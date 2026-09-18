@@ -1,5 +1,6 @@
 // Arming bots from the combined view.
 import fs from 'fs'
+import { readKey } from '../../src/agentkeys.js'
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 
 let pass = 0, fail = 0
@@ -14,15 +15,16 @@ const grab = (s, sig) => {
 }
 
 // ── the resolver ─────────────────────────────────────────────────────────────
-const mk = (isAll, tradeAcct, addr, keys = {}) => new Function(`
+// _agentKeyGet is injected as the REAL one from agentkeys.js over a fake storage, not a
+// lookalike written here. A stub that accepted the sentinel would keep passing while the app
+// was refusing it, which is the kind of agreement a test is supposed to check.
+const mk = (isAll, tradeAcct, addr, keys = {}) => new Function('_agentKeyGet', `
   const state = { isAllAccounts: ${isAll}, addr: ${JSON.stringify(addr)} }
   const window = { __getTradeAcct: () => ${JSON.stringify(tradeAcct)} }
-  const localStorage = { getItem: (k) => (${JSON.stringify(keys)})[k] ?? null }
-  const _agentKeyForAddr = (a) => a ? 'hliq_agent_key_' + a.toLowerCase() : null
   ${grab(cli, 'function _stratTargetAddr()')}
   ${grab(cli, 'function _stratTargetKey()')}
   return { addr: _stratTargetAddr(), key: _stratTargetKey() }
-`)()
+`)((a) => readKey({ getItem: (k) => keys[k] ?? null }, a))
 
 const A = '0xAAaa000000000000000000000000000000000001'
 const B = '0xBBbb000000000000000000000000000000000002'

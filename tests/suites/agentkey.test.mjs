@@ -43,8 +43,10 @@ t('a malformed key still ends in the clear error, not a crash', c.includes('catc
 t('with no key anywhere it still refuses', c.includes('if (!c) throw new Error(`No agent key for'))
 t('the UI gate counts a stored key too, so a button is not disabled on timing alone',
   grab(trd, 'export function hasAgentFor(masterAddr)').includes('_agentKeyResolver(masterAddr)'))
+// _agentKeyForAddr is gone: storage moved to agentkeys.js, which refuses anything that is
+// not a real address instead of building a key name out of it.
 t('the resolver reads ONLY the per-address key',
-  cli.includes('setAgentKeyResolver(addr => {') && cli.includes('_agentKeyForAddr(addr)'))
+  cli.includes('setAgentKeyResolver(addr => {') && cli.includes('_agentKeyGet(addr)'))
 t('never the legacy global one, which belongs to another wallet',
   grab(cli, 'setAgentKeyResolver(addr =>') .includes("hliq_agent_key'") === false)
 
