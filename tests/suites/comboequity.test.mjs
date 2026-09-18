@@ -14,7 +14,7 @@
 // which is what placing a position does — read as a loss for as long as the snapshot was
 // stale. Measuring it on each wallet's TOTAL makes that transfer net to zero inside the row.
 import fs from 'fs'
-import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, ARTIFACT_TOL } from '../../src/comboequity.js'
+import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey, ARTIFACT_TOL } from '../../src/comboequity.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -152,12 +152,52 @@ console.log(nl + '-- a move the perp side does not explain is not profit --')
   t('snapshotRows keys by wallet', snapshotRows([R(0, 1, 2)]).get('w0').acct === 1)
 }
 
+console.log(nl + '-- the anchor belongs to particular wallets, not to a count --')
+{
+  // "still having spikes": the rows summed 86.79 lower than 2.3s earlier while the largest
+  // single row moved 1.97 and the perp side moved 43 cents. The set had changed, not the
+  // values -- a wallet erroring out as another recovered, with the count staying at eight.
+  const rows = (n) => Array.from({ length: n }, (_, i) => ({ addr: '0x' + i, accountValue: '100', _perpLive: '50' }))
+  const snapOf = (rs) => ({ accountValue: 1000, perpBase: 100, acctBase: acctBaseFrom(rs), acctKey: rowKey(rs), wallets: rs.length })
+
+  t('the same wallets still bridge', bridgeCombined(snapOf(rows(3)), rows(3))?.val === 1000)
+  t('order does not matter', bridgeCombined(snapOf(rows(3)), rows(3).reverse())?.val === 1000)
+
+  const base = rows(3)
+  const swapped = [base[0], base[1], { addr: '0xZZ', accountValue: '187', _perpLive: '50' }]
+  t('one wallet swapped for another is refused, not bridged',
+    bridgeCombined(snapOf(base), swapped) === null)
+  // Refusing is the whole point: bridging it would have published the 87 difference between
+  // those two wallets as profit, which is exactly what was on screen.
+  t('and it would have been an 87 gain if it had not been',
+    Math.round(1000 + (acctBaseFrom(swapped) - acctBaseFrom(base))) === 1087)
+
+  t('a snapshot with no identities still bridges, as before',
+    bridgeCombined({ ...snapOf(base), acctKey: null }, swapped)?.val === 1087)
+  t('rowKey is order-independent and lowercased',
+    rowKey([{ addr: '0xBb' }, { addr: '0xaA' }]) === rowKey([{ addr: '0xAa' }, { addr: '0xbB' }]))
+}
+
+console.log(nl + '-- the record can tell a swap from a move --')
+{
+  const CLI = fs.readFileSync('src/main.js', 'utf8')
+  // The old record aggregated to `moved` and `worstAcctDelta`, and a row with no previous
+  // value is skipped by both -- so the half of a swap that mattered was invisible.
+  t('rows new to the comparison are counted', CLI.includes('{ newRows++;'))
+  t('so are rows that vanished from it', CLI.includes('if (!here.has(a)) { goneRows++;'))
+  t('and the per-row deltas are recorded', CLI.includes('rowDeltas=[$' + '{(ctx.deltas ?? []).join('))
+}
+
 console.log(nl + '-- it is wired in --')
 {
   const CLI = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
   t('main.js imports it', CLI.includes("from './comboequity.js'"))
+  // Split in two when the snapshot started carrying the row IDENTITIES as well as their sum:
+  // the same expression now spans several lines behind a `complete` flag.
   t('the snapshot records what the rows added up to when it was adopted',
-    CLI.includes('acctBase: visible.length === addrs.length ? acctBaseFrom(visible) : null'))
+    CLI.includes('acctBase: complete ? acctBaseFrom(visible) : null'))
+  t('and WHICH rows that was, so a same-sized set cannot be mistaken for the same one',
+    CLI.includes('acctKey:  complete ? rowKey(visible) : null'))
   t('and the headline is bridged through it', CLI.includes('const bridged = bridgeCombined(_combinedSnap, rows)'))
   t('a refusal holds rather than guessing', CLI.includes('if (!bridged) return null'))
   // The watcher already reports the halves; it should say which bridge produced them.

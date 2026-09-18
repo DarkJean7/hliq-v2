@@ -24,12 +24,36 @@
  *
  * One wallet, -240 on the perp side alone, recovered the moment the snapshot caught up.
  *
+ * A THIRD sensitivity, and the one behind "still having spikes" (caught the same way):
+ *
+ *     04:53  step -86.79 (6728.97 -> 6642.18)  basis=total  snapAge=33s  dtMs=2309
+ *            worstAcctDelta=1.97  moved=7  absorbed=0.00  perp moved -0.43
+ *
+ * The rows summed 86.79 lower than 2.3 seconds earlier, while the largest single row moved
+ * 1.97 and the perp side moved 43 cents. That arithmetic cannot close — so the row set did not
+ * move, it CHANGED. With ten wallets and 429s in the log, a row drops out on an error as
+ * another comes back, and the count stays at eight while the membership does not. The anchor
+ * was measured over the old set, so swapping one wallet for another publishes the difference
+ * between two wallets as profit or loss.
+ *
+ * Checking `rows.length === snap.wallets` was always a proxy for "the same wallets". It is the
+ * same mistake as counting an empty array as an answer: eight rows is not eight PARTICULAR
+ * rows. The snapshot now carries the identities its base was measured over, and a set that
+ * does not match exactly is refused rather than bridged — the caller holds the last good
+ * figure until the next snapshot, which is the authority.
+ *
  * So the bridge is measured on each row's TOTAL instead. A row's accountValue already spans
  * both sides of that wallet, so a transfer between them nets to zero inside it and never
  * reaches the headline. Perp-only stays as the fallback for the case it was written for: a
  * snapshot adopted before the rows could be summed has no total to anchor against, and a
  * stale-by-a-minute bridge is still better than no bridge.
  */
+
+/** The identity of a row set, order-independent. Two sets with the same COUNT are not the
+ *  same set, and the bridge's anchor is only valid for the wallets it was measured over. */
+export function rowKey(rows) {
+  return (rows ?? []).map(r => String(r?.addr ?? '').toLowerCase()).sort().join(',')
+}
 
 /** Sum a field across rows. Returns null if ANY row cannot answer — a partial sum is a wrong
  *  total, and the caller must fall back rather than publish it. */
@@ -60,6 +84,9 @@ export function bridgeCombined(snap, rows) {
   // The snapshot describes a specific set of wallets. If the visible set has changed since,
   // the anchor no longer corresponds to it and any delta measured against it is meaningless.
   if (rows.length !== snap.wallets) return null
+  // By identity, not by count: a wallet erroring out while another recovers keeps the count
+  // and changes the set, and the difference between those two wallets then reads as PnL.
+  if (snap.acctKey && rowKey(rows) !== snap.acctKey) return null
 
   // Preferred: bridge on each wallet's TOTAL, which a spot/perp transfer cannot move.
   const acctBase = parseFloat(snap.acctBase)

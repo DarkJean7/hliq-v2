@@ -237,7 +237,7 @@ import { aggregatePosGroup, groupPositions, posHealthPct } from './posgroup.js'
 import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL,
          expectedPnl, groupExpectedPnl } from './ordergroup.js'
 import { probeNavGeometry } from './navprobe.js'
-import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows } from './comboequity.js'
+import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey } from './comboequity.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
 import { trackRecord, isSmallSample, openLossOf } from './trackrecord.js'
@@ -8474,7 +8474,15 @@ async function _fetchCombinedSnap(force = false) {
         // forward by the change in this, not by the change in perp equity alone -- see
         // comboequity.js. Null when a row cannot answer yet, and then the perp bridge is used.
         const visible = (_allAcctLastResults ?? []).filter(r => r && !r.error && !hidden.has(r.addr))
-        _combinedSnap = { ...d, acctBase: visible.length === addrs.length ? acctBaseFrom(visible) : null }
+        const complete = visible.length === addrs.length
+        // Which wallets that base was measured over, so the bridge can refuse a set that
+        // merely has the same size. Without this a row swapping out for another under rate
+        // limiting published the difference between two wallets as a gain.
+        _combinedSnap = {
+          ...d,
+          acctBase: complete ? acctBaseFrom(visible) : null,
+          acctKey:  complete ? rowKey(visible) : null,
+        }
         _combinedAt = Date.now()
       }
     }
@@ -12892,16 +12900,28 @@ function _comboEqWatch(val, ctx) {
   _eqStepLast = val
   // Which wallet moved most since the last sample, before this sample overwrites it.
   let worstAddr = '', worstDelta = 0, movedRows = 0
+  // Rows with no previous value are the ones the old record could not see: they are skipped by
+  // both counters below, so a row SWAPPING for another looked like nothing happened while the
+  // total jumped. Counting them is what separates "the market moved" from "the set changed".
+  let newRows = 0
+  const deltas = []
   for (const r of (ctx.rowsArr ?? [])) {
     const now = parseFloat(r.accountValue)
     if (!Number.isFinite(now)) continue
     const was = _eqPerpLast.get(r.addr)
-    if (Number.isFinite(was) && Math.abs(now - was) > Math.abs(worstDelta)) {
-      worstDelta = now - was; worstAddr = String(r.addr).slice(0, 8)
+    if (!Number.isFinite(was)) { newRows++; deltas.push(String(r.addr).slice(0, 6) + ':new') }
+    else {
+      if (Math.abs(now - was) > Math.abs(worstDelta)) { worstDelta = now - was; worstAddr = String(r.addr).slice(0, 8) }
+      if (Math.abs(now - was) > 0.005) movedRows++
+      if (Math.abs(now - was) > 0.5) deltas.push(String(r.addr).slice(0, 6) + ':' + (now - was).toFixed(2))
     }
-    if (Number.isFinite(was) && Math.abs(now - was) > 0.005) movedRows++
     _eqPerpLast.set(r.addr, now)
   }
+  // Rows that were there last time and are NOT now — the other half of a swap.
+  let goneRows = 0
+  const here = new Set((ctx.rowsArr ?? []).map(r => r.addr))
+  for (const a of _eqPerpLast.keys()) if (!here.has(a)) { goneRows++; _eqPerpLast.delete(a) }
+  ctx.newRows = newRows; ctx.goneRows = goneRows; ctx.deltas = deltas
   ctx.movedRows = movedRows
   const snapMoved = ctx.snapAt !== _eqSnapAtLast
   _eqSnapAtLast = ctx.snapAt
@@ -12935,7 +12955,11 @@ function _comboEqWatch(val, ctx) {
                `rows=${ctx.rows} wallets=${ctx.wallets} snapAge=${Math.round(ctx.age / 1000)}s ` +
                `worstWallet=${worstAddr} worstAcctDelta=${worstDelta.toFixed(2)} ` +
                `absorbed=${(ctx.absorbed ?? 0).toFixed(2)} absorbedBy=${ctx.absorbedBy ?? ''} ` +
-               `dtMs=${dt} moved=${ctx.movedRows ?? '?'}`,
+               `dtMs=${dt} moved=${ctx.movedRows ?? '?'} ` +
+               // The sum of the parts, against the whole. When these disagree the step did not
+               // come from the rows' values at all, and the next two fields say why.
+               `newRows=${ctx.newRows ?? '?'} goneRows=${ctx.goneRows ?? '?'} ` +
+               `rowDeltas=[${(ctx.deltas ?? []).join(' ')}]`,
         url: location.pathname,
       }),
     }).catch(() => {})
