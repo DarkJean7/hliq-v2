@@ -69,6 +69,18 @@ console.log(nl + '-- no inline handler assigns a module variable --')
     assigns.length === 0, assigns.slice(0, 10))
 }
 
+console.log(nl + '-- the Overview’s Trade card --')
+{
+  // Asked for: a box under the Net deposited / funding / Member since card that opens the
+  // Trade tab. It is a card-shaped button, so it must go through window like any other.
+  const rnd = fs.readFileSync('src/render.js', 'utf8')
+  t('the card sits under the footer stats',
+    /<div class="ov-hr"><span>Member since<\/span>[\s\S]{0,60}<\/div>[\s\S]{0,400}class="ov-card ov-cta"/.test(rnd))
+  t('and opens the Trade tab', rnd.includes('onclick="window.__ovGoTrade()"'))
+  t('through the nav button, so the tab bar highlights it',
+    text['src/main.js'].includes("window.__ovGoTrade = function()") && text['src/main.js'].includes("b.getAttribute('onclick')?.includes(\"'trade'\")"))
+}
+
 console.log(nl + '-- the Wallet settings button itself --')
 {
   const m = text['src/main.js'].match(/<button class="mob-wallet-settings-btn" onclick="([^"]*)"/)

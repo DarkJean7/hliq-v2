@@ -717,6 +717,14 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
           <div class="ov-hr"><span>All-time funding</span><b class="${allTimeFunding >= 0 ? 'pos' : 'neg'}">${fmtPnL(allTimeFunding).text}</b></div>
           <div class="ov-hr"><span>Member since</span><b>${esc(memberSince)}</b></div>
         </div>
+
+        <!-- Straight to the ticket. The Overview is where someone decides to trade; every
+             other route from here is the tab bar at the top of the page. -->
+        <button class="ov-card ov-cta" onclick="window.__ovGoTrade()">
+          <span class="ov-cta-ic">⚡</span>
+          <span class="ov-cta-txt"><b>Trade</b><small>Open the trade ticket</small></span>
+          <span class="ov-cta-go">→</span>
+        </button>
       </div>
     </div>`
 

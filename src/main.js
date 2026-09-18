@@ -23965,6 +23965,12 @@ window.toggleSizeMode     = toggleSizeMode
 // Both are called from inline onclick handlers, which run at global scope. Neither was here,
 // so desktop's Leaderboard "↻ Refresh" and the grid form's %/$ spacing toggle did nothing.
 // suites/inlineglobals.test.mjs now fails the build on any inline call to a name not exported.
+// The Overview's Trade card. It goes through the nav button rather than switchTab('trade',
+// null) so the tab bar highlights the tab it just opened, the same way the watch strip does.
+window.__ovGoTrade = function() {
+  const btn = [...document.querySelectorAll('.nav-tab')].find(b => b.getAttribute('onclick')?.includes("'trade'"))
+  switchTab('trade', btn)
+}
 window.toggleGridSpacing  = toggleGridSpacing
 window.renderLeaderboard  = renderLeaderboard
 window.setSizeMode        = setSizeMode

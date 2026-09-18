@@ -6031,6 +6031,26 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 .ov-act-ago { font-size: 11px; color: var(--muted); flex-shrink: 0; }
 .ov-footer .ov-hr:first-child { border-top: none; }
 
+/* The Trade card under the footer stats: a card that is a button, so it reads as part of the
+   column rather than a control dropped on top of it. */
+.ov-cta {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  font: inherit; color: var(--fg); text-align: left; cursor: pointer;
+  transition: border-color .15s, background .15s, transform .05s;
+}
+.ov-cta:hover { border-color: var(--accent); background: var(--panel-2); }
+.ov-cta:active { transform: translateY(1px); }
+.ov-cta-ic {
+  width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 16px;
+  background: rgba(0, 229, 160, 0.12); color: var(--accent);
+}
+.ov-cta-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.ov-cta-txt b { font-size: 14px; font-weight: 700; }
+.ov-cta-txt small { font-size: 11px; color: var(--muted); }
+.ov-cta-go { color: var(--muted); font-size: 15px; flex-shrink: 0; }
+.ov-cta:hover .ov-cta-go { color: var(--accent); }
+
 @media (max-width: 1100px) {
   .ov-grid { grid-template-columns: 1fr; }
   .ov-top-row { grid-template-columns: 1fr; }
