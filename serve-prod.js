@@ -147,21 +147,12 @@ createServer((req, res) => {
       if (existsSync(imgPath)) return serveFile(res, imgPath)
       res.writeHead(404).end(); return
     }
-    if (req.method === 'POST') {
-      let body = ''
-      req.on('data', chunk => { body += chunk; if (body.length > 2_000_000) req.destroy() })
-      req.on('end', () => {
-        try {
-          const { dataUrl } = JSON.parse(body)
-          if (!dataUrl?.startsWith('data:image/')) { res.writeHead(400).end(); return }
-          mkdirSync(pfpDir, { recursive: true })
-          writeAtomic(imgPath, Buffer.from(dataUrl.split(',')[1], 'base64'))
-          res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}')
-        } catch { res.writeHead(500).end() }
-      })
-      return
-    }
-    res.writeHead(405).end(); return
+    // Uploads moved to POST /api/pfp on the strategy server, which is where the ownership
+    // proof lives. This accepted ANY post for ANY address — the only thing stopping a
+    // stranger replacing your picture was that the button was hidden. Reads stay here.
+    res.writeHead(405, { 'Content-Type': 'application/json' })
+       .end('{"error":"upload moved to POST /api/pfp"}')
+    return
   }
 
   // ── Coin icon cache/proxy ────────────────────────────────────────────────────

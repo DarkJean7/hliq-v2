@@ -135,12 +135,21 @@ const offline = async (ctx) => {
   })
 }
 
+// WebSockets are NOT covered by ctx.route, and the combined view opens one to Hyperliquid for
+// live state. Left alone it delivers real prices straight past every fixture here — which is
+// how a stubbed KNTQ at $0.26438 rendered as $0.2872, drifting between runs. Closed, so the
+// app falls back to the REST path the fixtures actually govern.
+const blockHlSockets = async (ctx) => {
+  try { await ctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
+}
+
 const browser = await chromium.launch()
 const errs = []
 
 // ─── desktop ──────────────────────────────────────────────────────────────────
 {
   const ctx = await browser.newContext({ viewport: { width: 1500, height: 950 } })
+  await blockHlSockets(ctx)
   await offline(ctx)
   const p = await ctx.newPage()
   p.on('pageerror', e => errs.push('desktop: ' + e.message))
@@ -215,6 +224,7 @@ const errs = []
 // ─── mobile, the primary surface ──────────────────────────────────────────────
 {
   const ctx = await browser.newContext({ ...devices['iPhone 14 Pro'] })
+  await blockHlSockets(ctx)
   await offline(ctx)
   const p = await ctx.newPage()
   p.on('pageerror', e => errs.push('mobile: ' + e.message))

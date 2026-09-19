@@ -12377,54 +12377,78 @@ function _mobVSetPfp(addr, dataUrl) {
   localStorage.setItem('hliq_pfp_' + addr.toLowerCase(), dataUrl)
 }
 
+/**
+ * Square a picture to 256px and send it as this account's own.
+ *
+ * Drawing it through a canvas first is not cosmetic: it re-encodes whatever was picked into
+ * one predictable JPEG, which drops EXIF — including the GPS tag a phone photo carries — and
+ * bounds the size before anything is uploaded. A profile picture is shown to every visitor on
+ * the public board, so stripping the location out of it is part of the job, not a nicety.
+ *
+ * The write is authenticated by the account's own agent key (serverFetch attaches the session
+ * for `authAddr`). It used to be an open POST with the button hidden behind isDev(), which is
+ * not the same thing as being closed.
+ */
+async function _pfpUpload(addr, file) {
+  const a = String(addr ?? '').toLowerCase()
+  if (!/^0x[0-9a-f]{40}$/.test(a) || !file) return { ok: false, error: 'no account' }
+  const dataUrl = await new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onerror = () => resolve(null)
+    reader.onload = (e) => {
+      const img = new Image()
+      img.onerror = () => resolve(null)
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = 256; canvas.height = 256
+        const ctx  = canvas.getContext('2d')
+        const size = Math.min(img.width, img.height)
+        ctx.drawImage(img, (img.width - size) / 2, (img.height - size) / 2, size, size, 0, 0, 256, 256)
+        resolve(canvas.toDataURL('image/jpeg', 0.88))
+      }
+      img.src = e.target.result
+    }
+    reader.readAsDataURL(file)
+  })
+  if (!dataUrl) return { ok: false, error: 'could not read that image' }
+  const r = await serverFetch('/api/pfp', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    authAddr: a, body: JSON.stringify({ addr: a, dataUrl, ts: Date.now() }),
+  })
+  if (!r?.ok) return { ok: false, error: r?.error || 'upload failed' }
+  // It exists now: clear the session's "no picture here" mark and repoint every img at it,
+  // cache-busted, so the change shows without a reload.
+  _pfpForget(a)
+  const bust = `/pfp/${a}?v=${Date.now()}`
+  const avatarEl = document.getElementById('mobVAvatar')
+  if (avatarEl) { delete avatarEl.dataset.avatarKey; const i = avatarEl.querySelector('img'); if (i) i.src = bust }
+  const drawerAvatar = document.getElementById('mobVDrawerAvatar')
+  if (drawerAvatar) { const i = drawerAvatar.querySelector('img'); if (i) i.src = bust }
+  document.querySelectorAll(`img[src^="/pfp/${a}"]`).forEach(i => { i.src = bust })
+  return { ok: true }
+}
+
 window._mobVPickPfp = function() {
   const input = document.getElementById('mobVPfpInput')
   if (input) input.click()
 }
 
-window._mobVHandlePfp = function(input) {
+window._mobVHandlePfp = async function(input) {
   const file = input?.files?.[0]
-  if (!file || !state.addr) return
-  if (!isDev()) return
-  const reader = new FileReader()
-  reader.onload = function(e) {
-    const img = new Image()
-    img.onload = function() {
-      const canvas = document.createElement('canvas')
-      canvas.width = 256; canvas.height = 256
-      const ctx = canvas.getContext('2d')
-      const size = Math.min(img.width, img.height)
-      const sx = (img.width - size) / 2
-      const sy = (img.height - size) / 2
-      ctx.drawImage(img, sx, sy, size, size, 0, 0, 256, 256)
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.88)
-      const ts = Date.now()
-      fetch('/pfp/' + state.addr.toLowerCase(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dataUrl }),
-      }).then(() => {
-        // This address now HAS a photo — clear the "missing" mark so later renders
-        // request it again instead of drawing the fallback badge.
-        _pfpForget(state.addr)
-        const bust = `/pfp/${state.addr.toLowerCase()}?v=${ts}`
-        const avatarEl = document.getElementById('mobVAvatar')
-        // Clear the cache key too, or the next render sees "same address, already drawn"
-        // and never re-requests the photo that was just uploaded.
-        if (avatarEl) { delete avatarEl.dataset.avatarKey; const img = avatarEl.querySelector('img'); if (img) img.src = bust }
-        const drawerAvatar = document.getElementById('mobVDrawerAvatar')
-        if (drawerAvatar) { const img = drawerAvatar.querySelector('img'); if (img) img.src = bust }
-        document.querySelectorAll(`img[src^="/pfp/${state.addr.toLowerCase()}"]`).forEach(img => { img.src = bust })
-      }).catch(() => {})
-    }
-    img.src = e.target.result
-  }
-  reader.readAsDataURL(file)
   input.value = ''
+  // `if (!isDev()) return` lived here. Every other user picked a file and nothing whatsoever
+  // happened — no upload, no error, not even a local copy — which is why a friend's picture
+  // was never on the board. The write is authenticated now, so the gate is not what was
+  // holding it shut.
+  const a = _agentUiAddr()
+  if (!file || !a) return
+  const r = await _pfpUpload(a, file)
+  if (!r.ok) _paperToast('✗ ' + (r.error === 'no account' ? _T('Open an account first', 'Abre una cuenta primero') : r.error))
+  else _paperToast('✓ ' + _T('Profile picture updated', 'Foto de perfil actualizada'))
 }
 
 window._mobVAvatarError = function(img, addr, size) {
-  _pfpMissing.add(addr)   // don't re-request this one for the rest of the session
+  _pfpMissing.add(addr)   // skip re-requesting it, until the TTL above lets it be checked again
   const d = document.createElement('div')
   // Combined view has no hex address to derive a colour/initials from — use the ⊕ badge.
   if (addr === '__all_accounts__') {
@@ -12461,7 +12485,26 @@ function _mobVAvatarHtml(addr, size) {
 
 // Addresses with no stored photo — session-only, so uploading one takes effect
 // immediately on the next render without a reload.
-const _pfpMissing = new Set()
+/**
+ * Addresses known to have no picture, so a render does not re-request a 404 every tick.
+ *
+ * Remembered with a TIME, not forever. Held for the session, somebody who uploads a picture
+ * while you are looking at the board stays a letter avatar until you reload — which is half
+ * of "my friend did and i cannot see it". Five minutes is long enough to stop the 404 spam
+ * and short enough that a new picture turns up on its own.
+ */
+const _PFP_MISS_TTL = 5 * 60_000
+const _pfpMissing = {
+  _at: new Map(),
+  add(a) { this._at.set(String(a).toLowerCase(), Date.now()) },
+  delete(a) { this._at.delete(String(a).toLowerCase()) },
+  has(a) {
+    const t = this._at.get(String(a).toLowerCase())
+    if (t == null) return false
+    if (Date.now() - t > _PFP_MISS_TTL) { this._at.delete(String(a).toLowerCase()); return false }
+    return true
+  },
+}
 function _pfpForget(addr) { _pfpMissing.delete(addr) }
 
 /** The non-photo avatar, as markup. Mirrors _mobVAvatarError's DOM version. */
@@ -12635,7 +12678,11 @@ window._mobVOpenWalletSwitch = function() {
     <div class="mob-wallet-current">
       <div style="position:relative;display:inline-block;flex-shrink:0" id="mobVDrawerAvatar">
         ${_mobVAvatarImgHtml(state.addr, 80)}
-        ${isDev()
+        ${/* Was isDev(): the camera never appeared for anyone else, so "my friend uploaded
+             one" was a file picker that did nothing. Shown for an account you can PROVE is
+             yours — the same test the upload authenticates with — and not for the combined
+             view, which is not a wallet and has no picture of its own. */
+          (isDev() || (!_isAll && _lbOwnsAddr(state.addr)))
           ? `<button onclick="window._mobVPickPfp()" style="position:absolute;bottom:0;right:0;width:26px;height:26px;border-radius:50%;background:var(--panel-3);border:2px solid var(--bg);display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0" title="Change photo">
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
              </button>`
@@ -33181,25 +33228,10 @@ window.__lbChangePic = function(addr) {
     const file = input.files?.[0]
     document.body.removeChild(input)
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = async () => {
-      const dataUrl = reader.result
-      if (!dataUrl?.startsWith('data:image/')) return
-      try {
-        const r = await fetch(`/pfp/${addr.toLowerCase()}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dataUrl }),
-        })
-        if (!r.ok) { alert('Failed to upload profile pic'); return }
-        // Bust browser cache for every avatar img showing this addr
-        const ts = Date.now()
-        document.querySelectorAll(`img[src^="/pfp/${addr.toLowerCase()}"]`).forEach(img => {
-          img.src = `/pfp/${addr.toLowerCase()}?v=${ts}`
-        })
-      } catch { alert('Upload failed — is the server running?') }
-    }
-    reader.readAsDataURL(file)
+    // Same authenticated path as the mobile picker, and the same canvas pass — this one used
+    // to send the raw file, so a phone photo went up at full size with its EXIF intact.
+    const r = await _pfpUpload(addr, file)
+    if (!r.ok) alert('Could not set that picture: ' + r.error)
   })
   input.click()
 }

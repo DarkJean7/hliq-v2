@@ -2662,6 +2662,60 @@ const server = createServer(async (req, res) => {
   // can have the named wallet in the leaderboard instead of just the address … what is the
   // point of naming wallets of random users" — the names should come from their owners.
   // An unapproved key proves nothing and gets nothing, exactly as before.
+  /**
+   * POST /api/pfp { addr, dataUrl, ts, signature? } — your own profile picture.
+   *
+   * It lived on serve-prod.js with NO authentication at all, and the only thing stopping
+   * anyone setting anyone's picture was that the button was hidden behind isDev(). Opening
+   * the feature to everyone — which is the point — makes that gap load-bearing, so the write
+   * moved here where the ownership proof already lives, and serve-prod now only SERVES.
+   *
+   * Same proof as the leaderboard name: an agent key Hyperliquid confirms is approved for the
+   * address, or a signature from the address itself. Pictures are shown to every visitor on
+   * the public board, so "who put this here" has to be answerable.
+   */
+  if (method === 'POST' && path === '/api/pfp') {
+    const b = await body(req)
+    if (!isAddr(b.addr)) return json(res, 400, { error: 'invalid address' })
+
+    const auth = getAuth(req)
+    const byAgent = !!auth && (auth.admin || await agentApprovedFor(b.addr, auth.signer))
+    if (!byAgent) {
+      const ts = Number(b.ts ?? 0)
+      if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > 10 * 60 * 1000)
+        return json(res, 400, { error: 'stale request — try again' })
+      const msg = `Insolvent Trade — set profile picture\naddress: ${b.addr.toLowerCase()}\nts: ${ts}`
+      let signer
+      try { signer = ethers.verifyMessage(msg, b.signature ?? '') }
+      catch { return json(res, 400, { error: 'bad signature' }) }
+      if (signer.toLowerCase() !== b.addr.toLowerCase())
+        return json(res, 403, { error: 'signature does not match that address' })
+    }
+
+    // The client re-draws every upload through a 256x256 canvas before sending, which
+    // normalises the format and drops EXIF with it. This still checks what arrived rather
+    // than trusting that: an image type it will actually serve, and a size a 256px JPEG
+    // cannot exceed.
+    const dataUrl = String(b.dataUrl ?? '')
+    if (!/^data:image\/(jpeg|png|webp);base64,/.test(dataUrl))
+      return json(res, 400, { error: 'expected a jpeg, png or webp data url' })
+    let buf
+    try { buf = Buffer.from(dataUrl.split(',')[1] ?? '', 'base64') } catch { buf = null }
+    if (!buf?.length) return json(res, 400, { error: 'could not read the image' })
+    if (buf.length > 600_000) return json(res, 413, { error: 'image too large' })
+
+    try {
+      const dir = join(__dirname, 'data', 'pfp')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, b.addr.toLowerCase() + '.jpg'), buf)
+      console.log('[pfp]', b.addr.toLowerCase(), buf.length + 'b', byAgent ? 'agent' : 'signed')
+      return json(res, 200, { ok: true })
+    } catch (e) {
+      console.warn('[pfp] write failed', e.message)
+      return json(res, 500, { error: 'could not save' })
+    }
+  }
+
   if (method === 'POST' && path === '/api/leaderboard/name') {
     const b = await body(req)
     if (!isAddr(b.addr)) return json(res, 400, { error: 'invalid address' })

@@ -57,10 +57,10 @@ Grep for a **string literal**, not a function name — the minifier renames func
 ## Before you push
 
 ```bash
-npm test        # 126 suites, no browser or network needed, a few seconds
+npm test        # 128 suites, no browser or network needed, a few seconds
 ```
 
-Expect `122 passing · 3 known-failing · 0 broken`. The three are listed with reasons in
+Expect `123 passing · 3 known-failing · 0 broken`. The three are listed with reasons in
 `tests/run.mjs`; they fail for causes outside this repo. **`broken` must be 0.**
 
 Suites read the source and assert against it, so they catch a surprising amount: a handler
@@ -89,6 +89,13 @@ JSON where it expected JavaScript and never boots. It is hermetic: its own serve
 exchange are both stubbed, so it takes about fifteen seconds and cannot fail because
 Hyperliquid is having a bad morning. Keep it that way — fixtures live at the top of the file,
 and an unstubbed request type gets `{}`, which the app treats like a call that failed.
+
+**`ctx.route` does not cover WebSockets**, and the combined view opens one to Hyperliquid for
+live state. Left alone it delivers real prices straight past every fixture: a stubbed coin at
+$0.26438 rendered as $0.2872 and drifted between runs, so the assertion was really testing the
+market. Every browser test calls `blockHlSockets(ctx)` (`ctx.routeWebSocket(/hyperliquid/i,
+ws => ws.close())`) so the app falls back to the REST path the fixtures govern. A new browser
+test needs that line too.
 
 CI serves `dist/`, so the browser test gates the artifact that is about to ship, not a dev
 build of it.
