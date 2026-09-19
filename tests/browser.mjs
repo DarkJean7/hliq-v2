@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const args = process.argv.slice(2)
-const FILES = ['agentkeys-browser.mjs', 'cancelcoin-browser.mjs', 'overviewhead-browser.mjs', 'spottab-browser.mjs', 'pfp-browser.mjs']
+const FILES = ['agentkeys-browser.mjs', 'cancelcoin-browser.mjs', 'overviewhead-browser.mjs', 'spottab-browser.mjs', 'pfp-browser.mjs', 'allocation-browser.mjs']
 
 let failed = []
 for (const f of FILES) {

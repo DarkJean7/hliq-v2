@@ -36,20 +36,25 @@ t('and passes null when it learned nothing', ws.includes('sawHip3 ? hip3Pos : nu
 t('the flag is set from the dex entries themselves', ws.includes('sawHip3 = true'))
 t('why it matters is on the record', ws.includes('exactly the shape of the reported flicker'))
 
-console.log('\n-- a margin transfer on a fills tick must still re-baseline --')
+console.log('\n-- a margin transfer is caught on EVERY tick, not just a fills tick --')
 const _rA = cli.indexOf('async function refreshLive(force = false)')
 const ref = cli.slice(_rA, cli.indexOf('// Rebuild outcome token map', _rA))
-t('the anchor is still only nudged on a tick with NO fills',
-  ref.includes('if (newRawFills.length === 0) {') && ref.includes('_perpAnchor += _spurious'))
-// The refetch used to live inside that same branch, so a transfer arriving with a fill was
-// never revisited - and _lastPerpCash advanced anyway, baking the error in.
-t('the portfolio re-baseline now runs either way, not only on a fills-free tick',
-  ref.includes(String.fromCharCode(10) + '        const _a = state.addr') &&
-  !ref.includes(String.fromCharCode(10) + '          const _a = state.addr'))
-
+// This used to hang off `if (_fillsTick)`, because "did fills arrive" was the only way it
+// could tell a transfer from a trade. Fills are fetched every 3rd tick at best and every 6th
+// on a tab that is not showing them, so a transfer stood uncorrected for up to thirty seconds
+// - reported as equity spiking with a fake value and then fixing itself. The correction was
+// right; the delay was the bug. What tells them apart is whether a position changed SIZE, and
+// that is on the clearinghouse state every tick already fetches.
+t('the reconcile no longer waits for a fills tick', !/if \(_fillsTick\) \{[\s\S]{0,400}_perpAnchor/.test(ref))
+t('it is keyed on the positions instead', ref.includes('cashSample(perpState.marginSummary?.accountValue, perpState.assetPositions)'))
+t('a transfer moves the anchor so the headline does not move', ref.includes("_move.kind === 'transfer'") && ref.includes('_perpAnchor += _move.delta'))
+t('a fill re-reads the snapshot rather than guessing the split', ref.includes("_move.kind === 'trade'"))
 t('and pairs a fresh snapshot with a fresh anchor', ref.includes('_anchorPortfolio(p, state.perpState)'))
-t('the $690-showing-as-$709 case is documented', ref.includes('exactly how $690 showed as $709'))
-t('_lastPerpCash still advances, since the re-baseline supersedes it', ref.includes('_lastPerpCash = _perpCash'))
+// A snapshot that landed THIS tick was already paired with THIS perp state, so shifting it by
+// a delta measured against the previous tick would push it straight back off.
+t('a snapshot that just landed is left alone', ref.includes("_move.kind === 'transfer' && !freshPortfolio"))
+t('the re-read is throttled, since a bot fills continuously', ref.includes('Date.now() - _reanchorAt > 8000'))
+t('the sample advances either way', ref.includes('if (_sample) _lastPerpCash = _sample'))
 
 console.log('\n-- the bridge itself is unchanged --')
 // equity = snapshot + (perpNow - anchor). The fix is about WHEN the pair is refreshed,

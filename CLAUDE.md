@@ -155,6 +155,22 @@ thing that already failed.
   `renderSpotGroup`, the single-account cancel has the All-Accounts one, and so on. Fixing one
   and shipping it is how the same crash gets reported twice in a row. After any fix here,
   grep for the pattern before you claim it is done.
+- **A perp-equity delta is not an account-value delta.** Every equity figure in the app is
+  `snapshot + (live perp equity − perp equity when the snapshot was taken)`. On a unified
+  account Hyperliquid moves USDC between the spot and perp sides on its own — funding a new
+  position's margin, reserving it for a resting order, a bot's `usdClassTransfer`. Perp equity
+  jumps, the account is worth what it was, and the bridge publishes the transfer as profit
+  until the next snapshot lands: "equity spikes with a fake value and then fixes itself". What
+  separates a transfer from a trade is whether a position changed SIZE — not whether fills
+  were fetched, which is what the old check used and why it lagged by up to thirty seconds.
+  `src/perpcash.js`, and `kind=eqstep` in the telemetry is what settled it.
+- **Margin has more than two places to be.** Positions post it, resting ORDERS reserve it,
+  spot tokens hold it, and only what is left is withdrawable. `marginSummary.totalMarginUsed`
+  is positions ONLY and `withdrawable` already has the order reserve taken out, so anything
+  that adds those two and calls it the account is short by whatever is resting — $710 of a
+  $1,664 wallet, and the allocation wheel shipped that way for months. The reserve is
+  `accountValue − totalMarginUsed − withdrawable`, which agrees to the cent with
+  `Σ size × price ÷ leverage` over the non-reduce-only orders. `src/alloc.js`.
 - **Hyperliquid rate-limits by IP**, 1200 weight/min shared across `/info` and `/exchange`.
   Fanning a request across nine wallets is how the limiter gets tripped. Batch or cache.
 - **Agent keys can trade but cannot move funds.** Anything that moves money needs the main

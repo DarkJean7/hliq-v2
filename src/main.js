@@ -241,6 +241,8 @@ import { accountRoe, partRoe, positionRoe, fmtRoe, compareRoe } from './roe.js'
 import { ordersForCoin, byAccount, statusesFrom, classifyCancels, describeOrders,
          isAlreadyGone, sideOf as _ordSideOf, summarize as _cancelSummary } from './cancelbatch.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey } from './comboequity.js'
+import { cashSample, classifyCashMove } from './perpcash.js'
+import { orderMarginByCoin, spotByCoin, SLICE_DUST } from './alloc.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
 import { trackRecord, isSmallSample, openLossOf } from './trackrecord.js'
@@ -1817,7 +1819,8 @@ async function fetchSubAccounts(addr) {
 let _lastPosHash  = null
 let _lastOrdHash  = null
 let _lastAcctHash = null
-let _lastPerpCash = null   // perp balance minus uPnL — used to catch spot↔perp transfers
+let _lastPerpCash = null   // { cash, fp } — perp balance minus uPnL, plus the position sizes it was read with
+let _reanchorAt   = 0      // last snapshot re-read forced by a fill, throttled
 const _cancelledOids = new Set()  // oids removed optimistically, filtered from refreshes
 
 function _fingerprint(obj) {
@@ -2054,63 +2057,54 @@ async function refreshLive(force = false) {
     state.perpState  = perpState
     state.openOrders = openOrders.filter(o => !_cancelledOids.has(o.oid))
 
-    // Catch spot↔perp transfers (e.g. a bot's margin top-up on start): they move
-    // money into the perp balance without changing the unified account value, so
-    // the live perp-delta would otherwise spike it. perp "cash" = accountValue −
-    // uPnL stays flat under pure PnL, but jumps on a transfer/deposit. When it
-    // jumps (and it isn't a fill), shift the anchor so the value stays continuous.
-    // Only reconcile on ticks where we actually fetched fills. On a skipped tick
-    // `newRawFills` is null, so we can't tell a legit realized-PnL move from a
-    // transfer — and `_lastPerpCash` deliberately does NOT advance, so the next
-    // fills tick compares against the right baseline and sees every fill in between.
-    if (_fillsTick) {
-      // marginSummary.accountValue is MAIN-DEX ONLY, but assetPositions has HIP-3
-      // positions merged into it (see fetchClearinghouseState). Summing uPnL across
-      // both subtracts HIP-3 unrealized from a main-only equity figure, so ordinary
-      // HIP-3 price drift read as a "transfer" and nudged the anchor every fills
-      // tick. Count main-dex positions only, matching the scope of _perpVal.
-      const _uPnl    = (perpState.assetPositions ?? [])
-        .filter(p => !String(p.position?.coin ?? '').includes(':'))
-        .reduce((s, p) => s + parseFloat(p.position?.unrealizedPnl ?? 0), 0)
-      const _perpVal = parseFloat(perpState.marginSummary?.accountValue ?? 0)
-      const _perpCash = _perpVal - _uPnl
-      if (_lastPerpCash != null && Math.abs(_perpCash - _lastPerpCash) > 0.01) {
-        // Reconcile ONLY on ticks with no fills — that's a genuine transfer/deposit.
-        // On a tick that HAD fills, the difference is dominated by ordinary trading
-        // noise: uPnL is marked at mark price while closedPnl realizes at fill price,
-        // plus funding, and fees charged in HYPE rather than USDC. Shifting the anchor
-        // by that noise is what spiked the value on every close — it moved the number,
-        // then the authoritative refetch below yanked it back a second later. Fills
-        // already trigger that refetch, which re-baselines snapshot AND anchor exactly
-        // (absorbing any real transfer landing on the same tick), so leave the anchor
-        // alone and let it settle. The value then stays continuous across a close.
-        // Shifting the anchor by the raw delta is only safe with no fills this tick: with
-        // fills the difference is dominated by trading noise (uPnL marked at mark vs
-        // closedPnl realized at fill, funding, HYPE-denominated fees).
-        if (newRawFills.length === 0) {
-          const _spurious = _perpCash - _lastPerpCash
-          if (Math.abs(_spurious) > 0.01 && state.portfolio && state.portfolio._perpAnchor != null) {
-            state.portfolio._perpAnchor += _spurious
-          }
+    // Catch spot↔perp transfers (e.g. a bot's margin top-up, or the margin Hyperliquid
+    // reserves when an order is placed): they move money into the perp balance without
+    // changing the unified account value, so the live perp-delta would otherwise spike it.
+    //
+    // Every tick — not only on the ticks that fetched fills.
+    //
+    // This used to sit behind `if (_fillsTick)`, because "did fills arrive" was how it told a
+    // transfer from a trade. Fills are fetched every 3rd tick at best and every 6th on a tab
+    // that isn't showing them, so a margin transfer went uncorrected for up to thirty seconds
+    // — which is the reported "spikes with a fake value and then fixes itself". The gap WAS
+    // the bug: the correction was right, it just arrived late.
+    //
+    // What tells them apart is whether a position changed size (see src/perpcash.js), and
+    // that is on the clearinghouse state this tick already fetched. So the check is free and
+    // runs every tick, and the window shrinks from thirty seconds to five.
+    {
+      // Main dex only, on both halves — marginSummary.accountValue is main-dex while
+      // assetPositions arrives with HIP-3 merged in, and mixing the two made ordinary
+      // builder-dex drift read as a transfer. cashSample enforces that itself.
+      const _sample = cashSample(perpState.marginSummary?.accountValue, perpState.assetPositions)
+      const _move   = classifyCashMove(_lastPerpCash, _sample)
+
+      // A portfolio snapshot that landed THIS tick was just paired with THIS perpState by
+      // _anchorPortfolio above, so the anchor is exact by construction. Shifting it by a
+      // delta measured against the previous tick would push it back off.
+      if (_move.kind === 'transfer' && !freshPortfolio) {
+        // Margin moved between the spot and perp sides, or an order reserved it. The account
+        // is worth what it was a moment ago, so move the anchor with it and the headline
+        // stays where it is.
+        if (state.portfolio && state.portfolio._perpAnchor != null) state.portfolio._perpAnchor += _move.delta
+      } else if (_move.kind === 'trade') {
+        // A position changed size, so part of this delta is realized PnL — real money that
+        // belongs in the headline — and part of it is the margin Hyperliquid moved to fund
+        // or release the position. From here those are one number, and shifting by the whole
+        // of it would erase the trade's result. Re-reading the snapshot pairs a fresh total
+        // with a fresh anchor, which absorbs the transfer without having to separate them.
+        //
+        // Throttled: a bot filling continuously would otherwise spend a weight-2 call per
+        // tick on this, and the bridge is accurate enough in between for a few seconds.
+        if (Date.now() - _reanchorAt > 8000) {
+          _reanchorAt = Date.now()
+          const _a = state.addr
+          info.portfolio({ user: _a }).catch(() => null).then(p => {
+            if (p && state.addr === _a) { state.portfolio = _anchorPortfolio(p, state.perpState); renderAccountSection() }
+          })
         }
-        // But the RE-BASELINE has to happen either way, and it did not.
-        //
-        // Opening a position makes Hyperliquid move USDC spot -> perp to fund the margin.
-        // That lifts perp equity without changing the unified account value, so the bridge
-        // (snapshot + perpNow - anchor) reads high by the transfer. The reconcile above was
-        // skipped because the same tick carried the opening fill, no refetch was scheduled
-        // because that lived inside the same branch, and _lastPerpCash advanced regardless
-        // - so the jump was baked in and never revisited. A $18.80 margin transfer is
-        // exactly how $690 showed as $709 until something else forced a refresh.
-        //
-        // Re-reading the portfolio pairs a fresh snapshot with a fresh anchor, which
-        // absorbs the transfer without trusting the noisy delta.
-        const _a = state.addr
-        info.portfolio({ user: _a }).catch(() => null).then(p => {
-          if (p && state.addr === _a) { state.portfolio = _anchorPortfolio(p, state.perpState); renderAccountSection() }
-        })
       }
-      _lastPerpCash = _perpCash
+      if (_sample) _lastPerpCash = _sample
     }
 
     // Rebuild outcome token map so '#N' coins resolve correctly in open orders,
@@ -3604,8 +3598,90 @@ function _freeMarginUsd() {
 // names what it is (cash) instead of looking like one more traded asset. Fixed hex, not a
 // theme token: it is a brand colour and reads the same in light and dark.
 const _ALLOC_FREE_COLOR = '#2775CA'
-const _allocColor = s => s.isFree ? _ALLOC_FREE_COLOR : _coinColor(s.coin)
-const _allocLabel = s => s.isFree ? _T('Free margin', 'Margen libre') : _ocCoinLabel(s.coin)
+// Reserved margin is cash too — it is just cash you cannot spend — so it takes the same brand
+// blue, dimmed, rather than a hashed coin colour it would share with an unrelated asset.
+const _ALLOC_ORD_COLOR = '#7FA9DC'
+const _allocColor = s => s.isFree ? _ALLOC_FREE_COLOR : s.isOrders ? _ALLOC_ORD_COLOR : _coinColor(s.coin)
+const _allocLabel = s => s.isFree   ? _T('Free margin', 'Margen libre')
+                       : s.isOrders ? _T('In orders', 'En órdenes')
+                       : s.isSpot   ? _ocCoinLabel(s.coin) + ' · ' + _T('Spot', 'Spot')
+                       : _ocCoinLabel(s.coin)
+
+/**
+ * Price for anything that can sit on the spot side.
+ *
+ * Outcome shares are spot balances too ("+41590"), and they are money — leaving them out
+ * would put the wheel back under the account total for anyone holding a prediction. Their id
+ * packs market and side: the digits after the sign are outcome*10 + side.
+ */
+function _allocSpotMid(coin) {
+  if (_lbIsOutcome(coin)) {
+    const n = Number(String(coin).slice(1))
+    return Number.isFinite(n) ? _ocSidePrice(Math.floor(n / 10), n % 10) : 0
+  }
+  return _spotMid(coin)
+}
+
+/**
+ * Every spot holding behind the current view.
+ *
+ * Two sources, because the combined view keeps real tokens OFF state.spotState (they would
+ * double-count into its free-margin sum) and carries them per wallet instead. Reading only
+ * state.spotState here is what made spot invisible in All Accounts — the same
+ * one-renderer-two-shells split that has now bitten the Spot tab twice.
+ */
+function _allocSpotBalances() {
+  const out = [...(state.spotState?.balances ?? [])]
+  if (state.isAllAccounts) {
+    const hidden = _maHiddenLoad()
+    for (const r of (_allAcctLastResults ?? [])) {
+      if (r.error || hidden.has(r.addr)) continue
+      const label = r.label || (r.addr.slice(0, 6) + '…')
+      for (const b of (r.spotBalances ?? [])) out.push({ ...b, _acct: label, _acctAddr: r.addr })
+    }
+  }
+  return out
+}
+
+/** Leverage a coin is being held at. The account's own position is the truth; failing that,
+ *  the market's cap, which is what an account that never changed the setting is using. In the
+ *  combined view the same coin can be open at different leverage on two wallets, so an order
+ *  is matched to its own wallet's position first. */
+function _allocLevOf(coin, acctAddr) {
+  let any = 0
+  for (const ap of (state.perpState?.assetPositions ?? [])) {
+    const p = ap.position ?? {}
+    if (p.coin !== coin) continue
+    const l = parseFloat(p.leverage?.value ?? 0)
+    if (!(l > 0)) continue
+    if (acctAddr && p._acctAddr && String(p._acctAddr).toLowerCase() === String(acctAddr).toLowerCase()) return l
+    if (!any) any = l
+  }
+  return any || _coinMaxLev(coin)
+}
+
+/**
+ * Margin held back by resting orders, as the ACCOUNT reports it.
+ *
+ * accountValue - totalMarginUsed - withdrawable. `totalMarginUsed` is positions only and
+ * orders are the only other claim on the balance, so whatever is left is theirs. Verified
+ * against the per-order sum on a live wallet: both $710.05, to the cent, over 18 orders.
+ *
+ * Main dex only - the figures it is built from are. The combined view cannot use the residual
+ * (its accountValue is the sum of wallet TOTALS, spot included), so each row carries its own
+ * and _aggPerpState sums them. Null when nothing can answer, never 0: a wheel that has not
+ * been told is not a wheel with no orders.
+ */
+function _orderMarginReported() {
+  const ps = state.perpState
+  const carried = parseFloat(ps?._orderMargin)
+  if (Number.isFinite(carried)) return Math.max(0, carried)
+  const av = parseFloat(ps?.marginSummary?.accountValue ?? NaN)
+  const mu = parseFloat(ps?.marginSummary?.totalMarginUsed ?? NaN)
+  const wd = parseFloat(ps?.withdrawable ?? NaN)
+  if (![av, mu, wd].every(Number.isFinite) || !(av > 0)) return null
+  return Math.min(Math.max(0, av - mu - wd), av)
+}
 
 function _allocationSlices() {
   const byCoin = new Map()
@@ -3633,9 +3709,71 @@ function _allocationSlices() {
     if (p._acct) cur.accts.add(p._acct)
     byCoin.set(key, cur)
   }
+  const posMargin = [...byCoin.values()].reduce((s, x) => s + x.margin, 0)
+
+  // ── margin resting orders are holding ──────────────────────────────────────
+  //
+  // Neither "used" (no position carries it) nor "free" (withdrawable excludes it), so it fell
+  // between the wheel's only two categories and simply vanished: $710 of a $1,664 account on
+  // the wallet this was measured on. Attributed per coin from the orders themselves, then
+  // reconciled to the account's own residual so the TOTAL is HL's number even where a
+  // leverage guess for a coin with no open position is off.
+  // A spot or outcome order is on a market with no leverage: a buy sits on the whole notional
+  // in USDC (which `hold` has already taken out of free margin, so it would otherwise be money
+  // in neither place), and a sell sits on the token, which the spot slice below already counts.
+  const _cashMkt  = c => isSpotCoin(c, _watchSpotNameMap) || _lbIsOutcome(c)
+  const ordByCoin = orderMarginByCoin(state.openOrders ?? [], _allocLevOf, _cashMkt)
+  const ordSaid   = _orderMarginReported()
+  // HIP-3 orders reserve margin on a builder dex, which the main-dex residual never saw, so
+  // only the main-dex estimate is scaled onto it and builder coins keep their own figure.
+  // ...and neither reaches the main-dex residual either, so only plain perp coins are scaled
+  // onto it. A HIP-3 order reserves margin on a builder dex the residual never saw.
+  const isH3      = c => String(c).includes(':')
+  const scaled    = v => !isH3(v.coin) && !v.cash
+  const mainEst   = [...ordByCoin.values()].filter(scaled).reduce((s, v) => s + v.margin, 0)
+  const scale     = (ordSaid != null && mainEst > SLICE_DUST) ? ordSaid / mainEst : 1
+  for (const v of ordByCoin.values()) {
+    const m = scaled(v) ? v.margin * scale : v.margin
+    if (!(m > SLICE_DUST)) continue
+    const cur = byCoin.get(v.coin) ?? { coin: v.coin, margin: 0, notional: 0, size: 0, uPnl: 0, longs: 0, shorts: 0, accts: new Set() }
+    cur.margin    += m
+    cur.ordMargin  = (cur.ordMargin ?? 0) + m
+    cur.ordCount   = (cur.ordCount  ?? 0) + v.count
+    cur.ordBuys    = (cur.ordBuys   ?? 0) + v.buys
+    cur.ordSells   = (cur.ordSells  ?? 0) + v.sells
+    byCoin.set(v.coin, cur)
+  }
+  // Margin the account says is reserved that no visible order explains: the orders list lags
+  // the state by a tick, or every resting order is on a dex whose book has not loaded. Shown
+  // as one slice rather than folded into free margin, which is the lie this is undoing.
+  const ordOrphan = (ordSaid != null && mainEst <= SLICE_DUST) ? ordSaid : 0
+  const ordTotal  = [...byCoin.values()].reduce((s, x) => s + (x.ordMargin ?? 0), 0) + ordOrphan
+
   const slices = [...byCoin.values()].sort((a, b) => b.margin - a.margin)
-  const used   = slices.reduce((s, x) => s + x.margin, 0)
-  const free   = _freeMarginUsd()
+  const used   = posMargin
+
+  // ── spot holdings ──────────────────────────────────────────────────────────
+  //
+  // Never counted at all before this. _freeMarginUsd reads spot USDC and stops, so tokens
+  // were money the wheel could not see. Priced at the pair's mid (see _spotMid - balances are
+  // keyed by token name, mids by pair), which is also what makes them appear in All Accounts,
+  // where they live on the rows rather than on state.
+  const spotRows = [...spotByCoin(_allocSpotBalances(), _allocSpotMid).values()]
+    .filter(h => h.usd > SLICE_DUST)
+    .sort((a, b) => b.usd - a.usd)
+  for (const h of spotRows) slices.push({
+    coin: h.coin, isSpot: true, margin: h.usd, spotCost: h.cost,
+    notional: 0, size: h.size, uPnl: h.cost > 0 ? h.usd - h.cost : 0,
+    longs: 0, shorts: 0, accts: h.accts,
+  })
+  const spot = spotRows.reduce((s, h) => s + h.usd, 0)
+
+  if (ordOrphan > SLICE_DUST) slices.push({
+    coin: 'USDC', isOrders: true, margin: ordOrphan,
+    notional: 0, size: 0, uPnl: 0, longs: 0, shorts: 0, accts: new Set(),
+  })
+
+  const free = _freeMarginUsd()
   // Ride free margin along as its own slice so the ring describes the whole account and
   // not just the deployed part — an account sitting mostly in cash used to draw a full
   // ring and read as fully committed. Pinned last rather than sorted in: it is not a
@@ -3644,15 +3782,28 @@ function _allocationSlices() {
     coin: 'USDC', isFree: true, margin: free,
     notional: 0, size: 0, uPnl: 0, longs: 0, shorts: 0, accts: new Set(),
   })
-  // hasPositions gates the empty state: free margin on its own must not turn "no open
-  // positions" into a ring that is 100% one grey slice.
-  return { slices, total: used + free, used, free, hasPositions: byCoin.size > 0 }
+  // hasAny gates the empty state: free margin on its own must not turn "nothing open" into a
+  // ring that is 100% one grey slice — but a wallet holding only spot, or only resting
+  // orders, DOES have something to show and used to get the empty state anyway.
+  return {
+    slices, total: used + ordTotal + spot + free,
+    used, orders: ordTotal, spot, free,
+    hasAny: byCoin.size > 0 || spotRows.length > 0 || ordOrphan > SLICE_DUST,
+  }
+}
+
+// The wheel's own arithmetic, exposed for tests/allocation-browser.mjs. The four parts only
+// meet inside the renderer — clearinghouse state, open orders, spot balances and mids — so
+// there is nothing else to assert "it adds up to the account" against.
+window.__allocParts = () => {
+  const { total, used, orders, spot, free } = _allocationSlices()
+  return { total, used, orders, spot, free }
 }
 
 // How much of the coin a slice is: "41.83 HYPE". Empty for free margin, which is already
 // dollars -- "1,234.00 USDC" under $1,234.00 is the same number twice.
 function _allocSizeTxt(s) {
-  if (s.isFree || !(s.size > 0)) return ''
+  if (s.isFree || s.isOrders || !(s.size > 0)) return ''
   return fmtSize(s.size) + ' ' + _ocCoinLabel(s.coin)
 }
 
@@ -3678,8 +3829,15 @@ window.__allocHover = function(i) {
   // would read as a broken position rather than as uncommitted margin.
   const detail = s.isFree
     ? `<div style="font-size:12px;color:var(--muted)">${_T('Available to trade', 'Disponible para operar')}</div>`
+    : s.isOrders
+    ? `<div style="font-size:12px;color:var(--muted)">${_T('Held by resting orders', 'Retenido por órdenes en libro')}</div>`
+    : s.isSpot
+    ? `<div style="font-size:12px;color:var(--muted)">${_prv(_allocSizeTxt(s))}</div>
+       <div style="font-size:12px;color:var(--muted)">${_T('Spot holding', 'Tenencia spot')}</div>
+       ${s.spotCost > 0 ? `<div style="font-size:12px;font-weight:600;margin-top:1px" class="${s.uPnl >= 0 ? 'pos' : 'neg'}">${s.uPnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(s.uPnl))}</div>` : ''}`
     : `<div style="font-size:12px;color:var(--muted)">${_prv(_allocSizeTxt(s))}</div>
        <div style="font-size:12px;color:var(--muted)">${_prv('$' + fmtUSD(s.notional, 2))} position value</div>
+       ${s.ordMargin > 0 ? `<div style="font-size:12px;color:var(--muted)">${_prv('$' + fmtUSD(s.ordMargin))} ${_T('in', 'en')} ${s.ordCount} ${s.ordCount === 1 ? _T('order', 'orden') : _T('orders', 'órdenes')}</div>` : ''}
        <div style="font-size:12px;font-weight:600;margin-top:1px" class="${s.uPnl >= 0 ? 'pos' : 'neg'}">${s.uPnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(s.uPnl))}</div>`
   if (c) c.innerHTML = `
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
@@ -3687,7 +3845,7 @@ window.__allocHover = function(i) {
       <span style="font-size:13px;font-weight:700;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_allocLabel(s))}</span>
     </div>
     <div style="font-size:26px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv('$' + fmtUSD(s.margin, 2))}</div>
-    <div style="font-size:12px;color:var(--muted)">${s.pct.toFixed(1)}% ${_T('of margin', 'del margen')}</div>
+    <div style="font-size:12px;color:var(--muted)">${s.pct.toFixed(1)}% ${_T('of equity', 'del patrimonio')}</div>
     ${detail}`
 }
 
@@ -3706,10 +3864,10 @@ function _mobVRenderAllocation(el) {
   if (_allocView === 'movers')   { _mobVRenderAttribution(el); return }
   if (_allocView === 'exposure') { _mobVRenderExposure(el); return }
   const header = _allocViewHeader()
-  const { slices, total, used, free, hasPositions } = _allocationSlices()
-  if (!hasPositions || !slices.length || total <= 0) {
+  const { slices, total, used, orders, spot, free, hasAny } = _allocationSlices()
+  if (!hasAny || !slices.length || total <= 0) {
     _allocSlices = []
-    el.innerHTML = `${header}<div class="mob-v-empty">${_T('No open positions to allocate.', 'Sin posiciones abiertas para asignar.')}</div>`
+    el.innerHTML = `${header}<div class="mob-v-empty">${_T('Nothing allocated yet — no positions, orders or spot holdings.', 'Nada asignado todavía — sin posiciones, órdenes ni tenencias spot.')}</div>`
     return
   }
 
@@ -3751,14 +3909,22 @@ function _mobVRenderAllocation(el) {
   ).join('')
 
   const totalNotional = slices.reduce((s, x) => s + x.notional, 0)
-  const assetCount    = slices.filter(x => !x.isFree).length
-  // The ring totals deployed + free now, so the headline has to be that same total or the
-  // centre and the ring would be describing two different things. Split spelled out under it.
+  const assetCount    = slices.filter(x => !x.isFree && !x.isOrders && !x.isSpot).length
+  // The ring now totals every place the account's money can be — positions, resting orders,
+  // spot tokens and cash — so it reads as the account's equity and the headline says so. It
+  // said TOTAL MARGIN over $2,737.75 while the same account showed $6,800 of equity, because
+  // the two categories it could see were the only two it counted.
+  //
+  // Each part of the split is dropped when it is zero, so an account with no orders and no
+  // spot gets exactly the two lines it used to.
+  const part = (v, en, es) => v > SLICE_DUST ? `${_prv('$' + fmtUSD(v))} ${_T(en, es)}` : ''
+  const line = (...bits) => { const b = bits.filter(Boolean); return b.length ? `<div style="font-size:11.5px;color:var(--muted)">${b.join(' · ')}</div>` : '' }
   _allocCenterHtml = `
-    <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${free > 0 ? _T('Total margin', 'Margen total') : _T('Margin used', 'Margen usado')}</div>
+    <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${_T('Total equity', 'Patrimonio total')}</div>
     <div style="font-size:28px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv('$' + fmtUSD(total, 2))}</div>
-    ${free > 0 ? `<div style="font-size:12px;color:var(--muted)">${_prv('$' + fmtUSD(used))} ${_T('deployed', 'desplegado')} · ${_prv('$' + fmtUSD(free))} ${_T('free', 'libre')}</div>` : ''}
-    <div style="font-size:12px;color:var(--muted)">${assetCount} asset${assetCount === 1 ? '' : 's'} · ${_prv('$' + fmtUSD(totalNotional))} position value</div>`
+    ${line(part(used, 'in positions', 'en posiciones'), part(orders, 'in orders', 'en órdenes'))}
+    ${line(part(spot, 'spot', 'spot'), part(free, 'free', 'libre'))}
+    <div style="font-size:11.5px;color:var(--muted)">${assetCount} asset${assetCount === 1 ? '' : 's'} · ${_prv('$' + fmtUSD(totalNotional))} position value</div>`
 
   const wheel = `
     <div style="display:flex;justify-content:center;padding:18px 12px 6px">
@@ -3777,16 +3943,27 @@ function _mobVRenderAllocation(el) {
   const rows = _allocSlices.map((s, i) => {
     const pnl   = s.uPnl
     const cls   = pnl >= 0 ? 'pos' : 'neg'
-    const sides = s.longs && s.shorts ? `${s.longs}L / ${s.shorts}S`
+    // A coin with resting orders and no position has no sides to describe — saying "Long" of
+    // an order book that is only holding margin would invent a position that is not there.
+    const ordTxt = s.ordCount
+      ? `${s.ordCount} ${s.ordCount === 1 ? _T('order', 'orden') : _T('orders', 'órdenes')} · ${_prv('$' + fmtUSD(s.ordMargin))}`
+      : ''
+    const sides = !(s.longs || s.shorts) ? ''
+                : s.longs && s.shorts ? `${s.longs}L / ${s.shorts}S`
                 : s.shorts ? `${s.shorts > 1 ? s.shorts + ' ' : ''}Short`
                 : `${s.longs > 1 ? s.longs + ' ' : ''}Long`
     const sizeTxt = _allocSizeTxt(s)
     const acctTxt = s.accts.size ? ` · <span style="color:var(--accent)">${esc([...s.accts].join(', '))}</span>` : ''
-    const sub   = s.isFree ? _T('Available to trade', 'Disponible para operar')
-                           : `${sides} · Value ${_prv('$' + fmtUSD(s.notional, 2))}${acctTxt}`
-    // No PnL for cash — the right-hand column is share-of-margin only.
-    const right = s.isFree ? `<div class="mob-v-row-pct" style="color:var(--muted)">${s.pct.toFixed(1)}%</div>`
-                           : `<div class="mob-v-row-pct ${cls}">${s.pct.toFixed(1)}% · ${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}</div>`
+    const sub   = s.isFree   ? _T('Available to trade', 'Disponible para operar')
+                : s.isOrders ? _T('Held by resting orders', 'Retenido por órdenes en libro')
+                : s.isSpot   ? `${_T('Spot', 'Spot')} · ${_prv(fmtSize(s.size))} ${esc(_ocCoinLabel(s.coin))}${acctTxt}`
+                : [sides, sides ? `Value ${_prv('$' + fmtUSD(s.notional, 2))}` : '', ordTxt]
+                    .filter(Boolean).join(' · ') + acctTxt
+    // No PnL for cash or for reserved margin — neither has a result yet, and the right-hand
+    // column is share-of-equity only. A spot holding transferred in has no cost basis either.
+    const noPnl = s.isFree || s.isOrders || (s.isSpot && !(s.spotCost > 0))
+    const right = noPnl ? `<div class="mob-v-row-pct" style="color:var(--muted)">${s.pct.toFixed(1)}%</div>`
+                        : `<div class="mob-v-row-pct ${cls}">${s.pct.toFixed(1)}% · ${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}</div>`
     // Rows drive the same highlight — the arcs are thin to hit accurately on a phone.
     return `<div class="mob-v-row" data-alloc-row="${i}" style="cursor:pointer;transition:background .12s ease">
       <span style="width:10px;height:10px;border-radius:3px;background:${_allocColor(s)};flex-shrink:0;margin-right:10px"></span>
@@ -3806,7 +3983,7 @@ function _mobVRenderAllocation(el) {
   el.innerHTML = `${header}${wheel}
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:10px 16px 4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700">
       <span>${_T('Breakdown', 'Desglose')}</span>
-      <span>${_T('Margin', 'Margen')}</span>
+      <span>${_T('Value', 'Valor')}</span>
     </div>
     <div style="padding-bottom:calc(90px + env(safe-area-inset-bottom))">${rows}</div>`
 
@@ -8158,6 +8335,48 @@ async function _allAcctFastValue() {
 // byte-for-byte the single-account liveAccountValue formula, so a wallet reads identically
 // in All Accounts and its own view; re-derived from a fixed snapshot each time so it can't
 // drift or diverge between devices.
+/**
+ * Re-pair one wallet's snapshot with a fresh anchor, after a fill moved its perp cash.
+ *
+ * The row's value is `_portVal + (livePerp − _perpBase)`. A fill changes cash by realized PnL
+ * AND by whatever margin Hyperliquid posted or released alongside it; the two arrive as one
+ * number, so neither absorbing it nor publishing it is right. Re-reading the portfolio gives
+ * a total that already contains the trade, and reading the perp equity straight after it
+ * gives an anchor measured at the same instant. Order matters: snapshot first, anchor second,
+ * never one without the other, or the gap between them is counted twice.
+ *
+ * Two weight-2 calls for one wallet, throttled per wallet — a grid bot fills constantly, and
+ * eight wallets doing this on every tick would be most of HL's budget.
+ */
+const _maReanchorAt = new Map()
+const _MA_REANCHOR_MS = 15_000
+async function _maReanchorRow(addr) {
+  const lc = String(addr ?? '').toLowerCase()
+  if (!lc || !state.isAllAccounts || _hlLimited()) return
+  if (Date.now() - (_maReanchorAt.get(lc) ?? 0) < _MA_REANCHOR_MS) return
+  _maReanchorAt.set(lc, Date.now())
+  try {
+    const info = new InfoClient({ transport: _transport })
+    const port = await info.portfolio({ user: addr })
+    const hist = (port ?? []).find(x => x[0] === 'allTime')?.[1]?.accountValueHistory ?? []
+    if (!hist.length) return
+    const snapVal = parseFloat(hist.at(-1)[1])
+    const cs      = await info.clearinghouseState({ user: addr })
+    const perpAt  = parseFloat(cs?.marginSummary?.accountValue ?? NaN)
+    if (!Number.isFinite(snapVal) || !Number.isFinite(perpAt) || !state.isAllAccounts) return
+    const row = _allAcctLastResults.find(x => String(x.addr ?? '').toLowerCase() === lc)
+    if (!row) return
+    row._portVal  = snapVal
+    row._perpBase = perpAt
+    row._cash     = cashSample(perpAt, cs.assetPositions)
+    // The cached history store carries the pair too, so a later fan-out doesn't restore the
+    // stale one. Keep everything else in the entry as it was.
+    const hc = _maHistCache2.get(lc)
+    if (hc) _histSet(lc, { ...hc, portfolio: port, perpAtHist: perpAt, ts: Date.now() })
+    if (_applyAcctLiveCs(row, cs)) _allAcctLightPaint()
+  } catch (e) { _hl429(e) }
+}
+
 function _applyAcctLiveCs(r, cs, hip3Override) {
   if (!cs || !r || r.error) return false
   const mainPos    = cs.assetPositions ?? []
@@ -8169,6 +8388,26 @@ function _applyAcctLiveCs(r, cs, hip3Override) {
   const hip3 = hip3Override ?? (r.positions ?? []).filter(ap => String((ap.position ?? ap)?.coin ?? '').includes(':'))
   const _base   = Number.isFinite(parseFloat(r._portVal))  ? parseFloat(r._portVal)  : parseFloat(r.accountValue ?? 0)
   const perpNow = parseFloat(cs.marginSummary?.accountValue ?? 0)
+
+  // Transfers, the same way the single-account tick catches them — this path had no check at
+  // all, and it is the one that runs every 12 seconds (and on every WebSocket push) for eight
+  // wallets at once. Telemetry has it plainly: one wallet's perp equity up $185.49 in 1.5s
+  // with every other row flat, the combined total up with it, and the next server snapshot
+  // putting it straight back twelve seconds later. That was margin being moved, published as
+  // profit. See src/perpcash.js for why the position sizes are the discriminator.
+  const _sample = cashSample(perpNow, mainPos)
+  const _move   = classifyCashMove(r._cash, _sample)
+  if (_move.kind === 'transfer') {
+    // Money moved between this wallet's spot and perp sides. Its total is unchanged, so the
+    // anchor moves with it and the row does not budge.
+    r._perpBase = (Number.isFinite(parseFloat(r._perpBase)) ? parseFloat(r._perpBase) : perpNow) + _move.delta
+  } else if (_move.kind === 'trade') {
+    // A fill: part realized PnL, part released or posted margin, and one number here. Only
+    // HL's own snapshot can separate them, so ask it for this one wallet.
+    _maReanchorRow(r.addr)
+  }
+  if (_sample) r._cash = _sample
+
   const _perpB  = Number.isFinite(parseFloat(r._perpBase)) ? parseFloat(r._perpBase) : perpNow
   const cand    = _base + (perpNow - _perpB)
   // Glitched reading? Hold this account entirely for this update so the next good reading
@@ -8185,6 +8424,13 @@ function _applyAcctLiveCs(r, cs, hip3Override) {
   r.positions     = [...mainPos, ...hip3]
   r.maintMargin   = maint
   r.withdrawable  = parseFloat(cs.withdrawable ?? 0) + parseFloat(r._spotFree ?? 0)
+  // Margin this wallet's resting orders are holding: what the perp side is worth, less what
+  // positions have posted, less what can still be withdrawn. The allocation wheel cannot
+  // derive this in the combined view (its accountValue is the sum of wallet totals, spot
+  // included), so it has to travel on the row.
+  r._orderMargin  = Math.max(0, perpNow
+    - mainPos.reduce((sum, ap) => sum + Math.abs(parseFloat(ap.position?.marginUsed ?? 0)), 0)
+    - parseFloat(cs.withdrawable ?? 0))
   const hBase     = (r._marginBase ?? 0) > 0 ? r._marginBase : r.accountValue
   r.healthPct     = hBase > 0 ? Math.max(0, Math.min(100, (1 - maint / hBase) * 100)) : 100
   r.healthCls     = r.healthPct > 60 ? 'pos' : r.healthPct > 30 ? 'warn' : 'neg'
@@ -8687,7 +8933,7 @@ function _allAcctReaggregate() {
 // tagged with `_acct` (its wallet label) so the UI can show its origin.
 function _aggPerpState(results) {
   const assetPositions = []
-  let accountValue = 0, totalNtl = 0, totalMarginUsed = 0, maint = 0, withdrawable = 0
+  let accountValue = 0, totalNtl = 0, totalMarginUsed = 0, maint = 0, withdrawable = 0, orderMargin = 0
   for (const r of results) {
     const acctLabel = r.label || r.addr.slice(0, 6) + '…'
     for (const ap of (r.positions ?? [])) {
@@ -8699,12 +8945,17 @@ function _aggPerpState(results) {
     accountValue += parseFloat(r.accountValue ?? 0)
     maint        += parseFloat(r.maintMargin ?? 0)
     withdrawable += parseFloat(r.withdrawable ?? 0)
+    orderMargin  += parseFloat(r._orderMargin ?? 0)
   }
   return {
     assetPositions,
     marginSummary: { accountValue: String(accountValue), totalNtlPos: String(totalNtl), totalMarginUsed: String(totalMarginUsed) },
     crossMaintenanceMarginUsed: String(maint),
     withdrawable: String(withdrawable),
+    // Summed from the rows, not derivable here: the residual that works on one wallet
+    // (accountValue - totalMarginUsed - withdrawable) cannot work on this synthetic state,
+    // whose accountValue is the sum of wallet TOTALS and therefore already carries spot.
+    _orderMargin: orderMargin,
   }
 }
 
@@ -32776,6 +33027,11 @@ async function _lbFetchResults(entries) {
     const _perpBase        = portfolioAcctVal != null ? _perpAtHist       : _perpAcctVal
     // Denominator of HL's Unified Account Ratio = the Portfolio Value (unified account
     // value), NOT the perp-only account value. Cached for the light refresh.
+    // Same figure as the live tick's (see _applyAcctLiveCs), so a freshly fanned row and a
+    // ticked one describe the account the same way.
+    const _orderMargin     = Math.max(0, _perpAcctVal
+      - positions.reduce((sum, ap) => sum + Math.abs(parseFloat(ap.position?.marginUsed ?? 0)), 0)
+      - parseFloat(csNow.withdrawable ?? 0))
     const _marginBase      = accountValue
     // Main dex AND the builder dexes. `positions` here comes from a plain
     // clearinghouseState, which is main-dex only - HIP-3 arrives separately in hip3Res and
@@ -32853,7 +33109,7 @@ async function _lbFetchResults(entries) {
     // headline silently fell back to the per-device sum — a DIFFERENT anchor, hundreds of
     // dollars away. Closing a position triggers exactly this rebuild, which is why the
     // equity stepped on a close and stayed there until every wallet had had a WS tick.
-    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, track, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
+    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, _cash: cashSample(_perpAcctVal, positions), _orderMargin, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, track, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
   }
 
   for (let i = 0; i < entries.length; i++) {

@@ -38,8 +38,10 @@ console.log(nl + '-- every dollar figure in the donut carries a $ --')
 // Each of these is a number the reader has to be able to tell from a percentage.
 for (const [what, needle] of [
   ['the total in the centre',        "_prv('$' + fmtUSD(total, 2))"],
-  ['the deployed half of the split', "_prv('$' + fmtUSD(used))"],
-  ['the free half',                  "_prv('$' + fmtUSD(free))"],
+  // The split grew from two categories to four (positions, orders, spot, free) once the
+  // wheel started counting the money it could not previously see, so all four go through
+  // one `part` helper rather than four hand-written spans.
+  ['every half of the split',        "_prv('$' + fmtUSD(v))"],
   ['the total position value',       "_prv('$' + fmtUSD(totalNotional))"],
   ['a hovered slice\'s margin',      "_prv('$' + fmtUSD(s.margin, 2))"],
   ['a hovered slice\'s value',       "_prv('$' + fmtUSD(s.notional, 2))"],
