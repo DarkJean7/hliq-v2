@@ -9,7 +9,8 @@
     "watch": "powershell -ExecutionPolicy Bypass -File watch.ps1",
     "test": "node tests/run.mjs",
     "test:browser": "node tests/browser.mjs",
-    "hl-weight": "node tests/hl-weight.mjs"
+    "hl-weight": "node tests/hl-weight.mjs",
+    "alloc-reconcile": "node tests/alloc-reconcile.mjs"
   },
   "dependencies": {
     "@nktkas/hyperliquid": "^0.32.2",
