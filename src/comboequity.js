@@ -130,6 +130,24 @@ export const ARTIFACT_TOL = 5
  * So each row's total move is compared against its own perp move, and the unexplained part is
  * folded into the anchor instead of being published as a gain. It reaches the headline on the
  * next server snapshot, which is the authority for anything that is not a price move.
+ *
+ * ── and the part of the perp move that was DELIBERATE ──
+ *
+ * src/perpcash.js now catches a spot↔perp transfer as it happens and shifts that row's
+ * `_perpBase` by the same amount, so the row's own accountValue correctly does not move. This
+ * function then saw acct flat against perp up by the transfer, called the difference
+ * unexplained, and folded it into the anchor — which publishes the transfer as a gain, just
+ * with the opposite sign. The two corrections fought, and the transfer reached the headline
+ * anyway.
+ *
+ * Caught in eqstep after the first fix shipped, and reproduced exactly in the unit test:
+ *
+ *     04:38  step +26.48  basis=total  absorbed=-22.13  absorbedBy=0xaa7Ad5
+ *            rowDeltas=[0xaa7A:2.06 …]   — nothing moved 22 dollars
+ *
+ * A negative `absorbed` with nothing on the rows to explain it IS this signature. So a row
+ * carries how much of its perp move was a shift it already accounted for, and only the rest
+ * counts as a perp move here.
  */
 export function reanchor(prev, rows, acctBase) {
   const base = parseFloat(acctBase)
@@ -140,8 +158,12 @@ export function reanchor(prev, rows, acctBase) {
     if (!p) continue
     const acct = parseFloat(r.accountValue), perp = parseFloat(r._perpLive)
     if (![acct, perp, p.acct, p.perp].every(Number.isFinite)) continue
+    // Perp movement this row has NOT already neutralised in its own accountValue. On a
+    // transfer both rise together, so this is zero and there is nothing left to explain.
+    const shift    = (parseFloat(r._perpShift) || 0) - (parseFloat(p.shift) || 0)
+    const perpMove = (perp - p.perp) - shift
     // The part of this wallet's move that its own perp equity does not explain.
-    const gap = (acct - p.acct) - (perp - p.perp)
+    const gap = (acct - p.acct) - perpMove
     if (Math.abs(gap) <= ARTIFACT_TOL) continue
     absorbed += gap
     if (Math.abs(gap) > worstAbs) { worstAbs = Math.abs(gap); worst = { addr: r.addr, gap } }
@@ -149,11 +171,16 @@ export function reanchor(prev, rows, acctBase) {
   return { acctBase: base + absorbed, absorbed, worst }
 }
 
-/** The per-wallet pair the next comparison needs. */
+/** The per-wallet triple the next comparison needs. `shift` is the running total of perp
+ *  movement the row has already neutralised itself, so reanchor can discount it. */
 export function snapshotRows(rows) {
   const m = new Map()
   for (const r of rows ?? []) {
-    m.set(r.addr, { acct: parseFloat(r.accountValue), perp: parseFloat(r._perpLive) })
+    m.set(r.addr, {
+      acct:  parseFloat(r.accountValue),
+      perp:  parseFloat(r._perpLive),
+      shift: parseFloat(r._perpShift) || 0,
+    })
   }
   return m
 }

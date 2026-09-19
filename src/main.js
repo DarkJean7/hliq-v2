@@ -8483,6 +8483,13 @@ function _applyAcctLiveCs(r, cs, hip3Override) {
     // Money moved between this wallet's spot and perp sides. Its total is unchanged, so the
     // anchor moves with it and the row does not budge.
     r._perpBase = (Number.isFinite(parseFloat(r._perpBase)) ? parseFloat(r._perpBase) : perpNow) + _move.delta
+    // Running total of perp movement this row has already cancelled out. The combined
+    // bridge's reanchor() compares each row's total against its perp equity and folds the
+    // unexplained part into the anchor — and without this it sees perp up by the transfer
+    // while the total sat still, calls that unexplained, and publishes the transfer as a
+    // gain with the sign flipped. Monotonic on purpose: reanchor only ever reads the
+    // DIFFERENCE between two consecutive samples of it.
+    r._perpShift = (parseFloat(r._perpShift) || 0) + _move.delta
   } else if (_move.kind === 'trade') {
     // A fill: part realized PnL, part released or posted margin, and one number here. Only
     // HL's own snapshot can separate them, so ask it for this one wallet.
@@ -8918,12 +8925,18 @@ function _combinedServerValue() {
   if (!bridged) return null              // a row hasn't had a live tick yet — don't guess
   const { val, basis } = bridged
   const livePerp = rows.reduce((a, r) => a + (parseFloat(r._perpLive) || 0), 0)
+  // The bridge's ACTUAL input on the 'total' basis, and the one figure the first round of
+  // eqstep records could not be reconciled without: a 50.84 step with four row deltas adding
+  // to -4.57 is either a row the log did not print or a basis that moved, and livePerp cannot
+  // tell those apart.
+  const liveAcct = rows.reduce((a, r) => a + (parseFloat(r.accountValue) || 0), 0)
+  const liveShift = rows.reduce((a, r) => a + (parseFloat(r._perpShift) || 0), 0)
   _comboSrvLast = { val, wallets: rows.length, at: Date.now() }
   // Kept for the step watcher: it must report the halves that produced the number ON
   // SCREEN, not a fresh recomputation that may already disagree with it.
   _comboSrvParts = {
     snapVal: _combinedSnap.accountValue, perpBase: _combinedSnap.perpBase,
-    livePerp, rows: rows.length, wallets: _combinedSnap.wallets,
+    livePerp, liveAcct, liveShift, rows: rows.length, wallets: _combinedSnap.wallets,
     snapAt: Number(_combinedSnap.updatedAt ?? 0), rowsArr: rows,
     basis, acctBase: _combinedSnap.acctBase,
     absorbed: _re.absorbed, absorbedBy: _re.worst ? String(_re.worst.addr).slice(0, 8) : '',
@@ -13570,6 +13583,7 @@ function _comboEqWatch(val, ctx) {
                  `src=${ctx.src} snapMoved=${snapMoved ? 1 : 0}`,
         stack: `basis=${ctx.basis} acctBase=${ctx.acctBase} ` +
                `snapVal=${ctx.snapVal} perpBase=${ctx.perpBase} livePerp=${ctx.livePerp} ` +
+               `liveAcct=${ctx.liveAcct} liveShift=${ctx.liveShift} ` +
                `rows=${ctx.rows} wallets=${ctx.wallets} snapAge=${Math.round(ctx.age / 1000)}s ` +
                `worstWallet=${worstAddr} worstAcctDelta=${worstDelta.toFixed(2)} ` +
                `absorbed=${(ctx.absorbed ?? 0).toFixed(2)} absorbedBy=${ctx.absorbedBy ?? ''} ` +

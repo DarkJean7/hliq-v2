@@ -190,8 +190,7 @@ console.log(nl + '-- the record can tell a swap from a move --')
 
 console.log(nl + '-- it is wired in --')
 {
-  const CLI = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
-  t('main.js imports it', CLI.includes("from './comboequity.js'"))
+  const CLI = fs.readFileSync('src/main.js', 'utf8')
   // Split in two when the snapshot started carrying the row IDENTITIES as well as their sum:
   // the same expression now spans several lines behind a `complete` flag.
   t('the snapshot records what the rows added up to when it was adopted',
@@ -212,6 +211,74 @@ console.log(nl + '-- it is wired in --')
     CLI.includes('const now = parseFloat(r.accountValue)') &&
     CLI.includes('worstAcctDelta=') && CLI.includes('absorbed='))
   t('the reason lives with the code', fs.readFileSync('src/comboequity.js', 'utf8').includes('worstDelta=-240.08'))
+}
+
+console.log(nl + '-- a transfer the row already cancelled is not re-published here --')
+{
+  const CLI = fs.readFileSync('src/main.js', 'utf8')
+  const CEQ = fs.readFileSync('src/comboequity.js', 'utf8')
+  // The two corrections fought. src/perpcash.js catches a spot/perp transfer as it happens
+  // and shifts that row's _perpBase by the same amount, so the row's own accountValue
+  // correctly does not move. reanchor() then saw acct flat against perp up by the transfer,
+  // called the difference unexplained, and folded it into the anchor — which publishes the
+  // transfer as a gain with the sign flipped.
+  //
+  // It is in the live log with the first fix already shipped, and this is the signature: a
+  // NEGATIVE absorbed with nothing on the rows big enough to explain it.
+  //
+  //   04:38  step +26.48  basis=total  absorbed=-22.13  absorbedBy=0xaa7Ad5
+  //          rowDeltas=[0xaa7A:2.06 0x974E:-0.86 0x84Ce:0.59 0x25A2:2.73 0x01A4:0.57]
+  const published = (prevRow, row, base = 1000) => {
+    const re = reanchor(new Map([['0xa', prevRow]]), [row], base)
+    // val = snapVal + (liveAcct - acctBase): lowering the anchor RAISES the headline.
+    return { absorbed: re.absorbed, step: (base - re.acctBase) + (parseFloat(row.accountValue) - prevRow.acct) }
+  }
+
+  let r = published({ acct: 1000, perp: 500, shift: 0 },
+                    { addr: '0xa', accountValue: 1000, _perpLive: 600, _perpShift: 100 })
+  t('a neutralised transfer absorbs nothing', r.absorbed === 0, String(r.absorbed))
+  t('and moves the headline not at all', r.step === 0, String(r.step))
+
+  // Without the shift recorded, this is the bug exactly — kept as the counter-example so the
+  // test says what it is protecting against.
+  r = published({ acct: 1000, perp: 500, shift: 0 },
+                { addr: '0xa', accountValue: 1000, _perpLive: 600 })
+  t('un-shifted, the same move still absorbs (the old behaviour)', r.absorbed === -100, String(r.absorbed))
+
+  // Real profit lives on the perp side and moves both together: nothing to absorb, and the
+  // gain reaches the headline through liveAcct as it should.
+  r = published({ acct: 1000, perp: 500, shift: 0 },
+                { addr: '0xa', accountValue: 1100, _perpLive: 600, _perpShift: 0 })
+  t('real profit is left alone', r.absorbed === 0 && r.step === 100, JSON.stringify(r))
+
+  // A row re-anchored on a fresh snapshot moves its total ALONE — still an artifact, still
+  // absorbed, and the two cancel so the headline holds.
+  r = published({ acct: 1000, perp: 500, shift: 0 },
+                { addr: '0xa', accountValue: 1056, _perpLive: 500, _perpShift: 0 })
+  t('a row re-anchoring is still folded away', r.absorbed === 56 && r.step === 0, JSON.stringify(r))
+
+  // A transfer AND a real move in the same tick: only the transfer is discounted.
+  r = published({ acct: 1000, perp: 500, shift: 0 },
+                { addr: '0xa', accountValue: 1030, _perpLive: 630, _perpShift: 100 })
+  t('a transfer and profit together keep only the profit', r.absorbed === 0 && r.step === 30, JSON.stringify(r))
+
+  t('the shift travels with the row snapshot', CEQ.includes('shift: parseFloat(r._perpShift) || 0'))
+  t('and main.js records it when it shifts the base', CLI.includes("r._perpShift = (parseFloat(r._perpShift) || 0) + _move.delta"))
+  // Monotonic: reanchor only ever reads the difference between two consecutive samples, so
+  // resetting it would look like a transfer in the opposite direction.
+  t('why it is never reset is written down', CLI.includes('Monotonic on purpose'))
+  t('the evidence is filed with the code', CEQ.includes('absorbed=-22.13'))
+}
+
+console.log(nl + '-- and the log can now be reconciled without guessing --')
+{
+  const CLI = fs.readFileSync('src/main.js', 'utf8')
+  // A 50.84 step whose four printed row deltas add to -4.57 is either a row the log did not
+  // print or a basis that moved, and livePerp cannot tell those apart. liveAcct is the
+  // bridge's actual input on the 'total' basis.
+  t('the summed row totals are recorded', CLI.includes('const liveAcct = rows.reduce'))
+  t('and reach the eqstep line', CLI.includes('liveAcct=${ctx.liveAcct}'))
+  t('along with how much of it was deliberate', CLI.includes('liveShift=${ctx.liveShift}'))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
