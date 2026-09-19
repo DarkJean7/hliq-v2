@@ -12732,6 +12732,44 @@ function _mobVSetPfp(addr, dataUrl) {
  * for `authAddr`). It used to be an open POST with the button hidden behind isDev(), which is
  * not the same thing as being closed.
  */
+/**
+ * Sign "this picture is for my address", for an owner with no agent key saved.
+ *
+ * The message is built byte-for-byte the way server.js rebuilds it before calling
+ * ethers.verifyMessage — em dash, newlines, lowercased address and the SAME ts that is
+ * posted. Change one of those and every upload fails verification with nothing on screen
+ * to say why.
+ *
+ * Returns null rather than throwing when there is no wallet, the wallet is a different
+ * address, or the person declines the prompt. Declining is an ordinary answer, not an error.
+ */
+async function _pfpSign(addr, ts) {
+  try {
+    if (!isMainWalletConnected()) return null
+    const me = String(getMainAddress() ?? '').toLowerCase()
+    if (me !== String(addr).toLowerCase()) return null
+    const msg = `Insolvent Trade — set profile picture\naddress: ${String(addr).toLowerCase()}\nts: ${ts}`
+    return await getMainSigner().signMessage(msg)
+  } catch { return null }
+}
+
+/**
+ * The account whose picture the person using this device may set.
+ *
+ * The one they are looking at when they can prove it is theirs, otherwise the wallet they
+ * have connected. Never the combined view or paper, which are not addresses and have no
+ * picture of their own.
+ */
+function _pfpOwnAddr() {
+  const cur = String(state.addr ?? '').toLowerCase()
+  if (/^0x[0-9a-f]{40}$/.test(cur) && _lbOwnsAddr(cur)) return cur
+  try {
+    const me = String(getMainAddress() ?? '').toLowerCase()
+    if (/^0x[0-9a-f]{40}$/.test(me) && isMainWalletConnected()) return me
+  } catch {}
+  return null
+}
+
 async function _pfpUpload(addr, file) {
   const a = String(addr ?? '').toLowerCase()
   if (!/^0x[0-9a-f]{40}$/.test(a) || !file) return { ok: false, error: 'no account' }
@@ -12754,11 +12792,38 @@ async function _pfpUpload(addr, file) {
     reader.readAsDataURL(file)
   })
   if (!dataUrl) return { ok: false, error: 'could not read that image' }
-  const r = await serverFetch('/api/pfp', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    authAddr: a, body: JSON.stringify({ addr: a, dataUrl, ts: Date.now() }),
-  })
-  if (!r?.ok) return { ok: false, error: r?.error || 'upload failed' }
+
+  // Two ways to prove the account is yours, and the server takes either: an agent key
+  // Hyperliquid confirms is approved for it, or a signature from the address itself.
+  //
+  // Only the first was ever sent. So an owner who had connected their wallet but never saved
+  // an agent key — which is most people, since the key is only needed to TRADE from here —
+  // got "bad signature" and no picture, on a feature whose whole point was that everyone can
+  // set one. The agent key goes first because it is silent; the signature costs a tap in the
+  // wallet, so it is the fallback rather than the default.
+  const ts   = Date.now()
+  const body = { addr: a, dataUrl, ts }
+  let r = null
+  if (_agentKeyGet(a)) {
+    r = await serverFetch('/api/pfp', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      authAddr: a, body: JSON.stringify(body),
+    })
+  }
+  if (!r?.ok) {
+    const signature = await _pfpSign(a, ts)
+    if (!signature) return {
+      ok: false,
+      error: r?.error || _T('connect the wallet that owns this account',
+                            'conecta la wallet dueña de esta cuenta'),
+    }
+    const resp = await fetch('/api/pfp', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, signature }),
+    })
+    r = await resp.json().catch(() => ({}))
+    if (!resp.ok || r?.error) return { ok: false, error: r?.error ?? ('HTTP ' + resp.status) }
+  }
   // It exists now: clear the session's "no picture here" mark and repoint every img at it,
   // cache-busted, so the change shows without a reload.
   _pfpForget(a)
@@ -21586,6 +21651,7 @@ function _mobVBuildLbHtml(results, opts = {}) {
         : '')
       + `<button onclick="window.__lbPaperOptOut()" title="Share or hide your paper results" style="${pill}">${localStorage.getItem('hliq_paper_lb_optout') === '1' ? '▶ Share mine' : '⏸ Stop sharing'}</button>`
     : `<button onclick="window.__lbSetMyName()" title="Set your display name (signed by your wallet)" style="${pill}">✏️ My name</button>`
+      + `<button onclick="window.__lbSetMyPic()" title="Set your photo (only the owner of the address can)" style="${pill}">📷 My photo</button>`
 
   // When your connected account isn't on the board (e.g. after removing it), offer an
   // explicit re-add. Auto-join never brings a removed account back on its own.
@@ -33407,6 +33473,7 @@ async function renderLeaderboard() {
       ${_lbDeskModeBar()}
       <div class="lb-count">${results.length} wallet${results.length !== 1 ? 's' : ''}</div>
       ${_lbDeskSortBar()}
+      <button class="btn-sm" onclick="window.__lbSetMyPic()" title="Set your photo (only the owner of the address can)">📷 My photo</button>
       <button class="btn-sm" onclick="renderLeaderboard()">↻ Refresh</button>
     </div>
     <div class="table-wrap">
@@ -33566,6 +33633,24 @@ window.__lbRename = async function(addr) {
   })
 }
 
+/**
+ * Set the photo for whichever account this device can prove it owns.
+ *
+ * The board is where these pictures are looked at, so it is where people go to change one —
+ * the only control before this was a camera button inside the mobile wallet drawer, which
+ * nobody finds, and __lbChangePic had no caller at all.
+ */
+window.__lbSetMyPic = function() {
+  const a = _pfpOwnAddr()
+  if (!a) {
+    alert(_T('Connect the wallet that owns the account — the picture is signed by its owner.',
+             'Conecta la wallet dueña de la cuenta — la foto la firma su dueño.'))
+    try { openWalletPicker() } catch {}
+    return
+  }
+  window.__lbChangePic(a)
+}
+
 window.__lbChangePic = function(addr) {
   const input = document.createElement('input')
   input.type   = 'file'
@@ -33579,7 +33664,10 @@ window.__lbChangePic = function(addr) {
     // Same authenticated path as the mobile picker, and the same canvas pass — this one used
     // to send the raw file, so a phone photo went up at full size with its EXIF intact.
     const r = await _pfpUpload(addr, file)
-    if (!r.ok) alert('Could not set that picture: ' + r.error)
+    if (!r.ok) { alert('Could not set that picture: ' + r.error); return }
+    // The board is the reason to set one, so repaint it rather than waiting for the poll.
+    try { _lbLastFetch = 0; renderLeaderboard() } catch {}
+    try { _paperToast('✓ ' + _T('Profile picture updated', 'Foto de perfil actualizada')) } catch {}
   })
   input.click()
 }

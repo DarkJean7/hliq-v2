@@ -62,6 +62,51 @@ console.log(nl + '-- the image is re-encoded before it leaves the device --')
   t('the leaderboard picker uses it too', grab(cli, 'window.__lbChangePic = function(addr)').includes('_pfpUpload(addr, file)'))
 }
 
+console.log(nl + '-- an owner with no agent key can still set one --')
+{
+  // The server always took either proof: an agent key Hyperliquid confirms for the address,
+  // or a signature from the address itself. The client only ever sent the first, so an owner
+  // who had connected their wallet but never saved an agent key — most people, since the key
+  // is only needed to TRADE from here — got "bad signature" and no picture. On a feature
+  // whose whole point is that everyone can set one.
+  const u = grab(cli, 'async function _pfpUpload(addr, file)')
+  t('the silent proof is tried first', u.includes('if (_agentKeyGet(a))'))
+  t('and a signature is the fallback, not the default', u.includes('const signature = await _pfpSign(a, ts)'))
+  t('the signed request goes unauthenticated, since the signature IS the auth',
+    u.includes("fetch('/api/pfp'") && u.includes('...body, signature'))
+  // The ts that is signed has to be the ts that is sent, or the server rebuilds a different
+  // message and every upload fails verification with nothing on screen to say why.
+  t('one timestamp, signed and sent', u.includes('const ts   = Date.now()') && u.includes('const body = { addr: a, dataUrl, ts }'))
+  t('declining the wallet prompt is not an error', cli.includes('Declining is an ordinary answer, not an error.'))
+
+  const sg = grab(cli, 'async function _pfpSign(addr, ts)')
+  t('it refuses to sign for another address', sg.includes('if (me !== String(addr).toLowerCase()) return null'))
+  t('and needs a connected wallet at all', sg.includes('if (!isMainWalletConnected()) return null'))
+  // Byte-for-byte what server.js rebuilds before ethers.verifyMessage.
+  t('the message matches the one the server verifies',
+    sg.includes('Insolvent Trade — set profile picture') && sg.includes('address: ${String(addr).toLowerCase()}') && sg.includes('ts: ${ts}'))
+  t('and the server builds exactly that', srv.includes('Insolvent Trade — set profile picture'))
+}
+
+console.log(nl + '-- and there is a way in where the picture is seen --')
+{
+  // __lbChangePic had NO caller. The only control was a camera button inside the mobile
+  // wallet drawer, which nobody finds — so "let everyone change their profile image" was
+  // true in the code and false on the screen.
+  t('the board offers it', cli.includes("window.__lbSetMyPic()"))
+  t('on the mobile board', cli.includes('📷 My photo</button>'))
+  t('and on the desktop one', /_lbDeskSortBar\(\)[\s\S]{0,200}__lbSetMyPic/.test(cli))
+  const pick = grab(cli, 'window.__lbSetMyPic = function()')
+  t('it resolves whose picture it may set', pick.includes('const a = _pfpOwnAddr()'))
+  t('and says so plainly when it cannot', pick.includes('the picture is signed by its owner'))
+
+  const own = grab(cli, 'function _pfpOwnAddr()')
+  t('the account in view counts when it can be proved', own.includes('_lbOwnsAddr(cur)'))
+  t('otherwise the connected wallet', own.includes('isMainWalletConnected()'))
+  // __all_accounts__ and the paper sentinel are not addresses and have no picture.
+  t('and never a sentinel', own.includes('/^0x[0-9a-f]{40}$/.test(cur)'))
+}
+
 console.log(nl + '-- the write is authenticated, the read is not --')
 {
   const route = srv.slice(srv.indexOf("path === '/api/pfp'"), srv.indexOf("path === '/api/leaderboard/name'"))
