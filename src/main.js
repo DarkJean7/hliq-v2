@@ -247,6 +247,7 @@ import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey } from './
 import { cashSample, classifyCashMove } from './perpcash.js'
 import { orderMarginByCoin, spotByCoin, SLICE_DUST } from './alloc.js'
 import { hlBudget as _hlBudget, meterTransport, weightOf as _hlWeightOf } from './hlbudget.js'
+import { holdingStart, fmtHeld, fmtWhen } from './holding.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
 import { trackRecord, isSmallSample, openLossOf } from './trackrecord.js'
@@ -12471,6 +12472,48 @@ function _spotMid(coin) {
   return (key && num(mids[key])) || num(mids[coin])
 }
 
+/**
+ * Every name a spot coin answers to.
+ *
+ * Balances are keyed by TOKEN NAME ("KNTQ"), fills by PAIR ("@334"). Reading one with the
+ * other is the mismatch that has taken the Spot tab down twice, so the lookup is written once
+ * here and both sides are handed to the matcher rather than either being guessed.
+ */
+function _spotCoinKeys(coin) {
+  const c = String(coin ?? '')
+  const keys = [c]
+  const pair = _watchSpotKeyMap?.[c] ?? _watchSpotKeyMap?.[c + '/USDC']
+  if (pair) keys.push(pair)
+  if (/^@\d+$/.test(c)) { const nm = _watchSpotNameMap?.[c]; if (nm) keys.push(nm, String(nm).split('/')[0]) }
+  return keys
+}
+
+/**
+ * "3d 4h · since 15 Sep 2026", or null when the fills cannot say.
+ *
+ * `≥` when the balance is larger than the fills can account for: the rest was transferred in,
+ * or this device has not walked far enough back, and either way the holding is OLDER than the
+ * date shown. A confident wrong date is worse than an honest "at least".
+ *
+ * In the combined view `fills` is every wallet's, merged — so for a coin held on two accounts
+ * this is the earliest run still open across them, which is what "how long have I held this"
+ * means when the card is about the group.
+ */
+function _spotHeldTxt(coin, size, fills = state.fills) {
+  const h = holdingStart(fills, _spotCoinKeys(coin), size)
+  if (!h.since) return null
+  return (h.exact ? '' : '≥ ') + fmtHeld(Date.now() - h.since) + ' · ' + _T('since', 'desde') + ' ' + fmtWhen(h.since)
+}
+
+/** When it was last added to — different from when the holding began, and worth saying on a
+ *  position someone has been averaging into. Null when it is the same day as the start. */
+function _spotLastBuyTxt(coin, size, fills = state.fills) {
+  const h = holdingStart(fills, _spotCoinKeys(coin), size)
+  if (!h.lastBuy || !h.since) return null
+  if (h.lastBuy - h.since < 86400000) return null
+  return fmtWhen(h.lastBuy) + ' · ' + fmtHeld(Date.now() - h.lastBuy) + ' ' + _T('ago', 'atrás')
+}
+
 function _mobVCoinIcon(coin) {
   return `<div class="mob-v-row-icon" style="padding:0;overflow:hidden;background:var(--panel-2)">${_coinIconHtml(coin)}</div>`
 }
@@ -18806,6 +18849,11 @@ function _mobVRenderContent(tick = false) {
             ['Profit', `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}`, pnl >= 0 ? 'var(--green)' : 'var(--red)'],
             ['ROI', `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`, roi >= 0 ? 'var(--green)' : 'var(--red)'],
           ]),
+          // When this holding began, and when it was last added to. A balance says what you
+          // have and never since when, and +20% over a week is a different fact from +20%
+          // over four months.
+          ...(() => { const h = _spotHeldTxt(b.coin, total); return h ? [['Held', h]] : [] })(),
+          ...(() => { const l = _spotLastBuyTxt(b.coin, total); return l ? [['Last bought', l]] : [] })(),
           ['Available', fmtSize(avail) + ' ' + esc(_ocCoinLabel(b.coin))],
           ['In Orders', hold > 0 ? fmtSize(hold) + ' ' + esc(_ocCoinLabel(b.coin)) : '—'],
           ['Price', px > 0 ? '$' + fmtPrice(px) : '—'],
@@ -18997,6 +19045,10 @@ function _mobVRenderContent(tick = false) {
               ['Profit', `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}`, pnl >= 0 ? 'var(--green)' : 'var(--red)'],
               ['ROI', `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`, roi >= 0 ? 'var(--green)' : 'var(--red)'],
             ]),
+            // The combined view's copy. state.fills here is every wallet's, merged, so for a
+            // coin held on two accounts this is the earliest run still open across them.
+            ...(() => { const h = _spotHeldTxt(coin, total); return h ? [['Held', h]] : [] })(),
+            ...(() => { const l = _spotLastBuyTxt(coin, total); return l ? [['Last bought', l]] : [] })(),
           ]) : ''}${subRows}</div>
       </div>`
     }
@@ -37322,32 +37374,37 @@ window.__chalClaim = async function() {
  * "holding" row for it would be the same dollars twice. Outcome shares have their own tab.
  */
 window.__ovSpotHoldings = function() {
-  const out = (state.spotState?.balances ?? [])
-    .filter(b => b.coin !== 'USDC' && !_lbIsOutcome(b.coin) && parseFloat(b.total ?? 0) > 0)
+  const keep = (b) => !_lbIsOutcome(b.coin) && parseFloat(b.total ?? 0) > 0
+  const out = (state.spotState?.balances ?? []).filter(keep)
   if (state.isAllAccounts) {
     const hidden = _maHiddenLoad()
     for (const r of (_allAcctLastResults ?? [])) {
       if (r.error || hidden.has(r.addr)) continue
       const label = r.label || (r.addr.slice(0, 6) + '…')
       for (const b of (r.spotBalances ?? [])) {
-        if (b.coin === 'USDC' || _lbIsOutcome(b.coin) || !(parseFloat(b.total ?? 0) > 0)) continue
+        if (!keep(b)) continue
         out.push({ ...b, _acct: label, _acctAddr: r.addr })
       }
     }
   }
-  // One row per token, so the same coin on five wallets reads as one holding with the
-  // accounts named on it — the way the positions table already groups.
+  // One row per token, so the same coin on eight wallets reads as one holding you can open —
+  // which is how mobile has always shown it.
   const by = new Map()
   for (const b of out) {
-    const cur = by.get(b.coin) ?? { coin: b.coin, total: 0, hold: 0, entryNtl: 0, accts: new Set() }
+    const cur = by.get(b.coin) ?? { coin: b.coin, total: 0, hold: 0, entryNtl: 0, parts: [] }
     cur.total    += parseFloat(b.total ?? 0)
     cur.hold     += parseFloat(b.hold ?? 0)
     cur.entryNtl += parseFloat(b.entryNtl ?? 0)
-    if (b._acct) cur.accts.add(b._acct)
+    cur.parts.push({ acct: b._acct ?? null, total: parseFloat(b.total ?? 0), hold: parseFloat(b.hold ?? 0) })
     by.set(b.coin, cur)
   }
   return [...by.values()]
-    .map(h => { const px = _spotMid(h.coin); return { ...h, px, usd: px > 0 ? h.total * px : 0 } })
+    .map(h => {
+      // USDC is the quote asset: it is worth its face value and never has a market price.
+      const px  = h.coin === 'USDC' ? 1 : _spotMid(h.coin)
+      const usd = px > 0 ? h.total * px : 0
+      return { ...h, px, usd, parts: h.parts.sort((a, b) => b.total - a.total) }
+    })
     .sort((a, b) => b.usd - a.usd)
 }
 
@@ -37355,26 +37412,59 @@ window.__ovBuildSpotBody = function() {
   const rows = window.__ovSpotHoldings()
   if (!rows.length) return '<div class="ov-empty">No spot holdings</div>'
   const head = `<div class="ov-ord-head ov-spot-row"><span>Token</span><span class="ov-r">Price</span><span class="ov-r">Balance</span><span class="ov-r">Value</span><span class="ov-r">PnL</span></div>`
-  const body = rows.map(h => {
-    // entryNtl is HL's cost basis. It is 0 for anything transferred in rather than bought, and
-    // a 0 basis is not a 100% gain — those rows show no PnL at all rather than a fiction.
+  const body = rows.map((h, i) => {
+    // entryNtl is HL's cost basis. It is 0 for USDC (the quote asset never has one) and for
+    // anything transferred in rather than bought, and a 0 basis is not a 100% gain — those
+    // rows show no PnL at all rather than a fiction.
     const known = h.entryNtl > 0 && h.usd > 0
     const pnl   = known ? h.usd - h.entryNtl : null
     const roi   = known ? (pnl / h.entryNtl) * 100 : null
     const cls   = (pnl ?? 0) >= 0 ? 'pos' : 'neg'
     const avail = h.total - h.hold
-    const acct  = h.accts.size ? `<i style="color:var(--accent)">${esc([...h.accts].join(', '))}</i>` : ''
-    return `<div class="ov-ord-row ov-spot-row">
-      <span class="ov-pos-mkt"><div class="ov-av-img">${_coinIconHtml(h.coin)}</div><span class="ov-pos-info"><b>${esc(_ocCoinLabel(h.coin))}</b>${acct}</span></span>
-      <span class="ov-r mono">${h.px > 0 ? '$' + fmtPrice(h.px) : '—'}</span>
-      <span class="ov-r mono">${_prv(fmtSize(h.total))}${h.hold > 0 ? `<i style="display:block;font-size:10px;color:var(--muted)">${_prv(fmtSize(avail))} free</i>` : ''}</span>
-      <span class="ov-r mono">${h.usd > 0 ? _prv('$' + fmtUSD(h.usd)) : '—'}</span>
-      <span class="ov-r mono ${known ? cls : ''}">${known
-        ? `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} · ${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%`
-        : '—'}</span>
+    const id    = 'ovsp-' + i
+    const accts = h.parts.filter(p => p.acct).length
+    const sub   = accts > 1 ? `<i>×${accts} accounts</i>`
+                : h.parts[0]?.acct ? `<i style="color:var(--accent)">${esc(h.parts[0].acct)}</i>` : ''
+    const held  = _spotHeldTxt(h.coin, h.total)
+    const last  = _spotLastBuyTxt(h.coin, h.total)
+
+    // Per-account rows, and the dates — the same facts the mobile card opens to. Shown on a
+    // press rather than in the grid, because eight wallets of USDC is a list, not a cell.
+    const detail = (h.parts.some(p => p.acct) || held || h.entryNtl > 0) ? `
+      <div class="ov-oc-close" id="ovspd-${id}" style="display:none">
+        <div class="ov-spot-facts">
+          ${h.entryNtl > 0 ? `<span><i>Cost</i>${_prv('$' + fmtUSD(h.entryNtl))}</span>` : ''}
+          ${h.entryNtl > 0 && h.total > 0 ? `<span><i>Avg buy</i>$${fmtPrice(h.entryNtl / h.total)}</span>` : ''}
+          ${held ? `<span><i>Held</i>${esc(held)}</span>` : ''}
+          ${last ? `<span><i>Last bought</i>${esc(last)}</span>` : ''}
+          ${h.hold > 0 ? `<span><i>In orders</i>${_prv(fmtSize(h.hold))}</span>` : ''}
+        </div>
+        ${h.parts.some(p => p.acct) ? h.parts.map(p => `
+          <div class="ov-spot-acct">
+            <span style="color:var(--accent)">${esc(p.acct ?? '—')}</span>
+            <span class="mono">${_prv(fmtSize(p.total))} ${esc(_ocCoinLabel(h.coin))}</span>
+            <span class="mono" style="color:var(--muted)">${p.hold > 0 ? _prv(fmtSize(p.total - p.hold)) + ' free' : 'all free'}</span>
+          </div>`).join('') : ''}
+      </div>` : ''
+
+    return `<div class="ov-oc-item">
+      <div class="ov-ord-row ov-spot-row" style="cursor:${detail ? 'pointer' : 'default'}" ${detail ? `onclick="window.__ovToggleSpot('${id}')"` : ''}>
+        <span class="ov-pos-mkt"><div class="ov-av-img">${_coinIconHtml(h.coin)}</div><span class="ov-pos-info"><b>${esc(_ocCoinLabel(h.coin))}</b>${sub}</span></span>
+        <span class="ov-r mono">${h.px > 0 ? '$' + fmtPrice(h.px) : '—'}</span>
+        <span class="ov-r mono">${_prv(fmtSize(h.total))}${h.hold > 0 ? `<i style="display:block;font-size:10px;color:var(--muted)">${_prv(fmtSize(avail))} free</i>` : ''}</span>
+        <span class="ov-r mono">${h.usd > 0 ? _prv('$' + fmtUSD(h.usd)) : '—'}</span>
+        <span class="ov-r mono ${known ? cls : ''}">${known
+          ? `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} · ${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%`
+          : '—'}</span>
+      </div>
+      ${detail}
     </div>`
   }).join('')
   return `${head}<div class="ov-pos-scroll">${body}</div>`
+}
+window.__ovToggleSpot = function(id) {
+  const el = document.getElementById('ovspd-' + id)
+  if (el) el.style.display = el.style.display === 'none' ? '' : 'none'
 }
 
 window.__ovOutcomeHoldings = function() {

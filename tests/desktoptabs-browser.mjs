@@ -63,7 +63,11 @@ const CTX = { funding: '0', openInterest: '0', prevDayPx: '100', dayNtlVlm: '0',
 const HL = {
   clearinghouseState: STATE, spotClearinghouseState: SPOT,
   allMids: { BTC: '100000', SOL: '100', '@107': '75', '@334': '0.20' },
-  frontendOpenOrders: [], userFills: [], userFillsByTime: [], userFunding: [],
+  // Two HYPE bought in one go eleven days ago, on the @107 pair — balances are keyed by token
+  // name and fills by pair id, so this also proves the mapping.
+  frontendOpenOrders: [],
+  userFills: [{ coin: '@107', dir: 'Buy', sz: '2', px: '50', time: Date.now() - 11 * 86400000, closedPnl: '0', fee: '0', oid: 1, tid: 1, hash: '0x0' }],
+  userFillsByTime: [], userFunding: [],
   userNonFundingLedgerUpdates: [], subAccounts: [], candleSnapshot: [], extraAgents: [],
   allPerpMetas: [], outcomeMeta: {},
   portfolio: ['day', 'week', 'month', 'allTime'].map(w => [w, WINDOW]),
@@ -126,15 +130,17 @@ console.log(NL + '-- desktop has a Spot tab, like mobile --')
   }), true)
   const count = await p.evaluate(() =>
     document.querySelector('.ov-postab[data-pt="spot"] .count-pill')?.textContent)
-  // HYPE and KNTQ. USDC is cash and is the Free margin figure everywhere else, so a holding
-  // row for it would be the same dollars twice.
-  t('and counts the tokens, not the cash', count, '2')
+  // USDC, HYPE and KNTQ. Mobile lists USDC here and desktop left it out — the tab is a
+  // holdings list, not a partition of equity, so excluding it just lost a balance. (The
+  // allocation wheel is the one place it must stay out of, where it IS the Free margin
+  // bucket and a second slice would be the same dollars twice.)
+  t('and counts every balance, USDC included', count, '3')
 
   await p.evaluate(() => window.__ovSetPosTab('spot'))
   await p.waitForTimeout(400)
   const rows = await p.evaluate(() => [...document.querySelectorAll('#ovPosBody .ov-spot-row')]
     .slice(1).map(r => r.innerText.replace(/\s+/g, ' ')))
-  t('one row per token', rows.length, 2)
+  t('one row per balance', rows.length, 3)
   const hype = rows.find(r => /HYPE/.test(r)) ?? ''
   const kntq = rows.find(r => /KNTQ/.test(r)) ?? ''
   // 2 HYPE at the @107 pair mid of $75 = $150, bought for $100.
@@ -143,7 +149,11 @@ console.log(NL + '-- desktop has a Spot tab, like mobile --')
   t('with PnL against its cost basis', /\+\$50\.00/.test(hype) && /\+50\.0%/.test(hype), true)
   // entryNtl 0 means it was transferred in, not bought. A 0 basis is not a 100% gain.
   t('and no invented PnL where there is no cost basis', /—/.test(kntq), true)
-  t('USDC is not a holding row', rows.some(r => /USDC/.test(r)), false)
+  t('USDC is listed, the way mobile lists it', rows.some(r => /USDC/.test(r)), true)
+  // The quote asset is worth its face value and has no market price to look up.
+  t('and is priced at par', /\$1\.00 /.test(rows.find(r => /USDC/.test(r)) ?? ''), true)
+  t('with no invented PnL, since cash has no cost basis',
+    /—/.test(rows.find(r => /USDC/.test(r)) ?? ''), true)
   // Neither "Close all" nor "Cancel all" means anything on a list of holdings.
   t('the bulk action is hidden', await p.evaluate(() =>
     document.getElementById('ovPosAction')?.style.display), 'none')

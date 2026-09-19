@@ -5961,6 +5961,11 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 /* Spot: token, price, balance, value, PnL. No action column — a holding has nothing to
    close, and leaving an empty one just pushes the numbers off centre. */
 .ov-ord-head.ov-spot-row, .ov-ord-row.ov-spot-row { grid-template-columns: 2fr 1fr 1.2fr 1.1fr 1.4fr; }
+.ov-spot-facts { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 8px 4px 6px 40px; }
+.ov-spot-facts span { display: flex; flex-direction: column; font-size: 12px; font-family: var(--font-mono); }
+.ov-spot-facts i { font-style: normal; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-family: var(--font); }
+.ov-spot-acct { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 8px; padding: 5px 4px 5px 40px; font-size: 12px; border-top: 1px solid var(--border); }
+.ov-spot-acct .mono { text-align: right; }
 .ov-oc-item { border-bottom: 1px solid var(--border); }
 .ov-oc-row { cursor: pointer; border-bottom: none; }
 .ov-oc-row:hover { background: var(--panel-2); }
