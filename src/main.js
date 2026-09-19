@@ -3851,21 +3851,45 @@ function _allocSizeTxt(s) {
 
 // Hover/tap state for the allocation wheel: the slice list plus the default centre readout to
 // restore when nothing is highlighted.
-let _allocSlices = [], _allocCenterHtml = ''
-const _ALLOC_SW = 18, _ALLOC_SW_HI = 26
+let _allocSlices = [], _allocItemsFlat = [], _allocCenterHtml = '', _allocTotal = 0
+// Two rings. The OUTER one is where the money is — positions, orders, spot, cash — and the
+// INNER one breaks each of those into the assets inside it, sitting directly under its own
+// bucket's arc. Asked for as "keep the ring divisions like it currently has but inside those
+// divisions add the assets divisions", which is the bucket view and the old per-coin view at
+// once rather than a choice between them.
+//
+// Thinner than the single ring was, and closer together, because the hole they leave has to
+// hold the centre readout.
+const _ALLOC_SW = 14, _ALLOC_SW_HI = 19      // outer: the buckets
+const _ALLOC_IW = 8,  _ALLOC_IW_HI = 12      // inner: the assets
+const _ALLOC_RING_GAP = 3
+const _allocItemColor = (it, g) => it.unattributed ? _allocGroupColor(g) : _coinColor(it.coin)
+
+// Dim everything except the arcs belonging to one bucket. Shared by both hovers: hovering an
+// ASSET still lights its bucket, because the question "what is this a slice of" is the one
+// the inner ring would otherwise leave unanswered.
+function _allocDim(groupIdx, itemIdx) {
+  document.querySelectorAll('[data-alloc-arc]').forEach(a => {
+    const on = a.dataset.allocArc === String(groupIdx)
+    a.setAttribute('stroke-width', String(on ? _ALLOC_SW_HI : _ALLOC_SW))
+    a.style.opacity = on ? '1' : '0.3'
+  })
+  document.querySelectorAll('[data-alloc-iarc]').forEach(a => {
+    const mine = a.dataset.allocGi === String(groupIdx)
+    const on   = itemIdx != null ? a.dataset.allocIarc === String(itemIdx) : mine
+    a.setAttribute('stroke-width', String(on ? _ALLOC_IW_HI : _ALLOC_IW))
+    a.style.opacity = on ? '1' : (mine ? '0.55' : '0.2')
+  })
+  document.querySelectorAll('[data-alloc-row]').forEach(r => {
+    r.style.background = r.dataset.allocRow === String(groupIdx) ? 'var(--panel-2)' : ''
+  })
+}
 
 // Highlight one bucket: thicken its arc, dim the rest, and swap the centre to its numbers.
 window.__allocHover = function(i) {
   const g = _allocSlices[i]
   if (!g) return
-  document.querySelectorAll('[data-alloc-arc]').forEach(a => {
-    const on = a.dataset.allocArc === String(i)
-    a.setAttribute('stroke-width', String(on ? _ALLOC_SW_HI : _ALLOC_SW))
-    a.style.opacity = on ? '1' : '0.35'
-  })
-  document.querySelectorAll('[data-alloc-row]').forEach(r => {
-    r.style.background = r.dataset.allocRow === String(i) ? 'var(--panel-2)' : ''
-  })
+  _allocDim(i, null)
   const c = document.getElementById('allocCenter')
   if (!c) return
   // The biggest few things inside the bucket, so the centre answers "of what" without
@@ -3884,10 +3908,35 @@ window.__allocHover = function(i) {
     ${top ? `<div style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.35">${top}</div>` : ''}`
 }
 
+// Highlight one ASSET on the inner ring, and say which bucket it sits in.
+window.__allocHoverItem = function(k) {
+  const e = _allocItemsFlat[k]
+  if (!e) return
+  const { it, g, gi } = e
+  _allocDim(gi, k)
+  const c = document.getElementById('allocCenter')
+  if (!c) return
+  const pct = (it.margin / (_allocTotal || 1)) * 100
+  const sz  = _allocSizeTxt(it)
+  c.innerHTML = `
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+      <span style="width:9px;height:9px;border-radius:3px;background:${_allocItemColor(it, g)}"></span>
+      <span style="font-size:13px;font-weight:700;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_allocItemLabel(it))}</span>
+    </div>
+    <div style="font-size:24px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv('$' + fmtUSD(it.margin, 2))}</div>
+    <div style="font-size:12px;color:var(--muted)">${pct.toFixed(1)}% ${_T('of equity', 'del patrimonio')}</div>
+    <div style="font-size:12px;color:${_allocGroupColor(g)}">${esc(_allocGroupLabel(g))}</div>
+    ${sz ? `<div style="font-size:11px;color:var(--muted)">${_prv(sz)}</div>` : ''}`
+}
+
 // Back to the totals view.
 window.__allocLeave = function() {
   document.querySelectorAll('[data-alloc-arc]').forEach(a => {
     a.setAttribute('stroke-width', String(_ALLOC_SW))
+    a.style.opacity = '1'
+  })
+  document.querySelectorAll('[data-alloc-iarc]').forEach(a => {
+    a.setAttribute('stroke-width', String(_ALLOC_IW))
     a.style.opacity = '1'
   })
   document.querySelectorAll('[data-alloc-row]').forEach(r => { r.style.background = '' })
@@ -3897,7 +3946,11 @@ window.__allocLeave = function() {
 
 // Open or close one bucket's asset list. Kept in the module rather than in
 // _mobVExpandedIds so a repaint (every 5s) cannot forget what the reader opened.
-const _allocOpen = new Set(['orders'])
+//
+// Starts with everything CLOSED. Orders was pre-opened when the bucket was new, to make the
+// money that had been missing obvious — but a panel that decides for you which section is
+// expanded is just a panel you have to collapse every time you open it.
+const _allocOpen = new Set()
 window.__allocToggleGroup = function(kind) {
   if (_allocOpen.has(kind)) _allocOpen.delete(kind); else _allocOpen.add(kind)
   _allocRepaint()
@@ -3916,69 +3969,113 @@ function _mobVRenderAllocation(el) {
 
   // Cache each bucket's share so the hover readout doesn't recompute it.
   _allocSlices = groups.map(g => ({ ...g, pct: (g.value / total) * 100 }))
+  _allocTotal  = total
+  // Every asset, flattened in bucket order, so the inner ring tiles continuously and each
+  // asset sits under the arc of the bucket it belongs to.
+  _allocItemsFlat = []
+  _allocSlices.forEach((g, gi) => { for (const it of g.items) _allocItemsFlat.push({ it, g, gi }) })
 
   // Donut geometry. Segments are drawn as dashed arcs on stacked circles: each gets a dash of
   // its own arc length, offset by everything before it, with a small gap so slices read apart.
   // The radius leaves room for the thicker highlighted stroke so it can't clip at the edge.
-  const SIZE = 260, R = (SIZE - _ALLOC_SW_HI) / 2 - 4, CX = SIZE / 2, C = 2 * Math.PI * R
-  const GAP  = _allocSlices.length > 1 ? Math.min(6, C * 0.012) : 0
+  const SIZE = 260, CX = SIZE / 2
+  const R_OUT = (SIZE - _ALLOC_SW_HI) / 2 - 4
+  const R_IN  = R_OUT - (_ALLOC_SW / 2 + _ALLOC_RING_GAP + _ALLOC_IW / 2)
+  const C_OUT = 2 * Math.PI * R_OUT
+  const C_IN  = 2 * Math.PI * R_IN
+
   // Each slice is drawn twice: the visible arc (whose width animates on highlight) and an
   // invisible, FIXED-width hit band on top. Hit-testing the visible arc directly caused a
   // feedback loop — growing it moved its edge past the cursor, firing mouseleave, which shrank
   // it and re-fired mouseenter, so the highlight flickered and stuck. The hit band never
   // changes size, so the pointer target is stable.
-  const HIT = _ALLOC_SW_HI + 8
-  let acc = 0
-  const geo = _allocSlices.map(g => {
-    const frac = g.value / total
-    const len  = Math.max(1, frac * C - GAP)
-    const off  = -acc
-    acc += frac * C
-    return { g, dash: `${len.toFixed(2)} ${(C - len).toFixed(2)}`, off: off.toFixed(2) }
-  })
-  const arcs = geo.map((x, i) =>
-    `<circle data-alloc-arc="${i}" cx="${CX}" cy="${CX}" r="${R}" fill="none"
-      stroke="${_allocGroupColor(x.g)}" stroke-width="${_ALLOC_SW}"
-      stroke-dasharray="${x.dash}" stroke-dashoffset="${x.off}"
+  //
+  // With two rings the bands must not overlap either, or the inner one swallows the outer's
+  // edge and the bucket becomes unhoverable. Each is capped at the gap between them.
+  const BAND    = _ALLOC_SW + _ALLOC_RING_GAP * 2
+  const BAND_IN = _ALLOC_IW + _ALLOC_RING_GAP * 2
+
+  const arcsFrom = (entries, C, gap) => {
+    let acc = 0
+    return entries.map(e => {
+      const frac = e.value / total
+      const len  = Math.max(0.6, frac * C - gap)
+      const off  = -acc
+      acc += frac * C
+      return { ...e, dash: `${len.toFixed(2)} ${(C - len).toFixed(2)}`, off: off.toFixed(2) }
+    })
+  }
+
+  const GAP_OUT = _allocSlices.length > 1 ? Math.min(6, C_OUT * 0.012) : 0
+  const geoOut = arcsFrom(_allocSlices.map(g => ({ g, value: g.value })), C_OUT, GAP_OUT)
+
+  // The inner ring walks the SAME circle in the same order, so an asset's arc lies under its
+  // bucket's. Cash contributes nothing to it — it has no assets, and drawing a band there
+  // would invent one. Its share of the circumference is simply skipped.
+  const GAP_IN = _allocItemsFlat.length > 1 ? Math.min(3, C_IN * 0.006) : 0
+  let accIn = 0
+  const geoIn = []
+  for (const g of _allocSlices) {
+    for (const it of g.items) {
+      const frac = it.margin / total
+      const len  = Math.max(0.6, frac * C_IN - GAP_IN)
+      geoIn.push({ it, g, dash: `${len.toFixed(2)} ${(C_IN - len).toFixed(2)}`, off: (-accIn).toFixed(2) })
+      accIn += frac * C_IN
+    }
+    // Skip past a bucket with nothing inside it (cash), so the next bucket's assets still
+    // start under the right arc.
+    if (!g.items.length) accIn += (g.value / total) * C_IN
+  }
+
+  const ring = (i, r, sw, dash, off, color, attr) =>
+    `<circle ${attr}="${i}" cx="${CX}" cy="${CX}" r="${r}" fill="none"
+      stroke="${color}" stroke-width="${sw}"
+      stroke-dasharray="${dash}" stroke-dashoffset="${off}"
       transform="rotate(-90 ${CX} ${CX})" stroke-linecap="butt"
       style="pointer-events:none;transition:stroke-width .12s ease,opacity .12s ease"></circle>`
-  ).join('')
-  // pointer-events="stroke" makes a transparent stroke hit-testable (visiblePainted wouldn't).
-  const hits = geo.map((x, i) =>
-    `<circle data-alloc-hit="${i}" cx="${CX}" cy="${CX}" r="${R}" fill="none"
-      stroke="transparent" stroke-width="${HIT}" pointer-events="stroke"
-      stroke-dasharray="${x.dash}" stroke-dashoffset="${x.off}"
+  const hit = (r, band, dash, off, attrs) =>
+    `<circle ${attrs} cx="${CX}" cy="${CX}" r="${r}" fill="none"
+      stroke="transparent" stroke-width="${band}" pointer-events="stroke"
+      stroke-dasharray="${dash}" stroke-dashoffset="${off}"
       transform="rotate(-90 ${CX} ${CX})" stroke-linecap="butt" style="cursor:pointer"></circle>`
-  ).join('')
+
+  const arcs = geoOut.map((x, i) => ring(i, R_OUT, _ALLOC_SW, x.dash, x.off, _allocGroupColor(x.g), 'data-alloc-arc')).join('')
+  const iarcs = geoIn.map((x, k) =>
+    `<circle data-alloc-iarc="${k}" data-alloc-gi="${_allocItemsFlat[k].gi}" cx="${CX}" cy="${CX}" r="${R_IN}" fill="none"
+      stroke="${_allocItemColor(x.it, x.g)}" stroke-width="${_ALLOC_IW}"
+      stroke-dasharray="${x.dash}" stroke-dashoffset="${x.off}"
+      transform="rotate(-90 ${CX} ${CX})" stroke-linecap="butt"
+      style="pointer-events:none;transition:stroke-width .12s ease,opacity .12s ease"></circle>`).join('')
+  // pointer-events="stroke" makes a transparent stroke hit-testable (visiblePainted wouldn't).
+  const hits  = geoOut.map((x, i) => hit(R_OUT, BAND, x.dash, x.off, `data-alloc-hit="${i}"`)).join('')
+  const ihits = geoIn.map((x, k) => hit(R_IN, BAND_IN, x.dash, x.off, `data-alloc-ihit="${k}"`)).join('')
 
   const totalNotional = (groups.find(g => g.kind === 'positions')?.items ?? [])
     .reduce((s, x) => s + x.notional, 0)
   const assetCount    = (groups.find(g => g.kind === 'positions')?.items ?? []).length
   // The ring totals every place the account's money can be — positions, resting orders, spot
-  // tokens and cash — so it reads as the account's equity and the headline says so. It said
-  // TOTAL MARGIN over $2,737.75 while the same account showed $6,800 of equity, because the
-  // two categories it could see were the only two it counted.
+  // tokens and cash — so it reads as the account's equity and the headline says so.
   //
-  // Each part of the split is dropped when it is zero, so an account with no orders and no
-  // spot gets exactly the two lines it used to.
-  const part = (v, en, es) => v > SLICE_DUST ? `${_prv('$' + fmtUSD(v))} ${_T(en, es)}` : ''
-  const line = (...bits) => { const b = bits.filter(Boolean); return b.length ? `<div style="font-size:11.5px;color:var(--muted)">${b.join(' · ')}</div>` : '' }
+  // The four figures are NOT repeated here any more. They were, and at five lines the block
+  // outgrew the hole: "$2,776.04 in orders" wrapped and the last line ran under the ring. They
+  // are on the four cards immediately below, each with its share, which is where a number you
+  // want to read rather than glance at belongs.
   _allocCenterHtml = `
     <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${_T('Total equity', 'Patrimonio total')}</div>
-    <div style="font-size:28px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv('$' + fmtUSD(total, 2))}</div>
-    ${line(part(used, 'in positions', 'en posiciones'), part(orders, 'in orders', 'en órdenes'))}
-    ${line(part(spot, 'spot', 'spot'), part(free, 'free', 'libre'))}
-    ${assetCount ? `<div style="font-size:11.5px;color:var(--muted)">${assetCount} asset${assetCount === 1 ? '' : 's'} · ${_prv('$' + fmtUSD(totalNotional))} position value</div>` : ''}`
+    <div style="font-size:27px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv('$' + fmtUSD(total, 2))}</div>
+    ${assetCount ? `<div style="font-size:11.5px;color:var(--muted)">${assetCount} asset${assetCount === 1 ? '' : 's'} · ${_prv('$' + fmtUSD(totalNotional))} ${_T('position value', 'valor de posición')}</div>` : ''}`
 
   const wheel = `
     <div style="display:flex;justify-content:center;padding:18px 12px 6px">
       <div style="position:relative;width:${SIZE}px;height:${SIZE}px;max-width:100%">
         <svg viewBox="0 0 ${SIZE} ${SIZE}" style="width:100%;height:100%;display:block;overflow:visible">
-          <circle cx="${CX}" cy="${CX}" r="${R}" fill="none" stroke="var(--panel-2)" stroke-width="${_ALLOC_SW}" style="pointer-events:none"></circle>
+          <circle cx="${CX}" cy="${CX}" r="${R_OUT}" fill="none" stroke="var(--panel-2)" stroke-width="${_ALLOC_SW}" style="pointer-events:none"></circle>
           ${arcs}
+          ${iarcs}
           ${hits}
+          ${ihits}
         </svg>
-        <div id="allocCenter" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;pointer-events:none;padding:0 34px">
+        <div id="allocCenter" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;pointer-events:none;padding:0 46px">
           ${_allocCenterHtml}
         </div>
       </div>
@@ -4066,6 +4163,17 @@ function _mobVRenderAllocation(el) {
   // Wire hover/tap in JS rather than inline attributes: onmouseenter/onmouseleave are NOT SVG
   // event attributes (SVG only defines onmouseover/onmouseout), so inline handlers silently do
   // nothing on the arcs. addEventListener works the same for SVG and HTML nodes.
+  // The inner ring's own listeners: an asset highlights itself and its bucket, but tapping it
+  // does NOT expand the card — the arc you are pointing at would slide out from under your
+  // finger as the list below it grew.
+  el.querySelectorAll('[data-alloc-ihit]').forEach(node => {
+    const k = Number(node.dataset.allocIhit)
+    if (!Number.isFinite(k)) return
+    node.addEventListener('mouseenter', () => window.__allocHoverItem(k))
+    node.addEventListener('mouseleave', () => window.__allocLeave())
+    node.addEventListener('touchstart', () => window.__allocHoverItem(k), { passive: true })
+    node.addEventListener('click',      () => window.__allocHoverItem(k))
+  })
   el.querySelectorAll('[data-alloc-hit], [data-alloc-row]').forEach(node => {
     const i = Number(node.dataset.allocHit ?? node.dataset.allocRow)
     if (!Number.isFinite(i)) return
@@ -37139,6 +37247,74 @@ window.__chalClaim = async function() {
 // ── Desktop Overview: outcome (prediction) holdings manager ──────────────────
 // Bridges consumed by render.js's Overview "Outcomes" sub-tab. Reuses the same
 // close flow (_mobOcClose) and mark math as the mobile outcome cards.
+/**
+ * Spot holdings for the desktop Spot tab.
+ *
+ * Mobile has had a Spot tab since the tokens became worth real money; desktop never did, so
+ * the only way to see a spot balance on a big screen was the allocation wheel. Same two
+ * sources the wheel reads — state.spotState for a single account, and each wallet's row in
+ * the combined view, where real tokens are deliberately kept OFF state.spotState because they
+ * would double-count into its free-margin sum.
+ *
+ * USDC is excluded: it is cash, it is already the Free margin figure everywhere else, and a
+ * "holding" row for it would be the same dollars twice. Outcome shares have their own tab.
+ */
+window.__ovSpotHoldings = function() {
+  const out = (state.spotState?.balances ?? [])
+    .filter(b => b.coin !== 'USDC' && !_lbIsOutcome(b.coin) && parseFloat(b.total ?? 0) > 0)
+  if (state.isAllAccounts) {
+    const hidden = _maHiddenLoad()
+    for (const r of (_allAcctLastResults ?? [])) {
+      if (r.error || hidden.has(r.addr)) continue
+      const label = r.label || (r.addr.slice(0, 6) + '…')
+      for (const b of (r.spotBalances ?? [])) {
+        if (b.coin === 'USDC' || _lbIsOutcome(b.coin) || !(parseFloat(b.total ?? 0) > 0)) continue
+        out.push({ ...b, _acct: label, _acctAddr: r.addr })
+      }
+    }
+  }
+  // One row per token, so the same coin on five wallets reads as one holding with the
+  // accounts named on it — the way the positions table already groups.
+  const by = new Map()
+  for (const b of out) {
+    const cur = by.get(b.coin) ?? { coin: b.coin, total: 0, hold: 0, entryNtl: 0, accts: new Set() }
+    cur.total    += parseFloat(b.total ?? 0)
+    cur.hold     += parseFloat(b.hold ?? 0)
+    cur.entryNtl += parseFloat(b.entryNtl ?? 0)
+    if (b._acct) cur.accts.add(b._acct)
+    by.set(b.coin, cur)
+  }
+  return [...by.values()]
+    .map(h => { const px = _spotMid(h.coin); return { ...h, px, usd: px > 0 ? h.total * px : 0 } })
+    .sort((a, b) => b.usd - a.usd)
+}
+
+window.__ovBuildSpotBody = function() {
+  const rows = window.__ovSpotHoldings()
+  if (!rows.length) return '<div class="ov-empty">No spot holdings</div>'
+  const head = `<div class="ov-ord-head ov-spot-row"><span>Token</span><span class="ov-r">Price</span><span class="ov-r">Balance</span><span class="ov-r">Value</span><span class="ov-r">PnL</span></div>`
+  const body = rows.map(h => {
+    // entryNtl is HL's cost basis. It is 0 for anything transferred in rather than bought, and
+    // a 0 basis is not a 100% gain — those rows show no PnL at all rather than a fiction.
+    const known = h.entryNtl > 0 && h.usd > 0
+    const pnl   = known ? h.usd - h.entryNtl : null
+    const roi   = known ? (pnl / h.entryNtl) * 100 : null
+    const cls   = (pnl ?? 0) >= 0 ? 'pos' : 'neg'
+    const avail = h.total - h.hold
+    const acct  = h.accts.size ? `<i style="color:var(--accent)">${esc([...h.accts].join(', '))}</i>` : ''
+    return `<div class="ov-ord-row ov-spot-row">
+      <span class="ov-pos-mkt"><div class="ov-av-img">${_coinIconHtml(h.coin)}</div><span class="ov-pos-info"><b>${esc(_ocCoinLabel(h.coin))}</b>${acct}</span></span>
+      <span class="ov-r mono">${h.px > 0 ? '$' + fmtPrice(h.px) : '—'}</span>
+      <span class="ov-r mono">${_prv(fmtSize(h.total))}${h.hold > 0 ? `<i style="display:block;font-size:10px;color:var(--muted)">${_prv(fmtSize(avail))} free</i>` : ''}</span>
+      <span class="ov-r mono">${h.usd > 0 ? _prv('$' + fmtUSD(h.usd)) : '—'}</span>
+      <span class="ov-r mono ${known ? cls : ''}">${known
+        ? `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} · ${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%`
+        : '—'}</span>
+    </div>`
+  }).join('')
+  return `${head}<div class="ov-pos-scroll">${body}</div>`
+}
+
 window.__ovOutcomeHoldings = function() {
   const isOc = c => typeof c === 'string' && (c[0] === '+' || c[0] === '#' || /^o\d/.test(c))
   return (state.spotState?.balances ?? []).filter(b => isOc(b.coin) && parseFloat(b.total ?? 0) > 0)

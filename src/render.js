@@ -46,12 +46,48 @@ let _ovChartType = 'value'   // 'value' | 'accumulated' | 'realized'
 let _ovHead = null           // the Equity headline as rendered, so switching back restores it
 let _ovPortfolio = []
 let _ovFills = []
-let _ovPosTab = 'positions'   // 'positions' | 'orders' (shown one at a time)
+// 'positions' | 'orders' | 'spot' | 'outcomes', shown one at a time — and remembered, like
+// the sort below it. A tab that resets on every refresh is the same annoyance twice.
+let _ovPosTab = (() => {
+  try {
+    const v = localStorage.getItem('ovPosTab')
+    return ['positions', 'orders', 'spot', 'outcomes'].includes(v) ? v : 'positions'
+  } catch { return 'positions' }
+})()
 let _ovPosBody = ''
 let _ovOrdBody = ''
-let _ovPosSortKey = 'pnl', _ovPosSortDir = -1   // default: unrealized PnL, descending
+/**
+ * Sort choices survive a reload.
+ *
+ * Mobile has done this since it shipped (mobPosSortBy / mobPosSortDir in localStorage) and
+ * desktop simply never did, so every refresh threw the reader back to PnL-descending — most
+ * annoying for the person who sorts by Market or by Liq. Price precisely because they are
+ * watching one thing across reloads.
+ *
+ * Wrapped: localStorage throws in a private window with site data blocked, and a sort
+ * preference is not worth taking the panel down for.
+ */
+const _ovSortLoad = (k, dflt) => {
+  try { return localStorage.getItem(k) ?? dflt } catch { return dflt }
+}
+const _ovSortLoadDir = (k) => {
+  try { const v = parseInt(localStorage.getItem(k) ?? '-1', 10); return v === 1 ? 1 : -1 } catch { return -1 }
+}
+function _ovSortSave(keyName, dirName, key, dir) {
+  try {
+    if (key == null) localStorage.removeItem(keyName)
+    else localStorage.setItem(keyName, key)
+    localStorage.setItem(dirName, String(dir))
+  } catch {}
+}
+
+let _ovPosSortKey = _ovSortLoad('ovPosSortBy', 'pnl')   // default: unrealized PnL, descending
+let _ovPosSortDir = _ovSortLoadDir('ovPosSortDir')
 let _ovPosData = null                          // { positions, allMids, tpslMap } for re-sort without full re-render
-let _ovOrdSortKey = null, _ovOrdSortDir = -1
+// null is a real choice here — it means "the order the exchange gave them" — so an absent
+// key restores as null rather than falling back to a column the reader never picked.
+let _ovOrdSortKey = _ovSortLoad('ovOrdSortBy', null) || null
+let _ovOrdSortDir = _ovSortLoadDir('ovOrdSortDir')
 let _ovOrdData = null                          // { orders, allMids } for re-sort without full re-render
 const _ovExpanded = new Set()   // sanitized coin ids whose action row is open (survives re-renders)
 const _OV_PERIOD_KEY = { '1D': 'day', '1W': 'week', '1M': 'month', 'All': 'allTime' }
@@ -695,9 +731,10 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
             <div class="ov-postabs">
               <button class="ov-postab${_ovPosTab === 'positions' ? ' active' : ''}" data-pt="positions" onclick="window.__ovSetPosTab('positions')">Positions <span class="count-pill">${positions.length}</span></button>
               <button class="ov-postab${_ovPosTab === 'orders' ? ' active' : ''}" data-pt="orders" onclick="window.__ovSetPosTab('orders')">Orders <span class="count-pill">${(openOrders ?? []).length}</span></button>
+              <button class="ov-postab${_ovPosTab === 'spot' ? ' active' : ''}" data-pt="spot" onclick="window.__ovSetPosTab('spot')">Spot <span class="count-pill">${_ovSpotCount()}</span></button>
               <button class="ov-postab${_ovPosTab === 'outcomes' ? ' active' : ''}" data-pt="outcomes" onclick="window.__ovSetPosTab('outcomes')">Outcomes <span class="count-pill">${_ovOcCount()}</span></button>
             </div>
-            <button class="manage-btn close" id="ovPosAction" style="padding:4px 12px;font-size:11px;display:${_ovPosTab === 'outcomes' ? 'none' : ''}" onclick="window.__ovPosAction()">${_ovPosTab === 'positions' ? 'Close all' : 'Cancel all'}</button>
+            <button class="manage-btn close" id="ovPosAction" style="padding:4px 12px;font-size:11px;display:${(_ovPosTab === 'outcomes' || _ovPosTab === 'spot') ? 'none' : ''}" onclick="window.__ovPosAction()">${_ovPosTab === 'positions' ? 'Close all' : 'Cancel all'}</button>
           </div>
           <div id="ovPosBody">${_ovTabBody(_ovPosTab)}</div>
         </div>
@@ -1104,6 +1141,7 @@ function _ovSortArr(key, activeKey, dir) {
 window.__ovSortPos = function(key) {
   if (_ovPosSortKey === key) _ovPosSortDir *= -1
   else { _ovPosSortKey = key; _ovPosSortDir = (key === 'market' || key === 'side') ? 1 : -1 }
+  _ovSortSave('ovPosSortBy', 'ovPosSortDir', _ovPosSortKey, _ovPosSortDir)
   if (!_ovPosData) return
   _ovPosBody = _ovBuildPosBody(_ovPosData.positions, _ovPosData.allMids, _ovPosData.tpslMap)
   if (_ovPosTab === 'positions') { const b = document.getElementById('ovPosBody'); if (b) b.innerHTML = _ovPosBody }
@@ -1235,6 +1273,7 @@ function _ovMergedOrdRow(g, allMids) {
 window.__ovSortOrd = function(key) {
   if (_ovOrdSortKey === key) _ovOrdSortDir *= -1
   else { _ovOrdSortKey = key; _ovOrdSortDir = (key === 'market' || key === 'side') ? 1 : -1 }
+  _ovSortSave('ovOrdSortBy', 'ovOrdSortDir', _ovOrdSortKey, _ovOrdSortDir)
   if (!_ovOrdData) return
   _ovOrdBody = _ovBuildOrdBody(_ovOrdData.orders, _ovOrdData.allMids)
   if (_ovPosTab === 'orders') { const b = document.getElementById('ovPosBody'); if (b) b.innerHTML = _ovOrdBody }
@@ -1319,9 +1358,11 @@ window.__ovSetRange = function(label) {
 
 // Outcome (prediction) holdings live in main.js — access via window bridges.
 function _ovOcCount() { return (typeof window !== 'undefined' && window.__ovOutcomeHoldings) ? window.__ovOutcomeHoldings().length : 0 }
+function _ovSpotCount() { return (typeof window !== 'undefined' && window.__ovSpotHoldings) ? window.__ovSpotHoldings().length : 0 }
 function _ovTabBody(tab) {
   if (tab === 'orders')   return _ovOrdBody
   if (tab === 'outcomes') return (typeof window !== 'undefined' && window.__ovBuildOcBody) ? window.__ovBuildOcBody() : `<div class="ov-empty">No outcome positions</div>`
+  if (tab === 'spot')     return (typeof window !== 'undefined' && window.__ovBuildSpotBody) ? window.__ovBuildSpotBody() : `<div class="ov-empty">No spot holdings</div>`
   return _ovPosBody
 }
 // Fetch live outcome marks after the outcomes body is in the DOM.
@@ -1330,12 +1371,18 @@ function _ovRefreshOcMarks() { try { window.__ovUpdateOcMarks?.() } catch {} }
 // Positions / Orders / Outcomes sub-tab switcher (one at a time)
 window.__ovSetPosTab = function(tab) {
   _ovPosTab = tab
-  document.querySelectorAll('.ov-postab').forEach(b => b.classList.toggle('active', b.dataset.pt === tab))
+  try { localStorage.setItem('ovPosTab', tab) } catch {}
+  // Scoped by [data-pt]: the Manage panel reuses .ov-postab for its own Positions/Orders
+  // switcher WITHOUT a data-pt, so an unscoped query matched those too and, since their
+  // dataset.pt is undefined, cleared `active` off both of them every time this ran. The
+  // Manage panel lost its highlight whenever the Overview tab changed.
+  document.querySelectorAll('.ov-postab[data-pt]').forEach(b => b.classList.toggle('active', b.dataset.pt === tab))
   const body = document.getElementById('ovPosBody')
   if (body) body.innerHTML = _ovTabBody(tab)
   const act = document.getElementById('ovPosAction')
   if (act) {
-    act.style.display = tab === 'outcomes' ? 'none' : ''
+    // Neither "Close all" nor "Cancel all" means anything on a list of holdings.
+    act.style.display = (tab === 'outcomes' || tab === 'spot') ? 'none' : ''
     act.textContent = tab === 'positions' ? 'Close all' : 'Cancel all'
   }
   if (tab === 'outcomes') _ovRefreshOcMarks()

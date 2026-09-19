@@ -153,44 +153,84 @@ console.log(NL + '-- and says so on screen --')
   const txt = await text()
   t('the centre no longer calls itself total MARGIN', /TOTAL EQUITY/i.test(txt), true)
   t('the total is the one the parts add to', /\$525\.00/.test(txt), true)
-  t('positions are named in the split', /in positions/.test(txt), true)
-  t('so are orders', /in orders/.test(txt), true)
-  t('and spot', /\bspot\b/i.test(txt), true)
+  // The four categories are named on the cards below the ring now rather than crammed into
+  // the centre, so this looks for them on the panel as a whole.
+  t('positions are named', /In positions/.test(txt), true)
+  t('so are orders', /In orders/.test(txt), true)
+  t('and spot', /Spot/.test(txt), true)
+  t('and free margin', /Free margin/.test(txt), true)
 }
 
-console.log(NL + '-- the ring is money, not assets --')
+console.log(NL + '-- the ring is money on the outside, assets on the inside --')
 {
-  // "the allocation ring should be based on the overall account value... instead of the ring
-  // being distributed based on value it should be with the real money available to trade, the
-  // margin used in positions, orders, etc." So: one arc per place money can be, four here.
-  const arcs = await p.evaluate(() => document.querySelectorAll('[data-alloc-arc]').length)
-  t('four arcs, one per bucket', arcs, 4)
+  // "keep the ring divisions like it currently has but inside those divisions add the assets
+  // divisions" — the bucket view and the old per-coin view at once, rather than a choice
+  // between them. Outer: where the money is. Inner: what it is in, sitting under its bucket.
+  const arcs  = await p.evaluate(() => document.querySelectorAll('[data-alloc-arc]').length)
+  const iarcs = await p.evaluate(() => document.querySelectorAll('[data-alloc-iarc]').length)
+  t('four outer arcs, one per bucket', arcs, 4)
   const groups = await p.evaluate(() => [...document.querySelectorAll('[data-alloc-group]')]
     .map(g => g.dataset.allocGroup))
   t('and they are the four buckets in order', groups, ['positions', 'orders', 'spot', 'free'])
-  // Not one arc per coin any more: BTC, SOL, HYPE and KNTQ are rows inside the buckets.
-  t('no arc per coin', arcs < 5, true)
+  // BTC position; SOL + BTC orders; HYPE + KNTQ spot. Cash has no assets and contributes none.
+  t('the inner ring has one arc per asset', iarcs, 5)
+  t('each inner arc knows which bucket it belongs to',
+    await p.evaluate(() => [...document.querySelectorAll('[data-alloc-iarc]')].every(a => a.dataset.allocGi != null)), true)
+  // Free margin must not get an inner band: it has nothing in it, and drawing one would
+  // invent an asset.
+  const giCounts = await p.evaluate(() => {
+    const m = {}
+    for (const a of document.querySelectorAll('[data-alloc-iarc]')) m[a.dataset.allocGi] = (m[a.dataset.allocGi] ?? 0) + 1
+    return m
+  })
+  t('assets are distributed across three buckets, not four', Object.keys(giCounts).sort(), ['0', '1', '2'])
+  t('one position, two order markets, two spot tokens',
+    [giCounts['0'], giCounts['1'], giCounts['2']], [1, 2, 2])
+
+  // Hovering an asset names the bucket it is a slice of — the question the inner ring would
+  // otherwise leave unanswered.
+  const centre = await p.evaluate(() => {
+    window.__allocHoverItem(0)
+    return document.getElementById('allocCenter')?.innerText ?? ''
+  })
+  t('hovering an asset names it', /BTC/.test(centre), true)
+  t('and says which bucket it sits in', /In positions/.test(centre), true)
+  await p.evaluate(() => window.__allocLeave())
 }
 
-console.log(NL + '-- orders are one card that opens to the assets under it --')
+console.log(NL + '-- the centre fits inside the hole --')
 {
-  // "make it like all orders be under a card called 'orders', when its pressed it should
-  // extend and show order cards based on assets".
+  // It used to spell out all four buckets. At five lines it outgrew the ring — "$2,776.04 in
+  // orders" wrapped and the last line ran under the arc — and the inner ring shrinks the hole
+  // further. The figures are on the cards below, each with its share.
+  const txt = await p.evaluate(() => document.getElementById('allocCenter')?.innerText ?? '')
+  t('it still says what the ring adds up to', /\$525\.00/.test(txt), true)
+  t('and no longer repeats the four-way split', /in positions/.test(txt), false)
+  const lines = txt.split('\n').filter(Boolean).length
+  t('three lines at most', lines <= 3, true)
+}
+
+console.log(NL + '-- orders are a card that opens, and does not open itself --')
+{
+  // "when opening allocation for some reason the orders card is extended by default, fix it".
+  const shut = await p.evaluate(() => document.querySelector('[data-alloc-group="orders"]')?.children.length)
+  t('every card starts closed', shut, 1)
+
   const card = await p.evaluate(() => {
     const g = document.querySelector('[data-alloc-group="orders"]')
-    return { head: g?.firstElementChild?.innerText?.replace(/\s+/g, ' ') ?? '', rows: g?.children.length ?? 0 }
+    return g?.firstElementChild?.innerText?.replace(/\s+/g, ' ') ?? ''
   })
-  t('the card is named Orders and carries the bucket total', /In orders/.test(card.head) && /\$125\.00/.test(card.head), true)
-  t('it says what is inside without opening', /3 orders · 2 markets/.test(card.head), true)
-  // It starts open, because it is the thing that was reported missing.
-  t('and it is open, showing one row per asset', card.rows, 3)
+  t('the card is named Orders and carries the bucket total', /In orders/.test(card) && /\$125\.00/.test(card), true)
+  // It has to say what is inside WITHOUT being opened, or a closed card is a dead end.
+  t('and says what is inside while shut', /3 orders · 2 markets/.test(card), true)
 
+  await p.evaluate(() => window.__allocToggleGroup('orders'))
+  await p.waitForTimeout(300)
   const inside = await p.evaluate(() => [...document.querySelectorAll('[data-alloc-group="orders"] .mob-v-row')]
     .slice(1).map(r => r.innerText.replace(/\s+/g, ' ')))
-  // SOL: 2 buys, $1,000 notional at 20x max → $50 estimated, scaled 125/150 → $83.33.
-  // BTC: 1 buy,  $500 notional at 10x (its position's leverage) → $50 → $41.67.
   const sol = inside.find(r => /^SOL/.test(r)) ?? ''
   const btc = inside.find(r => /^BTC/.test(r)) ?? ''
+  t('pressing it shows one row per market', inside.length, 2)
   t('an order row names its market', !!sol && !!btc, true)
   t('with how many orders and which way', /2 orders/.test(sol) && /2 buys/.test(sol), true)
   t('its notional', /Notional \$1,000\.00/.test(sol), true)
@@ -205,11 +245,10 @@ console.log(NL + '-- orders are one card that opens to the assets under it --')
   // A reduce-only order closes a position and posts nothing, so it must not appear.
   t('the reduce-only order is not one of them', inside.length, 2)
 
-  // Pressing it closes it again.
   await p.evaluate(() => window.__allocToggleGroup('orders'))
   await p.waitForTimeout(300)
-  const closed = await p.evaluate(() => document.querySelector('[data-alloc-group="orders"]')?.children.length)
-  t('pressing the card collapses it', closed, 1)
+  t('pressing it again collapses it',
+    await p.evaluate(() => document.querySelector('[data-alloc-group="orders"]')?.children.length), 1)
   await p.evaluate(() => window.__allocToggleGroup('orders'))
   await p.waitForTimeout(300)
 }

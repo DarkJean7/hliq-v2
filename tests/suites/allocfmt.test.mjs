@@ -27,6 +27,10 @@ console.log(nl + '-- the panel is where we think it is --')
 t('the slice builder is there', slices.length > 500, String(slices.length))
 t('the hover readout is there', hover.length > 500, String(hover.length))
 t('the renderer is there', render.length > 2000, String(render.length))
+// The centre says what the ring adds up to and nothing it has no room for.
+t('the centre carries the total and the asset count',
+  render.includes("_prv('$' + fmtUSD(total, 2))") && render.includes('asset${assetCount === 1'))
+t('and no longer tries to fit the four-way split into it', !render.includes("part(used, 'in positions'"))
 
 console.log(nl + '-- fmtUSD has no dollar sign of its own --')
 // The premise of the whole suite. If this ever changes, every '$' + fmtUSD below becomes
@@ -38,10 +42,10 @@ console.log(nl + '-- every dollar figure in the donut carries a $ --')
 // Each of these is a number the reader has to be able to tell from a percentage.
 for (const [what, needle] of [
   ['the total in the centre',        "_prv('$' + fmtUSD(total, 2))"],
-  // The split grew from two categories to four (positions, orders, spot, free) once the
-  // wheel started counting the money it could not previously see, so all four go through
-  // one `part` helper rather than four hand-written spans.
-  ['every half of the split',        "_prv('$' + fmtUSD(v))"],
+  // The four-way split used to be spelled out in the centre. At five lines it outgrew the
+  // hole — "$2,776.04 in orders" wrapped and the last line ran under the ring — and the inner
+  // asset ring made the hole smaller still. The figures live on the four cards below now,
+  // each with its share, so the assertion follows them there rather than being deleted.
   ['the total position value',       "_prv('$' + fmtUSD(totalNotional))"],
   // The ring is four money buckets now, not one arc per coin, so a "slice" is a bucket and
   // the coins are the rows that open underneath it. Same rule, new names.

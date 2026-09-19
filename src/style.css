@@ -5958,6 +5958,9 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 
 /* Overview → Outcomes sub-tab (prediction holdings + close panel) */
 .ov-ord-head.ov-oc-row, .ov-ord-row.ov-oc-row { grid-template-columns: 1.9fr 0.7fr 1fr 1fr 1.4fr 0.55fr; }
+/* Spot: token, price, balance, value, PnL. No action column — a holding has nothing to
+   close, and leaving an empty one just pushes the numbers off centre. */
+.ov-ord-head.ov-spot-row, .ov-ord-row.ov-spot-row { grid-template-columns: 2fr 1fr 1.2fr 1.1fr 1.4fr; }
 .ov-oc-item { border-bottom: 1px solid var(--border); }
 .ov-oc-row { cursor: pointer; border-bottom: none; }
 .ov-oc-row:hover { background: var(--panel-2); }
