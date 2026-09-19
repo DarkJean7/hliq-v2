@@ -6,7 +6,9 @@ import { InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { updateGameMode as _updateGameMode, gmOrdersInvalidate } from './game.js'
 import { initOnboarding } from './onboard.js'   // also registers window.__glossary/__openLearn/__startMainTour/__term
 import { loadAccountData, loadFundingData, buildAssetMap, infoClient, fetchAllMids, fetchHip3Mids, hip3DexNames, fetchFrontendOpenOrders, fetchClearinghouseState, hip3Rename, coinLabel, hlPool, subsClient, fetchAllFills, fetchAllFunding } from './api.js'
-const _transport = new HttpTransport({ timeout: 30_000 })
+// Metered at the funnel: every info request paces itself against HL's budget, and order
+// placement is counted but never delayed. See src/hlbudget.js.
+const _transport = meterTransport(new HttpTransport({ timeout: 30_000 }))
 import {
   renderOverview,
   renderSpot,
@@ -244,6 +246,7 @@ import { ordersForCoin, byAccount, statusesFrom, classifyCancels, describeOrders
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey } from './comboequity.js'
 import { cashSample, classifyCashMove } from './perpcash.js'
 import { orderMarginByCoin, spotByCoin, SLICE_DUST } from './alloc.js'
+import { hlBudget as _hlBudget, meterTransport, weightOf as _hlWeightOf } from './hlbudget.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
 import { trackRecord, isSmallSample, openLossOf } from './trackrecord.js'
@@ -1922,7 +1925,10 @@ function _hlOk() {
 let _hlLastTripReason = 'unknown'
 function _hl429(e) {
   const m = String(e?.message ?? e)
-  if (/429|too many/i.test(m)) { _hlLastTripReason = 'real-429'; _hlTrip(); return true }
+  // The bucket above is a MODEL of HL's limiter; a 429 is the exchange saying the model was
+  // optimistic. Believe the exchange and start it again from empty, so the pacing backs right
+  // off instead of insisting there was headroom.
+  if (/429|too many/i.test(m)) { _hlLastTripReason = 'real-429'; _hlBudget.drain(); _hlTrip(); return true }
   if (/failed to fetch|load failed|networkerror|err_failed|cors|access-control/i.test(m)) {
     _hlLastTripReason = 'network-shaped'   // could be a 429, could be the network
     _hlTrip(); return true
@@ -33231,6 +33237,25 @@ async function _histFundingFrom(addr, prior, info) {
   return _histMerge(prior, await fetchAllFunding(addr, from, { info }), _histFundKey)
 }
 
+/**
+ * Roughly what one wallet's cold fan costs: clearinghouseState (2) + spotClearinghouseState
+ * (2) + frontendOpenOrders, portfolio, fills and funding at 20 each.
+ *
+ * Only used to decide whether to START another wallet — every individual request is metered
+ * and paced at the transport, so this does not need to be exact and must not double-count.
+ */
+const _WALLET_FAN_WEIGHT = _hlWeightOf('clearinghouseState') + _hlWeightOf('spotClearinghouseState')
+  + _hlWeightOf('frontendOpenOrders') + _hlWeightOf('portfolio')
+  + _hlWeightOf('userFillsByTime') + _hlWeightOf('userFunding')
+
+/** Hold the NEXT wallet until the bucket could afford its fan. The requests inside it pace
+ *  themselves; this only stops eight fans being launched into a budget that fits three. */
+async function _hlPace(w) {
+  const ms = _hlBudget.waitFor(w)
+  if (ms > 0) await new Promise(r => setTimeout(r, ms))
+  return ms
+}
+
 async function _lbFetchResults(entries) {
   const GENESIS = 1667260800000
   const info    = new InfoClient({ transport: _transport })
@@ -33472,10 +33497,18 @@ async function _lbFetchResults(entries) {
   }
 
   for (let i = 0; i < entries.length; i++) {
-    // Stagger wallets so N accounts don't fire their (cs+orders+spot+history+HIP-3) bursts on
-    // top of each other and blow HL's burst bucket. Widen the gap for bigger wallet sets — 8
-    // wallets was tripping the limit on app-open. ~650ms spreads 8 wallets over ~4.5s.
-    if (i > 0) await new Promise(r => setTimeout(r, entries.length > 4 ? 650 : 350))
+    // Pace each wallet against what the budget can actually afford, rather than a fixed gap.
+    //
+    // A flat 650ms stagger lived here, chosen because 8 wallets was tripping the limit on
+    // app-open. It could not work: the right gap depends on what the rest of the app has just
+    // spent, and one wide enough for the worst case slows every cold load for nothing.
+    // Measured, it left all 98 requests of an 8-wallet load inside 8.0 seconds — a peak of
+    // 1240 weight against a bucket that refills ~200 in ten.
+    //
+    // Now: zero wait while there is headroom (so a warm bucket loads exactly as fast as
+    // before), and exactly the refill time when there is not. The reserve inside the bucket
+    // is what keeps the dashboard from spending the budget an order needs.
+    if (i > 0) await _hlPace(_WALLET_FAN_WEIGHT)
     const entry = entries[i]
     let ok = false
     for (let attempt = 0; attempt < 8; attempt++) {

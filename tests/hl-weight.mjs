@@ -47,6 +47,11 @@ const HL = {
 }
 
 const counts = new Map()   // "type" or "type|dex" -> n
+// Every request, stamped. The average over a minute is not what trips Hyperliquid — the
+// limiter is a bucket that refills at roughly 20 weight a second, so 1200 spread evenly is
+// fine and 1200 in the first eight seconds is not. Without this the tool could not tell those
+// apart, and could not show whether spreading a burst had helped.
+const stamps = []   // { at, w }
 const b = await chromium.launch()
 const ctx = await b.newContext({ viewport: { width: 1500, height: 950 } })
 await ctx.route('**/api/**', r => r.fulfill({ status: 503, body: 'offline' }))
@@ -57,6 +62,7 @@ await ctx.route(/^https?:\/\/[a-z0-9.-]*hyperliquid[a-z0-9.-]*\.xyz\//i, (route)
   const t = body.type || '(non-json)'
   const k = body.dex ? `${t} [dex]` : t
   counts.set(k, (counts.get(k) ?? 0) + 1)
+  stamps.push({ at: Date.now(), w: weightOf(t) })
   return route.fulfill({ status: 200, contentType: 'application/json', json: HL[t] ?? {} })
 })
 const p = await ctx.newPage()
@@ -94,4 +100,29 @@ console.log('  weight/min   calls/min   endpoint')
 for (const r of rows) console.log(`  ${String(Math.round(r.wPerMin)).padStart(9)}   ${r.perMin.toFixed(1).padStart(9)}   ${r.k}`)
 const total = rows.reduce((s, r) => s + r.wPerMin, 0)
 console.log(`  ${String(Math.round(total)).padStart(9)}   ${'—'.padStart(9)}   TOTAL  (HL budget is 1200/min per IP → ${Math.round(total / 1200 * 100)}%)`)
+
+// ── what actually trips the limiter ──────────────────────────────────────────
+//
+// HL's budget behaves like a bucket refilling at ~20 weight/second. An average of 1200/min
+// spread evenly never empties it; the same 1200 arriving in the first eight seconds does, and
+// the 429s that follow starve order placement, not just the dashboard. So the number that
+// matters is the worst WINDOW, not the mean — and a fix that spreads a burst without removing
+// any requests moves the peak while leaving the average exactly where it was.
+const windowPeak = (ms) => {
+  let peak = 0
+  for (let i = 0; i < stamps.length; i++) {
+    let sum = 0
+    for (let j = i; j < stamps.length && stamps[j].at - stamps[i].at < ms; j++) sum += stamps[j].w
+    if (sum > peak) peak = sum
+  }
+  return peak
+}
+const peak60 = windowPeak(60_000)
+const peak10 = windowPeak(10_000)
+console.log('')
+console.log(`  peak in any 60s window: ${String(Math.round(peak60)).padStart(5)}   (${Math.round(peak60 / 1200 * 100)}% of the budget)`)
+// 200 is what the bucket refills in ten seconds, so a ten-second burst above it is drawing
+// the bucket down faster than it fills.
+console.log(`  peak in any 10s window: ${String(Math.round(peak10)).padStart(5)}   (refill over 10s is ~200)`)
+console.log(`  requests: ${stamps.length}, first ${stamps.length ? ((stamps.at(-1).at - stamps[0].at) / 1000).toFixed(1) : 0}s apart`)
 await b.close()

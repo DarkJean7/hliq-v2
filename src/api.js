@@ -1,7 +1,10 @@
 import { InfoClient, HttpTransport, SubscriptionClient, WebSocketTransport } from '@nktkas/hyperliquid'
+import { meterTransport } from './hlbudget.js'
 
 // Single shared transport + info client
-const transport = new HttpTransport({ timeout: 30_000 })
+// The SAME per-IP budget main.js spends from — two transports, one limit. Metered here too,
+// or half the app's traffic would be invisible to the pacing. See src/hlbudget.js.
+const transport = meterTransport(new HttpTransport({ timeout: 30_000 }))
 export const infoClient = new InfoClient({ transport })
 
 // Lazy WebSocket subscription client — used for live price (allMids) pushes so we don't

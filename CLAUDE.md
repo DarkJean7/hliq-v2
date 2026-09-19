@@ -173,6 +173,18 @@ thing that already failed.
   `Σ size × price ÷ leverage` over the non-reduce-only orders. `src/alloc.js`.
 - **Hyperliquid rate-limits by IP**, 1200 weight/min shared across `/info` and `/exchange`.
   Fanning a request across nine wallets is how the limiter gets tripped. Batch or cache.
+- **The average is not the thing that 429s you — the peak is.** The limiter is a bucket
+  refilling at ~20 weight/second. 1200 spread over a minute never empties it; the same 1200 in
+  the first eight seconds does. A cold All Accounts load with eight wallets measured 992/min
+  (83%, "fine") while putting every one of its 98 requests inside 8.0 seconds, peaking at 1240
+  against a 200-per-10s refill. `npm run hl-weight -- --settle=0` reports both; only read the
+  peak. Every request is now metered and paced at `transport.request` (`src/hlbudget.js`), and
+  the RESERVE is the part that matters: the dashboard is not allowed to spend the last of the
+  budget, because `/exchange` is in it and being throttled as you try to close a position is
+  the failure that costs money. Order placement is counted but never delayed.
+- **Check-then-act on a shared budget is a race.** One wallet's fan fires six requests through
+  `Promise.all`; if you ask "is there room" and only spend after awaiting, all six read the
+  same level and all six go at once. Claim the weight before the wait.
 - **Agent keys can trade but cannot move funds.** Anything that moves money needs the main
   wallet.
 - **A horizontally scrolling element needs `data-dragscroll`**, or a global CSS rule strips
