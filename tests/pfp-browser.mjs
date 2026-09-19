@@ -107,6 +107,73 @@ await waitFor(p, 'the wallet drawer', () => !!document.getElementById('mobVDrawe
 const hasBtn = await p.evaluate(() => !!document.querySelector('#mobVDrawerAvatar button[title="Change photo"]'))
 t('the camera button is offered for their own account', hasBtn, true)
 
+console.log(NL + '-- a visitor with NOTHING set up still sees it --')
+{
+  // The gate was isDev(), then "an account you can prove is yours". Both hid the camera from
+  // exactly the people the feature is for: someone who has not connected a wallet had no way
+  // to learn it existed. Reported as "currently is not working for non-dev users".
+  //
+  // A second context with no dev flag, no agent key and no wallet — and, like the screenshot
+  // that came with the report, sitting in All Accounts, which is not a wallet at all.
+  const bare = await browser.newContext({ ...devices['iPhone 14 Pro'] })
+  await blockHlSockets(bare)
+  await bare.route(HL_HOST, (route) => {
+    let b = {}
+    try { b = JSON.parse(route.request().postData() || '{}') } catch {}
+    return route.fulfill({ status: 200, contentType: 'application/json', json: HL[b.type] ?? {} })
+  })
+  await bare.route('**/api/**', r => r.fulfill({ status: 503, body: 'offline in test' }))
+  const q = await bare.newPage()
+  await q.goto(BASE, { waitUntil: 'domcontentloaded' })
+  await q.evaluate((a) => {
+    localStorage.clear()
+    localStorage.setItem('hliq_lang', 'en')
+    localStorage.setItem('hliq_onboard_done', '1')
+    localStorage.setItem('savedWallets', JSON.stringify([{ addr: a, label: 'Watching' }]))
+  }, MINE)
+  await q.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(q, 'boot', () => !!window.loadDashboard)
+  await q.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, MINE)
+  await waitFor(q, 'the account', () => document.getElementById('dashboard')?.classList.contains('active'))
+  await q.evaluate(() => window._mobVOpenWalletSwitch?.())
+  await waitFor(q, 'the wallet drawer', () => !!document.getElementById('mobVDrawerAvatar'), 15000)
+
+  t('the camera is there with nothing set up',
+    await q.evaluate(() => !!document.querySelector('#mobVDrawerAvatar button[title="Change photo"]')), true)
+  t('and the dev flag really is off', await q.evaluate(() => localStorage.getItem('hliq_dev')), null)
+  t('with no agent key either', await q.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('hliq_agent_key_')).length), 0)
+
+  // Pressing it must explain what is missing rather than doing nothing.
+  // _paperToast is module-scoped, so it cannot be stubbed from here — read what it actually
+  // put on the page instead, which is the thing the person would see anyway.
+  const press = () => q.evaluate(() => {
+    document.getElementById('paperToastHost')?.remove()
+    let picked = false
+    const inp = document.getElementById('mobVPfpInput')
+    const rc = inp.click.bind(inp); inp.click = () => { picked = true }
+    try { window._mobVPickPfp() } finally { inp.click = rc }
+    return { msg: document.getElementById('paperToastHost')?.innerText ?? '', picked }
+  })
+  const said = await press()
+  // A watch-only address IS in view here, and it is not theirs. Falling back to "connect your
+  // wallet" would be misleading — connecting would not make this account theirs, and it must
+  // never quietly retarget their own wallet from someone else's page.
+  t('it says that account is not theirs', /not yours/i.test(said.msg), true)
+  // A file dialog it cannot authenticate is worse than no dialog.
+  t('no file picker is opened yet', said.picked, false)
+
+  // All Accounts — the case in the report's screenshot. Not a wallet, so the only picture
+  // there is to set is the connected wallet's, and there isn't one yet.
+  await q.evaluate(() => window.__goAllAccounts())
+  await waitFor(q, 'the combined view', () => window.__stateAddrForTest === undefined
+    ? document.body.innerText.includes('All Accounts') : true, 20000)
+  const combined = await press()
+  t('there it offers to connect a wallet', /Connect your wallet/i.test(combined.msg), true)
+  t('and points back at the camera afterwards', /tap the camera again/i.test(combined.msg), true)
+  t('still no file picker', combined.picked, false)
+  await bare.close()
+}
+
 console.log(NL + '-- and the upload is authenticated and normalised --')
 // A 1x1 PNG, the smallest real image there is.
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='

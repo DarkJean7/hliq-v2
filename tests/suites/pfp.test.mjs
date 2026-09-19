@@ -36,14 +36,38 @@ console.log(nl + '-- anyone can set their OWN picture --')
   // Decommented: the comment explaining the removal quotes the line it removed.
   const code = (x) => x.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')
   t('the handler no longer refuses non-devs', !/if \(!isDev\(\)\) return/.test(code(h)), code(h).slice(0, 200))
-  t('and it acts on the account in view', h.includes('const a = _agentUiAddr()'))
-  t('the camera button is no longer dev-only either',
-    cli.includes('(isDev() || (!_isAll && _lbOwnsAddr(state.addr)))'))
-  // Shown only where it can actually work: an account you can prove is yours, and never the
-  // combined view, which is not a wallet.
-  t('it is offered for an account you can prove is yours', cli.includes('_lbOwnsAddr(state.addr)'))
-  t('and not for the combined view', cli.includes('!_isAll && _lbOwnsAddr'))
+  t('and it acts on the account the button offered', h.includes('const a = _pfpDrawerAddr()'))
+  // _agentUiAddr returns null in the combined view, so in All Accounts — where the camera is
+  // most visible — picking a file did nothing at all.
+  // Decommented: the comment explaining the change names the call it replaced.
+  t('not the one that is null in All Accounts', !code(h).includes('_agentUiAddr()'))
   t('why the old gate was not security is written down', cli.includes('holding it shut'))
+
+  // The button itself has NO condition left. isDev() first, then "an account you can prove is
+  // yours" — both hid it from exactly the people who had not set themselves up yet, so a
+  // visitor with no wallet had no way to learn the feature existed.
+  const drawer = cli.slice(cli.indexOf('id="mobVDrawerAvatar"'), cli.indexOf('mob-wallet-current-name'))
+  t('the camera is shown to everyone', drawer.includes('onclick="window._mobVPickPfp()"'))
+  t('with nothing gating it', !/isDev\(\)[\s\S]{0,80}_mobVPickPfp/.test(drawer) && !/_lbOwnsAddr[\s\S]{0,120}_mobVPickPfp/.test(drawer))
+  t('and why hiding it was never the guard is recorded', cli.includes('hiding a button was never that guard'))
+
+  // Pressing it explains what is missing, rather than the button being what is missing.
+  const pick = grab(cli, 'window._mobVPickPfp = function()')
+  t('no wallet connected offers the wallet picker', pick.includes('openWalletPicker()'))
+  t('and says to come back to the camera', pick.includes('then tap the camera again'))
+  // A programmatic input.click() after an await is blocked without a user gesture, so
+  // promising to re-open the dialog would be promising something that silently fails.
+  t('why it does not re-open the dialog itself is written down', cli.includes('only honour'))
+  t('an account that is not yours is refused outright', pick.includes('That account is not yours'))
+
+  const who = grab(cli, 'function _pfpDrawerAddr()')
+  t('a real address in view must be provably yours', who.includes('_lbOwnsAddr(cur) ? cur : null'))
+  // Falling back to the connected wallet from someone else's page would quietly change YOUR
+  // picture while you were looking at their account.
+  t('and never falls back to your own wallet from their page', who.includes('return _pfpOwnAddr()') && who.indexOf('_lbOwnsAddr') < who.indexOf('return _pfpOwnAddr()'))
+  t('All Accounts targets the connected wallet, since it is not one', who.includes('_pfpOwnAddr()'))
+  t('and the toast names it, because the combined avatar will not change',
+    h.includes('state.isAllAccounts && WM.getLabel(a)'))
 }
 
 console.log(nl + '-- the image is re-encoded before it leaves the device --')

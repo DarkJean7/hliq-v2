@@ -12836,7 +12836,48 @@ async function _pfpUpload(addr, file) {
   return { ok: true }
 }
 
+/**
+ * Whose picture the camera in the wallet drawer would set.
+ *
+ * A real address in view is that account's picture or nothing: falling back to the connected
+ * wallet from a stranger's page would quietly change YOUR photo while you were looking at
+ * someone else's account. All Accounts and paper are not wallets and have no picture of their
+ * own, so there the only thing to set is the connected wallet's.
+ */
+function _pfpDrawerAddr() {
+  const cur = String(state.addr ?? '').toLowerCase()
+  if (/^0x[0-9a-f]{40}$/.test(cur)) return _lbOwnsAddr(cur) ? cur : null
+  return _pfpOwnAddr()
+}
+
+/**
+ * The camera in the wallet drawer.
+ *
+ * Shown to everyone. It used to be hidden behind isDev() || _lbOwnsAddr(...), so a visitor
+ * with no wallet connected never saw it and had no way to learn the feature existed — you
+ * had to already be set up to discover the thing that sets you up. Pressing it now explains
+ * what is missing instead of the button being missing.
+ *
+ * The file dialog is NOT re-opened automatically after connecting: browsers only honour
+ * input.click() during a user gesture, and the connect flow is a modal with an await in the
+ * middle of it. Saying "then tap it again" is honest; a dialog that silently fails to open
+ * is not.
+ */
 window._mobVPickPfp = function() {
+  const cur = String(state.addr ?? '').toLowerCase()
+  const a   = _pfpDrawerAddr()
+  if (!a) {
+    if (/^0x[0-9a-f]{40}$/.test(cur)) {
+      // A real address that this device cannot prove belongs to the person using it.
+      _paperToast('✗ ' + _T('That account is not yours — only its owner can set its photo.',
+                            'Esa cuenta no es tuya — solo su dueño puede poner su foto.'))
+      return
+    }
+    _paperToast(_T('Connect your wallet to set a photo, then tap the camera again.',
+                   'Conecta tu wallet para poner una foto, luego toca la cámara otra vez.'))
+    try { openWalletPicker() } catch {}
+    return
+  }
   const input = document.getElementById('mobVPfpInput')
   if (input) input.click()
 }
@@ -12848,11 +12889,20 @@ window._mobVHandlePfp = async function(input) {
   // happened — no upload, no error, not even a local copy — which is why a friend's picture
   // was never on the board. The write is authenticated now, so the gate is not what was
   // holding it shut.
-  const a = _agentUiAddr()
+  //
+  // _agentUiAddr() lived here too, and it returns null in the combined view — so in All
+  // Accounts, which is where the camera is most visible, picking a file still did nothing at
+  // all. This resolves the same account the button just offered.
+  const a = _pfpDrawerAddr()
   if (!file || !a) return
   const r = await _pfpUpload(a, file)
-  if (!r.ok) _paperToast('✗ ' + (r.error === 'no account' ? _T('Open an account first', 'Abre una cuenta primero') : r.error))
-  else _paperToast('✓ ' + _T('Profile picture updated', 'Foto de perfil actualizada'))
+  if (!r.ok) { _paperToast('✗ ' + (r.error === 'no account' ? _T('Open an account first', 'Abre una cuenta primero') : r.error)); return }
+  // In All Accounts the avatar on screen is the combined one, so it will NOT change — say
+  // which wallet the picture actually went to rather than looking like nothing happened.
+  const who = (state.isAllAccounts && WM.getLabel(a)) || null
+  _paperToast('✓ ' + _T('Profile picture updated', 'Foto de perfil actualizada') + (who ? ` — ${who}` : ''))
+  // The board is where it is seen, so refresh it rather than waiting for the poll.
+  try { _lbLastFetch = 0; renderLeaderboard() } catch {}
 }
 
 window._mobVAvatarError = function(img, addr, size) {
@@ -13086,15 +13136,15 @@ window._mobVOpenWalletSwitch = function() {
     <div class="mob-wallet-current">
       <div style="position:relative;display:inline-block;flex-shrink:0" id="mobVDrawerAvatar">
         ${_mobVAvatarImgHtml(state.addr, 80)}
-        ${/* Was isDev(): the camera never appeared for anyone else, so "my friend uploaded
-             one" was a file picker that did nothing. Shown for an account you can PROVE is
-             yours — the same test the upload authenticates with — and not for the combined
-             view, which is not a wallet and has no picture of its own. */
-          (isDev() || (!_isAll && _lbOwnsAddr(state.addr)))
-          ? `<button onclick="window._mobVPickPfp()" style="position:absolute;bottom:0;right:0;width:26px;height:26px;border-radius:50%;background:var(--panel-3);border:2px solid var(--bg);display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0" title="Change photo">
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-             </button>`
-          : ''}
+        ${/* No gate. It was isDev() first, then "an account you can prove is yours" — and
+             both hid the button from exactly the people who had not set themselves up yet,
+             which is everyone the feature is for. A visitor with no wallet connected saw no
+             camera and had no way to learn there was one. It is shown to everyone now and
+             _mobVPickPfp says what is missing; the WRITE is what is guarded, by a signature
+             the server checks, and hiding a button was never that guard anyway. */''}
+        <button onclick="window._mobVPickPfp()" style="position:absolute;bottom:0;right:0;width:26px;height:26px;border-radius:50%;background:var(--panel-3);border:2px solid var(--bg);display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0" title="Change photo">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        </button>
       </div>
       <div class="mob-wallet-current-name${_labelNt}">${esc(label)}${
         // The account you are STANDING IN is not in the list below — in single-account mode it
