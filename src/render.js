@@ -242,6 +242,16 @@ function portfolioLatest(portfolio, period, key) {
 // swap in a different (double-counting) formula and jolt the displayed equity.
 let _lastGoodAcctVal = null
 
+/**
+ * The account value the card is currently showing, or null before the first paint.
+ *
+ * Deliberately the RENDERED figure rather than a re-derivation: the point is for another
+ * panel to agree with what the reader can see, and a second computation of "the same" number
+ * is how they came to disagree in the first place.
+ */
+let _shownEquity = null
+export function shownAccountValue() { return _shownEquity }
+
 function liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal) {
   const snap = portfolioLatest(portfolio, 'allTime', 'accountValueHistory')
   if (snap == null) {
@@ -376,6 +386,12 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   // Null before the first snapshot lands, and then the old sum is still better than nothing.
   const _localAcctVal    = liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal)
   const accountValue     = Number.isFinite(comboValue) && comboValue > 0 ? comboValue : _localAcctVal
+  // The number ON SCREEN, published for anything that has to agree with it. The allocation
+  // wheel is built from live parts while this is a server snapshot carried forward by a perp
+  // delta — two honest constructions of the same quantity that land a fraction of a percent
+  // apart, which reads as "the allocation total does not match my account equity" because
+  // that is exactly what it is. Reported at $6,814.39 against $6,880.03.
+  _shownEquity = Number.isFinite(accountValue) ? accountValue : null
 
   const totalUnrPnl = positions.reduce((s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0)
   const totalVolume = fills.reduce((s, f) => s + f.notional, 0)

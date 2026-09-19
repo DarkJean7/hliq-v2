@@ -31,6 +31,7 @@ import {
   getTradesPage,
   renderSummaryCards,
   computeAcctStats,
+  shownAccountValue,
   resetLiveAccountValue,
   aggregateByHash,
 } from './render.js'
@@ -3804,7 +3805,35 @@ function _allocationSlices() {
     }))
   const spot = spotRows.reduce((s, h) => s + h.margin, 0)
 
-  const free = _freeMarginUsd()
+  // ── free margin, and making the ring agree with the account card ───────────
+  //
+  // Reported as "why does allocation total equity not match the account equity" — $6,814.39
+  // against $6,880.03.
+  //
+  // Both were honest. The card is a server snapshot carried forward by a perp delta; the
+  // wheel is the sum of live parts. They are two constructions of one quantity and they land
+  // a fraction of a percent apart, which on screen is simply two different numbers for the
+  // same thing.
+  //
+  // So the wheel now takes the card's figure as the total and lets FREE be the remainder.
+  // That is not a fudge: free margin is definitionally what is not committed to a position,
+  // an order or a token, and HL's `withdrawable` is a conservative floor on it rather than
+  // the whole of it — it also leaves out HIP-3 withdrawable, which nothing else counts
+  // either (measured at $1.17 across eight wallets).
+  //
+  // The guard matters more than the adjustment. Absorbing a SMALL unattributed amount into
+  // cash is right; absorbing a large one would hide a genuine bug in one of the other three
+  // buckets behind a plausible-looking total. Past 5% of equity the remainder is not rounding
+  // and the wheel goes back to reporting its own parts, so the two numbers disagree visibly —
+  // which is the correct signal that something is wrong.
+  const _reported = _freeMarginUsd()
+  const _shown    = parseFloat(shownAccountValue())
+  const _parts    = used + orders + spot
+  let free = _reported
+  if (Number.isFinite(_shown) && _shown > 0) {
+    const balance = _shown - _parts
+    if (balance >= 0 && Math.abs(balance - _reported) <= _shown * 0.05) free = balance
+  }
 
   // ── the ring is money, not assets ──────────────────────────────────────────
   //

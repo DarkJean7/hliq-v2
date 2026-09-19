@@ -32,6 +32,10 @@ const _ocSidePrice = () => 0
 const _spotMid    = (c) => mids[c] ?? 0
 const _maHiddenLoad = () => new Set()
 const _watchSpotNameMap = null
+// What the account card is showing. null = no card painted yet, which is the cold-start
+// case and must leave the wheel reporting its own parts.
+let _shownEquity = null
+const shownAccountValue = () => _shownEquity
 let _allAcctLastResults = []
 
 // Every helper the slice builder leans on, taken from the shipped source rather than
@@ -43,11 +47,11 @@ const body = NAMES.map(grab).join('\n') + '\nreturn { ' + NAMES.join(', ') + ' }
 const built = new Function(
   'state', '_posMarkPx', '_coinMaxLev', '_lbIsOutcome', '_ocSidePrice', '_spotMid',
   '_maHiddenLoad', '_allAcctLastResults', 'orderMarginByCoin', 'spotByCoin', 'SLICE_DUST',
-  'isSpotCoin', '_watchSpotNameMap', body)
+  'isSpotCoin', '_watchSpotNameMap', 'shownAccountValue', body)
 const call = () => built(
   new Proxy({}, { get: (_, k) => state[k] }), _posMarkPx, _coinMaxLev, _lbIsOutcome,
   _ocSidePrice, _spotMid, _maHiddenLoad, _allAcctLastResults,
-  orderMarginByCoin, spotByCoin, SLICE_DUST, isSpotCoin, _watchSpotNameMap)
+  orderMarginByCoin, spotByCoin, SLICE_DUST, isSpotCoin, _watchSpotNameMap, shownAccountValue)
 const _allocationSlices = () => call()._allocationSlices()
 
 let pass = 0, fail = 0
@@ -253,6 +257,54 @@ console.log('\n-- All Accounts reads the rows, not state.spotState --')
   t('and with orders visible it reports them', r.orders > 0, `got ${r.orders}`)
   mids = {}
   _allAcctLastResults = []
+}
+
+console.log('\n-- the wheel agrees with the account card --')
+{
+  // Reported as "why does allocation total equity not match the account equity": $6,814.39 in
+  // the wheel against $6,880.03 on the card. Both were honest — the card is a server snapshot
+  // carried forward by a perp delta, the wheel is the sum of live parts — and two honest
+  // constructions of one quantity land a fraction of a percent apart. On screen that is just
+  // two different numbers for the same thing.
+  const setup = (shown) => {
+    _shownEquity = shown
+    state = {
+      perpState: { withdrawable: '100', marginSummary: { accountValue: '500', totalMarginUsed: '200' },
+                   assetPositions: [pos('BTC', 1, 200, 2000, 0)] },
+      spotState: { balances: [] },
+      openOrders: [],
+    }
+    return _allocationSlices()
+  }
+
+  // Parts: 200 positions + 200 orders (500-200-100) + 0 spot + 100 free = 500.
+  let r = setup(null)
+  t('with no card painted yet it reports its own parts', near(r.total, 500) && near(r.free, 100), JSON.stringify({ t: r.total, f: r.free }))
+
+  // The card says 512. The extra 12 is not committed to anything, so it is cash.
+  r = setup(512)
+  t('the total is the number the card shows', near(r.total, 512), String(r.total))
+  t('and the remainder lands in free margin', near(r.free, 112), String(r.free))
+  t('the other three buckets are untouched', near(r.used, 200) && near(r.orders, 200) && r.spot === 0)
+
+  // Below the reported free margin is just as legitimate — HL's withdrawable is a floor, and
+  // a snapshot half a second old can sit either side of the live parts.
+  r = setup(488)
+  t('it works downward too', near(r.total, 488) && near(r.free, 88), JSON.stringify({ t: r.total, f: r.free }))
+
+  // The guard is the point. Absorbing a small unattributed amount into cash is right;
+  // absorbing a large one would hide a real bug in one of the other buckets behind a
+  // plausible total. Past 5% the wheel reports its parts and the two numbers disagree
+  // VISIBLY, which is the correct signal.
+  r = setup(900)
+  t('a big disagreement is not absorbed', near(r.total, 500) && near(r.free, 100), JSON.stringify({ t: r.total, f: r.free }))
+  t('so the mismatch stays visible rather than being papered over', r.total !== 900)
+
+  // Parts exceeding the card would make free negative, which is not a slice.
+  r = setup(350)
+  t('free never goes negative', r.free >= 0 && near(r.total, 500), JSON.stringify({ t: r.total, f: r.free }))
+
+  _shownEquity = null
 }
 
 console.log('\n-- the health ring is the way in, and it has to work --')
