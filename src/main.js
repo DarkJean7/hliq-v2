@@ -3597,15 +3597,41 @@ function _freeMarginUsd() {
 // Free margin is drawn in USDC's brand blue rather than a hashed coin colour, so the slice
 // names what it is (cash) instead of looking like one more traded asset. Fixed hex, not a
 // theme token: it is a brand colour and reads the same in light and dark.
+// One colour per place money can be. Fixed hex rather than theme tokens: these four read as a
+// legend and have to stay the same four colours in light and dark. USDC blue for cash, and the
+// order reserve is the same blue dimmed, because it IS cash — just cash you cannot spend.
 const _ALLOC_FREE_COLOR = '#2775CA'
-// Reserved margin is cash too — it is just cash you cannot spend — so it takes the same brand
-// blue, dimmed, rather than a hashed coin colour it would share with an unrelated asset.
-const _ALLOC_ORD_COLOR = '#7FA9DC'
-const _allocColor = s => s.isFree ? _ALLOC_FREE_COLOR : s.isOrders ? _ALLOC_ORD_COLOR : _coinColor(s.coin)
-const _allocLabel = s => s.isFree   ? _T('Free margin', 'Margen libre')
-                       : s.isOrders ? _T('In orders', 'En órdenes')
-                       : s.isSpot   ? _ocCoinLabel(s.coin) + ' · ' + _T('Spot', 'Spot')
-                       : _ocCoinLabel(s.coin)
+const _ALLOC_ORD_COLOR  = '#7FA9DC'
+const _ALLOC_POS_COLOR  = '#7B61FF'
+const _ALLOC_SPOT_COLOR = '#2EC5CE'
+const _ALLOC_GROUP = {
+  positions: { color: _ALLOC_POS_COLOR,  en: 'In positions', es: 'En posiciones' },
+  orders:    { color: _ALLOC_ORD_COLOR,  en: 'In orders',    es: 'En órdenes' },
+  spot:      { color: _ALLOC_SPOT_COLOR, en: 'Spot',         es: 'Spot' },
+  free:      { color: _ALLOC_FREE_COLOR, en: 'Free margin',  es: 'Margen libre' },
+}
+const _allocGroupColor = g => _ALLOC_GROUP[g.kind]?.color ?? 'var(--muted)'
+const _allocGroupLabel = (g) => {
+  const d = _ALLOC_GROUP[g.kind]
+  return d ? _T(d.en, d.es) : g.kind
+}
+// What a group is, in one line, for the centre readout and the card's subtitle.
+const _allocGroupSub = (g) => {
+  const n = g.items.length
+  if (g.kind === 'free')  return _T('Available to trade', 'Disponible para operar')
+  if (g.kind === 'spot')  return n + ' ' + (n === 1 ? _T('token', 'token') : _T('tokens', 'tokens'))
+  if (g.kind === 'orders') {
+    const c = g.items.reduce((a, x) => a + (x.count ?? 0), 0)
+    return c
+      ? `${c} ${c === 1 ? _T('order', 'orden') : _T('orders', 'órdenes')} · ${n} ${n === 1 ? _T('market', 'mercado') : _T('markets', 'mercados')}`
+      : _T('Held by resting orders', 'Retenido por órdenes en libro')
+  }
+  return n + ' ' + (n === 1 ? _T('asset', 'activo') : _T('assets', 'activos'))
+}
+// An item inside a group: a coin, a token, or the one unattributed order row.
+const _allocItemLabel = (it) => it.unattributed
+  ? _T('Not yet attributed', 'Sin asignar todavía')
+  : _ocCoinLabel(it.coin)
 
 /**
  * Price for anything that can sit on the spot side.
@@ -3676,6 +3702,11 @@ function _orderMarginReported() {
   const ps = state.perpState
   const carried = parseFloat(ps?._orderMargin)
   if (Number.isFinite(carried)) return Math.max(0, carried)
+  // The combined view has ONLY the carried figure. Its marginSummary.accountValue is the sum
+  // of wallet totals and already contains spot, so the residual below would hand back
+  // "orders + spot tokens" and count the tokens twice. Unknown is the honest answer, and the
+  // caller falls back to what the orders themselves say.
+  if (state.isAllAccounts) return null
   const av = parseFloat(ps?.marginSummary?.accountValue ?? NaN)
   const mu = parseFloat(ps?.marginSummary?.totalMarginUsed ?? NaN)
   const wd = parseFloat(ps?.withdrawable ?? NaN)
@@ -3698,6 +3729,10 @@ function _allocationSlices() {
     const key = p.coin
     const cur = byCoin.get(key) ?? { coin: key, margin: 0, notional: 0, size: 0, uPnl: 0, longs: 0, shorts: 0, accts: new Set() }
     cur.margin   += margin
+    // Kept apart from `margin`, which now also carries whatever this coin's resting orders
+    // are holding. Folding the two together is what made the position's own margin vanish
+    // from the row: one combined number with only the orders half named beside it.
+    cur.posMargin = (cur.posMargin ?? 0) + margin
     cur.notional += notional
     // GROSS, like notional above: a coin held long on one account and short on another has
     // margin posted against both, and netting the size to zero next to a non-zero margin and
@@ -3709,7 +3744,8 @@ function _allocationSlices() {
     if (p._acct) cur.accts.add(p._acct)
     byCoin.set(key, cur)
   }
-  const posMargin = [...byCoin.values()].reduce((s, x) => s + x.margin, 0)
+  const posRows = [...byCoin.values()].sort((a, b) => b.margin - a.margin)
+  const used    = posRows.reduce((s, x) => s + x.margin, 0)
 
   // ── margin resting orders are holding ──────────────────────────────────────
   //
@@ -3718,39 +3754,39 @@ function _allocationSlices() {
   // the wallet this was measured on. Attributed per coin from the orders themselves, then
   // reconciled to the account's own residual so the TOTAL is HL's number even where a
   // leverage guess for a coin with no open position is off.
+  //
   // A spot or outcome order is on a market with no leverage: a buy sits on the whole notional
   // in USDC (which `hold` has already taken out of free margin, so it would otherwise be money
-  // in neither place), and a sell sits on the token, which the spot slice below already counts.
+  // in neither place), and a sell sits on the token, which the spot group below already counts.
   const _cashMkt  = c => isSpotCoin(c, _watchSpotNameMap) || _lbIsOutcome(c)
   const ordByCoin = orderMarginByCoin(state.openOrders ?? [], _allocLevOf, _cashMkt)
   const ordSaid   = _orderMarginReported()
-  // HIP-3 orders reserve margin on a builder dex, which the main-dex residual never saw, so
-  // only the main-dex estimate is scaled onto it and builder coins keep their own figure.
-  // ...and neither reaches the main-dex residual either, so only plain perp coins are scaled
-  // onto it. A HIP-3 order reserves margin on a builder dex the residual never saw.
+  // HIP-3 orders reserve margin on a builder dex, which the main-dex residual never saw, and
+  // neither do cash markets — so only plain perp coins are scaled onto it.
   const isH3      = c => String(c).includes(':')
   const scaled    = v => !isH3(v.coin) && !v.cash
   const mainEst   = [...ordByCoin.values()].filter(scaled).reduce((s, v) => s + v.margin, 0)
-  const scale     = (ordSaid != null && mainEst > SLICE_DUST) ? ordSaid / mainEst : 1
+  // Scale onto the account's own figure only when there IS one and it is not zero. A zero
+  // here used to wipe out every order slice; if the account says nothing is reserved while
+  // orders are visibly resting, the orders are the better evidence and the estimate stands.
+  const scale     = (ordSaid > SLICE_DUST && mainEst > SLICE_DUST) ? ordSaid / mainEst : 1
+  const ordRows   = []
   for (const v of ordByCoin.values()) {
-    const m = scaled(v) ? v.margin * scale : v.margin
-    if (!(m > SLICE_DUST)) continue
-    const cur = byCoin.get(v.coin) ?? { coin: v.coin, margin: 0, notional: 0, size: 0, uPnl: 0, longs: 0, shorts: 0, accts: new Set() }
-    cur.margin    += m
-    cur.ordMargin  = (cur.ordMargin ?? 0) + m
-    cur.ordCount   = (cur.ordCount  ?? 0) + v.count
-    cur.ordBuys    = (cur.ordBuys   ?? 0) + v.buys
-    cur.ordSells   = (cur.ordSells  ?? 0) + v.sells
-    byCoin.set(v.coin, cur)
+    const margin = scaled(v) ? v.margin * scale : v.margin
+    if (!(margin > SLICE_DUST)) continue
+    ordRows.push({ ...v, margin, uPnl: 0, size: 0, longs: 0, shorts: 0 })
   }
+  ordRows.sort((a, b) => b.margin - a.margin)
   // Margin the account says is reserved that no visible order explains: the orders list lags
-  // the state by a tick, or every resting order is on a dex whose book has not loaded. Shown
-  // as one slice rather than folded into free margin, which is the lie this is undoing.
+  // the clearinghouse state by a tick, and by up to five minutes in the combined view. Kept
+  // as an unattributed row rather than folded into free margin, which is the lie this whole
+  // change is undoing — that money is not spendable.
   const ordOrphan = (ordSaid != null && mainEst <= SLICE_DUST) ? ordSaid : 0
-  const ordTotal  = [...byCoin.values()].reduce((s, x) => s + (x.ordMargin ?? 0), 0) + ordOrphan
-
-  const slices = [...byCoin.values()].sort((a, b) => b.margin - a.margin)
-  const used   = posMargin
+  if (ordOrphan > SLICE_DUST) ordRows.push({
+    coin: 'USDC', unattributed: true, margin: ordOrphan,
+    count: 0, buys: 0, sells: 0, notional: 0, uPnl: 0, size: 0, longs: 0, shorts: 0, accts: new Set(),
+  })
+  const orders = ordRows.reduce((s, x) => s + x.margin, 0)
 
   // ── spot holdings ──────────────────────────────────────────────────────────
   //
@@ -3761,34 +3797,39 @@ function _allocationSlices() {
   const spotRows = [...spotByCoin(_allocSpotBalances(), _allocSpotMid).values()]
     .filter(h => h.usd > SLICE_DUST)
     .sort((a, b) => b.usd - a.usd)
-  for (const h of spotRows) slices.push({
-    coin: h.coin, isSpot: true, margin: h.usd, spotCost: h.cost,
-    notional: 0, size: h.size, uPnl: h.cost > 0 ? h.usd - h.cost : 0,
-    longs: 0, shorts: 0, accts: h.accts,
-  })
-  const spot = spotRows.reduce((s, h) => s + h.usd, 0)
-
-  if (ordOrphan > SLICE_DUST) slices.push({
-    coin: 'USDC', isOrders: true, margin: ordOrphan,
-    notional: 0, size: 0, uPnl: 0, longs: 0, shorts: 0, accts: new Set(),
-  })
+    .map(h => ({
+      coin: h.coin, isSpot: true, margin: h.usd, spotCost: h.cost, px: h.px,
+      notional: 0, size: h.size, uPnl: h.cost > 0 ? h.usd - h.cost : 0,
+      longs: 0, shorts: 0, accts: h.accts,
+    }))
+  const spot = spotRows.reduce((s, h) => s + h.margin, 0)
 
   const free = _freeMarginUsd()
-  // Ride free margin along as its own slice so the ring describes the whole account and
-  // not just the deployed part — an account sitting mostly in cash used to draw a full
-  // ring and read as fully committed. Pinned last rather than sorted in: it is not a
-  // position, and keeping it at the end stops it reshuffling the assets as cash moves.
-  if (free > 0) slices.push({
-    coin: 'USDC', isFree: true, margin: free,
-    notional: 0, size: 0, uPnl: 0, longs: 0, shorts: 0, accts: new Set(),
-  })
+
+  // ── the ring is money, not assets ──────────────────────────────────────────
+  //
+  // It used to draw one arc per coin, sized by that coin's margin. Asked for directly: "the
+  // allocation ring should be based on the overall account value... instead of the ring being
+  // distributed based on value it should be with the real money available to trade, the
+  // margin used in positions, orders, etc."
+  //
+  // So the arcs are the four places money can be, and the assets live inside them — each
+  // group opens to its own rows. Free margin is pinned last: it is not a commitment, and
+  // keeping it at the end stops it reshuffling the others as cash moves.
+  const groups = [
+    { kind: 'positions', value: used,   items: posRows  },
+    { kind: 'orders',    value: orders, items: ordRows  },
+    { kind: 'spot',      value: spot,   items: spotRows },
+    { kind: 'free',      value: free,   items: []       },
+  ].filter(g => g.value > SLICE_DUST)
+
   // hasAny gates the empty state: free margin on its own must not turn "nothing open" into a
   // ring that is 100% one grey slice — but a wallet holding only spot, or only resting
   // orders, DOES have something to show and used to get the empty state anyway.
   return {
-    slices, total: used + ordTotal + spot + free,
-    used, orders: ordTotal, spot, free,
-    hasAny: byCoin.size > 0 || spotRows.length > 0 || ordOrphan > SLICE_DUST,
+    groups, total: used + orders + spot + free,
+    used, orders, spot, free,
+    hasAny: groups.some(g => g.kind !== 'free'),
   }
 }
 
@@ -3800,10 +3841,11 @@ window.__allocParts = () => {
   return { total, used, orders, spot, free }
 }
 
-// How much of the coin a slice is: "41.83 HYPE". Empty for free margin, which is already
-// dollars -- "1,234.00 USDC" under $1,234.00 is the same number twice.
+// How much of the coin a row is: "41.83 HYPE". Empty where there is no coin to count — cash,
+// and an order reserve, which are already dollars. "1,234.00 USDC" under $1,234.00 is just
+// the same number twice.
 function _allocSizeTxt(s) {
-  if (s.isFree || s.isOrders || !(s.size > 0)) return ''
+  if (!(s?.size > 0) || s.unattributed) return ''
   return fmtSize(s.size) + ' ' + _ocCoinLabel(s.coin)
 }
 
@@ -3812,10 +3854,10 @@ function _allocSizeTxt(s) {
 let _allocSlices = [], _allocCenterHtml = ''
 const _ALLOC_SW = 18, _ALLOC_SW_HI = 26
 
-// Highlight one slice: thicken it, dim the rest, and swap the centre to that asset's numbers.
+// Highlight one bucket: thicken its arc, dim the rest, and swap the centre to its numbers.
 window.__allocHover = function(i) {
-  const s = _allocSlices[i]
-  if (!s) return
+  const g = _allocSlices[i]
+  if (!g) return
   document.querySelectorAll('[data-alloc-arc]').forEach(a => {
     const on = a.dataset.allocArc === String(i)
     a.setAttribute('stroke-width', String(on ? _ALLOC_SW_HI : _ALLOC_SW))
@@ -3825,28 +3867,21 @@ window.__allocHover = function(i) {
     r.style.background = r.dataset.allocRow === String(i) ? 'var(--panel-2)' : ''
   })
   const c = document.getElementById('allocCenter')
-  // Cash has no notional and no PnL — rendering "$0.00 position value / +$0.00" for it
-  // would read as a broken position rather than as uncommitted margin.
-  const detail = s.isFree
-    ? `<div style="font-size:12px;color:var(--muted)">${_T('Available to trade', 'Disponible para operar')}</div>`
-    : s.isOrders
-    ? `<div style="font-size:12px;color:var(--muted)">${_T('Held by resting orders', 'Retenido por órdenes en libro')}</div>`
-    : s.isSpot
-    ? `<div style="font-size:12px;color:var(--muted)">${_prv(_allocSizeTxt(s))}</div>
-       <div style="font-size:12px;color:var(--muted)">${_T('Spot holding', 'Tenencia spot')}</div>
-       ${s.spotCost > 0 ? `<div style="font-size:12px;font-weight:600;margin-top:1px" class="${s.uPnl >= 0 ? 'pos' : 'neg'}">${s.uPnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(s.uPnl))}</div>` : ''}`
-    : `<div style="font-size:12px;color:var(--muted)">${_prv(_allocSizeTxt(s))}</div>
-       <div style="font-size:12px;color:var(--muted)">${_prv('$' + fmtUSD(s.notional, 2))} position value</div>
-       ${s.ordMargin > 0 ? `<div style="font-size:12px;color:var(--muted)">${_prv('$' + fmtUSD(s.ordMargin))} ${_T('in', 'en')} ${s.ordCount} ${s.ordCount === 1 ? _T('order', 'orden') : _T('orders', 'órdenes')}</div>` : ''}
-       <div style="font-size:12px;font-weight:600;margin-top:1px" class="${s.uPnl >= 0 ? 'pos' : 'neg'}">${s.uPnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(s.uPnl))}</div>`
-  if (c) c.innerHTML = `
+  if (!c) return
+  // The biggest few things inside the bucket, so the centre answers "of what" without
+  // needing the card opened. Cash has nothing inside it and says what it is for instead.
+  const top = g.items.slice(0, 3)
+    .map(it => `${esc(_allocItemLabel(it))} ${_prv('$' + fmtUSD(it.margin))}`)
+    .join(' · ')
+  c.innerHTML = `
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
-      <span style="width:9px;height:9px;border-radius:3px;background:${_allocColor(s)}"></span>
-      <span style="font-size:13px;font-weight:700;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_allocLabel(s))}</span>
+      <span style="width:9px;height:9px;border-radius:3px;background:${_allocGroupColor(g)}"></span>
+      <span style="font-size:13px;font-weight:700;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_allocGroupLabel(g))}</span>
     </div>
-    <div style="font-size:26px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv('$' + fmtUSD(s.margin, 2))}</div>
-    <div style="font-size:12px;color:var(--muted)">${s.pct.toFixed(1)}% ${_T('of equity', 'del patrimonio')}</div>
-    ${detail}`
+    <div style="font-size:26px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv('$' + fmtUSD(g.value, 2))}</div>
+    <div style="font-size:12px;color:var(--muted)">${g.pct.toFixed(1)}% ${_T('of equity', 'del patrimonio')}</div>
+    <div style="font-size:12px;color:var(--muted)">${esc(_allocGroupSub(g))}</div>
+    ${top ? `<div style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.35">${top}</div>` : ''}`
 }
 
 // Back to the totals view.
@@ -3860,25 +3895,33 @@ window.__allocLeave = function() {
   if (c) c.innerHTML = _allocCenterHtml
 }
 
+// Open or close one bucket's asset list. Kept in the module rather than in
+// _mobVExpandedIds so a repaint (every 5s) cannot forget what the reader opened.
+const _allocOpen = new Set(['orders'])
+window.__allocToggleGroup = function(kind) {
+  if (_allocOpen.has(kind)) _allocOpen.delete(kind); else _allocOpen.add(kind)
+  _allocRepaint()
+}
+
 function _mobVRenderAllocation(el) {
   if (_allocView === 'movers')   { _mobVRenderAttribution(el); return }
   if (_allocView === 'exposure') { _mobVRenderExposure(el); return }
   const header = _allocViewHeader()
-  const { slices, total, used, orders, spot, free, hasAny } = _allocationSlices()
-  if (!hasAny || !slices.length || total <= 0) {
+  const { groups, total, used, orders, spot, free, hasAny } = _allocationSlices()
+  if (!hasAny || !groups.length || total <= 0) {
     _allocSlices = []
     el.innerHTML = `${header}<div class="mob-v-empty">${_T('Nothing allocated yet — no positions, orders or spot holdings.', 'Nada asignado todavía — sin posiciones, órdenes ni tenencias spot.')}</div>`
     return
   }
 
-  // Cache each slice's share so the hover readout doesn't recompute it.
-  _allocSlices = slices.map(s => ({ ...s, pct: (s.margin / total) * 100 }))
+  // Cache each bucket's share so the hover readout doesn't recompute it.
+  _allocSlices = groups.map(g => ({ ...g, pct: (g.value / total) * 100 }))
 
   // Donut geometry. Segments are drawn as dashed arcs on stacked circles: each gets a dash of
   // its own arc length, offset by everything before it, with a small gap so slices read apart.
   // The radius leaves room for the thicker highlighted stroke so it can't clip at the edge.
   const SIZE = 260, R = (SIZE - _ALLOC_SW_HI) / 2 - 4, CX = SIZE / 2, C = 2 * Math.PI * R
-  const GAP  = slices.length > 1 ? Math.min(6, C * 0.012) : 0
+  const GAP  = _allocSlices.length > 1 ? Math.min(6, C * 0.012) : 0
   // Each slice is drawn twice: the visible arc (whose width animates on highlight) and an
   // invisible, FIXED-width hit band on top. Hit-testing the visible arc directly caused a
   // feedback loop — growing it moved its edge past the cursor, firing mouseleave, which shrank
@@ -3886,34 +3929,35 @@ function _mobVRenderAllocation(el) {
   // changes size, so the pointer target is stable.
   const HIT = _ALLOC_SW_HI + 8
   let acc = 0
-  const geo = _allocSlices.map(s => {
-    const frac = s.margin / total
+  const geo = _allocSlices.map(g => {
+    const frac = g.value / total
     const len  = Math.max(1, frac * C - GAP)
     const off  = -acc
     acc += frac * C
-    return { s, dash: `${len.toFixed(2)} ${(C - len).toFixed(2)}`, off: off.toFixed(2) }
+    return { g, dash: `${len.toFixed(2)} ${(C - len).toFixed(2)}`, off: off.toFixed(2) }
   })
-  const arcs = geo.map((g, i) =>
+  const arcs = geo.map((x, i) =>
     `<circle data-alloc-arc="${i}" cx="${CX}" cy="${CX}" r="${R}" fill="none"
-      stroke="${_allocColor(g.s)}" stroke-width="${_ALLOC_SW}"
-      stroke-dasharray="${g.dash}" stroke-dashoffset="${g.off}"
+      stroke="${_allocGroupColor(x.g)}" stroke-width="${_ALLOC_SW}"
+      stroke-dasharray="${x.dash}" stroke-dashoffset="${x.off}"
       transform="rotate(-90 ${CX} ${CX})" stroke-linecap="butt"
       style="pointer-events:none;transition:stroke-width .12s ease,opacity .12s ease"></circle>`
   ).join('')
   // pointer-events="stroke" makes a transparent stroke hit-testable (visiblePainted wouldn't).
-  const hits = geo.map((g, i) =>
+  const hits = geo.map((x, i) =>
     `<circle data-alloc-hit="${i}" cx="${CX}" cy="${CX}" r="${R}" fill="none"
       stroke="transparent" stroke-width="${HIT}" pointer-events="stroke"
-      stroke-dasharray="${g.dash}" stroke-dashoffset="${g.off}"
+      stroke-dasharray="${x.dash}" stroke-dashoffset="${x.off}"
       transform="rotate(-90 ${CX} ${CX})" stroke-linecap="butt" style="cursor:pointer"></circle>`
   ).join('')
 
-  const totalNotional = slices.reduce((s, x) => s + x.notional, 0)
-  const assetCount    = slices.filter(x => !x.isFree && !x.isOrders && !x.isSpot).length
-  // The ring now totals every place the account's money can be — positions, resting orders,
-  // spot tokens and cash — so it reads as the account's equity and the headline says so. It
-  // said TOTAL MARGIN over $2,737.75 while the same account showed $6,800 of equity, because
-  // the two categories it could see were the only two it counted.
+  const totalNotional = (groups.find(g => g.kind === 'positions')?.items ?? [])
+    .reduce((s, x) => s + x.notional, 0)
+  const assetCount    = (groups.find(g => g.kind === 'positions')?.items ?? []).length
+  // The ring totals every place the account's money can be — positions, resting orders, spot
+  // tokens and cash — so it reads as the account's equity and the headline says so. It said
+  // TOTAL MARGIN over $2,737.75 while the same account showed $6,800 of equity, because the
+  // two categories it could see were the only two it counted.
   //
   // Each part of the split is dropped when it is zero, so an account with no orders and no
   // spot gets exactly the two lines it used to.
@@ -3924,7 +3968,7 @@ function _mobVRenderAllocation(el) {
     <div style="font-size:28px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv('$' + fmtUSD(total, 2))}</div>
     ${line(part(used, 'in positions', 'en posiciones'), part(orders, 'in orders', 'en órdenes'))}
     ${line(part(spot, 'spot', 'spot'), part(free, 'free', 'libre'))}
-    <div style="font-size:11.5px;color:var(--muted)">${assetCount} asset${assetCount === 1 ? '' : 's'} · ${_prv('$' + fmtUSD(totalNotional))} position value</div>`
+    ${assetCount ? `<div style="font-size:11.5px;color:var(--muted)">${assetCount} asset${assetCount === 1 ? '' : 's'} · ${_prv('$' + fmtUSD(totalNotional))} position value</div>` : ''}`
 
   const wheel = `
     <div style="display:flex;justify-content:center;padding:18px 12px 6px">
@@ -3940,43 +3984,75 @@ function _mobVRenderAllocation(el) {
       </div>
     </div>`
 
-  const rows = _allocSlices.map((s, i) => {
-    const pnl   = s.uPnl
-    const cls   = pnl >= 0 ? 'pos' : 'neg'
-    // A coin with resting orders and no position has no sides to describe — saying "Long" of
-    // an order book that is only holding margin would invent a position that is not there.
-    const ordTxt = s.ordCount
-      ? `${s.ordCount} ${s.ordCount === 1 ? _T('order', 'orden') : _T('orders', 'órdenes')} · ${_prv('$' + fmtUSD(s.ordMargin))}`
-      : ''
-    const sides = !(s.longs || s.shorts) ? ''
-                : s.longs && s.shorts ? `${s.longs}L / ${s.shorts}S`
-                : s.shorts ? `${s.shorts > 1 ? s.shorts + ' ' : ''}Short`
-                : `${s.longs > 1 ? s.longs + ' ' : ''}Long`
-    const sizeTxt = _allocSizeTxt(s)
-    const acctTxt = s.accts.size ? ` · <span style="color:var(--accent)">${esc([...s.accts].join(', '))}</span>` : ''
-    const sub   = s.isFree   ? _T('Available to trade', 'Disponible para operar')
-                : s.isOrders ? _T('Held by resting orders', 'Retenido por órdenes en libro')
-                : s.isSpot   ? `${_T('Spot', 'Spot')} · ${_prv(fmtSize(s.size))} ${esc(_ocCoinLabel(s.coin))}${acctTxt}`
-                : [sides, sides ? `Value ${_prv('$' + fmtUSD(s.notional, 2))}` : '', ordTxt]
-                    .filter(Boolean).join(' · ') + acctTxt
-    // No PnL for cash or for reserved margin — neither has a result yet, and the right-hand
-    // column is share-of-equity only. A spot holding transferred in has no cost basis either.
-    const noPnl = s.isFree || s.isOrders || (s.isSpot && !(s.spotCost > 0))
-    const right = noPnl ? `<div class="mob-v-row-pct" style="color:var(--muted)">${s.pct.toFixed(1)}%</div>`
-                        : `<div class="mob-v-row-pct ${cls}">${s.pct.toFixed(1)}% · ${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}</div>`
-    // Rows drive the same highlight — the arcs are thin to hit accurately on a phone.
-    return `<div class="mob-v-row" data-alloc-row="${i}" style="cursor:pointer;transition:background .12s ease">
-      <span style="width:10px;height:10px;border-radius:3px;background:${_allocColor(s)};flex-shrink:0;margin-right:10px"></span>
-      <div style="width:28px;height:28px;border-radius:50%;overflow:hidden;background:var(--panel-2);flex-shrink:0;margin-right:10px">${_coinIconHtml(s.coin)}</div>
+  // ── one card per bucket, opening to the assets inside it ────────────────────
+  //
+  // Asked for directly, about orders: "make it like all orders be under a card called
+  // 'orders', when its pressed it should extend and show order cards based on assets". The
+  // other three work the same way, because a list where one category behaves differently from
+  // its neighbours reads as a bug.
+  const itemRow = (g, it) => {
+    const cls   = it.uPnl >= 0 ? 'pos' : 'neg'
+    const acct  = it.accts?.size ? ` · <span style="color:var(--accent)">${esc([...it.accts].join(', '))}</span>` : ''
+    let sub = ''
+    if (g.kind === 'positions') {
+      const sides = it.longs && it.shorts ? `${it.longs}L / ${it.shorts}S`
+                  : it.shorts ? `${it.shorts > 1 ? it.shorts + ' ' : ''}Short`
+                  : `${it.longs > 1 ? it.longs + ' ' : ''}Long`
+      // Margin and position value are both dollars, so without the token amount nothing on
+      // the row says how much of the coin is actually held.
+      const szTxt = _allocSizeTxt(it)
+      sub = [sides, szTxt ? _prv(szTxt) : '', `Value ${_prv('$' + fmtUSD(it.notional, 2))}`]
+        .filter(Boolean).join(' · ') + acct
+    } else if (g.kind === 'orders') {
+      // No direction word here: an order book holding margin is not a position, and calling
+      // it "Long" would invent one.
+      const n    = it.count ?? 0
+      const legs = [
+        it.buys  ? `${it.buys} ${it.buys === 1 ? _T('buy', 'compra') : _T('buys', 'compras')}` : '',
+        it.sells ? `${it.sells} ${it.sells === 1 ? _T('sell', 'venta') : _T('sells', 'ventas')}` : '',
+      ].filter(Boolean).join(' / ')
+      sub = it.unattributed
+        ? _T('Reserved by the exchange, orders not loaded yet', 'Reservado por el exchange, órdenes aún sin cargar')
+        : `${n} ${n === 1 ? _T('order', 'orden') : _T('orders', 'órdenes')}${legs ? ' · ' + legs : ''} · ${_T('Notional', 'Nocional')} ${_prv('$' + fmtUSD(it.notional, 2))}${acct}`
+    } else {
+      sub = `${_prv(_allocSizeTxt(it))}${it.px ? ` · $${fmtPrice(it.px)}` : ''}${acct}`
+    }
+    // PnL only where there is a result: an order reserve has none, and a spot holding
+    // transferred in rather than bought has no cost basis to measure against.
+    const showPnl = g.kind === 'positions' || (g.kind === 'spot' && it.spotCost > 0)
+    return `<div class="mob-v-row" style="padding-left:30px">
+      <div style="width:26px;height:26px;border-radius:50%;overflow:hidden;background:var(--panel-2);flex-shrink:0;margin-right:10px">${it.unattributed ? '' : _coinIconHtml(it.coin)}</div>
       <div class="mob-v-row-info">
-        <div class="mob-v-row-name">${esc(_allocLabel(s))}</div>
+        <div class="mob-v-row-name">${esc(_allocItemLabel(it))}</div>
         <div class="mob-v-row-sub">${sub}</div>
       </div>
       <div class="mob-v-row-right">
-        <div class="mob-v-row-val">${_prv('$' + fmtUSD(s.margin, 2))}</div>
-        ${sizeTxt ? `<div style="font-size:11px;color:var(--muted);font-family:var(--font-mono);white-space:nowrap">${_prv(sizeTxt)}</div>` : ''}
-        ${right}
+        <div class="mob-v-row-val">${_prv('$' + fmtUSD(it.margin, 2))}</div>
+        ${showPnl ? `<div class="mob-v-row-pct ${cls}">${it.uPnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(it.uPnl))}</div>`
+                  : `<div class="mob-v-row-pct" style="color:var(--muted)">${((it.margin / total) * 100).toFixed(1)}%</div>`}
       </div>
+    </div>`
+  }
+
+  const rows = _allocSlices.map((g, i) => {
+    const open = _allocOpen.has(g.kind) && g.items.length > 0
+    const chev = g.items.length
+      ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;margin-left:8px;transition:transform .2s${open ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>`
+      : ''
+    return `<div data-alloc-group="${g.kind}">
+      <div class="mob-v-row" data-alloc-row="${i}" style="cursor:pointer;transition:background .12s ease">
+        <span style="width:10px;height:10px;border-radius:3px;background:${_allocGroupColor(g)};flex-shrink:0;margin-right:10px"></span>
+        <div class="mob-v-row-info">
+          <div class="mob-v-row-name" style="font-weight:800">${esc(_allocGroupLabel(g))}</div>
+          <div class="mob-v-row-sub">${esc(_allocGroupSub(g))}</div>
+        </div>
+        <div class="mob-v-row-right">
+          <div class="mob-v-row-val">${_prv('$' + fmtUSD(g.value, 2))}</div>
+          <div class="mob-v-row-pct" style="color:var(--muted)">${g.pct.toFixed(1)}%</div>
+        </div>
+        ${chev}
+      </div>
+      ${open ? g.items.map(it => itemRow(g, it)).join('') : ''}
     </div>`
   }).join('')
 
@@ -3998,7 +4074,13 @@ function _mobVRenderAllocation(el) {
     // Touch selects and stays put (no timer clearing it out from under you); tapping another
     // slice or row switches the selection.
     node.addEventListener('touchstart', () => window.__allocHover(i), { passive: true })
-    node.addEventListener('click',      () => window.__allocHover(i))
+    // A tap on the CARD also opens it. The arc only highlights — there is nothing to expand
+    // out there, and a ring that reflowed the list under the reader's thumb would be worse.
+    node.addEventListener('click', () => {
+      window.__allocHover(i)
+      const kind = node.dataset.allocRow != null ? _allocSlices[i]?.kind : null
+      if (kind && _allocSlices[i]?.items.length) window.__allocToggleGroup(kind)
+    })
   })
 }
 
@@ -8934,6 +9016,7 @@ function _allAcctReaggregate() {
 function _aggPerpState(results) {
   const assetPositions = []
   let accountValue = 0, totalNtl = 0, totalMarginUsed = 0, maint = 0, withdrawable = 0, orderMargin = 0
+  let orderMarginKnown = results.length > 0
   for (const r of results) {
     const acctLabel = r.label || r.addr.slice(0, 6) + '…'
     for (const ap of (r.positions ?? [])) {
@@ -8945,7 +9028,15 @@ function _aggPerpState(results) {
     accountValue += parseFloat(r.accountValue ?? 0)
     maint        += parseFloat(r.maintMargin ?? 0)
     withdrawable += parseFloat(r.withdrawable ?? 0)
-    orderMargin  += parseFloat(r._orderMargin ?? 0)
+    // Empty is not unknown, again. A row restored from the persisted cache, or one written
+    // before this field existed, has no _orderMargin — and `?? 0` turned "this wallet has not
+    // said" into "this wallet has none". The sum then read 0, which the wheel took as
+    // authoritative and scaled every order slice down to nothing: reserved margin vanished
+    // from both the ring and the breakdown. One silent row is enough to do it, so the whole
+    // sum is refused rather than under-reported.
+    const om = parseFloat(r._orderMargin)
+    if (Number.isFinite(om)) orderMargin += om
+    else orderMarginKnown = false
   }
   return {
     assetPositions,
@@ -8955,7 +9046,8 @@ function _aggPerpState(results) {
     // Summed from the rows, not derivable here: the residual that works on one wallet
     // (accountValue - totalMarginUsed - withdrawable) cannot work on this synthetic state,
     // whose accountValue is the sum of wallet TOTALS and therefore already carries spot.
-    _orderMargin: orderMargin,
+    // null, never 0, when any wallet has yet to report one.
+    _orderMargin: orderMarginKnown ? orderMargin : null,
   }
 }
 

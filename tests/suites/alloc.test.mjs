@@ -71,24 +71,33 @@ state = {
   spotState: { balances: [{ coin: 'USDC', total: '100', hold: '40' }] },
 }
 let r = _allocationSlices()
+// Helpers: the ring is four money buckets now, and the coins live inside them.
+const grp   = (k) => r.groups.find(g => g.kind === k)
+const items = (k) => grp(k)?.items ?? []
+const item  = (k, coin) => items(k).find(i => i.coin === coin)
+
 t('free = perp withdrawable + unheld spot USDC', near(r.free, 310), `got ${r.free}`)
 t('used = sum of position margin', near(r.used, 744.89), `got ${r.used}`)
 t('total = used + free', near(r.total, 1054.89), `got ${r.total}`)
-t('free slice appended', r.slices.length === 3)
-t('free slice is pinned LAST', r.slices.at(-1).isFree === true)
-t('free slice carries no notional/PnL', r.slices.at(-1).notional === 0 && r.slices.at(-1).uPnl === 0)
-t('assets still sorted by margin desc', r.slices[0].coin === 'HYPE' && r.slices[1].coin === 'PUMP')
+t('two buckets have money in them', r.groups.length === 2)
+t('and an empty one is not drawn', !grp('orders') && !grp('spot'))
+t('free margin is pinned LAST', r.groups.at(-1).kind === 'free')
+t('cash has nothing to open', grp('free').items.length === 0)
+t('the assets are inside the positions bucket, sorted by margin desc',
+  items('positions').map(i => i.coin).join(',') === 'HYPE,PUMP')
 t('hasAny true', r.hasAny === true)
-const pcts = r.slices.map(s => (s.margin / r.total) * 100)
+const pcts = r.groups.map(g => (g.value / r.total) * 100)
 t('percentages sum to 100', near(pcts.reduce((a, b) => a + b, 0), 100), `got ${pcts.reduce((a,b)=>a+b,0)}`)
-t('HYPE share is of the NEW total (was 46.8% of margin-only)',
-  Math.abs(pcts[0] - 48.42) < 0.01, `got ${pcts[0].toFixed(2)}`)
+// The arc is the bucket, but an asset's share is still of the whole account — that is what
+// makes the wheel readable against the equity card.
+t('an asset share is of the NEW total (was 46.8% of margin-only)',
+  Math.abs((item('positions', 'HYPE').margin / r.total) * 100 - 48.42) < 0.01)
 
 // ── no free cash: behaviour must be exactly as before ─────────────────────────
 state = { perpState: { withdrawable: '0', assetPositions: [pos('HYPE', 1, 100, 1000, 5)] },
           spotState: { balances: [] } }
 r = _allocationSlices()
-t('no free slice when free = 0', r.slices.length === 1 && !r.slices[0].isFree)
+t('no free bucket when free = 0', r.groups.length === 1 && r.groups[0].kind === 'positions')
 t('total unchanged when free = 0', near(r.total, 100))
 
 // ── free cash but NO positions: empty state must still win ────────────────────
@@ -100,7 +109,7 @@ t('hasAny false with cash only', r.hasAny === false)
 state = { perpState: { withdrawable: '-12', assetPositions: [pos('X', 1, 50, 500, 0)] },
           spotState: { balances: [{ coin: 'USDC', total: '10', hold: '99' }] } }
 r = _allocationSlices()
-t('negative withdrawable clamps to 0 (no free slice)', r.free === 0 && r.slices.length === 1)
+t('negative withdrawable clamps to 0 (no free bucket)', r.free === 0 && r.groups.length === 1)
 
 // ── spot USDC fully on hold contributes nothing ───────────────────────────────
 state = { perpState: { withdrawable: '0', assetPositions: [pos('X', 1, 50, 500, 0)] },
@@ -130,22 +139,22 @@ console.log('\n-- margin held by resting orders is money too --')
     ],
   }
   r = _allocationSlices()
+  const g = (k) => r.groups.find(x => x.kind === k)
+  const it = (k, c) => (g(k)?.items ?? []).find(x => x.coin === c)
   // accountValue - totalMarginUsed - withdrawable. That residual IS the reserved margin, and
   // on a live wallet it agreed with the per-order sum to the cent over 18 orders.
-  t('the account residual is what the total comes to', near(r.orders, 980.30 - 268.27 - 1.98, 1e-9), `got ${r.orders}`)
+  t('the account residual is what the bucket comes to', near(r.orders, 980.30 - 268.27 - 1.98, 1e-9), `got ${r.orders}`)
+  t('orders are a bucket of their own, in the ring and the list', !!g('orders'))
   t('and the wheel totals the whole account', near(r.total, r.used + r.orders + r.spot + r.free, 1e-9))
-  const hype = r.slices.find(s => s.coin === 'HYPE')
-  const sol  = r.slices.find(s => s.coin === 'SOL')
-  t('a coin with orders and no position gets a slice', !!hype && !!sol)
-  t('and it is attributed, not lumped', hype.ordMargin > 0 && sol.ordMargin > 0)
-  t('the reserve splits by notional', hype.ordMargin > sol.ordMargin, `${hype.ordMargin} vs ${sol.ordMargin}`)
-  t('an orders-only coin reports no position', hype.longs === 0 && hype.shorts === 0)
-  t('the order count is on the slice', hype.ordCount === 2 && sol.ordCount === 1)
+  t('a coin with orders and no position is inside it', !!it('orders', 'HYPE') && !!it('orders', 'SOL'))
+  t('the reserve splits by notional', it('orders', 'HYPE').margin > it('orders', 'SOL').margin)
+  t('the order count travels with it', it('orders', 'HYPE').count === 2 && it('orders', 'SOL').count === 1)
   // A reduce-only order closes something that already exists, and a position TP/SL is the
   // same. Counting either would inflate the reserve by the whole size of every stop resting.
-  const zro = r.slices.find(s => s.coin === 'ZRO')
-  t('reduce-only and TP/SL post no margin of their own', !(zro.ordMargin > 0), String(zro.ordMargin))
-  t('a position keeps its own margin', near(zro.margin, 268.27))
+  t('reduce-only and TP/SL post no margin of their own', !it('orders', 'ZRO'))
+  // The position bucket is untouched by any of it: its number is margin the POSITION posted.
+  t('a position keeps its own margin, apart from the reserve', near(it('positions', 'ZRO').margin, 268.27))
+  t('and the two buckets do not overlap', near(r.used, 268.27))
 }
 
 console.log('\n-- reserved margin nothing explains is still shown --')
@@ -160,8 +169,10 @@ console.log('\n-- reserved margin nothing explains is still shown --')
     openOrders: [],
   }
   r = _allocationSlices()
-  t('it gets its own slice', r.slices.some(s => s.isOrders))
-  t('worth what the account said', near(r.orders, 390))
+  const og = r.groups.find(g => g.kind === 'orders')
+  t('the bucket is still there', !!og)
+  t('worth what the account said', near(og.value, 390))
+  t('with one row saying it is not attributed yet', og.items.length === 1 && og.items[0].unattributed === true)
   t('free margin stays what can actually be withdrawn', near(r.free, 10))
   t('and it is not counted twice', near(r.total, 100 + 390 + 10))
 }
@@ -181,21 +192,22 @@ console.log('\n-- spot holdings are part of the account --')
     openOrders: [],
   }
   r = _allocationSlices()
+  const sg = r.groups.find(g => g.kind === 'spot')
   t('spot is counted', near(r.spot, 3.81743312 * 93.5695 + 199.8656 * 0.28223, 1e-6), `got ${r.spot}`)
   t('and reaches the total', near(r.total, r.used + r.orders + r.spot + r.free, 1e-9))
-  const spotSlices = r.slices.filter(s => s.isSpot)
-  t('one slice per token', spotSlices.length === 2)
-  // USDC is cash and is already counted as free margin; a second slice for it would be the
+  t('one row per token', sg.items.length === 2)
+  // USDC is cash and is already counted as free margin; a second row for it would be the
   // same dollars twice.
-  t('USDC is not one of them', !spotSlices.some(s => s.coin === 'USDC'))
-  t('a dust balance is left off the wheel', !spotSlices.some(s => s.coin === 'DUST'))
-  t('a spot slice carries its token amount', near(spotSlices.find(s => s.coin === 'HYPE').size, 3.81743312))
-  t('with a cost basis it shows PnL', near(spotSlices.find(s => s.coin === 'HYPE').uPnl, 3.81743312 * 93.5695 - 300, 1e-6))
-  t('without one it claims none', spotSlices.find(s => s.coin === 'KNTQ').uPnl === 0)
+  t('USDC is not one of them', !sg.items.some(i => i.coin === 'USDC'))
+  t('a dust balance is left off the wheel', !sg.items.some(i => i.coin === 'DUST'))
+  t('a spot row carries its token amount', near(sg.items.find(i => i.coin === 'HYPE').size, 3.81743312))
+  t('with a cost basis it shows PnL', near(sg.items.find(i => i.coin === 'HYPE').uPnl, 3.81743312 * 93.5695 - 300, 1e-6))
+  t('without one it claims none', sg.items.find(i => i.coin === 'KNTQ').uPnl === 0)
   // The same coin held as a perp position AND as spot is two different things in two
-  // different places, so it is two slices.
+  // different places, so it appears once in each bucket and never merged.
   t('spot HYPE does not merge into the HYPE position',
-    r.slices.filter(s => s.coin === 'HYPE').length === 2)
+    !!sg.items.find(i => i.coin === 'HYPE') &&
+    !!r.groups.find(g => g.kind === 'positions').items.find(i => i.coin === 'HYPE'))
 
   // An account holding nothing but spot used to get "no open positions to allocate".
   state = { perpState: { withdrawable: '0', assetPositions: [] },
@@ -211,8 +223,8 @@ console.log('\n-- All Accounts reads the rows, not state.spotState --')
   // that only reads state is how the Spot tab shipped broken twice.
   mids = { KNTQ: 0.25 }
   _allAcctLastResults = [
-    { addr: '0xa', label: 'One', spotBalances: [{ coin: 'KNTQ', total: '100' }] },
-    { addr: '0xb', label: 'Two', spotBalances: [{ coin: 'KNTQ', total: '40' }] },
+    { addr: '0xa', label: 'One', spotBalances: [{ coin: 'KNTQ', total: '100' }], _orderMargin: 40 },
+    { addr: '0xb', label: 'Two', spotBalances: [{ coin: 'KNTQ', total: '40' }],  _orderMargin: 37 },
     { addr: '0xc', label: 'Bad', error: 'rate limited', spotBalances: [{ coin: 'KNTQ', total: '999' }] },
   ]
   state = {
@@ -222,14 +234,23 @@ console.log('\n-- All Accounts reads the rows, not state.spotState --')
     openOrders: [],
   }
   r = _allocationSlices()
+  const sg = r.groups.find(g => g.kind === 'spot')
   t('a wallet\'s spot tokens reach the wheel', near(r.spot, 140 * 0.25), `got ${r.spot}`)
-  t('the same token on two wallets is one slice', r.slices.filter(s => s.isSpot).length === 1)
-  t('tagged with the accounts holding it',
-    [...r.slices.find(s => s.isSpot).accts].sort().join(',') === 'One,Two')
+  t('the same token on two wallets is one row', sg.items.length === 1)
+  t('tagged with the accounts holding it', [...sg.items[0].accts].sort().join(',') === 'One,Two')
   t('a wallet that errored is left out', !near(r.spot, (140 + 999) * 0.25))
   // The single-wallet residual cannot work here: this accountValue is the sum of wallet
   // TOTALS, so it already contains spot. Each row carries its own and _aggPerpState sums them.
   t('reserved margin comes from the summed rows', near(r.orders, 77))
+
+  // And a wallet that has not reported one yet must not drag the sum to zero — the bug that
+  // made orders vanish from the ring and the breakdown entirely. Unknown, not none.
+  state.perpState._orderMargin = null
+  r = _allocationSlices()
+  t('an unknown reserve falls back to the orders themselves, not to nothing', r.orders === 0)
+  state.openOrders = [{ coin: 'SOL', side: 'B', sz: '10', limitPx: '100', _acctAddr: '0xa' }]
+  r = _allocationSlices()
+  t('and with orders visible it reports them', r.orders > 0, `got ${r.orders}`)
   mids = {}
   _allAcctLastResults = []
 }

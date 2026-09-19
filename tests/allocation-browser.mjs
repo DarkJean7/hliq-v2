@@ -158,29 +158,87 @@ console.log(NL + '-- and says so on screen --')
   t('and spot', /\bspot\b/i.test(txt), true)
 }
 
-console.log(NL + '-- a coin with orders and no position gets a row --')
+console.log(NL + '-- the ring is money, not assets --')
 {
-  const rows = await p.evaluate(() => [...document.querySelectorAll('#mobVContent .mob-v-row')]
-    .map(r => r.innerText.replace(/\s+/g, ' ')))
-  const sol = rows.find(r => /^SOL/.test(r))
-  t('SOL is on the wheel at all', !!sol, true)
-  // It has no position, so it must not claim one.
-  t('and it does not invent a direction', !/Long|Short/.test(sol ?? ''), true)
-  t('it says how many orders instead', /2 orders/.test(sol ?? ''), true)
-  const btc = rows.find(r => /^BTC/.test(r))
-  t('a coin with both shows both', /Long/.test(btc ?? '') && /1 order/.test(btc ?? ''), true)
+  // "the allocation ring should be based on the overall account value... instead of the ring
+  // being distributed based on value it should be with the real money available to trade, the
+  // margin used in positions, orders, etc." So: one arc per place money can be, four here.
+  const arcs = await p.evaluate(() => document.querySelectorAll('[data-alloc-arc]').length)
+  t('four arcs, one per bucket', arcs, 4)
+  const groups = await p.evaluate(() => [...document.querySelectorAll('[data-alloc-group]')]
+    .map(g => g.dataset.allocGroup))
+  t('and they are the four buckets in order', groups, ['positions', 'orders', 'spot', 'free'])
+  // Not one arc per coin any more: BTC, SOL, HYPE and KNTQ are rows inside the buckets.
+  t('no arc per coin', arcs < 5, true)
 }
 
-console.log(NL + '-- spot is its own row, even for a coin also held as a perp --')
+console.log(NL + '-- orders are one card that opens to the assets under it --')
 {
-  const rows = await p.evaluate(() => [...document.querySelectorAll('#mobVContent .mob-v-row')]
-    .map(r => r.innerText.replace(/\s+/g, ' ')))
-  t('HYPE spot is there', rows.some(r => /HYPE/.test(r) && /Spot/.test(r)), true)
-  t('KNTQ too, priced through its pair', rows.some(r => /KNTQ/.test(r) && /\$20\.00/.test(r)), true)
-  // USDC is cash and is already the free-margin slice; a second row for it would be the same
+  // "make it like all orders be under a card called 'orders', when its pressed it should
+  // extend and show order cards based on assets".
+  const card = await p.evaluate(() => {
+    const g = document.querySelector('[data-alloc-group="orders"]')
+    return { head: g?.firstElementChild?.innerText?.replace(/\s+/g, ' ') ?? '', rows: g?.children.length ?? 0 }
+  })
+  t('the card is named Orders and carries the bucket total', /In orders/.test(card.head) && /\$125\.00/.test(card.head), true)
+  t('it says what is inside without opening', /3 orders · 2 markets/.test(card.head), true)
+  // It starts open, because it is the thing that was reported missing.
+  t('and it is open, showing one row per asset', card.rows, 3)
+
+  const inside = await p.evaluate(() => [...document.querySelectorAll('[data-alloc-group="orders"] .mob-v-row')]
+    .slice(1).map(r => r.innerText.replace(/\s+/g, ' ')))
+  // SOL: 2 buys, $1,000 notional at 20x max → $50 estimated, scaled 125/150 → $83.33.
+  // BTC: 1 buy,  $500 notional at 10x (its position's leverage) → $50 → $41.67.
+  const sol = inside.find(r => /^SOL/.test(r)) ?? ''
+  const btc = inside.find(r => /^BTC/.test(r)) ?? ''
+  t('an order row names its market', !!sol && !!btc, true)
+  t('with how many orders and which way', /2 orders/.test(sol) && /2 buys/.test(sol), true)
+  t('its notional', /Notional \$1,000\.00/.test(sol), true)
+  // The per-coin split is best-effort — it divides each order's notional by the leverage that
+  // coin is being held at, and a coin with no position falls back to the market's cap. What
+  // is NOT best-effort is the total: the rows have to add up to what the account reported.
+  const sum = await p.evaluate(() => [...document.querySelectorAll('[data-alloc-group="orders"] .mob-v-row')]
+    .slice(1)
+    .map(r => Number((r.querySelector('.mob-v-row-val')?.textContent ?? '').replace(/[$,]/g, '')))
+    .reduce((a, b) => a + b, 0))
+  t('and the rows add up to the bucket', Math.round(sum * 100) / 100, 125)
+  // A reduce-only order closes a position and posts nothing, so it must not appear.
+  t('the reduce-only order is not one of them', inside.length, 2)
+
+  // Pressing it closes it again.
+  await p.evaluate(() => window.__allocToggleGroup('orders'))
+  await p.waitForTimeout(300)
+  const closed = await p.evaluate(() => document.querySelector('[data-alloc-group="orders"]')?.children.length)
+  t('pressing the card collapses it', closed, 1)
+  await p.evaluate(() => window.__allocToggleGroup('orders'))
+  await p.waitForTimeout(300)
+}
+
+console.log(NL + '-- positions and spot behave the same way --')
+{
+  // A list where one category opens and its neighbours do not reads as a bug.
+  await p.evaluate(() => { window.__allocToggleGroup('positions'); window.__allocToggleGroup('spot') })
+  await p.waitForTimeout(300)
+  const pos = await p.evaluate(() => [...document.querySelectorAll('[data-alloc-group="positions"] .mob-v-row')]
+    .slice(1).map(r => r.innerText.replace(/\s+/g, ' ')))
+  t('the position bucket opens to its coins', pos.length, 1)
+  // Its figure is the margin the POSITION posted — the order reserve is a different bucket.
+  t('and the row is that position\'s own margin', /\$200\.00/.test(pos[0] ?? ''), true)
+  t('with its direction, size and notional',
+    /Long/.test(pos[0] ?? '') && /0\.02\d* BTC/.test(pos[0] ?? '') && /Value \$2,000\.00/.test(pos[0] ?? ''), true)
+
+  const spot = await p.evaluate(() => [...document.querySelectorAll('[data-alloc-group="spot"] .mob-v-row')]
+    .slice(1).map(r => r.innerText.replace(/\s+/g, ' ')))
+  t('the spot bucket opens to its tokens', spot.length, 2)
+  t('HYPE spot is one of them', spot.some(r => /HYPE/.test(r) && /\$150\.00/.test(r)), true)
+  t('KNTQ too, priced through its pair', spot.some(r => /KNTQ/.test(r) && /\$20\.00/.test(r)), true)
+  // USDC is cash and is already the free-margin bucket; a token row for it would be the same
   // dollars twice.
-  t('spot USDC is not double-counted as a holding',
-    rows.filter(r => /^USDC/.test(r) && /Spot/.test(r)).length, 0)
+  t('spot USDC is not double-counted as a holding', spot.filter(r => /USDC/.test(r)).length, 0)
+
+  // Cash has nothing inside it, so it must not pretend to open.
+  const free = await p.evaluate(() => document.querySelector('[data-alloc-group="free"]')?.children.length)
+  t('free margin has nothing to expand', free, 1)
 }
 
 await browser.close()

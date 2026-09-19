@@ -73,11 +73,13 @@ export function orderMarginByCoin(orders, levOf, isCashMarket) {
     const cash = !!isCashMarket?.(o.coin)
     const m = orderMarginOf(o, levOf?.(o.coin, o._acctAddr), cash)
     if (!(m > 0)) continue
-    const cur = by.get(o.coin) ?? { coin: o.coin, cash, margin: 0, count: 0, buys: 0, sells: 0, notional: 0 }
+    const cur = by.get(o.coin) ?? { coin: o.coin, cash, margin: 0, count: 0, buys: 0, sells: 0, notional: 0, accts: new Set() }
     cur.margin   += m
     cur.notional += Math.abs(parseFloat(o.sz ?? 0)) * (parseFloat(o.limitPx ?? 0) || parseFloat(o.triggerPx ?? 0))
     cur.count++
     if (String(o.side).toUpperCase() === 'B') cur.buys++; else cur.sells++
+    // Which wallet's book it is resting on, so the combined view can say so on the row.
+    if (o._acct) cur.accts.add(o._acct)
     by.set(o.coin, cur)
   }
   return by
@@ -116,11 +118,13 @@ export function spotValues(balances, midOf) {
 export function spotByCoin(balances, midOf) {
   const by = new Map()
   for (const h of spotValues(balances, midOf)) {
-    const cur = by.get(h.coin) ?? { coin: h.coin, size: 0, usd: 0, cost: 0, accts: new Set(), priced: false }
+    const cur = by.get(h.coin) ?? { coin: h.coin, size: 0, usd: 0, cost: 0, px: null, accts: new Set(), priced: false }
     cur.size += h.size
     cur.usd  += h.usd
     cur.cost += h.cost
     cur.priced = cur.priced || h.priced
+    // One price for the token, whichever wallet it came from — they all read the same mid.
+    if (cur.px == null && h.px != null) cur.px = h.px
     if (h.acct) cur.accts.add(h.acct)
     by.set(h.coin, cur)
   }

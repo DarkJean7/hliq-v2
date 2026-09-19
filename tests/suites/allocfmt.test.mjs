@@ -43,13 +43,16 @@ for (const [what, needle] of [
   // one `part` helper rather than four hand-written spans.
   ['every half of the split',        "_prv('$' + fmtUSD(v))"],
   ['the total position value',       "_prv('$' + fmtUSD(totalNotional))"],
-  ['a hovered slice\'s margin',      "_prv('$' + fmtUSD(s.margin, 2))"],
-  ['a hovered slice\'s value',       "_prv('$' + fmtUSD(s.notional, 2))"],
-  ['a row\'s margin',                "_prv('$' + fmtUSD(s.margin, 2))"],
-  ['a row\'s value',                 "Value ${_prv('$' + fmtUSD(s.notional, 2))}"],
+  // The ring is four money buckets now, not one arc per coin, so a "slice" is a bucket and
+  // the coins are the rows that open underneath it. Same rule, new names.
+  ['a hovered bucket\'s total',      "_prv('$' + fmtUSD(g.value, 2))"],
+  ['each asset named in the centre', "_prv('$' + fmtUSD(it.margin))"],
+  ['the bucket card\'s total',       "_prv('$' + fmtUSD(g.value, 2))"],
+  ['an asset row\'s figure',         "_prv('$' + fmtUSD(it.margin, 2))"],
+  ['a position row\'s value',        "Value ${_prv('$' + fmtUSD(it.notional, 2))}"],
+  ['an order row\'s notional',       "${_T('Notional', 'Nocional')} ${_prv('$' + fmtUSD(it.notional, 2))}"],
 ]) t(what + ' has one', cli.includes(needle))
-t('and so does a row\'s PnL', /\$\{pnl >= 0 \? '\+' : '-'\}\$\$\{fmtUSD/.test(cli))
-t('and a hovered slice\'s PnL', hover.includes("'+' : '-'}$${fmtUSD(Math.abs(s.uPnl))}"))
+t('and so does an asset row\'s PnL', /\$\{it\.uPnl >= 0 \? '\+' : '-'\}\$\$\{fmtUSD/.test(cli))
 
 // The bug was bare fmtUSD calls, so assert none are left in the rendered strings.
 const bare = [...render.matchAll(/\$\{_prv\(fmtUSD\(/g)].length +
@@ -59,24 +62,25 @@ t('no dollar figure is left bare', bare === 0, String(bare))
 console.log(nl + '-- and every position says how much coin it is --')
 t('the slice carries a token size', slices.includes('cur.size     += Math.abs(sz)'))
 t('the size is initialised with the rest', /coin: key, margin: 0, notional: 0, size: 0/.test(slices))
-t('free margin has one too, so the shape does not vary',
-  /coin: 'USDC', isFree: true[\s\S]{0,120}size: 0/.test(slices))
+t('the unattributed order row has one too, so the shape does not vary',
+  /coin: 'USDC', unattributed: true[\s\S]{0,160}size: 0/.test(slices))
 t('there is one place that formats it', cli.includes('function _allocSizeTxt(s)'))
 t('it uses the app\'s own size formatter, not a new one',
   /function _allocSizeTxt[\s\S]{0,240}fmtSize\(s\.size\)/.test(cli))
 t('and the market\'s display name', /function _allocSizeTxt[\s\S]{0,240}_ocCoinLabel\(s\.coin\)/.test(cli))
-t('the hovered slice shows it', hover.includes('_allocSizeTxt(s)'))
-t('so does every row', render.includes('const sizeTxt = _allocSizeTxt(s)') &&
-  render.includes('${_prv(sizeTxt)}'))
-t('a row with no size renders no empty line',
-  render.includes("${sizeTxt ? `<div"))
+// The centre now describes a BUCKET, which has no single coin to count — it names the
+// biggest few assets in it by dollars instead. The token amount belongs on the asset row.
+t('a position row carries its token amount', render.includes('const szTxt = _allocSizeTxt(it)'))
+t('and so does a spot row', render.includes('${_prv(_allocSizeTxt(it))}'))
+t('a row with no size renders no empty separator',
+  render.includes("szTxt ? _prv(szTxt) : ''") && render.includes(".filter(Boolean).join(' · ')"))
 
 console.log(nl + '-- the two judgement calls are written down --')
 t('why the size is gross and not net', slices.includes('GROSS, like notional above'))
 t('and that the row already shows the direction', slices.includes('"1L / 5S"'))
-t('why free margin has no token line', cli.includes('the same number twice'))
+t('why cash has no token line', cli.includes('the same number twice'))
 t('the size is hidden under privacy mode like every other figure',
-  render.includes('${_prv(sizeTxt)}') && hover.includes('_prv(_allocSizeTxt(s))'))
+  render.includes('_prv(szTxt)') && render.includes('_prv(_allocSizeTxt(it))'))
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
