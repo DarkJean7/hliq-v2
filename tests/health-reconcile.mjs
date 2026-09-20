@@ -1,5 +1,15 @@
-// Reproduce Hyperliquid's Unified Account Ratio exactly as their docs define it, and compare
-// it with what the app currently shows as Health. Throwaway probe.
+// Does our Health match Hyperliquid's Unified Account Ratio, on a real account?
+//
+//   npm run health-reconcile -- 0xabc...
+//
+// NOT part of `npm test`: it talks to Hyperliquid. tests/suites/health.test.mjs pins the
+// algorithm against fixtures; this answers the different question of whether the live data
+// still flows into it correctly — the bug it was written for was never in the formula, it was
+// in which numbers were being fed to one.
+//
+// It prints HL's ratio computed from their own documented algorithm alongside the old
+// main-dex-over-portfolio-value form, so a regression to the flattering version is obvious.
+// On the account it was written against: HL 15.64%, old formula 88.96% health, correct 84.36%.
 const post = async (b) => (await fetch('https://api.hyperliquid.xyz/info', {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b),
 })).json()
@@ -54,12 +64,33 @@ for (const [tokStr, cross] of Object.entries(crossByToken)) {
 }
 
 const main = states[0] ?? {}
-const acctVal = n(main.marginSummary?.accountValue)
 const mainMaint = n(main.crossMaintenanceMarginUsed)
+
+// The app's own health, through the shipped module and the shipped fetch — so this checks the
+// code that actually runs, not a second copy of the formula that could agree while the app
+// disagrees.
+const { accountHealth } = await import('../src/health.js')
+const dexStates = states.map((cs, i) => ({
+  crossMaintenanceMarginUsed: n(cs?.crossMaintenanceMarginUsed),
+  assetPositions: cs?.assetPositions ?? [],
+  _dex: i === 0 ? 'main' : dexs[i]?.name,
+}))
+const ours = accountHealth(dexStates, spot.balances)
+
+// And the form this replaced, for contrast: main-dex maintenance over the PORTFOLIO value.
+// Wrong twice and optimistic twice, which is why it is printed — a regression back to it
+// shows up here as a number several points too kind.
+const port = await post({ type: 'portfolio', user: A }).catch(() => null)
+const hist = (port ?? []).find(x => x[0] === 'allTime')?.[1]?.accountValueHistory ?? []
+const portVal = hist.length ? n(hist.at(-1)[1]) : 0
+
 console.log('')
 console.log('HL Unified Account Ratio :', (maxRatio * 100).toFixed(2) + '%', detail)
 console.log('  → health (100 - ratio) :', (100 - maxRatio * 100).toFixed(2) + '%')
 console.log('')
-console.log("OUR current formula       : 1 - mainMaint / accountValue")
-console.log(`  mainMaint=${mainMaint.toFixed(2)} accountValue=${acctVal.toFixed(2)}`)
-console.log('  → health                :', acctVal > 0 ? ((1 - mainMaint / acctVal) * 100).toFixed(2) + '%' : 'n/a')
+console.log('the app, via src/health.js:', ours == null ? 'unknown' : ours.toFixed(2) + '%',
+  ours != null && Math.abs(ours - (100 - maxRatio * 100)) < 0.5 ? '  ✓ agrees' : '  ✗ DISAGREES')
+console.log('')
+console.log('the old formula it replaced: 1 - mainDexMaint / portfolioValue')
+console.log(`  mainMaint=${mainMaint.toFixed(2)} portfolioValue=${portVal.toFixed(2)}`)
+console.log('  → health                :', portVal > 0 ? ((1 - mainMaint / portVal) * 100).toFixed(2) + '%  (too kind)' : 'n/a')

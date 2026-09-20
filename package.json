@@ -10,7 +10,8 @@
     "test": "node tests/run.mjs",
     "test:browser": "node tests/browser.mjs",
     "hl-weight": "node tests/hl-weight.mjs",
-    "alloc-reconcile": "node tests/alloc-reconcile.mjs"
+    "alloc-reconcile": "node tests/alloc-reconcile.mjs",
+    "health-reconcile": "node tests/health-reconcile.mjs"
   },
   "dependencies": {
     "@nktkas/hyperliquid": "^0.32.2",
