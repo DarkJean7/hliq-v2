@@ -4683,6 +4683,24 @@ function _proSyncTabs() {
   try { _mobVSyncProBtn() } catch {}
 }
 
+/**
+ * What the mobile ticket's submit button says when Pro is NOT in charge.
+ *
+ * One definition, because there were three saying the same thing and none of them covering
+ * the case that mattered: the sheet's own markup paints it at render, _mobVSetSide repaints
+ * it when the side toggles, and leaving Pro repainted nothing. So picking Market or Limit
+ * after a Pro type left "Buy · Chase" sitting on the button — the only code that could have
+ * replaced it runs on a side change, and pressing a type tab is not one.
+ */
+function _mobVPlainSubmitLabel() {
+  if (!window.__canTradeUI()) {
+    return isMainWalletConnected() ? '⚡ Auto-generate agent key' : '🔗 Connect wallet to trade'
+  }
+  const coin    = state.selectedCoin || 'BTC'
+  const display = _spotNameMap[coin] ?? _mktDisplay(coin) ?? coin.replace(/.*:/, '')
+  return state.tradeSide !== 'short' ? `Long ${display}` : `Short ${display}`
+}
+
 /** The mobile ticket's Pro button says the same thing the desktop one does. */
 function _mobVSyncProBtn() {
   const b = document.getElementById('mobTradeOrderTypePro')
@@ -4691,8 +4709,11 @@ function _mobVSyncProBtn() {
   b.textContent = on ? `${_proById(proType()).label} ▾` : 'Pro ▾'
   b.style.background = on ? 'var(--panel-3)' : 'transparent'
   b.style.color      = on ? 'var(--fg)' : 'var(--muted)'
+  // BOTH halves. `if (sub && on)` was the bug: turning Pro off ran this with on=false and
+  // then did nothing, so the Pro label outlived the Pro mode. Desktop's updateSubmitBtn has
+  // always had the else branch.
   const sub = document.getElementById('mobTradeSubmitBtn')
-  if (sub && on) sub.textContent = proButtonLabel()
+  if (sub) sub.textContent = on ? proButtonLabel() : _mobVPlainSubmitLabel()
 }
 
 window.__proMenu  = (anchor) => openProMenu(anchor)
@@ -22765,7 +22786,7 @@ window._mobVSetSide = function(side) {
       const display = _spotNameMap[coin] ?? _mktDisplay(coin) ?? coin.replace(/.*:/, '')
       submitBtn.style.background = isBuy ? 'var(--green)' : 'var(--red)'
       submitBtn.style.color = isBuy ? '#000' : '#fff'
-      submitBtn.textContent = isBuy ? `Long ${display}` : `Short ${display}`
+      submitBtn.textContent = _mobVPlainSubmitLabel()
     }
     if (slider) slider.style.accentColor = isBuy ? 'var(--green)' : 'var(--red)'
     _mobUpdateOrderSummary()
@@ -24163,7 +24184,7 @@ function _mobRenderDetailTrade(el, coin) {
       <!-- Submit -->
       <button id="mobTradeSubmitBtn" onclick="window._mobTradeSubmitNew()"
         style="width:100%;padding:14px;border-radius:13px;border:none;font-size:15px;font-weight:700;cursor:pointer;background:${connected?(isBuy?'var(--green)':'var(--red)'):'var(--panel-2)'};color:${connected?(isBuy?'#000':'#fff'):'var(--muted)'};letter-spacing:.01em;transition:all .12s">
-        ${connected ? (isBuy ? `Long ${esc(display)}` : `Short ${esc(display)}`) : (isMainWalletConnected() ? '⚡ Auto-generate agent key' : '🔗 Connect wallet to trade')}
+        ${esc(_mobVPlainSubmitLabel())}
       </button>
       <div id="mobTradeStatus" style="text-align:center;font-size:12px;min-height:18px;padding-bottom:4px"></div>
     </div>`
