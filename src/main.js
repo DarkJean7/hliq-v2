@@ -259,6 +259,9 @@ import { readKey as _akRead, writeKey as _akWrite, removeKey as _akRemove,
          migrateLegacy as _akMigrateLegacy, strayEntries as _akStrays,
          onAgentKeyMisuse, LEGACY_KEY as _AK_LEGACY } from './agentkeys.js'
 import { rulesFor, clampLeverage, marginModeFor, delistedNames, hasNoActivity, deployerOf } from './assetrules.js'
+import { initPro, selectPro, clearPro, proActive, proType, proButtonLabel, refreshProPreview,
+         openProMenu, openProLearn, mountProFields, submitPro, stopAllChases } from './proticket.js'
+import { byId as _proById } from './protypes.js'
 
 /**
  * Brightness, as a layer over the app rather than a filter on <html>.
@@ -4534,6 +4537,9 @@ window.__selectCoin = function (coin) {
   if (state.orderType !== 'market') {
     document.getElementById('limitPriceInput').value = price.toString()
   }
+  // A Pro form seeded from BTC's mark is nonsense on SOL — re-seed it from the market that
+  // is now selected rather than leave a trigger price five figures away from the book.
+  if (proActive()) selectPro(proType(), { keep: false })
   updateOrderSummary()
   updateSubmitBtn()
   loadTradeChart(coin)
@@ -4585,6 +4591,9 @@ function setSide(side) {
 // ─── ORDER TYPE ───────────────────────────────────────────────────────────────
 function setOrderType(type) {
   state.orderType = type
+  // Pressing one of the plain tabs leaves Pro mode. Both live in the same row and only one
+  // of them can be what the submit button means.
+  clearPro()
   ;['market', 'limit', 'stop'].forEach(t => {
     document.getElementById('otype-' + t).classList.toggle('active', t === type)
   })
@@ -4598,6 +4607,117 @@ function setOrderType(type) {
     }
   }
   updateOrderSummary()
+  updateSubmitBtn()
+}
+
+// ─── PRO ORDER TYPES ──────────────────────────────────────────────────────────
+/**
+ * Chase, Scale, Stop/Take × Market/Limit, Trailing Stop and TWAP.
+ *
+ * The catalogue, the arithmetic and the form all live in src/protypes.js and
+ * src/proticket.js, which cannot see `state`. This is the seam: everything those modules
+ * need to know about the account, the market and the size is answered here, once, for both
+ * shells — so there is no second copy of any of it to forget about.
+ */
+
+/**
+ * The size on the ticket, in coins.
+ *
+ * The two tickets do not agree about what a number in the size box means: desktop's USD is
+ * NOTIONAL, mobile's USD is MARGIN (it multiplies by leverage). Reading the wrong one would
+ * place an order `leverage` times too big or too small, so this asks which ticket is
+ * actually on screen rather than assuming.
+ */
+function _proSizeCoin() {
+  const coin = state.selectedCoin
+  const mkt  = parseFloat(state.allMids?.[coin] ?? 0)
+  const mob  = document.getElementById('mobTradeAmtInput')
+  if (mob && mob.offsetParent !== null) {
+    const v = parseFloat(mob.value) || 0
+    return _mobTradeAmtUnit === 'coin' ? v : (mkt > 0 ? (v * (state.leverage ?? 5)) / mkt : 0)
+  }
+  const d = parseFloat(document.getElementById('sizeInput')?.value) || 0
+  return state.sizeMode === 'coin' ? d : (mkt > 0 ? d / mkt : 0)
+}
+
+initPro({
+  coin:     () => state.selectedCoin,
+  mark:     () => parseFloat(state.allMids?.[state.selectedCoin] ?? 0) || null,
+  isBuy:    () => state.tradeSide !== 'short',
+  sizeCoin: _proSizeCoin,
+  leverage: () => state.leverage ?? 5,
+  isolated: () => !!state.isIsolated,
+  // Never state.addr: in the combined view that is the '__all_accounts__' sentinel, and an
+  // order signed for a sentinel is an order signed for nobody.
+  acct:     () => window.__getTradeAcct?.() ?? null,
+  canTrade: () => !!window.__canTradeUI?.(),
+  hasPosition: (coin) => !!_guardFindPos(coin, window.__getTradeAcct?.() ?? null),
+  isSpot:   (coin) => isSpotCoin(coin) || String(coin ?? '').startsWith('#'),
+  afterAction: () => window.__refreshAfterAction?.(1500, window.__getTradeAcct?.() ?? null),
+  openTrail: (coin) => window.__openTrailModal?.(coin, null, window.__getTradeAcct?.() ?? null),
+  refreshTabs: () => _proSyncTabs(),
+})
+
+/** Paint the tab row and the submit button for whatever mode is now active. */
+function _proSyncTabs() {
+  const on = proActive()
+  const t  = on ? _proById(proType()) : null
+  const pro = document.getElementById('otype-pro')
+  if (pro) {
+    pro.classList.toggle('active', on)
+    pro.textContent = on ? `${t.label} ▾` : 'Pro ▾'
+  }
+  if (on) {
+    ;['market', 'limit', 'stop'].forEach(x => document.getElementById('otype-' + x)?.classList.remove('active'))
+    // The plain price fields belong to the plain tabs; Pro paints its own.
+    const lp = document.getElementById('limitPriceField'); if (lp) lp.style.display = 'none'
+    const sp = document.getElementById('stopPriceField');  if (sp) sp.style.display = 'none'
+  }
+  mountProFields(document.getElementById('proFieldsDesk'))
+  mountProFields(document.getElementById('proFieldsMob'))
+  try { updateSubmitBtn() } catch {}
+  try { _mobVSyncProBtn() } catch {}
+}
+
+/** The mobile ticket's Pro button says the same thing the desktop one does. */
+function _mobVSyncProBtn() {
+  const b = document.getElementById('mobTradeOrderTypePro')
+  if (!b) return
+  const on = proActive()
+  b.textContent = on ? `${_proById(proType()).label} ▾` : 'Pro ▾'
+  b.style.background = on ? 'var(--panel-3)' : 'transparent'
+  b.style.color      = on ? 'var(--fg)' : 'var(--muted)'
+  const sub = document.getElementById('mobTradeSubmitBtn')
+  if (sub && on) sub.textContent = proButtonLabel()
+}
+
+window.__proMenu  = (anchor) => openProMenu(anchor)
+window.__proLearn = (type)   => openProLearn(type ?? null)
+window.__proActive = () => proActive()
+
+/**
+ * Submit whatever the Pro ticket describes, painting into whichever status line asked.
+ *
+ * Both tickets funnel here rather than each growing their own copy of the branch — the
+ * "a renderer usually has a second copy" trap in CLAUDE.md applies just as hard to submit
+ * paths, and this one signs real orders.
+ */
+window.__proSubmit = async function (statusEl, { mobile = false } = {}) {
+  const say = (kind, msg) => {
+    if (!statusEl) return
+    if (mobile) {
+      const c = kind === 'error' ? 'var(--red)' : kind === 'success' ? 'var(--green)' : 'var(--muted)'
+      statusEl.innerHTML = `<span style="color:${c}">${esc(msg)}</span>`
+    } else {
+      showTradeStatus(statusEl, kind, msg)
+    }
+  }
+  const sent = await submitPro(say)
+  if (sent) {
+    const d = document.getElementById('sizeInput');       if (d) d.value = ''
+    const m = document.getElementById('mobTradeAmtInput'); if (m) m.value = ''
+  }
+  return sent
 }
 
 // ─── LEVERAGE ─────────────────────────────────────────────────────────────────
@@ -4700,6 +4820,9 @@ function fillMarketPrice() {
 
 // ─── ORDER SUMMARY ────────────────────────────────────────────────────────────
 function updateOrderSummary() {
+  // The size box is shared with the Pro panel, which cannot hear about it from where it
+  // lives — a Scale ladder and a TWAP's $100 floor both depend on the number typed here.
+  refreshProPreview()
   const coin    = state.selectedCoin
   const rawVal  = parseFloat(document.getElementById('sizeInput').value) || 0
   const limitPx = parseFloat(document.getElementById('limitPriceInput').value) || 0
@@ -4719,7 +4842,7 @@ function updateOrderSummary() {
 
   document.getElementById('sum-coin').textContent   = coin ?? '—'
   document.getElementById('sum-side').textContent   = state.tradeSide.toUpperCase()
-  document.getElementById('sum-type').textContent   = state.orderType.charAt(0).toUpperCase() + state.orderType.slice(1)
+  document.getElementById('sum-type').textContent   = proActive() ? _proById(proType()).label : state.orderType.charAt(0).toUpperCase() + state.orderType.slice(1)
   document.getElementById('sum-price').textContent  = price   > 0 ? '$' + fmtPrice(price)  : '—'
   document.getElementById('sum-size').textContent   = sizeUSD > 0 ? '$' + fmtUSD(sizeUSD)  : '—'
   document.getElementById('sum-coins').textContent  = coinSz  > 0 ? fmtSize(coinSz) + (coin ? ' ' + coin : '') : '—'
@@ -5611,6 +5734,13 @@ function updateSubmitBtn() {
     return
   }
   btn.disabled = false
+  // A Pro type says what it will do, not "Buy / Long" — a Scale is five orders and a TWAP is
+  // a schedule, and calling either of them "Buy BTC" is the label lying about the action.
+  if (proActive()) {
+    btn.className = state.tradeSide === 'long' ? 'btn-trade-long' : 'btn-trade-short'
+    btn.textContent = proButtonLabel()
+    return
+  }
   if (state.tradeSide === 'long') {
     btn.className = 'btn-trade-long'; btn.textContent = `▲ Buy / Long  ${state.selectedCoin}`
   } else {
@@ -5638,6 +5768,11 @@ async function submitOrder() {
   }
   // One-time risk acknowledgment before the first real order (paper exempt).
   if (!isPaper() && !(await _riskAckGate())) return
+
+  // Everything above this line gates ANY order — the agent key, the builder fee, the risk
+  // pause, the acknowledgment. Below it the ticket is about a market/limit/stop; a Pro type
+  // has its own form and its own submit, so it branches here rather than duplicating gates.
+  if (proActive()) { await window.__proSubmit(statusEl); return }
 
   const coin    = state.selectedCoin
   const isBuy   = state.tradeSide === 'long'
@@ -9903,6 +10038,10 @@ window.__goPaper = async function(which) {
 
   state.isAllAccounts = false
   setMultiAcctStrict(false)
+  // Any chase running against the real account must stop BEFORE the paper flag flips: the
+  // chase's next re-price calls straight through placeOrderRaw, which reads isPaper() at
+  // send time, so it would cancel a live order and replace it with a simulated one.
+  stopAllChases()
   setPaper(true)
   state.addr = PAPER_ADDR
   setActiveWallet(null)   // paper has no wallet
@@ -10406,6 +10545,9 @@ window.__dbgResetCooldown = function() {
 /** Leaving paper mode — called by every real-account entry point. */
 function _paperExit() {
   if (_paperTimer) { clearInterval(_paperTimer); _paperTimer = null }
+  // Same reason as the entry above, in the other direction: a chase started in the simulator
+  // would begin placing real orders the moment the flag cleared.
+  stopAllChases()
   setPaper(false)
 }
 
@@ -22617,11 +22759,14 @@ window._mobVSetSide = function(side) {
 
 window._mobVSetOrderType = function(type) {
   state.orderType = type
+  // Same rule as the desktop tabs: picking a plain type leaves Pro mode.
+  clearPro()
   const mktBtn = document.getElementById('mobTradeOrderTypeMkt')
   const lmtBtn = document.getElementById('mobTradeOrderTypeLmt')
   if (mktBtn && lmtBtn) {
     const isLmt   = type === 'limit'
     const wrapper = document.getElementById('mobTradeLimitWrapper')
+    _mobVSyncProBtn()
     mktBtn.style.background = !isLmt ? 'var(--panel-3)' : 'transparent'
     mktBtn.style.color      = !isLmt ? 'var(--fg)' : 'var(--muted)'
     lmtBtn.style.background = isLmt ? 'var(--panel-3)' : 'transparent'
@@ -23872,7 +24017,10 @@ function _mobRenderDetailTrade(el, coin) {
   const mids      = state.allMids ?? {}
   const price     = parseFloat(mids[coin] ?? 0)
   const isBuy     = state.tradeSide !== 'short'
-  const isLmt     = state.orderType === 'limit'
+  const isPro     = proActive()
+  // In Pro mode neither plain tab is active — the Pro button carries the selection, and the
+  // limit-price row belongs to the Limit tab, not to a Stop Limit or a Scale.
+  const isLmt     = !isPro && state.orderType === 'limit'
   const lev       = state.leverage ?? 5
   const avail     = _tradeAvail().avail
   const isIso     = state.isIsolated ?? false
@@ -23897,6 +24045,7 @@ function _mobRenderDetailTrade(el, coin) {
         <div style="display:flex;gap:3px;background:var(--panel-2);border-radius:9px;padding:3px">
           <button id="mobTradeOrderTypeMkt" onclick="window._mobVSetOrderType('market')" style="padding:6px 13px;border-radius:7px;border:none;background:${!isLmt?'var(--panel-3)':'transparent'};color:${!isLmt?'var(--fg)':'var(--muted)'};font-size:12px;font-weight:600;cursor:pointer;transition:all .12s">Market</button>
           <button id="mobTradeOrderTypeLmt" onclick="window._mobVSetOrderType('limit')" style="padding:6px 13px;border-radius:7px;border:none;background:${isLmt?'var(--panel-3)':'transparent'};color:${isLmt?'var(--fg)':'var(--muted)'};font-size:12px;font-weight:600;cursor:pointer;transition:all .12s">Limit</button>
+          <button id="mobTradeOrderTypePro" onclick="event.stopPropagation();window.__proMenu(this)" style="padding:6px 13px;border-radius:7px;border:none;background:${isPro?'var(--panel-3)':'transparent'};color:${isPro?'var(--fg)':'var(--muted)'};font-size:12px;font-weight:600;cursor:pointer;transition:all .12s">${isPro?esc(_proById(proType()).label)+' ▾':'Pro ▾'}</button>
         </div>
         <span style="font-size:11px;color:var(--muted)">Available <span id="mobTradeAvailAmt" style="color:var(--fg);font-weight:700;font-family:var(--font-mono)">$${fmtUSD(avail,2)}</span></span>
       </div>
@@ -23946,6 +24095,9 @@ function _mobRenderDetailTrade(el, coin) {
           style="flex:1;min-width:0;background:none;border:none;color:var(--fg);font-size:15px;font-weight:700;outline:none;-webkit-text-size-adjust:none;text-align:right;font-family:var(--font-mono)">
         <span style="font-size:12px;color:var(--muted);flex-shrink:0">USDC</span>
       </div>
+      <!-- Pro order type fields — painted by src/proticket.js, the same renderer the desktop
+           ticket uses. One renderer, so a fix cannot land in one shell and miss the other. -->
+      <div id="proFieldsMob" style="display:none"></div>
       <!-- TP/SL -->
       <div style="border:1px solid var(--border2);border-radius:12px;overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:9px 12px;background:var(--panel-2)">
@@ -24002,6 +24154,10 @@ function _mobRenderDetailTrade(el, coin) {
   if (_mobTradeObTimer) { clearInterval(_mobTradeObTimer); _mobTradeObTimer = null }
   _mobTradeUpdateConvHint()
   _startAvailTimer()
+  // The form was just rebuilt, so the Pro fields container is a brand-new element. Re-mount
+  // it or the Pro panel would be painted into the node this render threw away.
+  mountProFields(document.getElementById('proFieldsMob'))
+  _mobVSyncProBtn()
 }
 
 function _mobRenderDetailOrderBook(el, coin) {
@@ -24270,6 +24426,7 @@ function _orderEstimate({ coin, side, coinSz, price, leverage, orderType }) {
 }
 
 function _mobUpdateOrderSummary() {
+  refreshProPreview()          // same reason as the desktop copy: the size box is shared
   if (!document.getElementById('mobSumPrice')) return
   const coin  = state.selectedCoin || 'BTC'
   const display = _spotNameMap[coin] ?? _mktDisplay(coin) ?? String(coin).replace(/.*:/, '')
@@ -24387,6 +24544,23 @@ window._mobTradeSubmitNew = async function() {
       return
     }
   } else if (!_canAct()) { window.__quickConnectAgent(); return }
+
+  // A Pro type (Chase, Scale, a trigger, Trailing Stop, TWAP) has its own form, so it
+  // branches here — after the agent-key gate above, which applies to any order, and after
+  // the same preflight the plain path runs below.
+  if (proActive()) {
+    if (btnEl) btnEl.disabled = true
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--muted)">Checking key…</span>'
+    if (!await _guardAgent(window.__getTradeAcct())) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--neg)">Agent key not valid for this account</span>'
+      if (btnEl) btnEl.disabled = false
+      return
+    }
+    await window.__proSubmit(statusEl, { mobile: true })
+    if (btnEl) btnEl.disabled = false
+    return
+  }
+
   const coin      = state.selectedCoin
   const isBuy     = state.tradeSide !== 'short'
   const mktPx     = parseFloat(state.allMids?.[coin] ?? 0)

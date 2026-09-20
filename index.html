@@ -1242,6 +1242,9 @@
               <button class="order-type-tab active" id="otype-market" onclick="setOrderType('market')">Market</button>
               <button class="order-type-tab"        id="otype-limit"  onclick="setOrderType('limit')">Limit</button>
               <button class="order-type-tab"        id="otype-stop"   onclick="setOrderType('stop')">Stop</button>
+              <!-- Everything else HL offers — Chase, Scale, the four triggers, Trailing Stop,
+                   TWAP — lives behind this one, the same way their ticket does. -->
+              <button class="order-type-tab"        id="otype-pro"    onclick="window.__proMenu(this)">Pro ▾</button>
             </div>
             <div class="margin-toggle" style="margin:0;flex-shrink:0">
               <button class="margin-btn active" id="marginCross"    onclick="setMarginMode(false)">Cross</button>
@@ -1258,6 +1261,10 @@
             <div class="field-label">Trigger Price</div>
             <input class="field-input" id="stopPriceInput" type="number" placeholder="0.00" step="any"/>
           </div>
+
+          <!-- Pro order type fields. Painted by src/proticket.js, which paints the mobile
+               ticket's copy from the same renderer — there is only one of these to fix. -->
+          <div id="proFieldsDesk" style="display:none"></div>
 
           <!-- Available balance bar -->
           <div class="hl-avail-bar">

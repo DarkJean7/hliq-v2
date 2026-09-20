@@ -364,8 +364,91 @@ export async function approveAgentKey(mainSigner, agentAddress) {
 
 
 /**
- * Core order placer — uses asset index format required by v0.32.x
+ * Every order this app places, in one place. Asset-index format, as v0.32.x requires.
+ *
+ * `orders` is a list because a Scale ladder is genuinely one action: the rungs have to
+ * arrive together or not at all, and a signed batch is the only way to get that. Everything
+ * else passes a list of one through the wrapper below, so the paper guard, the leverage
+ * call, the outcome tick rule and the builder fee are written once and cannot drift between
+ * the single and the batched path.
  */
+async function placeOrdersRaw({
+  coin,
+  orders,                 // [{ isBuy, sz, limitPx, orderType, reduceOnly }]
+  leverage      = 5,
+  isIsolated    = false,
+  skipLevUpdate = false,
+  acct          = null,
+}) {
+  if (!orders?.length) throw new Error('No orders to place')
+  // Leverage is a property of the position, not of one order: it is set when anything in
+  // this batch OPENS. A batch of purely reduce-only orders leaves it alone, as before.
+  const anyOpening = orders.some(o => !o.reduceOnly)
+
+  // PAPER MODE — every order path in the app funnels through here, so this one
+  // guard is what makes it impossible to sign a real order while simulating.
+  // It sits above _client() on purpose: no agent key is resolved or read.
+  if (isPaper()) {
+    const { szDecimals: _sd, isOutcome: _io, isSpot: _is } = await getAssetInfo(coin)
+    // The real path sets leverage in a separate call before ordering; mirror that
+    // so the simulated fill uses the leverage the user actually picked.
+    if (anyOpening && !_is) paperSetLeverage(coin, leverage)
+    // paperOrder simulates ONE order, so a ladder is simulated rung by rung and the
+    // statuses are stitched back into the single response shape the callers parse.
+    const statuses = []
+    let last = null
+    for (const o of orders) {
+      const _p = _io ? Math.round(parseFloat(o.limitPx) * 1e5) / 1e5 : roundPx(o.limitPx, _sd)
+      last = paperOrder({
+        orders: [{
+          a: 0, b: o.isBuy, p: _p.toString(), s: roundSz(o.sz, _sd).toString(),
+          r: !!o.reduceOnly, t: o.orderType,
+        }],
+        grouping: 'na',
+      }, coin, { isSpot: _is, isOutcome: _io })
+      statuses.push(...(last?.response?.data?.statuses ?? []))
+    }
+    return orders.length === 1 ? last : { status: 'ok', response: { type: 'order', data: { statuses } } }
+  }
+
+  const client = _client(acct)
+
+  const { index: assetIndex, szDecimals, isSpot, isOutcome } = await getAssetInfo(coin)
+
+  // Spot/outcome assets have no leverage — calling updateLeverage on them is rejected
+  // by HL ("invalid spot"). Only perps get a leverage update.
+  if (anyOpening && !skipLevUpdate && !isSpot) {
+    await client.updateLeverage({
+      asset:   assetIndex,
+      isCross: !isIsolated,
+      leverage,
+    })
+  }
+
+  const params = {
+    orders: orders.map(o => ({
+      a: assetIndex,
+      b: o.isBuy,
+      // Outcome (HIP-4) prices use a fixed 1e-5 tick (5 decimal places), NOT the
+      // perp 5-significant-figure rule — roundPx would emit 6 decimals for prices
+      // under 0.1 (e.g. 0.034441) and HL rejects with "not divisible by tick size".
+      p: (isOutcome
+        ? Math.round(parseFloat(o.limitPx) * 1e5) / 1e5
+        : roundPx(o.limitPx, szDecimals)).toString(),
+      s: roundSz(o.sz, szDecimals).toString(),
+      r: !!o.reduceOnly,
+      t: o.orderType,
+    })),
+    grouping: 'na',
+  }
+  // Builder fees apply to perps only — attaching one to a spot/outcome order is rejected
+  // by HL ("invalid spot").
+  if (builderFeeEnabled && !isSpot) {
+    params.builder = { b: '0x25A267e78F51A2E4Ddd6d4951b7f7Ed752891c38', f: 100 }
+  }
+  return client.order(params)
+}
+
 async function placeOrderRaw({
   coin,
   isBuy,
@@ -378,69 +461,18 @@ async function placeOrderRaw({
   skipLevUpdate = false,
   acct          = null,
 }) {
-  // PAPER MODE — every order path in the app funnels through here, so this one
-  // guard is what makes it impossible to sign a real order while simulating.
-  // It sits above _client() on purpose: no agent key is resolved or read.
-  if (isPaper()) {
-    const { szDecimals: _sd, isOutcome: _io, isSpot: _is } = await getAssetInfo(coin)
-    // The real path sets leverage in a separate call before ordering; mirror that
-    // so the simulated fill uses the leverage the user actually picked.
-    if (!reduceOnly && !_is) paperSetLeverage(coin, leverage)
-    const _p = _io ? Math.round(parseFloat(limitPx) * 1e5) / 1e5 : roundPx(limitPx, _sd)
-    return paperOrder({
-      orders: [{
-        a: 0, b: isBuy, p: _p.toString(), s: roundSz(sz, _sd).toString(),
-        r: reduceOnly, t: orderType,
-      }],
-      grouping: 'na',
-    }, coin, { isSpot: _is, isOutcome: _io })
-  }
-
-  const client = _client(acct)
-
-  const { index: assetIndex, szDecimals, isSpot, isOutcome } = await getAssetInfo(coin)
-
-  // Spot/outcome assets have no leverage — calling updateLeverage on them is rejected
-  // by HL ("invalid spot"). Only perps get a leverage update.
-  if (!reduceOnly && !skipLevUpdate && !isSpot) {
-    await client.updateLeverage({
-      asset:   assetIndex,
-      isCross: !isIsolated,
-      leverage,
-    })
-  }
-
-  // Outcome (HIP-4) prices use a fixed 1e-5 tick (5 decimal places), NOT the
-  // perp 5-significant-figure rule — roundPx would emit 6 decimals for prices
-  // under 0.1 (e.g. 0.034441) and HL rejects with "not divisible by tick size".
-  const pVal = isOutcome
-    ? Math.round(parseFloat(limitPx) * 1e5) / 1e5
-    : roundPx(limitPx, szDecimals)
-
-  const params = {
-    orders: [{
-      a: assetIndex,
-      b: isBuy,
-      p: pVal.toString(),
-      s: roundSz(sz, szDecimals).toString(),
-      r: reduceOnly,
-      t: orderType,
-    }],
-    grouping: 'na',
-  }
-  // Builder fees apply to perps only — attaching one to a spot/outcome order is rejected
-  // by HL ("invalid spot").
-  if (builderFeeEnabled && !isSpot) {
-    params.builder = { b: '0x25A267e78F51A2E4Ddd6d4951b7f7Ed752891c38', f: 100 }
-  }
-  return client.order(params)
+  return placeOrdersRaw({
+    coin,
+    orders: [{ isBuy, sz, limitPx, orderType, reduceOnly }],
+    leverage, isIsolated, skipLevUpdate, acct,
+  })
 }
 
 /**
  * Market order — aggressive IOC limit with 3% slippage (wide enough to fill on any
  * liquid market; the IOC never rests, so unfilled remainder is simply cancelled).
  */
-export async function placeMarketOrder({ coin, isBuy, sz, markPrice, leverage, isIsolated, acct = null }) {
+export async function placeMarketOrder({ coin, isBuy, sz, markPrice, leverage, isIsolated, reduceOnly = false, acct = null }) {
   const slippage = 0.03   // 3% — wide enough to ensure IOC fills on any liquid market
   const limitPx  = isBuy
     ? markPrice * (1 + slippage)
@@ -449,7 +481,9 @@ export async function placeMarketOrder({ coin, isBuy, sz, markPrice, leverage, i
   return placeOrderRaw({
     coin, isBuy, sz, limitPx,
     orderType:  { limit: { tif: 'Ioc' } },
-    reduceOnly: false,
+    // The mobile ticket has a Reduce Only checkbox and has been passing this all along; the
+    // parameter was not declared, so it was dropped on the floor and the box did nothing.
+    reduceOnly,
     leverage,
     isIsolated,
     acct,
@@ -474,18 +508,125 @@ export async function placeOutcomeOrder({ coin, isBuy, sz, limitPx, market = fal
 }
 
 /**
- * Limit order — GTC
+ * Limit order. GTC by default; `tif` takes 'Ioc' (take what is there, cancel the rest) or
+ * 'Alo' (post only — the exchange REJECTS it rather than letting it fill on arrival).
  */
-export async function placeLimitOrder({ coin, isBuy, sz, limitPx, leverage, isIsolated, acct = null }) {
+export async function placeLimitOrder({ coin, isBuy, sz, limitPx, leverage, isIsolated, tif = 'Gtc', reduceOnly = false, acct = null }) {
   return placeOrderRaw({
     coin, isBuy, sz, limitPx,
-    orderType:  { limit: { tif: 'Gtc' } },
-    reduceOnly: false,
+    orderType:  { limit: { tif } },
+    reduceOnly,
     leverage,
     isIsolated,
     acct,
   })
 }
+
+/**
+ * A scale ladder — every rung in ONE signed batch.
+ *
+ * Not a loop of placeLimitOrder: a loop can place four of six rungs and then hit a rate
+ * limit or a rejection, which leaves a lopsided ladder nobody asked for and a position
+ * skewed to one end of the range. A batch is accepted or rejected whole.
+ *
+ * `rungs` comes from scaleLadder() in src/protypes.js, which owns the arithmetic.
+ */
+export async function placeScaleOrders({ coin, isBuy, rungs, leverage, isIsolated, tif = 'Gtc', reduceOnly = false, acct = null }) {
+  if (!rungs?.length) throw new Error('No rungs to place')
+  return placeOrdersRaw({
+    coin,
+    orders: rungs.map(r => ({
+      isBuy, sz: r.sz, limitPx: r.px,
+      orderType: { limit: { tif } },
+      reduceOnly,
+    })),
+    leverage, isIsolated, acct,
+  })
+}
+
+/**
+ * A stop or take, market or limit — the four Pro trigger types in one function.
+ *
+ * `tpsl` ('sl' or 'tp') and the order's side are what tell the exchange WHICH WAY the
+ * trigger points; see triggerSide() in src/protypes.js for the four cases. `isMarket` picks
+ * between "fill at any price" and "place a limit at `limitPx` when it fires".
+ *
+ * Unlike placeTriggerOrder (the TP/SL attached to a position, always reduce-only), this one
+ * can OPEN a position — a stop-market buy above the mark is a breakout entry, and forcing
+ * reduce-only on it would make it silently do nothing.
+ */
+export async function placeStopOrder({
+  coin, isBuy, sz, triggerPx, limitPx = null, tpsl = 'sl', isMarket = true,
+  reduceOnly = false, leverage = 5, isIsolated = false, acct = null,
+}) {
+  const { szDecimals } = await getAssetInfo(coin)   // tick rule needs szDecimals
+  const trig = roundPx(triggerPx, szDecimals)
+  if (!(trig > 0)) throw new Error('Invalid trigger price')
+
+  // A trigger MARKET order still carries a limit price — it is the worst price the exchange
+  // may fill at once triggered, so it has to be well through the trigger or the "market"
+  // order rests instead of filling. 3% is the headroom every market order here uses.
+  const px = isMarket
+    ? (isBuy ? trig * 1.03 : trig * 0.97)
+    : parseFloat(limitPx)
+  if (!(px > 0)) throw new Error('Invalid limit price')
+
+  return placeOrderRaw({
+    coin, isBuy, sz, limitPx: px,
+    orderType: { trigger: { triggerPx: trig.toString(), isMarket, tpsl } },
+    reduceOnly,
+    leverage,
+    isIsolated,
+    acct,
+  })
+}
+
+/**
+ * A TWAP, run by the exchange.
+ *
+ * This is a different action from `order` — the exchange holds the schedule and sends the
+ * suborders itself, which is why a TWAP survives closing the tab and a chase does not.
+ * `minutes` is validated against the same bounds the ticket shows (src/protypes.js TWAP);
+ * the SDK rejects anything outside them before a signature is produced.
+ *
+ * Paper mode has no TWAP engine, so it is refused rather than quietly filled as a market
+ * order — a simulation that behaves differently from the real thing teaches the wrong habit.
+ */
+export async function placeTwapOrder({ coin, isBuy, sz, minutes, randomize = false, reduceOnly = false, leverage = 5, isIsolated = false, acct = null }) {
+  if (isPaper()) throw new Error('TWAP runs on the exchange and is not simulated in paper mode')
+
+  const client = _client(acct)
+  const { index: assetIndex, szDecimals, isSpot } = await getAssetInfo(coin)
+
+  if (!reduceOnly && !isSpot) {
+    await client.updateLeverage({ asset: assetIndex, isCross: !isIsolated, leverage })
+  }
+
+  // The action nests its parameters under `twap` — unlike twapCancel, which does not.
+  return client.twapOrder({
+    twap: {
+      a: assetIndex,
+      b: isBuy,
+      s: roundSz(sz, szDecimals).toString(),
+      r: !!reduceOnly,
+      m: Math.round(minutes),
+      t: !!randomize,
+    },
+  })
+}
+
+/** Cancel a running exchange TWAP. */
+export async function cancelTwapOrder({ coin, twapId, acct = null }) {
+  const { index: assetIndex } = await getAssetInfo(coin)
+  return _client(acct).twapCancel({ a: assetIndex, t: parseInt(twapId) })
+}
+
+/**
+ * How many size decimals this market allows — the ticket needs it to size a price tick.
+ *
+ * Reads the cached meta, so it is free after the first call for a given universe.
+ */
+export async function szDecimalsFor(coin) { return (await getAssetInfo(coin)).szDecimals }
 
 /**
  * Close position at market (reduce-only IOC)

@@ -364,3 +364,23 @@ export function aggregateFillsByCoin(fills) {
   }
   return Object.values(map).sort((a, b) => b.volume - a.volume)
 }
+/**
+ * The top of the book — what a Chase order needs to know to sit at the front of it.
+ *
+ * Deliberately here rather than in trading.js: this one is POLLED, so it has to go through
+ * the metered transport that paces against HL's shared per-IP budget. trading.js keeps its
+ * own unpaced info client so that a cold meta lookup can never make an order wait, which is
+ * exactly the wrong property for a loop that runs every few seconds.
+ *
+ * Returns nulls rather than zeros when the book cannot be read. A chase that treated "we
+ * could not fetch the book" as "the bid is 0" would cancel its resting order and replace it
+ * at the bottom of the market.
+ */
+export async function bestBidAsk(coin) {
+  // l2Book takes no dex argument — a HIP-3 market is addressed by its 'dex:SYM' coin string,
+  // which is what `coin` already is.
+  const book = await infoClient.l2Book({ coin }).catch(() => null)
+  const bid  = parseFloat(book?.levels?.[0]?.[0]?.px ?? NaN)
+  const ask  = parseFloat(book?.levels?.[1]?.[0]?.px ?? NaN)
+  return { bestBid: bid > 0 ? bid : null, bestAsk: ask > 0 ? ask : null }
+}
