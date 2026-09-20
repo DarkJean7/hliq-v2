@@ -1208,8 +1208,12 @@ function renderAccountSection() {
   // ONCE per render, not once per card: _comboEqFilter is stateful, and calling it twice in
   // the same pass would advance the spike filter twice for a single reading.
   const comboValue = _comboDisplayEquity()
-  renderOverview({ perpState, spotState, fills, funding, openOrders, allMids, portfolio, webData: state.webData, sessionStart: state.sessionStart, firstFillTime: state.firstFillTime ?? null, ledger: ledger ?? [], addr: state.addr, comboValue })
-  renderPortfolioStats({ perpState, spotState, fills, funding, portfolio, webData: state.webData, comboValue })
+  // Combined view with nothing trustworthy to show. Both combined sources refuse to answer
+  // once a wallet has errored, and the local sum left behind is missing it -- so the desktop
+  // shell withholds exactly where the mobile one does, instead of printing a short total.
+  const comboPending = state.isAllAccounts && comboValue == null
+  renderOverview({ perpState, spotState, fills, funding, openOrders, allMids, portfolio, webData: state.webData, sessionStart: state.sessionStart, firstFillTime: state.firstFillTime ?? null, ledger: ledger ?? [], addr: state.addr, comboValue, comboPending })
+  renderPortfolioStats({ perpState, spotState, fills, funding, portfolio, webData: state.webData, comboValue, comboPending })
   renderSummaryCards(fills, perpState, spotState, portfolio)
 }
 

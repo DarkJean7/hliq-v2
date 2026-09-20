@@ -373,7 +373,7 @@ export function computeAcctStats(perpState, spotState, fills, portfolio = [], fu
 }
 
 // ─── OVERVIEW ────────────────────────────────────────────────────────────────
-export function renderOverview({ perpState, spotState, fills, funding = [], openOrders, allMids = {}, portfolio = [], webData = null, sessionStart = null, firstFillTime = null, addr = null, ledger = [], comboValue = null }) {
+export function renderOverview({ perpState, spotState, fills, funding = [], openOrders, allMids = {}, portfolio = [], webData = null, sessionStart = null, firstFillTime = null, addr = null, ledger = [], comboValue = null, comboPending = false }) {
   const margin    = perpState.marginSummary ?? {}
   const positions = perpState.assetPositions ?? []
 
@@ -394,9 +394,17 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   // account, which is the PER-DEVICE SUM that comboequity.js and the mobile headline both
   // discarded as a third basis. Rotating a phone past the breakpoint swapped the mobile shell
   // for this one and so swapped the basis, and the headline changed with it.
-  // Null before the first snapshot lands, and then the old sum is still better than nothing.
   const _localAcctVal    = liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal)
   const accountValue     = Number.isFinite(comboValue) && comboValue > 0 ? comboValue : _localAcctVal
+  // "and then the old sum is still better than nothing" is what this used to say, and it was
+  // wrong. Both _combinedServerValue and _combinedHeldValue refuse to answer when a wallet
+  // ERRORED -- they filter the failed row out and then find the count no longer matches the
+  // snapshot. The local sum left behind is missing that wallet: an understated total that
+  // reads as a real balance drop, which is exactly what the mobile headline withholds rather
+  // than show. So print nothing here too, or a rotation turns an honest dash into a wrong
+  // number. Ratios below still use the local basis -- a share of a smaller whole is off by
+  // far less than a total that silently dropped a wallet.
+  const acctValStr       = comboPending ? '—' : '$' + fmtUSD(accountValue)
   // The number ON SCREEN, published for anything that has to agree with it. The allocation
   // wheel is built from live parts while this is a server snapshot carried forward by a perp
   // delta — two honest constructions of the same quantity that land a fraction of a percent
@@ -509,7 +517,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   const heroStats = [
     {
       label: 'Account Value',
-      value: '$' + fmtUSD(accountValue),
+      value: acctValStr,
       sub:   'Perp equity (cross + isolated)',
       cls:   'neu',
     },
@@ -704,7 +712,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
                 <div class="ov-acct-av">${(typeof window !== 'undefined' && window._mobVAvatarHtml) ? window._mobVAvatarHtml(addr, 44) : ''}</div>
                 <div style="min-width:0">
                 <div class="ov-label">Account Value · Perp Equity</div>
-                <div class="ov-eq-val">$${fmtUSD(accountValue)}</div>
+                <div class="ov-eq-val">${acctValStr}</div>
                 <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
                   <span class="ov-chg ${chgCls}" id="ovChgPill">${chgFull}</span>
                 </div>
@@ -818,7 +826,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   // not a re-derived approximation.
   _ovHead = {
     label: 'Account Value · Perp Equity',
-    value: '$' + fmtUSD(accountValue),
+    value: acctValStr,
     chg: chgFull, chgCls,
     sub: `${positions.length} open position${positions.length !== 1 ? 's' : ''} · cross + isolated · ${_OV_PERIOD_LABEL[_ovPeriod] ?? 'today'}`,
   }
@@ -1867,7 +1875,7 @@ export function renderTrades(fills) {
 
 
 // ─── PORTFOLIO STATS ──────────────────────────────────────────────────────────
-export function renderPortfolioStats({ perpState, spotState, fills, funding, portfolio = [], webData = null, comboValue = null }) {
+export function renderPortfolioStats({ perpState, spotState, fills, funding, portfolio = [], webData = null, comboValue = null, comboPending = false }) {
   // HL "Portfolio Value" — the portfolio endpoint is HL's own unified account value
   const _perpVal      = parseFloat((perpState.marginSummary ?? {}).accountValue ?? 0)
   const _spotUSDCTot  = parseFloat((spotState?.balances ?? []).find(b => b.coin === 'USDC')?.total ?? 0)
@@ -1876,6 +1884,9 @@ export function renderPortfolioStats({ perpState, spotState, fills, funding, por
   // disagree with the headline one tab over.
   const _localVal     = liveAccountValue(portfolio, _perpVal, _spotUSDCTot)
   const accountValue  = Number.isFinite(comboValue) && comboValue > 0 ? comboValue : _localVal
+  // Same withholding rule as the overview hero: with a wallet errored the local sum is short
+  // by that wallet, and printing it here would contradict the dash one tab over.
+  const acctValStr    = comboPending ? '—' : '$' + fmtUSD(accountValue)
 
   const totalUnrPnl  = (perpState.assetPositions ?? []).reduce(
     (s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0
@@ -1903,7 +1914,7 @@ export function renderPortfolioStats({ perpState, spotState, fills, funding, por
   const stats = [
     {
       label: 'Account Value',
-      value: '$' + fmtUSD(accountValue),
+      value: acctValStr,
       sub:   'Total perp equity',
       cls:   'neu',
     },

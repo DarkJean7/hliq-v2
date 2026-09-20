@@ -40,11 +40,11 @@ t('computeAcctStats is left alone, because its callers already override it',
   /const accountValue\s*=\s*liveAccountValue\(/.test(bodyOf('export function computeAcctStats(')))
 t('and the portfolio tab takes the same figure',
   /renderPortfolioStats\(\{[\s\S]{0,300}?comboValue = null/.test(RND) &&
-  /renderPortfolioStats\(\{[^)]*comboValue \}\)/.test(CLI))
+  /renderPortfolioStats\(\{[^)]*comboValue, comboPending \}\)/.test(CLI))
 t('computed once per render, because the filter is stateful',
   /const comboValue = _comboDisplayEquity\(\)/.test(CLI) &&
   (CLI.match(/_comboDisplayEquity\(\)/g) || []).length === 2)
-t('the desktop call site hands it over', /renderOverview\(\{[^)]*comboValue \}\)/.test(CLI))
+t('the desktop call site hands it over', /renderOverview\(\{[^)]*comboValue, comboPending \}\)/.test(CLI))
 
 console.log(nl + '-- and that figure is the mobile one, not a second opinion --')
 // Start from the doc comment, not the keyword: the reasoning lives above the signature.
@@ -69,6 +69,26 @@ t('no hardcoded "· today" is left in that caption',
 const setRange = RND.slice(RND.indexOf('window.__ovSetRange = function'), RND.indexOf('// Outcome (prediction) holdings'))
 t('switching range updates the caption too', setRange.includes('ovEqSub'))
 t('and the caption has an id to be updated by', RND.includes('id="ovEqSub"'))
+
+console.log(nl + '-- and neither shell prints a total that is missing a wallet --')
+// Both combined sources filter an errored row out and then find the count no longer matches
+// the snapshot, so both return null the moment a wallet fails. The local sum left behind is
+// SHORT BY THAT WALLET. Mobile has always shown loading dots there; desktop used to print the
+// short sum, so rotating turned an honest dash into a wrong number.
+t('the caller tells the renderers when it has nothing trustworthy',
+  /const comboPending = state\.isAllAccounts && comboValue == null/.test(CLI))
+t('and passes it to both', (CLI.match(/comboValue, comboPending \}\)/g) || []).length === 2)
+t('both renderers accept it',
+  /renderOverview\(\{[\s\S]{0,600}?comboPending = false/.test(RND) &&
+  /renderPortfolioStats\(\{[\s\S]{0,400}?comboPending = false/.test(RND))
+t('the printed figure goes through the guard', (RND.match(/comboPending \? '—' :/g) || []).length === 2)
+// Every place the value reaches the screen must use it, including _ovHead, which is what
+// _ovPaintHead repaints the hero from on a chart-mode switch.
+t('no renderer still prints the raw value',
+  !/value: '\$' \+ fmtUSD\(accountValue\),/.test(RND) &&
+  !/ov-eq-val">\$\$\{fmtUSD\(accountValue\)\}/.test(RND))
+t('the live repaint follows it too', /_ovHead = \{[\s\S]{0,200}?value: acctValStr/.test(RND))
+t('why the old fallback was wrong is written down', RND.includes('is what this used to say, and it was'))
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
