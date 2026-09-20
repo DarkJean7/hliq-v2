@@ -546,6 +546,9 @@ body.priv #portfolioValueHero,
 body.priv #pnlHero,
 body.priv #managePosTable tbody td:not(:first-child):not(:last-child),
 body.priv #manageOrdTable tbody td:not(:first-child):not(:last-child),
+/* The Spot tab's table is Token / Total / On Hold / Available — every column but the
+   first is how much you hold, and none of it was covered before. */
+body.priv #spotTbody td:not(:first-child),
 body.priv .perf-table-wrap tbody td:not(:first-child):not(:nth-child(2)) {
   -webkit-text-security: disc;
   -moz-text-security: disc;

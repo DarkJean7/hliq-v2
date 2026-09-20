@@ -13073,8 +13073,10 @@ async function _mobUpdateOcMarks(holdings) {
       const pnl = (mark - entry) * total, roe = cost > 0 ? pnl / cost * 100 : 0
       const cls = pnl >= 0 ? 'pos' : 'neg', key = 'oc-' + i
       const mk = document.getElementById('ocmark-' + key); if (mk) mk.textContent = (mark * 100).toFixed(2) + '¢'
-      const pe = document.getElementById('ocpnl-' + key);  if (pe) { pe.textContent = (pnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(pnl)); pe.className = 'mob-v-row-val ' + cls }
-      const re = document.getElementById('ocroe-' + key);  if (re) { re.textContent = (roe >= 0 ? '+' : '') + roe.toFixed(1) + '%'; re.className = 'mob-v-row-pct ' + cls }
+      // Masked, like the full render — a tick that writes the raw number back into the
+      // element privacy mode just hid un-hides it a second or two after it was hidden.
+      const pe = document.getElementById('ocpnl-' + key);  if (pe) { pe.textContent = _prv((pnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(pnl))); pe.className = 'mob-v-row-val ' + cls }
+      const re = document.getElementById('ocroe-' + key);  if (re) { re.textContent = _prv((roe >= 0 ? '+' : '') + roe.toFixed(1) + '%'); re.className = 'mob-v-row-pct ' + cls }
     } catch {}
   }
 }
@@ -19151,16 +19153,16 @@ function _mobVRenderContent(tick = false) {
           ${_mobVCoinIcon(b.coin)}
           <div class="mob-v-row-info">
             <div class="mob-v-row-name">${esc(_ocCoinLabel(b.coin))}</div>
-            <div class="mob-v-row-sub">${fmtSize(total)} ${esc(_ocCoinLabel(b.coin))}${b._acct ? ` · <span class="notranslate" style="color:var(--accent)">${esc(b._acct)}</span>` : ''}</div>
+            <div class="mob-v-row-sub">${_prv(fmtSize(total))} ${esc(_ocCoinLabel(b.coin))}${b._acct ? ` · <span class="notranslate" style="color:var(--accent)">${esc(b._acct)}</span>` : ''}</div>
           </div>
           <div style="flex-shrink:0;width:74px;display:flex;flex-direction:column">
             <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;line-height:1.2;text-align:center">Price</div>
             <div style="font-size:13px;font-weight:500;color:var(--fg);line-height:1.3;margin-top:2px;white-space:nowrap;text-align:center;overflow:hidden;text-overflow:ellipsis">${px > 0 ? '$' + fmtPrice(px) : b.coin === 'USDC' ? '$1.00' : '—'}</div>
           </div>
           <div class="mob-v-row-right" style="width:104px;flex-shrink:0;flex-grow:0">
-            <div class="mob-v-row-val">${usd > 0 ? '$' + fmtUSD(usd) : '—'}</div>
-            ${roi == null ? '' : `<div class="mob-v-row-pct" style="color:${roi >= 0 ? 'var(--green)' : 'var(--red)'};white-space:nowrap">${
-              pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} · ${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%</div>`}
+            <div class="mob-v-row-val">${_prv(usd > 0 ? '$' + fmtUSD(usd) : '—')}</div>
+            ${roi == null ? '' : `<div class="mob-v-row-pct" style="color:${roi >= 0 ? 'var(--green)' : 'var(--red)'};white-space:nowrap">${_prv(`${
+              pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} · ${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`)}</div>`}
           </div>
           ${chev}
         </div>
@@ -19168,7 +19170,9 @@ function _mobVRenderContent(tick = false) {
           ...(b._acct ? [['Account', esc(b._acct)]] : []),
           // What it cost is known from the ledger whether or not the market is quoting.
           ...(cost > 0 ? [
-            ['Cost', '$' + fmtUSD(cost)],
+            ['Cost', _prv('$' + fmtUSD(cost))],
+            // Average buy PRICE stays visible: it says what you paid per token, not how
+            // much of it you own, and the live price beside it is public either way.
             ['Avg buy', total > 0 ? '$' + fmtPrice(cost / total) : '—'],
           ] : []),
           // Profit and ROI need a LIVE price as well as a cost, and roi/pnl are null when
@@ -19177,18 +19181,18 @@ function _mobVRenderContent(tick = false) {
           // Spot tab down with "Cannot read properties of null". Guard on the value that was
           // actually computed, and say plainly when it cannot be worked out.
           ...(roi == null ? (cost > 0 ? [['Profit', 'No price for this market yet']] : []) : [
-            ['Profit', `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}`, pnl >= 0 ? 'var(--green)' : 'var(--red)'],
-            ['ROI', `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`, roi >= 0 ? 'var(--green)' : 'var(--red)'],
+            ['Profit', _prv(`${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}`), pnl >= 0 ? 'var(--green)' : 'var(--red)'],
+            ['ROI', _prv(`${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`), roi >= 0 ? 'var(--green)' : 'var(--red)'],
           ]),
           // When this holding began, and when it was last added to. A balance says what you
           // have and never since when, and +20% over a week is a different fact from +20%
           // over four months.
           ...(() => { const h = _spotHeldTxt(b.coin, total); return h ? [['Held', h]] : [] })(),
           ...(() => { const l = _spotLastBuyTxt(b.coin, total); return l ? [['Last bought', l]] : [] })(),
-          ['Available', fmtSize(avail) + ' ' + esc(_ocCoinLabel(b.coin))],
-          ['In Orders', hold > 0 ? fmtSize(hold) + ' ' + esc(_ocCoinLabel(b.coin)) : '—'],
+          ['Available', _prv(fmtSize(avail)) + ' ' + esc(_ocCoinLabel(b.coin))],
+          ['In Orders', hold > 0 ? _prv(fmtSize(hold)) + ' ' + esc(_ocCoinLabel(b.coin)) : '—'],
           ['Price', px > 0 ? '$' + fmtPrice(px) : '—'],
-          ['Value', usd > 0 ? '$' + fmtUSD(usd, 2) : '—'],
+          ['Value', _prv(usd > 0 ? '$' + fmtUSD(usd, 2) : '—')],
         ])}</div>
       </div>`
     }
@@ -19231,8 +19235,16 @@ function _mobVRenderContent(tick = false) {
       // the slider would be stuck at 0. Closing cancels this market's resting orders first.
       const _ocMax  = Math.max(0, Math.floor(total))
       const _ocHold = Math.max(0, Math.floor(hold))
+      // The close panel is deliberately NOT masked, and that is not an oversight.
+      //
+      // Privacy mode hides READOUTS — the row, the card, the detail grid. This is a FORM:
+      // the share count lives in an editable input and the slider it mirrors, both of which
+      // have to stay usable to close a position at all. Masking the estimate underneath
+      // while the number that produced it sits in a box above it hides nothing and costs
+      // you the one figure that says what the slider just did. If you want it covered,
+      // the eye is one tap away.
       const closePanel = `
-        <div style="padding:2px 16px 14px;background:var(--panel-2);border-bottom:1px solid rgba(255,255,255,0.04)" onclick="event.stopPropagation()">
+        <div data-ocform style="padding:2px 16px 14px;background:var(--panel-2);border-bottom:1px solid rgba(255,255,255,0.04)" onclick="event.stopPropagation()">
           ${_ocHold > 0 ? `<div class="notranslate" style="font-size:10.5px;color:#f59e0b;margin-bottom:7px">⏳ ${_ocHold} ${_T('shares in a resting order — closing cancels it first', 'acciones en una orden pendiente — cerrar la cancela primero')}</div>` : ''}
           <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:3px">
             <span>${_T('Amount to close', 'Cantidad a cerrar')}</span><span id="ocpct-${id}" class="notranslate">100%</span>
@@ -19271,29 +19283,30 @@ function _mobVRenderContent(tick = false) {
                 <span style="font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(title)}</span>
                 <span style="font-size:9.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:${sideBg};color:${sideColor};text-transform:uppercase;letter-spacing:0.5px;flex-shrink:0">${sideTxt}</span>
               </div>
-              <div style="font-size:11px;color:var(--muted);margin-top:2px">${fmtSize(total)} shares${b._acct ? ` · <span class="notranslate" style="color:var(--accent)">${esc(b._acct)}</span>` : ''}</div>
-              <div style="font-size:10.5px;margin-top:3px;white-space:nowrap"><span style="color:var(--muted)">If it wins </span><span style="color:var(--green);font-weight:700">+$${fmtUSD(winProfit)}</span><span style="color:var(--green)"> (+${winPct.toFixed(0)}%)</span></div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px">${_prv(fmtSize(total))} shares${b._acct ? ` · <span class="notranslate" style="color:var(--accent)">${esc(b._acct)}</span>` : ''}</div>
+              <div style="font-size:10.5px;margin-top:3px;white-space:nowrap"><span style="color:var(--muted)">If it wins </span><span style="color:var(--green);font-weight:700">${_prv(`+$${fmtUSD(winProfit)} (+${winPct.toFixed(0)}%)`)}</span></div>
             </div>
             <div style="text-align:center;flex-shrink:0">
               <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
               <div id="ocmark-${id}" style="font-size:13px;font-weight:600;margin-top:2px">${mark > 0 ? (mark * 100).toFixed(2) + '¢' : '—'}</div>
             </div>
             <div style="text-align:right;flex-shrink:0;min-width:62px">
-              <div class="mob-v-row-val ${cls}" id="ocpnl-${id}" style="font-size:15px;font-weight:700;line-height:1.15">${(pnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(pnl))}</div>
-              <div class="mob-v-row-pct ${cls}" id="ocroe-${id}" style="font-size:11px;font-weight:600;line-height:1.15;margin-top:1px">${(roe >= 0 ? '+' : '') + roe.toFixed(1)}%</div>
+              <div class="mob-v-row-val ${cls}" id="ocpnl-${id}" style="font-size:15px;font-weight:700;line-height:1.15">${_prv((pnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(pnl)))}</div>
+              <div class="mob-v-row-pct ${cls}" id="ocroe-${id}" style="font-size:11px;font-weight:600;line-height:1.15;margin-top:1px">${_prv((roe >= 0 ? '+' : '') + roe.toFixed(1) + '%')}</div>
             </div>
             ${chev}
           </div>
         </div>
         <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${_mobVDetailGrid([
-          ['Size', fmtSize(total) + ' ' + sideLabel],
-          ['Position Value', '$' + fmtUSD(value, 2)],
+          // Prices are public — the share COUNT and every figure derived from it are not.
+          ['Size', _prv(fmtSize(total)) + ' ' + sideLabel],
+          ['Position Value', _prv('$' + fmtUSD(value, 2))],
           ['Entry Price', (entry * 100).toFixed(2) + '¢'],
           ['Mark Price', mark > 0 ? (mark * 100).toFixed(2) + '¢' : '—'],
-          ['Cost', '$' + fmtUSD(cost, 2)],
-          ['PnL (ROE)', `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} (${roe >= 0 ? '+' : ''}${roe.toFixed(1)}%)`, pnl >= 0 ? 'var(--green)' : 'var(--red)'],
-          ['If it wins', `$${fmtUSD(total, 2)} payout · +$${fmtUSD(winProfit)} (+${winPct.toFixed(1)}%)`, 'var(--green)'],
-          ...(hold > 0 ? [['In Orders', fmtSize(hold) + ' ' + sideLabel]] : []),
+          ['Cost', _prv('$' + fmtUSD(cost, 2))],
+          ['PnL (ROE)', _prv(`${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} (${roe >= 0 ? '+' : ''}${roe.toFixed(1)}%)`), pnl >= 0 ? 'var(--green)' : 'var(--red)'],
+          ['If it wins', _prv(`$${fmtUSD(total, 2)} payout · +$${fmtUSD(winProfit)} (+${winPct.toFixed(1)}%)`), 'var(--green)'],
+          ...(hold > 0 ? [['In Orders', _prv(fmtSize(hold)) + ' ' + sideLabel]] : []),
         ])}${closePanel}</div>
       </div>`
     }
@@ -19316,8 +19329,8 @@ function _mobVRenderContent(tick = false) {
       const xp    = _mobVExpandedIds.has(id)
       const chev  = `<svg id="mrc-${id}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>`
       const sub   = items.length > 1
-        ? `${fmtSize(total)} · ×${items.length} accounts`
-        : `${fmtSize(total)} ${esc(_ocCoinLabel(coin))}${items[0]._acct ? ` · <span class="notranslate" style="color:var(--accent)">${esc(items[0]._acct)}</span>` : ''}`
+        ? `${_prv(fmtSize(total))} · ×${items.length} accounts`
+        : `${_prv(fmtSize(total))} ${esc(_ocCoinLabel(coin))}${items[0]._acct ? ` · <span class="notranslate" style="color:var(--accent)">${esc(items[0]._acct)}</span>` : ''}`
       const subRows = items
         .slice().sort((a, b) => usdOf(parseFloat(b.total ?? 0)) - usdOf(parseFloat(a.total ?? 0)))
         .map(b => {
@@ -19332,14 +19345,14 @@ function _mobVRenderContent(tick = false) {
           return `<div class="mob-v-row" style="padding-left:52px;background:var(--panel-2)">
             <div class="mob-v-row-info">
               <div class="mob-v-row-name notranslate" style="font-size:13px;color:var(--accent)">${esc(b._acct ?? '—')}</div>
-              <div class="mob-v-row-sub">${fmtSize(t)} ${esc(_ocCoinLabel(coin))}${hd > 0 ? ` · ${fmtSize(av)} free` : ''}</div>
+              <div class="mob-v-row-sub">${_prv(fmtSize(t))} ${esc(_ocCoinLabel(coin))}${hd > 0 ? ` · ${_prv(fmtSize(av))} free` : ''}</div>
             </div>
             <div class="mob-v-row-right" style="width:104px;flex-shrink:0;flex-grow:0">
-              <div class="mob-v-row-val">${u > 0 ? '$' + fmtUSD(u) : '—'}</div>
+              <div class="mob-v-row-val">${_prv(u > 0 ? '$' + fmtUSD(u) : '—')}</div>
               ${rr != null
-                ? `<div class="mob-v-row-pct" style="color:${rr >= 0 ? 'var(--green)' : 'var(--red)'};white-space:nowrap">${
-                    rp >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(rp))} · ${rr >= 0 ? '+' : ''}${rr.toFixed(2)}%</div>`
-                : hd > 0 ? `<div class="mob-v-row-pct" style="color:var(--muted)">${fmtSize(hd)} held</div>` : ''}
+                ? `<div class="mob-v-row-pct" style="color:${rr >= 0 ? 'var(--green)' : 'var(--red)'};white-space:nowrap">${_prv(`${
+                    rp >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(rp))} · ${rr >= 0 ? '+' : ''}${rr.toFixed(2)}%`)}</div>`
+                : hd > 0 ? `<div class="mob-v-row-pct" style="color:var(--muted)">${_prv(fmtSize(hd))} held</div>` : ''}
             </div>
           </div>`
         }).join('')
@@ -19355,9 +19368,9 @@ function _mobVRenderContent(tick = false) {
             <div style="font-size:13px;font-weight:500;color:var(--fg);line-height:1.3;margin-top:2px;white-space:nowrap;text-align:center;overflow:hidden;text-overflow:ellipsis">${px > 0 ? '$' + fmtPrice(px) : coin === 'USDC' ? '$1.00' : '—'}</div>
           </div>
           <div class="mob-v-row-right" style="width:104px;flex-shrink:0;flex-grow:0">
-            <div class="mob-v-row-val">${usd > 0 ? '$' + fmtUSD(usd) : '—'}</div>
-            ${roi == null ? '' : `<div class="mob-v-row-pct" style="color:${roi >= 0 ? 'var(--green)' : 'var(--red)'};white-space:nowrap">${
-              pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} · ${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%</div>`}
+            <div class="mob-v-row-val">${_prv(usd > 0 ? '$' + fmtUSD(usd) : '—')}</div>
+            ${roi == null ? '' : `<div class="mob-v-row-pct" style="color:${roi >= 0 ? 'var(--green)' : 'var(--red)'};white-space:nowrap">${_prv(`${
+              pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} · ${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`)}</div>`}
           </div>
           ${chev}
         </div>
@@ -19368,13 +19381,13 @@ function _mobVRenderContent(tick = false) {
           // account was fixed first and this one was missed, which is why All Accounts
           // still could not open Spot.
           cost > 0 ? _mobVDetailGrid([
-            ['Cost', '$' + fmtUSD(cost)],
-            ['Value', usd > 0 ? '$' + fmtUSD(usd) : '—'],
+            ['Cost', _prv('$' + fmtUSD(cost))],
+            ['Value', _prv(usd > 0 ? '$' + fmtUSD(usd) : '—')],
             ['Avg buy', total > 0 ? '$' + fmtPrice(cost / total) : '—'],
             ['Now', px > 0 ? '$' + fmtPrice(px) : '—'],
             ...(roi == null ? [['Profit', 'No price for this market yet']] : [
-              ['Profit', `${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}`, pnl >= 0 ? 'var(--green)' : 'var(--red)'],
-              ['ROI', `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`, roi >= 0 ? 'var(--green)' : 'var(--red)'],
+              ['Profit', _prv(`${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))}`), pnl >= 0 ? 'var(--green)' : 'var(--red)'],
+              ['ROI', _prv(`${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`), roi >= 0 ? 'var(--green)' : 'var(--red)'],
             ]),
             // The combined view's copy. state.fills here is every wallet's, merged, so for a
             // coin held on two accounts this is the earliest run still open across them.
@@ -37877,7 +37890,7 @@ function _ovOcRow(b, id) {
   const key = String(n)
   return `<div class="ov-oc-item">
     <div class="ov-ord-row ov-oc-row" onclick="window.__ovToggleOc('${id}')">
-      <span class="ov-pos-mkt"><div class="ov-av-img">${_coinIconHtml(b.coin)}</div><span class="ov-pos-info"><b>${esc(title)}</b><i>${fmtSize(total)} shares</i></span></span>
+      <span class="ov-pos-mkt"><div class="ov-av-img">${_coinIconHtml(b.coin)}</div><span class="ov-pos-info"><b>${esc(title)}</b><i>${_prv(fmtSize(total))} shares</i></span></span>
       <span class="ov-side-badge ${sideCls}">${sideTxt}</span>
       <span class="ov-r mono" id="ovocmark-${key}">${mark > 0 ? (mark * 100).toFixed(2) + '¢' : '—'}</span>
       <span class="ov-r mono">$${fmtUSD(value)}</span>

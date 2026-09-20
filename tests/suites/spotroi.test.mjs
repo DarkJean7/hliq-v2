@@ -53,8 +53,12 @@ t('and shows ROI beside the value', grp.includes("${roi >= 0 ? '+' : ''}${roi.to
 t('only when there is a basis', grp.includes("roi == null ? '' :"))
 // Value is dashed rather than printed as $0.00 when the market is not quoting the coin —
 // the same reason ROI is withheld there. Cost is unconditional: the ledger knows it.
+// Both figures now go through _prv: privacy mode was covering the positions rows and
+// leaving every spot holding — amount, value, cost, PnL — in the clear. The assertion still
+// says "Cost and Value are both here"; it just spells them the way a masked figure is spelt.
+// See tests/suites/privacy.test.mjs for the rest of that sweep.
 t('expanding shows what it cost and what it is worth',
-  grp.includes("['Cost', '$' + fmtUSD(cost)]") && grp.includes("['Value', usd > 0 ? '$' + fmtUSD(usd) : '—']"))
+  grp.includes("['Cost', _prv('$' + fmtUSD(cost))]") && grp.includes("['Value', _prv(usd > 0 ? '$' + fmtUSD(usd) : '—')]"))
 t('and an unpriceable holding says so instead of claiming a profit',
   grp.includes("['Profit', 'No price for this market yet']"))
 t('plus the average buy price against the current one',
@@ -83,11 +87,16 @@ t('per-account profits sum to the group profit',
   Math.abs(parts.reduce((a, b) => a + b, 0) - 8.53) < 0.005)
 
 console.log(String.fromCharCode(10) + '-- single account gets it too, from the same fields --')
-const row = cli.slice(cli.indexOf('const renderSpotRow = (b, id)'), cli.indexOf('const renderOutcomeRow'))
+// renderOcRow, not renderOutcomeRow — the old name matched nothing, so indexOf returned -1
+// and this slice ran to the end of the file. Every assertion below could then be satisfied by
+// the GROUP renderer instead of the single-account one they are about.
+const row = cli.slice(cli.indexOf('const renderSpotRow = (b, id)'), cli.indexOf('const renderOcRow = (b, id)'))
 t('it computes a basis', row.includes("const cost  = parseFloat(b.entryNtl ?? 0)"))
-t('shows profit and ROI on the row', money.test(row))
+// The pair itself is unchanged — privacy mode wrapped the whole template in _prv rather
+// than splitting it, which is why this regex still matches.
+t('shows profit and ROI on the row', money.test(row), row.length)
 t('and adds Cost / Avg buy / Profit / ROI when expanded',
-  row.includes("['Cost', '$' + fmtUSD(cost)]") && row.includes("['Avg buy'") && row.includes("['ROI'"))
+  row.includes("['Cost', _prv('$' + fmtUSD(cost))]") && row.includes("['Avg buy'") && row.includes("['ROI'"))
 t('those lines are skipped entirely for a coin with no basis', row.includes('...(cost > 0 ? ['))
 t('USDC therefore still shows just its balance', row.includes("['Available'"))
 
