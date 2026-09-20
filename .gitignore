@@ -3,6 +3,8 @@
 # Bot runtime state (cursors, buffers, what a copy bot holds). Written to the working dir.
 .accumulator-state.json
 .copytrade-state.json
+.guardian-state.json
+.trailstop-state.json
 
 # Dependencies — reinstalled from package-lock.json
 node_modules/
