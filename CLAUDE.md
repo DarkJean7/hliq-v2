@@ -171,6 +171,13 @@ thing that already failed.
   $1,664 wallet, and the allocation wheel shipped that way for months. The reserve is
   `accountValue − totalMarginUsed − withdrawable`, which agrees to the cent with
   `Σ size × price ÷ leverage` over the non-reduce-only orders. `src/alloc.js`.
+- **Health is not `1 - maint / accountValue`.** It is 100 minus Hyperliquid's Unified Account
+  Ratio, and their docs give the algorithm (Trading → Account abstraction modes). Per COLLATERAL
+  TOKEN: cross maintenance margin summed across EVERY dex, divided by that token'''s SPOT balance
+  less isolated margin, then the WORST token wins — you are liquidated on the book that runs out
+  first. We divided main-dex maintenance by portfolio value, which is wrong twice and optimistic
+  twice: 89.1% against HL'''s 83.9% on the account it was reported on. Portfolio value includes
+  spot tokens that do not collateralise a USDC position. `src/health.js`.
 - **Hyperliquid rate-limits by IP**, 1200 weight/min shared across `/info` and `/exchange`.
   Fanning a request across nine wallets is how the limiter gets tripped. Batch or cache.
 - **The average is not the thing that 429s you — the peak is.** The limiter is a bucket

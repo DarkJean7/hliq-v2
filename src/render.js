@@ -1,3 +1,4 @@
+import { accountHealth, healthClass, approxHealth } from './health.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
 import { pairTrades, drawdownFor } from './drawdown.js'
 import { partRoe, fmtRoe } from './roe.js'
@@ -352,8 +353,18 @@ export function computeAcctStats(perpState, spotState, fills, portfolio = [], fu
   // Value (the unified account value: perp + spot + vaults, NOT the perp-only account
   // value). This is the exact number HL shows in its Unified Account Summary.
   const marginBase = accountValue
-  const healthPct  = marginBase > 0 ? Math.max(0, Math.min(100, (1 - maintMargin / marginBase) * 100)) : 100
-  const healthCls  = healthPct > 60 ? 'pos' : healthPct > 30 ? 'warn' : 'neg'
+  // Health is 100 − Hyperliquid's Unified Account Ratio, computed the way their docs compute
+  // it: maintenance margin summed across EVERY dex, over the spot balance of the collateral
+  // token less isolated margin. Reported as ours saying 89.1% while HL said 16.10% (= 83.9%).
+  // The old form — main-dex maintenance over portfolio value — was wrong in both halves and
+  // optimistic in both, which is the one direction a liquidation gauge must not be wrong in.
+  const _dexStates = perpState?._dexStates
+    ?? [{ crossMaintenanceMarginUsed: maintMargin, assetPositions: positions }]
+  const _hlHealth  = accountHealth(_dexStates, spotState?.balances)
+  // Falls back to the old approximation only when there is no spot balance to divide by — a
+  // failed read, a cold cache. Degraded, not equivalent: it flatters an account holding spot.
+  const healthPct  = _hlHealth ?? approxHealth(maintMargin, marginBase) ?? 100
+  const healthCls  = healthClass(healthPct)
   const healthStr  = accountValue > 0 ? healthPct.toFixed(1) + '%' : '—'
 
   const accountLeverage = accountValue > 0 ? totalNtl / accountValue : 0
@@ -1877,14 +1888,15 @@ export function renderPortfolioStats({ perpState, spotState, fills, funding, por
   const spotUSDCFree = spotUSDC ? Math.max(0, parseFloat(spotUSDC.total ?? 0) - parseFloat(spotUSDC.hold ?? 0)) : 0
   const withdrawable = perpWdraw + spotUSDCFree
 
-  // Health = 100 − HL's Unified Account Ratio (maintenance margin ÷ Portfolio Value)
+  // Health = 100 − HL's Unified Account Ratio. Same algorithm as computeAcctStats; this is the
+  // overview's copy of it, and it had the same two faults.
   const cms          = perpState.crossMarginSummary ?? {}
   const marginUsed   = parseFloat(cms.totalMarginUsed ?? 0)
   const maintMargin  = parseFloat(perpState.crossMaintenanceMarginUsed ?? 0)
-  const _hBase       = accountValue
-  const healthPct    = _hBase > 0
-    ? Math.max(0, Math.min(100, (1 - maintMargin / _hBase) * 100))
-    : 100
+  const _dexStates2  = perpState?._dexStates
+    ?? [{ crossMaintenanceMarginUsed: maintMargin, assetPositions: perpState.assetPositions ?? [] }]
+  const healthPct    = accountHealth(_dexStates2, spotState?.balances)
+    ?? approxHealth(maintMargin, accountValue) ?? 100
   const healthStr    = accountValue > 0 ? healthPct.toFixed(1) + '%' : '—'
   const healthCls    = healthPct > 60 ? 'pos' : healthPct > 30 ? 'neu' : 'neg'
 

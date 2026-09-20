@@ -67,16 +67,32 @@ function _hip3DexNames(allMetas) {
 export async function fetchClearinghouseState(address, allMetas) {
   const dexes = allMetas && allMetas.length > 1 ? _hip3DexNames(allMetas) : []
   const mainState  = await infoClient.clearinghouseState({ user: address })
+  // Each dex's own cross maintenance margin, kept so health can be computed the way
+  // Hyperliquid computes it. `crossMaintenanceMarginUsed` on the main state is MAIN DEX ONLY;
+  // a builder-dex position has its own and it was simply not counted, which overstated health
+  // by the whole of it. See src/health.js.
+  const _dexStates = (main, extras) => [
+    { crossMaintenanceMarginUsed: main?.crossMaintenanceMarginUsed ?? 0, assetPositions: main?.assetPositions ?? [] },
+    ...extras,
+  ]
+
   const hip3States = await _pool(dexes, dex =>
     infoClient.clearinghouseState({ user: address, dex }).catch(() => null))
   if (!dexes.length) {
     // Caller skipped the HIP-3 fan-out this tick (rate-limit protection) — reuse THIS
     // wallet's cached HIP-3 positions so they don't flicker out of the UI.
     const cached = _hip3For(address).positions
+    // The cached HIP-3 maintenance margin travels with the cached positions: dropping it on a
+    // skipped fan would make health jump every time the fan was skipped.
+    const cachedMaint = _hip3For(address).maint ?? []
     if (cached.length) {
-      return { ...mainState, assetPositions: [...(mainState.assetPositions ?? []), ...cached] }
+      return {
+        ...mainState,
+        assetPositions: [...(mainState.assetPositions ?? []), ...cached],
+        _dexStates: _dexStates(mainState, cachedMaint),
+      }
     }
-    return mainState
+    return { ...mainState, _dexStates: _dexStates(mainState, cachedMaint) }
   }
   // HIP-3 clearinghouseState returns coin names WITHOUT the "dex:" prefix (e.g. "CL" not "xyz:CL").
   // Prefix them so they match allMids keys and fills (which do use the "dex:coin" convention).
@@ -107,8 +123,19 @@ export async function fetchClearinghouseState(address, allMetas) {
     if (!dexes.includes(dex) && held.length) extraPositions.push(...held)
   }
   entry.positions = extraPositions
-  if (!extraPositions.length) return mainState
-  return { ...mainState, assetPositions: [...(mainState.assetPositions ?? []), ...extraPositions] }
+  // One record per dex that answered, for the health ratio. A dex that did NOT answer keeps
+  // its last known figure rather than contributing zero — zero maintenance margin reads as
+  // "nothing at risk there", which is the empty-is-not-unknown mistake on a liquidation gauge.
+  const answered = dexes.map((dex, i) => hip3States[i] ? {
+    crossMaintenanceMarginUsed: hip3States[i].crossMaintenanceMarginUsed ?? 0,
+    assetPositions: hip3States[i].assetPositions ?? [],
+  } : null)
+  const priorMaint = new Map((_hip3For(address).maint ?? []).map(m => [m._dex, m]))
+  const maintAll = dexes.map((dex, i) => ({ ...(answered[i] ?? priorMaint.get(dex) ?? { crossMaintenanceMarginUsed: 0, assetPositions: [] }), _dex: dex }))
+  entry.maint = maintAll
+  const out = { ...mainState, _dexStates: _dexStates(mainState, maintAll) }
+  if (!extraPositions.length) return out
+  return { ...out, assetPositions: [...(mainState.assetPositions ?? []), ...extraPositions] }
 }
 
 // Fetch frontendOpenOrders for main DEX + all HIP-3 DEXes, merged into one array.

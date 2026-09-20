@@ -248,6 +248,7 @@ import { cashSample, classifyCashMove } from './perpcash.js'
 import { orderMarginByCoin, spotByCoin, SLICE_DUST } from './alloc.js'
 import { hlBudget as _hlBudget, meterTransport, weightOf as _hlWeightOf } from './hlbudget.js'
 import { holdingStart, fmtHeld, fmtWhen } from './holding.js'
+import { accountHealth as _hlHealth, healthClass as _hlHealthCls, approxHealth as _hlApproxHealth } from './health.js'
 import { sideOf as _tsSide, stopPrice as _tsStopPx, resolveSize as _tsSize,
          validate as _tsValidate, describe as _tsDescribe } from './trailstop.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
@@ -8845,9 +8846,16 @@ function _applyAcctLiveCs(r, cs, hip3Override) {
   r._orderMargin  = Math.max(0, perpNow
     - mainPos.reduce((sum, ap) => sum + Math.abs(parseFloat(ap.position?.marginUsed ?? 0)), 0)
     - parseFloat(cs.withdrawable ?? 0))
+  // Health the way Hyperliquid computes it. `maint` here is MAIN DEX only — this tick reads
+  // one clearinghouse state — so the builder-dex figures from the last heavy fan are carried
+  // on the row and reused. Dropping them would make health jump upward every 12 seconds and
+  // back down on each fan, which is worse than being consistently wrong.
+  const _prevDex  = Array.isArray(r._dexStates) ? r._dexStates.slice(1) : []
+  const _dexSt    = [{ crossMaintenanceMarginUsed: maint, assetPositions: mainPos }, ..._prevDex]
+  r._dexStates    = _dexSt
   const hBase     = (r._marginBase ?? 0) > 0 ? r._marginBase : r.accountValue
-  r.healthPct     = hBase > 0 ? Math.max(0, Math.min(100, (1 - maint / hBase) * 100)) : 100
-  r.healthCls     = r.healthPct > 60 ? 'pos' : r.healthPct > 30 ? 'warn' : 'neg'
+  r.healthPct     = _hlHealth(_dexSt, r._spotBals) ?? _hlApproxHealth(maint, hBase) ?? 100
+  r.healthCls     = _hlHealthCls(r.healthPct)
   r.netPnl        = parseFloat(r.realizedPnl ?? 0) + r.unrealizedPnl + parseFloat(r.allTimeFunding ?? 0) - parseFloat(r.totalFees ?? 0)
   return true
 }
@@ -33680,9 +33688,20 @@ async function _lbFetchResults(entries) {
     const allTimeFunding   = funding.reduce((s, f) => s + parseFloat(f.delta?.usdc ?? 0), 0)
     const netPnl           = realizedPnl + unrealizedPnl + allTimeFunding - totalFees
     const maintMargin      = parseFloat(csNow.crossMaintenanceMarginUsed ?? 0)
-    // Health = 100 − HL's Unified Account Ratio (maintenance margin ÷ Portfolio Value)
-    const healthPct        = _marginBase > 0 ? Math.max(0, Math.min(100, (1 - maintMargin / _marginBase) * 100)) : 100
-    const healthCls        = healthPct > 60 ? 'pos' : healthPct > 30 ? 'warn' : 'neg'
+    // Health = 100 − HL's Unified Account Ratio, their algorithm: maintenance margin summed
+    // across EVERY dex, over the collateral token's spot balance less isolated margin. This is
+    // the combined view's copy of the same calculation the single account does.
+    //
+    // hip3Res carries this wallet's builder-dex state, so its maintenance margin is counted
+    // here rather than silently omitted — which is what made health read high on any account
+    // with a HIP-3 position.
+    const _dexSt           = csNow._dexStates ?? [{ crossMaintenanceMarginUsed: maintMargin, assetPositions: positions }]
+    const healthPct        = _hlHealth(_dexSt, spotState?.balances)
+      ?? _hlApproxHealth(maintMargin, _marginBase) ?? 100
+    const healthCls        = _hlHealthCls(healthPct)
+    // Kept on the row so the 12s live tick can recompute health without re-fanning the dexes.
+    const _dexStates       = _dexSt
+    const _spotBals        = (spotState?.balances ?? []).map(b => ({ token: b.token, total: b.total }))
     // Free margin = perp withdrawable + free (un-held) spot USDC. Compute it here in the
     // base fetch (the spot state is already loaded) so free margin is correct on the very
     // first paint and the 12s value tick can re-add the spot part via _spotFree.
@@ -33737,7 +33756,7 @@ async function _lbFetchResults(entries) {
     // headline silently fell back to the per-device sum — a DIFFERENT anchor, hundreds of
     // dollars away. Closing a position triggers exactly this rebuild, which is why the
     // equity stepped on a close and stayed there until every wallet had had a WS tick.
-    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, _cash: cashSample(_perpAcctVal, positions), _orderMargin, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, track, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
+    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, _cash: cashSample(_perpAcctVal, positions), _orderMargin, _dexStates, _spotBals, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, track, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
   }
 
   for (let i = 0; i < entries.length; i++) {
