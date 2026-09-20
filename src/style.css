@@ -5961,6 +5961,13 @@ body.light-mode .guard-seg-btn:not(.active):hover { background: rgba(0,0,0,0.04)
 /* Spot: token, price, balance, value, PnL. No action column — a holding has nothing to
    close, and leaving an empty one just pushes the numbers off centre. */
 .ov-ord-head.ov-spot-row, .ov-ord-row.ov-spot-row { grid-template-columns: 2fr 1fr 1.2fr 1.1fr 1.4fr; }
+.trail-facts { display: flex; flex-direction: column; gap: 7px; margin: 14px 0 18px; }
+.trail-facts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 13px; }
+.trail-facts span { color: var(--muted); }
+.trail-facts b { font-family: var(--font-mono); font-weight: 600; }
+.trail-unit { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; color: var(--fg); padding: 6px 8px; cursor: pointer; }
+.trail-check { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+.trail-check input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
 .ov-spot-facts { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 8px 4px 6px 40px; }
 .ov-spot-facts span { display: flex; flex-direction: column; font-size: 12px; font-family: var(--font-mono); }
 .ov-spot-facts i { font-style: normal; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-family: var(--font); }

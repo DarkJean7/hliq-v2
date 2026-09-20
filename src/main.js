@@ -248,6 +248,8 @@ import { cashSample, classifyCashMove } from './perpcash.js'
 import { orderMarginByCoin, spotByCoin, SLICE_DUST } from './alloc.js'
 import { hlBudget as _hlBudget, meterTransport, weightOf as _hlWeightOf } from './hlbudget.js'
 import { holdingStart, fmtHeld, fmtWhen } from './holding.js'
+import { sideOf as _tsSide, stopPrice as _tsStopPx, resolveSize as _tsSize,
+         validate as _tsValidate, describe as _tsDescribe } from './trailstop.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
 import { trackRecord, isSmallSample, openLossOf } from './trackrecord.js'
@@ -6393,6 +6395,185 @@ async function _guardFetchOwnerState(mode, coin, acct, armedKey) {
   } catch { return null }
 }
 
+/**
+ * Set Trailing Stop.
+ *
+ * Hyperliquid has no trailing-stop order type, so this arms a server-side watcher
+ * (strategies/trailstop.js) that remembers the high-water mark and keeps a reduce-only stop
+ * resting behind it. Everything the form decides is computed by src/trailstop.js, which is
+ * pure and tested — the modal only collects it and says what will happen.
+ *
+ * Runs on the SERVER on purpose. A trailing stop that lives in a browser tab stops trailing
+ * when the tab does, and the moment it matters most is the one where nobody is watching.
+ */
+let _trailCfg = null
+
+window.__openTrailModal = function (coin, apiSide, acct) {
+  const p = _guardFindPos(coin, acct)
+  if (!p) { alert('Position not found — refresh and try again.'); return }
+  // The owning account, never the '__all_accounts__' sentinel: the bot API is owner-gated per
+  // real address, so the sentinel yields no auth token and the arm would fail with nothing
+  // useful on screen.
+  const addr = _isRealAddr(acct) ? acct : (_isRealAddr(state.addr) ? state.addr : (p._acctAddr || null))
+  // The modal lives inside .app, which is display:none in the mobile shell — reparent it to
+  // <body> so it renders there too. Idempotent after the first open.
+  const ov = document.getElementById('trailModal')
+  if (ov && ov.parentElement !== document.body) document.body.appendChild(ov)
+
+  const szi   = parseFloat(p.szi ?? 0)
+  const side  = _tsSide(szi)
+  const size  = Math.abs(szi)
+  const entry = parseFloat(p.entryPx ?? 0)
+  const mark  = parseFloat(state.allMids?.[coin] ?? 0) || entry
+  const liq   = parseFloat(p.liquidationPx ?? 0)
+  const armed = !!_armedGuardKey('trailstop', coin, addr)
+  _trailCfg = { coin, addr, side, size, entry, mark, liq, armed }
+
+  const label = _ocCoinLabel(coin)
+  _setTxt('trailMarket', label)
+  const posEl = document.getElementById('trailPos')
+  if (posEl) {
+    posEl.textContent = fmtSize(size) + ' ' + label
+    posEl.className = side === 'long' ? 'pos' : 'neg'
+  }
+  _setTxt('trailEntry', entry > 0 ? '$' + fmtPrice(entry) : '—')
+  _setTxt('trailMark',  mark  > 0 ? '$' + fmtPrice(mark)  : '—')
+  // A cross position often has no liquidation price of its own; a dash is the honest answer
+  // and "$0.00" would read as "about to be liquidated".
+  _setTxt('trailLiq',   liq   > 0 ? '$' + fmtPrice(liq)   : '—')
+  _setTxt('trailSizeUnit', label)
+
+  const amt = document.getElementById('trailAmt');  if (amt) amt.value = ''
+  const act = document.getElementById('trailAct');  if (act) act.value = ''
+  const on  = document.getElementById('trailActOn'); if (on) on.checked = false
+  const pct = document.getElementById('trailPct');  if (pct) pct.value = 100
+  const sz  = document.getElementById('trailSize'); if (sz) sz.value = _trailFmtSz(size)
+  const st  = document.getElementById('trailStatus'); if (st) { st.textContent = ''; st.className = 'trade-status' }
+  const stop = document.getElementById('trailStopBtn'); if (stop) stop.style.display = armed ? '' : 'none'
+  const conf = document.getElementById('trailConfirmBtn')
+  if (conf) { conf.disabled = false; conf.textContent = armed ? 'Replace' : 'Confirm' }
+
+  window.__trailPreview()
+  document.getElementById('trailModal').classList.add('open')
+}
+
+const _setTxt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v }
+// Enough decimals for the smallest size the market allows, without a wall of zeros.
+const _trailFmtSz = (n) => Number(n).toFixed(6).replace(/0+$/, '').replace(/\.$/, '')
+
+/** Slider moved: the size box follows it. */
+window.__trailPctMoved = function (v) {
+  if (!_trailCfg) return
+  const pct = Math.max(1, Math.min(100, parseFloat(v) || 100))
+  const sz  = document.getElementById('trailSize')
+  if (sz) sz.value = _trailFmtSz(_tsSize(_trailCfg.size, { pct }))
+  _setTxt('trailPctLabel', pct + '% of the position')
+  window.__trailPreview()
+}
+
+/** Size typed: the slider follows IT, so the two never disagree about what will be closed. */
+window.__trailSizeTyped = function () {
+  if (!_trailCfg) return
+  const v = parseFloat(document.getElementById('trailSize')?.value)
+  if (Number.isFinite(v) && _trailCfg.size > 0) {
+    const pct = Math.max(1, Math.min(100, Math.round((v / _trailCfg.size) * 100)))
+    const sl = document.getElementById('trailPct'); if (sl) sl.value = pct
+    _setTxt('trailPctLabel', pct + '% of the position')
+  }
+  window.__trailPreview()
+}
+
+window.__trailQuick = function (n) {
+  const u = document.getElementById('trailUnit'); if (u) u.value = 'pct'
+  const a = document.getElementById('trailAmt');  if (a) a.value = n
+  window.__trailPreview()
+}
+
+/** Everything the form currently says, in one place, so preview and submit cannot disagree. */
+function _trailRead() {
+  const unit = document.getElementById('trailUnit')?.value === 'usd' ? '$' : '%'
+  const actOn = !!document.getElementById('trailActOn')?.checked
+  const row = document.getElementById('trailActRow'); if (row) row.style.display = actOn ? '' : 'none'
+  return {
+    amount: document.getElementById('trailAmt')?.value ?? '',
+    unit,
+    size: document.getElementById('trailSize')?.value ?? '',
+    activationPx: actOn ? (document.getElementById('trailAct')?.value ?? '') : null,
+  }
+}
+
+window.__trailPreview = function () {
+  if (!_trailCfg) return
+  const f = _trailRead()
+  const { side, size, mark } = _trailCfg
+  const px = _tsStopPx(side, mark, f.amount, f.unit)
+  _setTxt('trailStopPx', px ? `Stop would sit near $${fmtPrice(px)} at today's mark` : '')
+  _setTxt('trailExplain', _tsDescribe({ side, amount: f.amount, unit: f.unit, markPx: mark, activationPx: f.activationPx }))
+  // The first thing wrong with the form, under the button, rather than on submit.
+  const errs = _tsValidate({ side, positionSz: size, amount: f.amount, unit: f.unit,
+                             size: f.size, activationPx: f.activationPx, markPx: mark })
+  const st = document.getElementById('trailStatus')
+  const conf = document.getElementById('trailConfirmBtn')
+  if (st && !st.dataset.busy) {
+    st.textContent = errs.length ? errs[0] : ''
+    st.className = 'trade-status' + (errs.length ? ' error' : '')
+  }
+  if (conf && !conf.dataset.busy) conf.disabled = errs.length > 0
+}
+
+window.__trailConfirm = async function () {
+  if (!_trailCfg) return
+  const { coin, addr, side, size, mark, armed } = _trailCfg
+  const f = _trailRead()
+  const errs = _tsValidate({ side, positionSz: size, amount: f.amount, unit: f.unit,
+                             size: f.size, activationPx: f.activationPx, markPx: mark })
+  const st = document.getElementById('trailStatus')
+  const conf = document.getElementById('trailConfirmBtn')
+  if (errs.length) { showTradeStatus(st, 'error', errs[0]); return }
+
+  const agentKey = addr ? _agentKeyGet(addr) : null
+  if (!agentKey) { showTradeStatus(st, 'error', 'No agent key for this account — add one in Settings.'); return }
+
+  const argv = ['--coin', String(coin), '--retrace', String(parseFloat(f.amount)),
+                '--unit', f.unit === '$' ? 'usd' : 'pct',
+                '--size', String(_tsSize(size, { size: f.size }))]
+  if (f.activationPx) argv.push('--activation', String(parseFloat(f.activationPx)))
+
+  if (conf) { conf.disabled = true; conf.dataset.busy = '1' }
+  if (st) st.dataset.busy = '1'
+  showTradeStatus(st, 'pending', armed ? 'Replacing…' : 'Arming…')
+  try {
+    // Replacing = restart with fresh config, so the old watcher cannot keep a stale
+    // high-water mark alive alongside the new one.
+    if (armed) { try { await _postStop('trailstop', String(coin), addr) } catch {} await new Promise(r => setTimeout(r, 600)) }
+    const res = await serverFetch('/api/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'trailstop', agentKey, args: argv, address: addr, instance: String(coin) }),
+    })
+    if (!res.ok) { showTradeStatus(st, 'error', '✗ ' + (res.error || 'Could not start')); return }
+    showTradeStatus(st, 'success', '✓ Trailing stop armed')
+    checkServer()
+    setTimeout(() => { closeModals(); try { _mobVRenderContent() } catch {} }, 900)
+  } catch {
+    showTradeStatus(st, 'error', 'Server unreachable. Is hliq-strat running?')
+  } finally {
+    if (conf) { delete conf.dataset.busy; conf.disabled = false }
+    if (st) delete st.dataset.busy
+  }
+}
+
+window.__trailDisarm = async function () {
+  if (!_trailCfg) return
+  const st = document.getElementById('trailStatus')
+  showTradeStatus(st, 'pending', 'Stopping…')
+  try {
+    await _postStop('trailstop', String(_trailCfg.coin), _trailCfg.addr)
+    showTradeStatus(st, 'success', '✓ Stopped trailing')
+    checkServer()
+    setTimeout(() => { closeModals(); try { _mobVRenderContent() } catch {} }, 700)
+  } catch { showTradeStatus(st, 'error', 'Could not stop it') }
+}
+
 window.__openGuardModal = function (mode, coin, apiSide, acct) {
   const p = _guardFindPos(coin, acct)
   if (!p) { alert('Position not found — refresh and try again.'); return }
@@ -7310,7 +7491,7 @@ function _modalToBody(id) {
 }
 
 function closeModals() {
-  ;['closeModal','editModal','editOrderModal','marginModal','guardModal','ocBotModal'].forEach(id => {
+  ;['closeModal','editModal','editOrderModal','marginModal','guardModal','trailModal','ocBotModal'].forEach(id => {
     document.getElementById(id)?.classList.remove('open')
   })
   state.closingPos   = null
@@ -7323,7 +7504,7 @@ function closeModals() {
 
 // Add a close ✕ to the top-right of every standard modal (one-time, on load).
 function _injectModalCloseButtons() {
-  for (const id of ['closeModal','editModal','editOrderModal','marginModal','guardModal','ocBotModal']) {
+  for (const id of ['closeModal','editModal','editOrderModal','marginModal','guardModal','trailModal','ocBotModal']) {
     const m = document.getElementById(id)?.querySelector('.modal')
     if (!m || m.querySelector('.modal-close-x')) continue
     const b = document.createElement('button')
@@ -19195,6 +19376,16 @@ function _mobVRenderContent(tick = false) {
       const _liqOn  = !!serverStatus?._instances?.[`liqguard:${_gInst}`]
       const _brkOn  = !!serverStatus?._instances?.[`levbrake:${_gInst}`]
       const _gAcctArg = p._acctAddr ? `,'${esc(p._acctAddr)}'` : ''
+      // A trailing stop is just a reduce-only stop order that follows the high-water mark, so
+      // unlike the two guards below it it is NOT isolated-only — it works the same on a cross
+      // position, and gating it the same way would hide it from most of them. Armed state is
+      // resolved through armedGuardKey, which knows that a HIP-3 instance key keeps the market
+      // as written rather than uppercased.
+      const _trailOn = !!_armedGuardKey('trailstop', p.coin, p._acctAddr)
+      const trailRow = `<div style="display:flex;gap:8px;padding:0 16px 12px;background:var(--panel-2)">
+        <button onclick="event.stopPropagation();window.__openTrailModal('${esc(p.coin)}','${apiSide}'${_gAcctArg})"
+          style="flex:1;padding:8px;background:${_trailOn ? 'rgba(0,229,160,0.18)' : 'rgba(255,255,255,0.05)'};border:1px solid ${_trailOn ? 'var(--accent)' : 'rgba(255,255,255,0.12)'};border-radius:8px;color:${_trailOn ? 'var(--accent)' : 'var(--fg)'};font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">📉 ${_T('Trailing Stop', 'Stop dinámico')}${_trailOn ? ' ✓' : ''}</button>
+      </div>`
       const guardsRow = isIso ? `<div style="display:flex;gap:8px;padding:0 16px 12px;background:var(--panel-2)">
         <button onclick="event.stopPropagation();window.__openGuardModal('liqguard','${esc(p.coin)}','${apiSide}'${_gAcctArg})"
           style="flex:1;padding:8px;background:${_liqOn ? 'rgba(0,229,160,0.18)' : 'rgba(255,255,255,0.05)'};border:1px solid ${_liqOn ? 'var(--accent)' : 'rgba(255,255,255,0.12)'};border-radius:8px;color:${_liqOn ? 'var(--accent)' : 'var(--fg)'};font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">🛡 Liq Guard${_liqOn ? ' ✓' : ''}</button>
@@ -19277,6 +19468,7 @@ function _mobVRenderContent(tick = false) {
             ['Real Leverage', margin > 0 ? (posVal / margin).toFixed(2) + 'x' : '—'],
             _fundingCell(p.coin, funding),
           ])}
+          ${trailRow}
           ${guardsRow}
           ${actions}
         </div>

@@ -1897,6 +1897,69 @@
 </div>
 
 <!-- POSITION GUARD MODAL (Liq Guard / Lev Brake) -->
+<div class="modal-overlay" id="trailModal" onclick="if(event.target===this)closeModals()">
+  <div class="modal">
+    <div class="modal-title">Set Trailing Stop</div>
+    <div class="modal-desc">This closes the position once the price retraces by the amount set.</div>
+
+    <div class="trail-facts">
+      <div><span>Market</span><b id="trailMarket">—</b></div>
+      <div><span>Position</span><b id="trailPos" class="pos">—</b></div>
+      <div><span>Entry Price</span><b id="trailEntry">—</b></div>
+      <div><span>Mark Price</span><b id="trailMark">—</b></div>
+      <div><span>Liquidation Price</span><b id="trailLiq">—</b></div>
+    </div>
+
+    <div class="guard-field">
+      <span class="guard-label">Retracement</span>
+      <div class="guard-input-row">
+        <input class="margin-amt-input" id="trailAmt" type="number" min="0" step="0.1" style="flex:1"
+          placeholder="0" oninput="window.__trailPreview()"/>
+        <select class="guard-unit trail-unit" id="trailUnit" onchange="window.__trailPreview()">
+          <option value="pct">%</option>
+          <option value="usd">$</option>
+        </select>
+        <button type="button" class="guard-seg-btn" onclick="window.__trailQuick(5)">5%</button>
+        <button type="button" class="guard-seg-btn" onclick="window.__trailQuick(10)">10%</button>
+      </div>
+      <span id="trailStopPx" class="guard-trigger-px"></span>
+    </div>
+
+    <div class="guard-field">
+      <span class="guard-label">Size</span>
+      <div class="guard-input-row">
+        <input class="margin-amt-input" id="trailSize" type="number" min="0" step="0.0001" style="flex:1"
+          oninput="window.__trailSizeTyped()"/>
+        <span class="guard-unit" id="trailSizeUnit">—</span>
+      </div>
+      <input type="range" class="sz-slider" id="trailPct" min="1" max="100" value="100"
+        oninput="window.__trailPctMoved(this.value)" style="width:100%;margin-top:8px"/>
+      <span id="trailPctLabel" class="guard-desc">100% of the position</span>
+    </div>
+
+    <div class="guard-field">
+      <label class="trail-check">
+        <input type="checkbox" id="trailActOn" onchange="window.__trailPreview()"/>
+        <span>Activation Price</span>
+      </label>
+      <div class="guard-input-row" id="trailActRow" style="display:none">
+        <input class="margin-amt-input" id="trailAct" type="number" min="0" step="0.0001" style="flex:1"
+          placeholder="Start trailing once the mark reaches…" oninput="window.__trailPreview()"/>
+      </div>
+    </div>
+
+    <div class="guard-desc" id="trailExplain"></div>
+    <div id="trailStatus" class="trade-status"></div>
+
+    <div class="modal-actions">
+      <button class="btn-modal-cancel" onclick="closeModals()">Cancel</button>
+      <button class="btn-modal-cancel" id="trailStopBtn" style="display:none;border-color:var(--red);color:var(--red)"
+        onclick="window.__trailDisarm()">Stop trailing</button>
+      <button class="btn-modal-confirm" id="trailConfirmBtn" onclick="window.__trailConfirm()">Confirm</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="guardModal" onclick="if(event.target===this)closeModals()">
   <div class="modal">
     <div class="modal-title" id="guardTitle">Liq Guard</div>

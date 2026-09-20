@@ -63,6 +63,9 @@ const SCRIPTS = {
   volbreak:  'strategies/volbreak.js',
   copytrade: 'strategies/copytrade.js',
   // Per-position risk guards (share one script; mode comes from --mode in args)
+  // A trailing stop watches ONE position: HL has no trailing-stop order type, so something
+  // has to remember the high-water mark and move a resting stop up behind it.
+  trailstop: 'strategies/trailstop.js',
   liqguard:  'strategies/guardian.js',
   levbrake:  'strategies/guardian.js',
 }
