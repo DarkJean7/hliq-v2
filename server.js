@@ -846,6 +846,39 @@ const _combinedCache = new Map()   // key(sorted addrs) -> { at, data }
  */
 const _combinedComplete = new Map()   // key -> { at, data }
 const COMBINED_COMPLETE_MAX_MS = 10 * 60_000
+
+/**
+ * ...and it survives a restart.
+ *
+ * It lived only in memory, so every deploy that touched server.js threw it away. The next
+ * snapshot then had to be computed cold, across every wallet at once — and if HL rate-limited
+ * that fan-out there was no complete one left to fall back on, so every All Accounts client
+ * refused what it was offered and printed a dash for its equity and Net PnL until a complete
+ * one landed. Reported as "the account equity sometimes does not render", right after a deploy
+ * whose one-off hold-time backfill was also pulling every board wallet's fill history.
+ *
+ * The same ten-minute age cap applies to what is read back, so a long outage cannot serve a
+ * snapshot that stopped describing the account. Mode 0600: it is account values keyed by
+ * address, the same sensitivity as the leaderboard stats beside it.
+ */
+const COMBINED_COMPLETE_FILE = join(__dirname, 'combined-complete.json')
+try {
+  const saved = JSON.parse(readFileSync(COMBINED_COMPLETE_FILE, 'utf8'))
+  for (const [k, v] of Object.entries(saved ?? {})) {
+    if (v && Number(v.at) > 0 && Date.now() - Number(v.at) < COMBINED_COMPLETE_MAX_MS) _combinedComplete.set(k, v)
+  }
+} catch (_) { /* none yet */ }
+let _combinedSaveTimer = null
+function combinedCompleteSave() {
+  if (_combinedSaveTimer) return
+  // Coalesced: ten clients refreshing the same set within a second is one write, not ten.
+  _combinedSaveTimer = setTimeout(() => {
+    _combinedSaveTimer = null
+    const out = {}
+    for (const [k, v] of _combinedComplete) if (Date.now() - v.at < COMBINED_COMPLETE_MAX_MS) out[k] = v
+    try { writeFileSync(COMBINED_COMPLETE_FILE, JSON.stringify(out), { mode: 0o600 }) } catch (_) {}
+  }, 5_000)
+}
 const _isComplete = (d, addrs) => !!d && (d.missing?.length ?? 0) === 0 && d.wallets === addrs.length
 
 // Value of an HL [ts, "value"] series at an instant, by linear interpolation. Clamped: a
@@ -2624,6 +2657,7 @@ const server = createServer(async (req, res) => {
       if (data.wallets > 0) _combinedCache.set(key, { at: Date.now(), data })
       if (_isComplete(data, addrs)) {
         _combinedComplete.set(key, { at: Date.now(), data })
+        combinedCompleteSave()
         return json(res, 200, data)
       }
       // Partial: a wallet 429'd or errored. Hand back the last complete snapshot rather than

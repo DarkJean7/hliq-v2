@@ -174,7 +174,9 @@ export function mergeQuotes(gt = {}, ds = {}) {
 export async function fetchQuotes(addrs, fetchJson) {
   const safe = (u) => (u ? fetchJson(u).catch(() => null) : Promise.resolve(null))
   const [gtJ, dsJ] = await Promise.all([safe(gtMultiUrl(addrs)), safe(dsMultiUrl(addrs))])
-  return { quotes: mergeQuotes(gtJ ? parseGtMulti(gtJ) : {}, dsJ ? parseDsPairs(dsJ) : {}), ok: !!(gtJ || dsJ) }
+  // `both` matters as much as `ok`: with only one source answering, a token can come back
+  // priced from the WRONG pool — EAGLE from GeckoTerminal alone is the empty pool, 40% low.
+  return { quotes: mergeQuotes(gtJ ? parseGtMulti(gtJ) : {}, dsJ ? parseDsPairs(dsJ) : {}), ok: !!(gtJ || dsJ), both: !!(gtJ && dsJ) }
 }
 
 // ─── STORAGE ──────────────────────────────────────────────────────────────────

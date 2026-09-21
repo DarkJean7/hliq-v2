@@ -28,8 +28,33 @@ export function initOffex(overrides = {}) { ctx = { ...ctx, ...overrides } }
 
 // ─── PRICES ───────────────────────────────────────────────────────────────────
 
-/** addr → parsed quote. Missing means "not priced", never $0. */
+/**
+ * addr → parsed quote. Missing means "not priced", never $0.
+ *
+ * Remembered on the device, and kept through a failed fetch. Both were missing, and together
+ * they made the off-exchange value "flicker and disappear and appear when visiting the spot
+ * tab": on a fresh load there were no prices at all until the Spot tab asked for them, so the
+ * headline ("Count in balance") and the wheel showed nothing and then jumped; and one fetch
+ * that came back without a token replaced its known price with nothing, blanking the row
+ * until the next one. Not fetched is not the same as not priced.
+ */
+const LS_QUOTES = 'hliq_offex_quotes'
+const QUOTE_KEEP_MS = 30 * 60_000          // a known price outlives a failed fetch this long
 const _quotes = {}
+const _quoteAt = {}
+try {
+  const saved = JSON.parse((typeof localStorage !== 'undefined' && localStorage.getItem(LS_QUOTES)) || '{}')
+  for (const [a, v] of Object.entries(saved ?? {})) {
+    if (v?.q && Date.now() - Number(v.at) < QUOTE_KEEP_MS) { _quotes[a] = v.q; _quoteAt[a] = Number(v.at) }
+  }
+} catch {}
+function _saveQuotes() {
+  try {
+    const out = {}
+    for (const a of Object.keys(_quotes)) if (_quotes[a]) out[a] = { q: _quotes[a], at: _quoteAt[a] ?? Date.now() }
+    ctx.store()?.setItem(LS_QUOTES, JSON.stringify(out))
+  } catch {}
+}
 let _lastFetch = 0
 let _inflight = null
 
@@ -51,11 +76,23 @@ export function refreshPrices({ force = false, extra = [] } = {}) {
       if (!r.ok) return false
       const { prices = {} } = await r.json()
       let changed = false
+      // Only what a reader can see counts as a change. Pool liquidity moves on every fetch,
+      // and repainting the Spot tab once a minute for a figure nobody is looking at is churn.
+      const shown = (q) => q ? [q.price, q.thin, q.icon, q.symbol, q.src, q.pool].join('|') : ''
       for (const a of want) {
         const q = prices[a] ?? null
-        if (JSON.stringify(_quotes[a] ?? null) !== JSON.stringify(q)) changed = true
-        _quotes[a] = q
+        if (q) {
+          if (shown(_quotes[a]) !== shown(q)) changed = true
+          _quotes[a] = q; _quoteAt[a] = Date.now()
+        } else if (_quotes[a] && Date.now() - (_quoteAt[a] ?? 0) < QUOTE_KEEP_MS) {
+          // Absent from this answer, known recently: keep it. A blip is not a delisting.
+        } else {
+          // Absent, and nothing recent to fall back on: genuinely unpriced.
+          if (_quotes[a]) changed = true
+          _quotes[a] = null
+        }
       }
+      _saveQuotes()
       if (changed) { try { ctx.rerender() } catch {} }
       return changed
     } catch { return false }
@@ -90,6 +127,7 @@ export function count() { return rows().length }
  * — "NEST" the HyperEVM token is not whatever Hyperliquid lists under that name.
  */
 export function wheelItems() {
+  refreshPrices()
   const by = new Map()
   for (const r of rows()) {
     if (r.value.usd == null || !(r.value.usd > 0)) continue
@@ -120,6 +158,7 @@ export function wheelItems() {
 
 /** The group's total. `complete: false` when any holding has no price — the sum is a floor. */
 export function total() {
+  refreshPrices()      // at most once a minute; the headline and the wheel read this, not just Spot
   const r = rows()
   const quotes = Object.fromEntries(r.map(x => [x.entry.token, quoteFor(x.entry.token)]))
   return holdingsTotal(r.map(x => x.entry), quotes)

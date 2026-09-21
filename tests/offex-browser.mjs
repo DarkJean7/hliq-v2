@@ -142,7 +142,9 @@ console.log(NL + '-- adding NEST through the sheet --')
 
   const stored = await p.evaluate((a) => localStorage.getItem('hliq_offex_' + a.toLowerCase()), ADDR)
   ok('it is stored under the real account', !!stored && JSON.parse(stored)[0].token === '0x07c57e32a3c29d5659bda1d3efc2e7bf004e3035', stored)
-  ok('and nowhere else', await p.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('hliq_offex_')).length) === 1)
+  // Holdings keys are hliq_offex_<address>. The price cache and the balance switch share the
+  // prefix but are not holdings, so only address-shaped keys are counted.
+  ok('and nowhere else', await p.evaluate(() => Object.keys(localStorage).filter(k => /^hliq_offex_0x[0-9a-f]{40}$/.test(k)).length) === 1)
 }
 
 console.log(NL + '-- it never touches the account --')
@@ -320,6 +322,59 @@ console.log(NL + '-- editing can move a holding to another account --')
   }), { a: ADDR, o: OTHER })
   ok('the holding left the old account', after.main.length === 0, after.main)
   ok('and arrived on the new one, note and all', after.other.length === 1 && after.other[0].amount === 12000 && after.other[0].note === 'locked on Nest', after.other)
+}
+
+console.log(NL + '-- no flicker: priced without visiting Spot, and through a failed fetch --')
+{
+  // "Flickers and disappears and appears when visiting the spot tab." A fresh page, the
+  // switch on, and the Spot tab never opened: the headline must still carry the holding.
+  const fctx = await browser.newContext({ ...devices['iPhone 14 Pro'] })
+  await blockHlSockets(fctx)
+  await fctx.route(HL_HOST, (route) => {
+    let b = {}
+    try { b = JSON.parse(route.request().postData() || '{}') } catch {}
+    return route.fulfill({ status: 200, contentType: 'application/json', json: HL[b.type] ?? {} })
+  })
+  let priceUp = true
+  await fctx.route('**/offexprice**', (route) => {
+    const a = (new URL(route.request().url()).searchParams.get('a') || '').split(',')
+    return route.fulfill({ status: 200, json: { prices: priceUp ? Object.fromEntries(a.filter(x => PRICES[x]).map(x => [x, PRICES[x]])) : {} } })
+  })
+  await fctx.route('**/api/**', (route) => route.fulfill({ status: 503, body: 'offline in test' }))
+  const f = await fctx.newPage()
+  f.on('pageerror', e => errs.push('flicker: ' + e.message))
+  await f.goto(BASE, { waitUntil: 'domcontentloaded' })
+  await f.evaluate(({ a, k, n }) => {
+    localStorage.clear()
+    localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_onboard_done', '1')
+    localStorage.setItem('hliq_lang_chosen', '1')
+    ;['hliq_onboard_welcomed_v1', 'hliq_onboard_tour_v1', 'hliq_install_nudge_v2'].forEach(x => localStorage.setItem(x, '1'))
+    localStorage.setItem('hliq_ann_dismissed', JSON.stringify(['*']))
+    localStorage.setItem('hliq_agent_key_' + a.toLowerCase(), k)
+    localStorage.setItem('savedWallets', JSON.stringify([{ addr: a, label: 'Main' }]))
+    localStorage.setItem('hliq_offex_in_bal', '1')
+    localStorage.setItem('hliq_offex_' + a.toLowerCase(), JSON.stringify([{ token: n, amount: 12000, symbol: 'NEST', added: 1 }]))
+  }, { a: ADDR, k: KEY, n: NEST })
+  await f.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(f, 'boot', () => !!window.loadDashboard)
+  await f.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, ADDR)
+  await waitFor(f, 'the account', () => document.getElementById('dashboard')?.classList.contains('active'))
+  const got = await waitFor(f, 'the headline to carry NEST', () => /incl\. \$244\.51 off-exchange/.test(document.getElementById('mobVBalance')?.textContent ?? ''), 20000)
+  ok('the headline is priced without ever opening the Spot tab', got,
+    await f.evaluate(() => document.getElementById('mobVBalance')?.textContent))
+
+  // Now the price service goes quiet. The value must stay, not blank and come back.
+  priceUp = false
+  await f.evaluate(() => window.mobVTab('spot'))
+  await waitFor(f, 'the group', () => /Off-exchange/.test(document.getElementById('mobVContent')?.textContent ?? ''))
+  for (let i = 0; i < 3; i++) {
+    await f.evaluate(() => window.__offexToggle?.('x'))    // any repaint
+    await f.waitForTimeout(250)
+  }
+  const g = await f.evaluate(() => document.querySelector('[data-offex]')?.textContent ?? '')
+  ok('a failed price fetch does not blank a known value', g.includes('$244.51'), g.slice(0, 200))
+  ok('and the price is remembered for the next load', await f.evaluate(() => !!JSON.parse(localStorage.getItem('hliq_offex_quotes') || '{}')['0x07c57e32a3c29d5659bda1d3efc2e7bf004e3035']))
+  await fctx.close()
 }
 
 if (errs.length) { fail++; console.log('  FAIL page errors → ' + JSON.stringify(errs.slice(0, 4))) }

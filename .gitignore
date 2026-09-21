@@ -19,6 +19,7 @@ dev-dist/
 *.log
 logs/
 pulse-volume.json
+combined-complete.json
 sub-payments.json
 chat-deleted.json
 chat.json

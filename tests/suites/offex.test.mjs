@@ -161,6 +161,25 @@ console.log(nl + '-- value --')
   t('and a fully priced one is complete', holdingsTotal([nest], { [NEST]: { price: 0.02 } }).complete === true)
 }
 
+console.log(nl + '-- prices that do not flicker --')
+{
+  // "The off-exchange balance sometimes flickers and disappears and appears when visiting the
+  // spot tab."
+  const ui    = fs.readFileSync('src/offexui.js', 'utf8')
+  const serve = fs.readFileSync('serve-prod.js', 'utf8')
+  t('prices are remembered on the device', /const LS_QUOTES = 'hliq_offex_quotes'/.test(ui) && /_saveQuotes\(\)/.test(ui))
+  t('a token missing from one answer keeps its recent price', /A blip is not a delisting/.test(ui) && /QUOTE_KEEP_MS/.test(ui))
+  t('the headline and the wheel ask for prices themselves, not only the Spot tab',
+    /export function total\(\) \{\s*refreshPrices\(\)/.test(ui) && /export function wheelItems\(\) \{\s*refreshPrices\(\)/.test(ui))
+  t('a liquidity-only change does not repaint', /const shown = \(q\) => q \? \[q\.price, q\.thin, q\.icon/.test(ui))
+  // One source down must not swap EAGLE onto its empty pool for a minute.
+  t('the server keeps the deeper quote when only one source answered',
+    /const t = both \? \(got\[a\] \?\? null\) : pickDeepest\(prev, got\[a\] \?\? null\)/.test(serve))
+  t('and retries a half answer soon', /Date\.now\(\) - OFFEX_TTL \+ 10_000/.test(serve))
+  const r = await fetchQuotes([EAGLE], async (u) => { if (u.includes('dexscreener')) throw new Error('503'); return { data: [] } })
+  t('fetchQuotes says when only one source answered', r.ok === true && r.both === false)
+}
+
 console.log(nl + '-- the wiring --')
 {
   const main  = fs.readFileSync('src/main.js', 'utf8')
@@ -199,6 +218,18 @@ console.log(nl + '-- the wiring --')
 
   // Privacy mode covers these like any other holding.
   t('amounts and values go through the privacy mask', (ui.match(/ctx\.prv\(/g) ?? []).length >= 8)
+}
+
+console.log(nl + '-- the combined snapshot survives a restart --')
+{
+  // "The account equity sometimes does not render." Every deploy that touched server.js threw
+  // away the last complete All Accounts snapshot, and a cold, rate-limited recompute left
+  // every client refusing a partial one — a dash for equity and Net PnL.
+  const srv = fs.readFileSync('server.js', 'utf8')
+  t('it is written to disk when it changes', /_combinedComplete\.set\(key, \{ at: Date\.now\(\), data \}\)\s*combinedCompleteSave\(\)/.test(srv))
+  t('read back at startup, under the same age cap', /readFileSync\(COMBINED_COMPLETE_FILE[\s\S]{0,300}< COMBINED_COMPLETE_MAX_MS\) _combinedComplete\.set/.test(srv))
+  t('owner-only', /writeFileSync\(COMBINED_COMPLETE_FILE, JSON\.stringify\(out\), \{ mode: 0o600 \}\)/.test(srv))
+  t('and never committed', /combined-complete\.json/.test(fs.readFileSync('.gitignore', 'utf8')))
 }
 
 console.log(nl + `${pass} passed, ${fail} failed`)

@@ -9,7 +9,7 @@ import { join, extname, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coinGeckoUpgrade } from './src/iconpick.js'
 import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, parseSeries } from './src/extmarkets.js'
-import { fetchQuotes, normAddr, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
+import { fetchQuotes, normAddr, pickDeepest, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DIST      = join(__dirname, 'dist')
@@ -372,15 +372,21 @@ createServer((req, res) => {
         try {
           // GeckoTerminal AND DexScreener, deepest pool wins — GeckoTerminal alone priced
           // EAGLE from an empty pool 40% under its real market. See src/offex.js.
-          const { quotes: got, ok } = await fetchQuotes(stale, async (u) => {
+          const { quotes: got, ok, both } = await fetchQuotes(stale, async (u) => {
             const r = await fetch(u, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) })
             if (!r.ok) throw new Error(String(r.status))
             return r.json()
           })
           if (ok) {
             for (const a of stale) {
-              offexCache.set(a, { at: Date.now(), t: got[a] ?? null })
-              if (got[a]) prices[a] = got[a]
+              const prev = offexCache.get(a)?.t ?? null
+              // With one source down, the deeper of (what it just said, what we last knew)
+              // wins — otherwise EAGLE flips between its real pool and an empty one each time
+              // DexScreener blinks. And a half answer is kept only briefly, so the next poll
+              // asks both again.
+              const t = both ? (got[a] ?? null) : pickDeepest(prev, got[a] ?? null)
+              offexCache.set(a, { at: both ? Date.now() : Date.now() - OFFEX_TTL + 10_000, t })
+              if (t) prices[a] = t
             }
           }
           // When BOTH sources fail, nothing is cached: the next poll asks again rather than
