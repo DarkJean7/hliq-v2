@@ -9,6 +9,7 @@ import { join, extname, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coinGeckoUpgrade } from './src/iconpick.js'
 import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, parseSeries } from './src/extmarkets.js'
+import { gtMultiUrl, parseGtMulti, normAddr, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DIST      = join(__dirname, 'dist')
@@ -22,6 +23,11 @@ const TV_SEARCH_TTL = 10 * 60_000
 
 // External market quotes (see the /extquote route). TradingView symbol -> { at, q }.
 const extQuoteCache = new Map()
+// Off-exchange token prices, by lower-cased contract address → { at, t } where t is the parsed
+// quote, or null for "GeckoTerminal does not know this token" (remembered too, so an unknown
+// address is not re-asked on every poll).
+const offexCache = new Map()
+const OFFEX_TTL = 60_000
 const EXT_QUOTE_TTL = 60_000
 
 // Compare-chart series (see /extcandles). "SYMBOL|TF" -> { at, pts }.
@@ -339,6 +345,48 @@ createServer((req, res) => {
       }))
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' })
          .end(JSON.stringify({ quotes }))
+    })()
+    return
+  }
+
+  // ── Off-exchange token prices (HyperEVM, via GeckoTerminal) ────────────────────
+  // Tokens held outside Hyperliquid's spot book, typed into the Spot tab by hand. The client
+  // names contract ADDRESSES — validated as 0x-hex before they go anywhere near a URL — so
+  // this cannot be pointed at anything but GeckoTerminal's token endpoint. One minute of
+  // cache, shared by every client, because GeckoTerminal allows about thirty calls a minute
+  // and the same NEST row is asked for by everyone who holds it. src/offex.js has the why.
+  if (url === '/offexprice') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const qs   = new URLSearchParams(req.url.split('?')[1] || '')
+    const want = [...new Set((qs.get('a') || '').split(',').map(normAddr).filter(Boolean))].slice(0, OFFEX_MAX)
+    if (!want.length) { res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"prices":{}}'); return }
+    ;(async () => {
+      const prices = {}
+      const stale  = []
+      for (const a of want) {
+        const hit = offexCache.get(a)
+        if (hit && Date.now() - hit.at < OFFEX_TTL) { if (hit.t) prices[a] = hit.t }
+        else stale.push(a)
+      }
+      if (stale.length) {
+        try {
+          const r = await fetch(gtMultiUrl(stale), {
+            headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000),
+          })
+          if (r.ok) {
+            const got = parseGtMulti(await r.json())
+            for (const a of stale) {
+              offexCache.set(a, { at: Date.now(), t: got[a] ?? null })
+              if (got[a]) prices[a] = got[a]
+            }
+          }
+          // A failed call caches NOTHING: the next poll asks again rather than holding a
+          // "no price" for a minute because GeckoTerminal hiccupped once.
+        } catch { /* leave them out — the row shows a dash, which is the truth */ }
+        if (offexCache.size > 2000) offexCache.clear()
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' })
+         .end(JSON.stringify({ prices }))
     })()
     return
   }

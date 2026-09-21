@@ -262,6 +262,7 @@ import { rulesFor, clampLeverage, marginModeFor, delistedNames, hasNoActivity, d
 import { initPro, selectPro, clearPro, proActive, proType, proButtonLabel, refreshProPreview,
          openProMenu, openProLearn, mountProFields, submitPro, stopAllChases } from './proticket.js'
 import { byId as _proById } from './protypes.js'
+import { initOffex, sectionHtml as _offexSectionHtml, total as _offexTotal } from './offexui.js'
 
 /**
  * Brightness, as a layer over the app rather than a filter on <html>.
@@ -4109,7 +4110,15 @@ function _mobVRenderAllocation(el) {
   _allocCenterHtml = `
     <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${_T('Total equity', 'Patrimonio total')}</div>
     <div style="font-size:27px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv('$' + fmtUSD(total, 2))}</div>
-    ${assetCount ? `<div style="font-size:11.5px;color:var(--muted)">${assetCount} asset${assetCount === 1 ? '' : 's'} · ${_prv('$' + fmtUSD(totalNotional))} ${_T('position value', 'valor de posición')}</div>` : ''}`
+    ${assetCount ? `<div style="font-size:11.5px;color:var(--muted)">${assetCount} asset${assetCount === 1 ? '' : 's'} · ${_prv('$' + fmtUSD(totalNotional))} ${_T('position value', 'valor de posición')}</div>` : ''}
+    ${(() => {
+      // Off-exchange holdings are NOT a slice of this wheel — the wheel is the Hyperliquid
+      // account, to the cent. They get one line of their own under it, as a separate figure.
+      const ox = _offexTotal()
+      return ox.count && ox.usd > 0
+        ? `<div style="font-size:11.5px;color:var(--muted)">${_T('incl. off-exchange', 'incl. fuera del exchange')} ${_prv('$' + fmtUSD(total + ox.usd, 2))}${ox.complete ? '' : ' *'}</div>`
+        : ''
+    })()}`
 
   const wheel = `
     <div style="display:flex;justify-content:center;padding:18px 12px 6px">
@@ -10913,6 +10922,28 @@ window.__togglePrivacy = function() {
   if (_isMobView()) { _mobVRenderBalance(); _mobVRenderContent() }
 }
 window._mobVTogglePrivacy = window.__togglePrivacy
+
+// ─── OFF-EXCHANGE HOLDINGS ────────────────────────────────────────────────────
+// Tokens held outside Hyperliquid, typed in by amount and priced live — src/offex.js and
+// src/offexui.js. This is the seam: which REAL accounts the view covers, the privacy mask,
+// and how to repaint. Never state.addr raw — in the combined view it is '__all_accounts__',
+// and in paper mode a sentinel, and a holding saved under either is never read back.
+initOffex({
+  accounts: () => {
+    if (isPaper()) return []
+    if (state.isAllAccounts) {
+      const hidden = _maHiddenLoad()
+      return (_maLoad() ?? []).filter(e => _isRealAddr(e.addr) && !hidden.has(e.addr))
+        .map(e => ({ addr: e.addr, label: e.label || null }))
+    }
+    return _isRealAddr(state.addr) ? [{ addr: state.addr, label: null }] : []
+  },
+  prv: (s) => _prv(s),
+  rerender: () => {
+    try { if (_isMobView() && _mobVActiveTab === 'spot') _mobVRenderContent() } catch {}
+    try { if (document.querySelector('.ov-postab[data-pt="spot"].active')) window.__ovSetPosTab?.('spot') } catch {}
+  },
+})
 
 const _privEyeSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
 const _privEyeClosedSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
@@ -19443,18 +19474,25 @@ function _mobVRenderContent(tick = false) {
         const usd = px > 0 ? parseFloat(b.total) * px : (b.coin === 'USDC' ? parseFloat(b.total) : 0)
         return `${b.coin}:${b._acct ?? ''}:${usd.toFixed(2)}:${parseFloat(b.entryNtl ?? 0).toFixed(2)}`
       }).join('|'))) return
+      // What the Hyperliquid rows add up to, so the off-exchange group can print the two
+      // together as one "incl. off-exchange" figure — a figure of its own, never the account's.
+      const _spotUsd = spots.reduce((s, b) => {
+        const px = _spotMid(b.coin)
+        return s + (px > 0 ? parseFloat(b.total) * px : (b.coin === 'USDC' ? parseFloat(b.total) : 0))
+      }, 0)
+      const _offex = _offexSectionHtml({ spotUsd: _spotUsd })
       if (state.isAllAccounts) {
         const groups = {}
         for (const b of spots) (groups[b.coin] ??= []).push(b)
         const keys = Object.keys(groups)
-        el.innerHTML = keys.length
+        el.innerHTML = (keys.length
           ? `<div style="padding-top:6px">${keys.map((coin, gi) => renderSpotGroup(coin, groups[coin], `spg-${gi}`)).join('')}</div>`
-          : `<div class="mob-v-empty">No spot balances</div>`
+          : `<div class="mob-v-empty">No spot balances</div>`) + _offex
         return
       }
-      el.innerHTML = spots.length
+      el.innerHTML = (spots.length
         ? `<div style="padding-top:6px">${spots.map((b, i) => renderSpotRow(b, `sp-${i}`)).join('')}</div>`
-        : `<div class="mob-v-empty">No spot balances</div>`
+        : `<div class="mob-v-empty">No spot balances</div>`) + _offex
       return
     }
     // Outcomes tab — prediction holdings as position-style cards. On a tick, skip the rebuild
@@ -37847,7 +37885,10 @@ window.__ovSpotHoldings = function() {
 
 window.__ovBuildSpotBody = function() {
   const rows = window.__ovSpotHoldings()
-  if (!rows.length) return '<div class="ov-empty">No spot holdings</div>'
+  // The off-exchange group sits under the Hyperliquid rows here as well — the same renderer
+  // the mobile Spot tab uses, so there is one copy of it to keep right.
+  const offex = () => `<div class="ov-offex">${_offexSectionHtml({ spotUsd: rows.reduce((s, h) => s + (h.usd > 0 ? h.usd : 0), 0) })}</div>`
+  if (!rows.length) return '<div class="ov-empty">No spot holdings</div>' + offex()
   const head = `<div class="ov-ord-head ov-spot-row"><span>Token</span><span class="ov-r">Price</span><span class="ov-r">Balance</span><span class="ov-r">Value</span><span class="ov-r">PnL</span></div>`
   const body = rows.map((h, i) => {
     // entryNtl is HL's cost basis. It is 0 for USDC (the quote asset never has one) and for
@@ -37897,7 +37938,7 @@ window.__ovBuildSpotBody = function() {
       ${detail}
     </div>`
   }).join('')
-  return `${head}<div class="ov-pos-scroll">${body}</div>`
+  return `${head}<div class="ov-pos-scroll">${body}</div>` + offex()
 }
 window.__ovToggleSpot = function(id) {
   const el = document.getElementById('ovspd-' + id)
