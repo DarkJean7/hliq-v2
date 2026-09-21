@@ -87,6 +87,36 @@ export function total() {
   return holdingsTotal(r.map(x => x.entry), quotes)
 }
 
+// ─── COUNT IN BALANCE ─────────────────────────────────────────────────────────
+
+/**
+ * An opt-in switch that adds off-exchange value to the headline balance. OFF by default —
+ * asked for in exactly those words — because the headline otherwise matches Hyperliquid to
+ * the cent, and a typed amount priced from a DEX pool cannot be checked against anything.
+ *
+ * It moves the HEADLINE only. Health, leverage, ROE, Net PnL and the "today" change are all
+ * still computed from the Hyperliquid account: a lock on Nest is not margin, and a price move
+ * on EAGLE is not trading profit. Per device, like the other display preferences.
+ */
+const LS_IN_BAL = 'hliq_offex_in_bal'
+export function countInBalance() {
+  try { return ctx.store()?.getItem(LS_IN_BAL) === '1' } catch { return false }
+}
+export function setCountInBalance(on) {
+  try { ctx.store()?.setItem(LS_IN_BAL, on ? '1' : '0') } catch {}
+  try { ctx.rerender() } catch {}
+  try { ctx.onBalanceMode?.() } catch {}
+}
+/**
+ * What to add to the headline: the priced off-exchange total when the switch is on, else 0.
+ * A holding with no price adds nothing — it is not counted as $0, it is just not counted.
+ */
+export function balanceAdd() {
+  if (!countInBalance()) return 0
+  const t = total()
+  return t.usd > 0 ? t.usd : 0
+}
+
 // ─── RENDER ───────────────────────────────────────────────────────────────────
 
 const _open = new Set()   // expanded rows, by acct|token
@@ -185,10 +215,21 @@ export function sectionHtml({ spotUsd = null } = {}) {
     ? list.map(r => rowHtml(r, showAcct)).join('')
     : `<div style="padding:4px 16px 12px;font-size:12px;line-height:1.5;color:var(--muted)">Track tokens you hold outside Hyperliquid — a HyperEVM token in your wallet, NEST locked on Nest Exchange. Enter the amount; the price is looked up live. It is never added to your account equity.</div>`
 
+  const inBal = countInBalance()
   const footer = list.length && spotUsd != null
     ? `<div style="display:flex;justify-content:space-between;padding:10px 16px 4px;font-size:12px;border-top:1px solid var(--border);margin-top:4px">
         <span style="color:var(--muted)">Spot incl. off-exchange${tot.complete ? '' : ' (priced only)'}</span>
         <b style="font-family:var(--font-mono)">${ctx.prv('$' + fmtUSD(spotUsd + tot.usd))}</b>
+      </div>
+      <div data-offex-inbal style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 16px 12px;cursor:pointer" onclick="window.__offexToggleInBal()">
+        <span style="font-size:12px;line-height:1.4">
+          <span style="font-weight:700">Count in balance</span>
+          <span style="display:block;color:var(--muted);font-size:11px">Adds off-exchange value to your headline balance only — health, PnL and ROE stay Hyperliquid-only.</span>
+        </span>
+        <span role="switch" aria-checked="${inBal}"
+          style="flex-shrink:0;position:relative;width:38px;height:22px;border-radius:11px;background:${inBal ? 'var(--accent)' : 'var(--panel-3)'};border:1px solid ${inBal ? 'var(--accent)' : 'var(--border2)'};transition:background .15s">
+          <span style="position:absolute;top:2px;left:${inBal ? '18px' : '2px'};width:16px;height:16px;border-radius:50%;background:${inBal ? '#000' : 'var(--fg-2)'};transition:left .15s"></span>
+        </span>
       </div>`
     : ''
 
@@ -326,6 +367,10 @@ if (typeof window !== 'undefined') {
   window.__offexClose  = () => closeSheet()
   window.__offexSave   = () => save()
   window.__offexRemove = () => remove()
+  window.__offexToggleInBal = () => setCountInBalance(!countInBalance())
+  // render.js builds the desktop headline and cannot import this module's state, so it reads
+  // the figure through a bridge, as it already does for the spot and outcome bodies.
+  window.__offexBalanceAdd  = () => balanceAdd()
   window.__offexToggle = (id) => {
     _open.has(id) ? _open.delete(id) : _open.add(id)
     try { ctx.rerender() } catch {}

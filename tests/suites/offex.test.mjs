@@ -182,11 +182,20 @@ console.log(nl + '-- the wiring --')
   t('the mobile Spot tab shows the group', (main.match(/\+ _offex\n/g) ?? []).length === 2 || (main.match(/\) \+ _offex/g) ?? []).length === 2)
   t('and so does the desktop overview', /ov-offex[\s\S]{0,120}_offexSectionHtml/.test(main))
 
-  // The promise that was made: never folded into the account.
+  // Off-exchange value is its own figure unless the user switches "Count in balance" on —
+  // asked for with "by default should be off". Even then it moves the HEADLINE only.
   const uses = main.match(/_offexTotal\(/g) ?? []
-  t('the total is used for its own caption only', uses.length === 1)
+  t('the wheel total is used for its own caption only', uses.length === 1)
   t('that caption is labelled as a separate figure', /incl\. off-exchange/.test(main))
-  t('nothing off-exchange reaches accountValue', !/accountValue[^\n]*offex/i.test(main))
+  t('the switch is off unless explicitly set on', /getItem\(LS_IN_BAL\) === '1'/.test(ui))
+  t('and adds nothing while off', /if \(!countInBalance\(\)\) return 0/.test(ui))
+  // accountValue feeds health, ROE and the allocation cross-check; the add goes to the
+  // printed string and the shown number, never into accountValue itself.
+  const rnd = fs.readFileSync('src/render.js', 'utf8')
+  t('desktop adds it to the printed string only', /fmtUSD\(accountValue \+ _oxAdd\)/.test(rnd) && /_shownEquity = Number\.isFinite\(accountValue\) \? accountValue : null/.test(rnd))
+  t('mobile adds it to the shown figure, not to val', /const shown = val \+ _ox/.test(main) && !/val\s*=\s*val \+ _ox/.test(main))
+  t('and labels it when it is in there', /incl\. \$\{_privacyMode \? '•••' : '\$' \+ fmtUSD\(_ox\)\} off-exchange/.test(main))
+  t('nothing off-exchange reaches accountValue', !/accountValue\s*[+]?=[^\n]*offex/i.test(main + rnd))
 
   // Privacy mode covers these like any other holding.
   t('amounts and values go through the privacy mask', (ui.match(/ctx\.prv\(/g) ?? []).length >= 8)

@@ -82,7 +82,7 @@ await p.goto(BASE, { waitUntil: 'domcontentloaded' })
 await p.evaluate(({ a, k }) => {
   localStorage.clear()
   localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_onboard_done', '1')
-  localStorage.setItem('hliq_lang_chosen', '1')
+  localStorage.setItem('hliq_lang_chosen', '1'); ['hliq_onboard_welcomed_v1', 'hliq_onboard_tour_v1', 'hliq_install_nudge_v2'].forEach(k => localStorage.setItem(k, '1'))   // the welcome sheet / tour / install nudge land on a timer and cover the page
   localStorage.setItem('hliq_ann_dismissed', JSON.stringify(['*']))
   localStorage.setItem('hliq_privacy', '0')
   localStorage.setItem('hliq_agent_key_' + a.toLowerCase(), k)
@@ -149,6 +149,28 @@ console.log(NL + '-- it never touches the account --')
 {
   // The promise made when this was agreed: off-exchange value is its own figure.
   ok('account equity did not move', (await equity()) === equityBefore, [equityBefore, await equity()])
+}
+
+console.log(NL + '-- "Count in balance": off by default, headline only --')
+{
+  const num = (s) => parseFloat(String(s).replace(/[^0-9.]/g, '')) || 0
+  const sw  = () => p.evaluate(() => document.querySelector('[data-offex-inbal] [role="switch"]')?.getAttribute('aria-checked'))
+  ok('the switch is there, and OFF', (await sw()) === 'false', await sw())
+  const before = num((await equity()).split('incl')[0])
+  ok('off, the headline is the Hyperliquid figure', !/off-exchange/.test(await equity()), await equity())
+
+  await p.click('[data-offex-inbal]')
+  await p.waitForTimeout(300)
+  ok('one tap turns it on', (await sw()) === 'true')
+  const on = await equity()
+  const head = num(on.split('incl')[0])
+  ok('the headline now adds the off-exchange value', Math.abs(head - (before + 244.51)) < 0.02, [before, head, on])
+  ok('and says so under the number', /incl\. \$244\.51 off-exchange/.test(on), on)
+  ok('the choice is remembered', await p.evaluate(() => localStorage.getItem('hliq_offex_in_bal')) === '1')
+
+  await p.click('[data-offex-inbal]')
+  await p.waitForTimeout(300)
+  ok('off again puts the Hyperliquid figure back', num(await equity()) === before && !/off-exchange/.test(await equity()), await equity())
 }
 
 console.log(NL + '-- a thin market says so --')
@@ -225,7 +247,7 @@ console.log(NL + '-- the desktop overview shows the same group --')
   await d.evaluate(({ a, k, n }) => {
     localStorage.clear()
     localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_onboard_done', '1')
-    localStorage.setItem('hliq_lang_chosen', '1')
+    localStorage.setItem('hliq_lang_chosen', '1'); ['hliq_onboard_welcomed_v1', 'hliq_onboard_tour_v1', 'hliq_install_nudge_v2'].forEach(k => localStorage.setItem(k, '1'))   // the welcome sheet / tour / install nudge land on a timer and cover the page
     localStorage.setItem('hliq_ann_dismissed', JSON.stringify(['*']))
     localStorage.setItem('hliq_agent_key_' + a.toLowerCase(), k)
     localStorage.setItem('savedWallets', JSON.stringify([{ addr: a, label: 'Main' }]))

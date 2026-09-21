@@ -404,7 +404,12 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   // than show. So print nothing here too, or a rotation turns an honest dash into a wrong
   // number. Ratios below still use the local basis -- a share of a smaller whole is off by
   // far less than a total that silently dropped a wallet.
-  const acctValStr       = comboPending ? '—' : '$' + fmtUSD(accountValue)
+  // "Count in balance" (off-exchange holdings, opt-in, off by default) moves the HEADLINE
+  // only. accountValue itself stays the Hyperliquid figure: health, ROE and the allocation
+  // cross-check below all read it. See src/offexui.js.
+  const _oxAdd           = (typeof window !== 'undefined' && window.__offexBalanceAdd) ? (window.__offexBalanceAdd() || 0) : 0
+  const acctValStr       = comboPending ? '—' : '$' + fmtUSD(accountValue + _oxAdd)
+  const _oxSub           = _oxAdd > 0 ? ' · incl. $' + fmtUSD(_oxAdd) + ' off-exchange' : ''
   // The number ON SCREEN, published for anything that has to agree with it. The allocation
   // wheel is built from live parts while this is a server snapshot carried forward by a perp
   // delta — two honest constructions of the same quantity that land a fraction of a percent
@@ -716,7 +721,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
                 <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
                   <span class="ov-chg ${chgCls}" id="ovChgPill">${chgFull}</span>
                 </div>
-                <div class="ov-eq-sub" id="ovEqSub">${positions.length} open position${positions.length !== 1 ? 's' : ''} · cross + isolated · ${_OV_PERIOD_LABEL[_ovPeriod] ?? 'today'}</div>
+                <div class="ov-eq-sub" id="ovEqSub">${positions.length} open position${positions.length !== 1 ? 's' : ''} · cross + isolated${_oxSub} · ${_OV_PERIOD_LABEL[_ovPeriod] ?? 'today'}</div>
                 </div>
               </div>
               <div class="ov-range" id="ovRange">${rangeBtns}</div>
@@ -1886,7 +1891,8 @@ export function renderPortfolioStats({ perpState, spotState, fills, funding, por
   const accountValue  = Number.isFinite(comboValue) && comboValue > 0 ? comboValue : _localVal
   // Same withholding rule as the overview hero: with a wallet errored the local sum is short
   // by that wallet, and printing it here would contradict the dash one tab over.
-  const acctValStr    = comboPending ? '—' : '$' + fmtUSD(accountValue)
+  const _oxAdd2       = (typeof window !== 'undefined' && window.__offexBalanceAdd) ? (window.__offexBalanceAdd() || 0) : 0
+  const acctValStr    = comboPending ? '—' : '$' + fmtUSD(accountValue + _oxAdd2)
 
   const totalUnrPnl  = (perpState.assetPositions ?? []).reduce(
     (s, p) => s + parseFloat(p.position.unrealizedPnl ?? 0), 0

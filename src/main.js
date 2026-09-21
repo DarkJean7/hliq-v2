@@ -262,7 +262,8 @@ import { rulesFor, clampLeverage, marginModeFor, delistedNames, hasNoActivity, d
 import { initPro, selectPro, clearPro, proActive, proType, proButtonLabel, refreshProPreview,
          openProMenu, openProLearn, mountProFields, submitPro, stopAllChases } from './proticket.js'
 import { byId as _proById } from './protypes.js'
-import { initOffex, sectionHtml as _offexSectionHtml, total as _offexTotal } from './offexui.js'
+import { initOffex, sectionHtml as _offexSectionHtml, total as _offexTotal,
+         balanceAdd as _offexBalanceAdd, countInBalance as _offexInBal } from './offexui.js'
 
 /**
  * Brightness, as a layer over the app rather than a filter on <html>.
@@ -10942,7 +10943,11 @@ initOffex({
   rerender: () => {
     try { if (_isMobView() && _mobVActiveTab === 'spot') _mobVRenderContent() } catch {}
     try { if (document.querySelector('.ov-postab[data-pt="spot"].active')) window.__ovSetPosTab?.('spot') } catch {}
+    // A new price or amount moves the headline too, when it is counting them.
+    if (_offexInBal()) { try { _mobVRenderBalance() } catch {} ; try { renderAccountSection() } catch {} }
   },
+  // The switch itself: repaint both headlines whichever way it went.
+  onBalanceMode: () => { try { _mobVRenderBalance() } catch {} ; try { renderAccountSection() } catch {} },
 })
 
 const _privEyeSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
@@ -14339,11 +14344,20 @@ function _mobVRenderBalance() {
     // that disagrees with the one replacing it a second later.
     balEl.innerHTML = `<span style="color:var(--muted)">—</span>`
   } else {
-    const whole = Math.floor(val)
-    const cents = (val % 1).toFixed(2).slice(1) // ".XX"
-    balEl.innerHTML = _privacyMode
+    // Off-exchange holdings, when "Count in balance" is on. Added to the number SHOWN only:
+    // `val` stays the Hyperliquid figure, because the "today" change below is measured from
+    // it and a lock on Nest is not a day's trading. Labelled, so nobody mistakes the sum for
+    // what Hyperliquid reports.
+    const _ox   = _offexBalanceAdd()
+    const shown = val + _ox
+    const whole = Math.floor(shown)
+    const cents = (shown % 1).toFixed(2).slice(1) // ".XX"
+    const oxTag = _ox > 0
+      ? `<div data-offex-tag style="font-size:11px;font-weight:600;letter-spacing:0;color:var(--muted);margin-top:2px">incl. ${_privacyMode ? '•••' : '$' + fmtUSD(_ox)} off-exchange</div>`
+      : ''
+    balEl.innerHTML = (_privacyMode
       ? `<span style="letter-spacing:4px;color:var(--muted)">•••••</span>`
-      : `$${fmtUSD(whole, 0)}<span style="color:var(--muted)">${cents}</span>`
+      : `$${fmtUSD(whole, 0)}<span style="color:var(--muted)">${cents}</span>`) + oxTag
   }
 
   // Today's change → colored pill ( ▲/▼  $X · Y% today )
