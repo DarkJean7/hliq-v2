@@ -2444,6 +2444,16 @@ export function renderManageOrders(openOrders, perpState, allMids = {}) {
 let _calCache = { fills: [], ledger: [], byDay: {}, rootId: 'calendarRoot', detailId: 'calDetail' }
 
 let _calClickGuard = { key: '', ts: 0 }
+// What a transfer is called on the calendar. Peer transfers are named by which way they went
+// — money arriving is a deposit into this account, money leaving is a send — which is how the
+// Transfers tab names them, so a row reads the same in both places.
+function _calTxLabel(type, amt) {
+  const directional = type === 'send' || type === 'spotTransfer' || type === 'internalTransfer'
+  if (directional) return amt >= 0 ? { label: 'Deposit', badge: 'badge-deposit' } : { label: 'Send', badge: 'badge-withdraw' }
+  const meta = TRANSFER_TYPES[type]
+  return meta ? { label: meta.label, badge: meta.badge } : { label: type || 'Transfer', badge: 'badge-transfer' }
+}
+
 export function calDayClick(key, rootId) {
   // A single tap on a day sometimes fires twice (touch → synthesised click, or a
   // re-render swapping the cell mid-tap), which toggled the panel closed then open
@@ -2494,10 +2504,9 @@ export function calDayClick(key, rootId) {
 
   // Ledger entries for this day
   const dayLedger = cache.ledger.filter(e => e.time >= dayStart && e.time < dayEnd)
-  const txEntries = dayLedger.filter(e => {
-    const t = e.delta.type
-    return t === 'deposit' || t === 'withdraw' || (t === 'send' && e.delta.token === 'USDC')
-  })
+  // Every transfer that day — the same set the Transfers tab lists, not just the ones that
+  // move money in or out, or the calendar hides activity the other tab shows.
+  const txEntries = dayLedger.filter(e => e?.delta).sort((a, b) => a.time - b.time)
 
   const tradesHtml = trades.length ? `
     <div class="cal-detail-section">
@@ -2530,16 +2539,19 @@ export function calDayClick(key, rootId) {
 
   const txHtml = txEntries.length ? `
     <div class="cal-detail-section">
-      <div class="cal-detail-section-title">Deposits & Withdrawals</div>
+      <div class="cal-detail-section-title">Transfers</div>
       ${txEntries.map(e => {
-        const t         = e.delta.type
-        const isDeposit = t === 'deposit' || (t === 'send' && e.delta.token === 'USDC')
-        const amt       = parseFloat(isDeposit ? (t === 'deposit' ? e.delta.usdc : e.delta.usdcValue) : e.delta.usdc) || 0
+        const t    = e.delta.type
+        // Signed exactly as the Transfers tab signs it, against the wallet it belongs to.
+        const amt  = ledgerAmount(e, ledgerOwner(e, cache.owner))
+        const isIn = amt >= 0
+        const { label, badge } = _calTxLabel(t, amt)
+        const acct = e._acct ?? e._label
         return `<div class="cal-detail-tx">
           <span class="cal-detail-time">${_calTime(e.time)}</span>
-          <span class="badge ${isDeposit ? 'badge-deposit' : 'badge-withdraw'}">${isDeposit ? 'Deposit' : 'Withdrawal'}</span>
-          ${e._acct ? `<span class="acct-pill">${esc(e._acct)}</span>` : ''}
-          <span class="${isDeposit ? 'pos' : 'neg'}" style="font-family:'JetBrains Mono',monospace;font-weight:700">${isDeposit ? '+' : '-'}$${fmtUSD(amt)} USDC</span>
+          <span class="badge ${badge}">${esc(label)}</span>
+          ${acct ? `<span class="acct-pill">${esc(acct)}</span>` : ''}
+          <span class="${amt === 0 ? '' : isIn ? 'pos' : 'neg'}" style="font-family:'JetBrains Mono',monospace;font-weight:700">${amt === 0 ? '' : isIn ? '+' : '-'}$${fmtUSD(Math.abs(amt))}</span>
         </div>`
       }).join('')}
     </div>` : ''
@@ -2572,6 +2584,7 @@ export function calDayClick(key, rootId) {
         ${trades.length ? `<span class="cal-detail-pill neu">${trades.length} trade${trades.length !== 1 ? 's' : ''}</span>` : ''}
         ${(data?.deposited ?? 0) > 0 ? `<span class="cal-detail-pill pos">Deposited +$${fmtUSD(data.deposited)}</span>` : ''}
         ${(data?.withdrawn ?? 0) > 0 ? `<span class="cal-detail-pill neg">Withdrawn -$${fmtUSD(data.withdrawn)}</span>` : ''}
+        ${txEntries.length ? `<span class="cal-detail-pill neu">${txEntries.length} transfer${txEntries.length !== 1 ? 's' : ''}</span>` : ''}
       </div>
       <button class="cal-detail-close" onclick="window.__calDayClick('${key}','${rootId || ''}')">✕</button>
     </div>
@@ -2579,7 +2592,9 @@ export function calDayClick(key, rootId) {
     ${!trades.length && !txEntries.length ? '<div style="color:var(--muted);font-size:12px;padding:12px 0">No activity on this day.</div>' : ''}`
 }
 
-export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'calendarRoot', navId = null, detailId = 'calDetail') {
+// `owner` is the account the ledger belongs to, so a send can be told from a receive. The
+// combined views tag each entry with its own `_acctAddr` instead; see ledgerFlow.
+export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'calendarRoot', navId = null, detailId = 'calDetail', owner = null) {
   const root = document.getElementById(rootId)
   if (!root) return
 
@@ -2607,27 +2622,25 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
     volByDay[key] = (volByDay[key] || 0) + ntl
   }
 
-  // Aggregate deposits & withdrawals per day
+  // Every transfer lands on its day — the same entries the Transfers tab lists — and the ones
+  // that move money in or out also add to that day's Deposited / Withdrawn, by the same rule
+  // the Transfers tab totals with (ledgerFlow). A spot ↔ perp move still shows up; it just is
+  // not money arriving.
   for (const e of ledger) {
-    const t = e.delta.type
-    const isDeposit  = t === 'deposit' || (t === 'send' && e.delta.token === 'USDC')
-    const isWithdraw = t === 'withdraw'
-    if (!isDeposit && !isWithdraw) continue
-    const amt = isDeposit
-      ? parseFloat(t === 'deposit' ? e.delta.usdc : e.delta.usdcValue ?? 0)
-      : parseFloat(e.delta.usdc ?? 0)
-    if (!amt) continue
+    if (!e?.delta || !Number.isFinite(e.time)) continue
     const d   = new Date(e.time)
     const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
-    if (!byDay[key]) byDay[key] = { pnl: 0, trades: 0, deposited: 0, withdrawn: 0 }
-    if (isDeposit)  byDay[key].deposited += amt
-    else            byDay[key].withdrawn += amt
+    if (!byDay[key]) byDay[key] = { pnl: 0, trades: 0, deposited: 0, withdrawn: 0, transfers: 0 }
+    byDay[key].transfers = (byDay[key].transfers || 0) + 1
+    const v = ledgerFlow(e, owner)
+    if (v > 0)      byDay[key].deposited += v
+    else if (v < 0) byDay[key].withdrawn += -v
   }
 
   // Store in cache for click handler + month nav re-render. Also stash per-root so
   // each calendar (desktop / mobile calendar tab / accounts tab) clicks its OWN data.
-  _calCache = { fills, ledger, byDay, rootId, detailId: detailId || 'calDetail' }
-  root._calData = { fills, ledger, byDay, detailId: detailId || 'calDetail' }
+  _calCache = { fills, ledger, byDay, rootId, detailId: detailId || 'calDetail', owner }
+  root._calData = { fills, ledger, byDay, detailId: detailId || 'calDetail', owner }
 
   // Month summary
   const todayD    = new Date()
@@ -2739,9 +2752,13 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
     const txHtml = data ? [
       data.deposited > 0 ? `<div class="cal-day-tx dep">DEP +$${fmtUSD(data.deposited)}</div>` : '',
       data.withdrawn > 0 ? `<div class="cal-day-tx wth">WDR -$${fmtUSD(data.withdrawn)}</div>` : '',
+      // Transfers that moved no money in or out (spot ↔ perp, sub-account) still happened.
+      // Without a marker the day looks empty and there is nothing to tap.
+      (data.transfers > 0 && !(data.deposited > 0) && !(data.withdrawn > 0))
+        ? `<div class="cal-day-tx">⇄ ${data.transfers} transfer${data.transfers !== 1 ? 's' : ''}</div>` : '',
     ].join('') : ''
 
-    const hasActivity = data && (data.pnl !== 0 || data.deposited > 0 || data.withdrawn > 0)
+    const hasActivity = data && (data.pnl !== 0 || data.deposited > 0 || data.withdrawn > 0 || data.transfers > 0)
     if (hasActivity) cls += ' cal-clickable'
 
     cells += `<div class="${cls}"${hasActivity ? ` data-key="${key}" onclick="window.__calDayClick('${key}','${rootId}')"` : ''}>
@@ -2876,6 +2893,36 @@ export function ledgerAmount(entry, addr = null) {
   }
 }
 
+/**
+ * The part of a ledger entry that counts as money IN or OUT of the account, signed.
+ *
+ * One rule, used by the Transfers tab's Deposited / Withdrawn totals AND by the calendar's,
+ * so the two can never print different figures for the same month. The calendar used to
+ * keep its own copy, and it had drifted twice over: it booked EVERY USDC send as a deposit —
+ * an outgoing $18.81 send showed on the calendar as "+$18.81 deposited" — and it ignored
+ * spot transfers entirely.
+ *
+ * Counts bridge deposits and withdrawals plus peer transfers (USDC sends, spot transfers),
+ * each signed by which way it went. Spot ↔ perp moves and sub-account shuffles are the
+ * account moving money between its own pockets, not money arriving, so they are 0 here —
+ * they still APPEAR on the calendar, just not in these totals.
+ *
+ * `addr` is the account the ledger belongs to. It has to be a real address: the combined
+ * view's '__all_accounts__' and the paper sentinel are not accounts, and signing a transfer
+ * against one reads every incoming send as outgoing. The entry's own `_acctAddr` wins when it
+ * has one, which is how the combined view works out direction per wallet.
+ */
+const _FLOW_TYPES = ['deposit', 'withdraw', 'send', 'spotTransfer']
+const _realAddr = (a) => (typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a)) ? a : null
+export function ledgerOwner(entry, addr = null) { return _realAddr(entry?._acctAddr) ?? _realAddr(addr) }
+export function ledgerFlow(entry, addr = null) {
+  const t = entry?.delta?.type
+  if (!_FLOW_TYPES.includes(t)) return 0
+  if (t === 'send' && entry.delta.token !== 'USDC') return 0   // non-USDC sends carry no USDC value
+  const v = ledgerAmount(entry, ledgerOwner(entry, addr))
+  return Number.isFinite(v) ? v : 0
+}
+
 function ledgerDetails(entry) {
   const d = entry.delta
   switch (d.type) {
@@ -2906,14 +2953,10 @@ export function renderTransfers(ledger, filter = 'all', addr = null) {
   // deposits & withdrawals plus peer transfers (spot transfers, USDC sends) —
   // an incoming transfer adds to Deposited, an outgoing one to Withdrawn. Uses
   // the same signed amount as the rows so totals and line items agree.
-  const FLOW_TYPES = ['deposit', 'withdraw', 'send', 'spotTransfer']
+  // ledgerFlow is the whole rule, shared with the calendar so the two cannot disagree.
   let totalDeposited = 0, totalWithdrawn = 0
   for (const e of ledger) {
-    if (!FLOW_TYPES.includes(e.delta.type)) continue
-    if (e.delta.type === 'send' && e.delta.token !== 'USDC') continue   // non-USDC sends carry no USDC value
-    // In the combined view `addr` is a sentinel, so direction must be judged against
-    // the wallet the entry actually came from.
-    const v = ledgerAmount(e, e._acctAddr ?? addr)
+    const v = ledgerFlow(e, addr)
     if (v > 0) totalDeposited += v
     else if (v < 0) totalWithdrawn += -v
   }

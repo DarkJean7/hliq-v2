@@ -1226,7 +1226,7 @@ function renderPositionSection() {
 
 function renderHistorySection() {
   renderTrades(state.fills)
-  renderPnLCalendar(state.fills, state.calMonth, state.calYear, state.ledger ?? [])
+  renderPnLCalendar(state.fills, state.calMonth, state.calYear, state.ledger ?? [], 'calendarRoot', null, 'calDetail', state.addr)
   renderTransfers(state.ledger ?? [], state.transferFilter, state.addr)
 }
 
@@ -1247,7 +1247,7 @@ const _renderedTabs = new Set(['overview', 'positions'])
 function _renderLazyTab(name) {
   switch (name) {
     case 'trades':    renderTrades(state.fills); break
-    case 'calendar':  renderPnLCalendar(state.fills, state.calMonth, state.calYear, state.ledger ?? []); break
+    case 'calendar':  renderPnLCalendar(state.fills, state.calMonth, state.calYear, state.ledger ?? [], 'calendarRoot', null, 'calDetail', state.addr); break
     case 'transfers': renderTransfers(state.ledger ?? [], state.transferFilter, state.addr); break
   }
 }
@@ -20574,7 +20574,7 @@ function _mobVRenderContent(tick = false) {
 
     el.innerHTML = `${calHeader}<div style="padding:8px 8px 0"><div id="mobCalRoot"></div></div><div id="mobCalDetail" class="cal-detail" style="margin:8px 16px 24px"></div>`
     try {
-      renderPnLCalendar(fills, state.calMonth, state.calYear, ledger, 'mobCalRoot', 'mobCalNav', 'mobCalDetail')
+      renderPnLCalendar(fills, state.calMonth, state.calYear, ledger, 'mobCalRoot', 'mobCalNav', 'mobCalDetail', state.addr)
       el.dataset.calSig = sig
       // Reopen the previously expanded day. calDayClick toggles, and the fresh panel
       // has no activeKey, so this call opens it rather than closing it.
@@ -21046,7 +21046,7 @@ function _mobVAfterMaRender(results) {
   const hidden    = _maHiddenLoad()
   const vis       = results.filter(r => !hidden.has(r.addr) && !r.error)
   const allFills  = vis.flatMap(r => (r.fills ?? []).map(f => ({ ...f, _label: r.label || r.addr.slice(0, 6) + '…' })))
-  const allLedger = vis.flatMap(r => (r.ledgerEntries ?? []).map(e => ({ ...e, _label: r.label || r.addr.slice(0, 6) + '…' })))
+  const allLedger = vis.flatMap(r => (r.ledgerEntries ?? []).map(e => ({ ...e, _label: r.label || r.addr.slice(0, 6) + '…', _acctAddr: e._acctAddr ?? r.addr })))
   renderPnLCalendar(allFills, _mobVMaCalMonth, _mobVMaCalYear, allLedger, 'mobMaCalRoot', 'mobVMaCalNav', 'mobMaCalDetail')
 }
 
@@ -21228,7 +21228,7 @@ window.mobVMaCalNav = function(dir) {
   const hidden    = _maHiddenLoad()
   const vis       = (_mobVMaResults ?? []).filter(r => !hidden.has(r.addr) && !r.error)
   const allFills  = vis.flatMap(r => (r.fills ?? []).map(f => ({ ...f, _label: r.label || r.addr.slice(0, 6) + '…' })))
-  const allLedger = vis.flatMap(r => (r.ledgerEntries ?? []).map(e => ({ ...e, _label: r.label || r.addr.slice(0, 6) + '…' })))
+  const allLedger = vis.flatMap(r => (r.ledgerEntries ?? []).map(e => ({ ...e, _label: r.label || r.addr.slice(0, 6) + '…', _acctAddr: e._acctAddr ?? r.addr })))
   const detail = document.getElementById('mobMaCalDetail')
   if (detail) { detail.innerHTML = ''; detail.dataset.activeKey = '' }
   renderPnLCalendar(allFills, _mobVMaCalMonth, _mobVMaCalYear, allLedger, 'mobMaCalRoot', 'mobVMaCalNav', 'mobMaCalDetail')
@@ -24659,7 +24659,7 @@ window.mobCalNav = function(dir) {
   if (state.calMonth < 0)  { state.calMonth = 11; state.calYear-- }
   const detail = document.getElementById('mobCalDetail')
   if (detail) { detail.innerHTML = ''; detail.dataset.activeKey = '' }
-  renderPnLCalendar(state.fills ?? [], state.calMonth, state.calYear, state.ledger ?? [], 'mobCalRoot', 'mobCalNav', 'mobCalDetail')
+  renderPnLCalendar(state.fills ?? [], state.calMonth, state.calYear, state.ledger ?? [], 'mobCalRoot', 'mobCalNav', 'mobCalDetail', state.addr)
 }
 
 window._mobVConnectAgentKey = async function() {
@@ -25322,8 +25322,8 @@ window.calNav = function(dir) {
   state.calMonth += dir
   if (state.calMonth > 11) { state.calMonth = 0;  state.calYear++ }
   if (state.calMonth < 0)  { state.calMonth = 11; state.calYear-- }
-  if (isMob) renderPnLCalendar(state.fills ?? [], state.calMonth, state.calYear, state.ledger ?? [], 'mobCalRoot', 'mobCalNav', 'mobCalDetail')
-  else       renderPnLCalendar(state.fills, state.calMonth, state.calYear, state.ledger ?? [])
+  if (isMob) renderPnLCalendar(state.fills ?? [], state.calMonth, state.calYear, state.ledger ?? [], 'mobCalRoot', 'mobCalNav', 'mobCalDetail', state.addr)
+  else       renderPnLCalendar(state.fills, state.calMonth, state.calYear, state.ledger ?? [], 'calendarRoot', null, 'calDetail', state.addr)
 }
 
 window.filterTransfers = function(filter, btn) {
@@ -34940,7 +34940,7 @@ function _maRenderCalendar(results) {
   const vis       = results.filter(r => !hidden.has(r.addr) && !r.error)
   const label     = r => r.label || (r.addr.slice(0, 6) + '…')
   const allFills  = vis.flatMap(r => (r.fills ?? []).map(f => ({ ...f, _label: label(r) })))
-  const allLedger = vis.flatMap(r => (r.ledgerEntries ?? []).map(e => ({ ...e, _label: label(r) })))
+  const allLedger = vis.flatMap(r => (r.ledgerEntries ?? []).map(e => ({ ...e, _label: label(r), _acctAddr: e._acctAddr ?? r.addr })))
   renderPnLCalendar(allFills, _maCalMonth, _maCalYear, allLedger, 'maCalendarRoot', 'maCalNav', 'maCalDetail')
 }
 
