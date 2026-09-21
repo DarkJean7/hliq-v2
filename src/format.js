@@ -139,6 +139,9 @@ export function parseFills(rawFills) {
     fee:       parseFloat(f.fee ?? 0),
     feeToken:  f.feeToken ?? 'USDC',
     dir:       f.dir ?? '',
+    // The position BEFORE this fill, as Hyperliquid reports it. What hold time is measured
+    // from (src/trackrecord.js holdsStep); null when the fill did not carry it.
+    startPosition: f.startPosition ?? null,
     hash:      f.hash ?? '',
     oid:       f.oid ?? null,   // unique per order — used to collapse partial fills (hash is 0x0…0 for many HL fills)
     tid:       f.tid ?? null,

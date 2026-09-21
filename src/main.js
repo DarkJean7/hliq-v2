@@ -253,7 +253,7 @@ import { sideOf as _tsSide, stopPrice as _tsStopPx, resolveSize as _tsSize,
          validate as _tsValidate, describe as _tsDescribe } from './trailstop.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
-import { trackRecord, isSmallSample, openLossOf } from './trackrecord.js'
+import { trackRecord, isSmallSample, openLossOf, holdsStep } from './trackrecord.js'
 import { createJoiner, ownedAddresses } from './lbjoin.js'
 import { readKey as _akRead, writeKey as _akWrite, removeKey as _akRemove,
          migrateLegacy as _akMigrateLegacy, strayEntries as _akStrays,
@@ -21859,6 +21859,8 @@ function _lbPaperPayload(slot) {
       windows, portfolio: paperPortfolio(),
       lastFillAt: (s.fills ?? []).reduce((m, f) => Math.max(m, +f.time || 0), 0) || null,
       openLoss: openLossOf(pos),
+      // Paper fills carry startPosition like real ones, so hold time is measured the same way.
+      holds: holdsStep(null, s.fills ?? []),
     })
     return {
       equity:        paperEquity(),
@@ -22059,7 +22061,12 @@ function _lbTrackHtml(r) {
   const grid = _mobVDetailGrid([
     [_T('Profit factor', 'Factor de beneficio'), pf[0], pf[1]],
     [_T('Avg win / loss', 'Gan. / pérd. media'),
-      `<span style="color:${G}">${money(tr.avgWin)}</span> / <span style="color:${R}">${tr.avgLoss == null ? '—' : '−$' + fmtUSD(tr.avgLoss)}</span>`],
+      `<span style="color:${G}">${money(tr.avgWin)}</span> / <span style="color:${R}">${tr.avgLoss == null ? '—' : '−$' + fmtUSD(tr.avgLoss)}</span>`
+      // "In the little space under avg win/loss include avg held time." How long a position
+      // lives, opened to flat — the figure that says whether a human could follow it at all.
+      + (tr.avgHoldMs != null
+        ? `<div style="font-size:11px;font-weight:600;color:var(--muted);margin-top:2px">${_T('held', 'mantiene')} ${tr.avgHoldMs < 60_000 ? '<1m' : fmtHeld(tr.avgHoldMs)} ${_T('avg', 'prom.')}</div>`
+        : '')],
     [_T('7D PnL', 'PnL 7D'),   money(tr.pnl7d),  tone(tr.pnl7d)],
     [_T('30D PnL', 'PnL 30D'), money(tr.pnl30d), tone(tr.pnl30d)],
     [_T('Per trade', 'Por operación'), money(tr.expectancy), tone(tr.expectancy)],
@@ -34045,7 +34052,7 @@ async function _lbFetchResults(entries) {
     const winCount     = _allW.filter(n => n > 0).length
     const totalWindows = _allW.length
     // Same module and same windows as the server's rows, so a board built here reads the same.
-    const track        = trackRecord({ windows: _windows, portfolio,
+    const track        = trackRecord({ windows: _windows, portfolio, holds: holdsStep(null, fills),
       lastFillAt: fills.reduce((m, f) => Math.max(m, +f.time || 0), 0) || null,
       openLoss: openLossOf([...positions, ...(hip3Res?.positions ?? [])]) })
     // Full canonical fill shape (adds side/timeStr/oid/tid/feeToken over the old

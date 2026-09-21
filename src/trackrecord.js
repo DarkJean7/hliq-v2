@@ -90,7 +90,81 @@ function drawdown(portfolio) {
  * @param {number} [p.openLoss]   sum of the LOSING open positions' unrealized P&L, as a
  *                                positive number (see openLossOf). Omit when unknown.
  */
-export function trackRecord({ windows, portfolio, lastFillAt, openLoss } = {}) {
+// ─── HOW LONG POSITIONS ARE HELD ─────────────────────────────────────────────────────────
+//
+// Asked for under Avg win / loss: "include avg held time". A copier needs it as much as the
+// P&L figures — a wallet that holds for 40 seconds cannot be followed by a human, and one that
+// holds for three weeks will not do anything on the day you start copying it.
+//
+// A HOLD is one position's life: from the fill that took the coin from flat to open, to the
+// fill that took it back to flat. A flip (long straight to short) closes one hold and opens
+// the next at the same instant. Adding to or trimming a position does not start a new one.
+//
+// The position BEFORE each fill comes from Hyperliquid's own `startPosition` on the fill, not
+// from a running sum: the board only reads history from its genesis date, so a wallet can
+// enter it already holding something, and a running sum from 0 would read that position's
+// first close as a fresh short. A position whose opening fill we never saw has no known start,
+// so its hold is simply not counted — never guessed.
+//
+// Incremental, because the server reads each wallet's fills incrementally: `holdsStep` takes
+// the state from the last refresh and the new fills, and returns the state for the next one.
+// Perps only, like the rest of this record — copy trading copies perps.
+
+const _isPerpCoin = (c) => typeof c === 'string' && c.length > 0
+  && c[0] !== '@' && c[0] !== '#' && c[0] !== '+' && !c.includes('/')
+
+/** The empty state. `open` is coin → when the current position was opened. */
+export const emptyHolds = () => ({ open: {}, sum: 0, n: 0 })
+
+/**
+ * Fold fills into the hold state.
+ *
+ * `assumeFlatStart` is for histories known to begin flat — a paper account, whose fills carry
+ * no startPosition because the simulator never had to report one. Everywhere else the
+ * position before a fill must come from the fill, and a fill without it is skipped (and forgets
+ * any open it was tracking for that coin, since the chain is broken).
+ */
+export function holdsStep(state, fills, { assumeFlatStart = false } = {}) {
+  const st = {
+    open: { ...(state?.open ?? {}) },
+    sum:  Number(state?.sum) || 0,
+    n:    Number(state?.n) || 0,
+  }
+  const running = {}
+  const list = [...(fills ?? [])]
+    .filter(f => _isPerpCoin(f?.coin) && Number.isFinite(+f.time))
+    .sort((a, b) => (+a.time - +b.time) || ((a.tid ?? 0) - (b.tid ?? 0)))
+
+  for (const f of list) {
+    const sz  = Math.abs(parseFloat(f.sz))
+    if (!(sz > 0)) continue
+    const buy = f.side === 'B' || f.side === 'BUY'
+    let before = parseFloat(f.startPosition)
+    if (!Number.isFinite(before)) {
+      if (!assumeFlatStart) { delete st.open[f.coin]; continue }
+      before = running[f.coin] ?? 0
+    }
+    const after = before + (buy ? sz : -sz)
+    running[f.coin] = after
+    const eps  = 1e-9 * Math.max(1, Math.abs(before), sz)
+    const flatB = Math.abs(before) <= eps
+    const flatA = Math.abs(after)  <= eps
+    const t = +f.time
+
+    const close = () => {
+      const at = st.open[f.coin]
+      if (Number.isFinite(at) && t >= at) { st.sum += t - at; st.n++ }
+      delete st.open[f.coin]
+    }
+    if (flatB && !flatA) st.open[f.coin] = t                         // opened
+    else if (!flatB && flatA) close()                                 // closed
+    else if (!flatB && !flatA && Math.sign(before) !== Math.sign(after)) { close(); st.open[f.coin] = t }  // flipped
+    // otherwise: added to or trimmed an open position — same hold continues
+  }
+  return st
+}
+
+export function trackRecord({ windows, portfolio, lastFillAt, openLoss, holds } = {}) {
   const entries = Object.entries(windows ?? {})
     .map(([k, v]) => [Number(String(k).slice(String(k).lastIndexOf('_') + 1)), Number(v)])
     .filter(([h, v]) => Number.isFinite(h) && Number.isFinite(v))
@@ -132,6 +206,9 @@ export function trackRecord({ windows, portfolio, lastFillAt, openLoss } = {}) {
     tradingDays: days.size,
     firstTradeAt: Number.isFinite(firstHour) ? firstHour * HOUR : null,
     lastFillAt: Number(lastFillAt) > 0 ? Number(lastFillAt) : null,
+    // Mean length of a position, opened-to-flat. Null until at least one full hold was seen.
+    avgHoldMs: Number(holds?.n) > 0 ? Number(holds.sum) / Number(holds.n) : null,
+    holdCount: Number(holds?.n) || 0,
     pnl7d:  seriesLast(portfolio, ['perpWeek', 'week']),
     pnl30d: seriesLast(portfolio, ['perpMonth', 'month']),
     maxDrawdown: drawdown(portfolio),

@@ -106,7 +106,9 @@ console.log(nl + '-- drawdown --')
 
 console.log(nl + '-- one module, both data paths, both shells --')
 {
-  t('the server computes it for every row', /import \{ trackRecord, openLossOf \}/.test(srv) && /track: trackRecord\(\{ windows, portfolio/.test(srv))
+  // The import now also brings holdsStep/emptyHolds (hold time, tests/suites/holdtime.test.mjs),
+  // so the list is matched by its start rather than its exact contents.
+  t('the server computes it for every row', /import \{ trackRecord, openLossOf[^}]*\}/.test(srv) && /track: trackRecord\(\{ windows, portfolio/.test(srv))
   t('with the open losses of the positions it just read', srv.includes('openLoss: openLossOf(rawPos)'))
   // The stats endpoint strips the internal accumulators; `track` must survive that.
   const strip = srv.slice(srv.indexOf("path === '/api/leaderboard/stats'"), srv.indexOf("path === '/api/leaderboard/stats'") + 1400)

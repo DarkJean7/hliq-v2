@@ -19,7 +19,7 @@ import { fileURLToPath }                                      from 'node:url'
 import { homedir }                                            from 'node:os'
 import { randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual } from 'node:crypto'
 import { ethers }                                             from 'ethers'
-import { trackRecord, openLossOf }                            from './src/trackrecord.js'
+import { trackRecord, openLossOf, holdsStep, emptyHolds }     from './src/trackrecord.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const PORT       = 3002
@@ -1276,6 +1276,16 @@ async function lbRefreshOne(addr, label, prev) {
   const windows = { ...(st.windows ?? {}) }
   const fills = await hlFillsSince(addr, st.lastFillTs)
   let { realizedPnl, fees, volume, lastFillTs } = st
+  // Hold times (src/trackrecord.js holdsStep), carried across refreshes like the windows. A
+  // row cached before this existed has no hold state, and its old fills will never be read
+  // again incrementally — so it gets ONE backfill from genesis. Without it the average would
+  // be built from whatever trades happen after the deploy, and read "held 4m" off one scalp.
+  let holds
+  if (st.holds) holds = holdsStep(st.holds, fills)
+  else if (prev) {
+    try { holds = holdsStep(emptyHolds(), await hlFillsSince(addr, LB_GENESIS - 1)) }
+    catch (e) { if (e.rateLimited) throw e; holds = null }   // try again next refresh
+  } else holds = holdsStep(emptyHolds(), fills)
   for (const f of fills) {
     const pnl = parseFloat(f.closedPnl ?? 0)
     const fee = parseFloat(f.fee ?? 0)
@@ -1357,11 +1367,13 @@ async function lbRefreshOne(addr, label, prev) {
     // Profit factor, average win and loss, drawdown, 7D/30D, record length — what a copier
     // needs and win rate alone hides. From the same windows as win rate, so they agree.
     track: trackRecord({ windows, portfolio, lastFillAt: lastFillTs >= LB_GENESIS ? lastFillTs : null,
-                         openLoss: openLossOf(rawPos) }),
+                         openLoss: openLossOf(rawPos), holds }),
     totalFees: fees,
     allTimeFunding: funding,
     // internal accumulators (stripped before the row is served)
     fees, volume, funding, lastFillTs, lastFundingTs, windows,
+    // null when the backfill failed, so the next refresh tries it again
+    holds: holds ?? undefined,
     // which HIP-3 dexes this account uses, so later refreshes skip the other 8
     dexes: dexesWithPos,
     dexSweepAt: doSweep ? Date.now() : (st.dexSweepAt ?? 0),
@@ -2100,7 +2112,7 @@ const server = createServer(async (req, res) => {
       .filter(r => isAdmin || !hidden.has(r.addr.toLowerCase()))
       .map(r => hidden.has(r.addr.toLowerCase()) ? { ...r, hidden: true } : r)
       // drop internal accumulators/cursors — `windows` in particular is large
-      .map(({ lastFillTs, lastFundingTs, windows, fees, volume, funding, dexes, dexSweepAt, ...row }) => row)
+      .map(({ lastFillTs, lastFundingTs, windows, holds, fees, volume, funding, dexes, dexSweepAt, ...row }) => row)
       .sort((a, b) => b.accountValue - a.accountValue)
     return json(res, 200, { updatedAt: s.updatedAt ?? 0, rows })
   }
