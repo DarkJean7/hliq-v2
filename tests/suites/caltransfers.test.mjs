@@ -60,6 +60,23 @@ console.log(nl + '-- one rule decides direction --')
   // Moving money between your own pockets is not money arriving.
   t('a spot ↔ perp move is not a flow', ledgerFlow(LEDGER[7], ME) === 0)
 
+  // "transfers in/out should be counted in deposited/withdrawn" — every kind of transfer
+  // that crosses the account's edge, not just USDC sends and spot transfers.
+  const internalOut = { time: day(15), delta: { type: 'internalTransfer', usdc: '25', user: ME, destination: THEM, fee: '0' } }
+  const internalIn  = { time: day(15), delta: { type: 'internalTransfer', usdc: '60', user: THEM, destination: ME, fee: '0' } }
+  const subOut      = { time: day(14), delta: { type: 'subAccountTransfer', usdc: '70', user: ME, destination: OTHER } }
+  const hypeOut     = send(55, THEM, 14, 12, 'HYPE')
+  t('an internal transfer out is a withdrawal', ledgerFlow(internalOut, ME) === -25)
+  t('an internal transfer in is a deposit', ledgerFlow(internalIn, ME) === 60)
+  t('a sub-account transfer out is a withdrawal', ledgerFlow(subOut, ME) === -70)
+  t('a send of any token counts, at its USD value', near(ledgerFlow(hypeOut, ME), -55))
+
+  renderPnLCalendar([], 8, 2026, [internalOut, internalIn, subOut, hypeOut], 'ioRoot', 'ioNav', 'ioDet', ME)
+  const io = el('ioRoot')._calData.byDay
+  t('the calendar books them as deposited and withdrawn',
+    io['2026-09-15'].deposited === 60 && io['2026-09-15'].withdrawn === 25 &&
+    near(io['2026-09-14'].withdrawn, 125) && io['2026-09-14'].deposited === 0, io)
+
   // The combined view's address is a sentinel, not an account. Signing a send against it
   // reads every incoming send as outgoing — so it is refused, and the entry's own wallet wins.
   t('the combined-view sentinel is not an owner', ledgerOwner(out, '__all_accounts__') === null)

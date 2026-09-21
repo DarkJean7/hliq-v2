@@ -2909,23 +2909,27 @@ export function ledgerAmount(entry, addr = null) {
  * an outgoing $18.81 send showed on the calendar as "+$18.81 deposited" — and it ignored
  * spot transfers entirely.
  *
- * Counts bridge deposits and withdrawals plus peer transfers (USDC sends, spot transfers),
- * each signed by which way it went. Spot ↔ perp moves and sub-account shuffles are the
- * account moving money between its own pockets, not money arriving, so they are 0 here —
- * they still APPEAR on the calendar, just not in these totals.
+ * Counts bridge deposits and withdrawals plus EVERY transfer in or out: sends of any token,
+ * spot transfers, internal transfers and sub-account transfers, each signed by which way it
+ * went. A transfer in is a deposit and a transfer out is a withdrawal — asked for in exactly
+ * those words, after a day showed "1 transfer" and no Deposited or Withdrawn at all.
+ *
+ * The one thing left out is a spot ↔ perp move (accountClassTransfer). That is the same
+ * account moving money between its own two pockets: nothing arrived and nothing left, and
+ * counting it would book a $300 move to perp as $300 deposited. It still APPEARS on the
+ * calendar and in the transfers pill — just not as money in or out.
  *
  * `addr` is the account the ledger belongs to. It has to be a real address: the combined
  * view's '__all_accounts__' and the paper sentinel are not accounts, and signing a transfer
  * against one reads every incoming send as outgoing. The entry's own `_acctAddr` wins when it
  * has one, which is how the combined view works out direction per wallet.
  */
-const _FLOW_TYPES = ['deposit', 'withdraw', 'send', 'spotTransfer']
+const _FLOW_TYPES = ['deposit', 'withdraw', 'send', 'spotTransfer', 'internalTransfer', 'subAccountTransfer']
 const _realAddr = (a) => (typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a)) ? a : null
 export function ledgerOwner(entry, addr = null) { return _realAddr(entry?._acctAddr) ?? _realAddr(addr) }
 export function ledgerFlow(entry, addr = null) {
   const t = entry?.delta?.type
   if (!_FLOW_TYPES.includes(t)) return 0
-  if (t === 'send' && entry.delta.token !== 'USDC') return 0   // non-USDC sends carry no USDC value
   const v = ledgerAmount(entry, ledgerOwner(entry, addr))
   return Number.isFinite(v) ? v : 0
 }
