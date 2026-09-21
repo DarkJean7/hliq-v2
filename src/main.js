@@ -22384,13 +22384,21 @@ function _mobVBuildLbHtml(results, opts = {}) {
       const nCls = r.netPnl        >= 0 ? 'var(--green)' : 'var(--red)'
       const hCls = r.healthCls === 'pos' ? 'var(--green)' : r.healthCls === 'warn' ? 'var(--orange)' : 'var(--red)'
       const winRate = r.totalWindows > 0 ? (r.winCount / r.totalWindows * 100).toFixed(1) + '%' : '—'
+      // The count behind the percentage, under it: 98.4% of 129 trades and 98.4% of 5 are not
+      // the same claim. A "trade" is the same unit the rate uses — every close in one coin
+      // within an hour, net of fees — and a loss is every such trade that did not win.
+      const _wins   = r.winCount ?? 0
+      const _losses = Math.max(0, (r.totalWindows ?? 0) - _wins)
+      const winRateHtml = r.totalWindows > 0
+        ? `${winRate}<div style="font-size:11px;font-weight:600;margin-top:1px"><span style="color:var(--green)">${_wins} W</span> <span style="color:var(--muted)">/</span> <span style="color:var(--red)">${_losses} L</span></div>`
+        : winRate
       expandHtml = _mobVDetailGrid([
         ['Unrealized', _lbPnl(r.unrealizedPnl, null), uCls],
         ['Realized',   _lbPnl(r.realizedPnl,   null), rCls],
         ['Net PnL',    _lbPnl(r.netPnl,         null), nCls],
         ['ROE',        fmtRoe(accountRoe(r)), nCls],
         ['Health',     r.healthPct > 0 ? r.healthPct.toFixed(1) + '%' : '—', hCls],
-        ['Win Rate',   winRate],
+        ['Win Rate',   winRateHtml],
         ['Volume',     '$' + fmtCompact(r.totalVolume ?? 0)],
       ])
       // The track record sits between the numbers and the buttons: it is what someone reads
@@ -22401,7 +22409,12 @@ function _mobVBuildLbHtml(results, opts = {}) {
       if (r.addr) expandHtml += opts.paper ? _lbPaperSocialHtml(r) : _lbSocialHtml(r)
       const openPos = (r.positions ?? []).filter(ap => parseFloat(ap.position?.szi ?? 0) !== 0)
       if (openPos.length) {
-        expandHtml += _lbCollapse(`${id}-pos`, `${openPos.length} Open Position${openPos.length !== 1 ? 's' : ''}`,
+        // Which way the book leans, in the header — "7 open positions: 6 longs / 1 short" —
+        // so you can read it without opening the list.
+        const _longs  = openPos.filter(ap => parseFloat(ap.position.szi) > 0).length
+        const _shorts = openPos.length - _longs
+        const _side = (n, w) => `${n} ${w}${n !== 1 ? 's' : ''}`
+        expandHtml += _lbCollapse(`${id}-pos`, `${openPos.length} Open Position${openPos.length !== 1 ? 's' : ''}: <span style="color:var(--green)">${_side(_longs, 'long')}</span> / <span style="color:var(--red)">${_side(_shorts, 'short')}</span>`,
           openPos.map((ap, pi) => _mobVSubPosRow(ap, `${id}-p${pi}`)).join(''))
       }
       const outcomes = _ocClampPending((r.outcomes ?? []).map(o => ({ ...o, _acctAddr: r.addr })))
