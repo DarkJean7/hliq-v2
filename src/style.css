@@ -1920,6 +1920,7 @@ html.has-bg-image .mkt-panel-search { background: transparent; }
 }
 .cal-day-tx.dep { color: var(--green); }
 .cal-day-tx.wth { color: var(--red); }
+.cal-day-tx.rwd { color: var(--accent); }
 
 .cal-clickable { cursor: pointer; }
 .cal-clickable:hover { border-color: var(--accent) !important; background: rgba(0,255,204,0.06) !important; }

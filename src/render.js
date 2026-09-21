@@ -2507,6 +2507,8 @@ export function calDayClick(key, rootId) {
   // Every transfer that day — the same set the Transfers tab lists, not just the ones that
   // move money in or out, or the calendar hides activity the other tab shows.
   const txEntries = dayLedger.filter(isCalTransfer).sort((a, b) => a.time - b.time)
+  const rwEntries = dayLedger.filter(isCalReward).sort((a, b) => a.time - b.time)
+  const rwUsd     = rwEntries.reduce((s, e) => s + rewardUsd(e), 0)
   // The pill carries only what the Deposited / Withdrawn pills beside it do not. Everything
   // that moved money in or out is already there — printing the total again put
   // "Withdrawn -$206.56" and "3 transfers · $206.56" side by side. What is left is a spot ↔
@@ -2585,6 +2587,22 @@ export function calDayClick(key, rootId) {
     } catch {}
   }
 
+  const rwHtml = rwEntries.length ? `
+    <div class="cal-detail-section">
+      <div class="cal-detail-section-title">Rewards</div>
+      ${rwEntries.map(e => {
+        const tok  = e.delta.token ?? 'USDC'
+        const amt  = parseFloat(e.delta.amount) || 0
+        const acct = e._acct ?? e._label
+        return `<div class="cal-detail-tx">
+          <span class="cal-detail-time">${_calTime(e.time)}</span>
+          <span class="badge badge-reward">Reward</span>
+          ${acct ? `<span class="acct-pill">${esc(acct)}</span>` : ''}
+          <span class="pos" style="font-family:'JetBrains Mono',monospace;font-weight:700">${tok === 'USDC' ? '+$' + fmtUSD(amt) : '+' + fmtSize(amt) + ' ' + esc(tok)}</span>
+        </div>`
+      }).join('')}
+    </div>` : ''
+
   detail.innerHTML = `
     <div class="cal-detail-header">
       <div class="cal-detail-date">${dateLabel}</div>
@@ -2593,12 +2611,13 @@ export function calDayClick(key, rootId) {
         ${trades.length ? `<span class="cal-detail-pill neu">${trades.length} trade${trades.length !== 1 ? 's' : ''}</span>` : ''}
         ${(data?.deposited ?? 0) > 0 ? `<span class="cal-detail-pill pos">Deposited +$${fmtUSD(data.deposited)}</span>` : ''}
         ${(data?.withdrawn ?? 0) > 0 ? `<span class="cal-detail-pill neg">Withdrawn -$${fmtUSD(data.withdrawn)}</span>` : ''}
+        ${rwEntries.length ? `<span class="cal-detail-pill pos">Rewards ${rwUsd > 0 ? '+$' + fmtUSD(rwUsd) : '×' + rwEntries.length}</span>` : ''}
         ${txEntries.length ? `<span class="cal-detail-pill neu">${txEntries.length} transfer${txEntries.length !== 1 ? 's' : ''}${txInternal > 0 ? ` · $${fmtUSD(txInternal)} spot ↔ perp` : ''}</span>` : ''}
       </div>
       <button class="cal-detail-close" onclick="window.__calDayClick('${key}','${rootId || ''}')">✕</button>
     </div>
-    ${tradesHtml}${txHtml}
-    ${!trades.length && !txEntries.length ? '<div style="color:var(--muted);font-size:12px;padding:12px 0">No activity on this day.</div>' : ''}`
+    ${tradesHtml}${txHtml}${rwHtml}
+    ${!trades.length && !txEntries.length && !rwEntries.length ? '<div style="color:var(--muted);font-size:12px;padding:12px 0">No activity on this day.</div>' : ''}`
 }
 
 // `owner` is the account the ledger belongs to, so a send can be told from a receive. The
@@ -2636,6 +2655,14 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
   // the Transfers tab totals with (ledgerFlow). A spot ↔ perp move still shows up; it just is
   // not money arriving.
   for (const e of ledger) {
+    if (isCalReward(e) && Number.isFinite(e.time)) {
+      const d   = new Date(e.time)
+      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+      if (!byDay[key]) byDay[key] = { pnl: 0, trades: 0, deposited: 0, withdrawn: 0, transfers: 0 }
+      byDay[key].rewards      = (byDay[key].rewards || 0) + 1
+      byDay[key].rewardsUsd   = (byDay[key].rewardsUsd || 0) + rewardUsd(e)
+      continue
+    }
     if (!isCalTransfer(e) || !Number.isFinite(e.time)) continue
     const d   = new Date(e.time)
     const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
@@ -2765,9 +2792,11 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
       // Without a marker the day looks empty and there is nothing to tap.
       (data.transfers > 0 && !(data.deposited > 0) && !(data.withdrawn > 0))
         ? `<div class="cal-day-tx">⇄ ${data.transfers} transfer${data.transfers !== 1 ? 's' : ''}</div>` : '',
+      data.rewards > 0
+        ? `<div class="cal-day-tx rwd">RWD ${data.rewardsUsd > 0 ? '+$' + fmtUSD(data.rewardsUsd) : '×' + data.rewards}</div>` : '',
     ].join('') : ''
 
-    const hasActivity = data && (data.pnl !== 0 || data.deposited > 0 || data.withdrawn > 0 || data.transfers > 0)
+    const hasActivity = data && (data.pnl !== 0 || data.deposited > 0 || data.withdrawn > 0 || data.transfers > 0 || data.rewards > 0)
     if (hasActivity) cls += ' cal-clickable'
 
     cells += `<div class="${cls}"${hasActivity ? ` data-key="${key}" onclick="window.__calDayClick('${key}','${rootId}')"` : ''}>
@@ -2933,6 +2962,20 @@ const _realAddr = (a) => (typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a)
 // listing all of it as "transfers" is how a rewards claim turned up in that section.
 export const CAL_TRANSFER_TYPES = [..._FLOW_TYPES, 'accountClassTransfer']
 export const isCalTransfer = (e) => CAL_TRANSFER_TYPES.includes(e?.delta?.type)
+// Reward claims. Shown on the calendar in their own right — asked for as "show the rewards,
+// just not as transfers": a reward is money the account earned, not money that moved, so it
+// never feeds Deposited / Withdrawn and never sits under the Transfers heading.
+export const isCalReward = (e) => e?.delta?.type === 'rewardsClaim'
+// A reward can be paid in a token that is not USDC. Its USD value is only known for USDC, so
+// that is the only kind that can be added into a dollar total; the others are listed by
+// token rather than guessed at.
+export function rewardUsd(e) {
+  if (!isCalReward(e)) return 0
+  const tok = e.delta.token ?? 'USDC'
+  if (tok !== 'USDC') return 0
+  const v = parseFloat(e.delta.amount)
+  return Number.isFinite(v) ? v : 0
+}
 export function ledgerOwner(entry, addr = null) { return _realAddr(entry?._acctAddr) ?? _realAddr(addr) }
 export function ledgerFlow(entry, addr = null) {
   const t = entry?.delta?.type

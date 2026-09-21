@@ -139,25 +139,39 @@ console.log(nl + '-- tapping the day lists them the way the Transfers tab does -
   t('and its size shows in the header', el('calDet').innerHTML.includes('1 transfer · $300.00 spot ↔ perp'))
 }
 
-console.log(nl + '-- rewards are not transfers --')
+console.log(nl + '-- rewards show, just not as transfers --')
 {
-  // Reported: "rewards appears as transfers". The ledger carries more than transfers, and
-  // the calendar was listing all of it under that heading.
-  const reward = { time: day(12), delta: { type: 'rewardsClaim', amount: '4.20', token: 'USDC' } }
+  // "rewards appears as transfers", then "show the rewards, just not as transfers". The ledger
+  // carries more than transfers; a reward is money earned, not money moved, so it gets its own
+  // section and pill and never touches Deposited, Withdrawn or the transfer count.
+  const reward = { time: day(12, 9), delta: { type: 'rewardsClaim', amount: '4.20', token: 'USDC' } }
+  const hype   = { time: day(12, 10), delta: { type: 'rewardsClaim', amount: '0.5', token: 'HYPE' } }
   const liq    = { time: day(12), delta: { type: 'liquidation', accountValue: '10', leverageType: 'Cross', liquidatedPositions: [] } }
   const moved  = send(11, THEM, 12)
-  renderPnLCalendar([], 8, 2026, [reward, liq, moved], 'rwRoot', 'rwNav', 'rwDet', ME)
+  renderPnLCalendar([], 8, 2026, [reward, hype, liq, moved], 'rwRoot', 'rwNav', 'rwDet', ME)
   const bd = el('rwRoot')._calData.byDay['2026-09-12']
   t('only the send counts as a transfer', bd?.transfers === 1, bd)
+  t('the rewards are counted as rewards', bd?.rewards === 2, bd)
+  // Only a USDC reward has a known dollar value; a HYPE one is listed, not guessed at.
+  t('and only the USDC one adds to the dollar total', near(bd.rewardsUsd, 4.2), bd)
+  t('rewards are not money deposited', near(bd.withdrawn, 11) && bd.deposited === 0, bd)
+  t('the day cell shows the reward', el('rwRoot').innerHTML.includes('RWD +$4.20'))
+
   el('rwDet').dataset.activeKey = ''
   calDayClick('2026-09-12', 'rwRoot')
   const html = el('rwDet').innerHTML
-  t('the day panel does not list the reward', !/Rewards/.test(html) && !html.includes('4.20'), html.match(/badge[^>]*>[^<]*/g))
-  t('or the liquidation', !/Liquidation/.test(html))
-  t('and says one transfer', html.includes('1 transfer<'))
+  const txSec = html.slice(html.indexOf('>Transfers<'), html.indexOf('>Rewards<'))
+  t('there is a Rewards section', html.includes('>Rewards<'))
+  t('listing both claims', html.includes('+$4.20') && html.includes('HYPE'))
+  t('with a Rewards pill at the top', html.includes('Rewards +$4.20'))
+  t('and the Transfers section does not list them', !/Reward/.test(txSec) && !txSec.includes('4.20'), txSec)
+  t('it still says one transfer', html.includes('1 transfer<'))
+  t('the liquidation is neither', !/Liquidation/.test(html))
 
   renderPnLCalendar([], 8, 2026, [reward], 'rw2Root', 'rw2Nav', 'rw2Det', ME)
-  t('a day with only a reward has no transfer marker', !el('rw2Root').innerHTML.includes('⇄'))
+  const cell = el('rw2Root').innerHTML
+  t('a day with only a reward is tappable', cell.includes('data-key="2026-09-12"'))
+  t('and has no transfer marker', !cell.includes('⇄'))
 }
 
 console.log(nl + '-- the combined views --')
