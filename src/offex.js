@@ -15,11 +15,18 @@
  *
  * ── where the price comes from ──
  *
- * GeckoTerminal's token endpoint, HyperEVM network. Its `price_usd` is the price in the
- * token's DEEPEST pool, which matters more than it sounds: SIGNAL trades in several pools
- * that disagree by more than 3× ($0.0016 to $0.0056), and a price taken from whichever pool
- * answered first would have tripled or thirded the value at random. The deepest pool is the
- * one you could actually sell into.
+ * TWO sources, and the deepest pool either of them knows about wins.
+ *
+ * GeckoTerminal was the only source at first, and it was wrong for EAGLE by 40%: the one
+ * EAGLE pool it indexes is an EAGLE/WHYPE pool created that morning with effectively $0 in
+ * it and a single trade, priced $0.000191. The real market is EAGLE/NEST on Project X —
+ * $104k of liquidity, half a million a day of volume, $0.000313 — and GeckoTerminal does not
+ * index it. DexScreener does. So both are asked, and for each token the quote backed by more
+ * liquidity is the one used; the other is a fallback for tokens only one of them lists.
+ *
+ * "Deepest pool" is the rule because it is the price you could actually sell into. SIGNAL
+ * trades in several pools that disagree by more than 3×, and a price taken from whichever
+ * pool answered first would triple or third the value at random.
  *
  * The server fetches it (serve-prod.js /offexprice), for three reasons: GeckoTerminal allows
  * about 30 requests a minute, one server-side cache serves every user; the browser names a
@@ -89,9 +96,85 @@ export function parseGtMulti(json) {
   const out = {}
   for (const rec of (Array.isArray(json?.data) ? json.data : [])) {
     const t = parseGtToken(rec)
-    if (t) out[t.addr] = t
+    if (t) out[t.addr] = { ...t, src: 'GeckoTerminal', pool: null }
   }
   return out
+}
+
+/** DexScreener's batch endpoint for HyperEVM tokens. Same validation as gtMultiUrl. */
+export function dsMultiUrl(addrs) {
+  const ok = [...new Set((addrs ?? []).map(normAddr).filter(Boolean))].slice(0, MAX_PER_REQUEST)
+  if (!ok.length) return null
+  return `https://api.dexscreener.com/tokens/v1/hyperevm/${ok.join(',')}`
+}
+
+/**
+ * DexScreener pairs → { addr: quote }, keeping each token's DEEPEST pair.
+ *
+ * Only pairs where the token is the BASE count: `priceUsd` is always the base token's price,
+ * so a pair that merely quotes in our token (NEST, for EAGLE/NEST) would hand NEST the price
+ * of EAGLE.
+ */
+export function parseDsPairs(json) {
+  const out = {}
+  for (const p of (Array.isArray(json) ? json : (Array.isArray(json?.pairs) ? json.pairs : []))) {
+    const addr  = normAddr(p?.baseToken?.address)
+    if (!addr) continue
+    const price = parseFloat(p.priceUsd)
+    const liq   = parseFloat(p?.liquidity?.usd)
+    if (!(Number.isFinite(price) && price > 0)) continue
+    const q = {
+      addr,
+      symbol: String(p.baseToken.symbol ?? '').slice(0, 24) || null,
+      name:   String(p.baseToken.name ?? '').slice(0, 64) || null,
+      icon:   typeof p?.info?.imageUrl === 'string' && /^https:\/\//.test(p.info.imageUrl) ? p.info.imageUrl : null,
+      price,
+      liq:    Number.isFinite(liq) ? liq : null,
+      thin:   !(Number.isFinite(liq) && liq >= THIN_LIQUIDITY_USD),
+      src:    'DexScreener',
+      pool:   `${p.dexId ?? 'dex'} · ${p.baseToken.symbol ?? '?'}/${p?.quoteToken?.symbol ?? '?'}`.slice(0, 48),
+    }
+    if (!out[addr] || (q.liq ?? -1) > (out[addr].liq ?? -1)) out[addr] = q
+  }
+  return out
+}
+
+/**
+ * The quote to use when both sources answered: whichever is backed by more liquidity. A
+ * source with no liquidity figure loses to one that has any. Name and icon are taken from
+ * whichever has them, so a token GeckoTerminal has no image for still gets DexScreener's.
+ */
+export function pickDeepest(a, b) {
+  if (!a) return b ?? null
+  if (!b) return a
+  // A quote with no price cannot win on liquidity — it has nothing to offer but the name.
+  const priced = (q) => q.price != null
+  const win  = priced(a) !== priced(b)
+    ? (priced(a) ? a : b)
+    : ((b.liq ?? -1) > (a.liq ?? -1) ? b : a)
+  const lose = win === a ? b : a
+  return { ...win, symbol: win.symbol ?? lose.symbol, name: win.name ?? lose.name, icon: win.icon ?? lose.icon }
+}
+
+/** Merge both sources' replies into one { addr: quote }. */
+export function mergeQuotes(gt = {}, ds = {}) {
+  const out = {}
+  for (const addr of new Set([...Object.keys(gt ?? {}), ...Object.keys(ds ?? {})])) {
+    const q = pickDeepest(gt?.[addr], ds?.[addr])
+    if (q) out[addr] = q
+  }
+  return out
+}
+
+/**
+ * Ask both sources and merge. `fetchJson(url)` is injected so the server, the dev server and
+ * the tests share this one function; a source that fails contributes nothing rather than
+ * failing the other.
+ */
+export async function fetchQuotes(addrs, fetchJson) {
+  const safe = (u) => (u ? fetchJson(u).catch(() => null) : Promise.resolve(null))
+  const [gtJ, dsJ] = await Promise.all([safe(gtMultiUrl(addrs)), safe(dsMultiUrl(addrs))])
+  return { quotes: mergeQuotes(gtJ ? parseGtMulti(gtJ) : {}, dsJ ? parseDsPairs(dsJ) : {}), ok: !!(gtJ || dsJ) }
 }
 
 // ─── STORAGE ──────────────────────────────────────────────────────────────────

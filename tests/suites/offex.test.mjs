@@ -10,6 +10,7 @@ import {
   isTokenAddr, normAddr, gtMultiUrl, parseGtToken, parseGtMulti, THIN_LIQUIDITY_USD,
   storageKey, cleanEntry, loadHoldings, saveHoldings, upsertHolding, removeHolding,
   holdingValue, holdingsTotal, MAX_PER_REQUEST,
+  dsMultiUrl, parseDsPairs, pickDeepest, mergeQuotes, fetchQuotes,
 } from '../../src/offex.js'
 
 const nl = String.fromCharCode(10)
@@ -68,6 +69,50 @@ console.log(nl + '-- reading GeckoTerminal --')
   t('a malformed reply is empty, not a crash', Object.keys(parseGtMulti({ nope: 1 })).length === 0)
 }
 
+console.log(nl + '-- two sources, and the deepest pool wins --')
+{
+  // Reported: "for spot eagle is kinda off". 342K EAGLE showed $65.46 here and $108.95
+  // elsewhere. GeckoTerminal's only EAGLE pool was an EAGLE/WHYPE pool created that morning
+  // with effectively nothing in it; the real market is EAGLE/NEST on Project X, which only
+  // DexScreener indexes. Replies below are the real shapes from that day.
+  const gt = parseGtMulti({ data: [
+    { attributes: { address: EAGLE, symbol: 'EAGLE', name: 'Eagle', price_usd: '0.0001914099722', total_reserve_in_usd: '0.0000000000000001867' } },
+    { attributes: { address: NEST, symbol: 'NEST', name: 'Nest', price_usd: '0.02037', total_reserve_in_usd: '913455' } },
+  ] })
+  const ds = parseDsPairs([
+    { dexId: 'prjx', baseToken: { address: '0xE99509927aa0dc328e7ab5058cd24be1b2a5f280', symbol: 'EAGLE', name: 'Eagle' },
+      quoteToken: { symbol: 'NEST' }, priceUsd: '0.0003131', liquidity: { usd: 104211.28 }, info: { imageUrl: 'https://dd.dexscreener.com/eagle.png' } },
+    // A pair that QUOTES in NEST must not hand NEST the price of EAGLE.
+    { dexId: 'prjx', baseToken: { address: EAGLE, symbol: 'EAGLE' }, quoteToken: { address: NEST, symbol: 'NEST' }, priceUsd: '0.0003131', liquidity: { usd: 104211 } },
+    { dexId: 'nest', baseToken: { address: NEST, symbol: 'NEST', name: 'Nest' }, quoteToken: { symbol: 'WHYPE' }, priceUsd: '0.02089', liquidity: { usd: 1090649 } },
+  ])
+  t('DexScreener finds the real EAGLE market', near(ds[EAGLE].price, 0.0003131) && ds[EAGLE].pool === 'prjx · EAGLE/NEST')
+  t('a pair only priced IN a token does not price it', near(ds[NEST].price, 0.02089))
+
+  const m = mergeQuotes(gt, ds)
+  t('EAGLE is priced from the deep pool, not the empty one', near(m[EAGLE].price, 0.0003131) && m[EAGLE].src === 'DexScreener', m[EAGLE])
+  t('which puts 342K EAGLE at ~$107, not $65', Math.abs(342000 * m[EAGLE].price - 107.08) < 0.01, 342000 * m[EAGLE].price)
+  t('and it is no longer called thin', m[EAGLE].thin === false)
+  t('the deeper NEST quote wins too', m[NEST].src === 'DexScreener')
+  t('an icon only one source has is kept', m[EAGLE].icon === 'https://dd.dexscreener.com/eagle.png')
+
+  // GeckoTerminal still wins where it is the deeper one — the rule is liquidity, not a brand.
+  const gtDeep = pickDeepest({ price: 1, liq: 500000, src: 'GeckoTerminal' }, { price: 3, liq: 900, src: 'DexScreener' })
+  t('the deeper source wins whichever it is', gtDeep.src === 'GeckoTerminal' && gtDeep.price === 1)
+  t('a quote with no price never wins on liquidity', pickDeepest({ price: null, liq: 9e9 }, { price: 2, liq: 10 }).price === 2)
+  t('one source alone is used as-is', mergeQuotes({}, ds)[EAGLE].price === ds[EAGLE].price && mergeQuotes(gt, {})[EAGLE].src === 'GeckoTerminal')
+  t('the DexScreener URL is validated the same way', dsMultiUrl(['../x', NEST]) === 'https://api.dexscreener.com/tokens/v1/hyperevm/' + NEST)
+
+  // One source down must not take the other with it.
+  const r = await fetchQuotes([EAGLE], async (u) => {
+    if (u.includes('geckoterminal')) throw new Error('503')
+    return [{ dexId: 'prjx', baseToken: { address: EAGLE, symbol: 'EAGLE' }, quoteToken: { symbol: 'NEST' }, priceUsd: '0.0003131', liquidity: { usd: 104211 } }]
+  })
+  t('GeckoTerminal failing still prices from DexScreener', r.ok && near(r.quotes[EAGLE].price, 0.0003131))
+  const dead = await fetchQuotes([EAGLE], async () => { throw new Error('down') })
+  t('both failing is reported as a failure, not as "no price"', dead.ok === false)
+}
+
 console.log(nl + '-- storage belongs to a real account --')
 {
   const mem = new Map()
@@ -123,8 +168,8 @@ console.log(nl + '-- the wiring --')
   const serve = fs.readFileSync('serve-prod.js', 'utf8')
 
   t('the server route validates addresses before fetching', /url === '\/offexprice'[\s\S]{0,600}map\(normAddr\)\.filter\(Boolean\)/.test(serve))
-  t('and builds the URL only through gtMultiUrl', /fetch\(gtMultiUrl\(stale\)/.test(serve))
-  t('a failed call is not cached as "no price"', /A failed call caches NOTHING/.test(serve))
+  t('and asks both sources through fetchQuotes', /await fetchQuotes\(stale,/.test(serve))
+  t('a failed call is not cached as "no price"', /When BOTH sources fail, nothing is cached/.test(serve) && /if \(ok\) \{/.test(serve))
   t('dev serves the same route', /path === '\/offexprice'/.test(fs.readFileSync('vite.config.js', 'utf8')))
 
   // The seam: only real accounts, never state.addr raw.

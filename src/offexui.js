@@ -92,6 +92,10 @@ export function total() {
 const _open = new Set()   // expanded rows, by acct|token
 
 function icon(entry) {
+  // The live quote's image wins over the one saved with the holding: EAGLE was saved when
+  // the only source had no image for it, and would otherwise show a letter forever.
+  const q = quoteFor(entry.token)
+  if (q?.icon) entry = { ...entry, icon: q.icon }
   const letter = esc((entry.symbol || '?').slice(0, 1).toUpperCase())
   const fallback = `<span style="display:flex;width:100%;height:100%;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:var(--fg-2)">${letter}</span>`
   if (!entry.icon) return `<div class="mob-v-row-icon" style="padding:0;overflow:hidden;background:var(--panel-2)">${fallback}</div>`
@@ -116,6 +120,10 @@ function rowHtml(r, showAcct) {
     ...(showAcct ? [['Account', esc(r.label || short(r.acct))]] : []),
     ['Amount', ctx.prv(fmtSize(e.amount)) + ' ' + sym],
     ['Price', v.price != null ? '$' + fmtPrice(v.price) : 'No price yet'],
+    // Where the number came from, so a price that looks wrong can be checked — and so the
+    // deepest-pool rule is visible rather than taken on trust.
+    ...(quoteFor(e.token)?.src ? [['Priced from', esc([quoteFor(e.token).pool, quoteFor(e.token).src].filter(Boolean).join(' · '))
+      + (quoteFor(e.token).liq != null ? ` <span style="color:var(--muted)">($${fmtUSD(quoteFor(e.token).liq, 0)} liquidity)</span>` : '')]] : []),
     ['Value', ctx.prv(v.usd != null ? '$' + fmtUSD(v.usd, 2) : '—')],
     ...(e.cost != null ? [
       ['Cost', ctx.prv('$' + fmtUSD(e.cost, 2))],

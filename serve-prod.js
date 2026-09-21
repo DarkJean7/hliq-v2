@@ -9,7 +9,7 @@ import { join, extname, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coinGeckoUpgrade } from './src/iconpick.js'
 import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, parseSeries } from './src/extmarkets.js'
-import { gtMultiUrl, parseGtMulti, normAddr, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
+import { fetchQuotes, normAddr, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DIST      = join(__dirname, 'dist')
@@ -370,18 +370,21 @@ createServer((req, res) => {
       }
       if (stale.length) {
         try {
-          const r = await fetch(gtMultiUrl(stale), {
-            headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000),
+          // GeckoTerminal AND DexScreener, deepest pool wins — GeckoTerminal alone priced
+          // EAGLE from an empty pool 40% under its real market. See src/offex.js.
+          const { quotes: got, ok } = await fetchQuotes(stale, async (u) => {
+            const r = await fetch(u, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) })
+            if (!r.ok) throw new Error(String(r.status))
+            return r.json()
           })
-          if (r.ok) {
-            const got = parseGtMulti(await r.json())
+          if (ok) {
             for (const a of stale) {
               offexCache.set(a, { at: Date.now(), t: got[a] ?? null })
               if (got[a]) prices[a] = got[a]
             }
           }
-          // A failed call caches NOTHING: the next poll asks again rather than holding a
-          // "no price" for a minute because GeckoTerminal hiccupped once.
+          // When BOTH sources fail, nothing is cached: the next poll asks again rather than
+          // holding a "no price" for a minute because the price services hiccupped once.
         } catch { /* leave them out — the row shows a dash, which is the truth */ }
         if (offexCache.size > 2000) offexCache.clear()
       }
