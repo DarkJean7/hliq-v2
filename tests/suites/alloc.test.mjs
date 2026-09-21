@@ -37,6 +37,10 @@ const _watchSpotNameMap = null
 let _shownEquity = null
 const shownAccountValue = () => _shownEquity
 let _allAcctLastResults = []
+// Off-exchange holdings (src/offexui.js) are their own arc now. Empty unless a test sets it,
+// so every assertion below still describes a Hyperliquid-only account.
+let offexItems = []
+const _offexWheelItems = () => offexItems
 
 // Every helper the slice builder leans on, taken from the shipped source rather than
 // re-implemented — a copy of _orderMarginReported here would pass while the real one was
@@ -47,11 +51,11 @@ const body = NAMES.map(grab).join('\n') + '\nreturn { ' + NAMES.join(', ') + ' }
 const built = new Function(
   'state', '_posMarkPx', '_coinMaxLev', '_lbIsOutcome', '_ocSidePrice', '_spotMid',
   '_maHiddenLoad', '_allAcctLastResults', 'orderMarginByCoin', 'spotByCoin', 'SLICE_DUST',
-  'isSpotCoin', '_watchSpotNameMap', 'shownAccountValue', body)
+  'isSpotCoin', '_watchSpotNameMap', 'shownAccountValue', '_offexWheelItems', body)
 const call = () => built(
   new Proxy({}, { get: (_, k) => state[k] }), _posMarkPx, _coinMaxLev, _lbIsOutcome,
   _ocSidePrice, _spotMid, _maHiddenLoad, _allAcctLastResults,
-  orderMarginByCoin, spotByCoin, SLICE_DUST, isSpotCoin, _watchSpotNameMap, shownAccountValue)
+  orderMarginByCoin, spotByCoin, SLICE_DUST, isSpotCoin, _watchSpotNameMap, shownAccountValue, _offexWheelItems)
 const _allocationSlices = () => call()._allocationSlices()
 
 let pass = 0, fail = 0
@@ -371,6 +375,27 @@ console.log('\n-- a shared pane has to know which shell it is in --')
     t(`${fn} no longer hardcodes the mobile host`, !body.includes("getElementById('mobVContent')"))
   }
   t('why is written down', src.includes('renders as a phone mock-up'))
+}
+
+console.log('\n-- off-exchange tokens get an arc of their own --')
+{
+  // "Allocation is also missing the added manual spot tokens." They are drawn as a fifth
+  // bucket AFTER free margin is worked out, so free is still the remainder of the HYPERLIQUID
+  // headline and __allocParts().total still matches the account card.
+  state = {
+    perpState: { marginSummary: { accountValue: '1000', totalMarginUsed: '0' }, crossMarginSummary: { accountValue: '1000', totalMarginUsed: '0' }, withdrawable: '1000', assetPositions: [] },
+    spotState: { balances: [] }, openOrders: [], isAllAccounts: false,
+  }
+  _shownEquity = 1000
+  offexItems = [{ coin: 'NEST', offex: true, label: 'NEST', margin: 244.51, size: 12000, spotCost: 0, uPnl: 0, notional: 0, accts: new Set() }]
+  const w = _allocationSlices()
+  const ox = w.groups.find(g => g.kind === 'offex')
+  t('the holdings are an arc', !!ox && Math.abs(ox.value - 244.51) < 1e-9, JSON.stringify(w.groups.map(g => g.kind)))
+  t('free margin is still the Hyperliquid remainder', Math.abs(w.free - 1000) < 1e-9, w.free)
+  t('the ring totals both', Math.abs(w.total - 1244.51) < 1e-9, w.total)
+  t('and the Hyperliquid total is kept beside it', Math.abs(w.hlTotal - 1000) < 1e-9, w.hlTotal)
+  offexItems = []
+  t('with none, there is no arc and nothing changes', !_allocationSlices().groups.some(g => g.kind === 'offex'))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

@@ -199,6 +199,33 @@ console.log(NL + '-- privacy mode covers them --')
   await p.waitForTimeout(300)
 }
 
+console.log(NL + '-- the sheet, the badge and the wheel --')
+{
+  // "Remove the word NEST from the sentence explanation."
+  await p.evaluate(() => window.__offexAdd())
+  await waitFor(p, 'the sheet', () => document.getElementById('offexSheet')?.style.display === 'flex')
+  const hint = await p.evaluate(() => document.querySelector('#offexSheet')?.textContent ?? '')
+  ok('the address hint no longer names NEST', /A token in your HyperEVM wallet/.test(hint) && !/NEST, a token/.test(hint), hint.slice(0, 200))
+  // "Make the panel non-transparent." A photo backdrop makes --panel 55% alpha; the sheet
+  // layers it over --bg, which is opaque under every theme.
+  const bg = await p.evaluate(() => {
+    const cs = getComputedStyle(document.querySelector('#offexSheet [role="dialog"]'))
+    return { img: cs.backgroundImage, col: cs.backgroundColor }
+  })
+  ok('the sheet has a solid base under its tint', /gradient/.test(bg.img) && !/rgba\(0, 0, 0, 0\)|transparent/.test(bg.col), bg)
+  await p.evaluate(() => window.__offexClose())
+
+  // "In the tab name it displays the amount of spot tokens but is not counting manual spot."
+  // USDC plus NEST and EAGLE.
+  const badge = await p.evaluate(() => document.getElementById('mobSpotCount')?.textContent)
+  ok('the Spot tab badge counts the off-exchange tokens', badge === '3', badge)
+
+  // "Allocation is also missing the added manual spot tokens."
+  const parts = await p.evaluate(() => window.__allocParts())
+  ok('the wheel has an off-exchange arc', parts.offex > 900, parts)
+  ok('while its Hyperliquid total is unchanged', Math.abs(parts.total - (parts.used + parts.orders + parts.spot + parts.free)) < 0.01, parts)
+}
+
 console.log(NL + '-- editing and removing --')
 {
   await p.evaluate((a) => window.__offexEdit(a.toLowerCase(), '0x07c57e32a3c29d5659bda1d3efc2e7bf004e3035'), ADDR)
@@ -264,6 +291,35 @@ console.log(NL + '-- the desktop overview shows the same group --')
   ok('the overview Spot tab carries the off-exchange group', /Off-exchange/.test(g) && /NEST/.test(g), g.slice(0, 160))
   ok('priced the same way', g.includes('$244.51'), g.slice(0, 300))
   await dctx.close()
+}
+
+console.log(NL + '-- editing can move a holding to another account --')
+{
+  // "In edit is not letting me edit the account." The picker only appears with more than one
+  // account in view, which is the combined view — so enter it with two wallets.
+  const OTHER = '0x1111111111111111111111111111111111111111'
+  await p.evaluate(({ a, o, n }) => {
+    localStorage.setItem('savedWallets', JSON.stringify([{ addr: a, label: 'Main' }, { addr: o, label: 'Brrr' }]))
+    localStorage.setItem('hliq_offex_' + a.toLowerCase(), JSON.stringify([{ token: n, amount: 12000, symbol: 'NEST', note: 'locked on Nest', added: 1 }]))
+    localStorage.removeItem('hliq_offex_' + o.toLowerCase())
+  }, { a: ADDR, o: OTHER, n: NEST })
+  await p.evaluate(() => window.__goAllAccounts())
+  await waitFor(p, 'the combined view', () => !!window.__getTradeAcct?.(), 45000)
+
+  await p.evaluate((a) => window.__offexEdit(a.toLowerCase(), '0x07c57e32a3c29d5659bda1d3efc2e7bf004e3035'), ADDR)
+  await waitFor(p, 'the sheet', () => document.getElementById('offexSheet')?.style.display === 'flex')
+  const sel = await p.evaluate(() => { const s = document.getElementById('offexAcct'); return s ? { disabled: s.disabled, n: s.options.length } : null })
+  ok('the account picker is there while editing, and enabled', !!sel && sel.disabled === false && sel.n === 2, sel)
+
+  await p.selectOption('#offexAcct', OTHER.toLowerCase())
+  await p.click('#offexSave')
+  await waitFor(p, 'the sheet to close', () => document.getElementById('offexSheet')?.style.display === 'none')
+  const after = await p.evaluate(({ a, o }) => ({
+    main:  JSON.parse(localStorage.getItem('hliq_offex_' + a.toLowerCase()) || '[]'),
+    other: JSON.parse(localStorage.getItem('hliq_offex_' + o.toLowerCase()) || '[]'),
+  }), { a: ADDR, o: OTHER })
+  ok('the holding left the old account', after.main.length === 0, after.main)
+  ok('and arrived on the new one, note and all', after.other.length === 1 && after.other[0].amount === 12000 && after.other[0].note === 'locked on Nest', after.other)
 }
 
 if (errs.length) { fail++; console.log('  FAIL page errors → ' + JSON.stringify(errs.slice(0, 4))) }

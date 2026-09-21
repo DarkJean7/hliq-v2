@@ -263,7 +263,8 @@ import { initPro, selectPro, clearPro, proActive, proType, proButtonLabel, refre
          openProMenu, openProLearn, mountProFields, submitPro, stopAllChases } from './proticket.js'
 import { byId as _proById } from './protypes.js'
 import { initOffex, sectionHtml as _offexSectionHtml, total as _offexTotal,
-         balanceAdd as _offexBalanceAdd, countInBalance as _offexInBal } from './offexui.js'
+         balanceAdd as _offexBalanceAdd, countInBalance as _offexInBal,
+         count as _offexCount, wheelItems as _offexWheelItems } from './offexui.js'
 
 /**
  * Brightness, as a layer over the app rather than a filter on <html>.
@@ -1327,6 +1328,9 @@ function _updateMobTabCounts(posCount, ordCount) {
         .forEach(r => (r.spotBalances ?? []).forEach(b => coins.add(b.coin)))
       spCount = coins.size
     }
+    // Off-exchange tokens are Spot-tab rows too, so they count: "in the tab name it displays
+    // the amount of spot tokens but is not counting manual spot added".
+    spCount += _offexCount()
     mobSpot.textContent = spCount
     mobSpot.style.display = spCount > 0 ? '' : 'none'
   }
@@ -3624,10 +3628,15 @@ const _ALLOC_FREE_COLOR = '#2775CA'
 const _ALLOC_ORD_COLOR  = '#7FA9DC'
 const _ALLOC_POS_COLOR  = '#7B61FF'
 const _ALLOC_SPOT_COLOR = '#2EC5CE'
+// Tokens held outside Hyperliquid (src/offexui.js). A warm colour, deliberately unlike the
+// four Hyperliquid buckets, because it is a different kind of money: typed in, priced from a
+// DEX pool, and not something this account can margin or withdraw.
+const _ALLOC_OFFEX_COLOR = '#E0A43B'
 const _ALLOC_GROUP = {
   positions: { color: _ALLOC_POS_COLOR,  en: 'In positions', es: 'En posiciones' },
   orders:    { color: _ALLOC_ORD_COLOR,  en: 'In orders',    es: 'En órdenes' },
   spot:      { color: _ALLOC_SPOT_COLOR, en: 'Spot',         es: 'Spot' },
+  offex:     { color: _ALLOC_OFFEX_COLOR, en: 'Off-exchange', es: 'Fuera del exchange' },
   free:      { color: _ALLOC_FREE_COLOR, en: 'Free margin',  es: 'Margen libre' },
 }
 const _allocGroupColor = g => _ALLOC_GROUP[g.kind]?.color ?? 'var(--muted)'
@@ -3640,6 +3649,7 @@ const _allocGroupSub = (g) => {
   const n = g.items.length
   if (g.kind === 'free')  return _T('Available to trade', 'Disponible para operar')
   if (g.kind === 'spot')  return n + ' ' + (n === 1 ? _T('token', 'token') : _T('tokens', 'tokens'))
+  if (g.kind === 'offex') return n + ' ' + (n === 1 ? _T('token', 'token') : _T('tokens', 'tokens')) + ' · ' + _T('held outside Hyperliquid', 'fuera de Hyperliquid')
   if (g.kind === 'orders') {
     const c = g.items.reduce((a, x) => a + (x.count ?? 0), 0)
     return c
@@ -3651,7 +3661,7 @@ const _allocGroupSub = (g) => {
 // An item inside a group: a coin, a token, or the one unattributed order row.
 const _allocItemLabel = (it) => it.unattributed
   ? _T('Not yet attributed', 'Sin asignar todavía')
-  : _ocCoinLabel(it.coin)
+  : it.offex ? it.label : _ocCoinLabel(it.coin)
 
 /**
  * Price for anything that can sit on the spot side.
@@ -3864,10 +3874,20 @@ function _allocationSlices() {
   // So the arcs are the four places money can be, and the assets live inside them — each
   // group opens to its own rows. Free margin is pinned last: it is not a commitment, and
   // keeping it at the end stops it reshuffling the others as cash moves.
+  // ── off-exchange holdings ───────────────────────────────────────────────────
+  //
+  // "Allocation is also missing the added manual spot tokens." They are money you have, so
+  // they get an arc of their own — AFTER the four above, so `free` (the remainder against the
+  // Hyperliquid headline) is still worked out on Hyperliquid money only. The ring's total is
+  // everything; the centre names the Hyperliquid part separately so it can still be checked.
+  const offexRows = _offexWheelItems()
+  const offex = offexRows.reduce((s, h) => s + h.margin, 0)
+
   const groups = [
     { kind: 'positions', value: used,   items: posRows  },
     { kind: 'orders',    value: orders, items: ordRows  },
     { kind: 'spot',      value: spot,   items: spotRows },
+    { kind: 'offex',     value: offex,  items: offexRows },
     { kind: 'free',      value: free,   items: []       },
   ].filter(g => g.value > SLICE_DUST)
 
@@ -3875,8 +3895,9 @@ function _allocationSlices() {
   // ring that is 100% one grey slice — but a wallet holding only spot, or only resting
   // orders, DOES have something to show and used to get the empty state anyway.
   return {
-    groups, total: used + orders + spot + free,
-    used, orders, spot, free,
+    groups, total: used + orders + spot + free + offex,
+    hlTotal: used + orders + spot + free,
+    used, orders, spot, free, offex,
     hasAny: groups.some(g => g.kind !== 'free'),
   }
 }
@@ -3885,8 +3906,10 @@ function _allocationSlices() {
 // meet inside the renderer — clearinghouse state, open orders, spot balances and mids — so
 // there is nothing else to assert "it adds up to the account" against.
 window.__allocParts = () => {
-  const { total, used, orders, spot, free } = _allocationSlices()
-  return { total, used, orders, spot, free }
+  // `total` stays the HYPERLIQUID total — it is what tests/allocation-browser.mjs checks
+  // against the account card. Off-exchange value is reported beside it, not inside it.
+  const { hlTotal, used, orders, spot, free, offex } = _allocationSlices()
+  return { total: hlTotal, used, orders, spot, free, offex }
 }
 
 // How much of the coin a row is: "41.83 HYPE". Empty where there is no coin to count — cash,
@@ -3894,7 +3917,7 @@ window.__allocParts = () => {
 // the same number twice.
 function _allocSizeTxt(s) {
   if (!(s?.size > 0) || s.unattributed) return ''
-  return fmtSize(s.size) + ' ' + _ocCoinLabel(s.coin)
+  return fmtSize(s.size) + ' ' + (s.offex ? s.label : _ocCoinLabel(s.coin))
 }
 
 // Hover/tap state for the allocation wheel: the slice list plus the default centre readout to
@@ -4108,18 +4131,17 @@ function _mobVRenderAllocation(el) {
   // outgrew the hole: "$2,776.04 in orders" wrapped and the last line ran under the ring. They
   // are on the four cards immediately below, each with its share, which is where a number you
   // want to read rather than glance at belongs.
+  // With off-exchange tokens in the ring, the big number is everything the ring draws and
+  // the line under it is the Hyperliquid part — the figure that matches the account card, so
+  // the two can still be checked against each other.
+  const _oxGroup = groups.find(g => g.kind === 'offex')
+  const _oxUsd   = _oxGroup?.value ?? 0
+  const _oxTot   = _offexTotal()
   _allocCenterHtml = `
-    <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${_T('Total equity', 'Patrimonio total')}</div>
-    <div style="font-size:27px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv('$' + fmtUSD(total, 2))}</div>
-    ${assetCount ? `<div style="font-size:11.5px;color:var(--muted)">${assetCount} asset${assetCount === 1 ? '' : 's'} · ${_prv('$' + fmtUSD(totalNotional))} ${_T('position value', 'valor de posición')}</div>` : ''}
-    ${(() => {
-      // Off-exchange holdings are NOT a slice of this wheel — the wheel is the Hyperliquid
-      // account, to the cent. They get one line of their own under it, as a separate figure.
-      const ox = _offexTotal()
-      return ox.count && ox.usd > 0
-        ? `<div style="font-size:11.5px;color:var(--muted)">${_T('incl. off-exchange', 'incl. fuera del exchange')} ${_prv('$' + fmtUSD(total + ox.usd, 2))}${ox.complete ? '' : ' *'}</div>`
-        : ''
-    })()}`
+    <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${_oxUsd > 0 ? _T('Total incl. off-exchange', 'Total incl. fuera del exchange') : _T('Total equity', 'Patrimonio total')}</div>
+    <div style="font-size:27px;font-weight:800;font-family:var(--font-mono);line-height:1.15">${_prv('$' + fmtUSD(total, 2))}${_oxUsd > 0 && !_oxTot.complete ? '<span style="font-size:14px;color:var(--muted)"> *</span>' : ''}</div>
+    ${_oxUsd > 0 ? `<div style="font-size:11.5px;color:var(--muted)">${_prv('$' + fmtUSD(total - _oxUsd, 2))} ${_T('on Hyperliquid', 'en Hyperliquid')} · ${_prv('$' + fmtUSD(_oxUsd, 2))} ${_T('off-exchange', 'fuera')}</div>` : ''}
+    ${assetCount ? `<div style="font-size:11.5px;color:var(--muted)">${assetCount} asset${assetCount === 1 ? '' : 's'} · ${_prv('$' + fmtUSD(totalNotional))} ${_T('position value', 'valor de posición')}</div>` : ''}`
 
   const wheel = `
     <div style="display:flex;justify-content:center;padding:18px 12px 6px">
@@ -4172,16 +4194,23 @@ function _mobVRenderAllocation(el) {
     }
     // PnL only where there is a result: an order reserve has none, and a spot holding
     // transferred in rather than bought has no cost basis to measure against.
-    const showPnl = g.kind === 'positions' || (g.kind === 'spot' && it.spotCost > 0)
+    const showPnl = g.kind === 'positions' || ((g.kind === 'spot' || g.kind === 'offex') && it.spotCost > 0)
+    // An off-exchange token draws its own icon: its symbol may also be the name of some
+    // unrelated Hyperliquid listing, whose logo would be the wrong one.
+    const _ico = it.unattributed ? ''
+      : it.offex
+        ? (it.icon ? `<img src="${esc(it.icon)}" alt="" style="width:100%;height:100%;object-fit:cover">`
+                   : `<span style="display:flex;width:100%;height:100%;align-items:center;justify-content:center;font-weight:800;font-size:12px">${esc(String(it.label).slice(0, 1))}</span>`)
+        : _coinIconHtml(it.coin)
     return `<div class="mob-v-row" style="padding-left:30px">
-      <div style="width:26px;height:26px;border-radius:50%;overflow:hidden;background:var(--panel-2);flex-shrink:0;margin-right:10px">${it.unattributed ? '' : _coinIconHtml(it.coin)}</div>
+      <div style="width:26px;height:26px;border-radius:50%;overflow:hidden;background:var(--panel-2);flex-shrink:0;margin-right:10px">${_ico}</div>
       <div class="mob-v-row-info">
         <div class="mob-v-row-name">${esc(_allocItemLabel(it))}</div>
         <div class="mob-v-row-sub">${sub}</div>
       </div>
       <div class="mob-v-row-right">
         <div class="mob-v-row-val">${_prv('$' + fmtUSD(it.margin, 2))}</div>
-        ${showPnl ? `<div class="mob-v-row-pct ${cls}">${it.uPnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(it.uPnl))}</div>`
+        ${showPnl ? `<div class="mob-v-row-pct ${cls}">${_prv((it.uPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(it.uPnl)))}</div>`
                   : `<div class="mob-v-row-pct" style="color:var(--muted)">${((it.margin / total) * 100).toFixed(1)}%</div>`}
       </div>
     </div>`

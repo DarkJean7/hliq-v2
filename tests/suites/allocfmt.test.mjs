@@ -56,7 +56,9 @@ for (const [what, needle] of [
   ['a position row\'s value',        "Value ${_prv('$' + fmtUSD(it.notional, 2))}"],
   ['an order row\'s notional',       "${_T('Notional', 'Nocional')} ${_prv('$' + fmtUSD(it.notional, 2))}"],
 ]) t(what + ' has one', cli.includes(needle))
-t('and so does an asset row\'s PnL', /\$\{it\.uPnl >= 0 \? '\+' : '-'\}\$\$\{fmtUSD/.test(cli))
+// The row's PnL now goes through the privacy mask, which is why it is spelled as a string
+// concatenation rather than a template — it still carries its "$".
+t('and so does an asset row\'s PnL', cli.includes("_prv((it.uPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(it.uPnl)))"))
 
 // The bug was bare fmtUSD calls, so assert none are left in the rendered strings.
 const bare = [...render.matchAll(/\$\{_prv\(fmtUSD\(/g)].length +

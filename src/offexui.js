@@ -80,6 +80,44 @@ export function rows() {
   return out.sort((x, y) => (y.value.usd ?? -1) - (x.value.usd ?? -1))
 }
 
+/** How many holdings are in view — the Spot tab badges add this to the Hyperliquid tokens. */
+export function count() { return rows().length }
+
+/**
+ * The holdings as allocation-wheel items: priced ones only, since an arc has to have a size.
+ * The shape matches the wheel's spot rows so the renderer draws both the same way; `offex`
+ * marks them so it can label and icon them from the holding rather than from a HL coin name
+ * — "NEST" the HyperEVM token is not whatever Hyperliquid lists under that name.
+ */
+export function wheelItems() {
+  const by = new Map()
+  for (const r of rows()) {
+    if (r.value.usd == null || !(r.value.usd > 0)) continue
+    const q   = quoteFor(r.entry.token)
+    const key = r.entry.token
+    const it  = by.get(key) ?? {
+      coin: r.entry.symbol || r.entry.token, offex: true, token: key,
+      label: r.entry.symbol || (key.slice(0, 6) + '…' + key.slice(-4)),
+      icon: q?.icon ?? r.entry.icon ?? null,
+      margin: 0, px: r.value.price, size: 0, spotCost: 0, uPnl: 0, notional: 0,
+      longs: 0, shorts: 0, accts: new Set(), _costKnown: true,
+    }
+    it.margin += r.value.usd
+    it.size   += r.entry.amount
+    if (r.entry.cost != null) it.spotCost += r.entry.cost
+    else it._costKnown = false
+    if (r.label) it.accts.add(r.label)
+    by.set(key, it)
+  }
+  return [...by.values()].map(it => {
+    // PnL only when EVERY holding of the token has a cost — a partial basis would call the
+    // uncosted part pure profit.
+    if (!it._costKnown) it.spotCost = 0
+    it.uPnl = it.spotCost > 0 ? it.margin - it.spotCost : 0
+    return it
+  }).sort((a, b) => b.margin - a.margin)
+}
+
 /** The group's total. `complete: false` when any holding has no price — the sum is a floor. */
 export function total() {
   const r = rows()
@@ -271,16 +309,19 @@ export function openSheet(acct = null, token = null) {
   _sheet = { acct: owner, token: existing?.token ?? null }
 
   const ov = sheetEl()
-  ov.innerHTML = `<div role="dialog" aria-label="Off-exchange token" style="width:min(520px,100%);max-height:90vh;overflow-y:auto;background:var(--panel);border:1px solid var(--border);border-radius:18px 18px 0 0;padding:20px 18px calc(20px + env(safe-area-inset-bottom))">
+  // Solid, not --panel alone: with a photo backdrop --panel is 55% alpha, and the Spot rows
+  // showed straight through the form. --bg stays opaque under every theme, and the panel tint
+  // is layered over it so the sheet still reads as a raised surface.
+  ov.innerHTML = `<div role="dialog" aria-label="Off-exchange token" style="width:min(520px,100%);max-height:90vh;overflow-y:auto;background:linear-gradient(var(--panel),var(--panel)),var(--bg);border:1px solid var(--border);border-radius:18px 18px 0 0;padding:20px 18px calc(20px + env(safe-area-inset-bottom))">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <div style="font-size:17px;font-weight:800">${existing ? 'Edit' : 'Add'} off-exchange token</div>
       <button onclick="window.__offexClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">&times;</button>
     </div>
     ${field('Contract address (HyperEVM)',
       `<input id="offexToken" style="${inputCss};font-family:var(--font-mono);font-size:12.5px" placeholder="0x…" value="${esc(existing?.token ?? '')}" ${existing ? 'readonly' : ''} spellcheck="false" autocomplete="off">`,
-      'NEST, a token in your HyperEVM wallet, anything with a contract address.')}
+      'A token in your HyperEVM wallet, or anything else with a contract address.')}
     <div id="offexLookup" style="font-size:12.5px;margin:-4px 0 12px;min-height:18px"></div>
-    ${accts.length > 1 ? field('Account', `<select id="offexAcct" style="${inputCss}" ${existing ? 'disabled' : ''}>${accts.map(a => `<option value="${esc(a.addr)}" ${a.addr === owner ? 'selected' : ''}>${esc(a.label || short(a.addr))}</option>`).join('')}</select>`) : ''}
+    ${accts.length > 1 ? field('Account', `<select id="offexAcct" style="${inputCss}">${accts.map(a => `<option value="${esc(a.addr)}" ${a.addr === owner ? 'selected' : ''}>${esc(a.label || short(a.addr))}</option>`).join('')}</select>`) : ''}
     ${field('Amount you hold', `<input id="offexAmount" type="number" inputmode="decimal" step="any" min="0" style="${inputCss}" value="${existing ? esc(String(existing.amount)) : ''}" placeholder="0">`,
       'Locked or staked tokens too — a lock does not show up as a wallet balance, so it is typed here.')}
     ${field('What you paid, in USD (optional)', `<input id="offexCost" type="number" inputmode="decimal" step="any" min="0" style="${inputCss}" value="${existing?.cost != null ? esc(String(existing.cost)) : ''}" placeholder="leave blank if unknown">`,
@@ -330,11 +371,15 @@ function save() {
   const amount = parseFloat(document.getElementById('offexAmount')?.value)
   if (!(amount > 0)) return say('Enter how much you hold.')
   const acctSel = document.getElementById('offexAcct')
-  const acct = normAddr(acctSel && !acctSel.disabled ? acctSel.value : _sheet.acct)
+  const acct = normAddr(acctSel ? acctSel.value : _sheet.acct)
   if (!acct) return say('Pick an account.')
   const q = quoteFor(token)
   const store = ctx.store()
-  const prev = loadHoldings(store, acct).find(e => e.token === token)
+  // Editing may MOVE the holding to another account. `from` is where it lives now; it is
+  // read from there so the note, cost and date travel with it.
+  const from = _sheet.token ? _sheet.acct : acct
+  const prev = loadHoldings(store, from).find(e => e.token === token)
+    ?? loadHoldings(store, acct).find(e => e.token === token)
   const entry = {
     token, amount,
     cost: document.getElementById('offexCost')?.value ?? '',
@@ -347,7 +392,10 @@ function save() {
     added:  prev?.added ?? Date.now(),
   }
   try {
+    // Write the new home first, then take it out of the old one — so a failure part-way
+    // leaves the holding in two accounts for a moment rather than in none.
     saveHoldings(store, acct, upsertHolding(loadHoldings(store, acct), entry))
+    if (from !== acct) saveHoldings(store, from, removeHolding(loadHoldings(store, from), token))
   } catch (e) { return say(e.message) }
   closeSheet()
   try { ctx.rerender() } catch {}
@@ -371,6 +419,7 @@ if (typeof window !== 'undefined') {
   // render.js builds the desktop headline and cannot import this module's state, so it reads
   // the figure through a bridge, as it already does for the spot and outcome bodies.
   window.__offexBalanceAdd  = () => balanceAdd()
+  window.__offexCount       = () => count()
   window.__offexToggle = (id) => {
     _open.has(id) ? _open.delete(id) : _open.add(id)
     try { ctx.rerender() } catch {}

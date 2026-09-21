@@ -1398,7 +1398,11 @@ window.__ovSetRange = function(label) {
 
 // Outcome (prediction) holdings live in main.js — access via window bridges.
 function _ovOcCount() { return (typeof window !== 'undefined' && window.__ovOutcomeHoldings) ? window.__ovOutcomeHoldings().length : 0 }
-function _ovSpotCount() { return (typeof window !== 'undefined' && window.__ovSpotHoldings) ? window.__ovSpotHoldings().length : 0 }
+// Off-exchange tokens are rows in the same tab, so they count toward its number too.
+function _ovSpotCount() {
+  if (typeof window === 'undefined') return 0
+  return (window.__ovSpotHoldings ? window.__ovSpotHoldings().length : 0) + (window.__offexCount ? window.__offexCount() : 0)
+}
 function _ovTabBody(tab) {
   if (tab === 'orders')   return _ovOrdBody
   if (tab === 'outcomes') return (typeof window !== 'undefined' && window.__ovBuildOcBody) ? window.__ovBuildOcBody() : `<div class="ov-empty">No outcome positions</div>`
