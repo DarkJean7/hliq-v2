@@ -2507,6 +2507,13 @@ export function calDayClick(key, rootId) {
   // Every transfer that day — the same set the Transfers tab lists, not just the ones that
   // move money in or out, or the calendar hides activity the other tab shows.
   const txEntries = dayLedger.filter(e => e?.delta).sort((a, b) => a.time - b.time)
+  // How much moved that day, whichever way — the sum of the amounts the rows below print, so
+  // the pill and the list add up. Direction is already in the Deposited / Withdrawn pills; a
+  // spot ↔ perp move has neither, and this is the only place its size shows at the top.
+  const txTotal = txEntries.reduce((s, e) => {
+    const v = ledgerAmount(e, ledgerOwner(e, cache.owner))
+    return s + (Number.isFinite(v) ? Math.abs(v) : 0)
+  }, 0)
 
   const tradesHtml = trades.length ? `
     <div class="cal-detail-section">
@@ -2584,7 +2591,7 @@ export function calDayClick(key, rootId) {
         ${trades.length ? `<span class="cal-detail-pill neu">${trades.length} trade${trades.length !== 1 ? 's' : ''}</span>` : ''}
         ${(data?.deposited ?? 0) > 0 ? `<span class="cal-detail-pill pos">Deposited +$${fmtUSD(data.deposited)}</span>` : ''}
         ${(data?.withdrawn ?? 0) > 0 ? `<span class="cal-detail-pill neg">Withdrawn -$${fmtUSD(data.withdrawn)}</span>` : ''}
-        ${txEntries.length ? `<span class="cal-detail-pill neu">${txEntries.length} transfer${txEntries.length !== 1 ? 's' : ''}</span>` : ''}
+        ${txEntries.length ? `<span class="cal-detail-pill neu">${txEntries.length} transfer${txEntries.length !== 1 ? 's' : ''} · $${fmtUSD(txTotal)}</span>` : ''}
       </div>
       <button class="cal-detail-close" onclick="window.__calDayClick('${key}','${rootId || ''}')">✕</button>
     </div>

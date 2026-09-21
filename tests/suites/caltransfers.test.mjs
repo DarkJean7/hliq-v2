@@ -106,6 +106,8 @@ console.log(nl + '-- tapping the day lists them the way the Transfers tab does -
   t('and signed as money out', d.includes('-$18.81') && d.includes('-$178.40') && d.includes('-$9.35'))
   t('none of them claims to be a deposit', !/Deposit/.test(d))
   t('the day says how many there were', d.includes('3 transfers'))
+  // ...and how much moved, at the top where the PnL is — the sum of the rows below it.
+  t('and how much they came to', d.includes('3 transfers · $206.56'), d.match(/cal-detail-pill neu">[^<]*/g))
 
   el('calDet').dataset.activeKey = ''
   calDayClick('2026-09-18', 'calRoot')
@@ -114,6 +116,8 @@ console.log(nl + '-- tapping the day lists them the way the Transfers tab does -
   el('calDet').dataset.activeKey = ''
   calDayClick('2026-09-16', 'calRoot')
   t('a spot ↔ perp move is listed by name', el('calDet').innerHTML.includes('Spot ↔ Perp'))
+  // It has no Deposited or Withdrawn pill, so the transfers pill is the only place its size shows.
+  t('and its size shows in the header', el('calDet').innerHTML.includes('1 transfer · $300.00'))
 }
 
 console.log(nl + '-- the combined views --')
