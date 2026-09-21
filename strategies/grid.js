@@ -26,7 +26,8 @@ import { ExchangeClient, InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { ethers }    from 'ethers'
 import { parseArgs } from 'node:util'
 import { isPaused, onPause, onResume } from './_pause.js'
-import { botCloid } from '../src/cloid.js'
+import { botCloid, cloidBot } from '../src/cloid.js'
+import { orderMargin, isEntry, capPlan, fitsCap } from '../src/gridcap.js'
 
 // ─── CLI ARGS ─────────────────────────────────────────────────────────────────
 const { values: args } = parseArgs({
@@ -238,7 +239,10 @@ async function snapshotOrders() {
       const d = Math.abs(PRICES[i] - px)
       if (d < bestDist) { bestDist = d; best = i }
     }
-    const fEntry = { oid, side: o.side === 'B' ? 'buy' : 'sell', px, sz: parseFloat(o.sz), reduceOnly: !!(o.reduceOnly ?? o.isReduceOnly) }
+    const fEntry = { oid, side: o.side === 'B' ? 'buy' : 'sell', px, sz: parseFloat(o.sz), reduceOnly: !!(o.reduceOnly ?? o.isReduceOnly),
+                     // Which bot placed it, from its client order id — 'grid' for this bot's own
+                     // orders, null for a manual one. See src/gridcap.js for why it matters.
+                     bot: cloidBot(o.cloid) }
     if (best === -1 || bestDist > gapAt(best) * 0.4) {
       // Not a grid order for the current range (manual order, or leftover from a
       // previous run with a different range). Tracked so loss-making leftover
@@ -446,6 +450,18 @@ async function reconcile() {
   const exitSide  = IS_SHORT ? 'buy'  : 'sell'
   const entrySide = IS_SHORT ? 'sell' : 'buy'
 
+  // ── ORPHANED ENTRIES ───────────────────────────────────────────────────────────
+  // An entry THIS bot placed that no longer sits on a level is left over from a previous run:
+  // a restart re-centres the grid, the old ladder stops matching, and the new run places its
+  // own on top — two ladders against one margin cap. On 2026-09-21 that took a $100-capped
+  // ADA short to $147. Cancelled on sight. Entries a person placed by hand are left alone.
+  for (const e of foreign) {
+    if (e.bot === 'grid' && isEntry(e, IS_SHORT)) {
+      await cancelOid(e.oid, `${e.side} @ $${e.px} left over from a previous run — the current grid places its own`)
+      e.cancelled = true
+    }
+  }
+
   // ── PROFIT GATE ──────────────────────────────────────────────────────────────
   // Never close at a loss: cancel any resting exit (current grid level OR a
   // leftover order from a previous run) that would close vs the average entry
@@ -541,11 +557,39 @@ async function reconcile() {
     }
   }
 
+  // ── MARGIN CAP: budget what is COMMITTED, not just what is used ─────────────────
+  // The position's margin plus every resting order that would add to it. The old check read
+  // the position alone, so a ladder placed while the position was small filled later and
+  // walked straight through the cap. Over budget, this bot's own entries are cancelled
+  // farthest-from-mark first; a manual entry on the same coin counts but is never cancelled.
+  let capHeadroom = Infinity
+  let capCommitted = null
+  if (TOTAL_MARGIN > 0 && !stopEntries) {
+    const own = [...levelOrders.entries()]
+      .filter(([, e]) => e.side === entrySide && e.oid !== 'pending')
+      .map(([levelIdx, e]) => ({ ...e, levelIdx }))
+    const others = foreign.filter(e => !e.cancelled && e.bot !== 'grid' && isEntry(e, IS_SHORT))
+    const plan = capPlan({ cap: TOTAL_MARGIN, leverage: LEVERAGE, posMargin: posMarginUsed, own, others, markPx })
+    for (const e of plan.cancel) {
+      await cancelOid(e.oid, `resting entries would take margin past the $${TOTAL_MARGIN.toFixed(2)} cap — not adding to position`)
+      levelOrders.delete(e.levelIdx)
+    }
+    capHeadroom  = plan.headroom
+    capCommitted = plan.committed
+  }
+
   // ── ENTRIES ──────────────────────────────────────────────────────────────────
   // Long: a buy at every level below mark. Short: a sell at every level above.
   // A level is skipped while its lot's exit (one level past it) is still open —
   // this is what prevents re-entering a level right after its fill.
-  for (let i = 0; !stopEntries && i < PRICES.length; i++) {
+  // Nearest the mark first, so when the cap leaves room for only some levels it is the ones
+  // price reaches first that get it. (A long's entries are below the mark, so its nearest is
+  // the HIGHEST index — the loop used to walk them farthest-first.)
+  const entryIdxs = [...PRICES.keys()]
+  if (!IS_SHORT) entryIdxs.reverse()
+  let capSkipped = 0
+  for (const i of entryIdxs) {
+    if (stopEntries) break
     const eligible = IS_SHORT
       ? PRICES[i] > markPx + gapAt(i) * 0.5
       : PRICES[i] < markPx - gapAt(i) * 0.5
@@ -564,9 +608,15 @@ async function reconcile() {
     if (open || blocked || placed >= MAX_PLACE_PER_CYCLE) continue
     if (Date.now() < _marginBackoffUntil) continue   // margin exhausted — don't spam
 
+    const entrySz = entrySzAt(i, szDecimals)
+    const entryM  = orderMargin({ sz: entrySz, px: PRICES[i] }, LEVERAGE)
+    if (!fitsCap({ cap: TOTAL_MARGIN, headroom: capHeadroom, margin: entryM })) { capSkipped++; continue }
+
     try {
-      await placeOrder(i, entrySide, entrySzAt(i, szDecimals), false)
+      await placeOrder(i, entrySide, entrySz, false)
       levelOrders.set(i, { oid: 'pending', side: entrySide, px: PRICES[i], sz: 0 })
+      capHeadroom -= entryM
+      if (capCommitted != null) capCommitted += entryM
       placed++
     } catch (e) {
       const msg = e.message ?? ''
@@ -589,7 +639,12 @@ async function reconcile() {
     ? `  | holding ${uncovered.toFixed(2)} (no profitable exit vs avg $${avgEntry.toFixed(5)})`
     : ''
   const healthStr = inventory > 0 ? ` | health ${healthPct.toFixed(1)}%${stopEntries ? ' (adds paused — sell only)' : ''}` : ''
-  log('SCAN', `mark $${markPx} | inv ${inventory.toFixed(4)} ${COIN} ${IS_SHORT ? 'short' : 'long'}${healthStr} | ${liveBuys} buys / ${liveSells} sells | realized P&L: ${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(4)}${held}`)
+  // What the cap is measuring, every scan — so a log shows the committed figure, not just the
+  // used one, and a level held back for budget is visible rather than silently missing.
+  const capStr = TOTAL_MARGIN > 0 && capCommitted != null
+    ? ` | margin committed $${capCommitted.toFixed(2)} / cap $${TOTAL_MARGIN.toFixed(2)}${capSkipped ? ` (${capSkipped} level${capSkipped === 1 ? '' : 's'} held back)` : ''}`
+    : ''
+  log('SCAN', `mark $${markPx} | inv ${inventory.toFixed(4)} ${COIN} ${IS_SHORT ? 'short' : 'long'}${healthStr}${capStr} | ${liveBuys} buys / ${liveSells} sells | realized P&L: ${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(4)}${held}`)
 }
 
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
