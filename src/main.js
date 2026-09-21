@@ -8690,6 +8690,20 @@ function _allAcctMerge(fresh, prev) {
       // Heavy-refresh values go through the same guard (a glitched portfolio value would
       // otherwise land straight on the card and the total).
       r.accountValue = _acctEqFilter(r.addr, parseFloat(r.accountValue ?? 0))
+      // A fresh fetch does not carry the ledger — that arrives in the enrichment pass a
+      // moment later. Taking the fresh row as-is dropped the wallet's transfers on EVERY
+      // background refresh, so the combined ledger went back to null, the calendar redrew
+      // without a single transfer, and the enrichment put them all back: "the calendar seems
+      // like it's destroying and rebuilding — the transfer data sometimes disappears and
+      // appears". Net Deposited blinked with it, since totalDeposited is a placeholder 0 on a
+      // fresh row. Not fetched yet is not the same as none: keep what we already had until
+      // the enrichment replaces it.
+      const was = prevByAddr.get(r.addr.toLowerCase())
+      if (was && !Array.isArray(r.ledgerEntries) && Array.isArray(was.ledgerEntries)) {
+        r.ledgerEntries  = was.ledgerEntries
+        r.totalDeposited = was.totalDeposited
+        r.totalWithdrawn = was.totalWithdrawn
+      }
       out.push(r); continue
     }
     const stale = prevByAddr.get(r.addr.toLowerCase())

@@ -123,8 +123,10 @@ console.log(nl + '-- tapping the day lists them the way the Transfers tab does -
   t('and signed as money out', d.includes('-$18.81') && d.includes('-$178.40') && d.includes('-$9.35'))
   t('none of them claims to be a deposit', !/Deposit/.test(d))
   t('the day says how many there were', d.includes('3 transfers'))
-  // ...and how much moved, at the top where the PnL is — the sum of the rows below it.
-  t('and how much they came to', d.includes('3 transfers · $206.56'), d.match(/cal-detail-pill neu">[^<]*/g))
+  // The amount is already in the Withdrawn pill beside it. Printing it twice was reported:
+  // "we dont need to display two times the amount withdrawn".
+  t('the Withdrawn pill carries the amount', d.includes('Withdrawn -$206.56'))
+  t('and the transfers pill does not repeat it', !/transfers · \$206\.56/.test(d), d.match(/cal-detail-pill neu">[^<]*/g))
 
   el('calDet').dataset.activeKey = ''
   calDayClick('2026-09-18', 'calRoot')
@@ -134,7 +136,28 @@ console.log(nl + '-- tapping the day lists them the way the Transfers tab does -
   calDayClick('2026-09-16', 'calRoot')
   t('a spot ↔ perp move is listed by name', el('calDet').innerHTML.includes('Spot ↔ Perp'))
   // It has no Deposited or Withdrawn pill, so the transfers pill is the only place its size shows.
-  t('and its size shows in the header', el('calDet').innerHTML.includes('1 transfer · $300.00'))
+  t('and its size shows in the header', el('calDet').innerHTML.includes('1 transfer · $300.00 spot ↔ perp'))
+}
+
+console.log(nl + '-- rewards are not transfers --')
+{
+  // Reported: "rewards appears as transfers". The ledger carries more than transfers, and
+  // the calendar was listing all of it under that heading.
+  const reward = { time: day(12), delta: { type: 'rewardsClaim', amount: '4.20', token: 'USDC' } }
+  const liq    = { time: day(12), delta: { type: 'liquidation', accountValue: '10', leverageType: 'Cross', liquidatedPositions: [] } }
+  const moved  = send(11, THEM, 12)
+  renderPnLCalendar([], 8, 2026, [reward, liq, moved], 'rwRoot', 'rwNav', 'rwDet', ME)
+  const bd = el('rwRoot')._calData.byDay['2026-09-12']
+  t('only the send counts as a transfer', bd?.transfers === 1, bd)
+  el('rwDet').dataset.activeKey = ''
+  calDayClick('2026-09-12', 'rwRoot')
+  const html = el('rwDet').innerHTML
+  t('the day panel does not list the reward', !/Rewards/.test(html) && !html.includes('4.20'), html.match(/badge[^>]*>[^<]*/g))
+  t('or the liquidation', !/Liquidation/.test(html))
+  t('and says one transfer', html.includes('1 transfer<'))
+
+  renderPnLCalendar([], 8, 2026, [reward], 'rw2Root', 'rw2Nav', 'rw2Det', ME)
+  t('a day with only a reward has no transfer marker', !el('rw2Root').innerHTML.includes('⇄'))
 }
 
 console.log(nl + '-- the combined views --')
@@ -156,6 +179,28 @@ console.log(nl + '-- the combined views --')
   t('every single-account calendar passes its owner',
     calls.filter(c => c.includes('state.ledger') || c.includes(', ledger,')).every(c => c.includes('state.addr)')),
     calls.filter(c => !c.includes('state.addr)') && !c.includes('allLedger')))
+}
+
+console.log(nl + '-- a background refresh does not wipe the transfers --')
+{
+  // Reported: "the calendar seems like it's destroying and rebuilding — the transfer data
+  // sometimes disappears and appears". A fresh per-wallet fetch carries no ledger; the
+  // enrichment pass adds it a moment later. The merge took the fresh row as-is, so every
+  // refresh set the combined ledger back to null and the calendar redrew without transfers.
+  const main = fs.readFileSync('src/main.js', 'utf8')
+  const src  = main.slice(main.indexOf('function _allAcctMerge('), main.indexOf('async function _allAcctCacheLoad'))
+  const merge = new Function('_acctEqFilter', src + '; return _allAcctMerge')((_, v) => v)
+
+  const prev  = [{ addr: ME, accountValue: '100', ledgerEntries: [LEDGER[0]], totalDeposited: 500, totalWithdrawn: 18.81 }]
+  const fresh = [{ addr: ME, accountValue: '101', totalDeposited: 0, totalWithdrawn: 0 }]
+  const [r] = merge(fresh, prev)
+  t('the ledger survives a refresh that did not fetch it', Array.isArray(r.ledgerEntries) && r.ledgerEntries.length === 1)
+  t('and so do the deposit totals', r.totalDeposited === 500 && r.totalWithdrawn === 18.81, r)
+  t('while the fresh figures still win', r.accountValue === 101)
+
+  // ...but a refresh that DID fetch the ledger replaces it, even with an empty one.
+  const [r2] = merge([{ addr: ME, accountValue: '101', ledgerEntries: [] }], prev)
+  t('a fetched ledger replaces the old one', Array.isArray(r2.ledgerEntries) && r2.ledgerEntries.length === 0)
 }
 
 console.log(nl + '-- one rule, one copy --')

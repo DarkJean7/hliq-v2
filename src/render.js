@@ -2506,12 +2506,14 @@ export function calDayClick(key, rootId) {
   const dayLedger = cache.ledger.filter(e => e.time >= dayStart && e.time < dayEnd)
   // Every transfer that day — the same set the Transfers tab lists, not just the ones that
   // move money in or out, or the calendar hides activity the other tab shows.
-  const txEntries = dayLedger.filter(e => e?.delta).sort((a, b) => a.time - b.time)
-  // How much moved that day, whichever way — the sum of the amounts the rows below print, so
-  // the pill and the list add up. Direction is already in the Deposited / Withdrawn pills; a
-  // spot ↔ perp move has neither, and this is the only place its size shows at the top.
-  const txTotal = txEntries.reduce((s, e) => {
-    const v = ledgerAmount(e, ledgerOwner(e, cache.owner))
+  const txEntries = dayLedger.filter(isCalTransfer).sort((a, b) => a.time - b.time)
+  // The pill carries only what the Deposited / Withdrawn pills beside it do not. Everything
+  // that moved money in or out is already there — printing the total again put
+  // "Withdrawn -$206.56" and "3 transfers · $206.56" side by side. What is left is a spot ↔
+  // perp move, which is neither in nor out and has no other place at the top to show its size.
+  const txInternal = txEntries.reduce((s, e) => {
+    if (e.delta.type !== 'accountClassTransfer') return s
+    const v = parseFloat(e.delta.usdc)
     return s + (Number.isFinite(v) ? Math.abs(v) : 0)
   }, 0)
 
@@ -2591,7 +2593,7 @@ export function calDayClick(key, rootId) {
         ${trades.length ? `<span class="cal-detail-pill neu">${trades.length} trade${trades.length !== 1 ? 's' : ''}</span>` : ''}
         ${(data?.deposited ?? 0) > 0 ? `<span class="cal-detail-pill pos">Deposited +$${fmtUSD(data.deposited)}</span>` : ''}
         ${(data?.withdrawn ?? 0) > 0 ? `<span class="cal-detail-pill neg">Withdrawn -$${fmtUSD(data.withdrawn)}</span>` : ''}
-        ${txEntries.length ? `<span class="cal-detail-pill neu">${txEntries.length} transfer${txEntries.length !== 1 ? 's' : ''} · $${fmtUSD(txTotal)}</span>` : ''}
+        ${txEntries.length ? `<span class="cal-detail-pill neu">${txEntries.length} transfer${txEntries.length !== 1 ? 's' : ''}${txInternal > 0 ? ` · $${fmtUSD(txInternal)} spot ↔ perp` : ''}</span>` : ''}
       </div>
       <button class="cal-detail-close" onclick="window.__calDayClick('${key}','${rootId || ''}')">✕</button>
     </div>
@@ -2634,7 +2636,7 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
   // the Transfers tab totals with (ledgerFlow). A spot ↔ perp move still shows up; it just is
   // not money arriving.
   for (const e of ledger) {
-    if (!e?.delta || !Number.isFinite(e.time)) continue
+    if (!isCalTransfer(e) || !Number.isFinite(e.time)) continue
     const d   = new Date(e.time)
     const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
     if (!byDay[key]) byDay[key] = { pnl: 0, trades: 0, deposited: 0, withdrawn: 0, transfers: 0 }
@@ -2926,6 +2928,11 @@ export function ledgerAmount(entry, addr = null) {
  */
 const _FLOW_TYPES = ['deposit', 'withdraw', 'send', 'spotTransfer', 'internalTransfer', 'subAccountTransfer']
 const _realAddr = (a) => (typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a)) ? a : null
+// What the calendar calls a transfer: money in or out (the flow types) plus a spot ↔ perp
+// move. The ledger holds more than that — reward claims, liquidations, vault moves — and
+// listing all of it as "transfers" is how a rewards claim turned up in that section.
+export const CAL_TRANSFER_TYPES = [..._FLOW_TYPES, 'accountClassTransfer']
+export const isCalTransfer = (e) => CAL_TRANSFER_TYPES.includes(e?.delta?.type)
 export function ledgerOwner(entry, addr = null) { return _realAddr(entry?._acctAddr) ?? _realAddr(addr) }
 export function ledgerFlow(entry, addr = null) {
   const t = entry?.delta?.type
