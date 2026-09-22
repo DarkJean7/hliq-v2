@@ -11018,6 +11018,8 @@ initOffex({
     return _isRealAddr(state.addr) ? [{ addr: state.addr, label: null }] : []
   },
   prv: (s) => _prv(s),
+  // The mobile spot rows' own detail grid, so an off-exchange token opens to the same layout.
+  detailGrid: (items) => _mobVDetailGrid(items),
   rerender: () => {
     try { if (_isMobView() && _mobVActiveTab === 'spot') _mobVRenderContent() } catch {}
     try { if (document.querySelector('.ov-postab[data-pt="spot"].active')) window.__ovSetPosTab?.('spot') } catch {}
@@ -38006,8 +38008,10 @@ window.__ovBuildSpotBody = function() {
   const rows = window.__ovSpotHoldings()
   // The off-exchange group sits under the Hyperliquid rows here as well — the same renderer
   // the mobile Spot tab uses, so there is one copy of it to keep right.
-  const offex = () => `<div class="ov-offex">${_offexSectionHtml({ spotUsd: rows.reduce((s, h) => s + (h.usd > 0 ? h.usd : 0), 0) })}</div>`
-  if (!rows.length) return '<div class="ov-empty">No spot holdings</div>' + offex()
+  // Drawn as rows of this same table (desk: true) so a token held off-exchange reads like one
+  // held on Hyperliquid — the same columns, icon, and press-to-open detail.
+  const offex = (withHead = false) => `<div class="ov-offex">${_offexSectionHtml({ spotUsd: rows.reduce((s, h) => s + (h.usd > 0 ? h.usd : 0), 0), desk: true, withHead })}</div>`
+  if (!rows.length) return '<div class="ov-empty">No spot holdings</div>' + offex(true)
   const head = `<div class="ov-ord-head ov-spot-row"><span>Token</span><span class="ov-r">Price</span><span class="ov-r">Balance</span><span class="ov-r">Value</span><span class="ov-r">PnL</span></div>`
   const body = rows.map((h, i) => {
     // entryNtl is HL's cost basis. It is 0 for USDC (the quote asset never has one) and for

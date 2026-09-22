@@ -231,55 +231,117 @@ function icon(entry) {
 
 const short = (a) => a.slice(0, 6) + '…' + a.slice(-4)
 
-function rowHtml(r, showAcct) {
+// The facts a holding opens to, as [label, value, colour] — the same triples the Hyperliquid
+// spot rows open to, so both shells can lay them out exactly as they lay out a HL token.
+function facts(r, showAcct) {
   const { entry: e, value: v } = r
-  const id  = r.acct + '|' + quoteKey(e.net, e.token)
   const q   = quoteFor(e.token, e.net)
-  const xp  = _open.has(id)
   const sym = esc(e.symbol || short(e.token))
-  const pnlLine = v.pnl != null
-    ? `<div class="mob-v-row-pct" style="color:${v.pnl >= 0 ? 'var(--green)' : 'var(--red)'};white-space:nowrap">${ctx.prv(`${v.pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(v.pnl))} · ${v.roi >= 0 ? '+' : ''}${v.roi.toFixed(2)}%`)}</div>`
-    : ''
-  const detail = [
-    ['Contract', `<span class="notranslate" style="font-family:var(--font-mono)">${esc(short(e.token))}</span>`],
-    ['Network', esc(NETWORKS[normNet(e.net)].label)],
+  return [
     ...(showAcct ? [['Account', esc(r.label || short(r.acct))]] : []),
+    ...(e.cost != null ? [
+      ['Cost', ctx.prv('$' + fmtUSD(e.cost))],
+      ['Avg buy', e.amount > 0 ? '$' + fmtPrice(e.cost / e.amount) : '—'],
+      ...(v.pnl == null ? [['Profit', 'No price for this token yet']] : [
+        ['Profit', ctx.prv(`${v.pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(v.pnl))}`), v.pnl >= 0 ? 'var(--green)' : 'var(--red)'],
+        ['ROI', ctx.prv(`${v.roi >= 0 ? '+' : ''}${v.roi.toFixed(2)}%`), v.roi >= 0 ? 'var(--green)' : 'var(--red)'],
+      ]),
+    ] : []),
     ['Amount', ctx.prv(fmtSize(e.amount)) + ' ' + sym],
-    ['Price', v.price != null ? '$' + fmtPrice(v.price) : 'No price yet'],
+    ['Price', v.price != null ? '$' + fmtPrice(v.price) : '—'],
+    ['Value', ctx.prv(v.usd != null ? '$' + fmtUSD(v.usd, 2) : '—')],
+    ['Network', esc(NETWORKS[normNet(e.net)].label)],
+    ['Contract', `<span class="notranslate" style="font-family:var(--font-mono)">${esc(short(e.token))}</span>`],
     // Where the number came from, so a price that looks wrong can be checked — and so the
     // deepest-pool rule is visible rather than taken on trust.
     ...(q?.src ? [['Priced from', esc([q.pool, q.src].filter(Boolean).join(' · '))
-      + (q.liq != null ? ` <span style="color:var(--muted)">($${fmtUSD(q.liq, 0)} liquidity)</span>` : '')]] : []),
-    ['Value', ctx.prv(v.usd != null ? '$' + fmtUSD(v.usd, 2) : '—')],
-    ...(e.cost != null ? [
-      ['Cost', ctx.prv('$' + fmtUSD(e.cost, 2))],
-      ['Profit', v.pnl != null ? ctx.prv(`${v.pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(v.pnl))}`) : '—'],
-    ] : []),
+      + (q.liq != null ? ` <span style="color:var(--muted)">($${fmtUSD(q.liq, 0)} liq.)</span>` : '')]] : []),
     ...(e.note ? [['Note', esc(e.note)]] : []),
-  ].map(([k, val]) => `<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:12px">
-      <span style="color:var(--muted)">${k}</span><span style="text-align:right">${val}</span></div>`).join('')
+  ]
+}
 
+const thinNote = `<div style="font-size:11px;color:#f59e0b;padding:6px 0 4px">Thin market — this price comes from a pool with little liquidity and may not be what you could sell for.</div>`
+const editBtn = (r) => `<button onclick="event.stopPropagation();window.__offexEdit('${esc(r.acct)}','${esc(r.entry.token)}','${esc(normNet(r.entry.net))}')"
+  style="width:100%;margin-top:8px;padding:9px;border-radius:9px;border:1px solid var(--border2);background:var(--panel-3);color:var(--fg);font-size:12px;font-weight:700;cursor:pointer">Edit</button>`
+const rowId = (r) => r.acct + '|' + quoteKey(r.entry.net, r.entry.token)
+
+// What sits under the name, the way a HL row names its account: the account (when more than
+// one is in view), then the note — "locked" is the most useful thing to see without opening it.
+function subLine(r, showAcct) {
+  const parts = []
+  if (showAcct && r.label) parts.push(`<span class="notranslate" style="color:var(--accent)">${esc(r.label)}</span>`)
+  if (normNet(r.entry.net) !== DEFAULT_NET) parts.push(esc(NETWORKS[normNet(r.entry.net)].label))
+  if (r.entry.note) parts.push(esc(r.entry.note))
+  return parts.join(' · ')
+}
+
+/** Mobile: the same row as a Hyperliquid spot token — icon, name, price, value, chevron. */
+function rowHtml(r, showAcct) {
+  const { entry: e, value: v } = r
+  const id  = rowId(r)
+  const xp  = _open.has(id)
+  const sym = esc(e.symbol || short(e.token))
+  const sub = subLine(r, false)
+  const pnlLine = v.pnl != null
+    ? `<div class="mob-v-row-pct" style="color:${v.pnl >= 0 ? 'var(--green)' : 'var(--red)'};white-space:nowrap">${ctx.prv(`${v.pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(v.pnl))} · ${v.roi >= 0 ? '+' : ''}${v.roi.toFixed(2)}%`)}</div>`
+    : ''
+  const chev = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>`
+  const grid = ctx.detailGrid ? ctx.detailGrid(facts(r, showAcct)) : ''
   return `<div>
     <div class="mob-v-row" style="cursor:pointer" onclick="window.__offexToggle('${esc(id)}')">
       ${icon(e)}
       <div class="mob-v-row-info">
         <div class="mob-v-row-name">${sym}</div>
-        <div class="mob-v-row-sub">${ctx.prv(fmtSize(e.amount))} ${sym}${showAcct && r.label ? ` · <span class="notranslate" style="color:var(--accent)">${esc(r.label)}</span>` : ''}${e.note ? ` · ${esc(e.note)}` : ''}</div>
+        <div class="mob-v-row-sub">${ctx.prv(fmtSize(e.amount))} ${sym}${showAcct && r.label ? ` · <span class="notranslate" style="color:var(--accent)">${esc(r.label)}</span>` : ''}${sub ? ` · ${sub}` : ''}</div>
       </div>
       <div style="flex-shrink:0;width:74px;display:flex;flex-direction:column">
         <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;line-height:1.2;text-align:center">Price</div>
-        <div style="font-size:13px;font-weight:500;line-height:1.3;margin-top:2px;white-space:nowrap;text-align:center;overflow:hidden;text-overflow:ellipsis">${v.price != null ? '$' + fmtPrice(v.price) : '—'}</div>
+        <div style="font-size:13px;font-weight:500;color:var(--fg);line-height:1.3;margin-top:2px;white-space:nowrap;text-align:center;overflow:hidden;text-overflow:ellipsis">${v.price != null ? '$' + fmtPrice(v.price) : '—'}</div>
       </div>
       <div class="mob-v-row-right" style="width:104px;flex-shrink:0;flex-grow:0">
         <div class="mob-v-row-val">${ctx.prv(v.usd != null ? '$' + fmtUSD(v.usd) : '—')}</div>
         ${pnlLine}
       </div>
+      ${chev}
     </div>
-    <div style="display:${xp ? '' : 'none'};padding:4px 16px 12px;background:var(--panel-2)">
-      ${v.thin ? `<div style="font-size:11px;color:#f59e0b;padding:6px 0 4px">Thin market — this price comes from a pool with little liquidity and may not be what you could sell for.</div>` : ''}
-      ${detail}
-      <button onclick="event.stopPropagation();window.__offexEdit('${esc(r.acct)}','${esc(e.token)}','${esc(normNet(e.net))}')"
-        style="width:100%;margin-top:8px;padding:9px;border-radius:9px;border:1px solid var(--border2);background:var(--panel-3);color:var(--fg);font-size:12px;font-weight:700;cursor:pointer">Edit</button>
+    <div style="display:${xp ? '' : 'none'}">
+      ${grid}
+      <div style="padding:0 16px 12px;background:var(--panel-2)">${v.thin ? thinNote : ''}${editBtn(r)}</div>
+    </div>
+  </div>`
+}
+
+/** Desktop: a row of the Hyperliquid spot table itself — Token, Price, Balance, Value, PnL. */
+function deskRowHtml(r, showAcct) {
+  const { entry: e, value: v } = r
+  const id  = rowId(r)
+  const xp  = _open.has(id)
+  const sym = esc(e.symbol || short(e.token))
+  const sub = subLine(r, showAcct)
+  const cls = (v.pnl ?? 0) >= 0 ? 'pos' : 'neg'
+  const img = (() => {
+    const q = quoteFor(e.token, e.net)
+    const url = q?.icon ?? e.icon
+    const letter = esc((e.symbol || '?').slice(0, 1).toUpperCase())
+    const letterDiv = `<div style="display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;color:var(--fg-2)">${letter}</div>`
+    return url
+      ? `<img src="${esc(url)}" alt="" style="object-fit:cover" onerror="this.outerHTML='${letterDiv.replace(/'/g, '&#39;').replace(/"/g, '&quot;')}'">`
+      : letterDiv
+  })()
+  return `<div class="ov-oc-item" data-offex-row>
+    <div class="ov-ord-row ov-spot-row" style="cursor:pointer" onclick="window.__offexToggle('${esc(id)}')">
+      <span class="ov-pos-mkt"><div class="ov-av-img">${img}</div><span class="ov-pos-info"><b>${sym}</b>${sub ? `<i>${sub}</i>` : ''}</span></span>
+      <span class="ov-r mono">${v.price != null ? '$' + fmtPrice(v.price) : '—'}</span>
+      <span class="ov-r mono">${ctx.prv(fmtSize(e.amount))}</span>
+      <span class="ov-r mono">${v.usd != null ? ctx.prv('$' + fmtUSD(v.usd)) : '—'}</span>
+      <span class="ov-r mono ${v.pnl != null ? cls : ''}">${v.pnl != null
+        ? ctx.prv(`${v.pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(v.pnl))} · ${v.roi >= 0 ? '+' : ''}${v.roi.toFixed(1)}%`)
+        : '—'}</span>
+    </div>
+    <div class="ov-oc-close" style="display:${xp ? '' : 'none'}">
+      ${v.thin ? thinNote : ''}
+      <div class="ov-spot-facts">${facts(r, showAcct).map(([k, val, c]) => `<span><i>${k}</i><b style="font-weight:600${c ? ';color:' + c : ''}">${val}</b></span>`).join('')}</div>
+      <div style="max-width:220px">${editBtn(r)}</div>
     </div>
   </div>`
 }
@@ -291,7 +353,7 @@ function rowHtml(r, showAcct) {
  * "incl. off-exchange" as one combined figure — kept visibly separate from the account's own
  * equity, which it never feeds.
  */
-export function sectionHtml({ spotUsd = null } = {}) {
+export function sectionHtml({ spotUsd = null, desk = false, withHead = false } = {}) {
   const accts = ctx.accounts() ?? []
   if (!accts.length) return ''            // paper, or no real account in view
   const list = rows()
@@ -299,7 +361,9 @@ export function sectionHtml({ spotUsd = null } = {}) {
   const showAcct = accts.length > 1
   if (list.length) refreshPrices()        // at most once a minute; repaints only on change
 
-  const header = `<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 16px 6px">
+  // Desktop lines the group up with the table above it: the same 4px gutter as its rows.
+  const pad = desk ? '4px' : '16px'
+  const header = `<div style="display:flex;align-items:center;justify-content:space-between;padding:${desk ? '14px' : '16px'} ${pad} 6px">
     <div>
       <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);text-transform:uppercase">Off-exchange</div>
       ${list.length ? `<div style="font-size:12px;color:var(--fg-2);margin-top:2px">${ctx.prv('$' + fmtUSD(tot.usd))}${tot.complete ? '' : ` <span style="color:var(--muted)">· ${tot.count - tot.priced} unpriced</span>`}</div>` : ''}
@@ -307,17 +371,21 @@ export function sectionHtml({ spotUsd = null } = {}) {
     <button onclick="window.__offexAdd()" style="border:1px solid var(--accent);background:color-mix(in oklch,var(--accent) 12%,transparent);color:var(--accent);border-radius:9px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer">+ Add token</button>
   </div>`
 
+  // With no Hyperliquid rows above, the desktop table has no column header — give it one.
+  const deskHead = desk && withHead && list.length
+    ? `<div class="ov-ord-head ov-spot-row"><span>Token</span><span class="ov-r">Price</span><span class="ov-r">Balance</span><span class="ov-r">Value</span><span class="ov-r">PnL</span></div>`
+    : ''
   const body = list.length
-    ? list.map(r => rowHtml(r, showAcct)).join('')
-    : `<div style="padding:4px 16px 12px;font-size:12px;line-height:1.5;color:var(--muted)">Track tokens you hold outside Hyperliquid — a HyperEVM token in your wallet, NEST locked on Nest Exchange. Enter the amount; the price is looked up live. It is never added to your account equity.</div>`
+    ? deskHead + list.map(r => (desk ? deskRowHtml(r, showAcct) : rowHtml(r, showAcct))).join('')
+    : `<div style="padding:4px ${pad} 12px;font-size:12px;line-height:1.5;color:var(--muted)">Track tokens you hold outside Hyperliquid — a HyperEVM token in your wallet, NEST locked on Nest Exchange. Enter the amount; the price is looked up live. It is never added to your account equity.</div>`
 
   const inBal = countInBalance()
   const footer = list.length && spotUsd != null
-    ? `<div style="display:flex;justify-content:space-between;padding:10px 16px 4px;font-size:12px;border-top:1px solid var(--border);margin-top:4px">
+    ? `<div style="display:flex;justify-content:space-between;padding:10px ${pad} 4px;font-size:12px;${desk ? '' : 'border-top:1px solid var(--border);'}margin-top:4px">
         <span style="color:var(--muted)">Spot incl. off-exchange${tot.complete ? '' : ' (priced only)'}</span>
         <b style="font-family:var(--font-mono)">${ctx.prv('$' + fmtUSD(spotUsd + tot.usd))}</b>
       </div>
-      <div data-offex-inbal style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 16px 12px;cursor:pointer" onclick="window.__offexToggleInBal()">
+      <div data-offex-inbal style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px ${pad} 12px;cursor:pointer" onclick="window.__offexToggleInBal()">
         <span style="font-size:12px;line-height:1.4">
           <span style="font-weight:700">Count in balance</span>
           <span style="display:block;color:var(--muted);font-size:11px">Adds off-exchange value to your headline balance only — health, PnL and ROE stay Hyperliquid-only.</span>

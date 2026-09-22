@@ -292,6 +292,24 @@ console.log(NL + '-- the desktop overview shows the same group --')
   const g = await d.evaluate(() => document.querySelector('.ov-offex')?.textContent ?? '')
   ok('the overview Spot tab carries the off-exchange group', /Off-exchange/.test(g) && /NEST/.test(g), g.slice(0, 160))
   ok('priced the same way', g.includes('$244.51'), g.slice(0, 300))
+
+  // "Make off-exchange spot tokens resemble the Hyperliquid spots." They were stacked mobile
+  // cards under a table; now they are rows OF that table — same grid, same columns, lined up.
+  const cols = await d.evaluate(() => {
+    const cells = (row) => row ? [...row.children].map(c => Math.round(c.getBoundingClientRect().right)) : null
+    const hl = [...document.querySelectorAll('.ov-ord-row.ov-spot-row')].find(r => !r.closest('.ov-offex'))
+    const ox = document.querySelector('.ov-offex .ov-ord-row.ov-spot-row')
+    return { hl: cells(hl), ox: cells(ox), oxText: ox ? [...ox.children].map(c => c.textContent.trim()) : null }
+  })
+  ok('an off-exchange token is a row of the spot table', cols.ox?.length === 5, cols)
+  ok('in the same columns: price, balance, value', cols.oxText?.[1] === '$0.02038' && cols.oxText?.[2] === '12,000.00' && cols.oxText?.[3] === '$244.51', cols.oxText)
+  ok('lined up with the Hyperliquid rows above', !cols.hl || cols.hl.every((x, i) => Math.abs(x - cols.ox[i]) <= 1), cols)
+  await d.click('.ov-offex .ov-ord-row.ov-spot-row')
+  await waitFor(d, 'the detail', () => /Edit/.test(document.querySelector('.ov-offex .ov-oc-close:not([style*="none"])')?.textContent ?? ''))
+  const det = await d.evaluate(() => document.querySelector('.ov-offex .ov-oc-close')?.textContent ?? '')
+  ok('and opens on a press, like a Hyperliquid row', /Network[\s\S]*HyperEVM/.test(det) && /Edit/.test(det), det.slice(0, 200))
+  // Set OFFEX_SHOT=<file.png> to see it.
+  if (process.env.OFFEX_SHOT) await d.screenshot({ path: process.env.OFFEX_SHOT, clip: await d.evaluate(() => { const r = document.querySelector('.ov-offex').closest('.ov-card, section, .ov-postabs-wrap')?.getBoundingClientRect() ?? document.querySelector('.ov-offex').getBoundingClientRect(); return { x: r.x, y: Math.max(0, r.y - 200), width: r.width, height: r.height + 200 } }) }).catch(() => {})
   await dctx.close()
 }
 
