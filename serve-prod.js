@@ -9,7 +9,7 @@ import { join, extname, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coinGeckoUpgrade } from './src/iconpick.js'
 import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, parseSeries } from './src/extmarkets.js'
-import { fetchQuotes, normAddr, pickDeepest, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
+import { fetchQuotes, normAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DIST      = join(__dirname, 'dist')
@@ -28,6 +28,9 @@ const extQuoteCache = new Map()
 // address is not re-asked on every poll).
 const offexCache = new Map()
 const OFFEX_TTL = 60_000
+// addr -> { at, net } — which network an address trades on. Changes rarely; asked once per paste.
+const offexFindCache = new Map()
+const OFFEX_FIND_TTL = 10 * 60_000
 const EXT_QUOTE_TTL = 60_000
 
 // Compare-chart series (see /extcandles). "SYMBOL|TF" -> { at, pts }.
@@ -358,13 +361,34 @@ createServer((req, res) => {
   if (url === '/offexprice') {
     if (req.method !== 'GET') { res.writeHead(405).end(); return }
     const qs   = new URLSearchParams(req.url.split('?')[1] || '')
+    // ?find=<addr> — which supported network it trades on (DexScreener, across chains). The
+    // add sheet asks this when HyperEVM has no market for a pasted address.
+    const find = normAddr(qs.get('find') || '')
+    if (find) {
+      ;(async () => {
+        const hit = offexFindCache.get(find)
+        let net = hit && Date.now() - hit.at < OFFEX_FIND_TTL ? hit.net : undefined
+        if (net === undefined) {
+          try {
+            const r = await fetch(dsFindUrl(find), { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) })
+            if (r.ok) { net = pickNetwork(await r.json(), find); offexFindCache.set(find, { at: Date.now(), net }) }
+          } catch {}
+          if (offexFindCache.size > 2000) offexFindCache.clear()
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ net: net ?? null }))
+      })()
+      return
+    }
+    // ?n=<network> — one of src/offex.js NETWORKS, anything else is HyperEVM. Never put in a
+    // URL as typed: it only ever selects an id from that table.
+    const net  = normNet(qs.get('n'))
     const want = [...new Set((qs.get('a') || '').split(',').map(normAddr).filter(Boolean))].slice(0, OFFEX_MAX)
     if (!want.length) { res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"prices":{}}'); return }
     ;(async () => {
       const prices = {}
       const stale  = []
       for (const a of want) {
-        const hit = offexCache.get(a)
+        const hit = offexCache.get(quoteKey(net, a))
         if (hit && Date.now() - hit.at < OFFEX_TTL) { if (hit.t) prices[a] = hit.t }
         else stale.push(a)
       }
@@ -376,16 +400,16 @@ createServer((req, res) => {
             const r = await fetch(u, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) })
             if (!r.ok) throw new Error(String(r.status))
             return r.json()
-          })
+          }, net)
           if (ok) {
             for (const a of stale) {
-              const prev = offexCache.get(a)?.t ?? null
+              const prev = offexCache.get(quoteKey(net, a))?.t ?? null
               // With one source down, the deeper of (what it just said, what we last knew)
               // wins — otherwise EAGLE flips between its real pool and an empty one each time
               // DexScreener blinks. And a half answer is kept only briefly, so the next poll
               // asks both again.
               const t = both ? (got[a] ?? null) : pickDeepest(prev, got[a] ?? null)
-              offexCache.set(a, { at: both ? Date.now() : Date.now() - OFFEX_TTL + 10_000, t })
+              offexCache.set(quoteKey(net, a), { at: both ? Date.now() : Date.now() - OFFEX_TTL + 10_000, t })
               if (t) prices[a] = t
             }
           }

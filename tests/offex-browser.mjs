@@ -207,7 +207,7 @@ console.log(NL + '-- the sheet, the badge and the wheel --')
   await p.evaluate(() => window.__offexAdd())
   await waitFor(p, 'the sheet', () => document.getElementById('offexSheet')?.style.display === 'flex')
   const hint = await p.evaluate(() => document.querySelector('#offexSheet')?.textContent ?? '')
-  ok('the address hint no longer names NEST', /A token in your HyperEVM wallet/.test(hint) && !/NEST, a token/.test(hint), hint.slice(0, 200))
+  ok('the address hint no longer names NEST', /A token on HyperEVM, Ethereum/.test(hint) && !/NEST, a token/.test(hint), hint.slice(0, 200))
   // "Make the panel non-transparent." A photo backdrop makes --panel 55% alpha; the sheet
   // layers it over --bg, which is opaque under every theme.
   const bg = await p.evaluate(() => {
@@ -375,6 +375,82 @@ console.log(NL + '-- no flicker: priced without visiting Spot, and through a fai
   ok('a failed price fetch does not blank a known value', g.includes('$244.51'), g.slice(0, 200))
   ok('and the price is remembered for the next load', await f.evaluate(() => !!JSON.parse(localStorage.getItem('hliq_offex_quotes') || '{}')['0x07c57e32a3c29d5659bda1d3efc2e7bf004e3035']))
   await fctx.close()
+}
+
+console.log(NL + '-- a token on another network is found and priced there --')
+{
+  // Reported with a screenshot: DIME, 0xb32e…0fa7, "No HyperEVM market found" — it is an
+  // Ethereum token. The sheet has to find the network itself, since nobody knows to pick one.
+  const DIME = '0xb32e10022ffbedfe10bc818a1c7e67d9d87e0fa7'
+  const nctx = await browser.newContext({ ...devices['iPhone 14 Pro'] })
+  await blockHlSockets(nctx)
+  await nctx.route(HL_HOST, (route) => {
+    let b = {}
+    try { b = JSON.parse(route.request().postData() || '{}') } catch {}
+    return route.fulfill({ status: 200, contentType: 'application/json', json: HL[b.type] ?? {} })
+  })
+  const asks = []
+  await nctx.route('**/offexprice**', (route) => {
+    const sp = new URL(route.request().url()).searchParams
+    asks.push(sp.toString())
+    if (sp.get('find')) return route.fulfill({ status: 200, json: { net: sp.get('find') === DIME ? 'eth' : null } })
+    const a = (sp.get('a') || '').split(',')
+    // Priced ONLY when asked on Ethereum — HyperEVM has never heard of it.
+    const prices = sp.get('n') === 'eth' && a.includes(DIME)
+      ? { [DIME]: { addr: DIME, symbol: 'DIME', name: 'DIME', icon: null, price: 0.0606, liq: 94698, thin: false, src: 'DexScreener', pool: 'uniswap · DIME/WETH' } }
+      : {}
+    return route.fulfill({ status: 200, json: { prices } })
+  })
+  await nctx.route('**/api/**', (route) => route.fulfill({ status: 503, body: 'offline in test' }))
+  const n = await nctx.newPage()
+  n.on('pageerror', e => errs.push('network: ' + e.message))
+  await n.goto(BASE, { waitUntil: 'domcontentloaded' })
+  await n.evaluate(({ a, k }) => {
+    localStorage.clear()
+    localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_onboard_done', '1')
+    localStorage.setItem('hliq_lang_chosen', '1')
+    ;['hliq_onboard_welcomed_v1', 'hliq_onboard_tour_v1', 'hliq_install_nudge_v2'].forEach(x => localStorage.setItem(x, '1'))
+    localStorage.setItem('hliq_ann_dismissed', JSON.stringify(['*']))
+    localStorage.setItem('hliq_agent_key_' + a.toLowerCase(), k)
+    localStorage.setItem('savedWallets', JSON.stringify([{ addr: a, label: 'Main' }]))
+  }, { a: ADDR, k: KEY })
+  await n.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(n, 'boot', () => !!window.loadDashboard)
+  await n.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, ADDR)
+  await waitFor(n, 'the account', () => document.getElementById('dashboard')?.classList.contains('active'))
+  await waitFor(n, 'the mobile shell', () => !!window.mobVTab, 30000)
+  await n.evaluate(() => window.mobVTab('spot'))
+  await waitFor(n, 'the Spot tab', () => /Off-exchange/.test(document.getElementById('mobVContent')?.textContent ?? ''))
+
+  await n.evaluate(() => window.__offexAdd())
+  await waitFor(n, 'the sheet', () => document.getElementById('offexSheet')?.style.display === 'flex')
+  ok('the sheet no longer says HyperEVM only', !/\(HyperEVM\)/.test(await n.textContent('#offexSheet')))
+  ok('it starts on HyperEVM', (await n.inputValue('#offexNet')) === 'hyperevm')
+  await n.fill('#offexToken', DIME)
+  await waitFor(n, 'the lookup', () => /DIME/.test(document.getElementById('offexLookup')?.textContent ?? ''))
+  const look = await n.textContent('#offexLookup')
+  ok('an Ethereum address is found and priced', /DIME[\s\S]*\$0\.060/.test(look), look)
+  ok('and says where it was found', /found on Ethereum/.test(look), look)
+  ok('the network switches itself', (await n.inputValue('#offexNet')) === 'eth')
+  ok('HyperEVM was asked first, then the network looked up', asks.some(s => s === 'a=' + DIME) && asks.some(s => s === 'find=' + DIME) && asks.some(s => s.includes('n=eth')), asks)
+
+  await n.fill('#offexAmount', '1617.19')
+  await n.fill('#offexCost', '98.97')
+  await n.click('#offexSave')
+  await waitFor(n, 'the sheet to close', () => document.getElementById('offexSheet')?.style.display === 'none')
+  await waitFor(n, 'the row', () => /DIME/.test(document.querySelector('[data-offex]')?.textContent ?? ''))
+  const g = await n.evaluate(() => document.querySelector('[data-offex]')?.textContent ?? '')
+  // 1,617.19 × $0.0606 = $98.00, $0.97 under the $98.97 paid.
+  ok('the row is priced on Ethereum', g.includes('$98.00'), g.slice(0, 200))
+  ok('with its loss against what was paid', /-\$0\.97/.test(g), g.slice(0, 200))
+  const stored = JSON.parse(await n.evaluate((a) => localStorage.getItem('hliq_offex_' + a.toLowerCase()), ADDR) || '[]')
+  ok('stored with its network', stored[0]?.token === DIME && stored[0]?.net === 'eth', stored)
+
+  // Reopened for editing, it must stay on Ethereum — not fall back to HyperEVM and lose its price.
+  await n.evaluate(({ a, d }) => window.__offexEdit(a, d, 'eth'), { a: ADDR, d: DIME })
+  await waitFor(n, 'the edit sheet', () => document.getElementById('offexSheet')?.style.display === 'flex')
+  ok('editing keeps the network', (await n.inputValue('#offexNet')) === 'eth' && (await n.inputValue('#offexAmount')) === '1617.19')
+  await nctx.close()
 }
 
 if (errs.length) { fail++; console.log('  FAIL page errors → ' + JSON.stringify(errs.slice(0, 4))) }

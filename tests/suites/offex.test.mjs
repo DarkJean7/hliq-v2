@@ -11,6 +11,7 @@ import {
   storageKey, cleanEntry, loadHoldings, saveHoldings, upsertHolding, removeHolding,
   holdingValue, holdingsTotal, MAX_PER_REQUEST,
   dsMultiUrl, parseDsPairs, pickDeepest, mergeQuotes, fetchQuotes,
+  NETWORKS, DEFAULT_NET, normNet, quoteKey, dsFindUrl, pickNetwork,
 } from '../../src/offex.js'
 
 const nl = String.fromCharCode(10)
@@ -186,7 +187,10 @@ console.log(nl + '-- the wiring --')
   const ui    = fs.readFileSync('src/offexui.js', 'utf8')
   const serve = fs.readFileSync('serve-prod.js', 'utf8')
 
-  t('the server route validates addresses before fetching', /url === '\/offexprice'[\s\S]{0,600}map\(normAddr\)\.filter\(Boolean\)/.test(serve))
+  // Two ways in now — ?find= and ?a= — and both validate before anything is fetched.
+  t('the server route validates addresses before fetching',
+    /const find = normAddr\(qs\.get\('find'\) \|\| ''\)/.test(serve) && /\(qs\.get\('a'\) \|\| ''\)\.split\(','\)\.map\(normAddr\)\.filter\(Boolean\)/.test(serve))
+  t('and the network only ever selects from the table', /const net  = normNet\(qs\.get\('n'\)\)/.test(serve))
   t('and asks both sources through fetchQuotes', /await fetchQuotes\(stale,/.test(serve))
   t('a failed call is not cached as "no price"', /When BOTH sources fail, nothing is cached/.test(serve) && /if \(ok\) \{/.test(serve))
   t('dev serves the same route', /path === '\/offexprice'/.test(fs.readFileSync('vite.config.js', 'utf8')))
@@ -230,6 +234,51 @@ console.log(nl + '-- the combined snapshot survives a restart --')
   t('read back at startup, under the same age cap', /readFileSync\(COMBINED_COMPLETE_FILE[\s\S]{0,300}< COMBINED_COMPLETE_MAX_MS\) _combinedComplete\.set/.test(srv))
   t('owner-only', /writeFileSync\(COMBINED_COMPLETE_FILE, JSON\.stringify\(out\), \{ mode: 0o600 \}\)/.test(srv))
   t('and never committed', /combined-complete\.json/.test(fs.readFileSync('.gitignore', 'utf8')))
+}
+
+console.log(nl + '-- other networks --')
+{
+  // Reported: DIME, 0xb32e…0fa7, "is from the eth network" — HyperEVM had no market for it.
+  const DIME = '0xb32e10022ffbedfe10bc818a1c7e67d9d87e0fa7'
+  t('HyperEVM is still the default', DEFAULT_NET === 'hyperevm' && gtMultiUrl([DIME]).includes('/networks/hyperevm/'))
+  t('Ethereum asks each source by its own id',
+    gtMultiUrl([DIME], 'eth').includes('/networks/eth/tokens/multi/') && dsMultiUrl([DIME], 'eth') === 'https://api.dexscreener.com/tokens/v1/ethereum/' + DIME)
+  // The network goes into a URL, so it may only ever pick from the table.
+  t('an unknown network is HyperEVM, never text in a URL', normNet('../../x') === 'hyperevm' && !gtMultiUrl([DIME], '../../x').includes('..'))
+  t('toString and friends are not networks', normNet('toString') === 'hyperevm' && normNet('__proto__') === 'hyperevm')
+  t('a HyperEVM quote keeps its old key — cached prices stay valid', quoteKey('hyperevm', DIME) === DIME)
+  t('another network\'s carries the network', quoteKey('eth', DIME.toUpperCase().replace('0X', '0x')) === 'eth:' + DIME)
+  t('the cross-chain lookup URL is validated', dsFindUrl('../x') === null && dsFindUrl(DIME).endsWith('/latest/dex/tokens/' + DIME))
+
+  const reply = { pairs: [
+    { chainId: 'ethereum', baseToken: { address: DIME }, liquidity: { usd: 94698 } },
+    { chainId: 'base', baseToken: { address: DIME }, liquidity: { usd: 500 } },
+    // DIME as the QUOTE token on a deeper pool elsewhere says nothing about where DIME trades.
+    { chainId: 'bsc', baseToken: { address: '0x' + '1'.repeat(40) }, quoteToken: { address: DIME }, liquidity: { usd: 1e7 } },
+    { chainId: 'solana', baseToken: { address: DIME }, liquidity: { usd: 1e9 } },
+  ] }
+  t('the network with its deepest pool wins', pickNetwork(reply, DIME) === 'eth')
+  t('unsupported chains and quote-side pairs do not count', pickNetwork({ pairs: reply.pairs.slice(2) }, DIME) === null)
+  t('nothing found is null', pickNetwork({ pairs: null }, DIME) === null)
+
+  const r = await fetchQuotes([DIME], async (u) => {
+    if (u.includes('geckoterminal')) return { data: [{ attributes: { address: DIME, symbol: 'DIME', price_usd: '0.0612', total_reserve_in_usd: '64142' } }] }
+    return [{ baseToken: { address: DIME, symbol: 'DIME' }, priceUsd: '0.0606', liquidity: { usd: 94698 }, dexId: 'uniswap', quoteToken: { symbol: 'WETH' } }]
+  }, 'eth')
+  t('priced on Ethereum from the deeper pool', r.quotes[DIME]?.price === 0.0606 && r.both, r.quotes[DIME])
+
+  // Stored holdings: the network travels, old ones read as HyperEVM, and one address on two
+  // chains is two holdings.
+  t('an old holding reads as HyperEVM', cleanEntry({ token: DIME, amount: 1 }).net === 'hyperevm')
+  let list = upsertHolding([], { token: DIME, amount: 1617.19, net: 'eth' })
+  list = upsertHolding(list, { token: DIME, amount: 5, net: 'hyperevm' })
+  t('the same address on two networks is two holdings', list.length === 2)
+  list = upsertHolding(list, { token: DIME, amount: 2000, net: 'eth' })
+  t('re-adding on the same network updates it', list.length === 2 && list.find(e => e.net === 'eth').amount === 2000)
+  t('removing takes only that network\'s', removeHolding(list, DIME, 'eth').map(e => e.net).join() === 'hyperevm')
+  const tot = holdingsTotal(list, { ['eth:' + DIME]: { price: 0.06 } })
+  t('the total prices each holding on its own network', near(tot.usd, 120) && tot.complete === false, tot)
+  t('every network in the table has both ids', Object.values(NETWORKS).every(n => n.gt && n.ds && n.label))
 }
 
 console.log(nl + `${pass} passed, ${fail} failed`)

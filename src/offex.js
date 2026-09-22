@@ -52,13 +52,42 @@ export const normAddr = (a) => (isTokenAddr(a) ? a.trim().toLowerCase() : null)
 export const MAX_PER_REQUEST = 30
 
 /**
+ * The networks a holding can be priced on. HyperEVM first and the default — every holding
+ * stored before this existed is one. The others are there because an address is only an
+ * address: DIME (Paradex) is an Ethereum token with the same 0x shape, and asking HyperEVM for
+ * its price found nothing. Each network has its own id at each price source.
+ */
+export const NETWORKS = {
+  hyperevm: { label: 'HyperEVM', gt: 'hyperevm', ds: 'hyperevm' },
+  eth:      { label: 'Ethereum', gt: 'eth',      ds: 'ethereum' },
+  base:     { label: 'Base',     gt: 'base',     ds: 'base' },
+  arbitrum: { label: 'Arbitrum', gt: 'arbitrum', ds: 'arbitrum' },
+  bsc:      { label: 'BNB Chain', gt: 'bsc',     ds: 'bsc' },
+}
+export const DEFAULT_NET = 'hyperevm'
+/** A network key, or the default for anything unrecognised — never a string built into a URL. */
+export const normNet = (n) => (Object.hasOwn(NETWORKS, String(n ?? '')) ? String(n) : DEFAULT_NET)
+
+/**
+ * The key a price is cached under. The same address can be a different token on another
+ * chain, so it has to carry the network — except on HyperEVM, where the bare address keeps
+ * every quote cached before networks existed valid.
+ */
+export const quoteKey = (net, addr) => {
+  const a = normAddr(addr)
+  if (!a) return null
+  const n = normNet(net)
+  return n === DEFAULT_NET ? a : `${n}:${a}`
+}
+
+/**
  * The GeckoTerminal URL for a set of HyperEVM tokens. Every address is validated first, so
  * nothing but 0x-hex ever reaches the path. Returns null when none survive.
  */
-export function gtMultiUrl(addrs) {
+export function gtMultiUrl(addrs, net = DEFAULT_NET) {
   const ok = [...new Set((addrs ?? []).map(normAddr).filter(Boolean))].slice(0, MAX_PER_REQUEST)
   if (!ok.length) return null
-  return `https://api.geckoterminal.com/api/v2/networks/hyperevm/tokens/multi/${ok.join(',')}`
+  return `https://api.geckoterminal.com/api/v2/networks/${NETWORKS[normNet(net)].gt}/tokens/multi/${ok.join(',')}`
 }
 
 /**
@@ -102,10 +131,10 @@ export function parseGtMulti(json) {
 }
 
 /** DexScreener's batch endpoint for HyperEVM tokens. Same validation as gtMultiUrl. */
-export function dsMultiUrl(addrs) {
+export function dsMultiUrl(addrs, net = DEFAULT_NET) {
   const ok = [...new Set((addrs ?? []).map(normAddr).filter(Boolean))].slice(0, MAX_PER_REQUEST)
   if (!ok.length) return null
-  return `https://api.dexscreener.com/tokens/v1/hyperevm/${ok.join(',')}`
+  return `https://api.dexscreener.com/tokens/v1/${NETWORKS[normNet(net)].ds}/${ok.join(',')}`
 }
 
 /**
@@ -171,12 +200,37 @@ export function mergeQuotes(gt = {}, ds = {}) {
  * the tests share this one function; a source that fails contributes nothing rather than
  * failing the other.
  */
-export async function fetchQuotes(addrs, fetchJson) {
+export async function fetchQuotes(addrs, fetchJson, net = DEFAULT_NET) {
   const safe = (u) => (u ? fetchJson(u).catch(() => null) : Promise.resolve(null))
-  const [gtJ, dsJ] = await Promise.all([safe(gtMultiUrl(addrs)), safe(dsMultiUrl(addrs))])
+  const [gtJ, dsJ] = await Promise.all([safe(gtMultiUrl(addrs, net)), safe(dsMultiUrl(addrs, net))])
   // `both` matters as much as `ok`: with only one source answering, a token can come back
   // priced from the WRONG pool — EAGLE from GeckoTerminal alone is the empty pool, 40% low.
   return { quotes: mergeQuotes(gtJ ? parseGtMulti(gtJ) : {}, dsJ ? parseDsPairs(dsJ) : {}), ok: !!(gtJ || dsJ), both: !!(gtJ && dsJ) }
+}
+
+/** DexScreener's cross-chain lookup: every pair for an address, on any chain. */
+export function dsFindUrl(addr) {
+  const a = normAddr(addr)
+  return a ? `https://api.dexscreener.com/latest/dex/tokens/${a}` : null
+}
+
+/**
+ * Which supported network an address trades on, from a cross-chain reply: the one holding its
+ * deepest pool (the same rule the price uses), counting only pairs where it is the BASE token.
+ * Null when it trades on none of them.
+ */
+export function pickNetwork(json, addr) {
+  const a = normAddr(addr)
+  const byDs = Object.fromEntries(Object.entries(NETWORKS).map(([k, v]) => [v.ds, k]))
+  let best = null, bestLiq = -1
+  for (const p of (Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : []))) {
+    const net = byDs[p?.chainId]
+    if (!net || normAddr(p?.baseToken?.address) !== a) continue
+    const liq = parseFloat(p?.liquidity?.usd)
+    const l = Number.isFinite(liq) ? liq : 0
+    if (l > bestLiq) { bestLiq = l; best = net }
+  }
+  return best
 }
 
 // ─── STORAGE ──────────────────────────────────────────────────────────────────
@@ -202,6 +256,8 @@ export function cleanEntry(e) {
   const cost = parseFloat(e?.cost)
   return {
     token,
+    // Absent on everything stored before networks existed, all of which were HyperEVM.
+    net: normNet(e?.net),
     amount,
     // Cost basis is optional. Absent means "unknown", which shows no PnL — never a 0 basis,
     // which would show the whole value as profit.
@@ -241,13 +297,14 @@ export function saveHoldings(store, acct, list) {
 export function upsertHolding(list, entry) {
   const e = cleanEntry(entry)
   if (!e) return list
-  const rest = (list ?? []).filter(x => x.token !== e.token)
+  // Same token AND network: one address on two chains is two different tokens.
+  const rest = (list ?? []).filter(x => !(x.token === e.token && x.net === e.net))
   return [...rest, e]
 }
 
-export function removeHolding(list, token) {
-  const t = normAddr(token)
-  return (list ?? []).filter(x => x.token !== t)
+export function removeHolding(list, token, net = DEFAULT_NET) {
+  const t = normAddr(token), n = normNet(net)
+  return (list ?? []).filter(x => !(x.token === t && normNet(x.net) === n))
 }
 
 // ─── VALUE ────────────────────────────────────────────────────────────────────
@@ -277,7 +334,7 @@ export function holdingValue(entry, quote) {
 export function holdingsTotal(list, quotes) {
   let usd = 0, priced = 0
   for (const e of (list ?? [])) {
-    const v = holdingValue(e, quotes?.[e.token])
+    const v = holdingValue(e, quotes?.[quoteKey(e.net, e.token)])
     if (v.usd != null) { usd += v.usd; priced++ }
   }
   return { usd, priced, count: (list ?? []).length, complete: priced === (list ?? []).length }

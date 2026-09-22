@@ -12,7 +12,7 @@
  * holding saved under that key is a holding nothing ever reads back.
  */
 import { loadHoldings, saveHoldings, upsertHolding, removeHolding, holdingValue, holdingsTotal,
-         normAddr, isTokenAddr } from './offex.js'
+         normAddr, isTokenAddr, NETWORKS, DEFAULT_NET, normNet, quoteKey } from './offex.js'
 import { fmtUSD, fmtPrice, fmtSize, esc } from './format.js'
 
 let ctx = {
@@ -64,23 +64,40 @@ let _inflight = null
  * Only repaints when a price actually changed, so a poll that brings back the same numbers
  * does not rebuild the Spot tab under someone's thumb.
  */
+// A quote key back into its network and address ("eth:0x…", or a bare HyperEVM address).
+const splitKey = (k) => {
+  const s = String(k ?? ''), i = s.indexOf(':')
+  return i > 0 ? [normNet(s.slice(0, i)), normAddr(s.slice(i + 1))] : [DEFAULT_NET, normAddr(s)]
+}
+
+// `extra`: quote keys (quoteKey(net, addr)) or bare addresses, which are HyperEVM.
 export function refreshPrices({ force = false, extra = [] } = {}) {
-  const want = [...new Set([...rows().map(r => r.entry.token), ...extra.map(normAddr).filter(Boolean)])]
+  const want = [...new Set([
+    ...rows().map(r => quoteKey(r.entry.net, r.entry.token)),
+    ...extra.map(k => quoteKey(...splitKey(k))),
+  ].filter(Boolean))]
   if (!want.length) return Promise.resolve(false)
   if (_inflight) return _inflight
   if (!force && Date.now() - _lastFetch < 60_000 && want.every(a => a in _quotes)) return Promise.resolve(false)
   _lastFetch = Date.now()
   _inflight = (async () => {
     try {
-      const r = await fetch('/offexprice?a=' + want.join(','))
-      if (!r.ok) return false
-      const { prices = {} } = await r.json()
+      // One request per network — each source prices one chain per call.
+      const byNet = {}
+      for (const k of want) { const [n, a] = splitKey(k); (byNet[n] ??= []).push(a) }
+      const answers = await Promise.all(Object.entries(byNet).map(async ([n, addrs]) => {
+        try {
+          const r = await fetch('/offexprice?a=' + addrs.join(',') + (n === DEFAULT_NET ? '' : '&n=' + n))
+          if (!r.ok) return null
+          const { prices = {} } = await r.json()
+          return addrs.map(a => [quoteKey(n, a), prices[a] ?? null])
+        } catch { return null }     // this network's answer is unknown — leave its quotes alone
+      }))
       let changed = false
       // Only what a reader can see counts as a change. Pool liquidity moves on every fetch,
       // and repainting the Spot tab once a minute for a figure nobody is looking at is churn.
       const shown = (q) => q ? [q.price, q.thin, q.icon, q.symbol, q.src, q.pool].join('|') : ''
-      for (const a of want) {
-        const q = prices[a] ?? null
+      for (const [a, q] of answers.filter(Boolean).flat()) {
         if (q) {
           if (shown(_quotes[a]) !== shown(q)) changed = true
           _quotes[a] = q; _quoteAt[a] = Date.now()
@@ -101,7 +118,7 @@ export function refreshPrices({ force = false, extra = [] } = {}) {
   return _inflight
 }
 
-export const quoteFor = (token) => _quotes[normAddr(token)] ?? null
+export const quoteFor = (token, net = DEFAULT_NET) => _quotes[quoteKey(net, token)] ?? null
 
 // ─── WHAT IS IN VIEW ──────────────────────────────────────────────────────────
 
@@ -111,7 +128,7 @@ export function rows() {
   const out = []
   for (const a of (ctx.accounts() ?? [])) {
     for (const entry of loadHoldings(store, a.addr)) {
-      out.push({ acct: a.addr, label: a.label ?? null, entry, value: holdingValue(entry, quoteFor(entry.token)) })
+      out.push({ acct: a.addr, label: a.label ?? null, entry, value: holdingValue(entry, quoteFor(entry.token, entry.net)) })
     }
   }
   return out.sort((x, y) => (y.value.usd ?? -1) - (x.value.usd ?? -1))
@@ -131,11 +148,11 @@ export function wheelItems() {
   const by = new Map()
   for (const r of rows()) {
     if (r.value.usd == null || !(r.value.usd > 0)) continue
-    const q   = quoteFor(r.entry.token)
-    const key = r.entry.token
+    const q   = quoteFor(r.entry.token, r.entry.net)
+    const key = quoteKey(r.entry.net, r.entry.token)
     const it  = by.get(key) ?? {
       coin: r.entry.symbol || r.entry.token, offex: true, token: key,
-      label: r.entry.symbol || (key.slice(0, 6) + '…' + key.slice(-4)),
+      label: r.entry.symbol || (r.entry.token.slice(0, 6) + '…' + r.entry.token.slice(-4)),
       icon: q?.icon ?? r.entry.icon ?? null,
       margin: 0, px: r.value.price, size: 0, spotCost: 0, uPnl: 0, notional: 0,
       longs: 0, shorts: 0, accts: new Set(), _costKnown: true,
@@ -160,7 +177,7 @@ export function wheelItems() {
 export function total() {
   refreshPrices()      // at most once a minute; the headline and the wheel read this, not just Spot
   const r = rows()
-  const quotes = Object.fromEntries(r.map(x => [x.entry.token, quoteFor(x.entry.token)]))
+  const quotes = Object.fromEntries(r.map(x => [quoteKey(x.entry.net, x.entry.token), quoteFor(x.entry.token, x.entry.net)]))
   return holdingsTotal(r.map(x => x.entry), quotes)
 }
 
@@ -201,7 +218,7 @@ const _open = new Set()   // expanded rows, by acct|token
 function icon(entry) {
   // The live quote's image wins over the one saved with the holding: EAGLE was saved when
   // the only source had no image for it, and would otherwise show a letter forever.
-  const q = quoteFor(entry.token)
+  const q = quoteFor(entry.token, entry.net)
   if (q?.icon) entry = { ...entry, icon: q.icon }
   const letter = esc((entry.symbol || '?').slice(0, 1).toUpperCase())
   const fallback = `<span style="display:flex;width:100%;height:100%;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:var(--fg-2)">${letter}</span>`
@@ -216,7 +233,8 @@ const short = (a) => a.slice(0, 6) + '…' + a.slice(-4)
 
 function rowHtml(r, showAcct) {
   const { entry: e, value: v } = r
-  const id  = r.acct + '|' + e.token
+  const id  = r.acct + '|' + quoteKey(e.net, e.token)
+  const q   = quoteFor(e.token, e.net)
   const xp  = _open.has(id)
   const sym = esc(e.symbol || short(e.token))
   const pnlLine = v.pnl != null
@@ -224,13 +242,14 @@ function rowHtml(r, showAcct) {
     : ''
   const detail = [
     ['Contract', `<span class="notranslate" style="font-family:var(--font-mono)">${esc(short(e.token))}</span>`],
+    ['Network', esc(NETWORKS[normNet(e.net)].label)],
     ...(showAcct ? [['Account', esc(r.label || short(r.acct))]] : []),
     ['Amount', ctx.prv(fmtSize(e.amount)) + ' ' + sym],
     ['Price', v.price != null ? '$' + fmtPrice(v.price) : 'No price yet'],
     // Where the number came from, so a price that looks wrong can be checked — and so the
     // deepest-pool rule is visible rather than taken on trust.
-    ...(quoteFor(e.token)?.src ? [['Priced from', esc([quoteFor(e.token).pool, quoteFor(e.token).src].filter(Boolean).join(' · '))
-      + (quoteFor(e.token).liq != null ? ` <span style="color:var(--muted)">($${fmtUSD(quoteFor(e.token).liq, 0)} liquidity)</span>` : '')]] : []),
+    ...(q?.src ? [['Priced from', esc([q.pool, q.src].filter(Boolean).join(' · '))
+      + (q.liq != null ? ` <span style="color:var(--muted)">($${fmtUSD(q.liq, 0)} liquidity)</span>` : '')]] : []),
     ['Value', ctx.prv(v.usd != null ? '$' + fmtUSD(v.usd, 2) : '—')],
     ...(e.cost != null ? [
       ['Cost', ctx.prv('$' + fmtUSD(e.cost, 2))],
@@ -259,7 +278,7 @@ function rowHtml(r, showAcct) {
     <div style="display:${xp ? '' : 'none'};padding:4px 16px 12px;background:var(--panel-2)">
       ${v.thin ? `<div style="font-size:11px;color:#f59e0b;padding:6px 0 4px">Thin market — this price comes from a pool with little liquidity and may not be what you could sell for.</div>` : ''}
       ${detail}
-      <button onclick="event.stopPropagation();window.__offexEdit('${esc(r.acct)}','${esc(e.token)}')"
+      <button onclick="event.stopPropagation();window.__offexEdit('${esc(r.acct)}','${esc(e.token)}','${esc(normNet(e.net))}')"
         style="width:100%;margin-top:8px;padding:9px;border-radius:9px;border:1px solid var(--border2);background:var(--panel-3);color:var(--fg);font-size:12px;font-weight:700;cursor:pointer">Edit</button>
     </div>
   </div>`
@@ -340,12 +359,12 @@ const field = (label, inner, hint = '') => `<label style="display:block;margin-b
 const inputCss = 'width:100%;box-sizing:border-box;background:var(--panel-2);border:1px solid var(--border2);border-radius:10px;padding:10px 11px;color:var(--fg);font-size:14px;outline:none'
 
 /** Open the sheet to add (no token) or edit (token given) a holding. */
-export function openSheet(acct = null, token = null) {
+export function openSheet(acct = null, token = null, net = DEFAULT_NET) {
   const accts = ctx.accounts() ?? []
   if (!accts.length) return
   const owner = normAddr(acct) ?? accts[0].addr
-  const existing = token ? loadHoldings(ctx.store(), owner).find(e => e.token === normAddr(token)) : null
-  _sheet = { acct: owner, token: existing?.token ?? null }
+  const existing = token ? loadHoldings(ctx.store(), owner).find(e => e.token === normAddr(token) && e.net === normNet(net)) : null
+  _sheet = { acct: owner, token: existing?.token ?? null, net: existing?.net ?? DEFAULT_NET }
 
   const ov = sheetEl()
   // Solid, not --panel alone: with a photo backdrop --panel is 55% alpha, and the Spot rows
@@ -356,10 +375,11 @@ export function openSheet(acct = null, token = null) {
       <div style="font-size:17px;font-weight:800">${existing ? 'Edit' : 'Add'} off-exchange token</div>
       <button onclick="window.__offexClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">&times;</button>
     </div>
-    ${field('Contract address (HyperEVM)',
+    ${field('Contract address',
       `<input id="offexToken" style="${inputCss};font-family:var(--font-mono);font-size:12.5px" placeholder="0x…" value="${esc(existing?.token ?? '')}" ${existing ? 'readonly' : ''} spellcheck="false" autocomplete="off">`,
-      'A token in your HyperEVM wallet, or anything else with a contract address.')}
+      'A token on HyperEVM, Ethereum, Base, Arbitrum or BNB Chain. The network is found for you.')}
     <div id="offexLookup" style="font-size:12.5px;margin:-4px 0 12px;min-height:18px"></div>
+    ${field('Network', `<select id="offexNet" style="${inputCss}">${Object.entries(NETWORKS).map(([k, n]) => `<option value="${k}" ${k === _sheet.net ? 'selected' : ''}>${esc(n.label)}</option>`).join('')}</select>`)}
     ${accts.length > 1 ? field('Account', `<select id="offexAcct" style="${inputCss}">${accts.map(a => `<option value="${esc(a.addr)}" ${a.addr === owner ? 'selected' : ''}>${esc(a.label || short(a.addr))}</option>`).join('')}</select>`) : ''}
     ${field('Amount you hold', `<input id="offexAmount" type="number" inputmode="decimal" step="any" min="0" style="${inputCss}" value="${existing ? esc(String(existing.amount)) : ''}" placeholder="0">`,
       'Locked or staked tokens too — a lock does not show up as a wallet balance, so it is typed here.')}
@@ -375,17 +395,20 @@ export function openSheet(acct = null, token = null) {
   ov.style.display = 'flex'
 
   const tokEl = document.getElementById('offexToken')
+  // Picking a network by hand asks that network only — no second-guessing the choice.
+  const netEl = document.getElementById('offexNet')
+  if (netEl) netEl.onchange = () => lookup(tokEl.value, { auto: false })
   if (!existing) {
     tokEl.oninput = () => lookup(tokEl.value)
     setTimeout(() => tokEl.focus(), 50)
   } else {
-    lookup(existing.token)
+    lookup(existing.token, { auto: false })
   }
 }
 
 let _lookupSeq = 0
 /** Resolve a pasted address to a name and a price before it is saved, so a typo shows now. */
-async function lookup(raw) {
+async function lookup(raw, { auto = true } = {}) {
   const out = document.getElementById('offexLookup')
   if (!out) return
   const a = normAddr(raw)
@@ -393,12 +416,29 @@ async function lookup(raw) {
   if (!a) { out.innerHTML = '<span style="color:var(--red)">That is not a contract address (0x followed by 40 characters).</span>'; return }
   const seq = ++_lookupSeq
   out.innerHTML = '<span style="color:var(--muted)">Looking it up…</span>'
-  await refreshPrices({ force: true, extra: [a] })
+  const netEl = document.getElementById('offexNet')
+  let net = normNet(netEl?.value)
+  await refreshPrices({ force: true, extra: [quoteKey(net, a)] })
   if (seq !== _lookupSeq) return          // a newer paste has taken over
-  const q = quoteFor(a)
+  let q = quoteFor(a, net), moved = false
+  // Nothing on the selected network: ask which supported network the address trades on. Every
+  // EVM chain uses the same 0x address shape, so a pasted address says nothing about which one
+  // it belongs to — DIME is an Ethereum token and HyperEVM had never heard of it.
+  if (!q && auto) {
+    out.innerHTML = `<span style="color:var(--muted)">Not on ${esc(NETWORKS[net].label)} — checking other networks…</span>`
+    const f = await fetch('/offexprice?find=' + a).then(r => (r.ok ? r.json() : null)).catch(() => null)
+    if (seq !== _lookupSeq) return
+    if (f?.net && normNet(f.net) !== net) {
+      net = normNet(f.net)
+      if (netEl) netEl.value = net
+      await refreshPrices({ force: true, extra: [quoteKey(net, a)] })
+      if (seq !== _lookupSeq) return
+      q = quoteFor(a, net); moved = !!q
+    }
+  }
   out.innerHTML = q
-    ? `<b>${esc(q.symbol || '')}</b> <span style="color:var(--muted)">${esc(q.name || '')}</span> · ${q.price != null ? '$' + fmtPrice(q.price) : 'no price'}${q.thin ? ' <span style="color:#f59e0b">· thin market</span>' : ''}`
-    : '<span style="color:#f59e0b">No HyperEVM market found for this address. You can still add it — it will show without a price until one exists.</span>'
+    ? `<b>${esc(q.symbol || '')}</b> <span style="color:var(--muted)">${esc(q.name || '')}</span> · ${q.price != null ? '$' + fmtPrice(q.price) : 'no price'}${q.thin ? ' <span style="color:#f59e0b">· thin market</span>' : ''}${moved ? ` <span style="color:var(--muted)">· found on ${esc(NETWORKS[net].label)}</span>` : ''}`
+    : `<span style="color:#f59e0b">No ${auto ? 'market on any supported network' : esc(NETWORKS[net].label) + ' market'} for this address. You can still add it — it will show without a price until one exists.</span>`
 }
 
 function save() {
@@ -412,15 +452,17 @@ function save() {
   const acctSel = document.getElementById('offexAcct')
   const acct = normAddr(acctSel ? acctSel.value : _sheet.acct)
   if (!acct) return say('Pick an account.')
-  const q = quoteFor(token)
+  const net = normNet(document.getElementById('offexNet')?.value)
+  const q = quoteFor(token, net)
   const store = ctx.store()
-  // Editing may MOVE the holding to another account. `from` is where it lives now; it is
-  // read from there so the note, cost and date travel with it.
+  // Editing may MOVE the holding to another account, or correct its network. `from`/`fromNet`
+  // is where it lives now; it is read from there so the note, cost and date travel with it.
   const from = _sheet.token ? _sheet.acct : acct
-  const prev = loadHoldings(store, from).find(e => e.token === token)
-    ?? loadHoldings(store, acct).find(e => e.token === token)
+  const fromNet = _sheet.token ? _sheet.net : net
+  const prev = loadHoldings(store, from).find(e => e.token === token && e.net === fromNet)
+    ?? loadHoldings(store, acct).find(e => e.token === token && e.net === net)
   const entry = {
-    token, amount,
+    token, net, amount,
     cost: document.getElementById('offexCost')?.value ?? '',
     note: document.getElementById('offexNote')?.value ?? '',
     // The name and icon are remembered, so the row reads properly even while the price
@@ -434,7 +476,7 @@ function save() {
     // Write the new home first, then take it out of the old one — so a failure part-way
     // leaves the holding in two accounts for a moment rather than in none.
     saveHoldings(store, acct, upsertHolding(loadHoldings(store, acct), entry))
-    if (from !== acct) saveHoldings(store, from, removeHolding(loadHoldings(store, from), token))
+    if (from !== acct || fromNet !== net) saveHoldings(store, from, removeHolding(loadHoldings(store, from), token, fromNet))
   } catch (e) { return say(e.message) }
   closeSheet()
   try { ctx.rerender() } catch {}
@@ -443,14 +485,14 @@ function save() {
 function remove() {
   if (!_sheet?.token) return
   const store = ctx.store()
-  try { saveHoldings(store, _sheet.acct, removeHolding(loadHoldings(store, _sheet.acct), _sheet.token)) } catch {}
+  try { saveHoldings(store, _sheet.acct, removeHolding(loadHoldings(store, _sheet.acct), _sheet.token, _sheet.net)) } catch {}
   closeSheet()
   try { ctx.rerender() } catch {}
 }
 
 if (typeof window !== 'undefined') {
   window.__offexAdd    = () => openSheet()
-  window.__offexEdit   = (acct, token) => openSheet(acct, token)
+  window.__offexEdit   = (acct, token, net) => openSheet(acct, token, net)
   window.__offexClose  = () => closeSheet()
   window.__offexSave   = () => save()
   window.__offexRemove = () => remove()
