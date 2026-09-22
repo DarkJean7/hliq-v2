@@ -1,5 +1,6 @@
 import { accountHealth, healthClass, approxHealth } from './health.js'
 import { mtmDelta } from './mtmbridge.js'
+import { monthNotesHtml, dayNotesHtml, noteDays, loadNotes } from './calnotes.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
 import { pairTrades, drawdownFor } from './drawdown.js'
 import { partRoe, fmtRoe } from './roe.js'
@@ -2632,7 +2633,8 @@ export function calDayClick(key, rootId) {
       <button class="cal-detail-close" onclick="window.__calDayClick('${key}','${rootId || ''}')">✕</button>
     </div>
     ${tradesHtml}${txHtml}${rwHtml}
-    ${!trades.length && !txEntries.length && !rwEntries.length ? '<div style="color:var(--muted);font-size:12px;padding:12px 0">No activity on this day.</div>' : ''}`
+    ${!trades.length && !txEntries.length && !rwEntries.length ? '<div style="color:var(--muted);font-size:12px;padding:12px 20px">No activity on this day.</div>' : ''}
+    ${dayNotesHtml(key, rootId)}`
 }
 
 // `owner` is the account the ledger belongs to, so a send can be told from a receive. The
@@ -2691,7 +2693,11 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
   // Store in cache for click handler + month nav re-render. Also stash per-root so
   // each calendar (desktop / mobile calendar tab / accounts tab) clicks its OWN data.
   _calCache = { fills, ledger, byDay, rootId, detailId: detailId || 'calDetail', owner }
-  root._calData = { fills, ledger, byDay, detailId: detailId || 'calDetail', owner }
+  root._calData = { fills, ledger, byDay, detailId: detailId || 'calDetail', owner, year, month }
+  // Days that carry a note (src/calnotes.js) — marked on the cell, and pressable even when
+  // nothing was traded, so any day can be written about.
+  let _noteDays = new Set()
+  try { _noteDays = noteDays(loadNotes(typeof localStorage !== 'undefined' ? localStorage : null), year, month) } catch {}
 
   // Month summary
   const todayD    = new Date()
@@ -2812,9 +2818,12 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
     ].join('') : ''
 
     const hasActivity = data && (data.pnl !== 0 || data.deposited > 0 || data.withdrawn > 0 || data.transfers > 0 || data.rewards > 0)
-    if (hasActivity) cls += ' cal-clickable'
+    // A quiet day still opens — for its notes, and to write one — but without the hover
+    // highlight an active day gets, so the grid does not read as all-clickable-activity.
+    cls += hasActivity ? ' cal-clickable' : ' cal-quiet'
+    if (_noteDays.has(key)) cls += ' cal-has-note'
 
-    cells += `<div class="${cls}"${hasActivity ? ` data-key="${key}" onclick="window.__calDayClick('${key}','${rootId}')"` : ''}>
+    cells += `<div class="${cls}" data-key="${key}" onclick="window.__calDayClick('${key}','${rootId}')">
       <div class="cal-day-num">${dayNum}</div>
       ${data && data.pnl !== 0 ? `
         <div class="cal-day-pnl ${data.pnl >= 0 ? 'pos' : 'neg'}">${data.pnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(data.pnl))}</div>
@@ -2905,6 +2914,21 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
       <div class="cal-dow-row" style="min-width:350px">${DOWS.map(d => `<div class="cal-dow-cell">${d}</div>`).join('')}</div>
       <div class="cal-grid" style="min-width:350px">${cells}</div>
     </div>`
+
+  // The month's notes as collapsed cards, UNDER the calendar and its day panel: a sibling of
+  // the panel, since the panel is where a pressed day opens and the cards come after it.
+  try {
+    const det = document.getElementById(detailId || 'calDetail')
+    const anchor = det && det.parentNode ? det : root
+    let box = document.querySelector(`[data-cal-notes="${rootId}"]`)
+    if (!box) {
+      box = document.createElement('div')
+      box.className = 'cal-notes'
+      box.setAttribute('data-cal-notes', rootId)
+      anchor.parentNode?.insertBefore(box, anchor.nextSibling)
+    }
+    box.innerHTML = monthNotesHtml(year, month, rootId)
+  } catch {}
 }
 
 // ─── TRANSFERS ────────────────────────────────────────────────────────────────

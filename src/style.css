@@ -1926,6 +1926,49 @@ html.has-bg-image .mkt-panel-search { background: transparent; }
 .cal-clickable:hover { border-color: var(--accent) !important; background: rgba(0,255,204,0.06) !important; }
 .cal-cell.cal-selected { border-color: var(--accent) !important; box-shadow: 0 0 0 1px var(--accent); }
 
+.cal-quiet { cursor: pointer; }
+/* A day with a note: a small dot in the corner, so the journal is findable from the grid. */
+.cal-cell { position: relative; }
+.cal-cell.cal-has-note::after {
+  content: ''; position: absolute; top: 7px; right: 7px; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--accent);
+}
+
+/* Calendar notes (src/calnotes.js) */
+.cal-notes:empty { display: none; }
+.cal-notes { margin-top: 16px; }
+/* The mobile calendars sit edge to edge; their day panel keeps a 16px gutter, and so do these. */
+.cal-notes[data-cal-notes^="mob"] { margin: 4px 16px 24px; }
+.cal-notes-title, .cal-day-notes .cal-detail-section-title {
+  font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted); margin: 0 2px 8px;
+}
+.cal-note-card {
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg2);
+  margin-bottom: 8px; overflow: hidden;
+}
+.cal-note-head { display: flex; align-items: center; gap: 10px; padding: 11px 14px; cursor: pointer; }
+.cal-note-titles { flex: 1; min-width: 0; }
+.cal-note-title { font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-note-date { font-size: 11px; color: var(--muted); margin-top: 2px; font-family: 'JetBrains Mono', monospace; }
+.cal-note-chev { color: var(--muted); flex-shrink: 0; transition: transform .2s; }
+.cal-note-card.open .cal-note-chev { transform: rotate(90deg); }
+.cal-note-body { padding: 0 14px 12px; border-top: 1px solid var(--border); }
+.cal-note-text { font-size: 13px; line-height: 1.55; padding-top: 10px; white-space: normal; overflow-wrap: anywhere; }
+.cal-note-actions { display: flex; gap: 8px; margin-top: 10px; }
+.cal-note-actions button {
+  padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border2); background: transparent;
+  color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.cal-note-actions button.del { color: var(--red); border-color: rgba(255,77,109,0.35); }
+.cal-day-notes .cal-note-card { background: var(--bg3); }
+/* The option to write one: a text link, not a call to action. */
+.cal-note-add {
+  background: none; border: none; padding: 2px 0; color: var(--muted); font-size: 12px;
+  font-weight: 600; cursor: pointer;
+}
+.cal-note-add:hover { color: var(--accent); }
+
 /* Day detail panel */
 .cal-detail {
   margin-top: 20px; border: 1px solid var(--border2);
