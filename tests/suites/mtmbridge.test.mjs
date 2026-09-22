@@ -88,6 +88,10 @@ console.log(nl + '-- wired in --')
   const main = fs.readFileSync('src/main.js', 'utf8')
   const rnd = fs.readFileSync('src/render.js', 'utf8')
   t('the client keeps it on the adopted snapshot', /books:\s+complete \? booksFrom\(d\.books, visible\) : null/.test(main))
+  // The server caches the snapshot for a minute; the client asks every minute. Re-measuring
+  // the base against the SAME old value erased every price move since it — $27–$80 steps.
+  t('the same snapshot handed back keeps the base it was adopted with',
+    /Number\(_combinedSnap\.updatedAt\) === Number\(d\.updatedAt\)/.test(main) && /acctBase: _combinedSnap\.acctBase,/.test(main))
   t('the single account stamps its book with its anchor', /portfolio\._mtmBook = mtmBook\(perpState\.assetPositions\)/.test(main))
   t('and its headline is carried by it', /const mtm = portfolio\?\._mtmBook \? mtmDelta\(portfolio\._mtmBook, livePositions\) : null/.test(rnd))
   t('every caller hands over the live positions', (rnd.match(/liveAccountValue\([^)]*perpState\?\.assetPositions\)/g) ?? []).length === 3)

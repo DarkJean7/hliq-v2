@@ -196,7 +196,8 @@ console.log(nl + '-- it is wired in --')
   t('the snapshot records what the rows added up to when it was adopted',
     CLI.includes('acctBase: complete ? acctBaseFrom(visible) : null'))
   t('and WHICH rows that was, so a same-sized set cannot be mistaken for the same one',
-    CLI.includes('acctKey:  complete ? rowKey(visible) : null'))
+    // Computed once as _key: the same-snapshot check compares it before a new base is taken.
+    CLI.includes('const _key = complete ? rowKey(visible) : null') && CLI.includes('acctKey:  _key,'))
   t('and the headline is bridged through it', CLI.includes('const bridged = bridgeCombined(_combinedSnap, rows)'))
   t('a refusal holds rather than guessing', CLI.includes('if (!bridged) return null'))
   // The watcher already reports the halves; it should say which bridge produced them.

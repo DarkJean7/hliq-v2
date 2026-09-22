@@ -9479,10 +9479,24 @@ async function _fetchCombinedSnap(force = false) {
         // Which wallets that base was measured over, so the bridge can refuse a set that
         // merely has the same size. Without this a row swapping out for another under rate
         // limiting published the difference between two wallets as a gain.
-        _combinedSnap = {
+        // The SAME snapshot again keeps the base it was adopted with. The server caches this
+        // for a minute and the client asks every minute, so it is often handed back the one it
+        // already has — and re-measuring the base from the rows NOW, against a value measured
+        // a minute AGO, zeroed out every price move in between: the headline snapped back by
+        // whatever the market did since the snapshot. eqstep, 2026-09-22: a dozen $27–$80
+        // steps with snapMoved=0 and every row flat. A new snapshot is measured afresh.
+        const _key = complete ? rowKey(visible) : null
+        const _same = _combinedSnap && _key && _combinedSnap.acctKey === _key &&
+          Number(_combinedSnap.updatedAt) === Number(d.updatedAt) && _combinedSnap.acctBase != null
+        _combinedSnap = _same ? {
+          ...d,
+          acctBase: _combinedSnap.acctBase,
+          acctKey:  _combinedSnap.acctKey,
+          books:    _combinedSnap.books,
+        } : {
           ...d,
           acctBase: complete ? acctBaseFrom(visible) : null,
-          acctKey:  complete ? rowKey(visible) : null,
+          acctKey:  _key,
           // What each wallet held, and at what marks, when that value was read. The bridge
           // carries the snapshot forward by price on these alone -- src/mtmbridge.js.
           books:    complete ? booksFrom(d.books, visible) : null,
