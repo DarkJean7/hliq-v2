@@ -42,8 +42,11 @@ t('a wallet with no HIP-3 positions is unaffected',
 
 console.log('\n-- equity never read this array, which is why it did not move --')
 t('the row\'s equity is anchored on perp account value', cli.includes('_perpLive: _perpAcctVal'))
-t('and bridges from a portfolio snapshot, not from positions',
-  cli.includes('portfolioAcctVal + (_perpAcctVal - _perpAtHist)'))
+// Still from the portfolio snapshot. The carry is now price acting on the book taken with it
+// (src/mtmbridge.js) — positions, but their SIZES and MARKS, never this unrealized array — and
+// the perp delta only for a snapshot cached before books existed.
+t('and bridges from a portfolio snapshot, by price on its book or else the perp delta',
+  cli.includes('portfolioAcctVal + (_mtmNow != null ? _mtmNow : (_perpAcctVal - _perpAtHist))'))
 t('the live path keeps a SEPARATE main-only figure for that bridge',
   cli.includes('r._mainUnreal   = liveUnreal'))
 

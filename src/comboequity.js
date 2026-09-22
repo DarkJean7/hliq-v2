@@ -47,7 +47,42 @@
  * reaches the headline. Perp-only stays as the fallback for the case it was written for: a
  * snapshot adopted before the rows could be summed has no total to anchor against, and a
  * stale-by-a-minute bridge is still better than no bridge.
+ *
+ * ── and then price alone ──
+ *
+ * Both of those bridges read a figure the client DERIVES — a row's total, a row's perp side —
+ * and every derived figure turned out to have its own way of jumping. The snapshot now carries
+ * each wallet's positions and marks, and the preferred bridge is price acting on them, which
+ * nothing but the market can move. See src/mtmbridge.js; the two older bridges remain only for
+ * a snapshot that arrived without books.
  */
+import { mtmBook, mergeBooks, mtmDelta } from './mtmbridge.js'
+
+const lc = a => String(a ?? '').toLowerCase()
+const isHip3 = ap => String((ap?.position ?? ap)?.coin ?? '').includes(':')
+
+/**
+ * The per-wallet books the bridge carries the snapshot forward from, fixed at adoption.
+ *
+ * Main-dex positions come from the SERVER's book: read with the snapshot's own value, so its
+ * marks are the ones that value was measured at, however old the snapshot is. HIP-3 positions
+ * are not in it (a plain clearinghouseState is main-dex only), so those are taken from the
+ * rows as they stand now — off by at most the HIP-3 move over the snapshot's age.
+ *
+ * Null unless the server sent a book for EVERY row: a wallet with no book would be bridged by
+ * nothing, and its whole move would read as flat.
+ */
+export function booksFrom(serverBooks, rows) {
+  if (!serverBooks || typeof serverBooks !== 'object' || !Array.isArray(rows)) return null
+  const out = {}
+  for (const r of rows) {
+    const k = lc(r?.addr)
+    const srv = serverBooks[k]
+    if (!srv || typeof srv !== 'object') return null
+    out[k] = mergeBooks(mtmBook((r.positions ?? []).filter(isHip3)), srv)
+  }
+  return out
+}
 
 /** The identity of a row set, order-independent. Two sets with the same COUNT are not the
  *  same set, and the bridge's anchor is only valid for the wallets it was measured over. */
@@ -74,7 +109,7 @@ function sumOrNull(rows, pick) {
  *          own totals at the instant the snapshot was adopted, and may be absent.
  * `rows`: the visible per-wallet rows, each with `accountValue` and `_perpLive`.
  *
- * Returns { val, basis } where basis is 'total' or 'perp', so the caller can log which bridge
+ * Returns { val, basis } where basis is 'mtm', 'total' or 'perp', so the caller can log which bridge
  * produced a figure without recomputing it.
  */
 export function bridgeCombined(snap, rows) {
@@ -88,7 +123,18 @@ export function bridgeCombined(snap, rows) {
   // and changes the set, and the difference between those two wallets then reads as PnL.
   if (snap.acctKey && rowKey(rows) !== snap.acctKey) return null
 
-  // Preferred: bridge on each wallet's TOTAL, which a spot/perp transfer cannot move.
+  // Preferred: price acting on what each wallet held when the snapshot was read.
+  if (snap.books) {
+    let d = 0, ok = true
+    for (const r of rows) {
+      const x = mtmDelta(snap.books[lc(r?.addr)], r?.positions)
+      if (x == null) { ok = false; break }
+      d += x
+    }
+    if (ok) return { val: anchor + d, basis: 'mtm' }
+  }
+
+  // Next: bridge on each wallet's TOTAL, which a spot/perp transfer cannot move.
   const acctBase = parseFloat(snap.acctBase)
   if (Number.isFinite(acctBase)) {
     const liveAcct = sumOrNull(rows, r => r.accountValue)

@@ -243,8 +243,9 @@ import { probeNavGeometry } from './navprobe.js'
 import { accountRoe, partRoe, positionRoe, fmtRoe, compareRoe } from './roe.js'
 import { ordersForCoin, byAccount, statusesFrom, classifyCancels, describeOrders,
          isAlreadyGone, sideOf as _ordSideOf, summarize as _cancelSummary } from './cancelbatch.js'
-import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey } from './comboequity.js'
-import { cashSample, classifyCashMove } from './perpcash.js'
+import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey, booksFrom } from './comboequity.js'
+import { cashSample, classifyCashMove, posFingerprint } from './perpcash.js'
+import { mtmBook, mtmDelta } from './mtmbridge.js'
 import { orderMarginByCoin, spotByCoin, SLICE_DUST } from './alloc.js'
 import { hlBudget as _hlBudget, meterTransport, weightOf as _hlWeightOf } from './hlbudget.js'
 import { holdingStart, fmtHeld, fmtWhen } from './holding.js'
@@ -1968,8 +1969,12 @@ let _maLastFetch  = 0
 // Stamp the perp account value seen at portfolio-fetch time onto the snapshot
 // so renders can add the live perp-equity delta between (1/min) refetches.
 function _anchorPortfolio(portfolio, perpState) {
-  if (Array.isArray(portfolio) && perpState?.marginSummary)
+  if (Array.isArray(portfolio) && perpState?.marginSummary) {
     portfolio._perpAnchor = parseFloat(perpState.marginSummary.accountValue ?? 0)
+    // What was held, and at what marks, when that value was read: the live value is carried
+    // forward by price acting on these, which no transfer or reserve can move. src/mtmbridge.js
+    portfolio._mtmBook = mtmBook(perpState.assetPositions)
+  }
   return portfolio
 }
 
@@ -2219,6 +2224,7 @@ async function refreshLive(force = false) {
     updateWatchTicker()
     if (state.selectedCoin) updateChartStats(state.selectedCoin)
     updateMobileView()
+    _singleEqWatch(!!freshPortfolio)
     _hlOk()   // clean pass — reset the breaker's escalation
 
   } catch (e) {
@@ -2229,6 +2235,40 @@ async function refreshLive(force = false) {
   } finally {
     _refreshInProgress = false
   }
+}
+
+// The single-account twin of _comboEqWatch. Every recorded eqstep so far came from the combined
+// view because that was the only one reporting — a spike here went unrecorded. Same kind, same
+// thresholds, src=single, and enough of the bridge's halves to say which one moved.
+let _sEqLast = null, _sEqAt = 0, _sEqReportAt = 0, _sEqAddr = null, _sEqPos = ''
+function _singleEqWatch(snapMoved) {
+  const val = parseFloat(shownAccountValue())
+  const now = Date.now()
+  const pos = posFingerprint(state.perpState?.assetPositions)
+  if (_sEqAddr !== state.addr) { _sEqAddr = state.addr; _sEqLast = null }
+  const prev = _sEqLast, dt = _sEqAt ? now - _sEqAt : -1, posWas = _sEqPos
+  _sEqLast = Number.isFinite(val) ? val : null; _sEqAt = now; _sEqPos = pos
+  if (prev == null || !Number.isFinite(val)) return
+  const step = Math.abs(val - prev)
+  if (step < 25 || (step < 100 && now - _sEqReportAt < 60_000)) return
+  _sEqReportAt = now
+  const p = state.portfolio
+  const snap = (p ?? []).find(x => x[0] === 'allTime')?.[1]?.accountValueHistory?.at(-1)?.[1]
+  const perpNow = parseFloat(state.perpState?.marginSummary?.accountValue)
+  const mtm = p?._mtmBook ? mtmDelta(p._mtmBook, state.perpState?.assetPositions) : null
+  try {
+    fetch('/api/error', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        kind: 'eqstep',
+        message: `equity step ${step.toFixed(2)} (${prev.toFixed(2)} -> ${val.toFixed(2)}) src=single snapMoved=${snapMoved ? 1 : 0}`,
+        stack: `basis=${mtm != null ? 'mtm' : 'perp'} snapVal=${snap} mtm=${mtm == null ? '' : mtm.toFixed(2)} ` +
+               `perpDelta=${Number.isFinite(perpNow) && p?._perpAnchor != null ? (perpNow - p._perpAnchor).toFixed(2) : ''} ` +
+               `posChanged=${pos !== posWas ? 1 : 0} dtMs=${dt} addr=${String(state.addr).slice(0, 8)}`,
+        url: location.pathname,
+      }),
+    }).catch(() => {})
+  } catch {}
 }
 
 // Pull fresh data right after a user action (place / close / cancel) so Orders, History,
@@ -8990,10 +9030,12 @@ async function _maReanchorRow(addr) {
     row._portVal  = snapVal
     row._perpBase = perpAt
     row._cash     = cashSample(perpAt, cs.assetPositions)
+    // HIP-3 from the row as it stands: the WebSocket keeps those live, and cs is main-dex only.
+    row._mtmBook  = mtmBook([...(cs.assetPositions ?? []), ...(row.positions ?? []).filter(ap => String((ap.position ?? ap)?.coin ?? '').includes(':'))])
     // The cached history store carries the pair too, so a later fan-out doesn't restore the
     // stale one. Keep everything else in the entry as it was.
     const hc = _maHistCache2.get(lc)
-    if (hc) _histSet(lc, { ...hc, portfolio: port, perpAtHist: perpAt, ts: Date.now() })
+    if (hc) _histSet(lc, { ...hc, portfolio: port, perpAtHist: perpAt, bookAtHist: row._mtmBook, ts: Date.now() })
     if (_applyAcctLiveCs(row, cs)) _allAcctLightPaint()
   } catch (e) { _hl429(e) }
 }
@@ -9037,7 +9079,11 @@ function _applyAcctLiveCs(r, cs, hip3Override) {
   if (_sample) r._cash = _sample
 
   const _perpB  = Number.isFinite(parseFloat(r._perpBase)) ? parseFloat(r._perpBase) : perpNow
-  const cand    = _base + (perpNow - _perpB)
+  // By price on what was held at the snapshot, when the row has that book -- nothing but the
+  // market moves it (src/mtmbridge.js). The perp-equity bridge and the transfer detection
+  // above remain for a row cached before books existed.
+  const _mtm    = r._mtmBook ? mtmDelta(r._mtmBook, [...mainPos, ...hip3]) : null
+  const cand    = _mtm != null ? _base + _mtm : _base + (perpNow - _perpB)
   // Glitched reading? Hold this account entirely for this update so the next good reading
   // still yields a correct delta from the same anchor.
   if (_acctEqFilter(r.addr, cand) !== cand) return false
@@ -9263,7 +9309,7 @@ function _allAcctLightPaint() {
   // Make liveAccountValue return the summed live equity: anchor = the series' latest
   // point, so snap + (perpAcctVal − anchor) = perpAcctVal = Σ r.accountValue.
   const snapAll = (state.portfolio ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory?.at(-1)?.[1]
-  if (snapAll != null && state.portfolio) state.portfolio._perpAnchor = parseFloat(snapAll)
+  if (snapAll != null && state.portfolio) { state.portfolio._perpAnchor = parseFloat(snapAll); delete state.portfolio._mtmBook }
   const liveTotal = visible.reduce((s, r) => s + (r.error ? 0 : parseFloat(r.accountValue ?? 0)), 0)
 
   _syncAllAcctCards()
@@ -9437,6 +9483,9 @@ async function _fetchCombinedSnap(force = false) {
           ...d,
           acctBase: complete ? acctBaseFrom(visible) : null,
           acctKey:  complete ? rowKey(visible) : null,
+          // What each wallet held, and at what marks, when that value was read. The bridge
+          // carries the snapshot forward by price on these alone -- src/mtmbridge.js.
+          books:    complete ? booksFrom(d.books, visible) : null,
         }
         _combinedAt = Date.now()
       }
@@ -9564,7 +9613,7 @@ function _allAcctReaggregate() {
   // the equity alternated between the live sum (fast tick) and the snapshot (reaggregate):
   // the "spiking" the user saw.
   const _snap = (state.portfolio ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory?.at(-1)?.[1]
-  if (_snap != null && state.portfolio) state.portfolio._perpAnchor = parseFloat(_snap)
+  if (_snap != null && state.portfolio) { state.portfolio._perpAnchor = parseFloat(_snap); delete state.portfolio._mtmBook }
   renderAll()
   renderMobileView()
   _syncAllAcctCards()
@@ -10076,7 +10125,7 @@ function _paperRefresh() {
   // liveAccountValue() offsets a portfolio snapshot by the perp delta; the paper
   // portfolio is already exact, so anchor it to itself and the offset is zero.
   const snap = state.portfolio.find(p => p[0] === 'allTime')?.[1]?.accountValueHistory?.at(-1)?.[1]
-  if (snap != null) state.portfolio._perpAnchor = parseFloat(snap)
+  if (snap != null) { state.portfolio._perpAnchor = parseFloat(snap); delete state.portfolio._mtmBook }
 
   // A throw in any renderer must not take down the caller — __goPaper installs the
   // 5s poll loop after this, so an unguarded render error left paper frozen: the
@@ -33888,7 +33937,10 @@ async function _lbFetchResults(entries) {
       hip3Pending.catch(() => ({ positions: [], orders: [] })),
     ])
     const _hc = await _histEnsure(key)   // memory, else the persisted store from a past session
-    let portfolio, fills, funding, _perpAtHist
+    let portfolio, fills, funding, _perpAtHist, _bookAtHist
+    // HIP-3 half of a fresh book: the previous row's positions are the live ones (the WebSocket
+    // keeps them current), where hip3Res may be a quarter of an hour old.
+    const _bookHip3 = () => (prevRow?.positions ? prevRow.positions.filter(_isHip3) : (hip3Res?.positions ?? []))
     // Perp state used for BOTH the anchor and the live value. Starts as the parallel read
     // above, but on a cache miss it's re-read AFTER the portfolio snapshot (see below).
     let csNow = cs
@@ -33920,15 +33972,16 @@ async function _lbFetchResults(entries) {
         portfolio = p2
         try { csNow = await info.clearinghouseState({ user: entry.addr }) } catch { csNow = cs }
         _perpAtHist = parseFloat(csNow.marginSummary?.accountValue ?? 0)
-        _histSet(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: Date.now() })
+        _bookAtHist = mtmBook([...(csNow.assetPositions ?? []), ..._bookHip3()])
+        _histSet(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, bookAtHist: _bookAtHist, ts: Date.now() })
       } else {
         // Snapshot fetch failed — keep the cached pair rather than mixing a fresh anchor
         // with a stale snapshot, which is the exact mismatch this branch exists to avoid.
-        ;({ portfolio, perpAtHist: _perpAtHist } = _hc)
-        _histSet(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: _hc.ts })
+        ;({ portfolio, perpAtHist: _perpAtHist, bookAtHist: _bookAtHist } = _hc)
+        _histSet(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, bookAtHist: _bookAtHist, ts: _hc.ts })
       }
     } else if (_histFresh) {
-      ({ portfolio, fills, funding, perpAtHist: _perpAtHist } = _hc)
+      ({ portfolio, fills, funding, perpAtHist: _perpAtHist, bookAtHist: _bookAtHist } = _hc)
     } else {
       // The portfolio snapshot is a point-in-time value, not a log, so it is always re-read
       // (weight 2). Fills and funding are append-only, so a stored copy — even an expired one
@@ -33953,9 +34006,10 @@ async function _lbFetchResults(entries) {
       // only on a cache miss.
       try { csNow = await info.clearinghouseState({ user: entry.addr }) } catch { csNow = cs }
       _perpAtHist = parseFloat(csNow.marginSummary?.accountValue ?? 0)
+      _bookAtHist = mtmBook([...(csNow.assetPositions ?? []), ..._bookHip3()])
       // Snapshot and anchor are written together, never one without the other — that pairing
       // is what the double-counting note above depends on, and it must hold on disk too.
-      _histSet(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, ts: Date.now() })
+      _histSet(key, { portfolio, fills, funding, perpAtHist: _perpAtHist, bookAtHist: _bookAtHist, ts: Date.now() })
     }
     const positions        = csNow.assetPositions ?? []
     const allTimePort      = (portfolio ?? []).find(p => p[0] === 'allTime')
@@ -33981,8 +34035,10 @@ async function _lbFetchResults(entries) {
     // _MA_HIST_TTL2 old, which is exactly what made one account read ~$2 off in All Accounts
     // vs its own (60s-fresh) single view. On a cache miss _perpAtHist == _perpAcctVal, so the
     // delta is 0 and this equals the raw snapshot.
+    // By price when the pair has a book (src/mtmbridge.js), else the perp bridge as before.
+    const _mtmNow          = _bookAtHist ? mtmDelta(_bookAtHist, [...positions, ..._bookHip3()]) : null
     const accountValue     = portfolioAcctVal != null
-      ? portfolioAcctVal + (_perpAcctVal - _perpAtHist)
+      ? portfolioAcctVal + (_mtmNow != null ? _mtmNow : (_perpAcctVal - _perpAtHist))
       : (Number.isFinite(_prevAcctVal) && _prevAcctVal > 0 ? _prevAcctVal : _perpAcctVal + _spotUSDCTotal)
     // Fast-tick baseline: the FIXED snapshot + its time-aligned perp anchor. The 12s value
     // tick recomputes _portVal + (perpNow − _perpBase) — identical formula to the single view.
@@ -34083,7 +34139,7 @@ async function _lbFetchResults(entries) {
     // headline silently fell back to the per-device sum — a DIFFERENT anchor, hundreds of
     // dollars away. Closing a position triggers exactly this rebuild, which is why the
     // equity stepped on a close and stayed there until every wallet had had a WS tick.
-    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, _cash: cashSample(_perpAcctVal, positions), _orderMargin, _dexStates, _spotBals, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, track, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
+    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, _mtmBook: portfolioAcctVal != null ? (_bookAtHist ?? null) : null, _cash: cashSample(_perpAcctVal, positions), _orderMargin, _dexStates, _spotBals, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, track, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
   }
 
   for (let i = 0; i < entries.length; i++) {

@@ -1,4 +1,5 @@
 import { accountHealth, healthClass, approxHealth } from './health.js'
+import { mtmDelta } from './mtmbridge.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
 import { pairTrades, drawdownFor } from './drawdown.js'
 import { partRoe, fmtRoe } from './roe.js'
@@ -253,7 +254,7 @@ let _lastGoodAcctVal = null
 let _shownEquity = null
 export function shownAccountValue() { return _shownEquity }
 
-function liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal) {
+function liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal, livePositions = null) {
   const snap = portfolioLatest(portfolio, 'allTime', 'accountValueHistory')
   if (snap == null) {
     // `perp + spot` double-counts on a unified account (the USDC balance already
@@ -270,8 +271,12 @@ function liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal) {
     if (_lastGoodAcctVal != null) return _lastGoodAcctVal
     return perpAcctVal
   }
+  // By price on what was held when the snapshot was read, when it carries that book. The perp
+  // bridge moved on every spot/perp transfer and order reserve, and a detector for each of
+  // those never closed the gap; price acting on positions cannot see them. src/mtmbridge.js
+  const mtm = portfolio?._mtmBook ? mtmDelta(portfolio._mtmBook, livePositions) : null
   const anchor = portfolio?._perpAnchor
-  const val = anchor != null ? snap + (perpAcctVal - anchor) : snap
+  const val = mtm != null ? snap + mtm : anchor != null ? snap + (perpAcctVal - anchor) : snap
   _lastGoodAcctVal = val
   _persistAcctVal(val)
   return val
@@ -324,7 +329,7 @@ export function computeAcctStats(perpState, spotState, fills, portfolio = [], fu
   const perpAcctVal   = parseFloat(margin.accountValue ?? 0)
   // HL "Portfolio Value": unified account value (on unified accounts the USDC
   // balance already contains perp equity, so perp+spot would double-count).
-  const accountValue  = liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal)
+  const accountValue  = liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal, perpState?.assetPositions)
 
   const perpUnrealized = positions.reduce((s, p) => s + parseFloat(p.position?.unrealizedPnl ?? 0), 0)
   // Spot/outcome holdings move in value too, and that was counted nowhere: an account
@@ -394,7 +399,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   // account, which is the PER-DEVICE SUM that comboequity.js and the mobile headline both
   // discarded as a third basis. Rotating a phone past the breakpoint swapped the mobile shell
   // for this one and so swapped the basis, and the headline changed with it.
-  const _localAcctVal    = liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal)
+  const _localAcctVal    = liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal, perpState?.assetPositions)
   const accountValue     = Number.isFinite(comboValue) && comboValue > 0 ? comboValue : _localAcctVal
   // "and then the old sum is still better than nothing" is what this used to say, and it was
   // wrong. Both _combinedServerValue and _combinedHeldValue refuse to answer when a wallet
@@ -1891,7 +1896,7 @@ export function renderPortfolioStats({ perpState, spotState, fills, funding, por
   // Same rule as the overview hero: in All Accounts the caller's server-anchored figure wins,
   // because summing perpState here is the per-device basis and this tab would otherwise
   // disagree with the headline one tab over.
-  const _localVal     = liveAccountValue(portfolio, _perpVal, _spotUSDCTot)
+  const _localVal     = liveAccountValue(portfolio, _perpVal, _spotUSDCTot, perpState?.assetPositions)
   const accountValue  = Number.isFinite(comboValue) && comboValue > 0 ? comboValue : _localVal
   // Same withholding rule as the overview hero: with a wallet errored the local sum is short
   // by that wallet, and printing it here would contradict the dash one tab over.
