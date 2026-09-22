@@ -20,6 +20,7 @@ import { homedir }                                            from 'node:os'
 import { randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual } from 'node:crypto'
 import { ethers }                                             from 'ethers'
 import { trackRecord, openLossOf, holdsStep, emptyHolds }     from './src/trackrecord.js'
+import { mtmBook }                                            from './src/mtmbridge.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const PORT       = 3002
@@ -955,6 +956,10 @@ async function computeCombined(addrs) {
   // same split that had a phone reading -$25 against a desktop's -$168. Handing back the
   // pieces lets every surface build its figure the one way, from the one source.
   const perWallet = {}
+  // Each wallet's positions and marks at the instant its value was read, so the client can
+  // carry this snapshot forward by price alone -- see src/mtmbridge.js. Main dex only (a plain
+  // clearinghouseState); the client adds the HIP-3 part from its own rows.
+  const books = {}
   for (const addr of addrs) {
     try {
       // Portfolio FIRST, then the anchor — never the other way round. Reading the anchor
@@ -967,6 +972,7 @@ async function computeCombined(addrs) {
       accountValue += parseFloat(hist[hist.length - 1][1]) || 0
       dayAgo       += _hlSeriesAt(hist, now - 86_400_000)
       perpBase     += parseFloat(cs?.marginSummary?.accountValue ?? 0)
+      books[String(addr).toLowerCase()] = mtmBook(cs?.assetPositions)
 
       // Realized side from the persisted accrual; unrealized from the state just read, so
       // the pair is consistent and the client can bridge live unrealized off unrealBase.
@@ -997,7 +1003,7 @@ async function computeCombined(addrs) {
     }
   }
   return {
-    updatedAt: now, accountValue, perpBase, dayAgo,
+    updatedAt: now, accountValue, perpBase, dayAgo, books,
     wallets: addrs.length - missing.length, missing,
     // settledPnl is the part that does NOT move with price: realized, funding, fees. The
     // client adds its own live unrealized and gets Net PnL.

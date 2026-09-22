@@ -85,8 +85,10 @@ console.log(nl + '-- the combined headline --')
 
 console.log(nl + '-- wired in --')
 {
+  const srv = fs.readFileSync('server.js', 'utf8')
   const main = fs.readFileSync('src/main.js', 'utf8')
   const rnd = fs.readFileSync('src/render.js', 'utf8')
+  t('the server snapshot carries each wallet\'s book', /books\[String\(addr\)\.toLowerCase\(\)\] = mtmBook\(cs\?\.assetPositions\)/.test(srv) && /accountValue, perpBase, dayAgo, books,/.test(srv))
   t('the client keeps it on the adopted snapshot', /books:\s+complete \? booksFrom\(d\.books, visible\) : null/.test(main))
   t('the single account stamps its book with its anchor', /portfolio\._mtmBook = mtmBook\(perpState\.assetPositions\)/.test(main))
   t('and its headline is carried by it', /const mtm = portfolio\?\._mtmBook \? mtmDelta\(portfolio\._mtmBook, livePositions\) : null/.test(rnd))
