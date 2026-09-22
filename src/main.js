@@ -3549,12 +3549,34 @@ function updateCoinHeader(coin) {
   }
 }
 
+/**
+ * Does this market have leverage at all? Spot and outcome markets do not.
+ *
+ * state.leverage is GLOBAL and carries over from the last perp you looked at, and every size
+ * box multiplies by it. Opening a spot market with 20x left over therefore turned "$10 of
+ * USDC" into an order for $200 of the token — which fills for real when the balance covers
+ * it. Nothing downstream caught it: placeOrdersRaw already skips the leverage UPDATE for spot
+ * ("invalid spot"), so it simply received a size that was twenty times too big.
+ *
+ * _coinMaxLev could not catch it either — assetMap and allMetas are PERP universes, so a spot
+ * coin misses both and fell through to the 50x default.
+ */
+function _noLeverageMkt(coin) {
+  return isSpotCoin(coin, _spotNameMap) || _lbIsOutcome(coin)
+}
+/** The leverage that actually applies to `coin` — 1 where the market has none. */
+function _effLeverage(coin = state.selectedCoin) {
+  return _noLeverageMkt(coin) ? 1 : (state.leverage ?? 5)
+}
+
 // Real max leverage for a coin, HIP-3-aware. `state.assetMap` is NOT rebuilt with HIP-3 in the
 // All-Accounts / leaderboard path (only `state.allMetas` is), so a HIP-3 coin like "xyz:SPCX"
 // misses the map and used to default to 50× — letting users over-lever past the dex's real cap
 // (SPCX is 20×). Fall back to searching every loaded dex universe, which IS populated there.
 function _coinMaxLev(coin) {
   const c = String(coin || '')
+  // Before the map lookups: a spot coin is in neither universe and used to fall through to 50.
+  if (_noLeverageMkt(c)) return 1
   const fromMap = state.assetMap?.[c]?.maxLeverage
   if (fromMap) return fromMap
   for (const m of (state.allMetas || [])) {
@@ -4416,11 +4438,11 @@ function _stopAvailTimer() {
 function _tradeAvail() {
   if (state.isAllAccounts) {
     const avail = _availEffective()
-    return { avail, maxNotional: avail * (state.leverage ?? 1) }
+    return { avail, maxNotional: avail * _effLeverage() }
   }
   if (_canAct()) {
     const avail = _availEffective()
-    return { avail, maxNotional: avail * (state.leverage ?? 1) }
+    return { avail, maxNotional: avail * _effLeverage() }
   }
   // Fallback formula when watching (no agent connected)
   const ps = state.perpState
@@ -4430,7 +4452,7 @@ function _tradeAvail() {
   const acctVal = parseFloat(ms.accountValue ?? 0)
   const posUsed = parseFloat(cms.totalMarginUsed ?? ms.totalMarginUsed ?? 0)
   const avail   = Math.max(0, acctVal - posUsed)
-  return { avail, maxNotional: avail * (state.leverage ?? 1) }
+  return { avail, maxNotional: avail * _effLeverage() }
 }
 
 function _updateAvailDisplay() {
@@ -4718,7 +4740,7 @@ function _proSizeCoin() {
   const mob  = document.getElementById('mobTradeAmtInput')
   if (mob && mob.offsetParent !== null) {
     const v = parseFloat(mob.value) || 0
-    return _mobTradeAmtUnit === 'coin' ? v : (mkt > 0 ? (v * (state.leverage ?? 5)) / mkt : 0)
+    return _mobTradeAmtUnit === 'coin' ? v : (mkt > 0 ? (v * _effLeverage(coin)) / mkt : 0)
   }
   const d = parseFloat(document.getElementById('sizeInput')?.value) || 0
   return state.sizeMode === 'coin' ? d : (mkt > 0 ? d / mkt : 0)
@@ -4729,7 +4751,7 @@ initPro({
   mark:     () => parseFloat(state.allMids?.[state.selectedCoin] ?? 0) || null,
   isBuy:    () => state.tradeSide !== 'short',
   sizeCoin: _proSizeCoin,
-  leverage: () => state.leverage ?? 5,
+  leverage: () => _effLeverage(),
   isolated: () => !!state.isIsolated,
   // Never state.addr: in the combined view that is the '__all_accounts__' sentinel, and an
   // order signed for a sentinel is an order signed for nobody.
@@ -4778,7 +4800,11 @@ function _mobVPlainSubmitLabel() {
   }
   const coin    = state.selectedCoin || 'BTC'
   const display = _spotNameMap[coin] ?? _mktDisplay(coin) ?? coin.replace(/.*:/, '')
-  return state.tradeSide !== 'short' ? `Long ${display}` : `Short ${display}`
+  // Spot is bought and sold, not gone long and short. One definition, so the sheet's markup
+  // and the side toggle both follow it.
+  const buy     = state.tradeSide !== 'short'
+  if (_noLeverageMkt(coin)) return buy ? `Buy ${display}` : `Sell ${display}`
+  return buy ? `Long ${display}` : `Short ${display}`
 }
 
 /** The mobile ticket's Pro button says the same thing the desktop one does. */
@@ -4943,7 +4969,8 @@ function updateOrderSummary() {
     coinSz  = price > 0 && sizeUSD > 0 ? sizeUSD / price : 0
   }
 
-  const margin = state.leverage > 0 ? sizeUSD / state.leverage : 0
+  const _lev   = _effLeverage(coin)
+  const margin = _lev > 0 ? sizeUSD / _lev : 0
 
   document.getElementById('sum-coin').textContent   = coin ?? '—'
   document.getElementById('sum-side').textContent   = state.tradeSide.toUpperCase()
@@ -23093,7 +23120,7 @@ window._mobVSubmitOrder = async function() {
   const mktPx   = parseFloat(state.allMids?.[coin] ?? 0)
   const avail   = _tradeAvail().avail
   const margin  = avail * _mobVTradeMarginPct / 100
-  const notional = margin * (state.leverage ?? 5)
+  const notional = margin * _effLeverage()
   const coinSz  = mktPx > 0 ? notional / mktPx : 0
   const limitPx = parseFloat(document.getElementById('mobTradeLimitInput')?.value ?? 0)
   const tpPx    = parseFloat(_mobVTradeTp) || 0
@@ -23105,7 +23132,7 @@ window._mobVSubmitOrder = async function() {
   if (!isPaper() && !(await _riskAckGate())) { if (statusEl) statusEl.innerHTML = ''; return }
   // Beginner guardrail: real money + high leverage → make the liquidation risk explicit before
   // it's placed. Only fires ≥15× (genuinely dangerous) and can be turned off; paper is exempt.
-  const _lev = state.leverage ?? 5
+  const _lev = _effLeverage()
   if (!isPaper() && _lev >= 15 && localStorage.getItem('hliq_lev_warn_off') !== '1') {
     const movePct = (100 / _lev).toFixed(1)
     if (!confirm(`⚠️ ${_lev}× leverage is high.\n\nA move of just ${movePct}% against you would liquidate this trade — you'd lose the margin you put in.\n\nConsider lower leverage while you're learning.\n\nPlace it anyway?`)) {
@@ -23793,8 +23820,8 @@ function _mobRenderTradeDetail(el) {
 
     <!-- Sticky action bar -->
     <div style="flex-shrink:0;display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--border);background:var(--bg)">
-      <button onclick="window._mobOpenOrderSheet('long')"  style="flex:1;padding:14px;border-radius:13px;border:none;background:var(--green);color:#000;font-weight:800;font-size:15px;cursor:pointer">Long</button>
-      <button onclick="window._mobOpenOrderSheet('short')" style="flex:1;padding:14px;border-radius:13px;border:none;background:var(--red);color:#fff;font-weight:800;font-size:15px;cursor:pointer">Short</button>
+      <button onclick="window._mobOpenOrderSheet('long')"  style="flex:1;padding:14px;border-radius:13px;border:none;background:var(--green);color:#000;font-weight:800;font-size:15px;cursor:pointer">${isSpot ? 'Buy' : 'Long'}</button>
+      <button onclick="window._mobOpenOrderSheet('short')" style="flex:1;padding:14px;border-radius:13px;border:none;background:var(--red);color:#fff;font-weight:800;font-size:15px;cursor:pointer">${isSpot ? 'Sell' : 'Short'}</button>
       <button onclick="window._mobOpenMktTools('orderbook')" style="flex-shrink:0;width:52px;border-radius:13px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg-2);cursor:pointer;display:flex;align-items:center;justify-content:center">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
       </button>
@@ -24292,7 +24319,7 @@ function _mobRenderDetailTrade(el, coin) {
   // In Pro mode neither plain tab is active — the Pro button carries the selection, and the
   // limit-price row belongs to the Limit tab, not to a Stop Limit or a Scale.
   const isLmt     = !isPro && state.orderType === 'limit'
-  const lev       = state.leverage ?? 5
+  const lev       = _effLeverage(coin)
   const avail     = _tradeAvail().avail
   const isIso     = state.isIsolated ?? false
   const accentClr = isBuy ? 'var(--green)' : 'var(--red)'
@@ -24303,6 +24330,9 @@ function _mobRenderDetailTrade(el, coin) {
   // form stuck on "Connect wallet to trade" in paper mode.
   const connected = window.__canTradeUI()
   const display   = _spotNameMap[coin] ?? _mktDisplay(coin) ?? coin.replace(/.*:/, '')
+  // Spot and outcome markets have no leverage, no margin mode and no funding, and cannot be
+  // sold short. The ticket used to render the perp form for them regardless.
+  const isSpotMkt = _noLeverageMkt(coin)
 
   // Make el a flex row (horizontal split) — no wrapper div needed
   el.style.overflow      = 'hidden'
@@ -24322,11 +24352,11 @@ function _mobRenderDetailTrade(el, coin) {
       </div>
       <!-- Long / Short -->
       <div style="display:flex;gap:6px">
-        <button id="mobTradeLongBtn" onclick="window._mobVSetSide('long')" style="flex:1;padding:12px;border-radius:11px;border:1px solid ${isBuy?'var(--green)':'var(--border2)'};font-size:14px;font-weight:700;cursor:pointer;background:${isBuy?'color-mix(in oklch,var(--green) 18%,transparent)':'var(--panel-2)'};color:${isBuy?'var(--green)':'var(--muted)'};transition:all .12s">Long</button>
-        <button id="mobTradeShortBtn" onclick="window._mobVSetSide('short')" style="flex:1;padding:12px;border-radius:11px;border:1px solid ${!isBuy?'var(--red)':'var(--border2)'};font-size:14px;font-weight:700;cursor:pointer;background:${!isBuy?'color-mix(in oklch,var(--red) 18%,transparent)':'var(--panel-2)'};color:${!isBuy?'var(--red)':'var(--muted)'};transition:all .12s">Short</button>
+        <button id="mobTradeLongBtn" onclick="window._mobVSetSide('long')" style="flex:1;padding:12px;border-radius:11px;border:1px solid ${isBuy?'var(--green)':'var(--border2)'};font-size:14px;font-weight:700;cursor:pointer;background:${isBuy?'color-mix(in oklch,var(--green) 18%,transparent)':'var(--panel-2)'};color:${isBuy?'var(--green)':'var(--muted)'};transition:all .12s">${isSpotMkt ? 'Buy' : 'Long'}</button>
+        <button id="mobTradeShortBtn" onclick="window._mobVSetSide('short')" style="flex:1;padding:12px;border-radius:11px;border:1px solid ${!isBuy?'var(--red)':'var(--border2)'};font-size:14px;font-weight:700;cursor:pointer;background:${!isBuy?'color-mix(in oklch,var(--red) 18%,transparent)':'var(--panel-2)'};color:${!isBuy?'var(--red)':'var(--muted)'};transition:all .12s">${isSpotMkt ? 'Sell' : 'Short'}</button>
       </div>
-      <!-- Margin mode + leverage -->
-      <div style="display:flex;gap:6px">
+      <!-- Margin mode + leverage — neither exists on spot -->
+      <div style="display:${isSpotMkt ? 'none' : 'flex'};gap:6px">
         <button id="mobTradeIsolatedBtn" onclick="window._mobVToggleIsolated()" style="flex:1;padding:9px;border-radius:10px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg-2);font-size:12px;font-weight:600;cursor:pointer">${isIso?'Isolated':'Cross'}</button>
         <button id="mobTradeLevBtn" onclick="window._mobTradeLevPicker()" style="flex:1;padding:9px;border-radius:10px;border:1px solid var(--accent);background:color-mix(in oklch,var(--accent) 12%,transparent);color:var(--accent);font-size:12px;font-weight:700;cursor:pointer">${lev}× Leverage</button>
       </div>
@@ -24397,10 +24427,10 @@ function _mobRenderDetailTrade(el, coin) {
         <div class="mob-sum-row"><span>Size (USD)</span><b id="mobSumSizeUsd">—</b></div>
         <div class="mob-sum-row"><span>Size (Coin)</span><b id="mobSumSizeCoin">—</b></div>
         <div class="mob-sum-row"><span>Leverage</span><b id="mobSumLev">—</b></div>
-        <div class="mob-sum-row"><span>Funding (8h)</span><b id="mobSumFund">—</b></div>
+        <div class="mob-sum-row" style="display:${isSpotMkt ? 'none' : 'flex'}"><span>Funding (8h)</span><b id="mobSumFund">—</b></div>
         <div class="mob-sum-row"><span>Est. Fee</span><b id="mobSumFee">—</b></div>
         <div style="height:1px;background:var(--border);margin:1px 0"></div>
-        <div class="mob-sum-row"><span style="font-weight:700;color:var(--fg)">Required Margin</span><b id="mobSumMargin" style="color:var(--accent)">—</b></div>
+        <div class="mob-sum-row"><span style="font-weight:700;color:var(--fg)">${isSpotMkt ? 'Total Cost' : 'Required Margin'}</span><b id="mobSumMargin" style="color:var(--accent)">—</b></div>
       </div>
       <!-- Position preview -->
       <div id="mobPosPreview" style="display:none;border:1px solid var(--border2);border-radius:12px;padding:11px 12px;background:var(--panel-2);flex-direction:column;gap:7px">
@@ -24577,7 +24607,7 @@ function _mobRenderDetailHistory(el, coin) {
 function _mobTradeAmtForPct(pct) {
   const marginAmt = _tradeAvail().avail * pct / 100
   if (_mobTradeAmtUnit !== 'coin') return marginAmt > 0 ? marginAmt.toFixed(2) : ''
-  const coin = state.selectedCoin, mktPx = parseFloat(state.allMids?.[coin] ?? 0), lev = state.leverage ?? 5
+  const coin = state.selectedCoin, mktPx = parseFloat(state.allMids?.[coin] ?? 0), lev = _effLeverage()
   const sz = mktPx > 0 ? (marginAmt * lev) / mktPx : 0
   return sz > 0 ? sz.toFixed(4) : ''
 }
@@ -24602,7 +24632,7 @@ window._mobTradeUpdateSlider = function() {
   // Convert the entered amount to a margin-equivalent for the slider position
   let marginEquiv = val
   if (_mobTradeAmtUnit === 'coin') {
-    const coin = state.selectedCoin, mktPx = parseFloat(state.allMids?.[coin] ?? 0), lev = state.leverage ?? 5
+    const coin = state.selectedCoin, mktPx = parseFloat(state.allMids?.[coin] ?? 0), lev = _effLeverage()
     marginEquiv = (mktPx > 0 && lev > 0) ? (val * mktPx) / lev : 0
   }
   slider.value = avail > 0 ? Math.min(100, marginEquiv / avail * 100) : 0
@@ -24613,7 +24643,7 @@ window._mobTradeToggleUnit = function() {
   const input = document.getElementById('mobTradeAmtInput')
   const coin  = state.selectedCoin
   const mktPx = parseFloat(state.allMids?.[coin] ?? 0)
-  const lev   = state.leverage ?? 5
+  const lev   = _effLeverage()
   const cur   = parseFloat(input?.value) || 0
   if (input && cur > 0 && mktPx > 0 && lev > 0) {
     input.value = _mobTradeAmtUnit === 'usd' ? ((cur * lev) / mktPx).toFixed(4) : ((cur * mktPx) / lev).toFixed(2)
@@ -24631,7 +24661,7 @@ function _mobTradeUpdateConvHint() {
   const hint = document.getElementById('mobTradeConvHint'); if (!hint) return
   const coin  = state.selectedCoin
   const mktPx = parseFloat(state.allMids?.[coin] ?? 0)
-  const lev   = state.leverage ?? 5
+  const lev   = _effLeverage()
   const display = _spotNameMap[coin] ?? _mktDisplay(coin) ?? String(coin).replace(/.*:/, '')
   const v = parseFloat(document.getElementById('mobTradeAmtInput')?.value) || 0
   if (!(v > 0) || !(mktPx > 0)) { hint.textContent = ''; return }
@@ -24704,7 +24734,7 @@ function _mobUpdateOrderSummary() {
   const mktPx = parseFloat(state.allMids?.[coin] ?? 0)
   const limitPx = parseFloat(document.getElementById('mobTradeLimitInput')?.value) || 0
   const price = state.orderType === 'limit' && limitPx > 0 ? limitPx : mktPx
-  const lev   = state.leverage ?? 5
+  const lev   = _effLeverage()
   const v     = parseFloat(document.getElementById('mobTradeAmtInput')?.value) || 0
   // Resolve coin size from the entered amount (USDC-margin or coin unit)
   const coinSz = _mobTradeAmtUnit === 'coin' ? v : (price > 0 ? (v * lev) / price : 0)
@@ -24836,7 +24866,7 @@ window._mobTradeSubmitNew = async function() {
   const isBuy     = state.tradeSide !== 'short'
   const mktPx     = parseFloat(state.allMids?.[coin] ?? 0)
   const inputVal  = parseFloat(document.getElementById('mobTradeAmtInput')?.value ?? 0)
-  const lev       = state.leverage ?? 5
+  const lev       = _effLeverage(coin)
   // Amount can be entered as USDC margin or as token size — resolve to coin size
   const coinSz    = _mobTradeAmtUnit === 'coin' ? inputVal : (mktPx > 0 ? (inputVal * lev) / mktPx : 0)
   const limitPx   = parseFloat(document.getElementById('mobTradeLimitInput')?.value ?? 0) || 0

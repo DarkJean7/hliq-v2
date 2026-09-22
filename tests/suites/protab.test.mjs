@@ -45,6 +45,8 @@ t('the sheet markup uses it', /\$\{esc\(_mobVPlainSubmitLabel\(\)\)\}/.test(CLI)
 // The literal that used to be written out three times must not be back anywhere.
 // Exactly one: the definition itself. Three was the bug.
 t('the rule is written once', (CLI.match(/`Long \$\{display\}`/g) || []).length === 1)
+// And the same definition now answers for spot, which is bought and sold rather than longed.
+t('spot gets Buy/Sell from that same place', /_noLeverageMkt\(coin\)\) return buy \? `Buy \$\{display\}`/.test(CLI))
 t('nor in the markup', !/\(isBuy \? `Long \$\{esc\(display\)\}`/.test(CLI))
 
 console.log(nl + '-- leaving Pro is still wired to both type tabs --')
@@ -58,17 +60,22 @@ t('and the desktop button has always had both branches',
 
 console.log(nl + '-- the label itself says the right thing --')
 // Built from the source so the assertion tracks the real function, not a copy of it.
-const mk = (canTrade, side, coin) => new Function('stubs', `
-  const { __canTradeUI, isMainWalletConnected, state, _spotNameMap, _mktDisplay } = stubs
+// _noLeverageMkt is stubbed rather than pulled in: this suite is about what the button SAYS,
+// and which markets have leverage is pinned by spotticket.test.mjs.
+const mk = (canTrade, side, coin, spot = false) => new Function('stubs', `
+  const { __canTradeUI, isMainWalletConnected, state, _spotNameMap, _mktDisplay, _noLeverageMkt } = stubs
   const window = { __canTradeUI }
   ${fnBody('function _mobVPlainSubmitLabel(')}
   return _mobVPlainSubmitLabel()
 `)({ __canTradeUI: () => canTrade, isMainWalletConnected: () => false,
-     state: { selectedCoin: coin, tradeSide: side }, _spotNameMap: {}, _mktDisplay: () => null })
+     state: { selectedCoin: coin, tradeSide: side }, _spotNameMap: {}, _mktDisplay: () => null,
+     _noLeverageMkt: () => spot })
 t('long side names the coin', mk(true, 'long', 'LIT') === 'Long LIT')
 t('short side names the coin', mk(true, 'short', 'LIT') === 'Short LIT')
 t('and it never says Chase', !mk(true, 'long', 'LIT').includes('Chase'))
 t('not tradeable falls back to the connect prompt', mk(false, 'long', 'LIT').includes('Connect wallet'))
+t('a spot market is bought, not longed', mk(true, 'long', '@142', true) === 'Buy @142')
+t('and sold, not shorted', mk(true, 'short', '@142', true) === 'Sell @142')
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
