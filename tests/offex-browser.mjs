@@ -450,6 +450,19 @@ console.log(NL + '-- a token on another network is found and priced there --')
   await n.evaluate(({ a, d }) => window.__offexEdit(a, d, 'eth'), { a: ADDR, d: DIME })
   await waitFor(n, 'the edit sheet', () => document.getElementById('offexSheet')?.style.display === 'flex')
   ok('editing keeps the network', (await n.inputValue('#offexNet')) === 'eth' && (await n.inputValue('#offexAmount')) === '1617.19')
+  await n.evaluate(() => window.__offexClose())
+
+  // The reported row itself: DIME saved BEFORE networks existed, so filed as HyperEVM and
+  // unpriced. Opening Edit must find Ethereum, and Save must move it there — not add a second.
+  await n.evaluate((a) => localStorage.setItem('hliq_offex_' + a.toLowerCase(),
+    JSON.stringify([{ token: '0xb32e10022ffbedfe10bc818a1c7e67d9d87e0fa7', amount: 1617.19, cost: 98.97, added: 1 }])), ADDR)
+  await n.evaluate(({ a, d }) => window.__offexEdit(a, d), { a: ADDR, d: DIME })
+  await waitFor(n, 'the old row to be found on Ethereum', () => document.getElementById('offexNet')?.value === 'eth', 10000)
+  ok('an old unpriced holding is found on its real network', (await n.inputValue('#offexNet')) === 'eth', await n.textContent('#offexLookup'))
+  await n.click('#offexSave')
+  await waitFor(n, 'the sheet to close', () => document.getElementById('offexSheet')?.style.display === 'none')
+  const moved = JSON.parse(await n.evaluate((a) => localStorage.getItem('hliq_offex_' + a.toLowerCase()), ADDR) || '[]')
+  ok('and Save moves it there, keeping what was paid', moved.length === 1 && moved[0].net === 'eth' && moved[0].cost === 98.97, moved)
   await nctx.close()
 }
 

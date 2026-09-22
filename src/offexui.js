@@ -402,7 +402,10 @@ export function openSheet(acct = null, token = null, net = DEFAULT_NET) {
     tokEl.oninput = () => lookup(tokEl.value)
     setTimeout(() => tokEl.focus(), 50)
   } else {
-    lookup(existing.token, { auto: false })
+    // Auto only when it has no price where it is saved: a holding added before networks
+    // existed was filed as HyperEVM whatever chain it is on, and this finds the right one —
+    // the save then moves it. A priced holding is on the right network and is left alone.
+    lookup(existing.token, { auto: !quoteFor(existing.token, existing.net) })
   }
 }
 
