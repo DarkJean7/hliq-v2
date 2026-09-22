@@ -263,6 +263,7 @@ import { rulesFor, clampLeverage, marginModeFor, delistedNames, hasNoActivity, d
 import { initPro, selectPro, clearPro, proActive, proType, proButtonLabel, refreshProPreview,
          openProMenu, openProLearn, mountProFields, submitPro, stopAllChases } from './proticket.js'
 import { byId as _proById } from './protypes.js'
+import { multiSort as _mktMultiSort, cycleSortKey as _mktCycleSortKey, cleanSortKeys as _mktCleanSortKeys } from './mktsort.js'
 import { initOffex, sectionHtml as _offexSectionHtml, total as _offexTotal,
          balanceAdd as _offexBalanceAdd, countInBalance as _offexInBal,
          count as _offexCount, wheelItems as _offexWheelItems } from './offexui.js'
@@ -11213,6 +11214,15 @@ let _mobTradeDetailCoin = null      // coin the detail was last fully built for 
 let _mobTradeDetailTab  = 'chart'   // 'chart' | 'trade' | 'orderbook' | 'history'
 let _mobTradeSort       = 'oi'      // 'volume' | 'change' | 'price' | 'name' | 'oi'
 let _mobTradeSortDir    = 'desc'    // 'desc' | 'asc' — re-pressing the active sort flips it
+// Multi-column sort (src/mktsort.js): when on, pressing a column adds it to an ordered list
+// instead of replacing the sort. Remembered on the device — it is a way of looking at markets.
+let _mobMultiSort = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem('hliq_mkt_multisort_v1') || 'null')
+    return { on: !!v?.on, keys: _mktCleanSortKeys(v?.keys) }
+  } catch { return { on: false, keys: [] } }
+})()
+function _mobMultiSave() { try { localStorage.setItem('hliq_mkt_multisort_v1', JSON.stringify(_mobMultiSort)) } catch {} }
 let _mobTradeMainFilter = 'all'     // 'all' | 'perps' | 'spot' | 'crypto' | 'tradfi' | 'stocks' | 'indices' | 'commodities' | 'fx' | 'metals' | 'energy' | 'preipo' | 'hip3' | 'trending' | 'favorites'
 let _mobTradeSearchQ    = ''
 let _mobTradeObTimer    = null
@@ -19263,6 +19273,8 @@ function _mobVRenderContent(tick = false) {
   // Same for Pulse's permanent lift — without this every other tab would render inside a
   // fixed pane stuck over the app, which is exactly the bug the Strats guard exists for.
   if (_mobVActiveTab !== 'pulse') document.getElementById('mobileView')?.classList.remove('mob-tab-full')
+  // The Trade tab paints a solid ground under a backdrop photo — see style.css.
+  document.getElementById('mobileView')?.classList.toggle('mob-in-trade', _mobVActiveTab === 'trade')
 
   // On a real (non-tick) render, harvest this tab's strings after it's in the DOM so a later
   // language switch can pre-warm from them. Deferred + non-tick only, so it's cheap.
@@ -23182,14 +23194,7 @@ window._mobTradeSetFilter = function(type) {
   const rows = document.getElementById('mobMktRows')
   if (rows) rows.innerHTML = _mobBuildMarketRows()
   // Refresh every sort button's active state + label (OI relabels to Mkt Cap in the spot tab).
-  document.querySelectorAll('.mob-mkt-sortbtn').forEach(b => {
-    const active = b.dataset.sort === _mobTradeSort
-    b.style.fontWeight = active ? '700' : '500'
-    b.style.color      = active ? 'var(--fg)' : 'var(--muted)'
-    const lbl = b.dataset.sort === 'oi' && type === 'spot' ? 'Mkt Cap'
-              : ({ volume:'Vol', change:'Chg%', price:'Price', oi:'OI' }[b.dataset.sort] ?? b.dataset.sort)
-    b.textContent = lbl + (active ? (_mobTradeSortDir === 'asc' ? ' ▴' : ' ▾') : '')
-  })
+  _mobSortBtnsPaint()
   // Re-render pills
   document.querySelectorAll('.mob-mkt-fpill').forEach(b => {
     const active = b.dataset.type === type
@@ -23199,20 +23204,57 @@ window._mobTradeSetFilter = function(type) {
   })
 }
 
+// One painter for the sort buttons, for single and multi mode alike. In multi mode a chosen
+// column shows its place in the order (1, 2, …) and its direction; the rest stay plain.
+function _mobSortBtnsLabel(type, active, dir, pos) {
+  const base = type === 'oi' && _mobTradeMainFilter === 'spot' ? 'Mkt Cap'
+    : ({ volume: 'Vol', change: 'Chg%', price: 'Price', oi: 'OI' }[type] ?? type)
+  if (!active) return base
+  return (pos ? `<sup class="mob-mkt-sortpos">${pos}</sup>` : '') + base + (dir === 'asc' ? ' ▴' : ' ▾')
+}
+function _mobSortBtnState(type) {
+  if (_mobMultiSort.on) {
+    const i = _mobMultiSort.keys.findIndex(x => x.k === type)
+    return i < 0 ? { active: false } : { active: true, dir: _mobMultiSort.keys[i].dir, pos: i + 1 }
+  }
+  return _mobTradeSort === type ? { active: true, dir: _mobTradeSortDir, pos: 0 } : { active: false }
+}
+function _mobSortBtnsPaint() {
+  document.querySelectorAll('.mob-mkt-sortbtn').forEach(b => {
+    const st = _mobSortBtnState(b.dataset.sort)
+    b.style.fontWeight = st.active ? '700' : '500'
+    b.style.color      = st.active ? 'var(--fg)' : 'var(--muted)'
+    b.innerHTML = _mobSortBtnsLabel(b.dataset.sort, st.active, st.dir, st.pos)
+  })
+  const m = document.getElementById('mobMktMultiBtn')
+  if (m) { m.classList.toggle('on', _mobMultiSort.on); m.setAttribute('aria-pressed', String(_mobMultiSort.on)) }
+}
+
 window._mobTradeSetSort = function(type) {
-  // Re-pressing the active column toggles asc/desc; a new column starts descending.
-  if (_mobTradeSort === type) _mobTradeSortDir = _mobTradeSortDir === 'desc' ? 'asc' : 'desc'
-  else { _mobTradeSort = type; _mobTradeSortDir = 'desc' }
+  if (_mobMultiSort.on) {
+    // Multi: add it, flip it, or take it out (src/mktsort.js cycleSortKey).
+    _mobMultiSort.keys = _mktCycleSortKey(_mobMultiSort.keys, type)
+    _mobMultiSave()
+  } else {
+    // Re-pressing the active column toggles asc/desc; a new column starts descending.
+    if (_mobTradeSort === type) _mobTradeSortDir = _mobTradeSortDir === 'desc' ? 'asc' : 'desc'
+    else { _mobTradeSort = type; _mobTradeSortDir = 'desc' }
+  }
   const rows = document.getElementById('mobMktRows')
   if (rows) rows.innerHTML = _mobBuildMarketRows()
-  const arrow = _mobTradeSortDir === 'asc' ? ' ▴' : ' ▾'
-  document.querySelectorAll('.mob-mkt-sortbtn').forEach(b => {
-    const active = b.dataset.sort === _mobTradeSort
-    b.style.fontWeight = active ? '700' : '500'
-    b.style.color      = active ? 'var(--fg)' : 'var(--muted)'
-    const baseLabel = b.dataset.sort === 'oi' && _mobTradeMainFilter === 'spot' ? 'Mkt Cap' : ({ volume:'Vol', change:'Chg%', price:'Price', oi:'OI' }[b.dataset.sort] ?? b.dataset.sort)
-    b.textContent = baseLabel + (active ? arrow : '')
-  })
+  _mobSortBtnsPaint()
+}
+
+// Multi-sort on or off. Turning it on starts from the column already sorting the list, so the
+// order on screen does not jump; the chosen columns are kept for next time it is turned on.
+window._mobTradeMulti = function() {
+  _mobMultiSort.on = !_mobMultiSort.on
+  if (_mobMultiSort.on && !_mobMultiSort.keys.length && ['oi', 'change', 'volume', 'price'].includes(_mobTradeSort))
+    _mobMultiSort.keys = [{ k: _mobTradeSort, dir: _mobTradeSortDir }]
+  _mobMultiSave()
+  const rows = document.getElementById('mobMktRows')
+  if (rows) rows.innerHTML = _mobBuildMarketRows()
+  _mobSortBtnsPaint()
 }
 
 window._mobTradeSearch = function(q) {
@@ -23371,7 +23413,16 @@ function _mobBuildMarketRows() {
   const _saneMcap = k => { const m = _mktCtxMap[k]?.marketCap ?? 0; return m > _MCAP_CEIL ? 0 : m }
   const oiMetric = k => f === 'spot' ? _saneMcap(k) : (_mktCtxMap[k]?.oi ?? 0)
   const volOf    = k => _mktCtxMap[k]?.volume ?? 0
-  if (_mobTradeSort === 'volume')      entries.sort((a,b) => ((_mktCtxMap[a[0]]?.volume ?? 0) - (_mktCtxMap[b[0]]?.volume ?? 0)) * dir)
+  if (_mobMultiSort.on && _mobMultiSort.keys.length) {
+    // Several columns at once, blended by rank with the first counting most (src/mktsort.js).
+    // OI means market cap under Spot, exactly as the single sort reads it.
+    const val = ([k, px], col) => col === 'oi' ? oiMetric(k)
+      : col === 'volume' ? volOf(k)
+      : col === 'change' ? (_mktCtxMap[k]?.change24 ?? 0)
+      : parseFloat(px ?? 0)
+    entries = _mktMultiSort(entries, _mobMultiSort.keys, val, (a, b) => volOf(b[0]) - volOf(a[0]))
+  }
+  else if (_mobTradeSort === 'volume') entries.sort((a,b) => ((_mktCtxMap[a[0]]?.volume ?? 0) - (_mktCtxMap[b[0]]?.volume ?? 0)) * dir)
   else if (_mobTradeSort === 'change') entries.sort((a,b) => ((_mktCtxMap[a[0]]?.change24 ?? 0) - (_mktCtxMap[b[0]]?.change24 ?? 0)) * dir)
   else if (_mobTradeSort === 'price')  entries.sort((a,b) => (parseFloat(a[1] ?? 0) - parseFloat(b[1] ?? 0)) * dir)
   else if (_mobTradeSort === 'name')   entries.sort((a,b) => a[0].replace(/.*:/,'').localeCompare(b[0].replace(/.*:/,'')) * dir)
@@ -23445,10 +23496,9 @@ function _mobRenderTradeList(el) {
       style="display:inline-block;padding:6px 14px;border-radius:20px;border:1px solid ${active?'var(--accent)':'var(--border)'};background:${active?'color-mix(in oklch,var(--accent) 15%,transparent)':'transparent'};color:${active?'var(--accent)':'var(--muted)'};font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;vertical-align:middle">${lbl}</button>`
   }
   const sb = (label, type) => {
-    const active = _mobTradeSort === type
-    const arrow  = _mobTradeSortDir === 'asc' ? ' ▴' : ' ▾'
+    const st = _mobSortBtnState(type)
     return `<button class="mob-mkt-sortbtn" data-sort="${type}" onclick="window._mobTradeSetSort('${type}')"
-      style="padding:10px 6px;border:none;background:none;font-size:12px;font-weight:${active?'700':'500'};color:${active?'var(--fg)':'var(--muted)'};cursor:pointer;white-space:nowrap;min-height:40px">${label}${active?arrow:''}</button>`
+      style="padding:10px 6px;border:none;background:none;font-size:12px;font-weight:${st.active?'700':'500'};color:${st.active?'var(--fg)':'var(--muted)'};cursor:pointer;white-space:nowrap;min-height:40px">${_mobSortBtnsLabel(type, st.active, st.dir, st.pos)}</button>`
   }
 
   el.innerHTML = `
@@ -23476,7 +23526,10 @@ function _mobRenderTradeList(el) {
       </div>
       <div id="mobMktDexRow" data-dragscroll style="display:none;overflow-x:scroll;-webkit-overflow-scrolling:touch;touch-action:pan-x;scrollbar-width:none;-ms-overflow-style:none;border-bottom:1px solid var(--border);padding:7px 12px;white-space:nowrap"></div>
       <div style="display:flex;align-items:center;padding:0 12px 0 52px;border-bottom:2px solid var(--border);background:var(--panel-2);min-height:42px;gap:4px">
-        <div style="flex:1;font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:0.06em">Symbol</div>
+        <div style="flex:1;display:flex;align-items:center;gap:8px;min-width:0">
+          <span style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:0.06em">Symbol</span>
+          <button id="mobMktMultiBtn" class="mob-mkt-multibtn${_mobMultiSort.on ? ' on' : ''}" aria-pressed="${_mobMultiSort.on}" title="Sort by several columns at once" onclick="window._mobTradeMulti()">Multi</button>
+        </div>
         <div style="display:flex;align-items:center">${sb('Vol','volume')}${sb('Chg%','change')}${sb('Price','price')}${sb('OI','oi')}</div>
       </div>
     </div>

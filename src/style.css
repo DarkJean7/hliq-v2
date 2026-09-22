@@ -7839,3 +7839,23 @@ html.has-bg-image .topbar { backdrop-filter: blur(12px); }
   box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
 }
 .bd-swatch[aria-pressed='true'] { border-color: var(--accent); }
+
+/* Market list multi-sort (src/mktsort.js): the toggle beside "Symbol", and each chosen
+   column's place in the order. */
+.mob-mkt-multibtn {
+  padding: 3px 8px; border-radius: 6px; border: 1px solid var(--border2); background: transparent;
+  color: var(--muted); font-size: 10.5px; font-weight: 700; cursor: pointer; letter-spacing: .02em;
+}
+.mob-mkt-multibtn.on {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+}
+.mob-mkt-sortpos { font-size: 9px; color: var(--accent); margin-right: 1px; font-weight: 800; }
+
+/* The Trade tab is a solid pane under a backdrop photo. It is a wall of prices; reading them
+   through a picture is what was asked to stop. Panels inside are translucent in photo mode,
+   and with an opaque --bg under them they read opaque too. */
+html.has-bg-image #mobileView.mob-in-trade .mob-v-content {
+  background: var(--bg) !important;
+  background-image: none !important;
+}
