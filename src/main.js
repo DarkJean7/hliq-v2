@@ -20073,9 +20073,12 @@ function _mobVRenderContent(tick = false) {
             ['Position Value', _prv('$' + fmtUSD(posVal))],
             ['Entry Price', '$' + fmtPrice(p.entryPx)],
             ['Liq. Price', _prv(liqPx > 0 ? '$' + fmtPrice(liqPx) : '—'), liqPx > 0 && markPx > 0 && (sz > 0 ? liqPx > markPx * 0.9 : liqPx < markPx * 1.1) ? 'var(--red)' : ''],
-            // Where liquidation ends up once an armed guard has spent its remaining fires.
-            ..._guardedLiqCell(p, liqPx),
             ['Margin Used', _prv('$' + fmtUSD(margin))],
+            // Where liquidation ends up once an armed guard has spent its remaining fires.
+            // Under Margin Used rather than under Liq. Price: the two liq prices then sit in
+            // the same column, one above the other, which is how they are read against each
+            // other. Asked for in those words.
+            ..._guardedLiqCell(p, liqPx),
             // Effective leverage = notional ÷ margin. Unlike the leverage SETTING shown in
             // the header (e.g. 20x), this drops as margin is added — the real current ratio.
             ['Real Leverage', margin > 0 ? (posVal / margin).toFixed(2) + 'x' : '—'],
