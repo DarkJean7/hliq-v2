@@ -253,6 +253,7 @@ import { accountHealth as _hlHealth, healthClass as _hlHealthCls, approxHealth a
 import { sideOf as _tsSide, stopPrice as _tsStopPx, resolveSize as _tsSize,
          validate as _tsValidate, describe as _tsDescribe } from './trailstop.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
+import { guardPlan } from './guardplan.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
 import { trackRecord, isSmallSample, openLossOf, holdsStep } from './trackrecord.js'
 import { createJoiner, ownedAddresses } from './lbjoin.js'
@@ -7022,6 +7023,62 @@ window.__guardPreview = function () {
   _guardRenderPlan()
 }
 
+/**
+ * The liquidation price a guarded position REALLY has: where liquidation ends up once the
+ * armed guard has spent every fire it has left.
+ *
+ * Asked for as "the 'real' liq": the exchange's liquidation price describes the position as it
+ * stands, before the guard has done anything, so a guarded position reads as more dangerous
+ * than it is. Both guards move it — Liq Guard by adding margin, Lev Brake by cutting size.
+ *
+ * Null unless a guard is armed for THIS position AND its config is known here: the counters and
+ * arguments live with the owning wallet, and in the combined view another wallet's guard is
+ * known to be armed without them. A projection from defaults would put a number on the card
+ * that the guard has no intention of producing.
+ */
+function _posGuardedLiq(p, acct, liqPx) {
+  if (!(liqPx > 0) || !p?.coin) return null
+  const owner = _isRealAddr(acct) ? acct : (_isRealAddr(state.addr) ? state.addr : (p._acctAddr || null))
+  for (const mode of ['liqguard', 'levbrake']) {
+    const key = _armedGuardKey(mode, p.coin, owner)
+    if (!key) continue
+    const g = serverStatus?._guards?.[key]
+    if (!g) continue                       // armed elsewhere: known to run, not known how
+    const live = _parseGuardArgs(g.args)
+    if (live['dry-run']) continue          // a dry run reports what it would do and does nothing
+    const szi = parseFloat(p.szi ?? 0)
+    const plan = guardPlan({
+      mode,
+      isLong: szi > 0,
+      entry:  parseFloat(p.entryPx ?? 0),
+      size:   Math.abs(szi),
+      liq:    liqPx,
+      margin: parseFloat(p.marginUsed ?? 0),
+      maxLev: parseFloat(p.maxLeverage ?? p.leverage?.value ?? 1) || 1,
+      trigPct:   parseFloat(live['trigger-pct']) || 0,
+      maxFires:  parseInt(live['max-fires']) || 0,
+      firesUsed: parseInt(g.fires) || 0,
+      added:     parseFloat(g.added) || 0,
+      addMode:   live['target-leverage'] ? 'target' : 'fixed',
+      maxTotal:  parseFloat(live['max-total-add']) || 0,
+      targetLev: parseFloat(live['target-leverage']) || 0,
+      reducePct: parseFloat(live['reduce-pct']) || 0,
+    })
+    if (!plan.rows.length || !(plan.finalLiq > 0)) continue
+    return { mode, liq: plan.finalLiq, fires: plan.rows.length, added: plan.totalAdd, size: plan.finalSize }
+  }
+  return null
+}
+
+/** The card row for it, or nothing when no guard is armed here. */
+function _guardedLiqCell(p, liqPx, acct = null) {
+  const gl = _posGuardedLiq(p, acct ?? p?._acctAddr ?? null, liqPx)
+  if (!gl) return []
+  const label = gl.mode === 'liqguard' ? _T('Liq. after guard', 'Liq. tras guardián') : _T('Liq. after brake', 'Liq. tras freno')
+  const fires = `${gl.fires} ${gl.fires === 1 ? _T('fire', 'disparo') : _T('fires', 'disparos')}`
+  return [[label, _prv('$' + fmtPrice(gl.liq)) + ` <span style="font-size:10px;color:var(--muted)">· ${fires}</span>`, 'var(--accent)']]
+}
+
 // Build a step-by-step projection of how the position evolves across the fires —
 // trigger price → action → resulting estimated liquidation price — so the user can
 // plan. Liq math mirrors HL's isolated model (linear in margin; size-scaled for brake).
@@ -7071,10 +7128,9 @@ function _guardRenderPlan() {
   const firesUsed = g.fires || 0
   if (!(g.liq > 0) || !(g.size > 0) || !(pct > 0)) { box.style.display = 'none'; box.innerHTML = ''; return }
   const long = g.isLong
-  const mf   = g.maxLev > 0 ? 1 / (2 * g.maxLev) : 0
   const sym  = String(g.coin).replace(/.*:/, '')
-  // Trigger price for a given current liq (pct of the way from entry to liq)
-  const trigFrom = liq => long ? g.entry - pct * (g.entry - liq) : g.entry + pct * (liq - g.entry)
+  // The maintenance fraction, the per-fire trigger prices and the liq walk are all in
+  // src/guardplan.js now — this function turns its rows into words.
   const rows = []
 
   if (g.mode === 'liqguard') {
@@ -7082,31 +7138,21 @@ function _guardRenderPlan() {
     const maxTotal   = parseFloat(document.getElementById('guardMaxAdd').value) || 0
     const tl         = parseFloat(document.getElementById('guardTargetLev').value) || 0
     if (maxTotal <= 0) { box.style.display = 'none'; box.innerHTML = ''; return }
-    const slope = long ? 1 / (g.size * (1 - mf)) : 1 / (g.size * (1 + mf))   // Δliq per $ margin
-    // Continue from what an armed guard has ALREADY done: budgetUsed counts toward the
-    // cap; only remaining fires are projected; futureAdd is the additional margin from here.
+    // Continue from what an armed guard has ALREADY done: only the remaining fires are
+    // projected, and what it has spent counts against the cap. The arithmetic is in
+    // src/guardplan.js, shared with the position card's "after guard" liq price.
     const remainingFires = Math.max(0, maxFires - firesUsed)
     const avgPast  = firesUsed > 0 ? (g.added || 0) / firesUsed : 0
     const firedRows = Array.from({ length: firesUsed }, (_, i) => ({ n: i + 1, act: `+$${avgPast.toFixed(2)} ${_T('margin', 'margen')}` }))
-    let liq = g.liq, margin = g.margin, budgetUsed = g.added || 0, futureAdd = 0
-    for (let i = 1; i <= remainingFires; i++) {
-      const remaining = maxTotal - budgetUsed
-      if (remaining <= 0.01) break
-      const px = trigFrom(liq)
-      let add
-      if (targetMode) {
-        const uPnlAtPx = (long ? (px - g.entry) : (g.entry - px)) * g.size
-        const equity   = margin + uPnlAtPx
-        add = Math.max(0, (g.size * px) / tl - equity)
-      } else {
-        add = maxTotal / maxFires
-      }
-      add = Math.min(add, remaining)
-      if (add < 0.01) { rows.push({ px, act: _T('already ≤ target', 'ya ≤ objetivo'), liq }); continue }
-      const newLiq = long ? liq - add * slope : liq + add * slope
-      rows.push({ px, act: `+$${add.toFixed(2)} ${_T('margin', 'margen')}`, liq: Math.max(0, newLiq) })
-      liq = newLiq; margin += add; budgetUsed += add; futureAdd += add
+    const plan = guardPlan({ mode: 'liqguard', isLong: long, entry: g.entry, size: g.size, liq: g.liq,
+      margin: g.margin, maxLev: g.maxLev, trigPct: pct * 100, maxFires, firesUsed, added: g.added || 0,
+      addMode: targetMode ? 'target' : 'fixed', maxTotal, targetLev: tl })
+    for (const r of plan.rows) {
+      rows.push(r.add >= 0.01
+        ? { px: r.px, act: `+$${r.add.toFixed(2)} ${_T('margin', 'margen')}`, liq: r.liq }
+        : { px: r.px, act: _T('already ≤ target', 'ya ≤ objetivo'), liq: r.liq })
     }
+    const futureAdd = plan.totalAdd
     const capReached = remainingFires <= 0 && firesUsed >= maxFires
     const foot = (capReached
         ? _T(`Max Fires reached (${firesUsed}/${maxFires}) — raise Max Fires to add more. `, `Máx disparos alcanzado (${firesUsed}/${maxFires}) — sube Disparos máx para agregar más. `)
@@ -7119,20 +7165,14 @@ function _guardRenderPlan() {
   } else {
     const r = (parseFloat(document.getElementById('guardReducePct').value) || 0) / 100
     if (!(r > 0)) { box.style.display = 'none'; box.innerHTML = ''; return }
-    // Implied isolated margin consistent with the reported liq (held on the position as size shrinks)
-    const M = long ? g.size * (g.entry - (1 - mf) * g.liq) : g.size * ((1 + mf) * g.liq - g.entry)
-    // g.size is the CURRENT (already-reduced) size, so project only the remaining fires.
+    // g.size is the CURRENT (already-reduced) size, so project only the remaining fires. The
+    // implied isolated margin and the liq recomputation live in src/guardplan.js.
     const remainingFires = Math.max(0, maxFires - firesUsed)
     const firedRows = Array.from({ length: firesUsed }, (_, i) => ({ n: i + 1, act: _T('reduced', 'reducido') }))
-    let size = g.size, liq = g.liq
-    for (let i = 1; i <= remainingFires; i++) {
-      const px  = trigFrom(liq)
-      const cut = size * r
-      const newSize = size - cut
-      if (newSize <= 0) break
-      const newLiq = long ? (newSize * g.entry - M) / (newSize * (1 - mf)) : (newSize * g.entry + M) / (newSize * (1 + mf))
-      rows.push({ px, act: `−${fmtSize(cut)} → ${fmtSize(newSize)} ${sym}`, liq: Math.max(0, newLiq) })
-      size = newSize; liq = newLiq
+    const plan = guardPlan({ mode: 'levbrake', isLong: long, entry: g.entry, size: g.size, liq: g.liq,
+      margin: g.margin, maxLev: g.maxLev, trigPct: pct * 100, maxFires, firesUsed, reducePct: r * 100 })
+    for (const row of plan.rows) {
+      rows.push({ px: row.px, act: `−${fmtSize(row.cut)} → ${fmtSize(row.size)} ${sym}`, liq: row.liq })
     }
     const capReached = remainingFires <= 0 && firesUsed >= maxFires
     const foot = (capReached ? _T(`Max Fires reached (${firesUsed}/${maxFires}) — raise Max Fires to add more. `, `Máx disparos alcanzado (${firesUsed}/${maxFires}) — sube Disparos máx para agregar más. `) : firesUsed > 0 ? _T(`${firesUsed}/${maxFires} already fired. `, `${firesUsed}/${maxFires} ya disparados. `) : '')
@@ -19942,6 +19982,8 @@ function _mobVRenderContent(tick = false) {
             ['Position Value', _prv('$' + fmtUSD(posVal))],
             ['Entry Price', '$' + fmtPrice(p.entryPx)],
             ['Liq. Price', _prv(liqPx > 0 ? '$' + fmtPrice(liqPx) : '—'), liqPx > 0 && markPx > 0 && (sz > 0 ? liqPx > markPx * 0.9 : liqPx < markPx * 1.1) ? 'var(--red)' : ''],
+            // Where liquidation ends up once an armed guard has spent its remaining fires.
+            ..._guardedLiqCell(p, liqPx),
             ['Margin Used', _prv('$' + fmtUSD(margin))],
             // Effective leverage = notional ÷ margin. Unlike the leverage SETTING shown in
             // the header (e.g. 20x), this drops as margin is added — the real current ratio.
@@ -35216,6 +35258,11 @@ function _maRenderPositions(results) {
             <div class="row-expand-item"><span>Mark Price</span><span>${mark ? '$' + fmtPrice(mark) : '—'}</span></div>
             <div class="row-expand-item"><span>Entry Price</span><span>$${fmtPrice(entryPx)}</span></div>
             <div class="row-expand-item ${liqWarn ? 'liq-warn' : ''}"><span>Liq. Price</span><span>${liqWarn ? '⚠ ' : ''}$${fmtPrice(liqPx)}</span></div>
+            ${/* The same "after guard" figure the position cards show -- this table has its own
+                  copy of the Liq. Price row, and a guarded position must not read as riskier here
+                  than it does there. */
+              _guardedLiqCell(p, liqPx, r.addr).map(([label, val]) =>
+                `<div class="row-expand-item"><span>${label}</span><span style="color:var(--accent)">${val}</span></div>`).join('')}
             <div class="row-expand-item"><span>Leverage</span><span>${lev}</span></div>
             <div class="row-expand-item"><span>Margin Used</span><span>$${fmtUSD(margin)}</span></div>
             <div class="row-expand-item"><span>ROE</span><span class="${rCls}">${(roe >= 0 ? '+' : '') + roe.toFixed(2) + '%'}</span></div>
