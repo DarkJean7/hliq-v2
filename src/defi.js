@@ -1,5 +1,5 @@
 import { ethers } from 'ethers'
-import { ExchangeClient, HttpTransport } from '@nktkas/hyperliquid'
+import { ExchangeClient, InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { getRawProvider, getMainSigner, wakeWallet, ensureChain } from './wallet.js'
 
 const BRIDGE_ADDRESS    = '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7'
@@ -23,7 +23,7 @@ const MIN_DEPOSIT_USDC = 5
  * kept coming back: fixes went into whichever of the two someone found first, and the
  * deposit path was running the copy that had not been hardened.
  */
-async function getArbitrumSigner() {
+async function ensureArbitrum(what = 'Deposit') {
   const raw = getRawProvider()
   if (!raw) throw new Error('Main wallet not connected')
   // wake: on mobile the switch prompt goes to the wallet app, which the browser will not
@@ -32,9 +32,37 @@ async function getArbitrumSigner() {
   if (!r.ok) {
     throw new Error(r.rejected
       ? 'Network switch rejected — approve switching to Arbitrum One in your wallet'
-      : 'Wallet still on the wrong network — open your wallet, switch to Arbitrum One, then tap Deposit again')
+      : `Wallet still on the wrong network — open your wallet, switch to Arbitrum One, then tap ${what} again`)
   }
+  return raw
+}
+
+async function getArbitrumSigner() {
+  const raw = await ensureArbitrum('Deposit')
   return new ethers.BrowserProvider(raw).getSigner()
+}
+
+/**
+ * What can actually leave the account, and where it is sitting.
+ *
+ * `withdrawable` on the perp side is what a withdrawal can take. USDC held on the SPOT side is
+ * the same account's money but not that figure — on an account that is not in unified mode the
+ * two are separate balances, and a withdrawal larger than the perp half is rejected however
+ * much spot USDC is there. Measured on a real account mid-report: perp withdrawable $0.10
+ * against $231 of free spot USDC, while the app offered their SUM as "Max".
+ */
+export async function withdrawableUsdc(addr) {
+  const info = new InfoClient({ transport: new HttpTransport() })
+  const [perp, spot] = await Promise.all([
+    info.clearinghouseState({ user: addr }),
+    info.spotClearinghouseState({ user: addr }).catch(() => null),
+  ])
+  const u = (spot?.balances ?? []).find(b => b.coin === 'USDC')
+  const free = u ? Math.max(0, parseFloat(u.total ?? 0) - parseFloat(u.hold ?? 0)) : 0
+  return {
+    perp: Math.max(0, parseFloat(perp?.withdrawable ?? 0) || 0),
+    spot: Number.isFinite(free) ? free : 0,
+  }
 }
 
 export async function getUsdcBalance() {
@@ -100,14 +128,71 @@ export async function deposit({ amount, destination, onStep }) {
   return tx.hash
 }
 
-export async function withdraw({ amount, destination }) {
-  const signer = getMainSigner()
-  if (!signer) throw new Error('Main wallet not connected')
+/** Hyperliquid's own fee, taken out of the amount withdrawn. */
+export const WITHDRAW_FEE_USDC = 1
+
+/**
+ * Withdraw USDC to an Arbitrum address.
+ *
+ * Three things this has to do that it did not, each behind a reported "error trying to
+ * withdraw" with nothing useful on screen:
+ *
+ *  - SIGN ON ARBITRUM. The signature carries the chain it was made on, and a withdrawal is
+ *    the one action where that chain is also where the money lands. Asking the wallet to
+ *    switch is also what wakes a sleeping WalletConnect session: telemetry has the failure
+ *    that leaves behind — "Cannot read properties of undefined (reading 'request')" from
+ *    inside the WalletConnect bundle, which is the provider not being there at all.
+ *  - MOVE THE MONEY TO THE SIDE A WITHDRAWAL TAKES FROM. `withdrawable` is the perp side;
+ *    USDC sitting in spot is the same account's money but not part of that figure, and a
+ *    withdrawal for more than the perp half is rejected. The "Max" button offered the sum of
+ *    the two, so Max could not go through. When the perp side is short, the shortfall is
+ *    moved across first (one extra signature, announced through onStep).
+ *  - SAY WHAT IS WRONG BEFORE ASKING FOR A SIGNATURE: an amount under the fee, a destination
+ *    that is not an address, or more than the account holds.
+ */
+export async function withdraw({ amount, destination, onStep = () => {} }) {
+  const amt  = parseFloat(amount)
+  const dest = String(destination ?? '').trim()
+  if (!Number.isFinite(amt) || amt <= WITHDRAW_FEE_USDC) {
+    throw new Error(`A withdrawal has to be more than the $${WITHDRAW_FEE_USDC} fee.`)
+  }
+  if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) {
+    throw new Error('That destination is not a wallet address (0x followed by 40 characters).')
+  }
+  if (!getMainSigner()) throw new Error('Main wallet not connected')
+
+  onStep('Switching to Arbitrum...')
+  const raw = await ensureArbitrum('Withdraw')
+  // A FRESH signer, built after the switch. The connected one was made when the wallet was on
+  // whatever chain it was on then, and ethers pins a provider to the network it first saw:
+  // signing through it after the switch throws `network changed: 1 => 42161`, which is the
+  // reported "error trying to withdraw". The deposit path has always rebuilt its signer here,
+  // which is why depositing worked and withdrawing did not.
+  const signer = await new ethers.BrowserProvider(raw).getSigner()
+
+  const addr      = await signer.getAddress()
   const transport = new HttpTransport()
   const client    = new ExchangeClient({ transport, wallet: signer })
+
+  const bal = await withdrawableUsdc(addr).catch(() => null)
+  if (bal && amt > bal.perp + bal.spot + 1e-6) {
+    throw new Error(`Only ${(bal.perp + bal.spot).toFixed(2)} USDC can be withdrawn right now — the rest is margin behind open positions and resting orders.`)
+  }
+  // The perp side is what a withdrawal takes from; top it up from spot if it is short.
+  if (bal && amt > bal.perp + 1e-6) {
+    const need = Math.min(Math.ceil((amt - bal.perp) * 1e6) / 1e6, bal.spot)
+    onStep('Move USDC from spot to perps (1 of 2 signatures)...')
+    const t = client.usdClassTransfer({ amount: need.toFixed(6), toPerp: true })
+    if (getRawProvider()?.setDefaultChain) setTimeout(() => { try { wakeWallet() } catch {} }, 300)
+    await t
+    onStep('Confirm the withdrawal (2 of 2)...')
+  } else {
+    onStep('Confirm withdrawal in wallet...')
+  }
+
   // Mobile WalletConnect: the withdraw signature prompt lands in the (backgrounded) wallet
   // app — deep-link so it surfaces, same as deposit/agent-approval.
-  const p = client.withdraw3({ destination, amount: amount.toString() })
+  const p = client.withdraw3({ destination: dest, amount: amt.toString() })
   if (getRawProvider()?.setDefaultChain) setTimeout(() => { try { wakeWallet() } catch {} }, 300)
   return p
 }

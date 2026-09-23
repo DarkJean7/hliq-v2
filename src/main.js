@@ -209,7 +209,7 @@ import {
   getConnectedWallets,
   hasWalletFor,
 } from './wallet.js'
-import { deposit, withdraw, getUsdcBalance } from './defi.js'
+import { deposit, withdraw, getUsdcBalance, withdrawableUsdc } from './defi.js'
 import {
   PAPER_ADDR, PAPER_START, isPaper, setPaper, setPaperMarks, paperTick, paperReset, setPaperSlot, paperSlot,
   paperPerpState, paperOpenOrders, paperSpotState, paperPortfolio, paperFills, paperWithdrawable, paperStore, paperEquity,
@@ -2762,7 +2762,9 @@ window.__executeWithdraw = async function() {
   btn.disabled = true
   statusEl.innerHTML = '<span style="color:var(--muted)">Confirm in wallet...</span>'
   try {
-    await withdraw({ amount, destination: dest })
+    // Every step is announced: a withdrawal can now ask for two signatures (spot → perps, then
+    // the withdrawal), and an unexplained second prompt reads as something having gone wrong.
+    await withdraw({ amount, destination: dest, onStep: m => { statusEl.innerHTML = `<span style="color:var(--muted)">${esc(m)}</span>` } })
     statusEl.innerHTML = `<span style="color:var(--green)">✓ Withdrawal submitted — arrives on Arbitrum in ~1 min</span>`
     _defiEl('withdrawAmount').value = ''
     window.__updateWithdrawPreview()
