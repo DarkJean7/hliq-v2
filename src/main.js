@@ -4036,6 +4036,12 @@ function _allocDim(groupIdx, itemIdx) {
 // the way out; a TAP or CLICK stays, which is what "it always displays the total instead of the
 // selected section" was asking for. Cleared by choosing the same slice again.
 let _allocPin = null    // { kind: 'g' | 'i', idx }
+// A touch fires touchstart AND, a moment later, a synthesised click. Both used to pin, so one
+// tap pinned the slice and then un-pinned it: "when pressing an allocation ring it deselects".
+// The touch wins and the click that follows it is ignored — one press, one decision.
+let _allocTouchAt = 0
+const _allocTouched = () => Date.now() - _allocTouchAt < 700
+const _allocTouch = () => { _allocTouchAt = Date.now() }
 window.__allocPinned = () => _allocPin
 window.__allocHover = function(i, pin = false) {
   const g = _allocSlices[i]
@@ -4346,8 +4352,8 @@ function _mobVRenderAllocation(el) {
     if (!Number.isFinite(k)) return
     node.addEventListener('mouseenter', () => window.__allocHoverItem(k))
     node.addEventListener('mouseleave', () => window.__allocLeave())
-    node.addEventListener('touchstart', () => window.__allocHoverItem(k, true), { passive: true })
-    node.addEventListener('click',      () => window.__allocHoverItem(k, true))
+    node.addEventListener('touchstart', () => { _allocTouch(); window.__allocHoverItem(k, true) }, { passive: true })
+    node.addEventListener('click',      () => { if (!_allocTouched()) window.__allocHoverItem(k, true) })
   })
   // The panel repaints every few seconds; without this the centre would drop back to the
   // total under the reader, which is the same complaint from the other direction.
@@ -4363,11 +4369,12 @@ function _mobVRenderAllocation(el) {
     node.addEventListener('mouseleave', () => window.__allocLeave())
     // Touch selects and stays put (no timer clearing it out from under you); tapping another
     // slice or row switches the selection.
-    node.addEventListener('touchstart', () => window.__allocHover(i, true), { passive: true })
+    node.addEventListener('touchstart', () => { _allocTouch(); window.__allocHover(i, true) }, { passive: true })
     // A tap on the CARD also opens it. The arc only highlights — there is nothing to expand
     // out there, and a ring that reflowed the list under the reader's thumb would be worse.
     node.addEventListener('click', () => {
-      window.__allocHover(i, true)
+      // The touch has already chosen; this is its echo. The CARD still opens either way.
+      if (!_allocTouched()) window.__allocHover(i, true)
       const kind = node.dataset.allocRow != null ? _allocSlices[i]?.kind : null
       if (kind && _allocSlices[i]?.items.length) window.__allocToggleGroup(kind)
     })

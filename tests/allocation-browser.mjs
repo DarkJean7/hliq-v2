@@ -280,6 +280,45 @@ console.log(NL + '-- positions and spot behave the same way --')
   t('free margin has nothing to expand', free, 1)
 }
 
+// ── one press, one decision ─────────────────────────────────────────────────
+// Reported: "when pressing an allocation ring it deselects". A touch fires touchstart AND a
+// synthesised click, and both pinned the slice — so one tap selected it and then dropped it.
+{
+  const centre = () => p.evaluate(() => document.getElementById('allocCenter')?.innerText.replace(/\s+/g, ' ') ?? '')
+  const total  = await centre()
+  t('the centre starts on the total', /Total/i.test(total), true)
+
+  // The pair of events a tap really produces: touchstart, then the click the browser
+  // synthesises from it. Dispatched rather than tapped because the arc is a transparent SVG
+  // stroke, which Playwright will not consider a visible target.
+  const tap = () => p.evaluate(() => {
+    const n = document.querySelector('[data-alloc-hit="0"]')
+    // A real TouchEvent, with a real touch on it: the page's own drag-scroll guards read
+    // e.touches, and a bare Event would throw inside them rather than testing anything.
+    const r = n.getBoundingClientRect()
+    const t = new Touch({ identifier: 1, target: n, clientX: r.x + r.width / 2, clientY: r.y })
+    n.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true, touches: [t], targetTouches: [t], changedTouches: [t] }))
+    n.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  await tap()
+  await p.waitForTimeout(300)
+  const picked = await centre()
+  t('one tap selects the slice and it stays', picked !== total && !/Total/i.test(picked), true)
+  t('and the centre shows that slice', /% of equity/.test(picked), true)
+
+  // The panel repaints on its own every few seconds; the choice has to survive that.
+  await p.evaluate(() => window._mobVRenderContent?.())
+  await p.waitForTimeout(300)
+  t('a repaint does not drop it', (await centre()) !== total, true)
+
+  // Tapping the same slice again is how you let it go. (A second tap is a second decision —
+  // the guard only swallows the click that belongs to the SAME press.)
+  await p.waitForTimeout(800)
+  await tap()
+  await p.waitForTimeout(300)
+  t('tapping it again releases it', /Total/i.test(await centre()), true)
+}
+
 await browser.close()
 console.log(NL + 'errors: ' + (errs.length ? JSON.stringify(errs.slice(0, 3)) : 'none'))
 console.log(pass + ' passed, ' + (fail + errs.length) + ' failed')
