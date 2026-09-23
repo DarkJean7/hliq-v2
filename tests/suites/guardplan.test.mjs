@@ -95,8 +95,12 @@ console.log(nl + '-- on the card, and one copy of the arithmetic --')
 {
   const cli = fs.readFileSync('src/main.js', 'utf8')
   t('the card asks for the guarded liq', /\.\.\._guardedLiqCell\(p, liqPx\),/.test(cli))
+  // Its own account's status, or the owning wallet's asked for separately — but never a
+  // projection from defaults while the real config is still unknown.
   t('only when a guard is armed for this position, with its config known',
-    /const g = serverStatus\?\._guards\?\.\[key\]\s*\n\s*if \(!g\) continue/.test(cli))
+    /const g = serverStatus\?\._guards\?\.\[key\] \?\? _guardCfgFor\(mode, p\.coin, owner, key\)/.test(cli) && /if \(!g\) continue/.test(cli))
+  t('another wallet’s guard is fetched, not guessed', /_guardFetchOwnerState\(mode, coin, owner, key\)/.test(cli))
+  t('the desktop rows read the same figure', /window\.__guardedLiq = function\(p\)/.test(cli))
   t('a dry run is not a projection', /if \(live\['dry-run'\]\) continue/.test(cli))
   t('the modal draws the same plan from the same module',
     (cli.match(/guardPlan\(\{ mode: '(liqguard|levbrake)'/g) ?? []).length === 2)

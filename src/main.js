@@ -4032,9 +4032,16 @@ function _allocDim(groupIdx, itemIdx) {
 }
 
 // Highlight one bucket: thicken its arc, dim the rest, and swap the centre to its numbers.
-window.__allocHover = function(i) {
+// What the reader chose, so the centre keeps showing it. Hovering is a glance and reverts on
+// the way out; a TAP or CLICK stays, which is what "it always displays the total instead of the
+// selected section" was asking for. Cleared by choosing the same slice again.
+let _allocPin = null    // { kind: 'g' | 'i', idx }
+window.__allocPinned = () => _allocPin
+window.__allocHover = function(i, pin = false) {
   const g = _allocSlices[i]
   if (!g) return
+  if (pin) _allocPin = (_allocPin?.kind === 'g' && _allocPin.idx === i) ? null : { kind: 'g', idx: i }
+  if (pin && !_allocPin) { window.__allocLeave(); return }
   _allocDim(i, null)
   const c = document.getElementById('allocCenter')
   if (!c) return
@@ -4055,9 +4062,11 @@ window.__allocHover = function(i) {
 }
 
 // Highlight one ASSET on the inner ring, and say which bucket it sits in.
-window.__allocHoverItem = function(k) {
+window.__allocHoverItem = function(k, pin = false) {
   const e = _allocItemsFlat[k]
   if (!e) return
+  if (pin) _allocPin = (_allocPin?.kind === 'i' && _allocPin.idx === k) ? null : { kind: 'i', idx: k }
+  if (pin && !_allocPin) { window.__allocLeave(); return }
   const { it, g, gi } = e
   _allocDim(gi, k)
   const c = document.getElementById('allocCenter')
@@ -4075,8 +4084,14 @@ window.__allocHoverItem = function(k) {
     ${sz ? `<div style="font-size:11px;color:var(--muted)">${_prv(sz)}</div>` : ''}`
 }
 
-// Back to the totals view.
+// Back to whatever is pinned, or to the totals when nothing is.
 window.__allocLeave = function() {
+  if (_allocPin) {
+    const { kind, idx } = _allocPin
+    _allocPin = null                      // so the call below does not toggle it off
+    if (kind === 'g') window.__allocHover(idx, true); else window.__allocHoverItem(idx, true)
+    return
+  }
   document.querySelectorAll('[data-alloc-arc]').forEach(a => {
     a.setAttribute('stroke-width', String(_ALLOC_SW))
     a.style.opacity = '1'
@@ -4331,9 +4346,16 @@ function _mobVRenderAllocation(el) {
     if (!Number.isFinite(k)) return
     node.addEventListener('mouseenter', () => window.__allocHoverItem(k))
     node.addEventListener('mouseleave', () => window.__allocLeave())
-    node.addEventListener('touchstart', () => window.__allocHoverItem(k), { passive: true })
-    node.addEventListener('click',      () => window.__allocHoverItem(k))
+    node.addEventListener('touchstart', () => window.__allocHoverItem(k, true), { passive: true })
+    node.addEventListener('click',      () => window.__allocHoverItem(k, true))
   })
+  // The panel repaints every few seconds; without this the centre would drop back to the
+  // total under the reader, which is the same complaint from the other direction.
+  if (_allocPin) {
+    const { kind, idx } = _allocPin
+    _allocPin = null
+    if (kind === 'g') window.__allocHover(idx, true); else window.__allocHoverItem(idx, true)
+  }
   el.querySelectorAll('[data-alloc-hit], [data-alloc-row]').forEach(node => {
     const i = Number(node.dataset.allocHit ?? node.dataset.allocRow)
     if (!Number.isFinite(i)) return
@@ -4341,11 +4363,11 @@ function _mobVRenderAllocation(el) {
     node.addEventListener('mouseleave', () => window.__allocLeave())
     // Touch selects and stays put (no timer clearing it out from under you); tapping another
     // slice or row switches the selection.
-    node.addEventListener('touchstart', () => window.__allocHover(i), { passive: true })
+    node.addEventListener('touchstart', () => window.__allocHover(i, true), { passive: true })
     // A tap on the CARD also opens it. The arc only highlights — there is nothing to expand
     // out there, and a ring that reflowed the list under the reader's thumb would be worse.
     node.addEventListener('click', () => {
-      window.__allocHover(i)
+      window.__allocHover(i, true)
       const kind = node.dataset.allocRow != null ? _allocSlices[i]?.kind : null
       if (kind && _allocSlices[i]?.items.length) window.__allocToggleGroup(kind)
     })
@@ -7037,14 +7059,45 @@ window.__guardPreview = function () {
  * known to be armed without them. A projection from defaults would put a number on the card
  * that the guard has no intention of producing.
  */
+/**
+ * The owning wallet's guard config, for a guard this view knows is armed but holds no numbers
+ * for. serverStatus only ever describes the SELECTED account, so in the combined view — which
+ * is where most people sit — every guard on every other wallet was config-less, and the card
+ * printed nothing. Reported as "the real liq price is still missing".
+ *
+ * Answers from cache, and fetches in the background the first time, repainting when it lands.
+ * Null while it is in flight: a projection from defaults is worse than no projection.
+ */
+const _guardCfgCache = new Map()   // `${addr}|${key}` -> { at, g }
+const _guardCfgWanted = new Set()
+function _guardCfgFor(mode, coin, owner, key) {
+  const ck = `${String(owner).toLowerCase()}|${key}`
+  const hit = _guardCfgCache.get(ck)
+  if (hit && Date.now() - hit.at < 60_000) return hit.g
+  if (!_guardCfgWanted.has(ck)) {
+    _guardCfgWanted.add(ck)
+    _guardFetchOwnerState(mode, coin, owner, key)
+      .then(g => {
+        _guardCfgCache.set(ck, { at: Date.now(), g: g ?? null })
+        _guardCfgWanted.delete(ck)
+        // Only when it actually adds something, and only once — repainting on every answer
+        // would loop through this same path.
+        if (g && !hit) { try { _mobVRenderContent() } catch {} ; try { renderPositionSection() } catch {} }
+      })
+      .catch(() => _guardCfgWanted.delete(ck))
+  }
+  return hit?.g ?? null
+}
+
 function _posGuardedLiq(p, acct, liqPx) {
   if (!(liqPx > 0) || !p?.coin) return null
   const owner = _isRealAddr(acct) ? acct : (_isRealAddr(state.addr) ? state.addr : (p._acctAddr || null))
   for (const mode of ['liqguard', 'levbrake']) {
     const key = _armedGuardKey(mode, p.coin, owner)
     if (!key) continue
-    const g = serverStatus?._guards?.[key]
-    if (!g) continue                       // armed elsewhere: known to run, not known how
+    // This account's own status first; a guard on another wallet is asked for separately.
+    const g = serverStatus?._guards?.[key] ?? _guardCfgFor(mode, p.coin, owner, key)
+    if (!g) continue                       // its numbers have not arrived yet
     const live = _parseGuardArgs(g.args)
     if (live['dry-run']) continue          // a dry run reports what it would do and does nothing
     const szi = parseFloat(p.szi ?? 0)
@@ -7069,6 +7122,11 @@ function _posGuardedLiq(p, acct, liqPx) {
     return { mode, liq: plan.finalLiq, fires: plan.rows.length, added: plan.totalAdd, size: plan.finalSize }
   }
   return null
+}
+
+// render.js draws the desktop rows and cannot see serverStatus; it reads this.
+window.__guardedLiq = function(p) {
+  try { return _posGuardedLiq(p, p?._acctAddr ?? null, parseFloat(p?.liquidationPx ?? 0)) } catch { return null }
 }
 
 /** The card row for it, or nothing when no guard is armed here. */
@@ -12408,7 +12466,10 @@ function _armedGuardKeys() {
   return out
 }
 
-function _mobVGuardBadge(coin) {
+/** The same badges for the desktop rows, which have no room for a block: one line, inline. */
+window.__guardBadgeHtml = function(coin) { return _mobVGuardBadge(coin, true) }
+
+function _mobVGuardBadge(coin, inline = false) {
   const c   = String(coin).toUpperCase()
   const _armed = _armedGuardKeys()
   const liq = _armed.has(`liqguard:${c}`.toLowerCase())
@@ -12422,7 +12483,10 @@ function _mobVGuardBadge(coin) {
     brk ? '🛑 Lev Brake' : '',
     alerts ? `🔔 ${alerts} ${alerts === 1 ? _T('price alert', 'alerta de precio') : _T('price alerts', 'alertas de precio')}` : '',
   ].filter(Boolean).join(' · ') + ' ' + _T('active', 'activo')
-  return `<div style="display:flex;gap:4px;justify-content:center;margin-top:3px;line-height:1;font-size:11px" title="${esc(tip)}">${liq ? '🛡' : ''}${brk ? '🛑' : ''}${alerts ? '🔔' : ''}</div>`
+  const glyphs = `${liq ? '🛡' : ''}${brk ? '🛑' : ''}${alerts ? '🔔' : ''}`
+  return inline
+    ? `<span style="line-height:1;font-size:10.5px;flex-shrink:0" title="${esc(tip)}">${glyphs}</span>`
+    : `<div style="display:flex;gap:4px;justify-content:center;margin-top:3px;line-height:1;font-size:11px" title="${esc(tip)}">${glyphs}</div>`
 }
 
 function _mobVMergedPosCard(members) {

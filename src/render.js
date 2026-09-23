@@ -952,8 +952,12 @@ function _ovPosMeta(p) {
     ? `<span class="acct-pill notranslate">${esc(p._acct)}</span>` : ''
   const bots = (typeof window !== 'undefined' && window._botBadgeHtml)
     ? window._botBadgeHtml(p.coin, p._acctAddr ?? null, true) : ''
-  if (!pill && !bots) return ''
-  return `<i class="ov-pos-meta">${pill}${bots}</i>`
+  // Liq Guard / Lev Brake / price alerts. Mobile has shown these under the mark price since
+  // they shipped; the desktop rows showed nothing, so a guarded position looked unguarded.
+  const guards = (typeof window !== 'undefined' && window.__guardBadgeHtml)
+    ? (window.__guardBadgeHtml(p.coin) || '') : ''
+  if (!pill && !bots && !guards) return ''
+  return `<i class="ov-pos-meta">${pill}${bots}${guards}</i>`
 }
 
 function _ovPositionRow(p, allMids, tpslMap = {}, member = false) {
@@ -1009,7 +1013,12 @@ function _ovPositionRow(p, allMids, tpslMap = {}, member = false) {
       <span class="ov-r ov-pos-size"><b>${_ovSz(Math.abs(szi))}</b><i>$${fmtUSD(notional)}</i></span>
       <span class="ov-r mono">$${_ovPx(entry)}</span>
       <span class="ov-r mono">$${_ovPx(mark)}</span>
-      <span class="ov-r mono neg">${liq > 0 ? '$' + _ovPx(liq) : '—'}</span>
+      <span class="ov-r mono neg">${liq > 0 ? '$' + _ovPx(liq) : '—'}${(() => {
+        // Where liquidation really sits once the armed guard has fired everything it has
+        // left — the same figure the position cards carry (main.js _guardedLiqCell).
+        const gl = typeof window !== 'undefined' && window.__guardedLiq ? window.__guardedLiq(p) : null
+        return gl ? `<i class="ov-roe" style="color:var(--accent)" title="After the guard's remaining fires">🛡 $${_ovPx(gl.liq)}</i>` : ''
+      })()}</span>
       <span class="ov-r mono">$${fmtUSD(margin)}</span>
       <span class="ov-r mono ${funding >= 0 ? 'pos' : 'neg'}">${funding >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(funding))}</span>
       <span class="ov-r ov-hp"><span class="ov-hp-bar"><i style="width:${hp.toFixed(0)}%;background:${hpColor}"></i></span><em>${hp.toFixed(0)}%</em></span>

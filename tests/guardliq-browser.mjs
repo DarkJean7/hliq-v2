@@ -36,7 +36,7 @@ const waitFor = async (p, label, fn, arg, ms = 25000) => {
 
 const POS = {
   position: {
-    coin: 'CRCL', szi: '1.0', entryPx: '95.506', positionValue: '95.54', unrealizedPnl: '-0.05',
+    coin: 'xyz:CRCL', szi: '1.0', entryPx: '95.506', positionValue: '95.54', unrealizedPnl: '-0.05',
     marginUsed: '9.59', liquidationPx: '90.4729', maxLeverage: 10, returnOnEquity: '-0.005',
     leverage: { type: 'isolated', value: 10, rawUsd: '9.59' }, cumFunding: { allTime: '0', sinceOpen: '0', sinceChange: '0' },
   },
@@ -46,11 +46,11 @@ const MARGIN = { accountValue: '500', totalNtlPos: '95.54', totalRawUsd: '500', 
 const STATE  = { marginSummary: MARGIN, crossMarginSummary: MARGIN, crossMaintenanceMarginUsed: '0.5',
                  withdrawable: '480', assetPositions: [POS], time: Date.now() }
 const WINDOW = { accountValueHistory: [[Date.now() - 3600e3, '500'], [Date.now(), '500']], pnlHistory: [], vlm: '0' }
-const UNIVERSE = [{ name: 'CRCL', szDecimals: 2, maxLeverage: 10 }]
+const UNIVERSE = [{ name: 'xyz:CRCL', szDecimals: 2, maxLeverage: 10 }]
 const HL = {
   clearinghouseState: STATE,
   spotClearinghouseState: { balances: [] },
-  allMids: { CRCL: '95.518' }, frontendOpenOrders: [], userFills: [], userFillsByTime: [], userFunding: [],
+  allMids: { 'xyz:CRCL': '95.518' }, frontendOpenOrders: [], userFills: [], userFillsByTime: [], userFunding: [],
   userNonFundingLedgerUpdates: [], subAccounts: [], candleSnapshot: [], extraAgents: [],
   allPerpMetas: [{ universe: UNIVERSE }], outcomeMeta: {}, perpDexs: [null], perpCategories: [],
   portfolio: ['day', 'week', 'month', 'allTime'].map(w => [w, WINDOW]),
@@ -61,12 +61,12 @@ const HL = {
 }
 
 // The bot server: one armed Liq Guard on CRCL, nothing fired yet.
-const GUARD_ARGS = ['--coin', 'CRCL', '--trigger-pct', '85', '--max-fires', '2', '--max-total-add', '20']
+const GUARD_ARGS = ['--coin', 'xyz:CRCL', '--trigger-pct', '85', '--max-fires', '2', '--max-total-add', '20']
 let guardOn = true
 const statusBody = () => guardOn ? {
-  ok: true, liqguard: true, _configs: { 'liqguard:CRCL': { args: GUARD_ARGS } },
-  _instances: { 'liqguard:CRCL': { running: true, args: GUARD_ARGS } },
-  _guards: { 'liqguard:CRCL': { args: GUARD_ARGS, fires: 0, added: 0 } },
+  ok: true, liqguard: true, _configs: { 'liqguard:xyz:CRCL': { args: GUARD_ARGS } },
+  _instances: { 'liqguard:xyz:CRCL': { running: true, args: GUARD_ARGS } },
+  _guards: { 'liqguard:xyz:CRCL': { args: GUARD_ARGS, fires: 0, added: 0 } },
 } : { ok: true, _configs: {}, _instances: {}, _guards: {} }
 
 const browser = await chromium.launch()
@@ -120,6 +120,45 @@ console.log(NL + '-- with a guard armed --')
   // $20 over 2 fires on 1 CRCL at mf 0.05 → liq falls 2 × $10.53 → $69.42.
   ok('projected from the guard\'s own config: $69.42', /Liq\. after guard \$69\.4/.test(txt), txt.match(/Liq\. after guard[^A-Z]{0,24}/)?.[0])
   ok('and it says how many fires that assumes', /Liq\. after guard \$69\.4\d+ · 2 fires/.test(txt), txt.match(/Liq\. after guard[^A-Z]{0,30}/)?.[0])
+}
+
+console.log(NL + '-- the desktop rows carry both --')
+{
+  const d = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  try { await d.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
+  await d.route(HL_HOST, (route) => {
+    let b = {}
+    try { b = JSON.parse(route.request().postData() || '{}') } catch {}
+    return route.fulfill({ status: 200, contentType: 'application/json', json: HL[b.type] ?? {} })
+  })
+  await d.route('**/api/**', (route) => route.fulfill({ status: 503, body: 'offline in test' }))
+  await d.route('**/api/status*', (route) => route.fulfill({ status: 200, json: statusBody() }))
+  await d.route('**/offexprice**', (route) => route.fulfill({ status: 200, json: { prices: {} } }))
+  const q = await d.newPage()
+  q.on('pageerror', e => errs.push('desktop: ' + e.message))
+  await q.goto(BASE, { waitUntil: 'domcontentloaded' })
+  await q.evaluate(({ a, k }) => {
+    localStorage.clear()
+    localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_onboard_done', '1')
+    localStorage.setItem('hliq_lang_chosen', '1')
+    ;['hliq_onboard_welcomed_v1', 'hliq_onboard_tour_v1', 'hliq_install_nudge_v2'].forEach(x => localStorage.setItem(x, '1'))
+    localStorage.setItem('hliq_ann_dismissed', JSON.stringify(['*']))
+    localStorage.setItem('hliq_privacy', '0')
+    localStorage.setItem('hliq_agent_key_' + a.toLowerCase(), k)
+    localStorage.setItem('savedWallets', JSON.stringify([{ addr: a, label: 'Main' }]))
+  }, { a: ADDR, k: KEY })
+  await q.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(q, 'boot', () => !!window.loadDashboard)
+  await q.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, ADDR)
+  await waitFor(q, 'the account', () => document.getElementById('dashboard')?.classList.contains('active'))
+  const row = () => q.evaluate(() => document.querySelector('.ov-pos-row')?.textContent?.replace(/\s+/g, ' ') ?? '')
+  const gotRow = await waitFor(q, 'the desktop position row', () => /CRCL/.test(document.querySelector('.ov-pos-row')?.textContent ?? ''), null, 30000)
+  ok('the desktop row is there', gotRow, await row())
+  const badge = await waitFor(q, 'the guard badge', () => /🛡/.test(document.querySelector('.ov-pos-meta')?.textContent ?? ''), null, 25000)
+  ok('with the guard badge mobile has always shown', badge, await q.evaluate(() => document.querySelector('.ov-pos-meta')?.textContent ?? ''))
+  const liq = await waitFor(q, 'the guarded liq', () => /69\.4/.test(document.querySelector('.ov-pos-row')?.textContent ?? ''), null, 25000)
+  ok('and the liq price after the guard, next to the exchange one', liq, await row())
+  await d.close()
 }
 
 console.log(NL + '-- and without one --')

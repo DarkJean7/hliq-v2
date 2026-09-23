@@ -20,7 +20,10 @@ const region = (sig, end) => {
   return j < 0 ? cli.slice(i) : cli.slice(i, j)
 }
 const slices = region('function _allocationSlices()', 'let _allocSlices =')
-const hover  = region('window.__allocHover = function(i)', 'window.__allocLeave')
+// Takes a `pin` now: a tap keeps the slice in the centre instead of reverting to the total.
+// Ends at the item readout, not at the first mention of __allocLeave: the bucket readout
+// calls that itself now, when a second tap un-pins the slice.
+const hover  = region('window.__allocHover = function(i, pin', '// Highlight one ASSET')
 const render = region('function _mobVRenderAllocation(el)', 'function _allocViewHeader')
 
 console.log(nl + '-- the panel is where we think it is --')
