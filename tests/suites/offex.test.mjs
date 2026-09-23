@@ -6,13 +6,7 @@
 // "worthless" — instead of a dash. A manual number leaking into account equity, which is the
 // one figure in the app that matches Hyperliquid to the cent.
 import fs from 'fs'
-import {
-  isTokenAddr, normAddr, gtMultiUrl, parseGtToken, parseGtMulti, THIN_LIQUIDITY_USD,
-  storageKey, cleanEntry, loadHoldings, saveHoldings, upsertHolding, removeHolding,
-  holdingValue, holdingsTotal, MAX_PER_REQUEST,
-  dsMultiUrl, parseDsPairs, pickDeepest, mergeQuotes, fetchQuotes,
-  NETWORKS, DEFAULT_NET, normNet, quoteKey, dsFindUrl, pickNetwork,
-} from '../../src/offex.js'
+import { isTokenAddr, normAddr, gtMultiUrl, parseGtToken, parseGtMulti, THIN_LIQUIDITY_USD, storageKey, cleanEntry, loadHoldings, saveHoldings, upsertHolding, removeHolding, holdingValue, holdingsTotal, MAX_PER_REQUEST, dsMultiUrl, parseDsPairs, pickDeepest, mergeQuotes, fetchQuotes, NETWORKS, DEFAULT_NET, normNet, quoteKey, dsFindUrl, pickNetwork, HL_NET } from '../../src/offex.js'
 
 const nl = String.fromCharCode(10)
 let pass = 0, fail = 0
@@ -278,7 +272,23 @@ console.log(nl + '-- other networks --')
   t('removing takes only that network\'s', removeHolding(list, DIME, 'eth').map(e => e.net).join() === 'hyperevm')
   const tot = holdingsTotal(list, { ['eth:' + DIME]: { price: 0.06 } })
   t('the total prices each holding on its own network', near(tot.usd, 120) && tot.complete === false, tot)
-  t('every network in the table has both ids', Object.values(NETWORKS).every(n => n.gt && n.ds && n.label))
+  // Was "every network has both ids". Hyperliquid is now in this table and deliberately has
+  // NEITHER: it is priced from the mids the app already polls, because HYPE has no contract
+  // for a DEX source to quote (spotMeta gives it evmContract:null). So the rule is now: a
+  // network is either DEX-priced and carries both ids, or it is HL and carries neither.
+  t('every DEX-priced network has both ids',
+    Object.entries(NETWORKS).every(([k, n]) => k === HL_NET ? (!n.gt && !n.ds) : (n.gt && n.ds)))
+  t('and every network is labelled', Object.values(NETWORKS).every(n => n.label))
+  t('the HL network asks no DEX source', gtMultiUrl(['HYPE'], HL_NET) === null && dsMultiUrl(['HYPE'], HL_NET) === null)
+  // Its tokens are NAMED, not addressed — the whole reason it exists.
+  t('an HL holding is keyed by symbol', quoteKey(HL_NET, 'hype') === 'hl:HYPE')
+  t('and a symbol is refused on an addressed network', quoteKey('eth', 'HYPE') === null)
+  const hl = cleanEntry({ token: 'hype', net: HL_NET, amount: 19.87 })
+  t('an HL entry survives cleaning', hl && hl.token === 'HYPE' && hl.net === HL_NET && near(hl.amount, 19.87), hl)
+  t('an address is still refused there', cleanEntry({ token: DIME, net: HL_NET, amount: 1 }) === null)
+  t('removing one matches by symbol', removeHolding([hl], 'HYPE', HL_NET).length === 0)
+  t('an HL holding prices from its own quote',
+    near(holdingsTotal([hl], { 'hl:HYPE': { price: 97.5 } }).usd, 19.87 * 97.5))
 }
 
 console.log(nl + `${pass} passed, ${fail} failed`)

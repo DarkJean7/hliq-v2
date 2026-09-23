@@ -12,7 +12,8 @@
  * holding saved under that key is a holding nothing ever reads back.
  */
 import { loadHoldings, saveHoldings, upsertHolding, removeHolding, holdingValue, holdingsTotal,
-         normAddr, isTokenAddr, NETWORKS, DEFAULT_NET, normNet, quoteKey } from './offex.js'
+         normAddr, isTokenAddr, NETWORKS, DEFAULT_NET, normNet, quoteKey,
+         HL_NET, normToken, isHlToken } from './offex.js'
 import { fmtUSD, fmtPrice, fmtSize, esc } from './format.js'
 
 let ctx = {
@@ -23,6 +24,9 @@ let ctx = {
   /** Repaint whatever shows the group. */
   rerender: () => {},
   store: () => (typeof localStorage !== 'undefined' ? localStorage : null),
+  /** Mid price for an HL-listed spot token, or null. Injected: this module does not read
+   *  state, and the app already polls these every tick. */
+  hlPrice: () => null,
 }
 export function initOffex(overrides = {}) { ctx = { ...ctx, ...overrides } }
 
@@ -67,7 +71,8 @@ let _inflight = null
 // A quote key back into its network and address ("eth:0x…", or a bare HyperEVM address).
 const splitKey = (k) => {
   const s = String(k ?? ''), i = s.indexOf(':')
-  return i > 0 ? [normNet(s.slice(0, i)), normAddr(s.slice(i + 1))] : [DEFAULT_NET, normAddr(s)]
+  if (i > 0) { const n = normNet(s.slice(0, i)); return [n, normToken(n, s.slice(i + 1))] }
+  return [DEFAULT_NET, normAddr(s)]
 }
 
 // `extra`: quote keys (quoteKey(net, addr)) or bare addresses, which are HyperEVM.
@@ -86,6 +91,17 @@ export function refreshPrices({ force = false, extra = [] } = {}) {
       const byNet = {}
       for (const k of want) { const [n, a] = splitKey(k); (byNet[n] ??= []).push(a) }
       const answers = await Promise.all(Object.entries(byNet).map(async ([n, addrs]) => {
+        // Hyperliquid's own book: the app already has these mids, so there is nothing to
+        // fetch and nothing to spend. No contract exists to ask a DEX source about anyway.
+        if (n === HL_NET) {
+          return addrs.map(a => {
+            const px = Number(ctx.hlPrice?.(a))
+            return [quoteKey(n, a), Number.isFinite(px) && px > 0
+              ? { addr: a, symbol: a, name: 'Hyperliquid spot', icon: null,
+                  price: px, liq: null, thin: false, src: 'Hyperliquid', pool: null }
+              : null]
+          })
+        }
         try {
           const r = await fetch('/offexprice?a=' + addrs.join(',') + (n === DEFAULT_NET ? '' : '&n=' + n))
           if (!r.ok) return null
@@ -424,6 +440,10 @@ export function closeSheet() {
 const field = (label, inner, hint = '') => `<label style="display:block;margin-bottom:12px">
   <div style="font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:5px">${label}</div>
   ${inner}${hint ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">${hint}</div>` : ''}</label>`
+/** What the token box wants, which depends entirely on the network. */
+const TOKEN_HINT = (net) => normNet(net) === HL_NET
+  ? 'A token on Hyperliquid\'s spot book, by symbol — HYPE has no contract address to paste. Priced from the mid the app already has.'
+  : 'A token on HyperEVM, Ethereum, Base, Arbitrum or BNB Chain. The network is found for you.'
 const inputCss = 'width:100%;box-sizing:border-box;background:var(--panel-2);border:1px solid var(--border2);border-radius:10px;padding:10px 11px;color:var(--fg);font-size:14px;outline:none'
 
 /** Open the sheet to add (no token) or edit (token given) a holding. */
@@ -431,7 +451,7 @@ export function openSheet(acct = null, token = null, net = DEFAULT_NET) {
   const accts = ctx.accounts() ?? []
   if (!accts.length) return
   const owner = normAddr(acct) ?? accts[0].addr
-  const existing = token ? loadHoldings(ctx.store(), owner).find(e => e.token === normAddr(token) && e.net === normNet(net)) : null
+  const existing = token ? loadHoldings(ctx.store(), owner).find(e => e.token === normToken(net, token) && e.net === normNet(net)) : null
   _sheet = { acct: owner, token: existing?.token ?? null, net: existing?.net ?? DEFAULT_NET }
 
   const ov = sheetEl()
@@ -443,11 +463,11 @@ export function openSheet(acct = null, token = null, net = DEFAULT_NET) {
       <div style="font-size:17px;font-weight:800">${existing ? 'Edit' : 'Add'} off-exchange token</div>
       <button onclick="window.__offexClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">&times;</button>
     </div>
-    ${field('Contract address',
-      `<input id="offexToken" style="${inputCss};font-family:var(--font-mono);font-size:12.5px" placeholder="0x…" value="${esc(existing?.token ?? '')}" ${existing ? 'readonly' : ''} spellcheck="false" autocomplete="off">`,
-      'A token on HyperEVM, Ethereum, Base, Arbitrum or BNB Chain. The network is found for you.')}
+    ${field(`<span id="offexTokenLabel">${_sheet.net === HL_NET ? 'Token symbol' : 'Contract address'}</span>`,
+      `<input id="offexToken" style="${inputCss};font-family:var(--font-mono);font-size:12.5px" placeholder="${_sheet.net === HL_NET ? 'HYPE' : '0x…'}" value="${esc(existing?.token ?? '')}" ${existing ? 'readonly' : ''} spellcheck="false" autocomplete="off">`,
+      `<span id="offexTokenHint">${TOKEN_HINT(_sheet.net)}</span>`)}
     <div id="offexLookup" style="font-size:12.5px;margin:-4px 0 12px;min-height:18px"></div>
-    ${field('Network', `<select id="offexNet" style="${inputCss}">${Object.entries(NETWORKS).map(([k, n]) => `<option value="${k}" ${k === _sheet.net ? 'selected' : ''}>${esc(n.label)}</option>`).join('')}</select>`)}
+    ${field('Network', `<select id="offexNet" onchange="window.__offexNetChange()" style="${inputCss}">${Object.entries(NETWORKS).map(([k, n]) => `<option value="${k}" ${k === _sheet.net ? 'selected' : ''}>${esc(n.label)}</option>`).join('')}</select>`)}
     ${accts.length > 1 ? field('Account', `<select id="offexAcct" style="${inputCss}">${accts.map(a => `<option value="${esc(a.addr)}" ${a.addr === owner ? 'selected' : ''}>${esc(a.label || short(a.addr))}</option>`).join('')}</select>`) : ''}
     ${field('Amount you hold', `<input id="offexAmount" type="number" inputmode="decimal" step="any" min="0" style="${inputCss}" value="${existing ? esc(String(existing.amount)) : ''}" placeholder="0">`,
       'Locked or staked tokens too — a lock does not show up as a wallet balance, so it is typed here.')}
@@ -482,8 +502,24 @@ let _lookupSeq = 0
 async function lookup(raw, { auto = true } = {}) {
   const out = document.getElementById('offexLookup')
   if (!out) return
-  const a = normAddr(raw)
   if (!raw.trim()) { out.innerHTML = ''; return }
+  const netEl0 = document.getElementById('offexNet')
+  // Hyperliquid names its tokens; every other network addresses them. HYPE has no contract to
+  // paste — its spotMeta record carries evmContract:null — so on this network the box takes a
+  // symbol and the price is the mid the app already holds.
+  if (normNet(netEl0?.value) === HL_NET) {
+    const t = normToken(HL_NET, raw)
+    if (!t) { out.innerHTML = '<span style="color:var(--red)">That is not a token symbol (e.g. HYPE).</span>'; return }
+    const seq0 = ++_lookupSeq
+    await refreshPrices({ force: true, extra: [quoteKey(HL_NET, t)] })
+    if (seq0 !== _lookupSeq) return
+    const qh = quoteFor(t, HL_NET)
+    out.innerHTML = qh && qh.price != null
+      ? `<b>${esc(t)}</b> <span style="color:var(--muted)">on Hyperliquid</span> · $${fmtPrice(qh.price)}`
+      : `<span style="color:#f59e0b">Hyperliquid is not quoting ${esc(t)}. Check the symbol — it is the one on the spot book.</span>`
+    return
+  }
+  const a = normAddr(raw)
   if (!a) { out.innerHTML = '<span style="color:var(--red)">That is not a contract address (0x followed by 40 characters).</span>'; return }
   const seq = ++_lookupSeq
   out.innerHTML = '<span style="color:var(--muted)">Looking it up…</span>'
@@ -516,14 +552,16 @@ function save() {
   const st = document.getElementById('offexStatus')
   const say = (m) => { if (st) { st.textContent = m; st.style.color = 'var(--red)' } }
   if (!_sheet) return
-  const token = normAddr(document.getElementById('offexToken')?.value ?? '')
-  if (!token) return say('Enter the token\'s contract address.')
+  // Net FIRST: it decides whether the box holds an address or a symbol. Reading the token as
+  // an address before knowing that rejected every Hyperliquid-listed token out of hand.
+  const net = normNet(document.getElementById('offexNet')?.value)
+  const token = normToken(net, document.getElementById('offexToken')?.value ?? '')
+  if (!token) return say(net === HL_NET ? 'Enter the token\'s symbol, e.g. HYPE.' : 'Enter the token\'s contract address.')
   const amount = parseFloat(document.getElementById('offexAmount')?.value)
   if (!(amount > 0)) return say('Enter how much you hold.')
   const acctSel = document.getElementById('offexAcct')
   const acct = normAddr(acctSel ? acctSel.value : _sheet.acct)
   if (!acct) return say('Pick an account.')
-  const net = normNet(document.getElementById('offexNet')?.value)
   const q = quoteFor(token, net)
   const store = ctx.store()
   // Editing may MOVE the holding to another account, or correct its network. `from`/`fromNet`
@@ -562,6 +600,18 @@ function remove() {
 }
 
 if (typeof window !== 'undefined') {
+  window.__offexNetChange = () => {
+    // The box means a different thing on each side of this switch, so relabel it before the
+    // lookup runs — otherwise it reports "not a contract address" at someone typing a symbol.
+    const n   = normNet(document.getElementById('offexNet')?.value)
+    const lab = document.getElementById('offexTokenLabel')
+    const hnt = document.getElementById('offexTokenHint')
+    const inp = document.getElementById('offexToken')
+    if (lab) lab.textContent = n === HL_NET ? 'Token symbol' : 'Contract address'
+    if (hnt) hnt.innerHTML   = TOKEN_HINT(n)
+    if (inp) inp.placeholder = n === HL_NET ? 'HYPE' : '0x…'
+    if (inp) lookup(inp.value)
+  }
   window.__offexAdd    = () => openSheet()
   window.__offexEdit   = (acct, token, net) => openSheet(acct, token, net)
   window.__offexClose  = () => closeSheet()

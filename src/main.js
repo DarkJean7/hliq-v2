@@ -11060,6 +11060,17 @@ initOffex({
     return _isRealAddr(state.addr) ? [{ addr: state.addr, label: null }] : []
   },
   prv: (s) => _prv(s),
+  // Hyperliquid-listed off-exchange tokens (HYPE in a cold wallet) price from the mids the app
+  // already polls — no contract exists for them, and no request is spent. Try the spot pair
+  // name first (`HYPE/USDC` -> its @N id), then the bare key.
+  hlPrice: (tok) => {
+    const t = String(tok ?? '').toUpperCase()
+    const mids = state.allMids ?? {}
+    const pair = Object.keys(_spotNameMap ?? {}).find(k => String(_spotNameMap[k]).toUpperCase() === t)
+    const raw  = mids[pair] ?? mids[t] ?? null
+    const n    = parseFloat(raw)
+    return Number.isFinite(n) && n > 0 ? n : null
+  },
   // The mobile spot rows' own detail grid, so an off-exchange token opens to the same layout.
   detailGrid: (items) => _mobVDetailGrid(items),
   rerender: () => {

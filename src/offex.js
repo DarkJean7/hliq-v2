@@ -59,6 +59,12 @@ export const MAX_PER_REQUEST = 30
  */
 export const NETWORKS = {
   hyperevm: { label: 'HyperEVM', gt: 'hyperevm', ds: 'hyperevm' },
+  // Hyperliquid's own spot book. No DEX source, because there is no contract to ask one
+  // about: HYPE is HyperEVM's NATIVE gas token and its spotMeta record says evmContract:null,
+  // so the only way to hold it off-exchange was not to hold it here at all. Its price comes
+  // from the mids the app already polls — deeper than any HyperEVM pool for the same token,
+  // which is the same "deepest pool wins" rule the DEX sources follow.
+  hl:       { label: 'Hyperliquid', gt: null, ds: null },
   eth:      { label: 'Ethereum', gt: 'eth',      ds: 'ethereum' },
   base:     { label: 'Base',     gt: 'base',     ds: 'base' },
   arbitrum: { label: 'Arbitrum', gt: 'arbitrum', ds: 'arbitrum' },
@@ -68,15 +74,26 @@ export const DEFAULT_NET = 'hyperevm'
 /** A network key, or the default for anything unrecognised — never a string built into a URL. */
 export const normNet = (n) => (Object.hasOwn(NETWORKS, String(n ?? '')) ? String(n) : DEFAULT_NET)
 
+/** The network whose tokens are named, not addressed. */
+export const HL_NET = 'hl'
+/**
+ * An HL-listed spot token: a symbol ('HYPE') or a pair id ('@107'). Upper-cased on the way in
+ * for the same reason addresses are lower-cased — one token, one row.
+ */
+export const isHlToken = (t) => typeof t === 'string' && /^(@[0-9]{1,6}|[A-Za-z][A-Za-z0-9]{0,15})$/.test(t.trim())
+export const normHlToken = (t) => (isHlToken(t) ? t.trim().toUpperCase() : null)
+/** How a token is identified on `net`: HL names them, every other network addresses them. */
+export const normToken = (net, t) => (normNet(net) === HL_NET ? normHlToken(t) : normAddr(t))
+
 /**
  * The key a price is cached under. The same address can be a different token on another
  * chain, so it has to carry the network — except on HyperEVM, where the bare address keeps
  * every quote cached before networks existed valid.
  */
 export const quoteKey = (net, addr) => {
-  const a = normAddr(addr)
-  if (!a) return null
   const n = normNet(net)
+  const a = normToken(n, addr)
+  if (!a) return null
   return n === DEFAULT_NET ? a : `${n}:${a}`
 }
 
@@ -85,6 +102,8 @@ export const quoteKey = (net, addr) => {
  * nothing but 0x-hex ever reaches the path. Returns null when none survive.
  */
 export function gtMultiUrl(addrs, net = DEFAULT_NET) {
+  // Hyperliquid has no pool to price against; asking a DEX source for it would 404.
+  if (normNet(net) === HL_NET) return null
   const ok = [...new Set((addrs ?? []).map(normAddr).filter(Boolean))].slice(0, MAX_PER_REQUEST)
   if (!ok.length) return null
   return `https://api.geckoterminal.com/api/v2/networks/${NETWORKS[normNet(net)].gt}/tokens/multi/${ok.join(',')}`
@@ -132,6 +151,8 @@ export function parseGtMulti(json) {
 
 /** DexScreener's batch endpoint for HyperEVM tokens. Same validation as gtMultiUrl. */
 export function dsMultiUrl(addrs, net = DEFAULT_NET) {
+  // Hyperliquid has no pool to price against; asking a DEX source for it would 404.
+  if (normNet(net) === HL_NET) return null
   const ok = [...new Set((addrs ?? []).map(normAddr).filter(Boolean))].slice(0, MAX_PER_REQUEST)
   if (!ok.length) return null
   return `https://api.dexscreener.com/tokens/v1/${NETWORKS[normNet(net)].ds}/${ok.join(',')}`
@@ -250,14 +271,16 @@ export const storageKey = (acct) => {
 
 /** An entry as it is stored. Anything else in localStorage is ignored rather than trusted. */
 export function cleanEntry(e) {
-  const token  = normAddr(e?.token)
+  // Net first: it decides whether the token is an address or a name.
+  const net    = normNet(e?.net)
+  const token  = normToken(net, e?.token)
   const amount = parseFloat(e?.amount)
   if (!token || !(amount > 0) || !Number.isFinite(amount)) return null
   const cost = parseFloat(e?.cost)
   return {
     token,
     // Absent on everything stored before networks existed, all of which were HyperEVM.
-    net: normNet(e?.net),
+    net,
     amount,
     // Cost basis is optional. Absent means "unknown", which shows no PnL — never a 0 basis,
     // which would show the whole value as profit.
@@ -303,7 +326,7 @@ export function upsertHolding(list, entry) {
 }
 
 export function removeHolding(list, token, net = DEFAULT_NET) {
-  const t = normAddr(token), n = normNet(net)
+  const n = normNet(net), t = normToken(n, token)
   return (list ?? []).filter(x => !(x.token === t && normNet(x.net) === n))
 }
 
