@@ -65,5 +65,19 @@ t('the side toggles say Buy/Sell', /isSpotMkt \? 'Buy' : 'Long'/.test(CLI) && /i
 // The coin page's own pair opens this sheet and had the same wording.
 t('so do the buttons that open it', /isSpot \? 'Buy' : 'Long'/.test(CLI) && /isSpot \? 'Sell' : 'Short'/.test(CLI))
 
+console.log(nl + '-- and boots, which is the part CI caught and this suite did not --')
+// _noLeverageMkt reaches _lbIsOutcome, and it runs during module evaluation:
+// loadDashboard -> _szSyncSlider -> _tradeAvail -> _effLeverage. _lbIsOutcome was a `const`
+// 30,000 lines further down with the leaderboard code, so the desktop shell threw
+// "Cannot access '_lbIsOutcome' before initialization" on boot and four browser tests went
+// red, blocking three deploys. Same trap as _hip3WsDexes; see calspot.test.mjs.
+const iOutcome = CLI.indexOf('const _lbIsOutcome =')
+const iNoLev   = CLI.indexOf('function _noLeverageMkt(coin)')
+t('_lbIsOutcome is declared BEFORE the function that calls it', iOutcome > 0 && iOutcome < iNoLev)
+t('and only once, so moving it did not leave a copy behind',
+  CLI.split('const _lbIsOutcome =').length === 2)
+t('with the reason recorded so it does not get moved back',
+  CLI.includes("Cannot access '_lbIsOutcome' before initialization"))
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

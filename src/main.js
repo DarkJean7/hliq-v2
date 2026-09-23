@@ -3561,6 +3561,14 @@ function updateCoinHeader(coin) {
  * _coinMaxLev could not catch it either — assetMap and allMetas are PERP universes, so a spot
  * coin misses both and fell through to the 50x default.
  */
+// Prediction-outcome holdings live in spotClearinghouseState as "+N"/"#N"/"oN" coins.
+// DECLARED HERE, not down with the leaderboard code it was written for: _noLeverageMkt below
+// reaches it, and that runs during module evaluation — loadDashboard → _szSyncSlider →
+// _tradeAvail → _effLeverage — so a `const` 30,000 lines further down did not exist yet and
+// the desktop shell died on boot with "Cannot access '_lbIsOutcome' before initialization".
+// Same trap as _hip3WsDexes; see calspot.test.mjs.
+const _lbIsOutcome = c => typeof c === 'string' && (c[0] === '+' || c[0] === '#' || /^o\d/.test(c))
+
 function _noLeverageMkt(coin) {
   return isSpotCoin(coin, _spotNameMap) || _lbIsOutcome(coin)
 }
@@ -33751,9 +33759,6 @@ function _lbRowHtml(entry, rank, podium = true) {
       </div></td>
     </tr>`
 }
-
-// Prediction-outcome holdings live in spotClearinghouseState as "+N"/"#N"/"oN" coins.
-const _lbIsOutcome = c => typeof c === 'string' && (c[0] === '+' || c[0] === '#' || /^o\d/.test(c))
 
 // Ensure the all-dex perp metas + outcome token map are loaded so the leaderboard
 // can resolve HIP-3 dexes and prediction-market names even without a loaded account.
