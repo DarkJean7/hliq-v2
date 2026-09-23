@@ -282,5 +282,24 @@ console.log(nl + '-- and the log can now be reconciled without guessing --')
   t('along with how much of it was deliberate', CLI.includes('liveShift=${ctx.liveShift}'))
 }
 
+console.log(nl + '-- when the server cannot finish a snapshot --')
+{
+  const CLI = fs.readFileSync('src/main.js', 'utf8')
+  // Reported as "the account equity is not loading": the server was being rate-limited by
+  // Hyperliquid mid-snapshot, so every answer covered 8 of 10 wallets, the client refused each
+  // partial total, and the headline stayed a dash. The wallets' own values are the last resort.
+  t('the rows are summed only after the snapshot has been missing a while',
+    /const COMBO_ROWS_AFTER_MS = 90_000/.test(CLI) && /now - _comboSnapMissSince < after/.test(CLI))
+  t('and never with a wallet missing or unanswered',
+    /if \(!rows\.length \|\| rows\.some\(r => r\.error\)\) return null/.test(CLI) &&
+    /if \(!Number\.isFinite\(v\) \|\| v <= 0\) return null/.test(CLI))
+  t('both shells read the one chain', /const val = state\.isAllAccounts \? _comboDisplayEquity\(_srvVal\) : _rawVal/.test(CLI))
+  t('the server value is asked for once per paint, not twice',
+    /function _comboDisplayEquity\(srv\)/.test(CLI) && /\(srv !== undefined \? srv : _combinedServerValue\(\)\)/.test(CLI))
+  t('a basis change is recorded', /src=rows/.test(CLI))
+  // Asking every minute while it keeps failing is pressure on the budget that made it fail.
+  t('and the client backs off while answers stay partial', /_COMBINED_REFRESH_MS \* \(_combinedPartials > 1 \? 3 : 1\)/.test(CLI))
+}
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

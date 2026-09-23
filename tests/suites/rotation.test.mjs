@@ -41,9 +41,11 @@ t('computeAcctStats is left alone, because its callers already override it',
 t('and the portfolio tab takes the same figure',
   /renderPortfolioStats\(\{[\s\S]{0,300}?comboValue = null/.test(RND) &&
   /renderPortfolioStats\(\{[^)]*comboValue, comboPending \}\)/.test(CLI))
+// Once per render: the filter and the re-anchor are stateful. The mobile call passes the
+// server value it has already asked for (_comboDisplayEquity(_srvVal)) for the same reason.
 t('computed once per render, because the filter is stateful',
   /const comboValue = _comboDisplayEquity\(\)/.test(CLI) &&
-  (CLI.match(/_comboDisplayEquity\(\)/g) || []).length === 2)
+  (CLI.match(/_comboDisplayEquity\((\)|_srvVal\))/g) || []).length === 2)
 t('the desktop call site hands it over', /renderOverview\(\{[^)]*comboValue, comboPending \}\)/.test(CLI))
 
 console.log(nl + '-- and that figure is the mobile one, not a second opinion --')
@@ -51,7 +53,7 @@ console.log(nl + '-- and that figure is the mobile one, not a second opinion --'
 const fn = CLI.slice(CLI.indexOf('The combined figure BOTH shells show'), CLI.indexOf('function _comboEqFilter'))
 t('there is such a function', fn.length > 0)
 t('it is null outside the combined view', fn.includes('if (!state.isAllAccounts) return null'))
-t('same chain as the mobile headline', fn.includes('_combinedServerValue() ?? _combinedHeldValue()'))
+t('same chain as the mobile headline', fn.includes('_combinedServerValue()) ?? _combinedHeldValue()'))
 t('and the same spike filter', fn.includes('_comboEqFilter(raw)'))
 // Sharing the filter's state is the point, not an oversight: a rotation must not hand the
 // first reading on the other side a free pass.

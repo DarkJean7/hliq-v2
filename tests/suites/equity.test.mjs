@@ -89,8 +89,12 @@ const bal = grab(cli, 'function _mobVRenderBalance(')
 // The per-device sum was the third basis and it stepped: measured live, equity went
 // $2,772.43 -> $2,973.80 and straight back, +$201.37, almost exactly the spot HYPE on those
 // wallets, with leverage and margin unmoved. Up and back is a basis switch, not a market.
-t('the combined view has exactly TWO bases now, not three',
-  bal.includes('const _combo = state.isAllAccounts ? (_srvVal ?? _combinedHeldValue()) : null'))
+// Both shells now read ONE chain (_comboDisplayEquity): the server snapshot, the held value,
+// and — only once the server has been unable to finish a snapshot for 90 seconds — the wallets'
+// own values, which is what a rate-limited server left stranded behind a dash. Still never the
+// old per-device sum, which is the third basis this test was written to keep out.
+t('the combined view reads the one chain, not the per-device sum',
+  bal.includes('const val = state.isAllAccounts ? _comboDisplayEquity(_srvVal) : _rawVal'))
 t('the per-device sum is gone from the combined path',
   !bal.includes('_combinedHeldValue() ?? _rawVal'))
 t('a single account still uses its own computation', bal.includes(") : _rawVal"))

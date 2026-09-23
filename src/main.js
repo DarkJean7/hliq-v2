@@ -9480,10 +9480,14 @@ let _combinedSnap   = null   // { accountValue, perpBase, dayAgo, updatedAt, wal
 let _combinedAt     = 0
 let _combinedFetching = false
 const _COMBINED_REFRESH_MS = 60_000
+let _combinedPartials = 0    // answers in a row that did not cover every wallet
 
 async function _fetchCombinedSnap(force = false) {
   if (!state.isAllAccounts || _combinedFetching) return
-  if (!force && Date.now() - _combinedAt < _COMBINED_REFRESH_MS) return
+  // Asking again every minute while the server keeps answering partial is pressure on the very
+  // budget that made it partial: Hyperliquid rate-limits by IP, and the server is spending that
+  // same budget for every device. Back off while it cannot complete the set.
+  if (!force && Date.now() - _combinedAt < _COMBINED_REFRESH_MS * (_combinedPartials > 1 ? 3 : 1)) return
   const hidden = _maHiddenLoad()
   const addrs  = (_allAcctLastResults ?? [])
     .filter(r => r && !r.error && !hidden.has(r.addr))
@@ -9506,7 +9510,9 @@ async function _fetchCombinedSnap(force = false) {
       const d = await r.json()
       // Only adopt a snapshot that covers EVERY wallet. A partial one would understate the
       // total and read as a real loss — the same trap the per-wallet merge already guards.
+      if (d && d.wallets !== addrs.length) _combinedPartials++
       if (d && d.wallets === addrs.length && d.accountValue > 0) {
+        _combinedPartials = 0
         // What the rows themselves add up to RIGHT NOW. The bridge below carries the snapshot
         // forward by the change in this, not by the change in perp equity alone -- see
         // comboequity.js. Null when a row cannot answer yet, and then the perp bridge is used.
@@ -14365,10 +14371,73 @@ function _comboPnlHeld(nRows) {
  * is mounted at a time, and the spike filter SHOULD carry across a rotation — restarting it
  * would let the first reading after turning the phone through unchallenged.
  */
-function _comboDisplayEquity() {
+/**
+ * Last resort: the wallets' own values, added up on this device.
+ *
+ * Refused unless EVERY wallet in view can answer — a sum missing a wallet is not a smaller
+ * account, it is a wrong total, and that is the mistake this file keeps having to re-learn.
+ *
+ * This used to be the reason the combined headline was wrong on two devices at once, because
+ * each row was bridged from its own cached anchor. It is not that any more: a row is now HL's
+ * own portfolio value for that wallet carried forward by price alone (src/mtmbridge.js), so
+ * two devices summing the same eight rows land within a dollar of each other.
+ */
+function _comboRowsValue() {
+  const hidden = _maHiddenLoad()
+  const rows = (_allAcctLastResults ?? []).filter(r => r && !hidden.has(r.addr))
+  if (!rows.length || rows.some(r => r.error)) return null
+  let sum = 0
+  for (const r of rows) {
+    const v = parseFloat(r.accountValue)
+    if (!Number.isFinite(v) || v <= 0) return null
+    sum += v
+  }
+  return sum
+}
+
+// How long the server snapshot may be unusable before the rows are summed instead. Long enough
+// that a blip is ridden out on the held value; short enough that nobody stares at a dash.
+const COMBO_ROWS_AFTER_MS = 90_000
+let _comboSnapMissSince = 0
+let _comboRowsSaidAt = 0
+
+// `srv` lets a caller that has ALREADY asked _combinedServerValue() pass the answer in:
+// that function advances the re-anchor state, and calling it twice in one paint would
+// advance it twice for a single reading.
+function _comboDisplayEquity(srv) {
   if (!state.isAllAccounts) return null
-  const raw = _combinedServerValue() ?? _combinedHeldValue()
-  return raw == null ? null : _comboEqFilter(raw)
+  const raw = (srv !== undefined ? srv : _combinedServerValue()) ?? _combinedHeldValue()
+  if (raw != null) { _comboSnapMissSince = 0; return _comboEqFilter(raw) }
+  // No server-anchored figure. Reported as "the account equity is not loading": with ten
+  // wallets the server was being rate-limited by Hyperliquid mid-snapshot ("[combined] HL 429
+  // — serving what we have"), so every answer covered eight of them, the client refused each
+  // one as a partial total, and the headline stayed a dash indefinitely. Holding out for a
+  // complete snapshot is right for a moment, not for ten minutes.
+  const now = Date.now()
+  if (!_comboSnapMissSince) _comboSnapMissSince = now
+  // The wait is shortened by tests/comboequity-browser.mjs, which cannot sit out 90 seconds.
+  const after = Number(window.__comboRowsAfterMs) > 0 ? Number(window.__comboRowsAfterMs) : COMBO_ROWS_AFTER_MS
+  if (now - _comboSnapMissSince < after) return null
+  const rows = _comboRowsValue()
+  if (rows == null) return null
+  // Recorded, because a headline on a different basis is exactly the thing this app has been
+  // bitten by, and the next report needs to say which one it was looking at.
+  if (now - _comboRowsSaidAt > 10 * 60_000) {
+    _comboRowsSaidAt = now
+    try {
+      fetch('/api/error', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+        body: JSON.stringify({
+          kind: 'eqstep',
+          message: `combined equity on the ROWS basis ${rows.toFixed(2)} src=rows snapMoved=0`,
+          stack: `no server snapshot for ${Math.round((now - _comboSnapMissSince) / 1000)}s ` +
+                 `rows=${(_allAcctLastResults ?? []).length} snapWallets=${_combinedSnap?.wallets ?? ''}`,
+          url: location.pathname,
+        }),
+      }).catch(() => {})
+    } catch {}
+  }
+  return _comboEqFilter(rows)
 }
 
 function _comboEqFilter(val) {
@@ -14472,8 +14541,11 @@ function _mobVRenderBalance() {
   // market move, and the same removal is what stopped Net PnL doing this.
   //
   // The honest cost is a dash for the second or two before the first snapshot lands.
-  const _combo = state.isAllAccounts ? (_srvVal ?? _combinedHeldValue()) : null
-  const val = state.isAllAccounts ? (_combo != null ? _comboEqFilter(_combo) : null) : _rawVal
+  // One chain for both shells (_comboDisplayEquity): server snapshot, then the held value,
+  // then — only after the server has been unable to finish a snapshot for a while — the
+  // wallets' own values. This used to stop at the held value, which is why a rate-limited
+  // server left the headline a dash while every row underneath it had a figure.
+  const val = state.isAllAccounts ? _comboDisplayEquity(_srvVal) : _rawVal
   // Watch the number that is actually shown, after the filter -- a step the filter absorbed
   // is not a step the user saw, and one it let through is.
   if (state.isAllAccounts && val != null) {
