@@ -119,7 +119,8 @@ console.log(nl + '-- and it is shown where a PnL is shown --')
   t('the desktop tile no longer divides by current equity',
     !rnd.includes("(n / accountValue * 100).toFixed(2)"))
   t('it uses the shared basis', rnd.includes('const r = partRoe(n, { accountValue, netPnl })'))
-  t('and labels the tile ROE', rnd.includes("sub: pctEq(netPnl) ? 'ROE ' + pctEq(netPnl) : 'incl. funding'"))
+  // Still ROE, now with a note when off-exchange holdings are folded in ("Count in balance").
+  t('and labels the tile ROE', rnd.includes("(pctEq(netPnl) ? 'ROE ' + pctEq(netPnl) : 'incl. funding')"))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

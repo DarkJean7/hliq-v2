@@ -71,8 +71,9 @@ console.log(nl + '-- profit factor, counting the losses a grid holds open --')
 console.log(nl + '-- one formula: the tab, its win rate, and the leaderboard --')
 {
   t('the tab takes profit factor from trackRecord', cli.includes('const _pfTrack = trackRecord({ windows,'))
-  t('from the same windows as the win rate beside it', /const allW    = Object\.values\(windows\)[\s\S]{0,600}trackRecord\(\{ windows,/.test(cli))
-  t('with this account’s losing positions', cli.includes('openLoss: openLossOf(state.perpState?.assetPositions ?? [])'))
+  t('from the same windows as the win rate beside it', /const allW    = Object\.values\(windows\)[\s\S]{0,1200}trackRecord\(\{ windows,/.test(cli))
+  // And loss held off-exchange, when the switch counts those holdings as part of the account.
+  t('with this account’s losing positions', cli.includes('openLoss: openLossOf(state.perpState?.assetPositions ?? []) + _offexOpenLoss()'))
   t('the per-fill, pre-fee version is gone',
     !cli.includes('const grossWin  = fills.reduce((s, f) => f.closedPnl > 0 ? s + f.closedPnl : s, 0)'))
   t('the leaderboard cell uses the same renderer', cli.includes('const pf = _pfCell(tr)'))

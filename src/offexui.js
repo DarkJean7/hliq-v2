@@ -230,6 +230,39 @@ export function balanceAdd() {
   return t.usd > 0 ? t.usd : 0
 }
 
+/**
+ * What the off-exchange holdings have MADE, for the figures built on the balance.
+ *
+ * Asked for with the switch in mind: "i want to know my real total pnl, profit factor, etc".
+ * A holding priced live and bought for a known amount has a result — value minus cost — and it
+ * is the same kind of number as the unrealized PnL on a spot token, which the account already
+ * counts. A holding with no price or no cost basis contributes NOTHING and is reported in
+ * `unknown`, because a missing basis is not a zero one: counting it would book the whole
+ * holding as profit.
+ *
+ * `pnl` is always the real figure; `counted` is it or zero depending on the switch, so callers
+ * can show what it would be without turning it on.
+ */
+export function pnlTotal() {
+  let pnl = 0, known = 0, unknown = 0, loss = 0
+  for (const r of rows()) {
+    const v = r.value
+    if (v.usd == null || r.entry.cost == null) { unknown++; continue }
+    known++
+    pnl += v.pnl ?? 0
+    // Only the losers, summed positive — the same rule the profit factor uses for open
+    // positions (trackrecord.js openLossOf): netting would hide loss that is being held.
+    if ((v.pnl ?? 0) < 0) loss -= v.pnl
+  }
+  const on = countInBalance()
+  return { pnl, counted: on ? pnl : 0, openLoss: on ? loss : 0, known, unknown, on }
+}
+
+/** The off-exchange result to fold into Net PnL, or 0 when the switch is off. */
+export const pnlAdd = () => pnlTotal().counted
+/** The losing part of it, for the profit factor. 0 when the switch is off. */
+export const openLossAdd = () => pnlTotal().openLoss
+
 // ─── RENDER ───────────────────────────────────────────────────────────────────
 
 const _open = new Set()   // expanded rows, by acct|token
@@ -636,6 +669,10 @@ if (typeof window !== 'undefined') {
   // render.js builds the desktop headline and cannot import this module's state, so it reads
   // the figure through a bridge, as it already does for the spot and outcome bodies.
   window.__offexBalanceAdd  = () => balanceAdd()
+  // The PnL half of the same switch: what the holdings have made, and the losing part of it.
+  window.__offexPnlAdd      = () => pnlAdd()
+  window.__offexOpenLoss    = () => openLossAdd()
+  window.__offexPnlTotal    = () => pnlTotal()
   window.__offexCount       = () => count()
   window.__offexToggle = (id) => {
     _open.has(id) ? _open.delete(id) : _open.add(id)

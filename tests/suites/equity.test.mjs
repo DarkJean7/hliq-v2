@@ -174,8 +174,10 @@ t('a server figure once seen is held when the snapshot goes away',
 Q.setRows(wal(8))
 t('but not across a change in wallet count', Q.sums() === null)
 
+// Plus the off-exchange result when "Count in balance" is on — the server figure knows nothing
+// about holdings held outside Hyperliquid, and the single-account one already carries them.
 t('the card prefers the server figure over the recomputed one',
-  bal.includes('const _cp = _comboPnlSums()') && bal.includes('_cp ? _cp.net : netPnl'))
+  bal.includes('const _cp = _comboPnlSums()') && bal.includes('_cp ? _cp.net + _oxPnl : netPnl'))
 t('and in the combined view with nothing to show it shows a dash, not a third basis',
   bal.includes('const _pnlMissing = _pnlNet && state.isAllAccounts && !_cp')
     && bal.includes('!_pnlMissing &&'))

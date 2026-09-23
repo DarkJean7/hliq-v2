@@ -268,6 +268,7 @@ import { byId as _proById } from './protypes.js'
 import { multiSort as _mktMultiSort, cycleSortKey as _mktCycleSortKey, cleanSortKeys as _mktCleanSortKeys } from './mktsort.js'
 import { initOffex, sectionHtml as _offexSectionHtml, total as _offexTotal,
          balanceAdd as _offexBalanceAdd, countInBalance as _offexInBal,
+         pnlAdd as _offexPnlAdd, openLossAdd as _offexOpenLoss,
          count as _offexCount, wheelItems as _offexWheelItems } from './offexui.js'
 
 /**
@@ -14771,9 +14772,13 @@ function _mobVRenderBalance() {
   // the very step this removes. With nothing authoritative to show, show nothing.
   const _cp = _comboPnlSums()
   const _pnlMissing = _pnlNet && state.isAllAccounts && !_cp
+  // "Count in balance": what the off-exchange holdings have made belongs to this stat for the
+  // same reason their value belongs to the balance above it. The single-account figures already
+  // carry it (computeAcctStats); the combined ones come from the server and do not.
+  const _oxPnl = _offexPnlAdd()
   const _pnlVal = _pnlNet
-    ? (_cp ? _cp.net : netPnl)
-    : (_cp ? _cp.unreal : unrealizedPnl)
+    ? (_cp ? _cp.net + _oxPnl : netPnl)
+    : (_cp ? _cp.unreal + _oxPnl : unrealizedPnl)
   const upEl = document.getElementById('mobVUnrealPnl')
   // Net PnL needs the ALL-TIME fills; unrealized does not. While only the 14-day window is
   // loaded, leave whatever is already on screen rather than flashing a wrong all-time total
@@ -20865,8 +20870,11 @@ function _mobVRenderContent(tick = false) {
     // the leaderboard uses. It used to be per fill and before fees, so this row and the board
     // disagreed about the same wallet (940 here, 914 there) and this row disagreed with the
     // win rate directly above it.
+    // Loss held off-exchange counts the same way loss held in an open position does — but only
+    // when "Count in balance" says those holdings are part of this account (_offexOpenLoss is
+    // 0 otherwise). Winners are not netted off, exactly as openLossOf refuses to.
     const _pfTrack = trackRecord({ windows,
-      openLoss: openLossOf(state.perpState?.assetPositions ?? []) })
+      openLoss: openLossOf(state.perpState?.assetPositions ?? []) + _offexOpenLoss() })
     const [pfStr, _pfColor] = _pfCell(_pfTrack)
     const pfCls = _pfColor === 'var(--green)' ? 'pos' : _pfColor === 'var(--red)' ? 'neg' : ''
     // Member since = earliest activity. Combined view concatenates several accounts'

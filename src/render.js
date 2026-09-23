@@ -346,7 +346,14 @@ export function computeAcctStats(perpState, spotState, fills, portfolio = [], fu
     if (!(total > 0) || !(basis > 0) || !(px > 0)) return s
     return s + (total * px - basis)
   }, 0)
-  const unrealizedPnl = perpUnrealized + spotUnrealized
+  // Off-exchange holdings, when "Count in balance" is on. They are the same kind of thing as a
+  // spot holding — priced live, bought for a known amount — so once the switch says they are
+  // part of the balance, their result is part of what the account has made. Asked for in those
+  // words: "i want to know my real total pnl, profit factor, etc". Zero when the switch is off,
+  // and a holding with no price or no cost basis contributes nothing (src/offexui.js pnlTotal).
+  const offexUnrealized = (typeof window !== 'undefined' && window.__offexPnlAdd)
+    ? (window.__offexPnlAdd() || 0) : 0
+  const unrealizedPnl = perpUnrealized + spotUnrealized + offexUnrealized
   const realizedPnl   = (fills ?? []).reduce((s, f) => s + (f.closedPnl ?? 0), 0)
   // Net PnL counts what the account actually kept: trading result MINUS the fees paid
   // and PLUS/MINUS funding. Leaving those out (as this did) put every surface using
@@ -376,7 +383,7 @@ export function computeAcctStats(perpState, spotState, fills, portfolio = [], fu
 
   const accountLeverage = accountValue > 0 ? totalNtl / accountValue : 0
 
-  return { accountValue, unrealizedPnl, perpUnrealized, spotUnrealized, realizedPnl, netPnl, totalFees, netFunding, maintMargin, marginUsed, withdrawable, healthPct, healthStr, healthCls, accountLeverage }
+  return { accountValue, unrealizedPnl, perpUnrealized, spotUnrealized, offexUnrealized, realizedPnl, netPnl, totalFees, netFunding, maintMargin, marginUsed, withdrawable, healthPct, healthStr, healthCls, accountLeverage }
 }
 
 // ─── OVERVIEW ────────────────────────────────────────────────────────────────
@@ -454,8 +461,15 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
 
   const allTimeFunding = funding.reduce((s, f) => s + f.usdc, 0)
 
-  // Net PnL = realized + unrealized + funding − fees
-  const netPnl = totalClosedPnl + totalUnrPnl + allTimeFunding - totalFees
+  // Net PnL = realized + unrealized + funding − fees.
+  //
+  // `totalUnrPnl` is the open POSITIONS only. With "Count in balance" on, the off-exchange
+  // holdings are part of the balance, so what they have made is part of what the account has
+  // made — the same rule computeAcctStats applies (src/offexui.js pnlTotal). Zero when the
+  // switch is off, so this figure is unchanged for anyone not using it.
+  const offexPnl  = (typeof window !== 'undefined' && window.__offexPnlAdd) ? (window.__offexPnlAdd() || 0) : 0
+  const unrealAll = totalUnrPnl + offexPnl
+  const netPnl = totalClosedPnl + unrealAll + allTimeFunding - totalFees
 
   // ── Biggest loss: aggregate closing fills per asset per 1h window ─────────
   // Groups all closing fills for the same coin within a 1-hour bucket,
@@ -535,10 +549,11 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
     },
     {
       label: 'Unrealized PnL',
-      value: fmtPnL(totalUnrPnl).text,
+      value: fmtPnL(unrealAll).text,
       sub:   positions.length + ' open position' + (positions.length !== 1 ? 's' : '')
-           + (accountValue > 0 ? ' · ' + (totalUnrPnl / accountValue * 100).toFixed(2) + '%' : ''),
-      cls:   fmtPnL(totalUnrPnl).cls,
+           + (offexPnl ? ' · incl. off-exchange' : '')
+           + (accountValue > 0 ? ' · ' + (unrealAll / (accountValue + _oxAdd) * 100).toFixed(2) + '%' : ''),
+      cls:   fmtPnL(unrealAll).cls,
     },
     {
       label: 'Withdrawable',
@@ -672,8 +687,8 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   // ── Selected stats for the strip (the 6 from the mockup) ──────────────────
   const ringColor = health > 70 ? 'var(--green)' : health > 40 ? 'var(--yellow)' : health > 20 ? '#ff9444' : 'var(--red)'
   const strip = [
-    { label: 'Unrealized PnL', value: fmtPnL(totalUnrPnl).text, sub: (accountValue > 0 ? (totalUnrPnl >= 0 ? '+' : '') + (totalUnrPnl / accountValue * 100).toFixed(2) + '% of equity' : 'open positions'), cls: fmtPnL(totalUnrPnl).cls },
-    { label: 'Net PnL',       value: fmtPnL(netPnl).text,       sub: pctEq(netPnl) ? 'ROE ' + pctEq(netPnl) : 'incl. funding', cls: fmtPnL(netPnl).cls },
+    { label: 'Unrealized PnL', value: fmtPnL(unrealAll).text, sub: (accountValue > 0 ? (unrealAll >= 0 ? '+' : '') + (unrealAll / (accountValue + _oxAdd) * 100).toFixed(2) + '% of equity' : 'open positions') + (offexPnl ? ' · incl. off-exchange' : ''), cls: fmtPnL(unrealAll).cls },
+    { label: 'Net PnL',       value: fmtPnL(netPnl).text,       sub: (pctEq(netPnl) ? 'ROE ' + pctEq(netPnl) : 'incl. funding') + (offexPnl ? ' · incl. off-exchange' : ''), cls: fmtPnL(netPnl).cls },
     { label: 'Win Rate',      value: winRate + (closedTrades > 0 ? '%' : ''), sub: winningTrades + ' / ' + closedTrades, cls: 'neu' },
     { label: 'Profit Factor', value: profitFactor === Infinity ? '∞' : profitFactor > 0 ? profitFactor.toFixed(2) : '—', sub: 'wins ÷ losses', cls: profitFactor >= 1 ? 'pos' : profitFactor > 0 ? 'neg' : 'neu' },
     { label: 'Total Volume',  value: '$' + fmtCompact(totalVolume), sub: fills.length + ' fills', cls: 'neu', id: 'statTotalVolume' },

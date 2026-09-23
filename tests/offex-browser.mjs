@@ -170,6 +170,26 @@ console.log(NL + '-- "Count in balance": off by default, headline only --')
   ok('and says so under the number', /incl\. \$244\.51 off-exchange/.test(on), on)
   ok('the choice is remembered', await p.evaluate(() => localStorage.getItem('hliq_offex_in_bal')) === '1')
 
+  // Asked for after the switch shipped: "i want to know my real total pnl, profit factor".
+  // NEST is 12,000 at $0.02037551306 = $244.51 against $200 paid, so the holdings have made
+  // $44.51 — and that has to reach the PnL, not just the balance.
+  {
+    const pnlOn = await p.evaluate(() => window.__offexPnlTotal?.() ?? null)
+    ok('with the switch on, the holdings report what they made', pnlOn && Math.abs(pnlOn.counted - 44.51) < 0.02, pnlOn)
+    ok('and the losing part of it, for the profit factor', pnlOn && pnlOn.openLoss === 0, pnlOn)
+    // The stat under the headline is the account's PnL; it moves by exactly that much.
+    const statOf = () => p.evaluate(() => document.getElementById('mobVUnrealPnl')?.textContent?.trim() ?? '')
+    const withOx = num(await statOf())
+    await p.click('[data-offex-inbal]')
+    await p.waitForTimeout(400)
+    const without = num(await statOf())
+    ok('turning it off takes the same amount back out', Math.abs((withOx - without) - 44.51) < 0.05, [withOx, without])
+    ok('and the holdings then report nothing counted',
+      (await p.evaluate(() => window.__offexPnlTotal?.().counted)) === 0)
+    await p.click('[data-offex-inbal]')
+    await p.waitForTimeout(300)
+  }
+
   await p.click('[data-offex-inbal]')
   await p.waitForTimeout(300)
   ok('off again puts the Hyperliquid figure back', num(await equity()) === before && !/off-exchange/.test(await equity()), await equity())
