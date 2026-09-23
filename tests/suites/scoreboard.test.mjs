@@ -1,5 +1,6 @@
 // Expandable Scoreboard rows, driven against REAL Hyperliquid fills.
 import fs from 'fs'
+import { closedTrades } from '../../src/tradegroup.js'
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 
 let pass = 0, fail = 0
@@ -13,7 +14,7 @@ const grab = (s, sig) => {
   return ''
 }
 
-const M = new Function('fmtUSD', 'fmtPrice', 'esc', '_T', `
+const M = new Function('fmtUSD', 'fmtPrice', 'esc', '_T', 'closedTrades', `
   ${grab(cli, 'function _scPnl(v)')}
   ${cli.slice(cli.indexOf('const SC_TRADE_LIMIT'), cli.indexOf('function _scTradesHtml'))}
   ${grab(cli, 'function _scTradesHtml(fills, funding = [])')}
@@ -23,6 +24,7 @@ const M = new Function('fmtUSD', 'fmtPrice', 'esc', '_T', `
   (n) => Number(n).toFixed(4),
   (s) => String(s),
   (en) => en,
+  closedTrades,
 )
 
 // ── the sign bug the screenshot showed ───────────────────────────────────────
@@ -44,18 +46,22 @@ const byCoin = {}
 for (const f of fills) (byCoin[f.coin] ??= []).push(f)
 const coin = Object.entries(byCoin).sort((a, b) => b[1].length - a[1].length)[0]
 const html = M._scTradesHtml(coin[1])
-const closes = coin[1].filter(f => Number(f.closedPnl) !== 0)
-console.log(`  (using ${coin[0]}: ${coin[1].length} fills, ${closes.length} closed)`)
+// One row per closing ORDER, not per fill: the exchange fills one close in as many pieces as
+// the book needs. Reported on an account with a single short: "14 trades", "6 CLOSED".
+const closes = closedTrades(coin[1])
+const closingFills = coin[1].filter(f => Number(f.closedPnl) !== 0)
+console.log(`  (using ${coin[0]}: ${coin[1].length} fills, ${closingFills.length} closing fills, ${closes.length} closed trades)`)
 
-t('only CLOSING fills are listed — an opening fill has no realized number',
+t('one row per closing TRADE, not per fill',
   (html.match(/Long|Short/g) ?? []).length >= 1
   && (html.match(/@ \$/g) ?? []).length === Math.min(closes.length, M.SC_TRADE_LIMIT))
+t('no more rows than there were closing fills', closes.length <= closingFills.length)
 t('the header counts the closed trades', html.includes(`${closes.length} closed`))
 t('and how many won', /\d+\/\d+ won/.test(html))
 
 // The total must reconcile with what the account kept, so EVERY fee comes off — the
 // opening fills carry closedPnl 0 and a real fee, and they used to be skipped.
-const netExpected = closes.reduce((a, f) => a + Number(f.closedPnl), 0)
+const netExpected = closes.reduce((a, g) => a + Number(g.closedPnl), 0)
                   - coin[1].reduce((a, f) => a + Number(f.fee ?? 0), 0)
 t('the total is after every fee, entry included', html.includes(M._scPnl(netExpected)), M._scPnl(netExpected))
 t('and says so', html.includes('after fees'))

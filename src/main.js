@@ -254,6 +254,7 @@ import { sideOf as _tsSide, stopPrice as _tsStopPx, resolveSize as _tsSize,
          validate as _tsValidate, describe as _tsDescribe } from './trailstop.js'
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { guardPlan } from './guardplan.js'
+import { groupTrades, countTrades, closedTrades, tradeWindows } from './tradegroup.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
 import { trackRecord, isSmallSample, openLossOf, holdsStep } from './trackrecord.js'
 import { createJoiner, ownedAddresses } from './lbjoin.js'
@@ -7934,15 +7935,11 @@ function _computeBotPerformance(wins) {
     const fees     = fl.reduce((s, f) => s + (f.fee ?? 0), 0)
     const vol      = fl.reduce((s, f) => s + (f.notional ?? 0), 0)
     const fund     = fu.reduce((s, f) => s + (f.usdc ?? 0), 0)
-    const windows  = {}
-    for (const f of fl.filter(f => (f.closedPnl ?? 0) !== 0)) {
-      const key = `${f.coin}_${Math.floor(f.time / ONE_HOUR)}`
-      windows[key] = (windows[key] ?? 0) + (f.closedPnl ?? 0) - (f.fee ?? 0)
-    }
-    const ws      = Object.values(windows)
+    const ws      = Object.values(tradeWindows(fl))
     const winRate = ws.length ? (ws.filter(n => n > 0).length / ws.length * 100) : null
     const lastTs  = fl.length ? Math.max(...fl.map(f => f.time)) : 0
-    return { trades: fl.length, realized, fees, fund, vol, net: realized - fees + fund, winRate, wins: 0, lastTs }
+    // What was DONE, not how many pieces the book filled it in.
+    return { trades: countTrades(fl), realized, fees, fund, vol, net: realized - fees + fund, winRate, wins: 0, lastTs }
   }
 
   const statsForCoins = (coinSet, t = null) => {
@@ -11119,6 +11116,10 @@ initOffex({
   // Hyperliquid-listed off-exchange tokens (HYPE in a cold wallet) price from the mids the app
   // already polls — no contract exists for them, and no request is spent. Try the spot pair
   // name first (`HYPE/USDC` -> its @N id), then the bare key.
+  // Hyperliquid-listed holdings have no contract and no DEX pool, so no price source carries
+  // artwork for them — reported as HYPE and BTC showing a letter circle in the Spot tab. The
+  // app already has the coin's icon; hand it over rather than teaching this module about it.
+  coinIconHtml: (sym) => _coinIconHtml(sym),
   hlPrice: (tok) => {
     const t = String(tok ?? '').toUpperCase()
     const mids = state.allMids ?? {}
@@ -12080,6 +12081,22 @@ async function _chatPoll(full) {
   } catch {}
 }
 
+/**
+ * When a message was sent, in the reader's own locale: "Sep 22, 2:23 PM", and the year as well
+ * once it is not this one. "3m ago" says how fresh a message is and nothing about when it
+ * happened — which is the whole of what was asked for here.
+ */
+function _chatWhen(ts, full = false) {
+  const t = Number(ts)
+  if (!Number.isFinite(t) || t <= 0) return ''
+  const d = new Date(t)
+  const sameYear = d.getFullYear() === new Date().getFullYear()
+  return d.toLocaleString(undefined, {
+    month: 'short', day: 'numeric', ...(sameYear && !full ? {} : { year: 'numeric' }),
+    hour: 'numeric', minute: '2-digit', ...(full ? { second: '2-digit' } : {}),
+  })
+}
+
 function _chatRender(forceBottom) {
   const el = document.getElementById('chatScroll'); if (!el) return
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 90
@@ -12090,7 +12107,8 @@ function _chatRender(forceBottom) {
   el.innerHTML = _chatMsgs.map(m => `<div id="chatMsg-${esc(m.id)}" style="display:flex;flex-direction:column;gap:2px">
       <div style="display:flex;align-items:baseline;gap:7px">
         <span class="notranslate" style="font-size:12px;font-weight:700;color:${_chatColor(m.name)}">${esc(m.name || 'anon')}</span>
-        <span style="font-size:10px;color:var(--muted)">${_chatAgo(m.ts)}</span>
+        <span style="font-size:10px;color:var(--muted)" title="${esc(_chatWhen(m.ts, true))}">${_chatAgo(m.ts)}</span>
+        <span style="font-size:10px;color:var(--fg-3)">${esc(_chatWhen(m.ts))}</span>
         <span style="flex:1"></span>
         ${_mod && m.id && !String(m.id).startsWith('tmp') ? `<button onclick="window.__chatDelete('${esc(m.id)}', this)"
           title="${_T('Delete this message', 'Eliminar este mensaje')}"
@@ -15895,9 +15913,9 @@ const SC_TRADE_LIMIT = 60
 const _isSpotFill = (coin) => isSpotCoin(coin, _spotNameMap)
 
 function _scTradesHtml(fills, funding = []) {
-  const closes = (fills ?? [])
-    .filter(f => Number(f.closedPnl) !== 0)
-    .sort((a, b) => (b.time ?? 0) - (a.time ?? 0))
+  // One row per closing ORDER, not per fill: the exchange fills one close in as many pieces
+  // as the book needs, and six of them are one trade (src/tradegroup.js).
+  const closes = closedTrades(fills ?? []).sort((a, b) => (b.time ?? 0) - (a.time ?? 0))
   if (!closes.length) {
     return `<div style="padding:10px 16px 12px;font-size:11.5px;color:var(--muted)">${
       _T('No closed trades yet — every fill here opened a position.',
@@ -15910,6 +15928,8 @@ function _scTradesHtml(fills, funding = []) {
     const net  = pnl - fee
     const when = new Date(f.time ?? 0).toLocaleString(undefined,
       { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    // Said out loud when an order took several fills, so the price reads as the average it was.
+    const pieces = (f.fills ?? 1) > 1 ? ` <span style="color:var(--fg-3)">(${f.fills} fills)</span>` : ''
     // `dir` is HL's own wording — "Close Long" / "Close Short" — so the side shown is the
     // position that was closed, not the side of this fill, which is the opposite.
     const side = /short/i.test(f.dir ?? '') ? 'Short' : 'Long'
@@ -15917,7 +15937,7 @@ function _scTradesHtml(fills, funding = []) {
     return `<div style="display:flex;align-items:center;gap:8px;padding:6px 16px;font-size:11.5px">
       <span style="color:${side === 'Short' ? 'var(--red)' : 'var(--green)'};font-weight:700;width:38px;flex-shrink:0">${side}</span>
       <span style="color:var(--muted);white-space:nowrap">${esc(when)}</span>
-      <span style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">@ $${fmtPrice(parseFloat(f.px ?? 0))}</span>
+      <span style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">@ $${fmtPrice(parseFloat(f.px ?? 0))}${pieces}</span>
       <span style="flex:1"></span>
       <span style="font-family:var(--font-mono);font-weight:700;color:${tone};white-space:nowrap">${_scPnl(net)}</span>
     </div>`
@@ -20763,12 +20783,8 @@ function _mobVRenderContent(tick = false) {
     const dispRealized = _cpP?.parts ? _cpP.parts.realized : realizedPnl
     const dispFunding  = _cpP?.parts ? _cpP.parts.funding  : netFunding
     const totalVol      = fills.reduce((s, f) => s + (f.notional ?? 0), 0)
-    const ONE_HOUR = 3600000
-    const windows  = {}
-    for (const f of fills.filter(f => f.closedPnl !== 0)) {
-      const key = `${f.coin}_${Math.floor(f.time / ONE_HOUR)}`
-      windows[key] = (windows[key] ?? 0) + f.closedPnl - f.fee
-    }
+    // A trade is an order, not an hour and not a fill — src/tradegroup.js.
+    const windows = tradeWindows(fills)
     const allW    = Object.values(windows)
     const winRate = allW.length > 0 ? (allW.filter(n => n > 0).length / allW.length * 100).toFixed(1) + '%' : '—'
     // Profit factor from the SAME windows as the win rate beside it, through the same module
@@ -20947,7 +20963,7 @@ function _mobVRenderContent(tick = false) {
           ${_mobVCoinIcon(s.coin)}
           <div class="mob-v-row-info">
             <div class="mob-v-row-name">${esc(_ocCoinLabel(s.coin))}</div>
-            <div class="mob-v-row-sub">${s.fills} trades · ${wr}% win</div>
+            <div class="mob-v-row-sub">${s.trades} ${s.trades === 1 ? _T('trade', 'operación') : _T('trades', 'operaciones')} · ${wr}% win</div>
           </div>
           <div class="mob-v-row-right">
             <div class="mob-v-row-val ${cls}">${_scPnl(s.totalPnl)}</div>
@@ -22088,14 +22104,9 @@ function _lbPaperPayload(slot) {
     const pos = paperPerpState().assetPositions
     if (s.positions.some(p => !(paperMark(p.coin) > 0))) return null
     const closed = (s.fills ?? []).filter(f => parseFloat(f.closedPnl ?? 0) !== 0)
-    // Trades in the SAME unit the real board uses — every close in one coin within an hour,
-    // net of its fees — and the same track record built from them. Win rate here used to
-    // count individual closing fills, so the two boards measured different things.
-    const windows = {}
-    for (const f of closed) {
-      const k = `${f.coin}_${Math.floor(+f.time / 3600000)}`
-      windows[k] = (windows[k] ?? 0) + parseFloat(f.closedPnl) - parseFloat(f.fee ?? 0)
-    }
+    // Trades in the SAME unit the real board uses: one closing ORDER, net of its fees
+    // (src/tradegroup.js), and the same track record built from them.
+    const windows = tradeWindows(closed)
     const track = trackRecord({
       windows, portfolio: paperPortfolio(),
       lastFillAt: (s.fills ?? []).reduce((m, f) => Math.max(m, +f.time || 0), 0) || null,
@@ -34326,17 +34337,12 @@ async function _lbFetchResults(entries) {
     const withdrawable     = parseFloat(csNow.withdrawable ?? 0) + _spotFree
     const totalVolume      = fills.reduce((s, f) => s + parseFloat(f.sz ?? 0) * parseFloat(f.px ?? 0), 0)
     let grossWin = 0, grossLoss = 0
-    const ONE_HOUR = 3600000
-    const _windows = {}
     for (const f of fills) {
       const pnl = parseFloat(f.closedPnl ?? 0)
       if (pnl > 0) grossWin += pnl
       else if (pnl < 0) grossLoss += Math.abs(pnl)
-      if (pnl !== 0) {
-        const key = `${f.coin}_${Math.floor(+f.time / ONE_HOUR)}`
-        _windows[key] = (_windows[key] ?? 0) + pnl - parseFloat(f.fee ?? 0)
-      }
     }
+    const _windows = tradeWindows(fills)
     const _allW        = Object.values(_windows)
     const winCount     = _allW.filter(n => n > 0).length
     const totalWindows = _allW.length
@@ -37998,8 +38004,8 @@ async function _chalSubmit() {
       realizedPnl:   closed.reduce((a, f) => a + parseFloat(f.closedPnl ?? 0), 0),
       volume:        (s.fills ?? []).reduce((a, f) => a + Math.abs(parseFloat(f.sz ?? 0)) * parseFloat(f.px ?? 0), 0),
       healthPct:     _paperHealthPct(),
-      trades:        closed.length,
-      wins:          closed.filter(f => parseFloat(f.closedPnl) > 0).length,
+      trades:        countTrades(closed),
+      wins:          closedTrades(closed).filter(g => g.closedPnl > 0).length,
       positions,
     }
     // Audit trail: attach the FULL fill log + total funding, but only when the trade log

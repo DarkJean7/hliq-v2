@@ -1,5 +1,6 @@
 import { accountHealth, healthClass, approxHealth } from './health.js'
 import { mtmDelta } from './mtmbridge.js'
+import { groupTrades, countTrades } from './tradegroup.js'
 import { monthNotesHtml, dayNotesHtml, noteDays, loadNotes } from './calnotes.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
 import { pairTrades, drawdownFor } from './drawdown.js'
@@ -1992,37 +1993,32 @@ function coinLogoUrl(coin) {
 export function computeCoinStats(coin, coinFills, price) {
   let totalPnl = 0, volume = 0
 
-  // Group closing fills by 1h bucket to avoid counting partial fills as separate trades
-  const ONE_H  = 60 * 60 * 1000
-  const buckets = {}  // key: `side_bucket` → { side: 'long'|'short', netPnl }
-
   for (const f of coinFills) {
     volume   += f.notional
     totalPnl += f.closedPnl
-
-    const dir     = (f.dir ?? '').toLowerCase()
-    const isClose = f.closedPnl !== 0 || dir.includes('close')
-    if (!isClose) continue
-
-    const wasLong  = dir.includes('close long')  || (!dir.includes('short') && f.rawSide === 'A')
-    const wasShort = dir.includes('close short') || (dir.includes('short') && f.rawSide === 'B')
-    if (!wasLong && !wasShort) continue
-
-    const side   = wasLong ? 'long' : 'short'
-    const bucket = Math.floor(f.time / ONE_H)
-    const key    = `${side}_${bucket}`
-    if (!buckets[key]) buckets[key] = { side, netPnl: 0 }
-    buckets[key].netPnl += f.closedPnl
   }
 
+  // One ORDER is one trade (src/tradegroup.js). These were buckets of an hour, which counted
+  // a single close filled in six pieces as six closes — reported on a one-short account that
+  // read "14 trades · 6 closed".
   let longs = 0, shorts = 0, longsWon = 0, shortsWon = 0
-  for (const b of Object.values(buckets)) {
-    if (b.side === 'long')  { longs++;  if (b.netPnl > 0) longsWon++ }
-    if (b.side === 'short') { shorts++; if (b.netPnl > 0) shortsWon++ }
+  for (const g of groupTrades(coinFills)) {
+    const dir     = (g.dir ?? '').toLowerCase()
+    const isClose = g.closedPnl !== 0 || dir.includes('close')
+    if (!isClose) continue
+    const wasLong  = dir.includes('close long')  || (!dir.includes('short') && g.rawSide === 'A')
+    const wasShort = dir.includes('close short') || (dir.includes('short') && g.rawSide === 'B')
+    if (!wasLong && !wasShort) continue
+    const net = g.closedPnl
+    if (wasLong)  { longs++;  if (net > 0) longsWon++ }
+    else          { shorts++; if (net > 0) shortsWon++ }
   }
 
   const avgHoldMs = computeAvgHoldTime(coinFills)
-  return { coin, price, longs, shorts, longsWon, shortsWon, totalPnl, volume, fills: coinFills.length, avgHoldMs }
+  // `fills` is the raw count (still used where the pieces matter); `trades` is what a person
+  // did — and what every "N trades" on screen must print.
+  return { coin, price, longs, shorts, longsWon, shortsWon, totalPnl, volume,
+           fills: coinFills.length, trades: countTrades(coinFills), avgHoldMs }
 }
 
 export function renderCoinCard(stats, _price, isSearchResult = false) {

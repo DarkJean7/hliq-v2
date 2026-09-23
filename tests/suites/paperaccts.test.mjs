@@ -172,7 +172,9 @@ console.log(nl + '-- the paper board is the real board, section for section --')
   // open orders. Desktop had no paper board at all.
   const srv = fs.readFileSync('server.js', 'utf8')
   const pay = grab(cli, 'function _lbPaperPayload(slot)')
-  t('trades use the real board\u2019s unit (closes per coin per hour)', pay.includes('const k = `${f.coin}_${Math.floor(+f.time / 3600000)}`'))
+  // The unit is one closing ORDER, not an hour of them and not a fill: an hour bucket merged
+  // two separate trades, and a fill count split one close into the pieces it filled in.
+  t('trades use the real board’s unit (one closing order)', pay.includes('const windows = tradeWindows(closed)'))
   t('each account posts a track record', pay.includes('const track = trackRecord({') && pay.includes('portfolio: paperPortfolio()'))
   t('and its open orders', pay.includes('openOrders:    paperOpenOrders()'))
   t('the server keeps both, cleaned', srv.includes('      openOrders,\n      track,\n') || (srv.includes('openOrders,') && srv.includes('      track,')))

@@ -24,6 +24,9 @@ let ctx = {
   /** Repaint whatever shows the group. */
   rerender: () => {},
   store: () => (typeof localStorage !== 'undefined' ? localStorage : null),
+  /** The app's own artwork for a Hyperliquid-listed coin, as HTML. Injected for the same
+   *  reason as hlPrice: this module does not read state. */
+  coinIconHtml: null,
   /** Mid price for an HL-listed spot token, or null. Injected: this module does not read
    *  state, and the app already polls these every tick. */
   hlPrice: () => null,
@@ -232,6 +235,10 @@ export function balanceAdd() {
 const _open = new Set()   // expanded rows, by acct|token
 
 function icon(entry) {
+  // A Hyperliquid-listed token has no contract and no pool, so neither price source carries an
+  // image for it. The app has one — the same icon the Spot rows above use.
+  const hl = hlIconHtml(entry)
+  if (hl) return `<div class="mob-v-row-icon" style="padding:0;overflow:hidden;background:var(--panel-2)">${hl}</div>`
   // The live quote's image wins over the one saved with the holding: EAGLE was saved when
   // the only source had no image for it, and would otherwise show a letter forever.
   const q = quoteFor(entry.token, entry.net)
@@ -243,6 +250,12 @@ function icon(entry) {
   return `<div class="mob-v-row-icon" style="padding:0;overflow:hidden;background:var(--panel-2)">
     <img src="${esc(entry.icon)}" alt="" style="width:100%;height:100%;object-fit:cover"
       onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'${letter}',style:'display:flex;width:100%;height:100%;align-items:center;justify-content:center;font-weight:800;font-size:14px'}))"></div>`
+}
+
+/** The app's icon for a Hyperliquid-listed holding, or null for anything else. */
+function hlIconHtml(entry) {
+  if (normNet(entry?.net) !== HL_NET || !ctx.coinIconHtml) return null
+  try { return ctx.coinIconHtml(String(entry.symbol || entry.token)) || null } catch { return null }
 }
 
 const short = (a) => a.slice(0, 6) + '…' + a.slice(-4)
@@ -336,6 +349,8 @@ function deskRowHtml(r, showAcct) {
   const sub = subLine(r, showAcct)
   const cls = (v.pnl ?? 0) >= 0 ? 'pos' : 'neg'
   const img = (() => {
+    const hl = hlIconHtml(e)
+    if (hl) return hl
     const q = quoteFor(e.token, e.net)
     const url = q?.icon ?? e.icon
     const letter = esc((e.symbol || '?').slice(0, 1).toUpperCase())
