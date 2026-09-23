@@ -2510,7 +2510,7 @@ export function calDayClick(key, rootId) {
     const acctKey = f._acctAddr ? f._acctAddr + '|' : ''
     const k = acctKey + (f.oid != null ? `oid_${f.oid}`
       : (f.hash && !/^0x0+$/.test(f.hash) ? f.hash : `tid_${f.tid ?? f.time + '_' + f.coin + '_' + f.px}`))
-    if (!groups.has(k)) groups.set(k, { coin: f.coin, dir: f.dir, sz: 0, notional: 0, fee: 0, closedPnl: 0, time: f.time, _acct: f._acct })
+    if (!groups.has(k)) groups.set(k, { coin: f.coin, dir: f.dir, sz: 0, notional: 0, fee: 0, feeToken: f.feeToken, closedPnl: 0, time: f.time, _acct: f._acct })
     const g = groups.get(k)
     g.sz += f.sz; g.notional += f.notional; g.fee += f.fee; g.closedPnl += f.closedPnl
   }
@@ -2539,15 +2539,21 @@ export function calDayClick(key, rootId) {
     <div class="cal-detail-section">
       <div class="cal-detail-section-title">Trades</div>
       ${trades.map(t => {
-        const netPnl  = t.closedPnl - t.fee
-        // Buying spot is a purchase, so what it cost is the figure worth the slot — and it
-        // is the only one there is, since spot fills carry no closed PnL. A perp keeps its
-        // PnL there, and a dash when it opened rather than closed. Same rule as History.
+        // HL charges the fee in the asset received: USDC on anything that sold, the bought
+        // token on a spot buy. Taking a KNTQ fee off a dollar PnL is a unit error, so only
+        // a USDC fee comes off — every fill that closed something is quoted in USDC anyway.
+        const netPnl  = t.closedPnl - ((t.feeToken ?? 'USDC') === 'USDC' ? t.fee : 0)
+        // A SPOT SELL DOES CARRY CLOSED PnL — Hyperliquid realizes it against your cost
+        // basis, and the day total in the header counts it. Printing the notional instead
+        // hid $59.02 of a $138.26 day behind a grey number, which is the report "the PnL at
+        // the top does not match the green rows". So a PnL wins wherever there is one. The
+        // notional is for a fill that closed nothing, where on spot what it cost is the only
+        // figure there is, and a perp opening a position gets the dash. Same rule as History.
         const isSpot = isSpotCoin(t.coin)
-        const right = isSpot
-          ? `<span class="cal-detail-pnl" style="color:var(--muted)">$${fmtUSD(t.notional ?? 0)}</span>`
-          : t.closedPnl !== 0
-            ? `<span class="${netPnl >= 0 ? 'pos' : 'neg'} cal-detail-pnl">${netPnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(netPnl))}</span>`
+        const right = t.closedPnl !== 0
+          ? `<span class="${netPnl >= 0 ? 'pos' : 'neg'} cal-detail-pnl">${netPnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(netPnl))}</span>`
+          : isSpot
+            ? `<span class="cal-detail-pnl" style="color:var(--muted)">$${fmtUSD(t.notional ?? 0)}</span>`
             : '<span class="cal-detail-pnl" style="color:var(--muted)">—</span>'
         // Tapping expands the size/price line. No handler and no state: the class is the
         // state, which also means a re-render of the day starts collapsed again, as it

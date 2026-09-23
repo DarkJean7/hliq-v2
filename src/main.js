@@ -20099,6 +20099,8 @@ function _mobVRenderContent(tick = false) {
       // their settlement fills carry dir="Settlement" (no long/short word), so the
       // old regex mis-read them as short → wrong entry (e.g. 1.68 for a 0–1 token).
       const _sz       = parseFloat(f.sz) || 0
+      // Spot shows what the trade was worth ONLY when it closed nothing — a spot sell
+      // carries closed PnL like a perp does and shows it. See the Calendar row.
       const _isSpot   = _isSpotFill(f.coin)
       const _ntl      = Number(f.notional ?? 0) || (_sz * (parseFloat(f.px) || 0))
       const _isOc     = typeof f.coin === 'string' && (f.coin[0] === '#' || f.coin[0] === '+')
@@ -20124,8 +20126,8 @@ function _mobVRenderContent(tick = false) {
           <div class="mob-v-row-right">
             <div class="mob-v-row-val">${fmtSize(f.sz)} @ $${fmtPrice(f.px)}</div>
             <div class="mob-v-row-pct ${pnl !== 0 ? pnlCls : ''}" style="display:flex;align-items:center;gap:6px;justify-content:flex-end;${pnl === 0 ? 'color:var(--muted)' : ''}">
-              <span>${_isSpot ? '$' + fmtUSD(_ntl)
-                              : pnl !== 0 ? (pnl >= 0 ? '+' : '') + '$' + fmtUSD(Math.abs(pnl))
+              <span>${pnl !== 0 ? (pnl >= 0 ? '+' : '') + '$' + fmtUSD(Math.abs(pnl))
+                              : _isSpot ? '$' + fmtUSD(_ntl)
                               : '—'}</span>
               ${pnl !== 0 ? `<button class="trade-share-btn" title="Share PnL" onclick="event.stopPropagation();${_shareCall}" style="padding:1px 6px;font-size:12px">↗</button>` : ''}
             </div>
