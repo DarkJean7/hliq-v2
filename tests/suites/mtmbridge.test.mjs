@@ -5,8 +5,8 @@
 // minutes, every one of them undone by the next snapshot — the carry between snapshots was
 // wrong, not the snapshot. These tests are built from those records; see src/mtmbridge.js.
 import fs from 'fs'
-import { mtmBook, mergeBooks, mtmDelta } from '../../src/mtmbridge.js'
-import { bridgeCombined, booksFrom } from '../../src/comboequity.js'
+import { mtmBook, mergeBooks, mtmDelta, bookState, advanceBook, mtmCarry } from '../../src/mtmbridge.js'
+import { bridgeCombined, booksFrom, advanceBooks } from '../../src/comboequity.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -37,7 +37,7 @@ console.log(nl + '-- only price moves it --')
   t('margin, unrealized and transfers do not move it', near(mtmDelta(book, withNoise), 0))
 }
 
-console.log(nl + '-- trades between snapshots --')
+console.log(nl + '-- what a FIXED book can see: only what is still held --')
 {
   const book = mtmBook([pos('ADA', -6000, 0.24)])
   // Half closed, then price moved: only what is still held accrues.
@@ -47,6 +47,46 @@ console.log(nl + '-- trades between snapshots --')
   t('a close stops accruing', near(mtmDelta(book, []), 0))
   t('a flip counts nothing of the old side', near(mtmDelta(book, [pos('ADA', 500, 0.25)]), 0))
   t('a new coin waits for the snapshot', near(mtmDelta(book, [pos('ADA', -6000, 0.24), pos('ETH', 1, 3000)]), 0))
+}
+
+// Reported as "when a position open/closes the account equity spikes". A fixed book drops a
+// closed position's accrued move and ignores an opened one, and both of those are a step in
+// the headline that the next snapshot undoes. The book is advanced instead.
+console.log(nl + '-- a close banks what it made real --')
+{
+  const st0 = bookState([pos('ADA', -6000, 0.24)])
+  t('a fresh state carries nothing yet', mtmCarry(st0, [pos('ADA', -6000, 0.24)]) === 0)
+  // Price moves 1c against a 6000 short: -60. Then it is closed at that mark.
+  const moved = [pos('ADA', -6000, 0.25)]
+  const st1 = advanceBook(st0, moved)
+  t('while it is held, the carry is the price move', near(mtmCarry(st1, moved), -60))
+  const st2 = advanceBook(st1, [])
+  t('closing keeps it — the fixed book dropped it', near(st2.realized, -60) && near(mtmCarry(st2, []), -60))
+  t('and nothing accrues on it after', near(mtmCarry(advanceBook(st2, []), []), -60))
+
+  // The half that was closed is banked; the half still open keeps accruing from the snapshot.
+  const h1 = advanceBook(bookState([pos('ADA', -6000, 0.24)]), [pos('ADA', -3000, 0.25)])
+  t('a partial close banks its half', near(h1.realized, -30))
+  t('and the rest still accrues from the snapshot mark', near(mtmCarry(h1, [pos('ADA', -3000, 0.26)]), -30 - 60))
+
+  // A position opened after the snapshot: nothing at the instant it is opened, everything after.
+  const o1 = advanceBook(bookState([]), [pos('ETH', 1, 3000)])
+  t('an open counts for nothing at the time', near(mtmCarry(o1, [pos('ETH', 1, 3000)]), 0))
+  t('and for its price move afterwards', near(mtmCarry(o1, [pos('ETH', 1, 3050)]), 50))
+  // Added to a held position: one entry at the size-weighted mark, exact for the pair.
+  const a1 = advanceBook(bookState([pos('ETH', 1, 3000)]), [pos('ETH', 2, 3100)])
+  t('an add joins at its own mark', near(mtmCarry(a1, [pos('ETH', 2, 3100)]), 100))
+  t('and the pair accrues together after', near(mtmCarry(a1, [pos('ETH', 2, 3200)]), 100 + 200))
+  // A flip is a close and an open.
+  const f1 = advanceBook(bookState([pos('ADA', -6000, 0.24)]), [pos('ADA', 3000, 0.25)])
+  t('a flip banks the old side and starts the new one at zero',
+    near(f1.realized, -60) && near(mtmCarry(f1, [pos('ADA', 3000, 0.25)]), -60))
+  t('the new side then accrues on its own', near(mtmCarry(f1, [pos('ADA', 3000, 0.26)]), -60 + 30))
+
+  t('a tick that saw no positions changes nothing', advanceBook(st1, null).realized === st1.realized)
+  t('a bare book still works — an older snapshot stamped one', near(mtmCarry({ ADA: [-6000, 0.24] }, moved), -60))
+  t('it survives JSON, like the books the server sends',
+    near(mtmCarry(JSON.parse(JSON.stringify(st2)), []), -60))
 }
 
 console.log(nl + '-- unknown is not zero --')
@@ -81,6 +121,16 @@ console.log(nl + '-- the combined headline --')
   // ADA -30.02, SPCX +2 and +4, BTC +20
   t('price does', near(bridgeCombined(snap, rowsMoved).val, 6595.71 - 30.02 + 2 + 4 + 20), bridgeCombined(snap, rowsMoved))
   t('a snapshot without books falls back to the old bridge', bridgeCombined({ ...snap, books: null }, rowsBad).basis === 'total')
+
+  // A wallet closes its ADA after the snapshot, having made -30.02 on it since: the headline
+  // must not move at the close. With fixed books it fell by exactly that amount.
+  const held   = [{ ...rows0[0], positions: [pos('ADA', -6004, 0.245), pos('xyz:SPCX', 1, 180)] }, rows0[1]]
+  const closed = [{ ...rows0[0], positions: [pos('xyz:SPCX', 1, 180)] }, rows0[1]]
+  const snapA  = { ...snap, books: advanceBooks(snap.books, held) }
+  const before = bridgeCombined(snapA, held).val
+  const snapB  = { ...snapA, books: advanceBooks(snapA.books, closed) }
+  t('a close does not move the combined headline',
+    near(bridgeCombined(snapB, closed).val, before), [before, bridgeCombined(snapB, closed).val])
 }
 
 console.log(nl + '-- wired in --')
@@ -93,9 +143,21 @@ console.log(nl + '-- wired in --')
   t('the same snapshot handed back keeps the base it was adopted with',
     /Number\(_combinedSnap\.updatedAt\) === Number\(d\.updatedAt\)/.test(main) && /acctBase: _combinedSnap\.acctBase,/.test(main))
   t('the single account stamps its book with its anchor', /portfolio\._mtmBook = mtmBook\(perpState\.assetPositions\)/.test(main))
-  t('and its headline is carried by it', /const mtm = portfolio\?\._mtmBook \? mtmDelta\(portfolio\._mtmBook, livePositions\) : null/.test(rnd))
+  // The headline reads the ADVANCED state when the portfolio has one, and the fixed book only
+  // as the fallback for a portfolio stamped before that existed.
+  t('and its headline is carried by it',
+    /const mtm = portfolio\?\._mtm \? mtmCarry\(portfolio\._mtm, livePositions\)/.test(rnd) &&
+    /: portfolio\?\._mtmBook \? mtmDelta\(portfolio\._mtmBook, livePositions\) : null/.test(rnd))
+  t('the single account advances it every tick, not only when a snapshot lands',
+    /state\.portfolio\._mtm = advanceBook\(state\.portfolio\._mtm, perpState\.assetPositions\)/.test(main))
+  t('a combined row advances its own', /if \(r\._mtm\) r\._mtm = advanceBook\(r\._mtm, _live\)/.test(main))
+  t('and keeps it across a rebuild of the same snapshot',
+    /const _sameSnap\s+= prevRow\?\._mtm && portfolioAcctVal != null && parseFloat\(prevRow\._portVal\) === portfolioAcctVal/.test(main))
+  t('the combined headline advances its books before bridging',
+    /const _books = advanceBooks\(_combinedSnap\.books, rows\)/.test(main))
   t('every caller hands over the live positions', (rnd.match(/liveAccountValue\([^)]*perpState\?\.assetPositions\)/g) ?? []).length === 3)
-  t('synthetic portfolios never carry a stale book', (main.match(/_perpAnchor = parseFloat\([^)]*\); delete state\.portfolio\._mtmBook/g) ?? []).length === 3)
+  t('synthetic portfolios never carry a stale book — nor a stale state',
+    (main.match(/_perpAnchor = parseFloat\([^)]*\); delete state\.portfolio\._mtmBook; delete state\.portfolio\._mtm/g) ?? []).length === 3)
   t('a combined row is carried the same way', /const cand\s+= _mtm != null \? _base \+ _mtm : _base \+ \(perpNow - _perpB\)/.test(main))
   t('and its book is stored with its anchor', (main.match(/bookAtHist: _bookAtHist/g) ?? []).length >= 3)
   t('single-account spikes are recorded too', /src=single snapMoved=/.test(main))

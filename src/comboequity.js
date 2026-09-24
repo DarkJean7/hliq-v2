@@ -56,7 +56,7 @@
  * nothing but the market can move. See src/mtmbridge.js; the two older bridges remain only for
  * a snapshot that arrived without books.
  */
-import { mtmBook, mergeBooks, mtmDelta } from './mtmbridge.js'
+import { mtmBook, mergeBooks, mtmDelta, mtmCarry, advanceBook } from './mtmbridge.js'
 
 const lc = a => String(a ?? '').toLowerCase()
 const isHip3 = ap => String((ap?.position ?? ap)?.coin ?? '').includes(':')
@@ -80,6 +80,25 @@ export function booksFrom(serverBooks, rows) {
     const srv = serverBooks[k]
     if (!srv || typeof srv !== 'object') return null
     out[k] = mergeBooks(mtmBook((r.positions ?? []).filter(isHip3)), srv)
+  }
+  return out
+}
+
+/**
+ * The books carried to what the rows hold NOW.
+ *
+ * Called on every paint, before the bridge: a close between two snapshots banks its price
+ * move into the wallet's book, and a position opened since joins at the mark it is first seen
+ * at. Returns the same object when there is nothing to advance, so the caller can keep the
+ * snapshot it has.
+ */
+export function advanceBooks(books, rows) {
+  if (!books || typeof books !== 'object' || !Array.isArray(rows)) return books
+  const out = { ...books }
+  for (const r of rows) {
+    const k = lc(r?.addr)
+    if (!out[k] || !Array.isArray(r?.positions)) continue
+    out[k] = advanceBook(out[k], r.positions)
   }
   return out
 }
@@ -127,7 +146,11 @@ export function bridgeCombined(snap, rows) {
   if (snap.books) {
     let d = 0, ok = true
     for (const r of rows) {
-      const x = mtmDelta(snap.books[lc(r?.addr)], r?.positions)
+      // mtmCarry, not mtmDelta: the books are ADVANCED as positions are seen (advanceBooks
+      // below), so each one also carries what closing a position banked. A fixed book
+      // dropped that, and the headline fell by the closed position's whole accrued move
+      // until the next snapshot — "when a position open/closes the account equity spikes".
+      const x = mtmCarry(snap.books[lc(r?.addr)], r?.positions)
       if (x == null) { ok = false; break }
       d += x
     }

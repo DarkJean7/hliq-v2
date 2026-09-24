@@ -1,5 +1,5 @@
 import { accountHealth, healthClass, approxHealth } from './health.js'
-import { mtmDelta } from './mtmbridge.js'
+import { mtmDelta, mtmCarry } from './mtmbridge.js'
 import { groupTrades, countTrades } from './tradegroup.js'
 import { monthNotesHtml, dayNotesHtml, noteDays, loadNotes } from './calnotes.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
@@ -276,7 +276,10 @@ function liveAccountValue(portfolio, perpAcctVal, spotUSDCTotal, livePositions =
   // By price on what was held when the snapshot was read, when it carries that book. The perp
   // bridge moved on every spot/perp transfer and order reserve, and a detector for each of
   // those never closed the gap; price acting on positions cannot see them. src/mtmbridge.js
-  const mtm = portfolio?._mtmBook ? mtmDelta(portfolio._mtmBook, livePositions) : null
+  // `_mtm` is the book ADVANCED as positions were seen, so it also carries what closing a
+  // position banked; `_mtmBook` is the fixed book a portfolio stamped before that existed.
+  const mtm = portfolio?._mtm ? mtmCarry(portfolio._mtm, livePositions)
+            : portfolio?._mtmBook ? mtmDelta(portfolio._mtmBook, livePositions) : null
   const anchor = portfolio?._perpAnchor
   const val = mtm != null ? snap + mtm : anchor != null ? snap + (perpAcctVal - anchor) : snap
   _lastGoodAcctVal = val

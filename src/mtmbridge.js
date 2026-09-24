@@ -90,3 +90,111 @@ export function mtmDelta(book, live) {
   }
   return d
 }
+
+/**
+ * ── what a fixed book cannot do, and why the headline still stepped ──
+ *
+ * Reported as "when a position open/closes the account equity spikes", and it is the same
+ * failure at both ends of a trade:
+ *
+ *   CLOSING — mtmDelta stops accruing a coin the moment it leaves the live positions. But the
+ *             price move it had accrued since the snapshot did not evaporate; closing is
+ *             exactly what makes it REAL. Carrying $180 of gain on a short and then closing it
+ *             took the headline down $180 until the next snapshot, and the drop had nothing to
+ *             do with the trade's result.
+ *   OPENING — a position opened after the snapshot is not in the book, so the market moving it
+ *             counts as nothing until the next snapshot lands and it all arrives at once.
+ *
+ * So the book is advanced as positions are observed, rather than fixed at the snapshot:
+ *
+ *   · a size that SHRINKS banks the closed part at the last mark seen — realized, permanent,
+ *     and it stays in the carry until a new snapshot replaces the whole state;
+ *   · a size that GROWS keeps the entry at the size-weighted mark of the old and the new, so
+ *     Σ size × (mark now − mark) still describes the whole holding exactly;
+ *   · a coin that APPEARS joins at the mark it is first seen at, which is what opening it did
+ *     to the account: nothing at that instant, and every tick after it counts;
+ *   · a FLIP is both — the old side is banked, the new side joins at the current mark.
+ *
+ * What it still cannot see is the fee, and the gap between the last mark observed and the
+ * price the fill actually got. Both are small and both are corrected by the next snapshot —
+ * which is the whole contract of this file: a bridge that drifts by cents rather than one that
+ * steps by hundreds.
+ */
+
+/** A state from whatever the caller has: a state, a bare book (persisted by an older
+ *  version, or handed over by the server), or nothing. */
+function asState(s) {
+  if (!s || typeof s !== 'object') return null
+  if (s.book && typeof s.book === 'object') {
+    return { book: s.book, realized: Number(s.realized) || 0, marks: s.marks && typeof s.marks === 'object' ? s.marks : {} }
+  }
+  return { book: s, realized: 0, marks: {} }        // a bare book: nothing banked yet
+}
+
+/** A fresh state from the positions held when a snapshot was read. */
+export function bookState(assetPositions) {
+  const book = mtmBook(assetPositions)
+  return { book, realized: 0, marks: Object.fromEntries(Object.entries(book).map(([c, v]) => [c, v[1]])) }
+}
+
+/**
+ * The state after seeing `live`. Returns a NEW state; the old one is left alone, so a caller
+ * that decides not to trust this reading can keep what it had.
+ *
+ * `live` null or not an array means "not observed this tick" — the state is returned unchanged
+ * rather than treated as an account with nothing in it, which would bank every open position
+ * as closed (empty is not the same as unknown).
+ */
+export function advanceBook(prev, live) {
+  const s = asState(prev)
+  if (!s) return null
+  if (!Array.isArray(live)) return s
+  const now = mtmBook(live)
+  const book = {}, marks = { ...s.marks }
+  let realized = s.realized
+
+  for (const [coin, v] of Object.entries(s.book)) {
+    const [sz, mark] = v ?? []
+    if (!Number.isFinite(sz) || !Number.isFinite(mark)) continue
+    const n = now[coin]
+    // Gone, or flipped to the other side: all of it was closed. At the last mark seen, which
+    // is at most one tick old — the fill happened near it.
+    if (!n || Math.sign(n[0]) !== Math.sign(sz)) {
+      // A flip still shows a mark, so use it; a coin that is simply gone is valued at the
+      // last mark seen for it, at most one tick old.
+      const last = n ? n[1] : (Number.isFinite(marks[coin]) ? marks[coin] : mark)
+      realized += sz * (last - mark)
+      continue
+    }
+    const [liveSz, markNow] = n
+    if (Math.abs(liveSz) < Math.abs(sz)) {
+      realized += (sz - liveSz) * (markNow - mark)   // the part that just became real
+      book[coin] = [liveSz, mark]
+    } else if (Math.abs(liveSz) > Math.abs(sz)) {
+      // Added to: one entry at the size-weighted mark, which is exact for the pair.
+      book[coin] = [liveSz, (sz * mark + (liveSz - sz) * markNow) / liveSz]
+    } else {
+      book[coin] = [sz, mark]
+    }
+  }
+  // Opened since: it joins at the mark it is first seen at, so it contributes nothing now and
+  // everything after. A flipped coin arrives here too, its old side already banked above.
+  for (const [coin, n] of Object.entries(now)) {
+    if (!book[coin]) book[coin] = [n[0], n[1]]
+  }
+  for (const [coin, n] of Object.entries(now)) marks[coin] = n[1]
+  return { book, realized, marks }
+}
+
+/**
+ * The whole carry: what price has done to what is still held, plus what closing banked.
+ *
+ * Null when the live positions are unknown — the caller holds its last figure rather than
+ * publishing a snapshot with the price moves stripped out.
+ */
+export function mtmCarry(state, live) {
+  const s = asState(state)
+  if (!s) return null
+  const d = mtmDelta(s.book, live)
+  return d == null ? null : s.realized + d
+}

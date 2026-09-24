@@ -1,7 +1,7 @@
 // All-Accounts equity and Net PnL: both must come from ONE source, or the headline steps
 // when it switches basis and two devices disagree.
 import fs from 'fs'
-import { bridgeCombined, reanchor, snapshotRows } from '../../src/comboequity.js'
+import { bridgeCombined, reanchor, snapshotRows, advanceBooks } from '../../src/comboequity.js'
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 const srv = fs.readFileSync('server.js', 'utf8').replace(/\r\n/g, '\n')
 
@@ -15,7 +15,7 @@ const grab = (s, sig) => {
   for (; j < s.length; j++) { if (s[j] === '{') d++; else if (s[j] === '}') { d--; if (!d) return s.slice(i, j + 1) } }
   return ''
 }
-const harness = (extra = '') => new Function('bridgeCombined', 'reanchor', 'snapshotRows', `
+const harness = (extra = '') => new Function('bridgeCombined', 'reanchor', 'snapshotRows', 'advanceBooks', `
   const state = { isAllAccounts: true, fills: [] }
   const _maHiddenLoad = () => new Set()
   let _allAcctLastResults = []
@@ -44,7 +44,7 @@ const harness = (extra = '') => new Function('bridgeCombined', 'reanchor', 'snap
     setFills: (f) => { state.fills = f },
     fetches: () => fetches,
   }
-`)(bridgeCombined, reanchor, snapshotRows)
+`)(bridgeCombined, reanchor, snapshotRows, advanceBooks)
 
 // ── 1. equity: the anchor swap on closing a position ─────────────────────────
 const mk = (n, withLive = true) => Array.from({ length: n }, (_, i) => ({

@@ -246,9 +246,9 @@ import { probeNavGeometry } from './navprobe.js'
 import { accountRoe, partRoe, positionRoe, fmtRoe, compareRoe } from './roe.js'
 import { ordersForCoin, byAccount, statusesFrom, classifyCancels, describeOrders,
          isAlreadyGone, sideOf as _ordSideOf, summarize as _cancelSummary } from './cancelbatch.js'
-import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey, booksFrom } from './comboequity.js'
+import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey, booksFrom, advanceBooks } from './comboequity.js'
 import { cashSample, classifyCashMove, posFingerprint } from './perpcash.js'
-import { mtmBook, mtmDelta } from './mtmbridge.js'
+import { mtmBook, mtmDelta, mtmCarry, bookState, advanceBook } from './mtmbridge.js'
 import { orderMarginByCoin, spotByCoin, SLICE_DUST } from './alloc.js'
 import { hlBudget as _hlBudget, meterTransport, weightOf as _hlWeightOf } from './hlbudget.js'
 import { holdingStart, fmtHeld, fmtWhen } from './holding.js'
@@ -2026,6 +2026,12 @@ function _anchorPortfolio(portfolio, perpState) {
     // What was held, and at what marks, when that value was read: the live value is carried
     // forward by price acting on these, which no transfer or reserve can move. src/mtmbridge.js
     portfolio._mtmBook = mtmBook(perpState.assetPositions)
+    // The same book, as the state the bridge ADVANCES as positions are seen: a close banks
+    // what it made real instead of dropping it, and a position opened since counts from the
+    // mark it was first seen at. Without that the headline stepped by the whole accrued move
+    // of whatever was just opened or closed — "when a position open/closes the account equity
+    // spikes" — until the next snapshot undid it. src/mtmbridge.js
+    portfolio._mtm = bookState(perpState.assetPositions)
   }
   return portfolio
 }
@@ -2137,6 +2143,12 @@ async function refreshLive(force = false) {
 
     state.perpState  = perpState
     state.openOrders = openOrders.filter(o => !_cancelledOids.has(o.oid))
+
+    // Carry the book to what is held NOW. A snapshot that landed this tick was just paired
+    // with this same perpState above, so this is a no-op on those ticks and the real work
+    // happens on the ~11 ticks in between: banking a close, admitting an open. Every tick,
+    // because a position can be opened and closed between two portfolio fetches.
+    if (state.portfolio?._mtm) state.portfolio._mtm = advanceBook(state.portfolio._mtm, perpState.assetPositions)
 
     // Catch spot↔perp transfers (e.g. a bot's margin top-up, or the margin Hyperliquid
     // reserves when an order is placed): they move money into the perp balance without
@@ -9232,6 +9244,9 @@ async function _maReanchorRow(addr) {
     row._cash     = cashSample(perpAt, cs.assetPositions)
     // HIP-3 from the row as it stands: the WebSocket keeps those live, and cs is main-dex only.
     row._mtmBook  = mtmBook([...(cs.assetPositions ?? []), ...(row.positions ?? []).filter(ap => String((ap.position ?? ap)?.coin ?? '').includes(':'))])
+    // And the state the row advances from here: this pairing is exact, so whatever the old
+    // state had banked belongs to the snapshot that has just been replaced.
+    row._mtm      = bookState([...(cs.assetPositions ?? []), ...(row.positions ?? []).filter(ap => String((ap.position ?? ap)?.coin ?? '').includes(':'))])
     // The cached history store carries the pair too, so a later fan-out doesn't restore the
     // stale one. Keep everything else in the entry as it was.
     const hc = _maHistCache2.get(lc)
@@ -9282,7 +9297,13 @@ function _applyAcctLiveCs(r, cs, hip3Override) {
   // By price on what was held at the snapshot, when the row has that book -- nothing but the
   // market moves it (src/mtmbridge.js). The perp-equity bridge and the transfer detection
   // above remain for a row cached before books existed.
-  const _mtm    = r._mtmBook ? mtmDelta(r._mtmBook, [...mainPos, ...hip3]) : null
+  // Advanced on every push — the same reason the single account advances on every tick: a
+  // close banks what it made real, an open joins at the mark it is first seen at. A fixed
+  // book dropped both, and the row (and the combined total with it) stepped by the whole
+  // accrued move of whatever had just been opened or closed.
+  const _live   = [...mainPos, ...hip3]
+  if (r._mtm) r._mtm = advanceBook(r._mtm, _live)
+  const _mtm    = r._mtm ? mtmCarry(r._mtm, _live) : r._mtmBook ? mtmDelta(r._mtmBook, _live) : null
   const cand    = _mtm != null ? _base + _mtm : _base + (perpNow - _perpB)
   // Glitched reading? Hold this account entirely for this update so the next good reading
   // still yields a correct delta from the same anchor.
@@ -9509,7 +9530,7 @@ function _allAcctLightPaint() {
   // Make liveAccountValue return the summed live equity: anchor = the series' latest
   // point, so snap + (perpAcctVal − anchor) = perpAcctVal = Σ r.accountValue.
   const snapAll = (state.portfolio ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory?.at(-1)?.[1]
-  if (snapAll != null && state.portfolio) { state.portfolio._perpAnchor = parseFloat(snapAll); delete state.portfolio._mtmBook }
+  if (snapAll != null && state.portfolio) { state.portfolio._perpAnchor = parseFloat(snapAll); delete state.portfolio._mtmBook; delete state.portfolio._mtm }
   const liveTotal = visible.reduce((s, r) => s + (r.error ? 0 : parseFloat(r.accountValue ?? 0)), 0)
 
   _syncAllAcctCards()
@@ -9736,6 +9757,12 @@ function _combinedServerValue() {
   if (_re.absorbed) _combinedSnap = { ..._combinedSnap, acctBase: _re.acctBase }
   _comboPrevRows = snapshotRows(rows)
 
+  // Carry each wallet's book to what it holds now before bridging: a position closed since
+  // the snapshot banks its price move, one opened since starts counting. Held on the snapshot,
+  // so it survives until the next one replaces the books outright.
+  const _books = advanceBooks(_combinedSnap.books, rows)
+  if (_books !== _combinedSnap.books) _combinedSnap = { ..._combinedSnap, books: _books }
+
   const bridged = bridgeCombined(_combinedSnap, rows)
   if (!bridged) return null              // a row hasn't had a live tick yet — don't guess
   const { val, basis } = bridged
@@ -9839,7 +9866,7 @@ function _allAcctReaggregate() {
   // the equity alternated between the live sum (fast tick) and the snapshot (reaggregate):
   // the "spiking" the user saw.
   const _snap = (state.portfolio ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory?.at(-1)?.[1]
-  if (_snap != null && state.portfolio) { state.portfolio._perpAnchor = parseFloat(_snap); delete state.portfolio._mtmBook }
+  if (_snap != null && state.portfolio) { state.portfolio._perpAnchor = parseFloat(_snap); delete state.portfolio._mtmBook; delete state.portfolio._mtm }
   renderAll()
   renderMobileView()
   _syncAllAcctCards()
@@ -10413,7 +10440,7 @@ function _paperRefresh() {
   // liveAccountValue() offsets a portfolio snapshot by the perp delta; the paper
   // portfolio is already exact, so anchor it to itself and the offset is zero.
   const snap = state.portfolio.find(p => p[0] === 'allTime')?.[1]?.accountValueHistory?.at(-1)?.[1]
-  if (snap != null) { state.portfolio._perpAnchor = parseFloat(snap); delete state.portfolio._mtmBook }
+  if (snap != null) { state.portfolio._perpAnchor = parseFloat(snap); delete state.portfolio._mtmBook; delete state.portfolio._mtm }
 
   // A throw in any renderer must not take down the caller — __goPaper installs the
   // 5s poll loop after this, so an unguarded render error left paper frozen: the
@@ -34602,7 +34629,16 @@ async function _lbFetchResults(entries) {
     // vs its own (60s-fresh) single view. On a cache miss _perpAtHist == _perpAcctVal, so the
     // delta is 0 and this equals the raw snapshot.
     // By price when the pair has a book (src/mtmbridge.js), else the perp bridge as before.
-    const _mtmNow          = _bookAtHist ? mtmDelta(_bookAtHist, [...positions, ..._bookHip3()]) : null
+    //
+    // The state is carried across a rebuild when the snapshot behind it has not changed:
+    // what a close banked belongs to THAT snapshot, and starting over from the book would
+    // throw it away every fan-out — the row would drop by the closed position's whole
+    // accrued move until the next snapshot, which is the spike this is here to remove.
+    const _liveBook        = [...positions, ..._bookHip3()]
+    const _sameSnap        = prevRow?._mtm && portfolioAcctVal != null && parseFloat(prevRow._portVal) === portfolioAcctVal
+    const _mtmState        = _sameSnap ? advanceBook(prevRow._mtm, _liveBook)
+                           : _bookAtHist ? advanceBook(_bookAtHist, _liveBook) : null
+    const _mtmNow          = _mtmState ? mtmCarry(_mtmState, _liveBook) : null
     const accountValue     = portfolioAcctVal != null
       ? portfolioAcctVal + (_mtmNow != null ? _mtmNow : (_perpAcctVal - _perpAtHist))
       : (Number.isFinite(_prevAcctVal) && _prevAcctVal > 0 ? _prevAcctVal : _perpAcctVal + _spotUSDCTotal)
@@ -34705,7 +34741,7 @@ async function _lbFetchResults(entries) {
     // headline silently fell back to the per-device sum — a DIFFERENT anchor, hundreds of
     // dollars away. Closing a position triggers exactly this rebuild, which is why the
     // equity stepped on a close and stayed there until every wallet had had a WS tick.
-    return { ...entry, accountValue, _cumLedger, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, _mtmBook: portfolioAcctVal != null ? (_bookAtHist ?? null) : null, _cash: cashSample(_perpAcctVal, positions), _orderMargin, _dexStates, _spotBals, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, track, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
+    return { ...entry, accountValue, _cumLedger, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, _mtmBook: portfolioAcctVal != null ? (_bookAtHist ?? null) : null, _mtm: portfolioAcctVal != null ? (_mtmState ?? null) : null, _cash: cashSample(_perpAcctVal, positions), _orderMargin, _dexStates, _spotBals, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, track, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
   }
 
   for (let i = 0; i < entries.length; i++) {
