@@ -1557,12 +1557,9 @@
                   <div class="settings-label">Sound on fill</div>
                   <div class="settings-desc">Plays when one of your orders fills. Your browser only allows it after you have clicked the page once.</div>
                 </div>
-                <div style="display:flex;align-items:center;gap:10px">
-                  <select id="fillSoundSel" class="btn-sm" onchange="window.__setFillSound(this.value)" style="padding:5px 8px"></select>
-                  <input type="range" id="fillSoundVol" min="0" max="100" step="5" style="width:90px"
-                         oninput="window.__setFillVolume(this.value / 100)" title="Volume">
-                  <button class="btn-sm" onclick="window.__testFillSound()">Test</button>
-                </div>
+                <!-- Filled in from the stored setting by _syncFillSoundUI(), with the same
+                     markup the mobile shell uses — src/fillsound.js pickerHtml(). -->
+                <div id="fillSoundBox"></div>
               </div>
               <div class="settings-row">
                 <div>

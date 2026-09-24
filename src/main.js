@@ -221,7 +221,7 @@ import {
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
-import { SOUNDS as _FILL_SOUNDS, soundName as _fillSound, setSound as _setFillSound,
+import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fillPickerHtml,
          volume as _fillVol, setVolume as _setFillVol, play as _playSound,
          playFill as _playFillSound, unlock as _unlockSound } from './fillsound.js'
 import { historyHtml, collapseFills } from './perfhistory.js'
@@ -1576,19 +1576,18 @@ window.__testFillSound = function () {
   _playSound()
 }
 
-// The desktop row is static HTML, so its two controls are filled in from the stored setting.
+// The desktop row is static HTML, so the picker is rendered into it once; after that both
+// shells' pickers are updated in place — re-rendering would drop the slider mid-drag, and the
+// mobile picker is in the DOM at the same time as the desktop one.
 function _syncFillSoundUI() {
-  const sel = document.getElementById('fillSoundSel')
-  if (sel) {
-    const want = _fillSound()
-    if (!sel.options.length) {
-      sel.innerHTML = Object.entries(_FILL_SOUNDS)
-        .map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('')
-    }
-    sel.value = want
-  }
-  const vol = document.getElementById('fillSoundVol')
-  if (vol) vol.value = String(Math.round(_fillVol() * 100))
+  const box = document.getElementById('fillSoundBox')
+  if (box && !box.firstElementChild) box.innerHTML = _fillPickerHtml(_fillSound(), _fillVol())
+  const want = _fillSound(), vol = String(Math.round(_fillVol() * 100))
+  document.querySelectorAll('.snd-picker').forEach(p => {
+    p.querySelectorAll('.snd-pill').forEach(b => b.classList.toggle('on', b.dataset.snd === want))
+    const v = p.querySelector('.snd-vol')
+    if (v && document.activeElement !== v) v.value = vol
+  })
 }
 
 // Browsers refuse to play anything until the page has been interacted with, and a context
@@ -20746,14 +20745,7 @@ function _mobVRenderContent(tick = false) {
         </div>
         <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:8px">
           <div><div>Sound on fill</div><div style="font-size:11px;color:var(--muted)">Plays when one of your orders fills</div></div>
-          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
-            <select onchange="window.__setFillSound(this.value)" style="padding:5px 8px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:12px">
-              ${Object.entries(_FILL_SOUNDS).map(([k, v]) => `<option value="${k}" ${k === _fillSound() ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}
-            </select>
-            <button class="mob-v-setting-btn" onclick="window.__testFillSound()">Test</button>
-          </div>
-          <input type="range" min="0" max="100" step="5" value="${Math.round(_fillVol() * 100)}" style="width:100%"
-                 oninput="window.__setFillVolume(this.value / 100)">
+          ${_fillPickerHtml(_fillSound(), _fillVol())}
         </div>
         <div class="mob-v-setting-row">
           <div><div>Celebrations</div><div style="font-size:11px;color:var(--muted)">Confetti on a new all-time high and on a big winning trade</div></div>

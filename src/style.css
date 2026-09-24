@@ -7859,3 +7859,54 @@ html.has-bg-image #mobileView.mob-in-trade .mob-v-content {
   background: var(--bg) !important;
   background-image: none !important;
 }
+
+/* ─── SOUND ON FILL — the picker ──────────────────────────────────────────────
+   Was a bare browser <select>, which looked like the operating system rather than
+   the app. Markup in src/fillsound.js (pickerHtml), one copy for both shells. */
+.snd-picker {
+  display: flex; flex-direction: column; gap: 8px;
+  background: var(--panel-2); border: 1px solid var(--rule);
+  border-radius: var(--r-3); padding: 10px;
+  min-width: 250px; max-width: 340px;
+}
+.snd-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.snd-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--panel); border: 1px solid var(--rule);
+  border-radius: 999px; padding: 5px 10px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+  cursor: pointer; white-space: nowrap;
+  transition: border-color .12s, color .12s, background .12s;
+}
+.snd-pill:hover { border-color: var(--accent); color: var(--fg); }
+.snd-pill.on {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.snd-pill-ico { font-size: 12px; line-height: 1; }
+.snd-foot { display: flex; align-items: center; gap: 8px; }
+.snd-vol-ico { font-size: 11px; opacity: 0.65; }
+.snd-vol {
+  -webkit-appearance: none; appearance: none;
+  flex: 1; min-width: 0; height: 4px; border-radius: 2px;
+  background: var(--rule); outline: none; cursor: pointer;
+}
+.snd-vol::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent); cursor: pointer;
+}
+.snd-vol::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent); border: none; cursor: pointer;
+}
+.snd-test {
+  background: transparent; border: 1px solid var(--rule);
+  border-radius: var(--r-2); padding: 5px 10px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--fg);
+  cursor: pointer; white-space: nowrap;
+  transition: border-color .12s, color .12s;
+}
+.snd-test:hover { border-color: var(--accent); color: var(--accent); }
+/* Mobile Settings rows are a wrapping flex; the picker takes the whole width. */
+.mob-v-setting-row .snd-picker { flex: 1 1 100%; max-width: none; }

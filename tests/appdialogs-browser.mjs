@@ -124,9 +124,20 @@ console.log(NL + '-- the sound on fill --')
   ok('the setting is in Settings', /Sound on fill/.test(await p.evaluate(() => document.getElementById('mobVContent')?.textContent ?? '')))
   ok('and starts off', await p.evaluate(() => localStorage.getItem('hliq_fill_sound')) === null)
 
+  // The pills ARE the control now — no <select> to pick from, so click one the way a person
+  // would and check both that it stuck and that it is the one shown as chosen.
+  const pills = await p.evaluate(() => document.querySelectorAll('#mobVContent .snd-pill').length)
+  ok('every sound is on screen, not hidden in a dropdown', pills >= 5)
+  await p.click('#mobVContent .snd-pill[data-snd="register"]')
+  await p.waitForTimeout(150)
+  ok('choosing one is remembered', await p.evaluate(() => localStorage.getItem('hliq_fill_sound')) === 'register')
+  ok('and the pill shows as chosen',
+    await p.evaluate(() => !!document.querySelector('#mobVContent .snd-pill[data-snd="register"]')?.classList.contains('on')))
+
   await p.evaluate(() => window.__setFillSound('chime'))
   await p.waitForTimeout(150)
-  ok('choosing one is remembered', await p.evaluate(() => localStorage.getItem('hliq_fill_sound')) === 'chime')
+  ok('a sound picked under the old names still resolves to one',
+    await p.evaluate(() => localStorage.getItem('hliq_fill_sound')) === 'bell')
   await p.evaluate(() => window.__setFillVolume(0.3))
   ok('so is the volume', await p.evaluate(() => localStorage.getItem('hliq_fill_sound_vol')) === '0.3')
   // Playing must never throw, whatever the browser decides about audio.
