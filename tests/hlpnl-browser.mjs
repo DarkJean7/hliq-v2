@@ -96,9 +96,14 @@ await waitFor(p, 'the mobile shell', () => !!window.mobVTab, null, 60000)
 console.log(NL + '-- the Portfolio tab agrees with Hyperliquid --')
 {
   await p.evaluate(() => window.mobVTab('portfolio'))
-  const got = await waitFor(p, 'the portfolio rows', () => /Net PnL/.test(document.getElementById('mobVContent')?.textContent ?? ''), null, 60000)
+  // Wait for the FIGURE, not for the label. cumLedger arrives with webData2, which is one of
+  // several calls in flight at boot; until it lands the tab correctly shows the itemised sum
+  // as its fallback. Waiting on "Net PnL" being on screen therefore read whichever of the two
+  // had got there first, which on a slower runner was the fallback — three CI failures, none
+  // of them reproducible on a fast machine.
+  const got = await waitFor(p, "HL's own Net PnL", () => /-\$3,443\.12/.test(document.getElementById('mobVContent')?.textContent ?? ''), null, 60000)
   const txt = (await p.evaluate(() => document.getElementById('mobVContent')?.textContent?.replace(/\s+/g, ' ') ?? ''))
-  ok('the tab is there', got, txt.slice(0, 120))
+  ok("the tab is there, with HL's figure on it", got, txt.slice(0, 160))
   const row = (label) => (txt.match(new RegExp(label + '\\s*(\\+?-?\\$[\\d,.]+)')) ?? [])[1] ?? ''
   ok('Net PnL is HL\'s own all-time figure', row('Net PnL') === '-$3,443.12', row('Net PnL'))
   // The rebuild it replaced: 261.85 − 3284.17 = −3,022.32, which is what the tab used to show.
