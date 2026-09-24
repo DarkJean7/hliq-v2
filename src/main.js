@@ -10022,6 +10022,29 @@ window.__selectMarketCard = function (coin, price) {
   window.__showMarketDetail(coin, price)
 }
 
+/**
+ * Hyperliquid's own all-time numbers for the loaded account.
+ *
+ * `cumLedger` is HL's authoritative "net money in": every deposit, withdrawal and transfer it
+ * has ever seen, signed. Its portfolio PnL is exactly `accountValue − cumLedger` — verified to
+ * the cent on three live wallets — so anything that rebuilds all-time PnL from realized, fees
+ * and funding is re-deriving a published number and will drift from it.
+ *
+ * Null when the figure is not known: webData2 is a single-account payload, and the combined
+ * view synthesises its own from the per-wallet ledgers. Never 0, which would read as "this
+ * account has never deposited".
+ */
+function _hlCumLedger() {
+  if (state.isAllAccounts) return null
+  const v = parseFloat(state.webData?.cumLedger)
+  return Number.isFinite(v) ? v : null
+}
+function _hlAllTimePnl(accountValue) {
+  const cum = _hlCumLedger()
+  if (cum == null || !Number.isFinite(accountValue)) return null
+  return accountValue - cum
+}
+
 // Minimal transient notice. The app had no general toast — trade results go to an
 // inline status element — but paper events (fills, liquidations) happen off the
 // back of the poll loop with no element to attach to, so they need one.
@@ -14889,8 +14912,13 @@ function _mobVRenderBalance() {
   // same reason their value belongs to the balance above it. The single-account figures already
   // carry it (computeAcctStats); the combined ones come from the server and do not.
   const _oxPnl = _offexPnlAdd()
+  // Single account: Hyperliquid's OWN all-time PnL — equity less everything ever paid in —
+  // so this stat and HL's portfolio page cannot disagree. The itemised sum (realized +
+  // unrealized + funding − fees) stays on the desktop tile, which is labelled as that sum.
+  // Reported: HL said -$3,443.12 on a closed account and the app said -$3,022.32.
+  const _hlPnl = state.isAllAccounts ? null : _hlAllTimePnl(_rawVal)
   const _pnlVal = _pnlNet
-    ? (_cp ? _cp.net + _oxPnl : netPnl)
+    ? (_cp ? _cp.net + _oxPnl : (_hlPnl != null ? _hlPnl + _oxPnl : netPnl))
     : (_cp ? _cp.unreal + _oxPnl : unrealizedPnl)
   const upEl = document.getElementById('mobVUnrealPnl')
   // Net PnL needs the ALL-TIME fills; unrealized does not. While only the 14-day window is
@@ -14898,7 +14926,10 @@ function _mobVRenderBalance() {
   // and correcting it a beat later. Nothing on screen yet → a dash, which is at least true.
   // The combined view has its own completeness check above, so this gate is for the single
   // account only — state.fillsFull is set by that load path and would otherwise leak across.
-  const _pnlReady = !_pnlMissing && (!_pnlNet || state.isAllAccounts || state.fillsFull !== false)
+  // HL's own all-time figure needs no fills at all — it is equity less everything ever paid in
+  // — so when it is in hand the stat can be shown at once instead of waiting out the all-time
+  // fill walk (which is what the `fillsFull` gate is for).
+  const _pnlReady = !_pnlMissing && (!_pnlNet || state.isAllAccounts || _hlPnl != null || state.fillsFull !== false)
   if (upEl && _pnlReady) {
     upEl.textContent = _privacyMode ? '•••' : (_pnlVal >= 0 ? '+' : '') + _mobVStatUSD(_pnlVal)
     upEl.style.color = _pnlVal > 0 ? 'var(--green)' : _pnlVal < 0 ? 'var(--red)' : ''
@@ -20968,13 +20999,31 @@ function _mobVRenderContent(tick = false) {
         else totalWithdrawn += v
       }
     }
-    const netDeposited  = totalDeposited - totalWithdrawn
+    // What HL itself counts as money in, when it has said so: its cumLedger is the figure its
+    // own PnL is measured against, and our sum of the ledger can differ from it (it counts a
+    // token arriving from another wallet at its value that day, among other things). Falls
+    // back to the ledger sum, which is all there is in the combined view.
+    const _hlIn         = _hlCumLedger()
+    const netDeposited  = _hlIn != null ? _hlIn : totalDeposited - totalWithdrawn
     const totalFees     = fills.reduce((s, f) => s + (f.fee ?? 0), 0)
     const netFunding    = funding.reduce((s, f) => s + (f.usdc ?? 0), 0)
     // Net PnL = realized + unrealized + funding − fees — the same full formula the
     // desktop overview and the All-Accounts cards use (computeAcctStats returns only
     // realized+unrealized, which made this tab disagree with the account cards).
     let netPnl          = realizedPnl + unrealizedPnl + netFunding - totalFees
+    // …but Hyperliquid's OWN all-time figure wins when it is available.
+    //
+    // Reported against a closed account: HL said -$3,443.12 and this tab said -$3,022.32. The
+    // sum above is only as complete as its parts, and two of them were short — funding read
+    // $0.00 because an idle account's funding window had nothing in it, and realized PnL comes
+    // from fills' closedPnl, which HL reports for PERPS only, so a loss taken on a spot sale is
+    // invisible to it. Rebuilding a number the exchange already publishes is how they drift.
+    //
+    // `accountValue − cumLedger` IS that number: equity now, less every dollar ever put in.
+    // Checked against three live wallets, it equals HL's own allTime pnlHistory to the cent
+    // (+454.88, −521.94, +908.62). The parts stay on screen as the breakdown they are.
+    const _hlNet = _hlAllTimePnl(accountValue)
+    if (_hlNet != null) netPnl = _hlNet
     // Combined view: take the authoritative figures rather than re-deriving them here.
     // This tab was the last surface still computing its own, off the merged per-device
     // fills — and in the combined view state.funding is [], so its Net PnL was also missing
@@ -21097,7 +21146,10 @@ function _mobVRenderContent(tick = false) {
         <div class="mob-v-setting-row"><span>Profit Factor</span><span class="${pfCls}" style="font-weight:600;font-size:14px;text-align:right">${pfStr}</span></div>
         <div class="mob-v-setting-row"><span>Total Deposited</span><span style="font-weight:600;font-size:14px">${ledgerKnown ? '$' + fmtUSD(totalDeposited) : '—'}</span></div>
         <div class="mob-v-setting-row"><span>Total Withdrawn</span><span style="font-weight:600;font-size:14px">${ledgerKnown ? '$' + fmtUSD(totalWithdrawn) : '—'}</span></div>
-        <div class="mob-v-setting-row"><span>Net Deposited</span><span class="${ledgerKnown ? (accountValue >= netDeposited ? 'pos' : 'neg') : ''}" style="font-weight:600;font-size:14px">${ledgerKnown ? pnlFmt(netDeposited) : '—'}</span></div>
+        <!-- Money paid in is not a gain or a loss, so it carries no sign and no colour: it was
+             rendering as a red "+$4,329.50", which reads as a loss of a deposit. And when HL's
+             own figure is in hand it does not need the ledger list to have landed. -->
+        <div class="mob-v-setting-row"><span>Net Deposited</span><span style="font-weight:600;font-size:14px">${(_hlIn != null || ledgerKnown) ? _prv('$' + fmtUSD(netDeposited)) : '—'}</span></div>
         <div class="mob-v-setting-row"><span>Member Since</span><span style="font-weight:600;font-size:14px">${esc(memberSince)}</span></div>
       </div>
     </div>`

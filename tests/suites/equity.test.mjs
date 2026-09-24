@@ -176,13 +176,17 @@ t('but not across a change in wallet count', Q.sums() === null)
 
 // Plus the off-exchange result when "Count in balance" is on — the server figure knows nothing
 // about holdings held outside Hyperliquid, and the single-account one already carries them.
+// A single account prefers HL's own all-time PnL over the itemised sum, which is short by
+// whatever it cannot see (spot realized PnL, an empty funding window).
 t('the card prefers the server figure over the recomputed one',
-  bal.includes('const _cp = _comboPnlSums()') && bal.includes('_cp ? _cp.net + _oxPnl : netPnl'))
+  bal.includes('const _cp = _comboPnlSums()') && bal.includes('_cp ? _cp.net + _oxPnl : (_hlPnl != null ? _hlPnl + _oxPnl : netPnl)'))
 t('and in the combined view with nothing to show it shows a dash, not a third basis',
   bal.includes('const _pnlMissing = _pnlNet && state.isAllAccounts && !_cp')
     && bal.includes('!_pnlMissing &&'))
+// The gate also short-circuits on HL's own all-time PnL, which is equity less everything ever
+// paid in and so needs no fill history at all.
 t('the single-account fills gate does not leak into the combined view',
-  bal.includes('!_pnlNet || state.isAllAccounts || state.fillsFull !== false'))
+  bal.includes('!_pnlNet || state.isAllAccounts || _hlPnl != null || state.fillsFull !== false'))
 t('the combined summary sheet shows the SAME figure as the headline',
   cli.includes('const _cpAll      = _comboPnlSums()') && cli.includes('const totalNet    = _cpAll?.net ?? null'))
 

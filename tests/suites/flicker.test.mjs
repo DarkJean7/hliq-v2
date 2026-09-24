@@ -150,8 +150,9 @@ t('a late partial response cannot clobber the full history',
 const bal = grab(cli, 'function _mobVRenderBalance(')
 t('Net PnL is not printed from a partial single-account history',
   bal.includes('state.fillsFull !== false'))
+// HL's own figure joins the short-circuits: it needs no fill history either.
 t('unrealized PnL is unaffected — it needs no fill history, so both gates short-circuit on it',
-  bal.includes('!_pnlNet || state.isAllAccounts || state.fillsFull !== false')
+  bal.includes('!_pnlNet || state.isAllAccounts || _hlPnl != null || state.fillsFull !== false')
     && bal.includes('_pnlMissing = _pnlNet &&'))
 t('an empty slot shows a dash rather than staying blank', bal.includes("upEl.textContent = '—'"))
 t('a previously correct value is left alone rather than overwritten with a wrong one',
