@@ -17,14 +17,20 @@
 // closed. HL's own value is $10,100 either way: nothing about closing changed what the account
 // is worth, so nothing on screen may change. Before this it dipped to $10,000 and came back.
 //
-// The portfolio call answers slowly in the closed phase, which is what a real one does — and
-// the old bridge depended on it landing to put the headline right.
+// The portfolio call is HELD across the whole window, because the old bridge depended on that
+// answer landing to put the headline right, and a bridge that is only correct once the thing
+// it bridges to arrives is not a bridge.
 //
 // Run:  npm run test:browser        (expects a dev server; pass --port=NNNN)
+//       node tests/eqclose-browser.mjs --base=https://insolvent.trade   (against the deploy)
 import { chromium, devices } from 'playwright'
 
 const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
-const BASE = 'http://localhost:' + port + '/'
+// --base=https://insolvent.trade runs the whole thing against a DEPLOYED bundle. The exchange
+// and the app's own API are stubbed either way, so this checks a shipped artifact without
+// touching a real account — which is the only way to prove a minified bundle carries a fix.
+const BASE = (process.argv.find(a => a.startsWith('--base=')) || '').split('=')[1]
+  || ('http://localhost:' + port + '/')
 const ADDR = '0xaa7Ad5Fa4D99D9BF3397232Df7F4523853538159'
 const NL   = String.fromCharCode(10)
 const HL_HOST = /^https?:\/\/[a-z0-9.-]*hyperliquid[a-z0-9.-]*\.xyz\//i
@@ -44,10 +50,7 @@ const waitFor = async (p, label, fn, arg, ms = 45000) => {
 }
 
 // ── the account, in three phases ─────────────────────────────────────────────
-// SNAP is what HL's portfolio call reports — its own unified account value. It is $10,000
-// while the position is open at its entry, $10,100 once BTC has moved, and stays $10,100 after
-// the close, because closing a position does not change what an account is worth.
-// HL always answers with the account's value AS IT IS — $10,100 from the moment BTC moves,
+// `snap` is what HL's portfolio call reports: its own unified account value. HL always answers with the account's value AS IT IS — $10,100 from the moment BTC moves,
 // closed or not. What makes a bridge necessary is that the app only ASKS about once a minute
 // (`_refreshTick % 12`), so between two asks the headline is the last answer carried forward.
 //
