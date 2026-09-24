@@ -22918,35 +22918,38 @@ function _mobVBuildLbHtml(results, opts = {}) {
   // lowest-first list is the worst account on the board, and crowning it would be a lie.
   const podium = dir < 0
   const arrow = dir < 0 ? '↓' : '↑'
+  // A segmented control, one track with the three columns in it — not three loose pills.
+  // At 430px the loose ones had to wrap INSIDE themselves: "Net PnL" broke over two lines and
+  // the active chip's arrow dropped under its label. Nothing here wraps (styles: .lb-seg).
   const chip = (by, label) => {
     const on = _lbSortBy === by
-    return `<button onclick="window._mobVLbSort('${by}')" title="${on ? (dir < 0 ? 'Highest first — tap to flip' : 'Lowest first — tap to flip') : 'Sort by ' + label}" style="padding:5px 11px;border-radius:14px;border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};background:${on ? 'var(--accent)' : 'transparent'};color:${on ? '#000' : 'var(--muted)'};font-size:11px;font-weight:700;cursor:pointer">${label}${on ? ' ' + arrow : ''}</button>`
+    return `<button class="lb-seg-btn${on ? ' on' : ''}" onclick="window._mobVLbSort('${by}')" title="${on ? (dir < 0 ? 'Highest first — tap to flip' : 'Lowest first — tap to flip') : 'Sort by ' + label}">${label}${on ? `<span class="lb-seg-dir">${arrow}</span>` : ''}</button>`
   }
   // Paper names are set in the account switcher, so its header offers the share
   // toggle instead of the signature-backed rename the real board uses.
   // Both boards: "✏️ My name" on the left, and the one control that decides whether you are
   // on the board beside it (➕ Add me for a wallet, share / stop sharing for paper — every
   // paper account on this device posts automatically, so that is the switch it has).
-  const pill = 'flex-shrink:0;padding:5px 11px;border-radius:14px;border:1px solid var(--border2);background:var(--panel-2);color:var(--muted);font-size:11px;font-weight:700;cursor:pointer'
   const leftBtn = opts.paper
     ? (isPaper()
-        ? `<button onclick="window.__paperRename()" title="Rename the paper account you are in" style="${pill}">✏️ My name</button>`
+        ? `<button class="lb-act" onclick="window.__paperRename()" title="Rename the paper account you are in">✏️ My name</button>`
         : '')
-      + `<button onclick="window.__lbPaperOptOut()" title="Share or hide your paper results" style="${pill}">${localStorage.getItem('hliq_paper_lb_optout') === '1' ? '▶ Share mine' : '⏸ Stop sharing'}</button>`
-    : `<button onclick="window.__lbSetMyName()" title="Set your display name (signed by your wallet)" style="${pill}">✏️ My name</button>`
-      + `<button onclick="window.__lbSetMyPic()" title="Set your photo (only the owner of the address can)" style="${pill}">📷 My photo</button>`
+      + `<button class="lb-act" onclick="window.__lbPaperOptOut()" title="Share or hide your paper results">${localStorage.getItem('hliq_paper_lb_optout') === '1' ? '▶ Share mine' : '⏸ Stop sharing'}</button>`
+    : `<button class="lb-act" onclick="window.__lbSetMyName()" title="Set your display name (signed by your wallet)">✏️ My name</button>`
+      + `<button class="lb-act" onclick="window.__lbSetMyPic()" title="Set your photo (only the owner of the address can)">📷 My photo</button>`
 
   // When your connected account isn't on the board (e.g. after removing it), offer an
   // explicit re-add. Auto-join never brings a removed account back on its own.
   const myAddr  = opts.paper ? null : _lbMyActiveAddr()
   const listed  = myAddr && sorted.some(r => String(r.addr ?? '').toLowerCase() === myAddr)
   const addMeBtn = (myAddr && !listed)
-    ? `<button onclick="window.__lbAddMe()" title="Add your connected account to the leaderboard"
-        style="flex-shrink:0;padding:5px 11px;border-radius:14px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:11px;font-weight:700;cursor:pointer">➕ Add me</button>`
+    ? `<button class="lb-act on" onclick="window.__lbAddMe()" title="Add your connected account to the leaderboard">➕ Add me</button>`
     : ''
-  const header = `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px 8px;gap:8px">
-    <div style="display:flex;gap:6px;align-items:center">${leftBtn}${addMeBtn}</div>
-    <div style="display:flex;gap:6px">${chip('value', 'Value')}${chip('net', 'Net PnL')}${chip('roe', 'ROE')}</div>
+  // Two lines: what you can change about your own entry, then what the board is sorted by.
+  // Side by side they fought over about 130px each and both lost.
+  const header = `<div class="lb-head">
+    <div class="lb-acts">${leftBtn}${addMeBtn}</div>
+    <div class="lb-seg" role="group" aria-label="Sort the board by">${chip('value', 'Value')}${chip('net', 'Net PnL')}${chip('roe', 'ROE')}</div>
   </div>`
   // `bare` (used by the Challenge standings) drops the full-screen header, the Real/Paper
   // mode bar and the action row — the caller supplies its own chrome and just wants the rows.

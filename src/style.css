@@ -7910,3 +7910,44 @@ html.has-bg-image #mobileView.mob-in-trade .mob-v-content {
 .snd-test:hover { border-color: var(--accent); color: var(--accent); }
 /* Mobile Settings rows are a wrapping flex; the picker takes the whole width. */
 .mob-v-setting-row .snd-picker { flex: 1 1 100%; max-width: none; }
+
+/* ─── LEADERBOARD, mobile header ──────────────────────────────────────────────
+   Was five loose pills on one line at 430px: "Net PnL" wrapped inside its own
+   pill and the active chip's ↓ fell under its label. Two rows now — your own
+   entry's controls, then a segmented control for the sort. */
+.lb-head { display: flex; flex-direction: column; gap: 8px; padding: 10px 16px 8px; }
+.lb-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.lb-act {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px;
+  height: 30px; padding: 0 13px; border-radius: 15px;
+  border: 1px solid var(--rule); background: var(--panel-2); color: var(--muted);
+  font-family: var(--font-mono); font-size: 11px; font-weight: 700;
+  white-space: nowrap; cursor: pointer;
+  transition: border-color .12s, color .12s, background .12s;
+}
+.lb-act:hover { border-color: var(--accent); color: var(--fg); }
+.lb-act:active { transform: translateY(1px); }
+.lb-act.on {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.lb-seg {
+  display: flex; gap: 4px; padding: 3px;
+  border: 1px solid var(--rule); border-radius: 13px; background: var(--panel-2);
+}
+.lb-seg-btn {
+  flex: 1 1 0; min-width: 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  height: 28px; padding: 0 6px; border: 0; border-radius: 10px;
+  background: transparent; color: var(--muted);
+  font-family: var(--font-mono); font-size: 11px; font-weight: 700;
+  white-space: nowrap; cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.lb-seg-btn:hover { color: var(--fg); }
+.lb-seg-btn.on {
+  background: var(--accent); color: #000;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.28);
+}
+/* The direction lives with the column it sorts, small enough not to widen it. */
+.lb-seg-dir { font-size: 10px; opacity: 0.75; }
