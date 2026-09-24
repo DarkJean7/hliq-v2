@@ -9825,7 +9825,13 @@ function _allAcctReaggregate() {
     ledger:      visible.every(r => r.error || Array.isArray(r.ledgerEntries))
       ? visible.flatMap(r => (r.ledgerEntries ?? []).map(e => ({ ...e, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr })))
       : null,
-    webData:     { cumLedger: visible.reduce((s, r) => s + (r.totalDeposited || 0) - (r.totalWithdrawn || 0), 0) },
+    // HL's own net money in per wallet, summed, with our ledger walk as the fallback for a
+    // wallet whose portfolio history has not arrived. The walk counts things HL's cumLedger
+    // does not (a token arriving from another wallet, valued the day it landed), which is
+    // how the combined Net Deposited read $4,329.50 against HL's $3,443.12 on one account.
+    webData:     { cumLedger: visible.reduce((s, r) => s + (Number.isFinite(Number(r._cumLedger))
+      ? Number(r._cumLedger)
+      : (r.totalDeposited || 0) - (r.totalWithdrawn || 0)), 0) },
     ocTokenMap:  state.ocTokenMap,
   }
   // Anchor liveAccountValue to the merged history's latest point so the combined equity
@@ -10035,7 +10041,9 @@ window.__selectMarketCard = function (coin, price) {
  * account has never deposited".
  */
 function _hlCumLedger() {
-  if (state.isAllAccounts) return null
+  // The combined view builds the same figure by summing each wallet's own (see _allAcctMerge),
+  // so it is available there too — this used to refuse to answer and left the tab on its own
+  // walk of the ledgers.
   const v = parseFloat(state.webData?.cumLedger)
   return Number.isFinite(v) ? v : null
 }
@@ -14434,6 +14442,29 @@ function _comboPnlSums() {
   // every second is worse than a dash.
   if (snap && Date.now() - Number(snap.updatedAt ?? 0) > COMBO_SNAP_MAX_AGE_MS) {
     return _comboPnlHeld(rows.length)
+  }
+  // Every wallet's own HL figure, summed — the combined Net PnL, live and exact.
+  //
+  // The server's settled half is realized + funding − fees accrued from FILLS, which cannot
+  // see a spot sale's result and misses funding the window did not cover. It stays as the
+  // breakdown and as the fallback; the total itself is now what HL would say for each wallet
+  // added up. Refused unless EVERY visible wallet can answer: a sum missing a wallet is a
+  // wrong total, not a smaller one.
+  const _hlNet = (() => {
+    let sum = 0
+    for (const r of rows) {
+      const cum = Number(r._cumLedger), av = Number(r.accountValue)
+      if (!Number.isFinite(cum) || !Number.isFinite(av)) return null
+      sum += av - cum
+    }
+    return sum
+  })()
+  if (_hlNet != null && haveUnreal) {
+    const parts = snap && Number.isFinite(Number(snap.settledPnl))
+      ? { realized: Number(snap.realizedPnl), funding: Number(snap.funding), fees: Number(snap.fees) }
+      : null
+    _comboPnlLast = { net: _hlNet, unreal, wallets: rows.length, parts, at: Date.now() }
+    return { net: _hlNet, unreal, parts }
   }
   if (haveUnreal && snap && Number.isFinite(Number(snap.settledPnl))
       && snap.pnlWallets === rows.length && snap.wallets === rows.length) {
@@ -34539,6 +34570,22 @@ async function _lbFetchResults(entries) {
     const allTimePort      = (portfolio ?? []).find(p => p[0] === 'allTime')
     const acctValHist      = allTimePort?.[1]?.accountValueHistory ?? []
     const portfolioAcctVal = acctValHist.length ? parseFloat(acctValHist.at(-1)[1]) : null
+    /**
+     * What HL itself says this wallet has ever been paid, net: its own portfolio value at an
+     * instant, less its own all-time PnL at that same instant. Both halves come out of the
+     * `portfolio` call this row already makes, so it costs nothing.
+     *
+     * It is the figure HL measures its own PnL against, and it only moves on a deposit or a
+     * withdrawal — so the row's live PnL is `accountValue − cumLedger`, exact at every tick.
+     * Rebuilding PnL from realized + funding − fees instead is what put this app $420 away
+     * from HL on a closed account: funding can be missing and spot realized PnL is not in
+     * fills at all. Null when the history is not there to derive it from — never 0, which
+     * would claim the wallet has never deposited.
+     */
+    const _pnlHist         = allTimePort?.[1]?.pnlHistory ?? []
+    const _hlPnlAtHist     = _pnlHist.length ? parseFloat(_pnlHist.at(-1)[1]) : NaN
+    const _cumLedger       = (portfolioAcctVal != null && Number.isFinite(_hlPnlAtHist))
+      ? portfolioAcctVal - _hlPnlAtHist : null
     const _perpAcctVal     = parseFloat(csNow.marginSummary?.accountValue ?? 0)
     const _spotUSDCTotal   = parseFloat((spotState?.balances ?? []).find(b => b.coin === 'USDC')?.total ?? 0)
     // HL "Portfolio Value" — the portfolio endpoint is HL's own unified account value.
@@ -34593,7 +34640,12 @@ async function _lbFetchResults(entries) {
     const realizedPnl      = fills.reduce((s, f) => s + parseFloat(f.closedPnl ?? 0), 0)
     const totalFees        = fills.reduce((s, f) => s + parseFloat(f.fee ?? 0), 0)
     const allTimeFunding   = funding.reduce((s, f) => s + parseFloat(f.delta?.usdc ?? 0), 0)
-    const netPnl           = realizedPnl + unrealizedPnl + allTimeFunding - totalFees
+    // HL's own, when it can be had: equity now less everything ever paid in. The itemised sum
+    // stays as the fallback and as the breakdown (realized / funding / fees are shown as their
+    // own rows), but it is not what the wallet's Net PnL claims to be any more.
+    const netPnl           = _cumLedger != null && Number.isFinite(accountValue)
+      ? accountValue - _cumLedger
+      : realizedPnl + unrealizedPnl + allTimeFunding - totalFees
     const maintMargin      = parseFloat(csNow.crossMaintenanceMarginUsed ?? 0)
     // Health = 100 − HL's Unified Account Ratio, their algorithm: maintenance margin summed
     // across EVERY dex, over the collateral token's spot balance less isolated margin. This is
@@ -34658,7 +34710,7 @@ async function _lbFetchResults(entries) {
     // headline silently fell back to the per-device sum — a DIFFERENT anchor, hundreds of
     // dollars away. Closing a position triggers exactly this rebuild, which is why the
     // equity stepped on a close and stayed there until every wallet had had a WS tick.
-    return { ...entry, accountValue, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, _mtmBook: portfolioAcctVal != null ? (_bookAtHist ?? null) : null, _cash: cashSample(_perpAcctVal, positions), _orderMargin, _dexStates, _spotBals, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, track, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
+    return { ...entry, accountValue, _cumLedger, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, _mtmBook: portfolioAcctVal != null ? (_bookAtHist ?? null) : null, _cash: cashSample(_perpAcctVal, positions), _orderMargin, _dexStates, _spotBals, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, track, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
   }
 
   for (let i = 0; i < entries.length; i++) {
@@ -35706,7 +35758,9 @@ async function _maSilentUpdate() {
         const _hBase        = (cached._marginBase ?? 0) > 0 ? cached._marginBase : accountValue
         const healthPct     = _hBase > 0 ? Math.max(0, Math.min(100, (1 - maintMargin / _hBase) * 100)) : 100
         const healthCls     = healthPct > 60 ? 'pos' : healthPct > 30 ? 'warn' : 'neg'
-        const netPnl        = (cached.realizedPnl ?? 0) + unrealizedPnl + (cached.allTimeFunding ?? 0) - (cached.totalFees ?? 0)
+        const netPnl        = Number.isFinite(cached._cumLedger) && Number.isFinite(accountValue)
+          ? accountValue - cached._cumLedger
+          : (cached.realizedPnl ?? 0) + unrealizedPnl + (cached.allTimeFunding ?? 0) - (cached.totalFees ?? 0)
         results.push({ ...cached, accountValue, unrealizedPnl, netPnl, withdrawable, maintMargin, healthPct, healthCls, positions })
       } catch {
         results.push(cached)

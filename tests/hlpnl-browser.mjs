@@ -123,6 +123,66 @@ console.log(NL + '-- and so does the balance card --')
   ok('the Net PnL stat reads the same figure', /3,443|3\.44K|-\$3\.4K/i.test(stat), stat)
 }
 
+console.log(NL + "-- All Accounts sums the wallets own figures --")
+{
+  // A second wallet: $500 equity against $700 ever paid in, so HL would say −$200 for it.
+  // Combined with the first (−$3,443.12) the total must be exactly −$3,643.12 — and the
+  // server's settled half is deliberately wrong here (+$1,000) to prove it is not being used.
+  const W2 = '0x974e086b541afc90acaf9ac5d3326d666a601e6b'
+  const M2 = { accountValue: '500.0', totalNtlPos: '0.0', totalRawUsd: '500.0', totalMarginUsed: '0.0' }
+  const S2 = { marginSummary: M2, crossMarginSummary: M2, crossMaintenanceMarginUsed: '0', withdrawable: '500.0', assetPositions: [], time: Date.now() }
+  const W2WIN = { accountValueHistory: [[Date.now() - 86400e3, '500.0'], [Date.now(), '500.0']],
+                  pnlHistory: [[Date.now() - 86400e3, '-200'], [Date.now(), '-200']], vlm: '0' }
+  const ctx2 = await browser.newContext({ ...devices['iPhone 14 Pro'] })
+  try { await ctx2.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
+  await ctx2.route(HL_HOST, (route) => {
+    let b = {}
+    try { b = JSON.parse(route.request().postData() || '{}') } catch {}
+    const two = String(b.user ?? '').toLowerCase() === W2
+    if (two) {
+      const T = { ...HL, clearinghouseState: S2, webData2: { clearinghouseState: S2, openOrders: [], cumLedger: '700' },
+                  portfolio: ['day', 'week', 'month', 'allTime'].map(w => [w, W2WIN]), userFills: [], userFillsByTime: [],
+                  userNonFundingLedgerUpdates: [{ time: Date.now() - 50 * 86400e3, hash: '0x9', delta: { type: 'deposit', usdc: '700' } }] }
+      return route.fulfill({ status: 200, contentType: 'application/json', json: T[b.type] ?? {} })
+    }
+    return route.fulfill({ status: 200, contentType: 'application/json', json: HL[b.type] ?? {} })
+  })
+  // The server's combined snapshot, with a settled half that is plainly wrong.
+  await ctx2.route('**/api/combined', (route) => route.fulfill({ status: 200, json: {
+    updatedAt: Date.now(), accountValue: 500, perpBase: 500, dayAgo: 500, wallets: 2, missing: [], books: {},
+    settledPnl: 1000, realizedPnl: 1000, fees: 0, funding: 0, unrealBase: 0, pnlWallets: 2, perWallet: {},
+  } }))
+  await ctx2.route('**/api/**', (route) => route.fulfill({ status: 503, body: 'offline in test' }))
+  await ctx2.route('**/offexprice**', (route) => route.fulfill({ status: 200, json: { prices: {} } }))
+  const q = await ctx2.newPage()
+  q.on('pageerror', e => errs.push('combined: ' + e.message))
+  await q.goto(BASE, { waitUntil: 'domcontentloaded' })
+  await q.evaluate(({ a, b }) => {
+    localStorage.clear()
+    localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_onboard_done', '1')
+    localStorage.setItem('hliq_lang_chosen', '1')
+    ;['hliq_onboard_welcomed_v1', 'hliq_onboard_tour_v1', 'hliq_install_nudge_v2'].forEach(x => localStorage.setItem(x, '1'))
+    localStorage.setItem('hliq_ann_dismissed', JSON.stringify(['*']))
+    localStorage.setItem('hliq_privacy', '0')
+    localStorage.setItem('savedWallets', JSON.stringify([{ addr: a, label: 'Old' }, { addr: b, label: 'Two' }]))
+  }, { a: ADDR, b: W2 })
+  await q.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(q, 'boot', () => !!window.loadDashboard)
+  await q.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, ADDR)
+  await waitFor(q, 'the account', () => document.getElementById('dashboard')?.classList.contains('active'))
+  await waitFor(q, 'the mobile shell', () => !!window.mobVTab, null, 30000)
+  await q.evaluate(() => { window.__goAllAccounts?.(); return true })
+  const inAll = await waitFor(q, 'All Accounts', () => /All Accounts/i.test(document.body.textContent ?? ''), null, 40000)
+  ok('the combined view is up', inAll)
+  await q.evaluate(() => window.mobVTab('portfolio'))
+  const got = await waitFor(q, 'the combined Net PnL', () => /-\$3,643\.12/.test(document.getElementById('mobVContent')?.textContent ?? ''), null, 45000)
+  const txt = await q.evaluate(() => document.getElementById('mobVContent')?.textContent?.replace(/\s+/g, ' ') ?? '')
+  ok("Net PnL is the two wallets own figures added up", got, (txt.match(/Net PnL.{0,20}/) ?? [])[0])
+  ok("not the server settled half (+$1,000)", !/\+\$1,000/.test(txt))
+  ok("and Net Deposited is their cumLedgers added up", /Net Deposited[^$]*\$4,143\.12/.test(txt), (txt.match(/Net Deposited.{0,24}/) ?? [])[0])
+  await ctx2.close()
+}
+
 if (errs.length) { fail++; console.log('  FAIL page errors → ' + JSON.stringify(errs.slice(0, 4))) }
 console.log(NL + `${pass} passed, ${fail} failed`)
 await browser.close()
