@@ -1057,9 +1057,11 @@ function _gmFeedScreen(ov, stats, mood) {
   _gmSetPet(mood, 150)
 }
 
-window.__gmFeedPick = function(usd) {
+window.__gmFeedPick = async function(usd) {
   if (!usd) {
-    const v = parseFloat(prompt('How much USDC should we feed?') || 0)
+    const v = parseFloat(await (window.__appPrompt
+      ? window.__appPrompt({ title: 'Feed the pet', body: 'How much USDC should we feed?', placeholder: '10', confirmText: 'Feed' })
+      : Promise.resolve(null)) || 0)
     if (!(v > 0)) return
     usd = v
   }
@@ -1194,7 +1196,11 @@ window.__gmCancel = async function(coin, oid, btn) {
 window.__gmCancelAll = async function(btn) {
   const orders = (S().openOrders ?? []).slice()
   if (!orders.length) return
-  if (!confirm(`Cancel all ${orders.length} open orders?`)) return
+  if (!(window.__appConfirm && await window.__appConfirm({
+    title: `Cancel all ${orders.length} open orders?`,
+    body: 'Every resting order is cancelled. Positions are left as they are.',
+    confirmText: 'Cancel orders', danger: true,
+  }))) return
   btn.disabled = true; btn.textContent = 'Sweeping…'
   for (const o of orders) { try { await window.__cancelOrder(o.coin, o.oid, false, null) } catch {} }
   _gmOrdersHash = null

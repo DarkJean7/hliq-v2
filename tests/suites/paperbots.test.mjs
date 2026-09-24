@@ -59,7 +59,7 @@ t('why sharing one key was wrong is recorded',
   cli.includes('managing a position that account does not hold'))
 
 console.log(nl + '-- deleting an account takes its bots with it --')
-const del = grab(cli, 'window.__paperAcctDelete = function')
+const del = grab(cli, 'window.__paperAcctDelete = async function')
 t('the bot config is removed too', del.includes('localStorage.removeItem(`${PAPER_BOTS_KEY}_${slot}`)'))
 t('and it says which half removes what', del.includes('paper.js removes the store'))
 

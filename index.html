@@ -1549,6 +1549,21 @@
               <!-- Opt-out, not opt-in: the celebrations are part of the app's character,
                    but nobody should have to watch confetti over a real account if they
                    would rather not. Reduced-motion is honoured separately and always. -->
+              <!-- A fill happens on the exchange's schedule, not yours, and often while the
+                   tab is in the background. OFF by default: nobody's first session should make
+                   a noise they did not ask for. src/fillsound.js -->
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Sound on fill</div>
+                  <div class="settings-desc">Plays when one of your orders fills. Your browser only allows it after you have clicked the page once.</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <select id="fillSoundSel" class="btn-sm" onchange="window.__setFillSound(this.value)" style="padding:5px 8px"></select>
+                  <input type="range" id="fillSoundVol" min="0" max="100" step="5" style="width:90px"
+                         oninput="window.__setFillVolume(this.value / 100)" title="Volume">
+                  <button class="btn-sm" onclick="window.__testFillSound()">Test</button>
+                </div>
+              </div>
               <div class="settings-row">
                 <div>
                   <div class="settings-label">Celebrations</div>

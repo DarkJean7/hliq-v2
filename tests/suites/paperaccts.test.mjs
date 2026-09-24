@@ -159,7 +159,7 @@ t('and waits for its marks rather than posting cash as equity',
   cli.includes('if (s.positions.some(p => !(paperMark(p.coin) > 0))) return null'))
 t('a name someone else holds gets a distinct board name, once',
   cli.includes('if (r?.ok) localStorage.setItem(_lbPaperBoardKey(slot), name)'))
-t('deleting an account removes its row', grab(cli, 'window.__paperAcctDelete = function(slot)').includes('_lbPaperUnpost(slot, boardName)'))
+t('deleting an account removes its row', grab(cli, 'window.__paperAcctDelete = async function(slot)').includes('_lbPaperUnpost(slot, boardName)'))
 t('renaming one moves its row instead of leaving a ghost', grab(cli, 'window.__paperRename = async function()').includes('await _lbPaperUnpost(slot, oldBoard)'))
 t('reloads do not re-post everything', cli.includes("const _LB_PAPER_SYNC_KEY = 'hliq_paper_lb_sync'"))
 t('the rename sheet no longer says extra accounts are off the board',

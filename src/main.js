@@ -221,6 +221,9 @@ import {
 } from './paper.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
+import { SOUNDS as _FILL_SOUNDS, soundName as _fillSound, setSound as _setFillSound,
+         volume as _fillVol, setVolume as _setFillVol, play as _playSound,
+         playFill as _playFillSound, unlock as _unlockSound } from './fillsound.js'
 import { historyHtml, collapseFills } from './perfhistory.js'
 import { gzipToString, gunzipFromString } from './gzstore.js'
 import { cloidBot } from './cloid.js'
@@ -875,8 +878,8 @@ window.__panelRenameSave = function(addr, label) {
   _reopenWsPanel()
 }
 
-window.__panelRemove = function(addr) {
-  if (!_confirmRemoveWallet(addr)) return
+window.__panelRemove = async function(addr) {
+  if (!await _confirmRemoveWallet(addr)) return
   WM.remove(addr)
   if (state.addr && addr.toLowerCase() === state.addr.toLowerCase()) {
     resetDashboard()
@@ -901,15 +904,19 @@ window.__panelSave = function() {
 // wallet panel, and the All Accounts card. Removing a watched account is a quiet
 // destructive action (and re-adding means re-pasting the address + relabelling),
 // so it should never happen on a single stray tap.
-function _confirmRemoveWallet(addr) {
+async function _confirmRemoveWallet(addr) {
   if (!addr) return false
   const w     = WM.load().find(e => e.addr.toLowerCase() === String(addr).toLowerCase())
   const label = w?.label ? `"${w.label}" (${addr.slice(0, 6)}…${addr.slice(-4)})` : `${addr.slice(0, 8)}…${addr.slice(-6)}`
-  return confirm(`Remove ${label} from your accounts?\n\nIt stops being tracked and drops out of All Accounts. You can add it back by pasting the address again.`)
+  return _appConfirm({
+    title: `Remove ${label}?`,
+    body: 'It stops being tracked and drops out of All Accounts. You can add it back by pasting the address again.',
+    confirmText: 'Remove', danger: true,
+  })
 }
 
-window.__removeWallet = function(addr) {
-  if (!_confirmRemoveWallet(addr)) return
+window.__removeWallet = async function(addr) {
+  if (!await _confirmRemoveWallet(addr)) return
   WM.remove(addr)
   if (state.addr === addr) resetDashboard()
   else renderSavedWallets()
@@ -1551,6 +1558,48 @@ function _fxCheck() {
 
 window.__toggleCelebrate = function (on) { setFxEnabled(on) }
 
+// ─── SOUND ON FILL ────────────────────────────────────────────────────────────
+// The setting lives in src/fillsound.js; these are the three things the Settings row does.
+// Choosing a sound plays it once, because picking one from a list without hearing it is
+// guessing — and that first play doubles as the gesture the browser needs to allow audio.
+window.__setFillSound = function (name) {
+  const v = _setFillSound(name)
+  _unlockSound()
+  if (v !== 'off') _playSound(v)
+  _syncFillSoundUI()
+}
+window.__setFillVolume = function (v) { _setFillVol(v); _unlockSound() }
+window.__testFillSound = function () {
+  _unlockSound()
+  // Nothing chosen: say so rather than letting a silent Test read as broken audio.
+  if (_fillSound() === 'off') { _showChartToast('Pick a sound first'); return }
+  _playSound()
+}
+
+// The desktop row is static HTML, so its two controls are filled in from the stored setting.
+function _syncFillSoundUI() {
+  const sel = document.getElementById('fillSoundSel')
+  if (sel) {
+    const want = _fillSound()
+    if (!sel.options.length) {
+      sel.innerHTML = Object.entries(_FILL_SOUNDS)
+        .map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('')
+    }
+    sel.value = want
+  }
+  const vol = document.getElementById('fillSoundVol')
+  if (vol) vol.value = String(Math.round(_fillVol() * 100))
+}
+
+// Browsers refuse to play anything until the page has been interacted with, and a context
+// made before that starts suspended — so the first fill of a session would be silent and
+// every one after it fine. One listener, on the first gesture, and it takes itself off.
+if (typeof window !== 'undefined') {
+  const _unlockOnce = () => { _unlockSound(); window.removeEventListener('pointerdown', _unlockOnce); window.removeEventListener('keydown', _unlockOnce) }
+  window.addEventListener('pointerdown', _unlockOnce, { passive: true })
+  window.addEventListener('keydown', _unlockOnce)
+}
+
 // Shows what the setting actually does. A toggle labelled "Celebrations" tells you nothing
 // about how intrusive it is, and the honest answer is "watch it once and decide".
 // Deliberately ignores the setting -- you asked for this one.
@@ -2179,6 +2228,11 @@ async function refreshLive(force = false) {
       // net PnL permanently, since nothing later re-derives state.fills from scratch.
       const _have  = new Set(state.fills.map(fillKey))
       const _fresh = newFills.filter(f => !_have.has(fillKey(f)))
+      // An order filled. One sound for the batch, not one per fill — the exchange fills a
+      // single order in as many pieces as the book needs (src/tradegroup.js). Silent unless
+      // a sound was chosen in Settings, and never on the first load, which is history
+      // arriving rather than anything happening now.
+      if (_fresh.length && state.fillsFull !== false) { try { _playFillSound(_fresh.length) } catch {} }
       state.fills = [..._fresh, ...state.fills]
       computeLossStreak(state.fills)
       _refreshVisitedSection('trades')
@@ -2451,7 +2505,7 @@ window.__pickWallet = async function(rdns) {
       if (statusEl) { statusEl.innerHTML = inline; statusEl.style.color = 'var(--red)' }
       dotEl?.classList.remove('connected')
       _refreshWalletUI()
-      alert(popup)
+      _appAlert(popup)
     }
     if (viewing === '__all_accounts__') {
       rejectConnect('✗ Open a single account to connect.',
@@ -2474,13 +2528,11 @@ window.__pickWallet = async function(rdns) {
       // reject here; just say what happened and offer to jump to that account.
       if (statusEl) { statusEl.innerHTML = `Connected <b>${w}</b> — open that account to use it.`; statusEl.style.color = 'var(--muted)' }
       _refreshWalletUI()
-      if (confirm(
-        `Connected ${w}.\n\n` +
-        `You're viewing ${v}, which this wallet doesn't control, so it stays connected to ${w} and is kept for when you open it.\n\n` +
-        `Open ${w} now?`
-      )) {
-        window.__quickLoad(addr)
-      }
+      _appConfirm({
+        title: `Connected ${w}`,
+        body: `You're viewing ${v}, which this wallet doesn't control, so it stays connected to ${w} and is kept for when you open it. Open ${w} now?`,
+        confirmText: `Open ${w}`,
+      }).then(ok => { if (ok) window.__quickLoad(addr) })
       return
     }
     if (state.addr) localStorage.setItem(_walletRdnsForAddr(state.addr), rdns)
@@ -6720,7 +6772,7 @@ let _trailCfg = null
 
 window.__openTrailModal = function (coin, apiSide, acct) {
   const p = _guardFindPos(coin, acct)
-  if (!p) { alert('Position not found — refresh and try again.'); return }
+  if (!p) { _appAlert('Position not found — refresh and try again.'); return }
   // The owning account, never the '__all_accounts__' sentinel: the bot API is owner-gated per
   // real address, so the sentinel yields no auth token and the arm would fail with nothing
   // useful on screen.
@@ -6886,7 +6938,7 @@ window.__trailDisarm = async function () {
 
 window.__openGuardModal = function (mode, coin, apiSide, acct) {
   const p = _guardFindPos(coin, acct)
-  if (!p) { alert('Position not found — refresh and try again.'); return }
+  if (!p) { _appAlert('Position not found — refresh and try again.'); return }
   // Owning account for this guard: the one passed by the card (combined view), else the
   // real connected wallet, else the position's own tag. NEVER the '__all_accounts__' sentinel
   // — the bot API is owner-gated per real address, so the sentinel yields no auth token.
@@ -7644,7 +7696,11 @@ window.__closeAllPositions = async function (btn) {
   const positions = (state.perpState?.assetPositions ?? []).filter(p => parseFloat(p.position?.szi ?? 0) !== 0)
   if (!positions.length) return
   if (!_canAct()) { _showChartToast('✗ Connect agent key first'); return }
-  if (!confirm(`Close all ${positions.length} open position${positions.length > 1 ? 's' : ''} at market price?`)) return
+  if (!await _appConfirm({
+    title: `Close all ${positions.length} position${positions.length > 1 ? 's' : ''}?`,
+    body: 'Every open position is closed at market price. This cannot be undone.',
+    confirmText: 'Close all', danger: true,
+  })) return
   if (btn) { btn.disabled = true; btn.textContent = 'Closing…' }
   let ok = 0, fail = 0
   for (const ap of positions) {
@@ -7747,7 +7803,11 @@ window.__cancelAllOrders = async function () {
     return
   }
   const n = orders.length
-  if (!confirm(`Cancel all ${n} open order${n > 1 ? 's' : ''}?`)) return
+  if (!await _appConfirm({
+    title: `Cancel all ${n} order${n > 1 ? 's' : ''}?`,
+    body: 'Every resting order is cancelled. Positions are left as they are.',
+    confirmText: 'Cancel orders', danger: true,
+  })) return
   showTradeStatus(statusEl, 'pending', `Cancelling ${n} order${n > 1 ? 's' : ''}…`)
   _showChartToast(`Cancelling ${n} order${n > 1 ? 's' : ''}…`)
   try {
@@ -9986,6 +10046,43 @@ function _paperToast(msg, kind = 'success') {
   setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 250) }, 3200)
 }
 
+/**
+ * Themed notice sheet — the app's own _appAlert().
+ *
+ * Reported with a screenshot of "insolvent.trade says": the browser's _appAlert() is a grey system
+ * box with the domain in it, it blocks the page, and on a phone it looks like the site is
+ * asking for something rather than telling you something. The confirm and prompt sheets below
+ * were already themed; this is the third one, so nothing native is left.
+ *
+ * The message is plain text, the way _appAlert() took it: the FIRST LINE becomes the heading and
+ * the rest the body, which is the shape the old messages were already written in
+ * ("Could not start\n\nthe reason"). Returns a promise that settles when it is dismissed, so
+ * `await`ing it is possible where a caller wants to wait.
+ */
+function _appAlert(msg, opts = {}) {
+  const text  = String(msg ?? '')
+  const lines = text.split('\n')
+  const title = opts.title ?? (lines[0] || 'Notice')
+  const body  = opts.title ? text : lines.slice(1).join('\n').trim()
+  return new Promise(resolve => {
+    const ov = document.createElement('div')
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100080;background:rgba(0,0,0,.6);display:flex;flex-direction:column;justify-content:flex-end'
+    const done = () => { ov.remove(); document.removeEventListener('keydown', onKey); resolve() }
+    const onKey = e => { if (e.key === 'Escape' || e.key === 'Enter') done() }
+    ov.onclick = e => { if (e.target === ov) done() }
+    ov.innerHTML = `<div role="alertdialog" style="background:var(--panel-2,#1a1d24);border:1px solid var(--border2,#2a2e39);border-radius:20px 20px 0 0;padding:22px 18px calc(18px + env(safe-area-inset-bottom))">
+      <div style="width:38px;height:4px;border-radius:2px;background:var(--border2,#2a2e39);margin:-8px auto 16px"></div>
+      <div style="font-size:18px;font-weight:800;margin-bottom:6px">${esc(title)}</div>
+      ${body ? `<div style="font-size:13.5px;line-height:1.55;color:var(--fg-2,#c9cdd6);margin-bottom:18px;white-space:pre-wrap;overflow-wrap:anywhere">${esc(body)}</div>` : '<div style="height:8px"></div>'}
+      <button id="_aaY" style="border:none;border-radius:12px;padding:14px;font-size:15px;font-weight:800;cursor:pointer;width:100%;background:var(--accent);color:#000">${esc(opts.okText ?? 'OK')}</button>
+    </div>`
+    document.body.appendChild(ov)
+    ov.querySelector('#_aaY').onclick = done
+    document.addEventListener('keydown', onKey)
+  })
+}
+window.__appAlert = _appAlert
+
 // Themed confirm sheet (replaces the browser's confirm() so dialogs match the app).
 // Returns Promise<boolean>.
 function _appConfirm({ title, body = '', confirmText = 'Confirm', danger = false }) {
@@ -10545,8 +10642,12 @@ window.__paperFundSubmit = function(mode) {
   _paperToast(`${mode === 'withdraw' ? 'Withdrew' : 'Deposited'} ${fmtUSD(r.amount, 2)} paper funds`, 'success')
 }
 
-window.__paperResetAcct = function() {
-  if (!confirm('Reset ' + _paperName() + '?\n\nAll simulated positions, orders and history are erased and the balance returns to $' + PAPER_START.toLocaleString() + '.')) return
+window.__paperResetAcct = async function() {
+  if (!await _appConfirm({
+    title: 'Reset ' + _paperName() + '?',
+    body: 'All simulated positions, orders and history are erased and the balance returns to $' + PAPER_START.toLocaleString() + '.',
+    confirmText: 'Reset', danger: true,
+  })) return
   paperReset()
   _paperRefresh()
   _paperToast('Paper account reset', 'success')
@@ -10583,9 +10684,13 @@ window.__paperAcctNew = async function() {
   _paperToast(name + ' created — $' + PAPER_START.toLocaleString() + ' to practice with', 'success')
 }
 
-window.__paperAcctDelete = function(slot) {
+window.__paperAcctDelete = async function(slot) {
   const name = _paperName(slot)
-  if (!confirm('Delete ' + name + '?\n\nThis paper account and everything in it — positions, orders, history — is erased. Your other paper accounts are untouched.\n\nThis cannot be undone.')) return
+  if (!await _appConfirm({
+    title: 'Delete ' + name + '?',
+    body: 'This paper account and everything in it — positions, orders, history — is erased. Your other paper accounts are untouched. This cannot be undone.',
+    confirmText: 'Delete', danger: true,
+  })) return
   const wasHere = paperSlot() === slot
   // Its leaderboard row goes too — every account is listed now, and a deleted one would
   // otherwise sit there forever with nothing left that can update or remove it.
@@ -13399,7 +13504,11 @@ window._mobVCancelAll = async function() {
   if (!orders.length) return
   if (!_canAct()) { _showChartToast('✗ Connect agent key first'); return }
   const n = orders.length
-  if (!confirm(`Cancel all ${n} open order${n > 1 ? 's' : ''}?`)) return
+  if (!await _appConfirm({
+    title: `Cancel all ${n} order${n > 1 ? 's' : ''}?`,
+    body: 'Every resting order is cancelled. Positions are left as they are.',
+    confirmText: 'Cancel orders', danger: true,
+  })) return
   _showChartToast(`Cancelling ${n} order${n > 1 ? 's' : ''}…`)
   try {
     const { ok, msg } = await _cancelBatch(orders)
@@ -13562,7 +13671,11 @@ window._mobVCancelSelected = async function() {
   if (!orders.length) { _showChartToast('No orders selected'); return }
   if (!_canAct()) { _showChartToast('✗ Connect agent key first'); return }
   const n = orders.length
-  if (!confirm(`Cancel ${n} selected order${n > 1 ? 's' : ''}?`)) return
+  if (!await _appConfirm({
+    title: `Cancel ${n} selected order${n > 1 ? 's' : ''}?`,
+    body: 'The orders you ticked are cancelled. Positions are left as they are.',
+    confirmText: 'Cancel orders', danger: true,
+  })) return
   _showChartToast(`Cancelling ${n} order${n > 1 ? 's' : ''}…`)
   try {
     const { ok, msg } = await _cancelBatch(orders)
@@ -20569,6 +20682,17 @@ function _mobVRenderContent(tick = false) {
           <input type="range" style="width:100%;margin-top:2px" min="50" max="150" step="5" value="${brightness}"
             oninput="window.__onBrightnessChange(this.value);document.getElementById('mobVBrightLbl').textContent=this.value+'%'">
         </div>
+        <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:8px">
+          <div><div>Sound on fill</div><div style="font-size:11px;color:var(--muted)">Plays when one of your orders fills</div></div>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+            <select onchange="window.__setFillSound(this.value)" style="padding:5px 8px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:12px">
+              ${Object.entries(_FILL_SOUNDS).map(([k, v]) => `<option value="${k}" ${k === _fillSound() ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}
+            </select>
+            <button class="mob-v-setting-btn" onclick="window.__testFillSound()">Test</button>
+          </div>
+          <input type="range" min="0" max="100" step="5" value="${Math.round(_fillVol() * 100)}" style="width:100%"
+                 oninput="window.__setFillVolume(this.value / 100)">
+        </div>
         <div class="mob-v-setting-row">
           <div><div>Celebrations</div><div style="font-size:11px;color:var(--muted)">Confetti on a new all-time high and on a big winning trade</div></div>
           <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
@@ -21710,12 +21834,17 @@ function _lbCleanName(s) {
 window.__lbSetMyName = async function() {
   const addr = getMainAddress?.()
   if (!isMainWalletConnected() || !addr) {
-    alert('Connect your wallet first — the display name is signed by the account owner.')
+    _appAlert('Connect your wallet first — the display name is signed by the account owner.')
     try { openWalletPicker() } catch {}
     return
   }
   const cur   = _mobVLbResults.find(r => String(r.addr).toLowerCase() === addr.toLowerCase())?.label ?? ''
-  const input = prompt('Leaderboard display name (max 24 chars — leave blank to show your address):', cur)
+  const input = await _appPrompt({
+    title: 'Display name',
+    body: 'Shown on the leaderboard instead of your address. Max 24 characters — leave it blank to show the address.',
+    placeholder: 'e.g. insolvent', value: cur, confirmText: 'Save name',
+    validate: v => (v.length > 24 ? 'Keep it to 24 characters or fewer.' : null),
+  })
   if (input === null) return
   const name = _lbCleanName(input)
   try {
@@ -21727,7 +21856,7 @@ window.__lbSetMyName = async function() {
       body: JSON.stringify({ addr, name, ts, signature }),
     })
     const j = await r.json().catch(() => ({}))
-    if (!r.ok || j.error) { alert('Could not set name: ' + (j.error ?? r.status)); return }
+    if (!r.ok || j.error) { _appAlert('Could not set name: ' + (j.error ?? r.status)); return }
     // Reflect immediately, then force a refetch so everyone's view agrees.
     const row = _mobVLbResults.find(x => String(x.addr).toLowerCase() === addr.toLowerCase())
     if (row) row.label = j.label ?? name
@@ -21736,7 +21865,7 @@ window.__lbSetMyName = async function() {
     if (el && _mobVActiveTab === 'leaderboard') el.innerHTML = _mobVBuildLbHtml(_mobVLbResults)
     try { renderLeaderboard() } catch {}
   } catch (e) {
-    alert('Signing failed: ' + (e?.message ?? e))
+    _appAlert('Signing failed: ' + (e?.message ?? e))
   }
 }
 
@@ -21813,7 +21942,11 @@ window.__lbRemove = async function(addr, via) {
 // Remove a paper-board entry. via 'owner' → row secret; via 'dev' → LB PIN.
 window.__lbPaperRemove = async function(nameEnc, via) {
   const name = decodeURIComponent(nameEnc)
-  if (!confirm(`Remove "${name}" from the paper leaderboard?`)) return
+  if (!await _appConfirm({
+    title: `Remove "${name}"?`,
+    body: 'It comes off the paper leaderboard. The paper account itself is untouched.',
+    confirmText: 'Remove', danger: true,
+  })) return
   try {
     let r
     if (via === 'dev') {
@@ -21825,13 +21958,13 @@ window.__lbPaperRemove = async function(nameEnc, via) {
       r = await fetch('/api/leaderboard/paper/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, secret: localStorage.getItem('hliq_paper_lb_secret') ?? '' }) })
     }
     const j = await r.json().catch(() => ({}))
-    if (!r.ok || j.error) { alert('Could not remove: ' + (j.error ?? r.status)); return }
+    if (!r.ok || j.error) { _appAlert('Could not remove: ' + (j.error ?? r.status)); return }
     if (via === 'owner') {
       localStorage.removeItem('hliq_paper_lb_secret')
       localStorage.setItem('hliq_paper_lb_optout', '1')   // don't silently re-post on the next trade
     }
     _lbAfterRemove()
-  } catch (e) { alert('Remove failed: ' + (e?.message ?? e)) }
+  } catch (e) { _appAlert('Remove failed: ' + (e?.message ?? e)) }
 }
 
 // ➕ Add me. Joins the account, and — if the owner hid it earlier — shows it again. Showing a
@@ -23290,9 +23423,14 @@ window._mobVToggleIsolated = function() {
   _mobVRenderContent()
 }
 
-window._mobVEditTpSl = function(type) {
+window._mobVEditTpSl = async function(type) {
   const cur = type === 'tp' ? _mobVTradeTp : _mobVTradeSl
-  const val = prompt(type === 'tp' ? 'Take Profit price (leave blank to clear):' : 'Stop Loss price (leave blank to clear):', cur)
+  const val = await _appPrompt({
+    title: type === 'tp' ? 'Take Profit price' : 'Stop Loss price',
+    body: 'Leave it blank to clear the order.',
+    placeholder: '0.00', value: cur, confirmText: 'Set',
+    validate: v => (v === '' || parseFloat(v) > 0 ? null : 'Enter a price, or leave it blank to clear.'),
+  })
   if (val === null) return
   if (type === 'tp') _mobVTradeTp = val.trim()
   else               _mobVTradeSl = val.trim()
@@ -23365,7 +23503,11 @@ window._mobVSubmitOrder = async function() {
   const _lev = _effLeverage()
   if (!isPaper() && _lev >= 15 && localStorage.getItem('hliq_lev_warn_off') !== '1') {
     const movePct = (100 / _lev).toFixed(1)
-    if (!confirm(`⚠️ ${_lev}× leverage is high.\n\nA move of just ${movePct}% against you would liquidate this trade — you'd lose the margin you put in.\n\nConsider lower leverage while you're learning.\n\nPlace it anyway?`)) {
+    if (!await _appConfirm({
+      title: `${_lev}× leverage is high`,
+      body: `A move of just ${movePct}% against you would liquidate this trade — you would lose the margin you put in. Consider lower leverage while you are learning.`,
+      confirmText: 'Place it anyway', danger: true,
+    })) {
       if (statusEl) statusEl.innerHTML = ''
       return
     }
@@ -25163,7 +25305,7 @@ window._mobVConnectAgentKey = async function() {
   const keyVal = input.value.trim()
   if (!keyVal || !keyVal.startsWith('0x') || keyVal.length < 66) {
     setStatus('Invalid key (must be 0x + 64 hex chars)', 'var(--red)')
-    if (!statusEl) alert('Invalid agent key — must be 0x followed by 64 hex characters.')
+    if (!statusEl) _appAlert('Invalid agent key — must be 0x followed by 64 hex characters.')
     return
   }
   setStatus('Connecting…', 'var(--muted)')
@@ -25188,7 +25330,7 @@ window._mobVConnectAgentKey = async function() {
     _refreshWalletUI()   // repaint Settings so the "Connected" state shows without a reopen
   } catch {
     setStatus('Failed — check key and try again', 'var(--red)')
-    if (!statusEl) alert('Couldn\'t connect that agent key — check it and try again.')
+    if (!statusEl) _appAlert('Couldn\'t connect that agent key — check it and try again.')
   }
 }
 
@@ -26134,7 +26276,7 @@ function _parseStratArgs(argv) {
 // Open the bot's config card pre-filled with a specific running instance's live config.
 function _mobEditStratInstance(type, instance) {
   const cfg = serverStatus?._configs?.[`${type}:${instance}`]
-  if (!cfg) { alert('Config not available yet — wait a second and try again.'); return }
+  if (!cfg) { _appAlert('Config not available yet — wait a second and try again.'); return }
   const p = _parseStratArgs(cfg.args)
   if (type === 'grid')             _mobEditGridInstance(instance, p)
   else if (type === 'accumulator') _mobEditAccumInstance(instance, p)
@@ -26202,7 +26344,7 @@ let _deskEditing = null
 
 function _deskEditStratInstance(type, instance) {
   const cfg = serverStatus?._configs?.[`${type}:${instance}`]
-  if (!cfg) { alert('Config not available yet — wait a second and try again.'); return }
+  if (!cfg) { _appAlert('Config not available yet — wait a second and try again.'); return }
   const p = _parseStratArgs(cfg.args)
   if (type === 'grid') _deskEditGridInstance(instance, p)
 }
@@ -26312,7 +26454,7 @@ async function _canStartBot(addr) {
  */
 async function _restoreBotAfterFailedEdit(type, instance, agentKey, origArgs, why) {
   if (!Array.isArray(origArgs) || !origArgs.length) {
-    alert(`Could not update: ${why}\n\nThe previous bot was stopped and could not be restored automatically — please start it again.`)
+    _appAlert(`Could not update: ${why}\n\nThe previous bot was stopped and could not be restored automatically — please start it again.`)
     return
   }
   try {
@@ -26324,12 +26466,12 @@ async function _restoreBotAfterFailedEdit(type, instance, agentKey, origArgs, wh
     if (back?.ok) {
       serverStatus[type] = true
       checkServer()
-      alert(`Could not update: ${why}\n\nYour previous settings are still running — nothing was lost.`)
+      _appAlert(`Could not update: ${why}\n\nYour previous settings are still running — nothing was lost.`)
       return
     }
-    alert(`Could not update: ${why}\n\nThe previous bot was stopped and could not be restarted (${back?.error ?? 'unknown error'}) — please start it again.`)
+    _appAlert(`Could not update: ${why}\n\nThe previous bot was stopped and could not be restarted (${back?.error ?? 'unknown error'}) — please start it again.`)
   } catch {
-    alert(`Could not update: ${why}\n\nThe previous bot was stopped and the server is unreachable — please start it again.`)
+    _appAlert(`Could not update: ${why}\n\nThe previous bot was stopped and the server is unreachable — please start it again.`)
   }
 }
 
@@ -26339,13 +26481,13 @@ async function updateStrategy(type) {
   if (!ed || ed.type !== type) return runStrategy(type)
   const agentKey = _agentKeyInView()
                 || document.getElementById('agentKey')?.value?.trim()
-  if (!agentKey) { alert('Enter your Agent Private Key above.'); return }
-  if (!state.addr) { alert('Load a wallet address before updating a strategy.'); return }
+  if (!agentKey) { _appAlert('Enter your Agent Private Key above.'); return }
+  if (!state.addr) { _appAlert('Load a wallet address before updating a strategy.'); return }
   await ensureAllMids()
   const argv    = buildArgv(type)
   const newInst = _argvInstance(argv)
   // Checked BEFORE the stop, so a refusal costs nothing.
-  if (!(await _canStartBot(_stratTargetAddr()))) { alert(_stratLockedMsg()); return }
+  if (!(await _canStartBot(_stratTargetAddr()))) { _appAlert(_stratLockedMsg()); return }
   const origArgs = serverStatus?._configs?.[`${type}:${ed.instance}`]?.args
   try {
     await _postStop(type, ed.instance)               // stop the instance being edited
@@ -26362,7 +26504,7 @@ async function updateStrategy(type) {
     checkServer()
     updateAllStrategyButtons()
     _verifyStarted(type, newInst)
-  } catch { alert('Server unreachable. Is hliq-strat running?') }
+  } catch { _appAlert('Server unreachable. Is hliq-strat running?') }
 }
 window.updateStrategy = updateStrategy
 
@@ -26374,7 +26516,7 @@ async function updateStrategyMob(type) {
   const agentKey = _stratTargetKey()
                 || document.getElementById('m-agentKey')?.value?.trim()
                 || document.getElementById('agentKey')?.value?.trim()
-  if (!agentKey) { alert('Enter your Agent Private Key above.'); return }
+  if (!agentKey) { _appAlert('Enter your Agent Private Key above.'); return }
   await ensureAllMids()
   const argv    = buildArgvMob(type)
   const newInst = _argvInstance(argv)
@@ -26395,7 +26537,7 @@ async function updateStrategyMob(type) {
     serverStatus[type] = true
     checkServer()
     _verifyStarted(type, newInst)
-  } catch { alert('Server unreachable. Is hliq-strat running?') }
+  } catch { _appAlert('Server unreachable. Is hliq-strat running?') }
 }
 
 // ─── BOT PREVIEW ──────────────────────────────────────────────────────────────
@@ -27142,11 +27284,13 @@ window.__subPayNow = async function() {
   // The wallet that signs is the wallet that gets credited, because that is what the
   // server sees in the ledger. Say so plainly instead of enabling the wrong account.
   if (main && target && main !== target) {
-    const ok = confirm(_T(
-      `Your connected wallet is ${main.slice(0,6)}…${main.slice(-4)}, but you are viewing ${target.slice(0,6)}…${target.slice(-4)}.\n\n` +
-      `The subscription is credited to the wallet that pays, so this would enable ${main.slice(0,6)}…${main.slice(-4)}.\n\nContinue?`,
-      `Tu cartera conectada es ${main.slice(0,6)}…${main.slice(-4)}, pero estás viendo ${target.slice(0,6)}…${target.slice(-4)}.\n\n` +
-      `La suscripción se acredita a la cartera que paga, así que esto activaría ${main.slice(0,6)}…${main.slice(-4)}.\n\n¿Continuar?`))
+    const ok = await _appConfirm({
+      title: _T('That would credit another wallet', 'Eso acreditaría otra cartera'),
+      body: _T(
+        `Your connected wallet is ${main.slice(0,6)}…${main.slice(-4)}, but you are viewing ${target.slice(0,6)}…${target.slice(-4)}. The subscription is credited to the wallet that pays, so this would enable ${main.slice(0,6)}…${main.slice(-4)}.`,
+        `Tu cartera conectada es ${main.slice(0,6)}…${main.slice(-4)}, pero estás viendo ${target.slice(0,6)}…${target.slice(-4)}. La suscripción se acredita a la cartera que paga, así que esto activaría ${main.slice(0,6)}…${main.slice(-4)}.`),
+      confirmText: _T('Continue', 'Continuar'),
+    })
     if (!ok) return
   }
 
@@ -29415,7 +29559,7 @@ async function runStrategyMob(type) {
   if (type === 'copytrade') { window.__lbCopyTrade(''); return }
   const _target = _stratTargetAddr()
   if (!_target) {
-    alert(state.isAllAccounts
+    _appAlert(state.isAllAccounts
       ? 'Pick which account to run this bot on first.'
       : 'Load a wallet address first.')
     return
@@ -29430,7 +29574,7 @@ async function runStrategyMob(type) {
   const agentKey = _stratTargetKey()
                 || document.getElementById('m-agentKey')?.value?.trim()
                 || document.getElementById('agentKey')?.value?.trim()
-  if (!agentKey) { alert('Enter your Agent Private Key above.'); return }
+  if (!agentKey) { _appAlert('Enter your Agent Private Key above.'); return }
   await ensureAllMids()
   const argv = buildArgvMob(type)
   try {
@@ -29451,12 +29595,12 @@ async function runStrategyMob(type) {
           : _T('Subscription required to run strategies', 'Se requiere suscripción para usar estrategias'), 'err')
         return
       }
-      alert(`Could not start: ${r.error}`); return
+      _appAlert(`Could not start: ${r.error}`); return
     }
     serverStatus[type] = true
     updateAllStrategyButtons()
     _verifyStarted(type, _argvInstance(argv))
-  } catch { alert('Server unreachable. Is hliq-strat running?') }
+  } catch { _appAlert('Server unreachable. Is hliq-strat running?') }
 }
 
 // Bots validate config (min order size, margin) right after spawn, but the
@@ -29467,7 +29611,7 @@ function _verifyStarted(type, instance) {
     try {
       await checkServer()   // refreshes serverStatus, buttons, mobile strategies tab
       const alive = instance ? !!serverStatus?._instances?.[`${type}:${instance}`] : !!serverStatus?.[type]
-      if (!alive) alert(`The ${type} bot${instance ? ' (' + instance + ')' : ''} exited right after starting.\n\nOpen its Logs for the exact reason — most common: capital too low for Hyperliquid's $10 minimum order size, or no free margin (other bots' orders reserve margin).`)
+      if (!alive) _appAlert(`The ${type} bot${instance ? ' (' + instance + ')' : ''} exited right after starting.\n\nOpen its Logs for the exact reason — most common: capital too low for Hyperliquid's $10 minimum order size, or no free margin (other bots' orders reserve margin).`)
     } catch {}
   }, 5000)
 }
@@ -29486,7 +29630,7 @@ async function stopStrategyMob(type, instance) {
     checkServer()
     updateAllStrategyButtons()
     if (typeof _mobVActiveTab !== 'undefined' && _mobVActiveTab === 'strategies') _mobVRenderContent()
-  } catch { alert('Server unreachable.') }
+  } catch { _appAlert('Server unreachable.') }
 }
 
 async function _mobShowStratLogs(type, inst = '', addrOverride = '') {
@@ -29969,8 +30113,8 @@ async function runStrategy(type) {
   }
   const agentKey = _agentKeyInView()
                 || document.getElementById('agentKey')?.value?.trim()
-  if (!agentKey) { alert('Enter your Agent Private Key in the Strategies tab before running.'); return }
-  if (!state.addr) { alert('Load a wallet address before running a strategy.'); return }
+  if (!agentKey) { _appAlert('Enter your Agent Private Key in the Strategies tab before running.'); return }
+  if (!state.addr) { _appAlert('Load a wallet address before running a strategy.'); return }
   await ensureAllMids()
   const argv = buildArgv(type)
   const script = type === 'custom'
@@ -29994,14 +30138,14 @@ async function runStrategy(type) {
           : _T('Subscription required to run strategies', 'Se requiere suscripción para usar estrategias'), 'err')
         return
       }
-      alert(`Could not start: ${r.error}`); return
+      _appAlert(`Could not start: ${r.error}`); return
     }
     serverStatus[type] = true
     updateAllStrategyButtons()
     renderWinsPanel()
     _verifyStarted(type, _argvInstance(argv))
   } catch (e) {
-    alert('Server unreachable. Is server.js running?')
+    _appAlert('Server unreachable. Is server.js running?')
   }
 }
 
@@ -30069,12 +30213,12 @@ async function restartInstance(type, instance, btn) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type, address: state.addr, instance: instance ?? '' }),
     })
-    if (!r.ok) alert(`Could not restart: ${r.error}`)
+    if (!r.ok) _appAlert(`Could not restart: ${r.error}`)
     await checkServer()
     updateAllStrategyButtons()
     if (typeof _mobVActiveTab !== 'undefined' && _mobVActiveTab === 'strategies') _mobVRenderContent()
   } catch {
-    alert('Server unreachable.')
+    _appAlert('Server unreachable.')
     if (btn) { btn.disabled = false; btn.innerHTML = btn.dataset._t || '⟳ Restart' }
   }
 }
@@ -30090,12 +30234,12 @@ async function _pauseResumeInstance(action, type, instance, btn) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type, address: state.addr, instance: instance ?? '' }),
     })
-    if (!r.ok) alert(`Could not ${action}: ${r.error}`)
+    if (!r.ok) _appAlert(`Could not ${action}: ${r.error}`)
     await checkServer()
     updateAllStrategyButtons()
     if (typeof _mobVActiveTab !== 'undefined' && _mobVActiveTab === 'strategies') _mobVRenderContent()
   } catch {
-    alert('Server unreachable.')
+    _appAlert('Server unreachable.')
     if (btn) { btn.disabled = false; btn.textContent = btn.dataset._t }
   }
 }
@@ -30117,7 +30261,7 @@ async function stopStrategy(type, instance) {
     checkServer()
     updateAllStrategyButtons()
   } catch (e) {
-    alert('Server unreachable.')
+    _appAlert('Server unreachable.')
   }
 }
 window.stopInstance = (type, inst) => stopStrategy(type, inst)
@@ -30639,7 +30783,7 @@ window.__quickConnectAgent = async function() {
   }
   const mainAddr = getMainAddress()?.toLowerCase()
   if (!state.addr || mainAddr !== state.addr.toLowerCase()) {
-    alert('Your connected wallet (' + (mainAddr ? mainAddr.slice(0, 6) + '…' + mainAddr.slice(-4) : '?') +
+    _appAlert('Your connected wallet (' + (mainAddr ? mainAddr.slice(0, 6) + '…' + mainAddr.slice(-4) : '?') +
           ') doesn\'t match the address you\'re viewing.\n\nSwitch to this address in your wallet (or load the address your wallet controls), then try again.')
     return
   }
@@ -30653,7 +30797,7 @@ window.__autoGenerateAgentKey = async function() {
   const _acct = _agentUiAddr()
 
   if (!isMainWalletConnected()) {
-    alert('Connect your wallet first.\n\nThis proves you own the address and lets the app approve the agent key on Hyperliquid on your behalf.')
+    _appAlert('Connect your wallet first.\n\nThis proves you own the address and lets the app approve the agent key on Hyperliquid on your behalf.')
     return
   }
   const mainAddr = getMainAddress()?.toLowerCase()
@@ -30661,7 +30805,7 @@ window.__autoGenerateAgentKey = async function() {
   // the account we are generating for. Compared against the account in view rather than
   // state.addr, so this works from inside the combined view too.
   if (!_acct || mainAddr !== _acct.toLowerCase()) {
-    alert('Connected wallet (' + (mainAddr ? mainAddr.slice(0,6) + '…' + mainAddr.slice(-4) : '?') + ') does not match the account you\'re generating a key for.\n\nSwitch to that address in your wallet and reconnect.')
+    _appAlert('Connected wallet (' + (mainAddr ? mainAddr.slice(0,6) + '…' + mainAddr.slice(-4) : '?') + ') does not match the account you\'re generating a key for.\n\nSwitch to that address in your wallet and reconnect.')
     return
   }
 
@@ -30716,7 +30860,7 @@ window.__autoGenerateAgentKey = async function() {
       // Surface the real error rather than guessing — signing works on any chain now.
       msg = full
     }
-    alert('Couldn\'t generate agent key:\n\n' + msg)
+    _appAlert('Couldn\'t generate agent key:\n\n' + msg)
     console.error('auto-gen agent key failed:', e)
     document.querySelectorAll('.auto-gen-agent-btn').forEach(b => { b.disabled = false; b.textContent = 'Auto-generate' })
   }
@@ -31208,6 +31352,8 @@ function _syncSettingsTab() {
   // than testing the key for '1' -- an unset key means on here, not off.
   const fxToggle = document.getElementById('celebrateToggle')
   if (fxToggle) fxToggle.checked = fxEnabled()
+  // The sound row's select and slider are static markup; fill them from the stored setting.
+  _syncFillSoundUI()
 }
 
 window.__switchSettingsPanel = function(name, btn) {
@@ -31218,16 +31364,16 @@ window.__switchSettingsPanel = function(name, btn) {
   if (panel) panel.style.display = ''
 }
 
-window.__exportSettings = function() {
+window.__exportSettings = async function() {
   // This backup dumps ALL of localStorage — which INCLUDES your agent signing keys in
   // plain text. Anyone with the file can trade your accounts (they still can't withdraw).
   // Make that explicit before the file is created; silent "Export Settings" hid it.
   const hasKeys = Object.keys(localStorage).some(k => k.startsWith(_AK_LEGACY) || k === 'savedWallets')
-  if (hasKeys && !confirm(
-    'This backup file will contain your AGENT SIGNING KEYS in plain text.\n\n' +
-    'Anyone who gets this file can place trades on your accounts (they cannot withdraw your funds).\n\n' +
-    'Only save it somewhere private and offline — never email it, share it, or put it in cloud storage.\n\nContinue?'
-  )) return
+  if (hasKeys && !await _appConfirm({
+    title: 'This backup contains your signing keys',
+    body: 'The file will hold your AGENT SIGNING KEYS in plain text. Anyone who gets it can place trades on your accounts (they cannot withdraw your funds). Save it somewhere private and offline — never email it, share it, or put it in cloud storage.',
+    confirmText: 'Export anyway', danger: true,
+  })) return
   const data = { _exportedAt: new Date().toISOString(), _version: 1 }
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i)
@@ -31618,14 +31764,14 @@ window.__alarmToggle = async function(on) {
   if (!ok) {
     localStorage.removeItem(_ALARM_KEY)
     _renderAlarmRow()
-    alert('Your browser would not let the alarm start its audio.\n\nTap the toggle again, and keep this tab open — the alarm needs a sound already playing to be able to make noise later with the screen off.')
+    _appAlert('Your browser would not let the alarm start its audio.\n\nTap the toggle again, and keep this tab open — the alarm needs a sound already playing to be able to make noise later with the screen off.')
     return
   }
   localStorage.setItem(_ALARM_KEY, '1')
   _renderAlarmRow()
 }
 
-window.__alarmTest = function() { if (!_alarm.fire()) alert('Arm the alarm first.') }
+window.__alarmTest = function() { if (!_alarm.fire()) _appAlert('Arm the alarm first.') }
 window.__alarmStop = function() { _alarm.stop() }
 
 // Sound the alarm for a price alert, wherever the trigger came from.
@@ -34844,7 +34990,7 @@ window.__lbRename = async function(addr) {
 window.__lbSetMyPic = function() {
   const a = _pfpOwnAddr()
   if (!a) {
-    alert(_T('Connect the wallet that owns the account — the picture is signed by its owner.',
+    _appAlert(_T('Connect the wallet that owns the account — the picture is signed by its owner.',
              'Conecta la wallet dueña de la cuenta — la foto la firma su dueño.'))
     try { openWalletPicker() } catch {}
     return
@@ -34865,7 +35011,7 @@ window.__lbChangePic = function(addr) {
     // Same authenticated path as the mobile picker, and the same canvas pass — this one used
     // to send the raw file, so a phone photo went up at full size with its EXIF intact.
     const r = await _pfpUpload(addr, file)
-    if (!r.ok) { alert('Could not set that picture: ' + r.error); return }
+    if (!r.ok) { _appAlert('Could not set that picture: ' + r.error); return }
     // The board is the reason to set one, so repaint it rather than waiting for the poll.
     try { _lbLastFetch = 0; renderLeaderboard() } catch {}
     try { _paperToast('✓ ' + _T('Profile picture updated', 'Foto de perfil actualizada')) } catch {}
@@ -35549,8 +35695,8 @@ window.__maToggleHide = function(addr) {
   renderMultiAccount()
 }
 
-window.__maRemove = function(addr) {
-  if (!_confirmRemoveWallet(addr)) return
+window.__maRemove = async function(addr) {
+  if (!await _confirmRemoveWallet(addr)) return
   WM.remove(addr)
   _maLedgerCache.delete(addr)
   // Drop it from the combined view's cache too, or its equity lingers in the totals.
@@ -36837,7 +36983,7 @@ window.__ocExpandCard = function(id) {
 
 // ── Outcome spread-grid bot: config modal → launch ──────────────────────────────
 window.__openOcBotModal = function(outcome, yesLabel, noLabel) {
-  if (!state.addr) { alert('Load a wallet first.'); return }
+  if (!state.addr) { _appAlert('Load a wallet first.'); return }
   state.ocBotCfg = { outcome, side: 0, yesLabel: yesLabel || 'Yes', noLabel: noLabel || 'No' }
   _modalToBody('ocBotModal')
   const name = state.ocQuestionMap?.[outcome] || _ocCoinLabel('#' + (outcome * 10)) || 'Outcome'
@@ -37837,7 +37983,7 @@ let _shareAccent = '#ff8a2a'
 window.__shareBgPick = function(input) {
   const f = input.files?.[0]
   if (!f) return
-  if (!f.type.startsWith('image/')) { alert('Please choose an image file.'); return }
+  if (!f.type.startsWith('image/')) { _appAlert('Please choose an image file.'); return }
   const rd = new FileReader()
   rd.onload = () => { _shareBg = rd.result; window.__shareRenderPreview() }
   rd.readAsDataURL(f)
@@ -38042,12 +38188,12 @@ window.__shareSaveImage = async function(btn) {
     const a = document.createElement('a')
     a.download = 'insolvent-' + ((_shareData?.coin || 'pnl').replace(/[^a-z0-9]/gi, '') || 'pnl') + '.png'
     a.href = c.toDataURL('image/png'); a.click()
-  } catch (e) { alert('Could not render image: ' + (e?.message || e)) }
+  } catch (e) { _appAlert('Could not render image: ' + (e?.message || e)) }
   finally { btn.disabled = false; btn.textContent = t }
 }
 window.__shareCopyLink = async function(btn) {
   try { await navigator.clipboard.writeText('https://insolvent.trade'); const t = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = t }, 1500) }
-  catch { alert('Copy failed — link: https://insolvent.trade') }
+  catch { _appAlert('Copy failed — link: https://insolvent.trade') }
 }
 window.__shareOnX = function() {
   const d = _shareData; if (!d) return

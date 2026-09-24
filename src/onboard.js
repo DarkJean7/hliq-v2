@@ -183,7 +183,7 @@ window.__inviteShare = async function() {
 }
 window.__inviteCopy = async function(btn) {
   try { await navigator.clipboard.writeText(APP_LINK); const t = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = t }, 1500) }
-  catch { alert(APP_LINK) }
+  catch { window.__appAlert?.(APP_LINK, { title: 'Copy it by hand' }) }
 }
 window.__openInvite = function() {
   document.getElementById('mobMoreDrawer')?.classList.remove('open')
