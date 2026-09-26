@@ -11,7 +11,8 @@
 import fs from 'fs'
 import {
   MODES, DEFAULT_MODE, monthBounds, mergedHistory, valueSeries, accumSeries, realizedSeries,
-  seriesFor, availableModes, panelHtml, isOpen, setOpen, setMode, collapse, canvasId, emptyNote,
+  seriesFor, availableModes, modeHasData, panelHtml, isOpen, setOpen, setMode, collapse,
+  canvasId, emptyNote,
 } from '../../src/monthchart.js'
 
 let pass = 0, fail = 0
@@ -94,17 +95,22 @@ console.log(nl + '-- realized PnL is the closes, accumulated --')
   t('other months are not in it', !r.some(p => near(p.y, 500) || near(p.y, 900)))
   t('no fills held: null', realizedSeries(null, Y, M) === null)
   t('no closes this month: empty, which is a real answer', realizedSeries([{ time: aug(2), closedPnl: 5 }], Y, M).length === 0)
-  t('and it is said as one', emptyNote('realized') === 'No trades closed in this month')
+  t('and it is said as one', emptyNote('realized', { fills: [] }) === 'No trades closed in this month')
 }
 
-console.log(nl + '-- what can be offered depends on what is held --')
+console.log(nl + '-- all three are always offered --')
 {
   const portfolio = [['allTime', { accountValueHistory: [[at(2), '1']], pnlHistory: [[at(2), '1']] }]]
+  // Reported as "how can i see the month account equity and accumulative pnl": the modes used
+  // to be filtered by what was held, so a view without an account history showed one lone
+  // Realized tab and no way to tell that the other two existed at all.
   t('three modes with an account history', availableModes({ portfolio, fills: [] }).length === 3)
-  // The combined view has no ONE account history. Realized comes from the calendar's own
-  // fills, so that mode still works there and the other two are simply not offered.
-  t('only realized without one', availableModes({ portfolio: null, fills: [] }).map(m => m.id).join() === 'realized')
-  t('and nothing at all with neither', availableModes({}).length === 0)
+  t('and three without one', availableModes({ portfolio: null, fills: [] }).length === 3)
+  t('what is missing is said in the chart, not by hiding the tab',
+    emptyNote('value', { portfolio: null }) === 'Account history has not loaded yet' &&
+    emptyNote('value', { portfolio: [] }) === 'No account history for this month')
+  t('and a mode knows what it needs',
+    modeHasData('realized', { fills: [] }) && !modeHasData('accum', { fills: [] }))
   t('the default is the one that shows the shape of the month', DEFAULT_MODE === 'accum')
   t('each mode says what it is', MODES.every(m => m.id && m.label && m.title && m.needs))
   t('seriesFor routes to each', seriesFor('value', { portfolio }, Y, M).length === 1 &&
@@ -123,13 +129,10 @@ console.log(nl + '-- the row itself --')
   const open = panelHtml('mobCalRoot', Y, M, data)
   t('open, it carries a canvas of its own per calendar', open.includes(`id="${canvasId('mobCalRoot')}"`))
   t('and the three tabs', ['Value', 'Accum.', 'Realized'].every(l => open.includes('>' + l + '<')))
-  t('a mode the data cannot serve is not offered',
-    !panelHtml('mobCalRoot', Y, M, { portfolio: null, fills: [] }).includes('>Value<'))
-  // Switching to a mode, then landing on a view that cannot serve it, must not leave the row
-  // pointing at nothing.
+  t('every mode is offered even where its data is missing',
+    ['>Value<', '>Accum.<', '>Realized<'].every(l =>
+      panelHtml('mobCalRoot', Y, M, { portfolio: null, fills: [] }).includes(l)))
   setMode('value')
-  t('and asking for it there falls back rather than drawing blank',
-    panelHtml('maCalendarRoot', Y, M, { portfolio: null, fills: [] }).includes('>Realized<'))
   collapse()
   t('collapse shuts it', !isOpen() && !panelHtml('mobCalRoot', Y, M, data).includes('<canvas'))
 }
@@ -143,8 +146,13 @@ console.log(nl + '-- wired in --')
     /\$\{monthChartPanel\(rootId, year, month, monthChartData\(fills\)\)\}\s*\n\s*<div style="overflow-x:auto/.test(rnd))
   t('and is drawn after the calendar is painted', /try \{ drawMonthChart\(rootId\) \} catch \{\}/.test(rnd))
   t('every calendar draws its own', /export const canvasId = \(rootId\) =>/.test(fs.readFileSync('src/monthchart.js', 'utf8')))
+  // In the combined view state.portfolio is already every visible wallet's history resampled
+  // and summed (_mergePortfolio) — the series the All Accounts charts themselves use. Handing
+  // the row null there is what hid two of its three tabs.
   t('the portfolio is asked for at draw time, not threaded through seven callers',
-    /setMonthChartSource\(\(\) => \(\{ portfolio: state\.isAllAccounts \? null : state\.portfolio \}\)\)/.test(main))
+    /setMonthChartSource\(\(\) => \(\{ portfolio: state\.portfolio \}\)\)/.test(main))
+  t('and the combined view uses the history it already merges',
+    /portfolio:   _mergePortfolio\(visible\),/.test(main))
   t('opening a calendar closes it — both shells and the More menu',
     (main.match(/_collapseMonthChart\(\)/g) ?? []).length >= 3)
   // A value line is not a PnL line: it is never negative, and what it is saying is the change

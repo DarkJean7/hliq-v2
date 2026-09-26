@@ -197,6 +197,75 @@ console.log(NL + '-- paging to another month redraws it --')
     !(await p.evaluate(() => !!document.getElementById('calMChart_mobCalRoot'))))
 }
 
+console.log(NL + '-- and All Accounts has all three too --')
+{
+  // Reported as "how can i see the month account equity and accumulative pnl": the combined
+  // view was handed no portfolio at all, so it showed a lone Realized tab. It has one — every
+  // visible wallet's history resampled onto a grid and summed, which is what its own charts
+  // are drawn from. A second wallet flat at $5,000 must therefore lift the line by $5,000.
+  const W2 = '0x974e086b541afc90acaf9ac5d3326d666a601e6b'
+  const M2 = { accountValue: '5000', totalNtlPos: '0', totalRawUsd: '5000', totalMarginUsed: '0' }
+  const S2 = { marginSummary: M2, crossMarginSummary: M2, crossMaintenanceMarginUsed: '0',
+               withdrawable: '5000', assetPositions: [], time: Date.now() }
+  const W2WIN = { accountValueHistory: [[prevM, '5000'], [eve, '5000'], [day(9), '5000']],
+                  pnlHistory: [[prevM, '0'], [eve, '0'], [day(9), '0']], vlm: '0' }
+  const ctx2 = await browser.newContext({ ...devices['iPhone 14 Pro'] })
+  try { await ctx2.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
+  await ctx2.route(HL_HOST, (route) => {
+    let b = {}
+    try { b = JSON.parse(route.request().postData() || '{}') } catch {}
+    if (String(b.user ?? '').toLowerCase() === W2) {
+      const T = { ...HL, clearinghouseState: S2, webData2: { clearinghouseState: S2, openOrders: [], cumLedger: '5000' },
+                  portfolio: ['day', 'week', 'month', 'allTime'].map(w => [w, W2WIN]),
+                  userFills: [], userFillsByTime: [], userNonFundingLedgerUpdates: [] }
+      return route.fulfill({ status: 200, contentType: 'application/json', json: T[b.type] ?? {} })
+    }
+    return route.fulfill({ status: 200, contentType: 'application/json', json: HL[b.type] ?? {} })
+  })
+  await ctx2.route('**/api/combined', (route) => route.fulfill({ status: 503, body: 'no snapshot in test' }))
+  await ctx2.route('**/api/**', (route) => route.fulfill({ status: 503, body: 'offline in test' }))
+  await ctx2.route('**/offexprice**', (route) => route.fulfill({ status: 200, json: { prices: {} } }))
+  const q = await ctx2.newPage()
+  q.on('pageerror', e => errs.push('combined: ' + e.message))
+  await q.goto(BASE, { waitUntil: 'domcontentloaded' })
+  await q.evaluate(({ a, b }) => {
+    localStorage.clear()
+    localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_onboard_done', '1')
+    localStorage.setItem('hliq_lang_chosen', '1')
+    ;['hliq_onboard_welcomed_v1', 'hliq_onboard_tour_v1', 'hliq_install_nudge_v2'].forEach(x => localStorage.setItem(x, '1'))
+    localStorage.setItem('hliq_ann_dismissed', JSON.stringify(['*']))
+    localStorage.setItem('hliq_privacy', '0')
+    localStorage.setItem('savedWallets', JSON.stringify([{ addr: a, label: 'One' }, { addr: b, label: 'Two' }]))
+    localStorage.setItem('hliq_multi_accounts', JSON.stringify([{ addr: a, label: 'One' }, { addr: b, label: 'Two' }]))
+  }, { a: ADDR, b: W2 })
+  await q.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(q, 'boot', () => !!window.loadDashboard)
+  await q.evaluate(() => { window.__comboRowsAfterMs = 1500 })
+  await q.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, ADDR)
+  await waitFor(q, 'the account', () => document.getElementById('dashboard')?.classList.contains('active'))
+  await waitFor(q, 'the mobile shell', () => !!window.mobVTab, null, 60000)
+  await q.evaluate(() => { window.__goAllAccounts?.() })
+  await waitFor(q, 'All Accounts', () => !!window.__isAllAccounts?.() || /All Accounts/i.test(document.body.textContent ?? ''), null, 90000)
+  // The combined calendar lives in the Accounts view, under the per-wallet rows.
+  await q.evaluate(() => window.mobVTab('accounts'))
+  const combined = await waitFor(q, 'the combined calendar',
+    () => !!document.querySelector('[data-cal-mchart="mobMaCalRoot"]'), null, 90000)
+  ok('the combined view has the row too', combined)
+  if (combined) {
+    const labels = await q.$$eval('[data-cal-mchart="mobMaCalRoot"] .cal-note-head', () => [])
+    await q.click('[data-cal-mchart="mobMaCalRoot"] .cal-note-head')
+    await q.waitForTimeout(800)
+    const tabs = await q.$$eval('[data-cal-mchart="mobMaCalRoot"] .chart-tab', els => els.map(e => e.textContent.trim()))
+    ok('with all three tabs, not just Realized', tabs.join() === 'Value,Accum.,Realized', tabs)
+    await q.click('[data-cal-mchart="mobMaCalRoot"] .chart-tab:text-is("Value")')
+    await q.waitForTimeout(600)
+    const last = await q.evaluate(() => (window.__calMonthPoints('mobMaCalRoot') ?? []).at(-1)?.y ?? null)
+    // $9,875 for the first wallet at its last reading, $5,000 flat for the second.
+    ok('and the value line is both wallets added up', last != null && Math.abs(last - 14875) < 60, last)
+  }
+  await ctx2.close()
+}
+
 if (errs.length) { fail++; console.log('  FAIL page errors → ' + JSON.stringify(errs.slice(0, 4))) }
 console.log(NL + `${pass} passed, ${fail} failed`)
 await browser.close()

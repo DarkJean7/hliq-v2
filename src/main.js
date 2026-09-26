@@ -1560,10 +1560,15 @@ function _fxCheck() {
 window.__toggleCelebrate = function (on) { setFxEnabled(on) }
 
 // The calendar's "Month's chart performance" row asks for the account history at draw time
-// rather than having it threaded through seven renderPnLCalendar call sites. The combined
-// view answers null: there is no one account history there, and the sum of eight of them is
-// the combined bridge's problem, not this row's. src/monthchart.js
-setMonthChartSource(() => ({ portfolio: state.isAllAccounts ? null : state.portfolio }))
+// rather than having it threaded through seven renderPnLCalendar call sites.
+//
+// `state.portfolio` in the combined view is ALREADY every visible wallet's history resampled
+// onto one grid and summed (_mergePortfolio, via _allAcctReaggregate) — the same series the
+// All Accounts charts are drawn from. This used to hand the row null there on the theory that
+// a combined history was a problem for someone else to solve, which hid Account value and
+// Accumulative PnL behind a single Realized tab in the view most likely to want them.
+// src/monthchart.js
+setMonthChartSource(() => ({ portfolio: state.portfolio }))
 
 // ─── SOUND ON FILL ────────────────────────────────────────────────────────────
 // The setting lives in src/fillsound.js; these are the three things the Settings row does.

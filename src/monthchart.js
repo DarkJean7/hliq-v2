@@ -131,10 +131,20 @@ export function seriesFor(mode, { portfolio = null, fills = null } = {}, year, m
   return accumSeries(portfolio, year, month)
 }
 
-/** Which modes can be offered with what is held. Realized needs only the calendar's own fills,
- *  so the combined view — which has no single portfolio — still gets that one. */
-export function availableModes({ portfolio = null, fills = null } = {}) {
-  return MODES.filter(m => (m.needs === 'portfolio' ? Array.isArray(portfolio) : Array.isArray(fills)))
+/**
+ * All three, always — the tab is how the reader learns the series exists.
+ *
+ * They used to be filtered by what was held, and a view whose account history had not arrived
+ * (or was wrongly withheld, as the combined view's was) showed a lone "Realized" tab with
+ * nothing to say why: "how can i see the month account equity and accumulative pnl". A tab
+ * that opens onto an explained empty chart answers that question; a missing tab cannot.
+ */
+export function availableModes() { return MODES }
+
+/** Whether a mode has the data it needs — for the note the empty chart shows. */
+export function modeHasData(mode, { portfolio = null, fills = null } = {}) {
+  const m = MODES.find(x => x.id === mode)
+  return m?.needs === 'fills' ? Array.isArray(fills) : Array.isArray(portfolio)
 }
 
 // ── the panel ─────────────────────────────────────────────────────────────────
@@ -173,9 +183,8 @@ export const heroId   = (rootId) => 'calMChartHero_' + rootId
  * is the same gesture on the same screen.
  */
 export function panelHtml(rootId, year, month, data = {}) {
-  const modes = availableModes(data)
-  if (!modes.length) return ''
-  if (!modes.some(m => m.id === _mode)) _mode = modes[0].id
+  const modes = availableModes()
+  if (!modes.some(m => m.id === _mode)) _mode = DEFAULT_MODE
   const active = modes.find(m => m.id === _mode) ?? modes[0]
   const tabs = modes.map(m => `<button class="chart-tab${m.id === _mode ? ' active' : ''}"
       onclick="event.stopPropagation();window.__calMonthChartMode('${esc(rootId)}','${m.id}')">${m.label}</button>`).join('')
@@ -205,8 +214,9 @@ export function panelHtml(rootId, year, month, data = {}) {
 
 /** What the chart should say when a mode has no points, which is not the same as zero. */
 export function emptyNote(mode, data = {}) {
+  if (!modeHasData(mode, data)) return 'Account history has not loaded yet'
   if (mode === 'realized') return 'No trades closed in this month'
-  return Array.isArray(data.portfolio) ? 'No account history for this month' : 'No account history held'
+  return 'No account history for this month'
 }
 
 // ── wiring ────────────────────────────────────────────────────────────────────
