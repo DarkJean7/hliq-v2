@@ -184,7 +184,10 @@ console.log(nl + '-- wired in --')
   // labels over these ones, and the axis wrote a negative as "$-1,000".
   t('one set of axis labels, not two', /yPriceBoxes: false,/.test(cht))
   t('and the minus goes before the dollar', /callback: v => \(v < 0 \? '-\$' : '\$'\) \+ Math\.abs\(Number\(v\)\)/.test(cht))
-  t('the card asks for an axis that cannot be clipped by a late font', /maxTicks: 3, axisMin: 66,/.test(fs.readFileSync('src/monthchart.js', 'utf8')))
+  t('the card asks for an axis that cannot be clipped by a late font', /axisMin: 66,/.test(fs.readFileSync('src/monthchart.js', 'utf8')))
+  // The frame is measured from the data, so the card can also say WHEN — the x axis is the
+  // month itself, from the 1st to the last day or to today in the month still running.
+  t('and for a frame that is the month', /dates: true, xMin: from, xMax: now > from && now < to \? now : to,/.test(fs.readFileSync('src/monthchart.js', 'utf8')))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

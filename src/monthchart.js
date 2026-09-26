@@ -294,10 +294,10 @@ export async function drawMonthChart(rootId) {
   renderPerfChart(canvasId(rootId), pts ?? [], heroId(rootId), {
     kind: _mode === 'value' ? 'value' : 'pnl',
     empty: emptyNote(_mode, data),
-    // Three labels and a guaranteed axis width: this chart lives in a card a third the height
-    // of the Portfolio tab's, where four labels crowd and a clipped "$1,000.00" reads as a
-    // glitch rather than as an axis.
-    maxTicks: 3, axisMin: 66,
+    // A guaranteed axis width, and four labels rather than three: with the frame measured
+    // from the data (src/chartframe.js) the range is tight enough to carry them, and three
+    // over a tight frame left whole cards with a single "$0" on the axis.
+    maxTicks: 4, axisMin: 66,
     dates: true, xMin: from, xMax: now > from && now < to ? now : to,
   })
 }

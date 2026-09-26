@@ -1,5 +1,6 @@
 import Chart from 'chart.js/auto'
 import { fmtTimeShort, fmtUSD, fmtPrice } from './format.js'
+import { frameFor } from './chartframe.js'
 
 let portfolioChartInst = null
 let pnlChartInst       = null
@@ -188,9 +189,20 @@ export function renderPerfChart(canvasId, points, heroId = null, { kind = 'pnl',
     borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, fill: 'start', tension: 0.3,
   }
 
+  // The vertical frame, measured rather than left to Chart.js — which grows the range out to
+  // its own tick spacing and drew a month that was never red on an axis reaching −$5,000.
+  // src/chartframe.js has the evidence and the rule.
+  const frame = frameFor(data, { kind, xMin, xMax })
+  const yMin = frame?.min, yMax = frame?.max
+
   if (perfChartInsts[canvasId]?.canvas === canvas) {
-    Object.assign(perfChartInsts[canvasId].data.datasets[0], ds)
-    perfChartInsts[canvasId].update('none')
+    const ch = perfChartInsts[canvasId]
+    Object.assign(ch.data.datasets[0], ds)
+    // The frame follows the data on an update too — switching from a $6,000 account value to
+    // a $560 month of PnL on the same canvas otherwise keeps the old one.
+    if (frame) Object.assign(ch.options.scales.y, { min: yMin, max: yMax })
+    if (dates) Object.assign(ch.options.scales.x, { min: xMin ?? undefined, max: xMax ?? undefined })
+    ch.update('none')
   } else {
     perfChartInsts[canvasId]?.destroy()
     const options = _ovChartOptions()
@@ -223,6 +235,10 @@ export function renderPerfChart(canvasId, points, heroId = null, { kind = 'pnl',
     // wider than the space it reserved, so "$1,000.00" comes out clipped at both ends. Asking
     // for a minimum width costs a few pixels of plot and cannot be got wrong by a font.
     if (axisMin > 0) options.scales.y.afterFit = (sc) => { sc.width = Math.max(sc.width, axisMin) }
+    if (frame) { options.scales.y.min = yMin; options.scales.y.max = yMax }
+    // Labels at round numbers inside the frame. With min and max set, Chart.js labels the
+    // bounds themselves by default — which is how the axis came to read "-$256.68".
+    options.scales.y.ticks.includeBounds = false
     perfChartInsts[canvasId] = new Chart(canvas.getContext('2d'), {
       type: 'line',
       data: { datasets: [ds] },
