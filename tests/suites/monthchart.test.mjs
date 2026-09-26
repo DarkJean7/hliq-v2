@@ -10,7 +10,7 @@
 // measuring something different and only one of them is HL's own number as it comes.
 import fs from 'fs'
 import {
-  MODES, DEFAULT_MODE, monthBounds, mergedHistory, valueSeries, accumSeries, realizedSeries,
+  MODES, DEFAULT_MODE, monthBounds, windowHistory, pickWindow, valueSeries, accumSeries, realizedSeries,
   seriesFor, availableModes, modeHasData, panelHtml, isOpen, setOpen, setMode, collapse,
   canvasId, emptyNote,
 } from '../../src/monthchart.js'
@@ -34,24 +34,41 @@ console.log(nl + '-- the month, bounded where the grid bounds it --')
   t('and it is local time, not UTC — the squares are too', new Date(from).getMonth() === M)
 }
 
-console.log(nl + '-- every window HL sent, at the best resolution it has --')
+console.log(nl + '-- ONE window, and never a perp-only one --')
 {
-  // HL answers in four windows at four resolutions. `month` cannot reach March; `allTime`
-  // reaches it coarsely. Merging is what lets one row serve whichever month is on screen.
+  // Reported as "in all accounts the charts are very bad… they are so wrong", with a line
+  // that looked like a scribble between two levels.
+  //
+  // HL answers the portfolio call with EIGHT windows: day/week/month/allTime for the whole
+  // account, and a perp-only twin of each. Points from all eight were merged into one series,
+  // so two quantities hundreds or thousands of dollars apart, sampled on grids that do not
+  // line up, were drawn alternately as if they were one line. The combined view made it
+  // obvious because there the perp and unified totals are far apart and every window is
+  // resampled independently.
   const portfolio = [
-    ['day',     { accountValueHistory: [[at(26, 9), '10500'], [at(26, 10), '10600']], pnlHistory: [] }],
-    ['month',   { accountValueHistory: [[at(20), '10200'], [at(26, 9), '10500']],     pnlHistory: [] }],
-    ['allTime', { accountValueHistory: [[aug(30), '9000'], [at(1), '9500'], [at(20), '10200'], [oct(2), '11000']], pnlHistory: [] }],
+    ['day',         { accountValueHistory: [[at(26, 9), '10500'], [at(26, 10), '10600']], pnlHistory: [] }],
+    ['month',       { accountValueHistory: [[aug(30), '9400'], [at(2), '9500'], [at(10), '9800'], [at(20), '10200'], [at(26, 9), '10500']], pnlHistory: [] }],
+    ['allTime',     { accountValueHistory: [[aug(30), '9000'], [at(1), '9500'], [at(20), '10200'], [oct(2), '11000']], pnlHistory: [] }],
+    // The perp side of the same account: real numbers, a different quantity.
+    ['perpMonth',   { accountValueHistory: [[at(3), '2100'], [at(11), '2400'], [at(21), '2600']], pnlHistory: [] }],
+    ['perpAllTime', { accountValueHistory: [[at(4), '2000'], [at(22), '2500']], pnlHistory: [] }],
   ]
-  const all = mergedHistory(portfolio, 'accountValueHistory')
-  t('each timestamp once', all.length === 6, all.length)
-  t('in order', all.every((p, i) => i === 0 || p.x >= all[i - 1].x))
   const v = valueSeries(portfolio, Y, M)
-  t('cut to the month — August and October are not this month', v.length === 4 && v.every(p => p.x >= at(1, 0) && p.x <= at(30, 23)))
-  t('the fine points survive the cut', v.some(p => near(p.y, 10600)))
+  t('no perp-only point is in the line', !v.some(p => p.y < 5000), v.map(p => p.y))
+  t('and the line is one window, not a blend of them',
+    v.length === 4 && v.every(p => [9500, 9800, 10200, 10500].some(y => near(p.y, y))), v.map(p => p.y))
+  // `month` covers the whole of September so far; `day` covers one hour of it and `allTime`
+  // has three points in it. Coverage first, then resolution.
+  t('the window chosen is the one that covers the month best', pickWindow(portfolio, 'accountValueHistory', Y, M).name === 'month')
+  // An older month is only in allTime, and that is then the right answer rather than no answer.
+  const old = [['month', { accountValueHistory: [[at(2), '9500']] }],
+               ['allTime', { accountValueHistory: [[aug(3), '8000'], [aug(19), '8400']] }]]
+  t('an older month falls to the window that reaches it', pickWindow(old, 'accountValueHistory', Y, M - 1).name === 'allTime')
+  t('cut to the month — August and October are not in it', v.every(p => p.x >= at(1, 0) && p.x <= at(30, 23)))
   // Empty is not unknown: no portfolio held is a different answer from a flat account.
-  t('no portfolio: null, not an empty line', valueSeries(null, Y, M) === null && mergedHistory(undefined, 'pnlHistory') === null)
-  t('a portfolio with no history at all: null', mergedHistory([['day', {}]], 'pnlHistory') === null)
+  t('no portfolio: null, not an empty line', valueSeries(null, Y, M) === null && windowHistory(undefined, 'pnlHistory', 'day') === null)
+  t('a window with no history at all: null', windowHistory([['day', {}]], 'pnlHistory', 'day') === null)
+  t('a month no window reaches: empty', valueSeries(portfolio, 2019, 0).length === 0)
 }
 
 console.log(nl + '-- accumulative PnL is rebased to the 1st --')
@@ -61,8 +78,11 @@ console.log(nl + '-- accumulative PnL is rebased to the 1st --')
   const portfolio = [['allTime', { accountValueHistory: [], pnlHistory: [
     [aug(31, 23), '4000'],    // where the account stood going into September
     [at(2), '4300'], [at(10), '3600'], [at(20), '4800'], [at(26), '6497'],
-  ] }]]
+  ] }],
+  // The perp-only twin says something quite different about the same month. It is not this.
+  ['perpAllTime', { pnlHistory: [[aug(31, 23), '900'], [at(12), '1500'], [at(26), '1200']] }]]
   const a = accumSeries(portfolio, Y, M)
+  t('the perp window is not what the month is measured from', near(a.at(-1).y, 2497))
   t('it starts at zero on the 1st', a[0].x === monthBounds(Y, M).from && a[0].y === 0)
   t('and reads as what the month has made', near(a.at(-1).y, 2497))
   // The drawdown the calendar cannot show: +300, then −700 from there.

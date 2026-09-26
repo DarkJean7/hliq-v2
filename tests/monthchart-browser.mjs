@@ -60,6 +60,12 @@ const FILLS = [
 const VAL = [[prevM, '9000'], [eve, '9500'], [day(3), '9300'], [day(9), '9875']]
 const PNL = [[prevM, '3600'], [eve, '4000'], [day(3), '3800'], [day(9), '4375.5']]
 const WINDOW = { accountValueHistory: VAL, pnlHistory: PNL, vlm: '120000' }
+// HL sends a perp-only twin of every window (perpDay … perpAllTime). It is a different
+// quantity — the perp side alone — and drawing its points in the same line as the account's
+// own value is what made the chart a scribble between two levels.
+const PERP = { vlm: '0',
+  accountValueHistory: [[prevM, '2000'], [eve, '2100'], [day(5), '2300'], [day(9), '2500']],
+  pnlHistory: [[prevM, '900'], [eve, '1000'], [day(9), '1400']] }
 const MARGIN = { accountValue: '9875.0', totalNtlPos: '0', totalRawUsd: '9875.0', totalMarginUsed: '0' }
 const STATE  = { marginSummary: MARGIN, crossMarginSummary: MARGIN, crossMaintenanceMarginUsed: '0',
                  withdrawable: '9875.0', assetPositions: [], time: Date.now() }
@@ -69,7 +75,8 @@ const HL = {
   userNonFundingLedgerUpdates: [{ time: prevM, hash: '0x1', delta: { type: 'deposit', usdc: '9000' } }],
   subAccounts: [], candleSnapshot: [], extraAgents: [], allPerpMetas: [{ universe: [] }], outcomeMeta: {},
   perpDexs: [null], perpCategories: [],
-  portfolio: ['day', 'week', 'month', 'allTime'].map(w => [w, WINDOW]),
+  portfolio: [...['day', 'week', 'month', 'allTime'].map(w => [w, WINDOW]),
+              ...['perpDay', 'perpWeek', 'perpMonth', 'perpAllTime'].map(w => [w, PERP])],
   webData2: { clearinghouseState: STATE, openOrders: [], cumLedger: '9000' },
   meta: { universe: [] }, spotMeta: { tokens: [], universe: [] },
   metaAndAssetCtxs: [{ universe: [] }, []], spotMetaAndAssetCtxs: [{ tokens: [], universe: [] }, []],
@@ -166,6 +173,10 @@ console.log(NL + '-- the three series the Portfolio tab has --')
   const value = await tab('Value')
   ok('account value is the account\'s own dollars', value.last === 9875, value)
   ok('and it is titled as such', value.title === 'Account value', value.title)
+  // The perp-only windows sit around $2,000-$2,500. One point from them in this line is the
+  // scribble that was reported, so the whole series has to stay in the account's own range.
+  const ys = await p.evaluate(() => (window.__calMonthPoints('mobCalRoot') ?? []).map(d => d.y))
+  ok('and not one point from the perp-only windows', ys.length > 1 && ys.every(y => y > 5000), ys)
   ok('the hero reads as an amount, not a result', /^\$9,875\.00/.test(await heroText()), await heroText())
 
   const real = await tab('Realized')
@@ -216,7 +227,8 @@ console.log(NL + '-- and All Accounts has all three too --')
     try { b = JSON.parse(route.request().postData() || '{}') } catch {}
     if (String(b.user ?? '').toLowerCase() === W2) {
       const T = { ...HL, clearinghouseState: S2, webData2: { clearinghouseState: S2, openOrders: [], cumLedger: '5000' },
-                  portfolio: ['day', 'week', 'month', 'allTime'].map(w => [w, W2WIN]),
+                  portfolio: [...['day', 'week', 'month', 'allTime'].map(w => [w, W2WIN]),
+                              ...['perpDay', 'perpWeek', 'perpMonth', 'perpAllTime'].map(w => [w, W2WIN])],
                   userFills: [], userFillsByTime: [], userNonFundingLedgerUpdates: [] }
       return route.fulfill({ status: 200, contentType: 'application/json', json: T[b.type] ?? {} })
     }

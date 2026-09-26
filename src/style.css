@@ -7958,12 +7958,12 @@ html.has-bg-image #mobileView.mob-in-trade .mob-v-content {
 .cal-mchart { margin: 14px 0 16px; }
 .cal-mchart .cal-note-title::before { content: '📈'; margin-right: 7px; }
 .cal-mchart-body { padding: 0 14px 14px; }
-.cal-mchart-wrap { position: relative; height: 190px; width: 100%; margin-top: 4px; }
+.cal-mchart-wrap { position: relative; height: 205px; width: 100%; margin-top: 4px; }
 .cal-mchart-foot { font-size: 11px; color: var(--muted); line-height: 1.5; margin-top: 8px; }
 /* The hero sits right under the header; the Portfolio tab's own spacing is too airy here. */
 .cal-mchart-body .portfolio-pnl-hero { margin: 2px 0 0; min-height: 40px; }
 .cal-mchart-body .chart-tabs { flex-shrink: 0; }
 @media (max-width: 560px) {
-  .cal-mchart-wrap { height: 165px; }
+  .cal-mchart-wrap { height: 180px; }
   .cal-mchart-body .chart-header { flex-wrap: wrap; gap: 6px; }
 }

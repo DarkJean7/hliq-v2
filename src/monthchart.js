@@ -58,32 +58,61 @@ export function monthBounds(year, month) {
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null }
 
 /**
- * One series out of every window HL sent, sorted, each timestamp once.
+ * The windows that describe the WHOLE account.
  *
- * `key` is 'accountValueHistory' or 'pnlHistory'. Null — not [] — when there is no portfolio
- * to read, because "we were not given one" and "the account had no value" are different
- * answers and only one of them should draw a flat line.
+ * HL answers the portfolio call with eight: these four, and a perp-only twin of each
+ * (perpDay … perpAllTime) carrying just the perp side's equity. Points from all eight used to
+ * be merged into one line here, which is what made the All Accounts chart look like a
+ * scribble — two quantities hundreds or thousands of dollars apart, sampled on grids that do
+ * not line up, drawn alternately as if they were one series. Reported as "in all accounts the
+ * charts are very bad… they are so wrong", and the single account had the same fault; its
+ * perp and unified values just happen to sit closer together.
  */
-export function mergedHistory(portfolio, key) {
+const ACCOUNT_WINDOWS = ['day', 'week', 'month', 'allTime']
+
+/** One window's series, sorted, as points. Null when that window is not in the portfolio. */
+export function windowHistory(portfolio, key, name) {
   if (!Array.isArray(portfolio)) return null
-  const seen = new Map()
-  for (const entry of portfolio) {
-    for (const p of (entry?.[1]?.[key] ?? [])) {
-      const x = num(p?.[0]), y = num(p?.[1])
-      if (x == null || y == null) continue
-      if (!seen.has(x)) seen.set(x, y)
+  const hist = portfolio.find(e => e?.[0] === name)?.[1]?.[key]
+  if (!Array.isArray(hist) || !hist.length) return null
+  const pts = hist.map(p => ({ x: num(p?.[0]), y: num(p?.[1]) }))
+    .filter(p => p.x != null && p.y != null)
+    .sort((a, b) => a.x - b.x)
+  return pts.length ? pts : null
+}
+
+/**
+ * The best single window for this month, and its points.
+ *
+ * ONE window, never a blend: `day` and `allTime` are the same quantity at different
+ * resolutions, but they are sampled and (in the combined view) resampled independently, so
+ * interleaving them draws the difference between two approximations as if it were the market.
+ *
+ * Best means: covers the most of the month — a window that reaches only the last 24 hours
+ * cannot describe September — and, between two that cover the same span, the one with more
+ * points, which is the finer grain. So the current month is usually drawn from `month` and an
+ * older one from `allTime`, without either being hard-coded.
+ */
+export function pickWindow(portfolio, key, year, month) {
+  const { from, to } = monthBounds(year, month)
+  let best = null
+  for (const name of ACCOUNT_WINDOWS) {
+    const all = windowHistory(portfolio, key, name)
+    if (!all) continue
+    const inMonth = all.filter(p => p.x >= from && p.x <= to)
+    if (!inMonth.length) continue
+    const span = inMonth.at(-1).x - inMonth[0].x
+    if (!best || span > best.span + 36e5 || (Math.abs(span - best.span) <= 36e5 && inMonth.length > best.inMonth.length)) {
+      best = { name, all, inMonth, span }
     }
   }
-  if (!seen.size) return null
-  return [...seen.entries()].sort((a, b) => a[0] - b[0]).map(([x, y]) => ({ x, y }))
+  return best
 }
 
 /** The account's own value through the month. Absolute dollars. */
 export function valueSeries(portfolio, year, month) {
-  const all = mergedHistory(portfolio, 'accountValueHistory')
-  if (!all) return null
-  const { from, to } = monthBounds(year, month)
-  return all.filter(p => p.x >= from && p.x <= to)
+  if (!Array.isArray(portfolio)) return null
+  return pickWindow(portfolio, 'accountValueHistory', year, month)?.inMonth ?? []
 }
 
 /**
@@ -94,11 +123,13 @@ export function valueSeries(portfolio, year, month) {
  * it instead would silently drop whatever happened between midnight and that first bucket.
  */
 export function accumSeries(portfolio, year, month) {
-  const all = mergedHistory(portfolio, 'pnlHistory')
-  if (!all) return null
-  const { from, to } = monthBounds(year, month)
-  const inMonth = all.filter(p => p.x >= from && p.x <= to)
-  if (!inMonth.length) return []
+  if (!Array.isArray(portfolio)) return null
+  const { from } = monthBounds(year, month)
+  const win = pickWindow(portfolio, 'pnlHistory', year, month)
+  if (!win) return []
+  const { all, inMonth } = win
+  // The baseline comes from the SAME window: a reading from a different one is a different
+  // approximation of the same number, and the whole month would be shifted by the gap.
   const before = all.filter(p => p.x < from).at(-1)
   const base = before ? before.y : inMonth[0].y
   const pts = inMonth.map(p => ({ x: p.x, y: p.y - base }))
@@ -255,6 +286,11 @@ export async function drawMonthChart(rootId) {
   // Chart.js, and the arithmetic above is meant to be readable by a test with neither.
   // main.js imports charts.js statically, so in the app this is already loaded.
   const { renderPerfChart } = await import('./charts.js')
+  // The frame is the MONTH, not the data: the 1st on the left and the last day (or today, in
+  // the month still running) on the right, so a month that only traded in its first week
+  // shows that, and two months can be compared by eye.
+  const { from, to } = monthBounds(cache.year, cache.month)
+  const now = Date.now()
   renderPerfChart(canvasId(rootId), pts ?? [], heroId(rootId), {
     kind: _mode === 'value' ? 'value' : 'pnl',
     empty: emptyNote(_mode, data),
@@ -262,6 +298,7 @@ export async function drawMonthChart(rootId) {
     // of the Portfolio tab's, where four labels crowd and a clipped "$1,000.00" reads as a
     // glitch rather than as an axis.
     maxTicks: 3, axisMin: 66,
+    dates: true, xMin: from, xMax: now > from && now < to ? now : to,
   })
 }
 

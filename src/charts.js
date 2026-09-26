@@ -165,7 +165,7 @@ export function destroyPerfCharts() {
  * carries the difference and the percentage, as the Portfolio tab's value chart does.
  * `empty` is what to say when there are no points, which a caller knows better than this does.
  */
-export function renderPerfChart(canvasId, points, heroId = null, { kind = 'pnl', empty = 'No closed trades in range', maxTicks = 4, axisMin = 0 } = {}) {
+export function renderPerfChart(canvasId, points, heroId = null, { kind = 'pnl', empty = 'No closed trades in range', maxTicks = 4, axisMin = 0, dates = false, xMin = null, xMax = null } = {}) {
   const canvas = document.getElementById(canvasId)
   if (!canvas) return
   const data = (points || []).filter(p => Number.isFinite(p.y))
@@ -195,6 +195,29 @@ export function renderPerfChart(canvasId, points, heroId = null, { kind = 'pnl',
     perfChartInsts[canvasId]?.destroy()
     const options = _ovChartOptions()
     options.scales.y.ticks.maxTicksLimit = maxTicks
+    if (dates) {
+      // A line with no dates under it says the shape of a month without saying WHEN — the
+      // dip is unreadable if you cannot tell the 4th from the 22nd. Day numbers only: the
+      // month is named in the header a centimetre above, and "Sep 4" at every tick would
+      // repeat it five times.
+      options.scales.x = {
+        type: 'linear', display: true,
+        min: xMin ?? undefined, max: xMax ?? undefined,
+        grid: { color: 'rgba(255,255,255,0.05)', drawTicks: false },
+        border: { display: false },
+        ticks: {
+          color: '#7a8092', font: { family: 'Space Mono', size: 10 }, padding: 6,
+          // Five, evenly spread between the ends of the month. Left to itself the auto-ticker
+          // picks a round number of MILLISECONDS, which lands on 1, 9, 15, 26 in one month and
+          // somewhere else in the next, so no two months read alike.
+          count: 5, maxRotation: 0,
+          callback: v => String(new Date(v).getDate()),
+        },
+      }
+      // Faint rules across the plot at each dollar tick: reading a value off a line is
+      // guesswork without them, and at this size a grid is cheaper than more labels.
+      options.scales.y.grid = { color: 'rgba(255,255,255,0.05)', drawTicks: false }
+    }
     // A floor under the axis width. Chart.js measures the labels to size the axis, and in a
     // narrow card it measures them before "Space Mono" has finished loading — then draws them
     // wider than the space it reserved, so "$1,000.00" comes out clipped at both ends. Asking
