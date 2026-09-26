@@ -2,6 +2,7 @@ import { accountHealth, healthClass, approxHealth } from './health.js'
 import { mtmDelta, mtmCarry } from './mtmbridge.js'
 import { groupTrades, countTrades } from './tradegroup.js'
 import { monthNotesHtml, dayNotesHtml, noteDays, loadNotes } from './calnotes.js'
+import { panelHtml as monthChartPanel, drawMonthChart, chartData as monthChartData } from './monthchart.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
 import { pairTrades, drawdownFor } from './drawdown.js'
 import { partRoe, fmtRoe } from './roe.js'
@@ -2939,10 +2940,16 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
         <div class="stat-value neg">${monthWithdrawn > 0 ? '-$' + fmtUSD(monthWithdrawn) : '$0'}</div>
       </div>
     </div>
+    ${monthChartPanel(rootId, year, month, monthChartData(fills))}
     <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
       <div class="cal-dow-row" style="min-width:350px">${DOWS.map(d => `<div class="cal-dow-cell">${d}</div>`).join('')}</div>
       <div class="cal-grid" style="min-width:350px">${cells}</div>
     </div>`
+
+  // The month's own curve, between the cards and the grid: what the nine totals above cannot
+  // say, which is the order things happened in. Only drawn when the row is open — a collapsed
+  // card has no canvas. src/monthchart.js
+  try { drawMonthChart(rootId) } catch {}
 
   // The month's notes as collapsed cards, UNDER the calendar and its day panel: a sibling of
   // the panel, since the panel is where a pressed day opens and the cards come after it.

@@ -225,6 +225,7 @@ import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fill
          volume as _fillVol, setVolume as _setFillVol, play as _playSound,
          playFill as _playFillSound, unlock as _unlockSound } from './fillsound.js'
 import { historyHtml, collapseFills } from './perfhistory.js'
+import { setMonthChartSource, collapse as _collapseMonthChart } from './monthchart.js'
 import { gzipToString, gunzipFromString } from './gzstore.js'
 import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
@@ -1557,6 +1558,12 @@ function _fxCheck() {
 }
 
 window.__toggleCelebrate = function (on) { setFxEnabled(on) }
+
+// The calendar's "Month's chart performance" row asks for the account history at draw time
+// rather than having it threaded through seven renderPnLCalendar call sites. The combined
+// view answers null: there is no one account history there, and the sum of eight of them is
+// the combined bridge's problem, not this row's. src/monthchart.js
+setMonthChartSource(() => ({ portfolio: state.isAllAccounts ? null : state.portfolio }))
 
 // ─── SOUND ON FILL ────────────────────────────────────────────────────────────
 // The setting lives in src/fillsound.js; these are the three things the Settings row does.
@@ -8444,6 +8451,10 @@ function _stopTabTimers() {
 }
 
 function switchTab(name, btn) {
+  // The month chart starts closed every time a calendar is opened: the calendar is what the
+  // reader came for, and the chart is the follow-up question. Both shells, and the combined
+  // view's calendar too — one collapse for whichever of them is about to be rendered.
+  if (name === 'calendar' || name === 'accounts') _collapseMonthChart()
   // Analysis is a SEGMENT of Pulse, not a tab of its own. Sending it to the Pulse pane
   // rather than the Analysis one is what makes the three-segment header work: __pulseSetSeg
   // renders into deskPulse, and from a hidden Analysis pane that host does not exist.
@@ -8514,6 +8525,7 @@ window.__mobMore = function() {
   backdrop?.classList.toggle('open', open)
 }
 window.__mobMoreTab = function(name) {
+  if (name === 'calendar') _collapseMonthChart()
   // Analysis is one of the three segments of the Pulse view, not a separate place. Opening
   // it from the menu used to render the bare Analysis screen, which left the reader inside
   // a set of three tabs with no way to see the other two. Same view, segment preselected.
@@ -25575,6 +25587,7 @@ window._mobVApplyThresholds = function() {
 }
 
 window.mobVTab = function(name) {
+  if (name === 'calendar') _collapseMonthChart()
   _mobVActiveTab = name
   document.querySelectorAll('.mob-v-tab').forEach(b => b.classList.remove('active'))
   const btn = document.getElementById('mobVTab-' + name)

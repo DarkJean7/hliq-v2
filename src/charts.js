@@ -48,7 +48,16 @@ function _ovChartOptions() {
     maintainAspectRatio: false,
     animation: false,
     interaction: { mode: 'index', intersect: false },
-    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    plugins: {
+      legend: { display: false }, tooltip: { enabled: false },
+      // `yPriceBoxes` (main.js) is registered on Chart itself, so it paints its pill labels
+      // over the ticks of EVERY chart in the app — including these, which already write their
+      // own axis through the callback below. Two sets of labels in the same place, formatted
+      // differently ("$1,000.00" under a pill reading "1,000"), and in a card narrow enough
+      // the pair overlaps into mush. It belongs to the price chart, which asks for it through
+      // makeChartOptions; these dollar charts say no.
+      yPriceBoxes: false,
+    },
     scales: {
       x: { type: 'linear', display: false },
       y: {
@@ -57,7 +66,9 @@ function _ovChartOptions() {
         border: { display: false },
         ticks: {
           color: '#9aa0b0', font: { family: 'Space Mono', size: 11 }, padding: 6, maxTicksLimit: 4,
-          callback: v => '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: Math.abs(v) >= 1000 ? 0 : 2 }),
+          // The minus goes before the dollar, as it does everywhere else in the app: the axis
+          // read "$-1,000" against a "-$1,000" beside it on the same screen.
+          callback: v => (v < 0 ? '-$' : '$') + Math.abs(Number(v)).toLocaleString('en-US', { maximumFractionDigits: Math.abs(v) >= 1000 ? 0 : 2 }),
         },
       },
     },
@@ -144,7 +155,17 @@ export function destroyPerfCharts() {
   }
 }
 
-export function renderPerfChart(canvasId, points, heroId = null) {
+/**
+ * A line chart with a hover hero, by canvas id.
+ *
+ * `kind` is what the numbers MEAN, not how they look: 'pnl' is a figure that is good above
+ * zero and bad below it, so it is coloured by its sign and written +$/-$; 'value' is an
+ * amount the account holds, which is never negative and whose story is the CHANGE across what
+ * is on screen — so it is coloured by whether it ended above where it started, and the hero
+ * carries the difference and the percentage, as the Portfolio tab's value chart does.
+ * `empty` is what to say when there are no points, which a caller knows better than this does.
+ */
+export function renderPerfChart(canvasId, points, heroId = null, { kind = 'pnl', empty = 'No closed trades in range', maxTicks = 4, axisMin = 0 } = {}) {
   const canvas = document.getElementById(canvasId)
   if (!canvas) return
   const data = (points || []).filter(p => Number.isFinite(p.y))
@@ -153,12 +174,13 @@ export function renderPerfChart(canvasId, points, heroId = null) {
     perfChartInsts[canvasId]?.destroy()
     delete perfChartInsts[canvasId]
     const h = heroId && document.getElementById(heroId)
-    if (h) h.innerHTML = `<div class="portfolio-pnl-num neu" style="font-size:14px;color:var(--muted)">No closed trades in range</div>`
+    if (h) h.innerHTML = `<div class="portfolio-pnl-num neu" style="font-size:14px;color:var(--muted)">${empty}</div>`
     return
   }
 
-  const last = data[data.length - 1].y
-  const up   = last >= 0
+  const last  = data[data.length - 1].y
+  const first = data[0].y
+  const up    = kind === 'value' ? last >= first : last >= 0
   const col  = up ? '#00e5a0' : '#ff4d6d'
   const grad = up ? 'rgba(0,229,160,0.18)' : 'rgba(255,77,109,0.18)'
   const ds   = {
@@ -171,21 +193,39 @@ export function renderPerfChart(canvasId, points, heroId = null) {
     perfChartInsts[canvasId].update('none')
   } else {
     perfChartInsts[canvasId]?.destroy()
+    const options = _ovChartOptions()
+    options.scales.y.ticks.maxTicksLimit = maxTicks
+    // A floor under the axis width. Chart.js measures the labels to size the axis, and in a
+    // narrow card it measures them before "Space Mono" has finished loading — then draws them
+    // wider than the space it reserved, so "$1,000.00" comes out clipped at both ends. Asking
+    // for a minimum width costs a few pixels of plot and cannot be got wrong by a font.
+    if (axisMin > 0) options.scales.y.afterFit = (sc) => { sc.width = Math.max(sc.width, axisMin) }
     perfChartInsts[canvasId] = new Chart(canvas.getContext('2d'), {
       type: 'line',
       data: { datasets: [ds] },
-      options: _ovChartOptions(),
+      options,
       plugins: [crosshairPlugin, zeroLinePlugin],
     })
   }
 
   if (heroId) {
     const sign = v => (v >= 0 ? '+$' : '-$') + fmtUSD(Math.abs(v))
-    const defHtml = `<div class="portfolio-pnl-num ${up ? 'pos' : 'neg'}">${sign(last)}</div>`
+    // For a value series the hero reads like the Portfolio tab's: the amount, and underneath
+    // it what that amount has done since the left edge of what is drawn.
+    const change = (v) => {
+      const d = v - first, cls = d >= 0 ? 'pos' : 'neg', sg = d >= 0 ? '+' : ''
+      const pct = first !== 0 ? (d / first) * 100 : 0
+      return `<div class="portfolio-pnl-num ${cls}">$${fmtUSD(v)}</div>
+              <div class="portfolio-pnl-pct ${cls}">${sg}$${fmtUSD(Math.abs(d))} &nbsp;${sg}${pct.toFixed(2)}%</div>`
+    }
+    const defHtml = kind === 'value' ? change(last)
+      : `<div class="portfolio-pnl-num ${up ? 'pos' : 'neg'}">${sign(last)}</div>`
     perfHandlers[canvasId] = perfHandlers[canvasId] || { move: null, leave: null }
     attachHover(perfChartInsts[canvasId], canvasId, heroId, defHtml, (val, lbl) =>
-      `<div class="portfolio-pnl-num ${val >= 0 ? 'pos' : 'neg'}">${sign(val)}</div>
-       <div class="portfolio-pnl-date">${fmtTimeShort(lbl)}</div>`, perfHandlers[canvasId])
+      (kind === 'value'
+        ? change(val)
+        : `<div class="portfolio-pnl-num ${val >= 0 ? 'pos' : 'neg'}">${sign(val)}</div>`) +
+      `<div class="portfolio-pnl-date">${fmtTimeShort(lbl)}</div>`, perfHandlers[canvasId])
   }
 }
 
