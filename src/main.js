@@ -38839,7 +38839,13 @@ function _goMobileShell() {
  * on the right tab and iOS has already done its own measuring.
  */
 function _goDesktopShell({ settled = true } = {}) {
-  const want = _shellToDesk(_mobVActiveTab, n => !!document.getElementById('tab-' + n))
+  const want = _shellToDesk(_mobVActiveTab, {
+    // A nav tab is what makes a pass-through a destination. index.html also carries two
+    // panels nothing opens — tab-positions ("Open Orders") and tab-spot — and landing on one
+    // of those is how the phone's home screen used to arrive at an orphan.
+    hasNav:   n => !!document.querySelector(`.nav-tab[onclick*="'${n}'"]`),
+    hasPanel: n => !!document.getElementById('tab-' + n),
+  })
   mobVHide()
   renderAll()
   // window.switchTab, not the inner one: the wrapper is what loads the trade chart, refreshes

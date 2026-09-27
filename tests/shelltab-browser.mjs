@@ -120,12 +120,29 @@ console.log(NL + '-- the screens the two shells name differently --')
   const home = await p.evaluate(() => document.getElementById('mobVTab-positions')?.classList.contains('active') ?? null)
   ok('desktop Overview lands on the phone home screen', home !== false, home)
 
-  // The phone's own Orders screen is a table under desktop Positions.
+  // And the reverse. Reported after the first attempt: "when in mobile home when changing
+  // to desktop it displays 'Open orders'? which is not even a tab by its own" — index.html
+  // carries a tab-positions panel that nothing in the app opens, and the phone's home screen
+  // was landing on it by name.
+  await p.evaluate(() => window.__toggleForceMobile(false))
+  await waitFor(p, 'the desktop shell', () => !document.body.classList.contains('is-mob-view'))
+  ok('and the phone home screen comes back to the Overview', await deskTab() === 'overview', await deskTab())
+  ok('never the orphan panel that shares its name', await deskTab() !== 'positions')
+
+  // The phone's own Orders screen: desktop keeps open orders in the Trade tab's tables.
+  await p.evaluate(() => window.__toggleForceMobile(true))
+  await waitFor(p, 'the phone shell', () => document.body.classList.contains('is-mob-view'))
   await p.evaluate(() => window.mobVTab('orders'))
   await p.waitForTimeout(400)
   await p.evaluate(() => window.__toggleForceMobile(false))
   await waitFor(p, 'the desktop shell', () => !document.body.classList.contains('is-mob-view'))
-  ok('the phone Orders screen lands on desktop Positions', await deskTab() === 'positions', await deskTab())
+  ok('the phone Orders screen lands where desktop keeps orders', await deskTab() === 'trade', await deskTab())
+  // Whatever it lands on has to be somewhere the nav can show you are.
+  const lit = await p.evaluate(() => {
+    const t = [...document.querySelectorAll('.tab-panel.active')].map(e => e.id.replace('tab-', ''))[0]
+    return !!document.querySelector(`.nav-tab[onclick*="'${t}'"]`)
+  })
+  ok('and the nav lights up for it', lit)
 }
 
 console.log(NL + '-- and turning the phone does the same --')

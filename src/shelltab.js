@@ -8,18 +8,31 @@
  * "its annoying changing modes and encountering home."
  *
  * So a switch carries the view across. Most names are already the same on both sides and
- * simply pass through; the rest are the handful below, where one shell splits a screen the
- * other keeps whole:
+ * simply pass through; the rest are below, where one shell splits a screen the other keeps
+ * whole, or keeps a screen the other does not have at all.
  *
- *   overview    → positions   Desktop opens on an Overview the phone does not have. Its
- *                             phone equivalent is the home screen, which is the positions
- *                             list. (Not the reverse: a phone showing positions means
- *                             positions, and desktop has that tab.)
- *   orders      → positions   The phone gives resting orders their own screen; on desktop
- *                             they are a table under Positions.
- *   heatmap     → allocation  Two segments of one screen on desktop.
+ * ── the trap this walked into first ──
+ *
+ * index.html has a `tab-positions` panel and a `tab-spot` panel, and NOTHING opens either:
+ * no nav button, no switchTab call anywhere in the app. They are leftovers. Sending the
+ * phone's home screen (which is its positions list) to the same-named desktop panel landed
+ * the reader on an orphan — reported as: "instead of displaying overview it displays 'Open
+ * orders'? which is not even a tab by its own".
+ *
+ * So a name only passes through when desktop has a NAV TAB for it. Everything else goes
+ * through the map, whose destinations are all places the app itself can open:
+ *
+ *   positions   → overview    The phone's home screen. Desktop's home is the Overview.
+ *   orders      → trade       Desktop keeps open orders in the Trade tab's manage tables.
+ *   spot        → overview    The desktop spot panel is one of the orphans; the Overview is
+ *                             where holdings are summarised.
+ *   heatmap     → allocation  Two segments of one desktop screen.
  *   attribution → portfolio   "What moved your account" is a phone screen of its own and a
  *                             panel of the desktop Portfolio tab.
+ *   accounts    → accounts    All Accounts has no nav button either — the account switcher
+ *                             opens it — but switchTab knows it, so it is named here.
+ *   overview    → positions   Coming back the other way: the phone has no Overview, and its
+ *                             home screen is the nearest thing.
  *
  * Anything with no equivalent falls back to that shell's own landing page rather than to a
  * tab that does not exist — a blank panel is worse than the Home this was meant to stop.
@@ -28,11 +41,14 @@
 export const DESK_DEFAULT = 'overview'
 export const MOB_DEFAULT  = 'positions'
 
-/** Phone screen → desktop tab, for the names that differ. */
+/** Phone screen → desktop tab: the names that differ, and the ones with no nav tab. */
 export const TO_DESKTOP = {
-  orders:      'positions',
+  positions:   'overview',
+  orders:      'trade',
+  spot:        'overview',
   heatmap:     'allocation',
   attribution: 'portfolio',
+  accounts:    'accounts',
   home:        'overview',
 }
 
@@ -57,16 +73,18 @@ export const MOB_VIEWS = new Set([
 /**
  * The desktop tab that shows what the phone was showing.
  *
- * `isValid` answers whether a desktop tab exists — the caller checks the DOM for its panel,
- * so a tab that is renamed or removed degrades to the landing page instead of switching to
- * nothing. Same for `toMobile` below.
+ * `hasNav` answers whether desktop offers that tab in its nav — the test a pass-through has
+ * to meet, because a panel with no way in is not a destination. `hasPanel` answers whether
+ * the panel exists at all, which is what the map's own destinations are checked against
+ * (All Accounts has no nav button and is still a real place). Both are asked of the DOM by
+ * the caller, so a tab renamed out of index.html degrades to the landing page rather than
+ * switching to nothing.
  */
-export function toDesktop(mobTab, isValid = () => true) {
+export function toDesktop(mobTab, { hasNav = () => true, hasPanel = () => true } = {}) {
   const name = String(mobTab ?? '')
-  if (name && isValid(name)) return name
   const mapped = TO_DESKTOP[name]
-  if (mapped && isValid(mapped)) return mapped
-  return DESK_DEFAULT
+  if (mapped) return hasPanel(mapped) ? mapped : DESK_DEFAULT
+  return name && hasNav(name) ? name : DESK_DEFAULT
 }
 
 /** The phone screen that shows what the desktop was showing. */
