@@ -2,7 +2,8 @@ import { accountHealth, healthClass, approxHealth } from './health.js'
 import { mtmDelta, mtmCarry } from './mtmbridge.js'
 import { groupTrades, countTrades } from './tradegroup.js'
 import { monthNotesHtml, dayNotesHtml, noteDays, loadNotes } from './calnotes.js'
-import { panelHtml as monthChartPanel, drawMonthChart, chartData as monthChartData } from './monthchart.js'
+import { panelHtml as monthChartPanel, drawMonthChart, chartData as monthChartData,
+         accumSeries as monthAccumSeries, maxDrawdown as curveDrawdown } from './monthchart.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
 import { pairTrades, drawdownFor } from './drawdown.js'
 import { partRoe, fmtRoe } from './roe.js'
@@ -2795,23 +2796,44 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
   const monthFills = monthKeys.reduce((s, k) => s + (byDay[k].trades || 0), 0)
 
   /**
-   * Worst peak-to-trough run of the month, walking the days in order.
+   * Worst peak-to-trough run of the month — how far it gave back from its own best point.
    *
-   * This is the drawdown of the month's own PnL curve, not of account equity: it starts
-   * each month from zero, so it answers "how far did this month give back from its own best
-   * point", which is what sits next to Month PnL and Best Day. An equity drawdown would be a
-   * different number and would need a balance history the calendar does not have.
+   * From the month's PnL AS IT HAPPENED, unrealized included: HL's own pnlHistory rebased to
+   * zero on the 1st, which is the line the chart above this draws (src/monthchart.js).
+   *
+   * It used to walk the daily CLOSED PnL instead, and that answers a different question than
+   * the one the card is asked. An account can give back $600 of open profit over a week and
+   * close nothing at a loss — every day green, every square green, and "Max Drawdown $0 ·
+   * never gave any back" printed under a chart that plainly shows the dip. Reported exactly
+   * that way. Sitting between Month PnL and Best Day, both of which are closed PnL, this is
+   * the one card that is about the ride rather than the result.
+   *
+   * The day walk stays as the fallback for a view with no account history to read — better a
+   * drawdown of the closed days than none at all — and `ddBasis` records which one answered.
    *
    * Worst Day already reports the worst SINGLE day. This is the run: three -$20 days in a
    * row is -$60 here and -$20 there, and the difference is the whole reason to show it.
    */
   const ordered = monthKeys.slice().sort()
-  let ddPeak = 0, ddRun = 0, maxDD = 0, ddFrom = null, ddTo = null, ddPeakKey = null
+  let ddPeak = 0, ddRun = 0, maxDD = 0, ddFrom = null, ddTo = null, ddPeakKey = null, ddBasis = 'closed'
   for (const k of ordered) {
     ddRun += byDay[k].pnl
     if (ddRun > ddPeak) { ddPeak = ddRun; ddPeakKey = k }
     const gap = ddPeak - ddRun
     if (gap > maxDD) { maxDD = gap; ddFrom = ddPeakKey; ddTo = k }
+  }
+  {
+    const _curve = curveDrawdown(monthAccumSeries(monthChartData(fills).portfolio, year, month))
+    if (_curve) {
+      ddBasis = 'live'
+      maxDD   = _curve.drop
+      // Both ends as day keys, so the caption reads in the same dates as the grid below.
+      const _key = (ts) => Number.isFinite(ts)
+        ? `${new Date(ts).getFullYear()}-${String(new Date(ts).getMonth() + 1).padStart(2, '0')}-${String(new Date(ts).getDate()).padStart(2, '0')}`
+        : null
+      ddFrom = _curve.drop > 0 ? _key(_curve.from) : null
+      ddTo   = _curve.drop > 0 ? _key(_curve.to)   : null
+    }
   }
 
   const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
@@ -2913,14 +2935,16 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
           avgDayPnl == null ? '—' : (avgDayPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(avgDayPnl))}</div>
         ${elapsedDays ? `<div class="stat-sub">over ${elapsedDays} day${elapsedDays !== 1 ? 's' : ''}</div>` : ''}
       </div>
-      <div class="stat-card">
+      <div class="stat-card" title="${ddBasis === 'live'
+        ? 'The deepest this month&apos;s PnL fell from its own high, unrealized included'
+        : 'From the closed days only — this view has no account history to read'}">
         <div class="stat-label">Max Drawdown</div>
         <div class="stat-value ${maxDD > 0 ? 'neg' : 'neu'}">${maxDD > 0 ? '-$' + fmtUSD(maxDD) : '$0'}</div>
         ${maxDD > 0 && ddTo
           ? `<div class="stat-sub">${ddFrom && ddFrom !== ddTo
               ? fmtDayLabel(ddFrom) + ' → ' + fmtDayLabel(ddTo)
               : fmtDayLabel(ddTo)}</div>`
-          : '<div class="stat-sub">never gave any back</div>'}
+          : `<div class="stat-sub">${ddBasis === 'live' ? 'never gave any back' : 'no closed losses'}</div>`}
       </div>
       <div class="stat-card">
         <div class="stat-label">Trades Made</div>

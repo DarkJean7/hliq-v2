@@ -155,6 +155,29 @@ export function realizedSeries(fills, year, month) {
   return [{ x: from, y: 0 }, ...closes.map(f => ({ x: f.time, y: (running += f.closedPnl) }))]
 }
 
+/**
+ * The worst peak-to-trough run on a curve: { drop, from, to, peak }, or null when there is
+ * no curve to walk. `drop` is positive dollars given back, 0 when it only ever went up.
+ *
+ * Used by the calendar's Max Drawdown card, which used to walk the DAILY CLOSED PnL instead
+ * — so a month that gave back $600 of open profit and closed nothing at a loss reported "$0,
+ * never gave any back" directly underneath a chart visibly showing the dip. Reported as:
+ * "some of my accounts are experiencing a drawdown. despite that the card max drawdown is
+ * displaying $0. it seems it uses just closed pnl."
+ */
+export function maxDrawdown(points) {
+  if (!Array.isArray(points) || points.length < 2) return null
+  let peak = points[0].y, peakX = points[0].x
+  let drop = 0, from = null, to = null
+  for (const p of points) {
+    if (!Number.isFinite(p?.y)) continue
+    if (p.y > peak) { peak = p.y; peakX = p.x }
+    const gap = peak - p.y
+    if (gap > drop) { drop = gap; from = peakX; to = p.x }
+  }
+  return { drop, from, to, peak }
+}
+
 /** The series for a mode, or null when the data it needs is not held. */
 export function seriesFor(mode, { portfolio = null, fills = null } = {}, year, month) {
   if (mode === 'value')    return valueSeries(portfolio, year, month)

@@ -58,7 +58,10 @@ const FILLS = [
 // HL's own histories. pnlHistory is ALL-TIME, so the row has to rebase it: going into the
 // month the account was +$4,000, and it ends the month +$4,375.50.
 const VAL = [[prevM, '9000'], [eve, '9500'], [day(3), '9300'], [day(9), '9875']]
-const PNL = [[prevM, '3600'], [eve, '4000'], [day(3), '3800'], [day(9), '4375.5']]
+// Rises to +$375.50 for the month, but gives back $575 of open profit on the way — the ride
+// the Max Drawdown card is about, and invisible to any walk of the closed days.
+const PNL = [[prevM, '3600'], [eve, '4000'], [day(3), '3800'], [day(9), '4375.5'],
+             [day(14), '3800.5'], [day(20), '4375.5']]
 const WINDOW = { accountValueHistory: VAL, pnlHistory: PNL, vlm: '120000' }
 // HL sends a perp-only twin of every window (perpDay … perpAllTime). It is a different
 // quantity — the perp side alone — and drawing its points in the same line as the account's
@@ -185,6 +188,28 @@ console.log(NL + '-- the three series the Portfolio tab has --')
   // The grid above sums the same closedPnl into its days, so the two must agree.
   const monthPnl = await p.evaluate(() => document.querySelector('#mobCalRoot .cal-summary .stat-value')?.textContent ?? '')
   ok('which is what the Month PnL card says', /375\.50/.test(monthPnl), monthPnl)
+}
+
+console.log(NL + '-- and the Max Drawdown card measures the same curve --')
+{
+  // Reported: "some of my accounts are experiencing a drawdown. despite that the card max
+  // drawdown is displaying $0. it seems it uses just closed pnl."
+  //
+  // This month's only red CLOSING day is -$45 on the 3rd, so a walk of the daily closed PnL
+  // finds a $45 drawdown. The account actually handed back $575 of open profit between the
+  // 9th and the 14th — PNL above goes 4375.5 -> 3800.5 — and that is the number the card is
+  // asked for.
+  const card = await p.evaluate(() => {
+    const el = [...document.querySelectorAll('#mobCalRoot .cal-summary .stat-card')]
+      .find(c => /Max Drawdown/i.test(c.textContent))
+    return el ? el.textContent.replace(/\s+/g, ' ').trim() : ''
+  })
+  ok('the card is there', /Max Drawdown/i.test(card), card)
+  ok('it reports the open giveback, not $0', /575/.test(card), card)
+  ok('and not "never gave any back"', !/never gave any back/i.test(card), card)
+  // What the old basis would have found: the only red CLOSING day is the -$45 on the 3rd,
+  // so walking the closed days gives $45 against the $575 the account actually gave back.
+  ok('not the $45.00 the closed days add up to', !/45\.00/.test(card), card)
 }
 
 console.log(NL + '-- paging to another month redraws it --')

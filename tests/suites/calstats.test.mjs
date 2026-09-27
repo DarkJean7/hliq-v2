@@ -228,8 +228,16 @@ t('Trades Made is a card', sum.includes('Trades Made'))
 t('there are nine cards now', (sum.match(/class="stat-card"/g) || []).length === 9)
 t('drawdown is a RUN, not the worst single day',
   src.includes('ddPeak - ddRun') && src.includes('This is the run'))
-t('and it is the month PnL curve, not account equity, and says so',
-  src.includes('not of account equity'))
+// Reported: "some of my accounts are experiencing a drawdown. despite that the card max
+// drawdown is displaying $0. it seems it uses just closed pnl." It did: it walked the daily
+// closed PnL, so a month that gave back $600 of OPEN profit and closed nothing at a loss
+// read "$0 · never gave any back" under a chart that plainly showed the dip.
+t('the drawdown is measured on the month PnL curve, unrealized included',
+  src.includes('curveDrawdown(monthAccumSeries(') && src.includes("ddBasis = 'live'"))
+t('with the closed-day walk kept as the fallback where there is no account history',
+  src.includes("ddBasis = 'closed'") && src.includes('ddPeak - ddRun'))
+t('and the card says which of the two answered',
+  src.includes("ddBasis === 'live'") && src.includes('no closed losses'))
 
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

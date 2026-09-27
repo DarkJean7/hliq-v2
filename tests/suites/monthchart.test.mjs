@@ -11,7 +11,7 @@
 import fs from 'fs'
 import {
   MODES, DEFAULT_MODE, monthBounds, windowHistory, pickWindow, valueSeries, accumSeries, realizedSeries,
-  seriesFor, availableModes, modeHasData, panelHtml, isOpen, setOpen, setMode, collapse,
+  seriesFor, availableModes, modeHasData, maxDrawdown, panelHtml, isOpen, setOpen, setMode, collapse,
   canvasId, emptyNote,
 } from '../../src/monthchart.js'
 
@@ -116,6 +116,24 @@ console.log(nl + '-- realized PnL is the closes, accumulated --')
   t('no fills held: null', realizedSeries(null, Y, M) === null)
   t('no closes this month: empty, which is a real answer', realizedSeries([{ time: aug(2), closedPnl: 5 }], Y, M).length === 0)
   t('and it is said as one', emptyNote('realized', { fills: [] }) === 'No trades closed in this month')
+}
+
+console.log(nl + '-- how far the month gave back --')
+{
+  // The calendar's Max Drawdown card reads this. It used to walk the daily CLOSED PnL, which
+  // is a different question: an account can hand back $600 of open profit over a week and
+  // close nothing at a loss, and the card said "$0 - never gave any back".
+  const curve = [{ x: 1, y: 0 }, { x: 2, y: 500 }, { x: 3, y: 2200 }, { x: 4, y: 1600 }, { x: 5, y: 1900 }]
+  const dd = maxDrawdown(curve)
+  t('the drop is peak to trough', near(dd.drop, 600))
+  t('and it names both ends', dd.from === 3 && dd.to === 4)
+  t('a month that only went up gave nothing back', maxDrawdown([{ x: 1, y: 0 }, { x: 2, y: 9 }]).drop === 0)
+  // The deepest run, not the last one: 2200 -> 1600 is 600, and a later 1900 -> 1500 is 400.
+  t('the DEEPEST run wins, not the latest',
+    near(maxDrawdown([...curve, { x: 6, y: 1500 }]).drop, 700))
+  t('a month still under water measures from its own high',
+    near(maxDrawdown([{ x: 1, y: 0 }, { x: 2, y: -300 }, { x: 3, y: -1200 }]).drop, 1200))
+  t('nothing to walk: null, not zero', maxDrawdown([]) === null && maxDrawdown([{ x: 1, y: 5 }]) === null)
 }
 
 console.log(nl + '-- all three are always offered --')
