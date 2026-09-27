@@ -226,6 +226,7 @@ import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fill
          playFill as _playFillSound, unlock as _unlockSound } from './fillsound.js'
 import { historyHtml, collapseFills } from './perfhistory.js'
 import { setMonthChartSource, collapse as _collapseMonthChart } from './monthchart.js'
+import { toDesktop as _shellToDesk, toMobile as _shellToMob, MOB_VIEWS as _MOB_VIEWS } from './shelltab.js'
 import { gzipToString, gunzipFromString } from './gzstore.js'
 import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
@@ -38802,21 +38803,114 @@ function renderOutcomePositions() {
 }
 
 // ─── UI MODE TOGGLES ──────────────────────────────────────────────────────────
+//
+// A shell switch carries the view across with it. The two shells name their screens mostly
+// alike but not entirely, and each used to show whatever IT was last on — which was Home,
+// every time, because the other shell had been driving. src/shelltab.js holds the map.
+//
+// Both directions, and both triggers: the Settings switch and turning the phone.
+function _goMobileShell() {
+  _mobVActiveTab = _shellToMob(_activeTab, n => _MOB_VIEWS.has(n))
+  renderMobileView()
+  // The phone's routers light the nav themselves; arriving this way skips them, and the
+  // screen was right while the tab strip underneath still pointed somewhere else.
+  document.querySelectorAll('.mob-v-tab').forEach(b =>
+    b.classList.toggle('active', b.id === 'mobVTab-' + _mobVActiveTab))
+  document.querySelectorAll('.mob-v-bottom-btn').forEach(b => b.classList.remove('active'))
+  const _bot = _mobVActiveTab === 'trades' ? 'mobVBotHistory' : 'mobVBotHome'
+  document.getElementById(_bot)?.classList.add('active')
+}
+/**
+ * `settled` is false when the switch is happening DURING a rotation.
+ *
+ * Reported the day this shipped: "the app like changes zoom between changes and it makes the
+ * app basically unusuable and to fix the user needs to close the app" — an iPhone, turning
+ * the phone, everything then too big to use.
+ *
+ * That is iOS re-laying-out for the new orientation while the page is busy. If the layout is
+ * still pinned to the old width when Safari measures, it scales that width up to fill the
+ * new one: portrait 393 stretched across a 852-wide screen is 2.2x, pannable, and permanent
+ * — an installed PWA honours `user-scalable=no`, so there is no pinching back out, and only
+ * a relaunch clears it.
+ *
+ * The shell swap itself is what it always was. What was new was revealing a desktop tab in
+ * the same frame — building the History table, or loading the trade chart's iframe — so that
+ * part now waits for the rotation to finish. A few hundred milliseconds later the reader is
+ * on the right tab and iOS has already done its own measuring.
+ */
+function _goDesktopShell({ settled = true } = {}) {
+  const want = _shellToDesk(_mobVActiveTab, n => !!document.getElementById('tab-' + n))
+  mobVHide()
+  renderAll()
+  // window.switchTab, not the inner one: the wrapper is what loads the trade chart, refreshes
+  // the watch tab and fills the deposit previews when those tabs are the one being restored.
+  const reveal = () => {
+    // Rotated back while we waited — the phone shell owns the screen again, and switching a
+    // hidden desktop tab underneath it would only fight the next swap.
+    if (document.body.classList.contains('is-mob-view')) return
+    try { window.switchTab(want) } catch { try { window.switchTab('overview') } catch {} }
+  }
+  if (settled) reveal()
+  else requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(reveal, 350)))
+}
+
 window.__toggleForceMobile = function(checked) {
   localStorage.setItem('hliq_force_mobile', checked ? '1' : '0')
-  if (checked) {
-    renderMobileView()
-  } else {
-    mobVHide()
-    renderAll()
-  }
+  if (checked) _goMobileShell()
+  else         _goDesktopShell()
 }
 
 window.matchMedia('(orientation: landscape)').addEventListener('change', e => {
   if (localStorage.getItem('hliq_force_mobile') === '1') return
-  if (e.matches) { mobVHide(); renderAll() }
-  else renderMobileView()
+  if (e.matches) _goDesktopShell({ settled: false })
+  else           _goMobileShell()
+  _reportRotationScale()
 })
+
+/**
+ * Did the rotation leave the page laid out at the OLD width?
+ *
+ * That is the state behind "the app like changes zoom between changes… the user needs to
+ * close the app": iOS keeps the previous layout width and scales it up to fill the screen,
+ * and an installed app cannot pinch back out. It is invisible from here as a "zoom" — what
+ * it looks like in numbers is a layout viewport much narrower than the screen it is on.
+ *
+ * Reported once per rotation, and only when it actually happens. It is here because the bug
+ * has now been guessed at once; the next time it should arrive with the numbers attached.
+ * Kind `viewport` in the telemetry (GET /api/errors?kind=viewport).
+ */
+let _rotReportAt = 0
+function _reportRotationScale() {
+  setTimeout(() => {
+    try {
+      const layout = window.innerWidth
+      const phys   = Math.max(screen.width || 0, screen.height || 0) >= Math.min(screen.width || 0, screen.height || 0)
+        ? (window.matchMedia('(orientation: landscape)').matches
+            ? Math.max(screen.width || 0, screen.height || 0)
+            : Math.min(screen.width || 0, screen.height || 0))
+        : layout
+      if (!layout || !phys) return
+      const ratio = phys / layout
+      // Under 1.15 is rounding, a scrollbar, or a browser's own chrome. Over it, the page is
+      // being blown up to fill a screen it was not laid out for.
+      if (ratio < 1.15 || Date.now() - _rotReportAt < 60_000) return
+      _rotReportAt = Date.now()
+      fetch('/api/error', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+        body: JSON.stringify({
+          kind: 'viewport',
+          message: `after rotate: laid out at ${layout}px on a ${phys}px screen (x${ratio.toFixed(2)})`,
+          stack: `inner=${window.innerWidth}x${window.innerHeight} screen=${screen.width}x${screen.height} ` +
+                 `dpr=${window.devicePixelRatio} vv=${window.visualViewport ? Math.round(window.visualViewport.width) + 'x' + Math.round(window.visualViewport.height) + '@' + window.visualViewport.scale : 'n/a'} ` +
+                 `doc=${document.documentElement.scrollWidth} shell=${document.body.classList.contains('is-mob-view') ? 'phone' : 'desktop'} ` +
+                 `standalone=${window.navigator.standalone === true ? 1 : 0}`,
+          url: location.pathname,
+          ua: navigator.userAgent,
+        }),
+      }).catch(() => {})
+    } catch {}
+  }, 1200)
+}
 
 // Initial ticker render
 updateWatchTicker()
