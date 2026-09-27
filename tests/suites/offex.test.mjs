@@ -177,7 +177,10 @@ console.log(nl + '-- prices that do not flicker --')
 
 console.log(nl + '-- the wiring --')
 {
-  const main  = fs.readFileSync('src/main.js', 'utf8')
+  // Newlines normalised: the assertions below look for them, and git hands a Windows
+  // checkout CRLF. So this passed on the CI runner (LF) and failed on the machine the code
+  // was written on — which is how it broke on a checkout that changed nothing at all.
+  const main  = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
   const ui    = fs.readFileSync('src/offexui.js', 'utf8')
   const serve = fs.readFileSync('serve-prod.js', 'utf8')
 
