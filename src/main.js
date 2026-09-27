@@ -226,6 +226,7 @@ import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fill
          playFill as _playFillSound, unlock as _unlockSound } from './fillsound.js'
 import { historyHtml, collapseFills } from './perfhistory.js'
 import { setMonthChartSource, collapse as _collapseMonthChart } from './monthchart.js'
+import { toDesktop as _shellToDesk, toMobile as _shellToMob, MOB_VIEWS as _MOB_VIEWS } from './shelltab.js'
 import { gzipToString, gunzipFromString } from './gzstore.js'
 import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
@@ -38802,20 +38803,44 @@ function renderOutcomePositions() {
 }
 
 // ─── UI MODE TOGGLES ──────────────────────────────────────────────────────────
+//
+// A shell switch carries the view across with it. The two shells name their screens mostly
+// alike but not entirely, and each used to show whatever IT was last on — which was Home,
+// every time, because the other shell had been driving. src/shelltab.js holds the map.
+//
+// Both directions, and both triggers: the Settings switch and turning the phone.
+function _goMobileShell() {
+  _mobVActiveTab = _shellToMob(_activeTab, n => _MOB_VIEWS.has(n))
+  renderMobileView()
+  // The phone's routers light the nav themselves; arriving this way skips them, and the
+  // screen was right while the tab strip underneath still pointed somewhere else.
+  document.querySelectorAll('.mob-v-tab').forEach(b =>
+    b.classList.toggle('active', b.id === 'mobVTab-' + _mobVActiveTab))
+  document.querySelectorAll('.mob-v-bottom-btn').forEach(b => b.classList.remove('active'))
+  const _bot = _mobVActiveTab === 'trades' ? 'mobVBotHistory' : 'mobVBotHome'
+  document.getElementById(_bot)?.classList.add('active')
+}
+function _goDesktopShell() {
+  const want = _shellToDesk(_mobVActiveTab, n => !!document.getElementById('tab-' + n))
+  mobVHide()
+  renderAll()
+  // After renderAll, which paints every desktop section — switchTab only reveals one of them
+  // and renders the lazy ones.
+  // window.switchTab, not the inner one: the wrapper is what loads the trade chart, refreshes
+  // the watch tab and fills the deposit previews when those tabs are the one being restored.
+  try { window.switchTab(want) } catch { window.switchTab('overview') }
+}
+
 window.__toggleForceMobile = function(checked) {
   localStorage.setItem('hliq_force_mobile', checked ? '1' : '0')
-  if (checked) {
-    renderMobileView()
-  } else {
-    mobVHide()
-    renderAll()
-  }
+  if (checked) _goMobileShell()
+  else         _goDesktopShell()
 }
 
 window.matchMedia('(orientation: landscape)').addEventListener('change', e => {
   if (localStorage.getItem('hliq_force_mobile') === '1') return
-  if (e.matches) { mobVHide(); renderAll() }
-  else renderMobileView()
+  if (e.matches) _goDesktopShell()
+  else           _goMobileShell()
 })
 
 // Initial ticker render
