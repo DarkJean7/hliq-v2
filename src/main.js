@@ -191,6 +191,7 @@ import {
   assetIdFor,
 } from './trading.js'
 import { createAlarm, ALARM_SOUNDS, DEFAULT_ALARM } from './alarm.js'
+import { PING as _SND_PING, setAudioSession as _setAudioSession } from './audiosession.js'
 import { computeEcosystem, oiConcentration, computeDexes, computeSpot, computeProtocol , sparkPath, windowSeries, feeSeries, pulseSeries, computeEcosystemAll } from './ecosystem.js'
 import {
   getDiscoveredWallets,
@@ -31977,6 +31978,7 @@ const _ALARM_SND = 'hliq_wake_alarm_sound'
 const _alarmSaved = (() => { try { return localStorage.getItem(_ALARM_SND) } catch { return null } })()
 const _alarm = createAlarm({
   vibrate: (p) => navigator.vibrate?.(p),
+  session: (t) => _setAudioSession(t),
   sound: ALARM_SOUNDS[_alarmSaved] ? _alarmSaved : DEFAULT_ALARM,
   onChange: () => { try { _renderAlarmRow(); _renderAlarmOverlay() } catch {} },
 })
@@ -32020,15 +32022,24 @@ window.__alarmToggle = async function(on) {
  * bottom of the screen, so everything above it moved: a press that started on the ✕ of an
  * alert landed somewhere else by the time it was released. The button is always here now.
  */
+let _alarmTestOnly = false
 window.__alarmTest = async function() {
   if (!_alarm.isArmed()) {
     const ok = await _alarm.arm()
     if (!ok) { _appAlert('Your browser would not let the alarm start its audio. Tap the toggle, and keep this tab open.'); return }
-    try { localStorage.setItem(_ALARM_KEY, '1') } catch {}
+    // Armed only to demonstrate it, and NOT written to storage. Hearing a thing once is not
+    // choosing it: Test used to persist the armed state, so a single press left the alarm on
+    // for good — re-arming on the first tap of every launch, holding the audio session, and
+    // stopping whatever the phone was playing. Reported as "the app acts like a sound player".
+    _alarmTestOnly = true
   }
   _alarm.fire()
 }
-window.__alarmStop = function() { _alarm.stop() }
+window.__alarmStop = function() {
+  _alarm.stop()
+  // Put the alarm back exactly as the Test found it — including giving the session back.
+  if (_alarmTestOnly) { _alarmTestOnly = false; _alarm.disarm() }
+}
 
 // Sound the alarm for a price alert, wherever the trigger came from.
 function _alarmOnPriceAlert() {
@@ -32071,6 +32082,7 @@ function _renderAlarmRow() {
     <div class="snd-opts pa-alarm-snds">${Object.entries(ALARM_SOUNDS).map(([k, v]) =>
       `<button type="button" class="snd-pill${k === _alarm.sound() ? ' on' : ''}" data-alarm-snd="${k}"
          onclick="window.__alarmSound('${k}')">${_T(v.label, v.label)}</button>`).join('')}</div>
+    <div class="pa-alarm-note">${_T('While armed it holds the phone’s audio, so other apps stay silent.', 'Mientras está activada retiene el audio del teléfono, así que otras apps quedan en silencio.')}</div>
     <button class="pa-alarm-test" onclick="window.__alarmTest()">${_T('Test the alarm', 'Probar la alarma')}</button>`
   hosts.forEach(el => { el.innerHTML = html })
 }
@@ -39189,6 +39201,12 @@ function _reportRotationScale() {
     } catch {}
   }, 1200)
 }
+
+// A fill chime and an alert are notification pings: they ride over whatever the phone is
+// playing instead of ending it. Declared BEFORE the first sound, because the session in
+// force when a sound starts is the one it keeps. The wake alarm asks for the other kind
+// when it arms, and gives it back when it disarms. src/audiosession.js.
+try { _setAudioSession(_SND_PING) } catch {}
 
 // An alarm armed before a reload cannot re-arm itself — the autoplay policy wants a gesture
 // — so it waits for the next tap. src/alarm.js, _alarmRestore.

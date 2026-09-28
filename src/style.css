@@ -8122,6 +8122,9 @@ html.has-bg-image .sheet-solid {
 /* The wake alarm's sound picker — the fill-sound pills again, because it is the same
    gesture: tap one, hear it, that is your choice. src/alarm.js */
 .pa-alarm-snds { margin-top: 10px; }
+/* Always on screen, armed or not. It is NOT in .pa-alarm-s because that line is inside
+   the row whose height must not change as the alarm arms — see _renderAlarmRow. */
+.pa-alarm-note { font-size: 11px; line-height: 1.45; color: var(--muted); margin-top: 9px; }
 .pa-alarm-snds .snd-pill { flex: 1 1 auto; justify-content: center; }
 
 /* The wake-alarm row must not change HEIGHT when it arms: this sheet is anchored to the

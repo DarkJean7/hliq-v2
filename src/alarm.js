@@ -16,6 +16,8 @@
 // Both the silence and the alarm are generated here as WAV data, so there is no binary
 // asset to ship, cache-bust, or have go missing at 4am.
 
+import { PING, ALARM, setAudioSession } from './audiosession.js'
+
 // ── WAV encoding ─────────────────────────────────────────────────────────────
 const SAMPLE_RATE = 8000        // plenty for a beep; keeps the data URI small
 
@@ -182,8 +184,12 @@ export function alarmSamples(kind = DEFAULT_ALARM, sampleRate = SAMPLE_RATE) {
  * Deliberately a factory over module state: the tests drive it with a stub element, and
  * the app has exactly one instance.
  */
-export function createAlarm({ makeAudio, vibrate, onChange, sound = DEFAULT_ALARM } = {}) {
+export function createAlarm({ makeAudio, vibrate, onChange, session, sound = DEFAULT_ALARM } = {}) {
   const mk = makeAudio ?? (() => new Audio())
+  // Taking the audio session is the loud, visible half of arming: other apps stop, and the
+  // lock screen starts calling us a music player. It belongs to the armed alarm and to
+  // nothing else, so it is claimed in arm() and given back in disarm(). src/audiosession.js.
+  const askSession = session ?? setAudioSession
   let el = null
   let armed = false
   let ringing = false
@@ -216,9 +222,13 @@ export function createAlarm({ makeAudio, vibrate, onChange, sound = DEFAULT_ALAR
     el.loop = true
     el.src = silentUrl
     el.volume = 0.02          // inaudible, but a real level: some platforms treat 0 as muted
+    // BEFORE play(): the session in force when a media element starts is the one it keeps,
+    // so asking afterwards would leave this loop filed as a ping and let iOS drop it.
+    askSession(ALARM)
     try {
       await el.play()
     } catch (e) {
+      askSession(PING)        // refused — do not sit on the session we did not get to use
       return false
     }
     armed = true
@@ -230,6 +240,7 @@ export function createAlarm({ makeAudio, vibrate, onChange, sound = DEFAULT_ALAR
     stop()
     armed = false
     if (el) { try { el.pause() } catch {} }
+    askSession(PING)
     notify()
   }
 
@@ -283,6 +294,9 @@ export function createAlarm({ makeAudio, vibrate, onChange, sound = DEFAULT_ALAR
    */
   function preview(next = kind) {
     const spec = ALARM_SOUNDS[next] ? next : kind
+    // Hearing one is not arming one: a preview rides over whatever is playing instead of
+    // ending it. An alarm already armed keeps the session it is holding.
+    if (!armed) askSession(PING)
     el = el ?? mk()
     el.loop = false
     el.src = url(encodeWav(alarmSamples(spec)))

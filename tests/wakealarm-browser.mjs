@@ -140,8 +140,9 @@ console.log(NL + '-- arming it, and ringing --')
   await p.click('#mobVContent [data-wake-alarm] .pin-toggle')
   const armed = await waitFor(p, 'it to arm', () => !!window.__alarmWasArmed?.(), null, 10000)
   ok('the toggle arms it', armed)
-  ok('and it says the screen can be off', /screen can be off/i.test(await p.evaluate(() =>
-    document.querySelector('#mobVContent [data-wake-alarm]')?.textContent ?? '')))
+  ok('and it says the screen can be off', await waitFor(p, 'the armed wording', () =>
+    /screen can be off/i.test(document.querySelector('#mobVContent [data-wake-alarm]')?.textContent ?? ''),
+    null, 10000), await p.evaluate(() => document.querySelector('#mobVContent [data-wake-alarm]')?.textContent ?? ''))
 
   // Ringing takes over the screen — at 4am the dismiss target should be the whole screen.
   await p.evaluate(() => window.__alarmTest())
@@ -170,6 +171,8 @@ console.log(NL + '-- and there is more than one sound to wake to --')
 {
   await p.evaluate(() => window.mobVTab('settings'))
   await waitFor(p, 'the alarm row', () => !!document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm'), null, 20000)
+  await waitFor(p, 'the sound pills', () =>
+    document.querySelectorAll('#mobVContent [data-wake-alarm] [data-alarm-snd]').length >= 5, null, 20000)
   const pills = await p.evaluate(() => [...document.querySelectorAll('#mobVContent [data-wake-alarm] [data-alarm-snd]')]
     .map(b => b.textContent.trim()))
   ok('several sounds are offered', pills.length >= 5, pills)
@@ -186,8 +189,8 @@ console.log(NL + '-- and there is more than one sound to wake to --')
   await boot()
   await p.evaluate(() => window.mobVTab('settings'))
   await waitFor(p, 'the alarm row again', () => !!document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm'), null, 20000)
-  ok('and the next night still has it', await p.evaluate(() =>
-    !!document.querySelector('#mobVContent [data-wake-alarm] [data-alarm-snd="klaxon"].on')))
+  ok('and the next night still has it', await waitFor(p, 'the chosen sound to come back', () =>
+    !!document.querySelector('#mobVContent [data-wake-alarm] [data-alarm-snd="klaxon"].on'), null, 20000))
 }
 
 console.log(NL + '-- an alert reads as the price it was set at --')
@@ -231,10 +234,18 @@ console.log(NL + '-- a reload does not silently lose it --')
   await boot()
   await p.evaluate(() => window.mobVTab('settings'))
   await waitFor(p, 'the row', () => !!document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm'), null, 20000)
-  const txt = await p.evaluate(() => document.querySelector('#mobVContent [data-wake-alarm]')?.textContent ?? '')
   // Arming needs a gesture, so a reload cannot do it alone — but it must SAY so rather than
   // leave someone believing an alarm is set.
-  ok('it remembers it was armed', /tap anywhere to arm it again|screen can be off/i.test(txt), txt)
+  //
+  // Waiting for the WORDS, not for the element. The mobile shell rebuilds this host on every
+  // render and refills it on the next tick (_mobVPaintHosted), so an element that exists one
+  // evaluate ago can be an empty div by the time a second evaluate reads its text — which is
+  // a gap in the reader, not in the app, and it failed about one run in three.
+  const said = await waitFor(p, 'the row to say what it remembers', () =>
+    /tap anywhere to arm it again|screen can be off/i.test(
+      document.querySelector('#mobVContent [data-wake-alarm]')?.textContent ?? ''), null, 20000)
+  ok('it remembers it was armed', said, await p.evaluate(() =>
+    document.querySelector('#mobVContent [data-wake-alarm]')?.textContent ?? ''))
   // And any tap brings it back.
   await p.click('#mobVContent')
   await p.waitForTimeout(400)
