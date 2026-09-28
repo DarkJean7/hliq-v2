@@ -5139,8 +5139,10 @@ function updatePositionPreview({ coin, coinSz, price, margin }) {
     return
   }
 
-  // Find existing open position for this coin
-  const existingPos = (state.perpState?.assetPositions ?? [])
+  // Find existing open position for this coin — on the account being traded from. The
+  // combined view aggregates every wallet into state.perpState, so an unscoped `.find` adds
+  // the order to whichever wallet happens to be first (see _orderEstimate).
+  const existingPos = _tradePositions()
     .find(p => p.position.coin === coin)?.position
 
   const curSzi    = parseFloat(existingPos?.szi           ?? 0)   // signed: + long, - short
@@ -5623,7 +5625,10 @@ const _TF_LOOKBACK = {
 
 function _buildChartAnnotations(coin) {
   const annotations = {}
-  const pos = (state.perpState?.assetPositions ?? [])
+  // The trade chart draws entry and liquidation for the account being traded from — the same
+  // reason _tradeOpenOrders scopes the TP/SL lines. Unscoped, the combined view drew another
+  // wallet's entry across your chart.
+  const pos = _tradePositions()
     .find(p => p.position.coin === coin)?.position
   if (!pos) return annotations
 
@@ -25189,7 +25194,12 @@ function _orderEstimate({ coin, side, coinSz, price, leverage, orderType }) {
   const fee     = sizeUSD * feeRate
   const funding = _mktCtxMap[coin]?.funding ?? null
 
-  const pos      = (state.perpState?.assetPositions ?? []).find(p => p.position.coin === coin)?.position
+  // _tradePositions, not state.perpState: in the combined view that array holds EVERY
+  // wallet's positions, and `.find` returns whichever came first. Reported with a 500,872
+  // PUMP short and a 500,000 add previewing as 875,000 — another wallet's 375,000 PUMP short
+  // was being treated as the position being added to. The margin gave it away too: $453.84
+  // is $259.25 for the order plus $194.59, which is the OTHER position's margin.
+  const pos      = _tradePositions().find(p => p.position.coin === coin)?.position
   const curSzi   = parseFloat(pos?.szi ?? 0)
   const curEntry = parseFloat(pos?.entryPx ?? 0)
   const curMargin= parseFloat(pos?.marginUsed ?? 0)
@@ -27997,7 +28007,11 @@ async function _devBotExecute(def, it) {
     return { ok: true }
   }
   if (it.type === 'close') {
-    const pos = (state.perpState?.assetPositions ?? []).find(p => p.position.coin === coin)
+    // Scoped to the account this bot trades from. The same unscoped lookup that mis-previewed
+    // a position would, here, close the SIZE of a different wallet's position on this one.
+    const pos = (state.perpState?.assetPositions ?? []).find(p => p.position.coin === coin &&
+      (!state.isAllAccounts || !acct ||
+        String(p.position?._acctAddr ?? '').toLowerCase() === String(acct).toLowerCase()))
     const szi = parseFloat(pos?.position?.szi ?? 0)
     if (!szi) return { ok: false, error: 'no position to close' }
     if (isPaper()) {
