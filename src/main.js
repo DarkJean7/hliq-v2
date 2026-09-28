@@ -20242,10 +20242,17 @@ function _mobVRenderContent(tick = false) {
           style="${_disCss}flex:1;min-width:80px;padding:8px;background:rgba(0,229,160,0.1);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Edit TP/SL</button>
         ${isIso ? `<button ${_dis}${_noKey} onclick="event.stopPropagation();window._mobVAdjustMargin('${esc(p.coin)}',${_acctArg})"
           style="${_disCss}flex:1;min-width:80px;padding:8px;background:rgba(99,179,237,0.12);border:none;border-radius:8px;color:#63b3ed;font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Margin</button>`
-        // Cross only: on an isolated position the button above is the one that helps, and a
-        // deposit to the account would not reach it. src/liqdeposit.js
+        // Cross only: on an isolated position the button above is the one that helps, because
+        // money in the account does not reach it. src/liqdeposit.js
+        //
+        // Deliberately NOT dressed like its neighbours. Edit TP/SL, Margin, Share and Close
+        // all DO something to the position; this one only works out what a deposit would do.
+        // Filled and blue, in the slot Margin occupies on an isolated card, it read as the
+        // same button under another name — "it basically replaced the margin button? since
+        // its almost the same". An outline, and a label that says preview, not action.
         : `<button onclick="event.stopPropagation();window.__liqDepOpen('${esc(p.coin)}',${_acctArg})"
-          style="flex:1;min-width:80px;padding:8px;background:rgba(99,179,237,0.12);border:none;border-radius:8px;color:#63b3ed;font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">+ Funds?</button>`}
+          title="Work out what a deposit would do to this liquidation price"
+          style="flex:1;min-width:80px;padding:8px;background:transparent;border:1px dashed var(--border2);border-radius:8px;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Liq. preview</button>`}
         <button onclick="event.stopPropagation();window.__openShareCard({coin:'${_jsStr(p.coin)}',title:'${_jsStr(_ocCoinLabel(p.coin))}',side:'${side}',lev:${levVal},roePct:${roe.toFixed(2)},entry:'$${fmtPrice(entryPx)}',mark:'$${fmtPrice(markPx)}'})"
           style="flex:1;min-width:80px;padding:8px;background:rgba(255,138,42,0.12);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">↗ Share</button>
         <button ${_dis}${_noKey} onclick="event.stopPropagation();window._mobVClosePos(this,'${esc(p.coin)}','${apiSide}','${p.szi}','${markPx}',${_acctArg})"

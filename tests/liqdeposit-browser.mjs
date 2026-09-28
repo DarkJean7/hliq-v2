@@ -110,11 +110,16 @@ console.log(NL + '-- it opens from the position it is about --')
   await waitFor(p, 'the position cards', () => /ETH/.test(document.getElementById('mobVContent')?.textContent ?? ''), null, 45000)
   // The card's own button, not a back door: a cross position offers it, an isolated one keeps
   // its Margin button instead, since that is the thing that helps there.
-  const btn = await p.evaluate(() => {
-    const b = [...document.querySelectorAll('#mobVContent button')].filter(x => /\+ Funds\?/.test(x.textContent))
-    return b.length
-  })
-  ok('the cross positions offer it', btn >= 2, btn)
+  const btns = await p.evaluate(() => [...document.querySelectorAll('#mobVContent button')]
+    .filter(x => /Liq\. preview/i.test(x.textContent))
+    .map(x => ({ bg: getComputedStyle(x).backgroundColor, style: getComputedStyle(x).borderStyle })))
+  ok('the cross positions offer it', btns.length >= 2, btns.length)
+  // And it does not dress as one of the actions beside it. Filled and blue, in the slot the
+  // Margin button occupies on an isolated card, it read as that button under another name.
+  ok('but it does not look like an action button',
+    btns.every(b => b.bg === 'rgba(0, 0, 0, 0)' && b.style === 'dashed'), btns)
+  ok("and the Margin button is still the isolated one's own", await p.evaluate(() =>
+    [...document.querySelectorAll('#mobVContent button')].some(x => x.textContent.trim() === 'Margin')))
   await p.evaluate(() => window.__liqDepOpen('ETH'))
   await waitFor(p, 'the sheet', () => document.getElementById('liqDepSheet')?.classList.contains('open'))
   const txt = await sheet()
