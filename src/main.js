@@ -20245,14 +20245,12 @@ function _mobVRenderContent(tick = false) {
         // Cross only: on an isolated position the button above is the one that helps, because
         // money in the account does not reach it. src/liqdeposit.js
         //
-        // Deliberately NOT dressed like its neighbours. Edit TP/SL, Margin, Share and Close
-        // all DO something to the position; this one only works out what a deposit would do.
-        // Filled and blue, in the slot Margin occupies on an isolated card, it read as the
-        // same button under another name — "it basically replaced the margin button? since
-        // its almost the same". An outline, and a label that says preview, not action.
+        // Blue like Margin, and in the same slot: the two never appear together, and they are
+        // the margin question in each of its forms — move margin into an isolated position, or
+        // see what account margin would do to a cross one. The label carries the difference.
         : `<button onclick="event.stopPropagation();window.__liqDepOpen('${esc(p.coin)}',${_acctArg})"
           title="Work out what a deposit would do to this liquidation price"
-          style="flex:1;min-width:80px;padding:8px;background:transparent;border:1px dashed var(--border2);border-radius:8px;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Liq. preview</button>`}
+          style="flex:1;min-width:80px;padding:8px;background:rgba(99,179,237,0.12);border:none;border-radius:8px;color:#63b3ed;font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Liq. preview</button>`}
         <button onclick="event.stopPropagation();window.__openShareCard({coin:'${_jsStr(p.coin)}',title:'${_jsStr(_ocCoinLabel(p.coin))}',side:'${side}',lev:${levVal},roePct:${roe.toFixed(2)},entry:'$${fmtPrice(entryPx)}',mark:'$${fmtPrice(markPx)}'})"
           style="flex:1;min-width:80px;padding:8px;background:rgba(255,138,42,0.12);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">↗ Share</button>
         <button ${_dis}${_noKey} onclick="event.stopPropagation();window._mobVClosePos(this,'${esc(p.coin)}','${apiSide}','${p.szi}','${markPx}',${_acctArg})"
@@ -38843,7 +38841,9 @@ function _liqDepSheetEl() {
   ov.id = 'liqDepSheet'
   ov.className = 'liqd-overlay'
   ov.addEventListener('click', (e) => { if (e.target === ov) window.__liqDepClose() })
-  ov.innerHTML = '<div class="liqd-card" id="liqDepCard"></div>'
+  // sheet-over: this opens OVER the app, and --panel drops to 55% alpha while a background
+  // photo is set. The class is what style.css keys the opaque stack off for the photo case.
+  ov.innerHTML = '<div class="liqd-card sheet-over" id="liqDepCard"></div>'
   document.body.appendChild(ov)
   return ov
 }

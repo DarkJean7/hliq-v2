@@ -112,18 +112,26 @@ console.log(NL + '-- it opens from the position it is about --')
   // its Margin button instead, since that is the thing that helps there.
   const btns = await p.evaluate(() => [...document.querySelectorAll('#mobVContent button')]
     .filter(x => /Liq\. preview/i.test(x.textContent))
-    .map(x => ({ bg: getComputedStyle(x).backgroundColor, style: getComputedStyle(x).borderStyle })))
+    .map(x => ({ bg: getComputedStyle(x).backgroundColor, color: getComputedStyle(x).color })))
   ok('the cross positions offer it', btns.length >= 2, btns.length)
-  // And it does not dress as one of the actions beside it. Filled and blue, in the slot the
-  // Margin button occupies on an isolated card, it read as that button under another name.
-  ok('but it does not look like an action button',
-    btns.every(b => b.bg === 'rgba(0, 0, 0, 0)' && b.style === 'dashed'), btns)
+  // Blue like Margin, which is the point: the two never appear on the same card, and they are
+  // the margin question in each of its forms. The label is what tells them apart.
+  ok('dressed like the Margin button it stands in for',
+    btns.every(b => b.bg === 'rgba(99, 179, 237, 0.12)'), btns)
   ok("and the Margin button is still the isolated one's own", await p.evaluate(() =>
     [...document.querySelectorAll('#mobVContent button')].some(x => x.textContent.trim() === 'Margin')))
   await p.evaluate(() => window.__liqDepOpen('ETH'))
   await waitFor(p, 'the sheet', () => document.getElementById('liqDepSheet')?.classList.contains('open'))
   const txt = await sheet()
   ok('the sheet opens', /What would a deposit do/i.test(txt), txt.slice(0, 80))
+  // Opaque: it opens OVER the position cards, and --panel carries alpha under a backdrop
+  // photo. A panel you can read the app through is not a panel.
+  const solid = await p.evaluate(() => {
+    const cs = getComputedStyle(document.getElementById('liqDepCard'))
+    const alpha = (cs.backgroundColor.match(/rgba?\(([^)]+)\)/)?.[1] ?? '').split(',')[3]
+    return { bg: cs.backgroundColor, img: cs.backgroundImage.slice(0, 40), alpha: alpha ? parseFloat(alpha) : 1 }
+  })
+  ok('and it is not see-through', solid.alpha === 1 && /gradient/.test(solid.img), solid)
   ok('and counts the positions a deposit would reach', /2 cross positions/.test(txt), txt.slice(0, 120))
 }
 

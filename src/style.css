@@ -7979,9 +7979,15 @@ html.has-bg-image #mobileView.mob-in-trade .mob-v-content {
 .liqd-overlay.open { display: flex; }
 .liqd-card {
   width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto;
-  background: var(--panel); border: 1px solid var(--rule);
+  /* Opaque, like the other sheets: --panel carries alpha under a backdrop photo, and a panel
+     you can read the position cards through is not a panel. The stack puts --panel's own tint
+     over a solid --bg; the photo case is handled by `sheet-over` in the popover rules below. */
+  background: linear-gradient(var(--panel), var(--panel)), var(--bg);
+  border: 1px solid var(--rule);
   border-radius: 18px 18px 0 0; padding: 16px 16px 22px;
 }
+/* The rows sit on that opaque ground, so they only need to be solid against IT. */
+.liqd-row { background: linear-gradient(var(--panel-2), var(--panel-2)), var(--bg); }
 @media (min-width: 720px) {
   .liqd-overlay { align-items: center; }
   .liqd-card { border-radius: 16px; padding: 18px 20px 22px; }
