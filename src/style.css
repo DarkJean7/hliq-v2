@@ -8123,3 +8123,9 @@ html.has-bg-image .sheet-solid {
    gesture: tap one, hear it, that is your choice. src/alarm.js */
 .pa-alarm-snds { margin-top: 10px; }
 .pa-alarm-snds .snd-pill { flex: 1 1 auto; justify-content: center; }
+
+/* The wake-alarm row must not change HEIGHT when it arms: this sheet is anchored to the
+   bottom of the screen, so anything that grows pushes everything above it up — and a press
+   that started on a control lands somewhere else by the time it is released. Two lines of
+   room for the status line, whichever of the three it is showing. */
+.pa-alarm-s { min-height: 2.7em; }

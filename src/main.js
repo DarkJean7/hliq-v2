@@ -32013,7 +32013,21 @@ window.__alarmToggle = async function(on) {
   _renderAlarmRow()
 }
 
-window.__alarmTest = function() { if (!_alarm.fire()) _appAlert('Arm the alarm first.') }
+/**
+ * Hear the whole thing — the loop, the vibration, the takeover — and arm it on the way if it
+ * is not armed yet. It used to refuse until armed and was rendered only when armed, which
+ * meant the row changed HEIGHT the moment the alarm came on. This sheet is anchored to the
+ * bottom of the screen, so everything above it moved: a press that started on the ✕ of an
+ * alert landed somewhere else by the time it was released. The button is always here now.
+ */
+window.__alarmTest = async function() {
+  if (!_alarm.isArmed()) {
+    const ok = await _alarm.arm()
+    if (!ok) { _appAlert('Your browser would not let the alarm start its audio. Tap the toggle, and keep this tab open.'); return }
+    try { localStorage.setItem(_ALARM_KEY, '1') } catch {}
+  }
+  _alarm.fire()
+}
 window.__alarmStop = function() { _alarm.stop() }
 
 // Sound the alarm for a price alert, wherever the trigger came from.
@@ -32057,7 +32071,7 @@ function _renderAlarmRow() {
     <div class="snd-opts pa-alarm-snds">${Object.entries(ALARM_SOUNDS).map(([k, v]) =>
       `<button type="button" class="snd-pill${k === _alarm.sound() ? ' on' : ''}" data-alarm-snd="${k}"
          onclick="window.__alarmSound('${k}')">${_T(v.label, v.label)}</button>`).join('')}</div>
-    ${on ? `<button class="pa-alarm-test" onclick="window.__alarmTest()">${_T('Test the alarm', 'Probar la alarma')}</button>` : ''}`
+    <button class="pa-alarm-test" onclick="window.__alarmTest()">${_T('Test the alarm', 'Probar la alarma')}</button>`
   hosts.forEach(el => { el.innerHTML = html })
 }
 

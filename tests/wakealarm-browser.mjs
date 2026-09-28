@@ -52,11 +52,7 @@ const HL = {
   metaAndAssetCtxs: [{ universe: [] }, []], spotMetaAndAssetCtxs: [{ tokens: [], universe: [] }, []],
 }
 
-// Media without a gesture: the alarm is audio, and whether Chromium's autoplay policy lets a
-// headless runner start it is not what is under test here — arming, choosing a sound, ringing
-// and re-arming are. Without this the suite passed locally and failed on the runner, where a
-// refused play() disarmed the alarm halfway through and the last check had nothing to re-arm.
-const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] })
+const browser = await chromium.launch()
 // Notifications deliberately NOT granted: the alarm is audio and must not depend on them.
 const ctx = await browser.newContext({ ...devices['iPhone 14 Pro'] })
 try { await ctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
@@ -67,6 +63,29 @@ await ctx.route(HL_HOST, (route) => {
 })
 await ctx.route('**/api/**', (route) => route.fulfill({ status: 503, body: 'offline in test' }))
 await ctx.route('**/offexprice**', (route) => route.fulfill({ status: 200, json: { prices: {} } }))
+
+/**
+ * The alarm's own audio element, stubbed for the whole page.
+ *
+ * Whether a headless runner lets media start is the browser's policy, not this app's
+ * behaviour, and depending on it made the suite pass here and fail on CI: one refused play()
+ * disarms the alarm by design, so the last check had nothing left to re-arm. Passing
+ * --autoplay-policy did not take on the runner either.
+ *
+ * What IS under test is the page: that the toggle arms, that a sound can be chosen, that
+ * ringing takes the screen, that a reload's next tap brings it back. The real element is
+ * driven against a stub in tests/suites/alarm.test.mjs, which is where it belongs.
+ */
+await ctx.addInitScript(() => {
+  class StubAudio {
+    constructor() { this.src = ''; this.loop = false; this.volume = 0; this.plays = 0 }
+    play() { this.plays++; return Promise.resolve() }
+    pause() {}
+    addEventListener() {}
+    removeEventListener() {}
+  }
+  window.Audio = StubAudio
+})
 
 const p = await ctx.newPage()
 const errs = []
@@ -130,11 +149,21 @@ console.log(NL + '-- arming it, and ringing --')
   ok('it rings with a full-screen dismiss', ringing)
   const ov = await p.evaluate(() => document.getElementById('alarmOverlay')?.textContent ?? '')
   ok('saying what woke you', /price alert/i.test(ov), ov)
+  // The row must not change HEIGHT as it arms: this sheet is bottom-anchored, so anything
+  // that grows pushes what is above it upward — and a press that began on a control lands
+  // somewhere else by the time it is released. It cost a working ✕ in the alert list.
+  const h1 = await p.evaluate(() => document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm')?.getBoundingClientRect().height ?? 0)
   await p.click('.alarm-ov-btn')
   await p.waitForTimeout(300)
   ok('and it stops when dismissed', !(await p.evaluate(() => !!document.getElementById('alarmOverlay'))))
   // Stopping one alert must not disarm the night's alarm.
   ok('but stays armed for the next one', await p.evaluate(() => !!window.__alarmWasArmed?.()))
+  await p.evaluate(() => window.__alarmToggle(false))
+  await p.waitForTimeout(300)
+  const h2 = await p.evaluate(() => document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm')?.getBoundingClientRect().height ?? 0)
+  ok('and the row is the same height armed or not', h1 > 0 && Math.abs(h1 - h2) < 2, { h1, h2 })
+  await p.click('#mobVContent [data-wake-alarm] .pin-toggle')
+  await p.waitForTimeout(300)
 }
 
 console.log(NL + '-- and there is more than one sound to wake to --')
