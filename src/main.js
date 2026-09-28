@@ -31722,6 +31722,27 @@ window.__resetPriceAlert = function(id) {
   _renderPriceAlerts()
 }
 
+/**
+ * An alert's price, written the way the market writes it.
+ *
+ * Reported: an alert set at $0.00543 showing as "$0.01" in Settings — "idk if it triggers at
+ * that price or 0.0054 like its really supposed". It triggers at what was stored; fmtUSD
+ * rounds to cents, which is meaningless for a sub-cent coin. fmtPrice keeps the digits that
+ * distinguish one price from another.
+ *
+ * An outcome market's alert is stored in 0..1 like its mid, and read in cents like its ticket.
+ */
+function _paPriceStr(a) {
+  return _lbIsOutcome(a.coin)
+    ? (parseFloat(a.price) * 100).toFixed(1) + '¢'
+    : '$' + fmtPrice(a.price)
+}
+
+/** The alerts set on one coin, newest last — what the quick sheet shows above its form. */
+function _paForCoin(coin) {
+  return _paLoad().filter(a => a.coin === coin)
+}
+
 function _renderPriceAlerts() {
   try { _renderAlarmRow() } catch {}
   const el = document.getElementById('priceAlertsList')
@@ -31732,7 +31753,7 @@ function _renderPriceAlerts() {
     <div class="pa-row${a.fired ? ' pa-row-fired' : ''}">
       <span class="pa-coin">${esc(a.coin)}</span>
       <span class="pa-dir ${a.dir === 'above' ? 'pos' : 'neg'}">${a.dir === 'above' ? '↑' : '↓'}</span>
-      <span class="pa-price">$${fmtUSD(a.price)}</span>
+      <span class="pa-price">${_paPriceStr(a)}</span>
       ${a.fired ? '<span class="pa-tag">Triggered</span>' : '<span class="pa-tag-placeholder"></span>'}
       ${a.fired ? `<button class="lb-edit" onclick="window.__resetPriceAlert('${a.id}')" title="Reset">↺</button>` : ''}
       <button class="lb-remove" onclick="window.__removePriceAlert('${a.id}')">✕</button>
@@ -31755,8 +31776,10 @@ function _checkPriceAlerts(allMids) {
     if (!hit) continue
     a.fired = true
     changed = true
-    if (canNotify) showNotif(`Price Alert: ${a.coin} ${a.dir === 'above' ? '↑' : '↓'} $${fmtUSD(a.price)}`, {
-      body: `${a.coin} is now at $${fmtUSD(mid)}`,
+    if (canNotify) showNotif(`Price Alert: ${a.coin} ${a.dir === 'above' ? '↑' : '↓'} ${_paPriceStr(a)}`, {
+      // Same formatter on both halves: a notification reading "PUMP ↑ $0.01 — PUMP is now at
+      // $0.01" says nothing about a coin that trades at four zeros.
+      body: `${a.coin} is now at ${_paPriceStr({ coin: a.coin, price: mid })}`,
       tag:  'hliq-price-' + a.id,
     })
     _alarmOnPriceAlert()
@@ -31849,12 +31872,13 @@ window.__quickPriceAlert = function(coin, px) {
   wrap.id = 'quickAlertModal'
   wrap.innerHTML = `
     <div onclick="window.__qaClose()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100060"></div>
-    <div id="qaSheet" class="sheet-over" style="position:fixed;bottom:0;left:0;right:0;z-index:100061;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-width:520px;margin:0 auto;transition:transform .18s ease-out;will-change:transform">
+    <div id="qaSheet" class="sheet-over sheet-solid" style="position:fixed;bottom:0;left:0;right:0;z-index:100061;background:var(--panel-2);border-radius:20px 20px 0 0;padding:0 0 env(safe-area-inset-bottom);max-width:520px;margin:0 auto;transition:transform .18s ease-out;will-change:transform">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px 12px;border-bottom:1px solid var(--border)">
         <span style="font-size:16px;font-weight:700">🔔 ${_T('Price alert', 'Alerta de precio')} · <span class="notranslate">${esc(label)}</span></span>
         <button onclick="window.__qaClose()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:0 4px">×</button>
       </div>
       <div style="padding:16px 18px 22px">
+        <div id="qaExisting">${_qaExistingHtml(coin)}</div>
         <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${_T('Notify me when the price is', 'Avísame cuando el precio esté')}:</div>
         <div id="qaDir" style="display:flex;gap:8px;margin-bottom:14px">
           <button data-dir="above" onclick="window.__qaSetDir('above')" class="qa-dir-btn" style="flex:1;padding:11px;border-radius:10px;border:1px solid var(--accent);background:rgba(0,229,160,.14);color:var(--accent);font-weight:700;font-size:13px;cursor:pointer">↑ ${_T('Above', 'Por encima')}</button>
@@ -31883,6 +31907,37 @@ window.__quickPriceAlert = function(coin, px) {
   setTimeout(() => { try { document.getElementById('qaPrice')?.focus() } catch {} }, 60)
 }
 
+/**
+ * The alerts already set on this coin, above the form that sets another.
+ *
+ * Reported: "i created an alert but when trying to set a new one it does not tell me the ones
+ * that where already set." Without it the sheet cannot tell you whether you are adding a
+ * second alert or repeating the one you set this morning — and the list is in desktop
+ * Settings, which is not where you are standing.
+ */
+function _qaExistingHtml(coin) {
+  const list = _paForCoin(coin)
+  if (!list.length) return ''
+  return `<div class="qa-existing">
+    <div class="qa-existing-t">${_T('Already set on this market', 'Ya configuradas en este mercado')}</div>
+    ${list.map(a => `<div class="qa-existing-row">
+      <span class="qa-existing-dir ${a.dir === 'above' ? 'pos' : 'neg'}">${a.dir === 'above' ? '↑' : '↓'}</span>
+      <span class="qa-existing-px">${_paPriceStr(a)}</span>
+      ${a.fired ? `<span class="qa-existing-tag">${_T('Triggered', 'Disparada')}</span>` : ''}
+      <button class="qa-existing-x" onclick="window.__qaRemove('${a.id}','${_jsStr(coin)}')"
+        title="${_T('Remove', 'Eliminar')}">&#10005;</button>
+    </div>`).join('')}
+  </div>`
+}
+
+/** Remove one from inside the sheet, and repaint the list in place. */
+window.__qaRemove = function(id, coin) {
+  _paSave(_paLoad().filter(a => a.id !== id))
+  const host = document.getElementById('qaExisting')
+  if (host) host.innerHTML = _qaExistingHtml(coin)
+  try { _renderPriceAlerts() } catch {}
+}
+
 window.__qaSetDir = function(dir) {
   window._qaDir = dir
   document.querySelectorAll('#qaDir .qa-dir-btn').forEach(b => {
@@ -31903,7 +31958,7 @@ window.__qaSave = function(coin, isOc) {
   _paSave(alerts)
   if (notifPermission() !== 'granted') { try { requestNotifications() } catch {} }
   window.__qaClose()
-  _paperToast('🔔 ' + _T('Alert set', 'Alerta creada'))
+  _paperToast('🔔 ' + _T('Alert set', 'Alerta creada') + ' · ' + _paPriceStr({ coin, price }))
   try { _renderPriceAlerts() } catch {}
 }
 
@@ -38913,7 +38968,9 @@ function _liqDepSheetEl() {
   ov.addEventListener('click', (e) => { if (e.target === ov) window.__liqDepClose() })
   // sheet-over: this opens OVER the app, and --panel drops to 55% alpha while a background
   // photo is set. The class is what style.css keys the opaque stack off for the photo case.
-  ov.innerHTML = '<div class="liqd-card sheet-over" id="liqDepCard"></div>'
+  // sheet-solid too: the same request was made of this panel — numbers to read, not a
+  // window onto the wallpaper. --sheet-tint picks the card's own ground. See style.css.
+  ov.innerHTML = '<div class="liqd-card sheet-over sheet-solid" id="liqDepCard" style="--sheet-tint:var(--panel)"></div>'
   document.body.appendChild(ov)
   return ov
 }

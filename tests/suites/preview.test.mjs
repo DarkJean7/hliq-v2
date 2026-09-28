@@ -317,10 +317,13 @@ console.log('\n── the sheet does not show the app through itself ──')
   const css = fs.readFileSync('src/style.css', 'utf8')
   // --panel-2 is translucent while a backdrop photo is set, which is right for a card in the
   // page and wrong for a sheet that opens over one: the bot list read through the preview.
-  t('bottom sheets are tagged as over-content', (cli.match(/class="sheet-over"/g) ?? []).length >= 4)
+  // `sheet-over` may now be followed by `sheet-solid` — the opt-out for a sheet whose
+  // numbers have to be read rather than glanced at — so the class is matched inside the
+  // attribute rather than as the whole of it.
+  t('bottom sheets are tagged as over-content', (cli.match(/class="sheet-over[ "]/g) ?? []).length >= 4)
   t('every fixed bottom sheet carries the class',
     (cli.match(/position:fixed;bottom:0;left:0;right:0;z-index:\d+;background:var\(--panel-2\)/g) ?? []).length ===
-    (cli.match(/sheet-over"[^>]*style="position:fixed;bottom:0/g) ?? []).length)
+    (cli.match(/sheet-over[^"]*"[^>]*style="position:fixed;bottom:0/g) ?? []).length)
   t('and the class makes them opaque over a photo',
     css.includes('html.has-bg-image .sheet-over') && css.includes('background-color: var(--bg) !important'))
   // The rule now opens with a selector LIST — the search popovers joined the same stack — so
@@ -328,6 +331,10 @@ console.log('\n── the sheet does not show the app through itself ──')
   t('while still showing the wallpaper',
     /html\.has-bg-image \.coin-dropdown \{[\s\S]{0,400}var\(--app-bg-image\)/.test(css))
   t('the reason is recorded', css.includes('opens OVER the app'))
+  // And the opt-out for the ones that must not: same ground, no picture.
+  t('a sheet can ask to be solid instead',
+    css.includes('.sheet-solid,') && css.includes('html.has-bg-image .sheet-solid {'))
+  t('which the price-alert sheet does', /id="qaSheet" class="sheet-over sheet-solid"/.test(cli))
 }
 
 console.log('\n── a short grid is the long grid mirrored ──')

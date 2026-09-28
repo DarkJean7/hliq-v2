@@ -29,6 +29,9 @@ const SOLID_ON_PURPOSE = {
   '.alarm-ov':     'a 4am liquidation alarm is not the place for a wallpaper',
   '.pin-modal-input': 'an input, not a container — it fills with --bg by design',
   '.oc-card-close':   'a button, not a container — a see-through close control is a bad target',
+  // Asked for twice, about two different panels: "make the panel non-transparent". A menu
+  // can show the wallpaper through it; a panel of prices you are deciding on cannot.
+  '.sheet-solid':     'the opt-out: a sheet of numbers to read, not a window onto the photo',
 }
 
 /** The declaration block whose selector list starts at `marker`, selectors included. */

@@ -8076,3 +8076,45 @@ html.has-bg-image #mobileView.mob-in-trade .mob-v-content {
 .liqd-cost-amt { font-family: var(--font-mono); font-size: 13px; font-weight: 800; color: var(--accent); }
 .liqd-costs-none { margin-top: 12px; font-size: 11.5px; color: var(--muted); line-height: 1.55; }
 .liqd-foot { margin-top: 14px; font-size: 10.5px; color: var(--fg-3); line-height: 1.55; }
+
+/* ─── A SHEET YOU HAVE TO READ ────────────────────────────────────────────────
+   `sheet-over` keeps the backdrop photo visible through a panel, dimmed, so an
+   overlay looks like the rest of the app. That is right for a menu and wrong for
+   a panel of prices: "make the panel non-transparent", twice. This makes one
+   solid: the opt-out: a sheet of numbers to read, not a window onto the photo.
+   The panel tint over an opaque ground, no picture behind the figures. Tint per
+   sheet via --sheet-tint; --panel-2 unless the sheet says otherwise. */
+.sheet-solid,
+html.has-bg-image .sheet-solid {
+  background-color: var(--bg) !important;
+  background-image:
+    linear-gradient(var(--sheet-tint, var(--panel-2)), var(--sheet-tint, var(--panel-2))) !important;
+  background-size: auto !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-attachment: scroll !important;
+}
+/* The alerts already set on a market, above the form that adds another. */
+.qa-existing { margin-bottom: 14px; }
+.qa-existing-t {
+  font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 7px;
+}
+.qa-existing-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 10px; margin-bottom: 6px;
+  border: 1px solid var(--rule); border-radius: 10px; background: var(--panel-1, var(--bg2));
+}
+.qa-existing-dir { font-size: 13px; font-weight: 800; }
+.qa-existing-dir.pos { color: var(--green); }
+.qa-existing-dir.neg { color: var(--red); }
+.qa-existing-px { font-family: var(--font-mono); font-size: 13px; font-weight: 700; flex: 1; }
+.qa-existing-tag {
+  font-size: 9px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--muted); background: var(--bg3); border-radius: 5px; padding: 2px 6px;
+}
+.qa-existing-x {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 12px; padding: 2px 4px; line-height: 1;
+}
+.qa-existing-x:hover { color: var(--red); }

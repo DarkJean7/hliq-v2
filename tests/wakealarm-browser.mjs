@@ -133,6 +133,42 @@ console.log(NL + '-- arming it, and ringing --')
   ok('but stays armed for the next one', await p.evaluate(() => !!window.__alarmWasArmed?.()))
 }
 
+console.log(NL + '-- an alert reads as the price it was set at --')
+{
+  // Reported: an alert set at $0.00543 shown as "$0.01" — "idk if it triggers at that price
+  // or 0.0054 like its really supposed". It triggers at what was stored; fmtUSD rounds to
+  // cents, which erases a sub-cent coin entirely.
+  await p.evaluate(() => {
+    localStorage.setItem('hliq_price_alerts', JSON.stringify([
+      { id: 'a1', coin: 'PUMP', dir: 'above', price: 0.00543, fired: false },
+    ]))
+  })
+  await p.evaluate(() => window.__quickPriceAlert('PUMP', 0.005))
+  await waitFor(p, 'the alert sheet', () => !!document.getElementById('qaSheet'))
+  const existing = await p.evaluate(() => document.getElementById('qaExisting')?.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+  // And the other half of the report: "when trying to set a new one it does not tell me the
+  // ones that where already set".
+  ok('the sheet lists what is already set on that market', /already set/i.test(existing), existing)
+  ok('at the price it was set at, not rounded to a cent', /0\.00543/.test(existing), existing)
+  ok('and not "$0.01"', !/\$0\.01/.test(existing), existing)
+  ok('with the direction it was set in', /↑/.test(existing), existing)
+
+  // Solid: numbers to read, not a window onto the wallpaper.
+  const bg = await p.evaluate(() => {
+    const cs = getComputedStyle(document.getElementById('qaSheet'))
+    return { color: cs.backgroundColor, image: cs.backgroundImage }
+  })
+  ok('the sheet is not see-through', !/rgba\([^)]+,\s*0(\.\d+)?\)/.test(bg.color), bg.color)
+  ok('and carries no wallpaper behind it', !/url\(/.test(bg.image), bg.image.slice(0, 60))
+
+  // Removing one from the sheet takes it off the list in place.
+  await p.click('#qaExisting .qa-existing-x')
+  await p.waitForTimeout(250)
+  const after = await p.evaluate(() => document.getElementById('qaExisting')?.textContent?.trim() ?? '')
+  ok('and one can be removed from here', after === '', after)
+  await p.evaluate(() => window.__qaClose())
+}
+
 console.log(NL + '-- a reload does not silently lose it --')
 {
   await boot()
