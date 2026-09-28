@@ -149,20 +149,11 @@ console.log(NL + '-- a reload does not silently lose it --')
   ok('and a tap re-arms it', back)
 }
 
-console.log(NL + '-- the alarm does not depend on notifications --')
-{
-  // The notification needs permission; the alarm is audio the page is already playing. This
-  // check used to return before either could happen.
-  const src = await (await fetch(BASE + 'src/main.js')).text().catch(() => '')
-  if (src) {
-    ok('the price check no longer returns when notifications are off', !/function _checkPriceAlerts\(allMids\) \{\s*\n\s*if \(notifPermission\(\) !== 'granted'\) return/.test(src))
-    ok('it only skips the notification itself', /const canNotify = notifPermission\(\) === 'granted'/.test(src) && /if \(canNotify\) showNotif\(/.test(src))
-  } else {
-    // Against a built bundle the source is not served; the behaviour is covered by the unit
-    // suite, which reads the file from disk.
-    ok('source not served from a build — covered by tests/suites/alarm.test.mjs', true)
-  }
-}
+// That the alarm no longer depends on notification permission is asserted in
+// tests/suites/alarm.test.mjs, which reads main.js from disk. This file used to fetch
+// /src/main.js and check it here — which works against a dev server and silently reads the
+// SPA's index.html against a build, where CI serves dist/. It failed there, on the one thing
+// that is not a behaviour of the page at all.
 
 if (errs.length) { fail++; console.log('  FAIL page errors → ' + JSON.stringify(errs.slice(0, 4))) }
 console.log(NL + `${pass} passed, ${fail} failed`)
