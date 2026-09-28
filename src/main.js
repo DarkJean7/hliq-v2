@@ -190,7 +190,7 @@ import {
   invalidateApprovedAgents,
   assetIdFor,
 } from './trading.js'
-import { createAlarm } from './alarm.js'
+import { createAlarm, ALARM_SOUNDS, DEFAULT_ALARM } from './alarm.js'
 import { computeEcosystem, oiConcentration, computeDexes, computeSpot, computeProtocol , sparkPath, windowSeries, feeSeries, pulseSeries, computeEcosystemAll } from './ecosystem.js'
 import {
   getDiscoveredWallets,
@@ -20930,7 +20930,7 @@ function _mobVRenderContent(tick = false) {
             <div style="display:flex;align-items:center;gap:8px;width:100%;font-size:13px">
               <span style="font-weight:600">${esc(a.coin)}</span>
               <span class="${a.dir === 'above' ? 'pos' : 'neg'}">${a.dir === 'above' ? '↑' : '↓'}</span>
-              <span style="font-family:monospace">$${fmtUSD(a.price)}</span>
+              <span style="font-family:monospace">${_paPriceStr(a)}</span>
               ${a.fired ? `<span style="font-size:10px;color:var(--muted);border:1px solid var(--border2);border-radius:3px;padding:1px 4px">Triggered</span>` : ''}
               <span style="flex:1"></span>
               ${a.fired ? `<button class="mob-v-setting-btn" style="padding:2px 7px;font-size:11px" onclick="window.__resetPriceAlert('${a.id}');_mobVRenderContent()">↺</button>` : ''}
@@ -31973,10 +31973,25 @@ function _urlBase64ToUint8Array(b64) {
 // ─── WAKE ALARM ───────────────────────────────────────────────────────────────
 // See src/alarm.js for why this is a media element looping silence rather than a Wake Lock.
 const _ALARM_KEY = 'hliq_wake_alarm'
+const _ALARM_SND = 'hliq_wake_alarm_sound'
+const _alarmSaved = (() => { try { return localStorage.getItem(_ALARM_SND) } catch { return null } })()
 const _alarm = createAlarm({
   vibrate: (p) => navigator.vibrate?.(p),
+  sound: ALARM_SOUNDS[_alarmSaved] ? _alarmSaved : DEFAULT_ALARM,
   onChange: () => { try { _renderAlarmRow(); _renderAlarmOverlay() } catch {} },
 })
+
+/**
+ * Pick a sound and hear it at once — picking one you have never heard is guessing, and the
+ * old Test could only be reached after arming. The tap that chooses is also the gesture the
+ * autoplay policy wants, so the preview always has permission to play.
+ */
+window.__alarmSound = function (kind) {
+  const set = _alarm.setSound(kind)
+  try { localStorage.setItem(_ALARM_SND, set) } catch {}
+  _alarm.preview(set)
+  _renderAlarmRow()
+}
 
 window.__alarmToggle = async function(on) {
   if (!on) {
@@ -32039,7 +32054,10 @@ function _renderAlarmRow() {
         <span class="pin-toggle-slider"></span>
       </label>
     </div>
-    ${on ? `<button class="pa-alarm-test" onclick="window.__alarmTest()">${_T('Test the sound', 'Probar el sonido')}</button>` : ''}`
+    <div class="snd-opts pa-alarm-snds">${Object.entries(ALARM_SOUNDS).map(([k, v]) =>
+      `<button type="button" class="snd-pill${k === _alarm.sound() ? ' on' : ''}" data-alarm-snd="${k}"
+         onclick="window.__alarmSound('${k}')">${_T(v.label, v.label)}</button>`).join('')}</div>
+    ${on ? `<button class="pa-alarm-test" onclick="window.__alarmTest()">${_T('Test the alarm', 'Probar la alarma')}</button>` : ''}`
   hosts.forEach(el => { el.innerHTML = html })
 }
 

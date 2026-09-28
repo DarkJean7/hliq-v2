@@ -8118,3 +8118,8 @@ html.has-bg-image .sheet-solid {
   font-size: 12px; padding: 2px 4px; line-height: 1;
 }
 .qa-existing-x:hover { color: var(--red); }
+
+/* The wake alarm's sound picker — the fill-sound pills again, because it is the same
+   gesture: tap one, hear it, that is your choice. src/alarm.js */
+.pa-alarm-snds { margin-top: 10px; }
+.pa-alarm-snds .snd-pill { flex: 1 1 auto; justify-content: center; }

@@ -133,6 +133,30 @@ console.log(NL + '-- arming it, and ringing --')
   ok('but stays armed for the next one', await p.evaluate(() => !!window.__alarmWasArmed?.()))
 }
 
+console.log(NL + '-- and there is more than one sound to wake to --')
+{
+  await p.evaluate(() => window.mobVTab('settings'))
+  await waitFor(p, 'the alarm row', () => !!document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm'), null, 20000)
+  const pills = await p.evaluate(() => [...document.querySelectorAll('#mobVContent [data-wake-alarm] [data-alarm-snd]')]
+    .map(b => b.textContent.trim()))
+  ok('several sounds are offered', pills.length >= 5, pills)
+  ok('named rather than numbered', pills.every(x => /^[A-Za-z]/.test(x)), pills)
+  const before = await p.evaluate(() => localStorage.getItem('hliq_wake_alarm_sound'))
+  // Tapping one picks it AND plays it — choosing an alarm you have never heard is guessing.
+  await p.click('#mobVContent [data-wake-alarm] [data-alarm-snd="klaxon"]')
+  await p.waitForTimeout(400)
+  const after = await p.evaluate(() => localStorage.getItem('hliq_wake_alarm_sound'))
+  ok('tapping one chooses it', after === 'klaxon', { before, after })
+  ok('and the choice is shown', await p.evaluate(() =>
+    !!document.querySelector('#mobVContent [data-wake-alarm] [data-alarm-snd="klaxon"].on')))
+  // It survives a reload, which is the only way an alarm set at bedtime is any use.
+  await boot()
+  await p.evaluate(() => window.mobVTab('settings'))
+  await waitFor(p, 'the alarm row again', () => !!document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm'), null, 20000)
+  ok('and the next night still has it', await p.evaluate(() =>
+    !!document.querySelector('#mobVContent [data-wake-alarm] [data-alarm-snd="klaxon"].on')))
+}
+
 console.log(NL + '-- an alert reads as the price it was set at --')
 {
   // Reported: an alert set at $0.00543 shown as "$0.01" — "idk if it triggers at that price

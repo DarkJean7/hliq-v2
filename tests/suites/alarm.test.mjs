@@ -1,6 +1,6 @@
 // The wake alarm, driven for real against a stub audio element.
 import fs from 'fs'
-import { encodeWav, silenceSamples, alarmSamples, createAlarm }
+import { encodeWav, silenceSamples, alarmSamples, createAlarm, ALARM_SOUNDS, DEFAULT_ALARM }
   from '../../src/alarm.js'
 
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
@@ -9,6 +9,7 @@ const css = fs.readFileSync('src/style.css', 'utf8').replace(/\r\n/g, '\n')
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, x))
+const nl = String.fromCharCode(10)
 
 // Node has no Blob URL; the module only needs these two to exist.
 globalThis.URL.createObjectURL ??= (b) => 'blob:stub/' + (b?.size ?? 0)
@@ -97,6 +98,44 @@ t('the service worker cache was bumped, or the old worker would linger',
 t('ringing takes over the whole screen', cli.includes('alarm-ov') && css.includes('.alarm-ov {'))
 t('the armed state survives a reload being recorded', cli.includes("localStorage.setItem(_ALARM_KEY, '1')"))
 t('there is a way to hear it before trusting it', cli.includes('window.__alarmTest'))
+
+// "add more and better wake alarm sounds" — one sound is not a choice, and the right alarm
+// is the one that wakes YOU: a warble a light sleeper hears is not what gets someone out of
+// deep sleep, and a klaxon at 3am in a shared bed is a different problem.
+console.log(nl + '-- five of them, all built to wake someone --')
+{
+  const names = Object.keys(ALARM_SOUNDS)
+  t('there are several to choose from', names.length >= 5, names)
+  t('each has a label', Object.values(ALARM_SOUNDS).every(v => v.label && typeof v.build === 'function'))
+  t('the default is one of them', !!ALARM_SOUNDS[DEFAULT_ALARM])
+  for (const k of names) {
+    const smp = alarmSamples(k)
+    let peak = 0, sum = 0
+    for (const v of smp) { const a = Math.abs(v); if (a > peak) peak = a; sum += v * v }
+    const rms = Math.sqrt(sum / smp.length)
+    // Loud: an alarm at conversation level is not an alarm. And a whole number of seconds,
+    // because the element loops it and a seam mid-beep reads as a fault.
+    t(`${k} is loud`, peak > 0.85, peak)
+    t(`${k} is not just a click`, rms > 0.1, rms)
+    t(`${k} loops cleanly`, Math.abs(smp.length % 8000) === 0, smp.length)
+  }
+  // An unknown name must not fall back to silence — the one place in the app where nothing
+  // is the worst possible answer.
+  t('an unknown sound is the default, never silence', alarmSamples('nonsense').length === alarmSamples(DEFAULT_ALARM).length)
+  t('and the old call shape still works', alarmSamples(8000).length === 8000)
+}
+
+console.log(nl + '-- choosing one --')
+{
+  const el = mkStub()
+  const a  = createAlarm({ makeAudio: () => el, vibrate: () => {} })
+  t('it starts on the default', a.sound() === DEFAULT_ALARM)
+  t('and takes another', a.setSound('klaxon') === 'klaxon' && a.sound() === 'klaxon')
+  t('but refuses one that does not exist', a.setSound('nope') === 'klaxon')
+  // Hearing one must not require arming first: that was the old Test button's problem.
+  t('a preview plays without arming', a.preview('siren') === true && !a.isArmed())
+  t('and does not leave the alarm ringing', !a.isRinging())
+}
 
 // Asked for as if it were new — "can we also have like loud alarms for price targets... i may
 // be sleeping" — because the control lived in desktop Settings only. It is on the phone now:
