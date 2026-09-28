@@ -19742,9 +19742,16 @@ function _pulseRenderInner(el) {
   </div>`
 }
 
+/** Hosts that the mobile shell rebuilds on every render need filling again afterwards. */
+function _mobVPaintHosted() { try { _renderAlarmRow() } catch {} }
+
 function _mobVRenderContent(tick = false) {
   const el = document.getElementById('mobVContent')
   if (!el) return
+  // After whichever branch below paints: the settings screen carries a [data-wake-alarm]
+  // host, and this function returns from a dozen places, so the fill is scheduled rather
+  // than appended to one of them. A no-op when no host is on screen.
+  setTimeout(_mobVPaintHosted, 0)
 
   // Full-screen Strats is a class on #mobileView, and only the Exit button used to take it
   // off. Leaving the tab any other way — Home, the bottom nav, the More drawer — left every
@@ -20806,6 +20813,10 @@ function _mobVRenderContent(tick = false) {
         <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:8px">
           <div><div>Sound on fill</div><div style="font-size:11px;color:var(--muted)">Plays when one of your orders fills</div></div>
           ${_fillPickerHtml(_fillSound(), _fillVol())}
+        </div>
+        <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:8px">
+          <div><div>Wake alarm</div><div style="font-size:11px;color:var(--muted)">A loud, repeating alarm when a price alert fires — over silent mode, with the screen off</div></div>
+          <div data-wake-alarm></div>
         </div>
         <div class="mob-v-setting-row">
           <div><div>Celebrations</div><div style="font-size:11px;color:var(--muted)">Confetti on a new all-time high and on a big winning trade</div></div>
@@ -31729,7 +31740,11 @@ function _renderPriceAlerts() {
 }
 
 function _checkPriceAlerts(allMids) {
-  if (notifPermission() !== 'granted') return
+  // The NOTIFICATION needs permission. The alarm does not — it is audio the page is already
+  // playing, and it is the half that wakes someone up. This used to return here, so anyone
+  // who had declined notifications (or was on a browser that never asked) armed a wake alarm
+  // that could not ring while the app was open in front of them.
+  const canNotify = notifPermission() === 'granted'
   const alerts  = _paLoad()
   let changed   = false
   for (const a of alerts) {
@@ -31740,7 +31755,7 @@ function _checkPriceAlerts(allMids) {
     if (!hit) continue
     a.fired = true
     changed = true
-    showNotif(`Price Alert: ${a.coin} ${a.dir === 'above' ? '↑' : '↓'} $${fmtUSD(a.price)}`, {
+    if (canNotify) showNotif(`Price Alert: ${a.coin} ${a.dir === 'above' ? '↑' : '↓'} $${fmtUSD(a.price)}`, {
       body: `${a.coin} is now at $${fmtUSD(mid)}`,
       tag:  'hliq-price-' + a.id,
     })
@@ -31822,6 +31837,8 @@ window.__qaClose = function() {
 
 window.__quickPriceAlert = function(coin, px) {
   window.__qaClose()
+  // The alarm row inside the sheet is filled in after it is appended (see the end of this
+  // function) — _renderAlarmRow paints every host it finds.
   window._qaDir = 'above'
   const isOc  = _lbIsOutcome(coin)
   const cur   = parseFloat(state.allMids?.[coin] ?? px ?? 0) || px || 0
@@ -31851,10 +31868,15 @@ window.__quickPriceAlert = function(coin, px) {
         </div>
         <div style="font-size:11px;color:var(--muted);margin-bottom:16px">${_T('Current', 'Actual')}: <span class="notranslate">${curTxt}</span></div>
         <button onclick="window.__qaSave('${_jsStr(coin)}',${isOc ? 1 : 0})" style="width:100%;padding:14px;border:none;border-radius:12px;background:var(--accent);color:#000;font-weight:800;font-size:15px;cursor:pointer">${_T('Set alert', 'Crear alerta')}</button>
+        <!-- The wake alarm belongs here, not only in Settings: this sheet is where someone
+             decides they want to be told, and "wake me for it" is part of that decision.
+             Same renderer as the Settings row — src/alarm.js, _renderAlarmRow. -->
+        <div data-wake-alarm style="margin-top:14px"></div>
         ${notifPermission() !== 'granted' ? `<div style="font-size:11px;color:#ff9f43;margin-top:10px;text-align:center">${_T('Enable notifications to receive alerts', 'Activa las notificaciones para recibir alertas')}</div>` : ''}
       </div>
     </div>`
   document.body.appendChild(wrap)
+  try { _renderAlarmRow() } catch {}
   _qaDetach = _liftAboveKeyboard(document.getElementById('qaSheet'))
   // Focus the price field directly: the point of the sheet is to type a number, and
   // focusing it is also what triggers the keyboard the lift above compensates for.
@@ -31938,17 +31960,24 @@ if ('serviceWorker' in navigator) {
   })
 }
 
+/**
+ * Wherever the control is on screen — desktop Settings, mobile Settings, the quick-alert
+ * sheet. One renderer, several hosts: an alarm you can only arm from a desktop tab is no use
+ * to the person who asked for it, who is asleep next to their phone.
+ */
 function _renderAlarmRow() {
-  const el = document.getElementById('wakeAlarmRow')
-  if (!el) return
+  const hosts = document.querySelectorAll('#wakeAlarmRow, [data-wake-alarm]')
+  if (!hosts.length) return
   const on = _alarm.isArmed()
-  el.innerHTML = `
+  const html = `
     <div class="pa-alarm">
       <div class="pa-alarm-l">
         <div class="pa-alarm-t">${_T('Wake alarm', 'Alarma')}</div>
         <div class="pa-alarm-s">${on
           ? _T('Armed — keep this tab open. Screen can be off.', 'Activada — deja esta pestaña abierta. La pantalla puede estar apagada.')
-          : _T('Ring a loud alarm when an alert fires, even on silent.', 'Suena una alarma fuerte cuando salta una alerta, incluso en silencio.')}</div>
+          : window.__alarmWasArmed()
+            ? _T('Was on — tap anywhere to arm it again (the page reloaded).', 'Estaba activada — toca en cualquier sitio para volver a activarla (la página se recargó).')
+            : _T('Ring a loud alarm when an alert fires, even on silent.', 'Suena una alarma fuerte cuando salta una alerta, incluso en silencio.')}</div>
       </div>
       <label class="pin-toggle" style="flex-shrink:0">
         <input type="checkbox" ${on ? 'checked' : ''} onchange="window.__alarmToggle(this.checked)">
@@ -31956,7 +31985,34 @@ function _renderAlarmRow() {
       </label>
     </div>
     ${on ? `<button class="pa-alarm-test" onclick="window.__alarmTest()">${_T('Test the sound', 'Probar el sonido')}</button>` : ''}`
+  hosts.forEach(el => { el.innerHTML = html })
 }
+
+/**
+ * Arming needs a user gesture — the autoplay policy refuses audio started any other way — so
+ * a reload cannot restore it by itself. It used to just forget: the toggle was written to
+ * localStorage and never read back, so a tab that reloaded overnight left someone with an
+ * alarm they believed was set. Now the next tap of any kind re-arms it, and the row says so
+ * until that happens.
+ */
+function _alarmRestore() {
+  if (_alarm.isArmed()) return
+  try { if (localStorage.getItem(_ALARM_KEY) !== '1') return } catch { return }
+  const rearm = async () => {
+    off()
+    const ok = await _alarm.arm()
+    if (!ok) { try { localStorage.removeItem(_ALARM_KEY) } catch {} }
+    _renderAlarmRow()
+  }
+  const off = () => {
+    window.removeEventListener('pointerdown', rearm)
+    window.removeEventListener('keydown', rearm)
+  }
+  window.addEventListener('pointerdown', rearm, { once: true })
+  window.addEventListener('keydown', rearm, { once: true })
+  _renderAlarmRow()
+}
+window.__alarmWasArmed = () => { try { return localStorage.getItem(_ALARM_KEY) === '1' } catch { return false } }
 
 // Full-screen takeover while ringing — at 4am the dismiss target should be the whole screen.
 function _renderAlarmOverlay() {
@@ -39044,6 +39100,10 @@ function _reportRotationScale() {
     } catch {}
   }, 1200)
 }
+
+// An alarm armed before a reload cannot re-arm itself — the autoplay policy wants a gesture
+// — so it waits for the next tap. src/alarm.js, _alarmRestore.
+try { _alarmRestore() } catch {}
 
 // Initial ticker render
 updateWatchTicker()

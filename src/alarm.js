@@ -91,6 +91,14 @@ export function createAlarm({ makeAudio, vibrate, onChange } = {}) {
   let buzzTimer = null
 
   const url = (blob) => URL.createObjectURL(blob)
+  /**
+   * play() returns a PROMISE, so `try { el.play() } catch {}` catches nothing: swapping the
+   * source while a play is in flight rejects with "The play() request was interrupted by a
+   * new load request", which is exactly what stopping the alarm does. Harmless, and it was
+   * surfacing as an unhandled rejection — noise in the console at 4am, and in the error
+   * telemetry the rest of the time.
+   */
+  const play = (e) => { try { e.play()?.catch(() => {}) } catch {} }
   const notify = () => { try { onChange?.({ armed, ringing }) } catch {} }
 
   /**
@@ -132,7 +140,7 @@ export function createAlarm({ makeAudio, vibrate, onChange } = {}) {
     el.src = alarmUrl
     el.loop = true
     el.volume = 1
-    try { el.play() } catch {}
+    play(el)
     if (vibrate) {
       const buzz = () => { try { vibrate([600, 300, 600, 300, 600, 900]) } catch {} }
       buzz()
@@ -148,7 +156,7 @@ export function createAlarm({ makeAudio, vibrate, onChange } = {}) {
     try { vibrate?.(0) } catch {}
     if (!ringing) return
     ringing = false
-    if (el && armed) { el.src = silentUrl; el.volume = 0.02; el.loop = true; try { el.play() } catch {} }
+    if (el && armed) { el.src = silentUrl; el.volume = 0.02; el.loop = true; play(el) }
     notify()
   }
 

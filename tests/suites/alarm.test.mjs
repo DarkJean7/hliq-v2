@@ -98,5 +98,30 @@ t('ringing takes over the whole screen', cli.includes('alarm-ov') && css.include
 t('the armed state survives a reload being recorded', cli.includes("localStorage.setItem(_ALARM_KEY, '1')"))
 t('there is a way to hear it before trusting it', cli.includes('window.__alarmTest'))
 
+// Asked for as if it were new — "can we also have like loud alarms for price targets... i may
+// be sleeping" — because the control lived in desktop Settings only. It is on the phone now:
+// in its Settings, and in the sheet where an alert is actually set.
+const alarmSrc = fs.readFileSync('src/alarm.js', 'utf8')
+t('the phone can arm it too', (cli.match(/data-wake-alarm/g) ?? []).length >= 2)
+t('including from the sheet that sets the alert', /data-wake-alarm style="margin-top:14px"/.test(cli))
+t('one renderer fills every host', /querySelectorAll\('#wakeAlarmRow, \[data-wake-alarm\]'\)/.test(cli))
+// The notification needs permission. The alarm is audio the page is already playing, and it
+// is the half that wakes someone: it used to be skipped along with the notification.
+t('a declined notification no longer silences the alarm',
+  /const canNotify = notifPermission\(\) === 'granted'/.test(cli) && /if \(canNotify\) showNotif\(/.test(cli))
+// Arming needs a gesture, so a reload cannot restore it by itself — but it must not pretend
+// the alarm is still set either.
+t('an alarm dropped by a reload is re-armed by the next tap',
+  /function _alarmRestore\(\)/.test(cli) && /window\.addEventListener\('pointerdown', rearm, \{ once: true \}\)/.test(cli))
+t('and says so until it is', /tap anywhere to arm it again/.test(cli))
+// play() returns a promise, so `try { el.play() } catch {}` caught nothing: swapping the
+// source while one is in flight rejects, which is exactly what stopping the alarm does.
+t('the play is caught as a promise', /e\.play\(\)\?\.catch\(\(\) => \{\}\)/.test(alarmSrc))
+// Comments stripped: the doc comment above the helper quotes the old line it replaced.
+t('and nothing calls play bare any more',
+  !/try \{ el\.play\(\) \} catch/.test(alarmSrc.replace(/\/\*[\s\S]*?\*\//g, '')))
+t('while arming still awaits it, which is where a refusal must be caught',
+  /await el\.play\(\)/.test(alarmSrc))
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
