@@ -52,7 +52,11 @@ const HL = {
   metaAndAssetCtxs: [{ universe: [] }, []], spotMetaAndAssetCtxs: [{ tokens: [], universe: [] }, []],
 }
 
-const browser = await chromium.launch()
+// Media without a gesture: the alarm is audio, and whether Chromium's autoplay policy lets a
+// headless runner start it is not what is under test here — arming, choosing a sound, ringing
+// and re-arming are. Without this the suite passed locally and failed on the runner, where a
+// refused play() disarmed the alarm halfway through and the last check had nothing to re-arm.
+const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] })
 // Notifications deliberately NOT granted: the alarm is audio and must not depend on them.
 const ctx = await browser.newContext({ ...devices['iPhone 14 Pro'] })
 try { await ctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
