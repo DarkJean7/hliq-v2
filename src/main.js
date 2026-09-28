@@ -227,6 +227,7 @@ import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fill
 import { historyHtml, collapseFills } from './perfhistory.js'
 import { setMonthChartSource, collapse as _collapseMonthChart } from './monthchart.js'
 import { toDesktop as _shellToDesk, toMobile as _shellToMob, MOB_VIEWS as _MOB_VIEWS } from './shelltab.js'
+import { previewRows as _liqDepRows, sheetHtml as _liqDepSheetHtml } from './liqdeposit.js'
 import { gzipToString, gunzipFromString } from './gzstore.js'
 import { cloidBot } from './cloid.js'
 import { signalChartSvg } from './sigchart.js'
@@ -20240,7 +20241,11 @@ function _mobVRenderContent(tick = false) {
         <button ${_dis}${_noKey} onclick="event.stopPropagation();window._mobVEditPosTpSl('${esc(p.coin)}',${_acctArg})"
           style="${_disCss}flex:1;min-width:80px;padding:8px;background:rgba(0,229,160,0.1);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Edit TP/SL</button>
         ${isIso ? `<button ${_dis}${_noKey} onclick="event.stopPropagation();window._mobVAdjustMargin('${esc(p.coin)}',${_acctArg})"
-          style="${_disCss}flex:1;min-width:80px;padding:8px;background:rgba(99,179,237,0.12);border:none;border-radius:8px;color:#63b3ed;font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Margin</button>` : ''}
+          style="${_disCss}flex:1;min-width:80px;padding:8px;background:rgba(99,179,237,0.12);border:none;border-radius:8px;color:#63b3ed;font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Margin</button>`
+        // Cross only: on an isolated position the button above is the one that helps, and a
+        // deposit to the account would not reach it. src/liqdeposit.js
+        : `<button onclick="event.stopPropagation();window.__liqDepOpen('${esc(p.coin)}',${_acctArg})"
+          style="flex:1;min-width:80px;padding:8px;background:rgba(99,179,237,0.12);border:none;border-radius:8px;color:#63b3ed;font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">+ Funds?</button>`}
         <button onclick="event.stopPropagation();window.__openShareCard({coin:'${_jsStr(p.coin)}',title:'${_jsStr(_ocCoinLabel(p.coin))}',side:'${side}',lev:${levVal},roePct:${roe.toFixed(2)},entry:'$${fmtPrice(entryPx)}',mark:'$${fmtPrice(markPx)}'})"
           style="flex:1;min-width:80px;padding:8px;background:rgba(255,138,42,0.12);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">↗ Share</button>
         <button ${_dis}${_noKey} onclick="event.stopPropagation();window._mobVClosePos(this,'${esc(p.coin)}','${apiSide}','${p.szi}','${markPx}',${_acctArg})"
@@ -25694,6 +25699,8 @@ function _mobDefiModal(type) {
           style="flex:1;background:var(--panel-1);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:15px;color:var(--fg);outline:none"/>
         <button onclick="window.__setDepositMax()" style="padding:10px 14px;background:var(--panel-1);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0">MAX</button>
       </div>
+      <button onclick="window.__liqDepFromDeposit()" style="margin-top:8px;background:none;border:none;padding:2px 0;color:var(--accent);font-size:11.5px;font-weight:700;cursor:pointer">
+        What would this do to my liquidation prices? &rarr;</button>
     </div>
     <div id="depositPreview" style="opacity:0.4;background:var(--panel-1);border-radius:10px;padding:12px 14px;margin-bottom:10px">
       ${row('You send','dp-send')}${row('You receive','dp-receive')}${row('Destination','dp-dest')}
@@ -38800,6 +38807,105 @@ function renderOutcomePositions() {
       </td>
     </tr>`
   }).join('')
+}
+
+// ─── WHAT WOULD A DEPOSIT DO? ─────────────────────────────────────────────────
+//
+// Asked for: "i have an account with a position close to liquidation. i was wondering how
+// much capital i may need to deposit in the app to get a good liquidation price. this way an
+// user can know if the deposit would be in vain or to protect the position."
+//
+// The arithmetic is src/liqdeposit.js. This is the sheet, the live data, and the one thing
+// the module cannot know: WHICH wallet the deposit would land in. A deposit reaches exactly
+// one account, so in the combined view the sheet is about the wallet whose card was pressed —
+// summing nine wallets' positions here would answer a question nobody can act on.
+let _liqDep = null   // { coin, acct, deposit }
+
+function _liqDepPositions(acct) {
+  const all = state.perpState?.assetPositions ?? []
+  if (!state.isAllAccounts) return all
+  const want = String(acct ?? '').toLowerCase()
+  if (!want) return []
+  return all.filter(ap => String((ap?.position ?? ap)?._acctAddr ?? '').toLowerCase() === want)
+}
+
+function _liqDepSheetEl() {
+  let ov = document.getElementById('liqDepSheet')
+  if (ov) return ov
+  ov = document.createElement('div')
+  ov.id = 'liqDepSheet'
+  ov.className = 'liqd-overlay'
+  ov.addEventListener('click', (e) => { if (e.target === ov) window.__liqDepClose() })
+  ov.innerHTML = '<div class="liqd-card" id="liqDepCard"></div>'
+  document.body.appendChild(ov)
+  return ov
+}
+
+function _liqDepPaint() {
+  if (!_liqDep) return
+  const card = document.getElementById('liqDepCard')
+  if (!card) return
+  const rows = _liqDepRows(_liqDepPositions(_liqDep.acct), _liqDep.deposit)
+  // The wallet's own label, so the combined view says whose account this deposit would land
+  // in. Positions carry it already (_allAcctReaggregate tags every one).
+  const label = state.isAllAccounts
+    ? String((_liqDepPositions(_liqDep.acct)[0]?.position ?? _liqDepPositions(_liqDep.acct)[0])?._acct ?? '')
+    : ''
+  // The amount field is rebuilt with the rest of the sheet, so a typed value would lose the
+  // caret on every keystroke. Only the rows are repainted while it has focus.
+  const typing = document.activeElement?.id === 'liqDepAmt'
+  if (typing) {
+    const holder = document.createElement('div')
+    holder.innerHTML = _liqDepSheetHtml(rows, _liqDep.deposit, { coin: _liqDep.coin, walletLabel: label })
+    for (const sel of ['.liqd-rows', '.liqd-costs', '.liqd-costs-none', '.liqd-chips']) {
+      const next = holder.querySelector(sel), cur = card.querySelector(sel)
+      if (next && cur) cur.replaceWith(next)
+      else if (next && !cur) card.querySelector('.liqd-rows')?.before(next)
+      else if (!next && cur) cur.remove()
+    }
+    return
+  }
+  card.innerHTML = _liqDepSheetHtml(rows, _liqDep.deposit, { coin: _liqDep.coin, walletLabel: label })
+}
+
+/**
+ * From the deposit box: the same sheet, seeded with the amount being considered.
+ *
+ * This is where the question gets asked — you are about to send money and want to know what
+ * it buys — so the answer is one press away from the field rather than back on a card.
+ */
+window.__liqDepFromDeposit = function () {
+  const typed = parseFloat(document.getElementById('depositAmount')?.value ?? '')
+  window.__liqDepOpen(null, null)
+  if (Number.isFinite(typed) && typed > 0) window.__liqDepSet(typed)
+}
+
+/** Open it for a position (or for the account as a whole, with no coin). */
+window.__liqDepOpen = function (coin = null, acct = null) {
+  _liqDep = { coin: coin || null, acct: acct || (state.isAllAccounts ? null : state.addr), deposit: 0 }
+  const ov = _liqDepSheetEl()
+  _liqDepPaint()
+  ov.classList.add('open')
+}
+
+window.__liqDepClose = function () {
+  _liqDep = null
+  document.getElementById('liqDepSheet')?.classList.remove('open')
+}
+
+/**
+ * `typed` marks the amount box as the source, so the field is left alone while the rows
+ * around it are redrawn. A chip sets the value and the whole sheet is rebuilt.
+ */
+window.__liqDepSet = function (v, typed = false) {
+  if (!_liqDep) return
+  const n = Math.max(0, parseFloat(v) || 0)
+  _liqDep.deposit = n
+  if (!typed) {
+    const el = document.getElementById('liqDepAmt')
+    if (el) el.value = n > 0 ? n.toFixed(2) : ''
+  }
+  _liqDepPaint()
 }
 
 // ─── UI MODE TOGGLES ──────────────────────────────────────────────────────────

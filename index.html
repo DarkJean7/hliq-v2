@@ -1003,6 +1003,11 @@
               <input class="field-input" id="depositAmount" type="number" placeholder="0.00" min="5" step="1" oninput="window.__updateDepositPreview()" style="flex:1"/>
               <button class="btn-sm" onclick="window.__setDepositMax()" style="white-space:nowrap">MAX</button>
             </div>
+            <!-- The question people actually have in front of this field: not "can I send it"
+                 but "will it save the position". src/liqdeposit.js -->
+            <button onclick="window.__liqDepFromDeposit()"
+                    style="margin-top:8px;background:none;border:none;padding:2px 0;color:var(--accent);font-size:11.5px;font-weight:700;cursor:pointer">
+              What would this do to my liquidation prices? &rarr;</button>
           </div>
           <!-- A Hyperliquid deposit is a plain USDC transfer to the bridge: it carries
                no destination field, so the funds always land in the unified account.

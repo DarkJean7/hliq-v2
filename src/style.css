@@ -7967,3 +7967,106 @@ html.has-bg-image #mobileView.mob-in-trade .mob-v-content {
   .cal-mchart-wrap { height: 180px; }
   .cal-mchart-body .chart-header { flex-wrap: wrap; gap: 6px; }
 }
+
+/* ─── "WHAT WOULD A DEPOSIT DO?" ──────────────────────────────────────────────
+   The liquidation-vs-deposit sheet (src/liqdeposit.js). Bottom sheet on a phone,
+   centred card on a desktop, same markup. */
+.liqd-overlay {
+  position: fixed; inset: 0; z-index: 100040; display: none;
+  align-items: flex-end; justify-content: center;
+  background: rgba(0, 0, 0, 0.62);
+}
+.liqd-overlay.open { display: flex; }
+.liqd-card {
+  width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--rule);
+  border-radius: 18px 18px 0 0; padding: 16px 16px 22px;
+}
+@media (min-width: 720px) {
+  .liqd-overlay { align-items: center; }
+  .liqd-card { border-radius: 16px; padding: 18px 20px 22px; }
+}
+.liqd-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+.liqd-title { font-size: 15px; font-weight: 800; }
+.liqd-sub { font-size: 11px; color: var(--muted); margin-top: 3px; font-family: var(--font-mono); }
+.liqd-x {
+  margin-left: auto; background: none; border: none; color: var(--muted);
+  font-size: 15px; cursor: pointer; padding: 2px 4px; line-height: 1;
+}
+.liqd-x:hover { color: var(--fg); }
+
+/* The amount. 16px or iOS zooms the page when it takes focus. */
+.liqd-amt-wrap {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--panel-2); border: 1px solid var(--rule);
+  border-radius: 12px; padding: 10px 12px;
+}
+.liqd-amt-cur { font-family: var(--font-mono); font-size: 16px; color: var(--muted); }
+.liqd-amt {
+  flex: 1; min-width: 0; background: none; border: none; outline: none;
+  color: var(--fg); font-family: var(--font-mono); font-size: 16px; font-weight: 700;
+  -webkit-text-size-adjust: none;
+}
+.liqd-clear {
+  background: none; border: none; color: var(--muted); font-size: 11px;
+  font-weight: 700; cursor: pointer; padding: 2px 4px;
+}
+.liqd-clear:hover { color: var(--accent); }
+.liqd-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 14px; }
+.liqd-chip {
+  flex: 1; min-width: 62px; padding: 7px 0; border-radius: 999px;
+  border: 1px solid var(--rule); background: var(--panel-2); color: var(--muted);
+  font-family: var(--font-mono); font-size: 11px; font-weight: 700; cursor: pointer;
+  transition: border-color .12s, color .12s, background .12s;
+}
+.liqd-chip:hover { border-color: var(--accent); color: var(--fg); }
+.liqd-chip.on {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.liqd-rows { display: flex; flex-direction: column; gap: 8px; }
+.liqd-row {
+  border: 1px solid var(--rule); border-radius: 12px;
+  background: var(--panel-2); padding: 10px 12px;
+}
+.liqd-row-head { display: flex; align-items: center; gap: 7px; }
+.liqd-coin { font-size: 13px; font-weight: 800; }
+.liqd-side {
+  font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 5px;
+}
+.liqd-side.pos { color: var(--green); background: rgba(0, 229, 160, 0.12); }
+.liqd-side.neg { color: var(--red);   background: rgba(255, 77, 109, 0.12); }
+.liqd-iso {
+  font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 5px; color: var(--muted); background: var(--bg3);
+}
+.liqd-liqs {
+  display: flex; align-items: baseline; gap: 8px; margin-top: 6px;
+  font-family: var(--font-mono); font-size: 15px; font-weight: 700;
+}
+.liqd-from { color: var(--muted); text-decoration: line-through; text-decoration-thickness: 1px; }
+.liqd-arrow { color: var(--muted); font-size: 12px; }
+.liqd-to { color: var(--green); }
+.liqd-dist { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+.liqd-warn { color: var(--fg-2); }
+.liqd-empty { font-size: 12px; color: var(--muted); padding: 10px 2px; }
+
+/* What a target costs — each one sets the amount above when pressed. */
+.liqd-costs { margin-top: 14px; }
+.liqd-costs-title {
+  font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 8px;
+}
+.liqd-cost {
+  display: flex; align-items: center; justify-content: space-between; width: 100%;
+  border: 1px solid var(--rule); border-radius: 10px; background: transparent;
+  padding: 9px 12px; margin-bottom: 6px; cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+.liqd-cost:hover { border-color: var(--accent); background: var(--panel-2); }
+.liqd-cost-pct { font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: var(--fg); }
+.liqd-cost-amt { font-family: var(--font-mono); font-size: 13px; font-weight: 800; color: var(--accent); }
+.liqd-costs-none { margin-top: 12px; font-size: 11.5px; color: var(--muted); line-height: 1.55; }
+.liqd-foot { margin-top: 14px; font-size: 10.5px; color: var(--fg-3); line-height: 1.55; }
