@@ -55,7 +55,8 @@ t('and an unfinished trade keeps its entry but has no exit',
   one.trades.filter(x => x.outcome === 'open').every(x => x.entry > 0 && x.exitPx === null))
 
 console.log(nl + '-- the view --')
-const view = grab(cli, 'function _simTradesHtml')
+// The row is its own function now, shared by the ledger and the calendar's day list.
+const view = grab(cli, 'function _simTradesHtml') + grab(cli, 'function _simTradeRow')
 t('there is a trade list', view.length > 400)
 // The report has tabs now; the ledger is one of them and the tab carries the count, which is
 // what the collapsed "Show every trade (N)" button used to do.
@@ -95,11 +96,11 @@ t('why it is paged is recorded', cli.includes('locks the phone for seconds'))
 console.log(nl + '-- what each row shows --')
 t('entry and exit prices', view.includes('fmtPrice(t.entry)') && view.includes('fmtPrice(t.exitPx)'))
 t('an exit that never happened is a dash, not a zero', view.includes("t.exitPx != null ? fmtPrice(t.exitPx) : '—'"))
-t('both timestamps', view.includes('when(t.time)') && view.includes('when(t.exitAt)'))
+t('both timestamps', view.includes('_simWhen(t.time)') && view.includes('_simWhen(t.exitAt)'))
 t('how long it was held', view.includes('t.heldFor'))
 t('what it did to the balance, signed', view.includes('signed(t.delta)'))
 t('a missing delta shows as a dash rather than $0', view.includes("Number.isFinite(t.delta) ? signed(t.delta) : '—'"))
-t('the outcome, coloured', view.includes('outCol[t.outcome]'))
+t('the outcome, coloured', view.includes('_simOutCol[t.outcome]'))
 t('the side, as a direction', view.includes("t.side === 'long' ? '↑' : '↓'"))
 t('and the market, but only when there is more than one', view.includes('multi ?') && view.includes('r.byMarket.length > 1'))
 t('the market name is escaped', view.includes('esc(_ocCoinLabel(t.coin'))

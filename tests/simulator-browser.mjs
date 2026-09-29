@@ -227,6 +227,47 @@ console.log(NL + '-- desktop: the page --')
   await p.click('#deskSim .sim-results .sim-btn-p:has-text("Replay this run")')
   ok('the replay draws candles', await waitFor(p, 'replay', () => !!document.querySelector('#simReplayBody svg'), null, 5000))
 
+  console.log(NL + '-- desktop: the calendar is the app\'s calendar --')
+  // Asked for: "make the calendar exactly as the one that we already have" -- same header,
+  // same cards, same grid, same classes, so the same stylesheet draws it.
+  await p.click('#deskSim .sim-tab:has-text("Calendar")')
+  ok('it has the calendar\'s header, cards and grid', await waitFor(p, 'calendar', () =>
+    !!document.querySelector('#deskSim .cal-header-row .cal-month-label') &&
+    document.querySelectorAll('#deskSim .cal-summary .stat-card').length === 9 &&
+    document.querySelectorAll('#deskSim .cal-grid .cal-cell').length >= 28, null, 5000))
+  ok('days that made or lost money are coloured the same way', await p.evaluate(() =>
+    document.querySelectorAll('#deskSim .cal-grid .cal-pos, #deskSim .cal-grid .cal-neg').length > 0))
+  const cards = await p.evaluate(() => [...document.querySelectorAll('#deskSim .cal-summary .stat-label')].map(e => e.textContent.trim()))
+  ok('with the same summary, deposits swapped for what a backtest has', ['Month PnL', 'Best Day', 'Worst Day', 'Avg / Day', 'Max Drawdown', 'Trades Made', 'Month Volume', 'Fees Paid', 'Liquidations'].every(k => cards.includes(k)), cards)
+  const monthBefore = await p.evaluate(() => document.querySelector('#deskSim .cal-month-label').textContent)
+  await p.click('#deskSim .cal-nav-btn:has-text("Prev")')
+  const monthAfter = await p.evaluate(() => document.querySelector('#deskSim .cal-month-label').textContent)
+  ok('Prev goes back a month', monthBefore !== monthAfter, [monthBefore, monthAfter])
+  await p.click('#deskSim .cal-grid .cal-clickable >> nth=0')
+  ok('a day opens the trades that closed on it', await waitFor(p, 'the day', () =>
+    !!document.querySelector('#deskSim .cal-selected') && document.querySelectorAll('#deskSim .sim-results .sim-trade').length > 0, null, 5000))
+  await shot(p, 'desk-calendar')
+  ok('each month of the run is one tap away, with its return', await p.evaluate(() =>
+    document.querySelectorAll('#deskSim .sim-results [data-dragscroll] .sim-chip').length >= 2))
+
+  console.log(NL + '-- desktop: every setting, to replicate it --')
+  await p.click('#deskSim .sim-tab:has-text("Settings")')
+  const setup = await p.evaluate(() => document.querySelector('#deskSim .sim-results .sim-stats')?.textContent.replace(/\s+/g, ' ') ?? '')
+  ok('it lists the strategy\'s own parameters', /RSI length\s?14/.test(setup) && /Oversold\s?30/.test(setup), setup.slice(0, 300))
+  ok('the margin mode and leverage', /Margin mode\s?(Isolated|Cross)/.test(setup) && /Leverage set\s?10x/.test(setup), setup)
+  ok('and what each market actually ran at, against its own max', /BTC leverage used\s?10x \(max 40x/.test(setup) && /ETH leverage used\s?10x \(max 25x/.test(setup), setup)
+  ok('fees per fill', /Maker fee\s?0\.015%/.test(setup) && /Taker fee\s?0\.045%/.test(setup))
+  ok('the exact markets and period', /Exchange ids\s?BTC, ETH/.test(setup) && /Period/.test(setup))
+  ok('and not a field the strategy ignores', !/Rolling window|Base order|Size per level/.test(setup))
+  await shot(p, 'desk-settings')
+  await p.evaluate(() => { try { Object.defineProperty(navigator, 'clipboard', { value: { writeText: (t) => { window.__copied = t; return Promise.resolve() } }, configurable: true }) } catch {} })
+  await p.click('#deskSim .sim-results .sim-btn:has-text("Copy settings")')
+  const copied = await p.evaluate(() => window.__copied ?? document.getElementById('simSetupRaw')?.value ?? '')
+  ok('it copies as text someone can set a bot up from', /STRATEGY/.test(copied) && /Leverage set: 10x/.test(copied), copied.slice(0, 200))
+  await p.fill('#sim_leverage', '3')
+  await p.click('#deskSim .sim-results .sim-btn:has-text("Load into form")')
+  ok('and loads back into the form', await waitFor(p, 'loaded', () => document.getElementById('sim_leverage')?.value === '10', null, 5000))
+
   console.log(NL + '-- desktop: a changed setting marks the result stale --')
   await p.fill('#sim_rsiLen', '21')
   ok('without re-rendering the box being typed in', await p.evaluate(() =>

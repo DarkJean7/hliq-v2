@@ -691,6 +691,7 @@ window.__simRun = async function() {
       // Pressing Run is asking for the report. Landing on last run's sweep or ledger instead
       // reads as the run having done nothing.
       _simTab = 'overview'
+      _simCal = null
     }
     _simSkipped = skipped
   } catch (e) {
@@ -778,6 +779,7 @@ window.__simCmpPick = function(key) {
   _simSkipped = []
   _simStale = false
   _simTab = 'overview'
+  _simCal = null
   _simRepClose()
   _simTradePage = 1
   _simSave()
@@ -842,8 +844,7 @@ window.__simSweep = async function() {
     }))]
     const rows = []
     for (const v of vals) {
-      const params = coerceParams({ ..._simParams, [key]: v,
-        ...Object.fromEntries(BT_CHOICES.map(c => [c.key, String(_simParams[c.key])])) })
+      const params = _simCoerceKeep({ ..._simParams, [key]: v })
       const result = _simRunOn(bars, coins, params)
       if (result) {
         const s = summarize(result, null, null)
@@ -931,24 +932,24 @@ function _simChoiceHtml(c) {
 }
 
 /** A field belongs here if it is not tied to another strategy or to an off module. */
-function _simFieldVisible(f) {
-  if (f.strategy && f.strategy !== _simParams.strategy) return false
-  if (f.notFor?.includes(_simParams.strategy)) return false
-  const kind = strategyKind(_simParams.strategy)
+function _simFieldVisible(f, P = _simParams) {
+  if (f.strategy && f.strategy !== P.strategy) return false
+  if (f.notFor?.includes(P.strategy)) return false
+  const kind = strategyKind(P.strategy)
   const ladder = kind === 'grid' || kind === 'dca'
   // Grid and DCA are sized by their own orders; of the position settings only leverage applies.
-  if (f.key === 'leverage') return _simHL()
+  if (f.key === 'leverage') return _simHL(P)
   if (ladder && (f.group === 'riskModel' || f.group === 'fixedModel' || f.group === 'notionalModel')) return false
-  if (f.key === 'sizePct') return _simParams.pnlModel === 'notional' && _simParams.sizeMode === 'pct'
-  if (f.key === 'sizeUsd') return _simParams.pnlModel === 'notional' && _simParams.sizeMode === 'usd'
-  if (f.key === 'sizeCoin') return _simParams.pnlModel === 'notional' && _simParams.sizeMode === 'coin'
+  if (f.key === 'sizePct') return P.pnlModel === 'notional' && P.sizeMode === 'pct'
+  if (f.key === 'sizeUsd') return P.pnlModel === 'notional' && P.sizeMode === 'usd'
+  if (f.key === 'sizeCoin') return P.pnlModel === 'notional' && P.sizeMode === 'coin'
   // Per-fill maker and taker fees for a Hyperliquid position; one flat cost for the others.
-  if (f.key === 'makerFeePct' || f.key === 'takerFeePct') return !!_simParams.useFees && _simHL()
-  if (f.key === 'feePct') return !!_simParams.useFees && !_simHL()
-  if (f.group === 'riskModel') return _simParams.pnlModel === 'risk'
-  if (f.group === 'fixedModel') return _simParams.pnlModel === 'fixed'
-  if (f.group === 'notionalModel') return _simParams.pnlModel === 'notional'
-  if (f.group && f.group.startsWith('use')) return !!_simParams[f.group]
+  if (f.key === 'makerFeePct' || f.key === 'takerFeePct') return !!P.useFees && _simHL(P)
+  if (f.key === 'feePct') return !!P.useFees && !_simHL(P)
+  if (f.group === 'riskModel') return P.pnlModel === 'risk'
+  if (f.group === 'fixedModel') return P.pnlModel === 'fixed'
+  if (f.group === 'notionalModel') return P.pnlModel === 'notional'
+  if (f.group && f.group.startsWith('use')) return !!P[f.group]
   return true
 }
 
@@ -1327,29 +1328,6 @@ window.__simEqHover = function(ev) {
   if (line) { line.style.display = ''; line.style.left = (f * 100) + '%' }
 }
 
-/** Calendar months as a heat table: the shape of a return, which a single number hides. */
-function _simMonthsHtml(months) {
-  if (!months?.length || months.length < 2) return ''
-  const years = [...new Set(months.map(m => m.year))]
-  const mon = Array.from({ length: 12 }, (_, i) => new Date(2020, i, 1).toLocaleDateString(undefined, { month: 'narrow' }))
-  const cell = (m) => {
-    if (!m || m.ret == null) return `<td class="sim-mo-e"></td>`
-    const a = Math.min(1, Math.abs(m.ret) / 20)
-    const bg = m.ret >= 0 ? `color-mix(in srgb, var(--green) ${Math.round(12 + a * 55)}%, transparent)`
-                          : `color-mix(in srgb, var(--red) ${Math.round(12 + a * 55)}%, transparent)`
-    return `<td style="background:${bg}" title="${m.ret.toFixed(2)}%">${Math.abs(m.ret) >= 10 ? Math.round(m.ret) : m.ret.toFixed(1)}</td>`
-  }
-  return `<div class="sim-sub">${_T('Monthly returns', 'Retornos mensuales')} <span class="sim-lbl-u">%</span></div>
-    <div data-dragscroll class="sim-scrollx"><table class="sim-mo">
-      <thead><tr><th></th>${mon.map(m => `<th>${esc(m)}</th>`).join('')}<th>${_T('Yr', 'Año')}</th></tr></thead>
-      <tbody>${years.map(y => {
-        const row = Array.from({ length: 12 }, (_, i) => months.find(m => m.year === y && m.month === i))
-        const yr = row.filter(Boolean).reduce((a, m) => a * (1 + (m.ret ?? 0) / 100), 1)
-        return `<tr><th>${String(y).slice(2)}</th>${row.map(cell).join('')}<td class="sim-mo-y" style="color:${tone(yr - 1)}">${((yr - 1) * 100).toFixed(1)}</td></tr>`
-      }).join('')}</tbody>
-    </table></div>`
-}
-
 function _simSpark(curve, w = 96, h = 26) {
   const pts = downsample(curve ?? [], 60)
   if (pts.length < 2) return ''
@@ -1435,41 +1413,43 @@ window.__simTradeOrder = function() {
   _simRender()
 }
 
+/** One trade as a row: side, prices, size, when, where it would have been liquidated, result. */
+const _simWhen = (t) => t ? new Date(t).toLocaleString(undefined,
+  { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'
+const _simOutCol = { win: 'var(--green)', loss: 'var(--red)', open: 'var(--warn)' }
+function _simTradeRow(t, multi) {
+  const held = t.heldFor != null ? _simDur(t.heldFor, _simRunMeta?.iv) : ''
+  return `<div class="sim-trade">
+    <span class="sim-trade-s" style="color:${t.side === 'long' ? 'var(--green)' : 'var(--red)'}">${t.side === 'long' ? '↑' : '↓'}</span>
+    <span style="min-width:0;flex:1">
+      <span class="mono">${fmtPrice(t.entry)}</span>
+      <span style="color:var(--muted)"> → </span>
+      <span class="mono">${t.exitPx != null ? fmtPrice(t.exitPx) : '—'}</span>
+      ${multi ? `<span class="notranslate" style="color:var(--accent);font-weight:700;margin-left:5px">${esc(_ocCoinLabel(t.coin ?? ''))}</span>` : ''}
+      ${t.so ? `<span class="sim-badge" style="margin-left:5px">${t.so} SO</span>` : ''}
+      ${Number.isFinite(t.q) ? `<span class="sim-lbl-u" style="margin-left:5px">${fmtSizeCoin(t.q)}</span>` : ''}
+      <span style="display:block;color:var(--muted);font-size:10px;margin-top:2px">${
+        esc(_simWhen(t.time))}${t.exitAt ? ' → ' + esc(_simWhen(t.exitAt)) : ''}${held ? ' · ' + held : ''}${
+        t.liqPx ? ` · <span style="color:var(--red)">liq $${fmtPrice(t.liqPx)}</span>` : ''}${
+        t.mae > 0 ? ` · ${_T('worst', 'peor')} -${t.mae.toFixed(1)}%` : ''}</span>
+    </span>
+    <span style="flex-shrink:0;text-align:right">
+      <span class="mono" style="font-weight:700;color:${tone(t.delta ?? 0)}">${
+        Number.isFinite(t.delta) ? signed(t.delta) : '—'}</span>
+      <span style="display:block;font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:${_simOutCol[t.outcome] ?? 'var(--muted)'}">${esc(t.liq ? _T('liquidated', 'liquidada') : t.outcome)}</span>
+    </span>
+  </div>`
+}
+
 function _simTradesHtml(r) {
   const all = (r?.trades ?? [])
   if (!all.length) return `<div class="sim-empty-s">${_T('No trades in this run.', 'Sin operaciones en esta ejecución.')}</div>`
-  const when   = (t) => t ? new Date(t).toLocaleString(undefined,
-    { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'
-  const outCol = { win: 'var(--green)', loss: 'var(--red)', open: 'var(--warn)' }
-
   // Newest first by default: the end of a run is what you are usually checking.
   const ordered = _simTradeOrder === 'old' ? [...all] : [...all].reverse()
   const shown = ordered.slice(0, _simTradePage * _SIM_TRADES_PER_PAGE)
   const multi = Array.isArray(r.byMarket) && r.byMarket.length > 1
 
-  const row = (t) => {
-    const held = t.heldFor != null ? _simDur(t.heldFor, _simRunMeta?.iv) : ''
-    return `<div class="sim-trade">
-      <span class="sim-trade-s" style="color:${t.side === 'long' ? 'var(--green)' : 'var(--red)'}">${t.side === 'long' ? '↑' : '↓'}</span>
-      <span style="min-width:0;flex:1">
-        <span class="mono">${fmtPrice(t.entry)}</span>
-        <span style="color:var(--muted)"> → </span>
-        <span class="mono">${t.exitPx != null ? fmtPrice(t.exitPx) : '—'}</span>
-        ${multi ? `<span class="notranslate" style="color:var(--accent);font-weight:700;margin-left:5px">${esc(_ocCoinLabel(t.coin ?? ''))}</span>` : ''}
-        ${t.so ? `<span class="sim-badge" style="margin-left:5px">${t.so} SO</span>` : ''}
-        ${Number.isFinite(t.q) ? `<span class="sim-lbl-u" style="margin-left:5px">${fmtSizeCoin(t.q)}</span>` : ''}
-        <span style="display:block;color:var(--muted);font-size:10px;margin-top:2px">${
-          esc(when(t.time))}${t.exitAt ? ' → ' + esc(when(t.exitAt)) : ''}${held ? ' · ' + held : ''}${
-          t.liqPx ? ` · <span style="color:var(--red)">liq $${fmtPrice(t.liqPx)}</span>` : ''}${
-          t.mae > 0 ? ` · ${_T('worst', 'peor')} -${t.mae.toFixed(1)}%` : ''}</span>
-      </span>
-      <span style="flex-shrink:0;text-align:right">
-        <span class="mono" style="font-weight:700;color:${tone(t.delta ?? 0)}">${
-          Number.isFinite(t.delta) ? signed(t.delta) : '—'}</span>
-        <span style="display:block;font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:${outCol[t.outcome] ?? 'var(--muted)'}">${esc(t.liq ? _T('liquidated', 'liquidada') : t.outcome)}</span>
-      </span>
-    </div>`
-  }
+  const row = (t) => _simTradeRow(t, multi)
 
   return `
     <div class="sim-lbl" style="margin-bottom:8px">
@@ -1836,6 +1816,344 @@ function _simSweepHtml() {
     ${table}`
 }
 
+// ── RESULTS: calendar ─────────────────────────────────────────────────────────
+//
+// Asked for: "lets make the calendar exactly as the one that we already have". So it is built
+// from the same parts as the Calendar tab -- its header, its nine stat cards, its Sunday-first
+// grid, its green and red cells, the same class names so it is the same stylesheet -- with the
+// simulated trades where the real fills would be. A day's figure is what CLOSED that day, the
+// same rule the real calendar uses; the month's drawdown is read from the run's equity curve,
+// open positions included, as the real one reads the account's.
+//
+// Deposits and withdrawals do not happen in a backtest, so their two cards say what does:
+// the fees the month paid and the positions it lost to liquidation.
+
+let _simCal = null        // { y, m, day } -- the month on screen and the day opened in it
+
+const _calKey = (ms) => {
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+window.__simCalNav = function(d) {
+  if (!_simCal) return
+  const t = new Date(_simCal.y, _simCal.m + d, 1)
+  _simCal = { y: t.getFullYear(), m: t.getMonth(), day: null }
+  _simRender()
+}
+window.__simCalGo = function(y, m) { _simCal = { y, m, day: null }; _simRender() }
+window.__simCalDay = function(key) {
+  if (!_simCal) return
+  _simCal.day = _simCal.day === key ? null : key
+  _simRender()
+}
+
+/** The fees one closed trade paid, from what it did and what the price did. */
+function _simTradeFee(t, p) {
+  if (!Number.isFinite(t.q) || !p.useFees || !_simHL(p)) return 0
+  const gross = (t.side === 'long' ? 1 : -1) * t.q * ((t.exitPx ?? t.entry) - t.entry)
+  return Math.max(0, gross - (t.delta ?? 0))
+}
+
+function _simCalendarHtml(r, s) {
+  const closed = (r.trades ?? []).filter(t => t.outcome !== 'open' && Number.isFinite(t.delta) && (t.exitAt ?? t.time))
+  const from = new Date(r.from ?? Date.now()), to = new Date(r.to ?? Date.now())
+  const first = { y: from.getFullYear(), m: from.getMonth() }, last = { y: to.getFullYear(), m: to.getMonth() }
+  const idx = (x) => x.y * 12 + x.m
+  if (!_simCal || idx(_simCal) < idx(first) || idx(_simCal) > idx(last)) _simCal = { ...last, day: null }
+  const { y: year, m: month } = _simCal
+
+  const byDay = {}
+  for (const t of closed) {
+    const at = t.exitAt ?? t.time
+    const d = new Date(at)
+    if (d.getFullYear() !== year || d.getMonth() !== month) continue
+    const k = _calKey(at)
+    const b = byDay[k] ??= { pnl: 0, trades: 0, won: 0, volume: 0, fees: 0, liqs: 0, list: [] }
+    b.pnl += t.delta
+    b.trades++
+    if (t.delta > 0) b.won++
+    if (Number.isFinite(t.q)) b.volume += t.q * (t.entry + (t.exitPx ?? t.entry))
+    b.fees += _simTradeFee(t, r.params)
+    if (t.liq) b.liqs++
+    b.list.push(t)
+  }
+  const days = Object.keys(byDay).sort()
+  const sum = (k) => days.reduce((a, d) => a + byDay[d][k], 0)
+  const monthPnl = sum('pnl'), monthTrades = sum('trades'), monthWon = sum('won')
+  const monthVolume = sum('volume'), monthFees = sum('fees'), monthLiqs = sum('liqs')
+  const bestDay = days.length ? days.reduce((a, d) => byDay[d].pnl > byDay[a].pnl ? d : a) : null
+  const worstDay = days.length ? days.reduce((a, d) => byDay[d].pnl < byDay[a].pnl ? d : a) : null
+
+  // Days of the run that fall in this month -- a run that starts on the 20th has eleven.
+  const mStart = new Date(year, month, 1).getTime(), mEnd = new Date(year, month + 1, 1).getTime()
+  const spanStart = Math.max(mStart, r.from ?? mStart), spanEnd = Math.min(mEnd, (r.to ?? mEnd) + 1)
+  const elapsedDays = Math.max(1, Math.ceil((spanEnd - spanStart) / 86400e3))
+  const avgDay = monthTrades ? monthPnl / elapsedDays : null
+
+  // The month's drawdown from its own curve, open positions included, in dollars -- the same
+  // reading the real calendar takes from the account's history.
+  let peak = null, maxDD = 0, ddFrom = null, ddTo = null, peakAt = null
+  for (const [t, v] of s.curve ?? []) {
+    if (t < mStart || t >= mEnd) continue
+    if (peak == null || v > peak) { peak = v; peakAt = t }
+    if (peak - v > maxDD) { maxDD = peak - v; ddFrom = peakAt; ddTo = t }
+  }
+
+  const MONTHS = Array.from({ length: 12 }, (_, i) => new Date(2020, i, 1).toLocaleDateString(undefined, { month: 'long' }))
+  const DOWS = Array.from({ length: 7 }, (_, i) => new Date(2023, 0, 1 + i).toLocaleDateString(undefined, { weekday: 'short' }))
+  const lbl = (key) => key ? MONTHS[month].slice(0, 3) + ' ' + parseInt(key.split('-')[2], 10) : '—'
+  const lblT = (t) => t ? lbl(_calKey(t)) : '—'
+  const amt = (v) => (v > 0 ? '+$' : v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v))
+  const cls = (v) => v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu'
+
+  const firstDay = new Date(year, month, 1), lastDay = new Date(year, month + 1, 0)
+  const startDow = firstDay.getDay()
+  const rows = Math.ceil((startDow + lastDay.getDate()) / 7)
+  const today = new Date()
+  let cells = ''
+  for (let i = 0; i < rows * 7; i++) {
+    const dayNum = i - startDow + 1
+    if (dayNum < 1 || dayNum > lastDay.getDate()) { cells += `<div class="cal-cell cal-empty"></div>`; continue }
+    const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`
+    const d = byDay[key]
+    const cellT = new Date(year, month, dayNum).getTime()
+    const outside = cellT + 86400e3 <= (r.from ?? 0) || cellT > (r.to ?? Infinity)
+    let c = 'cal-cell'
+    if (year === today.getFullYear() && month === today.getMonth() && dayNum === today.getDate()) c += ' cal-today'
+    if (d) c += (d.pnl >= 0 ? ' cal-pos' : ' cal-neg') + ' cal-clickable'
+    if (_simCal.day === key) c += ' cal-selected'
+    cells += `<div class="${c}"${outside ? ' style="opacity:.35"' : ''}${d ? ` onclick="window.__simCalDay('${key}')"` : ''}>
+      <div class="cal-day-num">${dayNum}</div>
+      ${d ? `<div class="cal-day-pnl ${d.pnl >= 0 ? 'pos' : 'neg'}">${d.pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(d.pnl))}</div>
+        <div class="cal-day-trades">${d.trades} ${d.trades === 1 ? _T('trade', 'op') : _T('trades', 'ops')}</div>
+        ${d.liqs ? `<div class="cal-day-tx wth">LIQ ×${d.liqs}</div>` : ''}` : ''}
+    </div>`
+  }
+
+  // Every month of the run, with what it returned -- the strip the monthly table used to be.
+  const months = (s.months ?? []).map(m => {
+    const on = m.year === year && m.month === month
+    return `<button type="button" class="sim-chip sim-chip-sm${on ? ' on' : ''}" onclick="window.__simCalGo(${m.year},${m.month})">${
+      esc(MONTHS[m.month].slice(0, 3))} ${String(m.year).slice(2)} <span style="${on ? '' : `color:${tone(m.ret ?? 0)}`}">${m.ret == null ? '' : pct(m.ret, 1)}</span></button>`
+  }).join('')
+
+  const canPrev = idx(_simCal) > idx(first), canNext = idx(_simCal) < idx(last)
+  const dayOpen = _simCal.day && byDay[_simCal.day]
+  const multi = Array.isArray(r.byMarket) && r.byMarket.length > 1
+  return `
+    ${months ? `<div data-dragscroll class="sim-scrollx" style="margin-bottom:12px">${months}</div>` : ''}
+    <div class="cal-header-row">
+      <button class="cal-nav-btn" onclick="window.__simCalNav(-1)" ${canPrev ? '' : 'disabled style="opacity:.35"'}>◀ ${_T('Prev', 'Ant.')}</button>
+      <div class="cal-month-label">${esc(MONTHS[month])} ${year}</div>
+      <button class="cal-nav-btn" onclick="window.__simCalNav(1)" ${canNext ? '' : 'disabled style="opacity:.35"'}>${_T('Next', 'Sig.')} ▶</button>
+    </div>
+    <div class="cal-summary">
+      <div class="stat-card"><div class="stat-label">${_T('Month PnL', 'PnL del mes')}</div>
+        <div class="stat-value ${cls(monthPnl)}">${amt(monthPnl)}</div></div>
+      <div class="stat-card"><div class="stat-label">${_T('Best Day', 'Mejor día')}</div>
+        <div class="stat-value ${cls(bestDay ? byDay[bestDay].pnl : 0)}">${bestDay ? amt(byDay[bestDay].pnl) : '—'}</div>
+        ${bestDay ? `<div class="stat-sub">${lbl(bestDay)}</div>` : ''}</div>
+      <div class="stat-card"><div class="stat-label">${_T('Worst Day', 'Peor día')}</div>
+        <div class="stat-value ${cls(worstDay ? byDay[worstDay].pnl : 0)}">${worstDay ? amt(byDay[worstDay].pnl) : '—'}</div>
+        ${worstDay ? `<div class="stat-sub">${lbl(worstDay)}</div>` : ''}</div>
+      <div class="stat-card"><div class="stat-label">${_T('Avg / Day', 'Media / día')}</div>
+        <div class="stat-value ${avgDay == null ? 'neu' : cls(avgDay)}">${avgDay == null ? '—' : amt(avgDay)}</div>
+        <div class="stat-sub">${_T('over', 'en')} ${elapsedDays} ${elapsedDays === 1 ? _T('day', 'día') : _T('days', 'días')}</div></div>
+      <div class="stat-card"><div class="stat-label">${_T('Max Drawdown', 'Caída máx.')}</div>
+        <div class="stat-value ${maxDD > 0 ? 'neg' : 'neu'}">${maxDD > 0 ? '-$' + fmtUSD(maxDD) : '$0'}</div>
+        <div class="stat-sub">${maxDD > 0 ? (lblT(ddFrom) === lblT(ddTo) ? lblT(ddTo) : lblT(ddFrom) + ' → ' + lblT(ddTo)) : _T('never gave any back', 'nunca devolvió nada')}</div></div>
+      <div class="stat-card"><div class="stat-label">${_T('Trades Made', 'Operaciones')}</div>
+        <div class="stat-value neu">${monthTrades}</div>
+        ${days.length ? `<div class="stat-sub">${_T('over', 'en')} ${days.length} ${days.length === 1 ? _T('day', 'día') : _T('days', 'días')} · ${monthTrades ? Math.round(monthWon / monthTrades * 100) : 0}% ${_T('won', 'ganadas')}</div>` : ''}</div>
+      <div class="stat-card"><div class="stat-label">${_T('Month Volume', 'Volumen')}</div>
+        <div class="stat-value neu">${monthVolume > 0 ? '$' + fmtUSD(monthVolume, 0) : '$0'}</div></div>
+      <div class="stat-card"><div class="stat-label">${_T('Fees Paid', 'Comisiones')}</div>
+        <div class="stat-value ${monthFees > 0 ? 'neg' : 'neu'}">${monthFees > 0 ? '-$' + fmtUSD(monthFees) : '$0'}</div></div>
+      <div class="stat-card"><div class="stat-label">${_T('Liquidations', 'Liquidaciones')}</div>
+        <div class="stat-value ${monthLiqs ? 'neg' : 'neu'}">${monthLiqs}</div></div>
+    </div>
+    <div data-dragscroll style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <div class="cal-dow-row" style="min-width:350px">${DOWS.map(d => `<div class="cal-dow-cell">${esc(d)}</div>`).join('')}</div>
+      <div class="cal-grid" style="min-width:350px">${cells}</div>
+    </div>
+    ${dayOpen ? `<div class="sim-inset" style="margin-top:12px">
+      <div class="sim-lbl" style="margin-bottom:6px">
+        <span class="sim-sub" style="margin:0">${esc(new Date(year, month, parseInt(_simCal.day.split('-')[2], 10)).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }))}</span>
+        <span style="flex:1"></span>
+        <span class="mono" style="font-weight:800;color:${tone(dayOpen.pnl)}">${amt(dayOpen.pnl)}</span>
+      </div>
+      <div class="sim-table">${dayOpen.list.map(t => _simTradeRow(t, multi)).join('')}</div>
+    </div>` : `<div class="sim-hint" style="margin-top:8px">${_T('Tap a day to see the trades that closed on it.', 'Toca un día para ver sus operaciones.')}</div>`}`
+}
+
+// ── RESULTS: the settings, in full ────────────────────────────────────────────
+//
+// Asked for: "add more info like the settings used. the amount of leverage used, etc.
+// important info to be able to replicate the strategy". Every setting that shaped the run and
+// nothing that did not -- a field the strategy ignores listed beside the ones it read is how
+// a bot gets configured wrong. It can be copied as text to set up a real bot by hand, as JSON
+// to keep, or loaded straight back into the form.
+
+/** Parameters made safe to hand back to coerceParams, whose choices must be strings. */
+function _simCoerceKeep(p) {
+  return coerceParams({ ...p, ...Object.fromEntries(BT_CHOICES.map(c => [c.key, String(p[c.key])])) })
+}
+
+/** The settings of a run as labelled sections: [[title, [[label, value], ...]], ...]. */
+function _simSetupSections(r) {
+  const p = r.params
+  const kind = strategyKind(p.strategy)
+  const meta = _simRunMeta ?? { coins: [], iv: '', count: r.candles }
+  const hl = _simHL(p)
+  const unitOf = (f) => {
+    if (['dcaBaseUsd', 'dcaSoUsd', 'gridUsdPerLevel'].includes(f.key)) return p.orderUnit === 'coin' ? _T('coins', 'monedas') : 'USDC'
+    if (f.key === 'sizeCoin') return _T('coins', 'monedas')
+    return f.unit
+  }
+  const fieldVal = (f) => `${p[f.key]}${unitOf(f) ? ' ' + unitOf(f) : ''}`
+  const choiceVal = (c) => c.options.find(o => o[0] === String(p[c.key]))?.[1] ?? String(p[c.key])
+  const when = (t) => t ? new Date(t).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'
+
+  const data = [
+    [_T('Markets', 'Mercados'), meta.coins.map(c => `${_mktName(c)}${_mktDex(c) ? ' (' + _mktDex(c) + ')' : ''}`).join(', ')],
+    [_T('Exchange ids', 'Ids'), meta.coins.join(', ')],
+    [_T('Interval', 'Intervalo'), meta.iv],
+    [_T('Candles', 'Velas'), `${(meta.count ?? r.candles)?.toLocaleString?.() ?? meta.count}${meta.coins.length > 1 ? ' ' + _T('per market', 'por mercado') : ''}`],
+    [_T('Period', 'Periodo'), `${when(r.from)} → ${when(r.to)}`],
+  ]
+
+  const strat = [[_T('Strategy', 'Estrategia'), _stratLabel(p.strategy)]]
+  for (const f of BT_FIELDS) if (f.strategy === p.strategy && _simFieldVisible(f, p)) strat.push([f.label, fieldVal(f)])
+  for (const c of BT_CHOICES) if (c.strategy === p.strategy) strat.push([c.label, choiceVal(c)])
+  if (p.strategy === 'tokyo') {
+    strat.push([_T('Time zone', 'Zona horaria'), 'America/New_York'])
+    for (const c of meta.coins) {
+      const row = tokyoWindowsFor(c)
+      if (row) strat.push([_mktName(c), `L ${row.long[0]}–${row.long[1]} · S ${row.short[0]}–${row.short[1]}`])
+    }
+  }
+
+  const exits = []
+  for (const f of BT_FIELDS) if (!f.strategy && !f.group && f.key !== 'startBalance' && _simFieldVisible(f, p)) exits.push([f.label, fieldVal(f)])
+  if (kind === 'signal') for (const c of BT_CHOICES) if (c.key === 'ambiguous') exits.push([c.label, choiceVal(c)])
+
+  const pos = [[_T('Starting balance', 'Balance inicial'), money(p.startBalance)]]
+  if (meta.coins.length > 1) pos.push([_T('With several markets', 'Con varios mercados'), p.splitRisk === false
+    ? _T('each with the whole balance', 'cada uno con todo el balance')
+    : _T(`balance split ${meta.coins.length} ways (${money(p.startBalance / meta.coins.length)} each)`, `balance repartido entre ${meta.coins.length}`)])
+  if (!hl) {
+    pos.push([_T('Sizing model', 'Modelo'), p.pnlModel === 'risk' ? _T('Risk-based', 'Por riesgo') : _T('Fixed %', 'Fijo %')])
+    for (const f of BT_FIELDS) if ((f.group === 'riskModel' || f.group === 'fixedModel') && _simFieldVisible(f, p)) pos.push([f.label, fieldVal(f)])
+  } else {
+    pos.push([_T('Sizing model', 'Modelo'), 'Hyperliquid'])
+    pos.push([_T('Margin mode', 'Modo de margen'), p.marginMode === 'isolated' ? _T('Isolated', 'Aislado') : _T('Cross', 'Cruzado')])
+    pos.push([_T('Leverage set', 'Apalancamiento'), p.leverage + 'x'])
+    // What each market actually ran at: the setting, capped at that market's own maximum.
+    for (const c of meta.coins) {
+      const mx = _simMaxLev(c)
+      const used = Math.min(p.leverage, mx ?? p.leverage)
+      pos.push([`${_mktName(c)} ${_T('leverage used', 'apalanc. usado')}`,
+        `${used}x${mx ? ` (${_T('max', 'máx')} ${mx}x · ${_T('maintenance', 'mant.')} ${(mmRate({ maxLev: mx }) * 100).toFixed(2)}%)` : ` (${_T('max unknown, 20x assumed', 'máx desconocido, 20x')})`}`])
+    }
+    if (kind === 'grid' || kind === 'dca') pos.push([_T('Order sizes in', 'Órdenes en'), p.orderUnit === 'coin' ? _T('coins', 'monedas') : 'USDC'])
+    else pos.push([_T('Position size', 'Tamaño'), p.sizeMode === 'usd' ? `${money(p.sizeUsd)} ${_T('per position', 'por posición')}`
+      : p.sizeMode === 'coin' ? `${p.sizeCoin} ${_T('coins per position', 'monedas por posición')}`
+      : `${p.sizePct}% ${_T('of balance as margin', 'del balance como margen')}`])
+  }
+  if (kind === 'dca') {
+    const d = r.dca
+    if (d) pos.push([_T('Full deal', 'Trato completo'), `${money(d.maxPossible)} · ${_T('margin', 'margen')} ${money(d.maxPossibleMargin ?? d.maxPossible)}`])
+  }
+
+  const fees = !p.useFees ? [[_T('Fees', 'Comisiones'), _T('off', 'desactivadas')]]
+    : hl ? [[_T('Maker fee', 'Comisión maker'), p.makerFeePct + '% ' + _T('per fill', 'por ejecución')],
+            [_T('Taker fee', 'Comisión taker'), p.takerFeePct + '% ' + _T('per fill', 'por ejecución')]]
+    : [[_T('Cost per trade', 'Costo por op.'), p.feePct + '%']]
+
+  const mods = []
+  if (kind === 'signal') {
+    for (const m of BT_MODULES) {
+      if (m.key === 'useFees') continue
+      const inner = [...BT_FIELDS.filter(f => f.group === m.key).map(f => `${f.label.toLowerCase()} ${fieldVal(f)}`),
+                     ...BT_CHOICES.filter(c => c.group === m.key).map(c => choiceVal(c).toLowerCase())]
+      mods.push([m.label, p[m.key] ? _T('On', 'Sí') + (inner.length ? ' · ' + inner.join(', ') : '') : _T('Off', 'No')])
+    }
+  }
+
+  return [
+    [_T('Data', 'Datos'), data],
+    [_T('Strategy', 'Estrategia'), strat],
+    ...(exits.length ? [[_T('Entry and exit', 'Entrada y salida'), exits]] : []),
+    [_T('Position & margin', 'Posición y margen'), pos],
+    [_T('Fees', 'Comisiones'), fees],
+    ...(mods.length ? [[_T('Modules', 'Módulos'), mods]] : []),
+  ]
+}
+
+function _simSetupText(r) {
+  const lines = [`${_T('Trade Simulator settings', 'Ajustes del simulador')} — insolvent.trade`]
+  for (const [title, rows] of _simSetupSections(r)) {
+    lines.push('', title.toUpperCase())
+    for (const [k, v] of rows) lines.push(`${k}: ${v}`)
+  }
+  return lines.join('\n')
+}
+
+function _simSetupJson(r) {
+  const meta = _simRunMeta ?? {}
+  const { maxLev, ...params } = r.params
+  return JSON.stringify({ app: 'insolvent-simulator', v: 1, markets: meta.coins ?? [], interval: meta.iv, candles: meta.count, params }, null, 2)
+}
+
+async function _simCopy(text, done) {
+  try { await navigator.clipboard.writeText(text); _paperToast(done) }
+  catch {
+    // A browser that will not let a page write the clipboard still shows the text to copy.
+    const el = document.getElementById('simSetupRaw')
+    if (el) { el.style.display = ''; el.value = text; el.select() }
+    _paperToast(_T('Select the text below and copy it.', 'Selecciona el texto y cópialo.'))
+  }
+}
+
+window.__simCopySetup = function(kind) {
+  if (!_simResult) return
+  if (kind === 'json') _simCopy(_simSetupJson(_simResult), _T('Settings copied as JSON', 'Ajustes copiados como JSON'))
+  else _simCopy(_simSetupText(_simResult), _T('Settings copied', 'Ajustes copiados'))
+}
+
+/** Put the run's settings back in the form -- after a comparison, the board's row becomes the form. */
+window.__simLoadSetup = function() {
+  if (!_simResult) return
+  const meta = _simRunMeta ?? {}
+  _simParams = _simCoerceKeep(_simResult.params)
+  if (meta.coins?.length) _simCoin = meta.coins.join(', ')
+  if (meta.iv) _simIv = meta.iv
+  if (meta.count) _simCount = meta.count
+  _simStale = false
+  _simSave()
+  _simRender()
+  _paperToast(_T('These settings are now in the form.', 'Estos ajustes están ahora en el formulario.'))
+}
+
+function _simSetupHtml(r) {
+  const sections = _simSetupSections(r)
+  return `
+    <div class="sim-hint" style="margin-bottom:10px">${_T(
+      'Everything this run used, and nothing it ignored — enough to set the same bot up by hand, or to load it back here later.',
+      'Todo lo que usó esta ejecución, y nada que ignoró — suficiente para configurar el mismo bot a mano.')}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      <button type="button" class="sim-btn sim-btn-p" onclick="window.__simCopySetup('text')">${_T('Copy settings', 'Copiar ajustes')}</button>
+      <button type="button" class="sim-btn" onclick="window.__simCopySetup('json')">${_T('Copy as JSON', 'Copiar JSON')}</button>
+      <button type="button" class="sim-btn" onclick="window.__simLoadSetup()">${_T('Load into form', 'Cargar en el formulario')}</button>
+    </div>
+    <textarea id="simSetupRaw" class="sim-in" style="display:none;height:160px;font-size:11px" readonly></textarea>
+    <div class="sim-stats">${sections.map(([title, rows]) => `<div class="sim-inset">
+      <div class="sim-sub">${esc(title)}</div>
+      ${rows.map(([k, v]) => `<div class="sim-row"><span>${esc(k)}</span><span class="notranslate" style="white-space:normal;text-align:right">${esc(String(v))}</span></div>`).join('')}
+    </div>`).join('')}</div>`
+}
+
 // ── RESULTS: overview ─────────────────────────────────────────────────────────
 
 function _simKpi(label, value, sub = '', colour = '') {
@@ -1941,7 +2259,8 @@ function _simOverviewHtml(r, s) {
   return `
     <div class="sim-inset" style="padding:10px 10px 8px">${_simEquityHtml(s, r.startBalance, stepped)}</div>
     ${_simStatsHtml(r, s)}
-    ${s.months.length > 1 ? `<div class="sim-inset">${_simMonthsHtml(s.months)}</div>` : ''}`
+    <div class="sim-hint" style="margin-top:10px">${_T('Day by day and month by month: the Calendar tab. Every setting this run used: Settings.',
+      'Día a día y mes a mes: pestaña Calendario. Cada ajuste usado: Ajustes.')}</div>`
 }
 
 /** The settings that produced the numbers, stated on the result itself. */
@@ -2061,13 +2380,17 @@ function _simResultHtml() {
   const multi = meta.coins.length > 1
   const tabs = [
     ['overview', _T('Overview', 'Resumen')],
+    ['calendar', _T('Calendar', 'Calendario')],
     ['trades', _T('Trades', 'Operaciones') + ` <span class="sim-lbl-u">${r.tradesMade}</span>`],
     ...(multi ? [['markets', _T('Markets', 'Mercados')]] : []),
     ['replay', _T('Replay', 'Repetición')],
     ['sweep', _T('Sweep', 'Barrido')],
+    ['setup', _T('Settings', 'Ajustes')],
   ]
   const tab = tabs.some(([k]) => k === _simTab) ? _simTab : 'overview'
   const body = tab === 'trades' ? _simTradesHtml(r)
+    : tab === 'calendar' ? _simCalendarHtml(r, s)
+    : tab === 'setup' ? _simSetupHtml(r)
     : tab === 'markets' ? _simMarketsHtml(r)
     : tab === 'replay' ? _simReplayHtml()
     : tab === 'sweep' ? _simSweepHtml()

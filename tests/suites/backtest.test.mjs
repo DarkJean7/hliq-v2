@@ -227,9 +227,11 @@ t('risk is derived from the stop distance', bt.includes('const rr = slDist > 0 ?
 t('and the model is selectable', cli.includes('window.__simSetModel'))
 
 console.log(String.fromCharCode(10) + '-- the form follows the configuration --')
-t('fields belonging to another strategy are hidden', cli.includes("if (f.strategy && f.strategy !== _simParams.strategy) return false"))
-t('so are fields behind an off module', cli.includes("if (f.group && f.group.startsWith('use')) return !!_simParams[f.group]"))
-t('and the money fields swap with the model', cli.includes("if (f.group === 'riskModel') return _simParams.pnlModel === 'risk'"))
+t('fields belonging to another strategy are hidden', cli.includes("if (f.strategy && f.strategy !== P.strategy) return false") &&
+  // Checked against a RUN's parameters, not only the form's, so the Settings tab lists what that run used.
+  cli.includes('function _simFieldVisible(f, P = _simParams)'))
+t('so are fields behind an off module', cli.includes("if (f.group && f.group.startsWith('use')) return !!P[f.group]"))
+t('and the money fields swap with the model', cli.includes("if (f.group === 'riskModel') return P.pnlModel === 'risk'"))
 t('a module shows its own settings only when on', cli.includes('${on && inner ? `<div class="sim-mod-body">'))
 // A structural change rebuilds the form, so what was typed has to be read first.
 // Anchored on the DEFINITION, not on the first mention: the interval buttons now route
@@ -299,7 +301,7 @@ t('the list stays in the engine even though the view no longer prints it',
   BT_UNSIMULATABLE.length >= 5 && !cli.includes('BT_UNSIMULATABLE'))
 // Two sets of levels on screen, only one of which is read, is worse than none.
 t('a strategy that sets its own levels hides the generic ones',
-  cli.includes("if (f.notFor?.includes(_simParams.strategy)) return false"))
+  cli.includes("if (f.notFor?.includes(P.strategy)) return false"))
 t('and no two fields share a key, which would put two inputs on one id', (() => {
   const keys = BT_FIELDS.map(f => f.key)
   return keys.length === new Set(keys).size
