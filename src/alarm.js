@@ -158,8 +158,90 @@ function pulseSamples(sr) {
   return out
 }
 
-/** Every sound, in the order they are offered. */
+// ── ringtones ────────────────────────────────────────────────────────────────
+//
+// Asked for: "is the wake up alarm a ring tone?? if not make it like one because the idea is
+// to wake up". It was not: five harsh test tones at 8kHz, closer to a smoke detector than to
+// the phone alarm people actually wake to. These are ringtones -- a melody, a struck timbre,
+// a phrase that repeats -- generated at 22kHz so a marimba sounds like one and not like a
+// buzzer. The harsh five stay for anyone who wants them.
+
+const RING_RATE = 22050
+
+/**
+ * A struck bar: the fundamental plus the bright partial a marimba has at four times it, each
+ * decaying on its own clock. The upper partial dies first, which is what makes the attack
+ * bright and the tail round -- the difference between a mallet and a beep.
+ */
+function mallet(out, sr, at, freq, dur, gain = 1) {
+  const i0 = Math.round(at * sr), n = Math.round(dur * sr)
+  for (let k = 0; k < n && i0 + k < out.length; k++) {
+    const t = k / sr
+    const attack = Math.min(1, t * 400)                 // 2.5ms: no click, still a strike
+    const v = Math.sin(2 * Math.PI * freq * t) * Math.exp(-t * 5)
+            + 0.35 * Math.sin(2 * Math.PI * freq * 4 * t) * Math.exp(-t * 18)
+            + 0.12 * Math.sin(2 * Math.PI * freq * 10 * t) * Math.exp(-t * 40)
+    out[i0 + k] += v * attack * gain
+  }
+}
+
+/** Scale a clip so its loudest sample sits at `peak` -- every ringtone as loud as the others. */
+function normalise(out, peak = 0.95) {
+  let m = 0
+  for (const v of out) m = Math.max(m, Math.abs(v))
+  if (m > 0) for (let i = 0; i < out.length; i++) out[i] = out[i] / m * peak
+  return out
+}
+
+const NOTE = { E5: 659.25, 'G#5': 830.61, B5: 987.77, C6: 1046.5, E6: 1318.51, 'G#6': 1661.22, B6: 1975.53,
+               C5: 523.25, G5: 783.99, D6: 1174.66, G6: 1567.98, C7: 2093.0 }
+
+/**
+ * The default: a marimba phrase in the shape of a modern phone alarm -- a bright rising figure,
+ * answered, then a breath before it comes round again. Two seconds, so the loop seam falls in
+ * the rest.
+ */
+function marimbaSamples(sr) {
+  const out = new Float32Array(sr * 2)
+  const seq = [['E6', 0], ['B5', 0.15], ['E6', 0.30], ['G#6', 0.45], ['B6', 0.60],
+               ['G#6', 0.90], ['E6', 1.05], ['B5', 1.20], ['E6', 1.35]]
+  for (const [n, at] of seq) mallet(out, sr, at, NOTE[n], 0.6)
+  return normalise(out)
+}
+
+/**
+ * An old telephone: two dual-tone bells struck twenty times a second, in the ring-ring cadence
+ * everyone knows -- 0.4s on, 0.2s off, 0.4s on, then a pause. The one nobody sleeps through
+ * because it has meant "pick up" their whole life.
+ */
+function classicSamples(sr) {
+  const out = new Float32Array(sr * 2)
+  const bursts = [[0, 0.4], [0.6, 1.0]]
+  for (let i = 0; i < out.length; i++) {
+    const t = i / sr
+    if (!bursts.some(([a, b]) => t >= a && t < b)) continue
+    const strike = (t * 20) % 1
+    const env = Math.exp(-strike * 3)
+    out[i] = (Math.sin(2 * Math.PI * 1100 * t) * 0.55 + Math.sin(2 * Math.PI * 1500 * t) * 0.45) * env
+  }
+  return normalise(out)
+}
+
+/** A rising chime: a major arpeggio climbing two octaves and landing high, then again. */
+function risingSamples(sr) {
+  const out = new Float32Array(sr * 2)
+  const seq = ['C5', 'E5', 'G5', 'C6', 'E6', 'G6', 'C7']
+  seq.forEach((n, k) => mallet(out, sr, k * 0.12, NOTE[n], 0.7, 0.8 + k * 0.05))
+  mallet(out, sr, 0.95, NOTE.C7, 0.8)
+  mallet(out, sr, 0.95, NOTE.G6, 0.8, 0.6)
+  return normalise(out)
+}
+
+/** Every sound, in the order they are offered. Ringtones first: they are what people wake to. */
 export const ALARM_SOUNDS = {
+  ringtone: { label: 'Ringtone',      build: marimbaSamples, rate: RING_RATE },
+  classic:  { label: 'Classic phone', build: classicSamples, rate: RING_RATE },
+  rising:   { label: 'Rising',        build: risingSamples,  rate: RING_RATE },
   warble: { label: 'Warble', build: warbleSamples },
   siren:  { label: 'Siren',  build: sirenSamples },
   klaxon: { label: 'Klaxon', build: klaxonSamples },
@@ -167,15 +249,42 @@ export const ALARM_SOUNDS = {
   pulse:  { label: 'Pulse',  build: pulseSamples },
 }
 
-export const DEFAULT_ALARM = 'warble'
+export const DEFAULT_ALARM = 'ringtone'
 
 /** Samples for one of them. An unknown name is the default rather than silence: this is the
  *  one sound in the app where falling back to nothing is the worst possible answer. */
-export function alarmSamples(kind = DEFAULT_ALARM, sampleRate = SAMPLE_RATE) {
+export function alarmSamples(kind = DEFAULT_ALARM, sampleRate) {
   // Called as alarmSamples(8000) by older code and by the first version of the tests.
   if (typeof kind === 'number') { sampleRate = kind; kind = DEFAULT_ALARM }
   const spec = ALARM_SOUNDS[kind] ?? ALARM_SOUNDS[DEFAULT_ALARM]
-  return spec.build(sampleRate)
+  return spec.build(sampleRate ?? spec.rate ?? SAMPLE_RATE)
+}
+
+/** The rate a sound is built at -- the ringtones need more than a beep does. */
+export function alarmRate(kind = DEFAULT_ALARM) {
+  return (ALARM_SOUNDS[kind] ?? ALARM_SOUNDS[DEFAULT_ALARM]).rate ?? SAMPLE_RATE
+}
+
+/** A sound as a WAV clip, at its own rate. */
+function alarmWav(kind) { return encodeWav(alarmSamples(kind), alarmRate(kind)) }
+
+/**
+ * The first seconds of ringing: the sound repeated with its level rising from about a third
+ * to full, the way a phone alarm swells. Baked into the samples rather than set on the
+ * element, because iOS ignores a page setting an audio element's volume -- a ramp done that
+ * way would be full volume from the first note on the phones that matter most.
+ */
+export const RAMP_SECONDS = 8
+export function rampSamples(kind = DEFAULT_ALARM) {
+  const one = alarmSamples(kind)
+  const sr = alarmRate(kind)
+  const reps = Math.max(1, Math.round(RAMP_SECONDS * sr / one.length))
+  const out = new Float32Array(one.length * reps)
+  for (let i = 0; i < out.length; i++) {
+    const g = 0.35 + 0.65 * (i / out.length)
+    out[i] = one[i % one.length] * g
+  }
+  return out
 }
 
 // ── controller ───────────────────────────────────────────────────────────────
@@ -217,7 +326,7 @@ export function createAlarm({ makeAudio, vibrate, onChange, session, sound = DEF
   async function arm() {
     if (armed) return true
     if (!silentUrl) silentUrl = url(encodeWav(silenceSamples()))
-    if (!alarmUrl)  alarmUrl  = url(encodeWav(alarmSamples(kind)))
+    if (!alarmUrl)  alarmUrl  = url(alarmWav(kind))
     el = el ?? mk()
     el.loop = true
     el.src = silentUrl
@@ -250,9 +359,19 @@ export function createAlarm({ makeAudio, vibrate, onChange, session, sound = DEF
     // Firing without arming cannot work: no gesture has been given, so play() is refused.
     if (!armed) return false
     ringing = true
-    el.src = alarmUrl
-    el.loop = true
+    // Swell first, then ring at full for as long as it takes. The same element all the way
+    // through: it is the one the page was allowed to play, and swapping its source from
+    // `ended` is the same move fire() itself makes from a background callback.
+    el.src = url(encodeWav(rampSamples(kind), alarmRate(kind)))
+    el.loop = false
     el.volume = 1
+    el.onended = () => {
+      el.onended = null
+      if (!ringing) return
+      el.src = alarmUrl
+      el.loop = true
+      play(el)
+    }
     play(el)
     if (vibrate) {
       const buzz = () => { try { vibrate([600, 300, 600, 300, 600, 900]) } catch {} }
@@ -269,6 +388,7 @@ export function createAlarm({ makeAudio, vibrate, onChange, session, sound = DEF
     try { vibrate?.(0) } catch {}
     if (!ringing) return
     ringing = false
+    if (el) el.onended = null
     if (el && armed) { el.src = silentUrl; el.volume = 0.02; el.loop = true; play(el) }
     notify()
   }
@@ -280,8 +400,9 @@ export function createAlarm({ makeAudio, vibrate, onChange, session, sound = DEF
   function setSound(next) {
     if (!ALARM_SOUNDS[next] || next === kind) return kind
     kind = next
-    alarmUrl = url(encodeWav(alarmSamples(kind)))
-    if (ringing && el) { el.src = alarmUrl; el.loop = true; play(el) }
+    alarmUrl = url(alarmWav(kind))
+    // Changed while ringing: straight to the new one at full -- someone choosing at 4am is awake.
+    if (ringing && el) { el.onended = null; el.src = alarmUrl; el.loop = true; play(el) }
     notify()
     return kind
   }
@@ -299,7 +420,7 @@ export function createAlarm({ makeAudio, vibrate, onChange, session, sound = DEF
     if (!armed) askSession(PING)
     el = el ?? mk()
     el.loop = false
-    el.src = url(encodeWav(alarmSamples(spec)))
+    el.src = url(alarmWav(spec))
     el.volume = 1
     try { const r = el.play(); r?.catch?.(() => {}); } catch { return false }
     // Back to holding the media session open, if this alarm is meant to stay armed.

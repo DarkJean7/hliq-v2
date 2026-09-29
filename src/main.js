@@ -30971,7 +30971,19 @@ function _urlBase64ToUint8Array(b64) {
 // See src/alarm.js for why this is a media element looping silence rather than a Wake Lock.
 const _ALARM_KEY = 'hliq_wake_alarm'
 const _ALARM_SND = 'hliq_wake_alarm_sound'
-const _alarmSaved = (() => { try { return localStorage.getItem(_ALARM_SND) } catch { return null } })()
+// Once: a saved choice of the old default goes to the ringtone. The five test tones were the
+// only options when most of these were saved, so "warble" was rarely a preference -- and the
+// ask was a ringtone. Anything picked after this sticks.
+const _alarmSaved = (() => {
+  try {
+    const v = localStorage.getItem(_ALARM_SND)
+    if (!localStorage.getItem('hliq_wake_alarm_v2')) {
+      localStorage.setItem('hliq_wake_alarm_v2', '1')
+      if (v === 'warble') { localStorage.removeItem(_ALARM_SND); return null }
+    }
+    return v
+  } catch { return null }
+})()
 const _alarm = createAlarm({
   vibrate: (p) => navigator.vibrate?.(p),
   session: (t) => _setAudioSession(t),

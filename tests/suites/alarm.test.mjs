@@ -1,6 +1,6 @@
 // The wake alarm, driven for real against a stub audio element.
 import fs from 'fs'
-import { encodeWav, silenceSamples, alarmSamples, createAlarm, ALARM_SOUNDS, DEFAULT_ALARM }
+import { encodeWav, silenceSamples, alarmSamples, alarmRate, rampSamples, createAlarm, ALARM_SOUNDS, DEFAULT_ALARM }
   from '../../src/alarm.js'
 
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
@@ -58,7 +58,12 @@ buzzes = []
 t('fire() rings', alarm.fire() === true)
 t('it swaps to the alarm track', el.src !== quietSrc)
 t('at full volume', el.volume === 1)
-t('looping, so it does not stop after one second', el.loop === true)
+// It swells first -- a phone alarm's crescendo, baked into the samples because iOS ignores a
+// page setting an element's volume -- and then loops at full for as long as it takes.
+const rampSrc = el.src
+t('it swells first, then hands over', el.loop === false && typeof el.onended === 'function')
+el.onended()
+t('looping at full after the swell, so it does not stop', el.loop === true && el.src !== rampSrc && el.src !== quietSrc)
 t('and vibrates', buzzes.length > 0)
 
 const before = el.plays
@@ -117,12 +122,22 @@ console.log(nl + '-- five of them, all built to wake someone --')
     // because the element loops it and a seam mid-beep reads as a fault.
     t(`${k} is loud`, peak > 0.85, peak)
     t(`${k} is not just a click`, rms > 0.1, rms)
-    t(`${k} loops cleanly`, Math.abs(smp.length % 8000) === 0, smp.length)
+    // At its own rate: the ringtones are built at 22kHz, a beep never needed more than 8.
+    t(`${k} loops cleanly`, Math.abs(smp.length % alarmRate(k)) === 0, smp.length)
   }
   // An unknown name must not fall back to silence — the one place in the app where nothing
   // is the worst possible answer.
   t('an unknown sound is the default, never silence', alarmSamples('nonsense').length === alarmSamples(DEFAULT_ALARM).length)
-  t('and the old call shape still works', alarmSamples(8000).length === 8000)
+  t('and the old call shape still works', alarmSamples(8000).length % 8000 === 0 && alarmSamples(8000).length > 0)
+  // Asked for: "is the wake up alarm a ring tone?? if not make it like one".
+  t('the default is a ringtone, not a test tone', DEFAULT_ALARM === 'ringtone' && ALARM_SOUNDS.ringtone.rate >= 22050)
+  t('there is a classic phone ring too', !!ALARM_SOUNDS.classic)
+  const ramp = rampSamples(DEFAULT_ALARM)
+  const peakOf = (a) => a.reduce((m, v) => Math.max(m, Math.abs(v)), 0)
+  const tenth = Math.floor(ramp.length / 10)
+  t('the swell starts softer than it ends', peakOf(ramp.slice(0, tenth)) < peakOf(ramp.slice(-tenth)) * 0.6,
+    [peakOf(ramp.slice(0, tenth)), peakOf(ramp.slice(-tenth))])
+  t('and lasts several seconds', ramp.length / alarmRate(DEFAULT_ALARM) >= 6)
 }
 
 console.log(nl + '-- choosing one --')
