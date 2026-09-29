@@ -25,7 +25,8 @@
  */
 import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW,
          BT_STRATEGIES, BT_MODULES, BT_STRATEGY_META, BT_CATEGORIES, strategyKind,
-         tokyoWindowsFor, tokyoMarkets, runPortfolio, normalise, dcaDeviations } from './backtest.js'
+         tokyoWindowsFor, tokyoMarkets, runPortfolio, normalise, dcaDeviations, dcaFullDeal,
+         sizePosition, effLeverage, mmRate } from './backtest.js'
 import { summarize, downsample, drawdownCurve, score as _simScore, buyHold } from './btstats.js'
 import { replayMarks, marksUpto, stateAt as simStateAt, openPnlAt as simOpenPnl } from './simreplay.js'
 import { signalChartSvg } from './sigchart.js'
@@ -51,6 +52,8 @@ let ctx = {
   icon: () => '',
   /** Ask the app to load 24h volumes. They are only fetched when some screen needs them. */
   loadMarkets: () => Promise.resolve(),
+  /** A market's max leverage on Hyperliquid, or null. It sets the maintenance margin. */
+  maxLeverage: () => null,
 }
 export function initSimulator(overrides = {}) { ctx = { ...ctx, ...overrides } }
 
@@ -280,6 +283,17 @@ function _simResultsHtml() {
   }).join('')}</div>`
 }
 
+/**
+ * Repaint the position preview from what is in the boxes right now. Collects without
+ * rebuilding, so the box being typed in keeps the keyboard.
+ */
+function _simPreviewPaint() {
+  const pv = document.getElementById('simPreview')
+  if (!pv) return
+  _simCollect()
+  pv.innerHTML = _simPosPreview()
+}
+
 /** Repaint the chips and the search results without touching the box being typed in. */
 function _simMktPaint() {
   const c = document.getElementById('simChips')
@@ -288,6 +302,7 @@ function _simMktPaint() {
   if (r) r.innerHTML = _simResultsHtml()
   const clr = document.getElementById('simClearCoins')
   if (clr) clr.style.display = _simCoinList().length ? '' : 'none'
+  _simPreviewPaint()
 }
 
 window.__simMktSearch = function(v) {
@@ -485,6 +500,7 @@ window.__simTouch = function() {
   const span = document.getElementById('simSpan')
   const cnt = parseInt(document.getElementById('sim_count')?.value ?? '', 10)
   if (span && Number.isFinite(cnt)) span.textContent = _simSpanText(Math.max(50, Math.min(5000, cnt)))
+  _simPreviewPaint()
   if (!_simResult || _simStale) return
   _simStale = true
   const el = document.getElementById('simStale')
@@ -514,12 +530,24 @@ const SIM_CACHE_MS = 10 * 60e3
  * not a portfolio, it is the same rule fifteen times. Null means the market cannot be run.
  */
 function _simParamsFor(coin, base) {
-  if (base.strategy !== 'tokyo') return base
+  // Every market carries its own max leverage, because that -- not the leverage chosen -- sets
+  // its maintenance margin and so its liquidation price. Unknown stands in as 20x, and says so.
+  const withLev = { ...base, maxLev: _simMaxLev(coin) ?? 20 }
+  if (base.strategy !== 'tokyo') return withLev
   const row = tokyoWindowsFor(coin)
   if (!row) return null
-  return { ...base, tokyoLongFrom: row.long[0], tokyoLongTo: row.long[1],
+  return { ...withLev, tokyoLongFrom: row.long[0], tokyoLongTo: row.long[1],
            tokyoShortFrom: row.short[0], tokyoShortTo: row.short[1] }
 }
+
+function _simMaxLev(coin) {
+  let v = null
+  try { v = +ctx.maxLeverage(coin) } catch {}
+  return Number.isFinite(v) && v >= 1 ? v : null
+}
+
+/** Is this run sized the way Hyperliquid sizes -- a position with margin, leverage and a line? */
+const _simHL = (p = _simParams) => p.pnlModel === 'notional' || ['grid', 'dca'].includes(strategyKind(p.strategy))
 
 /**
  * Candles for every market in the list, from the cache where it is fresh.
@@ -584,6 +612,17 @@ function _simRunOn(bars, coins, params, skipped = null) {
   }
   if (!runs.length) return null
   if (runs.length === 1 && coins.length === 1) return runs[0].result
+  if (_simHL(params)) {
+    // Margin, refusals and liquidations are only real inside one account, so each market runs
+    // as its own SUB-ACCOUNT -- the balance split between them, or each with all of it -- and
+    // its trades are summed in dollars in the order they closed.
+    const share = params.splitRisk === false ? 1 : runs.length
+    const sub = runs.map(({ coin }) => {
+      const par = _simParamsFor(coin, { ...params, startBalance: params.startBalance / share })
+      return { coin, result: runBacktest(bars[coin], par) }
+    })
+    return runPortfolio(sub, { ...params, absolute: true })
+  }
   return runPortfolio(runs, params)
 }
 
@@ -842,12 +881,29 @@ function _simHelpHtml(key, text) {
   return `<div id="simHelp_${key}" class="sim-help" style="display:none">${esc(text)}</div>`
 }
 
+/** The coin the form is talking about, for "0.5 BTC" rather than "0.5 coins". */
+function _simCoinUnit() {
+  const list = _simCoinList()
+  return list.length === 1 ? _mktName(list[0]) : _T('coins', 'monedas')
+}
+
+/** A field's unit, where it depends on how orders are sized. */
+function _simUnit(f) {
+  if (['dcaBaseUsd', 'dcaSoUsd', 'gridUsdPerLevel'].includes(f.key)) return _simParams.orderUnit === 'coin' ? _simCoinUnit() : 'USDC'
+  if (f.key === 'sizeCoin') return _simCoinUnit()
+  if (f.key === 'leverage') {
+    const m = _simMaxLev(_simCoinList()[0])
+    return m ? `x · ${_T('max', 'máx')} ${m}x` : 'x'
+  }
+  return f.unit
+}
+
 function _simFieldHtml(f) {
   const v = _simParams[f.key]
   return `<label class="sim-field">
     <div class="sim-lbl">
       <span class="sim-lbl-t">${esc(f.label)}</span>
-      <span class="sim-lbl-u">${esc(f.unit)}</span>
+      <span class="sim-lbl-u">${esc(_simUnit(f))}</span>
       <span style="flex:1"></span>
       ${_simQ(f.key)}
     </div>
@@ -879,10 +935,16 @@ function _simFieldVisible(f) {
   if (f.strategy && f.strategy !== _simParams.strategy) return false
   if (f.notFor?.includes(_simParams.strategy)) return false
   const kind = strategyKind(_simParams.strategy)
-  // Grid and DCA are paid in dollars by their own order sizes; no money model applies.
-  if (f.group === 'riskModel' || f.group === 'fixedModel' || f.group === 'notionalModel') {
-    if (kind === 'grid' || kind === 'dca') return false
-  }
+  const ladder = kind === 'grid' || kind === 'dca'
+  // Grid and DCA are sized by their own orders; of the position settings only leverage applies.
+  if (f.key === 'leverage') return _simHL()
+  if (ladder && (f.group === 'riskModel' || f.group === 'fixedModel' || f.group === 'notionalModel')) return false
+  if (f.key === 'sizePct') return _simParams.pnlModel === 'notional' && _simParams.sizeMode === 'pct'
+  if (f.key === 'sizeUsd') return _simParams.pnlModel === 'notional' && _simParams.sizeMode === 'usd'
+  if (f.key === 'sizeCoin') return _simParams.pnlModel === 'notional' && _simParams.sizeMode === 'coin'
+  // Per-fill maker and taker fees for a Hyperliquid position; one flat cost for the others.
+  if (f.key === 'makerFeePct' || f.key === 'takerFeePct') return !!_simParams.useFees && _simHL()
+  if (f.key === 'feePct') return !!_simParams.useFees && !_simHL()
   if (f.group === 'riskModel') return _simParams.pnlModel === 'risk'
   if (f.group === 'fixedModel') return _simParams.pnlModel === 'fixed'
   if (f.group === 'notionalModel') return _simParams.pnlModel === 'notional'
@@ -942,16 +1004,18 @@ function _simTokyoNote() {
 
 /** What a DCA deal can grow to, stated beside the settings that decide it. */
 function _simDcaNote() {
-  const p = _simParams
-  const devs = dcaDeviations(p)
-  const total = p.dcaBaseUsd + devs.reduce((a, _, k) => a + p.dcaSoUsd * Math.pow(p.dcaVolScale, k), 0)
-  const last = devs[devs.length - 1] ?? 0
-  const over = total > p.startBalance
+  const id = _simCoinList()[0]
+  const px = _simMarkets().by[id]?.px
+  // In coins a deal is only worth something at a price; without one there is nothing honest to say.
+  if (_simParams.orderUnit === 'coin' && !(px > 0)) return ''
+  const p = { ..._simParams, maxLev: _simMaxLev(id) ?? 20 }
+  const full = dcaFullDeal(p, px > 0 ? px : 100)
+  const over = full.margin > p.startBalance
   return `<div class="sim-note" style="color:${over ? 'var(--warn)' : 'var(--fg-2)'}">${
-    _T(`A full deal commits <b>${money(total)}</b> and the last safety order rests <b>${last.toFixed(1)}%</b> from the base price${
-        over ? ` — more than the ${money(p.startBalance)} balance, so it needs leverage to exist` : ''}.`,
-       `Un trato completo compromete <b>${money(total)}</b> y la última orden está a <b>${last.toFixed(1)}%</b> del precio base${
-        over ? ` — más que el balance de ${money(p.startBalance)}` : ''}.`)}</div>`
+    _T(`A full deal is a <b>${money(full.notional)}</b> position needing <b>${money(full.margin)}</b> of margin at ${effLeverage(p)}x; the last safety order rests <b>${full.lastDev.toFixed(1)}%</b> from the base price${
+        over ? ` — more margin than the ${money(p.startBalance)} balance, so the last orders will be refused` : ''}.`,
+       `Un trato completo es una posición de <b>${money(full.notional)}</b> con <b>${money(full.margin)}</b> de margen a ${effLeverage(p)}x; la última orden está a <b>${full.lastDev.toFixed(1)}%</b>${
+        over ? ` — más margen que el balance, así que las últimas órdenes serán rechazadas` : ''}.`)}</div>`
 }
 
 function _simStrategyCard() {
@@ -1022,16 +1086,87 @@ function _simExitCard() {
   return _simCard(3, _T('Entry and exit', 'Entrada y salida'), _simGrid(fields + choices))
 }
 
+/** A segmented control for one of the Hyperliquid choices, backed by a hidden input _simCollect reads. */
+function _simSegChoice(key, labels = {}) {
+  const c = BT_CHOICES.find(x => x.key === key)
+  if (!c) return ''
+  return `<input type="hidden" id="sim_${key}" value="${esc(String(_simParams[key]))}">
+    <div class="sim-lbl" style="margin-top:12px">
+      <span class="sim-lbl-t">${esc(c.label)}</span><span style="flex:1"></span>${_simQ(key)}
+    </div>
+    <div class="sim-seg">${c.options.map(([k, lbl]) => `<button type="button" class="${String(_simParams[key]) === k ? 'on' : ''}" onclick="window.__simSetChoice('${key}','${k}')">${esc(labels[k] ?? lbl)}</button>`).join('')}</div>
+    ${_simHelpHtml(key, c.help ?? '')}`
+}
+
+window.__simSetChoice = function(key, v) { window.__simStructural(() => { _simParams[key] = v }) }
+
+/**
+ * What the settings above would open RIGHT NOW on the first market: its size, the margin it
+ * posts, and where it would be liquidated each way. The one line that makes cross against
+ * isolated, and leverage, something you can see before running anything.
+ */
+function _simPosPreview() {
+  const id = _simCoinList()[0]
+  const m = _simMarkets().by[id]
+  const px = m?.px
+  if (!(px > 0)) return ''
+  const maxLev = _simMaxLev(id)
+  const p = { ..._simParams, maxLev: maxLev ?? 20 }
+  const kind = strategyKind(p.strategy)
+  const line = (lbl, v, colour = '') => `<div class="sim-row"><span>${lbl}</span><span${colour ? ` style="color:${colour}"` : ''}>${v}</span></div>`
+  const liqTxt = (liq) => liq == null ? `<span style="color:var(--green)">${_T('none', 'ninguna')}</span>`
+    : `$${fmtPrice(liq)} <span class="sim-lbl-u">(${pct((liq / px - 1) * 100, 1)})</span>`
+  const levWarn = maxLev && p.leverage > maxLev
+    ? `<div class="sim-note" style="color:var(--warn);margin-top:6px">${_T(`${esc(_mktName(id))} allows ${maxLev}x at most; runs use ${maxLev}x.`, `${esc(_mktName(id))} permite ${maxLev}x como máximo.`)}</div>` : ''
+  const head = `<div class="sim-sub" style="margin-top:0">${_T('If opened now on', 'Si se abriera ahora en')} <span class="notranslate">${esc(_mktName(id))}</span> · $${fmtPrice(px)}</div>`
+  if (kind === 'grid' || kind === 'dca') {
+    if (kind === 'dca') {
+      const full = dcaFullDeal(p, px)
+      return `<div class="sim-inset sim-preview">${head}
+        ${line(_T('Full deal', 'Trato completo'), money(full.notional))}
+        ${line(_T('Margin it needs', 'Margen necesario'), money(full.margin), full.margin > p.startBalance ? 'var(--warn)' : '')}
+        ${line(_T('Maintenance', 'Mantenimiento'), (mmRate(p) * 100).toFixed(2) + '% ' + _T('of position', 'de la posición'))}
+      </div>${levWarn}`
+    }
+    return `<div class="sim-inset sim-preview">${head}
+      ${line(_T('Leverage used', 'Apalancamiento'), effLeverage(p) + 'x · ' + (p.marginMode === 'isolated' ? _T('isolated', 'aislado') : _T('cross', 'cruzado')))}
+      ${line(_T('Maintenance', 'Mantenimiento'), (mmRate(p) * 100).toFixed(2) + '% ' + _T('of position', 'de la posición'))}
+    </div>${levWarn}`
+  }
+  const L = sizePosition(p.startBalance, p, px, 1), S = sizePosition(p.startBalance, p, px, -1)
+  if (L.rejected) {
+    return `<div class="sim-inset sim-preview">${head}<div class="sim-note" style="color:var(--warn);margin-top:4px">${
+      L.rejected === 'min' ? _T('Under Hyperliquid\'s $10 minimum — every order would be refused.', 'Bajo el mínimo de $10 — toda orden sería rechazada.')
+                           : _T('More margin than the balance has — every order would be refused.', 'Más margen del que hay — toda orden sería rechazada.')}</div></div>${levWarn}`
+  }
+  return `<div class="sim-inset sim-preview">${head}
+    ${line(_T('Position', 'Posición'), `${fmtSizeCoin(L.q)} <span class="notranslate">${esc(_mktName(id))}</span> · ${money(L.notional)}`)}
+    ${line(_T('Margin posted', 'Margen'), `${money(L.margin)} <span class="sim-lbl-u">${L.lev}x</span>`)}
+    ${line(_T('Liquidation if long', 'Liquidación si largo'), liqTxt(L.liq), L.liq != null ? 'var(--red)' : '')}
+    ${line(_T('Liquidation if short', 'Liquidación si corto'), liqTxt(S.liq), 'var(--red)')}
+  </div>${levWarn}`
+}
+
+function fmtSizeCoin(q) {
+  if (!Number.isFinite(q)) return '—'
+  const a = Math.abs(q)
+  return a >= 1000 ? q.toFixed(0) : a >= 1 ? q.toFixed(3) : q.toPrecision(3)
+}
+
 function _simMoneyCard(n) {
   const kind = strategyKind(_simParams.strategy)
-  const dollar = kind === 'grid' || kind === 'dca'
+  const ladder = kind === 'grid' || kind === 'dca'
   const seg = (k, lbl) => `<button type="button" class="${_simParams.pnlModel === k ? 'on' : ''}" onclick="window.__simSetModel('${k}')">${lbl}</button>`
   const multi = _simCoinList().length > 1
-  return _simCard(n, _T('Money', 'Dinero'), `
+  const hl = _simHL()
+  const posFields = BT_FIELDS.filter(f => (f.group === 'riskModel' || f.group === 'fixedModel' || f.group === 'notionalModel') && _simFieldVisible(f))
+  return _simCard(n, _T('Position & margin', 'Posición y margen'), `
     ${_simGrid(BT_FIELDS.filter(f => f.key === 'startBalance').map(_simFieldHtml).join('') +
                (multi ? BT_CHOICES.filter(c => c.key === 'splitRisk').map(_simChoiceHtml).join('') : ''))}
-    ${dollar ? `<div class="sim-note">${_T('Paid in dollars by its own order sizes above — the money models do not apply.',
-                                          'Se paga en dólares según sus propias órdenes — los modelos de dinero no aplican.')}</div>` : `
+    ${multi && hl ? `<div class="sim-note">${_T(
+      'Each market trades its own sub-account — the balance split between them, or all of it each — with its own margin and liquidations, as separate isolated wallets would.',
+      'Cada mercado opera su propia subcuenta, con su propio margen y liquidaciones.')}</div>` : ''}
+    ${ladder ? '' : `
     <input type="hidden" id="sim_pnlModel" value="${esc(_simParams.pnlModel)}">
     <div class="sim-lbl" style="margin-top:14px">
       <span class="sim-lbl-t">${_T('How a result is sized', 'Cómo se dimensiona')}</span>
@@ -1039,14 +1174,18 @@ function _simMoneyCard(n) {
       ${_simQ('pnlModel')}
     </div>
     <div class="sim-seg">
-      ${seg('notional', _T('Position × leverage', 'Posición × apalanc.'))}
+      ${seg('notional', _T('Hyperliquid', 'Hyperliquid'))}
       ${seg('fixed', _T('Fixed %', 'Fijo %'))}
       ${seg('risk', _T('Risk-based', 'Por riesgo'))}
     </div>
     ${_simHelpHtml('pnlModel', _T(
-      'Position × leverage is how an exchange pays: each trade posts a share of the balance as margin, at a leverage, and gains or loses exactly what the price moved -- liquidated if the move takes the margin. Fixed adds or subtracts a flat percentage of the balance, so the size of the price move does not affect the result -- the levels decide whether you won, these settings decide by how much, and keeping them consistent is on you. Risk-based sets what a stop costs and pays a win that multiplied by the reward-to-risk the levels imply, so changing the target changes the payout by itself.',
-      'Posición × apalancamiento es como paga un exchange: cada operación gana o pierde lo que movió el precio. Fijo suma o resta un porcentaje del balance. Por riesgo dimensiona según la distancia al stop, así que cambiar el objetivo cambia el pago.'))}
-    <div style="margin-top:12px">${_simGrid(BT_FIELDS.filter(f => (f.group === 'riskModel' || f.group === 'fixedModel' || f.group === 'notionalModel') && _simFieldVisible(f)).map(_simFieldHtml).join(''))}</div>`}`)
+      'Hyperliquid sizes each trade as a real position: a size, a leverage, margin posted in cross or isolated, per-fill maker and taker fees, the $10 minimum, and a liquidation price computed the way the exchange computes it. Fixed adds or subtracts a flat percentage of the balance, so the size of the price move does not affect the result -- the levels decide whether you won, these settings decide by how much, and keeping them consistent is on you. Risk-based sets what a stop costs and pays a win that multiplied by the reward-to-risk the levels imply, so changing the target changes the payout by itself.',
+      'Hyperliquid dimensiona cada operación como una posición real: tamaño, apalancamiento, margen cruzado o aislado, comisiones maker y taker y precio de liquidación. Fijo suma o resta un porcentaje del balance. Por riesgo dimensiona según la distancia al stop.'))}`}
+    ${hl ? `
+      ${_simSegChoice('marginMode')}
+      ${ladder ? _simSegChoice('orderUnit', { coin: _simCoinUnit() }) : _simSegChoice('sizeMode', { coin: _simCoinUnit() })}` : ''}
+    ${posFields.length ? `<div style="margin-top:12px">${_simGrid(posFields.map(_simFieldHtml).join(''))}</div>` : ''}
+    ${hl ? `<div id="simPreview" style="margin-top:12px">${_simPosPreview()}</div>` : ''}`)
 }
 
 function _simModulesCard(n) {
@@ -1318,8 +1457,11 @@ function _simTradesHtml(r) {
         <span class="mono">${t.exitPx != null ? fmtPrice(t.exitPx) : '—'}</span>
         ${multi ? `<span class="notranslate" style="color:var(--accent);font-weight:700;margin-left:5px">${esc(_ocCoinLabel(t.coin ?? ''))}</span>` : ''}
         ${t.so ? `<span class="sim-badge" style="margin-left:5px">${t.so} SO</span>` : ''}
+        ${Number.isFinite(t.q) ? `<span class="sim-lbl-u" style="margin-left:5px">${fmtSizeCoin(t.q)}</span>` : ''}
         <span style="display:block;color:var(--muted);font-size:10px;margin-top:2px">${
-          esc(when(t.time))}${t.exitAt ? ' → ' + esc(when(t.exitAt)) : ''}${held ? ' · ' + held : ''}</span>
+          esc(when(t.time))}${t.exitAt ? ' → ' + esc(when(t.exitAt)) : ''}${held ? ' · ' + held : ''}${
+          t.liqPx ? ` · <span style="color:var(--red)">liq $${fmtPrice(t.liqPx)}</span>` : ''}${
+          t.mae > 0 ? ` · ${_T('worst', 'peor')} -${t.mae.toFixed(1)}%` : ''}</span>
       </span>
       <span style="flex-shrink:0;text-align:right">
         <span class="mono" style="font-weight:700;color:${tone(t.delta ?? 0)}">${
@@ -1516,7 +1658,9 @@ function _simRepBodyHtml() {
   // the balance beside it, and saying so is the difference between a replay and a highlight
   // reel.
   const op = st.open
-  const openPnl = op ? simOpenPnl(op, px, start, _simRepStakeFrac()) : null
+  const openPnl = !op ? null
+    : Number.isFinite(op.q) ? (op.side === 'long' ? 1 : -1) * op.q * (px - op.entry)
+    : simOpenPnl(op, px, start, _simRepStakeFrac())
   const openTxt = !op ? '—'
     : `${op.side === 'long' ? _T('LONG', 'LARGO') : _T('SHORT', 'CORTO')} @ $${fmtPrice(op.entry)}`
 
@@ -1705,6 +1849,12 @@ function _simKpi(label, value, sub = '', colour = '') {
 const _row = (label, value, colour = '') =>
   `<div class="sim-row"><span>${label}</span><span${colour ? ` style="color:${colour}"` : ''}>${value}</span></div>`
 
+/** The furthest any single trade went against its entry, before whatever closed it. */
+function _simWorst(r) {
+  const m = (r.trades ?? []).map(t => t.mae).filter(v => Number.isFinite(v))
+  return m.length ? Math.max(...m) : null
+}
+
 function _simStatsHtml(r, s) {
   const t = s.trades, k = s.risk
   const iv = _simRunMeta?.iv
@@ -1744,7 +1894,9 @@ function _simStatsHtml(r, s) {
     ${_row(_T('Longs', 'Largos'), t.long.n ? `${t.long.n} · <span style="color:${tone(t.long.net)}">${signed(t.long.net)}</span>` : '—')}
     ${_row(_T('Shorts', 'Cortos'), t.short.n ? `${t.short.n} · <span style="color:${tone(t.short.net)}">${signed(t.short.net)}</span>` : '—')}
     ${_row(_T('Unresolved', 'Sin resolver'), `${r.unresolved}`)}
-    ${t.liquidations ? _row(_T('Liquidations', 'Liquidaciones'), `${t.liquidations}`, 'var(--red)') : ''}
+    ${_simHL(r.params) ? _row(_T('Liquidations', 'Liquidaciones'), `${t.liquidations}`, t.liquidations ? 'var(--red)' : '') : ''}
+    ${_simHL(r.params) ? _row(_T('Orders refused', 'Órdenes rechazadas'), `${r.refused ?? 0}`, r.refused ? 'var(--warn)' : '') : ''}
+    ${_simWorst(r) != null ? _row(_T('Worst move against a trade', 'Peor movimiento en contra'), '-' + _simWorst(r).toFixed(2) + '%') : ''}
   </div>`)
   if (r.grid) blocks.push(`<div class="sim-inset"><div class="sim-sub">${_T('Grid', 'Cuadrícula')}</div>
     ${_row(_T('Range', 'Rango'), `${money(r.grid.lower)} - ${money(r.grid.upper)}`)}
@@ -1758,6 +1910,11 @@ function _simStatsHtml(r, s) {
       : _T('nothing', 'nada'))}
     ${_row(_T('Worth now', 'Valor actual'), money(r.grid.inventoryValue))}
     ${_row(_T('Open position PnL', 'PnL de la posición'), signed(r.grid.unrealized), tone(r.grid.unrealized))}
+    ${_row(_T('Leverage', 'Apalancamiento'), `${r.grid.lev ?? 1}x ${r.params.marginMode === 'isolated' ? _T('isolated', 'aislado') : _T('cross', 'cruzado')}`)}
+    ${_row(_T('Most margin posted', 'Máx. margen'), money(r.grid.maxMargin ?? 0))}
+    ${_row(_T('Liquidations', 'Liquidaciones'), `${r.grid.liquidations ?? 0}`, r.grid.liquidations ? 'var(--red)' : '')}
+    ${_row(_T('Closest to liquidation', 'Más cerca de liquidación'), r.grid.closestLiq == null ? _T('never at risk', 'nunca en riesgo') : r.grid.closestLiq.toFixed(1) + '%')}
+    ${r.grid.liqNow ? _row(_T('Liquidation price now', 'Liquidación ahora'), '$' + fmtPrice(r.grid.liqNow), 'var(--red)') : ''}
   </div>`)
   if (r.dca) {
     const hist = r.dca.soHist.map((n, k) => n ? `${k}:${n}` : '').filter(Boolean).join(' · ')
@@ -1768,7 +1925,10 @@ function _simStatsHtml(r, s) {
       ${_row(_T('Most safety orders used', 'Máx. órdenes usadas'), `${r.dca.maxSo} / ${r.dca.soCount}`, r.dca.maxSo === r.dca.soCount && r.dca.soCount ? 'var(--warn)' : '')}
       ${_row(_T('Deals by orders used', 'Tratos por órdenes'), hist || '—')}
       ${_row(_T('Largest deal', 'Mayor trato'), money(r.dca.maxDeployed))}
-      ${_row(_T('Full deal would be', 'Trato completo'), money(r.dca.maxPossible))}
+      ${_row(_T('Most margin posted', 'Máx. margen'), money(r.dca.maxMargin ?? 0))}
+      ${_row(_T('Liquidations', 'Liquidaciones'), `${r.dca.liquidations ?? 0}`, r.dca.liquidations ? 'var(--red)' : '')}
+      ${_row(_T('Closest to liquidation', 'Más cerca de liquidación'), r.dca.closestLiq == null ? _T('never at risk', 'nunca en riesgo') : r.dca.closestLiq.toFixed(1) + '%', r.dca.closestLiq != null && r.dca.closestLiq < 5 ? 'var(--warn)' : '')}
+      ${_row(_T('Full deal would be', 'Trato completo'), `${money(r.dca.maxPossible)} · ${_T('margin', 'margen')} ${money(r.dca.maxPossibleMargin ?? r.dca.maxPossible)}`)}
       ${_row(_T('Open deal', 'Trato abierto'), r.dca.openCost ? `${money(r.dca.openCost)} · ${r.dca.openSo} SO` : _T('none', 'ninguno'))}
       ${_row(_T('Open deal PnL', 'PnL del trato abierto'), signed(r.dca.unrealized), tone(r.dca.unrealized))}
     </div>`)
@@ -1805,11 +1965,19 @@ function _simUsedBits(r) {
     if (p.useTimeExit) bits.push(`${_T('exit after', 'salir tras')} ${p.timeExitCandles}`)
     bits.push(p.ambiguous === 'win' ? _T('ties → target', 'empates → objetivo') : _T('ties → stop', 'empates → stop'))
   }
-  if (kind !== 'grid' && kind !== 'dca') {
-    bits.push(p.pnlModel === 'notional' ? `${p.sizePct}% × ${p.leverage}x`
-      : p.pnlModel === 'risk' ? `${_T('risk', 'riesgo')} ${p.riskPct}%` : `+${p.winPct}% / -${p.lossPct}%`)
+  const hl = _simHL(p)
+  if (hl) {
+    const size = kind === 'grid' || kind === 'dca'
+      ? (p.orderUnit === 'coin' ? _T('orders in coins', 'órdenes en monedas') : _T('orders in USDC', 'órdenes en USDC'))
+      : p.sizeMode === 'usd' ? `$${fmtUSD(p.sizeUsd)} ${_T('per trade', 'por op.')}`
+      : p.sizeMode === 'coin' ? `${p.sizeCoin} ${_T('coins per trade', 'monedas por op.')}`
+      : `${p.sizePct}% ${_T('of balance', 'del balance')}`
+    bits.push(size, `${p.leverage}x ${p.marginMode === 'isolated' ? _T('isolated', 'aislado') : _T('cross', 'cruzado')}`)
+    bits.push(p.useFees ? `${_T('maker', 'maker')} ${p.makerFeePct}% / ${_T('taker', 'taker')} ${p.takerFeePct}%` : _T('no fees', 'sin comisiones'))
+  } else {
+    bits.push(p.pnlModel === 'risk' ? `${_T('risk', 'riesgo')} ${p.riskPct}%` : `+${p.winPct}% / -${p.lossPct}%`)
+    bits.push(p.useFees ? `${_T('fees', 'comis.')} ${p.feePct}%` : _T('no fees', 'sin comisiones'))
   }
-  bits.push(p.useFees ? `${_T('fees', 'comis.')} ${p.feePct}%` : _T('no fees', 'sin comisiones'))
   return bits.filter(Boolean)
 }
 
@@ -1863,8 +2031,24 @@ function _simResultHtml() {
            'Las velas que tocaron ambos niveles cuentan como ganadas.')
       : '',
     s.trades.liquidations > 0
-      ? _T(`${s.trades.liquidations} trade${s.trades.liquidations === 1 ? ' was' : 's were'} liquidated at ${r.params.leverage}x. Lower the leverage or tighten the stop.`,
-           `${s.trades.liquidations} operación(es) liquidadas a ${r.params.leverage}x.`)
+      ? _T(`${s.trades.liquidations} position${s.trades.liquidations === 1 ? ' was' : 's were'} liquidated (${r.params.marginMode === 'isolated' ? 'isolated' : 'cross'}, ${r.params.leverage}x). ${
+            r.params.marginMode === 'isolated' ? 'Each cost its own margin.' : 'In cross each took the account down to maintenance margin.'}`,
+           `${s.trades.liquidations} posición(es) liquidadas.`)
+      : '',
+    (r.refused ?? 0) > 0
+      ? _T(`${r.refused} order${r.refused === 1 ? ' was' : 's were'} refused, as Hyperliquid would refuse them: under the $10 minimum, or more margin than the account had.`,
+           `${r.refused} orden(es) rechazadas: bajo el mínimo de $10 o sin margen suficiente.`)
+      : '',
+    (r.dca?.soRefused ?? 0) > 0
+      ? _T(`${r.dca.soRefused} time${r.dca.soRefused === 1 ? '' : 's'} a deal ran out of margin for its next safety order and had to sit.`,
+           `${r.dca.soRefused} vez/veces un trato se quedó sin margen para su siguiente orden.`)
+      : '',
+    _simHL(r.params) && (_simRunMeta?.coins ?? []).some(c => _simMaxLev(c) != null && r.params.leverage > _simMaxLev(c))
+      ? _T(`Leverage was capped at each market's own maximum: ${(_simRunMeta?.coins ?? []).filter(c => r.params.leverage > (_simMaxLev(c) ?? Infinity)).map(c => `${_mktName(c)} ${_simMaxLev(c)}x`).join(', ')}.`,
+           'El apalancamiento se limitó al máximo de cada mercado.')
+      : '',
+    _simHL(r.params) && (_simRunMeta?.coins ?? []).some(c => _simMaxLev(c) == null)
+      ? _T('A market\'s max leverage was not known, so its maintenance margin assumed 20x.', 'No se conocía el apalancamiento máximo de un mercado; se asumió 20x.')
       : '',
     r.halted ? _T('The run halted after the losing streak set under Modules.', 'La ejecución se detuvo tras la racha de pérdidas.') : '',
     r.unresolved > 0 && !r.grid && !r.dca

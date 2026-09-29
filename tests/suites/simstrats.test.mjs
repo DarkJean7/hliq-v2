@@ -6,7 +6,8 @@
 // leveraged one that moves too far is liquidated rather than forgiven.
 import fs from 'fs'
 import { runBacktest, runPortfolio, signals, normalise, coerceParams, rsiSeries, supertrendSeries,
-         notionalDelta, liqPrice, dcaDeviations, runDcaBacktest,
+         dcaDeviations, runDcaBacktest, runGridBacktest, dcaFullDeal,
+         mmRate, hlLiqPrice, sizePosition, closePnl, effLeverage,
          BT_DEFAULTS, BT_STRATEGIES, BT_STRATEGY_META, BT_FIELDS, BT_CHOICES, BT_MODULES, strategyKind }
   from '../../src/backtest.js'
 import { equityCurve, drawdownCurve, riskStats, tradeStats, monthlyReturns, buyHold, summarize,
@@ -132,16 +133,43 @@ const gr = runBacktest(wave, { strategy: 'grid', gridRangePct: 5 })
 t('marked to market every candle, so it is not always zero', gr.maxDrawdown > 0, gr.maxDrawdown)
 t('grid cycles are dollar-sized for a portfolio', gr.trades.every(x => x.sized && Number.isFinite(x.ret)))
 
-console.log(nl + '-- position sizing pays what the price moved --')
-const P = { ...BT_DEFAULTS, sizePct: 50, leverage: 4, useFees: false }
-t('half the balance at 4x on a 1% move is 2% of the balance', near(notionalDelta(1000, P, 100, 101, true), 20))
-t('a short gains when price falls', near(notionalDelta(1000, P, 100, 99, false), 20))
-t('fees are charged on the whole position', near(notionalDelta(1000, { ...P, useFees: true, feePct: 0.1 }, 100, 100, true), -2))
-t('a loss never exceeds the margin posted', near(notionalDelta(1000, P, 100, 50, true), -500))
-t('1x has no liquidation line', liqPrice({ pnlModel: 'notional', leverage: 1 }, 100, true) === null)
-t('10x is liquidated about 9% away', near(liqPrice({ pnlModel: 'notional', leverage: 10 }, 100, true), 91) &&
-  near(liqPrice({ pnlModel: 'notional', leverage: 10 }, 100, false), 109))
-t('the other money models have none', liqPrice({ pnlModel: 'fixed', leverage: 10 }, 100, true) === null)
+console.log(nl + '-- Hyperliquid margin: cross, isolated, and where each is liquidated --')
+// Asked for: "cross/isolated, with their proper liquidation prices depending the chosen one".
+// Hyperliquid: maintenance margin is half the initial margin at the market's MAX leverage, and a
+// position is liquidated where equity meets it. Cross counts the whole account as equity;
+// isolated counts only the margin posted for the position.
+const HLP = { ...BT_DEFAULTS, maxLev: 50, useFees: false }
+t('maintenance is half the initial margin at max leverage', near(mmRate({ maxLev: 50 }), 0.01) && near(mmRate({ maxLev: 3 }), 1 / 6))
+// A long of 1 coin at 100, backed by $10: equity 10 + (P - 100) meets 0.01 * P at P = 90/0.99.
+t('the long line is where equity meets maintenance', near(hlLiqPrice(1, 100, 1, 10, 0.01), 90 / 0.99, 1e-9))
+t('and the short line is its mirror', near(hlLiqPrice(-1, 100, 1, 10, 0.01), 110 / 1.01, 1e-9))
+t('a long backed by its whole value cannot be liquidated', hlLiqPrice(1, 100, 1, 100, 0.01) === null)
+const iso = sizePosition(1000, { ...HLP, marginMode: 'isolated', sizeMode: 'usd', sizeUsd: 1000, leverage: 10 }, 100, 1)
+const crs = sizePosition(1000, { ...HLP, marginMode: 'cross', sizeMode: 'usd', sizeUsd: 1000, leverage: 10 }, 100, 1)
+t('a $1,000 position at 10x posts $100 of margin', near(iso.margin, 100) && near(iso.q, 10))
+t('isolated: liquidated about 9% away, when its $100 is nearly gone', near(iso.liq, (100 - 10) / 0.99, 1e-9))
+t('cross: the same position is backed by the whole $1,000 -- it cannot be liquidated at all', crs.liq === null)
+const crs5 = sizePosition(1000, { ...HLP, marginMode: 'cross', sizeMode: 'usd', sizeUsd: 5000, leverage: 10 }, 100, 1)
+t('a bigger cross position sits closer, backed by the same account', crs5.liq != null && crs5.liq > 79 && crs5.liq < 81, crs5.liq)
+const crs5b = sizePosition(1000, { ...HLP, marginMode: 'cross', sizeMode: 'usd', sizeUsd: 5000, leverage: 20 }, 100, 1)
+t('in cross, leverage does not move the line -- only the margin it asks for', near(crs5b.liq, crs5.liq) && crs5b.margin < crs5.margin)
+const iso20 = sizePosition(1000, { ...HLP, marginMode: 'isolated', sizeMode: 'usd', sizeUsd: 1000, leverage: 20 }, 100, 1)
+t('in isolated, more leverage pulls it closer', iso20.liq > iso.liq)
+t('an order under $10 is refused', sizePosition(1000, { ...HLP, sizeMode: 'usd', sizeUsd: 9 }, 100, 1).rejected === 'min')
+t('so is one the account cannot margin', sizePosition(100, { ...HLP, sizeMode: 'usd', sizeUsd: 5000, leverage: 10 }, 100, 1).rejected === 'margin')
+t('leverage is capped at the market\'s maximum', effLeverage({ leverage: 40, maxLev: 3 }) === 3)
+t('100% of the balance leaves room for the fee, as the order slider does',
+  !sizePosition(1000, { ...BT_DEFAULTS, maxLev: 50, sizePct: 100, leverage: 1 }, 100, 1).rejected)
+t('sizes can be coins', near(sizePosition(1000, { ...HLP, sizeMode: 'coin', sizeCoin: 2.5 }, 100, 1).q, 2.5))
+
+console.log(nl + '-- fees are per fill: maker for resting orders, taker for the rest --')
+const FP = { ...BT_DEFAULTS, useFees: true, makerFeePct: 0.015, takerFeePct: 0.045 }
+const fp = sizePosition(20000, { ...FP, sizeMode: 'usd', sizeUsd: 10000 }, 100, 1)
+t('the entry is a market order and pays taker', near(fp.openFee, 4.5))
+t('a target that fills pays maker on the way out', near(closePnl(fp, 1, 100, 100, FP, 'maker'), -4.5 - 1.5))
+t('a stop pays taker', near(closePnl(fp, 1, 100, 100, FP, 'taker'), -9))
+
+console.log(nl + '-- liquidation in a run --')
 // A long entered on a candle before a crash, with a stop far below the liquidation line.
 const crash = normalise([
   ...Array.from({ length: 40 }, (_, i) => ({ t: T0 + i * H, o: 100, h: 100.5, l: 99.5, c: 100 })),
@@ -149,12 +177,49 @@ const crash = normalise([
   { t: T0 + 41 * H, o: 103.5, h: 103.5, l: 80, c: 82 },
   ...Array.from({ length: 10 }, (_, i) => ({ t: T0 + (42 + i) * H, o: 82, h: 83, l: 81, c: 82 })),
 ])
-const lq = runBacktest(crash, { strategy: 'breakout', breakoutLookback: 20, leverage: 20, stopLossPct: 15, takeProfitPct: 50, useCooldown: false })
-const lqT = lq.trades.find(x => x.liq)
-t('a leveraged trade that moves past its line is liquidated', !!lqT, lq.trades)
-t('and loses the margin, not more', lqT && lqT.delta < 0 && -lqT.delta <= 1000 * 1.0 + 1e-6)
-t('the stop never gets the chance to fire', lqT && lqT.exitPx > lqT.sl)
-t('leverage is capped at the exchange ceiling', coerceParams({ leverage: 500 }).leverage === 50)
+const run = (extra) => runBacktest(crash, { strategy: 'breakout', breakoutLookback: 20, stopLossPct: 15, takeProfitPct: 50,
+  useCooldown: false, maxLev: 50, ...extra })
+const lqI = run({ marginMode: 'isolated', sizeMode: 'usd', sizeUsd: 5000, leverage: 20 })
+const lqT = lqI.trades.find(x => x.liq)
+t('an isolated 20x long is liquidated in the crash, before its stop', !!lqT && lqT.exitPx > lqT.sl, lqI.trades)
+t('it closes at its own liquidation price', lqT && near(lqT.exitPx, lqT.liqPx, 1e-9))
+t('and loses about its margin, not the account', lqT && lqT.delta < -200 && lqT.delta > -260, lqT?.delta)
+const lqC = run({ marginMode: 'cross', sizeMode: 'usd', sizeUsd: 5000, leverage: 20 })
+t('the same position in cross survives -- the account stands behind it', !lqC.trades.some(x => x.liq))
+t('and takes the stop instead, a much bigger loss', lqC.trades[0]?.outcome === 'loss' && lqC.trades[0].delta < lqT.delta)
+const big = run({ marginMode: 'cross', sizeMode: 'pct', sizePct: 100, leverage: 20 })
+// At 20x on a 50x market, cross is liquidated when the account is down to maintenance -- 1% of
+// a position twenty times its size, so about a fifth of it is left.
+t('a full-size cross 20x long is liquidated, and takes most of the account', big.trades.some(x => x.liq) && big.balance < 300, big.balance)
+t('every trade records how far it went against it', lqI.trades.every(x => x.mae != null))
+
+console.log(nl + '-- grid and DCA are leveraged positions too --')
+const dcaCrash = normalise([
+  { t: T0, o: 100, h: 100, l: 100, c: 100 },
+  ...Array.from({ length: 30 }, (_, i) => ({ t: T0 + (i + 1) * H, o: 100 - i * 2, h: 100 - i * 2, l: 98 - i * 2, c: 98 - i * 2 })),
+])
+const dcaP = { strategy: 'dca', maxLev: 50, dcaBaseUsd: 1000, dcaSoUsd: 1000, dcaSoCount: 3, dcaStepPct: 2, dcaVolScale: 1, dcaTpPct: 1 }
+const dI = runBacktest(dcaCrash, { ...dcaP, marginMode: 'isolated', leverage: 10 })
+t('an isolated DCA stack is liquidated when price runs past its safety orders', dI.dca.liquidations >= 1, dI.dca)
+t('the liquidation is on the ledger', dI.trades.some(x => x.liq && x.outcome === 'loss'))
+const dC = runBacktest(dcaCrash, { ...dcaP, marginMode: 'cross', leverage: 10 })
+const firstLiq = (r) => r.trades.find(x => x.liq)?.exitPx
+t('the same stack in cross is liquidated later -- the account stands behind it', firstLiq(dC) < firstLiq(dI), [firstLiq(dI), firstLiq(dC)])
+t('and when it goes, it takes the account; isolated lost only what each deal posted', dC.balance < dI.balance, [dI.balance, dC.balance])
+const dSmall = runBacktest(dcaCrash, { ...dcaP, startBalance: 1500, leverage: 1, dcaSoCount: 5 })
+t('a safety order the account cannot margin is refused, not filled', dSmall.dca.soRefused >= 1, dSmall.dca)
+const dCoin = runDcaBacktest(normalise([{ t: T0, o: 100, h: 100, l: 100, c: 100 }, { t: T0 + H, o: 100, h: 100, l: 100, c: 100 }]),
+  { ...BT_DEFAULTS, ...dcaP, orderUnit: 'coin', dcaBaseUsd: 3 })
+t('DCA orders can be sized in coins', near(dCoin.trades[0].q, 3))
+t('a full deal says what margin it needs at this leverage', near(dcaFullDeal({ ...BT_DEFAULTS, ...dcaP, leverage: 4 }, 100).margin, 4000 / 4))
+const gl = runBacktest(dcaCrash, { strategy: 'grid', maxLev: 50, gridRangePct: 20, gridLevels: 10, gridUsdPerLevel: 2000, leverage: 10, marginMode: 'isolated' })
+t('a leveraged grid holding a falling inventory is liquidated', gl.grid.liquidations >= 1, gl.grid)
+t('a grid rung pays maker, not taker', (() => {
+  // One candle, so only buys fill: each is a $1,000 resting order at the maker rate.
+  const f = runGridBacktest(normalise([{ t: T0, o: 100, h: 100, l: 95, c: 96 }]),
+    { ...BT_DEFAULTS, startBalance: 10000, gridLower: 90, gridUpper: 110, gridLevels: 5, gridUsdPerLevel: 1000, maxLev: 50 })
+  return f.grid.buys >= 1 && near(f.grid.fees, f.grid.buys * 1000 * 0.00015)
+})())
 
 console.log(nl + '-- one position at a time --')
 const many = runBacktest(wave, { strategy: 'bollinger', useCooldown: false, useOnePos: false })

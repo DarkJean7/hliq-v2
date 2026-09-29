@@ -63,7 +63,8 @@ const STATE  = { marginSummary: MARGIN, crossMarginSummary: MARGIN, crossMainten
 const HL = {
   clearinghouseState: STATE, spotClearinghouseState: { balances: [] }, allMids: { BTC: '83000', ETH: '4100', SOL: '210', HYPE: '38' },
   frontendOpenOrders: [], userFills: [], userFillsByTime: [], userFunding: [],
-  userNonFundingLedgerUpdates: [], subAccounts: [], extraAgents: [], allPerpMetas: [{ universe: [] }, { universe: [{ name: 'xyz:NVDA', szDecimals: 2, maxLeverage: 10 }] }], outcomeMeta: {},
+  userNonFundingLedgerUpdates: [], subAccounts: [], extraAgents: [], allPerpMetas: [{ universe: [['BTC', 40], ['ETH', 25], ['SOL', 20], ['HYPE', 10]].map(([name, maxLeverage]) => ({ name, szDecimals: 3, maxLeverage })) },
+    { universe: [{ name: 'xyz:NVDA', szDecimals: 2, maxLeverage: 10 }] }], outcomeMeta: {},
   perpDexs: [null], perpCategories: [], portfolio: [],
   webData2: { clearinghouseState: STATE, openOrders: [], cumLedger: '1000' },
   meta: { universe: [] }, spotMeta: { tokens: [], universe: [] },
@@ -182,6 +183,31 @@ console.log(NL + '-- desktop: the page --')
   ok('and it is stored as the market the exchange knows', ids.includes('xyz:NVDA'), ids)
   await p.click('#deskSim .sim-mchip[title="xyz:NVDA"] button')
   ok('× takes one away', await waitFor(p, 'removed', () => document.querySelectorAll('#deskSim .sim-mchip').length === 2, null, 3000))
+
+  console.log(NL + '-- desktop: a Hyperliquid position, cross or isolated --')
+  // Asked for: "cross/isolated, with their proper liquidation prices depending the chosen one".
+  // $1,000 at 10x on a $1,000 account: in cross the whole account backs a position worth the
+  // account, so it cannot be liquidated; in isolated only the $100 posted does.
+  await p.click('#deskSim .sim-seg button:text-is("USDC")')
+  await p.fill('#sim_sizeUsd', '1000')
+  await p.fill('#sim_leverage', '10')
+  const pv = () => p.evaluate(() => document.getElementById('simPreview')?.textContent.replace(/\s+/g, ' ') ?? '')
+  ok('the preview says what would open, and where it dies', await waitFor(p, 'preview', () => /Liquidation if long/.test(document.getElementById('simPreview')?.textContent ?? ''), null, 5000))
+  // The fee leaves the account a hair under the position's value, so the line exists -- at
+  // about zero. That is the right answer, and it reads as -100%.
+  ok('in cross, backed by the whole account, the long is safe to about zero', /Liquidation if long\s?\$[\d.,]+ \(-(99|100)\.\d%\)/.test(await pv()), await pv())
+  await p.click('#deskSim .sim-seg button:text-is("Isolated")')
+  await waitFor(p, 'isolated', () => !/Liquidation if long\s?\$[\d.,]+ \(-(99|100)\.\d%\)/.test(document.getElementById('simPreview')?.textContent.replace(/\s+/g, ' ') ?? ''), null, 5000)
+  const isoTxt = await pv()
+  ok('in isolated it is liquidated about 9% away', /Liquidation if long\s?\$[\d,.]+ \(-(8|9)\.\d%\)/.test(isoTxt), isoTxt)
+  ok('the margin posted is the position over the leverage', /Margin posted\s?\$100\.00/.test(isoTxt), isoTxt)
+  await p.evaluate(() => document.getElementById('simPreview')?.scrollIntoView({ block: 'center' }))
+  await shot(p, 'desk-position')
+  await p.fill('#sim_leverage', '60')
+  ok('leverage over the market maximum is flagged', await waitFor(p, 'the cap', () => /allows 40x at most/.test(document.getElementById('simPreview')?.textContent ?? ''), null, 5000))
+  ok('and the box says what the market allows', await p.evaluate(() => /max 40x/.test(document.querySelector('#sim_leverage')?.closest('.sim-field')?.textContent ?? '')))
+  await p.fill('#sim_leverage', '10')
+
   await p.click('#deskSim .sim-runbar .sim-btn-p')
   const ran = await waitFor(p, 'a result', () => !!document.querySelector('#deskSim .sim-kpis'))
   ok('a run puts a report on the page', ran)
@@ -238,7 +264,12 @@ console.log(NL + '-- desktop: the page --')
   await p.click('#deskSim .sim-runbar .sim-btn-p')
   await waitFor(p, 'a DCA report', () => /DCA/.test(document.querySelector('#deskSim .sim-res-t')?.textContent ?? '') && !!document.querySelector('#deskSim .sim-kpis'))
   ok('its own block is in the stats', await p.evaluate(() => /Deals closed/.test(document.querySelector('#deskSim .sim-stats')?.textContent ?? '')))
-  ok('and the money models step aside for its dollar sizes', await p.evaluate(() => !document.getElementById('sim_pnlModel')))
+  ok('and reports how close it came to liquidation', await p.evaluate(() => /Closest to liquidation/.test(document.querySelector('#deskSim .sim-stats')?.textContent ?? '')))
+  ok('the flat money models step aside -- its orders are the sizes', await p.evaluate(() => !document.getElementById('sim_pnlModel')))
+  ok('but leverage and margin mode still apply', await p.evaluate(() => !!document.getElementById('sim_leverage') && !!document.getElementById('sim_marginMode')))
+  await p.click('#deskSim .sim-seg button:text-is("coins")')
+  ok('orders can be sized in the coin', await waitFor(p, 'coin unit', () =>
+    /coins/.test(document.querySelector('#sim_dcaBaseUsd')?.closest('.sim-field')?.querySelector('.sim-lbl-u')?.textContent ?? ''), null, 5000))
 
   ok('no errors on the page', errs.length === 0, errs)
   await browser.close()

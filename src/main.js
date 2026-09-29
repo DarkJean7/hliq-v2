@@ -11376,6 +11376,9 @@ initSimulator({
     })),
   icon: (id) => _coinIconHtml(id),
   loadMarkets: () => _ensureMarketData(),
+  // Hyperliquid's own per-market ceiling. It sets the maintenance margin, and so where a
+  // simulated position is liquidated -- the leverage someone picks does not.
+  maxLeverage: (id) => state.assetMap?.[id]?.maxLeverage ?? null,
 })
 
 initOffex({

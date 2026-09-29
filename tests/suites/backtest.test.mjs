@@ -76,7 +76,9 @@ t('won + lost + unresolved is every trade', r.won + r.lost + r.unresolved === r.
 // A trade the data never resolved is not a win, not a loss, and not swept away.
 t('unresolved trades are reported, not dropped', runBacktest(rows.slice(0, 320)).unresolved >= 0)
 t('costs are charged even on an unresolved trade', bt.includes('the position was opened either way'))
-t('a cost makes the result worse', runBacktest(rows, { feePct: 0 }).balance > r.balance)
+// Fees are per fill now (maker / taker) under the default Hyperliquid sizing; the flat round-trip
+// percentage only applies to the fixed and risk models. Switching costs off tests both.
+t('a cost makes the result worse', runBacktest(rows, { useFees: false }).balance > r.balance)
 t('drawdown is measured from the peak', r.maxDrawdown >= 0)
 t('with no resolved trade the win rate is unknown, not zero', (() => {
   const none = runBacktest(rows, { takeProfitPct: 500, stopLossPct: 500 })

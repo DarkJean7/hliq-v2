@@ -141,7 +141,10 @@ const paramsFor = grab(cli, 'function _simParamsFor')
 const runOn = grab(cli, 'function _simRunOn')
 const loadBlock = grab(cli, 'async function _simLoad')
 t('windows are looked up per market', paramsFor.includes('const row = tokyoWindowsFor(coin)'))
-t('and applied to that market only', paramsFor.includes('return { ...base, tokyoLongFrom: row.long[0]'))
+// The per-market parameters now also carry that market's max leverage, so the windows are laid
+// over those rather than over the shared ones.
+t('and applied to that market only', paramsFor.includes('return { ...withLev, tokyoLongFrom: row.long[0]'))
+t('every market carries its own max leverage', paramsFor.includes('maxLev: _simMaxLev(coin) ?? 20'))
 t('every run goes through it', runOn.includes('const par = _simParamsFor(coin, params)'))
 t('why is recorded', cli.includes('it is the same rule fifteen times'))
 t('a market with no row is skipped, not run on the wrong hours',

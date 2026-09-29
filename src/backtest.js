@@ -144,6 +144,18 @@ export const BT_DEFAULTS = {
   // balance times the leverage, gaining or losing exactly what the price moved.
   sizePct: 100,
   leverage: 1,
+
+  // The Hyperliquid account around every position -- see HYPERLIQUID ACCOUNT MECHANICS.
+  marginMode: 'cross',    // 'cross' | 'isolated' -- cross is Hyperliquid's own default
+  sizeMode: 'pct',        // 'pct' of balance as margin | 'usd' position value | 'coin' amount
+  sizeUsd: 1000,
+  sizeCoin: 1,
+  orderUnit: 'usd',       // grid and DCA order sizes: 'usd' | 'coin'
+  makerFeePct: 0.015,     // per fill, Hyperliquid base tier
+  takerFeePct: 0.045,
+  // The market's max leverage. Not a setting: the app passes each market's own, because it
+  // decides the maintenance margin. 20 stands in only when it is not known.
+  maxLev: 20,
 }
 
 /**
@@ -452,36 +464,88 @@ export function supertrendSeries(rows, n, mult) {
   return out
 }
 
-/**
- * What one closed position did to the balance under the NOTIONAL model: a position worth
- * `sizePct` of the balance times the leverage, gaining or losing what the price moved.
- *
- * Capped at the margin posted. A move that takes more than the margin is a liquidation,
- * and an exchange does not send you a bill for the rest -- it takes the margin and stops.
- * Fees are charged on the notional, round trip, which is how Hyperliquid charges them.
- */
-export function notionalDelta(balance, p, entry, exit, long, split = 1) {
-  const margin = Math.max(0, balance * (p.sizePct / 100) / split)
-  const notional = margin * Math.max(1, p.leverage)
-  const moved = entry > 0 ? (long ? exit - entry : entry - exit) / entry : 0
-  const fee = p.useFees ? notional * (p.feePct / 100) : 0
-  return Math.max(-margin, notional * moved) - fee
+// ── HYPERLIQUID ACCOUNT MECHANICS ─────────────────────────────────────────────
+//
+// Asked for: "make sure the simulator simulates like the real hyperliquid market environment
+// ... cross/isolated, with their proper liquidation prices depending the chosen one". So these
+// are Hyperliquid's own rules, not an approximation of them:
+//
+//   MAINTENANCE MARGIN is half the initial margin at the market's MAX leverage: a market that
+//     allows 40x liquidates when equity falls to 1/80 of the position's value. It depends on
+//     the market, not on the leverage you picked -- which is why the app passes each market's
+//     max leverage in, and why a 10x position on a 3x-max market is simply refused.
+//   THE LIQUIDATION PRICE is where equity meets maintenance margin. What counts as equity is
+//     the whole difference between the modes: ISOLATED backs the position with the margin you
+//     posted for it and nothing else; CROSS backs it with the entire account. Same size, same
+//     leverage, cross sits further away -- and when it is hit, it takes the account.
+//   LEVERAGE sets the margin an order must post, so it decides whether an order is ACCEPTED.
+//     In cross it does not move the liquidation price of a position of a given size; only in
+//     isolated, where the margin posted is all there is, does it.
+//   ORDERS UNDER $10 are rejected, as the exchange rejects them.
+//   FEES are per fill: taker for anything that crosses the book (a market entry, a stop, a
+//     liquidation), maker for a resting order that is filled (a take-profit, a grid level, a
+//     safety order). Base tier: 0.045% and 0.015%.
+//
+// A liquidation closes the position AT the liquidation price and charges a taker fee; what is
+// left of the margin stays in the account. A candle that gaps through the line is still filled
+// on it, so a violent market reads a little kinder than it was.
+
+export const HL_MIN_NOTIONAL = 10
+
+/** The maintenance margin rate for a market: 1 / (2 x its max leverage). */
+export function mmRate(p) { return 1 / (2 * Math.max(1, p.maxLev || 20)) }
+
+/** The leverage actually used: what was asked for, capped at what the market allows. */
+export function effLeverage(p) { return Math.max(1, Math.min(p.leverage || 1, p.maxLev || 50)) }
+
+/** Fee rate for one fill, as a fraction. */
+export function feeRate(p, kind) {
+  if (!p.useFees) return 0
+  return (kind === 'maker' ? p.makerFeePct : p.takerFeePct) / 100
 }
 
 /**
- * The price at which a leveraged position is liquidated, or null at 1x.
- *
- * Approximate on purpose: the real line depends on each market's maintenance margin, which
- * is not in the candles. Liquidating at 90% of the margin gone sits a little before the
- * exchange's line on every market listed, so this errs early -- a backtest that forgives a
- * liquidation the exchange would have taken is the flattering kind of wrong.
+ * Where a position of `q` coins at average entry `p0`, backed by `A` dollars, is liquidated:
+ * equity A + side*q*(P - p0) meets maintenance margin l*q*P. Null when it cannot happen -- a
+ * long whose backing covers the whole position would have to fall below zero.
  */
-export function liqPrice(p, entry, long) {
-  if (p.pnlModel !== 'notional' || !(p.leverage > 1)) return null
-  const d = 0.9 / p.leverage
-  return long ? entry * (1 - d) : entry * (1 + d)
+export function hlLiqPrice(side, p0, q, A, l) {
+  if (!(q > 0) || !(p0 > 0)) return null
+  const P = (side * p0 - A / q) / (side - l)
+  return Number.isFinite(P) && P > 0 ? P : null
 }
 
+/**
+ * Open a position for a signal or flip strategy, or say why the exchange would refuse it.
+ *
+ * Sized three ways, as the order ticket allows: a share of the balance posted as margin (times
+ * the leverage), a USDC amount, or an amount of the coin itself. The balance here is the whole
+ * account -- one position at a time -- so in cross it is also what backs the position.
+ */
+export function sizePosition(balance, p, entry, side) {
+  const lev = effLeverage(p)
+  let q
+  if (p.sizeMode === 'usd') q = p.sizeUsd / entry
+  else if (p.sizeMode === 'coin') q = p.sizeCoin
+  else {
+    q = Math.max(0, balance) * (p.sizePct / 100) * lev / entry
+    // "100%" means everything the account can open, fee included -- as the order ticket's
+    // slider does. Without this, a full-size position is refused for want of its own fee.
+    q = Math.min(q, Math.max(0, balance) / (entry * (1 / lev + feeRate(p, 'taker'))))
+  }
+  const notional = q * entry
+  if (!(q > 0) || notional < HL_MIN_NOTIONAL - 1e-9) return { rejected: 'min' }
+  const margin = notional / lev
+  const openFee = notional * feeRate(p, 'taker')
+  if (margin + openFee > balance + 1e-9) return { rejected: 'margin' }
+  const A = p.marginMode === 'isolated' ? margin : balance - openFee
+  return { q, notional, margin, lev, openFee, liq: hlLiqPrice(side, entry, q, A, mmRate(p)) }
+}
+
+/** What a position did to the balance when closed at `exit`, fees on both fills included. */
+export function closePnl(pos, side, entry, exit, p, kind) {
+  return side * pos.q * (exit - entry) - pos.openFee - pos.q * exit * feeRate(p, kind)
+}
 /**
  * The entry signal at each candle: 1 long, -1 short, 0 nothing, null not enough history.
  *
@@ -631,6 +695,17 @@ function runTrendBot(rows, p, sig) {
   let won = 0, lost = 0
   let pos = null
   const trades = []
+  // Under Hyperliquid sizing a position is an order the exchange can refuse: too small, or
+  // more margin than the account has. A refused entry is retried on the next candle, and
+  // counted once per run of refusals rather than once per candle.
+  let refused = 0, refusedNow = false
+  const openAt = (side, px, i) => {
+    if (p.pnlModel !== 'notional') return { side, entry: px, i, mae: 0 }
+    const sz = sizePosition(balance, p, px, side)
+    if (sz.rejected) { if (!refusedNow) refused++; refusedNow = true; return null }
+    refusedNow = false
+    return { side, entry: px, i, mae: 0, ...sz }
+  }
 
   const book = (entry, exit, side, outcome, openedAt, closedAt, heldFor) => {
     const long = side > 0
@@ -639,7 +714,8 @@ function runTrendBot(rows, p, sig) {
     const cost = p.useFees ? balance * (p.feePct / 100) : 0
     let delta = -cost
     if (p.pnlModel === 'notional') {
-      delta = notionalDelta(balance, p, entry, exit, long)
+      // Every exit here crosses the book -- a flip, a stop, the clock -- so it pays taker.
+      delta = closePnl(pos, side, entry, exit, p, 'taker')
     } else if (p.pnlModel === 'risk' && slDist > 0) {
       delta += balance * (p.riskPct / 100) * (moved / slDist)
     } else if (outcome === 'win') delta += balance * (p.winPct / 100)
@@ -651,7 +727,8 @@ function runTrendBot(rows, p, sig) {
     if (peak > 0) maxDD = Math.max(maxDD, (peak - balance) / peak * 100)
     trades.push({ i: openedAt, time: rows[openedAt].t, side: long ? 'long' : 'short',
       entry, tp: null, sl: slDist > 0 ? (long ? entry - slDist : entry + slDist) : null,
-      outcome, exitAt: closedAt, exitPx: exit, heldFor, balance, delta })
+      outcome, exitAt: closedAt, exitPx: exit, heldFor, balance, delta,
+      q: pos?.q, liqPx: pos?.liq ?? null, mae: pos?.mae ?? null })
   }
 
   for (let i = 0; i < rows.length; i++) {
@@ -665,7 +742,8 @@ function runTrendBot(rows, p, sig) {
     // thing most likely to end one.
     if (pos) {
       const long = pos.side > 0
-      const liq = liqPrice(p, pos.entry, long)
+      pos.mae = Math.max(pos.mae, (long ? pos.entry - rows[i].l : rows[i].h - pos.entry) / pos.entry * 100)
+      const liq = pos.liq ?? null
       let stopPx = stopFrac > 0 ? (long ? pos.entry * (1 - stopFrac) : pos.entry * (1 + stopFrac)) : null
       if (liq != null && (stopPx == null || (long ? liq > stopPx : liq < stopPx))) stopPx = liq
       if (stopPx != null && (long ? rows[i].l <= stopPx : rows[i].h >= stopPx)) {
@@ -684,17 +762,17 @@ function runTrendBot(rows, p, sig) {
       pos = null
     }
 
-    if (!pos) pos = { side: want, entry: px, i }
+    if (!pos) pos = openAt(want, px, i)
   }
 
   // Whatever it was still holding when the data ended. Counted, never scored.
   const openTrade = pos
     ? [{ i: pos.i, time: rows[pos.i].t, side: pos.side > 0 ? 'long' : 'short', entry: pos.entry,
          tp: null, sl: null, outcome: 'open', exitAt: null, exitPx: null,
-         heldFor: rows.length - 1 - pos.i, balance }]
+         heldFor: rows.length - 1 - pos.i, balance, q: pos.q, liqPx: pos.liq ?? null, mae: pos.mae }]
     : []
 
-  return { trades: [...trades, ...openTrade], balance, peak, maxDD, won, lost }
+  return { trades: [...trades, ...openTrade], balance, peak, maxDD, won, lost, refused }
 }
 
 /**
@@ -722,6 +800,17 @@ function runTokyoBot(rows, p, sig) {
   let won = 0, lost = 0
   let pos = null
   const trades = []
+  // Under Hyperliquid sizing a position is an order the exchange can refuse: too small, or
+  // more margin than the account has. A refused entry is retried on the next candle, and
+  // counted once per run of refusals rather than once per candle.
+  let refused = 0, refusedNow = false
+  const openAt = (side, px, i) => {
+    if (p.pnlModel !== 'notional') return { side, entry: px, i, mae: 0 }
+    const sz = sizePosition(balance, p, px, side)
+    if (sz.rejected) { if (!refusedNow) refused++; refusedNow = true; return null }
+    refusedNow = false
+    return { side, entry: px, i, mae: 0, ...sz }
+  }
 
   const book = (entry, exit, side, openedAt, closedAt, heldFor, stopped) => {
     const long = side > 0
@@ -731,7 +820,8 @@ function runTokyoBot(rows, p, sig) {
     const cost = p.useFees ? balance * (p.feePct / 100) : 0
     let delta = -cost
     if (p.pnlModel === 'notional') {
-      delta = notionalDelta(balance, p, entry, exit, long)
+      // Every exit here crosses the book -- a flip, a stop, the clock -- so it pays taker.
+      delta = closePnl(pos, side, entry, exit, p, 'taker')
     } else if (p.pnlModel === 'risk' && slDist > 0) {
       delta += balance * (p.riskPct / 100) * (moved / slDist)
     } else if (outcome === 'win') delta += balance * (p.winPct / 100)
@@ -743,7 +833,8 @@ function runTokyoBot(rows, p, sig) {
     if (peak > 0) maxDD = Math.max(maxDD, (peak - balance) / peak * 100)
     trades.push({ i: openedAt, time: rows[openedAt].t, side: long ? 'long' : 'short',
       entry, tp: null, sl: slDist > 0 ? (long ? entry - slDist : entry + slDist) : null,
-      outcome, exitAt: closedAt, exitPx: exit, heldFor, balance, delta })
+      outcome, exitAt: closedAt, exitPx: exit, heldFor, balance, delta,
+      q: pos?.q, liqPx: pos?.liq ?? null, mae: pos?.mae ?? null })
   }
 
   for (let i = 0; i < rows.length; i++) {
@@ -756,7 +847,8 @@ function runTokyoBot(rows, p, sig) {
     // line that ends a position whether or not a stop was set.
     if (pos) {
       const long = pos.side > 0
-      const liq = liqPrice(p, pos.entry, long)
+      pos.mae = Math.max(pos.mae, (long ? pos.entry - rows[i].l : rows[i].h - pos.entry) / pos.entry * 100)
+      const liq = pos.liq ?? null
       let stopPx = stopFrac > 0 ? (long ? pos.entry * (1 - stopFrac) : pos.entry * (1 + stopFrac)) : null
       if (liq != null && (stopPx == null || (long ? liq > stopPx : liq < stopPx))) stopPx = liq
       if (stopPx != null && (long ? rows[i].l <= stopPx : rows[i].h >= stopPx)) {
@@ -770,17 +862,17 @@ function runTokyoBot(rows, p, sig) {
       book(pos.entry, px, pos.side, pos.i, rows[i].t, i - pos.i, false)
       pos = null
     }
-    if (!pos && want !== 0) pos = { side: want, entry: px, i }
+    if (!pos && want !== 0) pos = openAt(want, px, i)
   }
 
   // Whatever was still held when the candles ran out. Counted, never scored.
   const openTrade = pos
     ? [{ i: pos.i, time: rows[pos.i].t, side: pos.side > 0 ? 'long' : 'short', entry: pos.entry,
          tp: null, sl: null, outcome: 'open', exitAt: null, exitPx: null,
-         heldFor: rows.length - 1 - pos.i, balance }]
+         heldFor: rows.length - 1 - pos.i, balance, q: pos.q, liqPx: pos.liq ?? null, mae: pos.mae }]
     : []
 
-  return { trades: [...trades, ...openTrade], balance, peak, maxDD, won, lost }
+  return { trades: [...trades, ...openTrade], balance, peak, maxDD, won, lost, refused }
 }
 
 /** The ladder of prices, spaced evenly in price or evenly in percent. */
@@ -823,61 +915,108 @@ export function runGridBacktest(rows, p) {
   const upper = p.gridUpper > 0 ? p.gridUpper : ref * (1 + p.gridRangePct / 100)
   const prices = gridLevels(lower, upper, p.gridLevels, p.gridGeometric)
   const short = !!p.gridShort
-  const fee = p.useFees ? p.feePct / 100 / 2 : 0   // the flag is a round trip; each fill pays half
+  const side = short ? -1 : 1
+  // Every grid fill is a resting order, so it pays maker. A liquidation is the exception.
+  const mk = feeRate(p, 'maker'), tk = feeRate(p, 'taker')
+  const lev = effLeverage(p), l = mmRate(p)
+  const isolated = p.marginMode === 'isolated'
+  // The size per level is USDC or coins, as set; in USDC it buys fewer coins at higher rungs.
+  const qAt = (px) => p.orderUnit === 'coin' ? p.gridUsdPerLevel : p.gridUsdPerLevel / px
 
   // One slot per level that can hold a position: a long grid buys at i and sells at i+1,
   // so the top level has nothing to sell into. A short grid is the mirror.
   const slots = prices.map(() => null)
   let realized = 0, fees = 0, cycles = 0, buys = 0, sells = 0
-  let inRange = 0, maxInventory = 0
+  let inRange = 0, maxInventory = 0, maxNotional = 0, maxMargin = 0
+  let refused = 0, liquidations = 0, closestLiq = null
   let mtmPeak = p.startBalance, mtmDD = 0
   const curve = []
   const trades = []
 
+  const cash = () => p.startBalance + realized - fees
+  const inv = () => {
+    let q = 0, c = 0, m = 0
+    for (const s of slots) if (s) { q += s.sz; c += s.px * s.sz; m += s.margin }
+    return { q, avg: q ? c / q : 0, margin: m }
+  }
+  const unrealAt = (px) => { const { q, avg } = inv(); return q ? side * q * (px - avg) : 0 }
+  const liqOf = () => {
+    const { q, avg, margin } = inv()
+    return q ? hlLiqPrice(side, avg, q, isolated ? margin : cash(), l) : null
+  }
+
   for (const row of rows) {
     if (row.h >= lower && row.l <= upper) inRange++
 
-    for (let i = 0; i < prices.length - 1; i++) {
-      const openPx = short ? prices[i + 1] : prices[i]
-      const closePx = short ? prices[i] : prices[i + 1]
-      // Long: buy when the candle trades down to the level. Short: sell into a rise.
-      const openTouched = short ? row.h >= openPx : row.l <= openPx
-      const closeTouched = short ? row.l <= closePx : row.h >= closePx
+    // The inventory carried INTO the candle is tested against its adverse extreme first. The
+    // candle may also have filled more rungs on the way down, but those would only have moved
+    // the line closer -- testing before them is the kinder reading, and it is stated.
+    const lq = liqOf()
+    if (lq != null && (side > 0 ? row.l <= lq : row.h >= lq)) {
+      const { q, avg } = inv()
+      const pnl = side * q * (lq - avg), fee = q * lq * tk
+      const before = cash()
+      realized += pnl; fees += fee; liquidations++
+      trades.push({ i: -1, time: row.t, side: short ? 'short' : 'long', entry: avg, tp: null, sl: null,
+        outcome: 'loss', exitAt: row.t, exitPx: lq, heldFor: 0, balance: cash(), delta: pnl - fee,
+        liq: true, q, liqPx: lq, sized: true, ret: before > 0 ? (pnl - fee) / before : 0 })
+      slots.fill(null)
+    } else {
+      for (let i = 0; i < prices.length - 1; i++) {
+        const openPx = short ? prices[i + 1] : prices[i]
+        const closePx = short ? prices[i] : prices[i + 1]
+        // Long: buy when the candle trades down to the level. Short: sell into a rise.
+        const openTouched = short ? row.h >= openPx : row.l <= openPx
+        const closeTouched = short ? row.l <= closePx : row.h >= closePx
 
-      if (slots[i] == null && openTouched) {
-        const sz = p.gridUsdPerLevel / openPx
-        slots[i] = { px: openPx, sz, at: row.t, openedOn: row }
-        fees += openPx * sz * fee
-        buys++
-        // Same candle: the close level was touched too, but OHLC cannot order the two.
-        if (closeTouched && p.gridSameCandle !== 'allow') continue
-      }
+        if (slots[i] == null && openTouched) {
+          const sz = qAt(openPx), notional = sz * openPx
+          const margin = notional / lev, fee = notional * mk
+          // The exchange refuses an order it cannot margin, or one under its minimum. The
+          // rung simply does not fill, and is tried again the next time price comes to it.
+          const used = inv().margin
+          const avail = cash() + (isolated ? 0 : unrealAt(openPx)) - used
+          if (notional < HL_MIN_NOTIONAL - 1e-9 || margin + fee > avail) { refused++; continue }
+          slots[i] = { px: openPx, sz, at: row.t, openedOn: row, margin, fee }
+          fees += fee
+          buys++
+          // Same candle: the close level was touched too, but OHLC cannot order the two.
+          if (closeTouched && p.gridSameCandle !== 'allow') continue
+        }
 
-      if (slots[i] != null && closeTouched) {
-        // A slot opened on THIS candle can only close now if same-candle trips are allowed.
-        if (slots[i].openedOn === row && p.gridSameCandle !== 'allow') continue
-        const { px, sz } = slots[i]
-        const gain = short ? (px - closePx) * sz : (closePx - px) * sz
-        realized += gain
-        fees += closePx * sz * fee
-        cycles++
-        sells++
-        const before = p.startBalance + realized - gain - (fees - closePx * sz * fee)
-        trades.push({ i, time: slots[i].at, side: short ? 'short' : 'long', entry: px,
-          tp: closePx, sl: null, outcome: 'win', exitAt: row.t, exitPx: closePx, heldFor: 0,
-          balance: p.startBalance + realized - fees, delta: gain,
-          // Dollar-sized: a portfolio re-books it by what it returned, not by a win percentage.
-          sized: true, ret: before > 0 ? gain / before : 0 })
-        slots[i] = null
+        if (slots[i] != null && closeTouched) {
+          // A slot opened on THIS candle can only close now if same-candle trips are allowed.
+          if (slots[i].openedOn === row && p.gridSameCandle !== 'allow') continue
+          const { px, sz } = slots[i]
+          const gain = side * (closePx - px) * sz
+          const fee = closePx * sz * mk
+          const before = cash() + slots[i].fee
+          realized += gain
+          fees += fee
+          cycles++
+          sells++
+          const delta = gain - fee - slots[i].fee
+          trades.push({ i, time: slots[i].at, side: short ? 'short' : 'long', entry: px,
+            tp: closePx, sl: null, outcome: 'win', exitAt: row.t, exitPx: closePx, heldFor: 0,
+            balance: cash(), delta, q: sz,
+            // Dollar-sized: a portfolio re-books it by what it returned, not by a win percentage.
+            sized: true, ret: before > 0 ? delta / before : 0 })
+          slots[i] = null
+        }
       }
     }
-    const held = slots.reduce((a, s) => a + (s ? s.sz : 0), 0)
-    if (held > maxInventory) maxInventory = held
+    const { q, margin } = inv()
+    if (q > maxInventory) maxInventory = q
+    if (q * row.c > maxNotional) maxNotional = q * row.c
+    if (margin > maxMargin) maxMargin = margin
+    const lqNow = liqOf()
+    if (lqNow != null) {
+      const d = Math.abs(row.c - lqNow) / row.c * 100
+      if (closestLiq == null || d < closestLiq) closestLiq = d
+    }
     // Marked to the close every candle. The grid's losing lives in the inventory it holds,
     // so a drawdown from realised cycles alone -- which only ever go up -- was always zero.
-    let unreal = 0
-    for (const s of slots) if (s) unreal += short ? (s.px - row.c) * s.sz : (row.c - s.px) * s.sz
-    const eq = p.startBalance + realized - fees + unreal
+    const eq = cash() + unrealAt(row.c)
     if (eq > mtmPeak) mtmPeak = eq
     if (mtmPeak > 0) mtmDD = Math.max(mtmDD, (mtmPeak - eq) / mtmPeak * 100)
     curve.push([row.t, eq])
@@ -889,25 +1028,24 @@ export function runGridBacktest(rows, p) {
   const open = slots.filter(Boolean)
   const invSz = open.reduce((a, s) => a + s.sz, 0)
   const invCost = open.reduce((a, s) => a + s.px * s.sz, 0)
-  const unrealized = invSz > 0
-    ? (short ? invCost - invSz * last : invSz * last - invCost)
-    : 0
+  const unrealized = invSz > 0 ? (short ? invCost - invSz * last : invSz * last - invCost) : 0
 
-  const balance = p.startBalance + realized - fees + unrealized
+  const balance = cash() + unrealized
   return {
     grid: {
       lower, upper, levels: prices.length, prices,
       cycles, buys, sells,
       realized, fees, unrealized,
       inventorySize: invSz, inventoryCost: invCost, inventoryValue: invSz * last,
-      maxInventory,
+      maxInventory, maxNotional, maxMargin, refused, liquidations, closestLiq,
+      liqNow: liqOf(), lev,
       inRangePct: rows.length ? (inRange / rows.length) * 100 : null,
       openSlots: open.length,
     },
     trades, balance, curve,
     peak: Math.max(mtmPeak, balance),
     maxDD: mtmDD,
-    won: cycles, lost: 0,
+    won: cycles, lost: liquidations,
   }
 }
 
@@ -924,6 +1062,24 @@ export function dcaDeviations(p) {
 }
 
 /**
+ * What a whole DCA deal comes to if every safety order fills, starting from `basePx`: the
+ * position's value and the margin it needs. In USDC the orders are the amounts; in coins they
+ * are worth what the coin costs at each order's price.
+ */
+export function dcaFullDeal(p, basePx) {
+  const devs = dcaDeviations(p)
+  const long = p.dcaSide !== 'short'
+  const coin = p.orderUnit === 'coin'
+  let notional = coin ? p.dcaBaseUsd * basePx : p.dcaBaseUsd
+  devs.forEach((d, k) => {
+    const amt = p.dcaSoUsd * Math.pow(Math.max(0.1, p.dcaVolScale), k)
+    const px = long ? basePx * (1 - d / 100) : basePx * (1 + d / 100)
+    notional += coin ? amt * px : amt
+  })
+  return { notional, margin: notional / effLeverage(p), lastDev: devs[devs.length - 1] ?? 0 }
+}
+
+/**
  * The DCA bot.
  *
  * A base order opens a deal at a candle's close. Safety orders rest below it (above it for a
@@ -932,104 +1088,163 @@ export function dcaDeviations(p) {
  * exit closer -- which is the entire mechanism. When the target fills the deal is done and
  * the next one opens at that candle's close.
  *
+ * On Hyperliquid it is a leveraged position like any other: each order posts margin, an
+ * order the account cannot margin is refused -- and a deal that has run out of safety orders
+ * keeps falling toward a liquidation price that every fill moved closer. That line is checked
+ * between the orders, in the order price reaches them.
+ *
  * Two readings kept honest, for the same reasons as the grid:
  *
  *   A SAFETY ORDER AND THE TARGET IN ONE CANDLE. The low filled the safety order and the high
  *     reached the new, closer target -- but OHLC cannot say the low came first. The target
  *     waits for a later candle whenever a safety order filled in this one.
  *   THE WIN RATE. Without a stop every closed deal is a win by construction. The loss is the
- *     deal still open when the data ends, which is valued at the last close and reported
- *     before anything else.
+ *     deal still open when the data ends, or the one that was liquidated.
  *
  * Paid in dollars, not a share of the balance: the order sizes ARE the bot's settings.
  * Equity is marked to every close, so the drawdown includes the stack sitting underwater.
  */
 export function runDcaBacktest(rows, p) {
   const long = p.dcaSide !== 'short'
-  const fee = p.useFees ? p.feePct / 100 / 2 : 0
+  const side = long ? 1 : -1
+  const mk = feeRate(p, 'maker'), tk = feeRate(p, 'taker')
+  const lev = effLeverage(p), l = mmRate(p)
+  const isolated = p.marginMode === 'isolated'
   const devs = dcaDeviations(p)
   const tpF = Math.max(0.01, p.dcaTpPct) / 100
   const slF = Math.max(0, p.dcaSlPct) / 100
+  const qOf = (amount, px) => p.orderUnit === 'coin' ? amount : amount / px
   let realized = 0, fees = 0
   let peak = p.startBalance, maxDD = 0
-  let won = 0, lost = 0, maxSo = 0, maxDeployed = 0
+  let won = 0, lost = 0, maxSo = 0, maxDeployed = 0, maxMargin = 0
+  let refused = 0, refusedNow = false, liquidations = 0, soRefused = 0, closestLiq = null
   const soHist = new Array(devs.length + 1).fill(0)
   const trades = [], curve = []
   let deal = null
 
+  const cash = () => p.startBalance + realized - fees
+  const avg = () => deal.cost / deal.qty
+  const liqOf = () => deal ? hlLiqPrice(side, avg(), deal.qty, isolated ? deal.margin : cash(), l) : null
+  // What the account can still margin: cash, plus unrealised profit in cross, less what is posted.
+  const avail = (px) => cash() + (!deal || isolated ? 0 : side * deal.qty * (px - avg())) - (deal?.margin ?? 0)
+
   const open = (i) => {
     const px = rows[i].c
-    const qty = p.dcaBaseUsd / px
-    fees += p.dcaBaseUsd * fee
-    deal = { i, base: px, qty, cost: p.dcaBaseUsd, so: 0, feeAcc: p.dcaBaseUsd * fee }
+    const q = qOf(p.dcaBaseUsd, px), notional = q * px
+    const margin = notional / lev, fee = notional * tk      // the base order is a market order
+    if (notional < HL_MIN_NOTIONAL - 1e-9 || margin + fee > avail(px)) {
+      if (!refusedNow) refused++
+      refusedNow = true
+      return
+    }
+    refusedNow = false
+    fees += fee
+    deal = { i, base: px, qty: q, cost: notional, so: 0, feeAcc: fee, margin, mae: 0, stopped: false }
   }
-  const avg = () => deal.cost / deal.qty
+
+  const close = (i, exitPx, kind, outcome, isLiq) => {
+    const a = avg()
+    const gross = side * deal.qty * (exitPx - a)
+    const outFee = deal.qty * exitPx * (kind === 'maker' ? mk : tk)
+    fees += outFee
+    const before = p.startBalance + realized - (fees - deal.feeAcc - outFee)
+    realized += gross
+    const delta = gross - deal.feeAcc - outFee
+    if (delta >= 0) won++; else lost++
+    soHist[deal.so]++
+    trades.push({ i: deal.i, time: rows[deal.i].t, side: long ? 'long' : 'short', entry: a,
+      tp: a * (1 + side * tpF), sl: slF > 0 ? a * (1 - side * slF) : null, outcome,
+      exitAt: rows[i].t, exitPx, heldFor: i - deal.i,
+      balance: cash(), delta, so: deal.so, cost: deal.cost, q: deal.qty, margin: deal.margin,
+      liqPx: liqOf(), mae: deal.mae, ...(isLiq ? { liq: true } : {}),
+      sized: true, ret: before > 0 ? delta / before : 0 })
+    deal = null
+  }
 
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]
-    if (!deal) { open(i); curve.push([r.t, p.startBalance + realized - fees]); continue }
+    if (!deal) { open(i); curve.push([r.t, cash()]); continue }
 
-    // Safety orders first -- they are the adverse move, and several can fill in one candle.
-    let filled = false
-    while (deal.so < devs.length) {
+    // Safety orders first -- they are the adverse move, and several can fill in one candle --
+    // but in the order price reaches them, with the liquidation line between them: a deal
+    // whose line sits above the next safety order is liquidated before that order can fill.
+    let filled = false, liquidated = false
+    while (deal.so < devs.length && !deal.stopped) {
       const d = devs[deal.so] / 100
       const soPx = long ? deal.base * (1 - d) : deal.base * (1 + d)
       if (long ? r.l > soPx : r.h < soPx) break
-      const usd = p.dcaSoUsd * Math.pow(Math.max(0.1, p.dcaVolScale), deal.so)
-      deal.qty += usd / soPx
-      deal.cost += usd
-      deal.feeAcc += usd * fee
-      fees += usd * fee
+      const lq = liqOf()
+      if (lq != null && (long ? lq >= soPx : lq <= soPx)) break      // the line comes first
+      const amt = p.dcaSoUsd * Math.pow(Math.max(0.1, p.dcaVolScale), deal.so)
+      const q = qOf(amt, soPx), notional = q * soPx
+      const margin = notional / lev, fee = notional * mk
+      if (notional < HL_MIN_NOTIONAL - 1e-9 || margin + fee > avail(soPx)) {
+        // Refused for margin: the bot has nothing left to average with. It keeps the deal.
+        deal.stopped = true
+        soRefused++
+        break
+      }
+      deal.qty += q
+      deal.cost += notional
+      deal.margin += margin
+      deal.feeAcc += fee
+      fees += fee
       deal.so++
       filled = true
     }
     if (deal.so > maxSo) maxSo = deal.so
     if (deal.cost > maxDeployed) maxDeployed = deal.cost
-
+    if (deal.margin > maxMargin) maxMargin = deal.margin
     const a = avg()
-    const tpPx = long ? a * (1 + tpF) : a * (1 - tpF)
-    const slPx = slF > 0 ? (long ? a * (1 - slF) : a * (1 + slF)) : null
-    const hitSl = slPx != null && (long ? r.l <= slPx : r.h >= slPx)
-    const hitTp = !filled && (long ? r.h >= tpPx : r.l <= tpPx)
-    // Both inside one candle: the stop, for the same reason the signal rules count it.
-    const exitPx = hitSl ? slPx : hitTp ? tpPx : null
-    if (exitPx != null) {
-      const gross = long ? deal.qty * (exitPx - a) : deal.qty * (a - exitPx)
-      const outFee = deal.qty * exitPx * fee
-      fees += outFee
-      const before = p.startBalance + realized - (fees - deal.feeAcc - outFee)
-      realized += gross
-      const delta = gross - deal.feeAcc - outFee
-      if (delta >= 0) won++; else lost++
-      soHist[deal.so]++
-      trades.push({ i: deal.i, time: rows[deal.i].t, side: long ? 'long' : 'short', entry: a,
-        tp: tpPx, sl: slPx, outcome: hitSl ? 'loss' : 'win', exitAt: r.t, exitPx, heldFor: i - deal.i,
-        balance: p.startBalance + realized - fees, delta, so: deal.so, cost: deal.cost,
-        sized: true, ret: before > 0 ? delta / before : 0 })
-      deal = null
-      // The next deal opens at this candle's close, after the exit inside it.
-      open(i)
+    deal.mae = Math.max(deal.mae, (long ? a - r.l : r.h - a) / a * 100)
+
+    const lq = liqOf()
+    if (lq != null && (long ? r.l <= lq : r.h >= lq)) {
+      close(i, lq, 'taker', 'loss', true)
+      liquidations++
+      liquidated = true
     }
-    const unreal = deal ? (long ? deal.qty * (r.c - avg()) : deal.qty * (avg() - r.c)) : 0
-    const eq = p.startBalance + realized - fees + unreal
+
+    if (!liquidated) {
+      const tpPx = long ? a * (1 + tpF) : a * (1 - tpF)
+      const slPx = slF > 0 ? (long ? a * (1 - slF) : a * (1 + slF)) : null
+      const hitSl = slPx != null && (long ? r.l <= slPx : r.h >= slPx)
+      const hitTp = !filled && (long ? r.h >= tpPx : r.l <= tpPx)
+      // Both inside one candle: the stop, for the same reason the signal rules count it.
+      if (hitSl) close(i, slPx, 'taker', 'loss', false)
+      else if (hitTp) close(i, tpPx, 'maker', 'win', false)
+      // The next deal opens at this candle's close, after the exit inside it.
+      if (!deal) open(i)
+    }
+    const lqNow = liqOf()
+    if (lqNow != null) {
+      const dist = Math.abs(r.c - lqNow) / r.c * 100
+      if (closestLiq == null || dist < closestLiq) closestLiq = dist
+    }
+    const unreal = deal ? side * deal.qty * (r.c - avg()) : 0
+    const eq = cash() + unreal
     if (eq > peak) peak = eq
     if (peak > 0) maxDD = Math.max(maxDD, (peak - eq) / peak * 100)
     curve.push([r.t, eq])
   }
 
   const last = rows[rows.length - 1]?.c ?? 0
-  const unrealized = deal ? (long ? deal.qty * (last - avg()) : deal.qty * (avg() - last)) : 0
+  const unrealized = deal ? side * deal.qty * (last - avg()) : 0
   const openTrade = deal ? [{ i: deal.i, time: rows[deal.i].t, side: long ? 'long' : 'short',
     entry: avg(), tp: null, sl: null, outcome: 'open', exitAt: null, exitPx: null,
-    heldFor: rows.length - 1 - deal.i, balance: p.startBalance + realized - fees, so: deal.so, cost: deal.cost }] : []
-  const balance = p.startBalance + realized - fees + unrealized
+    heldFor: rows.length - 1 - deal.i, balance: cash(), so: deal.so, cost: deal.cost,
+    q: deal.qty, margin: deal.margin, liqPx: liqOf(), mae: deal.mae }] : []
+  const balance = cash() + unrealized
+  const full = dcaFullDeal(p, rows[0]?.c ?? 0)
   return {
     dca: {
       deals: trades.length, realized, fees, unrealized,
       openCost: deal?.cost ?? 0, openSo: deal?.so ?? 0, openAvg: deal ? avg() : null,
-      maxSo, soCount: devs.length, maxDeployed, soHist,
+      openLiq: liqOf(), openMargin: deal?.margin ?? 0,
+      maxSo, soCount: devs.length, maxDeployed, maxMargin, soHist,
+      refused, soRefused, liquidations, closestLiq, lev,
       // What a deal can grow to if every safety order fills. The number that matters.
-      maxPossible: p.dcaBaseUsd + devs.reduce((a, _, k) => a + p.dcaSoUsd * Math.pow(Math.max(0.1, p.dcaVolScale), k), 0),
+      maxPossible: full.notional, maxPossibleMargin: full.margin,
       lastDev: devs[devs.length - 1] ?? 0,
     },
     trades: [...trades, ...openTrade], balance, curve,
@@ -1046,7 +1261,7 @@ export function runBacktest(candles, params = {}) {
 
   let balance = p.startBalance
   let peak = p.startBalance, maxDD = 0
-  let won = 0, lost = 0, cooldown = 0, streak = 0, halted = false
+  let won = 0, lost = 0, cooldown = 0, streak = 0, halted = false, refused = 0
   let trades = []
 
   // The Trend bot is always in a position, so it runs its own walk and rejoins here for
@@ -1063,6 +1278,7 @@ export function runBacktest(candles, params = {}) {
       won: g.won, lost: g.lost,
       unresolved: g.grid ? g.grid.openSlots : g.trades.length - closed.length,
       timedOut: 0, halted: false,
+      refused: (g.grid ?? g.dca)?.refused ?? 0,
       // Deliberately null for a grid, and for a DCA with no stop. Every completed cycle or
       // deal profits by construction, so a win rate there is always 100% and would read as
       // a perfect strategy.
@@ -1080,7 +1296,7 @@ export function runBacktest(candles, params = {}) {
   if (p.strategy === 'trend') {
     const t = runTrendBot(rows, p, sig)
     trades = t.trades
-    balance = t.balance; peak = t.peak; maxDD = t.maxDD; won = t.won; lost = t.lost
+    balance = t.balance; peak = t.peak; maxDD = t.maxDD; won = t.won; lost = t.lost; refused = t.refused ?? 0
   }
 
   if (p.strategy === 'tokyo' || p.strategy === 'supertrend') {
@@ -1089,7 +1305,7 @@ export function runBacktest(candles, params = {}) {
     // in the slot Tokyo's occupies.
     const t = runTokyoBot(rows, p.strategy === 'supertrend' ? { ...p, tokyoStopPct: p.stStopPct } : p, sig)
     trades = t.trades
-    balance = t.balance; peak = t.peak; maxDD = t.maxDD; won = t.won; lost = t.lost
+    balance = t.balance; peak = t.peak; maxDD = t.maxDD; won = t.won; lost = t.lost; refused = t.refused ?? 0
   }
 
   const ownWalk = strategyKind(p.strategy) !== 'signal'
@@ -1117,15 +1333,26 @@ export function runBacktest(candles, params = {}) {
     const slDist = vbAvg != null ? vbAvg * p.vbSlMult : entry * (p.stopLossPct / 100)
     const tp = long ? entry + tpDist : entry - tpDist
     const sl0 = long ? entry - slDist : entry + slDist
+    // Under Hyperliquid sizing the entry is an order the exchange can refuse -- too small, or
+    // more margin than the account has left. A refused signal is a trade that did not happen.
+    let pos = null
+    if (p.pnlModel === 'notional') {
+      pos = sizePosition(balance, p, entry, long ? 1 : -1)
+      if (pos.rejected) { refused++; continue }
+    }
     // Leverage puts a second line under the trade. It only matters when it sits CLOSER than
     // the stop -- a 5% stop at 20x never gets the chance to fire.
-    const liq = liqPrice(p, entry, long)
+    const liq = pos?.liq ?? null
     if (p.useCooldown) cooldown = p.cooldownCandles
 
     let stop = sl0, best = entry
     let outcome = 'open', exitAt = null, exitPx = null, heldFor = 0, exitIdx = rows.length, liquidated = false
+    let mae = 0
     for (let x = i + 1; x < rows.length; x++) {
       heldFor = x - i
+      // The worst it went against the trade, which is what decides whether a looser stop or
+      // more leverage would have survived it.
+      mae = Math.max(mae, (long ? entry - rows[x].l : rows[x].h - entry) / entry * 100)
       const eff = liq == null ? stop : (long ? Math.max(stop, liq) : Math.min(stop, liq))
       const hitTp = long ? rows[x].h >= tp : rows[x].l <= tp
       const hitSl = long ? rows[x].l <= eff : rows[x].h >= eff
@@ -1162,16 +1389,18 @@ export function runBacktest(candles, params = {}) {
     const cost = p.useFees ? balance * (p.feePct / 100) : 0
     let delta = -cost
     if (p.pnlModel === 'notional') {
-      // What the position actually made: its size times the move, fees on the notional.
+      // What the position actually made: its size times the move, each fill charged as the
+      // exchange charges it. The target is a resting order (maker); the stop, a timeout and a
+      // liquidation all cross the book (taker).
       if (exitPx != null) {
-        delta = notionalDelta(balance, p, entry, exitPx, long)
+        delta = closePnl(pos, long ? 1 : -1, entry, exitPx, p, outcome === 'win' && !liquidated ? 'maker' : 'taker')
         const moved = long ? exitPx - entry : entry - exitPx
         if (outcome === 'timeout') { if (moved > 0) won++; else if (moved < 0) lost++ }
         else if (outcome === 'win') won++
         else if (outcome === 'loss') lost++
       } else {
-        // Never closed, so never scored -- but it was opened, and opening paid half the fee.
-        delta = p.useFees ? -(balance * (p.sizePct / 100) * Math.max(1, p.leverage) * (p.feePct / 100) / 2) : 0
+        // Never closed, so never scored -- but it was opened, and opening paid its fee.
+        delta = -pos.openFee
       }
     } else if (p.pnlModel === 'risk') {
       // Sized from the actual distance to the stop: risking `riskPct` of the balance, a
@@ -1212,6 +1441,7 @@ export function runBacktest(candles, params = {}) {
     trades.push({
       i, time: rows[i].t, side: long ? 'long' : 'short', entry, tp, sl: sl0,
       outcome, exitAt, exitPx, heldFor, balance, delta, ...(liquidated ? { liq: true } : {}),
+      mae, ...(pos ? { q: pos.q, margin: pos.margin, liqPx: pos.liq ?? null } : {}),
     })
 
     // One position at a time: the next entry is looked for from the candle this one closed
@@ -1234,6 +1464,8 @@ export function runBacktest(candles, params = {}) {
     unresolved: trades.filter(t => t.outcome === 'open').length,
     timedOut: trades.filter(t => t.outcome === 'timeout').length,
     halted,
+    // Entries the exchange would have refused: under its $10 minimum, or not enough margin.
+    refused,
     // Null, not 0, when nothing resolved: a rate with no denominator is unknown, and 0%
     // reads as "it lost every time".
     winRate: resolved ? (won / resolved) * 100 : null,
@@ -1432,10 +1664,26 @@ export const BT_FIELDS = [
     help: 'Each trade posts this share of the balance as margin. With several markets and "split the risk" on, it is divided between them. 100% at 1x is the plain "all in, no leverage" case, directly comparable to holding the coin.' },
 
   { key: 'leverage', label: 'Leverage', unit: 'x', step: '1', group: 'notionalModel',
-    hint: 'Position = size x leverage. 1-50.',
-    help: 'The position is worth the margin times this. Gains and losses scale with it, and so does the fee, which is charged on the whole position. Above 1x a trade can be LIQUIDATED: when the move against it takes about 90% of the margin, it is closed there and the result says so -- slightly early against Hyperliquid\'s real line, on purpose.' },
+    hint: 'Margin = position ÷ leverage. Capped at the market max.',
+    help: 'Sets the margin each order must post: a $1,000 position at 10x posts $100. Sized as a share of the balance, it also sets how big the position is. It is capped at each market\'s own maximum, as Hyperliquid caps it. In ISOLATED the posted margin is all that backs the position, so more leverage pulls the liquidation price closer; in CROSS the whole account backs it, and leverage only decides how much margin an order needs -- for the same size, the line does not move. The preview below shows both lines for the first market.' },
 
-  { key: 'takeProfitPct', notFor:['volbreak', 'trend', 'grid', 'tokyo', 'supertrend', 'dca'], label: 'Take profit', unit: '%', step: '0.05',
+  { key: 'sizeUsd', label: 'Position size', unit: 'USDC', step: '10', group: 'notionalModel',
+    hint: 'The position\'s value, as on the order ticket.',
+    help: 'The value of each position in USDC -- what you type into Hyperliquid\'s order ticket. The margin it posts is this divided by the leverage. Orders under $10 are refused, as the exchange refuses them, and so is one the account cannot margin.' },
+
+  { key: 'sizeCoin', label: 'Position size', unit: 'coins', step: '0.001', group: 'notionalModel',
+    hint: 'An amount of the coin itself.',
+    help: 'Each position is this many of the coin -- 0.01 BTC, 50 HYPE. The dollar value follows the price, so the same setting risks more after a rally. With several markets it is the same amount of EACH coin, which is rarely what you want across very different prices.' },
+
+  { key: 'makerFeePct', label: 'Maker fee', unit: '% per fill', step: '0.001', group: 'useFees',
+    hint: 'Resting orders: targets, grid rungs, safety orders.',
+    help: 'Charged on the value of every fill from an order that was resting on the book. Hyperliquid\'s base tier is 0.015%; volume tiers and referral discounts lower it.' },
+
+  { key: 'takerFeePct', label: 'Taker fee', unit: '% per fill', step: '0.001', group: 'useFees',
+    hint: 'Market entries, stops, liquidations.',
+    help: 'Charged on the value of every fill that crossed the book: a market entry, a stop, a flip, a timeout and a liquidation. Hyperliquid\'s base tier is 0.045%.' },
+
+  { key: 'takeProfitPct', notFor: ['volbreak', 'trend', 'grid', 'tokyo', 'supertrend', 'dca'], label: 'Take profit', unit: '%', step: '0.05',
     hint: 'How far price must move your way to win.',
     help: 'Measured from the entry price, as a percentage. A long entered at $100 with 1% wins if any later candle trades at $101. Percent rather than a fixed amount so the same setting means the same on a $78,000 market and a $0.004 one.' },
 
@@ -1493,6 +1741,18 @@ export const BT_CHOICES = [
     options: [['false', 'Even price gaps'], ['true', 'Even percent gaps']],
     help: 'Even price gaps put the rungs the same number of dollars apart. Even percent gaps put them the same percentage apart, so the lower rungs sit closer together -- which keeps the profit per cycle proportional across a wide range instead of shrinking at the bottom.' },
 
+  { key: 'marginMode', label: 'Margin mode', group: 'hl',
+    options: [['cross', 'Cross'], ['isolated', 'Isolated']],
+    help: 'Cross backs the position with the WHOLE account: its liquidation price sits further away, and when it is hit it takes the account with it. Isolated backs it only with the margin posted for it: the line is closer, but a liquidation costs that margin and nothing else. For the same size, leverage moves the liquidation price only in isolated -- in cross it only decides how much margin the order needs.' },
+
+  { key: 'sizeMode', label: 'Size each position by', group: 'hl',
+    options: [['pct', '% of balance'], ['usd', 'USDC'], ['coin', 'Coin']],
+    help: 'A share of the balance posted as margin (so the position grows and shrinks with the account), a fixed USDC value, or a fixed amount of the coin -- the three ways an order ticket takes a size.' },
+
+  { key: 'orderUnit', label: 'Order sizes in', group: 'hl',
+    options: [['usd', 'USDC'], ['coin', 'Coin']],
+    help: 'Whether the order sizes above are USDC or an amount of the coin. In USDC every order is worth the same and buys more coins lower down; in coins every order is the same size and costs less lower down.' },
+
   { key: 'bbMode', label: 'Trade the band', strategy: 'bollinger',
     options: [['revert', 'Fade it (mean reversion)'], ['breakout', 'Follow it (breakout)']],
     help: 'A close outside the upper band can mean "stretched, due to snap back" or "breaking out, about to run". Fading shorts it; following buys it. They are opposite bets on the same candle, so on the same market one of them is usually the answer and the other the lesson.' },
@@ -1535,8 +1795,10 @@ export const BT_OVERVIEW = [
    'A target and a stop are set as percentages of the entry price. Each later candle is checked in turn and whichever level is touched first ends the trade. With the time exit on, a trade that reaches neither is closed at the price it had. A trade still open when the data ends is reported as unresolved.'],
   ['How the money is counted',
    'Position sizing is the default and the realistic one: each trade posts a share of the balance as margin, at a leverage, and gains or loses exactly what the price moved -- liquidated if the move takes the margin. Fixed mode instead adds or subtracts a flat percentage of the balance, so the size of the price move does not affect the result -- the levels decide whether you won, the gain and loss settings decide by how much. Risk-based mode sizes from the distance to the stop, so changing the target changes the payout on its own. Grid and DCA are paid in dollars by their own order sizes.'],
+  ['The Hyperliquid account',
+   'Under Hyperliquid sizing every position is what the exchange would open: a size in USDC, coins or a share of the balance; margin posted at a leverage capped at the market maximum; cross or isolated; maker and taker fees per fill; the $10 minimum. It is liquidated where equity meets maintenance margin -- half the initial margin at the market max leverage -- with cross counting the whole account and isolated only the margin posted. Orders the account could not margin are refused, and counted.'],
   ['What it cannot tell you',
-   'It assumes you were filled at the closing price, that the stop filled exactly at its level, and that nothing gapped past it. Real fills are worse than all three. Treat a result as an upper bound, not a forecast.'],
+   'It assumes you were filled at the closing price, that a stop or a liquidation filled exactly at its level, and that nothing gapped past it. Real fills are worse than all three. Funding payments are not included, and neither are the tiered margin requirements for very large positions. Treat a result as an upper bound, not a forecast.'],
 ]
 
 /** Merge user input over the defaults, dropping anything that is not a number. */
@@ -1585,12 +1847,15 @@ export function runPortfolio(runs, params = {}) {
     const slDist = t.sl != null ? Math.abs(t.entry - t.sl) : 0
     const cost = p.useFees ? balance * (p.feePct / 100) / split : 0
     let delta = -cost
-    if (t.sized) {
-      // A grid cycle or a DCA deal was paid in dollars by its own order sizes. It is carried
-      // over as what it RETURNED on the balance it had, shared out like every other stake.
-      delta = balance * (t.ret ?? 0) / split
-    } else if (p.pnlModel === 'notional') {
-      delta = t.exitPx != null ? notionalDelta(balance, p, t.entry, t.exitPx, long, split) : 0
+    if (p.absolute) {
+      // Each market ran as its own sub-account, with its own margin, refusals and
+      // liquidations -- the only way those can be real. Its trades are dollars, summed.
+      delta = t.delta
+    } else if (t.sized || p.pnlModel === 'notional') {
+      // Paid in dollars by the market's own run. Carried over as what it RETURNED on the
+      // balance it had, shared out like every other stake.
+      const ret = t.sized ? (t.ret ?? 0) : (t.balance - t.delta > 0 ? t.delta / (t.balance - t.delta) : 0)
+      delta = balance * ret / split
     } else if (p.pnlModel === 'risk' && slDist > 0) {
       delta += balance * (p.riskPct / 100 / split) * (moved / slDist)
     } else if (t.outcome === 'win') delta += balance * (p.winPct / 100 / split)
@@ -1607,7 +1872,7 @@ export function runPortfolio(runs, params = {}) {
   // total instead of each describing a different hypothetical account.
   const byMarket = live.map(({ coin, result }) => {
     const mine = trades.filter(t => t.coin === coin)
-    const open = (result.grid?.unrealized ?? result.dca?.unrealized ?? 0) / split
+    const open = (result.grid?.unrealized ?? result.dca?.unrealized ?? 0) / (p.absolute ? 1 : split)
     const net = mine.reduce((a, t) => a + t.delta, 0) + open
     const w = mine.filter(t => t.outcome === 'win').length
     const l = mine.filter(t => t.outcome === 'loss').length
@@ -1622,7 +1887,7 @@ export function runPortfolio(runs, params = {}) {
 
   // A grid's inventory and a DCA's open deal are where those strategies lose, and neither
   // ever closes into a trade. Left out, a portfolio of them reported only the winning cycles.
-  const openPnl = live.reduce((a, r) => a + (r.result.grid?.unrealized ?? r.result.dca?.unrealized ?? 0), 0) / split
+  const openPnl = live.reduce((a, r) => a + (r.result.grid?.unrealized ?? r.result.dca?.unrealized ?? 0), 0) / (p.absolute ? 1 : split)
   balance += openPnl
   if (peak > 0) maxDD = Math.max(maxDD, (peak - balance) / peak * 100)
   const net = balance - p.startBalance
@@ -1644,7 +1909,8 @@ export function runPortfolio(runs, params = {}) {
     avgPerTrade: trades.length ? net / trades.length : 0,
     avgHeld: trades.length ? trades.reduce((a, t) => a + (t.heldFor ?? 0), 0) / trades.length : 0,
     byMarket,
-    dca: _dcaAcross(live.map(r => r.result.dca).filter(Boolean), split),
+    dca: _dcaAcross(live.map(r => r.result.dca).filter(Boolean), p.absolute ? 1 : split),
+    refused: live.reduce((a, r) => a + (r.result.refused ?? 0), 0),
   }
 }
 
@@ -1661,7 +1927,10 @@ function _dcaAcross(ds, split) {
     deals: sum('deals'), realized: sum('realized') / split, fees: sum('fees') / split,
     unrealized: sum('unrealized') / split, openCost: sum('openCost'), openSo: max('openSo'),
     openAvg: null, maxSo: max('maxSo'), soCount: ds[0].soCount, maxDeployed: max('maxDeployed'),
-    soHist: hist, maxPossible: ds[0].maxPossible, lastDev: ds[0].lastDev, markets: ds.length,
+    soHist: hist, maxPossible: ds[0].maxPossible, maxPossibleMargin: ds[0].maxPossibleMargin,
+    lastDev: ds[0].lastDev, markets: ds.length, lev: ds[0].lev, maxMargin: max('maxMargin'),
+    refused: sum('refused'), soRefused: sum('soRefused'), liquidations: sum('liquidations'),
+    closestLiq: ds.some(d => d.closestLiq != null) ? Math.min(...ds.filter(d => d.closestLiq != null).map(d => d.closestLiq)) : null,
   }
 }
 
@@ -1725,6 +1994,11 @@ export function coerceParams(raw = {}) {
   out.dcaTpPct = Math.max(0.05, out.dcaTpPct)
   out.dcaSlPct = Math.max(0, out.dcaSlPct)
   out.sizePct = Math.max(1, Math.min(100, out.sizePct))
+  out.sizeUsd = Math.max(0, out.sizeUsd)
+  out.sizeCoin = Math.max(0, out.sizeCoin)
+  out.makerFeePct = Math.max(0, out.makerFeePct)
+  out.takerFeePct = Math.max(0, out.takerFeePct)
+  if (Number.isFinite(+raw.maxLev) && +raw.maxLev >= 1) out.maxLev = +raw.maxLev
   // Hyperliquid's own ceiling. Anything higher is a number, not a position anyone can open.
   out.leverage = Math.max(1, Math.min(50, out.leverage))
   return out
