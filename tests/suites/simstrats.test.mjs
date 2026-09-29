@@ -215,6 +215,11 @@ t('a comparison row opens as a full result without fetching again', !/window\.__
 t('a sweep warns when the best value is a spike', sim.includes('The best value is a spike'))
 t('horizontal strips can be reached by drag', (sim.match(/data-dragscroll/g) || []).length >= 3)
 t('a hidden strategy\'s settings survive collecting the form', sim.includes('for (const f of BT_FIELDS) if (raw[f.key] == null) raw[f.key] = _simParams[f.key]'))
+// Reported: "instead of popular is sorted alphabetically". Volumes are only loaded when a screen
+// asks; with none, every market tied at zero and the list was the exchange's A-Z order.
+t('the most-traded list asks for volumes itself', sim.includes('ctx.loadMarkets()') && main.includes('loadMarkets: () => _ensureMarketData()'))
+t('and shows nothing rather than an unranked list', sim.includes('const list = _simMarkets().list.filter(m => (m.vol ?? 0) > 0)') &&
+  sim.includes('if (!list.length) { _simLoadVolumes(); return [] }'))
 t('old saves move to position sizing only if they never chose a model', sim.includes("if (!s.modelV && _simParams.pnlModel === 'fixed')"))
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

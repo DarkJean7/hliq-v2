@@ -49,6 +49,8 @@ let ctx = {
   markets: () => [],
   /** A market's artwork, as HTML. Only asked for the handful of search results on screen. */
   icon: () => '',
+  /** Ask the app to load 24h volumes. They are only fetched when some screen needs them. */
+  loadMarkets: () => Promise.resolve(),
 }
 export function initSimulator(overrides = {}) { ctx = { ...ctx, ...overrides } }
 
@@ -211,11 +213,28 @@ function _simSearch(q, limit = 8) {
     .slice(0, limit).map(([, m]) => m)
 }
 
-/** The busiest markets not already chosen, offered while the search box is empty. */
-function _simPopular(limit = 6) {
+/**
+ * The busiest markets not already chosen, offered while the search box is empty.
+ *
+ * Only once volumes are actually known. Reported: "instead of popular is sorted
+ * alphabetically" -- with no 24h volume loaded every market tied at zero and the sort fell
+ * back to the order the exchange lists them, 0G, 2Z, AAVE. An unknown ranking is not shown
+ * as a ranking; nothing is offered until the volumes arrive.
+ */
+function _simPopular(limit = 8) {
   const have = new Set(_simCoinList())
-  return [..._simMarkets().list].sort((a, b) => (b.vol ?? 0) - (a.vol ?? 0))
-    .filter(m => !have.has(m.id)).slice(0, limit)
+  const list = _simMarkets().list.filter(m => (m.vol ?? 0) > 0)
+  if (!list.length) { _simLoadVolumes(); return [] }
+  return list.sort((a, b) => b.vol - a.vol).filter(m => !have.has(m.id)).slice(0, limit)
+}
+
+let _simVolAsked = false
+function _simLoadVolumes() {
+  if (_simVolAsked) return
+  _simVolAsked = true
+  Promise.resolve().then(() => ctx.loadMarkets()).then(() => { _simMarkets(true); _simMktPaint() }, () => {})
+    // A load refused by the rate-limit breaker is retried on a later visit, not never.
+    .finally(() => setTimeout(() => { _simVolAsked = false }, 30e3))
 }
 
 function _simDexTag(dex) {
@@ -241,7 +260,7 @@ function _simResultsHtml() {
   if (!q) {
     const pop = _simPopular()
     if (!pop.length) return ''
-    return `<div class="sim-mkt-pop"><span class="sim-lbl-u">${_T('Popular', 'Populares')}</span>${
+    return `<div class="sim-mkt-pop"><span class="sim-lbl-u">${_T('Most traded 24h', 'Más operados 24h')}</span>${
       pop.map(m => `<button type="button" class="sim-chip sim-chip-sm notranslate" onclick="window.__simAddCoin('${esc(m.id)}')">+ ${esc(m.name)}${m.dex ? ` <span style="opacity:.6">${esc(m.dex)}</span>` : ''}</button>`).join('')}</div>`
   }
   const hits = _simSearch(q)

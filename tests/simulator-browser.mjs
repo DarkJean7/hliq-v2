@@ -67,7 +67,10 @@ const HL = {
   perpDexs: [null], perpCategories: [], portfolio: [],
   webData2: { clearinghouseState: STATE, openOrders: [], cumLedger: '1000' },
   meta: { universe: [] }, spotMeta: { tokens: [], universe: [] },
-  metaAndAssetCtxs: [{ universe: [] }, []], spotMetaAndAssetCtxs: [{ tokens: [], universe: [] }, []],
+  // Volumes in an order that is NOT alphabetical, so a list that fell back to A-Z is caught.
+  metaAndAssetCtxs: [{ universe: ['BTC', 'ETH', 'SOL', 'HYPE'].map(name => ({ name, szDecimals: 2, maxLeverage: 40 })) },
+    [9e8, 5e8, 5e7, 3e8].map((v, i) => ({ dayNtlVlm: String(v), markPx: ['83000', '4100', '210', '38'][i],
+      prevDayPx: '1', funding: '0', openInterest: '0', oraclePx: '1' }))], spotMetaAndAssetCtxs: [{ tokens: [], universe: [] }, []],
 }
 
 async function open(device, label) {
@@ -151,6 +154,10 @@ console.log(NL + '-- desktop: the page --')
   // No default: a strategy nobody has picked markets for starts empty and says so.
   ok('there is no default list', await p.evaluate(() =>
     document.querySelectorAll('#deskSim .sim-mchip').length === 0 && /No markets chosen/.test(document.getElementById('simChips').textContent)))
+  // Most traded first, by real 24h volume -- never the exchange's alphabetical listing.
+  const pop = await waitFor(p, 'the most-traded list', () => document.querySelectorAll('#simMktRes .sim-mkt-pop .sim-chip').length >= 4, null, 15000)
+  const order = await p.evaluate(() => [...document.querySelectorAll('#simMktRes .sim-mkt-pop .sim-chip')].map(b => b.textContent.replace('+', '').trim()))
+  ok('most traded markets are offered by volume, not A-Z', pop && order.slice(0, 4).join(',') === 'BTC,ETH,HYPE,SOL', order)
   await p.fill('#simMktQ', 'bt')
   ok('typing searches', await waitFor(p, 'results', () => /BTC/.test(document.querySelector('#simMktRes .sim-mres-row')?.textContent ?? ''), null, 5000))
   await p.press('#simMktQ', 'Enter')

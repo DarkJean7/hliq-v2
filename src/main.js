@@ -11375,6 +11375,7 @@ initSimulator({
       vol: _mktCtxMap[k]?.volume ?? 0,
     })),
   icon: (id) => _coinIconHtml(id),
+  loadMarkets: () => _ensureMarketData(),
 })
 
 initOffex({
