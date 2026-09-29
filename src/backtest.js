@@ -61,12 +61,12 @@ export const BT_DEFAULTS = {
 
   // ── the money ───────────────────────────────────────────────────────────
   startBalance: 1000,
-  pnlModel: 'fixed',      // 'fixed' | 'risk'
+  pnlModel: 'notional',   // 'notional' | 'fixed' | 'risk'
   winPct: 4,              // fixed: % of balance gained on a win
   lossPct: 2,             // fixed: % of balance lost on a stop
   riskPct: 1,             // risk: % of balance lost AT THE STOP; the win follows the ratio
   useFees: true,
-  feePct: 0.045,
+  feePct: 0.09,           // round trip: Hyperliquid's base taker fee is 0.045% each way
 
   // ── modules, each independently switchable ──────────────────────────────
   useCooldown: true,
@@ -98,7 +98,87 @@ export const BT_DEFAULTS = {
   // Several markets on one account: divide each stake by how many, the way the deployed
   // portfolio bot does. Off answers a different question, and a much louder one.
   splitRisk: true,
+
+  // ── the common retail bots ──────────────────────────────────────────────
+  // rsi -- mean reversion on Wilder's RSI
+  rsiLen: 14,
+  rsiLow: 30,
+  rsiHigh: 70,
+
+  // bollinger -- bands of `bbMult` standard deviations around a `bbLen` average
+  bbLen: 20,
+  bbMult: 2,
+  bbMode: 'revert',       // 'revert' fades a close outside the band | 'breakout' follows it
+
+  // macd -- the MACD line crossing its signal line
+  macdFast: 12,
+  macdSlow: 26,
+  macdSignal: 9,
+
+  // emacross -- a crossing EVENT with a target and stop (the Trend bot holds a STATE instead)
+  crossFast: 9,
+  crossSlow: 21,
+
+  // supertrend -- ATR bands that flip the side; always in a position, like the Trend bot
+  stLen: 10,
+  stMult: 3,
+  stStopPct: 0,           // 0 = none: it is closed by the flip, not a price
+
+  // dca -- a base order plus safety orders that average down, closed at a target
+  dcaSide: 'long',
+  dcaBaseUsd: 100,
+  dcaSoUsd: 100,
+  dcaSoCount: 5,
+  dcaStepPct: 1.5,        // first safety order this far from the base price
+  dcaStepScale: 1.2,      // each gap after that is this much wider
+  dcaVolScale: 1.5,       // each safety order is this much larger than the one before
+  dcaTpPct: 1.5,          // from the AVERAGE entry, which is the whole point of averaging
+  dcaSlPct: 0,            // from the average entry; 0 = none, which is how most are run
+
+  // One position per market at a time, the way every deployed bot runs. Off lets a new
+  // signal open a second trade while the first is still running -- which, sized at the
+  // whole balance, is leverage nobody set.
+  useOnePos: true,
+
+  // notional sizing -- the way an exchange actually pays: a position worth sizePct of the
+  // balance times the leverage, gaining or losing exactly what the price moved.
+  sizePct: 100,
+  leverage: 1,
 }
+
+/**
+ * How each strategy is shaped, which decides which parts of the form apply to it.
+ *
+ *   signal -- an entry rule plus a target and a stop; every module applies.
+ *   flip   -- always in a position, turned over by the rule itself. Entry modules have
+ *             nothing to act on in something that never sits out.
+ *   grid / dca -- dollar-sized ladders with their own walk. They pay in dollars, not in a
+ *             share of the balance, so the money model does not apply either.
+ *
+ * `bot` marks the ones that are the deployed bots' own rules rather than textbook versions.
+ */
+export const BT_STRATEGY_META = {
+  volbreak:   { cat: 'breakout', kind: 'signal', bot: true,  tag: 'Huge candle → trade its way' },
+  trend:      { cat: 'trend',    kind: 'flip',   bot: true,  tag: 'EMA state, holds losers to the stop' },
+  range:      { cat: 'breakout', kind: 'signal', bot: false, tag: 'Unusual candle, % target and stop' },
+  grid:       { cat: 'grid',     kind: 'grid',   bot: true,  tag: 'Ladder that earns the chop' },
+  tokyo:      { cat: 'clock',    kind: 'flip',   bot: true,  tag: 'Long/short by the hour, NY time' },
+  breakout:   { cat: 'breakout', kind: 'signal', bot: false, tag: 'Close beyond the N-candle channel' },
+  rsi:        { cat: 'revert',   kind: 'signal', bot: false, tag: 'Buy oversold, sell overbought' },
+  bollinger:  { cat: 'revert',   kind: 'signal', bot: false, tag: 'Fade or follow the bands' },
+  macd:       { cat: 'trend',    kind: 'signal', bot: false, tag: 'MACD crosses its signal line' },
+  emacross:   { cat: 'trend',    kind: 'signal', bot: false, tag: 'Fast EMA crosses the slow one' },
+  supertrend: { cat: 'trend',    kind: 'flip',   bot: false, tag: 'ATR bands flip the side' },
+  dca:        { cat: 'grid',     kind: 'dca',    bot: false, tag: 'Safety orders average the entry' },
+}
+
+export const BT_CATEGORIES = [
+  ['all', 'All'], ['trend', 'Trend'], ['revert', 'Mean reversion'],
+  ['breakout', 'Breakout'], ['grid', 'Grid & DCA'], ['clock', 'Clock'],
+]
+
+/** The strategy's shape, defaulting to a plain signal rule for anything unlisted. */
+export function strategyKind(key) { return BT_STRATEGY_META[key]?.kind ?? 'signal' }
 
 export const BT_STRATEGIES = [
   ['volbreak', 'Volatility Breakout (bot)',
@@ -113,6 +193,18 @@ export const BT_STRATEGIES = [
    'Two fixed windows on the clock per market: long inside one, short inside the other, flat if they overlap. It is ALWAYS in a position outside those gaps and never looks at price to decide -- only at the hour, in New York time. The windows come from the portfolio table when the market is in it, and can be typed for anything else.'],
   ['breakout', 'Channel breakout',
    'A close beyond the highest high or lowest low of the previous N candles opens a trade that way. Not one of the deployed bots -- a plain comparison rule.'],
+  ['rsi', 'RSI reversal',
+   'Mean reversion on Wilder\'s RSI. A long opens when RSI climbs back ABOVE the oversold line, a short when it falls back BELOW the overbought one -- waiting for the turn rather than buying the moment it is low, which is the version that does not catch every falling knife on the way down.'],
+  ['bollinger', 'Bollinger bands',
+   'Bands a number of standard deviations either side of a moving average. Revert mode fades a close outside a band, betting it snaps back to the middle; breakout mode follows it, betting the stretch is the start of a move. Same bands, opposite bets -- running both is the fastest way to learn which kind of market you are in.'],
+  ['macd', 'MACD cross',
+   'The MACD line (fast EMA minus slow EMA) crossing its own signal line opens a trade that way. The classic momentum trigger, closed by the target and stop below rather than by the next cross.'],
+  ['emacross', 'EMA crossover',
+   'The fast EMA crossing the slow one opens a trade in the direction of the cross, closed by the target and stop. Unlike the Trend bot it acts on the CROSS, not the state, and sits out between signals.'],
+  ['supertrend', 'Supertrend',
+   'Bands an ATR multiple above and below the candle midpoint that ratchet with price. A close through the band flips the side. Always in a position, like the Trend bot, but it flips losers too -- the band is the stop.'],
+  ['dca', 'DCA with safety orders',
+   'The most common retail bot. A base order opens the deal; if price moves against it, safety orders buy more at wider and wider gaps, dragging the average entry toward price. The deal closes at a target measured from that AVERAGE, then a new one starts. It wins almost every deal -- until price runs past the last safety order and the whole stack sits underwater.'],
 ]
 
 /**
@@ -122,7 +214,6 @@ export const BT_STRATEGIES = [
  */
 export const BT_UNSIMULATABLE = [
   ['Outcome Grid', 'A grid over prediction-market outcomes, which settle to 0 or 1 rather than trading continuously. The price series this reads does not describe them.'],
-  ['DCA', 'Averages into a position over several entries with no per-entry stop. The trade lifecycle here is one entry, one exit.'],
   ['TWAP', 'An execution algorithm -- it splits an order over time rather than deciding when to trade. There is no win or loss to measure.'],
   ['Accumulator', 'Buys spot on a schedule. Nothing here opens or closes against a target.'],
   ['Copy Trade', 'Mirrors another wallet, so its results depend on the fills of that wallet rather than on candles.'],
@@ -298,6 +389,100 @@ function sma(rows, n) {
 }
 
 /**
+ * Wilder's RSI over closes. Null until `n` changes have been seen -- the first value is a
+ * plain average of those, every later one is smoothed, which is how every charting package
+ * computes it and so the only version whose 30 and 70 mean what a trader expects.
+ */
+export function rsiSeries(rows, n) {
+  const out = new Array(rows.length).fill(null)
+  let ag = 0, al = 0
+  const val = () => al === 0 ? (ag === 0 ? 50 : 100) : 100 - 100 / (1 + ag / al)
+  for (let i = 1; i < rows.length; i++) {
+    const ch = rows[i].c - rows[i - 1].c
+    const g = ch > 0 ? ch : 0, l = ch < 0 ? -ch : 0
+    if (i <= n) {
+      ag += g; al += l
+      if (i === n) { ag /= n; al /= n; out[i] = val() }
+    } else {
+      ag = (ag * (n - 1) + g) / n
+      al = (al * (n - 1) + l) / n
+      out[i] = val()
+    }
+  }
+  return out
+}
+
+/** EMA over an arbitrary series that may start with nulls; null until `n` values are seen. */
+function emaOf(vals, n) {
+  const out = new Array(vals.length).fill(null)
+  const k = 2 / (n + 1)
+  let prev = null, seen = 0
+  for (let i = 0; i < vals.length; i++) {
+    const v = vals[i]
+    if (v == null) continue
+    prev = prev == null ? v : v * k + prev * (1 - k)
+    if (++seen >= n) out[i] = prev
+  }
+  return out
+}
+
+/**
+ * Supertrend direction at each candle: 1 while price is above the lower band, -1 while below
+ * the upper one. The bands only ever ratchet toward price while the side holds, which is
+ * what makes them a trailing stop rather than an envelope.
+ */
+export function supertrendSeries(rows, n, mult) {
+  const out = new Array(rows.length).fill(null)
+  let atr = null, trSum = 0
+  let upper = null, lower = null, dir = 1
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]
+    const pc = i ? rows[i - 1].c : r.c
+    const tr = Math.max(r.h - r.l, Math.abs(r.h - pc), Math.abs(r.l - pc))
+    if (i < n) { trSum += tr; if (i === n - 1) atr = trSum / n; else continue }
+    else atr = (atr * (n - 1) + tr) / n
+    const mid = (r.h + r.l) / 2
+    const bu = mid + mult * atr, bl = mid - mult * atr
+    upper = (upper == null || bu < upper || pc > upper) ? bu : upper
+    lower = (lower == null || bl > lower || pc < lower) ? bl : lower
+    if (dir > 0 && r.c < lower) dir = -1
+    else if (dir < 0 && r.c > upper) dir = 1
+    out[i] = dir
+  }
+  return out
+}
+
+/**
+ * What one closed position did to the balance under the NOTIONAL model: a position worth
+ * `sizePct` of the balance times the leverage, gaining or losing what the price moved.
+ *
+ * Capped at the margin posted. A move that takes more than the margin is a liquidation,
+ * and an exchange does not send you a bill for the rest -- it takes the margin and stops.
+ * Fees are charged on the notional, round trip, which is how Hyperliquid charges them.
+ */
+export function notionalDelta(balance, p, entry, exit, long, split = 1) {
+  const margin = Math.max(0, balance * (p.sizePct / 100) / split)
+  const notional = margin * Math.max(1, p.leverage)
+  const moved = entry > 0 ? (long ? exit - entry : entry - exit) / entry : 0
+  const fee = p.useFees ? notional * (p.feePct / 100) : 0
+  return Math.max(-margin, notional * moved) - fee
+}
+
+/**
+ * The price at which a leveraged position is liquidated, or null at 1x.
+ *
+ * Approximate on purpose: the real line depends on each market's maintenance margin, which
+ * is not in the candles. Liquidating at 90% of the margin gone sits a little before the
+ * exchange's line on every market listed, so this errs early -- a backtest that forgives a
+ * liquidation the exchange would have taken is the flattering kind of wrong.
+ */
+export function liqPrice(p, entry, long) {
+  if (p.pnlModel !== 'notional' || !(p.leverage > 1)) return null
+  const d = 0.9 / p.leverage
+  return long ? entry * (1 - d) : entry * (1 + d)
+}
+
+/**
  * The entry signal at each candle: 1 long, -1 short, 0 nothing, null not enough history.
  *
  * Every strategy reads only candles at or before the one it is judging. A signal on candle
@@ -341,6 +526,65 @@ export function signals(rows, p) {
       // paying two sets of fees and funding. The bot goes flat; so does this.
       out[i] = (enL && enS) ? 0 : enL ? 1 : enS ? -1 : 0
     }
+    return out
+  }
+  if (p.strategy === 'rsi') {
+    // The TURN, not the level: a long when RSI climbs back above oversold. Buying the moment
+    // it dips below is the version that buys every candle of a crash.
+    const r = rsiSeries(rows, Math.max(2, Math.round(p.rsiLen)))
+    for (let i = 1; i < rows.length; i++) {
+      if (r[i] == null || r[i - 1] == null) continue
+      out[i] = (r[i - 1] < p.rsiLow && r[i] >= p.rsiLow) ? 1
+             : (r[i - 1] > p.rsiHigh && r[i] <= p.rsiHigh) ? -1 : 0
+    }
+    return out
+  }
+  if (p.strategy === 'bollinger') {
+    // The band INCLUDES the candle being judged. That is not lookahead: the signal is acted
+    // on at this candle's close, which is also when its band is known.
+    const n = Math.max(2, Math.round(p.bbLen))
+    const mid = sma(rows, n)
+    const fade = p.bbMode !== 'breakout'
+    const up = new Array(rows.length).fill(null), dn = new Array(rows.length).fill(null)
+    for (let i = n - 1; i < rows.length; i++) {
+      let v = 0
+      for (let k = i - n + 1; k <= i; k++) v += (rows[k].c - mid[i]) ** 2
+      const sd = Math.sqrt(v / n)
+      up[i] = mid[i] + p.bbMult * sd
+      dn[i] = mid[i] - p.bbMult * sd
+    }
+    for (let i = n; i < rows.length; i++) {
+      // Fires on the candle that crosses OUT of the band, not on every one outside it. Each
+      // close is judged against ITS OWN band: the previous close against today's band would
+      // call a candle that was already outside "inside", and fire twice running.
+      const wasIn = rows[i - 1].c <= up[i - 1] && rows[i - 1].c >= dn[i - 1]
+      const above = rows[i].c > up[i], below = rows[i].c < dn[i]
+      out[i] = !wasIn ? 0 : above ? (fade ? -1 : 1) : below ? (fade ? 1 : -1) : 0
+    }
+    return out
+  }
+  if (p.strategy === 'macd' || p.strategy === 'emacross') {
+    let a, b
+    if (p.strategy === 'macd') {
+      const f = ema(rows, Math.max(2, Math.round(p.macdFast)))
+      const s = ema(rows, Math.max(2, Math.round(p.macdSlow)))
+      a = f.map((v, i) => v == null || s[i] == null ? null : v - s[i])
+      b = emaOf(a, Math.max(2, Math.round(p.macdSignal)))
+    } else {
+      a = ema(rows, Math.max(2, Math.round(p.crossFast)))
+      b = ema(rows, Math.max(2, Math.round(p.crossSlow)))
+    }
+    for (let i = 1; i < rows.length; i++) {
+      if (a[i] == null || b[i] == null || a[i - 1] == null || b[i - 1] == null) continue
+      out[i] = (a[i - 1] <= b[i - 1] && a[i] > b[i]) ? 1
+             : (a[i - 1] >= b[i - 1] && a[i] < b[i]) ? -1 : 0
+    }
+    return out
+  }
+  if (p.strategy === 'supertrend') {
+    // A STATE, like the Trend bot: which side the bands say to hold.
+    const st = supertrendSeries(rows, Math.max(2, Math.round(p.stLen)), Math.max(0.1, p.stMult))
+    for (let i = 0; i < rows.length; i++) out[i] = st[i]
     return out
   }
   if (p.strategy === 'breakout') {
@@ -394,7 +638,9 @@ function runTrendBot(rows, p, sig) {
     const slDist = entry * stopFrac
     const cost = p.useFees ? balance * (p.feePct / 100) : 0
     let delta = -cost
-    if (p.pnlModel === 'risk' && slDist > 0) {
+    if (p.pnlModel === 'notional') {
+      delta = notionalDelta(balance, p, entry, exit, long)
+    } else if (p.pnlModel === 'risk' && slDist > 0) {
       delta += balance * (p.riskPct / 100) * (moved / slDist)
     } else if (outcome === 'win') delta += balance * (p.winPct / 100)
     else if (outcome === 'loss') delta -= balance * (p.lossPct / 100)
@@ -415,11 +661,16 @@ function runTrendBot(rows, p, sig) {
 
     // The stop is checked against the candle's extreme, before anything else -- a stop that
     // was hit during the candle cannot be undone by where the candle happened to close.
-    if (pos && stopFrac > 0) {
+    // A leveraged position can also be liquidated, which for a bot that holds losers is the
+    // thing most likely to end one.
+    if (pos) {
       const long = pos.side > 0
-      const stopPx = long ? pos.entry * (1 - stopFrac) : pos.entry * (1 + stopFrac)
-      if (long ? rows[i].l <= stopPx : rows[i].h >= stopPx) {
+      const liq = liqPrice(p, pos.entry, long)
+      let stopPx = stopFrac > 0 ? (long ? pos.entry * (1 - stopFrac) : pos.entry * (1 + stopFrac)) : null
+      if (liq != null && (stopPx == null || (long ? liq > stopPx : liq < stopPx))) stopPx = liq
+      if (stopPx != null && (long ? rows[i].l <= stopPx : rows[i].h >= stopPx)) {
         book(pos.entry, stopPx, pos.side, 'loss', pos.i, rows[i].t, i - pos.i)
+        if (stopPx === liq) trades[trades.length - 1].liq = true
         pos = null
       }
     }
@@ -479,7 +730,9 @@ function runTokyoBot(rows, p, sig) {
     const slDist = entry * stopFrac
     const cost = p.useFees ? balance * (p.feePct / 100) : 0
     let delta = -cost
-    if (p.pnlModel === 'risk' && slDist > 0) {
+    if (p.pnlModel === 'notional') {
+      delta = notionalDelta(balance, p, entry, exit, long)
+    } else if (p.pnlModel === 'risk' && slDist > 0) {
       delta += balance * (p.riskPct / 100) * (moved / slDist)
     } else if (outcome === 'win') delta += balance * (p.winPct / 100)
     else if (outcome === 'loss') delta -= balance * (p.lossPct / 100)
@@ -499,12 +752,16 @@ function runTokyoBot(rows, p, sig) {
     const px = rows[i].c
 
     // Checked against the candle's extreme and before anything else: a stop touched inside
-    // the candle cannot be undone by where it happened to close.
-    if (pos && stopFrac > 0) {
+    // the candle cannot be undone by where it happened to close. Leverage adds a second
+    // line that ends a position whether or not a stop was set.
+    if (pos) {
       const long = pos.side > 0
-      const stopPx = long ? pos.entry * (1 - stopFrac) : pos.entry * (1 + stopFrac)
-      if (long ? rows[i].l <= stopPx : rows[i].h >= stopPx) {
+      const liq = liqPrice(p, pos.entry, long)
+      let stopPx = stopFrac > 0 ? (long ? pos.entry * (1 - stopFrac) : pos.entry * (1 + stopFrac)) : null
+      if (liq != null && (stopPx == null || (long ? liq > stopPx : liq < stopPx))) stopPx = liq
+      if (stopPx != null && (long ? rows[i].l <= stopPx : rows[i].h >= stopPx)) {
         book(pos.entry, stopPx, pos.side, pos.i, rows[i].t, i - pos.i, true)
+        if (stopPx === liq) trades[trades.length - 1].liq = true
         pos = null
       }
     }
@@ -573,6 +830,8 @@ export function runGridBacktest(rows, p) {
   const slots = prices.map(() => null)
   let realized = 0, fees = 0, cycles = 0, buys = 0, sells = 0
   let inRange = 0, maxInventory = 0
+  let mtmPeak = p.startBalance, mtmDD = 0
+  const curve = []
   const trades = []
 
   for (const row of rows) {
@@ -603,14 +862,25 @@ export function runGridBacktest(rows, p) {
         fees += closePx * sz * fee
         cycles++
         sells++
+        const before = p.startBalance + realized - gain - (fees - closePx * sz * fee)
         trades.push({ i, time: slots[i].at, side: short ? 'short' : 'long', entry: px,
           tp: closePx, sl: null, outcome: 'win', exitAt: row.t, exitPx: closePx, heldFor: 0,
-          balance: p.startBalance + realized - fees, delta: gain })
+          balance: p.startBalance + realized - fees, delta: gain,
+          // Dollar-sized: a portfolio re-books it by what it returned, not by a win percentage.
+          sized: true, ret: before > 0 ? gain / before : 0 })
         slots[i] = null
       }
     }
     const held = slots.reduce((a, s) => a + (s ? s.sz : 0), 0)
     if (held > maxInventory) maxInventory = held
+    // Marked to the close every candle. The grid's losing lives in the inventory it holds,
+    // so a drawdown from realised cycles alone -- which only ever go up -- was always zero.
+    let unreal = 0
+    for (const s of slots) if (s) unreal += short ? (s.px - row.c) * s.sz : (row.c - s.px) * s.sz
+    const eq = p.startBalance + realized - fees + unreal
+    if (eq > mtmPeak) mtmPeak = eq
+    if (mtmPeak > 0) mtmDD = Math.max(mtmDD, (mtmPeak - eq) / mtmPeak * 100)
+    curve.push([row.t, eq])
   }
 
   // What the grid was still holding when the data ended, valued at the last price. This is
@@ -634,10 +904,136 @@ export function runGridBacktest(rows, p) {
       inRangePct: rows.length ? (inRange / rows.length) * 100 : null,
       openSlots: open.length,
     },
-    trades, balance,
-    peak: Math.max(p.startBalance, balance),
-    maxDD: 0,
+    trades, balance, curve,
+    peak: Math.max(mtmPeak, balance),
+    maxDD: mtmDD,
     won: cycles, lost: 0,
+  }
+}
+
+/** Where safety order k (1-based) rests, as a percentage away from the base price. */
+export function dcaDeviations(p) {
+  const out = []
+  let dev = 0, gap = p.dcaStepPct
+  for (let k = 1; k <= Math.max(0, Math.round(p.dcaSoCount)); k++) {
+    dev += gap
+    out.push(dev)
+    gap *= Math.max(0.1, p.dcaStepScale)
+  }
+  return out
+}
+
+/**
+ * The DCA bot.
+ *
+ * A base order opens a deal at a candle's close. Safety orders rest below it (above it for a
+ * short) at gaps that widen by `dcaStepScale`, each larger than the last by `dcaVolScale`.
+ * The target is measured from the AVERAGE entry, so every safety order that fills pulls the
+ * exit closer -- which is the entire mechanism. When the target fills the deal is done and
+ * the next one opens at that candle's close.
+ *
+ * Two readings kept honest, for the same reasons as the grid:
+ *
+ *   A SAFETY ORDER AND THE TARGET IN ONE CANDLE. The low filled the safety order and the high
+ *     reached the new, closer target -- but OHLC cannot say the low came first. The target
+ *     waits for a later candle whenever a safety order filled in this one.
+ *   THE WIN RATE. Without a stop every closed deal is a win by construction. The loss is the
+ *     deal still open when the data ends, which is valued at the last close and reported
+ *     before anything else.
+ *
+ * Paid in dollars, not a share of the balance: the order sizes ARE the bot's settings.
+ * Equity is marked to every close, so the drawdown includes the stack sitting underwater.
+ */
+export function runDcaBacktest(rows, p) {
+  const long = p.dcaSide !== 'short'
+  const fee = p.useFees ? p.feePct / 100 / 2 : 0
+  const devs = dcaDeviations(p)
+  const tpF = Math.max(0.01, p.dcaTpPct) / 100
+  const slF = Math.max(0, p.dcaSlPct) / 100
+  let realized = 0, fees = 0
+  let peak = p.startBalance, maxDD = 0
+  let won = 0, lost = 0, maxSo = 0, maxDeployed = 0
+  const soHist = new Array(devs.length + 1).fill(0)
+  const trades = [], curve = []
+  let deal = null
+
+  const open = (i) => {
+    const px = rows[i].c
+    const qty = p.dcaBaseUsd / px
+    fees += p.dcaBaseUsd * fee
+    deal = { i, base: px, qty, cost: p.dcaBaseUsd, so: 0, feeAcc: p.dcaBaseUsd * fee }
+  }
+  const avg = () => deal.cost / deal.qty
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]
+    if (!deal) { open(i); curve.push([r.t, p.startBalance + realized - fees]); continue }
+
+    // Safety orders first -- they are the adverse move, and several can fill in one candle.
+    let filled = false
+    while (deal.so < devs.length) {
+      const d = devs[deal.so] / 100
+      const soPx = long ? deal.base * (1 - d) : deal.base * (1 + d)
+      if (long ? r.l > soPx : r.h < soPx) break
+      const usd = p.dcaSoUsd * Math.pow(Math.max(0.1, p.dcaVolScale), deal.so)
+      deal.qty += usd / soPx
+      deal.cost += usd
+      deal.feeAcc += usd * fee
+      fees += usd * fee
+      deal.so++
+      filled = true
+    }
+    if (deal.so > maxSo) maxSo = deal.so
+    if (deal.cost > maxDeployed) maxDeployed = deal.cost
+
+    const a = avg()
+    const tpPx = long ? a * (1 + tpF) : a * (1 - tpF)
+    const slPx = slF > 0 ? (long ? a * (1 - slF) : a * (1 + slF)) : null
+    const hitSl = slPx != null && (long ? r.l <= slPx : r.h >= slPx)
+    const hitTp = !filled && (long ? r.h >= tpPx : r.l <= tpPx)
+    // Both inside one candle: the stop, for the same reason the signal rules count it.
+    const exitPx = hitSl ? slPx : hitTp ? tpPx : null
+    if (exitPx != null) {
+      const gross = long ? deal.qty * (exitPx - a) : deal.qty * (a - exitPx)
+      const outFee = deal.qty * exitPx * fee
+      fees += outFee
+      const before = p.startBalance + realized - (fees - deal.feeAcc - outFee)
+      realized += gross
+      const delta = gross - deal.feeAcc - outFee
+      if (delta >= 0) won++; else lost++
+      soHist[deal.so]++
+      trades.push({ i: deal.i, time: rows[deal.i].t, side: long ? 'long' : 'short', entry: a,
+        tp: tpPx, sl: slPx, outcome: hitSl ? 'loss' : 'win', exitAt: r.t, exitPx, heldFor: i - deal.i,
+        balance: p.startBalance + realized - fees, delta, so: deal.so, cost: deal.cost,
+        sized: true, ret: before > 0 ? delta / before : 0 })
+      deal = null
+      // The next deal opens at this candle's close, after the exit inside it.
+      open(i)
+    }
+    const unreal = deal ? (long ? deal.qty * (r.c - avg()) : deal.qty * (avg() - r.c)) : 0
+    const eq = p.startBalance + realized - fees + unreal
+    if (eq > peak) peak = eq
+    if (peak > 0) maxDD = Math.max(maxDD, (peak - eq) / peak * 100)
+    curve.push([r.t, eq])
+  }
+
+  const last = rows[rows.length - 1]?.c ?? 0
+  const unrealized = deal ? (long ? deal.qty * (last - avg()) : deal.qty * (avg() - last)) : 0
+  const openTrade = deal ? [{ i: deal.i, time: rows[deal.i].t, side: long ? 'long' : 'short',
+    entry: avg(), tp: null, sl: null, outcome: 'open', exitAt: null, exitPx: null,
+    heldFor: rows.length - 1 - deal.i, balance: p.startBalance + realized - fees, so: deal.so, cost: deal.cost }] : []
+  const balance = p.startBalance + realized - fees + unrealized
+  return {
+    dca: {
+      deals: trades.length, realized, fees, unrealized,
+      openCost: deal?.cost ?? 0, openSo: deal?.so ?? 0, openAvg: deal ? avg() : null,
+      maxSo, soCount: devs.length, maxDeployed, soHist,
+      // What a deal can grow to if every safety order fills. The number that matters.
+      maxPossible: p.dcaBaseUsd + devs.reduce((a, _, k) => a + p.dcaSoUsd * Math.pow(Math.max(0.1, p.dcaVolScale), k), 0),
+      lastDev: devs[devs.length - 1] ?? 0,
+    },
+    trades: [...trades, ...openTrade], balance, curve,
+    peak: Math.max(peak, balance), maxDD, won, lost,
   }
 }
 
@@ -656,23 +1052,28 @@ export function runBacktest(candles, params = {}) {
   // The Trend bot is always in a position, so it runs its own walk and rejoins here for
   // the reporting. Modules that describe entries -- cooldown, side, trend filter -- have
   // nothing to act on in a strategy that never sits out, and are simply not applied.
-  if (p.strategy === 'grid') {
-    const g = runGridBacktest(rows, p)
+  if (p.strategy === 'grid' || p.strategy === 'dca') {
+    const g = p.strategy === 'grid' ? runGridBacktest(rows, p) : runDcaBacktest(rows, p)
     const netG = g.balance - p.startBalance
+    const closed = g.trades.filter(t => t.outcome !== 'open')
     return {
       params: p, candles: rows.length,
       from: rows[0]?.t ?? null, to: rows[rows.length - 1]?.t ?? null,
       trades: g.trades, tradesMade: g.trades.length,
-      won: g.won, lost: 0, unresolved: g.grid.openSlots, timedOut: 0, halted: false,
-      // Deliberately null. Every completed cycle profits by construction, so a win rate
-      // here is always 100% and would read as a perfect strategy.
-      winRate: null,
+      won: g.won, lost: g.lost,
+      unresolved: g.grid ? g.grid.openSlots : g.trades.length - closed.length,
+      timedOut: 0, halted: false,
+      // Deliberately null for a grid, and for a DCA with no stop. Every completed cycle or
+      // deal profits by construction, so a win rate there is always 100% and would read as
+      // a perfect strategy.
+      winRate: (g.grid || !(p.dcaSlPct > 0)) ? null : (g.won + g.lost ? (g.won / (g.won + g.lost)) * 100 : null),
       startBalance: p.startBalance, balance: g.balance, netPnl: netG,
       roe: p.startBalance > 0 ? (netG / p.startBalance) * 100 : null,
       peak: g.peak, maxDrawdown: g.maxDD,
       avgPerTrade: g.trades.length ? netG / g.trades.length : 0,
-      avgHeld: 0, signalsSeen: g.grid.buys,
-      grid: g.grid,
+      avgHeld: closed.length ? closed.reduce((a, t) => a + (t.heldFor ?? 0), 0) / closed.length : 0,
+      signalsSeen: g.grid ? g.grid.buys : closed.length,
+      grid: g.grid, dca: g.dca, curve: g.curve,
     }
   }
 
@@ -682,13 +1083,16 @@ export function runBacktest(candles, params = {}) {
     balance = t.balance; peak = t.peak; maxDD = t.maxDD; won = t.won; lost = t.lost
   }
 
-  if (p.strategy === 'tokyo') {
-    const t = runTokyoBot(rows, p, sig)
+  if (p.strategy === 'tokyo' || p.strategy === 'supertrend') {
+    // Supertrend has the same shape of life as Tokyo -- always in, turned over by its own
+    // rule, never refusing to close a loser -- so it shares the walk. Its optional stop goes
+    // in the slot Tokyo's occupies.
+    const t = runTokyoBot(rows, p.strategy === 'supertrend' ? { ...p, tokyoStopPct: p.stStopPct } : p, sig)
     trades = t.trades
     balance = t.balance; peak = t.peak; maxDD = t.maxDD; won = t.won; lost = t.lost
   }
 
-  const ownWalk = p.strategy === 'trend' || p.strategy === 'tokyo'
+  const ownWalk = strategyKind(p.strategy) !== 'signal'
   for (let i = 0; i < rows.length && !halted && !ownWalk; i++) {
     if (cooldown > 0) { cooldown--; continue }
     const s = sig[i]
@@ -713,14 +1117,18 @@ export function runBacktest(candles, params = {}) {
     const slDist = vbAvg != null ? vbAvg * p.vbSlMult : entry * (p.stopLossPct / 100)
     const tp = long ? entry + tpDist : entry - tpDist
     const sl0 = long ? entry - slDist : entry + slDist
+    // Leverage puts a second line under the trade. It only matters when it sits CLOSER than
+    // the stop -- a 5% stop at 20x never gets the chance to fire.
+    const liq = liqPrice(p, entry, long)
     if (p.useCooldown) cooldown = p.cooldownCandles
 
     let stop = sl0, best = entry
-    let outcome = 'open', exitAt = null, exitPx = null, heldFor = 0
+    let outcome = 'open', exitAt = null, exitPx = null, heldFor = 0, exitIdx = rows.length, liquidated = false
     for (let x = i + 1; x < rows.length; x++) {
       heldFor = x - i
+      const eff = liq == null ? stop : (long ? Math.max(stop, liq) : Math.min(stop, liq))
       const hitTp = long ? rows[x].h >= tp : rows[x].l <= tp
-      const hitSl = long ? rows[x].l <= stop : rows[x].h >= stop
+      const hitSl = long ? rows[x].l <= eff : rows[x].h >= eff
       if (hitTp && hitSl) {
         // Both levels inside one candle. OHLC cannot say which came first.
         outcome = p.ambiguous === 'win' ? 'win' : 'loss'
@@ -738,19 +1146,34 @@ export function runBacktest(candles, params = {}) {
           outcome = 'timeout'
           exitAt = rows[x].t
           exitPx = rows[x].c
+          exitIdx = x
           break
         }
         continue
       }
       exitAt = rows[x].t
-      exitPx = outcome === 'win' ? tp : stop
+      exitPx = outcome === 'win' ? tp : eff
+      liquidated = outcome === 'loss' && eff === liq
+      exitIdx = x
       break
     }
 
     // ── the money ─────────────────────────────────────────────────────────
     const cost = p.useFees ? balance * (p.feePct / 100) : 0
     let delta = -cost
-    if (p.pnlModel === 'risk') {
+    if (p.pnlModel === 'notional') {
+      // What the position actually made: its size times the move, fees on the notional.
+      if (exitPx != null) {
+        delta = notionalDelta(balance, p, entry, exitPx, long)
+        const moved = long ? exitPx - entry : entry - exitPx
+        if (outcome === 'timeout') { if (moved > 0) won++; else if (moved < 0) lost++ }
+        else if (outcome === 'win') won++
+        else if (outcome === 'loss') lost++
+      } else {
+        // Never closed, so never scored -- but it was opened, and opening paid half the fee.
+        delta = p.useFees ? -(balance * (p.sizePct / 100) * Math.max(1, p.leverage) * (p.feePct / 100) / 2) : 0
+      }
+    } else if (p.pnlModel === 'risk') {
       // Sized from the actual distance to the stop: risking `riskPct` of the balance, a
       // win pays that times the reward-to-risk the levels imply. Change the target and the
       // payout follows, which the fixed model cannot do.
@@ -788,8 +1211,13 @@ export function runBacktest(candles, params = {}) {
 
     trades.push({
       i, time: rows[i].t, side: long ? 'long' : 'short', entry, tp, sl: sl0,
-      outcome, exitAt, exitPx, heldFor, balance, delta,
+      outcome, exitAt, exitPx, heldFor, balance, delta, ...(liquidated ? { liq: true } : {}),
     })
+
+    // One position at a time: the next entry is looked for from the candle this one closed
+    // on. That candle's close comes after the exit inside it, so acting on it is fair. A
+    // trade that never closed holds the market to the end.
+    if (p.useOnePos) i = exitIdx - 1
   }
 
   const resolved = won + lost
@@ -915,11 +1343,103 @@ export const BT_FIELDS = [
     hint: 'Bought at each rung.',
     help: 'The dollars committed at each rung. Multiply it by the number of rungs to see what the grid can end up holding if price leaves the bottom of the range -- that total, not the size per level, is what is actually at risk.' },
 
-  { key: 'takeProfitPct', notFor: ['volbreak', 'trend', 'grid', 'tokyo'], label: 'Take profit', unit: '%', step: '0.05',
+  { key: 'rsiLen', label: 'RSI length', unit: 'candles', step: '1', strategy: 'rsi',
+    hint: 'Changes averaged. 14 is the standard.',
+    help: 'How many candles of gains and losses the RSI averages, Wilder-smoothed the way every charting package does it -- so 30 and 70 here mean what they mean on a chart. Shorter swings to the extremes more often and fires more; longer rarely reaches them at all.' },
+
+  { key: 'rsiLow', label: 'Oversold', unit: 'RSI', step: '1', strategy: 'rsi',
+    hint: 'A long fires when RSI climbs back above this.',
+    help: 'The long signal is the TURN: RSI was below this line and has just closed back above it. Buying the moment it dips under is the other common version, and it is the one that buys every candle of a crash -- this one waits for the selling to pause. Lower is rarer and deeper.' },
+
+  { key: 'rsiHigh', label: 'Overbought', unit: 'RSI', step: '1', strategy: 'rsi',
+    hint: 'A short fires when RSI falls back below this.',
+    help: 'The mirror: RSI was above this and has just closed back under it. Use Restrict side under Modules to run the long half alone -- mean reversion shorts in a market that only went up are usually where this strategy bleeds.' },
+
+  { key: 'bbLen', label: 'Band length', unit: 'candles', step: '1', strategy: 'bollinger',
+    hint: 'The moving average in the middle. 20 is standard.',
+    help: 'The middle line is a simple average of this many closes, and the bands are measured from it in standard deviations of the same closes. A signal fires only on the candle that closes OUTSIDE a band after closing inside it, so a long stretch outside counts once, not every candle.' },
+
+  { key: 'bbMult', label: 'Band width', unit: 'std devs', step: '0.1', strategy: 'bollinger',
+    hint: 'How far out the bands sit. 2 is standard.',
+    help: 'At 2 standard deviations a normal market closes outside a band roughly one candle in twenty. Wider bands fire rarely and on more extreme stretches; narrower ones fire constantly and mostly on noise.' },
+
+  { key: 'macdFast', label: 'Fast EMA', unit: 'candles', step: '1', strategy: 'macd',
+    hint: 'MACD line = fast EMA minus slow EMA.',
+    help: 'The standard is 12, 26 and 9. The MACD line is this average minus the slow one; when it crosses above its own signal line momentum is turning up, and a long opens.' },
+
+  { key: 'macdSlow', label: 'Slow EMA', unit: 'candles', step: '1', strategy: 'macd',
+    hint: 'Must be longer than the fast one.',
+    help: 'The longer average the fast one is measured against. Kept at least one candle longer than the fast EMA -- if they were equal the MACD line would be flat at zero and nothing would ever cross.' },
+
+  { key: 'macdSignal', label: 'Signal line', unit: 'candles', step: '1', strategy: 'macd',
+    hint: 'EMA of the MACD line itself.',
+    help: 'An average of the MACD line. The trade fires on the MACD line crossing THIS, which is earlier than waiting for the two EMAs themselves to cross and noisier for the same reason.' },
+
+  { key: 'crossFast', label: 'Fast EMA', unit: 'candles', step: '1', strategy: 'emacross',
+    hint: 'The quicker average.',
+    help: 'A long opens on the candle where this average crosses ABOVE the slow one, a short where it crosses below. Only the crossing candle fires; between crosses the strategy sits out, which is the difference from the Trend bot.' },
+
+  { key: 'crossSlow', label: 'Slow EMA', unit: 'candles', step: '1', strategy: 'emacross',
+    hint: 'The slower average.',
+    help: 'Kept longer than the fast one. 9 and 21 is a common short-term pair; 50 and 200 is the famous "golden cross", which on hourly candles fires only a handful of times a year.' },
+
+  { key: 'stLen', label: 'ATR length', unit: 'candles', step: '1', strategy: 'supertrend',
+    hint: 'Candles in the average true range.',
+    help: 'The Average True Range measures how far price typically travels in a candle, gaps included. The bands sit a multiple of it away from each candle\'s midpoint. 10 is the common default.' },
+
+  { key: 'stMult', label: 'Multiplier', unit: 'x ATR', step: '0.25', strategy: 'supertrend',
+    hint: 'How far the bands sit. 3 is common.',
+    help: 'Wider bands flip less often and give a trend more room, at the cost of giving back more before they flip. Narrower bands flip on every wobble and pay the fees for it -- check the trade count against the net.' },
+
+  { key: 'stStopPct', label: 'Stop loss', unit: '%', step: '0.25', strategy: 'supertrend',
+    hint: '0 = none; the band is the stop.',
+    help: 'Supertrend closes a position when price closes through the opposite band, so it already has an exit. A percentage stop here is an extra, tighter line that can end a trade before the band does.' },
+
+  { key: 'dcaBaseUsd', label: 'Base order', unit: '$', step: '10', strategy: 'dca',
+    hint: 'What opens each deal.',
+    help: 'Bought at the close of the candle a deal starts on. A deal starts at the beginning of the run and again straight after every target is hit.' },
+
+  { key: 'dcaSoUsd', label: 'Safety order', unit: '$', step: '10', strategy: 'dca',
+    hint: 'The first one; later ones scale.',
+    help: 'The size of the first safety order. Each after it is multiplied by the volume scale, so with 1.5 the fifth is five times the first. The panel shows what a deal can grow to if every one fills -- that total, not the base order, is what the bot really risks.' },
+
+  { key: 'dcaSoCount', label: 'Safety orders', unit: 'max', step: '1', strategy: 'dca',
+    hint: 'How many times it can average down.',
+    help: 'More safety orders let a deal survive a deeper move, and make the deal that finally does not survive much larger. The result says how many were ever used and how often.' },
+
+  { key: 'dcaStepPct', label: 'First step', unit: '%', step: '0.1', strategy: 'dca',
+    hint: 'Distance from the base price to the first.',
+    help: 'The first safety order rests this far against the base price. Later gaps widen by the step scale, and the panel shows the deviation the last one sits at -- a move past that is a move the bot has nothing left for.' },
+
+  { key: 'dcaStepScale', label: 'Step scale', unit: 'x', step: '0.1', strategy: 'dca',
+    hint: 'Each gap is this much wider than the last.',
+    help: 'At 1 the orders are evenly spaced. Above 1 they spread out, covering a deeper move with the same count. 1.2 to 1.5 is typical.' },
+
+  { key: 'dcaVolScale', label: 'Volume scale', unit: 'x', step: '0.1', strategy: 'dca',
+    hint: 'Each order is this much larger than the last.',
+    help: 'Larger later orders pull the average entry toward price faster, so a smaller bounce closes the deal. They also grow the total geometrically -- 1.5 over ten orders is more than a hundred times the first.' },
+
+  { key: 'dcaTpPct', label: 'Take profit', unit: '% from avg', step: '0.1', strategy: 'dca',
+    hint: 'Measured from the average entry.',
+    help: 'The deal closes when price reaches this far past the AVERAGE entry, not the first one. That is the whole trick: every safety order drags the target closer to where price is.' },
+
+  { key: 'dcaSlPct', label: 'Stop loss', unit: '% from avg', step: '0.5', strategy: 'dca',
+    hint: '0 = none, which is how most are run.',
+    help: 'Most DCA bots are run with no stop, which is why they win nearly every deal and why the one they lose is so large. Set one to see what cutting the stack would have cost or saved; the win rate is only shown when a stop exists, because without one it is 100% by construction.' },
+
+  { key: 'sizePct', label: 'Position size', unit: '% of balance', step: '5', group: 'notionalModel',
+    hint: 'Margin posted per trade.',
+    help: 'Each trade posts this share of the balance as margin. With several markets and "split the risk" on, it is divided between them. 100% at 1x is the plain "all in, no leverage" case, directly comparable to holding the coin.' },
+
+  { key: 'leverage', label: 'Leverage', unit: 'x', step: '1', group: 'notionalModel',
+    hint: 'Position = size x leverage. 1-50.',
+    help: 'The position is worth the margin times this. Gains and losses scale with it, and so does the fee, which is charged on the whole position. Above 1x a trade can be LIQUIDATED: when the move against it takes about 90% of the margin, it is closed there and the result says so -- slightly early against Hyperliquid\'s real line, on purpose.' },
+
+  { key: 'takeProfitPct', notFor:['volbreak', 'trend', 'grid', 'tokyo', 'supertrend', 'dca'], label: 'Take profit', unit: '%', step: '0.05',
     hint: 'How far price must move your way to win.',
     help: 'Measured from the entry price, as a percentage. A long entered at $100 with 1% wins if any later candle trades at $101. Percent rather than a fixed amount so the same setting means the same on a $78,000 market and a $0.004 one.' },
 
-  { key: 'stopLossPct', notFor: ['volbreak', 'trend', 'grid', 'tokyo'], label: 'Stop loss', unit: '%', step: '0.05',
+  { key: 'stopLossPct', notFor: ['volbreak', 'trend', 'grid', 'tokyo', 'supertrend', 'dca'], label: 'Stop loss', unit: '%', step: '0.05',
     hint: 'How far against you before it is a loss.',
     help: 'The mirror of the target. Whichever level the price touches FIRST ends the trade, checked candle by candle after entry. If neither is ever touched before the data runs out, the trade is reported as unresolved: not a win, not a loss.' },
 
@@ -937,7 +1457,7 @@ export const BT_FIELDS = [
 
   { key: 'feePct', label: 'Cost per trade', unit: '%', step: '0.005', group: 'useFees',
     hint: 'Charged on every trade taken.',
-    help: 'A round-trip cost as a percentage of the balance, charged whether the trade won, lost, or never resolved -- the position was opened either way. Hyperliquid taker fees come to roughly 0.045% in and out together. Turning fees off is a way to see how much of a result they were eating, not a realistic setting.' },
+    help: 'A round-trip cost, charged whether the trade won, lost, or never resolved -- the position was opened either way. Under position sizing it is a percentage of the POSITION, which is how Hyperliquid charges: the base taker fee is 0.045% each way, so 0.09% for a trade opened and closed at market, less for resting orders. Under the fixed and risk models it is a percentage of the balance. Grid and DCA pay half of it on every fill. Turning fees off is a way to see how much of a result they were eating, not a realistic setting.' },
 
   { key: 'cooldownCandles', label: 'Cooldown', unit: 'candles', step: '1', group: 'useCooldown',
     hint: 'Candles to sit out after entering.',
@@ -973,6 +1493,14 @@ export const BT_CHOICES = [
     options: [['false', 'Even price gaps'], ['true', 'Even percent gaps']],
     help: 'Even price gaps put the rungs the same number of dollars apart. Even percent gaps put them the same percentage apart, so the lower rungs sit closer together -- which keeps the profit per cycle proportional across a wide range instead of shrinking at the bottom.' },
 
+  { key: 'bbMode', label: 'Trade the band', strategy: 'bollinger',
+    options: [['revert', 'Fade it (mean reversion)'], ['breakout', 'Follow it (breakout)']],
+    help: 'A close outside the upper band can mean "stretched, due to snap back" or "breaking out, about to run". Fading shorts it; following buys it. They are opposite bets on the same candle, so on the same market one of them is usually the answer and the other the lesson.' },
+
+  { key: 'dcaSide', label: 'Deal direction', strategy: 'dca',
+    options: [['long', 'Long (buy the dips)'], ['short', 'Short (sell the rips)']],
+    help: 'A long DCA buys more as price falls and closes on a bounce. A short DCA sells more as price rises and closes on a pullback -- the same machine pointed the other way, and in a market that trends up it is the one that gets carried off.' },
+
   { key: 'direction', label: 'Which side', group: 'useDirection',
     options: [['both', 'Both'], ['long', 'Long only'], ['short', 'Short only']],
     help: 'Green candles open longs and red ones open shorts. Restricting to one side is how you find out whether a rule has an edge or was carried by a market that only went one way. Note that "both" usually takes FEWER trades than long-only and short-only added together: a trade on one side starts the cooldown, which can block one on the other.' },
@@ -981,13 +1509,14 @@ export const BT_CHOICES = [
     options: [['true', 'Split the risk between them'], ['false', 'Each at full risk']],
     help: 'Several markets share ONE account here, so this decides what adding a market means. Splitting divides each stake by how many markets are running, which is what the deployed portfolio bot does: adding markets spreads the account rather than multiplying what it can lose. Full risk gives every market the whole stake, which answers a different question -- what each would have done with the account to itself -- and produces a much louder number. It has no effect on a single market.' },
 
-  { key: 'ambiguous', notFor: ['trend', 'grid', 'tokyo'], label: 'If one candle hits both levels',
+  { key: 'ambiguous', notFor: ['trend', 'grid', 'tokyo', 'supertrend', 'dca'], label: 'If one candle hits both levels',
     options: [['loss', 'Count the stop'], ['win', 'Count the target']],
     help: 'Sometimes a single candle is wide enough to touch the target AND the stop. Its high, low, open and close cannot say which came first, so this is a guess either way. Counting the stop is the pessimistic reading and the default. On tight levels the difference is enormous -- the same rule can go from every trade winning to every trade losing.' },
 ]
 
 /** Modules: a switch, what it turns on, and why you would. */
 export const BT_MODULES = [
+  { key: 'useOnePos',      label: 'One at a time',    blurb: 'Wait for a trade to close first.' },
   { key: 'useCooldown',    label: 'Cooldown',         blurb: 'Skip candles after entering.' },
   { key: 'useDirection',   label: 'Restrict side',    blurb: 'Longs only, or shorts only.' },
   { key: 'useTrendFilter', label: 'Trend filter',     blurb: 'Only trade with the longer trend.' },
@@ -1005,7 +1534,7 @@ export const BT_OVERVIEW = [
   ['How a trade ends',
    'A target and a stop are set as percentages of the entry price. Each later candle is checked in turn and whichever level is touched first ends the trade. With the time exit on, a trade that reaches neither is closed at the price it had. A trade still open when the data ends is reported as unresolved.'],
   ['How the money is counted',
-   'Fixed mode adds or subtracts a flat percentage of the balance, so the size of the price move does not affect the result: the levels decide whether you won, the gain and loss settings decide by how much. Risk-based mode sizes from the actual distance to the stop, so changing the target changes the payout on its own.'],
+   'Position sizing is the default and the realistic one: each trade posts a share of the balance as margin, at a leverage, and gains or loses exactly what the price moved -- liquidated if the move takes the margin. Fixed mode instead adds or subtracts a flat percentage of the balance, so the size of the price move does not affect the result -- the levels decide whether you won, the gain and loss settings decide by how much. Risk-based mode sizes from the distance to the stop, so changing the target changes the payout on its own. Grid and DCA are paid in dollars by their own order sizes.'],
   ['What it cannot tell you',
    'It assumes you were filled at the closing price, that the stop filled exactly at its level, and that nothing gapped past it. Real fills are worse than all three. Treat a result as an upper bound, not a forecast.'],
 ]
@@ -1056,7 +1585,13 @@ export function runPortfolio(runs, params = {}) {
     const slDist = t.sl != null ? Math.abs(t.entry - t.sl) : 0
     const cost = p.useFees ? balance * (p.feePct / 100) / split : 0
     let delta = -cost
-    if (p.pnlModel === 'risk' && slDist > 0) {
+    if (t.sized) {
+      // A grid cycle or a DCA deal was paid in dollars by its own order sizes. It is carried
+      // over as what it RETURNED on the balance it had, shared out like every other stake.
+      delta = balance * (t.ret ?? 0) / split
+    } else if (p.pnlModel === 'notional') {
+      delta = t.exitPx != null ? notionalDelta(balance, p, t.entry, t.exitPx, long, split) : 0
+    } else if (p.pnlModel === 'risk' && slDist > 0) {
       delta += balance * (p.riskPct / 100 / split) * (moved / slDist)
     } else if (t.outcome === 'win') delta += balance * (p.winPct / 100 / split)
     else if (t.outcome === 'loss') delta -= balance * (p.lossPct / 100 / split)
@@ -1072,7 +1607,8 @@ export function runPortfolio(runs, params = {}) {
   // total instead of each describing a different hypothetical account.
   const byMarket = live.map(({ coin, result }) => {
     const mine = trades.filter(t => t.coin === coin)
-    const net = mine.reduce((a, t) => a + t.delta, 0)
+    const open = (result.grid?.unrealized ?? result.dca?.unrealized ?? 0) / split
+    const net = mine.reduce((a, t) => a + t.delta, 0) + open
     const w = mine.filter(t => t.outcome === 'win').length
     const l = mine.filter(t => t.outcome === 'loss').length
     return {
@@ -1084,17 +1620,24 @@ export function runPortfolio(runs, params = {}) {
     }
   }).sort((a, b) => b.netPnl - a.netPnl)
 
+  // A grid's inventory and a DCA's open deal are where those strategies lose, and neither
+  // ever closes into a trade. Left out, a portfolio of them reported only the winning cycles.
+  const openPnl = live.reduce((a, r) => a + (r.result.grid?.unrealized ?? r.result.dca?.unrealized ?? 0), 0) / split
+  balance += openPnl
+  if (peak > 0) maxDD = Math.max(maxDD, (peak - balance) / peak * 100)
   const net = balance - p.startBalance
   const resolved = won + lost
+  // Every closed grid cycle, and every DCA deal without a stop, wins by construction.
+  const byConstruction = p.strategy === 'grid' || (p.strategy === 'dca' && !(p.dcaSlPct > 0))
   return {
-    params: p, markets: live.map(r => r.coin), splitRisk: split > 1,
+    params: p, markets: live.map(r => r.coin), splitRisk: split > 1, openPnl,
     from: all.length ? Math.min(...all.map(t => t.time)) : null,
     to: all.length ? Math.max(...all.map(t => t.closedAt)) : null,
     candles: live.reduce((a, r) => a + (r.result.candles ?? 0), 0),
     trades, tradesMade: trades.length, won, lost,
     unresolved: live.reduce((a, r) => a + r.result.trades.filter(t => t.outcome === 'open').length, 0),
     timedOut: 0, halted: false,
-    winRate: resolved > 0 ? (won / resolved) * 100 : null,
+    winRate: byConstruction ? null : resolved > 0 ? (won / resolved) * 100 : null,
     startBalance: p.startBalance, balance, netPnl: net,
     roe: p.startBalance > 0 ? (net / p.startBalance) * 100 : null,
     peak, maxDrawdown: maxDD,
@@ -1127,7 +1670,7 @@ export function coerceParams(raw = {}) {
     if (Number.isFinite(hhmmToMinutes(raw[k]))) out[k] = String(raw[k]).trim()
   }
   if (BT_STRATEGIES.some(s => s[0] === raw.strategy)) out.strategy = raw.strategy
-  if (raw.pnlModel === 'risk' || raw.pnlModel === 'fixed') out.pnlModel = raw.pnlModel
+  if (raw.pnlModel === 'risk' || raw.pnlModel === 'fixed' || raw.pnlModel === 'notional') out.pnlModel = raw.pnlModel
   if (typeof raw.splitRisk === 'boolean') out.splitRisk = raw.splitRisk
   for (const m of BT_MODULES) {
     if (typeof raw[m.key] === 'boolean') out[m.key] = raw[m.key]
@@ -1142,5 +1685,29 @@ export function coerceParams(raw = {}) {
   out.timeExitCandles = Math.max(1, Math.round(out.timeExitCandles))
   out.maxConsecLosses = Math.max(1, Math.round(out.maxConsecLosses))
   out.tokyoStopPct = Math.max(0, out.tokyoStopPct)
+  out.rsiLen = Math.max(2, Math.round(out.rsiLen))
+  out.rsiLow = Math.max(1, Math.min(99, out.rsiLow))
+  out.rsiHigh = Math.max(out.rsiLow + 1, Math.min(99, out.rsiHigh))
+  out.bbLen = Math.max(2, Math.round(out.bbLen))
+  out.bbMult = Math.max(0.1, out.bbMult)
+  out.macdFast = Math.max(2, Math.round(out.macdFast))
+  out.macdSlow = Math.max(out.macdFast + 1, Math.round(out.macdSlow))
+  out.macdSignal = Math.max(2, Math.round(out.macdSignal))
+  out.crossFast = Math.max(2, Math.round(out.crossFast))
+  out.crossSlow = Math.max(out.crossFast + 1, Math.round(out.crossSlow))
+  out.stLen = Math.max(2, Math.round(out.stLen))
+  out.stMult = Math.max(0.1, out.stMult)
+  out.stStopPct = Math.max(0, out.stStopPct)
+  out.dcaBaseUsd = Math.max(1, out.dcaBaseUsd)
+  out.dcaSoUsd = Math.max(0, out.dcaSoUsd)
+  out.dcaSoCount = Math.max(0, Math.min(25, Math.round(out.dcaSoCount)))
+  out.dcaStepPct = Math.max(0.05, out.dcaStepPct)
+  out.dcaStepScale = Math.max(0.5, Math.min(3, out.dcaStepScale))
+  out.dcaVolScale = Math.max(0.5, Math.min(3, out.dcaVolScale))
+  out.dcaTpPct = Math.max(0.05, out.dcaTpPct)
+  out.dcaSlPct = Math.max(0, out.dcaSlPct)
+  out.sizePct = Math.max(1, Math.min(100, out.sizePct))
+  // Hyperliquid's own ceiling. Anything higher is a number, not a position anyone can open.
+  out.leverage = Math.max(1, Math.min(50, out.leverage))
   return out
 }

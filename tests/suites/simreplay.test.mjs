@@ -15,7 +15,9 @@ import { replayMarks, marksUpto, balanceAt, openAt, stateAt, openPnlAt } from '.
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
 const nl = String.fromCharCode(10)
-const CLI = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
+// The simulator's screen moved to src/simulator.js; the one helper it shares with the bot
+// cards stayed in main.js. The assertions are about the app, so they read both.
+const CLI = ['src/main.js', 'src/simulator.js'].map(p => fs.readFileSync(p, 'utf8')).join('\n').replace(/\r\n/g, '\n')
 
 // A resolved trade and an open one, in the shape backtest.js emits.
 const win  = { i: 5,  time: 100, side: 'long',  entry: 10, exitAt: 200, exitPx: 11, outcome: 'win',  delta:  50 }
@@ -207,7 +209,8 @@ console.log(nl + '-- the market list belongs to the strategy, not to the app --'
 console.log(nl + '-- and the replay is wired to the run it describes --')
 {
   t('the run keeps its candles, normalised as the backtest saw them',
-    CLI.includes('const rows = normalise(bars.slice(-_simCount))') && CLI.includes('_simBars[coin] = rows'))
+    CLI.includes('const rows = normalise(raw.slice(-_simCount))') && CLI.includes('bars[coin] = rows') &&
+    CLI.includes('_simBars = bars'))
   t('a new run drops the old replay', CLI.includes('_simRepClose()           // a replay of the previous run means nothing now'))
   t('closing it clears the timer', CLI.includes('if (_simRepTimer) { clearInterval(_simRepTimer); _simRepTimer = null }'))
   // The window ends AT the playhead, so the axis only ever scales to what has been revealed.

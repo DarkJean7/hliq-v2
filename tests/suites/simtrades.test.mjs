@@ -5,7 +5,9 @@
 // behind the figures is what makes a result checkable instead of believable.
 import fs from 'fs'
 import { runBacktest, coerceParams } from '../../src/backtest.js'
-const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
+// The simulator's screen moved to src/simulator.js; the one helper it shares with the bot
+// cards stayed in main.js. The assertions are about the app, so they read both.
+const cli = ['src/main.js', 'src/simulator.js'].map(p => fs.readFileSync(p, 'utf8')).join('\n').replace(/\r\n/g, '\n')
 const eng = fs.readFileSync('src/backtest.js', 'utf8').replace(/\r\n/g, '\n')
 
 let pass = 0, fail = 0
@@ -55,9 +57,13 @@ t('and an unfinished trade keeps its entry but has no exit',
 console.log(nl + '-- the view --')
 const view = grab(cli, 'function _simTradesHtml')
 t('there is a trade list', view.length > 400)
-t('it is on the result panel', cli.includes('${_simTradesHtml(r)}'))
-t('it starts collapsed behind a count', view.includes('Show every trade ('))
-t('nothing renders when there are no trades', view.includes("if (!all.length) return ''"))
+// The report has tabs now; the ledger is one of them and the tab carries the count, which is
+// what the collapsed "Show every trade (N)" button used to do.
+t('it is on the result panel', cli.includes("tab === 'trades' ? _simTradesHtml(r)"))
+t('it sits behind a tab that carries the count',
+  cli.includes("_T('Trades', 'Operaciones') + ` <span class=\"sim-lbl-u\">${r.tradesMade}</span>`"))
+// A tab that opens onto nothing reads as broken, so an empty ledger says so.
+t('no trades says so rather than drawing an empty table', view.includes('if (!all.length) return `<div class="sim-empty-s">'))
 t('newest first by default', view.includes("_simTradeOrder === 'old' ? [...all] : [...all].reverse()"))
 t('why newest first is the default is recorded', cli.includes('the end of a run is what you are usually checking'))
 
@@ -91,8 +97,8 @@ t('entry and exit prices', view.includes('fmtPrice(t.entry)') && view.includes('
 t('an exit that never happened is a dash, not a zero', view.includes("t.exitPx != null ? fmtPrice(t.exitPx) : '—'"))
 t('both timestamps', view.includes('when(t.time)') && view.includes('when(t.exitAt)'))
 t('how long it was held', view.includes('t.heldFor'))
-t('what it did to the balance', view.includes('money(t.delta)'))
-t('a missing delta shows as a dash rather than $0', view.includes("Number.isFinite(t.delta) ? money(t.delta) : '—'"))
+t('what it did to the balance, signed', view.includes('signed(t.delta)'))
+t('a missing delta shows as a dash rather than $0', view.includes("Number.isFinite(t.delta) ? signed(t.delta) : '—'"))
 t('the outcome, coloured', view.includes('outCol[t.outcome]'))
 t('the side, as a direction', view.includes("t.side === 'long' ? '↑' : '↓'"))
 t('and the market, but only when there is more than one', view.includes('multi ?') && view.includes('r.byMarket.length > 1'))

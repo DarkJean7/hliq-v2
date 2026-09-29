@@ -10,7 +10,9 @@ import { BT_STRATEGIES, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_TOKYO_TABLE, BT_T
          runBacktest, coerceParams } from '../../src/backtest.js'
 
 const eng = fs.readFileSync('src/backtest.js', 'utf8').replace(/\r\n/g, '\n')
-const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
+// The simulator's screen moved to src/simulator.js; the one helper it shares with the bot
+// cards stayed in main.js. The assertions are about the app, so they read both.
+const cli = ['src/main.js', 'src/simulator.js'].map(p => fs.readFileSync(p, 'utf8')).join('\n').replace(/\r\n/g, '\n')
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))

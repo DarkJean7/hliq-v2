@@ -9,7 +9,9 @@ import fs from 'fs'
 import { runBacktest, runPortfolio, coerceParams, BT_DEFAULTS, BT_CHOICES } from '../../src/backtest.js'
 
 const eng = fs.readFileSync('src/backtest.js', 'utf8').replace(/\r\n/g, '\n')
-const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
+// The simulator's screen moved to src/simulator.js; the one helper it shares with the bot
+// cards stayed in main.js. The assertions are about the app, so they read both.
+const cli = ['src/main.js', 'src/simulator.js'].map(p => fs.readFileSync(p, 'utf8')).join('\n').replace(/\r\n/g, '\n')
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -126,20 +128,31 @@ t('a 500 is translated into something actionable',
 
 console.log(nl + '-- each market runs its own Tokyo windows --')
 // Running ZEC's hours against XMR is not a portfolio, it is the same rule fifteen times.
+// Run, Compare and Sweep all go through the same three steps now -- load the candles, pick
+// each market's parameters, run -- so the assertions follow those steps, not one caller.
 const runBlock = grab(cli, 'window.__simRun = async function')
-t('windows are looked up per market', runBlock.includes('const row = tokyoWindowsFor(coin)'))
-t('and applied to that market only', runBlock.includes('par = { ..._simParams, tokyoLongFrom: row.long[0]'))
+const paramsFor = grab(cli, 'function _simParamsFor')
+const runOn = grab(cli, 'function _simRunOn')
+const loadBlock = grab(cli, 'async function _simLoad')
+t('windows are looked up per market', paramsFor.includes('const row = tokyoWindowsFor(coin)'))
+t('and applied to that market only', paramsFor.includes('return { ...base, tokyoLongFrom: row.long[0]'))
+t('every run goes through it', runOn.includes('const par = _simParamsFor(coin, params)'))
 t('why is recorded', cli.includes('it is the same rule fifteen times'))
 t('a market with no row is skipped, not run on the wrong hours',
-  runBlock.includes("skipped.push(coin + ' (not in the portfolio table)')"))
+  runOn.includes("skipped?.push(coin + ' (not in the portfolio table)')"))
 t('the form warns before the run, too', cli.includes('each one uses ITS OWN row'))
 
 console.log(nl + '-- fetching many markets does not trip the limiter --')
 // Fifteen candleSnapshot calls in one burst is the shape that gets rate-limited, and a
 // limited run reports "not enough history" for markets that have plenty.
-t('the fetch is pooled', runBlock.includes('await hlPool(coins,') && runBlock.includes('}, 3)'))
+t('the fetch is pooled', loadBlock.includes('await hlPool(coins,') && loadBlock.includes('}, 3)'))
+// Comparing twelve strategies must not mean twelve fetches per market.
+t('and cached, so a comparison or sweep fetches each market once',
+  loadBlock.includes('_simCache.get(key)') && loadBlock.includes('_simCache.set(key,'))
 t('why is recorded', cli.includes('is exactly the shape that trips the per-IP limiter'))
-t('results are put back in the order typed', runBlock.includes('runs.sort((a, b) => coins.indexOf(a.coin) - coins.indexOf(b.coin))'))
+// hlPool resolves out of order, so the runs used to be sorted back afterwards. They are now
+// run after the fetch, walking the typed list, so they are in that order to begin with.
+t('results are in the order typed', runOn.includes('for (const coin of coins)') && !runOn.includes('hlPool'))
 t('a market that could not be fetched is named, not silently dropped',
   runBlock.includes('_simSkipped = skipped') && cli.includes("_T('Left out: ', 'Omitidos: ')"))
 t('and nothing runnable at all is an error, not an empty result',

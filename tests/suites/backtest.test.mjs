@@ -8,7 +8,9 @@ import { runBacktest, classify, normalise, coerceParams, signals, avgRangeSeries
          BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW, BT_STRATEGIES, BT_MODULES, BT_UNSIMULATABLE }
   from '../../src/backtest.js'
 
-const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
+// The simulator's screen moved to src/simulator.js; the one helper it shares with the bot
+// cards stayed in main.js. The assertions are about the app, so they read both.
+const cli = ['src/main.js', 'src/simulator.js'].map(p => fs.readFileSync(p, 'utf8')).join('\n').replace(/\r\n/g, '\n')
 const htm = fs.readFileSync('index.html', 'utf8').replace(/\r\n/g, '\n')
 const bt  = fs.readFileSync('src/backtest.js', 'utf8').replace(/\r\n/g, '\n')
 let pass = 0, fail = 0
@@ -226,7 +228,7 @@ console.log(String.fromCharCode(10) + '-- the form follows the configuration --'
 t('fields belonging to another strategy are hidden', cli.includes("if (f.strategy && f.strategy !== _simParams.strategy) return false"))
 t('so are fields behind an off module', cli.includes("if (f.group && f.group.startsWith('use')) return !!_simParams[f.group]"))
 t('and the money fields swap with the model', cli.includes("if (f.group === 'riskModel') return _simParams.pnlModel === 'risk'"))
-t('a module shows its own settings only when on', cli.includes('${_simParams[m.key] ? `<div style="margin-top:9px">'))
+t('a module shows its own settings only when on', cli.includes('${on && inner ? `<div class="sim-mod-body">'))
 // A structural change rebuilds the form, so what was typed has to be read first.
 // Anchored on the DEFINITION, not on the first mention: the interval buttons now route
 // through this too, and their call sits earlier in the file than the function itself.
@@ -242,7 +244,11 @@ t('a module switch is not toggled twice', cli.includes('window.__simToggleModule
 t('a switch that is not on screen leaves its value alone', cli.includes('if (el) raw[m.key] = !!el.checked'))
 t('unknown strategies and models are ignored',
   coerceParams({ strategy: 'nope', pnlModel: 'nope' }).strategy === 'range' &&
-  coerceParams({ pnlModel: 'nope' }).pnlModel === 'fixed')
+  coerceParams({ pnlModel: 'nope' }).pnlModel === 'notional')
+// Position sizing is the default now: a win pays what the price moved, times the size and
+// leverage, which is how an exchange pays. The flat-percentage model is still offered.
+t('the default money model is position sizing', BT_DEFAULTS.pnlModel === 'notional' &&
+  coerceParams({ pnlModel: 'fixed' }).pnlModel === 'fixed')
 t('modules coerce only from booleans', coerceParams({ useCooldown: 'yes' }).useCooldown === BT_DEFAULTS.useCooldown &&
   coerceParams({ useCooldown: false }).useCooldown === false)
 
@@ -283,7 +289,10 @@ console.log(String.fromCharCode(10) + '-- and the ones it cannot do are named --
 t('the unsimulatable bots are listed with a reason', BT_UNSIMULATABLE.length >= 5 &&
   BT_UNSIMULATABLE.every(([name, why]) => name && why.length > 40))
 t('the outcome grid is named, and why', BT_UNSIMULATABLE.some(([n, w]) => /Outcome Grid/.test(n) && w.length > 40))
-t('so is DCA', BT_UNSIMULATABLE.some(([n]) => /DCA/.test(n)))
+// DCA used to be listed here: its one-entry-one-exit lifecycle could not average down. It
+// has its own walk now, so listing it as unsimulatable would be the thing that is wrong.
+t('DCA is simulated now, and no longer listed as impossible',
+  BT_STRATEGIES.some(([k]) => k === 'dca') && !BT_UNSIMULATABLE.some(([n]) => /DCA/.test(n)))
 t('the list stays in the engine even though the view no longer prints it',
   BT_UNSIMULATABLE.length >= 5 && !cli.includes('BT_UNSIMULATABLE'))
 // Two sets of levels on screen, only one of which is read, is worse than none.
@@ -328,7 +337,10 @@ t('time inside the range is reported', gr.grid.inRangePct > 0 && gr.grid.inRange
 // A grid's cycles are profitable BY CONSTRUCTION, so a win rate is always 100% and would
 // read as a perfect strategy. The loss lives in the inventory.
 t('no win rate is claimed', gr.winRate === null)
-t('and the view does not render one for a grid', cli.includes("${r.grid ? '' : row(_T('Win rate'"))
+// The report has a tile and a stats block now. The tile says why there is no number, and the
+// per-trade block -- where the win rate lives -- is not drawn for a grid at all.
+t('and the view does not render one for a grid', cli.includes('if (!r.grid) blocks.push(') &&
+  cli.includes("_T('100% by construction'"))
 t('holding a position at the end is flagged', cli.includes('That is where a grid loses'))
 
 // A candle spanning two rungs touched both prices, but cannot say in which order.
