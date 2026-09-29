@@ -845,7 +845,10 @@ const _combinedCache = new Map()   // key(sorted addrs) -> { at, data }
  * partial one keeps them all anchor-less.
  */
 const _combinedComplete = new Map()   // key -> { at, data }
-const COMBINED_COMPLETE_MAX_MS = 10 * 60_000
+// Three minutes, not ten. Offered in place of a partial answer, a ten-minute-old total was a
+// headline that had stopped tracking the market; now that a snapshot finishes a wallet at a
+// time, a complete one is rarely more than a minute or two behind.
+const COMBINED_COMPLETE_MAX_MS = 3 * 60_000
 
 /**
  * ...and it survives a restart.
@@ -942,13 +945,78 @@ async function pnlAccrue(addr) {
   return st
 }
 
+/**
+ * Each wallet's half of the snapshot, kept on its own.
+ *
+ * Reported as "account equity is not loading", and the log said why in one line repeated for an
+ * hour: `[combined] HL 429 — serving what we have`, with the client recording `no server
+ * snapshot for 3117s rows=10`. The snapshot was rebuilt from nothing every minute -- portfolio,
+ * clearinghouse, fills and funding for every wallet, one after another -- on an IP the trading
+ * bots also spend, and the first 429 threw the whole attempt away. With ten wallets it never
+ * reached the tenth, so it was never complete, so every device refused it.
+ *
+ * Now a wallet is read and KEPT. An attempt refreshes only the wallets that have gone stale,
+ * stops at the first 429 without losing the ones it did, and the next attempt carries on from
+ * there. A snapshot is assembled from wallets read within WALLET_MAX_MS, each wallet's value and
+ * perp anchor still read together, so the pairing the bridge relies on holds per wallet.
+ *
+ * The realized-PnL accrual (fills and funding, the heaviest calls) runs every five minutes per
+ * wallet rather than every minute: it is history, and it does not change between two ticks.
+ */
+const _combinedWallet = new Map()   // addr -> { at, accountValue, perpBase, dayAgo, unreal, pnl, pnlAt }
+const WALLET_FRESH_MS = 50_000      // re-read a wallet after this
+const WALLET_MAX_MS   = 150_000     // a wallet read this recently still counts toward a snapshot
+const PNL_EVERY_MS    = 5 * 60_000
+
 async function computeCombined(addrs) {
+  let limited = false
+  for (const addr of addrs) {
+    if (limited) break
+    const t0 = Date.now()
+    const w = _combinedWallet.get(addr)
+    const needVal = !w || t0 - w.at >= WALLET_FRESH_MS
+    const needPnl = !w?.pnl || t0 - (w.pnlAt ?? 0) >= PNL_EVERY_MS
+    if (!needVal && !needPnl) continue
+    try {
+      const next = { ...(w ?? {}) }
+      if (needVal) {
+        // Portfolio FIRST, then the anchor — never the other way round. Reading the anchor
+        // before the (slower) portfolio call would pair a snapshot with a perp value from
+        // before it, and every later bridge would re-apply that gap.
+        const port = await hlInfo({ type: 'portfolio', user: addr })
+        const cs   = await hlInfo({ type: 'clearinghouseState', user: addr })
+        const hist = (port ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory ?? []
+        if (hist.length) {
+          next.at           = Date.now()
+          next.accountValue = parseFloat(hist[hist.length - 1][1]) || 0
+          next.dayAgo       = _hlSeriesAt(hist, next.at - 86_400_000)
+          next.perpBase     = parseFloat(cs?.marginSummary?.accountValue ?? 0)
+          next.unreal       = (cs?.assetPositions ?? [])
+            .reduce((t, ap) => t + parseFloat(ap.position?.unrealizedPnl ?? 0), 0)
+        }
+      }
+      // A PnL failure must not lose the wallet its equity contribution, so it is caught
+      // separately; the client declines only the PnL figure when pnlWallets comes up short.
+      if (needPnl) {
+        try { next.pnl = await pnlAccrue(addr); next.pnlAt = Date.now() }
+        catch (e) { if (e.rateLimited) limited = true; else console.warn('[pnl]', addr, e.message) }
+      }
+      if (next.at) _combinedWallet.set(addr, next)
+    } catch (e) {
+      if (e.rateLimited) { limited = true; console.warn('[combined] HL 429 — keeping what we have') }
+      else console.warn('[combined]', addr, e.message)
+    }
+    // Spread the reads. Hyperliquid's limiter is a bucket: the same weight in a burst empties
+    // it where the same weight over a few seconds does not.
+    await sleep(150)
+  }
+
   const now = Date.now()
   let accountValue = 0, perpBase = 0, dayAgo = 0
   // Net PnL travels with the same snapshot as the equity, and for the same reason: one
   // authoritative source that every device bridges from, instead of nine per-device sums.
   let realizedPnl = 0, fees = 0, funding = 0, unrealBase = 0
-  let pnlWallets = 0
+  let pnlWallets = 0, newest = 0
   const missing = []
   // Per wallet as well as summed. The account cards used to derive their own Net PnL from
   // each DEVICE's cached fill history, so nine cards never added up to the header — the
@@ -956,48 +1024,31 @@ async function computeCombined(addrs) {
   // pieces lets every surface build its figure the one way, from the one source.
   const perWallet = {}
   for (const addr of addrs) {
-    try {
-      // Portfolio FIRST, then the anchor — never the other way round. Reading the anchor
-      // before the (slower) portfolio call would pair a snapshot with a perp value from
-      // before it, and every later bridge would re-apply that gap.
-      const port = await hlInfo({ type: 'portfolio', user: addr })
-      const cs   = await hlInfo({ type: 'clearinghouseState', user: addr })
-      const hist = (port ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory ?? []
-      if (!hist.length) { missing.push(addr); continue }
-      accountValue += parseFloat(hist[hist.length - 1][1]) || 0
-      dayAgo       += _hlSeriesAt(hist, now - 86_400_000)
-      perpBase     += parseFloat(cs?.marginSummary?.accountValue ?? 0)
-
-      // Realized side from the persisted accrual; unrealized from the state just read, so
-      // the pair is consistent and the client can bridge live unrealized off unrealBase.
-      // A PnL failure must not lose the wallet its equity contribution, so it is caught
-      // separately and only pnlWallets goes short — the client then declines the figure
-      // rather than showing one that is missing a wallet.
-      try {
-        const acc = await pnlAccrue(addr)
-        realizedPnl += acc.realizedPnl
-        fees        += acc.fees
-        funding     += acc.funding
-        unrealBase  += (cs?.assetPositions ?? [])
-          .reduce((t, ap) => t + parseFloat(ap.position?.unrealizedPnl ?? 0), 0)
-        perWallet[String(addr).toLowerCase()] = {
-          settledPnl: acc.realizedPnl + acc.funding - acc.fees,
-          realizedPnl: acc.realizedPnl, fees: acc.fees, funding: acc.funding,
-        }
-        pnlWallets++
-      } catch (e) {
-        if (e.rateLimited) throw e
-        console.warn('[pnl]', addr, e.message)
+    const w = _combinedWallet.get(addr)
+    // A wallet that is not here, or is too old to describe now, is reported, never dropped —
+    // dropping it would shrink the total and read as a real loss.
+    if (!w || now - w.at > WALLET_MAX_MS) { missing.push(addr); continue }
+    accountValue += w.accountValue
+    dayAgo       += w.dayAgo
+    perpBase     += w.perpBase
+    if (w.at > newest) newest = w.at
+    if (w.pnl) {
+      realizedPnl += w.pnl.realizedPnl
+      fees        += w.pnl.fees
+      funding     += w.pnl.funding
+      unrealBase  += w.unreal ?? 0
+      perWallet[String(addr).toLowerCase()] = {
+        settledPnl: w.pnl.realizedPnl + w.pnl.funding - w.pnl.fees,
+        realizedPnl: w.pnl.realizedPnl, fees: w.pnl.fees, funding: w.pnl.funding,
       }
-    } catch (e) {
-      // A wallet that fails is reported, not silently dropped — dropping it would shrink
-      // the total and read as a real loss.
-      missing.push(addr)
-      if (e.rateLimited) { console.warn('[combined] HL 429 — serving what we have'); break }
+      pnlWallets++
     }
   }
   return {
-    updatedAt: now, accountValue, perpBase, dayAgo,
+    // The NEWEST read, so a snapshot in which any wallet was re-read is a new snapshot to the
+    // client -- it re-measures its base against it. One in which nothing was re-read is the
+    // same snapshot, and keeps the base it had.
+    updatedAt: newest || now, accountValue, perpBase, dayAgo,
     wallets: addrs.length - missing.length, missing,
     // settledPnl is the part that does NOT move with price: realized, funding, fees. The
     // client adds its own live unrealized and gets Net PnL.
@@ -2643,7 +2694,11 @@ const server = createServer(async (req, res) => {
       return c && (Date.now() - c.at) < COMBINED_COMPLETE_MAX_MS ? c : null
     }
     const hit = _combinedCache.get(key)
-    if (hit && (Date.now() - hit.at) < COMBINED_TTL_MS) {
+    // A partial entry is cached for seconds, not the full minute: the next request is what
+    // reads the wallets it is missing, and a minute of serving the partial one from here is a
+    // minute every device shows a dash.
+    const ttl = hit && _isComplete(hit.data, addrs) ? COMBINED_TTL_MS : 15_000
+    if (hit && (Date.now() - hit.at) < ttl) {
       if (_isComplete(hit.data, addrs)) return json(res, 200, { ...hit.data, cached: true })
       // A fresh-but-partial cache entry is no use; prefer a complete one even if it is older.
       const c = bestComplete()

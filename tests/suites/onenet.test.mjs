@@ -16,10 +16,11 @@ const grab = (s, sig) => {
 console.log('\n-- the server hands back the pieces, per wallet --')
 t('per-wallet settled PnL is returned', srv.includes('perWallet,'))
 t('built from the same accrual the total uses',
-  srv.includes('settledPnl: acc.realizedPnl + acc.funding - acc.fees'))
-t('with its parts, so realized can be shown too', srv.includes('realizedPnl: acc.realizedPnl, fees: acc.fees, funding: acc.funding'))
+  srv.includes('settledPnl: w.pnl.realizedPnl + w.pnl.funding - w.pnl.fees'))
+t('with its parts, so realized can be shown too', srv.includes('realizedPnl: w.pnl.realizedPnl, fees: w.pnl.fees, funding: w.pnl.funding'))
 t('only recorded for a wallet whose accrual succeeded — a failure must not read as zero',
-  srv.indexOf('perWallet[String(addr).toLowerCase()]') > srv.indexOf('const acc = await pnlAccrue(addr)'))
+  // The accrual is kept per wallet now (computeCombined), and a wallet only reports PnL it has.
+  srv.includes('if (w.pnl) {') && srv.indexOf('perWallet[String(addr).toLowerCase()]') > srv.indexOf('if (w.pnl) {'))
 
 console.log('\n-- one accessor, and it refuses rather than guesses --')
 const f = grab(cli, 'function _comboPnlForWallet(addr)')

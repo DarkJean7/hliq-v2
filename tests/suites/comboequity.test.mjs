@@ -14,7 +14,7 @@
 // which is what placing a position does — read as a loss for as long as the snapshot was
 // stale. Measuring it on each wallet's TOTAL makes that transfer net to zero inside the row.
 import fs from 'fs'
-import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey, ARTIFACT_TOL } from '../../src/comboequity.js'
+import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey, ARTIFACT_TOL, settledBase, ROW_FRESH_MS } from '../../src/comboequity.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -193,8 +193,11 @@ console.log(nl + '-- it is wired in --')
   const CLI = fs.readFileSync('src/main.js', 'utf8')
   // Split in two when the snapshot started carrying the row IDENTITIES as well as their sum:
   // the same expression now spans several lines behind a `complete` flag.
+  // Still recorded at adoption -- but only from rows that are fresh and agree with the
+  // snapshot (settledBase). Otherwise it is deferred, and the snapshot is shown as it is.
   t('the snapshot records what the rows added up to when it was adopted',
-    CLI.includes('acctBase: complete ? acctBaseFrom(visible) : null'))
+    CLI.includes("const _sb = complete ? settledBase(visible, d.accountValue) : { base: null, why: 'incomplete' }") &&
+    CLI.includes('acctBase: _sb.base,') && CLI.includes('baseDeferred: _sb.base == null,'))
   t('and WHICH rows that was, so a same-sized set cannot be mistaken for the same one',
     // Computed once as _key: the same-snapshot check compares it before a new base is taken.
     CLI.includes('const _key = complete ? rowKey(visible) : null') && CLI.includes('acctKey:  _key,'))
@@ -298,7 +301,35 @@ console.log(nl + '-- when the server cannot finish a snapshot --')
     /function _comboDisplayEquity\(srv\)/.test(CLI) && /\(srv !== undefined \? srv : _combinedServerValue\(\)\)/.test(CLI))
   t('a basis change is recorded', /src=rows/.test(CLI))
   // Asking every minute while it keeps failing is pressure on the budget that made it fail.
-  t('and the client backs off while answers stay partial', /_COMBINED_REFRESH_MS \* \(_combinedPartials > 1 \? 3 : 1\)/.test(CLI))
+  // It backed off to three minutes. The server finishes a snapshot a wallet at a time now, so
+  // asking again sooner costs only the wallets still missing -- and waiting was the dash.
+  t('and the client asks again sooner while answers stay partial',
+    CLI.includes('_combinedPartials > 0 ? 30_000 : _COMBINED_REFRESH_MS'))
+}
+
+console.log(nl + '-- a base is only taken from rows that can give one --')
+{
+  // Reported: "i opened the app in my phone and it showed like ~200 less from the total ... the
+  // solution was to use the app reload button". A cold open paints from last session's cache;
+  // a base measured over those rows carried their staleness onto the headline. eqstep had the
+  // same shape: acctBase=5835.14 against snapVal=6015.11, published as a $181.60 step.
+  const CLI = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
+  const now = 1_000_000_000
+  const r = (v, extra = {}) => ({ addr: '0x' + v, accountValue: v, ...extra })
+  const ok = settledBase([r(1000), r(2000)], 3005, now)
+  t('fresh rows that agree with the snapshot give the base', ok.base === 3000, ok)
+  const stale = settledBase([r(1000, { _cachedAt: now - 3 * 3600e3 }), r(2000)], 3005, now)
+  t('a row painted from an hours-old cache defers it', stale.base === null && stale.why === 'cached', stale)
+  t('a cache written moments ago is still fresh', settledBase([r(1000, { _cachedAt: now - 10_000 }), r(2000)], 3005, now).base === 3000)
+  const off = settledBase([r(1000), r(1820)], 3000, now)
+  t('rows $180 away from the snapshot defer it -- the reported step, refused', off.base === null && off.why === 'disagree' && Math.abs(off.gap + 180) < 1e-9, off)
+  t('a minute of honest drift does not', settledBase([r(1000), r(2012)], 3000, now).base === 3012)
+  t('a row with no value defers it', settledBase([r(1000), { addr: '0xz' }], 3000, now).base === null)
+  t('while deferred, the bridge shows the snapshot as it is',
+    bridgeCombined({ accountValue: 3000, perpBase: 0, wallets: 2, baseDeferred: true }, [r(1000), r(1820)])?.val === 3000)
+  t('cached rows are marked with when they were cached', CLI.includes('o.results.map(r => ({ ...r, _cachedAt: Number(o.ts) || 1 }))'))
+  t('the rows fallback refuses them too', CLI.slice(CLI.indexOf('function _comboRowsValue()'), CLI.indexOf('function _comboRowsValue()') + 1400).includes('now - Number(r._cachedAt) >= ROW_FRESH_MS'))
+  t('and a failed wallet is retried until it lands, not four times', !CLI.includes('if (_allAcctRetries >= 4) return'))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

@@ -248,7 +248,7 @@ import { probeNavGeometry } from './navprobe.js'
 import { accountRoe, partRoe, positionRoe, fmtRoe, compareRoe } from './roe.js'
 import { ordersForCoin, byAccount, statusesFrom, classifyCancels, describeOrders,
          isAlreadyGone, sideOf as _ordSideOf, summarize as _cancelSummary } from './cancelbatch.js'
-import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey, booksFrom, advanceBooks } from './comboequity.js'
+import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey, booksFrom, advanceBooks, settledBase, ROW_FRESH_MS } from './comboequity.js'
 import { cashSample, classifyCashMove, posFingerprint } from './perpcash.js'
 import { mtmBook, mtmDelta, mtmCarry, bookState, advanceBook } from './mtmbridge.js'
 import { orderMarginByCoin, spotByCoin, SLICE_DUST } from './alloc.js'
@@ -9048,7 +9048,12 @@ async function _allAcctCacheLoad() {
   const parse = (json) => {
     try {
       const o = JSON.parse(json || 'null')
-      return (o && Array.isArray(o.results) && o.results.length) ? o.results : null
+      // Marked with WHEN they were cached. A row painted from here is a figure from the last
+      // session, not from now, and the combined total must not take its base from it -- that is
+      // the "~200 less until I pressed reload" report. settledBase() reads the mark.
+      return (o && Array.isArray(o.results) && o.results.length)
+        ? o.results.map(r => ({ ...r, _cachedAt: Number(o.ts) || 1 }))
+        : null
     } catch { return null }
   }
   try {
@@ -9609,8 +9614,10 @@ async function _allAcctFetchAndRender(entries) {
 function _allAcctRetryMissing(entries) {
   if (_allAcctRetryTimer) return
   if (!_allAcctIncomplete) { _allAcctRetries = 0; return }
-  if (_allAcctRetries >= 4) return          // give up quietly; the 5-min timer takes over
-  const delay = _hlLimited() ? 15_000 : 4_000 * (_allAcctRetries + 1)
+  // It used to give up after four tries and leave the rest to the five-minute refresh, so one
+  // wallet rate-limited on a cold open held the headline on a dash for minutes. Back off
+  // instead, to a minute at most, and keep going while the view is open.
+  const delay = _hlLimited() ? 20_000 : Math.min(60_000, 4_000 * (_allAcctRetries + 1))
   _allAcctRetries++
   _allAcctRetryTimer = setTimeout(async () => {
     _allAcctRetryTimer = null
@@ -9693,14 +9700,53 @@ let _combinedFetching = false
 const _COMBINED_REFRESH_MS = 60_000
 let _combinedPartials = 0    // answers in a row that did not cover every wallet
 
+/**
+ * The wallets the combined total has to cover: every saved one that is not hidden.
+ *
+ * Not "the rows that loaded". A wallet that failed on a cold open used to drop out of both the
+ * request and the check against it, so nine rows met a nine-wallet snapshot and a total missing
+ * a wallet was published as complete.
+ */
+function _comboExpectedAddrs() {
+  const hidden = _maHiddenLoad()
+  try { return (_maLoad() ?? []).filter(e => e && !hidden.has(e.addr)).map(e => e.addr) } catch { return [] }
+}
+
+let _comboBaseSaidAt = 0
+/** Once in ten minutes: why the bridge is sitting on the snapshot instead of carrying it. */
+function _comboBaseSay(sb, rows, snapVal) {
+  if (Date.now() - _comboBaseSaidAt < 10 * 60_000) return
+  _comboBaseSaidAt = Date.now()
+  try {
+    fetch('/api/error', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        kind: 'eqstep',
+        message: `combined base deferred why=${sb.why} src=snap`,
+        stack: `gap=${Number.isFinite(sb.gap) ? sb.gap.toFixed(2) : ''} cached=${sb.cached ?? 0} ` +
+               `rows=${rows.length} snapVal=${Number(snapVal).toFixed(2)} ` +
+               `rowVals=${rows.map(r => String(r.addr).slice(0, 8) + ':' + Number(r.accountValue).toFixed(0) + (r._cachedAt ? 'c' : '')).join(',')}`,
+        url: location.pathname,
+      }),
+    }).catch(() => {})
+  } catch {}
+}
+
 async function _fetchCombinedSnap(force = false) {
   if (!state.isAllAccounts || _combinedFetching) return
   // Asking again every minute while the server keeps answering partial is pressure on the very
   // budget that made it partial: Hyperliquid rate-limits by IP, and the server is spending that
   // same budget for every device. Back off while it cannot complete the set.
-  if (!force && Date.now() - _combinedAt < _COMBINED_REFRESH_MS * (_combinedPartials > 1 ? 3 : 1)) return
+  //
+  // It used to back off to three minutes while partial. The server now finishes a snapshot a
+  // wallet at a time and keeps what it has, so asking again sooner costs it only the wallets
+  // still missing -- and a partial answer is what leaves this device on a dash.
+  if (!force && Date.now() - _combinedAt < (_combinedPartials > 0 ? 30_000 : _COMBINED_REFRESH_MS)) return
   const hidden = _maHiddenLoad()
-  const addrs  = (_allAcctLastResults ?? [])
+  // Every wallet the total must cover, loaded here or not: the server can read a wallet this
+  // device failed to.
+  const expected = _comboExpectedAddrs()
+  const addrs  = expected.length ? expected : (_allAcctLastResults ?? [])
     .filter(r => r && !r.error && !hidden.has(r.addr))
     .map(r => r.addr)
   if (!addrs.length) return
@@ -9741,14 +9787,19 @@ async function _fetchCombinedSnap(force = false) {
         const _key = complete ? rowKey(visible) : null
         const _same = _combinedSnap && _key && _combinedSnap.acctKey === _key &&
           Number(_combinedSnap.updatedAt) === Number(d.updatedAt) && _combinedSnap.acctBase != null
+        // The base only from rows that are fresh and agree with the snapshot -- settledBase().
+        const _sb = complete ? settledBase(visible, d.accountValue) : { base: null, why: 'incomplete' }
+        if (!_same && _sb.base == null && complete) _comboBaseSay(_sb, visible, d.accountValue)
         _combinedSnap = _same ? {
           ...d,
           acctBase: _combinedSnap.acctBase,
           acctKey:  _combinedSnap.acctKey,
           books:    _combinedSnap.books,
+          baseDeferred: false,
         } : {
           ...d,
-          acctBase: complete ? acctBaseFrom(visible) : null,
+          acctBase: _sb.base,
+          baseDeferred: _sb.base == null,
           acctKey:  _key,
           // What each wallet held, and at what marks, when that value was read. The bridge
           // carries the snapshot forward by price on these alone -- src/mtmbridge.js.
@@ -9776,7 +9827,28 @@ function _combinedServerValue() {
   const rows = (_allAcctLastResults ?? []).filter(r => r && !r.error && !hidden.has(r.addr))
   // The snapshot covers a specific set of wallets; if the visible set has changed since,
   // the anchor no longer corresponds to it.
-  if (rows.length !== _combinedSnap.wallets) return null
+  if (rows.length !== _combinedSnap.wallets) {
+    // Unless THIS device is the one missing a wallet. The server read all of them, so its
+    // snapshot is a complete total even while a row here is still loading or rate-limited --
+    // shown as it is, unbridged, while it is recent. A dash would be hiding a number we have.
+    const age = Date.now() - Number(_combinedSnap.updatedAt ?? 0)
+    const expected = _comboExpectedAddrs().length
+    if (expected && _combinedSnap.wallets === expected && rows.length < expected && age < 120_000) {
+      const v = parseFloat(_combinedSnap.accountValue)
+      return Number.isFinite(v) && v > 0 ? v : null
+    }
+    return null
+  }
+  // Nine rows meeting a nine-wallet snapshot is not a ten-wallet total. Both sides are checked
+  // against the saved list, not against each other.
+  const _exp = _comboExpectedAddrs().length
+  if (_exp && _combinedSnap.wallets !== _exp) return null
+  // A base deferred at adoption is taken as soon as the rows are fresh and agree with the
+  // snapshot. Until then bridgeCombined shows the snapshot itself rather than carry a gap.
+  if (_combinedSnap.baseDeferred) {
+    const sb = settledBase(rows, _combinedSnap.accountValue)
+    if (sb.base != null) _combinedSnap = { ..._combinedSnap, acctBase: sb.base, acctKey: rowKey(rows), baseDeferred: false }
+  }
   // Fold away any per-wallet move its own perp equity does not explain -- a row settling, a
   // portfolio cache refreshing, a close rebuilding the row. See reanchor() for the evidence.
   const _re = reanchor(_comboPrevRows, rows, _combinedSnap.acctBase)
@@ -14770,6 +14842,12 @@ function _comboRowsValue() {
   const hidden = _maHiddenLoad()
   const rows = (_allAcctLastResults ?? []).filter(r => r && !hidden.has(r.addr))
   if (!rows.length || rows.some(r => r.error)) return null
+  // Every saved wallet, not the ones that loaded: a sum missing one is a wrong total.
+  const expected = _comboExpectedAddrs()
+  if (expected.length && rows.length !== expected.length) return null
+  // And none painted from last session's cache -- a figure from then is not a figure for now.
+  const now = Date.now()
+  if (rows.some(r => Number(r._cachedAt) > 0 && now - Number(r._cachedAt) >= ROW_FRESH_MS)) return null
   let sum = 0
   for (const r of rows) {
     const v = parseFloat(r.accountValue)

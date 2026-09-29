@@ -2,7 +2,7 @@
 // (server) and checks the property that matters: two devices with DIFFERENT local caches
 // must produce the SAME combined equity.
 import fs from 'fs'
-import { bridgeCombined, reanchor, snapshotRows, advanceBooks } from '../../src/comboequity.js'
+import { bridgeCombined, reanchor, snapshotRows, advanceBooks, settledBase, rowKey } from '../../src/comboequity.js'
 
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 const srv = fs.readFileSync('server.js', 'utf8').replace(/\r\n/g, '\n')
@@ -24,15 +24,17 @@ const near = (a, b, e = 1e-6) => Math.abs(a - b) < e
 // ── client: _combinedServerValue ─────────────────────────────────────────────
 // bridgeCombined is a real dependency of _combinedServerValue now, so the sandbox is handed
 // the real one rather than a stand-in — a stub here would test the stub.
-const mkClient = (snap, rows, hidden = []) => new Function('SNAP', 'ROWS', 'HIDDEN', 'bridgeCombined', 'reanchor', 'snapshotRows', 'advanceBooks', `
+const mkClient = (snap, rows, hidden = [], expected = []) => new Function('SNAP', 'ROWS', 'HIDDEN', 'EXPECTED', 'bridgeCombined', 'reanchor', 'snapshotRows', 'advanceBooks', 'settledBase', 'rowKey', `
   const state = { isAllAccounts: true }
   let _combinedSnap = SNAP
   const _allAcctLastResults = ROWS
   const _maHiddenLoad = () => new Set(HIDDEN)
+  // The saved wallet list the total must cover. Empty = not known, the old behaviour.
+  const _comboExpectedAddrs = () => EXPECTED
   let _comboPrevRows = null
   ${grab(cli, 'function _combinedServerValue(')}
   return _combinedServerValue()
-`)(snap, rows, hidden, bridgeCombined, reanchor, snapshotRows, advanceBooks)
+`)(snap, rows, hidden, expected, bridgeCombined, reanchor, snapshotRows, advanceBooks, settledBase, rowKey)
 
 const SNAP = { accountValue: 3400, perpBase: 3000, dayAgo: 3250, wallets: 3, updatedAt: 1 }
 const rows = (perps) => perps.map((p, i) => ({ addr: '0x' + i, error: null, _perpLive: p }))
@@ -58,6 +60,24 @@ t('errored rows are excluded from the count',
   mkClient({ ...SNAP, wallets: 3 }, [...devA, { addr: '0xerr', error: 'x', _perpLive: 500 }]) !== null)
 t('hidden wallets are excluded from the count',
   mkClient({ ...SNAP, wallets: 3 }, [...devA, { addr: '0xhid', error: null, _perpLive: 500 }], ['0xhid']) !== null)
+
+// A wallet THIS device failed to load, while the server read all four. The snapshot is a
+// complete total; bridging three rows against it would be wrong, and a dash would hide it.
+const four = ['0x0', '0x1', '0x2', '0x3']
+t('a wallet missing here, but in the server\'s snapshot: the snapshot is shown, unbridged',
+  mkClient({ ...SNAP, wallets: 4, updatedAt: Date.now() }, devA, [], four) === 3400)
+t('but only while that snapshot is recent',
+  mkClient({ ...SNAP, wallets: 4, updatedAt: Date.now() - 5 * 60_000 }, devA, [], four) === null)
+t('and never a three-wallet total published as four',
+  mkClient({ ...SNAP, wallets: 3, updatedAt: Date.now() }, devA, [], four) === null)
+// A base deferred at adoption (cached or disagreeing rows): the snapshot as it is.
+t('a deferred base shows the snapshot itself, not a bridge from rows that disagreed',
+  mkClient({ ...SNAP, baseDeferred: true, acctBase: null },
+    devA.map(r => ({ ...r, accountValue: 900 }))) === 3400)
+t('and takes the base the moment the rows agree with the snapshot', (() => {
+  const agree = devA.map((r, i) => ({ ...r, accountValue: [1200, 1100, 1100][i] }))
+  return mkClient({ ...SNAP, baseDeferred: true, acctBase: null }, agree) === 3400
+})())
 
 // live perp moving changes the value (it must stay live, not frozen to the snapshot)
 const moved = mkClient(SNAP, rows([1010, 1200, 900]))

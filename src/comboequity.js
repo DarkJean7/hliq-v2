@@ -164,6 +164,11 @@ export function bridgeCombined(snap, rows) {
     if (liveAcct != null) return { val: anchor + (liveAcct - acctBase), basis: 'total' }
   }
 
+  // The base was deliberately NOT taken -- the rows were cached or disagreed with the snapshot
+  // (settledBase). Any bridge now would carry that disagreement onto the headline, so show the
+  // snapshot as it is. It is the authority; it is only as old as the last minute.
+  if (snap.baseDeferred) return { val: anchor, basis: 'snap' }
+
   // Fallback: the original perp-only bridge.
   const perpBase = parseFloat(snap.perpBase)
   if (!Number.isFinite(perpBase)) return null
@@ -264,4 +269,41 @@ export function snapshotRows(rows) {
  */
 export function acctBaseFrom(rows) {
   return sumOrNull(rows, r => r.accountValue)
+}
+
+/**
+ * How far the rows may sit from the snapshot at adoption and still be measuring the same
+ * thing. The snapshot is up to a minute old, so real drift is allowed; a wallet read from an
+ * hours-old cache, or one missing its spot side, is not.
+ */
+export const BASE_TOL_ABS = 25
+export const BASE_TOL_REL = 0.01
+export const ROW_FRESH_MS = 45_000
+
+/**
+ * The rows' total, but only when it can serve as the bridge's base -- or null, and why.
+ *
+ * Reported as "i opened the app in my phone and it showed like ~200 less from the total ... the
+ * solution was to use the app reload button". A cold open paints every wallet from the device's
+ * cache, which can be hours old, and the first snapshot arrived while those rows were still the
+ * cached ones. acctBaseFrom() summed them anyway, and the moment the fresh rows landed the
+ * headline moved by (fresh - cached) as though the market had. eqstep has the same shape from
+ * the other direction: `step 181.60 basis=total acctBase=5835.14 snapVal=6015.11`, rows barely
+ * moving (worstAcctDelta=3.89) -- a base measured $180 away from the value it was anchoring,
+ * published as profit, and taken back by the next snapshot.
+ *
+ * So a base is only taken from rows that are fresh and that AGREE with the snapshot. Until they
+ * do, the caller shows the snapshot itself: up to a minute old, but never wrong by a wallet.
+ */
+export function settledBase(rows, snapVal, now = Date.now()) {
+  if (!Array.isArray(rows) || !rows.length) return { base: null, why: 'no-rows' }
+  const cached = rows.filter(r => Number(r?._cachedAt) > 0 && now - Number(r._cachedAt) >= ROW_FRESH_MS).length
+  if (cached) return { base: null, why: 'cached', cached }
+  const sum = sumOrNull(rows, r => r.accountValue)
+  if (sum == null) return { base: null, why: 'unpriced' }
+  const snap = parseFloat(snapVal)
+  if (!Number.isFinite(snap)) return { base: sum, why: '' }
+  const gap = sum - snap
+  if (Math.abs(gap) > Math.max(BASE_TOL_ABS, Math.abs(snap) * BASE_TOL_REL)) return { base: null, why: 'disagree', gap }
+  return { base: sum, why: '', gap }
 }

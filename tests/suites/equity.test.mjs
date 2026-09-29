@@ -1,7 +1,7 @@
 // All-Accounts equity and Net PnL: both must come from ONE source, or the headline steps
 // when it switches basis and two devices disagree.
 import fs from 'fs'
-import { bridgeCombined, reanchor, snapshotRows, advanceBooks } from '../../src/comboequity.js'
+import { bridgeCombined, reanchor, snapshotRows, advanceBooks, settledBase, rowKey } from '../../src/comboequity.js'
 const cli = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')
 const srv = fs.readFileSync('server.js', 'utf8').replace(/\r\n/g, '\n')
 
@@ -15,9 +15,10 @@ const grab = (s, sig) => {
   for (; j < s.length; j++) { if (s[j] === '{') d++; else if (s[j] === '}') { d--; if (!d) return s.slice(i, j + 1) } }
   return ''
 }
-const harness = (extra = '') => new Function('bridgeCombined', 'reanchor', 'snapshotRows', 'advanceBooks', `
+const harness = (extra = '') => new Function('bridgeCombined', 'reanchor', 'snapshotRows', 'advanceBooks', 'settledBase', 'rowKey', `
   const state = { isAllAccounts: true, fills: [] }
   const _maHiddenLoad = () => new Set()
+  const _comboExpectedAddrs = () => []
   let _allAcctLastResults = []
   let _combinedSnap = null
   let _comboSrvLast = null
@@ -44,7 +45,7 @@ const harness = (extra = '') => new Function('bridgeCombined', 'reanchor', 'snap
     setFills: (f) => { state.fills = f },
     fetches: () => fetches,
   }
-`)(bridgeCombined, reanchor, snapshotRows, advanceBooks)
+`)(bridgeCombined, reanchor, snapshotRows, advanceBooks, settledBase, rowKey)
 
 // ── 1. equity: the anchor swap on closing a position ─────────────────────────
 const mk = (n, withLive = true) => Array.from({ length: n }, (_, i) => ({
@@ -236,7 +237,14 @@ t('the old netPnl field is kept so an older cached client is not broken',
   srv.includes('netPnl: realizedPnl + unrealBase + funding - fees'))
 const cc = grab(srv, 'async function computeCombined(addrs)')
 t('a PnL failure costs the wallet its PnL, not its equity contribution', cc.includes("console.warn('[pnl]'"))
-t('a rate limit aborts rather than silently under-counting', cc.includes('if (e.rateLimited) throw e'))
+// A 429 used to abort the whole attempt, which is why ten wallets never completed. It now stops
+// further reads and KEEPS what was read; a wallet not read recently enough is reported missing,
+// and the client refuses a snapshot with anything missing -- so it still never under-counts.
+t('a rate limit stops reading but keeps what it has', cc.includes('if (e.rateLimited) limited = true') && cc.includes('if (limited) break'))
+t('and a wallet not read recently enough is reported missing, not dropped',
+  cc.includes('if (!w || now - w.at > WALLET_MAX_MS) { missing.push(addr); continue }'))
+t('the heavy PnL accrual runs every few minutes, not every snapshot', srv.includes('const PNL_EVERY_MS    = 5 * 60_000'))
+t('reads are spread, not burst', cc.includes('await sleep(150)'))
 t('pnlWallets is counted so the client can tell a partial snapshot', cc.includes('pnlWallets++'))
 
 // ── the settled half must describe the same instant as the unrealized half ───
