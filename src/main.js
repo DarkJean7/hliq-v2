@@ -30971,15 +30971,14 @@ function _urlBase64ToUint8Array(b64) {
 // See src/alarm.js for why this is a media element looping silence rather than a Wake Lock.
 const _ALARM_KEY = 'hliq_wake_alarm'
 const _ALARM_SND = 'hliq_wake_alarm_sound'
-// Once: a saved choice of the old default goes to the ringtone. The five test tones were the
-// only options when most of these were saved, so "warble" was rarely a preference -- and the
-// ask was a ringtone. Anything picked after this sticks.
+// A saved choice of a sound that no longer exists (the five test tones, removed) goes back to
+// the default ringtone. Anything picked from what is offered sticks.
 const _alarmSaved = (() => {
   try {
     const v = localStorage.getItem(_ALARM_SND)
     if (!localStorage.getItem('hliq_wake_alarm_v2')) {
       localStorage.setItem('hliq_wake_alarm_v2', '1')
-      if (v === 'warble') { localStorage.removeItem(_ALARM_SND); return null }
+      if (v && !ALARM_SOUNDS[v]) { localStorage.removeItem(_ALARM_SND); return null }
     }
     return v
   } catch { return null }
@@ -31043,6 +31042,33 @@ window.__alarmTest = async function() {
   }
   _alarm.fire()
 }
+/**
+ * Ring in thirty seconds, for a test outside the app.
+ *
+ * Asked for: "i want to test them outside the app ... a test button that with a timer it
+ * activates the ringtone after 30 seconds or something". Test Now proves the sound; this proves
+ * the thing that matters -- that it rings with the phone locked or another app in front. The
+ * tap is the gesture that lets it arm, like the toggle; armed for the test only, not saved.
+ */
+let _alarmTickTimer = null
+window.__alarmTestIn = async function(sec = 30) {
+  if (_alarm.dueIn() != null) { _alarm.cancelScheduled(); if (_alarmTestOnly) { _alarmTestOnly = false; _alarm.disarm() } ; _renderAlarmRow(); return }
+  if (!_alarm.isArmed()) {
+    const ok = await _alarm.arm()
+    if (!ok) { _appAlert('Your browser would not let the alarm start its audio. Tap again, and keep this tab open.'); return }
+    _alarmTestOnly = true
+  }
+  _alarm.fireIn(sec * 1000)
+  _renderAlarmRow()
+  // Only the countdown text is repainted, once a second, while one is pending.
+  if (_alarmTickTimer) clearInterval(_alarmTickTimer)
+  _alarmTickTimer = setInterval(() => {
+    const due = _alarm.dueIn()
+    document.querySelectorAll('[data-alarm-count]').forEach(el => { el.textContent = due == null ? '' : Math.ceil(due / 1000) + 's' })
+    if (due == null) { clearInterval(_alarmTickTimer); _alarmTickTimer = null; _renderAlarmRow() }
+  }, 1000)
+}
+
 window.__alarmStop = function() {
   _alarm.stop()
   // Put the alarm back exactly as the Test found it — including giving the session back.
@@ -31091,7 +31117,12 @@ function _renderAlarmRow() {
       `<button type="button" class="snd-pill${k === _alarm.sound() ? ' on' : ''}" data-alarm-snd="${k}"
          onclick="window.__alarmSound('${k}')">${_T(v.label, v.label)}</button>`).join('')}</div>
     <div class="pa-alarm-note">${_T('While armed it holds the phone’s audio, so other apps stay silent.', 'Mientras está activada retiene el audio del teléfono, así que otras apps quedan en silencio.')}</div>
-    <button class="pa-alarm-test" onclick="window.__alarmTest()">${_T('Test the alarm', 'Probar la alarma')}</button>`
+    <div class="pa-alarm-tests">
+      <button class="pa-alarm-test" onclick="window.__alarmTest()">${_T('Test now', 'Probar ahora')}</button>
+      <button class="pa-alarm-test${_alarm.dueIn() != null ? ' on' : ''}" onclick="window.__alarmTestIn(30)">${_alarm.dueIn() != null
+        ? `${_T('Rings in', 'Suena en')} <b data-alarm-count>${Math.ceil(_alarm.dueIn() / 1000)}s</b> · ${_T('lock your phone now — tap to cancel', 'bloquea el teléfono ahora — toca para cancelar')}`
+        : _T('Test in 30 s', 'Probar en 30 s')}</button>
+    </div>`
   hosts.forEach(el => { el.innerHTML = html })
 }
 
@@ -31131,8 +31162,8 @@ function _renderAlarmOverlay() {
   ov.className = 'alarm-ov'
   ov.innerHTML = `
     <div class="alarm-ov-icon">🔔</div>
-    <div class="alarm-ov-t">${_T('Price alert', 'Alerta de precio')}</div>
-    <div class="alarm-ov-s">${_T('One of your alerts triggered', 'Se activó una de tus alertas')}</div>
+    <div class="alarm-ov-t">${_alarmTestOnly ? _T('Alarm test', 'Prueba de alarma') : _T('Price alert', 'Alerta de precio')}</div>
+    <div class="alarm-ov-s">${_alarmTestOnly ? _T('This is what an alert will sound like', 'Así sonará una alerta') : _T('One of your alerts triggered', 'Se activó una de tus alertas')}</div>
     <button class="alarm-ov-btn" onclick="window.__alarmStop()">${_T('Stop', 'Detener')}</button>`
   document.body.appendChild(ov)
 }

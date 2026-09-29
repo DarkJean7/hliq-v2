@@ -57,114 +57,14 @@ export function silenceSamples(seconds = 2, sampleRate = SAMPLE_RATE) {
   return out
 }
 
-// ── the sounds ───────────────────────────────────────────────────────────────
-//
-// Five, because one is not a choice and the right alarm is the one that wakes YOU: a warble
-// that a light sleeper will hear is not what gets someone out of deep sleep, and a klaxon at
-// 3am in a shared bed is a different kind of problem. All harsh on purpose — a gentle sound
-// is the wrong tool — and all generated here as samples, so there is still no audio file to
-// ship, cache-bust or have go missing at 4am.
-//
-// 8kHz sampling means nothing above ~3.5kHz, which is fine: the ear is most sensitive around
-// 2-4kHz and that is where these sit.
-
-/** One second of two tones alternating eight times a second. The original. */
-function warbleSamples(sr) {
-  const out = new Float32Array(sr)
-  for (let i = 0; i < sr; i++) {
-    const t = i / sr
-    const slot = Math.floor(t * 8) % 2
-    const freq = slot ? 1320 : 880
-    const phase = (t * 8) % 1
-    // Fade in/out inside each beep to avoid clicks, silent for the last quarter.
-    const env = phase > 0.75 ? 0 : Math.min(1, phase * 12, (0.75 - phase) * 12)
-    out[i] = Math.sin(2 * Math.PI * freq * t) * env * 0.9
-  }
-  return out
-}
-
-/**
- * An ambulance sweep, 600Hz up to 1500 and back over two seconds. Continuous — no gaps for
- * a half-asleep brain to file it away as something outside.
- */
-function sirenSamples(sr) {
-  const n = sr * 2
-  const out = new Float32Array(n)
-  let phase = 0
-  for (let i = 0; i < n; i++) {
-    const t = i / sr
-    const f = 1050 + 450 * Math.sin(2 * Math.PI * t / 2)
-    phase += 2 * Math.PI * f / sr
-    out[i] = Math.sin(phase) * 0.9
-  }
-  return out
-}
-
-/**
- * A ship's klaxon: a low blast with its harmonics, twice a second. The lowest of the five,
- * and the one that carries through a wall.
- */
-function klaxonSamples(sr) {
-  const out = new Float32Array(sr)
-  for (let i = 0; i < sr; i++) {
-    const t = i / sr
-    const phase = (t * 2) % 1
-    const env = phase > 0.62 ? 0 : Math.min(1, phase * 25, (0.62 - phase) * 25)
-    const f = 320
-    // Odd harmonics, squared off — the buzz that makes a horn a horn rather than a tone.
-    const v = Math.sin(2 * Math.PI * f * t)
-            + 0.55 * Math.sin(2 * Math.PI * f * 3 * t)
-            + 0.30 * Math.sin(2 * Math.PI * f * 5 * t)
-            + 0.18 * Math.sin(2 * Math.PI * f * 7 * t)
-    // Driven past the clamp on purpose: a squared-off horn is harsher than a clean one, and
-    // the clipping is what makes it read as a klaxon rather than as a low tone.
-    out[i] = Math.max(-1, Math.min(1, v * 0.85)) * env * 0.95
-  }
-  return out
-}
-
-/** An old telephone bell: two struck tones ringing ten times a second. */
-function bellSamples(sr) {
-  const out = new Float32Array(sr)
-  for (let i = 0; i < sr; i++) {
-    const t = i / sr
-    const phase = (t * 10) % 1
-    const env = Math.exp(-phase * 4)          // struck, then ringing down into the next strike
-    out[i] = (Math.sin(2 * Math.PI * 1046 * t) * 0.6 + Math.sin(2 * Math.PI * 1480 * t) * 0.4) * env * 0.95
-  }
-  return out
-}
-
-/**
- * A smoke-alarm triplet: three hard 3kHz beeps, then silence long enough that the next set
- * lands as a new alarm rather than as a drone. The hardest of the five to sleep through.
- */
-function pulseSamples(sr) {
-  const n = sr * 2
-  const out = new Float32Array(n)
-  for (let i = 0; i < n; i++) {
-    const t = i / sr
-    const cyc = t % 2                          // a triplet, then a rest
-    let v = 0
-    for (let k = 0; k < 3; k++) {
-      const start = k * 0.22
-      const d = cyc - start
-      if (d < 0 || d > 0.15) continue
-      const env = Math.min(1, d * 60, (0.15 - d) * 60)
-      v = Math.sin(2 * Math.PI * 3000 * t) * env
-    }
-    out[i] = v * 0.95
-  }
-  return out
-}
-
 // ── ringtones ────────────────────────────────────────────────────────────────
 //
 // Asked for: "is the wake up alarm a ring tone?? if not make it like one because the idea is
 // to wake up". It was not: five harsh test tones at 8kHz, closer to a smoke detector than to
 // the phone alarm people actually wake to. These are ringtones -- a melody, a struck timbre,
 // a phrase that repeats -- generated at 22kHz so a marimba sounds like one and not like a
-// buzzer. The harsh five stay for anyone who wants them.
+// buzzer. The five test tones that came before are gone: "delete the ones that are not
+// ringtones".
 
 const RING_RATE = 22050
 
@@ -242,11 +142,6 @@ export const ALARM_SOUNDS = {
   ringtone: { label: 'Ringtone',      build: marimbaSamples, rate: RING_RATE },
   classic:  { label: 'Classic phone', build: classicSamples, rate: RING_RATE },
   rising:   { label: 'Rising',        build: risingSamples,  rate: RING_RATE },
-  warble: { label: 'Warble', build: warbleSamples },
-  siren:  { label: 'Siren',  build: sirenSamples },
-  klaxon: { label: 'Klaxon', build: klaxonSamples },
-  bell:   { label: 'Bell',   build: bellSamples },
-  pulse:  { label: 'Pulse',  build: pulseSamples },
 }
 
 export const DEFAULT_ALARM = 'ringtone'
@@ -306,6 +201,8 @@ export function createAlarm({ makeAudio, vibrate, onChange, session, sound = DEF
   let alarmUrl  = null
   let buzzTimer = null
   let kind = ALARM_SOUNDS[sound] ? sound : DEFAULT_ALARM
+  let dueAt = 0
+  let dueTimer = null
 
   const url = (blob) => URL.createObjectURL(blob)
   /**
@@ -346,6 +243,7 @@ export function createAlarm({ makeAudio, vibrate, onChange, session, sound = DEF
   }
 
   function disarm() {
+    cancelScheduled()
     stop()
     armed = false
     if (el) { try { el.pause() } catch {} }
@@ -353,9 +251,35 @@ export function createAlarm({ makeAudio, vibrate, onChange, session, sound = DEF
     notify()
   }
 
+  /**
+   * Ring in `ms`, as a real alert would -- so it can be tested with the phone locked or the app
+   * in the background, which is the only test that means anything.
+   *
+   * Two clocks, because either alone fails where it matters. A timer is throttled, sometimes to
+   * once a minute, in a background tab; the audio element's `timeupdate` keeps firing while
+   * the silent loop plays, screen off included. Whichever notices the deadline first rings.
+   */
+  function fireIn(ms) {
+    if (!armed) return false
+    cancelScheduled()
+    dueAt = Date.now() + Math.max(0, ms)
+    const check = () => { if (dueAt && Date.now() >= dueAt) { cancelScheduled(); fire() } }
+    dueTimer = setInterval(check, 500)
+    if (el) el.ontimeupdate = check
+    notify()
+    return true
+  }
+
+  function cancelScheduled() {
+    dueAt = 0
+    if (dueTimer) { clearInterval(dueTimer); dueTimer = null }
+    if (el) el.ontimeupdate = null
+  }
+
   /** Ring. Safe to call repeatedly — a second trigger must not restart or stack. */
   function fire() {
     if (ringing) return true
+    if (dueAt) cancelScheduled()
     // Firing without arming cannot work: no gesture has been given, so play() is refused.
     if (!armed) return false
     ringing = true
@@ -429,7 +353,9 @@ export function createAlarm({ makeAudio, vibrate, onChange, session, sound = DEF
   }
 
   return {
-    arm, disarm, fire, stop, setSound, preview,
+    arm, disarm, fire, stop, setSound, preview, fireIn,
+    cancelScheduled: () => { cancelScheduled(); notify() },
+    dueIn:     () => dueAt ? Math.max(0, dueAt - Date.now()) : null,
     sound:     () => kind,
     isArmed:   () => armed,
     isRinging: () => ringing,

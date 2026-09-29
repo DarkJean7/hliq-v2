@@ -172,25 +172,36 @@ console.log(NL + '-- and there is more than one sound to wake to --')
   await p.evaluate(() => window.mobVTab('settings'))
   await waitFor(p, 'the alarm row', () => !!document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm'), null, 20000)
   await waitFor(p, 'the sound pills', () =>
-    document.querySelectorAll('#mobVContent [data-wake-alarm] [data-alarm-snd]').length >= 5, null, 20000)
+    document.querySelectorAll('#mobVContent [data-wake-alarm] [data-alarm-snd]').length >= 3, null, 20000)
   const pills = await p.evaluate(() => [...document.querySelectorAll('#mobVContent [data-wake-alarm] [data-alarm-snd]')]
     .map(b => b.textContent.trim()))
-  ok('several sounds are offered', pills.length >= 5, pills)
+  // Ringtones only now -- "delete the ones that are not ringtones".
+  ok('several ringtones are offered, and only ringtones', pills.length >= 3 && !pills.some(x => /Klaxon|Siren|Warble|Pulse/.test(x)), pills)
   ok('named rather than numbered', pills.every(x => /^[A-Za-z]/.test(x)), pills)
   const before = await p.evaluate(() => localStorage.getItem('hliq_wake_alarm_sound'))
   // Tapping one picks it AND plays it — choosing an alarm you have never heard is guessing.
-  await p.click('#mobVContent [data-wake-alarm] [data-alarm-snd="klaxon"]')
+  await p.click('#mobVContent [data-wake-alarm] [data-alarm-snd="classic"]')
   await p.waitForTimeout(400)
   const after = await p.evaluate(() => localStorage.getItem('hliq_wake_alarm_sound'))
-  ok('tapping one chooses it', after === 'klaxon', { before, after })
+  ok('tapping one chooses it', after === 'classic', { before, after })
   ok('and the choice is shown', await p.evaluate(() =>
-    !!document.querySelector('#mobVContent [data-wake-alarm] [data-alarm-snd="klaxon"].on')))
+    !!document.querySelector('#mobVContent [data-wake-alarm] [data-alarm-snd="classic"].on')))
   // It survives a reload, which is the only way an alarm set at bedtime is any use.
   await boot()
   await p.evaluate(() => window.mobVTab('settings'))
   await waitFor(p, 'the alarm row again', () => !!document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm'), null, 20000)
   ok('and the next night still has it', await waitFor(p, 'the chosen sound to come back', () =>
-    !!document.querySelector('#mobVContent [data-wake-alarm] [data-alarm-snd="klaxon"].on'), null, 20000))
+    !!document.querySelector('#mobVContent [data-wake-alarm] [data-alarm-snd="classic"].on'), null, 20000))
+
+  // The thirty-second test: a countdown on the button, and the alarm rings when it runs out.
+  const wasOn = await p.evaluate(() => [localStorage.getItem('hliq_wake_alarm'), window.__alarmArmed?.() ?? null])
+  await p.evaluate(() => window.__alarmTestIn(2))
+  ok('the timed test shows a countdown', await waitFor(p, 'the countdown', () =>
+    /Rings in/.test(document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm-tests')?.textContent ?? ''), null, 5000))
+  ok('and rings when it runs out', await waitFor(p, 'the ring', () => !!document.getElementById('alarmOverlay'), null, 10000))
+  ok('saying it is a test', await p.evaluate(() => /Alarm test/.test(document.getElementById('alarmOverlay')?.textContent ?? '')))
+  await p.evaluate(() => window.__alarmStop())
+  ok('stopping it leaves the alarm as it was before the test', (await p.evaluate(() => localStorage.getItem('hliq_wake_alarm'))) === wasOn[0])
 }
 
 console.log(NL + '-- an alert reads as the price it was set at --')

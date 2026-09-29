@@ -8329,3 +8329,10 @@ input.sim-sw:checked::before { transform: translateX(14px); }
 .sim-root ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--fg) 16%, transparent); border-radius: 999px; }
 .sim-root ::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--fg) 30%, transparent); }
 .sim-root ::-webkit-scrollbar-button { display: none; height: 0; width: 0; }
+
+/* The alarm's two test buttons, side by side so the row keeps the height it had with one --
+   the sheet is anchored to the bottom of the screen, and a row that grows moves every
+   control above it. The pending one is highlighted and carries the countdown. */
+.pa-alarm-tests { display: flex; gap: 8px; }
+.pa-alarm-tests .pa-alarm-test { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pa-alarm-tests .pa-alarm-test.on { flex: 2.4; border-color: var(--accent); color: var(--accent); }

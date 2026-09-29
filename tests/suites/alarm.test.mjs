@@ -107,10 +107,13 @@ t('there is a way to hear it before trusting it', cli.includes('window.__alarmTe
 // "add more and better wake alarm sounds" — one sound is not a choice, and the right alarm
 // is the one that wakes YOU: a warble a light sleeper hears is not what gets someone out of
 // deep sleep, and a klaxon at 3am in a shared bed is a different problem.
-console.log(nl + '-- five of them, all built to wake someone --')
+// "delete the ones that are not ringtones": the five test tones are gone, three ringtones stay.
+console.log(nl + '-- ringtones, and only ringtones --')
 {
   const names = Object.keys(ALARM_SOUNDS)
-  t('there are several to choose from', names.length >= 5, names)
+  t('there is a choice', names.length >= 3, names)
+  t('and every one is a ringtone, built at ringtone quality', Object.values(ALARM_SOUNDS).every(v => v.rate >= 22050))
+  t('the test tones are gone', !['warble', 'siren', 'klaxon', 'bell', 'pulse'].some(k => ALARM_SOUNDS[k]))
   t('each has a label', Object.values(ALARM_SOUNDS).every(v => v.label && typeof v.build === 'function'))
   t('the default is one of them', !!ALARM_SOUNDS[DEFAULT_ALARM])
   for (const k of names) {
@@ -145,10 +148,10 @@ console.log(nl + '-- choosing one --')
   const el = mkStub()
   const a  = createAlarm({ makeAudio: () => el, vibrate: () => {} })
   t('it starts on the default', a.sound() === DEFAULT_ALARM)
-  t('and takes another', a.setSound('klaxon') === 'klaxon' && a.sound() === 'klaxon')
-  t('but refuses one that does not exist', a.setSound('nope') === 'klaxon')
+  t('and takes another', a.setSound('classic') === 'classic' && a.sound() === 'classic')
+  t('but refuses one that does not exist', a.setSound('nope') === 'classic' && a.setSound('klaxon') === 'classic')
   // Hearing one must not require arming first: that was the old Test button's problem.
-  t('a preview plays without arming', a.preview('siren') === true && !a.isArmed())
+  t('a preview plays without arming', a.preview('rising') === true && !a.isArmed())
   t('and does not leave the alarm ringing', !a.isRinging())
 }
 
@@ -176,6 +179,36 @@ t('and nothing calls play bare any more',
   !/try \{ el\.play\(\) \} catch/.test(alarmSrc.replace(/\/\*[\s\S]*?\*\//g, '')))
 t('while arming still awaits it, which is where a refusal must be caught',
   /await el\.play\(\)/.test(alarmSrc))
+
+// Asked for: "i want to test them outside the app ... a test button that with a timer it
+// activates the ringtone after 30 seconds". Rings as a real alert would, with the app behind.
+console.log(nl + '-- ring later, to test it with the phone locked --')
+{
+  const el = mkStub()
+  const a  = createAlarm({ makeAudio: () => el, vibrate: () => {}, session: () => {} })
+  t('it will not schedule before it is armed -- nothing could ring', a.fireIn(1000) === false && a.dueIn() === null)
+  await a.arm()
+  t('armed, it schedules', a.fireIn(60_000) === true && a.dueIn() > 59_000)
+  t('and says how long is left', a.dueIn() <= 60_000)
+  t('the audio element\'s own clock watches the deadline too -- a background timer is throttled',
+    typeof el.ontimeupdate === 'function')
+  a.cancelScheduled()
+  t('it can be called off', a.dueIn() === null && !a.isRinging() && el.ontimeupdate === null)
+  a.fireIn(0)
+  el.ontimeupdate()
+  t('when the time comes it rings', a.isRinging() && a.dueIn() === null)
+  a.stop()
+  a.fireIn(60_000)
+  a.disarm()
+  t('disarming calls off a pending ring', a.dueIn() === null)
+}
+t('there is a thirty-second test in the app', cli.includes('window.__alarmTestIn = async function(sec = 30)') &&
+  cli.includes('onclick="window.__alarmTestIn(30)"'))
+t('armed for the test only, never saved as on', (() => {
+  const f = cli.slice(cli.indexOf('window.__alarmTestIn'), cli.indexOf('window.__alarmStop'))
+  return f.includes('_alarmTestOnly = true') && !f.includes('localStorage.setItem(_ALARM_KEY')
+})())
+t('and the ringing screen says it is a test', cli.includes("_alarmTestOnly ? _T('Alarm test'"))
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
