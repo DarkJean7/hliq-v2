@@ -285,6 +285,14 @@ t('a hidden strategy\'s settings survive collecting the form', sim.includes('for
 t('the most-traded list asks for volumes itself', sim.includes('ctx.loadMarkets()') && main.includes('loadMarkets: () => _ensureMarketData()'))
 t('and shows nothing rather than an unranked list', sim.includes('const list = _simMarkets().list.filter(m => (m.vol ?? 0) > 0)') &&
   sim.includes('if (!list.length) { _simLoadVolumes(); return [] }'))
+// Reported as a yellow "max leverage was not known" on SOL. state.assetMap is not built in every
+// view (All Accounts), so the simulator guessed 20x. The market data it loads itself carries
+// the real number; the app now keeps it, and asks all three places before guessing.
+t('max leverage is kept with the market data', main.includes('maxLeverage: u.maxLeverage ?? null'))
+t('and read from the asset map, the metas, then that', /maxLeverage: \(id\) => state\.assetMap\?\.\[id\]\?\.maxLeverage\s*\?\? \(state\.allMetas/.test(main) &&
+  main.includes('?? _mktCtxMap[id]?.maxLeverage ?? null'))
+t('a run loads that data before it needs it', sim.includes("try { await ctx.loadMarkets() } catch {}"))
+t('scrollbars in the simulator are thin and themed', css.includes('.sim-root ::-webkit-scrollbar { width: 6px') && css.includes('scrollbar-width: thin'))
 t('old saves move to position sizing only if they never chose a model', sim.includes("if (!s.modelV && _simParams.pnlModel === 'fixed')"))
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

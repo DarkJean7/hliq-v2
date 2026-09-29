@@ -302,6 +302,11 @@ function _simMktPaint() {
   if (r) r.innerHTML = _simResultsHtml()
   const clr = document.getElementById('simClearCoins')
   if (clr) clr.style.display = _simCoinList().length ? '' : 'none'
+  // The leverage label names the first market's max, which changes with the list and arrives
+  // with the market data.
+  const lu = document.getElementById('simU_leverage')
+  const lf = BT_FIELDS.find(f => f.key === 'leverage')
+  if (lu && lf) lu.textContent = _simUnit(lf)
   _simPreviewPaint()
 }
 
@@ -557,6 +562,11 @@ const _simHL = (p = _simParams) => p.pnlModel === 'notional' || ['grid', 'dca'].
  * history" for markets that have plenty.
  */
 async function _simLoad(coins) {
+  // The market data carries each market's max leverage -- the maintenance margin, and so every
+  // liquidation price. Shared and deduped with the rest of the app, so this costs nothing when
+  // another screen already loaded it.
+  try { await ctx.loadMarkets() } catch {}
+  _simMarkets(true)
   const bars = {}
   const skipped = []
   let done = 0
@@ -904,7 +914,7 @@ function _simFieldHtml(f) {
   return `<label class="sim-field">
     <div class="sim-lbl">
       <span class="sim-lbl-t">${esc(f.label)}</span>
-      <span class="sim-lbl-u">${esc(_simUnit(f))}</span>
+      <span class="sim-lbl-u" id="simU_${f.key}">${esc(_simUnit(f))}</span>
       <span style="flex:1"></span>
       ${_simQ(f.key)}
     </div>
@@ -2442,6 +2452,8 @@ function _simRender(el) {
   // The form's own scroll survives a rebuild: on a wide screen the settings scroll inside
   // their column, and every structural change rebuilds it.
   const cfgScroll = host.querySelector('.sim-config')?.scrollTop ?? 0
+  // Volumes and max leverages, if no screen has loaded them yet. Deduped; repaints on arrival.
+  if (!_simMarkets().list.some(m => (m.vol ?? 0) > 0)) _simLoadVolumes()
   host.innerHTML = `<div class="sim-root">${ctx.fullHeader(_T('Trade Simulator', 'Simulador'))}
     <div class="sim-wrap">
       <div class="sim-intro">

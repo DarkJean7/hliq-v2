@@ -211,6 +211,8 @@ console.log(NL + '-- desktop: the page --')
   await p.click('#deskSim .sim-runbar .sim-btn-p')
   const ran = await waitFor(p, 'a result', () => !!document.querySelector('#deskSim .sim-kpis'))
   ok('a run puts a report on the page', ran)
+  ok('every market max leverage is known, so nothing is guessed', await p.evaluate(() =>
+    !/max leverage was not known/.test(document.querySelector('#deskSim .sim-results')?.textContent ?? '')))
   const kpis = await p.evaluate(() => [...document.querySelectorAll('#deskSim .sim-kpi-l')].map(e => e.textContent.trim()))
   ok('with the headline numbers', ['Net PnL', 'vs buy & hold', 'Max drawdown', 'Win rate', 'Profit factor', 'Sharpe'].every(k => kpis.includes(k)), kpis)
   ok('an equity curve against holding', await p.evaluate(() =>

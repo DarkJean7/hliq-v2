@@ -2978,7 +2978,10 @@ async function _doEnsureMarketData() {
       ;(meta.universe ?? []).forEach((u, i) => {
         const c = ctxs[i]
         if (!c) return
-        _mktCtxMap[u.name] = _buildCtxEntry(c)
+        // The market's max leverage rides along from the same response. It is the one number
+        // the Trade Simulator needs to find a liquidation price, and state.assetMap is not
+        // built in every view -- All Accounts, for one.
+        _mktCtxMap[u.name] = { ..._buildCtxEntry(c), maxLeverage: u.maxLeverage ?? null }
       })
       _mktCtxReady = true
     } else { console.warn('[hliq] fetchMarketCtxs failed:', mktR.reason) }
@@ -3153,7 +3156,7 @@ async function _hip3CtxTick() {
     ;(meta2.universe ?? []).forEach((u, j) => {
       const c2 = ctxs2[j]
       if (!c2) return
-      _mktCtxMap[u.name] = _buildCtxEntry(c2)
+      _mktCtxMap[u.name] = { ..._buildCtxEntry(c2), maxLeverage: u.maxLeverage ?? null }
       changed = true
     })
     _mktHip3Ready = true                                      // partial data is enough to show the tab
@@ -11378,7 +11381,12 @@ initSimulator({
   loadMarkets: () => _ensureMarketData(),
   // Hyperliquid's own per-market ceiling. It sets the maintenance margin, and so where a
   // simulated position is liquidated -- the leverage someone picks does not.
-  maxLeverage: (id) => state.assetMap?.[id]?.maxLeverage ?? null,
+  // Three places know it, and which of them is filled depends on the view: the asset map
+  // (paper, single account), the raw metas, or the market data the simulator loads itself.
+  // Null only when none of them has it -- never a made-up 50.
+  maxLeverage: (id) => state.assetMap?.[id]?.maxLeverage
+    ?? (state.allMetas ?? []).flatMap(m => m.universe ?? []).find(u => u?.name === id)?.maxLeverage
+    ?? _mktCtxMap[id]?.maxLeverage ?? null,
 })
 
 initOffex({
