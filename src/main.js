@@ -23,7 +23,7 @@ import {
   renderPnLCalendar,
   calDayClick,
   renderTransfers,
-  ledgerAmount,
+  ledgerAmount, ledgerFlow, setLedgerPeers, isPeerTransfer, isPeerMirror, peerRoute, peerAmount,
   skeletonStatCards,
   skeletonRows,
   setSortOrd,
@@ -9111,6 +9111,18 @@ async function _allAcctCachePersist() {
   } catch (e) { _allAcctCacheWhy('write-failed', String(e?.name || e).slice(0, 80)) }
 }
 
+// Which wallets a ledger transfer can be "between". Only in the combined view: in a single
+// account every send really is money in or out of the account on screen. render.js asks this
+// whenever it classifies an entry, so hiding a wallet takes effect on the next paint.
+setLedgerPeers(() => {
+  if (!state.isAllAccounts) return null
+  const hidden = _maHiddenLoad()
+  const m = new Map()
+  try { for (const e of (_maLoad() ?? [])) if (e && !hidden.has(e.addr)) m.set(String(e.addr).toLowerCase(), e.label || '') }
+  catch {}
+  return m.size > 1 ? m : null
+})
+
 async function loadAllAccountsDashboard() {
   _paperExit()   // leaving the simulated account
   const entries = _maLoad()
@@ -15152,18 +15164,10 @@ function _mobVRenderBalance() {
 // Portfolio page already renders. Used as the denominator for the all-time PnL %,
 // where "value at window start" is ~$0 (account genesis) and would hide the %.
 function _netDepositedFromLedger() {
-  let dep = 0, wd = 0
-  for (const e of (state.ledger ?? [])) {
-    const d = e.delta ?? {}
-    if (d.type === 'deposit') dep += parseFloat(d.usdc ?? 0)
-    else if (d.type === 'withdraw') wd += parseFloat(d.usdc ?? 0)
-    else if (d.type === 'send' || d.type === 'spotTransfer') {
-      const me = (e._acctAddr ?? state.addr ?? '').toLowerCase()
-      const v  = parseFloat(d.usdcValue ?? 0)
-      if ((d.destination ?? '').toLowerCase() === me) dep += v; else wd += v
-    }
-  }
-  return dep - wd
+  // The one rule (render.js ledgerFlow): a transfer between two wallets in view is neither.
+  let net = 0
+  for (const e of (state.ledger ?? [])) net += ledgerFlow(e, e._acctAddr ?? state.addr)
+  return net
 }
 
 function _mobVPortHeroHtml(hist, vals, idx, baseRef = 0) {
@@ -15307,9 +15311,10 @@ function _mobVDrawPortCanvas(canvas, crosshairIdx) {
     for (const e of (state.ledger ?? [])) {
       const ty = e.delta?.type, t = +(e.time ?? 0)
       if (!(t > t0 && t < t1)) continue
-      const amt = ledgerAmount(e, e._acctAddr ?? state.addr) || 0
-      if (ty === 'deposit' || ((ty === 'send' || ty === 'spotTransfer') && amt > 0)) evs.push({ t, type: 'dep' })
-      else if (ty === 'withdraw' || ((ty === 'send' || ty === 'spotTransfer') && amt < 0)) evs.push({ t, type: 'wd' })
+      // Money in or out only; a transfer between two wallets in view marks neither.
+      const amt = ledgerFlow(e, e._acctAddr ?? state.addr) || 0
+      if (amt > 0) evs.push({ t, type: 'dep' })
+      else if (amt < 0) evs.push({ t, type: 'wd' })
     }
     evs.sort((a, b) => a.t - b.t)
     const style = { buy: { c: '#00e5a0', l: 'B', dy: 11 }, sell: { c: '#ff4d6d', l: 'S', dy: -11 },
@@ -15665,10 +15670,11 @@ function _advBuildEvents() {
   }
   for (const e of (state.ledger ?? [])) {
     const ty = e.delta?.type, t = +(e.time ?? 0)
-    const amt = ledgerAmount(e, e._acctAddr ?? state.addr) || 0
-    if (ty === 'deposit' || ((ty === 'send' || ty === 'spotTransfer') && amt > 0))
+    // Money in or out only; a transfer between two wallets in view marks neither.
+    const amt = ledgerFlow(e, e._acctAddr ?? state.addr) || 0
+    if (amt > 0)
       evs.push({ t, kind: 'dep', title: 'Deposit', lines: [`+$${fmtUSD(Math.abs(amt))}`] })
-    else if (ty === 'withdraw' || ((ty === 'send' || ty === 'spotTransfer') && amt < 0))
+    else if (amt < 0)
       evs.push({ t, kind: 'wd', title: 'Withdraw', lines: [`−$${fmtUSD(Math.abs(amt))}`] })
   }
   evs.sort((a, b) => a.t - b.t)
@@ -19633,7 +19639,7 @@ function _mobVRenderContent(tick = false) {
 
   if (_mobVActiveTab === 'transfers') {
     const txHeader = _mobVFullHeader('Transfers')
-    const ledger = (state.ledger ?? []).slice().sort((a, b) => b.time - a.time)
+    const ledger = (state.ledger ?? []).filter(e => !isPeerMirror(e, e._acctAddr ?? state.addr)).sort((a, b) => b.time - a.time)
     if (!ledger.length) { el.innerHTML = `${txHeader}<div class="mob-v-empty">No transfers yet</div>`; return }
     const typeLabel = { deposit: 'Deposit', withdraw: 'Withdraw', send: 'Send', accountClassTransfer: 'Internal', internalTransfer: 'Internal', subAccountTransfer: 'Sub-account', spotTransfer: 'Spot transfer' }
     // Peer/USDC/spot transfers are directional: money arriving IS a deposit into the
@@ -19644,9 +19650,10 @@ function _mobVRenderContent(tick = false) {
       // Signed flow (+ into the account, − out) — spot/peer transfers are signed
       // by whether we sent or received them (shared with the desktop ledger). In the
       // combined view state.addr is a sentinel, so judge against the owning wallet.
-      const amt    = ledgerAmount(e, e._acctAddr ?? state.addr)
+      const route  = peerRoute(e, e._acctAddr ?? state.addr)
+      const amt    = route ? peerAmount(e) : ledgerAmount(e, e._acctAddr ?? state.addr)
       const isIn   = amt >= 0
-      const label  = dirTypes.has(type) ? (isIn ? 'Deposit' : 'Send') : (typeLabel[type] ?? type)
+      const label  = route ? 'Transfer · ' + route : dirTypes.has(type) ? (isIn ? 'Deposit' : 'Send') : (typeLabel[type] ?? type)
       const cls    = isIn ? 'pos' : 'neg'
       const ts     = new Date(e.time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
       const acctHtml = e._acctAddr
@@ -20077,18 +20084,12 @@ function _mobVRenderContent(tick = false) {
     const ledgerKnown = Array.isArray(state.ledger)
     const ledger   = state.ledger ?? []
     let totalDeposited = 0, totalWithdrawn = 0
+    // The one rule (render.js ledgerFlow), which the calendar and Transfers tab also use: a
+    // transfer between two wallets in view is neither a deposit nor a withdrawal.
     for (const e of ledger) {
-      const d = e.delta ?? {}
-      if (d.type === 'deposit') totalDeposited += parseFloat(d.usdc ?? 0)
-      else if (d.type === 'withdraw') totalWithdrawn += parseFloat(d.usdc ?? 0)
-      // USDC sends + spot-token transfers, counted by direction at USD value
-      // (in the combined view each entry's owner is its _acctAddr)
-      else if (d.type === 'send' || d.type === 'spotTransfer') {
-        const me = (e._acctAddr ?? state.addr ?? '').toLowerCase()
-        const v  = parseFloat(d.usdcValue ?? 0)
-        if ((d.destination ?? '').toLowerCase() === me) totalDeposited += v
-        else totalWithdrawn += v
-      }
+      const v = ledgerFlow(e, e._acctAddr ?? state.addr)
+      if (v > 0) totalDeposited += v
+      else if (v < 0) totalWithdrawn += -v
     }
     // What HL itself counts as money in, when it has said so: its cumLedger is the figure its
     // own PnL is measured against, and our sum of the ledger can differ from it (it counts a
@@ -34650,27 +34651,20 @@ async function _maEnrichResults(results, forceRefreshLedger = false) {
       const cached = _maLedgerCache.get(r.addr)
       let totalDeposited = 0, totalWithdrawn = 0, ledgerEntries = []
       if (!forceRefreshLedger && cached && now - cached.ts < _MA_LEDGER_TTL) {
-        totalDeposited = cached.totalDeposited
-        totalWithdrawn = cached.totalWithdrawn
         ledgerEntries  = cached.ledgerEntries ?? []
       } else {
         const ledger = await info.userNonFundingLedgerUpdates({ user: r.addr, startTime: GENESIS }).catch(() => [])
         ledgerEntries = ledger ?? []
-        const _me = r.addr.toLowerCase()
-        for (const e of ledgerEntries) {
-          const d = e.delta ?? {}
-          if (d.type === 'deposit') totalDeposited += parseFloat(d.usdc ?? 0)
-          else if (d.type === 'withdraw') totalWithdrawn += parseFloat(d.usdc ?? 0)
-          // Transfers (USDC sends AND spot-token transfers) move real money in or out:
-          // count them by direction at their USD value, otherwise received tokens show
-          // up as pure "profit" and outgoing sends vanish from the books.
-          else if (d.type === 'send' || d.type === 'spotTransfer') {
-            const v = parseFloat(d.usdcValue ?? 0)
-            if ((d.destination ?? '').toLowerCase() === _me) totalDeposited += v
-            else totalWithdrawn += v
-          }
-        }
-        _maLedgerCache.set(r.addr, { totalDeposited, totalWithdrawn, ledgerEntries, ts: now })
+        _maLedgerCache.set(r.addr, { ledgerEntries, ts: now })
+      }
+      // Totalled here, from the entries, every time -- not cached with them. Whether a send
+      // counts depends on whether its other end is in view, and that changes when a wallet is
+      // hidden or added; a cached total would keep the old answer. ledgerFlow is the one rule.
+      totalDeposited = 0; totalWithdrawn = 0
+      for (const e of ledgerEntries) {
+        const v = ledgerFlow(e, r.addr)
+        if (v > 0) totalDeposited += v
+        else if (v < 0) totalWithdrawn += -v
       }
       // Free margin (withdrawable, incl. spot-free USDC) and _spotFree are computed in the
       // base fetch (_lbFetchResults), so don't touch them here — re-adding spot-free would

@@ -12,6 +12,8 @@ import { renderOverviewChart } from './charts.js'
 import { aggregatePosGroup, groupPositions, posHealthPct, posSideOf } from './posgroup.js'
 import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL,
          expectedPnl, groupExpectedPnl } from './ordergroup.js'
+import { setLedgerPeers, isPeerTransfer, isPeerMirror, peerRoute, peerAmount } from './ledgerpeers.js'
+export { setLedgerPeers, isPeerTransfer, isPeerMirror, peerRoute, peerAmount }
 
 // Outcome-aware coin label: resolves prediction-market "#N"/"+N" codes to their
 // market name + side via main.js's ocTokenMap (window._ocCoinLabel). Falls back to
@@ -2547,7 +2549,9 @@ export function calDayClick(key, rootId) {
   const dayLedger = cache.ledger.filter(e => e.time >= dayStart && e.time < dayEnd)
   // Every transfer that day — the same set the Transfers tab lists, not just the ones that
   // move money in or out, or the calendar hides activity the other tab shows.
-  const txEntries = dayLedger.filter(isCalTransfer).sort((a, b) => a.time - b.time)
+  // One row per transfer between two wallets in view -- the sender's; the receiver's copy of it
+  // is the same money and would list it twice.
+  const txEntries = dayLedger.filter(e => isCalTransfer(e) && !isPeerMirror(e, cache.owner)).sort((a, b) => a.time - b.time)
   const rwEntries = dayLedger.filter(isCalReward).sort((a, b) => a.time - b.time)
   const rwUsd     = rwEntries.reduce((s, e) => s + rewardUsd(e), 0)
   // The pill carries only what the Deposited / Withdrawn pills beside it do not. Everything
@@ -2601,6 +2605,16 @@ export function calDayClick(key, rootId) {
       ${txEntries.map(e => {
         const t    = e.delta.type
         // Signed exactly as the Transfers tab signs it, against the wallet it belongs to.
+        const route = peerRoute(e, cache.owner)
+        if (route) {
+          // Between two wallets on screen: a transfer, unsigned -- it left one and reached the other.
+          return `<div class="cal-detail-tx">
+          <span class="cal-detail-time">${_calTime(e.time)}</span>
+          <span class="badge badge-transfer">Transfer</span>
+          <span class="acct-pill">${esc(route)}</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-weight:700">$${fmtUSD(peerAmount(e))}</span>
+        </div>`
+        }
         const amt  = ledgerAmount(e, ledgerOwner(e, cache.owner))
         const isIn = amt >= 0
         const { label, badge } = _calTxLabel(t, amt)
@@ -2712,6 +2726,7 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
       continue
     }
     if (!isCalTransfer(e) || !Number.isFinite(e.time)) continue
+    if (isPeerMirror(e, owner)) continue      // the same transfer as the sender's row
     const d   = new Date(e.time)
     const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
     if (!byDay[key]) byDay[key] = { pnl: 0, trades: 0, deposited: 0, withdrawn: 0, transfers: 0 }
@@ -3076,9 +3091,14 @@ export function rewardUsd(e) {
   return Number.isFinite(v) ? v : 0
 }
 export function ledgerOwner(entry, addr = null) { return _realAddr(entry?._acctAddr) ?? _realAddr(addr) }
+
+
+// Transfers between two wallets in view: src/ledgerpeers.js.
 export function ledgerFlow(entry, addr = null) {
   const t = entry?.delta?.type
   if (!_FLOW_TYPES.includes(t)) return 0
+  // Between two wallets in view: moved, not added or taken away.
+  if (isPeerTransfer(entry, addr)) return 0
   const v = ledgerAmount(entry, ledgerOwner(entry, addr))
   return Number.isFinite(v) ? v : 0
 }
@@ -3142,17 +3162,21 @@ export function renderTransfers(ledger, filter = 'all', addr = null) {
     return
   }
 
-  cardsEl.innerHTML = visible.slice().sort((a, b) => b.time - a.time).map(entry => {
-    const meta    = TRANSFER_TYPES[entry.delta.type] ?? { label: entry.delta.type, badge: 'badge-transfer', sign: 0 }
-    const amt     = ledgerAmount(entry, entry._acctAddr ?? addr)
-    const amtStr  = amt > 0 ? '+$' + fmtUSD(amt) : amt < 0 ? '-$' + fmtUSD(Math.abs(amt)) : '$0.00'
+  cardsEl.innerHTML = visible.filter(e => !isPeerMirror(e, addr)).sort((a, b) => b.time - a.time).map(entry => {
+    const route   = peerRoute(entry, addr)
+    const meta    = route ? { label: 'Transfer', badge: 'badge-transfer', sign: 0 }
+                  : TRANSFER_TYPES[entry.delta.type] ?? { label: entry.delta.type, badge: 'badge-transfer', sign: 0 }
+    // A transfer between two wallets on screen is shown by its size, unsigned: it is not money
+    // in or out of what is being looked at.
+    const amt     = route ? 0 : ledgerAmount(entry, entry._acctAddr ?? addr)
+    const amtStr  = route ? '$' + fmtUSD(peerAmount(entry)) : amt > 0 ? '+$' + fmtUSD(amt) : amt < 0 ? '-$' + fmtUSD(Math.abs(amt)) : '$0.00'
     // Colour follows the actual signed flow (so spot/internal transfers get +/-),
     // falling back to the type's nominal sign when the amount is zero.
     const amtCls  = amt > 0 ? 'pos' : amt < 0 ? 'neg' : (meta.sign > 0 ? 'pos' : meta.sign < 0 ? 'neg' : 'muted')
     const date    = new Date(entry.time)
     const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) +
                     ' ' + date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-    const details = ledgerDetails(entry)
+    const details = route ?? ledgerDetails(entry)
     // In the combined view show whose wallet the transfer belongs to.
     const acctHtml = entry._acctAddr && typeof window !== 'undefined' && window._mobVAvatarHtml
       ? `<span class="txfr-card-acct" title="${esc(entry._acct ?? '')}">
