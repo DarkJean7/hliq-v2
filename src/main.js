@@ -11362,6 +11362,19 @@ initSimulator({
   toast: (msg) => _paperToast(msg),
   resolveMarketId: (name) => _resolveMarketId(name),
   coinLabel: (c) => _ocCoinLabel(c),
+  // Every perp, main dex and HIP-3, named the way the rest of the app names it so nobody has
+  // to know a market lives at xyz:SMSN to find it. Spot, outcomes and delisted markets are
+  // left out: there is nothing to backtest on them here.
+  markets: () => Object.keys(state.allMids ?? {})
+    .filter(k => !k.startsWith('@') && !k.startsWith('#') && !k.includes('/') && !_spotNameMap[k] && !_isDelistedMkt(k))
+    .map(k => ({
+      id: k,
+      name: _mktDisplay(k) ?? hip3Rename(k).replace(/.*:/, ''),
+      dex: deployerOf(k) ? _dexLabel(deployerOf(k)) : '',
+      px: _livePx(k),
+      vol: _mktCtxMap[k]?.volume ?? 0,
+    })),
+  icon: (id) => _coinIconHtml(id),
 })
 
 initOffex({

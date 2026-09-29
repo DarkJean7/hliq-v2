@@ -45,37 +45,33 @@ let ctx = {
   resolveMarketId: (s) => String(s ?? '').trim().toUpperCase(),
   /** How a market id is shown: "xyz:SMSN" reads as SMSN. */
   coinLabel: (c) => String(c ?? ''),
+  /** Every perp the app knows: [{ id, name, dex, px, vol }]. Empty until markets load. */
+  markets: () => [],
+  /** A market's artwork, as HTML. Only asked for the handful of search results on screen. */
+  icon: () => '',
 }
 export function initSimulator(overrides = {}) { ctx = { ...ctx, ...overrides } }
 
 const _T = (en, es) => ctx.T(en, es)
 const _resolveMarketId = (name) => ctx.resolveMarketId(name)
-const _ocCoinLabel = (c) => ctx.coinLabel(c)
 const _paperToast = (m) => ctx.toast(m)
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
 
 const SIM_KEY = 'hliq_sim'
-// One market to start with, not a basket: a first run should be the simplest thing the
-// screen can do, and the box takes a comma-separated list the moment anyone wants one.
-const SIM_COIN_DEFAULT = 'HYPE'
 /**
- * The market list is remembered PER STRATEGY, and there is one default behind them all.
+ * ONE list of markets, chosen by you, with NO default behind it.
  *
- * Reported: "why in trade simulator the default list keeps appearing... only make it appears
- * in strategies that need it and just like an option to chose those as the default."
+ * Reported twice. First: "the default list keeps appearing" — Tokyo's fifteen markets, loaded
+ * once, sat invisibly under every strategy. Then, with a HYPE default, per-strategy lists and a
+ * "set as default" button: "lets get rid of that default and just be clear". Every version had
+ * the same flaw: the list on screen was one the app had chosen, by some rule you could not see.
  *
- * The list used to be one global value. Tokyo needs its own fifteen markets — its rule is a
- * table of per-market trading windows, and a market not in that table cannot be run at all —
- * so loading them once left those fifteen in the box for every other strategy, every session,
- * forever. They were not a default anyone chose; they were the last thing typed, kept.
- *
- * So: each strategy keeps its own list, and a strategy with no list of its own starts from the
- * default, which is HYPE until someone presses "Set as default" on a list they like.
+ * So the markets are chips you put there, they stay when you change strategy — comparing
+ * strategies on the same markets is the point — and nothing else ever adds one. Tokyo offers
+ * its fifteen as a button, and Clear all takes them away again.
  */
-let _simDefaultCoin = SIM_COIN_DEFAULT
-let _simCoinByStrat = {}          // strategy -> its own market list
-let _simCoin = SIM_COIN_DEFAULT   // the CURRENT strategy's list; what the box edits
+let _simCoin = ''                 // the chosen markets, as comma-separated market ids
 let _simIv   = '1h'
 let _simCount = 2000
 let _simParams = { ...BT_DEFAULTS }
@@ -100,75 +96,32 @@ let _simSweepKey = null
 try {
   const s = JSON.parse(localStorage.getItem(SIM_KEY) || '{}')
   // An empty saved list is honoured, not treated as "nothing saved". Someone who cleared the
-  // box meant to clear it, and reopening the tab to find HYPE back in it is the same bug as
-  // the box refusing to clear in the first place.
+  // markets meant to clear them.
   if (typeof s.coin === 'string') _simCoin = s.coin
   if (typeof s.iv === 'string' && s.iv) _simIv = s.iv
   if (Number.isFinite(+s.count)) _simCount = +s.count
   if (s.params && typeof s.params === 'object') _simParams = coerceParams(s.params)
-  if (typeof s.defaultCoin === 'string' && s.defaultCoin) _simDefaultCoin = s.defaultCoin
-  if (s.coinByStrat && typeof s.coinByStrat === 'object') _simCoinByStrat = { ...s.coinByStrat }
   if (typeof s.cat === 'string') _simCat = s.cat
-  // Older saves have one global list and no per-strategy map. Where it lands matters, because
-  // the reported symptom IS an old save: the fifteen Tokyo markets sitting in the box under the
-  // Range strategy, which is how they were being seen everywhere. A list that IS the Tokyo
-  // portfolio is filed under Tokyo — the only strategy it can be run with — and the strategy
-  // that happened to be selected goes back to the default. Any other list belongs to whichever
-  // strategy was open, because that is the only one it was ever used with.
-  if (!Object.keys(_simCoinByStrat).length && typeof s.coin === 'string') {
-    const isTokyoList = _simIsTokyoList(s.coin)
-    if (isTokyoList) _simCoinByStrat.tokyo = s.coin
-    else _simCoinByStrat[_simParams.strategy] = s.coin
-    if (isTokyoList && _simParams.strategy !== 'tokyo') _simCoin = _simDefaultCoin
-  }
   // Saves from before the money model existed were all 'fixed' by default rather than by
   // choice. `modelV` marks a save made after position sizing became the default, so only a
   // model somebody actually picked survives the upgrade.
   if (!s.modelV && _simParams.pnlModel === 'fixed') _simParams.pnlModel = BT_DEFAULTS.pnlModel
   if (!s.modelV) _simParams.useOnePos = BT_DEFAULTS.useOnePos
+  // Saves from before v3 carry lists the old defaults put there — HYPE, or a typed-out Tokyo
+  // list with the prefixes someone had to remember. Nobody can tell those from a choice, which
+  // is the whole complaint, so every list starts over once, empty and explicit.
+  if (!(s.modelV >= 3)) _simCoin = ''
 } catch {}
 function _simSave() {
   try {
-    _simCoinByStrat[_simParams.strategy] = _simCoin
     localStorage.setItem(SIM_KEY, JSON.stringify({
-      coin: _simCoin, iv: _simIv, count: _simCount, params: _simParams, cat: _simCat, modelV: 2,
-      defaultCoin: _simDefaultCoin, coinByStrat: _simCoinByStrat }))
+      coin: _simCoin, iv: _simIv, count: _simCount, params: _simParams, cat: _simCat, modelV: 3 }))
   } catch {}
-}
-
-/**
- * Is this saved list the Tokyo portfolio rather than a list someone chose?
- *
- * Used once, to file an old global save under the strategy it actually belongs to. Set
- * equality, not string equality — the saved copy may be reordered or differently spaced, and
- * it is the same fifteen markets either way. A single market that happens to appear in the
- * table is NOT the portfolio: "ZEC" on its own is a choice, and moving it to Tokyo would take
- * away the list someone was using.
- */
-function _simIsTokyoList(v) {
-  const set = (x) => new Set(String(x ?? '').split(/[,\s]+/).map(s => s.trim()).filter(Boolean))
-  const mine = set(v), tok = set(tokyoMarkets().join(','))
-  return mine.size > 1 && mine.size === tok.size && [...mine].every(m => tok.has(m))
-}
-
-/**
- * The market list a strategy should open with.
- *
- * Its own, if it has one — including an empty one, which is a choice someone made and not an
- * absence. Otherwise the default. Tokyo is the exception and the reason this exists: its rule
- * IS a table of per-market windows, so a market outside that table cannot be run, and the
- * fifteen are what the strategy means rather than a preference about it.
- */
-function _simCoinFor(strategy) {
-  if (Object.hasOwn(_simCoinByStrat, strategy)) return _simCoinByStrat[strategy]
-  if (strategy === 'tokyo') return tokyoMarkets().join(', ')
-  return _simDefaultCoin
 }
 
 const SIM_IVS = ['1m', '5m', '15m', '1h', '4h', '8h', '1d']
 const SIM_IV_MS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 4 * 3600e3, '8h': 8 * 3600e3, '1d': 86400e3 }
 const SIM_COUNTS = [500, 1000, 2000, 5000]
-const SIM_QUICK = ['BTC', 'ETH', 'SOL', 'HYPE']
 
 // ── FORMATTING ────────────────────────────────────────────────────────────────
 
@@ -199,80 +152,176 @@ function _simSpanText(count = _simCount, iv = _simIv) {
 const _stratLabel = (k) => (BT_STRATEGIES.find(s => s[0] === k)?.[1] ?? k)
 const _stratShort = (k) => _stratLabel(k).replace(/\s*\((bot|original script|hourly windows)\)\s*$/i, '')
 
-// ── THE MARKET BOX ────────────────────────────────────────────────────────────
+// ── THE MARKET PICKER ─────────────────────────────────────────────────────────
+//
+// Chips for what is chosen, a search for what is not. Asked for: "add a searcher and remove
+// the need of adding the hip3 market like xyz: or oi: or para:". The prefix is the id the
+// exchange uses and it is still what gets fetched — but nobody types it or reads it: a result
+// shows the name, with the dex that listed it as a small tag, and the SAME name on two dexes
+// shows as two results, because they are two different markets.
+
+let _simMkt = null          // { at, list, by } — every perp the app knows, cached briefly
+let _simMktQ = ''           // what is in the search box
 
 /**
- * The line under the market box: what it is, and what can be done with it.
- *
- * Its own function because it has to be repainted on its own. The box commits on blur without
- * re-rendering the form (a rebuild mid-edit takes the keyboard away), so typing a new list
- * would otherwise leave "set as default" hidden until something unrelated caused a render —
- * an option you cannot see is not an option.
+ * Rebuilt on every search keystroke (`fresh`), cached for a moment otherwise. HIP-3 markets
+ * arrive seconds after the main dex; a longer cache meant a search made early could not find
+ * NVDA for twenty seconds, which reads as NVDA not existing.
  */
-function _simCoinCtlHtml() {
-  const btn = (fn, label, colour, title = '') =>
-    `<button type="button" onclick="${fn}"${title ? ` title="${esc(title)}"` : ''}
-      style="border:none;background:transparent;color:${colour};font-size:10.5px;font-weight:700;cursor:pointer;padding:0;white-space:nowrap">${label}</button>`
-  const differs = _simCoin !== _simDefaultCoin
-  return `<span style="font-size:10px;color:var(--muted)">${_T('comma separated', 'separados por comas')}</span>
-    <span style="flex:1"></span>
-    ${
-      // The list belongs to this STRATEGY, and one list is the default the others start from.
-      // Both are offered rather than assumed: the fifteen-market Tokyo list became everyone's
-      // by being loaded once, which is what "just like an option to chose those as the
-      // default" is asking not to happen.
-      _simCoin && differs
-        ? btn('window.__simSetDefaultCoins()', _T('set as default', 'fijar por defecto'), 'var(--accent)',
-              _T('Use this list for every strategy that has no list of its own',
-                 'Usar esta lista en cada estrategia sin lista propia')) : ''}
-    ${_simDefaultCoin && differs
-      ? btn('window.__simUseDefaultCoins()', _T('use default', 'usar por defecto'), 'var(--fg-3)', _simDefaultCoin) : ''}
-    ${_simParams.strategy === 'tokyo'
-      ? btn('window.__simLoadPortfolio()', _T('load all 15', 'cargar los 15'), 'var(--accent)') : ''}`
+function _simMarkets(fresh = false) {
+  if (fresh || !_simMkt || Date.now() - _simMkt.at > 3e3 || !_simMkt.list.length) {
+    let list = []
+    try { list = (ctx.markets() ?? []).filter(m => m && m.id) } catch {}
+    _simMkt = { at: Date.now(), list, by: Object.fromEntries(list.map(m => [m.id, m])) }
+  }
+  return _simMkt
 }
 
-/** Repaint just that line — see why in _simCoinCtlHtml. */
-function _simCoinCtlPaint() {
-  const el = document.getElementById('simCoinCtl')
-  if (el) el.innerHTML = _simCoinCtlHtml()
-  const q = document.getElementById('simQuick')
-  if (q) q.innerHTML = _simQuickHtml()
+/** A market's name as people know it: "SMSN", never "xyz:SMSN". */
+function _mktName(id) {
+  return _simMarkets().by[id]?.name ?? String(id ?? '').replace(/^.*:/, '')
+}
+/** The dex that listed it, or '' for Hyperliquid's own. */
+function _mktDex(id) {
+  const m = _simMarkets().by[id]
+  if (m) return m.dex ?? ''
+  return String(id ?? '').includes(':') ? String(id).split(':')[0] : ''
+}
+const _ocCoinLabel = (c) => _mktName(c)
+
+/**
+ * Markets matching a query, best first: an exact name, then names that start with it, then
+ * names or dexes that contain it — and within each, the busiest market first, because the one
+ * with the volume is almost always the one meant.
+ */
+function _simSearch(q, limit = 8) {
+  const s = String(q ?? '').trim().toLowerCase().replace(/^.*:/, '')
+  const { list } = _simMarkets()
+  if (!s) return []
+  const rank = (m) => {
+    const n = m.name.toLowerCase(), id = m.id.toLowerCase().replace(/^.*:/, '')
+    if (n === s || id === s) return 0
+    if (n.startsWith(s) || id.startsWith(s)) return 1
+    if (n.includes(s) || id.includes(s)) return 2
+    if ((m.dex ?? '').toLowerCase().includes(s)) return 3
+    return 9
+  }
+  return list.map(m => [rank(m), m]).filter(([r]) => r < 9)
+    .sort((a, b) => a[0] - b[0] || (b[1].vol ?? 0) - (a[1].vol ?? 0))
+    .slice(0, limit).map(([, m]) => m)
 }
 
-/** One-tap markets. Each toggles its market in the list rather than replacing the list. */
-function _simQuickHtml() {
+/** The busiest markets not already chosen, offered while the search box is empty. */
+function _simPopular(limit = 6) {
+  const have = new Set(_simCoinList())
+  return [..._simMarkets().list].sort((a, b) => (b.vol ?? 0) - (a.vol ?? 0))
+    .filter(m => !have.has(m.id)).slice(0, limit)
+}
+
+function _simDexTag(dex) {
+  return dex ? `<span class="sim-dex">${esc(dex)}</span>` : ''
+}
+
+function _simChipsHtml() {
   const list = _simCoinList()
-  return SIM_QUICK.map(c => {
-    const on = list.includes(_resolveMarketId(c))
-    return `<button type="button" class="sim-chip sim-chip-sm${on ? ' on' : ''}" onclick="window.__simQuickCoin('${c}')">${on ? '✓ ' : '+ '}${c}</button>`
-  }).join('')
+  if (!list.length) {
+    return `<div class="sim-mkt-empty">${_T('No markets chosen. Search below to add one or several.',
+      'Sin mercados. Busca abajo para añadir uno o varios.')}</div>`
+  }
+  return list.map(id => `<span class="sim-mchip notranslate" title="${esc(id)}">
+      ${esc(_mktName(id))}${_simDexTag(_mktDex(id))}
+      <button type="button" onclick="window.__simRemoveCoin('${esc(id)}')" aria-label="${_T('Remove', 'Quitar')} ${esc(_mktName(id))}">×</button>
+    </span>`).join('')
 }
 
-window.__simQuickCoin = function(c) {
-  window.__simStructural(() => {
-    const parts = String(_simCoin ?? '').split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
-    const id = _resolveMarketId(c)
-    const has = parts.some(p => _resolveMarketId(p) === id)
-    const next = has ? parts.filter(p => _resolveMarketId(p) !== id) : [...parts, c]
-    _simCoin = next.join(', ')
-    if (_simParams.strategy === 'tokyo') _simTokyoPrefill()
-  })
+function _simResultsHtml() {
+  const q = _simMktQ.trim()
+  const have = new Set(_simCoinList())
+  const known = _simMarkets().list.length > 0
+  if (!q) {
+    const pop = _simPopular()
+    if (!pop.length) return ''
+    return `<div class="sim-mkt-pop"><span class="sim-lbl-u">${_T('Popular', 'Populares')}</span>${
+      pop.map(m => `<button type="button" class="sim-chip sim-chip-sm notranslate" onclick="window.__simAddCoin('${esc(m.id)}')">+ ${esc(m.name)}${m.dex ? ` <span style="opacity:.6">${esc(m.dex)}</span>` : ''}</button>`).join('')}</div>`
+  }
+  const hits = _simSearch(q)
+  if (!hits.length) {
+    return `<div class="sim-mres"><div class="sim-mres-none">${known
+      ? _T(`No market called “${esc(q)}”. Press Enter to try it anyway.`, `Ningún mercado “${esc(q)}”. Enter para probarlo igual.`)
+      : _T('Markets are still loading — press Enter to add it as typed.', 'Cargando mercados — Enter para añadirlo tal cual.')}</div></div>`
+  }
+  return `<div class="sim-mres">${hits.map((m, i) => {
+    const on = have.has(m.id)
+    return `<button type="button" class="sim-mres-row${i === 0 ? ' first' : ''}${on ? ' on' : ''}" onmousedown="event.preventDefault()" onclick="window.__simAddCoin('${esc(m.id)}')">
+      <span class="sim-mres-i">${(() => { try { return ctx.icon(m.id) ?? '' } catch { return '' } })()}</span>
+      <span class="sim-mres-n notranslate">${esc(m.name)}${_simDexTag(m.dex)}</span>
+      <span class="sim-mres-p mono">${Number.isFinite(m.px) && m.px > 0 ? '$' + fmtPrice(m.px) : ''}</span>
+      <span class="sim-mres-a">${on ? '✓' : '+'}</span>
+    </button>`
+  }).join('')}</div>`
 }
 
-/** Make the list in the box the one every strategy without its own list starts from. */
-window.__simSetDefaultCoins = function() {
-  _simCollect()
-  _simDefaultCoin = _simCoin
+/** Repaint the chips and the search results without touching the box being typed in. */
+function _simMktPaint() {
+  const c = document.getElementById('simChips')
+  if (c) c.innerHTML = _simChipsHtml()
+  const r = document.getElementById('simMktRes')
+  if (r) r.innerHTML = _simResultsHtml()
+  const clr = document.getElementById('simClearCoins')
+  if (clr) clr.style.display = _simCoinList().length ? '' : 'none'
+}
+
+window.__simMktSearch = function(v) {
+  _simMktQ = String(v ?? '')
+  _simMarkets(true)
+  const r = document.getElementById('simMktRes')
+  if (r) r.innerHTML = _simResultsHtml()
+}
+
+window.__simMktKey = function(ev) {
+  if (ev.key === 'Escape') { ev.target.value = ''; window.__simMktSearch(''); return }
+  if (ev.key !== 'Enter') return
+  ev.preventDefault()
+  const q = _simMktQ.trim()
+  if (!q) return
+  const hit = _simSearch(q, 1)[0]
+  // Nothing matched: take it as typed and let the resolver and the exchange decide. A market
+  // listed this morning is not in a list loaded last night.
+  window.__simAddCoin(hit ? hit.id : _resolveMarketId(q))
+}
+
+/**
+ * Add a market — or take it away again if it is already chosen, which is what tapping a ticked
+ * result means. The search clears and keeps focus, so a basket is typed one name after another
+ * without reaching for the box each time.
+ */
+window.__simAddCoin = function(id) {
+  if (!id) return
+  const list = _simCoinList()
+  const next = list.includes(id) ? list.filter(c => c !== id) : [...list, id]
+  _simSetCoins(next)
+  _simMktQ = ''
+  const box = document.getElementById('simMktQ')
+  if (box) { box.value = ''; box.focus() }
+  _simMktPaint()
+}
+
+window.__simRemoveCoin = function(id) { _simSetCoins(_simCoinList().filter(c => c !== id)); _simMktPaint() }
+window.__simClearCoins = function() { _simSetCoins([]); _simMktPaint() }
+
+/**
+ * The one place the chosen list changes. Chips and results are repainted in place rather than
+ * the form rebuilt, so the search box keeps the keyboard; only Tokyo, whose windows depend on
+ * the first market, needs the form redrawn.
+ */
+function _simSetCoins(ids) {
+  _simCoin = ids.join(', ')
+  if (_simResult && !_simStale) window.__simTouch()
+  if (_simParams.strategy === 'tokyo') {
+    window.__simStructural(() => { _simCoin = ids.join(', '); _simTokyoPrefill() })
+    return
+  }
   _simSave()
-  _simRender()
-  _paperToast(_simCoin
-    ? _T('Default markets: ', 'Mercados por defecto: ') + _simCoin
-    : _T('Default markets cleared', 'Mercados por defecto borrados'))
-}
-
-/** Put this strategy back on the default list. */
-window.__simUseDefaultCoins = function() {
-  window.__simStructural(() => { _simCoin = _simDefaultCoin })
 }
 
 /** Read every box at once, so one run cannot use a mix of old and new values. */
@@ -299,15 +348,6 @@ function _simCollect() {
   _simParams = coerceParams(raw)
   const cnt = parseInt(document.getElementById('sim_count')?.value ?? '', 10)
   if (Number.isFinite(cnt)) _simCount = Math.max(50, Math.min(5000, cnt))
-  // Kept as typed: _simCoinList does the splitting and normalising, and uppercasing here
-  // would destroy a builder-dex prefix ("xyz:SPCX" is not "XYZ:SPCX").
-  //
-  // An EMPTY box is a value. This used to be `if (coin) _simCoin = coin`, which ignored the
-  // empty case — so clearing the field left the old list in state and the next render put it
-  // straight back, which reads as the box refusing to be cleared. Only a missing element
-  // (the field is not on screen) leaves state alone.
-  const el = document.getElementById('sim_coin')
-  if (el) _simCoin = String(el.value ?? '').trim()
   _simSave()
 }
 
@@ -392,13 +432,9 @@ window.__simStructural = function(fn) {
 }
 window.__simSetStrategy = function(v) {
   window.__simStructural(() => {
-    // Park the list under the strategy being left, then pick up the one belonging to the
-    // strategy being entered. Without this, Tokyo's fifteen markets follow you into every
-    // other strategy and never leave — which is what "the default list keeps appearing" was.
-    // _simCollect has already run, so _simCoin holds what is actually in the box.
-    _simCoinByStrat[_simParams.strategy] = _simCoin
+    // The markets stay: they are on screen as chips, and trying another strategy on the same
+    // markets is the most common thing this screen is for.
     _simParams.strategy = v
-    _simCoin = _simCoinFor(v)
     if (v !== 'tokyo') return
     // The rule is about the hour of the day, so a 4h or daily candle cannot express it:
     // one candle would span most of a window. Switch to hourly rather than run something
@@ -418,17 +454,6 @@ window.__simLoadPortfolio = function() {
   })
 }
 
-// The market box is free text, so this runs when it is committed rather than on each
-// keystroke -- prefilling mid-word would fight the typing.
-window.__simCoinChanged = function() {
-  const before = _simCoin
-  _simCollect()
-  // A new list may have just become worth making the default, or stopped differing from it.
-  // Only that line is repainted: rebuilding the form here would take the keyboard away.
-  _simCoinCtlPaint()
-  if (_simParams.strategy !== 'tokyo' || _simCoin === before) return
-  window.__simStructural(() => { _simTokyoPrefill() })
-}
 window.__simSetModel = function(v) { window.__simStructural(() => { _simParams.pnlModel = v }) }
 window.__simToggleModule = function() { window.__simStructural(() => {}) }
 window.__simSetTab = function(v) { _simTab = v; _simRender() }
@@ -500,15 +525,14 @@ async function _simLoad(coins) {
     try { raw = await fetchCandles(coin, _simIv, start) }
     catch (e) {
       // Hyperliquid answers 500 for a coin it does not have, which as an error message
-      // tells you nothing you can act on. A builder-dex market needs its prefix.
+      // tells you nothing you can act on.
       const msg = String(e?.message ?? e)
-      skipped.push(coin + (/500/.test(msg)
-        ? _T(' (no such market — a builder-dex market needs its prefix, e.g. xyz:SMSN)',
-             ' (no existe — un mercado de dex necesita su prefijo, p. ej. xyz:SMSN)')
+      skipped.push(_mktName(coin) + (/500/.test(msg)
+        ? _T(' (no such market on Hyperliquid)', ' (no existe en Hyperliquid)')
         : ' (' + msg.slice(0, 40) + ')'))
       return
     }
-    if (!Array.isArray(raw) || raw.length < 60) { skipped.push(coin + ' (not enough history)'); return }
+    if (!Array.isArray(raw) || raw.length < 60) { skipped.push(_mktName(coin) + ' (not enough history)'); return }
     // Kept, normalised exactly as the backtest sees them, so the replay can draw the run
     // over the same candles it was computed from. A trade's `i` indexes into THIS array;
     // re-normalising later or slicing differently would slide every marker.
@@ -536,7 +560,7 @@ function _simRunOn(bars, coins, params, skipped = null) {
   for (const coin of coins) {
     if (!bars[coin]) continue
     const par = _simParamsFor(coin, params)
-    if (!par) { skipped?.push(coin + ' (not in the portfolio table)'); continue }
+    if (!par) { skipped?.push(_mktName(coin) + ' (not in the portfolio table)'); continue }
     runs.push({ coin, result: runBacktest(bars[coin], par) })
   }
   if (!runs.length) return null
@@ -687,7 +711,6 @@ window.__simCmpPick = function(key) {
   const row = _simCmp?.rows.find(r => r.key === key && r.result)
   if (!row) return
   _simCollect()
-  _simCoinByStrat[_simParams.strategy] = _simCoin
   _simParams = { ..._simParams, strategy: key }
   _simCoin = _simCmp.coins.join(', ')
   _simResult = row.result
@@ -941,14 +964,22 @@ function _simStrategyCard() {
 }
 
 function _simDataCard() {
+  const n = _simCoinList().length
   return _simCard(1, _T('Markets & data', 'Mercados y datos'), `
-    <label class="sim-field">
-      <div class="sim-lbl"><span class="sim-lbl-t">${_T('Markets', 'Mercados')}</span></div>
-      <input id="sim_coin" class="sim-in" type="text" value="${esc(_simCoin)}" autocapitalize="characters" spellcheck="false"
-        placeholder="HYPE, BTC, xyz:NVDA" oninput="window.__simTouch()" onchange="window.__simCoinChanged()">
-      <div id="simCoinCtl" class="sim-ctl">${_simCoinCtlHtml()}</div>
-    </label>
-    <div id="simQuick" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${_simQuickHtml()}</div>
+    <div class="sim-lbl">
+      <span class="sim-lbl-t">${_T('Markets', 'Mercados')}</span>
+      <span style="flex:1"></span>
+      ${_simParams.strategy === 'tokyo' ? `<button type="button" class="sim-link" onclick="window.__simLoadPortfolio()">${_T('Load Tokyo’s 15', 'Cargar los 15 de Tokyo')}</button>` : ''}
+      <button type="button" id="simClearCoins" class="sim-link sim-link-m" style="${n ? '' : 'display:none'}" onclick="window.__simClearCoins()">${_T('Clear all', 'Quitar todos')}</button>
+    </div>
+    <div id="simChips" class="sim-chips">${_simChipsHtml()}</div>
+    <div class="sim-msearch">
+      <span class="sim-msearch-i">⌕</span>
+      <input id="simMktQ" class="sim-in" type="search" autocomplete="off" autocapitalize="characters" spellcheck="false"
+        value="${esc(_simMktQ)}" placeholder="${_T('Search any market — BTC, NVDA, GOLD…', 'Busca un mercado — BTC, NVDA, GOLD…')}"
+        oninput="window.__simMktSearch(this.value)" onkeydown="window.__simMktKey(event)">
+    </div>
+    <div id="simMktRes">${_simResultsHtml()}</div>
 
     <div class="sim-lbl" style="margin-top:14px"><span class="sim-lbl-t">${_T('Interval', 'Intervalo')}</span></div>
     <div class="sim-seg">${SIM_IVS.map(v => `<button type="button" class="${v === _simIv ? 'on' : ''}" onclick="window.__simSetIv('${v}')">${v}</button>`).join('')}</div>

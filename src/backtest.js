@@ -1644,6 +1644,24 @@ export function runPortfolio(runs, params = {}) {
     avgPerTrade: trades.length ? net / trades.length : 0,
     avgHeld: trades.length ? trades.reduce((a, t) => a + (t.heldFor ?? 0), 0) / trades.length : 0,
     byMarket,
+    dca: _dcaAcross(live.map(r => r.result.dca).filter(Boolean), split),
+  }
+}
+
+/**
+ * The DCA numbers across several markets. Counts add up; dollars are shared out the same way
+ * the trades were; the deepest a deal ever went is the deepest on any market.
+ */
+function _dcaAcross(ds, split) {
+  if (!ds.length) return undefined
+  const sum = (k) => ds.reduce((a, d) => a + (d[k] ?? 0), 0)
+  const max = (k) => Math.max(...ds.map(d => d[k] ?? 0))
+  const hist = ds[0].soHist.map((_, k) => ds.reduce((a, d) => a + (d.soHist[k] ?? 0), 0))
+  return {
+    deals: sum('deals'), realized: sum('realized') / split, fees: sum('fees') / split,
+    unrealized: sum('unrealized') / split, openCost: sum('openCost'), openSo: max('openSo'),
+    openAvg: null, maxSo: max('maxSo'), soCount: ds[0].soCount, maxDeployed: max('maxDeployed'),
+    soHist: hist, maxPossible: ds[0].maxPossible, lastDev: ds[0].lastDev, markets: ds.length,
   }
 }
 

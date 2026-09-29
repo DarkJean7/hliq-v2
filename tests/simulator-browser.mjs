@@ -61,9 +61,9 @@ const MARGIN = { accountValue: '1000.0', totalNtlPos: '0', totalRawUsd: '1000.0'
 const STATE  = { marginSummary: MARGIN, crossMarginSummary: MARGIN, crossMaintenanceMarginUsed: '0',
                  withdrawable: '1000.0', assetPositions: [], time: Date.now() }
 const HL = {
-  clearinghouseState: STATE, spotClearinghouseState: { balances: [] }, allMids: {},
+  clearinghouseState: STATE, spotClearinghouseState: { balances: [] }, allMids: { BTC: '83000', ETH: '4100', SOL: '210', HYPE: '38' },
   frontendOpenOrders: [], userFills: [], userFillsByTime: [], userFunding: [],
-  userNonFundingLedgerUpdates: [], subAccounts: [], extraAgents: [], allPerpMetas: [{ universe: [] }], outcomeMeta: {},
+  userNonFundingLedgerUpdates: [], subAccounts: [], extraAgents: [], allPerpMetas: [{ universe: [] }, { universe: [{ name: 'xyz:NVDA', szDecimals: 2, maxLeverage: 10 }] }], outcomeMeta: {},
   perpDexs: [null], perpCategories: [], portfolio: [],
   webData2: { clearinghouseState: STATE, openOrders: [], cumLedger: '1000' },
   meta: { universe: [] }, spotMeta: { tokens: [], universe: [] },
@@ -81,6 +81,11 @@ async function open(device, label) {
     if (b.type === 'candleSnapshot') {
       candleCalls++
       return route.fulfill({ status: 200, contentType: 'application/json', json: candles(b.req?.coin, b.req?.interval) })
+    }
+    // A builder dex answers allMids with its own prefixed keys -- the shape the picker has to
+    // hide. xyz:NVDA must be findable as "NVDA".
+    if (b.type === 'allMids' && b.dex) {
+      return route.fulfill({ status: 200, contentType: 'application/json', json: b.dex === 'xyz' ? { 'xyz:NVDA': '180' } : {} })
     }
     return route.fulfill({ status: 200, contentType: 'application/json', json: HL[b.type] ?? {} })
   })
@@ -142,8 +147,34 @@ console.log(NL + '-- desktop: the page --')
   await p.click('#deskSim .sim-chip:text-is("All")')
 
   console.log(NL + '-- desktop: run --')
-  await p.fill('#sim_coin', 'BTC, ETH')
-  await p.dispatchEvent('#sim_coin', 'change')
+  console.log(NL + '-- desktop: picking markets --')
+  // No default: a strategy nobody has picked markets for starts empty and says so.
+  ok('there is no default list', await p.evaluate(() =>
+    document.querySelectorAll('#deskSim .sim-mchip').length === 0 && /No markets chosen/.test(document.getElementById('simChips').textContent)))
+  await p.fill('#simMktQ', 'bt')
+  ok('typing searches', await waitFor(p, 'results', () => /BTC/.test(document.querySelector('#simMktRes .sim-mres-row')?.textContent ?? ''), null, 5000))
+  await p.press('#simMktQ', 'Enter')
+  ok('Enter adds the first result', await waitFor(p, 'a chip', () => /BTC/.test(document.getElementById('simChips').textContent), null, 3000))
+  ok('and the box clears and keeps focus', await p.evaluate(() => document.activeElement?.id === 'simMktQ' && document.getElementById('simMktQ').value === ''))
+  await p.fill('#simMktQ', 'eth')
+  await p.click('#simMktRes .sim-mres-row >> nth=0')
+  ok('a click adds too', await waitFor(p, 'two chips', () => document.querySelectorAll('#deskSim .sim-mchip').length === 2, null, 3000))
+  // HIP-3 mids land a few seconds after the main dex. A person retypes; so does this, the way
+  // a keystroke would, rather than sleeping a fixed time.
+  let nv = false
+  for (let k = 0; k < 40 && !nv; k++) {
+    await p.fill('#simMktQ', 'nvda')
+    nv = await p.evaluate(() => /NVDA/.test(document.querySelector('#simMktRes .sim-mres-row')?.textContent ?? ''))
+    if (!nv) await p.waitForTimeout(500)
+  }
+  ok('a HIP-3 market is found by its name alone', nv)
+  const nvText = await p.evaluate(() => document.querySelector('#simMktRes .sim-mres-row')?.textContent.replace(/\s+/g, ' ').trim() ?? '')
+  ok('shown without the prefix, the dex as a tag', /NVDA/.test(nvText) && !/xyz:NVDA/.test(nvText) && /xyz/.test(nvText), nvText)
+  await p.press('#simMktQ', 'Enter')
+  const ids = await p.evaluate(() => [...document.querySelectorAll('#deskSim .sim-mchip')].map(c => c.title))
+  ok('and it is stored as the market the exchange knows', ids.includes('xyz:NVDA'), ids)
+  await p.click('#deskSim .sim-mchip[title="xyz:NVDA"] button')
+  ok('× takes one away', await waitFor(p, 'removed', () => document.querySelectorAll('#deskSim .sim-mchip').length === 2, null, 3000))
   await p.click('#deskSim .sim-runbar .sim-btn-p')
   const ran = await waitFor(p, 'a result', () => !!document.querySelector('#deskSim .sim-kpis'))
   ok('a run puts a report on the page', ran)
@@ -224,6 +255,9 @@ console.log(NL + '-- phone: one column, nothing off the side --')
     .filter(e => e.getBoundingClientRect().right > window.innerWidth + 1 && !e.closest('[data-dragscroll]'))
     .map(e => e.className || e.tagName).slice(0, 5))
   ok('nothing runs off the right edge', wide.length === 0, wide)
+  await p.fill('#simMktQ', 'hype')
+  await p.press('#simMktQ', 'Enter')
+  await waitFor(p, 'a chip', () => document.querySelectorAll('#mobVContent .sim-mchip').length === 1, null, 3000)
   await p.click('#mobVContent .sim-runbar .sim-btn-p')
   ok('a run reports', await waitFor(p, 'a result', () => !!document.querySelector('#mobVContent .sim-kpis')))
   const kp = await p.evaluate(() => getComputedStyle(document.querySelector('#mobVContent .sim-kpis')).gridTemplateColumns.split(' ').length)

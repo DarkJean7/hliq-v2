@@ -98,7 +98,9 @@ t('it splits on commas and spaces', grab(cli, 'function _simCoinList').includes(
 t('duplicates collapse', grab(cli, 'function _simCoinList').includes('new Set'))
 t('a builder-dex prefix survives',
   grab(cli, 'function _resolveMarketId').includes("s.split(':')[0].toLowerCase()"))
-t('why it is not simply uppercased is recorded', cli.includes('"xyz:SPCX" is not "XYZ:SPCX"'))
+// Nobody types the prefix any more, but a market id still carries it and the fetch needs it.
+t('the prefix survives in the id even though it is never shown', grab(cli, 'function _mktName').includes(".replace(/^.*:/, '')") &&
+  grab(cli, 'function _resolveMarketId').includes("s.split(':')[0].toLowerCase()"))
 
 // Every entry goes through the resolver, because "SMSN" is not a market -- "xyz:SMSN" is
 // -- and it can be typed that way from the table, from Hyperliquid's own list, or by a
@@ -117,14 +119,18 @@ t('it resolves at use time rather than migrating what was saved',
   cli.includes('Resolved at USE time rather than migrated'))
 t('why fixing only the button was not enough is recorded',
   cli.includes('left all three still broken, which is what shipped'))
-t('the label says a list is allowed', cli.includes("_T('comma separated', 'separados por comas')"))
+// The box took a comma-separated list; the picker takes one market at a time, as many times
+// as you like, and the list is still stored and resolved the same way.
+t('several markets can be chosen', cli.includes('const next = list.includes(id) ? list.filter(c => c !== id) : [...list, id]'))
 t('the whole Tokyo table loads in one tap', cli.includes('window.__simLoadPortfolio'))
 // It loaded the table's KEYS, which are bare tickers -- so nine builder-dex markets were
 // sent to the API as names it does not have, and came back as 500s in the "left out" list.
 t('and loads the ids the exchange knows, not the bare keys',
   cli.includes('_simCoin = tokyoMarkets().join') && !cli.includes('_simCoin = Object.keys(BT_TOKYO_TABLE)'))
+// It used to tell you to type the dex prefix. Nobody types the prefix now -- the search
+// finds the market by name -- so a 500 simply means the market is not there.
 t('a 500 is translated into something actionable',
-  cli.includes('no such market — a builder-dex market needs its prefix'))
+  cli.includes("_T(' (no such market on Hyperliquid)'") && !cli.includes('needs its prefix'))
 
 console.log(nl + '-- each market runs its own Tokyo windows --')
 // Running ZEC's hours against XMR is not a portfolio, it is the same rule fifteen times.
@@ -139,7 +145,7 @@ t('and applied to that market only', paramsFor.includes('return { ...base, tokyo
 t('every run goes through it', runOn.includes('const par = _simParamsFor(coin, params)'))
 t('why is recorded', cli.includes('it is the same rule fifteen times'))
 t('a market with no row is skipped, not run on the wrong hours',
-  runOn.includes("skipped?.push(coin + ' (not in the portfolio table)')"))
+  runOn.includes("skipped?.push(_mktName(coin) + ' (not in the portfolio table)')"))
 t('the form warns before the run, too', cli.includes('each one uses ITS OWN row'))
 
 console.log(nl + '-- fetching many markets does not trip the limiter --')

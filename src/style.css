@@ -8294,3 +8294,28 @@ input.sim-sw:checked::before { transform: translateX(14px); }
 .sim-cmp-d { width: 50px; flex-shrink: 0; text-align: right; font-family: var(--font-mono); font-size: 10.5px; color: var(--red); }
 .sim-cmp svg { display: none; }
 @container simres (min-width: 560px) { .sim-cmp svg { display: block; } }
+
+/* The market picker: chips for what is chosen, a search for what is not. */
+.sim-link { border: none; background: transparent; color: var(--accent); font-size: 11px; font-weight: 700; cursor: pointer; padding: 0; white-space: nowrap; }
+.sim-link-m { color: var(--muted); }
+.sim-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.sim-mchip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 4px 4px 10px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, var(--panel-2)); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); font-size: 12px; font-weight: 800; color: var(--fg); }
+.sim-mchip button { width: 18px; height: 18px; border-radius: 50%; border: none; background: color-mix(in srgb, var(--fg) 10%, transparent); color: var(--fg-2); font-size: 13px; line-height: 1; cursor: pointer; padding: 0; }
+.sim-dex { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--fg) 9%, transparent); color: var(--muted); text-transform: lowercase; margin-left: 5px; }
+.sim-mchip .sim-dex { margin-left: 0; }
+.sim-mkt-empty { font-size: 11.5px; color: var(--muted); padding: 9px 11px; border: 1px dashed var(--border2); border-radius: 10px; width: 100%; }
+.sim-msearch { position: relative; margin-top: 9px; }
+.sim-msearch .sim-in { margin-top: 0; padding-left: 30px; font-family: inherit; font-weight: 600; }
+.sim-msearch-i { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 15px; pointer-events: none; }
+.sim-mres { margin-top: 6px; border: 1px solid var(--border2); border-radius: 11px; background: var(--bg); overflow: hidden; max-height: 300px; overflow-y: auto; }
+.sim-mres-row { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px; border: none; border-top: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; text-align: left; font: inherit; }
+.sim-mres-row:first-child { border-top: none; }
+.sim-mres-row:hover, .sim-mres-row.first { background: color-mix(in srgb, var(--fg) 5%, transparent); }
+.sim-mres-row.on .sim-mres-a { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.sim-mres-i { width: 22px; height: 22px; border-radius: 50%; overflow: hidden; flex-shrink: 0; background: var(--panel-2); display: inline-flex; }
+.sim-mres-i > * { width: 100%; height: 100%; }
+.sim-mres-n { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sim-mres-p { font-size: 11px; color: var(--fg-2); flex-shrink: 0; }
+.sim-mres-a { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border2); display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; flex-shrink: 0; color: var(--fg-2); }
+.sim-mres-none { padding: 10px 12px; font-size: 11.5px; color: var(--muted); }
+.sim-mkt-pop { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }

@@ -166,8 +166,10 @@ t('why is recorded', eng.includes("parseFloat is happy to say '07:00' is 7"))
 
 console.log(nl + '-- the market decides the windows --')
 t('choosing the strategy loads them', grab(cli, 'window.__simSetStrategy = function').includes('_simTokyoPrefill()'))
-t('so does changing the market', cli.includes('window.__simCoinChanged = function'))
-t('but only on a committed change, not every keystroke', cli.includes('onchange="window.__simCoinChanged()"'))
+// The market list changes by picking, not typing, so there is no keystroke to wait out:
+// every change of list re-reads the first market's windows.
+t('so does changing the market', grab(cli, 'function _simSetCoins').includes('_simTokyoPrefill()'))
+t('but only for tokyo', grab(cli, 'function _simSetCoins').includes("if (_simParams.strategy === 'tokyo')"))
 t('the prefill never runs on a plain render',
   grab(cli, 'function _simTokyoPrefill').includes('return false') &&
   cli.includes('would overwrite windows the user had just typed'))
