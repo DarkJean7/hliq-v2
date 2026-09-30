@@ -235,7 +235,7 @@ t('the snapshot carries a SETTLED total, with no unrealized in it to disagree ab
   srv.includes('settledPnl: realizedPnl + funding - fees'))
 t('the old netPnl field is kept so an older cached client is not broken',
   srv.includes('netPnl: realizedPnl + unrealBase + funding - fees'))
-const cc = grab(srv, 'async function computeCombined(addrs)')
+const cc = grab(srv, 'async function computeCombined(addrs')
 t('a PnL failure costs the wallet its PnL, not its equity contribution', cc.includes("console.warn('[pnl]'"))
 // A 429 used to abort the whole attempt, which is why ten wallets never completed. It now stops
 // further reads and KEEPS what was read; a wallet not read recently enough is reported missing,

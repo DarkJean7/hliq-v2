@@ -251,6 +251,7 @@ import { probeNavGeometry } from './navprobe.js'
 import { accountRoe, partRoe, positionRoe, fmtRoe, compareRoe } from './roe.js'
 import { ordersForCoin, byAccount, statusesFrom, classifyCancels, describeOrders,
          isAlreadyGone, sideOf as _ordSideOf, summarize as _cancelSummary } from './cancelbatch.js'
+import { seedValue } from './comboseed.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey, booksFrom, advanceBooks, settledBase, ROW_FRESH_MS } from './comboequity.js'
 import { cashSample, classifyCashMove, posFingerprint } from './perpcash.js'
 import { mtmBook, mtmDelta, mtmCarry, bookState, advanceBook } from './mtmbridge.js'
@@ -9186,6 +9187,21 @@ async function loadAllAccountsDashboard() {
 
   if (_allAcctLastResults.length) {
     _allAcctReaggregate()                 // instant paint from the last fetch
+    // The server's read of each wallet, now rather than on the first paint's timer: until a
+    // wallet's own row is fresh it is what the equity headline is built from (src/comboseed.js).
+    _fetchComboSeeds()
+    // And prices to carry it with. The price socket's first push measured six seconds after a
+    // reopen, queued behind every wallet's own streams, so it is asked once over REST (weight 2)
+    // ahead of the wallet reads. Merged, so a push that beats it is not overwritten.
+    if (!Object.keys(state.allMids ?? {}).length) {
+      infoClient.allMids().then(m => {
+        if (!m || !state.isAllAccounts) return
+        state.allMids = { ...m, ...state.allMids }
+        try { if (_isMobView()) _mobVRenderBalance(); else renderAccountSection() } catch {}
+      }).catch(e => _hl429(e))
+    }
+    // A spot token's price is looked up through the pair map, so it is loaded now as well.
+    try { ensureSpotMeta() } catch {}
     // Only re-fan the 8-wallet burst if the cached data is actually stale. Re-entering All
     // Accounts (e.g. Home → back) used to re-fetch everything every time — a ~40-call spike
     // that 429'd HL and starved the chart. The 5-min _allAcctTimer keeps it fresh after this.
@@ -9808,6 +9824,9 @@ async function _fetchCombinedSnap(force = false) {
     })
     if (r.ok) {
       const d = await r.json()
+      // Each wallet's value as the server read it, with what it held -- kept per wallet and
+      // newest wins, from any answer, complete or not (src/comboseed.js).
+      _comboSeedsTake(d?.seeds)
       // Only adopt a snapshot that covers EVERY wallet. A partial one would understate the
       // total and read as a real loss — the same trap the per-wallet merge already guards.
       if (d && d.wallets !== addrs.length) _combinedPartials++
@@ -14990,19 +15009,55 @@ function _comboPnlHeld(nRows) {
  * own portfolio value for that wallet carried forward by price alone (src/mtmbridge.js), so
  * two devices summing the same eight rows land within a dollar of each other.
  */
+// The server's read of each wallet, with its holdings: addr -> { value, at, book }.
+const _comboSeeds = {}
+
+/** Kept per wallet, newest wins, from any answer, complete or not; painted at once. */
+function _comboSeedsTake(seeds) {
+  let took = false
+  for (const [a, sd] of Object.entries(seeds ?? {})) {
+    if (!(Number(sd?.at) > Number(_comboSeeds[a]?.at ?? 0))) continue
+    _comboSeeds[a] = sd; took = true
+  }
+  // Painted now, not on whatever happens to render next -- on a reopen that was the rows
+  // landing, which is the wait this exists to remove.
+  if (took && state.isAllAccounts) {
+    setTimeout(() => { try { if (_isMobView()) _mobVRenderBalance(); else renderAccountSection() } catch {} }, 0)
+  }
+}
+
+/**
+ * The seeds alone, from the server's memory -- it answers without reading Hyperliquid, where
+ * /api/combined may read every wallet first. What gets the equity on screen as fast as Net PnL.
+ */
+function _fetchComboSeeds() {
+  const addrs = _comboExpectedAddrs()
+  if (!addrs.length) return
+  fetch('/api/combined/seeds', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ addrs }),
+  }).then(r => r.ok ? r.json() : null).then(d => _comboSeedsTake(d?.seeds)).catch(() => {})
+}
+
 function _comboRowsValue() {
   const hidden = _maHiddenLoad()
   const rows = (_allAcctLastResults ?? []).filter(r => r && !hidden.has(r.addr))
-  if (!rows.length || rows.some(r => r.error)) return null
   // Every saved wallet, not the ones that loaded: a sum missing one is a wrong total.
   const expected = _comboExpectedAddrs()
-  if (expected.length && rows.length !== expected.length) return null
-  // And none painted from last session's cache -- a figure from then is not a figure for now.
+  const addrs = expected.length ? expected : rows.map(r => r.addr)
+  if (!addrs.length) return null
   const now = Date.now()
-  if (rows.some(r => Number(r._cachedAt) > 0 && now - Number(r._cachedAt) >= ROW_FRESH_MS)) return null
+  const byAddr = new Map(rows.map(r => [String(r.addr).toLowerCase(), r]))
   let sum = 0
-  for (const r of rows) {
-    const v = parseFloat(r.accountValue)
+  for (const a of addrs) {
+    const lc = String(a).toLowerCase()
+    const r = byAddr.get(lc)
+    // The wallet's own row, when it has one for now -- not errored, and not painted from last
+    // session's cache (a figure from then is not a figure for now).
+    const fresh = r && !r.error && !(Number(r._cachedAt) > 0 && now - Number(r._cachedAt) >= ROW_FRESH_MS)
+    let v = fresh ? parseFloat(r.accountValue) : null
+    // Until then, the server's read of it carried to now by price -- what made the headline as
+    // quick to appear as Net PnL (src/comboseed.js). Neither: the total waits.
+    if (v == null) v = seedValue(_comboSeeds[lc], c => state.allMids?.[c], _spotMid, now)
     if (!Number.isFinite(v) || v <= 0) return null
     sum += v
   }
@@ -15033,9 +15088,11 @@ let _comboRowsSaidAt = 0
  * it, and two devices reading the same wallets land on the same figure. So the sum IS the
  * account; there is nothing to bridge.
  *
- * Published only when every saved, visible wallet has a fresh row -- a sum missing one is a
- * wrong total, and a row painted from last session's cache is not a value for now. Until then
- * the last published total is held for a short while, then a dash.
+ * Published only when every saved, visible wallet has a value for now -- a sum missing one is a
+ * wrong total, and a row painted from last session's cache is not a value for now. A wallet
+ * whose own row is not fresh yet counts at the server's read of it carried by price
+ * (src/comboseed.js), which is what puts this on screen as fast as Net PnL. Until every wallet
+ * has one or the other, the last published total is held for a short while, then a dash.
  */
 let _comboRowsLast = null   // { val, at }
 const COMBO_ROWS_HOLD_MS = 120_000

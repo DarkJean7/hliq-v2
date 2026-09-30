@@ -9,7 +9,7 @@ const srv = fs.readFileSync('server.js', 'utf8').replace(/\r\n/g, '\n')
 const grab = (src, sig) => {
   const start = src.indexOf(sig)
   if (start < 0) throw new Error(`not found: ${sig}`)
-  let i = src.indexOf('{', start), depth = 0
+  let i = src.indexOf('{', start + sig.length), depth = 0   // after the signature: it may destructure
   for (; i < src.length; i++) {
     if (src[i] === '{') depth++
     else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(start, i + 1) }
@@ -127,7 +127,7 @@ t('the client throttles ATTEMPTS, not just adoptions',
   cli.includes('// Count the ATTEMPT, not just a successful adoption.'))
 t('and it still refuses a partial snapshot', cli.includes('if (d && d.wallets === addrs.length && d.accountValue > 0)'))
 
-const comp = grab(srv, 'async function computeCombined(')
+const comp = grab(srv, 'async function computeCombined(addrs, { pnl = true, freshMs = WALLET_FRESH_MS } = {})')
 t('portfolio is read BEFORE the anchor (pairing rule)',
   comp.indexOf("type: 'portfolio'") < comp.indexOf("type: 'clearinghouseState'"))
 t('failed wallets are reported, not silently dropped', comp.includes('missing.push(addr)'))

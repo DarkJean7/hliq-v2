@@ -37,6 +37,13 @@ async function truth() {
 const browser = await chromium.launch()
 const ctx = await browser.newContext({ ...devices['iPhone 14 Pro'], viewport: { width: 430, height: 930 } })
 const p = await ctx.newPage()
+// --api=http://localhost:3002 sends /api/combined to a server.js run locally -- the dev server
+// has none, so without it the app runs as though the server had no snapshot.
+const API = arg('api', '')
+if (API) await p.route(/\/api\/combined(\/seeds)?$/, async (route) => {
+  const r = await fetch(API + new URL(route.request().url()).pathname, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: route.request().postData() })
+  await route.fulfill({ status: r.status, contentType: 'application/json', body: await r.text() })
+})
 const errs = []
 p.on('pageerror', e => errs.push(e.message))
 await p.goto(BASE, { waitUntil: 'domcontentloaded' })
@@ -103,6 +110,12 @@ console.log('\n── result ──')
 console.log(`first figure after ${first ?? 'never'}s; ${series.length} readings`)
 console.log(`steps >= $${STEP_USD} in one second: ${spikes.length}`)
 console.log(`vs Hyperliquid: ${checks.length} checks, worst gap $${diffs.length ? Math.max(...diffs).toFixed(2) : '—'}, mean $${diffs.length ? (diffs.reduce((a, b) => a + b, 0) / diffs.length).toFixed(2) : '—'}`)
+// Around each step, the readings either side: a flat line and then a jump is a figure that
+// stopped moving and caught up; a steady climb into it is the market.
+for (const sp of spikes) {
+  const around = series.filter(([at]) => Math.abs(at - sp.at) <= 12).map(([at, v]) => `${at}s:${v.toFixed(2)}`)
+  console.log(`around ${sp.at}s: ${around.join(' ')}`)
+}
 if (errs.length) console.log('page errors:', errs.slice(0, 5))
 await browser.close()
 process.exit(0)

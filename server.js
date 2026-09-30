@@ -20,6 +20,7 @@ import { homedir }                                            from 'node:os'
 import { randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual } from 'node:crypto'
 import { ethers }                                             from 'ethers'
 import { trackRecord, openLossOf, holdsStep, emptyHolds }     from './src/trackrecord.js'
+import { spotPxFrom, seedBook, SEED_MAX_MS }                            from './src/comboseed.js'
 import { isSticker }                                          from './src/stickers.js'
 import { isImageDataUrl, dataUrlBytes, CHAT_IMG_MAX_BYTES }   from './src/imgstore.js'
 
@@ -970,14 +971,72 @@ const WALLET_FRESH_MS = 50_000      // re-read a wallet after this
 const WALLET_MAX_MS   = 150_000     // a wallet read this recently still counts toward a snapshot
 const PNL_EVERY_MS    = 5 * 60_000
 
-async function computeCombined(addrs) {
+// Spot prices for the wallet books below, shared by every wallet read within a few seconds.
+let _seedSpotPx = null   // { at, px }
+async function seedSpotPx() {
+  if (_seedSpotPx && Date.now() - _seedSpotPx.at < 10_000) return _seedSpotPx.px
+  const px = spotPxFrom(await hlInfo({ type: 'spotMetaAndAssetCtxs' }))
+  _seedSpotPx = { at: Date.now(), px }
+  return px
+}
+
+/**
+ * Each wallet's value with what it held when read (src/comboseed.js). For every wallet the
+ * server has, complete set or not: a phone uses them one wallet at a time, and refuses one
+ * older than SEED_MAX_MS itself.
+ */
+function combinedSeeds(addrs) {
+  const now = Date.now(), seeds = {}
+  for (const addr of addrs) {
+    const w = _combinedWallet.get(addr)
+    if (w?.at && w.book && now - w.at <= SEED_MAX_MS) {
+      seeds[String(addr).toLowerCase()] = { value: w.accountValue, at: w.at, book: w.book }
+    }
+  }
+  return seeds
+}
+
+/**
+ * Keeping the seeds warm for the wallet sets people open.
+ *
+ * A phone reopened after hours found the server's copies as old as its own, so the server read
+ * all eight wallets before it could answer and the equity waited on that instead. The wallet sets
+ * asked for in the last SEED_KEEP_MS are re-read here, value only (the PnL accrual stays on
+ * demand), each wallet at most every SEED_EVERY_MS: about 24 weight per wallet (portfolio 20,
+ * clearinghouse 2, spot 2), so eight wallets are ~100 of the IP's 1200 weight a minute. It stops
+ * at the first 429 like every other read here, and never runs two at once.
+ */
+const SEED_KEEP_MS  = 12 * 3600_000
+const SEED_EVERY_MS = 110_000
+const _seedSets = new Map()   // key -> { addrs, askedAt }
+let _seedWarming = false
+const SEED_SETS_MAX = 8        // the endpoint is public; a stranger cannot make it warm the world
+function seedWatch(addrs) {
+  if (!addrs.length || addrs.length > 20) return
+  _seedSets.delete(addrs.join(','))
+  _seedSets.set(addrs.join(','), { addrs, askedAt: Date.now() })
+  while (_seedSets.size > SEED_SETS_MAX) _seedSets.delete(_seedSets.keys().next().value)   // oldest ask
+}
+async function seedWarm() {
+  if (_seedWarming) return
+  _seedWarming = true
+  try {
+    for (const [key, e] of _seedSets) {
+      if (Date.now() - e.askedAt > SEED_KEEP_MS) { _seedSets.delete(key); continue }
+      await computeCombined(e.addrs, { pnl: false, freshMs: SEED_EVERY_MS })
+    }
+  } catch (e) { console.warn('[seeds]', e.message) }
+  finally { _seedWarming = false }
+}
+
+async function computeCombined(addrs, { pnl = true, freshMs = WALLET_FRESH_MS } = {}) {
   let limited = false
   for (const addr of addrs) {
     if (limited) break
     const t0 = Date.now()
     const w = _combinedWallet.get(addr)
-    const needVal = !w || t0 - w.at >= WALLET_FRESH_MS
-    const needPnl = !w?.pnl || t0 - (w.pnlAt ?? 0) >= PNL_EVERY_MS
+    const needVal = !w || t0 - w.at >= freshMs
+    const needPnl = pnl && (!w?.pnl || t0 - (w.pnlAt ?? 0) >= PNL_EVERY_MS)
     if (!needVal && !needPnl) continue
     try {
       const next = { ...(w ?? {}) }
@@ -995,6 +1054,13 @@ async function computeCombined(addrs) {
           next.perpBase     = parseFloat(cs?.marginSummary?.accountValue ?? 0)
           next.unreal       = (cs?.assetPositions ?? [])
             .reduce((t, ap) => t + parseFloat(ap.position?.unrealizedPnl ?? 0), 0)
+          // What the wallet held at this read, and at what prices, so a phone can carry the
+          // value to now while its own read of the wallet is still on the way (src/comboseed.js).
+          // Read right after, like the anchor; null when it cannot be, never a book missing a part.
+          try {
+            const spot = await hlInfo({ type: 'spotClearinghouseState', user: addr })
+            next.book = seedBook(cs?.assetPositions, spot?.balances, await seedSpotPx())
+          } catch (e) { if (e.rateLimited) throw e; next.book = null }
         }
       }
       // A PnL failure must not lose the wallet its equity contribution, so it is caught
@@ -1025,6 +1091,7 @@ async function computeCombined(addrs) {
   // same split that had a phone reading -$25 against a desktop's -$168. Handing back the
   // pieces lets every surface build its figure the one way, from the one source.
   const perWallet = {}
+  const seeds = combinedSeeds(addrs)
   for (const addr of addrs) {
     const w = _combinedWallet.get(addr)
     // A wallet that is not here, or is too old to describe now, is reported, never dropped —
@@ -1067,7 +1134,7 @@ async function computeCombined(addrs) {
     // much as the Unrealized figure next to it, which is the only self-consistent answer.
     settledPnl: realizedPnl + funding - fees,
     netPnl: realizedPnl + unrealBase + funding - fees,   // retained for older clients
-    realizedPnl, fees, funding, unrealBase, pnlWallets, perWallet,
+    realizedPnl, fees, funding, unrealBase, pnlWallets, perWallet, seeds,
   }
 }
 
@@ -2767,6 +2834,18 @@ const server = createServer(async (req, res) => {
   // Public and read-only: it returns aggregate figures for addresses the caller already
   // knows, and every input is a public Hyperliquid address whose data anyone can query
   // directly. Cached per address-set so N devices polling cost one upstream refresh.
+  // ── POST /api/combined/seeds { addrs } → each wallet's last read, straight from memory ──
+  // Never reads Hyperliquid on the request: it is what the equity headline is built from in the
+  // first seconds after opening, so it has to answer at once. seedWarm() keeps it current.
+  if (method === 'POST' && path === '/api/combined/seeds') {
+    const b = await body(req)
+    const addrs = [...new Set((Array.isArray(b.addrs) ? b.addrs : [])
+      .filter(a => isAddr(a)).map(a => String(a).toLowerCase()))].sort()
+    if (!addrs.length || addrs.length > 50) return json(res, 400, { error: 'bad addresses' })
+    seedWatch(addrs)
+    return json(res, 200, { seeds: combinedSeeds(addrs) })
+  }
+
   if (method === 'POST' && path === '/api/combined') {
     const b = await body(req)
     const addrs = [...new Set((Array.isArray(b.addrs) ? b.addrs : [])
@@ -2775,6 +2854,7 @@ const server = createServer(async (req, res) => {
     if (addrs.length > 50) return json(res, 400, { error: 'too many addresses' })
 
     const key = addrs.join(',')
+    seedWatch(addrs)
     // The last complete snapshot, while it is worth offering. A client can only use one that
     // covers every wallet, so this is what it is served whenever the fresh answer does not.
     const bestComplete = () => {
@@ -3075,5 +3155,6 @@ server.listen(PORT, () => {
   // so a fresh install has a point immediately instead of an empty chart for an hour.
   setTimeout(() => volPoll(), 8000)
   setInterval(() => volPoll(), VOL_POLL_MS)
+  setInterval(() => seedWarm(), 30_000)
   console.log('')
 })
