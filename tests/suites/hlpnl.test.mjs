@@ -53,7 +53,7 @@ console.log(nl + '-- every wallet in All Accounts --')
     /const _cumLedger       = \(portfolioAcctVal != null && Number\.isFinite\(_hlPnlAtHist\)\)/.test(cli) &&
     /const _pnlHist         = allTimePort\?\.\[1\]\?\.pnlHistory \?\? \[\]/.test(cli))
   t('no extra request is made for it', !/webData2.*per wallet|type: 'webData2'/.test(cli.slice(cli.indexOf('const _pnlHist'), cli.indexOf('const _pnlHist') + 2000)))
-  t('the row carries it', /return \{ \.\.\.entry, accountValue, _cumLedger,/.test(cli))
+  t('the row carries it', /return \{ \.\.\.entry, accountValue, (_spotBook, )?_cumLedger,/.test(cli))
   t('the row\'s own Net PnL is HL\'s', /const netPnl           = _cumLedger != null && Number\.isFinite\(accountValue\)\s*\n\s*\? accountValue - _cumLedger/.test(cli))
   t('a cached row keeps it', /Number\.isFinite\(cached\._cumLedger\) && Number\.isFinite\(accountValue\)/.test(cli))
   t('the combined total sums the wallets\' own figures', /const _hlNet = \(\(\) => \{/.test(cli) && /sum \+= av - cum/.test(cli))

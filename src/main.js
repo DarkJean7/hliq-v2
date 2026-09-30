@@ -9287,6 +9287,7 @@ async function _maReanchorRow(addr) {
     if (!row) return
     row._portVal  = snapVal
     row._perpBase = perpAt
+    row._spotBook = _spotBookOf(row.spotBalances)
     row._cash     = cashSample(perpAt, cs.assetPositions)
     // HIP-3 from the row as it stands: the WebSocket keeps those live, and cs is main-dex only.
     row._mtmBook  = mtmBook([...(cs.assetPositions ?? []), ...(row.positions ?? []).filter(ap => String((ap.position ?? ap)?.coin ?? '').includes(':'))])
@@ -9299,6 +9300,33 @@ async function _maReanchorRow(addr) {
     if (hc) _histSet(lc, { ...hc, portfolio: port, perpAtHist: perpAt, bookAtHist: row._mtmBook, ts: Date.now() })
     if (_applyAcctLiveCs(row, cs)) _allAcctLightPaint()
   } catch (e) { _hl429(e) }
+}
+
+/**
+ * Spot tokens, carried by price between snapshots the way positions are.
+ *
+ * A wallet's value is Hyperliquid's own portfolio figure carried forward by price. The carry
+ * covered perp positions only, so a wallet holding spot HYPE sat still while HYPE moved and then
+ * jumped by the whole move when its next snapshot landed -- the "$200 that fixes itself", which
+ * was measured at almost exactly the spot HYPE across the wallets. The book records each token's
+ * size and its price when the snapshot was read; the carry is size x (price now - price then).
+ * A token not yet priced takes its first price as the baseline rather than counting from zero.
+ */
+function _spotBookOf(bals) {
+  return (bals ?? [])
+    .filter(b => b && b.coin && b.coin !== 'USDC' && !_lbIsOutcome(b.coin) && parseFloat(b.total ?? 0) > 0)
+    .map(b => ({ coin: b.coin, size: parseFloat(b.total), px: _spotMid(b.coin) || null }))
+}
+function _spotCarry(book) {
+  if (!Array.isArray(book)) return 0
+  let d = 0
+  for (const s of book) {
+    const now = _spotMid(s.coin)
+    if (!(now > 0)) continue
+    if (!(s.px > 0)) { s.px = now; continue }
+    d += s.size * (now - s.px)
+  }
+  return d
 }
 
 function _applyAcctLiveCs(r, cs, hip3Override) {
@@ -9350,7 +9378,7 @@ function _applyAcctLiveCs(r, cs, hip3Override) {
   const _live   = [...mainPos, ...hip3]
   if (r._mtm) r._mtm = advanceBook(r._mtm, _live)
   const _mtm    = r._mtm ? mtmCarry(r._mtm, _live) : r._mtmBook ? mtmDelta(r._mtmBook, _live) : null
-  const cand    = _mtm != null ? _base + _mtm : _base + (perpNow - _perpB)
+  const cand    = (_mtm != null ? _base + _mtm : _base + (perpNow - _perpB)) + _spotCarry(r._spotBook)
   // Glitched reading? Hold this account entirely for this update so the next good reading
   // still yields a correct delta from the same anchor.
   if (_acctEqFilter(r.addr, cand) !== cand) return false
@@ -11471,6 +11499,14 @@ initSimulator({
   // Three places know it, and which of them is filled depends on the view: the asset map
   // (paper, single account), the raw metas, or the market data the simulator loads itself.
   // Null only when none of them has it -- never a made-up 50.
+  // The desktop tab when its pane is visible, or the phone's Simulator tab when that is the
+  // one open. Anything else means a late repaint must not draw -- the phone's content area is
+  // shared, and drawing into it paints over whatever tab is there now.
+  isShowing: () => {
+    const d = document.getElementById('deskSim')
+    if (d && d.offsetParent !== null) return true
+    return _isMobView() && _mobVActiveTab === 'simulator'
+  },
   maxLeverage: (id) => state.assetMap?.[id]?.maxLeverage
     ?? (state.allMetas ?? []).flatMap(m => m.universe ?? []).find(u => u?.name === id)?.maxLeverage
     ?? _mktCtxMap[id]?.maxLeverage ?? null,
@@ -14982,7 +15018,37 @@ let _comboRowsSaidAt = 0
 // `srv` lets a caller that has ALREADY asked _combinedServerValue() pass the answer in:
 // that function advances the re-anchor state, and calling it twice in one paint would
 // advance it twice for a single reading.
+/**
+ * The All Accounts equity: every wallet's own value, summed. Nothing else.
+ *
+ * It used to be a server snapshot carried forward by the change in the rows, with a base taken
+ * at adoption, a re-anchor folding in "unexplained" moves, and a hold between snapshots. Each
+ * layer was added to fix a spike and each could drift from the others, and a new snapshot then
+ * snapped the drift back -- the spikes themselves. eqstep over 36 hours: `step 143.68
+ * acctBase=4519.96 snapVal=4678.98`, `step 166.24 ... snapAge=1s moved=0` -- rows barely moving,
+ * the headline jumping by the gap between two of its own layers.
+ *
+ * A row is Hyperliquid's portfolio value for that wallet, carried forward by price on what it
+ * holds -- perps and, now, spot tokens -- and re-read after a fill. Nothing but the market moves
+ * it, and two devices reading the same wallets land on the same figure. So the sum IS the
+ * account; there is nothing to bridge.
+ *
+ * Published only when every saved, visible wallet has a fresh row -- a sum missing one is a
+ * wrong total, and a row painted from last session's cache is not a value for now. Until then
+ * the last published total is held for a short while, then a dash.
+ */
+let _comboRowsLast = null   // { val, at }
+const COMBO_ROWS_HOLD_MS = 120_000
 function _comboDisplayEquity(srv) {
+  if (!state.isAllAccounts) return null
+  const rows = _comboRowsValue()
+  if (rows != null) { _comboRowsLast = { val: rows, at: Date.now() }; _comboSnapMissSince = 0; return _comboEqFilter(rows) }
+  if (_comboRowsLast && Date.now() - _comboRowsLast.at < COMBO_ROWS_HOLD_MS) return _comboEqFilter(_comboRowsLast.val)
+  return null
+}
+
+// The former chain, kept for reference by the tests that describe it; not on screen.
+function _comboDisplayEquityViaSnapshot(srv) {
   if (!state.isAllAccounts) return null
   const raw = (srv !== undefined ? srv : _combinedServerValue()) ?? _combinedHeldValue()
   if (raw != null) { _comboSnapMissSince = 0; return _comboEqFilter(raw) }
@@ -15129,7 +15195,7 @@ function _mobVRenderBalance() {
   if (state.isAllAccounts && val != null) {
     try {
       _comboEqWatch(val, {
-        src: _srvVal != null ? 'srv' : 'held',
+        src: 'rows',
         ...( _comboSrvParts ?? { snapVal: 0, perpBase: 0, livePerp: 0, rows: 0, wallets: 0, snapAt: 0, rowsArr: [] }),
         age: Date.now() - Number(_combinedSnap?.updatedAt ?? 0),
       })
@@ -33983,8 +34049,12 @@ async function _lbFetchResults(entries) {
     const _mtmState        = _sameSnap ? advanceBook(prevRow._mtm, _liveBook)
                            : _bookAtHist ? advanceBook(_bookAtHist, _liveBook) : null
     const _mtmNow          = _mtmState ? mtmCarry(_mtmState, _liveBook) : null
+    // Spot tokens carried by price as well (_spotBookOf). The same snapshot keeps its book, for
+    // the same reason the position state is kept: a new baseline would drop what it has carried.
+    const _spotBook        = _sameSnap && Array.isArray(prevRow?._spotBook) ? prevRow._spotBook
+                           : _spotBookOf(spotState?.balances)
     const accountValue     = portfolioAcctVal != null
-      ? portfolioAcctVal + (_mtmNow != null ? _mtmNow : (_perpAcctVal - _perpAtHist))
+      ? portfolioAcctVal + (_mtmNow != null ? _mtmNow : (_perpAcctVal - _perpAtHist)) + _spotCarry(_spotBook)
       : (Number.isFinite(_prevAcctVal) && _prevAcctVal > 0 ? _prevAcctVal : _perpAcctVal + _spotUSDCTotal)
     // Fast-tick baseline: the FIXED snapshot + its time-aligned perp anchor. The 12s value
     // tick recomputes _portVal + (perpNow − _perpBase) — identical formula to the single view.
@@ -34085,7 +34155,7 @@ async function _lbFetchResults(entries) {
     // headline silently fell back to the per-device sum — a DIFFERENT anchor, hundreds of
     // dollars away. Closing a position triggers exactly this rebuild, which is why the
     // equity stepped on a close and stayed there until every wallet had had a WS tick.
-    return { ...entry, accountValue, _cumLedger, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, _mtmBook: portfolioAcctVal != null ? (_bookAtHist ?? null) : null, _mtm: portfolioAcctVal != null ? (_mtmState ?? null) : null, _cash: cashSample(_perpAcctVal, positions), _orderMargin, _dexStates, _spotBals, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, track, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
+    return { ...entry, accountValue, _spotBook, _cumLedger, _marginBase, _portVal: _fastBase, _perpBase, _perpLive: _perpAcctVal, _mtmBook: portfolioAcctVal != null ? (_bookAtHist ?? null) : null, _mtm: portfolioAcctVal != null ? (_mtmState ?? null) : null, _cash: cashSample(_perpAcctVal, positions), _orderMargin, _dexStates, _spotBals, maintMargin, healthPct, healthCls, unrealizedPnl, realizedPnl, netPnl, totalFees, allTimeFunding, withdrawable, _spotFree, totalVolume, totalDeposited: 0, totalWithdrawn: 0, grossWin, grossLoss, winCount, totalWindows, track, positions: allPositions, openOrders: allOrders, outcomes, spotBalances, portfolio, fills: chartFills, funding: parseFunding(funding), error: null }
   }
 
   for (let i = 0; i < entries.length; i++) {

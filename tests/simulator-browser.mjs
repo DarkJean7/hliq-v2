@@ -349,6 +349,28 @@ console.log(NL + '-- phone: one column, nothing off the side --')
   ok('and the report fits the screen too', wide2.length === 0, wide2)
   await p.evaluate(() => document.getElementById('simResTop')?.scrollIntoView())
   await shot(p, 'phone-run')
+
+  // Reported: "each time i do a change in the parameters it redirects to the top of the trade
+  // simulator tab". Measured on the screen, not on any one scroller: the card tapped must still
+  // be where it was.
+  await p.evaluate(() => document.querySelector('#mobVContent .sim-strat:nth-child(9)')?.scrollIntoView({ block: 'center' }))
+  await p.waitForTimeout(200)
+  const y0 = await p.evaluate(() => document.querySelector('#mobVContent .sim-strat:nth-child(9)')?.getBoundingClientRect().top)
+  await p.click('#mobVContent .sim-strat:nth-child(9)')
+  await waitFor(p, 'the new strategy', () => document.querySelector('#mobVContent .sim-strat:nth-child(9)')?.classList.contains('on'), null, 5000)
+  const y1 = await p.evaluate(() => document.querySelector('#mobVContent .sim-strat:nth-child(9)')?.getBoundingClientRect().top)
+  ok('changing a setting keeps the page where it was', y0 > 150 && Math.abs(y1 - y0) < 40, [y0, y1])
+
+  // Reported: "when i close the simulator tab it keeps showing the trade simulator instead of
+  // showing the new selected tab". A run still finishing after the tab is left must not paint
+  // itself over the tab now open.
+  await p.evaluate(() => { window.__simRun() })
+  await p.evaluate(() => window.mobVTab('positions'))
+  await p.waitForTimeout(2500)
+  ok('leaving mid-run shows the tab chosen, not the simulator', await p.evaluate(() =>
+    !document.querySelector('#mobVContent .sim-root')))
+  await p.evaluate(() => window.mobVTab('simulator'))
+  ok('and coming back shows the finished run', await waitFor(p, 'the result', () => !!document.querySelector('#mobVContent .sim-kpis'), null, 10000))
   ok('no errors on the page', errs.length === 0, errs)
   await browser.close()
 }

@@ -54,6 +54,8 @@ let ctx = {
   loadMarkets: () => Promise.resolve(),
   /** A market's max leverage on Hyperliquid, or null. It sets the maintenance margin. */
   maxLeverage: () => null,
+  /** Is the simulator the screen being shown? A repaint for one that is not is dropped. */
+  isShowing: () => true,
 }
 export function initSimulator(overrides = {}) { ctx = { ...ctx, ...overrides } }
 
@@ -2447,8 +2449,22 @@ function _simResultHtml() {
 // ── RENDER ────────────────────────────────────────────────────────────────────
 
 function _simRender(el) {
+  // Reported: "when i close the simulator tab it keeps showing the trade simulator instead of
+  // the new selected tab". Without a host given, this drew into ctx.viewHost -- which on a
+  // phone is the shared content area, whatever tab is in it. A repaint that landed after the
+  // tab was left (a run finishing, a replay frame, a sweep) painted the simulator over the tab
+  // just opened. A repaint for a screen that is not showing is dropped instead.
+  if (!el && !ctx.isShowing()) { _simRepStop(); return }
   const host = el ?? ctx.viewHost('deskSim')
   if (!host) return
+  // Reported: "each time i do a change in the parameters it redirects to the top". Every
+  // structural change rebuilds the page, and on a phone the element that scrolls is the
+  // content area or the page itself, not the settings column -- so its position went with the
+  // old markup. Whatever is scrolled, from the host up, is put back where it was.
+  const _scrolled = []
+  for (let n = host; n; n = n.parentElement) if (n.scrollTop > 0) _scrolled.push([n, n.scrollTop])
+  const _se = document.scrollingElement
+  if (_se && _se.scrollTop > 0 && !_scrolled.some(([n]) => n === _se)) _scrolled.push([_se, _se.scrollTop])
   // The form's own scroll survives a rebuild: on a wide screen the settings scroll inside
   // their column, and every structural change rebuilds it.
   const cfgScroll = host.querySelector('.sim-config')?.scrollTop ?? 0
@@ -2482,6 +2498,7 @@ function _simRender(el) {
   </div>`
   const cfg = host.querySelector('.sim-config')
   if (cfg && cfgScroll) cfg.scrollTop = cfgScroll
+  for (const [n, top] of _scrolled) n.scrollTop = top
 }
 
 export { _simRender as renderSimulator }

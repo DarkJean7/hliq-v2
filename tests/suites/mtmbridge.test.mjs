@@ -158,7 +158,9 @@ console.log(nl + '-- wired in --')
   t('every caller hands over the live positions', (rnd.match(/liveAccountValue\([^)]*perpState\?\.assetPositions\)/g) ?? []).length === 3)
   t('synthetic portfolios never carry a stale book — nor a stale state',
     (main.match(/_perpAnchor = parseFloat\([^)]*\); delete state\.portfolio\._mtmBook; delete state\.portfolio\._mtm/g) ?? []).length === 3)
-  t('a combined row is carried the same way', /const cand\s+= _mtm != null \? _base \+ _mtm : _base \+ \(perpNow - _perpB\)/.test(main))
+  // Spot tokens are carried by price too now (_spotCarry): a wallet holding spot HYPE jumped by
+  // HYPE's whole move when its next snapshot landed.
+  t('a combined row is carried the same way, spot included', /const cand\s+= \(_mtm != null \? _base \+ _mtm : _base \+ \(perpNow - _perpB\)\) \+ _spotCarry\(r\._spotBook\)/.test(main))
   t('and its book is stored with its anchor', (main.match(/bookAtHist: _bookAtHist/g) ?? []).length >= 3)
   t('single-account spikes are recorded too', /src=single snapMoved=/.test(main))
 }
