@@ -20,6 +20,8 @@ import { homedir }                                            from 'node:os'
 import { randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual } from 'node:crypto'
 import { ethers }                                             from 'ethers'
 import { trackRecord, openLossOf, holdsStep, emptyHolds }     from './src/trackrecord.js'
+import { isSticker }                                          from './src/stickers.js'
+import { isImageDataUrl, dataUrlBytes, CHAT_IMG_MAX_BYTES }   from './src/imgstore.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const PORT       = 3002
@@ -1638,6 +1640,66 @@ function loadChat() { try { const a = JSON.parse(readFileSync(CHAT_FILE, 'utf8')
 function saveChat(a) { try { writeFileSync(CHAT_FILE, JSON.stringify(a)) } catch (e) { console.error('[chat] save failed:', e.message) } }
 const _chatClean = s => String(s ?? '').split('').filter(c => { const n = c.charCodeAt(0); return n >= 32 && n !== 127 }).join('').replace(/\s+/g, ' ').trim()
 
+// ── pictures in the chat ─────────────────────────────────────────────────────
+//
+// A message may carry ONE picture. The client re-draws every file through a canvas first
+// (src/imgstore.js) — which bounds the size and drops the EXIF a phone photo carries,
+// including its GPS tag — but this checks what ARRIVED rather than trusting that, because
+// the client is not the only thing that can post here.
+//
+// The bytes go to disk under their own id and the message keeps only that id; serve-prod.js
+// serves them at /chatimg/<id>, the way it already serves /pfp/. They are NOT put in
+// chat.json: that file is rewritten in full on every message, and a few hundred kilobytes
+// of base64 per row would turn each message into a multi-megabyte write.
+//
+// Anyone can post one. That was a deliberate choice and it is worth writing down: the
+// operator's Delete (POST /api/chat/remove, already here) is the moderation, and the caps
+// below are what stop the disk being the problem in the meantime.
+const CHAT_IMG_DIR = join(__dirname, 'data', 'chatimg')
+const _chatImgHits = new Map()
+/** Pictures are rarer than messages and cost far more, so they have their own, meaner limit. */
+function chatImgAllowed(ip) {
+  const now = Date.now(), win = 3600_000
+  const hits = (_chatImgHits.get(ip) ?? []).filter(t => now - t < win)
+  if (hits.length >= 12) { _chatImgHits.set(ip, hits); return false }   // 12 pictures/hour/IP
+  hits.push(now); _chatImgHits.set(ip, hits)
+  return true
+}
+/** Write one and answer with its id, or null — a picture that will not store is not a
+ *  reason to lose the message it came with. */
+function saveChatImg(dataUrl) {
+  let buf
+  try { buf = Buffer.from(String(dataUrl).split(',')[1] ?? '', 'base64') } catch { return null }
+  if (!buf?.length) return null
+  // Every one of these is a JPEG by the time it gets here: the client's canvas re-encode
+  // has no other output. Checking the magic bytes is what makes that true of what ARRIVED,
+  // so nothing but a JPEG is ever written into a directory the web server serves.
+  if (buf[0] !== 0xFF || buf[1] !== 0xD8 || buf[2] !== 0xFF) return null
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+  try {
+    mkdirSync(CHAT_IMG_DIR, { recursive: true })
+    writeFileSync(join(CHAT_IMG_DIR, id + '.jpg'), buf)
+    return id
+  } catch (e) { console.warn('[chat] image write failed', e.message); return null }
+}
+/**
+ * Throw away every picture no retained message points at. The message list is capped at 300,
+ * so without this the directory would keep every picture ever posted while the feed that
+ * shows them has long since scrolled past. Cheap: one readdir on the rare write that had a
+ * picture in it, not on every message.
+ */
+function sweepChatImgs(list) {
+  try {
+    if (!existsSync(CHAT_IMG_DIR)) return
+    const live = new Set((list ?? []).map(m => m.img).filter(Boolean))
+    for (const f of readdirSync(CHAT_IMG_DIR)) {
+      if (!f.endsWith('.jpg')) continue
+      if (live.has(f.slice(0, -4))) continue
+      try { unlinkSync(join(CHAT_IMG_DIR, f)) } catch {}
+    }
+  } catch (e) { console.warn('[chat] image sweep failed', e.message) }
+}
+
 // Deleted-message tombstones. The poll is incremental — a client asks for messages newer
 // than what it holds — so simply dropping a message from the file would leave it on every
 // screen that already had it until the next full reload. Recording the id with the time it
@@ -2394,20 +2456,44 @@ const server = createServer(async (req, res) => {
     const deleted = since ? loadChatTombs().filter(x => Number(x.ts) > since).map(x => x.id) : []
     return json(res, 200, { messages, deleted, now: Date.now() })
   }
-  // ── POST /api/chat { name, text, addr? } → append a global-chat message ──
+  // ── POST /api/chat { name, text, addr?, img?, sticker? } → append a message ──
   if (method === 'POST' && path === '/api/chat') {
     const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
     if (!chatAllowed(ip)) return json(res, 429, { error: 'slow down — too many messages' })
     const b    = await body(req)
     const text = _chatClean(b.text).slice(0, 280)
-    if (!text) return json(res, 400, { error: 'empty message' })
+    // A name we do not know is dropped rather than stored: the set in src/stickers.js is
+    // closed, and the client draws nothing for anything outside it, so a message carrying
+    // one would be a blank row forever.
+    const sticker = isSticker(b.sticker) ? b.sticker : null
+
+    let img = null
+    if (b.img != null && b.img !== '') {
+      // The client's canvas re-encode has exactly one output, so the chat takes exactly one
+      // format. Accepting a png here would mean writing bytes nothing re-drew into a
+      // directory the web server hands to every visitor, and the message would have been
+      // "could not read that image" for a file that was perfectly readable.
+      if (!isImageDataUrl(b.img) || !String(b.img).startsWith('data:image/jpeg;base64,'))
+        return json(res, 400, { error: 'expected a jpeg data url' })
+      if (dataUrlBytes(b.img) > CHAT_IMG_MAX_BYTES) return json(res, 413, { error: 'image too large' })
+      if (!chatImgAllowed(ip)) return json(res, 429, { error: 'too many images — try again later' })
+      img = saveChatImg(b.img)
+      if (!img) return json(res, 400, { error: 'could not read that image' })
+    }
+
+    // A picture or a sticker IS a message — "here is the chart" needs no caption.
+    if (!text && !img && !sticker) return json(res, 400, { error: 'empty message' })
+
     const name = _chatClean(b.name).slice(0, 24) || 'anon'
     const addr = isAddr(b.addr) ? String(b.addr).toLowerCase() : null
-    const msg  = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, addr, text, ts: Date.now() }
+    const msg  = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, addr, text, img, sticker, ts: Date.now() }
     let list = loadChat()
     list.push(msg)
     if (list.length > 300) list = list.slice(-300)
     saveChat(list)
+    // Only when one arrived: the messages this push dropped off the end may have carried
+    // pictures, and that is the moment their files stop being referenced.
+    if (img) sweepChatImgs(list)
     return json(res, 200, { ok: true, message: msg })
   }
 
@@ -2427,6 +2513,8 @@ const server = createServer(async (req, res) => {
     const keep = list.filter(m => m.id !== id)
     if (keep.length === list.length) return json(res, 200, { ok: true, removed: 0 })
     saveChat(keep)
+    // Deleting a message takes its picture off the disk too, not just off the screen.
+    sweepChatImgs(keep)
     const tombs = loadChatTombs()
     tombs.push({ id, ts: Date.now() })
     saveChatTombs(tombs)

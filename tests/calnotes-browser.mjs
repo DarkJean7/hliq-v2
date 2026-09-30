@@ -49,6 +49,22 @@ const HL = {
 }
 const blockHlSockets = async (c) => { try { await c.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {} }
 
+// A real 1x1 JPEG. The app re-draws every picked file through a canvas, so what matters is
+// that this DECODES — a made-up buffer would fail in the browser rather than in the app.
+const JPEG = Buffer.from(
+  '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a' +
+  'HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIy' +
+  'MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIA' +
+  'AhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQA' +
+  'AAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3' +
+  'ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWm' +
+  'p6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEA' +
+  'AwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSEx' +
+  'BhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElK' +
+  'U1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3' +
+  'uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iii' +
+  'gD//2Q==', 'base64')
+
 // Today's key, the way the calendar builds it (local time), and the header the note carries.
 const now = new Date()
 const DAY = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
@@ -113,7 +129,8 @@ console.log(NL + '-- mobile: write a note on a quiet day --')
   await waitFor(p, 'the editor', () => document.getElementById('calNoteSheet')?.style.display === 'flex')
   ok('the editor carries the date', (await p.textContent('#calNoteSheet')).includes(DATE_LABEL))
   await p.click('#calNoteSheet button[onclick*="__calNoteSave"]')
-  ok('an empty note is refused', /Write a title or some text/.test(await p.textContent('#calNoteStatus')))
+  // The wording gained ", or add an image" when pictures did: a picture alone is a note.
+  ok('an empty note is refused', /Write a title, some text, or add an image/.test(await p.textContent('#calNoteStatus')))
   await p.fill('#calNoteTitle', 'Stuck to the plan')
   await p.fill('#calNoteBody', 'Took the ADA short off at the level.\nNo revenge trades.')
   await p.click('#calNoteSheet button[onclick*="__calNoteSave"]')
@@ -184,6 +201,113 @@ console.log(NL + '-- desktop: the same notes, the same way --')
   const panel = await p.textContent('#calDetail')
   ok('pressing the day shows its notes, and the option to add another', /Notes[\s\S]*Desk note[\s\S]*\+ Add note/.test(panel), panel.slice(0, 200))
   if (SHOT) await p.screenshot({ path: SHOT + '/calnotes-desktop.png', fullPage: true })
+  await ctx.close()
+}
+
+console.log(NL + '-- the time it was written, and a picture pinned to it --')
+{
+  // Asked for: "i wrote a note today this morning at 10am and one at 7pm — I want them to
+  // display the timestamp like if they were a message", and pictures in the same breath.
+  //
+  // Two notes seeded an hour apart, because one note cannot show that two of them are told
+  // apart. Seeded rather than written, since the clock is what is under test.
+  const t10 = new Date(); t10.setHours(10, 4, 0, 0)
+  const t19 = new Date(); t19.setHours(19, 12, 0, 0)
+  const seeded = [
+    { id: 'aaa111', day: DAY, title: 'Morning', body: 'Plan for the open', imgs: [], created: t10.getTime(), updated: t10.getTime() },
+    { id: 'bbb222', day: DAY, title: 'Evening', body: 'How it went',      imgs: [], created: t19.getTime(), updated: t19.getTime() },
+  ]
+  const { ctx, p } = await open({ ...devices['iPhone 14 Pro'] }, seeded)
+  await waitFor(p, 'the mobile shell', () => !!window.mobVTab, null, 30000)
+  await p.evaluate(() => window.mobVTab('calendar'))
+  await waitFor(p, 'the calendar', () => !!document.querySelector('#mobCalRoot .cal-grid'))
+  await waitFor(p, 'the month cards', () => document.querySelectorAll('[data-cal-notes="mobCalRoot"] .cal-note-card').length === 2)
+
+  const times = await p.evaluate(() => [...document.querySelectorAll('[data-cal-notes="mobCalRoot"] .cal-note-time')].map(e => e.textContent.trim()))
+  ok('every note carries a time', times.length === 2 && times.every(x => /\d{1,2}:\d{2}/.test(x)), times)
+  ok('and the morning one is not the evening one', times[0] !== times[1], times)
+  ok('to the minute, not the hour', times.some(x => /:04/.test(x)) && times.some(x => /:12/.test(x)), times)
+  // The time belongs at the END of the header row, where a message puts it.
+  ok('shown after the title, not before it', await p.evaluate(() => {
+    const card = document.querySelector('[data-cal-notes="mobCalRoot"] .cal-note-card')
+    const title = card?.querySelector('.cal-note-title')?.getBoundingClientRect()
+    const time  = card?.querySelector('.cal-note-time')?.getBoundingClientRect()
+    return !!(title && time && time.left > title.left)
+  }))
+
+  // ── a picture ──
+  await p.click(`#mobCalRoot .cal-cell[data-key="${DAY}"]`)
+  await waitFor(p, 'the day panel', () => !!document.querySelector('#mobCalDetail .cal-note-add'))
+  const dayTimes = await p.evaluate(() => [...document.querySelectorAll('#mobCalDetail .cal-note-time')].map(e => e.textContent.trim()))
+  ok('the day panel shows them too', dayTimes.length === 2, dayTimes)
+  // The panel's own header already says which day it is.
+  ok('without repeating the date on every card', !(await p.evaluate(() =>
+    [...document.querySelectorAll('#mobCalDetail .cal-note-date')].some(e => e.textContent.includes(','))
+  )))
+
+  await p.click('#mobCalDetail .cal-note-add')
+  await waitFor(p, 'the editor', () => document.getElementById('calNoteSheet')?.style.display === 'flex')
+  ok('the editor offers a picture', await p.evaluate(() => !!document.getElementById('calNoteAddImg')))
+  await p.setInputFiles('#calNoteFile', { name: 'chart.jpg', mimeType: 'image/jpeg', buffer: JPEG })
+  const thumbed = await waitFor(p, 'the thumbnail', () => {
+    const t = document.querySelector('.cal-note-edit-img img')
+    return !!t && (t.getAttribute('src') || '').startsWith('data:image/jpeg')
+  }, null, 15000)
+  ok('a picked file becomes a thumbnail', thumbed)
+  // Re-drawn through a canvas, so whatever was picked is now one predictable JPEG — which
+  // is what drops the EXIF a phone photo arrives with. A PNG in would come out jpeg too.
+  ok('re-encoded as a jpeg before anything stores it', await p.evaluate(() =>
+    (document.querySelector('.cal-note-edit-img img')?.getAttribute('src') ?? '').startsWith('data:image/jpeg')))
+
+  // A picture alone is a note: "here is the chart" needs no title.
+  await p.click('#calNoteSheet button[onclick*="__calNoteSave"]')
+  await waitFor(p, 'the editor to close', () => document.getElementById('calNoteSheet')?.style.display === 'none')
+  // BY ID, not "the last card": notes are ordered by when they were written, and the two
+  // seeded above are timed 10:04 and 19:12 — a run before 10am writes this one FIRST.
+  const noteId = await p.evaluate(() =>
+    (JSON.parse(localStorage.getItem('hliq_cal_notes_v1') || '[]').find(n => (n.imgs ?? []).length) ?? {}).id ?? '')
+  ok('the new note was saved', /^[a-z0-9]{6,24}$/i.test(noteId), noteId)
+  const shown = await waitFor(p, 'the picture on the card', (id) =>
+    !!document.querySelector(`#mobCalDetail [data-note="${id}"] .cal-note-img[src]`), noteId, 15000)
+  ok('a picture alone is a note, and it shows on the card', shown)
+
+  // The bytes are in IndexedDB and the note holds only the id — so this is the assertion
+  // that the two halves really find each other again.
+  ok('the note stores an id, never the bytes', await p.evaluate(() => {
+    const list = JSON.parse(localStorage.getItem('hliq_cal_notes_v1') || '[]')
+    const withImg = list.filter(n => (n.imgs ?? []).length)
+    return withImg.length === 1 && /^[a-z0-9]{8,16}$/i.test(withImg[0].imgs[0])
+  }))
+  ok('and localStorage is not carrying a picture', await p.evaluate(() =>
+    !(localStorage.getItem('hliq_cal_notes_v1') || '').includes('data:image')))
+
+  await p.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(p, 'boot', () => !!window.loadDashboard)
+  await p.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, ADDR)
+  await waitFor(p, 'the account', () => document.getElementById('dashboard')?.classList.contains('active'))
+  await waitFor(p, 'the mobile shell', () => !!window.mobVTab, null, 30000)
+  await p.evaluate(() => window.mobVTab('calendar'))
+  await waitFor(p, 'the calendar', () => !!document.querySelector('#mobCalRoot .cal-grid'))
+  await p.evaluate((id) => document.querySelector(`[data-cal-notes="mobCalRoot"] [data-note="${id}"] .cal-note-head`)?.click(), noteId)
+  ok('and it is still there on the next load', await waitFor(p, 'the picture again', (id) =>
+    !!document.querySelector(`[data-cal-notes="mobCalRoot"] [data-note="${id}"] .cal-note-img[src^="data:image"]`), noteId, 15000))
+
+  // Deleting the note has to take the bytes with it, or the store grows forever.
+  const before = await p.evaluate(() => new Promise(res => {
+    const r = indexedDB.open('hliq_img', 1)
+    r.onsuccess = () => { const q = r.result.transaction('imgs').objectStore('imgs').getAllKeys(); q.onsuccess = () => res(q.result.length) }
+    r.onerror = () => res(-1)
+  }))
+  ok('the store holds it', before === 1, before)
+  await p.evaluate((id) => { window.__calNoteDelete(id, 'mobCalRoot'); window.__calNoteDelete(id, 'mobCalRoot') }, noteId)
+  const swept = await waitFor(p, 'the bytes to go too', () => new Promise(res => {
+    const r = indexedDB.open('hliq_img', 1)
+    r.onsuccess = () => { const q = r.result.transaction('imgs').objectStore('imgs').getAllKeys(); q.onsuccess = () => res(q.result.length === 0) }
+    r.onerror = () => res(false)
+  }), null, 15000)
+  ok('deleting the note takes the picture off the device too', swept)
+
+  if (SHOT) await p.screenshot({ path: SHOT + '/calnotes-images.png', fullPage: true })
   await ctx.close()
 }
 

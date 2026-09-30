@@ -192,6 +192,9 @@ import {
 } from './trading.js'
 import { createAlarm, ALARM_SOUNDS, DEFAULT_ALARM } from './alarm.js'
 import { PING as _SND_PING, setAudioSession as _setAudioSession } from './audiosession.js'
+import { STICKERS, isSticker, stickerChar, stickerLabel } from './stickers.js'
+import { downscaleFile as _downscaleImg, dataUrlBytes as _imgBytes,
+         CHAT_IMG_MAX_BYTES, CHAT_MAX_EDGE } from './imgstore.js'
 import { computeEcosystem, oiConcentration, computeDexes, computeSpot, computeProtocol , sparkPath, windowSeries, feeSeries, pulseSeries, computeEcosystemAll } from './ecosystem.js'
 import {
   getDiscoveredWallets,
@@ -12380,6 +12383,38 @@ function _mobVRenderAttribution(el) {
 // Poll-based global chatroom (server: GET/POST /api/chat). Full-screen overlay so it's
 // reachable everywhere; polls every 4s while open, stops on close.
 let _chatPollTimer = null, _chatLastTs = 0, _chatMsgs = []
+// The picture waiting to be sent with the next message, as a data URL. One at a time: a
+// feed of several pictures per row reads worse than several rows, and the server keeps one.
+let _chatPendingImg = null
+
+/**
+ * A message's picture. The bytes are on the server under an id (server.js writes them,
+ * serve-prod.js serves them at /chatimg/<id>) and the message carries only that id — so an
+ * optimistic row, which has no id yet, shows the data URL it is about to upload instead.
+ */
+function _chatImgHtml(m) {
+  const src = m.imgData ? m.imgData : (typeof m.img === 'string' && /^[a-z0-9]{8,24}$/.test(m.img) ? '/chatimg/' + m.img : '')
+  if (!src) return ''
+  return `<img class="chat-img" src="${esc(src)}" alt="" loading="lazy"
+    onclick="window.__imgView('${esc(src)}')">`
+}
+
+/**
+ * One picture, full screen. Shares the calendar note viewer's markup and CSS (.img-view) —
+ * the same job, and two of them would drift.
+ */
+window.__imgView = function(src) {
+  document.getElementById('imgView')?.remove()
+  const ov = document.createElement('div')
+  ov.id = 'imgView'
+  ov.className = 'img-view'
+  ov.innerHTML = `<img alt="" src="${esc(src)}"><div class="img-view-nav"></div><button class="img-view-x" aria-label="Close">&times;</button>`
+  const close = () => { ov.remove(); document.removeEventListener('keydown', onKey) }
+  const onKey = (e) => { if (e.key === 'Escape') close() }
+  ov.onclick = () => close()
+  document.addEventListener('keydown', onKey)
+  document.body.appendChild(ov)
+}
 const _CHAT_NAME_KEY = 'hliq_chat_name'
 function _chatName() {
   const saved = localStorage.getItem(_CHAT_NAME_KEY)
@@ -12411,12 +12446,18 @@ window.__openChat = function() {
       </div>
     </div>
     <div id="chatScroll" style="flex:1;min-height:0;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:11px"><div class="mob-v-empty">${_T('Loading…', 'Cargando…')}</div></div>
-    <div style="flex-shrink:0;border-top:1px solid var(--border);padding:10px 12px calc(10px + env(safe-area-inset-bottom));display:flex;gap:8px;align-items:center">
+    <div id="chatStickers" class="chat-stickers" hidden></div>
+    <div id="chatPending" class="chat-pending" hidden></div>
+    <div style="flex-shrink:0;border-top:1px solid var(--border);padding:10px 12px calc(10px + env(safe-area-inset-bottom));display:flex;gap:6px;align-items:center">
+      <button onclick="window.__chatStickers()" title="${_T('Stickers', 'Stickers')}" class="chat-icon-btn">☺</button>
+      <button onclick="document.getElementById('chatFile').click()" title="${_T('Add a picture', 'Añadir imagen')}" class="chat-icon-btn">🖼</button>
+      <input type="file" id="chatFile" accept="image/*" hidden onchange="window.__chatPick(this)">
       <input id="chatInput" maxlength="280" placeholder="${_T('Message', 'Mensaje')}…" enterkeyhint="send" autocomplete="off"
         onkeydown="if(event.key==='Enter'){event.preventDefault();window.__chatSend()}"
-        style="flex:1;background:var(--panel-1);border:1px solid var(--border);border-radius:10px;padding:11px 13px;font-size:16px;color:var(--fg);outline:none">
-      <button onclick="window.__chatSend()" style="flex-shrink:0;background:var(--accent);border:none;border-radius:10px;padding:11px 17px;color:#000;font-weight:800;font-size:14px;cursor:pointer">${_T('Send', 'Enviar')}</button>
+        style="flex:1;min-width:0;background:var(--panel-1);border:1px solid var(--border);border-radius:10px;padding:11px 13px;font-size:16px;color:var(--fg);outline:none">
+      <button onclick="window.__chatSend()" style="flex-shrink:0;background:var(--accent);border:none;border-radius:10px;padding:11px 15px;color:#000;font-weight:800;font-size:14px;cursor:pointer">${_T('Send', 'Enviar')}</button>
     </div>`
+  _chatPendingImg = null
   _chatLastTs = 0; _chatMsgs = []
   _chatPoll(true)
   if (_chatPollTimer) clearInterval(_chatPollTimer)
@@ -12486,25 +12527,88 @@ function _chatRender(forceBottom) {
           style="flex-shrink:0;padding:1px 7px;border-radius:6px;border:1px solid var(--red);background:transparent;color:var(--red);font-size:10px;font-weight:700;cursor:pointer;line-height:1.5">${
           _T('Delete', 'Eliminar')}</button>` : ''}
       </div>
-      <div class="notranslate" style="font-size:14px;color:var(--fg);word-break:break-word;line-height:1.35">${esc(m.text)}</div>
+      ${m.text ? `<div class="notranslate" style="font-size:14px;color:var(--fg);word-break:break-word;line-height:1.35">${esc(m.text)}</div>` : ''}
+      ${m.sticker && isSticker(m.sticker) ? `<div class="chat-sticker" title="${esc(stickerLabel(m.sticker))}" role="img" aria-label="${esc(stickerLabel(m.sticker))}">${stickerChar(m.sticker)}</div>` : ''}
+      ${_chatImgHtml(m)}
     </div>`).join('')
   if (forceBottom || nearBottom) el.scrollTop = el.scrollHeight
 }
 
-window.__chatSend = async function() {
-  const inp = document.getElementById('chatInput'); if (!inp) return
-  const text = inp.value.trim(); if (!text) return
-  inp.value = ''
+/**
+ * Send one message. A picture or a sticker IS a message — "here is the chart" needs no
+ * caption — so an empty box with something attached is not an empty message.
+ *
+ * `sticker` is sent on its own, straight from the picker: staging one behind a Send button
+ * is a step no chat app makes you take.
+ */
+window.__chatSend = async function(sticker = null) {
+  const inp  = document.getElementById('chatInput')
+  const text = sticker ? '' : (inp?.value.trim() ?? '')
+  const img  = sticker ? null : _chatPendingImg
+  if (!text && !img && !sticker) return
+  if (inp && !sticker) inp.value = ''
+  if (!sticker) _chatSetPending(null)
   let addr = null; try { if (isMainWalletConnected()) addr = getMainAddress() } catch {}
   const name = _chatName()
-  _chatMsgs = [..._chatMsgs, { id: 'tmp' + Date.now(), name, addr, text, ts: Date.now() }].slice(-200)
+  // Shown at once, with the picture it is about to upload rather than a gap: the row is
+  // replaced by the server's copy on the next poll, which carries the id instead.
+  _chatMsgs = [..._chatMsgs, { id: 'tmp' + Date.now(), name, addr, text, sticker, imgData: img, ts: Date.now() }].slice(-200)
   _chatRender(true)
   try {
-    const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, text, addr }) })
+    const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, text, addr, img, sticker }) })
     const j = await r.json()
     if (j.ok && j.message) _chatLastTs = Math.max(_chatLastTs, j.message.ts)
     else if (j.error) _paperToast('⚠ ' + j.error)
   } catch { _paperToast('⚠ ' + _T('Could not send', 'No se pudo enviar')) }
+}
+
+/** The strip above the composer showing what is attached, and the ✕ that takes it off. */
+function _chatSetPending(dataUrl) {
+  _chatPendingImg = dataUrl
+  const box = document.getElementById('chatPending')
+  if (!box) return
+  box.hidden = !dataUrl
+  box.innerHTML = dataUrl
+    ? `<img src="${esc(dataUrl)}" alt=""><button onclick="window.__chatDropImg()" aria-label="${_T('Remove', 'Quitar')}">&times;</button>
+       <span>${_T('Ready to send', 'Listo para enviar')}</span>`
+    : ''
+}
+
+/**
+ * A picked file, re-drawn before it goes anywhere: src/imgstore.js bounds the size and drops
+ * the EXIF — a phone photo carries a GPS tag, and this is a public chatroom.
+ */
+window.__chatPick = async function(input) {
+  const f = input?.files?.[0]
+  if (input) input.value = ''
+  if (!f) return
+  _paperToast(_T('Preparing image…', 'Preparando imagen…'))
+  const data = await _downscaleImg(f, { maxEdge: CHAT_MAX_EDGE })
+  if (!data) return _paperToast('⚠ ' + _T('That file is not a picture this browser can read', 'Ese archivo no es una imagen que este navegador pueda leer'))
+  if (_imgBytes(data) > CHAT_IMG_MAX_BYTES) return _paperToast('⚠ ' + _T('That picture is too large', 'Esa imagen es demasiado grande'))
+  _chatSetPending(data)
+  _chatStickerPanel(false)
+}
+
+window.__chatDropImg = function() { _chatSetPending(null) }
+
+/** Open or close the sticker grid. Tapping one sends it and closes the grid. */
+function _chatStickerPanel(open) {
+  const box = document.getElementById('chatStickers')
+  if (!box) return
+  if (!open) { box.hidden = true; return }
+  box.innerHTML = STICKERS.map(st =>
+    `<button type="button" title="${esc(st.label)}" aria-label="${esc(st.label)}"
+       onclick="window.__chatSticker('${esc(st.id)}')">${st.char}</button>`).join('')
+  box.hidden = false
+}
+window.__chatStickers = function() {
+  const box = document.getElementById('chatStickers')
+  _chatStickerPanel(!!box?.hidden)
+}
+window.__chatSticker = function(id) {
+  _chatStickerPanel(false)
+  if (isSticker(id)) window.__chatSend(id)
 }
 
 /**

@@ -164,6 +164,34 @@ createServer((req, res) => {
     return
   }
 
+  // ── Global-chat pictures ─────────────────────────────────────────────────────
+  // Written by POST /api/chat on the strategy server, which is where the size cap, the
+  // rate limit and the JPEG check live. This only SERVES them, the way /pfp/ above does.
+  //
+  // The id pattern is the whole path validation: it has no dot and no slash, so nothing
+  // here can be talked into reading outside the directory. nosniff on top of an explicit
+  // image/jpeg, because these are the one thing on this origin a stranger put there — a
+  // browser that sniffed one as HTML would be running it on our domain.
+  if (url.startsWith('/chatimg/')) {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const id = url.slice(9).replace(/\.jpg$/, '')
+    if (!/^[a-z0-9]{8,24}$/.test(id)) { res.writeHead(400).end(); return }
+    const imgPath = join(__dirname, 'data', 'chatimg', id + '.jpg')
+    if (!existsSync(imgPath)) { res.writeHead(404).end(); return }
+    const st = statSync(imgPath)
+    res.writeHead(200, {
+      'Content-Type': 'image/jpeg',
+      'Content-Length': st.size,
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "default-src 'none'; sandbox",
+      // The bytes never change under an id, so it can be cached hard. A deleted message's
+      // picture is gone from the feed either way.
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    })
+    createReadStream(imgPath).pipe(res)
+    return
+  }
+
   // ── Coin icon cache/proxy ────────────────────────────────────────────────────
   // Logos were fetched by every client directly from external CDNs (Hyperliquid /
   // CoinGecko / TradingView) on every render — flaky (403/404s), slow, and console-noisy.

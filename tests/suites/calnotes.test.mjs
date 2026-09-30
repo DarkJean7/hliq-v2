@@ -3,8 +3,9 @@
 import fs from 'fs'
 import {
   LS_KEY, isDayKey, dayLabel, cleanNote, loadNotes, saveNotes, upsertNote, removeNote,
-  notesForDay, notesForMonth, noteDays, newId, MAX_TITLE,
+  notesForDay, notesForMonth, noteDays, newId, MAX_TITLE, timeLabel, wasEdited,
 } from '../../src/calnotes.js'
+import { MAX_NOTE_IMGS } from '../../src/imgstore.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -63,6 +64,57 @@ console.log(nl + '-- wired into the calendar --')
   const src = fs.readFileSync('src/calnotes.js', 'utf8')
   t('storage never involves an account: one fixed key, one write', /store\?\.setItem\(LS_KEY, /.test(src) && (src.match(/setItem\(/g) ?? []).length === 1 && !/from '\.\/main\.js'/.test(src))
   t('the option is a quiet link, not a button that shouts', /\.cal-note-add \{\s*background: none; border: none/.test(css))
+}
+
+console.log(nl + '-- when it was written --')
+{
+  // Asked for: "i wrote a note today this morning at 10am and one at 7pm — I want them to
+  // display the timestamp like if they were a message." Both carried the same date and
+  // nothing else, so the order on screen was the only clue which was which.
+  const morning = new Date(2026, 8, 22, 10, 4).getTime()
+  const evening = new Date(2026, 8, 22, 19, 12).getTime()
+  t('a time reads as a clock', /^\d{1,2}:\d{2}/.test(timeLabel(morning)), timeLabel(morning))
+  t('morning and evening are different', timeLabel(morning) !== timeLabel(evening))
+  t('and it is the minutes, not just the hour', /:04/.test(timeLabel(morning)), timeLabel(morning))
+  t('no timestamp is blank, not "Invalid Date"', timeLabel(0) === '' && timeLabel(null) === '' && timeLabel('x') === '')
+  // Every save writes `updated`, so equality with `created` cannot be the test for "edited".
+  t('a note saved once is not "edited"', !wasEdited({ created: morning, updated: morning + 400 }))
+  t('one rewritten hours later is', wasEdited({ created: morning, updated: evening }))
+  const src = fs.readFileSync('src/calnotes.js', 'utf8')
+  t('the time is shown at the end of the row, where a message puts it', src.includes('class="cal-note-time"'))
+  t('the day panel does not repeat the date its own header already carries',
+    /cardHtml\(n, rootId, false\)/.test(src) && /cardHtml\(n, rootId, true\)/.test(src))
+}
+
+console.log(nl + '-- and what was pinned to it --')
+{
+  const id = newId()
+  t('a picture alone is a note — "here is the chart" is a journal entry',
+    !!cleanNote({ id, day: '2026-09-22', title: '', body: '', imgs: ['aaaaaaaa'] }))
+  t('nothing at all still is not', cleanNote({ id, day: '2026-09-22', title: '', body: '', imgs: [] }) === null)
+  t('only ids are kept, never bytes',
+    JSON.stringify(cleanNote({ id, day: '2026-09-22', title: 'x', imgs: ['aaaaaaaa', 'data:image/jpeg;base64,AAAA'] }).imgs) === JSON.stringify(['aaaaaaaa']))
+  t('and they are capped',
+    cleanNote({ id, day: '2026-09-22', title: 'x', imgs: Array.from({ length: 40 }, (_, i) => 'img' + String(i).padStart(5, '0')) }).imgs.length === MAX_NOTE_IMGS)
+  t('a note written before pictures existed still loads', (() => {
+    const s2 = mem()
+    s2.setItem(LS_KEY, JSON.stringify([{ id, day: '2026-09-22', title: 'old', body: 'x', created: 1, updated: 1 }]))
+    const got = loadNotes(s2)
+    return got.length === 1 && Array.isArray(got[0].imgs) && got[0].imgs.length === 0
+  })())
+  const src = fs.readFileSync('src/calnotes.js', 'utf8')
+  // The markup is built synchronously and the bytes are in IndexedDB, which is not.
+  t('a thumbnail carries its id and gets its bytes afterwards',
+    src.includes('data-img="${esc(imgId)}"') && src.includes('export async function hydrateImages'))
+  t('a picture the store no longer has leaves no broken icon', src.includes('else el.remove()'))
+  t('deleting a note takes its pictures with it', /removeNote\(loadNotes\(s\), id\)\) \} catch \{\}[\s\S]{0,200}sweepImages\(s\)/.test(src))
+  t('and so does an edit that dropped one', /refreshNotes\(rootId\)\s*\n\s*\/\/[^\n]*\n\s*sweepImages\(s\)/.test(src))
+  // Saving the note first can leave it pointing at a picture the device refused to keep.
+  t('the bytes are stored before the note that points at them',
+    src.indexOf('const id = await putImage') < src.indexOf('saveNotes(s, upsertNote(list, note))'))
+  t('and a picture that would not store is said out loud', src.includes('Some images could not be stored on this device'))
+  t('the editor holds them in memory until Save, so cancelling leaves nothing behind',
+    src.includes('The pictures are held IN MEMORY while the'))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

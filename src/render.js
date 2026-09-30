@@ -1,7 +1,7 @@
 import { accountHealth, healthClass, approxHealth } from './health.js'
 import { mtmDelta, mtmCarry } from './mtmbridge.js'
 import { groupTrades, countTrades } from './tradegroup.js'
-import { monthNotesHtml, dayNotesHtml, noteDays, loadNotes } from './calnotes.js'
+import { monthNotesHtml, dayNotesHtml, noteDays, loadNotes, hydrateImages } from './calnotes.js'
 import { panelHtml as monthChartPanel, drawMonthChart, chartData as monthChartData,
          accumSeries as monthAccumSeries, maxDrawdown as curveDrawdown } from './monthchart.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
@@ -2680,6 +2680,9 @@ export function calDayClick(key, rootId) {
     ${tradesHtml}${txHtml}${rwHtml}
     ${!trades.length && !txEntries.length && !rwEntries.length ? '<div style="color:var(--muted);font-size:12px;padding:12px 20px">No activity on this day.</div>' : ''}
     ${dayNotesHtml(key, rootId)}`
+  // A note's pictures live in IndexedDB, so the markup above carries their ids and nothing
+  // else; this is what puts the bytes in. src/calnotes.js, hydrateImages.
+  hydrateImages(detail)
 }
 
 // `owner` is the account the ledger belongs to, so a send can be told from a receive. The
@@ -3003,6 +3006,7 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
       anchor.parentNode?.insertBefore(box, anchor.nextSibling)
     }
     box.innerHTML = monthNotesHtml(year, month, rootId)
+    hydrateImages(box)
   } catch {}
 }
 
