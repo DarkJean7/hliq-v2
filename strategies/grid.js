@@ -351,21 +351,64 @@ async function cancelOid(oid, why) {
 onPause(()  => log('PAUSE', 'Paused — resting orders left in place, bot frozen (no place/cancel/reconcile) until resumed'))
 onResume(() => log('RESUME', 'Resumed — managing grid again next cycle'))
 
-// ─── CLOSE ENTIRE POSITION AT UPPER BOUNDARY ─────────────────────────────────
+// ─── TAKE PROFIT AT THE FAR BOUNDARY ─────────────────────────────────────────
+/**
+ * Cash the whole position out when the mark reaches the profitable end of the range — a long
+ * grid at the top, a short grid at the bottom.
+ *
+ * IT MUST BE A PROFIT. That was always what this was for, and it was the one exit in this
+ * file that never checked. On 2026-10-01 it closed a 229.7 ZRO short at $1.6317 against an
+ * average entry of $1.0923 and realised -$123.89 — a "take profit" at a 50% loss.
+ *
+ * How a boundary ends up on the WRONG side of the average entry: the range is re-derived on
+ * every start, centred on the mark (see the auto-range block in run()), and a restart strips
+ * any stored bounds. That short was built around $1.09 and ZRO then ran to $1.86; a deploy
+ * restarted the bots at that price, the new range came out $1.64-$2.08, and the "bottom" of
+ * it was 50% ABOVE the average entry. Thirty hours later the mark drifted down through
+ * $1.637 and this fired.
+ *
+ * So the gate is the same one every resting exit already passes — exitProfitable, against
+ * the average entry — and an unknown average is a REFUSAL, not a free pass. exitProfitable
+ * answers true for a missing basis because a resting order has nothing to lose by being
+ * placed; closing the entire position on a basis we could not read is how the above
+ * happened, and "we did not look" is not "there is none".
+ *
+ * Returns false when the boundary was reached and closing would lose money. The caller then
+ * carries on managing the grid as it does on any other cycle: the position is underwater, so
+ * the thing to do with it is work it, which is what the grid is for. Nothing is cancelled on
+ * that path — the read happens BEFORE the cancels now, or every later cycle would tear the
+ * ladder down and build it again.
+ */
+let _boundaryHeldAt = 0
 async function closeAtBoundary(markPx, levelOrders) {
   const bound = IS_SHORT ? `Lower $${LOWER}` : `Upper $${UPPER}`
-  for (const e of levelOrders.values()) await cancelOid(e.oid, 'boundary hit')
-  log('CLOSE', `Cancelled ${levelOrders.size} open grid order(s)`)
 
   const acctState = await info.clearinghouseState(Q(QUERY_ADDR))
   const pos       = (acctState.assetPositions ?? []).find(p => p.position.coin === COIN)
   const szi       = parseFloat(pos?.position?.szi ?? 0)
+  const avgEntry  = parseFloat(pos?.position?.entryPx ?? 0)
   const openSz    = IS_SHORT ? Math.max(0, -szi) : Math.max(0, szi)
 
   if (openSz <= 0) {
+    for (const e of levelOrders.values()) await cancelOid(e.oid, 'boundary hit')
     log('CLOSE', `${bound} hit — no open ${IS_SHORT ? 'short' : 'long'} position. Grid stopped.`)
     process.exit(0)
   }
+
+  if (!(avgEntry > 0) || !exitProfitable(markPx, avgEntry)) {
+    // Once every 15 minutes: the boundary stays hit for as long as the mark is past it, and
+    // a line per cycle would bury everything else in the log.
+    if (Date.now() - _boundaryHeldAt > 900_000) {
+      _boundaryHeldAt = Date.now()
+      log('HOLD', `${bound} hit at $${markPx} — NOT closing: ${avgEntry > 0
+        ? `${openSz} ${COIN} against avg entry $${avgEntry} would realise a loss`
+        : `no average entry could be read, and closing on an unknown basis is not allowed`}. Grid carries on; exits stay held to the average.`)
+    }
+    return false
+  }
+
+  for (const e of levelOrders.values()) await cancelOid(e.oid, 'boundary hit')
+  log('CLOSE', `Cancelled ${levelOrders.size} open grid order(s)`)
 
   const { index, szDecimals } = await getAssetInfo(COIN)
   const closePx = roundPx(IS_SHORT ? markPx * 1.01 : markPx * 0.99, szDecimals)   // IOC 1% through mark, tick-valid
@@ -400,9 +443,11 @@ async function reconcile() {
 
   const { levelOrders, surplus, foreign } = await snapshotOrders()
 
-  // Take-profit boundary: long grids cash out at the TOP, short grids at the BOTTOM
-  if (!IS_SHORT && markPx >= UPPER) { await closeAtBoundary(markPx, levelOrders); return }
-  if (IS_SHORT  && markPx <= LOWER) { await closeAtBoundary(markPx, levelOrders); return }
+  // Take-profit boundary: long grids cash out at the TOP, short grids at the BOTTOM — but
+  // only when it really is a profit. closeAtBoundary returns false when it refused, and the
+  // grid then goes on managing this cycle exactly as it would have without the boundary.
+  if (!IS_SHORT && markPx >= UPPER) { if (await closeAtBoundary(markPx, levelOrders)) return }
+  if (IS_SHORT  && markPx <= LOWER) { if (await closeAtBoundary(markPx, levelOrders)) return }
 
   await detectFills(levelOrders)
 
