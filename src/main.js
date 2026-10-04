@@ -2667,7 +2667,9 @@ window.__setDepositMax = function() {
   if (el) { el.value = Math.floor(_usdcBalance * 100) / 100; window.__updateDepositPreview() }
 }
 
-window.__setWithdrawMax = function() {
+window.__setWithdrawMax = async function() {
+  // MAX is where a stale figure costs: re-read first (cancelled orders free margin).
+  await _refreshWithdrawAvailable()
   if (!_withdrawAvailable) return
   const el = _defiEl('withdrawAmount')
   if (el) { el.value = Math.floor(_withdrawAvailable * 100) / 100; window.__updateWithdrawPreview() }
@@ -2852,6 +2854,7 @@ window.__executeWithdraw = async function() {
     _defiEl('withdrawAmount').value = ''
     window.__updateWithdrawPreview()
     refreshDefiBalances()
+    _refreshWithdrawAvailable()
   } catch (e) {
     statusEl.innerHTML = `<span style="color:var(--red)">✗ ${esc(_signErrorText(e))}</span>`
     btn.disabled = false
@@ -24963,7 +24966,7 @@ function _mobDefiModal(type) {
   const withdrawForm = `
     <div style="display:flex;justify-content:space-between;align-items:center;background:var(--panel-1);border-radius:10px;padding:12px 14px;margin-bottom:16px">
       <span style="font-size:12px;color:var(--muted)">Available to Withdraw</span>
-      <span style="font-size:14px;font-weight:600">$${_withdrawAvailable.toFixed(2)}</span>
+      <span id="withdrawAvailModal" style="font-size:14px;font-weight:600">$${_withdrawAvailable.toFixed(2)}</span>
     </div>
     <div style="margin-bottom:14px">
       <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Amount (USDC)</div>
@@ -25019,7 +25022,31 @@ function _mobDefiModal(type) {
   } else {
     document.getElementById('wp-fee').textContent = '$1.00'
     window.__updateWithdrawPreview()
+    _refreshWithdrawAvailable()
   }
+}
+
+// The sheet opened on the figure from the last full account load, so cancelling orders to
+// free margin and then opening Withdraw still showed the old, smaller number until a reload
+// ($123 against $283 free). Read it fresh whenever it matters, from the wallet that will
+// sign — that is whose money leaves.
+async function _refreshWithdrawAvailable() {
+  let addr = null
+  try { addr = getMainAddress?.() } catch {}
+  if (!_isRealAddr(addr)) addr = state.addr
+  if (!_isRealAddr(addr)) return
+  const el = document.getElementById('withdrawAvailModal')
+  if (el) el.style.opacity = '0.5'
+  try {
+    const bal = await withdrawableUsdc(addr)
+    _withdrawAvailable = bal.total
+    const cur = document.getElementById('withdrawAvailModal')
+    if (cur) cur.textContent = '$' + bal.total.toFixed(2)
+    const desk = document.getElementById('withdrawAvail')   // desktop's copy of the same figure
+    if (desk) desk.textContent = `Available: ${bal.total.toFixed(2)} USDC`
+    window.__updateWithdrawPreview?.()
+  } catch { /* keep the figure we had; the withdrawal re-checks before signing */ }
+  finally { const cur = document.getElementById('withdrawAvailModal'); if (cur) cur.style.opacity = '' }
 }
 
 window._closeMobDefiModal = function() {

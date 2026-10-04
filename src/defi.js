@@ -52,18 +52,33 @@ async function getArbitrumSigner() {
  * against $231 of free spot USDC, while the app offered their SUM as "Max".
  */
 export async function withdrawableUsdc(addr) {
-  const info = new InfoClient({ transport: new HttpTransport() })
-  const [perp, spot] = await Promise.all([
+  const transport = new HttpTransport()
+  const info = new InfoClient({ transport })
+  const [perp, spot, mode] = await Promise.all([
     info.clearinghouseState({ user: addr }),
     info.spotClearinghouseState({ user: addr }).catch(() => null),
+    // null = we could not tell, which is NOT the same as "not unified": see withdraw().
+    transport.request('info', { type: 'userAbstraction', user: addr }).catch(() => null),
   ])
   const u = (spot?.balances ?? []).find(b => b.coin === 'USDC')
   const free = u ? Math.max(0, parseFloat(u.total ?? 0) - parseFloat(u.hold ?? 0)) : 0
-  return {
+  const unified = typeof mode === 'string' ? isUnifiedMode(mode) : null
+  const out = {
     perp: Math.max(0, parseFloat(perp?.withdrawable ?? 0) || 0),
     spot: Number.isFinite(free) ? free : 0,
+    unified,
   }
+  // On a unified account the USDC lives on the spot side and a withdrawal draws on it
+  // directly; spot `hold` already carries what positions and resting orders tie up. The perp
+  // `withdrawable` is not a second pot there, so adding it could only double-count.
+  out.total = unified ? out.spot : out.perp + out.spot
+  return out
 }
+
+/** Unified and portfolio-margin accounts keep one balance; Hyperliquid refuses spot↔perp
+ *  class transfers on them ("Action disabled when unified account is active"). */
+export const isUnifiedMode = m => m === 'unifiedAccount' || m === 'portfolioMargin'
+const _isUnifiedRejection = e => /unified account is active|disabled when unified|portfolio margin/i.test(String(e?.message ?? e))
 
 export async function getUsdcBalance() {
   try {
@@ -175,17 +190,27 @@ export async function withdraw({ amount, destination, onStep = () => {} }) {
   const client    = new ExchangeClient({ transport, wallet: signer })
 
   const bal = await withdrawableUsdc(addr).catch(() => null)
-  if (bal && amt > bal.perp + bal.spot + 1e-6) {
-    throw new Error(`Only ${(bal.perp + bal.spot).toFixed(2)} USDC can be withdrawn right now — the rest is margin behind open positions and resting orders.`)
+  if (bal && amt > bal.total + 1e-6) {
+    throw new Error(`Only ${bal.total.toFixed(2)} USDC can be withdrawn right now — the rest is margin behind open positions and resting orders.`)
   }
-  // The perp side is what a withdrawal takes from; top it up from spot if it is short.
-  if (bal && amt > bal.perp + 1e-6) {
+  // On a split account the perp side is what a withdrawal takes from; top it up from spot if
+  // it is short. On a UNIFIED account there is no such step: Hyperliquid rejects the transfer
+  // with "Action disabled when unified account is active" and the withdrawal draws on the one
+  // balance directly. That rejection is what users hit, with the money sitting right there.
+  // When the mode could not be read (null), the transfer is tried and that rejection is taken
+  // as the answer rather than as a failure.
+  if (bal && bal.unified !== true && amt > bal.perp + 1e-6) {
     const need = Math.min(Math.ceil((amt - bal.perp) * 1e6) / 1e6, bal.spot)
     onStep('Move USDC from spot to perps (1 of 2 signatures)...')
     const t = client.usdClassTransfer({ amount: need.toFixed(6), toPerp: true })
     if (getRawProvider()?.setDefaultChain) setTimeout(() => { try { wakeWallet() } catch {} }, 300)
-    await t
-    onStep('Confirm the withdrawal (2 of 2)...')
+    try {
+      await t
+      onStep('Confirm the withdrawal (2 of 2)...')
+    } catch (e) {
+      if (!_isUnifiedRejection(e)) throw e
+      onStep('Unified account — confirm the withdrawal in your wallet...')
+    }
   } else {
     onStep('Confirm withdrawal in wallet...')
   }

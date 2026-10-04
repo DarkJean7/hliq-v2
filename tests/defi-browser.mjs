@@ -60,6 +60,7 @@ try { await ctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
 
 // Everything the exchange is asked to do, in order.
 const actions = []
+let UNIFIED_REJECTS = false
 // The app approves a builder fee and sets a referrer when a wallet connects; those are not
 // what this test is about. Only the actions that move money count.
 const moves = () => actions.filter(a => ['withdraw3', 'usdClassTransfer'].includes(a.type))
@@ -69,6 +70,10 @@ await ctx.route(HL_HOST, async (route) => {
   try { b = JSON.parse(route.request().postData() || '{}') } catch {}
   if (/\/exchange/.test(url)) {
     actions.push(b?.action ?? {})
+    // A unified account: Hyperliquid's own words when asked for a spot↔perp transfer.
+    if (UNIFIED_REJECTS && b?.action?.type === 'usdClassTransfer') {
+      return route.fulfill({ status: 200, contentType: 'application/json', json: { status: 'err', response: 'Action disabled when unified account is active' } })
+    }
     return route.fulfill({ status: 200, contentType: 'application/json', json: { status: 'ok', response: { type: 'default' } } })
   }
   return route.fulfill({ status: 200, contentType: 'application/json', json: HL_INFO[b.type] ?? {} })
@@ -192,6 +197,48 @@ console.log(NL + '-- and then it withdraws, from wherever the money is --')
   ok('and it is signed on Arbitrum', wd.signatureChainId === '0xa4b1', wd.signatureChainId)
   ok('the signature prompt was a typed-data one, not a blind sign',
     await p.evaluate(() => window.__walletCalls.some(c => c.method === 'eth_signTypedData_v4')))
+}
+
+console.log(NL + '-- a unified account withdraws straight from its one balance --')
+{
+  // Reported: "Action disabled when unified account is active". On a unified account the perp
+  // side reads $0 withdrawable and the USDC sits on spot; the old code saw a shortfall, asked
+  // for a spot→perp transfer, and Hyperliquid refused it with the money right there.
+  UNIFIED_REJECTS = true
+  HL_INFO.userAbstraction = 'unifiedAccount'
+  actions.length = 0
+  await fill('withdrawAmount', '50')
+  await p.evaluate(() => { window.__executeWithdraw(); return true })
+  await waitFor(p, 'the withdrawal', () => /Withdrawal submitted|✗/i.test(document.getElementById('withdrawStatus')?.textContent ?? ''), null, 25000)
+  ok('it is submitted', /Withdrawal submitted/i.test(await status('withdrawStatus')), await status('withdrawStatus'))
+  ok('with no transfer asked for: one action, the withdrawal', moves().map(a => a.type).join(',') === 'withdraw3', moves().map(a => a.type))
+
+  // Mode unreadable (null is "we could not tell", not "not unified"): the transfer is tried,
+  // and the unified rejection is taken as the answer rather than as a failure.
+  delete HL_INFO.userAbstraction
+  actions.length = 0
+  await fill('withdrawAmount', '50')
+  await p.evaluate(() => { window.__executeWithdraw(); return true })
+  await waitFor(p, 'the withdrawal', () => /Withdrawal submitted|✗/i.test(document.getElementById('withdrawStatus')?.textContent ?? ''), null, 25000)
+  ok('mode unknown: the refused transfer does not stop the withdrawal', /Withdrawal submitted/i.test(await status('withdrawStatus')), await status('withdrawStatus'))
+  ok('transfer tried, then the withdrawal went', moves().map(a => a.type).join(',') === 'usdClassTransfer,withdraw3', moves().map(a => a.type))
+  UNIFIED_REJECTS = false
+}
+
+console.log(NL + '-- Available to Withdraw is read fresh, not from the last full load --')
+{
+  // Reported: orders cancelled to free margin, Withdraw still said $123 against $283 free.
+  HL_INFO.userAbstraction = 'unifiedAccount'
+  const before = SPOT_USDC.hold
+  SPOT_USDC.hold = '0'                       // the orders are gone; the exchange says so
+  await fill('withdrawAmount', '')
+  await p.evaluate(() => window.__setWithdrawMax())
+  const amt = await p.evaluate(() => parseFloat(document.getElementById('withdrawAmount').value))
+  ok('MAX re-reads and offers the whole balance', amt === 444.69, amt)
+  ok('and the figure on screen follows', /444\.69/.test(await p.evaluate(() => document.getElementById('withdrawAvail')?.textContent ?? '')),
+    await p.evaluate(() => document.getElementById('withdrawAvail')?.textContent))
+  SPOT_USDC.hold = before
+  delete HL_INFO.userAbstraction
 }
 
 console.log(NL + '-- a deposit is a plain USDC transfer to the bridge --')
