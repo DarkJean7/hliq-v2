@@ -13,7 +13,7 @@ import { chromium, devices } from 'playwright'
 import { Wallet } from 'ethers'
 
 const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
-const BASE = 'http://localhost:' + port + '/'
+const BASE = 'http://localhost:' + port + '/app'
 const ADDR = '0xaa7Ad5Fa4D99D9BF3397232Df7F4523853538159'
 const KEY  = Wallet.createRandom().privateKey
 const NL   = String.fromCharCode(10)

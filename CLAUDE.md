@@ -46,11 +46,15 @@ change introduced — the asset hash differs from a local build, so comparing ha
 nothing:
 
 ```bash
-h=$(curl -s https://insolvent.trade/ | grep -o "assets/index-[A-Za-z0-9_-]*\.js" | head -1)
+h=$(curl -s https://insolvent.trade/app | grep -o "assets/index-[A-Za-z0-9_-]*\.js" | head -1)
 curl -s "https://insolvent.trade/$h" | grep -c "some string you added"
 ```
 
 Grep for a **string literal**, not a function name — the minifier renames functions.
+
+The app is **`/app`**, not `/`. `/` is the landing page (`landing.html`, `src/landing.*`),
+which sends anyone who has used the app straight on to `/app`; the >insolvent logo links
+back with `/?home`. `index.html` is still the app's file. A browser test goes to `/app`.
 
 ---
 

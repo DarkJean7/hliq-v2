@@ -39,6 +39,8 @@
   </style>
   <title>Insolvent Trade — Hyperliquid Dashboard</title>
   <script>
+    // The landing page at / skips itself for anyone who has been in the app; see landing.html.
+    try { localStorage.setItem('hliq_app_entered', '1') } catch (e) {}
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'))
     }
@@ -100,9 +102,9 @@
 <!-- SIDEBAR -->
 <aside class="sidebar">
   <div class="brand">
-    <div class="insolvent-logo notranslate" aria-label="Insolvent Trade">
+    <a class="insolvent-logo notranslate" href="/?home" aria-label="Insolvent — home page">
       <span class="insolvent-logo__prompt">&gt;</span><span class="insolvent-logo__word">insolvent</span><span class="insolvent-logo__cursor" aria-hidden="true"></span>
-    </div>
+    </a>
     <span class="beta-badge">Early Beta</span>
   </div>
   <nav class="sidebar-nav" id="sidebarNav">
@@ -184,9 +186,9 @@
 <!-- TOPBAR -->
 <div class="topbar">
   <div class="topbar-brand">
-    <div class="insolvent-logo insolvent-logo--sm notranslate" aria-label="Insolvent Trade">
+    <a class="insolvent-logo insolvent-logo--sm notranslate" href="/?home" aria-label="Insolvent — home page">
       <span class="insolvent-logo__prompt">&gt;</span><span class="insolvent-logo__word">insolvent</span><span class="insolvent-logo__cursor" aria-hidden="true"></span>
-    </div>
+    </a>
     <span class="beta-badge">Early Beta</span>
   </div>
   <div class="topbar-status">
@@ -2349,9 +2351,14 @@
 <div id="mobileView" class="mob-view" style="display:none">
 
   <!-- Header -->
-  <div id="mobPredictHandle" class="mob-v-header" onclick="window.__openPredictions()"
-    style="padding:7px 0 3px;display:flex;justify-content:center;cursor:pointer">
-    <div style="width:38px;height:4px;border-radius:2px;background:rgba(255,255,255,0.18)"></div>
+  <div id="mobPredictHandle" class="mob-v-header mob-v-brandbar" onclick="window.__openPredictions()"
+    style="padding:7px 16px 3px;cursor:pointer">
+    <a class="mob-v-brand notranslate" href="/?home" aria-label="Insolvent — home page"
+      onclick="event.stopPropagation()" ontouchstart="event.stopPropagation()">
+      <span class="insolvent-logo insolvent-logo--sm"><span class="insolvent-logo__prompt">&gt;</span><span class="insolvent-logo__word">insolvent</span><span class="insolvent-logo__cursor" aria-hidden="true"></span></span>
+    </a>
+    <div class="mob-v-brandbar__pill"></div>
+    <div class="mob-v-brandbar__live"><span style="color:var(--pos)">●</span> LIVE</div>
   </div>
   <div class="mob-v-header">
     <div class="mob-v-identity" onclick="window._mobVOpenWalletSwitch()" style="cursor:pointer">

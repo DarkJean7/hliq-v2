@@ -9,7 +9,7 @@
 import { chromium } from 'playwright'
 
 const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5173'
-const URL  = `http://localhost:${port}/`
+const URL  = `http://localhost:${port}/app`
 
 const b  = await chromium.launch()
 const pg = await b.newPage()

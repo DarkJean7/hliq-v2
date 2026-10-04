@@ -19,7 +19,7 @@ import { chromium } from 'playwright'
 const PORT = (process.argv.find(a => a.startsWith('--port=')) ?? '').split('=')[1] || '5175'
 const browser = await chromium.launch()
 const page = await (await browser.newContext()).newPage()
-await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'domcontentloaded' })
+await page.goto(`http://localhost:${PORT}/app`, { waitUntil: 'domcontentloaded' })
 
 const rows = await page.evaluate(async () => {
   const m = await import('/src/fillsound.js')

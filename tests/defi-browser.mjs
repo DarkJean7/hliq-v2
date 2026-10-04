@@ -13,7 +13,7 @@
 import { chromium } from 'playwright'
 
 const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
-const BASE = 'http://localhost:' + port + '/'
+const BASE = 'http://localhost:' + port + '/app'
 const ADDR = '0xaa7Ad5Fa4D99D9BF3397232Df7F4523853538159'
 const DEST = '0x974e086b541afc90acaf9ac5d3326d666a601e6b'
 const NL   = String.fromCharCode(10)

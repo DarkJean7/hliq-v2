@@ -42,7 +42,7 @@ self.addEventListener('notificationclick', event => {
     )
     return
   }
-  event.waitUntil(clients.openWindow('/'))
+  event.waitUntil(clients.openWindow('/app'))
 })
 
 // Cache-first for Vite hashed assets (/assets/*) — safe to cache forever

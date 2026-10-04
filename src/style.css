@@ -169,6 +169,21 @@ html, body {
   user-select: none;
 }
 .insolvent-logo--sm { font-size: 13px; }
+/* The logo is the link back to the landing page (/?home) — on desktop and in the mobile bar */
+a.insolvent-logo { text-decoration: none; cursor: pointer; }
+a.insolvent-logo:hover .insolvent-logo__word { color: var(--fg-2); }
+/* Mobile brand bar: >insolvent on the left (no beta badge: the equity card right below has one), the Predictions pill dead centre, LIVE on
+   the right. The row IS #mobPredictHandle, so tapping anywhere but the logo still opens
+   Predictions and the safe-area padding-top still lands on the shell's first child. */
+#mobPredictHandle.mob-v-brandbar {
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+  min-height: 26px;
+}
+.mob-v-brand { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: var(--fg); justify-self: start; }
+.mob-v-brandbar__pill { width: 38px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.18); }
+.mob-v-brandbar__live {
+  justify-self: end; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--fg-3);
+}
 /* Early-beta badge — sits next to the logo / equity label */
 .beta-badge {
   display: inline-block;
@@ -5557,7 +5572,7 @@ body.layout-mobile .nav-tabs { display: none !important; }
   /* Status-bar clearance for the whole mobile shell, on its FIRST IN-FLOW CHILD rather than on
      .mob-view -- see the note there for why the scroll container must keep its padding at 0.
      #mobPredictHandle is always that first child: it is the Predictions drag pill, and it is a
-     .mob-v-header too, so everything below it moves down with it. It carries `padding:7px 0 3px`
+     .mob-v-header too, so everything below it moves down with it. It carries `padding:7px 16px 3px`
      inline, which is why this needs !important. 7px + the inset lands the pill exactly where it
      sat when iOS was still reserving the strip, and resolves to a bare 7px without a notch. */
   #mobPredictHandle { padding-top: calc(7px + env(safe-area-inset-top)) !important; }

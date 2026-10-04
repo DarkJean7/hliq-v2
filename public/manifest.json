@@ -2,7 +2,7 @@
   "name": "Insolvent Trade",
   "short_name": "Insolvent",
   "description": "Trade Hyperliquid from your phone",
-  "start_url": "/",
+  "start_url": "/app",
   "display": "standalone",
   "background_color": "#0a0a0f",
   "theme_color": "#0a0a0f",

@@ -21,7 +21,7 @@ import { chromium, devices } from 'playwright'
 import { Wallet } from 'ethers'
 
 const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
-const URL  = `http://localhost:${port}/`
+const URL  = `http://localhost:${port}/app`
 
 const A = '0xaa7Ad5Fa4D99D9BF3397232Df7F4523853538159'   // has a key
 const B = '0x84Ceb6127A07bf6c7234470F4ca8563DeEDc7c6F'   // has a different key

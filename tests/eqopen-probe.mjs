@@ -13,7 +13,7 @@ import { chromium, devices } from 'playwright'
 const arg = (k, d) => (process.argv.find(a => a.startsWith(`--${k}=`)) || '').split('=')[1] || d
 const WALLETS = arg('wallets', '').split(',').map(s => s.trim()).filter(Boolean)
 const REOPENS = Number(arg('reopens', '2'))
-const BASE = 'http://localhost:' + arg('port', '5175') + '/'
+const BASE = 'http://localhost:' + arg('port', '5175') + '/app'
 const LIMIT_MS = Number(arg('limit', '120')) * 1000
 if (!WALLETS.length) { console.error('pass --wallets=0x…,0x…'); process.exit(2) }
 

@@ -15,7 +15,7 @@ import { chromium, devices } from 'playwright'
 const arg = (k, d) => (process.argv.find(a => a.startsWith(`--${k}=`)) || '').split('=')[1] || d
 const WALLETS = arg('wallets', '').split(',').map(s => s.trim()).filter(Boolean)
 const MINUTES = Number(arg('minutes', '8'))
-const BASE = 'http://localhost:' + arg('port', '5175') + '/'
+const BASE = 'http://localhost:' + arg('port', '5175') + '/app'
 const STEP_USD = Number(arg('step', '25'))
 if (!WALLETS.length) { console.error('pass --wallets=0x…,0x…'); process.exit(2) }
 

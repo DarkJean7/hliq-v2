@@ -15,7 +15,7 @@ import { chromium, devices } from 'playwright'
 
 const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
 const BASE = (process.argv.find(a => a.startsWith('--base=')) || '').split('=')[1]
-  || ('http://localhost:' + port + '/')
+  || ('http://localhost:' + port + '/app')
 const ADDR = '0xaa7Ad5Fa4D99D9BF3397232Df7F4523853538159'
 const NL   = String.fromCharCode(10)
 const HL_HOST = /^https?:\/\/[a-z0-9.-]*hyperliquid[a-z0-9.-]*\.xyz\//i

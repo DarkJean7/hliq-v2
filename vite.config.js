@@ -300,9 +300,28 @@ function strategyPlugin() {
   }
 }
 
+// ─── LANDING ROUTES ───────────────────────────────────────────────────────────
+// / is the landing page (landing.html), the app is /app (index.html). The app keeps the
+// index.html filename so nothing that reads it — every suite, the safe-area test, the
+// deploy — had to learn a new path. /app needs no rule here: it is not a file, so vite's
+// SPA fallback already answers it with index.html, exactly as serve-prod.js does in prod.
+// Dev and preview both get this, so a browser test hits the same routes users do.
+function landingRoutes() {
+  const rewrite = (req, _res, next) => {
+    const [path, qs] = (req.url ?? '').split('?')
+    if (path === '/') req.url = '/landing.html' + (qs ? '?' + qs : '')
+    next()
+  }
+  return {
+    name: 'insolvent-landing-routes',
+    configureServer(server)        { server.middlewares.use(rewrite) },
+    configurePreviewServer(server) { server.middlewares.use(rewrite) },
+  }
+}
+
 // ─── VITE CONFIG ──────────────────────────────────────────────────────────────
 export default defineConfig({
-  plugins: [strategyPlugin()],
+  plugins: [landingRoutes(), strategyPlugin()],
   define: {
     __HLIQ_BUILD__: JSON.stringify(Date.now().toString(36)),
   },
@@ -318,8 +337,18 @@ export default defineConfig({
   build: {
     target: 'esnext',
     rollupOptions: {
+      input: {
+        // Keyed `index` so the app's chunk stays assets/index-*.js, which is what the deploy
+        // check in CLAUDE.md greps for.
+        index:   join(__dirname, 'index.html'),     // the app, served at /app
+        landing: join(__dirname, 'landing.html'),   // the front door, served at /
+      },
       output: {
         manualChunks(id) {
+          // Both pages include vite's modulepreload polyfill. Left to rollup it lands in a
+          // WalletConnect chunk, and the landing page then downloads WalletConnect and
+          // chart.js to show a static page. Its own chunk is under 1 KB with no imports.
+          if (id.includes('modulepreload-polyfill')) return 'preload-polyfill'
           if (id.includes('@walletconnect') || id.includes('@web3modal') || id.includes('w3m')) {
             return 'walletconnect'
           }

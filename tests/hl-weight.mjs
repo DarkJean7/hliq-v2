@@ -66,7 +66,7 @@ await ctx.route(/^https?:\/\/[a-z0-9.-]*hyperliquid[a-z0-9.-]*\.xyz\//i, (route)
   return route.fulfill({ status: 200, contentType: 'application/json', json: HL[t] ?? {} })
 })
 const p = await ctx.newPage()
-await p.goto('http://localhost:5175/', { waitUntil: 'domcontentloaded' })
+await p.goto('http://localhost:5175/app', { waitUntil: 'domcontentloaded' })
 await p.evaluate(({ wallets }) => {
   localStorage.clear()
   localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_onboard_done', '1')

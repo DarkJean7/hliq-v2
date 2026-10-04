@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <!-- The front door. The app itself is /app (index.html) and does not know this page exists,
+       apart from its logo linking back here with ?home.
+
+       Someone who has used the app before goes straight through to it: the landing is for
+       people who have not decided yet, not a speed bump for people who have. "Used before" is
+       hliq_app_entered, which the app sets on every load -- OR any hliq_ key at all, so the
+       people who were using the app before this page existed are not shown it either. An
+       installed PWA always goes through too: an icon on a home screen is a decision already
+       made, and installs from before the manifest moved start_url to /app still open at /.
+
+       ?home is the logo's way in, and it is the only way to see this page once you have been
+       inside. It is stripped from the address bar so a reload or a bookmark of it behaves
+       like the bare domain does.
+
+       This runs before anything paints, so a returning user never sees a flash of landing. -->
+  <script>
+    (function () {
+      try {
+        var q = new URLSearchParams(location.search)
+        if (q.has('home')) {
+          q.delete('home')
+          var s = q.toString()
+          history.replaceState(null, '', '/' + (s ? '?' + s : '') + location.hash)
+          return
+        }
+        var ls = localStorage, go = ls.getItem('hliq_app_entered') === '1'
+        if (!go) for (var i = 0; i < ls.length; i++) {
+          var k = ls.key(i)
+          if (k && k.indexOf('hliq_') === 0) { go = true; break }
+        }
+        if (!go && window.matchMedia && matchMedia('(display-mode: standalone)').matches) go = true
+        if (go) location.replace('/app' + location.search + location.hash)
+      } catch (e) {}
+    })()
+  </script>
+  <title>Insolvent — Trade Hyperliquid like a terminal</title>
+  <meta name="description" content="A Hyperliquid trading terminal for your phone and desktop. Every wallet in one view, bots that run while you sleep, pro order types and liquidation health that matches the exchange."/>
+  <meta property="og:title" content="Insolvent — Trade Hyperliquid like a terminal"/>
+  <meta property="og:description" content="Every wallet in one view, bots that run while you sleep, and pro order types — on Hyperliquid."/>
+  <meta property="og:image" content="/pwa-512x512.png?v=5"/>
+  <meta name="theme-color" content="#0a0c10"/>
+  <link rel="manifest" href="/manifest.json"/>
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=5"/>
+  <link rel="icon" type="image/png" href="/favicon.png?v=5"/>
+  <link rel="stylesheet" href="/fonts/fonts.css">
+  <link rel="preload" as="font" type="font/woff2" href="/fonts/inter-tight-700-normal-latin.woff2" crossorigin>
+  <link rel="preload" as="font" type="font/woff2" href="/fonts/jetbrains-mono-400-normal-latin.woff2" crossorigin>
+</head>
+<body>
+
+<header class="ln-nav" id="lnNav">
+  <div class="ln-wrap ln-nav__row">
+    <a class="ln-logo notranslate" href="/?home" aria-label="Insolvent home">
+      <span class="ln-logo__prompt">&gt;</span>insolvent<span class="ln-logo__cursor" aria-hidden="true"></span>
+      <span class="ln-beta">Early Beta</span>
+    </a>
+    <nav class="ln-links" id="lnLinks">
+      <a href="#features">Features</a>
+      <a href="#bots">Bots</a>
+      <a href="#security">Security</a>
+      <a href="#how">How it works</a>
+    </nav>
+    <a class="ln-btn ln-btn--solid ln-nav__cta" href="/app" data-launch>Launch app</a>
+    <button class="ln-burger" id="lnBurger" aria-label="Menu" aria-expanded="false"><span></span><span></span></button>
+  </div>
+</header>
+
+<main>
+  <section class="ln-hero">
+    <div class="ln-grid" aria-hidden="true"></div>
+    <canvas class="ln-candles" id="lnCandles" aria-hidden="true"></canvas>
+    <div class="ln-wrap ln-hero__inner">
+      <div class="ln-hero__copy">
+        <div class="ln-eyebrow"><span class="ln-dot"></span> Live · Hyperliquid mainnet</div>
+        <h1 class="ln-h1">Trade Hyperliquid<br>like you mean it.<br><span class="ln-dim">Every wallet. One terminal.</span></h1>
+        <p class="ln-lead">
+          Perps, spot, HIP-3 markets and outcomes, from your phone or your desk. Watch every
+          wallet you own <b>as one account</b>, run bots that keep going while you sleep, and
+          see liquidation risk the way Hyperliquid calculates it.
+        </p>
+        <div class="ln-ctas">
+          <a class="ln-btn ln-btn--solid" href="/app" data-launch>Launch app <span aria-hidden="true">→</span></a>
+          <a class="ln-btn" href="#features">See what it does</a>
+        </div>
+      </div>
+
+      <div class="ln-term" aria-hidden="true">
+        <div class="ln-term__bar"><i></i><i></i><i></i><span>insolvent — all accounts</span></div>
+        <div class="ln-term__body">
+          <div class="ln-term__line" style="--d:.1s">&gt; wallets <b>10 combined</b></div>
+          <div class="ln-term__line" style="--d:.4s">&gt; hyperliquid mainnet <b class="ok">connected</b></div>
+          <div class="ln-term__line" style="--d:.7s">&gt; grid BTC <b class="ok">running</b> · 24 levels</div>
+          <div class="ln-term__line" style="--d:1s">&gt; health <b class="ok">89.3%</b> · low liq. risk</div>
+          <div class="ln-term__line" style="--d:1.3s">&gt; alert ETH &lt; 3,200 <b>armed</b></div>
+          <div class="ln-term__line" style="--d:1.6s">&gt; <span class="ln-caret"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ln-wrap ln-stats">
+      <div class="ln-stat"><b>∞</b><span>Wallets in one view</span></div>
+      <div class="ln-stat"><b>05</b><span>Bot engines</span></div>
+      <div class="ln-stat"><b>05</b><span>Pro order types</span></div>
+      <div class="ln-stat"><b>24/7</b><span>Bots run server-side</span></div>
+    </div>
+  </section>
+
+  <section class="ln-sec" id="features">
+    <div class="ln-wrap">
+      <div class="ln-kicker">01 · Features</div>
+      <h2 class="ln-h2">Everything the exchange can do,<br><span class="ln-dim">laid out for the way you trade.</span></h2>
+      <div class="ln-cards">
+        <article class="ln-card ln-reveal">
+          <div class="ln-card__ico">◎</div>
+          <h3>All Accounts</h3>
+          <p>Every wallet you own merged into one equity, one PnL and one position list, and you can act on all of them at once. Each order is signed by the right wallet's key.</p>
+        </article>
+        <article class="ln-card ln-reveal">
+          <div class="ln-card__ico">♥</div>
+          <h3>Health that matches HL</h3>
+          <p>Liquidation risk from Hyperliquid's own unified-account ratio, per collateral token, across every dex. You see the book that runs out first, not an average.</p>
+        </article>
+        <article class="ln-card ln-reveal">
+          <div class="ln-card__ico">⚡</div>
+          <h3>Pro order types</h3>
+          <p>Chase, Scale, Stop &amp; Take, Trailing and TWAP: the orders a desk uses, in a sheet you can work with your thumb.</p>
+        </article>
+        <article class="ln-card ln-reveal">
+          <div class="ln-card__ico">◈</div>
+          <h3>HIP-3 &amp; outcomes</h3>
+          <p>Builder-deployed perps like stocks and gold sit next to the main book, and prediction outcomes get their own tab.</p>
+        </article>
+        <article class="ln-card ln-reveal">
+          <div class="ln-card__ico">⏰</div>
+          <h3>Alerts that wake you</h3>
+          <p>Push price alerts, plus a wake alarm that rings even with the screen locked when a level you care about breaks.</p>
+        </article>
+        <article class="ln-card ln-reveal">
+          <div class="ln-card__ico">▦</div>
+          <h3>Journal &amp; calendar</h3>
+          <p>A PnL calendar, a trade journal with pictures, and a "what moved your account" breakdown by asset.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="ln-sec ln-sec--alt" id="bots">
+    <div class="ln-wrap ln-split">
+      <div>
+        <div class="ln-kicker">02 · Bots</div>
+        <h2 class="ln-h2">Strategies that keep<br>trading <span class="ln-dim">when you stop.</span></h2>
+        <p class="ln-lead">
+          Bots run on our server, not in your browser tab. Close the app, lose signal, put the
+          phone down; they keep working, and they pick up where they left off after a restart.
+          Grids budget their margin up front, so a ladder cannot quietly grow past what you allowed.
+        </p>
+        <a class="ln-btn ln-btn--solid" href="/app" data-launch>Start a bot <span aria-hidden="true">→</span></a>
+      </div>
+      <ul class="ln-list">
+        <li class="ln-reveal"><b>Grid</b><span>Buy the dips, sell the rips inside a range, with the take-profit set where it actually makes a profit.</span></li>
+        <li class="ln-reveal"><b>DCA</b><span>Build a position on a schedule instead of on a feeling.</span></li>
+        <li class="ln-reveal"><b>TWAP</b><span>Work a large order over time so it doesn't move the book.</span></li>
+        <li class="ln-reveal"><b>Trend</b><span>Follow momentum with rules you set once.</span></li>
+        <li class="ln-reveal"><b>Shorter</b><span>Systematic downside exposure, sized to your risk.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="ln-sec" id="security">
+    <div class="ln-wrap">
+      <div class="ln-kicker">03 · Security</div>
+      <h2 class="ln-h2">Keys that can trade.<br><span class="ln-dim">Never keys that can withdraw.</span></h2>
+      <div class="ln-cards ln-cards--3">
+        <article class="ln-card ln-reveal">
+          <h3>Agent keys only</h3>
+          <p>Trading is signed by a Hyperliquid agent key you approve. Hyperliquid itself does not let an agent key withdraw or transfer funds.</p>
+        </article>
+        <article class="ln-card ln-reveal">
+          <h3>Your wallet moves money</h3>
+          <p>Deposits, withdrawals and sends always need your own wallet's signature. We never hold the key that can move your money.</p>
+        </article>
+        <article class="ln-card ln-reveal">
+          <h3>Revoke any time</h3>
+          <p>An agent key is one approval on Hyperliquid, and you can revoke it from the exchange whenever you want.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="ln-sec ln-sec--alt" id="how">
+    <div class="ln-wrap">
+      <div class="ln-kicker">04 · How it works</div>
+      <h2 class="ln-h2">Three steps to the terminal.</h2>
+      <ol class="ln-steps">
+        <li class="ln-reveal"><i>1</i><b>Open the app</b><span>No sign-up. Add the wallets you want to watch, or start on paper with $1,000.</span></li>
+        <li class="ln-reveal"><i>2</i><b>Approve an agent key</b><span>One signature from your wallet lets the terminal place orders for you.</span></li>
+        <li class="ln-reveal"><i>3</i><b>Trade &amp; automate</b><span>Place orders, run bots, set alerts. Install it to your home screen and it opens like an app.</span></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="ln-final">
+    <div class="ln-grid" aria-hidden="true"></div>
+    <div class="ln-wrap">
+      <h2 class="ln-h2">Your accounts are waiting.</h2>
+      <a class="ln-btn ln-btn--solid ln-btn--lg" href="/app" data-launch>Launch app <span aria-hidden="true">→</span></a>
+    </div>
+  </section>
+</main>
+
+<footer class="ln-foot">
+  <div class="ln-wrap ln-foot__row">
+    <span class="ln-logo ln-logo--sm notranslate"><span class="ln-logo__prompt">&gt;</span>insolvent</span>
+    <p>An independent interface for Hyperliquid, not affiliated with Hyperliquid. Trading perpetuals carries a real risk of loss, up to your entire margin.</p>
+  </div>
+</footer>
+
+<script type="module" src="/src/landing.js"></script>
+</body>
+</html>

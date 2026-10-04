@@ -497,8 +497,21 @@ createServer((req, res) => {
     return
   }
 
+  // / is the landing page; the app lives at /app (see landing.html for who gets redirected
+  // past it). /app is not a file, so the navigation fallback below serves it index.html —
+  // that is the whole of the app's route. /app/ is sent to /app so the page has one URL.
+  if (url === '/app/') {
+    const qs = req.url.slice(url.length)
+    res.writeHead(301, { Location: '/app' + qs }).end()
+    return
+  }
+  if (url === '/index.html') {
+    res.writeHead(301, { Location: '/app' }).end()
+    return
+  }
+
   // Static files
-  const candidate = join(DIST, url === '/' ? 'index.html' : url)
+  const candidate = join(DIST, url === '/' ? 'landing.html' : url)
   if (existsSync(candidate) && !candidate.endsWith('/')) return serveFile(res, candidate)
 
   // SPA fallback — but ONLY for real navigations. Returning index.html with a 200
