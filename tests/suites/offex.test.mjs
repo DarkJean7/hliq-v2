@@ -186,7 +186,8 @@ console.log(nl + '-- the wiring --')
 
   // Two ways in now — ?find= and ?a= — and both validate before anything is fetched.
   t('the server route validates addresses before fetching',
-    /const find = normAddr\(qs\.get\('find'\) \|\| ''\)/.test(serve) && /\(qs\.get\('a'\) \|\| ''\)\.split\(','\)\.map\(normAddr\)\.filter\(Boolean\)/.test(serve))
+    // Validated in each network's own shape now (0x hex, or a Solana mint), not 0x only.
+    /const find = normAnyAddr\(qs\.get\('find'\) \|\| ''\)/.test(serve) && /\(qs\.get\('a'\) \|\| ''\)\.split\(','\)\.map\(a => normTokenAddr\(net, a\)\)\.filter\(Boolean\)/.test(serve))
   t('and the network only ever selects from the table', /const net  = normNet\(qs\.get\('n'\)\)/.test(serve))
   t('and asks both sources through fetchQuotes', /await fetchQuotes\(stale,/.test(serve))
   t('a failed call is not cached as "no price"', /When BOTH sources fail, nothing is cached/.test(serve) && /if \(ok\) \{/.test(serve))
@@ -292,6 +293,37 @@ console.log(nl + '-- other networks --')
   t('removing one matches by symbol', removeHolding([hl], 'HYPE', HL_NET).length === 0)
   t('an HL holding prices from its own quote',
     near(holdingsTotal([hl], { 'hl:HYPE': { price: 97.5 } }).usd, 19.87 * 97.5))
+}
+
+console.log(nl + '-- Robinhood Chain and Solana --')
+{
+  const O = await import('../../src/offex.js')
+  const MINT = '6GmAFSYs4gk3FDao5FzzySQpPZaWsa4rUJHacpMpUNgx'
+  const EVM  = '0x008Df4b3E857D06c4603Aeb11F267ccD32ce2005'
+  t('both are networks, with the ids both price sources use',
+    O.NETWORKS.robinhood?.gt === 'robinhood' && O.NETWORKS.robinhood?.ds === 'robinhood' &&
+    O.NETWORKS.solana?.gt === 'solana' && O.NETWORKS.solana?.ds === 'solana')
+  t('a Solana mint keeps its case (base58 is case-sensitive)', O.normToken('solana', MINT) === MINT)
+  t('and is not an address on any EVM network', O.normToken('eth', MINT) === null && O.normToken('hyperevm', MINT) === null)
+  t('a 0x address is not a Solana token', O.normToken('solana', EVM) === null)
+  t('Robinhood Chain takes 0x addresses, lower-cased like every EVM chain', O.normToken('robinhood', EVM) === EVM.toLowerCase())
+  t('no 0x string can pass as base58 (no 0 in the alphabet)', !O.isSolAddr('0x' + 'a'.repeat(40)))
+  t('Solana quote key carries the network and the exact mint', O.quoteKey('solana', MINT) === 'solana:' + MINT)
+  t('price URLs keep the mint as typed',
+    O.dsMultiUrl([MINT], 'solana') === 'https://api.dexscreener.com/tokens/v1/solana/' + MINT &&
+    O.gtMultiUrl([MINT], 'solana') === 'https://api.geckoterminal.com/api/v2/networks/solana/tokens/multi/' + MINT)
+  t('and drop anything not in the shape of that network', O.dsMultiUrl([EVM], 'solana') === null && O.gtMultiUrl([MINT], 'base') === null)
+  const ds = O.parseDsPairs([{ chainId: 'solana', baseToken: { address: MINT, symbol: 'STONK' }, quoteToken: { symbol: 'SOL' }, priceUsd: '0.2', liquidity: { usd: 50000 } }])
+  t('a Solana reply is keyed by the exact mint', ds[MINT]?.price === 0.2, Object.keys(ds))
+  t('the cross-chain lookup finds Solana for a mint',
+    O.pickNetwork({ pairs: [{ chainId: 'solana', baseToken: { address: MINT }, liquidity: { usd: 9 } }] }, MINT) === 'solana' &&
+    O.dsFindUrl(MINT) === 'https://api.dexscreener.com/latest/dex/tokens/' + MINT)
+  t('and Robinhood Chain for its token',
+    O.pickNetwork({ pairs: [{ chainId: 'robinhood', baseToken: { address: EVM }, liquidity: { usd: 9 } }] }, EVM) === 'robinhood')
+  const e = O.cleanEntry({ token: MINT, net: 'solana', amount: 10 })
+  t('a Solana holding stores and totals', e?.token === MINT && O.holdingsTotal([e], { ['solana:' + MINT]: { price: 0.2 } }).usd === 2)
+  const PROD = fs.readFileSync('serve-prod.js', 'utf8')
+  t('the server validates ?a= in the shape of the network, not 0x only', PROD.includes('normTokenAddr(net, a)') && PROD.includes("normAnyAddr(qs.get('find')"))
 }
 
 console.log(nl + `${pass} passed, ${fail} failed`)

@@ -22,6 +22,7 @@ const HL_HOST = /^https?:\/\/[a-z0-9.-]*hyperliquid[a-z0-9.-]*\.xyz\//i
 const NEST  = '0x07c57e32a3c29d5659bda1d3efc2e7bf004e3035'
 const EAGLE = '0xe99509927aa0dc328e7ab5058cd24be1b2a5f280'
 
+const MINT = '6GmAFSYs4gk3FDao5FzzySQpPZaWsa4rUJHacpMpUNgx'
 let pass = 0, fail = 0
 const ok = (n, cond, got = '') => {
   cond ? pass++ : fail++
@@ -436,6 +437,9 @@ console.log(NL + '-- a token on another network is found and priced there --')
     // Priced ONLY when asked on Ethereum — HyperEVM has never heard of it.
     const prices = sp.get('n') === 'eth' && a.includes(DIME)
       ? { [DIME]: { addr: DIME, symbol: 'DIME', name: 'DIME', icon: null, price: 0.0606, liq: 94698, thin: false, src: 'DexScreener', pool: 'uniswap · DIME/WETH' } }
+      // A Solana mint, priced only when asked on Solana and only under its EXACT case.
+      : sp.get('n') === 'solana' && a.includes(MINT)
+      ? { [MINT]: { addr: MINT, symbol: 'STONK', name: 'STONK', icon: null, price: 0.2035, liq: 80000, thin: false, src: 'DexScreener', pool: 'raydium · STONK/SOL' } }
       : {}
     return route.fulfill({ status: 200, json: { prices } })
   })
@@ -501,6 +505,23 @@ console.log(NL + '-- a token on another network is found and priced there --')
   await waitFor(n, 'the sheet to close', () => document.getElementById('offexSheet')?.style.display === 'none')
   const moved = JSON.parse(await n.evaluate((a) => localStorage.getItem('hliq_offex_' + a.toLowerCase()), ADDR) || '[]')
   ok('and Save moves it there, keeping what was paid', moved.length === 1 && moved[0].net === 'eth' && moved[0].cost === 98.97, moved)
+
+  // Solana: a base58 mint, case-sensitive. Its shape alone says Solana, so no lookup is needed.
+  asks.length = 0
+  await n.evaluate(() => window.__offexAdd())
+  await waitFor(n, 'the sheet', () => document.getElementById('offexSheet')?.style.display === 'flex')
+  ok('Robinhood Chain and Solana are offered', await n.evaluate(() => ['robinhood', 'solana'].every(v => [...document.querySelectorAll('#offexNet option')].some(o => o.value === v))))
+  await n.fill('#offexToken', MINT)
+  await waitFor(n, 'the Solana lookup', () => /STONK/.test(document.getElementById('offexLookup')?.textContent ?? ''))
+  ok('a pasted mint switches the network to Solana by itself', (await n.inputValue('#offexNet')) === 'solana')
+  ok('and is priced, asked for under its exact case', /STONK[\s\S]*\$0\.20/.test(await n.textContent('#offexLookup')) && asks.some(q => q.includes('n=solana') && q.includes(MINT)), asks)
+  ok('without a cross-chain lookup', !asks.some(q => q.startsWith('find=')), asks)
+  ok('the box is relabelled for a mint', /Mint address/.test(await n.textContent('#offexTokenLabel')))
+  await n.fill('#offexAmount', '1000')
+  await n.click('#offexSave')
+  await waitFor(n, 'the sheet to close', () => document.getElementById('offexSheet')?.style.display === 'none')
+  const sol = JSON.parse(await n.evaluate((a) => localStorage.getItem('hliq_offex_' + a.toLowerCase()), ADDR) || '[]').find(e => e.net === 'solana')
+  ok('saved under the exact mint, not lower-cased', sol?.token === MINT, sol)
   await nctx.close()
 }
 

@@ -37,7 +37,7 @@ t('and so is an empty symbol', normToken(HL_NET, '') === null)
 t('Hyperliquid is in the network table', !!NETWORKS[HL_NET] && NETWORKS[HL_NET].label === 'Hyperliquid')
 
 console.log(nl + '-- the form asks for the right thing on each network --')
-t('the token label follows the network', /offexTokenLabel[\s\S]{0,140}?HL_NET \? 'Token symbol' : 'Contract address'/.test(UI))
+t('the token label follows the network (symbol on HL, mint on Solana, contract elsewhere)', /offexTokenLabel[\s\S]{0,140}?HL_NET \? 'Token symbol' : _sheet\.net === SOL_NET \? 'Mint address' : 'Contract address'/.test(UI))
 t('so does the hint', /const TOKEN_HINT = \(net\) => normNet\(net\) === HL_NET/.test(UI))
 t('and the hint says why there is no address to paste', /no contract address to paste/.test(UI))
 t('changing network reshapes the box', /window\.__offexNetChange = \(\) => \{/.test(UI))

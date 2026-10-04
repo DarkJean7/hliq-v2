@@ -48,6 +48,16 @@
 export const isTokenAddr = (a) => typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a.trim())
 export const normAddr = (a) => (isTokenAddr(a) ? a.trim().toLowerCase() : null)
 
+/**
+ * A Solana mint: base58, 32–44 characters. Kept EXACTLY as typed — base58 is case-sensitive,
+ * so lower-casing it (what every EVM address gets) names a different, nonexistent token.
+ * Base58 has no 0, so no 0x… string can ever match this, and the two shapes never collide.
+ */
+export const isSolAddr = (a) => typeof a === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a.trim())
+export const normSolAddr = (a) => (isSolAddr(a) ? a.trim() : null)
+/** Either shape, for places that do not know the network yet (a cross-chain lookup, a reply). */
+export const normAnyAddr = (a) => normAddr(a) ?? normSolAddr(a)
+
 /** How many tokens one price request may name — GeckoTerminal's own cap on the multi call. */
 export const MAX_PER_REQUEST = 30
 
@@ -69,7 +79,15 @@ export const NETWORKS = {
   base:     { label: 'Base',     gt: 'base',     ds: 'base' },
   arbitrum: { label: 'Arbitrum', gt: 'arbitrum', ds: 'arbitrum' },
   bsc:      { label: 'BNB Chain', gt: 'bsc',     ds: 'bsc' },
+  // Robinhood Chain is an EVM chain (Arbitrum Orbit): same 0x shape as the rest.
+  robinhood: { label: 'Robinhood Chain', gt: 'robinhood', ds: 'robinhood' },
+  // Solana is not EVM: its tokens are base58 mints, see isSolAddr.
+  solana:   { label: 'Solana',   gt: 'solana',   ds: 'solana' },
 }
+/** The network whose addresses are base58 mints rather than 0x hex. */
+export const SOL_NET = 'solana'
+/** A token address in the shape `net` uses, or null. */
+export const normTokenAddr = (net, a) => (normNet(net) === SOL_NET ? normSolAddr(a) : normAddr(a))
 export const DEFAULT_NET = 'hyperevm'
 /** A network key, or the default for anything unrecognised — never a string built into a URL. */
 export const normNet = (n) => (Object.hasOwn(NETWORKS, String(n ?? '')) ? String(n) : DEFAULT_NET)
@@ -83,7 +101,7 @@ export const HL_NET = 'hl'
 export const isHlToken = (t) => typeof t === 'string' && /^(@[0-9]{1,6}|[A-Za-z][A-Za-z0-9]{0,15})$/.test(t.trim())
 export const normHlToken = (t) => (isHlToken(t) ? t.trim().toUpperCase() : null)
 /** How a token is identified on `net`: HL names them, every other network addresses them. */
-export const normToken = (net, t) => (normNet(net) === HL_NET ? normHlToken(t) : normAddr(t))
+export const normToken = (net, t) => (normNet(net) === HL_NET ? normHlToken(t) : normTokenAddr(net, t))
 
 /**
  * The key a price is cached under. The same address can be a different token on another
@@ -104,7 +122,7 @@ export const quoteKey = (net, addr) => {
 export function gtMultiUrl(addrs, net = DEFAULT_NET) {
   // Hyperliquid has no pool to price against; asking a DEX source for it would 404.
   if (normNet(net) === HL_NET) return null
-  const ok = [...new Set((addrs ?? []).map(normAddr).filter(Boolean))].slice(0, MAX_PER_REQUEST)
+  const ok = [...new Set((addrs ?? []).map(a => normTokenAddr(net, a)).filter(Boolean))].slice(0, MAX_PER_REQUEST)
   if (!ok.length) return null
   return `https://api.geckoterminal.com/api/v2/networks/${NETWORKS[normNet(net)].gt}/tokens/multi/${ok.join(',')}`
 }
@@ -124,7 +142,8 @@ export const THIN_LIQUIDITY_USD = 1_000
  */
 export function parseGtToken(rec) {
   const a = rec?.attributes
-  const addr = normAddr(a?.address)
+  // Either shape: the reply is for whichever network was asked, Solana included.
+  const addr = normAnyAddr(a?.address)
   if (!addr) return null
   const price = parseFloat(a.price_usd)
   const liq   = parseFloat(a.total_reserve_in_usd)
@@ -153,7 +172,7 @@ export function parseGtMulti(json) {
 export function dsMultiUrl(addrs, net = DEFAULT_NET) {
   // Hyperliquid has no pool to price against; asking a DEX source for it would 404.
   if (normNet(net) === HL_NET) return null
-  const ok = [...new Set((addrs ?? []).map(normAddr).filter(Boolean))].slice(0, MAX_PER_REQUEST)
+  const ok = [...new Set((addrs ?? []).map(a => normTokenAddr(net, a)).filter(Boolean))].slice(0, MAX_PER_REQUEST)
   if (!ok.length) return null
   return `https://api.dexscreener.com/tokens/v1/${NETWORKS[normNet(net)].ds}/${ok.join(',')}`
 }
@@ -168,7 +187,7 @@ export function dsMultiUrl(addrs, net = DEFAULT_NET) {
 export function parseDsPairs(json) {
   const out = {}
   for (const p of (Array.isArray(json) ? json : (Array.isArray(json?.pairs) ? json.pairs : []))) {
-    const addr  = normAddr(p?.baseToken?.address)
+    const addr  = normAnyAddr(p?.baseToken?.address)
     if (!addr) continue
     const price = parseFloat(p.priceUsd)
     const liq   = parseFloat(p?.liquidity?.usd)
@@ -231,7 +250,7 @@ export async function fetchQuotes(addrs, fetchJson, net = DEFAULT_NET) {
 
 /** DexScreener's cross-chain lookup: every pair for an address, on any chain. */
 export function dsFindUrl(addr) {
-  const a = normAddr(addr)
+  const a = normAnyAddr(addr)
   return a ? `https://api.dexscreener.com/latest/dex/tokens/${a}` : null
 }
 
@@ -241,12 +260,13 @@ export function dsFindUrl(addr) {
  * Null when it trades on none of them.
  */
 export function pickNetwork(json, addr) {
-  const a = normAddr(addr)
+  const a = normAnyAddr(addr)
   const byDs = Object.fromEntries(Object.entries(NETWORKS).map(([k, v]) => [v.ds, k]))
   let best = null, bestLiq = -1
   for (const p of (Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : []))) {
     const net = byDs[p?.chainId]
-    if (!net || normAddr(p?.baseToken?.address) !== a) continue
+    // The address must also be in THAT network's shape: a 0x token is never on Solana.
+    if (!net || normTokenAddr(net, p?.baseToken?.address) !== a) continue
     const liq = parseFloat(p?.liquidity?.usd)
     const l = Number.isFinite(liq) ? liq : 0
     if (l > bestLiq) { bestLiq = l; best = net }

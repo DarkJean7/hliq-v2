@@ -13,7 +13,7 @@
  */
 import { loadHoldings, saveHoldings, upsertHolding, removeHolding, holdingValue, holdingsTotal,
          normAddr, isTokenAddr, NETWORKS, DEFAULT_NET, normNet, quoteKey,
-         HL_NET, normToken, isHlToken } from './offex.js'
+         HL_NET, normToken, isHlToken, SOL_NET, normAnyAddr, isSolAddr } from './offex.js'
 import { fmtUSD, fmtPrice, fmtSize, esc } from './format.js'
 
 let ctx = {
@@ -491,7 +491,9 @@ const field = (label, inner, hint = '') => `<label style="display:block;margin-b
 /** What the token box wants, which depends entirely on the network. */
 const TOKEN_HINT = (net) => normNet(net) === HL_NET
   ? 'A token on Hyperliquid\'s spot book, by symbol — HYPE has no contract address to paste. Priced from the mid the app already has.'
-  : 'A token on HyperEVM, Ethereum, Base, Arbitrum or BNB Chain. The network is found for you.'
+  : normNet(net) === SOL_NET
+    ? 'A Solana token, by its mint address. Paste it exactly — Solana addresses are case-sensitive.'
+    : 'A token on HyperEVM, Ethereum, Base, Arbitrum, BNB Chain, Robinhood Chain or Solana. The network is found for you.'
 const inputCss = 'width:100%;box-sizing:border-box;background:var(--panel-2);border:1px solid var(--border2);border-radius:10px;padding:10px 11px;color:var(--fg);font-size:14px;outline:none'
 
 /** Open the sheet to add (no token) or edit (token given) a holding. */
@@ -511,7 +513,7 @@ export function openSheet(acct = null, token = null, net = DEFAULT_NET) {
       <div style="font-size:17px;font-weight:800">${existing ? 'Edit' : 'Add'} off-exchange token</div>
       <button onclick="window.__offexClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">&times;</button>
     </div>
-    ${field(`<span id="offexTokenLabel">${_sheet.net === HL_NET ? 'Token symbol' : 'Contract address'}</span>`,
+    ${field(`<span id="offexTokenLabel">${_sheet.net === HL_NET ? 'Token symbol' : _sheet.net === SOL_NET ? 'Mint address' : 'Contract address'}</span>`,
       `<input id="offexToken" style="${inputCss};font-family:var(--font-mono);font-size:12.5px" placeholder="${_sheet.net === HL_NET ? 'HYPE' : '0x…'}" value="${esc(existing?.token ?? '')}" ${existing ? 'readonly' : ''} spellcheck="false" autocomplete="off">`,
       `<span id="offexTokenHint">${TOKEN_HINT(_sheet.net)}</span>`)}
     <div id="offexLookup" style="font-size:12.5px;margin:-4px 0 12px;min-height:18px"></div>
@@ -545,6 +547,16 @@ export function openSheet(acct = null, token = null, net = DEFAULT_NET) {
   }
 }
 
+/** Label, hint and placeholder of the token box for network `n`. */
+function syncTokenBox(n) {
+  const lab = document.getElementById('offexTokenLabel')
+  const hnt = document.getElementById('offexTokenHint')
+  const inp = document.getElementById('offexToken')
+  if (lab) lab.textContent = n === HL_NET ? 'Token symbol' : n === SOL_NET ? 'Mint address' : 'Contract address'
+  if (hnt) hnt.innerHTML   = TOKEN_HINT(n)
+  if (inp) inp.placeholder = n === HL_NET ? 'HYPE' : n === SOL_NET ? 'e.g. 6GmAF…UNgx' : '0x…'
+}
+
 let _lookupSeq = 0
 /** Resolve a pasted address to a name and a price before it is saved, so a typo shows now. */
 async function lookup(raw, { auto = true } = {}) {
@@ -567,12 +579,19 @@ async function lookup(raw, { auto = true } = {}) {
       : `<span style="color:#f59e0b">Hyperliquid is not quoting ${esc(t)}. Check the symbol — it is the one on the spot book.</span>`
     return
   }
-  const a = normAddr(raw)
-  if (!a) { out.innerHTML = '<span style="color:var(--red)">That is not a contract address (0x followed by 40 characters).</span>'; return }
+  const a = normAnyAddr(raw)
+  if (!a) { out.innerHTML = '<span style="color:var(--red)">That is not a contract address (0x followed by 40 characters, or a Solana mint).</span>'; return }
   const seq = ++_lookupSeq
   out.innerHTML = '<span style="color:var(--muted)">Looking it up…</span>'
   const netEl = document.getElementById('offexNet')
   let net = normNet(netEl?.value)
+  // The SHAPE settles Solana-or-not: a base58 mint is only ever Solana, and a 0x address is
+  // never Solana. Unlike one EVM chain against another, this needs no lookup.
+  const sol = isSolAddr(a)
+  if (sol !== (net === SOL_NET)) {
+    net = sol ? SOL_NET : DEFAULT_NET
+    if (netEl) { netEl.value = net; syncTokenBox(net) }
+  }
   await refreshPrices({ force: true, extra: [quoteKey(net, a)] })
   if (seq !== _lookupSeq) return          // a newer paste has taken over
   let q = quoteFor(a, net), moved = false
@@ -581,7 +600,7 @@ async function lookup(raw, { auto = true } = {}) {
   // it belongs to — DIME is an Ethereum token and HyperEVM had never heard of it.
   if (!q && auto) {
     out.innerHTML = `<span style="color:var(--muted)">Not on ${esc(NETWORKS[net].label)} — checking other networks…</span>`
-    const f = await fetch('/offexprice?find=' + a).then(r => (r.ok ? r.json() : null)).catch(() => null)
+    const f = await fetch('/offexprice?find=' + encodeURIComponent(a)).then(r => (r.ok ? r.json() : null)).catch(() => null)
     if (seq !== _lookupSeq) return
     if (f?.net && normNet(f.net) !== net) {
       net = normNet(f.net)
@@ -652,12 +671,8 @@ if (typeof window !== 'undefined') {
     // The box means a different thing on each side of this switch, so relabel it before the
     // lookup runs — otherwise it reports "not a contract address" at someone typing a symbol.
     const n   = normNet(document.getElementById('offexNet')?.value)
-    const lab = document.getElementById('offexTokenLabel')
-    const hnt = document.getElementById('offexTokenHint')
+    syncTokenBox(n)
     const inp = document.getElementById('offexToken')
-    if (lab) lab.textContent = n === HL_NET ? 'Token symbol' : 'Contract address'
-    if (hnt) hnt.innerHTML   = TOKEN_HINT(n)
-    if (inp) inp.placeholder = n === HL_NET ? 'HYPE' : '0x…'
     if (inp) lookup(inp.value)
   }
   window.__offexAdd    = () => openSheet()

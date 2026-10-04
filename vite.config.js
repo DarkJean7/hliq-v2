@@ -158,9 +158,9 @@ function strategyPlugin() {
         // Off-exchange token prices — the dev twin of serve-prod.js /offexprice, so the Spot
         // tab's manual tokens price locally too. Same validation (src/offex.js), no cache.
         if (method === 'GET' && path === '/offexprice') {
-          const { fetchQuotes, normAddr, normNet, dsFindUrl, pickNetwork } = await import('./src/offex.js')
+          const { fetchQuotes, normAnyAddr, normTokenAddr, normNet, dsFindUrl, pickNetwork } = await import('./src/offex.js')
           const qs = new URLSearchParams(req.url.split('?')[1] || '')
-          const find = normAddr(qs.get('find') || '')
+          const find = normAnyAddr(qs.get('find') || '')
           if (find) {
             try {
               const r = await fetch(dsFindUrl(find), { signal: AbortSignal.timeout(8000) })
@@ -168,7 +168,7 @@ function strategyPlugin() {
             } catch { return sendJson(res, 200, { net: null }) }
           }
           const want = [...new Set((qs.get('a') || '')
-            .split(',').map(normAddr).filter(Boolean))].slice(0, 30)
+            .split(',').map(a => normTokenAddr(normNet(qs.get('n')), a)).filter(Boolean))].slice(0, 30)
           if (!want.length) return sendJson(res, 400, { prices: {} })
           try {
             const { quotes } = await fetchQuotes(want, async (u) => {

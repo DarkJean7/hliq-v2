@@ -9,7 +9,7 @@ import { join, extname, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coinGeckoUpgrade } from './src/iconpick.js'
 import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, parseSeries } from './src/extmarkets.js'
-import { fetchQuotes, normAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
+import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DIST      = join(__dirname, 'dist')
@@ -391,7 +391,7 @@ createServer((req, res) => {
     const qs   = new URLSearchParams(req.url.split('?')[1] || '')
     // ?find=<addr> — which supported network it trades on (DexScreener, across chains). The
     // add sheet asks this when HyperEVM has no market for a pasted address.
-    const find = normAddr(qs.get('find') || '')
+    const find = normAnyAddr(qs.get('find') || '')
     if (find) {
       ;(async () => {
         const hit = offexFindCache.get(find)
@@ -410,7 +410,8 @@ createServer((req, res) => {
     // ?n=<network> — one of src/offex.js NETWORKS, anything else is HyperEVM. Never put in a
     // URL as typed: it only ever selects an id from that table.
     const net  = normNet(qs.get('n'))
-    const want = [...new Set((qs.get('a') || '').split(',').map(normAddr).filter(Boolean))].slice(0, OFFEX_MAX)
+    // Validated in the shape `net` uses: 0x hex, or a base58 mint on Solana (case kept).
+    const want = [...new Set((qs.get('a') || '').split(',').map(a => normTokenAddr(net, a)).filter(Boolean))].slice(0, OFFEX_MAX)
     if (!want.length) { res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"prices":{}}'); return }
     ;(async () => {
       const prices = {}
