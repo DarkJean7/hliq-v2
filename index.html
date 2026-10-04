@@ -69,8 +69,8 @@
        62 being the status-bar inset, so the bottom strip was outside the document and no
        stylesheet could reach it. Three CSS fixes chased a bar that was never misplaced. -->
   <meta name="apple-mobile-web-app-title" content="Insolvent Trade"/>
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=5"/>
-  <link rel="icon" type="image/png" href="/favicon.png?v=5"/>
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=6"/>
+  <link rel="icon" type="image/png" href="/favicon.png?v=6"/>
   <!-- NOTE: No <link> for style.css here. It is imported inside src/main.js via "import './style.css'" and injected by Vite. -->
 </head>
 <body>
@@ -81,8 +81,8 @@
   <div class="boot-grid"></div>
   <div class="boot-scan"></div>
   <div class="boot-inner">
-    <div class="boot-icon"><img src="/pwa-512x512.png?v=5" alt="Insolvent"/></div>
-    <div class="boot-word notranslate">insolvent<span class="boot-caret"></span></div>
+    <div class="boot-icon"><img src="/pwa-512x512.png?v=6" alt="Insolvent"/></div>
+    <div class="boot-word insolvent-logo notranslate"><span class="insolvent-logo__in">in</span><span class="insolvent-logo__word">solvent</span><span class="insolvent-logo__dot">.</span></div>
     <div class="boot-sub">TRADE PERPETUALS</div>
     <div class="boot-log" id="bootLog">
       <div class="boot-line" style="--d:0.15s">&gt; wallet <span id="bootWallet">0x…</span> <b>ok</b></div>
@@ -103,7 +103,7 @@
 <aside class="sidebar">
   <div class="brand">
     <a class="insolvent-logo notranslate" href="/?home" aria-label="Insolvent — home page">
-      <span class="insolvent-logo__prompt">&gt;</span><span class="insolvent-logo__word">insolvent</span><span class="insolvent-logo__cursor" aria-hidden="true"></span>
+      <span class="insolvent-logo__in">in</span><span class="insolvent-logo__word">solvent</span><span class="insolvent-logo__dot">.</span>
     </a>
     <span class="beta-badge">Early Beta</span>
   </div>
@@ -187,7 +187,7 @@
 <div class="topbar">
   <div class="topbar-brand">
     <a class="insolvent-logo insolvent-logo--sm notranslate" href="/?home" aria-label="Insolvent — home page">
-      <span class="insolvent-logo__prompt">&gt;</span><span class="insolvent-logo__word">insolvent</span><span class="insolvent-logo__cursor" aria-hidden="true"></span>
+      <span class="insolvent-logo__in">in</span><span class="insolvent-logo__word">solvent</span><span class="insolvent-logo__dot">.</span>
     </a>
     <span class="beta-badge">Early Beta</span>
   </div>
@@ -207,7 +207,7 @@
   <div class="main-input-area" id="inputArea">
     <div class="landing-grid"></div>
     <div class="landing-scan"></div>
-    <div class="landing-icon"><img src="/pwa-512x512.png?v=5" alt="Insolvent"/></div>
+    <div class="landing-icon"><img src="/pwa-512x512.png?v=6" alt="Insolvent"/></div>
     <h1 class="main-title">Your <span>Hyperliquid</span><br/>Dashboard</h1>
     <p class="main-subtitle">Enter any wallet address to explore positions, trades, portfolio & more.</p>
     <div class="wallet-form">
@@ -2355,7 +2355,7 @@
     style="padding:7px 16px 3px;cursor:pointer">
     <a class="mob-v-brand notranslate" href="/?home" aria-label="Insolvent — home page"
       onclick="event.stopPropagation()" ontouchstart="event.stopPropagation()">
-      <span class="insolvent-logo insolvent-logo--sm"><span class="insolvent-logo__prompt">&gt;</span><span class="insolvent-logo__word">insolvent</span><span class="insolvent-logo__cursor" aria-hidden="true"></span></span>
+      <span class="insolvent-logo insolvent-logo--sm"><span class="insolvent-logo__in">in</span><span class="insolvent-logo__word">solvent</span><span class="insolvent-logo__dot">.</span></span>
     </a>
     <div class="mob-v-brandbar__pill"></div>
     <div class="mob-v-brandbar__live"><span style="color:var(--pos)">●</span> LIVE</div>

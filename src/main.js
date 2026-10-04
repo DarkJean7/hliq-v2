@@ -37717,7 +37717,7 @@ window.__shareRenderPreview = function() {
         <div style="text-align:right"><div style="font-size:clamp(9px,1.1vw,12px);color:#8a92a3">Trade on</div><div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${a};font-size:clamp(12px,1.6vw,18px)">insolvent.trade</div></div>
       </div>
     </div>
-    <img src="/pwa-512x512.png?v=5" alt="" style="position:absolute;right:5.5%;top:5%;width:clamp(44px,9vw,82px);height:auto;border-radius:18%;box-shadow:0 0 40px ${a}66">`
+    <img src="/pwa-512x512.png?v=6" alt="" style="position:absolute;right:5.5%;top:5%;width:clamp(44px,9vw,82px);height:auto;border-radius:18%;box-shadow:0 0 40px ${a}66">`
 }
 
 function _rr(ctx, x, y, w, h, r) {
@@ -37804,7 +37804,7 @@ async function _shareDrawCanvas() {
       res()
     }
     img.onerror = res
-    img.src = '/pwa-512x512.png?v=5'
+    img.src = '/pwa-512x512.png?v=6'
   })
   return canvas
 }

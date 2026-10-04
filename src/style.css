@@ -157,18 +157,26 @@ html, body {
 }
 
 /* ─── INSOLVENT LOGO ──────────────────────────────────────────────────────────── */
+/* "insolvent." with the "in" struck through in orange — the landing headline's mark, and
+   the app icon's (generate-icons.mjs). One markup everywhere: __in, __word, __dot. */
 .insolvent-logo {
-  font-family: var(--font-mono);
-  font-weight: 500;
-  font-size: 15px;
-  letter-spacing: -0.02em;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: -0.05em;
   line-height: 1;
   color: var(--fg);
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   user-select: none;
+  white-space: nowrap;
 }
-.insolvent-logo--sm { font-size: 13px; }
+.insolvent-logo--sm { font-size: 17px; }
+.insolvent-logo__in { position: relative; color: var(--fg-3); }
+.insolvent-logo__in::after {
+  content: ''; position: absolute; left: -6%; right: -6%; top: 52%; height: 0.15em; border-radius: 0.08em;
+  background: #ff8a2a; transform: rotate(-10deg);
+}
 /* The logo is the link back to the landing page (/?home) — on desktop and in the mobile bar */
 a.insolvent-logo { text-decoration: none; cursor: pointer; }
 a.insolvent-logo:hover .insolvent-logo__word { color: var(--fg-2); }
@@ -202,21 +210,6 @@ a.insolvent-logo:hover .insolvent-logo__word { color: var(--fg-2); }
   white-space: nowrap;
   margin-left: 7px;
 }
-.insolvent-logo__prompt {
-  color: #ff8a2a;
-  font-weight: 400;
-  margin-right: 0.12em;
-}
-.insolvent-logo__cursor {
-  display: inline-block;
-  width: 0.5em;
-  height: 0.96em;
-  background: #ff8a2a;
-  margin-left: 0.12em;
-  box-shadow: 0 0 10px rgba(255,138,42,0.6);
-  animation: insolvent-blink 1s steps(1) infinite;
-}
-@keyframes insolvent-blink { 50% { opacity: 0; } }
 
 .sidebar-nav {
   flex: 1;
@@ -495,12 +488,7 @@ header { display: none; }
   50%     { box-shadow: 0 0 0 1px rgba(255,138,42,0.4), 0 0 64px rgba(255,138,42,0.5); }
 }
 #bootSplash .boot-word {
-  margin-top: 28px; font-size: 30px; font-weight: 800; letter-spacing: -0.5px; color: var(--fg);
-  display: flex; align-items: center; gap: 4px;
-}
-#bootSplash .boot-caret {
-  display: inline-block; width: 13px; height: 24px; background: #ff8a2a;
-  margin-left: 2px; animation: bootBlink 1.05s steps(1) infinite; box-shadow: 0 0 12px rgba(255,138,42,0.6);
+  margin-top: 28px; font-size: 40px; color: var(--fg);
 }
 @keyframes bootBlink { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
 #bootSplash .boot-sub {
