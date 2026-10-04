@@ -54,6 +54,11 @@ self.addEventListener('fetch', event => {
   // Never intercept non-GET requests or API calls
   if (request.method !== 'GET' || url.pathname.startsWith('/api/')) return
 
+  // Page loads go straight to the browser. HTML is never cached here, so re-fetching it gained
+  // nothing offline — and the re-fetch can reach the server as Sec-Fetch-Dest: empty instead of
+  // document, which is how /app came back 404 the day the app moved there.
+  if (request.mode === 'navigate') return
+
   // Coin icons: let the browser HTTP-cache handle them normally (they carry a 1-day max-age),
   // so re-renders and scrolling serve instantly from cache with no flicker. Corrections still
   // reach users because the client bumps the icon URL version (?v=) when the logic changes,

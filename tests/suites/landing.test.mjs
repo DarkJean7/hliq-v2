@@ -76,6 +76,8 @@ t('landing "Launch app" buttons go to /app',
 
 console.log(nl + '-- routes --')
 t('prod serves landing.html at /', /url === '\/' \? 'landing\.html'/.test(PROD))
+t('prod serves /app whatever Sec-Fetch-Dest says (SW re-fetch sends empty)', PROD.includes("if (url === '/app') return serveFile(res, join(DIST, 'index.html'))"))
+t('the service worker leaves page loads alone', SW.includes("if (request.mode === 'navigate') return"))
 t('prod sends /app/ to /app', PROD.includes("url === '/app/'"))
 t('/app is answered by the navigation fallback with index.html',
   /serveFile\(res, join\(DIST, 'index\.html'\)\)\s*\n\}\)\.listen/.test(PROD))

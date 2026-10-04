@@ -519,10 +519,15 @@ createServer((req, res) => {
   // then fail to parse it (Chrome reports it as a slow-network font intervention).
   // Sec-Fetch-Dest tells us what the request is for; clients that omit it (curl,
   // old browsers) fall back to "does the path look like a file?".
+  // /app is the app's own route and is answered unconditionally. A page load that the
+  // service worker re-fetches can arrive with Sec-Fetch-Dest: empty rather than document, and
+  // judging /app by that header 404'd the whole app on the day it moved there from / (which
+  // never hit this branch, being a real file). Sec-Fetch-Mode: navigate counts for the same reason.
+  if (url === '/app') return serveFile(res, join(DIST, 'index.html'))
   const dest = req.headers['sec-fetch-dest']
-  const isNavigation = dest
+  const isNavigation = req.headers['sec-fetch-mode'] === 'navigate' || (dest
     ? dest === 'document'
-    : !/\.[a-z0-9]{2,8}$/i.test(url)
+    : !/\.[a-z0-9]{2,8}$/i.test(url))
 
   if (!isNavigation) { res.writeHead(404).end(); return }
   serveFile(res, join(DIST, 'index.html'))
