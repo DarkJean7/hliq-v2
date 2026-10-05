@@ -166,7 +166,7 @@ export function onePerToken(rows) {
 }
 
 /** The columns a table can be ranked by. */
-export const SORT_KEYS = ['vol24', 'oi', 'mcap', 'chg24', 'funding1h', 'price', 'rev24', 'rev7', 'rev30', 'fee24', 'fee30']
+export const SORT_KEYS = ['vol24', 'oi', 'mcap', 'chg24', 'funding1h', 'price', 'rev24', 'rev7', 'rev30', 'fee24', 'fee30', 'sq', 'sttm', 'syoy']
 
 /**
  * Sort by `key`, descending unless `asc`. Nulls go LAST in both directions: an unknown
@@ -270,13 +270,28 @@ export function dedupeHip3(rows) {
  * `hip3` is [{ dex, label, data: [meta, ctxs] }]; a dex that failed is simply not in it, and
  * the caller reports how many of how many loaded rather than presenting a partial list as all.
  */
-export function buildMarkets({ core = null, spot = null, hip3 = [], cats = null, revenue = null, cg = null } = {}) {
+export function buildMarkets({ core = null, spot = null, hip3 = [], cats = null, revenue = null, cg = null, stocks = null } = {}) {
   const perps = core ? perpRows(core[0], core[1]) : []
   const perpSyms = new Set(perps.map(p => p.sym))
   const spots = (spot ? spotRows(spot[0], spot[1]) : [])
     .map(r => { const d = spotDisplayName(r.sym, perpSyms); return d === r.sym ? r : { ...r, sym: d, wrapped: r.sym } })
   const hips = hip3.flatMap(h => perpRows(h.data?.[0], h.data?.[1], h.dex, h.label))
-  return withCgMarketCaps(categorize([...linkMarketCaps(perps, spots), ...spots, ...dedupeHip3(hips)], cats, revenue), cg)
+  return withStockRevenue(withCgMarketCaps(categorize([...linkMarketCaps(perps, spots), ...spots, ...dedupeHip3(hips)], cats, revenue), cg), stocks)
+}
+
+/**
+ * A stock's reported revenue (src/secrev.js, via /markets-meta `stocks`): last quarter,
+ * trailing twelve months, year-on-year. Only on rows Hyperliquid calls stocks — a crypto
+ * token sharing a company's ticker is not that company. Quarterly figures, kept apart from
+ * the crypto 24h/7d/30d revenue columns; null when the company does not file with the SEC.
+ */
+export function withStockRevenue(rows, stocks) {
+  if (!stocks) return rows
+  return rows.map(r => {
+    const s = r.hlCat === 'stocks' ? stocks[r.sym] : null
+    return s ? { ...r, sq: s.q ?? null, sqStart: s.qStart ?? null, sqEnd: s.qEnd ?? null, sqDerived: !!s.qDerived,
+                 sttm: s.ttm ?? null, syoy: s.yoy ?? null, sName: s.name ?? null } : r
+  })
 }
 
 /**

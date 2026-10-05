@@ -9,6 +9,7 @@ import { join, extname, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coinGeckoUpgrade } from './src/iconpick.js'
 import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, parseSeries } from './src/extmarkets.js'
+import { SEC_CONCEPTS, SEC_TICKERS_URL, secConceptUrl, companyRevenue } from './src/secrev.js'
 import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
@@ -97,14 +98,65 @@ function cgRefresh() {
   })().finally(() => { try { if (readFileSync(CG_LOCK, 'utf8') === String(process.pid)) unlinkSync(CG_LOCK) } catch {} }).catch(e => console.warn('[markets-meta] CoinGecko refresh failed:', e.message)).finally(() => { cgInflight = null })
   return cgInflight
 }
+// ── Stocks' reported revenue, from the SEC (src/secrev.js) ──────────────────────────────
+// Once a day: Hyperliquid's stock tickers (perpCategories — one weight-20 call a day, next to
+// nothing beside the bots), the SEC's ticker → CIK list, then each company's revenue concepts,
+// paced at ~6 a second (the SEC allows 10). One worker fetches (lock); all read the file.
+// The SEC asks callers to identify themselves; SEC_CONTACT overrides the default.
+const SEC_TTL = 24 * 60 * 60_000
+const SEC_FILE = join(__dirname, 'data', 'secrev.json')
+const SEC_LOCK = SEC_FILE + '.lock'
+const SEC_UA = process.env.SEC_CONTACT || 'InsolventTerminal/1.0 (+https://insolvent.trade)'
+let secData = null             // { at, stocks: { TICKER: { name, q, qStart, qEnd, qDerived, ttm, yoy } } }
+let secInflight = null
+function secFromDisk() {
+  try { const d = JSON.parse(readFileSync(SEC_FILE, 'utf8')); if (d?.stocks && d.at && (!secData || d.at > secData.at)) secData = d } catch {}
+  return !!secData
+}
+secFromDisk()
+function secRefresh() {
+  if (secInflight) return secInflight
+  secInflight = (async () => {
+    if (secFromDisk() && Date.now() - secData.at < SEC_TTL) return
+    try { if (Date.now() - statSync(SEC_LOCK).mtimeMs < 30 * 60_000) return } catch {}
+    try { mkdirSync(dirname(SEC_FILE), { recursive: true }); writeFileSync(SEC_LOCK, String(process.pid)) } catch {}
+    const cats = await fetch('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"type":"perpCategories"}', signal: AbortSignal.timeout(15_000) }).then(r => r.json())
+    const tickers = [...new Set((Array.isArray(cats) ? cats : []).filter(([, k]) => /^stocks?$/i.test(String(k))).map(([c]) => String(c).replace(/^.*:/, '')))]
+    const secList = await fetch(SEC_TICKERS_URL, { headers: { 'User-Agent': SEC_UA }, signal: AbortSignal.timeout(30_000) }).then(r => r.json())
+    const byTicker = new Map(Object.values(secList ?? {}).map(x => [x.ticker, x]))
+    const stocks = {}
+    for (const tk of tickers) {
+      const co = byTicker.get(tk)
+      if (!co) continue                                  // not an SEC filer (Tencent, SK Hynix…) or an ETF
+      const byConcept = {}
+      for (const concept of SEC_CONCEPTS) {
+        await new Promise(r => setTimeout(r, 170))
+        try {
+          const r = await fetch(secConceptUrl(co.cik_str, concept), { headers: { 'User-Agent': SEC_UA }, signal: AbortSignal.timeout(20_000) })
+          if (r.ok) byConcept[concept] = (await r.json())?.units?.USD ?? []
+        } catch {}
+      }
+      const v = companyRevenue(byConcept)
+      if (v) stocks[tk] = { name: co.title, ...v }
+    }
+    if (!Object.keys(stocks).length) throw new Error('no company answered')
+    secData = { at: Date.now(), stocks }
+    writeAtomic(SEC_FILE, JSON.stringify(secData))
+  })().finally(() => { try { if (readFileSync(SEC_LOCK, 'utf8') === String(process.pid)) unlinkSync(SEC_LOCK) } catch {} })
+    .catch(e => console.warn('[markets-meta] SEC refresh failed:', e.message))
+    .finally(() => { secInflight = null })
+  return secInflight
+}
+
 function metaJson() {
   if (!llamaData || !cgData) return null
-  const key = llamaData.at + ':' + cgData.at
+  const key = llamaData.at + ':' + cgData.at + ':' + (secData?.at ?? 0)
   if (metaBody?.key !== key) {
     const { bySym } = verifyRevenue(llamaData.bySym, cgData.top)
     // Ticker → [CoinGecko id, market cap]; the page uses the cap for perps HL gives none.
     const cg = Object.fromEntries(Object.entries(cgData.top).map(([s, v]) => [s, [v.id, v.mcap]]))
-    metaBody = { key, body: JSON.stringify({ revenue: bySym, cg, at: llamaData.at, cgAt: cgData.at, source: 'DefiLlama, CoinGecko' }) }
+    // Stocks: null until the SEC list has loaded — the page then says so rather than show dashes as fact.
+    metaBody = { key, body: JSON.stringify({ revenue: bySym, cg, stocks: secData?.stocks ?? null, at: llamaData.at, cgAt: cgData.at, secAt: secData?.at ?? null, source: 'DefiLlama, CoinGecko, SEC' }) }
   }
   return metaBody.body
 }
@@ -489,6 +541,8 @@ createServer((req, res) => {
     // Pick up what another worker fetched — cheap, and the reason a worker is not left at 503.
     if (!cgData || Date.now() - cgData.at > CG_TTL) cgFromDisk()
     if (!cgData || Date.now() - cgData.at > CG_TTL) cgRefresh()
+    if (!secData || Date.now() - secData.at > SEC_TTL) secFromDisk()
+    if (!secData || Date.now() - secData.at > SEC_TTL) secRefresh()
     if (llamaData && Date.now() - llamaData.at < LLAMA_TTL) return send()
     if (llamaData) { llamaRefresh(); return send() }       // stale: serve it, refresh behind
     llamaRefresh().then(send)

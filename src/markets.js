@@ -26,6 +26,8 @@ let last = { core: null, spot: null, list: [] }
 let cats = null        // perpCategories: [[coin, category], …]
 let revenue = null     // /markets-meta bySym, or null while unknown
 let cg = null          // /markets-meta cg: { SYM: [coingecko id, market cap] }
+let stocks = null      // /markets-meta stocks: SEC-reported revenue by ticker, or null while unknown
+let metaRetries = 0
 let revState = 'loading'
 
 // ── formatting ───────────────────────────────────────────────────────────────
@@ -64,7 +66,7 @@ const post = (body) => fetch(API, {
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
 const rebuild = () => {
-  rows = buildMarkets({ core: last.core, spot: last.spot, hip3: last.list.map(d => hip3Cache.get(d.name)).filter(Boolean), cats, revenue, cg })
+  rows = buildMarkets({ core: last.core, spot: last.spot, hip3: last.list.map(d => hip3Cache.get(d.name)).filter(Boolean), cats, revenue, cg, stocks })
 }
 
 /**
@@ -104,12 +106,18 @@ async function loadMeta() {
     const j = r.ok ? await r.json() : null
     if (j?.revenue && typeof j.revenue === 'object') { revenue = j.revenue; revState = 'ok' }
     if (j?.cg && typeof j.cg === 'object') cg = j.cg
+    if (j?.stocks && typeof j.stocks === 'object') stocks = j.stocks
+    // The server fetches the SEC once a day and answers without stocks while it does; ask
+    // again in a minute rather than waiting out the half-hour refresh.
+    else if (metaRetries++ < 10) setTimeout(loadMeta, 60_000)
     else if (!revenue) revState = 'down'
   } catch { if (!revenue) revState = 'down' }
   rebuild(); render()
 }
 
 // ── render ───────────────────────────────────────────────────────────────────
+const stockRevenueView = () => view.mode === 'revenue' && view.tab === 'tradfi'
+
 function current() {
   const kind = ['perp', 'hip3', 'spot'].includes(view.tab) ? view.tab : 'all'
   const group = view.tab === 'crypto' || view.tab === 'tradfi' ? view.tab : null
@@ -118,7 +126,10 @@ function current() {
   // and one row per token, since revenue belongs to the token, not to each of its markets.
   // A token shows here when DefiLlama has it doing something: revenue OR fees. Morpho keeps
   // $0 of ~$20M a month in fees and belongs on this table; an entry at $0 and $0 does not.
-  if (view.mode === 'revenue') list = onePerToken(list.filter(r => (r.rev30 ?? 0) > 0 || (r.rev24 ?? 0) > 0 || (r.fee30 ?? 0) > 0))
+  // Stocks report by QUARTER: on the TradFi tab the Revenue view is theirs (SEC filings);
+  // elsewhere it is crypto's daily figures, and stocks are not mixed in.
+  if (view.mode === 'revenue' && stockRevenueView()) list = list.filter(r => r.sq != null)
+  else if (view.mode === 'revenue') list = onePerToken(list.filter(r => (r.rev30 ?? 0) > 0 || (r.rev24 ?? 0) > 0 || (r.fee30 ?? 0) > 0))
   return list
 }
 
@@ -134,10 +145,13 @@ function renderCards(list) {
   // Summed once per token: PUMP's perp and its wrapped spot would otherwise count it twice.
   const revRows = onePerToken(list.filter(r => r.rev24 != null))
   const rev = revRows.reduce((a, r) => a + r.rev24, 0), revN = revRows.length
+  const stk = list.filter(r => r.sttm != null), stkSum = stk.reduce((a, r) => a + r.sttm, 0)
   $('mkCards').innerHTML = [
     card('Volume 24h', money(s.vol) + floor, `${s.volN} markets`),
     card('Open interest', s.oiN ? money(s.oi) + floor : '—', s.oiN ? `${s.oiN} perp markets` : 'spot has none'),
-    card('Revenue 24h', revN ? money(rev) : '—', revN ? `${revN} protocol tokens · DefiLlama` : revState === 'loading' ? 'loading…' : revState === 'ok' ? 'no protocol tokens here' : 'not available'),
+    stockRevenueView()
+      ? card('Revenue, 12 months', stk.length ? money(stkSum) : '—', stk.length ? `${stk.length} companies · SEC filings` : stocks ? 'none reported here' : 'loading…')
+      : card('Revenue 24h', revN ? money(rev) : '—', revN ? `${revN} protocol tokens · DefiLlama` : revState === 'loading' ? 'loading…' : revState === 'ok' ? 'no protocol tokens here' : 'not available'),
     card('Top gainer 24h', mover(s.gainer), s.gainer ? money(s.gainer.vol24) + ' volume' : 'min. $100K volume'),
     card('Top loser 24h', mover(s.loser), s.loser ? money(s.loser.vol24) + ' volume' : 'min. $100K volume'),
   ].join('')
@@ -152,8 +166,8 @@ function renderControls() {
   }
   for (const b of $('mkStrict').querySelectorAll('button')) b.classList.toggle('is-on', (b.dataset.strict === '1') === view.strict)
   for (const b of $('mkMode').querySelectorAll('button')) b.classList.toggle('is-on', b.dataset.mode === view.mode)
-  const sorts = view.mode === 'revenue' ? ['rev24', 'rev7', 'rev30', 'fee30', 'mcap'] : ['vol24', 'oi', 'mcap', 'chg24', 'funding1h', 'rev24']
-  const LBL = { fee30: 'Fees 30d', vol24: 'Volume', oi: 'Open interest', mcap: 'Market cap', chg24: '24h change', funding1h: 'Funding', rev24: 'Revenue 24h', rev7: 'Revenue 7d', rev30: 'Revenue 30d' }
+  const sorts = stockRevenueView() ? ['sq', 'sttm', 'syoy'] : view.mode === 'revenue' ? ['rev24', 'rev7', 'rev30', 'fee30', 'mcap'] : ['vol24', 'oi', 'mcap', 'chg24', 'funding1h', 'rev24']
+  const LBL = { sq: 'Last quarter', sttm: 'Last 12 months', syoy: 'Growth YoY', fee30: 'Fees 30d', vol24: 'Volume', oi: 'Open interest', mcap: 'Market cap', chg24: '24h change', funding1h: 'Funding', rev24: 'Revenue 24h', rev7: 'Revenue 7d', rev30: 'Revenue 30d' }
   $('mkRankBtns').innerHTML = sorts.map(k => `<button data-sort="${k}" class="${k === view.sort ? 'is-on' : ''}">${LBL[k]}</button>`).join('')
 
   // Category chips: the sectors of the rows in view (tab + strict, before the sector itself),
@@ -188,16 +202,28 @@ function renderControls() {
 
 const COLS = {
   market:  [['price', 'Price'], ['chg24', '24h'], ['vol24', 'Volume 24h'], ['oi', 'Open interest'], ['mcap', 'Market cap'], ['funding1h', 'Funding 1h']],
+  stocks:  [['sq', 'Revenue, last quarter'], ['sqPeriod', 'Quarter'], ['sttm', 'Revenue, 12 months'], ['syoy', 'Growth YoY'], ['chg24', '24h']],
   revenue: [['rev24', 'Revenue 24h'], ['rev7', 'Revenue 7d'], ['rev30', 'Revenue 30d'], ['fee30', 'Fees 30d'], ['mcap', 'Market cap'], ['chg24', '24h']],
 }
-const cellFor = (k, r) => k === 'price' ? price(r.price) : k === 'chg24' ? chg(r.chg24) : k === 'funding1h' ? fund(r.funding1h)
+// "Apr–Jun 2026" from a quarter's dates; * when it is derived (a fiscal Q4, inside the 10-K).
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const qLabel = (r) => {
+  if (!r.sqStart || !r.sqEnd) return dash
+  const a = new Date(r.sqStart + 'T00:00:00Z'), b = new Date(r.sqEnd + 'T00:00:00Z')
+  const txt = `${MON[a.getUTCMonth()]}–${MON[b.getUTCMonth()]} ${b.getUTCFullYear()}`
+  return r.sqDerived
+    ? `<span class="mk-dim" title="Fiscal Q4: the annual report minus the three quarters filed before it">${txt}*</span>`
+    : `<span class="mk-dim">${txt}</span>`
+}
+const cellFor = (k, r) => k === 'sqPeriod' ? qLabel(r) : k === 'syoy' ? chg(r.syoy)
+  : k === 'price' ? price(r.price) : k === 'chg24' ? chg(r.chg24) : k === 'funding1h' ? fund(r.funding1h)
   : k === 'mcap' && r.mcapFrom === 'coingecko' && r.mcap != null ? `<span title="Market cap from CoinGecko">${money(r.mcap)}</span>`
   : m(r[k])
 
 function renderTable(list) {
-  const cols = COLS[view.mode]
+  const cols = stockRevenueView() ? COLS.stocks : COLS[view.mode]
   $('mkHead').innerHTML = `<th class="mk-c-rank">#</th><th class="mk-c-asset">Asset</th>` +
-    cols.map(([k, l]) => `<th data-sort="${k}" class="${k === view.sort ? 'is-on' : ''}" data-dir="${k === view.sort ? (view.asc ? '▴' : '▾') : ''}">${l}</th>`).join('') +
+    cols.map(([k, l]) => k === 'sqPeriod' ? `<th>${l}</th>` : `<th data-sort="${k}" class="${k === view.sort ? 'is-on' : ''}" data-dir="${k === view.sort ? (view.asc ? '▴' : '▾') : ''}">${l}</th>`).join('') +
     `<th class="mk-c-cat">Category</th>`
   const sorted = sortRows(list, view.sort, view.asc)
   const page = sorted.slice(0, view.shown)
@@ -216,10 +242,19 @@ function renderTable(list) {
       ${catCell(r)}
     </tr>`).join('')
     : `<tr><td colspan="${cols.length + 3}" class="mk-empty">${!rows.length ? 'Loading markets from Hyperliquid…'
+        : stockRevenueView() && !stocks ? (revState === 'down' ? 'Company revenue is not available right now.' : 'Loading revenue reported to the SEC…')
         : view.mode === 'revenue' && revState !== 'ok' ? (revState === 'loading' ? 'Loading revenue from DefiLlama…' : 'Revenue is not available right now.')
         : 'Nothing matches.'}</td></tr>`
   $('mkMore').hidden = sorted.length <= view.shown
   $('mkMore').textContent = `Show more (${sorted.length - view.shown} left)`
+}
+
+function renderHint() {
+  const h = $('mkHint')
+  if (!h) return
+  const show = view.mode === 'revenue' && view.tab !== 'tradfi'
+  h.hidden = !show
+  if (show) h.innerHTML = `Crypto protocols, by day. Stocks report revenue by quarter — <button data-tab="tradfi">see them on the TradFi tab</button>.`
 }
 
 function renderStatus() {
@@ -233,11 +268,20 @@ function render() {
   renderControls()
   renderCards(list)
   renderTable(list)
+  renderHint()
   renderStatus()
 }
 
 // ── controls ─────────────────────────────────────────────────────────────────
-const set = (patch) => { view = { ...view, ...patch, shown: PAGE }; render() }
+const STOCK_SORTS = ['sq', 'sttm', 'syoy']
+const set = (patch) => {
+  view = { ...view, ...patch, shown: PAGE }
+  // Keep the sort meaningful across tab/mode changes: the stock revenue view ranks by its own
+  // columns, and the crypto one cannot rank by a stock's quarter.
+  if (stockRevenueView() && !STOCK_SORTS.includes(view.sort)) view = { ...view, sort: 'sq', asc: false }
+  else if (!stockRevenueView() && STOCK_SORTS.includes(view.sort)) view = { ...view, sort: view.mode === 'revenue' ? 'rev24' : 'vol24', asc: false }
+  render()
+}
 $('mkTabs').addEventListener('click', e => { const b = e.target.closest('button[data-tab]'); if (b) set({ tab: b.dataset.tab, dex: null, sector: null }) })
 $('mkStrict').addEventListener('click', e => { const b = e.target.closest('button[data-strict]'); if (b) set({ strict: b.dataset.strict === '1' }) })
 $('mkMode').addEventListener('click', e => {
@@ -294,6 +338,7 @@ $('mkRankBtns').addEventListener('click', e => { const b = e.target.closest('but
 $('mkHead').addEventListener('click', e => { const th = e.target.closest('th[data-sort]'); if (th) setSort(th.dataset.sort) })
 let qt
 $('mkSearch').addEventListener('input', e => { clearTimeout(qt); qt = setTimeout(() => set({ q: e.target.value }), 120) })
+$('mkHint')?.addEventListener('click', e => { if (e.target.closest('button[data-tab]')) set({ tab: 'tradfi', dex: null, sector: null }) })
 $('mkMore').addEventListener('click', () => { view.shown += PAGE; render() })
 
 // Nav (same behaviour as the landing)

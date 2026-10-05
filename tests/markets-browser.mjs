@@ -56,6 +56,8 @@ await ctx.route(HL_HOST, (route) => {
 await ctx.route('**/markets-meta', (route) => route.fulfill({ status: 200, contentType: 'application/json', json: { revenue: {
   HYPE: { name: 'Hyperliquid', category: 'Derivatives', r24: 670000, r7: 9.9e6, r30: 5.2e7 },
   DOGE: { name: 'Dogeish', category: 'Launchpad', r24: 1000, r7: 7000, r30: 30000 },
+}, stocks: {
+  NVDA: { name: 'NVIDIA CORP', q: 96221e6, qStart: '2026-04-27', qEnd: '2026-07-26', ttm: 302969e6, yoy: 105.9 },
 } } }))
 const icons = []
 await ctx.route('**/icon/**', (route) => { icons.push(route.request().url()); return route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg"/>' }) })
@@ -124,6 +126,21 @@ const strictN = await p.evaluate(() => +document.querySelector('#mkTabs button[d
 await p.click('#mkStrict button[data-strict="0"]')
 const allN = await p.evaluate(() => +document.querySelector('#mkTabs button[data-tab="all"] i').textContent)
 ok('Strict by default; All adds the untraded spot token', allN === strictN + 1, { strictN, allN })
+
+console.log('\n-- stocks: reported revenue on the TradFi tab --')
+await p.click('#mkMode button[data-mode="revenue"]')
+ok('the crypto revenue view points to the TradFi tab for stocks', await p.evaluate(() => !document.getElementById('mkHint').hidden && /TradFi/.test(document.getElementById('mkHint').textContent)))
+await p.click('#mkHint button[data-tab="tradfi"]')
+const stockRows = await syms()
+ok('TradFi revenue lists the companies with SEC revenue', JSON.stringify(stockRows) === JSON.stringify(['NVDA']), stockRows)
+const heads = await p.evaluate(() => [...document.querySelectorAll('#mkHead th')].map(t => t.textContent.trim()))
+ok('with quarterly columns, not 24h/7d/30d', heads.includes('Revenue, last quarter') && heads.includes('Revenue, 12 months') && !heads.includes('Revenue 24h'), heads)
+ok('last quarter $96.22B, Apr–Jul 2026, 12 months $302.97B, +105.90%',
+  await cell('NVDA', 2) === '$96.22B' && await cell('NVDA', 3) === 'Apr–Jul 2026' && await cell('NVDA', 4) === '$302.97B' && await cell('NVDA', 5) === '+105.90%',
+  [await cell('NVDA', 2), await cell('NVDA', 3), await cell('NVDA', 4), await cell('NVDA', 5)])
+ok('ranked by last quarter', await p.evaluate(() => document.querySelector('#mkRankBtns button.is-on')?.dataset.sort) === 'sq')
+await p.click('#mkMode button[data-mode="market"]')
+await p.click('#mkTabs button[data-tab="all"]')
 await p.click('#mkStrict button[data-strict="1"]')
 
 console.log('\n-- the page --')

@@ -196,10 +196,30 @@ function strategyPlugin() {
               globalThis.__devCg = L.cgForHyperliquid(pages)
             }
             const [rev, lite, paid] = await Promise.all([get(L.LLAMA_FEES_URL), get(L.LLAMA_LITE_URL), get(L.LLAMA_FEESPAID_URL).catch(() => null)])
+            // Stocks (SEC): once per dev session, a handful of tickers so dev stays quick.
+            if (!globalThis.__devSec) {
+              const S = await import('./src/secrev.js')
+              const UA = process.env.SEC_CONTACT || 'InsolventTerminal/1.0 (+https://insolvent.trade)'
+              const list = await fetch(S.SEC_TICKERS_URL, { headers: { 'User-Agent': UA } }).then(r => r.json()).catch(() => ({}))
+              const byT = new Map(Object.values(list).map(x => [x.ticker, x]))
+              const out = {}
+              for (const tk of ['NVDA', 'TSLA', 'AAPL', 'MSFT', 'COIN', 'HOOD', 'MSTR', 'AMD', 'META', 'GOOGL', 'AMZN', 'PLTR', 'INTC', 'MU', 'ORCL', 'CRCL']) {
+                const co = byT.get(tk); if (!co) continue
+                const by = {}
+                for (const c of S.SEC_CONCEPTS) {
+                  await new Promise(r => setTimeout(r, 150))
+                  const r = await fetch(S.secConceptUrl(co.cik_str, c), { headers: { 'User-Agent': UA } }).catch(() => null)
+                  if (r?.ok) by[c] = (await r.json())?.units?.USD ?? []
+                }
+                const s = S.companyRevenue(by); if (s) out[tk] = { name: co.title, ...s }
+              }
+              globalThis.__devSec = out
+            }
             const cgTop = globalThis.__devCg
             return sendJson(res, 200, {
               revenue: L.verifyRevenue(L.buildRevenue(rev, lite, paid).bySym, cgTop).bySym,
               cg: Object.fromEntries(Object.entries(cgTop).map(([s, x]) => [s, [x.id, x.mcap]])),
+              stocks: globalThis.__devSec,
               at: Date.now(), source: 'DefiLlama, CoinGecko',
             })
           } catch { return sendJson(res, 503, { revenue: null }) }

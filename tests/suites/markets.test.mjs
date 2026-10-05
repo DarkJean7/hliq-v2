@@ -259,5 +259,41 @@ console.log(nl + '-- the right token for a ticker, and fees beside revenue --')
   t('the Revenue view lists tokens with revenue OR fees', /\(r\.fee30 \?\? 0\) > 0/.test(JS) && JS.includes("['fee30', 'Fees 30d']"))
 }
 
+console.log(nl + '-- stocks: revenue reported to the SEC (src/secrev.js) --')
+{
+  const S = await import('../../src/secrev.js')
+  // Microsoft's real FY2026 figures ($M): three 10-Q quarters, and a 10-K year whose last
+  // quarter is never filed on its own. The same quarter refiled later must not double.
+  const f = (start, end, val, filed) => ({ start, end, val: val * 1e6, filed })
+  const MSFT = [
+    f('2024-04-01', '2024-06-30', 64727, '2024-07-30'),
+    f('2024-07-01', '2024-09-30', 65585, '2024-10-30'), f('2024-10-01', '2024-12-31', 69632, '2025-01-29'),
+    f('2025-01-01', '2025-03-31', 70066, '2025-04-30'), f('2024-07-01', '2025-06-30', 281724, '2025-07-30'),
+    f('2025-07-01', '2025-09-30', 77673, '2025-10-29'), f('2025-10-01', '2025-12-31', 81273, '2026-01-28'),
+    f('2025-10-01', '2025-12-31', 81273, '2026-07-29'),   // refiled as a comparative
+    f('2026-01-01', '2026-03-31', 82886, '2026-04-29'), f('2025-07-01', '2026-03-31', 241832, '2026-04-29'),
+    f('2025-07-01', '2026-06-30', 331839, '2026-07-29'),
+  ]
+  const series = S.quarterSeries(MSFT)
+  const q4 = series.find(q => q.end === '2026-06-30')
+  t('the fiscal Q4 is derived from the 10-K: 331,839 − 77,673 − 81,273 − 82,886 = 90,007', q4?.derived && Math.round(q4.val / 1e6) === 90007, q4)
+  t('a 9-month year-to-date figure is not taken for a quarter', !series.some(q => q.start === '2025-07-01' && q.end === '2026-03-31'))
+  t('a quarter refiled later is counted once', series.filter(q => q.end === '2025-12-31').length === 1)
+  const sum = S.summarizeRevenue(series)
+  t('last quarter, twelve months, growth year on year', sum.qEnd === '2026-06-30' && Math.round(sum.ttm / 1e6) === 331839 && Math.abs(sum.yoy - (90007 / (281724 - 65585 - 69632 - 70066) - 1) * 100) < 0.01, sum)
+  t('no twelve months across a gap', S.summarizeRevenue([{ start: '2025-01-01', end: '2025-03-31', val: 1 }, { start: '2025-07-01', end: '2025-09-30', val: 1 }, { start: '2025-10-01', end: '2025-12-31', val: 1 }, { start: '2026-01-01', end: '2026-03-31', val: 1 }]).ttm === null)
+  t('a derived Q4 that comes out negative is dropped, not shown',
+    !S.quarterSeries([f('2025-01-01', '2025-03-31', 50, 'a'), f('2025-04-01', '2025-06-30', 50, 'b'), f('2025-07-01', '2025-09-30', 50, 'c'), f('2025-01-01', '2025-12-31', 100, 'd')]).some(q => q.derived))
+  t('of several concepts, the one with the latest quarter wins',
+    S.companyRevenue({ Revenues: [f('2020-01-01', '2020-03-31', 5, 'x')], RevenueFromContractWithCustomerExcludingAssessedTax: MSFT }).concept === 'RevenueFromContractWithCustomerExcludingAssessedTax')
+  const rowsS = M.withStockRevenue([{ sym: 'NVDA', hlCat: 'stocks' }, { sym: 'NVDA', hlCat: 'crypto' }],
+    { NVDA: { name: 'NVIDIA CORP', q: 9.6e10, qStart: '2026-04-27', qEnd: '2026-07-26', ttm: 3.0e11, yoy: 105.9 } })
+  t('only a market HL calls a stock takes a company\'s revenue', rowsS[0].sq === 9.6e10 && rowsS[1].sq === undefined)
+  t('the server fetches the SEC once a day, one worker, identified, paced',
+    PROD.includes('const SEC_TTL = 24 * 60 * 60_000') && PROD.includes("const SEC_LOCK = SEC_FILE + '.lock'") && PROD.includes("process.env.SEC_CONTACT") && PROD.includes('setTimeout(r, 170)'))
+  t('the TradFi tab has its own revenue columns; crypto revenue does not mix stocks in',
+    JS.includes("const stockRevenueView = () => view.mode === 'revenue' && view.tab === 'tradfi'") && JS.includes("['sq', 'Revenue, last quarter']"))
+}
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
