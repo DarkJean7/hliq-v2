@@ -28,6 +28,7 @@ let revenue = null     // /markets-meta bySym, or null while unknown
 let cg = null          // /markets-meta cg: { SYM: [coingecko id, market cap] }
 let stocks = null      // /markets-meta stocks: SEC-reported revenue by ticker, or null while unknown
 let metaRetries = 0
+let sic = null         // /markets-meta sic: { TICKER: [SIC code, SEC industry name] }
 let revState = 'loading'
 
 // ── formatting ───────────────────────────────────────────────────────────────
@@ -66,7 +67,7 @@ const post = (body) => fetch(API, {
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
 const rebuild = () => {
-  rows = buildMarkets({ core: last.core, spot: last.spot, hip3: last.list.map(d => hip3Cache.get(d.name)).filter(Boolean), cats, revenue, cg, stocks })
+  rows = buildMarkets({ core: last.core, spot: last.spot, hip3: last.list.map(d => hip3Cache.get(d.name)).filter(Boolean), cats, revenue, cg, stocks, sic })
 }
 
 /**
@@ -106,6 +107,7 @@ async function loadMeta() {
     const j = r.ok ? await r.json() : null
     if (j?.revenue && typeof j.revenue === 'object') { revenue = j.revenue; revState = 'ok' }
     if (j?.cg && typeof j.cg === 'object') cg = j.cg
+    if (j?.sic && typeof j.sic === 'object') sic = j.sic
     if (j?.stocks && typeof j.stocks === 'object') stocks = j.stocks
     // The server fetches the SEC once a day and answers without stocks while it does; ask
     // again in a minute rather than waiting out the half-hour refresh.
@@ -231,7 +233,7 @@ function renderTable(list) {
     : r.kind === 'spot' ? `<em class="mk-b mk-b--spot">Spot${r.wrapped ? ' · ' + esc(r.wrapped) : ''}</em>`
     : `<em class="mk-b">Perp${r.maxLev ? ' · ' + r.maxLev + 'x' : ''}</em>`
   const catCell = (r) => {
-    const extra = (r.tags ?? []).map(t => SECTOR_LABEL[t]).filter(l => l && l !== r.category).slice(0, 2)
+    const extra = (r.tags ?? []).map(t => SECTOR_LABEL[t]).filter(l => l && l !== r.category).slice(0, 3)
     return `<td class="mk-c-cat">${r.category ? `<button class="mk-cat" data-cat="${esc((r.tags ?? [])[0] ?? '')}">${esc(r.category)}</button>` : dash}${extra.map(l => `<span class="mk-tag">${esc(l)}</span>`).join('')}</td>`
   }
   const sub = (r) => view.mode === 'revenue' && r.revName ? r.revName : (r.name && r.name !== r.sym ? r.name : '')

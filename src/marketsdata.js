@@ -270,13 +270,13 @@ export function dedupeHip3(rows) {
  * `hip3` is [{ dex, label, data: [meta, ctxs] }]; a dex that failed is simply not in it, and
  * the caller reports how many of how many loaded rather than presenting a partial list as all.
  */
-export function buildMarkets({ core = null, spot = null, hip3 = [], cats = null, revenue = null, cg = null, stocks = null } = {}) {
+export function buildMarkets({ core = null, spot = null, hip3 = [], cats = null, revenue = null, cg = null, stocks = null, sic = null } = {}) {
   const perps = core ? perpRows(core[0], core[1]) : []
   const perpSyms = new Set(perps.map(p => p.sym))
   const spots = (spot ? spotRows(spot[0], spot[1]) : [])
     .map(r => { const d = spotDisplayName(r.sym, perpSyms); return d === r.sym ? r : { ...r, sym: d, wrapped: r.sym } })
   const hips = hip3.flatMap(h => perpRows(h.data?.[0], h.data?.[1], h.dex, h.label))
-  return withStockRevenue(withCgMarketCaps(categorize([...linkMarketCaps(perps, spots), ...spots, ...dedupeHip3(hips)], cats, revenue), cg), stocks)
+  return withStockRevenue(withCgMarketCaps(categorize([...linkMarketCaps(perps, spots), ...spots, ...dedupeHip3(hips)], cats, revenue, sic), cg), stocks)
 }
 
 /**
@@ -320,7 +320,7 @@ export function withCgMarketCaps(rows, cg) {
  * `revenue` is src/llama.js bySym; only crypto rows take it (a stock's ticker can collide
  * with a protocol token's). Null `revenue` means it did not load — every rev* stays null.
  */
-export function categorize(rows, cats = null, revenue = null) {
+export function categorize(rows, cats = null, revenue = null, sic = null) {
   const catOf = new Map((Array.isArray(cats) ? cats : []).map(([c, k]) => [c, k]))
   const stockSyms = new Set([...catOf].filter(([, k]) => normHlCat(k) === 'stocks').map(([c]) => c.replace(/^.*:/, '')))
   const perpSyms = new Set(rows.filter(r => r.kind === 'perp').map(r => r.sym))
@@ -338,7 +338,7 @@ export function categorize(rows, cats = null, revenue = null) {
     // DefiLlama's category is evidence only when the protocol is doing something: an entry
     // with $0 revenue AND $0 fees ("Kaito Capital Launchpad") does not make KAITO a launchpad.
     const active = rev && ((rev.r30 ?? 0) > 0 || (rev.f30 ?? 0) > 0)
-    const c = shadow ? { group: 'crypto', hlCat: 'crypto', tags: [] } : classify({ sym: r.sym, hlCat: hl, llamaCat: active ? rev.category : null })
+    const c = shadow ? { group: 'crypto', hlCat: 'crypto', tags: [] } : classify({ sym: r.sym, hlCat: hl, llamaCat: active ? rev.category : null, sic: sic?.[r.sym]?.[0] ?? null })
     const useRev = c.group === 'crypto' && rev
     return {
       ...r, group: c.group, hlCat: c.hlCat, tags: c.tags, shadow,

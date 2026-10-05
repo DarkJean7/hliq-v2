@@ -107,10 +107,11 @@ const SEC_TTL = 24 * 60 * 60_000
 const SEC_FILE = join(__dirname, 'data', 'secrev.json')
 const SEC_LOCK = SEC_FILE + '.lock'
 const SEC_UA = process.env.SEC_CONTACT || 'InsolventTerminal/1.0 (+https://insolvent.trade)'
-let secData = null             // { at, stocks: { TICKER: { name, q, qStart, qEnd, qDerived, ttm, yoy } } }
+let secData = null             // { at, stocks: { TICKER: { name, q, qStart, qEnd, qDerived, ttm, yoy } }, sic: { TICKER: [code, name] } }
 let secInflight = null
 function secFromDisk() {
-  try { const d = JSON.parse(readFileSync(SEC_FILE, 'utf8')); if (d?.stocks && d.at && (!secData || d.at > secData.at)) secData = d } catch {}
+  // A file from before industry codes were fetched has no `sic`; it counts as stale.
+  try { const d = JSON.parse(readFileSync(SEC_FILE, 'utf8')); if (d?.stocks && d.at && (!secData || d.at > secData.at)) secData = d.sic ? d : { ...d, at: 0 } } catch {}
   return !!secData
 }
 secFromDisk()
@@ -124,7 +125,7 @@ function secRefresh() {
     const tickers = [...new Set((Array.isArray(cats) ? cats : []).filter(([, k]) => /^stocks?$/i.test(String(k))).map(([c]) => String(c).replace(/^.*:/, '')))]
     const secList = await fetch(SEC_TICKERS_URL, { headers: { 'User-Agent': SEC_UA }, signal: AbortSignal.timeout(30_000) }).then(r => r.json())
     const byTicker = new Map(Object.values(secList ?? {}).map(x => [x.ticker, x]))
-    const stocks = {}
+    const stocks = {}, sic = {}
     for (const tk of tickers) {
       const co = byTicker.get(tk)
       if (!co) continue                                  // not an SEC filer (Tencent, SK Hynix…) or an ETF
@@ -138,9 +139,16 @@ function secRefresh() {
       }
       const v = companyRevenue(byConcept)
       if (v) stocks[tk] = { name: co.title, ...v }
+      // The company's SEC industry code, for its sector on /markets (src/sectors.js sicSectors).
+      await new Promise(r => setTimeout(r, 170))
+      try {
+        const r = await fetch(`https://data.sec.gov/submissions/CIK${String(co.cik_str).padStart(10, '0')}.json`, { headers: { 'User-Agent': SEC_UA }, signal: AbortSignal.timeout(20_000) })
+        const sub = r.ok ? await r.json() : null
+        if (sub?.sic) sic[tk] = [Number(sub.sic), String(sub.sicDescription ?? '')]
+      } catch {}
     }
     if (!Object.keys(stocks).length) throw new Error('no company answered')
-    secData = { at: Date.now(), stocks }
+    secData = { at: Date.now(), stocks, sic }
     writeAtomic(SEC_FILE, JSON.stringify(secData))
   })().finally(() => { try { if (readFileSync(SEC_LOCK, 'utf8') === String(process.pid)) unlinkSync(SEC_LOCK) } catch {} })
     .catch(e => console.warn('[markets-meta] SEC refresh failed:', e.message))
@@ -156,7 +164,7 @@ function metaJson() {
     // Ticker → [CoinGecko id, market cap]; the page uses the cap for perps HL gives none.
     const cg = Object.fromEntries(Object.entries(cgData.top).map(([s, v]) => [s, [v.id, v.mcap]]))
     // Stocks: null until the SEC list has loaded — the page then says so rather than show dashes as fact.
-    metaBody = { key, body: JSON.stringify({ revenue: bySym, cg, stocks: secData?.stocks ?? null, at: llamaData.at, cgAt: cgData.at, secAt: secData?.at ?? null, source: 'DefiLlama, CoinGecko, SEC' }) }
+    metaBody = { key, body: JSON.stringify({ revenue: bySym, cg, stocks: secData?.stocks ?? null, sic: secData?.sic ?? null, at: llamaData.at, cgAt: cgData.at, secAt: secData?.at ?? null, source: 'DefiLlama, CoinGecko, SEC' }) }
   }
   return metaBody.body
 }

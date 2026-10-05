@@ -212,6 +212,8 @@ function strategyPlugin() {
                   if (r?.ok) by[c] = (await r.json())?.units?.USD ?? []
                 }
                 const s = S.companyRevenue(by); if (s) out[tk] = { name: co.title, ...s }
+                const sub = await fetch(`https://data.sec.gov/submissions/CIK${String(co.cik_str).padStart(10, '0')}.json`, { headers: { 'User-Agent': UA } }).then(r => r.json()).catch(() => null)
+                if (sub?.sic) (globalThis.__devSic ??= {})[tk] = [Number(sub.sic), String(sub.sicDescription ?? '')]
               }
               globalThis.__devSec = out
             }
@@ -220,6 +222,7 @@ function strategyPlugin() {
               revenue: L.verifyRevenue(L.buildRevenue(rev, lite, paid).bySym, cgTop).bySym,
               cg: Object.fromEntries(Object.entries(cgTop).map(([s, x]) => [s, [x.id, x.mcap]])),
               stocks: globalThis.__devSec,
+              sic: globalThis.__devSic ?? null,
               at: Date.now(), source: 'DefiLlama, CoinGecko',
             })
           } catch { return sendJson(res, 503, { revenue: null }) }

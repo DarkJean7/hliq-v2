@@ -259,6 +259,36 @@ console.log(nl + '-- the right token for a ticker, and fees beside revenue --')
   t('the Revenue view lists tokens with revenue OR fees', /\(r\.fee30 \?\? 0\) > 0/.test(JS) && JS.includes("['fee30', 'Fees 30d']"))
 }
 
+console.log(nl + '-- stocks: sectors from the SEC industry code, and our lists --')
+{
+  const { sicSectors, classify } = await import('../../src/sectors.js')
+  const has = (code, k) => sicSectors(code).includes(k)
+  // The codes the SEC actually files for these companies.
+  t('Chevron 2911 petroleum refining → Energy', has(2911, 'energy'))
+  t('Costco 5331 variety stores → Consumer', has(5331, 'consumer'))
+  t('Eli Lilly 2834 → Healthcare; Hims 8011 → Healthcare', has(2834, 'healthcare') && has(8011, 'healthcare'))
+  t('Vistra 4911 → Utilities', has(4911, 'utilities'))
+  t('Rocket Lab 3760 and RTX 3724 → Aerospace & defense', has(3760, 'aerospace') && has(3724, 'aerospace'))
+  t('NVIDIA 3674 → Semiconductors and Tech', has(3674, 'semis') && has(3674, 'tech'))
+  t('Coinbase 6199, Blackstone 6282 → Financials', has(6199, 'financials') && has(6282, 'financials'))
+  t('Netflix 7841 → Telecom & media; Microsoft 7372 → Tech', has(7841, 'media') && has(7372, 'tech'))
+  t('Tesla 3711 → Autos; USA Rare Earth 1000 → Materials', has(3711, 'autos') && has(1000, 'materials'))
+  t('no code, no guess', sicSectors(null).length === 0 && sicSectors(0).length === 0)
+  t('the code applies to stocks only, never to a crypto token with the same ticker',
+    classify({ sym: 'CVX', hlCat: 'stocks', sic: 2911 }).tags.includes('energy') && !classify({ sym: 'CVX', sic: 2911 }).tags.includes('energy'))
+  t('non-SEC companies from our lists: SK Hynix → Semiconductors, Hyundai → Autos',
+    classify({ sym: 'SKHX', hlCat: 'stocks' }).tags.includes('semis') && classify({ sym: 'HYUNDAI', hlCat: 'stocks' }).tags.includes('autos'))
+  t('chip-equipment makers are Semiconductors despite their machinery code (ASML 3559)',
+    classify({ sym: 'ASML', hlCat: 'stocks', sic: 3559 }).tags.includes('semis'))
+  t('ETFs are ETFs, and carry their theme: SMH → Semiconductors, XLE → Energy',
+    ['etf', 'semis'].every(k => classify({ sym: 'SMH', hlCat: 'stocks' }).tags.includes(k)) && ['etf', 'energy'].every(k => classify({ sym: 'XLE', hlCat: 'stocks' }).tags.includes(k)))
+  t('the server reads each company\'s industry code with its revenue, and refetches a cache from before',
+    PROD.includes('data.sec.gov/submissions/CIK') && PROD.includes('secData = d.sic ? d : { ...d, at: 0 }'))
+  const rowsC = M.buildMarkets({ hip3: [{ dex: 'xyz', label: 'XYZ', data: [{ universe: [{ name: 'xyz:CVX', maxLeverage: 10 }] }, [{ markPx: '150', prevDayPx: '149', dayNtlVlm: '1e6', openInterest: '1e4' }]] }],
+    cats: [['xyz:CVX', 'stocks']], sic: { CVX: [2911, 'Petroleum Refining'] } })
+  t('on the page: CVX is Stocks + Energy', rowsC[0].tags.includes('stocks') && rowsC[0].tags.includes('energy'), rowsC[0].tags)
+}
+
 console.log(nl + '-- stocks: revenue reported to the SEC (src/secrev.js) --')
 {
   const S = await import('../../src/secrev.js')

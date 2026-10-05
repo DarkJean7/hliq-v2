@@ -39,6 +39,16 @@ export const SECTORS = [
   { key: 'tech',        label: 'Tech',             group: 'tradfi' },
   { key: 'semis',       label: 'Semiconductors',   group: 'tradfi' },
   { key: 'cryptostocks', label: 'Crypto stocks',   group: 'tradfi' },
+  { key: 'financials',  label: 'Financials',       group: 'tradfi' },
+  { key: 'healthcare',  label: 'Healthcare',       group: 'tradfi' },
+  { key: 'consumer',    label: 'Consumer',         group: 'tradfi' },
+  { key: 'media',       label: 'Telecom & media',  group: 'tradfi' },
+  { key: 'industrials', label: 'Industrials',      group: 'tradfi' },
+  { key: 'aerospace',   label: 'Aerospace & defense', group: 'tradfi' },
+  { key: 'autos',       label: 'Autos',            group: 'tradfi' },
+  { key: 'utilities',   label: 'Utilities',        group: 'tradfi' },
+  { key: 'materials',   label: 'Materials & mining', group: 'tradfi' },
+  { key: 'etf',         label: 'ETFs',             group: 'tradfi' },
   { key: 'preipo',      label: 'Pre-IPO',          group: 'tradfi' },
   { key: 'indices',     label: 'Indices',          group: 'tradfi' },
   { key: 'metals',      label: 'Metals',           group: 'tradfi' },
@@ -72,8 +82,24 @@ export const CURATED = {
   hlnative: ['HYPE', 'PURR', 'HFUN', 'JEFF', 'PIP', 'CATBAL', 'KHYPE', 'LHYPE', 'STHYPE'],
   // ── stocks (applied only where Hyperliquid itself says "stocks") ──
   tech:    ['AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'NVDA', 'TSLA', 'AMD', 'NFLX', 'ORCL', 'PLTR', 'INTC', 'MU', 'AVGO', 'CRWV', 'SNDK', 'IONQ', 'NBIS', 'TCNT', 'BABA', 'UBER', 'SHOP', 'CRM', 'ADBE', 'SMCI', 'ARM', 'TSM', 'QCOM', 'DELL', 'IBM', 'SNOW', 'SPOT', 'RDDT', 'GPRO', 'SKHX', 'DRAM'],
-  semis:   ['NVDA', 'AMD', 'INTC', 'MU', 'AVGO', 'TSM', 'SMCI', 'SNDK', 'ARM', 'QCOM', 'SKHX', 'DRAM', 'ASML'],
-  cryptostocks: ['COIN', 'HOOD', 'MSTR', 'CRCL', 'BMNR', 'MARA', 'RIOT', 'GLXY', 'CIFR', 'SBET', 'BLSH', 'GEMI'],
+  semis:   ['NVDA', 'AMD', 'INTC', 'MU', 'AVGO', 'TSM', 'SMCI', 'SNDK', 'ARM', 'QCOM', 'SKHX', 'DRAM', 'ASML',
+            // chip-equipment makers, which the SEC files as industrial machinery or instruments
+            'LRCX', 'AMAT', 'KLAC', 'TER',
+            // memory and chips from companies that do not file with the SEC
+            'SMSN', 'KIOXIA', 'CXMT', 'GIGADEV', 'IBIDEN', 'SKHY',
+            // semiconductor ETFs
+            'SMH', 'SOXL'],
+  cryptostocks: ['COIN', 'HOOD', 'MSTR', 'CRCL', 'BMNR', 'MARA', 'RIOT', 'GLXY', 'CIFR', 'SBET', 'BLSH', 'GEMI', 'IREN', 'STRC'],
+  // ── stocks the SEC has no industry code for (not SEC filers), and ETFs by theme ──
+  stockTech:   ['TCNT', 'TENCENT', 'XIAOMI', 'SOFTBANK', 'MINIMAX', 'ZHIPU', 'IGV', 'MAGS'],
+  stockConsumer: ['SHEIN', 'BABA', 'MELI', 'EBAY'],
+  stockAutos:  ['HYUNDAI'],
+  stockIndustrials: ['UNITREE'],
+  stockEnergy: ['XLE'],
+  stockHealth: ['XBI'],
+  stockMaterials: ['GDX', 'URNM'],
+  stockRates:  ['TLT', 'USBOND'],
+  etf:     ['SMH', 'SOXL', 'XLE', 'XBI', 'GDX', 'URNM', 'IGV', 'MAGS', 'TLT', 'USBOND', 'EWJ', 'EWT', 'EWY', 'EWZ', 'KORU'],
 }
 
 /** Commodities sub-split, by ticker — HL calls all of them "commodities". */
@@ -81,9 +107,35 @@ export const METALS = new Set(['GOLD', 'SILVER', 'PALLADIUM', 'PLATINUM', 'COPPE
 export const ENERGY = new Set(['OIL', 'GAS', 'NATGAS', 'USOIL', 'WTI', 'BRENTOIL', 'CL', 'USENERGY', 'URANIUM', 'URNM'])
 
 const CRYPTO_ONLY = new Set(['l1', 'l2', 'defi', 'dex', 'derivatives', 'lending', 'launchpad', 'memes', 'infra', 'gaming', 'rwa', 'privacy', 'prediction', 'stables', 'hlnative'])
-const STOCK_ONLY  = new Set(['tech', 'semis', 'cryptostocks'])
+const STOCK_ONLY  = new Set(['tech', 'semis', 'cryptostocks', 'stockTech', 'stockConsumer', 'stockAutos', 'stockIndustrials', 'stockEnergy', 'stockHealth', 'stockMaterials', 'stockRates', 'etf'])
 /** Curated list keys that tag under another name. */
-const TAG_OF = { aiStocks: 'ai' }
+const TAG_OF = { aiStocks: 'ai', stockTech: 'tech', stockConsumer: 'consumer', stockAutos: 'autos', stockIndustrials: 'industrials',
+                 stockEnergy: 'energy', stockHealth: 'healthcare', stockMaterials: 'materials', stockRates: 'rates' }
+
+/**
+ * A company's SEC industry code (SIC, from its filings) → our sectors. This covers every
+ * SEC-filing stock without a hand-written list: Chevron 2911 petroleum refining is energy,
+ * Costco 5331 variety stores is consumer, Eli Lilly 2834 is healthcare. Ranges follow the
+ * SEC's own divisions; only those with a clear meaning are mapped, the rest add nothing.
+ */
+export function sicSectors(sic) {
+  const c = Number(sic)
+  if (!Number.isFinite(c) || c <= 0) return []
+  const within = (a, b) => c >= a && c <= b
+  if (c === 3674) return ['semis', 'tech']
+  if (within(3570, 3579) || c === 3672 || within(3660, 3669) || within(7370, 7379) || c === 3825 || c === 3827 || c === 3861) return ['tech']
+  if (within(3711, 3716)) return ['autos']
+  if (within(3720, 3729) || within(3760, 3769) || c === 3812) return ['aerospace', 'industrials']
+  if (within(1300, 1399) || within(2900, 2999) || within(5170, 5172) || within(4920, 4925)) return ['energy']
+  if (within(4900, 4919) || within(4926, 4999)) return ['utilities']
+  if (within(1000, 1099) || within(1400, 1499) || within(2800, 2829) || within(3300, 3356) || within(2600, 2699)) return ['materials']
+  if (within(2830, 2836) || within(3840, 3851) || within(8000, 8099) || c === 5122) return ['healthcare']
+  if (within(6000, 6799)) return ['financials']
+  if (within(4800, 4899) || within(7800, 7849) || within(2700, 2799)) return ['media']
+  if (within(5200, 5999) || within(2000, 2199) || within(2300, 2399) || within(7000, 7099) || within(7900, 7999)) return ['consumer']
+  if (within(3357, 3569) || within(3580, 3599) || within(3600, 3659) || within(4000, 4799) || within(8700, 8799)) return ['industrials']
+  return []
+}
 const MEMBERS = new Map()
 for (const [k, list] of Object.entries(CURATED)) for (const s of list) {
   if (!MEMBERS.has(s)) MEMBERS.set(s, new Set())
@@ -115,7 +167,7 @@ export const LLAMA_TO_SECTOR = {
  * `hlCat` is what Hyperliquid said for this market (null when it said nothing); `llamaCat`
  * the DefiLlama category of its token, when it has revenue.
  */
-export function classify({ sym, hlCat = null, llamaCat = null }) {
+export function classify({ sym, hlCat = null, llamaCat = null, sic = null }) {
   const cat = normHlCat(hlCat)
   const tradfi = !!cat && cat !== 'crypto'
   const tags = new Set()
@@ -131,5 +183,7 @@ export function classify({ sym, hlCat = null, llamaCat = null }) {
     tags.add(TAG_OF[k] ?? k)
   }
   if (!tradfi) for (const k of (LLAMA_TO_SECTOR[llamaCat] ?? [])) tags.add(k)
+  // A stock's industry, from the SEC's code for the company.
+  if (cat === 'stocks') for (const k of sicSectors(sic)) tags.add(k)
   return { group: tradfi ? 'tradfi' : 'crypto', hlCat: cat ?? (tradfi ? null : 'crypto'), tags: [...tags] }
 }
