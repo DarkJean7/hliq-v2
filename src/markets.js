@@ -162,8 +162,9 @@ function renderControls() {
   const n = new Map()
   for (const r of scope) for (const t of (r.tags ?? [])) n.set(t, (n.get(t) ?? 0) + 1)
   const chips = SECTORS.filter(s => n.get(s.key))
+  // The group label is a button too: it switches to that tab (Crypto / TradFi).
   const groupChip = (g, label) => chips.some(s => s.group === g || s.group === 'both')
-    ? `<span class="mk-sec-group">${label}</span>` : ''
+    ? `<button class="mk-sec-group${view.tab === g ? ' is-on' : ''}" data-tab="${g}" title="Show ${label} only">${label}</button>` : ''
   const chip = (s) => `<button data-sector="${s.key}" class="${view.sector === s.key ? 'is-on' : ''}">${esc(s.label)} <i>${n.get(s.key)}</i></button>`
   $('mkSectors').innerHTML = `<button data-sector="" class="${!view.sector ? 'is-on' : ''}">All categories</button>` +
     (view.tab !== 'tradfi' ? groupChip('crypto', 'Crypto') + chips.filter(s => s.group === 'crypto' || (s.group === 'both' && view.tab !== 'tradfi')).map(chip).join('') : '') +
@@ -238,7 +239,45 @@ $('mkMode').addEventListener('click', e => {
   set({ mode: b.dataset.mode, sort: b.dataset.mode === 'revenue' ? 'rev24' : 'vol24', asc: false })
 })
 $('mkDexes').addEventListener('click', e => { const b = e.target.closest('button[data-dex]'); if (b) set({ dex: b.dataset.dex || null }) })
-$('mkSectors').addEventListener('click', e => { const b = e.target.closest('button[data-sector]'); if (b) set({ sector: b.dataset.sector || null }) })
+$('mkSectors').addEventListener('click', e => {
+  if (dragged) return                                   // the end of a drag is not a click
+  const g = e.target.closest('button[data-tab]')
+  if (g) return set({ tab: g.dataset.tab, dex: null, sector: null })
+  const b = e.target.closest('button[data-sector]'); if (b) set({ sector: b.dataset.sector || null })
+})
+
+/**
+ * Sideways rows without a scrollbar: the mouse wheel scrolls them, and so does dragging with
+ * the mouse. Touch already swipes natively, so only a mouse pointer starts a drag. A drag that
+ * moved more than a few pixels swallows the click it ends on, or letting go over a chip would
+ * select it.
+ */
+let dragged = false
+function sideScroll(el) {
+  el.addEventListener('wheel', e => {
+    if (el.scrollWidth <= el.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return
+    el.scrollLeft += e.deltaY
+    e.preventDefault()
+  }, { passive: false })
+  let x0 = null, s0 = 0
+  el.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'mouse' || e.button !== 0) return
+    x0 = e.clientX; s0 = el.scrollLeft; dragged = false
+  })
+  window.addEventListener('pointermove', e => {
+    if (x0 == null) return
+    const dx = e.clientX - x0
+    if (!dragged && Math.abs(dx) > 5) { dragged = true; el.classList.add('is-dragging') }
+    if (dragged) el.scrollLeft = s0 - dx
+  })
+  window.addEventListener('pointerup', () => {
+    if (x0 == null) return
+    x0 = null; el.classList.remove('is-dragging')
+    setTimeout(() => { dragged = false }, 0)          // after the click this drag ends on
+  })
+}
+sideScroll($('mkSectors'))
+sideScroll($('mkCards'))
 // A category in the table is a shortcut to that filter.
 $('mkBody').addEventListener('click', e => { const b = e.target.closest('button[data-cat]'); if (b && b.dataset.cat) { set({ sector: b.dataset.cat }); $('mkSectors').scrollIntoView({ behavior: 'smooth', block: 'center' }) } })
 const setSort = (key) => {

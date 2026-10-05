@@ -147,3 +147,14 @@
   #mkRankBtns button { flex-shrink: 0; }
   .mk-tag { display: none; }
 }
+
+/* Category row: no scrollbar anywhere — wheel, drag (markets.js sideScroll) or swipe. */
+.mk-sectors { scrollbar-width: none; user-select: none; -webkit-user-select: none; cursor: grab; }
+.mk-sectors::-webkit-scrollbar { display: none; }
+.mk-sectors.is-dragging { cursor: grabbing; }
+.mk-sectors.is-dragging button { pointer-events: none; }
+/* The group label switches tabs, so it is a (quiet) button */
+.mk-sectors button.mk-sec-group { padding: 6px 8px; border: 0; background: transparent; border-radius: 8px; margin: 0 0 0 6px; color: var(--fg-3); }
+.mk-sectors button.mk-sec-group:hover { color: var(--fg); background: rgba(255,255,255,.05); }
+.mk-sectors button.mk-sec-group.is-on { color: var(--accent); background: rgba(255,138,42,.1); }
+.mk-cards { user-select: none; -webkit-user-select: none; }

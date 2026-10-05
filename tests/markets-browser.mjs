@@ -131,6 +131,51 @@ ok('no horizontal page scroll on a phone', await p.evaluate(() => document.docum
 ok('icons are only ever READ from the app cache', icons.length > 0 && icons.every(u => /[?&]ro=1(&|$)/.test(u)), icons.slice(0, 3))
 ok('no page errors', errs.length === 0, errs.slice(0, 3))
 
+console.log('\n-- desktop: the category row scrolls without a scrollbar --')
+{
+  const dctx = await browser.newContext({ viewport: { width: 900, height: 900 } })
+  try { await dctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
+
+  await dctx.route(HL_HOST, (route) => {
+    let b = {}
+    try { b = JSON.parse(route.request().postData() || '{}') } catch {}
+    const json = b.type === 'perpDexs' ? [null, { name: 'xyz', fullName: 'XYZ' }]
+      : b.type === 'perpCategories' ? [['xyz:NVDA', 'stocks'], ['xyz:SP500', 'indices']]
+      : b.type === 'metaAndAssetCtxs' ? (b.dex === 'xyz' ? XYZ : CORE)
+      : b.type === 'spotMetaAndAssetCtxs' ? SPOT : {}
+    return route.fulfill({ status: 200, contentType: 'application/json', json })
+  })
+  await dctx.route('**/markets-meta', (route) => route.fulfill({ status: 200, contentType: 'application/json', json: { revenue: {} } }))
+  await dctx.route('**/icon/**', (route) => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg"/>' }))
+  const d = await dctx.newPage()
+  d.on('pageerror', e => errs.push('desktop: ' + e.message))
+  await d.goto(URL_, { waitUntil: 'domcontentloaded' })
+  await d.waitForFunction(() => document.querySelectorAll('#mkSectors button[data-sector]').length > 3, null, { timeout: 20000 }).catch(() => {})
+  // Narrow the row so it has to scroll, whatever the fixture's chip count.
+  await d.evaluate(() => { document.getElementById('mkSectors').style.maxWidth = '260px' })
+  const row = d.locator('#mkSectors')
+  ok('no scrollbar on the category row', await d.evaluate(() => getComputedStyle(document.getElementById('mkSectors')).scrollbarWidth === 'none'))
+  const box = await row.boundingBox()
+  await d.mouse.move(box.x + 40, box.y + box.height / 2)
+  await d.mouse.wheel(0, 120)
+  const afterWheel = await d.evaluate(() => document.getElementById('mkSectors').scrollLeft)
+  ok('the mouse wheel scrolls it sideways', afterWheel > 0, afterWheel)
+  await d.evaluate(() => { document.getElementById('mkSectors').scrollLeft = 0 })
+  const before = await d.evaluate(() => [...document.querySelectorAll('#mkSectors button[data-sector].is-on')].map(b => b.dataset.sector).join())
+  await d.mouse.move(box.x + 200, box.y + box.height / 2)
+  await d.mouse.down()
+  await d.mouse.move(box.x + 120, box.y + box.height / 2, { steps: 6 })
+  await d.mouse.move(box.x + 40, box.y + box.height / 2, { steps: 6 })
+  await d.mouse.up()
+  ok('dragging scrolls it too', await d.evaluate(() => document.getElementById('mkSectors').scrollLeft) > 0)
+  ok('and letting go of a drag does not select the chip under the mouse',
+    await d.evaluate(() => [...document.querySelectorAll('#mkSectors button[data-sector].is-on')].map(b => b.dataset.sector).join()) === before)
+  await d.click('#mkSectors button.mk-sec-group[data-tab="crypto"]')
+  ok('the CRYPTO label is a button: it switches to the Crypto tab',
+    await d.evaluate(() => document.querySelector('#mkTabs button[data-tab="crypto"]').classList.contains('is-on')))
+  await dctx.close()
+}
+
 await p.goto('http://localhost:' + port + '/?home', { waitUntil: 'domcontentloaded' })
 ok('the landing links to it', await p.evaluate(() => !!document.querySelector('.ln-links a[href="/markets"]')))
 
