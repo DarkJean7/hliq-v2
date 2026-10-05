@@ -9,7 +9,7 @@ import { join, extname, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coinGeckoUpgrade } from './src/iconpick.js'
 import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, parseSeries } from './src/extmarkets.js'
-import { buildRevenue, LLAMA_FEES_URL, LLAMA_LITE_URL } from './src/llama.js'
+import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -33,25 +33,66 @@ const OFFEX_TTL = 60_000
 const offexFindCache = new Map()
 const OFFEX_FIND_TTL = 10 * 60_000
 
-// ── /markets-meta: protocol revenue by token, from DefiLlama (src/llama.js) ──────────────
-// Two feeds, ~11 MB together, boiled down to a few KB and held for half an hour. One copy
-// per worker serves every visitor; a stale copy is served while a fresh one is fetched, and
-// a failed refresh keeps the last good one rather than replacing it with nothing.
+// ── /markets-meta: revenue and fees by token (DefiLlama) + market caps (CoinGecko) ───────
+// src/llama.js has the rules. DefiLlama: three feeds, ~15 MB, boiled down to a few KB and
+// held for half an hour. CoinGecko: its top 2,000 coins, which say which coin a ticker MEANS
+// (so Strike's revenue is not shown on Starknet's STRK) and give perps a market cap. Its free
+// API throttles hard (429 after five quick pages), so the pages are fetched slowly, every six
+// hours, and kept on disk, shared by every worker and surviving a restart.
+// A stale copy is served while a fresh one is fetched; a failed refresh keeps the last good.
+// Revenue is NOT served until CoinGecko has loaded once: unverified, it would put the wrong
+// project's revenue back on a ticker.
 const LLAMA_TTL = 30 * 60_000
-let llamaCache = null          // { at, body }
+const CG_TTL    = 6 * 60 * 60_000
+const CG_FILE   = join(__dirname, 'data', 'cgtop.json')
+let llamaData = null           // { at, bySym }
 let llamaInflight = null
+let cgData = null              // { at, top }
+let cgInflight = null
+let metaBody = null            // { key, body } — composed once per data change
+try { const d = JSON.parse(readFileSync(CG_FILE, 'utf8')); if (d?.top && d.at) cgData = d } catch {}
 function llamaRefresh() {
   if (llamaInflight) return llamaInflight
   const get = (u) => fetch(u, { signal: AbortSignal.timeout(45_000) }).then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-  llamaInflight = Promise.all([get(LLAMA_FEES_URL), get(LLAMA_LITE_URL)])
-    .then(([fees, lite]) => {
-      const { bySym } = buildRevenue(fees, lite)
-      const at = Date.now()
-      llamaCache = { at, body: JSON.stringify({ revenue: bySym, at, source: 'DefiLlama' }) }
-    })
+  llamaInflight = Promise.all([get(LLAMA_FEES_URL), get(LLAMA_LITE_URL), get(LLAMA_FEESPAID_URL).catch(() => null)])
+    .then(([rev, lite, paid]) => { llamaData = { at: Date.now(), bySym: buildRevenue(rev, lite, paid).bySym } })
     .catch(e => console.warn('[markets-meta] DefiLlama refresh failed:', e.message))
     .finally(() => { llamaInflight = null })
   return llamaInflight
+}
+function cgRefresh() {
+  if (cgInflight) return cgInflight
+  cgInflight = (async () => {
+    // Another worker may have refreshed it since this one started.
+    try { const d = JSON.parse(readFileSync(CG_FILE, 'utf8')); if (d?.top && Date.now() - d.at < CG_TTL) { cgData = d; return } } catch {}
+    const pages = []
+    let retries = 0
+    for (let p = 1; p <= CG_PAGES; p++) {
+      if (p > 1) await new Promise(r => setTimeout(r, 13_000))   // ~5 a minute: under the free limit
+      try {
+        const r = await fetch(cgMarketsUrl(p), { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) })
+        // Throttled: wait a minute and retry the same page — a few times, never forever.
+        if (r.status === 429 && retries++ < 4) { await new Promise(r2 => setTimeout(r2, 60_000)); p--; continue }
+        if (r.ok) pages.push(await r.json())
+      } catch {}
+    }
+    // Half the list is not the list: a ticker missing from a partial fetch would go unchecked.
+    if (pages.length < CG_PAGES / 2) throw new Error(`only ${pages.length} of ${CG_PAGES} pages`)
+    cgData = { at: Date.now(), top: cgForHyperliquid(pages) }
+    try { mkdirSync(dirname(CG_FILE), { recursive: true }); writeAtomic(CG_FILE, JSON.stringify(cgData)) } catch {}
+  })().catch(e => console.warn('[markets-meta] CoinGecko refresh failed:', e.message)).finally(() => { cgInflight = null })
+  return cgInflight
+}
+function metaJson() {
+  if (!llamaData || !cgData) return null
+  const key = llamaData.at + ':' + cgData.at
+  if (metaBody?.key !== key) {
+    const { bySym } = verifyRevenue(llamaData.bySym, cgData.top)
+    // Ticker → [CoinGecko id, market cap]; the page uses the cap for perps HL gives none.
+    const cg = Object.fromEntries(Object.entries(cgData.top).map(([s, v]) => [s, [v.id, v.mcap]]))
+    metaBody = { key, body: JSON.stringify({ revenue: bySym, cg, at: llamaData.at, cgAt: cgData.at, source: 'DefiLlama, CoinGecko' }) }
+  }
+  return metaBody.body
 }
 const EXT_QUOTE_TTL = 60_000
 
@@ -423,12 +464,17 @@ createServer((req, res) => {
   // and the same NEST row is asked for by everyone who holds it. src/offex.js has the why.
   if (url === '/markets-meta') {
     if (req.method !== 'GET') { res.writeHead(405).end(); return }
-    const send = () => llamaCache
-      ? res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' }).end(llamaCache.body)
-      // Unknown, not empty: the page shows dashes and says revenue did not load.
-      : res.writeHead(503, { 'Content-Type': 'application/json' }).end('{"revenue":null}')
-    if (llamaCache && Date.now() - llamaCache.at < LLAMA_TTL) return send()
-    if (llamaCache) { llamaRefresh(); return send() }       // stale: serve it, refresh behind
+    const send = () => {
+      const body = metaJson()
+      return body
+        ? res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' }).end(body)
+        // Unknown, not empty: the page shows dashes and says revenue did not load.
+        : res.writeHead(503, { 'Content-Type': 'application/json' }).end('{"revenue":null}')
+    }
+    // CoinGecko takes minutes to fetch politely; never make a visitor wait for it.
+    if (!cgData || Date.now() - cgData.at > CG_TTL) cgRefresh()
+    if (llamaData && Date.now() - llamaData.at < LLAMA_TTL) return send()
+    if (llamaData) { llamaRefresh(); return send() }       // stale: serve it, refresh behind
     llamaRefresh().then(send)
     return
   }

@@ -180,13 +180,28 @@ function strategyPlugin() {
           } catch { return sendJson(res, 200, { prices: {} }) }
         }
 
-        // Dev twin of serve-prod.js /markets-meta (no cache: dev only).
+        // Dev twin of serve-prod.js /markets-meta: same pipeline, cached in memory for the dev
+        // session (CoinGecko's free API throttles, so it is fetched once, a few seconds apart).
         if (method === 'GET' && path === '/markets-meta') {
-          const { buildRevenue, LLAMA_FEES_URL, LLAMA_LITE_URL } = await import('./src/llama.js')
+          const L = await import('./src/llama.js')
           try {
             const get = (u) => fetch(u, { signal: AbortSignal.timeout(45_000) }).then(r => r.json())
-            const [fees, lite] = await Promise.all([get(LLAMA_FEES_URL), get(LLAMA_LITE_URL)])
-            return sendJson(res, 200, { revenue: buildRevenue(fees, lite).bySym, at: Date.now(), source: 'DefiLlama' })
+            if (!globalThis.__devCg) {
+              const pages = []
+              for (let p = 1; p <= L.CG_PAGES; p++) {
+                if (p > 1) await new Promise(r => setTimeout(r, 3000))
+                const r = await fetch(L.cgMarketsUrl(p)).catch(() => null)
+                if (r?.ok) pages.push(await r.json())
+              }
+              globalThis.__devCg = L.cgForHyperliquid(pages)
+            }
+            const [rev, lite, paid] = await Promise.all([get(L.LLAMA_FEES_URL), get(L.LLAMA_LITE_URL), get(L.LLAMA_FEESPAID_URL).catch(() => null)])
+            const cgTop = globalThis.__devCg
+            return sendJson(res, 200, {
+              revenue: L.verifyRevenue(L.buildRevenue(rev, lite, paid).bySym, cgTop).bySym,
+              cg: Object.fromEntries(Object.entries(cgTop).map(([s, x]) => [s, [x.id, x.mcap]])),
+              at: Date.now(), source: 'DefiLlama, CoinGecko',
+            })
           } catch { return sendJson(res, 503, { revenue: null }) }
         }
 

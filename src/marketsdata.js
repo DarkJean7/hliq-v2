@@ -166,7 +166,7 @@ export function onePerToken(rows) {
 }
 
 /** The columns a table can be ranked by. */
-export const SORT_KEYS = ['vol24', 'oi', 'mcap', 'chg24', 'funding1h', 'price', 'rev24', 'rev7', 'rev30']
+export const SORT_KEYS = ['vol24', 'oi', 'mcap', 'chg24', 'funding1h', 'price', 'rev24', 'rev7', 'rev30', 'fee24', 'fee30']
 
 /**
  * Sort by `key`, descending unless `asc`. Nulls go LAST in both directions: an unknown
@@ -270,13 +270,30 @@ export function dedupeHip3(rows) {
  * `hip3` is [{ dex, label, data: [meta, ctxs] }]; a dex that failed is simply not in it, and
  * the caller reports how many of how many loaded rather than presenting a partial list as all.
  */
-export function buildMarkets({ core = null, spot = null, hip3 = [], cats = null, revenue = null } = {}) {
+export function buildMarkets({ core = null, spot = null, hip3 = [], cats = null, revenue = null, cg = null } = {}) {
   const perps = core ? perpRows(core[0], core[1]) : []
   const perpSyms = new Set(perps.map(p => p.sym))
   const spots = (spot ? spotRows(spot[0], spot[1]) : [])
     .map(r => { const d = spotDisplayName(r.sym, perpSyms); return d === r.sym ? r : { ...r, sym: d, wrapped: r.sym } })
   const hips = hip3.flatMap(h => perpRows(h.data?.[0], h.data?.[1], h.dex, h.label))
-  return categorize([...linkMarketCaps(perps, spots), ...spots, ...dedupeHip3(hips)], cats, revenue)
+  return withCgMarketCaps(categorize([...linkMarketCaps(perps, spots), ...spots, ...dedupeHip3(hips)], cats, revenue), cg)
+}
+
+/**
+ * A crypto perp with no market cap from Hyperliquid takes CoinGecko's, for the coin its
+ * ticker means (/markets-meta `cg`: { SYM: [id, mcap] }, biggest coin per ticker, with
+ * src/llama.js HL_CG_OVERRIDES). A k-prefixed perp (kPEPE = 1,000 PEPE) is its base coin.
+ * Spot keeps its own supply-based figure, and TradFi takes nothing: a stock's ticker can
+ * be some token's on CoinGecko.
+ */
+export function withCgMarketCaps(rows, cg) {
+  if (!cg) return rows
+  return rows.map(r => {
+    if (r.mcap != null || r.kind === 'spot' || r.group !== 'crypto') return r
+    const base = /^k[A-Z]/.test(r.sym) ? r.sym.slice(1) : r.sym
+    const cap = cg[base.toUpperCase()]?.[1]
+    return Number.isFinite(cap) && cap > 0 && cap <= MCAP_CEIL ? { ...r, mcap: cap, mcapFrom: 'coingecko' } : r
+  })
 }
 
 /**
@@ -303,15 +320,20 @@ export function categorize(rows, cats = null, revenue = null) {
     // the same asset and keeps everything.
     const shadow = r.kind === 'spot' && !r.protocol && perpSyms.has(r.sym) && (r.vol24 ?? 0) < STRICT_SPOT_MIN_VOL
     const rev = shadow ? null : (revenue?.[r.sym.toUpperCase()] ?? null)
-    const c = shadow ? { group: 'crypto', hlCat: 'crypto', tags: [] } : classify({ sym: r.sym, hlCat: hl, llamaCat: rev?.category ?? null })
+    // DefiLlama's category is evidence only when the protocol is doing something: an entry
+    // with $0 revenue AND $0 fees ("Kaito Capital Launchpad") does not make KAITO a launchpad.
+    const active = rev && ((rev.r30 ?? 0) > 0 || (rev.f30 ?? 0) > 0)
+    const c = shadow ? { group: 'crypto', hlCat: 'crypto', tags: [] } : classify({ sym: r.sym, hlCat: hl, llamaCat: active ? rev.category : null })
     const useRev = c.group === 'crypto' && rev
     return {
       ...r, group: c.group, hlCat: c.hlCat, tags: c.tags, shadow,
       // The one label the table shows: DefiLlama's own word for a revenue token, like its
       // table; else our first sector; else what Hyperliquid calls it.
-      category: (useRev && rev.category && !(WEAK_LLAMA_CATS.has(rev.category) && c.tags[0]) ? rev.category : null)
+      category: (useRev && active && rev.category && !(WEAK_LLAMA_CATS.has(rev.category) && c.tags[0]) ? rev.category : null)
         || (c.tags[0] ? SECTOR_LABEL[firstStrongTag(c.tags)] : null) || (c.group === 'tradfi' ? null : 'Crypto'),
       rev24: useRev ? rev.r24 : null, rev7: useRev ? rev.r7 : null, rev30: useRev ? rev.r30 : null,
+      // Fees: what users paid, beside what the protocol kept. Morpho keeps $0 of ~$20M a month.
+      fee24: useRev ? (rev.f24 ?? null) : null, fee30: useRev ? (rev.f30 ?? null) : null,
       revName: useRev ? rev.name : null,
     }
   })

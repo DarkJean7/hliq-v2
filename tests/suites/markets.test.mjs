@@ -202,5 +202,60 @@ console.log(nl + '-- strict --')
 }
 t('CI ships it', fs.readFileSync('.github/workflows/deploy.yml', 'utf8').includes('rsync -avz markets.html'))
 
+console.log(nl + '-- the right token for a ticker, and fees beside revenue --')
+{
+  const L = await import('../../src/llama.js')
+  // CoinGecko pages are ordered by market cap; the first coin per ticker is what it means.
+  const pages = [[
+    { id: 'starknet', symbol: 'strk', market_cap: 4.4e8 },
+    { id: 'morpho', symbol: 'morpho', market_cap: 1.9e9 },
+    { id: 'sideshift-token', symbol: 'xai', market_cap: 2.9e7 },
+  ], [
+    { id: 'strike', symbol: 'strk', market_cap: 1e6 },
+    { id: 'xai-blockchain', symbol: 'xai', market_cap: 2e7 },
+  ]]
+  const top = L.cgTopBySymbol(pages)
+  t('the biggest coin with a ticker is what it means', top.STRK.id === 'starknet')
+  const hl = L.cgForHyperliquid(pages)
+  t("an override corrects a ticker HL lists differently: XAI is Xai, not SideShift", hl.XAI.id === 'xai-blockchain' && hl.XAI.mcap === 2e7)
+  const v = L.verifyRevenue({
+    STRK: { gecko: 'strike', r30: 75000 }, MORPHO: { gecko: 'morpho', r30: 0, f30: 2e7 },
+    XAI: { gecko: 'sideshift-token', r30: 0 }, CARDS: { gecko: 'collector-crypt', r30: 1.3e7 },
+  }, hl)
+  t("Strike's revenue is not put on Starknet's STRK", !v.bySym.STRK && v.dropped.some(d => d.startsWith('STRK:')))
+  t("nor SideShift's on Xai's XAI", !v.bySym.XAI)
+  t('the right token keeps it', !!v.bySym.MORPHO)
+  t('a ticker CoinGecko does not list keeps it: nothing contradicts it', !!v.bySym.CARDS)
+
+  const r = L.buildRevenue(
+    { protocols: [{ defillamaId: '9', name: 'Morpho Blue', category: 'Lending', total24h: 0, total7d: 0, total30d: 0 }] },
+    { protocols: [{ defillamaId: '9', symbol: 'MORPHO', geckoId: 'morpho' }] },
+    { protocols: [{ defillamaId: '9', total24h: 6.6e5, total7d: 4.6e6, total30d: 2e7 }] })
+  t('fees ride beside revenue: Morpho keeps $0 of $20M', r.bySym.MORPHO.r30 === 0 && r.bySym.MORPHO.f30 === 2e7)
+
+  const CORE3 = [{ universe: [{ name: 'MORPHO', maxLeverage: 5 }, { name: 'KAITO', maxLeverage: 5 }, { name: 'kPEPE', maxLeverage: 10 }] },
+    [{ markPx: '1.8', prevDayPx: '1.8', dayNtlVlm: '1e7', openInterest: '1e6' },
+     { markPx: '0.9', prevDayPx: '0.9', dayNtlVlm: '5e6', openInterest: '1e6' },
+     { markPx: '0.01', prevDayPx: '0.01', dayNtlVlm: '5e7', openInterest: '1e9' }]]
+  const revenue = {
+    MORPHO: { name: 'Morpho', category: 'Lending', r24: 0, r7: 0, r30: 0, f24: 6.6e5, f30: 2e7 },
+    KAITO: { name: 'Kaito', category: 'Launchpad', r24: 0, r7: 0, r30: 0, f24: 0, f30: 0 },
+  }
+  const cg = { MORPHO: ['morpho', 1.9e9], PEPE: ['pepe', 4e9], KAITO: ['kaito', 8.4e7] }
+  const rows3 = M.buildMarkets({ core: CORE3, revenue, cg })
+  const mo = rows3.find(x => x.sym === 'MORPHO'), ka = rows3.find(x => x.sym === 'KAITO'), pe = rows3.find(x => x.sym === 'kPEPE')
+  t('the row shows $0 revenue and its fees, not a dash', mo.rev30 === 0 && mo.fee30 === 2e7)
+  t("an idle DefiLlama entry ($0 and $0) does not name the category: KAITO is not a launchpad", ka.category !== 'Launchpad' && !ka.tags.includes('launchpad'), ka.category)
+  t('a perp with no HL market cap takes CoinGecko\'s', mo.mcap === 1.9e9 && mo.mcapFrom === 'coingecko')
+  t('kPEPE takes PEPE\'s', pe.mcap === 4e9)
+  t('a HIP-3 stock never takes a CoinGecko cap', M.withCgMarketCaps([{ kind: 'hip3', group: 'tradfi', sym: 'MORPHO', mcap: null }], cg)[0].mcap === null)
+  t('revenue and fees sort', M.sortRows(rows3, 'fee30')[0].sym === 'MORPHO')
+  t('the server will not serve revenue unchecked against CoinGecko',
+    /if \(!llamaData \|\| !cgData\) return null/.test(PROD) && PROD.includes('verifyRevenue(llamaData.bySym, cgData.top)'))
+  t('and fetches CoinGecko slowly, bounded, cached on disk',
+    PROD.includes('setTimeout(r, 13_000)') && PROD.includes('retries++ < 4') && PROD.includes("join(__dirname, 'data', 'cgtop.json')"))
+  t('the Revenue view lists tokens with revenue OR fees', /\(r\.fee30 \?\? 0\) > 0/.test(JS) && JS.includes("['fee30', 'Fees 30d']"))
+}
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

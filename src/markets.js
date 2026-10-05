@@ -25,6 +25,7 @@ const hip3Cache = new Map()
 let last = { core: null, spot: null, list: [] }
 let cats = null        // perpCategories: [[coin, category], …]
 let revenue = null     // /markets-meta bySym, or null while unknown
+let cg = null          // /markets-meta cg: { SYM: [coingecko id, market cap] }
 let revState = 'loading'
 
 // ── formatting ───────────────────────────────────────────────────────────────
@@ -63,7 +64,7 @@ const post = (body) => fetch(API, {
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
 const rebuild = () => {
-  rows = buildMarkets({ core: last.core, spot: last.spot, hip3: last.list.map(d => hip3Cache.get(d.name)).filter(Boolean), cats, revenue })
+  rows = buildMarkets({ core: last.core, spot: last.spot, hip3: last.list.map(d => hip3Cache.get(d.name)).filter(Boolean), cats, revenue, cg })
 }
 
 /**
@@ -102,6 +103,7 @@ async function loadMeta() {
     const r = await fetch('/markets-meta', { signal: AbortSignal.timeout(60_000) })
     const j = r.ok ? await r.json() : null
     if (j?.revenue && typeof j.revenue === 'object') { revenue = j.revenue; revState = 'ok' }
+    if (j?.cg && typeof j.cg === 'object') cg = j.cg
     else if (!revenue) revState = 'down'
   } catch { if (!revenue) revState = 'down' }
   rebuild(); render()
@@ -114,7 +116,9 @@ function current() {
   let list = filterRows(rows, { kind, group, dex: view.dex, sector: view.sector, q: view.q, strict: view.strict })
   // Revenue view: tokens with revenue only — a table of dashes ranks nothing.
   // and one row per token, since revenue belongs to the token, not to each of its markets.
-  if (view.mode === 'revenue') list = onePerToken(list.filter(r => r.rev30 != null || r.rev24 != null))
+  // A token shows here when DefiLlama has it doing something: revenue OR fees. Morpho keeps
+  // $0 of ~$20M a month in fees and belongs on this table; an entry at $0 and $0 does not.
+  if (view.mode === 'revenue') list = onePerToken(list.filter(r => (r.rev30 ?? 0) > 0 || (r.rev24 ?? 0) > 0 || (r.fee30 ?? 0) > 0))
   return list
 }
 
@@ -148,8 +152,8 @@ function renderControls() {
   }
   for (const b of $('mkStrict').querySelectorAll('button')) b.classList.toggle('is-on', (b.dataset.strict === '1') === view.strict)
   for (const b of $('mkMode').querySelectorAll('button')) b.classList.toggle('is-on', b.dataset.mode === view.mode)
-  const sorts = view.mode === 'revenue' ? ['rev24', 'rev7', 'rev30', 'mcap'] : ['vol24', 'oi', 'mcap', 'chg24', 'funding1h', 'rev24']
-  const LBL = { vol24: 'Volume', oi: 'Open interest', mcap: 'Market cap', chg24: '24h change', funding1h: 'Funding', rev24: 'Revenue 24h', rev7: 'Revenue 7d', rev30: 'Revenue 30d' }
+  const sorts = view.mode === 'revenue' ? ['rev24', 'rev7', 'rev30', 'fee30', 'mcap'] : ['vol24', 'oi', 'mcap', 'chg24', 'funding1h', 'rev24']
+  const LBL = { fee30: 'Fees 30d', vol24: 'Volume', oi: 'Open interest', mcap: 'Market cap', chg24: '24h change', funding1h: 'Funding', rev24: 'Revenue 24h', rev7: 'Revenue 7d', rev30: 'Revenue 30d' }
   $('mkRankBtns').innerHTML = sorts.map(k => `<button data-sort="${k}" class="${k === view.sort ? 'is-on' : ''}">${LBL[k]}</button>`).join('')
 
   // Category chips: the sectors of the rows in view (tab + strict, before the sector itself),
@@ -184,9 +188,11 @@ function renderControls() {
 
 const COLS = {
   market:  [['price', 'Price'], ['chg24', '24h'], ['vol24', 'Volume 24h'], ['oi', 'Open interest'], ['mcap', 'Market cap'], ['funding1h', 'Funding 1h']],
-  revenue: [['rev24', 'Revenue 24h'], ['rev7', 'Revenue 7d'], ['rev30', 'Revenue 30d'], ['mcap', 'Market cap'], ['chg24', '24h']],
+  revenue: [['rev24', 'Revenue 24h'], ['rev7', 'Revenue 7d'], ['rev30', 'Revenue 30d'], ['fee30', 'Fees 30d'], ['mcap', 'Market cap'], ['chg24', '24h']],
 }
-const cellFor = (k, r) => k === 'price' ? price(r.price) : k === 'chg24' ? chg(r.chg24) : k === 'funding1h' ? fund(r.funding1h) : m(r[k])
+const cellFor = (k, r) => k === 'price' ? price(r.price) : k === 'chg24' ? chg(r.chg24) : k === 'funding1h' ? fund(r.funding1h)
+  : k === 'mcap' && r.mcapFrom === 'coingecko' && r.mcap != null ? `<span title="Market cap from CoinGecko">${money(r.mcap)}</span>`
+  : m(r[k])
 
 function renderTable(list) {
   const cols = COLS[view.mode]
