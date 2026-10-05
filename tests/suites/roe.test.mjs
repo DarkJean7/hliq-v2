@@ -120,7 +120,8 @@ console.log(nl + '-- and it is shown where a PnL is shown --')
     !rnd.includes("(n / accountValue * 100).toFixed(2)"))
   t('it uses the shared basis', rnd.includes('const r = partRoe(n, { accountValue, netPnl })'))
   // Still ROE, now with a note when off-exchange holdings are folded in ("Count in balance").
-  t('and labels the tile ROE', rnd.includes("(pctEq(netPnl) ? 'ROE ' + pctEq(netPnl) : 'incl. funding')"))
+  // The tile shows the shared headline figure now, and its ROE is taken on that same figure.
+  t('and labels the tile ROE', rnd.includes("(roe ? 'ROE ' + roe : 'incl. funding')") && rnd.includes('partRoe(n, { accountValue, netPnl: n })'))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

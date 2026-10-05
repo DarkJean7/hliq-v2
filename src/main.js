@@ -1233,7 +1233,7 @@ function renderAccountSection() {
   // once a wallet has errored, and the local sum left behind is missing it -- so the desktop
   // shell withholds exactly where the mobile one does, instead of printing a short total.
   const comboPending = state.isAllAccounts && comboValue == null
-  renderOverview({ perpState, spotState, fills, funding, openOrders, allMids, portfolio, webData: state.webData, sessionStart: state.sessionStart, firstFillTime: state.firstFillTime ?? null, ledger: ledger ?? [], addr: state.addr, comboValue, comboPending })
+  renderOverview({ perpState, spotState, fills, funding, openOrders, allMids, portfolio, webData: state.webData, sessionStart: state.sessionStart, firstFillTime: state.firstFillTime ?? null, ledger: ledger ?? [], addr: state.addr, comboValue, comboPending, headlineNet: _headlineNetPnl })
   renderPortfolioStats({ perpState, spotState, fills, funding, portfolio, webData: state.webData, comboValue, comboPending })
   renderSummaryCards(fills, perpState, spotState, portfolio)
 }
@@ -10242,6 +10242,27 @@ function _hlAllTimePnl(accountValue) {
   return accountValue - cum
 }
 
+/**
+ * THE Net PnL headline, for both shells. Reported: phone +$811, desktop +$749.11 for the same
+ * ten wallets at the same moment — the desktop Overview tile re-derived it from fills
+ * (realized + unrealized + funding − fees), which misses spot sales and uncovered funding.
+ *
+ *   All Accounts → the per-wallet HL figures summed (_comboPnlSums), or null: nothing
+ *                  authoritative to show, so the caller shows a dash.
+ *   One account  → Hyperliquid's own all-time PnL (equity less everything paid in), or
+ *                  undefined while that is not known: the caller falls back to its itemised sum.
+ * Off-exchange PnL is added when "Count in balance" is on, as it is everywhere else.
+ */
+function _headlineNetPnl(accountValue) {
+  const ox = _offexPnlAdd()
+  if (state.isAllAccounts) {
+    const cp = _comboPnlSums()
+    return cp ? cp.net + ox : null
+  }
+  const hl = _hlAllTimePnl(accountValue)
+  return hl != null ? hl + ox : undefined
+}
+
 // Minimal transient notice. The app had no general toast — trade results go to an
 // inline status element — but paper events (fills, liquidations) happen off the
 // back of the poll loop with no element to attach to, so they need one.
@@ -15353,8 +15374,9 @@ function _mobVRenderBalance() {
   // unrealized + funding − fees) stays on the desktop tile, which is labelled as that sum.
   // Reported: HL said -$3,443.12 on a closed account and the app said -$3,022.32.
   const _hlPnl = state.isAllAccounts ? null : _hlAllTimePnl(_rawVal)
+  // The same function the desktop Overview tile uses, so the two shells cannot disagree.
   const _pnlVal = _pnlNet
-    ? (_cp ? _cp.net + _oxPnl : (_hlPnl != null ? _hlPnl + _oxPnl : netPnl))
+    ? (_headlineNetPnl(_rawVal) ?? netPnl)
     : (_cp ? _cp.unreal + _oxPnl : unrealizedPnl)
   const upEl = document.getElementById('mobVUnrealPnl')
   // Net PnL needs the ALL-TIME fills; unrealized does not. While only the 14-day window is

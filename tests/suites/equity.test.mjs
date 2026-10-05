@@ -180,7 +180,13 @@ t('but not across a change in wallet count', Q.sums() === null)
 // A single account prefers HL's own all-time PnL over the itemised sum, which is short by
 // whatever it cannot see (spot realized PnL, an empty funding window).
 t('the card prefers the server figure over the recomputed one',
-  bal.includes('const _cp = _comboPnlSums()') && bal.includes('_cp ? _cp.net + _oxPnl : (_hlPnl != null ? _hlPnl + _oxPnl : netPnl)'))
+  // Moved into _headlineNetPnl so the desktop Overview tile shares it (it re-derived from
+  // fills and said +$749 against the phone's +$811 for the same wallets).
+  bal.includes('const _cp = _comboPnlSums()') && bal.includes('_headlineNetPnl(_rawVal) ?? netPnl') &&
+  fs.readFileSync('src/main.js', 'utf8').includes('return cp ? cp.net + ox : null'))
+t('and the desktop Overview tile shows that same figure, not its own itemised sum',
+  fs.readFileSync('src/main.js', 'utf8').includes('headlineNet: _headlineNetPnl })') &&
+  fs.readFileSync('src/render.js', 'utf8').includes("typeof headlineNet === 'function' ? headlineNet(_localAcctVal) : undefined"))
 t('and in the combined view with nothing to show it shows a dash, not a third basis',
   bal.includes('const _pnlMissing = _pnlNet && state.isAllAccounts && !_cp')
     && bal.includes('!_pnlMissing &&'))

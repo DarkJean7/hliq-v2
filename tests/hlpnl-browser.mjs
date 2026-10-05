@@ -128,6 +128,49 @@ console.log(NL + '-- and so does the balance card --')
   ok('the Net PnL stat reads the same figure', /3,443|3\.44K|-\$3\.4K/i.test(stat), stat)
 }
 
+console.log(NL + '-- the desktop Overview tile shows the same figure as the phone --')
+{
+  // Reported: phone +$811, desktop +$749.11 for the same wallets. The desktop tile re-derived
+  // Net PnL from fills (the itemised -$3,022.32 here); it now uses the phone's headline.
+  const dctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  try { await dctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
+  await dctx.route(HL_HOST, (route) => {
+    let b = {}
+    try { b = JSON.parse(route.request().postData() || '{}') } catch {}
+    return route.fulfill({ status: 200, contentType: 'application/json', json: HL[b.type] ?? {} })
+  })
+  await dctx.route('**/api/**', (route) => route.fulfill({ status: 503, body: 'offline in test' }))
+  await dctx.route('**/offexprice**', (route) => route.fulfill({ status: 200, json: { prices: {} } }))
+  const d = await dctx.newPage()
+  d.on('pageerror', e => errs.push('desktop: ' + e.message))
+  await d.goto(BASE, { waitUntil: 'domcontentloaded' })
+  await d.evaluate((a) => {
+    localStorage.clear()
+    localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_onboard_done', '1')
+    localStorage.setItem('hliq_lang_chosen', '1')
+    ;['hliq_onboard_welcomed_v1', 'hliq_onboard_tour_v1', 'hliq_install_nudge_v2'].forEach(x => localStorage.setItem(x, '1'))
+    localStorage.setItem('hliq_ann_dismissed', JSON.stringify(['*']))
+    localStorage.setItem('hliq_privacy', '0')
+    localStorage.setItem('savedWallets', JSON.stringify([{ addr: a, label: 'Old' }]))
+  }, ADDR)
+  await d.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(d, 'boot', () => !!window.loadDashboard)
+  await d.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, ADDR)
+  const tile = () => d.evaluate(() => {
+    const s = [...document.querySelectorAll('.ov-stat')].find(x => x.querySelector('.ov-stat-label')?.textContent.trim() === 'Net PnL')
+    return s?.querySelector('.ov-stat-val')?.textContent.trim() ?? ''
+  })
+  // Wait for the FIGURE: cumLedger lands with webData2, and until then the tile shows the sum.
+  await waitFor(d, "HL's figure on the tile", () => {
+    const s = [...document.querySelectorAll('.ov-stat')].find(x => x.querySelector('.ov-stat-label')?.textContent.trim() === 'Net PnL')
+    return /3,443\.12/.test(s?.querySelector('.ov-stat-val')?.textContent ?? '')
+  }, null, 30000)
+  const v = await tile()
+  ok("the Overview Net PnL tile is HL's own figure, as on the phone", /-\$3,443\.12/.test(v), v)
+  ok('and not the itemised sum from fills', !/3,022\.32/.test(v), v)
+  await dctx.close()
+}
+
 console.log(NL + "-- All Accounts sums the wallets own figures --")
 {
   // A second wallet: $500 equity against $700 ever paid in, so HL would say −$200 for it.

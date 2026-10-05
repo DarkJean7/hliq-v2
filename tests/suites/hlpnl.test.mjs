@@ -43,7 +43,8 @@ console.log(nl + '-- a single account --')
     /if \(cum == null \|\| !Number\.isFinite\(accountValue\)\) return null/.test(cli))
   t('the Portfolio tab prefers it', /const _hlNet = _hlAllTimePnl\(accountValue\)\s*\n\s*if \(_hlNet != null\) netPnl = _hlNet/.test(cli))
   t('so does Net Deposited', /const netDeposited  = _hlIn != null \? _hlIn : totalDeposited - totalWithdrawn/.test(cli))
-  t('and the balance card', /_hlPnl != null \? _hlPnl \+ _oxPnl : netPnl/.test(cli))
+  // Via _headlineNetPnl now, which the desktop Overview tile shares.
+  t('and the balance card', cli.includes('_headlineNetPnl(_rawVal) ?? netPnl') && cli.includes('return hl != null ? hl + ox : undefined'))
   t('which no longer waits for the all-time fills it does not need', /_hlPnl != null \|\| state\.fillsFull !== false/.test(cli))
 }
 

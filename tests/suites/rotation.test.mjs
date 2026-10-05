@@ -46,7 +46,7 @@ t('and the portfolio tab takes the same figure',
 t('computed once per render, because the filter is stateful',
   /const comboValue = _comboDisplayEquity\(\)/.test(CLI) &&
   (CLI.match(/_comboDisplayEquity\((\)|_srvVal\))/g) || []).length === 2)
-t('the desktop call site hands it over', /renderOverview\(\{[^)]*comboValue, comboPending \}\)/.test(CLI))
+t('the desktop call site hands it over', /renderOverview\(\{[^)]*comboValue, comboPending(, headlineNet: _headlineNetPnl)? \}\)/.test(CLI))
 
 console.log(nl + '-- and that figure is the mobile one, not a second opinion --')
 // Start from the doc comment, not the keyword: the reasoning lives above the signature.
@@ -79,7 +79,7 @@ console.log(nl + '-- and neither shell prints a total that is missing a wallet -
 // short sum, so rotating turned an honest dash into a wrong number.
 t('the caller tells the renderers when it has nothing trustworthy',
   /const comboPending = state\.isAllAccounts && comboValue == null/.test(CLI))
-t('and passes it to both', (CLI.match(/comboValue, comboPending \}\)/g) || []).length === 2)
+t('and passes it to both', (CLI.match(/comboValue, comboPending(, headlineNet: _headlineNetPnl)? \}\)/g) || []).length === 2)
 t('both renderers accept it',
   /renderOverview\(\{[\s\S]{0,600}?comboPending = false/.test(RND) &&
   /renderPortfolioStats\(\{[\s\S]{0,400}?comboPending = false/.test(RND))

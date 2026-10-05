@@ -394,7 +394,7 @@ export function computeAcctStats(perpState, spotState, fills, portfolio = [], fu
 }
 
 // ─── OVERVIEW ────────────────────────────────────────────────────────────────
-export function renderOverview({ perpState, spotState, fills, funding = [], openOrders, allMids = {}, portfolio = [], webData = null, sessionStart = null, firstFillTime = null, addr = null, ledger = [], comboValue = null, comboPending = false }) {
+export function renderOverview({ perpState, spotState, fills, funding = [], openOrders, allMids = {}, portfolio = [], webData = null, sessionStart = null, firstFillTime = null, addr = null, ledger = [], comboValue = null, comboPending = false, headlineNet = null }) {
   const margin    = perpState.marginSummary ?? {}
   const positions = perpState.assetPositions ?? []
 
@@ -695,7 +695,18 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   const ringColor = health > 70 ? 'var(--green)' : health > 40 ? 'var(--yellow)' : health > 20 ? '#ff9444' : 'var(--red)'
   const strip = [
     { label: 'Unrealized PnL', value: fmtPnL(unrealAll).text, sub: (accountValue > 0 ? (unrealAll >= 0 ? '+' : '') + (unrealAll / (accountValue + _oxAdd) * 100).toFixed(2) + '% of equity' : 'open positions') + (offexPnl ? ' · incl. off-exchange' : ''), cls: fmtPnL(unrealAll).cls },
-    { label: 'Net PnL',       value: fmtPnL(netPnl).text,       sub: (pctEq(netPnl) ? 'ROE ' + pctEq(netPnl) : 'incl. funding') + (offexPnl ? ' · incl. off-exchange' : ''), cls: fmtPnL(netPnl).cls },
+    // The headline figure the mobile shell shows (main.js _headlineNetPnl), not the itemised
+    // sum: that re-derives from fills and missed spot sales and some funding, so the two
+    // shells said +$811 and +$749 for the same wallets. The itemised sum keeps its own tile
+    // on Performance, where it is labelled as that sum.
+    (() => {
+      const h = typeof headlineNet === 'function' ? headlineNet(_localAcctVal) : undefined
+      if (h === null) return { label: 'Net PnL', value: '—', sub: 'waiting for every wallet', cls: 'neu' }
+      const n = Number.isFinite(h) ? h : netPnl
+      const r = partRoe(n, { accountValue, netPnl: n })
+      const roe = r == null ? '' : '(' + fmtRoe(r, { decimals: 2 }) + ')'
+      return { label: 'Net PnL', value: fmtPnL(n).text, sub: (roe ? 'ROE ' + roe : 'incl. funding') + (offexPnl ? ' · incl. off-exchange' : ''), cls: fmtPnL(n).cls }
+    })(),
     { label: 'Win Rate',      value: winRate + (closedTrades > 0 ? '%' : ''), sub: winningTrades + ' / ' + closedTrades, cls: 'neu' },
     { label: 'Profit Factor', value: profitFactor === Infinity ? '∞' : profitFactor > 0 ? profitFactor.toFixed(2) : '—', sub: 'wins ÷ losses', cls: profitFactor >= 1 ? 'pos' : profitFactor > 0 ? 'neg' : 'neu' },
     { label: 'Total Volume',  value: '$' + fmtCompact(totalVolume), sub: fills.length + ' fills', cls: 'neu', id: 'statTotalVolume' },

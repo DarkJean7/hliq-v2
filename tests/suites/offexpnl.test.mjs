@@ -72,9 +72,10 @@ console.log(nl + '-- wired in, and only while the switch is on --')
     /const netPnl = totalClosedPnl \+ unrealAll \+ allTimeFunding - totalFees/.test(rnd))
   t('and say when they are including it', /incl\. off-exchange/.test(rnd))
   // The combined view's PnL comes from the server, which knows nothing about these holdings.
-  t('the combined figure has it added on the client', /_cp \? _cp\.net \+ _oxPnl :/.test(cli))
+  // In _headlineNetPnl now, shared by both shells.
+  t('the combined figure has it added on the client', cli.includes('return cp ? cp.net + ox : null'))
   // A single account reads HL's own all-time PnL, and the holdings are added to that instead.
-  t("and the single-account one adds it to HL own figure", /_hlPnl != null \? _hlPnl \+ _oxPnl : netPnl/.test(cli))
+  t("and the single-account one adds it to HL own figure", cli.includes('return hl != null ? hl + ox : undefined'))
   t('the profit factor counts the loss held in them',
     /openLoss: openLossOf\(state\.perpState\?\.assetPositions \?\? \[\]\) \+ _offexOpenLoss\(\)/.test(cli))
 }
