@@ -180,6 +180,16 @@ function strategyPlugin() {
           } catch { return sendJson(res, 200, { prices: {} }) }
         }
 
+        // Dev twin of serve-prod.js /markets-meta (no cache: dev only).
+        if (method === 'GET' && path === '/markets-meta') {
+          const { buildRevenue, LLAMA_FEES_URL, LLAMA_LITE_URL } = await import('./src/llama.js')
+          try {
+            const get = (u) => fetch(u, { signal: AbortSignal.timeout(45_000) }).then(r => r.json())
+            const [fees, lite] = await Promise.all([get(LLAMA_FEES_URL), get(LLAMA_LITE_URL)])
+            return sendJson(res, 200, { revenue: buildRevenue(fees, lite).bySym, at: Date.now(), source: 'DefiLlama' })
+          } catch { return sendJson(res, 503, { revenue: null }) }
+        }
+
         if (!path.startsWith('/api/') && !path.startsWith('/pfp/')) return next()
 
         // POST /api/start

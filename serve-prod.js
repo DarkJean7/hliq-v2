@@ -9,6 +9,7 @@ import { join, extname, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coinGeckoUpgrade } from './src/iconpick.js'
 import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, parseSeries } from './src/extmarkets.js'
+import { buildRevenue, LLAMA_FEES_URL, LLAMA_LITE_URL } from './src/llama.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -31,6 +32,27 @@ const OFFEX_TTL = 60_000
 // addr -> { at, net } — which network an address trades on. Changes rarely; asked once per paste.
 const offexFindCache = new Map()
 const OFFEX_FIND_TTL = 10 * 60_000
+
+// ── /markets-meta: protocol revenue by token, from DefiLlama (src/llama.js) ──────────────
+// Two feeds, ~11 MB together, boiled down to a few KB and held for half an hour. One copy
+// per worker serves every visitor; a stale copy is served while a fresh one is fetched, and
+// a failed refresh keeps the last good one rather than replacing it with nothing.
+const LLAMA_TTL = 30 * 60_000
+let llamaCache = null          // { at, body }
+let llamaInflight = null
+function llamaRefresh() {
+  if (llamaInflight) return llamaInflight
+  const get = (u) => fetch(u, { signal: AbortSignal.timeout(45_000) }).then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+  llamaInflight = Promise.all([get(LLAMA_FEES_URL), get(LLAMA_LITE_URL)])
+    .then(([fees, lite]) => {
+      const { bySym } = buildRevenue(fees, lite)
+      const at = Date.now()
+      llamaCache = { at, body: JSON.stringify({ revenue: bySym, at, source: 'DefiLlama' }) }
+    })
+    .catch(e => console.warn('[markets-meta] DefiLlama refresh failed:', e.message))
+    .finally(() => { llamaInflight = null })
+  return llamaInflight
+}
 const EXT_QUOTE_TTL = 60_000
 
 // Compare-chart series (see /extcandles). "SYMBOL|TF" -> { at, pts }.
@@ -399,6 +421,18 @@ createServer((req, res) => {
   // this cannot be pointed at anything but GeckoTerminal's token endpoint. One minute of
   // cache, shared by every client, because GeckoTerminal allows about thirty calls a minute
   // and the same NEST row is asked for by everyone who holds it. src/offex.js has the why.
+  if (url === '/markets-meta') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const send = () => llamaCache
+      ? res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' }).end(llamaCache.body)
+      // Unknown, not empty: the page shows dashes and says revenue did not load.
+      : res.writeHead(503, { 'Content-Type': 'application/json' }).end('{"revenue":null}')
+    if (llamaCache && Date.now() - llamaCache.at < LLAMA_TTL) return send()
+    if (llamaCache) { llamaRefresh(); return send() }       // stale: serve it, refresh behind
+    llamaRefresh().then(send)
+    return
+  }
+
   if (url === '/offexprice') {
     if (req.method !== 'GET') { res.writeHead(405).end(); return }
     const qs   = new URLSearchParams(req.url.split('?')[1] || '')

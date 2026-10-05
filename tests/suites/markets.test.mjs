@@ -108,7 +108,98 @@ t('its own nav goes back through ?home (the landing redirects returning users)',
 t('the page does not pull in the app', !/^import\b.*(main\.js|style\.css)/m.test(JS))
 t('icons are read-only from the app cache, at the app version', JS.includes('&ro=1') && /const ICON_V = '(\d+)'/.exec(JS)?.[1] === /const _ICON_V = '(\d+)'/.exec(fs.readFileSync('src/main.js', 'utf8'))?.[1])
 t('the server honours ro=1 without writing', /if \(\/\(\?:\^\|&\)ro=1\(\?:&\|\$\)\/\.test\(query\)\)/.test(PROD))
-t('HIP-3 dexes are fetched one at a time, not in a burst', /for \(const d of list\) \{\s*await sleep\(/.test(JS))
+t('HIP-3 dexes are fetched one at a time, not in a burst', /for \(const d of (last\.)?list\) \{\s*await sleep\(/.test(JS))
+
+console.log(nl + '-- revenue (DefiLlama, src/llama.js) --')
+{
+  const { buildRevenue } = await import('../../src/llama.js')
+  const fees = { protocols: [
+    { defillamaId: '1', name: 'pump.fun',  category: 'Launchpad', total24h: 2_000_000, total7d: 12e6, total30d: 40e6, parentProtocol: 'parent#pump', chains: ['Solana'] },
+    { defillamaId: '2', name: 'PumpSwap',  category: 'Dexs',      total24h: 700_000,   total7d: 4e6,  total30d: 14e6, parentProtocol: 'parent#pump', chains: ['Solana'] },
+    { defillamaId: '3', name: 'Paxos Stablecoin Issuer', category: 'Stablecoin Issuer', total24h: 9e5, total7d: 6e6, total30d: 2e7, parentProtocol: 'parent#paxos' },
+    { defillamaId: '4', name: 'Tether', category: 'Stablecoin Issuer', total24h: 1.7e7, total7d: 1e8, total30d: 5e8 },
+    { defillamaId: '5', name: 'Velo A', category: 'Dexs', total24h: 10, total7d: 70, total30d: 300 },
+    { defillamaId: '6', name: 'Velo B', category: 'Dexs', total24h: 20, total7d: 90, total30d: 400 },
+    { defillamaId: '7', name: 'Collector Crypt', category: 'Physical TCG', total24h: 5e5, total7d: 4e6, total30d: 1.3e7 },
+  ] }
+  const lite = {
+    protocols: [
+      { defillamaId: '1', symbol: 'PUMP', geckoId: null, parentProtocol: 'parent#pump' },
+      { defillamaId: '2', symbol: '-',    geckoId: null, parentProtocol: 'parent#pump' },
+      { defillamaId: '3', symbol: '-',    geckoId: null, parentProtocol: 'parent#paxos' },
+      { defillamaId: '4', symbol: '-',    geckoId: null },
+      { defillamaId: '5', symbol: 'VELO', geckoId: 'velo-a' },
+      { defillamaId: '6', symbol: 'VELO', geckoId: 'velo-b' },
+      { defillamaId: '7', symbol: 'CARDS', geckoId: 'collector-crypt' },
+    ],
+    parentProtocols: [
+      { id: 'parent#pump', name: 'Pump', symbol: 'PUMP', gecko_id: 'pump-fun' },
+      { id: 'parent#paxos', name: 'Paxos', symbol: 'PAXG', gecko_id: null },
+    ],
+  }
+  const { bySym, ambiguous } = buildRevenue(fees, lite)
+  t('a parent\'s protocols are summed under its token (pump.fun + PumpSwap = PUMP)', bySym.PUMP?.r24 === 2_700_000 && bySym.PUMP.r30 === 54e6 && bySym.PUMP.protocols === 2, bySym.PUMP)
+  t('named after the parent, categorised by its biggest earner', bySym.PUMP.name === 'Pump' && bySym.PUMP.category === 'Launchpad')
+  t('no CoinGecko id, no token: Paxos stablecoin revenue is NOT credited to PAXG', !bySym.PAXG)
+  t('a protocol with no token earns nothing for anyone', !Object.values(bySym).some(x => x.r24 === 1.7e7))
+  t('a ticker shared by two tokens is dropped, not guessed', !bySym.VELO && ambiguous.includes('VELO'))
+  t('a token with its own record counts', bySym.CARDS?.category === 'Physical TCG')
+}
+
+console.log(nl + '-- categories (src/sectors.js) --')
+{
+  const { classify, SECTORS } = await import('../../src/sectors.js')
+  const tagsOf = (o) => classify(o).tags
+  t('HL stocks + our tech, semis and AI: NVDA', ['stocks', 'tech', 'semis', 'ai'].every(k => tagsOf({ sym: 'NVDA', hlCat: 'stocks' }).includes(k)), tagsOf({ sym: 'NVDA', hlCat: 'stocks' }))
+  t('a community spot "NVDA" is not Nvidia: no stock or AI tags', tagsOf({ sym: 'NVDA' }).length === 0, tagsOf({ sym: 'NVDA' }))
+  t('commodities split: GOLD is metals, CL energy', tagsOf({ sym: 'GOLD', hlCat: 'commodities' })[0] === 'metals' && tagsOf({ sym: 'CL', hlCat: 'commodities' })[0] === 'energy')
+  t("HL's inconsistent spellings are normalised (FX, stock)", classify({ sym: 'EUR', hlCat: 'FX' }).hlCat === 'fx' && classify({ sym: 'X', hlCat: 'stock' }).hlCat === 'stocks')
+  t('pre-IPO AI labs are AI: OAI', tagsOf({ sym: 'OAI', hlCat: 'preipo' }).includes('ai'))
+  t('crypto: DefiLlama Launchpad → launchpad, plus our lists', tagsOf({ sym: 'PUMP', llamaCat: 'Launchpad' }).includes('launchpad'))
+  t('a crypto list never tags a TradFi market (a stock called DOGE)', !tagsOf({ sym: 'DOGE', hlCat: 'stocks' }).includes('memes'))
+  t('every sector has a label and a group', SECTORS.every(s => s.key && s.label && ['crypto', 'tradfi', 'both'].includes(s.group)))
+}
+
+console.log(nl + '-- categories and revenue on rows --')
+{
+  const SPOT2 = [
+    { tokens: [{ name: 'USDC', index: 0 }, { name: 'PUMP', index: 10, deployerTradingFeeShare: '0.0' }, { name: 'UPUMP', index: 11, deployerTradingFeeShare: '1.0' }, { name: 'NVDA', index: 12, deployerTradingFeeShare: '1.0' }],
+      universe: [{ name: '@1', tokens: [10, 0] }, { name: '@2', tokens: [11, 0] }, { name: '@3', tokens: [12, 0] }] },
+    [{ coin: '@1', markPx: '0.006', prevDayPx: '0.006', dayNtlVlm: '50', circulatingSupply: '1e7' },
+     { coin: '@2', markPx: '0.0064', prevDayPx: '0.0063', dayNtlVlm: '90000', circulatingSupply: '1e12' },
+     { coin: '@3', markPx: '180', prevDayPx: '178', dayNtlVlm: '20000', circulatingSupply: '24e9' }],
+  ]
+  const CORE2 = [{ universe: [{ name: 'PUMP', maxLeverage: 10 }, { name: 'NEAR', maxLeverage: 10 }] },
+    [{ markPx: '0.0064', prevDayPx: '0.0063', dayNtlVlm: '150000000', openInterest: '5e10', funding: '0' },
+     { markPx: '4.9', prevDayPx: '4.8', dayNtlVlm: '120000000', openInterest: '7e7', funding: '0' }]]
+  const revenue = { PUMP: { name: 'Pump', category: 'Launchpad', r24: 2.7e6, r7: 1.6e7, r30: 5.5e7 }, NEAR: { name: 'NEAR', category: 'Bridge', r24: 1000, r7: 7000, r30: 30000 } }
+  const cats2 = [['xyz:NVDA', 'stocks']]
+  const r2 = M.buildMarkets({ core: CORE2, spot: SPOT2, cats: cats2, revenue })
+  const pPerp = r2.find(r => r.kind === 'perp' && r.sym === 'PUMP')
+  const pComm = r2.find(r => r.kind === 'spot' && r.sym === 'PUMP' && !r.protocol)
+  const pWrap = r2.find(r => r.kind === 'spot' && r.wrapped === 'UPUMP')
+  t('the perp carries the token revenue and DefiLlama\'s category', pPerp.rev24 === 2.7e6 && pPerp.category === 'Launchpad')
+  t('a community spot token with the same ticker does NOT', pComm && pComm.rev24 === null && pComm.category !== 'Launchpad', pComm)
+  t('the wrapped protocol spot (UPUMP) may — it is the same asset', pWrap?.rev24 === 2.7e6)
+  { const one = M.onePerToken(r2.filter(r => r.rev24 != null && r.sym === 'PUMP'))
+    t('but per token, revenue is counted once — by the perp', one.length === 1 && one[0].kind === 'perp', one) }
+  t('the shadow is not strict and carries no category', !M.isStrict(pComm) && pComm.tags.length === 0)
+  t('a weak DefiLlama label gives way to ours: NEAR is Layer 1, not Bridge', r2.find(r => r.sym === 'NEAR').category === 'Layer 1', r2.find(r => r.sym === 'NEAR').category)
+  t('a protocol spot token HL lists as a stock elsewhere is filed as a stock', r2.find(r => r.kind === 'spot' && r.sym === 'NVDA')?.group === 'tradfi')
+  t('no revenue loaded → every revenue cell unknown (null), not 0', M.buildMarkets({ core: CORE2 }).every(r => r.rev24 === null && r.rev30 === null))
+  t('rank by revenue sorts unknowns last', M.sortRows(r2, 'rev24')[0].rev24 === 2.7e6 && M.sortRows(r2, 'rev24').at(-1).rev24 === null)
+  t('filter by group and sector', M.filterRows(r2, { group: 'tradfi' }).every(r => r.group === 'tradfi') && M.filterRows(r2, { sector: 'launchpad' }).every(r => r.tags.includes('launchpad')))
+}
+
+console.log(nl + '-- strict --')
+{
+  t('every core perp is strict', M.isStrict({ kind: 'perp' }))
+  t('a dead HIP-3 copy is not; a live one is', !M.isStrict({ kind: 'hip3', vol24: 0, oi: 0 }) && M.isStrict({ kind: 'hip3', vol24: 5, oi: 0 }))
+  t('an untraded community spot token is not', !M.isStrict({ kind: 'spot', vol24: 50, tags: [] }))
+  t('one that trades, earns, or is on our lists is', M.isStrict({ kind: 'spot', vol24: M.STRICT_SPOT_MIN_VOL }) && M.isStrict({ kind: 'spot', vol24: 0, rev30: 1 }) && M.isStrict({ kind: 'spot', vol24: 0, tags: ['memes'] }))
+  t('the page starts in Strict, like Hyperliquid', /strict: true/.test(JS) && /data-strict="1" class="is-on"/.test(HTML))
+  t('the server serves revenue from a cache, and says when it has none', PROD.includes("if (url === '/markets-meta')") && PROD.includes(`'{"revenue":null}'`))
+}
 t('CI ships it', fs.readFileSync('.github/workflows/deploy.yml', 'utf8').includes('rsync -avz markets.html'))
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

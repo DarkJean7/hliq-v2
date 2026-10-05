@@ -111,3 +111,39 @@
   .mk-card__sub { font-size: 11px; }
   .mk-rank span { display: none; }
 }
+
+/* ── v2 controls: tabs + toggles, category chips, rank buttons, search ── */
+.mk-controls { grid-template-columns: 1fr auto; }
+.mk-tabs { flex-wrap: wrap; }
+.mk-toggles { display: flex; gap: 8px; justify-self: end; }
+.mk-seg { display: inline-flex; padding: 3px; border-radius: 10px; background: var(--panel); border: 1px solid var(--rule); }
+.mk-seg button { font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; border: 0; padding: 7px 13px; border-radius: 8px; background: transparent; color: var(--fg-2); }
+.mk-seg button.is-on { background: #2ad1a5; color: #04241b; }
+#mkMode button.is-on { background: #e9edf3; color: #0a0c10; }
+.mk-sectors { grid-column: 1 / -1; display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
+.mk-sectors button { flex-shrink: 0; font: inherit; font-size: 12.5px; cursor: pointer; padding: 6px 11px; border-radius: 999px; color: var(--fg-2); background: var(--panel); border: 1px solid var(--rule); }
+.mk-sectors button i { font-style: normal; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3); margin-left: 3px; }
+.mk-sectors button.is-on { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.mk-sectors button.is-on i { color: rgba(26,13,2,.6); }
+.mk-sec-group { flex-shrink: 0; align-self: center; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--fg-3); margin: 0 2px 0 8px; }
+.mk-rank { grid-column: 1 / -1; justify-self: start; }
+#mkRankBtns { display: flex; flex-wrap: wrap; gap: 6px; }
+#mkRankBtns button { font: inherit; cursor: pointer; padding: 7px 12px; border-radius: 999px; font-size: 13px; border: 1px solid var(--rule); background: transparent; color: var(--fg-2); }
+#mkRankBtns button.is-on { color: var(--fg); border-color: var(--accent); background: rgba(255,138,42,.1); }
+.mk-table .mk-c-cat { text-align: left; }
+.mk-cat { font: inherit; font-size: 13px; cursor: pointer; border: 0; padding: 0; background: none; color: #6aa8ff; }
+.mk-cat:hover { text-decoration: underline; }
+.mk-tag { display: inline-block; margin-left: 6px; font-size: 11px; color: var(--fg-3); padding: 1px 6px; border-radius: 5px; background: #1b202b; }
+@media (max-width: 1000px) {
+  .mk-controls { grid-template-columns: 1fr; }
+  .mk-toggles { justify-self: start; }
+}
+@media (max-width: 760px) {
+  .mk-tabs { flex-wrap: nowrap; overflow-x: auto; }
+  .mk-tabs button { flex: 0 0 auto; padding: 8px 11px; }
+  .mk-sectors { scrollbar-width: none; }
+  .mk-sectors::-webkit-scrollbar { display: none; }
+  #mkRankBtns { flex-wrap: nowrap; overflow-x: auto; }
+  #mkRankBtns button { flex-shrink: 0; }
+  .mk-tag { display: none; }
+}
