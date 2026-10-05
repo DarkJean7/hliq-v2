@@ -310,6 +310,8 @@ function landingRoutes() {
   const rewrite = (req, _res, next) => {
     const [path, qs] = (req.url ?? '').split('?')
     if (path === '/') req.url = '/landing.html' + (qs ? '?' + qs : '')
+    // /markets — the public markets ranking (markets.html), part of the site, not the app.
+    else if (path === '/markets' || path === '/markets/') req.url = '/markets.html' + (qs ? '?' + qs : '')
     next()
   }
   return {
@@ -342,6 +344,7 @@ export default defineConfig({
         // check in CLAUDE.md greps for.
         index:   join(__dirname, 'index.html'),     // the app, served at /app
         landing: join(__dirname, 'landing.html'),   // the front door, served at /
+        markets: join(__dirname, 'markets.html'),   // every HL asset ranked, served at /markets
       },
       output: {
         manualChunks(id) {

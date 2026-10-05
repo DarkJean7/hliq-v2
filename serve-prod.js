@@ -239,6 +239,19 @@ createServer((req, res) => {
     // it must never land before the image it points at.
     const store = r => { mkdirSync(iconDir, { recursive: true }); writeAtomic(join(iconDir, safe + r.ext), r.buf); writeAtomic(metaPath, JSON.stringify({ ct: r.ct, ext: r.ext, src: r.src, v: iconVer })) }
     const serve = r => res.writeHead(200, { 'Content-Type': r.ct, 'Cache-Control': 'public, max-age=86400' }).end(r.buf)
+    // ?ro=1 — READ-ONLY, for /markets. That page shows the icons the app already chose and
+    // never chooses one itself: probing with its own sources would cache a worse logo (or a
+    // miss, which the app then serves as a letter) over what the app resolves. Hit: serve it.
+    // Anything else: the transparent miss, and NOTHING written.
+    if (/(?:^|&)ro=1(?:&|$)/.test(query)) {
+      try {
+        const meta = existsSync(metaPath) ? JSON.parse(readFileSync(metaPath, 'utf8')) : null
+        const f = meta && !meta.miss && meta.ext ? join(iconDir, safe + meta.ext) : null
+        if (f && existsSync(f)) { res.writeHead(200, { 'Content-Type': meta.ct, 'Cache-Control': 'public, max-age=86400' }); createReadStream(f).pipe(res); return }
+      } catch {}
+      sendIconMiss(res)
+      return
+    }
     ;(async () => {
       if (existsSync(metaPath)) {
         try {
@@ -510,6 +523,13 @@ createServer((req, res) => {
     res.writeHead(301, { Location: '/app' }).end()
     return
   }
+
+  // /markets — every Hyperliquid asset ranked (markets.html). Public, like the landing.
+  if (url === '/markets/') {
+    res.writeHead(301, { Location: '/markets' + req.url.slice(url.length) }).end()
+    return
+  }
+  if (url === '/markets') return serveFile(res, join(DIST, 'markets.html'))
 
   // Static files
   const candidate = join(DIST, url === '/' ? 'landing.html' : url)

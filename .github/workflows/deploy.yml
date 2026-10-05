@@ -71,6 +71,7 @@ jobs:
           rsync -avz --delete public/  "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/public/"
           rsync -avz index.html        "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/index.html"
           rsync -avz landing.html      "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/landing.html"
+          rsync -avz markets.html      "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/markets.html"
           rsync -avz vite.config.js    "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/vite.config.js"
           rsync -avz serve-prod.js     "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/serve-prod.js"
           rsync -avz ecosystem.config.cjs "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/ecosystem.config.cjs"

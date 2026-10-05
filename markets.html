@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <!-- /markets: every asset Hyperliquid lists, ranked. Part of the public site (like the
+       landing), so it does NOT redirect returning users to /app. Data comes straight from
+       Hyperliquid in the visitor's browser (src/markets.js); rows are built in
+       src/marketsdata.js. -->
+  <title>Insolvent — Hyperliquid markets, ranked</title>
+  <meta name="description" content="Every perp, HIP-3 market and spot token on Hyperliquid, ranked by volume, open interest, market cap, 24h performance and funding. Live from the exchange."/>
+  <meta property="og:title" content="Hyperliquid markets, ranked — Insolvent"/>
+  <meta property="og:description" content="Every Hyperliquid asset ranked by volume, open interest, market cap, performance and funding."/>
+  <meta property="og:image" content="/pwa-512x512.png?v=6"/>
+  <meta name="theme-color" content="#0a0c10"/>
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=6"/>
+  <link rel="icon" type="image/png" href="/favicon.png?v=6"/>
+  <link rel="stylesheet" href="/fonts/fonts.css">
+  <link rel="preload" as="font" type="font/woff2" href="/fonts/inter-tight-700-normal-latin.woff2" crossorigin>
+  <link rel="preload" as="font" type="font/woff2" href="/fonts/jetbrains-mono-400-normal-latin.woff2" crossorigin>
+</head>
+<body>
+
+<header class="ln-nav" id="lnNav">
+  <div class="ln-wrap ln-nav__row">
+    <a class="ln-logo notranslate" href="/?home" aria-label="Insolvent home">
+      <span class="ln-in">in</span>solvent<span class="ln-logo__dot">.</span>
+    </a>
+    <!-- ?home: the landing sends returning users on to /app, and these links mean the landing. -->
+    <nav class="ln-links" id="lnLinks">
+      <a href="/?home#features">Features</a>
+      <a href="/markets" class="is-active" aria-current="page">Markets</a>
+      <a href="/?home#bots">Bots</a>
+      <a href="/?home#security">Security</a>
+    </nav>
+    <a class="ln-pill ln-nav__cta" href="/app" data-launch>Launch app</a>
+    <button class="ln-burger" id="lnBurger" aria-label="Menu" aria-expanded="false"><span></span><span></span></button>
+  </div>
+</header>
+
+<main class="mk">
+  <section class="ln-wrap mk-head">
+    <div>
+      <h1 class="ln-h2 mk-title"><span class="ln-prompt">&gt;</span> markets</h1>
+      <p class="mk-sub">Every asset on Hyperliquid, ranked. Perps, HIP-3 markets and spot tokens, live from the exchange.</p>
+    </div>
+    <div class="mk-status" id="mkStatus"><span class="ln-dot"></span> <span id="mkStatusText">loading…</span></div>
+  </section>
+
+  <section class="ln-wrap mk-cards" id="mkCards" aria-label="Summary"></section>
+
+  <section class="ln-wrap mk-controls">
+    <div class="mk-tabs" role="tablist" id="mkTabs">
+      <button role="tab" data-kind="all"  class="is-on">All <i></i></button>
+      <button role="tab" data-kind="perp">Perps <i></i></button>
+      <button role="tab" data-kind="hip3">HIP-3 <i></i></button>
+      <button role="tab" data-kind="spot">Spot <i></i></button>
+    </div>
+    <div class="mk-rank" id="mkRank" aria-label="Rank by">
+      <span>Rank by</span>
+      <button data-sort="vol24" class="is-on">Volume</button>
+      <button data-sort="oi">Open interest</button>
+      <button data-sort="mcap">Market cap</button>
+      <button data-sort="chg24">24h change</button>
+      <button data-sort="funding1h">Funding</button>
+    </div>
+    <div class="mk-dexes" id="mkDexes" hidden></div>
+    <input class="mk-search" id="mkSearch" type="search" placeholder="Search BTC, NVDA, HYPE…" autocomplete="off" spellcheck="false">
+  </section>
+
+  <section class="ln-wrap">
+    <div class="mk-table-wrap">
+      <table class="mk-table" id="mkTable">
+        <thead><tr>
+          <th class="mk-c-rank">#</th>
+          <th class="mk-c-asset">Asset</th>
+          <th data-sort="price">Price</th>
+          <th data-sort="chg24">24h</th>
+          <th data-sort="vol24">Volume 24h</th>
+          <th data-sort="oi">Open interest</th>
+          <th data-sort="mcap">Market cap</th>
+          <th data-sort="funding1h">Funding 1h</th>
+        </tr></thead>
+        <tbody id="mkBody"></tbody>
+      </table>
+    </div>
+    <div class="mk-more"><button id="mkMore" hidden>Show more</button></div>
+    <p class="mk-note">
+      Market cap is circulating supply × price, published by Hyperliquid for spot tokens; a perp
+      shows one when its own spot token is listed. Blank means not known, never zero.
+      Coming next: 7d and 30d performance, market cap for every perp, and HIP-4 outcomes.
+    </p>
+  </section>
+</main>
+
+<footer class="ln-foot">
+  <div class="ln-wrap ln-foot__row">
+    <span class="ln-logo ln-logo--sm notranslate"><span class="ln-in">in</span>solvent<span class="ln-logo__dot">.</span></span>
+    <p>An independent interface for Hyperliquid, not affiliated with Hyperliquid. Market data comes from Hyperliquid's public API and is shown as it is reported.</p>
+  </div>
+</footer>
+
+<script type="module" src="/src/markets.js"></script>
+</body>
+</html>
