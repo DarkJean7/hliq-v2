@@ -50,7 +50,19 @@ let llamaInflight = null
 let cgData = null              // { at, top }
 let cgInflight = null
 let metaBody = null            // { key, body } — composed once per data change
-try { const d = JSON.parse(readFileSync(CG_FILE, 'utf8')); if (d?.top && d.at) cgData = d } catch {}
+// pm2 runs several workers. ONE fetches (CG_LOCK); the rest read what it wrote. Two fetching
+// at once each tripped CoinGecko's limit for the other, and a worker that had started its own
+// slow fetch kept answering 503 long after the file it needed was on disk.
+const CG_LOCK = CG_FILE + '.lock'
+const CG_LOCK_TTL = 15 * 60_000
+function cgFromDisk() {
+  try {
+    const d = JSON.parse(readFileSync(CG_FILE, 'utf8'))
+    if (d?.top && d.at && (!cgData || d.at > cgData.at)) cgData = d
+  } catch {}
+  return !!cgData
+}
+cgFromDisk()
 function llamaRefresh() {
   if (llamaInflight) return llamaInflight
   const get = (u) => fetch(u, { signal: AbortSignal.timeout(45_000) }).then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
@@ -63,8 +75,10 @@ function llamaRefresh() {
 function cgRefresh() {
   if (cgInflight) return cgInflight
   cgInflight = (async () => {
-    // Another worker may have refreshed it since this one started.
-    try { const d = JSON.parse(readFileSync(CG_FILE, 'utf8')); if (d?.top && Date.now() - d.at < CG_TTL) { cgData = d; return } } catch {}
+    // Another worker may have refreshed it since this one started, or be doing so now.
+    if (cgFromDisk() && Date.now() - cgData.at < CG_TTL) return
+    try { if (Date.now() - statSync(CG_LOCK).mtimeMs < CG_LOCK_TTL) return } catch {}
+    try { mkdirSync(dirname(CG_FILE), { recursive: true }); writeFileSync(CG_LOCK, String(process.pid)) } catch {}
     const pages = []
     let retries = 0
     for (let p = 1; p <= CG_PAGES; p++) {
@@ -80,7 +94,7 @@ function cgRefresh() {
     if (pages.length < CG_PAGES / 2) throw new Error(`only ${pages.length} of ${CG_PAGES} pages`)
     cgData = { at: Date.now(), top: cgForHyperliquid(pages) }
     try { mkdirSync(dirname(CG_FILE), { recursive: true }); writeAtomic(CG_FILE, JSON.stringify(cgData)) } catch {}
-  })().catch(e => console.warn('[markets-meta] CoinGecko refresh failed:', e.message)).finally(() => { cgInflight = null })
+  })().finally(() => { try { if (readFileSync(CG_LOCK, 'utf8') === String(process.pid)) unlinkSync(CG_LOCK) } catch {} }).catch(e => console.warn('[markets-meta] CoinGecko refresh failed:', e.message)).finally(() => { cgInflight = null })
   return cgInflight
 }
 function metaJson() {
@@ -472,6 +486,8 @@ createServer((req, res) => {
         : res.writeHead(503, { 'Content-Type': 'application/json' }).end('{"revenue":null}')
     }
     // CoinGecko takes minutes to fetch politely; never make a visitor wait for it.
+    // Pick up what another worker fetched — cheap, and the reason a worker is not left at 503.
+    if (!cgData || Date.now() - cgData.at > CG_TTL) cgFromDisk()
     if (!cgData || Date.now() - cgData.at > CG_TTL) cgRefresh()
     if (llamaData && Date.now() - llamaData.at < LLAMA_TTL) return send()
     if (llamaData) { llamaRefresh(); return send() }       // stale: serve it, refresh behind

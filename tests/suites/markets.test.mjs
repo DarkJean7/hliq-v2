@@ -254,6 +254,8 @@ console.log(nl + '-- the right token for a ticker, and fees beside revenue --')
     /if \(!llamaData \|\| !cgData\) return null/.test(PROD) && PROD.includes('verifyRevenue(llamaData.bySym, cgData.top)'))
   t('and fetches CoinGecko slowly, bounded, cached on disk',
     PROD.includes('setTimeout(r, 13_000)') && PROD.includes('retries++ < 4') && PROD.includes("join(__dirname, 'data', 'cgtop.json')"))
+  t('one pm2 worker fetches CoinGecko (lock); the others read its file on request',
+    PROD.includes("const CG_LOCK = CG_FILE + '.lock'") && /if \(!cgData \|\| Date\.now\(\) - cgData\.at > CG_TTL\) cgFromDisk\(\)/.test(PROD))
   t('the Revenue view lists tokens with revenue OR fees', /\(r\.fee30 \?\? 0\) > 0/.test(JS) && JS.includes("['fee30', 'Fees 30d']"))
 }
 
