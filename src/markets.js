@@ -186,9 +186,20 @@ function renderControls() {
   const groupChip = (g, label) => chips.some(s => s.group === g || s.group === 'both')
     ? `<button class="mk-sec-group${view.tab === g ? ' is-on' : ''}" data-tab="${g}" title="Show ${label} only">${label}</button>` : ''
   const chip = (s) => `<button data-sector="${s.key}" class="${view.sector === s.key ? 'is-on' : ''}">${esc(s.label)} <i>${n.get(s.key)}</i></button>`
-  $('mkSectors').innerHTML = `<button data-sector="" class="${!view.sector ? 'is-on' : ''}">All categories</button>` +
-    (view.tab !== 'tradfi' ? groupChip('crypto', 'Crypto') + chips.filter(s => s.group === 'crypto' || (s.group === 'both' && view.tab !== 'tradfi')).map(chip).join('') : '') +
-    (view.tab !== 'crypto' ? groupChip('tradfi', 'TradFi') + chips.filter(s => s.group === 'tradfi' || (s.group === 'both' && view.tab === 'tradfi')).map(chip).join('') : '')
+  // One row per group — Crypto, then TradFi underneath — so TradFi is not at the far end of
+  // one long scroll. Each row scrolls on its own; where it was scrolled to survives the
+  // re-render (data refreshes rebuild these rows every few seconds while HIP-3 loads).
+  const host = $('mkSectors')
+  const kept = Object.fromEntries([...host.querySelectorAll('.mk-sec-row')].map(r => [r.dataset.group, r.scrollLeft]))
+  const cryptoChips = view.tab !== 'tradfi' ? chips.filter(s => s.group === 'crypto' || (s.group === 'both' && view.tab !== 'tradfi')) : []
+  const tradfiChips = view.tab !== 'crypto' ? chips.filter(s => s.group === 'tradfi' || (s.group === 'both' && view.tab === 'tradfi')) : []
+  const all = `<button data-sector="" class="${!view.sector ? 'is-on' : ''}">All categories</button>`
+  const rowsHtml = []
+  if (cryptoChips.length) rowsHtml.push(['crypto', groupChip('crypto', 'Crypto') + cryptoChips.map(chip).join('')])
+  if (tradfiChips.length) rowsHtml.push(['tradfi', groupChip('tradfi', 'TradFi') + tradfiChips.map(chip).join('')])
+  host.innerHTML = (rowsHtml.length ? rowsHtml : [['none', '']])
+    .map(([g, html], i) => `<div class="mk-sec-row" data-group="${g}">${i === 0 ? all : '<span class="mk-sec-pad"></span>'}${html}</div>`).join('')
+  for (const r of host.querySelectorAll('.mk-sec-row')) if (kept[r.dataset.group]) r.scrollLeft = kept[r.dataset.group]
 
   // HIP-3 dex chips, by volume, only on the HIP-3 tab
   const dx = $('mkDexes')
@@ -305,30 +316,35 @@ $('mkSectors').addEventListener('click', e => {
  * select it.
  */
 let dragged = false
-function sideScroll(el) {
+// `rowSel`: scroll the child row under the pointer instead of `el` itself — the category
+// rows are rebuilt on every render, so they are found at event time, not bound once.
+function sideScroll(el, rowSel = null) {
+  const target = (t) => (rowSel ? t?.closest?.(rowSel) : el)
   el.addEventListener('wheel', e => {
-    if (el.scrollWidth <= el.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return
-    el.scrollLeft += e.deltaY
+    const sc = target(e.target)
+    if (!sc || sc.scrollWidth <= sc.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return
+    sc.scrollLeft += e.deltaY
     e.preventDefault()
   }, { passive: false })
-  let x0 = null, s0 = 0
+  let x0 = null, s0 = 0, sc = null
   el.addEventListener('pointerdown', e => {
     if (e.pointerType !== 'mouse' || e.button !== 0) return
-    x0 = e.clientX; s0 = el.scrollLeft; dragged = false
+    sc = target(e.target); if (!sc) return
+    x0 = e.clientX; s0 = sc.scrollLeft; dragged = false
   })
   window.addEventListener('pointermove', e => {
-    if (x0 == null) return
+    if (x0 == null || !sc) return
     const dx = e.clientX - x0
     if (!dragged && Math.abs(dx) > 5) { dragged = true; el.classList.add('is-dragging') }
-    if (dragged) el.scrollLeft = s0 - dx
+    if (dragged) sc.scrollLeft = s0 - dx
   })
   window.addEventListener('pointerup', () => {
     if (x0 == null) return
-    x0 = null; el.classList.remove('is-dragging')
+    x0 = null; sc = null; el.classList.remove('is-dragging')
     setTimeout(() => { dragged = false }, 0)          // after the click this drag ends on
   })
 }
-sideScroll($('mkSectors'))
+sideScroll($('mkSectors'), '.mk-sec-row')
 sideScroll($('mkCards'))
 // A category in the table is a shortcut to that filter.
 $('mkBody').addEventListener('click', e => { const b = e.target.closest('button[data-cat]'); if (b && b.dataset.cat) { set({ sector: b.dataset.cat }); $('mkSectors').scrollIntoView({ behavior: 'smooth', block: 'center' }) } })

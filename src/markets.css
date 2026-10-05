@@ -148,9 +148,15 @@
   .mk-tag { display: none; }
 }
 
-/* Category row: no scrollbar anywhere — wheel, drag (markets.js sideScroll) or swipe. */
-.mk-sectors { scrollbar-width: none; user-select: none; -webkit-user-select: none; cursor: grab; }
-.mk-sectors::-webkit-scrollbar { display: none; }
+/* Category rows (Crypto, then TradFi under it): no scrollbar anywhere — each row scrolls by
+   wheel, drag (markets.js sideScroll) or swipe. */
+/* min-width:0 — a grid item grows to fit its content otherwise, and the rows would
+   stretch past the screen instead of scrolling. */
+.mk-sectors { min-width: 0; display: flex; flex-direction: column; gap: 8px; overflow: visible; user-select: none; -webkit-user-select: none; cursor: grab; }
+.mk-sec-row { min-width: 0; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.mk-sec-row::-webkit-scrollbar { display: none; }
+/* Lines the TradFi row's label up under the Crypto one (the width of "All categories"). */
+.mk-sec-pad { flex: 0 0 auto; width: 104px; }
 .mk-sectors.is-dragging { cursor: grabbing; }
 .mk-sectors.is-dragging button { pointer-events: none; }
 /* The group label switches tabs, so it is a (quiet) button */
