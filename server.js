@@ -1047,10 +1047,14 @@ async function computeCombined(addrs, { pnl = true, freshMs = WALLET_FRESH_MS } 
         const port = await hlInfo({ type: 'portfolio', user: addr })
         const cs   = await hlInfo({ type: 'clearinghouseState', user: addr })
         const hist = (port ?? []).find(p => p[0] === 'allTime')?.[1]?.accountValueHistory ?? []
+        // A day ago from the 1-DAY history: the all-time one has points up to two weeks apart
+        // (measured: 20,256 minutes), so reading "24h ago" off it interpolated across a
+        // fortnight. That was the phone's "today" disagreeing with desktop's 1D by $80.
+        const dayHist = (port ?? []).find(p => p[0] === 'day')?.[1]?.accountValueHistory ?? []
         if (hist.length) {
           next.at           = Date.now()
           next.accountValue = parseFloat(hist[hist.length - 1][1]) || 0
-          next.dayAgo       = _hlSeriesAt(hist, next.at - 86_400_000)
+          next.dayAgo       = _hlSeriesAt(dayHist.length ? dayHist : hist, next.at - 86_400_000)
           next.perpBase     = parseFloat(cs?.marginSummary?.accountValue ?? 0)
           next.unreal       = (cs?.assetPositions ?? [])
             .reduce((t, ap) => t + parseFloat(ap.position?.unrealizedPnl ?? 0), 0)

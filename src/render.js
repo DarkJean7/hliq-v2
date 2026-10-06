@@ -685,6 +685,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   // ── Period change for the hero (from portfolio account-value history) ──────
   _ovPortfolio = portfolio
   _ovFills = fills
+  _ovLiveVal = accountValue
   const periodChg = _ovComputeChange(_ovPeriod)
   const chgCls    = periodChg.diff >= 0 ? 'pos' : 'neg'
   const chgFull   = _ovChgText(periodChg)
@@ -882,7 +883,12 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
 }
 
 // Period change from cached portfolio account-value history
+// The live equity the Overview shows; the pill measures to it (main.js _periodChange).
+let _ovLiveVal = null
 function _ovComputeChange(period) {
+  // The one rule every screen uses — live equity against the period's base.
+  const shared = typeof window !== 'undefined' && window.__periodChange ? window.__periodChange(period, _ovLiveVal) : null
+  if (shared) return { diff: shared.diff, pct: shared.pct }
   const entry = (_ovPortfolio || []).find(p => p[0] === period) ?? (_ovPortfolio || []).find(p => p[0] === 'allTime')
   const hist  = entry?.[1]?.accountValueHistory ?? []
   if (hist.length < 2) return { diff: 0, pct: null }
@@ -1435,6 +1441,14 @@ window.__ovSetRange = function(label) {
   if (pill) {
     pill.className = 'ov-chg ' + (chg.diff >= 0 ? 'pos' : 'neg')
     pill.textContent = _ovChgText(chg)
+  }
+  // _ovPaintHead (called just below) restores the Equity headline from _ovHead, which still
+  // held the change of the range the page was RENDERED with — so picking 1D repainted the
+  // week's change under a "1D" button. Keep it in step with the range just chosen.
+  if (_ovHead) {
+    _ovHead.chg = _ovChgText(chg)
+    _ovHead.chgCls = chg.diff >= 0 ? 'pos' : 'neg'
+    _ovHead.sub = _ovHead.sub.replace(/·\s*(today|this week|this month|all time)\s*$/, '· ' + (_OV_PERIOD_LABEL[_ovPeriod] ?? 'today'))
   }
   // The caption names the period the pill is measuring, so it has to move with it. This path
   // repaints the pill without a full re-render, which is how it went stale in the first place.

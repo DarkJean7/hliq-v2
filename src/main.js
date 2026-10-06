@@ -10124,6 +10124,42 @@ function _seriesValueAt(hist, ts) {
   return _sampleAt(s, ts, s[0][1])
 }
 
+/**
+ * THE period change, for every screen that shows one: the mobile "today" pill, the desktop
+ * Overview pill and the Portfolio overlay. Reported: the same ten wallets read +$152.05
+ * "today" on the phone and +$232.38 "1D" on desktop and in the overlay. Two faults:
+ *
+ *  - the phone's baseline (the server's dayAgo) was read off the ALL-TIME history, whose
+ *    points can sit two weeks apart (measured: 20,256 minutes) — an interpolation across a
+ *    fortnight, not the value a day ago. The 1-day history has a point every 9–74 minutes.
+ *  - the desktop and the overlay measured to the history's LAST POINT, not to the live
+ *    equity printed beside it — which is why both said exactly +$232.38 while showing
+ *    $4,716.60 and $4,713.28.
+ *
+ * So: live equity minus the base, where the base for 1D is the 1-DAY history read at exactly
+ * 24 hours ago (in All Accounts, the server's figure, which reads that same history), and
+ * for the other ranges the window's first point. `live` is the equity the caller shows.
+ * Returns { diff, pct, base }, or null when there is no base to measure from.
+ */
+function _periodBase(period) {
+  if (period === 'day' && state.isAllAccounts && Number(_combinedSnap?.dayAgo) > 0) return Number(_combinedSnap.dayAgo)
+  const hist = (state.portfolio ?? []).find(p => p[0] === period)?.[1]?.accountValueHistory ?? []
+  if (!hist.length) return null
+  return period === 'day' ? _seriesValueAt(hist, Date.now() - 86_400_000) : parseFloat(hist[0][1])
+}
+function _periodChange(period, live) {
+  const base = _periodBase(period)
+  if (base == null || !Number.isFinite(live)) return null
+  const diff = live - base
+  // A percentage against a near-zero base (an all-time series starts at $0) is noise.
+  const pct = base > 0 && base >= Math.abs(live) * 0.01 ? diff / base * 100 : null
+  return { diff, pct, base }
+}
+window.__periodChange = _periodChange
+// The equity the mobile headline last showed — the overlay's "now" has to be the same number.
+let _lastHeadlineVal = null
+window.__lastHeadlineVal = () => _lastHeadlineVal
+
 function _mergeSeries(results, period, key, backfill = false) {
   const series = []
   for (const r of results) {
@@ -15271,6 +15307,7 @@ function _mobVRenderBalance() {
   // wallets' own values. This used to stop at the held value, which is why a rate-limited
   // server left the headline a dash while every row underneath it had a figure.
   const val = state.isAllAccounts ? _comboDisplayEquity(_srvVal) : _rawVal
+  if (val != null) _lastHeadlineVal = val
   // Watch the number that is actually shown, after the filter -- a step the filter absorbed
   // is not a step the user saw, and one it let through is.
   if (state.isAllAccounts && val != null) {
@@ -15322,11 +15359,11 @@ function _mobVRenderBalance() {
       // timestamp asks both devices the same question, so the grid only affects resolution.
       // Same reasoning as the headline: when the shared snapshot is present its dayAgo is
       // the one baseline both devices hold. The local series is the fallback.
-      const prev = (state.isAllAccounts && _combinedSnap && _srvVal != null && _combinedSnap.dayAgo > 0)
-        ? _combinedSnap.dayAgo
-        : _seriesValueAt(hist, todayStart)
-      const diff = (val ?? 0) - parseFloat(prev)
-      const pct  = parseFloat(prev) > 0 ? diff / parseFloat(prev) * 100 : 0
+      // _periodChange: the same rule the desktop pill and the Portfolio overlay use.
+      const _chg = _periodChange('day', val)
+      const diff = _chg ? _chg.diff : 0
+      const pct  = _chg?.pct ?? 0
+      void todayStart
       const up   = diff >= 0
       changeEl.style.cssText = `display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:8px;font-size:12px;font-weight:600;margin-top:7px;background:${up ? 'rgba(0,229,160,0.12)' : 'rgba(255,77,109,0.14)'};color:${up ? 'var(--green)' : 'var(--red)'}`
       // Keep the ever-changing number in a .notranslate span, and "today" as its OWN stable text
@@ -15428,8 +15465,15 @@ function _mobVPortHeroHtml(hist, vals, idx, baseRef = 0) {
   const date = new Date(+ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
   const isLatest = idx === vals.length - 1
   if (_mobVPortChartType === 'value') {
-    const base = vals[0]
-    const diff = val - base
+    // At the latest point the hero is "now", so it shows the headline's live equity and the
+    // shared period change (_periodChange) — the overlay used to measure the chart's last
+    // point against its first and disagree with the pill on the page behind it. Scrubbing
+    // back shows that point's value against the same base.
+    const live = isLatest ? window.__lastHeadlineVal?.() : null
+    const shared = _periodBase(_mobVPortPeriod)
+    const base = shared ?? vals[0]
+    const shownVal = isLatest && Number.isFinite(live) ? live : val
+    const diff = shownVal - base
     // % of the value at window start. On All-time that start is ~$0 (genesis), so use
     // net invested capital instead — the same fallback the PnL views use — rather than
     // hiding the %. Only omitted if there's no basis at all (never funded).
@@ -15438,7 +15482,7 @@ function _mobVPortHeroHtml(hist, vals, idx, baseRef = 0) {
     const sign = diff >= 0 ? '+' : '-'
     const cls  = diff >= 0 ? 'pos' : 'neg'
     const pctStr = pct == null ? '' : ' (' + sign + Math.abs(pct).toFixed(2) + '%)'
-    return `<div style="font-size:22px;font-weight:700;color:var(--fg)">${_prv('$' + fmtUSD(val))}</div><div style="font-size:13px;margin-top:2px" class="${cls}">${_prv(sign + '$' + fmtUSD(Math.abs(diff)) + pctStr)}</div>${!isLatest ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${date}</div>` : ''}`
+    return `<div style="font-size:22px;font-weight:700;color:var(--fg)">${_prv('$' + fmtUSD(shownVal))}</div><div style="font-size:13px;margin-top:2px" class="${cls}">${_prv(sign + '$' + fmtUSD(Math.abs(diff)) + pctStr)}</div>${!isLatest ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${date}</div>` : ''}`
   } else {
     // Accum. PnL / Realized: show the value as a % of the capital held at the start
     // of the period (baseRef = account value at window start), the same basis the
