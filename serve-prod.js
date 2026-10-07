@@ -565,12 +565,19 @@ createServer((req, res) => {
     const qs   = new URLSearchParams(req.url.split('?')[1] || '')
     const sym  = String(qs.get('sym') || '').toUpperCase().slice(0, 24)
     const type = qs.get('type') === 'fees' ? 'fees' : 'revenue'
-    const tok  = llamaData && cgData ? verifyRevenue(llamaData.bySym, cgData.top).bySym[sym] : null
-    if (!tok?.slugs?.length) { res.writeHead(404, { 'Content-Type': 'application/json' }).end('{"points":null}'); return }
-    revHistory(tok.slugs, type)
+    // pm2 runs several workers and each loads the revenue table on its own first request: a
+    // chart asked of a worker that has not yet (any worker, right after a deploy) must load it
+    // rather than answer 404 for a token the page is showing.
+    ;(async () => {
+      if (!cgData) cgFromDisk()
+      if (!llamaData) await llamaRefresh()
+      const tok = llamaData && cgData ? verifyRevenue(llamaData.bySym, cgData.top).bySym[sym] : null
+      if (!tok?.slugs?.length) { res.writeHead(llamaData && cgData ? 404 : 503, { 'Content-Type': 'application/json' }).end('{"points":null}'); return }
+      return revHistory(tok.slugs, type)
       .then(points => res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=900' })
         .end(JSON.stringify({ sym, type, name: tok.name, points })))
       .catch(() => res.writeHead(502, { 'Content-Type': 'application/json' }).end('{"points":null}'))
+    })()
     return
   }
 
