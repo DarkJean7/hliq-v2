@@ -102,8 +102,22 @@ async function run(label, opts) {
 
   const box = await p.locator('#fillToasts .ft-card').first().boundingBox()
   const vp = p.viewportSize()
-  if (opts.isMobile) ok('on a phone it sits at the top, full width', box.y < 120 && box.width > vp.width * 0.85, box)
-  else ok('on desktop it sits bottom-right', box.x > vp.width / 2 && box.y + box.height > vp.height * 0.6, box)
+  // Both shells: the bottom-right corner (on a phone, above the nav bar).
+  ok('it sits bottom-right', box.x + box.width > vp.width - 30 && box.x > vp.width * 0.2 && box.y + box.height > vp.height * 0.6, box)
+  if (opts.isMobile) {
+    // Whatever bar is pinned to the bottom of the screen (the shells use different elements).
+    const nav = await p.evaluate(() => {
+      let n = document.elementFromPoint(innerWidth / 2, innerHeight - 4)
+      while (n && n !== document.body && getComputedStyle(n).position !== 'fixed') n = n.parentElement
+      return n && n !== document.body ? n.getBoundingClientRect().top : null
+    })
+    ok('on a phone it clears the bottom nav', nav == null || box.y + box.height <= nav, { box, nav })
+  }
+  ok('the card is opaque, whatever the theme', await p.evaluate(() => {
+    const bg = getComputedStyle(document.querySelector('#fillToasts .ft-card')).backgroundColor
+    const m = bg.match(/rgba?\(([^)]+)\)/); const a = m ? m[1].split(',').map(Number)[3] : 1
+    return a === undefined || isNaN(a) || a === 1
+  }))
   if (SHOT) await p.screenshot({ path: `${SHOT}/fillnotify-${label}.png` })
 
   await p.click('#fillToasts .ft-card .ft-x >> nth=0')

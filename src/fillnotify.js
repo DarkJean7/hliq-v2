@@ -223,7 +223,10 @@ function injectCss() {
   s.textContent = `
   .ft-host { position: fixed; right: 18px; bottom: 18px; z-index: 100060; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; pointer-events: none; }
   .ft-card { pointer-events: auto; position: relative; display: flex; width: 300px; max-width: calc(100vw - 24px); overflow: hidden;
-    background: var(--panel, #12151c); border: 1px solid var(--rule, #1f2533); border-radius: 12px;
+    /* Opaque whatever the theme: with a background photo theme.js makes the panels translucent,
+       and a card that opens OVER the positions must not show them through it. --bg stays solid. */
+    background-color: var(--bg, #0a0c10); background-image: linear-gradient(var(--panel-3, #1c2230), var(--panel-3, #1c2230));
+    border: 1px solid var(--rule, #1f2533); border-radius: 12px;
     box-shadow: 0 12px 34px rgba(0,0,0,.45); color: var(--fg, #e5e9f0); font-size: 13px;
     animation: ft-in .22s cubic-bezier(.2,.8,.2,1); }
   .ft-card.ft-out { animation: ft-outk .22s ease forwards; }
@@ -244,10 +247,10 @@ function injectCss() {
   .ft-pnl { margin-top: 5px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .ft-up { color: var(--green, #2ad1a5); } .ft-dn { color: var(--red, #ff4d6d); }
   @media (max-width: 768px) {
-    .ft-host { right: 0; left: 0; bottom: auto; top: calc(env(safe-area-inset-top, 0px) + 8px); align-items: center; padding: 0 12px; }
-    .ft-card { width: 100%; max-width: 440px; }
-    @keyframes ft-in { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: none; } }
-    @keyframes ft-outk { to { opacity: 0; transform: translateY(-12px); } }
+    /* The same corner as desktop, lifted above the bottom nav. */
+    .ft-host { right: 10px; bottom: calc(env(safe-area-inset-bottom, 0px) + 78px); }
+    .ft-card { width: 270px; max-width: calc(100vw - 20px); font-size: 12.5px; }
+    .ft-main { font-size: 13px; }
   }
   @media (prefers-reduced-motion: reduce) { .ft-card, .ft-card.ft-out { animation: none; } }`
   document.head.appendChild(s)
