@@ -370,7 +370,7 @@ console.log(nl + '-- revenue history: the chart (src/revchart.js) and its source
   const co = S.companyRevenue({ Revenues: [f('2025-01-01', '2025-03-31', 10), f('2025-04-01', '2025-06-30', 12), f('2025-07-01', '2025-09-30', 14)] })
   t('a stock keeps its quarters for the chart: [start, end, value, derived]', co.hist.length === 3 && co.hist.at(-1)[2] === 14 && co.hist.at(-1)[3] === 0)
   t('and an old SEC cache without them counts as stale', PROD.includes('d.v >= 2'))
-  t('a worker that has not loaded the revenue table yet loads it for a chart, not 404', /if (!llamaData) await llamaRefresh()/.test(PROD))
+  t('a worker that has not loaded the revenue table yet loads it for a chart, not 404', PROD.includes('if (!llamaData) await llamaRefresh()'))
   t('the Revenue view opens a row\'s history', JS.includes("import { openRevenueChart } from './revchart.js'") && JS.includes('mk-row-chart'))
 }
 
