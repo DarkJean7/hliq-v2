@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { coinGeckoUpgrade } from './src/iconpick.js'
 import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, parseSeries } from './src/extmarkets.js'
 import { SEC_CONCEPTS, SEC_TICKERS_URL, secConceptUrl, companyRevenue } from './src/secrev.js'
+import { llamaSummaryUrl, sumDaily } from './src/llama.js'
 import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
@@ -111,7 +112,8 @@ let secData = null             // { at, stocks: { TICKER: { name, q, qStart, qEn
 let secInflight = null
 function secFromDisk() {
   // A file from before industry codes were fetched has no `sic`; it counts as stale.
-  try { const d = JSON.parse(readFileSync(SEC_FILE, 'utf8')); if (d?.stocks && d.at && (!secData || d.at > secData.at)) secData = d.sic ? d : { ...d, at: 0 } } catch {}
+  // A file from before industry codes, or before the quarter history (v2), counts as stale.
+  try { const d = JSON.parse(readFileSync(SEC_FILE, 'utf8')); if (d?.stocks && d.at && (!secData || d.at > secData.at)) secData = d.sic && d.v >= 2 ? d : { ...d, at: 0 } } catch {}
   return !!secData
 }
 secFromDisk()
@@ -148,12 +150,34 @@ function secRefresh() {
       } catch {}
     }
     if (!Object.keys(stocks).length) throw new Error('no company answered')
-    secData = { at: Date.now(), stocks, sic }
+    secData = { at: Date.now(), stocks, sic, v: 2 }
     writeAtomic(SEC_FILE, JSON.stringify(secData))
   })().finally(() => { try { if (readFileSync(SEC_LOCK, 'utf8') === String(process.pid)) unlinkSync(SEC_LOCK) } catch {} })
     .catch(e => console.warn('[markets-meta] SEC refresh failed:', e.message))
     .finally(() => { secInflight = null })
   return secInflight
+}
+
+// ── /markets-revenue?sym=PUMP&type=revenue|fees: a token's daily history, for the chart ──
+// Only a ticker the revenue table already carries (its DefiLlama slug comes from there), so
+// the route never fetches what a caller names. An hour per slug and type; the newest day
+// moves, the rest does not.
+const REVHIST_TTL = 60 * 60_000
+const revHist = new Map()        // 'slug|type' -> { at, pts }
+async function revHistory(slugs, type) {
+  const series = []
+  for (const slug of slugs) {
+    const k = slug + '|' + type
+    const hit = revHist.get(k)
+    if (hit && Date.now() - hit.at < REVHIST_TTL) { series.push(hit.pts); continue }
+    const r = await fetch(llamaSummaryUrl(slug, type), { signal: AbortSignal.timeout(30_000) })
+    if (!r.ok) throw new Error(String(r.status))
+    const pts = (await r.json())?.totalDataChart ?? []
+    if (revHist.size > 300) revHist.clear()
+    revHist.set(k, { at: Date.now(), pts })
+    series.push(pts)
+  }
+  return sumDaily(series)
 }
 
 function metaJson() {
@@ -536,6 +560,20 @@ createServer((req, res) => {
   // this cannot be pointed at anything but GeckoTerminal's token endpoint. One minute of
   // cache, shared by every client, because GeckoTerminal allows about thirty calls a minute
   // and the same NEST row is asked for by everyone who holds it. src/offex.js has the why.
+  if (url === '/markets-revenue') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const qs   = new URLSearchParams(req.url.split('?')[1] || '')
+    const sym  = String(qs.get('sym') || '').toUpperCase().slice(0, 24)
+    const type = qs.get('type') === 'fees' ? 'fees' : 'revenue'
+    const tok  = llamaData && cgData ? verifyRevenue(llamaData.bySym, cgData.top).bySym[sym] : null
+    if (!tok?.slugs?.length) { res.writeHead(404, { 'Content-Type': 'application/json' }).end('{"points":null}'); return }
+    revHistory(tok.slugs, type)
+      .then(points => res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=900' })
+        .end(JSON.stringify({ sym, type, name: tok.name, points })))
+      .catch(() => res.writeHead(502, { 'Content-Type': 'application/json' }).end('{"points":null}'))
+    return
+  }
+
   if (url === '/markets-meta') {
     if (req.method !== 'GET') { res.writeHead(405).end(); return }
     const send = () => {

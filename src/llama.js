@@ -54,7 +54,17 @@ export function buildRevenue(fees, lite, feesFeed = null) {
     const cur = byGecko.get(tok.gecko) ?? {
       sym: tok.sym, gecko: tok.gecko, name: parent?.name ?? f.displayName ?? f.name,
       r24: null, r7: null, r30: null, f24: null, f7: null, f30: null, category: null, catRev: -1, protocols: 0, chains: new Set(),
+      slugs: new Set(),
     }
+    // Where this token's daily HISTORY lives (for the revenue chart): a parent protocol's
+    // own summary already sums its children (DefiLlama's "Pump" = pump.fun + PumpSwap + …),
+    // so a token reached through a parent is charted from the parent alone; otherwise from
+    // each protocol that carries the token itself.
+    // A parent counts only when it is THIS token's parent (same CoinGecko id): its summary
+    // already includes every child, so adding a child that carries the token on its own record
+    // (aave-v2 under Aave) would count it twice. A child with a different token keeps its own.
+    if (parent && tokenOf(parent)?.gecko === tok.gecko) cur.slugs.add(String(parentId).replace(/^parent#/, ''))
+    else if (f.slug) cur.slugs.add(String(f.slug))
     cur.r24 = add(cur.r24, n(f.total24h))
     cur.r7  = add(cur.r7,  n(f.total7d))
     cur.r30 = add(cur.r30, n(f.total30d))
@@ -78,7 +88,7 @@ export function buildRevenue(fees, lite, feesFeed = null) {
   for (const [sym, list] of bySymAll) {
     if (list.length > 1) { ambiguous.push(sym); continue }
     const t = list[0]
-    bySym[sym] = { name: t.name, gecko: t.gecko, category: t.category, r24: t.r24, r7: t.r7, r30: t.r30, f24: t.f24, f7: t.f7, f30: t.f30, protocols: t.protocols, chains: t.chains.size }
+    bySym[sym] = { name: t.name, gecko: t.gecko, category: t.category, r24: t.r24, r7: t.r7, r30: t.r30, f24: t.f24, f7: t.f7, f30: t.f30, protocols: t.protocols, chains: t.chains.size, slugs: [...t.slugs].slice(0, 8) }
   }
   return { bySym, ambiguous }
 }
@@ -152,4 +162,25 @@ export function cgForHyperliquid(pages) {
     top[sym] = { id, mcap: Number.isFinite(mcap) && mcap > 0 ? mcap : null }
   }
   return top
+}
+
+// ── Daily history, for the revenue chart ──────────────────────────────────────
+
+/** A protocol's daily revenue or fees, all time. Only a slug from buildRevenue is ever used. */
+export const llamaSummaryUrl = (slug, type) =>
+  `https://api.llama.fi/summary/fees/${encodeURIComponent(slug)}?excludeTotalDataChartBreakdown=true&dataType=${type === 'fees' ? 'dailyFees' : 'dailyRevenue'}`
+
+/**
+ * Several protocols' daily series → one, summed by day: [[unixSeconds, usd], …] oldest first.
+ * A day missing from one protocol counts that protocol as nothing that day (it had not
+ * launched, or DefiLlama has no figure) — the sum is still every value that exists.
+ */
+export function sumDaily(seriesList) {
+  const by = new Map()
+  for (const s of (seriesList ?? [])) for (const p of (Array.isArray(s) ? s : [])) {
+    const t = Number(p?.[0]), v = Number(p?.[1])
+    if (!Number.isFinite(t) || !Number.isFinite(v)) continue
+    by.set(t, (by.get(t) ?? 0) + v)
+  }
+  return [...by.entries()].sort((a, b) => a[0] - b[0])
 }

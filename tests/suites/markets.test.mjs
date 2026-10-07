@@ -283,7 +283,7 @@ console.log(nl + '-- stocks: sectors from the SEC industry code, and our lists -
   t('ETFs are ETFs, and carry their theme: SMH → Semiconductors, XLE → Energy',
     ['etf', 'semis'].every(k => classify({ sym: 'SMH', hlCat: 'stocks' }).tags.includes(k)) && ['etf', 'energy'].every(k => classify({ sym: 'XLE', hlCat: 'stocks' }).tags.includes(k)))
   t('the server reads each company\'s industry code with its revenue, and refetches a cache from before',
-    PROD.includes('data.sec.gov/submissions/CIK') && PROD.includes('secData = d.sic ? d : { ...d, at: 0 }'))
+    PROD.includes('data.sec.gov/submissions/CIK') && PROD.includes('secData = d.sic && d.v >= 2 ? d : { ...d, at: 0 }'))
   const rowsC = M.buildMarkets({ hip3: [{ dex: 'xyz', label: 'XYZ', data: [{ universe: [{ name: 'xyz:CVX', maxLeverage: 10 }] }, [{ markPx: '150', prevDayPx: '149', dayNtlVlm: '1e6', openInterest: '1e4' }]] }],
     cats: [['xyz:CVX', 'stocks']], sic: { CVX: [2911, 'Petroleum Refining'] } })
   t('on the page: CVX is Stocks + Energy', rowsC[0].tags.includes('stocks') && rowsC[0].tags.includes('energy'), rowsC[0].tags)
@@ -323,6 +323,54 @@ console.log(nl + '-- stocks: revenue reported to the SEC (src/secrev.js) --')
     PROD.includes('const SEC_TTL = 24 * 60 * 60_000') && PROD.includes("const SEC_LOCK = SEC_FILE + '.lock'") && PROD.includes("process.env.SEC_CONTACT") && PROD.includes('setTimeout(r, 170)'))
   t('the TradFi tab has its own revenue columns; crypto revenue does not mix stocks in',
     JS.includes("const stockRevenueView = () => view.mode === 'revenue' && view.tab === 'tradfi'") && JS.includes("['sq', 'Revenue, last quarter']"))
+}
+
+console.log(nl + '-- revenue history: the chart (src/revchart.js) and its source --')
+{
+  const C = await import('../../src/revchart.js')
+  const L = await import('../../src/llama.js')
+  const S = await import('../../src/secrev.js')
+  const day = 86400
+  // 400 days of $1,000/day ending on a Wednesday mid-month, as DefiLlama sends them.
+  const end = Date.UTC(2026, 9, 7) / 1000
+  const pts = Array.from({ length: 400 }, (_, i) => [end - (399 - i) * day, 1000])
+  t('a range is measured back from the newest day the series has, not from now (DefiLlama lags)',
+    C.windowPoints(pts, 30).length === 30 && C.windowPoints(pts, 30)[0].t === (end - 29 * day) * 1000)
+  const d90 = C.bucket(C.windowPoints(pts, 90), 90)
+  t('up to 90 days: one bar a day', d90.length === 90 && d90.every(b => b.unit === 'day' && b.v === 1000))
+  const w = C.bucket(C.windowPoints(pts, 365), 365)
+  t('a year: summed by week, nothing lost', w.every(b => b.unit === 'week') && w.reduce((a, b) => a + b.v, 0) === 365 * 1000)
+  t('this week so far is flagged, not drawn as a full week', w.at(-1).partial && w.at(-1).days < 7 && !w[1].partial)
+  const mo = C.bucket(C.windowPoints(pts, null), null)
+  t('all time: summed by month; this month so far is flagged', mo.every(b => b.unit === 'month') && mo.at(-1).partial && mo.reduce((a, b) => a + b.v, 0) === 400 * 1000)
+  const st = C.rangeStats(pts, 90)
+  t('range total and average per day', st.total === 90000 && st.avg === 1000 && st.days === 90)
+  t('change vs the period before, when that period is fully covered', st.change === 0)
+  t('no change against a period the data does not cover', C.rangeStats(pts.slice(-100), 90).change === null)
+  t('a clean axis: 0 to a round top in 4 steps', JSON.stringify(C.niceScale(3.3e6).ticks) === JSON.stringify([0, 1e6, 2e6, 3e6, 4e6]))
+  t('axis labels are round: $150M, $2.5M', C.tickUsd(150e6) === '$150M' && C.tickUsd(2.5e6) === '$2.5M')
+  t('a period still in progress says so in its label', /so far/.test(C.barLabel(w.at(-1))) && /so far/.test(C.barLabel(mo.at(-1))))
+
+  t('daily series from several protocols sum by day', JSON.stringify(L.sumDaily([[[1, 5], [2, 5]], [[2, 3], [3, 1]]])) === JSON.stringify([[1, 5], [2, 8], [3, 1]]))
+  const rv = L.buildRevenue({ protocols: [
+    { defillamaId: '1', slug: 'aave-v2', total24h: 1, total7d: 1, total30d: 1, parentProtocol: 'parent#aave' },
+    { defillamaId: '2', slug: 'aave-v3', total24h: 1, total7d: 1, total30d: 1, parentProtocol: 'parent#aave' },
+    { defillamaId: '3', slug: 'spark',   total24h: 1, total7d: 1, total30d: 1, parentProtocol: 'parent#sky' },
+  ] }, {
+    protocols: [{ defillamaId: '1', symbol: 'AAVE', geckoId: 'aave' }, { defillamaId: '2', symbol: '-', geckoId: null },
+                { defillamaId: '3', symbol: 'SPK', geckoId: 'spark-2' }],
+    parentProtocols: [{ id: 'parent#aave', symbol: 'AAVE', gecko_id: 'aave' }, { id: 'parent#sky', symbol: 'SKY', gecko_id: 'sky' }],
+  })
+  t("a token's history comes from its parent alone, never parent + child (aave-v2 is inside Aave)", JSON.stringify(rv.bySym.AAVE.slugs) === '["aave"]')
+  t("a child with its OWN token keeps its own history, not its parent's total (SPK is not Sky)", JSON.stringify(rv.bySym.SPK.slugs) === '["spark"]')
+  t('the history URL asks for revenue or fees', /dataType=dailyRevenue/.test(L.llamaSummaryUrl('pump', 'revenue')) && /dataType=dailyFees/.test(L.llamaSummaryUrl('pump', 'fees')))
+  t('the server charts only a ticker the revenue table carries, and caches each history',
+    PROD.includes("if (url === '/markets-revenue')") && PROD.includes('verifyRevenue(llamaData.bySym, cgData.top).bySym[sym]') && PROD.includes('const REVHIST_TTL = 60 * 60_000'))
+  const f = (start, endD, val) => ({ start, end: endD, val, filed: endD })
+  const co = S.companyRevenue({ Revenues: [f('2025-01-01', '2025-03-31', 10), f('2025-04-01', '2025-06-30', 12), f('2025-07-01', '2025-09-30', 14)] })
+  t('a stock keeps its quarters for the chart: [start, end, value, derived]', co.hist.length === 3 && co.hist.at(-1)[2] === 14 && co.hist.at(-1)[3] === 0)
+  t('and an old SEC cache without them counts as stale', PROD.includes('d.v >= 2'))
+  t('the Revenue view opens a row\'s history', JS.includes("import { openRevenueChart } from './revchart.js'") && JS.includes('mk-row-chart'))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

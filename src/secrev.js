@@ -95,9 +95,12 @@ export function summarizeRevenue(series) {
 export function companyRevenue(byConcept) {
   let best = null
   for (const [concept, facts] of Object.entries(byConcept ?? {})) {
-    const sum = summarizeRevenue(quarterSeries(facts))
+    const series = quarterSeries(facts)
+    const sum = summarizeRevenue(series)
     if (!sum) continue
-    if (!best || sum.qEnd > best.qEnd || (sum.qEnd === best.qEnd && sum.q > best.q)) best = { ...sum, concept }
+    // The last 16 quarters, for the chart: [start, end, value, derived ? 1 : 0].
+    const hist = series.slice(-16).map(q => [q.start, q.end, q.val, q.derived ? 1 : 0])
+    if (!best || sum.qEnd > best.qEnd || (sum.qEnd === best.qEnd && sum.q > best.q)) best = { ...sum, concept, hist }
   }
   return best
 }

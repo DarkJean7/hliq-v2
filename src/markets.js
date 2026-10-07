@@ -5,6 +5,7 @@ import './landing.css'
 import './markets.css'
 import { buildMarkets, sortRows, filterRows, summarize, onePerToken } from './marketsdata.js'
 import { SECTORS, SECTOR_LABEL } from './sectors.js'
+import { openRevenueChart } from './revchart.js'
 
 const API = 'https://api.hyperliquid.xyz/info'
 const PAGE = 100
@@ -248,7 +249,9 @@ function renderTable(list) {
     return `<td class="mk-c-cat">${r.category ? `<button class="mk-cat" data-cat="${esc((r.tags ?? [])[0] ?? '')}">${esc(r.category)}</button>` : dash}${extra.map(l => `<span class="mk-tag">${esc(l)}</span>`).join('')}</td>`
   }
   const sub = (r) => view.mode === 'revenue' && r.revName ? r.revName : (r.name && r.name !== r.sym ? r.name : '')
-  $('mkBody').innerHTML = page.length ? page.map((r, i) => `<tr>
+  // In the Revenue view a row opens its revenue history (src/revchart.js).
+  const chartable = view.mode === 'revenue'
+  $('mkBody').innerHTML = page.length ? page.map((r, i) => `<tr data-id="${esc(r.id)}"${chartable ? ' class="mk-row-chart" tabindex="0" title="Show the revenue history"' : ''}>
       <td class="mk-c-rank">${i + 1}</td>
       <td class="mk-c-asset"><div class="mk-asset">${iconHtml(r)}<div><b>${esc(r.sym)}</b>${badge(r)}${sub(r) ? `<small>${esc(sub(r))}</small>` : ''}</div></div></td>
       ${cols.map(([k]) => `<td>${cellFor(k, r)}</td>`).join('')}
@@ -267,7 +270,8 @@ function renderHint() {
   if (!h) return
   const show = view.mode === 'revenue' && view.tab !== 'tradfi'
   h.hidden = !show
-  if (show) h.innerHTML = `Crypto protocols, by day. Stocks report revenue by quarter — <button data-tab="tradfi">see them on the TradFi tab</button>.`
+  if (show) h.innerHTML = `Crypto protocols, by day — tap a row for its history. Stocks report revenue by quarter — <button data-tab="tradfi">see them on the TradFi tab</button>.`
+  else if (stockRevenueView()) { h.hidden = false; h.textContent = 'Revenue reported to the SEC, by quarter — tap a row for the last four years.' }
 }
 
 function renderStatus() {
@@ -346,6 +350,19 @@ function sideScroll(el, rowSel = null) {
 }
 sideScroll($('mkSectors'), '.mk-sec-row')
 sideScroll($('mkCards'))
+// Revenue view: a row (or Enter on a focused row) opens its revenue history. A category
+// button inside the row keeps its own job.
+const openRow = (tr) => {
+  const r = tr && rows.find(x => x.id === tr.dataset.id)
+  if (r) openRevenueChart(r)
+}
+$('mkBody').addEventListener('click', e => {
+  if (view.mode !== 'revenue' || e.target.closest('button')) return
+  openRow(e.target.closest('tr.mk-row-chart'))
+})
+$('mkBody').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.matches?.('tr.mk-row-chart')) openRow(e.target)
+})
 // A category in the table is a shortcut to that filter.
 $('mkBody').addEventListener('click', e => { const b = e.target.closest('button[data-cat]'); if (b && b.dataset.cat) { set({ sector: b.dataset.cat }); $('mkSectors').scrollIntoView({ behavior: 'smooth', block: 'center' }) } })
 const setSort = (key) => {

@@ -57,8 +57,18 @@ await ctx.route('**/markets-meta', (route) => route.fulfill({ status: 200, conte
   HYPE: { name: 'Hyperliquid', category: 'Derivatives', r24: 670000, r7: 9.9e6, r30: 5.2e7 },
   DOGE: { name: 'Dogeish', category: 'Launchpad', r24: 1000, r7: 7000, r30: 30000 },
 }, stocks: {
-  NVDA: { name: 'NVIDIA CORP', q: 96221e6, qStart: '2026-04-27', qEnd: '2026-07-26', ttm: 302969e6, yoy: 105.9 },
+  NVDA: { name: 'NVIDIA CORP', q: 96221e6, qStart: '2026-04-27', qEnd: '2026-07-26', ttm: 302969e6, yoy: 105.9,
+    hist: [['2025-10-27', '2026-01-25', 68000e6, 1], ['2026-01-26', '2026-04-26', 80000e6, 0], ['2026-04-27', '2026-07-26', 96221e6, 0]] },
 } } }))
+// Revenue history (/markets-revenue): 120 days for HYPE, $1,000 a day, fees $3,000.
+const revAsks = []
+await ctx.route('**/markets-revenue**', (route) => {
+  const u = new URL(route.request().url())
+  revAsks.push(u.searchParams.get('sym') + ':' + u.searchParams.get('type'))
+  const v = u.searchParams.get('type') === 'fees' ? 3000 : 1000
+  const last = Date.UTC(2026, 9, 6) / 1000
+  return route.fulfill({ status: 200, contentType: 'application/json', json: { points: Array.from({ length: 120 }, (_, i) => [last - (119 - i) * 86400, v]) } })
+})
 const icons = []
 await ctx.route('**/icon/**', (route) => { icons.push(route.request().url()); return route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg"/>' }) })
 
@@ -139,6 +149,35 @@ ok('last quarter $96.22B, Apr–Jul 2026, 12 months $302.97B, +105.90%',
   await cell('NVDA', 2) === '$96.22B' && await cell('NVDA', 3) === 'Apr–Jul 2026' && await cell('NVDA', 4) === '$302.97B' && await cell('NVDA', 5) === '+105.90%',
   [await cell('NVDA', 2), await cell('NVDA', 3), await cell('NVDA', 4), await cell('NVDA', 5)])
 ok('ranked by last quarter', await p.evaluate(() => document.querySelector('#mkRankBtns button.is-on')?.dataset.sort) === 'sq')
+
+console.log('\n-- revenue history charts --')
+await p.click('#mkBody tr.mk-row-chart')
+await p.waitForFunction(() => document.querySelectorAll('#rcOverlay .rc-bar').length > 0, null, { timeout: 10000 }).catch(() => {})
+ok('a stock row opens its quarters', await p.locator('#rcOverlay .rc-bar').count() === 3 && /NVDA/.test(await p.textContent('#rcTitle')))
+ok('a derived fiscal Q4 is faded and explained, not just coloured',
+  await p.evaluate(() => document.querySelector('#rcOverlay .rc-bar[data-i="0"]').getAttribute('opacity') === '0.45') &&
+  /Derived|\*/.test(await p.textContent('#rcOverlay .rc-tbl')) && /annual report/.test(await p.textContent('#rcOverlay .rc-src')))
+await p.keyboard.press('Escape')
+ok('Escape closes it', await p.locator('#rcOverlay').count() === 0)
+await p.click('#mkTabs button[data-tab="all"]')
+await p.waitForFunction(() => [...document.querySelectorAll('#mkBody tr.mk-row-chart .mk-asset b')].some(b => b.textContent === 'HYPE'), null, { timeout: 5000 }).catch(() => {})
+await p.click('#mkBody tr.mk-row-chart:has(.mk-asset b:text-is("HYPE"))')
+await p.waitForFunction(() => document.querySelectorAll('#rcOverlay .rc-bar').length > 0, null, { timeout: 10000 }).catch(() => {})
+ok('a crypto row opens its daily history: 90 days by default', await p.locator('#rcOverlay .rc-bar').count() === 90, await p.locator('#rcOverlay .rc-bar').count())
+ok('asked for that token\'s revenue', revAsks.includes('HYPE:revenue'), revAsks)
+ok('the range total is the sum of the days: $90.0K', /\$90\.0K/.test(await p.textContent('#rcOverlay .rc-stats')), await p.textContent('#rcOverlay .rc-stats'))
+const sb = await p.locator('#rcOverlay .rc-svg').boundingBox()
+await p.mouse.move(sb.x + sb.width * 0.6, sb.y + sb.height * 0.6)
+ok('hovering anywhere over the plot shows the nearest bar: value, then date',
+  await p.evaluate(() => { const t = document.querySelector('#rcOverlay .rc-tip'); return !t.hidden && /\$1\.0K/.test(t.querySelector('b').textContent) && /2026/.test(t.textContent) }))
+await p.click('#rcOverlay .rc-seg[data-k="range"] button[data-v="1Y"]')
+const wk = await p.locator('#rcOverlay .rc-bar').count()
+ok('a year is drawn by week, not 120 slivers', wk >= 17 && wk <= 19, wk)
+await p.click('#rcOverlay .rc-seg[data-k="type"] button[data-v="fees"]')
+await p.waitForFunction(() => /\$360\.0K/.test(document.querySelector('#rcOverlay .rc-stats')?.textContent ?? ''), null, { timeout: 5000 }).catch(() => {})
+ok('Fees is its own chart, from its own history', revAsks.includes('HYPE:fees') && /\$360\.0K/.test(await p.textContent('#rcOverlay .rc-stats')), revAsks)
+await p.click('#rcOverlay .rc-close')
+ok('the close button closes it', await p.locator('#rcOverlay').count() === 0)
 await p.click('#mkMode button[data-mode="market"]')
 await p.click('#mkTabs button[data-tab="all"]')
 await p.click('#mkStrict button[data-strict="1"]')

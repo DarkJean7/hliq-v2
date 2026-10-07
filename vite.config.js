@@ -180,6 +180,21 @@ function strategyPlugin() {
           } catch { return sendJson(res, 200, { prices: {} }) }
         }
 
+        // Dev twin of serve-prod.js /markets-revenue (no cache).
+        if (method === 'GET' && path === '/markets-revenue') {
+          const L = await import('./src/llama.js')
+          const qs = new URLSearchParams(req.url.split('?')[1] || '')
+          const sym = String(qs.get('sym') || '').toUpperCase(), type = qs.get('type') === 'fees' ? 'fees' : 'revenue'
+          try {
+            const get = (u) => fetch(u, { signal: AbortSignal.timeout(45_000) }).then(r => r.json())
+            const [rev, lite] = await Promise.all([get(L.LLAMA_FEES_URL), get(L.LLAMA_LITE_URL)])
+            const tok = L.buildRevenue(rev, lite).bySym[sym]
+            if (!tok?.slugs?.length) return sendJson(res, 404, { points: null })
+            const series = await Promise.all(tok.slugs.map(s => get(L.llamaSummaryUrl(s, type)).then(j => j?.totalDataChart ?? [])))
+            return sendJson(res, 200, { sym, type, name: tok.name, points: L.sumDaily(series) })
+          } catch { return sendJson(res, 502, { points: null }) }
+        }
+
         // Dev twin of serve-prod.js /markets-meta: same pipeline, cached in memory for the dev
         // session (CoinGecko's free API throttles, so it is fetched once, a few seconds apart).
         if (method === 'GET' && path === '/markets-meta') {

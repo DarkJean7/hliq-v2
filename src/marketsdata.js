@@ -290,7 +290,9 @@ export function withStockRevenue(rows, stocks) {
   return rows.map(r => {
     const s = r.hlCat === 'stocks' ? stocks[r.sym] : null
     return s ? { ...r, sq: s.q ?? null, sqStart: s.qStart ?? null, sqEnd: s.qEnd ?? null, sqDerived: !!s.qDerived,
-                 sttm: s.ttm ?? null, syoy: s.yoy ?? null, sName: s.name ?? null } : r
+                 sttm: s.ttm ?? null, syoy: s.yoy ?? null, sName: s.name ?? null,
+                 // Quarters for the chart: [start, end, value, derived]
+                 sHist: Array.isArray(s.hist) ? s.hist : null } : r
   })
 }
 
