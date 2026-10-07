@@ -1568,6 +1568,20 @@
                      markup the mobile shell uses — src/fillsound.js pickerHtml(). -->
                 <div id="fillSoundBox"></div>
               </div>
+              <!-- The DEX-style card when an order fills. ON by default. src/fillnotify.js -->
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Order filled cards</div>
+                  <div class="settings-desc">A small card when one of your orders fills: side, size, price, and what a close realized</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <button class="btn-sm" onclick="window.__previewFillToast()">Preview</button>
+                  <label class="pin-toggle">
+                    <input type="checkbox" id="fillToastToggle" checked onchange="window.__toggleFillToasts(this.checked)">
+                    <span class="pin-toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
               <div class="settings-row">
                 <div>
                   <div class="settings-label">Celebrations</div>

@@ -264,6 +264,7 @@ import { sideOf as _tsSide, stopPrice as _tsStopPx, resolveSize as _tsSize,
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { guardPlan } from './guardplan.js'
 import { groupTrades, countTrades, closedTrades, tradeWindows } from './tradegroup.js'
+import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
 import { trackRecord, isSmallSample, openLossOf, holdsStep } from './trackrecord.js'
 import { createJoiner, ownedAddresses } from './lbjoin.js'
@@ -1165,6 +1166,8 @@ async function loadDashboard() {
       const fills = parseFills(rawFills).map(f => ({ ...f, coin: hip3Rename(f.coin) }))
       state.fills = fills
       state.fillsFull = full
+      // What already happened is history: recorded so the "Order filled" cards only show news.
+      if (_isRealAddr(addr)) seedFills(fills, addr)
       const FIRST_FILL_KEY = 'hliq_first_fill_' + addr
       if (fills.length > 0) localStorage.setItem(FIRST_FILL_KEY, fills[fills.length - 1].time)
       const cachedFirstFill = localStorage.getItem(FIRST_FILL_KEY)
@@ -1586,6 +1589,17 @@ window.__setFillSound = function (name) {
   _syncFillSoundUI()
 }
 window.__setFillVolume = function (v) { _setFillVol(v); _unlockSound() }
+
+// ─── "ORDER FILLED" CARDS ─────────────────────────────────────────────────────
+// src/fillnotify.js draws them; the app supplies the names it shows everywhere else (a HIP-3
+// market without its dex prefix, a spot pair by its token) and the privacy setting.
+initFillNotify({
+  name: (c) => { const s = String(c ?? ''); return _spotNameMap[s] || (s.includes(':') ? s.split(':')[1] : s) },
+  dex: (c) => { const s = String(c ?? ''); return s.includes(':') ? s.split(':')[0] : null },
+  privacy: () => _privacyMode,
+})
+window.__toggleFillToasts = function (on) { _setFillToasts(on) }
+window.__previewFillToast = function () { _previewFillToast() }
 window.__testFillSound = function () {
   _unlockSound()
   // Nothing chosen: say so rather than letting a silent Test read as broken audio.
@@ -2261,6 +2275,9 @@ async function refreshLive(force = false) {
       // a sound was chosen in Settings, and never on the first load, which is history
       // arriving rather than anything happening now.
       if (_fresh.length && state.fillsFull !== false) { try { _playFillSound(_fresh.length) } catch {} }
+      // The DEX-style "Order filled" card (src/fillnotify.js) — one per order, only for news.
+      // Paper fills have their own toast; the sentinels are not accounts.
+      if (_fresh.length && _isRealAddr(state.addr)) { try { notifyFills(_fresh, { acct: state.addr }) } catch {} }
       state.fills = [..._fresh, ...state.fills]
       computeLossStreak(state.fills)
       _refreshVisitedSection('trades')
@@ -9653,11 +9670,28 @@ function _allAcctLightPaint() {
 // Cold path: paint as soon as the per-wallet fan-out lands. The ledger/spot
 // enrichment is a second sequential pass that only feeds Net Deposited and the
 // calendar, so it must not gate the first paint.
+/**
+ * All Accounts: each wallet's fills arrive with its own refresh, not through the single-account
+ * tick, so the "Order filled" cards are fed from here too — per wallet, named by its label, and
+ * not for a wallet hidden from the combined view. src/fillnotify.js records each wallet's first
+ * batch as history and shows only fills that are new and recent.
+ */
+function _notifyComboFills(rows) {
+  try {
+    const hidden = _maHiddenLoad()
+    for (const r of (rows ?? [])) {
+      if (!r || r.error || hidden.has(r.addr) || !_isRealAddr(r.addr)) continue
+      notifyFills(r.fills ?? [], { acct: r.addr, label: r.label || null })
+    }
+  } catch {}
+}
+
 async function _allAcctFetchAndRender(entries) {
   const base = _allAcctMerge(await _lbFetchResults(entries), _allAcctLastResults)
   if (!base.length) throw new Error('No account data returned')
   _allAcctLastGoodFetch = Date.now()
   _allAcctLastResults = base
+  _notifyComboFills(base)
   _allAcctReaggregate()
   _allAcctRetryMissing(entries)   // some wallet didn't land → refetch soon so the loader clears
   if (_hlLimited()) return   // breaker tripped mid-fetch — don't chase it with enrichment
@@ -9700,6 +9734,7 @@ async function _allAcctSilentRefresh(entries) {
     if (!base.length || !state.isAllAccounts) return
     _allAcctLastGoodFetch = Date.now()
     _allAcctLastResults = base
+    _notifyComboFills(base)
     _allAcctReaggregate()
 
     if (_hlLimited()) return   // breaker tripped mid-fetch — don't chase it with enrichment
@@ -20113,6 +20148,13 @@ function _mobVRenderContent(tick = false) {
         <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:8px">
           <div><div>Sound on fill</div><div style="font-size:11px;color:var(--muted)">Plays when one of your orders fills</div></div>
           ${_fillPickerHtml(_fillSound(), _fillVol())}
+        </div>
+        <div class="mob-v-setting-row">
+          <div><div>Order filled cards</div><div style="font-size:11px;color:var(--muted)">A small card when one of your orders fills: side, size, price, and what a close realized</div></div>
+          <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
+            <button class="mob-v-setting-btn" onclick="window.__previewFillToast()">Preview</button>
+            ${tog(_fillToastsOn(), 'window.__toggleFillToasts(this.checked)')}
+          </div>
         </div>
         <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:8px">
           <div><div>Wake alarm</div><div style="font-size:11px;color:var(--muted)">A loud, repeating alarm when a price alert fires — over silent mode, with the screen off</div></div>
@@ -30831,6 +30873,8 @@ function _syncSettingsTab() {
   // than testing the key for '1' -- an unset key means on here, not off.
   const fxToggle = document.getElementById('celebrateToggle')
   if (fxToggle) fxToggle.checked = fxEnabled()
+  const ftToggle = document.getElementById('fillToastToggle')
+  if (ftToggle) ftToggle.checked = _fillToastsOn()
   // The sound row's select and slider are static markup; fill them from the stored setting.
   _syncFillSoundUI()
 }
