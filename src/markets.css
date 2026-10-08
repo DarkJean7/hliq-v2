@@ -200,7 +200,9 @@
 .rc-tip b { display: block; font-size: 14px; }
 .rc-tip span { color: #49505e; }
 .rc-tip small { display: block; margin-top: 2px; color: #49505e; white-space: normal; max-width: 220px; }
-.rc-msg { display: grid; place-items: center; height: 260px; color: var(--fg-3); font-size: 14px; }
+.rc-msg { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; height: 260px; color: var(--fg-3); font-size: 14px; text-align: center; }
+.rc-retry { font: inherit; font-size: 13px; font-weight: 600; color: var(--fg); background: var(--panel-3, #1c2230); border: 1px solid var(--rule, #2a3140); border-radius: 8px; padding: 7px 16px; cursor: pointer; }
+.rc-retry:hover { border-color: #4e8ff0; color: #4e8ff0; }
 .rc-details { margin-top: 8px; }
 .rc-details summary { cursor: pointer; color: #6aa8ff; font-size: 13px; }
 .rc-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; font-variant-numeric: tabular-nums; }

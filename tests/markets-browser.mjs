@@ -62,9 +62,11 @@ await ctx.route('**/markets-meta', (route) => route.fulfill({ status: 200, conte
 } } }))
 // Revenue history (/markets-revenue): 120 days for HYPE, $1,000 a day, fees $3,000.
 const revAsks = []
+let revFail = 0      // the next N answers are a 502, as when DefiLlama is slow or rate-limiting the server
 await ctx.route('**/markets-revenue**', (route) => {
   const u = new URL(route.request().url())
   revAsks.push(u.searchParams.get('sym') + ':' + u.searchParams.get('type'))
+  if (revFail > 0) { revFail--; return route.fulfill({ status: 502, contentType: 'application/json', body: '{"points":null}' }) }
   const v = u.searchParams.get('type') === 'fees' ? 3000 : 1000
   const last = Date.UTC(2026, 9, 6) / 1000
   return route.fulfill({ status: 200, contentType: 'application/json', json: { points: Array.from({ length: 120 }, (_, i) => [last - (119 - i) * 86400, v]) } })
@@ -178,6 +180,21 @@ await p.waitForFunction(() => /\$360\.0K/.test(document.querySelector('#rcOverla
 ok('Fees is its own chart, from its own history', revAsks.includes('HYPE:fees') && /\$360\.0K/.test(await p.textContent('#rcOverlay .rc-stats')), revAsks)
 await p.click('#rcOverlay .rc-close')
 ok('the close button closes it', await p.locator('#rcOverlay').count() === 0)
+// A failed load: one quiet second try, then a Retry for just the chart.
+revFail = 1
+await p.click('#mkBody tr.mk-row-chart:has(.mk-asset b:text-is("DOGE"))')
+await p.waitForFunction(() => document.querySelectorAll('#rcOverlay .rc-bar').length > 0, null, { timeout: 10000 }).catch(() => {})
+ok('one failed answer is retried on its own', await p.locator('#rcOverlay .rc-bar').count() > 0 && revFail === 0)
+// Both tries fail: the chart says so and offers a Retry; the rest of the panel stays.
+revFail = 2
+await p.click('#rcOverlay .rc-seg[data-k="type"] button[data-v="fees"]')
+await p.waitForSelector('#rcOverlay .rc-retry', { timeout: 10000 }).catch(() => {})
+ok('two failures: a Retry button for just the chart', await p.locator('#rcOverlay .rc-retry').count() === 1 && /did not load/.test(await p.textContent('#rcOverlay .rc-chart')))
+await p.click('#rcOverlay .rc-retry')
+await p.waitForFunction(() => document.querySelectorAll('#rcOverlay .rc-bar').length > 0, null, { timeout: 10000 }).catch(() => {})
+ok('Retry loads it', await p.locator('#rcOverlay .rc-bar').count() > 0 && revAsks.filter(a => a === 'DOGE:fees').length === 3, revAsks)
+await p.click('#rcOverlay .rc-close')
+
 await p.click('#mkMode button[data-mode="market"]')
 await p.click('#mkTabs button[data-tab="all"]')
 await p.click('#mkStrict button[data-strict="1"]')

@@ -258,20 +258,38 @@ export function openRevenueChart(row) {
     drawBars(chart, bars)
     tbl.innerHTML = tableHtml(bars)
   }
+  // A failed load is usually DefiLlama being slow or rate-limiting the server (502/503, or our
+  // timeout): try once more on its own, then offer a Retry for just the chart. A 404 is not a
+  // failure — the token has no history to show — so it says that and offers nothing.
+  const fetchPoints = async () => {
+    const r = await fetch(`/markets-revenue?sym=${encodeURIComponent(row.sym)}&type=${state.type}`, { signal: AbortSignal.timeout(45_000) })
+    if (r.status === 404) return { none: true }
+    const j = r.ok ? await r.json() : null
+    if (!Array.isArray(j?.points)) throw new Error(String(r.status))
+    return { points: j.points }
+  }
+  let seq = 0
   const load = async () => {
     const k = row.sym + '|' + state.type
     if (cache.has(k)) return render(cache.get(k))
+    const my = ++seq        // a slow answer for a range or type since left must not paint over the new one
     // Refetch keeps the frame: the previous chart stays, dimmed, until the new one lands.
-    chart.style.opacity = chart.querySelector('svg') ? '.45' : ''
-    try {
-      const r = await fetch(`/markets-revenue?sym=${encodeURIComponent(row.sym)}&type=${state.type}`, { signal: AbortSignal.timeout(45_000) })
-      const j = r.ok ? await r.json() : null
-      if (!Array.isArray(j?.points)) throw new Error('none')
-      cache.set(k, j.points)
-      if (document.body.contains(ov)) render(j.points)
-    } catch {
-      chart.innerHTML = '<div class="rc-msg">The history is not available right now.</div>'
-    } finally { chart.style.opacity = '' }
+    if (chart.querySelector('svg')) chart.style.opacity = '.45'
+    else chart.innerHTML = '<div class="rc-msg">Loading…</div>'
+    let out = null
+    for (let attempt = 0; attempt < 2 && !out; attempt++) {
+      if (attempt) await new Promise(r => setTimeout(r, 1500))
+      if (my !== seq || !document.body.contains(ov)) return
+      try { out = await fetchPoints() } catch {}
+    }
+    if (my !== seq || !document.body.contains(ov)) return
+    chart.style.opacity = ''
+    if (out?.points) { cache.set(k, out.points); return render(out.points) }
+    tbl.innerHTML = ''
+    chart.innerHTML = out?.none
+      ? `<div class="rc-msg">No ${state.type} history is published for ${esc(row.sym)}.</div>`
+      : '<div class="rc-msg">The history did not load. <button type="button" class="rc-retry">Retry</button></div>'
+    chart.querySelector('.rc-retry')?.addEventListener('click', load)
   }
   ov.querySelectorAll('.rc-seg').forEach(seg => seg.addEventListener('click', (e) => {
     const b = e.target.closest('button[data-v]'); if (!b) return
