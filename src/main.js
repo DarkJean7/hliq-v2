@@ -264,6 +264,7 @@ import { sideOf as _tsSide, stopPrice as _tsStopPx, resolveSize as _tsSize,
 import { armedGuardKey, firedSummary } from './guardkey.js'
 import { guardPlan } from './guardplan.js'
 import { groupTrades, countTrades, closedTrades, tradeWindows } from './tradegroup.js'
+import { initSectorAlloc, loadSectorMeta, holdingsSectors, sectorAllocHtml, wireSectorAlloc } from './sectoralloc.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
 import { trackRecord, isSmallSample, openLossOf, holdsStep } from './trackrecord.js'
@@ -4227,10 +4228,90 @@ window.__allocToggleGroup = function(kind) {
   _allocRepaint()
 }
 
+// ─── Allocation → By sector (src/sectoralloc.js) ──────────────────────────────
+// The same wheel's money, regrouped by what it is exposed to: the categories /markets uses.
+// 'money' ("By type") is the original wheel (positions, orders, spot, cash); 'sector' is exposure by sector.
+let _allocMode = (() => { try { return localStorage.getItem('hliq_alloc_mode') === 'sector' ? 'sector' : 'money' } catch { return 'money' } })()
+window.__allocSetMode = function(m) {
+  _allocMode = m === 'sector' ? 'sector' : 'money'
+  try { localStorage.setItem('hliq_alloc_mode', _allocMode) } catch {}
+  _allocRepaint()
+}
+initSectorAlloc({ onChange: () => _allocRepaint() })
+
+/**
+ * Everything held, as exposure: each perp's position value on its side, each spot token and
+ * off-exchange token at its dollar value. The same sources as the money wheel — state.perpState
+ * (every visible wallet in All Accounts), _allocSpotBalances, the off-exchange list — so the two
+ * views describe one account. USDC is cash (spotValues drops it) and exposure to nothing.
+ */
+function _sectorHoldings() {
+  const by = new Map()
+  const add = (id, o, longUsd, shortUsd, acct) => {
+    const h = by.get(id) ?? { id, ...o, long: 0, short: 0, accts: new Set() }
+    h.long += longUsd; h.short += shortUsd
+    if (acct) h.accts.add(acct)
+    by.set(id, h)
+  }
+  for (const ap of (state.perpState?.assetPositions ?? [])) {
+    const p = ap.position ?? {}
+    const sz = parseFloat(p.szi ?? 0)
+    if (!sz || !p.coin) continue
+    const v = Math.abs(parseFloat(p.positionValue ?? 0)) || Math.abs(sz) * _posMarkPx(p)
+    if (!(v > 0)) continue
+    const coin = String(p.coin)
+    const h3 = coin.includes(':')
+    add('perp:' + coin, { coin, kind: 'perp', sym: h3 ? coin.split(':')[1] : coin,
+      hlCat: _mktCatMap[coin] ?? _MAIN_DEX_TRADFI_CATS[coin] ?? null, label: _ocCoinLabel(coin) },
+      sz > 0 ? v : 0, sz < 0 ? v : 0, p._acct)
+  }
+  for (const s of spotByCoin(_allocSpotBalances(), _allocSpotMid).values()) {
+    if (!(s.usd > SLICE_DUST)) continue
+    const outcome = _lbIsOutcome(s.coin)
+    add('spot:' + s.coin, { coin: s.coin, kind: outcome ? 'outcome' : 'spot', sym: s.coin, hlCat: null, label: _ocCoinLabel(s.coin) },
+      s.usd, 0, null)
+    for (const a of (s.accts ?? [])) by.get('spot:' + s.coin).accts.add(a)
+  }
+  for (const it of _offexWheelItems()) {
+    if (!(it.margin > SLICE_DUST)) continue
+    add('offex:' + it.token, { coin: it.coin, kind: 'offex', sym: String(it.label ?? '').toUpperCase(), hlCat: null, label: it.label, icon: it.icon }, it.margin, 0, null)
+    for (const a of (it.accts ?? [])) by.get('offex:' + it.token).accts.add(a)
+  }
+  return [...by.values()]
+}
+window.__sectorAlloc = () => holdingsSectors(_sectorHoldings())     // tests/sectoralloc-browser.mjs
+
+function _allocModeToggle() {
+  const b = (k, lbl) => `<button data-alloc-mode="${k}" onclick="window.__allocSetMode('${k}')" style="flex:1;padding:6px 0;border:none;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;background:${_allocMode === k ? 'var(--panel-3)' : 'transparent'};color:${_allocMode === k ? 'var(--fg)' : 'var(--muted)'}">${lbl}</button>`
+  return `<div style="display:flex;gap:3px;margin:12px 16px 0;padding:3px;border:1px solid var(--border);border-radius:10px">${b('money', _T('By type', 'Por tipo'))}${b('sector', _T('By sector', 'Por sector'))}</div>`
+}
+
+function _mobVRenderSectors(el) {
+  // Hyperliquid's own categories (stocks, indices, commodities…) come with the market data;
+  // the DefiLlama and SEC ones from /markets-meta. Both load once and repaint when they land.
+  if (!Object.keys(_mktCatMap).length) _ensureMarketData().then(() => { if (Object.keys(_mktCatMap).length) _allocRepaint() }).catch(() => {})
+  loadSectorMeta()
+  const d = holdingsSectors(_sectorHoldings())
+  const h = {
+    T: _T,
+    usd: (v) => _prv('$' + fmtUSD(v, 2)),
+    equity: parseFloat(shownAccountValue()),
+    icon: (it) => it.kind === 'offex'
+      ? (it.icon ? `<img src="${esc(it.icon)}" alt="" style="width:100%;height:100%;object-fit:cover">`
+                 : `<span style="display:flex;width:100%;height:100%;align-items:center;justify-content:center;font-weight:800;font-size:12px">${esc(String(it.label).slice(0, 1))}</span>`)
+      : _coinIconHtml(it.coin),
+  }
+  const prevScroll = el.scrollTop
+  el.innerHTML = _allocViewHeader() + _allocModeToggle() + sectorAllocHtml(d, h)
+  wireSectorAlloc(el, d, h)
+  el.scrollTop = prevScroll
+}
+
 function _mobVRenderAllocation(el) {
   if (_allocView === 'movers')   { _mobVRenderAttribution(el); return }
   if (_allocView === 'exposure') { _mobVRenderExposure(el); return }
-  const header = _allocViewHeader()
+  if (_allocMode === 'sector')   { _mobVRenderSectors(el); return }
+  const header = _allocViewHeader() + _allocModeToggle()
   const { groups, total, used, orders, spot, free, hasAny } = _allocationSlices()
   if (!hasAny || !groups.length || total <= 0) {
     _allocSlices = []
