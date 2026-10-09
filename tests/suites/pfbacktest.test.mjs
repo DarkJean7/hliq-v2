@@ -97,8 +97,18 @@ console.log(nl + '-- names: what Hyperliquid shows, not only the ticker --')
   t('a market row carries the shown name and keeps its ticker', rows[0].label === 'WTIOIL' && rows[0].sym === 'CL')
   t('/markets search finds it by the shown name', M.filterRows(rows, { q: 'wtioil' }).length === 1 && M.filterRows(rows, { q: 'oil' }).length === 1)
   const P = fs.readFileSync('src/portfolio.js', 'utf8'), MAIN = fs.readFileSync('src/main.js', 'utf8')
-  t('/portfolios searches the shown name anywhere in it', P.includes("const names = (r) => [r.sym, r.label ?? '', r.name ?? '']") &&P.includes('names(r).some(x => x.includes(q))'))
+  t('/portfolios searches the shown name anywhere in it', P.includes("const names = (r) => [r.sym, r.label ?? '', r.name ?? '', ...(r.keywords ?? [])]") &&P.includes('names(r).some(x => x.includes(q))'))
   t('the app reads the same list', MAIN.includes('const _MKT_DISPLAY = DISPLAY_NAMES'))
+  // Hyperliquid's own names: perpConciseAnnotations, with perpCategories accepted as before.
+  const A = M.readAnnotations([['xyz:HO', { category: 'commodities', displayName: 'DIESEL', keywords: ['ho', 'ulsd'] }], ['xyz:SMSN', { category: 'stocks', displayName: 'SAMSUNG' }], ['xyz:NVDA', 'stocks']])
+  t('annotations give categories, names and keywords; the old shape still reads', A.cat.length === 3 && A.names.get('xyz:HO').label === 'DIESEL' && A.names.get('xyz:SMSN').label === 'SAMSUNG' && !A.names.has('xyz:NVDA'))
+  const rows2 = M.buildMarkets({ hip3: [{ dex: 'xyz', label: 'XYZ', data: [{ universe: [{ name: 'xyz:HO', maxLeverage: 10 }] }, [{ markPx: '4.7', prevDayPx: '4.6', dayNtlVlm: '100000', openInterest: '50000', funding: '0' }]] }],
+    cats: [['xyz:HO', { category: 'commodities', displayName: 'DIESEL', keywords: ['ho', 'ulsd'] }]] })
+  t('xyz:HO is DIESEL, found by "diesel" and by its keyword "ulsd"', rows2[0].label === 'DIESEL' && M.filterRows(rows2, { q: 'diesel' }).length === 1 && M.filterRows(rows2, { q: 'ulsd' }).length === 1)
+  t('and is energy, not just "commodities"', rows2[0].tags.includes('energy'), rows2[0].tags)
+  t('both public pages ask for the annotations, falling back to perpCategories', ['src/markets.js', 'src/portfolio.js'].every(f => { const x = fs.readFileSync(f, 'utf8'); return x.includes("type: 'perpConciseAnnotations'") && x.includes("post({ type: 'perpCategories' })") }))
+  t('sector rows scroll with the wheel and a drag on both pages', fs.readFileSync('src/markets.js', 'utf8').includes("from './sidescroll.js'") && P.includes("sideScroll($('pfSectors'), '.pf-sec-row')"))
+  t('a description is saved, shared and shown on its card', P.includes("desc: (S.desc ?? '').trim()") && P.includes('d: S.desc || undefined') && P.includes('pf-gc-desc'))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

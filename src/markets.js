@@ -6,6 +6,7 @@ import './markets.css'
 import { buildMarkets, sortRows, filterRows, summarize, onePerToken } from './marketsdata.js'
 import { SECTORS, SECTOR_LABEL } from './sectors.js'
 import { openRevenueChart } from './revchart.js'
+import { sideScroll, wasDrag } from './sidescroll.js'
 
 const API = 'https://api.hyperliquid.xyz/info'
 const PAGE = 100
@@ -24,7 +25,7 @@ let dexInfo = { ok: 0, total: 0 }
 // back one by one would make the table and the totals jump every 90 seconds.
 const hip3Cache = new Map()
 let last = { core: null, spot: null, list: [] }
-let cats = null        // perpCategories: [[coin, category], …]
+let cats = null        // perpConciseAnnotations (or perpCategories): categories, display names, keywords
 let revenue = null     // /markets-meta bySym, or null while unknown
 let cg = null          // /markets-meta cg: { SYM: [coingecko id, market cap] }
 let stocks = null      // /markets-meta stocks: SEC-reported revenue by ticker, or null while unknown
@@ -82,7 +83,9 @@ async function load() {
     post({ type: 'metaAndAssetCtxs' }).catch(() => null),
     post({ type: 'spotMetaAndAssetCtxs' }).catch(() => null),
     post({ type: 'perpDexs' }).catch(() => null),
-    cats ? Promise.resolve(cats) : post({ type: 'perpCategories' }).catch(() => null),
+    // The annotations carry the categories AND the names Hyperliquid shows (DIESEL for xyz:HO);
+    // perpCategories, categories only, is the fallback.
+    cats ? Promise.resolve(cats) : post({ type: 'perpConciseAnnotations' }).then(a => Array.isArray(a) ? a : Promise.reject()).catch(() => post({ type: 'perpCategories' })).catch(() => null),
   ])
   if (!core && !spot) throw new Error('Hyperliquid did not answer')
   if (Array.isArray(pc)) cats = pc
@@ -307,47 +310,13 @@ $('mkMode').addEventListener('click', e => {
 })
 $('mkDexes').addEventListener('click', e => { const b = e.target.closest('button[data-dex]'); if (b) set({ dex: b.dataset.dex || null }) })
 $('mkSectors').addEventListener('click', e => {
-  if (dragged) return                                   // the end of a drag is not a click
+  if (wasDrag()) return                                 // the end of a drag is not a click
   const g = e.target.closest('button[data-tab]')
   if (g) return set({ tab: g.dataset.tab, dex: null, sector: null })
   const b = e.target.closest('button[data-sector]'); if (b) set({ sector: b.dataset.sector || null })
 })
 
-/**
- * Sideways rows without a scrollbar: the mouse wheel scrolls them, and so does dragging with
- * the mouse. Touch already swipes natively, so only a mouse pointer starts a drag. A drag that
- * moved more than a few pixels swallows the click it ends on, or letting go over a chip would
- * select it.
- */
-let dragged = false
-// `rowSel`: scroll the child row under the pointer instead of `el` itself — the category
-// rows are rebuilt on every render, so they are found at event time, not bound once.
-function sideScroll(el, rowSel = null) {
-  const target = (t) => (rowSel ? t?.closest?.(rowSel) : el)
-  el.addEventListener('wheel', e => {
-    const sc = target(e.target)
-    if (!sc || sc.scrollWidth <= sc.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return
-    sc.scrollLeft += e.deltaY
-    e.preventDefault()
-  }, { passive: false })
-  let x0 = null, s0 = 0, sc = null
-  el.addEventListener('pointerdown', e => {
-    if (e.pointerType !== 'mouse' || e.button !== 0) return
-    sc = target(e.target); if (!sc) return
-    x0 = e.clientX; s0 = sc.scrollLeft; dragged = false
-  })
-  window.addEventListener('pointermove', e => {
-    if (x0 == null || !sc) return
-    const dx = e.clientX - x0
-    if (!dragged && Math.abs(dx) > 5) { dragged = true; el.classList.add('is-dragging') }
-    if (dragged) sc.scrollLeft = s0 - dx
-  })
-  window.addEventListener('pointerup', () => {
-    if (x0 == null) return
-    x0 = null; sc = null; el.classList.remove('is-dragging')
-    setTimeout(() => { dragged = false }, 0)          // after the click this drag ends on
-  })
-}
+// Wheel and mouse-drag scrolling for the sideways rows (src/sidescroll.js, shared with /portfolios).
 sideScroll($('mkSectors'), '.mk-sec-row')
 sideScroll($('mkCards'))
 // Revenue view: a row (or Enter on a focused row) opens its revenue history. A category

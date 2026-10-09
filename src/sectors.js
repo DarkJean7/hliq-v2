@@ -104,7 +104,8 @@ export const CURATED = {
 
 /** Commodities sub-split, by ticker — HL calls all of them "commodities". */
 export const METALS = new Set(['GOLD', 'SILVER', 'PALLADIUM', 'PLATINUM', 'COPPER', 'GOLDJM', 'SILVERJM', 'GLDMINE', 'ALUMINIUM', 'ALUMINUM'])
-export const ENERGY = new Set(['OIL', 'GAS', 'NATGAS', 'USOIL', 'WTI', 'BRENTOIL', 'CL', 'USENERGY', 'URANIUM', 'URNM'])
+// HO is heating oil — Hyperliquid shows xyz:HO as DIESEL.
+export const ENERGY = new Set(['OIL', 'GAS', 'NATGAS', 'USOIL', 'WTI', 'BRENTOIL', 'CL', 'HO', 'DIESEL', 'USENERGY', 'URANIUM', 'URNM'])
 
 const CRYPTO_ONLY = new Set(['l1', 'l2', 'defi', 'dex', 'derivatives', 'lending', 'launchpad', 'memes', 'infra', 'gaming', 'rwa', 'privacy', 'prediction', 'stables', 'hlnative'])
 const STOCK_ONLY  = new Set(['tech', 'semis', 'cryptostocks', 'stockTech', 'stockConsumer', 'stockAutos', 'stockIndustrials', 'stockEnergy', 'stockHealth', 'stockMaterials', 'stockRates', 'etf'])

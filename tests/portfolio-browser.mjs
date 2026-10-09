@@ -34,10 +34,15 @@ const PRICE = { BTC: (t) => 100 * (1 + Math.max(0, t - T0) / (400 * DAY)), ETH: 
 const TF = { '1d': DAY, '4h': 4 * 3_600_000, '1h': 3_600_000 }
 const ctx0 = (px) => ({ funding: '0.00001', openInterest: '1000', prevDayPx: String(px), dayNtlVlm: '5000000', premium: '0', oraclePx: String(px), markPx: String(px), midPx: String(px), impactPxs: [String(px), String(px)] })
 const UNIVERSE = [{ name: 'BTC', szDecimals: 5, maxLeverage: 40 }, { name: 'ETH', szDecimals: 4, maxLeverage: 25 }, { name: 'SOL', szDecimals: 2, maxLeverage: 20 }, { name: 'NOPE', szDecimals: 0, maxLeverage: 3 }]
+const XYZ = [{ universe: [{ name: 'xyz:HO', szDecimals: 2, maxLeverage: 10 }, { name: 'xyz:SMSN', szDecimals: 3, maxLeverage: 10 }, { name: 'xyz:NVDA', szDecimals: 3, maxLeverage: 20 }] },
+  [ctx0(4.76), ctx0(192), ctx0(180)]]
 const HL = {
   metaAndAssetCtxs: [{ universe: UNIVERSE }, [ctx0(200), ctx0(50), ctx0(20), ctx0(1)]],
   spotMetaAndAssetCtxs: [{ tokens: [], universe: [] }, []],
-  perpDexs: [null], perpCategories: [],
+  // One HIP-3 dex with markets Hyperliquid names differently from their ticker.
+  perpDexs: [null, { name: 'xyz', fullName: 'XYZ' }],
+  perpConciseAnnotations: [['xyz:HO', { category: 'commodities', displayName: 'DIESEL', keywords: ['ho', 'ulsd'] }],
+                           ['xyz:SMSN', { category: 'stocks', displayName: 'SAMSUNG' }], ['xyz:NVDA', { category: 'stocks' }]],
 }
 // The basket as a share link: BTC and ETH, half each, buy & hold and monthly, 1Y, BTC benchmark.
 const share = (o) => Buffer.from(JSON.stringify(o)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
@@ -65,6 +70,7 @@ async function run(label, opts) {
       }
       return route.fulfill({ status: 200, contentType: 'application/json', json: out })
     }
+    if (b.type === 'metaAndAssetCtxs' && b.dex === 'xyz') return route.fulfill({ status: 200, contentType: 'application/json', json: XYZ })
     return route.fulfill({ status: 200, contentType: 'application/json', json: HL[b.type] ?? {} })
   })
   await ctx.route('**/markets-meta', r => r.fulfill({ status: 200, json: { revenue: {}, cg: {}, stocks: {}, sic: {} } }))
@@ -95,6 +101,17 @@ async function run(label, opts) {
   // The composition ring.
   ok('the composition shows the weights', /BTC/.test(await p.textContent('#pfComp')) && /50\.0%/.test(await p.textContent('#pfComp')))
 
+  // Markets by the name Hyperliquid shows, and by its keywords (perpConciseAnnotations).
+  await waitFor(p, 'the HIP-3 dex', () => [...document.querySelectorAll('#pfSectors button')].some(b => /Stocks/.test(b.textContent)))
+  const suggest = async (q) => { await p.fill('#pfSearch', q); await p.waitForTimeout(150); const t = await p.textContent('#pfSuggest'); await p.press('#pfSearch', 'Escape'); return t.replace(/\s+/g, ' ') }
+  ok('"diesel" finds xyz:HO, shown as DIESEL', /DIESEL/.test(await suggest('diesel')))
+  ok('so do its keywords: "ulsd"', /DIESEL/.test(await suggest('ulsd')))
+  ok('"samsung" finds xyz:SMSN', /SAMSUNG/.test(await suggest('samsung')))
+  await p.fill('#pfSearch', '')
+  const tradfi = await p.evaluate(() => [...document.querySelectorAll('#pfSectors .pf-sec-group')].map(g => g.textContent.replace(/\s+/g, ' ').trim()))
+  ok('sectors come in two rows, and TradFi is one of them', tradfi.length === 2 && /^Crypto/.test(tradfi[0]) && /^TradFi.*Stocks/.test(tradfi[1]), tradfi)
+  ok('both rows scroll with the wheel and a drag', await p.evaluate(() => getComputedStyle(document.querySelector('.pf-sec-row')).overflowX) === 'auto')
+
   // A trading strategy from the Simulator, on 4-hour candles.
   await p.click('[data-bot="supertrend"]')
   await waitFor(p, 'the Simulator run', () => window.__pf.last?.runs?.some(r => r.id === 'bot:supertrend'))
@@ -110,6 +127,8 @@ async function run(label, opts) {
   ok('a holding can be turned short', await p.evaluate(() => window.__pf.state.items[2].side) === 'short')
   await p.click('#pfWeighting [data-w="equal"]')
   ok('equal weighting', (await p.evaluate(() => window.__pf.state.items.map(i => i.w))).every(w => Math.abs(w - 33.33) < 0.02))
+  await p.fill('#pfDesc', 'Two majors and a short hedge.')
+  ok('a description shows on the composition', /Two majors and a short hedge\./.test(await p.textContent('#pfComp')))
 
   // Save, then reload: the saved portfolio is still there.
   await p.fill('#pfName', 'Three')
@@ -117,6 +136,7 @@ async function run(label, opts) {
   await p.reload({ waitUntil: 'domcontentloaded' })
   await waitFor(p, 'the card', () => document.querySelectorAll('#pfGallery [data-load]').length > 0)
   ok('a saved portfolio survives a reload, as a card', (await p.textContent('#pfGallery')).includes('Three'))
+  ok('with its description', (await p.textContent('#pfGallery')).includes('Two majors and a short hedge.') && await p.inputValue('#pfDesc') === 'Two majors and a short hedge.')
   ok('and once edited, a reload keeps your draft rather than the shared link', await p.evaluate(() => window.__pf.state.name) === 'Three' && !/p=/.test(await p.evaluate(() => location.hash)))
 
   // The card: buy & hold over 1 year by default. A third each in BTC, ETH (flat) and SOL short

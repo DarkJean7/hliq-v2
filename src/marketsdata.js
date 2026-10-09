@@ -214,7 +214,8 @@ export function filterRows(rows, { kind = 'all', dex = null, q = '', group = nul
     (!dex || r.dex === dex) &&
     (!group || r.group === group) &&
     (!sector || (r.tags ?? []).includes(sector)) &&
-    (!s || r.sym.toLowerCase().includes(s) || (r.label ?? '').toLowerCase().includes(s) || (r.name ?? '').toLowerCase().includes(s) || (r.dexLabel ?? '').toLowerCase().includes(s)))
+    (!s || r.sym.toLowerCase().includes(s) || (r.label ?? '').toLowerCase().includes(s) || (r.name ?? '').toLowerCase().includes(s) || (r.dexLabel ?? '').toLowerCase().includes(s)
+      || (r.keywords ?? []).some(k => k.toLowerCase().includes(s))))
 }
 
 /**
@@ -273,13 +274,36 @@ export function dedupeHip3(rows) {
  * `hip3` is [{ dex, label, data: [meta, ctxs] }]; a dex that failed is simply not in it, and
  * the caller reports how many of how many loaded rather than presenting a partial list as all.
  */
+/**
+ * Hyperliquid's market annotations. `perpConciseAnnotations` is [[coin, { category,
+ * displayName, keywords }]] — what its own UI shows and searches: xyz:HO is "DIESEL" (keywords
+ * "ho", "ulsd"), xyz:SMSN is "SAMSUNG", io:ANTH is found by "anthropic". The older
+ * `perpCategories` is [[coin, category]]; both are accepted, so a caller can fall back to it.
+ * → { cat: [[coin, category]], names: Map(coin → { label, keywords }) }
+ */
+export function readAnnotations(list) {
+  const cat = [], names = new Map()
+  for (const e of Array.isArray(list) ? list : []) {
+    if (!Array.isArray(e) || !e[0]) continue
+    const [coin, v] = e
+    if (v && typeof v === 'object') {
+      if (v.category) cat.push([coin, v.category])
+      const keywords = Array.isArray(v.keywords) ? v.keywords.map(String) : []
+      if (v.displayName || keywords.length) names.set(coin, { label: v.displayName ? String(v.displayName) : null, keywords })
+    } else if (v) cat.push([coin, v])
+  }
+  return { cat, names }
+}
+
 export function buildMarkets({ core = null, spot = null, hip3 = [], cats = null, revenue = null, cg = null, stocks = null, sic = null } = {}) {
+  const ann = readAnnotations(cats)
+  const named = (r) => { const n = ann.names.get(r.coin); return n ? { ...r, label: n.label ?? r.label, keywords: n.keywords } : r }
   const perps = core ? perpRows(core[0], core[1]) : []
   const perpSyms = new Set(perps.map(p => p.sym))
   const spots = (spot ? spotRows(spot[0], spot[1]) : [])
     .map(r => { const d = spotDisplayName(r.sym, perpSyms); return d === r.sym ? r : { ...r, sym: d, wrapped: r.sym } })
-  const hips = hip3.flatMap(h => perpRows(h.data?.[0], h.data?.[1], h.dex, h.label))
-  return withStockRevenue(withCgMarketCaps(categorize([...linkMarketCaps(perps, spots), ...spots, ...dedupeHip3(hips)], cats, revenue, sic), cg), stocks)
+  const hips = hip3.flatMap(h => perpRows(h.data?.[0], h.data?.[1], h.dex, h.label)).map(named)
+  return withStockRevenue(withCgMarketCaps(categorize([...linkMarketCaps(perps, spots), ...spots, ...dedupeHip3(hips)], ann.cat, revenue, sic), cg), stocks)
 }
 
 /**

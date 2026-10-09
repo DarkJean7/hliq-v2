@@ -10,6 +10,7 @@ import './markets.css'
 import './portfolio.css'
 import { buildMarkets, isStrict } from './marketsdata.js'
 import { displayName } from './coinnames.js'
+import { sideScroll, wasDrag } from './sidescroll.js'
 import { SECTORS, SECTOR_LABEL } from './sectors.js'
 import { holdingsSectors, sectorColor } from './sectoralloc.js'
 import { STRATEGIES, STRATEGY_LABEL, BOT_STRATEGIES, BOT_LABEL, backtest, botRun, DAY, dayOf } from './pfbacktest.js'
@@ -54,6 +55,7 @@ const BENCH_COLOR = '#8d99ae'
 // ── state ────────────────────────────────────────────────────────────────────
 const DEFAULT = {
   name: 'Majors',
+  desc: 'The four most traded perps on Hyperliquid, weighted by hand.',
   items: [{ coin: 'BTC', sym: 'BTC', kind: 'perp', w: 40, side: 'long' }, { coin: 'ETH', sym: 'ETH', kind: 'perp', w: 25, side: 'long' },
           { coin: 'SOL', sym: 'SOL', kind: 'perp', w: 15, side: 'long' }, { coin: 'HYPE', sym: 'HYPE', kind: 'perp', w: 20, side: 'long' }],
   weighting: 'custom',
@@ -75,6 +77,7 @@ function decodeShare(h) {
     if (!Array.isArray(j.i)) return null
     return {
       name: String(j.n || 'Shared portfolio').slice(0, 40),
+      desc: String(j.d ?? '').slice(0, 280),
       items: j.i.slice(0, 30).map(([coin, w, sh]) => ({ coin: String(coin), sym: String(coin).replace(/^.*:/, ''), kind: String(coin).includes(':') ? 'hip3' : String(coin).startsWith('@') ? 'spot' : 'perp', w: Number(w) || 0, side: sh ? 'short' : 'long' })),
       weighting: 'custom',
       ...(j.s && typeof j.s === 'object' ? pickSettings(j.s) : {}),
@@ -84,13 +87,15 @@ function decodeShare(h) {
 const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'tf', 'tp', 'sl', 'both', 'bench']
 const pickSettings = (o) => Object.fromEntries(SETTING_KEYS.filter(k => k in o).map(k => [k, o[k]]))
 function encodeShare() {
-  const j = { n: S.name, i: S.items.map(i => [i.coin, +Number(i.w).toFixed(4), i.side === 'short' ? 1 : 0]), s: pickSettings(S) }
+  const j = { n: S.name, d: S.desc || undefined, i: S.items.map(i => [i.coin, +Number(i.w).toFixed(4), i.side === 'short' ? 1 : 0]), s: pickSettings(S) }
   return btoa(unescape(encodeURIComponent(JSON.stringify(j)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 const shared = decodeShare(location.hash)
 if (shared) S = { ...S, ...shared }
 
 const saveDraft = () => store.set(DRAFT_KEY, S)
+/** What a holding is called on screen: Hyperliquid's own name for it (DIESEL, SAMSUNG). */
+const nameOf = (i) => rowById.get(i.coin)?.label ?? displayName(i.sym)
 
 // ── markets ──────────────────────────────────────────────────────────────────
 async function loadMarkets() {
@@ -98,7 +103,8 @@ async function loadMarkets() {
     post({ type: 'metaAndAssetCtxs' }).catch(() => null),
     post({ type: 'spotMetaAndAssetCtxs' }).catch(() => null),
     post({ type: 'perpDexs' }).catch(() => null),
-    post({ type: 'perpCategories' }).catch(() => null),
+    // Categories, and the names and keywords Hyperliquid's UI uses (DIESEL is xyz:HO).
+    post({ type: 'perpConciseAnnotations' }).then(a => Array.isArray(a) ? a : Promise.reject()).catch(() => post({ type: 'perpCategories' })).catch(() => null),
   ])
   if (!core && !spot) throw new Error('Hyperliquid did not answer')
   if (Array.isArray(pc)) cats = pc
@@ -198,15 +204,23 @@ function sectorBasket(key) {
   return [...best.values()].sort((a, b) => (b.vol24 ?? 0) - (a.vol24 ?? 0)).slice(0, 8)
 }
 
+// Two rows, as on /markets: crypto sectors and TradFi sectors. Each scrolls sideways with the
+// wheel or a drag (src/sidescroll.js) — with the scrollbar hidden, a row that only scrolled by
+// touch hid everything past its edge on a desktop, TradFi included.
 function renderSectors() {
   const el = $('pfSectors')
-  const chips = [['top', 'Top 8 by volume']]
-  for (const s of SECTORS) if (sectorBasket(s.key).length >= 2) chips.push([s.key, s.label])
-  el.innerHTML = chips.map(([k, l]) => `<button data-sector="${k}">${esc(l)}</button>`).join('')
+  const chip = ([k, l]) => `<button data-sector="${k}">${esc(l)}</button>`
+  const live = SECTORS.filter(s => sectorBasket(s.key).length >= 2)
+  const crypto = [['top', 'Top 8 by volume'], ...live.filter(s => s.group !== 'tradfi').map(s => [s.key, s.label])]
+  const tradfi = live.filter(s => s.group === 'tradfi').map(s => [s.key, s.label])
+  el.innerHTML = `<div class="pf-sec-group"><span>Crypto</span><div class="pf-sec-row">${crypto.map(chip).join('')}</div></div>`
+    + (tradfi.length ? `<div class="pf-sec-group"><span>TradFi</span><div class="pf-sec-row">${tradfi.map(chip).join('')}</div></div>` : '')
 }
+sideScroll($('pfSectors'), '.pf-sec-row')
 
 function renderBuilder() {
   $('pfName').value = S.name
+  if (document.activeElement !== $('pfDesc')) $('pfDesc').value = S.desc ?? ''
   $('pfWeighting').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.w === S.weighting))
   renderGallery()
   $('pfHoldings').innerHTML = S.items.length ? S.items.map((i, k) => {
@@ -216,10 +230,10 @@ function renderBuilder() {
     return `<div class="pf-hold" data-k="${k}">
       <span class="pf-sw" style="background:${HOLD_COLORS[k % HOLD_COLORS.length]}"></span>
       ${iconHtml(i.coin, i.sym)}
-      <div class="pf-hold-name"><b>${esc(displayName(i.sym))}</b>${badge}${gone}</div>
+      <div class="pf-hold-name"><b>${esc(nameOf(i))}</b>${badge}${gone}</div>
       <button class="pf-side ${i.side === 'short' ? 'is-short' : ''}" data-side="${k}" title="Long or short">${i.side === 'short' ? 'Short' : 'Long'}</button>
-      <label class="pf-w"><input type="number" min="0" step="1" value="${+Number(i.w).toFixed(2)}" data-w="${k}" aria-label="Weight of ${esc(displayName(i.sym))}"><span>${(share(i) * 100).toFixed(1)}%</span></label>
-      <button class="pf-x" data-rm="${k}" aria-label="Remove ${esc(displayName(i.sym))}">×</button>
+      <label class="pf-w"><input type="number" min="0" step="1" value="${+Number(i.w).toFixed(2)}" data-w="${k}" aria-label="Weight of ${esc(nameOf(i))}"><span>${(share(i) * 100).toFixed(1)}%</span></label>
+      <button class="pf-x" data-rm="${k}" aria-label="Remove ${esc(nameOf(i))}">×</button>
     </div>`
   }).join('') : '<div class="pf-empty">Add assets above, or start from a sector.</div>'
   const t = totalW()
@@ -277,10 +291,10 @@ function renderGallery() {
     const live = p.items.filter(i => Number(i.w) > 0)
     const tot = live.reduce((a, i) => a + Number(i.w), 0) || 1
     const editing = p.name === S.name
-    const edited = editing && !sameItems(p.items, S.items)
+    const edited = editing && (!sameItems(p.items, S.items) || (p.desc ?? '') !== (S.desc ?? ''))
     const res = galResult(p)
     const icons = live.slice(0, 5).map(i => iconHtml(i.coin, i.sym)).join('') + (live.length > 5 ? `<span class="pf-more">+${live.length - 5}</span>` : '')
-    const bar = live.map((i, j) => `<i style="width:${(100 * Number(i.w) / tot).toFixed(2)}%;background:${HOLD_COLORS[j % HOLD_COLORS.length]}" title="${esc(displayName(i.sym))} ${(100 * Number(i.w) / tot).toFixed(1)}%"></i>`).join('')
+    const bar = live.map((i, j) => `<i style="width:${(100 * Number(i.w) / tot).toFixed(2)}%;background:${HOLD_COLORS[j % HOLD_COLORS.length]}" title="${esc(nameOf(i))} ${(100 * Number(i.w) / tot).toFixed(1)}%"></i>`).join('')
     let body
     if (res.state === 'ok') {
       const r = res.run
@@ -295,6 +309,7 @@ function renderGallery() {
         <div class="pf-gc-name"><b>${esc(p.name)}</b><small>${live.length} holding${live.length === 1 ? '' : 's'}${editing ? ` · <span class="pf-gc-tag">${edited ? 'editing, unsaved changes' : 'editing'}</span>` : ''}</small></div>
         <button class="pf-gc-del${delArmed === k ? ' is-armed' : ''}" data-del="${k}" aria-label="Delete ${esc(p.name)}">${delArmed === k ? 'Delete?' : '×'}</button>
       </div>
+      ${p.desc ? `<p class="pf-gc-desc">${esc(p.desc)}</p>` : ''}
       <div class="pf-gc-icons">${icons}</div>
       <div class="pf-gc-bar">${bar}</div>
       ${body}
@@ -332,7 +347,7 @@ function renderComp() {
   const arcs = live.map(i => {
     const len = Math.max(0.5, i.s * C - gap), off = -acc
     acc += i.s * C
-    return `<circle cx="${CX}" cy="${CX}" r="${R}" fill="none" stroke="${HOLD_COLORS[i.k % HOLD_COLORS.length]}" stroke-width="${SW}" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}" transform="rotate(-90 ${CX} ${CX})"><title>${esc(displayName(i.sym))} ${(i.s * 100).toFixed(1)}%</title></circle>`
+    return `<circle cx="${CX}" cy="${CX}" r="${R}" fill="none" stroke="${HOLD_COLORS[i.k % HOLD_COLORS.length]}" stroke-width="${SW}" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}" transform="rotate(-90 ${CX} ${CX})"><title>${esc(nameOf(i))} ${(i.s * 100).toFixed(1)}%</title></circle>`
   }).join('')
   const longS = live.filter(i => i.side !== 'short').reduce((a, i) => a + i.s, 0)
   // Sector mix: the same categories as /markets and the app's Allocation → By sector.
@@ -343,6 +358,7 @@ function renderComp() {
   }), meta ? { revenue: meta.revenue, sic: meta.sic } : null)
   el.innerHTML = `
     <div class="pf-comp-head"><div class="pf-lbl">Composition</div></div>
+    ${S.desc ? `<p class="pf-comp-desc">${esc(S.desc)}</p>` : ''}
     <div class="pf-comp-body">
       <div class="pf-ring">
         <svg viewBox="0 0 ${SIZE} ${SIZE}">${arcs}</svg>
@@ -351,7 +367,7 @@ function renderComp() {
       </div>
       <div class="pf-legend">${live.slice().sort((a, b) => b.s - a.s).map(i => `
         <div class="pf-leg"><span class="pf-sw" style="background:${HOLD_COLORS[i.k % HOLD_COLORS.length]}"></span>${iconHtml(i.coin, i.sym)}
-          <div><b>${esc(displayName(i.sym))}</b>${i.side === 'short' ? ' <i class="pf-short">short</i>' : ''}<small>${esc(rowById.get(i.coin)?.category ?? '')}</small></div>
+          <div><b>${esc(nameOf(i))}</b>${i.side === 'short' ? ' <i class="pf-short">short</i>' : ''}<small>${esc(rowById.get(i.coin)?.category ?? '')}</small></div>
           <span class="pf-leg-pct">${(i.s * 100).toFixed(1)}%</span></div>`).join('')}
       </div>
     </div>
@@ -499,7 +515,7 @@ function renderResults() {
   const dd = lineChart(all.map(s => ({ id: s.id, color: s.color, dash: s.dash, v: s.dd })), L.days, { h: 150, fmt: (v) => (v * 100).toFixed(0) + '%', signed: true })
   const best = L.runs.slice().sort((a, b) => b.final - a.final)[0]
   const f = all.find(x => x.id === focus) ?? best
-  const contrib = f ? Object.entries(f.pnlBy).map(([k, v]) => ({ k, v, sym: displayName(rowById.get(k)?.sym ?? k) })).sort((a, b) => b.v - a.v) : []
+  const contrib = f ? Object.entries(f.pnlBy).map(([k, v]) => ({ k, v, sym: rowById.get(k)?.label ?? displayName(k) })).sort((a, b) => b.v - a.v) : []
   const cmax = Math.max(1e-9, ...contrib.map(c => Math.abs(c.v)))
   const tradesOf = (x) => x.id === '__bench' ? '1' : x.trades != null && x.won != null ? `${x.trades}${x.won + x.lost ? ` · ${Math.round(100 * x.won / (x.won + x.lost))}% won` : ''}` : x.rebalances != null ? `${x.rebalances} rebal.` : '—'
 
@@ -566,13 +582,17 @@ function changed({ rerun = true } = {}) {
 }
 
 $('pfName').addEventListener('input', e => { S.name = e.target.value.slice(0, 40); saveDraft(); renderComp(); renderGallery() })
+$('pfDesc').addEventListener('input', e => { S.desc = e.target.value.slice(0, 280); saveDraft(); renderComp(); renderGallery() })
 $('pfWeighting').addEventListener('click', e => { const b = e.target.closest('button[data-w]'); if (!b) return; applyWeighting(b.dataset.w); changed() })
 $('pfSectors').addEventListener('click', e => {
+  if (wasDrag()) return                                 // the end of a drag is not a click
   const b = e.target.closest('button[data-sector]'); if (!b) return
   const k = b.dataset.sector
   const list = k === 'top' ? [...new Map(rows.slice().sort((a, b) => (b.vol24 ?? 0) - (a.vol24 ?? 0)).map(r => [r.sym, r])).values()].slice(0, 8) : sectorBasket(k)
   S.items = list.map(r => ({ coin: r.coin, sym: r.sym, kind: r.kind, w: 1, side: 'long' }))
   S.name = k === 'top' ? 'Top 8 by volume' : `${SECTOR_LABEL[k]} basket`
+  // A starting description, saying what the basket is; yours to rewrite.
+  S.desc = k === 'top' ? 'The 8 most traded markets on Hyperliquid today.' : `The 8 most traded ${SECTOR_LABEL[k]} markets on Hyperliquid today.`
   applyWeighting(S.weighting === 'custom' ? 'equal' : S.weighting)
   changed()
 })
@@ -602,7 +622,7 @@ $('pfSearch').addEventListener('input', e => {
   if (!q) { sug.hidden = true; return }
   // Ticker or display name, anywhere in it: "oil" finds BRENTOIL, WTIOIL (xyz:CL) and USOIL.
   // Exact names first, then names that start with it, then the rest; most traded first within each.
-  const names = (r) => [r.sym, r.label ?? '', r.name ?? ''].map(x => x.toLowerCase())
+  const names = (r) => [r.sym, r.label ?? '', r.name ?? '', ...(r.keywords ?? [])].map(x => x.toLowerCase())
   const rank = (r) => { const n = names(r); return n.some(x => x === q) ? 0 : n.some(x => x.startsWith(q)) ? 1 : 2 }
   sugList = rows.filter(r => names(r).some(x => x.includes(q)) || r.coin.toLowerCase() === q)
     .sort((a, b) => rank(a) - rank(b) || (b.vol24 ?? 0) - (a.vol24 ?? 0)).slice(0, 8)
@@ -618,7 +638,7 @@ document.addEventListener('click', e => { if (!e.target.closest('.pf-add')) sug.
 $('pfSave').addEventListener('click', () => {
   const saved = store.get(SAVED_KEY, [])
   const name = (S.name || 'Portfolio').trim()
-  const entry = { name, items: S.items.map(i => ({ ...i })), at: Date.now() }
+  const entry = { name, desc: (S.desc ?? '').trim(), items: S.items.map(i => ({ ...i })), at: Date.now() }
   const k = saved.findIndex(p => p.name === name)
   if (k >= 0) saved[k] = entry; else saved.unshift(entry)
   store.set(SAVED_KEY, saved.slice(0, 30))
@@ -631,7 +651,7 @@ $('pfShare').addEventListener('click', async () => {
   history.replaceState(null, '', '#p=' + encodeShare())
   try { await navigator.clipboard.writeText(url); flash($('pfShare'), 'Link copied') } catch { flash($('pfShare'), 'Link in the address bar') }
 })
-$('pfNew').addEventListener('click', () => { S.items = []; S.name = 'My portfolio'; S.weighting = 'equal'; history.replaceState(null, '', location.pathname); changed() })
+$('pfNew').addEventListener('click', () => { S.items = []; S.name = 'My portfolio'; S.desc = ''; S.weighting = 'equal'; history.replaceState(null, '', location.pathname); changed() })
 $('pfGallery').addEventListener('click', e => {
   const saved = store.get(SAVED_KEY, [])
   const del = e.target.closest('[data-del]')
@@ -648,7 +668,7 @@ $('pfGallery').addEventListener('click', e => {
   if (!card) return
   const p = saved[Number(card.dataset.load)]
   if (!p) return
-  S.name = p.name; S.items = p.items.map(i => ({ ...i })); S.weighting = 'custom'
+  S.name = p.name; S.desc = p.desc ?? ''; S.items = p.items.map(i => ({ ...i })); S.weighting = 'custom'
   changed()
   $('pfBuilderSec').scrollIntoView({ behavior: 'smooth', block: 'start' })
 })
