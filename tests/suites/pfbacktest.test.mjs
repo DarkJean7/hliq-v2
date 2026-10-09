@@ -111,5 +111,26 @@ console.log(nl + '-- names: what Hyperliquid shows, not only the ticker --')
   t('a description is saved, shared and shown on its card', P.includes("desc: (S.desc ?? '').trim()") && P.includes('d: S.desc || undefined') && P.includes('pf-gc-desc'))
 }
 
+console.log(nl + '-- featured portfolios: public to read, the developer\'s to change --')
+{
+  const F = await import('../../src/pfshared.js')
+  const ok1 = F.cleanPortfolio({ name: '  Asia  ', desc: 'x'.repeat(400), items: [{ coin: 'xyz:SMSN', w: 14, side: 'long', kind: 'hip3' }, { coin: 'xyz:SMSN', w: 3 }, { coin: '<script>', w: 5 }, { coin: 'BTC', w: 0 }, { coin: 'ETH', w: 2, side: 'short' }] })
+  t('a stored portfolio is cleaned: name trimmed, description capped, bad and duplicate holdings dropped', ok1.name === 'Asia' && ok1.desc.length === 280 && ok1.items.map(i => i.coin).join() === 'xyz:SMSN,ETH' && ok1.items[1].side === 'short', ok1)
+  t('no name or no weighted holding is not a portfolio', F.cleanPortfolio({ name: '', items: [{ coin: 'BTC', w: 1 }] }) === null && F.cleanPortfolio({ name: 'A', items: [] }) === null)
+  t('an id only survives when it is one of ours', F.cleanPortfolio({ id: '../../etc', name: 'A', items: [{ coin: 'BTC', w: 1 }] }).id === null)
+  const l1 = F.upsertFeatured([], F.cleanPortfolio({ name: 'A', items: [{ coin: 'BTC', w: 1 }] }), 100)
+  const l2 = F.upsertFeatured(l1, { ...F.cleanPortfolio({ name: 'A2', items: [{ coin: 'ETH', w: 1 }] }), id: l1[0].id }, 200)
+  t('new ones get an id; an update replaces in place and keeps when it was first published', l1.length === 1 && /^[a-z0-9]{6,}$/.test(l1[0].id) && l2.length === 1 && l2[0].name === 'A2' && l2[0].at === 100 && l2[0].updated === 200)
+  t('the list has a ceiling', F.upsertFeatured(Array.from({ length: F.PF_FEATURED_MAX }, (_, i) => ({ id: 'id' + String(i).padStart(6, '0') })), F.cleanPortfolio({ name: 'A', items: [{ coin: 'BTC', w: 1 }] })) === null)
+  const SRV = fs.readFileSync('serve-prod.js', 'utf8')
+  const route = SRV.slice(SRV.indexOf("if (url === '/portfolios-data' ||"), SRV.indexOf("if (url === '/markets-meta')"))
+  t('the server: anyone reads; every write first asks the strategy server whether the PIN is right', route.includes("return send(200, { portfolios: pfRead() })") && route.indexOf('await devPinOk(') < route.indexOf('await readJson(') && route.includes("if (!ok) return send(403"))
+  t('an unreachable PIN check is "try later", never a yes', route.includes("if (ok === null) return send(503") && SRV.includes("res.statusCode === 200 ? true : res.statusCode === 403 ? false : null"))
+  t('what is stored has been through cleanPortfolio', route.includes('cleanPortfolio(b.portfolio)'))
+  const P = fs.readFileSync('src/portfolio.js', 'utf8')
+  t('the page: a visitor saving a featured portfolio keeps a copy on this device', /if \(S\.featuredId && isDev\(\)\)[\s\S]{0,300}featuredWrite\('save'[\s\S]{0,400}localSave\(\)/.test(P))
+  t('dev mode is the app\'s own (hliq_dev + hliq_lb_pin), checked by the server before it is kept', P.includes("localStorage.getItem('hliq_dev') === '1' && !!devPin()") && P.includes("fetch('/api/leaderboard/verify-pin'"))
+}
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

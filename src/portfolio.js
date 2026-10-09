@@ -79,7 +79,7 @@ function decodeShare(h) {
       name: String(j.n || 'Shared portfolio').slice(0, 40),
       desc: String(j.d ?? '').slice(0, 280),
       items: j.i.slice(0, 30).map(([coin, w, sh]) => ({ coin: String(coin), sym: String(coin).replace(/^.*:/, ''), kind: String(coin).includes(':') ? 'hip3' : String(coin).startsWith('@') ? 'spot' : 'perp', w: Number(w) || 0, side: sh ? 'short' : 'long' })),
-      weighting: 'custom',
+      weighting: 'custom', featuredId: null,
       ...(j.s && typeof j.s === 'object' ? pickSettings(j.s) : {}),
     }
   } catch { return null }
@@ -220,6 +220,7 @@ sideScroll($('pfSectors'), '.pf-sec-row')
 
 function renderBuilder() {
   $('pfName').value = S.name
+  renderMode()
   if (document.activeElement !== $('pfDesc')) $('pfDesc').value = S.desc ?? ''
   $('pfWeighting').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.w === S.weighting))
   renderGallery()
@@ -282,51 +283,100 @@ function spark(eq, up) {
     <path d="${d}L${W},${H}L0,${H}Z" fill="${c}" opacity=".1"/><path d="${d}" fill="none" stroke="${c}" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>`
 }
 
-function renderGallery() {
-  const el = $('pfGallery')
-  if (!el) return
-  $('pfGalTf').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.g === galTf))
-  const saved = store.get(SAVED_KEY, [])
-  const cards = saved.map((p, k) => {
-    const live = p.items.filter(i => Number(i.w) > 0)
-    const tot = live.reduce((a, i) => a + Number(i.w), 0) || 1
-    const editing = p.name === S.name
-    const edited = editing && (!sameItems(p.items, S.items) || (p.desc ?? '') !== (S.desc ?? ''))
-    const res = galResult(p)
-    const icons = live.slice(0, 5).map(i => iconHtml(i.coin, i.sym)).join('') + (live.length > 5 ? `<span class="pf-more">+${live.length - 5}</span>` : '')
-    const bar = live.map((i, j) => `<i style="width:${(100 * Number(i.w) / tot).toFixed(2)}%;background:${HOLD_COLORS[j % HOLD_COLORS.length]}" title="${esc(nameOf(i))} ${(100 * Number(i.w) / tot).toFixed(1)}%"></i>`).join('')
-    let body
-    if (res.state === 'ok') {
-      const r = res.run
-      body = `<div class="pf-gc-ret ${cls(r.ret)}">${pct(r.ret)}</div>
-        <div class="pf-gc-sub">${galLabel()}${res.clippedBy ? ` · since ${dLabel(res.start)}` : ''} · ${r.maxDd < -0.0005 ? `max drawdown ${(r.maxDd * 100).toFixed(1)}%` : 'no drawdown'}</div>
-        ${spark(r.equity, (r.ret ?? 0) >= 0)}`
-    } else if (res.state === 'loading') body = '<div class="pf-gc-ret mk-dim">…</div><div class="pf-gc-sub">loading prices</div><div class="pf-spark pf-spark--empty"></div>'
-    else if (res.state === 'failed') body = '<div class="pf-gc-ret mk-dim">—</div><div class="pf-gc-sub">prices did not load for every holding</div><div class="pf-spark pf-spark--empty"></div>'
-    else body = '<div class="pf-gc-ret mk-dim">—</div><div class="pf-gc-sub">no holdings with a weight</div><div class="pf-spark pf-spark--empty"></div>'
-    return `<div class="pf-gc${editing ? ' is-editing' : ''}" data-load="${k}" role="button" tabindex="0" aria-label="Open ${esc(p.name)} in the builder">
-      <div class="pf-gc-top">
-        <div class="pf-gc-name"><b>${esc(p.name)}</b><small>${live.length} holding${live.length === 1 ? '' : 's'}${editing ? ` · <span class="pf-gc-tag">${edited ? 'editing, unsaved changes' : 'editing'}</span>` : ''}</small></div>
-        <button class="pf-gc-del${delArmed === k ? ' is-armed' : ''}" data-del="${k}" aria-label="Delete ${esc(p.name)}">${delArmed === k ? 'Delete?' : '×'}</button>
-      </div>
-      ${p.desc ? `<p class="pf-gc-desc">${esc(p.desc)}</p>` : ''}
-      <div class="pf-gc-icons">${icons}</div>
-      <div class="pf-gc-bar">${bar}</div>
-      ${body}
-    </div>`
-  })
-  cards.push(`<button class="pf-gc pf-gc--new" data-new><span>+</span>New portfolio</button>`)
-  el.innerHTML = saved.length ? cards.join('')
-    : `<div class="pf-gal-empty">Portfolios you save appear here as cards, with what they returned. Build one below and press <b>Save</b>.</div>`
+// ── featured portfolios (src/pfshared.js, served by serve-prod.js /portfolios-data) ──────────
+// Everyone sees them; only the developer can change them. "Developer" is the app's own dev
+// mode — the same PIN (hliq_lb_pin), checked by the server on every write — so there is no
+// second login to keep in step. A visitor who opens one can change anything and test it; the
+// page never writes back, and "Save a copy" keeps their version on this device.
+let featured = null                 // null until it loads (or when it could not): not "there are none"
+let featuredState = 'loading'       // 'loading' | 'ok' | 'failed'
+const devPin = () => { try { return localStorage.getItem('hliq_lb_pin') || '' } catch { return '' } }
+const isDev = () => { try { return localStorage.getItem('hliq_dev') === '1' && !!devPin() } catch { return false } }
+
+async function loadFeatured() {
+  try {
+    const r = await fetch('/portfolios-data', { signal: AbortSignal.timeout(15_000) })
+    const j = r.ok ? await r.json() : null
+    if (!Array.isArray(j?.portfolios)) throw new Error('none')
+    featured = j.portfolios; featuredState = 'ok'
+  } catch { featuredState = featured ? 'ok' : 'failed' }
+  // A draft that was a featured portfolio that has since been removed is just a draft now.
+  if (S.featuredId && featured && !featured.some(p => p.id === S.featuredId)) { S.featuredId = null; saveDraft() }
+  renderBuilder()
+  loadGalleryPrices()
 }
 
-// Prices for every saved portfolio, one coin at a time — the cards fill in as they arrive.
+/** POST a change to the featured list as the developer. → the new list, or throws with a reason. */
+async function featuredWrite(path, body) {
+  const r = await fetch('/portfolios-data/' + path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-lb-pin': devPin() }, body: JSON.stringify(body) })
+  const j = await r.json().catch(() => ({}))
+  if (r.status === 403) { try { localStorage.removeItem('hliq_lb_pin') } catch {} ; throw new Error('The dev PIN was not accepted. Sign in again.') }
+  if (!r.ok || !Array.isArray(j.portfolios)) throw new Error(j.error || 'Could not save right now.')
+  featured = j.portfolios; featuredState = 'ok'
+  return featured
+}
+
+function cardHtml(p, ref, { kind }) {
+  const live = p.items.filter(i => Number(i.w) > 0)
+  const tot = live.reduce((a, i) => a + Number(i.w), 0) || 1
+  const editing = kind === 'featured' ? S.featuredId === p.id : !S.featuredId && p.name === S.name
+  const edited = editing && (!sameItems(p.items, S.items) || (p.desc ?? '') !== (S.desc ?? ''))
+  const res = galResult(p)
+  const icons = live.slice(0, 5).map(i => iconHtml(i.coin, i.sym)).join('') + (live.length > 5 ? `<span class="pf-more">+${live.length - 5}</span>` : '')
+  const bar = live.map((i, j) => `<i style="width:${(100 * Number(i.w) / tot).toFixed(2)}%;background:${HOLD_COLORS[j % HOLD_COLORS.length]}" title="${esc(nameOf(i))} ${(100 * Number(i.w) / tot).toFixed(1)}%"></i>`).join('')
+  let body
+  if (res.state === 'ok') {
+    const r = res.run
+    body = `<div class="pf-gc-ret ${cls(r.ret)}">${pct(r.ret)}</div>
+      <div class="pf-gc-sub">${galLabel()}${res.clippedBy ? ` · since ${dLabel(res.start)}` : ''} · ${r.maxDd < -0.0005 ? `max drawdown ${(r.maxDd * 100).toFixed(1)}%` : 'no drawdown'}</div>
+      ${spark(r.equity, (r.ret ?? 0) >= 0)}`
+  } else if (res.state === 'loading') body = '<div class="pf-gc-ret mk-dim">…</div><div class="pf-gc-sub">loading prices</div><div class="pf-spark pf-spark--empty"></div>'
+  else if (res.state === 'failed') body = '<div class="pf-gc-ret mk-dim">—</div><div class="pf-gc-sub">prices did not load for every holding</div><div class="pf-spark pf-spark--empty"></div>'
+  else body = '<div class="pf-gc-ret mk-dim">—</div><div class="pf-gc-sub">no holdings with a weight</div><div class="pf-spark pf-spark--empty"></div>'
+  const tag = editing ? ` · <span class="pf-gc-tag">${kind === 'featured' ? (edited ? 'open, testing changes' : 'open') : (edited ? 'editing, unsaved changes' : 'editing')}</span>` : ''
+  // Delete: always on your own; on a featured one, for the developer only.
+  const canDel = kind === 'local' || isDev()
+  const del = canDel ? `<button class="pf-gc-del${delArmed === ref ? ' is-armed' : ''}" data-del="${ref}" aria-label="${kind === 'featured' ? 'Remove from featured' : 'Delete'} ${esc(p.name)}">${delArmed === ref ? (kind === 'featured' ? 'Remove?' : 'Delete?') : '×'}</button>` : ''
+  const pub = kind === 'local' && isDev() ? `<button class="pf-gc-pub" data-pub="${ref}" title="Show this portfolio to everyone, under Featured">Publish</button>` : ''
+  return `<div class="pf-gc${editing ? ' is-editing' : ''}${kind === 'featured' ? ' pf-gc--featured' : ''}" data-load="${ref}" role="button" tabindex="0" aria-label="Open ${esc(p.name)} in the builder">
+    <div class="pf-gc-top">
+      <div class="pf-gc-name"><b>${esc(p.name)}</b><small>${kind === 'featured' ? '<span class="pf-gc-badge">Featured</span> · ' : ''}${live.length} holding${live.length === 1 ? '' : 's'}${tag}</small></div>
+      <div class="pf-gc-btns">${pub}${del}</div>
+    </div>
+    ${p.desc ? `<p class="pf-gc-desc">${esc(p.desc)}</p>` : ''}
+    <div class="pf-gc-icons">${icons}</div>
+    <div class="pf-gc-bar">${bar}</div>
+    ${body}
+  </div>`
+}
+
+function renderGallery() {
+  const el = $('pfGallery'), fe = $('pfFeatured')
+  if (!el || !fe) return
+  $('pfGalTf').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.g === galTf))
+  // Featured: unknown is not empty — "loading" and "could not load" each say so.
+  fe.innerHTML = featuredState === 'loading' && !featured ? '<div class="pf-gal-empty">Loading featured portfolios…</div>'
+    : featuredState === 'failed' ? '<div class="pf-gal-empty">Featured portfolios did not load. <button class="pf-btn pf-btn--ghost" data-featured-retry>Retry</button></div>'
+    : featured.length ? featured.map(p => cardHtml(p, 'f:' + p.id, { kind: 'featured' })).join('')
+    : `<div class="pf-gal-empty">${isDev() ? 'Nothing featured yet. Press <b>Publish</b> on one of your portfolios to show it to everyone.' : 'No featured portfolios yet.'}</div>`
+  $('pfDevNote').innerHTML = isDev()
+    ? 'Developer mode: you can publish, update and remove featured portfolios. <button data-dev-out>Sign out</button>'
+    : 'Built by Insolvent. Open one to test it — your changes stay on your device. <button data-dev-in>Developer sign-in</button>'
+  const saved = store.get(SAVED_KEY, [])
+  const cards = saved.map((p, k) => cardHtml(p, 'l:' + k, { kind: 'local' }))
+  cards.push(`<button class="pf-gc pf-gc--new" data-new><span>+</span>New portfolio</button>`)
+  el.innerHTML = saved.length ? cards.join('')
+    : `<div class="pf-gal-empty">Portfolios you save appear here as cards, with what they returned. They stay on this device. Build one below and press <b>Save</b>.</div>`
+}
+
+// Prices for every card, one coin at a time — the cards fill in as they arrive.
 let galLoading = false
 async function loadGalleryPrices() {
   if (galLoading) return
   galLoading = true
   try {
-    const coins = [...new Set(store.get(SAVED_KEY, []).flatMap(p => p.items.filter(i => Number(i.w) > 0).map(i => i.coin)))]
+    const all = [...(featured ?? []), ...store.get(SAVED_KEY, [])]
+    const coins = [...new Set(all.flatMap(p => p.items.filter(i => Number(i.w) > 0).map(i => i.coin)))]
     for (const c of coins) {
       if (daily.has(c) || galFailed.has(c)) continue
       try { await fetchDaily(c) } catch { galFailed.add(c) }
@@ -590,6 +640,7 @@ $('pfSectors').addEventListener('click', e => {
   const k = b.dataset.sector
   const list = k === 'top' ? [...new Map(rows.slice().sort((a, b) => (b.vol24 ?? 0) - (a.vol24 ?? 0)).map(r => [r.sym, r])).values()].slice(0, 8) : sectorBasket(k)
   S.items = list.map(r => ({ coin: r.coin, sym: r.sym, kind: r.kind, w: 1, side: 'long' }))
+  S.featuredId = null
   S.name = k === 'top' ? 'Top 8 by volume' : `${SECTOR_LABEL[k]} basket`
   // A starting description, saying what the basket is; yours to rewrite.
   S.desc = k === 'top' ? 'The 8 most traded markets on Hyperliquid today.' : `The 8 most traded ${SECTOR_LABEL[k]} markets on Hyperliquid today.`
@@ -635,14 +686,27 @@ sug.addEventListener('click', e => { const b = e.target.closest('[data-sug]'); i
 document.addEventListener('click', e => { if (!e.target.closest('.pf-add')) sug.hidden = true })
 
 // Saving and sharing.
-$('pfSave').addEventListener('click', () => {
+const localSave = () => {
   const saved = store.get(SAVED_KEY, [])
   const name = (S.name || 'Portfolio').trim()
   const entry = { name, desc: (S.desc ?? '').trim(), items: S.items.map(i => ({ ...i })), at: Date.now() }
   const k = saved.findIndex(p => p.name === name)
   if (k >= 0) saved[k] = entry; else saved.unshift(entry)
   store.set(SAVED_KEY, saved.slice(0, 30))
-  flash($('pfSave'), 'Saved')
+}
+$('pfSave').addEventListener('click', async () => {
+  // A featured portfolio: the developer updates it for everyone; anyone else keeps a copy.
+  if (S.featuredId && isDev()) {
+    try {
+      await featuredWrite('save', { portfolio: { id: S.featuredId, name: S.name, desc: S.desc, items: S.items } })
+      flash($('pfSave'), 'Updated for everyone')
+    } catch (e) { flash($('pfSave'), 'Not saved'); setNote(e.message) }
+    renderBuilder(); return
+  }
+  localSave()
+  const wasFeatured = !!S.featuredId
+  S.featuredId = null; saveDraft()
+  flash($('pfSave'), wasFeatured ? 'Saved to yours' : 'Saved')
   renderBuilder()
   loadGalleryPrices()
 })
@@ -651,33 +715,90 @@ $('pfShare').addEventListener('click', async () => {
   history.replaceState(null, '', '#p=' + encodeShare())
   try { await navigator.clipboard.writeText(url); flash($('pfShare'), 'Link copied') } catch { flash($('pfShare'), 'Link in the address bar') }
 })
-$('pfNew').addEventListener('click', () => { S.items = []; S.name = 'My portfolio'; S.desc = ''; S.weighting = 'equal'; history.replaceState(null, '', location.pathname); changed() })
-$('pfGallery').addEventListener('click', e => {
+$('pfNew').addEventListener('click', () => { S.items = []; S.name = 'My portfolio'; S.desc = ''; S.weighting = 'equal'; S.featuredId = null; history.replaceState(null, '', location.pathname); changed() })
+
+const openPortfolio = (p, featuredId = null) => {
+  S.name = p.name; S.desc = p.desc ?? ''; S.items = p.items.map(i => ({ ...i })); S.weighting = 'custom'; S.featuredId = featuredId
+  changed()
+  $('pfBuilderSec').scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+const armDelete = (ref) => {
+  if (delArmed === ref) return true
+  delArmed = ref; clearTimeout(delT); delT = setTimeout(() => { delArmed = null; renderGallery() }, 3000); renderGallery()
+  return false
+}
+async function galleryClick(e) {
   const saved = store.get(SAVED_KEY, [])
+  if (e.target.closest('[data-featured-retry]')) { featuredState = 'loading'; renderGallery(); loadFeatured(); return }
+  if (e.target.closest('[data-dev-in]')) { devSignIn(); return }
+  if (e.target.closest('[data-dev-out]')) { try { localStorage.removeItem('hliq_dev') } catch {} ; renderBuilder(); return }
   const del = e.target.closest('[data-del]')
   if (del) {
-    // Two taps: the first arms it ("Delete?"), the second deletes. A card is easy to brush past.
-    const k = Number(del.dataset.del)
-    if (delArmed !== k) { delArmed = k; clearTimeout(delT); delT = setTimeout(() => { delArmed = null; renderGallery() }, 3000); renderGallery(); return }
+    // Two taps: the first arms it, the second acts. A card is easy to brush past.
+    const ref = del.dataset.del
+    if (!armDelete(ref)) return
     delArmed = null
-    saved.splice(k, 1); store.set(SAVED_KEY, saved); renderGallery()
+    if (ref.startsWith('f:')) {
+      try { await featuredWrite('delete', { id: ref.slice(2) }); if (S.featuredId === ref.slice(2)) S.featuredId = null } catch (err) { setNote(err.message) }
+      renderBuilder(); return
+    }
+    saved.splice(Number(ref.slice(2)), 1); store.set(SAVED_KEY, saved); renderGallery()
     return
+  }
+  const pub = e.target.closest('[data-pub]')
+  if (pub) {
+    const p = saved[Number(pub.dataset.pub.slice(2))]
+    if (!p) return
+    pub.disabled = true; pub.textContent = 'Publishing…'
+    try { await featuredWrite('save', { portfolio: { name: p.name, desc: p.desc, items: p.items } }); setNote(`"${p.name}" is now featured for everyone.`) }
+    catch (err) { setNote(err.message) }
+    renderBuilder(); loadGalleryPrices(); return
   }
   if (e.target.closest('[data-new]')) { $('pfNew').click(); $('pfBuilderSec').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('pfName').select(); return }
   const card = e.target.closest('[data-load]')
   if (!card) return
-  const p = saved[Number(card.dataset.load)]
-  if (!p) return
-  S.name = p.name; S.desc = p.desc ?? ''; S.items = p.items.map(i => ({ ...i })); S.weighting = 'custom'
-  changed()
-  $('pfBuilderSec').scrollIntoView({ behavior: 'smooth', block: 'start' })
-})
-$('pfGallery').addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-load]')) { e.preventDefault(); e.target.click() } })
+  const ref = card.dataset.load
+  if (ref.startsWith('f:')) { const p = (featured ?? []).find(x => x.id === ref.slice(2)); if (p) openPortfolio(p, p.id) }
+  else { const p = saved[Number(ref.slice(2))]; if (p) openPortfolio(p) }
+}
+for (const id of ['pfGallery', 'pfFeatured', 'pfDevNote']) {
+  $(id).addEventListener('click', galleryClick)
+  $(id).addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-load]')) { e.preventDefault(); e.target.click() } })
+}
 $('pfGalTf').addEventListener('click', e => {
   const b = e.target.closest('button[data-g]'); if (!b) return
   galTf = b.dataset.g; store.set(GAL_TF_KEY, galTf)
   renderGallery(); loadGalleryPrices()
 })
+
+// The app's dev mode, entered here too: the PIN is checked by the server before it is kept.
+async function devSignIn() {
+  const pin = (window.prompt('Developer PIN') ?? '').trim()
+  if (!pin) return
+  try {
+    const r = await fetch('/api/leaderboard/verify-pin', { method: 'POST', headers: { 'x-lb-pin': pin } })
+    if (!r.ok) { setNote(r.status === 403 ? 'That PIN was not accepted.' : 'Could not check the PIN right now.'); return }
+    localStorage.setItem('hliq_lb_pin', pin); localStorage.setItem('hliq_dev', '1')
+    setNote('Developer mode on.')
+  } catch { setNote('Could not check the PIN right now.') }
+  renderBuilder()
+}
+// One line under the builder's name for what Save will do, and for anything that went wrong.
+let noteMsg = '', noteT
+function setNote(msg) { noteMsg = msg; clearTimeout(noteT); noteT = setTimeout(() => { noteMsg = ''; renderMode() }, 6000); renderMode() }
+function renderMode() {
+  const el = $('pfMode')
+  if (!el) return
+  const dev = isDev()
+  $('pfSave').textContent = S.featuredId ? (dev ? 'Update featured' : 'Save a copy') : 'Save'
+  const base = S.featuredId
+    ? (dev ? 'Featured portfolio. <b>Update featured</b> publishes your changes to everyone.'
+           : 'Featured portfolio. Change anything and test it: nothing here changes it for anyone else. <b>Save a copy</b> keeps your version on this device.')
+    : ''
+  el.innerHTML = [base, noteMsg ? esc(noteMsg) : ''].filter(Boolean).join(' · ')
+  el.hidden = !el.innerHTML
+}
+
 function flash(btn, text) { const t0 = btn.textContent; btn.textContent = text; btn.disabled = true; setTimeout(() => { btn.textContent = t0; btn.disabled = false }, 1400) }
 
 // Run settings.
@@ -706,7 +827,7 @@ for (const a of document.querySelectorAll('[data-launch]')) a.addEventListener('
 renderBuilder()
 renderRunControls()
 run()
-loadGalleryPrices()
+loadFeatured()
 loadMeta()
 loadMarkets().catch(() => setStatus('Hyperliquid did not answer — reload to try again'))
 window.__pf = { get state() { return S }, get last() { return last } }     // tests/portfolio-browser.mjs

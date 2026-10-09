@@ -180,6 +180,34 @@ function strategyPlugin() {
           } catch { return sendJson(res, 200, { prices: {} }) }
         }
 
+        // Dev twin of serve-prod.js /portfolios-data (featured portfolios). Stored in the local
+        // data/portfolios.json. Writes need the dev PIN: LB_PIN, or ~/.hliq/lb_pin, as on the
+        // strategy server; with neither set locally, nobody can write — the same as prod.
+        if (path === '/portfolios-data' || path === '/portfolios-data/save' || path === '/portfolios-data/delete') {
+          const fs = await import('node:fs'), os = await import('node:os')
+          const S = await import('./src/pfshared.js')
+          const file = join(__dirname, 'data', 'portfolios.json')
+          const read = () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')).portfolios ?? [] } catch { return [] } }
+          if (path === '/portfolios-data') return method === 'GET' ? sendJson(res, 200, { portfolios: read() }) : sendJson(res, 405, {})
+          if (method !== 'POST') return sendJson(res, 405, {})
+          let pin = process.env.LB_PIN || ''
+          try { pin = fs.readFileSync(join(os.homedir(), '.hliq', 'lb_pin'), 'utf8').trim() || pin } catch {}
+          if (!pin || req.headers['x-lb-pin'] !== pin) return sendJson(res, 403, { error: 'forbidden' })
+          const chunks = []
+          for await (const c of req) chunks.push(c)
+          let b = null
+          try { b = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch {}
+          let list = read()
+          if (path === '/portfolios-data/save') {
+            const p = S.cleanPortfolio(b?.portfolio)
+            if (!p) return sendJson(res, 400, { error: 'not a portfolio' })
+            list = S.upsertFeatured(list, p) ?? list
+          } else list = list.filter(x => x.id !== String(b?.id ?? ''))
+          fs.mkdirSync(dirname(file), { recursive: true })
+          fs.writeFileSync(file, JSON.stringify({ portfolios: list }))
+          return sendJson(res, 200, { portfolios: list })
+        }
+
         // Dev twin of serve-prod.js /markets-revenue (no cache).
         if (method === 'GET' && path === '/markets-revenue') {
           const L = await import('./src/llama.js')

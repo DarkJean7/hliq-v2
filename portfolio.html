@@ -51,7 +51,7 @@
   <!-- ── saved portfolios: one card each, its return over the chosen timeframe ── -->
   <section class="ln-wrap pf-gallery" id="pfGallerySec">
     <div class="pf-gal-head">
-      <h2 class="pf-gal-title">Your portfolios</h2>
+      <h2 class="pf-gal-title">Portfolios</h2>
       <div class="pf-gal-tools">
         <span class="pf-gal-note">Buy &amp; hold return</span>
         <div class="mk-seg pf-seg" id="pfGalTf">
@@ -59,6 +59,9 @@
         </div>
       </div>
     </div>
+    <div class="pf-gal-sub"><b>Featured</b><span id="pfDevNote"></span></div>
+    <div class="pf-gal" id="pfFeatured" data-dragscroll></div>
+    <div class="pf-gal-sub"><b>Your portfolios</b><span>Saved on this device only</span></div>
     <div class="pf-gal" id="pfGallery" data-dragscroll></div>
   </section>
 
@@ -73,6 +76,7 @@
           <button id="pfNew" class="pf-btn pf-btn--ghost">New</button>
         </div>
       </div>
+      <p class="pf-mode" id="pfMode" hidden></p>
       <textarea id="pfDesc" class="pf-desc" maxlength="280" rows="2" spellcheck="true" placeholder="Add a description: what this portfolio is for, why these weights…" aria-label="Portfolio description"></textarea>
 
       <div class="pf-lbl">Start from a sector <small>the 8 most traded in it</small></div>

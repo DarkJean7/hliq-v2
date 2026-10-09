@@ -60,6 +60,18 @@
 .pf-gc-desc { margin: 8px 0 0; font-size: 12.5px; line-height: 1.4; color: var(--fg-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .pf-comp-desc { margin: -2px 0 12px; font-size: 13.5px; line-height: 1.5; color: var(--fg-2); }
 
+/* featured vs yours */
+.pf-gal-sub { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 16px 0 10px; font-size: 13px; color: var(--fg-3); }
+.pf-gal-sub b { font-size: 15px; color: var(--fg); letter-spacing: -0.01em; }
+.pf-gal-sub button { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.pf-gc--featured { background: linear-gradient(180deg, rgba(255,138,42,.06), transparent 55%), var(--panel); }
+.pf-gc-badge { color: var(--accent); font-weight: 600; }
+.pf-gc-btns { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.pf-gc-pub { font: inherit; font-size: 11.5px; font-weight: 700; cursor: pointer; color: var(--accent); background: rgba(255,138,42,.1); border: 1px solid rgba(255,138,42,.35); border-radius: 7px; padding: 3px 8px; }
+.pf-gc-pub:disabled { opacity: .6; cursor: default; }
+.pf-mode { margin: 8px 0 0; padding: 8px 10px; border-radius: 9px; font-size: 12.5px; line-height: 1.45; color: var(--fg-2); background: rgba(255,138,42,.07); border: 1px solid rgba(255,138,42,.22); }
+.pf-mode[hidden] { display: none; }
+
 /* builder + composition */
 .pf-top { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 14px; margin-bottom: 14px; }
 .pf-name-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }

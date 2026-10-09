@@ -10,6 +10,7 @@
 //
 // Run:  npm run test:browser        (expects a dev server; pass --port=NNNN)
 import { chromium, devices } from 'playwright'
+import { cleanPortfolio, upsertFeatured } from '../src/pfshared.js'
 
 const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
 const BASE = 'http://localhost:' + port + '/portfolios'
@@ -74,6 +75,21 @@ async function run(label, opts) {
     return route.fulfill({ status: 200, contentType: 'application/json', json: HL[b.type] ?? {} })
   })
   await ctx.route('**/markets-meta', r => r.fulfill({ status: 200, json: { revenue: {}, cg: {}, stocks: {}, sic: {} } }))
+  // The featured list, as serve-prod.js keeps it: public to read, writes only with the dev PIN,
+  // through the same cleanPortfolio/upsertFeatured the server uses.
+  let featured = [{ id: 'feat0001', name: 'Featured One', desc: 'Picked by us.', at: 1, items: [{ coin: 'BTC', sym: 'BTC', kind: 'perp', w: 60, side: 'long' }, { coin: 'ETH', sym: 'ETH', kind: 'perp', w: 40, side: 'long' }] }]
+  const writes = []
+  await ctx.route('**/portfolios-data**', (route) => {
+    const req = route.request(), path = new URL(req.url()).pathname
+    if (req.method() === 'GET') return route.fulfill({ status: 200, json: { portfolios: featured } })
+    let b = {}
+    try { b = JSON.parse(req.postData() || '{}') } catch {}
+    writes.push({ path, pin: req.headers()['x-lb-pin'] ?? '', body: b })
+    if (req.headers()['x-lb-pin'] !== 'devpin') return route.fulfill({ status: 403, json: { error: 'forbidden' } })
+    if (path.endsWith('/save')) featured = upsertFeatured(featured, cleanPortfolio(b.portfolio)) ?? featured
+    else featured = featured.filter(x => x.id !== b.id)
+    return route.fulfill({ status: 200, json: { portfolios: featured } })
+  })
   await ctx.route('**/icon/**', r => r.fulfill({ status: 404, body: '' }))
   const p = await ctx.newPage()
   const errs = []
@@ -145,20 +161,20 @@ async function run(label, opts) {
   const yr = (PRICE.BTC(dayOf(NOW)) / PRICE.BTC(dayOf(NOW) - 365 * DAY) - 1) / 3 - 0.00045
   const pctTxt = (x) => (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%'
   await waitFor(p, 'the card\'s return', () => /%/.test(document.querySelector('#pfGallery .pf-gc-ret')?.textContent ?? ''))
-  const card1 = (await p.textContent('#pfGallery [data-load="0"]')).replace(/\s+/g, ' ')
+  const card1 = (await p.textContent('#pfGallery [data-load="l:0"]')).replace(/\s+/g, ' ')
   ok('the card shows its 1-year return, worked out from the closes', card1.includes(pctTxt(yr)) && /1 year/.test(card1), [card1, pctTxt(yr)])
-  ok('with its holdings, its weights and its line', await p.locator('#pfGallery [data-load="0"] .mk-ico').count() === 3 && await p.locator('#pfGallery [data-load="0"] .pf-gc-bar i').count() === 3 && await p.locator('#pfGallery [data-load="0"] .pf-spark path').count() === 2)
+  ok('with its holdings, its weights and its line', await p.locator('#pfGallery [data-load="l:0"] .mk-ico').count() === 3 && await p.locator('#pfGallery [data-load="l:0"] .pf-gc-bar i').count() === 3 && await p.locator('#pfGallery [data-load="l:0"] .pf-spark path').count() === 2)
   ok('and says it is the one being edited', /editing/.test(card1))
   await p.click('#pfGalTf [data-g="30"]')
   const m1 = (PRICE.BTC(dayOf(NOW)) / PRICE.BTC(dayOf(NOW) - 30 * DAY) - 1) / 3 - 0.00045
-  const card30 = (await p.textContent('#pfGallery [data-load="0"]')).replace(/\s+/g, ' ')
+  const card30 = (await p.textContent('#pfGallery [data-load="l:0"]')).replace(/\s+/g, ' ')
   ok('the timeframe changes every card: 30 days', card30.includes(pctTxt(m1)) && /30 days/.test(card30), [card30, pctTxt(m1)])
   ok('and is remembered', await p.evaluate(() => localStorage.getItem('hliq_pf_gallery_tf')) === '"30"')
   if (SHOT) { await p.locator('#pfGallerySec').scrollIntoViewIfNeeded(); await p.screenshot({ path: `${SHOT}/portfolio-gallery-${label}.png` }) }
   // Open a portfolio from its card.
   await p.click('#pfNew')
   ok('New empties the builder', await p.evaluate(() => window.__pf.state.items.length) === 0)
-  await p.click('#pfGallery [data-load="0"] .pf-gc-name')
+  await p.click('#pfGallery [data-load="l:0"] .pf-gc-name')
   ok('clicking a card opens it in the builder', await waitFor(p, 'loaded', () => window.__pf.state.name === 'Three' && window.__pf.state.items.length === 3, null, 5000))
 
   // A holding Hyperliquid has no prices for: the page names it and offers a retry.
@@ -169,10 +185,54 @@ async function run(label, opts) {
   ok('no history: says which holding, offers a retry', await p.locator('#pfRetry').count() === 1)
 
   // Delete takes two taps.
-  await p.click('#pfGallery [data-del="0"]')
-  ok('the first tap on × only asks', await p.locator('#pfGallery [data-load]').count() === 1 && /Delete\?/.test(await p.textContent('#pfGallery [data-del="0"]')))
-  await p.click('#pfGallery [data-del="0"]')
+  await p.click('#pfGallery [data-del="l:0"]')
+  ok('the first tap on × only asks', await p.locator('#pfGallery [data-load]').count() === 1 && /Delete\?/.test(await p.textContent('#pfGallery [data-del="l:0"]')))
+  await p.click('#pfGallery [data-del="l:0"]')
   ok('the second deletes it', await p.locator('#pfGallery [data-load]').count() === 0 && /Portfolios you save appear here/.test(await p.textContent('#pfGallery')))
+
+  // ── featured portfolios: everyone sees them; only the developer changes them ──
+  ok('a visitor sees the featured portfolio, with its description and return', await waitFor(p, 'featured', () => /Featured One/.test(document.getElementById('pfFeatured').textContent) && /%/.test(document.querySelector('#pfFeatured .pf-gc-ret')?.textContent ?? '')) && /Picked by us\./.test(await p.textContent('#pfFeatured')))
+  ok('but cannot remove or republish it', await p.locator('#pfFeatured [data-del], #pfFeatured [data-pub]').count() === 0)
+  await p.click('#pfFeatured [data-load="f:feat0001"] .pf-gc-name')
+  await waitFor(p, 'opened', () => window.__pf.state.featuredId === 'feat0001')
+  ok('opening it says changes stay theirs, and Save becomes "Save a copy"', /nothing here changes it/.test(await p.textContent('#pfMode')) && (await p.textContent('#pfSave')).trim() === 'Save a copy')
+  await p.fill('#pfHoldings [data-w="0"]', '90')
+  await p.locator('#pfHoldings [data-w="0"]').dispatchEvent('change')
+  await waitFor(p, 'the re-run', () => window.__pf.last?.runs?.length > 0)
+  ok('they can change it and test it', await p.evaluate(() => window.__pf.state.items[0].w) === 90 && /testing changes/.test(await p.textContent('#pfFeatured')))
+  await p.click('#pfSave')
+  ok('"Save a copy" keeps it on this device, and writes nothing to the server', writes.length === 0 && await p.evaluate(() => JSON.parse(localStorage.getItem('hliq_pf_saved'))[0]?.name) === 'Featured One' && await p.evaluate(() => window.__pf.state.featuredId) === null)
+  ok('the featured one is unchanged', featured.length === 1 && featured[0].items[0].w === 60)
+
+  // The developer: the app's dev mode and PIN.
+  await p.evaluate(() => { localStorage.setItem('hliq_dev', '1'); localStorage.setItem('hliq_lb_pin', 'devpin') })
+  await p.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(p, 'dev cards', () => document.querySelectorAll('#pfGallery [data-pub]').length > 0 && /Developer mode/.test(document.getElementById('pfDevNote').textContent))
+  ok('the developer can publish their own', await p.locator('#pfGallery [data-pub]').count() === 1)
+  await p.evaluate(() => { const s = JSON.parse(localStorage.getItem('hliq_pf_saved')); s[0].name = 'Mine, published'; localStorage.setItem('hliq_pf_saved', JSON.stringify(s)) })
+  await p.evaluate(() => window.dispatchEvent(new Event('focus')))
+  await p.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(p, 'dev cards', () => document.querySelectorAll('#pfGallery [data-pub]').length > 0)
+  await p.click('#pfGallery [data-pub]')
+  await waitFor(p, 'published', () => document.querySelectorAll('#pfFeatured [data-load]').length === 2)
+  ok('Publish puts it under Featured, sent with the PIN', featured.length === 2 && featured[0].name === 'Mine, published' && writes.at(-1).pin === 'devpin' && writes.at(-1).path.endsWith('/save'))
+  await p.click('#pfFeatured [data-load="f:feat0001"] .pf-gc-name')
+  await waitFor(p, 'opened', () => window.__pf.state.featuredId === 'feat0001')
+  ok('for the developer, Save on a featured one is "Update featured"', (await p.textContent('#pfSave')).trim() === 'Update featured')
+  await p.fill('#pfName', 'Featured One, revised')
+  await p.click('#pfSave')
+  await waitFor(p, 'updated', () => /revised/.test(document.getElementById('pfFeatured').textContent))
+  ok('Update featured changes it for everyone, in place', featured.length === 2 && featured.find(x => x.id === 'feat0001')?.name === 'Featured One, revised')
+  await p.click('#pfFeatured [data-del="f:feat0001"]')
+  ok('removing a featured one also takes two taps', /Remove\?/.test(await p.textContent('#pfFeatured [data-del="f:feat0001"]')) && featured.length === 2)
+  await p.click('#pfFeatured [data-del="f:feat0001"]')
+  await waitFor(p, 'removed', () => document.querySelectorAll('#pfFeatured [data-load]').length === 1)
+  ok('and the second removes it', featured.length === 1 && !featured.some(x => x.id === 'feat0001'))
+  // A wrong PIN is refused by the server, and the page says so.
+  await p.evaluate(() => localStorage.setItem('hliq_lb_pin', 'wrong'))
+  await p.click('#pfGallery [data-pub]')
+  await waitFor(p, 'refused', () => /not accepted/.test(document.getElementById('pfMode').textContent))
+  ok('a wrong PIN is refused and the page says so', featured.length === 1 && /not accepted/.test(await p.textContent('#pfMode')))
 
   ok('no horizontal page scroll', await p.evaluate(() => document.documentElement.scrollWidth - innerWidth) <= 0, await p.evaluate(() => document.documentElement.scrollWidth - innerWidth))
   if (SHOT) await p.screenshot({ path: `${SHOT}/portfolio-${label}.png`, fullPage: true })

@@ -11,6 +11,7 @@ import { coinGeckoUpgrade } from './src/iconpick.js'
 import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, parseSeries } from './src/extmarkets.js'
 import { SEC_CONCEPTS, SEC_TICKERS_URL, secConceptUrl, companyRevenue } from './src/secrev.js'
 import { llamaSummaryUrl, sumDaily } from './src/llama.js'
+import { cleanPortfolio, upsertFeatured } from './src/pfshared.js'
 import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
@@ -252,6 +253,41 @@ function writeAtomic(path, data) {
     try { unlinkSync(tmp) } catch {}   // don't leave debris behind on a failed write
     throw e
   }
+}
+
+// ── /portfolios-data: the featured portfolios on /portfolios (src/pfshared.js) ───────────
+// Public to read; writes need the dev PIN. The PIN is not known here — the strategy server
+// owns it (~/.hliq/lb_pin or LB_PIN) and answers /api/leaderboard/verify-pin, so this asks
+// that instead of keeping a second copy of a secret. Kept in this server, not that one, so
+// publishing a portfolio never needs a change to server.js, whose deploy restarts the bots.
+const PF_FILE = join(__dirname, 'data', 'portfolios.json')
+let pfCache = null                                   // { mtime, list } — both workers read the file
+function pfRead() {
+  try {
+    const st = statSync(PF_FILE)
+    if (pfCache?.mtime !== st.mtimeMs) pfCache = { mtime: st.mtimeMs, list: JSON.parse(readFileSync(PF_FILE, 'utf8')).portfolios ?? [] }
+    return pfCache.list
+  } catch { return [] }
+}
+function readJson(req, max = 64_000) {
+  return new Promise((resolve) => {
+    let n = 0; const chunks = []
+    req.on('data', c => { n += c.length; if (n > max) { req.destroy(); resolve(null) } else chunks.push(c) })
+    req.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))) } catch { resolve(null) } })
+    req.on('error', () => resolve(null))
+  })
+}
+// true / false, or null when the strategy server could not say (it is down) — not a "no".
+function devPinOk(pin) {
+  if (!pin) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    const r = httpRequest({ host: '127.0.0.1', port: API_PORT, path: '/api/leaderboard/verify-pin', method: 'POST', headers: { 'x-lb-pin': String(pin).slice(0, 200) }, timeout: 5000 }, (res) => {
+      res.resume()
+      resolve(res.statusCode === 200 ? true : res.statusCode === 403 ? false : null)
+    })
+    r.on('error', () => resolve(null)); r.on('timeout', () => { r.destroy(); resolve(null) })
+    r.end()
+  })
 }
 
 function serveFile(res, filePath, allowIndexFallback = true) {
@@ -577,6 +613,39 @@ createServer((req, res) => {
       .then(points => res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=900' })
         .end(JSON.stringify({ sym, type, name: tok.name, points })))
       .catch(() => res.writeHead(502, { 'Content-Type': 'application/json' }).end('{"points":null}'))
+    })()
+    return
+  }
+
+  if (url === '/portfolios-data' || url === '/portfolios-data/save' || url === '/portfolios-data/delete') {
+    const send = (code, obj) => res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(obj))
+    if (url === '/portfolios-data') {
+      if (req.method !== 'GET') { res.writeHead(405).end(); return }
+      return send(200, { portfolios: pfRead() })
+    }
+    if (req.method !== 'POST') { res.writeHead(405).end(); return }
+    ;(async () => {
+      const ok = await devPinOk(req.headers['x-lb-pin'])
+      if (ok === null) return send(503, { error: 'could not check the PIN right now' })
+      if (!ok) return send(403, { error: 'forbidden' })
+      const b = await readJson(req)
+      if (!b) return send(400, { error: 'bad request' })
+      let list = pfRead()
+      if (url === '/portfolios-data/save') {
+        const p = cleanPortfolio(b.portfolio)
+        if (!p) return send(400, { error: 'not a portfolio: it needs a name and at least one holding with a weight' })
+        const next = upsertFeatured(list, p)
+        if (!next) return send(409, { error: 'the featured list is full' })
+        list = next
+      } else {
+        const id = String(b.id ?? '')
+        if (!list.some(x => x.id === id)) return send(404, { error: 'no such portfolio' })
+        list = list.filter(x => x.id !== id)
+      }
+      try { mkdirSync(dirname(PF_FILE), { recursive: true }); writeAtomic(PF_FILE, JSON.stringify({ portfolios: list })) }
+      catch { return send(500, { error: 'could not save' }) }
+      pfCache = null
+      return send(200, { portfolios: list })
     })()
     return
   }
