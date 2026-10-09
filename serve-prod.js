@@ -733,6 +733,12 @@ createServer((req, res) => {
     return
   }
   if (url === '/markets') return serveFile(res, join(DIST, 'markets.html'))
+  // /portfolios — build a basket and backtest it (portfolio.html). Public, like /markets.
+  if (url === '/portfolios/') {
+    res.writeHead(301, { Location: '/portfolios' + req.url.slice(url.length) }).end()
+    return
+  }
+  if (url === '/portfolios') return serveFile(res, join(DIST, 'portfolio.html'))
 
   // Static files
   const candidate = join(DIST, url === '/' ? 'landing.html' : url)

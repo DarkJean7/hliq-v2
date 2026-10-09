@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <!-- /portfolios: build a basket of Hyperliquid assets and backtest it on their price history.
+       Part of the public site, like /markets: it does NOT redirect returning users to /app.
+       Prices come straight from Hyperliquid in the visitor's browser (src/portfolio.js); the
+       arithmetic is src/pfbacktest.js, and the trading strategies are the app's own Trade
+       Simulator engine (src/backtest.js). -->
+  <title>Insolvent — Portfolio backtester</title>
+  <meta name="description" content="Build a portfolio from any Hyperliquid perp, HIP-3 market or spot token and test it on real price history: buy and hold, rebalancing, DCA, trend filters and the Trade Simulator's strategies."/>
+  <meta property="og:title" content="Portfolio backtester — Insolvent"/>
+  <meta property="og:description" content="Build a basket of Hyperliquid assets and see how it would have done, strategy by strategy."/>
+  <meta property="og:image" content="/pwa-512x512.png?v=6"/>
+  <meta name="theme-color" content="#0a0c10"/>
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=6"/>
+  <link rel="icon" type="image/png" href="/favicon.png?v=6"/>
+  <link rel="stylesheet" href="/fonts/fonts.css">
+  <link rel="preload" as="font" type="font/woff2" href="/fonts/inter-tight-700-normal-latin.woff2" crossorigin>
+  <link rel="preload" as="font" type="font/woff2" href="/fonts/jetbrains-mono-400-normal-latin.woff2" crossorigin>
+</head>
+<body>
+
+<header class="ln-nav" id="lnNav">
+  <div class="ln-wrap ln-nav__row">
+    <a class="ln-logo notranslate" href="/?home" aria-label="Insolvent home">
+      <span class="ln-in">in</span>solvent<span class="ln-logo__dot">.</span>
+    </a>
+    <nav class="ln-links" id="lnLinks">
+      <a href="/?home#features">Features</a>
+      <a href="/markets">Markets</a>
+      <a href="/portfolios" class="is-active" aria-current="page">Portfolios</a>
+      <a href="/?home#bots">Bots</a>
+      <a href="/?home#security">Security</a>
+    </nav>
+    <a class="ln-pill ln-nav__cta" href="/app" data-launch>Launch app</a>
+    <button class="ln-burger" id="lnBurger" aria-label="Menu" aria-expanded="false"><span></span><span></span></button>
+  </div>
+</header>
+
+<main class="mk pf">
+  <section class="ln-wrap mk-head">
+    <div>
+      <h1 class="ln-h2 mk-title"><span class="ln-prompt">&gt;</span> portfolios</h1>
+      <p class="mk-sub">Build a basket from any Hyperliquid asset, then see how it would have done: held, rebalanced, bought weekly, or traded with the Simulator's strategies.</p>
+    </div>
+    <div class="mk-status" id="pfStatus"><span class="ln-dot"></span> <span id="pfStatusText">loading markets…</span></div>
+  </section>
+
+  <section class="ln-wrap pf-top">
+    <!-- ── the builder ── -->
+    <div class="pf-card pf-build">
+      <div class="pf-name-row">
+        <input id="pfName" class="pf-name" maxlength="40" spellcheck="false" aria-label="Portfolio name">
+        <div class="pf-actions">
+          <button id="pfSave" class="pf-btn">Save</button>
+          <button id="pfShare" class="pf-btn">Share link</button>
+          <button id="pfNew" class="pf-btn pf-btn--ghost">New</button>
+        </div>
+      </div>
+      <div class="pf-saved" id="pfSaved" data-dragscroll></div>
+
+      <div class="pf-lbl">Start from a sector <small>the 8 most traded in it</small></div>
+      <div class="pf-chips" id="pfSectors" data-dragscroll></div>
+
+      <div class="pf-add">
+        <input id="pfSearch" class="mk-search" type="search" placeholder="Add an asset: BTC, NVDA, GOLD, HYPE…" autocomplete="off" spellcheck="false" aria-label="Add an asset">
+        <div class="pf-suggest" id="pfSuggest" hidden></div>
+      </div>
+
+      <div class="pf-weight-row">
+        <span class="pf-lbl pf-lbl--inline">Weight by</span>
+        <div class="mk-seg pf-seg" id="pfWeighting">
+          <button data-w="equal">Equal</button><button data-w="vol24">Volume</button><button data-w="mcap">Market cap</button><button data-w="oi">Open interest</button>
+        </div>
+      </div>
+      <div class="pf-holdings" id="pfHoldings"></div>
+      <div class="pf-total" id="pfTotal"></div>
+    </div>
+
+    <!-- ── composition ── -->
+    <div class="pf-card pf-comp" id="pfComp"></div>
+  </section>
+
+  <!-- ── the test ── -->
+  <section class="ln-wrap"><div class="pf-card pf-run" id="pfRun">
+    <div class="pf-run-grid">
+      <div>
+        <div class="pf-lbl">Period</div>
+        <div class="mk-seg pf-seg" id="pfPeriod">
+          <button data-p="30">30D</button><button data-p="90">90D</button><button data-p="182">6M</button><button data-p="365">1Y</button><button data-p="730">2Y</button><button data-p="max">Max</button>
+        </div>
+        <div class="pf-dates"><input type="date" id="pfFrom" aria-label="From"><span>→</span><input type="date" id="pfTo" aria-label="To"></div>
+      </div>
+      <label class="pf-field"><span class="pf-lbl">Starting capital</span><input id="pfCapital" type="number" min="100" step="100" inputmode="decimal"></label>
+      <div>
+        <div class="pf-lbl">Leverage</div>
+        <div class="mk-seg pf-seg" id="pfLev"><button data-l="1">1×</button><button data-l="2">2×</button><button data-l="3">3×</button><button data-l="5">5×</button></div>
+      </div>
+      <label class="pf-field"><span class="pf-lbl">Fee per trade, %</span><input id="pfFee" type="number" min="0" step="0.005" inputmode="decimal"></label>
+      <label class="pf-check"><input type="checkbox" id="pfBench"> Compare with BTC</label>
+    </div>
+
+    <div class="pf-lbl">Allocation strategies <small>the whole basket, by its weights</small></div>
+    <div class="pf-chips pf-strats" id="pfStrats"></div>
+    <div class="pf-params" id="pfAllocParams">
+      <label>Drift band <input id="pfBand" type="number" min="1" max="50" step="1"> %</label>
+      <label>Trend average <input id="pfTrendDays" type="number" min="5" max="200" step="1"> days</label>
+    </div>
+
+    <div class="pf-lbl">Trading strategies <small>the Trade Simulator's rules, run on every holding with its share of the capital</small></div>
+    <div class="pf-chips pf-strats" id="pfBots"></div>
+    <div class="pf-params" id="pfBotParams">
+      <label>Candles <select id="pfTf"><option value="1h">1 hour</option><option value="4h">4 hours</option><option value="1d">1 day</option></select></label>
+      <label>Take profit <input id="pfTp" type="number" min="0.1" step="0.5"> %</label>
+      <label>Stop loss <input id="pfSl" type="number" min="0.1" step="0.5"> %</label>
+      <label class="pf-check"><input type="checkbox" id="pfBoth"> Trade both directions</label>
+    </div>
+  </div></section>
+
+  <section class="ln-wrap pf-results" id="pfResults" aria-live="polite"></section>
+
+  <section class="ln-wrap">
+    <p class="mk-note">
+      How this is worked out: one price per day, Hyperliquid's daily close; a day with no trade keeps the last close.
+      Leverage scales the whole basket, and a balance that reaches zero is liquidated and stays there. Daily closes miss
+      intraday wicks, so leveraged results are better than a real account would have had. A fee is charged on every trade;
+      funding and slippage are not included. A basket can only be tested from the day its newest holding was listed.
+      The trading strategies are the app's Trade Simulator: each holding runs the rule on its own share of the capital,
+      in its own direction, and a trade still open at the end is not counted. Past prices say nothing certain about
+      future ones; this is a way to look at history, not advice.
+    </p>
+  </section>
+</main>
+
+<footer class="ln-foot">
+  <div class="ln-wrap ln-foot__row">
+    <span class="ln-logo ln-logo--sm notranslate"><span class="ln-in">in</span>solvent<span class="ln-logo__dot">.</span></span>
+    <p>An independent interface for Hyperliquid, not affiliated with Hyperliquid. Market data comes from Hyperliquid's public API and is shown as it is reported.</p>
+  </div>
+</footer>
+
+<script type="module" src="/src/portfolio.js"></script>
+</body>
+</html>

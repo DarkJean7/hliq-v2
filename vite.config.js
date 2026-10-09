@@ -375,6 +375,8 @@ function landingRoutes() {
     if (path === '/') req.url = '/landing.html' + (qs ? '?' + qs : '')
     // /markets — the public markets ranking (markets.html), part of the site, not the app.
     else if (path === '/markets' || path === '/markets/') req.url = '/markets.html' + (qs ? '?' + qs : '')
+    // /portfolios — the portfolio builder and backtester (portfolio.html), also part of the site.
+    else if (path === '/portfolios' || path === '/portfolios/') req.url = '/portfolio.html' + (qs ? '?' + qs : '')
     next()
   }
   return {
@@ -408,6 +410,7 @@ export default defineConfig({
         index:   join(__dirname, 'index.html'),     // the app, served at /app
         landing: join(__dirname, 'landing.html'),   // the front door, served at /
         markets: join(__dirname, 'markets.html'),   // every HL asset ranked, served at /markets
+        portfolio: join(__dirname, 'portfolio.html'), // build + backtest a basket, served at /portfolios
       },
       output: {
         manualChunks(id) {
@@ -415,10 +418,16 @@ export default defineConfig({
           // WalletConnect chunk, and the landing page then downloads WalletConnect and
           // chart.js to show a static page. Its own chunk is under 1 KB with no imports.
           if (id.includes('modulepreload-polyfill')) return 'preload-polyfill'
-          if (id.includes('@walletconnect') || id.includes('@web3modal') || id.includes('w3m')) {
+          // @reown too: its scaffold UI ships a tiny re-export module (exports/basic.js) that, left
+          // to rollup, was merged into whichever shared app module sat beside it — and a page that
+          // imported that module (/portfolios, for the Simulator engine and the sector view) then
+          // loaded 1.6 MB of WalletConnect it never used.
+          if (id.includes('@walletconnect') || id.includes('@web3modal') || id.includes('@reown') || id.includes('w3m')) {
             return 'walletconnect'
           }
-          if (id.includes('chart.js')) {
+          // The chart.js LIBRARY only. A bare includes('chart.js') also matched src/revchart.js, which
+          // put the /markets revenue chart in this chunk and made that page download chart.js.
+          if (/node_modules[\\/]chart\.js[\\/]/.test(id)) {
             return 'charts'
           }
         },
