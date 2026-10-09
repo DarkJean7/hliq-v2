@@ -115,17 +115,17 @@ await p.evaluate((a) => { document.getElementById('walletInput').value = a; retu
 await waitFor(p, 'the account', () => document.getElementById('dashboard')?.classList.contains('active'))
 await waitFor(p, 'the mobile shell', () => !!window.mobVTab, null, 60000)
 
-const row = () => p.$('[data-cal-mchart="mobCalRoot"]')
+const row = () => p.$('[data-cal-chart="mobCalRoot"][data-scope="month"]')
 const heroText = () => p.evaluate(() =>
   document.getElementById('calMChartHero_mobCalRoot')?.textContent?.replace(/\s+/g, ' ').trim() ?? '')
 
 console.log(NL + '-- the calendar opens with the row closed --')
 {
   await p.evaluate(() => window.mobVTab('calendar'))
-  const there = await waitFor(p, 'the calendar', () => !!document.querySelector('[data-cal-mchart="mobCalRoot"]'), null, 60000)
+  const there = await waitFor(p, 'the calendar', () => !!document.querySelector('[data-cal-chart="mobCalRoot"][data-scope="month"]'), null, 60000)
   ok('the row is on the calendar', there)
   ok('it says what it is', /Month's chart performance/.test(await p.evaluate(() =>
-    document.querySelector('[data-cal-mchart="mobCalRoot"]')?.textContent ?? '')))
+    document.querySelector('[data-cal-chart="mobCalRoot"][data-scope="month"]')?.textContent ?? '')))
   ok('and it starts closed', !(await p.evaluate(() =>
     !!document.getElementById('calMChart_mobCalRoot'))))
   // Between the cards and the grid, which is where it was asked for.
@@ -133,14 +133,14 @@ console.log(NL + '-- the calendar opens with the row closed --')
     const root = document.getElementById('mobCalRoot')
     const kids = [...root.children]
     const i = (sel) => kids.findIndex(k => k.matches(sel) || k.querySelector(sel))
-    return { cards: i('.cal-summary'), row: i('[data-cal-mchart]'), grid: i('.cal-grid') }
+    return { cards: i('.cal-summary'), row: i('[data-cal-chart][data-scope="month"]'), grid: i('.cal-grid') }
   })
   ok('under the stat cards and above the grid', order.cards < order.row && order.row < order.grid, order)
 }
 
 console.log(NL + '-- opening it draws the month --')
 {
-  await p.click('[data-cal-mchart="mobCalRoot"] .cal-note-head')
+  await p.click('[data-cal-chart="mobCalRoot"][data-scope="month"] .cal-note-head')
   // Painted, not merely present: a canvas with nothing drawn on it is the failure mode worth
   // catching, so this compares against a blank one of the same size.
   const drawn = await waitFor(p, 'the chart', () => {
@@ -165,12 +165,12 @@ console.log(NL + '-- opening it draws the month --')
 console.log(NL + '-- the three series the Portfolio tab has --')
 {
   const tab = async (label) => {
-    await p.click(`[data-cal-mchart="mobCalRoot"] .chart-tab:text-is("${label}")`)
+    await p.click(`[data-cal-chart="mobCalRoot"][data-scope="month"] .chart-tab:text-is("${label}")`)
     await p.waitForTimeout(400)
     return p.evaluate(() => {
       const d = window.__calMonthPoints('mobCalRoot') ?? []
       return { n: d.length, last: d.at(-1)?.y ?? null,
-               title: document.querySelector('[data-cal-mchart="mobCalRoot"] .section-title')?.textContent ?? '' }
+               title: document.querySelector('[data-cal-chart="mobCalRoot"][data-scope="month"] .section-title')?.textContent ?? '' }
     })
   }
   const value = await tab('Value')
@@ -212,6 +212,75 @@ console.log(NL + '-- and the Max Drawdown card measures the same curve --')
   ok('not the $45.00 the closed days add up to', !/45\.00/.test(card), card)
 }
 
+console.log(NL + '-- and the same row again, for a pressed day --')
+{
+  // Asked for: "similar as month's chart performance, no the same for the selected day".
+  const pad = (n) => String(n).padStart(2, '0')
+  const K3 = `${Y}-${pad(M + 1)}-03`     // the -$45 ETH close
+  const K9 = `${Y}-${pad(M + 1)}-09`     // the +$300.50 SOL close
+  const dayRow = '[data-cal-chart="mobCalRoot"][data-scope="day"]'
+  // What the month row looks like before any of this, so the day's row can be shown not to
+  // have moved it: they are on screen together and share a module.
+  const monthBefore = await p.evaluate(() => ({
+    open: !!document.getElementById('calMChart_mobCalRoot'),
+    tab: document.querySelector('[data-cal-chart="mobCalRoot"][data-scope="month"] .chart-tab.active')?.textContent?.trim() ?? '',
+  }))
+
+  await p.click(`#mobCalRoot .cal-cell[data-key="${K3}"]`)
+  ok('a pressed day carries the row too', await waitFor(p, 'the day row', () => !!document.querySelector(
+    '[data-cal-chart="mobCalRoot"][data-scope="day"]'), null, 20000))
+  const head = await p.evaluate(() => document.querySelector(
+    '[data-cal-chart="mobCalRoot"][data-scope="day"]')?.textContent ?? '')
+  ok('calling itself the day, not the month', /Day's chart performance/.test(head), head.slice(0, 60))
+  ok('and naming the day it is about', new RegExp(`\\b3, ${Y}`).test(head), head.slice(0, 80))
+  ok('it starts closed, like the month one', !(await p.evaluate(() => !!document.getElementById('calDChart_mobCalRoot'))))
+  // Above the trades, under the pills — where the day's overview belongs.
+  ok('above the day\'s trade list', await p.evaluate(() => {
+    const d = document.getElementById('mobCalDetail')
+    const row = d?.querySelector('.cal-day-chart'), sec = d?.querySelector('.cal-detail-section')
+    return !!(row && sec && (row.compareDocumentPosition(sec) & Node.DOCUMENT_POSITION_FOLLOWING))
+  }))
+
+  await p.click(`${dayRow} .cal-note-head`)
+  ok('opening it draws the day', await waitFor(p, 'the day chart', () => {
+    const c = document.getElementById('calDChart_mobCalRoot')
+    if (!c || !c.width) return false
+    const blank = document.createElement('canvas')
+    blank.width = c.width; blank.height = c.height
+    return c.toDataURL() !== blank.toDataURL()
+  }, null, 20000))
+  // Two canvases, two rows, and neither drawn on the other.
+  ok('the month row is still drawn on its own canvas', await p.evaluate(() =>
+    !!document.getElementById('calMChart_mobCalRoot') && !!document.getElementById('calDChart_mobCalRoot')))
+  const monthAfter = await p.evaluate(() => ({
+    open: !!document.getElementById('calMChart_mobCalRoot'),
+    tab: document.querySelector('[data-cal-chart="mobCalRoot"][data-scope="month"] .chart-tab.active')?.textContent?.trim() ?? '',
+  }))
+  ok('and opening the day moved neither its state nor its tab',
+    monthAfter.open === monthBefore.open && monthAfter.tab === monthBefore.tab, { monthBefore, monthAfter })
+
+  // The day's Realized line has to end on the number the day's own square shows — they are
+  // the same closedPnl, so a disagreement is one of them being wrong.
+  await p.click(`${dayRow} .chart-tab:text-is("Realized")`)
+  await waitFor(p, 'the realized line', () => (window.__calChartPoints('mobCalRoot', 'day') ?? []).length > 1, null, 15000)
+  const y3 = await p.evaluate(() => (window.__calChartPoints('mobCalRoot', 'day') ?? []).at(-1)?.y ?? null)
+  ok('its Realized line ends on that day\'s PnL', Math.abs((y3 ?? 0) - (-45)) < 1e-6, y3)
+  const sq3 = await p.evaluate((k) => document.querySelector(`#mobCalRoot .cal-cell[data-key="${k}"]`)?.textContent ?? '', K3)
+  ok('which is what the square says', /45/.test(sq3), sq3)
+  // And it is only that day: the month's other closes are not in it.
+  const ys3 = await p.evaluate(() => (window.__calChartPoints('mobCalRoot', 'day') ?? []).map(d => d.y))
+  ok('nothing from the rest of the month is in it', !ys3.some(y => Math.abs(y - 120) < 1e-6 || Math.abs(y - 300.5) < 1e-6), ys3)
+
+  // Walking to another day keeps the row open and redraws it for the new one.
+  await p.click(`#mobCalRoot .cal-cell[data-key="${K9}"]`)
+  await waitFor(p, 'the 9th', () => /\b9,/.test(document.querySelector(
+    '[data-cal-chart="mobCalRoot"][data-scope="day"]')?.textContent ?? ''), null, 20000)
+  ok('pressing another day keeps the row open', await p.evaluate(() => !!document.getElementById('calDChart_mobCalRoot')))
+  await waitFor(p, 'the new day\'s line', () => (window.__calChartPoints('mobCalRoot', 'day') ?? []).length > 1, null, 15000)
+  const y9 = await p.evaluate(() => (window.__calChartPoints('mobCalRoot', 'day') ?? []).at(-1)?.y ?? null)
+  ok('and redraws it for that day', Math.abs((y9 ?? 0) - 300.5) < 1e-6, y9)
+}
+
 console.log(NL + '-- paging to another month redraws it --')
 {
   await p.evaluate(() => window.mobCalNav(-1))
@@ -228,7 +297,7 @@ console.log(NL + '-- paging to another month redraws it --')
   await p.evaluate(() => window.mobVTab('home'))
   await p.waitForTimeout(300)
   await p.evaluate(() => window.mobVTab('calendar'))
-  await waitFor(p, 'the calendar again', () => !!document.querySelector('[data-cal-mchart="mobCalRoot"]'))
+  await waitFor(p, 'the calendar again', () => !!document.querySelector('[data-cal-chart="mobCalRoot"][data-scope="month"]'))
   ok('and it is closed again next time the calendar is opened',
     !(await p.evaluate(() => !!document.getElementById('calMChart_mobCalRoot'))))
 }
@@ -286,15 +355,15 @@ console.log(NL + '-- and All Accounts has all three too --')
   // The combined calendar lives in the Accounts view, under the per-wallet rows.
   await q.evaluate(() => window.mobVTab('accounts'))
   const combined = await waitFor(q, 'the combined calendar',
-    () => !!document.querySelector('[data-cal-mchart="mobMaCalRoot"]'), null, 90000)
+    () => !!document.querySelector('[data-cal-chart="mobMaCalRoot"][data-scope="month"]'), null, 90000)
   ok('the combined view has the row too', combined)
   if (combined) {
-    const labels = await q.$$eval('[data-cal-mchart="mobMaCalRoot"] .cal-note-head', () => [])
-    await q.click('[data-cal-mchart="mobMaCalRoot"] .cal-note-head')
+    const labels = await q.$$eval('[data-cal-chart="mobMaCalRoot"][data-scope="month"] .cal-note-head', () => [])
+    await q.click('[data-cal-chart="mobMaCalRoot"][data-scope="month"] .cal-note-head')
     await q.waitForTimeout(800)
-    const tabs = await q.$$eval('[data-cal-mchart="mobMaCalRoot"] .chart-tab', els => els.map(e => e.textContent.trim()))
+    const tabs = await q.$$eval('[data-cal-chart="mobMaCalRoot"][data-scope="month"] .chart-tab', els => els.map(e => e.textContent.trim()))
     ok('with all three tabs, not just Realized', tabs.join() === 'Value,Accum.,Realized', tabs)
-    await q.click('[data-cal-mchart="mobMaCalRoot"] .chart-tab:text-is("Value")')
+    await q.click('[data-cal-chart="mobMaCalRoot"][data-scope="month"] .chart-tab:text-is("Value")')
     await q.waitForTimeout(600)
     const last = await q.evaluate(() => (window.__calMonthPoints('mobMaCalRoot') ?? []).at(-1)?.y ?? null)
     // $9,875 for the first wallet at its last reading, $5,000 flat for the second.

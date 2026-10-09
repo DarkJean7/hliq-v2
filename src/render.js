@@ -2,8 +2,9 @@ import { accountHealth, healthClass, approxHealth } from './health.js'
 import { mtmDelta, mtmCarry } from './mtmbridge.js'
 import { groupTrades, countTrades } from './tradegroup.js'
 import { monthNotesHtml, dayNotesHtml, noteDays, loadNotes, hydrateImages } from './calnotes.js'
-import { panelHtml as monthChartPanel, drawMonthChart, chartData as monthChartData,
-         accumSeries as monthAccumSeries, maxDrawdown as curveDrawdown } from './monthchart.js'
+import { panelHtml as calChartPanel, drawMonthChart, drawDayChart, chartData as monthChartData,
+         accumSeries as monthAccumSeries, maxDrawdown as curveDrawdown,
+         monthBounds, dayBounds, MONTH as CHART_MONTH, DAY as CHART_DAY } from './monthchart.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
 import { pairTrades, drawdownFor } from './drawdown.js'
 import { partRoe, fmtRoe } from './roe.js'
@@ -2702,12 +2703,19 @@ export function calDayClick(key, rootId) {
       </div>
       <button class="cal-detail-close" onclick="window.__calDayClick('${key}','${rootId || ''}')">✕</button>
     </div>
+    <div class="cal-day-chart">${calChartPanel(rootId, dayBounds(key), monthChartData(cache.fills), CHART_DAY)}</div>
     ${tradesHtml}${txHtml}${rwHtml}
     ${!trades.length && !txEntries.length && !rwEntries.length ? '<div style="color:var(--muted);font-size:12px;padding:12px 20px">No activity on this day.</div>' : ''}
     ${dayNotesHtml(key, rootId)}`
   // A note's pictures live in IndexedDB, so the markup above carries their ids and nothing
   // else; this is what puts the bytes in. src/calnotes.js, hydrateImages.
   hydrateImages(detail)
+
+  // The day's own curve, under the pills: the same row the month has, for the day that was
+  // pressed. Only draws when that row is open — a collapsed card has no canvas. The panel
+  // carries its span, so pressing a different day redraws for the new one and an open row
+  // stays open as the reader walks across the grid. src/monthchart.js
+  try { drawDayChart(rootId) } catch {}
 }
 
 // `owner` is the account the ledger belongs to, so a send can be told from a receive. The
@@ -2866,7 +2874,7 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
     if (gap > maxDD) { maxDD = gap; ddFrom = ddPeakKey; ddTo = k }
   }
   {
-    const _curve = curveDrawdown(monthAccumSeries(monthChartData(fills).portfolio, year, month))
+    const _curve = curveDrawdown(monthAccumSeries(monthChartData(fills).portfolio, monthBounds(year, month)))
     if (_curve) {
       ddBasis = 'live'
       maxDD   = _curve.drop
@@ -3007,7 +3015,7 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
         <div class="stat-value neg">${monthWithdrawn > 0 ? '-$' + fmtUSD(monthWithdrawn) : '$0'}</div>
       </div>
     </div>
-    ${monthChartPanel(rootId, year, month, monthChartData(fills))}
+    ${calChartPanel(rootId, monthBounds(year, month), monthChartData(fills), CHART_MONTH)}
     <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
       <div class="cal-dow-row" style="min-width:350px">${DOWS.map(d => `<div class="cal-dow-cell">${d}</div>`).join('')}</div>
       <div class="cal-grid" style="min-width:350px">${cells}</div>

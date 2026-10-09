@@ -240,9 +240,12 @@ console.log(NL + '-- the time it was written, and a picture pinned to it --')
   await waitFor(p, 'the day panel', () => !!document.querySelector('#mobCalDetail .cal-note-add'))
   const dayTimes = await p.evaluate(() => [...document.querySelectorAll('#mobCalDetail .cal-note-time')].map(e => e.textContent.trim()))
   ok('the day panel shows them too', dayTimes.length === 2, dayTimes)
-  // The panel's own header already says which day it is.
+  // The panel's own header already says which day it is. Scoped to the NOTES: the day's
+  // chart row is built from the same card markup on purpose (it is the same gesture on the
+  // same screen) and that one does name the day, because it is the only thing that says
+  // which day the curve is of.
   ok('without repeating the date on every card', !(await p.evaluate(() =>
-    [...document.querySelectorAll('#mobCalDetail .cal-note-date')].some(e => e.textContent.includes(','))
+    [...document.querySelectorAll('#mobCalDetail .cal-day-notes .cal-note-date')].some(e => e.textContent.includes(','))
   )))
 
   await p.click('#mobCalDetail .cal-note-add')

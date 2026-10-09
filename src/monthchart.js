@@ -1,5 +1,16 @@
 /**
- * INSOLVENT TERMINAL — the month, as a curve
+ * INSOLVENT TERMINAL — a span of the calendar, as a curve
+ *
+ * Two rows use this, and they are the same row twice: "Month's chart performance" between the
+ * stat cards and the grid, and "Day's chart performance" inside a pressed day's panel. Asked
+ * for as "similar as month's chart performance, no the same for the selected day".
+ *
+ * So nothing here knows about months. Everything takes a SPAN — { from, to } in milliseconds
+ * — and monthBounds() and dayBounds() are the two ways of making one. A second copy of the
+ * three series for days would have been the cheapest change and the wrong one: this file's
+ * whole subject is that each series measures a different thing, and two copies of that
+ * argument drift. The file is still called monthchart.js because the month row is what it
+ * was built for and a rename buys nothing.
  *
  * The calendar says what each day made. It does not say how the month got there: a month that
  * ends +$2,497 having never given anything back and a month that ends +$2,497 after being down
@@ -55,6 +66,17 @@ export function monthBounds(year, month) {
   return { from: new Date(year, month, 1).getTime(), to: new Date(year, month + 1, 1).getTime() - 1 }
 }
 
+/** The same, for one 'YYYY-MM-DD' key — built the way the grid builds its keys, local time. */
+export function dayBounds(key) {
+  if (typeof key !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(key)) return null
+  const [y, m, d] = key.split('-').map(Number)
+  const from = new Date(y, m - 1, d).getTime()
+  return { from, to: from + 86400000 - 1 }
+}
+
+/** A span this module will draw, or null. Anything else is refused rather than guessed at. */
+export const isSpan = (sp) => !!sp && Number.isFinite(sp.from) && Number.isFinite(sp.to) && sp.to > sp.from
+
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null }
 
 /**
@@ -93,13 +115,14 @@ export function windowHistory(portfolio, key, name) {
  * points, which is the finer grain. So the current month is usually drawn from `month` and an
  * older one from `allTime`, without either being hard-coded.
  */
-export function pickWindow(portfolio, key, year, month) {
-  const { from, to } = monthBounds(year, month)
+export function pickWindow(portfolio, key, span) {
+  if (!isSpan(span)) return null
+  const { from, to } = span
   let best = null
   for (const name of ACCOUNT_WINDOWS) {
     const all = windowHistory(portfolio, key, name)
     if (!all) continue
-    const inMonth = all.filter(p => p.x >= from && p.x <= to)
+    const inMonth = all.filter(p => p.x >= from && p.x <= to)   // "inMonth" historically; it is the span
     if (!inMonth.length) continue
     const span = inMonth.at(-1).x - inMonth[0].x
     if (!best || span > best.span + 36e5 || (Math.abs(span - best.span) <= 36e5 && inMonth.length > best.inMonth.length)) {
@@ -110,9 +133,9 @@ export function pickWindow(portfolio, key, year, month) {
 }
 
 /** The account's own value through the month. Absolute dollars. */
-export function valueSeries(portfolio, year, month) {
+export function valueSeries(portfolio, span) {
   if (!Array.isArray(portfolio)) return null
-  return pickWindow(portfolio, 'accountValueHistory', year, month)?.inMonth ?? []
+  return pickWindow(portfolio, 'accountValueHistory', span)?.inMonth ?? []
 }
 
 /**
@@ -122,10 +145,10 @@ export function valueSeries(portfolio, year, month) {
  * against the last reading BEFORE the month started. Rebasing against the first reading INSIDE
  * it instead would silently drop whatever happened between midnight and that first bucket.
  */
-export function accumSeries(portfolio, year, month) {
-  if (!Array.isArray(portfolio)) return null
-  const { from } = monthBounds(year, month)
-  const win = pickWindow(portfolio, 'pnlHistory', year, month)
+export function accumSeries(portfolio, span) {
+  if (!Array.isArray(portfolio) || !isSpan(span)) return null
+  const { from } = span
+  const win = pickWindow(portfolio, 'pnlHistory', span)
   if (!win) return []
   const { all, inMonth } = win
   // The baseline comes from the SAME window: a reading from a different one is a different
@@ -144,9 +167,9 @@ export function accumSeries(portfolio, year, month) {
  * closedPnl only, the same figure the day squares above are summed from, so the last point of
  * this line equals the Month PnL card. Fees are not taken out here for exactly that reason.
  */
-export function realizedSeries(fills, year, month) {
-  if (!Array.isArray(fills)) return null
-  const { from, to } = monthBounds(year, month)
+export function realizedSeries(fills, span) {
+  if (!Array.isArray(fills) || !isSpan(span)) return null
+  const { from, to } = span
   const closes = fills
     .filter(f => f && f.closedPnl && f.time >= from && f.time <= to)
     .sort((a, b) => a.time - b.time)
@@ -179,10 +202,10 @@ export function maxDrawdown(points) {
 }
 
 /** The series for a mode, or null when the data it needs is not held. */
-export function seriesFor(mode, { portfolio = null, fills = null } = {}, year, month) {
-  if (mode === 'value')    return valueSeries(portfolio, year, month)
-  if (mode === 'realized') return realizedSeries(fills, year, month)
-  return accumSeries(portfolio, year, month)
+export function seriesFor(mode, { portfolio = null, fills = null } = {}, span) {
+  if (mode === 'value')    return valueSeries(portfolio, span)
+  if (mode === 'realized') return realizedSeries(fills, span)
+  return accumSeries(portfolio, span)
 }
 
 /**
@@ -203,15 +226,27 @@ export function modeHasData(mode, { portfolio = null, fills = null } = {}) {
 
 // ── the panel ─────────────────────────────────────────────────────────────────
 
-// Open state and mode, per nothing: one calendar is on screen at a time, and the row is
-// collapsed again whenever the calendar is opened (collapse() below).
-let _open = false
-let _mode = DEFAULT_MODE
+/**
+ * Open state and mode, PER SCOPE. One calendar is on screen at a time, but the month row and
+ * a pressed day's row are on it together: one state for both would open and close them as a
+ * pair and make the tabs of one move the other.
+ */
+export const MONTH = 'month'
+export const DAY   = 'day'
+const scopeOf = (s) => (s === DAY ? DAY : MONTH)
+const _st = {
+  [MONTH]: { open: false, mode: DEFAULT_MODE },
+  [DAY]:   { open: false, mode: DEFAULT_MODE },
+}
 
-export const isOpen = () => _open
-export const currentMode = () => _mode
-export function setOpen(v) { _open = !!v; return _open }
-export function setMode(m) { _mode = MODES.some(x => x.id === m) ? m : DEFAULT_MODE; return _mode }
+export const isOpen = (scope) => _st[scopeOf(scope)].open
+export const currentMode = (scope) => _st[scopeOf(scope)].mode
+export function setOpen(v, scope) { _st[scopeOf(scope)].open = !!v; return _st[scopeOf(scope)].open }
+export function setMode(m, scope) {
+  const sc = scopeOf(scope)
+  _st[sc].mode = MODES.some(x => x.id === m) ? m : DEFAULT_MODE
+  return _st[sc].mode
+}
 /**
  * Called when the calendar is OPENED, not when it re-renders: the row starts closed every
  * time the reader arrives, and stays as they left it while they page through months.
@@ -221,56 +256,94 @@ export function setMode(m) { _mode = MODES.some(x => x.id === m) ? m : DEFAULT_M
  * otherwise find the row exactly as it was left — closed in the state and open on the page.
  */
 export function collapse() {
-  _open = false
+  _st[MONTH].open = false
+  _st[DAY].open   = false
   if (typeof document === 'undefined') return
-  document.querySelectorAll('[data-cal-mchart]').forEach(el => repaint(el.getAttribute('data-cal-mchart')))
+  document.querySelectorAll('[data-cal-chart]').forEach(el => repaint(el))
 }
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
-export const canvasId = (rootId) => 'calMChart_' + rootId
-export const heroId   = (rootId) => 'calMChartHero_' + rootId
+// The day row and the month row are on screen together, so their canvases cannot share an id.
+export const canvasId = (rootId, scope) => (scopeOf(scope) === DAY ? 'calDChart_' : 'calMChart_') + rootId
+export const heroId   = (rootId, scope) => (scopeOf(scope) === DAY ? 'calDChartHero_' : 'calMChartHero_') + rootId
 
 /**
  * The row, collapsed or open. Built to look like the note cards under the calendar, because it
  * is the same gesture on the same screen.
  */
-export function panelHtml(rootId, year, month, data = {}) {
+/** What each row calls itself, and what its three captions say. One shape, two subjects. */
+const WORDS = {
+  [MONTH]: {
+    title: "Month's chart performance",
+    realized: 'Closed trades only, accumulated through the month — the same figures the days above add up.',
+    accum:    "This month's PnL as it happened, unrealized included, starting from zero on the 1st.",
+    value:    "The account's own value through the month. A deposit or a withdrawal moves it.",
+  },
+  [DAY]: {
+    title: "Day's chart performance",
+    realized: 'Closed trades only, accumulated through the day — the same figures this day adds up to.',
+    accum:    "This day's PnL as it happened, unrealized included, starting from zero at midnight.",
+    value:    "The account's own value through the day. A deposit or a withdrawal moves it.",
+  },
+}
+
+/** "October 5, 2026" for a day, "October 2026" for a month — the subtitle under the title. */
+function spanLabel(span, scope) {
+  if (!isSpan(span)) return ''
+  const d = new Date(span.from)
+  return scopeOf(scope) === DAY
+    ? `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`
+    : `${MONTHS[d.getMonth()]} ${d.getFullYear()}`
+}
+
+/**
+ * The row, collapsed or open. Built to look like the note cards under the calendar, because it
+ * is the same gesture on the same screen.
+ *
+ * The span is written onto the element, so a repaint and a redraw can read it back without
+ * asking the calendar which day is open — the day panel is rebuilt from scratch on every
+ * press and the answer would be stale exactly when it changed.
+ */
+export function panelHtml(rootId, span, data = {}, scope = MONTH) {
+  const sc = scopeOf(scope)
+  const st = _st[sc]
   const modes = availableModes()
-  if (!modes.some(m => m.id === _mode)) _mode = DEFAULT_MODE
-  const active = modes.find(m => m.id === _mode) ?? modes[0]
-  const tabs = modes.map(m => `<button class="chart-tab${m.id === _mode ? ' active' : ''}"
-      onclick="event.stopPropagation();window.__calMonthChartMode('${esc(rootId)}','${m.id}')">${m.label}</button>`).join('')
-  return `<div class="cal-note-card cal-mchart${_open ? ' open' : ''}" data-cal-mchart="${esc(rootId)}">
-    <div class="cal-note-head" onclick="window.__calMonthChartToggle('${esc(rootId)}')">
+  if (!modes.some(m => m.id === st.mode)) st.mode = DEFAULT_MODE
+  const active = modes.find(m => m.id === st.mode) ?? modes[0]
+  const w = WORDS[sc]
+  const tabs = modes.map(m => `<button class="chart-tab${m.id === st.mode ? ' active' : ''}"
+      onclick="event.stopPropagation();window.__calChartMode('${esc(rootId)}','${m.id}','${sc}')">${m.label}</button>`).join('')
+  return `<div class="cal-note-card cal-mchart${st.open ? ' open' : ''}" data-cal-chart="${esc(rootId)}"
+      data-scope="${sc}" data-from="${isSpan(span) ? span.from : ''}" data-to="${isSpan(span) ? span.to : ''}">
+    <div class="cal-note-head" onclick="window.__calChartToggle('${esc(rootId)}','${sc}')">
       <div class="cal-note-titles">
-        <div class="cal-note-title">Month's chart performance</div>
-        <div class="cal-note-date">${MONTHS[month]} ${year} · how the account moved</div>
+        <div class="cal-note-title">${w.title}</div>
+        <div class="cal-note-date">${esc(spanLabel(span, sc))} · how the account moved</div>
       </div>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" class="cal-note-chev"><polyline points="9 6 15 12 9 18"/></svg>
     </div>
-    ${_open ? `<div class="cal-note-body cal-mchart-body">
+    ${st.open ? `<div class="cal-note-body cal-mchart-body">
       <div class="chart-header" style="margin:10px 0 0">
         <div class="section-title" style="margin:0">${active.title}</div>
         <div class="chart-tabs" style="margin:0">${tabs}</div>
       </div>
-      <div class="portfolio-pnl-hero" id="${heroId(rootId)}"></div>
-      <div class="cal-mchart-wrap"><canvas id="${canvasId(rootId)}" style="cursor:crosshair"></canvas></div>
-      <div class="cal-mchart-foot">${active.id === 'realized'
-        ? 'Closed trades only, accumulated through the month — the same figures the days above add up.'
-        : active.id === 'accum'
-          ? 'This month\'s PnL as it happened, unrealized included, starting from zero on the 1st.'
-          : 'The account\'s own value through the month. A deposit or a withdrawal moves it.'}</div>
+      <div class="portfolio-pnl-hero" id="${heroId(rootId, sc)}"></div>
+      <div class="cal-mchart-wrap"><canvas id="${canvasId(rootId, sc)}" style="cursor:crosshair"></canvas></div>
+      <div class="cal-mchart-foot">${w[active.id] ?? ''}</div>
     </div>` : ''}
   </div>`
 }
 
 /** What the chart should say when a mode has no points, which is not the same as zero. */
-export function emptyNote(mode, data = {}) {
+export function emptyNote(mode, data = {}, scope = MONTH) {
+  const what = scopeOf(scope) === DAY ? 'day' : 'month'
   if (!modeHasData(mode, data)) return 'Account history has not loaded yet'
-  if (mode === 'realized') return 'No trades closed in this month'
-  return 'No account history for this month'
+  if (mode === 'realized') return `No trades closed in this ${what}`
+  // A day far enough back that HL only keeps a coarse reading of it has no points to draw,
+  // which is not the same as a flat day. Said plainly rather than shown as a flat line.
+  return `No account history for this ${what}`
 }
 
 // ── wiring ────────────────────────────────────────────────────────────────────
@@ -298,25 +371,42 @@ export function chartData(fills) {
  * Draw (or redraw) the open panel for one calendar. Does nothing when the row is closed —
  * there is no canvas then, and no chart to keep alive behind a collapsed card.
  */
-export async function drawMonthChart(rootId) {
-  if (typeof document === 'undefined' || !_open) return
+/** The element for one row, and the span written on it. */
+function rowOf(rootId, scope) {
+  return document.querySelector(`[data-cal-chart="${rootId}"][data-scope="${scopeOf(scope)}"]`)
+}
+function spanOf(el) {
+  const from = Number(el?.getAttribute('data-from')), to = Number(el?.getAttribute('data-to'))
+  return isSpan({ from, to }) ? { from, to } : null
+}
+
+/**
+ * Draw (or redraw) one open row. Does nothing when it is closed — there is no canvas then,
+ * and no chart to keep alive behind a collapsed card.
+ */
+export async function drawCalChart(rootId, scope = MONTH) {
+  const sc = scopeOf(scope)
+  if (typeof document === 'undefined' || !_st[sc].open) return
   const root = document.getElementById(rootId)
   const cache = root?._calData
-  if (!cache || !document.getElementById(canvasId(rootId))) return
+  const el = rowOf(rootId, sc)
+  const span = spanOf(el)
+  if (!cache || !span || !document.getElementById(canvasId(rootId, sc))) return
+  const mode = _st[sc].mode
   const data = chartData(cache.fills)
-  const pts  = seriesFor(_mode, data, cache.year, cache.month)
+  const pts  = seriesFor(mode, data, span)
   // Imported here rather than at the top: charts.js reaches for `window` and pulls in
   // Chart.js, and the arithmetic above is meant to be readable by a test with neither.
   // main.js imports charts.js statically, so in the app this is already loaded.
   const { renderPerfChart } = await import('./charts.js')
-  // The frame is the MONTH, not the data: the 1st on the left and the last day (or today, in
-  // the month still running) on the right, so a month that only traded in its first week
-  // shows that, and two months can be compared by eye.
-  const { from, to } = monthBounds(cache.year, cache.month)
+  // The frame is the SPAN, not the data: the 1st (or midnight) on the left and its last
+  // instant — or now, while it is still running — on the right, so a month that only traded
+  // in its first week shows that, and two of them can be compared by eye.
+  const { from, to } = span
   const now = Date.now()
-  renderPerfChart(canvasId(rootId), pts ?? [], heroId(rootId), {
-    kind: _mode === 'value' ? 'value' : 'pnl',
-    empty: emptyNote(_mode, data),
+  renderPerfChart(canvasId(rootId, sc), pts ?? [], heroId(rootId, sc), {
+    kind: mode === 'value' ? 'value' : 'pnl',
+    empty: emptyNote(mode, data, sc),
     // A guaranteed axis width, and four labels rather than three: with the frame measured
     // from the data (src/chartframe.js) the range is tight enough to carry them, and three
     // over a tight frame left whole cards with a single "$0" on the axis.
@@ -325,23 +415,38 @@ export async function drawMonthChart(rootId) {
   })
 }
 
-/** Repaint just the row — not the calendar, so the grid and any open day panel stay put. */
-function repaint(rootId) {
-  const el = document.querySelector(`[data-cal-mchart="${rootId}"]`)
-  const root = document.getElementById(rootId)
-  const cache = root?._calData
-  if (!el || !cache) return
-  el.outerHTML = panelHtml(rootId, cache.year, cache.month, chartData(cache.fills))
-  drawMonthChart(rootId)
+/** The month row, by its old name — src/render.js and the browser test both call it. */
+export const drawMonthChart = (rootId) => drawCalChart(rootId, MONTH)
+/** The day row. */
+export const drawDayChart = (rootId) => drawCalChart(rootId, DAY)
+
+/** Repaint just one row — not the calendar, so the grid and any open day panel stay put. */
+function repaint(elOrRootId, scope = MONTH) {
+  const el = typeof elOrRootId === 'string' ? rowOf(elOrRootId, scope) : elOrRootId
+  if (!el) return
+  const rootId = el.getAttribute('data-cal-chart')
+  const sc     = scopeOf(el.getAttribute('data-scope'))
+  const span   = spanOf(el)
+  const cache  = document.getElementById(rootId)?._calData
+  if (!cache || !span) return
+  el.outerHTML = panelHtml(rootId, span, chartData(cache.fills), sc)
+  drawCalChart(rootId, sc)
 }
 
 if (typeof window !== 'undefined') {
-  window.__calMonthChartToggle = (rootId) => { _open = !_open; repaint(rootId) }
-  window.__calMonthChartMode   = (rootId, mode) => { setMode(mode); repaint(rootId) }
-  // What the row is actually drawing. For the browser test, and for a console when a month
-  // on screen looks wrong — charts.js exposes its own instances the same way.
-  window.__calMonthPoints = (rootId) => {
-    const c = document.getElementById(rootId)?._calData
-    return c ? seriesFor(_mode, chartData(c.fills), c.year, c.month) : null
+  window.__calChartToggle = (rootId, scope) => {
+    const sc = scopeOf(scope)
+    _st[sc].open = !_st[sc].open
+    repaint(rootId, sc)
   }
+  window.__calChartMode = (rootId, mode, scope) => { setMode(mode, scope); repaint(rootId, scopeOf(scope)) }
+  // What a row is actually drawing. For the browser test, and for a console when a span on
+  // screen looks wrong — charts.js exposes its own instances the same way.
+  window.__calChartPoints = (rootId, scope) => {
+    const sc = scopeOf(scope)
+    const c = document.getElementById(rootId)?._calData
+    const span = spanOf(rowOf(rootId, sc))
+    return c && span ? seriesFor(_st[sc].mode, chartData(c.fills), span) : null
+  }
+  window.__calMonthPoints = (rootId) => window.__calChartPoints(rootId, MONTH)
 }

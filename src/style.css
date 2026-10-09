@@ -8056,6 +8056,11 @@ html.has-bg-image #mobileView.mob-in-trade .mob-v-content {
    A row between the stat cards and the grid, built like the note cards under the
    calendar because it is the same gesture on the same screen. src/monthchart.js */
 .cal-mchart { margin: 14px 0 16px; }
+/* The same row inside a pressed day's panel. The panel has its own 20px gutter, so the card
+   gets the margin instead of the padding the month row sits in. */
+.cal-day-chart { padding: 0 20px; }
+.cal-day-chart .cal-mchart { margin: 2px 0 4px; }
+.cal-day-chart .cal-mchart .cal-note-title::before { content: '📊'; }
 .cal-mchart .cal-note-title::before { content: '📈'; margin-right: 7px; }
 .cal-mchart-body { padding: 0 14px 14px; }
 .cal-mchart-wrap { position: relative; height: 205px; width: 100%; margin-top: 4px; }

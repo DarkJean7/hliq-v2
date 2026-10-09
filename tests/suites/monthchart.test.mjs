@@ -10,9 +10,9 @@
 // measuring something different and only one of them is HL's own number as it comes.
 import fs from 'fs'
 import {
-  MODES, DEFAULT_MODE, monthBounds, windowHistory, pickWindow, valueSeries, accumSeries, realizedSeries,
-  seriesFor, availableModes, modeHasData, maxDrawdown, panelHtml, isOpen, setOpen, setMode, collapse,
-  canvasId, emptyNote,
+  MODES, DEFAULT_MODE, monthBounds, dayBounds, isSpan, windowHistory, pickWindow, valueSeries,
+  accumSeries, realizedSeries, seriesFor, availableModes, modeHasData, maxDrawdown, panelHtml,
+  isOpen, setOpen, setMode, currentMode, collapse, canvasId, heroId, emptyNote, MONTH, DAY,
 } from '../../src/monthchart.js'
 
 let pass = 0, fail = 0
@@ -25,6 +25,10 @@ const Y = 2026, M = 8
 const at = (day, hour = 12) => new Date(Y, M, day, hour).getTime()
 const aug = (day, hour = 12) => new Date(Y, M - 1, day, hour).getTime()
 const oct = (day, hour = 12) => new Date(Y, M + 1, day, hour).getTime()
+// The series take a SPAN now, not a year and a month: the same three are drawn for a pressed
+// DAY as for the month, and two copies of that arithmetic would drift. monthBounds/dayBounds
+// are the two ways of making one.
+const SEP = monthBounds(Y, M)
 
 console.log(nl + '-- the month, bounded where the grid bounds it --')
 {
@@ -53,20 +57,20 @@ console.log(nl + '-- ONE window, and never a perp-only one --')
     ['perpMonth',   { accountValueHistory: [[at(3), '2100'], [at(11), '2400'], [at(21), '2600']], pnlHistory: [] }],
     ['perpAllTime', { accountValueHistory: [[at(4), '2000'], [at(22), '2500']], pnlHistory: [] }],
   ]
-  const v = valueSeries(portfolio, Y, M)
+  const v = valueSeries(portfolio, SEP)
   t('no perp-only point is in the line', !v.some(p => p.y < 5000), v.map(p => p.y))
   t('and the line is one window, not a blend of them',
     v.length === 4 && v.every(p => [9500, 9800, 10200, 10500].some(y => near(p.y, y))), v.map(p => p.y))
   // `month` covers the whole of September so far; `day` covers one hour of it and `allTime`
   // has three points in it. Coverage first, then resolution.
-  t('the window chosen is the one that covers the month best', pickWindow(portfolio, 'accountValueHistory', Y, M).name === 'month')
+  t('the window chosen is the one that covers the month best', pickWindow(portfolio, 'accountValueHistory', SEP).name === 'month')
   // An older month is only in allTime, and that is then the right answer rather than no answer.
   const old = [['month', { accountValueHistory: [[at(2), '9500']] }],
                ['allTime', { accountValueHistory: [[aug(3), '8000'], [aug(19), '8400']] }]]
-  t('an older month falls to the window that reaches it', pickWindow(old, 'accountValueHistory', Y, M - 1).name === 'allTime')
+  t('an older month falls to the window that reaches it', pickWindow(old, 'accountValueHistory', monthBounds(Y, M - 1)).name === 'allTime')
   t('cut to the month — August and October are not in it', v.every(p => p.x >= at(1, 0) && p.x <= at(30, 23)))
   // Empty is not unknown: no portfolio held is a different answer from a flat account.
-  t('no portfolio: null, not an empty line', valueSeries(null, Y, M) === null && windowHistory(undefined, 'pnlHistory', 'day') === null)
+  t('no portfolio: null, not an empty line', valueSeries(null, SEP) === null && windowHistory(undefined, 'pnlHistory', 'day') === null)
   t('a window with no history at all: null', windowHistory([['day', {}]], 'pnlHistory', 'day') === null)
   t('a month no window reaches: empty', valueSeries(portfolio, 2019, 0).length === 0)
 }
@@ -81,7 +85,7 @@ console.log(nl + '-- accumulative PnL is rebased to the 1st --')
   ] }],
   // The perp-only twin says something quite different about the same month. It is not this.
   ['perpAllTime', { pnlHistory: [[aug(31, 23), '900'], [at(12), '1500'], [at(26), '1200']] }]]
-  const a = accumSeries(portfolio, Y, M)
+  const a = accumSeries(portfolio, SEP)
   t('the perp window is not what the month is measured from', near(a.at(-1).y, 2497))
   t('it starts at zero on the 1st', a[0].x === monthBounds(Y, M).from && a[0].y === 0)
   t('and reads as what the month has made', near(a.at(-1).y, 2497))
@@ -92,8 +96,8 @@ console.log(nl + '-- accumulative PnL is rebased to the 1st --')
   // With no reading before the month (a new account), the first in-month point IS the start.
   const fresh = [['allTime', { pnlHistory: [[at(3), '0'], [at(9), '120']] }]]
   t('a month with no history before it starts from its own first point',
-    accumSeries(fresh, Y, M).length === 2 && near(accumSeries(fresh, Y, M).at(-1).y, 120))
-  t('a month with no points at all is empty, and says so', accumSeries(portfolio, Y, M + 1).length === 0)
+    accumSeries(fresh, SEP).length === 2 && near(accumSeries(fresh, SEP).at(-1).y, 120))
+  t('a month with no points at all is empty, and says so', accumSeries(portfolio, monthBounds(Y, M + 1)).length === 0)
 }
 
 console.log(nl + '-- realized PnL is the closes, accumulated --')
@@ -106,15 +110,15 @@ console.log(nl + '-- realized PnL is the closes, accumulated --')
     { time: at(19), closedPnl: 0 },               // an opening fill: not a close
     { time: oct(1), closedPnl: 900 },             // next month
   ]
-  const r = realizedSeries(fills, Y, M)
+  const r = realizedSeries(fills, SEP)
   t('it starts at zero on the 1st', r[0].y === 0 && r[0].x === monthBounds(Y, M).from)
   t('one step per close, in time order', r.length === 4 && r[1].y === 120 && near(r[2].y, 75))
   // The last point has to equal the Month PnL card, or the chart and the grid above it are
   // telling the reader two different things about the same month.
   t('and it ends on the month\'s own PnL', near(r.at(-1).y, 375.5))
   t('other months are not in it', !r.some(p => near(p.y, 500) || near(p.y, 900)))
-  t('no fills held: null', realizedSeries(null, Y, M) === null)
-  t('no closes this month: empty, which is a real answer', realizedSeries([{ time: aug(2), closedPnl: 5 }], Y, M).length === 0)
+  t('no fills held: null', realizedSeries(null, SEP) === null)
+  t('no closes this month: empty, which is a real answer', realizedSeries([{ time: aug(2), closedPnl: 5 }], SEP).length === 0)
   t('and it is said as one', emptyNote('realized', { fills: [] }) === 'No trades closed in this month')
 }
 
@@ -151,28 +155,113 @@ console.log(nl + '-- all three are always offered --')
     modeHasData('realized', { fills: [] }) && !modeHasData('accum', { fills: [] }))
   t('the default is the one that shows the shape of the month', DEFAULT_MODE === 'accum')
   t('each mode says what it is', MODES.every(m => m.id && m.label && m.title && m.needs))
-  t('seriesFor routes to each', seriesFor('value', { portfolio }, Y, M).length === 1 &&
-    seriesFor('realized', { fills: [] }, Y, M).length === 0)
+  t('seriesFor routes to each', seriesFor('value', { portfolio }, SEP).length === 1 &&
+    seriesFor('realized', { fills: [] }, SEP).length === 0)
 }
 
 console.log(nl + '-- the row itself --')
 {
   const data = { portfolio: [['allTime', { accountValueHistory: [[at(2), '1']], pnlHistory: [[at(2), '1']] }]], fills: [] }
   collapse()
-  const shut = panelHtml('mobCalRoot', Y, M, data)
+  const shut = panelHtml('mobCalRoot', SEP, data, MONTH)
   t('it is closed to begin with', !isOpen() && !shut.includes('<canvas'))
   t('and says what it is', shut.includes("Month's chart performance") && shut.includes('September 2026'))
-  t('pressing it is the whole affordance', shut.includes('__calMonthChartToggle(\'mobCalRoot\')'))
+  t('pressing it is the whole affordance', shut.includes("__calChartToggle('mobCalRoot','month')"))
   setOpen(true)
-  const open = panelHtml('mobCalRoot', Y, M, data)
-  t('open, it carries a canvas of its own per calendar', open.includes(`id="${canvasId('mobCalRoot')}"`))
+  const open = panelHtml('mobCalRoot', SEP, data, MONTH)
+  t('open, it carries a canvas of its own per calendar', open.includes(`id="${canvasId('mobCalRoot', MONTH)}"`))
   t('and the three tabs', ['Value', 'Accum.', 'Realized'].every(l => open.includes('>' + l + '<')))
   t('every mode is offered even where its data is missing',
     ['>Value<', '>Accum.<', '>Realized<'].every(l =>
-      panelHtml('mobCalRoot', Y, M, { portfolio: null, fills: [] }).includes(l)))
+      panelHtml('mobCalRoot', SEP, { portfolio: null, fills: [] }, MONTH).includes(l)))
   setMode('value')
   collapse()
-  t('collapse shuts it', !isOpen() && !panelHtml('mobCalRoot', Y, M, data).includes('<canvas'))
+  t('collapse shuts it', !isOpen() && !panelHtml('mobCalRoot', SEP, data, MONTH).includes('<canvas'))
+}
+
+console.log(nl + '-- the same row, for the day that was pressed --')
+{
+  // Asked for: "similar as month's chart performance, no the same for the selected day".
+  // One module, one set of series, two spans — a second copy of the arithmetic would drift
+  // from this one, and this file's whole subject is that each series measures a different
+  // thing.
+  const D = '2026-09-14'
+  const sp = dayBounds(D)
+  t('a day key becomes a span', isSpan(sp))
+  t('starting at midnight, local time, where the square starts',
+    new Date(sp.from).getHours() === 0 && new Date(sp.from).getDate() === 14)
+  t('and ending one millisecond before the next day', sp.to - sp.from === 86400000 - 1)
+  t('tomorrow is a different span', dayBounds('2026-09-15').from === sp.to + 1)
+  t('anything that is not a day key is null, not a guess',
+    dayBounds('2026-9-14') === null && dayBounds('nope') === null && dayBounds(null) === null)
+  t('and a bad span draws nothing rather than everything',
+    !isSpan({ from: 1, to: 1 }) && !isSpan({ from: 2, to: 1 }) && !isSpan(null))
+
+  // The three series, cut to the day instead of the month.
+  const h = (hour) => new Date(2026, 8, 14, hour).getTime()
+  const portfolio = [['month', {
+    accountValueHistory: [[h(-6), '900'], [h(2), '1000'], [h(9), '1100'], [h(18), '1050'], [new Date(2026, 8, 15, 6).getTime(), '1200']],
+    pnlHistory:          [[h(-6), '40'],  [h(2), '50'],   [h(9), '150'],  [h(18), '100'],  [new Date(2026, 8, 15, 6).getTime(), '250']],
+  }]]
+  const dv = valueSeries(portfolio, sp)
+  t('value keeps only that day', dv.length === 3 && dv.every(p => p.x >= sp.from && p.x <= sp.to), dv.map(p => p.y))
+  const da = accumSeries(portfolio, sp)
+  t('accum starts at zero at midnight', da[0].x === sp.from && da[0].y === 0)
+  // Rebased on the last reading BEFORE the day, not the first one inside it, or whatever
+  // happened between midnight and the first bucket is silently dropped.
+  t('and is measured from the reading before midnight', near(da.at(-1).y, 60), da.map(p => p.y))
+  const fills = [
+    { time: new Date(2026, 8, 13, 20).getTime(), closedPnl: 99 },
+    { time: h(3),  closedPnl: 10 },
+    { time: h(16), closedPnl: -4 },
+    { time: new Date(2026, 8, 15, 1).getTime(), closedPnl: 77 },
+  ]
+  const dr = realizedSeries(fills, sp)
+  t('realized is that day\'s closes only', dr.length === 3 && near(dr.at(-1).y, 6), dr.map(p => p.y))
+  t('and it is the number the day square shows', near(dr.at(-1).y, 10 - 4))
+  t('a day that closed nothing is empty, which is a real answer',
+    realizedSeries(fills, dayBounds('2026-09-12')).length === 0)
+}
+
+console.log(nl + '-- two rows on one screen, told apart --')
+{
+  const data = { portfolio: [['allTime', { accountValueHistory: [[at(2), '1']], pnlHistory: [[at(2), '1']] }]], fills: [] }
+  const sp = dayBounds('2026-09-14')
+  collapse()
+  const day = panelHtml('mobCalRoot', sp, data, DAY)
+  t('the day row calls itself what it is', day.includes("Day's chart performance"))
+  t('and names the day, not the month', day.includes('September 14, 2026'))
+  t('the month row still names the month', panelHtml('mobCalRoot', SEP, data, MONTH).includes('September 2026'))
+  // They are on screen together: one canvas id for both would have Chart.js draw one over
+  // the other, and one open flag would open and close them as a pair.
+  t('their canvases cannot collide', canvasId('r', DAY) !== canvasId('r', MONTH) && heroId('r', DAY) !== heroId('r', MONTH))
+  setOpen(true, DAY)
+  t('opening the day leaves the month shut', isOpen(DAY) && !isOpen(MONTH))
+  t('and only the day grows a canvas',
+    panelHtml('r', sp, data, DAY).includes('<canvas') && !panelHtml('r', SEP, data, MONTH).includes('<canvas'))
+  // The month row was left on 'value' by the section above; put it somewhere known so this
+  // is testing independence rather than leftovers.
+  setMode('accum', MONTH)
+  setMode('value', DAY)
+  t('a tab pressed on one does not move the other',
+    currentMode(DAY) === 'value' && currentMode(MONTH) === 'accum')
+  // The span is written onto the element, because the day panel is rebuilt from scratch on
+  // every press and asking the calendar which day is open would be stale exactly then.
+  t('each row carries its own span', day.includes(`data-from="${sp.from}"`) && day.includes(`data-to="${sp.to}"`))
+  t('and its scope', day.includes('data-scope="day"'))
+  collapse()
+  t('opening a calendar shuts both', !isOpen(DAY) && !isOpen(MONTH))
+}
+
+console.log(nl + '-- what an empty day says --')
+{
+  // A day far enough back that HL only keeps a coarse reading of it has no points. That is
+  // not a flat day, and it must not be drawn as one.
+  t('no history for the day, said as the day', emptyNote('accum', { portfolio: [] }, DAY) === 'No account history for this day')
+  t('no closes, said as the day', emptyNote('realized', { fills: [] }, DAY) === 'No trades closed in this day')
+  t('the month still says month', emptyNote('accum', { portfolio: [] }, MONTH) === 'No account history for this month')
+  t('and "not loaded yet" is still told apart from "none"',
+    emptyNote('accum', { portfolio: null }, DAY) === 'Account history has not loaded yet')
 }
 
 console.log(nl + '-- wired in --')
@@ -181,9 +270,13 @@ console.log(nl + '-- wired in --')
   const main = fs.readFileSync('src/main.js', 'utf8')
   const cht  = fs.readFileSync('src/charts.js', 'utf8')
   t('the row sits between the cards and the grid',
-    /\$\{monthChartPanel\(rootId, year, month, monthChartData\(fills\)\)\}\s*\n\s*<div style="overflow-x:auto/.test(rnd))
+    /\$\{calChartPanel\(rootId, monthBounds\(year, month\), monthChartData\(fills\), CHART_MONTH\)\}\s*\n\s*<div style="overflow-x:auto/.test(rnd))
   t('and is drawn after the calendar is painted', /try \{ drawMonthChart\(rootId\) \} catch \{\}/.test(rnd))
-  t('every calendar draws its own', /export const canvasId = \(rootId\) =>/.test(fs.readFileSync('src/monthchart.js', 'utf8')))
+  t('the day row sits under the pills, above the trades',
+    /<div class="cal-day-chart">\$\{calChartPanel\(rootId, dayBounds\(key\), monthChartData\(cache\.fills\), CHART_DAY\)\}<\/div>\s*\n\s*\$\{tradesHtml\}/.test(rnd))
+  t('and is drawn after the day panel is painted', /try \{ drawDayChart\(rootId\) \} catch \{\}/.test(rnd))
+  t('every calendar draws its own, and each scope its own again',
+    /export const canvasId = \(rootId, scope\) =>/.test(fs.readFileSync('src/monthchart.js', 'utf8')))
   // In the combined view state.portfolio is already every visible wallet's history resampled
   // and summed (_mergePortfolio) — the series the All Accounts charts themselves use. Handing
   // the row null there is what hid two of its three tabs.
@@ -205,7 +298,7 @@ console.log(nl + '-- wired in --')
   t('the card asks for an axis that cannot be clipped by a late font', /axisMin: 66,/.test(fs.readFileSync('src/monthchart.js', 'utf8')))
   // The frame is measured from the data, so the card can also say WHEN — the x axis is the
   // month itself, from the 1st to the last day or to today in the month still running.
-  t('and for a frame that is the month', /dates: true, xMin: from, xMax: now > from && now < to \? now : to,/.test(fs.readFileSync('src/monthchart.js', 'utf8')))
+  t('and for a frame that is the span', /dates: true, xMin: from, xMax: now > from && now < to \? now : to,/.test(fs.readFileSync('src/monthchart.js', 'utf8')))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
