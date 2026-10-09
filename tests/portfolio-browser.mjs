@@ -115,9 +115,31 @@ async function run(label, opts) {
   await p.fill('#pfName', 'Three')
   await p.click('#pfSave')
   await p.reload({ waitUntil: 'domcontentloaded' })
-  await waitFor(p, 'saved list', () => document.querySelectorAll('#pfSaved [data-load]').length > 0)
-  ok('a saved portfolio survives a reload', (await p.textContent('#pfSaved')).includes('Three'))
+  await waitFor(p, 'the card', () => document.querySelectorAll('#pfGallery [data-load]').length > 0)
+  ok('a saved portfolio survives a reload, as a card', (await p.textContent('#pfGallery')).includes('Three'))
   ok('and once edited, a reload keeps your draft rather than the shared link', await p.evaluate(() => window.__pf.state.name) === 'Three' && !/p=/.test(await p.evaluate(() => location.hash)))
+
+  // The card: buy & hold over 1 year by default. A third each in BTC, ETH (flat) and SOL short
+  // (flat), so the return is a third of BTC's, less one fee of 0.045%.
+  const dayOf = (t) => Math.floor(t / DAY) * DAY
+  const yr = (PRICE.BTC(dayOf(NOW)) / PRICE.BTC(dayOf(NOW) - 365 * DAY) - 1) / 3 - 0.00045
+  const pctTxt = (x) => (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%'
+  await waitFor(p, 'the card\'s return', () => /%/.test(document.querySelector('#pfGallery .pf-gc-ret')?.textContent ?? ''))
+  const card1 = (await p.textContent('#pfGallery [data-load="0"]')).replace(/\s+/g, ' ')
+  ok('the card shows its 1-year return, worked out from the closes', card1.includes(pctTxt(yr)) && /1 year/.test(card1), [card1, pctTxt(yr)])
+  ok('with its holdings, its weights and its line', await p.locator('#pfGallery [data-load="0"] .mk-ico').count() === 3 && await p.locator('#pfGallery [data-load="0"] .pf-gc-bar i').count() === 3 && await p.locator('#pfGallery [data-load="0"] .pf-spark path').count() === 2)
+  ok('and says it is the one being edited', /editing/.test(card1))
+  await p.click('#pfGalTf [data-g="30"]')
+  const m1 = (PRICE.BTC(dayOf(NOW)) / PRICE.BTC(dayOf(NOW) - 30 * DAY) - 1) / 3 - 0.00045
+  const card30 = (await p.textContent('#pfGallery [data-load="0"]')).replace(/\s+/g, ' ')
+  ok('the timeframe changes every card: 30 days', card30.includes(pctTxt(m1)) && /30 days/.test(card30), [card30, pctTxt(m1)])
+  ok('and is remembered', await p.evaluate(() => localStorage.getItem('hliq_pf_gallery_tf')) === '"30"')
+  if (SHOT) { await p.locator('#pfGallerySec').scrollIntoViewIfNeeded(); await p.screenshot({ path: `${SHOT}/portfolio-gallery-${label}.png` }) }
+  // Open a portfolio from its card.
+  await p.click('#pfNew')
+  ok('New empties the builder', await p.evaluate(() => window.__pf.state.items.length) === 0)
+  await p.click('#pfGallery [data-load="0"] .pf-gc-name')
+  ok('clicking a card opens it in the builder', await waitFor(p, 'loaded', () => window.__pf.state.name === 'Three' && window.__pf.state.items.length === 3, null, 5000))
 
   // A holding Hyperliquid has no prices for: the page names it and offers a retry.
   await p.fill('#pfSearch', 'NOPE')
@@ -125,6 +147,12 @@ async function run(label, opts) {
   await p.press('#pfSearch', 'Enter')
   await waitFor(p, 'the failure', () => /No price history came back for NOPE/.test(document.getElementById('pfResults').textContent))
   ok('no history: says which holding, offers a retry', await p.locator('#pfRetry').count() === 1)
+
+  // Delete takes two taps.
+  await p.click('#pfGallery [data-del="0"]')
+  ok('the first tap on × only asks', await p.locator('#pfGallery [data-load]').count() === 1 && /Delete\?/.test(await p.textContent('#pfGallery [data-del="0"]')))
+  await p.click('#pfGallery [data-del="0"]')
+  ok('the second deletes it', await p.locator('#pfGallery [data-load]').count() === 0 && /Portfolios you save appear here/.test(await p.textContent('#pfGallery')))
 
   ok('no horizontal page scroll', await p.evaluate(() => document.documentElement.scrollWidth - innerWidth) <= 0, await p.evaluate(() => document.documentElement.scrollWidth - innerWidth))
   if (SHOT) await p.screenshot({ path: `${SHOT}/portfolio-${label}.png`, fullPage: true })

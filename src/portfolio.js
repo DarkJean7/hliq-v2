@@ -207,9 +207,7 @@ function renderSectors() {
 function renderBuilder() {
   $('pfName').value = S.name
   $('pfWeighting').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.w === S.weighting))
-  const saved = store.get(SAVED_KEY, [])
-  $('pfSaved').innerHTML = saved.length ? `<span class="pf-lbl pf-lbl--inline">Saved</span>` + saved.map((p, i) =>
-    `<span class="pf-saved-chip"><button data-load="${i}">${esc(p.name)}</button><button data-del="${i}" aria-label="Delete ${esc(p.name)}">×</button></span>`).join('') : ''
+  renderGallery()
   $('pfHoldings').innerHTML = S.items.length ? S.items.map((i, k) => {
     const r = rowById.get(i.coin)
     const badge = i.kind === 'hip3' ? `<i class="mk-b mk-b--hip3">${esc(r?.dexLabel || i.coin.split(':')[0])}</i>` : i.kind === 'spot' ? '<i class="mk-b mk-b--spot">Spot</i>' : '<i class="mk-b">Perp</i>'
@@ -229,6 +227,97 @@ function renderBuilder() {
     ? `${S.items.length} holding${S.items.length === 1 ? '' : 's'} · weights are shares of ${+t.toFixed(2)}, shown as % on the right${noFig.length ? ` · <span class="mk-dim">no ${S.weighting === 'mcap' ? 'market cap' : S.weighting === 'oi' ? 'open interest' : 'volume'} for ${esc(noFig.join(', '))}: given the average</span>` : ''}`
     : ''
   renderComp()
+}
+
+// ── your portfolios ──────────────────────────────────────────────────────────
+// One card per saved portfolio: its composition, and what holding it (buy & hold, 1×, the
+// default fee) returned over the gallery's own timeframe — 1 year unless changed. The same
+// engine and the same daily closes as the backtest below, so a card and a test of that
+// portfolio over the same window agree. Clicking a card opens it in the builder.
+const GAL_TF_KEY = 'hliq_pf_gallery_tf'
+let galTf = String(store.get(GAL_TF_KEY, '365'))
+let delArmed = null, delT
+const galWindow = () => {
+  const now = Date.now()
+  return { from: galTf === 'max' ? HIST_FROM : dayOf(now) - Number(galTf) * DAY, to: now }
+}
+const galLabel = () => ({ 30: '30 days', 90: '90 days', 182: '6 months', 365: '1 year', 730: '2 years', max: 'all time' })[galTf] ?? galTf + ' days'
+const sameItems = (a, b) => JSON.stringify(a.map(i => [i.coin, +Number(i.w).toFixed(4), i.side])) === JSON.stringify(b.map(i => [i.coin, +Number(i.w).toFixed(4), i.side]))
+const galFailed = new Set()
+
+function galResult(p) {
+  const items = p.items.filter(i => Number(i.w) > 0).map(i => ({ key: i.coin, weight: Number(i.w), side: i.side }))
+  if (!items.length) return { state: 'empty' }
+  if (items.some(i => galFailed.has(i.key))) return { state: 'failed' }
+  if (items.some(i => !daily.has(i.key))) return { state: 'loading' }
+  const { from, to } = galWindow()
+  const candles = Object.fromEntries(items.map(i => [i.key, daily.get(i.key).map(k => [k.t, k.c])]))
+  const r = backtest({ candles, items, from, to, strategies: ['hold'], opts: { capital: 10_000, leverage: 1, feeBps: DEFAULT.fee * 100 } })
+  if (!r.runs.length) return { state: 'failed' }
+  return { state: 'ok', run: r.runs[0], start: r.start, clippedBy: r.clippedBy }
+}
+
+function spark(eq, up) {
+  if (!eq || eq.length < 2) return ''
+  const W = 240, H = 56, lo = Math.min(...eq), hi = Math.max(...eq), span = hi - lo || 1
+  const pts = eq.map((v, i) => [(i / (eq.length - 1)) * W, H - 3 - ((v - lo) / span) * (H - 6)])
+  const d = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join('')
+  const c = up ? 'var(--pos)' : 'var(--neg)'
+  return `<svg class="pf-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+    <path d="${d}L${W},${H}L0,${H}Z" fill="${c}" opacity=".1"/><path d="${d}" fill="none" stroke="${c}" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>`
+}
+
+function renderGallery() {
+  const el = $('pfGallery')
+  if (!el) return
+  $('pfGalTf').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.g === galTf))
+  const saved = store.get(SAVED_KEY, [])
+  const cards = saved.map((p, k) => {
+    const live = p.items.filter(i => Number(i.w) > 0)
+    const tot = live.reduce((a, i) => a + Number(i.w), 0) || 1
+    const editing = p.name === S.name
+    const edited = editing && !sameItems(p.items, S.items)
+    const res = galResult(p)
+    const icons = live.slice(0, 5).map(i => iconHtml(i.coin, i.sym)).join('') + (live.length > 5 ? `<span class="pf-more">+${live.length - 5}</span>` : '')
+    const bar = live.map((i, j) => `<i style="width:${(100 * Number(i.w) / tot).toFixed(2)}%;background:${HOLD_COLORS[j % HOLD_COLORS.length]}" title="${esc(i.sym)} ${(100 * Number(i.w) / tot).toFixed(1)}%"></i>`).join('')
+    let body
+    if (res.state === 'ok') {
+      const r = res.run
+      body = `<div class="pf-gc-ret ${cls(r.ret)}">${pct(r.ret)}</div>
+        <div class="pf-gc-sub">${galLabel()}${res.clippedBy ? ` · since ${dLabel(res.start)}` : ''} · ${r.maxDd < -0.0005 ? `max drawdown ${(r.maxDd * 100).toFixed(1)}%` : 'no drawdown'}</div>
+        ${spark(r.equity, (r.ret ?? 0) >= 0)}`
+    } else if (res.state === 'loading') body = '<div class="pf-gc-ret mk-dim">…</div><div class="pf-gc-sub">loading prices</div><div class="pf-spark pf-spark--empty"></div>'
+    else if (res.state === 'failed') body = '<div class="pf-gc-ret mk-dim">—</div><div class="pf-gc-sub">prices did not load for every holding</div><div class="pf-spark pf-spark--empty"></div>'
+    else body = '<div class="pf-gc-ret mk-dim">—</div><div class="pf-gc-sub">no holdings with a weight</div><div class="pf-spark pf-spark--empty"></div>'
+    return `<div class="pf-gc${editing ? ' is-editing' : ''}" data-load="${k}" role="button" tabindex="0" aria-label="Open ${esc(p.name)} in the builder">
+      <div class="pf-gc-top">
+        <div class="pf-gc-name"><b>${esc(p.name)}</b><small>${live.length} holding${live.length === 1 ? '' : 's'}${editing ? ` · <span class="pf-gc-tag">${edited ? 'editing, unsaved changes' : 'editing'}</span>` : ''}</small></div>
+        <button class="pf-gc-del${delArmed === k ? ' is-armed' : ''}" data-del="${k}" aria-label="Delete ${esc(p.name)}">${delArmed === k ? 'Delete?' : '×'}</button>
+      </div>
+      <div class="pf-gc-icons">${icons}</div>
+      <div class="pf-gc-bar">${bar}</div>
+      ${body}
+    </div>`
+  })
+  cards.push(`<button class="pf-gc pf-gc--new" data-new><span>+</span>New portfolio</button>`)
+  el.innerHTML = saved.length ? cards.join('')
+    : `<div class="pf-gal-empty">Portfolios you save appear here as cards, with what they returned. Build one below and press <b>Save</b>.</div>`
+}
+
+// Prices for every saved portfolio, one coin at a time — the cards fill in as they arrive.
+let galLoading = false
+async function loadGalleryPrices() {
+  if (galLoading) return
+  galLoading = true
+  try {
+    const coins = [...new Set(store.get(SAVED_KEY, []).flatMap(p => p.items.filter(i => Number(i.w) > 0).map(i => i.coin)))]
+    for (const c of coins) {
+      if (daily.has(c) || galFailed.has(c)) continue
+      try { await fetchDaily(c) } catch { galFailed.add(c) }
+      renderGallery()
+      await sleep(200)
+    }
+  } finally { galLoading = false; renderGallery() }
 }
 
 // ── composition ──────────────────────────────────────────────────────────────
@@ -475,7 +564,7 @@ function changed({ rerun = true } = {}) {
   if (rerun) { clearTimeout(runT); runT = setTimeout(run, 450) }
 }
 
-$('pfName').addEventListener('input', e => { S.name = e.target.value.slice(0, 40); saveDraft(); renderComp() })
+$('pfName').addEventListener('input', e => { S.name = e.target.value.slice(0, 40); saveDraft(); renderComp(); renderGallery() })
 $('pfWeighting').addEventListener('click', e => { const b = e.target.closest('button[data-w]'); if (!b) return; applyWeighting(b.dataset.w); changed() })
 $('pfSectors').addEventListener('click', e => {
   const b = e.target.closest('button[data-sector]'); if (!b) return
@@ -530,6 +619,7 @@ $('pfSave').addEventListener('click', () => {
   store.set(SAVED_KEY, saved.slice(0, 30))
   flash($('pfSave'), 'Saved')
   renderBuilder()
+  loadGalleryPrices()
 })
 $('pfShare').addEventListener('click', async () => {
   const url = location.origin + '/portfolios#p=' + encodeShare()
@@ -537,11 +627,31 @@ $('pfShare').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(url); flash($('pfShare'), 'Link copied') } catch { flash($('pfShare'), 'Link in the address bar') }
 })
 $('pfNew').addEventListener('click', () => { S.items = []; S.name = 'My portfolio'; S.weighting = 'equal'; history.replaceState(null, '', location.pathname); changed() })
-$('pfSaved').addEventListener('click', e => {
+$('pfGallery').addEventListener('click', e => {
   const saved = store.get(SAVED_KEY, [])
-  const ld = e.target.closest('[data-load]'), del = e.target.closest('[data-del]')
-  if (ld) { const p = saved[Number(ld.dataset.load)]; if (p) { S.name = p.name; S.items = p.items.map(i => ({ ...i })); S.weighting = 'custom'; changed() } }
-  if (del) { saved.splice(Number(del.dataset.del), 1); store.set(SAVED_KEY, saved); renderBuilder() }
+  const del = e.target.closest('[data-del]')
+  if (del) {
+    // Two taps: the first arms it ("Delete?"), the second deletes. A card is easy to brush past.
+    const k = Number(del.dataset.del)
+    if (delArmed !== k) { delArmed = k; clearTimeout(delT); delT = setTimeout(() => { delArmed = null; renderGallery() }, 3000); renderGallery(); return }
+    delArmed = null
+    saved.splice(k, 1); store.set(SAVED_KEY, saved); renderGallery()
+    return
+  }
+  if (e.target.closest('[data-new]')) { $('pfNew').click(); $('pfBuilderSec').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('pfName').select(); return }
+  const card = e.target.closest('[data-load]')
+  if (!card) return
+  const p = saved[Number(card.dataset.load)]
+  if (!p) return
+  S.name = p.name; S.items = p.items.map(i => ({ ...i })); S.weighting = 'custom'
+  changed()
+  $('pfBuilderSec').scrollIntoView({ behavior: 'smooth', block: 'start' })
+})
+$('pfGallery').addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-load]')) { e.preventDefault(); e.target.click() } })
+$('pfGalTf').addEventListener('click', e => {
+  const b = e.target.closest('button[data-g]'); if (!b) return
+  galTf = b.dataset.g; store.set(GAL_TF_KEY, galTf)
+  renderGallery(); loadGalleryPrices()
 })
 function flash(btn, text) { const t0 = btn.textContent; btn.textContent = text; btn.disabled = true; setTimeout(() => { btn.textContent = t0; btn.disabled = false }, 1400) }
 
@@ -571,6 +681,7 @@ for (const a of document.querySelectorAll('[data-launch]')) a.addEventListener('
 renderBuilder()
 renderRunControls()
 run()
+loadGalleryPrices()
 loadMeta()
 loadMarkets().catch(() => setStatus('Hyperliquid did not answer — reload to try again'))
 window.__pf = { get state() { return S }, get last() { return last } }     // tests/portfolio-browser.mjs
