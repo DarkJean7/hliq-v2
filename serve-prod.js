@@ -12,6 +12,7 @@ import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, 
 import { SEC_CONCEPTS, SEC_TICKERS_URL, secConceptUrl, companyRevenue } from './src/secrev.js'
 import { llamaSummaryUrl, sumDaily } from './src/llama.js'
 import { cleanPortfolio, upsertFeatured } from './src/pfshared.js'
+import { coinsOf, coinFile, stalest, buildPerf, HIST_FROM as PFC_FROM } from './src/pfgallery.js'
 import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
@@ -269,6 +270,91 @@ function pfRead() {
     return pfCache.list
   } catch { return [] }
 }
+// ── /portfolios gallery prices: one market per tick, never a list ────────────────────────
+//
+// Why a trickle and not a refresh: the 22 featured portfolios reference 102 distinct markets,
+// a candleSnapshot is weight 20, and this box shares its Hyperliquid IP with the bots. 102 of
+// them at once is 2,040 weight against a 1,200/minute budget, and the request throttled behind
+// it could be a bot closing a position (CLAUDE.md). One a minute is 20 weight/minute — under
+// 2% — and fills the whole set in under two hours.
+//
+// A market not in the cache yet is simply absent from the answer, and the browser works that
+// card out for itself exactly as it did before. Absent is "no answer", never "nothing here".
+const PFC_DIR  = join(__dirname, 'data', 'pfcandles')
+const PFC_TTL  = 22 * 3600e3          // a market is refreshed at most once a day
+const PFC_TICK = 60_000               // at most one candleSnapshot a minute, from this box
+const PFC_LOCK = join(PFC_DIR, '.lock')
+const PFC_LOCK_TTL = 5 * 60_000
+const pfcMem = new Map()              // coin -> { at, closes }  (this worker's copy)
+
+function pfcRead(coin) {
+  const hit = pfcMem.get(coin)
+  if (hit) return hit
+  try {
+    const j = JSON.parse(readFileSync(join(PFC_DIR, coinFile(coin) + '.json'), 'utf8'))
+    const rec = { at: Number(j.at) || 0, closes: Array.isArray(j.closes) ? j.closes : [] }
+    pfcMem.set(coin, rec)
+    return rec
+  } catch { return null }
+}
+const pfcAt = (coin) => pfcRead(coin)?.at ?? 0
+
+let pfcBusy = false
+async function pfcTick() {
+  if (pfcBusy) return
+  const coins = coinsOf(pfRead())
+  if (!coins.length) return
+  // Re-read from disk before choosing: another worker may have refreshed since this one's
+  // memory was filled, and the two would otherwise take turns fetching the same market.
+  for (const c of coins) pfcMem.delete(c)
+  const coin = stalest(coins, pfcAt, PFC_TTL)
+  if (!coin) return
+  // One worker fetches. The cluster runs several and every one of them holds this timer.
+  try { if (Date.now() - statSync(PFC_LOCK).mtimeMs < PFC_LOCK_TTL) return } catch {}
+  pfcBusy = true
+  try {
+    mkdirSync(PFC_DIR, { recursive: true })
+    writeFileSync(PFC_LOCK, String(process.pid))
+    const r = await fetch('https://api.hyperliquid.xyz/info', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval: '1d', startTime: PFC_FROM, endTime: Date.now() } }),
+      signal: AbortSignal.timeout(20_000),
+    })
+    if (!r.ok) throw new Error('HTTP ' + r.status)
+    const j = await r.json()
+    const closes = (Array.isArray(j) ? j : [])
+      .map(k => [Number(k.t), Number(k.c)]).filter(([t, c]) => Number.isFinite(t) && c > 0)
+    // A market that answered with nothing is still RECORDED, with its time: otherwise it is
+    // chosen again on the very next tick and starves every market behind it.
+    writeAtomic(join(PFC_DIR, coinFile(coin) + '.json'), JSON.stringify({ coin, at: Date.now(), closes }))
+    pfcMem.delete(coin)
+    pfPerf = null
+    console.log(`[portfolios] ${coin}: ${closes.length} daily closes`)
+  } catch (e) {
+    console.warn('[portfolios] ' + coin + ' refresh failed:', e.message)
+  } finally {
+    try { if (readFileSync(PFC_LOCK, 'utf8') === String(process.pid)) unlinkSync(PFC_LOCK) } catch {}
+    pfcBusy = false
+  }
+}
+setInterval(() => { pfcTick().catch(() => {}) }, PFC_TICK).unref?.()
+
+// The computed cards, rebuilt when the portfolios or the prices change, and once an hour so a
+// window measured from "now" cannot drift a day behind.
+let pfPerf = null
+function pfPerfNow() {
+  const list = pfRead()
+  const stamp = list.map(p => p.id).join(',') + '|' + list.length
+  if (pfPerf && pfPerf.stamp === stamp && Date.now() - pfPerf.at < 3600e3) return pfPerf
+  const closes = {}
+  for (const c of coinsOf(list)) { const rec = pfcRead(c); if (rec?.closes?.length) closes[c] = rec.closes }
+  const t0 = Date.now()
+  const perf = buildPerf(list, closes)
+  pfPerf = { stamp, at: Date.now(), perf, coins: Object.keys(closes).length }
+  console.log(`[portfolios] built ${Object.keys(perf).length}/${list.length} cards from ${pfPerf.coins} markets in ${Date.now() - t0}ms`)
+  return pfPerf
+}
+
 function readJson(req, max = 64_000) {
   return new Promise((resolve) => {
     let n = 0; const chunks = []
@@ -621,7 +707,11 @@ createServer((req, res) => {
     const send = (code, obj) => res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(obj))
     if (url === '/portfolios-data') {
       if (req.method !== 'GET') { res.writeHead(405).end(); return }
-      return send(200, { portfolios: pfRead() })
+      // `perf` carries only the cards the cached prices can answer for. A portfolio missing
+      // from it is one the browser still works out itself — see src/pfgallery.js.
+      let perf = {}, asOf = 0
+      try { const b = pfPerfNow(); perf = b.perf; asOf = b.at } catch (e) { console.warn('[portfolios] perf failed:', e.message) }
+      return send(200, { portfolios: pfRead(), perf, asOf })
     }
     if (req.method !== 'POST') { res.writeHead(405).end(); return }
     ;(async () => {
@@ -645,6 +735,7 @@ createServer((req, res) => {
       try { mkdirSync(dirname(PF_FILE), { recursive: true }); writeAtomic(PF_FILE, JSON.stringify({ portfolios: list })) }
       catch { return send(500, { error: 'could not save' }) }
       pfCache = null
+      pfPerf = null
       return send(200, { portfolios: list })
     })()
     return

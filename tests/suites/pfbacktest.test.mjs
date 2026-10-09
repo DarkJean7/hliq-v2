@@ -141,7 +141,10 @@ console.log(nl + '-- featured portfolios: public to read, the developer\'s to ch
   t('the list has a ceiling', F.upsertFeatured(Array.from({ length: F.PF_FEATURED_MAX }, (_, i) => ({ id: 'id' + String(i).padStart(6, '0') })), F.cleanPortfolio({ name: 'A', items: [{ coin: 'BTC', w: 1 }] })) === null)
   const SRV = fs.readFileSync('serve-prod.js', 'utf8')
   const route = SRV.slice(SRV.indexOf("if (url === '/portfolios-data' ||"), SRV.indexOf("if (url === '/markets-meta')"))
-  t('the server: anyone reads; every write first asks the strategy server whether the PIN is right', route.includes("return send(200, { portfolios: pfRead() })") && route.indexOf('await devPinOk(') < route.indexOf('await readJson(') && route.includes("if (!ok) return send(403"))
+  // The read now carries the precomputed cards as well (perf, asOf — src/pfgallery.js); what
+  // this is pinning is that it is still a GET anyone may make and that the PIN is still
+  // checked before a write reads its body, both of which are unchanged.
+  t('the server: anyone reads; every write first asks the strategy server whether the PIN is right', /return send\(200, \{ portfolios: pfRead\(\)(, perf, asOf)? \}\)/.test(route) && route.indexOf('await devPinOk(') < route.indexOf('await readJson(') && route.includes("if (!ok) return send(403"))
   t('an unreachable PIN check is "try later", never a yes', route.includes("if (ok === null) return send(503") && SRV.includes("res.statusCode === 200 ? true : res.statusCode === 403 ? false : null"))
   t('what is stored has been through cleanPortfolio', route.includes('cleanPortfolio(b.portfolio)'))
   const P = fs.readFileSync('src/portfolio.js', 'utf8')

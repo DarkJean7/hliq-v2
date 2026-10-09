@@ -14,6 +14,9 @@ import { sideScroll, wasDrag } from './sidescroll.js'
 import { SECTORS, SECTOR_LABEL } from './sectors.js'
 import { holdingsSectors, sectorColor } from './sectoralloc.js'
 import { STRATEGIES, STRATEGY_LABEL, BOT_STRATEGIES, BOT_LABEL, backtest, botRun, DAY, dayOf } from './pfbacktest.js'
+// The gallery card's own backtest, shared with serve-prod.js so the two cannot price a card
+// differently depending on which of them answered.
+import { galBacktest } from './pfgallery.js'
 
 const API = 'https://api.hyperliquid.xyz/info'
 const $ = (id) => document.getElementById(id)
@@ -278,11 +281,15 @@ const galFailed = new Set()
 function galResult(p) {
   const items = p.items.filter(i => Number(i.w) > 0).map(i => ({ key: i.coin, weight: Number(i.w), side: i.side }))
   if (!items.length) return { state: 'empty' }
+  // The server's answer, when it has one for this portfolio and this window. Nothing is
+  // fetched and nothing is computed for these — which is the whole point.
+  const ready = galPerf?.[p.id]?.[String(galTf)]
+  if (ready) return ready
   if (items.some(i => galFailed.has(i.key))) return { state: 'failed' }
   if (items.some(i => !daily.has(i.key))) return { state: 'loading' }
   const { from, to } = galWindow()
   const candles = Object.fromEntries(items.map(i => [i.key, daily.get(i.key).map(k => [k.t, k.c])]))
-  const r = backtest({ candles, items, from, to, strategies: ['hold'], opts: { capital: 10_000, leverage: 1, feeBps: DEFAULT.fee * 100 } })
+  const r = galBacktest(candles, items, from, to)
   if (!r.runs.length) return { state: 'failed' }
   return { state: 'ok', run: r.runs[0], start: r.start, clippedBy: r.clippedBy, joined: r.joined ?? [], days: r.days.length - 1 }
 }
@@ -304,6 +311,19 @@ function spark(eq, up) {
 // page never writes back, and "Save a copy" keeps their version on this device.
 let featured = null                 // null until it loads (or when it could not): not "there are none"
 let featuredState = 'loading'       // 'loading' | 'ok' | 'failed'
+/**
+ * The cards the SERVER already worked out: { [portfolioId]: { [window]: result } }.
+ *
+ * Reported as "the performance seems that is being calculated per device instead of server
+ * side". It was: every visitor fetched a daily history per holding and ran every backtest
+ * itself, from caches that died with the page. serve-prod.js keeps those prices now and
+ * computes the featured cards from them.
+ *
+ * A portfolio ABSENT from this is one the server has no prices for yet, not one with nothing
+ * to show, so the card falls through to the old path and works it out here. Both sides call
+ * the same galBacktest (src/pfgallery.js), so whichever answers gives the same number.
+ */
+let galPerf = {}
 const devPin = () => { try { return localStorage.getItem('hliq_lb_pin') || '' } catch { return '' } }
 const isDev = () => { try { return localStorage.getItem('hliq_dev') === '1' && !!devPin() } catch { return false } }
 
@@ -313,6 +333,7 @@ async function loadFeatured() {
     const j = r.ok ? await r.json() : null
     if (!Array.isArray(j?.portfolios)) throw new Error('none')
     featured = j.portfolios; featuredState = 'ok'
+    galPerf = (j.perf && typeof j.perf === 'object') ? j.perf : {}
   } catch { featuredState = featured ? 'ok' : 'failed' }
   // A draft that was a featured portfolio that has since been removed is just a draft now.
   if (S.featuredId && featured && !featured.some(p => p.id === S.featuredId)) { S.featuredId = null; saveDraft() }
@@ -447,7 +468,10 @@ async function loadGalleryPrices() {
   if (galLoading) return
   galLoading = true
   try {
+    // Only what is still unanswered: a featured portfolio the server already priced needs no
+    // candles here at all, and on a warm cache that is every one of them.
     const all = [...(galHidden.featured ? [] : featured ?? []), ...(galHidden.local ? [] : store.get(SAVED_KEY, []))]
+      .filter(p => !galPerf?.[p.id])
     const coins = [...new Set(all.flatMap(p => p.items.filter(i => Number(i.w) > 0).map(i => i.coin)))]
     for (const c of coins) {
       if (daily.has(c) || galFailed.has(c)) continue
