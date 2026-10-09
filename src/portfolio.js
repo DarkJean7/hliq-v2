@@ -61,7 +61,7 @@ const DEFAULT = {
   weighting: 'custom',
   period: '365', from: null, to: null, capital: 10_000, lev: 1, fee: 0.045,
   strats: ['hold', 'monthly', 'trend'], bots: [], band: 5, trendDays: 50,
-  tf: '4h', tp: 4, sl: 2, both: false, bench: true,
+  tf: '4h', tp: 4, sl: 2, both: false, bench: true, listingWait: false,
 }
 let S = { ...DEFAULT, ...store.get(DRAFT_KEY, {}) }
 let focus = null           // the run whose contributions are shown, by id
@@ -84,7 +84,7 @@ function decodeShare(h) {
     }
   } catch { return null }
 }
-const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'tf', 'tp', 'sl', 'both', 'bench']
+const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'tf', 'tp', 'sl', 'both', 'bench', 'listingWait']
 const pickSettings = (o) => Object.fromEntries(SETTING_KEYS.filter(k => k in o).map(k => [k, o[k]]))
 function encodeShare() {
   const j = { n: S.name, d: S.desc || undefined, i: S.items.map(i => [i.coin, +Number(i.w).toFixed(4), i.side === 'short' ? 1 : 0]), s: pickSettings(S) }
@@ -270,7 +270,7 @@ function galResult(p) {
   const candles = Object.fromEntries(items.map(i => [i.key, daily.get(i.key).map(k => [k.t, k.c])]))
   const r = backtest({ candles, items, from, to, strategies: ['hold'], opts: { capital: 10_000, leverage: 1, feeBps: DEFAULT.fee * 100 } })
   if (!r.runs.length) return { state: 'failed' }
-  return { state: 'ok', run: r.runs[0], start: r.start, clippedBy: r.clippedBy, days: r.days.length - 1 }
+  return { state: 'ok', run: r.runs[0], start: r.start, clippedBy: r.clippedBy, joined: r.joined ?? [], days: r.days.length - 1 }
 }
 
 function spark(eq, up) {
@@ -321,6 +321,14 @@ async function featuredWrite(path, body) {
  * is listed, so "1 year" on a card whose window starts on Jul 22 was a year that never
  * happened: the card says the span it measured, and that it is shorter than asked.
  */
+/** The card's tooltip: why its span is short, and which holdings came in when they listed. */
+function galTitle(p, res) {
+  const nm = (k) => { const i = p.items.find(x => x.coin === k); return i ? nameOf(i) : k }
+  const lines = []
+  if (res.clippedBy) lines.push(`No holding traded before ${dLabel(res.start)} (${nm(res.clippedBy)}), so it is tested from then.`)
+  if (res.joined.length) lines.push('Joined when listed, their weight spread over the others until then: ' + res.joined.map(j => `${nm(j.key)} ${dLabel(j.t)}`).join(', ') + '.')
+  return lines.length ? ` title="${esc(lines.join(' '))}"` : ''
+}
 function spanLabel(res) {
   if (!res.clippedBy) return galLabel()
   const d = res.days
@@ -360,7 +368,7 @@ function cardHtml(p, ref, { kind, res = galResult(p) }) {
   if (res.state === 'ok') {
     const r = res.run
     body = `<div class="pf-gc-ret ${cls(r.ret)}">${pct(r.ret)}</div>
-      <div class="pf-gc-sub"${res.clippedBy ? ` title="Its newest holding was listed ${dLabel(res.start)}, so it is tested from then, not over the full ${galLabel()}."` : ''}>${spanLabel(res)} · ${r.maxDd < -0.0005 ? `max drawdown ${(r.maxDd * 100).toFixed(1)}%` : 'no drawdown'}</div>
+      <div class="pf-gc-sub"${galTitle(p, res)}>${spanLabel(res)}${res.joined.length ? ` · ${res.joined.length} joined later` : ''} · ${r.maxDd < -0.0005 ? `max drawdown ${(r.maxDd * 100).toFixed(1)}%` : 'no drawdown'}</div>
       ${spark(r.equity, (r.ret ?? 0) >= 0)}`
   } else if (res.state === 'loading') body = '<div class="pf-gc-ret mk-dim">…</div><div class="pf-gc-sub">loading prices</div><div class="pf-spark pf-spark--empty"></div>'
   else if (res.state === 'failed') body = '<div class="pf-gc-ret mk-dim">—</div><div class="pf-gc-sub">prices did not load for every holding</div><div class="pf-spark pf-spark--empty"></div>'
@@ -486,6 +494,7 @@ function renderRunControls() {
   $('pfLev').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', Number(b.dataset.l) === Number(S.lev)))
   $('pfFee').value = S.fee
   $('pfBench').checked = !!S.bench
+  $('pfWait').checked = !!S.listingWait
   $('pfBand').value = S.band; $('pfTrendDays').value = S.trendDays
   $('pfTf').value = S.tf; $('pfTp').value = S.tp; $('pfSl').value = S.sl; $('pfBoth').checked = !!S.both
   $('pfStrats').innerHTML = STRATEGIES.map(s => `<button data-strat="${s.id}" class="${S.strats.includes(s.id) ? 'is-on' : ''}" title="${esc(s.desc)}">${esc(s.label)}</button>`).join('')
@@ -523,7 +532,7 @@ async function run() {
   }
   if (my !== runSeq) return
   const candles = Object.fromEntries(need.filter(c => daily.has(c)).map(c => [c, daily.get(c).map(k => [k.t, k.c])]))
-  const opts = { capital: Number(S.capital) || 10_000, leverage: Number(S.lev) || 1, feeBps: (Number(S.fee) || 0) * 100, band: (Number(S.band) || 5) / 100, trendDays: Math.max(2, Number(S.trendDays) || 50) }
+  const opts = { capital: Number(S.capital) || 10_000, leverage: Number(S.lev) || 1, feeBps: (Number(S.fee) || 0) * 100, band: (Number(S.band) || 5) / 100, trendDays: Math.max(2, Number(S.trendDays) || 50), listing: S.listingWait ? 'wait' : 'join' }
   const r = backtest({ candles, items, from, to, strategies: S.strats, opts, bench: S.bench ? 'BTC' : null })
   if (failed.some(c => items.some(i => i.key === c)) || r.missing.length) {
     res.classList.remove('is-busy')
@@ -604,7 +613,11 @@ function renderResults() {
   const res = $('pfResults')
   const all = [...L.runs, ...(L.bench ? [{ ...L.bench, id: '__bench', label: 'BTC, held', color: BENCH_COLOR, dash: true }] : [])]
   const notes = []
-  if (L.clippedBy) notes.push(`Starts ${dLabel(L.start)}: ${esc(rowById.get(L.clippedBy)?.sym ?? L.clippedBy)} was listed then, and a basket can only be bought once all of it trades.`)
+  const nm = (k) => esc(rowById.get(k)?.label ?? displayName(k))
+  if (L.clippedBy) notes.push(S.listingWait
+    ? `Starts ${dLabel(L.start)}: ${nm(L.clippedBy)} was listed then, and this test waits until every holding trades.`
+    : `Starts ${dLabel(L.start)}: no holding traded before then; ${nm(L.clippedBy)} was the first.`)
+  if (L.joined?.length) notes.push(`Joined when listed: ${L.joined.map(j => `${nm(j.key)} on ${dLabel(j.t)}`).join(', ')}. Until then their weight was spread over the holdings that traded, and each was bought on its first day. The trading strategies keep a holding's share in cash until it lists.`)
   if (L.cut) notes.push(`The trading strategies use the most recent 5,000 ${esc(S.tf)} candles, which start after the window does. Choose 4-hour or daily candles to cover all of it.`)
   const liq = all.filter(x => x.liquidated)
   if (liq.length) notes.push(`Liquidated: ${liq.map(x => `${esc(x.label)} on ${dLabel(x.liquidated)}`).join('; ')}.`)
@@ -869,6 +882,7 @@ num('pfCapital', 'capital', 100, 1e9); num('pfFee', 'fee', 0, 1); num('pfBand', 
 num('pfTp', 'tp', 0.1, 100); num('pfSl', 'sl', 0.1, 100)
 $('pfTf').addEventListener('change', e => { S.tf = e.target.value; changed() })
 $('pfBench').addEventListener('change', e => { S.bench = e.target.checked; changed() })
+$('pfWait').addEventListener('change', e => { S.listingWait = e.target.checked; changed() })
 $('pfBoth').addEventListener('change', e => { S.both = e.target.checked; changed() })
 $('pfStrats').addEventListener('click', e => { const b = e.target.closest('[data-strat]'); if (!b) return; const id = b.dataset.strat; S.strats = S.strats.includes(id) ? S.strats.filter(x => x !== id) : [...S.strats, id]; changed() })
 $('pfBots').addEventListener('click', e => { const b = e.target.closest('[data-bot]'); if (!b) return; const id = b.dataset.bot; S.bots = S.bots.includes(id) ? S.bots.filter(x => x !== id) : [...S.bots, id]; changed() })

@@ -17,6 +17,10 @@
  *     less than a real account would — an intraday wick can liquidate a position that the
  *     close says survived — so leveraged results are optimistic, and the page says that too.
  *
+ * A holding listed after the window starts JOINS when it lists: until then its weight is spread
+ * over the holdings that trade, and on its first day the book is rebalanced to bring it in
+ * (opts.listing 'join', the default). opts.listing 'wait' starts only once every holding trades.
+ *
  * Strategies (all start fully invested at the weights, except DCA):
  *   hold      buy once, never trade again; winners grow their share
  *   weekly    rebalance to the weights every Monday (UTC)
@@ -118,12 +122,25 @@ export function simulate(grid, start, weights, id, opts = {}) {
   const tranche = dcaDates.length ? capital / dcaDates.length : 0
   let active = null
 
-  const value = (i) => keys.reduce((a, k) => a + units[k] * px[k][i], 0)
+  // A holding not listed yet has no price. Until it has one, the weights of those that do are
+  // scaled up to fill the book — its share is spread over them — and the day it lists, every
+  // strategy (even buy & hold) trades once to bring it in at its own weight. backtest() starts
+  // the run on the first day ANY holding trades (listing: 'join'), or, with listing: 'wait',
+  // on the first day they ALL do, in which case nothing here ever lists late.
+  const listed = (i) => keys.filter(k => px[k][i] != null)
+  const wNow = (live) => {
+    const sum = live.reduce((a, k) => a + Math.abs(weights[k]), 0)
+    return Object.fromEntries(keys.map(k => [k, sum > 0 && live.includes(k) ? weights[k] / sum : 0]))
+  }
+  let live = listed(start), w = wNow(live)
+
+  const value = (i) => keys.reduce((a, k) => a + (units[k] ? units[k] * px[k][i] : 0), 0)
   const rebalanceTo = (i, on) => {
     const eq = cash + value(i)
     let traded = false
     for (const k of keys) {
-      const target = on && !on[k] ? 0 : leverage * eq * weights[k] / px[k][i]
+      if (px[k][i] == null) continue
+      const target = on && !on[k] ? 0 : leverage * eq * w[k] / px[k][i]
       const d = target - units[k]
       if (Math.abs(d * px[k][i]) < 1e-9) continue
       const notional = Math.abs(d * px[k][i])
@@ -138,23 +155,29 @@ export function simulate(grid, start, weights, id, opts = {}) {
   for (let i = start; i < days.length; i++) {
     if (liquidated != null) { equity.push(0); continue }
     // Yesterday's holdings earn today's move, before anything is traded.
-    if (i > start) for (const k of keys) pnlBy[k] += units[k] * (px[k][i] - px[k][i - 1])
+    if (i > start) for (const k of keys) if (units[k] && px[k][i - 1] != null) pnlBy[k] += units[k] * (px[k][i] - px[k][i - 1])
     const dt = new Date(days[i])
     const first = i === start
+    // Something listed today: the weights widen to include it.
+    const nowLive = listed(i)
+    const joined = nowLive.length !== live.length
+    if (joined) { live = nowLive; w = wNow(live) }
     if (id === 'dca') {
-      if (dcaDates.includes(days[i])) { reserve -= tranche; cash += tranche; rebalanceTo(i) }
+      const due = dcaDates.includes(days[i])
+      if (due) { reserve -= tranche; cash += tranche }
+      if (due || joined) rebalanceTo(i)
     } else if (id === 'trend') {
-      const on = Object.fromEntries(keys.map(k => { const m = sma(px[k], i, trendDays); return [k, m == null || px[k][i] >= m] }))
+      const on = Object.fromEntries(keys.map(k => { const m = sma(px[k], i, trendDays); return [k, px[k][i] != null && (m == null || px[k][i] >= m)] }))
       const changed = first || keys.some(k => on[k] !== active[k])
       active = on
       if (changed) rebalanceTo(i, on)
-    } else if (first
+    } else if (first || joined
       || (id === 'weekly' && dt.getUTCDay() === 1)
       || (id === 'monthly' && dt.getUTCDate() === 1)) {
-      if (id !== 'hold' || first) rebalanceTo(i)
+      if (id !== 'hold' || first || joined) rebalanceTo(i)
     } else if (id === 'band') {
       const eq = cash + value(i)
-      const off = eq > 0 && keys.some(k => Math.abs(units[k] * px[k][i] / (leverage * eq) - weights[k]) > band)
+      const off = eq > 0 && live.some(k => Math.abs(units[k] * px[k][i] / (leverage * eq) - w[k]) > band)
       if (off) rebalanceTo(i)
     }
     const eq = reserve + cash + value(i)
@@ -198,16 +221,24 @@ export function backtest({ candles, items, from, to, strategies, opts = {}, benc
   const weights = normalizeWeights(items)
   const keys = Object.keys(weights)
   const missing = keys.filter(k => !(candles?.[k]?.length))
-  if (!keys.length || missing.length) return { days: [], runs: [], bench: null, missing, start: null, clippedBy: null }
+  if (!keys.length || missing.length) return { days: [], runs: [], bench: null, missing, start: null, clippedBy: null, joined: [] }
   // The grid reaches back for the trend filter's average; the simulation starts at `from`.
   const lookback = (opts.trendDays ?? 50) * DAY
   const grid = alignDaily(candles, from - lookback, to)
   const want = grid.days.findIndex(t => t >= dayOf(from))
-  const common = commonStart(grid.px, keys)
-  if (common < 0 || want < 0) return { days: [], runs: [], bench: null, missing, start: null, clippedBy: null }
+  // listing 'join' (the default): start on the first day ANY holding has a price; one listed
+  // later joins on its listing day (simulate). 'wait': start when ALL of them do, the old rule —
+  // which let one new listing cut a year's test down to the weeks since it appeared.
+  const wait = opts.listing === 'wait'
+  const anyStart = grid.days.findIndex((_, i) => keys.some(k => grid.px[k][i] != null))
+  const common = wait ? commonStart(grid.px, keys) : anyStart
+  if (common < 0 || want < 0) return { days: [], runs: [], bench: null, missing, start: null, clippedBy: null, joined: [] }
   const start = Math.max(want, common)
-  // Which holding pushed the start later — the one listed last.
-  const clippedBy = start > want ? keys.reduce((a, k) => ((grid.first[k] ?? 0) > (grid.first[a] ?? 0) ? k : a), keys[0]) : null
+  // Which holding set the start: with 'wait', the one listed last; with 'join', the first.
+  const pick = (better) => keys.reduce((a, k) => (better(grid.first[k] ?? 0, grid.first[a] ?? 0) ? k : a), keys[0])
+  const clippedBy = start > want ? (wait ? pick((x, y) => x > y) : pick((x, y) => x < y)) : null
+  // Holdings that had no price on the first day and came in when they listed.
+  const joined = keys.filter(k => grid.px[k][start] == null && grid.first[k] != null).map(k => ({ key: k, t: grid.first[k] })).sort((a, b) => a.t - b.t)
   const capital = opts.capital ?? 10_000
   const runs = (strategies ?? []).map(id => { const r = simulate(grid, start, weights, id, opts); return { ...r, ...metrics(r.equity, capital) } })
   let benchRun = null
@@ -218,7 +249,7 @@ export function backtest({ candles, items, from, to, strategies, opts = {}, benc
       benchRun = { ...r, ...metrics(r.equity, capital) }
     }
   }
-  return { days: grid.days.slice(start), start: grid.days[start], clippedBy, runs, bench: benchRun, missing: [] }
+  return { days: grid.days.slice(start), start: grid.days[start], clippedBy, joined, runs, bench: benchRun, missing: [] }
 }
 
 // ── the Simulator's trading strategies, run on every holding ────────────────────────────────

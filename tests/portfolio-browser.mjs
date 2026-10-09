@@ -213,8 +213,17 @@ async function run(label, opts) {
   await waitFor(p, 'both featured cards', () => [...document.querySelectorAll('#pfFeatured .pf-gc-ret')].filter(x => /%/.test(x.textContent)).length === 2)
   const late = (await p.textContent('#pfFeatured [data-load="f:feat0002"] .pf-gc-sub')).replace(/\s+/g, ' ')
   const full = (await p.textContent('#pfFeatured [data-load="f:feat0001"] .pf-gc-sub')).replace(/\s+/g, ' ')
-  ok('a card listed 50 days ago says "50 days", not "1 year"', /^50 days · since /.test(late) && !/1 year/.test(late), late)
+  // A holding listed 50 days ago joins then; the card still covers the year, and says so.
+  ok('a holding listed 50 days ago does not cut the year short: it joined later, and the card says so', /^1 year · 1 joined later · /.test(late) && /NVDA/.test(await p.getAttribute('#pfFeatured [data-load="f:feat0002"] .pf-gc-sub', 'title')), late)
   ok('a card with a full year still says "1 year"', /^1 year · /.test(full), full)
+  await p.click('#pfFeatured [data-load="f:feat0002"] .pf-gc-name')
+  await waitFor(p, 'the late basket\'s run', () => window.__pf.last?.joined?.length === 1)
+  ok('the backtest covers the whole year and names who joined, and when', /Joined when listed: NVDA on /.test(await p.textContent('#pfResults')) && await p.evaluate(() => window.__pf.last.days.length) >= 360)
+  await p.check('#pfWait')
+  await waitFor(p, 'the waiting run', () => window.__pf.last && window.__pf.last.days.length <= 51 && window.__pf.state.listingWait)
+  ok('"Wait until every holding is listed" starts the test when NVDA listed', await p.evaluate(() => window.__pf.last.days.length) <= 51 && /waits until every holding trades/.test(await p.textContent('#pfResults')))
+  await p.uncheck('#pfWait')
+  await waitFor(p, 'back to the year', () => window.__pf.last && window.__pf.last.days.length >= 360)
   // Sorting.
   const order = () => p.evaluate(() => [...document.querySelectorAll('#pfFeatured [data-load]')].map(c => c.querySelector('.pf-gc-name b').textContent))
   const rets = () => p.evaluate(() => [...document.querySelectorAll('#pfFeatured .pf-gc-ret')].map(c => parseFloat(c.textContent)))

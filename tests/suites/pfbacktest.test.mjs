@@ -57,9 +57,26 @@ console.log(nl + '-- strategies --')
 }
 {
   const c = { A: series(lin(100, 110, 40)), B: series(lin(10, 11, 30), T0 + 10 * D) }
-  const r = B.backtest({ candles: c, items: [{ key: 'A', weight: 1 }, { key: 'B', weight: 1 }], from: T0, to: T0 + 39 * D, strategies: ['hold'], opts: opts0, bench: 'A' })
-  t('a window that starts before a holding listed is clipped, and says by which', r.start === T0 + 10 * D && r.clippedBy === 'B')
+  const items2 = [{ key: 'A', weight: 1 }, { key: 'B', weight: 1 }]
+  // 'wait': the old rule, still selectable — start when every holding trades.
+  const r = B.backtest({ candles: c, items: items2, from: T0, to: T0 + 39 * D, strategies: ['hold'], opts: { ...opts0, listing: 'wait' }, bench: 'A' })
+  t('listing "wait": the window starts when the last holding lists, and says which', r.start === T0 + 10 * D && r.clippedBy === 'B' && r.joined.length === 0)
   t('the benchmark runs over the same days', r.bench && r.bench.equity.length === r.days.length)
+  // 'join', the default: the full window; B comes in the day it lists.
+  const j = B.backtest({ candles: c, items: items2, from: T0, to: T0 + 39 * D, strategies: ['hold', 'monthly', 'trend', 'dca'], opts: opts0 })
+  t('by default the full window is tested: a later listing does not cut it short', j.start === T0 && j.days.length === 40 && j.clippedBy === null)
+  t('and the late holding is named, with its listing day', j.joined.length === 1 && j.joined[0].key === 'B' && j.joined[0].t === T0 + 10 * D)
+  // By hand: 10 days all in A (100 → A(10)), then half each from day 10 to day 39.
+  const A = lin(100, 110, 40), Bp = lin(10, 11, 30)
+  const e10 = 1000 * A[10] / A[0]
+  const want2 = e10 / 2 * (A[39] / A[10]) + e10 / 2 * (Bp[29] / Bp[0])
+  const hold = j.runs.find(x => x.id === 'hold')
+  t('buy & hold: all in A until B lists, then half each — worked out by hand', near(hold.final, want2), [hold.final, want2])
+  t('which is one extra trade on the listing day', hold.rebalances === 2 && Object.keys(hold.pnlBy).length === 2)
+  t('every strategy runs the full window', j.runs.every(x => x.equity.length === 40 && x.equity.every(Number.isFinite)))
+  // A window that starts before ANY holding traded still starts at the first one to.
+  const k = B.backtest({ candles: { B: c.B, A: series(lin(5, 6, 20), T0 + 20 * D) }, items: items2, from: T0, to: T0 + 39 * D, strategies: ['hold'], opts: opts0 })
+  t('before any holding traded, it starts at the first listing, and says which', k.start === T0 + 10 * D && k.clippedBy === 'B' && k.joined[0]?.key === 'A')
   t('a holding with no candles stops the run and is named', B.backtest({ candles: { A: series([1, 2]) }, items: [{ key: 'A', weight: 1 }, { key: 'Z', weight: 1 }], from: T0, to: T0 + D, strategies: ['hold'] }).missing[0] === 'Z')
 }
 

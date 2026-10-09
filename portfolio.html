@@ -118,7 +118,10 @@
         <div class="mk-seg pf-seg" id="pfLev"><button data-l="1">1×</button><button data-l="2">2×</button><button data-l="3">3×</button><button data-l="5">5×</button></div>
       </div>
       <label class="pf-field"><span class="pf-lbl">Fee per trade, %</span><input id="pfFee" type="number" min="0" step="0.005" inputmode="decimal"></label>
+      <div class="pf-checks">
       <label class="pf-check"><input type="checkbox" id="pfBench"> Compare with BTC</label>
+      <label class="pf-check" title="Off: a holding listed later joins on its listing day, and the test covers the whole period. On: the test starts only once every holding trades."><input type="checkbox" id="pfWait"> Wait until every holding is listed</label>
+      </div>
     </div>
 
     <div class="pf-lbl">Allocation strategies <small>the whole basket, by its weights</small></div>
@@ -145,7 +148,7 @@
       How this is worked out: one price per day, Hyperliquid's daily close; a day with no trade keeps the last close.
       Leverage scales the whole basket, and a balance that reaches zero is liquidated and stays there. Daily closes miss
       intraday wicks, so leveraged results are better than a real account would have had. A fee is charged on every trade;
-      funding and slippage are not included. A basket can only be tested from the day its newest holding was listed.
+      funding and slippage are not included. A holding listed after the period starts joins on its listing day: until then its weight is spread over the holdings that traded (or, if you choose, the test waits until every holding is listed).
       The trading strategies are the app's Trade Simulator: each holding runs the rule on its own share of the capital,
       in its own direction, and a trade still open at the end is not counted. Past prices say nothing certain about
       future ones; this is a way to look at history, not advice.
