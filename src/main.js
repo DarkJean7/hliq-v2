@@ -316,6 +316,7 @@ function _applyBrightnessFilter(v) {
 import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
          compareAxisHtml, attachCompareScrub, compareReadoutHtml, assignCompareColors } from './compare.js'
 import { ES_DICT } from './i18n-es.js'
+import { DISPLAY_NAMES } from './coinnames.js'
 
 /**
  * "Can this view act on the account right now?"
@@ -3335,7 +3336,8 @@ const _HIP3_DEX_DOMAINS = {
 // is io:GPRO — the app was right and useless at the same time.
 // Ticker as HL's API names it -> name HL's own UI shows. Their market is "OPENAI-USDC";
 // the asset is `io:OAI`, so searching "openai" here found nothing but the dead vntl one.
-const _MKT_DISPLAY = { 'CL': 'WTIOIL', 'GPRO': 'GOPRO', 'OAI': 'OPENAI' }
+// One list with /markets and /portfolios: src/coinnames.js.
+const _MKT_DISPLAY = DISPLAY_NAMES
 function _mktDisplay(coin) { return _MKT_DISPLAY[coin.replace(/.*:/, '')] ?? null }
 
 /**

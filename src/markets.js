@@ -144,7 +144,7 @@ function renderCards(list) {
   const s = summarize(list)
   const partial = view.tab !== 'perp' && view.tab !== 'spot' && dexInfo.ok < dexInfo.total
   const floor = partial ? ' <span class="mk-dim" title="Not every HIP-3 dex has answered yet">+</span>' : ''
-  const mover = (r) => r ? `${esc(r.sym)} ${chg(r.chg24)}` : '—'
+  const mover = (r) => r ? `${esc(r.label ?? r.sym)} ${chg(r.chg24)}` : '—'
   // Summed once per token: PUMP's perp and its wrapped spot would otherwise count it twice.
   const revRows = onePerToken(list.filter(r => r.rev24 != null))
   const rev = revRows.reduce((a, r) => a + r.rev24, 0), revN = revRows.length
@@ -253,7 +253,7 @@ function renderTable(list) {
   const chartable = view.mode === 'revenue'
   $('mkBody').innerHTML = page.length ? page.map((r, i) => `<tr data-id="${esc(r.id)}"${chartable ? ' class="mk-row-chart" tabindex="0" title="Show the revenue history"' : ''}>
       <td class="mk-c-rank">${i + 1}</td>
-      <td class="mk-c-asset"><div class="mk-asset">${iconHtml(r)}<div><b>${esc(r.sym)}</b>${badge(r)}${sub(r) ? `<small>${esc(sub(r))}</small>` : ''}</div></div></td>
+      <td class="mk-c-asset"><div class="mk-asset">${iconHtml(r)}<div><b>${esc(r.label ?? r.sym)}</b>${badge(r)}${sub(r) ? `<small>${esc(sub(r))}</small>` : ''}</div></div></td>
       ${cols.map(([k]) => `<td>${cellFor(k, r)}</td>`).join('')}
       ${catCell(r)}
     </tr>`).join('')

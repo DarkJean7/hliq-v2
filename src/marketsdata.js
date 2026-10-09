@@ -25,6 +25,7 @@
  */
 
 import { classify, normHlCat, SECTOR_LABEL } from './sectors.js'
+import { displayName } from './coinnames.js'
 
 export const KINDS = { perp: 'Perps', hip3: 'HIP-3', spot: 'Spot' }
 
@@ -59,6 +60,8 @@ export function perpRows(meta, ctxs, dex = null, dexLabel = null) {
       id:       u.name,
       coin:     u.name,                        // what the app's /icon cache is keyed by
       sym:      u.name.replace(/^.*:/, ''),
+      // What Hyperliquid's own UI calls it (xyz:CL is "WTIOIL"); `sym` stays the ticker.
+      label:    displayName(u.name),
       name:     null,
       kind:     dex ? 'hip3' : 'perp',
       dex:      dex ?? null,
@@ -211,7 +214,7 @@ export function filterRows(rows, { kind = 'all', dex = null, q = '', group = nul
     (!dex || r.dex === dex) &&
     (!group || r.group === group) &&
     (!sector || (r.tags ?? []).includes(sector)) &&
-    (!s || r.sym.toLowerCase().includes(s) || (r.name ?? '').toLowerCase().includes(s) || (r.dexLabel ?? '').toLowerCase().includes(s)))
+    (!s || r.sym.toLowerCase().includes(s) || (r.label ?? '').toLowerCase().includes(s) || (r.name ?? '').toLowerCase().includes(s) || (r.dexLabel ?? '').toLowerCase().includes(s)))
 }
 
 /**

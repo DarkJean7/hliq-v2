@@ -9,6 +9,7 @@ import './landing.css'
 import './markets.css'
 import './portfolio.css'
 import { buildMarkets, isStrict } from './marketsdata.js'
+import { displayName } from './coinnames.js'
 import { SECTORS, SECTOR_LABEL } from './sectors.js'
 import { holdingsSectors, sectorColor } from './sectoralloc.js'
 import { STRATEGIES, STRATEGY_LABEL, BOT_STRATEGIES, BOT_LABEL, backtest, botRun, DAY, dayOf } from './pfbacktest.js'
@@ -215,10 +216,10 @@ function renderBuilder() {
     return `<div class="pf-hold" data-k="${k}">
       <span class="pf-sw" style="background:${HOLD_COLORS[k % HOLD_COLORS.length]}"></span>
       ${iconHtml(i.coin, i.sym)}
-      <div class="pf-hold-name"><b>${esc(i.sym)}</b>${badge}${gone}</div>
+      <div class="pf-hold-name"><b>${esc(displayName(i.sym))}</b>${badge}${gone}</div>
       <button class="pf-side ${i.side === 'short' ? 'is-short' : ''}" data-side="${k}" title="Long or short">${i.side === 'short' ? 'Short' : 'Long'}</button>
-      <label class="pf-w"><input type="number" min="0" step="1" value="${+Number(i.w).toFixed(2)}" data-w="${k}" aria-label="Weight of ${esc(i.sym)}"><span>${(share(i) * 100).toFixed(1)}%</span></label>
-      <button class="pf-x" data-rm="${k}" aria-label="Remove ${esc(i.sym)}">×</button>
+      <label class="pf-w"><input type="number" min="0" step="1" value="${+Number(i.w).toFixed(2)}" data-w="${k}" aria-label="Weight of ${esc(displayName(i.sym))}"><span>${(share(i) * 100).toFixed(1)}%</span></label>
+      <button class="pf-x" data-rm="${k}" aria-label="Remove ${esc(displayName(i.sym))}">×</button>
     </div>`
   }).join('') : '<div class="pf-empty">Add assets above, or start from a sector.</div>'
   const t = totalW()
@@ -279,7 +280,7 @@ function renderGallery() {
     const edited = editing && !sameItems(p.items, S.items)
     const res = galResult(p)
     const icons = live.slice(0, 5).map(i => iconHtml(i.coin, i.sym)).join('') + (live.length > 5 ? `<span class="pf-more">+${live.length - 5}</span>` : '')
-    const bar = live.map((i, j) => `<i style="width:${(100 * Number(i.w) / tot).toFixed(2)}%;background:${HOLD_COLORS[j % HOLD_COLORS.length]}" title="${esc(i.sym)} ${(100 * Number(i.w) / tot).toFixed(1)}%"></i>`).join('')
+    const bar = live.map((i, j) => `<i style="width:${(100 * Number(i.w) / tot).toFixed(2)}%;background:${HOLD_COLORS[j % HOLD_COLORS.length]}" title="${esc(displayName(i.sym))} ${(100 * Number(i.w) / tot).toFixed(1)}%"></i>`).join('')
     let body
     if (res.state === 'ok') {
       const r = res.run
@@ -331,7 +332,7 @@ function renderComp() {
   const arcs = live.map(i => {
     const len = Math.max(0.5, i.s * C - gap), off = -acc
     acc += i.s * C
-    return `<circle cx="${CX}" cy="${CX}" r="${R}" fill="none" stroke="${HOLD_COLORS[i.k % HOLD_COLORS.length]}" stroke-width="${SW}" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}" transform="rotate(-90 ${CX} ${CX})"><title>${esc(i.sym)} ${(i.s * 100).toFixed(1)}%</title></circle>`
+    return `<circle cx="${CX}" cy="${CX}" r="${R}" fill="none" stroke="${HOLD_COLORS[i.k % HOLD_COLORS.length]}" stroke-width="${SW}" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}" transform="rotate(-90 ${CX} ${CX})"><title>${esc(displayName(i.sym))} ${(i.s * 100).toFixed(1)}%</title></circle>`
   }).join('')
   const longS = live.filter(i => i.side !== 'short').reduce((a, i) => a + i.s, 0)
   // Sector mix: the same categories as /markets and the app's Allocation → By sector.
@@ -350,7 +351,7 @@ function renderComp() {
       </div>
       <div class="pf-legend">${live.slice().sort((a, b) => b.s - a.s).map(i => `
         <div class="pf-leg"><span class="pf-sw" style="background:${HOLD_COLORS[i.k % HOLD_COLORS.length]}"></span>${iconHtml(i.coin, i.sym)}
-          <div><b>${esc(i.sym)}</b>${i.side === 'short' ? ' <i class="pf-short">short</i>' : ''}<small>${esc(rowById.get(i.coin)?.category ?? '')}</small></div>
+          <div><b>${esc(displayName(i.sym))}</b>${i.side === 'short' ? ' <i class="pf-short">short</i>' : ''}<small>${esc(rowById.get(i.coin)?.category ?? '')}</small></div>
           <span class="pf-leg-pct">${(i.s * 100).toFixed(1)}%</span></div>`).join('')}
       </div>
     </div>
@@ -498,7 +499,7 @@ function renderResults() {
   const dd = lineChart(all.map(s => ({ id: s.id, color: s.color, dash: s.dash, v: s.dd })), L.days, { h: 150, fmt: (v) => (v * 100).toFixed(0) + '%', signed: true })
   const best = L.runs.slice().sort((a, b) => b.final - a.final)[0]
   const f = all.find(x => x.id === focus) ?? best
-  const contrib = f ? Object.entries(f.pnlBy).map(([k, v]) => ({ k, v, sym: rowById.get(k)?.sym ?? L.items.find(i => i.key === k)?.key.replace(/^.*:/, '') ?? k })).sort((a, b) => b.v - a.v) : []
+  const contrib = f ? Object.entries(f.pnlBy).map(([k, v]) => ({ k, v, sym: displayName(rowById.get(k)?.sym ?? k) })).sort((a, b) => b.v - a.v) : []
   const cmax = Math.max(1e-9, ...contrib.map(c => Math.abs(c.v)))
   const tradesOf = (x) => x.id === '__bench' ? '1' : x.trades != null && x.won != null ? `${x.trades}${x.won + x.lost ? ` · ${Math.round(100 * x.won / (x.won + x.lost))}% won` : ''}` : x.rebalances != null ? `${x.rebalances} rebal.` : '—'
 
@@ -599,9 +600,13 @@ let sugList = []
 $('pfSearch').addEventListener('input', e => {
   const q = e.target.value.trim().toLowerCase()
   if (!q) { sug.hidden = true; return }
-  sugList = rows.filter(r => r.sym.toLowerCase().startsWith(q) || (r.name ?? '').toLowerCase().includes(q) || r.coin.toLowerCase() === q)
-    .sort((a, b) => (b.sym.toLowerCase() === q) - (a.sym.toLowerCase() === q) || (b.vol24 ?? 0) - (a.vol24 ?? 0)).slice(0, 8)
-  sug.innerHTML = sugList.length ? sugList.map((r, k) => `<button data-sug="${k}" ${S.items.some(i => i.coin === r.coin) ? 'disabled' : ''}>${iconHtml(r.coin, r.sym)}<b>${esc(r.sym)}</b>${r.kind === 'hip3' ? `<i class="mk-b mk-b--hip3">${esc(r.dexLabel)}</i>` : r.kind === 'spot' ? '<i class="mk-b mk-b--spot">Spot</i>' : '<i class="mk-b">Perp</i>'}<small>${esc(r.category ?? '')}</small><span>${short$(r.vol24 ?? 0)} vol</span></button>`).join('')
+  // Ticker or display name, anywhere in it: "oil" finds BRENTOIL, WTIOIL (xyz:CL) and USOIL.
+  // Exact names first, then names that start with it, then the rest; most traded first within each.
+  const names = (r) => [r.sym, r.label ?? '', r.name ?? ''].map(x => x.toLowerCase())
+  const rank = (r) => { const n = names(r); return n.some(x => x === q) ? 0 : n.some(x => x.startsWith(q)) ? 1 : 2 }
+  sugList = rows.filter(r => names(r).some(x => x.includes(q)) || r.coin.toLowerCase() === q)
+    .sort((a, b) => rank(a) - rank(b) || (b.vol24 ?? 0) - (a.vol24 ?? 0)).slice(0, 8)
+  sug.innerHTML = sugList.length ? sugList.map((r, k) => `<button data-sug="${k}" ${S.items.some(i => i.coin === r.coin) ? 'disabled' : ''}>${iconHtml(r.coin, r.sym)}<b>${esc(r.label ?? r.sym)}</b>${r.kind === 'hip3' ? `<i class="mk-b mk-b--hip3">${esc(r.dexLabel)}</i>` : r.kind === 'spot' ? '<i class="mk-b mk-b--spot">Spot</i>' : '<i class="mk-b">Perp</i>'}<small>${esc(r.category ?? '')}</small><span>${short$(r.vol24 ?? 0)} vol</span></button>`).join('')
     : `<div class="pf-empty">${marketsReady ? 'Nothing on Hyperliquid matches.' : 'Markets are still loading…'}</div>`
   sug.hidden = false
 })

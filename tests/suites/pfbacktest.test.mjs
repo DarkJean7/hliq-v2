@@ -88,5 +88,18 @@ console.log(nl + '-- the Simulator\'s strategies on every holding --')
   t('each holding trades only its own direction unless asked', SRC.includes('useDirection: !both, direction: side'))
 }
 
+console.log(nl + '-- names: what Hyperliquid shows, not only the ticker --')
+{
+  const N = await import('../../src/coinnames.js')
+  const M = await import('../../src/marketsdata.js')
+  t('xyz:CL is WTIOIL, OAI is OPENAI', N.displayName('xyz:CL') === 'WTIOIL' && N.displayName('OAI') === 'OPENAI' && N.displayName('BTC') === 'BTC')
+  const rows = M.perpRows({ universe: [{ name: 'xyz:CL', maxLeverage: 20 }] }, [{ markPx: '70', prevDayPx: '69', dayNtlVlm: '1000', openInterest: '10', funding: '0' }], 'xyz')
+  t('a market row carries the shown name and keeps its ticker', rows[0].label === 'WTIOIL' && rows[0].sym === 'CL')
+  t('/markets search finds it by the shown name', M.filterRows(rows, { q: 'wtioil' }).length === 1 && M.filterRows(rows, { q: 'oil' }).length === 1)
+  const P = fs.readFileSync('src/portfolio.js', 'utf8'), MAIN = fs.readFileSync('src/main.js', 'utf8')
+  t('/portfolios searches the shown name anywhere in it', P.includes("const names = (r) => [r.sym, r.label ?? '', r.name ?? '']") &&P.includes('names(r).some(x => x.includes(q))'))
+  t('the app reads the same list', MAIN.includes('const _MKT_DISPLAY = DISPLAY_NAMES'))
+}
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

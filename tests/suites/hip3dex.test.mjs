@@ -70,8 +70,10 @@ t('the desktop sub-row still shows categories elsewhere',
 t('the type row that opens all this still exists', html.includes(`data-type="hip3"`))
 
 console.log(nl + '-- a market can be found by the name it is shown under --')
-t('GPRO is aliased to GOPRO', /'GPRO':\s*'GOPRO'/.test(cli))
-t('the existing WTIOIL alias is untouched', /'CL':\s*'WTIOIL'/.test(cli))
+// The list lives in src/coinnames.js (shared with /markets and /portfolios); main.js reads it.
+const names = fs.readFileSync('src/coinnames.js', 'utf8')
+t('GPRO is aliased to GOPRO', /GPRO:\s*'GOPRO'/.test(names) && cli.includes('const _MKT_DISPLAY = DISPLAY_NAMES'))
+t('the existing WTIOIL alias is untouched', /CL:\s*'WTIOIL'/.test(names))
 t('there is a reverse map', cli.includes('const _MKT_DISPLAY_REV = Object.fromEntries('))
 t('the bot coin field uses it', grab(cli, 'function _resolveGridCoin').includes('_MKT_DISPLAY_REV[up]'))
 t('the real ticker still resolves first',

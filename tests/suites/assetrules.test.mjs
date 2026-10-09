@@ -174,7 +174,8 @@ console.log(nl + '-- a delisted market is not a market you can pick --')
 }
 {
   // The alias is what makes the live market reachable by the only name anyone has seen.
-  t('OAI is shown as OPENAI', CLI.includes("'OAI': 'OPENAI'"))
+  // The list moved to src/coinnames.js so /markets and /portfolios share it; main.js reads it.
+  t('OAI is shown as OPENAI', /OAI:\s*'OPENAI'/.test(fs.readFileSync('src/coinnames.js', 'utf8')) && CLI.includes('const _MKT_DISPLAY = DISPLAY_NAMES'))
   t('searches match the shown name as well as the stored one',
     (CLI.match(/_mktDisplay\(c(?:oin)?\) \?\? ''\)\.to(?:Lower|Upper)Case\(\)\.(?:includes|startsWith)\(/g) ?? []).length >= 3)
   t('and rows read as the shown name', CLI.includes('_mktDisplay(coin) ?? coin'))
