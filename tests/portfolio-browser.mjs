@@ -118,6 +118,18 @@ async function run(label, opts) {
 
   // The composition ring.
   ok('the composition shows the weights', /BTC/.test(await p.textContent('#pfComp')) && /50\.0%/.test(await p.textContent('#pfComp')))
+  // Asset performance under the sector mix: each holding's own move, from the daily closes.
+  const dOf = (t) => Math.floor(t / DAY) * DAY
+  const pctT = (x) => (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%'
+  await waitFor(p, 'the performance rows', () => document.querySelectorAll('#pfComp .pf-perf-row').length === 2 && /%/.test(document.querySelector('#pfComp .pf-perf-val')?.textContent ?? ''))
+  const perf = () => p.evaluate(() => [...document.querySelectorAll('#pfComp .pf-perf-row')].map(r => [r.querySelector('b').textContent, r.querySelector('.pf-perf-val').textContent]))
+  const y1 = PRICE.BTC(dOf(NOW)) / PRICE.BTC(dOf(NOW) - 365 * DAY) - 1
+  const pr = await perf()
+  ok('asset performance: each holding\'s 1-year move, best first', pr[0][0] === 'BTC' && pr[0][1] === pctT(y1) && pr[1][0] === 'ETH' && pr[1][1] === '+0.0%', pr)
+  await p.click('#pfPerfTf [data-perf="30"]')
+  const m30 = PRICE.BTC(dOf(NOW)) / PRICE.BTC(dOf(NOW) - 30 * DAY) - 1
+  ok('and over 30 days', (await perf())[0][1] === pctT(m30), await perf())
+  ok('a visitor has no Publish button', await p.locator('#pfPublish').isHidden())
 
   // Markets by the name Hyperliquid shows, and by its keywords (perpConciseAnnotations).
   await waitFor(p, 'the HIP-3 dex', () => [...document.querySelectorAll('#pfSectors button')].some(b => /Stocks/.test(b.textContent)))
@@ -282,6 +294,14 @@ async function run(label, opts) {
   await p.click('#pfGallery [data-pub]')
   await waitFor(p, 'refused', () => /not accepted/.test(document.getElementById('pfMode').textContent))
   ok('a wrong PIN is refused and the page says so', featured.length === 1 && /not accepted/.test(await p.textContent('#pfMode')))
+  // Publish straight from the builder.
+  await p.evaluate(() => localStorage.setItem('hliq_lb_pin', 'devpin'))
+  await p.click('#pfGallery [data-load="l:0"] .pf-gc-name')
+  await waitFor(p, 'the builder publish button', () => !document.getElementById('pfPublish').hidden)
+  ok('the developer can publish what is in the builder', await p.locator('#pfPublish').isVisible())
+  await p.click('#pfPublish')
+  await waitFor(p, 'published from the builder', () => document.querySelectorAll('#pfFeatured [data-load]').length === 2)
+  ok('Publish puts it under Featured, and Save becomes "Update featured"', featured.length === 2 && (await p.textContent('#pfSave')).trim() === 'Update featured' && await p.locator('#pfPublish').isHidden() && !!(await p.evaluate(() => window.__pf.state.featuredId)))
 
   ok('no horizontal page scroll', await p.evaluate(() => document.documentElement.scrollWidth - innerWidth) <= 0, await p.evaluate(() => document.documentElement.scrollWidth - innerWidth))
   if (SHOT) await p.screenshot({ path: `${SHOT}/portfolio-${label}.png`, fullPage: true })

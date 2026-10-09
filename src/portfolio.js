@@ -445,6 +445,52 @@ async function loadGalleryPrices() {
 }
 
 // ── composition ──────────────────────────────────────────────────────────────
+// ── asset performance: each holding's own price change, under the sector mix ──
+// The market's move, not the portfolio's: a short holding's row is the asset going up or
+// down, marked "short", so the list reads the same as any price chart. Daily closes, the same
+// ones the backtest uses (fetchDaily, cached).
+const PERF_TFS = [['7', '7D'], ['30', '30D'], ['90', '90D'], ['365', '1Y']]
+function assetPerf(coin, days) {
+  const arr = daily.get(coin)
+  if (!arr?.length) return null
+  const from = dayOf(Date.now()) - days * DAY
+  const k = arr.findIndex(c => c.t >= from)
+  if (k < 0) return null
+  const pts = arr.slice(k), a = pts[0].c, b = pts[pts.length - 1].c
+  return { ret: b / a - 1, since: arr[0].t > from ? arr[0].t : null, pts: pts.map(c => c.c) }
+}
+const miniSpark = (v, up) => {
+  if (!v || v.length < 2) return '<i class="pf-perf-spark"></i>'
+  const W = 72, H = 22, lo = Math.min(...v), hi = Math.max(...v), sp = hi - lo || 1
+  const d = v.map((x, i) => `${i ? 'L' : 'M'}${(i / (v.length - 1) * W).toFixed(1)},${(H - 2 - (x - lo) / sp * (H - 4)).toFixed(1)}`).join('')
+  return `<svg class="pf-perf-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><path d="${d}" fill="none" stroke="${up ? 'var(--pos)' : 'var(--neg)'}" stroke-width="1.4" vector-effect="non-scaling-stroke"/></svg>`
+}
+function perfHtml(live) {
+  if (!live.length) return ''
+  const days = Number(S.perfTf ?? 365) || 365
+  const rows = live.map(i => ({ i, p: assetPerf(i.coin, days) }))
+    .sort((a, b) => (b.p?.ret ?? -Infinity) - (a.p?.ret ?? -Infinity))
+  const max = Math.max(1e-9, ...rows.map(r => Math.abs(r.p?.ret ?? 0)))
+  return `<div class="pf-perf-head"><div class="pf-lbl">Asset performance</div>
+      <div class="mk-seg pf-seg pf-perf-tf" id="pfPerfTf">${PERF_TFS.map(([k, l]) => `<button data-perf="${k}" class="${String(days) === k ? 'is-on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="pf-perf">${rows.map(({ i, p }) => `<div class="pf-perf-row">
+      ${iconHtml(i.coin, i.sym)}
+      <div class="pf-perf-name"><b>${esc(nameOf(i))}</b>${i.side === 'short' ? ' <i class="pf-short">short</i>' : ''}<small>${p?.since ? `since ${dLabel(p.since)}` : esc(rowById.get(i.coin)?.category ?? '')}</small></div>
+      ${miniSpark(p?.pts, (p?.ret ?? 0) >= 0)}
+      <span class="pf-perf-bar"><i class="${(p?.ret ?? 0) >= 0 ? 'up' : 'dn'}" style="width:${p ? (50 * Math.abs(p.ret) / max).toFixed(1) : 0}%"></i></span>
+      <span class="pf-perf-val ${p ? cls(p.ret) : 'mk-dim'}">${p ? pct(p.ret) : (daily.has(i.coin) ? '—' : '…')}</span>
+    </div>`).join('')}</div>`
+}
+// Prices for the rows, one coin at a time, then a redraw. The backtest usually has them already.
+let perfLoading = false
+async function loadPerfPrices(live) {
+  const need = live.map(i => i.coin).filter(c => !daily.has(c) && !galFailed.has(c))
+  if (perfLoading || !need.length) return
+  perfLoading = true
+  try { for (const c of need) { try { await fetchDaily(c) } catch { galFailed.add(c) } await sleep(150) } }
+  finally { perfLoading = false; renderComp() }
+}
+
 function renderComp() {
   const el = $('pfComp')
   const live = S.items.map((i, k) => ({ ...i, k, s: share(i) })).filter(i => i.s > 0)
@@ -481,7 +527,9 @@ function renderComp() {
     </div>
     ${sec.sectors.length ? `<div class="pf-lbl" style="margin-top:14px">Sector mix</div>
       <div class="pf-secbar">${sec.sectors.map(s => `<i style="width:${(s.gross * 100).toFixed(2)}%;background:${sectorColor(s.key)}" title="${esc(s.label)} ${(s.gross * 100).toFixed(1)}%"></i>`).join('')}</div>
-      <div class="pf-seclist">${sec.sectors.map(s => `<span><i style="background:${sectorColor(s.key)}"></i>${esc(s.label)} <b>${(s.gross * 100).toFixed(0)}%</b></span>`).join('')}</div>` : ''}`
+      <div class="pf-seclist">${sec.sectors.map(s => `<span><i style="background:${sectorColor(s.key)}"></i>${esc(s.label)} <b>${(s.gross * 100).toFixed(0)}%</b></span>`).join('')}</div>` : ''}
+    ${perfHtml(live)}`
+  loadPerfPrices(live)
 }
 
 // ── run controls ─────────────────────────────────────────────────────────────
@@ -575,6 +623,7 @@ async function run() {
   if (!runs.some(x => x.id === focus)) focus = runs.slice().sort((a, b) => b.final - a.final)[0]?.id ?? null
   res.classList.remove('is-busy')
   setStatus(`tested ${dLabel(r.days[0])} → ${dLabel(r.days[r.days.length - 1])}`)
+  renderComp()          // the asset performance rows read the prices this run fetched
   renderResults()
 }
 
@@ -773,6 +822,24 @@ $('pfSave').addEventListener('click', async () => {
   renderBuilder()
   loadGalleryPrices()
 })
+$('pfPublish').addEventListener('click', async () => {
+  const b = $('pfPublish')
+  b.disabled = true; b.textContent = 'Publishing…'
+  try {
+    const before = new Set((featured ?? []).map(p => p.id))
+    const list = await featuredWrite('save', { portfolio: { name: S.name, desc: S.desc, items: S.items } })
+    // From here on it is the featured one: Save becomes "Update featured".
+    S.featuredId = list.find(p => !before.has(p.id))?.id ?? null
+    saveDraft()
+    setNote(`"${S.name}" is now featured for everyone.`)
+  } catch (e) { setNote(e.message) }
+  b.disabled = false; b.textContent = 'Publish'
+  renderBuilder(); loadGalleryPrices()
+})
+$('pfComp').addEventListener('click', e => {
+  const b = e.target.closest('[data-perf]'); if (!b) return
+  S.perfTf = b.dataset.perf; saveDraft(); renderComp()
+})
 $('pfShare').addEventListener('click', async () => {
   const url = location.origin + '/portfolios#p=' + encodeShare()
   history.replaceState(null, '', '#p=' + encodeShare())
@@ -862,6 +929,9 @@ function renderMode() {
   if (!el) return
   const dev = isDev()
   $('pfSave').textContent = S.featuredId ? (dev ? 'Update featured' : 'Save a copy') : 'Save'
+  // Publish what is in the builder — for the developer, and only when it is not featured already
+  // (then Save is "Update featured").
+  $('pfPublish').hidden = !(dev && !S.featuredId)
   const base = S.featuredId
     ? (dev ? 'Featured portfolio. <b>Update featured</b> publishes your changes to everyone.'
            : 'Featured portfolio. Change anything and test it: nothing here changes it for anyone else. <b>Save a copy</b> keeps your version on this device.')

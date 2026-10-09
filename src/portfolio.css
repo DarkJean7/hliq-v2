@@ -138,6 +138,24 @@
 .pf-seclist { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 9px; font-size: 12.5px; color: var(--fg-2); }
 .pf-seclist i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
 
+/* asset performance */
+.pf-perf-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 18px; }
+.pf-perf-head .pf-lbl { margin: 0; }
+.pf-perf-tf button { padding: 5px 9px; font-size: 12px; }
+.pf-perf { display: flex; flex-direction: column; margin-top: 8px; }
+.pf-perf-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 72px 70px 64px; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--rule); }
+.pf-perf-row:last-child { border-bottom: 0; }
+.pf-perf-row .mk-ico { width: 24px; height: 24px; }
+.pf-perf-name { min-width: 0; font-size: 13.5px; }
+.pf-perf-name small { display: block; font-size: 11px; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pf-perf-spark { display: block; width: 72px; height: 22px; }
+.pf-perf-bar { position: relative; height: 8px; }
+.pf-perf-bar::before { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--rule); }
+.pf-perf-bar i { position: absolute; top: 0; height: 100%; border-radius: 3px; }
+.pf-perf-bar i.up { left: 50%; background: var(--pos); } .pf-perf-bar i.dn { right: 50%; background: var(--neg); }
+.pf-perf-val { text-align: right; font-family: var(--font-mono); font-size: 13px; font-weight: 600; }
+@media (max-width: 760px) { .pf-perf-row { grid-template-columns: 24px minmax(0, 1fr) 56px 64px; } .pf-perf-bar { display: none; } .pf-perf-spark { width: 56px; } }
+
 /* the test */
 .pf-run { margin-bottom: 14px; }
 .pf-run-grid { display: grid; grid-template-columns: auto 160px auto 130px auto; gap: 8px 22px; align-items: end; }
