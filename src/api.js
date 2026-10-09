@@ -22,6 +22,10 @@ const HIP3_RENAMES = {
 }
 function _hip3Rename(coin) { return HIP3_RENAMES[coin] ?? coin }
 export function hip3Rename(coin) { return _hip3Rename(coin) }
+// The other way: a renamed coin back to Hyperliquid's id ("WTIOIL" → "xyz:CL"), for anything
+// keyed by the real id — perpCategories, asset contexts. Unrenamed coins pass through.
+const HIP3_ORIGINAL = Object.fromEntries(Object.entries(HIP3_RENAMES).map(([k, v]) => [v, k]))
+export function hip3Original(coin) { return HIP3_ORIGINAL[coin] ?? coin }
 
 // Bounded-concurrency map, preserving input order.
 //

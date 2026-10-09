@@ -5,7 +5,7 @@ if (_il) _il.remove()
 import { InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { updateGameMode as _updateGameMode, gmOrdersInvalidate } from './game.js'
 import { initOnboarding } from './onboard.js'   // also registers window.__glossary/__openLearn/__startMainTour/__term
-import { loadAccountData, loadFundingData, buildAssetMap, infoClient, fetchAllMids, fetchHip3Mids, hip3DexNames, fetchFrontendOpenOrders, fetchClearinghouseState, hip3Rename, coinLabel, hlPool, subsClient, fetchAllFills, fetchAllFunding } from './api.js'
+import { loadAccountData, loadFundingData, buildAssetMap, infoClient, fetchAllMids, fetchHip3Mids, hip3DexNames, fetchFrontendOpenOrders, fetchClearinghouseState, hip3Rename, hip3Original, coinLabel, hlPool, subsClient, fetchAllFills, fetchAllFunding } from './api.js'
 // Metered at the funnel: every info request paces itself against HL's budget, and order
 // placement is counted but never delayed. See src/hlbudget.js.
 const _transport = meterTransport(new HttpTransport({ timeout: 30_000 }))
@@ -4260,9 +4260,12 @@ function _sectorHoldings() {
     const v = Math.abs(parseFloat(p.positionValue ?? 0)) || Math.abs(sz) * _posMarkPx(p)
     if (!(v > 0)) continue
     const coin = String(p.coin)
-    const h3 = coin.includes(':')
-    add('perp:' + coin, { coin, kind: 'perp', sym: h3 ? coin.split(':')[1] : coin,
-      hlCat: _mktCatMap[coin] ?? _MAIN_DEX_TRADFI_CATS[coin] ?? null, label: _ocCoinLabel(coin) },
+    // A renamed HIP-3 market arrives under its display name (xyz:CL as "WTIOIL"); its category
+    // and its ticker are filed under Hyperliquid's id. Without this WTIOIL was "Other crypto".
+    const id = hip3Original(coin)
+    const h3 = id.includes(':')
+    add('perp:' + coin, { coin, kind: 'perp', sym: h3 ? id.split(':')[1] : id,
+      hlCat: _mktCatMap[id] ?? _MAIN_DEX_TRADFI_CATS[id] ?? null, label: _ocCoinLabel(coin) },
       sz > 0 ? v : 0, sz < 0 ? v : 0, p._acct)
   }
   for (const s of spotByCoin(_allocSpotBalances(), _allocSpotMid).values()) {
