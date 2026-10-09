@@ -31,7 +31,9 @@ const waitFor = async (p, label, fn, arg, ms = 30000) => {
 
 const NOW = Date.now()
 const T0 = Math.floor(NOW / DAY) * DAY - 400 * DAY
-const PRICE = { BTC: (t) => 100 * (1 + Math.max(0, t - T0) / (400 * DAY)), ETH: () => 50, SOL: () => 20 }
+const PRICE = { BTC: (t) => 100 * (1 + Math.max(0, t - T0) / (400 * DAY)), ETH: () => 50, SOL: () => 20, 'xyz:NVDA': () => 180 }
+// Listed later than the rest: NVDA's history starts 50 days ago.
+const START = { 'xyz:NVDA': Math.floor(NOW / DAY) * DAY - 50 * DAY }
 const TF = { '1d': DAY, '4h': 4 * 3_600_000, '1h': 3_600_000 }
 const ctx0 = (px) => ({ funding: '0.00001', openInterest: '1000', prevDayPx: String(px), dayNtlVlm: '5000000', premium: '0', oraclePx: String(px), markPx: String(px), midPx: String(px), impactPxs: [String(px), String(px)] })
 const UNIVERSE = [{ name: 'BTC', szDecimals: 5, maxLeverage: 40 }, { name: 'ETH', szDecimals: 4, maxLeverage: 25 }, { name: 'SOL', szDecimals: 2, maxLeverage: 20 }, { name: 'NOPE', szDecimals: 0, maxLeverage: 3 }]
@@ -65,7 +67,7 @@ async function run(label, opts) {
       if (!f) return route.fulfill({ status: 200, contentType: 'application/json', json: [] })
       const step = TF[interval]
       const out = []
-      for (let t = Math.max(T0, Math.floor(startTime / step) * step); t <= endTime && out.length < 5000; t += step) {
+      for (let t = Math.max(T0, START[coin] ?? 0, Math.floor(startTime / step) * step); t <= endTime && out.length < 5000; t += step) {
         const c = f(t)
         out.push({ t, T: t + step - 1, s: coin, i: interval, o: String(c), h: String(c * 1.01), l: String(c * 0.99), c: String(c), v: '1', n: 1 })
       }
@@ -203,6 +205,32 @@ async function run(label, opts) {
   await p.click('#pfSave')
   ok('"Save a copy" keeps it on this device, and writes nothing to the server', writes.length === 0 && await p.evaluate(() => JSON.parse(localStorage.getItem('hliq_pf_saved'))[0]?.name) === 'Featured One' && await p.evaluate(() => window.__pf.state.featuredId) === null)
   ok('the featured one is unchanged', featured.length === 1 && featured[0].items[0].w === 60)
+
+  // A card whose newest holding was listed inside the window says the span it really tested.
+  featured.push({ id: 'feat0002', name: 'Alpha Late', at: 2, items: [{ coin: 'xyz:NVDA', sym: 'NVDA', kind: 'hip3', w: 50, side: 'long' }, { coin: 'BTC', sym: 'BTC', kind: 'perp', w: 50, side: 'long' }] })
+  await p.reload({ waitUntil: 'domcontentloaded' })
+  await p.click('#pfGalTf [data-g="365"]')
+  await waitFor(p, 'both featured cards', () => [...document.querySelectorAll('#pfFeatured .pf-gc-ret')].filter(x => /%/.test(x.textContent)).length === 2)
+  const late = (await p.textContent('#pfFeatured [data-load="f:feat0002"] .pf-gc-sub')).replace(/\s+/g, ' ')
+  const full = (await p.textContent('#pfFeatured [data-load="f:feat0001"] .pf-gc-sub')).replace(/\s+/g, ' ')
+  ok('a card listed 50 days ago says "50 days", not "1 year"', /^50 days · since /.test(late) && !/1 year/.test(late), late)
+  ok('a card with a full year still says "1 year"', /^1 year · /.test(full), full)
+  // Sorting.
+  const order = () => p.evaluate(() => [...document.querySelectorAll('#pfFeatured [data-load]')].map(c => c.querySelector('.pf-gc-name b').textContent))
+  const rets = () => p.evaluate(() => [...document.querySelectorAll('#pfFeatured .pf-gc-ret')].map(c => parseFloat(c.textContent)))
+  ok('newest first by default: as published', (await order()).join() === 'Featured One,Alpha Late')
+  await p.selectOption('#pfGalSort', 'name')
+  ok('sort by name', (await order()).join() === 'Alpha Late,Featured One', await order())
+  await p.selectOption('#pfGalSort', 'ret-desc')
+  const rd = await rets()
+  ok('sort by best return', rd.length === 2 && rd[0] >= rd[1], rd)
+  await p.selectOption('#pfGalSort', 'ret-asc')
+  const ra = await rets()
+  ok('and by worst', ra[0] <= ra[1] && ra[0] === rd[1], ra)
+  ok('the sort is remembered', await p.evaluate(() => localStorage.getItem('hliq_pf_gallery_sort')) === '"ret-asc"')
+  await p.selectOption('#pfGalSort', 'default')
+  featured = featured.filter(x => x.id !== 'feat0002')
+  await p.reload({ waitUntil: 'domcontentloaded' })
 
   // The developer: the app's dev mode and PIN.
   await p.evaluate(() => { localStorage.setItem('hliq_dev', '1'); localStorage.setItem('hliq_lb_pin', 'devpin') })

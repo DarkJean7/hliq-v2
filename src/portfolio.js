@@ -270,7 +270,7 @@ function galResult(p) {
   const candles = Object.fromEntries(items.map(i => [i.key, daily.get(i.key).map(k => [k.t, k.c])]))
   const r = backtest({ candles, items, from, to, strategies: ['hold'], opts: { capital: 10_000, leverage: 1, feeBps: DEFAULT.fee * 100 } })
   if (!r.runs.length) return { state: 'failed' }
-  return { state: 'ok', run: r.runs[0], start: r.start, clippedBy: r.clippedBy }
+  return { state: 'ok', run: r.runs[0], start: r.start, clippedBy: r.clippedBy, days: r.days.length - 1 }
 }
 
 function spark(eq, up) {
@@ -316,19 +316,51 @@ async function featuredWrite(path, body) {
   return featured
 }
 
-function cardHtml(p, ref, { kind }) {
+/**
+ * How long a card was actually tested. A basket can only be bought once its newest holding
+ * is listed, so "1 year" on a card whose window starts on Jul 22 was a year that never
+ * happened: the card says the span it measured, and that it is shorter than asked.
+ */
+function spanLabel(res) {
+  if (!res.clippedBy) return galLabel()
+  const d = res.days
+  const span = d < 60 ? `${d} day${d === 1 ? '' : 's'}` : d < 365 ? `${(d / 30.44).toFixed(1)} months` : `${(d / 365).toFixed(1)} years`
+  return `${span} · since ${dLabel(res.start)}`
+}
+
+// ── sorting the cards ──
+const SORT_KEY = 'hliq_pf_gallery_sort'
+const SORTS = [['default', 'Newest first'], ['ret-desc', 'Best return'], ['ret-asc', 'Worst return'], ['name', 'Name, A–Z'], ['dd', 'Smallest drawdown'], ['holdings', 'Most holdings']]
+let galSort = String(store.get(SORT_KEY, 'default'))
+if (!SORTS.some(([k]) => k === galSort)) galSort = 'default'
+/** entries: [{ p, ref, res }] in stored order → sorted. A card with no figure yet sorts last, whatever the order. */
+function sortCards(entries) {
+  if (galSort === 'default') return entries
+  const v = (e) => {
+    const r = e.res.state === 'ok' ? e.res.run : null
+    return galSort === 'ret-desc' ? (r ? -r.ret : null) : galSort === 'ret-asc' ? (r ? r.ret : null)
+      : galSort === 'dd' ? (r ? -r.maxDd : null) : galSort === 'holdings' ? -e.p.items.filter(i => Number(i.w) > 0).length : null
+  }
+  return entries.slice().sort((a, b) => {
+    if (galSort === 'name') return a.p.name.localeCompare(b.p.name, undefined, { sensitivity: 'base', numeric: true })
+    const x = v(a), y = v(b)
+    if (x == null || y == null) return (x == null) - (y == null)
+    return x - y
+  })
+}
+
+function cardHtml(p, ref, { kind, res = galResult(p) }) {
   const live = p.items.filter(i => Number(i.w) > 0)
   const tot = live.reduce((a, i) => a + Number(i.w), 0) || 1
   const editing = kind === 'featured' ? S.featuredId === p.id : !S.featuredId && p.name === S.name
   const edited = editing && (!sameItems(p.items, S.items) || (p.desc ?? '') !== (S.desc ?? ''))
-  const res = galResult(p)
   const icons = live.slice(0, 5).map(i => iconHtml(i.coin, i.sym)).join('') + (live.length > 5 ? `<span class="pf-more">+${live.length - 5}</span>` : '')
   const bar = live.map((i, j) => `<i style="width:${(100 * Number(i.w) / tot).toFixed(2)}%;background:${HOLD_COLORS[j % HOLD_COLORS.length]}" title="${esc(nameOf(i))} ${(100 * Number(i.w) / tot).toFixed(1)}%"></i>`).join('')
   let body
   if (res.state === 'ok') {
     const r = res.run
     body = `<div class="pf-gc-ret ${cls(r.ret)}">${pct(r.ret)}</div>
-      <div class="pf-gc-sub">${galLabel()}${res.clippedBy ? ` · since ${dLabel(res.start)}` : ''} · ${r.maxDd < -0.0005 ? `max drawdown ${(r.maxDd * 100).toFixed(1)}%` : 'no drawdown'}</div>
+      <div class="pf-gc-sub"${res.clippedBy ? ` title="Its newest holding was listed ${dLabel(res.start)}, so it is tested from then, not over the full ${galLabel()}."` : ''}>${spanLabel(res)} · ${r.maxDd < -0.0005 ? `max drawdown ${(r.maxDd * 100).toFixed(1)}%` : 'no drawdown'}</div>
       ${spark(r.equity, (r.ret ?? 0) >= 0)}`
   } else if (res.state === 'loading') body = '<div class="pf-gc-ret mk-dim">…</div><div class="pf-gc-sub">loading prices</div><div class="pf-spark pf-spark--empty"></div>'
   else if (res.state === 'failed') body = '<div class="pf-gc-ret mk-dim">—</div><div class="pf-gc-sub">prices did not load for every holding</div><div class="pf-spark pf-spark--empty"></div>'
@@ -357,13 +389,16 @@ function renderGallery() {
   // Featured: unknown is not empty — "loading" and "could not load" each say so.
   fe.innerHTML = featuredState === 'loading' && !featured ? '<div class="pf-gal-empty">Loading featured portfolios…</div>'
     : featuredState === 'failed' ? '<div class="pf-gal-empty">Featured portfolios did not load. <button class="pf-btn pf-btn--ghost" data-featured-retry>Retry</button></div>'
-    : featured.length ? featured.map(p => cardHtml(p, 'f:' + p.id, { kind: 'featured' })).join('')
+    : featured.length ? sortCards(featured.map(p => ({ p, ref: 'f:' + p.id, res: galResult(p) }))).map(e => cardHtml(e.p, e.ref, { kind: 'featured', res: e.res })).join('')
     : `<div class="pf-gal-empty">${isDev() ? 'Nothing featured yet. Press <b>Publish</b> on one of your portfolios to show it to everyone.' : 'No featured portfolios yet.'}</div>`
   $('pfDevNote').innerHTML = isDev()
     ? 'Developer mode: you can publish, update and remove featured portfolios. <button data-dev-out>Sign out</button>'
     : 'Built by Insolvent. Open one to test it — your changes stay on your device. <button data-dev-in>Developer sign-in</button>'
   const saved = store.get(SAVED_KEY, [])
-  const cards = saved.map((p, k) => cardHtml(p, 'l:' + k, { kind: 'local' }))
+  const cards = sortCards(saved.map((p, k) => ({ p, ref: 'l:' + k, res: galResult(p) }))).map(e => cardHtml(e.p, e.ref, { kind: 'local', res: e.res }))
+  const sel = $('pfGalSort')
+  if (sel && !sel.options.length) sel.innerHTML = SORTS.map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')
+  if (sel) sel.value = galSort
   cards.push(`<button class="pf-gc pf-gc--new" data-new><span>+</span>New portfolio</button>`)
   el.innerHTML = saved.length ? cards.join('')
     : `<div class="pf-gal-empty">Portfolios you save appear here as cards, with what they returned. They stay on this device. Build one below and press <b>Save</b>.</div>`
@@ -765,6 +800,7 @@ for (const id of ['pfGallery', 'pfFeatured', 'pfDevNote']) {
   $(id).addEventListener('click', galleryClick)
   $(id).addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-load]')) { e.preventDefault(); e.target.click() } })
 }
+$('pfGalSort').addEventListener('change', e => { galSort = e.target.value; store.set(SORT_KEY, galSort); renderGallery() })
 $('pfGalTf').addEventListener('click', e => {
   const b = e.target.closest('button[data-g]'); if (!b) return
   galTf = b.dataset.g; store.set(GAL_TF_KEY, galTf)
