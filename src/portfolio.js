@@ -95,7 +95,18 @@ if (shared) S = { ...S, ...shared }
 
 const saveDraft = () => store.set(DRAFT_KEY, S)
 /** What a holding is called on screen: Hyperliquid's own name for it (DIESEL, SAMSUNG). */
-const nameOf = (i) => rowById.get(i.coin)?.label ?? displayName(i.sym)
+/**
+ * A market's name for people: Hyperliquid's display name (DIESEL), else the token's own name
+ * (a spot market's id is "@700"; its token is DRV), else the stored name — never the id.
+ */
+const coinName = (coin, sym) => {
+  const r = rowById.get(coin)
+  if (r) return r.label ?? r.sym
+  const s = String(sym ?? '')
+  return s && !/^@\d+$/.test(s) ? displayName(s) : displayName(coin)
+}
+const symOf = (coin) => S.items.find(x => x.coin === coin)?.sym
+const nameOf = (i) => coinName(i.coin, i.sym)
 
 // ── markets ──────────────────────────────────────────────────────────────────
 async function loadMarkets() {
@@ -124,8 +135,11 @@ async function loadMarkets() {
 let mk = null
 function rebuild() {
   if (!mk) return
-  rows = buildMarkets({ ...mk, cats, revenue: meta?.revenue ?? null, cg: meta?.cg ?? null, stocks: meta?.stocks ?? null, sic: meta?.sic ?? null }).filter(isStrict)
-  rowById = new Map(rows.map(r => [r.coin, r]))
+  const all = buildMarkets({ ...mk, cats, revenue: meta?.revenue ?? null, cg: meta?.cg ?? null, stocks: meta?.stocks ?? null, sic: meta?.sic ?? null })
+  // Search and sector baskets offer the markets people trade (strict); names and categories
+  // are looked up across ALL of them, so a thin spot token held in a portfolio still has its name.
+  rows = all.filter(isStrict)
+  rowById = new Map(all.map(r => [r.coin, r]))
   marketsReady = true
   renderSectors(); renderBuilder()
 }
@@ -507,7 +521,7 @@ function renderComp() {
   // Sector mix: the same categories as /markets and the app's Allocation → By sector.
   const sec = holdingsSectors(live.map(i => {
     const r = rowById.get(i.coin)
-    return { id: i.coin, sym: i.sym, kind: i.kind === 'spot' ? 'spot' : 'perp', hlCat: r?.hlCat ?? null, label: i.sym,
+    return { id: i.coin, sym: r?.sym ?? i.sym, kind: i.kind === 'spot' ? 'spot' : 'perp', hlCat: r?.hlCat ?? null, label: i.sym,
              long: i.side === 'short' ? 0 : i.s, short: i.side === 'short' ? i.s : 0, accts: new Set() }
   }), meta ? { revenue: meta.revenue, sic: meta.sic } : null)
   el.innerHTML = `
@@ -662,7 +676,7 @@ function renderResults() {
   const res = $('pfResults')
   const all = [...L.runs, ...(L.bench ? [{ ...L.bench, id: '__bench', label: 'BTC, held', color: BENCH_COLOR, dash: true }] : [])]
   const notes = []
-  const nm = (k) => esc(rowById.get(k)?.label ?? displayName(k))
+  const nm = (k) => esc(coinName(k, symOf(k)))
   if (L.clippedBy) notes.push(S.listingWait
     ? `Starts ${dLabel(L.start)}: ${nm(L.clippedBy)} was listed then, and this test waits until every holding trades.`
     : `Starts ${dLabel(L.start)}: no holding traded before then; ${nm(L.clippedBy)} was the first.`)
@@ -677,7 +691,7 @@ function renderResults() {
   const dd = lineChart(all.map(s => ({ id: s.id, color: s.color, dash: s.dash, v: s.dd })), L.days, { h: 150, fmt: (v) => (v * 100).toFixed(0) + '%', signed: true })
   const best = L.runs.slice().sort((a, b) => b.final - a.final)[0]
   const f = all.find(x => x.id === focus) ?? best
-  const contrib = f ? Object.entries(f.pnlBy).map(([k, v]) => ({ k, v, sym: rowById.get(k)?.label ?? displayName(k) })).sort((a, b) => b.v - a.v) : []
+  const contrib = f ? Object.entries(f.pnlBy).map(([k, v]) => ({ k, v, sym: coinName(k, symOf(k)) })).sort((a, b) => b.v - a.v) : []
   const cmax = Math.max(1e-9, ...contrib.map(c => Math.abs(c.v)))
   const tradesOf = (x) => x.id === '__bench' ? '1' : x.trades != null && x.won != null ? `${x.trades}${x.won + x.lost ? ` · ${Math.round(100 * x.won / (x.won + x.lost))}% won` : ''}` : x.rebalances != null ? `${x.rebalances} rebal.` : '—'
 

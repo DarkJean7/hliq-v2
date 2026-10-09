@@ -31,7 +31,7 @@ const waitFor = async (p, label, fn, arg, ms = 30000) => {
 
 const NOW = Date.now()
 const T0 = Math.floor(NOW / DAY) * DAY - 400 * DAY
-const PRICE = { BTC: (t) => 100 * (1 + Math.max(0, t - T0) / (400 * DAY)), ETH: () => 50, SOL: () => 20, 'xyz:NVDA': () => 180 }
+const PRICE = { BTC: (t) => 100 * (1 + Math.max(0, t - T0) / (400 * DAY)), ETH: () => 50, SOL: () => 20, 'xyz:NVDA': () => 180, '@700': () => 2 }
 // Listed later than the rest: NVDA's history starts 50 days ago.
 const START = { 'xyz:NVDA': Math.floor(NOW / DAY) * DAY - 50 * DAY }
 const TF = { '1d': DAY, '4h': 4 * 3_600_000, '1h': 3_600_000 }
@@ -41,7 +41,10 @@ const XYZ = [{ universe: [{ name: 'xyz:HO', szDecimals: 2, maxLeverage: 10 }, { 
   [ctx0(4.76), ctx0(192), ctx0(180)]]
 const HL = {
   metaAndAssetCtxs: [{ universe: UNIVERSE }, [ctx0(200), ctx0(50), ctx0(20), ctx0(1)]],
-  spotMetaAndAssetCtxs: [{ tokens: [], universe: [] }, []],
+  // One thin spot market: "@700" is the market id, DRV its token. Too little volume for the
+  // strict list, so it is not offered in search — but a portfolio holding it still names it.
+  spotMetaAndAssetCtxs: [{ tokens: [{ index: 0, name: 'USDC' }, { index: 150, name: 'DRV' }], universe: [{ name: '@700', index: 700, tokens: [150, 0] }] },
+    [{ coin: '@700', markPx: '2', prevDayPx: '2', midPx: '2', dayNtlVlm: '50', circulatingSupply: '1000' }]],
   // One HIP-3 dex with markets Hyperliquid names differently from their ticker.
   perpDexs: [null, { name: 'xyz', fullName: 'XYZ' }],
   perpConciseAnnotations: [['xyz:HO', { category: 'commodities', displayName: 'DIESEL', keywords: ['ho', 'ulsd'] }],
@@ -264,6 +267,20 @@ async function run(label, opts) {
   await p.click('#pfFeatured .pf-gal-folded')
   await p.click('#pfHideLocal')
   ok('and come back with Show', await waitFor(p, 'shown', () => document.querySelectorAll('#pfFeatured [data-load]').length === 1 && document.querySelectorAll('#pfGallery [data-load]').length === 1, null, 5000))
+
+  // A spot holding is named by its token, never by its market id — even stored as "@700",
+  // the way a share link stores it.
+  featured.push({ id: 'feat0003', name: 'Spot basket', at: 3, items: [{ coin: '@700', sym: '@700', kind: 'spot', w: 50, side: 'long' }, { coin: 'BTC', sym: 'BTC', kind: 'perp', w: 50, side: 'long' }] })
+  await p.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(p, 'the spot basket', () => !!document.querySelector('#pfFeatured [data-load="f:feat0003"]'))
+  await waitFor(p, 'markets', () => document.querySelectorAll('#pfSectors button').length > 2)
+  await p.click('#pfFeatured [data-load="f:feat0003"] .pf-gc-name')
+  await waitFor(p, 'its run', () => window.__pf.state.featuredId === 'feat0003' && window.__pf.last?.runs?.length > 0 && !!document.querySelector('.pf-contrib'))
+  const seen = (await p.evaluate(() => ['#pfHoldings', '#pfComp', '.pf-contrib', '#pfResults'].map(q => document.querySelector(q)?.textContent ?? '').join(' '))).replace(/\s+/g, ' ')
+  ok('a spot holding reads as its token (DRV), never as its market id (@700)', /DRV/.test(seen) && !/@700/.test(seen), seen.slice(0, 300))
+  featured = featured.filter(x => x.id !== 'feat0003')
+  await p.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(p, 'featured back to one', () => document.querySelectorAll('#pfFeatured [data-load]').length === 1)
 
   // The developer: the app's dev mode and PIN.
   await p.evaluate(() => { localStorage.setItem('hliq_dev', '1'); localStorage.setItem('hliq_lb_pin', 'devpin') })
