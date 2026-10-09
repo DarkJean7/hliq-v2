@@ -382,12 +382,26 @@ function cardHtml(p, ref, { kind, res = galResult(p) }) {
   </div>`
 }
 
+// Either list can be folded away to one line, and stays folded on this device.
+const HIDE_KEY = 'hliq_pf_gallery_hidden'
+let galHidden = { featured: false, local: false, ...store.get(HIDE_KEY, {}) }
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
+function hideButtons() {
+  for (const [id, k] of [['pfHideFeatured', 'featured'], ['pfHideLocal', 'local']]) {
+    const b = $(id); if (!b) continue
+    b.textContent = galHidden[k] ? 'Show' : 'Hide'
+    b.setAttribute('aria-expanded', String(!galHidden[k]))
+  }
+}
+
 function renderGallery() {
   const el = $('pfGallery'), fe = $('pfFeatured')
   if (!el || !fe) return
   $('pfGalTf').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.g === galTf))
+  hideButtons()
   // Featured: unknown is not empty — "loading" and "could not load" each say so.
-  fe.innerHTML = featuredState === 'loading' && !featured ? '<div class="pf-gal-empty">Loading featured portfolios…</div>'
+  fe.innerHTML = galHidden.featured ? `<button class="pf-gal-folded" data-hide="featured">${featured ? plural(featured.length, 'featured portfolio', 'featured portfolios') : 'Featured portfolios'} hidden · <b>Show</b></button>`
+    : featuredState === 'loading' && !featured ? '<div class="pf-gal-empty">Loading featured portfolios…</div>'
     : featuredState === 'failed' ? '<div class="pf-gal-empty">Featured portfolios did not load. <button class="pf-btn pf-btn--ghost" data-featured-retry>Retry</button></div>'
     : featured.length ? sortCards(featured.map(p => ({ p, ref: 'f:' + p.id, res: galResult(p) }))).map(e => cardHtml(e.p, e.ref, { kind: 'featured', res: e.res })).join('')
     : `<div class="pf-gal-empty">${isDev() ? 'Nothing featured yet. Press <b>Publish</b> on one of your portfolios to show it to everyone.' : 'No featured portfolios yet.'}</div>`
@@ -400,7 +414,8 @@ function renderGallery() {
   if (sel && !sel.options.length) sel.innerHTML = SORTS.map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')
   if (sel) sel.value = galSort
   cards.push(`<button class="pf-gc pf-gc--new" data-new><span>+</span>New portfolio</button>`)
-  el.innerHTML = saved.length ? cards.join('')
+  el.innerHTML = galHidden.local ? `<button class="pf-gal-folded" data-hide="local">${plural(saved.length, 'portfolio', 'portfolios')} of yours hidden · <b>Show</b></button>`
+    : saved.length ? cards.join('')
     : `<div class="pf-gal-empty">Portfolios you save appear here as cards, with what they returned. They stay on this device. Build one below and press <b>Save</b>.</div>`
 }
 
@@ -410,7 +425,7 @@ async function loadGalleryPrices() {
   if (galLoading) return
   galLoading = true
   try {
-    const all = [...(featured ?? []), ...store.get(SAVED_KEY, [])]
+    const all = [...(galHidden.featured ? [] : featured ?? []), ...(galHidden.local ? [] : store.get(SAVED_KEY, []))]
     const coins = [...new Set(all.flatMap(p => p.items.filter(i => Number(i.w) > 0).map(i => i.coin)))]
     for (const c of coins) {
       if (daily.has(c) || galFailed.has(c)) continue
@@ -800,6 +815,13 @@ for (const id of ['pfGallery', 'pfFeatured', 'pfDevNote']) {
   $(id).addEventListener('click', galleryClick)
   $(id).addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-load]')) { e.preventDefault(); e.target.click() } })
 }
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-hide]'); if (!b) return
+  const k = b.dataset.hide
+  galHidden = { ...galHidden, [k]: !galHidden[k] }
+  store.set(HIDE_KEY, galHidden)
+  renderGallery(); loadGalleryPrices()
+})
 $('pfGalSort').addEventListener('change', e => { galSort = e.target.value; store.set(SORT_KEY, galSort); renderGallery() })
 $('pfGalTf').addEventListener('click', e => {
   const b = e.target.closest('button[data-g]'); if (!b) return

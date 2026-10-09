@@ -231,6 +231,18 @@ async function run(label, opts) {
   await p.selectOption('#pfGalSort', 'default')
   featured = featured.filter(x => x.id !== 'feat0002')
   await p.reload({ waitUntil: 'domcontentloaded' })
+  // Each list can be folded away, and stays folded.
+  await waitFor(p, 'featured back', () => document.querySelectorAll('#pfFeatured [data-load]').length === 1)
+  await p.click('#pfHideFeatured')
+  ok('Hide folds Featured to one line', await p.locator('#pfFeatured [data-load]').count() === 0 && /1 featured portfolio hidden/.test(await p.textContent('#pfFeatured')) && (await p.textContent('#pfHideFeatured')).trim() === 'Show')
+  await p.click('#pfHideLocal')
+  ok('and the device-only list too', await p.locator('#pfGallery [data-load]').count() === 0 && /portfolio of yours hidden/.test(await p.textContent('#pfGallery')))
+  await p.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(p, 'folded after reload', () => !!document.querySelector('#pfFeatured .pf-gal-folded') && !!document.querySelector('#pfGallery .pf-gal-folded'))
+  ok('both stay hidden after a reload', await p.locator('.pf-gal-folded').count() === 2)
+  await p.click('#pfFeatured .pf-gal-folded')
+  await p.click('#pfHideLocal')
+  ok('and come back with Show', await waitFor(p, 'shown', () => document.querySelectorAll('#pfFeatured [data-load]').length === 1 && document.querySelectorAll('#pfGallery [data-load]').length === 1, null, 5000))
 
   // The developer: the app's dev mode and PIN.
   await p.evaluate(() => { localStorage.setItem('hliq_dev', '1'); localStorage.setItem('hliq_lb_pin', 'devpin') })
