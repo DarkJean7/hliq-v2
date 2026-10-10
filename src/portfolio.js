@@ -14,7 +14,7 @@ import { sideScroll, wasDrag } from './sidescroll.js'
 import { SECTORS, SECTOR_LABEL } from './sectors.js'
 import { holdingsSectors, sectorColor } from './sectoralloc.js'
 import { STRATEGIES, STRATEGY_LABEL, BOT_STRATEGIES, BOT_LABEL, backtest, botRun, DAY, dayOf, effectiveLeverage, PCT_EXITS, BOT_PARAM_DEFAULTS } from './pfbacktest.js'
-import { BT_FIELDS, BT_DEFAULTS, BT_STRATEGY_META } from './backtest.js'
+import { BT_FIELDS, BT_DEFAULTS, BT_STRATEGY_META, BT_STRATEGIES } from './backtest.js'
 // The gallery card's own backtest, shared with serve-prod.js so the two cannot price a card
 // differently depending on which of them answered.
 import { galBacktest } from './pfgallery.js'
@@ -779,29 +779,68 @@ const BOT_FIELD_SKIP = new Set(['gridLower', 'gridUpper', 'gridUsdPerLevel', 'dc
 function botFields(id) {
   const own = BT_FIELDS.filter(f => f.strategy === id && !BOT_FIELD_SKIP.has(f.key) && f.type !== 'time')
   const pct = PCT_EXITS.includes(id)
-    ? [{ key: 'takeProfitPct', label: 'Take profit', unit: '%', step: '0.5', off: 'tpOff' }, { key: 'stopLossPct', label: 'Stop loss', unit: '%', step: '0.5', off: 'slOff' }]
+    ? [{ key: 'takeProfitPct', label: 'Take profit', unit: '%', step: '0.5', off: 'tpOff', hint: 'How far price must move your way, from the entry, to close in profit. Off: only the strategy\'s own exit closes it.' },
+       { key: 'stopLossPct', label: 'Stop loss', unit: '%', step: '0.5', off: 'slOff', hint: 'How far against you, from the entry, before it is closed at a loss. Off: no stop.' }]
     : []
   // A stop of 0 is no stop at all for these, which the field should say rather than leave a reader to guess.
   const ZERO_IS_NONE = new Set(['stStopPct', 'dcaSlPct', 'tokyoStopPct'])
-  return [...own.map(f => (ZERO_IS_NONE.has(f.key) ? { ...f, unit: (f.unit ?? '') + ' · 0 = none' } : f)), ...pct]
+  return [...own.map(f => ({ ...f, ...(BOT_HINTS[f.key] ? { hint: BOT_HINTS[f.key] } : {}), ...(ZERO_IS_NONE.has(f.key) ? { unit: (f.unit ?? '') + ' · 0 = none' } : {}) })),
+    ...(BOT_CHOICES[id] ?? []), ...pct]
 }
+// The Simulator's hints, where they speak of a form this page does not have.
+const BOT_HINTS = {
+  gridRangePct: 'How far above and below the first price the ladder reaches.',
+  vbTpMult: 'Target distance, in multiples of the average candle range.',
+  vbSlMult: 'Stop distance, on the same scale as the target.',
+}
+// Settings the engine reads that are a choice rather than a number.
+const BOT_CHOICES = {
+  bollinger: [{ key: 'bbMode', label: 'Mode', type: 'select', options: [['revert', 'Fade the band'], ['breakout', 'Follow the break']],
+    hint: 'Fade bets a close outside a band snaps back to the middle; follow bets it is the start of a move.' }],
+  grid: [{ key: 'gridGeometric', label: 'Spacing', type: 'select', options: [['', 'Even $ gaps'], ['1', 'Even % gaps']],
+    hint: 'Even dollar gaps between rungs, or even percentage gaps (wider rungs higher up).' }],
+}
+const BOT_DESC = Object.fromEntries(BT_STRATEGIES.map(([id, , d]) => [id, d.replace(/ -- /g, ' — ')]))
 const bp = (id, key) => S.botParams?.[id]?.[key] ?? BOT_PARAM_DEFAULTS[key] ?? BT_DEFAULTS[key]
+// The strategy cards are a lot of screen for something set once: closed until asked for,
+// and that choice kept on this device. A flipped card stays flipped across re-renders.
+const BOTCARDS_KEY = 'hliq_pf_botcards'
+let botCardsOpen = false
+try { botCardsOpen = localStorage.getItem(BOTCARDS_KEY) === '1' } catch {}
+const flipped = new Set()
 function renderBotCards() {
   const el = $('pfBotCards')
   if (!el) return
+  const tg = $('pfBotToggle')
+  if (tg) { tg.classList.toggle('is-on', botCardsOpen); tg.setAttribute('aria-expanded', String(botCardsOpen)); tg.textContent = botCardsOpen ? 'Hide strategy settings' : `Strategy settings (${S.bots.length})` }
+  el.hidden = !botCardsOpen || !S.bots.length
+  if (el.hidden) return
   el.innerHTML = S.bots.map(id => {
     const fields = botFields(id)
     const sizing = id === 'grid' ? 'Rungs sized to each holding\'s share of the capital.' : id === 'dca' ? 'Orders sized so the base and every safety order fit in each holding\'s share.' : ''
-    return `<div class="pf-botcard">
-      <div class="pf-botcard-h"><b>${esc(BOT_LABEL[id])}</b><small>${esc(BT_STRATEGY_META[id]?.tag ?? '')}</small></div>
-      <div class="pf-botcard-f">${fields.map(f => {
-        const off = f.off && S.botParams?.[id]?.[f.off]
-        return `<label class="${off ? 'is-off' : ''}" title="${esc(f.hint ?? '')}"><span>${esc(f.label)}</span>
-          <input type="number" data-bp="${id}|${f.key}" value="${bp(id, f.key)}" step="${f.step ?? 1}" ${off ? 'disabled' : ''}><em>${esc(f.unit ?? '')}</em>
-          ${f.off ? `<span class="pf-off"><input type="checkbox" data-bpoff="${id}|${f.off}" ${off ? 'checked' : ''}> Off</span>` : ''}</label>`
-      }).join('')}</div>
-      ${sizing ? `<p class="pf-help">${sizing}</p>` : ''}
-    </div>`
+    const head = (back) => `<div class="pf-botcard-h"><div><b>${esc(BOT_LABEL[id])}</b><small>${esc(back ? 'How it works' : (BT_STRATEGY_META[id]?.tag ?? ''))}</small></div>
+      <button type="button" class="pf-flip" data-flip="${id}" aria-label="${back ? 'Back to the settings' : 'What this strategy does'}" title="${back ? 'Back to the settings' : 'What this strategy does'}">${back ? '↺' : 'i'}</button></div>`
+    const input = (f, off) => {
+      if (f.type === 'select') {
+        const v = String(bp(id, f.key) === true ? '1' : bp(id, f.key) || '')
+        return `<select data-bpsel="${id}|${f.key}">${f.options.map(([o, l]) => `<option value="${o}" ${o === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`
+      }
+      return `<input type="number" data-bp="${id}|${f.key}" value="${bp(id, f.key)}" step="${f.step ?? 1}" ${off ? 'disabled' : ''}>`
+    }
+    return `<div class="pf-botcard${flipped.has(id) ? ' is-flipped' : ''}" data-card="${id}"><div class="pf-botcard-in">
+      <div class="pf-botcard-face pf-botcard-front" ${flipped.has(id) ? 'inert' : ''}>${head(false)}
+        <div class="pf-botcard-f">${fields.map(f => {
+          const off = f.off && S.botParams?.[id]?.[f.off]
+          return `<label class="${off ? 'is-off' : ''}${f.type === 'select' ? ' is-sel' : ''}" title="${esc(f.hint ?? '')}"><span>${esc(f.label)}</span>${input(f, off)}
+            <span class="pf-unit">${f.unit ? `<em>${esc(f.unit)}</em>` : ''}${f.off ? `<span class="pf-off"><input type="checkbox" data-bpoff="${id}|${f.off}" ${off ? 'checked' : ''}> Off</span>` : ''}</span></label>`
+        }).join('')}</div>
+        ${sizing ? `<p class="pf-help">${sizing}</p>` : ''}
+      </div>
+      <div class="pf-botcard-face pf-botcard-back" ${flipped.has(id) ? '' : 'inert'}>${head(true)}
+        <p class="pf-botcard-desc">${esc(BOT_DESC[id] ?? '')}</p>
+        <dl class="pf-botcard-dl">${fields.map(f => `<dt>${esc(f.label)}</dt><dd>${esc(f.hint ?? '')}</dd>`).join('')}</dl>
+      </div>
+    </div></div>`
   }).join('')
 }
 
@@ -1287,12 +1326,29 @@ $('pfLevIn').addEventListener('change', e => { const v = Math.round(Number(e.tar
 $('pfMargin').addEventListener('click', e => { const b = e.target.closest('button[data-m]'); if (!b) return; S.margin = b.dataset.m; changed() })
 $('pfBotCards').addEventListener('change', e => {
   const t = e.target
-  const [id, key] = (t.dataset.bp ?? t.dataset.bpoff ?? '').split('|')
+  const [id, key] = (t.dataset.bp ?? t.dataset.bpoff ?? t.dataset.bpsel ?? '').split('|')
   if (!id || !key) return
   S.botParams = { ...(S.botParams ?? {}), [id]: { ...(S.botParams?.[id] ?? {}) } }
   if (t.dataset.bpoff) S.botParams[id][key] = t.checked
+  else if (t.dataset.bpsel) S.botParams[id][key] = key === 'gridGeometric' ? t.value === '1' : t.value
   else { const v = Number(t.value); if (Number.isFinite(v)) S.botParams[id][key] = v }
   changed()
+})
+$('pfBotCards').addEventListener('click', e => {
+  const b = e.target.closest('[data-flip]')
+  if (!b) return
+  const id = b.dataset.flip
+  flipped.has(id) ? flipped.delete(id) : flipped.add(id)
+  const card = b.closest('.pf-botcard'), on = flipped.has(id)
+  card.classList.toggle('is-flipped', on)
+  card.querySelector('.pf-botcard-front').inert = on
+  card.querySelector('.pf-botcard-back').inert = !on
+  card.querySelector(on ? '.pf-botcard-back .pf-flip' : '.pf-botcard-front .pf-flip')?.focus({ preventScroll: true })
+})
+$('pfBotToggle').addEventListener('click', () => {
+  botCardsOpen = !botCardsOpen
+  try { localStorage.setItem(BOTCARDS_KEY, botCardsOpen ? '1' : '0') } catch {}
+  renderBotCards()
 })
 const num = (id, key, min, max) => $(id).addEventListener('change', e => { const v = Number(e.target.value); if (Number.isFinite(v)) { S[key] = Math.min(max, Math.max(min, v)); changed() } })
 num('pfCapital', 'capital', 100, 1e9); num('pfFee', 'fee', 0, 1); num('pfBand', 'band', 1, 50); num('pfTrendDays', 'trendDays', 5, 200)

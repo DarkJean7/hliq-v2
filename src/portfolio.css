@@ -175,16 +175,38 @@
 .pf-fee .pf-help { display: block; }
 .pf-params label[data-for] i, .pf-for { font-style: normal; font-size: 11px; font-weight: 700; color: var(--accent); margin-right: 4px; }
 .pf-params [hidden] { display: none !important; }
-.pf-botcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-top: 12px; }
-.pf-botcard { border: 1px solid var(--rule); border-radius: 12px; padding: 11px 12px; background: var(--bg-2); min-width: 0; }
-.pf-botcard-h { display: flex; flex-direction: column; margin-bottom: 8px; }
+.pf-bottoggle { margin-left: auto; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 6px 12px; border-radius: 999px; color: var(--accent); background: transparent; border: 1px solid rgba(255,138,42,.4); white-space: nowrap; }
+.pf-bottoggle:hover, .pf-bottoggle.is-on { background: rgba(255,138,42,.1); }
+.pf-botcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 10px; margin-top: 12px; }
+.pf-botcards[hidden] { display: none; }
+/* A card flips to its description. Both faces share one grid cell, so the card is as tall as
+   the taller face and neither is cut off. */
+.pf-botcard { min-width: 0; perspective: 1200px; }
+.pf-botcard-in { display: grid; height: 100%; transition: transform .45s ease; transform-style: preserve-3d; }
+.pf-botcard.is-flipped .pf-botcard-in { transform: rotateY(180deg); }
+.pf-botcard-face { grid-area: 1 / 1; min-width: 0; border: 1px solid var(--rule); border-radius: 12px; padding: 11px 12px; background: var(--bg-2); backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+.pf-botcard-back { transform: rotateY(180deg); }
+@media (prefers-reduced-motion: reduce) { .pf-botcard-in { transition: none; } }
+.pf-botcard-h { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.pf-botcard-h > div { display: flex; flex-direction: column; min-width: 0; }
 .pf-botcard-h b { font-size: 13.5px; }
 .pf-botcard-h small { font-size: 11.5px; color: var(--fg-3); }
+.pf-flip { flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%; font: inherit; font-size: 12px; font-weight: 700; font-style: italic; line-height: 1; cursor: pointer; color: var(--fg-2); background: transparent; border: 1px solid var(--rule); }
+.pf-botcard-back .pf-flip { font-style: normal; }
+.pf-flip:hover, .pf-flip:focus-visible { color: var(--accent); border-color: var(--accent); outline: none; }
+.pf-botcard-desc { margin: 0 0 8px; font-size: 12px; line-height: 1.5; color: var(--fg-2); }
+.pf-botcard-dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 11.5px; line-height: 1.4; }
+.pf-botcard-dl dt { font-weight: 600; color: var(--fg); white-space: nowrap; }
+.pf-botcard-dl dd { margin: 0; color: var(--fg-3); }
 .pf-botcard-f { display: flex; flex-direction: column; gap: 6px; }
-.pf-botcard-f label { display: grid; grid-template-columns: minmax(0, 1fr) 72px 78px 40px; align-items: center; gap: 6px; font-size: 12.5px; color: var(--fg-2); }
-.pf-botcard-f input[type=number] { width: 72px; font: inherit; font-size: 13px; color: var(--fg); background: var(--panel); border: 1px solid var(--rule); border-radius: 7px; padding: 5px 7px; outline: none; }
-.pf-botcard-f input[type=number]:focus { border-color: var(--accent); }
-.pf-botcard-f em { font-style: normal; font-size: 11px; color: var(--fg-3); white-space: nowrap; }
+/* Name, box, then unit and Off together: the name keeps enough room to be read whole. */
+.pf-botcard-f label { display: grid; grid-template-columns: minmax(92px, 1fr) 68px minmax(0, 1.1fr); align-items: center; gap: 8px; font-size: 12.5px; color: var(--fg-2); }
+.pf-botcard-f label.is-sel { grid-template-columns: minmax(92px, 1fr) minmax(0, 2.2fr); }
+.pf-botcard-f input[type=number] { width: 68px; font: inherit; font-size: 13px; color: var(--fg); background: var(--panel); border: 1px solid var(--rule); border-radius: 7px; padding: 5px 7px; outline: none; }
+.pf-botcard-f select { width: 100%; font: inherit; font-size: 12.5px; color: var(--fg); background: var(--panel); border: 1px solid var(--rule); border-radius: 7px; padding: 5px 6px; outline: none; }
+.pf-botcard-f input[type=number]:focus, .pf-botcard-f select:focus { border-color: var(--accent); }
+.pf-unit { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 8px; min-width: 0; }
+.pf-botcard-f em { font-style: normal; font-size: 11px; color: var(--fg-3); }
 .pf-botcard-f label.is-off input[type=number] { opacity: .35; }
 .pf-off { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--fg-3); }
 .pf-off input { accent-color: var(--accent); }

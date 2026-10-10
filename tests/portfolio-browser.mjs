@@ -186,8 +186,31 @@ async function run(label, opts) {
   ok('a Simulator strategy runs on every holding, on 4-hour candles', bot.n === bot.days && Math.abs(bot.first - 10000) < 50 && asks.includes('BTC:4h') && asks.includes('ETH:4h'), [bot, asks.slice(-4)])
   // Each trading strategy shows only the settings it reads.
   const cards = () => p.evaluate(() => [...document.querySelectorAll('#pfBotCards .pf-botcard')].map(c => ({ name: c.querySelector('b').textContent, fields: [...c.querySelectorAll('label > span:first-child')].map(x => x.textContent), offs: c.querySelectorAll('[data-bpoff]').length })))
+  // The cards are closed until asked for, and the choice is kept on this device.
+  ok('the strategy settings start hidden', await p.evaluate(() => document.getElementById('pfBotCards').hidden && /Strategy settings \(1\)/.test(document.getElementById('pfBotToggle').textContent)))
+  await p.click('#pfBotToggle')
+  await waitFor(p, 'the cards open', () => !document.getElementById('pfBotCards').hidden && document.querySelectorAll('#pfBotCards .pf-botcard').length === 1)
+  ok('opening them is remembered', await p.evaluate(() => localStorage.getItem('hliq_pf_botcards') === '1'))
   const c1 = await cards()
   ok('a card for the selected strategy only, with its own settings and no take profit (Supertrend has none)', c1.length === 1 && c1[0].name === 'Supertrend' && c1[0].fields.includes('ATR length') && !c1[0].fields.includes('Take profit'), c1)
+  // Every setting's name is readable whole: none is narrower than its text.
+  await p.click('[data-bot="volbreak"]')
+  await waitFor(p, 'the volatility card', () => document.querySelectorAll('#pfBotCards .pf-botcard').length === 2)
+  const clipped = await p.evaluate(() => [...document.querySelectorAll('#pfBotCards .pf-botcard-front label > span:first-child')].filter(s => s.scrollWidth > s.clientWidth + 1).map(s => s.textContent))
+  ok('no setting name is cut off (Threshold, Rolling window…)', !clipped.length, clipped)
+  // Flipped, a card says what the strategy does and what each setting is.
+  await p.click('[data-flip="volbreak"]')
+  const back = await p.evaluate(() => { const c = document.querySelector('[data-card="volbreak"]'); return { flipped: c.classList.contains('is-flipped'), terms: [...c.querySelectorAll('dt')].map(x => x.textContent), desc: c.querySelector('.pf-botcard-desc').textContent, frontInert: c.querySelector('.pf-botcard-front').inert } })
+  ok('a flipped card describes the strategy and every setting on its front', back.flipped && back.frontInert && /rolling average/.test(back.desc) && back.terms.join() === 'Rolling window,Threshold,Target,Stop', back)
+  await p.click('[data-card="volbreak"] .pf-botcard-back [data-flip]')
+  ok('and flips back', await p.evaluate(() => !document.querySelector('[data-card="volbreak"]').classList.contains('is-flipped')))
+  await p.click('[data-bot="volbreak"]')
+  // Choices the engine reads, not only numbers: Bollinger fades or follows.
+  await p.click('[data-bot="bollinger"]')
+  await waitFor(p, 'the Bollinger card', () => !!document.querySelector('[data-bpsel="bollinger|bbMode"]'))
+  await p.selectOption('[data-bpsel="bollinger|bbMode"]', 'breakout')
+  ok('Bollinger can follow the break instead of fading it', await p.evaluate(() => window.__pf.state.botParams?.bollinger?.bbMode === 'breakout'))
+  await p.click('[data-bot="bollinger"]')
   await p.click('[data-bot="rsi"]')
   await waitFor(p, 'the RSI card', () => document.querySelectorAll('#pfBotCards .pf-botcard').length === 2)
   const rsi = (await cards()).find(c => c.name === 'RSI reversal')
