@@ -107,41 +107,65 @@
 
   <!-- ── the test ── -->
   <section class="ln-wrap"><div class="pf-card pf-run" id="pfRun">
-    <div class="pf-run-grid">
-      <div>
-        <div class="pf-lbl">Period</div>
-        <div class="mk-seg pf-seg" id="pfPeriod">
-          <button data-p="30">30D</button><button data-p="90">90D</button><button data-p="182">6M</button><button data-p="365">1Y</button><button data-p="730">2Y</button><button data-p="max">Max</button>
+    <!-- Each section says what it applies to; a setting only appears beside the strategies that read it. -->
+    <div class="pf-sec">
+      <div class="pf-sec-h"><b>Test</b><small>applies to every strategy</small></div>
+      <div class="pf-run-grid">
+        <div>
+          <div class="pf-lbl">Period</div>
+          <div class="mk-seg pf-seg" id="pfPeriod">
+            <button data-p="30">30D</button><button data-p="90">90D</button><button data-p="182">6M</button><button data-p="365">1Y</button><button data-p="730">2Y</button><button data-p="max">Max</button>
+          </div>
+          <div class="pf-dates"><input type="date" id="pfFrom" aria-label="From"><span>→</span><input type="date" id="pfTo" aria-label="To"></div>
         </div>
-        <div class="pf-dates"><input type="date" id="pfFrom" aria-label="From"><span>→</span><input type="date" id="pfTo" aria-label="To"></div>
-      </div>
-      <label class="pf-field"><span class="pf-lbl">Starting capital</span><input id="pfCapital" type="number" min="100" step="100" inputmode="decimal"></label>
-      <div>
-        <div class="pf-lbl">Leverage</div>
-        <div class="mk-seg pf-seg" id="pfLev"><button data-l="1">1×</button><button data-l="2">2×</button><button data-l="3">3×</button><button data-l="5">5×</button></div>
-      </div>
-      <label class="pf-field"><span class="pf-lbl">Fee per trade, %</span><input id="pfFee" type="number" min="0" step="0.005" inputmode="decimal"></label>
-      <div class="pf-checks">
-      <label class="pf-check"><input type="checkbox" id="pfBench"> Compare with BTC</label>
-      <label class="pf-check" title="Off: a holding listed later joins on its listing day, and the test covers the whole period. On: the test starts only once every holding trades."><input type="checkbox" id="pfWait"> Wait until every holding is listed</label>
-      <label class="pf-check" title="Funding: Hyperliquid's actual hourly rates, estimated from the market's average where a day is not in yet; none on exchange prices or spot. Slippage: half the spread plus market impact by order size against volume — an estimate."><input type="checkbox" id="pfCosts"> Funding &amp; slippage</label>
+        <label class="pf-field"><span class="pf-lbl">Starting capital</span><input id="pfCapital" type="number" min="100" step="100" inputmode="decimal"></label>
+        <div class="pf-checks">
+          <label class="pf-check"><input type="checkbox" id="pfBench"> Compare with BTC</label>
+          <label class="pf-check" title="Off: a holding listed later joins on its listing day, and the test covers the whole period. On: the test starts only once every holding trades."><input type="checkbox" id="pfWait"> Wait until every holding is listed</label>
+          <label class="pf-check" title="Funding: Hyperliquid's actual hourly rates, estimated from the market's average where a day is not in yet; none on exchange prices or spot. Slippage: half the spread plus market impact by order size against volume — an estimate."><input type="checkbox" id="pfCosts"> Funding &amp; slippage</label>
+        </div>
       </div>
     </div>
 
-    <div class="pf-lbl">Allocation strategies <small>the whole basket, by its weights</small></div>
-    <div class="pf-chips pf-strats" id="pfStrats"></div>
-    <div class="pf-params" id="pfAllocParams">
-      <label>Drift band <input id="pfBand" type="number" min="1" max="50" step="1"> %</label>
-      <label>Trend average <input id="pfTrendDays" type="number" min="5" max="200" step="1"> days</label>
+    <div class="pf-sec">
+      <div class="pf-sec-h"><b>Account</b><small>as on Hyperliquid · applies to every strategy</small></div>
+      <div class="pf-acct">
+        <div>
+          <div class="pf-lbl">Leverage</div>
+          <div class="pf-lev">
+            <div class="mk-seg pf-seg" id="pfLev"><button data-l="1">1×</button><button data-l="2">2×</button><button data-l="3">3×</button><button data-l="5">5×</button><button data-l="10">10×</button><button data-l="20">20×</button><button data-l="max" title="Each market at its own maximum">Max</button></div>
+            <label class="pf-lev-in"><input id="pfLevIn" type="number" min="1" max="50" step="1" inputmode="numeric" aria-label="Leverage"><span>×</span></label>
+          </div>
+          <p class="pf-help" id="pfLevNote">Each market is capped at its own Hyperliquid maximum; spot cannot be leveraged (1×).</p>
+        </div>
+        <div>
+          <div class="pf-lbl">Margin</div>
+          <div class="mk-seg pf-seg" id="pfMargin"><button data-m="cross">Cross</button><button data-m="isolated">Isolated</button></div>
+          <p class="pf-help" id="pfMarginNote"></p>
+        </div>
+        <label class="pf-field pf-fee"><span class="pf-lbl">Fee per trade, %</span><input id="pfFee" type="number" min="0" step="0.005" inputmode="decimal"><span class="pf-help">Hyperliquid's base taker fee is 0.045%</span></label>
+      </div>
     </div>
 
-    <div class="pf-lbl">Trading strategies <small>the Trade Simulator's rules, run on every holding with its share of the capital</small></div>
-    <div class="pf-chips pf-strats" id="pfBots"></div>
-    <div class="pf-params" id="pfBotParams">
-      <label>Candles <select id="pfTf"><option value="1h">1 hour</option><option value="4h">4 hours</option><option value="1d">1 day</option></select></label>
-      <label>Take profit <input id="pfTp" type="number" min="0.1" step="0.5"> %</label>
-      <label>Stop loss <input id="pfSl" type="number" min="0.1" step="0.5"> %</label>
-      <label class="pf-check"><input type="checkbox" id="pfBoth"> Trade both directions</label>
+    <div class="pf-sec">
+      <div class="pf-sec-h"><b>Allocation strategies</b><small>trade the whole basket back to its weights</small></div>
+      <div class="pf-chips pf-strats" id="pfStrats"></div>
+      <div class="pf-params" id="pfAllocParams">
+        <label data-for="band"><i>Rebalance on drift</i> Drift band <input id="pfBand" type="number" min="1" max="50" step="1"> %</label>
+        <label data-for="trend"><i>Trend filter</i> Average <input id="pfTrendDays" type="number" min="5" max="200" step="1"> days</label>
+        <span class="pf-help" data-for="none">Buy &amp; hold, the rebalances on a calendar and DCA have no settings of their own.</span>
+      </div>
+    </div>
+
+    <div class="pf-sec">
+      <div class="pf-sec-h"><b>Trading strategies</b><small>the Trade Simulator's rules, run on every holding with its share of the capital</small></div>
+      <div class="pf-chips pf-strats" id="pfBots"></div>
+      <div class="pf-params" id="pfBotParams">
+        <i class="pf-for">For every trading strategy</i>
+        <label>Candles <select id="pfTf"><option value="1h">1 hour</option><option value="4h">4 hours</option><option value="1d">1 day</option></select></label>
+        <label class="pf-check"><input type="checkbox" id="pfBoth"> Trade both directions <span class="pf-help">(off: each holding only in its own direction)</span></label>
+      </div>
+      <div class="pf-botcards" id="pfBotCards"></div>
     </div>
   </div></section>
 

@@ -13,7 +13,8 @@ import { displayName } from './coinnames.js'
 import { sideScroll, wasDrag } from './sidescroll.js'
 import { SECTORS, SECTOR_LABEL } from './sectors.js'
 import { holdingsSectors, sectorColor } from './sectoralloc.js'
-import { STRATEGIES, STRATEGY_LABEL, BOT_STRATEGIES, BOT_LABEL, backtest, botRun, DAY, dayOf } from './pfbacktest.js'
+import { STRATEGIES, STRATEGY_LABEL, BOT_STRATEGIES, BOT_LABEL, backtest, botRun, DAY, dayOf, effectiveLeverage, PCT_EXITS, BOT_PARAM_DEFAULTS } from './pfbacktest.js'
+import { BT_FIELDS, BT_DEFAULTS, BT_STRATEGY_META } from './backtest.js'
 // The gallery card's own backtest, shared with serve-prod.js so the two cannot price a card
 // differently depending on which of them answered.
 import { galBacktest } from './pfgallery.js'
@@ -66,7 +67,7 @@ const DEFAULT = {
   weighting: 'custom',
   period: '365', from: null, to: null, capital: 10_000, lev: 1, fee: 0.045,
   strats: ['hold', 'monthly', 'trend'], bots: [], band: 5, trendDays: 50,
-  tf: '4h', tp: 4, sl: 2, both: false, bench: true, listingWait: false, source: 'hl', costs: true,
+  tf: '4h', both: false, bench: true, listingWait: false, source: 'hl', costs: true, margin: 'cross', botParams: {},
 }
 let S = { ...DEFAULT, ...store.get(DRAFT_KEY, {}) }
 let focus = null           // the run whose contributions are shown, by id
@@ -89,7 +90,7 @@ function decodeShare(h) {
     }
   } catch { return null }
 }
-const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'tf', 'tp', 'sl', 'both', 'bench', 'listingWait', 'costs']    // not 'source': price data is the reader's page-wide choice, not the link's
+const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'tf', 'both', 'bench', 'listingWait', 'costs', 'margin', 'botParams']    // not 'source': price data is the reader's page-wide choice, not the link's
 const pickSettings = (o) => Object.fromEntries(SETTING_KEYS.filter(k => k in o).map(k => [k, o[k]]))
 function encodeShare() {
   const j = { n: S.name, d: S.desc || undefined, i: S.items.map(i => [i.coin, +Number(i.w).toFixed(4), i.side === 'short' ? 1 : 0]), s: pickSettings(S) }
@@ -728,18 +729,80 @@ function renderRunControls() {
   $('pfFrom').value = dateStr(from); $('pfTo').value = dateStr(to)
   $('pfFrom').max = $('pfTo').max = dateStr(Date.now())
   $('pfCapital').value = S.capital
-  $('pfLev').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', Number(b.dataset.l) === Number(S.lev)))
+  $('pfLev').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.l === String(S.lev)))
+  $('pfLevIn').value = S.lev === 'max' ? '' : S.lev
+  $('pfLevIn').placeholder = S.lev === 'max' ? 'max' : ''
+  $('pfMargin').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.m === (S.margin === 'isolated' ? 'isolated' : 'cross')))
+  $('pfMarginNote').textContent = S.margin === 'isolated'
+    ? 'Each position has its own margin: one liquidated loses only its own, and the rest carry on.'
+    : 'One pool for the whole account: a loss on one holding uses the others\' margin, and the account is liquidated as one.'
+  $('pfLevNote').innerHTML = levNote()
   $('pfFee').value = S.fee
   $('pfBench').checked = !!S.bench
   $('pfWait').checked = !!S.listingWait
   $('pfCosts').checked = S.costs !== false
   $('pfSrc').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.src === srcMode()))
   $('pfBand').value = S.band; $('pfTrendDays').value = S.trendDays
-  $('pfTf').value = S.tf; $('pfTp').value = S.tp; $('pfSl').value = S.sl; $('pfBoth').checked = !!S.both
+  $('pfTf').value = S.tf; $('pfBoth').checked = !!S.both
   $('pfStrats').innerHTML = STRATEGIES.map(s => `<button data-strat="${s.id}" class="${S.strats.includes(s.id) ? 'is-on' : ''}" title="${esc(s.desc)}">${esc(s.label)}</button>`).join('')
   $('pfBots').innerHTML = BOT_STRATEGIES.map(([id, l]) => `<button data-bot="${id}" class="${S.bots.includes(id) ? 'is-on' : ''}">${esc(l)}</button>`).join('')
-  $('pfAllocParams').hidden = !(S.strats.includes('band') || S.strats.includes('trend'))
+  // A setting is shown only beside a strategy that reads it.
+  for (const el of $('pfAllocParams').querySelectorAll('[data-for]')) {
+    const f = el.dataset.for
+    el.hidden = f === 'none' ? (S.strats.includes('band') || S.strats.includes('trend') || !S.strats.length) : !S.strats.includes(f)
+  }
+  $('pfAllocParams').hidden = !S.strats.length
   $('pfBotParams').hidden = !S.bots.length
+  renderBotCards()
+}
+
+// ── leverage, as Hyperliquid allows it ──
+/** Each holding's leverage: asked, capped at its market's maximum (spot: 1×). */
+function levFor(coin) {
+  const r = rowById.get(coin)
+  return effectiveLeverage(S.lev ?? 1, r?.maxLev ?? null, coin.startsWith('@') || r?.kind === 'spot')
+}
+function levNote() {
+  const capped = S.items.filter(i => Number(i.w) > 0).map(i => [i, levFor(i.coin)])
+    .filter(([i, l]) => S.lev === 'max' || l < Number(S.lev))
+  const base = 'Each market is capped at its own Hyperliquid maximum; spot cannot be leveraged (1×).'
+  if (!capped.length) return base
+  const list = capped.map(([i, l]) => `${esc(nameOf(i))} ${l}×`).join(', ')
+  return S.lev === 'max' ? `Max: ${list}.` : `${base} Here: ${list}.`
+}
+
+// ── the trading strategies' own settings, one card each ──
+// Which settings a strategy reads comes from the Trade Simulator's own field list (BT_FIELDS),
+// so a card can only offer what actually changes that strategy. Percentage take-profit and
+// stop-loss belong to the five plain signal rules, each with an Off.
+const BOT_FIELD_SKIP = new Set(['gridLower', 'gridUpper', 'gridUsdPerLevel', 'dcaBaseUsd', 'dcaSoUsd'])
+function botFields(id) {
+  const own = BT_FIELDS.filter(f => f.strategy === id && !BOT_FIELD_SKIP.has(f.key) && f.type !== 'time')
+  const pct = PCT_EXITS.includes(id)
+    ? [{ key: 'takeProfitPct', label: 'Take profit', unit: '%', step: '0.5', off: 'tpOff' }, { key: 'stopLossPct', label: 'Stop loss', unit: '%', step: '0.5', off: 'slOff' }]
+    : []
+  // A stop of 0 is no stop at all for these, which the field should say rather than leave a reader to guess.
+  const ZERO_IS_NONE = new Set(['stStopPct', 'dcaSlPct', 'tokyoStopPct'])
+  return [...own.map(f => (ZERO_IS_NONE.has(f.key) ? { ...f, unit: (f.unit ?? '') + ' · 0 = none' } : f)), ...pct]
+}
+const bp = (id, key) => S.botParams?.[id]?.[key] ?? BOT_PARAM_DEFAULTS[key] ?? BT_DEFAULTS[key]
+function renderBotCards() {
+  const el = $('pfBotCards')
+  if (!el) return
+  el.innerHTML = S.bots.map(id => {
+    const fields = botFields(id)
+    const sizing = id === 'grid' ? 'Rungs sized to each holding\'s share of the capital.' : id === 'dca' ? 'Orders sized so the base and every safety order fit in each holding\'s share.' : ''
+    return `<div class="pf-botcard">
+      <div class="pf-botcard-h"><b>${esc(BOT_LABEL[id])}</b><small>${esc(BT_STRATEGY_META[id]?.tag ?? '')}</small></div>
+      <div class="pf-botcard-f">${fields.map(f => {
+        const off = f.off && S.botParams?.[id]?.[f.off]
+        return `<label class="${off ? 'is-off' : ''}" title="${esc(f.hint ?? '')}"><span>${esc(f.label)}</span>
+          <input type="number" data-bp="${id}|${f.key}" value="${bp(id, f.key)}" step="${f.step ?? 1}" ${off ? 'disabled' : ''}><em>${esc(f.unit ?? '')}</em>
+          ${f.off ? `<span class="pf-off"><input type="checkbox" data-bpoff="${id}|${f.off}" ${off ? 'checked' : ''}> Off</span>` : ''}</label>`
+      }).join('')}</div>
+      ${sizing ? `<p class="pf-help">${sizing}</p>` : ''}
+    </div>`
+  }).join('')
 }
 
 function windowOf() {
@@ -773,7 +836,9 @@ async function run() {
   }
   if (my !== runSeq) return
   const candles = Object.fromEntries(need.filter(c => closesOf(c)).map(c => [c, closesOf(c).pts]))
-  const opts = { capital: Number(S.capital) || 10_000, leverage: Number(S.lev) || 1, feeBps: (Number(S.fee) || 0) * 100, band: (Number(S.band) || 5) / 100, trendDays: Math.max(2, Number(S.trendDays) || 50), listing: S.listingWait ? 'wait' : 'join',
+  const opts = { capital: Number(S.capital) || 10_000, leverage: S.lev === 'max' ? 1 : (Number(S.lev) || 1), feeBps: (Number(S.fee) || 0) * 100, band: (Number(S.band) || 5) / 100, trendDays: Math.max(2, Number(S.trendDays) || 50), listing: S.listingWait ? 'wait' : 'join',
+    // Leverage per market, capped at what Hyperliquid allows there; the margin mode.
+    levBy: Object.fromEntries(items.map(i => [i.key, levFor(i.key)])), margin: S.margin === 'isolated' ? 'isolated' : 'cross',
     // Each market's maintenance margin, 1/(2 × its max leverage), as Hyperliquid sets it.
     mmr: Object.fromEntries(items.map(i => [i.key, rowById.get(i.key)?.maxLev > 0 ? 1 / (2 * rowById.get(i.key).maxLev) : undefined]).filter(([, v]) => v)) }
   const costs = await costsFor(items.map(i => i.key))
@@ -823,7 +888,7 @@ async function run() {
       ohlc[i.key] = ohlc[i.key].map(c => { const v = f.get(dayOf(c.t)); if (v != null) last = v; return { ...c, o: c.o * last, h: c.h * last, l: c.l * last, c: c.c * last } })
     }
     for (const id of S.bots) {
-      runs.push({ ...botRun(ohlc, items, r.days, id, { capital: opts.capital, leverage: opts.leverage, feeBps: opts.feeBps, tp: Number(S.tp) || 4, sl: Number(S.sl) || 2, both: !!S.both, funding: opts.funding, book: opts.book }), label: BOT_LABEL[id] })
+      runs.push({ ...botRun(ohlc, items, r.days, id, { capital: opts.capital, leverage: opts.leverage, feeBps: opts.feeBps, both: !!S.both, funding: opts.funding, book: opts.book, levBy: opts.levBy, margin: opts.margin, params: S.botParams?.[id] ?? {} }), label: BOT_LABEL[id] })
     }
   }
   runs.forEach((x, i) => { x.color = RUN_COLORS[i % RUN_COLORS.length] })
@@ -907,6 +972,11 @@ function renderResults() {
   const all = [...L.runs, ...(L.bench ? [{ ...L.bench, id: '__bench', label: 'BTC, held', color: BENCH_COLOR, dash: true }] : [])]
   const notes = []
   const nm = (k) => esc(coinName(k, symOf(k)))
+  // Leverage that Hyperliquid would not have allowed is not used: say where it was capped.
+  const capped = L.items.map(i => i.key).filter(k => L.opts.levBy?.[k] != null && (S.lev === 'max' || L.opts.levBy[k] < Number(S.lev)))
+  if (capped.length) notes.push(`Leverage ${S.lev === 'max' ? "at each market's maximum" : esc(String(S.lev)) + '× asked'}: ${capped.map(k => `${nm(k)} ${L.opts.levBy[k]}×`).join(', ')} — the most Hyperliquid allows there (spot: none).`)
+  const iso = L.runs.filter(x => x.isoLiqs > 0)
+  if (iso.length) notes.push(`Isolated margin: ${iso.map(x => `${esc(x.label)} had ${x.isoLiqs} position${x.isoLiqs === 1 ? '' : 's'} liquidated`).join('; ')} — each lost only its own margin; the rest carried on.`)
   if (srcMode() !== 'hl') {
     const by = (f) => L.items.map(i => i.key).filter(k => f(closesOf(k))).map(nm)
     if (srcMode() === 'tv') {
@@ -949,7 +1019,7 @@ function renderResults() {
     <div class="mk-cards pf-cards">
       <div class="mk-card"><div class="mk-card__lbl">Best</div><div class="mk-card__val">${esc(best?.label ?? '—')}</div><div class="mk-card__sub ${cls(best?.ret)}">${pct(best?.ret)} · ${usd(best?.final)}</div></div>
       <div class="mk-card"><div class="mk-card__lbl">Window</div><div class="mk-card__val">${L.days.length - 1} days</div><div class="mk-card__sub">${dLabel(L.days[0])} → ${dLabel(L.days[L.days.length - 1])}</div></div>
-      <div class="mk-card"><div class="mk-card__lbl">Capital</div><div class="mk-card__val">${usd(L.opts.capital)}</div><div class="mk-card__sub">${L.opts.leverage}× · fee ${(L.opts.feeBps / 100).toFixed(3)}% a trade</div></div>
+      <div class="mk-card"><div class="mk-card__lbl">Capital</div><div class="mk-card__val">${usd(L.opts.capital)}</div><div class="mk-card__sub">${S.lev === 'max' ? 'max leverage' : esc(String(S.lev)) + '×'} ${esc(L.opts.margin)} · fee ${(L.opts.feeBps / 100).toFixed(3)}% a trade</div></div>
       ${L.bench ? `<div class="mk-card"><div class="mk-card__lbl">BTC, held</div><div class="mk-card__val ${cls(L.bench.ret)}">${pct(L.bench.ret)}</div><div class="mk-card__sub">max drawdown ${pct(L.bench.maxDd)}</div></div>` : ''}
     </div>
     <div class="pf-card pf-chart-card">
@@ -1211,10 +1281,22 @@ function flash(btn, text) { const t0 = btn.textContent; btn.textContent = text; 
 $('pfPeriod').addEventListener('click', e => { const b = e.target.closest('button[data-p]'); if (!b) return; S.period = b.dataset.p; S.from = S.to = null; changed() })
 $('pfFrom').addEventListener('change', e => { if (e.target.value) { S.from = e.target.value; S.to = $('pfTo').value || null; changed() } })
 $('pfTo').addEventListener('change', e => { if (e.target.value) { S.from = $('pfFrom').value; S.to = e.target.value; changed() } })
-$('pfLev').addEventListener('click', e => { const b = e.target.closest('button[data-l]'); if (!b) return; S.lev = Number(b.dataset.l); changed() })
+$('pfLev').addEventListener('click', e => { const b = e.target.closest('button[data-l]'); if (!b) return; S.lev = b.dataset.l === 'max' ? 'max' : Number(b.dataset.l); changed() })
+// Any leverage Hyperliquid offers (1–50); each market is still capped at its own maximum.
+$('pfLevIn').addEventListener('change', e => { const v = Math.round(Number(e.target.value)); if (v >= 1) { S.lev = Math.min(50, v); changed() } })
+$('pfMargin').addEventListener('click', e => { const b = e.target.closest('button[data-m]'); if (!b) return; S.margin = b.dataset.m; changed() })
+$('pfBotCards').addEventListener('change', e => {
+  const t = e.target
+  const [id, key] = (t.dataset.bp ?? t.dataset.bpoff ?? '').split('|')
+  if (!id || !key) return
+  S.botParams = { ...(S.botParams ?? {}), [id]: { ...(S.botParams?.[id] ?? {}) } }
+  if (t.dataset.bpoff) S.botParams[id][key] = t.checked
+  else { const v = Number(t.value); if (Number.isFinite(v)) S.botParams[id][key] = v }
+  changed()
+})
 const num = (id, key, min, max) => $(id).addEventListener('change', e => { const v = Number(e.target.value); if (Number.isFinite(v)) { S[key] = Math.min(max, Math.max(min, v)); changed() } })
 num('pfCapital', 'capital', 100, 1e9); num('pfFee', 'fee', 0, 1); num('pfBand', 'band', 1, 50); num('pfTrendDays', 'trendDays', 5, 200)
-num('pfTp', 'tp', 0.1, 100); num('pfSl', 'sl', 0.1, 100)
+
 $('pfTf').addEventListener('change', e => { S.tf = e.target.value; changed() })
 $('pfBench').addEventListener('change', e => { S.bench = e.target.checked; changed() })
 $('pfWait').addEventListener('change', e => { S.listingWait = e.target.checked; changed() })

@@ -160,6 +160,36 @@
 .pf-perf-val { text-align: right; font-family: var(--font-mono); font-size: 13px; font-weight: 600; }
 @media (max-width: 760px) { .pf-perf-row { grid-template-columns: 24px minmax(0, 1fr) 56px 64px; } .pf-perf-bar { display: none; } .pf-perf-spark { width: 56px; } }
 
+/* the settings: four sections, each saying what it applies to */
+.pf-sec { padding: 4px 0 16px; }
+.pf-sec + .pf-sec { border-top: 1px solid var(--rule); padding-top: 14px; }
+.pf-sec-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.pf-sec-h b { font-size: 14.5px; letter-spacing: -0.01em; }
+.pf-sec-h small { font-size: 12px; color: var(--fg-3); }
+.pf-help { margin: 6px 0 0; font-size: 11.5px; line-height: 1.4; color: var(--fg-3); font-style: normal; }
+.pf-acct { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 170px; gap: 12px 24px; align-items: start; }
+.pf-lev { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pf-lev-in { display: inline-flex; align-items: center; gap: 4px; color: var(--fg-3); }
+.pf-lev-in input { width: 64px; font: inherit; font-size: 13.5px; color: var(--fg); background: var(--bg-2); border: 1px solid var(--rule); border-radius: 8px; padding: 7px 9px; outline: none; }
+.pf-lev-in input:focus { border-color: var(--accent); }
+.pf-fee .pf-help { display: block; }
+.pf-params label[data-for] i, .pf-for { font-style: normal; font-size: 11px; font-weight: 700; color: var(--accent); margin-right: 4px; }
+.pf-params [hidden] { display: none !important; }
+.pf-botcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-top: 12px; }
+.pf-botcard { border: 1px solid var(--rule); border-radius: 12px; padding: 11px 12px; background: var(--bg-2); min-width: 0; }
+.pf-botcard-h { display: flex; flex-direction: column; margin-bottom: 8px; }
+.pf-botcard-h b { font-size: 13.5px; }
+.pf-botcard-h small { font-size: 11.5px; color: var(--fg-3); }
+.pf-botcard-f { display: flex; flex-direction: column; gap: 6px; }
+.pf-botcard-f label { display: grid; grid-template-columns: minmax(0, 1fr) 72px 78px 40px; align-items: center; gap: 6px; font-size: 12.5px; color: var(--fg-2); }
+.pf-botcard-f input[type=number] { width: 72px; font: inherit; font-size: 13px; color: var(--fg); background: var(--panel); border: 1px solid var(--rule); border-radius: 7px; padding: 5px 7px; outline: none; }
+.pf-botcard-f input[type=number]:focus { border-color: var(--accent); }
+.pf-botcard-f em { font-style: normal; font-size: 11px; color: var(--fg-3); white-space: nowrap; }
+.pf-botcard-f label.is-off input[type=number] { opacity: .35; }
+.pf-off { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--fg-3); }
+.pf-off input { accent-color: var(--accent); }
+@media (max-width: 1000px) { .pf-acct { grid-template-columns: 1fr; } }
+
 /* the test */
 .pf-run { margin-bottom: 14px; }
 .pf-run-grid { display: grid; grid-template-columns: auto 160px auto 130px auto; gap: 8px 22px; align-items: end; }

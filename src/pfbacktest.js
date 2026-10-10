@@ -35,6 +35,19 @@ import { runBacktest, strategyKind } from './backtest.js'
 import { rateOn, slippage, dailyVol } from './pffunding.js'
 
 export const DAY = 86_400_000
+/**
+ * The leverage a market is actually run at: what was asked, capped at Hyperliquid's maximum for
+ * it — 5× on a market whose maximum is 3× is 3×, because 5× cannot be opened there. 'max' is each
+ * market's own maximum. Spot cannot be leveraged on Hyperliquid (1×); an unknown maximum is not
+ * capped.
+ */
+export function effectiveLeverage(asked, maxLev, spot = false) {
+  if (spot) return 1
+  const cap = maxLev > 0 ? maxLev : Infinity
+  if (asked === 'max') return Number.isFinite(cap) ? cap : 1
+  const a = Math.max(1, Number(asked) || 1)
+  return Math.min(a, cap)
+}
 /** Maintenance margin when a market's maximum leverage is not known: 1/(2×20). */
 export const MMR_DEFAULT = 0.025
 
@@ -110,8 +123,17 @@ function sma(arr, i, n) {
  * → { id, equity: number[] (from start), fees, trades, rebalances, liquidated: t|null, pnlBy: { key: $ } }
  */
 export function simulate(grid, start, weights, id, opts = {}) {
-  const { capital = 10_000, leverage = 1, feeBps = 4.5, band = 0.05, trendDays = 50, mmr = MMR_DEFAULT, funding = null, book = null } = opts
+  const { capital = 10_000, leverage = 1, feeBps = 4.5, band = 0.05, trendDays = 50, mmr = MMR_DEFAULT, funding = null, book = null, levBy = null, margin = 'cross' } = opts
   const keys = Object.keys(weights)
+  // Leverage per market: what was asked, capped at what Hyperliquid allows there (`levBy`, from
+  // effectiveLeverage). Without a map, the one figure for every market.
+  const levOf = (k) => (levBy && levBy[k] > 0 ? levBy[k] : leverage)
+  // Isolated margin: each position carries its own margin and is liquidated on its own, losing
+  // only that margin; the rest of the book goes on. Cross (the default): the account is one pool
+  // and is liquidated as a whole. `isoMargin` / `isoEntry` are what each position was opened with.
+  const isolated = margin === 'isolated'
+  const isoMargin = Object.fromEntries(keys.map(k => [k, 0])), isoEntry = Object.fromEntries(keys.map(k => [k, 0]))
+  let isoLiqs = 0
   // Funding and slippage (src/pffunding.js). `funding`: { key: fundingInfo } — none for a market
   // without it (spot, or prices that are not Hyperliquid's). `book`: { key: { spreadBps, vol } }
   // turns on slippage for every fill; without it no slippage is charged.
@@ -151,7 +173,7 @@ export function simulate(grid, start, weights, id, opts = {}) {
     let traded = false
     for (const k of keys) {
       if (px[k][i] == null) continue
-      const target = on && !on[k] ? 0 : leverage * eq * w[k] / px[k][i]
+      const target = on && !on[k] ? 0 : levOf(k) * eq * w[k] / px[k][i]
       const d = target - units[k]
       if (Math.abs(d * px[k][i]) < 1e-9) continue
       const notional = Math.abs(d * px[k][i])
@@ -162,6 +184,8 @@ export function simulate(grid, start, weights, id, opts = {}) {
         cash -= s; slipPaid += s; slipBy[k] += s
       }
       units[k] = target
+      // Isolated: the position is re-margined at its new size — its margin is its value ÷ leverage.
+      isoMargin[k] = Math.abs(target * px[k][i]) / levOf(k); isoEntry[k] = px[k][i]
       trades++; traded = true
     }
     if (traded) rebalances++
@@ -187,6 +211,20 @@ export function simulate(grid, start, weights, id, opts = {}) {
     // Liquidated where the exchange would: equity at or below the maintenance margin of what is
     // open — not at zero. Waiting for zero let a crashed book carry on with a few dollars,
     // re-lever them at the next rebalance and print +1,000% days off a near-empty account.
+    // Isolated: a position whose own equity (margin + its move since entry) is at or below its
+    // maintenance is closed and its margin lost; the account carries on.
+    if (i > start && isolated) {
+      for (const k of keys) {
+        if (!units[k] || px[k][i] == null) continue
+        const own = isoMargin[k] + units[k] * (px[k][i] - isoEntry[k])
+        if (own <= Math.abs(units[k] * px[k][i]) * mmrOf(k)) {
+          // Sold at the close; the account loses exactly this position's margin — what was left of it
+          // goes with it, and a loss past it (own < 0) is the liquidator's, not the account's.
+          cash += units[k] * px[k][i] - own
+          units[k] = 0; isoMargin[k] = 0; isoLiqs++
+        }
+      }
+    }
     if (i > start) {
       const eqNow = reserve + cash + value(i)
       const maint = keys.reduce((a, k) => a + (units[k] && px[k][i] != null ? Math.abs(units[k] * px[k][i]) * mmrOf(k) : 0), 0)
@@ -213,14 +251,14 @@ export function simulate(grid, start, weights, id, opts = {}) {
       if (id !== 'hold' || first || joined) rebalanceTo(i)
     } else if (id === 'band') {
       const eq = cash + value(i)
-      const off = eq > 0 && live.some(k => Math.abs(units[k] * px[k][i] / (leverage * eq) - w[k]) > band)
+      const off = eq > 0 && live.some(k => Math.abs(units[k] * px[k][i] / (levOf(k) * eq) - w[k]) > band)
       if (off) rebalanceTo(i)
     }
     const eq = reserve + cash + value(i)
     if (!(eq > 0)) { liquidated = days[i]; equity.push(0); continue }
     equity.push(eq)
   }
-  return { id, equity, fees, trades, rebalances, liquidated, pnlBy, funding: funding ? fundPaid : null, slippage: book ? slipPaid : null, fundDays, fundEstDays, fundBy, slipBy }
+  return { id, equity, fees, trades, rebalances, liquidated, isoLiqs, pnlBy, funding: funding ? fundPaid : null, slippage: book ? slipPaid : null, fundDays, fundEstDays, fundBy, slipBy }
 }
 
 /** Return, annualised return, drawdown, volatility, Sharpe, best/worst day — from an equity curve. */
@@ -284,7 +322,7 @@ export function backtest({ candles, items, from, to, strategies, opts = {}, benc
     const g = alignDaily({ [bench]: candles[bench] }, grid.days[0], grid.days[grid.days.length - 1])
     if (g.px[bench][start] != null) {
       // "BTC, held" is owning it: no leverage, no funding, no slippage — the plain reference.
-      const r = simulate(g, start, { [bench]: 1 }, 'hold', { ...opts, leverage: 1, funding: null, book: null })
+      const r = simulate(g, start, { [bench]: 1 }, 'hold', { ...opts, leverage: 1, levBy: null, margin: 'cross', funding: null, book: null })
       benchRun = { ...r, ...metrics(r.equity, capital) }
     }
   }
@@ -349,8 +387,49 @@ export function stepOnDays(points, days, v0) {
  *     on a signal strategy's take-profit (a resting order) and taker otherwise. Grid and DCA
  *     report their own fee totals; inside a window those are pro-rated by the fills in it.
  */
+/**
+ * Which settings each trading strategy reads, as the Trade Simulator's own field list says
+ * (src/backtest.js BT_FIELDS), and the defaults the portfolio page uses for them. A setting
+ * not listed for a strategy does nothing to it — the page shows each strategy only its own.
+ *
+ * Take profit / stop loss as percentages belong to the five plain signal rules. The Volatility
+ * breakout sets both as multiples of its rolling range; the Trend bot and Supertrend have only a
+ * stop; Grid and DCA their own ladders. 'off' on a percentage exit means it never fires (the
+ * trade closes on the strategy's other exits, or is held to the end).
+ */
+export const PCT_EXITS = ['breakout', 'rsi', 'bollinger', 'macd', 'emacross']
+export const BOT_PARAM_DEFAULTS = {
+  takeProfitPct: 4, stopLossPct: 2,
+  gridRangePct: 10, gridLevels: 10,
+  dcaSoCount: 5, dcaStepPct: 1.5, dcaStepScale: 1.2, dcaVolScale: 1.5, dcaTpPct: 1.5, dcaSlPct: 0,
+}
+const OFF = 1e6                      // a percentage no candle reaches
+export function botParams(strategy, params = {}, bal = 1000, side = 'long', both = false) {
+  const p = { ...params }
+  if (PCT_EXITS.includes(strategy)) {
+    p.takeProfitPct = params.tpOff ? OFF : (params.takeProfitPct ?? BOT_PARAM_DEFAULTS.takeProfitPct)
+    p.stopLossPct = params.slOff ? OFF : (params.stopLossPct ?? BOT_PARAM_DEFAULTS.stopLossPct)
+  }
+  delete p.tpOff; delete p.slOff
+  if (strategy === 'grid') {
+    const n = Math.max(2, Math.round(params.gridLevels ?? BOT_PARAM_DEFAULTS.gridLevels))
+    // Ladders sized to the holding's share of the capital, not the Simulator's $50 a rung.
+    Object.assign(p, { gridLevels: n, gridRangePct: params.gridRangePct ?? BOT_PARAM_DEFAULTS.gridRangePct, gridUsdPerLevel: bal / n, gridShort: !both && side === 'short' })
+  }
+  if (strategy === 'dca') {
+    const n = Math.max(0, Math.round(params.dcaSoCount ?? BOT_PARAM_DEFAULTS.dcaSoCount))
+    const vs = params.dcaVolScale ?? BOT_PARAM_DEFAULTS.dcaVolScale
+    // The base order and every safety order fit inside the holding's share when all are filled.
+    const units = 1 + Array.from({ length: n }, (_, j) => vs ** j).reduce((a, v) => a + v, 0)
+    Object.assign(p, { dcaSide: side, dcaSoCount: n, dcaVolScale: vs, dcaBaseUsd: bal / units, dcaSoUsd: bal / units,
+      dcaStepPct: params.dcaStepPct ?? BOT_PARAM_DEFAULTS.dcaStepPct, dcaStepScale: params.dcaStepScale ?? BOT_PARAM_DEFAULTS.dcaStepScale,
+      dcaTpPct: params.dcaTpPct ?? BOT_PARAM_DEFAULTS.dcaTpPct, dcaSlPct: params.dcaSlPct ?? BOT_PARAM_DEFAULTS.dcaSlPct })
+  }
+  return p
+}
+
 export function botRun(ohlc, items, days, strategy, opts = {}) {
-  const { capital = 10_000, leverage = 1, feeBps = 4.5, tp = 4, sl = 2, both = false, funding = null, book = null } = opts
+  const { capital = 10_000, leverage = 1, feeBps = 4.5, both = false, funding = null, book = null, levBy = null, margin = 'cross', params = {} } = opts
   const w = normalizeWeights(items)
   const curves = [], pnlBy = {}
   let trades = 0, won = 0, lost = 0, open = 0, refused = 0, fees = 0
@@ -364,14 +443,13 @@ export function botRun(ohlc, items, days, strategy, opts = {}) {
     const side = wk < 0 ? 'short' : 'long'
     const fees0 = fees, fund0 = fundPaid, slip0 = slipPaid
     const rows = (ohlc[k] ?? []).filter(c => c.t <= end && (!ladder || c.t >= start))
+    const sp = botParams(strategy, params, bal, side, both)
+    const lev = levBy && levBy[k] > 0 ? levBy[k] : leverage
     const r = runBacktest(rows, {
-      strategy, startBalance: bal, leverage, sizePct: 100,
+      ...sp,
+      strategy, startBalance: bal, leverage: lev, maxLev: Math.max(1, lev), marginMode: margin, sizePct: 100,
       useFees: true, takerFeePct: feeBps / 100, makerFeePct: Math.min(feeBps / 100, 0.015), feePct: 2 * feeBps / 100,
-      takeProfitPct: tp, stopLossPct: sl, useCooldown: false,
-      useDirection: !both, direction: side,
-      // Ladders sized to the sub-account, not the Simulator's $50 a level.
-      gridUsdPerLevel: bal / 10, gridLevels: 10, gridShort: !both && side === 'short',
-      dcaSide: side, dcaBaseUsd: bal / 14.2, dcaSoUsd: bal / 14.2,
+      useCooldown: false, useDirection: !both, direction: side,
     })
     // Closes by time, for marking an open position at any moment.
     const cs = rows.map(c => [c.t, c.c]).sort((a, b) => a[0] - b[0])

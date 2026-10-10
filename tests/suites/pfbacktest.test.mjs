@@ -221,6 +221,30 @@ console.log(nl + '-- accuracy: the errors found in the audit, each pinned --')
   t('with warm-up history the window still starts at the capital', near(warm.equity[0], 1000, 1e-9) && warm.equity.length === 60)
 }
 
+console.log(nl + '-- account settings: leverage as Hyperliquid allows it, cross or isolated --')
+{
+  t('5× asked on a 3× market is 3×; Max is each market\'s own; spot is 1×; an unknown maximum is not capped',
+    B.effectiveLeverage(5, 3) === 3 && B.effectiveLeverage('max', 10) === 10 && B.effectiveLeverage(20, 50, true) === 1 && B.effectiveLeverage(7, null) === 7)
+  const up = { A: series([100, 110]) }
+  const capped = B.backtest({ candles: up, items: [{ key: 'A', weight: 1 }], from: T0, to: T0 + D, strategies: ['hold'], opts: { capital: 1000, feeBps: 0, leverage: 5, levBy: { A: 3 } } }).runs[0]
+  t('capped at 3×, a +10% move earns 30%, not the 50% that 5× would', near(capped.final, 1300), capped.final)
+  // Two holdings at 5×, $2,500 each on $500 of margin each: A falls 40% (-$1,000), B is flat.
+  const two = { A: series([100, 60, 60]), B: series([100, 100, 100]) }
+  const items2b = [{ key: 'A', weight: 1 }, { key: 'B', weight: 1 }]
+  const iso = B.backtest({ candles: two, items: items2b, from: T0, to: T0 + 2 * D, strategies: ['hold'], opts: { capital: 1000, feeBps: 0, leverage: 5, mmr: 0.025, margin: 'isolated' } }).runs[0]
+  const cross = B.backtest({ candles: two, items: items2b, from: T0, to: T0 + 2 * D, strategies: ['hold'], opts: { capital: 1000, feeBps: 0, leverage: 5, mmr: 0.025, margin: 'cross' } }).runs[0]
+  t('isolated: the crashed position loses its own $500 margin — not the $1,000 it fell — and the other carries on', iso.isoLiqs === 1 && iso.liquidated === null && near(iso.final, 500), [iso.final, iso.isoLiqs])
+  t('cross: the same crash takes the whole account', cross.liquidated === T0 + D && cross.final === 0)
+  // The trading strategies' own settings
+  const p1 = B.botParams('rsi', { takeProfitPct: 8, slOff: true }, 1000)
+  t('take profit and stop loss reach the five strategies that read them; Off never fires', p1.takeProfitPct === 8 && p1.stopLossPct >= 1e6 && !('slOff' in p1))
+  t('and do nothing to the others (Supertrend, the Trend bot, Volatility breakout, Grid, DCA)', ['supertrend', 'trend', 'volbreak', 'grid', 'dca'].every(id => B.botParams(id, { takeProfitPct: 8 }).takeProfitPct === 8 && !B.PCT_EXITS.includes(id)))
+  const d = B.botParams('dca', { dcaSoCount: 3, dcaVolScale: 2 }, 1500)
+  t('DCA: the base order and all its safety orders fit the holding\'s share exactly', near(d.dcaBaseUsd + d.dcaSoUsd * (1 + 2 + 4), 1500) && d.dcaSoCount === 3)
+  const g = B.botParams('grid', { gridLevels: 5 }, 1000)
+  t('Grid: rungs sized to the holding\'s share', g.gridLevels === 5 && near(g.gridUsdPerLevel, 200))
+}
+
 console.log(nl + '-- funding and slippage (src/pffunding.js) --')
 {
   const F = await import('../../src/pffunding.js')
