@@ -404,22 +404,23 @@ setInterval(() => { pfxTick('cg').catch(() => {}) }, 60_000).unref?.()
  * leaves its cards OUT of the answer (the browser then works them out), never priced on the
  * wrong data.
  */
-function pfModeCloses(coin, mode) {
+function pfModeSeries(coin, mode) {
   const hl = pfcRead(coin)?.closes
   if (!hl?.length) return null
-  if (mode === 'hl') return hl
+  if (mode === 'hl') return closesFor('hl', hl, null)
   const p = planFor(coin)
   if (mode === 'tv') {
-    if (!p.yahooTv) return hl
+    if (!p.yahooTv) return closesFor('tv', hl, null)
     const ext = pfxRead('y:' + p.yahooTv)
     if (!ext) return null
-    return closesFor('tv', hl, ext.pts).pts
+    return closesFor('tv', hl, ext.pts)
   }
-  if (p.yahooMixed) { const ext = pfxRead('y:' + p.yahooMixed); if (!ext) return null; return closesFor('mixed', hl, ext.pts, 'tv').pts }
+  if (p.yahooMixed) { const ext = pfxRead('y:' + p.yahooMixed); if (!ext) return null; return closesFor('mixed', hl, ext.pts, 'tv') }
   const id = cgIdOf(p.cgSym)
-  if (id && wantsCg(hl)) { const ext = pfxRead('cg:' + id); if (!ext) return null; return closesFor('mixed', hl, ext.pts, 'cg').pts }
-  return hl
+  if (id && wantsCg(hl)) { const ext = pfxRead('cg:' + id); if (!ext) return null; return closesFor('mixed', hl, ext.pts, 'cg') }
+  return closesFor('mixed', hl, null)
 }
+const pfModeCloses = (coin, mode) => pfModeSeries(coin, mode)?.pts ?? null
 
 // The computed cards, per price mode, rebuilt when the portfolios or the prices change, and
 // once an hour so a window measured from "now" cannot drift a day behind.
@@ -832,6 +833,23 @@ createServer((req, res) => {
         .end(JSON.stringify({ sym, type, name: tok.name, points })))
       .catch(() => res.writeHead(502, { 'Content-Type': 'application/json' }).end('{"points":null}'))
     })()
+    return
+  }
+
+  // ── /pf-closes?src=mixed&coins=HYPE,xyz:NVDA: the daily closes the server already keeps, in a
+  // price mode — so the asset rows and the backtest of a featured portfolio's markets are read
+  // from here in ONE request, not fetched per market from Hyperliquid by every visitor. A
+  // market the server does not keep, or whose outside history is not cached yet, is ABSENT: the
+  // page fetches that one itself, as before.
+  if (url === '/pf-closes') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const qs = new URLSearchParams(req.url.split('?')[1] || '')
+    const mode = PF_MODES.includes(qs.get('src')) ? qs.get('src') : 'hl'
+    const kept = new Set(coinsOf(pfRead()))
+    const want = String(qs.get('coins') || '').split(',').map(s => s.trim()).filter(c => /^[A-Za-z0-9:@._/-]{1,40}$/.test(c) && kept.has(c)).slice(0, 40)
+    const out = {}
+    for (const c of want) { const s = pfModeSeries(c, mode); if (s?.pts?.length) out[c] = s }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=600' }).end(JSON.stringify({ src: mode, closes: out }))
     return
   }
 

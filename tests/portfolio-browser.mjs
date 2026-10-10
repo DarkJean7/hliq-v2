@@ -81,7 +81,16 @@ async function run(label, opts) {
     if (b.type === 'metaAndAssetCtxs' && b.dex === 'xyz') return route.fulfill({ status: 200, contentType: 'application/json', json: XYZ })
     return route.fulfill({ status: 200, contentType: 'application/json', json: HL[b.type] ?? {} })
   })
+  // The server's kept closes, per price mode (serve-prod /pf-closes): empty unless a test fills it.
+  const serverCloses = { hl: {}, tv: {}, mixed: {} }
+  const histAsks = []
+  await ctx.route('**/pf-closes**', (r) => {
+    const u = new URL(r.request().url()), src = u.searchParams.get('src') || 'hl'
+    const want = String(u.searchParams.get('coins') || '').split(',').filter(Boolean)
+    return r.fulfill({ status: 200, json: { src, closes: Object.fromEntries(want.filter(c => serverCloses[src]?.[c]).map(c => [c, serverCloses[src][c]])) } })
+  })
   await ctx.route('**/pf-history**', (r) => {
+    histAsks.push(new URL(r.request().url()).searchParams.get('sym'))
     const u = new URL(r.request().url())
     if (u.searchParams.get('src') !== 'yahoo' || u.searchParams.get('sym') !== 'NVDA') return r.fulfill({ status: 404, json: { pts: null } })
     const pts = []
@@ -362,6 +371,17 @@ async function run(label, opts) {
   ok('Mixed: the exchange\'s history until NVDA listed, Hyperliquid (flat) after', mxR.days === 366 && Math.abs(mxR.ret - mxWant) < 1e-9 && /NVDA from exchange prices until/.test(mxR.notes), [mxR.days, mxR.ret, mxWant])
   ok('and the card, which the server has not priced in Mixed, is worked out here in Mixed', (await card()).trim() === pctS(mxWant - 0.00045), [await card(), pctS(mxWant)])
   ok('the asset rows say where their prices came from', /TV\+HL/.test(await p.textContent('#pfComp')))
+  // When the server keeps a market's closes in the chosen mode, the page reads them from it —
+  // one request — and fetches nothing for that market itself.
+  serverCloses.tv['xyz:NVDA'] = { pts: [[dOfN - 400 * DAY, 100], [dOfN - 365 * DAY, 100], [dOfN, 300]], used: 'tv', splicedAt: null }
+  // (the page reloads in the last mode chosen, Mixed — the server keeps NVDA in that one too)
+  serverCloses.mixed['xyz:NVDA'] = { pts: [[dOfN - 400 * DAY, 100], [dOfN, 150]], used: 'tv', splicedAt: dOfN - 50 * DAY }
+  await p.reload({ waitUntil: 'domcontentloaded' })
+  const asked = histAsks.length
+  const fromServer = await runIn('tv')
+  await p.click('#pfPerfTf [data-perf="365"]')
+  ok('the test and the asset rows read the server\'s kept closes, in the chosen mode', Math.abs(fromServer.ret - 2) < 1e-9 && /\+200\.0%/.test(await p.textContent('#pfComp')), fromServer)
+  ok('and fetch nothing for that market themselves', !histAsks.slice(asked).includes('NVDA'), histAsks.slice(asked))
   ok('a share link does not carry the page\'s data choice', !/source/.test(Buffer.from((await p.evaluate(() => { document.getElementById('pfShare').click(); return location.hash })).replace('#p=', '').replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString()))
   await p.click('#pfSrc [data-src="hl"]')
   featured = featured.filter(x => x.id !== 'feat0009')

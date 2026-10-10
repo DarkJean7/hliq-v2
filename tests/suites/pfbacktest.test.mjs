@@ -182,10 +182,13 @@ console.log(nl + '-- price data: Hyperliquid, exchange prices ("TradingView"), m
   t('closesFor: TradingView is the exchange series, or Hyperliquid when there is none', P.closesFor('tv', hlS, exS).used === 'tv' && P.closesFor('tv', hlS, null).used === 'hl')
   t('closesFor: Mixed splices and says from which source', P.closesFor('mixed', hlS, exS, 'cg').used === 'cg' && P.closesFor('mixed', hlS, exS, 'cg').pts[0][1] === 25 && P.closesFor('hl', hlS, exS).pts === hlS)
   t('CoinGecko only for a coin Hyperliquid listed within its year', P.wantsCg([[Date.now() - 100 * D, 1]]) && !P.wantsCg([[Date.now() - 500 * D, 1]]))
-  t('the server prices the featured cards in every mode, from the same planFor/closesFor', SRV.includes("const PF_MODES = ['hl', 'tv', 'mixed']") && SRV.includes('return closesFor(\'tv\', hl, ext.pts).pts') && SRV.includes("get('src') || 'hl'"))
+  t('the server prices the featured cards in every mode, from the same planFor/closesFor', SRV.includes("const PF_MODES = ['hl', 'tv', 'mixed']") && SRV.includes("return closesFor('tv', hl, ext.pts)") && SRV.includes("get('src') || 'hl'"))
   t('a market whose outside history is not cached yet leaves its cards out (the browser answers), never priced on the wrong data', /if \(!ext\) return null/.test(SRV))
   t('the outside trickle never spends Hyperliquid weight: exchange every few seconds, CoinGecko a minute apart', SRV.includes("setInterval(() => { pfxTick('y').catch(() => {}) }, 8_000)") && SRV.includes("setInterval(() => { pfxTick('cg').catch(() => {}) }, 60_000)"))
+  const cr = SRV.slice(SRV.indexOf("if (url === '/pf-closes')"), SRV.indexOf("if (url === '/pf-history')"))
+  t('/pf-closes serves only markets the server keeps, in the mode asked, at most 40 at once', cr.includes('kept.has(c)') && cr.includes('.slice(0, 40)') && cr.includes('pfModeSeries(c, mode)'))
   const PJ = fs.readFileSync('src/portfolio.js', 'utf8')
+  t('the page asks the server first, in one request, and shares it between callers', PJ.includes('await primeCloses(need)') && PJ.includes('primeAsked.set(mode + \'|\' + c, job)'))
   t('the page asks for the cards in the mode on screen, and prices the rest with the same rule', PJ.includes("fetch('/portfolios-data?src=' + mode") && PJ.includes('const p = planFor(coin)') && PJ.includes("galPerfSrc === srcMode()"))
 }
 

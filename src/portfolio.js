@@ -215,8 +215,40 @@ const hlCloses = (coin) => daily.get(coin)?.map(k => [k.t, k.c])
 const closesBy = new Map()                              // 'mode|coin' → { pts, used, splicedAt }
 /** This holding's daily closes in the chosen data, or undefined while not loaded. */
 function closesOf(coin) {
+  const kept = closesBy.get(srcMode() + '|' + coin)
+  if (kept) return kept
   if (srcMode() === 'hl') return daily.has(coin) ? { pts: hlCloses(coin), used: 'hl', splicedAt: null } : undefined
-  return closesBy.get(srcMode() + '|' + coin)
+  return undefined
+}
+/**
+ * The server keeps every featured market's daily closes in every price mode (serve-prod.js
+ * /pf-closes). Ask it first, in one request, for everything not here yet; what it does not
+ * keep, ensureCloses fetches one by one as before. Each market is asked once per mode.
+ */
+// mode|coin → the request that asked for it. A second caller (the asset rows and the test
+// start together) waits for that request rather than fetching the market itself meanwhile.
+const primeAsked = new Map()
+async function primeCloses(coins) {
+  const mode = srcMode()
+  const all = [...new Set(coins)].filter(c => !closesOf(c))
+  const pending = all.map(c => primeAsked.get(mode + '|' + c)).filter(Boolean)
+  const want = all.filter(c => !primeAsked.has(mode + '|' + c))
+  if (want.length) {
+    const job = primeFetch(mode, want)
+    want.forEach(c => primeAsked.set(mode + '|' + c, job))
+    pending.push(job)
+  }
+  await Promise.all(pending)
+}
+async function primeFetch(mode, want) {
+  for (let i = 0; i < want.length; i += 40) {
+    try {
+      const r = await fetch(`/pf-closes?src=${mode}&coins=${want.slice(i, i + 40).map(encodeURIComponent).join(',')}`, { signal: AbortSignal.timeout(20_000) })
+      const j = r.ok ? await r.json() : null
+      if (j?.src !== mode) continue
+      for (const [c, s] of Object.entries(j.closes ?? {})) if (Array.isArray(s?.pts) && s.pts.length) closesBy.set(mode + '|' + c, { pts: s.pts, used: s.used ?? 'hl', splicedAt: s.splicedAt ?? null })
+    } catch {}
+  }
 }
 /**
  * Load them. "TradingView": the exchange series where the market is mapped, else Hyperliquid
@@ -225,9 +257,9 @@ function closesOf(coin) {
  */
 async function ensureCloses(coin) {
   const mode = srcMode()
-  if (mode === 'hl') { await fetchDaily(coin); return closesOf(coin) }
   const key = mode + '|' + coin
   if (closesBy.has(key)) return closesBy.get(key)
+  if (mode === 'hl') { await fetchDaily(coin); return closesOf(coin) }
   // Which outside series is planFor's answer from the market id — the same function the server
   // prices the featured cards with, so a card reads the same whoever worked it out.
   const p = planFor(coin)
@@ -543,6 +575,8 @@ async function loadGalleryPrices() {
     const all = [...(galHidden.featured ? [] : featured ?? []), ...(galHidden.local ? [] : store.get(SAVED_KEY, []))]
       .filter(p => !(galPerfSrc === srcMode() && galPerf?.[p.id]))
     const coins = [...new Set(all.flatMap(p => p.items.filter(i => Number(i.w) > 0).map(i => i.coin)))]
+    await primeCloses(coins)
+    renderGallery()
     for (const c of coins) {
       const fk = srcMode() + '|' + c
       if (closesOf(c) || galFailed.has(fk)) continue
@@ -597,7 +631,8 @@ async function loadPerfPrices(live) {
   const need = live.map(i => i.coin).filter(c => !closesOf(c) && !galFailed.has(fk(c)))
   if (perfLoading || !need.length) return
   perfLoading = true
-  try { for (const c of need) { try { await ensureCloses(c) } catch { galFailed.add(fk(c)) } await sleep(150) } }
+  // The server first, in one request; then one by one only what it did not keep.
+  try { await primeCloses(need); for (const c of need) { if (closesOf(c)) continue; try { await ensureCloses(c) } catch { galFailed.add(fk(c)) } await sleep(150) } }
   finally { perfLoading = false; renderComp() }
 }
 
@@ -682,6 +717,8 @@ async function run() {
   const { from, to } = windowOf()
   const need = [...new Set([...items.map(i => i.key), ...(S.bench ? ['BTC'] : [])])]
   const failed = []
+  await primeCloses(need)
+  if (my !== runSeq) return
   const todo = need.filter(c => !closesOf(c))
   for (const [n, coin] of todo.entries()) {
     if (my !== runSeq) return
