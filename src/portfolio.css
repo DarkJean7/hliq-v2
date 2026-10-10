@@ -139,6 +139,7 @@
 .pf-seclist i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
 
 /* asset performance */
+.pf-src { font-style: normal; font-family: var(--font-mono); font-size: 9.5px; font-weight: 600; padding: 1px 5px; border-radius: 4px; margin-left: 4px; color: var(--fg-2); background: #1b202b; vertical-align: 1px; }
 .pf-perf-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 18px; }
 .pf-perf-head .pf-lbl { margin: 0; }
 .pf-perf-tf button { padding: 5px 9px; font-size: 12px; }
@@ -158,7 +159,7 @@
 
 /* the test */
 .pf-run { margin-bottom: 14px; }
-.pf-run-grid { display: grid; grid-template-columns: auto 160px auto 130px auto; gap: 8px 22px; align-items: end; }
+.pf-run-grid { display: grid; grid-template-columns: auto 150px auto 120px auto auto; gap: 8px 22px; align-items: end; }
 .pf-run-grid .pf-lbl { margin-top: 0; }
 .pf-dates { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--fg-3); }
 .pf-dates input, .pf-field input, .pf-params input, .pf-params select {

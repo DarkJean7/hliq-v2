@@ -32,6 +32,8 @@ const waitFor = async (p, label, fn, arg, ms = 30000) => {
 const NOW = Date.now()
 const T0 = Math.floor(NOW / DAY) * DAY - 400 * DAY
 const PRICE = { BTC: (t) => 100 * (1 + Math.max(0, t - T0) / (400 * DAY)), ETH: () => 50, SOL: () => 20, 'xyz:NVDA': () => 180, '@700': () => 2 }
+// NVDA's exchange history ("TradingView", /pf-history): 400 days, rising in a straight line.
+const NV = (t) => 200 * (1 + (t - T0) / (400 * DAY))
 // Listed later than the rest: NVDA's history starts 50 days ago.
 const START = { 'xyz:NVDA': Math.floor(NOW / DAY) * DAY - 50 * DAY }
 const TF = { '1d': DAY, '4h': 4 * 3_600_000, '1h': 3_600_000 }
@@ -78,6 +80,13 @@ async function run(label, opts) {
     }
     if (b.type === 'metaAndAssetCtxs' && b.dex === 'xyz') return route.fulfill({ status: 200, contentType: 'application/json', json: XYZ })
     return route.fulfill({ status: 200, contentType: 'application/json', json: HL[b.type] ?? {} })
+  })
+  await ctx.route('**/pf-history**', (r) => {
+    const u = new URL(r.request().url())
+    if (u.searchParams.get('src') !== 'yahoo' || u.searchParams.get('sym') !== 'NVDA') return r.fulfill({ status: 404, json: { pts: null } })
+    const pts = []
+    for (let t = T0; t <= Math.floor(NOW / DAY) * DAY; t += DAY) pts.push([t, NV(t)])
+    return r.fulfill({ status: 200, json: { src: 'yahoo', key: 'NVDA', pts, currency: 'USD' } })
   })
   await ctx.route('**/markets-meta', r => r.fulfill({ status: 200, json: { revenue: {}, cg: {}, stocks: {}, sic: {} } }))
   // The featured list, as serve-prod.js keeps it: public to read, writes only with the dev PIN,
@@ -319,6 +328,27 @@ async function run(label, opts) {
   await p.click('#pfPublish')
   await waitFor(p, 'published from the builder', () => document.querySelectorAll('#pfFeatured [data-load]').length === 2)
   ok('Publish puts it under Featured, and Save becomes "Update featured"', featured.length === 2 && (await p.textContent('#pfSave')).trim() === 'Update featured' && await p.locator('#pfPublish').isHidden() && !!(await p.evaluate(() => window.__pf.state.featuredId)))
+
+  // ── price data: one NVDA-only basket, the three buttons ──
+  // Hyperliquid has NVDA for 50 days, flat at 180; the exchange has 400 days, rising.
+  const dOfN = Math.floor(NOW / DAY) * DAY
+  const srcLink = (src) => share({ n: 'NVDA only', i: [['xyz:NVDA', 100, 0]], s: { period: '365', from: null, to: null, capital: 10000, lev: 1, fee: 0, strats: ['hold'], bots: [], bench: false, source: src } })
+  const runIn = async (src) => {
+    await p.goto(BASE + '#p=' + srcLink(src), { waitUntil: 'domcontentloaded' })
+    await p.reload({ waitUntil: 'domcontentloaded' })
+    await waitFor(p, src + ' run', (s) => window.__pf.state.source === s && window.__pf.last?.runs?.length === 1 && (s === 'hl' || /Price data/.test(document.getElementById('pfResults').textContent)), src)
+    return p.evaluate(() => { const l = window.__pf.last; return { days: l.days.length, ret: l.runs[0].ret, notes: document.getElementById('pfResults').textContent.replace(/\s+/g, ' ') } })
+  }
+  const hlR = await runIn('hl')
+  ok('Hyperliquid: NVDA only has its 50 days there, flat', hlR.days <= 52 && Math.abs(hlR.ret) < 1e-9, hlR)
+  const tvR = await runIn('tv')
+  const tvWant = NV(dOfN) / NV(dOfN - 365 * DAY) - 1
+  ok('"TradingView": the exchange\'s whole year, and its return', tvR.days === 366 && Math.abs(tvR.ret - tvWant) < 1e-9 && /exchange prices for NVDA/.test(tvR.notes), [tvR.days, tvR.ret, tvWant])
+  ok('the button shows which data is on', await p.evaluate(() => document.querySelector('#pfSrc .is-on')?.dataset.src) === 'tv')
+  const mxR = await runIn('mixed')
+  const mxWant = NV(START['xyz:NVDA']) / NV(dOfN - 365 * DAY) - 1
+  ok('Mixed: the exchange\'s history until NVDA listed, Hyperliquid (flat) after', mxR.days === 366 && Math.abs(mxR.ret - mxWant) < 1e-9 && /NVDA from exchange prices until/.test(mxR.notes), [mxR.days, mxR.ret, mxWant])
+  ok('the asset rows say where their prices came from', /TV\+HL/.test(await p.textContent('#pfComp')))
 
   ok('no horizontal page scroll', await p.evaluate(() => document.documentElement.scrollWidth - innerWidth) <= 0, await p.evaluate(() => document.documentElement.scrollWidth - innerWidth))
   if (SHOT) await p.screenshot({ path: `${SHOT}/portfolio-${label}.png`, fullPage: true })

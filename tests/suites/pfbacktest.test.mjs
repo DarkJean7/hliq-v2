@@ -152,5 +152,30 @@ console.log(nl + '-- featured portfolios: public to read, the developer\'s to ch
   t('dev mode is the app\'s own (hliq_dev + hliq_lb_pin), checked by the server before it is kept', P.includes("localStorage.getItem('hliq_dev') === '1' && !!devPin()") && P.includes("fetch('/api/leaderboard/verify-pin'"))
 }
 
+console.log(nl + '-- price data: Hyperliquid, exchange prices ("TradingView"), mixed --')
+{
+  const P = await import('../../src/pfsources.js')
+  t('a TradFi market maps to its exchange symbol; non-US listings to their own exchange', P.yahooFor({ sym: 'NVDA', group: 'tradfi' }) === 'NVDA' && P.yahooFor({ sym: 'SMSN', group: 'tradfi' }) === '005930.KS' && P.yahooFor({ sym: 'CL', group: 'tradfi' }) === 'CL=F')
+  t('the same ticker is not the same asset: BB the perp (BounceBit) is not BB the stock (BlackBerry)', P.yahooFor({ sym: 'BB', group: 'crypto' }) === null && P.yahooFor({ sym: 'BB', group: 'tradfi' }) === 'BB')
+  t('an unverified ticker is not guessed: it stays on Hyperliquid', P.yahooFor({ sym: 'KSTR', group: 'tradfi' }) === null && P.yahooFor({ sym: 'OAI', group: 'tradfi' }) === null)
+  t('the server fetches only what the maps name', P.isAllowedYahoo('NVDA') && P.isAllowedYahoo('KRW=X') && !P.isAllowedYahoo('../x') && !P.isAllowedYahoo('EVIL'))
+  const yj = { chart: { result: [{ meta: { currency: 'KRW' }, timestamp: [T0 / 1000 + 3600, T0 / 1000 + 86400 + 3600, T0 / 1000 + 2 * 86400], indicators: { quote: [{ close: [70000, null, 71400] }] } }] } }
+  const py = P.parseYahooDaily(yj)
+  t('exchange closes: one per day, gaps skipped, currency kept', py.currency === 'KRW' && py.pts.length === 2 && py.pts[0][0] === T0 && py.pts[1][1] === 71400)
+  const usd = P.toUsd(py.pts, [[T0, 1400], [T0 + 2 * D, 1428]])
+  t('a won price becomes dollars at that day\'s rate', near(usd[0][1], 50) && near(usd[1][1], 50))
+  t('an index is a level, not a price: ^N225 is not converted', !P.needsUsd('^N225', 'JPY') && P.needsUsd('005930.KS', 'KRW') && !P.needsUsd('NVDA', 'USD'))
+  const sp = P.splice([[T0, 100], [T0 + D, 110], [T0 + 2 * D, 121], [T0 + 3 * D, 130]], [[T0 + 2 * D, 60.5], [T0 + 3 * D, 66]])
+  t('mixed: outside history before the listing, scaled to meet Hyperliquid\'s first close; Hyperliquid after', sp.splicedAt === T0 + 2 * D && sp.pts.length === 4 && near(sp.pts[0][1], 50) && near(sp.pts[1][1], 55) && sp.pts[2][1] === 60.5)
+  t('the scaling keeps every return the market made', near(sp.pts[1][1] / sp.pts[0][1], 1.1))
+  t('nothing before the listing: Hyperliquid alone', P.splice([[T0 + 5 * D, 1]], [[T0, 2]]).splicedAt === null)
+  t('CoinGecko: the last price of each day', JSON.stringify(P.parseCgChart({ prices: [[T0 + 1, 5], [T0 + 2, 6], [T0 + D, 7]] })) === JSON.stringify([[T0, 6], [T0 + D, 7]]))
+  const SRV = fs.readFileSync('serve-prod.js', 'utf8')
+  const r = SRV.slice(SRV.indexOf("if (url === '/pf-history')"), SRV.indexOf("if (url === '/portfolios-data' ||"))
+  t('the route: exchange symbols only from the allowlist, CoinGecko ids only ones already matched', r.includes("if (src === 'yahoo' && !isAllowedYahoo(key)) return send(404") && r.includes('if (!ids.has(key)) return send(404'))
+  t('CoinGecko is asked one at a time, seconds apart, and kept on disk', SRV.includes('const wait = 2600 - (Date.now() - pfhCgLast)') && SRV.includes("join(__dirname, 'data', 'cghist')"))
+  t('a listing in a currency it cannot convert is refused, not shown in the wrong units', SRV.includes("if (!fxSym) throw new Error('currency ' + currency)"))
+}
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

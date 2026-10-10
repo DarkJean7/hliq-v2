@@ -17,6 +17,7 @@ import { STRATEGIES, STRATEGY_LABEL, BOT_STRATEGIES, BOT_LABEL, backtest, botRun
 // The gallery card's own backtest, shared with serve-prod.js so the two cannot price a card
 // differently depending on which of them answered.
 import { galBacktest } from './pfgallery.js'
+import { SOURCES, yahooFor, splice } from './pfsources.js'
 
 const API = 'https://api.hyperliquid.xyz/info'
 const $ = (id) => document.getElementById(id)
@@ -64,7 +65,7 @@ const DEFAULT = {
   weighting: 'custom',
   period: '365', from: null, to: null, capital: 10_000, lev: 1, fee: 0.045,
   strats: ['hold', 'monthly', 'trend'], bots: [], band: 5, trendDays: 50,
-  tf: '4h', tp: 4, sl: 2, both: false, bench: true, listingWait: false,
+  tf: '4h', tp: 4, sl: 2, both: false, bench: true, listingWait: false, source: 'hl',
 }
 let S = { ...DEFAULT, ...store.get(DRAFT_KEY, {}) }
 let focus = null           // the run whose contributions are shown, by id
@@ -87,7 +88,7 @@ function decodeShare(h) {
     }
   } catch { return null }
 }
-const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'tf', 'tp', 'sl', 'both', 'bench', 'listingWait']
+const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'tf', 'tp', 'sl', 'both', 'bench', 'listingWait', 'source']
 const pickSettings = (o) => Object.fromEntries(SETTING_KEYS.filter(k => k in o).map(k => [k, o[k]]))
 function encodeShare() {
   const j = { n: S.name, d: S.desc || undefined, i: S.items.map(i => [i.coin, +Number(i.w).toFixed(4), i.side === 'short' ? 1 : 0]), s: pickSettings(S) }
@@ -152,6 +153,7 @@ async function loadMeta() {
     const j = r.ok ? await r.json() : null
     if (j?.revenue) meta = { revenue: j.revenue, cg: j.cg ?? null, stocks: j.stocks ?? null, sic: j.sic ?? null }
   } catch {}
+  metaDone()
   rebuild()
 }
 
@@ -186,6 +188,74 @@ async function fetchIntra(coin, tf, from, to) {
   intraday.set(k, out)
   return out
 }
+
+// ── price data: Hyperliquid, the real markets ("TradingView"), or mixed (src/pfsources.js) ──
+// Used by the backtest and the asset performance rows. The gallery cards stay on Hyperliquid:
+// the server prices those once for everyone (src/pfgallery.js), and pricing them per visitor
+// from three sources would bring back the hundred-market fetch that change removed.
+const srcMode = () => (SOURCES.some(([k]) => k === S.source) ? S.source : 'hl')
+const extCache = new Map(), extInflight = new Map()     // 'yahoo|NVDA' | 'cg|zcash' → [[t, close]] | null
+function fetchExt(src, key) {
+  const k = src + '|' + key
+  if (extCache.has(k)) return Promise.resolve(extCache.get(k))
+  if (!extInflight.has(k)) {
+    extInflight.set(k, fetch(`/pf-history?src=${src}&${src === 'cg' ? 'id' : 'sym'}=${encodeURIComponent(key)}`, { signal: AbortSignal.timeout(90_000) })
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => { const v = Array.isArray(j?.pts) && j.pts.length ? j.pts : null; extCache.set(k, v); return v })
+      .catch(() => null)
+      .finally(() => extInflight.delete(k)))
+  }
+  return extInflight.get(k)
+}
+// The markets (to know a holding's group and ticker) and the CoinGecko ids, before mapping.
+let marketsDone, metaDone
+const marketsDoneP = new Promise(r => { marketsDone = r }), metaDoneP = new Promise(r => { metaDone = r })
+const within = (p, ms) => Promise.race([p, sleep(ms)])
+const hlCloses = (coin) => daily.get(coin)?.map(k => [k.t, k.c])
+const closesBy = new Map()                              // 'mode|coin' → { pts, used, splicedAt }
+/** This holding's daily closes in the chosen data, or undefined while not loaded. */
+function closesOf(coin) {
+  if (srcMode() === 'hl') return daily.has(coin) ? { pts: hlCloses(coin), used: 'hl', splicedAt: null } : undefined
+  return closesBy.get(srcMode() + '|' + coin)
+}
+/**
+ * Load them. "TradingView": the exchange series where the market is mapped, else Hyperliquid
+ * (and marked so). Mixed: Hyperliquid, with the outside history spliced on before its first
+ * close — exchange prices for TradFi, CoinGecko for crypto listed within CoinGecko's year.
+ */
+async function ensureCloses(coin) {
+  const mode = srcMode()
+  if (mode === 'hl') { await fetchDaily(coin); return closesOf(coin) }
+  const key = mode + '|' + coin
+  if (closesBy.has(key)) return closesBy.get(key)
+  await within(marketsDoneP, 30_000)
+  const row = rowById.get(coin)
+  const tradfi = row?.group === 'tradfi'
+  let out
+  if (mode === 'tv') {
+    const ys = yahooFor(row)
+    const ext = ys ? await fetchExt('yahoo', ys) : null
+    if (ext) out = { pts: ext, used: 'tv', splicedAt: null }
+    else { await fetchDaily(coin); out = { pts: hlCloses(coin), used: 'hl', splicedAt: null, unmapped: !ys } }
+  } else {
+    await fetchDaily(coin)
+    const hl = hlCloses(coin)
+    let ext = null, src = null
+    if (tradfi) { const ys = yahooFor(row); if (ys) { ext = await fetchExt('yahoo', ys); src = 'tv' } }
+    else if (hl?.length && hl[0][0] > Date.now() - 360 * DAY) {
+      // CoinGecko's free history is a year, so it only adds to a coin Hyperliquid listed since.
+      await within(metaDoneP, 20_000)
+      const id = /^k[A-Z]/.test(row?.sym ?? '') ? null : meta?.cg?.[String(row?.sym ?? '').toUpperCase()]?.[0]
+      if (id) { ext = await fetchExt('cg', id); src = 'cg' }
+    }
+    const sp = ext ? splice(ext, hl) : { pts: hl, splicedAt: null }
+    out = { pts: sp.pts, used: sp.splicedAt ? src : 'hl', splicedAt: sp.splicedAt }
+  }
+  if (!out.pts?.length) throw new Error('no prices')
+  closesBy.set(key, out)
+  return out
+}
+const SRC_TAG = { hl: 'HL', tv: 'TV', cg: 'CG' }
 
 // ── builder ──────────────────────────────────────────────────────────────────
 const totalW = () => S.items.reduce((a, i) => a + (Number(i.w) > 0 ? Number(i.w) : 0), 0)
@@ -489,13 +559,13 @@ async function loadGalleryPrices() {
 // ones the backtest uses (fetchDaily, cached).
 const PERF_TFS = [['7', '7D'], ['30', '30D'], ['90', '90D'], ['365', '1Y']]
 function assetPerf(coin, days) {
-  const arr = daily.get(coin)
+  const s = closesOf(coin), arr = s?.pts
   if (!arr?.length) return null
   const from = dayOf(Date.now()) - days * DAY
-  const k = arr.findIndex(c => c.t >= from)
+  const k = arr.findIndex(c => c[0] >= from)
   if (k < 0) return null
-  const pts = arr.slice(k), a = pts[0].c, b = pts[pts.length - 1].c
-  return { ret: b / a - 1, since: arr[0].t > from ? arr[0].t : null, pts: pts.map(c => c.c) }
+  const pts = arr.slice(k), a = pts[0][1], b = pts[pts.length - 1][1]
+  return { ret: b / a - 1, since: arr[0][0] > from ? arr[0][0] : null, pts: pts.map(c => c[1]), used: s.used, splicedAt: s.splicedAt }
 }
 const miniSpark = (v, up) => {
   if (!v || v.length < 2) return '<i class="pf-perf-spark"></i>'
@@ -513,19 +583,20 @@ function perfHtml(live) {
       <div class="mk-seg pf-seg pf-perf-tf" id="pfPerfTf">${PERF_TFS.map(([k, l]) => `<button data-perf="${k}" class="${String(days) === k ? 'is-on' : ''}">${l}</button>`).join('')}</div></div>
     <div class="pf-perf">${rows.map(({ i, p }) => `<div class="pf-perf-row">
       ${iconHtml(i.coin, i.sym)}
-      <div class="pf-perf-name"><b>${esc(nameOf(i))}</b>${i.side === 'short' ? ' <i class="pf-short">short</i>' : ''}<small>${p?.since ? `since ${dLabel(p.since)}` : esc(rowById.get(i.coin)?.category ?? '')}</small></div>
+      <div class="pf-perf-name"><b>${esc(nameOf(i))}</b>${i.side === 'short' ? ' <i class="pf-short">short</i>' : ''}${p && srcMode() !== 'hl' ? ` <i class="pf-src" title="${p.splicedAt ? `${p.used === 'cg' ? 'CoinGecko' : 'Exchange'} prices before ${dLabel(p.splicedAt)}, Hyperliquid after` : p.used === 'tv' ? 'Exchange prices' : 'Hyperliquid prices'}">${p.splicedAt ? SRC_TAG[p.used] + '+HL' : SRC_TAG[p.used]}</i>` : ''}<small>${p?.since ? `since ${dLabel(p.since)}` : esc(rowById.get(i.coin)?.category ?? '')}</small></div>
       ${miniSpark(p?.pts, (p?.ret ?? 0) >= 0)}
       <span class="pf-perf-bar"><i class="${(p?.ret ?? 0) >= 0 ? 'up' : 'dn'}" style="width:${p ? (50 * Math.abs(p.ret) / max).toFixed(1) : 0}%"></i></span>
-      <span class="pf-perf-val ${p ? cls(p.ret) : 'mk-dim'}">${p ? pct(p.ret) : (daily.has(i.coin) ? '—' : '…')}</span>
+      <span class="pf-perf-val ${p ? cls(p.ret) : 'mk-dim'}">${p ? pct(p.ret) : (closesOf(i.coin) || galFailed.has(srcMode() + '|' + i.coin) ? '—' : '…')}</span>
     </div>`).join('')}</div>`
 }
 // Prices for the rows, one coin at a time, then a redraw. The backtest usually has them already.
 let perfLoading = false
 async function loadPerfPrices(live) {
-  const need = live.map(i => i.coin).filter(c => !daily.has(c) && !galFailed.has(c))
+  const fk = (c) => srcMode() + '|' + c
+  const need = live.map(i => i.coin).filter(c => !closesOf(c) && !galFailed.has(fk(c)))
   if (perfLoading || !need.length) return
   perfLoading = true
-  try { for (const c of need) { try { await fetchDaily(c) } catch { galFailed.add(c) } await sleep(150) } }
+  try { for (const c of need) { try { await ensureCloses(c) } catch { galFailed.add(fk(c)) } await sleep(150) } }
   finally { perfLoading = false; renderComp() }
 }
 
@@ -581,6 +652,7 @@ function renderRunControls() {
   $('pfFee').value = S.fee
   $('pfBench').checked = !!S.bench
   $('pfWait').checked = !!S.listingWait
+  $('pfSrc').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.src === srcMode()))
   $('pfBand').value = S.band; $('pfTrendDays').value = S.trendDays
   $('pfTf').value = S.tf; $('pfTp').value = S.tp; $('pfSl').value = S.sl; $('pfBoth').checked = !!S.both
   $('pfStrats').innerHTML = STRATEGIES.map(s => `<button data-strat="${s.id}" class="${S.strats.includes(s.id) ? 'is-on' : ''}" title="${esc(s.desc)}">${esc(s.label)}</button>`).join('')
@@ -609,22 +681,22 @@ async function run() {
   const { from, to } = windowOf()
   const need = [...new Set([...items.map(i => i.key), ...(S.bench ? ['BTC'] : [])])]
   const failed = []
-  const todo = need.filter(c => !daily.has(c))
+  const todo = need.filter(c => !closesOf(c))
   for (const [n, coin] of todo.entries()) {
     if (my !== runSeq) return
     setStatus(`loading prices ${n + 1}/${todo.length}…`)
     res.classList.add('is-busy')
-    try { await fetchDaily(coin); await sleep(150) } catch { failed.push(coin) }
+    try { await ensureCloses(coin); await sleep(150) } catch { failed.push(coin) }
   }
   if (my !== runSeq) return
-  const candles = Object.fromEntries(need.filter(c => daily.has(c)).map(c => [c, daily.get(c).map(k => [k.t, k.c])]))
+  const candles = Object.fromEntries(need.filter(c => closesOf(c)).map(c => [c, closesOf(c).pts]))
   const opts = { capital: Number(S.capital) || 10_000, leverage: Number(S.lev) || 1, feeBps: (Number(S.fee) || 0) * 100, band: (Number(S.band) || 5) / 100, trendDays: Math.max(2, Number(S.trendDays) || 50), listing: S.listingWait ? 'wait' : 'join' }
   const r = backtest({ candles, items, from, to, strategies: S.strats, opts, bench: S.bench ? 'BTC' : null })
   if (failed.some(c => items.some(i => i.key === c)) || r.missing.length) {
     res.classList.remove('is-busy')
     const names = [...new Set([...failed, ...r.missing])].filter(c => items.some(i => i.key === c)).map(c => rowById.get(c)?.sym ?? c)
     res.innerHTML = `<div class="pf-card pf-empty">No price history came back for ${esc(names.join(', '))}. <button class="pf-btn" id="pfRetry">Retry</button></div>`
-    $('pfRetry')?.addEventListener('click', () => { failed.forEach(c => daily.delete(c)); run() })
+    $('pfRetry')?.addEventListener('click', () => { failed.forEach(c => { daily.delete(c); closesBy.delete(srcMode() + '|' + c) }); run() })
     setStatus('prices did not load'); last = null
     return
   }
@@ -701,6 +773,19 @@ function renderResults() {
   const all = [...L.runs, ...(L.bench ? [{ ...L.bench, id: '__bench', label: 'BTC, held', color: BENCH_COLOR, dash: true }] : [])]
   const notes = []
   const nm = (k) => esc(coinName(k, symOf(k)))
+  if (srcMode() !== 'hl') {
+    const by = (f) => L.items.map(i => i.key).filter(k => f(closesOf(k))).map(nm)
+    if (srcMode() === 'tv') {
+      const ext = by(s => s?.used === 'tv'), own = by(s => s?.used === 'hl')
+      notes.push(`Price data: exchange prices${ext.length ? ` for ${ext.join(', ')}` : ''} (the prices TradingView charts, from Yahoo Finance)${own.length ? `; ${own.join(', ')} ${own.length === 1 ? 'has' : 'have'} no verified exchange symbol and ${own.length === 1 ? 'uses' : 'use'} Hyperliquid's` : ''}.`)
+    } else {
+      const sp = L.items.map(i => i.key).map(k => [k, closesOf(k)]).filter(([, s]) => s?.splicedAt)
+      notes.push(sp.length
+        ? `Price data, mixed: Hyperliquid from each listing; before it, ${sp.map(([k, s]) => `${nm(k)} from ${s.used === 'cg' ? 'CoinGecko' : 'exchange prices'} until ${dLabel(s.splicedAt)}`).join(', ')}.`
+        : 'Price data, mixed: every holding had Hyperliquid history for the whole window, so nothing was added.')
+    }
+    if (L.bots?.length || S.bots.length) notes.push('The trading strategies always run on Hyperliquid candles.')
+  }
   if (L.clippedBy) notes.push(S.listingWait
     ? `Starts ${dLabel(L.start)}: ${nm(L.clippedBy)} was listed then, and this test waits until every holding trades.`
     : `Starts ${dLabel(L.start)}: no holding traded before then; ${nm(L.clippedBy)} was the first.`)
@@ -991,6 +1076,7 @@ num('pfTp', 'tp', 0.1, 100); num('pfSl', 'sl', 0.1, 100)
 $('pfTf').addEventListener('change', e => { S.tf = e.target.value; changed() })
 $('pfBench').addEventListener('change', e => { S.bench = e.target.checked; changed() })
 $('pfWait').addEventListener('change', e => { S.listingWait = e.target.checked; changed() })
+$('pfSrc').addEventListener('click', e => { const b = e.target.closest('button[data-src]'); if (!b) return; S.source = b.dataset.src; changed() })
 $('pfBoth').addEventListener('change', e => { S.both = e.target.checked; changed() })
 $('pfStrats').addEventListener('click', e => { const b = e.target.closest('[data-strat]'); if (!b) return; const id = b.dataset.strat; S.strats = S.strats.includes(id) ? S.strats.filter(x => x !== id) : [...S.strats, id]; changed() })
 $('pfBots').addEventListener('click', e => { const b = e.target.closest('[data-bot]'); if (!b) return; const id = b.dataset.bot; S.bots = S.bots.includes(id) ? S.bots.filter(x => x !== id) : [...S.bots, id]; changed() })
@@ -1009,5 +1095,5 @@ renderRunControls()
 run()
 loadFeatured()
 loadMeta()
-loadMarkets().catch(() => setStatus('Hyperliquid did not answer — reload to try again'))
+loadMarkets().catch(() => setStatus('Hyperliquid did not answer — reload to try again')).finally(() => marketsDone())
 window.__pf = { get state() { return S }, get last() { return last } }     // tests/portfolio-browser.mjs

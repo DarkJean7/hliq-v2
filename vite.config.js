@@ -180,6 +180,31 @@ function strategyPlugin() {
           } catch { return sendJson(res, 200, { prices: {} }) }
         }
 
+        // Dev twin of serve-prod.js /pf-history (outside price history for /portfolios). No cache.
+        if (method === 'GET' && path === '/pf-history') {
+          const P = await import('./src/pfsources.js')
+          const qs = new URLSearchParams(req.url.split('?')[1] || '')
+          const src = qs.get('src'), key = String((src === 'cg' ? qs.get('id') : qs.get('sym')) || '')
+          const UA = { 'User-Agent': 'Mozilla/5.0 (compatible; InsolventTerminal/1.0)' }
+          try {
+            if (src === 'yahoo') {
+              if (!P.isAllowedYahoo(key)) return sendJson(res, 404, { pts: null })
+              const get = async (s) => P.parseYahooDaily(await fetch(P.yahooUrl(s), { headers: UA }).then(r => r.json()))
+              const a = await get(key)
+              if (!a.pts.length) throw new Error('empty')
+              if (!P.needsUsd(key, a.currency)) return sendJson(res, 200, { src, key, pts: a.pts, currency: a.currency || 'USD' })
+              const fx = P.FX_PER_USD[a.currency]; if (!fx) throw new Error('ccy')
+              return sendJson(res, 200, { src, key, pts: P.toUsd(a.pts, (await get(fx)).pts), currency: 'USD', from: a.currency })
+            }
+            if (src === 'cg' && /^[a-z0-9-]{1,80}$/.test(key)) {
+              const r = await fetch(P.cgChartUrl(key), { headers: { accept: 'application/json' } })
+              if (!r.ok) throw new Error(String(r.status))
+              return sendJson(res, 200, { src, key, pts: P.parseCgChart(await r.json()), currency: 'USD' })
+            }
+            return sendJson(res, 400, { pts: null })
+          } catch { return sendJson(res, 502, { pts: null }) }
+        }
+
         // Dev twin of serve-prod.js /portfolios-data (featured portfolios). Stored in the local
         // data/portfolios.json. Writes need the dev PIN: LB_PIN, or ~/.hliq/lb_pin, as on the
         // strategy server; with neither set locally, nobody can write — the same as prod.

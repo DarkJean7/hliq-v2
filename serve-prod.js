@@ -12,6 +12,7 @@ import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, 
 import { SEC_CONCEPTS, SEC_TICKERS_URL, secConceptUrl, companyRevenue } from './src/secrev.js'
 import { llamaSummaryUrl, sumDaily } from './src/llama.js'
 import { cleanPortfolio, upsertFeatured } from './src/pfshared.js'
+import { isAllowedYahoo, yahooUrl, cgChartUrl, parseYahooDaily, parseCgChart, toUsd, FX_PER_USD, needsUsd } from './src/pfsources.js'
 import { coinsOf, coinFile, stalest, buildPerf, HIST_FROM as PFC_FROM } from './src/pfgallery.js'
 import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
@@ -376,6 +377,52 @@ function devPinOk(pin) {
   })
 }
 
+// ── /pf-history: outside price history for /portfolios (src/pfsources.js) ────────────────
+// ?src=yahoo&sym=005930.KS — exchange closes, converted to dollars when listed elsewhere.
+// ?src=cg&id=zcash        — CoinGecko's year of daily prices.
+// Only symbols in pfsources' allowlists and coin ids the CoinGecko table already matched are
+// fetched, so the route is not a proxy for anything else. Daily data moves once a day: kept
+// six hours in memory, CoinGecko's also on disk (its free API allows a few calls a minute,
+// so they go one at a time, a few seconds apart, and both workers read what either fetched).
+const PFH_TTL = 6 * 60 * 60_000
+const pfhCache = new Map()                           // key -> { at, body }
+const PFH_CG_DIR = join(__dirname, 'data', 'cghist')
+let pfhCgChain = Promise.resolve(), pfhCgLast = 0
+const UA_HDR = { 'User-Agent': 'Mozilla/5.0 (compatible; InsolventTerminal/1.0; +https://insolvent.trade)' }
+async function yahooSeries(sym) {
+  const r = await fetch(yahooUrl(sym), { headers: UA_HDR, signal: AbortSignal.timeout(20_000) })
+  if (!r.ok) throw new Error(String(r.status))
+  return parseYahooDaily(await r.json())
+}
+async function pfhYahoo(sym) {
+  const { pts, currency } = await yahooSeries(sym)
+  if (!pts.length) throw new Error('empty')
+  if (!needsUsd(sym, currency)) return { pts, currency: currency || 'USD', from: currency }
+  const fxSym = FX_PER_USD[currency]
+  if (!fxSym) throw new Error('currency ' + currency)       // unconverted would be a different number, not an approximate one
+  const fx = await yahooSeries(fxSym)
+  const usd = toUsd(pts, fx.pts)
+  if (!usd.length) throw new Error('fx')
+  return { pts: usd, currency: 'USD', from: currency }
+}
+function pfhCg(id) {
+  const file = join(PFH_CG_DIR, id.replace(/[^a-z0-9-]/g, '') + '.json')
+  try { const d = JSON.parse(readFileSync(file, 'utf8')); if (Date.now() - d.at < 12 * 60 * 60_000 && d.pts?.length) return Promise.resolve({ pts: d.pts, currency: 'USD' }) } catch {}
+  const job = pfhCgChain.then(async () => {
+    const wait = 2600 - (Date.now() - pfhCgLast)
+    if (wait > 0) await new Promise(r => setTimeout(r, wait))
+    pfhCgLast = Date.now()
+    const r = await fetch(cgChartUrl(id), { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20_000) })
+    if (!r.ok) throw new Error(String(r.status))
+    const pts = parseCgChart(await r.json())
+    if (!pts.length) throw new Error('empty')
+    try { mkdirSync(PFH_CG_DIR, { recursive: true }); writeAtomic(file, JSON.stringify({ at: Date.now(), pts })) } catch {}
+    return { pts, currency: 'USD' }
+  })
+  pfhCgChain = job.catch(() => {})
+  return job
+}
+
 function serveFile(res, filePath, allowIndexFallback = true) {
   const ext      = extname(filePath).toLowerCase()
   const mime     = MIME[ext] ?? 'application/octet-stream'
@@ -700,6 +747,31 @@ createServer((req, res) => {
         .end(JSON.stringify({ sym, type, name: tok.name, points })))
       .catch(() => res.writeHead(502, { 'Content-Type': 'application/json' }).end('{"points":null}'))
     })()
+    return
+  }
+
+  if (url === '/pf-history') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const qs = new URLSearchParams(req.url.split('?')[1] || '')
+    const src = qs.get('src'), key = src === 'cg' ? String(qs.get('id') || '') : String(qs.get('sym') || '')
+    const send = (code, obj, cache = false) => res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': cache ? 'public, max-age=3600' : 'no-store' }).end(typeof obj === 'string' ? obj : JSON.stringify(obj))
+    if (src === 'yahoo' && !isAllowedYahoo(key)) return send(404, { pts: null })
+    if (src === 'cg') {
+      if (!cgData) cgFromDisk()
+      const ids = new Set(Object.values(cgData?.top ?? {}).map(v => v?.id).filter(Boolean))
+      if (!ids.has(key)) return send(404, { pts: null })
+    }
+    if (src !== 'yahoo' && src !== 'cg') return send(400, { pts: null })
+    const ck = src + '|' + key, hit = pfhCache.get(ck)
+    if (hit && Date.now() - hit.at < PFH_TTL) return send(200, hit.body, true)
+    ;(src === 'yahoo' ? pfhYahoo(key) : pfhCg(key))
+      .then(v => {
+        const body = JSON.stringify({ src, key, ...v })
+        if (pfhCache.size > 500) pfhCache.clear()
+        pfhCache.set(ck, { at: Date.now(), body })
+        send(200, body, true)
+      })
+      .catch(() => send(502, { pts: null }))
     return
   }
 

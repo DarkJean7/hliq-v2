@@ -119,6 +119,12 @@
         <div class="mk-seg pf-seg" id="pfLev"><button data-l="1">1×</button><button data-l="2">2×</button><button data-l="3">3×</button><button data-l="5">5×</button></div>
       </div>
       <label class="pf-field"><span class="pf-lbl">Fee per trade, %</span><input id="pfFee" type="number" min="0" step="0.005" inputmode="decimal"></label>
+      <div>
+        <div class="pf-lbl">Price data</div>
+        <div class="mk-seg pf-seg" id="pfSrc">
+          <button data-src="hl" title="Hyperliquid's own daily closes: what you could have traded here">Hyperliquid</button><button data-src="tv" title="Each asset's real exchange price — Nasdaq, NYSE, KRX, NYMEX, FX — the prices TradingView charts, from Yahoo Finance. Markets without a verified symbol use Hyperliquid.">TradingView</button><button data-src="mixed" title="Hyperliquid from each listing; before it, exchange prices for TradFi and CoinGecko for crypto">Mixed</button>
+        </div>
+      </div>
       <div class="pf-checks">
       <label class="pf-check"><input type="checkbox" id="pfBench"> Compare with BTC</label>
       <label class="pf-check" title="Off: a holding listed later joins on its listing day, and the test covers the whole period. On: the test starts only once every holding trades."><input type="checkbox" id="pfWait"> Wait until every holding is listed</label>
