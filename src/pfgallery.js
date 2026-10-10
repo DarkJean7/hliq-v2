@@ -53,11 +53,13 @@ export function windowOf(tf, now = Date.now()) {
  * Called by the server to precompute and by the browser to fill a gap, so a card shows the
  * same number whichever answered. `candles` is { key: [[t, close], …] }.
  */
-export function galBacktest(candles, items, from, to) {
+export function galBacktest(candles, items, from, to, extra = {}) {
+  // `extra.funding` ({ key: fundingInfo }, src/pffunding.js): a card holding perps pays (or
+  // earns) their funding, as holding them would. Passed by both sides, like everything here.
   return backtest({
     candles, items, from, to,
     strategies: ['hold'],
-    opts: { capital: GAL_CAPITAL, leverage: 1, feeBps: GAL_FEE_BPS },
+    opts: { capital: GAL_CAPITAL, leverage: 1, feeBps: GAL_FEE_BPS, funding: extra.funding ?? null },
   })
 }
 
@@ -153,7 +155,7 @@ export function packResult(r, sparkPoints = SPARK_POINTS) {
  * absent means "the server has no answer", and the browser then works that card out for
  * itself. An entry of null would be a claim that there is nothing to show.
  */
-export function buildPerf(portfolios, closes, now = Date.now(), sparkPoints = SPARK_POINTS) {
+export function buildPerf(portfolios, closes, now = Date.now(), sparkPoints = SPARK_POINTS, funding = null) {
   const out = {}
   for (const p of Array.isArray(portfolios) ? portfolios : []) {
     const items = (p?.items ?? []).filter(i => Number(i?.w) > 0)
@@ -163,7 +165,8 @@ export function buildPerf(portfolios, closes, now = Date.now(), sparkPoints = SP
     const per = {}
     for (const tf of WINDOWS) {
       const { from, to } = windowOf(tf, now)
-      const packed = packResult(galBacktest(mine, items, from, to), sparkPoints)
+      const fund = funding ? Object.fromEntries(items.filter(i => funding[i.key]).map(i => [i.key, funding[i.key]])) : null
+      const packed = packResult(galBacktest(mine, items, from, to, { funding: fund }), sparkPoints)
       if (packed) per[tf] = packed
     }
     if (Object.keys(per).length) out[p.id] = per

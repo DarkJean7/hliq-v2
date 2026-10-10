@@ -28,7 +28,7 @@ console.log(nl + '-- one definition of a gallery card, not two --')
   // Two implementations of "what the card says" would disagree the first time either
   // changed, and the disagreement would be a number on a public page.
   t('the server calls the shared backtest', sp.includes("from './src/pfgallery.js'") && gal.includes('export function galBacktest'))
-  t('and so does the browser', cli.includes("import { galBacktest } from './pfgallery.js'") && cli.includes('const r = galBacktest(candles, items, from, to)'))
+  t('and so does the browser', cli.includes("import { galBacktest } from './pfgallery.js'") && cli.includes('const r = galBacktest(candles, items, from, to, { funding: fund })'))   // with funding, as the server's cards
   t('neither keeps its own fee', gal.includes('export const GAL_FEE_BPS') && GAL_FEE_BPS === 4.5 && GAL_CAPITAL === 10_000)
   t('and the browser no longer builds its own options', !/strategies: \['hold'\], opts: \{ capital: 10_000/.test(cli))
   // The window arithmetic has to be the same too, or the two price different spans.

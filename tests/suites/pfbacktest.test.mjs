@@ -221,5 +221,36 @@ console.log(nl + '-- accuracy: the errors found in the audit, each pinned --')
   t('with warm-up history the window still starts at the capital', near(warm.equity[0], 1000, 1e-9) && warm.equity.length === 60)
 }
 
+console.log(nl + '-- funding and slippage (src/pffunding.js) --')
+{
+  const F = await import('../../src/pffunding.js')
+  const flat = { A: series(Array(11).fill(100)) }
+  const info = F.fundingInfo(Array.from({ length: 11 }, (_, i) => [T0 + i * D, 0.001]), T0)
+  const run = (side, fund, extra = {}) => B.backtest({ candles: flat, items: [{ key: 'A', weight: 1, side }], from: T0, to: T0 + 10 * D, strategies: ['hold'], opts: { capital: 1000, feeBps: 0, funding: fund, ...extra } }).runs[0]
+  const L = run('long', { A: info }), Sh = run('short', { A: info })
+  t('a long pays funding: $1,000 at 0.1% a day for 10 days is $10', near(L.funding, 10) && near(L.final, 990), [L.funding, L.final])
+  t('a short receives it', near(Sh.funding, -10) && near(Sh.final, 1010), [Sh.funding, Sh.final])
+  t('every day from actual rates', L.fundDays === 10 && L.fundEstDays === 0)
+  const part = F.fundingInfo([[T0, 0.001], [T0 + D, 0.001], [T0 + 2 * D, 0.004]], T0, T0 + 20 * D)
+  const P2 = run('long', { A: part })
+  t('days not in yet use the market\'s average, and are counted as estimated', P2.fundEstDays === 8 && near(P2.funding, (0.001 + 0.004 + 8 * 0.002) * 1000), [P2.funding, P2.fundEstDays])
+  t('no funding before a market listed on Hyperliquid', F.rateOn(F.fundingInfo([[T0, 0.01]], T0 + 5 * D), T0 + D)[0] === 0)
+  t('the daily sum of hourly rates', JSON.stringify(F.dailyFunding([{ time: T0 + 1, fundingRate: '0.0001' }, { time: T0 + 3600e3, fundingRate: '0.0002' }, { time: T0 + D, fundingRate: '-0.0001' }]).map(([d, r]) => [d, +r.toFixed(6)])) === JSON.stringify([[T0, 0.0003], [T0 + D, -0.0001]]))
+  t('slippage: half-spread + 0.7 × σ × √(size ÷ volume): $10K into a $1M market at 3% daily vol = 26 bps = $26', near(F.slippage(10_000, { spreadBps: 5, vol: 1e6 }, 0.03), 26, 1e-9))
+  t('a market with no book data still pays a modest default, never zero', near(F.slippage(1000, null, null), 1, 1e-9))
+  t('and no fill pays more than 5%', F.slippage(1e9, { spreadBps: 5, vol: 1 }, 0.5) === 1e9 * 0.05)
+  t('half the spread from Hyperliquid\'s impact prices', near(F.halfSpreadBps(['99.9', '100.1'], 100), 10))
+  const S1 = run('long', null, { book: { A: { spreadBps: 5, vol: 1e6 } } })
+  t('slippage is charged on the buy, and reported', S1.slippage > 0 && near(S1.final, 1000 - S1.slippage), S1.slippage)
+  t('"BTC, held" pays neither: it is owning BTC', B.backtest({ candles: flat, items: [{ key: 'A', weight: 1 }], from: T0, to: T0 + 10 * D, strategies: ['hold'], opts: { capital: 1000, feeBps: 0, funding: { A: info }, book: { A: {} } }, bench: 'A' }).bench.funding === null)
+  const rising = Array.from({ length: 120 }, (_, i) => { const c = 100 * (1 + 0.5 * i / 119); return { t: T0 + i * D, o: c * 0.999, h: c * 1.002, l: c * 0.998, c } })
+  const daysR = Array.from({ length: 120 }, (_, i) => T0 + i * D)
+  const fInfo = F.fundingInfo(daysR.map(d => [d, 0.0005]), T0)
+  const tb0 = B.botRun({ A: rising }, [{ key: 'A', weight: 1 }], daysR, 'trend', { capital: 1000, feeBps: 4.5 })
+  const tb1 = B.botRun({ A: rising }, [{ key: 'A', weight: 1 }], daysR, 'trend', { capital: 1000, feeBps: 4.5, funding: { A: fInfo }, book: { A: { spreadBps: 5, vol: 1e6 } } })
+  t('the trading strategies pay funding while they hold, and slippage on their fills', tb1.funding > 0 && tb1.slippage > 0 && near(tb0.final - tb1.final, tb1.funding + tb1.slippage, 0.02), [tb0.final, tb1.final, tb1.funding, tb1.slippage])
+  t('and each holding\'s row is before costs, so the rows and the costs add up to the result', near(Object.values(tb1.pnlBy).reduce((a, v) => a + v, 0) - tb1.fees - tb1.funding - tb1.slippage, tb1.final - 1000, 0.02))
+}
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

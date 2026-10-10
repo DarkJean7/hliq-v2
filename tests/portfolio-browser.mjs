@@ -54,7 +54,7 @@ const HL = {
 }
 // The basket as a share link: BTC and ETH, half each, buy & hold and monthly, 1Y, BTC benchmark.
 const share = (o) => Buffer.from(JSON.stringify(o)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-const LINK = share({ n: 'Test basket', i: [['BTC', 50, 0], ['ETH', 50, 0]], s: { period: '365', from: null, to: null, capital: 10000, lev: 1, fee: 0.045, strats: ['hold', 'monthly'], bots: [], bench: true, tf: '4h' } })
+const LINK = share({ n: 'Test basket', i: [['BTC', 50, 0], ['ETH', 50, 0]], s: { period: '365', from: null, to: null, capital: 10000, lev: 1, fee: 0.045, strats: ['hold', 'monthly'], bots: [], bench: true, tf: '4h', costs: false } })
 
 async function run(label, opts) {
   console.log('\n-- ' + label + ' --')
@@ -65,6 +65,11 @@ async function run(label, opts) {
   await ctx.route(HL_HOST, (route) => {
     let b = {}
     try { b = JSON.parse(route.request().postData() || '{}') } catch {}
+    if (b.type === 'fundingHistory') {
+      const out = []
+      if (b.coin === 'xyz:NVDA') for (let t = Math.ceil(b.startTime / 3600e3) * 3600e3; t <= (b.endTime ?? Date.now()) && out.length < 500; t += 3600e3) if (t >= START['xyz:NVDA']) out.push({ coin: b.coin, fundingRate: '0.00001', premium: '0', time: t })
+      return route.fulfill({ status: 200, contentType: 'application/json', json: out })
+    }
     if (b.type === 'candleSnapshot') {
       const { coin, interval, startTime, endTime } = b.req
       asks.push(coin + ':' + interval)
@@ -356,7 +361,7 @@ async function run(label, opts) {
   // The server has priced this card for "TradingView" only; in the other modes the page works it out.
   serverPerf.tv = { feat0009: { 365: { state: 'ok', run: { ret: 0.5, maxDd: -0.1, equity: [1, 1.5] }, start: dOfN - 365 * DAY, clippedBy: null, joined: [], days: 365 } } }
   await p.evaluate(() => localStorage.setItem('hliq_pf_gallery_hidden', '{}'))
-  await p.goto(BASE + '#p=' + share({ n: 'NVDA only', i: [['xyz:NVDA', 100, 0]], s: { period: '365', from: null, to: null, capital: 10000, lev: 1, fee: 0, strats: ['hold'], bots: [], bench: false } }), { waitUntil: 'domcontentloaded' })
+  await p.goto(BASE + '#p=' + share({ n: 'NVDA only', i: [['xyz:NVDA', 100, 0]], s: { period: '365', from: null, to: null, capital: 10000, lev: 1, fee: 0, strats: ['hold'], bots: [], bench: false, costs: false } }), { waitUntil: 'domcontentloaded' })
   await p.reload({ waitUntil: 'domcontentloaded' })
   await p.click('#pfGalTf [data-g="365"]')
   const card = () => p.evaluate(() => document.querySelector('#pfFeatured [data-load="f:feat0009"] .pf-gc-ret')?.textContent ?? '')
@@ -392,6 +397,22 @@ async function run(label, opts) {
   ok('the test and the asset rows read the server\'s kept closes, in the chosen mode', Math.abs(fromServer.ret - 2) < 1e-9 && /\+200\.0%/.test(await p.textContent('#pfComp')), fromServer)
   ok('and fetch nothing for that market themselves', !histAsks.slice(asked).includes('NVDA'), histAsks.slice(asked))
   ok('a share link does not carry the page\'s data choice', !/source/.test(Buffer.from((await p.evaluate(() => { document.getElementById('pfShare').click(); return location.hash })).replace('#p=', '').replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString()))
+  // Funding and slippage, on: a flat $10,000 of NVDA on Hyperliquid for its 50 days, paying
+  // 0.001% an hour (0.024% a day) — $2.40 a day, ≈$120 — with the days before the 500 hours one
+  // request returns estimated from their average.
+  await p.click('#pfSrc [data-src="hl"]')
+  await waitFor(p, 'hl', () => window.__pf.state.source === 'hl' && window.__pf.last?.runs?.length === 1)
+  await p.check('#pfCosts')
+  await waitFor(p, 'the costs run', () => window.__pf.last?.runs?.[0]?.funding > 0)
+  const cr = await p.evaluate(() => { const r = window.__pf.last.runs[0]; return { funding: r.funding, slip: r.slippage, est: r.fundEstDays, days: r.fundDays, notes: document.getElementById('pfResults').textContent.replace(/\s+/g, ' ') } })
+  ok('funding is charged from the rates: ≈ $2.40 a day for 50 days', cr.days >= 49 && cr.funding <= 2.4 * cr.days + 1e-6 && cr.funding >= 2.4 * (cr.days - 1) - 1e-6, cr)    // today is a part-day
+  ok('the days the one request did not reach are estimated, and the page says how many', cr.est > 20 && cr.est < cr.days && new RegExp(cr.est + ' of ' + cr.days + ' days estimated').test(cr.notes), [cr.est, cr.days])
+  ok('slippage is charged on the buy and shown', cr.slip > 0 && /slip \d/.test(await p.textContent('.pf-table')), cr.slip)
+  ok('the costs show in what each holding added', /Funding/.test(await p.textContent('.pf-contrib')) && /Slippage/.test(await p.textContent('.pf-contrib')))
+  await p.click('#pfSrc [data-src="tv"]')
+  await waitFor(p, 'tv costs', () => window.__pf.state.source === 'tv' && /no funding is charged/.test(document.getElementById('pfResults').textContent))
+  ok('on exchange prices — owning the asset — no funding is charged', await p.evaluate(() => window.__pf.last.runs[0].funding) === null)
+  await p.uncheck('#pfCosts')
   await p.click('#pfSrc [data-src="hl"]')
   featured = featured.filter(x => x.id !== 'feat0009')
 

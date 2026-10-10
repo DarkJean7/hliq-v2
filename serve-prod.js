@@ -12,6 +12,7 @@ import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, 
 import { SEC_CONCEPTS, SEC_TICKERS_URL, secConceptUrl, companyRevenue } from './src/secrev.js'
 import { llamaSummaryUrl, sumDaily } from './src/llama.js'
 import { cleanPortfolio, upsertFeatured } from './src/pfshared.js'
+import { dailyFunding, mergeDaily, fundingInfo, FUND_DAYS } from './src/pffunding.js'
 import { isAllowedYahoo, yahooUrl, cgChartUrl, parseYahooDaily, parseCgChart, toUsd, FX_PER_USD, needsUsd, planFor, closesFor, wantsCg } from './src/pfsources.js'
 import { coinsOf, coinFile, stalest, buildPerf, HIST_FROM as PFC_FROM } from './src/pfgallery.js'
 import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
@@ -399,6 +400,83 @@ async function pfxTick(kind) {
 setInterval(() => { pfxTick('y').catch(() => {}) }, 8_000).unref?.()
 setInterval(() => { pfxTick('cg').catch(() => {}) }, 60_000).unref?.()
 
+// ── funding for the featured perps: one fundingHistory request a minute ────────────────────
+// 500 hours (≈21 days) a request, weight ≈45 — at one a minute about 4% of the budget the bots
+// share. Every market gets its recent weeks first; then each is extended backwards, a chunk at a
+// time, to two years or its listing, and kept current. Days not in yet are estimated from the
+// market's own average by the engine, and the page says how many (src/pffunding.js).
+const PFF_DIR = join(__dirname, 'data', 'pffund')
+const PFF_LOCK = join(PFF_DIR, '.lock')
+const PFF_SPAN = 730 * 864e5
+const pffMem = new Map()
+function pffRead(coin) {
+  const hit = pffMem.get(coin)
+  if (hit) return hit
+  try { const j = JSON.parse(readFileSync(join(PFF_DIR, coinFile(coin) + '.json'), 'utf8')); pffMem.set(coin, j); return j } catch { return null }
+}
+/** What to fetch next: [coin, startTime, endTime], or null when every market is complete. */
+function pffNext() {
+  const perps = coinsOf(pfRead()).filter(c => !c.startsWith('@'))
+  const now = Date.now()
+  const day0 = Math.floor(now / 864e5) * 864e5
+  // Whole UTC days only (src/pffunding.js FUND_DAYS): a request never cuts a day in two.
+  for (const c of perps) if (!pffRead(c)) return [c, day0 - (FUND_DAYS - 1) * 864e5, now]           // never fetched: its recent weeks
+  for (const c of perps) { const f = pffRead(c); if (now - f.newest > 26 * 3600e3) return [c, Math.floor(f.newest / 864e5) * 864e5, now] }   // fallen behind: from the start of its last day, so that day is refetched whole
+  for (const c of perps) {
+    const f = pffRead(c), first = pfcRead(c)?.closes?.[0]?.[0] ?? 0
+    if (!f.done && f.oldest > Math.max(first, now - PFF_SPAN)) return [c, f.oldest - FUND_DAYS * 864e5, f.oldest - 1]
+  }
+  return null
+}
+let pffBusy = false
+async function pffTick() {
+  if (pffBusy) return
+  for (const c of coinsOf(pfRead())) pffMem.delete(c)
+  const next = pffNext()
+  if (!next) return
+  try { if (Date.now() - statSync(PFF_LOCK).mtimeMs < PFC_LOCK_TTL) return } catch {}
+  pffBusy = true
+  const [coin, startTime, endTime] = next
+  try {
+    mkdirSync(PFF_DIR, { recursive: true })
+    writeFileSync(PFF_LOCK, String(process.pid))
+    const r = await fetch('https://api.hyperliquid.xyz/info', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'fundingHistory', coin, startTime: Math.floor(startTime), endTime: Math.floor(endTime) }),
+      signal: AbortSignal.timeout(20_000),
+    })
+    if (!r.ok) throw new Error('HTTP ' + r.status)
+    const j = await r.json()
+    const got = Array.isArray(j) ? j : []
+    const prev = pffRead(coin)
+    const days = mergeDaily(prev?.days ?? [], dailyFunding(got))
+    const times = got.map(e => Number(e.time)).filter(Number.isFinite)
+    const rec = {
+      coin, at: Date.now(), days,
+      newest: Math.max(prev?.newest ?? 0, times.length ? Math.max(...times) : endTime, endTime > Date.now() - 3600e3 ? endTime : 0),
+      oldest: Math.min(prev?.oldest ?? Infinity, startTime),
+      // Asked for an older stretch and got nothing: the market did not exist yet. Stop there.
+      done: !!prev?.done || (prev != null && endTime < (prev.oldest ?? Infinity) && !got.length),
+    }
+    writeAtomic(join(PFF_DIR, coinFile(coin) + '.json'), JSON.stringify(rec))
+    pffMem.delete(coin)
+    pfPerfBy.clear()
+  } catch (e) {
+    console.warn('[portfolios] funding ' + coin + ' failed:', e.message)
+  } finally {
+    try { if (readFileSync(PFF_LOCK, 'utf8') === String(process.pid)) unlinkSync(PFF_LOCK) } catch {}
+    pffBusy = false
+  }
+}
+setInterval(() => { pffTick().catch(() => {}) }, 60_000).unref?.()
+/** A market's funding for the engine, or null: none for spot, none for exchange prices. */
+function pfFunding(coin, mode) {
+  if (mode === 'tv' || coin.startsWith('@')) return null
+  const f = pffRead(coin), first = pfcRead(coin)?.closes?.[0]?.[0]
+  if (!f?.days?.length || first == null) return null
+  return fundingInfo(f.days, first)
+}
+
 /**
  * A market's closes in a mode, or null while something it needs is not cached yet — which
  * leaves its cards OUT of the answer (the browser then works them out), never priced on the
@@ -437,7 +515,9 @@ function pfPerfNow(mode = 'hl') {
   const closes = {}
   for (const c of coinsOf(list)) { const v = pfModeCloses(c, mode); if (v?.length) closes[c] = v }
   const t0 = Date.now()
-  const perf = buildPerf(list, closes)
+  const funding = {}
+  for (const c of Object.keys(closes)) { const f = pfFunding(c, mode); if (f) funding[c] = f }
+  const perf = buildPerf(list, closes, Date.now(), undefined, funding)
   const built = { stamp, at: Date.now(), perf, coins: Object.keys(closes).length }
   pfPerfBy.set(mode, built)
   console.log(`[portfolios] ${mode}: built ${Object.keys(perf).length}/${list.length} cards from ${built.coins} markets in ${Date.now() - t0}ms`)
@@ -850,7 +930,13 @@ createServer((req, res) => {
     const kept = new Set(coinsOf(pfRead()))
     const want = String(qs.get('coins') || '').split(',').map(s => s.trim()).filter(c => /^[A-Za-z0-9:@._/-]{1,40}$/.test(c) && kept.has(c)).slice(0, 40)
     const out = {}
-    for (const c of want) { const s = pfModeSeries(c, mode); if (s?.pts?.length) out[c] = s }
+    for (const c of want) {
+      const s = pfModeSeries(c, mode)
+      if (!s?.pts?.length) continue
+      // With its funding by day, and where Hyperliquid's history starts (no funding before).
+      const f = mode === 'tv' || c.startsWith('@') ? null : pffRead(c)
+      out[c] = { ...s, funding: f?.days?.length ? { days: f.days, from: pfcRead(c)?.closes?.[0]?.[0] ?? null } : null }
+    }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=600' }).end(JSON.stringify({ src: mode, closes: out }))
     return
   }

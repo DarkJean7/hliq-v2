@@ -18,6 +18,7 @@ import { STRATEGIES, STRATEGY_LABEL, BOT_STRATEGIES, BOT_LABEL, backtest, botRun
 // differently depending on which of them answered.
 import { galBacktest } from './pfgallery.js'
 import { SOURCES, planFor, closesFor, wantsCg } from './pfsources.js'
+import { dailyFunding, fundingInfo, FUND_DAYS } from './pffunding.js'
 
 const API = 'https://api.hyperliquid.xyz/info'
 const $ = (id) => document.getElementById(id)
@@ -65,7 +66,7 @@ const DEFAULT = {
   weighting: 'custom',
   period: '365', from: null, to: null, capital: 10_000, lev: 1, fee: 0.045,
   strats: ['hold', 'monthly', 'trend'], bots: [], band: 5, trendDays: 50,
-  tf: '4h', tp: 4, sl: 2, both: false, bench: true, listingWait: false, source: 'hl',
+  tf: '4h', tp: 4, sl: 2, both: false, bench: true, listingWait: false, source: 'hl', costs: true,
 }
 let S = { ...DEFAULT, ...store.get(DRAFT_KEY, {}) }
 let focus = null           // the run whose contributions are shown, by id
@@ -88,7 +89,7 @@ function decodeShare(h) {
     }
   } catch { return null }
 }
-const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'tf', 'tp', 'sl', 'both', 'bench', 'listingWait']    // not 'source': price data is the reader's page-wide choice, not the link's
+const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'tf', 'tp', 'sl', 'both', 'bench', 'listingWait', 'costs']    // not 'source': price data is the reader's page-wide choice, not the link's
 const pickSettings = (o) => Object.fromEntries(SETTING_KEYS.filter(k => k in o).map(k => [k, o[k]]))
 function encodeShare() {
   const j = { n: S.name, d: S.desc || undefined, i: S.items.map(i => [i.coin, +Number(i.w).toFixed(4), i.side === 'short' ? 1 : 0]), s: pickSettings(S) }
@@ -243,7 +244,11 @@ async function primeFetch(mode, want) {
       const r = await fetch(`/pf-closes?src=${mode}&coins=${want.slice(i, i + 40).map(encodeURIComponent).join(',')}`, { signal: AbortSignal.timeout(20_000) })
       const j = r.ok ? await r.json() : null
       if (j?.src !== mode) continue
-      for (const [c, s] of Object.entries(j.closes ?? {})) if (Array.isArray(s?.pts) && s.pts.length) closesBy.set(mode + '|' + c, { pts: s.pts, used: s.used ?? 'hl', splicedAt: s.splicedAt ?? null })
+      for (const [c, s] of Object.entries(j.closes ?? {})) {
+        if (!Array.isArray(s?.pts) || !s.pts.length) continue
+        closesBy.set(mode + '|' + c, { pts: s.pts, used: s.used ?? 'hl', splicedAt: s.splicedAt ?? null })
+        if (s.funding?.days?.length) fundBy.set(c, fundingInfo(s.funding.days, s.funding.from))
+      }
     } catch {}
   }
 }
@@ -252,6 +257,36 @@ async function primeFetch(mode, want) {
  * (and marked so). Mixed: Hyperliquid, with the outside history spliced on before its first
  * close — exchange prices for TradFi, CoinGecko for crypto listed within CoinGecko's year.
  */
+// ── funding (src/pffunding.js) ──
+// The server's collected history arrives with its closes (primeCloses). A market it does not
+// keep gets one request here: its last 500 hours, which the engine also uses as the average for
+// earlier days — and the run says how many days that was.
+const fundBy = new Map(), fundAsked = new Map()
+function ensureFunding(coin) {
+  if (fundBy.has(coin) || coin.startsWith('@')) return Promise.resolve(fundBy.get(coin) ?? null)
+  if (!fundAsked.has(coin)) {
+    fundAsked.set(coin, (async () => {
+      try {
+        await fetchDaily(coin).catch(() => null)
+        const from = daily.get(coin)?.[0]?.t ?? null
+        const j = await post({ type: 'fundingHistory', coin, startTime: dayOf(Date.now()) - (FUND_DAYS - 1) * DAY, endTime: Date.now() }, 20_000)
+        const info = fundingInfo(dailyFunding(j), from)
+        if (info.avg != null) fundBy.set(coin, info)
+      } catch {}
+      return fundBy.get(coin) ?? null
+    })())
+  }
+  return fundAsked.get(coin)
+}
+/** What the engine needs for the costs, in this mode: { funding, book }, or nothing when off. */
+async function costsFor(keys) {
+  if (!S.costs) return { funding: null, book: null }
+  const book = Object.fromEntries(keys.map(k => { const r = rowById.get(k); return [k, { spreadBps: r?.spreadBps ?? null, vol: r?.vol24 ?? null }] }))
+  if (srcMode() === 'tv') return { funding: null, book }        // exchange prices: owning the asset, no funding
+  for (const k of keys) { if (!fundBy.has(k) && !k.startsWith('@')) { await ensureFunding(k); await sleep(120) } }
+  return { funding: Object.fromEntries(keys.filter(k => fundBy.has(k)).map(k => [k, fundBy.get(k)])), book }
+}
+
 /** ensureCloses in a given mode, whatever the page is showing (the split repair needs 'hl'). */
 const ensureClosesIn = (mode, coin) => ensureCloses(coin, mode)
 async function ensureCloses(coin, mode = srcMode()) {
@@ -394,7 +429,8 @@ function galResult(p) {
   if (items.some(i => !closesOf(i.key))) return { state: 'loading' }
   const { from, to } = galWindow()
   const candles = Object.fromEntries(items.map(i => [i.key, closesOf(i.key).pts]))
-  const r = galBacktest(candles, items, from, to)
+  const fund = srcMode() === 'tv' ? null : Object.fromEntries(items.filter(i => fundBy.has(i.key)).map(i => [i.key, fundBy.get(i.key)]))
+  const r = galBacktest(candles, items, from, to, { funding: fund })
   if (!r.runs.length) return { state: 'failed' }
   return { state: 'ok', run: r.runs[0], start: r.start, clippedBy: r.clippedBy, joined: r.joined ?? [], days: r.days.length - 1 }
 }
@@ -587,6 +623,8 @@ async function loadGalleryPrices() {
       const fk = srcMode() + '|' + c
       if (closesOf(c) || galFailed.has(fk)) continue
       try { await ensureCloses(c) } catch { galFailed.add(fk) }
+      // Cards pay funding, the server's and these alike, so a card you priced matches one it did.
+      if (srcMode() !== 'tv') await ensureFunding(c)
       renderGallery()
       await sleep(200)
     }
@@ -694,6 +732,7 @@ function renderRunControls() {
   $('pfFee').value = S.fee
   $('pfBench').checked = !!S.bench
   $('pfWait').checked = !!S.listingWait
+  $('pfCosts').checked = S.costs !== false
   $('pfSrc').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.src === srcMode()))
   $('pfBand').value = S.band; $('pfTrendDays').value = S.trendDays
   $('pfTf').value = S.tf; $('pfTp').value = S.tp; $('pfSl').value = S.sl; $('pfBoth').checked = !!S.both
@@ -737,6 +776,9 @@ async function run() {
   const opts = { capital: Number(S.capital) || 10_000, leverage: Number(S.lev) || 1, feeBps: (Number(S.fee) || 0) * 100, band: (Number(S.band) || 5) / 100, trendDays: Math.max(2, Number(S.trendDays) || 50), listing: S.listingWait ? 'wait' : 'join',
     // Each market's maintenance margin, 1/(2 × its max leverage), as Hyperliquid sets it.
     mmr: Object.fromEntries(items.map(i => [i.key, rowById.get(i.key)?.maxLev > 0 ? 1 / (2 * rowById.get(i.key).maxLev) : undefined]).filter(([, v]) => v)) }
+  const costs = await costsFor(items.map(i => i.key))
+  if (my !== runSeq) return
+  opts.funding = costs.funding; opts.book = costs.book
   const r = backtest({ candles, items, from, to, strategies: S.strats, opts, bench: S.bench ? 'BTC' : null })
   if (failed.some(c => items.some(i => i.key === c)) || r.missing.length) {
     res.classList.remove('is-busy')
@@ -781,7 +823,7 @@ async function run() {
       ohlc[i.key] = ohlc[i.key].map(c => { const v = f.get(dayOf(c.t)); if (v != null) last = v; return { ...c, o: c.o * last, h: c.h * last, l: c.l * last, c: c.c * last } })
     }
     for (const id of S.bots) {
-      runs.push({ ...botRun(ohlc, items, r.days, id, { capital: opts.capital, leverage: opts.leverage, feeBps: opts.feeBps, tp: Number(S.tp) || 4, sl: Number(S.sl) || 2, both: !!S.both }), label: BOT_LABEL[id] })
+      runs.push({ ...botRun(ohlc, items, r.days, id, { capital: opts.capital, leverage: opts.leverage, feeBps: opts.feeBps, tp: Number(S.tp) || 4, sl: Number(S.sl) || 2, both: !!S.both, funding: opts.funding, book: opts.book }), label: BOT_LABEL[id] })
     }
   }
   runs.forEach((x, i) => { x.color = RUN_COLORS[i % RUN_COLORS.length] })
@@ -828,10 +870,24 @@ const RES_COLS = [
   ['cagr', 'Annual', 'Annualised return (only over a year or more)'], ['maxDd', 'Max DD', 'Largest fall from a high'],
   ['vol', 'Vol.', 'Annualised volatility of daily returns'], ['sharpe', 'Sharpe', 'Mean daily return over its volatility, annualised; no risk-free rate'],
   ['best', 'Best / worst', 'Best and worst single day (sorted by best)'], ['trades', 'Trades', 'Trades (trading strategies) or rebalances (allocation)'],
-  ['fees', 'Fees', 'Fees paid'],
+  ['costs', 'Costs', 'Fees + funding + slippage (funding: paid when positive, received when negative)'],
 ]
 let resSort = { key: null, asc: false }
-const runKey = (x, k) => k === 'label' ? x.label : k === 'trades' ? (x.trades ?? x.rebalances ?? null) : x[k]
+const costOf = (x) => (x.fees ?? 0) + (x.funding ?? 0) + (x.slippage ?? 0)
+const runKey = (x, k) => k === 'label' ? x.label : k === 'trades' ? (x.trades ?? x.rebalances ?? null) : k === 'costs' ? costOf(x) : x[k]
+/** "$1,410" over "fees 79 · funding 1,212 · slip 119"; funding received reads as a negative cost. */
+function costCell(x) {
+  if (x.fees == null && x.funding == null && x.slippage == null) return '—'
+  const n = (v) => (v < 0 ? '-' : '') + Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 0 })
+  const parts = [`fees ${n(x.fees ?? 0)}`]
+  if (x.funding != null) parts.push(`funding ${n(x.funding)}`)
+  if (x.slippage != null) parts.push(`slip ${n(x.slippage)}`)
+  const est = x.feesEstimated || x.slippage != null || x.fundEstDays > 0
+  const tip = [x.feesEstimated ? 'Fees summed from the simulated fills.' : 'Fees charged on every trade.',
+    x.funding != null ? `Funding over ${x.fundDays} days${x.fundEstDays ? `, ${x.fundEstDays} of them estimated from the market's average` : ', all from actual rates'}.` : '',
+    x.slippage != null ? 'Slippage estimated: half the spread plus impact by order size against volume.' : ''].filter(Boolean).join(' ')
+  return `<span title="${esc(tip)}">${est ? '≈ ' : ''}${usd(costOf(x), 0)}</span><small class="pf-costs">${parts.join(' · ')}</small>`
+}
 /** Sorted by the chosen column; unknowns last either way; the BTC benchmark stays at the bottom. */
 function sortRuns(all) {
   const bench = all.filter(x => x.id === '__bench'), rest = all.filter(x => x.id !== '__bench')
@@ -868,6 +924,12 @@ function renderResults() {
     ? `Starts ${dLabel(L.start)}: ${nm(L.clippedBy)} was listed then, and this test waits until every holding trades.`
     : `Starts ${dLabel(L.start)}: no holding traded before then; ${nm(L.clippedBy)} was the first.`)
   if (L.joined?.length) notes.push(`Joined when listed: ${L.joined.map(j => `${nm(j.key)} on ${dLabel(j.t)}`).join(', ')}. Until then their weight was spread over the holdings that traded, and each was bought on its first day. The trading strategies keep a holding's share in cash until it lists.`)
+  if (S.costs !== false) {
+    const fr = L.runs.find(x => x.funding != null)
+    if (srcMode() === 'tv') notes.push('Exchange prices are owning the asset: no funding is charged. Slippage is estimated from Hyperliquid\'s spread and volume.')
+    else if (fr && fr.fundDays > 0) notes.push(`Funding: Hyperliquid's hourly rates${fr.fundEstDays ? ` — ${fr.fundEstDays} of ${fr.fundDays} days estimated from each market's average, where its history is not in yet` : ', every day from actual rates'}. Slippage is an estimate: half the spread plus market impact.`)
+    else if (fr) notes.push('Funding: none charged — no funding rates for these markets (spot tokens have none). Slippage is an estimate: half the spread plus market impact.')
+  }
   if (L.cut) notes.push(`The trading strategies use the most recent 5,000 ${esc(S.tf)} candles, which start after the window does. Choose 4-hour or daily candles to cover all of it.`)
   const liq = all.filter(x => x.liquidated)
   if (liq.length) notes.push(`Liquidated: ${liq.map(x => `${esc(x.label)} on ${dLabel(x.liquidated)}`).join('; ')}.`)
@@ -905,14 +967,14 @@ function renderResults() {
           <td data-l="Max drawdown" class="mk-dn">${pct(x.maxDd)}</td><td data-l="Volatility">${x.vol ? (x.vol * 100).toFixed(0) + '%' : '—'}</td><td data-l="Sharpe">${x.sharpe == null ? '—' : x.sharpe.toFixed(2)}</td>
           <td data-l="Best / worst day"><span class="${cls(x.best)}">${pct(x.best)}</span> <span class="mk-dim">/</span> <span class="${cls(x.worst)}">${pct(x.worst)}</span></td>
           <td data-l="Trades">${tradesOf(x)}</td>
-          <td data-l="Fees">${x.fees == null ? '—' : `<span title="${x.feesEstimated ? 'Summed from the simulated fills: taker to open, maker on a take-profit, taker otherwise' : 'Charged on every rebalance'}">${x.feesEstimated ? '≈ ' : ''}${usd(x.fees, 0)}</span>`}</td>
+          <td data-l="Costs">${costCell(x)}</td>
         </tr>`).join('')}</tbody>
       </table>
     </div>
     ${f && f.id !== '__bench' ? `<div class="pf-card pf-contrib">
       <div class="pf-lbl">What each holding added <small>${esc(f.label)} — tap a strategy to switch</small></div>
       ${contrib.map(c => `<div class="pf-cbar"><span class="pf-cname">${esc(c.sym)}</span><span class="pf-ctrack"><i class="${c.v >= 0 ? 'up' : 'dn'}" style="width:${(50 * Math.abs(c.v) / cmax).toFixed(1)}%"></i></span><span class="pf-cval ${cls(c.v)}">${c.v >= 0 ? '+' : ''}${usd(c.v)}</span></div>`).join('')}
-      ${f.fees ? `<div class="pf-cbar"><span class="pf-cname mk-dim">Fees</span><span class="pf-ctrack"><i class="dn" style="width:${(50 * f.fees / cmax).toFixed(1)}%"></i></span><span class="pf-cval mk-dn">-${usd(f.fees)}</span></div>` : ''}
+      ${[['Fees', f.fees], ['Funding', f.funding], ['Slippage', f.slippage]].filter(([, v]) => v).map(([l, v]) => `<div class="pf-cbar"><span class="pf-cname mk-dim">${l}</span><span class="pf-ctrack"><i class="${v > 0 ? 'dn' : 'up'}" style="width:${Math.min(50, 50 * Math.abs(v) / cmax).toFixed(1)}%"></i></span><span class="pf-cval ${v > 0 ? 'mk-dn' : 'mk-up'}">${v > 0 ? '-' : '+'}${usd(Math.abs(v))}</span></div>`).join('')}
     </div>` : ''}`
 
   // Hover: a crosshair and every line's value on that day.
@@ -1156,6 +1218,7 @@ num('pfTp', 'tp', 0.1, 100); num('pfSl', 'sl', 0.1, 100)
 $('pfTf').addEventListener('change', e => { S.tf = e.target.value; changed() })
 $('pfBench').addEventListener('change', e => { S.bench = e.target.checked; changed() })
 $('pfWait').addEventListener('change', e => { S.listingWait = e.target.checked; changed() })
+$('pfCosts').addEventListener('change', e => { S.costs = e.target.checked; changed() })
 // Price data is one setting for the whole page: every card, the test, the asset rows.
 $('pfSrc').addEventListener('click', e => {
   const b = e.target.closest('button[data-src]'); if (!b || b.dataset.src === srcMode()) return

@@ -26,6 +26,7 @@
 
 import { classify, normHlCat, SECTOR_LABEL } from './sectors.js'
 import { displayName } from './coinnames.js'
+import { halfSpreadBps } from './pffunding.js'
 
 export const KINDS = { perp: 'Perps', hip3: 'HIP-3', spot: 'Spot' }
 
@@ -73,6 +74,9 @@ export function perpRows(meta, ctxs, dex = null, dexLabel = null) {
       mcap:     null,
       funding1h: fund != null ? fund * 100 : null,
       maxLev:   num(u.maxLeverage),
+      // Half the spread at a standard order size, from Hyperliquid's impact prices — what a
+      // backtest charges as the first part of slippage (src/pffunding.js).
+      spreadBps: halfSpreadBps(c.impactPxs, num(c.midPx) ?? price),
     })
   })
   return out

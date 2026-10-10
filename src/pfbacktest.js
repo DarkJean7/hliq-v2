@@ -32,6 +32,7 @@
  */
 
 import { runBacktest, strategyKind } from './backtest.js'
+import { rateOn, slippage, dailyVol } from './pffunding.js'
 
 export const DAY = 86_400_000
 /** Maintenance margin when a market's maximum leverage is not known: 1/(2×20). */
@@ -109,8 +110,13 @@ function sma(arr, i, n) {
  * → { id, equity: number[] (from start), fees, trades, rebalances, liquidated: t|null, pnlBy: { key: $ } }
  */
 export function simulate(grid, start, weights, id, opts = {}) {
-  const { capital = 10_000, leverage = 1, feeBps = 4.5, band = 0.05, trendDays = 50, mmr = MMR_DEFAULT } = opts
+  const { capital = 10_000, leverage = 1, feeBps = 4.5, band = 0.05, trendDays = 50, mmr = MMR_DEFAULT, funding = null, book = null } = opts
   const keys = Object.keys(weights)
+  // Funding and slippage (src/pffunding.js). `funding`: { key: fundingInfo } — none for a market
+  // without it (spot, or prices that are not Hyperliquid's). `book`: { key: { spreadBps, vol } }
+  // turns on slippage for every fill; without it no slippage is charged.
+  let fundPaid = 0, slipPaid = 0, fundDays = 0, fundEstDays = 0
+  const fundBy = Object.fromEntries(keys.map(k => [k, 0])), slipBy = Object.fromEntries(keys.map(k => [k, 0]))
   // Maintenance margin as a share of each position: Hyperliquid's is half the initial margin at
   // the market's maximum leverage (1/(2×maxLev)). Per market when the caller knows it.
   const mmrOf = (k) => (typeof mmr === 'number' ? mmr : (mmr?.[k] ?? MMR_DEFAULT))
@@ -151,6 +157,10 @@ export function simulate(grid, start, weights, id, opts = {}) {
       const notional = Math.abs(d * px[k][i])
       cash -= d * px[k][i] + notional * fee
       fees += notional * fee
+      if (book) {
+        const s = slippage(notional, book[k], dailyVol(px[k], i))
+        cash -= s; slipPaid += s; slipBy[k] += s
+      }
       units[k] = target
       trades++; traded = true
     }
@@ -161,6 +171,19 @@ export function simulate(grid, start, weights, id, opts = {}) {
     if (liquidated != null) { equity.push(0); continue }
     // Yesterday's holdings earn today's move, before anything is traded.
     if (i > start) for (const k of keys) if (units[k] && px[k][i - 1] != null) pnlBy[k] += units[k] * (px[k][i] - px[k][i - 1])
+    // A day of funding on what was held through it: a long pays a positive rate, a short receives.
+    if (i > start && funding) {
+      let est = false, any = false
+      for (const k of keys) {
+        if (!units[k] || px[k][i] == null || !funding[k]) continue
+        const [r, e] = rateOn(funding[k], days[i])
+        if (!r) continue
+        const c = units[k] * px[k][i] * r
+        cash -= c; fundPaid += c; fundBy[k] += c
+        any = true; est = est || e
+      }
+      if (any) { fundDays++; if (est) fundEstDays++ }
+    }
     // Liquidated where the exchange would: equity at or below the maintenance margin of what is
     // open — not at zero. Waiting for zero let a crashed book carry on with a few dollars,
     // re-lever them at the next rebalance and print +1,000% days off a near-empty account.
@@ -197,7 +220,7 @@ export function simulate(grid, start, weights, id, opts = {}) {
     if (!(eq > 0)) { liquidated = days[i]; equity.push(0); continue }
     equity.push(eq)
   }
-  return { id, equity, fees, trades, rebalances, liquidated, pnlBy }
+  return { id, equity, fees, trades, rebalances, liquidated, pnlBy, funding: funding ? fundPaid : null, slippage: book ? slipPaid : null, fundDays, fundEstDays, fundBy, slipBy }
 }
 
 /** Return, annualised return, drawdown, volatility, Sharpe, best/worst day — from an equity curve. */
@@ -218,7 +241,9 @@ export function metrics(equity, capital) {
     cagr: years >= 1 && capital > 0 && last > 0 ? (last / capital) ** (1 / years) - 1 : null,
     maxDd, dd,
     vol: sd * Math.sqrt(365),
-    sharpe: sd > 0 ? (mean / sd) * Math.sqrt(365) : null,
+    // Not below 0.5% annual volatility: a near-flat curve divides by almost nothing and prints
+    // Sharpes of -143 that describe rounding, not a strategy.
+    sharpe: sd * Math.sqrt(365) > 0.005 ? (mean / sd) * Math.sqrt(365) : null,
     best: rets.length ? Math.max(...rets) : null,
     worst: rets.length ? Math.min(...rets) : null,
   }
@@ -258,7 +283,8 @@ export function backtest({ candles, items, from, to, strategies, opts = {}, benc
   if (bench && candles[bench]?.length) {
     const g = alignDaily({ [bench]: candles[bench] }, grid.days[0], grid.days[grid.days.length - 1])
     if (g.px[bench][start] != null) {
-      const r = simulate(g, start, { [bench]: 1 }, 'hold', { ...opts, leverage: 1 })
+      // "BTC, held" is owning it: no leverage, no funding, no slippage — the plain reference.
+      const r = simulate(g, start, { [bench]: 1 }, 'hold', { ...opts, leverage: 1, funding: null, book: null })
       benchRun = { ...r, ...metrics(r.equity, capital) }
     }
   }
@@ -324,10 +350,11 @@ export function stepOnDays(points, days, v0) {
  *     report their own fee totals; inside a window those are pro-rated by the fills in it.
  */
 export function botRun(ohlc, items, days, strategy, opts = {}) {
-  const { capital = 10_000, leverage = 1, feeBps = 4.5, tp = 4, sl = 2, both = false } = opts
+  const { capital = 10_000, leverage = 1, feeBps = 4.5, tp = 4, sl = 2, both = false, funding = null, book = null } = opts
   const w = normalizeWeights(items)
   const curves = [], pnlBy = {}
   let trades = 0, won = 0, lost = 0, open = 0, refused = 0, fees = 0
+  let fundPaid = 0, slipPaid = 0, fundDays = 0, fundEstDays = 0
   const start = days[0], end = days[days.length - 1] + DAY - 1
   const kind = strategyKind(strategy)
   const ladder = kind === 'grid' || kind === 'dca'
@@ -335,6 +362,7 @@ export function botRun(ohlc, items, days, strategy, opts = {}) {
   for (const [k, wk] of Object.entries(w)) {
     const bal = capital * Math.abs(wk)
     const side = wk < 0 ? 'short' : 'long'
+    const fees0 = fees, fund0 = fundPaid, slip0 = slipPaid
     const rows = (ohlc[k] ?? []).filter(c => c.t <= end && (!ladder || c.t >= start))
     const r = runBacktest(rows, {
       strategy, startBalance: bal, leverage, sizePct: 100,
@@ -369,9 +397,46 @@ export function botRun(ohlc, items, days, strategy, opts = {}) {
     // Valued from the window: whatever the strategy did in its warm-up only sets where it stands.
     const v0 = valueAt(start - 1)
     const scale = v0 > 0 ? bal / v0 : 1
-    const eq = days.map(d => Math.max(0, valueAt(d + DAY - 1) * scale))
+    // Funding and slippage, which the Simulator's engine does not charge: worked out from its
+    // trades and taken off this sub-account's curve as they fall due (src/pffunding.js).
+    // Funding: each day a position is open at the close, side × size × that close × the day's
+    // rate. Slippage: every fill in the window, by the market's spread and the order's size
+    // next to its volume.
+    const cost = new Array(days.length).fill(0)
+    if (funding?.[k] || book) {
+      const dailyCl = days.map(d => closeAt(d + DAY - 1))
+      for (let i = 0; i < days.length; i++) {
+        const dEnd = days[i] + DAY - 1
+        let c = 0
+        if (funding?.[k]) {
+          const [rate, est] = rateOn(funding[k], days[i])
+          if (rate && dailyCl[i] != null) {
+            let held = false
+            for (const t of tr) if (t.q > 0 && t.time <= dEnd && (t.outcome === 'open' || (t.exitAt ?? Infinity) > dEnd)) { c += (t.side === 'short' ? -1 : 1) * t.q * dailyCl[i] * rate; held = true }
+            if (held) { fundDays++; if (est) fundEstDays++ }
+          }
+          fundPaid += c * scale
+        }
+        cost[i] = c
+      }
+      if (book) {
+        const at = (T) => { const i = days.findIndex(d => d + DAY - 1 >= T); return i < 0 ? -1 : i }
+        for (const t of tr) {
+          if (!(t.q > 0)) continue
+          const fills = [[t.time, t.q * t.entry]]
+          if (t.outcome !== 'open' && t.exitAt != null && t.exitPx != null) fills.push([t.exitAt, t.q * t.exitPx])
+          for (const [T, n] of fills) {
+            const i = at(T)
+            if (T < start || i < 0) continue
+            const s = slippage(n, book[k], dailyVol(dailyCl, i))
+            cost[i] += s; slipPaid += s * scale
+          }
+        }
+      }
+      for (let i = 1; i < cost.length; i++) cost[i] += cost[i - 1]
+    }
+    const eq = days.map((d, i) => Math.max(0, (valueAt(d + DAY - 1) - cost[i]) * scale))
     curves.push(eq)
-    pnlBy[k] = (eq[eq.length - 1] ?? bal) - bal
     const inWin = tr.filter(t => (t.exitAt ?? Infinity) >= start || t.outcome === 'open')
     trades += inWin.length
     won += inWin.filter(t => t.outcome === 'win' || (t.outcome === 'timeout' && t.delta > 0)).length
@@ -391,8 +456,12 @@ export function botRun(ohlc, items, days, strategy, opts = {}) {
         }
       }
     }
+    // What the holding did at market, before costs — the costs are their own rows, as in an
+    // allocation run, so the rows add up to the result instead of counting the costs twice.
+    pnlBy[k] = (curves[curves.length - 1].at(-1) ?? bal) - bal + (fees - fees0) + (fundPaid - fund0) + (slipPaid - slip0)
   }
   const equity = days.map((_, i) => curves.reduce((a, c) => a + c[i], 0))
-  return { id: 'bot:' + strategy, equity, fees, feesEstimated: true, trades, won, lost, open, refused, rebalances: null, liquidated: null, pnlBy, ...metrics(equity, capital) }
+  return { id: 'bot:' + strategy, equity, fees, feesEstimated: true, trades, won, lost, open, refused, rebalances: null, liquidated: null, pnlBy,
+    funding: funding ? fundPaid : null, slippage: book ? slipPaid : null, fundDays, fundEstDays, ...metrics(equity, capital) }
 }
 
