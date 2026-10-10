@@ -407,7 +407,9 @@ setInterval(() => { pfxTick('cg').catch(() => {}) }, 60_000).unref?.()
 function pfModeSeries(coin, mode) {
   const hl = pfcRead(coin)?.closes
   if (!hl?.length) return null
-  if (mode === 'hl') return closesFor('hl', hl, null)
+  // Hyperliquid's own closes, with any stock split repaired against the exchange series when
+  // the market has one (and it is cached — until it is, they are served as Hyperliquid gives them).
+  if (mode === 'hl') { const p = planFor(coin); return closesFor('hl', hl, p.yahooMixed ? pfxRead('y:' + p.yahooMixed)?.pts : null) }
   const p = planFor(coin)
   if (mode === 'tv') {
     if (!p.yahooTv) return closesFor('tv', hl, null)

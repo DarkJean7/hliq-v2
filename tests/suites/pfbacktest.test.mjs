@@ -101,7 +101,7 @@ console.log(nl + '-- the Simulator\'s strategies on every holding --')
   }
   t('every Simulator strategy runs on a basket: one funded sub-account per holding, summed', true)
   const SRC = fs.readFileSync('src/pfbacktest.js', 'utf8')
-  t('it is the Simulator\'s own engine, not a copy', SRC.includes("import { runBacktest } from './backtest.js'"))
+  t('it is the Simulator\'s own engine, not a copy', SRC.includes("import { runBacktest, strategyKind } from './backtest.js'"))
   t('each holding trades only its own direction unless asked', SRC.includes('useDirection: !both, direction: side'))
 }
 
@@ -180,7 +180,7 @@ console.log(nl + '-- price data: Hyperliquid, exchange prices ("TradingView"), m
   t('planFor: a HIP-3 stock → its exchange; a coin → its quote or CoinGecko; spot and k-perps → Hyperliquid', a.tradfi && a.yahooTv === '005930.KS' && a.yahooMixed === '005930.KS' && !z.tradfi && z.yahooTv === 'ZEC-USD' && z.yahooMixed === null && z.cgSym === 'ZEC' && sp7.yahooTv === null && sp7.cgSym === null && kp.cgSym === null)
   const hlS = [[T0 + 10 * D, 50], [T0 + 11 * D, 55]], exS = [[T0, 10], [T0 + 10 * D, 20], [T0 + 11 * D, 30]]
   t('closesFor: TradingView is the exchange series, or Hyperliquid when there is none', P.closesFor('tv', hlS, exS).used === 'tv' && P.closesFor('tv', hlS, null).used === 'hl')
-  t('closesFor: Mixed splices and says from which source', P.closesFor('mixed', hlS, exS, 'cg').used === 'cg' && P.closesFor('mixed', hlS, exS, 'cg').pts[0][1] === 25 && P.closesFor('hl', hlS, exS).pts === hlS)
+  t('closesFor: Mixed splices and says from which source', P.closesFor('mixed', hlS, exS, 'cg').used === 'cg' && P.closesFor('mixed', hlS, exS, 'cg').pts[0][1] === 25 && P.closesFor('hl', hlS, null).pts === hlS)
   t('CoinGecko only for a coin Hyperliquid listed within its year', P.wantsCg([[Date.now() - 100 * D, 1]]) && !P.wantsCg([[Date.now() - 500 * D, 1]]))
   t('the server prices the featured cards in every mode, from the same planFor/closesFor', SRV.includes("const PF_MODES = ['hl', 'tv', 'mixed']") && SRV.includes("return closesFor('tv', hl, ext.pts)") && SRV.includes("get('src') || 'hl'"))
   t('a market whose outside history is not cached yet leaves its cards out (the browser answers), never priced on the wrong data', /if \(!ext\) return null/.test(SRV))
@@ -190,6 +190,35 @@ console.log(nl + '-- price data: Hyperliquid, exchange prices ("TradingView"), m
   const PJ = fs.readFileSync('src/portfolio.js', 'utf8')
   t('the page asks the server first, in one request, and shares it between callers', PJ.includes('await primeCloses(need)') && PJ.includes('primeAsked.set(mode + \'|\' + c, job)'))
   t('the page asks for the cards in the mode on screen, and prices the rest with the same rule', PJ.includes("fetch('/portfolios-data?src=' + mode") && PJ.includes('const p = planFor(coin)') && PJ.includes("galPerfSrc === srcMode()"))
+}
+
+console.log(nl + '-- accuracy: the errors found in the audit, each pinned --')
+{
+  const P = await import('../../src/pfsources.js')
+  // 1. Liquidation at the maintenance margin, not at zero. 3× long of $1,000: a 30% drop leaves
+  //    $100 against 2.5% of $2,100 = $52.50 (alive); a 32% drop leaves $40 against $51 (gone).
+  const run3 = (drop) => B.backtest({ candles: { A: series([100, 100 * (1 - drop), 100 * (1 - drop)]) }, items: [{ key: 'A', weight: 1 }], from: T0, to: T0 + 2 * D, strategies: ['hold'], opts: { capital: 1000, feeBps: 0, leverage: 3, mmr: 0.025 } }).runs[0]
+  t('3× through -30%: equity $100 is above maintenance $52.50 — alive', run3(0.30).liquidated === null && near(run3(0.30).final, 100))
+  t('3× through -32%: equity $40 is under maintenance $51 — liquidated', run3(0.32).liquidated === T0 + D && run3(0.32).final === 0)
+  // A crashed book no longer re-levers its last dollars into +1,000% days.
+  const crash = B.backtest({ candles: { A: series([100, 68, 100, 140, 160]) }, items: [{ key: 'A', weight: 1 }], from: T0, to: T0 + 4 * D, strategies: ['weekly', 'monthly', 'hold'], opts: { capital: 1000, feeBps: 0, leverage: 3, mmr: 0.025 } })
+  t('after a liquidation nothing is re-levered: no absurd days', crash.runs.every(x => x.final === 0 && (x.best ?? 0) <= 2))
+  // 2. Stock splits in Hyperliquid's closes, repaired against the exchange (KIOXIA, real numbers).
+  const T = Date.UTC(2026, 8, 24)
+  const kx = P.repairSplits([[T, 369], [T + D, 343], [T + 2 * D, 357], [T + 3 * D, 114.12]], [[T, 114.56], [T + D, 117.08], [T + 2 * D, 117.08], [T + 3 * D, 112.99]])
+  t('KIOXIA\'s 3-for-1 is not a -68% day: the split day moves as the exchange did (-3.5%)', near(kx[3][1] / kx[2][1], 112.99 / 117.08, 1e-9) && kx[3][1] === 114.12)
+  t('and a real move is left alone', P.repairSplits([[T, 100], [T + D, 80]], [[T, 10], [T + D, 8]])[0][1] === 100)
+  // 3. A data seam in outside history (Yahoo's AAVE carries the old LEND token, swapped 100:1).
+  t('outside history before a 100× seam is dropped, not counted as a gain', P.dropBeforeBreak([[1, 0.52], [2, 0.5], [3, 53], [4, 55]]).length === 2 && P.closesFor('tv', null, [[1, 0.52], [2, 0.5], [3, 53], [4, 55]]).pts[0][1] === 53)
+  // 4. The trading strategies: an open position is marked to market, its fee counted.
+  const rising = Array.from({ length: 120 }, (_, i) => { const c = 100 * (1 + 0.5 * i / 119); return { t: T0 + i * D, o: c * 0.999, h: c * 1.002, l: c * 0.998, c } })
+  const daysR = Array.from({ length: 120 }, (_, i) => T0 + i * D)
+  const tb = B.botRun({ A: rising }, [{ key: 'A', weight: 1 }], daysR, 'trend', { capital: 1000, leverage: 1, feeBps: 4.5 })
+  t('the Trend bot, always in, is valued with its open position: it enters after its 21-day average and rides the rest (~+38%), not "no trades closed"', tb.final > 1300 && tb.open >= 1, [tb.final, tb.open])
+  t('its fees are shown, from the fills (≈ the open fee of a $1,000 position)', tb.fees > 0.3 && tb.fees < 1.5 && tb.feesEstimated === true, tb.fees)
+  // 5. Warm-up: history before the window is used, and the run still starts at the capital.
+  const warm = B.botRun({ A: rising }, [{ key: 'A', weight: 1 }], daysR.slice(60), 'emacross', { capital: 1000, leverage: 1, feeBps: 4.5 })
+  t('with warm-up history the window still starts at the capital', near(warm.equity[0], 1000, 1e-9) && warm.equity.length === 60)
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

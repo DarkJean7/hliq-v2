@@ -215,10 +215,7 @@ const hlCloses = (coin) => daily.get(coin)?.map(k => [k.t, k.c])
 const closesBy = new Map()                              // 'mode|coin' → { pts, used, splicedAt }
 /** This holding's daily closes in the chosen data, or undefined while not loaded. */
 function closesOf(coin) {
-  const kept = closesBy.get(srcMode() + '|' + coin)
-  if (kept) return kept
-  if (srcMode() === 'hl') return daily.has(coin) ? { pts: hlCloses(coin), used: 'hl', splicedAt: null } : undefined
-  return undefined
+  return closesBy.get(srcMode() + '|' + coin)
 }
 /**
  * The server keeps every featured market's daily closes in every price mode (serve-prod.js
@@ -255,11 +252,20 @@ async function primeFetch(mode, want) {
  * (and marked so). Mixed: Hyperliquid, with the outside history spliced on before its first
  * close — exchange prices for TradFi, CoinGecko for crypto listed within CoinGecko's year.
  */
-async function ensureCloses(coin) {
-  const mode = srcMode()
+/** ensureCloses in a given mode, whatever the page is showing (the split repair needs 'hl'). */
+const ensureClosesIn = (mode, coin) => ensureCloses(coin, mode)
+async function ensureCloses(coin, mode = srcMode()) {
   const key = mode + '|' + coin
   if (closesBy.has(key)) return closesBy.get(key)
-  if (mode === 'hl') { await fetchDaily(coin); return closesOf(coin) }
+  if (mode === 'hl') {
+    // Hyperliquid's closes, with stock splits repaired against the exchange series (closesFor).
+    await fetchDaily(coin)
+    const ys = planFor(coin).yahooMixed
+    const out = closesFor('hl', hlCloses(coin), ys ? await fetchExt('yahoo', ys) : null)
+    if (!out.pts?.length) throw new Error('no prices')
+    closesBy.set(key, out)
+    return out
+  }
   // Which outside series is planFor's answer from the market id — the same function the server
   // prices the featured cards with, so a card reads the same whoever worked it out.
   const p = planFor(coin)
@@ -728,7 +734,9 @@ async function run() {
   }
   if (my !== runSeq) return
   const candles = Object.fromEntries(need.filter(c => closesOf(c)).map(c => [c, closesOf(c).pts]))
-  const opts = { capital: Number(S.capital) || 10_000, leverage: Number(S.lev) || 1, feeBps: (Number(S.fee) || 0) * 100, band: (Number(S.band) || 5) / 100, trendDays: Math.max(2, Number(S.trendDays) || 50), listing: S.listingWait ? 'wait' : 'join' }
+  const opts = { capital: Number(S.capital) || 10_000, leverage: Number(S.lev) || 1, feeBps: (Number(S.fee) || 0) * 100, band: (Number(S.band) || 5) / 100, trendDays: Math.max(2, Number(S.trendDays) || 50), listing: S.listingWait ? 'wait' : 'join',
+    // Each market's maintenance margin, 1/(2 × its max leverage), as Hyperliquid sets it.
+    mmr: Object.fromEntries(items.map(i => [i.key, rowById.get(i.key)?.maxLev > 0 ? 1 / (2 * rowById.get(i.key).maxLev) : undefined]).filter(([, v]) => v)) }
   const r = backtest({ candles, items, from, to, strategies: S.strats, opts, bench: S.bench ? 'BTC' : null })
   if (failed.some(c => items.some(i => i.key === c)) || r.missing.length) {
     res.classList.remove('is-busy')
@@ -760,10 +768,20 @@ async function run() {
       } catch { ohlc[i.key] = [] }
     }
     if (my !== runSeq) return
+    // Splits: each candle scaled as its day's close was (Hyperliquid's own, repaired), so a
+    // 3-for-1 is not a crash that trips every stop. The warm-up stays: botRun values the run
+    // from the window's first day, with indicators that have their history.
+    for (const i of items) {
+      const raw = new Map((daily.get(i.key) ?? []).map(k => [dayOf(k.t), k.c]))
+      const fixed = await ensureClosesIn('hl', i.key).catch(() => null)
+      if (!fixed?.pts?.length || !raw.size) continue
+      const f = new Map(fixed.pts.map(([t, c]) => [dayOf(t), raw.get(dayOf(t)) > 0 ? c / raw.get(dayOf(t)) : 1]))
+      if ([...f.values()].every(v => Math.abs(v - 1) < 1e-9)) continue
+      let last = 1
+      ohlc[i.key] = ohlc[i.key].map(c => { const v = f.get(dayOf(c.t)); if (v != null) last = v; return { ...c, o: c.o * last, h: c.h * last, l: c.l * last, c: c.c * last } })
+    }
     for (const id of S.bots) {
-      // Warm-up candles before the window would trade too; the run begins at the window's start.
-      const win = Object.fromEntries(Object.entries(ohlc).map(([c, v]) => [c, v.filter(x => x.t >= r.start)]))
-      runs.push({ ...botRun(win, items, r.days, id, { capital: opts.capital, leverage: opts.leverage, feeBps: opts.feeBps, tp: Number(S.tp) || 4, sl: Number(S.sl) || 2, both: !!S.both }), label: BOT_LABEL[id] })
+      runs.push({ ...botRun(ohlc, items, r.days, id, { capital: opts.capital, leverage: opts.leverage, feeBps: opts.feeBps, tp: Number(S.tp) || 4, sl: Number(S.sl) || 2, both: !!S.both }), label: BOT_LABEL[id] })
     }
   }
   runs.forEach((x, i) => { x.color = RUN_COLORS[i % RUN_COLORS.length] })
@@ -802,6 +820,28 @@ function lineChart(series, days, { h = 300, fmt = short$, minZero = false, signe
     return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.id === focus ? 2.4 : 1.6}" ${s.dash ? 'stroke-dasharray="5 4"' : ''} class="pf-line${dim}" data-id="${esc(s.id)}"/>`
   }).join('')
   return { svg: `<svg viewBox="0 0 ${W} ${h}" width="${W}" height="${h}" class="pf-svg">${grid}${xt}${lines}<line class="pf-cross" y1="${pad.t}" y2="${pad.t + ih}" x1="-10" x2="-10"/><rect class="pf-hit" x="${pad.l}" y="${pad.t}" width="${iw}" height="${ih}"/></svg>`, x, pad, iw }
+}
+
+// ── the results table: sortable by any column ──
+const RES_COLS = [
+  ['label', 'Strategy', 'Name'], ['final', 'Final', 'Final value'], ['ret', 'Return', 'Total return over the window'],
+  ['cagr', 'Annual', 'Annualised return (only over a year or more)'], ['maxDd', 'Max DD', 'Largest fall from a high'],
+  ['vol', 'Vol.', 'Annualised volatility of daily returns'], ['sharpe', 'Sharpe', 'Mean daily return over its volatility, annualised; no risk-free rate'],
+  ['best', 'Best / worst', 'Best and worst single day (sorted by best)'], ['trades', 'Trades', 'Trades (trading strategies) or rebalances (allocation)'],
+  ['fees', 'Fees', 'Fees paid'],
+]
+let resSort = { key: null, asc: false }
+const runKey = (x, k) => k === 'label' ? x.label : k === 'trades' ? (x.trades ?? x.rebalances ?? null) : x[k]
+/** Sorted by the chosen column; unknowns last either way; the BTC benchmark stays at the bottom. */
+function sortRuns(all) {
+  const bench = all.filter(x => x.id === '__bench'), rest = all.filter(x => x.id !== '__bench')
+  if (!resSort.key) return [...rest, ...bench]
+  const k = resSort.key, dir = resSort.asc ? 1 : -1
+  return [...rest.slice().sort((a, b) => {
+    const x = runKey(a, k), y = runKey(b, k)
+    if (x == null || y == null || Number.isNaN(x) || Number.isNaN(y)) return (x == null) - (y == null)
+    return (typeof x === 'string' ? x.localeCompare(y) : x - y) * dir
+  }), ...bench]
 }
 
 function renderResults() {
@@ -856,14 +896,16 @@ function renderResults() {
       <div class="pf-lbl" style="margin-top:10px">Drawdown <small>below the highest value so far</small></div>
       <div class="pf-chart" id="pfDd">${dd.svg}</div>
     </div>
-    <div class="mk-table-wrap pf-table-wrap" data-dragscroll>
+    <div class="mk-table-wrap pf-table-wrap">
       <table class="mk-table pf-table">
-        <thead><tr><th class="mk-c-asset">Strategy</th><th>Final value</th><th>Return</th><th>Annualised</th><th>Max drawdown</th><th>Volatility</th><th>Sharpe</th><th>Best day</th><th>Worst day</th><th>Trades</th><th>Fees</th></tr></thead>
-        <tbody>${all.map(x => `<tr data-focus="${esc(x.id)}" class="${x.id === focus ? 'is-focus' : ''}">
-          <td class="mk-c-asset"><span class="pf-runname"><i style="background:${x.color}"></i>${esc(x.label)}</span></td>
-          <td>${usd(x.final)}</td><td class="${cls(x.ret)}">${pct(x.ret)}</td><td class="${cls(x.cagr)}">${x.cagr == null ? '<span class="mk-dim" title="Only over a year or more">—</span>' : pct(x.cagr)}</td>
-          <td class="mk-dn">${pct(x.maxDd)}</td><td>${x.vol ? (x.vol * 100).toFixed(0) + '%' : '—'}</td><td>${x.sharpe == null ? '—' : x.sharpe.toFixed(2)}</td>
-          <td class="${cls(x.best)}">${pct(x.best)}</td><td class="${cls(x.worst)}">${pct(x.worst)}</td><td>${tradesOf(x)}</td><td>${x.fees == null ? '<span class="mk-dim" title="Included in the result">in result</span>' : usd(x.fees, 2)}</td>
+        <thead><tr>${RES_COLS.map(([k, l, tip]) => `<th data-rsort="${k}" class="${k === 'label' ? 'mk-c-asset ' : ''}${resSort.key === k ? 'is-on' : ''}" ${resSort.key === k ? `data-dir="${resSort.asc ? '▲' : '▼'}"` : ''} title="${esc(tip)}">${l}</th>`).join('')}</tr></thead>
+        <tbody>${sortRuns(all).map(x => `<tr data-focus="${esc(x.id)}" class="${x.id === focus ? 'is-focus' : ''}${x.id === '__bench' ? ' pf-bench' : ''}">
+          <td class="mk-c-asset"><span class="pf-runname"><i style="background:${x.color}"></i>${esc(x.label)}</span>${x.liquidated ? `<small class="mk-dn pf-liq">liquidated ${dLabel(x.liquidated)}</small>` : ''}</td>
+          <td data-l="Final value">${usd(x.final)}</td><td data-l="Return" class="${cls(x.ret)}">${pct(x.ret)}</td><td data-l="Annualised" class="${cls(x.cagr)}">${x.cagr == null ? '<span class="mk-dim" title="Only over a year or more">—</span>' : pct(x.cagr)}</td>
+          <td data-l="Max drawdown" class="mk-dn">${pct(x.maxDd)}</td><td data-l="Volatility">${x.vol ? (x.vol * 100).toFixed(0) + '%' : '—'}</td><td data-l="Sharpe">${x.sharpe == null ? '—' : x.sharpe.toFixed(2)}</td>
+          <td data-l="Best / worst day"><span class="${cls(x.best)}">${pct(x.best)}</span> <span class="mk-dim">/</span> <span class="${cls(x.worst)}">${pct(x.worst)}</span></td>
+          <td data-l="Trades">${tradesOf(x)}</td>
+          <td data-l="Fees">${x.fees == null ? '—' : `<span title="${x.feesEstimated ? 'Summed from the simulated fills: taker to open, maker on a take-profit, taker otherwise' : 'Charged on every rebalance'}">${x.feesEstimated ? '≈ ' : ''}${usd(x.fees, 0)}</span>`}</td>
         </tr>`).join('')}</tbody>
       </table>
     </div>
@@ -1125,7 +1167,17 @@ $('pfSrc').addEventListener('click', e => {
 $('pfBoth').addEventListener('change', e => { S.both = e.target.checked; changed() })
 $('pfStrats').addEventListener('click', e => { const b = e.target.closest('[data-strat]'); if (!b) return; const id = b.dataset.strat; S.strats = S.strats.includes(id) ? S.strats.filter(x => x !== id) : [...S.strats, id]; changed() })
 $('pfBots').addEventListener('click', e => { const b = e.target.closest('[data-bot]'); if (!b) return; const id = b.dataset.bot; S.bots = S.bots.includes(id) ? S.bots.filter(x => x !== id) : [...S.bots, id]; changed() })
-$('pfResults').addEventListener('click', e => { const b = e.target.closest('[data-focus]'); if (!b) return; focus = b.dataset.focus; renderResults() })
+$('pfResults').addEventListener('click', e => {
+  const th = e.target.closest('th[data-rsort]')
+  if (th) {
+    // The same column again flips it; a new one starts best-first (or A–Z for the name).
+    // (Highest first: the smallest drawdown is the highest of those negative numbers.)
+    const k = th.dataset.rsort
+    resSort = resSort.key === k ? { key: k, asc: !resSort.asc } : { key: k, asc: k === 'label' }
+    renderResults(); return
+  }
+  const b = e.target.closest('[data-focus]'); if (!b) return; focus = b.dataset.focus; renderResults()
+})
 let rw = 0
 window.addEventListener('resize', () => { if (innerWidth !== rw) { rw = innerWidth; clearTimeout(runT); runT = setTimeout(renderResults, 150) } })
 

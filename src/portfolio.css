@@ -204,7 +204,30 @@
 .pf-tip b { display: block; margin-bottom: 5px; font-family: var(--font-mono); font-size: 11px; color: var(--fg-3); font-weight: 500; }
 .pf-tip div { display: flex; align-items: center; gap: 7px; padding: 1px 0; white-space: nowrap; }
 .pf-tip span { margin-left: auto; padding-left: 12px; font-variant-numeric: tabular-nums; font-weight: 600; }
-.pf-table-wrap { margin-bottom: 14px; }
+/* Fits a desktop without scrolling sideways: tighter cells, headers that may wrap, best and
+   worst day in one column. On a phone each strategy becomes a small card (below). */
+.pf-table-wrap { margin-bottom: 14px; overflow-x: visible; }
+.pf-table { table-layout: auto; }
+.pf-table th, .pf-table td { padding: 10px 8px; font-size: 13px; }
+.pf-table th { white-space: normal; line-height: 1.25; vertical-align: bottom; cursor: pointer; user-select: none; }
+.pf-table th:hover { color: var(--fg-2); }
+.pf-table th.is-on { color: var(--accent); }
+.pf-table th.is-on::after { content: " " attr(data-dir); }
+.pf-table td.mk-c-asset { white-space: normal; min-width: 150px; }
+.pf-table .pf-liq { display: block; margin: 2px 0 0 23px; font-size: 11px; }
+.pf-table tr.pf-bench td { border-top: 1px solid var(--rule); }
+@media (max-width: 760px) {
+  /* The headers become a row of sort buttons above the cards. */
+  .pf-table thead, .pf-table thead tr { display: flex; flex-wrap: wrap; gap: 5px; padding: 10px 12px 6px; }
+  .pf-table thead th { position: static; padding: 4px 9px; border: 1px solid var(--rule); border-radius: 999px; font-size: 11px; background: transparent; white-space: nowrap; }
+  .pf-table thead th.is-on { border-color: var(--accent); }
+  .pf-table, .pf-table tbody { display: block; }
+  .pf-table tr { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; padding: 12px 14px; border-bottom: 1px solid var(--rule); }
+  .pf-table td { display: flex; justify-content: space-between; gap: 8px; padding: 0; border: 0; font-size: 12.5px; text-align: right; }
+  .pf-table td.mk-c-asset { grid-column: 1 / -1; display: block; text-align: left; margin-bottom: 4px; font-size: 14px; }
+  .pf-table td[data-l]::before { content: attr(data-l); color: var(--fg-3); font-size: 11.5px; text-align: left; }
+  .pf-table tbody tr:hover td { background: none; }
+}
 .pf-table tbody tr { cursor: pointer; }
 .pf-table tbody tr.is-focus td { background: rgba(255,138,42,.06); }
 .pf-runname { display: inline-flex; align-items: center; gap: 9px; font-weight: 600; }

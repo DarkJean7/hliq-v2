@@ -152,10 +152,52 @@ export const wantsCg = (hl, now = Date.now()) => !!hl?.length && hl[0][0] > now 
  * one) its outside series. → { pts, used: 'hl'|'tv'|'cg', splicedAt }
  */
 export function closesFor(mode, hl, ext, extSrc = 'tv') {
-  if (mode === 'tv') return ext?.length ? { pts: ext, used: 'tv', splicedAt: null } : { pts: hl ?? [], used: 'hl', splicedAt: null }
-  if (mode === 'mixed' && ext?.length) {
-    const sp = splice(ext, hl)
+  // Outside series lose any history before a data seam; Hyperliquid's own lose its splits, where
+  // an exchange series (TradFi) is there to tell a split from a move.
+  const x = dropBeforeBreak(ext)
+  const h = extSrc === 'tv' && x?.length ? repairSplits(hl, x) : (hl ?? [])
+  if (mode === 'tv') return x?.length ? { pts: x, used: 'tv', splicedAt: null } : { pts: h, used: 'hl', splicedAt: null }
+  if (mode === 'mixed' && x?.length) {
+    const sp = splice(x, h)
     return { pts: sp.pts, used: sp.splicedAt ? extSrc : 'hl', splicedAt: sp.splicedAt }
   }
-  return { pts: hl ?? [], used: 'hl', splicedAt: null }
+  return { pts: h, used: 'hl', splicedAt: null }
+}
+
+/**
+ * Stock splits in Hyperliquid's own closes. HIP-3 history is not split-adjusted: KIOXIA's 3-for-1
+ * on Sep 28, 2026 reads 357 → 114, a -68% day that never happened (the exchange, which IS
+ * adjusted, shows -3.5%). Where a market has an exchange reference, a day on which Hyperliquid's
+ * move and the exchange's differ by 1.6× or more is a split, and everything before it is
+ * rescaled so that day moves as the exchange's did. Without a reference nothing is touched —
+ * crypto does not split.
+ */
+export const SPLIT_GAP = 1.6
+export function repairSplits(hl, ref) {
+  if (!hl?.length || !ref?.length) return hl ?? []
+  const r = [...ref].sort((a, b) => a[0] - b[0])
+  const at = (t) => { let lo = 0, hi = r.length - 1, v = null; while (lo <= hi) { const m = (lo + hi) >> 1; if (r[m][0] <= t) { v = r[m][1]; lo = m + 1 } else hi = m - 1 } return v }
+  const out = hl.map(p => [p[0], p[1]])
+  let f = 1
+  for (let k = out.length - 1; k >= 1; k--) {
+    out[k][1] *= f
+    const a = at(hl[k - 1][0]), b = at(hl[k][0])
+    if (!(a > 0 && b > 0) || r[0][0] > hl[k - 1][0]) continue
+    const gap = (hl[k][1] / hl[k - 1][1]) / (b / a)
+    if (gap >= SPLIT_GAP || gap <= 1 / SPLIT_GAP) f *= gap
+  }
+  out[0][1] *= f
+  return out
+}
+
+/**
+ * Outside history with a break in it. A listed asset does not close at five times (or a fifth
+ * of) the day before; when a series says so, it is a data seam — Yahoo's AAVE carries the old
+ * LEND token, swapped 100:1 in Oct 2020 — and only what comes after the seam is kept.
+ */
+export function dropBeforeBreak(pts, k = 5) {
+  if (!pts?.length) return pts ?? []
+  let from = 0
+  for (let i = 1; i < pts.length; i++) { const q = pts[i][1] / pts[i - 1][1]; if (q > k || q < 1 / k) from = i }
+  return from ? pts.slice(from) : pts
 }

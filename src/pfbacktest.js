@@ -31,9 +31,11 @@
  *             share sits in cash otherwise. Trades only when an asset switches in or out.
  */
 
-import { runBacktest } from './backtest.js'
+import { runBacktest, strategyKind } from './backtest.js'
 
 export const DAY = 86_400_000
+/** Maintenance margin when a market's maximum leverage is not known: 1/(2×20). */
+export const MMR_DEFAULT = 0.025
 
 export const STRATEGIES = [
   { id: 'hold',    label: 'Buy & hold',        desc: 'Buy the weights once and never trade again. Winners grow their share.' },
@@ -107,8 +109,11 @@ function sma(arr, i, n) {
  * → { id, equity: number[] (from start), fees, trades, rebalances, liquidated: t|null, pnlBy: { key: $ } }
  */
 export function simulate(grid, start, weights, id, opts = {}) {
-  const { capital = 10_000, leverage = 1, feeBps = 4.5, band = 0.05, trendDays = 50 } = opts
+  const { capital = 10_000, leverage = 1, feeBps = 4.5, band = 0.05, trendDays = 50, mmr = MMR_DEFAULT } = opts
   const keys = Object.keys(weights)
+  // Maintenance margin as a share of each position: Hyperliquid's is half the initial margin at
+  // the market's maximum leverage (1/(2×maxLev)). Per market when the caller knows it.
+  const mmrOf = (k) => (typeof mmr === 'number' ? mmr : (mmr?.[k] ?? MMR_DEFAULT))
   const { days, px } = grid
   const units = Object.fromEntries(keys.map(k => [k, 0]))
   const pnlBy = Object.fromEntries(keys.map(k => [k, 0]))
@@ -156,6 +161,14 @@ export function simulate(grid, start, weights, id, opts = {}) {
     if (liquidated != null) { equity.push(0); continue }
     // Yesterday's holdings earn today's move, before anything is traded.
     if (i > start) for (const k of keys) if (units[k] && px[k][i - 1] != null) pnlBy[k] += units[k] * (px[k][i] - px[k][i - 1])
+    // Liquidated where the exchange would: equity at or below the maintenance margin of what is
+    // open — not at zero. Waiting for zero let a crashed book carry on with a few dollars,
+    // re-lever them at the next rebalance and print +1,000% days off a near-empty account.
+    if (i > start) {
+      const eqNow = reserve + cash + value(i)
+      const maint = keys.reduce((a, k) => a + (units[k] && px[k][i] != null ? Math.abs(units[k] * px[k][i]) * mmrOf(k) : 0), 0)
+      if (!(eqNow > maint)) { liquidated = days[i]; equity.push(0); continue }
+    }
     const dt = new Date(days[i])
     const first = i === start
     // Something listed today: the weights widen to include it.
@@ -290,20 +303,40 @@ export function stepOnDays(points, days, v0) {
 }
 
 /**
- * ohlc: { key: [{ t, o, h, l, c }] } at the chosen interval, already cut to the window.
- * items: [{ key, weight, side }], days: the daily grid to report on.
- * opts: { capital, leverage, feeBps, tp, sl, both (trade both directions) }
- * → { id, equity, fees: null, trades, won, lost, open, refused, liquidated, pnlBy, …metrics }
+ * A Simulator strategy on every holding, each its own sub-account, summed. → a run like
+ * simulate()'s, with trades, wins, fees and a DAILY equity curve.
+ *
+ * Three things this used to get wrong, each of which flattered or distorted the result:
+ *
+ *  1. OPEN POSITIONS WERE INVISIBLE. The curve moved only when a trade closed, so the Trend bot
+ *     and Supertrend — always in a position — showed neither the drawdown of the trade they
+ *     were in nor its result at the end. Every day is now marked to market: the balance after
+ *     the last closed trade, plus each open position's move from its entry, less its open fee.
+ *  2. COLD INDICATORS. The candles were cut at the window's start, so a 50-candle average had
+ *     nothing to average for its first 50 candles inside the window. Signal and flip strategies
+ *     now get the history before the window (`ohlc` should carry it); the run is valued from the
+ *     window's first day, scaled so each sub-account starts with its share of the capital — as if
+ *     the strategy had been running and you joined it then. Grid and DCA need no history and
+ *     are given none (their ladders are set from the first price they see).
+ *  3. FEES WERE "IN RESULT". They always were taken — every fill paid — but never shown. They are
+ *     now summed from the trades the way the engine charged them: taker to open; to close, maker
+ *     on a signal strategy's take-profit (a resting order) and taker otherwise. Grid and DCA
+ *     report their own fee totals; inside a window those are pro-rated by the fills in it.
  */
 export function botRun(ohlc, items, days, strategy, opts = {}) {
   const { capital = 10_000, leverage = 1, feeBps = 4.5, tp = 4, sl = 2, both = false } = opts
   const w = normalizeWeights(items)
   const curves = [], pnlBy = {}
-  let trades = 0, won = 0, lost = 0, open = 0, refused = 0
+  let trades = 0, won = 0, lost = 0, open = 0, refused = 0, fees = 0
+  const start = days[0], end = days[days.length - 1] + DAY - 1
+  const kind = strategyKind(strategy)
+  const ladder = kind === 'grid' || kind === 'dca'
+  const takerR = feeBps / 1e4, makerR = Math.min(feeBps, 1.5) / 1e4
   for (const [k, wk] of Object.entries(w)) {
     const bal = capital * Math.abs(wk)
     const side = wk < 0 ? 'short' : 'long'
-    const r = runBacktest(ohlc[k] ?? [], {
+    const rows = (ohlc[k] ?? []).filter(c => c.t <= end && (!ladder || c.t >= start))
+    const r = runBacktest(rows, {
       strategy, startBalance: bal, leverage, sizePct: 100,
       useFees: true, takerFeePct: feeBps / 100, makerFeePct: Math.min(feeBps / 100, 0.015), feePct: 2 * feeBps / 100,
       takeProfitPct: tp, stopLossPct: sl, useCooldown: false,
@@ -312,15 +345,54 @@ export function botRun(ohlc, items, days, strategy, opts = {}) {
       gridUsdPerLevel: bal / 10, gridLevels: 10, gridShort: !both && side === 'short',
       dcaSide: side, dcaBaseUsd: bal / 14.2, dcaSoUsd: bal / 14.2,
     })
-    const pts = Array.isArray(r.curve) && r.curve.length
-      ? r.curve
-      : r.trades.filter(t => t.outcome !== 'open' && t.balance != null).map(t => [t.exitAt ?? t.time, t.balance])
-    const eq = stepOnDays(pts, days, bal)
+    // Closes by time, for marking an open position at any moment.
+    const cs = rows.map(c => [c.t, c.c]).sort((a, b) => a[0] - b[0])
+    const closeAt = (T) => { let lo = 0, hi = cs.length - 1, v = null; while (lo <= hi) { const m = (lo + hi) >> 1; if (cs[m][0] <= T) { v = cs[m][1]; lo = m + 1 } else hi = m - 1 } return v }
+    const tr = r.trades ?? []
+    const valueAt = (T) => {
+      if (ladder && Array.isArray(r.curve) && r.curve.length) {
+        let v = bal
+        for (const [t, e] of r.curve) { if (t <= T) v = e; else break }
+        return v
+      }
+      let balance = bal, lastExit = -Infinity, upnl = 0
+      for (const t of tr) {
+        const closed = t.outcome !== 'open' && t.exitAt != null && t.exitAt <= T
+        if (closed) { if (t.exitAt >= lastExit) { lastExit = t.exitAt; balance = t.balance } continue }
+        if (t.time <= T && t.q > 0) {
+          const px = closeAt(T)
+          if (px != null) upnl += (t.side === 'short' ? -1 : 1) * t.q * (px - t.entry) - t.q * t.entry * takerR
+        }
+      }
+      return balance + upnl
+    }
+    // Valued from the window: whatever the strategy did in its warm-up only sets where it stands.
+    const v0 = valueAt(start - 1)
+    const scale = v0 > 0 ? bal / v0 : 1
+    const eq = days.map(d => Math.max(0, valueAt(d + DAY - 1) * scale))
     curves.push(eq)
     pnlBy[k] = (eq[eq.length - 1] ?? bal) - bal
-    trades += r.tradesMade ?? 0; won += r.won ?? 0; lost += r.lost ?? 0
-    open += r.unresolved ?? 0; refused += r.refused ?? 0
+    const inWin = tr.filter(t => (t.exitAt ?? Infinity) >= start || t.outcome === 'open')
+    trades += inWin.length
+    won += inWin.filter(t => t.outcome === 'win' || (t.outcome === 'timeout' && t.delta > 0)).length
+    lost += inWin.filter(t => t.outcome === 'loss' || (t.outcome === 'timeout' && t.delta < 0)).length
+    open += tr.filter(t => t.outcome === 'open').length
+    refused += r.refused ?? 0
+    if (ladder) {
+      const total = r.grid?.fees ?? r.dca?.fees ?? 0
+      fees += total                         // ladders run inside the window only, so all of it counts
+    } else {
+      for (const t of tr) {
+        if (!(t.q > 0)) continue
+        if (t.time >= start) fees += t.q * t.entry * takerR * scale
+        if (t.outcome !== 'open' && t.exitPx != null && t.exitAt != null && t.exitAt >= start) {
+          const maker = kind === 'signal' && t.outcome === 'win' && !t.liq
+          fees += t.q * t.exitPx * (maker ? makerR : takerR) * scale
+        }
+      }
+    }
   }
-  const equity = days.map((_, i) => curves.reduce((a, c) => a + Math.max(0, c[i]), 0))
-  return { id: 'bot:' + strategy, equity, fees: null, trades, won, lost, open, refused, rebalances: null, liquidated: null, pnlBy, ...metrics(equity, capital) }
+  const equity = days.map((_, i) => curves.reduce((a, c) => a + c[i], 0))
+  return { id: 'bot:' + strategy, equity, fees, feesEstimated: true, trades, won, lost, open, refused, rebalances: null, liquidated: null, pnlBy, ...metrics(equity, capital) }
 }
+

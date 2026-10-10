@@ -136,6 +136,15 @@ async function run(label, opts) {
   ok('BTC held, alongside', Math.abs(L.bench - (10000 * PRICE.BTC(L.last) / PRICE.BTC(L.first) - 4.5)) < 0.01, L.bench)
   const txt = (await p.textContent('#pfResults')).replace(/\s+/g, ' ')
   ok('the table names each strategy and its result', /Buy & hold/.test(txt) && /Rebalance monthly/.test(txt) && /BTC, held/.test(txt) && txt.includes('$' + Math.round(hold.final).toLocaleString('en-US')), txt.slice(0, 400))
+  // The results table: no sideways scrolling, and sortable by its headers.
+  ok('the results table fits without scrolling sideways', await p.evaluate(() => { const w = document.querySelector('.pf-table-wrap'); return w.scrollWidth <= w.clientWidth + 1 }))
+  const rowOrder = () => p.evaluate(() => [...document.querySelectorAll('.pf-table tbody tr')].map(r => r.dataset.focus))
+  await p.click('.pf-table th[data-rsort="ret"]')
+  const byRet = L.runs.slice().sort((a, b) => b.final - a.final).map(r => r.id)
+  ok('a header sorts the table, highest first, the benchmark kept last', JSON.stringify(await rowOrder()) === JSON.stringify([...byRet, '__bench']), await rowOrder())
+  await p.click('.pf-table th[data-rsort="ret"]')
+  ok('the same header again reverses it', JSON.stringify(await rowOrder()) === JSON.stringify([...byRet.slice().reverse(), '__bench']), await rowOrder())
+  ok('fees are shown for every strategy that paid any', await p.evaluate(() => [...document.querySelectorAll('.pf-table td[data-l="Fees"]')].every(td => /$/.test(td.textContent))))
   const d1 = asks.filter(a => a.endsWith(':1d'))
   ok('daily prices are fetched once per coin, never twice', d1.length >= 1 && new Set(d1).size === d1.length, asks)
 
