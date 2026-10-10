@@ -12,7 +12,7 @@ import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, 
 import { SEC_CONCEPTS, SEC_TICKERS_URL, secConceptUrl, companyRevenue } from './src/secrev.js'
 import { llamaSummaryUrl, sumDaily } from './src/llama.js'
 import { cleanPortfolio, upsertFeatured } from './src/pfshared.js'
-import { isAllowedYahoo, yahooUrl, cgChartUrl, parseYahooDaily, parseCgChart, toUsd, FX_PER_USD, needsUsd } from './src/pfsources.js'
+import { isAllowedYahoo, yahooUrl, cgChartUrl, parseYahooDaily, parseCgChart, toUsd, FX_PER_USD, needsUsd, planFor, closesFor, wantsCg } from './src/pfsources.js'
 import { coinsOf, coinFile, stalest, buildPerf, HIST_FROM as PFC_FROM } from './src/pfgallery.js'
 import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
@@ -329,7 +329,7 @@ async function pfcTick() {
     // chosen again on the very next tick and starves every market behind it.
     writeAtomic(join(PFC_DIR, coinFile(coin) + '.json'), JSON.stringify({ coin, at: Date.now(), closes }))
     pfcMem.delete(coin)
-    pfPerf = null
+    pfPerfBy.clear()
     console.log(`[portfolios] ${coin}: ${closes.length} daily closes`)
   } catch (e) {
     console.warn('[portfolios] ' + coin + ' refresh failed:', e.message)
@@ -340,20 +340,105 @@ async function pfcTick() {
 }
 setInterval(() => { pfcTick().catch(() => {}) }, PFC_TICK).unref?.()
 
-// The computed cards, rebuilt when the portfolios or the prices change, and once an hour so a
-// window measured from "now" cannot drift a day behind.
-let pfPerf = null
-function pfPerfNow() {
+// ── the outside histories behind "TradingView" and "Mixed" (src/pfsources.js) ─────────────
+// The same trickle, for the exchange series and CoinGecko's, so those cards are priced once
+// here too. Neither touches Hyperliquid's budget: exchange data is fetched one symbol every
+// few seconds, CoinGecko one id a minute (its free API allows a handful), each kept on disk a
+// day. Which outside series a market uses is planFor's answer from its id — the same function
+// the browser calls — so a card cannot differ by who priced it.
+const PFX_DIR  = join(__dirname, 'data', 'pfext')
+const PFX_LOCK = join(PFX_DIR, '.lock')
+const pfxMem = new Map()                  // key ('y:NVDA' | 'cg:zcash') -> { at, pts }
+function pfxRead(key) {
+  const hit = pfxMem.get(key)
+  if (hit) return hit
+  try {
+    const j = JSON.parse(readFileSync(join(PFX_DIR, coinFile(key) + '.json'), 'utf8'))
+    const rec = { at: Number(j.at) || 0, pts: Array.isArray(j.pts) ? j.pts : [] }
+    pfxMem.set(key, rec)
+    return rec
+  } catch { return null }
+}
+const cgIdOf = (sym) => { if (!cgData) cgFromDisk(); return sym ? (cgData?.top?.[sym]?.id ?? null) : null }
+/** The outside series each featured market needs, as cache keys. */
+function pfxKeys() {
+  const keys = new Set()
+  for (const c of coinsOf(pfRead())) {
+    const p = planFor(c)
+    if (p.yahooTv) keys.add('y:' + p.yahooTv)
+    const id = cgIdOf(p.cgSym)
+    if (id && wantsCg(pfcRead(c)?.closes)) keys.add('cg:' + id)
+  }
+  return [...keys]
+}
+let pfxBusy = { y: false, cg: false }
+async function pfxTick(kind) {
+  if (pfxBusy[kind]) return
+  const keys = pfxKeys().filter(k => k.startsWith(kind + ':'))
+  for (const k of keys) pfxMem.delete(k)
+  const key = stalest(keys, (k) => pfxRead(k)?.at ?? 0, PFC_TTL)
+  if (!key) return
+  const lock = PFX_LOCK + '.' + kind
+  try { if (Date.now() - statSync(lock).mtimeMs < PFC_LOCK_TTL) return } catch {}
+  pfxBusy[kind] = true
+  try {
+    mkdirSync(PFX_DIR, { recursive: true })
+    writeFileSync(lock, String(process.pid))
+    let pts = []
+    try { pts = (kind === 'y' ? await pfhYahoo(key.slice(2)) : await pfhCg(key.slice(3))).pts ?? [] }
+    catch (e) { console.warn('[portfolios] ' + key + ' failed:', e.message) }
+    // Recorded even when empty, with its time, so one bad symbol cannot starve the rest.
+    writeAtomic(join(PFX_DIR, coinFile(key) + '.json'), JSON.stringify({ key, at: Date.now(), pts }))
+    pfxMem.delete(key)
+    pfPerfBy.clear()
+  } finally {
+    try { if (readFileSync(lock, 'utf8') === String(process.pid)) unlinkSync(lock) } catch {}
+    pfxBusy[kind] = false
+  }
+}
+setInterval(() => { pfxTick('y').catch(() => {}) }, 8_000).unref?.()
+setInterval(() => { pfxTick('cg').catch(() => {}) }, 60_000).unref?.()
+
+/**
+ * A market's closes in a mode, or null while something it needs is not cached yet — which
+ * leaves its cards OUT of the answer (the browser then works them out), never priced on the
+ * wrong data.
+ */
+function pfModeCloses(coin, mode) {
+  const hl = pfcRead(coin)?.closes
+  if (!hl?.length) return null
+  if (mode === 'hl') return hl
+  const p = planFor(coin)
+  if (mode === 'tv') {
+    if (!p.yahooTv) return hl
+    const ext = pfxRead('y:' + p.yahooTv)
+    if (!ext) return null
+    return closesFor('tv', hl, ext.pts).pts
+  }
+  if (p.yahooMixed) { const ext = pfxRead('y:' + p.yahooMixed); if (!ext) return null; return closesFor('mixed', hl, ext.pts, 'tv').pts }
+  const id = cgIdOf(p.cgSym)
+  if (id && wantsCg(hl)) { const ext = pfxRead('cg:' + id); if (!ext) return null; return closesFor('mixed', hl, ext.pts, 'cg').pts }
+  return hl
+}
+
+// The computed cards, per price mode, rebuilt when the portfolios or the prices change, and
+// once an hour so a window measured from "now" cannot drift a day behind.
+const PF_MODES = ['hl', 'tv', 'mixed']
+const pfPerfBy = new Map()
+function pfPerfNow(mode = 'hl') {
+  if (!PF_MODES.includes(mode)) mode = 'hl'
   const list = pfRead()
   const stamp = list.map(p => p.id).join(',') + '|' + list.length
-  if (pfPerf && pfPerf.stamp === stamp && Date.now() - pfPerf.at < 3600e3) return pfPerf
+  const hit = pfPerfBy.get(mode)
+  if (hit && hit.stamp === stamp && Date.now() - hit.at < 3600e3) return hit
   const closes = {}
-  for (const c of coinsOf(list)) { const rec = pfcRead(c); if (rec?.closes?.length) closes[c] = rec.closes }
+  for (const c of coinsOf(list)) { const v = pfModeCloses(c, mode); if (v?.length) closes[c] = v }
   const t0 = Date.now()
   const perf = buildPerf(list, closes)
-  pfPerf = { stamp, at: Date.now(), perf, coins: Object.keys(closes).length }
-  console.log(`[portfolios] built ${Object.keys(perf).length}/${list.length} cards from ${pfPerf.coins} markets in ${Date.now() - t0}ms`)
-  return pfPerf
+  const built = { stamp, at: Date.now(), perf, coins: Object.keys(closes).length }
+  pfPerfBy.set(mode, built)
+  console.log(`[portfolios] ${mode}: built ${Object.keys(perf).length}/${list.length} cards from ${built.coins} markets in ${Date.now() - t0}ms`)
+  return built
 }
 
 function readJson(req, max = 64_000) {
@@ -781,9 +866,10 @@ createServer((req, res) => {
       if (req.method !== 'GET') { res.writeHead(405).end(); return }
       // `perf` carries only the cards the cached prices can answer for. A portfolio missing
       // from it is one the browser still works out itself — see src/pfgallery.js.
+      const mode = new URLSearchParams(req.url.split('?')[1] || '').get('src') || 'hl'
       let perf = {}, asOf = 0
-      try { const b = pfPerfNow(); perf = b.perf; asOf = b.at } catch (e) { console.warn('[portfolios] perf failed:', e.message) }
-      return send(200, { portfolios: pfRead(), perf, asOf })
+      try { const b = pfPerfNow(mode); perf = b.perf; asOf = b.at } catch (e) { console.warn('[portfolios] perf failed:', e.message) }
+      return send(200, { portfolios: pfRead(), perf, asOf, src: PF_MODES.includes(mode) ? mode : 'hl' })
     }
     if (req.method !== 'POST') { res.writeHead(405).end(); return }
     ;(async () => {
@@ -807,7 +893,7 @@ createServer((req, res) => {
       try { mkdirSync(dirname(PF_FILE), { recursive: true }); writeAtomic(PF_FILE, JSON.stringify({ portfolios: list })) }
       catch { return send(500, { error: 'could not save' }) }
       pfCache = null
-      pfPerf = null
+      pfPerfBy.clear()
       return send(200, { portfolios: list })
     })()
     return

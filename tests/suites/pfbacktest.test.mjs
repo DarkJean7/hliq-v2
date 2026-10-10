@@ -144,7 +144,7 @@ console.log(nl + '-- featured portfolios: public to read, the developer\'s to ch
   // The read now carries the precomputed cards as well (perf, asOf — src/pfgallery.js); what
   // this is pinning is that it is still a GET anyone may make and that the PIN is still
   // checked before a write reads its body, both of which are unchanged.
-  t('the server: anyone reads; every write first asks the strategy server whether the PIN is right', /return send\(200, \{ portfolios: pfRead\(\)(, perf, asOf)? \}\)/.test(route) && route.indexOf('await devPinOk(') < route.indexOf('await readJson(') && route.includes("if (!ok) return send(403"))
+  t('the server: anyone reads; every write first asks the strategy server whether the PIN is right', /return send\(200, \{ portfolios: pfRead\(\)(, perf, asOf(, src: [^}]+)?)? \}\)/.test(route) && route.indexOf('await devPinOk(') < route.indexOf('await readJson(') && route.includes("if (!ok) return send(403"))
   t('an unreachable PIN check is "try later", never a yes', route.includes("if (ok === null) return send(503") && SRV.includes("res.statusCode === 200 ? true : res.statusCode === 403 ? false : null"))
   t('what is stored has been through cleanPortfolio', route.includes('cleanPortfolio(b.portfolio)'))
   const P = fs.readFileSync('src/portfolio.js', 'utf8')
@@ -175,6 +175,18 @@ console.log(nl + '-- price data: Hyperliquid, exchange prices ("TradingView"), m
   t('the route: exchange symbols only from the allowlist, CoinGecko ids only ones already matched', r.includes("if (src === 'yahoo' && !isAllowedYahoo(key)) return send(404") && r.includes('if (!ids.has(key)) return send(404'))
   t('CoinGecko is asked one at a time, seconds apart, and kept on disk', SRV.includes('const wait = 2600 - (Date.now() - pfhCgLast)') && SRV.includes("join(__dirname, 'data', 'cghist')"))
   t('a listing in a currency it cannot convert is refused, not shown in the wrong units', SRV.includes("if (!fxSym) throw new Error('currency ' + currency)"))
+  // One rule, both sides: the source is decided from the market id alone.
+  const a = P.planFor('xyz:SMSN'), z = P.planFor('ZEC'), sp7 = P.planFor('@700'), kp = P.planFor('kPEPE')
+  t('planFor: a HIP-3 stock → its exchange; a coin → its quote or CoinGecko; spot and k-perps → Hyperliquid', a.tradfi && a.yahooTv === '005930.KS' && a.yahooMixed === '005930.KS' && !z.tradfi && z.yahooTv === 'ZEC-USD' && z.yahooMixed === null && z.cgSym === 'ZEC' && sp7.yahooTv === null && sp7.cgSym === null && kp.cgSym === null)
+  const hlS = [[T0 + 10 * D, 50], [T0 + 11 * D, 55]], exS = [[T0, 10], [T0 + 10 * D, 20], [T0 + 11 * D, 30]]
+  t('closesFor: TradingView is the exchange series, or Hyperliquid when there is none', P.closesFor('tv', hlS, exS).used === 'tv' && P.closesFor('tv', hlS, null).used === 'hl')
+  t('closesFor: Mixed splices and says from which source', P.closesFor('mixed', hlS, exS, 'cg').used === 'cg' && P.closesFor('mixed', hlS, exS, 'cg').pts[0][1] === 25 && P.closesFor('hl', hlS, exS).pts === hlS)
+  t('CoinGecko only for a coin Hyperliquid listed within its year', P.wantsCg([[Date.now() - 100 * D, 1]]) && !P.wantsCg([[Date.now() - 500 * D, 1]]))
+  t('the server prices the featured cards in every mode, from the same planFor/closesFor', SRV.includes("const PF_MODES = ['hl', 'tv', 'mixed']") && SRV.includes('return closesFor(\'tv\', hl, ext.pts).pts') && SRV.includes("get('src') || 'hl'"))
+  t('a market whose outside history is not cached yet leaves its cards out (the browser answers), never priced on the wrong data', /if \(!ext\) return null/.test(SRV))
+  t('the outside trickle never spends Hyperliquid weight: exchange every few seconds, CoinGecko a minute apart', SRV.includes("setInterval(() => { pfxTick('y').catch(() => {}) }, 8_000)") && SRV.includes("setInterval(() => { pfxTick('cg').catch(() => {}) }, 60_000)"))
+  const PJ = fs.readFileSync('src/portfolio.js', 'utf8')
+  t('the page asks for the cards in the mode on screen, and prices the rest with the same rule', PJ.includes("fetch('/portfolios-data?src=' + mode") && PJ.includes('const p = planFor(coin)') && PJ.includes("galPerfSrc === srcMode()"))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

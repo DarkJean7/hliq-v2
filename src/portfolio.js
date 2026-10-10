@@ -17,7 +17,7 @@ import { STRATEGIES, STRATEGY_LABEL, BOT_STRATEGIES, BOT_LABEL, backtest, botRun
 // The gallery card's own backtest, shared with serve-prod.js so the two cannot price a card
 // differently depending on which of them answered.
 import { galBacktest } from './pfgallery.js'
-import { SOURCES, yahooFor, splice } from './pfsources.js'
+import { SOURCES, planFor, closesFor, wantsCg } from './pfsources.js'
 
 const API = 'https://api.hyperliquid.xyz/info'
 const $ = (id) => document.getElementById(id)
@@ -88,7 +88,7 @@ function decodeShare(h) {
     }
   } catch { return null }
 }
-const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'tf', 'tp', 'sl', 'both', 'bench', 'listingWait', 'source']
+const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'tf', 'tp', 'sl', 'both', 'bench', 'listingWait']    // not 'source': price data is the reader's page-wide choice, not the link's
 const pickSettings = (o) => Object.fromEntries(SETTING_KEYS.filter(k => k in o).map(k => [k, o[k]]))
 function encodeShare() {
   const j = { n: S.name, d: S.desc || undefined, i: S.items.map(i => [i.coin, +Number(i.w).toFixed(4), i.side === 'short' ? 1 : 0]), s: pickSettings(S) }
@@ -228,28 +228,25 @@ async function ensureCloses(coin) {
   if (mode === 'hl') { await fetchDaily(coin); return closesOf(coin) }
   const key = mode + '|' + coin
   if (closesBy.has(key)) return closesBy.get(key)
-  await within(marketsDoneP, 30_000)
-  const row = rowById.get(coin)
-  const tradfi = row?.group === 'tradfi'
+  // Which outside series is planFor's answer from the market id — the same function the server
+  // prices the featured cards with, so a card reads the same whoever worked it out.
+  const p = planFor(coin)
   let out
   if (mode === 'tv') {
-    const ys = yahooFor(row)
-    const ext = ys ? await fetchExt('yahoo', ys) : null
-    if (ext) out = { pts: ext, used: 'tv', splicedAt: null }
-    else { await fetchDaily(coin); out = { pts: hlCloses(coin), used: 'hl', splicedAt: null, unmapped: !ys } }
+    const ext = p.yahooTv ? await fetchExt('yahoo', p.yahooTv) : null
+    if (ext) out = closesFor('tv', null, ext)
+    else { await fetchDaily(coin); out = { ...closesFor('tv', hlCloses(coin), null), unmapped: !p.yahooTv } }
   } else {
     await fetchDaily(coin)
     const hl = hlCloses(coin)
-    let ext = null, src = null
-    if (tradfi) { const ys = yahooFor(row); if (ys) { ext = await fetchExt('yahoo', ys); src = 'tv' } }
-    else if (hl?.length && hl[0][0] > Date.now() - 360 * DAY) {
-      // CoinGecko's free history is a year, so it only adds to a coin Hyperliquid listed since.
+    let ext = null, src = 'tv'
+    if (p.yahooMixed) ext = await fetchExt('yahoo', p.yahooMixed)
+    else if (p.cgSym && wantsCg(hl)) {
       await within(metaDoneP, 20_000)
-      const id = /^k[A-Z]/.test(row?.sym ?? '') ? null : meta?.cg?.[String(row?.sym ?? '').toUpperCase()]?.[0]
+      const id = meta?.cg?.[p.cgSym]?.[0]
       if (id) { ext = await fetchExt('cg', id); src = 'cg' }
     }
-    const sp = ext ? splice(ext, hl) : { pts: hl, splicedAt: null }
-    out = { pts: sp.pts, used: sp.splicedAt ? src : 'hl', splicedAt: sp.splicedAt }
+    out = closesFor('mixed', hl, ext, src)
   }
   if (!out.pts?.length) throw new Error('no prices')
   closesBy.set(key, out)
@@ -353,12 +350,12 @@ function galResult(p) {
   if (!items.length) return { state: 'empty' }
   // The server's answer, when it has one for this portfolio and this window. Nothing is
   // fetched and nothing is computed for these — which is the whole point.
-  const ready = galPerf?.[p.id]?.[String(galTf)]
+  const ready = galPerfSrc === srcMode() ? galPerf?.[p.id]?.[String(galTf)] : null
   if (ready) return ready
-  if (items.some(i => galFailed.has(i.key))) return { state: 'failed' }
-  if (items.some(i => !daily.has(i.key))) return { state: 'loading' }
+  if (items.some(i => galFailed.has(srcMode() + '|' + i.key))) return { state: 'failed' }
+  if (items.some(i => !closesOf(i.key))) return { state: 'loading' }
   const { from, to } = galWindow()
-  const candles = Object.fromEntries(items.map(i => [i.key, daily.get(i.key).map(k => [k.t, k.c])]))
+  const candles = Object.fromEntries(items.map(i => [i.key, closesOf(i.key).pts]))
   const r = galBacktest(candles, items, from, to)
   if (!r.runs.length) return { state: 'failed' }
   return { state: 'ok', run: r.runs[0], start: r.start, clippedBy: r.clippedBy, joined: r.joined ?? [], days: r.days.length - 1 }
@@ -394,16 +391,19 @@ let featuredState = 'loading'       // 'loading' | 'ok' | 'failed'
  * the same galBacktest (src/pfgallery.js), so whichever answers gives the same number.
  */
 let galPerf = {}
+let galPerfSrc = null              // the price mode galPerf was computed in
 const devPin = () => { try { return localStorage.getItem('hliq_lb_pin') || '' } catch { return '' } }
 const isDev = () => { try { return localStorage.getItem('hliq_dev') === '1' && !!devPin() } catch { return false } }
 
 async function loadFeatured() {
   try {
-    const r = await fetch('/portfolios-data', { signal: AbortSignal.timeout(15_000) })
+    const mode = srcMode()
+    const r = await fetch('/portfolios-data?src=' + mode, { signal: AbortSignal.timeout(15_000) })
     const j = r.ok ? await r.json() : null
     if (!Array.isArray(j?.portfolios)) throw new Error('none')
     featured = j.portfolios; featuredState = 'ok'
-    galPerf = (j.perf && typeof j.perf === 'object') ? j.perf : {}
+    // Only if it is still the mode on screen: a slow answer for one the reader has left is dropped.
+    if (mode === srcMode()) { galPerf = (j.perf && typeof j.perf === 'object') ? j.perf : {}; galPerfSrc = j.src ?? mode }
   } catch { featuredState = featured ? 'ok' : 'failed' }
   // A draft that was a featured portfolio that has since been removed is just a draft now.
   if (S.featuredId && featured && !featured.some(p => p.id === S.featuredId)) { S.featuredId = null; saveDraft() }
@@ -541,11 +541,12 @@ async function loadGalleryPrices() {
     // Only what is still unanswered: a featured portfolio the server already priced needs no
     // candles here at all, and on a warm cache that is every one of them.
     const all = [...(galHidden.featured ? [] : featured ?? []), ...(galHidden.local ? [] : store.get(SAVED_KEY, []))]
-      .filter(p => !galPerf?.[p.id])
+      .filter(p => !(galPerfSrc === srcMode() && galPerf?.[p.id]))
     const coins = [...new Set(all.flatMap(p => p.items.filter(i => Number(i.w) > 0).map(i => i.coin)))]
     for (const c of coins) {
-      if (daily.has(c) || galFailed.has(c)) continue
-      try { await fetchDaily(c) } catch { galFailed.add(c) }
+      const fk = srcMode() + '|' + c
+      if (closesOf(c) || galFailed.has(fk)) continue
+      try { await ensureCloses(c) } catch { galFailed.add(fk) }
       renderGallery()
       await sleep(200)
     }
@@ -1076,7 +1077,14 @@ num('pfTp', 'tp', 0.1, 100); num('pfSl', 'sl', 0.1, 100)
 $('pfTf').addEventListener('change', e => { S.tf = e.target.value; changed() })
 $('pfBench').addEventListener('change', e => { S.bench = e.target.checked; changed() })
 $('pfWait').addEventListener('change', e => { S.listingWait = e.target.checked; changed() })
-$('pfSrc').addEventListener('click', e => { const b = e.target.closest('button[data-src]'); if (!b) return; S.source = b.dataset.src; changed() })
+// Price data is one setting for the whole page: every card, the test, the asset rows.
+$('pfSrc').addEventListener('click', e => {
+  const b = e.target.closest('button[data-src]'); if (!b || b.dataset.src === srcMode()) return
+  S.source = b.dataset.src
+  galPerf = {}; galPerfSrc = null
+  changed()
+  loadFeatured()            // the server's cards for this mode, then whatever is left to work out
+})
 $('pfBoth').addEventListener('change', e => { S.both = e.target.checked; changed() })
 $('pfStrats').addEventListener('click', e => { const b = e.target.closest('[data-strat]'); if (!b) return; const id = b.dataset.strat; S.strats = S.strats.includes(id) ? S.strats.filter(x => x !== id) : [...S.strats, id]; changed() })
 $('pfBots').addEventListener('click', e => { const b = e.target.closest('[data-bot]'); if (!b) return; const id = b.dataset.bot; S.bots = S.bots.includes(id) ? S.bots.filter(x => x !== id) : [...S.bots, id]; changed() })

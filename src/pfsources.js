@@ -119,3 +119,43 @@ export function splice(ext, hl) {
   const scale = at && at[1] > 0 ? hl[0][1] / at[1] : 1
   return { pts: [...before.map(([t, v]) => [t, v * scale]), ...hl], splicedAt: first }
 }
+
+/**
+ * Where a market's outside history comes from, decided from its Hyperliquid id ALONE — so the
+ * server (which prices the featured cards) and the browser (which prices yours) always choose
+ * the same source for the same market, and a card reads the same whichever of them answered.
+ *
+ *   'xyz:NVDA'  a HIP-3 market whose ticker is on the TradFi map → its exchange series.
+ *   'ZEC'       a crypto perp → its exchange quote ("TradingView", majors only) or CoinGecko
+ *               (Mixed). A k-prefixed perp (kPEPE is 1,000 PEPE) is not its coin's price.
+ *   '@700'      a spot market → Hyperliquid only: its id names no ticker without the spot table.
+ */
+export function planFor(coin) {
+  const c = String(coin ?? '')
+  if (!c || c.startsWith('@')) return { sym: null, tradfi: false, yahooTv: null, yahooMixed: null, cgSym: null }
+  const sym = c.includes(':') ? c.slice(c.indexOf(':') + 1) : c
+  const tradfi = c.includes(':') && Object.hasOwn(TRADFI_YAHOO, sym)
+  return {
+    sym, tradfi,
+    yahooTv: tradfi ? TRADFI_YAHOO[sym] : (CRYPTO_YAHOO[sym] ?? null),
+    yahooMixed: tradfi ? TRADFI_YAHOO[sym] : null,
+    cgSym: tradfi || /^k[A-Z]/.test(sym) ? null : sym.toUpperCase(),
+  }
+}
+
+/** CoinGecko's free history is a year: it only adds to a coin Hyperliquid listed since. */
+export const CG_SPAN = 360 * DAY
+export const wantsCg = (hl, now = Date.now()) => !!hl?.length && hl[0][0] > now - CG_SPAN
+
+/**
+ * The closes a market is priced with in a mode, from its Hyperliquid series and (when there is
+ * one) its outside series. → { pts, used: 'hl'|'tv'|'cg', splicedAt }
+ */
+export function closesFor(mode, hl, ext, extSrc = 'tv') {
+  if (mode === 'tv') return ext?.length ? { pts: ext, used: 'tv', splicedAt: null } : { pts: hl ?? [], used: 'hl', splicedAt: null }
+  if (mode === 'mixed' && ext?.length) {
+    const sp = splice(ext, hl)
+    return { pts: sp.pts, used: sp.splicedAt ? extSrc : 'hl', splicedAt: sp.splicedAt }
+  }
+  return { pts: hl ?? [], used: 'hl', splicedAt: null }
+}

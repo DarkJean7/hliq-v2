@@ -91,11 +91,13 @@ async function run(label, opts) {
   await ctx.route('**/markets-meta', r => r.fulfill({ status: 200, json: { revenue: {}, cg: {}, stocks: {}, sic: {} } }))
   // The featured list, as serve-prod.js keeps it: public to read, writes only with the dev PIN,
   // through the same cleanPortfolio/upsertFeatured the server uses.
+  const serverPerf = {}
   let featured = [{ id: 'feat0001', name: 'Featured One', desc: 'Picked by us.', at: 1, items: [{ coin: 'BTC', sym: 'BTC', kind: 'perp', w: 60, side: 'long' }, { coin: 'ETH', sym: 'ETH', kind: 'perp', w: 40, side: 'long' }] }]
   const writes = []
   await ctx.route('**/portfolios-data**', (route) => {
     const req = route.request(), path = new URL(req.url()).pathname
-    if (req.method() === 'GET') return route.fulfill({ status: 200, json: { portfolios: featured } })
+    // The server's priced cards, per price mode (?src=), as serve-prod sends them.
+    if (req.method() === 'GET') { const src = new URL(req.url()).searchParams.get('src') || 'hl'; return route.fulfill({ status: 200, json: { portfolios: featured, perf: serverPerf[src] ?? {}, src } }) }
     let b = {}
     try { b = JSON.parse(req.postData() || '{}') } catch {}
     writes.push({ path, pin: req.headers()['x-lb-pin'] ?? '', body: b })
@@ -329,26 +331,40 @@ async function run(label, opts) {
   await waitFor(p, 'published from the builder', () => document.querySelectorAll('#pfFeatured [data-load]').length === 2)
   ok('Publish puts it under Featured, and Save becomes "Update featured"', featured.length === 2 && (await p.textContent('#pfSave')).trim() === 'Update featured' && await p.locator('#pfPublish').isHidden() && !!(await p.evaluate(() => window.__pf.state.featuredId)))
 
-  // ── price data: one NVDA-only basket, the three buttons ──
+  // ── price data: ONE setting for the whole page — the cards, the test, the asset rows ──
   // Hyperliquid has NVDA for 50 days, flat at 180; the exchange has 400 days, rising.
   const dOfN = Math.floor(NOW / DAY) * DAY
-  const srcLink = (src) => share({ n: 'NVDA only', i: [['xyz:NVDA', 100, 0]], s: { period: '365', from: null, to: null, capital: 10000, lev: 1, fee: 0, strats: ['hold'], bots: [], bench: false, source: src } })
+  featured.push({ id: 'feat0009', name: 'NVDA basket', at: 9, items: [{ coin: 'xyz:NVDA', sym: 'NVDA', kind: 'hip3', w: 100, side: 'long' }] })
+  // The server has priced this card for "TradingView" only; in the other modes the page works it out.
+  serverPerf.tv = { feat0009: { 365: { state: 'ok', run: { ret: 0.5, maxDd: -0.1, equity: [1, 1.5] }, start: dOfN - 365 * DAY, clippedBy: null, joined: [], days: 365 } } }
+  await p.evaluate(() => localStorage.setItem('hliq_pf_gallery_hidden', '{}'))
+  await p.goto(BASE + '#p=' + share({ n: 'NVDA only', i: [['xyz:NVDA', 100, 0]], s: { period: '365', from: null, to: null, capital: 10000, lev: 1, fee: 0, strats: ['hold'], bots: [], bench: false } }), { waitUntil: 'domcontentloaded' })
+  await p.reload({ waitUntil: 'domcontentloaded' })
+  await p.click('#pfGalTf [data-g="365"]')
+  const card = () => p.evaluate(() => document.querySelector('#pfFeatured [data-load="f:feat0009"] .pf-gc-ret')?.textContent ?? '')
+  const pctS = (x) => (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%'
   const runIn = async (src) => {
-    await p.goto(BASE + '#p=' + srcLink(src), { waitUntil: 'domcontentloaded' })
-    await p.reload({ waitUntil: 'domcontentloaded' })
-    await waitFor(p, src + ' run', (s) => window.__pf.state.source === s && window.__pf.last?.runs?.length === 1 && (s === 'hl' || /Price data/.test(document.getElementById('pfResults').textContent)), src)
+    await p.click(`#pfSrc [data-src="${src}"]`)
+    await waitFor(p, src + ' run', (s) => window.__pf.state.source === s && window.__pf.last?.runs?.length === 1 && !document.getElementById('pfResults').classList.contains('is-busy') && (s === 'hl' ? !/Price data/.test(document.getElementById('pfResults').textContent) : (s === 'tv' ? /Price data: exchange/ : /Price data, mixed/).test(document.getElementById('pfResults').textContent)), src)
+    await waitFor(p, src + ' card', () => /%/.test(document.querySelector('#pfFeatured [data-load="f:feat0009"] .pf-gc-ret')?.textContent ?? ''))
     return p.evaluate(() => { const l = window.__pf.last; return { days: l.days.length, ret: l.runs[0].ret, notes: document.getElementById('pfResults').textContent.replace(/\s+/g, ' ') } })
   }
+  ok('Price data is in the gallery header, one setting for the page', await p.locator('#pfGallerySec #pfSrc').count() === 1 && await p.locator('#pfRun #pfSrc').count() === 0)
   const hlR = await runIn('hl')
   ok('Hyperliquid: NVDA only has its 50 days there, flat', hlR.days <= 52 && Math.abs(hlR.ret) < 1e-9, hlR)
+  ok('and the card says so too (flat, less the fee)', /^[-+]0\.0%$/.test((await card()).trim()), await card())
   const tvR = await runIn('tv')
   const tvWant = NV(dOfN) / NV(dOfN - 365 * DAY) - 1
-  ok('"TradingView": the exchange\'s whole year, and its return', tvR.days === 366 && Math.abs(tvR.ret - tvWant) < 1e-9 && /exchange prices for NVDA/.test(tvR.notes), [tvR.days, tvR.ret, tvWant])
-  ok('the button shows which data is on', await p.evaluate(() => document.querySelector('#pfSrc .is-on')?.dataset.src) === 'tv')
+  ok('"TradingView": the test runs the exchange\'s whole year', tvR.days === 366 && Math.abs(tvR.ret - tvWant) < 1e-9 && /exchange prices for NVDA/.test(tvR.notes), [tvR.days, tvR.ret, tvWant])
+  ok('and the card takes the server\'s TradingView answer', (await card()).trim() === '+50.0%', await card())
   const mxR = await runIn('mixed')
   const mxWant = NV(START['xyz:NVDA']) / NV(dOfN - 365 * DAY) - 1
   ok('Mixed: the exchange\'s history until NVDA listed, Hyperliquid (flat) after', mxR.days === 366 && Math.abs(mxR.ret - mxWant) < 1e-9 && /NVDA from exchange prices until/.test(mxR.notes), [mxR.days, mxR.ret, mxWant])
+  ok('and the card, which the server has not priced in Mixed, is worked out here in Mixed', (await card()).trim() === pctS(mxWant - 0.00045), [await card(), pctS(mxWant)])
   ok('the asset rows say where their prices came from', /TV\+HL/.test(await p.textContent('#pfComp')))
+  ok('a share link does not carry the page\'s data choice', !/source/.test(Buffer.from((await p.evaluate(() => { document.getElementById('pfShare').click(); return location.hash })).replace('#p=', '').replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString()))
+  await p.click('#pfSrc [data-src="hl"]')
+  featured = featured.filter(x => x.id !== 'feat0009')
 
   ok('no horizontal page scroll', await p.evaluate(() => document.documentElement.scrollWidth - innerWidth) <= 0, await p.evaluate(() => document.documentElement.scrollWidth - innerWidth))
   if (SHOT) await p.screenshot({ path: `${SHOT}/portfolio-${label}.png`, fullPage: true })

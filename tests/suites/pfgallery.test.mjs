@@ -141,20 +141,21 @@ console.log(nl + '-- absent is not empty --')
 
 console.log(nl + '-- what the browser does with it --')
 {
-  t('the server\'s answer is used as it is, with nothing fetched',
-    /const ready = galPerf\?\.\[p\.id\]\?\.\[String\(galTf\)\]\s*\n\s*if \(ready\) return ready/.test(cli))
+  // Per price mode since the Price data buttons: an answer is used only for the mode on screen.
+  t('the server\'s answer is used as it is, with nothing fetched — for the mode on screen',
+    /const ready = galPerfSrc === srcMode\(\) \? galPerf\?\.\[p\.id\]\?\.\[String\(galTf\)\] : null\s*\n\s*if \(ready\) return ready/.test(cli))
   t('and a card it cannot answer still falls through to the old path',
-    cli.includes("if (items.some(i => galFailed.has(i.key))) return { state: 'failed' }"))
+    cli.includes("if (items.some(i => galFailed.has(srcMode() + '|' + i.key))) return { state: 'failed' }"))
   // On a warm cache this is every featured portfolio, so the page makes no HL calls at all.
   t('prices are only fetched for cards the server did not answer',
-    /\.filter\(p => !galPerf\?\.\[p\.id\]\)/.test(cli))
+    /\.filter\(p => !\(galPerfSrc === srcMode\(\) && galPerf\?\.\[p\.id\]\)\)/.test(cli))
   t('perf is read off the response', /galPerf = \(j\.perf && typeof j\.perf === 'object'\) \? j\.perf : \{\}/.test(cli))
-  t('and the route sends it', /return send\(200, \{ portfolios: pfRead\(\), perf, asOf \}\)/.test(sp))
+  t('and the route sends it, for the mode asked', /return send\(200, \{ portfolios: pfRead\(\), perf, asOf, src: /.test(sp) && sp.includes('pfPerfNow(mode)'))
   t('a failed build still serves the portfolios', /let perf = \{\}, asOf = 0/.test(sp) && /catch \(e\) \{ console\.warn\('\[portfolios\] perf failed/.test(sp))
-  t('publishing a portfolio rebuilds the cards', /pfCache = null\s*\n\s*pfPerf = null/.test(sp))
-  t('and so does a new price', /pfcMem\.delete\(coin\)\s*\n\s*pfPerf = null/.test(sp))
+  t('publishing a portfolio rebuilds the cards, in every mode', /pfCache = null\s*\n\s*pfPerfBy\.clear\(\)/.test(sp))
+  t('and so does a new price, Hyperliquid or outside', /pfcMem\.delete\(coin\)\s*\n\s*pfPerfBy\.clear\(\)/.test(sp) && /pfxMem\.delete\(key\)\s*\n\s*pfPerfBy\.clear\(\)/.test(sp))
   // A window is measured from "now", so a build kept for a day would quietly slide.
-  t('the build does not outlive the day it was measured in', /Date\.now\(\) - pfPerf\.at < 3600e3/.test(sp))
+  t('the build does not outlive the day it was measured in', /Date\.now\(\) - hit\.at < 3600e3/.test(sp))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
