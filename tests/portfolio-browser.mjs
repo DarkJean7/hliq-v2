@@ -229,6 +229,11 @@ async function run(label, opts) {
   await p.click('#pfMargin [data-m="isolated"]')
   await waitFor(p, 'isolated', () => window.__pf.last?.opts?.margin === 'isolated')
   ok('isolated margin reaches the engine, and the page explains it', /its own margin/.test(await p.textContent('#pfMarginNote')))
+  // Run test runs now: a fresh result object, and the button comes back.
+  await p.evaluate(() => { window.__pfBefore = window.__pf.last })
+  await p.click('#pfRunBtn')
+  await waitFor(p, 'a run from the button', () => window.__pf.last && window.__pf.last !== window.__pfBefore && !document.getElementById('pfRunBtn').disabled)
+  ok('the Run test button runs the test again', await p.textContent('#pfRunBtn') === 'Run test')
   await p.click('#pfMargin [data-m="cross"]'); await p.click('#pfLev [data-l="1"]')
   await waitFor(p, 'back to 1x', () => window.__pf.state.lev === 1 && window.__pf.last?.opts?.margin === 'cross')
 

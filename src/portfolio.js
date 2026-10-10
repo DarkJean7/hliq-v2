@@ -1117,6 +1117,13 @@ function changed({ rerun = true } = {}) {
   if (rerun) { clearTimeout(runT); runT = setTimeout(run, 450) }
 }
 
+// Runs start by themselves after a change; this runs now, and is the retry when prices stalled.
+$('pfRunBtn').addEventListener('click', async () => {
+  const b = $('pfRunBtn')
+  clearTimeout(runT)
+  b.disabled = true; b.textContent = 'Running…'
+  try { await run() } finally { b.disabled = false; b.textContent = 'Run test' }
+})
 $('pfName').addEventListener('input', e => { S.name = e.target.value.slice(0, 40); saveDraft(); renderComp(); renderGallery() })
 $('pfDesc').addEventListener('input', e => { S.desc = e.target.value.slice(0, 280); saveDraft(); renderComp(); renderGallery() })
 $('pfWeighting').addEventListener('click', e => { const b = e.target.closest('button[data-w]'); if (!b) return; applyWeighting(b.dataset.w); changed() })
