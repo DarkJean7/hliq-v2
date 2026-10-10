@@ -136,11 +136,13 @@ export const MCAP_CEIL = 4e12
 
 /** Give allow-listed HL-native perps the market cap of their spot token. Returns new rows. */
 //
-// Also any PROTOCOL-deployed spot token that trades: those are Hyperliquid's and Unit's own
-// (UBTC, UETH, USOL…), published with the real supply, so BTC's perp gets BTC's market cap.
-// Community tokens are never linked — anyone can deploy one named after a perp.
+// Also any other PROTOCOL-deployed spot token that trades — but never a WRAPPED one. Unit's
+// UBTC, UZEC… publish the coin's MAXIMUM supply as their circulating supply: 21,000,000 for
+// both, so ZEC read $25.5B against CoinGecko's $20.7B and BTC $1.73T against $1.66T. Those
+// perps take CoinGecko's figure instead (withCgMarketCaps). Community tokens are never
+// linked — anyone can deploy one named after a perp.
 export function linkMarketCaps(perps, spots) {
-  const ok = (s) => s.mcap != null && (SPOT_LINKED.has(s.sym) || (s.protocol && (s.vol24 ?? 0) > 0))
+  const ok = (s) => s.mcap != null && (SPOT_LINKED.has(s.sym) || (s.protocol && !s.wrapped && (s.vol24 ?? 0) > 0))
   const caps = new Map(spots.filter(ok).map(s => [s.sym, s.mcap]))
   return perps.map(r => (r.kind === 'perp' && caps.has(r.sym) ? { ...r, mcap: caps.get(r.sym), mcapFrom: 'spot' } : r))
 }
@@ -331,9 +333,12 @@ export function withStockRevenue(rows, stocks) {
  * be some token's on CoinGecko.
  */
 export function withCgMarketCaps(rows, cg) {
-  if (!cg) return rows
   return rows.map(r => {
-    if (r.mcap != null || r.kind === 'spot' || r.group !== 'crypto') return r
+    // A wrapped spot token's own figure is its max supply × price, not a market cap (see
+    // linkMarketCaps): it shows CoinGecko's for the coin it wraps, or nothing — never that.
+    if (r.kind === 'spot' && r.wrapped) r = { ...r, mcap: null, mcapFrom: null }
+    if (!cg) return r
+    if (r.mcap != null || (r.kind === 'spot' && !r.wrapped) || r.group !== 'crypto') return r
     const base = /^k[A-Z]/.test(r.sym) ? r.sym.slice(1) : r.sym
     const cap = cg[base.toUpperCase()]?.[1]
     return Number.isFinite(cap) && cap > 0 && cap <= MCAP_CEIL ? { ...r, mcap: cap, mcapFrom: 'coingecko' } : r

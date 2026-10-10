@@ -79,7 +79,9 @@ console.log(nl + '-- everything together --')
 const rows = M.buildMarkets({ core: CORE, spot: SPOT, hip3: [{ dex: 'xyz', label: 'XYZ', data: XYZ }, { dex: 'km', label: 'Kinetiq', data: DEAD }] })
 const sBtc = rows.find(r => r.kind === 'spot' && r.wrapped === 'UBTC')
 t('UBTC shows as BTC, keeping what it wraps', sBtc?.sym === 'BTC', sBtc)
-t('a perp takes the market cap of a trading protocol spot token', rows.find(r => r.kind === 'perp' && r.sym === 'BTC').mcap === 21000000 * 86000)
+// It used to: UBTC's 21,000,000 "circulating" is BTC's MAX supply, so the perp read 21M × price.
+// A wrapped token's figure is not taken; with no CoinGecko here, BTC's cap is unknown.
+t('a perp does NOT take a wrapped token\'s max-supply figure (UBTC: 21M × price)', rows.find(r => r.kind === 'perp' && r.sym === 'BTC').mcap == null && sBtc.mcap == null)
 t('and of an allow-listed HL-native token', rows.find(r => r.kind === 'perp' && r.sym === 'HYPE').mcap === 300000000 * 90)
 const hips = rows.filter(r => r.kind === 'hip3')
 t('HIP-3: a live market stays and its dead copy elsewhere goes', hips.filter(r => r.sym === 'NVDA').length === 1 && hips.find(r => r.sym === 'NVDA').dex === 'xyz', hips.map(r => r.dex + ':' + r.sym))
@@ -247,6 +249,20 @@ console.log(nl + '-- the right token for a ticker, and fees beside revenue --')
   t('the row shows $0 revenue and its fees, not a dash', mo.rev30 === 0 && mo.fee30 === 2e7)
   t("an idle DefiLlama entry ($0 and $0) does not name the category: KAITO is not a launchpad", ka.category !== 'Launchpad' && !ka.tags.includes('launchpad'), ka.category)
   t('a perp with no HL market cap takes CoinGecko\'s', mo.mcap === 1.9e9 && mo.mcapFrom === 'coingecko')
+  // Wrapped Unit tokens publish the coin's MAX supply as circulating (UZEC: 21,000,000), so
+  // ZEC read $25.5B. Their perps take CoinGecko's; HL-issued HYPE keeps Hyperliquid's own.
+  {
+    const S0 = { tokens: [{ name: 'USDC', index: 0 }, { name: 'UZEC', index: 419, fullName: 'Unit Zcash', deployerTradingFeeShare: '1.0' }, { name: 'HYPE', index: 150, deployerTradingFeeShare: '0.0' }],
+      universe: [{ name: '@272', index: 272, tokens: [419, 0] }, { name: '@107', index: 107, tokens: [150, 0] }] }
+    const C0 = [{ coin: '@272', markPx: '1214', prevDayPx: '1200', dayNtlVlm: '1e7', circulatingSupply: '21000000' }, { coin: '@107', markPx: '84', prevDayPx: '83', dayNtlVlm: '4e7', circulatingSupply: '302000000' }]
+    const core0 = [{ universe: [{ name: 'ZEC', maxLeverage: 10 }, { name: 'HYPE', maxLeverage: 10 }] }, [{ markPx: '1214', prevDayPx: '1200', dayNtlVlm: '1e8', openInterest: '1', funding: '0' }, { markPx: '84', prevDayPx: '83', dayNtlVlm: '1e8', openInterest: '1', funding: '0' }]]
+    const z = M.buildMarkets({ core: core0, spot: [S0, C0], cg: { ZEC: ['zcash', 20.72e9], HYPE: ['hyperliquid', 18.9e9] } })
+    const zp = z.find(r => r.kind === 'perp' && r.sym === 'ZEC'), zs = z.find(r => r.kind === 'spot' && r.wrapped === 'UZEC'), hp = z.find(r => r.kind === 'perp' && r.sym === 'HYPE')
+    t('a wrapped token\'s max supply is not a market cap: ZEC\'s perp takes CoinGecko\'s $20.72B, not 21M × price', zp.mcap === 20.72e9 && zp.mcapFrom === 'coingecko', zp)
+    t('and so does its wrapped spot row', zs.mcap === 20.72e9)
+    t('without CoinGecko, unknown — not the max-supply figure', M.buildMarkets({ core: core0, spot: [S0, C0] }).filter(r => r.sym === 'ZEC').every(r => r.mcap == null))
+    t('HYPE, which Hyperliquid issues, keeps Hyperliquid\'s own figure', Math.abs(hp.mcap - 84 * 302e6) < 1 && hp.mcapFrom === 'spot')
+  }
   t('kPEPE takes PEPE\'s', pe.mcap === 4e9)
   t('a HIP-3 stock never takes a CoinGecko cap', M.withCgMarketCaps([{ kind: 'hip3', group: 'tradfi', sym: 'MORPHO', mcap: null }], cg)[0].mcap === null)
   t('revenue and fees sort', M.sortRows(rows3, 'fee30')[0].sym === 'MORPHO')

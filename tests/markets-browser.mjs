@@ -59,7 +59,7 @@ await ctx.route('**/markets-meta', (route) => route.fulfill({ status: 200, conte
 }, stocks: {
   NVDA: { name: 'NVIDIA CORP', q: 96221e6, qStart: '2026-04-27', qEnd: '2026-07-26', ttm: 302969e6, yoy: 105.9,
     hist: [['2025-10-27', '2026-01-25', 68000e6, 1], ['2026-01-26', '2026-04-26', 80000e6, 0], ['2026-04-27', '2026-07-26', 96221e6, 0]] },
-} } }))
+}, cg: { BTC: ['bitcoin', 1.66e12] } } }))
 // Revenue history (/markets-revenue): 120 days for HYPE, $1,000 a day, fees $3,000.
 const revAsks = []
 let revFail = 0      // the next N answers are a 502, as when DefiLlama is slow or rate-limiting the server
@@ -91,7 +91,9 @@ const all = await syms()
 ok('every market is listed: 3 perps, 2 spot, 2 HIP-3', all.length === 7, all)
 ok('ranked by 24h volume by default', all[0] === 'BTC' && all[1] === 'ETH' && all[2] === 'SP500', all)
 ok('BTC open interest is coins × price', await cell('BTC', 5) === '$3.27B', await cell('BTC', 5))
-ok('BTC perp carries the market cap of its spot token', await cell('BTC', 6) === '$1.81T', await cell('BTC', 6))
+// UBTC publishes BTC's MAX supply (21M) as circulating: 21M × $86,000 = $1.81T is not a market
+// cap. BTC takes CoinGecko's instead.
+ok("BTC takes CoinGecko's market cap, not UBTC's max supply × price", await cell('BTC', 6) === '$1.66T', await cell('BTC', 6))
 ok('an unknown market cap is a dash, not $0', await cell('NVDA', 6) === '—', await cell('NVDA', 6))
 ok('UBTC is listed as BTC', all.filter(s => s === 'BTC').length === 2)
 
