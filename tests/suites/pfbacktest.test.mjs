@@ -276,5 +276,33 @@ console.log(nl + '-- funding and slippage (src/pffunding.js) --')
   t('and each holding\'s row is before costs, so the rows and the costs add up to the result', near(Object.values(tb1.pnlBy).reduce((a, v) => a + v, 0) - tb1.fees - tb1.funding - tb1.slippage, tb1.final - 1000, 0.02))
 }
 
+console.log(nl + '-- the allocation strategies\' own settings --')
+{
+  const n = 70
+  const c = { A: series(lin(100, 200, n)), B: series(Array(n).fill(50)) }
+  const items = [{ key: 'A', weight: 1 }, { key: 'B', weight: 1 }]
+  const run = (id, o) => B.backtest({ candles: c, items, from: T0, to: T0 + (n - 1) * D, strategies: [id], opts: { ...opts0, ...o } }).runs[0]
+  const tradeDays = (r) => r.equity.map((_, i) => i).filter(i => i > 0)
+  // Which weekday it trades on: the days after day one that it rebalanced.
+  const wd = (o) => { const r = run('weekly', o); return r.rebalances }
+  const days = Array.from({ length: n }, (_, i) => new Date(T0 + i * D))
+  const count = (pred) => days.filter((d, i) => i > 0 && pred(d)).length + 1
+  t('weekly rebalances on the weekday asked for (Monday by default)', wd({}) === count(d => d.getUTCDay() === 1) && wd({ weekDay: 4 }) === count(d => d.getUTCDay() === 4), [wd({}), wd({ weekDay: 4 })])
+  t('monthly on the day of the month asked for', run('monthly', { monthDay: 15 }).rebalances === count(d => d.getUTCDate() === 15) && run('monthly', {}).rebalances === count(d => d.getUTCDate() === 1))
+  t('a day past 28 is held at 28, so every month has one', run('monthly', { monthDay: 31 }).rebalances === count(d => d.getUTCDate() === 28))
+  const d7 = run('dca', {}), d14 = run('dca', { dcaEvery: 14 }), d100 = run('dca', { dcaUpfront: 1 }), hold = run('hold', {})
+  t('DCA buys every 7 days from day one by default', d7.rebalances === Math.ceil(n / 7), d7.rebalances)
+  t('every 14 days buys half as often', d14.rebalances === Math.ceil(n / 14), d14.rebalances)
+  t('100% up front is buying it all on day one: the same as buy & hold', near(d100.final, hold.final), [d100.final, hold.final])
+  const d50 = run('dca', { dcaUpfront: 0.5 })
+  t('half up front lands between pure DCA and buying at once in a rising market', d50.final > d7.final && d50.final < hold.final)
+  // A price that hugs its average: without a buffer it flips in and out; with one it holds still.
+  const wig = Array.from({ length: 80 }, (_, i) => 100 + (i % 2 ? 0.6 : -0.6))
+  const tr = (b) => B.backtest({ candles: { A: series(wig) }, items: [{ key: 'A', weight: 1 }], from: T0 + 10 * D, to: T0 + 79 * D, strategies: ['trend'], opts: { ...opts0, trendDays: 10, trendBuffer: b } }).runs[0]
+  t('trend buffer: a price hugging its average stops flipping in and out', tr(0).rebalances > 20 && tr(0.02).rebalances <= 1, [tr(0).rebalances, tr(0.02).rebalances])
+  t('and the defaults reproduce the old rules', B.ALLOC_DEFAULTS.weekDay === 1 && B.ALLOC_DEFAULTS.monthDay === 1 && B.ALLOC_DEFAULTS.trendBuffer === 0 && B.ALLOC_DEFAULTS.dcaUpfront === 0)
+  void tradeDays
+}
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

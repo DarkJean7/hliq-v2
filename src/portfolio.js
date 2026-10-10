@@ -90,7 +90,7 @@ function decodeShare(h) {
     }
   } catch { return null }
 }
-const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'tf', 'both', 'bench', 'listingWait', 'costs', 'margin', 'botParams']    // not 'source': price data is the reader's page-wide choice, not the link's
+const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'monthDay', 'weekDay', 'dcaEvery', 'dcaUpfront', 'trendBuffer', 'tf', 'both', 'bench', 'listingWait', 'costs', 'margin', 'botParams']    // not 'source': price data is the reader's page-wide choice, not the link's
 const pickSettings = (o) => Object.fromEntries(SETTING_KEYS.filter(k => k in o).map(k => [k, o[k]]))
 function encodeShare() {
   const j = { n: S.name, d: S.desc || undefined, i: S.items.map(i => [i.coin, +Number(i.w).toFixed(4), i.side === 'short' ? 1 : 0]), s: pickSettings(S) }
@@ -742,16 +742,11 @@ function renderRunControls() {
   $('pfWait').checked = !!S.listingWait
   $('pfCosts').checked = S.costs !== false
   $('pfSrc').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.src === srcMode()))
-  $('pfBand').value = S.band; $('pfTrendDays').value = S.trendDays
   $('pfTf').value = S.tf; $('pfBoth').checked = !!S.both
   $('pfStrats').innerHTML = STRATEGIES.map(s => `<button data-strat="${s.id}" class="${S.strats.includes(s.id) ? 'is-on' : ''}" title="${esc(s.desc)}">${esc(s.label)}</button>`).join('')
   $('pfBots').innerHTML = BOT_STRATEGIES.map(([id, l]) => `<button data-bot="${id}" class="${S.bots.includes(id) ? 'is-on' : ''}">${esc(l)}</button>`).join('')
-  // A setting is shown only beside a strategy that reads it.
-  for (const el of $('pfAllocParams').querySelectorAll('[data-for]')) {
-    const f = el.dataset.for
-    el.hidden = f === 'none' ? (S.strats.includes('band') || S.strats.includes('trend') || !S.strats.length) : !S.strats.includes(f)
-  }
   $('pfAllocParams').hidden = !S.strats.length
+  renderAllocCards()
   $('pfBotParams').hidden = !S.bots.length
   renderBotCards()
 }
@@ -809,36 +804,87 @@ let botCardsOpen = false
 try { botCardsOpen = localStorage.getItem(BOTCARDS_KEY) === '1' } catch {}
 const flipped = new Set()
 function renderBotCards() {
-  const el = $('pfBotCards')
+  renderCards({
+    el: $('pfBotCards'), toggle: $('pfBotToggle'), open: botCardsOpen, ids: S.bots, pre: '',
+    label: id => BOT_LABEL[id], tag: id => BT_STRATEGY_META[id]?.tag ?? '', desc: id => BOT_DESC[id] ?? '', fields: botFields,
+    value: (id, key) => bp(id, key), off: (id, f) => f.off && S.botParams?.[id]?.[f.off], attr: (id, key) => `${id}|${key}`,
+    note: id => (id === 'grid' ? 'Rungs sized to each holding\'s share of the capital.' : id === 'dca' ? 'Orders sized so the base and every safety order fit in each holding\'s share.' : ''),
+  })
+}
+
+// ── the allocation strategies' own settings, the same cards ──
+// Kept flat on the portfolio (S.monthDay…), in the units a person types: percentages as 5, not 0.05.
+const ALLOC_FIELDS = {
+  hold: [],
+  monthly: [{ key: 'monthDay', label: 'Day', unit: 'of the month', step: '1', min: 1, max: 28, hint: 'The day of each month it trades back to the weights (1–28, so every month has one).' }],
+  weekly: [{ key: 'weekDay', label: 'Weekday', type: 'select', options: [['1', 'Monday'], ['2', 'Tuesday'], ['3', 'Wednesday'], ['4', 'Thursday'], ['5', 'Friday'], ['6', 'Saturday'], ['0', 'Sunday']], hint: 'The day of each week it trades back to the weights (UTC).' }],
+  band: [{ key: 'band', label: 'Drift band', unit: 'points', step: '1', min: 1, max: 50, hint: 'How far a holding\'s share may wander from its weight before everything is put back: 5 means a 20% holding is left alone between 15% and 25%.' }],
+  dca: [
+    { key: 'dcaEvery', label: 'Buy every', unit: 'days', step: '1', min: 1, max: 180, hint: 'Days between buys; the first is on day one. 7 is weekly, 30 about monthly.' },
+    { key: 'dcaUpfront', label: 'Up front', unit: '% of capital', step: '5', min: 0, max: 100, hint: 'Bought on day one; the rest is split equally over every buy. 0 is pure DCA, 100 is buying it all at once.' },
+  ],
+  trend: [
+    { key: 'trendDays', label: 'Average', unit: 'days', step: '1', min: 5, max: 200, hint: 'The moving average each price is compared with. 50 and 200 are the usual ones.' },
+    { key: 'trendBuffer', label: 'Buffer', unit: '% · 0 = none', step: '0.5', min: 0, max: 20, hint: 'In only once the price is this far above the average, out only once it is this far below. Stops a price hugging its average from flipping in and out every day.' },
+  ],
+}
+const ALLOC_NOTE = {
+  hold: 'Nothing to set: bought once at the weights and never traded again.',
+  band: 'Checked every day; when one holding is outside its band, all are rebalanced.',
+}
+const ALLOC_DESC = {
+  hold: 'Buys the weights on day one and never trades again. Winners grow their share of the portfolio and losers shrink, so after a while the mix is not the one you set. The cheapest strategy: one set of fees, ever.',
+  monthly: 'Once a month, sells what has grown past its weight and buys what has fallen below it, so the mix stays the one you set. In a market that trends one way this sells the winner early; in one that swings back and forth it buys low and sells high.',
+  weekly: 'The same as monthly, every week: the mix stays closer to your weights, at the cost of more trades and more fees.',
+  band: 'Leaves the portfolio alone until a holding drifts a set distance from its weight, then puts everything back. Trades only when it is needed, rather than on a calendar.',
+  dca: 'Spreads the same capital over buys at a fixed interval instead of investing it all on day one. Until it is fully invested part of the money sits in cash, which helps in a falling market and costs in a rising one.',
+  trend: 'Holds each asset only while its price is above its moving average and moves that share into cash when it falls below. It aims to sit out long declines, and pays for it in whipsaws when the price crosses back and forth.',
+}
+const ALLOC_UI_DEFAULTS = { monthDay: 1, weekDay: 1, band: 5, dcaEvery: 7, dcaUpfront: 0, trendDays: 50, trendBuffer: 0 }
+const ALLOC_FIELD = Object.fromEntries(Object.values(ALLOC_FIELDS).flat().map(f => [f.key, f]))
+const ap = key => S[key] ?? ALLOC_UI_DEFAULTS[key]
+const ALLOCCARDS_KEY = 'hliq_pf_alloccards'
+let allocCardsOpen = false
+try { allocCardsOpen = localStorage.getItem(ALLOCCARDS_KEY) === '1' } catch {}
+function renderAllocCards() {
+  renderCards({
+    el: $('pfAllocCards'), toggle: $('pfAllocToggle'), open: allocCardsOpen, ids: S.strats, pre: 'alloc:',
+    label: id => STRATEGY_LABEL[id], tag: id => STRATEGIES.find(x => x.id === id)?.desc ?? '', desc: id => ALLOC_DESC[id] ?? '', fields: id => ALLOC_FIELDS[id] ?? [],
+    value: (id, key) => ap(key), off: () => false, attr: (id, key) => `alloc|${key}`, note: id => ALLOC_NOTE[id] ?? '',
+  })
+}
+
+// One card per selected strategy: its settings on the front; on the back, what it does and what
+// each setting means. Shared by both kinds of strategy.
+function renderCards({ el, toggle, open, ids, pre, label, tag, desc, fields, value, off: isOff, attr, note }) {
   if (!el) return
-  const tg = $('pfBotToggle')
-  if (tg) { tg.classList.toggle('is-on', botCardsOpen); tg.setAttribute('aria-expanded', String(botCardsOpen)); tg.textContent = botCardsOpen ? 'Hide strategy settings' : `Strategy settings (${S.bots.length})` }
-  el.hidden = !botCardsOpen || !S.bots.length
+  if (toggle) { toggle.classList.toggle('is-on', open); toggle.setAttribute('aria-expanded', String(open)); toggle.textContent = open ? 'Hide strategy settings' : `Strategy settings (${ids.length})` }
+  el.hidden = !open || !ids.length
   if (el.hidden) return
-  el.innerHTML = S.bots.map(id => {
-    const fields = botFields(id)
-    const sizing = id === 'grid' ? 'Rungs sized to each holding\'s share of the capital.' : id === 'dca' ? 'Orders sized so the base and every safety order fit in each holding\'s share.' : ''
-    const head = (back) => `<div class="pf-botcard-h"><div><b>${esc(BOT_LABEL[id])}</b><small>${esc(back ? 'How it works' : (BT_STRATEGY_META[id]?.tag ?? ''))}</small></div>
-      <button type="button" class="pf-flip" data-flip="${id}" aria-label="${back ? 'Back to the settings' : 'What this strategy does'}" title="${back ? 'Back to the settings' : 'What this strategy does'}">${back ? '↺' : 'i'}</button></div>`
+  el.innerHTML = ids.map(id => {
+    const fl = fields(id), key = pre + id, isFlipped = flipped.has(key), extra = note(id)
+    const head = (back) => `<div class="pf-botcard-h"><div><b>${esc(label(id))}</b><small>${esc(back ? 'How it works' : tag(id))}</small></div>
+      <button type="button" class="pf-flip" data-flip="${key}" aria-label="${back ? 'Back to the settings' : 'What this strategy does'}" title="${back ? 'Back to the settings' : 'What this strategy does'}">${back ? '↺' : 'i'}</button></div>`
     const input = (f, off) => {
+      const v = value(id, f.key)
       if (f.type === 'select') {
-        const v = String(bp(id, f.key) === true ? '1' : bp(id, f.key) || '')
-        return `<select data-bpsel="${id}|${f.key}">${f.options.map(([o, l]) => `<option value="${o}" ${o === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`
+        const sv = v === true ? '1' : v === false || v == null ? '' : String(v)
+        return `<select data-bpsel="${attr(id, f.key)}">${f.options.map(([o, l]) => `<option value="${o}" ${o === sv ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`
       }
-      return `<input type="number" data-bp="${id}|${f.key}" value="${bp(id, f.key)}" step="${f.step ?? 1}" ${off ? 'disabled' : ''}>`
+      return `<input type="number" data-bp="${attr(id, f.key)}" value="${v}" step="${f.step ?? 1}"${f.min != null ? ` min="${f.min}"` : ''}${f.max != null ? ` max="${f.max}"` : ''} ${off ? 'disabled' : ''}>`
     }
-    return `<div class="pf-botcard${flipped.has(id) ? ' is-flipped' : ''}" data-card="${id}"><div class="pf-botcard-in">
-      <div class="pf-botcard-face pf-botcard-front" ${flipped.has(id) ? 'inert' : ''}>${head(false)}
-        <div class="pf-botcard-f">${fields.map(f => {
-          const off = f.off && S.botParams?.[id]?.[f.off]
+    return `<div class="pf-botcard${isFlipped ? ' is-flipped' : ''}" data-card="${key}"><div class="pf-botcard-in">
+      <div class="pf-botcard-face pf-botcard-front" ${isFlipped ? 'inert' : ''}>${head(false)}
+        <div class="pf-botcard-f">${fl.map(f => {
+          const off = isOff(id, f)
           return `<label class="${off ? 'is-off' : ''}${f.type === 'select' ? ' is-sel' : ''}" title="${esc(f.hint ?? '')}"><span>${esc(f.label)}</span>${input(f, off)}
-            <span class="pf-unit">${f.unit ? `<em>${esc(f.unit)}</em>` : ''}${f.off ? `<span class="pf-off"><input type="checkbox" data-bpoff="${id}|${f.off}" ${off ? 'checked' : ''}> Off</span>` : ''}</span></label>`
+            <span class="pf-unit">${f.unit ? `<em>${esc(f.unit)}</em>` : ''}${f.off ? `<span class="pf-off"><input type="checkbox" data-bpoff="${attr(id, f.off)}" ${off ? 'checked' : ''}> Off</span>` : ''}</span></label>`
         }).join('')}</div>
-        ${sizing ? `<p class="pf-help">${sizing}</p>` : ''}
+        ${extra ? `<p class="pf-help">${esc(extra)}</p>` : ''}
       </div>
-      <div class="pf-botcard-face pf-botcard-back" ${flipped.has(id) ? '' : 'inert'}>${head(true)}
-        <p class="pf-botcard-desc">${esc(BOT_DESC[id] ?? '')}</p>
-        <dl class="pf-botcard-dl">${fields.map(f => `<dt>${esc(f.label)}</dt><dd>${esc(f.hint ?? '')}</dd>`).join('')}</dl>
+      <div class="pf-botcard-face pf-botcard-back" ${isFlipped ? '' : 'inert'}>${head(true)}
+        <p class="pf-botcard-desc">${esc(desc(id))}</p>
+        ${fl.length ? `<dl class="pf-botcard-dl">${fl.map(f => `<dt>${esc(f.label)}</dt><dd>${esc(f.hint ?? '')}</dd>`).join('')}</dl>` : ''}
       </div>
     </div></div>`
   }).join('')
@@ -875,7 +921,8 @@ async function run() {
   }
   if (my !== runSeq) return
   const candles = Object.fromEntries(need.filter(c => closesOf(c)).map(c => [c, closesOf(c).pts]))
-  const opts = { capital: Number(S.capital) || 10_000, leverage: S.lev === 'max' ? 1 : (Number(S.lev) || 1), feeBps: (Number(S.fee) || 0) * 100, band: (Number(S.band) || 5) / 100, trendDays: Math.max(2, Number(S.trendDays) || 50), listing: S.listingWait ? 'wait' : 'join',
+  const opts = { capital: Number(S.capital) || 10_000, leverage: S.lev === 'max' ? 1 : (Number(S.lev) || 1), feeBps: (Number(S.fee) || 0) * 100, band: (Number(ap('band')) || 5) / 100, trendDays: Math.max(2, Number(ap('trendDays')) || 50),
+    monthDay: Number(ap('monthDay')), weekDay: Number(ap('weekDay')), dcaEvery: Number(ap('dcaEvery')), dcaUpfront: Number(ap('dcaUpfront')) / 100, trendBuffer: Number(ap('trendBuffer')) / 100, listing: S.listingWait ? 'wait' : 'join',
     // Leverage per market, capped at what Hyperliquid allows there; the margin mode.
     levBy: Object.fromEntries(items.map(i => [i.key, levFor(i.key)])), margin: S.margin === 'isolated' ? 'isolated' : 'cross',
     // Each market's maintenance margin, 1/(2 × its max leverage), as Hyperliquid sets it.
@@ -1331,6 +1378,16 @@ $('pfLev').addEventListener('click', e => { const b = e.target.closest('button[d
 // Any leverage Hyperliquid offers (1–50); each market is still capped at its own maximum.
 $('pfLevIn').addEventListener('change', e => { const v = Math.round(Number(e.target.value)); if (v >= 1) { S.lev = Math.min(50, v); changed() } })
 $('pfMargin').addEventListener('click', e => { const b = e.target.closest('button[data-m]'); if (!b) return; S.margin = b.dataset.m; changed() })
+$('pfAllocCards').addEventListener('change', e => {
+  const t = e.target
+  const [, key] = (t.dataset.bp ?? t.dataset.bpsel ?? '').split('|')
+  const fd = ALLOC_FIELD[key]
+  if (!fd) return
+  const v = Number(t.value)
+  if (!Number.isFinite(v)) return
+  S[key] = Math.min(fd.max ?? Infinity, Math.max(fd.min ?? -Infinity, v))
+  changed()
+})
 $('pfBotCards').addEventListener('change', e => {
   const t = e.target
   const [id, key] = (t.dataset.bp ?? t.dataset.bpoff ?? t.dataset.bpsel ?? '').split('|')
@@ -1341,7 +1398,7 @@ $('pfBotCards').addEventListener('change', e => {
   else { const v = Number(t.value); if (Number.isFinite(v)) S.botParams[id][key] = v }
   changed()
 })
-$('pfBotCards').addEventListener('click', e => {
+const onFlip = e => {
   const b = e.target.closest('[data-flip]')
   if (!b) return
   const id = b.dataset.flip
@@ -1351,6 +1408,13 @@ $('pfBotCards').addEventListener('click', e => {
   card.querySelector('.pf-botcard-front').inert = on
   card.querySelector('.pf-botcard-back').inert = !on
   card.querySelector(on ? '.pf-botcard-back .pf-flip' : '.pf-botcard-front .pf-flip')?.focus({ preventScroll: true })
+}
+$('pfBotCards').addEventListener('click', onFlip)
+$('pfAllocCards').addEventListener('click', onFlip)
+$('pfAllocToggle').addEventListener('click', () => {
+  allocCardsOpen = !allocCardsOpen
+  try { localStorage.setItem(ALLOCCARDS_KEY, allocCardsOpen ? '1' : '0') } catch {}
+  renderAllocCards()
 })
 $('pfBotToggle').addEventListener('click', () => {
   botCardsOpen = !botCardsOpen
@@ -1358,7 +1422,7 @@ $('pfBotToggle').addEventListener('click', () => {
   renderBotCards()
 })
 const num = (id, key, min, max) => $(id).addEventListener('change', e => { const v = Number(e.target.value); if (Number.isFinite(v)) { S[key] = Math.min(max, Math.max(min, v)); changed() } })
-num('pfCapital', 'capital', 100, 1e9); num('pfFee', 'fee', 0, 1); num('pfBand', 'band', 1, 50); num('pfTrendDays', 'trendDays', 5, 200)
+num('pfCapital', 'capital', 100, 1e9); num('pfFee', 'fee', 0, 1); 
 
 $('pfTf').addEventListener('change', e => { S.tf = e.target.value; changed() })
 $('pfBench').addEventListener('change', e => { S.bench = e.target.checked; changed() })

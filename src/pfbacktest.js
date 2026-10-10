@@ -23,12 +23,15 @@
  *
  * Strategies (all start fully invested at the weights, except DCA):
  *   hold      buy once, never trade again; winners grow their share
- *   weekly    rebalance to the weights every Monday (UTC)
- *   monthly   rebalance on the 1st of each month
+ *   weekly    rebalance to the weights once a week, on `weekDay` (UTC; Monday by default)
+ *   monthly   rebalance once a month, on day `monthDay` (the 1st by default)
  *   band      rebalance whenever any holding drifts more than `band` (absolute) from its weight
- *   dca       the same capital, invested in equal tranches every Monday; the rest waits as cash
+ *   dca       the same capital, invested in equal tranches every `dcaEvery` days (7) from day one,
+ *             `dcaUpfront` of it on day one as well; the rest waits as cash
  *   trend     hold each asset only while its close is above its `trendDays`-day average; its
- *             share sits in cash otherwise. Trades only when an asset switches in or out.
+ *             share sits in cash otherwise. Trades only when an asset switches in or out. With
+ *             `trendBuffer` it switches only once the close is that far past the average.
+ * Their settings and defaults: ALLOC_DEFAULTS.
  */
 
 import { runBacktest, strategyKind } from './backtest.js'
@@ -53,12 +56,25 @@ export const MMR_DEFAULT = 0.025
 
 export const STRATEGIES = [
   { id: 'hold',    label: 'Buy & hold',        desc: 'Buy the weights once and never trade again. Winners grow their share.' },
-  { id: 'monthly', label: 'Rebalance monthly', desc: 'Back to the target weights on the 1st of every month.' },
-  { id: 'weekly',  label: 'Rebalance weekly',  desc: 'Back to the target weights every Monday.' },
+  { id: 'monthly', label: 'Rebalance monthly', desc: 'Back to the target weights once a month, on the day you pick.' },
+  { id: 'weekly',  label: 'Rebalance weekly',  desc: 'Back to the target weights once a week, on the weekday you pick.' },
   { id: 'band',    label: 'Rebalance on drift', desc: 'Rebalance only when a holding drifts more than the band from its weight.' },
-  { id: 'dca',     label: 'DCA weekly',        desc: 'The same capital, invested in equal weekly buys instead of all at once.' },
+  { id: 'dca',     label: 'DCA',               desc: 'The same capital, invested in equal buys spread over the window instead of all at once.' },
   { id: 'trend',   label: 'Trend filter',      desc: 'Hold each asset only while its price is above its moving average; cash otherwise.' },
 ]
+
+/**
+ * The allocation strategies' own settings and their defaults. Each is read by one strategy only.
+ *   monthDay   monthly: day of the month it rebalances (1–28, so every month has one)
+ *   weekDay    weekly: 0 Sunday … 6 Saturday
+ *   band       band: drift from the weight that triggers a rebalance (0.05 = 5 points)
+ *   dcaEvery   dca: days between buys, the first on day one
+ *   dcaUpfront dca: share of the capital bought on day one; the rest is split over every buy
+ *   trendDays  trend: the moving average, in days
+ *   trendBuffer trend: in only above the average by this much, out only below it by this much —
+ *              a price hugging its average no longer flips in and out every day
+ */
+export const ALLOC_DEFAULTS = { monthDay: 1, weekDay: 1, band: 0.05, dcaEvery: 7, dcaUpfront: 0, trendDays: 50, trendBuffer: 0 }
 export const STRATEGY_LABEL = Object.fromEntries(STRATEGIES.map(s => [s.id, s.label]))
 
 /** UTC midnight of a timestamp. */
@@ -124,6 +140,11 @@ function sma(arr, i, n) {
  */
 export function simulate(grid, start, weights, id, opts = {}) {
   const { capital = 10_000, leverage = 1, feeBps = 4.5, band = 0.05, trendDays = 50, mmr = MMR_DEFAULT, funding = null, book = null, levBy = null, margin = 'cross' } = opts
+  const monthDay = Math.min(28, Math.max(1, Math.round(opts.monthDay ?? ALLOC_DEFAULTS.monthDay)))
+  const weekDay = Math.min(6, Math.max(0, Math.round(opts.weekDay ?? ALLOC_DEFAULTS.weekDay)))
+  const dcaEvery = Math.max(1, Math.round(opts.dcaEvery ?? ALLOC_DEFAULTS.dcaEvery))
+  const dcaUpfront = Math.min(1, Math.max(0, opts.dcaUpfront ?? ALLOC_DEFAULTS.dcaUpfront))
+  const trendBuffer = Math.max(0, opts.trendBuffer ?? ALLOC_DEFAULTS.trendBuffer)
   const keys = Object.keys(weights)
   // Leverage per market: what was asked, capped at what Hyperliquid allows there (`levBy`, from
   // effectiveLeverage). Without a map, the one figure for every market.
@@ -150,9 +171,10 @@ export function simulate(grid, start, weights, id, opts = {}) {
   let reserve = id === 'dca' ? capital : 0
   let fees = 0, trades = 0, rebalances = 0, liquidated = null
   const equity = []
-  // DCA: one tranche per Monday in the window, the first on day one.
-  const dcaDates = id === 'dca' ? days.slice(start).filter((t, j) => j === 0 || new Date(t).getUTCDay() === 1) : []
-  const tranche = dcaDates.length ? capital / dcaDates.length : 0
+  // DCA: a buy every `dcaEvery` days, the first on day one. `dcaUpfront` of the capital goes in on
+  // day one as well; the rest is split equally over every buy.
+  const dcaDates = id === 'dca' ? days.slice(start).filter((t, j) => j % dcaEvery === 0) : []
+  const tranche = dcaDates.length ? capital * (1 - dcaUpfront) / dcaDates.length : 0
   let active = null
 
   // A holding not listed yet has no price. Until it has one, the weights of those that do are
@@ -237,17 +259,26 @@ export function simulate(grid, start, weights, id, opts = {}) {
     const joined = nowLive.length !== live.length
     if (joined) { live = nowLive; w = wNow(live) }
     if (id === 'dca') {
-      const due = dcaDates.includes(days[i])
-      if (due) { reserve -= tranche; cash += tranche }
+      // A buy day with nothing left to put in (all of it went in up front) is not a trading day.
+      const due = dcaDates.includes(days[i]) && (tranche > 0 || first)
+      const amt = tranche + (first ? capital * dcaUpfront : 0)
+      if (due) { reserve -= amt; cash += amt }
       if (due || joined) rebalanceTo(i)
     } else if (id === 'trend') {
-      const on = Object.fromEntries(keys.map(k => { const m = sma(px[k], i, trendDays); return [k, px[k][i] != null && (m == null || px[k][i] >= m)] }))
+      // With a buffer, between the two lines it keeps whatever it was doing.
+      const on = Object.fromEntries(keys.map(k => {
+        const m = sma(px[k], i, trendDays), p = px[k][i]
+        if (p == null) return [k, false]
+        if (m == null) return [k, true]
+        if (!trendBuffer || first || !active) return [k, p >= m]
+        return [k, p >= m * (1 + trendBuffer) ? true : p < m * (1 - trendBuffer) ? false : !!active[k]]
+      }))
       const changed = first || keys.some(k => on[k] !== active[k])
       active = on
       if (changed) rebalanceTo(i, on)
     } else if (first || joined
-      || (id === 'weekly' && dt.getUTCDay() === 1)
-      || (id === 'monthly' && dt.getUTCDate() === 1)) {
+      || (id === 'weekly' && dt.getUTCDay() === weekDay)
+      || (id === 'monthly' && dt.getUTCDate() === monthDay)) {
       if (id !== 'hold' || first || joined) rebalanceTo(i)
     } else if (id === 'band') {
       const eq = cash + value(i)

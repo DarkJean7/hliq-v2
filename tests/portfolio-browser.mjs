@@ -229,6 +229,20 @@ async function run(label, opts) {
   await p.click('#pfMargin [data-m="isolated"]')
   await waitFor(p, 'isolated', () => window.__pf.last?.opts?.margin === 'isolated')
   ok('isolated margin reaches the engine, and the page explains it', /its own margin/.test(await p.textContent('#pfMarginNote')))
+  // The allocation strategies have their own cards, the same way.
+  if (!(await p.evaluate(() => window.__pf.state.strats.includes('trend')))) await p.click('[data-strat="trend"]')
+  await p.click('#pfAllocToggle')
+  await waitFor(p, 'the allocation cards', () => !document.getElementById('pfAllocCards').hidden && !!document.querySelector('[data-card="alloc:trend"]'))
+  const acards = await p.evaluate(() => [...document.querySelectorAll('#pfAllocCards .pf-botcard')].map(c => [c.dataset.card, [...c.querySelectorAll('.pf-botcard-front label > span:first-child')].map(x => x.textContent).join('/')]))
+  ok('one card per selected allocation strategy, each with its own settings', acards.some(([k, f]) => k === 'alloc:trend' && f === 'Average/Buffer') && acards.some(([k, f]) => k === 'alloc:monthly' && f === 'Day') && acards.some(([k, f]) => k === 'alloc:hold' && f === ''), acards)
+  await p.fill('[data-bp="alloc|monthDay"]', '15'); await p.press('[data-bp="alloc|monthDay"]', 'Tab')
+  await waitFor(p, 'day 15 in the engine', () => window.__pf.state.monthDay === 15 && window.__pf.last?.opts?.monthDay === 15)
+  await p.fill('[data-bp="alloc|trendBuffer"]', '2'); await p.press('[data-bp="alloc|trendBuffer"]', 'Tab')
+  await waitFor(p, 'a 2% buffer in the engine', () => window.__pf.last?.opts?.trendBuffer === 0.02)
+  ok('a setting on an allocation card reaches the engine, in its own units (2% → 0.02)', true)
+  await p.click('[data-flip="alloc:trend"]')
+  ok('an allocation card flips to say what it does', await p.evaluate(() => /moving average/.test(document.querySelector('[data-card="alloc:trend"] .pf-botcard-desc').textContent)))
+
   // Run test runs now: a fresh result object, and the button comes back.
   await p.evaluate(() => { window.__pfBefore = window.__pf.last })
   await p.click('#pfRunBtn')

@@ -151,10 +151,10 @@
       <div class="pf-sec-h"><b>Allocation strategies</b><small>trade the whole basket back to its weights</small></div>
       <div class="pf-chips pf-strats" id="pfStrats"></div>
       <div class="pf-params" id="pfAllocParams">
-        <label data-for="band"><i>Rebalance on drift</i> Drift band <input id="pfBand" type="number" min="1" max="50" step="1"> %</label>
-        <label data-for="trend"><i>Trend filter</i> Average <input id="pfTrendDays" type="number" min="5" max="200" step="1"> days</label>
-        <span class="pf-help" data-for="none">Buy &amp; hold, the rebalances on a calendar and DCA have no settings of their own.</span>
+        <span class="pf-help">Each strategy's own settings are on its card.</span>
+        <button type="button" class="pf-bottoggle" id="pfAllocToggle" aria-controls="pfAllocCards" aria-expanded="false">Strategy settings</button>
       </div>
+      <div class="pf-botcards" id="pfAllocCards"></div>
     </div>
 
     <div class="pf-sec">
