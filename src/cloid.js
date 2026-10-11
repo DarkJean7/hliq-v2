@@ -43,6 +43,7 @@ export const BOT_CODES = {
   levbrake:    '0b',
   longer:      '0c',
   shorter:     '0d',
+  portfolio:   '0e',
 }
 
 /**

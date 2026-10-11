@@ -15,6 +15,7 @@ import { SECTORS, SECTOR_LABEL } from './sectors.js'
 import { holdingsSectors, sectorColor } from './sectoralloc.js'
 import { STRATEGIES, STRATEGY_LABEL, BOT_STRATEGIES, BOT_LABEL, backtest, botRun, DAY, dayOf, effectiveLeverage, PCT_EXITS, BOT_PARAM_DEFAULTS } from './pfbacktest.js'
 import { BT_FIELDS, BT_DEFAULTS, BT_STRATEGY_META, BT_STRATEGIES } from './backtest.js'
+import { initTrade } from './pftrade.js'
 // The gallery card's own backtest, shared with serve-prod.js so the two cannot price a card
 // differently depending on which of them answered.
 import { galBacktest } from './pfgallery.js'
@@ -1164,6 +1165,14 @@ function changed({ rerun = true } = {}) {
   renderRunControls()
   if (rerun) { clearTimeout(runT); runT = setTimeout(run, 450) }
 }
+
+// Trading it live: the portfolio on the page, with its allocation settings in the bot's units.
+initTrade(() => ({
+  name: S.name, featuredId: S.featuredId, items: S.items, strats: S.strats, lev: S.lev, margin: S.margin === 'isolated' ? 'isolated' : 'cross',
+  params: { monthDay: Number(ap('monthDay')), weekDay: Number(ap('weekDay')), band: Number(ap('band')) / 100, dcaEvery: Number(ap('dcaEvery')),
+    dcaUpfront: Number(ap('dcaUpfront')) / 100, trendDays: Number(ap('trendDays')), trendBuffer: Number(ap('trendBuffer')) / 100 },
+  labels: STRATEGY_LABEL, nameOf,
+}))
 
 // Runs start by themselves after a change; this runs now, and is the retry when prices stalled.
 $('pfRunBtn').addEventListener('click', async () => {

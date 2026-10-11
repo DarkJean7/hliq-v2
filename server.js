@@ -65,6 +65,8 @@ const SCRIPTS = {
   accumulator: 'strategies/accumulator.js',
   volbreak:  'strategies/volbreak.js',
   copytrade: 'strategies/copytrade.js',
+  // A /portfolios basket run live with one allocation strategy; instance = the portfolio's id.
+  portfolio: 'strategies/portfolio.js',
   // Per-position risk guards (share one script; mode comes from --mode in args)
   // A trailing stop watches ONE position: HL has no trailing-stop order type, so something
   // has to remember the high-water mark and move a resting stop up behind it.
@@ -315,7 +317,7 @@ function startStrategy(type, extraArgs = [], agentKey = '', address = '', instan
   // Guards persist a cumulative-cap counter; on auto-resume (deploy/reboot) tell the
   // bot to restore it instead of resetting. Not added to the persisted args — a fresh
   // user arm has no --resume, which makes the bot start the cap over.
-  const resumeArgs = (resume && (type === 'liqguard' || type === 'levbrake' || type === 'accumulator')) ? ['--resume'] : []
+  const resumeArgs = (resume && (type === 'liqguard' || type === 'levbrake' || type === 'accumulator' || type === 'portfolio')) ? ['--resume'] : []
   // Key is passed via env (AGENT_KEY), NOT argv — so it never shows in `ps aux`.
   const argv = [SCRIPTS[type], ...addressArgs, ...extraArgs, ...resumeArgs]
   const proc = spawn('node', argv, { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey, HLIQ_BOT: type } })
@@ -556,6 +558,21 @@ function getStatus(address) {
       }
     }
   }
+  // Portfolio bots: each one's ledger — equity, positions, what it last decided — so the page
+  // can show how a running portfolio is doing. Keyed "addr:ID" in its state file.
+  try {
+    const pfFile = join(__dirname, '.portfolio-state.json')
+    if (existsSync(pfFile)) {
+      const all = JSON.parse(readFileSync(pfFile, 'utf8'))
+      for (const [k, v] of Object.entries(all)) {
+        const i = k.lastIndexOf(':')
+        if (i < 0 || k.slice(0, i).toLowerCase() !== addrL) continue
+        out._portfolios = out._portfolios || {}
+        out._portfolios[k.slice(i + 1)] = { name: v?.name, strategy: v?.strategy, budget: v?.budget, equity: v?.equity ?? null, units: v?.units ?? {},
+          fees: v?.fees ?? 0, trades: v?.trades ?? 0, reason: v?.reason ?? '', startedAt: v?.startedAt, lastRebal: v?.lastRebal ?? null, skipped: v?.skipped ?? [], at: v?.at }
+      }
+    }
+  } catch {}
   // Profit Stack (accumulator) live buffer + lifetime, so the UI can show "buffer $X/$Y"
   // instead of the user guessing why no buy fired. Keyed by "addr:ASSET" in its state file.
   try {
