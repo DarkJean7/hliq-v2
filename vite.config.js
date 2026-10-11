@@ -205,6 +205,17 @@ function strategyPlugin() {
           } catch { return sendJson(res, 502, { pts: null }) }
         }
 
+        // Dev twin of serve-prod.js /paper/sync (src/paperhost.js): paper accounts kept in the local
+        // data/paper. No ticking here — the dev server is not left running with the app closed.
+        if (path === '/paper/sync') {
+          if (req.method !== 'POST') return sendJson(res, 405, {})
+          const H = await import('./src/paperhost.js')
+          globalThis.__devPaperHost ??= H.createPaperHost({ dir: join(__dirname, 'data', 'paper') })
+          const b = await readBody(req)
+          try { const r = globalThis.__devPaperHost.sync({ secret: b.secret, client: b.client, hold: b.hold ?? null, seen: b.seen ?? {}, push: b.push ?? {} }); return sendJson(res, r.ok ? 200 : 400, r) }
+          catch (e) { return sendJson(res, 503, { ok: false, error: e.message }) }
+        }
+
         // Dev twin of serve-prod.js /portfolios-data (featured portfolios). Stored in the local
         // data/portfolios.json. Writes need the dev PIN: LB_PIN, or ~/.hliq/lb_pin, as on the
         // strategy server; with neither set locally, nobody can write — the same as prod.

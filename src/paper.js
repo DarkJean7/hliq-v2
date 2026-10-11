@@ -303,6 +303,26 @@ export function paperSave() {
   catch (e) { _saveFailed = true; return false }
 }
 
+// ── the server copy (src/papersync.js in the app, src/paperhost.js on the server) ──
+// A paper account lives on the server too, so it keeps trading — resting orders, stops,
+// funding, liquidation — while the app is closed. One side writes a store at a time: the app
+// while it holds the store's lease, the server otherwise. These three are what that needs.
+
+/** The store key a slot is saved under (the unit the server syncs and leases). */
+export function paperStoreKey(slot = _slot) { return keyFor(slot) }
+/**
+ * Point the module at `slot` WITHOUT flushing the store in memory. setPaperSlot flushes first,
+ * which is right in the app and wrong on the server: there the in-memory store belongs to the
+ * previous OWNER, and flushing it would write one person's book into another's.
+ */
+export function paperBind(slot) { _slot = slot; _s = null }
+/** Forget the store in memory, so the next read loads what storage now holds (a server update). */
+export function paperReload() { _s = null }
+// Whether this side may advance the store: the app only while it holds the lease, so the app
+// and the server never both fill the same resting order. No gate: always (no server, or offline).
+let _tickGate = null
+export function setPaperTickGate(fn) { _tickGate = typeof fn === 'function' ? fn : null }
+
 export function paperReset() {
   _s = blank()
   paperSave()
@@ -884,6 +904,8 @@ export function paperAdjustMargin(coin, usd, isAdd) {
  * just while a paper screen is open — or navigating away would freeze the book.
  */
 export function paperTick() {
+  // The server is advancing this store (the app has not got its lease yet): leave it be.
+  if (_tickGate && !_tickGate(paperKey())) return []
   const s = paperStore()
   const events = []
   let dirty = false   // set by silent mutations that still must be persisted

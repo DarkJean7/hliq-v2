@@ -221,8 +221,9 @@ import {
   paperSettleOutcomes, paperFundingHistory, paperAccrueFunding, setPaperFundingRates, PAPER_COSTS,
   paperMark, paperOrder, paperCancelMany, paperCancel,
   paperAccounts, paperAcctCreate, paperAcctRename, paperAcctDelete, paperAcctName, paperAcctList,
-  paperSlotKnown, paperSaveFailed, PAPER_MAX_ACCTS, paperPeek,
+  paperSlotKnown, paperSaveFailed, PAPER_MAX_ACCTS, paperPeek, paperStoreKey, paperReload, setPaperTickGate,
 } from './paper.js'
+import { startPaperSync, hasPaper } from './papersync.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
 import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fillPickerHtml,
@@ -10805,7 +10806,29 @@ function _paperRefresh() {
   try { _paperRiskAlerts() } catch (e) { console.error('[paper] alert check failed:', e) }
 }
 
+// Paper accounts on the server (src/papersync.js, src/paperhost.js): they keep trading while the
+// app is closed. The app holds the lease on the account it is running and advances only that
+// one; the server advances the rest. Started for anyone who has ever used paper, and on entry.
+let _paperSync = null
+function _paperSyncStart() {
+  if (_paperSync) return
+  try {
+    _paperSync = startPaperSync({
+      holdKey: () => (isPaper() ? paperStoreKey() : null),
+      onAdopt: (keys) => {
+        // The server moved an account (fills while the app was closed): read it again.
+        if (keys.includes(paperStoreKey())) paperReload()
+        if (isPaper()) _paperRefresh()
+      },
+    })
+    setPaperTickGate(_paperSync.gate)
+    window.__paperSync = _paperSync
+  } catch { /* no server copy: paper runs on this device alone, as it always did */ }
+}
+if (hasPaper()) _paperSyncStart()
+
 window.__goPaper = async function(which) {
+  _paperSyncStart()
   // Every paper account is a separate store: the practice account ('main'), the Challenge
   // account ('challenge'), and however many the user has made. Pass a slot to pick one;
   // omit to keep whatever is active. An unknown slot is ignored rather than obeyed, so a
@@ -10826,6 +10849,7 @@ window.__goPaper = async function(which) {
   // send time, so it would cancel a live order and replace it with a simulated one.
   stopAllChases()
   setPaper(true)
+  _paperSync?.syncNow()   // take the lease on this account now, not at the next sync
   state.addr = PAPER_ADDR
   setActiveWallet(null)   // paper has no wallet
   resetLiveAccountValue()

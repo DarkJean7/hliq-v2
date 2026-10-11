@@ -12,6 +12,7 @@ import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, 
 import { SEC_CONCEPTS, SEC_TICKERS_URL, secConceptUrl, companyRevenue } from './src/secrev.js'
 import { llamaSummaryUrl, sumDaily } from './src/llama.js'
 import { cleanPortfolio, upsertFeatured } from './src/pfshared.js'
+import { createPaperHost, loadMarket } from './src/paperhost.js'
 import { dailyFunding, mergeDaily, fundingInfo, FUND_DAYS } from './src/pffunding.js'
 import { isAllowedYahoo, yahooUrl, cgChartUrl, parseYahooDaily, parseCgChart, toUsd, FX_PER_USD, needsUsd, planFor, closesFor, wantsCg } from './src/pfsources.js'
 import { coinsOf, coinFile, stalest, buildPerf, HIST_FROM as PFC_FROM } from './src/pfgallery.js'
@@ -257,6 +258,40 @@ function writeAtomic(path, data) {
     throw e
   }
 }
+
+// ── paper accounts on the server (src/paperhost.js) ─────────────────────────────────────
+// So a paper account keeps trading with the app closed. The app syncs its paper keys to
+// POST /paper/sync and holds the lease on the account it is running; the server advances
+// every other store — resting orders, stops, funding, liquidation — with src/paper.js itself.
+// One worker ticks (a lock file, like the trickles above); any worker answers a sync, and the
+// host locks per owner. Prices are fetched only for what some paper account holds, since this
+// box shares Hyperliquid's per-IP budget with the live bots.
+const PAPER_DIR = join(__dirname, 'data', 'paper')
+const paperHost = createPaperHost({ dir: PAPER_DIR, log: (m) => console.warn(m) })
+const PAPER_TICK = 15_000
+const PAPER_LOCK = join(PAPER_DIR, '.ticklock')
+let paperMarket = null, paperBusy = false
+async function paperTickOnce() {
+  if (paperBusy) return
+  try { const st = statSync(PAPER_LOCK); if (Date.now() - st.mtimeMs < 3 * PAPER_TICK && readFileSync(PAPER_LOCK, 'utf8') !== String(process.pid)) return } catch {}
+  paperBusy = true
+  try {
+    writeFileSync(PAPER_LOCK, String(process.pid))
+    const coins = paperHost.dueCoins()
+    if (!coins.size) return
+    const post = async (body) => {
+      const r = await fetch('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000) })
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      return r.json()
+    }
+    paperMarket = await loadMarket(post, coins, paperMarket)
+    const out = paperHost.tick(paperMarket)
+    if (out.events.length) console.log('[paper] ' + out.events.map(e => `${e.owner.slice(0, 6)}/${e.slot}: ${e.events.join('; ')}`).join(' | ').slice(0, 600))
+  } catch (e) {
+    console.warn('[paper] tick failed:', e.message)
+  } finally { paperBusy = false }
+}
+setInterval(() => { paperTickOnce().catch(() => {}) }, PAPER_TICK).unref?.()
 
 // ── /portfolios-data: the featured portfolios on /portfolios (src/pfshared.js) ───────────
 // Public to read; writes need the dev PIN. The PIN is not known here — the strategy server
@@ -963,6 +998,21 @@ createServer((req, res) => {
         send(200, body, true)
       })
       .catch(() => send(502, { pts: null }))
+    return
+  }
+
+  if (url === '/paper/sync') {
+    const send = (code, obj) => res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(obj))
+    if (req.method !== 'POST') { res.writeHead(405).end(); return }
+    ;(async () => {
+      // The first sync of a device carries every paper account it has: a few MB at most.
+      const b = await readJson(req, 9_000_000)
+      if (!b) return send(400, { ok: false, error: 'bad request' })
+      try {
+        const r = paperHost.sync({ secret: b.secret, client: b.client, hold: b.hold ?? null, seen: b.seen ?? {}, push: b.push ?? {} })
+        return send(r.ok ? 200 : 400, r)
+      } catch (e) { return send(503, { ok: false, error: e.message }) }
+    })()
     return
   }
 
