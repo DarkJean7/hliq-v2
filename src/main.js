@@ -10779,6 +10779,10 @@ function _paperRefresh() {
   state.portfolio  = paperPortfolio()
   state.fills      = parseFills(paperFills())
   state.ledger     = paperLedger()   // Transfers tab reads this
+  // Net PnL is equity less what was paid in (webData.cumLedger). A paper account has no
+  // webData2, so this used to be the LAST REAL ACCOUNT's — reported as -$2.7K Net PnL on a
+  // $1,003 paper account. Its own paid-in total, so equity − this is exactly paperPnl().
+  state.webData    = { cumLedger: String(paperDeposited()) }
   state.funding    = parseFunding(paperFundingHistory())   // Net Funding row + PnL
   // liveAccountValue() offsets a portfolio snapshot by the perp delta; the paper
   // portfolio is already exact, so anchor it to itself and the offset is zero.
@@ -11375,6 +11379,8 @@ function _paperExit() {
   // would begin placing real orders the moment the flag cleared.
   stopAllChases()
   setPaper(false)
+  // The paper account's paid-in total must not stand in for the real account's while it loads.
+  state.webData = null
 }
 
 // ─── RESET ────────────────────────────────────────────────────────────────────
