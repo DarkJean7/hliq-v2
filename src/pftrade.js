@@ -18,6 +18,15 @@ import { LIVE_STRATEGIES, liveWeights, liveArgs, HL_MIN_ORDER } from './pflive.j
 
 const $ = (id) => document.getElementById(id)
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`
+/** The name the user gave the account in the app's wallet list (savedWallets), or its short address. */
+function acctName(a) {
+  try {
+    const k = String(a).toLowerCase()
+    const w = (JSON.parse(localStorage.getItem('savedWallets') || '[]') || []).find(x => String(x?.addr).toLowerCase() === k)
+    if (w?.label && String(w.label).trim()) return String(w.label).trim()
+  } catch {}
+  return short(a)
+}
 const usd = (v) => (v == null || !Number.isFinite(v) ? '—' : (Math.abs(v) >= 1000 ? '$' + Math.round(v).toLocaleString('en-US') : '$' + v.toFixed(2)))
 const ls = { get: (k) => { try { return localStorage.getItem(k) } catch { return null } }, set: (k, v) => { try { localStorage.setItem(k, v) } catch {} } }
 
@@ -80,7 +89,7 @@ export function initTrade(get) {
       <div class="pf-sheet-h"><h3 id="pfTradeH">Trade “${esc(p.name)}” live</h3><button class="pf-sheet-x" data-x aria-label="Close">×</button></div>
       ${!accts.length ? `<p class="pf-help">No account on this device has an agent key yet. Open the app, connect your wallet and set one up under <b>Bots</b>; then come back here.</p>
         <a class="pf-btn" href="/app">Open the app</a>` : `
-      <label class="pf-tr-row"><span>Account</span><select id="pfTrAcct">${accts.map(a => `<option value="${a}" ${a === lastAcct ? 'selected' : ''}>${short(a)}</option>`).join('')}</select></label>
+      <label class="pf-tr-row"><span>Account</span><select id="pfTrAcct">${accts.map(a => `<option value="${a}" ${a === lastAcct ? 'selected' : ''} title="${a}">${esc(acctName(a))}${acctName(a) === short(a) ? '' : ' · ' + short(a)}</option>`).join('')}</select></label>
       <div class="pf-tr-row"><span>Strategy</span><div class="pf-chips pf-strats" id="pfTrStrat">${LIVE_STRATEGIES.map(s => `<button data-s="${s}" class="${s === strat ? 'is-on' : ''}">${esc(p.labels[s] ?? s)}</button>`).join('')}</div></div>
       <p class="pf-help" id="pfTrStratNote"></p>
       <label class="pf-tr-row" id="pfTrBuysRow" hidden><span>Buys</span><span class="pf-tr-in"><input id="pfTrBuys" type="number" min="1" max="52" step="1" value="8"> parts</span></label>
@@ -200,7 +209,7 @@ export function initTrade(get) {
       const st = b.st, ret = st?.equity != null && st.budget ? st.equity / st.budget - 1 : null
       const strat = get().labels[st?.strategy] ?? st?.strategy ?? ''
       return `<div class="pf-live-card">
-        <div class="pf-live-top"><b>${esc(st?.name ?? b.id)}</b><small>${esc(strat)} · ${short(b.addr)}${b.paused ? ' · <span class="pf-warn">paused</span>' : ''}</small></div>
+        <div class="pf-live-top"><b>${esc(st?.name ?? b.id)}</b><small>${esc(strat)} · ${esc(acctName(b.addr))}${b.paused ? ' · <span class="pf-warn">paused</span>' : ''}</small></div>
         <div class="pf-live-ret ${ret == null ? '' : ret >= 0 ? 'up' : 'dn'}">${ret == null ? '—' : (ret >= 0 ? '+' : '') + (ret * 100).toFixed(2) + '%'}</div>
         <div class="pf-live-sub">${usd(st?.equity)} of ${usd(st?.budget)} · ${Object.keys(st?.units ?? {}).length} positions · fees ${usd(st?.fees)}</div>
         <div class="pf-live-sub">${esc(st?.reason ?? 'starting…')}</div>

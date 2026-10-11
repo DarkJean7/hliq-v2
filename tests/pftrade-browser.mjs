@@ -86,9 +86,10 @@ async function run(label, opts) {
   ok('Escape closes it', await p.locator('.pf-sheet').count() === 0)
 
   // The app saved a key for this account (seeded after load, as the app would have).
-  await p.evaluate(([a, k]) => localStorage.setItem('hliq_agent_key_' + a, k), [ADDR, AGENT.privateKey])
+  // …and the name it was given there, saved checksummed as the app saves it.
+  await p.evaluate(([a, k]) => { localStorage.setItem('hliq_agent_key_' + a, k); localStorage.setItem('savedWallets', JSON.stringify([{ addr: a.toUpperCase().replace('0X', '0x'), label: 'Main' }])) }, [ADDR, AGENT.privateKey])
   await p.click('#pfTrade')
-  ok('the account with a key is offered', await p.inputValue('#pfTrAcct') === ADDR)
+  ok('the account with a key is offered, by the name it was given in the app', await p.inputValue('#pfTrAcct') === ADDR && /^Main · 0x0000/.test((await p.textContent('#pfTrAcct option')).trim()))
   ok('the strategy is the one tested, and says its settings (day 15)', await p.getAttribute('#pfTrStrat .is-on', 'data-s') === 'monthly' && /day 15/.test(await p.textContent('#pfTrStratNote')))
   ok('spot is named as skipped', /skipped.*DRV/i.test(await p.textContent('.pf-sheet')))
   ok('Start waits for a preview', await p.isDisabled('#pfTrStart'))
@@ -115,6 +116,7 @@ async function run(label, opts) {
   // Running.
   await waitFor(p, 'the running card', () => !document.getElementById('pfLiveSec').hidden && /\+5\.00%/.test(document.getElementById('pfLive').textContent))
   if (process.env.PF_SHOT) await p.locator('#pfLiveSec').screenshot({ path: process.env.PF_SHOT + '-' + label + '-live.png' })
+  ok('the running card names the account', /Rebalance monthly · Main/.test(await p.textContent('#pfLive')))
   ok('the running portfolio shows what it is worth against its budget', /\$210\.00 of \$200\.00/.test(await p.textContent('#pfLive')) && /day 15/.test(await p.textContent('#pfLive')))
   await p.click('#pfLive [data-live="pause"]')
   await waitFor(p, 'paused', () => /paused/.test(document.getElementById('pfLive').textContent))
