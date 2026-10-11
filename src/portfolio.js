@@ -519,8 +519,9 @@ function spanLabel(res) {
 // ── sorting the cards ──
 const SORT_KEY = 'hliq_pf_gallery_sort'
 const SORTS = [['default', 'Newest first'], ['ret-desc', 'Best return'], ['ret-asc', 'Worst return'], ['name', 'Name, A–Z'], ['dd', 'Smallest drawdown'], ['holdings', 'Most holdings']]
-let galSort = String(store.get(SORT_KEY, 'default'))
-if (!SORTS.some(([k]) => k === galSort)) galSort = 'default'
+// Best first unless this device picked another order.
+let galSort = String(store.get(SORT_KEY, 'ret-desc'))
+if (!SORTS.some(([k]) => k === galSort)) galSort = 'ret-desc'
 /** entries: [{ p, ref, res }] in stored order → sorted. A card with no figure yet sorts last, whatever the order. */
 function sortCards(entries) {
   if (galSort === 'default') return entries

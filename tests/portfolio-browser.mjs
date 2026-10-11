@@ -342,7 +342,11 @@ async function run(label, opts) {
   // Sorting.
   const order = () => p.evaluate(() => [...document.querySelectorAll('#pfFeatured [data-load]')].map(c => c.querySelector('.pf-gc-name b').textContent))
   const rets = () => p.evaluate(() => [...document.querySelectorAll('#pfFeatured .pf-gc-ret')].map(c => parseFloat(c.textContent)))
-  ok('newest first by default: as published', (await order()).join() === 'Featured One,Alpha Late')
+  // Best return first by default; newest first is still one of the choices.
+  const r0 = await rets()
+  ok('best return first by default', await p.inputValue('#pfGalSort') === 'ret-desc' && r0.length === 2 && r0[0] >= r0[1], r0)
+  await p.selectOption('#pfGalSort', 'default')
+  ok('newest first: as published', (await order()).join() === 'Featured One,Alpha Late', await order())
   await p.selectOption('#pfGalSort', 'name')
   ok('sort by name', (await order()).join() === 'Alpha Late,Featured One', await order())
   await p.selectOption('#pfGalSort', 'ret-desc')
