@@ -212,7 +212,7 @@ function strategyPlugin() {
           const H = await import('./src/paperhost.js')
           globalThis.__devPaperHost ??= H.createPaperHost({ dir: join(__dirname, 'data', 'paper') })
           const b = await readBody(req)
-          try { const r = globalThis.__devPaperHost.sync({ secret: b.secret, client: b.client, hold: b.hold ?? null, seen: b.seen ?? {}, push: b.push ?? {} }); return sendJson(res, r.ok ? 200 : 400, r) }
+          try { const r = globalThis.__devPaperHost.sync({ secret: b.secret, client: b.client, hold: b.hold ?? null, release: !!b.release, seen: b.seen ?? {}, push: b.push ?? {} }); return sendJson(res, r.ok ? 200 : 400, r) }
           catch (e) { return sendJson(res, 503, { ok: false, error: e.message }) }
         }
 

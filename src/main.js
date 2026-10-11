@@ -222,6 +222,7 @@ import {
   paperMark, paperOrder, paperCancelMany, paperCancel,
   paperAccounts, paperAcctCreate, paperAcctRename, paperAcctDelete, paperAcctName, paperAcctList,
   paperSlotKnown, paperSaveFailed, PAPER_MAX_ACCTS, paperPeek, paperStoreKey, paperReload, setPaperTickGate,
+  paperAcctBot, setPaperReadOnly,
 } from './paper.js'
 import { startPaperSync, hasPaper } from './papersync.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
@@ -10810,19 +10811,23 @@ function _paperRefresh() {
 // app is closed. The app holds the lease on the account it is running and advances only that
 // one; the server advances the rest. Started for anyone who has ever used paper, and on entry.
 let _paperSync = null
+const _BOT_ACCT_MSG = 'A portfolio bot is trading this paper account. Stop it on /portfolios to trade it by hand.'
 function _paperSyncStart() {
   if (_paperSync) return
   try {
     _paperSync = startPaperSync({
-      holdKey: () => (isPaper() ? paperStoreKey() : null),
+      // A portfolio bot's account is the server's to run (src/paperexchange.js): never held here.
+      holdKey: () => (isPaper() && !paperAcctBot(paperSlot()) ? paperStoreKey() : null),
       onAdopt: (keys) => {
         // The server moved an account (fills while the app was closed): read it again.
         if (keys.includes(paperStoreKey())) paperReload()
         if (isPaper()) _paperRefresh()
       },
     })
-    setPaperTickGate(_paperSync.gate)
+    // Never advance a bot's account here, even offline: it is the server's, run by the bot.
+    setPaperTickGate((key) => (paperAcctBot(paperSlot()) ? false : _paperSync.gate(key)))
     window.__paperSync = _paperSync
+    setPaperReadOnly((slot) => (paperAcctBot(slot) ? _BOT_ACCT_MSG : null))
   } catch { /* no server copy: paper runs on this device alone, as it always did */ }
 }
 if (hasPaper()) _paperSyncStart()
@@ -11065,6 +11070,7 @@ window.__paperFundSubmit = function(mode) {
 }
 
 window.__paperResetAcct = async function() {
+  if (paperAcctBot(paperSlot())) return _paperToast(_BOT_ACCT_MSG, 'error')
   if (!await _appConfirm({
     title: 'Reset ' + _paperName() + '?',
     body: 'All simulated positions, orders and history are erased and the balance returns to $' + PAPER_START.toLocaleString() + '.',
@@ -11107,6 +11113,7 @@ window.__paperAcctNew = async function() {
 }
 
 window.__paperAcctDelete = async function(slot) {
+  if (paperAcctBot(slot)) return _paperToast(_BOT_ACCT_MSG, 'error')
   const name = _paperName(slot)
   if (!await _appConfirm({
     title: 'Delete ' + name + '?',

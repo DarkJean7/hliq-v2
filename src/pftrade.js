@@ -11,11 +11,19 @@
  * key cannot be traded from here — the sheet says so and sends you to the app to set one up.
  * ethers is loaded only when a sheet is opened.
  *
+ * PAPER. "Paper" in the account list runs the same bot on a paper account made for it, with
+ * the budget as its balance — no wallet needed, no money at risk (src/paperexchange.js). The
+ * account is the device's paper owner's (src/papersync.js), so it appears in the app's paper
+ * accounts; while the bot runs it, only the bot trades it. Paper bots are controlled with the
+ * owner's secret (/api/paper/*), not an agent key.
+ *
  * Every decision the bot makes is in src/pflive.js; this file only asks and shows.
  */
 import { keyedAddresses, readKey } from './agentkeys.js'
 import { LIVE_STRATEGIES, liveWeights, liveArgs, HL_MIN_ORDER } from './pflive.js'
 import { SIGNAL_STRATEGIES } from './pfsignal.js'
+import { startPaperSync } from './papersync.js'
+import { PAPER_START, paperAcctCreate, paperAcctTag, paperAcctDelete, paperAcctName, paperBind, paperStore, paperSave, paperDeposit, paperWithdraw } from './paper.js'
 
 const $ = (id) => document.getElementById(id)
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`
@@ -57,6 +65,24 @@ async function api(path, addr, body) {
   return { status: r.status, ...j }
 }
 
+// ── paper: the device's paper owner and its bots ──
+const PAPER = 'paper'
+let psync = null
+const paperSync = () => (psync ??= startPaperSync({ holdKey: () => null }))
+const paperSecret = () => ls.get('hliq_paper_owner')
+/** The paper owner's bot address: 0x + the first 40 hex of sha256(secret), as the server makes it. */
+async function paperOwnerAddr() {
+  const sec = paperSecret()
+  if (!/^[0-9a-f]{64}$/.test(sec ?? '')) return null
+  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sec))
+  return '0x' + [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 40)
+}
+async function paperApi(act, body) {
+  const r = await fetch('/api/paper/' + act, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ secret: paperSecret(), ...body }) })
+  const j = (r.headers.get('content-type') ?? '').includes('json') ? await r.json() : { ok: false, error: (await r.text()).slice(0, 200) || 'the bot server did not answer' }
+  return { status: r.status, ...j }
+}
+
 /** A stable id for a portfolio: the featured id, or the name of one of yours. */
 export function portfolioId(p) {
   if (p.featuredId) return ('F-' + p.featuredId).toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 40)
@@ -86,14 +112,14 @@ export function initTrade(get) {
     const bot = p.bots.find(b => SIGNAL_STRATEGIES.includes(b))
     const strat = bot ? 'bot:' + bot : (p.strats.find(s => LIVE_STRATEGIES.includes(s)) ?? 'hold')
     const chip = (v, l) => `<button data-s="${v}" class="${v === strat ? 'is-on' : ''}">${esc(l)}</button>`
-    const lastAcct = ls.get('hliq_pf_trade_acct')
+    const lastAcct = ls.get('hliq_pf_trade_acct') ?? (accts.length ? accts[0] : PAPER)
     sheet = document.createElement('div')
     sheet.className = 'pf-sheet-bg'
     sheet.innerHTML = `<div class="pf-sheet" role="dialog" aria-modal="true" aria-labelledby="pfTradeH">
       <div class="pf-sheet-h"><h3 id="pfTradeH">Trade “${esc(p.name)}” live</h3><button class="pf-sheet-x" data-x aria-label="Close">×</button></div>
-      ${!accts.length ? `<p class="pf-help">No account on this device has an agent key yet. Open the app, connect your wallet and set one up under <b>Bots</b>; then come back here.</p>
-        <a class="pf-btn" href="/app">Open the app</a>` : `
-      <label class="pf-tr-row"><span>Account</span><select id="pfTrAcct">${accts.map(a => `<option value="${a}" ${a === lastAcct ? 'selected' : ''} title="${a}">${esc(acctName(a))}${acctName(a) === short(a) ? '' : ' · ' + short(a)}</option>`).join('')}</select></label>
+      <label class="pf-tr-row"><span>Account</span><select id="pfTrAcct">${accts.map(a => `<option value="${a}" ${a === lastAcct ? 'selected' : ''} title="${a}">${esc(acctName(a))}${acctName(a) === short(a) ? '' : ' · ' + short(a)}</option>`).join('')}<option value="${PAPER}" ${lastAcct === PAPER ? 'selected' : ''}>Paper · a new paper account (simulated money)</option></select></label>
+      ${accts.length ? '' : '<p class="pf-help">To trade with real money, open <a href="/app">the app</a>, connect your wallet and set up an agent key under <b>Bots</b>. Paper needs none.</p>'}
+      <p class="pf-help" id="pfTrPaperNote" hidden>Runs the same bot on a new paper account funded with the budget. It keeps running with this page closed; you can follow its positions in the app under that paper account.</p>
       <div class="pf-tr-row pf-tr-strats" id="pfTrStrat"><span>Strategy</span>
         <div><i class="pf-for">Allocation</i><div class="pf-chips pf-strats">${LIVE_STRATEGIES.map(s => chip(s, p.labels[s] ?? s)).join('')}</div>
         <i class="pf-for">Trading</i><div class="pf-chips pf-strats">${SIGNAL_STRATEGIES.map(b => chip('bot:' + b, p.labels['bot:' + b] ?? b)).join('')}</div></div></div>
@@ -104,18 +130,34 @@ export function initTrade(get) {
       ${skipped.length ? `<p class="pf-warn">Spot holdings are skipped (bots cannot trade spot yet), their weight spread over the rest: ${skipped.map(c => esc(p.nameOf({ coin: c }))).join(', ')}.</p>` : ''}
       ${!Object.keys(weights).length ? '<p class="pf-warn">Nothing here a bot can trade.</p>' : ''}
       <div class="pf-tr-plan" id="pfTrPlan"><button class="pf-btn pf-btn--ghost" id="pfTrPreview">Preview</button></div>
-      <label class="pf-check pf-tr-ack"><input type="checkbox" id="pfTrAck"> I understand this places real orders on Hyperliquid with this account.</label>
-      <div class="pf-tr-go"><button class="pf-btn" id="pfTrStart" disabled>Start</button><span class="pf-help" id="pfTrMsg"></span></div>`}
+      <label class="pf-check pf-tr-ack"><input type="checkbox" id="pfTrAck"> <span id="pfTrAckText"></span></label>
+      <div class="pf-tr-go"><button class="pf-btn" id="pfTrStart" disabled>Start</button><span class="pf-help" id="pfTrMsg"></span></div>
     </div>`
     document.body.appendChild(sheet)
     document.addEventListener('keydown', onKey)
     sheet.addEventListener('click', onClick)
-    sheet.addEventListener('change', e => { if (e.target.id === 'pfTrAcct' || e.target.id === 'pfTrBudget' || e.target.id === 'pfTrBuys') { if (plan) { plan = null; renderPlan() } } if (e.target.id === 'pfTrAck') gate() })
+    sheet.addEventListener('change', e => {
+      if (e.target.id === 'pfTrAcct' || e.target.id === 'pfTrBudget' || e.target.id === 'pfTrBuys') { if (plan) { plan = null; renderPlan() } }
+      if (e.target.id === 'pfTrAcct') acctNote()
+      if (e.target.id === 'pfTrAck') gate()
+    })
     stratNote()
+    acctNote()
     sheet.querySelector('#pfTrPreview, [data-x]')?.focus()
   }
 
   const chosen = () => sheet?.querySelector('#pfTrStrat .is-on')?.dataset.s ?? 'hold'
+  const isPaperAcct = () => sheet?.querySelector('#pfTrAcct')?.value === PAPER
+  // What Start does, said where it is ticked: real orders, or a simulated account.
+  function acctNote() {
+    if (!sheet) return
+    const paper = isPaperAcct()
+    const n = sheet.querySelector('#pfTrPaperNote'); if (n) n.hidden = !paper
+    const a = sheet.querySelector('#pfTrAckText')
+    if (a) a.textContent = paper ? 'I understand this is a paper run: simulated money on a new paper account, at live prices.' : 'I understand this places real orders on Hyperliquid with this account.'
+    const ack = sheet.querySelector('#pfTrAck'); if (ack) ack.checked = false
+    gate()
+  }
   function stratNote() {
     const el = sheet?.querySelector('#pfTrStratNote'); if (!el) return
     const p = get(), s = chosen(), q = p.params
@@ -178,9 +220,22 @@ export function initTrade(get) {
       if (!(budget >= HL_MIN_ORDER)) { plan = { ok: false, error: `The budget must be at least $${HL_MIN_ORDER}.` }; return renderPlan() }
       ls.set('hliq_pf_trade_acct', addr); ls.set('hliq_pf_trade_budget', String(budget))
       const el = sheet.querySelector('#pfTrPlan'); el.innerHTML = '<p class="pf-help">Asking the bot…</p>'
-      try { const r = await api('/api/plan', addr, { type: 'portfolio', agentKey: readKey(localStorage, addr), address: addr, args: args(false) }); plan = r.ok === false || r.status >= 400 ? { ok: false, error: r.error } : r }
-      catch (err) { plan = { ok: false, error: err.message } }
+      try {
+        // Paper: the bot's preview on a paper account (a blank one — the real one is made at Start,
+        // funded with exactly the budget, so there is no "free" to compare against).
+        const r = addr === PAPER
+          ? (paperSync(), await paperApi('plan', { slot: 'preview', args: args(true) }))
+          : await api('/api/plan', addr, { type: 'portfolio', agentKey: readKey(localStorage, addr), address: addr, args: args(false) })
+        plan = r.ok === false || r.status >= 400 ? { ok: false, error: r.error } : (addr === PAPER ? { ...r, free: null, resumes: false, paper: true } : r)
+      } catch (err) { plan = { ok: false, error: err.message } }
       return renderPlan()
+    }
+    if (e.target.closest('#pfTrStart') && plan?.ok && !busy && addr === PAPER) {
+      busy = true; gate(); msg('Making the paper account…')
+      try { await startPaper(); msg('Running on paper.'); setTimeout(() => { close(); refresh() }, 900) }
+      catch (err) { msg(err.message, true) }
+      busy = false; gate()
+      return
     }
     if (e.target.closest('#pfTrStart') && plan?.ok && !busy) {
       busy = true; gate(); msg('Starting…')
@@ -195,19 +250,42 @@ export function initTrade(get) {
     }
   }
 
+  // A paper run: a new paper account named after the portfolio, tagged as the bot's, funded
+  // with the budget; up to the server; then the bot.
+  async function startPaper() {
+    const sync = paperSync()
+    const inst = portfolioId(get())
+    const budget = Number(sheet.querySelector('#pfTrBudget').value)
+    const { slot, error } = paperAcctCreate(('PF · ' + get().name).slice(0, 24))
+    if (!slot) throw new Error(error === 'limit' ? 'This device has the most paper accounts it can hold. Delete one in the app first.' : 'The paper account could not be made (browser storage is full).')
+    const undo = async () => { paperAcctTag(slot, null); paperAcctDelete(slot); await sync.syncNow() }
+    paperAcctTag(slot, inst)
+    paperBind(slot)
+    paperStore()
+    if (budget > PAPER_START) paperDeposit(budget - PAPER_START)
+    else if (budget < PAPER_START) paperWithdraw(PAPER_START - budget)
+    else paperSave()
+    paperBind('main')
+    await sync.syncNow()
+    if (sync.state().online !== true) { await undo(); throw new Error('The server could not be reached; nothing was started.') }
+    const r = await paperApi('start', { slot, instance: inst, args: args(true) })
+    if (!r.ok) { await undo(); throw new Error(r.error ?? 'did not start') }
+  }
+
   // ── running portfolio bots, on every account with a key ──
   let live = []
   async function refresh() {
     const el = $('pfLive'); if (!el) return
     const accts = accounts()
-    if (!accts.length) { live = []; return render() }
     const out = []
-    await Promise.all(accts.map(async a => {
+    const paperAddr = await paperOwnerAddr()
+    await Promise.all([...accts, ...(paperAddr ? [paperAddr] : [])].map(async a => {
       try {
         const s = await (await fetch('/api/status?address=' + a)).json()
         for (const [k, c] of Object.entries(s._configs ?? {})) {
           if (c.type !== 'portfolio') continue
-          out.push({ addr: a, id: c.instance, paused: !!s._paused?.[k], st: s._portfolios?.[c.instance] ?? null, args: c.args })
+          const pi = (c.args ?? []).indexOf('--paper')
+          out.push({ addr: a, id: c.instance, paused: !!s._paused?.[k], st: s._portfolios?.[c.instance] ?? null, args: c.args, paper: a === paperAddr ? (c.args?.[pi + 1] ?? '') : null })
         }
       } catch { /* the server did not answer for this account: it is left out, not shown as stopped */ }
     }))
@@ -221,12 +299,12 @@ export function initTrade(get) {
       const st = b.st, ret = st?.equity != null && st.budget ? st.equity / st.budget - 1 : null
       const strat = get().labels[st?.strategy] ?? st?.strategy ?? ''
       return `<div class="pf-live-card">
-        <div class="pf-live-top"><b>${esc(st?.name ?? b.id)}</b><small>${esc(strat)} · ${esc(acctName(b.addr))}${b.paused ? ' · <span class="pf-warn">paused</span>' : ''}</small></div>
+        <div class="pf-live-top"><b>${b.paper != null ? '<span class="pf-paper-tag">PAPER</span> ' : ''}${esc(st?.name ?? b.id)}</b><small>${esc(strat)} · ${esc(b.paper != null ? (paperAcctName(b.paper) ?? 'paper account') : acctName(b.addr))}${b.paused ? ' · <span class="pf-warn">paused</span>' : ''}</small></div>
         <div class="pf-live-ret ${ret == null ? '' : ret >= 0 ? 'up' : 'dn'}">${ret == null ? '—' : (ret >= 0 ? '+' : '') + (ret * 100).toFixed(2) + '%'}</div>
         <div class="pf-live-sub">${usd(st?.equity)} of ${usd(st?.budget)} · ${Object.keys(st?.units ?? {}).length} positions · fees ${usd(st?.fees)}</div>
         <div class="pf-live-sub">${esc(st?.reason ?? 'starting…')}</div>
-        <div class="pf-live-btns"><button class="pf-btn pf-btn--ghost" data-live="${b.paused ? 'resume' : 'pause'}" data-a="${b.addr}" data-i="${esc(b.id)}">${b.paused ? 'Resume' : 'Pause'}</button>
-          <button class="pf-btn pf-btn--ghost" data-live="stop" data-a="${b.addr}" data-i="${esc(b.id)}">Stop</button></div>
+        <div class="pf-live-btns"><button class="pf-btn pf-btn--ghost" data-live="${b.paused ? 'resume' : 'pause'}" data-a="${b.addr}" data-i="${esc(b.id)}" data-paper="${esc(b.paper ?? '')}">${b.paused ? 'Resume' : 'Pause'}</button>
+          <button class="pf-btn pf-btn--ghost" data-live="stop" data-a="${b.addr}" data-i="${esc(b.id)}" data-paper="${esc(b.paper ?? '')}">Stop</button></div>
       </div>`
     }).join('')
   }
@@ -235,9 +313,14 @@ export function initTrade(get) {
     const act = b.dataset.live
     if (act === 'stop' && b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Stop? Positions stay open'; return }
     b.disabled = true
+    const paperSlot = b.dataset.paper
     try {
-      const r = await api('/api/' + act, b.dataset.a, { type: 'portfolio', address: b.dataset.a, instance: b.dataset.i })
+      const r = paperSlot
+        ? await paperApi(act, { instance: b.dataset.i })
+        : await api('/api/' + act, b.dataset.a, { type: 'portfolio', address: b.dataset.a, instance: b.dataset.i })
       if (!r.ok) throw new Error(r.error ?? 'refused')
+      // A stopped paper bot hands its account back: tradable by hand in the app again.
+      if (paperSlot && act === 'stop') { paperAcctTag(paperSlot, null); paperSync().syncNow() }
     } catch (err) { b.textContent = err.message.slice(0, 40); return }
     refresh()
   })

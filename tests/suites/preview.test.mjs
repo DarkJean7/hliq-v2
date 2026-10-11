@@ -61,7 +61,8 @@ t('and BUYS below, to cover', side(65, 80, true) === 'buy')
 
 console.log('\n── the endpoint ──')
 t('there is one', srv.includes("path === '/api/plan'"))
-t('it runs the REAL strategy, with --plan appended', srv.includes("...(b.args ?? []), '--plan'"))
+// runPlan() (shared with the paper bots' preview) spawns [script, ...args, '--plan'], and the route hands it the request's own arguments.
+t('it runs the REAL strategy, with --plan appended', srv.includes("[script, ...args, '--plan']") && srv.includes("runPlan(b.type, script, [...(b.address ? ['--address', b.address] : []), ...(b.args ?? [])], envKey)"))
 t('an unknown strategy is refused', srv.includes("if (!script) return json(res, 400, { error: 'unknown strategy' })"))
 t('the same key-ownership check as starting a bot', srv.includes("error: 'preview with your own agent key'"))
 t('but NOT behind the paywall — it places nothing',

@@ -50,6 +50,8 @@ export function startPaperSync({ holdKey, onAdopt = () => {}, storage = localSto
   const sent = new Map()
   // null: not answered yet (hold still); true: in touch; false: unreachable (run locally).
   let online = null, leased = null, busy = false, timer = null, stopped = false
+  // What this tab held at its last sync: letting go of it is a release, holding nothing never was.
+  let held = null
 
   const scan = () => {
     const out = {}
@@ -61,13 +63,14 @@ export function startPaperSync({ holdKey, onAdopt = () => {}, storage = localSto
     if (busy || stopped) return
     busy = true
     const hold = release ? null : (holdKey() ?? null)
+    const letGo = !!held && !hold
     try {
       const cur = scan()
       const push = {}
       for (const [k, v] of Object.entries(cur)) if (sent.get(k) !== v) push[k] = v
       for (const k of sent.keys()) if (!(k in cur) && sent.get(k) != null) push[k] = null
       const r = await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: release,
-        body: JSON.stringify({ secret, client, hold, seen, push }) })
+        body: JSON.stringify({ secret, client, hold, release: letGo, seen, push }) })
       const j = await r.json()
       if (!j?.ok) throw new Error(j?.error ?? 'sync refused')
       for (const [k, v] of Object.entries(push)) if (!j.conflicts?.includes(k)) sent.set(k, v)
@@ -82,6 +85,7 @@ export function startPaperSync({ holdKey, onAdopt = () => {}, storage = localSto
       try { storage.setItem(SEEN_KEY, JSON.stringify(seen)) } catch {}
       online = true
       leased = j.lease ?? null
+      held = hold
       if (adopted.length) { try { onAdopt(adopted) } catch {} }
     } catch {
       online = false

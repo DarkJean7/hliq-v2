@@ -7,6 +7,10 @@
 // Run:  npm run test:browser        (expects a dev server; pass --port=NNNN)
 import { chromium } from 'playwright'
 import { Wallet } from 'ethers'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { createPaperHost, ownerOf } from '../src/paperhost.js'
 
 const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
 const HL_HOST = /^https?:\/\/[a-z0-9.-]*hyperliquid[a-z0-9.-]*\.xyz\//i
@@ -51,8 +55,11 @@ async function run(label, opts) {
   })
   // The bot server.
   const sent = []
-  let running = false, paused = false
-  await ctx.route(/\/api\/(auth|plan|start|stop|pause|resume|status)/, async (route) => {
+  let running = false, paused = false, paperRun = null
+  // The paper server: src/paperhost.js itself behind /paper/sync.
+  const host = createPaperHost({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'pftrade-paper-')) })
+  await ctx.route('**/paper/sync', (route) => { const r = host.sync(JSON.parse(route.request().postData() || '{}')); return route.fulfill({ status: 200, contentType: 'application/json', json: r }) })
+  await ctx.route(/\/api\/(auth|plan|start|stop|pause|resume|status|paper)/, async (route) => {
     const u = new URL(route.request().url()), path = u.pathname
     let b = {}
     try { b = JSON.parse(route.request().postData() || '{}') } catch {}
@@ -62,10 +69,19 @@ async function run(label, opts) {
     if (path === '/api/auth/login') return j({ token: 'tok-' + b.address, exp: Date.now() + 3600e3 })
     const bot = (b.args ?? []).includes('bot:rsi')
     if (path === '/api/plan') return j({ ok: true, rows: [{ coin: 'BTC', w: 0.625, lev: 2, maxLev: 40, isolated: false, px: 100, usd: 250, ...(bot ? { now: { side: 'long', since: Date.UTC(2026, 9, 10, 8) } } : {}) }, { coin: 'ETH', w: -0.375, lev: 2, maxLev: 25, isolated: false, px: 50, usd: 150, ...(bot ? { now: null } : {}) }], skipped: ['@700'], tooSmall: [], missing: [], margin: 200, free: 1000, resumes: false, held: null })
+    if (path === '/api/paper/plan') return j({ ok: true, rows: [{ coin: 'BTC', w: 0.625, lev: 2, maxLev: 40, isolated: false, px: 100, usd: 625 }, { coin: 'ETH', w: -0.375, lev: 2, maxLev: 25, isolated: false, px: 50, usd: 375 }], skipped: ['@700'], tooSmall: [], missing: [], margin: 500, free: 1000, resumes: true, held: { BTC: 1 } })
+    if (path === '/api/paper/start') { paperRun = { slot: b.slot, instance: b.instance, owner: '0x' + ownerOf(b.secret) }; return j({ ok: true }) }
+    if (path === '/api/paper/stop') { paperRun = null; return j({ ok: true }) }
     if (path === '/api/start') { running = true; return j({ ok: true }) }
     if (path === '/api/stop') { running = false; return j({ ok: true }) }
     if (path === '/api/pause') { paused = true; return j({ ok: true }) }
     if (path === '/api/resume') { paused = false; return j({ ok: true }) }
+    if (path === '/api/status' && paperRun && u.searchParams.get('address') === paperRun.owner) {
+      const k = 'portfolio:' + paperRun.instance
+      return j({ _instances: { [k]: true }, _paused: {}, _configs: { [k]: { type: 'portfolio', instance: paperRun.instance, args: ['--strategy', 'bot:rsi', '--paper', paperRun.slot] } },
+        _portfolios: { [paperRun.instance]: { name: 'Live basket', strategy: 'bot:rsi', budget: 500, equity: 490, units: {}, fees: 0.4, reason: 'waiting for the next entry' } } })
+    }
+    if (path === '/api/status' && u.searchParams.get('address') !== ADDR) return j({ _configs: {} })
     if (path === '/api/status') {
       const inst = sent.find(s => s.path === '/api/start')?.body.instance ?? ''
       return j(running ? { portfolio: true, _instances: { ['portfolio:' + inst]: true }, _paused: paused ? { ['portfolio:' + inst]: true } : {},
@@ -82,7 +98,7 @@ async function run(label, opts) {
 
   // No agent key on this device: the sheet says where to get one, and offers nothing to start.
   await p.click('#pfTrade')
-  ok('without an agent key the sheet sends you to the app to set one up', await p.locator('.pf-sheet a[href="/app"]').count() === 1 && await p.locator('#pfTrStart').count() === 0)
+  ok('without an agent key the sheet offers Paper, and says where to set up a key for real money', await p.inputValue('#pfTrAcct') === 'paper' && await p.locator('#pfTrAcct option').count() === 1 && await p.locator('.pf-sheet a[href="/app"]').count() === 1)
   await p.keyboard.press('Escape')
   ok('Escape closes it', await p.locator('.pf-sheet').count() === 0)
 
@@ -140,6 +156,34 @@ async function run(label, opts) {
   const st2 = sent.filter(x => x.path === '/api/start').pop()
   const a2 = st2?.body.args ?? [], g2 = (k) => a2[a2.indexOf(k) + 1]
   ok('Start sends the trading strategy, its candle and its own settings', g2('--strategy') === 'bot:rsi' && g2('--tf') === '4h' && JSON.parse(Buffer.from(g2('--sparams') ?? '', 'base64').toString() || '{}').rsiLen === 9, a2)
+  // Paper: no wallet needed. A new paper account funded with the budget, run by the same bot.
+  await p.click('#pfTrade')
+  await p.selectOption('#pfTrAcct', 'paper')
+  ok('Paper says what it is where it is acknowledged: simulated money', /simulated money/.test(await p.textContent('#pfTrAckText')) && await p.isVisible('#pfTrPaperNote'))
+  await p.fill('#pfTrBudget', '500')
+  await p.click('#pfTrPreview')
+  await waitFor(p, 'the paper preview', () => !!document.querySelector('.pf-tr-tbl'))
+  const pplan = sent.find(x => x.path === '/api/paper/plan')
+  ok('the preview is the paper bot\'s, asked as the paper owner: no agent key, no sign-in', pplan && /^[0-9a-f]{64}$/.test(pplan.body.secret) && !pplan.body.agentKey && !pplan.auth, pplan?.body)
+  ok('a paper run never offers to carry on old positions, nor compares against a free balance', await p.locator('#pfTrCarry').count() === 0 && !/Free on this account/.test(await p.textContent('#pfTrPlan')))
+  await p.check('#pfTrAck')
+  await p.click('#pfTrStart')
+  await waitFor(p, 'the paper start', () => !document.querySelector('.pf-sheet'), undefined, 15000)
+  const pst = sent.find(x => x.path === '/api/paper/start')
+  const accts = await p.evaluate(() => JSON.parse(localStorage.getItem('hliq_paper_accts') || '[]'))
+  const mine = accts.find(a => a.slot === pst?.body.slot)
+  ok('Start makes a paper account named after the portfolio, tagged as the bot\'s', !!mine && /^PF · Live basket/.test(mine.name) && mine.bot === pst.body.instance, [accts, pst?.body])
+  const rec = host.read(ownerOf(pst.body.secret))
+  ok('funded with the budget, and on the server before the bot is started', JSON.parse(rec.kv['hliq_paper_s_' + pst.body.slot].v).balance === 500 && rec.kv.hliq_paper_accts.v.includes(pst.body.slot))
+  const pa = pst.body.args
+  ok('the bot starts fresh on it, with the strategy and budget shown', pa.includes('--fresh') && pa[pa.indexOf('--strategy') + 1] === 'bot:rsi' && pa[pa.indexOf('--budget') + 1] === '500' && !pa.includes('--paper'), pa)
+  await waitFor(p, 'the paper card', () => /PAPER/.test(document.getElementById('pfLive')?.textContent ?? ''))
+  ok('the running paper portfolio is listed, tagged PAPER, under its paper account', /PAPER/.test(await p.textContent('#pfLive')) && /PF · Live basket/.test(await p.textContent('#pfLive')))
+  const stopBtn = '#pfLive [data-live="stop"]:not([data-paper=""])'
+  await p.click(stopBtn)
+  await p.click(stopBtn)
+  await waitFor(p, 'the paper stop', () => !/PAPER/.test(document.getElementById('pfLive')?.textContent ?? ''))
+  ok('stopping it goes to /api/paper/stop, and hands the account back (untagged)', sent.some(x => x.path === '/api/paper/stop' && x.body.instance === pst.body.instance) && await p.evaluate((sl) => !JSON.parse(localStorage.getItem('hliq_paper_accts')).find(a => a.slot === sl).bot, pst.body.slot))
   ok('no page errors', !errors.length, errors)
   await browser.close()
 }

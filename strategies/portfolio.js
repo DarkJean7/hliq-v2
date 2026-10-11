@@ -31,6 +31,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { isPaused, onPause, onResume } from './_pause.js'
 import { botCloid } from '../src/cloid.js'
+import { installPaperExchange } from '../src/paperexchange.js'
 import { LIVE_STRATEGIES, LIVE_DEFAULTS, HL_MIN_ORDER, liveWeights, liveLeverage, freshLedger, equityOf, smaOf, decide, ordersFor, applyFill, reconcile, dayOf } from '../src/pflive.js'
 import { SIGNAL_STRATEGIES, TF_MS, WARMUP, closedCandles, simOpenTrade, decideHolding, openSize, freshSubs, subFill } from '../src/pfsignal.js'
 
@@ -49,6 +50,7 @@ const { values: args } = parseArgs({
     interval: { type: 'string' },                        // minutes between checks (5 allocation, 1 trading)
     slippage: { type: 'string', default: '1' },          // % the IOC limit may cross the mid
     fee: { type: 'string', default: '0.045' },           // % taker fee, for the ledger
+    paper: { type: 'string' },                           // a paper account (its slot): trade it instead of Hyperliquid
     fresh: { type: 'boolean', default: false },          // start a new ledger even if one is saved…
     run: { type: 'string', default: '' },                // …unless it is this run's own (a restart or resume)
     resume: { type: 'boolean', default: false },
@@ -68,8 +70,18 @@ function fail(msg) {
   process.exit(1)
 }
 
-const walletKey = process.env.AGENT_KEY || args.wallet
+let walletKey = process.env.AGENT_KEY || args.wallet
 if (!walletKey) fail('agent key not provided')
+// PAPER: the same bot, trading a paper account (src/paperexchange.js). What arrives in AGENT_KEY
+// is then the paper owner's secret, never a wallet key; the SDK signs with a throwaway one,
+// since nothing checks a paper order's signature.
+const PAPER = args.paper ? String(args.paper) : null
+if (PAPER) {
+  if (!/^[a-z0-9]{1,40}$/.test(PAPER)) fail('bad paper account')
+  if (!/^[0-9a-f]{64}$/.test(walletKey)) fail('paper runs need the paper owner')
+  installPaperExchange({ secret: walletKey, slot: PAPER, dir: process.env.PAPER_DIR || path.join(process.cwd(), 'data', 'paper'), log: (m) => log('PAPER', m) })
+  walletKey = ethers.Wallet.createRandom().privateKey
+}
 const ID = String(args.id ?? '').toUpperCase()
 if (!/^[A-Z0-9_-]{1,40}$/.test(ID)) fail('a portfolio id is required')
 const NAME = String(args.name ?? ID).slice(0, 40)

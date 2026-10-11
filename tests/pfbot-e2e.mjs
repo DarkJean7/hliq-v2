@@ -22,13 +22,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Wallet } from 'ethers'
+import { createPaperHost, ownerOf } from '../src/paperhost.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 let pass = 0, fail = 0
 const ok = (n, c, x = '') => { c ? pass++ : fail++; console.log('  ' + (c ? 'PASS ' : 'FAIL ') + n + (c ? '' : ' → ' + JSON.stringify(x).slice(0, 600))) }
 const H = 3_600_000
 
-async function runBot({ args, prices, hours, startOffsetH = 0.5, dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pfbot-')), T0 = Math.floor(Date.now() / H) * H - 400 * H }) {
+async function runBot({ args, prices, hours, startOffsetH = 0.5, dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pfbot-')), T0 = Math.floor(Date.now() / H) * H - 400 * H, env = {} }) {
   const log = path.join(dir, 'journal.jsonl')
   // T0: history behind the start, for the warm-up. A restart passes the same T0 and dir.
   try { fs.rmSync(path.join(dir, 'journal.jsonl')) } catch {}
@@ -37,7 +38,7 @@ async function runBot({ args, prices, hours, startOffsetH = 0.5, dir = fs.mkdtem
   const shifted = Object.fromEntries(Object.entries(prices).map(([c, st]) => [c, st.map(([h, p]) => [h + hist, p])]))
   const speed = 900
   const child = spawn(process.execPath, ['--import', 'file://' + path.join(root, 'tests', 'fakehl.mjs').replace(/\\/g, '/'), path.join(root, 'strategies', 'portfolio.js'), ...args], {
-    cwd: dir, env: { ...process.env, AGENT_KEY: Wallet.createRandom().privateKey, HLIQ_BOT: 'portfolio', FAKE_T0: String(T0), FAKE_START: String(START), FAKE_SPEED: String(speed), FAKE_PRICES: JSON.stringify(shifted), FAKE_LOG: log, FAKE_STATE: path.join(dir, 'exchange.json') },
+    cwd: dir, env: { ...process.env, AGENT_KEY: Wallet.createRandom().privateKey, HLIQ_BOT: 'portfolio', FAKE_T0: String(T0), FAKE_START: String(START), FAKE_SPEED: String(speed), FAKE_PRICES: JSON.stringify(shifted), FAKE_LOG: log, FAKE_STATE: path.join(dir, 'exchange.json'), ...env },
   })
   let out = ''
   child.stdout.on('data', d => { out += d }); child.stderr.on('data', d => { out += d })
@@ -107,6 +108,36 @@ console.log('\n-- a restart (deploy, reboot) never buys twice --')
   const e = await runBot({ args: [...targs, '--resume'], prices: tprices, hours: 2, dir: d.dir, T0: d.T0, startOffsetH: 3 })
   ok('the trading bot opened once before the restart', d.journal.filter(x => x.ev === 'ioc').length === 1, d.journal)
   ok('and after it holds the same trade: no new order, no close', e.journal.filter(x => x.ev === 'ioc' || x.ev === 'trigger').length === 0 && e.state?.subs?.BTC?.trade?.entry === 106, [e.journal, e.state?.subs?.BTC])
+}
+
+console.log('\n-- paper: the same bot, on a paper account (src/paperexchange.js) --')
+{
+  // An owner with a $1,000 paper account made for the bot, as the page makes it.
+  const pdir = fs.mkdtempSync(path.join(os.tmpdir(), 'pfpaper-'))
+  const host = createPaperHost({ dir: pdir })
+  const secret = 'a1'.repeat(32)
+  host.sync({ secret, client: 'testclient', push: { hliq_paper_s_bot1: JSON.stringify({ balance: 1000, positions: [], orders: [], fills: [], equity: [], deposited: 1000, ledger: [], nextOid: 1000, created: 0 }) } })
+  const paperStore = () => JSON.parse(host.read(ownerOf(secret)).kv.hliq_paper_s_bot1.v)
+  const sp = Buffer.from(JSON.stringify({ breakoutLookback: 20, takeProfitPct: 10, stopLossPct: 3 })).toString('base64')
+  const pargs = ['--address', '0x' + ownerOf(secret), '--id', 'PAPER1', '--items', items, '--budget', '1000', '--leverage', '2', '--run', 'p1', '--strategy', 'bot:breakout', '--tf', '1h', '--sparams', sp, '--paper', 'bot1']
+  const r = await runBot({ args: pargs, prices: { BTC: [[0, 100], [1, 106]], ETH: [[0, 50]] }, hours: 2.5, env: { AGENT_KEY: secret, PAPER_DIR: pdir } })
+  const st = paperStore()
+  if (process.env.E2E_DEBUG) console.log(r.out)
+  ok('NOTHING reaches the exchange: no order, cancel or leverage call arrived there', !r.journal.some(e => ['ioc', 'trigger', 'cancel', 'leverage', 'ioc-miss'].includes(e.ev)), r.journal)
+  ok('the breakout is bought in the paper account instead: 11.32 BTC at 106 plus paper slippage', Math.abs((st.positions[0]?.szi ?? 0) - 1200 / 106) < 0.01 && Math.abs(st.positions[0].entryPx - 106 * 1.0003) < 0.01, st.positions)
+  ok('paper charges the fee a person would pay (taker, 0.045%)', Math.abs(Number(st.fills[0]?.fee) - st.positions[0].szi * st.positions[0].entryPx * 0.00045) < 0.01, st.fills[0])
+  const trig = st.orders.filter(o => o.isTrigger)
+  ok('its target and stop rest in the paper account, reduce-only', trig.length === 2 && trig.every(o => o.reduceOnly && !o.isBuy) && trig.some(o => o.tpsl === 'tp' && Math.abs(o.triggerPx - 116.6 * 1.0003) < 0.1), trig)
+  ok('the bot holds the trade in its ledger, sized as live would be', Math.abs((r.state?.subs?.BTC?.trade?.sz ?? 0) - st.positions[0].szi) < 1e-9, r.state?.subs?.BTC)
+  ok('no errors', !/\[ERROR/.test(r.out), r.out.split('\n').filter(l => /ERROR/.test(l)))
+  // The server's paper tick fills the target with the app closed; the bot, resumed, books it.
+  host.tick({ marks: { BTC: '118' }, assets: { BTC: { szDecimals: 4, maxLeverage: 20 } }, funding: {} })
+  ok('the server\'s paper tick fills the target', !paperStore().positions.length && paperStore().fills[0]?.dir === 'Close Long')
+  const r2 = await runBot({ args: [...pargs, '--resume'], prices: { BTC: [[0, 100], [1, 106], [2.6, 118]], ETH: [[0, 50]] }, hours: 1.5, dir: r.dir, T0: r.T0, startOffsetH: 3, env: { AGENT_KEY: secret, PAPER_DIR: pdir } })
+  const sub = r2.state?.subs?.BTC
+  ok('the bot sees it closed and books the paper fill price, not a guess', sub && !(sub.trade?.time === r.state.subs.BTC.trade.time) && /closed on the exchange/.test(r2.out), [sub, r2.out.split('\n').filter(l => /CLOSE|ERROR/.test(l))])
+  ok('still nothing reached the exchange', !r2.journal.some(e => ['ioc', 'trigger', 'cancel', 'leverage'].includes(e.ev)))
+  fs.rmSync(pdir, { recursive: true, force: true })
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

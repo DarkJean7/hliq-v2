@@ -56,7 +56,8 @@ console.log(String.fromCharCode(10) + '-- the type reaches the bot, and the id r
 // Nothing in a build or a lint catches that, which is why it is asserted here.
 t('the runner spawn names the strategy from its parameter',
   srv.includes('HLIQ_BOT: type }'))
-t('the preview spawn names it from the request body', srv.includes('HLIQ_BOT: b.type'))
+// The preview spawn is runPlan(type, …), named by its parameter; the route passes the body's type.
+t('the preview spawn names it from the request body', srv.includes('HLIQ_BOT: type }') && srv.includes('runPlan(b.type, script'))
 t('and neither site uses a bare `type` where the body is the source',
   !/path === '\/api\/plan'[\s\S]{0,3000}HLIQ_BOT: type/.test(srv))
 t('both spawns pass it', (srv.match(/HLIQ_BOT:/g) || []).length === 2)

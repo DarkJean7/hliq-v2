@@ -185,6 +185,25 @@ export function paperAcctDelete(slot) {
   return paperAcctSave(list.filter(a => a.slot !== slot))
 }
 
+/**
+ * A paper account a portfolio bot is running (/portfolios → Trade live → Paper): tagged with
+ * the bot's id in the account list. While tagged, only the bot trades it — the app shows it
+ * and refuses manual orders, so a person and a bot never fight over one book. Untagged when
+ * the bot is stopped. → the tag, or null.
+ */
+export function paperAcctBot(slot) { return paperAcctList().find(a => a.slot === slot)?.bot ?? null }
+export function paperAcctTag(slot, bot) {
+  const list = paperAcctList()
+  const row = list.find(a => a.slot === slot)
+  if (!row) return false
+  if (bot) row.bot = String(bot); else delete row.bot
+  return paperAcctSave(list)
+}
+// The app's refusal for a bot's account; null (no refusal) on the server and in the bot.
+let _readOnly = null
+export function setPaperReadOnly(fn) { _readOnly = typeof fn === 'function' ? fn : null }
+const _botLock = () => (_readOnly ? _readOnly(_slot) : null)
+
 /** Every selectable paper account, in display order. */
 export function paperAccounts() {
   return [
@@ -428,6 +447,7 @@ export function paperPnl() { return paperEquity() - paperDeposited() }
 
 /** Add paper money. Appears in Transfers as a deposit and raises the cost basis. */
 export function paperDeposit(usd) {
+  if (_botLock()) return { ok: false, error: _botLock() }
   const amt = parseFloat(usd)
   if (!Number.isFinite(amt) || amt <= 0) return { ok: false, error: 'Enter an amount' }
   if (amt > 1e9) return { ok: false, error: 'That is more paper money than the simulation allows' }
@@ -446,6 +466,7 @@ export function paperDeposit(usd) {
 
 /** Remove paper money. Capped at free collateral so it can't strand open positions. */
 export function paperWithdraw(usd) {
+  if (_botLock()) return { ok: false, error: _botLock() }
   const amt  = parseFloat(usd)
   if (!Number.isFinite(amt) || amt <= 0) return { ok: false, error: 'Enter an amount' }
   const free = paperWithdrawable()
@@ -776,6 +797,8 @@ export function paperSpotValue() {
  * return value must be HL-shaped too — parseOrderResult reads it unchanged.
  */
 export function paperOrder(params, coin, meta = {}) {
+  const lock = _botLock()
+  if (lock) return { status: 'ok', response: { type: 'order', data: { statuses: [{ error: lock }] } } }
   const s  = paperStore()
   const spotLike = !!(meta.isSpot || meta.isOutcome)
   const o  = params?.orders?.[0] ?? {}
@@ -853,6 +876,7 @@ export function paperOrder(params, coin, meta = {}) {
 // the fill uses what the user actually picked.
 const _pendingLev = {}
 export function paperSetLeverage(coin, leverage) {
+  if (_botLock()) return { status: 'err', response: _botLock() }
   _pendingLev[coin] = Math.max(1, parseInt(leverage) || 1)
   const p = posOf(paperStore(), coin)
   if (p) {
@@ -866,6 +890,7 @@ export function paperSetLeverage(coin, leverage) {
 }
 
 export function paperCancel(oid) {
+  if (_botLock()) return { status: 'ok', response: { type: 'cancel', data: { statuses: ['error: ' + _botLock()] } } }
   const s = paperStore()
   const i = s.orders.findIndex(o => o.oid === parseInt(oid))
   if (i < 0) return { status: 'ok', response: { type: 'cancel', data: { statuses: ['error: order not found'] } } }
@@ -881,6 +906,7 @@ export function paperCancelMany(list) {
 
 /** Isolated-margin add/remove. Moves cash between free collateral and the position. */
 export function paperAdjustMargin(coin, usd, isAdd) {
+  if (_botLock()) return { ok: false, error: _botLock() }
   const s = paperStore()
   const p = posOf(s, coin)
   if (!p) return { ok: false, error: 'No position' }

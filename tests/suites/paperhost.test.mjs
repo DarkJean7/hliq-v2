@@ -53,6 +53,9 @@ console.log(nl + '-- the server advances what the app is not running --')
   t('it prices only what is held or ordered', [...host.dueCoins()].join() === 'BTC')
   // The app is running the main account: it holds that lease.
   host.sync({ secret: S2, client: CLIENT, hold: 'hliq_paper_v2' })
+  // Another tab of the same device (/portfolios) syncs holding nothing: that is not a release.
+  host.sync({ secret: S2, client: CLIENT })
+  t('a sync holding nothing does NOT release the app\'s lease (only an explicit release does)', host.read(H.ownerOf(S2)).lease?.key === 'hliq_paper_v2')
   const tk = host.tick(market)
   const rec = host.read(H.ownerOf(S2))
   const main = JSON.parse(rec.kv.hliq_paper_v2.v), alt = JSON.parse(rec.kv.hliq_paper_s_alt1.v)
@@ -94,6 +97,17 @@ console.log(nl + '-- the app\'s side: the tick gate --')
   P.setPaperTickGate(() => true)
   t('with it, it does, exactly as before', P.paperTick().length === 1 && P.paperStore().positions[0]?.szi === 1)
   P.setPaperTickGate(null)
+  // A portfolio bot's account: the app refuses manual trading on it, with the reason.
+  mem.hliq_paper_accts = JSON.stringify([{ slot: 'bot1', name: 'PF · X', createdAt: 1 }])
+  t('an account is tagged as a bot\'s, and untagged', P.paperAcctTag('bot1', 'L-ABC') && P.paperAcctBot('bot1') === 'L-ABC' && P.paperAcctTag('bot1', null) && P.paperAcctBot('bot1') === null)
+  P.paperAcctTag('bot1', 'L-ABC')
+  P.setPaperReadOnly((slot) => (P.paperAcctBot(slot) ? 'run by a bot' : null))
+  P.paperBind('bot1')
+  const refused = P.paperOrder({ orders: [{ b: true, p: '100', s: '1', r: false, t: { limit: { tif: 'Ioc' } } }] }, 'BTC')
+  t('manual orders on it are refused, saying why', refused.response.data.statuses[0].error === 'run by a bot' && !P.paperDeposit(5).ok && !P.paperAdjustMargin('BTC', 1, true).ok)
+  P.paperBind('main')
+  t('other accounts trade as before', !P.paperOrder({ orders: [{ b: true, p: '100', s: '0.1', r: false, t: { limit: { tif: 'Ioc' } } }] }, 'BTC').response.data.statuses[0].error)
+  P.setPaperReadOnly(null)
   t('the store key for an account', P.paperStoreKey('main') === 'hliq_paper_v2' && P.paperStoreKey('abc') === 'hliq_paper_s_abc')
 }
 

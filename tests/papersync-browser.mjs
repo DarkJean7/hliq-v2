@@ -118,6 +118,15 @@ await until('release', () => rec()?.lease == null)
 ok('hiding the app hands its account back to the server at once', rec()?.lease == null)
 await p.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' }) })
 
+console.log('\n-- a portfolio bot\'s paper account --')
+// /portfolios tags an account it made for a bot. Opened in the app, it is shown but never held.
+await p.evaluate(() => { const l = JSON.parse(localStorage.getItem('hliq_paper_accts')); l[0].bot = 'L-TEST'; localStorage.setItem('hliq_paper_accts', JSON.stringify(l)) })
+await until('the tag up', () => rec()?.kv?.hliq_paper_accts?.v?.includes('L-TEST'))
+await p.evaluate(() => window.__goPaper('alt1'))
+await p.waitForTimeout(7000)
+ok('the app does not take the lease on a bot\'s account: the server keeps running it', rec()?.lease?.key !== 'hliq_paper_s_alt1' && await p.evaluate(() => window.__paperSync.gate('hliq_paper_s_alt1')) === false)
+await p.evaluate(() => window.__goPaper('main'))
+
 console.log('\n-- the server cannot be reached --')
 down = true
 await waitFor(p, 'offline', () => window.__paperSync.state().online === false, undefined, 20000)

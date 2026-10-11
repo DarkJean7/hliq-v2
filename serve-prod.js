@@ -1009,7 +1009,7 @@ createServer((req, res) => {
       const b = await readJson(req, 9_000_000)
       if (!b) return send(400, { ok: false, error: 'bad request' })
       try {
-        const r = paperHost.sync({ secret: b.secret, client: b.client, hold: b.hold ?? null, seen: b.seen ?? {}, push: b.push ?? {} })
+        const r = paperHost.sync({ secret: b.secret, client: b.client, hold: b.hold ?? null, release: !!b.release, seen: b.seen ?? {}, push: b.push ?? {} })
         return send(r.ok ? 200 : 400, r)
       } catch (e) { return send(503, { ok: false, error: e.message }) }
     })()

@@ -361,3 +361,4 @@
 .pf-tr-strats { align-items: flex-start; }
 .pf-tr-strats > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
 .pf-tr-strats .pf-chips { flex-wrap: wrap; }
+.pf-paper-tag { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 2px 6px; border-radius: 5px; vertical-align: 2px; color: #04160e; background: var(--cyan); }

@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, appendFileSync, readFileSync, readdirSync, write
 import { join, dirname }                                      from 'node:path'
 import { fileURLToPath }                                      from 'node:url'
 import { homedir }                                            from 'node:os'
-import { randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual } from 'node:crypto'
+import { randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual, createHash } from 'node:crypto'
 import { ethers }                                             from 'ethers'
 import { trackRecord, openLossOf, holdsStep, emptyHolds }     from './src/trackrecord.js'
 import { spotPxFrom, seedBook, SEED_MAX_MS }                            from './src/comboseed.js'
@@ -302,6 +302,33 @@ function handleLine(type, addr, line, inst = '') {
 }
 
 // ─── PROCESS MANAGEMENT ───────────────────────────────────────────────────────
+// Paper portfolio bots (/api/paper/*): how many one owner, and the box, may run at once.
+const PAPER_BOTS_PER_OWNER = 3
+const PAPER_BOTS_MAX = 40
+
+/** A strategy run with --plan: what it WOULD do, from its own arithmetic. → its __PLAN__ answer. */
+function runPlan(type, script, args, envKey) {
+return new Promise((resolve) => {
+    const proc = spawn('node', [script, ...args, '--plan'], { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey, HLIQ_BOT: type } })
+    let out = '', err = ''
+    // A preview is something a person is waiting on, so it gets a short leash — and the
+    // process is killed rather than left running if it overruns.
+    const t = setTimeout(() => { try { proc.kill('SIGKILL') } catch (_) {} resolve({ ok: false, error: 'preview timed out' }) }, 30_000)
+    proc.stdout.on('data', c => { out += c.toString() })
+    proc.stderr.on('data', c => { err += c.toString() })
+    proc.on('close', () => {
+      clearTimeout(t)
+      const line = out.split('\n').find(l => l.startsWith('__PLAN__'))
+      if (line) { try { return resolve(JSON.parse(line.slice(8))) } catch (_) {} }
+      // The bot refuses some configs outright (capital too low, bad range). That refusal
+      // IS the preview's answer, so surface its own words rather than a generic failure.
+      const said = (out + err).split('\n').filter(l => /\[ERROR|^ERROR/.test(l)).pop()
+      resolve({ ok: false, error: (said || 'could not build a preview').replace(/^\[[^\]]+\]\s*\[[^\]]+\]\s*/, '').slice(0, 300) })
+    })
+    proc.on('error', e => { clearTimeout(t); resolve({ ok: false, error: e.message }) })
+  })
+}
+
 function startStrategy(type, extraArgs = [], agentKey = '', address = '', instance = '', resume = false) {
   const key = procKey(type, address, instance)
   if (procs[key])    return { ok: false, error: `already running${instance ? ' on ' + instance : ''}` }
@@ -2021,27 +2048,48 @@ const server = createServer(async (req, res) => {
     const envKey = b.agentKey || process.env.WALLET_KEY
     if (!envKey) return json(res, 400, { error: 'Agent key not provided' })
 
-    const argv = [script, ...(b.address ? ['--address', b.address] : []), ...(b.args ?? []), '--plan']
-    const plan = await new Promise((resolve) => {
-      const proc = spawn('node', argv, { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey, HLIQ_BOT: b.type } })
-      let out = '', err = ''
-      // A preview is something a person is waiting on, so it gets a short leash — and the
-      // process is killed rather than left running if it overruns.
-      const t = setTimeout(() => { try { proc.kill('SIGKILL') } catch (_) {} resolve({ ok: false, error: 'preview timed out' }) }, 30_000)
-      proc.stdout.on('data', c => { out += c.toString() })
-      proc.stderr.on('data', c => { err += c.toString() })
-      proc.on('close', () => {
-        clearTimeout(t)
-        const line = out.split('\n').find(l => l.startsWith('__PLAN__'))
-        if (line) { try { return resolve(JSON.parse(line.slice(8))) } catch (_) {} }
-        // The bot refuses some configs outright (capital too low, bad range). That refusal
-        // IS the preview's answer, so surface its own words rather than a generic failure.
-        const said = (out + err).split('\n').filter(l => /\[ERROR|^ERROR/.test(l)).pop()
-        resolve({ ok: false, error: (said || 'could not build a preview').replace(/^\[[^\]]+\]\s*\[[^\]]+\]\s*/, '').slice(0, 300) })
-      })
-      proc.on('error', e => { clearTimeout(t); resolve({ ok: false, error: e.message }) })
-    })
+    const plan = await runPlan(b.type, script, [...(b.address ? ['--address', b.address] : []), ...(b.args ?? [])], envKey)
     return json(res, 200, plan)
+  }
+
+  // ── paper portfolio bots ──────────────────────────────────────────────────
+  // strategies/portfolio.js --paper <account>: the live bot, trading one of the owner's paper
+  // accounts (src/paperexchange.js) instead of Hyperliquid. Paper users may have no wallet, so
+  // these are authorised by the paper OWNER's secret (src/papersync.js), whose hash is the
+  // owner; the bot's address is 0x + that hash. The secret travels as the bot's AGENT_KEY —
+  // persisted encrypted like any key, never in argv or /api/status — and the bot signs with a
+  // throwaway key. No subscription: nothing here can touch money. Capped per owner and in
+  // total, since each is a process on the box that runs the live bots.
+  if (method === 'POST' && path.startsWith('/api/paper/')) {
+    const b = await body(req)
+    const secret = String(b.secret ?? '')
+    if (!/^[0-9a-f]{64}$/.test(secret)) return json(res, 400, { ok: false, error: 'bad owner' })
+    const owner = '0x' + createHash('sha256').update(secret).digest('hex').slice(0, 40)
+    const act = path.slice('/api/paper/'.length)
+    const inst = String(b.instance ?? '').toUpperCase()
+    if (act === 'stop' || act === 'pause' || act === 'resume') {
+      const r = act === 'stop' ? stopStrategy('portfolio', owner, inst) : act === 'pause' ? pauseStrategy('portfolio', owner, inst) : resumeStrategy('portfolio', owner, inst)
+      return json(res, r.ok ? 200 : 400, r)
+    }
+    if (act !== 'start' && act !== 'plan') return json(res, 404, { ok: false, error: 'not found' })
+    const slot = String(b.slot ?? '')
+    if (!/^[a-z0-9]{1,40}$/.test(slot)) return json(res, 400, { ok: false, error: 'bad paper account' })
+    // The page's arguments, without any that would point the bot somewhere else.
+    const raw = Array.isArray(b.args) ? b.args.map(String) : []
+    const args = []
+    for (let i = 0; i < raw.length; i++) {
+      if (raw[i] === '--paper' || raw[i] === '--address' || raw[i] === '--wallet') { i++; continue }
+      args.push(raw[i])
+    }
+    args.push('--paper', slot)
+    if (act === 'plan') return json(res, 200, await runPlan('portfolio', SCRIPTS.portfolio, ['--address', owner, ...args], secret))
+    if (!/^[A-Z0-9_-]{1,40}$/.test(inst)) return json(res, 400, { ok: false, error: 'bad portfolio id' })
+    const mine = Object.keys(procs).filter(k => k.startsWith('portfolio:' + owner.toLowerCase() + ':')).length
+    const all = Object.values(procs).filter(p => (p.extraArgs ?? []).includes('--paper')).length
+    if (mine >= PAPER_BOTS_PER_OWNER) return json(res, 429, { ok: false, error: `at most ${PAPER_BOTS_PER_OWNER} paper portfolios at once — stop one first` })
+    if (all >= PAPER_BOTS_MAX) return json(res, 503, { ok: false, error: 'paper bots are full right now — try again later' })
+    const r = await startStrategy('portfolio', args, secret, owner, inst)
+    return json(res, r.ok ? 200 : 400, { ...r, address: owner })
   }
 
   // ── POST /api/stop ────────────────────────────────────────────────────────

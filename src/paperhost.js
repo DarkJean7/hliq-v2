@@ -72,10 +72,13 @@ export function createPaperHost({ dir, now = () => Date.now(), log = () => {} })
   /**
    * One round trip from the app.
    *   secret, client: who; hold: the store key the app is running now (or null)
+   *   release: hand the lease back now (the app left paper, or closed). Holding nothing is NOT
+   *   a release: another tab of the same device — /portfolios — syncs holding nothing while the
+   *   app runs an account, and reading that as a release would set the server running it too.
    *   seen: { key: revision the app last had }; push: { key: value | null (deleted) }
    * → { ok, revs: { key: rev }, changed: { key: value | null }, conflicts: [key], lease }
    */
-  function sync({ secret, client, hold = null, seen = {}, push = {} }) {
+  function sync({ secret, client, hold = null, release = false, seen = {}, push = {} }) {
     const o = ownerOf(secret)
     if (!o) return { ok: false, error: 'bad owner' }
     if (!/^[a-z0-9]{8,40}$/i.test(String(client ?? ''))) return { ok: false, error: 'bad client' }
@@ -96,9 +99,9 @@ export function createPaperHost({ dir, now = () => Date.now(), log = () => {} })
       }
       const size = Object.values(rec.kv).reduce((a, x) => a + (x.v?.length ?? 0), 0)
       if (size > MAX_OWNER) return { ok: false, error: 'too large' }
-      // The lease: the store the app is running. Releasing is holding nothing.
+      // The lease: the store the app is running, until it says it is done with it.
       if (hold) rec.lease = { key: hold, client, until: now() + LEASE_MS }
-      else if (rec.lease?.client === client) rec.lease = null
+      else if (release && rec.lease?.client === client) rec.lease = null
       rec.at = now()
       write(o, rec)
       const changed = {}
@@ -170,7 +173,35 @@ export function createPaperHost({ dir, now = () => Date.now(), log = () => {} })
     return coins
   }
 
-  return { sync, tick, dueCoins, read, ownerFile: file }
+  /**
+   * Run `fn(P)` against one owner's account, under the owner's lock, with src/paper.js pointed at
+   * that store and fed `market`. What a paper portfolio bot trades through (src/paperexchange.js):
+   * the same engine, so its fills cost what a person's do. Saved if it changed; fn's answer back.
+   */
+  function withStore(secret, slot, market, fn) {
+    const o = ownerOf(secret)
+    if (!o) throw new Error('bad owner')
+    return locked(o, () => {
+      const rec = read(o) ?? { kv: {}, rev: 0, created: now() }
+      const shim = {
+        getItem: (k) => rec.kv[k]?.v ?? null,
+        setItem: (k, v) => { if (rec.kv[k]?.v !== String(v)) rec.kv[k] = { v: String(v), rev: ++rec.rev } },
+        removeItem: (k) => { if (rec.kv[k]) rec.kv[k] = { v: null, rev: ++rec.rev } },
+      }
+      const prev = globalThis.localStorage
+      globalThis.localStorage = shim
+      try {
+        if (market) { P.setPaperMarks(market.marks); P.setPaperAssets(market.assets); P.setPaperFundingRates(market.funding ?? {}) }
+        P.setPaperTickGate(null)
+        P.paperBind(slot)
+        const out = fn(P)
+        write(o, rec)
+        return out
+      } finally { P.paperBind('main'); globalThis.localStorage = prev }
+    })
+  }
+
+  return { sync, tick, dueCoins, withStore, read, ownerFile: file }
 }
 
 /**
