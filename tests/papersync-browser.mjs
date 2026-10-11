@@ -125,6 +125,15 @@ await until('the tag up', () => rec()?.kv?.hliq_paper_accts?.v?.includes('L-TEST
 await p.evaluate(() => window.__goPaper('alt1'))
 await p.waitForTimeout(7000)
 ok('the app does not take the lease on a bot\'s account: the server keeps running it', rec()?.lease?.key !== 'hliq_paper_s_alt1' && await p.evaluate(() => window.__paperSync.gate('hliq_paper_s_alt1')) === false)
+// The flip-flop that was reported: a stale copy of the bot's account (another tab's memory,
+// a flush on switching) lands in this tab's storage. It must NEVER go up — the server's copy
+// comes back instead — or the account flips between the bot's book and the stale one.
+const before = rec().kv.hliq_paper_s_alt1
+await p.evaluate(() => localStorage.setItem('hliq_paper_s_alt1', JSON.stringify({ balance: 1, positions: [{ coin: 'ADA', szi: -100, entryPx: 1, margin: 10, leverage: 10, isIsolated: false }], orders: [], fills: [], equity: [], deposited: 1000, ledger: [], nextOid: 1, created: 0 })))
+await waitFor(p, 'the server copy back', (v) => localStorage.getItem('hliq_paper_s_alt1') === v, before.v, 20000)
+if (process.env.PS_DEBUG) console.log('DBG', JSON.stringify(syncs.slice(-4)), await p.evaluate(() => localStorage.getItem('hliq_paper_s_alt1').slice(0, 90)), (before.v ?? '').slice(0, 90))
+ok('a stale copy of an account the app is not running is replaced by the server\'s', await p.evaluate((v) => localStorage.getItem('hliq_paper_s_alt1') === v, before.v))
+ok('and was never sent: the server\'s copy is untouched', rec().kv.hliq_paper_s_alt1.rev === before.rev && rec().kv.hliq_paper_s_alt1.v === before.v)
 await p.evaluate(() => window.__goPaper('main'))
 
 console.log('\n-- the server cannot be reached --')

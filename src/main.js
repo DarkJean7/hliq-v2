@@ -10818,6 +10818,7 @@ function _paperSyncStart() {
     _paperSync = startPaperSync({
       // A portfolio bot's account is the server's to run (src/paperexchange.js): never held here.
       holdKey: () => (isPaper() && !paperAcctBot(paperSlot()) ? paperStoreKey() : null),
+      fast: () => isPaper(),   // a bot's account being watched refreshes as quickly as one being run
       onAdopt: (keys) => {
         // The server moved an account (fills while the app was closed): read it again.
         if (keys.includes(paperStoreKey())) paperReload()
@@ -10827,6 +10828,9 @@ function _paperSyncStart() {
     // Never advance a bot's account here, even offline: it is the server's, run by the bot.
     setPaperTickGate((key) => (paperAcctBot(paperSlot()) ? false : _paperSync.gate(key)))
     window.__paperSync = _paperSync
+    // Another tab (or /portfolios) wrote this account: read it again rather than keep showing,
+    // and later writing back, the copy this tab holds in memory.
+    window.addEventListener('storage', (e) => { if (e.key && e.key === paperStoreKey()) { paperReload(); if (isPaper()) _paperRefresh() } })
     setPaperReadOnly((slot) => (paperAcctBot(slot) ? _BOT_ACCT_MSG : null))
   } catch { /* no server copy: paper runs on this device alone, as it always did */ }
 }

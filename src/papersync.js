@@ -16,7 +16,7 @@
  * be reached, the app runs the account on its own, as it always did, and the next sync
  * reconciles: whatever the server advanced in the meantime wins.
  */
-import { PAPER_KEY_RE } from './paperkeys.js'
+import { PAPER_KEY_RE, slotOfKey } from './paperkeys.js'
 
 const OWNER_KEY = 'hliq_paper_owner', CLIENT_KEY = 'hliq_paper_client', SEEN_KEY = 'hliq_paper_seen'
 
@@ -36,10 +36,11 @@ export function hasPaper(st = localStorage) {
 /**
  *   holdKey(): the store key the app is running now, or null
  *   onAdopt(keys): the server sent newer values for these keys (already written to storage)
- *   every(active): ms between syncs — quick while an account is held, slow otherwise
+ *   fast(): whether to sync quickly — an account on screen (held, or a bot's being watched)
+ *   every(active): ms between syncs — quick while fast(), slow otherwise
  * → { gate(key), syncNow(), stop(), state() }
  */
-export function startPaperSync({ holdKey, onAdopt = () => {}, storage = localStorage, fetchImpl = (...a) => fetch(...a), every = (active) => (active ? 5_000 : 30_000), url = '/paper/sync' }) {
+export function startPaperSync({ holdKey, fast = holdKey, onAdopt = () => {}, storage = localStorage, fetchImpl = (...a) => fetch(...a), every = (active) => (active ? 5_000 : 30_000), url = '/paper/sync' }) {
   let secret = storage.getItem(OWNER_KEY)
   if (!/^[0-9a-f]{64}$/.test(secret ?? '')) { secret = hex(32); try { storage.setItem(OWNER_KEY, secret) } catch {} }
   let client = storage.getItem(CLIENT_KEY)
@@ -66,11 +67,21 @@ export function startPaperSync({ holdKey, onAdopt = () => {}, storage = localSto
     const letGo = !!held && !hold
     try {
       const cur = scan()
-      const push = {}
-      for (const [k, v] of Object.entries(cur)) if (sent.get(k) !== v) push[k] = v
+      const push = {}, ask = { ...seen }
+      for (const [k, v] of Object.entries(cur)) {
+        if (sent.get(k) === v) continue
+        // An account this tab is NOT running is the server's to write — a bot's, or one the
+        // server advances. A local difference there is a stale copy (another tab's memory, a
+        // flush on switching accounts), and sending it up overwrote the bot's newer book: the
+        // account flipped between two states. So once the server has it, ask for its copy back
+        // (seen 0 makes the server send it) instead. A store the server has never had — a new
+        // account — still goes up.
+        if (slotOfKey(k) != null && k !== hold && k in seen) { ask[k] = 0; continue }
+        push[k] = v
+      }
       for (const k of sent.keys()) if (!(k in cur) && sent.get(k) != null) push[k] = null
       const r = await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: release,
-        body: JSON.stringify({ secret, client, hold, release: letGo, seen, push }) })
+        body: JSON.stringify({ secret, client, hold, release: letGo, seen: ask, push }) })
       const j = await r.json()
       if (!j?.ok) throw new Error(j?.error ?? 'sync refused')
       for (const [k, v] of Object.entries(push)) if (!j.conflicts?.includes(k)) sent.set(k, v)
@@ -97,7 +108,7 @@ export function startPaperSync({ holdKey, onAdopt = () => {}, storage = localSto
   let last = 0
   const loop = async () => {
     if (stopped) return
-    if (Date.now() - last >= every(!!holdKey())) { last = Date.now(); await syncNow() }
+    if (Date.now() - last >= every(!!fast())) { last = Date.now(); await syncNow() }
     timer = setTimeout(loop, 1000)
   }
   loop()
