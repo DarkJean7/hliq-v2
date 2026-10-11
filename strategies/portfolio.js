@@ -390,8 +390,10 @@ async function plan() {
   const rows = COINS.map(c => ({ coin: c, w: W[c], lev: lb[c], maxLev: META[c].maxLev, isolated: ISOLATED || META[c].onlyIsolated, px: px[c] ?? null,
     usd: Math.abs(W[c]) * BUDGET * lb[c] }))
   const missing = rows.filter(r => !r.px).map(r => r.coin)
-  // DCA's first buy is the smallest slice there will be: check that, not the whole.
-  const slice = STRATEGY === 'dca' ? (PARAMS.dcaUpfront + (1 - PARAMS.dcaUpfront) / Math.max(1, Math.round(PARAMS.dcaBuys))) : 1
+  // The smallest order there will be: a whole position, or one DCA buy. With part of it bought
+  // up front, that is a LATER buy — the first carries the up-front part too, so checking the first
+  // (as this did) passed budgets whose every later buy is refused.
+  const slice = STRATEGY === 'dca' ? (PARAMS.dcaUpfront >= 1 ? 1 : (1 - PARAMS.dcaUpfront) / Math.max(1, Math.round(PARAMS.dcaBuys))) : 1
   const tooSmall = rows.filter(r => r.usd * slice < HL_MIN_ORDER).map(r => r.coin)
   const resumes = !!(saved && saved.units && Object.keys(saved.units).length && saved.strategy === STRATEGY)   // what a launch WITHOUT --fresh carries on from
   // A trading strategy: where the replay stands on each market right now. A trade it is

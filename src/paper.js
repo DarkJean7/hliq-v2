@@ -191,8 +191,14 @@ export function paperAcctDelete(slot) {
  * and refuses manual orders, so a person and a bot never fight over one book. Untagged when
  * the bot is stopped. → the tag, or null.
  */
-export function paperAcctBot(slot) { return paperAcctList().find(a => a.slot === slot)?.bot ?? null }
+// The practice account has no row in the list, so its tag is a key of its own (synced: src/paperkeys.js).
+const MAIN_BOT_KEY = 'hliq_paper_pf_mainbot'
+export function paperAcctBot(slot) {
+  if (slot === 'main') { try { return localStorage.getItem(MAIN_BOT_KEY) || null } catch { return null } }
+  return paperAcctList().find(a => a.slot === slot)?.bot ?? null
+}
 export function paperAcctTag(slot, bot) {
+  if (slot === 'main') { try { if (bot) localStorage.setItem(MAIN_BOT_KEY, String(bot)); else localStorage.removeItem(MAIN_BOT_KEY); return true } catch { return false } }
   const list = paperAcctList()
   const row = list.find(a => a.slot === slot)
   if (!row) return false

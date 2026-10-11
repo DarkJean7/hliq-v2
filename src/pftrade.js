@@ -23,7 +23,7 @@ import { keyedAddresses, readKey } from './agentkeys.js'
 import { LIVE_STRATEGIES, liveWeights, liveArgs, HL_MIN_ORDER } from './pflive.js'
 import { SIGNAL_STRATEGIES } from './pfsignal.js'
 import { startPaperSync } from './papersync.js'
-import { PAPER_START, paperAcctCreate, paperAcctTag, paperAcctDelete, paperAcctName, paperBind, paperStore, paperSave, paperDeposit, paperWithdraw } from './paper.js'
+import { PAPER_START, paperAcctCreate, paperAcctTag, paperAcctDelete, paperAcctName, paperAcctBot, paperAccounts, paperPeek, paperWithdrawable, paperBind, paperStore, paperSave, paperDeposit, paperWithdraw } from './paper.js'
 
 const $ = (id) => document.getElementById(id)
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`
@@ -66,7 +66,24 @@ async function api(path, addr, body) {
 }
 
 // ── paper: the device's paper owner and its bots ──
-const PAPER = 'paper'
+// Paper accounts in the picker are "paper:<slot>", and "paper:new" makes one.
+const PAPER = 'paper:', PAPER_NEW = 'paper:new'
+/**
+ * The device's paper accounts a bot may run: each with what it has free (cash less margin in
+ * use; open positions' profit is not counted here, the page has no prices for it) and whether a
+ * bot already runs it. The Challenge account is left out: it is a contest, not a test bench.
+ */
+function paperList() {
+  const out = []
+  for (const a of paperAccounts()) {
+    if (a.slot === 'challenge') continue
+    const name = a.slot === 'main' ? (ls.get('hliq_paper_name') || 'Practice account') : (a.name || 'Paper account')
+    let free = null
+    try { free = paperPeek(a.slot, () => paperWithdrawable()) } catch {}
+    out.push({ slot: a.slot, name, free, bot: paperAcctBot(a.slot) })
+  }
+  return out
+}
 let psync = null
 const paperSync = () => (psync ??= startPaperSync({ holdKey: () => null }))
 const paperSecret = () => ls.get('hliq_paper_owner')
@@ -112,14 +129,17 @@ export function initTrade(get) {
     const bot = p.bots.find(b => SIGNAL_STRATEGIES.includes(b))
     const strat = bot ? 'bot:' + bot : (p.strats.find(s => LIVE_STRATEGIES.includes(s)) ?? 'hold')
     const chip = (v, l) => `<button data-s="${v}" class="${v === strat ? 'is-on' : ''}">${esc(l)}</button>`
-    const lastAcct = ls.get('hliq_pf_trade_acct') ?? (accts.length ? accts[0] : PAPER)
+    const stored = ls.get('hliq_pf_trade_acct')
+    const lastAcct = stored === 'paper' ? PAPER_NEW : (stored ?? (accts.length ? accts[0] : PAPER_NEW))
+    const papers = paperList()
     sheet = document.createElement('div')
     sheet.className = 'pf-sheet-bg'
     sheet.innerHTML = `<div class="pf-sheet" role="dialog" aria-modal="true" aria-labelledby="pfTradeH">
       <div class="pf-sheet-h"><h3 id="pfTradeH">Trade “${esc(p.name)}” live</h3><button class="pf-sheet-x" data-x aria-label="Close">×</button></div>
-      <label class="pf-tr-row"><span>Account</span><select id="pfTrAcct">${accts.map(a => `<option value="${a}" ${a === lastAcct ? 'selected' : ''} title="${a}">${esc(acctName(a))}${acctName(a) === short(a) ? '' : ' · ' + short(a)}</option>`).join('')}<option value="${PAPER}" ${lastAcct === PAPER ? 'selected' : ''}>Paper · a new paper account (simulated money)</option></select></label>
+      <label class="pf-tr-row"><span>Account</span><select id="pfTrAcct">${accts.map(a => `<option value="${a}" ${a === lastAcct ? 'selected' : ''} title="${a}">${esc(acctName(a))}${acctName(a) === short(a) ? '' : ' · ' + short(a)}</option>`).join('')}<optgroup label="Paper · simulated money">${papers.map(a => `<option value="${PAPER}${esc(a.slot)}" ${lastAcct === PAPER + a.slot ? 'selected' : ''} ${a.bot ? 'disabled' : ''}>${esc(a.name)}${a.free != null ? ' · ' + usd(a.free) + ' free' : ''}${a.bot ? ' · a bot runs it' : ''}</option>`).join('')}<option value="${PAPER_NEW}" ${lastAcct === PAPER_NEW ? 'selected' : ''}>New paper account…</option></optgroup></select></label>
+      <label class="pf-tr-row" id="pfTrStartBalRow" hidden><span>Starting balance</span><span class="pf-tr-in"><input id="pfTrStartBal" type="number" min="${HL_MIN_ORDER}" step="100" value="${esc(ls.get('hliq_pf_trade_startbal') ?? String(PAPER_START))}"> USDC</span></label>
       ${accts.length ? '' : '<p class="pf-help">To trade with real money, open <a href="/app">the app</a>, connect your wallet and set up an agent key under <b>Bots</b>. Paper needs none.</p>'}
-      <p class="pf-help" id="pfTrPaperNote" hidden>Runs the same bot on a new paper account funded with the budget. It keeps running with this page closed; you can follow its positions in the app under that paper account.</p>
+      <p class="pf-help" id="pfTrPaperNote" hidden></p>
       <div class="pf-tr-row pf-tr-strats" id="pfTrStrat"><span>Strategy</span>
         <div><i class="pf-for">Allocation</i><div class="pf-chips pf-strats">${LIVE_STRATEGIES.map(s => chip(s, p.labels[s] ?? s)).join('')}</div>
         <i class="pf-for">Trading</i><div class="pf-chips pf-strats">${SIGNAL_STRATEGIES.map(b => chip('bot:' + b, p.labels['bot:' + b] ?? b)).join('')}</div></div></div>
@@ -137,7 +157,7 @@ export function initTrade(get) {
     document.addEventListener('keydown', onKey)
     sheet.addEventListener('click', onClick)
     sheet.addEventListener('change', e => {
-      if (e.target.id === 'pfTrAcct' || e.target.id === 'pfTrBudget' || e.target.id === 'pfTrBuys') { if (plan) { plan = null; renderPlan() } }
+      if (e.target.id === 'pfTrAcct' || e.target.id === 'pfTrBudget' || e.target.id === 'pfTrBuys' || e.target.id === 'pfTrStartBal') { if (plan) { plan = null; renderPlan() } }
       if (e.target.id === 'pfTrAcct') acctNote()
       if (e.target.id === 'pfTrAck') gate()
     })
@@ -147,14 +167,24 @@ export function initTrade(get) {
   }
 
   const chosen = () => sheet?.querySelector('#pfTrStrat .is-on')?.dataset.s ?? 'hold'
-  const isPaperAcct = () => sheet?.querySelector('#pfTrAcct')?.value === PAPER
+  const acctVal = () => sheet?.querySelector('#pfTrAcct')?.value ?? ''
+  const isPaperAcct = () => acctVal().startsWith(PAPER)
+  const startBal = () => Number(sheet?.querySelector('#pfTrStartBal')?.value)
   // What Start does, said where it is ticked: real orders, or a simulated account.
   function acctNote() {
     if (!sheet) return
     const paper = isPaperAcct()
-    const n = sheet.querySelector('#pfTrPaperNote'); if (n) n.hidden = !paper
+    const fresh = acctVal() === PAPER_NEW
+    const n = sheet.querySelector('#pfTrPaperNote')
+    if (n) {
+      n.hidden = !paper
+      n.textContent = fresh
+        ? 'A new paper account with the starting balance below; the bot trades the budget out of it. It keeps running with this page closed, and you can follow it in the app under that paper account.'
+        : 'The bot trades the budget out of this paper account; what else it holds stays as it is. While the bot runs, the account is the bot\'s: stop the bot to trade it by hand again.'
+    }
+    const sb = sheet.querySelector('#pfTrStartBalRow'); if (sb) sb.hidden = !fresh
     const a = sheet.querySelector('#pfTrAckText')
-    if (a) a.textContent = paper ? 'I understand this is a paper run: simulated money on a new paper account, at live prices.' : 'I understand this places real orders on Hyperliquid with this account.'
+    if (a) a.textContent = paper ? `I understand this is a paper run: simulated money on ${fresh ? 'a new paper account' : 'this paper account'}, at live prices.` : 'I understand this places real orders on Hyperliquid with this account.'
     const ack = sheet.querySelector('#pfTrAck'); if (ack) ack.checked = false
     gate()
   }
@@ -202,7 +232,7 @@ export function initTrade(get) {
     el.innerHTML = `<table class="pf-tr-tbl"><thead><tr><th>Market</th><th>Weight</th><th>Leverage</th><th>Position</th>${plan.rows.some(r => 'now' in r) ? '<th>Now</th>' : ''}</tr></thead><tbody>
       ${plan.rows.map(r => `<tr><td>${esc(p.nameOf({ coin: r.coin }))}${r.w < 0 ? ' <em>short</em>' : ''}</td><td>${(Math.abs(r.w) * 100).toFixed(1)}%</td><td>${r.lev}×${r.isolated ? ' iso' : ''}</td><td>${usd(r.usd)}</td>${'now' in r ? `<td>${r.now === undefined ? '—' : r.now ? `in a ${r.now.side} since ${new Date(r.now.since).toISOString().slice(5, 16).replace('T', ' ')}: waits for the next entry` : 'waiting for an entry'}</td>` : ''}</tr>`).join('')}
       </tbody></table>
-      ${plan.tooSmall?.length ? `<p class="pf-warn">Under Hyperliquid's $${HL_MIN_ORDER} minimum order: ${plan.tooSmall.map(c => esc(p.nameOf({ coin: c }))).join(', ')}. Raise the budget.</p>` : ''}
+      ${plan.tooSmall?.length ? tooSmallHtml(p) : ''}
       ${plan.missing?.length ? `<p class="pf-warn">No price right now for ${plan.missing.map(c => esc(p.nameOf({ coin: c }))).join(', ')}; the bot waits for one before trading.</p>` : ''}
       <p class="pf-help">Margin used: about ${usd(plan.margin)}. ${plan.free != null ? `Free on this account: ${usd(plan.free)}.` : ''}</p>
       ${under ? '<p class="pf-warn">The account has less free than the budget: some orders may be refused. Deposit, or lower the budget.</p>' : ''}
@@ -210,7 +240,49 @@ export function initTrade(get) {
     gate()
   }
 
+  /**
+   * Why Start is off when an order is too small, with the fix one click away. Hyperliquid's
+   * minimum is on an order's VALUE (size × price), whatever margin backs it: leverage makes the
+   * same margin a bigger order, which is why the Position column, at leverage, can look fine
+   * while each DCA buy — a slice of it — is not.
+   */
+  function smallest() {
+    const p = get(), dca = chosen() === 'dca'
+    const up = dca ? Math.min(1, Math.max(0, Number(p.params.dcaUpfront) || 0)) : 1
+    const n = dca ? Math.max(1, Math.round(Number(sheet.querySelector('#pfTrBuys')?.value) || 8)) : 1
+    // The smallest order there will be: a whole position, or one DCA buy after any up-front part.
+    const part = (k) => (dca ? (up >= 1 ? 1 : (1 - up) / k) : 1)
+    const minPos = Math.min(...plan.rows.map(r => r.usd))
+    const budget = Number(sheet.querySelector('#pfTrBudget').value)
+    const order = minPos * part(n)
+    const needBudget = Math.ceil(budget * HL_MIN_ORDER / order / 10) * 10
+    let maxBuys = 0
+    if (dca && up < 1) for (let k = n - 1; k >= 1; k--) if (minPos * part(k) >= HL_MIN_ORDER) { maxBuys = k; break }
+    return { dca, n, order, needBudget, maxBuys, lev: plan.rows.find(r => r.usd === minPos)?.lev ?? 1 }
+  }
+  function tooSmallHtml(p) {
+    const x = smallest()
+    const names = plan.tooSmall.map(c => esc(p.nameOf({ coin: c }))).join(', ')
+    const what = x.dca
+      ? `In ${x.n} buys, each buy of the smallest holding is an order of about ${usd(x.order)} (about ${usd(x.order / x.lev)} of margin at ${x.lev}×).`
+      : `The smallest position is an order of about ${usd(x.order)}.`
+    return `<p class="pf-warn">${what} Hyperliquid refuses orders under $${HL_MIN_ORDER} of value — size × price, whatever the margin — so these would never be placed: ${names}.</p>
+      <div class="pf-tr-fix"><button class="pf-btn pf-btn--ghost" data-fix="budget:${x.needBudget}">Use a $${x.needBudget.toLocaleString('en-US')} budget</button>${x.maxBuys ? `<button class="pf-btn pf-btn--ghost" data-fix="buys:${x.maxBuys}">Use ${x.maxBuys} buy${x.maxBuys === 1 ? '' : 's'}</button>` : ''}</div>`
+  }
+
   async function onClick(e) {
+    // A fix from the too-small message: set it and preview again.
+    const fix = e.target.closest('[data-fix]')
+    if (fix) {
+      const [k, v] = fix.dataset.fix.split(':')
+      const input = sheet.querySelector(k === 'budget' ? '#pfTrBudget' : '#pfTrBuys')
+      if (input) input.value = v
+      if (k === 'budget' && acctVal() === PAPER_NEW && startBal() < Number(v)) sheet.querySelector('#pfTrStartBal').value = v
+      plan = null
+      renderPlan()
+      sheet.querySelector('#pfTrPreview')?.click()
+      return
+    }
     if (e.target === sheet || e.target.closest('[data-x]')) return close()
     const s = e.target.closest('#pfTrStrat [data-s]')
     if (s) { sheet.querySelectorAll('#pfTrStrat [data-s]').forEach(b => b.classList.toggle('is-on', b === s)); plan = null; stratNote(); renderPlan(); return }
@@ -223,16 +295,23 @@ export function initTrade(get) {
       try {
         // Paper: the bot's preview on a paper account (a blank one — the real one is made at Start,
         // funded with exactly the budget, so there is no "free" to compare against).
-        const r = addr === PAPER
-          ? (paperSync(), await paperApi('plan', { slot: 'preview', args: args(true) }))
-          : await api('/api/plan', addr, { type: 'portfolio', agentKey: readKey(localStorage, addr), address: addr, args: args(false) })
-        plan = r.ok === false || r.status >= 400 ? { ok: false, error: r.error } : (addr === PAPER ? { ...r, free: null, resumes: false, paper: true } : r)
+        let r
+        if (isPaperAcct()) {
+          // The server's copy is what the bot will trade: bring it up to date first.
+          await paperSync().syncNow()
+          const sel = addr.slice(PAPER.length)
+          if (sel === 'new' && !(startBal() >= budget)) throw new Error('The starting balance must be at least the budget.')
+          r = await paperApi('plan', { slot: sel === 'new' ? 'preview' : sel, args: args(true) })
+          // A new account has exactly its starting balance free; an existing one, what the server says.
+          if (r.ok !== false && r.status < 400) r = { ...r, free: sel === 'new' ? startBal() : r.free, resumes: false, paper: true }
+        } else r = await api('/api/plan', addr, { type: 'portfolio', agentKey: readKey(localStorage, addr), address: addr, args: args(false) })
+        plan = r.ok === false || r.status >= 400 ? { ok: false, error: r.error } : r
       } catch (err) { plan = { ok: false, error: err.message } }
       return renderPlan()
     }
-    if (e.target.closest('#pfTrStart') && plan?.ok && !busy && addr === PAPER) {
+    if (e.target.closest('#pfTrStart') && plan?.ok && !busy && isPaperAcct()) {
       busy = true; gate(); msg('Making the paper account…')
-      try { await startPaper(); msg('Running on paper.'); setTimeout(() => { close(); refresh() }, 900) }
+      try { await startPaper(addr.slice(PAPER.length)); msg('Running on paper.'); setTimeout(() => { close(); refresh() }, 900) }
       catch (err) { msg(err.message, true) }
       busy = false; gate()
       return
@@ -250,22 +329,32 @@ export function initTrade(get) {
     }
   }
 
-  // A paper run: a new paper account named after the portfolio, tagged as the bot's, funded
-  // with the budget; up to the server; then the bot.
-  async function startPaper() {
+  // A paper run: on a paper account you pick, or a new one named after the portfolio and funded
+  // with the starting balance. Tagged as the bot's, up to the server, then the bot.
+  async function startPaper(sel) {
     const sync = paperSync()
     const inst = portfolioId(get())
-    const budget = Number(sheet.querySelector('#pfTrBudget').value)
-    const { slot, error } = paperAcctCreate(('PF · ' + get().name).slice(0, 24))
-    if (!slot) throw new Error(error === 'limit' ? 'This device has the most paper accounts it can hold. Delete one in the app first.' : 'The paper account could not be made (browser storage is full).')
-    const undo = async () => { paperAcctTag(slot, null); paperAcctDelete(slot); await sync.syncNow() }
-    paperAcctTag(slot, inst)
-    paperBind(slot)
-    paperStore()
-    if (budget > PAPER_START) paperDeposit(budget - PAPER_START)
-    else if (budget < PAPER_START) paperWithdraw(PAPER_START - budget)
-    else paperSave()
-    paperBind('main')
+    let slot, undo
+    if (sel === 'new') {
+      const bal = startBal()
+      ls.set('hliq_pf_trade_startbal', String(bal))
+      const made = paperAcctCreate(('PF · ' + get().name).slice(0, 24))
+      slot = made.slot
+      if (!slot) throw new Error(made.error === 'limit' ? 'This device has the most paper accounts it can hold. Delete one in the app first.' : 'The paper account could not be made (browser storage is full).')
+      undo = async () => { paperAcctTag(slot, null); paperAcctDelete(slot); await sync.syncNow() }
+      paperAcctTag(slot, inst)
+      paperBind(slot)
+      paperStore()
+      if (bal > PAPER_START) paperDeposit(bal - PAPER_START)
+      else if (bal < PAPER_START) paperWithdraw(PAPER_START - bal)
+      else paperSave()
+      paperBind('main')
+    } else {
+      slot = sel
+      if (paperAcctBot(slot)) throw new Error('A bot already runs that paper account.')
+      undo = async () => { paperAcctTag(slot, null); await sync.syncNow() }
+      paperAcctTag(slot, inst)
+    }
     await sync.syncNow()
     if (sync.state().online !== true) { await undo(); throw new Error('The server could not be reached; nothing was started.') }
     const r = await paperApi('start', { slot, instance: inst, args: args(true) })

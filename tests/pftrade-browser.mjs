@@ -69,7 +69,14 @@ async function run(label, opts) {
     if (path === '/api/auth/login') return j({ token: 'tok-' + b.address, exp: Date.now() + 3600e3 })
     const bot = (b.args ?? []).includes('bot:rsi')
     if (path === '/api/plan') return j({ ok: true, rows: [{ coin: 'BTC', w: 0.625, lev: 2, maxLev: 40, isolated: false, px: 100, usd: 250, ...(bot ? { now: { side: 'long', since: Date.UTC(2026, 9, 10, 8) } } : {}) }, { coin: 'ETH', w: -0.375, lev: 2, maxLev: 25, isolated: false, px: 50, usd: 150, ...(bot ? { now: null } : {}) }], skipped: ['@700'], tooSmall: [], missing: [], margin: 200, free: 1000, resumes: false, held: null })
-    if (path === '/api/paper/plan') return j({ ok: true, rows: [{ coin: 'BTC', w: 0.625, lev: 2, maxLev: 40, isolated: false, px: 100, usd: 625 }, { coin: 'ETH', w: -0.375, lev: 2, maxLev: 25, isolated: false, px: 50, usd: 375 }], skipped: ['@700'], tooSmall: [], missing: [], margin: 500, free: 1000, resumes: true, held: { BTC: 1 } })
+    if (path === '/api/paper/plan') {
+      // Positions at 2×: BTC 62.5% and ETH 37.5% of budget × 2. DCA in 8 buys at a $100 budget
+      // makes ETH's buy a $9.38 order: under $10, as the bot would say.
+      const a = b.args ?? [], budget = Number(a[a.indexOf('--budget') + 1]), dca = a[a.indexOf('--strategy') + 1] === 'dca'
+      const buys = Number(a[a.indexOf('--dcaBuys') + 1]) || 8
+      const rows = [{ coin: 'BTC', w: 0.625, lev: 2, maxLev: 40, isolated: false, px: 100, usd: budget * 1.25 }, { coin: 'ETH', w: -0.375, lev: 2, maxLev: 25, isolated: false, px: 50, usd: budget * 0.75 }]
+      return j({ ok: true, rows, skipped: ['@700'], tooSmall: rows.filter(r => r.usd / (dca ? buys : 1) < 10).map(r => r.coin), missing: [], margin: budget, free: 1234, resumes: true, held: { BTC: 1 } })
+    }
     if (path === '/api/paper/start') { paperRun = { slot: b.slot, instance: b.instance, owner: '0x' + ownerOf(b.secret) }; return j({ ok: true }) }
     if (path === '/api/paper/stop') { paperRun = null; return j({ ok: true }) }
     if (path === '/api/start') { running = true; return j({ ok: true }) }
@@ -98,7 +105,8 @@ async function run(label, opts) {
 
   // No agent key on this device: the sheet says where to get one, and offers nothing to start.
   await p.click('#pfTrade')
-  ok('without an agent key the sheet offers Paper, and says where to set up a key for real money', await p.inputValue('#pfTrAcct') === 'paper' && await p.locator('#pfTrAcct option').count() === 1 && await p.locator('.pf-sheet a[href="/app"]').count() === 1)
+  ok('without an agent key the sheet offers paper: the practice account and a new one, and says where to set up a key for real money', await p.inputValue('#pfTrAcct') === 'paper:new' && (await p.$$eval('#pfTrAcct option', os => os.map(o => o.value))).join() === 'paper:main,paper:new' && await p.locator('.pf-sheet a[href="/app"]').count() === 1)
+  ok('a new paper account asks for its starting balance', await p.isVisible('#pfTrStartBal'))
   await p.keyboard.press('Escape')
   ok('Escape closes it', await p.locator('.pf-sheet').count() === 0)
 
@@ -158,14 +166,15 @@ async function run(label, opts) {
   ok('Start sends the trading strategy, its candle and its own settings', g2('--strategy') === 'bot:rsi' && g2('--tf') === '4h' && JSON.parse(Buffer.from(g2('--sparams') ?? '', 'base64').toString() || '{}').rsiLen === 9, a2)
   // Paper: no wallet needed. A new paper account funded with the budget, run by the same bot.
   await p.click('#pfTrade')
-  await p.selectOption('#pfTrAcct', 'paper')
+  await p.selectOption('#pfTrAcct', 'paper:new')
+  await p.fill('#pfTrStartBal', '2000')
   ok('Paper says what it is where it is acknowledged: simulated money', /simulated money/.test(await p.textContent('#pfTrAckText')) && await p.isVisible('#pfTrPaperNote'))
   await p.fill('#pfTrBudget', '500')
   await p.click('#pfTrPreview')
   await waitFor(p, 'the paper preview', () => !!document.querySelector('.pf-tr-tbl'))
   const pplan = sent.find(x => x.path === '/api/paper/plan')
   ok('the preview is the paper bot\'s, asked as the paper owner: no agent key, no sign-in', pplan && /^[0-9a-f]{64}$/.test(pplan.body.secret) && !pplan.body.agentKey && !pplan.auth, pplan?.body)
-  ok('a paper run never offers to carry on old positions, nor compares against a free balance', await p.locator('#pfTrCarry').count() === 0 && !/Free on this account/.test(await p.textContent('#pfTrPlan')))
+  ok('a paper run never offers to carry on old positions; a new account has its starting balance free', await p.locator('#pfTrCarry').count() === 0 && /Free on this account: \$2,000/.test(await p.textContent('#pfTrPlan')))
   await p.check('#pfTrAck')
   await p.click('#pfTrStart')
   await waitFor(p, 'the paper start', () => !document.querySelector('.pf-sheet'), undefined, 15000)
@@ -174,7 +183,7 @@ async function run(label, opts) {
   const mine = accts.find(a => a.slot === pst?.body.slot)
   ok('Start makes a paper account named after the portfolio, tagged as the bot\'s', !!mine && /^PF · Live basket/.test(mine.name) && mine.bot === pst.body.instance, [accts, pst?.body])
   const rec = host.read(ownerOf(pst.body.secret))
-  ok('funded with the budget, and on the server before the bot is started', JSON.parse(rec.kv['hliq_paper_s_' + pst.body.slot].v).balance === 500 && rec.kv.hliq_paper_accts.v.includes(pst.body.slot))
+  ok('funded with the starting balance chosen, and on the server before the bot is started', JSON.parse(rec.kv['hliq_paper_s_' + pst.body.slot].v).balance === 2000 && rec.kv.hliq_paper_accts.v.includes(pst.body.slot))
   const pa = pst.body.args
   ok('the bot starts fresh on it, with the strategy and budget shown', pa.includes('--fresh') && pa[pa.indexOf('--strategy') + 1] === 'bot:rsi' && pa[pa.indexOf('--budget') + 1] === '500' && !pa.includes('--paper'), pa)
   await waitFor(p, 'the paper card', () => /PAPER/.test(document.getElementById('pfLive')?.textContent ?? ''))
@@ -184,6 +193,39 @@ async function run(label, opts) {
   await p.click(stopBtn)
   await waitFor(p, 'the paper stop', () => !/PAPER/.test(document.getElementById('pfLive')?.textContent ?? ''))
   ok('stopping it goes to /api/paper/stop, and hands the account back (untagged)', sent.some(x => x.path === '/api/paper/stop' && x.body.instance === pst.body.instance) && await p.evaluate((sl) => !JSON.parse(localStorage.getItem('hliq_paper_accts')).find(a => a.slot === sl).bot, pst.body.slot))
+  // An existing paper account: the practice one. Tagged while the bot runs it, untagged after.
+  await p.click('#pfTrade')
+  await p.selectOption('#pfTrAcct', 'paper:main')
+  ok('an existing paper account needs no starting balance, and says the bot will hold it', await p.isHidden('#pfTrStartBal') && /stop the bot to trade it by hand/.test(await p.textContent('#pfTrPaperNote')))
+  await p.click('#pfTrPreview')
+  await waitFor(p, 'the main preview', () => !!document.querySelector('.pf-tr-tbl'))
+  ok('its preview shows what that account has free, from the server', /Free on this account: \$1,234/.test(await p.textContent('#pfTrPlan')))
+  await p.check('#pfTrAck')
+  await p.click('#pfTrStart')
+  await waitFor(p, 'the main start', () => !document.querySelector('.pf-sheet'), undefined, 15000)
+  const mst = sent.filter(x => x.path === '/api/paper/start').pop()
+  ok('the bot is started on the practice account, which is marked as the bot\'s', mst?.body.slot === 'main' && await p.evaluate(() => localStorage.getItem('hliq_paper_pf_mainbot')) === mst.body.instance)
+  await waitFor(p, 'its card', () => /PAPER/.test(document.getElementById('pfLive')?.textContent ?? ''))
+  await p.click('#pfLive [data-live="stop"]:not([data-paper=""])')
+  await p.click('#pfLive [data-live="stop"]:not([data-paper=""])')
+  await waitFor(p, 'its stop', () => !/PAPER/.test(document.getElementById('pfLive')?.textContent ?? ''))
+  ok('stopped, it is the practice account again', await p.evaluate(() => localStorage.getItem('hliq_paper_pf_mainbot')) === null)
+
+  // Too small: DCA in 8 buys of a $100 budget. The message says what the order is, and fixes it.
+  await p.click('#pfTrade')
+  await p.selectOption('#pfTrAcct', 'paper:new')
+  await p.click('#pfTrStrat [data-s="dca"]')
+  await p.fill('#pfTrBudget', '100')
+  await p.click('#pfTrPreview')
+  await waitFor(p, 'the too-small preview', () => !!document.querySelector('[data-fix]'))
+  const warn = await p.textContent('#pfTrPlan')
+  ok('too small: it says the order each buy would be, and its margin, and that the minimum is on value', /In 8 buys, each buy of the smallest holding is an order of about \$9\.38 \(about \$4\.69 of margin at 2×\)/.test(warn) && /size × price, whatever the margin/.test(warn), warn)
+  ok('Start stays off', await p.isDisabled('#pfTrStart'))
+  ok('and it offers the two fixes: the budget that works, and the most buys that work', (await p.$$eval('[data-fix]', bs => bs.map(b => b.dataset.fix))).join() === 'budget:110,buys:7')
+  await p.click('[data-fix="budget:110"]')
+  await waitFor(p, 'the fixed preview', () => !!document.querySelector('.pf-tr-tbl') && !document.querySelector('[data-fix]'))
+  ok('one click sets the budget and previews again: nothing too small now', await p.inputValue('#pfTrBudget') === '110' && !/minimum/.test(await p.textContent('#pfTrPlan')))
+  await p.keyboard.press('Escape')
   ok('no page errors', !errors.length, errors)
   await browser.close()
 }
