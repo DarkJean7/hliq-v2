@@ -1171,7 +1171,8 @@ initTrade(() => ({
   name: S.name, featuredId: S.featuredId, items: S.items, strats: S.strats, lev: S.lev, margin: S.margin === 'isolated' ? 'isolated' : 'cross',
   params: { monthDay: Number(ap('monthDay')), weekDay: Number(ap('weekDay')), band: Number(ap('band')) / 100, dcaEvery: Number(ap('dcaEvery')),
     dcaUpfront: Number(ap('dcaUpfront')) / 100, trendDays: Number(ap('trendDays')), trendBuffer: Number(ap('trendBuffer')) / 100 },
-  labels: STRATEGY_LABEL, nameOf,
+  bots: S.bots, tf: S.tf, both: !!S.both, botParams: S.botParams ?? {},
+  labels: { ...STRATEGY_LABEL, ...Object.fromEntries(BOT_STRATEGIES.map(([id, l]) => ['bot:' + id, l])) }, nameOf,
 }))
 
 // Runs start by themselves after a change; this runs now, and is the retry when prices stalled.

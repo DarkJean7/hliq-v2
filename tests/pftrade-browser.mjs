@@ -60,7 +60,8 @@ async function run(label, opts) {
     const j = (x, status = 200) => route.fulfill({ status, contentType: 'application/json', json: x })
     if (path === '/api/auth/nonce') return j({ nonce: 'n1' })
     if (path === '/api/auth/login') return j({ token: 'tok-' + b.address, exp: Date.now() + 3600e3 })
-    if (path === '/api/plan') return j({ ok: true, rows: [{ coin: 'BTC', w: 0.625, lev: 2, maxLev: 40, isolated: false, px: 100, usd: 250 }, { coin: 'ETH', w: -0.375, lev: 2, maxLev: 25, isolated: false, px: 50, usd: 150 }], skipped: ['@700'], tooSmall: [], missing: [], margin: 200, free: 1000, resumes: false, held: null })
+    const bot = (b.args ?? []).includes('bot:rsi')
+    if (path === '/api/plan') return j({ ok: true, rows: [{ coin: 'BTC', w: 0.625, lev: 2, maxLev: 40, isolated: false, px: 100, usd: 250, ...(bot ? { now: { side: 'long', since: Date.UTC(2026, 9, 10, 8) } } : {}) }, { coin: 'ETH', w: -0.375, lev: 2, maxLev: 25, isolated: false, px: 50, usd: 150, ...(bot ? { now: null } : {}) }], skipped: ['@700'], tooSmall: [], missing: [], margin: 200, free: 1000, resumes: false, held: null })
     if (path === '/api/start') { running = true; return j({ ok: true }) }
     if (path === '/api/stop') { running = false; return j({ ok: true }) }
     if (path === '/api/pause') { paused = true; return j({ ok: true }) }
@@ -126,6 +127,19 @@ async function run(label, opts) {
   await p.click('#pfLive [data-live="stop"]')
   await waitFor(p, 'stopped', () => document.getElementById('pfLiveSec').hidden)
   ok('the second press stops it', sent.some(s => s.path === '/api/stop' && s.body.type === 'portfolio'))
+  // A trading strategy: RSI on every holding, with its own settings from its card.
+  await p.evaluate(() => { window.__pf.state.bots = ['rsi']; window.__pf.state.botParams = { rsi: { rsiLen: 9, slOff: true } } })
+  await p.click('#pfTrade')
+  ok('a trading strategy picked on the page is the sheet default', await p.getAttribute('#pfTrStrat .is-on', 'data-s') === 'bot:rsi' && /replays the backtest/.test(await p.textContent('#pfTrStratNote')))
+  await p.click('#pfTrPreview')
+  await waitFor(p, 'the bot preview', () => /waits for the next entry/.test(document.querySelector('.pf-tr-tbl')?.textContent ?? ''))
+  ok('the preview says where the strategy stands on each market, and that a trade already open is not joined', /in a long since .*waits for the next entry/.test(await p.textContent('.pf-tr-tbl')) && /waiting for an entry/.test(await p.textContent('.pf-tr-tbl')))
+  await p.check('#pfTrAck')
+  await p.click('#pfTrStart')
+  await waitFor(p, 'started again', () => !document.querySelector('.pf-sheet'))
+  const st2 = sent.filter(x => x.path === '/api/start').pop()
+  const a2 = st2?.body.args ?? [], g2 = (k) => a2[a2.indexOf(k) + 1]
+  ok('Start sends the trading strategy, its candle and its own settings', g2('--strategy') === 'bot:rsi' && g2('--tf') === '4h' && JSON.parse(Buffer.from(g2('--sparams') ?? '', 'base64').toString() || '{}').rsiLen === 9, a2)
   ok('no page errors', !errors.length, errors)
   await browser.close()
 }

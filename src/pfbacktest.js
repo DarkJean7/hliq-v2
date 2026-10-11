@@ -459,6 +459,21 @@ export function botParams(strategy, params = {}, bal = 1000, side = 'long', both
   return p
 }
 
+/**
+ * Everything runBacktest is given for one holding: the strategy's own settings (botParams) and
+ * the sub-account around them. One function, because the live portfolio bot (src/pfsignal.js)
+ * replays the same engine on the latest candles to decide its trades — if the two built this
+ * separately, the bot would trade a strategy the page never tested.
+ */
+export function simParams(strategy, params, { bal, side = 'long', both = false, lev = 1, margin = 'cross', feeBps = 4.5 }) {
+  return {
+    ...botParams(strategy, params, bal, side, both),
+    strategy, startBalance: bal, leverage: lev, maxLev: Math.max(1, lev), marginMode: margin, sizePct: 100,
+    useFees: true, takerFeePct: feeBps / 100, makerFeePct: Math.min(feeBps / 100, 0.015), feePct: 2 * feeBps / 100,
+    useCooldown: false, useDirection: !both, direction: side,
+  }
+}
+
 export function botRun(ohlc, items, days, strategy, opts = {}) {
   const { capital = 10_000, leverage = 1, feeBps = 4.5, both = false, funding = null, book = null, levBy = null, margin = 'cross', params = {} } = opts
   const w = normalizeWeights(items)
@@ -474,14 +489,8 @@ export function botRun(ohlc, items, days, strategy, opts = {}) {
     const side = wk < 0 ? 'short' : 'long'
     const fees0 = fees, fund0 = fundPaid, slip0 = slipPaid
     const rows = (ohlc[k] ?? []).filter(c => c.t <= end && (!ladder || c.t >= start))
-    const sp = botParams(strategy, params, bal, side, both)
     const lev = levBy && levBy[k] > 0 ? levBy[k] : leverage
-    const r = runBacktest(rows, {
-      ...sp,
-      strategy, startBalance: bal, leverage: lev, maxLev: Math.max(1, lev), marginMode: margin, sizePct: 100,
-      useFees: true, takerFeePct: feeBps / 100, makerFeePct: Math.min(feeBps / 100, 0.015), feePct: 2 * feeBps / 100,
-      useCooldown: false, useDirection: !both, direction: side,
-    })
+    const r = runBacktest(rows, simParams(strategy, params, { bal, side, both, lev, margin, feeBps }))
     // Closes by time, for marking an open position at any moment.
     const cs = rows.map(c => [c.t, c.c]).sort((a, b) => a[0] - b[0])
     const closeAt = (T) => { let lo = 0, hi = cs.length - 1, v = null; while (lo <= hi) { const m = (lo + hi) >> 1; if (cs[m][0] <= T) { v = cs[m][1]; lo = m + 1 } else hi = m - 1 } return v }

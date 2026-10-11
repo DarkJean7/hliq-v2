@@ -15,6 +15,7 @@
  */
 import { keyedAddresses, readKey } from './agentkeys.js'
 import { LIVE_STRATEGIES, liveWeights, liveArgs, HL_MIN_ORDER } from './pflive.js'
+import { SIGNAL_STRATEGIES } from './pfsignal.js'
 
 const $ = (id) => document.getElementById(id)
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`
@@ -81,7 +82,10 @@ export function initTrade(get) {
     const p = get()
     const { weights, skipped } = liveWeights(p.items)
     const accts = accounts()
-    const strat = p.strats.find(s => LIVE_STRATEGIES.includes(s)) ?? 'hold'
+    // The strategy the page is testing: a trading one if one is picked, else the first allocation one.
+    const bot = p.bots.find(b => SIGNAL_STRATEGIES.includes(b))
+    const strat = bot ? 'bot:' + bot : (p.strats.find(s => LIVE_STRATEGIES.includes(s)) ?? 'hold')
+    const chip = (v, l) => `<button data-s="${v}" class="${v === strat ? 'is-on' : ''}">${esc(l)}</button>`
     const lastAcct = ls.get('hliq_pf_trade_acct')
     sheet = document.createElement('div')
     sheet.className = 'pf-sheet-bg'
@@ -90,11 +94,13 @@ export function initTrade(get) {
       ${!accts.length ? `<p class="pf-help">No account on this device has an agent key yet. Open the app, connect your wallet and set one up under <b>Bots</b>; then come back here.</p>
         <a class="pf-btn" href="/app">Open the app</a>` : `
       <label class="pf-tr-row"><span>Account</span><select id="pfTrAcct">${accts.map(a => `<option value="${a}" ${a === lastAcct ? 'selected' : ''} title="${a}">${esc(acctName(a))}${acctName(a) === short(a) ? '' : ' · ' + short(a)}</option>`).join('')}</select></label>
-      <div class="pf-tr-row"><span>Strategy</span><div class="pf-chips pf-strats" id="pfTrStrat">${LIVE_STRATEGIES.map(s => `<button data-s="${s}" class="${s === strat ? 'is-on' : ''}">${esc(p.labels[s] ?? s)}</button>`).join('')}</div></div>
+      <div class="pf-tr-row pf-tr-strats" id="pfTrStrat"><span>Strategy</span>
+        <div><i class="pf-for">Allocation</i><div class="pf-chips pf-strats">${LIVE_STRATEGIES.map(s => chip(s, p.labels[s] ?? s)).join('')}</div>
+        <i class="pf-for">Trading</i><div class="pf-chips pf-strats">${SIGNAL_STRATEGIES.map(b => chip('bot:' + b, p.labels['bot:' + b] ?? b)).join('')}</div></div></div>
       <p class="pf-help" id="pfTrStratNote"></p>
       <label class="pf-tr-row" id="pfTrBuysRow" hidden><span>Buys</span><span class="pf-tr-in"><input id="pfTrBuys" type="number" min="1" max="52" step="1" value="8"> parts</span></label>
       <label class="pf-tr-row"><span>Budget</span><span class="pf-tr-in"><input id="pfTrBudget" type="number" min="${HL_MIN_ORDER}" step="10" value="${esc(ls.get('hliq_pf_trade_budget') ?? '100')}"> USDC</span></label>
-      <p class="pf-help">The money the bot manages: it buys the weights with it${p.lev === 'max' || Number(p.lev) > 1 ? `, at ${p.lev === 'max' ? 'each market\'s maximum leverage' : p.lev + '× (capped per market)'} ${p.margin === 'isolated' ? 'isolated' : 'cross'}` : ''}, and rebalances inside it. Leverage and margin come from <b>Account</b> above.</p>
+      <p class="pf-help">The money the bot manages, split over the holdings by weight. Leverage ${p.lev === 'max' ? 'at each market\'s maximum' : p.lev + '× (capped per market)'}, ${p.margin === 'isolated' ? 'isolated' : 'cross'}: from <b>Account</b> above.</p>
       ${skipped.length ? `<p class="pf-warn">Spot holdings are skipped (bots cannot trade spot yet), their weight spread over the rest: ${skipped.map(c => esc(p.nameOf({ coin: c }))).join(', ')}.</p>` : ''}
       ${!Object.keys(weights).length ? '<p class="pf-warn">Nothing here a bot can trade.</p>' : ''}
       <div class="pf-tr-plan" id="pfTrPlan"><button class="pf-btn pf-btn--ghost" id="pfTrPreview">Preview</button></div>
@@ -114,6 +120,11 @@ export function initTrade(get) {
     const el = sheet?.querySelector('#pfTrStratNote'); if (!el) return
     const p = get(), s = chosen(), q = p.params
     const day = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][q.weekDay] ?? 'Monday'
+    if (s.startsWith('bot:')) {
+      el.textContent = `Each holding is its own sub-account with its weight of the budget, trading ${p.both ? 'both directions' : 'only in its own direction'} on ${p.tf === '1d' ? 'daily' : p.tf === '1h' ? '1-hour' : '4-hour'} candles: the bot replays the backtest's own engine on every closed candle and copies the trade it is in. Stops and targets rest on Hyperliquid as trigger orders. A trade the strategy is already in when you start is not joined; the bot waits for the next entry. Its settings are the ones on its card under Trading strategies.`
+      const buys = sheet.querySelector('#pfTrBuysRow'); if (buys) buys.hidden = true
+      return
+    }
     el.textContent = {
       hold: 'Buys the weights once and holds them.',
       monthly: `Rebalances on day ${q.monthDay} of every month (UTC).`,
@@ -136,7 +147,8 @@ export function initTrade(get) {
     const p = get()
     const buys = Math.max(1, Math.min(52, Math.round(Number(sheet.querySelector('#pfTrBuys')?.value) || 8)))
     return liveArgs({ id: portfolioId(p), name: p.name, items: p.items, strategy: chosen(), params: { ...p.params, dcaBuys: buys },
-      budget: Number(sheet.querySelector('#pfTrBudget').value), lev: p.lev, margin: p.margin, fresh })
+      budget: Number(sheet.querySelector('#pfTrBudget').value), lev: p.lev, margin: p.margin, fresh,
+      tf: p.tf, both: p.both, sparams: chosen().startsWith('bot:') ? (p.botParams?.[chosen().slice(4)] ?? {}) : null })
   }
 
   function renderPlan() {
@@ -145,8 +157,8 @@ export function initTrade(get) {
     if (!plan.ok) { el.innerHTML = `<p class="pf-warn">${esc(plan.error ?? 'no preview')}</p><button class="pf-btn pf-btn--ghost" id="pfTrPreview">Try again</button>`; gate(); return }
     const p = get()
     const under = plan.free != null && plan.free < plan.margin
-    el.innerHTML = `<table class="pf-tr-tbl"><thead><tr><th>Market</th><th>Weight</th><th>Leverage</th><th>Position</th></tr></thead><tbody>
-      ${plan.rows.map(r => `<tr><td>${esc(p.nameOf({ coin: r.coin }))}${r.w < 0 ? ' <em>short</em>' : ''}</td><td>${(Math.abs(r.w) * 100).toFixed(1)}%</td><td>${r.lev}×${r.isolated ? ' iso' : ''}</td><td>${usd(r.usd)}</td></tr>`).join('')}
+    el.innerHTML = `<table class="pf-tr-tbl"><thead><tr><th>Market</th><th>Weight</th><th>Leverage</th><th>Position</th>${plan.rows.some(r => 'now' in r) ? '<th>Now</th>' : ''}</tr></thead><tbody>
+      ${plan.rows.map(r => `<tr><td>${esc(p.nameOf({ coin: r.coin }))}${r.w < 0 ? ' <em>short</em>' : ''}</td><td>${(Math.abs(r.w) * 100).toFixed(1)}%</td><td>${r.lev}×${r.isolated ? ' iso' : ''}</td><td>${usd(r.usd)}</td>${'now' in r ? `<td>${r.now === undefined ? '—' : r.now ? `in a ${r.now.side} since ${new Date(r.now.since).toISOString().slice(5, 16).replace('T', ' ')}: waits for the next entry` : 'waiting for an entry'}</td>` : ''}</tr>`).join('')}
       </tbody></table>
       ${plan.tooSmall?.length ? `<p class="pf-warn">Under Hyperliquid's $${HL_MIN_ORDER} minimum order: ${plan.tooSmall.map(c => esc(p.nameOf({ coin: c }))).join(', ')}. Raise the budget.</p>` : ''}
       ${plan.missing?.length ? `<p class="pf-warn">No price right now for ${plan.missing.map(c => esc(p.nameOf({ coin: c }))).join(', ')}; the bot waits for one before trading.</p>` : ''}

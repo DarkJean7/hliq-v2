@@ -358,3 +358,6 @@
 .pf-live-sub { margin-top: 3px; font-size: 11.5px; color: var(--fg-3); }
 .pf-live-btns { display: flex; gap: 8px; margin-top: 10px; }
 .pf-live-btns .pf-btn { padding: 6px 10px; font-size: 12px; }
+.pf-tr-strats { align-items: flex-start; }
+.pf-tr-strats > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.pf-tr-strats .pf-chips { flex-wrap: wrap; }

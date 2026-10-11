@@ -114,5 +114,45 @@ console.log(nl + '-- the bot and the server --')
   t('a rebalance counts as done only when every order filled', /if \(!failed\) ledger = \{ \.\.\.ledger, lastRebal: now/.test(bot))
 }
 
+console.log(nl + '-- trading strategies: the bot copies the backtest (src/pfsignal.js) --')
+{
+  const S = await import('../../src/pfsignal.js')
+  const PB = await import('../../src/pfbacktest.js')
+  const H = 4 * 3_600_000
+  // Flat at 100, then a close well above the 20-candle channel on candle 40.
+  const cs = Array.from({ length: 60 }, (_, i) => { const c = i < 40 ? 100 : 106; return { t: T0 + i * H, o: i === 40 ? 100 : c, h: c + 0.5, l: Math.min(c, i === 40 ? 100 : c) - 0.5, c } })
+  const ctx = { bal: 500, side: 'long', both: false, lev: 2, margin: 'cross', feeBps: 4.5 }
+  const tr = S.simOpenTrade(cs.slice(0, 41), 'breakout', { takeProfitPct: 10, stopLossPct: 3 }, ctx)
+  t('the replay finds the trade the backtest is in: long from candle 40, with its target and stop', tr && tr.side === 'long' && tr.time === cs[40].t && near(tr.tp, 106 * 1.1) && near(tr.sl, 106 * 0.97), tr)
+  t('a target switched off is no level at all, not a price of 1e6%', S.simOpenTrade(cs.slice(0, 41), 'breakout', { tpOff: true, stopLossPct: 3 }, ctx).tp === null)
+  t('short-only, the same breakout is not taken', S.simOpenTrade(cs.slice(0, 41), 'breakout', {}, { ...ctx, side: 'short' }) === null)
+  t('only closed candles are replayed', S.closedCandles(cs, '4h', cs[41].t + 1).length === 41 && S.closedCandles(cs, '4h', cs[41].t + H).length === 42)
+  const start = cs[39].t
+  const open = S.decideHolding({ sim: tr, cur: { trade: null, lastTime: null }, startedAt: start, tf: '4h', now: cs[41].t + 60_000 })
+  t('an entry after the bot started is copied', open.length === 1 && open[0].do === 'open', open)
+  t('one the strategy was already in when the bot started is not joined', !S.decideHolding({ sim: tr, cur: { trade: null, lastTime: null }, startedAt: cs[45].t, tf: '4h', now: cs[45].t + 60_000 }).length)
+  t('nor one a candle late (the bot was down)', !S.decideHolding({ sim: tr, cur: { trade: null, lastTime: null }, startedAt: start, tf: '4h', now: cs[43].t }).length)
+  t('nor one it already took and the exchange closed (stop or target)', !S.decideHolding({ sim: tr, cur: { trade: null, lastTime: tr.time }, startedAt: start, tf: '4h', now: cs[41].t + 60_000 }).length)
+  const held = { time: tr.time, side: 'long', sz: 1 }
+  t('holding the trade the replay holds: nothing to do', !S.decideHolding({ sim: tr, cur: { trade: held, lastTime: tr.time }, startedAt: start, tf: '4h', now: cs[42].t }).length)
+  t('the replay closed it: close', S.decideHolding({ sim: null, cur: { trade: held, lastTime: tr.time }, startedAt: start, tf: '4h', now: cs[42].t }).map(x => x.do).join() === 'close')
+  const flip = { ...tr, time: cs[41].t, side: 'short' }
+  t('a flip: close, then open the other way', S.decideHolding({ sim: flip, cur: { trade: held, lastTime: tr.time }, startedAt: start, tf: '4h', now: cs[42].t + 60_000 }).map(x => x.do).join() === 'close,open')
+  t('candles not read this time decide nothing', !S.decideHolding({ sim: undefined, cur: { trade: held }, startedAt: start, tf: '4h', now: cs[42].t }).length)
+  t('size: the sub-account at its leverage, floored to the decimals', S.openSize(500, 2, 106, 3) === 9.433)
+  const subs = S.freshSubs({ BTC: 0.6, ETH: -0.4 }, 1000)
+  t('sub-accounts start with their weight of the budget', subs.BTC.cash === 600 && subs.ETH.cash === 400)
+  // The same engine with the same settings: the bot and the page cannot test two strategies.
+  const pfb = fs.readFileSync(new URL('../../src/pfbacktest.js', import.meta.url), 'utf8')
+  const sig = fs.readFileSync(new URL('../../src/pfsignal.js', import.meta.url), 'utf8')
+  t('the backtest and the bot build the engine\'s settings with one function (simParams)', pfb.includes('runBacktest(rows, simParams(strategy, params,') && sig.includes('runBacktest(candles, sp)') && sig.includes('simParams(strategy, params, ctx)'))
+  t('grid and DCA (ladders) are not offered as a single-trade copy', !S.SIGNAL_STRATEGIES.includes('grid') && !S.SIGNAL_STRATEGIES.includes('dca'))
+  const bot = fs.readFileSync(new URL('../../strategies/portfolio.js', import.meta.url), 'utf8')
+  t('stops and targets rest on the exchange, reduce-only', bot.includes('r: true, t: { trigger: { isMarket: true'))
+  t('a trade closed on the exchange is settled and not re-entered', bot.includes('settle(c, (await exitPrice(c, tr)) ?? px[c]') && bot.includes('trade: null, lastTime: tr.time'))
+  const la = L.liveArgs({ id: 'x', items: [{ coin: 'BTC', w: 1 }], strategy: 'bot:rsi', budget: 100, lev: 1, margin: 'cross', tf: '1h', both: true, sparams: { rsiLen: 7 } })
+  t('launch args carry the candle, the direction rule and the settings', la[la.indexOf('--tf') + 1] === '1h' && la.includes('--both') && JSON.parse(Buffer.from(la[la.indexOf('--sparams') + 1], 'base64').toString()).rsiLen === 7)
+}
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

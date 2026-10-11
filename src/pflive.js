@@ -204,11 +204,17 @@ export function reconcile(ledger, held) {
 }
 
 /** Args → the bot's CLI flags, in one place for the page and the tests. */
-export function liveArgs({ id, name, items, strategy, params = {}, budget, lev, margin, fresh = false, run = String(Date.now()) }) {
+export function liveArgs({ id, name, items, strategy, params = {}, budget, lev, margin, fresh = false, run = String(Date.now()), tf = null, both = false, sparams = null }) {
   const enc = (o) => (typeof Buffer !== 'undefined' ? Buffer.from(JSON.stringify(o)).toString('base64') : btoa(unescape(encodeURIComponent(JSON.stringify(o)))))
   const a = ['--id', String(id), '--name', String(name ?? id).slice(0, 40), '--items', enc(items.map(i => ({ coin: i.coin, w: Number(i.w), side: i.side === 'short' ? 'short' : 'long', kind: i.kind ?? null }))),
     '--strategy', strategy, '--budget', String(budget), '--leverage', String(lev), '--margin', margin === 'isolated' ? 'isolated' : 'cross']
   for (const [k, v] of Object.entries(params)) if (v != null && k in LIVE_DEFAULTS) a.push('--' + k, String(v))
+  // A trading strategy ('bot:rsi'…): its candle, its direction rule, its own settings.
+  if (String(strategy).startsWith('bot:')) {
+    a.push('--tf', tf ?? '4h')
+    if (both) a.push('--both')
+    if (sparams) a.push('--sparams', enc(sparams))
+  }
   a.push('--run', run)
   if (fresh) a.push('--fresh')
   return a

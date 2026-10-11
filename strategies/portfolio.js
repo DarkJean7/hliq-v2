@@ -2,9 +2,12 @@
 /**
  * INSOLVENT TERMINAL — Portfolio bot
  *
- * Runs a /portfolios basket live with one allocation strategy: buy & hold, rebalance monthly /
- * weekly / on drift, DCA, or the trend filter — the same rules the page backtests. Every
- * decision is in src/pflive.js (pure, tested); this file fetches, places and remembers.
+ * Runs a /portfolios basket live with one strategy, the same rules the page backtests:
+ *   an ALLOCATION strategy — buy & hold, rebalance monthly / weekly / on drift, DCA, the trend
+ *     filter — decided in src/pflive.js; or
+ *   a TRADING strategy (--strategy bot:rsi, bot:macd, …) — each holding its own sub-account,
+ *     copying the trade the backtest's own engine is in on its latest candles: src/pfsignal.js.
+ * Both are pure and tested; this file fetches, places and remembers.
  *
  * It trades perps on the main dex and on HIP-3 builder dexes (xyz:NVDA). Spot holdings are
  * skipped and named in the log; their weight is spread over the rest.
@@ -29,6 +32,7 @@ import path from 'node:path'
 import { isPaused, onPause, onResume } from './_pause.js'
 import { botCloid } from '../src/cloid.js'
 import { LIVE_STRATEGIES, LIVE_DEFAULTS, HL_MIN_ORDER, liveWeights, liveLeverage, freshLedger, equityOf, smaOf, decide, ordersFor, applyFill, reconcile, dayOf } from '../src/pflive.js'
+import { SIGNAL_STRATEGIES, TF_MS, WARMUP, closedCandles, simOpenTrade, decideHolding, openSize, freshSubs, subFill } from '../src/pfsignal.js'
 
 const { values: args } = parseArgs({
   options: {
@@ -39,7 +43,10 @@ const { values: args } = parseArgs({
     monthDay: { type: 'string' }, weekDay: { type: 'string' }, band: { type: 'string' },
     dcaEvery: { type: 'string' }, dcaBuys: { type: 'string' }, dcaUpfront: { type: 'string' },
     trendDays: { type: 'string' }, trendBuffer: { type: 'string' },
-    interval: { type: 'string', default: '5' },          // minutes between checks
+    // Trading strategies: the candle, both directions or only each holding's own, and the
+    // strategy's own settings (base64 JSON, as the page's cards hold them).
+    tf: { type: 'string', default: '4h' }, both: { type: 'boolean', default: false }, sparams: { type: 'string' },
+    interval: { type: 'string' },                        // minutes between checks (5 allocation, 1 trading)
     slippage: { type: 'string', default: '1' },          // % the IOC limit may cross the mid
     fee: { type: 'string', default: '0.045' },           // % taker fee, for the ledger
     fresh: { type: 'boolean', default: false },          // start a new ledger even if one is saved…
@@ -67,7 +74,9 @@ const ID = String(args.id ?? '').toUpperCase()
 if (!/^[A-Z0-9_-]{1,40}$/.test(ID)) fail('a portfolio id is required')
 const NAME = String(args.name ?? ID).slice(0, 40)
 const STRATEGY = String(args.strategy)
-if (!LIVE_STRATEGIES.includes(STRATEGY)) fail(`unknown strategy "${STRATEGY}"`)
+// A trading strategy is 'bot:<id>' — the allocation and trading lists share names (trend, dca).
+const BOT = STRATEGY.startsWith('bot:') ? STRATEGY.slice(4) : null
+if (BOT ? !SIGNAL_STRATEGIES.includes(BOT) : !LIVE_STRATEGIES.includes(STRATEGY)) fail(`unknown strategy "${STRATEGY}"`)
 const BUDGET = Number(args.budget)
 if (!(BUDGET >= HL_MIN_ORDER)) fail(`a budget of at least $${HL_MIN_ORDER} is required`)
 let ITEMS
@@ -77,7 +86,11 @@ const LEV = String(args.leverage) === 'max' ? 'max' : Math.max(1, Math.round(Num
 const ISOLATED = String(args.margin) === 'isolated'
 const num = (k, scale = 1) => (args[k] != null && Number.isFinite(Number(args[k])) ? Number(args[k]) * scale : LIVE_DEFAULTS[k])
 const PARAMS = { monthDay: num('monthDay'), weekDay: num('weekDay'), band: num('band'), dcaEvery: num('dcaEvery'), dcaBuys: num('dcaBuys'), dcaUpfront: num('dcaUpfront'), trendDays: num('trendDays'), trendBuffer: num('trendBuffer') }
-const CHECK_MS = Math.max(1, Number(args.interval) || 5) * 60_000
+const CHECK_MS = Math.max(1, Number(args.interval) || (BOT ? 1 : 5)) * 60_000
+const TF = TF_MS[args.tf] ? args.tf : '4h'
+const BOTH = !!args.both
+let SPARAMS = {}
+if (args.sparams) { try { SPARAMS = JSON.parse(Buffer.from(String(args.sparams), 'base64').toString('utf8')) ?? {} } catch { fail('the strategy settings could not be read') } }
 const SLIP = Math.min(0.05, Math.max(0.001, (Number(args.slippage) || 1) / 100))
 const FEE = Math.max(0, Number(args.fee) || 0.045) / 100
 const RUN = String(args.run ?? '').slice(0, 40)
@@ -169,11 +182,12 @@ function save(ledger, extra = {}) {
   } catch (e) { log('WARN', `could not save the ledger: ${e.message}`) }
 }
 
+// Hyperliquid's price tick: at most 5 significant figures and (6 − size decimals) decimals.
+const tickPx = (x, szDecimals) => { const sig = Number(Number(x).toPrecision(5)), dec = Math.max(0, 6 - szDecimals); return Math.round(sig * 10 ** dec) / 10 ** dec }
+
 async function order(c, isBuy, sz, reduceOnly, mid) {
   const { index, szDecimals } = META[c]
-  const lim = isBuy ? mid * (1 + SLIP) : mid * (1 - SLIP)
-  const sig = Number(lim.toPrecision(5)), dec = Math.max(0, 6 - szDecimals)
-  const p = Math.round(sig * 10 ** dec) / 10 ** dec
+  const p = tickPx(isBuy ? mid * (1 + SLIP) : mid * (1 - SLIP), szDecimals)
   const r = await exchange.order({ orders: [{ c: botCloid(process.env.HLIQ_BOT), a: index, b: isBuy, p: String(p), s: String(sz), r: reduceOnly, t: { limit: { tif: 'Ioc' } } }], grouping: 'na' })
   const st = r?.response?.data?.statuses?.[0] ?? {}
   if (st.error) throw new Error(st.error)
@@ -227,6 +241,133 @@ async function tick() {
   log('EQUITY', `$${eq2 == null ? '?' : eq2.toFixed(2)} of $${BUDGET} · fees $${ledger.fees.toFixed(2)}`)
 }
 
+// ── trading strategies: each holding a sub-account copying the backtest's trade ──────────
+// Stops and targets rest on the exchange as reduce-only trigger orders, so they fill inside a
+// candle as the backtest assumes, and keep protecting the position if the bot is stopped.
+async function trigger(c, isBuy, sz, level, kind) {
+  const { index, szDecimals } = META[c]
+  const trig = tickPx(level, szDecimals)
+  const lim = tickPx(isBuy ? trig * (1 + 3 * SLIP) : trig * (1 - 3 * SLIP), szDecimals)
+  const r = await exchange.order({ orders: [{ c: botCloid(process.env.HLIQ_BOT), a: index, b: isBuy, p: String(lim), s: String(sz), r: true, t: { trigger: { isMarket: true, triggerPx: String(trig), tpsl: kind } } }], grouping: 'na' })
+  const st = r?.response?.data?.statuses?.[0] ?? {}
+  if (st.error) throw new Error(st.error)
+  return st.resting?.oid ?? null
+}
+async function cancelTriggers(c, tr) {
+  for (const oid of [tr.tpOid, tr.slOid]) if (oid) { try { await exchange.cancel({ cancels: [{ a: META[c].index, o: Number(oid) }] }) } catch { /* already filled or gone */ } }
+}
+/** The average price the exchange closed a trade at, from the account's fills since it opened. */
+async function exitPrice(c, tr) {
+  try {
+    const fills = await info.userFillsByTime({ user: QUERY_ADDR, startTime: tr.openedAt })
+    const closeSide = tr.side === 'long' ? 'A' : 'B'
+    let q = 0, v = 0
+    for (const fl of fills ?? []) {
+      if (fl.coin !== c || fl.side !== closeSide || !/^Close/.test(fl.dir ?? '')) continue
+      const take = Math.min(Number(fl.sz), tr.sz - q)
+      if (take <= 0) break
+      q += take; v += take * Number(fl.px)
+    }
+    return q > 0 ? v / q : null
+  } catch { return null }
+}
+const sim = {}                                   // coin → { bar, trade } — the replay, once per closed candle
+// What a holding's sub-account is worth: its cash plus its open trade at the price. NOT its cash
+// alone — with a trade open that is negative (the position was bought on margin), and the replay,
+// handed a negative balance, refuses the very trade it is in, so the bot closed it a candle later.
+// Caught by tests/pfbot-e2e.mjs.
+function subEquity(c, px) {
+  const sub = ledger.subs[c], tr = sub?.trade
+  const v = (sub?.cash ?? 0) + (tr ? (tr.side === 'long' ? 1 : -1) * tr.sz * (px[c] ?? tr.entry) : 0)
+  return Math.max(1, v)
+}
+function settle(c, exitPx, why) {
+  const sub = ledger.subs[c], tr = sub.trade
+  const signed = tr.side === 'long' ? -tr.sz : tr.sz
+  ledger = applyFill(ledger, c, signed, exitPx, FEE)
+  const after = subFill(sub, signed, exitPx, FEE)
+  ledger.subs = { ...ledger.subs, [c]: { ...after, trade: null, lastTime: tr.time } }
+  const pnl = (tr.side === 'long' ? 1 : -1) * tr.sz * (exitPx - tr.entry)
+  log('CLOSE', `${c} ${tr.side} ${tr.sz} @ $${exitPx} (${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}): ${why}`)
+}
+async function signalTick() {
+  const now = Date.now()
+  const px = await prices()
+  const h = await held()
+  const lb = levBy()
+  // 1. Closed by the exchange — its stop or target filled — or by hand: settle and wait.
+  for (const c of COINS) {
+    const tr = ledger.subs[c]?.trade
+    if (!tr || !(c in h.held)) continue
+    const have = h.held[c], want = tr.side === 'long' ? tr.sz : -tr.sz
+    if (Math.sign(have) === Math.sign(want) && Math.abs(have) >= Math.abs(want) * 0.999) continue
+    if (Math.sign(have) === Math.sign(want) && Math.abs(have) > 0) {
+      ledger.subs[c] = { ...ledger.subs[c], trade: { ...tr, sz: Math.abs(have) } }
+      log('RECONCILE', `${c}: the account holds ${Math.abs(have)} of this trade's ${tr.sz}; the bot manages what is left`)
+      continue
+    }
+    await cancelTriggers(c, tr)
+    settle(c, (await exitPrice(c, tr)) ?? px[c], 'closed on the exchange (its stop or target, or by hand)')
+  }
+  // 2. The replay, once per closed candle per holding.
+  const bar = Math.floor(now / TF_MS[TF])
+  for (const c of COINS) {
+    if (sim[c]?.bar === bar) continue
+    try {
+      const cs = await info.candleSnapshot({ coin: c, interval: TF, startTime: now - (WARMUP + 2) * TF_MS[TF], endTime: now })
+      const side = W[c] < 0 ? 'short' : 'long'
+      const t = simOpenTrade(closedCandles(cs, TF, now), BOT, SPARAMS, { bal: subEquity(c, px), side, both: BOTH, lev: lb[c], margin: ISOLATED ? 'isolated' : 'cross', feeBps: FEE * 1e4 })
+      sim[c] = { bar, trade: t }
+    } catch (e) { log('WARN', `${c}: candles did not load (${e.message}); trying again next check`) }
+    await new Promise(r => setTimeout(r, 250))                 // gentle on the shared rate limit
+  }
+  // 3. Copy it.
+  for (const c of COINS) {
+    const acts = decideHolding({ sim: sim[c]?.trade, cur: ledger.subs[c], startedAt: ledger.startedAt, tf: TF, now })
+    for (const a of acts) {
+      const sub = ledger.subs[c]
+      if (a.do === 'close' && sub.trade) {
+        const tr = sub.trade
+        await cancelTriggers(c, tr)
+        try {
+          const fl = await order(c, tr.side !== 'long', tr.sz, true, px[c])
+          if (fl.filled > 0) settle(c, fl.avgPx || px[c], 'the strategy closed it')
+          else log('WARN', `${c}: close did not fill; trying again next check`)
+        } catch (e) { log('ERROR', `${c}: close: ${e.message}`) }
+      }
+      if (a.do === 'open' && !ledger.subs[c].trade) {
+        const t = a.trade, long = t.side === 'long'
+        const sz = openSize(ledger.subs[c].cash, lb[c], px[c], META[c].szDecimals)
+        if (sz * px[c] < HL_MIN_ORDER) {
+          log('SKIP', `${c}: ${t.side} signal, but $${(sz * px[c]).toFixed(2)} is under Hyperliquid's $${HL_MIN_ORDER} minimum`)
+          ledger.subs[c] = { ...ledger.subs[c], lastTime: t.time }
+          continue
+        }
+        try {
+          const fl = await order(c, long, sz, false, px[c])
+          if (!(fl.filled > 0)) { log('WARN', `${c}: ${t.side} entry did not fill; trying again next check`); continue }
+          const entry = fl.avgPx || px[c]
+          ledger = applyFill(ledger, c, long ? fl.filled : -fl.filled, entry, FEE)
+          const after = subFill(ledger.subs[c], long ? fl.filled : -fl.filled, entry, FEE)
+          // The backtest's levels moved by however far the fill was from its entry price.
+          const shift = entry - t.entry
+          const tr = { time: t.time, side: t.side, sz: fl.filled, entry, openedAt: now - 60_000, tpOid: null, slOid: null,
+            tp: t.tp != null ? t.tp + shift : null, sl: t.sl != null ? t.sl + shift : null }
+          try { if (tr.tp) tr.tpOid = await trigger(c, !long, tr.sz, tr.tp, 'tp') } catch (e) { log('WARN', `${c}: target not placed (${e.message}); the bot closes it when the strategy does`) }
+          try { if (tr.sl) tr.slOid = await trigger(c, !long, tr.sz, tr.sl, 'sl') } catch (e) { log('WARN', `${c}: stop not placed (${e.message})`) }
+          ledger.subs = { ...ledger.subs, [c]: { ...after, trade: tr, lastTime: t.time } }
+          log('OPEN', `${c} ${t.side} ${tr.sz} @ $${entry}${tr.tp ? ` · target $${tr.tp.toPrecision(5)}` : ''}${tr.sl ? ` · stop $${tr.sl.toPrecision(5)}` : ''}`)
+        } catch (e) { log('ERROR', `${c}: entry: ${e.message}`) }
+      }
+    }
+    save(ledger)
+  }
+  const open = COINS.filter(c => ledger.subs[c]?.trade)
+  const eq = equityOf(ledger, px)
+  const reason = open.length ? `in ${open.length} trade${open.length === 1 ? '' : 's'}: ${open.map(c => `${c} ${ledger.subs[c].trade.side}`).join(', ')}` : 'waiting for the next entry'
+  save(ledger, { equity: eq, reason })
+}
+
 async function plan() {
   await loadMeta()
   const px = await prices()
@@ -241,11 +382,24 @@ async function plan() {
   const slice = STRATEGY === 'dca' ? (PARAMS.dcaUpfront + (1 - PARAMS.dcaUpfront) / Math.max(1, Math.round(PARAMS.dcaBuys))) : 1
   const tooSmall = rows.filter(r => r.usd * slice < HL_MIN_ORDER).map(r => r.coin)
   const resumes = !!(saved && saved.units && Object.keys(saved.units).length && saved.strategy === STRATEGY)   // what a launch WITHOUT --fresh carries on from
+  // A trading strategy: where the replay stands on each market right now. A trade it is
+  // already in is not joined — the bot waits for the next entry — and the preview says so.
+  if (BOT) {
+    const now = Date.now()
+    for (const r of rows) {
+      try {
+        const cs = await info.candleSnapshot({ coin: r.coin, interval: TF, startTime: now - (WARMUP + 2) * TF_MS[TF], endTime: now })
+        const t = simOpenTrade(closedCandles(cs, TF, now), BOT, SPARAMS, { bal: BUDGET * Math.abs(r.w), side: r.w < 0 ? 'short' : 'long', both: BOTH, lev: r.lev, margin: ISOLATED ? 'isolated' : 'cross', feeBps: FEE * 1e4 })
+        r.now = t ? { side: t.side, since: t.time } : null
+      } catch { r.now = undefined }
+    }
+  }
   console.log('__PLAN__' + JSON.stringify({ ok: true, rows, skipped: SKIPPED, tooSmall, missing, margin: BUDGET, free: h.free, resumes, held: resumes ? saved.units : null, strategy: STRATEGY, budget: BUDGET }))
 }
 
 async function run() {
   if (PLAN) { try { await plan() } catch (e) { fail(e.message) } process.exit(0) }
+  if (BOT) log('START', `Trading strategy ${BOT} on ${TF} candles${BOTH ? ', both directions' : ''}; each holding is its own sub-account. Trades the strategy is already in are not joined: it waits for the next entry.`)
   log('START', `Portfolio "${NAME}" (${ID}) · ${STRATEGY} · budget $${BUDGET} · leverage ${LEV}${LEV === 'max' ? '' : '×'} ${ISOLATED ? 'isolated' : 'cross'}`)
   log('START', `${COINS.length} markets: ${COINS.map(c => `${c} ${(W[c] * 100).toFixed(1)}%`).join(', ')}`)
   if (SKIPPED.length) log('START', `skipped (spot, not tradable by a bot yet): ${SKIPPED.join(', ')}`)
@@ -254,17 +408,19 @@ async function run() {
   // restart or a resume (deploy, reboot) re-sends the same arguments — so a saved ledger from
   // THIS run is always carried on, and --fresh can never buy everything a second time.
   const saved = readAll()[KEY]
-  const carry = saved && saved.units && saved.strategy === STRATEGY && (!args.fresh || (RUN && saved.run === RUN))
-  ledger = carry ? saved : { ...freshLedger(BUDGET, STRATEGY, Date.now()), run: RUN }
+  const carry = saved && saved.units && saved.strategy === STRATEGY && (!args.fresh || (RUN && saved.run === RUN)) && (!BOT || saved.subs)
+  ledger = carry ? saved : { ...freshLedger(BUDGET, STRATEGY, Date.now()), run: RUN, ...(BOT ? { subs: freshSubs(W, BUDGET) } : {}) }
+  // A holding added to the basket since the ledger was saved starts with its share.
+  if (BOT) for (const c of COINS) if (!ledger.subs[c]) ledger.subs[c] = { cash: BUDGET * Math.abs(W[c]), trade: null, lastTime: null }
   log('START', ledger === saved ? `carrying on from the saved ledger (${Object.keys(ledger.units).length} positions)` : 'new ledger')
   await setLeverage()
   save(ledger)
   for (;;) {
-    if (!isPaused()) { try { await tick() } catch (e) { log('ERROR', e.message) } }
+    if (!isPaused()) { try { await (BOT ? signalTick() : tick()) } catch (e) { log('ERROR', e.message) } }
     await new Promise(r => setTimeout(r, CHECK_MS))
   }
 }
 onPause(() => log('PAUSE', 'paused: no orders until resumed'))
 onResume(() => log('RESUME', 'resumed'))
-process.on('SIGTERM', () => { log('STOP', 'stopped; positions stay open and the ledger is kept'); process.exit(0) })
+process.on('SIGTERM', () => { log('STOP', `stopped; positions stay open${BOT ? ', with their stops and targets resting on the exchange,' : ''} and the ledger is kept`); process.exit(0) })
 run().catch(e => fail(e.message))
