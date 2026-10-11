@@ -38117,7 +38117,12 @@ async function _chalSubmit() {
   } catch {}
 }
 function _chalStartAutoSubmit() { if (_chalTimer) return; _chalSubmit(); _chalTimer = setInterval(_chalSubmit, 30000) }
-window.__chalMaybeAutoSubmit = () => { if (_chalActive()) { try { setPaperSlot('challenge') } catch {}; _chalStartAutoSubmit() } }   // called at init
+// Called at init. It used to switch the paper account to the Challenge one four seconds after
+// boot, under whatever account was on screen — reported as a paper account ("PF · insolvent")
+// showing the Challenge account's positions, and the two seeming to swap. The account restored
+// at boot (hliq_paper_slot) is the one shown; the submit already reports only while the
+// Challenge account is the one on screen, and the server keeps it trading in the meantime.
+window.__chalMaybeAutoSubmit = () => { if (_chalActive()) _chalStartAutoSubmit() }
 
 function _chalCountdown(end) {
   const ms = end - Date.now()
