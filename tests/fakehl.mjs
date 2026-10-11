@@ -26,14 +26,20 @@ const priceAt = (coin, t) => {
   for (const [h, v] of steps) if (t >= T0 + h * H) p = v
   return p
 }
-const universe = Object.keys(PRICES).map(name => ({ name, szDecimals: 4, maxLeverage: 20 }))
+// A coin named "@N" is a SPOT pair (asset id 10000 + N): its base token is "TKN<N>", 2 size
+// decimals; balances, not positions; bought with the spot USDC balance (FAKE_SPOT_USDC).
+const isSpot = (c) => c.startsWith('@')
+const universe = Object.keys(PRICES).filter(c => !isSpot(c)).map(name => ({ name, szDecimals: 4, maxLeverage: 20 }))
+const spotPairs = Object.keys(PRICES).filter(isSpot).map(c => ({ name: c, index: Number(c.slice(1)) }))
+const tokenOf = (c) => 'TKN' + c.slice(1)
 // The exchange outlives the bot: FAKE_STATE keeps positions, fills and resting orders across a
 // restart, as Hyperliquid would.
 const STATE = process.env.FAKE_STATE
 const saved = STATE && fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, 'utf8')) : {}
 const pos = saved.pos ?? {}, fills = saved.fills ?? [], resting = saved.resting ?? []
+const spotBal = saved.spotBal ?? { USDC: Number(process.env.FAKE_SPOT_USDC ?? 100000) }
 let oid = saved.oid ?? 1000
-const persist = () => { if (STATE) fs.writeFileSync(STATE, JSON.stringify({ pos, fills, resting, oid })) }
+const persist = () => { if (STATE) fs.writeFileSync(STATE, JSON.stringify({ pos, fills, resting, oid, spotBal })) }
 const journal = (o) => { if (LOG) fs.appendFileSync(LOG, JSON.stringify({ at: Date.now(), ...o }) + '\n') }
 const fill = (coin, isBuy, sz, px) => {
   const before = pos[coin] ?? 0, after = before + (isBuy ? sz : -sz)
@@ -58,6 +64,8 @@ function info(b) {
   const now = Date.now()
   switch (b.type) {
     case 'meta': return { universe, marginTables: [], collateralToken: 0 }
+    case 'spotMeta': return { tokens: [{ index: 0, name: 'USDC', szDecimals: 8 }, ...spotPairs.map(p => ({ index: p.index + 1, name: tokenOf(p.name), szDecimals: 2 }))], universe: spotPairs.map(p => ({ name: p.name, index: p.index, tokens: [p.index + 1, 0] })) }
+    case 'spotClearinghouseState': return { balances: Object.entries(spotBal).map(([coin, total]) => ({ coin, token: 0, total: String(total), hold: '0', entryNtl: '0' })) }
     case 'perpDexs': return [null]
     case 'allMids': return Object.fromEntries(Object.keys(PRICES).map(c => [c, String(priceAt(c, now))]))
     case 'clearinghouseState': return {
@@ -87,7 +95,21 @@ function exchange(b) {
   }
   if (a.type === 'order') {
     const statuses = a.orders.map(o => {
-      const coin = universe[o.a]?.name, isBuy = !!o.b, sz = Number(o.s)
+      const isBuy = !!o.b, sz = Number(o.s)
+      if (o.a >= 10000 && o.a < 100000) {
+        const coin = '@' + (o.a - 10000)
+        if (o.t?.trigger) return { error: 'no trigger orders on spot here' }
+        const mid = priceAt(coin, Date.now()), lim = Number(o.p), tk = tokenOf(coin)
+        if (isBuy ? lim < mid : lim > mid) return { error: 'Order could not immediately match' }
+        if (isBuy && (spotBal.USDC ?? 0) < sz * mid * 1.0007) { journal({ ev: 'spot-refused', coin, isBuy, sz, why: 'usdc' }); return { error: 'Insufficient spot balance' } }
+        if (!isBuy && (spotBal[tk] ?? 0) < sz - 1e-9) { journal({ ev: 'spot-refused', coin, isBuy, sz, why: 'balance' }); return { error: 'Insufficient spot balance' } }
+        spotBal.USDC = (spotBal.USDC ?? 0) + (isBuy ? -1 : 1) * sz * mid - sz * mid * 0.0007
+        spotBal[tk] = Math.round(((spotBal[tk] ?? 0) + (isBuy ? sz : -sz)) * 1e8) / 1e8
+        fills.push({ coin, px: String(mid), sz: String(sz), side: isBuy ? 'B' : 'A', time: Date.now(), dir: isBuy ? 'Buy' : 'Sell', startPosition: '0', closedPnl: '0', hash: '0x0', oid: ++oid, crossed: true, fee: String(sz * mid * 0.0007), tid: oid, feeToken: 'USDC' })
+        journal({ ev: 'ioc', coin, isBuy, sz, px: mid, spot: true, reduceOnly: !!o.r, cloid: o.c })
+        return { filled: { totalSz: String(sz), avgPx: String(mid), oid } }
+      }
+      const coin = universe[o.a]?.name
       if (o.t?.trigger) {
         const r = { oid: ++oid, coin, isBuy, sz, trig: Number(o.t.trigger.triggerPx), tpsl: o.t.trigger.tpsl, reduceOnly: !!o.r, cloid: o.c }
         resting.push(r); journal({ ev: 'trigger', ...r })

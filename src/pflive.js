@@ -14,8 +14,9 @@
  *   equity = reserve + cash + Σ units × price          (cash goes negative with leverage)
  * The exchange is consulted only to catch the ledger claiming more than exists (reconcile).
  *
- * Spot holdings are skipped: no bot here trades spot yet, and their weight is spread over the
- * rest. The launch screen lists them, so a skipped holding is never a silent one.
+ * Spot holdings are traded as spot: bought and sold with USDC, never leveraged, never short.
+ * A SHORT spot holding cannot exist on Hyperliquid, so it is skipped and its weight spread over
+ * the rest; the launch screen lists it, so a skipped holding is never a silent one.
  */
 
 export const LIVE_STRATEGIES = ['hold', 'monthly', 'weekly', 'band', 'dca', 'trend']
@@ -24,27 +25,31 @@ export const LIVE_DEFAULTS = { monthDay: 1, weekDay: 1, band: 0.05, dcaEvery: 7,
 const DAY = 86_400_000
 export const dayOf = (t) => Math.floor(t / DAY) * DAY
 
-/** A holding no bot can trade yet: spot (`@N`, or kind 'spot'). */
-export const isSpotItem = (i) => String(i.coin ?? '').startsWith('@') || i.kind === 'spot'
+/** A spot holding (`@N`, a "PURR/USDC" pair, or kind 'spot'). */
+export const isSpotItem = (i) => String(i.coin ?? '').startsWith('@') || String(i.coin ?? '').includes('/') || i.kind === 'spot'
 
 /**
  * The weights the bot trades: signed (a short is negative), Σ|w| = 1, over the holdings it
- * can trade. → { weights: { coin: w }, skipped: [coin] }
+ * can trade. → { weights: { coin: w }, skipped: [coin] (short spot), spot: [coin] }
  */
 export function liveWeights(items) {
-  const skipped = [], live = []
+  const skipped = [], live = [], spot = []
   for (const i of items ?? []) {
     const w = Number(i.w ?? i.weight)
     if (!(w > 0)) continue
-    if (isSpotItem(i)) { skipped.push(i.coin); continue }
+    if (isSpotItem(i)) {
+      if (i.side === 'short') { skipped.push(i.coin); continue }          // spot cannot be sold short
+      spot.push(i.coin)
+    }
     live.push([i.coin, i.side === 'short' ? -w : w])
   }
   const sum = live.reduce((a, [, w]) => a + Math.abs(w), 0)
-  return { weights: sum > 0 ? Object.fromEntries(live.map(([c, w]) => [c, w / sum])) : {}, skipped }
+  return { weights: sum > 0 ? Object.fromEntries(live.map(([c, w]) => [c, w / sum])) : {}, skipped, spot }
 }
 
-/** Each market's leverage: asked (a number or 'max'), capped at that market's maximum. */
-export function liveLeverage(lev, maxLev) {
+/** Each market's leverage: asked (a number or 'max'), capped at that market's maximum. Spot: 1. */
+export function liveLeverage(lev, maxLev, spot = false) {
+  if (spot) return 1
   const m = Number(maxLev) > 0 ? Number(maxLev) : 1
   if (lev === 'max') return m
   return Math.max(1, Math.min(m, Math.round(Number(lev) || 1)))

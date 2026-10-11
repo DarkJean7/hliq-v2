@@ -48,8 +48,25 @@ export function installPaperExchange({ secret, slot, dir, log = () => {} }) {
     byId = { map, dexes: all }
     return byId
   }
+  // Spot: asset id 10000 + pair index; a pair's balance is held under its base token's name.
+  let spot = null
+  async function spotMeta() {
+    if (spot) return spot
+    const sm = await post({ type: 'spotMeta' })
+    const tok = Object.fromEntries((sm.tokens ?? []).map(t => [t.index, t]))
+    const byId = {}, tokenOf = {}
+    for (const u of sm.universe ?? []) {
+      const base = tok[u.tokens?.[0]]
+      if (!base) continue
+      byId[10000 + u.index] = u.name; tokenOf[u.name] = base.name
+      assets[u.name] = { szDecimals: base.szDecimals, maxLeverage: 1 }
+    }
+    spot = { byId, tokenOf, isSpot: (c) => c in tokenOf }
+    return spot
+  }
   // An asset id's coin, loading its builder dex's markets the first time one is traded.
   async function coinOf(id) {
+    if (id >= 10000 && id < 100000) return (await spotMeta()).byId[id] ?? null
     let m = (await ids([])).map
     if (m[id]) return m[id]
     if (id >= 100000) {
@@ -93,11 +110,13 @@ export function installPaperExchange({ secret, slot, dir, log = () => {} }) {
         for (const o of a.orders) m[o.a] = await coinOf(o.a)
         const coins = Object.values(m).filter(Boolean)
         const mk = await market(coins)
+        const sp = coins.some(c => c.startsWith('@') || c.includes('/')) ? await spotMeta() : null
         const statuses = host.withStore(secret, slot, mk, (P) => a.orders.map(o => {
           const coin = m[o.a]
           if (!coin) return { error: 'unknown asset' }
           const before = P.paperStore().orders.length
-          const r = P.paperOrder({ orders: [o] }, coin, {})
+          // Spot settles as a balance, paid in full — paper.js's spot path, at its spot fee.
+          const r = P.paperOrder({ orders: [o] }, coin, sp?.isSpot(coin) ? { isSpot: true } : {})
           const st = r?.response?.data?.statuses?.[0]
           // A paper trigger answers "waitingForTrigger"; Hyperliquid answers with its order id,
           // which a bot needs to cancel it later.
@@ -117,6 +136,15 @@ export function installPaperExchange({ secret, slot, dir, log = () => {} }) {
       else st.assetPositions = st.assetPositions.filter(p => !p.position.coin.includes(':'))
       return ok(st)
     }
+    // Spot balances as Hyperliquid names them (by token), and the account's USDC: paper keeps one
+    // pool of cash, so what is free there is what spot can spend.
+    if (b.type === 'spotClearinghouseState') {
+      const sp = await spotMeta()
+      const out = host.withStore(secret, slot, null, (P) => ({ bal: P.paperSpotState().balances, free: P.paperWithdrawable() }))
+      const balances = out.bal.map(x => ({ ...x, coin: sp.tokenOf[x.coin] ?? x.coin }))
+      balances.push({ coin: 'USDC', token: 0, total: String(out.free), hold: '0', entryNtl: '0' })
+      return ok({ balances })
+    }
     if (b.type === 'userFillsByTime' || b.type === 'userFills') {
       const fills = host.withStore(secret, slot, null, (P) => P.paperFills())
       return ok(fills.filter(f => f.time >= (b.startTime ?? 0)))
@@ -124,7 +152,7 @@ export function installPaperExchange({ secret, slot, dir, log = () => {} }) {
     return real(url, init)
   }
   function heldCoins() {
-    try { return host.withStore(secret, slot, null, (P) => P.paperStore().positions.map(p => p.coin)) } catch { return [] }
+    try { return host.withStore(secret, slot, null, (P) => [...P.paperStore().positions.map(p => p.coin), ...Object.keys(P.paperStore().balances ?? {})]) } catch { return [] }
   }
   return host
 }

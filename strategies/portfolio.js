@@ -9,8 +9,11 @@
  *     copying the trade the backtest's own engine is in on its latest candles: src/pfsignal.js.
  * Both are pure and tested; this file fetches, places and remembers.
  *
- * It trades perps on the main dex and on HIP-3 builder dexes (xyz:NVDA). Spot holdings are
- * skipped and named in the log; their weight is spread over the rest.
+ * It trades perps on the main dex and on HIP-3 builder dexes (xyz:NVDA), and spot (@107,
+ * PURR/USDC). Spot is bought and sold with the USDC in the account's SPOT balance — an agent key
+ * cannot move USDC between perp and spot — never leveraged, never short (a short spot holding is
+ * skipped and named), and its stops and targets are watched by the bot, since a spot balance
+ * cannot carry reduce-only trigger orders the way a perp position does.
  *
  * The bot keeps a LEDGER of what it bought (units per market, cash left) and trades only the
  * gap between that ledger and its targets — never "the position", which the account may share
@@ -107,9 +110,12 @@ const SLIP = Math.min(0.05, Math.max(0.001, (Number(args.slippage) || 1) / 100))
 const FEE = Math.max(0, Number(args.fee) || 0.045) / 100
 const RUN = String(args.run ?? '').slice(0, 40)
 
-const { weights: W, skipped: SKIPPED } = liveWeights(ITEMS)
+const { weights: W, skipped: SKIPPED, spot: SPOT_LIST } = liveWeights(ITEMS)
 const COINS = Object.keys(W)
-if (!COINS.length) fail('nothing here the bot can trade: spot holdings are not supported yet')
+const SPOT = new Set(SPOT_LIST)
+if (!COINS.length) fail('nothing here the bot can trade: a spot holding cannot be short')
+const SPOT_FEE = 0.0007                                  // Hyperliquid's base spot taker fee
+const feeOf = (c) => (SPOT.has(c) ? SPOT_FEE : FEE)
 
 const transport = new HttpTransport()
 const info = new InfoClient({ transport })
@@ -132,10 +138,21 @@ async function loadMeta() {
       META[name] = { index: dex ? 100000 + di * 10000 + i : i, szDecimals: u.szDecimals ?? 4, maxLev: u.maxLeverage ?? 1, onlyIsolated: !!u.onlyIsolated || /strictIsolated|noCross/i.test(String(u.marginMode ?? '')), delisted: !!u.isDelisted }
     })
   }
+  // Spot: asset id 10000 + the pair's index; sizes in the BASE token's decimals; its balance is
+  // held under the base token's name.
+  if (SPOT.size) {
+    const sm = await info.spotMeta()
+    const tok = Object.fromEntries((sm.tokens ?? []).map(t => [t.index, t]))
+    for (const u of sm.universe ?? []) {
+      const base = tok[u.tokens?.[0]]
+      if (!base) continue
+      META[u.name] = { index: 10000 + u.index, szDecimals: base.szDecimals ?? 2, maxLev: 1, spot: true, token: base.name, onlyIsolated: false, delisted: false }
+    }
+  }
   const bad = COINS.filter(c => !META[c] || META[c].delisted)
   if (bad.length) throw new Error(`not tradable on Hyperliquid: ${bad.join(', ')}`)
 }
-const levBy = () => Object.fromEntries(COINS.map(c => [c, liveLeverage(LEV, META[c].maxLev)]))
+const levBy = () => Object.fromEntries(COINS.map(c => [c, liveLeverage(LEV, META[c].maxLev, SPOT.has(c))]))
 
 async function prices() {
   const px = {}
@@ -149,20 +166,30 @@ async function prices() {
   return px
 }
 
-/** Net position per market, as the exchange has it; only markets that were read. */
+/**
+ * Net position per market, as the exchange has it; only markets that were read. A spot
+ * holding is its base token's balance. → { held, free (perp), spotFree (spot USDC not on hold) }
+ */
 async function held() {
   const out = {}
-  let free = 0
-  for (const dex of DEXES) {
+  let free = 0, spotFree = null
+  const perpDexes = [...new Set(COINS.filter(c => !SPOT.has(c)).map(dexOf))]
+  for (const dex of perpDexes.length ? perpDexes : ['']) {
     const s = dex ? await info.clearinghouseState({ user: QUERY_ADDR, dex }) : await info.clearinghouseState({ user: QUERY_ADDR })
     if (!dex) free = Number(s.withdrawable ?? 0)
-    for (const c of COINS) if (dexOf(c) === dex) out[c] = 0
+    for (const c of COINS) if (!SPOT.has(c) && dexOf(c) === dex) out[c] = 0
     for (const ap of s.assetPositions ?? []) {
       const n = dex && !ap.position.coin.includes(':') ? `${dex}:${ap.position.coin}` : ap.position.coin
       if (n in out) out[n] = Number(ap.position.szi ?? 0)
     }
   }
-  return { held: out, free }
+  if (SPOT.size) {
+    const sp = await info.spotClearinghouseState({ user: QUERY_ADDR })
+    const bal = Object.fromEntries((sp.balances ?? []).map(b => [b.coin, b]))
+    for (const c of SPOT) out[c] = Number(bal[META[c].token]?.total ?? 0)
+    spotFree = Math.max(0, Number(bal.USDC?.total ?? 0) - Number(bal.USDC?.hold ?? 0))
+  }
+  return { held: out, free, spotFree }
 }
 
 const sma = {}
@@ -194,13 +221,16 @@ function save(ledger, extra = {}) {
   } catch (e) { log('WARN', `could not save the ledger: ${e.message}`) }
 }
 
-// Hyperliquid's price tick: at most 5 significant figures and (6 − size decimals) decimals.
-const tickPx = (x, szDecimals) => { const sig = Number(Number(x).toPrecision(5)), dec = Math.max(0, 6 - szDecimals); return Math.round(sig * 10 ** dec) / 10 ** dec }
+// Hyperliquid's price tick: at most 5 significant figures, and (6 − size decimals) decimals on a
+// perp, (8 − size decimals) on spot.
+const tickPx = (x, szDecimals, spot = false) => { const sig = Number(Number(x).toPrecision(5)), dec = Math.max(0, (spot ? 8 : 6) - szDecimals); return Math.round(sig * 10 ** dec) / 10 ** dec }
+const floorSz = (x, dec) => Math.floor(Math.max(0, x) * 10 ** dec + 1e-9) / 10 ** dec
 
 async function order(c, isBuy, sz, reduceOnly, mid) {
-  const { index, szDecimals } = META[c]
-  const p = tickPx(isBuy ? mid * (1 + SLIP) : mid * (1 - SLIP), szDecimals)
-  const r = await exchange.order({ orders: [{ c: botCloid(process.env.HLIQ_BOT), a: index, b: isBuy, p: String(p), s: String(sz), r: reduceOnly, t: { limit: { tif: 'Ioc' } } }], grouping: 'na' })
+  const { index, szDecimals, spot } = META[c]
+  const p = tickPx(isBuy ? mid * (1 + SLIP) : mid * (1 - SLIP), szDecimals, spot)
+  // Spot has no reduce-only: a sale is a sale, capped by the caller at what is held.
+  const r = await exchange.order({ orders: [{ c: botCloid(process.env.HLIQ_BOT), a: index, b: isBuy, p: String(p), s: String(sz), r: spot ? false : reduceOnly, t: { limit: { tif: 'Ioc' } } }], grouping: 'na' })
   const st = r?.response?.data?.statuses?.[0] ?? {}
   if (st.error) throw new Error(st.error)
   return { filled: Number(st.filled?.totalSz ?? 0), avgPx: Number(st.filled?.avgPx ?? 0) }
@@ -209,6 +239,7 @@ async function order(c, isBuy, sz, reduceOnly, mid) {
 async function setLeverage() {
   const lb = levBy()
   for (const c of COINS) {
+    if (SPOT.has(c)) continue                          // spot has no leverage to set
     const cross = !(ISOLATED || META[c].onlyIsolated)
     try { await exchange.updateLeverage({ asset: META[c].index, isCross: cross, leverage: lb[c] }) }
     catch (e) { log('WARN', `${c}: leverage not set (${e.message}); the market's current setting applies`) }
@@ -233,12 +264,17 @@ async function tick() {
   const szDec = Object.fromEntries(COINS.map(c => [c, META[c].szDecimals]))
   const { orders, tooSmall } = ordersFor(ledger.units, d.targets, px, szDec)
   if (tooSmall.length) log('SKIP', `under $${HL_MIN_ORDER}, left as they are: ${tooSmall.join(', ')}`)
+  const spotBuys = orders.filter(o => SPOT.has(o.coin) && o.isBuy).reduce((a, o) => a + o.usd, 0)
+  if (spotBuys && h.spotFree != null && h.spotFree < spotBuys) log('WARN', `spot buys need ~$${spotBuys.toFixed(2)} of USDC in the SPOT balance; it has $${h.spotFree.toFixed(2)}. Move USDC to spot in the app (an agent key cannot).`)
   let failed = 0
   for (const o of orders) {
+    // A spot sale can only sell what is there (a buy's fee may have come out of the coin).
+    if (SPOT.has(o.coin) && !o.isBuy) o.sz = Math.min(o.sz, floorSz(h.held[o.coin] ?? 0, META[o.coin].szDecimals))
+    if (!(o.sz > 0)) continue
     try {
       const f = await order(o.coin, o.isBuy, o.sz, o.reduceOnly, px[o.coin])
       if (f.filled > 0) {
-        ledger = applyFill(ledger, o.coin, o.isBuy ? f.filled : -f.filled, f.avgPx || px[o.coin], FEE)
+        ledger = applyFill(ledger, o.coin, o.isBuy ? f.filled : -f.filled, f.avgPx || px[o.coin], feeOf(o.coin))
         log('FILL', `${o.isBuy ? 'BUY ' : 'SELL'} ${f.filled} ${o.coin} @ $${f.avgPx}${o.reduceOnly ? ' (reduce-only)' : ''}`)
       } else { failed++; log('WARN', `${o.coin}: order did not fill; retrying next check`) }
     } catch (e) { failed++; log('ERROR', `${o.coin}: ${e.message}`) }
@@ -258,8 +294,8 @@ async function tick() {
 // candle as the backtest assumes, and keep protecting the position if the bot is stopped.
 async function trigger(c, isBuy, sz, level, kind) {
   const { index, szDecimals } = META[c]
-  const trig = tickPx(level, szDecimals)
-  const lim = tickPx(isBuy ? trig * (1 + 3 * SLIP) : trig * (1 - 3 * SLIP), szDecimals)
+  const trig = tickPx(level, szDecimals, META[c].spot)
+  const lim = tickPx(isBuy ? trig * (1 + 3 * SLIP) : trig * (1 - 3 * SLIP), szDecimals, META[c].spot)
   const r = await exchange.order({ orders: [{ c: botCloid(process.env.HLIQ_BOT), a: index, b: isBuy, p: String(lim), s: String(sz), r: true, t: { trigger: { isMarket: true, triggerPx: String(trig), tpsl: kind } } }], grouping: 'na' })
   const st = r?.response?.data?.statuses?.[0] ?? {}
   if (st.error) throw new Error(st.error)
@@ -296,8 +332,8 @@ function subEquity(c, px) {
 function settle(c, exitPx, why) {
   const sub = ledger.subs[c], tr = sub.trade
   const signed = tr.side === 'long' ? -tr.sz : tr.sz
-  ledger = applyFill(ledger, c, signed, exitPx, FEE)
-  const after = subFill(sub, signed, exitPx, FEE)
+  ledger = applyFill(ledger, c, signed, exitPx, feeOf(c))
+  const after = subFill(sub, signed, exitPx, feeOf(c))
   ledger.subs = { ...ledger.subs, [c]: { ...after, trade: null, lastTime: tr.time } }
   const pnl = (tr.side === 'long' ? 1 : -1) * tr.sz * (exitPx - tr.entry)
   log('CLOSE', `${c} ${tr.side} ${tr.sz} @ $${exitPx} (${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}): ${why}`)
@@ -312,7 +348,18 @@ async function signalTick() {
     const tr = ledger.subs[c]?.trade
     if (!tr || !(c in h.held)) continue
     const have = h.held[c], want = tr.side === 'long' ? tr.sz : -tr.sz
-    if (Math.sign(have) === Math.sign(want) && Math.abs(have) >= Math.abs(want) * 0.999) continue
+    // Spot: a buy's fee can come out of the coin itself, so the balance may sit a little under.
+    if (Math.sign(have) === Math.sign(want) && Math.abs(have) >= Math.abs(want) * (SPOT.has(c) ? 0.99 : 0.999)) {
+      // The bot is the stop and target on spot: a level reached is sold now.
+      const p = px[c], hit = SPOT.has(c) && p > 0 && ((tr.tp && p >= tr.tp) || (tr.sl && p <= tr.sl))
+      if (!hit) continue
+      try {
+        const fl = await order(c, false, Math.min(tr.sz, floorSz(have, META[c].szDecimals)), true, p)
+        if (fl.filled > 0) settle(c, fl.avgPx || p, tr.tp && p >= tr.tp ? 'its target was reached' : 'its stop was reached')
+        else log('WARN', `${c}: ${tr.tp && p >= tr.tp ? 'target' : 'stop'} reached but the sale did not fill; trying again next check`)
+      } catch (e) { log('ERROR', `${c}: exit: ${e.message}`) }
+      continue
+    }
     if (Math.sign(have) === Math.sign(want) && Math.abs(have) > 0) {
       ledger.subs[c] = { ...ledger.subs[c], trade: { ...tr, sz: Math.abs(have) } }
       log('RECONCILE', `${c}: the account holds ${Math.abs(have)} of this trade's ${tr.sz}; the bot manages what is left`)
@@ -328,7 +375,7 @@ async function signalTick() {
     try {
       const cs = await info.candleSnapshot({ coin: c, interval: TF, startTime: now - (WARMUP + 2) * TF_MS[TF], endTime: now })
       const side = W[c] < 0 ? 'short' : 'long'
-      const t = simOpenTrade(closedCandles(cs, TF, now), BOT, SPARAMS, { bal: subEquity(c, px), side, both: BOTH, lev: lb[c], margin: ISOLATED ? 'isolated' : 'cross', feeBps: FEE * 1e4 })
+      const t = simOpenTrade(closedCandles(cs, TF, now), BOT, SPARAMS, { bal: subEquity(c, px), side, both: BOTH && !SPOT.has(c), lev: lb[c], margin: ISOLATED ? 'isolated' : 'cross', feeBps: FEE * 1e4 })
       sim[c] = { bar, trade: t }
     } catch (e) { log('WARN', `${c}: candles did not load (${e.message}); trying again next check`) }
     await new Promise(r => setTimeout(r, 250))                 // gentle on the shared rate limit
@@ -342,7 +389,8 @@ async function signalTick() {
         const tr = sub.trade
         await cancelTriggers(c, tr)
         try {
-          const fl = await order(c, tr.side !== 'long', tr.sz, true, px[c])
+          const sz = SPOT.has(c) ? Math.min(tr.sz, floorSz(h.held[c] ?? 0, META[c].szDecimals)) : tr.sz
+          const fl = await order(c, tr.side !== 'long', sz, true, px[c])
           if (fl.filled > 0) settle(c, fl.avgPx || px[c], 'the strategy closed it')
           else log('WARN', `${c}: close did not fill; trying again next check`)
         } catch (e) { log('ERROR', `${c}: close: ${e.message}`) }
@@ -359,14 +407,16 @@ async function signalTick() {
           const fl = await order(c, long, sz, false, px[c])
           if (!(fl.filled > 0)) { log('WARN', `${c}: ${t.side} entry did not fill; trying again next check`); continue }
           const entry = fl.avgPx || px[c]
-          ledger = applyFill(ledger, c, long ? fl.filled : -fl.filled, entry, FEE)
-          const after = subFill(ledger.subs[c], long ? fl.filled : -fl.filled, entry, FEE)
+          ledger = applyFill(ledger, c, long ? fl.filled : -fl.filled, entry, feeOf(c))
+          const after = subFill(ledger.subs[c], long ? fl.filled : -fl.filled, entry, feeOf(c))
           // The backtest's levels moved by however far the fill was from its entry price.
           const shift = entry - t.entry
           const tr = { time: t.time, side: t.side, sz: fl.filled, entry, openedAt: now - 60_000, tpOid: null, slOid: null,
             tp: t.tp != null ? t.tp + shift : null, sl: t.sl != null ? t.sl + shift : null }
-          try { if (tr.tp) tr.tpOid = await trigger(c, !long, tr.sz, tr.tp, 'tp') } catch (e) { log('WARN', `${c}: target not placed (${e.message}); the bot closes it when the strategy does`) }
-          try { if (tr.sl) tr.slOid = await trigger(c, !long, tr.sz, tr.sl, 'sl') } catch (e) { log('WARN', `${c}: stop not placed (${e.message})`) }
+          if (!SPOT.has(c)) {
+            try { if (tr.tp) tr.tpOid = await trigger(c, !long, tr.sz, tr.tp, 'tp') } catch (e) { log('WARN', `${c}: target not placed (${e.message}); the bot closes it when the strategy does`) }
+            try { if (tr.sl) tr.slOid = await trigger(c, !long, tr.sz, tr.sl, 'sl') } catch (e) { log('WARN', `${c}: stop not placed (${e.message})`) }
+          }
           ledger.subs = { ...ledger.subs, [c]: { ...after, trade: tr, lastTime: t.time } }
           log('OPEN', `${c} ${t.side} ${tr.sz} @ $${entry}${tr.tp ? ` · target $${tr.tp.toPrecision(5)}` : ''}${tr.sl ? ` · stop $${tr.sl.toPrecision(5)}` : ''}`)
         } catch (e) { log('ERROR', `${c}: entry: ${e.message}`) }
@@ -387,7 +437,7 @@ async function plan() {
   const lb = levBy()
   const saved = readAll()[KEY]
   // The fully invested book (for DCA, where the buys lead): what each holding becomes.
-  const rows = COINS.map(c => ({ coin: c, w: W[c], lev: lb[c], maxLev: META[c].maxLev, isolated: ISOLATED || META[c].onlyIsolated, px: px[c] ?? null,
+  const rows = COINS.map(c => ({ coin: c, w: W[c], lev: lb[c], maxLev: META[c].maxLev, isolated: !SPOT.has(c) && (ISOLATED || META[c].onlyIsolated), spot: SPOT.has(c), px: px[c] ?? null,
     usd: Math.abs(W[c]) * BUDGET * lb[c] }))
   const missing = rows.filter(r => !r.px).map(r => r.coin)
   // The smallest order there will be: a whole position, or one DCA buy. With part of it bought
@@ -408,7 +458,9 @@ async function plan() {
       } catch { r.now = undefined }
     }
   }
-  console.log('__PLAN__' + JSON.stringify({ ok: true, rows, skipped: SKIPPED, tooSmall, missing, margin: BUDGET, free: h.free, resumes, held: resumes ? saved.units : null, strategy: STRATEGY, budget: BUDGET }))
+  // Spot is paid for in full from the SPOT balance; perps post margin from the perp side.
+  const spotNeed = rows.filter(r => r.spot).reduce((a, r) => a + r.usd, 0)
+  console.log('__PLAN__' + JSON.stringify({ ok: true, rows, skipped: SKIPPED, tooSmall, missing, margin: rows.filter(r => !r.spot).reduce((x, r) => x + r.usd / r.lev, 0), free: h.free, spotFree: h.spotFree, spotNeed, resumes, held: resumes ? saved.units : null, strategy: STRATEGY, budget: BUDGET }))
 }
 
 async function run() {
@@ -416,7 +468,8 @@ async function run() {
   if (BOT) log('START', `Trading strategy ${BOT} on ${TF} candles${BOTH ? ', both directions' : ''}; each holding is its own sub-account. Trades the strategy is already in are not joined: it waits for the next entry.`)
   log('START', `Portfolio "${NAME}" (${ID}) · ${STRATEGY} · budget $${BUDGET} · leverage ${LEV}${LEV === 'max' ? '' : '×'} ${ISOLATED ? 'isolated' : 'cross'}`)
   log('START', `${COINS.length} markets: ${COINS.map(c => `${c} ${(W[c] * 100).toFixed(1)}%`).join(', ')}`)
-  if (SKIPPED.length) log('START', `skipped (spot, not tradable by a bot yet): ${SKIPPED.join(', ')}`)
+  if (SPOT.size) log('START', `spot, bought with the spot balance's USDC, 1×, long only: ${[...SPOT].join(', ')}`)
+  if (SKIPPED.length) log('START', `skipped (a spot holding cannot be short): ${SKIPPED.join(', ')}`)
   await loadMeta()
   // --fresh is the person asking to start over, once. Every launch carries a --run id, and a
   // restart or a resume (deploy, reboot) re-sends the same arguments — so a saved ledger from

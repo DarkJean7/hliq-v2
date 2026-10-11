@@ -12,8 +12,11 @@ const T0 = Date.UTC(2026, 0, 1)            // a Thursday, the 1st
 
 console.log(nl + '-- what the bot trades --')
 {
-  const { weights, skipped } = L.liveWeights([{ coin: 'BTC', w: 50 }, { coin: 'ETH', w: 25, side: 'short' }, { coin: '@107', w: 25, kind: 'spot' }, { coin: 'SOL', w: 0 }])
-  t('spot is skipped and named; its weight is spread over the rest', skipped.join() === '@107' && near(weights.BTC, 2 / 3) && near(weights.ETH, -1 / 3) && !('SOL' in weights), [weights, skipped])
+  const { weights, skipped, spot } = L.liveWeights([{ coin: 'BTC', w: 50 }, { coin: 'ETH', w: 25, side: 'short' }, { coin: '@107', w: 25, kind: 'spot' }, { coin: 'SOL', w: 0 }])
+  t('spot is traded, at its weight, and named as spot', near(weights['@107'], 0.25) && near(weights.BTC, 0.5) && near(weights.ETH, -0.25) && spot.join() === '@107' && !skipped.length && !('SOL' in weights), [weights, skipped, spot])
+  const sh = L.liveWeights([{ coin: 'BTC', w: 50 }, { coin: '@107', w: 50, side: 'short' }, { coin: 'PURR/USDC', w: 50 }])
+  t('a SHORT spot holding cannot exist: skipped and named, its weight spread over the rest', sh.skipped.join() === '@107' && near(sh.weights.BTC, 0.5) && near(sh.weights['PURR/USDC'], 0.5) && sh.spot.join() === 'PURR/USDC', sh)
+  t('spot is never leveraged', L.liveLeverage('max', 40, true) === 1 && L.liveLeverage(5, 10, true) === 1)
   t('leverage is capped at the market maximum; Max is the maximum', L.liveLeverage(5, 3) === 3 && L.liveLeverage('max', 40) === 40 && L.liveLeverage(2, 10) === 2 && L.liveLeverage(5, null) === 1)
 }
 

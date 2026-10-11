@@ -68,7 +68,7 @@ async function run(label, opts) {
     if (path === '/api/auth/nonce') return j({ nonce: 'n1' })
     if (path === '/api/auth/login') return j({ token: 'tok-' + b.address, exp: Date.now() + 3600e3 })
     const bot = (b.args ?? []).includes('bot:rsi')
-    if (path === '/api/plan') return j({ ok: true, rows: [{ coin: 'BTC', w: 0.625, lev: 2, maxLev: 40, isolated: false, px: 100, usd: 250, ...(bot ? { now: { side: 'long', since: Date.UTC(2026, 9, 10, 8) } } : {}) }, { coin: 'ETH', w: -0.375, lev: 2, maxLev: 25, isolated: false, px: 50, usd: 150, ...(bot ? { now: null } : {}) }], skipped: ['@700'], tooSmall: [], missing: [], margin: 200, free: 1000, resumes: false, held: null })
+    if (path === '/api/plan') return j({ ok: true, rows: [{ coin: 'BTC', w: 0.625, lev: 2, maxLev: 40, isolated: false, px: 100, usd: 250, ...(bot ? { now: { side: 'long', since: Date.UTC(2026, 9, 10, 8) } } : {}) }, { coin: 'ETH', w: -0.375, lev: 2, maxLev: 25, isolated: false, px: 50, usd: 150, ...(bot ? { now: null } : {}) }, { coin: '@700', w: 0.2, lev: 1, maxLev: 1, isolated: false, spot: true, px: 2, usd: 40, ...(bot ? { now: null } : {}) }], skipped: [], tooSmall: [], missing: [], margin: 200, free: 1000, spotNeed: 40, spotFree: 5, resumes: false, held: null })
     if (path === '/api/paper/plan') {
       // Positions at 2×: BTC 62.5% and ETH 37.5% of budget × 2. DCA in 8 buys at a $100 budget
       // makes ETH's buy a $9.38 order: under $10, as the bot would say.
@@ -116,7 +116,7 @@ async function run(label, opts) {
   await p.click('#pfTrade')
   ok('the account with a key is offered, by the name it was given in the app', await p.inputValue('#pfTrAcct') === ADDR && /^Main · 0x0000/.test((await p.textContent('#pfTrAcct option')).trim()))
   ok('the strategy is the one tested, and says its settings (day 15)', await p.getAttribute('#pfTrStrat .is-on', 'data-s') === 'monthly' && /day 15/.test(await p.textContent('#pfTrStratNote')))
-  ok('spot is named as skipped', /skipped.*DRV/i.test(await p.textContent('.pf-sheet')))
+  ok('a long spot holding is traded, not skipped', !/skipped/i.test(await p.textContent('.pf-sheet')))
   ok('Start waits for a preview', await p.isDisabled('#pfTrStart'))
   await p.fill('#pfTrBudget', '200')
   await p.click('#pfTrPreview')
@@ -126,6 +126,8 @@ async function run(label, opts) {
   const login = sent.find(s => s.path === '/api/auth/login')
   ok('signed in by the agent key, as the app does', login && Wallet.prototype.constructor && (await import('ethers')).verifyMessage(`Insolvent Trade — bot control login\nAccount: ${ADDR}\nNonce: n1`, login.body.signature).toLowerCase() === AGENT.address.toLowerCase())
   ok('the preview lists each market with its leverage and size', /BTC.*62\.5%.*2×.*\$250/s.test(await p.textContent('.pf-tr-tbl')))
+  ok('spot is shown at 1×, as spot', /DRV.*1× spot.*\$40\.00/s.test(await p.textContent('.pf-tr-tbl')))
+  ok('short of spot USDC: it says what spot needs, what is there, and that the agent key cannot move it', /SPOT balance: about \$40\.00 needed, \$5\.00 there/.test(await p.textContent('#pfTrPlan')) && /agent key cannot move funds/.test(await p.textContent('#pfTrPlan')))
   if (process.env.PF_SHOT) await p.screenshot({ path: process.env.PF_SHOT + '-' + label + '-sheet.png' })
   ok('and Start still waits for the acknowledgement', await p.isDisabled('#pfTrStart'))
   await p.check('#pfTrAck')

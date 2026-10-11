@@ -110,6 +110,36 @@ console.log('\n-- a restart (deploy, reboot) never buys twice --')
   ok('and after it holds the same trade: no new order, no close', e.journal.filter(x => x.ev === 'ioc' || x.ev === 'trigger').length === 0 && e.state?.subs?.BTC?.trade?.entry === 106, [e.journal, e.state?.subs?.BTC])
 }
 
+console.log('\n-- spot (@5 is a spot pair: balances, spot USDC, 1×, long only) --')
+{
+  const enc = (x) => Buffer.from(JSON.stringify(x)).toString('base64')
+  const sbase = (its, id) => ['--address', '0x0000000000000000000000000000000000000001', '--id', id, '--items', enc(its), '--budget', '1000', '--leverage', '2', '--run', 'r' + id]
+  // Buy & hold, half BTC (perp, 2×) and half @5 (spot, at 10).
+  const a = await runBot({ args: [...sbase([{ coin: 'BTC', w: 50 }, { coin: '@5', w: 50, kind: 'spot' }], 'S1'), '--strategy', 'hold', '--interval', '1'], prices: { BTC: [[0, 100]], '@5': [[0, 10]] }, hours: 1 })
+  const io = a.journal.filter(e => e.ev === 'ioc')
+  const sp = io.find(e => e.coin === '@5'), perp = io.find(e => e.coin === 'BTC')
+  ok('the spot holding is bought as spot, at 1×: $500 of @5 at 10 = 50', sp?.spot && sp.isBuy && Math.abs(sp.sz - 50) < 1e-9 && !sp.reduceOnly, io)
+  ok('the perp beside it keeps its leverage: $500 at 2× = 10 BTC', Math.abs((perp?.sz ?? 0) - 10) < 1e-9)
+  ok('leverage is set on the perp only — spot has none to set', a.journal.filter(e => e.ev === 'leverage').length === 1)
+  ok('the ledger holds the spot units, and its equity counts them', Math.abs((a.state?.units?.['@5'] ?? 0) - 50) < 1e-9 && Math.abs(a.state.equity - (1000 - 500 * 0.0007 - 1000 * 0.00045)) < 0.05, a.state)
+  ok('no errors', !/\[ERROR/.test(a.out), a.out.split('\n').filter(l => /ERROR/.test(l)))
+  // Not enough USDC in the SPOT balance: the bot says so before it tries, and does not count the rebalance done.
+  const b = await runBot({ args: [...sbase([{ coin: 'BTC', w: 50 }, { coin: '@5', w: 50, kind: 'spot' }], 'S2'), '--strategy', 'hold', '--interval', '1'], prices: { BTC: [[0, 100]], '@5': [[0, 10]] }, hours: 0.2, env: { FAKE_SPOT_USDC: '100' } })
+  ok('short of spot USDC: it says how much spot needs and that an agent key cannot move it', /spot buys need ~\$500\.00 of USDC in the SPOT balance; it has \$100\.00/.test(b.out) && b.journal.some(e => e.ev === 'spot-refused'), b.out.split('\n').filter(l => /WARN|ERROR/.test(l)))
+  ok('and tries again rather than marking the rebalance done', b.state?.lastRebal == null)
+  // A short spot holding cannot exist: skipped and said.
+  const c = await runBot({ args: [...sbase([{ coin: 'BTC', w: 50 }, { coin: '@5', w: 50, side: 'short' }], 'S3'), '--strategy', 'hold', '--interval', '1'], prices: { BTC: [[0, 100]], '@5': [[0, 10]] }, hours: 0.2 })
+  ok('a short spot holding is skipped, and the log says why', /skipped \(a spot holding cannot be short\): @5/.test(c.out) && !c.journal.some(e => e.coin === '@5'))
+  // A trading strategy on spot: the breakout bought; the bot itself is its target (no trigger orders on spot).
+  const sp2 = Buffer.from(JSON.stringify({ breakoutLookback: 20, takeProfitPct: 10, stopLossPct: 3 })).toString('base64')
+  const d = await runBot({ args: [...sbase([{ coin: '@5', w: 100, kind: 'spot' }], 'S4'), '--strategy', 'bot:breakout', '--tf', '1h', '--sparams', sp2], prices: { '@5': [[0, 10], [1, 10.6], [3, 11.8]] }, hours: 3.6 })
+  const dio = d.journal.filter(e => e.ev === 'ioc')
+  ok('the spot breakout is bought at 1×: $1,000 at 10.6 = 94.33', dio[0]?.isBuy && Math.abs(dio[0].sz - 94.33) < 1e-9, dio)
+  ok('no trigger orders are placed on spot', !d.journal.some(e => e.ev === 'trigger'))
+  ok('the bot sells it itself when its +10% target is reached', dio[1] && !dio[1].isBuy && Math.abs(dio[1].sz - 94.33) < 1e-9 && /its target was reached/.test(d.out), [dio, d.out.split('\n').filter(l => /CLOSE|ERROR/.test(l))])
+  ok('no errors', !/\[ERROR/.test(d.out), d.out.split('\n').filter(l => /ERROR/.test(l)))
+}
+
 console.log('\n-- paper: the same bot, on a paper account (src/paperexchange.js) --')
 {
   // An owner with a $1,000 paper account made for the bot, as the page makes it.
@@ -137,6 +167,14 @@ console.log('\n-- paper: the same bot, on a paper account (src/paperexchange.js)
   const sub = r2.state?.subs?.BTC
   ok('the bot sees it closed and books the paper fill price, not a guess', sub && !(sub.trade?.time === r.state.subs.BTC.trade.time) && /closed on the exchange/.test(r2.out), [sub, r2.out.split('\n').filter(l => /CLOSE|ERROR/.test(l))])
   ok('still nothing reached the exchange', !r2.journal.some(e => ['ioc', 'trigger', 'cancel', 'leverage'].includes(e.ev)))
+  // Spot on paper: bought into the paper account's spot balances, paid in full, at the spot fee.
+  host.sync({ secret, client: 'testclient', seen: Object.fromEntries(Object.entries(host.read(ownerOf(secret)).kv).map(([k, x]) => [k, x.rev])), push: { hliq_paper_s_spot1: JSON.stringify({ balance: 1000, positions: [], orders: [], fills: [], equity: [], deposited: 1000, ledger: [], nextOid: 1000, created: 0 }) } })
+  const sitems = Buffer.from(JSON.stringify([{ coin: 'BTC', w: 50 }, { coin: '@5', w: 50, kind: 'spot' }])).toString('base64')
+  const r3 = await runBot({ args: ['--address', '0x' + ownerOf(secret), '--id', 'PSPOT', '--items', sitems, '--budget', '600', '--leverage', '2', '--run', 'p3', '--strategy', 'hold', '--interval', '1', '--paper', 'spot1'], prices: { BTC: [[0, 100]], '@5': [[0, 10]] }, hours: 1, env: { AGENT_KEY: secret, PAPER_DIR: pdir } })
+  const ss = JSON.parse(host.read(ownerOf(secret)).kv.hliq_paper_s_spot1.v)
+  ok('spot on paper lands in the paper account\'s spot balances: $300 of @5 at 10 (+ slippage) ≈ 30', Math.abs((ss.balances?.['@5']?.total ?? 0) - 30) < 0.01 && ss.fills.some(x => x.dir === 'Buy' && x.coin === '@5'), [ss.balances, ss.fills.slice(0, 3)])
+  ok('paid in full at the paper spot fee (0.07%), the perp beside it margined at 2×', Math.abs(Number(ss.fills.find(x => x.coin === '@5').fee) - 30 * 10 * 1.0003 * 0.0007) < 0.01 && Math.abs((ss.positions.find(x => x.coin === 'BTC')?.szi ?? 0) - 6) < 1e-9, ss)
+  ok('and still nothing reached the exchange', !r3.journal.some(e => ['ioc', 'trigger', 'cancel', 'leverage'].includes(e.ev)) && !/\[ERROR/.test(r3.out), r3.out.split('\n').filter(l => /ERROR/.test(l)))
   fs.rmSync(pdir, { recursive: true, force: true })
 }
 
