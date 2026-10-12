@@ -42,11 +42,15 @@ async function runBot({ args, prices, hours, startOffsetH = 0.5, dir = fs.mkdtem
   })
   let out = ''
   child.stdout.on('data', d => { out += d }); child.stderr.on('data', d => { out += d })
+  // Timed from the bot's first log line: until then it is loading, and its clock is not running.
+  for (let i = 0; i < 300 && !/\[START/.test(out); i++) await new Promise(r => setTimeout(r, 100))
   await new Promise(r => setTimeout(r, hours * H / speed))
   child.kill('SIGTERM')
   await new Promise(r => child.on('close', r))
   const journal = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []
-  const state = JSON.parse(fs.readFileSync(path.join(dir, '.portfolio-state.json'), 'utf8') || '{}')
+  // A ledger the bot never saved is no ledger: null, and the assertions say so — not a crash.
+  let state = {}
+  try { state = JSON.parse(fs.readFileSync(path.join(dir, '.portfolio-state.json'), 'utf8') || '{}') } catch {}
   return { out, journal, state: Object.values(state)[0], dir, T0 }
 }
 const items = Buffer.from(JSON.stringify([{ coin: 'BTC', w: 60 }, { coin: 'ETH', w: 40 }])).toString('base64')

@@ -320,12 +320,37 @@ export function resetLiveAccountValue(addr = null) {
 }
 
 // ─── ACCOUNT STATS ───────────────────────────────────────────────────────────
+/**
+ * Open notional and maintenance margin across EVERY dex.
+ *
+ * marginSummary.totalNtlPos and crossMaintenanceMarginUsed are the MAIN dex's only, and HIP-3
+ * positions (xyz:…, stocks, oil) live on builder dexes. Reported as Leverage 0.09× here against
+ * Hyperdash's 1.80× on a $1,815 account trading HIP-3, with Maint. "—": nearly all of its book was
+ * left out. The positions list already has every dex in it (src/api.js), each with its own
+ * positionValue, and _dexStates has each dex's maintenance — so sum those, and fall back to the
+ * main-dex figures only when they are not there.
+ */
+export function allDexNotional(perpState) {
+  const positions = perpState?.assetPositions ?? []
+  let sum = 0, any = false
+  for (const p of positions) {
+    const v = Math.abs(parseFloat(p.position?.positionValue))
+    if (Number.isFinite(v)) { sum += v; any = true }
+  }
+  return any ? sum : parseFloat(perpState?.marginSummary?.totalNtlPos ?? 0)
+}
+export function allDexMaint(perpState) {
+  const ds = perpState?._dexStates
+  if (Array.isArray(ds) && ds.length) return ds.reduce((a, d) => a + (parseFloat(d.crossMaintenanceMarginUsed) || 0), 0)
+  return parseFloat(perpState?.crossMaintenanceMarginUsed ?? perpState?.marginSummary?.totalMarginUsed ?? 0)
+}
+
 export function computeAcctStats(perpState, spotState, fills, portfolio = [], funding = [], allMids = {}) {
   const margin     = perpState?.marginSummary ?? {}
   const positions  = perpState?.assetPositions ?? []
 
-  const totalNtl      = parseFloat(margin.totalNtlPos      ?? 0)
-  const maintMargin   = parseFloat(perpState?.crossMaintenanceMarginUsed ?? margin.totalMarginUsed ?? 0)
+  const totalNtl      = allDexNotional(perpState)
+  const maintMargin   = allDexMaint(perpState)
   // Collateral actually backing open positions — NOT the same as maintenance margin
   // (typically ~10x larger). Summed from the positions so it always matches what the
   // position cards and the allocation wheel show.
@@ -399,7 +424,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   const margin    = perpState.marginSummary ?? {}
   const positions = perpState.assetPositions ?? []
 
-  const totalNtl    = parseFloat(margin.totalNtlPos    ?? 0)
+  const totalNtl    = allDexNotional(perpState)
   const marginUsed  = parseFloat(margin.totalMarginUsed ?? 0)
 
   // Withdrawable: perp + any free spot USDC
@@ -675,7 +700,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
     },
   ]
 
-  const maintMargin = parseFloat(perpState.crossMaintenanceMarginUsed ?? 0)
+  const maintMargin = allDexMaint(perpState)
   // Health = 100 − HL's Unified Account Ratio (maintenance margin ÷ Portfolio Value)
   const _healthBase = accountValue
   const health      = _healthBase > 0

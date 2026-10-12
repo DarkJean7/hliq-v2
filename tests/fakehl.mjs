@@ -15,8 +15,13 @@ const PRICES = JSON.parse(process.env.FAKE_PRICES || '{}')
 const LOG = process.env.FAKE_LOG
 const H = 3_600_000
 
-const realNow = Date.now.bind(Date), REAL0 = realNow()
-Date.now = () => START + (realNow() - REAL0) * SPEED
+// The clock starts at the bot's FIRST request, not at process start: loading the SDK takes a
+// second or more, and at 900× that used to burn a quarter of a virtual hour before the bot had
+// looked at anything — more on a loaded machine, which is how a short run could end before the
+// bot had saved its ledger at all.
+const realNow = Date.now.bind(Date)
+let REAL0 = null
+Date.now = () => START + (REAL0 == null ? 0 : (realNow() - REAL0) * SPEED)
 const rt = globalThis.setTimeout
 globalThis.setTimeout = (fn, ms, ...a) => rt(fn, Math.max(0, (Number(ms) || 0) / SPEED), ...a)
 
@@ -130,6 +135,7 @@ function exchange(b) {
 }
 
 globalThis.fetch = async (url, init) => {
+  if (REAL0 == null) REAL0 = realNow()
   const b = JSON.parse(init?.body ?? '{}')
   sweep()
   const out = String(url).endsWith('/exchange') ? exchange(b) : info(b)

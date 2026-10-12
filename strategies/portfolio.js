@@ -30,7 +30,7 @@
 import { ExchangeClient, InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { ethers } from 'ethers'
 import { parseArgs } from 'node:util'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import { isPaused, onPause, onResume } from './_pause.js'
 import { botCloid } from '../src/cloid.js'
@@ -217,7 +217,11 @@ function save(ledger, extra = {}) {
   try {
     const all = readAll()
     all[KEY] = { ...ledger, name: NAME, strategy: STRATEGY, coins: COINS, skipped: SKIPPED, ...extra, at: Date.now() }
-    writeFileSync(STATE_FILE, JSON.stringify(all))
+    // Written whole or not at all: a ledger cut off mid-write would read as no ledger, and the next
+    // start would buy everything again.
+    const tmp = STATE_FILE + '.' + process.pid + '.tmp'
+    writeFileSync(tmp, JSON.stringify(all))
+    renameSync(tmp, STATE_FILE)
   } catch (e) { log('WARN', `could not save the ledger: ${e.message}`) }
 }
 
