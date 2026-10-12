@@ -19057,7 +19057,7 @@ function _pulseRender(el) {
       el.innerHTML = _pulseSegHeader() + '<div id="pulseSegBody" class="ana-view"><div id="anaZ" class="ana-z"></div><div id="anaCharts"></div></div>'
       host = el.querySelector('#pulseSegBody')
     }
-    renderAnalysis(host.querySelector('#anaZ'), { T: _T, coin: () => state.selectedCoin || 'BTC', coins: _anaCoins })
+    renderAnalysis(host.querySelector('#anaZ'), { T: _T, coin: () => state.selectedCoin || 'BTC', coins: _anaCoins, addAlert: _anaAddAlert })
     _anaRender(host.querySelector('#anaCharts'))
     return
   }
@@ -33211,6 +33211,17 @@ function _anaShort(sym) {
  * resizing (hero vs stack) move the existing node, which the widget's autosize handles
  * without a reload.
  */
+// A plan's "Alert me there": the same price alert Settings makes, so it is listed, synced to
+// the notify server and fires with the app closed.
+function _anaAddAlert(coin, dir, price) {
+  if (!coin || !(price > 0) || !['above', 'below'].includes(dir)) return false
+  const alerts = _paLoad()
+  alerts.push({ id: Date.now().toString(36), coin, dir, price, fired: false })
+  _paSave(alerts)
+  _paperToast(_T(`Alert set: ${coin} ${dir} ${fmtPrice(price)}`, `Alerta creada: ${coin} ${dir === 'above' ? 'por encima de' : 'por debajo de'} ${fmtPrice(price)}`))
+  return true
+}
+
 // The markets this person has a reason to look at: open positions, then the watchlist.
 function _anaCoins() {
   return [...new Set([

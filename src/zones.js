@@ -258,3 +258,122 @@ export function bookRatio(books, pct = 0.02) {
   const bid = sum(b.bids, px => px >= lo), ask = sum(b.asks, px => px <= hi)
   return ask > 0 ? { ratio: bid / ask, bid, ask, pct } : null
 }
+
+// ── reading the levels: indicators, bias, and the plans they imply ─────────
+
+/** Simple moving average of the last n closes; null without n of them. */
+export function sma(c, n) {
+  if (!c || c.length < n) return null
+  let s = 0
+  for (let i = c.length - n; i < c.length; i++) s += c[i].c
+  return s / n
+}
+
+/** Wilder's RSI over n bars; null without n+1 closes. */
+export function rsi(c, n = 14) {
+  if (!c || c.length < n + 1) return null
+  let g = 0, l = 0
+  for (let i = 1; i <= n; i++) { const d = c[i].c - c[i - 1].c; if (d > 0) g += d; else l -= d }
+  g /= n; l /= n
+  for (let i = n + 1; i < c.length; i++) {
+    const d = c[i].c - c[i - 1].c
+    g = (g * (n - 1) + Math.max(0, d)) / n
+    l = (l * (n - 1) + Math.max(0, -d)) / n
+  }
+  return l === 0 ? 100 : 100 - 100 / (1 + g / l)
+}
+
+/**
+ * The bias checklist. Each item is +1 (leans up), -1 (leans down) or 0, with the number it
+ * came from, so the view can say WHY rather than just show a colour. Missing data is null
+ * and left out of the total — not counted as neutral.
+ */
+export function biasOf({ price, daily, ratio }) {
+  const out = []
+  const s50 = sma(daily, 50), s200 = sma(daily, 200)
+  if (s50 != null) out.push({ id: 'sma50', v: price > s50 ? 1 : -1, x: s50 })
+  if (s50 != null && s200 != null) out.push({ id: 'cross', v: s50 > s200 ? 1 : -1, x: s200 })
+  const r = rsi(daily)
+  if (r != null) out.push({ id: 'rsi', v: r >= 70 ? -1 : r <= 30 ? 1 : r > 55 ? 1 : r < 45 ? -1 : 0, x: r })
+  if (ratio != null) out.push({ id: 'book', v: ratio >= 1.15 ? 1 : ratio <= 0.87 ? -1 : 0, x: ratio })
+  const score = out.reduce((s, b) => s + b.v, 0)
+  return { items: out, score, max: out.length, lean: score >= 2 ? 'up' : score <= -2 ? 'down' : 'flat' }
+}
+
+const rr = (entry, stop, target) => target != null && Math.abs(entry - stop) > 0 ? Math.abs(target - entry) / Math.abs(entry - stop) : null
+
+/**
+ * What the key zones say about where price is now.
+ *
+ * state: 'breakout' | 'breakdown' (a key zone crossed within the last 5 daily closes),
+ * 'support' | 'resistance' (within half an ATR of one, or inside it), 'at' (inside a zone
+ * with no lean to break the tie), or 'range' (in between, no edge).
+ *
+ * Plans are CONDITIONAL — "if price is at X, this is the trade the levels describe":
+ * long at the nearest support (stop a quarter ATR under its band, targets the next two
+ * resistances), short at the nearest resistance, mirrored. The one price is at now is
+ * marked active. Levels, not advice.
+ */
+export function readSetup({ zones, price, atrD, daily = [], ratio = null }) {
+  const key = zones.filter(z => z.key)
+  const bias = biasOf({ price, daily, ratio })
+  const below = key.filter(z => z.hi < price).sort((a, b) => b.px - a.px)
+  const above = key.filter(z => z.lo > price).sort((a, b) => a.px - b.px)
+  const inside = key.find(z => z.lo <= price && z.hi >= price) ?? null
+  const a = atrD > 0 ? atrD : price * 0.03
+  const pad = 0.25 * a
+
+  // Crossed recently: a recent daily close on the other side of a key zone near price.
+  const recent = daily.slice(-6, -1).map(k => k.c)
+  const brokeUp = recent.length ? below.find(z => price - z.hi <= a && recent.some(c => c < z.px)) : null
+  const brokeDn = recent.length ? above.find(z => z.lo - price <= a && recent.some(c => c > z.px)) : null
+
+  const sup = inside ?? below[0] ?? null, res = inside ?? above[0] ?? null
+  const longPlan = (base, targets, kind) => {
+    if (!base) return null
+    const stop = base.lo - pad
+    const entry = Math.min(price, base.hi)
+    const t = targets.filter(z => z.lo > entry + 0.5 * a).slice(0, 2)
+    return { side: 'long', kind, zone: base, entry, stop, t1: t[0]?.px ?? null, t2: t[1]?.px ?? null, rr: rr(entry, stop, t[0]?.px ?? null) }
+  }
+  const shortPlan = (base, targets, kind) => {
+    if (!base) return null
+    const stop = base.hi + pad
+    const entry = Math.max(price, base.lo)
+    const t = targets.filter(z => z.hi < entry - 0.5 * a).slice(0, 2)
+    return { side: 'short', kind, zone: base, entry, stop, t1: t[0]?.px ?? null, t2: t[1]?.px ?? null, rr: rr(entry, stop, t[0]?.px ?? null) }
+  }
+
+  let state
+  if (brokeUp) state = 'breakout'
+  else if (brokeDn) state = 'breakdown'
+  else if (inside) state = bias.lean === 'up' ? 'support' : bias.lean === 'down' ? 'resistance' : 'at'
+  else if (sup && (price - sup.hi) <= 0.5 * a) state = 'support'
+  else if (res && (res.lo - price) <= 0.5 * a) state = 'resistance'
+  else state = 'range'
+
+  // The long plan buys the nearest support (or retests the zone just broken); the short
+  // plan sells the nearest resistance (or the zone just lost).
+  const long = state === 'breakout' ? longPlan(brokeUp, above, 'retest') : longPlan(inside ?? below[0], above, 'bounce')
+  const short = state === 'breakdown' ? shortPlan(brokeDn, below, 'retest') : shortPlan(inside ?? above[0], below, 'reject')
+  const active = ['breakout', 'support'].includes(state) ? 'long' : ['breakdown', 'resistance'].includes(state) ? 'short' : null
+
+  // Confidence: a strong zone, a bias that agrees, and room to the target.
+  const plan = active === 'long' ? long : active === 'short' ? short : null
+  let confidence = null
+  if (plan) {
+    let pts = 0
+    if (plan.zone.score >= 75) pts++
+    if (plan.zone.confluence >= 3) pts++
+    if ((active === 'long' && bias.lean === 'up') || (active === 'short' && bias.lean === 'down')) pts++
+    if ((active === 'long' && bias.lean === 'down') || (active === 'short' && bias.lean === 'up')) pts--
+    if (plan.rr != null && plan.rr >= 2) pts++
+    if (plan.rr != null && plan.rr < 1) pts--
+    confidence = pts >= 3 ? 'high' : pts >= 1 ? 'medium' : 'low'
+  }
+  return {
+    state, active, confidence, bias, long, short, broke: brokeUp ?? brokeDn ?? null,
+    support: below[0] ?? null, resistance: above[0] ?? null, inside,
+    toSupport: below[0] ? (price - below[0].hi) / a : null, toResistance: above[0] ? (above[0].lo - price) / a : null,
+  }
+}

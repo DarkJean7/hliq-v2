@@ -1,6 +1,6 @@
 // Analysis → Support & resistance: the engine (src/zones.js) and the view's guarantees (src/analysis.js).
 import fs from 'fs'
-import { toCandles, atr, pivots, cluster, volumeProfile, buildZones, parseBooks, bookMid, wallFor, bookReach, bookRatio } from '../../src/zones.js'
+import { toCandles, atr, pivots, cluster, volumeProfile, buildZones, parseBooks, bookMid, wallFor, bookReach, bookRatio, sma, rsi, biasOf, readSetup } from '../../src/zones.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -109,6 +109,42 @@ console.log('\n-- the order book --')
   t('no book, no ratio', bookRatio([]) === null)
 }
 
+console.log('\n-- indicators and the bias checklist --')
+{
+  const up = Array.from({ length: 220 }, (_, i) => ({ t: i, o: 100 + i, h: 101 + i, l: 99 + i, c: 100 + i, v: 1 }))
+  t('SMA is the mean of the last n closes', sma(up, 3) === (319 + 318 + 317) / 3)
+  t('SMA without n bars is null, not a guess', sma(up.slice(0, 2), 3) === null)
+  t('RSI of an unbroken rise is 100', rsi(up) === 100)
+  const dn = up.map((k, i) => ({ ...k, c: 400 - i }))
+  t('and of an unbroken fall is 0', rsi(dn) === 0)
+  const b = biasOf({ price: 330, daily: up, ratio: 1.5 })
+  t('a rising market over its averages with more bids leans up', b.lean === 'up' && b.items.find(x => x.id === 'sma50').v === 1 && b.items.find(x => x.id === 'book').v === 1, b)
+  t('RSI 100 counts as stretched (against), not as momentum', b.items.find(x => x.id === 'rsi').v === -1)
+  t('missing data is left out, not scored neutral', biasOf({ price: 1, daily: [], ratio: null }).max === 0)
+}
+
+console.log('\n-- the setup --')
+{
+  // Key zones at 80/90 (support) and 110/120 (resistance); ATR 2.
+  const Zn = (px, kind) => ({ px, lo: px - 0.5, hi: px + 0.5, kind, key: true, score: 80, confluence: 3 })
+  const zs = [Zn(80, 'support'), Zn(90, 'support'), Zn(110, 'resistance'), Zn(120, 'resistance')]
+  const mid = readSetup({ zones: zs, price: 100, atrD: 2 })
+  t('halfway between is "range", with no active plan', mid.state === 'range' && mid.active === null, mid.state)
+  t('the long plan buys the nearest support, stops a quarter ATR under it, targets the next resistances', mid.long.zone.px === 90 && mid.long.stop === 89 && mid.long.t1 === 110 && mid.long.t2 === 120, mid.long)
+  t('the short plan mirrors it', mid.short.zone.px === 110 && mid.short.stop === 111 && mid.short.t1 === 90 && mid.short.t2 === 80, mid.short)
+  const near = readSetup({ zones: zs, price: 91, atrD: 2 })
+  t('just above support is "support", and the long plan is active', near.state === 'support' && near.active === 'long')
+  t('reward:risk is target distance over stop distance', Math.abs(near.long.rr - (110 - 90.5) / (90.5 - 89)) < 1e-9, near.long.rr)
+  t('a strong zone with 2:1 or better is high confidence', near.confidence === 'high', near.confidence)
+  t('just under resistance is "resistance", short active', readSetup({ zones: zs, price: 109, atrD: 2 }).active === 'short')
+  // Closed below 110 last week, now above it: a breakout, and the long plan retests 110.
+  const daily = [105, 106, 108, 109, 112, 112.5].map((c, i) => ({ t: i, o: c, h: c, l: c, c, v: 1 }))
+  const zs2 = zs.map(z => z.px === 110 ? { ...z, kind: 'support' } : z)
+  const bo = readSetup({ zones: zs2, price: 112, atrD: 2, daily })
+  t('a key level crossed in the last week is a breakout', bo.state === 'breakout' && bo.active === 'long' && bo.long.kind === 'retest' && bo.long.zone.px === 110, [bo.state, bo.long?.zone?.px])
+  t('no key zones, no plans — not invented ones', readSetup({ zones: [], price: 100, atrD: 2 }).long === null)
+}
+
 console.log('\n-- the view --')
 {
   const a = read('src/analysis.js'), css = read('src/analysis.css'), th = read('src/theme.js'), m = read('src/main.js')
@@ -126,7 +162,7 @@ console.log('\n-- the view --')
   // On a phone the shell wiped the pane with "Loading…" on every tick until Pulse's own data
   // landed — which Analysis never fetches — so a selected zone and the zoom vanished.
   t('the phone shell only shows the Pulse placeholder for Pulse', m.includes("if (!_pulseData && _pulseSeg === 'pulse') el.innerHTML"))
-  t('and a rebuilt view keeps the selected zone and zoom', a.includes('if (prev && prev.coin === S.coin) { S.sel = prev.sel; S.view = prev.view; S.tf = prev.tf }'))
+  t('and a rebuilt view keeps the selected zone and zoom', a.includes('if (prev && prev.coin === S.coin) { S.sel = prev.sel; S.view = prev.view; S.tf = prev.tf; S.plan = prev.plan; S.help = prev.help }'))
   t('a row takes you to the chart; a chart label to its row', a.includes("S.root.querySelector('.ana-chart')?.scrollIntoView") && a.includes('row?.scrollIntoView'))
   t('the selected zone is always inside the fitted price range', a.includes('if (sel) { lo = Math.min(lo, sel.lo); hi = Math.max(hi, sel.hi) }'))
   t('the wheel zooms the chart, not the page', a.includes('{ passive: false }') && a.includes('ev.preventDefault()'))
@@ -136,6 +172,11 @@ console.log('\n-- the view --')
   t('nearest support/resistance and the reading come from key zones', (a.match(/const z = r\.zones\.filter\(x => x\.key\)/g) || []).length === 2)
   t('the toggle says how many weak zones it hides', a.includes('Show all (+${hidden} weak)'))
   t('and the choice is remembered', a.includes("all: p.all === true"))
+  t('the answer comes first: the signal, then the chart', a.includes('body.innerHTML = setupHtml(r) + chartHtml(r, e)'))
+  t('the zones read only the recent 4h; the chart gets the whole year', a.includes("'4h': c4.filter(k => k.t >= from)") && a.includes("'4h': 365 * 864e5"))
+  t('the chart has range buttons', a.includes("['1M', 30], ['3M', 91], ['6M', 182], ['1Y', 365], ['All', 0]"))
+  t('an alert from a plan goes through the price alerts Settings uses', m.includes('function _anaAddAlert(coin, dir, price) {') && m.includes('addAlert: _anaAddAlert'))
+  t('it says it is not advice', a.includes('it is not advice'))
   t('a vertical swipe on a phone still scrolls the page', fs.readFileSync('src/analysis.css', 'utf8').includes('touch-action: pan-y'))
 }
 

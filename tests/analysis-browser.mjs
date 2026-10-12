@@ -155,6 +155,42 @@ for (const [w, h, mob] of [[1400, 900, false], [430, 930, true]]) {
   await until('key', () => p.evaluate(() => !document.querySelector('[data-act="showall"]').classList.contains('on')), 5000)
   ok('and Key zones only takes them away again', (await p.evaluate(() => document.querySelectorAll('.ana-row[data-i]').length)) === keyRows)
 
+  console.log('-- the signal: what the levels say, and the plans --')
+  ok('the signal panel leads, above the chart', await p.evaluate(() => { const g = document.querySelector('.ana-sig'), c = document.querySelector('.ana-chart'); return !!g && !!c && (g.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) }))
+  ok('it names the situation in words', await p.evaluate(() => /Testing support|Testing resistance|Broke above|Broke below|Sitting on a key level|Between levels/.test(document.querySelector('.ana-sig-h').textContent)))
+  ok('with a long plan and a short plan, each with stop and reward:risk', await p.evaluate(() => {
+    const plans = [...document.querySelectorAll('.ana-plan')]
+    return plans.length === 2 && plans.every(pl => /Stop/.test(pl.textContent) && /Reward : risk/.test(pl.textContent))
+  }))
+  ok('and the checks behind it', await p.evaluate(() => document.querySelectorAll('.ana-chk').length >= 2))
+  // Show a plan on the chart: entry, stop and target lines.
+  await p.evaluate(() => { const on = document.querySelector('[data-act="plan"].on'); if (on) on.click() })
+  await until('plan off', () => p.evaluate(() => !document.querySelector('.ana-plot line.pl-stop')), 5000)
+  await p.click('[data-act="plan"][data-v="long"]')
+  await until('plan lines', () => p.evaluate(() => !!document.querySelector('.ana-plot line.pl-stop')), 5000)
+  ok('"Show on chart" draws the plan: stop and target lines, labelled', await p.evaluate(() => !!document.querySelector('.ana-plot line.pl-stop') && !!document.querySelector('.ana-plot line.pl-tgt') && /Stop/.test(document.querySelector('.ana-plot').textContent)))
+  // An alert from a plan lands in the same store Settings reads.
+  const alertBtn = await p.$('[data-act="alert"]')
+  if (alertBtn) {
+    const want = await alertBtn.evaluate(b => ({ dir: b.dataset.dir, px: +b.dataset.px }))
+    await alertBtn.click()
+    await until('alert', () => p.evaluate(() => (JSON.parse(localStorage.getItem('hliq_price_alerts') || '[]')).length > 0), 5000)
+    const saved = await p.evaluate(() => JSON.parse(localStorage.getItem('hliq_price_alerts') || '[]'))
+    ok('"Alert me there" saves a price alert at the plan\'s level', saved.some(x => x.coin === 'BTC' && x.dir === want.dir && Math.abs(x.price - want.px) < 1e-9), [want, saved])
+  } else ok('"Alert me there" is offered when price is away from a plan', false, 'no alert button')
+  await p.click('.ana-sig [data-act="help"]')
+  await until('guide', () => p.evaluate(() => !!document.querySelector('.ana-help')), 5000)
+  ok('"How to read this" opens a plain-language guide', await p.evaluate(() => /Reward : risk/.test(document.querySelector('.ana-help').textContent) && /Confluence/.test(document.querySelector('.ana-help').textContent)))
+  // Range buttons: 1M shows fewer bars than All.
+  const nBars = () => p.evaluate(() => document.querySelectorAll('.ana-plot svg line:not(.zl):not(.now):not(.poc):not([class^="pl-"])').length)
+  await p.click('[data-act="range-days"][data-v="All"]')
+  await until('all', () => p.evaluate(() => document.querySelector('[data-act="range-days"][data-v="All"]').classList.contains('on')), 5000)
+  const nAll = await nBars()
+  await p.click('[data-act="range-days"][data-v="1M"]')
+  await until('1M', async () => (await nBars()) < nAll, 5000)
+  const n1 = await nBars()
+  ok('1M shows about a month of 4h bars, fewer than All', n1 < nAll && Math.abs(n1 - 180) <= 2, [n1, nAll])
+
   console.log('-- sorting and an unknown market --')
   await p.click('.ana-seg button[data-act="sort"][data-v="score"]')
   const sc = await p.evaluate(() => [...document.querySelectorAll('.ana-row[data-i] .c-str b')].map(b => +b.textContent))

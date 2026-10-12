@@ -10,17 +10,24 @@
 // pins them back to the preset's opaque colours (analysis.css).
 import './analysis.css'
 import { infoClient } from './api.js'
-import { TFS, toCandles, buildZones, parseBooks, bookMid, wallFor, bookReach, bookRatio } from './zones.js'
+import { TFS, toCandles, buildZones, parseBooks, bookMid, wallFor, bookReach, bookRatio, readSetup } from './zones.js'
 
 const LS_COIN = 'hliq_ana_coin', LS_PREFS = 'hliq_ana_prefs'
-const SPAN = { '4h': 180 * 864e5, '1d': 1000 * 864e5, '1w': 3000 * 864e5 }
+// A year of 4h for the chart; the zones read only the last ZONE_4H_DAYS of it, where a 4h
+// swing still means something (older ones are what the daily and weekly are for).
+const SPAN = { '4h': 365 * 864e5, '1d': 1000 * 864e5, '1w': 3000 * 864e5 }
+const ZONE_4H_DAYS = 180
+// The chart's range buttons, in days.
+const RANGE_DAYS = [['1M', 30], ['3M', 91], ['6M', 182], ['1Y', 365], ['All', 0]]
+const BARS_PER_DAY = { '4h': 6, '1d': 1, '1w': 1 / 7 }
 const CANDLE_TTL = 5 * 60e3, BOOK_TTL = 20e3
-const CHART_BARS = { '4h': 180, '1d': 180, '1w': 160 }
+// The chart opens on three months of 4h, a year of daily, everything weekly.
+const CHART_BARS = { '4h': 546, '1d': 365, '1w': 1000 }
 const RANGES = { 10: 0.10, 25: 0.25, all: Infinity }
 
 const cache = new Map()        // coin → { candles, candleAt, books, bookAt, err, loading }
 let S = null                   // view state, made on first render
-let deps = { T: (en) => en, coins: () => [], coin: () => 'BTC' }
+let deps = { T: (en) => en, coins: () => [], coin: () => 'BTC', addAlert: null }
 let timer = null
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
@@ -104,7 +111,12 @@ function result() {
   const c4 = e.candles['4h']
   const price = bookMid(e.books) ?? c4[c4.length - 1]?.c ?? e.candles['1d'].at(-1)?.c
   const key = `${S.coin}|${e.candleAt}|${price}`
-  if (e.memo?.key !== key) e.memo = { key, r: buildZones({ candles: e.candles, price }) }
+  if (e.memo?.key !== key) {
+    const from = Date.now() - ZONE_4H_DAYS * 864e5
+    const r = buildZones({ candles: { ...e.candles, '4h': c4.filter(k => k.t >= from) }, price })
+    if (r) r.setup = readSetup({ zones: r.zones, price, atrD: r.atrD, daily: e.candles['1d'], ratio: e.books ? bookRatio(e.books)?.ratio : null })
+    e.memo = { key, r }
+  }
   return e.memo.r
 }
 
@@ -132,6 +144,102 @@ function chipsHtml() {
 
 const seg = (act, cur, opts) => `<span class="ana-seg">${opts.map(([v, l]) =>
   `<button data-act="${act}" data-v="${v}" class="${String(cur) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</span>`
+
+// ── the signal: where price is against the levels, and the two plans they describe ──
+const zoneTxt = z => `${fmtPx(z.px)} (${T('strength', 'fuerza')} ${z.score}, ${T(`${z.confluence} of 3`, `${z.confluence} de 3`)})`
+const days = x => x == null ? '' : x < 0.1 ? T('right there', 'justo ahí') : T(`${x.toFixed(1)} day-ranges away`, `a ${x.toFixed(1)} rangos diarios`)
+
+function setupHtml(r) {
+  const s = r.setup
+  if (!s) return ''
+  const p = r.price
+  const head = {
+    breakout: [T('Broke above a key level', 'Rompió un nivel clave al alza'), 'up',
+      T(`Price closed under ${zoneTxt(s.broke ?? s.long?.zone)} in the last week and is now above it. An old ceiling often becomes a floor: the long plan is a retest of it.`,
+        `El precio cerró por debajo de ${zoneTxt(s.broke ?? s.long?.zone)} la última semana y ahora está encima. Un techo roto suele volverse suelo: el plan largo es volver a probarlo.`)],
+    breakdown: [T('Broke below a key level', 'Rompió un nivel clave a la baja'), 'dn',
+      T(`Price closed over ${zoneTxt(s.broke ?? s.short?.zone)} in the last week and is now below it. An old floor often becomes a ceiling: the short plan is a retest of it from below.`,
+        `El precio cerró por encima de ${zoneTxt(s.broke ?? s.short?.zone)} la última semana y ahora está debajo. Un suelo roto suele volverse techo: el plan corto es volver a probarlo desde abajo.`)],
+    support: [T('Testing support', 'Probando soporte'), 'up',
+      T(`Price is on or just above support at ${zoneTxt(s.long?.zone)}. Buyers have stepped in here before; if they do again, this is where a long has the least distance to its stop.`,
+        `El precio está sobre o justo encima del soporte en ${zoneTxt(s.long?.zone)}. Aquí ya entraron compradores; si vuelven, es donde un largo tiene el stop más cerca.`)],
+    resistance: [T('Testing resistance', 'Probando resistencia'), 'dn',
+      T(`Price is at or just under resistance at ${zoneTxt(s.short?.zone)}. Sellers have stepped in here before; if they do again, this is where a short has the least distance to its stop.`,
+        `El precio está en o justo debajo de la resistencia en ${zoneTxt(s.short?.zone)}. Aquí ya entraron vendedores; si vuelven, es donde un corto tiene el stop más cerca.`)],
+    at: [T('Sitting on a key level', 'Sobre un nivel clave'), '',
+      T(`Price is inside ${fmtPx(s.inside?.lo)}–${fmtPx(s.inside?.hi)} and the checks below do not lean either way. How it leaves decides it: holding is the long plan, rejecting is the short plan.`,
+        `El precio está dentro de ${fmtPx(s.inside?.lo)}–${fmtPx(s.inside?.hi)} y los indicadores no se inclinan. Cómo salga decide: si aguanta, plan largo; si lo rechaza, plan corto.`)],
+    range: [T('Between levels — no edge here', 'Entre niveles — sin ventaja aquí'), '',
+      T(`Support ${s.support ? fmtPx(s.support.px) : '—'} is ${days(s.toSupport)} below, resistance ${s.resistance ? fmtPx(s.resistance.px) : '—'} is ${days(s.toResistance)} above. In the middle, a trade risks the most for the least; the plans below are what to wait for.`,
+        `El soporte ${s.support ? fmtPx(s.support.px) : '—'} está ${days(s.toSupport)} abajo y la resistencia ${s.resistance ? fmtPx(s.resistance.px) : '—'} ${days(s.toResistance)} arriba. En medio, una operación arriesga más por menos; los planes de abajo son lo que hay que esperar.`)],
+  }[s.state]
+  const conf = s.confidence ? `<span class="ana-conf c-${s.confidence}">${{ high: T('high confidence', 'confianza alta'), medium: T('medium confidence', 'confianza media'), low: T('low confidence', 'confianza baja') }[s.confidence]}</span>` : ''
+  const leanTxt = { up: T('leans up', 'se inclina al alza'), down: T('leans down', 'se inclina a la baja'), flat: T('no clear lean', 'sin inclinación clara') }[s.bias.lean]
+  const chip = b => {
+    const tone = b.v > 0 ? 'up' : b.v < 0 ? 'dn' : ''
+    const txt = {
+      sma50: b.v > 0 ? T(`Above its 50-day average (${fmtPx(b.x)})`, `Encima de su media de 50 días (${fmtPx(b.x)})`) : T(`Below its 50-day average (${fmtPx(b.x)})`, `Debajo de su media de 50 días (${fmtPx(b.x)})`),
+      cross: b.v > 0 ? T('50-day average over the 200-day: uptrend', 'Media de 50 sobre la de 200: tendencia alcista') : T('50-day average under the 200-day: downtrend', 'Media de 50 bajo la de 200: tendencia bajista'),
+      rsi: b.x >= 70 ? T(`RSI ${b.x.toFixed(0)}: stretched, often cools off`, `RSI ${b.x.toFixed(0)}: estirado, suele enfriarse`) : b.x <= 30 ? T(`RSI ${b.x.toFixed(0)}: oversold, often bounces`, `RSI ${b.x.toFixed(0)}: sobrevendido, suele rebotar`) : b.v > 0 ? T(`RSI ${b.x.toFixed(0)}: momentum up`, `RSI ${b.x.toFixed(0)}: impulso al alza`) : b.v < 0 ? T(`RSI ${b.x.toFixed(0)}: momentum down`, `RSI ${b.x.toFixed(0)}: impulso a la baja`) : T(`RSI ${b.x.toFixed(0)}: neutral`, `RSI ${b.x.toFixed(0)}: neutral`),
+      book: b.v > 0 ? T(`Order book: more buyers (${b.x.toFixed(2)})`, `Libro: más compradores (${b.x.toFixed(2)})`) : b.v < 0 ? T(`Order book: more sellers (${b.x.toFixed(2)})`, `Libro: más vendedores (${b.x.toFixed(2)})`) : T(`Order book: balanced (${b.x.toFixed(2)})`, `Libro: equilibrado (${b.x.toFixed(2)})`),
+    }[b.id]
+    return `<span class="ana-chk ${tone}"><i>${b.v > 0 ? '▲' : b.v < 0 ? '▼' : '•'}</i>${txt}</span>`
+  }
+  const planCard = (pl, side) => {
+    const isLong = side === 'long'
+    if (!pl) return `<div class="ana-plan"><div class="ana-plan-h ${isLong ? 'up' : 'dn'}">${isLong ? T('Long plan', 'Plan largo') : T('Short plan', 'Plan corto')}</div><div class="ana-empty">${isLong ? T('No key support below to lean on.', 'No hay soporte clave debajo en el que apoyarse.') : T('No key resistance above to lean on.', 'No hay resistencia clave arriba en la que apoyarse.')}</div></div>`
+    const active = s.active === side
+    const name = { bounce: T('Buy the bounce at support', 'Comprar el rebote en soporte'), retest: isLong ? T('Buy the retest of the broken level', 'Comprar la vuelta al nivel roto') : T('Sell the retest of the broken level', 'Vender la vuelta al nivel roto'), reject: T('Sell the rejection at resistance', 'Vender el rechazo en resistencia') }[pl.kind]
+    const pc = x => x == null ? '' : ` <small>${pct((x - p) / p)}</small>`
+    const row = (l, v, cls = '') => `<div class="r ${cls}"><span>${l}</span><b>${v}</b></div>`
+    const inZone = pl.zone.lo <= p && pl.zone.hi >= p
+    const wait = active ? `<div class="ana-now">${T('Price is here now', 'El precio está aquí ahora')}</div>`
+      : inZone ? `<div class="ana-now">${isLong ? T('Price is in this zone now — the plan if it holds', 'El precio está en esta zona — el plan si aguanta') : T('Price is in this zone now — the plan if it is rejected', 'El precio está en esta zona — el plan si la rechaza')}</div>`
+      : `<div class="ana-wait">${T(`Wait for ${fmtPx(isLong ? pl.zone.hi : pl.zone.lo)}`, `Esperar a ${fmtPx(isLong ? pl.zone.hi : pl.zone.lo)}`)} <small>${pct(((isLong ? pl.zone.hi : pl.zone.lo) - p) / p)}</small></div>`
+    const rrTone = pl.rr == null ? '' : pl.rr >= 2 ? 'up' : pl.rr < 1 ? 'dn' : ''
+    return `<div class="ana-plan${active ? ' active' : ''}">
+      <div class="ana-plan-h ${isLong ? 'up' : 'dn'}">${isLong ? T('Long plan', 'Plan largo') : T('Short plan', 'Plan corto')}<span>${name}</span></div>
+      ${wait}
+      ${row(T('Entry', 'Entrada'), fmtPx(pl.entry) + pc(pl.entry))}
+      ${row('Stop', fmtPx(pl.stop) + pc(pl.stop), 'dn')}
+      ${row(T('Target 1', 'Objetivo 1'), pl.t1 == null ? T('none in range', 'ninguno cerca') : fmtPx(pl.t1) + pc(pl.t1), 'up')}
+      ${pl.t2 != null ? row(T('Target 2', 'Objetivo 2'), fmtPx(pl.t2) + pc(pl.t2), 'up') : ''}
+      ${row(T('Reward : risk', 'Beneficio : riesgo'), pl.rr == null ? '—' : pl.rr.toFixed(1) + ' : 1', rrTone)}
+      <div class="ana-plan-b">
+        <button data-act="plan" data-v="${side}" class="${S.plan === side ? 'on' : ''}">${S.plan === side ? T('Hide from chart', 'Quitar del gráfico') : T('Show on chart', 'Ver en el gráfico')}</button>
+        ${deps.addAlert && !active && !inZone ? `<button data-act="alert" data-dir="${isLong ? 'below' : 'above'}" data-px="${isLong ? pl.zone.hi : pl.zone.lo}">${T('Alert me there', 'Avisarme ahí')}</button>` : ''}
+      </div>
+    </div>`
+  }
+  return `<div class="ana-card ana-sig">
+    <div class="ana-sig-top">
+      <div class="ana-sig-k">${T('What the levels say now', 'Qué dicen los niveles ahora')}</div>
+      <div class="ana-sig-h ${head[1]}">${head[0]} ${conf}</div>
+      <div class="ana-sig-p">${head[2]}</div>
+    </div>
+    ${s.bias.items.length ? `<div class="ana-bias"><div class="ana-bias-h">${T('Checks', 'Indicadores')}: <b class="${s.bias.lean === 'up' ? 'up' : s.bias.lean === 'down' ? 'dn' : ''}">${leanTxt}</b> <small>(${s.bias.score > 0 ? '+' : ''}${s.bias.score} ${T('of', 'de')} ±${s.bias.max})</small></div><div class="ana-chks">${s.bias.items.map(chip).join('')}</div></div>` : ''}
+    <div class="ana-plans">${planCard(s.long, 'long')}${planCard(s.short, 'short')}</div>
+    <div class="ana-sig-note">${T('Stops sit a quarter of a day’s range past the zone; targets are the next key zones. Aim for reward:risk of 2 or more. This reads levels — it is not advice, and levels fail.',
+      'El stop va un cuarto de rango diario más allá de la zona; los objetivos son las siguientes zonas clave. Busca beneficio:riesgo de 2 o más. Esto lee niveles — no es consejo, y los niveles fallan.')} <button data-act="help" class="ana-link">${S.help ? T('Hide the guide', 'Ocultar la guía') : T('How to read this', 'Cómo leer esto')}</button></div>
+  </div>`
+}
+
+function helpHtml() {
+  if (!S.help) return ''
+  const it = (h, en, es) => `<div class="ana-help-i"><b>${h}</b><span>${T(en, es)}</span></div>`
+  return `<div class="ana-card ana-help"><div class="ana-bar"><span class="ana-t">${T('How to read this', 'Cómo leer esto')}</span><span style="flex:1"></span><button data-act="help" class="ana-link">${T('Close', 'Cerrar')}</button></div><div class="ana-help-g">
+    ${it(T('Support', 'Soporte'), 'A price below where buyers have stepped in before. Price tends to slow or bounce there; if it breaks, it often becomes resistance.', 'Un precio por debajo donde antes entraron compradores. El precio suele frenar o rebotar ahí; si se rompe, suele volverse resistencia.')}
+    ${it(T('Resistance', 'Resistencia'), 'A price above where sellers have stepped in before. Price tends to stall there; if it breaks, it often becomes support.', 'Un precio por encima donde antes entraron vendedores. El precio suele frenarse ahí; si se rompe, suele volverse soporte.')}
+    ${it(T('Strength', 'Fuerza'), '0–100. Mostly how many timeframes agree, then how many times price turned there, how hard, how recently, and how much traded there.', '0–100. Sobre todo cuántas temporalidades coinciden, luego cuántas veces giró ahí, con qué fuerza, lo reciente y cuánto se negoció.')}
+    ${it(T('Confluence', 'Confluencia'), '“3 of 3” means the 4h, daily and weekly charts all turned at this price. Those are the levels most traders can see.', '“3 de 3” significa que los gráficos de 4h, diario y semanal giraron en este precio. Son los niveles que más traders ven.')}
+    ${it(T('Flip', 'Giro'), 'Made of the opposite swings: an old ceiling price has since gone through (now support), or an old floor it has fallen through (now resistance).', 'Formada por giros contrarios: un techo que el precio ya atravesó (ahora soporte) o un suelo que perdió (ahora resistencia).')}
+    ${it(T('Day-range (ATR)', 'Rango diario (ATR)'), 'How far price usually moves in a day. Distances in day-ranges tell you how close something really is for this market.', 'Cuánto se mueve el precio en un día normal. Las distancias en rangos diarios dicen qué tan cerca está algo de verdad en este mercado.')}
+    ${it(T('Reward : risk', 'Beneficio : riesgo'), 'How far to the first target compared with how far to the stop. 2 : 1 means you stand to make twice what you risk.', 'Distancia al primer objetivo comparada con la distancia al stop. 2 : 1 significa ganar el doble de lo que arriesgas.')}
+    ${it(T('Wall', 'Muro'), 'Dollars resting in the order book inside the zone right now. Big walls can slow price, but they can be pulled at any moment.', 'Dólares en el libro de órdenes dentro de la zona ahora mismo. Los muros grandes pueden frenar el precio, pero pueden retirarse en cualquier momento.')}
+    ${it(T('Checks', 'Indicadores'), 'Trend (price vs its 50-day average, 50-day vs 200-day), momentum (RSI) and the order book. They say which plan the market currently favours.', 'Tendencia (precio vs media de 50 días, media de 50 vs 200), impulso (RSI) y el libro de órdenes. Indican qué plan favorece el mercado ahora.')}
+    ${it(T('Breakout / breakdown', 'Ruptura'), 'A key level crossed in the last week. The common trade is not chasing it but waiting for price to come back and test it from the other side.', 'Un nivel clave cruzado la última semana. Lo habitual no es perseguirlo sino esperar a que el precio vuelva a probarlo desde el otro lado.')}
+  </div></div>`
+}
 
 function statsHtml(r, e) {
   const z = r.zones.filter(x => x.key)
@@ -194,6 +302,9 @@ function plotHtml(r, e) {
   let lo = Math.min(...c.map(k => k.l)), hi = Math.max(...c.map(k => k.h))
   const sel = S.sel != null ? r.zones[S.sel] : null
   if (sel) { lo = Math.min(lo, sel.lo); hi = Math.max(hi, sel.hi) }
+  // The plan on show: its stop and first target are always inside the range.
+  const plan = S.plan ? r.setup?.[S.plan] : null
+  if (plan) for (const p of [plan.stop, plan.t1].filter(x => x != null)) { lo = Math.min(lo, p); hi = Math.max(hi, p) }
   const pad = (hi - lo) * 0.06
   lo -= pad; hi += pad
   const mid = (lo + hi) / 2 + S.view.yo, half = (hi - lo) / 2 / S.view.yz
@@ -237,8 +348,12 @@ function plotHtml(r, e) {
     const i = Math.round((n - 1) * (j + 0.5) / 5)
     dates.push(`<span class="ana-date" style="left:${((i + 0.5) / n * 100).toFixed(2)}%">${fmtDate(c[i].t)}</span>`)
   }
-  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bands}${hline(r.profile?.poc, 'poc')}${bars}${hline(r.price, 'now')}</svg>
-    ${ticks.join('')}${dates.join('')}
+  // Entry, stop and targets of the plan on show, labelled on the left.
+  const planLv = plan ? [['entry', plan.entry, T('Entry', 'Entrada')], ['stop', plan.stop, 'Stop'], ['tgt', plan.t1, 'T1'], ['tgt', plan.t2, 'T2']].filter(([, p]) => p != null && p > lo && p < hi) : []
+  const planSvg = planLv.map(([cls, p]) => hline(p, 'pl-' + cls)).join('')
+  const planLab = planLv.map(([cls, p, name]) => `<span class="ana-pl pl-${cls}" style="top:${(y(p) / H * 100).toFixed(2)}%">${name} ${fmtPx(p)}</span>`).join('')
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bands}${hline(r.profile?.poc, 'poc')}${bars}${hline(r.price, 'now')}${planSvg}</svg>
+    ${plan ? '' : ticks.join('')}${dates.join('')}${planLab}
     ${labels.map(l => lab(l.top, `${fmtPx(l.z.px)} · ${l.z.score}`, l.z.kind + (l.i === S.sel ? ' on' : ''), l.i)).join('')}
     ${r.price > lo && r.price < hi ? lab(y(r.price) / H, fmtPx(r.price), 'now') : ''}
     <div class="ana-xh"><span></span></div>`
@@ -254,11 +369,29 @@ function fmtDate(t) {
   return S.tf === '4h' ? `${m} ${d.getUTCDate()} ${String(d.getUTCHours()).padStart(2, '0')}h` : S.tf === '1d' ? `${m} ${d.getUTCDate()}` : `${m} ${String(d.getUTCFullYear()).slice(2)}`
 }
 
+// The range buttons worth offering: one wider than the data is the same as All.
+function rangesFor(e) {
+  const len = (e.candles[S.tf] ?? []).length
+  return RANGE_DAYS.filter(([, d]) => !d || d * BARS_PER_DAY[S.tf] < len * 0.97)
+}
+// Which of them matches what is on screen, if any.
+function rangeOn(e) {
+  if (S.view.end || S.view.yz !== 1 || S.view.yo) return null
+  const len = (e.candles[S.tf] ?? []).length, n = Math.min(S.view.n, len)
+  for (const [l, d] of rangesFor(e)) {
+    const want = d ? Math.min(len, d * BARS_PER_DAY[S.tf]) : len
+    if (Math.abs(n - want) <= Math.max(1, want * 0.03)) return l
+  }
+  return null
+}
+
 function chartHtml(r, e) {
-  const zoomed = S.view.n !== CHART_BARS[S.tf] || S.view.end || S.view.yz !== 1 || S.view.yo
+  const on = rangeOn(e)
+  const ranges = rangesFor(e)
   return `<div class="ana-card ana-chart">
     <div class="ana-bar wrap"><span class="ana-t">${T('Zones on the chart', 'Zonas en el gráfico')}</span><span style="flex:1"></span>
-      <span class="ana-seg"><button data-act="zoom" data-v="out" aria-label="${T('Zoom out', 'Alejar')}">−</button><button data-act="zoom" data-v="in" aria-label="${T('Zoom in', 'Acercar')}">+</button><button data-act="zoom" data-v="reset" class="${zoomed ? '' : 'dim'}">${T('Reset', 'Restablecer')}</button></span>
+      <span class="ana-seg">${ranges.map(([l]) => `<button data-act="range-days" data-v="${l}" class="${on === l ? 'on' : ''}">${l === 'All' ? T('All', 'Todo') : l}</button>`).join('')}</span>
+      <span class="ana-seg"><button data-act="zoom" data-v="out" aria-label="${T('Zoom out', 'Alejar')}">−</button><button data-act="zoom" data-v="in" aria-label="${T('Zoom in', 'Acercar')}">+</button><button data-act="zoom" data-v="reset" class="${on ? 'dim' : ''}">${T('Reset', 'Restablecer')}</button></span>
       ${seg('tf', S.tf, TFS.map(t => [t, t]))}</div>
     <div class="ana-plot">${plotHtml(r, e)}</div>
     <div class="ana-legend"><span><i class="sw sup"></i>${T('support', 'soporte')}</span><span><i class="sw res"></i>${T('resistance', 'resistencia')}</span><span><i class="sw poc"></i>${T('volume POC', 'POC de volumen')}</span><span>${T('deeper colour = stronger · scroll or pinch to zoom, drag to pan, double-click to reset', 'color más intenso = más fuerte · rueda o pellizco para zoom, arrastra para mover, doble clic para restablecer')}</span></div>
@@ -275,7 +408,9 @@ function drawPlot() {
     if (!plot || !r) return
     plot.innerHTML = plotHtml(r, e)
     const rs = S.root.querySelector('[data-act="zoom"][data-v="reset"]')
-    if (rs) rs.classList.toggle('dim', !(S.view.n !== CHART_BARS[S.tf] || S.view.end || S.view.yz !== 1 || S.view.yo))
+    const on = rangeOn(e)
+    if (rs) rs.classList.toggle('dim', !!on)
+    S.root.querySelectorAll('[data-act="range-days"]').forEach(b => b.classList.toggle('on', b.dataset.v === on))
   })
 }
 
@@ -422,8 +557,11 @@ function draw() {
   }
   const r = result()
   if (!r) { body.innerHTML = `<div class="ana-card"><div class="ana-empty">${T('Not enough data for this market yet.', 'Aún no hay datos suficientes para este mercado.')}</div></div>`; return }
+  // The chart opens on the plan price is at now, if any.
+  if (S.plan === undefined) S.plan = r.setup?.active ?? null
   const keep = body.querySelector('.ana-table')?.scrollLeft ?? 0
-  body.innerHTML = statsHtml(r, e) + readingHtml(r) + chartHtml(r, e) + rowsHtml(r, e) + footHtml(r, e)
+  // The answer first, then the picture, then the numbers behind it.
+  body.innerHTML = setupHtml(r) + chartHtml(r, e) + statsHtml(r, e) + readingHtml(r) + rowsHtml(r, e) + helpHtml() + footHtml(r, e)
   const t = body.querySelector('.ana-table')
   if (t) t.scrollLeft = keep
   S.drawn = S.ver
@@ -458,13 +596,32 @@ function onClick(ev) {
     else return zoomBy(b.dataset.v === 'in' ? 1.5 : 1 / 1.5)
     drawPlot(); return
   }
+  if (a === 'range-days') {
+    const d = RANGE_DAYS.find(([l]) => l === b.dataset.v)?.[1]
+    S.view = { n: d ? d * BARS_PER_DAY[S.tf] : 1e6, end: 0, yz: 1, yo: 0 }
+    drawPlot(); return
+  }
+  // A plan's "Show on chart": its entry, stop and targets drawn; pressing again hides them.
+  if (a === 'plan') {
+    S.plan = S.plan === b.dataset.v ? null : b.dataset.v
+    S.sel = null
+    draw()
+    if (S.plan) S.root.querySelector('.ana-chart')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    return
+  }
+  if (a === 'alert') {
+    const px = +b.dataset.px
+    if (deps.addAlert && px > 0 && deps.addAlert(S.coin, b.dataset.dir, px)) { b.disabled = true; b.textContent = T('Alert set ✓', 'Alerta creada ✓') }
+    return
+  }
+  if (a === 'help') { S.help = !S.help; draw(); return }
   if (a === 'sort' || a === 'range' || a === 'tf') { S[a] = b.dataset.v; if (a === 'tf') S.view = freshView(S.tf); savePrefs(); draw() }
 }
 
 function pick(coin) {
   coin = normCoin(coin)
   if (!coin) return
-  S.coin = coin; S.sel = null; S.view = freshView(S.tf)
+  S.coin = coin; S.sel = null; S.plan = undefined; S.view = freshView(S.tf)
   try { localStorage.setItem(LS_COIN, coin) } catch {}
   const chips = S.root.querySelector('#anaZChips')
   if (chips) chips.innerHTML = chipsHtml()
@@ -488,7 +645,7 @@ export function renderAnalysis(root, d) {
     const prev = S
     S = { root, coin: normCoin(coin || deps.coin() || 'BTC'), sel: null, ver: 0, drawn: -1, chipSig: null, ...prefs() }
     S.view = freshView(S.tf)
-    if (prev && prev.coin === S.coin) { S.sel = prev.sel; S.view = prev.view; S.tf = prev.tf }
+    if (prev && prev.coin === S.coin) { S.sel = prev.sel; S.view = prev.view; S.tf = prev.tf; S.plan = prev.plan; S.help = prev.help }
     root.innerHTML = headHtml()
     root.addEventListener('click', onClick)
     bindChart(root)
