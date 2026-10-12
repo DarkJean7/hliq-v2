@@ -50,9 +50,9 @@ export function normCoin(s) {
 function prefs() {
   let p = {}
   try { p = JSON.parse(localStorage.getItem(LS_PREFS)) || {} } catch {}
-  return { sort: ['price', 'score', 'near'].includes(p.sort) ? p.sort : 'price', range: p.range in RANGES ? p.range : '25', tf: TFS.includes(p.tf) ? p.tf : '4h' }
+  return { sort: ['price', 'score', 'near'].includes(p.sort) ? p.sort : 'price', range: p.range in RANGES ? p.range : '25', tf: TFS.includes(p.tf) ? p.tf : '4h', all: p.all === true }
 }
-function savePrefs() { try { localStorage.setItem(LS_PREFS, JSON.stringify({ sort: S.sort, range: S.range, tf: S.tf })) } catch {} }
+function savePrefs() { try { localStorage.setItem(LS_PREFS, JSON.stringify({ sort: S.sort, range: S.range, tf: S.tf, all: S.all })) } catch {} }
 
 // ── data ────────────────────────────────────────────────────────────────────
 async function loadCandles(coin) {
@@ -134,7 +134,7 @@ const seg = (act, cur, opts) => `<span class="ana-seg">${opts.map(([v, l]) =>
   `<button data-act="${act}" data-v="${v}" class="${String(cur) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</span>`
 
 function statsHtml(r, e) {
-  const z = r.zones
+  const z = r.zones.filter(x => x.key)
   const sup = z.filter(x => x.kind === 'support').sort((a, b) => b.px - a.px)[0]
   const res = z.filter(x => x.kind === 'resistance').sort((a, b) => a.px - b.px)[0]
   const c4 = e.candles['4h']
@@ -150,14 +150,14 @@ function statsHtml(r, e) {
     ${card(T('Between them', 'Entre ambos'), pos == null ? '—' : Math.round(pos * 100) + '%', T('0% = on support, 100% = on resistance', '0% = en soporte, 100% = en resistencia'))}
     ${card(T('Daily range (ATR)', 'Rango diario (ATR)'), fmtPx(r.atrD), (r.atrD / r.price * 100).toFixed(2) + '% ' + T('a day', 'al día'))}
     ${card(T('Volume POC', 'POC de volumen'), r.profile ? fmtPx(r.profile.poc) : '—', r.profile ? `${T('value area', 'área de valor')} ${fmtPx(r.profile.val)}–${fmtPx(r.profile.vah)}` : '')}
-    ${card(T('Zones', 'Zonas'), String(z.length), `${all3} ${T('on all 3 timeframes', 'en las 3 temporalidades')}`)}
+    ${card(T('Key zones', 'Zonas clave'), String(z.length), `${all3} ${T('on all 3 timeframes', 'en las 3 temporalidades')} · ${r.zones.length} ${T('in total', 'en total')}`)}
     ${card(T('Book bid/ask ±2%', 'Libro bid/ask ±2%'), ratio ? ratio.ratio.toFixed(2) : '—', ratio ? `${fmtUsd(ratio.bid)} / ${fmtUsd(ratio.ask)}` : T('book not read yet', 'libro aún sin leer'), ratio ? (ratio.ratio >= 1 ? 'up' : 'dn') : '')}
   </div>`
 }
 
 // One line of plain reading — what the numbers say, never what to do about them.
 function readingHtml(r) {
-  const z = r.zones
+  const z = r.zones.filter(x => x.key)
   const near = (k) => z.filter(x => x.kind === k && Math.abs(x.dist) <= 0.1).sort((a, b) => b.score - a.score)[0]
   const s = near('support'), q = near('resistance'), at = z.find(x => x.kind === 'at')
   const bits = []
@@ -202,7 +202,7 @@ function plotHtml(r, e) {
   const y = p => (hi - p) / (hi - lo) * H
   S.map = { lo, hi, c, H }
   const col = z => z.kind === 'support' ? 'var(--green)' : z.kind === 'resistance' ? 'var(--red)' : 'var(--accent)'
-  const inView = r.zones.map((z, i) => ({ z, i })).filter(({ z }) => z.hi >= lo && z.lo <= hi)
+  const inView = r.zones.map((z, i) => ({ z, i })).filter(({ z, i }) => (S.all || z.key || i === S.sel) && z.hi >= lo && z.lo <= hi)
   const bands = inView.map(({ z, i }) => {
     const top = y(Math.min(hi, z.hi)), bot = y(Math.max(lo, z.lo)), on = S.sel === i
     const a = on ? 0.42 : 0.08 + 0.2 * z.score / 100
@@ -357,7 +357,8 @@ function bindChart(root) {
 
 function rowsHtml(r, e) {
   const lim = RANGES[S.range]
-  let z = r.zones.map((x, i) => ({ ...x, i })).filter(x => Math.abs(x.dist) <= lim)
+  let z = r.zones.map((x, i) => ({ ...x, i })).filter(x => Math.abs(x.dist) <= lim && (S.all || x.key))
+  const hidden = r.zones.filter(x => Math.abs(x.dist) <= lim && !x.key).length
   if (S.sort === 'score') z.sort((a, b) => b.score - a.score || Math.abs(a.dist) - Math.abs(b.dist))
   else if (S.sort === 'near') z.sort((a, b) => Math.abs(a.dist) - Math.abs(b.dist))
   else z.sort((a, b) => b.px - a.px)
@@ -394,6 +395,7 @@ function rowsHtml(r, e) {
       ${seg('sort', S.sort, [['price', T('by price', 'por precio')], ['score', T('by strength', 'por fuerza')], ['near', T('nearest', 'más cerca')]])}
       <span style="flex:1"></span>
       ${seg('range', S.range, [['10', '±10%'], ['25', '±25%'], ['all', T('all', 'todas')]])}
+      <button data-act="showall" class="ana-toggle${S.all ? ' on' : ''}" title="${T('Key zones: on 2+ timeframes, or strength 65+. The rest are mostly single 4h turns.', 'Zonas clave: en 2+ temporalidades o fuerza 65+. El resto son sobre todo giros sueltos de 4h.')}">${S.all ? T('Key zones only', 'Solo zonas clave') : T(`Show all (+${hidden} weak)`, `Mostrar todas (+${hidden} débiles)`)}</button>
     </div>
     <div class="ana-table" data-dragscroll><div class="ana-rows">${head}${z.length ? body : `<div class="ana-empty">${T('No zones in this range.', 'Sin zonas en este rango.')}</div>`}</div></div>
   </div>`
@@ -450,6 +452,7 @@ function onClick(ev) {
     row?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     return
   }
+  if (a === 'showall') { S.all = !S.all; if (!S.all && S.sel != null && !result()?.zones[S.sel]?.key) S.sel = null; savePrefs(); draw(); return }
   if (a === 'zoom') {
     if (b.dataset.v === 'reset') S.view = freshView(S.tf)
     else return zoomBy(b.dataset.v === 'in' ? 1.5 : 1 / 1.5)

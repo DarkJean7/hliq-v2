@@ -60,7 +60,22 @@ console.log('\n-- clustering and scoring --')
   const flipped = buildZones({ candles: { '4h': c4, '1d': c1, '1w': cw }, price: 130, now: 60 * DAY }).zones.find(z => z.px > 110)
   t('a zone made of old highs that price is now above is support, marked flip', flipped.kind === 'support' && flipped.flip)
   t('one inside the band is "at" price, neither', buildZones({ candles: { '4h': c4, '1d': c1, '1w': cw }, price: top.px, now: 60 * DAY }).zones.find(z => z.px > 110).kind === 'at')
-  t('no price, no zones', buildZones({ candles: { '4h': c4 }, price: 0 }) === null)
+  // Key: 2+ timeframes, or strength 65+. The 4h-only level here is neither.
+  t('the 3-of-3 level is key', top.key === true)
+  t('a lone, weak 4h level is not', low.key === (low.score >= 65), [low.score, low.key])
+  // Neighbours closer than half a day's move are one level, not two bands side by side.
+  {
+    const mk = (lvls) => flat(120, DAY / 6, Object.fromEntries(lvls.map(([i, l]) => [i, l])))
+    const d1 = flat(60, DAY, {})
+    // Daily ATR here is ~2 (bars span ±1), so half a day's move is ~1: 119 and 119.8 merge.
+    const near = buildZones({ candles: { '4h': mk([[20, 119], [60, 119.8]]), '1d': d1, '1w': [] }, price: 100, now: 60 * DAY })
+    t('two levels under half a day\'s move apart merge into one zone', near.zones.filter(z => z.px > 110).length === 1, near.zones.map(z => z.px))
+    const apart = buildZones({ candles: { '4h': mk([[20, 115], [60, 125]]), '1d': d1, '1w': [] }, price: 100, now: 60 * DAY })
+    t('levels far apart stay separate', apart.zones.filter(z => z.px > 110).length === 2, apart.zones.map(z => z.px))
+    const z1 = near.zones.find(z => z.px > 110)
+    t('a merged zone\'s band stays narrow: the middle of its pivots, not their whole spread plus padding', z1.hi - z1.lo < 3, [z1.lo, z1.hi])
+  }
+  t('no price, no zones',buildZones({ candles: { '4h': c4 }, price: 0 }) === null)
   t('a missing timeframe contributes nothing rather than breaking', buildZones({ candles: { '4h': c4 }, price: 100 }).counts['1w'].candles === 0)
 }
 
@@ -115,6 +130,12 @@ console.log('\n-- the view --')
   t('a row takes you to the chart; a chart label to its row', a.includes("S.root.querySelector('.ana-chart')?.scrollIntoView") && a.includes('row?.scrollIntoView'))
   t('the selected zone is always inside the fitted price range', a.includes('if (sel) { lo = Math.min(lo, sel.lo); hi = Math.max(hi, sel.hi) }'))
   t('the wheel zooms the chart, not the page', a.includes('{ passive: false }') && a.includes('ev.preventDefault()'))
+  // "why we have so much resistances and supports": weak zones are hidden by default.
+  t('the table shows key zones unless Show all is on', a.includes('&& (S.all || x.key))'))
+  t('the chart draws key zones, plus the selected one', a.includes('(S.all || z.key || i === S.sel)'))
+  t('nearest support/resistance and the reading come from key zones', (a.match(/const z = r\.zones\.filter\(x => x\.key\)/g) || []).length === 2)
+  t('the toggle says how many weak zones it hides', a.includes('Show all (+${hidden} weak)'))
+  t('and the choice is remembered', a.includes("all: p.all === true"))
   t('a vertical swipe on a phone still scrolls the page', fs.readFileSync('src/analysis.css', 'utf8').includes('touch-action: pan-y'))
 }
 

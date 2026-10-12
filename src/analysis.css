@@ -108,3 +108,5 @@ html.has-bg-image .ana-view { background: var(--bg) !important; }
   .ana-stats { grid-template-columns: 1fr 1fr; }
   .ana-stat .v { font-size: 16px; }
 }
+.ana-toggle { background: transparent; border: 1px dashed var(--border2); border-radius: 9px; padding: 4px 10px; font-size: 11.5px; font-weight: 700; color: var(--fg-2); cursor: pointer; white-space: nowrap; }
+.ana-toggle.on { border-style: solid; border-color: var(--accent); color: var(--accent); }

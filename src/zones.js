@@ -14,6 +14,7 @@ export const TF_WEIGHT = { '4h': 1, '1d': 2, '1w': 3 }
 // seven weeks to confirm and finds almost nothing.
 export const PIVOT_K = { '4h': 3, '1d': 2, '1w': 2 }
 const DAY = 864e5
+export const KEY_CONFLUENCE = 2, KEY_SCORE = 65
 
 /** SDK candles ({t,o,h,l,c,v} as strings) → numbers, oldest first, junk dropped. */
 export function toCandles(raw) {
@@ -152,7 +153,11 @@ export function buildZones({ candles, price, now = Date.now() }) {
   const c4 = candles['4h'] ?? [], c1 = candles['1d'] ?? []
   if (!(price > 0)) return null
   const atrD = atr(c1) ?? (atr(c4) != null ? atr(c4) * Math.sqrt(6) : null) ?? price * 0.03
-  const tol = clamp(0.25 * atrD, 0.0025 * price, 0.02 * price)
+  // Two widths. Pivots within half a day's move of each other are ONE level — closer than
+  // that, two "zones" are the same place drawn twice. The band drawn for it is narrower:
+  // the middle of where its pivots sit, never thinner than an eighth of a day's move.
+  const tol = clamp(0.5 * atrD, 0.004 * price, 0.03 * price)
+  const half = clamp(0.125 * atrD, 0.00125 * price, 0.01 * price)
   const counts = {}
   const all = []
   for (const tf of TFS) {
@@ -166,8 +171,9 @@ export function buildZones({ candles, price, now = Date.now() }) {
     const it = cl.items
     const wsum = it.reduce((s, p) => s + TF_WEIGHT[p.tf], 0)
     const center = it.reduce((s, p) => s + p.px * TF_WEIGHT[p.tf], 0) / wsum
-    let lo = Math.min(...it.map(p => p.px)), hi = Math.max(...it.map(p => p.px))
-    lo = Math.min(lo, center - tol / 2); hi = Math.max(hi, center + tol / 2)
+    const sorted = it.map(p => p.px).sort((a, b) => a - b)
+    const q = f => sorted[Math.min(sorted.length - 1, Math.floor(f * sorted.length))]
+    const lo = Math.min(q(0.2), center - half), hi = Math.max(q(0.8), center + half)
     const tfs = TFS.filter(tf => it.some(p => p.tf === tf))
     const highs = it.filter(p => p.side === 'high').length
     const last = Math.max(...it.map(p => p.t))
@@ -188,10 +194,13 @@ export function buildZones({ candles, price, now = Date.now() }) {
     // Built from the other side's swings: an old ceiling price has since gone through.
     const flip = (kind === 'support' && highs > it.length - highs) || (kind === 'resistance' && highs < it.length - highs)
     return {
-      px: center, lo, hi, kind, flip, tfs, confluence: tfs.length, pivots: it.length, highs,
+      px: center, lo, hi, kind, flip, tfs, confluence: tfs.length, pivots: it.length, highs, key: false,
       touches, density, react, last, score: clamp(score, 0, 100), dist: (center - price) / price,
     }
   })
+  // Key: more than one timeframe agrees, or it scores high on its own. The rest are mostly
+  // single 4h turns — six months of 4h candles turn at nearly every price.
+  for (const z of zones) z.key = z.confluence >= KEY_CONFLUENCE || z.score >= KEY_SCORE
   return { zones, price, tol, atrD, counts, profile: vp && { poc: vp.poc, vah: vp.vah, val: vp.val } }
 }
 

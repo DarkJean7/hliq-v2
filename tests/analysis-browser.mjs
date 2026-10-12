@@ -78,7 +78,7 @@ for (const [w, h, mob] of [[1400, 900, false], [430, 930, true]]) {
   ok('by price: resistances above the "price now" row, supports below it', at > 0 && rows.slice(0, at).every(r => r.kind !== 'support') && rows.slice(at + 1).every(r => r.kind !== 'resistance'), rows)
   ok('and they are in price order', rows.every((r, i) => i === 0 || r.px <= rows[i - 1].px), rows.map(r => r.px))
   const stats = await p.evaluate(() => [...document.querySelectorAll('.ana-stat .l')].map(e => e.textContent.trim().toLowerCase()))
-  ok('the stats read price, nearest support and resistance, ATR, POC, zones and the book', ['price', 'nearest support', 'nearest resistance', 'daily range (atr)', 'volume poc', 'zones', 'book bid/ask ±2%'].every(s => stats.includes(s)), stats)
+  ok('the stats read price, nearest support and resistance, ATR, POC, zones and the book', ['price', 'nearest support', 'nearest resistance', 'daily range (atr)', 'volume poc', 'key zones', 'book bid/ask ±2%'].every(s => stats.includes(s)), stats)
   ok('the chart draws bands and candles', await p.evaluate(() => document.querySelectorAll('.ana-plot rect').length > 50))
   ok('a wall is read from the book near price', await p.evaluate(() => [...document.querySelectorAll('.ana-row[data-i] .c-wall')].some(e => /^\$/.test(e.textContent.trim()))))
   ok('all three timeframes were asked for', ['4h', '1d', '1w'].every(iv => asked.some(b => b.type === 'candleSnapshot' && b.req?.interval === iv)))
@@ -141,6 +141,19 @@ for (const [w, h, mob] of [[1400, 900, false], [430, 930, true]]) {
   await p.click(`.ana-lab[data-i="${other}"]`)
   await until('row', () => p.evaluate((i) => !!document.querySelector(`.ana-row.sel[data-i="${i}"]`), other), 5000)
   ok('pressing a label on the chart selects its row', await p.evaluate((i) => !!document.querySelector(`.ana-row.sel[data-i="${i}"]`), other))
+
+  console.log('-- weak zones are hidden until asked for --')
+  const keyRows = await p.evaluate(() => document.querySelectorAll('.ana-row[data-i]').length)
+  const label = await p.evaluate(() => document.querySelector('[data-act="showall"]').textContent)
+  const weak = +(label.match(/\+(\d+)/) || [])[1]
+  ok('the toggle says how many weak zones are hidden', /Show all \(\+\d+ weak\)/.test(label), label)
+  await p.click('[data-act="showall"]')
+  await until('all', () => p.evaluate(() => document.querySelector('[data-act="showall"]').classList.contains('on')), 5000)
+  const allRows = await p.evaluate(() => document.querySelectorAll('.ana-row[data-i]').length)
+  ok('Show all adds exactly those', allRows === keyRows + weak, [keyRows, weak, allRows])
+  await p.click('[data-act="showall"]')
+  await until('key', () => p.evaluate(() => !document.querySelector('[data-act="showall"]').classList.contains('on')), 5000)
+  ok('and Key zones only takes them away again', (await p.evaluate(() => document.querySelectorAll('.ana-row[data-i]').length)) === keyRows)
 
   console.log('-- sorting and an unknown market --')
   await p.click('.ana-seg button[data-act="sort"][data-v="score"]')
