@@ -170,47 +170,189 @@ function readingHtml(r) {
   return bits.length ? `<div class="ana-read">${bits.join(' ')}</div>` : ''
 }
 
-function chartHtml(r, e) {
-  const c = (e.candles[S.tf] ?? []).slice(-CHART_BARS[S.tf])
-  if (c.length < 2) return `<div class="ana-card"><div class="ana-empty">${T('No candles on this timeframe.', 'Sin velas en esta temporalidad.')}</div></div>`
+// ── the chart: zoomable, pannable, every zone drawn and labelled ───────────
+//
+// S.view: n bars on screen, `end` bars hidden off the right edge (0 = the latest), yz a
+// price zoom around the fitted range and yo a price offset. The vertical range is fitted to
+// the candles on screen PLUS the selected zone, so picking a zone in the table always
+// brings it into view, however far it sits from where price has been.
+const MIN_BARS = 20
+const freshView = (tf) => ({ n: CHART_BARS[tf], end: 0, yz: 1, yo: 0 })
+
+function viewOf(e) {
+  const all = e.candles[S.tf] ?? []
+  const v = S.view
+  v.n = Math.max(Math.min(MIN_BARS, all.length), Math.min(all.length, v.n))
+  v.end = Math.max(0, Math.min(all.length - v.n, v.end))
+  const end = Math.round(v.end), n = Math.round(v.n)
+  return all.slice(Math.max(0, all.length - end - n), all.length - end)
+}
+
+function plotHtml(r, e) {
+  const c = viewOf(e)
+  if (c.length < 2) return `<div class="ana-empty">${T('No candles on this timeframe.', 'Sin velas en esta temporalidad.')}</div>`
   let lo = Math.min(...c.map(k => k.l)), hi = Math.max(...c.map(k => k.h))
+  const sel = S.sel != null ? r.zones[S.sel] : null
+  if (sel) { lo = Math.min(lo, sel.lo); hi = Math.max(hi, sel.hi) }
   const pad = (hi - lo) * 0.06
   lo -= pad; hi += pad
+  const mid = (lo + hi) / 2 + S.view.yo, half = (hi - lo) / 2 / S.view.yz
+  lo = mid - half; hi = mid + half
   const W = 1000, H = 300, n = c.length, bw = W / n
   const y = p => (hi - p) / (hi - lo) * H
-  const inView = r.zones.filter(z => z.hi >= lo && z.lo <= hi)
-  const bands = inView.map(z => {
-    const i = r.zones.indexOf(z)
-    const col = z.kind === 'support' ? 'var(--green)' : z.kind === 'resistance' ? 'var(--red)' : 'var(--accent)'
-    const top = y(Math.min(hi, z.hi)), bot = y(Math.max(lo, z.lo))
-    return `<rect x="0" y="${top.toFixed(1)}" width="${W}" height="${Math.max(1, bot - top).toFixed(1)}" style="fill:${col};fill-opacity:${(0.05 + 0.25 * z.score / 100).toFixed(3)}${S.sel === i ? `;stroke:${col};stroke-width:1.5` : ''}" vector-effect="non-scaling-stroke"/>`
+  S.map = { lo, hi, c, H }
+  const col = z => z.kind === 'support' ? 'var(--green)' : z.kind === 'resistance' ? 'var(--red)' : 'var(--accent)'
+  const inView = r.zones.map((z, i) => ({ z, i })).filter(({ z }) => z.hi >= lo && z.lo <= hi)
+  const bands = inView.map(({ z, i }) => {
+    const top = y(Math.min(hi, z.hi)), bot = y(Math.max(lo, z.lo)), on = S.sel === i
+    const a = on ? 0.42 : 0.08 + 0.2 * z.score / 100
+    return `<rect x="0" y="${top.toFixed(1)}" width="${W}" height="${Math.max(1, bot - top).toFixed(1)}" style="fill:${col(z)};fill-opacity:${a.toFixed(3)}"/>` +
+      `<line x1="0" x2="${W}" y1="${y(z.px).toFixed(1)}" y2="${y(z.px).toFixed(1)}" class="zl${on ? ' on' : ''}" style="stroke:${col(z)};stroke-opacity:${on ? 1 : (0.35 + 0.5 * z.score / 100).toFixed(2)}" vector-effect="non-scaling-stroke"/>`
   }).join('')
   const bars = c.map((k, i) => {
-    const x = i * bw + bw / 2, up = k.c >= k.o
-    const col = up ? 'var(--green)' : 'var(--red)'
+    const x = i * bw + bw / 2, cc = k.c >= k.o ? 'var(--green)' : 'var(--red)'
     const t = y(Math.max(k.o, k.c)), b = y(Math.min(k.o, k.c))
-    return `<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${y(k.h).toFixed(1)}" y2="${y(k.l).toFixed(1)}" style="stroke:${col}" vector-effect="non-scaling-stroke"/>` +
-      `<rect x="${(x - bw * 0.35).toFixed(1)}" width="${(bw * 0.7).toFixed(1)}" y="${t.toFixed(1)}" height="${Math.max(0.6, b - t).toFixed(1)}" style="fill:${col}"/>`
+    return `<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${y(k.h).toFixed(1)}" y2="${y(k.l).toFixed(1)}" style="stroke:${cc}" vector-effect="non-scaling-stroke"/>` +
+      `<rect x="${(x - bw * 0.35).toFixed(1)}" width="${(bw * 0.7).toFixed(1)}" y="${t.toFixed(1)}" height="${Math.max(0.6, b - t).toFixed(1)}" style="fill:${cc}"/>`
   }).join('')
   const hline = (p, cls) => p > lo && p < hi ? `<line x1="0" x2="${W}" y1="${y(p).toFixed(1)}" y2="${y(p).toFixed(1)}" class="${cls}" vector-effect="non-scaling-stroke"/>` : ''
-  // Labels: the strongest zones in view, thinned so two never print on top of each other.
+  // A label for every zone that has room: the selected one first, then by strength, never
+  // two closer than a label's height.
+  const px = S.root.querySelector('.ana-plot')?.clientHeight || 300
+  const gap = 15 / px
   const labels = []
-  for (const z of [...inView].sort((a, b) => b.score - a.score)) {
-    const top = y(z.px) / H
-    if (top < 0.03 || top > 0.97 || labels.some(l => Math.abs(l.top - top) < 0.07)) continue
-    labels.push({ top, z })
-    if (labels.length >= 8) break
+  const order = [...inView].sort((a, b) => (b.i === S.sel) - (a.i === S.sel) || b.z.score - a.z.score)
+  for (const it of order) {
+    const top = y(it.z.px) / H
+    if (top < 0.02 || top > 0.98 || labels.some(l => Math.abs(l.top - top) < gap)) continue
+    labels.push({ top, ...it })
   }
-  const lab = (top, txt, cls) => `<span class="ana-lab ${cls}" style="top:${(top * 100).toFixed(2)}%">${txt}</span>`
+  const lab = (top, txt, cls, i) => `<span class="ana-lab ${cls}"${i != null ? ` data-act="selz" data-i="${i}"` : ''} style="top:${(top * 100).toFixed(2)}%">${txt}</span>`
+  // Price ticks on the left, dates along the bottom.
+  const ticks = []
+  const stepP = niceStep((hi - lo) / 5)
+  for (let p = Math.ceil(lo / stepP) * stepP; p < hi; p += stepP) ticks.push(`<span class="ana-tick" style="top:${(y(p) / H * 100).toFixed(2)}%">${fmtPx(p)}</span>`)
+  const dates = []
+  for (let j = 0; j < 5; j++) {
+    const i = Math.round((n - 1) * (j + 0.5) / 5)
+    dates.push(`<span class="ana-date" style="left:${((i + 0.5) / n * 100).toFixed(2)}%">${fmtDate(c[i].t)}</span>`)
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bands}${hline(r.profile?.poc, 'poc')}${bars}${hline(r.price, 'now')}</svg>
+    ${ticks.join('')}${dates.join('')}
+    ${labels.map(l => lab(l.top, `${fmtPx(l.z.px)} · ${l.z.score}`, l.z.kind + (l.i === S.sel ? ' on' : ''), l.i)).join('')}
+    ${r.price > lo && r.price < hi ? lab(y(r.price) / H, fmtPx(r.price), 'now') : ''}
+    <div class="ana-xh"><span></span></div>`
+}
+
+function niceStep(x) {
+  const p = Math.pow(10, Math.floor(Math.log10(x))), f = x / p
+  return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p
+}
+function fmtDate(t) {
+  const d = new Date(t)
+  const m = d.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' })
+  return S.tf === '4h' ? `${m} ${d.getUTCDate()} ${String(d.getUTCHours()).padStart(2, '0')}h` : S.tf === '1d' ? `${m} ${d.getUTCDate()}` : `${m} ${String(d.getUTCFullYear()).slice(2)}`
+}
+
+function chartHtml(r, e) {
+  const zoomed = S.view.n !== CHART_BARS[S.tf] || S.view.end || S.view.yz !== 1 || S.view.yo
   return `<div class="ana-card ana-chart">
-    <div class="ana-bar"><span class="ana-t">${T('Zones on the chart', 'Zonas en el gráfico')}</span><span style="flex:1"></span>${seg('tf', S.tf, TFS.map(t => [t, t]))}</div>
-    <div class="ana-plot">
-      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bands}${hline(r.profile?.poc, 'poc')}${bars}${hline(r.price, 'now')}</svg>
-      ${labels.map(l => lab(l.top, `${fmtPx(l.z.px)} · ${l.z.score}`, l.z.kind)).join('')}
-      ${r.price > lo && r.price < hi ? lab(y(r.price) / H, fmtPx(r.price), 'now') : ''}
-    </div>
-    <div class="ana-legend"><span><i class="sw sup"></i>${T('support', 'soporte')}</span><span><i class="sw res"></i>${T('resistance', 'resistencia')}</span><span><i class="sw poc"></i>${T('volume POC', 'POC de volumen')}</span><span>${T('deeper colour = stronger zone', 'color más intenso = zona más fuerte')}</span></div>
+    <div class="ana-bar wrap"><span class="ana-t">${T('Zones on the chart', 'Zonas en el gráfico')}</span><span style="flex:1"></span>
+      <span class="ana-seg"><button data-act="zoom" data-v="out" aria-label="${T('Zoom out', 'Alejar')}">−</button><button data-act="zoom" data-v="in" aria-label="${T('Zoom in', 'Acercar')}">+</button><button data-act="zoom" data-v="reset" class="${zoomed ? '' : 'dim'}">${T('Reset', 'Restablecer')}</button></span>
+      ${seg('tf', S.tf, TFS.map(t => [t, t]))}</div>
+    <div class="ana-plot">${plotHtml(r, e)}</div>
+    <div class="ana-legend"><span><i class="sw sup"></i>${T('support', 'soporte')}</span><span><i class="sw res"></i>${T('resistance', 'resistencia')}</span><span><i class="sw poc"></i>${T('volume POC', 'POC de volumen')}</span><span>${T('deeper colour = stronger · scroll or pinch to zoom, drag to pan, double-click to reset', 'color más intenso = más fuerte · rueda o pellizco para zoom, arrastra para mover, doble clic para restablecer')}</span></div>
   </div>`
+}
+
+// Redraw only the plot — zooming must not rebuild the table under the finger.
+let _raf = 0
+function drawPlot() {
+  if (_raf) return
+  _raf = requestAnimationFrame(() => {
+    _raf = 0
+    const plot = S?.root?.querySelector('.ana-plot'), e = cache.get(S?.coin), r = e?.candles && result()
+    if (!plot || !r) return
+    plot.innerHTML = plotHtml(r, e)
+    const rs = S.root.querySelector('[data-act="zoom"][data-v="reset"]')
+    if (rs) rs.classList.toggle('dim', !(S.view.n !== CHART_BARS[S.tf] || S.view.end || S.view.yz !== 1 || S.view.yo))
+  })
+}
+
+/** Zoom time by `f` (>1 = fewer bars), keeping the bar at fraction `fx` of the width still. */
+function zoomBy(f, fx = 1) {
+  const v = S.view, n0 = v.n
+  v.n = Math.max(MIN_BARS, v.n / f)
+  v.end = v.end + (1 - fx) * (n0 - v.n)
+  drawPlot()
+}
+
+function bindChart(root) {
+  const pts = new Map()
+  let drag = null, pinch = null
+  const plotOf = ev => ev.target.closest?.('.ana-plot')
+  root.addEventListener('wheel', ev => {
+    const plot = plotOf(ev)
+    if (!plot || !S.map) return
+    ev.preventDefault()
+    const f = Math.exp(-ev.deltaY * 0.0015)
+    if (ev.shiftKey || ev.ctrlKey) { S.view.yz = Math.max(0.2, Math.min(40, S.view.yz * f)); drawPlot(); return }
+    const rc = plot.getBoundingClientRect()
+    zoomBy(f, (ev.clientX - rc.left) / rc.width)
+  }, { passive: false })
+  root.addEventListener('pointerdown', ev => {
+    const plot = plotOf(ev)
+    if (!plot || ev.button > 0) return
+    pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY })
+    const rc = plot.getBoundingClientRect()
+    if (pts.size === 1) drag = { x: ev.clientX, y: ev.clientY, end: S.view.end, yo: S.view.yo, w: rc.width, h: rc.height, moved: false, mouse: ev.pointerType === 'mouse' }
+    if (pts.size === 2) {
+      const [a, b] = [...pts.values()]
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, n: S.view.n, end: S.view.end, fx: ((a.x + b.x) / 2 - rc.left) / rc.width }
+      drag = null
+    }
+  })
+  root.addEventListener('pointermove', ev => {
+    const plot = plotOf(ev)
+    if (pts.has(ev.pointerId)) pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY })
+    if (pinch && pts.size >= 2) {
+      const [a, b] = [...pts.values()]
+      const d = Math.hypot(a.x - b.x, a.y - b.y) || 1
+      S.view.n = pinch.n; S.view.end = pinch.end
+      zoomBy(d / pinch.d, pinch.fx)
+      return
+    }
+    if (drag && pts.has(ev.pointerId)) {
+      const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y
+      if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true
+      if (!drag.moved) return
+      S.view.end = drag.end + dx / drag.w * S.view.n
+      // Vertical drag moves price for a mouse only; on a phone it is the page scrolling.
+      if (drag.mouse && S.map) S.view.yo = drag.yo + dy / drag.h * (S.map.hi - S.map.lo)
+      drawPlot()
+      return
+    }
+    // Crosshair: the price and time under the pointer.
+    if (plot && S.map && ev.pointerType === 'mouse') {
+      const rc = plot.getBoundingClientRect(), fy = (ev.clientY - rc.top) / rc.height, fx = (ev.clientX - rc.left) / rc.width
+      const xh = plot.querySelector('.ana-xh')
+      if (!xh || fy < 0 || fy > 1) return
+      const k = S.map.c[Math.min(S.map.c.length - 1, Math.max(0, Math.floor(fx * S.map.c.length)))]
+      xh.style.display = 'block'; xh.style.top = (fy * 100) + '%'
+      xh.firstElementChild.textContent = fmtPx(S.map.hi - fy * (S.map.hi - S.map.lo)) + (k ? ' · ' + fmtDate(k.t) : '')
+    }
+  })
+  const up = ev => {
+    pts.delete(ev.pointerId)
+    if (pts.size < 2) pinch = null
+    // The click that ends a drag is not a press on whatever it ended over.
+    if (drag?.moved) { S.dragClick = true; setTimeout(() => { S.dragClick = false }, 0) }
+    if (!pts.size) drag = null
+  }
+  root.addEventListener('pointerup', up)
+  root.addEventListener('pointercancel', up)
+  root.addEventListener('pointerleave', ev => { const xh = root.querySelector('.ana-xh'); if (xh && ev.pointerType === 'mouse') xh.style.display = 'none' })
+  root.addEventListener('dblclick', ev => { if (plotOf(ev)) { S.view = freshView(S.tf); drawPlot() } })
 }
 
 function rowsHtml(r, e) {
@@ -291,14 +433,35 @@ function onClick(ev) {
   const a = b.dataset.act
   if (a === 'coin') return pick(b.dataset.coin)
   if (a === 'retry') { refresh(true); return }
-  if (a === 'sel') { const i = +b.dataset.i; S.sel = S.sel === i ? null : i; draw(); return }
-  if (a === 'sort' || a === 'range' || a === 'tf') { S[a] = b.dataset.v; savePrefs(); draw() }
+  // A row takes you to its line on the chart; a label on the chart takes you to its row.
+  if (a === 'sel') {
+    const i = +b.dataset.i
+    S.sel = S.sel === i ? null : i
+    S.view.yz = 1; S.view.yo = 0
+    draw()
+    if (S.sel != null) S.root.querySelector('.ana-chart')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    return
+  }
+  if (a === 'selz') {
+    if (S.dragClick) return
+    S.sel = +b.dataset.i
+    draw()
+    const row = S.root.querySelector(`.ana-row[data-i="${S.sel}"]`)
+    row?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    return
+  }
+  if (a === 'zoom') {
+    if (b.dataset.v === 'reset') S.view = freshView(S.tf)
+    else return zoomBy(b.dataset.v === 'in' ? 1.5 : 1 / 1.5)
+    drawPlot(); return
+  }
+  if (a === 'sort' || a === 'range' || a === 'tf') { S[a] = b.dataset.v; if (a === 'tf') S.view = freshView(S.tf); savePrefs(); draw() }
 }
 
 function pick(coin) {
   coin = normCoin(coin)
   if (!coin) return
-  S.coin = coin; S.sel = null
+  S.coin = coin; S.sel = null; S.view = freshView(S.tf)
   try { localStorage.setItem(LS_COIN, coin) } catch {}
   const chips = S.root.querySelector('#anaZChips')
   if (chips) chips.innerHTML = chipsHtml()
@@ -317,9 +480,15 @@ export function renderAnalysis(root, d) {
   if (!S || S.root !== root || !root.querySelector('#anaZBody')) {
     let coin = ''
     try { coin = localStorage.getItem(LS_COIN) || '' } catch {}
+    // A rebuilt container is the same view to the person using it: keep the market, the
+    // selected zone and the zoom.
+    const prev = S
     S = { root, coin: normCoin(coin || deps.coin() || 'BTC'), sel: null, ver: 0, drawn: -1, chipSig: null, ...prefs() }
+    S.view = freshView(S.tf)
+    if (prev && prev.coin === S.coin) { S.sel = prev.sel; S.view = prev.view; S.tf = prev.tf }
     root.innerHTML = headHtml()
     root.addEventListener('click', onClick)
+    bindChart(root)
     root.querySelector('form[data-act="search"]').addEventListener('submit', ev => {
       ev.preventDefault()
       const inp = root.querySelector('#anaZInput')

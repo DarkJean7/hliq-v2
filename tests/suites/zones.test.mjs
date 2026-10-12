@@ -108,6 +108,14 @@ console.log('\n-- the view --')
   t('--panel-1, which nothing defined, is defined inside the view', css.includes('--panel-1: var(--panel)'))
   t('main.js mounts it above the charts', m.includes("renderAnalysis(host.querySelector('#anaZ')") && m.includes('<div id="pulseSegBody" class="ana-view">'))
   t('and the charts get a section heading, not a second page title', m.includes("const _sub = el.id === 'anaCharts'"))
+  // On a phone the shell wiped the pane with "Loading…" on every tick until Pulse's own data
+  // landed — which Analysis never fetches — so a selected zone and the zoom vanished.
+  t('the phone shell only shows the Pulse placeholder for Pulse', m.includes("if (!_pulseData && _pulseSeg === 'pulse') el.innerHTML"))
+  t('and a rebuilt view keeps the selected zone and zoom', a.includes('if (prev && prev.coin === S.coin) { S.sel = prev.sel; S.view = prev.view; S.tf = prev.tf }'))
+  t('a row takes you to the chart; a chart label to its row', a.includes("S.root.querySelector('.ana-chart')?.scrollIntoView") && a.includes('row?.scrollIntoView'))
+  t('the selected zone is always inside the fitted price range', a.includes('if (sel) { lo = Math.min(lo, sel.lo); hi = Math.max(hi, sel.hi) }'))
+  t('the wheel zooms the chart, not the page', a.includes('{ passive: false }') && a.includes('ev.preventDefault()'))
+  t('a vertical swipe on a phone still scrolls the page', fs.readFileSync('src/analysis.css', 'utf8').includes('touch-action: pan-y'))
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')

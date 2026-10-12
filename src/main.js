@@ -20911,7 +20911,9 @@ function _mobVRenderContent(tick = false) {
     // row above it are not context — they are just something to scroll past. Reuses the
     // lift built for full-screen Strats rather than a second mechanism.
     document.getElementById('mobileView')?.classList.add('mob-tab-full')
-    if (!_pulseData) el.innerHTML = `<div class="mob-v-empty">${_T('Loading…', 'Cargando…')}</div>`
+    // Only Pulse waits on _pulseData. Signals and Analysis never fetch it, so for them this
+    // wiped the view on every tick — Analysis lost its selected zone and zoom each time.
+    if (!_pulseData && _pulseSeg === 'pulse') el.innerHTML = `<div class="mob-v-empty">${_T('Loading…', 'Cargando…')}</div>`
     _pulseRender(el)
     return
   }

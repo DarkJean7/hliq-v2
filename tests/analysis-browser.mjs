@@ -95,6 +95,53 @@ for (const [w, h, mob] of [[1400, 900, false], [430, 930, true]]) {
   ok('stat cards, cards and the view itself are opaque', alpha.every(a => a === 1), alpha)
   ok('the chart cards below have a ground too (--panel-1 is defined here)', await p.evaluate(() => getComputedStyle(document.querySelector('#anaCharts')).getPropertyValue('--panel-1').trim() !== ''))
 
+  console.log('-- a row goes to its line on the chart, and the chart zooms --')
+  const bars = () => p.evaluate(() => document.querySelectorAll('.ana-plot svg line:not(.zl):not(.now):not(.poc)').length)
+  // The farthest zone from price: the one least likely to be on screen already.
+  const far = await p.evaluate(() => {
+    const rows = [...document.querySelectorAll('.ana-row[data-i]')]
+    const d = r => Math.abs(parseFloat(r.querySelector('.c-dist').textContent))
+    return +rows.sort((x, y) => d(y) - d(x))[0].dataset.i
+  })
+  await p.evaluate(() => window.scrollTo(0, 0))
+  await p.click(`.ana-row[data-i="${far}"]`)
+  await until('the selection', () => p.evaluate((i) => !!document.querySelector(`.ana-lab.on[data-i="${i}"]`), far), 5000)
+  ok('pressing a row marks that zone on the chart, labelled, even far from price', await p.evaluate((i) => !!document.querySelector(`.ana-lab.on[data-i="${i}"]`) && !!document.querySelector('.ana-plot line.zl.on'), far))
+  await until('the scroll', () => p.evaluate(() => { const r = document.querySelector('.ana-plot').getBoundingClientRect(); return r.top >= -5 && r.bottom <= innerHeight + 5 }), 5000)
+  ok('and brings the chart into view', await p.evaluate(() => { const r = document.querySelector('.ana-plot').getBoundingClientRect(); return r.top >= -5 && r.bottom <= innerHeight + 5 }))
+  const labelled = await p.evaluate(() => document.querySelectorAll('.ana-lab[data-act="selz"]').length)
+  ok('several zones are labelled on the chart, not only the strongest few', labelled >= 3, labelled)
+  const b0 = await bars()
+  if (!mob) {
+    // Let the smooth scroll to the chart finish before aiming at it.
+    let box = null
+    await until('settled', async () => { const b = await p.locator('.ana-plot').boundingBox(); const same = box && Math.abs(b.y - box.y) < 0.5; box = b; return same }, 5000)
+    await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await p.mouse.wheel(0, -600)
+    await until('zoom in', async () => (await bars()) < b0, 5000)
+    const b1 = await bars()
+    ok('the wheel zooms in: fewer candles on screen', b1 < b0, [b0, b1])
+    await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    const box2 = await p.locator('.ana-plot').boundingBox()
+    ok('the wheel zooms the chart, it does not scroll the page', Math.abs(box2.y - box.y) < 1, [box.y, box2.y])
+    const d0 = await p.evaluate(() => document.querySelector('.ana-date').textContent)
+    await p.mouse.down(); await p.mouse.move(box.x + box.width * 0.9, box.y + box.height / 2, { steps: 5 }); await p.mouse.up()
+    await until('pan', () => p.evaluate((d) => document.querySelector('.ana-date').textContent !== d, d0), 5000)
+    ok('dragging pans to older candles', await p.evaluate((d) => document.querySelector('.ana-date').textContent !== d, d0), d0)
+  } else {
+    await p.click('[data-act="zoom"][data-v="in"]')
+    await until('zoom in', async () => (await bars()) < b0, 5000)
+    ok('the + button zooms in: fewer candles on screen', (await bars()) < b0, [b0, await bars()])
+  }
+  await p.click('[data-act="zoom"][data-v="reset"]')
+  await until('reset', async () => (await bars()) === b0, 5000)
+  ok('Reset puts it back', (await bars()) === b0)
+  // From the chart back to the table.
+  const other = await p.evaluate((i) => +[...document.querySelectorAll('.ana-lab[data-act="selz"]')].find(l => +l.dataset.i !== i).dataset.i, far)
+  await p.click(`.ana-lab[data-i="${other}"]`)
+  await until('row', () => p.evaluate((i) => !!document.querySelector(`.ana-row.sel[data-i="${i}"]`), other), 5000)
+  ok('pressing a label on the chart selects its row', await p.evaluate((i) => !!document.querySelector(`.ana-row.sel[data-i="${i}"]`), other))
+
   console.log('-- sorting and an unknown market --')
   await p.click('.ana-seg button[data-act="sort"][data-v="score"]')
   const sc = await p.evaluate(() => [...document.querySelectorAll('.ana-row[data-i] .c-str b')].map(b => +b.textContent))
