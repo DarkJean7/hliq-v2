@@ -226,6 +226,7 @@ import {
 } from './paper.js'
 import { startPaperSync, hasPaper } from './papersync.js'
 import { createPaperBots } from './paperbots.js'
+import { renderAnalysis } from './analysis.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
 import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fillPickerHtml,
@@ -19052,10 +19053,12 @@ function _pulseRender(el) {
   if (_pulseSeg === 'analysis') {
     let host = el.querySelector('#pulseSegBody')
     if (!host) {
-      el.innerHTML = _pulseSegHeader() + '<div id="pulseSegBody"></div>'
+      // Support & resistance first (src/analysis.js), the TradingView charts under it.
+      el.innerHTML = _pulseSegHeader() + '<div id="pulseSegBody" class="ana-view"><div id="anaZ" class="ana-z"></div><div id="anaCharts"></div></div>'
       host = el.querySelector('#pulseSegBody')
     }
-    _anaRender(host)
+    renderAnalysis(host.querySelector('#anaZ'), { T: _T, coin: () => state.selectedCoin || 'BTC', coins: _anaCoins })
+    _anaRender(host.querySelector('#anaCharts'))
     return
   }
   if (_pulseSeg === 'signals') {
@@ -33206,6 +33209,14 @@ function _anaShort(sym) {
  * resizing (hero vs stack) move the existing node, which the widget's autosize handles
  * without a reload.
  */
+// The markets this person has a reason to look at: open positions, then the watchlist.
+function _anaCoins() {
+  return [...new Set([
+    ...(state.perpState?.assetPositions ?? []).filter(p => parseFloat(p.position?.szi ?? 0) !== 0).map(p => p.position.coin),
+    ...loadWatchlist(),
+  ])].filter(c => c && !String(c).startsWith('@')).slice(0, 12)
+}
+
 function _anaRender(el) {
   const list = _anaLoad()
   let host = document.getElementById('anaList')
@@ -33214,7 +33225,11 @@ function _anaRender(el) {
     // no such thing — the tab bar is the way out — so it would be a button that does
     // something surprising. Desktop gets a plain title instead.
     const _desk = el.id === 'deskAnalysis'
-    el.innerHTML = (_desk
+    // Under the zones view, inside the segment bar: a section heading, not a second page title.
+    const _sub = el.id === 'anaCharts'
+    el.innerHTML = (_sub
+      ? `<div style="display:flex;align-items:center;padding:6px 14px 0"><span style="font-size:15px;font-weight:800">${_T('Charts', 'Gráficos')}</span></div>`
+      : _desk
       ? `<div style="display:flex;align-items:center;padding:14px 16px 11px;border-bottom:1px solid var(--border)"><span style="font-size:18px;font-weight:700">${_T('Analysis', 'Análisis')}</span></div>`
       : _mobVFullHeader(_T('Analysis', 'Análisis'))) + `
       <div style="display:flex;align-items:center;gap:8px;padding:8px 14px 4px">

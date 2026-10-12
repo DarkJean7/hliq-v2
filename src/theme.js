@@ -100,6 +100,13 @@ export function applyBackdrop(id, { light = false, photo = false } = {}) {
   set('--panel-2', photo ? _rgba(v.p2, .62)    : v.p2)
   set('--panel-3', photo ? _rgba(v.p3, .78)    : v.p3)
   set('--rule', v.rule);  set('--rule-soft', v.soft)
+  // The same three, opaque, for the views that must stay solid over a photo (Analysis:
+  // src/analysis.css). Only meaningful while they are translucent, so only set then.
+  const clear = !!photo && !light && !!v.panel
+  set('--panel-o',   clear ? v.panel : null)
+  set('--panel-2-o', clear ? v.p2 : null)
+  set('--panel-3-o', clear ? v.p3 : null)
+  el.classList?.toggle('panels-clear', clear)
   return b
 }
 
