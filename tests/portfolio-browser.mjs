@@ -143,6 +143,17 @@ async function run(label, opts) {
   ok('the table names each strategy and its result', /Buy & hold/.test(txt) && /Rebalance monthly/.test(txt) && /BTC, held/.test(txt) && txt.includes('$' + Math.round(hold.final).toLocaleString('en-US')), txt.slice(0, 400))
   // The results table: no sideways scrolling, and sortable by its headers.
   ok('the results table fits without scrolling sideways', await p.evaluate(() => { const w = document.querySelector('.pf-table-wrap'); return w.scrollWidth <= w.clientWidth + 1 }))
+  // Reported: "i dont know what rebalance means", "what is 72 rebal.", "do the returns take the
+  // costs into consideration?"
+  ok('Trades spells out rebalances', /\d+ rebalances?\b/.test(txt) && !/rebal\./.test(txt))
+  ok('the table says returns are after costs, and how to read the cost figures', /Every return here is after costs/.test(txt) && /average balance/.test(txt))
+  ok('each cost is also set against the average balance it was paid from', await p.locator('.pf-costs-share').count() > 0)
+  await p.click('#pfAllocGuideBtn')
+  ok('"What do these do?" explains rebalancing, then every allocation strategy', /Rebalancing means selling/.test(await p.textContent('#pfAllocGuide')) && await p.locator('#pfAllocGuide dt').count() === 6 && (await p.$$eval('#pfAllocGuide dd', ds => ds.every(d => d.textContent.length > 40))))
+  await p.click('#pfBotGuideBtn')
+  ok('and every trading strategy', await p.locator('#pfBotGuide dt').count() >= 10 && (await p.$$eval('#pfBotGuide dd', ds => ds.every(d => d.textContent.length > 40))))
+  await p.click('#pfAllocGuideBtn'); await p.click('#pfBotGuideBtn')
+  ok('and closes again', await p.isHidden('#pfAllocGuide') && await p.isHidden('#pfBotGuide'))
   const rowOrder = () => p.evaluate(() => [...document.querySelectorAll('.pf-table tbody tr')].map(r => r.dataset.focus))
   await p.click('.pf-table th[data-rsort="ret"]')
   const byRet = L.runs.slice().sort((a, b) => b.final - a.final).map(r => r.id)

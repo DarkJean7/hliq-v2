@@ -746,7 +746,7 @@ function renderRunControls() {
   $('pfSrc').querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.src === srcMode()))
   $('pfTf').value = S.tf; $('pfBoth').checked = !!S.both
   $('pfStrats').innerHTML = STRATEGIES.map(s => `<button data-strat="${s.id}" class="${S.strats.includes(s.id) ? 'is-on' : ''}" title="${esc(s.desc)}">${esc(s.label)}</button>`).join('')
-  $('pfBots').innerHTML = BOT_STRATEGIES.map(([id, l]) => `<button data-bot="${id}" class="${S.bots.includes(id) ? 'is-on' : ''}">${esc(l)}</button>`).join('')
+  $('pfBots').innerHTML = BOT_STRATEGIES.map(([id, l]) => `<button data-bot="${id}" class="${S.bots.includes(id) ? 'is-on' : ''}" title="${esc(BOT_DESC[id] ?? '')}">${esc(l)}</button>`).join('')
   $('pfAllocParams').hidden = !S.strats.length
   renderAllocCards()
   $('pfBotParams').hidden = !S.bots.length
@@ -841,6 +841,23 @@ const ALLOC_DESC = {
   band: 'Leaves the portfolio alone until a holding drifts a set distance from its weight, then puts everything back. Trades only when it is needed, rather than on a calendar.',
   dca: 'Spreads the same capital over buys at a fixed interval instead of investing it all on day one. Until it is fully invested part of the money sits in cash, which helps in a falling market and costs in a rising one.',
   trend: 'Holds each asset only while its price is above its moving average and moves that share into cash when it falls below. It aims to sit out long declines, and pays for it in whipsaws when the price crosses back and forth.',
+}
+// "What do these do?" — every strategy in a section, in plain words, with the one idea the
+// allocation strategies all share spelled out first.
+const GUIDE_INTRO = {
+  alloc: '<p class="pf-guide-intro"><b>Rebalancing</b> means selling some of what has grown past its target share and buying what has fallen below it, so the basket goes back to the mix you set. If you set 50% BTC / 50% ETH and BTC doubles, you end up with about 67% / 33%; a rebalance sells BTC and buys ETH until it is 50 / 50 again. These strategies differ only in <i>when</i> they do it.</p>',
+  bot: '<p class="pf-guide-intro">These trade each holding on its own, using price signals, with that holding\'s share of the capital. A <b>trade</b> is one entry and its exit. Turning on <b>Trade both directions</b> lets them short as well as buy.</p>',
+}
+function renderGuide(kind) {
+  const el = $(kind === 'alloc' ? 'pfAllocGuide' : 'pfBotGuide'), btn = $(kind === 'alloc' ? 'pfAllocGuideBtn' : 'pfBotGuideBtn')
+  if (!el || !btn) return
+  const open = !el.hidden
+  btn.setAttribute('aria-expanded', String(open)); btn.textContent = open ? 'Hide' : 'What do these do?'
+  if (!open) return
+  const rows = kind === 'alloc'
+    ? STRATEGIES.map(s => [s.label, ALLOC_DESC[s.id] ?? s.desc ?? ''])
+    : BOT_STRATEGIES.map(([id, l]) => [l, BOT_DESC[id] ?? ''])
+  el.innerHTML = GUIDE_INTRO[kind] + `<dl>${rows.map(([l, d]) => `<div><dt>${esc(l)}</dt><dd>${esc(d)}</dd></div>`).join('')}</dl>`
 }
 const ALLOC_UI_DEFAULTS = { monthDay: 1, weekDay: 1, band: 5, dcaEvery: 7, dcaUpfront: 0, trendDays: 50, trendBuffer: 0 }
 const ALLOC_FIELD = Object.fromEntries(Object.values(ALLOC_FIELDS).flat().map(f => [f.key, f]))
@@ -1039,7 +1056,13 @@ function costCell(x) {
   const tip = [x.feesEstimated ? 'Fees summed from the simulated fills.' : 'Fees charged on every trade.',
     x.funding != null ? `Funding over ${x.fundDays} days${x.fundEstDays ? `, ${x.fundEstDays} of them estimated from the market's average` : ', all from actual rates'}.` : '',
     x.slippage != null ? 'Slippage estimated: half the spread plus impact by order size against volume.' : ''].filter(Boolean).join(' ')
-  return `<span title="${esc(tip)}">${est ? '≈ ' : ''}${usd(costOf(x), 0)}</span><small class="pf-costs">${parts.join(' · ')}</small>`
+  // Costs are dollars summed over the whole run, paid out of whatever the balance was at the
+  // time. A leveraged run that swung to $500k pays costs on $500k, so "$1.3M of costs on $10k"
+  // reads as impossible until it is set against the AVERAGE balance it was paid from.
+  const avg = Array.isArray(x.equity) && x.equity.length ? x.equity.reduce((s, v) => s + (v || 0), 0) / x.equity.length : null
+  const share = avg > 0 ? costOf(x) / avg : null
+  const shareTxt = share == null ? '' : `<small class="pf-costs pf-costs-share${share > 1 ? ' mk-dn' : ''}" title="Total costs divided by the average balance over the run (${usd(avg, 0)})">${(share * 100).toFixed(share < 0.1 ? 1 : 0)}% of avg. balance${share > 1 ? ' · heavy trading' : ''}</small>`
+  return `<span title="${esc(tip + ' Already taken out of Final and Return.')}">${est ? '≈ ' : ''}${usd(costOf(x), 0)}</span><small class="pf-costs">${parts.join(' · ')}</small>${shareTxt}`
 }
 /** Sorted by the chosen column; unknowns last either way; the BTC benchmark stays at the bottom. */
 function sortRuns(all) {
@@ -1100,7 +1123,7 @@ function renderResults() {
   const f = all.find(x => x.id === focus) ?? best
   const contrib = f ? Object.entries(f.pnlBy).map(([k, v]) => ({ k, v, sym: coinName(k, symOf(k)) })).sort((a, b) => b.v - a.v) : []
   const cmax = Math.max(1e-9, ...contrib.map(c => Math.abs(c.v)))
-  const tradesOf = (x) => x.id === '__bench' ? '1' : x.trades != null && x.won != null ? `${x.trades}${x.won + x.lost ? ` · ${Math.round(100 * x.won / (x.won + x.lost))}% won` : ''}` : x.rebalances != null ? `${x.rebalances} rebal.` : '—'
+  const tradesOf = (x) => x.id === '__bench' ? '1' : x.trades != null && x.won != null ? `${x.trades}${x.won + x.lost ? ` · ${Math.round(100 * x.won / (x.won + x.lost))}% won` : ''}` : x.rebalances != null ? `<span title="Times the basket was traded back to its weights">${x.rebalances} rebalance${x.rebalances === 1 ? '' : 's'}</span>` : '—'
 
   res.innerHTML = `
     ${notes.length ? `<div class="pf-notes">${notes.map(n => `<p>${n}</p>`).join('')}</div>` : ''}
@@ -1128,6 +1151,12 @@ function renderResults() {
           <td data-l="Costs">${costCell(x)}</td>
         </tr>`).join('')}</tbody>
       </table>
+    </div>
+    <div class="pf-table-note">
+      <p><b>Every return here is after costs.</b> Fees, funding and slippage are taken out of the balance as they happen, so Final and Return already include them — a high return is not hiding its costs.</p>
+      <p><b>Costs are dollars over the whole run</b>, paid from whatever the balance was at the time. With leverage a balance can swing far above the starting capital, and costs grow with it — so a run can show costs bigger than its final value. Compare them with the <b>average balance</b> under each figure: over 100% means the strategy traded its whole account many times over.</p>
+      <p><b>Trades</b>: for an allocation strategy, how many times the basket was <i>rebalanced</i> — traded back to the weights you set. For a trading strategy, how many trades it opened and closed, and the share that made money.</p>
+      <p><b>Max DD</b> (drawdown): the biggest fall from a high point. <b>Vol.</b>: how much the value swings, yearly. <b>Sharpe</b>: return per unit of swing — above 1 is good. <b>Best / worst</b>: the best and worst single day.</p>
     </div>
     ${f && f.id !== '__bench' ? `<div class="pf-card pf-contrib">
       <div class="pf-lbl">What each holding added <small>${esc(f.label)} — tap a strategy to switch</small></div>
@@ -1477,3 +1506,8 @@ loadFeatured()
 loadMeta()
 loadMarkets().catch(() => setStatus('Hyperliquid did not answer — reload to try again')).finally(() => marketsDone())
 window.__pf = { get state() { return S }, get last() { return last } }     // tests/portfolio-browser.mjs
+
+// "What do these do?" under each strategy section.
+for (const [btn, el, kind] of [['pfAllocGuideBtn', 'pfAllocGuide', 'alloc'], ['pfBotGuideBtn', 'pfBotGuide', 'bot']]) {
+  $(btn)?.addEventListener('click', () => { const g = $(el); g.hidden = !g.hidden; renderGuide(kind) })
+}
