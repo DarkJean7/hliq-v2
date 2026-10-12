@@ -189,7 +189,10 @@ import {
   fetchApprovedAgents,
   invalidateApprovedAgents,
   assetIdFor,
+  placeSpotOrder,
+  szDecimalsFor,
 } from './trading.js'
+import { createSpotSell } from './spotsell.js'
 import { createAlarm, ALARM_SOUNDS, DEFAULT_ALARM } from './alarm.js'
 import { PING as _SND_PING, setAudioSession as _setAudioSession } from './audiosession.js'
 import { STICKERS, isSticker, stickerChar, stickerLabel } from './stickers.js'
@@ -4750,10 +4753,16 @@ function renderCoinDropdownItems(query) {
     .filter(([k]) => favs.includes(k) || !_isDeadMkt(k))
   if (q) entries = entries.filter(([k]) => k.toLowerCase().includes(q) || (k + '-USDC').toLowerCase().includes(q) || (_mktDisplay(k) ?? '').toLowerCase().includes(q))
 
+  // Spot: the same set the phone's Spot filter shows — protocol tokens only with live volume
+  // (kills dead impersonators), vetted community tokens always. It said "not available".
   if (_dropType === 'spot') {
     if (catTabsEl) catTabsEl.innerHTML = ''
-    list.innerHTML = `<tr class="mkt-empty-row"><td colspan="6">Spot markets not available</td></tr>`
-    return
+    if (!_spotProtocolKeys.size && !_spotCommunityKeys.size) {
+      list.innerHTML = `<tr class="mkt-empty-row"><td colspan="6">${_T('Loading spot markets…', 'Cargando mercados spot…')}</td></tr>`
+      try { ensureSpotMeta() } catch {}
+      return
+    }
+    entries = entries.filter(([k]) => (_spotProtocolKeys.has(k) && (_mktCtxMap[k]?.volume ?? 0) > 0) || _spotCommunityKeys.has(k))
   }
   if (_dropType === 'perps') { /* all — same as all */ }
   if (_dropType === 'crypto')    entries = entries.filter(([k]) => !_isTradFiCat(_mktCatMap[k]))
@@ -4824,8 +4833,8 @@ function renderCoinDropdownItems(query) {
     return `<tr class="mkt-row ${active}" onclick="window.__selectCoin('${coin}')">
       <td class="mkt-td-symbol">
         <button class="coin-fav-btn ${fav}" onclick="window.__toggleFav('${coin}',event)">★</button>
-        <div class="mkt-sym-icon" style="background:transparent;overflow:hidden">${_coinIconHtml(coin)}</div>
-        <span class="mkt-sym-name">${_mktDisplay(coin) ?? hip3Rename(coin).replace(/.*:/, '')}-USDC</span>
+        <div class="mkt-sym-icon" style="background:transparent;overflow:hidden">${_coinIconHtml(_spotNameMap[coin] ?? coin)}</div>
+        <span class="mkt-sym-name">${_spotNameMap[coin] ?? _mktDisplay(coin) ?? hip3Rename(coin).replace(/.*:/, '')}-USDC${isSpotCoin(coin) ? ' <i style="font-style:normal;font-size:10px;color:var(--muted)">spot</i>' : ''}</span>
         ${lev ? `<span class="mkt-sym-lev">${lev}x</span>` : ''}
         ${(() => {
           // Who listed it — the dex sets the oracle, the fees and the leverage, so the same
@@ -4921,6 +4930,9 @@ document.addEventListener('click', e => {
 
 // ─── SIDE ─────────────────────────────────────────────────────────────────────
 function setSide(side) {
+  // Spot cannot be shorted: "Short" on a spot market is selling the token you hold, which the
+  // sell sheet does with the right ceiling (what is free) and the right preview (what is left).
+  if (side === 'short' && isSpotCoin(state.selectedCoin)) { window.__spotSell(state.selectedCoin); return }
   state.tradeSide = side
   document.getElementById('sideBtn-long').className  = 'side-btn' + (side === 'long'  ? ' active-long'  : '')
   document.getElementById('sideBtn-short').className = 'side-btn' + (side === 'short' ? ' active-short' : '')
@@ -19349,7 +19361,7 @@ function _mobVRenderContent(tick = false) {
           ['In Orders', hold > 0 ? _prv(fmtSize(hold)) + ' ' + esc(_ocCoinLabel(b.coin)) : '—'],
           ['Price', px > 0 ? '$' + fmtPrice(px) : '—'],
           ['Value', _prv(usd > 0 ? '$' + fmtUSD(usd, 2) : '—')],
-        ])}</div>
+        ])}${b.coin !== 'USDC' && avail > 0 && !state.isAllAccounts ? `<div style="padding:4px 16px 12px"><button class="mob-spot-sell" onclick="event.stopPropagation();window.__spotSell('${esc(b.coin)}')" style="width:100%;padding:11px;border-radius:11px;border:1px solid var(--red);background:color-mix(in srgb, var(--red) 14%, transparent);color:var(--red);font-weight:800;font-size:14px;cursor:pointer">${_T('Sell', 'Vender')} ${esc(_ocCoinLabel(b.coin))}</button></div>` : ''}</div>
       </div>`
     }
 
@@ -22979,6 +22991,7 @@ window._mobVTradeSearch = function(q) {
 }
 
 window._mobVSetSide = function(side) {
+  if (side === 'short' && isSpotCoin(state.selectedCoin)) { window._mobCloseOrderSheet?.(); window.__spotSell(state.selectedCoin); return }
   state.tradeSide = side
   _updateAvailEl()
   // Update the order sheet / trade form in place if it's open
@@ -24013,6 +24026,7 @@ window._mobOpenOrderSheet = function(side) {
     document.body.appendChild(ov)
     return
   }
+  if (side === 'short' && isSpotCoin(state.selectedCoin)) { window.__spotSell(state.selectedCoin); return }
   state.tradeSide = side
   const coin    = state.selectedCoin || 'BTC'
   const display = _spotNameMap[coin] ?? _mktDisplay(coin) ?? coin.replace(/.*:/, '')
@@ -38424,6 +38438,38 @@ window.__ovSpotHoldings = function() {
     .sort((a, b) => b.usd - a.usd)
 }
 
+// ── Selling a spot holding (src/spotsell.js) ────────────────────────────────
+// The pair a holding trades on. Balances are keyed by TOKEN ("KNTQ") on a real account and by
+// PAIR ("@334") on paper; orders and mids want the pair.
+function _spotPairOf(coin) {
+  const c = String(coin ?? '')
+  if (/^@\d+$/.test(c) || c.includes('/')) return c
+  return _watchSpotKeyMap?.[c] ?? _watchSpotKeyMap?.[c + '/USDC'] ?? null
+}
+const _spotSell = createSpotSell({
+  T: _T, esc, fmtPrice, fmtSize, fmtUSD,
+  icon: (c) => _coinIconHtml(_ocCoinLabel(c)),
+  label: (c) => _ocCoinLabel(c),
+  // Read fresh every redraw, matched by pair so "@334" and "KNTQ" are the same holding.
+  holding: (c) => {
+    const pair = _spotPairOf(c)
+    return (window.__ovSpotHoldings?.() ?? []).find(h => h.coin === c || (pair && _spotPairOf(h.coin) === pair)) ?? null
+  },
+  pairOf: _spotPairOf,
+  mid: (c) => _spotMid(_spotPairOf(c) ?? c),
+  szDec: (pair) => szDecimalsFor(pair),
+  place: ({ pair, sz, limitPx, tif }) => placeSpotOrder({ coin: pair, isBuy: false, sz, limitPx, tif }),
+  // One account at a time: in the combined view a holding can be spread over several wallets,
+  // and one order is signed by one of them.
+  blocked: () => state.isAllAccounts ? _T('Switch to the account that holds it to sell.', 'Cambia a la cuenta que lo tiene para vender.')
+    : !_canAct() ? _T('Connect an agent key first.', 'Conecta una clave de agente primero.') : null,
+  done: (text, ok) => { _paperToast(text, ok ? undefined : 'err'); if (ok) window.__refreshAfterAction?.(1200) },
+})
+window.__spotSell = async function(coin) {
+  if (!_spotMetaLoaded()) { try { await ensureSpotMeta() } catch {} }
+  return _spotSell.open(coin)
+}
+
 window.__ovBuildSpotBody = function() {
   const rows = window.__ovSpotHoldings()
   // The off-exchange group sits under the Hyperliquid rows here as well — the same renderer
@@ -38451,7 +38497,8 @@ window.__ovBuildSpotBody = function() {
 
     // Per-account rows, and the dates — the same facts the mobile card opens to. Shown on a
     // press rather than in the grid, because eight wallets of USDC is a list, not a cell.
-    const detail = (h.parts.some(p => p.acct) || held || h.entryNtl > 0) ? `
+    const sellable = h.coin !== 'USDC' && avail > 0 && !state.isAllAccounts
+    const detail = (h.parts.some(p => p.acct) || held || h.entryNtl > 0 || sellable) ? `
       <div class="ov-oc-close" id="ovspd-${id}" style="display:none">
         <div class="ov-spot-facts">
           ${h.entryNtl > 0 ? `<span><i>Cost</i>${_prv('$' + fmtUSD(h.entryNtl))}</span>` : ''}
@@ -38460,6 +38507,7 @@ window.__ovBuildSpotBody = function() {
           ${last ? `<span><i>Last bought</i>${esc(last)}</span>` : ''}
           ${h.hold > 0 ? `<span><i>In orders</i>${_prv(fmtSize(h.hold))}</span>` : ''}
         </div>
+        ${sellable ? `<div style="display:flex;justify-content:flex-end;padding:4px 2px 2px"><button class="ov-spot-sell" onclick="event.stopPropagation();window.__spotSell('${esc(h.coin)}')" style="padding:7px 16px;border-radius:9px;border:1px solid var(--red);background:color-mix(in srgb, var(--red) 14%, transparent);color:var(--red);font-weight:800;font-size:12.5px;cursor:pointer">${_T('Sell', 'Vender')} ${esc(_ocCoinLabel(h.coin))}</button></div>` : ''}
         ${h.parts.some(p => p.acct) ? h.parts.map(p => `
           <div class="ov-spot-acct">
             <span style="color:var(--accent)">${esc(p.acct ?? '—')}</span>

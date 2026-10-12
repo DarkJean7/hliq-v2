@@ -12,6 +12,31 @@ const infoClient    = new InfoClient({ transport: infoTransport })
 // Cache of coin → asset index
 let assetIndexCache = null
 let dexMetaCache    = {}   // { [dex]: { 'dex:SYM': {index, szDecimals} } }
+let spotMetaCache   = null // { '@N' | 'PURR/USDC': { index: 10000 + N, szDecimals: base token's } }
+
+/**
+ * Spot pairs, as the exchange numbers them: asset id 10000 + the pair's index, sized in the
+ * BASE token's szDecimals. There was no spot branch at all — every order on "@N" fell through
+ * to the perp universe and threw "Unknown coin", so the app could not sell a spot holding.
+ */
+async function spotAssetInfo(coin) {
+  if (!spotMetaCache) {
+    const meta = await infoClient.spotMeta()
+    // By each token's own index: delistings left gaps, so tokens[i] is NOT token i.
+    const toks = new Map((meta?.tokens ?? []).map(t => [t.index, t]))
+    const m = {}
+    for (const u of meta?.universe ?? []) {
+      const base = toks.get(u.tokens?.[0])
+      const info = { index: 10000 + u.index, szDecimals: base?.szDecimals ?? 2, isSpot: true }
+      m['@' + u.index] = info
+      if (u.name) m[u.name] = info                 // 'PURR/USDC', the one pair named by name
+    }
+    spotMetaCache = m
+  }
+  const info = spotMetaCache[coin]
+  if (!info) throw new Error(`Unknown spot market: ${coin}`)
+  return info
+}
 
 async function getAssetInfo(coin) {
   // HIP-4 outcome markets: coin '#N' (N = 10*outcomeId + side) → asset id 100_000_000 + N.
@@ -25,6 +50,7 @@ async function getAssetInfo(coin) {
     const n = parseInt(coin.slice(1))
     return { index: 100_000_000 + n, szDecimals: 0, isSpot: true, isOutcome: true }
   }
+  if (/^@\d+$/.test(coin) || coin.includes('/')) return spotAssetInfo(coin)
   // HIP-3 builder markets "dex:SYM" — separate universe, offset asset id:
   // 100000 + perpDexIndex*10000 + indexInDexUniverse (perpDexs[0] is the main dex).
   if (coin.includes(':')) {
@@ -398,7 +424,7 @@ async function placeOrdersRaw({
     const statuses = []
     let last = null
     for (const o of orders) {
-      const _p = _io ? Math.round(parseFloat(o.limitPx) * 1e5) / 1e5 : roundPx(o.limitPx, _sd)
+      const _p = _io ? Math.round(parseFloat(o.limitPx) * 1e5) / 1e5 : roundPx(o.limitPx, _sd, _is)
       last = paperOrder({
         orders: [{
           a: 0, b: o.isBuy, p: _p.toString(), s: roundSz(o.sz, _sd).toString(),
@@ -434,7 +460,7 @@ async function placeOrdersRaw({
       // under 0.1 (e.g. 0.034441) and HL rejects with "not divisible by tick size".
       p: (isOutcome
         ? Math.round(parseFloat(o.limitPx) * 1e5) / 1e5
-        : roundPx(o.limitPx, szDecimals)).toString(),
+        : roundPx(o.limitPx, szDecimals, isSpot)).toString(),
       s: roundSz(o.sz, szDecimals).toString(),
       r: !!o.reduceOnly,
       t: o.orderType,
@@ -626,6 +652,15 @@ export async function cancelTwapOrder({ coin, twapId, acct = null }) {
  *
  * Reads the cached meta, so it is free after the first call for a given universe.
  */
+/**
+ * A spot order: buy or sell a token for USDC. No leverage, no reduce-only (spot has neither),
+ * no builder fee. `tif` 'Ioc' is a market order with `limitPx` as its worst price; 'Gtc'
+ * rests as a limit. `coin` is the PAIR ("@N", or "PURR/USDC").
+ */
+export async function placeSpotOrder({ coin, isBuy, sz, limitPx, tif = 'Ioc', acct = null }) {
+  return placeOrderRaw({ coin, isBuy, sz, limitPx, orderType: { limit: { tif } }, reduceOnly: false, leverage: 1, isIsolated: false, skipLevUpdate: true, acct })
+}
+
 export async function szDecimalsFor(coin) { return (await getAssetInfo(coin)).szDecimals }
 
 /**
@@ -812,11 +847,12 @@ function roundSz(n, szDecimals = 6) {
 // HL perp price tick: at most 5 significant figures AND at most (6 - szDecimals)
 // decimal places. The old magnitude-based rounding gave e.g. 218.618 (6 sig figs)
 // which HL rejects ("not divisible by tick size") — common on HIP-3 stocks.
-function roundPx(n, szDecimals = 6) {
+function roundPx(n, szDecimals = 6, spot = false) {
   const f = parseFloat(n)
   if (!(f > 0)) return 0
   const sig    = parseFloat(f.toPrecision(5))        // ≤5 significant figures
-  const maxDec = Math.max(0, 6 - szDecimals)          // perp decimal-place cap
+  // Decimal-place cap: 6 − szDecimals on perps, 8 − szDecimals on spot (HL's tick rule).
+  const maxDec = Math.max(0, (spot ? 8 : 6) - szDecimals)
   const factor = Math.pow(10, maxDec)
   return Math.round(sig * factor) / factor
 }
