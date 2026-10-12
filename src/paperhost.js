@@ -227,6 +227,21 @@ export function createPaperHost({ dir, now = () => Date.now(), log = () => {} })
  *   post: (body) => Hyperliquid /info answer; coins: Set; prev: the last market (its limits reused)
  */
 const ORIGINAL = Object.fromEntries(Object.entries(HIP3_RENAMES).map(([k, v]) => [v, k]))
+/**
+ * Prices for an action someone just took (/paper/op): the last ones fetched if they are recent
+ * and cover the coin, fetched again otherwise — and when Hyperliquid refuses (429 on a busy
+ * IP), the last ones still, up to STALE_MS old. A refused action was put back on the person's
+ * screen as if it never happened: "i closed the positions and they are staying open".
+ */
+export const FRESH_MS = 15_000, STALE_MS = 120_000
+export async function marketFor(post, coins, prev, now = Date.now()) {
+  const age = prev?.marksAt ? now - prev.marksAt : Infinity
+  const covered = !!prev && [...coins].every(c => prev.marks?.[c] != null)
+  if (covered && age < FRESH_MS) return prev
+  try { return await loadMarket(post, coins, prev) }
+  catch (e) { if (covered && age < STALE_MS) return prev; throw e }
+}
+
 export async function loadMarket(post, coins, prev = null) {
   const want = [...coins].map(c => ORIGINAL[c] ?? c)
   const dexes = [...new Set(want.filter(c => c.includes(':')).map(c => c.split(':')[0]))]
@@ -248,7 +263,7 @@ export async function loadMarket(post, coins, prev = null) {
     for (const d of dexes) { try { addMeta(await post({ type: 'metaAndAssetCtxs', dex: d })) } catch {} }
     for (const [from, to] of Object.entries(HIP3_RENAMES)) { if (assets[from]) assets[to] = assets[from]; if (from in funding) funding[to] = funding[from] }
     metaAt = Date.now()
-    return { marks, assets, funding, metaAt, metaDexes: dexes }
+    return { marks, assets, funding, metaAt, metaDexes: dexes, marksAt: Date.now() }
   }
-  return { marks, assets, funding, metaAt, metaDexes: prev?.metaDexes ?? [] }
+  return { marks, assets, funding, metaAt, metaDexes: prev?.metaDexes ?? [], marksAt: Date.now() }
 }

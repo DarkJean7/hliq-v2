@@ -141,6 +141,53 @@ console.log(nl + '-- the app\'s side: the tick gate --')
   t('the store key for an account', P.paperStoreKey('main') === 'hliq_paper_v2' && P.paperStoreKey('abc') === 'hliq_paper_s_abc')
 }
 
+// Reported: "i closed the paper account positions and they are staying open". The server
+// refetched every price for every action, Hyperliquid answered 429, the close was refused —
+// and the app took the refusal for success, synced, and the server's copy put them back.
+console.log(nl + '-- an action is priced even when Hyperliquid refuses --')
+{
+  let calls = 0
+  const ok = async (b) => { calls++; return b.type === 'allMids' ? { BTC: '101' } : [{ universe: [{ name: 'BTC', szDecimals: 5 }] }, [{ funding: '0' }]] }
+  const busy = async () => { calls++; throw new Error('HTTP 429') }
+  const now = Date.now()
+  const prev = { marks: { BTC: '100' }, assets: {}, funding: {}, metaAt: now, metaDexes: [], marksAt: now - 5_000 }
+  t('recent prices that cover the coin are reused: nothing fetched', (await H.marketFor(busy, new Set(['BTC']), prev, now)) === prev && calls === 0)
+  const older = { ...prev, marksAt: now - 60_000 }
+  const got = await H.marketFor(ok, new Set(['BTC']), older, now)
+  t('older ones are refreshed when Hyperliquid answers', got.marks.BTC === '101' && got.marksAt >= now)
+  t('and kept when it refuses, up to two minutes old', (await H.marketFor(busy, new Set(['BTC']), older, now)) === older)
+  let threw = null
+  try { await H.marketFor(busy, new Set(['BTC']), { ...prev, marksAt: now - 600_000 }, now) } catch (e) { threw = e.message }
+  t('past that, the action is refused rather than priced at a stale mark', threw === 'HTTP 429')
+  threw = null
+  try { await H.marketFor(busy, new Set(['ETH']), prev, now) } catch (e) { threw = e.message }
+  t('a coin it has no price for at all is never guessed', threw === 'HTTP 429')
+}
+
+console.log(nl + '-- and the app does not take a refusal for success --')
+{
+  const { createPaperBots } = await import('../../src/paperbots.js')
+  const answers = [{ status: 503, j: { ok: false, error: 'HTTP 429' } }, { status: 503, j: { ok: false, error: 'HTTP 429' } }, { status: 200, j: { ok: true, result: {} } }]
+  let n = 0, done = 0, failed = []
+  const fetchImpl = async () => { const a = answers[Math.min(n++, answers.length - 1)]; return { ok: a.status < 300, status: a.status, json: async () => a.j } }
+  const B = createPaperBots({ secret: () => 'x', slot: () => 's1', fetchImpl, retryMs: [1, 1, 1], onOpsDone: () => done++, onOpFailed: (...a) => failed.push(a) })
+  B.send('s1')({ fn: 'paperOrder', args: [{}, 'BTC'] })
+  t('while it is being delivered the account is pending: the server copy does not overwrite it', B.pendingKeys().size === 1)
+  await new Promise(r => setTimeout(r, 50))
+  t('a server refusal (5xx) is retried until it lands', n === 3 && !failed.length && done === 1, { n, failed })
+  t('and only then is the account released to sync', B.pendingKeys().size === 0)
+  n = 0; done = 0; failed = []
+  answers.length = 0; answers.push({ status: 503, j: { ok: false, error: 'HTTP 429' } })
+  B.send('s1')({ fn: 'paperOrder', args: [{}, 'BTC'] })
+  await new Promise(r => setTimeout(r, 50))
+  t('if it never lands, it says so (with why) instead of letting the action quietly undo itself', failed.length === 1 && failed[0][1] === 'paperOrder' && /429/.test(failed[0][2]) && n === 4, { n, failed })
+  n = 0; failed = []
+  answers.length = 0; answers.push({ status: 400, j: { ok: false, error: 'not an action' } })
+  B.send('s1')({ fn: 'nope', args: [] })
+  await new Promise(r => setTimeout(r, 50))
+  t('a refusal from paper itself is final: not retried', n === 1 && failed.length === 1 && failed[0][2] === 'not an action', { n, failed })
+}
+
 fs.rmSync(dir, { recursive: true, force: true })
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

@@ -10840,7 +10840,12 @@ function _paperSyncStart() {
     // Never advance a bot's account here, even offline: it is the server's, run by the bot.
     setPaperTickGate((key) => (paperAcctBot(paperSlot()) ? false : _paperSync.gate(key)))
     window.__paperSync = _paperSync
-    _paperBots = createPaperBots({ secret: () => _paperSync.secret(), slot: () => paperSlot(), onOpsDone: () => _paperSync.syncNow() })
+    _paperBots = createPaperBots({ secret: () => _paperSync.secret(), slot: () => paperSlot(), onOpsDone: () => _paperSync.syncNow(),
+      // Said, not swallowed: after this the server's copy comes back, and without a word the
+      // action would just appear to undo itself.
+      onOpFailed: (_sl, fn, error) => _paperToast(_T(
+        `The paper server could not apply that${fn === 'paperOrder' ? ' order' : ''} (${error}); the account shows what the server has. Try again in a moment.`,
+        `El servidor de práctica no pudo aplicar ${fn === 'paperOrder' ? 'esa orden' : 'eso'} (${error}); la cuenta muestra lo que tiene el servidor. Inténtalo de nuevo en un momento.`), 'err') })
     setPaperRemote((slot) => (_paperSrvSlots.has(slot) ? _paperBots.send(slot) : null))
     // Another tab (or /portfolios) wrote this account: read it again rather than keep showing,
     // and later writing back, the copy this tab holds in memory.

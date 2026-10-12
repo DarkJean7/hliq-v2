@@ -33,7 +33,7 @@ export function paperSlotOfArgs(args) {
  *   secret(): the paper owner's secret; slot(): the paper account on screen
  *   onOpsDone(slot): the server has applied every queued action for that account (sync now)
  */
-export function createPaperBots({ secret, slot, onOpsDone = () => {}, fetchImpl = (...a) => fetch(...a) }) {
+export function createPaperBots({ secret, slot, onOpsDone = () => {}, onOpFailed = () => {}, fetchImpl = (...a) => fetch(...a), retryMs = [1000, 3000, 8000] }) {
   const call = async (act, body) => {
     const r = await fetchImpl('/api/paper/' + act, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ secret: secret(), ...body }) })
     const j = (r.headers.get('content-type') ?? '').includes('json') ? await r.json() : { ok: false, error: (await r.text()).slice(0, 200) || 'the bot server did not answer' }
@@ -41,13 +41,32 @@ export function createPaperBots({ secret, slot, onOpsDone = () => {}, fetchImpl 
   }
   // Actions on server-run accounts, one queue per account so they land in the order made.
   const queues = new Map(), pending = new Set()
+  // One action to the server, retried while the SERVER is the problem (unreachable, or 5xx —
+  // Hyperliquid refusing its price fetch). A refusal from paper itself (not an action, a bad
+  // account) is final. Treating every answer as success is what put closed positions back on
+  // screen: the server had refused the close, the app synced, and its copy won.
+  async function deliver(sl, fn, args) {
+    let error = 'the paper server did not answer'
+    for (let i = 0; ; i++) {
+      try {
+        const r = await fetchImpl('/paper/op', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ secret: secret(), slot: sl, fn, args }) })
+        const j = await r.json().catch(() => null)
+        if (r.ok && j?.ok === true) return true
+        error = j?.error || 'HTTP ' + r.status
+        if (r.status < 500 && j) break
+      } catch (e) { error = e?.message || error }
+      if (i >= retryMs.length) break
+      await new Promise(res => setTimeout(res, retryMs[i]))
+    }
+    try { onOpFailed(sl, fn, error) } catch {}
+    return false
+  }
   function send(sl) {
     return ({ fn, args }) => {
       const key = storeKey(sl)
       pending.add(key)
       const prev = queues.get(sl) ?? Promise.resolve()
-      const next = prev.then(() => fetchImpl('/paper/op', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ secret: secret(), slot: sl, fn, args }) })
-        .then(r => r.json()).catch(() => null))
+      const next = prev.then(() => deliver(sl, fn, args))
       queues.set(sl, next)
       next.then(() => {
         if (queues.get(sl) !== next) return            // more were queued behind it

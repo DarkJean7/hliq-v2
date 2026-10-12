@@ -12,7 +12,7 @@ import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, 
 import { SEC_CONCEPTS, SEC_TICKERS_URL, secConceptUrl, companyRevenue } from './src/secrev.js'
 import { llamaSummaryUrl, sumDaily } from './src/llama.js'
 import { cleanPortfolio, upsertFeatured } from './src/pfshared.js'
-import { createPaperHost, loadMarket } from './src/paperhost.js'
+import { createPaperHost, loadMarket, marketFor } from './src/paperhost.js'
 import { dailyFunding, mergeDaily, fundingInfo, FUND_DAYS } from './src/pffunding.js'
 import { isAllowedYahoo, yahooUrl, cgChartUrl, parseYahooDaily, parseCgChart, toUsd, FX_PER_USD, needsUsd, planFor, closesFor, wantsCg } from './src/pfsources.js'
 import { coinsOf, coinFile, stalest, buildPerf, HIST_FROM as PFC_FROM } from './src/pfgallery.js'
@@ -1017,7 +1017,9 @@ createServer((req, res) => {
           if (!r.ok) throw new Error('HTTP ' + r.status)
           return r.json()
         }
-        paperMarket = await loadMarket(post, new Set([...named, ...held]), paperMarket)
+        // Only the coin being traded must be priced to act; held ones refresh if they can.
+        paperMarket = await marketFor(post, new Set(named), paperMarket)
+        if (held.some(c => paperMarket.marks?.[c] == null)) paperMarket = await loadMarket(post, new Set([...named, ...held]), paperMarket).catch(() => paperMarket)
         return send(200, paperHost.op(b.secret, b.slot, b.fn, b.args, paperMarket))
       } catch (e) { return send(503, { ok: false, error: e.message }) }
     })()
