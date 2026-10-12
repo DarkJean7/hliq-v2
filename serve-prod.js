@@ -1001,6 +1001,29 @@ createServer((req, res) => {
     return
   }
 
+  // A person's own action on a paper account a server bot is running (src/paper.js setPaperRemote):
+  // applied here by the same engine, with prices for the coin it names and what the account holds.
+  if (url === '/paper/op') {
+    const send = (code, obj) => res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(obj))
+    if (req.method !== 'POST') { res.writeHead(405).end(); return }
+    ;(async () => {
+      const b = await readJson(req, 64_000)
+      if (!b || !/^[a-z0-9]{1,40}$/.test(String(b.slot ?? ''))) return send(400, { ok: false, error: 'bad request' })
+      try {
+        const named = typeof b.args?.[1] === 'string' && b.fn === 'paperOrder' ? [b.args[1]] : typeof b.args?.[0] === 'string' ? [b.args[0]] : []
+        const held = paperHost.withStore(b.secret, b.slot, null, (P) => [...P.paperStore().positions.map(p => p.coin), ...P.paperStore().orders.map(o => o.coin)])
+        const post = async (body) => {
+          const r = await fetch('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000) })
+          if (!r.ok) throw new Error('HTTP ' + r.status)
+          return r.json()
+        }
+        paperMarket = await loadMarket(post, new Set([...named, ...held]), paperMarket)
+        return send(200, paperHost.op(b.secret, b.slot, b.fn, b.args, paperMarket))
+      } catch (e) { return send(503, { ok: false, error: e.message }) }
+    })()
+    return
+  }
+
   if (url === '/paper/sync') {
     const send = (code, obj) => res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(obj))
     if (req.method !== 'POST') { res.writeHead(405).end(); return }

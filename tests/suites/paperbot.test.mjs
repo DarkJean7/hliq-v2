@@ -36,7 +36,8 @@ t('Run routes to the paper bot before touching the server', () => {
   t('the paper branch comes before the agent-key demand', paper > 0 && paper < key, { paper, key })
   t('and before the server call', paper > 0 && paper < post, { paper, post })
 }
-t('Stop is routed too', cli.includes('if (isPaper()) { window.__paperBotStop(type); return }'))
+// Paper bots run on the server now (src/paperbots.js); an old in-browser grid still stops locally.
+t('Stop is routed too', cli.includes('if (_paperBotsLoad()[type]) { window.__paperBotStop(type); return }') && cli.includes("await _paperBots?.stop(type, instance ?? '')"))
 t('the running state is synthesised, since there is no server to poll',
   cli.includes('const bots = _paperBotsLoad()\n    serverStatus = { ok: true, _configs: {} }'))
 t('the bot advances on the paper loop', cli.includes('_paperBotTick()'))

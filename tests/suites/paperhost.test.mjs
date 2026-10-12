@@ -86,6 +86,36 @@ console.log(nl + '-- the server advances what the app is not running --')
   t('nothing left to advance: nothing to price', ![...host.dueCoins()].includes('ETH'))
 }
 
+console.log(nl + '-- a person\'s own actions on an account a server bot runs (/paper/op) --')
+{
+  const S4 = '9a'.repeat(32)
+  host.sync({ secret: S4, client: CLIENT, push: { hliq_paper_s_cp1: store() } })
+  const mk = { marks: { BTC: '100' }, assets: { BTC: { szDecimals: 4, maxLeverage: 40 } }, funding: {} }
+  // Two separate requests, as the server's two workers would take them: the leverage set by
+  // the first is kept with the account for the second.
+  t('setting leverage is an action', host.op(S4, 'cp1', 'paperSetLeverage', ['BTC', 7], mk).ok)
+  const o = host.op(S4, 'cp1', 'paperOrder', [{ orders: [{ b: true, p: '101', s: '1', r: false, t: { limit: { tif: 'Ioc' } } }] }, 'BTC', {}], mk)
+  const acct = JSON.parse(host.read(H.ownerOf(S4)).kv.hliq_paper_s_cp1.v)
+  t('an order lands in that account, at the leverage set a request earlier', o.ok && acct.positions[0]?.szi === 1 && acct.positions[0].leverage === 7, acct.positions)
+  t('only the app\'s own actions are taken: nothing else, and nothing named otherwise', !host.op(S4, 'cp1', 'paperReset', [], mk).ok && !host.op(S4, 'cp1', 'constructor', [], mk).ok && !host.op(S4, 'cp1', 'paperOrder', 'x', mk).ok)
+  // The app's side: on a server-run account, each action is also sent.
+  const sent = []
+  const mem = {}
+  const prevLS = globalThis.localStorage
+  globalThis.localStorage = { getItem: k => mem[k] ?? null, setItem: (k, v) => { mem[k] = String(v) }, removeItem: k => { delete mem[k] } }
+  mem.hliq_paper_s_cp1 = store()
+  P.setPaperMarks({ BTC: '100' }); P.paperBind('cp1')
+  P.setPaperRemote((slot) => (slot === 'cp1' ? (x) => sent.push(x) : null))
+  P.paperSetLeverage('BTC', 3)
+  P.paperOrder({ orders: [{ b: true, p: '101', s: '0.5', r: false, t: { limit: { tif: 'Ioc' } } }] }, 'BTC')
+  t('on a server-run account the app still applies an order at once, and sends it, in order', P.paperStore().positions[0]?.szi === 0.5 && sent.map(x => x.fn).join() === 'paperSetLeverage,paperOrder' && sent[1].args[1] === 'BTC', sent)
+  P.paperBind('main')
+  sent.length = 0
+  P.paperOrder({ orders: [{ b: true, p: '101', s: '0.1', r: false, t: { limit: { tif: 'Ioc' } } }] }, 'BTC')
+  t('on an account the app runs itself, nothing is sent', !sent.length)
+  P.setPaperRemote(null); globalThis.localStorage = prevLS
+}
+
 console.log(nl + '-- the app\'s side: the tick gate --')
 {
   const mem = {}

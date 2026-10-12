@@ -56,11 +56,12 @@ console.log(String.fromCharCode(10) + '-- gaps this session created, closed --')
   const key   = body.indexOf('if (!agentKey)')
   t('desktop Run routes paper accounts to the paper bot', paper > 0, body.slice(0, 60))
   t('before demanding an agent key', paper > 0 && paper < key, { paper, key })
-  t('and it refreshes the buttons after starting', body.includes('checkServer(); updateAllStrategyButtons()'))
+  // _paperServerStart re-reads the server (checkServer) itself; Run then repaints the buttons.
+t('and it refreshes the buttons after starting', body.includes('if (await _paperServerStart(type, buildArgv(type))) updateAllStrategyButtons()') && /async function _paperServerStart[\s\S]{0,1400}await checkServer\(\)\s+return true/.test(cli))
 }
 t('Preview is offered on desktop too', cli.includes("onclick=\"window.__botPreview('${type}')\""))
 t('only for bots that can be previewed', cli.includes('${PREVIEWABLE.has(type) ?'))
-t('Stop already handled paper for both shells', cli.includes('if (isPaper()) { window.__paperBotStop(type); return }'))
+t('Stop already handled paper for both shells', cli.includes('if (_paperBotsLoad()[type]) { window.__paperBotStop(type); return }') && cli.includes("await _paperBots?.stop(type, instance ?? '')"))
 
 console.log(String.fromCharCode(10) + '-- and the reverse gap: Performance had no MOBILE entry --')
 // It was in _MOBV_NAV_ORDER, in both dispatch sets, and had a renderer. There was simply

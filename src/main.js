@@ -222,9 +222,10 @@ import {
   paperMark, paperOrder, paperCancelMany, paperCancel,
   paperAccounts, paperAcctCreate, paperAcctRename, paperAcctDelete, paperAcctName, paperAcctList,
   paperSlotKnown, paperSaveFailed, PAPER_MAX_ACCTS, paperPeek, paperStoreKey, paperReload, setPaperTickGate,
-  paperAcctBot, setPaperReadOnly,
+  paperAcctBot, setPaperReadOnly, setPaperRemote,
 } from './paper.js'
 import { startPaperSync, hasPaper } from './papersync.js'
+import { createPaperBots } from './paperbots.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
 import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fillPickerHtml,
@@ -10815,14 +10816,20 @@ function _paperRefresh() {
 // app is closed. The app holds the lease on the account it is running and advances only that
 // one; the server advances the rest. Started for anyone who has ever used paper, and on entry.
 let _paperSync = null
+// Bots on paper run on the server (src/paperbots.js). The accounts one runs on are the server's to
+// write — the app neither holds them nor advances them, and a person's own actions there are
+// sent (setPaperRemote). Refreshed with every status poll.
+let _paperBots = null
+let _paperSrvSlots = new Set()
 const _BOT_ACCT_MSG = 'A portfolio bot is trading this paper account. Stop it on /portfolios to trade it by hand.'
 function _paperSyncStart() {
   if (_paperSync) return
   try {
     _paperSync = startPaperSync({
       // A portfolio bot's account is the server's to run (src/paperexchange.js): never held here.
-      holdKey: () => (isPaper() && !paperAcctBot(paperSlot()) ? paperStoreKey() : null),
-      fast: () => isPaper(),   // a bot's account being watched refreshes as quickly as one being run
+      holdKey: () => (isPaper() && !paperAcctBot(paperSlot()) && !_paperSrvSlots.has(paperSlot()) ? paperStoreKey() : null),
+      fast: () => isPaper(),
+      pending: () => _paperBots?.pendingKeys() ?? new Set(),   // a bot's account being watched refreshes as quickly as one being run
       onAdopt: (keys) => {
         // The server moved an account (fills while the app was closed): read it again.
         if (keys.includes(paperStoreKey())) paperReload()
@@ -10832,6 +10839,8 @@ function _paperSyncStart() {
     // Never advance a bot's account here, even offline: it is the server's, run by the bot.
     setPaperTickGate((key) => (paperAcctBot(paperSlot()) ? false : _paperSync.gate(key)))
     window.__paperSync = _paperSync
+    _paperBots = createPaperBots({ secret: () => _paperSync.secret(), slot: () => paperSlot(), onOpsDone: () => _paperSync.syncNow() })
+    setPaperRemote((slot) => (_paperSrvSlots.has(slot) ? _paperBots.send(slot) : null))
     // Another tab (or /portfolios) wrote this account: read it again rather than keep showing,
     // and later writing back, the copy this tab holds in memory.
     window.addEventListener('storage', (e) => { if (e.key && e.key === paperStoreKey()) { paperReload(); if (isPaper()) _paperRefresh() } })
@@ -22358,7 +22367,7 @@ window.__lbCopyTrade = function(addr = '', name = '', opts = {}) {
       ? _T('Pick which of your accounts should do the copying first.', 'Elige primero cuál de tus cuentas copiará.')
       : _T('Load your wallet first.', 'Carga tu billetera primero.'))
     if (!paperName && to.toLowerCase() === tgt.toLowerCase()) return err(_T('That is this account — it cannot follow itself.', 'Esa es esta cuenta — no puede seguirse a sí misma.'))
-    if (!key) return err(_T('This account has no agent key saved. Add one in Strategies.', 'Esta cuenta no tiene clave de agente guardada. Añade una en Estrategias.'))
+    if (!key && !isPaper()) return err(_T('This account has no agent key saved. Add one in Strategies.', 'Esta cuenta no tiene clave de agente guardada. Añade una en Estrategias.'))
     const scale = parseFloat(v('ct-scale'))
     if (!(scale > 0)) return err(_T('Size must be above 0%.', 'El tamaño debe ser mayor que 0%.'))
 
@@ -22381,13 +22390,16 @@ window.__lbCopyTrade = function(addr = '', name = '', opts = {}) {
     btn.disabled = true
     btn.textContent = _T('Starting…', 'Iniciando…')
     try {
-      const r = await serverFetch('/api/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        // The target is the instance, so one account can follow several traders at once
-        // and each shows up as its own stoppable bot.
-        body: JSON.stringify({ type: 'copytrade', agentKey: key, args: argv, address: tgt, instance }),
-      })
+      // A paper account follows on the paper bot server: no key, no subscription.
+      const r = isPaper()
+        ? await (async () => { _paperSyncStart(); await _paperSync?.syncNow(); const x = await _paperBots.start('copytrade', argv, instance); if (x.ok) _paperSrvSlots.add(paperSlot()); return x })()
+        : await serverFetch('/api/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          // The target is the instance, so one account can follow several traders at once
+          // and each shows up as its own stoppable bot.
+          body: JSON.stringify({ type: 'copytrade', agentKey: key, args: argv, address: tgt, instance }),
+        })
       if (!r.ok) {
         if (r.subscribe) { close(); window.__subOpenPaywall?.(); return }
         btn.disabled = false
@@ -29216,7 +29228,7 @@ async function runStrategyMob(type) {
   // address is a sentinel HL has never heard of.
   if (isPaper()) {
     await ensureAllMids()
-    if (window.__paperBotStart(type)) { checkServer(); _mobVRenderContent() }
+    if (await _paperServerStart(type, buildArgvMob(type))) _mobVRenderContent()
     return
   }
   const agentKey = _stratTargetKey()
@@ -29465,6 +29477,18 @@ async function checkServer() {
     for (const [t, cfg] of Object.entries(bots)) {
       serverStatus[t] = true
       serverStatus._configs[`${t}:`] = { args: ['--coin', cfg.coin] }
+    }
+    // The bots the server runs on this paper account (Copy Trade, Grid, …): same shape, so the
+    // Strats UI shows them running, with Stop and Pause, like a real account's.
+    _paperSyncStart()
+    const srv = await _paperBots?.status().catch(() => null)
+    if (srv) {
+      _paperSrvSlots = srv.slots
+      const p = srv.status
+      for (const k of Object.keys(p)) if (k[0] !== '_' && p[k] === true) serverStatus[k] = true
+      Object.assign(serverStatus._configs, p._configs)
+      serverStatus._instances = { ...(serverStatus._instances ?? {}), ...p._instances }
+      serverStatus._paused = { ...(serverStatus._paused ?? {}), ...p._paused }
     }
     serverOnline = true
     updateAllStrategyButtons()
@@ -29751,12 +29775,29 @@ function buildArgv(type) {
   return argv
 }
 
+/**
+ * Start a bot on the paper account on screen: the server runs the same bot as live against it
+ * (src/paperbots.js). No agent key — a paper account has none and needs none.
+ */
+async function _paperServerStart(type, argv) {
+  _paperSyncStart()
+  // The account must be on the server before a bot trades it.
+  await _paperSync?.syncNow()
+  if (_paperSync?.state().online !== true) { _paperToast(_T('The paper server could not be reached; nothing was started.', 'No se pudo contactar al servidor de práctica; no se inició nada.'), 'error'); return false }
+  const r = await _paperBots.start(type, argv, _argvInstance(argv)).catch(e => ({ ok: false, error: e.message }))
+  if (!r.ok) { _paperToast(r.error || _T('Could not start.', 'No se pudo iniciar.'), 'error'); return false }
+  _paperSrvSlots.add(paperSlot())
+  _paperToast(_T('Running on this paper account — it keeps going with the app closed.', 'En marcha en esta cuenta de práctica — sigue con la app cerrada.'))
+  await checkServer()
+  return true
+}
+
 async function runStrategy(type) {
   // Paper has no agent key and a sentinel address, exactly as on mobile — without this the
   // desktop Run button demanded a key the practice account can never have.
   if (isPaper()) {
     await ensureAllMids()
-    if (window.__paperBotStart(type)) { checkServer(); updateAllStrategyButtons() }
+    if (await _paperServerStart(type, buildArgv(type))) updateAllStrategyButtons()
     return
   }
   const agentKey = _agentKeyInView()
@@ -29840,7 +29881,11 @@ function _typeInstances(type) {
 
 async function _postStop(type, instance, addr) {
   // Paper bots live in this browser, not on the server.
-  if (isPaper()) { window.__paperBotStop(type); return }
+  if (isPaper()) {
+    if (_paperBotsLoad()[type]) { window.__paperBotStop(type); return }      // an old in-browser grid
+    await _paperBots?.stop(type, instance ?? '')
+    return
+  }
   await serverFetch('/api/stop', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -29877,11 +29922,13 @@ window.restartStrategyMob = (type, instance, btn) => restartInstance(type, insta
 async function _pauseResumeInstance(action, type, instance, btn) {
   if (btn) { btn.disabled = true; btn.dataset._t = btn.textContent; btn.textContent = '…' }
   try {
-    const r = await serverFetch(`/api/${action}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, address: state.addr, instance: instance ?? '' }),
-    })
+    const r = isPaper()
+      ? await _paperBots[action](type, instance ?? '')
+      : await serverFetch(`/api/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, address: state.addr, instance: instance ?? '' }),
+      })
     if (!r.ok) _appAlert(`Could not ${action}: ${r.error}`)
     await checkServer()
     updateAllStrategyButtons()

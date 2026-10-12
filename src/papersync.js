@@ -40,7 +40,7 @@ export function hasPaper(st = localStorage) {
  *   every(active): ms between syncs — quick while fast(), slow otherwise
  * → { gate(key), syncNow(), stop(), state() }
  */
-export function startPaperSync({ holdKey, fast = holdKey, onAdopt = () => {}, storage = localStorage, fetchImpl = (...a) => fetch(...a), every = (active) => (active ? 5_000 : 30_000), url = '/paper/sync' }) {
+export function startPaperSync({ holdKey, fast = holdKey, pending = () => new Set(), onAdopt = () => {}, storage = localStorage, fetchImpl = (...a) => fetch(...a), every = (active) => (active ? 5_000 : 30_000), url = '/paper/sync' }) {
   let secret = storage.getItem(OWNER_KEY)
   if (!/^[0-9a-f]{64}$/.test(secret ?? '')) { secret = hex(32); try { storage.setItem(OWNER_KEY, secret) } catch {} }
   let client = storage.getItem(CLIENT_KEY)
@@ -68,8 +68,11 @@ export function startPaperSync({ holdKey, fast = holdKey, onAdopt = () => {}, st
     try {
       const cur = scan()
       const push = {}, ask = { ...seen }
+      // An account with the person's own actions still on their way to the server: its copy here
+      // is ahead of the server's, and neither sent nor replaced until they have landed.
+      const waiting = pending()
       for (const [k, v] of Object.entries(cur)) {
-        if (sent.get(k) === v) continue
+        if (sent.get(k) === v || waiting.has(k)) continue
         // An account this tab is NOT running is the server's to write — a bot's, or one the
         // server advances. A local difference there is a stale copy (another tab's memory, a
         // flush on switching accounts), and sending it up overwrote the bot's newer book: the
@@ -87,7 +90,7 @@ export function startPaperSync({ holdKey, fast = holdKey, onAdopt = () => {}, st
       for (const [k, v] of Object.entries(push)) if (!j.conflicts?.includes(k)) sent.set(k, v)
       const adopted = []
       for (const [k, v] of Object.entries(j.changed ?? {})) {
-        if (!PAPER_KEY_RE.test(k)) continue
+        if (!PAPER_KEY_RE.test(k) || pending().has(k)) continue
         try { if (v == null) storage.removeItem(k); else storage.setItem(k, v) } catch { continue }
         sent.set(k, v)
         adopted.push(k)
@@ -122,5 +125,7 @@ export function startPaperSync({ holdKey, fast = holdKey, onAdopt = () => {}, st
     syncNow,
     stop() { stopped = true; clearTimeout(timer) },
     state: () => ({ online, leased, owner: secret.slice(0, 6) }),
+    /** The owner's secret, for the paper bots it authorises (src/paperbots.js). */
+    secret: () => secret,
   }
 }

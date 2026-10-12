@@ -303,13 +303,19 @@ function handleLine(type, addr, line, inst = '') {
 
 // ─── PROCESS MANAGEMENT ───────────────────────────────────────────────────────
 // Paper portfolio bots (/api/paper/*): how many one owner, and the box, may run at once.
-const PAPER_BOTS_PER_OWNER = 3
+const PAPER_BOTS_PER_OWNER = 6
+// The bots that run on paper: the same scripts as live, through strategies/_paperpreload.js.
+const PAPER_TYPES = new Set(['portfolio', 'grid', 'dca', 'trend', 'volbreak', 'copytrade', 'trailstop', 'liqguard', 'levbrake', 'twap', 'accumulator'])
+// A paper bot is node --import the preload, so the paper exchange is in front of its SDK
+// before its first line runs. Read from its own arguments, so a resume or restart — which
+// re-sends them — starts it the same way.
+const nodeArgs = (args) => ((args ?? []).includes('--paper') ? ['--import', './strategies/_paperpreload.js'] : [])
 const PAPER_BOTS_MAX = 40
 
 /** A strategy run with --plan: what it WOULD do, from its own arithmetic. → its __PLAN__ answer. */
 function runPlan(type, script, args, envKey) {
 return new Promise((resolve) => {
-    const proc = spawn('node', [script, ...args, '--plan'], { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey, HLIQ_BOT: type } })
+    const proc = spawn('node', [...nodeArgs(args), script, ...args, '--plan'], { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey, HLIQ_BOT: type } })
     let out = '', err = ''
     // A preview is something a person is waiting on, so it gets a short leash — and the
     // process is killed rather than left running if it overruns.
@@ -347,7 +353,7 @@ function startStrategy(type, extraArgs = [], agentKey = '', address = '', instan
   const resumeArgs = (resume && (type === 'liqguard' || type === 'levbrake' || type === 'accumulator' || type === 'portfolio')) ? ['--resume'] : []
   // Key is passed via env (AGENT_KEY), NOT argv — so it never shows in `ps aux`.
   const argv = [SCRIPTS[type], ...addressArgs, ...extraArgs, ...resumeArgs]
-  const proc = spawn('node', argv, { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey, HLIQ_BOT: type } })
+  const proc = spawn('node', [...nodeArgs(extraArgs), ...argv], { cwd: __dirname, env: { ...process.env, AGENT_KEY: envKey, HLIQ_BOT: type } })
 
   // Keep the spawn inputs so /api/restart can relaunch with the exact same
   // config (incl. agent key, which lives only in memory) without the UI re-sending.
@@ -2067,8 +2073,12 @@ const server = createServer(async (req, res) => {
     const owner = '0x' + createHash('sha256').update(secret).digest('hex').slice(0, 40)
     const act = path.slice('/api/paper/'.length)
     const inst = String(b.instance ?? '').toUpperCase()
+    // Any of the paper-capable bots; /portfolios sends none, and means its own.
+    const type = String(b.type ?? 'portfolio')
+    if (!PAPER_TYPES.has(type)) return json(res, 400, { ok: false, error: `${type} does not run on paper` })
+    if (!/^[A-Z0-9_:@/.-]{0,60}$/.test(inst)) return json(res, 400, { ok: false, error: 'bad instance' })
     if (act === 'stop' || act === 'pause' || act === 'resume') {
-      const r = act === 'stop' ? stopStrategy('portfolio', owner, inst) : act === 'pause' ? pauseStrategy('portfolio', owner, inst) : resumeStrategy('portfolio', owner, inst)
+      const r = act === 'stop' ? stopStrategy(type, owner, inst) : act === 'pause' ? pauseStrategy(type, owner, inst) : resumeStrategy(type, owner, inst)
       return json(res, r.ok ? 200 : 400, r)
     }
     if (act !== 'start' && act !== 'plan') return json(res, 404, { ok: false, error: 'not found' })
@@ -2082,13 +2092,13 @@ const server = createServer(async (req, res) => {
       args.push(raw[i])
     }
     args.push('--paper', slot)
-    if (act === 'plan') return json(res, 200, await runPlan('portfolio', SCRIPTS.portfolio, ['--address', owner, ...args], secret))
-    if (!/^[A-Z0-9_-]{1,40}$/.test(inst)) return json(res, 400, { ok: false, error: 'bad portfolio id' })
-    const mine = Object.keys(procs).filter(k => k.startsWith('portfolio:' + owner.toLowerCase() + ':')).length
+    if (act === 'plan') return json(res, 200, await runPlan(type, SCRIPTS[type], ['--address', owner, ...args], secret))
+    if (type === 'portfolio' && !/^[A-Z0-9_-]{1,40}$/.test(inst)) return json(res, 400, { ok: false, error: 'bad portfolio id' })
+    const mine = Object.keys(procs).filter(k => k.split(':')[1] === owner.toLowerCase()).length
     const all = Object.values(procs).filter(p => (p.extraArgs ?? []).includes('--paper')).length
-    if (mine >= PAPER_BOTS_PER_OWNER) return json(res, 429, { ok: false, error: `at most ${PAPER_BOTS_PER_OWNER} paper portfolios at once — stop one first` })
+    if (mine >= PAPER_BOTS_PER_OWNER) return json(res, 429, { ok: false, error: `at most ${PAPER_BOTS_PER_OWNER} paper bots at once — stop one first` })
     if (all >= PAPER_BOTS_MAX) return json(res, 503, { ok: false, error: 'paper bots are full right now — try again later' })
-    const r = await startStrategy('portfolio', args, secret, owner, inst)
+    const r = await startStrategy(type, args, secret, owner, inst)
     return json(res, r.ok ? 200 : 400, { ...r, address: owner })
   }
 

@@ -1,13 +1,15 @@
 /**
  * A paper account as Hyperliquid, for a bot.
  *
- * strategies/portfolio.js --paper <slot> runs the EXACT bot that trades live — the point of a
- * paper run is to test that code, not a copy — against a paper account. This installs a fetch
- * in front of the bot's SDK:
+ * Any bot run with --paper <slot> (strategies/_paperpreload.js; strategies/portfolio.js installs
+ * it itself) is the EXACT bot that trades live — the point of a paper run is to test that code,
+ * not a copy — trading a paper account. This installs a fetch in front of its SDK:
  *
- *   market data (prices, candles, metadata)           → Hyperliquid, untouched
- *   the account (clearinghouseState, userFillsByTime) → the paper account
- *   orders, cancels, leverage (/exchange)             → src/paper.js on the paper account
+ *   market data (prices, candles, metadata), and any OTHER
+ *   account's reads (the trader a copy bot follows)       → Hyperliquid, untouched
+ *   the paper account's own reads (positions, orders,
+ *   fills, order status, spot, per-coin leverage)         → the paper account
+ *   orders, cancels, leverage, isolated margin (/exchange) → src/paper.js on the paper account
  *
  * The account is the owner's on the server (src/paperhost.js, the same files the app syncs
  * with), so its positions show in the app under that paper account, and the server's paper
@@ -21,9 +23,16 @@ import { createPaperHost } from './paperhost.js'
 
 const HL = /^https:\/\/api(\.hyperliquid|-ui\.hyperliquid)[a-z.-]*\//i
 
-export function installPaperExchange({ secret, slot, dir, log = () => {} }) {
+/**
+ *   secret, slot: the paper owner and account; dir: the server's paper data
+ *   addr: the bot's account address (0x + the owner's hash). Reads for that user are the paper
+ *         account's; reads for anyone else go to Hyperliquid. Without it, every account read is.
+ */
+export function installPaperExchange({ secret, slot, dir, addr = null, log = () => {} }) {
+  if (globalThis.__paperExchange) return globalThis.__paperExchange
   const host = createPaperHost({ dir })
   const real = globalThis.fetch
+  const mine = (b) => !addr || String(b.user ?? '').toLowerCase() === String(addr).toLowerCase()
   const post = async (body) => {
     const r = await real('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     if (!r.ok) throw new Error('HTTP ' + r.status)
@@ -101,6 +110,14 @@ export function installPaperExchange({ secret, slot, dir, log = () => {} }) {
         host.withStore(secret, slot, null, (P) => P.paperSetLeverage(coin, a.leverage))
         return ok({ status: 'ok', response: { type: 'default' } })
       }
+      if (a.type === 'updateIsolatedMargin') {
+        const coin = await coinOf(a.asset)
+        const usd = Math.abs(Number(a.ntli) || 0) / 1e6
+        const r = coin ? host.withStore(secret, slot, await market([coin]), (P) => P.paperAdjustMargin(coin, usd, Number(a.ntli) > 0)) : { ok: false, error: 'unknown asset' }
+        return ok(r.ok ? { status: 'ok', response: { type: 'default' } } : { status: 'err', response: r.error })
+      }
+      // Paper keeps one pool of cash for perps and spot: moving USDC between them is nothing.
+      if (a.type === 'usdClassTransfer') return ok({ status: 'ok', response: { type: 'default' } })
       if (a.type === 'cancel') {
         const statuses = host.withStore(secret, slot, null, (P) => (a.cancels ?? []).map(c => P.paperCancel(c.o)?.response?.data?.statuses?.[0] ?? 'success'))
         return ok({ status: 'ok', response: { type: 'cancel', data: { statuses } } })
@@ -129,6 +146,7 @@ export function installPaperExchange({ secret, slot, dir, log = () => {} }) {
       return ok({ status: 'ok', response: { type: 'default' } })
     }
     // The account's reads; everything else is market data, from Hyperliquid.
+    if (!mine(b)) return real(url, init)
     if (b.type === 'clearinghouseState') {
       const st = host.withStore(secret, slot, await market(heldCoins()), (P) => P.paperPerpState())
       // A builder dex's state holds only that dex's markets, as Hyperliquid answers it.
@@ -147,10 +165,35 @@ export function installPaperExchange({ secret, slot, dir, log = () => {} }) {
     }
     if (b.type === 'userFillsByTime' || b.type === 'userFills') {
       const fills = host.withStore(secret, slot, null, (P) => P.paperFills())
-      return ok(fills.filter(f => f.time >= (b.startTime ?? 0)))
+      return ok(fills.filter(f => f.time >= (b.startTime ?? 0) && f.time <= (b.endTime ?? Infinity)))
+    }
+    // Resting orders, as Hyperliquid lists them (a builder dex lists only its own).
+    if (b.type === 'openOrders' || b.type === 'frontendOpenOrders') {
+      const oo = host.withStore(secret, slot, null, (P) => P.paperOpenOrders())
+      return ok(oo.filter(o => (b.dex ? String(o.coin).startsWith(b.dex + ':') : !String(o.coin).includes(':'))))
+    }
+    // One order's state: resting, filled (its oid is on a fill), or not known.
+    if (b.type === 'orderStatus') {
+      const oid = Number(b.oid)
+      const r = host.withStore(secret, slot, null, (P) => ({ open: P.paperOpenOrders().find(o => o.oid === oid), fill: P.paperFills().find(f => Number(f.oid) === oid) }))
+      if (r.open) return ok({ status: 'order', order: { order: r.open, status: 'open', statusTimestamp: r.open.timestamp } })
+      if (r.fill) return ok({ status: 'order', order: { order: { coin: r.fill.coin, oid, side: r.fill.side, limitPx: r.fill.px, sz: '0', origSz: r.fill.sz, timestamp: r.fill.time }, status: 'filled', statusTimestamp: r.fill.time } })
+      return ok({ status: 'unknownOid' })
+    }
+    // A coin's leverage and what the account can trade there (guards and grids read it).
+    if (b.type === 'activeAssetData') {
+      const mk = await market([b.coin])
+      const px = Number(mk.marks[b.coin]) || 0
+      const r = host.withStore(secret, slot, mk, (P) => {
+        const p = P.paperStore().positions.find(x => x.coin === b.coin)
+        return { lev: p?.leverage ?? 5, iso: !!p?.isIsolated, free: P.paperWithdrawable() }
+      })
+      const can = px > 0 ? String(r.free * r.lev / px) : '0'
+      return ok({ user: b.user, coin: b.coin, leverage: { type: r.iso ? 'isolated' : 'cross', value: r.lev }, maxTradeSzs: [can, can], availableToTrade: [can, can], markPx: String(px) })
     }
     return real(url, init)
   }
+  globalThis.__paperExchange = host
   function heldCoins() {
     try { return host.withStore(secret, slot, null, (P) => [...P.paperStore().positions.map(p => p.coin), ...Object.keys(P.paperStore().balances ?? {})]) } catch { return [] }
   }

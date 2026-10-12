@@ -207,6 +207,20 @@ function strategyPlugin() {
 
         // Dev twin of serve-prod.js /paper/sync (src/paperhost.js): paper accounts kept in the local
         // data/paper. No ticking here — the dev server is not left running with the app closed.
+        // Dev twin of serve-prod.js /paper/op: a person's action on a paper account a server bot runs.
+        if (path === '/paper/op') {
+          if (req.method !== 'POST') return sendJson(res, 405, {})
+          const H = await import('./src/paperhost.js')
+          globalThis.__devPaperHost ??= H.createPaperHost({ dir: join(__dirname, 'data', 'paper') })
+          const b = await readBody(req)
+          const post = async (body) => (await fetch('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json()
+          try {
+            const coin = b.fn === 'paperOrder' ? b.args?.[1] : b.args?.[0]
+            const mk = await H.loadMarket(post, new Set(typeof coin === 'string' ? [coin] : []), null)
+            return sendJson(res, 200, globalThis.__devPaperHost.op(b.secret, b.slot, b.fn, b.args, mk))
+          } catch (e) { return sendJson(res, 503, { ok: false, error: e.message }) }
+        }
+
         if (path === '/paper/sync') {
           if (req.method !== 'POST') return sendJson(res, 405, {})
           const H = await import('./src/paperhost.js')

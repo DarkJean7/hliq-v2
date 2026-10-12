@@ -29,7 +29,8 @@ import * as P from './paper.js'
 
 import { PAPER_KEY_RE, slotOfKey } from './paperkeys.js'
 export { PAPER_KEY_RE, slotOfKey }
-export const LEASE_MS = 90_000                 // the app syncs every few seconds; this is a closed tab
+export const LEASE_MS = 90_000
+const OPS = new Set(['paperOrder', 'paperCancel', 'paperSetLeverage', 'paperAdjustMargin', 'paperDeposit', 'paperWithdraw'])                 // the app syncs every few seconds; this is a closed tab
 export const MAX_VALUE = 1_500_000             // one key (a store holds ≤400 fills, ≤2,000 equity points)
 export const MAX_OWNER = 8_000_000             // every key of one owner together
 
@@ -193,15 +194,28 @@ export function createPaperHost({ dir, now = () => Date.now(), log = () => {} })
       try {
         if (market) { P.setPaperMarks(market.marks); P.setPaperAssets(market.assets); P.setPaperFundingRates(market.funding ?? {}) }
         P.setPaperTickGate(null)
+        P.setPaperRemote(null)
         P.paperBind(slot)
+        P.setPaperPendingLev(rec.plev?.[slot] ?? {})
         const out = fn(P)
+        rec.plev = { ...(rec.plev ?? {}), [slot]: P.getPaperPendingLev() }
         write(o, rec)
         return out
       } finally { P.paperBind('main'); globalThis.localStorage = prev }
     })
   }
 
-  return { sync, tick, dueCoins, withStore, read, ownerFile: file }
+  /**
+   * A person's own action on an account a server bot is running (src/paper.js setPaperRemote).
+   * Only these, with their own arguments: the same calls the app made, applied by the same code.
+   */
+  function op(secret, slot, fn, args, market) {
+    if (!OPS.has(fn) || !Array.isArray(args)) return { ok: false, error: 'not an action' }
+    if (slotOfKey(slot === 'main' ? 'hliq_paper_v2' : slot === 'challenge' ? 'hliq_paper_chal_v2' : 'hliq_paper_s_' + slot) == null) return { ok: false, error: 'bad account' }
+    return { ok: true, result: withStore(secret, slot, market, (P) => P[fn](...args)) }
+  }
+
+  return { sync, tick, dueCoins, withStore, op, read, ownerFile: file }
 }
 
 /**

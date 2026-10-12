@@ -81,8 +81,12 @@ if (!walletKey) fail('agent key not provided')
 const PAPER = args.paper ? String(args.paper) : null
 if (PAPER) {
   if (!/^[a-z0-9]{1,40}$/.test(PAPER)) fail('bad paper account')
-  if (!/^[0-9a-f]{64}$/.test(walletKey)) fail('paper runs need the paper owner')
-  installPaperExchange({ secret: walletKey, slot: PAPER, dir: process.env.PAPER_DIR || path.join(process.cwd(), 'data', 'paper'), log: (m) => log('PAPER', m) })
+  // The server starts paper bots through strategies/_paperpreload.js, which has installed the
+  // paper exchange and swapped the owner's secret for a throwaway key already.
+  if (!globalThis.__paperExchange) {
+    if (!/^[0-9a-f]{64}$/.test(walletKey)) fail('paper runs need the paper owner')
+    installPaperExchange({ secret: walletKey, slot: PAPER, dir: process.env.PAPER_DIR || path.join(process.cwd(), 'data', 'paper'), log: (m) => log('PAPER', m) })
+  }
   walletKey = ethers.Wallet.createRandom().privateKey
 }
 const ID = String(args.id ?? '').toUpperCase()
