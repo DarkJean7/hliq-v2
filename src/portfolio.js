@@ -91,7 +91,7 @@ function decodeShare(h) {
     }
   } catch { return null }
 }
-const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'monthDay', 'weekDay', 'dcaEvery', 'dcaUpfront', 'trendBuffer', 'tf', 'both', 'bench', 'listingWait', 'costs', 'margin', 'botParams']    // not 'source': price data is the reader's page-wide choice, not the link's
+const SETTING_KEYS = ['period', 'from', 'to', 'capital', 'lev', 'fee', 'strats', 'bots', 'band', 'trendDays', 'monthDay', 'weekDay', 'dcaEvery', 'dcaUpfront', 'trendBuffer', 'dcaMode', 'dcaDrop', 'dcaBuys', 'volDays', 'momDays', 'momTop', 'volTarget', 'tf', 'both', 'bench', 'listingWait', 'costs', 'margin', 'botParams']    // not 'source': price data is the reader's page-wide choice, not the link's
 const pickSettings = (o) => Object.fromEntries(SETTING_KEYS.filter(k => k in o).map(k => [k, o[k]]))
 function encodeShare() {
   const j = { n: S.name, d: S.desc || undefined, i: S.items.map(i => [i.coin, +Number(i.w).toFixed(4), i.side === 'short' ? 1 : 0]), s: pickSettings(S) }
@@ -822,8 +822,25 @@ const ALLOC_FIELDS = {
   weekly: [{ key: 'weekDay', label: 'Weekday', type: 'select', options: [['1', 'Monday'], ['2', 'Tuesday'], ['3', 'Wednesday'], ['4', 'Thursday'], ['5', 'Friday'], ['6', 'Saturday'], ['0', 'Sunday']], hint: 'The day of each week it trades back to the weights (UTC).' }],
   band: [{ key: 'band', label: 'Drift band', unit: 'points', step: '1', min: 1, max: 50, hint: 'How far a holding\'s share may wander from its weight before everything is put back: 5 means a 20% holding is left alone between 15% and 25%.' }],
   dca: [
-    { key: 'dcaEvery', label: 'Buy every', unit: 'days', step: '1', min: 1, max: 180, hint: 'Days between buys; the first is on day one. 7 is weekly, 30 about monthly.' },
+    { key: 'dcaMode', label: 'Buy when', type: 'select', options: [['0', 'Every N days'], ['1', 'Price drops'], ['2', 'Either']], hint: 'Every N days: on a schedule. Price drops: each time the basket is a set % below where the last buy was made. Either: whichever comes first.' },
+    { key: 'dcaEvery', label: 'Buy every', unit: 'days', step: '1', min: 1, max: 180, hint: 'Days between buys; the first is on day one. 7 is weekly, 30 about monthly. (Not used when buying on drops only.)' },
+    { key: 'dcaDrop', label: 'Drop', unit: '% since last buy', step: '1', min: 1, max: 80, hint: 'Buy again once the basket is this far below where the last buy was made: 10 means each buy is about 10% cheaper than the one before. (Used by Price drops and Either.)' },
+    { key: 'dcaBuys', label: 'Buys', unit: 'parts', step: '1', min: 1, max: 52, hint: 'How many parts the capital is split into for drop buys. If prices never drop enough, the rest stays in cash. (On a schedule, the backtest spreads the capital over every buy in the window.)' },
     { key: 'dcaUpfront', label: 'Up front', unit: '% of capital', step: '5', min: 0, max: 100, hint: 'Bought on day one; the rest is split equally over every buy. 0 is pure DCA, 100 is buying it all at once.' },
+  ],
+  invvol: [
+    { key: 'monthDay', label: 'Day', unit: 'of the month', step: '1', min: 1, max: 28, hint: 'The day of each month it re-sizes the holdings.' },
+    { key: 'volDays', label: 'Volatility over', unit: 'days', step: '1', min: 7, max: 180, hint: 'How many days of daily moves the volatility is measured over. Shorter reacts faster; longer is steadier.' },
+  ],
+  momentum: [
+    { key: 'weekDay', label: 'Weekday', type: 'select', options: [['1', 'Monday'], ['2', 'Tuesday'], ['3', 'Wednesday'], ['4', 'Thursday'], ['5', 'Friday'], ['6', 'Saturday'], ['0', 'Sunday']], hint: 'The day of each week it re-picks (UTC).' },
+    { key: 'momDays', label: 'Return over', unit: 'days', step: '1', min: 3, max: 180, hint: 'The window it ranks the holdings by. 30 is about a month.' },
+    { key: 'momTop', label: 'Hold the top', unit: 'holdings', step: '1', min: 1, max: 20, hint: 'How many of the best performers it holds at once. Anything that fell over the window is never held, so it can hold fewer, or none.' },
+  ],
+  voltarget: [
+    { key: 'weekDay', label: 'Weekday', type: 'select', options: [['1', 'Monday'], ['2', 'Tuesday'], ['3', 'Wednesday'], ['4', 'Thursday'], ['5', 'Friday'], ['6', 'Saturday'], ['0', 'Sunday']], hint: 'The day of each week it re-checks the volatility (UTC).' },
+    { key: 'volDays', label: 'Volatility over', unit: 'days', step: '1', min: 7, max: 180, hint: 'How many days of daily moves the volatility is measured over. Shorter reacts faster; longer is steadier.' },
+    { key: 'volTarget', label: 'Target', unit: '% a year', step: '5', min: 5, max: 300, hint: 'The yearly volatility it aims the basket at. Crypto majors run 50–80%; a lower target holds less of the basket more of the time.' },
   ],
   trend: [
     { key: 'trendDays', label: 'Average', unit: 'days', step: '1', min: 5, max: 200, hint: 'The moving average each price is compared with. 50 and 200 are the usual ones.' },
@@ -839,7 +856,10 @@ const ALLOC_DESC = {
   monthly: 'Once a month, sells what has grown past its weight and buys what has fallen below it, so the mix stays the one you set. In a market that trends one way this sells the winner early; in one that swings back and forth it buys low and sells high.',
   weekly: 'The same as monthly, every week: the mix stays closer to your weights, at the cost of more trades and more fees.',
   band: 'Leaves the portfolio alone until a holding drifts a set distance from its weight, then puts everything back. Trades only when it is needed, rather than on a calendar.',
-  dca: 'Spreads the same capital over buys at a fixed interval instead of investing it all on day one. Until it is fully invested part of the money sits in cash, which helps in a falling market and costs in a rising one.',
+  dca: 'Spreads the same capital over several buys instead of investing it all on day one — on a schedule, each time the price drops a set amount, or whichever comes first. Until it is fully invested part of the money sits in cash, which helps in a falling market and costs in a rising one. Buying on drops buys cheaper, but if the price only climbs it may never invest it all.',
+  invvol: 'Sizes each holding by how much it swings: a coin twice as volatile gets half the share, so each one moves the basket about equally and no single wild coin dominates it. Your weights still count — they are adjusted, not replaced. Re-sized once a month.',
+  momentum: 'Each week it ranks the holdings by their return over the window and holds only the best few, at their weights; the rest sits in cash. Anything that fell is never held, so in a market where everything falls it holds nothing. It rides what is working and drops what is not, and pays for it when leaders change quickly.',
+  voltarget: 'Holds the basket at full size while it is calm, and less of it when it swings harder than your target — the rest waits in cash. The aim is a steadier ride: smaller in storms, full when quiet. It never adds leverage on top of what you chose, only steps back.',
   trend: 'Holds each asset only while its price is above its moving average and moves that share into cash when it falls below. It aims to sit out long declines, and pays for it in whipsaws when the price crosses back and forth.',
 }
 // "What do these do?" — every strategy in a section, in plain words, with the one idea the
@@ -859,7 +879,7 @@ function renderGuide(kind) {
     : BOT_STRATEGIES.map(([id, l]) => [l, BOT_DESC[id] ?? ''])
   el.innerHTML = GUIDE_INTRO[kind] + `<dl>${rows.map(([l, d]) => `<div><dt>${esc(l)}</dt><dd>${esc(d)}</dd></div>`).join('')}</dl>`
 }
-const ALLOC_UI_DEFAULTS = { monthDay: 1, weekDay: 1, band: 5, dcaEvery: 7, dcaUpfront: 0, trendDays: 50, trendBuffer: 0 }
+const ALLOC_UI_DEFAULTS = { monthDay: 1, weekDay: 1, band: 5, dcaEvery: 7, dcaUpfront: 0, trendDays: 50, trendBuffer: 0, dcaMode: 0, dcaDrop: 10, dcaBuys: 8, volDays: 30, momDays: 30, momTop: 3, volTarget: 50 }
 const ALLOC_FIELD = Object.fromEntries(Object.values(ALLOC_FIELDS).flat().map(f => [f.key, f]))
 const ap = key => S[key] ?? ALLOC_UI_DEFAULTS[key]
 const ALLOCCARDS_KEY = 'hliq_pf_alloccards'
@@ -942,6 +962,7 @@ async function run() {
   const candles = Object.fromEntries(need.filter(c => closesOf(c)).map(c => [c, closesOf(c).pts]))
   const opts = { capital: Number(S.capital) || 10_000, leverage: S.lev === 'max' ? 1 : (Number(S.lev) || 1), feeBps: (Number(S.fee) || 0) * 100, band: (Number(ap('band')) || 5) / 100, trendDays: Math.max(2, Number(ap('trendDays')) || 50),
     monthDay: Number(ap('monthDay')), weekDay: Number(ap('weekDay')), dcaEvery: Number(ap('dcaEvery')), dcaUpfront: Number(ap('dcaUpfront')) / 100, trendBuffer: Number(ap('trendBuffer')) / 100, listing: S.listingWait ? 'wait' : 'join',
+    dcaMode: Number(ap('dcaMode')), dcaDrop: Number(ap('dcaDrop')) / 100, dcaBuys: Number(ap('dcaBuys')), volDays: Number(ap('volDays')), momDays: Number(ap('momDays')), momTop: Number(ap('momTop')), volTarget: Number(ap('volTarget')) / 100,
     // Leverage per market, capped at what Hyperliquid allows there; the margin mode.
     levBy: Object.fromEntries(items.map(i => [i.key, levFor(i.key)])), margin: S.margin === 'isolated' ? 'isolated' : 'cross',
     // Each market's maintenance margin, 1/(2 × its max leverage), as Hyperliquid sets it.
@@ -1199,7 +1220,8 @@ function changed({ rerun = true } = {}) {
 initTrade(() => ({
   name: S.name, featuredId: S.featuredId, items: S.items, strats: S.strats, lev: S.lev, margin: S.margin === 'isolated' ? 'isolated' : 'cross',
   params: { monthDay: Number(ap('monthDay')), weekDay: Number(ap('weekDay')), band: Number(ap('band')) / 100, dcaEvery: Number(ap('dcaEvery')),
-    dcaUpfront: Number(ap('dcaUpfront')) / 100, trendDays: Number(ap('trendDays')), trendBuffer: Number(ap('trendBuffer')) / 100 },
+    dcaUpfront: Number(ap('dcaUpfront')) / 100, trendDays: Number(ap('trendDays')), trendBuffer: Number(ap('trendBuffer')) / 100,
+    dcaMode: Number(ap('dcaMode')), dcaDrop: Number(ap('dcaDrop')) / 100, dcaBuys: Number(ap('dcaBuys')), volDays: Number(ap('volDays')), momDays: Number(ap('momDays')), momTop: Number(ap('momTop')), volTarget: Number(ap('volTarget')) / 100 },
   bots: S.bots, tf: S.tf, both: !!S.both, botParams: S.botParams ?? {},
   labels: { ...STRATEGY_LABEL, ...Object.fromEntries(BOT_STRATEGIES.map(([id, l]) => ['bot:' + id, l])) }, nameOf,
 }))

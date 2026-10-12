@@ -35,7 +35,7 @@ import path from 'node:path'
 import { isPaused, onPause, onResume } from './_pause.js'
 import { botCloid } from '../src/cloid.js'
 import { installPaperExchange } from '../src/paperexchange.js'
-import { LIVE_STRATEGIES, LIVE_DEFAULTS, HL_MIN_ORDER, liveWeights, liveLeverage, freshLedger, equityOf, smaOf, decide, ordersFor, applyFill, reconcile, dayOf } from '../src/pflive.js'
+import { LIVE_STRATEGIES, LIVE_DEFAULTS, HIST_STRATEGIES, histDays, HL_MIN_ORDER, liveWeights, liveLeverage, freshLedger, equityOf, smaOf, decide, ordersFor, applyFill, reconcile, dayOf } from '../src/pflive.js'
 import { SIGNAL_STRATEGIES, TF_MS, WARMUP, closedCandles, simOpenTrade, decideHolding, openSize, freshSubs, subFill } from '../src/pfsignal.js'
 
 const { values: args } = parseArgs({
@@ -45,7 +45,8 @@ const { values: args } = parseArgs({
     strategy: { type: 'string', default: 'hold' }, budget: { type: 'string' },
     leverage: { type: 'string', default: '1' }, margin: { type: 'string', default: 'cross' },
     monthDay: { type: 'string' }, weekDay: { type: 'string' }, band: { type: 'string' },
-    dcaEvery: { type: 'string' }, dcaBuys: { type: 'string' }, dcaUpfront: { type: 'string' },
+    dcaEvery: { type: 'string' }, dcaBuys: { type: 'string' }, dcaUpfront: { type: 'string' }, dcaMode: { type: 'string' }, dcaDrop: { type: 'string' },
+    volDays: { type: 'string' }, momDays: { type: 'string' }, momTop: { type: 'string' }, volTarget: { type: 'string' },
     trendDays: { type: 'string' }, trendBuffer: { type: 'string' },
     // Trading strategies: the candle, both directions or only each holding's own, and the
     // strategy's own settings (base64 JSON, as the page's cards hold them).
@@ -104,7 +105,8 @@ if (!Array.isArray(ITEMS) || !ITEMS.length) fail('the portfolio has no holdings'
 const LEV = String(args.leverage) === 'max' ? 'max' : Math.max(1, Math.round(Number(args.leverage) || 1))
 const ISOLATED = String(args.margin) === 'isolated'
 const num = (k, scale = 1) => (args[k] != null && Number.isFinite(Number(args[k])) ? Number(args[k]) * scale : LIVE_DEFAULTS[k])
-const PARAMS = { monthDay: num('monthDay'), weekDay: num('weekDay'), band: num('band'), dcaEvery: num('dcaEvery'), dcaBuys: num('dcaBuys'), dcaUpfront: num('dcaUpfront'), trendDays: num('trendDays'), trendBuffer: num('trendBuffer') }
+const PARAMS = { monthDay: num('monthDay'), weekDay: num('weekDay'), band: num('band'), dcaEvery: num('dcaEvery'), dcaBuys: num('dcaBuys'), dcaUpfront: num('dcaUpfront'), trendDays: num('trendDays'), trendBuffer: num('trendBuffer'),
+  dcaMode: num('dcaMode'), dcaDrop: num('dcaDrop'), volDays: num('volDays'), momDays: num('momDays'), momTop: num('momTop'), volTarget: num('volTarget') }
 const CHECK_MS = Math.max(1, Number(args.interval) || (BOT ? 1 : 5)) * 60_000
 const TF = TF_MS[args.tf] ? args.tf : '4h'
 const BOTH = !!args.both
@@ -199,8 +201,8 @@ async function held() {
 const sma = {}
 let smaDay = null
 async function averages(now) {
-  if (STRATEGY !== 'trend' || smaDay === dayOf(now)) return
-  const n = Math.max(2, Math.round(PARAMS.trendDays))
+  if (!HIST_STRATEGIES.includes(STRATEGY) || smaDay === dayOf(now)) return
+  const n = Math.max(2, histDays(STRATEGY, PARAMS))
   for (const c of COINS) {
     try {
       const cs = await info.candleSnapshot({ coin: c, interval: '1d', startTime: now - (n + 3) * 86_400_000, endTime: now })
@@ -263,7 +265,8 @@ async function tick() {
   for (const f of rc.fixed) log('RECONCILE', `${f.coin}: the account holds less than the ledger (${f.from} → ${f.to}); closed outside the bot, so the ledger follows`)
   ledger = rc.ledger
   await averages(now)
-  const d = decide({ strategy: STRATEGY, params: PARAMS, weights: W, ledger, px, levBy: levBy(), now, sma: smaNow(px) })
+  const d = decide({ strategy: STRATEGY, params: PARAMS, weights: W, ledger, px, levBy: levBy(), now, sma: smaNow(px),
+    hist: Object.fromEntries(COINS.map(c => [c, sma[c] ? [...sma[c].closes, px[c]] : []])) })
   if (d.trendOn) ledger = { ...ledger, trendOn: d.trendOn, lastEval: now }
   const eq = equityOf(ledger, px)
   if (!d.due) { log('HOLD', `${d.reason} · equity ${eq == null ? '?' : '$' + eq.toFixed(2)}`); save(ledger, { equity: eq, reason: d.reason }); return }
@@ -290,7 +293,8 @@ async function tick() {
   }
   // A rebalance counts as done only when every order went through; otherwise the next check
   // tries again rather than waiting a month.
-  if (!failed) ledger = { ...ledger, lastRebal: now, dcaDone: ledger.dcaDone + (STRATEGY === 'dca' ? 1 : 0) }
+  // A DCA buy also marks where it was made: a drop-triggered buy is measured from here.
+  if (!failed) ledger = { ...ledger, lastRebal: now, dcaDone: ledger.dcaDone + (STRATEGY === 'dca' ? 1 : 0), ...(STRATEGY === 'dca' ? { dcaRef: { ...px }, lastBuyAt: now } : {}) }
   else if (d.release) ledger = { ...ledger, reserve: ledger.reserve + d.release, cash: ledger.cash - d.release }
   const eq2 = equityOf(ledger, px)
   save(ledger, { equity: eq2, reason: d.reason })

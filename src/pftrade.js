@@ -144,7 +144,7 @@ export function initTrade(get) {
         <div><i class="pf-for">Allocation</i><div class="pf-chips pf-strats">${LIVE_STRATEGIES.map(s => chip(s, p.labels[s] ?? s)).join('')}</div>
         <i class="pf-for">Trading</i><div class="pf-chips pf-strats">${SIGNAL_STRATEGIES.map(b => chip('bot:' + b, p.labels['bot:' + b] ?? b)).join('')}</div></div></div>
       <p class="pf-help" id="pfTrStratNote"></p>
-      <label class="pf-tr-row" id="pfTrBuysRow" hidden><span>Buys</span><span class="pf-tr-in"><input id="pfTrBuys" type="number" min="1" max="52" step="1" value="8"> parts</span></label>
+      <label class="pf-tr-row" id="pfTrBuysRow" hidden><span>Buys</span><span class="pf-tr-in"><input id="pfTrBuys" type="number" min="1" max="52" step="1" value="${Math.max(1, Math.min(52, Math.round(Number(p.params?.dcaBuys) || 8)))}"> parts</span></label>
       <label class="pf-tr-row"><span>Budget</span><span class="pf-tr-in"><input id="pfTrBudget" type="number" min="${HL_MIN_ORDER}" step="10" value="${esc(ls.get('hliq_pf_trade_budget') ?? '100')}"> USDC</span></label>
       <p class="pf-help">The money the bot manages, split over the holdings by weight. Leverage ${p.lev === 'max' ? 'at each market\'s maximum' : p.lev + '× (capped per market)'}, ${p.margin === 'isolated' ? 'isolated' : 'cross'}: from <b>Account</b> above.</p>
       ${skipped.length ? `<p class="pf-warn">A spot holding cannot be short, so these are skipped and their weight spread over the rest: ${skipped.map(c => esc(p.nameOf({ coin: c }))).join(', ')}.</p>` : ''}
@@ -202,7 +202,10 @@ export function initTrade(get) {
       monthly: `Rebalances on day ${q.monthDay} of every month (UTC).`,
       weekly: `Rebalances every ${day} (UTC).`,
       band: `Rebalances when a holding drifts more than ${Math.round(q.band * 100)} points from its weight; checked daily.`,
-      dca: `Buys one part every ${q.dcaEvery} days${q.dcaUpfront ? `, ${Math.round(q.dcaUpfront * 100)}% up front` : ''}.`,
+      dca: `Buys one part ${Number(q.dcaMode) === 1 ? `each time the basket is ${Math.round((q.dcaDrop ?? 0.1) * 100)}% below the last buy` : Number(q.dcaMode) === 2 ? `every ${q.dcaEvery} days, or sooner when the basket is ${Math.round((q.dcaDrop ?? 0.1) * 100)}% below the last buy` : `every ${q.dcaEvery} days`}${q.dcaUpfront ? `, ${Math.round(q.dcaUpfront * 100)}% up front` : ''}; the first right away.`,
+      invvol: `Sizes each holding against its ${q.volDays ?? 30}-day volatility; re-sized on day ${q.monthDay} of every month (UTC).`,
+      momentum: `Holds the top ${q.momTop ?? 3} by ${q.momDays ?? 30}-day return (never one that fell); re-picked every ${day} (UTC).`,
+      voltarget: `Holds less of the basket when its ${q.volDays ?? 30}-day volatility is over ${Math.round((q.volTarget ?? 0.5) * 100)}% a year; re-checked every ${day} (UTC).`,
       trend: `Holds each market while it is above its ${q.trendDays}-day average${q.trendBuffer ? ` (${(q.trendBuffer * 100).toFixed(1)}% buffer)` : ''}; cash otherwise. Checked daily.`,
     }[s] + ' Its settings are the ones on its card under Allocation strategies.'
     // A backtest spreads DCA over its window; a live run has no end date, so it needs a count.
@@ -260,7 +263,7 @@ export function initTrade(get) {
     const first = up + (1 - up) / nBuys, later = (1 - up) / nBuys
     const dcaHead = dca ? `<th>First buy</th>${nBuys > 1 ? `<th>Each later buy</th>` : ''}<th>After all ${nBuys}</th>` : '<th>Position</th>'
     const dcaCells = r => dca ? `<td>${usd(r.usd * first)}</td>${nBuys > 1 ? `<td>${usd(r.usd * later)}</td>` : ''}<td>${usd(r.usd)}</td>` : `<td>${usd(r.usd)}</td>`
-    el.innerHTML = `${dca ? `<p class="pf-help">DCA buys in ${nBuys} parts, one every ${Number(p.params?.dcaEvery) || 7} days${up ? `, with ${Math.round(up * 100)}% of the budget in the first` : ''}: the first buy is ${(first * 100).toFixed(1)}% of each position, each later one ${(later * 100).toFixed(1)}%. Positions reach the last column only after the final buy.</p>` : ''}<table class="pf-tr-tbl"><thead><tr><th>Market</th><th>Weight</th><th>Leverage</th>${dcaHead}${plan.rows.some(r => 'now' in r) ? '<th>Now</th>' : ''}</tr></thead><tbody>
+    el.innerHTML = `${dca ? `<p class="pf-help">DCA buys in ${nBuys} parts, ${Number(p.params?.dcaMode) === 1 ? `one each time the basket is ${Math.round((Number(p.params?.dcaDrop) || 0.1) * 100)}% below the last buy (if it never drops that far, the rest stays in cash)` : Number(p.params?.dcaMode) === 2 ? `one every ${Number(p.params?.dcaEvery) || 7} days or sooner on a ${Math.round((Number(p.params?.dcaDrop) || 0.1) * 100)}% drop` : `one every ${Number(p.params?.dcaEvery) || 7} days`}${up ? `, with ${Math.round(up * 100)}% of the budget in the first` : ''}: the first buy is ${(first * 100).toFixed(1)}% of each position, each later one ${(later * 100).toFixed(1)}%. Positions reach the last column only after the final buy.</p>` : ''}<table class="pf-tr-tbl"><thead><tr><th>Market</th><th>Weight</th><th>Leverage</th>${dcaHead}${plan.rows.some(r => 'now' in r) ? '<th>Now</th>' : ''}</tr></thead><tbody>
       ${plan.rows.map(r => `<tr><td>${esc(p.nameOf({ coin: r.coin }))}${r.w < 0 ? ' <em>short</em>' : ''}</td><td>${(Math.abs(r.w) * 100).toFixed(1)}%</td><td>${r.spot ? '1× spot' : `${r.lev}×${r.isolated ? ' iso' : ''}`}</td>${dcaCells(r)}${'now' in r ? `<td>${r.now === undefined ? '—' : r.now ? `in a ${r.now.side} since ${new Date(r.now.since).toISOString().slice(5, 16).replace('T', ' ')}: waits for the next entry` : 'waiting for an entry'}</td>` : ''}</tr>`).join('')}
       </tbody></table>
       ${plan.tooSmall?.length ? tooSmallHtml(p) : ''}

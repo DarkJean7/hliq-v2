@@ -149,7 +149,7 @@ async function run(label, opts) {
   ok('the table says returns are after costs, and how to read the cost figures', /Every return here is after costs/.test(txt) && /average balance/.test(txt))
   ok('each cost is also set against the average balance it was paid from', await p.locator('.pf-costs-share').count() > 0)
   await p.click('#pfAllocGuideBtn')
-  ok('"What do these do?" explains rebalancing, then every allocation strategy', /Rebalancing means selling/.test(await p.textContent('#pfAllocGuide')) && await p.locator('#pfAllocGuide dt').count() === 6 && (await p.$$eval('#pfAllocGuide dd', ds => ds.every(d => d.textContent.length > 40))))
+  ok('"What do these do?" explains rebalancing, then every allocation strategy', /Rebalancing means selling/.test(await p.textContent('#pfAllocGuide')) && await p.locator('#pfAllocGuide dt').count() === 9 && (await p.$$eval('#pfAllocGuide dd', ds => ds.every(d => d.textContent.length > 40))))
   await p.click('#pfBotGuideBtn')
   ok('and every trading strategy', await p.locator('#pfBotGuide dt').count() >= 10 && (await p.$$eval('#pfBotGuide dd', ds => ds.every(d => d.textContent.length > 40))))
   await p.click('#pfAllocGuideBtn'); await p.click('#pfBotGuideBtn')

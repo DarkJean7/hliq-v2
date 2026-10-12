@@ -36,6 +36,7 @@
 
 import { runBacktest, strategyKind } from './backtest.js'
 import { rateOn, slippage, dailyVol } from './pffunding.js'
+import { DCA_TIME, DCA_DROP, DCA_BOTH, basketChange, annualVol, trailingReturn, invVolWeights, momentumWeights, volScale, basketVol } from './pfrules.js'
 
 export const DAY = 86_400_000
 /**
@@ -59,8 +60,11 @@ export const STRATEGIES = [
   { id: 'monthly', label: 'Rebalance monthly', desc: 'Back to the target weights once a month, on the day you pick.' },
   { id: 'weekly',  label: 'Rebalance weekly',  desc: 'Back to the target weights once a week, on the weekday you pick.' },
   { id: 'band',    label: 'Rebalance on drift', desc: 'Rebalance only when a holding drifts more than the band from its weight.' },
-  { id: 'dca',     label: 'DCA',               desc: 'The same capital, invested in equal buys spread over the window instead of all at once.' },
+  { id: 'dca',     label: 'DCA',               desc: 'The same capital in equal buys instead of all at once: on a schedule, on price drops, or either.' },
   { id: 'trend',   label: 'Trend filter',      desc: 'Hold each asset only while its price is above its moving average; cash otherwise.' },
+  { id: 'invvol',  label: 'Risk parity',       desc: 'Monthly, each holding sized against its volatility: calmer coins get more, wilder ones less.' },
+  { id: 'momentum', label: 'Momentum rotation', desc: 'Weekly, holds only the top holdings by recent return; the rest, and anything falling, sit in cash.' },
+  { id: 'voltarget', label: 'Volatility target', desc: 'Weekly, holds less of the basket when it swings harder than your target, all of it when calmer.' },
 ]
 
 /**
@@ -73,8 +77,14 @@ export const STRATEGIES = [
  *   trendDays  trend: the moving average, in days
  *   trendBuffer trend: in only above the average by this much, out only below it by this much —
  *              a price hugging its average no longer flips in and out every day
+ *   dcaMode    dca: 0 buys every dcaEvery days, 1 buys when the basket has dropped dcaDrop since
+ *              the last buy, 2 either; drop and either split the capital over dcaBuys buys
+ *   volDays    invvol / voltarget: days of returns the volatility is measured over
+ *   momDays    momentum: the return window it ranks by;  momTop: how many it holds
+ *   volTarget  voltarget: the yearly volatility it aims the basket at (0.5 = 50%)
  */
-export const ALLOC_DEFAULTS = { monthDay: 1, weekDay: 1, band: 0.05, dcaEvery: 7, dcaUpfront: 0, trendDays: 50, trendBuffer: 0 }
+export const ALLOC_DEFAULTS = { monthDay: 1, weekDay: 1, band: 0.05, dcaEvery: 7, dcaUpfront: 0, trendDays: 50, trendBuffer: 0,
+  dcaMode: 0, dcaDrop: 0.1, dcaBuys: 8, volDays: 30, momDays: 30, momTop: 3, volTarget: 0.5 }
 export const STRATEGY_LABEL = Object.fromEntries(STRATEGIES.map(s => [s.id, s.label]))
 
 /** UTC midnight of a timestamp. */
@@ -145,6 +155,13 @@ export function simulate(grid, start, weights, id, opts = {}) {
   const dcaEvery = Math.max(1, Math.round(opts.dcaEvery ?? ALLOC_DEFAULTS.dcaEvery))
   const dcaUpfront = Math.min(1, Math.max(0, opts.dcaUpfront ?? ALLOC_DEFAULTS.dcaUpfront))
   const trendBuffer = Math.max(0, opts.trendBuffer ?? ALLOC_DEFAULTS.trendBuffer)
+  const dcaMode = [DCA_TIME, DCA_DROP, DCA_BOTH].includes(Number(opts.dcaMode)) ? Number(opts.dcaMode) : ALLOC_DEFAULTS.dcaMode
+  const dcaDrop = Math.min(0.9, Math.max(0.005, opts.dcaDrop ?? ALLOC_DEFAULTS.dcaDrop))
+  const dcaBuys = Math.max(1, Math.round(opts.dcaBuys ?? ALLOC_DEFAULTS.dcaBuys))
+  const volDays = Math.max(5, Math.round(opts.volDays ?? ALLOC_DEFAULTS.volDays))
+  const momDays = Math.max(2, Math.round(opts.momDays ?? ALLOC_DEFAULTS.momDays))
+  const momTop = Math.max(1, Math.round(opts.momTop ?? ALLOC_DEFAULTS.momTop))
+  const volTarget = Math.max(0.01, opts.volTarget ?? ALLOC_DEFAULTS.volTarget)
   const keys = Object.keys(weights)
   // Leverage per market: what was asked, capped at what Hyperliquid allows there (`levBy`, from
   // effectiveLeverage). Without a map, the one figure for every market.
@@ -173,8 +190,9 @@ export function simulate(grid, start, weights, id, opts = {}) {
   const equity = []
   // DCA: a buy every `dcaEvery` days, the first on day one. `dcaUpfront` of the capital goes in on
   // day one as well; the rest is split equally over every buy.
-  const dcaDates = id === 'dca' ? days.slice(start).filter((t, j) => j % dcaEvery === 0) : []
-  const tranche = dcaDates.length ? capital * (1 - dcaUpfront) / dcaDates.length : 0
+  const dcaDates = id === 'dca' && dcaMode !== DCA_DROP ? days.slice(start).filter((t, j) => j % dcaEvery === 0) : []
+  const tranche = id !== 'dca' ? 0 : dcaMode === DCA_TIME ? (dcaDates.length ? capital * (1 - dcaUpfront) / dcaDates.length : 0) : capital * (1 - dcaUpfront) / dcaBuys
+  let dcaRef = null    // prices at the last DCA buy: a drop is measured from there
   let active = null
 
   // A holding not listed yet has no price. Until it has one, the weights of those that do are
@@ -190,12 +208,16 @@ export function simulate(grid, start, weights, id, opts = {}) {
   let live = listed(start), w = wNow(live)
 
   const value = (i) => keys.reduce((a, k) => a + (units[k] ? units[k] * px[k][i] : 0), 0)
-  const rebalanceTo = (i, on) => {
+  // The closes up to day i (oldest first), for the rules that need history (src/pfrules.js).
+  const closesTo = (k, i, n) => px[k].slice(Math.max(0, i - n), i + 1).filter(x => x != null)
+  const pxAt = (i) => Object.fromEntries(keys.map(k => [k, px[k][i]]))
+  // `ww`: weights for this rebalance instead of the base ones; `scale`: the share of the book held.
+  const rebalanceTo = (i, on, ww = null, scale = 1) => {
     const eq = cash + value(i)
     let traded = false
     for (const k of keys) {
       if (px[k][i] == null) continue
-      const target = on && !on[k] ? 0 : levOf(k) * eq * w[k] / px[k][i]
+      const target = on && !on[k] ? 0 : levOf(k) * eq * (ww ? (ww[k] ?? 0) : w[k]) * scale / px[k][i]
       const d = target - units[k]
       if (Math.abs(d * px[k][i]) < 1e-9) continue
       const notional = Math.abs(d * px[k][i])
@@ -260,9 +282,13 @@ export function simulate(grid, start, weights, id, opts = {}) {
     if (joined) { live = nowLive; w = wNow(live) }
     if (id === 'dca') {
       // A buy day with nothing left to put in (all of it went in up front) is not a trading day.
-      const due = dcaDates.includes(days[i]) && (tranche > 0 || first)
-      const amt = tranche + (first ? capital * dcaUpfront : 0)
-      if (due) { reserve -= amt; cash += amt }
+      // Drop mode: a buy whenever the basket is dcaDrop below where the last buy was made.
+      const onDate = dcaMode !== DCA_DROP && dcaDates.includes(days[i])
+      const ch = dcaMode !== DCA_TIME && dcaRef ? basketChange(w, dcaRef, pxAt(i)) : null
+      const onDrop = ch != null && ch <= -dcaDrop
+      const due = (first || onDate || onDrop) && (tranche > 0 || first) && reserve > 1e-9
+      const amt = Math.min(reserve, tranche + (first ? capital * dcaUpfront : 0))
+      if (due) { reserve -= amt; cash += amt; dcaRef = pxAt(i) }
       if (due || joined) rebalanceTo(i)
     } else if (id === 'trend') {
       // With a buffer, between the two lines it keeps whatever it was doing.
@@ -276,6 +302,15 @@ export function simulate(grid, start, weights, id, opts = {}) {
       const changed = first || keys.some(k => on[k] !== active[k])
       active = on
       if (changed) rebalanceTo(i, on)
+    } else if (id === 'invvol' || id === 'momentum' || id === 'voltarget') {
+      // Monthly for risk parity; weekly for the two that react to the market.
+      const day = id === 'invvol' ? dt.getUTCDate() === monthDay : dt.getUTCDay() === weekDay
+      if (first || joined || day) {
+        const by = Object.fromEntries(live.map(k => [k, closesTo(k, i, Math.max(volDays, momDays) + 1)]))
+        if (id === 'invvol') rebalanceTo(i, null, invVolWeights(w, Object.fromEntries(live.map(k => [k, annualVol(by[k], volDays)]))))
+        else if (id === 'momentum') rebalanceTo(i, null, momentumWeights(Object.fromEntries(live.map(k => [k, w[k]])), Object.fromEntries(live.map(k => [k, trailingReturn(by[k], momDays)])), momTop))
+        else rebalanceTo(i, null, null, volScale(basketVol(Object.fromEntries(live.map(k => [k, w[k]])), by, volDays), volTarget))
+      }
     } else if (first || joined
       || (id === 'weekly' && dt.getUTCDay() === weekDay)
       || (id === 'monthly' && dt.getUTCDate() === monthDay)) {

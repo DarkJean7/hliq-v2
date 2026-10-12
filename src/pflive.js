@@ -19,9 +19,16 @@
  * the rest; the launch screen lists it, so a skipped holding is never a silent one.
  */
 
-export const LIVE_STRATEGIES = ['hold', 'monthly', 'weekly', 'band', 'dca', 'trend']
+import { DCA_TIME, DCA_DROP, basketChange, annualVol, trailingReturn, invVolWeights, momentumWeights, volScale, basketVol } from './pfrules.js'
+
+export const LIVE_STRATEGIES = ['hold', 'monthly', 'weekly', 'band', 'dca', 'trend', 'invvol', 'momentum', 'voltarget']
+/** The strategies that read daily history (the bot fetches it for these only). */
+export const HIST_STRATEGIES = ['trend', 'invvol', 'momentum', 'voltarget']
 export const HL_MIN_ORDER = 10                   // USD: Hyperliquid refuses smaller orders
-export const LIVE_DEFAULTS = { monthDay: 1, weekDay: 1, band: 0.05, dcaEvery: 7, dcaBuys: 8, dcaUpfront: 0, trendDays: 50, trendBuffer: 0 }
+export const LIVE_DEFAULTS = { monthDay: 1, weekDay: 1, band: 0.05, dcaEvery: 7, dcaBuys: 8, dcaUpfront: 0, trendDays: 50, trendBuffer: 0,
+  dcaMode: 0, dcaDrop: 0.1, volDays: 30, momDays: 30, momTop: 3, volTarget: 0.5 }
+/** Days of daily closes a strategy needs. */
+export const histDays = (strategy, p) => strategy === 'trend' ? Math.round(p.trendDays) : Math.max(Math.round(p.volDays), Math.round(p.momDays)) + 1
 const DAY = 86_400_000
 export const dayOf = (t) => Math.floor(t / DAY) * DAY
 
@@ -84,11 +91,12 @@ export function smaOf(closes, n) {
 /**
  * What to do now. Pure.
  *   strategy, params (LIVE_DEFAULTS' keys), weights (liveWeights), ledger, px { coin: price },
- *   levBy { coin: leverage }, now (ms), sma { coin: average } (trend only)
+ *   levBy { coin: leverage }, now (ms), sma { coin: average } (trend only),
+ *   hist { coin: daily closes, oldest first, today's price last } (invvol / momentum / voltarget)
  * → { due, reason, targets: { coin: units } | null, release: $ from reserve to cash, trendOn }
  * `due` false means hold still; `reason` says why either way, for the log.
  */
-export function decide({ strategy, params = {}, weights, ledger, px, levBy = {}, now, sma = {} }) {
+export function decide({ strategy, params = {}, weights, ledger, px, levBy = {}, now, sma = {}, hist = {} }) {
   const p = { ...LIVE_DEFAULTS, ...params }
   const keys = Object.keys(weights)
   const missing = keys.filter(k => !(px[k] > 0))
@@ -97,7 +105,7 @@ export function decide({ strategy, params = {}, weights, ledger, px, levBy = {},
   const first = ledger.lastRebal == null
   const fresh = ledger.lastRebal == null || ledger.lastRebal < day       // not rebalanced today
   const lev = (k) => (levBy[k] > 0 ? levBy[k] : 1)
-  let due = false, reason = '', on = null, release = 0
+  let due = false, reason = '', on = null, release = 0, ww = null, scale = 1
 
   if (strategy === 'hold') { due = first; reason = first ? 'first day: buying the weights' : 'holding' }
   else if (strategy === 'monthly') {
@@ -117,13 +125,49 @@ export function decide({ strategy, params = {}, weights, ledger, px, levBy = {},
       reason = due ? `drifted ${(worst * 100).toFixed(1)} points: rebalancing` : `largest drift ${(worst * 100).toFixed(1)} of ${(p.band * 100).toFixed(1)} points`
     } else reason = 'rebalanced today'
   } else if (strategy === 'dca') {
+    // Time: every dcaEvery days from the start. Drop: whenever the basket is dcaDrop below where
+    // the last buy was made (ledger.dcaRef). Either: whichever comes first, the clock counted
+    // from the last buy. The first buy is always on day one.
     const n = Math.max(1, Math.round(p.dcaBuys)), every = Math.max(1, Math.round(p.dcaEvery))
-    const nextAt = dayOf(ledger.startedAt) + ledger.dcaDone * every * DAY
-    if (ledger.dcaDone < n && now >= nextAt) {
+    const mode = Number(p.dcaMode) || DCA_TIME, drop = Math.max(0.005, Number(p.dcaDrop) || 0.1)
+    const nextAt = mode === DCA_TIME ? dayOf(ledger.startedAt) + ledger.dcaDone * every * DAY : dayOf(ledger.lastBuyAt ?? ledger.startedAt) + every * DAY
+    const ch = mode !== DCA_TIME && ledger.dcaRef ? basketChange(weights, ledger.dcaRef, px) : null
+    const onTime = mode !== DCA_DROP && now >= nextAt
+    const onDrop = ch != null && ch <= -drop
+    if (ledger.dcaDone < n && (ledger.dcaDone === 0 || onTime || onDrop)) {
       const tranche = ledger.budget * (1 - Math.min(1, Math.max(0, p.dcaUpfront))) / n
       release = Math.min(ledger.reserve, tranche + (ledger.dcaDone === 0 ? ledger.budget * Math.min(1, Math.max(0, p.dcaUpfront)) : 0))
-      due = true; reason = `buy ${ledger.dcaDone + 1} of ${n}`
-    } else reason = ledger.dcaDone >= n ? 'every buy made: holding' : `buy ${ledger.dcaDone + 1} of ${n} on ${new Date(nextAt).toISOString().slice(0, 10)}`
+      due = true; reason = `buy ${ledger.dcaDone + 1} of ${n}${onDrop && ledger.dcaDone ? ` (basket ${(ch * 100).toFixed(1)}% since the last buy)` : ''}`
+    } else if (ledger.dcaDone >= n) reason = 'every buy made: holding'
+    else {
+      const t = `on ${new Date(nextAt).toISOString().slice(0, 10)}`, d = `when the basket is ${(drop * 100).toFixed(1)}% below the last buy${ch != null ? ` (now ${(ch * 100).toFixed(1)}%)` : ''}`
+      reason = `buy ${ledger.dcaDone + 1} of ${n} ${mode === DCA_TIME ? t : mode === DCA_DROP ? d : t + ' or ' + d}`
+    }
+  } else if (strategy === 'invvol' || strategy === 'momentum' || strategy === 'voltarget') {
+    // Risk parity rebalances monthly; momentum and the volatility target weekly — the
+    // backtest's calendar, so a run trades on the days its backtest did.
+    if (strategy === 'invvol') {
+      const md = Math.min(28, Math.max(1, Math.round(p.monthDay)))
+      due = first || (fresh && d.getUTCDate() === md)
+      reason = first ? 'first day: sizing by volatility' : due ? `day ${md} of the month: re-sizing by volatility` : `next re-size on day ${md}`
+    } else {
+      const wd = Math.min(6, Math.max(0, Math.round(p.weekDay)))
+      due = first || (fresh && d.getUTCDay() === wd)
+      reason = first ? 'first day' : due ? 'rebalancing day' : 'waiting for the rebalancing day'
+    }
+    if (due) {
+      const vd = Math.max(5, Math.round(p.volDays))
+      if (strategy === 'invvol') {
+        ww = invVolWeights(weights, Object.fromEntries(keys.map(k => [k, annualVol(hist[k], vd)])))
+      } else if (strategy === 'momentum') {
+        ww = momentumWeights(weights, Object.fromEntries(keys.map(k => [k, trailingReturn(hist[k], Math.max(2, Math.round(p.momDays)))])), p.momTop)
+        const held = Object.keys(ww)
+        reason += held.length ? `: holding ${held.join(', ')}` : ': nothing is rising — all in cash'
+      } else {
+        scale = volScale(basketVol(weights, hist, vd), Math.max(0.01, Number(p.volTarget) || 0.5))
+        reason += `: holding ${(scale * 100).toFixed(0)}% of the basket`
+      }
+    }
   } else if (strategy === 'trend') {
     if (!(first || ledger.lastEval == null || ledger.lastEval < day)) reason = 'checked today'
     else {
@@ -143,7 +187,7 @@ export function decide({ strategy, params = {}, weights, ledger, px, levBy = {},
   if (!due) return { due, reason, targets: null, release: 0, trendOn: on }
   // Targets from the equity that is invested (cash + positions); a DCA reserve waits outside.
   const eq = ledger.cash + release + keys.reduce((a, k) => a + (ledger.units[k] ?? 0) * px[k], 0)
-  const targets = Object.fromEntries(keys.map(k => [k, on && !on[k] ? 0 : lev(k) * eq * weights[k] / px[k]]))
+  const targets = Object.fromEntries(keys.map(k => [k, on && !on[k] ? 0 : lev(k) * eq * (ww ? (ww[k] ?? 0) : weights[k]) * scale / px[k]]))
   // A market the ledger holds but the portfolio no longer does is closed.
   for (const k of Object.keys(ledger.units ?? {})) if (!(k in targets) && ledger.units[k]) targets[k] = 0
   return { due, reason, targets, release, trendOn: on }
