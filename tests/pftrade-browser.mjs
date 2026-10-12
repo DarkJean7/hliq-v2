@@ -92,7 +92,7 @@ async function run(label, opts) {
     if (path === '/api/status') {
       const inst = sent.find(s => s.path === '/api/start')?.body.instance ?? ''
       return j(running ? { portfolio: true, _instances: { ['portfolio:' + inst]: true }, _paused: paused ? { ['portfolio:' + inst]: true } : {},
-        _configs: { ['portfolio:' + inst]: { type: 'portfolio', instance: inst, args: [] } },
+        _configs: { ['portfolio:' + inst]: { type: 'portfolio', instance: inst, args: ['--strategy', 'monthly', '--leverage', '3', '--margin', 'cross'] } },
         _portfolios: { [inst]: { name: 'Live basket', strategy: 'monthly', budget: 200, equity: 210, units: { BTC: 2.5, ETH: -3 }, fees: 0.18, reason: 'next rebalance on day 15' } } } : { _configs: {} })
     }
     return j({})
@@ -143,7 +143,7 @@ async function run(label, opts) {
   // Running.
   await waitFor(p, 'the running card', () => !document.getElementById('pfLiveSec').hidden && /\+5\.00%/.test(document.getElementById('pfLive').textContent))
   if (process.env.PF_SHOT) await p.locator('#pfLiveSec').screenshot({ path: process.env.PF_SHOT + '-' + label + '-live.png' })
-  ok('the running card names the account', /Rebalance monthly · Main/.test(await p.textContent('#pfLive')))
+  ok('the running card names the account, and the leverage the run actually uses (from its own arguments)', /Rebalance monthly · 3× · Main/.test(await p.textContent('#pfLive')), await p.textContent('#pfLive .pf-live-top small'))
   ok('the running portfolio shows what it is worth against its budget', /\$210\.00 of \$200\.00/.test(await p.textContent('#pfLive')) && /day 15/.test(await p.textContent('#pfLive')))
   await p.click('#pfLive [data-live="pause"]')
   await waitFor(p, 'paused', () => /paused/.test(document.getElementById('pfLive').textContent))
@@ -166,6 +166,19 @@ async function run(label, opts) {
   const st2 = sent.filter(x => x.path === '/api/start').pop()
   const a2 = st2?.body.args ?? [], g2 = (k) => a2[a2.indexOf(k) + 1]
   ok('Start sends the trading strategy, its candle and its own settings', g2('--strategy') === 'bot:rsi' && g2('--tf') === '4h' && JSON.parse(Buffer.from(g2('--sparams') ?? '', 'base64').toString() || '{}').rsiLen === 9, a2)
+  // Reported: previewed at 5×, ran at 3× — bought 40% less than the table said. Start now
+  // refuses settings that changed after the preview.
+  await p.click('#pfTrade')
+  await p.click('#pfTrPreview')
+  await waitFor(p, 'a preview', () => !!document.querySelector('.pf-tr-tbl'))
+  const startsBefore = sent.filter(x => x.path === '/api/start' || x.path === '/api/paper/start').length
+  await p.evaluate(() => { window.__pf.state.lev = (Number(window.__pf.state.lev) || 1) + 2 })
+  await p.check('#pfTrAck')
+  await p.click('#pfTrStart')
+  await waitFor(p, 'the refusal', () => /changed since this preview/.test(document.getElementById('pfTrMsg')?.textContent ?? ''))
+  ok('settings changed after the preview: Start refuses and asks for a new preview, nothing is started', /Preview again/.test(await p.textContent('#pfTrMsg')) && sent.filter(x => x.path === '/api/start' || x.path === '/api/paper/start').length === startsBefore && await p.locator('.pf-tr-tbl').count() === 0)
+  await p.evaluate(() => { window.__pf.state.lev = Number(window.__pf.state.lev) - 2 })
+  await p.click('.pf-sheet [data-x]')
   // Paper: no wallet needed. A new paper account funded with the budget, run by the same bot.
   await p.click('#pfTrade')
   await p.selectOption('#pfTrAcct', 'paper:new')
@@ -227,6 +240,14 @@ async function run(label, opts) {
   await p.click('[data-fix="budget:110"]')
   await waitFor(p, 'the fixed preview', () => !!document.querySelector('.pf-tr-tbl') && !document.querySelector('[data-fix]'))
   ok('one click sets the budget and previews again: nothing too small now', await p.inputValue('#pfTrBudget') === '110' && !/minimum/.test(await p.textContent('#pfTrPlan')))
+  // Reported: "the positions should be closer to ~$454", when $454 was where DCA ENDS after 8
+  // buys. The table now shows what each buy adds, then the end position.
+  const heads = await p.$$eval('.pf-tr-tbl th', ts => ts.map(t => t.textContent))
+  const cells = await p.$$eval('.pf-tr-tbl tbody tr:first-child td', ts => ts.map(t => t.textContent))
+  const money = s => Number(String(s).replace(/[^0-9.]/g, ''))
+  ok('DCA: the table shows the first buy, each later buy, and the position after all of them', heads.join('|') === 'Market|Weight|Leverage|First buy|Each later buy|After all 8', heads)
+  ok('and the first buy is an eighth of the final position', Math.abs(money(cells[3]) * 8 - money(cells[5])) < 0.1 && money(cells[3]) === money(cells[4]), cells)
+  ok('and it says so in words', /Positions reach the last column only after the final buy/.test(await p.textContent('#pfTrPlan')))
   await p.keyboard.press('Escape')
   ok('no page errors', !errors.length, errors)
   await browser.close()

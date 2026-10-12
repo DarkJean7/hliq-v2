@@ -223,6 +223,25 @@ export function initTrade(get) {
       tf: p.tf, both: p.both, sparams: chosen().startsWith('bot:') ? (p.botParams?.[chosen().slice(4)] ?? {}) : null })
   }
 
+  // What a preview was made FOR: the bot's arguments, less the two that differ every call by
+  // design (a run id, and carry-on vs fresh). Start compares against it, so a run can never
+  // go out with settings the preview did not show — a portfolio previewed at 5× and started
+  // at 3× bought 40% less than the table said.
+  function sigOf(a) {
+    const out = []
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] === '--run') { i++; continue }
+      if (a[i] === '--fresh') continue
+      out.push(a[i])
+    }
+    return JSON.stringify(out)
+  }
+  const stale = () => !plan?.sig || plan.sig !== sigOf(args(false))
+  function refuseStale() {
+    plan = null; renderPlan()
+    msg('The portfolio’s settings changed since this preview (leverage, holdings or strategy settings). Preview again to see what will be bought.', true)
+  }
+
   function renderPlan() {
     const el = sheet?.querySelector('#pfTrPlan'); if (!el) return
     if (!plan) { el.innerHTML = '<button class="pf-btn pf-btn--ghost" id="pfTrPreview">Preview</button>'; gate(); return }
@@ -232,12 +251,21 @@ export function initTrade(get) {
     // a paper account has one pool of cash for both.
     const under = plan.free != null && plan.free < (plan.margin ?? 0) + (plan.paper ? (plan.spotNeed ?? 0) : 0)
     const spotShort = !plan.paper && plan.spotNeed > 0 && plan.spotFree != null && plan.spotFree < plan.spotNeed
-    el.innerHTML = `<table class="pf-tr-tbl"><thead><tr><th>Market</th><th>Weight</th><th>Leverage</th><th>Position</th>${plan.rows.some(r => 'now' in r) ? '<th>Now</th>' : ''}</tr></thead><tbody>
-      ${plan.rows.map(r => `<tr><td>${esc(p.nameOf({ coin: r.coin }))}${r.w < 0 ? ' <em>short</em>' : ''}</td><td>${(Math.abs(r.w) * 100).toFixed(1)}%</td><td>${r.spot ? '1× spot' : `${r.lev}×${r.isolated ? ' iso' : ''}`}</td><td>${usd(r.usd)}</td>${'now' in r ? `<td>${r.now === undefined ? '—' : r.now ? `in a ${r.now.side} since ${new Date(r.now.since).toISOString().slice(5, 16).replace('T', ' ')}: waits for the next entry` : 'waiting for an entry'}</td>` : ''}</tr>`).join('')}
+    // DCA reaches the Position only after its LAST buy. Showing that one number read as "it will
+    // buy $454 now" — reported as "it did not buy the supposed amount" when the first buy was 1/8
+    // of it. So DCA shows what each buy adds, then where it ends up.
+    const dca = chosen() === 'dca'
+    const nBuys = Math.max(1, Math.min(52, Math.round(Number(sheet.querySelector('#pfTrBuys')?.value) || 8)))
+    const up = Math.min(1, Math.max(0, Number(p.params?.dcaUpfront) || 0))
+    const first = up + (1 - up) / nBuys, later = (1 - up) / nBuys
+    const dcaHead = dca ? `<th>First buy</th>${nBuys > 1 ? `<th>Each later buy</th>` : ''}<th>After all ${nBuys}</th>` : '<th>Position</th>'
+    const dcaCells = r => dca ? `<td>${usd(r.usd * first)}</td>${nBuys > 1 ? `<td>${usd(r.usd * later)}</td>` : ''}<td>${usd(r.usd)}</td>` : `<td>${usd(r.usd)}</td>`
+    el.innerHTML = `${dca ? `<p class="pf-help">DCA buys in ${nBuys} parts, one every ${Number(p.params?.dcaEvery) || 7} days${up ? `, with ${Math.round(up * 100)}% of the budget in the first` : ''}: the first buy is ${(first * 100).toFixed(1)}% of each position, each later one ${(later * 100).toFixed(1)}%. Positions reach the last column only after the final buy.</p>` : ''}<table class="pf-tr-tbl"><thead><tr><th>Market</th><th>Weight</th><th>Leverage</th>${dcaHead}${plan.rows.some(r => 'now' in r) ? '<th>Now</th>' : ''}</tr></thead><tbody>
+      ${plan.rows.map(r => `<tr><td>${esc(p.nameOf({ coin: r.coin }))}${r.w < 0 ? ' <em>short</em>' : ''}</td><td>${(Math.abs(r.w) * 100).toFixed(1)}%</td><td>${r.spot ? '1× spot' : `${r.lev}×${r.isolated ? ' iso' : ''}`}</td>${dcaCells(r)}${'now' in r ? `<td>${r.now === undefined ? '—' : r.now ? `in a ${r.now.side} since ${new Date(r.now.since).toISOString().slice(5, 16).replace('T', ' ')}: waits for the next entry` : 'waiting for an entry'}</td>` : ''}</tr>`).join('')}
       </tbody></table>
       ${plan.tooSmall?.length ? tooSmallHtml(p) : ''}
       ${plan.missing?.length ? `<p class="pf-warn">No price right now for ${plan.missing.map(c => esc(p.nameOf({ coin: c }))).join(', ')}; the bot waits for one before trading.</p>` : ''}
-      <p class="pf-help">${plan.margin > 0 ? `Perp margin: about ${usd(plan.margin)}. ` : ''}${plan.spotNeed > 0 ? `Spot, paid in full: about ${usd(plan.spotNeed)}. ` : ''}${plan.free != null ? `Free on this account: ${usd(plan.free)}.` : ''}</p>
+      <p class="pf-help">${plan.margin > 0 ? `Perp margin: about ${usd(plan.margin)}${dca ? ` once fully invested (${usd(plan.margin * first)} after the first buy)` : ''}. ` : ''}${plan.spotNeed > 0 ? `Spot, paid in full: about ${usd(plan.spotNeed)}${dca ? ` once fully invested` : ''}. ` : ''}${plan.free != null ? `Free on this account: ${usd(plan.free)}.` : ''}</p>
       ${under ? '<p class="pf-warn">The account has less free than this needs: some orders may be refused. Deposit, or lower the budget.</p>' : ''}
       ${spotShort ? `<p class="pf-warn">Spot is bought with the USDC in your SPOT balance: about ${usd(plan.spotNeed)} needed, ${usd(plan.spotFree)} there. Move USDC from perps to spot in the app first — the bot's agent key cannot move funds, so those buys would be refused.</p>` : ''}
       ${plan.resumes ? `<label class="pf-check"><input type="checkbox" id="pfTrCarry" checked> Carry on from the positions it left last time (${Object.keys(plan.held ?? {}).length}); off starts a new ledger and buys everything again.</label>` : ''}`
@@ -309,10 +337,11 @@ export function initTrade(get) {
           // A new account has exactly its starting balance free; an existing one, what the server says.
           if (r.ok !== false && r.status < 400) r = { ...r, free: sel === 'new' ? startBal() : r.free, resumes: false, paper: true }
         } else r = await api('/api/plan', addr, { type: 'portfolio', agentKey: readKey(localStorage, addr), address: addr, args: args(false) })
-        plan = r.ok === false || r.status >= 400 ? { ok: false, error: r.error } : r
+        plan = r.ok === false || r.status >= 400 ? { ok: false, error: r.error } : { ...r, sig: sigOf(args(false)) }
       } catch (err) { plan = { ok: false, error: err.message } }
       return renderPlan()
     }
+    if (e.target.closest('#pfTrStart') && plan?.ok && !busy && stale()) return refuseStale()
     if (e.target.closest('#pfTrStart') && plan?.ok && !busy && isPaperAcct()) {
       busy = true; gate(); msg('Making the paper account…')
       try { await startPaper(addr.slice(PAPER.length)); msg('Running on paper.'); setTimeout(() => { close(); refresh() }, 900) }
@@ -391,8 +420,11 @@ export function initTrade(get) {
     el.innerHTML = live.map(b => {
       const st = b.st, ret = st?.equity != null && st.budget ? st.equity / st.budget - 1 : null
       const strat = get().labels[st?.strategy] ?? st?.strategy ?? ''
+      const argOf = k => { const i = (b.args ?? []).indexOf(k); return i >= 0 ? b.args[i + 1] : null }
+      const lev = argOf('--leverage'), mg = argOf('--margin')
+      const levTxt = lev ? ` · ${lev === 'max' ? 'max' : lev + '×'}${mg === 'isolated' ? ' isolated' : ''}` : ''
       return `<div class="pf-live-card">
-        <div class="pf-live-top"><b>${b.paper != null ? '<span class="pf-paper-tag">PAPER</span> ' : ''}${esc(st?.name ?? b.id)}</b><small>${esc(strat)} · ${esc(b.paper != null ? (paperAcctName(b.paper) ?? 'paper account') : acctName(b.addr))}${b.paused ? ' · <span class="pf-warn">paused</span>' : ''}</small></div>
+        <div class="pf-live-top"><b>${b.paper != null ? '<span class="pf-paper-tag">PAPER</span> ' : ''}${esc(st?.name ?? b.id)}</b><small>${esc(strat)}${esc(levTxt)} · ${esc(b.paper != null ? (paperAcctName(b.paper) ?? 'paper account') : acctName(b.addr))}${b.paused ? ' · <span class="pf-warn">paused</span>' : ''}</small></div>
         <div class="pf-live-ret ${ret == null ? '' : ret >= 0 ? 'up' : 'dn'}">${ret == null ? '—' : (ret >= 0 ? '+' : '') + (ret * 100).toFixed(2) + '%'}</div>
         <div class="pf-live-sub">${usd(st?.equity)} of ${usd(st?.budget)} · ${Object.keys(st?.units ?? {}).length} positions · fees ${usd(st?.fees)}</div>
         <div class="pf-live-sub">${esc(st?.reason ?? 'starting…')}</div>
