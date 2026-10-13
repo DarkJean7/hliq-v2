@@ -19393,7 +19393,6 @@ function _mobVRenderContent(tick = false) {
       const winProfit = total - cost
       const winPct    = cost > 0 ? winProfit / cost * 100 : 0
       const nm    = _ocCoinLabel(b.coin)                       // "USA Yes"
-      const sideLabel = nm.replace(/\s+/g, '-')                // "USA-Yes"
       const title = state.ocQuestionMap?.[oid] || nm           // "2026 World Cup Champion"
       const key   = String(n)
       // Card styling like a position: YES/NO badge by side, tint/border by P&L
@@ -19475,14 +19474,14 @@ function _mobVRenderContent(tick = false) {
         </div>
         <div id="mrd-${id}" style="display:${xp ? '' : 'none'}">${_mobVDetailGrid([
           // Prices are public — the share COUNT and every figure derived from it are not.
-          ['Size', _prv(fmtSize(total)) + ' ' + sideLabel],
+          ['Size', _prv(fmtSize(total)) + ' ' + _T('shares', 'acciones')],
           ['Position Value', _prv('$' + fmtUSD(value, 2))],
           ['Entry Price', (entry * 100).toFixed(2) + '¢'],
           ['Mark Price', mark > 0 ? (mark * 100).toFixed(2) + '¢' : '—'],
           ['Cost', _prv('$' + fmtUSD(cost, 2))],
           ['PnL (ROE)', _prv(`${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} (${roe >= 0 ? '+' : ''}${roe.toFixed(1)}%)`), pnl >= 0 ? 'var(--green)' : 'var(--red)'],
           ['If it wins', _prv(`$${fmtUSD(total, 2)} payout · +$${fmtUSD(winProfit)} (+${winPct.toFixed(1)}%)`), 'var(--green)'],
-          ...(hold > 0 ? [['In Orders', _prv(fmtSize(hold)) + ' ' + sideLabel]] : []),
+          ...(hold > 0 ? [['In Orders', _prv(fmtSize(hold)) + ' ' + _T('shares', 'acciones')]] : []),
         ])}${closePanel}</div>
       </div>`
     }
@@ -35874,6 +35873,15 @@ function _stopOcCountdown() {
 
 // Friendly label resolving prediction "#N" coins to "<market> <side>" via the
 // outcome token map (e.g. "#2170" → "USA Yes"); falls back to coinLabel otherwise.
+// An outcome on a HIP-3 underlying is named after the builder dex's market — "xyz:GOLD >$4,600
+// (Oct 30, 2026)". The "xyz:" is the deployer, which says nothing to someone reading their
+// positions, History or Calendar. Stripped once, wherever a name is made or loaded, so every
+// surface that shows one shows it without. Lowercase dex then a market starting with a capital
+// or digit: "xyz:GOLD", "flx:BTC" — never a time ("10:00") or a sentence colon.
+function _ocStripDex(s) {
+  return typeof s === 'string' ? s.replace(/\b[a-z][a-z0-9]{0,9}:(?=[A-Z0-9])/g, '') : s
+}
+
 function _ocCoinLabel(coin) {
   // Orders use "#N"; spot holdings of the same outcome use "+N" — both map to
   // the "#N" entry in ocTokenMap.
@@ -35881,7 +35889,7 @@ function _ocCoinLabel(coin) {
     const t = state.ocTokenMap?.['#' + coin.slice(1)]
     // "Market question · Side" — without the separator the side reads as a
     // duplicated word ("…Switzerland vs Colombia Colombia").
-    if (t && t.name) return t.side ? `${t.name} · ${t.side}` : t.name
+    if (t && t.name) { const nm = _ocStripDex(t.name); return t.side ? `${nm} · ${t.side}` : nm }
     // A title goes missing two different ways, so try both. Settled questions drop
     // out of the live outcomeMeta but HL keeps their spec behind
     // {type:'settledOutcome'}; a newly listed question is simply absent from a
@@ -36082,12 +36090,12 @@ function _buildOcTokenMap(meta) {
     const qName = qd.class === 'priceBucket' && qd.underlying
       ? `${qd.underlying} closing price${qd.expiry ? ' · ' + _fmtOutcomeExpiry(qd.expiry) : ''}`
       : q.name
-    for (const oid of (q.namedOutcomes ?? [])) state.ocQuestionMap[oid] = qName
+    for (const oid of (q.namedOutcomes ?? [])) state.ocQuestionMap[oid] = _ocStripDex(qName)
   }
   for (const o of list) {
     try {
       const d           = _ocDesc(o)
-      const underlying  = d.underlying || o.name
+      const underlying  = _ocStripDex(d.underlying || o.name)
       // A bucket member's "name" is the placeholder "Recurring Named Outcome"; what
       // identifies it is the price range, so that is what the label has to carry.
       const bucketStr   = d.class === 'priceBucket' ? ' ' + _ocBucketLabel(d, true) : ''
@@ -36124,8 +36132,12 @@ function _hydrateOcTokenMap() {
     }
     const cached = JSON.parse(localStorage.getItem('hliq_oc_token_map') || 'null')
     if (cached && Object.keys(cached).length) {
+      // Names saved before the deployer was stripped are cleaned as they load.
+      for (const v of Object.values(cached)) if (v && v.name) v.name = _ocStripDex(v.name)
       state.ocTokenMap    = cached
-      state.ocQuestionMap = JSON.parse(localStorage.getItem('hliq_oc_question_map') || '{}')
+      const qm = JSON.parse(localStorage.getItem('hliq_oc_question_map') || '{}')
+      for (const k of Object.keys(qm)) qm[k] = _ocStripDex(qm[k])
+      state.ocQuestionMap = qm
     }
   } catch {}
 }

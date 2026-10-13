@@ -149,7 +149,7 @@ export function createSpotSell(deps) {
     ov.id = 'spotSellOv'
     const wide = window.innerWidth >= 700
     ov.style.cssText = `position:fixed;inset:0;z-index:100002;background:rgba(0,0,0,.6);display:flex;align-items:${wide ? 'center' : 'flex-end'};justify-content:center`
-    ov.innerHTML = `<div id="spotSellBox" style="width:100%;max-width:${wide ? '420px' : '100%'};max-height:92vh;overflow-y:auto;box-sizing:border-box;background:var(--panel-3, var(--bg));border:1px solid var(--border);border-radius:${wide ? '16px' : '18px 18px 0 0'};padding:16px 16px calc(18px + env(safe-area-inset-bottom))"></div>`
+    ov.innerHTML = `<div id="spotSellBox" style="width:100%;max-width:${wide ? '420px' : '100%'};max-height:92vh;overflow-y:auto;box-sizing:border-box;background:var(--panel-3-o, var(--panel-3, var(--bg)));border:1px solid var(--border);border-radius:${wide ? '16px' : '18px 18px 0 0'};padding:16px 16px calc(18px + env(safe-area-inset-bottom))"></div>`
     document.body.appendChild(ov)
     ov.addEventListener('click', (e) => {
       if (e.target === ov) return close()
