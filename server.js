@@ -1018,7 +1018,11 @@ async function pnlAccrue(addr) {
  */
 const _combinedWallet = new Map()   // addr -> { at, accountValue, perpBase, dayAgo, unreal, pnl, pnlAt }
 const WALLET_FRESH_MS = 50_000      // re-read a wallet after this
-const WALLET_MAX_MS   = 150_000     // a wallet read this recently still counts toward a snapshot
+// A wallet read this recently still counts toward a snapshot. Was 150 s: with the server's IP
+// rate-limited (22 bots share it), a ten-wallet set never had every wallet that fresh at once,
+// so it never had a complete snapshot and every device showed a dash for equity and Net PnL.
+// A wallet's value is carried to now by its live perp equity on the client either way.
+const WALLET_MAX_MS   = 10 * 60_000
 const PNL_EVERY_MS    = 5 * 60_000
 
 // Spot prices for the wallet books below, shared by every wallet read within a few seconds.
@@ -1081,7 +1085,11 @@ async function seedWarm() {
 
 async function computeCombined(addrs, { pnl = true, freshMs = WALLET_FRESH_MS } = {}) {
   let limited = false
-  for (const addr of addrs) {
+  // Stalest first. A 429 stops the round, and the round always began at the first wallet —
+  // so under steady limiting the same first few were re-read every time and the last ones
+  // aged out forever. Reading the oldest first means every wallet gets its turn.
+  const order = [...addrs].sort((a, b) => (_combinedWallet.get(a)?.at ?? 0) - (_combinedWallet.get(b)?.at ?? 0))
+  for (const addr of order) {
     if (limited) break
     const t0 = Date.now()
     const w = _combinedWallet.get(addr)

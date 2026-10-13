@@ -48,6 +48,10 @@ export const HL_REFILL_PER_SEC = HL_BUDGET / 60
  */
 export const HL_RESERVE = 300
 
+/** After a 429: the share of the bucket assumed ours, and for how long. */
+export const SHARE = 0.5
+export const SHARE_MS = 10 * 60_000
+
 /** HL's documented weights: 2 for these, 60 for userRole, 20 for every other info request. */
 const CHEAP = new Set(['l2Book', 'allMids', 'clearinghouseState', 'orderStatus',
                        'spotClearinghouseState', 'exchangeStatus'])
@@ -68,14 +72,22 @@ export function createBudget({
   refillPerSec = HL_REFILL_PER_SEC,
   reserve = HL_RESERVE,
   now = Date.now,
+  startLevel = capacity,
+  shareMs = SHARE_MS,
 } = {}) {
-  let level = capacity
+  let level = Math.min(capacity, startLevel)
   let last  = now()
+  // The limit is per IP, and this app is rarely the only thing on that IP: a phone and a
+  // desktop on the same Wi-Fi, a second tab, Hyperliquid's own site. After the exchange says
+  // we overspent, assume half the bucket is someone else's for a while — the model believing
+  // it owned all 1200 is how two devices opening All Accounts together kept tripping it.
+  let sharedUntil = 0
+  const cap = () => (now() < sharedUntil ? capacity * SHARE : capacity)
 
   const refill = () => {
     const t = now()
     if (t > last) {
-      level = Math.min(capacity, level + ((t - last) / 1000) * refillPerSec)
+      level = Math.min(cap(), level + ((t - last) / 1000) * refillPerSec * (t < sharedUntil ? SHARE : 1))
       last = t
     }
   }
@@ -94,7 +106,8 @@ export function createBudget({
       // A single request bigger than the whole spendable budget can never satisfy the
       // reserve. Waiting forever would hang the load, so let it through on a full bucket
       // rather than deadlock — being slightly over is recoverable, never loading is not.
-      if (weight > capacity - reserve) return level >= capacity ? 0 : Math.ceil(((capacity - level) / refillPerSec) * 1000)
+      const c = cap()
+      if (weight > c - reserve) return level >= c ? 0 : Math.ceil(((c - level) / refillPerSec) * 1000)
       const short = weight + reserve - level
       return short <= 0 ? 0 : Math.ceil((short / refillPerSec) * 1000)
     },
@@ -105,7 +118,10 @@ export function createBudget({
 
     /** A 429 means the real bucket is emptier than this model thought. Believe the exchange
      *  over the model, and start again from empty. */
-    drain() { refill(); level = 0; last = now() },
+    drain() { refill(); level = 0; last = now(); sharedUntil = now() + shareMs },
+
+    /** True while the bucket is assumed shared (after a 429). */
+    shared() { return now() < sharedUntil },
   }
 }
 
@@ -116,7 +132,11 @@ export function createBudget({
  * bots poll, the combined view fans out — and HL counts every one of them together. Two
  * budgets tracking halves of one limit would each believe it had headroom.
  */
-export const hlBudget = createBudget()
+// Starts HALF full, not full. A page load is exactly when another device or tab on the same IP
+// may have just spent the bucket, and a cold All Accounts load is ~1,100 weight in its first
+// ten seconds — measured by tests/hl-weight.mjs with ten wallets. From half, the first ~300
+// go at once (what the overview needs first) and the rest at the refill rate.
+export const hlBudget = createBudget({ startLevel: HL_BUDGET / 2 })
 
 /**
  * Longest an info request will ever be held back.
@@ -127,6 +147,10 @@ export const hlBudget = createBudget()
  * us the 429 breaker is the mechanism built for that. Bounded latency beats a hung panel.
  */
 export const HL_MAX_WAIT_MS = 10_000
+/** ...except the heavy history reads (weight 20+: portfolio, fills, funding, ledger), which can
+ *  wait longer: nothing on screen is waiting for them the way it waits for a balance, and
+ *  letting them through at ten seconds is what made a ten-wallet cold load burst anyway. */
+export const HL_MAX_WAIT_HEAVY_MS = 30_000
 
 /**
  * Pace and meter every request a transport makes.
@@ -140,7 +164,7 @@ export const HL_MAX_WAIT_MS = 10_000
  * model has to stay honest — but it does not wait. Throttling the dashboard to protect
  * trading is the entire point; throttling trading to protect the dashboard would invert it.
  */
-export function meterTransport(transport, budget = hlBudget, { maxWaitMs = HL_MAX_WAIT_MS } = {}) {
+export function meterTransport(transport, budget = hlBudget, { maxWaitMs = HL_MAX_WAIT_MS, maxWaitHeavyMs = HL_MAX_WAIT_HEAVY_MS } = {}) {
   if (!transport || typeof transport.request !== 'function' || transport.__metered) return transport
   const raw = transport.request.bind(transport)
   transport.__metered = true
@@ -154,7 +178,7 @@ export function meterTransport(transport, budget = hlBudget, { maxWaitMs = HL_MA
     // let 1118 weight through in ten seconds against a bucket meant to stop at 900. Claiming
     // the weight up front means the second request sees what the first took and queues behind
     // it, which is the whole point of the model.
-    const ms = endpoint === 'info' ? Math.min(budget.waitFor(w), maxWaitMs) : 0
+    const ms = endpoint === 'info' ? Math.min(budget.waitFor(w), w >= 20 ? maxWaitHeavyMs : maxWaitMs) : 0
     budget.spend(w)
     if (ms > 0) await new Promise(r => setTimeout(r, ms))
     return raw(endpoint, payload, signal)

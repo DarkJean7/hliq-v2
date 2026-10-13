@@ -15,7 +15,7 @@
 // Clock is injected throughout, so a minute of pacing behaviour runs instantly. A bug that
 // only appears forty seconds in is exactly the one nobody re-runs a sleeping test to find.
 import fs from 'fs'
-import { createBudget, weightOf, HL_BUDGET, HL_REFILL_PER_SEC, HL_RESERVE } from '../../src/hlbudget.js'
+import { createBudget, weightOf, HL_BUDGET, HL_REFILL_PER_SEC, HL_RESERVE, SHARE, SHARE_MS } from '../../src/hlbudget.js'
 
 const nl = String.fromCharCode(10)
 let pass = 0, fail = 0
@@ -94,7 +94,10 @@ console.log(nl + '-- a 429 means the model was wrong --')
   t('a 429 empties it, whatever it believed', b.level() === 0)
   t('so the next request backs right off', b.waitFor(20) === Math.ceil(((20 + HL_RESERVE) / HL_REFILL_PER_SEC) * 1000))
   c.advance(60)
-  t('and a minute later it has recovered', b.level() === HL_BUDGET)
+  t('a minute later it has refilled — but only to its share: after a 429 the IP is assumed shared', b.level() === HL_BUDGET * SHARE, b.level())
+  t('and it says so', b.shared() === true)
+  c.advance(SHARE_MS / 1000)
+  t('ten minutes on, the whole bucket is its own again', b.shared() === false && Math.round(b.level()) === HL_BUDGET, b.level())
 }
 
 console.log(nl + '-- it cannot deadlock, and it cannot lie --')
@@ -110,7 +113,7 @@ console.log(nl + '-- it cannot deadlock, and it cannot lie --')
   b.drain(); b.spend(100)
   t('an overspend is recorded, not clamped away', b.level() === -100)
   c.advance(10)
-  t('and refills from there', Math.round(b.level()) === 100)
+  t('and refills from there, at the shared rate after a 429', Math.round(b.level()) === -100 + 10 * HL_REFILL_PER_SEC * SHARE, b.level())
 }
 
 console.log(nl + '-- and the app actually paces with it --')
@@ -121,7 +124,9 @@ console.log(nl + '-- and the app actually paces with it --')
   // One bucket, because the limit is per IP. main.js and api.js hold separate transports and
   // HL counts them together; two budgets tracking halves of one limit would each believe it
   // had headroom.
-  t('there is one bucket for the whole app', bud.includes('export const hlBudget = createBudget()'))
+  t('there is one bucket for the whole app, starting half full (another device may have just spent it)', bud.includes('export const hlBudget = createBudget({ startLevel: HL_BUDGET / 2 })'))
+  t('heavy history reads may wait longer than a balance', bud.includes("w >= 20 ? maxWaitHeavyMs : maxWaitMs") && bud.includes('export const HL_MAX_WAIT_HEAVY_MS = 30_000'))
+  t('a 429 hidden by CORS ("network-shaped") drains the bucket too — most trips are that kind', /_hlLastTripReason = 'network-shaped'[\s\S]{0,600}_hlBudget\.drain\(\)/.test(cli))
   t('and the reason it is a singleton is written down', bud.includes('because the limit is per IP'))
   t('main.js spends from it', cli.includes("import { hlBudget as _hlBudget, meterTransport"))
   t('and so does api.js, or half the traffic would be invisible',

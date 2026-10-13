@@ -2041,6 +2041,11 @@ function _hl429(e) {
   if (/429|too many/i.test(m)) { _hlLastTripReason = 'real-429'; _hlBudget.drain(); _hlTrip(); return true }
   if (/failed to fetch|load failed|networkerror|err_failed|cors|access-control/i.test(m)) {
     _hlLastTripReason = 'network-shaped'   // could be a 429, could be the network
+    // Drained too. Hyperliquid's 429s carry no CORS headers, so in a browser this IS what a 429
+    // looks like — and most trips recorded are this kind. Pausing without draining left the
+    // model insisting it had headroom, so the app came back from the pause at full speed and
+    // tripped again. A genuine network blip costs a few seconds of slower polling; fine.
+    _hlBudget.drain()
     _hlTrip(); return true
   }
   return false
