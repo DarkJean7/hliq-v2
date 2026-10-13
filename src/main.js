@@ -15312,7 +15312,10 @@ function _comboRowsValue() {
     // Until then, the server's read of it carried to now by price -- what made the headline as
     // quick to appear as Net PnL (src/comboseed.js). Neither: the total waits.
     if (v == null) v = seedValue(_comboSeeds[lc], c => state.allMids?.[c], _spotMid, now)
-    if (!Number.isFinite(v) || v <= 0) return null
+    // $0 is a value: an empty wallet counts as nothing, it does not make the total unknown.
+    // `v <= 0` refused it, and one empty wallet among the saved ones left the All Accounts
+    // equity a dash for as long as it stayed empty (eqstep: rowVals=…,0x25A267:0c).
+    if (!Number.isFinite(v) || v < 0) return null
     sum += v
   }
   return sum

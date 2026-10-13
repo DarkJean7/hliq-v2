@@ -54,7 +54,9 @@ console.log(nl + '-- carried by price, and only by price --')
   const v = seedValue(seed, c => mids[c], c => spot[c], now)
   // +0.1*100 long BTC, +(-1000)*(-0.01) short ADA, +3*1 spot HYPE
   t('value + Σ size × (price now − price then)', near(v, 1000 + 10 + 10 + 3), v)
-  t('no move, no change', near(seedValue(seed, c => ({ BTC: 60000, ADA: 0.25 })[c], () => 40, now), 1000))
+  t('an empty wallet is worth $0, not unknown', seedValue({ value: 0, at: now, book: { perp: {}, spot: {} } }, () => 1, () => 1, now) === 0)
+  t('a negative or missing value is still unknown', seedValue({ value: -5, at: now, book: { perp: {}, spot: {} } }, () => 1, () => 1, now) === null && seedValue({ at: now, book: { perp: {}, spot: {} } }, () => 1, () => 1, now) === null)
+  t('no move, no change',near(seedValue(seed, c => ({ BTC: 60000, ADA: 0.25 })[c], () => 40, now), 1000))
   t('a price not known yet: null, not the uncarried value',
     seedValue(seed, c => (c === 'BTC' ? 60100 : 0), c => spot[c], now) === null)
   t('a spot price not known yet: null', seedValue(seed, c => mids[c], () => undefined, now) === null)

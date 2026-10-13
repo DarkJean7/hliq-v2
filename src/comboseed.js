@@ -86,7 +86,9 @@ export function seedBook(assetPositions, spotBalances, spotPx) {
  */
 export function seedValue(seed, perpMid, spotMid, now = Date.now()) {
   const v = num(seed?.value), at = num(seed?.at)
-  if (!(v > 0) || !(at > 0) || now - at > SEED_MAX_MS || !seed.book) return null
+  // An EMPTY wallet is worth $0, and that is a value, not an unknown: `!(v > 0)` read it as
+  // unknown and kept a whole combined total on a dash for as long as one wallet was empty.
+  if (v == null || v < 0 || !(at > 0) || now - at > SEED_MAX_MS || !seed.book) return null
   let d = 0
   for (const [coin, [szi, mark]] of Object.entries(seed.book.perp ?? {})) {
     const m = num(perpMid(coin))

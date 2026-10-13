@@ -293,9 +293,11 @@ console.log(nl + '-- when the server cannot finish a snapshot --')
   // partial total, and the headline stayed a dash. The wallets' own values are the last resort.
   t('the rows are summed only after the snapshot has been missing a while',
     /const COMBO_ROWS_AFTER_MS = 90_000/.test(CLI) && /now - _comboSnapMissSince < after/.test(CLI))
-  t('and never with a wallet missing or unanswered',
+  // A wallet worth $0 is answered, not missing: `v <= 0` read an empty wallet as unknown and
+  // kept the whole total a dash while it stayed empty. Only a missing or invalid figure waits.
+  t('and never with a wallet missing or unanswered — but an EMPTY wallet ($0) counts',
     /if \(!rows\.length \|\| rows\.some\(r => r\.error\)\) return null/.test(CLI) &&
-    /if \(!Number\.isFinite\(v\) \|\| v <= 0\) return null/.test(CLI))
+    /if \(!Number\.isFinite\(v\) \|\| v < 0\) return null/.test(CLI) && !/if \(!Number\.isFinite\(v\) \|\| v <= 0\) return null/.test(CLI))
   t('both shells read the one chain', /const val = state\.isAllAccounts \? _comboDisplayEquity\(_srvVal\) : _rawVal/.test(CLI))
   t('the server value is asked for once per paint, not twice',
     /function _comboDisplayEquity\(srv\)/.test(CLI) && /\(srv !== undefined \? srv : _combinedServerValue\(\)\)/.test(CLI))
