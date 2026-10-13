@@ -59,7 +59,7 @@ async function run(label, opts) {
   // The paper server: src/paperhost.js itself behind /paper/sync.
   const host = createPaperHost({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'pftrade-paper-')) })
   await ctx.route('**/paper/sync', (route) => { const r = host.sync(JSON.parse(route.request().postData() || '{}')); return route.fulfill({ status: 200, contentType: 'application/json', json: r }) })
-  await ctx.route(/\/api\/(auth|plan|start|stop|pause|resume|status|paper)/, async (route) => {
+  await ctx.route(/\/api\/(auth|plan|start|stop|pause|resume|status|paper|portfolios)/, async (route) => {
     const u = new URL(route.request().url()), path = u.pathname
     let b = {}
     try { b = JSON.parse(route.request().postData() || '{}') } catch {}
@@ -88,6 +88,10 @@ async function run(label, opts) {
       return j({ _instances: { [k]: true }, _paused: {}, _configs: { [k]: { type: 'portfolio', instance: paperRun.instance, args: ['--strategy', 'bot:rsi', '--paper', paperRun.slot] } },
         _portfolios: { [paperRun.instance]: { name: 'Live basket', strategy: 'bot:rsi', budget: 500, equity: 490, units: {}, fees: 0.4, reason: 'waiting for the next entry' } } })
     }
+    // Someone else's public run: on the list, and opened in full.
+    const PUB = { pid: 'pub1abc', name: "Someone's basket", strategy: 'momentum', lev: '2', paper: false, paused: false, startedAt: Date.now() - 3 * 864e5, ret: 0.042, maxDd: -0.03, costPct: 0.001, trades: 9, positions: 3, holdings: [{ coin: 'BTC', share: 0.6 }, { coin: 'ETH', share: 0.4 }], reason: 'waiting for the rebalancing day', curve: [[Date.now() - 3 * 864e5, 0], [Date.now() - 864e5, -0.03], [Date.now(), 0.042]] }
+    if (path === '/api/portfolios/live') return j({ ok: true, runs: [PUB] })
+    if (path === '/api/portfolios/live/pub1abc') return j({ ok: true, run: { ...PUB, events: [{ t: Date.now() - 864e5, kind: 'REBAL', text: 'rebalancing day: holding BTC, ETH' }] } })
     if (path === '/api/status' && u.searchParams.get('address') !== ADDR) return j({ _configs: {} })
     if (path === '/api/status') {
       const inst = sent.find(s => s.path === '/api/start')?.body.instance ?? ''
@@ -98,6 +102,11 @@ async function run(label, opts) {
     return j({})
   })
   const p = await ctx.newPage()
+  // Flip the card holding `sel` to its controls (Manage), unless it already is.
+  const manage = async (sel) => {
+    const card = p.locator('#pfLive .pf-live-card', { has: p.locator(sel) }).first()
+    if (!(await card.evaluate(c => c.classList.contains('is-flip')))) await card.locator('.pf-live-front [data-manage]').click()
+  }
   const errors = []
   p.on('pageerror', e => errors.push(e.message))
   await p.goto(`http://localhost:${port}/portfolios#p=${LINK}`, { waitUntil: 'domcontentloaded' })
@@ -143,15 +152,28 @@ async function run(label, opts) {
   // Running.
   await waitFor(p, 'the running card', () => !document.getElementById('pfLiveSec').hidden && /\+5\.00%/.test(document.getElementById('pfLive').textContent))
   if (process.env.PF_SHOT) await p.locator('#pfLiveSec').screenshot({ path: process.env.PF_SHOT + '-' + label + '-live.png' })
+  // Everyone's public runs are listed too, with no controls; pressing one opens its performance.
+  await waitFor(p, 'the public run', () => /Someone's basket/.test(document.getElementById('pfLive')?.textContent ?? ''))
+  ok('another user public run is listed: its return and a sparkline, and no Pause or Stop', await p.evaluate(() => { const c = [...document.querySelectorAll('#pfLive .pf-live-card')].find(x => /Someone's basket/.test(x.textContent)); return !!c && c.textContent.includes('+4.20%') && !!c.querySelector('.pf-spark path') && !c.querySelector('[data-live], [data-manage]') }))
+  await p.evaluate(() => [...document.querySelectorAll('#pfLive .pf-live-card')].find(x => /Someone's basket/.test(x.textContent)).click())
+  await waitFor(p, 'its detail', () => !!document.querySelector('#pfRunOv .pf-run-chart svg path.l'))
+  ok('pressing it opens its performance: chart, return, drawdown, holdings and recent actions', await p.evaluate(() => { const o = document.getElementById('pfRunOv'); return !!o.querySelector('.pf-run-chart path.l') && o.textContent.includes('+4.20%') && o.textContent.includes('-3.00%') && /BTC/.test(o.textContent) && /rebalancing day/.test(o.textContent) }))
+  ok('a real-money run says it is shown in percent only', /shown in percent/.test(await p.textContent('#pfRunOv')))
+  await p.click('#pfRunOv [data-x]')
   ok('the running card names the account, and the leverage the run actually uses (from its own arguments)', /Rebalance monthly · 3× · Main/.test(await p.textContent('#pfLive')), await p.textContent('#pfLive .pf-live-top small'))
   ok('the running portfolio shows what it is worth against its budget', /\$210\.00 of \$200\.00/.test(await p.textContent('#pfLive')) && /day 15/.test(await p.textContent('#pfLive')))
+  // Pause and Stop are the owner's, behind Manage: the card's front is its performance.
+  ok('Pause and Stop are not on the card face', !(await p.isVisible('#pfLive [data-live="pause"]')))
+  await manage('[data-live="pause"]')
+  ok('Manage flips the card to its controls, and the public switch', await p.isVisible('#pfLive [data-live="pause"]') && await p.isVisible('#pfLive [data-vis]'))
   await p.click('#pfLive [data-live="pause"]')
   await waitFor(p, 'paused', () => /paused/.test(document.getElementById('pfLive').textContent))
   ok('pause goes to the server for that bot', sent.some(s => s.path === '/api/pause' && s.body.instance === start.body.instance && s.auth))
   await p.click('#pfLive [data-live="stop"]')
   ok('stop asks first, and says positions stay open', /positions stay open/i.test(await p.textContent('#pfLive [data-live="stop"]')) && !sent.some(s => s.path === '/api/stop'))
   await p.click('#pfLive [data-live="stop"]')
-  await waitFor(p, 'stopped', () => document.getElementById('pfLiveSec').hidden)
+  // Your card goes; the section stays while anyone else's public run is listed.
+  await waitFor(p, 'stopped', () => !document.querySelector('#pfLive .pf-live-card.is-mine'))
   ok('the second press stops it', sent.some(s => s.path === '/api/stop' && s.body.type === 'portfolio'))
   // A trading strategy: RSI on every holding, with its own settings from its card.
   await p.evaluate(() => { window.__pf.state.bots = ['rsi']; window.__pf.state.botParams = { rsi: { rsiLen: 9, slOff: true } } })
@@ -204,6 +226,7 @@ async function run(label, opts) {
   await waitFor(p, 'the paper card', () => /PAPER/.test(document.getElementById('pfLive')?.textContent ?? ''))
   ok('the running paper portfolio is listed, tagged PAPER, under its paper account', /PAPER/.test(await p.textContent('#pfLive')) && /PF · Live basket/.test(await p.textContent('#pfLive')))
   const stopBtn = '#pfLive [data-live="stop"]:not([data-paper=""])'
+  await manage(stopBtn.replace('#pfLive ', ''))
   await p.click(stopBtn)
   await p.click(stopBtn)
   await waitFor(p, 'the paper stop', () => !/PAPER/.test(document.getElementById('pfLive')?.textContent ?? ''))
@@ -221,6 +244,7 @@ async function run(label, opts) {
   const mst = sent.filter(x => x.path === '/api/paper/start').pop()
   ok('the bot is started on the practice account, which is marked as the bot\'s', mst?.body.slot === 'main' && await p.evaluate(() => localStorage.getItem('hliq_paper_pf_mainbot')) === mst.body.instance)
   await waitFor(p, 'its card', () => /PAPER/.test(document.getElementById('pfLive')?.textContent ?? ''))
+  await manage('[data-live="stop"]:not([data-paper=""])')
   await p.click('#pfLive [data-live="stop"]:not([data-paper=""])')
   await p.click('#pfLive [data-live="stop"]:not([data-paper=""])')
   await waitFor(p, 'its stop', () => !/PAPER/.test(document.getElementById('pfLive')?.textContent ?? ''))

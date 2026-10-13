@@ -22,6 +22,7 @@
 import { keyedAddresses, readKey } from './agentkeys.js'
 import { LIVE_STRATEGIES, liveWeights, liveArgs, HL_MIN_ORDER } from './pflive.js'
 import { SIGNAL_STRATEGIES } from './pfsignal.js'
+import { openRunView, sparkSvg, runningFor } from './pfrunview.js'
 import { startPaperSync } from './papersync.js'
 import { PAPER_START, paperAcctCreate, paperAcctTag, paperAcctDelete, paperAcctName, paperAcctBot, paperAccounts, paperPeek, paperWithdrawable, paperBind, paperStore, paperSave, paperDeposit, paperWithdraw } from './paper.js'
 
@@ -424,6 +425,12 @@ export function initTrade(get) {
 
   // ── running portfolio bots, on every account with a key ──
   let live = []
+  // Live portfolios: yours (from each account's status, with its controls) and everyone's
+  // public ones (/api/portfolios/live — opaque ids, percent only for real money). Asked: "make
+  // the running portfolio visible to every user not just to the deployer … showing
+  // performance, graph … pause, stop … only available for the deployer".
+  let others = []
+  const flippedLive = new Set()
   async function refresh() {
     const el = $('pfLive'); if (!el) return
     const accts = accounts()
@@ -440,29 +447,90 @@ export function initTrade(get) {
       } catch { /* the server did not answer for this account: it is left out, not shown as stopped */ }
     }))
     live = out.sort((x, y) => (x.st?.name ?? x.id).localeCompare(y.st?.name ?? y.id))
+    try {
+      const j = await (await fetch('/api/portfolios/live')).json()
+      const mine = new Set(live.map(b => b.st?.pid).filter(Boolean))
+      others = (j?.runs ?? []).filter(r => !mine.has(r.pid))
+    } catch { /* the public list is extra: without it, your own runs still show */ }
     render()
   }
+  const retCls = (r) => r == null ? '' : r >= 0 ? 'up' : 'dn'
+  const retTxt = (r) => r == null ? '—' : (r >= 0 ? '+' : '') + (r * 100).toFixed(2) + '%'
   function render() {
     const sec = $('pfLiveSec'), el = $('pfLive'); if (!sec || !el) return
-    sec.hidden = !live.length
-    el.innerHTML = live.map(b => {
+    sec.hidden = !live.length && !others.length
+    const mineHtml = live.map(b => {
       const st = b.st, ret = st?.equity != null && st.budget ? st.equity / st.budget - 1 : null
       const strat = get().labels[st?.strategy] ?? st?.strategy ?? ''
       const argOf = k => { const i = (b.args ?? []).indexOf(k); return i >= 0 ? b.args[i + 1] : null }
       const lev = argOf('--leverage'), mg = argOf('--margin')
       const levTxt = lev ? ` · ${lev === 'max' ? 'max' : lev + '×'}${mg === 'isolated' ? ' isolated' : ''}` : ''
-      return `<div class="pf-live-card">
-        <div class="pf-live-top"><b>${b.paper != null ? '<span class="pf-paper-tag">PAPER</span> ' : ''}${esc(st?.name ?? b.id)}</b><small>${esc(strat)}${esc(levTxt)} · ${esc(b.paper != null ? (paperAcctName(b.paper) ?? 'paper account') : acctName(b.addr))}${b.paused ? ' · <span class="pf-warn">paused</span>' : ''}</small></div>
-        <div class="pf-live-ret ${ret == null ? '' : ret >= 0 ? 'up' : 'dn'}">${ret == null ? '—' : (ret >= 0 ? '+' : '') + (ret * 100).toFixed(2) + '%'}</div>
-        <div class="pf-live-sub">${usd(st?.equity)} of ${usd(st?.budget)} · ${Object.keys(st?.units ?? {}).length} positions · fees ${usd(st?.fees)}</div>
-        <div class="pf-live-sub">${esc(st?.reason ?? 'starting…')}</div>
-        <div class="pf-live-btns"><button class="pf-btn pf-btn--ghost" data-live="${b.paused ? 'resume' : 'pause'}" data-a="${b.addr}" data-i="${esc(b.id)}" data-paper="${esc(b.paper ?? '')}">${b.paused ? 'Resume' : 'Pause'}</button>
-          <button class="pf-btn pf-btn--ghost" data-live="stop" data-a="${b.addr}" data-i="${esc(b.id)}" data-paper="${esc(b.paper ?? '')}">Stop</button></div>
+      const key = b.addr + ':' + b.id
+      const flip = flippedLive.has(key)
+      return `<div class="pf-live-card is-mine${flip ? ' is-flip' : ''}" data-open="${esc(st?.pid ?? '')}" data-own="1" data-a="${b.addr}" data-paperown="${b.paper != null ? '1' : ''}">
+        <div class="pf-live-face pf-live-front">
+          <div class="pf-live-top"><b>${b.paper != null ? '<span class="pf-paper-tag">PAPER</span> ' : ''}${esc(st?.name ?? b.id)} <span class="pf-live-you">yours</span></b><small>${esc(strat)}${esc(levTxt)} · ${esc(b.paper != null ? (paperAcctName(b.paper) ?? 'paper account') : acctName(b.addr))}${b.paused ? ' · <span class="pf-warn">paused</span>' : ''}</small></div>
+          <div class="pf-live-ret ${retCls(ret)}">${retTxt(ret)}</div>
+          <div class="pf-live-sub">${usd(st?.equity)} of ${usd(st?.budget)} · ${Object.keys(st?.units ?? {}).length} positions · fees ${usd(st?.fees)}</div>
+          <div class="pf-live-sub">${esc(st?.reason ?? 'starting…')}</div>
+          <div class="pf-live-foot"><span class="pf-live-vis">${st?.public ? '● Public' : '○ Private'}</span><button class="pf-live-manage" data-manage="${esc(key)}">Manage ⋯</button></div>
+        </div>
+        <div class="pf-live-face pf-live-back">
+          <div class="pf-live-top"><b>${esc(st?.name ?? b.id)}</b><small>Only you see these</small></div>
+          <div class="pf-live-btns"><button class="pf-btn pf-btn--ghost" data-live="${b.paused ? 'resume' : 'pause'}" data-a="${b.addr}" data-i="${esc(b.id)}" data-paper="${esc(b.paper ?? '')}">${b.paused ? 'Resume' : 'Pause'}</button>
+            <button class="pf-btn pf-btn--ghost" data-live="stop" data-a="${b.addr}" data-i="${esc(b.id)}" data-paper="${esc(b.paper ?? '')}">Stop</button></div>
+          <label class="pf-check pf-live-pub"><input type="checkbox" data-vis data-a="${b.addr}" data-i="${esc(b.id)}" data-paper="${esc(b.paper ?? '')}" ${st?.public ? 'checked' : ''}> Visible to everyone ${b.paper != null ? '' : '<small>(in percent — never your balances)</small>'}</label>
+          <button class="pf-live-manage" data-manage="${esc(key)}">Done</button>
+        </div>
       </div>`
     }).join('')
+    const othersHtml = others.map(r => {
+      const strat = get().labels[r.strategy] ?? r.strategy ?? ''
+      return `<div class="pf-live-card" data-open="${esc(r.pid)}">
+        <div class="pf-live-face pf-live-front">
+          <div class="pf-live-top"><b>${r.paper ? '<span class="pf-paper-tag">PAPER</span> ' : ''}${esc(r.name)}</b><small>${esc(strat)}${r.lev ? ` · ${r.lev === 'max' ? 'max' : r.lev + '×'}` : ''} · running ${runningFor(r.startedAt)}${r.paused ? ' · <span class="pf-warn">paused</span>' : ''}</small></div>
+          <div class="pf-live-ret ${retCls(r.ret)}">${retTxt(r.ret)}</div>
+          ${sparkSvg(r.curve)}
+          <div class="pf-live-sub">${r.positions} positions · max drawdown ${retTxt(r.maxDd)}</div>
+        </div>
+      </div>`
+    }).join('')
+    el.innerHTML = mineHtml + othersHtml
   }
+  // Open a card: everyone's public runs from the public route; your own (public or not) by
+  // proving it's yours, the way Pause does.
+  async function openRun(card) {
+    const pid = card.dataset.open
+    if (!pid) return
+    try {
+      let j
+      if (card.dataset.own) {
+        j = card.dataset.paperown
+          ? await (await fetch('/api/portfolios/mine/' + pid, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ secret: paperSecret() }) })).json()
+          : await api('/api/portfolios/mine/' + pid, card.dataset.a, { address: card.dataset.a })
+      } else j = await (await fetch('/api/portfolios/live/' + pid)).json()
+      if (!j?.ok || !j.run) throw new Error(j?.error ?? 'not available')
+      openRunView(j.run, { labels: get().labels, nameOf: (c) => get().nameOf({ coin: c }), mine: !!card.dataset.own })
+    } catch (e) { card.classList.add('pf-live-err'); setTimeout(() => card.classList.remove('pf-live-err'), 1500) }
+  }
+  $('pfLive')?.addEventListener('change', async e => {
+    const v = e.target.closest('[data-vis]'); if (!v) return
+    v.disabled = true
+    try {
+      const r = v.dataset.paper
+        ? await paperApi('visibility', { instance: v.dataset.i, public: v.checked })
+        : await api('/api/portfolio/visibility', v.dataset.a, { address: v.dataset.a, instance: v.dataset.i, public: v.checked })
+      if (!r.ok) throw new Error(r.error ?? 'refused')
+    } catch { v.checked = !v.checked }
+    v.disabled = false
+    refresh()
+  })
   $('pfLive')?.addEventListener('click', async e => {
-    const b = e.target.closest('[data-live]'); if (!b) return
+    if (e.target.closest('[data-vis], .pf-live-pub')) return
+    const m = e.target.closest('[data-manage]')
+    if (m) { const k = m.dataset.manage; flippedLive.has(k) ? flippedLive.delete(k) : flippedLive.add(k); render(); return }
+    const b = e.target.closest('[data-live]')
+    if (!b) { const card = e.target.closest('.pf-live-card'); if (card && !card.classList.contains('is-flip')) openRun(card); return }
     const act = b.dataset.live
     if (act === 'stop' && b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Stop? Positions stay open'; return }
     b.disabled = true

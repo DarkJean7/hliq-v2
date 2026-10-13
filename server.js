@@ -13,7 +13,8 @@
 
 import { createServer }                                       from 'node:http'
 import { spawn }                                              from 'node:child_process'
-import { existsSync, mkdirSync, appendFileSync, readFileSync, readdirSync, writeFileSync, chmodSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, appendFileSync, readFileSync, readdirSync, writeFileSync, chmodSync, unlinkSync, statSync, renameSync } from 'node:fs'
+import { publicRun, visibilityDefault } from './src/pflivepub.js'
 import { join, dirname }                                      from 'node:path'
 import { fileURLToPath }                                      from 'node:url'
 import { homedir }                                            from 'node:os'
@@ -602,7 +603,8 @@ function getStatus(address) {
         if (i < 0 || k.slice(0, i).toLowerCase() !== addrL) continue
         out._portfolios = out._portfolios || {}
         out._portfolios[k.slice(i + 1)] = { name: v?.name, strategy: v?.strategy, budget: v?.budget, equity: v?.equity ?? null, units: v?.units ?? {},
-          fees: v?.fees ?? 0, trades: v?.trades ?? 0, reason: v?.reason ?? '', startedAt: v?.startedAt, lastRebal: v?.lastRebal ?? null, skipped: v?.skipped ?? [], at: v?.at }
+          fees: v?.fees ?? 0, trades: v?.trades ?? 0, reason: v?.reason ?? '', startedAt: v?.startedAt, lastRebal: v?.lastRebal ?? null, skipped: v?.skipped ?? [], at: v?.at,
+          pid: pfPid(k), public: (() => { const vis = pfVisLoad(); const kl = k.toLowerCase(); if (kl in vis) return !!vis[kl]; const p = Object.entries(procs).find(([pk, pp]) => pk.startsWith('portfolio:') && pk.split(':')[1] === addrL && (pp.instance || '') === k.slice(i + 1)); return p ? visibilityDefault(p[1].extraArgs) : false })() }
       }
     }
   } catch {}
@@ -643,6 +645,57 @@ function readWins(type, addr) {
 function readAllWins(addr) {
   const out = {}
   for (const t of Object.keys(SCRIPTS)) out[t] = readWins(t, addr)
+  return out
+}
+
+// ─── LIVE PORTFOLIOS, PUBLICLY (src/pflivepub.js) ─────────────────────────────
+// Who may see a running portfolio. Paper runs are public unless their owner hides them;
+// real-money runs are private unless their owner shows them — and even then only in percent.
+const PF_VIS_FILE = join(__dirname, 'data', 'pf-visibility.json')
+function pfVisLoad() { try { return existsSync(PF_VIS_FILE) ? JSON.parse(readFileSync(PF_VIS_FILE, 'utf8')) : {} } catch { return {} } }
+function pfVisSet(key, on) {
+  const v = pfVisLoad(); v[key.toLowerCase()] = !!on
+  try { mkdirSync(join(__dirname, 'data'), { recursive: true }); writeFileSync(PF_VIS_FILE + '.tmp', JSON.stringify(v)); renameSync(PF_VIS_FILE + '.tmp', PF_VIS_FILE) } catch {}
+}
+const pfPid = (key) => createHash('sha256').update('pf:' + key.toLowerCase()).digest('hex').slice(0, 16)
+// A run's log since it began: every day-file for that portfolio id, oldest first, from the
+// day it started. Cached on the files' sizes, since this is read for every visitor.
+const _pfLogCache = new Map()
+function pfLogText(addr, inst, since) {
+  const d = join(LOGS_DIR, 'portfolio', addr.toLowerCase())
+  if (!existsSync(d)) return ''
+  const from = new Date(Math.max(0, (since || 0) - 86_400_000)).toISOString().slice(0, 10)
+  const files = readdirSync(d).filter(f => f.startsWith(inst + '-') && f.endsWith('.log') && f.slice(inst.length + 1, inst.length + 11) >= from).sort()
+  const sig = files.map(f => { try { return f + ':' + statSync(join(d, f)).size } catch { return f } }).join('|')
+  const key = addr + ':' + inst
+  const hit = _pfLogCache.get(key)
+  if (hit && hit.sig === sig) return hit.text
+  const text = files.map(f => { try { return readFileSync(join(d, f), 'utf8') } catch { return '' } }).join('\n')
+  _pfLogCache.set(key, { sig, text })
+  return text
+}
+let _pfPx = { at: 0, px: {} }
+async function pfMids() {
+  if (Date.now() - _pfPx.at < 60_000) return _pfPx.px
+  try { _pfPx = { at: Date.now(), px: await hlInfo({ type: 'allMids' }) } } catch { _pfPx.at = Date.now() }
+  return _pfPx.px
+}
+// Every running portfolio bot: { key, addr, inst, args, paused, state, pid, isPublic }.
+function pfRuns() {
+  let states = {}
+  try { const f = join(__dirname, '.portfolio-state.json'); if (existsSync(f)) states = JSON.parse(readFileSync(f, 'utf8')) } catch {}
+  const vis = pfVisLoad()
+  const out = []
+  for (const [k, p] of Object.entries(procs)) {
+    const [t, a] = k.split(':')
+    if (t !== 'portfolio') continue
+    const inst = p.instance || ''
+    const key = (a + ':' + inst).toLowerCase()
+    const state = Object.entries(states).find(([sk]) => sk.toLowerCase() === key)?.[1] ?? null
+    if (!state) continue
+    const isPublic = key in vis ? !!vis[key] : visibilityDefault(p.extraArgs)
+    out.push({ key, addr: a, inst, args: p.extraArgs ?? [], paused: !!p.paused, state, pid: pfPid(key), isPublic })
+  }
   return out
 }
 
@@ -2085,6 +2138,12 @@ const server = createServer(async (req, res) => {
     const type = String(b.type ?? 'portfolio')
     if (!PAPER_TYPES.has(type)) return json(res, 400, { ok: false, error: `${type} does not run on paper` })
     if (!/^[A-Z0-9_:@/.-]{0,60}$/.test(inst)) return json(res, 400, { ok: false, error: 'bad instance' })
+    if (act === 'visibility') {
+      const key = (owner + ':' + inst).toLowerCase()
+      if (!pfRuns().some(r => r.key === key)) return json(res, 404, { ok: false, error: 'not running' })
+      pfVisSet(key, !!b.public)
+      return json(res, 200, { ok: true, public: !!b.public })
+    }
     if (act === 'stop' || act === 'pause' || act === 'resume') {
       const r = act === 'stop' ? stopStrategy(type, owner, inst) : act === 'pause' ? pauseStrategy(type, owner, inst) : resumeStrategy(type, owner, inst)
       return json(res, r.ok ? 200 : 400, r)
@@ -2138,6 +2197,49 @@ const server = createServer(async (req, res) => {
     if (!await requireOwner(req, res, b.address ?? '')) return
     const r = resumeStrategy(b.type, b.address ?? '', b.instance ?? '')
     return json(res, r.ok ? 200 : 400, r)
+  }
+
+  // ── GET /api/portfolios/live — every PUBLIC running portfolio, no addresses ──
+  if (method === 'GET' && path === '/api/portfolios/live') {
+    const px = await pfMids()
+    const list = pfRuns().filter(r => r.isPublic)
+      .map(r => publicRun({ pid: r.pid, state: r.state, args: r.args, paused: r.paused, text: pfLogText(r.addr, r.inst, r.state.startedAt), px }))
+      .sort((a, b) => (b.ret ?? -1) - (a.ret ?? -1))
+    return json(res, 200, { ok: true, runs: list })
+  }
+  // ── GET /api/portfolios/live/:pid — one run in full (a long curve, its recent actions) ──
+  if (method === 'GET' && path.startsWith('/api/portfolios/live/')) {
+    const pid = path.slice('/api/portfolios/live/'.length)
+    const r = pfRuns().find(x => x.pid === pid)
+    if (!r || !r.isPublic) return json(res, 404, { ok: false, error: 'not found' })
+    return json(res, 200, { ok: true, run: publicRun({ pid: r.pid, state: r.state, args: r.args, paused: r.paused, text: pfLogText(r.addr, r.inst, r.state.startedAt), px: await pfMids(), full: true }) })
+  }
+  // ── POST /api/portfolios/mine/:pid — its OWNER opens their run, public or not ──
+  // Proven the way Pause is: a real account by its sign-in, a paper one by its secret. Money
+  // figures and fills are included (it is theirs).
+  if (method === 'POST' && path.startsWith('/api/portfolios/mine/')) {
+    const pid = path.slice('/api/portfolios/mine/'.length)
+    const b = await body(req)
+    let owner = ''
+    if (b.secret != null) {
+      if (!/^[0-9a-f]{64}$/.test(String(b.secret))) return json(res, 400, { ok: false, error: 'bad owner' })
+      owner = '0x' + createHash('sha256').update(String(b.secret)).digest('hex').slice(0, 40)
+    } else {
+      if (!await requireOwner(req, res, b.address ?? '')) return
+      owner = String(b.address ?? '').toLowerCase()
+    }
+    const r = pfRuns().find(x => x.pid === pid && x.addr === owner.toLowerCase())
+    if (!r) return json(res, 404, { ok: false, error: 'not found' })
+    return json(res, 200, { ok: true, run: publicRun({ pid: r.pid, state: r.state, args: r.args, paused: r.paused, text: pfLogText(r.addr, r.inst, r.state.startedAt), px: await pfMids(), full: true, owner: true }) })
+  }
+  // ── POST /api/portfolio/visibility — the owner shows or hides a real-money run ──
+  if (method === 'POST' && path === '/api/portfolio/visibility') {
+    const b = await body(req)
+    if (!await requireOwner(req, res, b.address ?? '')) return
+    const key = (String(b.address ?? '') + ':' + String(b.instance ?? '').toUpperCase()).toLowerCase()
+    if (!pfRuns().some(r => r.key === key)) return json(res, 404, { ok: false, error: 'not running' })
+    pfVisSet(key, !!b.public)
+    return json(res, 200, { ok: true, public: !!b.public })
   }
 
   // ── GET /api/status?address=0x... ─────────────────────────────────────────
