@@ -376,3 +376,12 @@
 .pf-table-note { margin: 10px 2px 4px; font-size: 12.5px; line-height: 1.55; opacity: .85; }
 .pf-table-note p { margin: 0 0 6px; }
 .pf-costs-share { white-space: normal; }
+
+/* The chosen strategy's settings inside the Trade sheet (same fields as its card). */
+.pf-tr-fields { margin: 4px 0 2px; padding: 4px 12px 10px; border: 1px solid var(--rule, #2a2f3a); border-radius: 12px; }
+.pf-tr-fields[hidden] { display: none; }
+.pf-tr-fields .pf-tr-row > span:first-child { min-width: 110px; }
+.pf-tr-fields select { background: var(--panel-2, #161a23); color: inherit; border: 1px solid var(--rule, #2a2f3a); border-radius: 8px; padding: 6px 8px; font: inherit; }
+.pf-tr-fields input[type="number"] { width: 90px; }
+.pf-tr-fields em { font-style: normal; font-size: 12px; opacity: .7; }
+.pf-tr-fields .pf-off { font-size: 12px; opacity: .8; margin-left: 6px; }

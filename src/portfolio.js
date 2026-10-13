@@ -1216,8 +1216,37 @@ function changed({ rerun = true } = {}) {
   if (rerun) { clearTimeout(runT); runT = setTimeout(run, 450) }
 }
 
+// The settings of one strategy, for the Trade sheet: the SAME fields and the same state as its
+// card on the page, so changing one changes the other. 'dca' (allocation) or 'bot:rsi' (trading).
+// Asked: "when i try to run it live it does not let me change the settings of the strategy".
+const tradeSettings = {
+  fields(sid) {
+    if (String(sid).startsWith('bot:')) {
+      const id = sid.slice(4)
+      return botFields(id).map(f => ({ ...f, value: bp(id, f.key), isOff: !!(f.off && S.botParams?.[id]?.[f.off]) }))
+    }
+    // Buys has its own row on the sheet (a live run has no end date to spread over).
+    return (ALLOC_FIELDS[sid] ?? []).filter(f => f.key !== 'dcaBuys').map(f => ({ ...f, value: ap(f.key) }))
+  },
+  set(sid, key, value, kind = 'value') {
+    if (String(sid).startsWith('bot:')) {
+      const id = sid.slice(4)
+      S.botParams = { ...(S.botParams ?? {}), [id]: { ...(S.botParams?.[id] ?? {}) } }
+      if (kind === 'off') S.botParams[id][key] = !!value
+      else if (kind === 'select') S.botParams[id][key] = key === 'gridGeometric' ? value === '1' : value
+      else { const v = Number(value); if (!Number.isFinite(v)) return; S.botParams[id][key] = v }
+    } else {
+      const fd = ALLOC_FIELD[key], v = Number(value)
+      if (!fd || !Number.isFinite(v)) return
+      S[key] = Math.min(fd.max ?? Infinity, Math.max(fd.min ?? -Infinity, v))
+    }
+    changed()
+  },
+}
+
 // Trading it live: the portfolio on the page, with its allocation settings in the bot's units.
 initTrade(() => ({
+  settings: tradeSettings,
   name: S.name, featuredId: S.featuredId, items: S.items, strats: S.strats, lev: S.lev, margin: S.margin === 'isolated' ? 'isolated' : 'cross',
   params: { monthDay: Number(ap('monthDay')), weekDay: Number(ap('weekDay')), band: Number(ap('band')) / 100, dcaEvery: Number(ap('dcaEvery')),
     dcaUpfront: Number(ap('dcaUpfront')) / 100, trendDays: Number(ap('trendDays')), trendBuffer: Number(ap('trendBuffer')) / 100,

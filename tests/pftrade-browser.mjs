@@ -230,6 +230,15 @@ async function run(label, opts) {
   await p.click('#pfTrade')
   await p.selectOption('#pfTrAcct', 'paper:new')
   await p.click('#pfTrStrat [data-s="dca"]')
+  // Asked: "when i try to run it live it does not let me change the settings of the strategy".
+  // The chosen strategy's own settings are in the sheet, and they are the page's settings.
+  ok('the sheet shows the chosen strategy\'s settings (DCA: buy when, every, drop, up front)', await p.locator('#pfTrFields [data-tk="dcaMode"]').count() === 1 && await p.locator('#pfTrFields [data-tk="dcaDrop"]').count() === 1 && await p.locator('#pfTrFields [data-tk="dcaBuys"]').count() === 0)
+  await p.selectOption('#pfTrFields [data-tk="dcaMode"]', '1')
+  ok('changing one changes the page\'s setting (its card follows) and the note says so', await p.evaluate(() => window.__pf.state.dcaMode) === 1 && /below the last buy/.test(await p.textContent('#pfTrStratNote')))
+  await p.selectOption('#pfTrFields [data-tk="dcaMode"]', '0')
+  await p.click('#pfTrStrat [data-s="bot:rsi"]').catch(() => {})
+  if (await p.locator('#pfTrStrat [data-s="bot:rsi"]').count()) ok('a trading strategy shows its own settings too', await p.locator('#pfTrFields [data-tk]').count() > 2)
+  await p.click('#pfTrStrat [data-s="dca"]')
   await p.fill('#pfTrBudget', '100')
   await p.click('#pfTrPreview')
   await waitFor(p, 'the too-small preview', () => !!document.querySelector('[data-fix]'))

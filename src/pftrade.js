@@ -144,6 +144,7 @@ export function initTrade(get) {
         <div><i class="pf-for">Allocation</i><div class="pf-chips pf-strats">${LIVE_STRATEGIES.map(s => chip(s, p.labels[s] ?? s)).join('')}</div>
         <i class="pf-for">Trading</i><div class="pf-chips pf-strats">${SIGNAL_STRATEGIES.map(b => chip('bot:' + b, p.labels['bot:' + b] ?? b)).join('')}</div></div></div>
       <p class="pf-help" id="pfTrStratNote"></p>
+      <div class="pf-tr-fields" id="pfTrFields"></div>
       <label class="pf-tr-row" id="pfTrBuysRow" hidden><span>Buys</span><span class="pf-tr-in"><input id="pfTrBuys" type="number" min="1" max="52" step="1" value="${Math.max(1, Math.min(52, Math.round(Number(p.params?.dcaBuys) || 8)))}"> parts</span></label>
       <label class="pf-tr-row"><span>Budget</span><span class="pf-tr-in"><input id="pfTrBudget" type="number" min="${HL_MIN_ORDER}" step="10" value="${esc(ls.get('hliq_pf_trade_budget') ?? '100')}"> USDC</span></label>
       <p class="pf-help">The money the bot manages, split over the holdings by weight. Leverage ${p.lev === 'max' ? 'at each market\'s maximum' : p.lev + '× (capped per market)'}, ${p.margin === 'isolated' ? 'isolated' : 'cross'}: from <b>Account</b> above.</p>
@@ -157,6 +158,15 @@ export function initTrade(get) {
     document.addEventListener('keydown', onKey)
     sheet.addEventListener('click', onClick)
     sheet.addEventListener('change', e => {
+      // A strategy setting: into the page's state (the card follows), and the preview is stale.
+      const tk = e.target.dataset?.tk
+      if (tk) {
+        const kind = e.target.dataset.kind ?? 'value'
+        get().settings?.set(chosen(), tk, kind === 'off' ? e.target.checked : e.target.value, kind)
+        if (plan) { plan = null; renderPlan() }
+        stratNote()
+        return
+      }
       if (e.target.id === 'pfTrAcct' || e.target.id === 'pfTrBudget' || e.target.id === 'pfTrBuys' || e.target.id === 'pfTrStartBal') { if (plan) { plan = null; renderPlan() } }
       if (e.target.id === 'pfTrAcct') acctNote()
       if (e.target.id === 'pfTrAck') gate()
@@ -193,8 +203,9 @@ export function initTrade(get) {
     const p = get(), s = chosen(), q = p.params
     const day = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][q.weekDay] ?? 'Monday'
     if (s.startsWith('bot:')) {
-      el.textContent = `Each holding is its own sub-account with its weight of the budget, trading ${p.both ? 'both directions' : 'only in its own direction'} on ${p.tf === '1d' ? 'daily' : p.tf === '1h' ? '1-hour' : '4-hour'} candles: the bot replays the backtest's own engine on every closed candle and copies the trade it is in. Stops and targets rest on Hyperliquid as trigger orders (on spot, which cannot carry them, the bot watches them itself). Spot is long only, at 1×. A trade the strategy is already in when you start is not joined; the bot waits for the next entry. Its settings are the ones on its card under Trading strategies.`
+      el.textContent = `Each holding is its own sub-account with its weight of the budget, trading ${p.both ? 'both directions' : 'only in its own direction'} on ${p.tf === '1d' ? 'daily' : p.tf === '1h' ? '1-hour' : '4-hour'} candles: the bot replays the backtest's own engine on every closed candle and copies the trade it is in. Stops and targets rest on Hyperliquid as trigger orders (on spot, which cannot carry them, the bot watches them itself). Spot is long only, at 1×. A trade the strategy is already in when you start is not joined; the bot waits for the next entry. Its settings are below; changing them here changes its card on the page too.`
       const buys = sheet.querySelector('#pfTrBuysRow'); if (buys) buys.hidden = true
+      renderFields()
       return
     }
     el.textContent = {
@@ -207,10 +218,24 @@ export function initTrade(get) {
       momentum: `Holds the top ${q.momTop ?? 3} by ${q.momDays ?? 30}-day return (never one that fell); re-picked every ${day} (UTC).`,
       voltarget: `Holds less of the basket when its ${q.volDays ?? 30}-day volatility is over ${Math.round((q.volTarget ?? 0.5) * 100)}% a year; re-checked every ${day} (UTC).`,
       trend: `Holds each market while it is above its ${q.trendDays}-day average${q.trendBuffer ? ` (${(q.trendBuffer * 100).toFixed(1)}% buffer)` : ''}; cash otherwise. Checked daily.`,
-    }[s] + ' Its settings are the ones on its card under Allocation strategies.'
+    }[s] + (get().settings?.fields(s)?.length ? ' Its settings are below; changing them here changes its card on the page too.' : '')
     // A backtest spreads DCA over its window; a live run has no end date, so it needs a count.
     const buys = sheet.querySelector('#pfTrBuysRow')
     if (buys) buys.hidden = s !== 'dca'
+    renderFields()
+  }
+
+  // The chosen strategy's own settings, right here — the same fields as its card on the page.
+  function renderFields() {
+    const el = sheet?.querySelector('#pfTrFields'); if (!el) return
+    const fs = get().settings?.fields(chosen()) ?? []
+    el.hidden = !fs.length
+    el.innerHTML = fs.map(f => {
+      const input = f.type === 'select'
+        ? `<select data-tk="${esc(f.key)}" data-kind="select">${f.options.map(([o, l]) => `<option value="${esc(o)}" ${String(f.value === true ? '1' : f.value === false ? '' : f.value) === o ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`
+        : `<input type="number" data-tk="${esc(f.key)}" value="${esc(f.value)}" step="${f.step ?? 1}"${f.min != null ? ` min="${f.min}"` : ''}${f.max != null ? ` max="${f.max}"` : ''} ${f.isOff ? 'disabled' : ''}>`
+      return `<label class="pf-tr-row" title="${esc(f.hint ?? '')}"><span>${esc(f.label)}</span><span class="pf-tr-in">${input}${f.unit ? ` <em>${esc(f.unit)}</em>` : ''}${f.off ? ` <span class="pf-off"><input type="checkbox" data-tk="${esc(f.off)}" data-kind="off" ${f.isOff ? 'checked' : ''}> Off</span>` : ''}</span></label>`
+    }).join('')
   }
   const gate = () => {
     const b = sheet?.querySelector('#pfTrStart'); if (!b) return
