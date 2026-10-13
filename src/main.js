@@ -258,7 +258,7 @@ import { probeNavGeometry } from './navprobe.js'
 import { accountRoe, partRoe, positionRoe, fmtRoe, compareRoe } from './roe.js'
 import { ordersForCoin, byAccount, statusesFrom, classifyCancels, describeOrders,
          isAlreadyGone, sideOf as _ordSideOf, summarize as _cancelSummary } from './cancelbatch.js'
-import { seedValue } from './comboseed.js'
+import { seedValue, seedEval } from './comboseed.js'
 import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey, booksFrom, advanceBooks, settledBase, ROW_FRESH_MS } from './comboequity.js'
 import { cashSample, classifyCashMove, posFingerprint } from './perpcash.js'
 import { mtmBook, mtmDelta, mtmCarry, bookState, advanceBook } from './mtmbridge.js'
@@ -15292,33 +15292,94 @@ function _fetchComboSeeds() {
   }).then(r => r.ok ? r.json() : null).then(d => _comboSeedsTake(d?.seeds)).catch(() => {})
 }
 
+/**
+ * Which wallets the headline is waiting on, and why — '' when it is waiting on none.
+ *
+ * Read by the balance card, so a blank headline says what it is waiting for instead of sitting
+ * there mute, and recorded below so the NEXT report of this answers itself. The live path used
+ * to withhold in silence: the two earlier rounds of this bug could only be diagnosed because
+ * the old snapshot chain happened to be logging rowVals=, and that chain is no longer what the
+ * screen is drawn from. "Check the telemetry before theorising" needs the telemetry to exist.
+ */
+let _comboWaiting = []
+let _comboWaitSaidAt = 0
+function _comboWaitingOn() { return _comboWaiting }
+
 function _comboRowsValue() {
   const hidden = _maHiddenLoad()
   const rows = (_allAcctLastResults ?? []).filter(r => r && !hidden.has(r.addr))
   // Every saved wallet, not the ones that loaded: a sum missing one is a wrong total.
   const expected = _comboExpectedAddrs()
   const addrs = expected.length ? expected : rows.map(r => r.addr)
-  if (!addrs.length) return null
+  if (!addrs.length) { _comboWaiting = []; return null }
   const now = Date.now()
   const byAddr = new Map(rows.map(r => [String(r.addr).toLowerCase(), r]))
   let sum = 0
+  const waiting = []
   for (const a of addrs) {
     const lc = String(a).toLowerCase()
     const r = byAddr.get(lc)
     // The wallet's own row, when it has one for now -- not errored, and not painted from last
     // session's cache (a figure from then is not a figure for now).
-    const fresh = r && !r.error && !(Number(r._cachedAt) > 0 && now - Number(r._cachedAt) >= ROW_FRESH_MS)
+    const cached = Number(r?._cachedAt) > 0 && now - Number(r._cachedAt) >= ROW_FRESH_MS
+    const fresh = r && !r.error && !cached
     let v = fresh ? parseFloat(r.accountValue) : null
     // Until then, the server's read of it carried to now by price -- what made the headline as
     // quick to appear as Net PnL (src/comboseed.js). Neither: the total waits.
-    if (v == null) v = seedValue(_comboSeeds[lc], c => state.allMids?.[c], _spotMid, now)
+    let why = ''
+    if (v == null) {
+      const ev = seedEval(_comboSeeds[lc], c => state.allMids?.[c], _spotMid, now)
+      v = ev.value
+      why = (!r ? 'norow' : r.error ? 'error' : cached ? 'cached' : 'row') + '/' + (ev.why || 'ok')
+    }
     // $0 is a value: an empty wallet counts as nothing, it does not make the total unknown.
     // `v <= 0` refused it, and one empty wallet among the saved ones left the All Accounts
     // equity a dash for as long as it stayed empty (eqstep: rowVals=…,0x25A267:0c).
-    if (!Number.isFinite(v) || v < 0) return null
+    if (!Number.isFinite(v) || v < 0) {
+      // Every one of them, not the first: knowing it is one wallet or six is the difference
+      // between a stuck wallet and a rate-limited round.
+      waiting.push({ addr: a, label: _comboLabelOf(a), why: why || 'noval' })
+      continue
+    }
     sum += v
   }
+  _comboWaiting = waiting
+  if (waiting.length) { _comboWaitSay(waiting, addrs.length); return null }
   return sum
+}
+
+// What the headline is waiting on, for a console and for a browser test — the way the
+// calendar exposes its own points. The card keeps its dash: it is the right thing to show for
+// a total we do not have, and this screen has been bitten before by a card that changed height.
+if (typeof window !== 'undefined') window.__comboWaiting = () => _comboWaitingOn()
+
+/** A saved wallet's own name, or its short address — what the card says it is waiting on. */
+function _comboLabelOf(addr) {
+  const lc = String(addr ?? '').toLowerCase()
+  try {
+    const hit = (_maLoad() ?? []).find(w => String(w?.addr ?? '').toLowerCase() === lc)
+    if (hit?.label) return hit.label
+  } catch {}
+  return lc.length >= 10 ? lc.slice(0, 6) + '…' + lc.slice(-4) : lc
+}
+
+/** Once in ten minutes: which wallets have no value for now, and what is wrong with each. */
+function _comboWaitSay(waiting, total) {
+  const now = Date.now()
+  if (now - _comboWaitSaidAt < 10 * 60_000) return
+  _comboWaitSaidAt = now
+  try {
+    fetch('/api/error', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        kind: 'eqstep',
+        message: `combined equity withheld: ${waiting.length} of ${total} wallets have no value for now`,
+        stack: waiting.map(w => String(w.addr).slice(0, 8) + ':' + w.why).join(',') +
+               ` seeds=${Object.keys(_comboSeeds ?? {}).length} rows=${(_allAcctLastResults ?? []).length}`,
+        url: location.pathname,
+      }),
+    }).catch(() => {})
+  } catch {}
 }
 
 // How long the server snapshot may be unusable before the rows are summed instead. Long enough

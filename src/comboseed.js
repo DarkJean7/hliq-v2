@@ -24,8 +24,24 @@
  * minute old, and all of it corrected when the wallet's own row lands a few seconds later.
  */
 
-/** A seed older than this is not a value for now; the wallet waits for its own row instead. */
-export const SEED_MAX_MS = 3 * 60_000
+/**
+ * A seed older than this is not a value for now; the wallet waits for its own row instead.
+ *
+ * TEN minutes, matched to the server's own WALLET_MAX_MS, and it used to be three. Three was
+ * unreachable for a ten-wallet set: the server re-reads a watched wallet every SEED_EVERY_MS
+ * (110s) and a 429 breaks the round, so a wallet's turn can come far less often than that —
+ * measured at 115-117s on a set of THREE with no contention, already two thirds of the way to
+ * the old cliff. Past it the seed was refused, the wallet had no value, and the whole combined
+ * headline was a dash until that one wallet's own row landed. Reported three times, most
+ * recently with ten wallets and everything else on the screen loading normally.
+ *
+ * The server had already made this judgement for itself — a wallet read counts toward a
+ * complete snapshot for ten minutes — and the client throwing the same read away at three was
+ * an asymmetry, not a second opinion. What actually ages here is not price: the carry below
+ * handles that. It is fills and transfers since the read, bounded by the seed being replaced
+ * the moment the wallet's own row is fresh, which is seconds.
+ */
+export const SEED_MAX_MS = 10 * 60_000
 /** A spot token the server could not price is ignored below this cost, and refuses the seed above it. */
 export const SEED_UNPRICED_USD = 5
 
@@ -84,21 +100,38 @@ export function seedBook(assetPositions, spotBalances, spotPx) {
  *
  * `perpMid(coin)` and `spotMid(token)` are the live prices; both answer 0 or null when unknown.
  */
-export function seedValue(seed, perpMid, spotMid, now = Date.now()) {
+/**
+ * The seed's value, AND why it has none — one walk, so the number on screen and the reason in
+ * the telemetry can never describe different things.
+ *
+ * `why` is '' when there is a value. Otherwise it is short and specific, because the whole
+ * point of recording it is that the next report says which wallet and what was wrong with it
+ * rather than "the equity is not loading".
+ */
+export function seedEval(seed, perpMid, spotMid, now = Date.now()) {
+  const no = (why) => ({ value: null, why })
   const v = num(seed?.value), at = num(seed?.at)
+  if (seed == null) return no('noseed')
   // An EMPTY wallet is worth $0, and that is a value, not an unknown: `!(v > 0)` read it as
   // unknown and kept a whole combined total on a dash for as long as one wallet was empty.
-  if (v == null || v < 0 || !(at > 0) || now - at > SEED_MAX_MS || !seed.book) return null
+  if (v == null || v < 0) return no('noval')
+  if (!(at > 0)) return no('noat')
+  if (now - at > SEED_MAX_MS) return no('old:' + Math.round((now - at) / 1000) + 's')
+  if (!seed.book) return no('nobook')
   let d = 0
   for (const [coin, [szi, mark]] of Object.entries(seed.book.perp ?? {})) {
     const m = num(perpMid(coin))
-    if (!(m > 0)) return null
+    if (!(m > 0)) return no('noperp:' + coin)
     d += szi * (m - mark)
   }
   for (const [coin, [size, px]] of Object.entries(seed.book.spot ?? {})) {
     const m = num(spotMid(coin))
-    if (!(m > 0)) return null
+    if (!(m > 0)) return no('nospot:' + coin)
     d += size * (m - px)
   }
-  return v + d
+  return { value: v + d, why: '' }
+}
+
+export function seedValue(seed, perpMid, spotMid, now = Date.now()) {
+  return seedEval(seed, perpMid, spotMid, now).value
 }

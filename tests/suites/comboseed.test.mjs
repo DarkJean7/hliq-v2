@@ -5,7 +5,7 @@
 // tests/eqopen-probe.mjs on eight real wallets: Net PnL 0.4s, equity 6-7s on a reopen, because the
 // headline waited for every wallet to be re-read one after another. See src/comboseed.js.
 import fs from 'fs'
-import { spotPxFrom, seedBook, seedValue, SEED_MAX_MS, SEED_UNPRICED_USD } from '../../src/comboseed.js'
+import { spotPxFrom, seedBook, seedValue, seedEval, SEED_MAX_MS, SEED_UNPRICED_USD } from '../../src/comboseed.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -68,13 +68,52 @@ console.log(nl + '-- carried by price, and only by price --')
     seedValue({ value: 150, at: now, book: { perp: {}, spot: {} } }, () => 0, () => 0, now) === 150)
 }
 
+console.log(nl + '-- why a seed has no value, said out loud --')
+{
+  const now = Date.now()
+  const book = { perp: { BTC: [1, 100] }, spot: {} }
+  const ok = (sd, mid = () => 100) => seedEval(sd, mid, () => 1, now)
+  t('a usable seed has no complaint', ok({ value: 10, at: now, book }).why === '' && ok({ value: 10, at: now, book }).value === 10)
+  t('no seed at all says so', seedEval(undefined, () => 1, () => 1, now).why === 'noseed')
+  t('and a seed with no value', seedEval({ at: now, book }, () => 1, () => 1, now).why === 'noval')
+  t('a stale one says HOW stale, which is the number that mattered',
+    /^old:\d+s$/.test(seedEval({ value: 1, at: now - SEED_MAX_MS - 5000, book }, () => 1, () => 1, now).why))
+  t('a seed with no book', seedEval({ value: 1, at: now }, () => 1, () => 1, now).why === 'nobook')
+  // An unpriced market refuses the wallet, and naming it is the difference between "equity is
+  // not loading" and "this one market has no mid".
+  t('an unpriced perp names the market', seedEval({ value: 1, at: now, book }, () => 0, () => 1, now).why === 'noperp:BTC')
+  t('and an unpriced spot token', seedEval({ value: 1, at: now, book: { perp: {}, spot: { PURR: [1, 1] } } }, () => 1, () => 0, now).why === 'nospot:PURR')
+  // One walk, so the number on screen and the reason in the telemetry cannot describe
+  // different things.
+  t('seedValue is seedEval\'s value, not a second opinion',
+    seedValue({ value: 10, at: now, book }, () => 100, () => 1, now) === ok({ value: 10, at: now, book }).value &&
+    seedValue(undefined, () => 1, () => 1, now) === null)
+}
+
+console.log(nl + '-- the cliff a ten-wallet set could not stay under --')
+{
+  // The server re-reads a watched wallet every SEED_EVERY_MS (110s) and a 429 breaks the
+  // round, so a wallet's turn can come far less often. Measured against the live server on a
+  // set of THREE with no contention: seeds already 115-117s old. At three minutes a ten-wallet
+  // set was past the cliff routinely, the seed was refused, and the whole headline was a dash.
+  t('a seed is good for ten minutes', SEED_MAX_MS === 10 * 60_000)
+  t('which is longer than the server takes to come round again', SEED_MAX_MS > 110_000 * 3)
+  // The server made the same judgement for itself; the client throwing the read away sooner
+  // was an asymmetry, not a second opinion.
+  const srvTxt = fs.readFileSync(new URL('../../server.js', import.meta.url), 'utf8')
+  t('and matches the server\'s own window for the same read', /const WALLET_MAX_MS   = 10 \* 60_000/.test(srvTxt))
+  t('the reason is written down', fs.readFileSync(new URL('../../src/comboseed.js', import.meta.url), 'utf8').includes('matched to the server'))
+}
+
 console.log(nl + '-- wired in --')
 {
   const main = fs.readFileSync(new URL('../../src/main.js', import.meta.url), 'utf8')
   const srv  = fs.readFileSync(new URL('../../server.js', import.meta.url), 'utf8')
   const rv = main.slice(main.indexOf('function _comboRowsValue()'), main.indexOf('function _comboRowsValue()') + 2000)
   t('a wallet uses its own fresh row first', /const fresh = r && !r\.error/.test(rv) && /fresh \? parseFloat\(r\.accountValue\)/.test(rv))
-  t('then the seed, carried by live prices', /seedValue\(_comboSeeds\[lc\], c => state\.allMids\?\.\[c\], _spotMid, now\)/.test(rv))
+  // seedEval now, not seedValue: the same walk answers with the value AND why there is none,
+  // so the reason the headline is withheld can be recorded instead of guessed at next time.
+  t('then the seed, carried by live prices', /seedEval\(_comboSeeds\[lc\], c => state\.allMids\?\.\[c\], _spotMid, now\)/.test(rv))
   t('every saved wallet must answer one way or the other', /for \(const a of addrs\)/.test(rv) && /return null/.test(rv))
   t('seeds are asked for on entry, from the endpoint that never reads HL', /_fetchComboSeeds\(\)/.test(main) && /'\/api\/combined\/seeds'/.test(main))
   t('prices are asked for on entry too -- the socket\'s first push measured six seconds', /infoClient\.allMids\(\)\.then\(m => \{/.test(main))
@@ -82,6 +121,27 @@ console.log(nl + '-- wired in --')
   t('and keeps them warm, without the PnL accrual', /computeCombined\(e\.addrs, \{ pnl: false, freshMs: SEED_EVERY_MS \}\)/.test(srv))
   t('the warm list is bounded -- the endpoint is public', /SEED_SETS_MAX/.test(srv) && /_seedSets\.size > SEED_SETS_MAX/.test(srv))
   t('the book is read with the value it belongs to', /next\.book = seedBook\(cs\?\.assetPositions, spot\?\.balances, await seedSpotPx\(\)\)/.test(srv))
+}
+
+console.log(nl + '-- and it never withholds in silence again --')
+{
+  const main = fs.readFileSync(new URL('../../src/main.js', import.meta.url), 'utf8')
+  // Two earlier rounds of this bug could only be diagnosed because the OLD snapshot chain
+  // happened to log rowVals=. That chain is not what the screen is drawn from any more, and
+  // the path that is drew a dash and said nothing at all.
+  t('the withholding path records it', main.includes('function _comboWaitSay'))
+  t('naming every wallet it is waiting on, not just the first',
+    /waiting\.push\(\{ addr: a, label: _comboLabelOf\(a\), why/.test(main) &&
+    /\{ _comboWaiting = waiting; [\s\S]{0,120}\}|_comboWaiting = waiting/.test(main))
+  t('with what is wrong with each', main.includes("waiting.map(w => String(w.addr).slice(0, 8) + ':' + w.why)"))
+  t('as eqstep, the kind the last two were found under', /kind: 'eqstep',\s*\n\s*message: `combined equity withheld/.test(main))
+  t('at most once in ten minutes, so a stuck wallet cannot flood it',
+    /if \(now - _comboWaitSaidAt < 10 \* 60_000\) return/.test(main))
+  t('and it is readable from a console', main.includes('window.__comboWaiting = () => _comboWaitingOn()'))
+  // Every wallet is still required: a sum missing one is a wrong total, which is the rule
+  // this whole file exists to keep.
+  t('a missing wallet still withholds the total, it is not summed around',
+    /if \(waiting\.length\) \{ _comboWaitSay\(waiting, addrs\.length\); return null \}/.test(main))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
