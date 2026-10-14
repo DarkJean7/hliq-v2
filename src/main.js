@@ -3717,6 +3717,19 @@ function _coinMaxLev(coin) {
   return 50
 }
 
+/**
+ * Maintenance margin as a share of a position, the way Hyperliquid sets it: half the initial
+ * margin at the market's MAXIMUM leverage, 1 / (2 × maxLeverage). Every liquidation estimate
+ * used a flat 0.005 instead — right only for a 100× market. ARM (HIP-3, 10× max) needs 5%,
+ * and at 0.5% its ticket put liquidation at $230.46 against Hyperliquid's $240.92: about $10
+ * further from entry than it is, which reads a position as safer than it is. (Hyperliquid
+ * also raises this on large positions by tier; not modelled — the estimate stays an estimate.)
+ */
+function _mmrOf(coin) {
+  const m = Number(_coinMaxLev(coin))
+  return m > 0 ? 1 / (2 * m) : 0.01
+}
+
 // ─── TRADE CARD COIN SEARCH ───────────────────────────────────────────────────
 window._tcsFilter = function(q = '') {
   const results = document.getElementById('tcsResults')
@@ -5344,8 +5357,8 @@ function updatePositionPreview({ coin, coinSz, price, margin }) {
   // account equity, so we use it as an anchor rather than re-deriving from scratch.
   //   LONG add:  newLiq = (newPrice×newSz + curHlLiq×curSz×(1−mmr)) / (totalSz×(1−mmr))
   //   SHORT add: same shape but (1+mmr)
-  // mmr = 0.005 (HL baseline maintenance margin rate)
-  const mmr = 0.005
+  // mmr: this market's maintenance rate, 1 / (2 × max leverage) — see _mmrOf
+  const mmr = _mmrOf(coin)
   let newLiqPx = 0
   const absCurSzi = Math.abs(curSzi)
   const absNewSzi = Math.abs(newSzi)
@@ -24793,7 +24806,7 @@ function _orderEstimate({ coin, side, coinSz, price, leverage, orderType }) {
   else newEntry = Math.abs(orderSzi) <= Math.abs(curSzi) ? curEntry : price
 
   const newMargin = curMargin + margin
-  const mmr = 0.005
+  const mmr = _mmrOf(coin)
   const absCur = Math.abs(curSzi), absNew = Math.abs(newSzi)
   let newLiqPx = 0
   if (newSzi === 0) newLiqPx = 0
@@ -26657,7 +26670,7 @@ function _botPreviewSheet(type, plan, loading) {
     const _fullMargin = plan.leverage > 0 ? _fullNot / plan.leverage : 0
     // The same maintenance rate and the same formula the order ticket uses, so the two
     // screens cannot disagree about the same position.
-    const _MMR = 0.005
+    const _MMR = _mmrOf(plan.coin)
     // Cross is backed by the whole account; isolated only by what this position posts.
     // Capital is used rather than account equity because that is what this bot was told
     // it may spend -- a liq price quoted against money the grid is not allowed to touch
