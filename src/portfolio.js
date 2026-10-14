@@ -1247,6 +1247,7 @@ const tradeSettings = {
 // Trading it live: the portfolio on the page, with its allocation settings in the bot's units.
 initTrade(() => ({
   settings: tradeSettings,
+  iconOf: (c) => iconHtml(c, nameOf({ coin: c })),
   name: S.name, featuredId: S.featuredId, items: S.items, strats: S.strats, lev: S.lev, margin: S.margin === 'isolated' ? 'isolated' : 'cross',
   params: { monthDay: Number(ap('monthDay')), weekDay: Number(ap('weekDay')), band: Number(ap('band')) / 100, dcaEvery: Number(ap('dcaEvery')),
     dcaUpfront: Number(ap('dcaUpfront')) / 100, trendDays: Number(ap('trendDays')), trendBuffer: Number(ap('trendBuffer')) / 100,

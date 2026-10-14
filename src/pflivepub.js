@@ -57,6 +57,35 @@ export function parseEvents(text, sinceMs = 0, { sizes = false, max = 40 } = {})
   return out.sort((a, b) => b.t - a.t).slice(0, max)
 }
 
+/**
+ * Each market's average entry, from the bot's own fills since the run began ("BUY 0.39 HYPE @
+ * $86.36", "SELL 4.3 UNI @ $7.70"). A reduce keeps the entry; past zero it flips to the fill's
+ * price. → { coin: { units, entry } }. Only what the log shows: a market with no fill here has
+ * no entry, never a guessed one.
+ */
+export function entriesFrom(text, sinceMs = 0) {
+  const pos = {}
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    const m = LINE.exec(line)
+    if (!m || m[3] !== 'FILL') continue
+    if (!(tsOf(m[1], m[2]) >= sinceMs)) continue
+    const f = /^(BUY|SELL)\s+([\d.]+)\s+(\S+)\s+@\s+\$([\d.]+)/.exec(m[4])
+    if (!f) continue
+    const d = (f[1] === 'BUY' ? 1 : -1) * Number(f[2]), px = Number(f[4]), c = f[3]
+    if (!(px > 0) || !d) continue
+    const p = pos[c] ?? { units: 0, entry: 0 }
+    if (p.units === 0 || Math.sign(p.units) === Math.sign(d)) {
+      p.entry = (Math.abs(p.units) * p.entry + Math.abs(d) * px) / (Math.abs(p.units) + Math.abs(d))
+      p.units += d
+    } else if (Math.abs(d) <= Math.abs(p.units) + 1e-12) {
+      p.units += d
+      if (Math.abs(p.units) < 1e-12) { p.units = 0; p.entry = 0 }
+    } else { p.units += d; p.entry = px }
+    pos[c] = p
+  }
+  return pos
+}
+
 /** At most `n` points, keeping the first and last and spreading the rest evenly. */
 export function downsample(pts, n) {
   if (!Array.isArray(pts) || pts.length <= n) return pts ?? []
@@ -93,11 +122,22 @@ export function publicRun({ pid, state = {}, args = [], paused = false, text = '
   if (state.equity > 0 && state.at) eqPts.push([Number(state.at), Number(state.equity)])
   eqPts.sort((a, b) => a[0] - b[0])
   const ret = budget > 0 && state.equity > 0 ? state.equity / budget - 1 : null
-  // Holdings as shares of what is held (by value where a price is known).
+  // Holdings as position cards: share of what is held (by value where a price is known), the
+  // average entry from its fills, the price now, and the move between them. Sizes and dollars
+  // only where money is shown (paper, or the owner).
   const units = state.units ?? {}
-  const vals = Object.entries(units).filter(([, u]) => u).map(([c, u]) => [c, Math.abs(u) * (Number(px[c]) || 0), u < 0])
-  const tot = vals.reduce((s, [, v]) => s + v, 0)
-  const holdings = vals.map(([coin, v, short]) => ({ coin, share: tot > 0 && v > 0 ? v / tot : null, short })).sort((a, b) => (b.share ?? 0) - (a.share ?? 0))
+  const ent = entriesFrom(text, since)
+  const vals = Object.entries(units).filter(([, u]) => u).map(([c, u]) => [c, u, Math.abs(u) * (Number(px[c]) || 0)])
+  const tot = vals.reduce((s, [, , v]) => s + v, 0)
+  const holdings = vals.map(([coin, u, v]) => {
+    const mark = Number(px[coin]) > 0 ? Number(px[coin]) : null
+    const entry = ent[coin]?.entry > 0 ? ent[coin].entry : null
+    const pnlPct = mark && entry ? (mark / entry - 1) * Math.sign(u) : null
+    return {
+      coin, short: u < 0, share: tot > 0 && v > 0 ? v / tot : null, entry, mark, pnlPct,
+      ...(money ? { size: Math.abs(u), value: mark ? v : null, pnl: mark && entry ? u * (mark - entry) : null } : {}),
+    }
+  }).sort((a, b) => (b.share ?? 0) - (a.share ?? 0))
   const curve = downsample(eqPts.map(([t, v]) => [t, budget > 0 ? v / budget - 1 : 0]), full ? 600 : 60)
   const out = {
     pid, name: String(state.name ?? 'Portfolio').slice(0, 40), strategy: state.strategy ?? argOf(args, '--strategy'),

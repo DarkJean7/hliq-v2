@@ -510,7 +510,7 @@ export function initTrade(get) {
           : await api('/api/portfolios/mine/' + pid, card.dataset.a, { address: card.dataset.a })
       } else j = await (await fetch('/api/portfolios/live/' + pid)).json()
       if (!j?.ok || !j.run) throw new Error(j?.error ?? 'not available')
-      openRunView(j.run, { labels: get().labels, nameOf: (c) => get().nameOf({ coin: c }), mine: !!card.dataset.own })
+      openRunView(j.run, { labels: get().labels, nameOf: (c) => get().nameOf({ coin: c }), iconOf: get().iconOf, mine: !!card.dataset.own })
     } catch (e) { card.classList.add('pf-live-err'); setTimeout(() => card.classList.remove('pf-live-err'), 1500) }
   }
   $('pfLive')?.addEventListener('change', async e => {

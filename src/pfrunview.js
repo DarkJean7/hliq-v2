@@ -51,15 +51,33 @@ function chartSvg(curve) {
  * Open one run. `run` is the server's (src/pflivepub.js publicRun with full: true).
  * opts: { labels: { strategyId: label }, nameOf(coin) → display name, mine: bool }
  */
-export function openRunView(run, { labels = {}, nameOf = (c) => c, mine = false } = {}) {
+export function openRunView(run, { labels = {}, nameOf = (c) => c, iconOf = () => '', mine = false } = {}) {
   document.getElementById('pfRunOv')?.remove()
   const ov = document.createElement('div')
   ov.id = 'pfRunOv'
   ov.className = 'pf-sheet-bg pf-run-ov'
   const r = run
   const strat = labels[r.strategy] ?? labels['bot:' + String(r.strategy).replace(/^bot:/, '')] ?? r.strategy
-  const holdings = (r.holdings ?? []).map(h => `<span class="pf-run-h">${esc(nameOf(h.coin))}${h.short ? ' <em>short</em>' : ''}${h.share != null ? ` <b>${(h.share * 100).toFixed(1)}%</b>` : ''}</span>`).join('')
-  const events = (r.events ?? []).map(e => `<li><time>${esc(new Date(e.t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</time><b class="k-${esc(e.kind)}">${esc({ REBAL: 'Rebalance', FILL: 'Fill', START: 'Start', STOP: 'Stop', SKIP: 'Skipped', RECONCILE: 'Reconciled', WARN: 'Note' }[e.kind] ?? e.kind)}</b><span>${esc(e.text)}</span></li>`).join('')
+  // Each holding as a position card: what it is, which way, where it was bought and where it
+  // is now. Sizes and dollars only when the run shows money (paper, or yours).
+  const px = (v) => v == null ? '—' : '$' + (v >= 1000 ? v.toLocaleString('en-US', { maximumFractionDigits: 2 }) : v >= 1 ? v.toFixed(v >= 100 ? 2 : 4) : v.toPrecision(4))
+  const holdings = (r.holdings ?? []).map(h => {
+    const cls = h.pnlPct == null ? '' : h.pnlPct >= 0 ? 'up' : 'dn'
+    return `<div class="pf-pos ${h.short ? 'is-short' : 'is-long'}">
+      <div class="pf-pos-h">${iconOf(h.coin)}<div class="pf-pos-n"><b>${esc(nameOf(h.coin))}</b><span class="pf-pos-side">${h.short ? 'SHORT' : 'LONG'}</span></div>
+        <div class="pf-pos-pnl ${cls}">${h.pnl != null ? `<b>${h.pnl >= 0 ? '+' : '-'}${usd(Math.abs(h.pnl))}</b>` : ''}<span>${pct(h.pnlPct)}</span></div></div>
+      <div class="pf-pos-g">
+        <div><i>Share</i>${h.share == null ? '—' : (h.share * 100).toFixed(1) + '%'}</div>
+        <div><i>Entry</i>${px(h.entry)}</div>
+        <div><i>Mark</i>${px(h.mark)}</div>
+        ${h.value != null ? `<div><i>Value</i>${usd(h.value)}</div>` : h.size != null ? `<div><i>Size</i>${h.size}</div>` : ''}
+      </div>
+      ${h.share != null ? `<div class="pf-pos-bar"><i style="width:${(h.share * 100).toFixed(1)}%"></i></div>` : ''}
+    </div>`
+  }).join('')
+  // Spot pairs are named by id in the bot's log ("BUY 24.72 @700"); say the token instead.
+  const named = (t) => String(t ?? '').replace(/@\d+/g, (id) => nameOf(id))
+  const events = (r.events ?? []).map(e => `<li><time>${esc(new Date(e.t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</time><b class="k-${esc(e.kind)}">${esc({ REBAL: 'Rebalance', FILL: 'Fill', START: 'Start', STOP: 'Stop', SKIP: 'Skipped', RECONCILE: 'Reconciled', WARN: 'Note' }[e.kind] ?? e.kind)}</b><span>${esc(named(e.text))}</span></li>`).join('')
   const stat = (l, v, cls = '') => `<div class="pf-run-stat"><div class="l">${l}</div><div class="v ${cls}">${v}</div></div>`
   ov.innerHTML = `<div class="pf-sheet pf-run" role="dialog" aria-label="${esc(r.name)}">
     <div class="pf-sheet-h"><div><b>${r.paper ? '<span class="pf-paper-tag">PAPER</span> ' : ''}${esc(r.name)}</b>
@@ -76,7 +94,7 @@ export function openRunView(run, { labels = {}, nameOf = (c) => c, mine = false 
       ${stat('Started', r.startedAt ? new Date(r.startedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—')}
     </div>
     ${r.reason ? `<p class="pf-run-next"><b>Next:</b> ${esc(r.reason)}</p>` : ''}
-    ${holdings ? `<div class="pf-run-sec">Holdings <small>share of what it holds now</small></div><div class="pf-run-hs">${holdings}</div>` : ''}
+    ${holdings ? `<div class="pf-run-sec">Positions <small>entry is the average of its own fills</small></div><div class="pf-pos-grid">${holdings}</div>` : ''}
     ${events ? `<div class="pf-run-sec">Recent actions</div><ul class="pf-run-ev">${events}</ul>` : ''}
     ${r.budget == null ? '<p class="pf-help">A real-money run, shown in percent: its owner\'s balances and order sizes are not published.</p>' : ''}
   </div>`

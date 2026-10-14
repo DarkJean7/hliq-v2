@@ -2,7 +2,7 @@
 // Asked: "make the running portfolio visible to every user not just to the deployer …
 // performance, graph … pause, stop … only available for the deployer".
 import fs from 'fs'
-import { parseEquity, parseEvents, downsample, maxDrawdown, visibilityDefault, publicRun } from '../../src/pflivepub.js'
+import { parseEquity, parseEvents, downsample, maxDrawdown, visibilityDefault, publicRun, entriesFrom } from '../../src/pflivepub.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -42,10 +42,29 @@ t('nothing in it names an address or a key', !/0x[0-9a-f]{8}|secret|agent/i.test
 const paper = publicRun({ pid: 'p', state, args: ['--paper', 's'], text: LOG, px: {}, full: true })
 t('a paper run shows its dollars', paper.budget === 1000 && paper.equity === 1000 && paper.paper === true)
 
+console.log('\n-- positions, like the leaderboard cards --')
+{
+  const L = ['[2026-10-12 00:00:00] [FILL    ] BUY 2 HYPE @ $100', '[2026-10-12 00:00:01] [FILL    ] BUY 2 HYPE @ $110', '[2026-10-12 00:00:02] [FILL    ] SELL 1 HYPE @ $120', '[2026-10-12 00:00:03] [FILL    ] SELL 1 ETH @ $50'].join('\n')
+  const e = entriesFrom(L, 0)
+  t('the entry is the average of its own buys; a partial sell keeps it', e.HYPE.units === 3 && Math.abs(e.HYPE.entry - 105) < 1e-9, e.HYPE)
+  t('a sell from flat is a short at its price', e.ETH.units === -1 && e.ETH.entry === 50)
+  const st = { budget: 1000, equity: 1000, startedAt: 0, at: 1, units: { HYPE: 3, ETH: -1 } }
+  const real = publicRun({ pid: 'p', state: st, args: [], text: L, px: { HYPE: 126, ETH: 45 } })
+  const h = real.holdings.find(x => x.coin === 'HYPE'), s2 = real.holdings.find(x => x.coin === 'ETH')
+  t('each card: entry, mark and the move in percent (a short gains as price falls)', Math.abs(h.pnlPct - 0.2) < 1e-9 && Math.abs(s2.pnlPct - 0.1) < 1e-9 && s2.short)
+  t('a real-money card has no size, value or dollar PnL', h.size === undefined && h.value === undefined && h.pnl === undefined)
+  const paper = publicRun({ pid: 'p', state: st, args: ['--paper', 's'], text: L, px: { HYPE: 126, ETH: 45 } })
+  t('paper shows size, value and dollar PnL', paper.holdings.find(x => x.coin === 'HYPE').pnl === 63 && paper.holdings.find(x => x.coin === 'HYPE').value === 378)
+  const srv = fs.readFileSync('server.js', 'utf8')
+  t('a HIP-3 holding is priced by its own dex (CRCL had no share)', srv.includes('const pfDexes = (runs) =>') && srv.includes("{ type: 'allMids', dex: d }"))
+  const rv = fs.readFileSync('src/pfrunview.js', 'utf8')
+  t('spot ids in the actions are named (@700 becomes its token)', rv.includes('const named = (t) =>') && rv.includes('esc(named(e.text))'))
+}
+
 console.log('\n-- the routes --')
 {
   const srv = fs.readFileSync('server.js', 'utf8').replace(/\r\n/g, '\n')
-  t('the public list serves public runs only', srv.includes("const list = pfRuns().filter(r => r.isPublic)"))
+  t('the public list serves public runs only', srv.includes("const runs = pfRuns().filter(r => r.isPublic)"))
   t('one run, publicly: public runs only', srv.includes("if (!r || !r.isPublic) return json(res, 404, { ok: false, error: 'not found' })"))
   t('the owner opens a private run by PROVING it is theirs (sign-in, or the paper secret) — not by naming an address',
     /\/api\/portfolios\/mine\/[\s\S]{0,700}requireOwner\(req, res, b\.address/.test(srv) && /\/api\/portfolios\/mine\/[\s\S]{0,700}createHash\('sha256'\)\.update\(String\(b\.secret\)\)/.test(srv))

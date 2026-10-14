@@ -674,12 +674,20 @@ function pfLogText(addr, inst, since) {
   _pfLogCache.set(key, { sig, text })
   return text
 }
-let _pfPx = { at: 0, px: {} }
-async function pfMids() {
-  if (Date.now() - _pfPx.at < 60_000) return _pfPx.px
-  try { _pfPx = { at: Date.now(), px: await hlInfo({ type: 'allMids' }) } } catch { _pfPx.at = Date.now() }
-  return _pfPx.px
+// Prices for the holdings: the main dex and spot in one call, plus each HIP-3 dex a run holds
+// ("xyz:CRCL" is priced by dex "xyz", not by the main allMids). A minute's cache per dex.
+const _pfPx = new Map()
+async function pfMids(dexes = []) {
+  const out = {}
+  for (const d of ['', ...new Set(dexes)]) {
+    const hit = _pfPx.get(d)
+    if (hit && Date.now() - hit.at < 60_000) { Object.assign(out, hit.px); continue }
+    try { const px = await hlInfo(d ? { type: 'allMids', dex: d } : { type: 'allMids' }); _pfPx.set(d, { at: Date.now(), px }); Object.assign(out, px) }
+    catch { _pfPx.set(d, { at: Date.now(), px: hit?.px ?? {} }); Object.assign(out, hit?.px ?? {}) }
+  }
+  return out
 }
+const pfDexes = (runs) => runs.flatMap(r => Object.keys(r.state?.units ?? {}).filter(c => c.includes(':')).map(c => c.split(':')[0]))
 // Every running portfolio bot: { key, addr, inst, args, paused, state, pid, isPublic }.
 function pfRuns() {
   let states = {}
@@ -2201,8 +2209,9 @@ const server = createServer(async (req, res) => {
 
   // ── GET /api/portfolios/live — every PUBLIC running portfolio, no addresses ──
   if (method === 'GET' && path === '/api/portfolios/live') {
-    const px = await pfMids()
-    const list = pfRuns().filter(r => r.isPublic)
+    const runs = pfRuns().filter(r => r.isPublic)
+    const px = await pfMids(pfDexes(runs))
+    const list = runs
       .map(r => publicRun({ pid: r.pid, state: r.state, args: r.args, paused: r.paused, text: pfLogText(r.addr, r.inst, r.state.startedAt), px }))
       .sort((a, b) => (b.ret ?? -1) - (a.ret ?? -1))
     return json(res, 200, { ok: true, runs: list })
@@ -2212,7 +2221,7 @@ const server = createServer(async (req, res) => {
     const pid = path.slice('/api/portfolios/live/'.length)
     const r = pfRuns().find(x => x.pid === pid)
     if (!r || !r.isPublic) return json(res, 404, { ok: false, error: 'not found' })
-    return json(res, 200, { ok: true, run: publicRun({ pid: r.pid, state: r.state, args: r.args, paused: r.paused, text: pfLogText(r.addr, r.inst, r.state.startedAt), px: await pfMids(), full: true }) })
+    return json(res, 200, { ok: true, run: publicRun({ pid: r.pid, state: r.state, args: r.args, paused: r.paused, text: pfLogText(r.addr, r.inst, r.state.startedAt), px: await pfMids(pfDexes([r])), full: true }) })
   }
   // ── POST /api/portfolios/mine/:pid — its OWNER opens their run, public or not ──
   // Proven the way Pause is: a real account by its sign-in, a paper one by its secret. Money
@@ -2230,7 +2239,7 @@ const server = createServer(async (req, res) => {
     }
     const r = pfRuns().find(x => x.pid === pid && x.addr === owner.toLowerCase())
     if (!r) return json(res, 404, { ok: false, error: 'not found' })
-    return json(res, 200, { ok: true, run: publicRun({ pid: r.pid, state: r.state, args: r.args, paused: r.paused, text: pfLogText(r.addr, r.inst, r.state.startedAt), px: await pfMids(), full: true, owner: true }) })
+    return json(res, 200, { ok: true, run: publicRun({ pid: r.pid, state: r.state, args: r.args, paused: r.paused, text: pfLogText(r.addr, r.inst, r.state.startedAt), px: await pfMids(pfDexes([r])), full: true, owner: true }) })
   }
   // ── POST /api/portfolio/visibility — the owner shows or hides a real-money run ──
   if (method === 'POST' && path === '/api/portfolio/visibility') {

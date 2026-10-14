@@ -439,3 +439,22 @@
 .pf-run-ev time { color: var(--fg-3); }
 .pf-run-ev b.k-FILL { color: var(--pos); } .pf-run-ev b.k-STOP, .pf-run-ev b.k-WARN { color: var(--neg); }
 @media (max-width: 560px) { .pf-run-ev li { grid-template-columns: 1fr; gap: 0; } .pf-run-chart { height: 170px; } }
+
+/* A run's positions, as cards (like the leaderboard's): icon, side, entry → mark, PnL, share. */
+.pf-pos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.pf-pos { border: 1px solid var(--rule); border-left: 3px solid var(--pos); border-radius: 12px; padding: 10px 11px 9px; background: color-mix(in srgb, var(--pos) 4%, transparent); }
+.pf-pos.is-short { border-left-color: var(--neg); background: color-mix(in srgb, var(--neg) 4%, transparent); }
+.pf-pos-h { display: flex; align-items: center; gap: 9px; }
+.pf-pos-h .mk-ico { width: 28px; height: 28px; flex-shrink: 0; }
+.pf-pos-n { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pf-pos-n b { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pf-pos-side { font-size: 9.5px; font-weight: 800; letter-spacing: .05em; color: var(--pos); }
+.pf-pos.is-short .pf-pos-side { color: var(--neg); }
+.pf-pos-pnl { text-align: right; display: flex; flex-direction: column; font-variant-numeric: tabular-nums; }
+.pf-pos-pnl b { font-size: 13px; }
+.pf-pos-pnl span { font-size: 11.5px; }
+.pf-pos-pnl.up { color: var(--pos); } .pf-pos-pnl.dn { color: var(--neg); }
+.pf-pos-g { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; margin-top: 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.pf-pos-g i { display: block; font-style: normal; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-3); }
+.pf-pos-bar { height: 3px; border-radius: 2px; background: var(--rule); margin-top: 8px; overflow: hidden; }
+.pf-pos-bar i { display: block; height: 100%; background: var(--accent); }
