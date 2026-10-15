@@ -341,12 +341,18 @@ export async function sendUsdcOnCore({ from, destination, amount, signer, source
 
   // `source` lets the Send sheet honour an explicit pocket choice. 'auto' keeps the
   // subscription flow's behaviour: whichever pocket can cover it, perp first.
-  // Unified: ONE balance, held on the spot side, which a usdSend draws on directly. The
-  // Trading/Spot split the sheet offers does not exist there, so the pocket chosen is ignored.
+  // Unified: ONE balance, held on the spot side. The Trading/Spot split the sheet offers does
+  // not exist there, so the pocket chosen is ignored. Both usdSend AND spotSend are refused on
+  // a unified account ("Action disabled when unified account is active" — usdSend was tried
+  // first and reported still failing), so it goes as a sendAsset, which names the pocket: spot
+  // to spot.
   if (unified) {
     if (spotFree < amt) throw new Error(`Your unified account has $${spotFree.toFixed(2)} free, and this needs $${amt.toFixed(2)}.`)
+    const meta = await infoClient.spotMeta()
+    const tok = (meta?.tokens ?? []).find(t => String(t.name).toUpperCase() === 'USDC')
+    if (!tok) throw new Error('Could not resolve the USDC token on Hyperliquid')
     const client = new ExchangeClient({ transport: new HttpTransport({ timeout: 60_000 }), wallet: signer })
-    return client.usdSend({ destination, amount: String(amt) })
+    return client.sendAsset({ destination, sourceDex: 'spot', destinationDex: 'spot', token: `${tok.name}:${tok.tokenId}`, amount: String(amt), fromSubAccount: '' })
   }
 
   if (source === 'perp' && perpFree < amt)

@@ -28,6 +28,7 @@ const build = (perp, spot, behaviour = decline, mode = 'default') => {
   const client = {
     usdSend: async (a) => { calls.push(['usdSend', a]); return behaviour() },
     spotSend: async (a) => { calls.push(['spotSend', a]); return behaviour() },
+    sendAsset: async (a) => { calls.push(['sendAsset', a]); return behaviour() },
   }
   const fn = new Function('ExchangeClient', 'HttpTransport', 'infoClient', 'infoTransport', `
     ${grab(src, 'export async function sendUsdcOnCore(').replace('export ', '')}
@@ -101,12 +102,13 @@ t('a real failure is NOT mislabelled as a cancellation',
 
 // Reported: "Action disabled when unified account is active" — Send from Spot on a unified
 // account. There is one balance there (on the spot side) and spotSend is refused, so the
-// route is decided from the account's mode, before any prompt: one usdSend.
+// route is decided from the account's mode, before any prompt. usdSend was refused too
+// (reported again), so it is one sendAsset, spot to spot.
 {
   const ok = () => { prompts++; return { status: 'ok' } }
   const u = build(0, 246.25, ok, 'unifiedAccount')
   await u.fn({ from: F, destination: D, amount: 150, signer: {}, source: 'spot' })
-  t('a unified account sends with ONE usdSend, never spotSend — whichever pocket was picked', u.calls.length === 1 && u.calls[0][0] === 'usdSend' && prompts === 1, u.calls.map(c => c[0]))
+  t('a unified account sends with ONE sendAsset spot to spot, never usdSend/spotSend — whichever pocket was picked', u.calls.length === 1 && u.calls[0][0] === 'sendAsset' && u.calls[0][1].sourceDex === 'spot' && u.calls[0][1].destinationDex === 'spot' && u.calls[0][1].token === 'USDC:0xdeadbeef' && prompts === 1, u.calls.map(c => c[0]))
   const big = build(0, 100, ok, 'unifiedAccount')
   const e2 = await big.fn({ from: F, destination: D, amount: 150, signer: {}, source: 'spot' }).then(() => null, e => e)
   t('and more than its one balance fails BEFORE any signature, saying what it has', big.calls.length === 0 && /unified account has \$100\.00/.test(String(e2?.message)), e2?.message)

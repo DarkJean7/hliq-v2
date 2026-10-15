@@ -76,6 +76,11 @@ t('an explicit choice that cannot be covered fails BEFORE any signature is asked
   send.indexOf("source === 'perp' && perpFree < amt") < send.lastIndexOf('new ExchangeClient') &&
   // A unified account (one balance) checks it before its own client is made, too.
   send.indexOf('Your unified account has') < send.indexOf('new ExchangeClient'))
+// Reported twice: "Action disabled when unified account is active". spotSend and then usdSend
+// were both refused; a unified account sends as a sendAsset, spot to spot.
+t('a unified account sends with sendAsset, spot to spot, and never usdSend/spotSend',
+  /if \(unified\) \{[\s\S]{0,900}client\.sendAsset\(\{ destination, sourceDex: 'spot', destinationDex: 'spot'/.test(send) &&
+  !/if \(unified\) \{[\s\S]{0,900}client\.(usdSend|spotSend)/.test(send.slice(send.indexOf('if (unified) {'), send.indexOf('if (unified) {') + 1000)))
 t('and names the shortfall rather than saying "failed"', send.includes('Trading account has $${perpFree.toFixed(2)} free'))
 t('the auto-mode both-pockets message is still there for the subscription flow',
   send.includes('Not enough free USDC in one place'))
