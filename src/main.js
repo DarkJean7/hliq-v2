@@ -170,7 +170,7 @@ import {
   parseOrderResult,
   approveBuilderFee,
   approveAgentKey,
-  sendUsdcOnCore,
+  sendUsdcOnCore, UNIFIED_SEND_GAS,
   sendValidate,
   setBuilderFeeEnabled,
   isBuilderFeeEnabled,
@@ -25569,8 +25569,14 @@ async function _sendLoadBalances() {
   // A UNIFIED account has one balance, kept on the spot side, and Hyperliquid refuses a spot
   // transfer from it ("Action disabled when unified account is active" — reported). So there
   // is nothing to choose: one pocket, named for what it is; sendUsdcOnCore routes it as a
-  // usdSend, which draws on that balance.
+  // sendAsset, spot to spot. That transfer pays Hyperliquid's gas out of the same balance, so
+  // sending all of it is refused ("Insufficient USDC balance for token transfer gas" —
+  // reported): what can be sent is the balance less the fee, and MAX says so.
   if (unified === true) {
+    _sendSpotFree = Math.max(0, _sendSpotFree - UNIFIED_SEND_GAS)
+    set('spot', _sendSpotFree)
+    const hint = document.getElementById('sendBal-spot')
+    if (hint) hint.textContent += ' ' + _T(`sendable ($${UNIFIED_SEND_GAS} gas kept)`, `enviable ($${UNIFIED_SEND_GAS} de gas reservado)`)
     document.getElementById('sendSrc-perp')?.remove()
     const sp = document.getElementById('sendSrc-spot')
     if (sp) { sp.onclick = null; sp.style.cursor = 'default'; sp.firstElementChild.textContent = _T('Unified account', 'Cuenta unificada') }
