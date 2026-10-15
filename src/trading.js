@@ -326,10 +326,14 @@ export async function sendUsdcOnCore({ from, destination, amount, signer, source
   if (!/^0x[0-9a-fA-F]{40}$/.test(destination ?? '')) throw new Error('Invalid destination address')
   if (!signer) throw new Error('Connect your wallet first')
 
-  const [perpState, spotState] = await Promise.all([
+  const [perpState, spotState, mode] = await Promise.all([
     infoClient.clearinghouseState({ user: from }).catch(() => null),
     infoClient.spotClearinghouseState({ user: from }).catch(() => null),
+    // The account's mode decides the route BEFORE any prompt (one tap, one signature): a unified
+    // account refuses a spot transfer ("Action disabled when unified account is active").
+    infoTransport.request('info', { type: 'userAbstraction', user: from }).catch(() => null),
   ])
+  const unified = mode === 'unifiedAccount' || mode === 'portfolioMargin'
   const perpFree = Number(perpState?.withdrawable ?? 0)
   const spotBal  = spotState?.balances ?? []
   const usdcRow  = spotBal.find(b => String(b.coin).toUpperCase() === 'USDC')
@@ -337,6 +341,14 @@ export async function sendUsdcOnCore({ from, destination, amount, signer, source
 
   // `source` lets the Send sheet honour an explicit pocket choice. 'auto' keeps the
   // subscription flow's behaviour: whichever pocket can cover it, perp first.
+  // Unified: ONE balance, held on the spot side, which a usdSend draws on directly. The
+  // Trading/Spot split the sheet offers does not exist there, so the pocket chosen is ignored.
+  if (unified) {
+    if (spotFree < amt) throw new Error(`Your unified account has $${spotFree.toFixed(2)} free, and this needs $${amt.toFixed(2)}.`)
+    const client = new ExchangeClient({ transport: new HttpTransport({ timeout: 60_000 }), wallet: signer })
+    return client.usdSend({ destination, amount: String(amt) })
+  }
+
   if (source === 'perp' && perpFree < amt)
     throw new Error(`Trading account has $${perpFree.toFixed(2)} free, and this needs $${amt.toFixed(2)}.`)
   if (source === 'spot' && spotFree < amt)

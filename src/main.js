@@ -25550,19 +25550,30 @@ window.__sendPickAddr = function(a) {
 async function _sendLoadBalances() {
   const from = getMainAddress()
   if (!from) return
+  let unified = null
   try {
-    const [perp, spot] = await Promise.all([
-      infoClient.clearinghouseState({ user: from }).catch(() => null),
-      infoClient.spotClearinghouseState({ user: from }).catch(() => null),
-    ])
-    _sendPerpFree = Number(perp?.withdrawable ?? 0)
-    const usdc = (spot?.balances ?? []).find(b => String(b.coin).toUpperCase() === 'USDC')
-    _sendSpotFree = Number(usdc?.total ?? 0) - Number(usdc?.hold ?? 0)
+    // The same read Withdraw uses (src/defi.js): both pockets AND the account's mode.
+    const b = await withdrawableUsdc(from)
+    _sendPerpFree = b.perp
+    _sendSpotFree = b.spot
+    unified = b.unified
   } catch { /* the preview just shows what it has */ }
 
   const set = (id, v) => { const e = document.getElementById('sendBal-' + id); if (e) e.textContent = '$' + fmtUSD(Math.max(0, v)) }
   set('perp', _sendPerpFree)
   set('spot', _sendSpotFree)
+  // A UNIFIED account has one balance, kept on the spot side, and Hyperliquid refuses a spot
+  // transfer from it ("Action disabled when unified account is active" — reported). So there
+  // is nothing to choose: one pocket, named for what it is; sendUsdcOnCore routes it as a
+  // usdSend, which draws on that balance.
+  if (unified === true) {
+    document.getElementById('sendSrc-perp')?.remove()
+    const sp = document.getElementById('sendSrc-spot')
+    if (sp) { sp.onclick = null; sp.style.cursor = 'default'; sp.firstElementChild.textContent = _T('Unified account', 'Cuenta unificada') }
+    window.__sendSetSource('spot')
+    window.__sendPreview()
+    return
+  }
   // Start on whichever pocket can actually pay, so MAX is not 0 on the common case of
   // an account whose USDC all sits on one side.
   if (_sendPerpFree <= 0 && _sendSpotFree > 0) window.__sendSetSource('spot')

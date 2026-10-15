@@ -73,7 +73,9 @@ const send = grab(trd, 'export async function sendUsdcOnCore(')
 t('an explicit perp source uses usdSend', send.includes("if (source === 'perp' || (source === 'auto' && perpFree >= amt))"))
 t('auto still prefers perp, so the subscription flow is unchanged', send.includes("source === 'auto' && perpFree >= amt"))
 t('an explicit choice that cannot be covered fails BEFORE any signature is asked for',
-  send.indexOf("source === 'perp' && perpFree < amt") < send.indexOf('new ExchangeClient'))
+  send.indexOf("source === 'perp' && perpFree < amt") < send.lastIndexOf('new ExchangeClient') &&
+  // A unified account (one balance) checks it before its own client is made, too.
+  send.indexOf('Your unified account has') < send.indexOf('new ExchangeClient'))
 t('and names the shortfall rather than saying "failed"', send.includes('Trading account has $${perpFree.toFixed(2)} free'))
 t('the auto-mode both-pockets message is still there for the subscription flow',
   send.includes('Not enough free USDC in one place'))

@@ -22,21 +22,21 @@ const decline = () => {
     { cause: new Error('ethers-user-denied: User rejected the request.') })
 }
 
-const build = (perp, spot, behaviour = decline) => {
+const build = (perp, spot, behaviour = decline, mode = 'default') => {
   prompts = 0
   const calls = []
   const client = {
     usdSend: async (a) => { calls.push(['usdSend', a]); return behaviour() },
     spotSend: async (a) => { calls.push(['spotSend', a]); return behaviour() },
   }
-  const fn = new Function('ExchangeClient', 'HttpTransport', 'infoClient', `
+  const fn = new Function('ExchangeClient', 'HttpTransport', 'infoClient', 'infoTransport', `
     ${grab(src, 'export async function sendUsdcOnCore(').replace('export ', '')}
     return sendUsdcOnCore
   `)(function () { return client }, function () {}, {
     clearinghouseState: async () => ({ withdrawable: String(perp) }),
     spotClearinghouseState: async () => ({ balances: [{ coin: 'USDC', total: String(spot), hold: '0' }] }),
     spotMeta: async () => ({ tokens: [{ name: 'USDC', tokenId: '0xdeadbeef' }] }),
-  })
+  }, { request: async () => mode })   // userAbstraction: the account's mode
   return { fn, calls }
 }
 
@@ -98,6 +98,22 @@ t('a rejection nested two deep is still recognised',
       { cause: new Error('MetaMask Tx Signature: User denied') }) })) === 'Payment cancelled.')
 t('a real failure is NOT mislabelled as a cancellation',
   classify(new Error('Insufficient balance')) !== 'Payment cancelled.')
+
+// Reported: "Action disabled when unified account is active" — Send from Spot on a unified
+// account. There is one balance there (on the spot side) and spotSend is refused, so the
+// route is decided from the account's mode, before any prompt: one usdSend.
+{
+  const ok = () => { prompts++; return { status: 'ok' } }
+  const u = build(0, 246.25, ok, 'unifiedAccount')
+  await u.fn({ from: F, destination: D, amount: 150, signer: {}, source: 'spot' })
+  t('a unified account sends with ONE usdSend, never spotSend — whichever pocket was picked', u.calls.length === 1 && u.calls[0][0] === 'usdSend' && prompts === 1, u.calls.map(c => c[0]))
+  const big = build(0, 100, ok, 'unifiedAccount')
+  const e2 = await big.fn({ from: F, destination: D, amount: 150, signer: {}, source: 'spot' }).then(() => null, e => e)
+  t('and more than its one balance fails BEFORE any signature, saying what it has', big.calls.length === 0 && /unified account has \$100\.00/.test(String(e2?.message)), e2?.message)
+  const split = build(0, 246.25, ok, 'default')
+  await split.fn({ from: F, destination: D, amount: 150, signer: {}, source: 'spot' })
+  t('a split account still sends spot USDC with spotSend', split.calls[0]?.[0] === 'spotSend')
+}
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
