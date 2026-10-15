@@ -30,6 +30,10 @@ t('the phone card and the desktop row both read the one helper, with the positio
 t('the title is the whole market, wrapping instead of cut off', CLI.includes('-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${esc(facts.market || title)}'))
 t('the underlying against the target, how far, and time left, under the title', CLI.includes('function _ocFactsLine(f)') && CLI.includes("% ${_T('away', 'de distancia')}"))
 t('the details add the question, underlying, target or range, settle time, chance and other sides', CLI.includes('..._ocFactsRows(facts),') && /function _ocFactsRows\(f\)[\s\S]{0,1600}Implied chance[\s\S]{0,400}f\.others/.test(CLI))
+// Reported: "is missing the asset mark price, in this case the gold" — xyz:GOLD's mid is only
+// loaded for a dex you hold a perp on.
+t('a HIP-3 underlying the app has not loaded is fetched for its dex (metered, 30 s) and the cards redrawn',
+  CLI.includes('|| _ocDexMid(u)) : 0') && /function _ocDexMid\(u\)[\s\S]{0,900}infoClient\.allMids\(\{ dex \}\)[\s\S]{0,300}_mobVRenderContent\(\)/.test(CLI))
 t('a side not loaded falls back to the mark, its complement for a two-sided market', CLI.includes('own != null && sides.length === 2 ? 1 - own : null'))
 
 const ss = fs.readFileSync('src/spotsell.js', 'utf8')

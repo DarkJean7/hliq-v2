@@ -36174,7 +36174,7 @@ function _ocFacts(coin, mark = null) {
   const sides = info?.sides?.length ? info.sides : ['Yes', 'No']
   const u = info?.u || null
   const mid = (k) => parseFloat(state.allMids?.[k] ?? 0) || 0
-  const uPx = u ? (mid(u) || mid(hip3Rename?.(u)) || mid(String(u).replace(/^[a-z]+:/, ''))) : 0
+  const uPx = u ? (mid(u) || mid(hip3Rename?.(u)) || mid(String(u).replace(/^[a-z]+:/, '')) || _ocDexMid(u)) : 0
   const t = Number.isFinite(info?.t) ? info.t : null
   const lo = Number.isFinite(info?.lo) ? info.lo : null, hi = Number.isFinite(info?.hi) ? info.hi : null
   const exp = info?.exp ? _expiryDate(info.exp)?.getTime() ?? null : null
@@ -36193,6 +36193,26 @@ function _ocFacts(coin, mark = null) {
     expiry: exp, left: exp ? exp - Date.now() : null,
     mine: sidePx(side), others: sides.map((nm, i) => ({ name: nm, px: sidePx(i) })).filter((_, i) => i !== side),
   }
+}
+
+// A HIP-3 underlying's price ("xyz:GOLD") when the app has not loaded that dex: it only fetches
+// a builder dex's mids for markets you hold a PERP on, so an outcome on GOLD showed no gold
+// price ("is missing the asset mark price — in this case the gold"). Fetched once per dex
+// through the metered client, kept 30 s, and the outcome cards redrawn when it lands.
+const _ocDexMids = new Map()   // dex → { at, mids, busy }
+function _ocDexMid(u) {
+  const m = /^([a-z][a-z0-9]{0,9}):/.exec(String(u ?? ''))
+  if (!m) return 0
+  const dex = m[1], hit = _ocDexMids.get(dex)
+  if (!hit || (!hit.busy && Date.now() - hit.at > 30_000)) {
+    _ocDexMids.set(dex, { at: hit?.at ?? 0, mids: hit?.mids ?? {}, busy: true })
+    infoClient.allMids({ dex }).then(mids => {
+      _ocDexMids.set(dex, { at: Date.now(), mids: mids ?? {}, busy: false })
+      try { if (_isMobView() && _mobVActiveTab === 'outcomes') _mobVRenderContent() } catch {}
+      try { if (document.querySelector('.ov-postab[data-pt="outcomes"].active')) window.__ovSetPosTab?.('outcomes') } catch {}
+    }).catch(() => _ocDexMids.set(dex, { at: Date.now(), mids: hit?.mids ?? {}, busy: false }))
+  }
+  return parseFloat(hit?.mids?.[u] ?? 0) || 0
 }
 
 /** "16d 4h", "3h 12m", "settled" — how long until it resolves. */
