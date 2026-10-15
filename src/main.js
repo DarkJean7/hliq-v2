@@ -19468,6 +19468,8 @@ function _mobVRenderContent(tick = false) {
       const winPct    = cost > 0 ? winProfit / cost * 100 : 0
       const nm    = _ocCoinLabel(b.coin)                       // "USA Yes"
       const title = state.ocQuestionMap?.[oid] || nm           // "2026 World Cup Champion"
+      const facts = _ocFacts(b.coin, mark)
+      const factsLine = _ocFactsLine(facts)
       const key   = String(n)
       // Card styling like a position: YES/NO badge by side, tint/border by P&L
       const sideTxt   = side === 0 ? 'YES' : 'NO'
@@ -19529,10 +19531,11 @@ function _mobVRenderContent(tick = false) {
             ${_mobVCoinIcon(b.coin)}
             <div style="min-width:0;flex:1">
               <div style="display:flex;align-items:center;gap:7px">
-                <span style="font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(title)}</span>
+                <span style="font-size:14px;font-weight:700;line-height:1.25;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${esc(facts.market || title)}</span>
                 <span style="font-size:9.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:${sideBg};color:${sideColor};text-transform:uppercase;letter-spacing:0.5px;flex-shrink:0">${sideTxt}</span>
               </div>
-              <div style="font-size:11px;color:var(--muted);margin-top:2px">${_prv(fmtSize(total))} shares${b._acct ? ` · <span class="notranslate" style="color:var(--accent)">${esc(b._acct)}</span>` : ''}</div>
+              ${factsLine ? `<div class="notranslate" style="font-size:11px;color:var(--fg-2);margin-top:3px;line-height:1.35">${factsLine}</div>` : ''}
+              <div style="font-size:11px;color:var(--muted);margin-top:2px">${_prv(fmtSize(total))} shares${facts.mine != null ? ` · ${(facts.mine * 100).toFixed(1)}% ${_T('chance', 'prob.')}` : ''}${b._acct ? ` · <span class="notranslate" style="color:var(--accent)">${esc(b._acct)}</span>` : ''}</div>
               <div style="font-size:10.5px;margin-top:3px;white-space:nowrap"><span style="color:var(--muted)">If it wins </span><span style="color:var(--green);font-weight:700">${_prv(`+$${fmtUSD(winProfit)} (+${winPct.toFixed(0)}%)`)}</span></div>
             </div>
             <div style="text-align:center;flex-shrink:0">
@@ -19556,6 +19559,7 @@ function _mobVRenderContent(tick = false) {
           ['PnL (ROE)', _prv(`${pnl >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(pnl))} (${roe >= 0 ? '+' : ''}${roe.toFixed(1)}%)`), pnl >= 0 ? 'var(--green)' : 'var(--red)'],
           ['If it wins', _prv(`$${fmtUSD(total, 2)} payout · +$${fmtUSD(winProfit)} (+${winPct.toFixed(1)}%)`), 'var(--green)'],
           ...(hold > 0 ? [['In Orders', _prv(fmtSize(hold)) + ' ' + _T('shares', 'acciones')]] : []),
+          ..._ocFactsRows(facts),
         ])}${closePanel}</div>
       </div>`
     }
@@ -36156,6 +36160,75 @@ function _ocBucketLabel(d, short = false) {
   return fmt(d.bucketLo) + (short ? '–' : ' – ') + fmt(d.bucketHi)
 }
 
+// ── An outcome position's market, without leaving the card ───────────────────
+// Asked: "similar as positions, include the whole outcome title, the current price, etc. — all
+// important info I may want without visiting the outcomes marketplace". Everything here is
+// read from what the app already holds: the market's terms (state.ocInfoMap, kept with the
+// names in _buildOcTokenMap), each side's price (_ocPrices) and the underlying's mid.
+function _ocFacts(coin, mark = null) {
+  const n = parseInt(String(coin).replace(/[^\d]/g, ''), 10) || 0
+  const oid = Math.floor(n / 10), side = n % 10
+  const tok = state.ocTokenMap?.['#' + n]
+  const info = state.ocInfoMap?.[oid] ?? null
+  const px = _ocPrices?.[oid]?.px ?? null
+  const sides = info?.sides?.length ? info.sides : ['Yes', 'No']
+  const u = info?.u || null
+  const mid = (k) => parseFloat(state.allMids?.[k] ?? 0) || 0
+  const uPx = u ? (mid(u) || mid(hip3Rename?.(u)) || mid(String(u).replace(/^[a-z]+:/, ''))) : 0
+  const t = Number.isFinite(info?.t) ? info.t : null
+  const lo = Number.isFinite(info?.lo) ? info.lo : null, hi = Number.isFinite(info?.hi) ? info.hi : null
+  const exp = info?.exp ? _expiryDate(info.exp)?.getTime() ?? null : null
+  // Each side's price: the market's own when loaded; otherwise this side is the position's mark,
+  // and in a two-sided market the other side is its complement.
+  const own = Number(mark) > 0 && Number(mark) < 1 ? Number(mark) : null
+  const sidePx = (i) => (Array.isArray(px) && px[i] > 0 ? px[i] : i === side ? own : own != null && sides.length === 2 ? 1 - own : null)
+  return {
+    oid, side, sides, sideName: sides[side] ?? (side === 0 ? 'Yes' : 'No'),
+    market: _ocStripDex(tok?.name) || _ocCoinLabel(coin), question: state.ocQuestionMap?.[oid] ?? null,
+    underlying: u ? coinLabel(u) || _ocStripDex(u) : null, uPx: uPx > 0 ? uPx : null,
+    target: t, lo, hi,
+    // How far the underlying must still move to reach the target (or the range), as a share.
+    dist: uPx > 0 && t > 0 ? t / uPx - 1 : uPx > 0 && (lo != null || hi != null)
+      ? (lo != null && uPx < lo ? lo / uPx - 1 : hi != null && uPx > hi ? hi / uPx - 1 : 0) : null,
+    expiry: exp, left: exp ? exp - Date.now() : null,
+    mine: sidePx(side), others: sides.map((nm, i) => ({ name: nm, px: sidePx(i) })).filter((_, i) => i !== side),
+  }
+}
+
+/** "16d 4h", "3h 12m", "settled" — how long until it resolves. */
+function _ocLeftTxt(ms) {
+  if (ms == null) return null
+  if (ms <= 0) return _T('ended', 'terminado')
+  const m = Math.floor(ms / 60000), d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60
+  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${mm}m` : `${mm}m`
+}
+
+/** The one-line summary under an outcome's title: the underlying against the target, and time left. */
+function _ocFactsLine(f) {
+  const bits = []
+  if (f.underlying && f.uPx) {
+    const goal = f.target ? '$' + fmtPrice(f.target) : (f.lo != null || f.hi != null) ? `$${f.lo != null ? fmtPrice(f.lo) : '…'}–$${f.hi != null ? fmtPrice(f.hi) : '…'}` : null
+    const away = f.dist != null && Math.abs(f.dist) > 0.0005 ? ` · ${f.dist > 0 ? '+' : ''}${(f.dist * 100).toFixed(1)}% ${_T('away', 'de distancia')}` : f.dist != null ? ` · ${_T('at target', 'en el objetivo')}` : ''
+    bits.push(`${esc(f.underlying)} $${fmtPrice(f.uPx)}${goal ? ` → ${goal}${away}` : ''}`)
+  }
+  const left = _ocLeftTxt(f.left)
+  if (left) bits.push(`⏱ ${left}`)
+  return bits.join(' · ')
+}
+
+/** The detail rows: market terms, the underlying, every side's price and time left. */
+function _ocFactsRows(f) {
+  const rows = []
+  if (f.question && f.question !== f.market) rows.push([_T('Question', 'Pregunta'), esc(f.question)])
+  if (f.underlying) rows.push([_T('Underlying now', 'Subyacente ahora'), f.uPx ? '$' + fmtPrice(f.uPx) : '—'])
+  if (f.target) rows.push([_T('Target', 'Objetivo'), '$' + fmtPrice(f.target) + (f.dist != null ? ` (${f.dist > 0 ? '+' : ''}${(f.dist * 100).toFixed(1)}%)` : '')])
+  else if (f.lo != null || f.hi != null) rows.push([_T('Range', 'Rango'), `$${f.lo != null ? fmtPrice(f.lo) : '…'} – $${f.hi != null ? fmtPrice(f.hi) : '…'}`])
+  if (f.expiry) rows.push([_T('Settles', 'Se liquida'), new Date(f.expiry).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) + (f.left > 0 ? ` · ${_T('in', 'en')} ${_ocLeftTxt(f.left)}` : '')])
+  if (f.mine != null) rows.push([_T('Implied chance', 'Probabilidad implícita'), (f.mine * 100).toFixed(1) + '% ' + esc(f.sideName)])
+  for (const o of f.others) rows.push([esc(o.name) + ' ' + _T('price', 'precio'), o.px != null ? (o.px * 100).toFixed(2) + '¢' : '—'])
+  return rows
+}
+
 function _buildOcTokenMap(meta) {
   // Every outcomeMeta fetch in the app funnels through here, so this is the one place
   // bucket members need flattening for the whole app to see them.
@@ -36166,6 +36239,7 @@ function _buildOcTokenMap(meta) {
   _hydrateOcTokenMap()
   if (!state.ocTokenMap)    state.ocTokenMap    = {}
   if (!state.ocQuestionMap) state.ocQuestionMap = {}
+  if (!state.ocInfoMap)     state.ocInfoMap     = {}
   const list = Array.isArray(meta) ? meta : (meta?.outcomes ?? [])
   // outcomeId → question name (e.g. 217 → "2026 World Cup Champion") for labels
   const questions = Array.isArray(meta) ? [] : (meta?.questions ?? [])
@@ -36187,6 +36261,10 @@ function _buildOcTokenMap(meta) {
       const target      = d.targetPrice ? ` >$${parseFloat(d.targetPrice).toLocaleString()}` : ''
       const expiry      = d.expiry ? ` (${_fmtOutcomeExpiry(d.expiry)})` : ''
       const displayName = underlying + target + bucketStr + expiry
+      // The market's terms, for the position cards (_ocFacts): what it tracks, the line, the window.
+      const num = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : null }
+      state.ocInfoMap[o.outcome] = { u: d.underlying || null, t: num(d.targetPrice), lo: num(d.bucketLo), hi: num(d.bucketHi), exp: d.expiry || null,
+        sides: (o.sideSpecs ?? []).map(sp => _ocSideName(sp.name, 'Yes')) }
       for (let i = 0; i < (o.sideSpecs?.length ?? 0); i++) {
         state.ocTokenMap['#' + (o.outcome * 10 + i)] = { name: displayName, side: _ocSideName(o.sideSpecs[i].name, 'Yes') }
       }
@@ -36200,6 +36278,7 @@ function _buildOcTokenMap(meta) {
     if (Object.keys(state.ocTokenMap).length) {
       localStorage.setItem('hliq_oc_token_map', JSON.stringify(state.ocTokenMap))
       localStorage.setItem('hliq_oc_question_map', JSON.stringify(state.ocQuestionMap || {}))
+      localStorage.setItem('hliq_oc_info_map', JSON.stringify(state.ocInfoMap || {}))
     }
   } catch {}
 }
@@ -36223,6 +36302,7 @@ function _hydrateOcTokenMap() {
       const qm = JSON.parse(localStorage.getItem('hliq_oc_question_map') || '{}')
       for (const k of Object.keys(qm)) qm[k] = _ocStripDex(qm[k])
       state.ocQuestionMap = qm
+      try { state.ocInfoMap = JSON.parse(localStorage.getItem('hliq_oc_info_map') || '{}') } catch { state.ocInfoMap = {} }
     }
   } catch {}
 }
@@ -38661,12 +38741,14 @@ function _ovOcRow(b, id) {
   const roe   = cost > 0 ? pnl / cost * 100 : 0
   const cls   = pnl >= 0 ? 'pos' : 'neg'
   const title = state.ocQuestionMap?.[oid] || _ocCoinLabel(b.coin)
+  const facts = _ocFacts(b.coin, mark)
+  const factsLine = _ocFactsLine(facts)
   const sideTxt = side === 0 ? 'YES' : 'NO'
   const sideCls = side === 0 ? 'pos' : 'neg'
   const key = String(n)
   return `<div class="ov-oc-item">
     <div class="ov-ord-row ov-oc-row" onclick="window.__ovToggleOc('${id}')">
-      <span class="ov-pos-mkt"><div class="ov-av-img">${_coinIconHtml(b.coin)}</div><span class="ov-pos-info"><b>${esc(title)}</b><i>${_prv(fmtSize(total))} shares</i></span></span>
+      <span class="ov-pos-mkt"><div class="ov-av-img">${_coinIconHtml(b.coin)}</div><span class="ov-pos-info"><b style="white-space:normal">${esc(facts.market || title)}</b><i>${_prv(fmtSize(total))} shares${facts.mine != null ? ` · ${(facts.mine * 100).toFixed(1)}% ${_T('chance', 'prob.')}` : ''}</i>${factsLine ? `<i class="notranslate" style="color:var(--fg-2)">${factsLine}</i>` : ''}</span></span>
       <span class="ov-side-badge ${sideCls}">${sideTxt}</span>
       <span class="ov-r mono" id="ovocmark-${key}">${mark > 0 ? (mark * 100).toFixed(2) + '¢' : '—'}</span>
       <span class="ov-r mono">$${fmtUSD(value)}</span>
@@ -38674,6 +38756,7 @@ function _ovOcRow(b, id) {
       <span class="ov-r"><button class="ov-close-x" title="Close position" onclick="event.stopPropagation();window.__ovToggleOc('${id}')">✕</button></span>
     </div>
     <div class="ov-oc-close" id="ovocp-${id}" style="display:none" onclick="event.stopPropagation()">
+      ${(() => { const r = _ocFactsRows(facts); return r.length ? `<div class="ov-spot-facts">${r.map(([l, v]) => `<span><i>${l}</i>${v}</span>`).join('')}</div>` : '' })()}
       <div class="ov-oc-inputs">
         <label>Shares<input id="ocsz-${id}" type="number" value="${Math.max(0, Math.floor(total - hold))}"></label>
         <label>Limit ¢ / share<input id="ocpx-${id}" type="number" step="0.1" value="${mark > 0 ? (mark * 100).toFixed(1) : ''}"></label>

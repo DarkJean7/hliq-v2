@@ -21,6 +21,17 @@ t('and as saved ones load (names cached before this are cleaned)', /for \(const 
 t('and in the label every surface reads (History, Calendar, positions, Outcomes)', CLI.includes('const nm = _ocStripDex(t.name); return t.side'))
 t('the Outcomes card says shares, not the name with its spaces turned into dashes', !CLI.includes("nm.replace(/\\s+/g, '-')") && CLI.includes("['Size', _prv(fmtSize(total)) + ' ' + _T('shares', 'acciones')]"))
 
+// Asked: "similar as positions, include the whole outcome title, the current price, etc. — all
+// important info I may want without visiting the outcomes marketplace".
+t('each outcome keeps its terms with its name, and they are saved and loaded like the names',
+  CLI.includes('state.ocInfoMap[o.outcome] = { u: d.underlying || null, t: num(d.targetPrice)') &&
+  CLI.includes("localStorage.setItem('hliq_oc_info_map'") && CLI.includes("JSON.parse(localStorage.getItem('hliq_oc_info_map')"))
+t('the phone card and the desktop row both read the one helper, with the position\'s mark', (CLI.match(/const facts = _ocFacts\(b\.coin, mark\)/g) || []).length === 2)
+t('the title is the whole market, wrapping instead of cut off', CLI.includes('-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${esc(facts.market || title)}'))
+t('the underlying against the target, how far, and time left, under the title', CLI.includes('function _ocFactsLine(f)') && CLI.includes("% ${_T('away', 'de distancia')}"))
+t('the details add the question, underlying, target or range, settle time, chance and other sides', CLI.includes('..._ocFactsRows(facts),') && /function _ocFactsRows\(f\)[\s\S]{0,1600}Implied chance[\s\S]{0,400}f\.others/.test(CLI))
+t('a side not loaded falls back to the mark, its complement for a two-sided market', CLI.includes('own != null && sides.length === 2 ? 1 - own : null'))
+
 const ss = fs.readFileSync('src/spotsell.js', 'utf8')
 t('the Sell sheet paints solid, even over a wallpaper (the opaque copy of its surface)', ss.includes('background:var(--panel-3-o, var(--panel-3, var(--bg)))'))
 

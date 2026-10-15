@@ -129,7 +129,8 @@ console.log(nl + '-- the desktop surfaces --')
 
   // The overview's outcome row puts the share count in .ov-pos-info, which the
   // `.ov-ord-row .mono` rule that covers the rest of that row never reaches.
-  t('the overview outcome share count is masked', main.includes('<i>${_prv(fmtSize(total))} shares</i>'))
+  // (The line now goes on to the market's implied chance, which is public — the count stays masked.)
+  t('the overview outcome share count is masked', main.includes('<i>${_prv(fmtSize(total))} shares${facts.mine != null'))
   // The overview spot row was already the reference implementation — keep it that way.
   t('the overview spot balance is still masked', main.includes('${_prv(fmtSize(h.total))}'))
   t('and its value', main.includes("${h.usd > 0 ? _prv('$' + fmtUSD(h.usd)) : '—'}"))
