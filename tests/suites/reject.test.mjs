@@ -31,7 +31,7 @@ const build = (perp, spot, behaviour = decline, mode = 'default') => {
     sendAsset: async (a) => { calls.push(['sendAsset', a]); return behaviour() },
   }
   const fn = new Function('ExchangeClient', 'HttpTransport', 'infoClient', 'infoTransport', `
-    const UNIFIED_SEND_GAS = 1
+    const UNIFIED_SEND_GAS = 0.05
     ${grab(src, 'export async function sendUsdcOnCore(').replace('export ', '')}
     return sendUsdcOnCore
   `)(function () { return client }, function () {}, {
@@ -117,7 +117,7 @@ t('a real failure is NOT mislabelled as a cancellation',
   // comes out of the same balance, so all of it is refused before the prompt.
   const all = build(0, 199.06, ok, 'unifiedAccount')
   const e3 = await all.fn({ from: F, destination: D, amount: 199.06, signer: {}, source: 'spot' }).then(() => null, e => e)
-  t('sending the whole unified balance is refused before signing, naming what can go', all.calls.length === 0 && /at most \$198\.06/.test(String(e3?.message)), e3?.message)
+  t('sending the whole unified balance is refused before signing, naming what can go', all.calls.length === 0 && /at most \$199\.01/.test(String(e3?.message)), e3?.message)
   const split = build(0, 246.25, ok, 'default')
   await split.fn({ from: F, destination: D, amount: 150, signer: {}, source: 'spot' })
   t('a split account still sends spot USDC with spotSend', split.calls[0]?.[0] === 'spotSend')

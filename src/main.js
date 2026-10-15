@@ -25576,7 +25576,7 @@ async function _sendLoadBalances() {
     _sendSpotFree = Math.max(0, _sendSpotFree - UNIFIED_SEND_GAS)
     set('spot', _sendSpotFree)
     const hint = document.getElementById('sendBal-spot')
-    if (hint) hint.textContent += ' ' + _T(`sendable ($${UNIFIED_SEND_GAS} gas kept)`, `enviable ($${UNIFIED_SEND_GAS} de gas reservado)`)
+    if (hint) hint.textContent += ' ' + _T(`sendable ($${UNIFIED_SEND_GAS.toFixed(2)} kept for gas)`, `enviable ($${UNIFIED_SEND_GAS.toFixed(2)} reservado para gas)`)
     document.getElementById('sendSrc-perp')?.remove()
     const sp = document.getElementById('sendSrc-spot')
     if (sp) { sp.onclick = null; sp.style.cursor = 'default'; sp.firstElementChild.textContent = _T('Unified account', 'Cuenta unificada') }

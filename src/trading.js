@@ -320,8 +320,9 @@ export async function approveBuilderFee(signer) {
 // a trader's USDC actually sits. If the perp send fails for a reason that is not a rejected
 // signature and spot could have covered it, we fall back rather than making the user work
 // out which pocket their money is in.
-/** USDC held back for the gas a unified account's sendAsset pays (Hyperliquid charges ~$1). */
-export const UNIFIED_SEND_GAS = 1
+/** USDC held back for the gas a unified account's sendAsset pays. Measured in the ledger: 0.0018
+ *  USDC on one send, 0.012 HYPE on another; 199.06 of 199.065 (half a cent left) was refused. */
+export const UNIFIED_SEND_GAS = 0.05
 
 export async function sendUsdcOnCore({ from, destination, amount, signer, source = 'auto' }) {
   const amt = Number(amount)
@@ -353,7 +354,7 @@ export async function sendUsdcOnCore({ from, destination, amount, signer, source
   // USDC balance for token transfer gas" — reported on a MAX send). Refused before the prompt.
   if (unified) {
     if (spotFree < amt) throw new Error(`Your unified account has $${spotFree.toFixed(2)} free, and this needs $${amt.toFixed(2)}.`)
-    if (spotFree - UNIFIED_SEND_GAS < amt) throw new Error(`Hyperliquid takes about $${UNIFIED_SEND_GAS} USDC gas from the balance for this transfer — send at most $${Math.max(0, Math.floor((spotFree - UNIFIED_SEND_GAS) * 100) / 100).toFixed(2)}.`)
+    if (spotFree - UNIFIED_SEND_GAS < amt) throw new Error(`Hyperliquid takes a small gas fee from the balance for this transfer — send at most $${Math.max(0, Math.floor((spotFree - UNIFIED_SEND_GAS) * 100) / 100).toFixed(2)}.`)
     const meta = await infoClient.spotMeta()
     const tok = (meta?.tokens ?? []).find(t => String(t.name).toUpperCase() === 'USDC')
     if (!tok) throw new Error('Could not resolve the USDC token on Hyperliquid')
