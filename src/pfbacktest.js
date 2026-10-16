@@ -466,9 +466,12 @@ export function stepOnDays(points, days, v0) {
  * trade closes on the strategy's other exits, or is held to the end).
  */
 export const PCT_EXITS = ['breakout', 'rsi', 'bollinger', 'macd', 'emacross']
+// The smallest order a strategy is sized down to: Hyperliquid's $10 minimum, with room for
+// the size to round down to the coin's step and still clear it.
+export const MIN_RUNG = 10.5
 export const BOT_PARAM_DEFAULTS = {
   takeProfitPct: 4, stopLossPct: 2,
-  gridRangePct: 10, gridLevels: 10,
+  gridRangePct: 10, gridLevels: 10, gridTrail: '1',
   dcaSoCount: 5, dcaStepPct: 1.5, dcaStepScale: 1.2, dcaVolScale: 1.5, dcaTpPct: 1.5, dcaSlPct: 0,
 }
 const OFF = 1e6                      // a percentage no candle reaches
@@ -480,15 +483,25 @@ export function botParams(strategy, params = {}, bal = 1000, side = 'long', both
   }
   delete p.tpOff; delete p.slOff
   if (strategy === 'grid') {
-    const n = Math.max(2, Math.round(params.gridLevels ?? BOT_PARAM_DEFAULTS.gridLevels))
-    // Ladders sized to the holding's share of the capital, not the Simulator's $50 a rung.
-    Object.assign(p, { gridLevels: n, gridRangePct: params.gridRangePct ?? BOT_PARAM_DEFAULTS.gridRangePct, gridUsdPerLevel: bal / n, gridShort: !both && side === 'short' })
+    const want = Math.max(2, Math.round(params.gridLevels ?? BOT_PARAM_DEFAULTS.gridLevels))
+    // Ladders sized to the holding's share of the capital, not the Simulator's $50 a rung. A
+    // share too small for that many $10 rungs (Hyperliquid's minimum) gets fewer levels over the
+    // same % range rather than a ladder that is refused every time — reported as adapted.
+    const n = Math.max(2, Math.min(want, Math.floor(bal / MIN_RUNG)))
+    if (n < want) p._adapted = true
+    Object.assign(p, { gridLevels: n, gridRangePct: params.gridRangePct ?? BOT_PARAM_DEFAULTS.gridRangePct, gridUsdPerLevel: bal / n, gridShort: !both && side === 'short',
+      gridTrail: (params.gridTrail ?? BOT_PARAM_DEFAULTS.gridTrail) !== '' && (params.gridTrail ?? BOT_PARAM_DEFAULTS.gridTrail) !== false })
   }
   if (strategy === 'dca') {
-    const n = Math.max(0, Math.round(params.dcaSoCount ?? BOT_PARAM_DEFAULTS.dcaSoCount))
     const vs = params.dcaVolScale ?? BOT_PARAM_DEFAULTS.dcaVolScale
-    // The base order and every safety order fit inside the holding's share when all are filled.
-    const units = 1 + Array.from({ length: n }, (_, j) => vs ** j).reduce((a, v) => a + v, 0)
+    const unitsOf = (k) => 1 + Array.from({ length: k }, (_, j) => vs ** j).reduce((a, v) => a + v, 0)
+    // The base order and every safety order fit inside the holding's share when all are filled;
+    // a share too small for that many $10 orders gets fewer safety orders.
+    const want = Math.max(0, Math.round(params.dcaSoCount ?? BOT_PARAM_DEFAULTS.dcaSoCount))
+    let n = want
+    while (n > 0 && bal / unitsOf(n) < MIN_RUNG) n--
+    if (n < want) p._adapted = true
+    const units = unitsOf(n)
     Object.assign(p, { dcaSide: side, dcaSoCount: n, dcaVolScale: vs, dcaBaseUsd: bal / units, dcaSoUsd: bal / units,
       dcaStepPct: params.dcaStepPct ?? BOT_PARAM_DEFAULTS.dcaStepPct, dcaStepScale: params.dcaStepScale ?? BOT_PARAM_DEFAULTS.dcaStepScale,
       dcaTpPct: params.dcaTpPct ?? BOT_PARAM_DEFAULTS.dcaTpPct, dcaSlPct: params.dcaSlPct ?? BOT_PARAM_DEFAULTS.dcaSlPct })
@@ -517,6 +530,7 @@ export function botRun(ohlc, items, days, strategy, opts = {}) {
   const curves = [], pnlBy = {}
   let trades = 0, won = 0, lost = 0, open = 0, refused = 0, fees = 0
   let fundPaid = 0, slipPaid = 0, fundDays = 0, fundEstDays = 0
+  let adapted = 0, tooSmall = 0, recentres = 0
   const start = days[0], end = days[days.length - 1] + DAY - 1
   const kind = strategyKind(strategy)
   const ladder = kind === 'grid' || kind === 'dca'
@@ -527,7 +541,12 @@ export function botRun(ohlc, items, days, strategy, opts = {}) {
     const fees0 = fees, fund0 = fundPaid, slip0 = slipPaid
     const rows = (ohlc[k] ?? []).filter(c => c.t <= end && (!ladder || c.t >= start))
     const lev = levBy && levBy[k] > 0 ? levBy[k] : leverage
-    const r = runBacktest(rows, simParams(strategy, params, { bal, side, both, lev, margin, feeBps }))
+    const sp = simParams(strategy, params, { bal, side, both, lev, margin, feeBps })
+    const r = runBacktest(rows, sp)
+    if (sp._adapted) adapted++
+    recentres += r.grid?.recentres ?? 0
+    // Refused every time and never traded: the share cannot buy even the smallest order.
+    if (ladder && !(r.trades?.length) && ((r.refused ?? r.grid?.refused ?? 0) > 0)) tooSmall++
     // Closes by time, for marking an open position at any moment.
     const cs = rows.map(c => [c.t, c.c]).sort((a, b) => a[0] - b[0])
     const closeAt = (T) => { let lo = 0, hi = cs.length - 1, v = null; while (lo <= hi) { const m = (lo + hi) >> 1; if (cs[m][0] <= T) { v = cs[m][1]; lo = m + 1 } else hi = m - 1 } return v }
@@ -616,7 +635,7 @@ export function botRun(ohlc, items, days, strategy, opts = {}) {
     pnlBy[k] = (curves[curves.length - 1].at(-1) ?? bal) - bal + (fees - fees0) + (fundPaid - fund0) + (slipPaid - slip0)
   }
   const equity = days.map((_, i) => curves.reduce((a, c) => a + c[i], 0))
-  return { id: 'bot:' + strategy, equity, fees, feesEstimated: true, trades, won, lost, open, refused, rebalances: null, liquidated: null, pnlBy,
+  return { id: 'bot:' + strategy, equity, fees, feesEstimated: true, trades, won, lost, open, refused, rebalances: null, liquidated: null, pnlBy, adapted, tooSmall, recentres,
     funding: funding ? fundPaid : null, slippage: book ? slipPaid : null, fundDays, fundEstDays, ...metrics(equity, capital) }
 }
 

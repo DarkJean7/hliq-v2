@@ -148,7 +148,7 @@ console.log(nl + '-- trading strategies: the bot copies the backtest (src/pfsign
   // The same engine with the same settings: the bot and the page cannot test two strategies.
   const pfb = fs.readFileSync(new URL('../../src/pfbacktest.js', import.meta.url), 'utf8')
   const sig = fs.readFileSync(new URL('../../src/pfsignal.js', import.meta.url), 'utf8')
-  t('the backtest and the bot build the engine\'s settings with one function (simParams)', pfb.includes('runBacktest(rows, simParams(strategy, params,') && sig.includes('runBacktest(candles, sp)') && sig.includes('simParams(strategy, params, ctx)'))
+  t('the backtest and the bot build the engine\'s settings with one function (simParams)', pfb.includes('const sp = simParams(strategy, params,') && pfb.includes('runBacktest(rows, sp)') && sig.includes('runBacktest(candles, sp)') && sig.includes('simParams(strategy, params, ctx)'))
   t('grid and DCA (ladders) are not offered as a single-trade copy', !S.SIGNAL_STRATEGIES.includes('grid') && !S.SIGNAL_STRATEGIES.includes('dca'))
   const bot = fs.readFileSync(new URL('../../strategies/portfolio.js', import.meta.url), 'utf8')
   t('stops and targets rest on the exchange, reduce-only', bot.includes('r: true, t: { trigger: { isMarket: true'))

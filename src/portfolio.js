@@ -796,7 +796,9 @@ const BOT_HINTS = {
 const BOT_CHOICES = {
   bollinger: [{ key: 'bbMode', label: 'Mode', type: 'select', options: [['revert', 'Fade the band'], ['breakout', 'Follow the break']],
     hint: 'Fade bets a close outside a band snaps back to the middle; follow bets it is the start of a move.' }],
-  grid: [{ key: 'gridGeometric', label: 'Spacing', type: 'select', options: [['', 'Even $ gaps'], ['1', 'Even % gaps']],
+  grid: [{ key: 'gridTrail', label: 'Follow the price', type: 'select', options: [['1', 'Up, once sold out'], ['', 'Stay where it started']],
+    hint: 'When the price rallies out of the top of the range and the grid has sold everything, move the range up to centre on the price. It never follows a fall.' },
+    { key: 'gridGeometric', label: 'Spacing', type: 'select', options: [['', 'Even $ gaps'], ['1', 'Even % gaps']],
     hint: 'Even dollar gaps between rungs, or even percentage gaps (wider rungs higher up).' }],
 }
 const BOT_DESC = { ...Object.fromEntries(BT_STRATEGIES.map(([id, , d]) => [id, d.replace(/ -- /g, ' — ')])), gridladder: LADDER_DESC }
@@ -966,7 +968,8 @@ async function run() {
     monthDay: Number(ap('monthDay')), weekDay: Number(ap('weekDay')), dcaEvery: Number(ap('dcaEvery')), dcaUpfront: Number(ap('dcaUpfront')) / 100, trendBuffer: Number(ap('trendBuffer')) / 100, listing: S.listingWait ? 'wait' : 'join',
     dcaMode: Number(ap('dcaMode')), dcaDrop: Number(ap('dcaDrop')) / 100, dcaBuys: Number(ap('dcaBuys')), volDays: Number(ap('volDays')), momDays: Number(ap('momDays')), momTop: Number(ap('momTop')), volTarget: Number(ap('volTarget')) / 100,
     // Leverage per market, capped at what Hyperliquid allows there; the margin mode.
-    levBy: Object.fromEntries(items.map(i => [i.key, levFor(i.key)])), margin: S.margin === 'isolated' ? 'isolated' : 'cross',
+    levBy: Object.fromEntries(items.map(i => [i.key, levFor(i.key)])),
+    szBy: Object.fromEntries(items.map(i => [i.key, rowById.get(i.key)?.szDec ?? null])), margin: S.margin === 'isolated' ? 'isolated' : 'cross',
     // Each market's maintenance margin, 1/(2 × its max leverage), as Hyperliquid sets it.
     mmr: Object.fromEntries(items.map(i => [i.key, rowById.get(i.key)?.maxLev > 0 ? 1 / (2 * rowById.get(i.key).maxLev) : undefined]).filter(([, v]) => v)) }
   const costs = await costsFor(items.map(i => i.key))
@@ -1016,7 +1019,7 @@ async function run() {
       ohlc[i.key] = ohlc[i.key].map(c => { const v = f.get(dayOf(c.t)); if (v != null) last = v; return { ...c, o: c.o * last, h: c.h * last, l: c.l * last, c: c.c * last } })
     }
     for (const id of S.bots) {
-      const o = { capital: opts.capital, leverage: opts.leverage, feeBps: opts.feeBps, both: !!S.both, funding: opts.funding, book: opts.book, levBy: opts.levBy, margin: opts.margin, params: S.botParams?.[id] ?? {} }
+      const o = { capital: opts.capital, leverage: opts.leverage, feeBps: opts.feeBps, both: !!S.both, funding: opts.funding, book: opts.book, levBy: opts.levBy, szBy: opts.szBy, margin: opts.margin, params: S.botParams?.[id] ?? {} }
       const run = id === 'gridladder'
         ? await ladderRun(ohlc, items, r.days, { ...o, progress: (k, n) => setStatus(`simulating the grid ladder ${k}/${n}…`) })
         : botRun(ohlc, items, r.days, id, o)
@@ -1142,6 +1145,17 @@ function renderResults() {
   if (L.cut) notes.push(`The trading strategies use the most recent 5,000 ${esc(S.tf)} candles, which start after the window does. Choose 4-hour or daily candles to cover all of it.`)
   const liq = all.filter(x => x.liquidated)
   if (liq.length) notes.push(`Liquidated: ${liq.map(x => `${esc(x.label)} on ${dLabel(x.liquidated)}`).join('; ')}.`)
+  // Grid, DCA and the ladder size their orders from each holding's share: say when that share
+  // made them adapt, and when one was too small to trade at all — "nothing happened" is a result
+  // a reader should be able to explain from the page.
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
+  const adapted = L.runs.filter(x => x.adapted)
+  if (adapted.length) notes.push(`Sized to the capital: ${adapted.map(x => `${esc(x.label)} (${plural(x.adapted, 'holding')})`).join('; ')} ran with fewer levels or orders, so each order clears Hyperliquid's $10 minimum.`)
+  const small = L.runs.filter(x => x.tooSmall)
+  if (small.length) notes.push(`Too small to trade: ${small.map(x => `${esc(x.label)} (${plural(x.tooSmall, 'holding')})`).join('; ')} stayed in cash — a share that cannot fund even the smallest grid. Raise the capital or hold fewer markets.`)
+  for (const x of L.runs.filter(x => x.failed?.length)) notes.push(`${esc(x.label)} could not be simulated on ${x.failed.map(f => esc(f)).join('; ')} — counted as cash.`)
+  const moved = L.runs.filter(x => x.recentres)
+  if (moved.length) notes.push(`Followed the price up: ${moved.map(x => `${esc(x.label)} ${plural(x.recentres, 'time')}`).join('; ')}.`)
   const openN = L.runs.reduce((a, x) => a + (x.open ?? 0), 0)
   if (openN) notes.push(`${openN} trade${openN === 1 ? ' was' : 's were'} still open when the window ended and ${openN === 1 ? 'is' : 'are'} not counted.`)
 

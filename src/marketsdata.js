@@ -74,6 +74,7 @@ export function perpRows(meta, ctxs, dex = null, dexLabel = null) {
       mcap:     null,
       funding1h: fund != null ? fund * 100 : null,
       maxLev:   num(u.maxLeverage),
+      szDec:    num(u.szDecimals),               // the order size step (a backtest rounds to it)
       // Half the spread at a standard order size, from Hyperliquid's impact prices — what a
       // backtest charges as the first part of slippage (src/pffunding.js).
       spreadBps: halfSpreadBps(c.impactPxs, num(c.midPx) ?? price),
@@ -124,6 +125,7 @@ export function spotRows(meta, ctxs) {
       mcap:     cap != null && cap <= MCAP_CEIL ? cap : null,
       funding1h: null,
       maxLev:   null,
+      szDec:    num(base.szDecimals),
       pairs:    1,
       protocol,
     }

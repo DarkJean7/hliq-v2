@@ -18,7 +18,7 @@ import { validateBot, DEFAULT_BOT } from './gridladder.js'
 import { normalizeWeights, metrics, DAY } from './pfbacktest.js'
 import { rateOn } from './pffunding.js'
 
-export const LADDER_DEFAULTS = { ladderBots: 5, ladderWidthPct: 25, ladderStepPct: 12.5, ladderLevels: 10 }
+export const LADDER_DEFAULTS = { ladderBots: 5, ladderWidthPct: 25, ladderStepPct: 12.5, ladderLevels: 10, ladderTrail: '1' }
 
 /** The settings card for it on /portfolios. */
 export const LADDER_FIELDS = [
@@ -26,6 +26,8 @@ export const LADDER_FIELDS = [
   { key: 'ladderWidthPct', label: 'Each range', unit: '%', step: '0.5', hint: 'How wide each bot\'s range is, as a share of the first price.' },
   { key: 'ladderStepPct', label: 'Gap between ranges', unit: '%', step: '0.5', hint: 'How far each bot\'s range sits above the one below it. Half the width overlaps them, as in the default ladder.' },
   { key: 'ladderLevels', label: 'Levels per bot', step: '1', hint: 'Price levels in each bot\'s range; a bot trades one fewer pairs than this.' },
+  { key: 'ladderTrail', label: 'Follow the price', type: 'select', options: [['1', 'Up, once sold out'], ['', 'Stay where it started']],
+    hint: 'When the price rallies above the whole ladder and every bot has sold, move the ladder up to centre on the price. It never follows a fall — there it holds what it bought.' },
 ]
 export const LADDER_DESC = 'Several long-only grids stacked around the price, each in its own account — the Grid Ladder bots. ' +
   'Each buys at one level and sells one level up, post-only, and sells only after a level fully fills. ' +
@@ -33,7 +35,7 @@ export const LADDER_DESC = 'Several long-only grids stacked around the price, ea
 
 /** The ladder for one holding: `n` ranges stacked around `px`. */
 export function ladderAround(px, p = {}) {
-  const n = Math.max(1, Math.min(10, Math.round(p.ladderBots ?? LADDER_DEFAULTS.ladderBots)))
+  const n = Math.max(1, Math.min(10, Math.round(p.bots ?? p.ladderBots ?? LADDER_DEFAULTS.ladderBots)))
   const w = (p.ladderWidthPct ?? LADDER_DEFAULTS.ladderWidthPct) / 100
   const s = (p.ladderStepPct ?? LADDER_DEFAULTS.ladderStepPct) / 100
   const r5 = (v) => +v.toPrecision(5)
@@ -43,19 +45,26 @@ export function ladderAround(px, p = {}) {
   }).filter(b => b.low > 0 && b.high > b.low)
 }
 
-/** Size decimals for a market we have no meta for: about four significant figures of size at this price. */
-const szDecOf = (px) => Math.max(0, Math.min(5, Math.round(Math.log10(10_000 / Math.max(1e-9, px)))))
+/**
+ * Size decimals when the market's own are not known: Hyperliquid sets them so one size step is
+ * worth roughly $0.1–$2 (BTC 5 at $100k, ETH 4, HYPE 2 at $50, DOGE 0) — about the digits of the
+ * price. The old guess here went the other way and gave BTC a 1-BTC step, so no order could round
+ * to $10 and every BTC ladder sat in cash.
+ */
+export const szDecOf = (px) => Math.max(0, Math.min(5, Math.ceil(Math.log10(Math.max(1e-9, px)))))
 
 /**
  * Same shape as pfbacktest.js botRun: a daily equity curve summed over the holdings, fees,
  * funding and the per-holding PnL. `progress(k, n)` is called as each holding finishes.
  */
 export async function ladderRun(ohlc, items, days, opts = {}) {
-  const { capital = 10_000, leverage = 1, feeBps = 4.5, both = false, funding = null, levBy = null, params = {}, progress = null } = opts
+  const { capital = 10_000, leverage = 1, feeBps = 4.5, both = false, funding = null, levBy = null, szBy = null, params = {}, progress = null } = opts
   const w = normalizeWeights(items)
   const start = days[0], end = days[days.length - 1] + DAY - 1
   const curves = [], pnlBy = {}
-  let fees = 0, fundPaid = 0, cycles = 0, refused = 0, liqAt = null, k0 = 0
+  let fees = 0, fundPaid = 0, cycles = 0, refused = 0, liqAt = null, k0 = 0, adapted = 0, recentres = 0
+  const failed = []
+  let tooSmall = 0
   const keys = Object.keys(w)
   for (const k of keys) {
     const bal = capital * Math.abs(w[k])
@@ -65,23 +74,42 @@ export async function ladderRun(ohlc, items, days, opts = {}) {
     if ((w[k] < 0 && !both) || rows.length < 2 || !(bal > 0)) { if (w[k] < 0 && !both) refused++; curves.push(flat); pnlBy[k] = 0; continue }
     const lev = Math.max(1, levBy && levBy[k] > 0 ? levBy[k] : leverage)
     const px0 = +rows[0].o || +rows[0].c
-    const szDecimals = szDecOf(px0)
-    const ranges = ladderAround(px0, params)
-    const levels = Math.max(2, Math.min(100, Math.round(params.ladderLevels ?? LADDER_DEFAULTS.ladderLevels)))
+    const szDecimals = Number.isInteger(szBy?.[k]) ? szBy[k] : szDecOf(px0)
     // Every bot gets an equal share; a level's dollars are what fills its range at this leverage.
-    const usd = (bal / ranges.length) * lev / (levels - 1)
-    const bots = ranges.map(r => ({ ...DEFAULT_BOT, ...r, levels, usd, leverage: lev, margin: 'isolated', killPrice: 0 }))
-    if (bots.some(b => validateBot(b, { szDecimals, maxLeverage: Math.max(lev, 50) }).length)) { refused++; curves.push(flat); pnlBy[k] = 0; continue }
+    // A share too small for Hyperliquid's $10 minimum on every level ADAPTS rather than sitting
+    // out: fewer BOTS first, keeping each bot's levels as dense as asked — the gap between levels
+    // is what lets a grid complete cycles, and it depends only on levels per bot. Only after a
+    // single bot cannot afford them does it thin the levels (down to 3). Ranges stay in % of the
+    // price. A share that cannot fund one 3-level bot stays in cash.
+    const wantBots = Math.max(1, Math.min(10, Math.round(params.ladderBots ?? LADDER_DEFAULTS.ladderBots)))
+    const wantLv = Math.max(2, Math.min(100, Math.round(params.ladderLevels ?? LADDER_DEFAULTS.ladderLevels)))
+    let bots = null
+    for (let lv = wantLv; lv >= Math.min(3, wantLv) && !bots; lv--) {
+      for (let nb = wantBots; nb >= 1 && !bots; nb--) {
+        const usd = (bal / nb) * lev / (lv - 1)
+        const set = ladderAround(px0, { ...params, bots: nb }).map(r => ({ ...DEFAULT_BOT, ...r, levels: lv, usd, leverage: lev, margin: 'isolated', killPrice: 0 }))
+        if (set.every(b => !validateBot(b, { szDecimals, maxLeverage: Math.max(lev, 50) }).length)) bots = set
+      }
+    }
+    if (!bots) { refused++; tooSmall++; curves.push(flat); pnlBy[k] = 0; continue }
+    if (bots.length < wantBots || bots[0].levels < wantLv) adapted++
+    const trail = (params.ladderTrail ?? LADDER_DEFAULTS.ladderTrail) !== ''
     // The page's funding is a daily sum of the hourly rates; the ladder charges it by the hour.
     const hourly = []
     if (funding?.[k]) for (let d = start; d <= end; d += DAY) { const [rate] = rateOn(funding[k], d); if (rate) for (let h = 0; h < 24; h++) hourly.push({ time: d + h * 3_600_000, fundingRate: rate / 24 }) }
-    const r = await backtestLadder({
+    let r
+    try {
+      r = await backtestLadder({
       candles: rows.map(c => ({ t: c.t, o: +c.o, h: +c.h, l: +c.l, c: +c.c })), funding: hourly, bots,
       // Maintenance for the liquidation check: Hyperliquid's 1 / (2 × max leverage), taken here at
       // the larger of the leverage used and 10× (the market's own maximum is not in this data).
-      szDecimals, maxLeverage: Math.max(lev, 10), cashMult: 1, stepPct: 0.006,
+      szDecimals, maxLeverage: Math.max(lev, 10), cashMult: 1, stepPct: 0.006, trail,
       feeRates: { maker: Math.min(feeBps, 1.5) / 1e4, taker: feeBps / 1e4 },
-    })
+      })
+    } catch (e) {
+      // One holding's ladder failing must not take the whole run with it: it is counted as cash.
+      failed.push(`${k}: ${e?.message ?? e}`); refused++; curves.push(flat); pnlBy[k] = 0; continue
+    }
     const scale = r.capital > 0 ? bal / r.capital : 1
     let j = 0, v = bal
     const eq = days.map(d => {
@@ -89,7 +117,7 @@ export async function ladderRun(ohlc, items, days, opts = {}) {
       return Math.max(0, v)
     })
     curves.push(eq)
-    fees += r.fees * scale; fundPaid += r.funding * scale; cycles += r.cycles
+    fees += r.fees * scale; fundPaid += r.funding * scale; cycles += r.cycles; recentres += r.recentres
     for (const b of r.bots) if (b.liquidated && (liqAt == null || b.liquidated.t < liqAt)) liqAt = b.liquidated.t
     pnlBy[k] = eq.at(-1) - bal + r.fees * scale + r.funding * scale
   }
@@ -99,7 +127,7 @@ export async function ladderRun(ohlc, items, days, opts = {}) {
     // 100% and mean nothing: the Trades column says cycles instead. What a ladder still holds at
     // the end is marked to market in the curve, so nothing is "open and not counted".
     id: 'bot:gridladder', equity, fees, feesEstimated: false, trades: cycles, won: null, lost: null, open: 0, refused,
-    rebalances: null, liquidated: liqAt, pnlBy, cycles,
+    rebalances: null, liquidated: liqAt, pnlBy, cycles, adapted, tooSmall, recentres, failed,
     funding: funding ? fundPaid : null, slippage: null, fundDays: 0, fundEstDays: 0, ...metrics(equity, capital),
   }
 }

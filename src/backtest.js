@@ -911,9 +911,15 @@ export function gridLevels(lower, upper, n, geometric) {
  */
 export function runGridBacktest(rows, p) {
   const ref = rows[0]?.c ?? 0
-  const lower = p.gridLower > 0 ? p.gridLower : ref * (1 - p.gridRangePct / 100)
-  const upper = p.gridUpper > 0 ? p.gridUpper : ref * (1 + p.gridRangePct / 100)
-  const prices = gridLevels(lower, upper, p.gridLevels, p.gridGeometric)
+  let lower = p.gridLower > 0 ? p.gridLower : ref * (1 - p.gridRangePct / 100)
+  let upper = p.gridUpper > 0 ? p.gridUpper : ref * (1 + p.gridRangePct / 100)
+  let prices = gridLevels(lower, upper, p.gridLevels, p.gridGeometric)
+  // gridTrail: a range set in % FOLLOWS the price out of the top (a short grid: the bottom) once
+  // everything it bought is sold — it is all cash then, so moving it abandons nothing. A grid
+  // left behind by a trend otherwise never trades again. It never follows a fall: there it holds
+  // its inventory, as a grid does. A range given in dollars stays where it was put.
+  const trails = !!p.gridTrail && !(p.gridLower > 0) && !(p.gridUpper > 0)
+  let recentres = 0
   const short = !!p.gridShort
   const side = short ? -1 : 1
   // Every grid fill is a resting order, so it pays maker. A liquidation is the exception.
@@ -1005,6 +1011,11 @@ export function runGridBacktest(rows, p) {
         }
       }
     }
+    if (trails && slots.every(x => x == null) && (short ? row.c < lower : row.c > upper)) {
+      lower = row.c * (1 - p.gridRangePct / 100); upper = row.c * (1 + p.gridRangePct / 100)
+      prices = gridLevels(lower, upper, p.gridLevels, p.gridGeometric)
+      recentres++
+    }
     const { q, margin } = inv()
     if (q > maxInventory) maxInventory = q
     if (q * row.c > maxNotional) maxNotional = q * row.c
@@ -1040,7 +1051,7 @@ export function runGridBacktest(rows, p) {
       maxInventory, maxNotional, maxMargin, refused, liquidations, closestLiq,
       liqNow: liqOf(), lev,
       inRangePct: rows.length ? (inRange / rows.length) * 100 : null,
-      openSlots: open.length,
+      openSlots: open.length, recentres,
     },
     trades, balance, curve,
     peak: Math.max(mtmPeak, balance),

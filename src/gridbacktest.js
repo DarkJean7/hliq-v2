@@ -14,7 +14,19 @@
  */
 import { createSimExchange } from './gridsim.js'
 import { createRunner, memoryStore } from './gridrunner.js'
-import { botCapital, inventoryOf, fitLadder } from './gridladder.js'
+import { botCapital, inventoryOf, fitLadder, levelsOf, MIN_NOTIONAL } from './gridladder.js'
+
+/**
+ * The smallest dollars per level that still clears the $10 minimum at every level of this range
+ * once the size is rounded DOWN to szDecimals — a range moved up can need slightly more than it
+ * started with, because the rounding step is worth more at a higher price.
+ */
+export function minUsdPerLevel(cfg, szDecimals) {
+  const f = 10 ** szDecimals
+  let need = 0
+  for (const px of levelsOf(+cfg.low, +cfg.high, +cfg.levels, szDecimals).slice(0, -1)) need = Math.max(need, (Math.ceil((MIN_NOTIONAL / px) * f) / f) * px)
+  return need * 1.0001
+}
 
 export { fitLadder }
 
@@ -41,20 +53,31 @@ function fundingAt(funding, t, idx) {
  * Run the ladder over `candles` ({t, o, h, l, c}, oldest first) with `funding`
  * ({time, fundingRate}, hourly). `bots` are ladder configs. Returns per-bot and total results.
  */
-export async function backtestLadder({ candles, funding = [], bots, szDecimals = 2, maxLeverage = 10, cashMult = 1.25, stepPct = 0.004, feeRates = null }) {
+export async function backtestLadder({ candles, funding = [], bots, szDecimals = 2, maxLeverage = 10, cashMult = 1.25, stepPct = 0.004, feeRates = null, trail = false }) {
   if (!candles.length) throw new Error('no candles')
   const start = +candles[0].o, t0 = +candles[0].t
   const rigs = []
+  let seq = 0
+  // A runner for this rig's account. Re-centring gives the same account a new runner, as the
+  // live bot would start a new run after its grid changed.
+  async function attach(x, cfg) {
+    let seed = 1000 + cfg.id + 97 * seq++
+    const r = createRunner({ key: 'bt' + cfg.id, botId: cfg.id, cfg, ex: x.sim, store: memoryStore(), now: () => x.sim.time, rand: () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648) })
+    x.offs = [x.sim.onFills(f => r.onFills(f)), x.sim.onOrderUpdates(u => r.onOrderUpdates(u))]
+    x.r = r; x.cfg = cfg
+    await r.start(); await r.idle()
+  }
   for (const cfg of bots) {
     const cap = botCapital(cfg, szDecimals)
     const cash = (cap.notional / Math.max(1, cfg.leverage)) * cashMult
     const sim = createSimExchange({ szDecimals, maxLeverage, mid: start, cash, time: t0, ...(feeRates ? { makerFee: feeRates.maker, takerFee: feeRates.taker } : {}) })
-    let seed = 1000 + cfg.id
-    const r = createRunner({ key: 'bt' + cfg.id, botId: cfg.id, cfg, ex: sim, store: memoryStore(), now: () => sim.time, rand: () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648) })
-    sim.onFills(f => r.onFills(f)); sim.onOrderUpdates(u => r.onOrderUpdates(u))
-    await r.start(); await r.idle()
-    rigs.push({ cfg, sim, r, cash, liquidated: null })
+    const x = { sim, cash, liquidated: null, done: { realized: 0, cycles: 0 } }
+    await attach(x, cfg)
+    rigs.push(x)
   }
+  let recentres = 0
+  const top = () => Math.max(...rigs.map(x => +x.cfg.high))
+  const mid0 = () => (Math.min(...rigs.map(x => +x.cfg.low)) + top()) / 2
   const capital = rigs.reduce((s, x) => s + x.cash, 0)
   const curve = []
   let peak = -Infinity, maxDD = 0
@@ -82,6 +105,22 @@ export async function backtestLadder({ candles, funding = [], bots, szDecimals =
         }
       }
     }
+    // trail: the price has closed above the whole ladder and every bot has sold everything — it is
+    // all cash, so the ladder moves up to centre on the price, keeping its shape. Without this a
+    // ladder left behind by a rally never trades again. It never follows a fall (it holds there).
+    if (trail && +c.c > top() && rigs.every(x => x.liquidated || (inventoryOf(x.r.state).sz < 1e-9 && Math.abs(x.sim.pos) < 1e-9))) {
+      const k = +c.c / mid0(), r5 = (v) => +(v * k).toPrecision(5)
+      for (const x of rigs) {
+        if (x.liquidated) continue
+        await x.r.stop('cancel'); await x.r.idle()
+        x.done.realized += x.r.state.realized; x.done.cycles += x.r.state.cycles
+        x.offs.forEach(o => o())
+        const moved = { ...x.cfg, low: r5(+x.cfg.low), high: r5(+x.cfg.high) }
+        moved.usd = Math.max(+x.cfg.usd, minUsdPerLevel(moved, szDecimals))
+        await attach(x, moved)
+      }
+      recentres++
+    }
     let eq = 0
     for (const x of rigs) eq += await x.sim.accountValue()
     curve.push({ t, eq, px: +c.c })
@@ -95,7 +134,7 @@ export async function backtestLadder({ candles, funding = [], bots, szDecimals =
     const eq = await x.sim.accountValue()
     per.push({
       id: x.cfg.id, range: `${x.cfg.low}–${x.cfg.high}`, cash: x.cash, equity: eq, pnl: eq - x.cash,
-      realized: st.realized + (st.lifetime?.realized ?? 0), cycles: st.cycles + (st.lifetime?.cycles ?? 0),
+      realized: st.realized + (st.lifetime?.realized ?? 0) + x.done.realized, cycles: st.cycles + (st.lifetime?.cycles ?? 0) + x.done.cycles,
       fees: x.sim.feesPaid, funding: x.sim.fundingPaid, inventory: inventoryOf(st).sz, unrealized: s.unrealized,
       liquidated: x.liquidated,
     })
@@ -108,7 +147,7 @@ export async function backtestLadder({ candles, funding = [], bots, szDecimals =
     hold: { pnl: capital * (end / start - 1), ret: end / start - 1 },
     realized: per.reduce((s, b) => s + b.realized, 0), cycles: per.reduce((s, b) => s + b.cycles, 0),
     fees: per.reduce((s, b) => s + b.fees, 0), funding: per.reduce((s, b) => s + b.funding, 0),
-    liquidations: per.filter(b => b.liquidated).length,
+    liquidations: per.filter(b => b.liquidated).length, recentres,
     bots: per, curve,
   }
 }
