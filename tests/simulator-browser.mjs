@@ -79,11 +79,13 @@ async function open(device, label) {
   const ctx = await browser.newContext(device)
   try { await ctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
   let candleCalls = 0
+  const candleReqs = []          // every candle request, so a check can ask WHICH were fetched
   await ctx.route(HL_HOST, (route) => {
     let b = {}
     try { b = JSON.parse(route.request().postData() || '{}') } catch {}
     if (b.type === 'candleSnapshot') {
       candleCalls++
+      candleReqs.push({ coin: b.req?.coin, iv: b.req?.interval })
       return route.fulfill({ status: 200, contentType: 'application/json', json: candles(b.req?.coin, b.req?.interval) })
     }
     // A builder dex answers allMids with its own prefixed keys -- the shape the picker has to
@@ -111,7 +113,7 @@ async function open(device, label) {
   await waitFor(p, 'boot', () => !!window.loadDashboard)
   await p.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, ADDR)
   await waitFor(p, 'the account', () => document.getElementById('dashboard')?.classList.contains('active'))
-  return { browser, p, errs, calls: () => candleCalls, label }
+  return { browser, p, errs, calls: () => candleCalls, reqs: () => candleReqs.slice(), label }
 }
 
 const shot = async (p, name) => { if (SHOTS) await p.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: false }) }
@@ -119,7 +121,7 @@ const shot = async (p, name) => { if (SHOTS) await p.screenshot({ path: `${SHOTS
 // ── desktop ──────────────────────────────────────────────────────────────────
 console.log(NL + '-- desktop: the page --')
 {
-  const { browser, p, errs, calls } = await open({ viewport: { width: 1600, height: 1000 } }, 'desktop')
+  const { browser, p, errs, calls, reqs } = await open({ viewport: { width: 1600, height: 1000 } }, 'desktop')
   await p.evaluate(() => window.switchTab('simulator', null))
   const there = await waitFor(p, 'the simulator', () => !!document.querySelector('#deskSim .sim-root'))
   ok('it opens', there)
@@ -276,7 +278,8 @@ console.log(NL + '-- desktop: the page --')
     document.getElementById('simStale')?.style.display === '' && document.activeElement?.id === 'sim_rsiLen'))
 
   console.log(NL + '-- desktop: compare every strategy --')
-  const before = calls()
+  const before = reqs().length
+  const runIv = await p.evaluate(() => document.querySelector('#deskSim .sim-seg button.on')?.textContent?.trim())
   await p.click('#deskSim .sim-runbar .sim-btn:has-text("Compare all")')
   const cmp = await waitFor(p, 'the board', () => document.querySelectorAll('#deskSim .sim-cmp-row').length > 0, null, 60000)
   ok('the board appears', cmp)
@@ -286,7 +289,11 @@ console.log(NL + '-- desktop: the page --')
   ok('every strategy that can run on these markets is ranked (the Grid Ladder too)', rows === 12, rows)
   ok('tokyo says why it is missing', await p.evaluate(() => /not in its table|none of these/.test(document.querySelector('#deskSim .sim-cmp').textContent)))
   ok('buy and hold is the bar to beat', await p.evaluate(() => !!document.querySelector('#deskSim .sim-cmp-bench')))
-  ok('and the candles were not fetched again', calls() === before, [before, calls()])
+  // The markets the run used, at the run's interval, are not downloaded again. Any candle request
+  // counted here used to fail it — including the app's own chart refreshing in the background,
+  // which a slower comparison (the Grid Ladder runs the live bot's engine) gave time to land on CI.
+  const again = reqs().slice(before).filter(q => ['BTC', 'ETH'].includes(q.coin) && q.iv === runIv)
+  ok('and the candles were not fetched again', /^\d+[mhd]$/.test(runIv ?? '') && again.length === 0, { again, all: reqs().slice(before), runIv })
   await p.click('#deskSim .sim-chip:text-is("Sharpe")')
   await shot(p, 'desk-compare')
   const first = await p.evaluate(() => document.querySelector('#deskSim .sim-cmp-row .sim-cmp-n b')?.textContent.trim())
