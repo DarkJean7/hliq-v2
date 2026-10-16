@@ -360,7 +360,9 @@ console.log(NL + '-- and All Accounts has all three too --')
   if (combined) {
     const labels = await q.$$eval('[data-cal-chart="mobMaCalRoot"][data-scope="month"] .cal-note-head', () => [])
     await q.click('[data-cal-chart="mobMaCalRoot"][data-scope="month"] .cal-note-head')
-    await q.waitForTimeout(800)
+    // A condition, not a sleep: an 800 ms wait here failed on a slower CI runner with the tabs
+    // not drawn yet (2026-10-16), though nothing about the calendar had changed.
+    await waitFor(q, 'the combined chart tabs', () => document.querySelectorAll('[data-cal-chart="mobMaCalRoot"][data-scope="month"] .chart-tab').length >= 3, null, 15000)
     const tabs = await q.$$eval('[data-cal-chart="mobMaCalRoot"][data-scope="month"] .chart-tab', els => els.map(e => e.textContent.trim()))
     ok('with all three tabs, not just Realized', tabs.join() === 'Value,Accum.,Realized', tabs)
     await q.click('[data-cal-chart="mobMaCalRoot"][data-scope="month"] .chart-tab:text-is("Value")')
