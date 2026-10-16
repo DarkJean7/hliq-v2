@@ -204,6 +204,12 @@ for (const [k] of BT_STRATEGIES) {
   const sumTrades = lr.trades.reduce((a, x) => a + x.delta, 0)
   t('Grid Ladder: its trades plus what it still holds are exactly the final balance', Math.abs(lr.startBalance + sumTrades + lr.grid.unrealized - lr.balance) < 1e-6, [lr.startBalance, sumTrades, lr.grid.unrealized, lr.balance])
   t('it reports as a grid the Simulator already draws: cycles, range, no win rate', lr.grid.ladder && lr.grid.cycles === lr.trades.filter(x => !x.liq).length && lr.grid.lower < lr.grid.upper && lr.winRate === null && lr.curve.length === wave.length)
+  // Asked: "how i change the size of the ladder by using leverage" — leverage only freed margin.
+  const at = (lev, size) => runLadderSim(wave, { ...BT_DEFAULTS, strategy: 'gridladder', startBalance: 1000, maxLev: 20, leverage: lev, ladderSize: size })
+  const [same1, same5, up5] = [await at(1, ''), await at(5, ''), await at(5, 'up')]
+  t('Same size: leverage changes the margin posted, not the trades', same5.grid.cycles === same1.grid.cycles && same5.grid.maxMargin < same1.grid.maxMargin * 0.3, [same1.grid.cycles, same5.grid.cycles, same1.grid.maxMargin, same5.grid.maxMargin])
+  t('Bigger ladder: at 5× it trades about five times the size', Math.abs(up5.grid.realized / same5.grid.realized - 5) < 1, [up5.grid.realized, same5.grid.realized])
+  t('and its liquidation distance is reported, not "never at risk"', up5.grid.closestLiq != null, up5.grid.closestLiq)
   const tiny = await runLadderSim(wave, { ...BT_DEFAULTS, strategy: 'gridladder', startBalance: 15, maxLev: 20 }).then(() => null, e => e)
   t('a balance that cannot fund one 3-level grid at $10 says so, rather than showing zero', tiny instanceof LadderTooSmall && /\$10 minimum/.test(tiny.message), tiny?.message)
 }

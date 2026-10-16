@@ -18,7 +18,7 @@ import { validateBot, DEFAULT_BOT } from './gridladder.js'
 import { normalizeWeights, metrics, DAY } from './pfbacktest.js'
 import { rateOn } from './pffunding.js'
 
-export const LADDER_DEFAULTS = { ladderBots: 5, ladderWidthPct: 25, ladderStepPct: 12.5, ladderLevels: 10, ladderTrail: '1', ladderLiq: '1' }
+export const LADDER_DEFAULTS = { ladderBots: 5, ladderWidthPct: 25, ladderStepPct: 12.5, ladderLevels: 10, ladderTrail: '1', ladderLiq: '1', ladderSize: '' }
 
 /** The settings card for it on /portfolios. */
 export const LADDER_FIELDS = [
@@ -30,6 +30,8 @@ export const LADDER_FIELDS = [
     hint: 'When the price rallies above the whole ladder and every bot has sold, move the ladder up to centre on the price. It never follows a fall — there it holds what it bought.' },
   { key: 'ladderLiq', label: 'Liquidations', type: 'select', options: [['1', 'On — then restart with what is left'], ['', 'Off — hold through any drop']],
     hint: 'On: a bot whose equity falls to maintenance margin is closed, as Hyperliquid would, then starts again around the price with what its account has left. Off: it never is — as if you keep its margin topped up from elsewhere, so a deep fall can cost more than its share.' },
+  { key: 'ladderSize', label: 'Leverage use', type: 'select', options: [['', 'Same size — frees margin'], ['up', 'Bigger ladder — sizes up']],
+    hint: 'Same size: the ladder is worth the balance, and leverage only lowers the margin it ties up. Bigger: leverage multiplies the ladder — at 10× a $1,000 balance runs a $10,000 ladder, with ten times the cycles, the profit, the drawdown, and real liquidation risk.' },
 ]
 export const LADDER_DESC = 'Several long-only grids stacked around the price, each in its own account — the Grid Ladder bots. ' +
   'Each buys at one level and sells one level up, post-only, and sells only after a level fully fills. ' +
@@ -74,12 +76,14 @@ export async function ladderOnOne({ rows, bal, lev = 1, params = {}, szDecimals 
   const szd = Number.isInteger(szDecimals) ? szDecimals : szDecOf(px0)
   const wantBots = Math.max(1, Math.min(10, Math.round(params.ladderBots ?? LADDER_DEFAULTS.ladderBots)))
   const wantLv = Math.max(2, Math.min(100, Math.round(params.ladderLevels ?? LADDER_DEFAULTS.ladderLevels)))
+  const sizeUp = (params.ladderSize ?? LADDER_DEFAULTS.ladderSize) === 'up' && lev > 1
   let bots = null
   for (let lv = wantLv; lv >= Math.min(3, wantLv) && !bots; lv--) {
     for (let nb = wantBots; nb >= 1 && !bots; nb--) {
-      // The ladder's full value is the share; leverage lowers the margin it ties up (and so how
-      // far it can fall before an isolated liquidation) — as Grid (bot) is sized.
-      const usd = (bal / nb) / (lv - 1)
+      // Same size (default): the ladder's full value is the share; leverage lowers the margin it
+      // ties up (and so how far it can fall before an isolated liquidation) — as Grid (bot) is
+      // sized. Bigger: leverage multiplies it, and the share is the margin behind it.
+      const usd = (bal / nb) / (lv - 1) * (sizeUp ? lev : 1)
       const set = ladderAround(px0, { ...params, bots: nb }).map(r => ({ ...DEFAULT_BOT, ...r, levels: lv, usd, leverage: lev, margin, killPrice: 0 }))
       if (set.every(b => !validateBot(b, { szDecimals: szd, maxLeverage: Math.max(lev, 50) }).length)) bots = set
     }
@@ -92,7 +96,8 @@ export async function ladderOnOne({ rows, bal, lev = 1, params = {}, szDecimals 
     szDecimals: szd, maxLeverage: Math.max(lev, +params.maxLev || 10), cashMult: 1, stepPct: 0.006,
     trail: (params.ladderTrail ?? LADDER_DEFAULTS.ladderTrail) !== '',
     liquidate: (params.ladderLiq ?? LADDER_DEFAULTS.ladderLiq) !== '',
-    sizing: 'notional', feeRates,
+    // The account holds the share either way: as the ladder's value, or as its margin.
+    sizing: sizeUp ? 'margin' : 'notional', feeRates,
   })
   return { r, bots, adapted: bots.length < wantBots || bots[0].levels < wantLv }
 }

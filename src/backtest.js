@@ -136,7 +136,7 @@ export const BT_DEFAULTS = {
   dcaSlPct: 0,            // from the average entry; 0 = none, which is how most are run
 
   // gridladder -- the Grid Ladder bot, run by its own engine (src/simladder.js, not here)
-  ladderBots: 5, ladderWidthPct: 25, ladderStepPct: 12.5, ladderLevels: 10, ladderTrail: '1', ladderLiq: '1',
+  ladderBots: 5, ladderWidthPct: 25, ladderStepPct: 12.5, ladderLevels: 10, ladderTrail: '1', ladderLiq: '1', ladderSize: '',
 
   // One position per market at a time, the way every deployed bot runs. Off lets a new
   // signal open a second trade while the first is still running -- which, sized at the
@@ -1777,6 +1777,9 @@ export const BT_CHOICES = [
   { key: 'ladderTrail', label: 'Follow the price', strategy: 'gridladder',
     options: [['1', 'Up, once sold out'], ['', 'Stay where it started']],
     help: 'When the price rallies above the whole ladder and every bot has sold, the ladder moves up to centre on the price, keeping its shape. It never follows a fall — there it holds what it bought.' },
+  { key: 'ladderSize', label: 'Leverage use', strategy: 'gridladder',
+    options: [['', 'Same size — frees margin'], ['up', 'Bigger ladder — sizes up']],
+    help: 'Same size: the ladder is worth the starting balance, and leverage only lowers the margin it ties up — the results do not change with leverage, only the margin posted. Bigger ladder: leverage multiplies it — at 10× a $1,000 balance runs a $10,000 ladder, with ten times the cycles, the profit and the drawdown, and a real chance of liquidation (use isolated margin to see how close each bot came).' },
   { key: 'ladderLiq', label: 'Liquidations', strategy: 'gridladder',
     options: [['1', 'On — then restart with what is left'], ['', 'Off — hold through any drop']],
     help: 'On: a bot whose isolated margin falls to maintenance is closed, as Hyperliquid would, then starts again around the price with what its account kept. Off: it never is — as if you keep its margin topped up from elsewhere, so a deep fall can cost more than its share.' },

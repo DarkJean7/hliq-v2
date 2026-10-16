@@ -153,16 +153,24 @@ export async function backtestLadder({ candles, funding = [], bots, szDecimals =
     }
     let eq = 0, margin = 0
     for (const x of rigs) {
-      eq += await x.sim.accountValue()
+      const acct = await x.sim.accountValue()
+      eq += acct
       if (x.dead || !(x.sim.pos > 0)) continue
       const { entryPx } = await x.sim.position()
       const lev = Math.max(1, +x.cfg.leverage)
       margin += x.sim.pos * entryPx / lev
       // How far the close is above this bot's isolated liquidation price, as a % of the price.
-      if (liquidate && x.cfg.margin !== 'cross') {
-        const liqPx = (entryPx - entryPx / lev) / (1 - 1 / (2 * maxLeverage))
-        const d = (+c.c - liqPx) / +c.c * 100
-        if (closestLiq == null || d < closestLiq) closestLiq = d
+      if (liquidate) {
+        // Isolated: the position's own margin backs it. Cross: the whole account does — the price
+        // at which the account's equity falls to maintenance.
+        const mm = 1 / (2 * maxLeverage), pos = x.sim.pos
+        const liqPx = x.cfg.margin === 'cross'
+          ? (pos * +c.c - acct) / (pos * (1 - mm))
+          : (entryPx - entryPx / lev) / (1 - mm)
+        if (liqPx > 0) {
+          const d = (+c.c - liqPx) / +c.c * 100
+          if (closestLiq == null || d < closestLiq) closestLiq = d
+        }
       }
     }
     maxMargin = Math.max(maxMargin, margin)
