@@ -1144,7 +1144,7 @@ function renderResults() {
   }
   if (L.cut) notes.push(`The trading strategies use the most recent 5,000 ${esc(S.tf)} candles, which start after the window does. Choose 4-hour or daily candles to cover all of it.`)
   const liq = all.filter(x => x.liquidated)
-  if (liq.length) notes.push(`Liquidated: ${liq.map(x => `${esc(x.label)} on ${dLabel(x.liquidated)}`).join('; ')}.`)
+  if (liq.length) notes.push(`Liquidated: ${liq.map(x => `${esc(x.label)} ${x.liqCount > 1 ? `${x.liqCount} times, first` : 'on'} ${dLabel(x.liquidated)}`).join('; ')}.${liq.some(x => x.id === 'bot:gridladder') ? ' A liquidated ladder bot starts again around the price with what its account had left; turn liquidations off on its card to see it hold instead.' : ''}`)
   // Grid, DCA and the ladder size their orders from each holding's share: say when that share
   // made them adapt, and when one was too small to trade at all — "nothing happened" is a result
   // a reader should be able to explain from the page.
@@ -1185,7 +1185,7 @@ function renderResults() {
       <table class="mk-table pf-table">
         <thead><tr>${RES_COLS.map(([k, l, tip]) => `<th data-rsort="${k}" class="${k === 'label' ? 'mk-c-asset ' : ''}${resSort.key === k ? 'is-on' : ''}" ${resSort.key === k ? `data-dir="${resSort.asc ? '▲' : '▼'}"` : ''} title="${esc(tip)}">${l}</th>`).join('')}</tr></thead>
         <tbody>${sortRuns(all).map(x => `<tr data-focus="${esc(x.id)}" class="${x.id === focus ? 'is-focus' : ''}${x.id === '__bench' ? ' pf-bench' : ''}">
-          <td class="mk-c-asset"><span class="pf-runname"><i style="background:${x.color}"></i>${esc(x.label)}</span>${x.liquidated ? `<small class="mk-dn pf-liq">liquidated ${dLabel(x.liquidated)}</small>` : ''}</td>
+          <td class="mk-c-asset"><span class="pf-runname"><i style="background:${x.color}"></i>${esc(x.label)}</span>${x.liquidated ? `<small class="mk-dn pf-liq">${x.liqCount > 1 ? `liquidated ${x.liqCount}× · first ` : 'liquidated '}${dLabel(x.liquidated)}</small>` : ''}</td>
           <td data-l="Final value">${usd(x.final)}</td><td data-l="Return" class="${cls(x.ret)}">${pct(x.ret)}</td><td data-l="Annualised" class="${cls(x.cagr)}">${x.cagr == null ? '<span class="mk-dim" title="Only over a year or more">—</span>' : pct(x.cagr)}</td>
           <td data-l="Max drawdown" class="mk-dn">${pct(x.maxDd)}</td><td data-l="Volatility">${x.vol ? (x.vol * 100).toFixed(0) + '%' : '—'}</td><td data-l="Sharpe">${x.sharpe == null ? '—' : x.sharpe.toFixed(2)}</td>
           <td data-l="Best / worst day"><span class="${cls(x.best)}">${pct(x.best)}</span> <span class="mk-dim">/</span> <span class="${cls(x.worst)}">${pct(x.worst)}</span></td>

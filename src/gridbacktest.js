@@ -53,7 +53,7 @@ function fundingAt(funding, t, idx) {
  * Run the ladder over `candles` ({t, o, h, l, c}, oldest first) with `funding`
  * ({time, fundingRate}, hourly). `bots` are ladder configs. Returns per-bot and total results.
  */
-export async function backtestLadder({ candles, funding = [], bots, szDecimals = 2, maxLeverage = 10, cashMult = 1.25, stepPct = 0.004, feeRates = null, trail = false }) {
+export async function backtestLadder({ candles, funding = [], bots, szDecimals = 2, maxLeverage = 10, cashMult = 1.25, stepPct = 0.004, feeRates = null, trail = false, liquidate = true, sizing = 'margin' }) {
   if (!candles.length) throw new Error('no candles')
   const start = +candles[0].o, t0 = +candles[0].t
   const rigs = []
@@ -69,13 +69,25 @@ export async function backtestLadder({ candles, funding = [], bots, szDecimals =
   }
   for (const cfg of bots) {
     const cap = botCapital(cfg, szDecimals)
-    const cash = (cap.notional / Math.max(1, cfg.leverage)) * cashMult
+    // sizing 'margin': the account holds the full grid's margin (× cashMult) — the CLI backtest,
+    // like the live panel. 'notional': it holds the full grid's VALUE, and leverage only lowers
+    // the margin tied up — how /portfolios sizes every trading strategy.
+    const cash = (sizing === 'notional' ? cap.notional : cap.notional / Math.max(1, cfg.leverage)) * cashMult
     const sim = createSimExchange({ szDecimals, maxLeverage, mid: start, cash, time: t0, ...(feeRates ? { makerFee: feeRates.maker, takerFee: feeRates.taker } : {}) })
-    const x = { sim, cash, liquidated: null, done: { realized: 0, cycles: 0 } }
+    const x = { sim, cash, sizing, liquidated: null, liqs: 0, dead: false, done: { realized: 0, cycles: 0 } }
     await attach(x, cfg)
     rigs.push(x)
   }
   let recentres = 0
+  async function rearm(x, p) {
+    const left = await x.sim.accountValue()
+    const c0 = (+x.cfg.low + +x.cfg.high) / 2, k = p / c0, r5 = (v) => +(v * k).toPrecision(5)
+    for (let lv = +x.cfg.levels; lv >= 3; lv--) {
+      const cfg = { ...x.cfg, low: r5(+x.cfg.low), high: r5(+x.cfg.high), levels: lv, usd: x.sizing === 'notional' ? left / (lv - 1) : (left * Math.max(1, +x.cfg.leverage)) / (lv - 1) }
+      if (cfg.usd >= minUsdPerLevel(cfg, szDecimals)) { await attach(x, cfg); return true }
+    }
+    return false
+  }
   const top = () => Math.max(...rigs.map(x => +x.cfg.high))
   const mid0 = () => (Math.min(...rigs.map(x => +x.cfg.low)) + top()) / 2
   const capital = rigs.reduce((s, x) => s + x.cash, 0)
@@ -92,26 +104,39 @@ export async function backtestLadder({ candles, funding = [], bots, szDecimals =
       const p = +path[j].toFixed(6), now = t + Math.floor((dt * j) / path.length)
       // Funding once per hour on what each bot holds.
       const hour = Math.floor(now / 3_600_000)
-      if (hour > lastHour) { const rate = fundingAt(funding, now, fIdx); for (const x of rigs) if (!x.liquidated) for (let h = lastHour; h < hour; h++) x.sim.applyFunding(rate); lastHour = hour }
+      if (hour > lastHour) { const rate = fundingAt(funding, now, fIdx); for (const x of rigs) if (!x.dead) for (let h = lastHour; h < hour; h++) x.sim.applyFunding(rate); lastHour = hour }
       for (const x of rigs) {
-        if (x.liquidated) continue
+        if (x.dead) continue
         x.sim.setMid(p, now)
         await x.r.tick(p); await x.r.idle()
-        const eq = await x.sim.accountValue()
-        const maint = Math.abs(x.sim.pos) * p / (2 * maxLeverage)
-        if (x.sim.pos > 0 && eq <= maint) {
+        if (!liquidate || !(x.sim.pos > 0)) continue      // liquidations off: it holds through any drop
+        // Isolated (the bot's default): only the position's own margin — what it cost ÷ leverage —
+        // stands behind it, and only that is lost; the rest of the account is untouched. Cross:
+        // the whole account backs it.
+        const maint = x.sim.pos * p / (2 * maxLeverage)
+        const { entryPx } = await x.sim.position()
+        const backing = x.cfg.margin === 'cross' ? await x.sim.accountValue() : x.sim.pos * entryPx / Math.max(1, +x.cfg.leverage) + x.sim.pos * (p - entryPx)
+        if (backing <= maint) {
           await x.r.stop('close'); await x.r.idle()
-          x.liquidated = { t: now, px: p }
+          x.liqs++
+          x.liquidated ??= { t: now, px: p }
+          // Liquidated is not finished: the account keeps what the close left, and the bot starts
+          // again around the price it is at now — the same range width, sized to what is left.
+          // Only an account that can no longer fund a 3-level grid at $10 a level stays out.
+          x.done.realized += x.r.state.realized
+          x.done.cycles += x.r.state.cycles
+          x.offs.forEach(o => o())
+          x.dead = !(await rearm(x, p))
         }
       }
     }
     // trail: the price has closed above the whole ladder and every bot has sold everything — it is
     // all cash, so the ladder moves up to centre on the price, keeping its shape. Without this a
     // ladder left behind by a rally never trades again. It never follows a fall (it holds there).
-    if (trail && +c.c > top() && rigs.every(x => x.liquidated || (inventoryOf(x.r.state).sz < 1e-9 && Math.abs(x.sim.pos) < 1e-9))) {
+    if (trail && +c.c > top() && rigs.every(x => x.dead || (inventoryOf(x.r.state).sz < 1e-9 && Math.abs(x.sim.pos) < 1e-9))) {
       const k = +c.c / mid0(), r5 = (v) => +(v * k).toPrecision(5)
       for (const x of rigs) {
-        if (x.liquidated) continue
+        if (x.dead) continue
         await x.r.stop('cancel'); await x.r.idle()
         x.done.realized += x.r.state.realized; x.done.cycles += x.r.state.cycles
         x.offs.forEach(o => o())
@@ -136,7 +161,7 @@ export async function backtestLadder({ candles, funding = [], bots, szDecimals =
       id: x.cfg.id, range: `${x.cfg.low}–${x.cfg.high}`, cash: x.cash, equity: eq, pnl: eq - x.cash,
       realized: st.realized + (st.lifetime?.realized ?? 0) + x.done.realized, cycles: st.cycles + (st.lifetime?.cycles ?? 0) + x.done.cycles,
       fees: x.sim.feesPaid, funding: x.sim.fundingPaid, inventory: inventoryOf(st).sz, unrealized: s.unrealized,
-      liquidated: x.liquidated,
+      liquidated: x.liquidated, liquidations: x.liqs, out: x.dead,
     })
   }
   const final = per.reduce((s, b) => s + b.equity, 0)
@@ -147,7 +172,7 @@ export async function backtestLadder({ candles, funding = [], bots, szDecimals =
     hold: { pnl: capital * (end / start - 1), ret: end / start - 1 },
     realized: per.reduce((s, b) => s + b.realized, 0), cycles: per.reduce((s, b) => s + b.cycles, 0),
     fees: per.reduce((s, b) => s + b.fees, 0), funding: per.reduce((s, b) => s + b.funding, 0),
-    liquidations: per.filter(b => b.liquidated).length, recentres,
+    liquidations: per.reduce((n, b) => n + b.liquidations, 0), recentres,
     bots: per, curve,
   }
 }

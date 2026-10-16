@@ -128,6 +128,17 @@ console.log(nl + '-- the Simulator\'s strategies on every holding --')
   t('Ladder: a small share runs fewer bots and levels instead of sitting out', lSmall.adapted === 1 && lSmall.tooSmall === 0 && lSmall.cycles > 0, [lSmall.adapted, lSmall.tooSmall, lSmall.cycles])
   const lTrail = await ladderRun(rally, [{ key: 'A', weight: 1 }], days50, { capital: 2000 })
   t('and it follows a rally up once it has sold out', lTrail.recentres > 0, lTrail.recentres)
+  // Reported: "the grid ladder bot seems that stopped at his first liquidation even tho he has
+  // more accounts and capital. lets also add … a new setting that would be to turn its liquidations off."
+  const dropBounce = { A: Array.from({ length: 200 }, (_, i) => { const p = i < 60 ? 100 * Math.pow(0.985, i) : 100 * Math.pow(0.985, 60) * (1 + 0.06 * Math.sin((i - 60) / 3)); return { t: T0 + i * D / 4, o: p, h: p * 1.01, l: p * 0.99, c: p } }) }
+  const liqOn = await ladderRun(dropBounce, [{ key: 'A', weight: 1 }], days50, { capital: 2000, leverage: 5 })
+  const { backtestLadder } = await import('../../src/gridbacktest.js')
+  const bt = await backtestLadder({ candles: dropBounce.A, bots: ladderAround(100).map(r => ({ ...r, levels: 10, usd: 40, leverage: 5, margin: 'isolated', killPrice: 0 })), cashMult: 1, sizing: 'notional' })
+  const reborn = bt.bots.filter(b => b.liquidated && !b.out)
+  t('liquidations on: a bot is liquidated, then starts again with what its account kept', liqOn.liqCount > 0 && liqOn.liquidated != null && reborn.length > 0, [liqOn.liqCount, reborn.length])
+  t('and the restarted bot trades on after it', reborn.some(b => b.cycles > 0))
+  const liqOff = await ladderRun(dropBounce, [{ key: 'A', weight: 1 }], days50, { capital: 2000, leverage: 5, params: { ladderLiq: '' } })
+  t('liquidations off: never liquidated — it holds its bag through the drop instead', liqOff.liqCount === 0 && liqOff.liquidated == null && liqOn.cycles > liqOff.cycles, [liqOff.liqCount, liqOn.cycles, liqOff.cycles])
   const { szDecOf } = await import('../../src/pfladder.js')
   t('a market with no meta gets Hyperliquid-like size steps (BTC 5, HYPE 2, DOGE 0)', szDecOf(100000) === 5 && szDecOf(50) === 2 && szDecOf(0.2) === 0)
   const lr5 = ladderAround(80)
