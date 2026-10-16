@@ -419,6 +419,8 @@ export const BOT_STRATEGIES = [
   ['bollinger',  'Bollinger bands'],
   ['grid',       'Grid (bot)'],
   ['dca',        'DCA with safety orders'],
+  // Simulated by the live Grid Ladder bot's own engine (src/pfladder.js), not by botRun.
+  ['gridladder', 'Grid ladder (bot)'],
 ]
 export const BOT_LABEL = Object.fromEntries(BOT_STRATEGIES)
 

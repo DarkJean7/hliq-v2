@@ -14,6 +14,7 @@ import { sideScroll, wasDrag } from './sidescroll.js'
 import { SECTORS, SECTOR_LABEL } from './sectors.js'
 import { holdingsSectors, sectorColor } from './sectoralloc.js'
 import { STRATEGIES, STRATEGY_LABEL, BOT_STRATEGIES, BOT_LABEL, backtest, botRun, DAY, dayOf, effectiveLeverage, PCT_EXITS, BOT_PARAM_DEFAULTS } from './pfbacktest.js'
+import { ladderRun, LADDER_DEFAULTS, LADDER_FIELDS, LADDER_DESC } from './pfladder.js'
 import { BT_FIELDS, BT_DEFAULTS, BT_STRATEGY_META, BT_STRATEGIES } from './backtest.js'
 import { initTrade } from './pftrade.js'
 // The gallery card's own backtest, shared with serve-prod.js so the two cannot price a card
@@ -774,6 +775,7 @@ function levNote() {
 // stop-loss belong to the five plain signal rules, each with an Off.
 const BOT_FIELD_SKIP = new Set(['gridLower', 'gridUpper', 'gridUsdPerLevel', 'dcaBaseUsd', 'dcaSoUsd'])
 function botFields(id) {
+  if (id === 'gridladder') return LADDER_FIELDS
   const own = BT_FIELDS.filter(f => f.strategy === id && !BOT_FIELD_SKIP.has(f.key) && f.type !== 'time')
   const pct = PCT_EXITS.includes(id)
     ? [{ key: 'takeProfitPct', label: 'Take profit', unit: '%', step: '0.5', off: 'tpOff', hint: 'How far price must move your way, from the entry, to close in profit. Off: only the strategy\'s own exit closes it.' },
@@ -797,8 +799,8 @@ const BOT_CHOICES = {
   grid: [{ key: 'gridGeometric', label: 'Spacing', type: 'select', options: [['', 'Even $ gaps'], ['1', 'Even % gaps']],
     hint: 'Even dollar gaps between rungs, or even percentage gaps (wider rungs higher up).' }],
 }
-const BOT_DESC = Object.fromEntries(BT_STRATEGIES.map(([id, , d]) => [id, d.replace(/ -- /g, ' — ')]))
-const bp = (id, key) => S.botParams?.[id]?.[key] ?? BOT_PARAM_DEFAULTS[key] ?? BT_DEFAULTS[key]
+const BOT_DESC = { ...Object.fromEntries(BT_STRATEGIES.map(([id, , d]) => [id, d.replace(/ -- /g, ' — ')])), gridladder: LADDER_DESC }
+const bp = (id, key) => S.botParams?.[id]?.[key] ?? BOT_PARAM_DEFAULTS[key] ?? LADDER_DEFAULTS[key] ?? BT_DEFAULTS[key]
 // The strategy cards are a lot of screen for something set once: closed until asked for,
 // and that choice kept on this device. A flipped card stays flipped across re-renders.
 const BOTCARDS_KEY = 'hliq_pf_botcards'
@@ -810,7 +812,7 @@ function renderBotCards() {
     el: $('pfBotCards'), toggle: $('pfBotToggle'), open: botCardsOpen, ids: S.bots, pre: '',
     label: id => BOT_LABEL[id], tag: id => BT_STRATEGY_META[id]?.tag ?? '', desc: id => BOT_DESC[id] ?? '', fields: botFields,
     value: (id, key) => bp(id, key), off: (id, f) => f.off && S.botParams?.[id]?.[f.off], attr: (id, key) => `${id}|${key}`,
-    note: id => (id === 'grid' ? 'Rungs sized to each holding\'s share of the capital.' : id === 'dca' ? 'Orders sized so the base and every safety order fit in each holding\'s share.' : ''),
+    note: id => (id === 'grid' ? 'Rungs sized to each holding\'s share of the capital.' : id === 'gridladder' ? 'One ladder per holding, centred on its first price in the window, with its share of the capital split between the bots. Long-only.' : id === 'dca' ? 'Orders sized so the base and every safety order fit in each holding\'s share.' : ''),
   })
 }
 
@@ -1014,7 +1016,12 @@ async function run() {
       ohlc[i.key] = ohlc[i.key].map(c => { const v = f.get(dayOf(c.t)); if (v != null) last = v; return { ...c, o: c.o * last, h: c.h * last, l: c.l * last, c: c.c * last } })
     }
     for (const id of S.bots) {
-      runs.push({ ...botRun(ohlc, items, r.days, id, { capital: opts.capital, leverage: opts.leverage, feeBps: opts.feeBps, both: !!S.both, funding: opts.funding, book: opts.book, levBy: opts.levBy, margin: opts.margin, params: S.botParams?.[id] ?? {} }), label: BOT_LABEL[id] })
+      const o = { capital: opts.capital, leverage: opts.leverage, feeBps: opts.feeBps, both: !!S.both, funding: opts.funding, book: opts.book, levBy: opts.levBy, margin: opts.margin, params: S.botParams?.[id] ?? {} }
+      const run = id === 'gridladder'
+        ? await ladderRun(ohlc, items, r.days, { ...o, progress: (k, n) => setStatus(`simulating the grid ladder ${k}/${n}…`) })
+        : botRun(ohlc, items, r.days, id, o)
+      if (my !== runSeq) return
+      runs.push({ ...run, label: BOT_LABEL[id] })
     }
   }
   runs.forEach((x, i) => { x.color = RUN_COLORS[i % RUN_COLORS.length] })
@@ -1144,7 +1151,7 @@ function renderResults() {
   const f = all.find(x => x.id === focus) ?? best
   const contrib = f ? Object.entries(f.pnlBy).map(([k, v]) => ({ k, v, sym: coinName(k, symOf(k)) })).sort((a, b) => b.v - a.v) : []
   const cmax = Math.max(1e-9, ...contrib.map(c => Math.abs(c.v)))
-  const tradesOf = (x) => x.id === '__bench' ? '1' : x.trades != null && x.won != null ? `${x.trades}${x.won + x.lost ? ` · ${Math.round(100 * x.won / (x.won + x.lost))}% won` : ''}` : x.rebalances != null ? `<span title="Times the basket was traded back to its weights">${x.rebalances} rebalance${x.rebalances === 1 ? '' : 's'}</span>` : '—'
+  const tradesOf = (x) => x.id === '__bench' ? '1' : x.cycles != null ? `<span title="Completed buy → sell cycles, across every holding's ladder">${x.cycles} cycles</span>` : x.trades != null && x.won != null ? `${x.trades}${x.won + x.lost ? ` · ${Math.round(100 * x.won / (x.won + x.lost))}% won` : ''}` : x.rebalances != null ? `<span title="Times the basket was traded back to its weights">${x.rebalances} rebalance${x.rebalances === 1 ? '' : 's'}</span>` : '—'
 
   res.innerHTML = `
     ${notes.length ? `<div class="pf-notes">${notes.map(n => `<p>${n}</p>`).join('')}</div>` : ''}

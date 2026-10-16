@@ -195,6 +195,14 @@ async function run(label, opts) {
   await waitFor(p, 'the Simulator run', () => window.__pf.last?.runs?.some(r => r.id === 'bot:supertrend'))
   const bot = await p.evaluate(() => { const r = window.__pf.last.runs.find(r => r.id === 'bot:supertrend'); return { n: r.equity.length, first: r.equity[0], days: window.__pf.last.days.length } })
   ok('a Simulator strategy runs on every holding, on 4-hour candles', bot.n === bot.days && Math.abs(bot.first - 10000) < 50 && asks.includes('BTC:4h') && asks.includes('ETH:4h'), [bot, asks.slice(-4)])
+  // The Grid Ladder, simulated by the live bot's own engine on each holding (src/pfladder.js).
+  await p.click('[data-bot="gridladder"]')
+  await waitFor(p, 'the ladder run', () => window.__pf.last?.runs?.some(r => r.id === 'bot:gridladder'), null, 90000)
+  const lad = await p.evaluate(() => { const r = window.__pf.last.runs.find(r => r.id === 'bot:gridladder'); return { n: r.equity.length, first: r.equity[0], days: window.__pf.last.days.length, cycles: r.cycles, won: r.won } })
+  ok('Grid ladder (bot) runs on every holding, from the capital, day by day', lad.n === lad.days && Math.abs(lad.first - 10000) < 60 && lad.cycles >= 0 && lad.won == null, lad)
+  ok('its Trades cell counts cycles, not a win rate', await p.evaluate(() => /\d+ cycles/.test(document.getElementById('pfResults').textContent)))
+  await p.click('[data-bot="gridladder"]')
+  await waitFor(p, 'the ladder off', () => !window.__pf.state.bots.includes('gridladder'))
   // Each trading strategy shows only the settings it reads.
   const cards = () => p.evaluate(() => [...document.querySelectorAll('#pfBotCards .pf-botcard')].map(c => ({ name: c.querySelector('b').textContent, fields: [...c.querySelectorAll('label > span:first-child')].map(x => x.textContent), offs: c.querySelectorAll('[data-bpoff]').length })))
   // The cards are closed until asked for, and the choice is kept on this device.

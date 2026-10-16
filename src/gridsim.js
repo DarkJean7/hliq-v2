@@ -17,7 +17,7 @@
  */
 import { MAKER_FEE, TAKER_FEE, MIN_NOTIONAL, roundPx, tickOf } from './gridladder.js'
 
-export function createSimExchange({ szDecimals = 2, maxLeverage = 10, mid = 80, cash = 1000, time = 0 } = {}) {
+export function createSimExchange({ szDecimals = 2, maxLeverage = 10, mid = 80, cash = 1000, time = 0, makerFee = MAKER_FEE, takerFee = TAKER_FEE } = {}) {
   let px = mid, now = time, nextOid = 1, nextTid = 1
   const orders = new Map()          // oid -> {oid, cloid, isBuy, px, sz, reduceOnly}
   const usedCloids = new Set()
@@ -34,7 +34,7 @@ export function createSimExchange({ szDecimals = 2, maxLeverage = 10, mid = 80, 
   const emit = (kind, v) => { if (socketUp) for (const cb of subs[kind]) cb(v) }
 
   function trade(o, fillPx, sz, maker) {
-    const fee = fillPx * sz * (maker ? MAKER_FEE : TAKER_FEE)
+    const fee = fillPx * sz * (maker ? makerFee : takerFee)
     const signed = o.isBuy ? sz : -sz
     if (pos >= 0 && signed > 0) { entry = (entry * pos + fillPx * sz) / (pos + sz); pos += sz }
     else { realized += (fillPx - entry) * Math.min(sz, Math.abs(pos)) * (pos > 0 ? 1 : -1); pos += signed; if (Math.abs(pos) < 1e-9) { pos = 0; entry = 0 } }

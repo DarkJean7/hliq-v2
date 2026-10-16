@@ -96,10 +96,23 @@ console.log(nl + '-- the Simulator\'s strategies on every holding --')
   const ohlc = { A: lin(100, 140, 120).map((c, i) => ({ t: T0 + i * D / 4, o: c * 0.99, h: c * 1.03, l: c * 0.97, c })), B: lin(50, 40, 120).map((c, i) => ({ t: T0 + i * D / 4, o: c * 1.01, h: c * 1.03, l: c * 0.97, c })) }
   const days = Array.from({ length: 30 }, (_, i) => T0 + i * D)
   for (const [id] of B.BOT_STRATEGIES) {
+    if (id === 'gridladder') continue            // its own engine (src/pfladder.js) — tested below
     const r = B.botRun(ohlc, [{ key: 'A', weight: 60 }, { key: 'B', weight: 40 }], days, id, { capital: 1000 })
     if (!(r.equity.length === 30 && near(r.equity[0], 1000, 0.05) && r.equity.every(v => Number.isFinite(v) && v >= 0))) { t(id + ': one funded sub-account per holding, summed', false, r.equity.slice(0, 3)); continue }
   }
   t('every Simulator strategy runs on a basket: one funded sub-account per holding, summed', true)
+  // Asked: "would it be possible to simulate it [the Grid Ladder] with historical data and add it
+  // in the portfolio strategies?" — the live bot's own engine, per holding (src/pfladder.js).
+  const { ladderRun, ladderAround } = await import('../../src/pfladder.js')
+  const wave = { A: Array.from({ length: 120 }, (_, i) => { const p = 100 + 8 * Math.sin(i / 5); return { t: T0 + i * D / 4, o: p, h: p * 1.01, l: p * 0.99, c: 100 + 8 * Math.sin((i + 1) / 5) } }), B: ohlc.B }
+  const lr = await ladderRun(wave, [{ key: 'A', weight: 60 }, { key: 'B', weight: 40 }], days, { capital: 1000, leverage: 2 })
+  t('Grid ladder: one ladder per holding, summed, starting at the capital', lr.equity.length === 30 && near(lr.equity[0], 1000, 0.05) && lr.equity.every(v => Number.isFinite(v) && v >= 0), lr.equity.slice(0, 3))
+  t('it completes cycles in a range and pays fees', lr.cycles > 0 && lr.fees > 0, [lr.cycles, lr.fees])
+  t('the Trades column reads cycles, with no win rate to mislead', lr.won == null && lr.trades === lr.cycles)
+  const lshort = await ladderRun(wave, [{ key: 'A', weight: 60 }, { key: 'B', weight: 40, side: 'short' }], days, { capital: 1000 })
+  t('long-only: a holding the basket shorts stays in cash', lshort.refused === 1 && lshort.pnlBy.B === 0)
+  const lr5 = ladderAround(80)
+  t('the default ladder around $80 is the panel\'s $50–$110', lr5.map(b => `${b.low}-${b.high}`).join() === '50-70,60-80,70-90,80-100,90-110', lr5)
   const SRC = fs.readFileSync('src/pfbacktest.js', 'utf8')
   t('it is the Simulator\'s own engine, not a copy', SRC.includes("import { runBacktest, strategyKind } from './backtest.js'"))
   t('each holding trades only its own direction unless asked', SRC.includes('useDirection: !both, direction: side'))

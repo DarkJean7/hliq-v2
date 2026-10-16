@@ -41,14 +41,14 @@ function fundingAt(funding, t, idx) {
  * Run the ladder over `candles` ({t, o, h, l, c}, oldest first) with `funding`
  * ({time, fundingRate}, hourly). `bots` are ladder configs. Returns per-bot and total results.
  */
-export async function backtestLadder({ candles, funding = [], bots, szDecimals = 2, maxLeverage = 10, cashMult = 1.25, stepPct = 0.004 }) {
+export async function backtestLadder({ candles, funding = [], bots, szDecimals = 2, maxLeverage = 10, cashMult = 1.25, stepPct = 0.004, feeRates = null }) {
   if (!candles.length) throw new Error('no candles')
   const start = +candles[0].o, t0 = +candles[0].t
   const rigs = []
   for (const cfg of bots) {
     const cap = botCapital(cfg, szDecimals)
     const cash = (cap.notional / Math.max(1, cfg.leverage)) * cashMult
-    const sim = createSimExchange({ szDecimals, maxLeverage, mid: start, cash, time: t0 })
+    const sim = createSimExchange({ szDecimals, maxLeverage, mid: start, cash, time: t0, ...(feeRates ? { makerFee: feeRates.maker, takerFee: feeRates.taker } : {}) })
     let seed = 1000 + cfg.id
     const r = createRunner({ key: 'bt' + cfg.id, botId: cfg.id, cfg, ex: sim, store: memoryStore(), now: () => sim.time, rand: () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648) })
     sim.onFills(f => r.onFills(f)); sim.onOrderUpdates(u => r.onOrderUpdates(u))
