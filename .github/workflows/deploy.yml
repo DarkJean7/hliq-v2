@@ -73,7 +73,14 @@ jobs:
         run: |
           # --delay-updates stages every file and renames them in at the end, so the served
           # dist/ is never a mix of old and new while the copy is in flight.
-          rsync -avz --delete --delay-updates dist/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/dist/"
+          #
+          # dist/assets/ is NOT --delete'd. Every chunk name carries its content hash, and a tab
+          # opened before this deploy still asks for the OLD names when it lazy-loads a screen —
+          # deleting them broke it ("Failed to fetch dynamically imported module …gridladder-ui-
+          # BNeupnae.js", 2026-10-16). Old chunks are kept for 14 days, then pruned.
+          rsync -avz --delay-updates dist/assets/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/dist/assets/"
+          rsync -avz --delete --delay-updates --exclude='/assets/' dist/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/dist/"
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "find '$DEPLOY_PATH/dist/assets' -type f -mtime +14 -delete"
           rsync -avz --delete src/     "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/src/"
           rsync -avz --delete public/  "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/public/"
           rsync -avz index.html        "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/index.html"
