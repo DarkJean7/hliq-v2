@@ -85,7 +85,9 @@ async function open(device, label) {
     try { b = JSON.parse(route.request().postData() || '{}') } catch {}
     if (b.type === 'candleSnapshot') {
       candleCalls++
-      candleReqs.push({ coin: b.req?.coin, iv: b.req?.interval })
+      // How many candles it asked for: the Simulator asks from a start time with no end, for 1.2×
+      // its candle count — a shape the app's own charts do not use.
+      candleReqs.push({ coin: b.req?.coin, iv: b.req?.interval, n: b.req?.endTime ? null : Math.round((Date.now() - b.req?.startTime) / (IV[b.req?.interval] ?? 3600e3)) })
       return route.fulfill({ status: 200, contentType: 'application/json', json: candles(b.req?.coin, b.req?.interval) })
     }
     // A builder dex answers allMids with its own prefixed keys -- the shape the picker has to
@@ -280,6 +282,7 @@ console.log(NL + '-- desktop: the page --')
   console.log(NL + '-- desktop: compare every strategy --')
   const before = reqs().length
   const runIv = await p.evaluate(() => document.querySelector('#deskSim .sim-seg button.on')?.textContent?.trim())
+  const runN = await p.evaluate(() => +document.getElementById('sim_count')?.value)
   await p.click('#deskSim .sim-runbar .sim-btn:has-text("Compare all")')
   const cmp = await waitFor(p, 'the board', () => document.querySelectorAll('#deskSim .sim-cmp-row').length > 0, null, 60000)
   ok('the board appears', cmp)
@@ -292,8 +295,10 @@ console.log(NL + '-- desktop: the page --')
   // The markets the run used, at the run's interval, are not downloaded again. Any candle request
   // counted here used to fail it — including the app's own chart refreshing in the background,
   // which a slower comparison (the Grid Ladder runs the live bot's engine) gave time to land on CI.
-  const again = reqs().slice(before).filter(q => ['BTC', 'ETH'].includes(q.coin) && q.iv === runIv)
-  ok('and the candles were not fetched again', /^\d+[mhd]$/.test(runIv ?? '') && again.length === 0, { again, all: reqs().slice(before), runIv })
+  // Only the SIMULATOR's request shape counts: the app's BTC 1h chart refreshes in the background
+  // and asks for the same market and interval (CI, 2026-10-16), but not for 1.2× the run's count.
+  const again = reqs().slice(before).filter(q => ['BTC', 'ETH'].includes(q.coin) && q.iv === runIv && q.n != null && Math.abs(q.n - runN * 1.2) <= runN * 0.1)
+  ok('and the candles were not fetched again', /^\d+[mhd]$/.test(runIv ?? '') && runN >= 50 && again.length === 0, { again, all: reqs().slice(before), runIv, runN })
   await p.click('#deskSim .sim-chip:text-is("Sharpe")')
   await shot(p, 'desk-compare')
   const first = await p.evaluate(() => document.querySelector('#deskSim .sim-cmp-row .sim-cmp-n b')?.textContent.trim())
