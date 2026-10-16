@@ -73,8 +73,9 @@ t('negative cached only ~15s (a blip must not lock the owner out)',
 // ── structural: every gated route awaits the now-async gate ──────────────────
 t('no un-awaited requireOwner call remains', !/if \(!requireOwner\(/.test(src))
 // 9: the original 7, plus a portfolio's owner opening their own run (/api/portfolios/mine/:pid)
-// and showing or hiding it (/api/portfolio/visibility) — both proven like Pause.
-t('all 9 gated routes await it', (src.match(/if \(!await requireOwner\(/g) || []).length === 9)
+// and showing or hiding it (/api/portfolio/visibility) — both proven like Pause. 11: the Grid
+// Ladder's status read and its stop-with-a-mode (/api/gridladder/status, /api/gridladder/stop).
+t('all 11 gated routes await it', (src.match(/if \(!await requireOwner\(/g) || []).length === 11)
 t('requireOwner is async', src.includes('async function requireOwner('))
 t('/api/start consults HL before refusing',
   src.includes("owner !== auth.signer && !(await agentApprovedFor("))

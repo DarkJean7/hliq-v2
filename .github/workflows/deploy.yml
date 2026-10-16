@@ -20,6 +20,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The server runs Node 22, and the Grid Ladder's store uses node:sqlite, which earlier
+      # versions do not have — test on what ships to.
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       # Build HERE, not on the server. The server ran `npm run build` in place, and vite
       # defaults to emptyOutDir:true — so it DELETED the live dist/ before writing the new
       # one, with serve-prod.js serving out of that same directory. A build that died midway

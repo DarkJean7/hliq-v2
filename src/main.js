@@ -12749,6 +12749,13 @@ function _chatName() {
 function _chatColor(name) { let h = 0; const s = String(name || 'anon'); for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return `hsl(${h % 360} 68% 62%)` }
 function _chatAgo(ts) { const s = Math.floor((Date.now() - ts) / 1000); if (s < 60) return s + 's'; const m = Math.floor(s / 60); if (m < 60) return m + 'm'; const h = Math.floor(m / 60); if (h < 24) return h + 'h'; return Math.floor(h / 24) + 'd' }
 
+// Grid Ladder: five HYPE grid bots, one account each (src/gridladder-ui.js), loaded on first open.
+window.__openGridLadder = function() {
+  document.getElementById('mobMoreDrawer')?.classList.remove('open')
+  document.getElementById('mobMoreBackdrop')?.classList.remove('open')
+  import('./gridladder-ui.js').then(m => m.openGridLadder()).catch(e => _appAlert('Could not open the Grid Ladder: ' + e.message))
+}
+
 window.__openChat = function() {
   document.getElementById('mobMoreDrawer')?.classList.remove('open')
   document.getElementById('mobMoreBackdrop')?.classList.remove('open')

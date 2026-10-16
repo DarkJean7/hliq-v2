@@ -20,6 +20,7 @@
  * Every decision the bot makes is in src/pflive.js; this file only asks and shows.
  */
 import { keyedAddresses, readKey } from './agentkeys.js'
+import { botApi, acctName } from './botapi.js'
 import { LIVE_STRATEGIES, liveWeights, liveArgs, HL_MIN_ORDER } from './pflive.js'
 import { SIGNAL_STRATEGIES } from './pfsignal.js'
 import { openRunView, sparkSvg, runningFor } from './pfrunview.js'
@@ -28,43 +29,11 @@ import { PAPER_START, paperAcctCreate, paperAcctTag, paperAcctDelete, paperAcctN
 
 const $ = (id) => document.getElementById(id)
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`
-/** The name the user gave the account in the app's wallet list (savedWallets), or its short address. */
-function acctName(a) {
-  try {
-    const k = String(a).toLowerCase()
-    const w = (JSON.parse(localStorage.getItem('savedWallets') || '[]') || []).find(x => String(x?.addr).toLowerCase() === k)
-    if (w?.label && String(w.label).trim()) return String(w.label).trim()
-  } catch {}
-  return short(a)
-}
 const usd = (v) => (v == null || !Number.isFinite(v) ? '—' : (Math.abs(v) >= 1000 ? '$' + Math.round(v).toLocaleString('en-US') : '$' + v.toFixed(2)))
 const ls = { get: (k) => { try { return localStorage.getItem(k) } catch { return null } }, set: (k, v) => { try { localStorage.setItem(k, v) } catch {} } }
 
-// ── the bot server, signed in the way the app does it ──
-const tokens = {}
-async function token(addr) {
-  const c = tokens[addr.toLowerCase()]
-  if (c && c.exp - 60_000 > Date.now()) return c.token
-  const key = readKey(localStorage, addr)
-  if (!key) throw new Error('no agent key for this account')
-  const { Wallet } = await import('ethers')
-  const { nonce } = await (await fetch('/api/auth/nonce')).json()
-  if (!nonce) throw new Error('the bot server did not answer')
-  const msg = `Insolvent Trade — bot control login\nAccount: ${addr.toLowerCase()}\nNonce: ${nonce}`
-  const signature = await new Wallet(key).signMessage(msg)
-  const j = await (await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: addr, nonce, signature }) })).json()
-  if (!j.token) throw new Error(j.error || 'sign-in to the bot server failed')
-  tokens[addr.toLowerCase()] = { token: j.token, exp: j.exp ?? Date.now() + 11 * 3600_000 }
-  return j.token
-}
-async function api(path, addr, body) {
-  const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + await token(addr) }
-  // Dev mode is earned by the PIN; the server checks the same PIN on /api/start only.
-  if (path === '/api/start' && ls.get('hliq_dev') === '1' && ls.get('hliq_lb_pin')) headers['x-lb-pin'] = ls.get('hliq_lb_pin')
-  const r = await fetch(path, body ? { method: 'POST', headers, body: JSON.stringify(body) } : { headers })
-  const j = (r.headers.get('content-type') ?? '').includes('json') ? await r.json() : { ok: false, error: (await r.text()).slice(0, 200) || 'the bot server did not answer' }
-  return { status: r.status, ...j }
-}
+// ── the bot server, signed in the way the app does it (src/botapi.js) ──
+const api = botApi
 
 // ── paper: the device's paper owner and its bots ──
 // Paper accounts in the picker are "paper:<slot>", and "paper:new" makes one.

@@ -16,7 +16,7 @@ const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, co
 const nl = String.fromCharCode(10)
 const mem = () => { const m = new Map(); return { getItem: k => m.get(k) ?? null, setItem: (k, v) => m.set(k, String(v)) } }
 
-const FILES = ['src/main.js', 'src/game.js', 'src/onboard.js', 'src/calnotes.js', 'src/offexui.js', 'src/render.js']
+const FILES = ['src/main.js', 'src/game.js', 'src/onboard.js', 'src/calnotes.js', 'src/offexui.js', 'src/render.js', 'src/gridladder-ui.js']
 
 console.log(nl + '-- no native dialogs are left --')
 {

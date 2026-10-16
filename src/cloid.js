@@ -44,6 +44,7 @@ export const BOT_CODES = {
   longer:      '0c',
   shorter:     '0d',
   portfolio:   '0e',
+  gridladder:  '0f',
 }
 
 /**

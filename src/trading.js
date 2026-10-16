@@ -403,8 +403,10 @@ export async function sendUsdcOnCore({ from, destination, amount, signer, source
   return client.spotSend({ destination, token: `${tok.name}:${tok.tokenId}`, amount: value })
 }
 
-export async function approveAgentKey(mainSigner, agentAddress) {
-  const transport = new HttpTransport({ timeout: 60_000 })
+// `testnet`: approve the same agent on Hyperliquid's testnet, where approvals are separate —
+// the Grid Ladder runs there first (src/gridladder-ui.js).
+export async function approveAgentKey(mainSigner, agentAddress, { testnet = false } = {}) {
+  const transport = new HttpTransport({ timeout: 60_000, isTestnet: testnet })
   const client    = new ExchangeClient({ transport, wallet: mainSigner })
   // HL caps agent validity at 180 days, set by appending `valid_until <ms>` to the
   // name (the base name's 16-char limit ignores that suffix). Use the max (minus a 1h

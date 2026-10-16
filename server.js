@@ -74,6 +74,8 @@ const SCRIPTS = {
   trailstop: 'strategies/trailstop.js',
   liqguard:  'strategies/guardian.js',
   levbrake:  'strategies/guardian.js',
+  // One rung of the Grid Ladder (src/gridladder.js); instance = "L<n>", state in data/gridladder.db.
+  gridladder: 'strategies/gridladder.js',
 }
 
 // ─── RUNTIME STATE ────────────────────────────────────────────────────────────
@@ -273,6 +275,39 @@ async function requireOwner(req, res, address, explicitToken) {
 }
 
 let shuttingDown = false
+
+// ─── GRID LADDER (panel reads) ────────────────────────────────────────────────
+// node:sqlite is loaded on first use, so a server that never runs a ladder never opens it.
+let _gridStore = null
+const gridStoreMod = () => (_gridStore ??= import('./strategies/_gridstore.js'))
+let _gridDb = null
+const gridDb = async () => (_gridDb ??= (await gridStoreMod()).sqliteStore())
+function parseArgsList(list) {
+  const out = {}
+  for (let i = 0; i < (list ?? []).length; i++) if (String(list[i]).startsWith('--')) out[list[i].slice(2)] = list[i + 1] && !String(list[i + 1]).startsWith('--') ? list[++i] : true
+  return out
+}
+async function gridLadderBots(master) {
+  const { botStats } = await import('./src/gridladder.js')
+  const s = await gridDb()
+  const out = []
+  for (const r of s.all()) {
+    const st = r.state, live = st.live ?? {}
+    if (String(live.master ?? '') !== master) continue
+    const inst = 'L' + st.bot
+    const p = procs[procKey('gridladder', master, inst)]
+    out.push({
+      key: r.key, bot: st.bot, instance: inst, network: live.network, trade: live.trade, vault: live.vault || '',
+      running: !!p, paused: !!p?.paused, lastError: p?.lastError ?? '', updated: r.updated,
+      cfg: st.cfg, prices: st.prices, waiting: !!st.waiting, stopped: !!st.stopped, killed: !!st.killed, drift: st.drift ?? null,
+      pairs: (st.pairs ?? []).map(q => ({ i: q.i, phase: q.phase, sz: q.sz, px: q.px, placed: !!q.placed, filled: q.filled, sold: q.sold, cycle: q.cycle })),
+      lifetime: st.lifetime ?? null, closePnl: st.closePnl ?? 0, live,
+      stats: botStats(st, { mid: live.mid || 0, funding: live.funding || 0, accountValue: live.accountValue ?? null, openBuyNotional: live.openBuyNotional || 0 }),
+      events: s.events(r.key, 25), cycles: s.cycles(r.key, 25),
+    })
+  }
+  return out.sort((a, b) => a.bot - b.bot)
+}
 
 // ─── WIN DETECTION ────────────────────────────────────────────────────────────
 const WIN_RE = /^\[(.+?)\] \[WIN\s*\] (.+)$/
@@ -2205,6 +2240,31 @@ const server = createServer(async (req, res) => {
     if (!await requireOwner(req, res, b.address ?? '')) return
     const r = resumeStrategy(b.type, b.address ?? '', b.instance ?? '')
     return json(res, r.ok ? 200 : 400, r)
+  }
+
+  // ── Grid Ladder: the panel's numbers, and stop / stop-and-close ──────────────
+  // Start, pause and resume are the generic /api/start, /api/pause, /api/resume (type
+  // "gridladder", instance "L<n>"). Stopping needs to say HOW, so the mode is written to the
+  // bot's store first and the bot reads it when the SIGTERM arrives; a SIGTERM with no mode is
+  // a deploy, after which the orders stay on the book.
+  if (method === 'GET' && path === '/api/gridladder/status') {
+    const addr = String(url.searchParams.get('address') ?? '').toLowerCase()
+    if (!await requireOwner(req, res, addr)) return
+    return json(res, 200, { bots: await gridLadderBots(addr) })
+  }
+  if (method === 'POST' && path === '/api/gridladder/stop') {
+    const b = await body(req)
+    const addr = String(b.address ?? '').toLowerCase()
+    if (!await requireOwner(req, res, addr)) return
+    const mode = b.mode === 'close' ? 'close' : 'stop'
+    const inst = String(b.instance ?? '')
+    const p = procs[procKey('gridladder', addr, inst)]
+    if (!p) return json(res, 400, { error: 'not running' })
+    const { ladderKey } = await gridStoreMod()
+    const a = parseArgsList(p.extraArgs)
+    ;(await gridDb()).setControl(ladderKey(a.network || 'testnet', a.vault || addr, a.bot || inst.replace(/\D/g, '')), mode)
+    if (p.paused) { try { p.proc.kill('SIGUSR2'); p.paused = false } catch {} }
+    return json(res, 200, stopStrategy('gridladder', addr, inst))
   }
 
   // ── GET /api/portfolios/live — every PUBLIC running portfolio, no addresses ──
