@@ -33,6 +33,7 @@ import { signalChartSvg } from './sigchart.js'
 import { hlPool } from './api.js'
 import { fetchCandles } from './trading.js'
 import { fmtUSD, fmtPrice, esc } from './format.js'
+import { runLadderSim, LadderTooSmall } from './simladder.js'
 
 let ctx = {
   /** The app's two-language string picker. */
@@ -539,7 +540,9 @@ const SIM_CACHE_MS = 10 * 60e3
 function _simParamsFor(coin, base) {
   // Every market carries its own max leverage, because that -- not the leverage chosen -- sets
   // its maintenance margin and so its liquidation price. Unknown stands in as 20x, and says so.
-  const withLev = { ...base, maxLev: _simMaxLev(coin) ?? 20 }
+  let szd = null
+  try { szd = ctx.szDecimals?.(coin) } catch {}
+  const withLev = { ...base, maxLev: _simMaxLev(coin) ?? 20, ...(Number.isInteger(szd) ? { szDecimals: szd } : {}) }
   if (base.strategy !== 'tokyo') return withLev
   const row = tokyoWindowsFor(coin)
   if (!row) return null
@@ -614,13 +617,25 @@ function _simProg(done, total) {
  * replay for several. Several markets are one account, so the trades are replayed against one
  * balance in the order they closed rather than the per-market results being added up.
  */
-function _simRunOn(bars, coins, params, skipped = null) {
+// One market, one strategy. The Grid Ladder is the live bot's own engine, which is async
+// (src/simladder.js); everything else is the synchronous one in src/backtest.js.
+async function _simOne(rows, par) {
+  if (par.strategy !== 'gridladder') return runBacktest(rows, par)
+  await _simYield()                      // a long ladder run must not freeze the page between markets
+  return runLadderSim(rows, par)
+}
+
+async function _simRunOn(bars, coins, params, skipped = null) {
   const runs = []
   for (const coin of coins) {
     if (!bars[coin]) continue
     const par = _simParamsFor(coin, params)
     if (!par) { skipped?.push(_mktName(coin) + ' (not in the portfolio table)'); continue }
-    runs.push({ coin, result: runBacktest(bars[coin], par) })
+    try { runs.push({ coin, result: await _simOne(bars[coin], par) }) }
+    catch (e) {
+      if (!(e instanceof LadderTooSmall)) throw e
+      skipped?.push(_mktName(coin) + ' (' + _T('too little balance for the $10 minimum', 'saldo insuficiente para el mínimo de $10') + ')')
+    }
   }
   if (!runs.length) return null
   if (runs.length === 1 && coins.length === 1) return runs[0].result
@@ -629,10 +644,16 @@ function _simRunOn(bars, coins, params, skipped = null) {
     // as its own SUB-ACCOUNT -- the balance split between them, or each with all of it -- and
     // its trades are summed in dollars in the order they closed.
     const share = params.splitRisk === false ? 1 : runs.length
-    const sub = runs.map(({ coin }) => {
+    const sub = []
+    for (const { coin } of runs) {
       const par = _simParamsFor(coin, { ...params, startBalance: params.startBalance / share })
-      return { coin, result: runBacktest(bars[coin], par) }
-    })
+      try { sub.push({ coin, result: await _simOne(bars[coin], par) }) }
+      catch (e) {
+        if (!(e instanceof LadderTooSmall)) throw e
+        skipped?.push(_mktName(coin) + ' (' + _T('its share is too small for the $10 minimum', 'su parte es menor que el mínimo de $10') + ')')
+      }
+    }
+    if (!sub.length) return null
     return runPortfolio(sub, { ...params, absolute: true })
   }
   return runPortfolio(runs, params)
@@ -687,7 +708,7 @@ window.__simRun = async function() {
     const coins = _simCoinList()
     const { bars, skipped } = await _simLoad(coins)
     _simBars = bars
-    const result = _simRunOn(bars, coins, _simParams, skipped)
+    const result = await _simRunOn(bars, coins, _simParams, skipped)
 
     if (!result) {
       // Distinguishable from a bad rule: too little data is not a result.
@@ -758,7 +779,7 @@ window.__simCompare = async function() {
         const params = { ..._simParams, strategy: key }
         const runnable = loaded.filter(c => _simParamsFor(c, params))
         if (!runnable.length) { rows.push({ key, na: _T('none of these markets is in its table', 'ningún mercado está en su tabla') }); continue }
-        const result = _simRunOn(bars, runnable, params)
+        const result = await _simRunOn(bars, runnable, params)
         if (!result) { rows.push({ key, na: _T('no result', 'sin resultado') }); continue }
         const sum = summarize(result, null, null)
         rows.push({ key, result, sum, coins: runnable, partial: runnable.length < loaded.length })
@@ -857,7 +878,7 @@ window.__simSweep = async function() {
     const rows = []
     for (const v of vals) {
       const params = _simCoerceKeep({ ..._simParams, [key]: v })
-      const result = _simRunOn(bars, coins, params)
+      const result = await _simRunOn(bars, coins, params)
       if (result) {
         const s = summarize(result, null, null)
         rows.push({ v: params[key], result, s })

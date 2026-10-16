@@ -11797,6 +11797,9 @@ initSimulator({
   maxLeverage: (id) => state.assetMap?.[id]?.maxLeverage
     ?? (state.allMetas ?? []).flatMap(m => m.universe ?? []).find(u => u?.name === id)?.maxLeverage
     ?? _mktCtxMap[id]?.maxLeverage ?? null,
+  // The market's order-size step — the Grid ladder sizes its levels to it (src/simladder.js).
+  szDecimals: (id) => state.assetMap?.[id]?.szDecimals
+    ?? (state.allMetas ?? []).flatMap(m => m.universe ?? []).find(u => u?.name === id)?.szDecimals ?? null,
 })
 
 initOffex({

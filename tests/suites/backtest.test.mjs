@@ -190,12 +190,25 @@ const wave = (() => {
   }
   return out
 })()
+// The Grid Ladder is the live bot's own engine, async, reached through src/simladder.js.
+const { runLadderSim } = await import('../../src/simladder.js')
+const runAny = async (k) => k === 'gridladder' ? runLadderSim(wave, { ...BT_DEFAULTS, strategy: k, startBalance: 1000, maxLev: 20 }) : runBacktest(wave, { strategy: k })
 for (const [k] of BT_STRATEGIES) {
-  const rr = runBacktest(wave, { strategy: k })
+  const rr = await runAny(k)
   t(`${k} produces signals and trades`, rr.signalsSeen > 0 && rr.tradesMade > 0, [rr.signalsSeen, rr.tradesMade])
 }
+// Asked: "is possible to add grid ladder bot in the trade simulator tab?"
+{
+  const { LadderTooSmall } = await import('../../src/simladder.js')
+  const lr = await runAny('gridladder')
+  const sumTrades = lr.trades.reduce((a, x) => a + x.delta, 0)
+  t('Grid Ladder: its trades plus what it still holds are exactly the final balance', Math.abs(lr.startBalance + sumTrades + lr.grid.unrealized - lr.balance) < 1e-6, [lr.startBalance, sumTrades, lr.grid.unrealized, lr.balance])
+  t('it reports as a grid the Simulator already draws: cycles, range, no win rate', lr.grid.ladder && lr.grid.cycles === lr.trades.filter(x => !x.liq).length && lr.grid.lower < lr.grid.upper && lr.winRate === null && lr.curve.length === wave.length)
+  const tiny = await runLadderSim(wave, { ...BT_DEFAULTS, strategy: 'gridladder', startBalance: 15, maxLev: 20 }).then(() => null, e => e)
+  t('a balance that cannot fund one 3-level grid at $10 says so, rather than showing zero', tiny instanceof LadderTooSmall && /\$10 minimum/.test(tiny.message), tiny?.message)
+}
 t('the strategies do different things',
-  new Set(BT_STRATEGIES.map(([k]) => runBacktest(wave, { strategy: k }).tradesMade)).size >= 3)
+  new Set(BT_STRATEGIES.filter(([k]) => k !== 'gridladder').map(([k]) => runBacktest(wave, { strategy: k }).tradesMade)).size >= 3)
 // Every indicator reads only candles at or before the one it judges.
 t('no strategy sees a candle it could not have', bt.includes('for (let k = i - n; k < i; k++)') &&
   bt.includes('the n candles strictly before each one'))

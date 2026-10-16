@@ -135,6 +135,9 @@ export const BT_DEFAULTS = {
   dcaTpPct: 1.5,          // from the AVERAGE entry, which is the whole point of averaging
   dcaSlPct: 0,            // from the average entry; 0 = none, which is how most are run
 
+  // gridladder -- the Grid Ladder bot, run by its own engine (src/simladder.js, not here)
+  ladderBots: 5, ladderWidthPct: 25, ladderStepPct: 12.5, ladderLevels: 10, ladderTrail: '1', ladderLiq: '1',
+
   // One position per market at a time, the way every deployed bot runs. Off lets a new
   // signal open a second trade while the first is still running -- which, sized at the
   // whole balance, is leverage nobody set.
@@ -182,6 +185,8 @@ export const BT_STRATEGY_META = {
   emacross:   { cat: 'trend',    kind: 'signal', bot: false, tag: 'Fast EMA crosses the slow one' },
   supertrend: { cat: 'trend',    kind: 'flip',   bot: false, tag: 'ATR bands flip the side' },
   dca:        { cat: 'grid',     kind: 'dca',    bot: false, tag: 'Safety orders average the entry' },
+  // Its own engine — the live bot's — reached through src/simladder.js; shaped like a grid.
+  gridladder: { cat: 'grid',     kind: 'grid',   bot: true,  tag: 'Stacked grids that follow the price' },
 }
 
 export const BT_CATEGORIES = [
@@ -215,6 +220,8 @@ export const BT_STRATEGIES = [
    'The fast EMA crossing the slow one opens a trade in the direction of the cross, closed by the target and stop. Unlike the Trend bot it acts on the CROSS, not the state, and sits out between signals.'],
   ['supertrend', 'Supertrend',
    'Bands an ATR multiple above and below the candle midpoint that ratchet with price. A close through the band flips the side. Always in a position, like the Trend bot, but it flips losers too -- the band is the stop.'],
+  ['gridladder', 'Grid Ladder (bot)',
+   'The real bot. Several long-only grids stacked around the price -- five by default, each 25% wide, each 12.5% above the last -- each in its own account with an equal share. Each buys at one level and sells one level up, and sells only after a level fully fills. It earns in a range, lags a strong rise (it sells on the way up), and holds a full bag in a fall. It follows a rally up once it has sold out, and a liquidated bot starts again with what its account kept.'],
   ['dca', 'DCA with safety orders',
    'The most common retail bot. A base order opens the deal; if price moves against it, safety orders buy more at wider and wider gaps, dragging the average entry toward price. The deal closes at a target measured from that AVERAGE, then a new one starts. It wins almost every deal -- until price runs past the last safety order and the whole stack sits underwater.'],
 ]
@@ -1265,6 +1272,8 @@ export function runDcaBacktest(rows, p) {
 
 export function runBacktest(candles, params = {}) {
   const p = { ...BT_DEFAULTS, ...params }
+  // The Grid Ladder runs the live bot's own (async) engine: src/simladder.js runLadderSim.
+  if (p.strategy === 'gridladder') throw new Error('Grid Ladder runs through src/simladder.js, not runBacktest')
   const rows = normalise(candles)
   const sig = signals(rows, p)
   const trend = p.useTrendFilter ? sma(rows, Math.max(2, Math.round(p.trendMa))) : null
@@ -1670,6 +1679,19 @@ export const BT_FIELDS = [
     hint: '0 = none, which is how most are run.',
     help: 'Most DCA bots are run with no stop, which is why they win nearly every deal and why the one they lose is so large. Set one to see what cutting the stack would have cost or saved; the win rate is only shown when a stop exists, because without one it is 100% by construction.' },
 
+  { key: 'ladderBots', label: 'Bots', unit: 'grids', step: '1', strategy: 'gridladder',
+    hint: 'How many grids are stacked, each with an equal share of the balance.',
+    help: 'Each bot is its own grid in its own account. More bots cover more of the price with the same money, each with less of it. A balance too small for every bot to clear Hyperliquid’s $10 minimum on every level runs fewer bots instead.' },
+  { key: 'ladderWidthPct', label: 'Each range', unit: '% of price', step: '0.5', strategy: 'gridladder',
+    hint: 'How wide each bot’s range is.',
+    help: 'Each bot buys and sells between a low and a high this far apart, as a share of the first price — 25% with the default 10 levels puts a level about 2.8% apart.' },
+  { key: 'ladderStepPct', label: 'Gap between ranges', unit: '% of price', step: '0.5', strategy: 'gridladder',
+    hint: 'How far each bot’s range sits above the one below.',
+    help: 'Half the width overlaps the ranges, as in the default ladder: five 25% ranges 12.5% apart cover from 37.5% below the first price to 37.5% above it.' },
+  { key: 'ladderLevels', label: 'Levels per bot', unit: 'levels', step: '1', strategy: 'gridladder',
+    hint: 'Price levels in each bot’s range.',
+    help: 'A bot with N levels trades N-1 pairs: buy at a level, sell one level up. More levels means smaller, more frequent cycles and more fees.' },
+
   { key: 'sizePct', label: 'Position size', unit: '% of balance', step: '5', group: 'notionalModel',
     hint: 'Margin posted per trade.',
     help: 'Each trade posts this share of the balance as margin. With several markets and "split the risk" on, it is divided between them. 100% at 1x is the plain "all in, no leverage" case, directly comparable to holding the coin.' },
@@ -1694,11 +1716,11 @@ export const BT_FIELDS = [
     hint: 'Market entries, stops, liquidations.',
     help: 'Charged on the value of every fill that crossed the book: a market entry, a stop, a flip, a timeout and a liquidation. Hyperliquid\'s base tier is 0.045%.' },
 
-  { key: 'takeProfitPct', notFor: ['volbreak', 'trend', 'grid', 'tokyo', 'supertrend', 'dca'], label: 'Take profit', unit: '%', step: '0.05',
+  { key: 'takeProfitPct', notFor: ['volbreak', 'trend', 'grid', 'gridladder', 'tokyo', 'supertrend', 'dca'], label: 'Take profit', unit: '%', step: '0.05',
     hint: 'How far price must move your way to win.',
     help: 'Measured from the entry price, as a percentage. A long entered at $100 with 1% wins if any later candle trades at $101. Percent rather than a fixed amount so the same setting means the same on a $78,000 market and a $0.004 one.' },
 
-  { key: 'stopLossPct', notFor: ['volbreak', 'trend', 'grid', 'tokyo', 'supertrend', 'dca'], label: 'Stop loss', unit: '%', step: '0.05',
+  { key: 'stopLossPct', notFor: ['volbreak', 'trend', 'grid', 'gridladder', 'tokyo', 'supertrend', 'dca'], label: 'Stop loss', unit: '%', step: '0.05',
     hint: 'How far against you before it is a loss.',
     help: 'The mirror of the target. Whichever level the price touches FIRST ends the trade, checked candle by candle after entry. If neither is ever touched before the data runs out, the trade is reported as unresolved: not a win, not a loss.' },
 
@@ -1752,6 +1774,13 @@ export const BT_CHOICES = [
     options: [['false', 'Even price gaps'], ['true', 'Even percent gaps']],
     help: 'Even price gaps put the rungs the same number of dollars apart. Even percent gaps put them the same percentage apart, so the lower rungs sit closer together -- which keeps the profit per cycle proportional across a wide range instead of shrinking at the bottom.' },
 
+  { key: 'ladderTrail', label: 'Follow the price', strategy: 'gridladder',
+    options: [['1', 'Up, once sold out'], ['', 'Stay where it started']],
+    help: 'When the price rallies above the whole ladder and every bot has sold, the ladder moves up to centre on the price, keeping its shape. It never follows a fall — there it holds what it bought.' },
+  { key: 'ladderLiq', label: 'Liquidations', strategy: 'gridladder',
+    options: [['1', 'On — then restart with what is left'], ['', 'Off — hold through any drop']],
+    help: 'On: a bot whose isolated margin falls to maintenance is closed, as Hyperliquid would, then starts again around the price with what its account kept. Off: it never is — as if you keep its margin topped up from elsewhere, so a deep fall can cost more than its share.' },
+
   { key: 'marginMode', label: 'Margin mode', group: 'hl',
     options: [['cross', 'Cross'], ['isolated', 'Isolated']],
     help: 'Cross backs the position with the WHOLE account: its liquidation price sits further away, and when it is hit it takes the account with it. Isolated backs it only with the margin posted for it: the line is closer, but a liquidation costs that margin and nothing else. For the same size, leverage moves the liquidation price only in isolated -- in cross it only decides how much margin the order needs.' },
@@ -1780,7 +1809,7 @@ export const BT_CHOICES = [
     options: [['true', 'Split the risk between them'], ['false', 'Each at full risk']],
     help: 'Several markets share ONE account here, so this decides what adding a market means. Splitting divides each stake by how many markets are running, which is what the deployed portfolio bot does: adding markets spreads the account rather than multiplying what it can lose. Full risk gives every market the whole stake, which answers a different question -- what each would have done with the account to itself -- and produces a much louder number. It has no effect on a single market.' },
 
-  { key: 'ambiguous', notFor: ['trend', 'grid', 'tokyo', 'supertrend', 'dca'], label: 'If one candle hits both levels',
+  { key: 'ambiguous', notFor: ['trend', 'grid', 'gridladder', 'tokyo', 'supertrend', 'dca'], label: 'If one candle hits both levels',
     options: [['loss', 'Count the stop'], ['win', 'Count the target']],
     help: 'Sometimes a single candle is wide enough to touch the target AND the stop. Its high, low, open and close cannot say which came first, so this is a guess either way. Counting the stop is the pessimistic reading and the default. On tight levels the difference is enormous -- the same rule can go from every trade winning to every trade losing.' },
 ]
@@ -1904,7 +1933,7 @@ export function runPortfolio(runs, params = {}) {
   const net = balance - p.startBalance
   const resolved = won + lost
   // Every closed grid cycle, and every DCA deal without a stop, wins by construction.
-  const byConstruction = p.strategy === 'grid' || (p.strategy === 'dca' && !(p.dcaSlPct > 0))
+  const byConstruction = p.strategy === 'grid' || p.strategy === 'gridladder' || (p.strategy === 'dca' && !(p.dcaSlPct > 0))
   return {
     params: p, markets: live.map(r => r.coin), splitRisk: split > 1, openPnl,
     from: all.length ? Math.min(...all.map(t => t.time)) : null,

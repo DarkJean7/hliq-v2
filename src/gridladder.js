@@ -292,7 +292,7 @@ export function applyFill(st, f) {
       if (p.phase !== 'I' || left <= eps) continue
       const take = Math.min(left, p.sz - p.filled)
       p.filled += take; p.cost += take * px; p.buyFee += fee * (take / sz); left -= take
-      if (p.filled >= p.sz - eps) { p.phase = 'S'; p.attempt = 0; p.px = null; p.placed = null }
+      if (p.filled >= p.sz - eps) { p.phase = 'S'; p.attempt = 0; p.px = null; p.placed = null; p.boughtAt = +f.time || 0 }
     }
     return { kind: 'inventory' }
   }
@@ -302,14 +302,14 @@ export function applyFill(st, f) {
   if (!p || p.cycle !== c.cycle) return { kind: 'stale' }
   if (c.side === 'B' && p.phase === 'B') {
     p.filled += sz; p.cost += sz * px; p.buyFee += fee
-    if (p.filled >= p.sz - eps) { p.phase = 'S'; p.attempt = 0; p.px = null; p.placed = null }
+    if (p.filled >= p.sz - eps) { p.phase = 'S'; p.attempt = 0; p.px = null; p.placed = null; p.boughtAt = +f.time || 0 }
     return { kind: 'buy', pair: p.i }
   }
   if (c.side === 'S' && p.phase === 'S') {
     p.sold += sz; p.proceeds += sz * px; p.sellFee += fee
     if (p.sold >= p.sz - eps) {
       const profit = p.proceeds - p.cost - p.buyFee - p.sellFee
-      const done = { pair: p.i, cycle: p.cycle, sz: p.sz, buyPx: p.cost / p.filled, sellPx: p.proceeds / p.sold, fees: p.buyFee + p.sellFee, profit, time: +f.time || 0 }
+      const done = { pair: p.i, cycle: p.cycle, sz: p.sz, buyPx: p.cost / p.filled, sellPx: p.proceeds / p.sold, fees: p.buyFee + p.sellFee, profit, time: +f.time || 0, buyTime: p.boughtAt ?? null }
       st.realized += profit; st.cycles++
       Object.assign(p, { phase: 'B', cycle: p.cycle + 1, attempt: 0, px: null, placed: null, filled: 0, cost: 0, buyFee: 0, sold: 0, proceeds: 0, sellFee: 0 })
       return { kind: 'cycle', pair: p.i, cycleDone: done, profit }

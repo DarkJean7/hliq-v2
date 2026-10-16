@@ -62,7 +62,9 @@ export async function backtestLadder({ candles, funding = [], bots, szDecimals =
   // live bot would start a new run after its grid changed.
   async function attach(x, cfg) {
     let seed = 1000 + cfg.id + 97 * seq++
-    const r = createRunner({ key: 'bt' + cfg.id, botId: cfg.id, cfg, ex: x.sim, store: memoryStore(), now: () => x.sim.time, rand: () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648) })
+    const store = memoryStore()
+    ;(x.stores ??= []).push(store)
+    const r = createRunner({ key: 'bt' + cfg.id, botId: cfg.id, cfg, ex: x.sim, store, now: () => x.sim.time, rand: () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648) })
     x.offs = [x.sim.onFills(f => r.onFills(f)), x.sim.onOrderUpdates(u => r.onOrderUpdates(u))]
     x.r = r; x.cfg = cfg
     await r.start(); await r.idle()
@@ -92,7 +94,7 @@ export async function backtestLadder({ candles, funding = [], bots, szDecimals =
   const mid0 = () => (Math.min(...rigs.map(x => +x.cfg.low)) + top()) / 2
   const capital = rigs.reduce((s, x) => s + x.cash, 0)
   const curve = []
-  let peak = -Infinity, maxDD = 0
+  let peak = -Infinity, maxDD = 0, maxMargin = 0, closestLiq = null
   const fIdx = { i: 0 }
   let lastHour = Math.floor(t0 / 3_600_000)
 
@@ -117,7 +119,10 @@ export async function backtestLadder({ candles, funding = [], bots, szDecimals =
         const { entryPx } = await x.sim.position()
         const backing = x.cfg.margin === 'cross' ? await x.sim.accountValue() : x.sim.pos * entryPx / Math.max(1, +x.cfg.leverage) + x.sim.pos * (p - entryPx)
         if (backing <= maint) {
+          const held = inventoryOf(x.r.state)
           await x.r.stop('close'); await x.r.idle()
+          // The forced close as a trade: what the held inventory fetched against what it cost.
+          ;(x.liqTrades ??= []).push({ time: now, entry: held.avg ?? p, exitPx: p, q: held.sz, delta: x.r.state.closePnl ?? 0 })
           x.liqs++
           x.liquidated ??= { t: now, px: p }
           // Liquidated is not finished: the account keeps what the close left, and the bot starts
@@ -146,8 +151,21 @@ export async function backtestLadder({ candles, funding = [], bots, szDecimals =
       }
       recentres++
     }
-    let eq = 0
-    for (const x of rigs) eq += await x.sim.accountValue()
+    let eq = 0, margin = 0
+    for (const x of rigs) {
+      eq += await x.sim.accountValue()
+      if (x.dead || !(x.sim.pos > 0)) continue
+      const { entryPx } = await x.sim.position()
+      const lev = Math.max(1, +x.cfg.leverage)
+      margin += x.sim.pos * entryPx / lev
+      // How far the close is above this bot's isolated liquidation price, as a % of the price.
+      if (liquidate && x.cfg.margin !== 'cross') {
+        const liqPx = (entryPx - entryPx / lev) / (1 - 1 / (2 * maxLeverage))
+        const d = (+c.c - liqPx) / +c.c * 100
+        if (closestLiq == null || d < closestLiq) closestLiq = d
+      }
+    }
+    maxMargin = Math.max(maxMargin, margin)
     curve.push({ t, eq, px: +c.c })
     peak = Math.max(peak, eq); maxDD = Math.max(maxDD, peak > 0 ? (peak - eq) / peak : 0)
   }
@@ -172,7 +190,12 @@ export async function backtestLadder({ candles, funding = [], bots, szDecimals =
     hold: { pnl: capital * (end / start - 1), ret: end / start - 1 },
     realized: per.reduce((s, b) => s + b.realized, 0), cycles: per.reduce((s, b) => s + b.cycles, 0),
     fees: per.reduce((s, b) => s + b.fees, 0), funding: per.reduce((s, b) => s + b.funding, 0),
-    liquidations: per.reduce((n, b) => n + b.liquidations, 0), recentres,
+    liquidations: per.reduce((n, b) => n + b.liquidations, 0), recentres, maxMargin, closestLiq,
+    // Every completed cycle and every forced close, for a trade list and a replay.
+    trades: rigs.flatMap(x => [
+      ...(x.stores ?? []).flatMap(st => st.cycles('bt' + x.cfg.id)).map(cy => ({ bot: x.cfg.id, kind: 'cycle', time: cy.buyTime ?? cy.time, exitAt: cy.time, entry: cy.buyPx, exitPx: cy.sellPx, q: cy.sz, delta: cy.profit, fees: cy.fees })),
+      ...(x.liqTrades ?? []).map(l => ({ bot: x.cfg.id, kind: 'liquidation', time: l.time, exitAt: l.time, entry: l.entry, exitPx: l.exitPx, q: l.q, delta: l.delta })),
+    ]).sort((a, b) => a.exitAt - b.exitAt),
     bots: per, curve,
   }
 }
