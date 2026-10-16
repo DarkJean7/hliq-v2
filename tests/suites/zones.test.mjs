@@ -143,6 +143,21 @@ console.log('\n-- the setup --')
   const bo = readSetup({ zones: zs2, price: 112, atrD: 2, daily })
   t('a key level crossed in the last week is a breakout', bo.state === 'breakout' && bo.active === 'long' && bo.long.kind === 'retest' && bo.long.zone.px === 110, [bo.state, bo.long?.zone?.px])
   t('no key zones, no plans — not invented ones', readSetup({ zones: [], price: 100, atrD: 2 }).long === null)
+
+  // Reported with two screenshots seconds apart: "Testing resistance · medium" at 0.33630 became
+  // "Broke above a key level · low" at 0.33645 — one tick across the zone's top edge, and an
+  // order-book reading that moved from 0.76 to 0.92 between two refreshes.
+  const edge = readSetup({ zones: zs2, price: 110.7, atrD: 2, daily })     // 0.2 past the band's top (110.5): inside the 0.3 buffer
+  t('one tick past a zone\'s edge is still AT the zone, not a breakout', edge.state !== 'breakout' && edge.inside?.px === 110, edge.state)
+  t('clear of it (past the 0.15-ATR buffer) it is', readSetup({ zones: zs2, price: 111, atrD: 2, daily }).state === 'breakout')
+  const held = readSetup({ zones: zs2, price: 110.7, atrD: 2, daily, prev: bo })
+  t('and a breakout holds while price only dips into the buffer — it changes when the market does', held.state === 'breakout' && held.long.zone.px === 110)
+  t('back properly inside the zone, it is no longer a breakout', readSetup({ zones: zs2, price: 110.1, atrD: 2, daily, prev: bo }).state !== 'breakout')
+  const { smoothRatio } = await import('../../src/zones.js')
+  t('the order book is smoothed: one snapshot counts for a third', Math.abs(smoothRatio(0.76, 0.92) - (0.76 * 2 / 3 + 0.92 / 3)) < 1e-12 && smoothRatio(null, 0.9) === 0.9 && smoothRatio(0.8, null) === 0.8)
+  t('so a single wall cannot flip the lean: 0.76 then 0.92 still reads "more sellers"', smoothRatio(0.76, 0.92) <= 0.87)
+  const an = read('src/analysis.js')
+  t('the view feeds the smoothed ratio and the last reading', an.includes('ratio: e.ratio ?? null, prev: e.lastSetup ?? null') && an.includes('e.ratio = smoothRatio(e.ratio, bookRatio(books)?.ratio ?? null)'))
 }
 
 console.log('\n-- the view --')

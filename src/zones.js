@@ -300,6 +300,13 @@ export function biasOf({ price, daily, ratio }) {
   return { items: out, score, max: out.length, lean: score >= 2 ? 'up' : score <= -2 ? 'down' : 'flat' }
 }
 
+/**
+ * The book ratio, smoothed across refreshes. One snapshot of the order book is noisy — a single
+ * wall placed or pulled moved it from 0.76 to 0.92 between two refreshes seconds apart, and with
+ * it the lean and the confidence. Each new reading counts for a third.
+ */
+export const smoothRatio = (prev, next) => next == null ? prev ?? null : prev == null ? next : prev * (2 / 3) + next / 3
+
 const rr = (entry, stop, target) => target != null && Math.abs(entry - stop) > 0 ? Math.abs(target - entry) / Math.abs(entry - stop) : null
 
 /**
@@ -314,19 +321,28 @@ const rr = (entry, stop, target) => target != null && Math.abs(entry - stop) > 0
  * resistances), short at the nearest resistance, mirrored. The one price is at now is
  * marked active. Levels, not advice.
  */
-export function readSetup({ zones, price, atrD, daily = [], ratio = null }) {
+export function readSetup({ zones, price, atrD, daily = [], ratio = null, prev = null }) {
   const key = zones.filter(z => z.key)
   const bias = biasOf({ price, daily, ratio })
-  const below = key.filter(z => z.hi < price).sort((a, b) => b.px - a.px)
-  const above = key.filter(z => z.lo > price).sort((a, b) => a.px - b.px)
-  const inside = key.find(z => z.lo <= price && z.hi >= price) ?? null
   const a = atrD > 0 ? atrD : price * 0.03
   const pad = 0.25 * a
+  // A zone's edges are not knife-edges: price has to be CLEAR of a band — 0.15 ATR past it — to
+  // have left it. Without this, one tick across an edge flipped "testing resistance" into
+  // "broke above" and back (0.33630 → 0.33645, seconds apart).
+  const edge = 0.15 * a
+  const below = key.filter(z => z.hi + edge < price).sort((a, b) => b.px - a.px)
+  const above = key.filter(z => z.lo - edge > price).sort((a, b) => a.px - b.px)
+  const inside = key.find(z => z.lo - edge <= price && z.hi + edge >= price) ?? null
 
   // Crossed recently: a recent daily close on the other side of a key zone near price.
   const recent = daily.slice(-6, -1).map(k => k.c)
-  const brokeUp = recent.length ? below.find(z => price - z.hi <= a && recent.some(c => c < z.px)) : null
-  const brokeDn = recent.length ? above.find(z => z.lo - price <= a && recent.some(c => c > z.px)) : null
+  let brokeUp = recent.length ? below.find(z => price - z.hi <= a && recent.some(c => c < z.px)) : null
+  let brokeDn = recent.length ? above.find(z => z.lo - price <= a && recent.some(c => c > z.px)) : null
+  // And once it has broken, it stays broken until price is back properly inside the zone — not
+  // the moment it dips into the buffer. A reading should change because the market did.
+  const same = (z) => z && key.find(k => Math.abs(k.px - z.px) < 1e-12)
+  if (!brokeUp && !brokeDn && prev?.state === 'breakout' && same(prev.broke) && price > same(prev.broke).hi - edge) brokeUp = same(prev.broke)
+  if (!brokeUp && !brokeDn && prev?.state === 'breakdown' && same(prev.broke) && price < same(prev.broke).lo + edge) brokeDn = same(prev.broke)
 
   const sup = inside ?? below[0] ?? null, res = inside ?? above[0] ?? null
   const longPlan = (base, targets, kind) => {

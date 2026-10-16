@@ -10,7 +10,7 @@
 // pins them back to the preset's opaque colours (analysis.css).
 import './analysis.css'
 import { infoClient } from './api.js'
-import { TFS, toCandles, buildZones, parseBooks, bookMid, wallFor, bookReach, bookRatio, readSetup } from './zones.js'
+import { TFS, toCandles, buildZones, parseBooks, bookMid, wallFor, bookReach, bookRatio, readSetup, smoothRatio } from './zones.js'
 
 const LS_COIN = 'hliq_ana_coin', LS_PREFS = 'hliq_ana_prefs'
 // A year of 4h for the chart; the zones read only the last ZONE_4H_DAYS of it, where a 4h
@@ -85,7 +85,7 @@ async function loadBooks(coin) {
   const raws = await Promise.all([undefined, 3, 2].map(n =>
     infoClient.l2Book(n ? { coin, nSigFigs: n } : { coin }).catch(() => null)))
   const books = parseBooks(raws)
-  if (books.length) { e.books = books; e.bookAt = Date.now() }
+  if (books.length) { e.books = books; e.bookAt = Date.now(); e.ratio = smoothRatio(e.ratio, bookRatio(books)?.ratio ?? null) }
 }
 
 async function refresh(force = false) {
@@ -114,7 +114,8 @@ function result() {
   if (e.memo?.key !== key) {
     const from = Date.now() - ZONE_4H_DAYS * 864e5
     const r = buildZones({ candles: { ...e.candles, '4h': c4.filter(k => k.t >= from) }, price })
-    if (r) r.setup = readSetup({ zones: r.zones, price, atrD: r.atrD, daily: e.candles['1d'], ratio: e.books ? bookRatio(e.books)?.ratio : null })
+    // The smoothed book ratio, and the last reading — so a reading holds until the market moves it.
+    if (r) { r.setup = readSetup({ zones: r.zones, price, atrD: r.atrD, daily: e.candles['1d'], ratio: e.ratio ?? null, prev: e.lastSetup ?? null }); e.lastSetup = r.setup }
     e.memo = { key, r }
   }
   return e.memo.r
