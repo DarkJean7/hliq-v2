@@ -60,8 +60,13 @@ export function startPaperSync({ holdKey, fast = holdKey, pending = () => new Se
     return out
   }
 
+  // A release asked for while a sync is in flight is not dropped: it runs the moment that sync
+  // lands. Dropping it left the account leased to an app that had gone, until the lease ran out
+  // — caught by the browser test on a slow CI runner, where a timer sync overlapped the hide.
+  let releaseWanted = false
   async function syncNow({ release = false } = {}) {
-    if (busy || stopped) return
+    if (stopped) return
+    if (busy) { if (release) releaseWanted = true; return }
     busy = true
     const hold = release ? null : (holdKey() ?? null)
     const letGo = !!held && !hold
@@ -103,7 +108,10 @@ export function startPaperSync({ holdKey, fast = holdKey, pending = () => new Se
       if (adopted.length) { try { onAdopt(adopted) } catch {} }
     } catch {
       online = false
-    } finally { busy = false }
+    } finally {
+      busy = false
+      if (releaseWanted) { releaseWanted = false; if (!release) syncNow({ release: true }) }
+    }
   }
 
   // Checked every second against the CURRENT cadence, so entering paper speeds the syncs up at
