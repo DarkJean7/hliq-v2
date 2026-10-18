@@ -111,22 +111,47 @@ export function agentAddressOf(privateKey) {
 // another device can supersede this one; a key can be stored for the wrong account). Orders
 // then fail mid-action with HL's opaque "User or API Wallet 0x… does not exist".
 // Cached briefly so a preflight check before every order isn't a fresh request each time.
-const _agentListCache = new Map()   // master(lowercase) -> { addrs:Set, ts }
+const _agentListCache = new Map()   // master(lowercase) -> { recs:Map, ts }
 const _AGENT_LIST_TTL = 120_000
-export async function fetchApprovedAgents(master, { force = false } = {}) {
+
+/**
+ * Every agent HL has a record of for `master`, as agent address -> { validUntil, expired }.
+ * `validUntil` is null when HL reports no expiry. One request serves this and
+ * `fetchApprovedAgents`, which is derived from it, so asking for the expiries costs nothing.
+ *
+ * The expiry matters on its own: an approval is capped at 180 days, so a key that has signed
+ * for months stops working on a date nobody wrote down. Knowing WHEN lets the UI say so a week
+ * out instead of only discovering it when an order is rejected mid-close.
+ */
+export async function fetchAgentRecords(master, { force = false } = {}) {
   const key = String(master ?? '').toLowerCase()
   if (!key) return null
   const hit = _agentListCache.get(key)
-  if (!force && hit && Date.now() - hit.ts < _AGENT_LIST_TTL) return hit.addrs
+  if (!force && hit && Date.now() - hit.ts < _AGENT_LIST_TTL) return hit.recs
   const info = new InfoClient({ transport: new HttpTransport({ timeout: 15_000 }) })
   const list = await info.extraAgents({ user: master })
-  // HL keeps EXPIRED agents in this list (each carries `validUntil`), and signing with one
-  // fails the same way as an unknown agent — so treat expired as not-approved.
-  const now = Date.now()
-  const addrs = new Set((list ?? [])
-    .filter(a => !a?.validUntil || Number(a.validUntil) > now)
-    .map(a => String(a?.address ?? '').toLowerCase()).filter(Boolean))
-  _agentListCache.set(key, { addrs, ts: Date.now() })
+  const now  = Date.now()
+  const recs = new Map()
+  for (const a of list ?? []) {
+    const addr = String(a?.address ?? '').toLowerCase()
+    if (!addr) continue
+    const until = a?.validUntil == null ? null : Number(a.validUntil)
+    recs.set(addr, { validUntil: Number.isFinite(until) ? until : null, expired: until != null && until <= now })
+  }
+  _agentListCache.set(key, { recs, ts: Date.now() })
+  return recs
+}
+
+// Agents currently VALID for `master`, lowercased.
+// HL keeps EXPIRED agents in this list for a while (each carries `validUntil`), and signing
+// with one fails the same way as an unknown agent — so treat expired as not-approved. It also
+// PRUNES them eventually, which is why a lapsed key reads as "does not exist" rather than
+// "expired": absent from the list and past its date are the same failure, one cause.
+export async function fetchApprovedAgents(master, { force = false } = {}) {
+  const recs = await fetchAgentRecords(master, { force })
+  if (!recs) return null
+  const addrs = new Set()
+  for (const [addr, r] of recs) if (!r.expired) addrs.add(addr)
   return addrs
 }
 export function invalidateApprovedAgents(master) {

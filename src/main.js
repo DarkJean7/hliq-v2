@@ -187,6 +187,7 @@ import {
   signWithAgentKey,
   agentAddressOf,
   fetchApprovedAgents,
+  fetchAgentRecords,
   invalidateApprovedAgents,
   assetIdFor,
   placeSpotOrder,
@@ -8981,23 +8982,46 @@ async function _preflightAgent(acct) {
   const ck = `${master}|${agentAddr}`
   const hit = _agentOkCache.get(ck)
   if (hit && hit.ok && Date.now() - hit.ts < _AGENT_OK_TTL) return { ok: true, agentAddr, master }
-  let addrs
-  try { addrs = await fetchApprovedAgents(master) } catch { return { ok: true } }   // fail open
-  if (!addrs) return { ok: true }
-  const ok = addrs.has(agentAddr)
+  let recs
+  try { recs = await fetchAgentRecords(master) } catch { return { ok: true } }   // fail open
+  if (!recs) return { ok: true }
+  const mine = recs.get(agentAddr)
+  const ok   = !!mine && !mine.expired
   _agentOkCache.set(ck, { ok, ts: Date.now() })
-  return ok ? { ok: true, agentAddr, master }
-            : { ok: false, reason: 'not-approved', agentAddr, master }
+  if (ok) {
+    _agentExpiry.set(master, mine.validUntil ?? null)
+    return { ok: true, agentAddr, master, validUntil: mine.validUntil ?? null }
+  }
+  _agentExpiry.delete(master)
+  // WHY it failed, because the two causes need opposite reactions. An approval that lapsed is
+  // nobody's mistake and the key on this device is the right one; a key HL doesn't know while
+  // OTHER agents are still valid means this device is holding a superseded or foreign key.
+  // HL prunes lapsed agents, so "absent, and the account has no valid agent at all" is the
+  // lapsed case too — it is what an expiry looks like once the record is gone.
+  const anyValid = [...recs.values()].some(r => !r.expired)
+  const reason = mine?.expired || !anyValid ? 'expired' : 'not-approved'
+  return { ok: false, reason, agentAddr, master, validUntil: mine?.validUntil ?? null }
 }
 
 // Shown when the preflight rejects: explains it in plain language and offers the one-tap fix.
-async function _agentInvalidPrompt(master, agentAddr) {
+async function _agentInvalidPrompt(master, agentAddr, reason = 'not-approved') {
   const label = (() => { try { return WM.getLabel(master) } catch { return null } })()
   const short = a => a ? a.slice(0, 6) + '…' + a.slice(-4) : '?'
+  // An expired approval is the common case and reads nothing like a wrong key: the key on this
+  // device is correct and was working yesterday. Saying "replaced on another device" there sends
+  // people hunting for a problem that isn't theirs — so each cause gets its own sentence.
+  const expired = reason === 'expired'
+  const title = expired ? _T('Agent key expired', 'Clave de agente expirada')
+                        : _T('Agent key not valid', 'Clave de agente no válida')
+  const lead = expired
+    ? `${_T('This account\'s agent key', 'La clave de agente de esta cuenta')}${label ? ` (<b>${esc(label)}</b>)` : ''} ${_T('has reached the end of its approval, so Hyperliquid no longer accepts it for signing', 'llegó al final de su aprobación, así que Hyperliquid ya no la acepta para firmar')}.`
+    : `${_T('Hyperliquid does not recognize this account\'s agent key', 'Hyperliquid no reconoce la clave de agente de esta cuenta')}${label ? ` (<b>${esc(label)}</b>)` : ''}, ${_T('so it can\'t sign orders', 'así que no puede firmar órdenes')}.`
+  const why = expired
+    ? _T('Hyperliquid caps an approval at 180 days and drops the record once it lapses, which is why it now reads as unknown rather than expired. Nothing was lost and nothing was changed on another device — regenerating re-approves it for another 180 days. Your funds and positions are unaffected.', 'Hyperliquid limita una aprobación a 180 días y elimina el registro al vencer, por eso ahora aparece como desconocida y no como expirada. No se perdió nada ni cambió nada en otro dispositivo — al regenerarla se vuelve a aprobar por otros 180 días. Tus fondos y posiciones no se ven afectados.')
+    : _T('This usually means the key was replaced by one generated on another device, or it belongs to a different account. Your funds and positions are unaffected.', 'Suele significar que la clave fue reemplazada por una generada en otro dispositivo, o que pertenece a otra cuenta. Tus fondos y posiciones no se ven afectados.')
   const fix = await _appConfirm({
-    title: _T('Agent key not valid', 'Clave de agente no válida'),
-    body: `${_T('Hyperliquid does not recognize this account\'s agent key', 'Hyperliquid no reconoce la clave de agente de esta cuenta')}${label ? ` (<b>${esc(label)}</b>)` : ''}, ${_T('so it can\'t sign orders', 'así que no puede firmar órdenes')}.<br><br>
-      ${_T('This usually means the key was replaced by one generated on another device, or it belongs to a different account. Your funds and positions are unaffected.', 'Suele significar que la clave fue reemplazada por una generada en otro dispositivo, o que pertenece a otra cuenta. Tus fondos y posiciones no se ven afectados.')}
+    title,
+    body: `${lead}<br><br>${why}
       <br><br><span style="opacity:.6;font-size:11px" class="notranslate">agent ${esc(short(agentAddr))}</span>`,
     confirmText: _T('⚡ Regenerate key', '⚡ Regenerar clave'),
   })
@@ -9020,7 +9044,7 @@ async function _agentInvalidPrompt(master, agentAddr) {
 async function _guardAgent(acct) {
   const r = await _preflightAgent(acct)
   if (r.ok) return true
-  await _agentInvalidPrompt(r.master, r.agentAddr)
+  await _agentInvalidPrompt(r.master, r.agentAddr, r.reason)
   return false
 }
 
@@ -9029,6 +9053,22 @@ async function _guardAgent(acct) {
 // and read synchronously while rendering.
 const _agentBadAccts = new Set()
 window.__agentKeyBad = addr => _agentBadAccts.has(String(addr ?? '').toLowerCase())
+
+// When each account's stored key stops being approved. master(lowercase) -> ms | null.
+// A 180-day approval expires on a date nobody wrote down, and the app used to find out at the
+// moment an order was rejected — which is the worst moment, because it is usually a close.
+// Populated by the preflight and the sweep below; the key panels warn from it.
+const _agentExpiry = new Map()
+const AGENT_EXPIRY_WARN_MS = 7 * 86400e3
+window.__agentKeyExpiry = addr => _agentExpiry.get(String(addr ?? '').toLowerCase()) ?? null
+// Days left, but only once it's close enough to act on. null means "nothing to say".
+window.__agentKeyExpiringIn = addr => {
+  const until = window.__agentKeyExpiry(addr)
+  if (!until) return null
+  const left = until - Date.now()
+  if (left <= 0 || left > AGENT_EXPIRY_WARN_MS) return null
+  return Math.max(1, Math.ceil(left / 86400e3))
+}
 
 // Background sweep: validate every stored agent key against HL. One request per account,
 // spaced out so it never contributes to a rate-limit burst, and only for accounts that
@@ -9047,6 +9087,15 @@ async function _sweepAgentKeys() {
     const r = await _preflightAgent(key)
     if (r.ok) _agentBadAccts.delete(key)
     else      _agentBadAccts.add(key)
+    // _preflightAgent short-circuits on its own cache without re-reading validUntil, so fill
+    // the expiry in from the (already cached) records when the sweep found nothing to warn about.
+    if (r.ok && !_agentExpiry.has(key)) {
+      try {
+        const recs = await fetchAgentRecords(key)
+        const mine = recs?.get(agentAddressOf(_agentKeyGet(key)) ?? '')
+        if (mine && !mine.expired) _agentExpiry.set(key, mine.validUntil ?? null)
+      } catch {}
+    }
     await new Promise(r2 => setTimeout(r2, 400))   // keep it off the burst bucket
   }
   // Repaint so a newly-flagged account shows its warning without waiting for a tab switch.
@@ -20282,9 +20331,14 @@ function _mobVRenderContent(tick = false) {
     // A stored key HL no longer recognizes (replaced from another device / wrong account) —
     // say so here rather than letting it fail mid-order.
     const agentBad     = !!savedKey && window.__agentKeyBad(_agentUiAddr())
+    // An approval that is about to lapse still signs today, so this is a warning, not an error —
+    // but it is the only notice there is before the key simply stops working mid-order.
+    const agentDays    = !savedKey || agentBad ? null : window.__agentKeyExpiringIn?.(_agentUiAddr())
     const agentStatus  = agentBad ? 'Not valid on Hyperliquid'
+                       : agentDays ? `Expires in ${agentDays}d — regenerate`
                        : isConnected() ? 'Connected' : (savedKey ? 'Saved — not active' : 'Not connected')
-    const agentCls     = agentBad ? 'var(--neg)' : isConnected() ? 'var(--green)' : 'var(--muted)'
+    const agentCls     = agentBad ? 'var(--neg)' : agentDays ? 'var(--warn)'
+                       : isConnected() ? 'var(--green)' : 'var(--muted)'
     const newsKw       = document.getElementById('newsKeywords')?.value || 'war, attack, sanctions, hack, exploit, ban, seized, collapse, default'
     const devOn        = !!localStorage.getItem('hliq_dev')
     const bioEnabled   = !!localStorage.getItem('hliq_biometric_cred')
@@ -30748,6 +30802,10 @@ function _agentStatusFor(addr) {
   if (!key) return { html: `No key saved for <span class="notranslate">${label}</span>`, colour: mut }
   if (typeof window.__agentKeyBad === 'function' && window.__agentKeyBad(addr)) {
     return { html: `⚠ Not approved for <span class="notranslate">${label}</span> — generate a new key`, colour: 'var(--neg)' }
+  }
+  const days = window.__agentKeyExpiringIn?.(addr)
+  if (days) {
+    return { html: `⚠ Expires in ${days}d for <span class="notranslate">${label}</span> — regenerate`, colour: 'var(--warn)' }
   }
   return { html: `✓ Connected · signs for <span style="color:var(--accent)" class="notranslate">${label}</span>`, colour: 'var(--green)' }
 }
