@@ -10505,6 +10505,7 @@ function _headlineNetPnl(accountValue) {
   const ox = _offexPnlAdd()
   if (state.isAllAccounts) {
     const cp = _comboPnlSums()
+    _comboNetWaitNote(!cp)
     return cp ? cp.net + ox : null
   }
   const hl = _hlAllTimePnl(accountValue)
@@ -15445,6 +15446,40 @@ function _comboLabelOf(addr) {
     if (hit?.label) return hit.label
   } catch {}
   return lc.length >= 10 ? lc.slice(0, 6) + '…' + lc.slice(-4) : lc
+}
+
+/**
+ * Net PnL still "waiting for every wallet" thirty seconds on: say which wallet lacks what.
+ * Reported as "sometimes some cards like in this case the net pnl"; one cause (a failed
+ * portfolio read cached as empty) is fixed, and this records any other one rather than leaving
+ * it to be guessed from a screenshot. Once in ten minutes.
+ */
+let _comboNetWaitSince = 0, _comboNetWaitSaidAt = 0
+function _comboNetWaitNote(waiting) {
+  const now = Date.now()
+  if (!waiting) { _comboNetWaitSince = 0; return }
+  if (!_comboNetWaitSince) { _comboNetWaitSince = now; return }
+  if (now - _comboNetWaitSince < 30_000 || now - _comboNetWaitSaidAt < 10 * 60_000) return
+  _comboNetWaitSaidAt = now
+  try {
+    const hidden = _maHiddenLoad()
+    const rows = (_allAcctLastResults ?? []).filter(r => r && !hidden.has(r.addr))
+    const why = rows.map(r => String(r.addr).slice(0, 8) + ':' + (r.error ? 'error'
+      : !Number.isFinite(Number(r._cumLedger)) ? 'noLedger' + (Array.isArray(r.portfolio) && !r.portfolio.length ? '(emptyPortfolio)' : '')
+      : !Number.isFinite(Number(r.accountValue)) ? 'noValue'
+      : !Number.isFinite(Number(r.unrealizedPnl)) ? 'noUnreal' : 'ok')).join(',')
+    const snap = _combinedSnap
+    fetch('/api/error', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({
+        kind: 'netwait',
+        message: `combined Net PnL withheld ${Math.round((now - _comboNetWaitSince) / 1000)}s`,
+        stack: why + ` snapAge=${snap ? Math.round((now - Number(snap.updatedAt ?? 0)) / 1000) + 's' : 'none'}` +
+               ` snapWallets=${snap?.wallets}/${snap?.pnlWallets} bucket=${Math.round(_hlBudget.level())}`,
+        url: location.pathname,
+      }),
+    }).catch(() => {})
+  } catch {}
 }
 
 /** Once in ten minutes: which wallets have no value for now, and what is wrong with each. */
@@ -34582,11 +34617,27 @@ async function _lbFetchResults(entries) {
       // full price, and only once. On error keep what we already had rather than dropping to
       // an empty array, which would throw away good history over a transient failure.
       ;[portfolio, fills, funding] = await Promise.all([
-        info.portfolio({ user: entry.addr }).catch(() => []),
+        // null on failure, NOT []. An empty portfolio was stored below as fresh history, so one
+        // failed read left the wallet with no ledger figure for the whole eight-minute TTL and
+        // the combined Net PnL said "waiting for every wallet" all that time ("sometimes some
+        // cards like in this case the net pnl"). Empty is not the same as unknown.
+        info.portfolio({ user: entry.addr }).catch(() => null),
         _histFillsFrom(entry.addr, _hc?.fills, info)
           .catch(() => info.userFills({ user: entry.addr }).catch(() => _hc?.fills ?? [])),
         _histFundingFrom(entry.addr, _hc?.funding, info).catch(() => _hc?.funding ?? []),
       ])
+    }
+    if (!_histFresh && portfolio == null) {
+      // The read failed. Fall back to the last snapshot WITH its own anchor (the pair must stay
+      // together) and leave its timestamp alone, so the next fan, seconds away, tries again.
+      if (_hc?.portfolio?.length) ({ portfolio, perpAtHist: _perpAtHist, bookAtHist: _bookAtHist } = _hc)
+      else {
+        portfolio = []
+        _perpAtHist = parseFloat(cs.marginSummary?.accountValue ?? 0)
+        _bookAtHist = mtmBook([...(cs.assetPositions ?? []), ..._bookHip3()])
+      }
+      _histSet(key, { ...(_hc ?? {}), portfolio: _hc?.portfolio ?? [], fills, funding, perpAtHist: _hc?.perpAtHist, bookAtHist: _hc?.bookAtHist, ts: _hc?.ts ?? 0 })
+    } else if (!_histFresh) {
       // Perp account value AT the moment this portfolio snapshot was taken — the anchor that
       // keeps the (now-cached) snapshot time-aligned with the live perp delta below.
       //
