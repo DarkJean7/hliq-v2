@@ -52,7 +52,7 @@ const js = fs.readFileSync('src/uinova.js', 'utf8')
 t('Focus: desktop only, no sidebar column, the sidebar slides in from a menu button', /@media \(min-width: 881px\)/.test(css) && /grid-template-areas: "topbar" "main" "statusbar"/.test(css) && /nova-nav-open \.sidebar \{ transform: none; \}/.test(css))
 t('the sidebar panel is solid, as every menu here is', /\.sidebar \{[^}]*background-color: var\(--panel-3-o, var\(--panel-3\)\)/.test(css))
 t('the quick actions are the app\'s own handlers', ['mobVDeposit', 'mobVWithdraw', 'mobVSend', '__ovGoTrade'].every(f => js.includes(`'${f}'`)))
-t('they are re-added when the overview is redrawn, watching only the overview', js.includes("doc.getElementById('overviewStats')") && js.includes('new MutationObserver(place).observe(host'))
+t('they are re-added when the overview is redrawn, watching only the overview', js.includes("doc.getElementById('overviewStats')") && js.includes('new MutationObserver(tick).observe(host'))
 t('the win/loss pair and Unrealized/Net PnL trade places in the new look only, and trade back in Classic', js.includes('export function arrange(') && js.includes("const want = root.classList.contains('ui-nova')") && js.includes("attributeFilter: ['class']"))
 t('main.js starts it', cli.includes('installNovaChrome()') && cli.includes("from './uinova.js'"))
 
