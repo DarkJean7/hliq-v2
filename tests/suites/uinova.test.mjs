@@ -24,7 +24,8 @@ const loose = selectors.filter(s => !s.startsWith('html.ui-nova') && !ownOnly(s)
 t('every rule is scoped to html.ui-nova — with it off, Classic is untouched', loose.length === 0, loose)
 
 t('it is loaded with the app', cli.includes("import './uinova.css'"))
-t('the class is set before first paint, from this device\'s choice', /localStorage\.getItem\('hliq_ui'\) === 'nova'\) document\.documentElement\.classList\.add\('ui-nova'\)/.test(htm))
+// The new look is the default (asked: "make the new ui the default"); Classic is a remembered choice.
+t('the class is set before first paint: on unless this device chose Classic', /localStorage\.getItem\('hliq_ui'\) !== 'classic'\) document\.documentElement\.classList\.add\('ui-nova'\)/.test(htm))
 t('Settings has the switch on desktop', htm.includes('id="uiVersionSeg"') && htm.includes("__onUiVersion('classic')") && htm.includes("__onUiVersion('nova')"))
 t('and on the phone', cli.includes("window.__onUiVersion('nova');_mobVRenderContent()") && cli.includes("window.__onUiVersion('classic');_mobVRenderContent()"))
 t('switching remembers the choice and flips the one class', /window\.__onUiVersion = function[\s\S]{0,300}classList\.toggle\('ui-nova', nova\)[\s\S]{0,120}localStorage\.setItem\('hliq_ui'/.test(cli))

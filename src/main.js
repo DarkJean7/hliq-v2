@@ -328,6 +328,7 @@ import { ES_DICT } from './i18n-es.js'
 import { DISPLAY_NAMES } from './coinnames.js'
 import { installStaleChunkReload, reloadForStaleChunk } from './stalechunk.js'
 import { installNovaChrome } from './uinova.js'
+import { ensurePortfoliosFrame, openPortfolios } from './pfembed.js'
 
 /**
  * "Can this view act on the account right now?"
@@ -8638,6 +8639,7 @@ function switchTab(name, btn) {
   if (name === 'tokens')    renderMarkets({ fills: state.fills, allMids: state.allMids, perpState: state.perpState })
   if (name === 'trade')     { try { renderManageTables(state.perpState, state.openOrders, state.allMids); populateCoinDropdown(); updateTradeBalance(); _updateAvailDisplay() } catch (e) { console.error(e) } }
   if (name === 'performance') renderPerformance()
+  if (name === 'portfolios') ensurePortfoliosFrame()       // /portfolios inside the app (src/pfembed.js)
   // Same renderers the mobile shell uses, mounted in their own desktop panes.
   if (name === 'pulse') {
     const _ph = _viewHost('deskPulse')
@@ -12811,6 +12813,8 @@ function _chatAgo(ts) { const s = Math.floor((Date.now() - ts) / 1000); if (s < 
 try { installStaleChunkReload() } catch {}
 // The new interface's desktop menu button and quick actions (src/uinova.js); hidden in Classic by CSS.
 try { installNovaChrome() } catch {}
+// More → Portfolios on the phone: the page as a full-screen sheet, not a trip out of the app.
+window.__openPortfolios = () => openPortfolios()
 // Grid Ladder: five HYPE grid bots, one account each (src/gridladder-ui.js), loaded on first open.
 window.__openGridLadder = function() {
   document.getElementById('mobMoreDrawer')?.classList.remove('open')
@@ -19209,7 +19213,7 @@ function _pulseSegHeader() {
   const tab = (k, lbl) => `<button onclick="window.__pulseSetSeg('${k}')" style="flex:1;padding:6px 10px;border:none;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap;background:${_pulseSeg === k ? 'var(--accent)' : 'transparent'};color:${_pulseSeg === k ? '#000' : 'var(--muted)'};transition:background .15s">${lbl}</button>`
   return `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:8px;padding:11px 12px 9px;background:var(--bg);border-bottom:1px solid var(--border)">
     <div style="flex:1;display:flex;gap:3px;background:var(--panel-1);border-radius:10px;padding:3px">${
-      tab('signals', _T('Signals', 'Señales'))}${tab('pulse', 'Pulse')}${tab('analysis', _T('Analysis', 'Análisis'))}</div>
+      tab('analysis', _T('Analysis', 'Análisis'))}${tab('signals', _T('Signals', 'Señales'))}${tab('pulse', 'Pulse')}</div>
     <button onclick="window.__paneClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
   </div>`
 }
@@ -28006,7 +28010,7 @@ function _devBotPreviewSheet(def, res) {
   const _pvMkts = botCoins(def)
   const _pvHomeOnly = res && res.intents.length > 0 &&
     res.intents.every(it => (it.coin ?? def.coin) === def.coin)
-  const _pvBlindToList = !/coins/.test(def.code ?? '')
+  const _pvBlindToList = !/\bcoins\b/.test(def.code ?? '')
   const _pvOneMarket = _pvMkts.length > 1 && _pvHomeOnly && _pvBlindToList
   let body
   if (!res) {

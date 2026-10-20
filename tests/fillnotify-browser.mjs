@@ -106,10 +106,15 @@ async function run(label, opts) {
   ok('it sits bottom-right', box.x + box.width > vp.width - 30 && box.x > vp.width * 0.2 && box.y + box.height > vp.height * 0.6, box)
   if (opts.isMobile) {
     // Whatever bar is pinned to the bottom of the screen (the shells use different elements).
+    // A bar, not a full-screen layer: the new interface's dock floats a few px above the edge,
+    // so the first fixed thing under the very bottom pixel can be the page layer behind it.
     const nav = await p.evaluate(() => {
-      let n = document.elementFromPoint(innerWidth / 2, innerHeight - 4)
-      while (n && n !== document.body && getComputedStyle(n).position !== 'fixed') n = n.parentElement
-      return n && n !== document.body ? n.getBoundingClientRect().top : null
+      for (let y = innerHeight - 4; y > innerHeight - 120; y -= 6) {
+        let n = document.elementFromPoint(innerWidth / 2, y)
+        while (n && n !== document.body && getComputedStyle(n).position !== 'fixed') n = n.parentElement
+        if (n && n !== document.body && n.getBoundingClientRect().height < innerHeight / 3) return n.getBoundingClientRect().top
+      }
+      return null
     })
     ok('on a phone it clears the bottom nav', nav == null || box.y + box.height <= nav, { box, nav })
   }

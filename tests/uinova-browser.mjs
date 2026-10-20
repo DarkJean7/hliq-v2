@@ -43,8 +43,13 @@ for (const [w, h, mob] of [[1400, 900, false], [430, 930, true]]) {
   })
   await p.reload({ waitUntil: 'domcontentloaded' })
   await until('boot', () => p.evaluate(() => !!window.__goPaper && !!window.__onUiVersion))
+  // Asked: "make the new ui the default". A device that has not chosen gets it; Classic is a choice.
+  ok('the new look is the default on a device that has not chosen', await p.evaluate(() => document.documentElement.classList.contains('ui-nova')))
+  await p.evaluate(() => window.__onUiVersion('classic'))
+  await p.reload({ waitUntil: 'domcontentloaded' })
+  await until('boot', () => p.evaluate(() => !!window.__goPaper && !!window.__onUiVersion))
   await p.evaluate(() => window.__goPaper('main'))
-  ok('Classic by default — nothing changes for anyone who has not chosen', !(await p.evaluate(() => document.documentElement.classList.contains('ui-nova'))))
+  ok('choosing Classic sticks across a reload', !(await p.evaluate(() => document.documentElement.classList.contains('ui-nova'))) && await p.evaluate(() => localStorage.getItem('hliq_ui') === 'classic'))
   const font = () => p.evaluate(() => getComputedStyle(document.querySelector(document.querySelector('.ov-eq-val')?.offsetParent ? '.ov-eq-val' : '.mob-v-balance') ?? document.body).fontFamily)
   const classicFont = await font()
 

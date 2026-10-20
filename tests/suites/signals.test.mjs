@@ -15,7 +15,8 @@ const fn = (sig, ret) => new Function(grab(sig) + '\n return ' + ret)()
 
 console.log(String.fromCharCode(10) + '-- three sections, like Allocation --')
 t('the segment state persists', cli.includes("localStorage.getItem('hliq_pulse_seg')"))
-t('there are exactly three', cli.includes("tab('signals', _T('Signals', 'Señales'))}${tab('pulse', 'Pulse')}${tab('analysis'"))
+// In the order asked for: "analysis, signals, pulse".
+t('there are exactly three', cli.includes("tab('analysis', _T('Analysis', 'Análisis'))}${tab('signals', _T('Signals', 'Señales'))}${tab('pulse', 'Pulse')}"))
 t('Pulse keeps its own body under the header', cli.includes("el.innerHTML = _pulseSegHeader() + `<div style=\"padding:2px 0 90px\">"))
 t('Analysis is handed a container rather than a rebuilt one', cli.includes("let host = el.querySelector('#pulseSegBody')"))
 t('why that matters is recorded', cli.includes('must not tear down live chart iframes'))

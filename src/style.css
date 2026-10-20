@@ -8441,3 +8441,6 @@ input.sim-sw:checked::before { transform: translateX(14px); }
 .pa-alarm-tests { display: flex; gap: 8px; }
 .pa-alarm-tests .pa-alarm-test { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pa-alarm-tests .pa-alarm-test.on { flex: 2.4; border-color: var(--accent); color: var(--accent); }
+
+/* Portfolios tab: the /portfolios page inside the app (src/pfembed.js), filling its panel. */
+.pf-embed-frame { display: block; width: 100%; height: calc(100vh - 190px); min-height: 560px; border: 0; border-radius: var(--r-3); background: var(--bg); }

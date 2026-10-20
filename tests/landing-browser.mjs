@@ -101,8 +101,10 @@ for (const [label, opts] of [['mobile', { ...devices['iPhone 14 Pro'] }], ['desk
   ok('from then on / goes straight to the app', u.pathname === '/app' && await isApp(p), p.url())
   ok('carrying the query along', u.search === '?coin=BTC', u.search)
 
-  // The way back: the logo. Mobile has it in the brand bar, desktop in the sidebar.
-  const sel = label === 'mobile' ? '#mobPredictHandle .mob-v-brand' : '.sidebar .brand a.insolvent-logo'
+  // The way back: the logo. Mobile has it in the brand bar; desktop in the sidebar, or — in the
+  // new interface (the default), which has no sidebar column — in the top bar.
+  const nova = await p.evaluate(() => document.documentElement.classList.contains('ui-nova'))
+  const sel = label === 'mobile' ? '#mobPredictHandle .mob-v-brand' : nova ? '.topbar-brand a.insolvent-logo' : '.sidebar .brand a.insolvent-logo'
   await loadAccount(p)
   const onScreen = s => { const e = document.querySelector(s); const r = e?.getBoundingClientRect()
     return !!r && r.width > 0 && r.height > 0 && document.elementFromPoint(r.x + 4, r.y + r.height / 2)?.closest('a') === e }

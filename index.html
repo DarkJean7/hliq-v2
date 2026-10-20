@@ -41,8 +41,9 @@
   <script>
     // The landing page at / skips itself for anyone who has been in the app; see landing.html.
     try { localStorage.setItem('hliq_app_entered', '1') } catch (e) {}
-    // Settings → Interface → New (src/uinova.css), set before first paint so it never flashes.
-    try { if (localStorage.getItem('hliq_ui') === 'nova') document.documentElement.classList.add('ui-nova') } catch (e) {}
+    // Settings → Interface (src/uinova.css). The new look is the default; Classic is a choice
+    // remembered on this device. Set before first paint so it never flashes.
+    try { if (localStorage.getItem('hliq_ui') !== 'classic') document.documentElement.classList.add('ui-nova') } catch (e) { document.documentElement.classList.add('ui-nova') }
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'))
     }
@@ -191,7 +192,7 @@
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="9" rx="1"/><line x1="5" y1="15" x2="11" y2="15"/></svg>
       <span>Simulator</span>
     </div>
-    <div class="sidebar-item" onclick="location.href='/portfolios'">
+    <div class="sidebar-item" data-tab="portfolios" onclick="switchTab('portfolios',null);setSidebarActive(this)">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M8 2l6 3.3L8 8.6 2 5.3z"/><path d="M2 8.6l6 3.3 6-3.3"/><path d="M2 11.6l6 3.3 6-3.3"/></svg>
       <span>Portfolios</span>
     </div>
@@ -325,7 +326,7 @@
       <button class="nav-tab" onclick="switchTab('analysis',this)">Analysis</button>
       <!-- The sidebar's order, Bot Agents included: Simulator, Portfolios, Strategies, Grid Ladder, Performance. -->
       <button class="nav-tab" onclick="switchTab('simulator',this)">Simulator</button>
-      <button class="nav-tab" onclick="location.href='/portfolios'">Portfolios</button>
+      <button class="nav-tab" onclick="switchTab('portfolios',this)">Portfolios</button>
       <button class="nav-tab" onclick="switchTab('strategies',this)"><svg viewBox="0 0 20 22" width="11" height="11" fill="currentColor"><rect x="1" y="0" width="4" height="5" rx="1"/><rect x="8" y="0" width="4" height="5" rx="1"/><rect x="15" y="0" width="4" height="5" rx="1"/><rect x="2" y="5" width="16" height="11" rx="1"/><rect x="0" y="16" width="20" height="5" rx="1"/></svg>Strategies</button>
       <button class="nav-tab" onclick="window.__openGridLadder()">Grid Ladder</button>
       <button class="nav-tab" onclick="switchTab('performance',this)">Performance</button>
@@ -956,6 +957,12 @@
     <!-- Allocation. Same renderer as the mobile tab, mounted in its own desktop pane. -->
     <div class="tab-panel" id="tab-allocation">
       <div id="deskAlloc"></div>
+    </div>
+
+    <!-- Portfolios: the /portfolios page itself, inside the app (src/pfembed.js), so it no longer
+         leaves the app. Loaded the first time the tab is opened. -->
+    <div class="tab-panel" id="tab-portfolios">
+      <iframe id="pfEmbedFrame" class="pf-embed-frame" title="Portfolios" loading="lazy"></iframe>
     </div>
 
     <!-- TradingView charting workbench. Same renderer as the mobile Analysis tab. -->
@@ -2561,7 +2568,7 @@
     <div class="mob-more-section">Bot Agents</div>
     <!-- In the order you use them: test an idea (Simulator, Portfolios), run it (Strategies, Grid Ladder), then see how it did (Bot Performance). -->
     <button onclick="window.__mobMoreTab('simulator')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v7L5 19a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8-3l-5-9V3"/><line x1="8" y1="16" x2="16" y2="16"/></svg>Trade Simulator</button>
-    <button onclick="location.href='/portfolios'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/><path d="M3 17.5l9 5 9-5"/></svg>Portfolios</button>
+    <button onclick="window.__openPortfolios()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/><path d="M3 17.5l9 5 9-5"/></svg>Portfolios</button>
     <button onclick="window.__mobMoreTab('strategies')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="8" height="8" rx="1"/><rect x="14" y="2" width="8" height="8" rx="1"/><rect x="2" y="14" width="8" height="8" rx="1"/><path d="M14 18h8M18 14v8"/></svg>Strategies</button>
     <button onclick="window.__openGridLadder()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="5" x2="20" y2="5"/><line x1="4" y1="10" x2="20" y2="10"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="4" y1="20" x2="20" y2="20"/><line x1="6" y1="3" x2="6" y2="22"/><line x1="18" y1="3" x2="18" y2="22"/></svg>Grid Ladder</button>
     <button onclick="window.__mobMoreTab('performance')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 19a9 9 0 1 1 18 0"/><line x1="12" y1="19" x2="16.5" y2="10.5"/></svg>Bot Performance</button>

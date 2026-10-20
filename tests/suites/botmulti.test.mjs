@@ -150,7 +150,9 @@ console.log(nl + '-- a card wider than its file is called out --')
 // The list is a permission, not an instruction, and a file that ignores it used to look
 // identical to one that honours it. Three conditions, so this stays a cause and not a guess.
 t('the preview works out whether the file can see the list',
-  cli.includes('const _pvBlindToList = !/\bcoins\b/.test(def.code')),
+  // String.raw: in a plain string '\b' is a backspace, which is how this assertion once pinned the
+  // broken regex (literal backspaces, never matching) instead of the word boundary it meant.
+  cli.includes(String.raw`const _pvBlindToList = !/\bcoins\b/.test(def.code`)),
 t('it only fires when every order was for the home market',
   cli.includes('res.intents.every(it => (it.coin ?? def.coin) === def.coin)')),
 t('and only when the card lists more than one market',

@@ -16,6 +16,10 @@
   <meta name="theme-color" content="#0a0c10"/>
   <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=6"/>
   <link rel="icon" type="image/png" href="/favicon.png?v=6"/>
+  <!-- Shown inside the app (the Portfolios tab, src/pfembed.js) as /portfolios?embed=1: the same
+       page, without the public site's menu and footer — the app has its own around it. -->
+  <script>if (/[?&]embed=1/.test(location.search)) document.documentElement.classList.add('pf-embed')</script>
+  <style>html.pf-embed .ln-nav, html.pf-embed .ln-foot { display: none !important; }</style>
   <link rel="stylesheet" href="/fonts/fonts.css">
   <link rel="preload" as="font" type="font/woff2" href="/fonts/inter-tight-700-normal-latin.woff2" crossorigin>
   <link rel="preload" as="font" type="font/woff2" href="/fonts/jetbrains-mono-400-normal-latin.woff2" crossorigin>
