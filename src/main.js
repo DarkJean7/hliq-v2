@@ -327,6 +327,7 @@ import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
 import { ES_DICT } from './i18n-es.js'
 import { DISPLAY_NAMES } from './coinnames.js'
 import { installStaleChunkReload, reloadForStaleChunk } from './stalechunk.js'
+import { installNovaChrome } from './uinova.js'
 
 /**
  * "Can this view act on the account right now?"
@@ -12805,6 +12806,8 @@ function _chatAgo(ts) { const s = Math.floor((Date.now() - ts) / 1000); if (s < 
 
 // A tab older than the last deploy reloads to the new version when a lazy chunk is gone (src/stalechunk.js).
 try { installStaleChunkReload() } catch {}
+// The new interface's desktop menu button and quick actions (src/uinova.js); hidden in Classic by CSS.
+try { installNovaChrome() } catch {}
 // Grid Ladder: five HYPE grid bots, one account each (src/gridladder-ui.js), loaded on first open.
 window.__openGridLadder = function() {
   document.getElementById('mobMoreDrawer')?.classList.remove('open')

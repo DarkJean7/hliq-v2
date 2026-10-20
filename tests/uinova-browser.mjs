@@ -70,7 +70,25 @@ for (const [w, h, mob] of [[1400, 900, false], [430, 930, true]]) {
   const novaFont = await font()
   ok('it really is a different look (the numbers are no longer monospace)', /Inter/.test(novaFont) && novaFont !== classicFont, [classicFont, novaFont])
 
+  if (!mob) {
+    // Focus (the chosen layout): no sidebar column, a menu button that slides it in.
+    const sideX = () => p.evaluate(() => document.querySelector('.sidebar').getBoundingClientRect().right)
+    await until('the layout to settle', async () => (await sideX()) <= 0)
+    ok('Focus: the sidebar is off the page, the menu button is there', (await sideX()) <= 0 && await p.evaluate(() => !!document.getElementById('novaMenuBtn')?.offsetParent), [await sideX(), await p.evaluate(() => !!document.getElementById('novaMenuBtn')?.offsetParent)])
+    await p.click('#novaMenuBtn')
+    await until('the panel', async () => (await sideX()) > 200)
+    ok('the menu slides the sidebar in', (await sideX()) > 200)
+    await p.click('.sidebar .sidebar-item[data-tab="overview"]')
+    await until('it closes', async () => (await sideX()) <= 0)
+    ok('choosing a page closes it again', (await sideX()) <= 0 && await p.evaluate(() => !document.documentElement.classList.contains('nova-nav-open')))
+    await p.evaluate(() => window.switchTab('overview', null))
+    await until('the quick actions', () => p.evaluate(() => document.querySelectorAll('.ov-equity .nova-actions .nova-act').length === 4))
+    ok('the overview has the four quick actions under the balance', await p.evaluate(() => [...document.querySelectorAll('.nova-act')].map(b => b.textContent).join() === 'Deposit,Withdraw,Send,Trade'))
+  }
+
   await p.evaluate(() => window.__onUiVersion('classic'))
+  if (!mob) ok('back in Classic: the sidebar is where it was, the new controls are gone', await p.evaluate(() =>
+    document.querySelector('.sidebar').getBoundingClientRect().left >= 0 && !document.getElementById('novaMenuBtn').offsetParent && !document.querySelector('.nova-actions')?.offsetParent))
   ok('and back to Classic in one tap, exactly as it was', !(await p.evaluate(() => document.documentElement.classList.contains('ui-nova'))) && (await font()) === classicFont)
   if (mob) ok('the phone page does not scroll sideways in the new look', await p.evaluate(() => { document.documentElement.classList.add('ui-nova'); return document.documentElement.scrollWidth <= window.innerWidth + 1 }))
   ok('no page errors', errs.length === 0, errs)

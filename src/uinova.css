@@ -206,3 +206,74 @@ html.ui-nova .mob-v-bottom-btn.active { color: var(--fg); }
 html.ui-nova .mob-more-drawer { border-radius: 28px 28px 0 0; }
 html.ui-nova .mob-more-grid > button { border-radius: 16px !important; }
 html.ui-nova .mob-wallet-drawer { border-radius: 28px 28px 0 0; }
+
+/* ═══ FOCUS — the desktop layout (chosen: "no sidebar, menu button instead, one centered column
+   like a banking app"). The phone is already one column; this is desktop only. ═══════════════ */
+@media (min-width: 881px) {
+  /* No sidebar column: the page is the content. */
+  html.ui-nova .app {
+    grid-template-columns: 1fr !important;
+    grid-template-areas: "topbar" "main" "statusbar" !important;
+  }
+  /* The sidebar is a panel the menu button slides in over the page (src/uinova.js). Solid. */
+  html.ui-nova .sidebar {
+    position: fixed; top: 12px; bottom: 12px; left: 12px; width: 268px; margin: 0;
+    z-index: 400; transform: translateX(calc(-100% - 24px)); transition: transform 0.26s cubic-bezier(0.32, 0.72, 0, 1);
+    background-color: var(--panel-3-o, var(--panel-3));
+    box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.8);
+  }
+  html.ui-nova.nova-nav-open .sidebar { transform: none; }
+  html.ui-nova .nova-scrim { position: fixed; inset: 0; z-index: 399; background: rgba(0, 0, 0, 0.5); opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+  html.ui-nova.nova-nav-open .nova-scrim { opacity: 1; pointer-events: auto; }
+  html.ui-nova .nova-menu-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 40px; height: 40px; border-radius: 14px; cursor: pointer; flex-shrink: 0;
+    background: var(--panel-2); color: var(--fg); border: 1px solid var(--nova-edge);
+  }
+  html.ui-nova .nova-menu-btn:hover { background: var(--panel-3); }
+  /* With no sidebar the logo lives in the top bar. */
+  html.ui-nova .topbar-brand { display: flex !important; }
+  html.ui-nova .topbar { padding: 0 22px; gap: 14px; }
+
+  /* Tabs: a centred pill bar. */
+  html.ui-nova .nav-tabs { margin-inline: auto; }
+
+  /* The overview: one centred column. */
+  html.ui-nova #overviewStats { max-width: 1000px; margin-inline: auto; }
+  html.ui-nova :is(.ov-grid, .ov-top-row) { grid-template-columns: minmax(0, 1fr) !important; }
+
+  /* The hero: a huge centred balance, its chart beneath, the actions between. */
+  html.ui-nova .ov-equity { padding: 34px 34px 26px; }
+  html.ui-nova .ov-eq-head { flex-direction: column; align-items: center; text-align: center; gap: 18px; }
+  html.ui-nova .ov-eq-head > div:first-child { flex-direction: column; align-items: center !important; }
+  html.ui-nova .ov-eq-head > div:first-child > div:last-child { display: flex; flex-direction: column; align-items: center; }
+  html.ui-nova .ov-eq-val { font-size: 76px; letter-spacing: -0.05em; margin-top: 2px; }
+  html.ui-nova .ov-acct-av { display: none; }
+  html.ui-nova .ov-chart-tabs { justify-content: center; margin-top: 18px; }
+  html.ui-nova .ov-chart-wrap { height: 240px; margin-top: 14px; }
+
+  html.ui-nova .nova-actions { display: flex; justify-content: center; gap: 10px; margin-top: 22px; flex-wrap: wrap; }
+  html.ui-nova .nova-act {
+    min-width: 128px; height: 46px; padding: 0 22px; border-radius: 999px; cursor: pointer;
+    font-size: 14.5px; font-weight: 600; color: var(--fg);
+    background: var(--panel-2); background-image: var(--nova-lit); border: 1px solid var(--nova-edge);
+  }
+  html.ui-nova .nova-act:hover { background-color: var(--panel-3); }
+  html.ui-nova .nova-act.primary { background: var(--nova-grad); color: #fff; border-color: transparent; box-shadow: 0 10px 28px -12px color-mix(in oklch, var(--accent) 70%, transparent); }
+
+  /* Health: a wide card — the ring beside its numbers rather than above them. */
+  html.ui-nova .ov-health { display: grid; grid-template-columns: 240px minmax(0, 1fr); grid-template-rows: auto 1fr; column-gap: 28px; align-items: center; }
+  html.ui-nova .ov-health-head { grid-column: 1 / -1; }
+  html.ui-nova .ov-health .ov-ring-wrap { grid-column: 1; }
+  html.ui-nova .ov-health .ov-health-rows { grid-column: 2; }
+
+  /* What was the side column follows the column, two across. */
+  html.ui-nova .ov-side { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+  html.ui-nova .ov-side > .ov-winloss { grid-column: 1 / -1; }
+  html.ui-nova .ov-side > .ov-cta { display: none; }        /* Trade is in the actions row now */
+}
+/* The new interface's own controls stay hidden everywhere else (and on the phone). */
+html:not(.ui-nova) :is(.nova-menu-btn, .nova-scrim, .nova-actions) { display: none !important; }
+@media (max-width: 880px) { html.ui-nova :is(.nova-menu-btn, .nova-scrim, .nova-actions) { display: none !important; } }
+/* Inter is wider than the classic monospace: the health ring's label is sized to stay inside it. */
+html.ui-nova .ov-ring text { font-size: 21px !important; font-weight: 700; letter-spacing: -0.03em; }

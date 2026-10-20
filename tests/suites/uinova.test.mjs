@@ -17,7 +17,10 @@ for (const m of css.matchAll(/([^{}]+)\{[^{}]*\}/g)) {
   if (cur.trim()) selectors.push(cur.trim())
 }
 t('the stylesheet has rules', selectors.length > 30, selectors.length)
-const loose = selectors.filter(s => !s.startsWith('html.ui-nova'))
+// The one exception: hiding the new look's OWN controls (menu button, scrim, quick actions —
+// src/uinova.js) when it is off. It touches nothing of the classic UI.
+const ownOnly = (s) => /^html:not\(\.ui-nova\) :is\((\.nova-[a-z-]+(, )?)+\)$/.test(s)
+const loose = selectors.filter(s => !s.startsWith('html.ui-nova') && !ownOnly(s))
 t('every rule is scoped to html.ui-nova — with it off, Classic is untouched', loose.length === 0, loose)
 
 t('it is loaded with the app', cli.includes("import './uinova.css'"))
@@ -43,6 +46,14 @@ const allowed = [/\.main, #mobileView/, /^html\.ui-nova \.ov-stat-strip$/, /^htm
 t('only the page containers, the stat strip and the two bars are made clear — never a card, sheet or menu',
   cleared.length === allowed.length && cleared.every(c => allowed.some(re => re.test(c))), cleared)
 t('and not over a wallpaper, which is its own picture', /html\.ui-nova:not\(\.has-bg-image\)/.test(css))
+
+// The Focus layout (chosen: "no sidebar, menu button instead, one centered column").
+const js = fs.readFileSync('src/uinova.js', 'utf8')
+t('Focus: desktop only, no sidebar column, the sidebar slides in from a menu button', /@media \(min-width: 881px\)/.test(css) && /grid-template-areas: "topbar" "main" "statusbar"/.test(css) && /nova-nav-open \.sidebar \{ transform: none; \}/.test(css))
+t('the sidebar panel is solid, as every menu here is', /\.sidebar \{[^}]*background-color: var\(--panel-3-o, var\(--panel-3\)\)/.test(css))
+t('the quick actions are the app\'s own handlers', ['mobVDeposit', 'mobVWithdraw', 'mobVSend', '__ovGoTrade'].every(f => js.includes(`'${f}'`)))
+t('they are re-added when the overview is redrawn, watching only the overview', js.includes("doc.getElementById('overviewStats')") && js.includes('new MutationObserver(place).observe(host'))
+t('main.js starts it', cli.includes('installNovaChrome()') && cli.includes("from './uinova.js'"))
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
