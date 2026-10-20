@@ -12817,6 +12817,7 @@ try { installNovaChrome() } catch {}
 window.__openPortfolios = () => openPortfolios()
 // Grid Ladder: five HYPE grid bots, one account each (src/gridladder-ui.js), loaded on first open.
 window.__openGridLadder = function() {
+  if (!isDev()) return            // dev mode only, for now (asked: "make grid ladder only visible in dev mode")
   document.getElementById('mobMoreDrawer')?.classList.remove('open')
   document.getElementById('mobMoreBackdrop')?.classList.remove('open')
   import('./gridladder-ui.js').then(m => m.openGridLadder()).catch(e => { if (!reloadForStaleChunk(e)) _appAlert('Could not open the Grid Ladder: ' + e.message) })
@@ -33780,6 +33781,7 @@ function _applyDevMode() {
     ? 'Dev mode active — leaderboard management, bot strategies, and profile pic editing unlocked'
     : 'Unlock leaderboard management, bot strategies, and profile pic editing. Requires PIN.'
   document.querySelectorAll('.dev-only').forEach(el => { el.style.display = on ? '' : 'none' })
+  document.documentElement.classList.toggle('is-dev', on)      // .dev-gate entries (style.css)
   // Dev mode gates the Strats paywall, so a change has to repaint that tab. Without this
   // the unlock only appeared after a reload.
   if (_isMobView() && _mobVActiveTab === 'strategies') _mobVRenderContent()

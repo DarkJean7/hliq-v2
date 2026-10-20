@@ -79,6 +79,17 @@ for (const [w, h, mob] of [[430, 930, true], [1400, 900, false]]) {
   }, { A, B, KEY_A, KEY_B })
   await p.reload({ waitUntil: 'domcontentloaded' })
   await until('boot', () => p.evaluate(() => typeof window.__openGridLadder === 'function'))
+
+  // Asked: "make grid ladder only visible in dev mode". Not in dev mode: no entry, and it will not open.
+  const entries = () => p.evaluate(() => [...document.querySelectorAll('[onclick*="__openGridLadder"]')].filter(e => e.getClientRects().length && getComputedStyle(e).display !== 'none').length)
+  ok('without dev mode, no Grid Ladder entry is shown', (await entries()) === 0)
+  await p.evaluate(() => window.__openGridLadder())
+  await new Promise(r => setTimeout(r, 500))
+  ok('and the panel will not open', await p.evaluate(() => !document.querySelector('.gl-ov')))
+  await p.evaluate(() => localStorage.setItem('hliq_dev', '1'))
+  await p.reload()
+  await until('boot again', () => p.evaluate(() => typeof window.__openGridLadder === 'function'))
+  ok('in dev mode it is there again, from the first paint', await p.evaluate(() => document.documentElement.classList.contains('is-dev')))
   await p.evaluate(() => window.__openGridLadder())
   await until('the panel', () => p.evaluate(() => document.querySelectorAll('.gl-card').length === 5))
 

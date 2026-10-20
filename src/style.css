@@ -8444,3 +8444,7 @@ input.sim-sw:checked::before { transform: translateX(14px); }
 
 /* Portfolios tab: the /portfolios page inside the app (src/pfembed.js), filling its panel. */
 .pf-embed-frame { display: block; width: 100%; height: calc(100vh - 190px); min-height: 560px; border: 0; border-radius: var(--r-3); background: var(--bg); }
+
+/* Dev-only entries (Grid Ladder for now): hidden unless dev mode is on. html.is-dev is set before
+   first paint (index.html) and kept in step when dev mode is switched (_applyDevMode). */
+html:not(.is-dev) .dev-gate { display: none !important; }
