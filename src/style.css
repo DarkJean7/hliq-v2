@@ -8448,3 +8448,6 @@ input.sim-sw:checked::before { transform: translateX(14px); }
 /* Dev-only entries (Grid Ladder for now): hidden unless dev mode is on. html.is-dev is set before
    first paint (index.html) and kept in step when dev mode is switched (_applyDevMode). */
 html:not(.is-dev) .dev-gate { display: none !important; }
+/* index.html declares color-scheme: dark so the blank canvas of a cold start is dark, not white.
+   In light mode the browser's own controls (scrollbars, native inputs) should be light again. */
+html:has(body.light-mode), body.light-mode { color-scheme: light; }

@@ -8,7 +8,8 @@
 //
 //   npm run test:browser                 # expects a dev server on 5175
 //   npm run test:browser -- --port=4173  # or wherever
-import { spawnSync } from 'node:child_process'
+//   BROWSER_JOBS=1 npm run test:browser  # one at a time
+import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -27,21 +28,51 @@ const annotate = (f, lines) => {
   console.log(`::error file=tests/${f}::${f} — ${body}`)
 }
 
-let failed = []
-for (const f of FILES) {
-  console.log('\n══ ' + f + ' ' + '═'.repeat(Math.max(0, 60 - f.length)))
-  // Piped rather than inherited so a failure's assertions can be pulled back out; written
-  // straight through either way, so the log reads exactly as it did.
-  const r = spawnSync(process.execPath, [join(here, f), ...args], { encoding: 'utf8' })
+// IN PARALLEL. One after another, they took 651 seconds of a 768-second deploy ("15 minutes just
+// to make grid ladder dev mode only??? why all changes take so long?"). Each file is hermetic —
+// its own browser, its own stubbed exchange — so they can share the machine: JOBS at a time
+// (default 3, for CI's 4 cores; BROWSER_JOBS to change it). Each file's output is printed as one
+// block when it finishes, so the log still reads file by file.
+//
+// A file that fails is run ONCE more, alone, after the rest. A few of these follow real timing
+// (a slide-in, a refresh) and can trip on a busy machine. A real failure fails twice and still
+// blocks the deploy; a pass on the second run is reported, never hidden.
+const JOBS = Math.max(1, parseInt(process.env.BROWSER_JOBS || '3', 10) || 3)
+const head = (f) => '\n══ ' + f + ' ' + '═'.repeat(Math.max(0, 60 - f.length))
+const runOne = (f) => new Promise((resolve) => {
+  const p = spawn(process.execPath, [join(here, f), ...args])
+  let out = ''
+  p.stdout.on('data', d => { out += d })
+  p.stderr.on('data', d => { out += d })
+  p.on('close', (code) => resolve({ f, code, out }))
+})
+
+const t0 = Date.now()
+const first = []
+let next = 0
+await Promise.all(Array.from({ length: Math.min(JOBS, FILES.length) }, async () => {
+  while (next < FILES.length) {
+    const r = await runOne(FILES[next++])
+    process.stdout.write(head(r.f) + '\n' + r.out)
+    if (r.code !== 0) first.push(r)
+  }
+}))
+
+const failed = [], flaky = []
+for (const r0 of first) {
+  console.log(head(r0.f + ' — again, alone'))
+  const r = spawnSync(process.execPath, [join(here, r0.f), ...args], { encoding: 'utf8' })
   const out = (r.stdout ?? '') + (r.stderr ?? '')
   process.stdout.write(out)
   if (r.status !== 0) {
-    failed.push(f)
-    annotate(f, out.split(/\r?\n/).filter(l => /\bFAIL\b|Error|error:/.test(l)).slice(0, 8))
-  }
+    failed.push(r0.f)
+    annotate(r0.f, out.split(/\r?\n/).filter(l => /\bFAIL\b|Error|error:/.test(l)).slice(0, 8))
+  } else flaky.push(r0.f)
 }
 
 console.log('')
+if (flaky.length) console.log('Passed on a second run alone (timing under load): ' + flaky.join(', '))
+console.log(`${FILES.length} files, ${JOBS} at a time, in ${Math.round((Date.now() - t0) / 1000)}s`)
 if (failed.length) {
   console.log('FAILED: ' + failed.join(', '))
   if (process.env.GITHUB_ACTIONS) console.log(`::error::browser tests failed: ${failed.join(', ')}`)
