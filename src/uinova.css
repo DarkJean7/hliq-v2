@@ -290,6 +290,40 @@ html.ui-nova .ov-ring text { font-size: 21px !important; font-weight: 700; lette
   html.ui-nova .ov-health { display: flex; flex-direction: column; }
   html.ui-nova .ov-health .ov-ring-wrap { flex: 1; }
   html.ui-nova .ov-health .ov-health-rows { width: 100%; align-self: stretch; }
-  html.ui-nova .ov-side { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  html.ui-nova .ov-side > .ov-winloss { grid-column: span 2; }
+}
+
+/* The hero's order, asked for: the balance, then its CHART, then the controls under it — the
+   quick actions and the Equity / Acc. PnL / Realized switch ("swap places the deposit/withdraw/
+   send/trade, equity/acc.pnl/realized buttons with the chart"). */
+@media (min-width: 881px) {
+  html.ui-nova .ov-equity { display: flex; flex-direction: column; }
+  html.ui-nova .ov-equity > .ov-eq-head    { order: 1; }
+  html.ui-nova .ov-equity > .ov-chart-wrap { order: 2; flex: 1 1 240px; min-height: 240px; margin-top: 22px; }
+  html.ui-nova .ov-equity > .nova-actions  { order: 3; margin-top: 20px; }
+  html.ui-nova .ov-equity > .ov-chart-tabs { order: 4; margin-top: 14px; }
+}
+
+/* Wide: the right column is Account Health with the cards that were beside it below —
+   biggest win/loss, recent activity, deposits ("move the recent activity and neighbour cards to
+   share space with account health"). The hero spans that column's height; stats and positions
+   run full width under both. The wrappers step aside (display: contents) so their cards can be
+   placed on one grid; nothing is moved in the page. */
+@media (min-width: 1300px) {
+  /* !important: the single-column rule above is !important too, and with it the right column was
+     only implied, so the full-width rows stopped at the first column. */
+  html.ui-nova .ov-grid { display: grid; grid-template-columns: minmax(0, 1fr) 400px !important; gap: 18px; align-items: start; }
+  html.ui-nova :is(.ov-main, .ov-top-row, .ov-side) { display: contents; }
+  html.ui-nova .ov-equity     { grid-column: 1; grid-row: 1 / span 4; align-self: stretch; }
+  html.ui-nova .ov-health     { grid-column: 2; grid-row: 1; }
+  html.ui-nova .ov-side > .ov-winloss { grid-column: 2; grid-row: 2; gap: 12px; min-width: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  html.ui-nova .ov-winloss > * { min-width: 0; padding: 16px 18px; }
+  html.ui-nova .ov-activity   { grid-column: 2; grid-row: 3; }
+  html.ui-nova .ov-footer     { grid-column: 2; grid-row: 4; }
+  html.ui-nova .ov-stat-strip { grid-column: 1 / -1; grid-row: 5; }
+  html.ui-nova .ov-positions  { grid-column: 1 / -1; grid-row: 6; }
+  /* Health shares its column now: a compact card, the ring beside its numbers. */
+  html.ui-nova .ov-health { display: grid; grid-template-columns: 112px minmax(0, 1fr); column-gap: 16px; align-items: center; }
+  html.ui-nova .ov-health .ov-hr { gap: 10px; }
+  html.ui-nova .ov-health .ov-ring-wrap { flex: none; padding: 0; }
+  html.ui-nova .ov-health .ov-ring { width: 112px; height: 112px; }
 }
