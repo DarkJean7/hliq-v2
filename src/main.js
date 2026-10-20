@@ -14476,10 +14476,9 @@ function _pfpOwnAddr() {
   return null
 }
 
-async function _pfpUpload(addr, file) {
-  const a = String(addr ?? '').toLowerCase()
-  if (!/^0x[0-9a-f]{40}$/.test(a) || !file) return { ok: false, error: 'no account' }
-  const dataUrl = await new Promise((resolve) => {
+/** Any picked image as a 256×256 centre-cropped JPEG data URL, or null if it cannot be read. */
+function _pfpDataUrl(file) {
+  return new Promise((resolve) => {
     const reader = new FileReader()
     reader.onerror = () => resolve(null)
     reader.onload = (e) => {
@@ -14497,6 +14496,24 @@ async function _pfpUpload(addr, file) {
     }
     reader.readAsDataURL(file)
   })
+}
+
+/** A picture now exists for `a`: clear the "none here" mark and repoint every img at it,
+ *  cache-busted, so the change shows without a reload. */
+function _pfpShowNew(a) {
+  _pfpForget(a)
+  const bust = `/pfp/${a}?v=${Date.now()}`
+  const avatarEl = document.getElementById('mobVAvatar')
+  if (avatarEl) { delete avatarEl.dataset.avatarKey; const i = avatarEl.querySelector('img'); if (i) i.src = bust }
+  const drawerAvatar = document.getElementById('mobVDrawerAvatar')
+  if (drawerAvatar) { const i = drawerAvatar.querySelector('img'); if (i) i.src = bust }
+  document.querySelectorAll(`img[src^="/pfp/${a}"]`).forEach(i => { i.src = bust })
+}
+
+async function _pfpUpload(addr, file) {
+  const a = String(addr ?? '').toLowerCase()
+  if (!/^0x[0-9a-f]{40}$/.test(a) || !file) return { ok: false, error: 'no account' }
+  const dataUrl = await _pfpDataUrl(file)
   if (!dataUrl) return { ok: false, error: 'could not read that image' }
 
   // Two ways to prove the account is yours, and the server takes either: an agent key
@@ -14530,16 +14547,41 @@ async function _pfpUpload(addr, file) {
     r = await resp.json().catch(() => ({}))
     if (!resp.ok || r?.error) return { ok: false, error: r?.error ?? ('HTTP ' + resp.status) }
   }
-  // It exists now: clear the session's "no picture here" mark and repoint every img at it,
-  // cache-busted, so the change shows without a reload.
-  _pfpForget(a)
-  const bust = `/pfp/${a}?v=${Date.now()}`
-  const avatarEl = document.getElementById('mobVAvatar')
-  if (avatarEl) { delete avatarEl.dataset.avatarKey; const i = avatarEl.querySelector('img'); if (i) i.src = bust }
-  const drawerAvatar = document.getElementById('mobVDrawerAvatar')
-  if (drawerAvatar) { const i = drawerAvatar.querySelector('img'); if (i) i.src = bust }
-  document.querySelectorAll(`img[src^="/pfp/${a}"]`).forEach(i => { i.src = bust })
+  _pfpShowNew(a)
   return { ok: true }
+}
+
+/**
+ * Dev: set ANY account's picture. Asked for: "let me be able to change the photos of users as
+ * dev". The proof is the leaderboard PIN dev mode is earned with (server.js /api/pfp), and a
+ * stale cached PIN self-heals with one retry, as Remove does.
+ */
+window.__lbSetPhoto = async function(addr) {
+  const a = String(addr ?? '').toLowerCase()
+  if (!isDev() || !/^0x[0-9a-f]{40}$/.test(a)) return
+  const file = await new Promise((resolve) => {
+    const inp = document.createElement('input')
+    inp.type = 'file'; inp.accept = 'image/*'
+    inp.onchange = () => resolve(inp.files?.[0] ?? null)
+    inp.click()
+  })
+  if (!file) return
+  const dataUrl = await _pfpDataUrl(file)
+  if (!dataUrl) { _paperToast('Could not read that image', 'error'); return }
+  const send = p => fetch('/api/pfp', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-lb-pin': p }, body: JSON.stringify({ addr: a, dataUrl }) })
+  try {
+    let pin = await _lbAdminPin(); if (!pin) return
+    let r = await send(pin)
+    if (r.status === 403) {
+      localStorage.removeItem('hliq_lb_pin'); pin = await _lbAdminPin(true); if (!pin) return; r = await send(pin)
+    }
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok || j.error) { _paperToast('Could not set the photo: ' + (j.error ?? r.status), 'error'); return }
+    _pfpShowNew(a)
+    // A row that had no picture shows a letter, not an <img>, so there was nothing to repoint.
+    _lbAfterRemove()
+    _paperToast('Photo updated')
+  } catch (e) { _paperToast('Could not set the photo: ' + (e?.message ?? e), 'error') }
 }
 
 /**
@@ -22820,7 +22862,10 @@ function _mobVBuildLbHtml(results, opts = {}) {
         const hideBtn = dev
           ? `<button onclick="event.stopPropagation();window.__lbToggleHide('${esc(r.addr)}',${r.hidden ? 'false' : 'true'})" style="flex:1;background:transparent;border:1px solid var(--border2);color:var(--fg-2);border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer">${r.hidden ? _T('👁 Unhide', '👁 Mostrar') : _T('🙈 Hide', '🙈 Ocultar')}</button>`
           : ''
-        removeBtn = `<div style="display:flex;gap:8px;padding:10px 16px 14px">${hideBtn}<button onclick="event.stopPropagation();window.__lbRemove('${esc(r.addr)}','${via}')" style="flex:1;background:transparent;border:1px solid var(--red);color:var(--red);border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer">Remove from leaderboard</button></div>`
+        const photoBtn = dev
+          ? `<button onclick="event.stopPropagation();window.__lbSetPhoto('${esc(r.addr)}')" style="flex:1;background:transparent;border:1px solid var(--border2);color:var(--fg-2);border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer">${_T('📷 Photo', '📷 Foto')}</button>`
+          : ''
+        removeBtn = `<div style="display:flex;gap:8px;padding:10px 16px 14px">${hideBtn}${photoBtn}<button onclick="event.stopPropagation();window.__lbRemove('${esc(r.addr)}','${via}')" style="flex:1;background:transparent;border:1px solid var(--red);color:var(--red);border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer">Remove from leaderboard</button></div>`
       }
     }
     // Hidden is a state the server enforces (these rows are withheld from the public board
@@ -34238,6 +34283,7 @@ function _lbRowHtml(entry, rank, podium = true) {
           ${(isDev() || entry._slot) ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbPaperRemove('${encodeURIComponent(entry._pname)}','${isDev() ? 'dev' : 'owner'}')">🗑 Remove</button>` : ''}
           ` : `
           ${isDev() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbRename('${esc(entry.addr)}')">✎ Rename</button>` : ''}
+          ${isDev() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbSetPhoto('${esc(entry.addr)}')">📷 Photo</button>` : ''}
           ${isDev() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbToggleHide('${esc(entry.addr)}',${entry.hidden ? 'false' : 'true'})">${entry.hidden ? '👁 Unhide' : '🙈 Hide'}</button>` : ''}
           ${(() => { const own = _lbMyActiveAddr() && entry.addr.toLowerCase() === _lbMyActiveAddr(); if (!isDev() && !own) return ''; return `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbRemove('${esc(entry.addr)}','${isDev() ? 'dev' : 'owner'}')">🗑 Remove</button>` })()}
           `}

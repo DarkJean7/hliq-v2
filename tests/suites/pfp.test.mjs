@@ -74,14 +74,16 @@ console.log(nl + '-- the image is re-encoded before it leaves the device --')
 {
   const u = grab(cli, 'async function _pfpUpload(addr, file)')
   t('one uploader, shared by both pickers', u.length > 400)
-  t('drawn through a 256px canvas', u.includes("canvas.width = 256; canvas.height = 256"))
-  t('and emitted as jpeg', u.includes("canvas.toDataURL('image/jpeg', 0.88)"))
+  // The canvas pass moved into _pfpDataUrl so the dev picker shares it.
+  const du = grab(cli, 'function _pfpDataUrl(file)')
+  t('drawn through a 256px canvas', u.includes('await _pfpDataUrl(file)') && du.includes("canvas.width = 256; canvas.height = 256"))
+  t('and emitted as jpeg', du.includes("canvas.toDataURL('image/jpeg', 0.88)"))
   // That pass is what drops EXIF. A phone photo carries a GPS tag, and this ends up on a
   // public board.
   t('why that matters is stated', cli.includes('which drops EXIF'))
   t('it posts to the authenticated route', u.includes("serverFetch('/api/pfp'"))
   t('as that account, so the session proves ownership', u.includes('authAddr: a'))
-  t('and it clears the missing-mark so the change shows at once', u.includes('_pfpForget(a)'))
+  t('and it clears the missing-mark so the change shows at once', u.includes('_pfpShowNew(a)') && grab(cli, 'function _pfpShowNew(a)').includes('_pfpForget(a)'))
   // The leaderboard picker used to send the raw file; now it goes the same way.
   t('the leaderboard picker uses it too', grab(cli, 'window.__lbChangePic = function(addr)').includes('_pfpUpload(addr, file)'))
 }
@@ -134,7 +136,17 @@ console.log(nl + '-- and there is a way in where the picture is seen --')
 console.log(nl + '-- the write is authenticated, the read is not --')
 {
   const route = srv.slice(srv.indexOf("path === '/api/pfp'"), srv.indexOf("path === '/api/leaderboard/name'"))
-  t('an agent-key session counts', route.includes('const byAgent = !!auth && (auth.admin || await agentApprovedFor(b.addr, auth.signer))'))
+  t('an agent-key session counts', route.includes('(!!auth && (auth.admin || await agentApprovedFor(b.addr, auth.signer)))'))
+  // "let me be able to change the photos of users as dev": the operator PIN is a third proof.
+  t('the dev PIN counts, for any account', route.includes("const byOperator = !!LB_PIN && pinHdr === LB_PIN") && route.includes('const byAgent = byOperator ||'))
+  t('a wrong PIN is refused outright, not tried as a signature', route.includes("if (pinHdr && !byOperator) return json(res, 403"))
+  t('and the log says it was the operator', route.includes("byOperator ? 'operator'"))
+  const dev = grab(cli, 'window.__lbSetPhoto = async function(addr)')
+  t('the dev picker is dev-only', dev.includes('if (!isDev() ||'))
+  t('it sends the PIN and the same canvas pass', dev.includes("'x-lb-pin': p") && dev.includes('await _pfpDataUrl(file)'))
+  t('a stale cached PIN gets one re-prompt', dev.includes("localStorage.removeItem('hliq_lb_pin'); pin = await _lbAdminPin(true)"))
+  t('and the board repaints, so a letter avatar becomes the photo', dev.includes('_lbAfterRemove()'))
+  t('desktop and mobile rows both offer it', (cli.match(/window\.__lbSetPhoto\('\$\{esc\((entry|r)\.addr\)\}'\)/g) ?? []).length === 2)
   t('otherwise a signature from that address is required', route.includes('ethers.verifyMessage(msg, b.signature'))
   t('and it must match', route.includes("error: 'signature does not match that address'"))
   t('a stale signature is refused', route.includes('stale request'))

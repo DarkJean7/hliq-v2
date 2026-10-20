@@ -77,7 +77,7 @@ await ctx.route('**/api/**', async (route) => {
   if (u.pathname.endsWith('/api/auth/nonce')) return route.fulfill({ status: 200, json: { nonce: 'n1', ttl: 60000 } })
   if (u.pathname.endsWith('/api/auth/login')) return route.fulfill({ status: 200, json: { token: 'tok', exp: Date.now() + 3600e3 } })
   if (u.pathname.endsWith('/api/pfp')) {
-    uploads.push({ addr: b.addr, auth: route.request().headers()['authorization'] ?? null, dataUrl: String(b.dataUrl ?? '') })
+    uploads.push({ addr: b.addr, auth: route.request().headers()['authorization'] ?? null, pin: route.request().headers()['x-lb-pin'] ?? null, dataUrl: String(b.dataUrl ?? '') })
     return route.fulfill({ status: 200, json: { ok: true } })
   }
   return route.fulfill({ status: 503, body: 'offline in test' })
@@ -190,6 +190,34 @@ t('as a 256px square, not the original', (uploads[0]?.dataUrl ?? '').length > 50
 
 // The old open POST /pfp is a serve-prod route; the dev server does not run it and falls
 // back to index.html, so that one is asserted in tests/suites/pfp.test.mjs instead.
+
+console.log(NL + '-- a dev can set ANYONE\'s photo ("let me be able to change the photos of users as dev") --')
+{
+  const OTHER = '0x1111111111111111111111111111111111111111'
+  // Not a dev yet: nothing is offered and nothing is sent.
+  const before = uploads.length
+  let picked = false
+  p.once('filechooser', () => { picked = true })
+  await p.evaluate((a) => window.__lbSetPhoto(a), OTHER)
+  await p.waitForTimeout(500)
+  t('a non-dev gets no file picker', picked, false)
+  t('and sends nothing', uploads.length, before)
+
+  await p.evaluate(() => { localStorage.setItem('hliq_dev', '1'); localStorage.setItem('hliq_lb_pin', 'test-pin') })
+  const isDev = await p.evaluate(() => typeof window.isDev === 'function' ? window.isDev() : null)
+  const chooser = p.waitForEvent('filechooser', { timeout: 10000 })
+  p.evaluate((a) => window.__lbSetPhoto(a), OTHER)
+  const fc = await chooser.catch(() => null)
+  t('in dev mode it opens a file picker' + (isDev === false ? ' (isDev() said false)' : ''), !!fc, true)
+  if (fc) await fc.setFiles({ name: 'them.png', mimeType: 'image/png', buffer: Buffer.from(PNG, 'base64') })
+  const t0 = Date.now()
+  while (uploads.length === before && Date.now() - t0 < 10000) await p.waitForTimeout(200)
+  const up = uploads.at(-1)
+  t('one upload, for THEIR address, not mine', up?.addr, OTHER)
+  t('proved by the dev PIN', up?.pin, 'test-pin')
+  t('not by anyone\'s agent session', up?.auth, null)
+  t('and through the same canvas pass', /^data:image\/jpeg;base64,/.test(up?.dataUrl ?? ''), true)
+}
 
 await browser.close()
 console.log(NL + 'errors: ' + (errs.length ? JSON.stringify(errs.slice(0, 3)) : 'none'))

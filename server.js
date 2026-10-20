@@ -3208,8 +3208,15 @@ const server = createServer(async (req, res) => {
     const b = await body(req)
     if (!isAddr(b.addr)) return json(res, 400, { error: 'invalid address' })
 
-    const auth = getAuth(req)
-    const byAgent = !!auth && (auth.admin || await agentApprovedFor(b.addr, auth.signer))
+    // A third proof, for the operator: the LB_PIN dev mode is earned with, as on the other
+    // moderation routes. Asked for: "let me be able to change the photos of users as dev".
+    // A PIN that is offered and wrong is refused outright rather than falling through to the
+    // signature check, so the client can tell "wrong PIN" from "stale request".
+    const pinHdr = req.headers['x-lb-pin'] ?? ''
+    const byOperator = !!LB_PIN && pinHdr === LB_PIN
+    if (pinHdr && !byOperator) return json(res, 403, { error: 'forbidden' })
+    const auth = byOperator ? null : getAuth(req)
+    const byAgent = byOperator || (!!auth && (auth.admin || await agentApprovedFor(b.addr, auth.signer)))
     if (!byAgent) {
       const ts = Number(b.ts ?? 0)
       if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > 10 * 60 * 1000)
@@ -3238,7 +3245,7 @@ const server = createServer(async (req, res) => {
       const dir = join(__dirname, 'data', 'pfp')
       mkdirSync(dir, { recursive: true })
       writeFileSync(join(dir, b.addr.toLowerCase() + '.jpg'), buf)
-      console.log('[pfp]', b.addr.toLowerCase(), buf.length + 'b', byAgent ? 'agent' : 'signed')
+      console.log('[pfp]', b.addr.toLowerCase(), buf.length + 'b', byOperator ? 'operator' : byAgent ? 'agent' : 'signed')
       return json(res, 200, { ok: true })
     } catch (e) {
       console.warn('[pfp] write failed', e.message)
