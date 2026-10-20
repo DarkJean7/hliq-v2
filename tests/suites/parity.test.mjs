@@ -7,7 +7,10 @@ let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
 
 console.log(String.fromCharCode(10) + '-- the views are reachable on desktop --')
-for (const tab of ['pulse', 'analysis', 'performance']) {
+// Pulse is reached through Analysis — the Analysis tab opens the Pulse pane with its segments —
+// so it has no tab or sidebar row of its own (asked: 'remove pulse … since it is accessible in analysis').
+t('pulse is reached through the Analysis tab', cli.includes("if (name === 'analysis') { _pulseSeg = 'analysis'; name = 'pulse' }") && !htm.includes("switchTab('pulse',this)") && !htm.includes('data-tab="pulse"'))
+for (const tab of ['analysis', 'performance']) {
   t(`${tab} is in the tab bar`, htm.includes(`switchTab('${tab}',this)`), tab)
   t(`${tab} is in the sidebar`, htm.includes(`data-tab="${tab}"`), tab)
 }

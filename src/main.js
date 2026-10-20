@@ -8627,7 +8627,10 @@ function switchTab(name, btn) {
   _activeTab = name
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'))
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'))
+  // Pulse has no tab of its own any more — it is a segment of Analysis — so the Pulse pane lights
+  // the Analysis tab.
   const activeNavTab = btn ?? document.querySelector(`.nav-tab[onclick*="'${name}'"]`)
+    ?? (name === 'pulse' ? document.querySelector(`.nav-tab[onclick*="'analysis'"]`) : null)
   if (activeNavTab) activeNavTab.classList.add('active')
   document.getElementById('tab-' + name).classList.add('active')
   _ensureTabRendered(name)   // trades / calendar / transfers render on first open
@@ -19292,25 +19295,6 @@ function _pulseRenderInner(el) {
       ${_pulseStatChartHtml()}
     </div>
 
-    ${_pulseSection(_T('Where the money sits', 'Dónde está el dinero'),
-      _T('Largest markets by open interest — the positions actually at risk right now.',
-         'Mayores mercados por interés abierto — las posiciones realmente en riesgo ahora.'),
-      d.topOi.map(r => _pulseRow(r, _pulseUsd(r.oi), 'var(--fg)', 'oi')).join(''))}
-
-    ${_pulseSection(_T('Longs are paying most', 'Los largos pagan más'),
-      _T('Highest funding, annualised. A crowded long side pays shorts to stay in.',
-         'Financiación más alta, anualizada. Un lado largo saturado paga a los cortos.'),
-      d.fundingHigh.map(r => _pulseRow(r, _pulseApr(r.apr), green, 'fh')).join(''))}
-
-    ${_pulseSection(_T('Shorts are paying most', 'Los cortos pagan más'),
-      _T('Most negative funding — the squeeze side. Shorts pay longs here.',
-         'Financiación más negativa — el lado del squeeze. Los cortos pagan a los largos.'),
-      d.fundingLow.map(r => _pulseRow(r, _pulseApr(r.apr), red, 'fl')).join(''))}
-
-    ${_pulseSection(_T('Biggest movers · 24h', 'Mayores movimientos · 24h'), '',
-      [...d.gainers.map(r => _pulseRow(r, `+${r.chg.toFixed(1)}%`, green, 'up')),
-       ...d.losers.map(r  => _pulseRow(r, `${r.chg.toFixed(1)}%`,  red,  'dn'))].join(''))}
-
     ${_pulseProto ? `<div style="padding:14px 16px 4px">
       <div style="font-size:12px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)">${
         _T('Protocol', 'Protocolo')}</div>
@@ -19341,6 +19325,25 @@ function _pulseRenderInner(el) {
         ${_pulseFeeChartHtml()}
       </div>
     </div>` : ''}
+
+    ${_pulseSection(_T('Where the money sits', 'Dónde está el dinero'),
+      _T('Largest markets by open interest — the positions actually at risk right now.',
+         'Mayores mercados por interés abierto — las posiciones realmente en riesgo ahora.'),
+      d.topOi.map(r => _pulseRow(r, _pulseUsd(r.oi), 'var(--fg)', 'oi')).join(''))}
+
+    ${_pulseSection(_T('Longs are paying most', 'Los largos pagan más'),
+      _T('Highest funding, annualised. A crowded long side pays shorts to stay in.',
+         'Financiación más alta, anualizada. Un lado largo saturado paga a los cortos.'),
+      d.fundingHigh.map(r => _pulseRow(r, _pulseApr(r.apr), green, 'fh')).join(''))}
+
+    ${_pulseSection(_T('Shorts are paying most', 'Los cortos pagan más'),
+      _T('Most negative funding — the squeeze side. Shorts pay longs here.',
+         'Financiación más negativa — el lado del squeeze. Los cortos pagan a los largos.'),
+      d.fundingLow.map(r => _pulseRow(r, _pulseApr(r.apr), red, 'fl')).join(''))}
+
+    ${_pulseSection(_T('Biggest movers · 24h', 'Mayores movimientos · 24h'), '',
+      [...d.gainers.map(r => _pulseRow(r, `+${r.chg.toFixed(1)}%`, green, 'up')),
+       ...d.losers.map(r  => _pulseRow(r, `${r.chg.toFixed(1)}%`,  red,  'dn'))].join(''))}
 
     ${_pulseSpot ? _pulseSection(_T('Spot', 'Spot'),
       `${_pulseUsd(_pulseSpot.vol)} ${_T('traded across', 'negociado en')} ${_pulseSpot.pairs} ${_T('pairs in 24h', 'pares en 24h')}`,

@@ -151,10 +151,6 @@
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="5"/><line x1="14" y1="14" x2="10.35" y2="10.35"/></svg>
       <span>Watch</span>
     </div>
-    <div class="sidebar-item" data-tab="pulse" onclick="switchTab('pulse',null);setSidebarActive(this)">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="15 8 12 8 10 14 6 2 4 8 1 8"/></svg>
-      <span>Pulse</span>
-    </div>
     <!-- Tabs the mobile shell already had and desktop did not. Replay and Simulator were
          the odd case: switchTab already rendered them and the panes already existed, so
          they were reachable by URL and by nothing a user could click. -->
@@ -301,10 +297,13 @@
       <button class="nav-tab" onclick="switchTab('tokens',this)"><svg viewBox="0 0 20 20" width="11" height="11" fill="currentColor"><rect x="0" y="13" width="4" height="7" rx="1"/><rect x="5.5" y="8" width="4" height="12" rx="1"/><rect x="11" y="4" width="4" height="16" rx="1"/><rect x="16.5" y="0" width="3.5" height="20" rx="1"/></svg>Scoreboard</button>
       <button class="nav-tab" onclick="switchTab('leaderboard',this)">Leaderboard</button>
       <button class="nav-tab" onclick="switchTab('watch',this)">Watch</button>
-      <button class="nav-tab" onclick="switchTab('pulse',this)">Pulse</button>
       <button class="nav-tab" onclick="switchTab('analysis',this)">Analysis</button>
-      <button class="nav-tab" onclick="switchTab('performance',this)">Performance</button>
+      <!-- The sidebar's order, Bot Agents included: Simulator, Portfolios, Strategies, Grid Ladder, Performance. -->
+      <button class="nav-tab" onclick="switchTab('simulator',this)">Simulator</button>
+      <button class="nav-tab" onclick="location.href='/portfolios'">Portfolios</button>
       <button class="nav-tab" onclick="switchTab('strategies',this)"><svg viewBox="0 0 20 22" width="11" height="11" fill="currentColor"><rect x="1" y="0" width="4" height="5" rx="1"/><rect x="8" y="0" width="4" height="5" rx="1"/><rect x="15" y="0" width="4" height="5" rx="1"/><rect x="2" y="5" width="16" height="11" rx="1"/><rect x="0" y="16" width="20" height="5" rx="1"/></svg>Strategies</button>
+      <button class="nav-tab" onclick="window.__openGridLadder()">Grid Ladder</button>
+      <button class="nav-tab" onclick="switchTab('performance',this)">Performance</button>
       <button class="nav-tab" onclick="switchTab('settings',this)">Settings</button>
     </div>
 

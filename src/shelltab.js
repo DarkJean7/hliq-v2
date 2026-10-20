@@ -50,6 +50,9 @@ export const TO_DESKTOP = {
   attribution: 'portfolio',
   accounts:    'accounts',
   home:        'overview',
+  // Pulse has no desktop tab of its own (it is a segment of Analysis), but its pane is there:
+  // mapped to itself so a phone on Pulse arrives on Pulse, not on Overview.
+  pulse:       'pulse',
 }
 
 /** Desktop tab → phone screen, for the names that differ. */
