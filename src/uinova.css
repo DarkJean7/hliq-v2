@@ -4,29 +4,47 @@
  * html.ui-nova, so with it off this file does nothing and the classic UI is exactly as it was.
  * The class is set before first paint (index.html) from localStorage 'hliq_ui'.
  *
- * What changes: shape (rounder, softer), type (Inter everywhere, tabular numbers, no
- * letter-spaced monospace capitals), depth (lit card edges and soft shadows), navigation
- * (pill tabs, a floating phone dock) and a light glow behind everything.
+ * Its own identity: an ink-navy palette, an accent → violet gradient for the things that matter
+ * (hero numbers, the hero card's edge, primary buttons, where you are), floating surfaces
+ * (sidebar, stat tiles, the phone dock), Inter with tabular numbers, and a glow behind the page.
  *
- * What does NOT change: colour. Backdrop presets, an uploaded wallpaper, light/dark and the
- * accent hue all paint through the same tokens as before, so a look you have tuned carries
- * over. No surface becomes transparent that was solid: depth is added with background-image
- * layered OVER the existing background colour, never instead of it.
+ * Two promises it keeps:
+ *  - An uploaded WALLPAPER keeps its look: the palette below applies only without one, so the
+ *    translucent panels that let a photo read through (src/theme.js) are left alone.
+ *  - Nothing solid turns see-through. Depth is added with background-image layered over the
+ *    surface's colour, never instead of it; only the page-sized containers clear, for the glow.
  */
 
 html.ui-nova {
   --r-1: 8px;
   --r-2: 12px;
   --r-3: 18px;
-  --nova-edge: rgba(255, 255, 255, 0.085);
+  --nova-2: oklch(0.66 0.21 292);                       /* violet: the gradient's second stop */
+  --nova-grad: linear-gradient(120deg, var(--accent), var(--nova-2));
+  --nova-tint: linear-gradient(120deg, color-mix(in oklch, var(--accent) 22%, transparent), color-mix(in oklch, var(--nova-2) 22%, transparent));
+  --nova-edge: rgba(255, 255, 255, 0.08);
   --nova-lit: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 160px);
-  --nova-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 14px 34px -18px rgba(0, 0, 0, 0.65);
+  --nova-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 18px 40px -22px rgba(0, 0, 0, 0.8);
   --nova-font: "Inter", "Inter Tight", -apple-system, system-ui, sans-serif;
 }
 html.ui-nova body.light-mode {
   --nova-edge: rgba(15, 20, 35, 0.08);
   --nova-lit: none;
-  --nova-shadow: 0 1px 2px rgba(15, 20, 35, 0.04), 0 12px 30px -16px rgba(15, 20, 35, 0.18);
+  --nova-shadow: 0 1px 2px rgba(15, 20, 35, 0.05), 0 14px 32px -18px rgba(15, 20, 35, 0.22);
+}
+
+/* ── palette: ink navy (dark, no wallpaper) ── */
+html.ui-nova:not(.has-bg-image) body:not(.light-mode) {
+  --bg:        #05060b;
+  --panel:     #0c0f19;
+  --panel-2:   #121627;
+  --panel-3:   #191e33;
+  --rule:      #1c2238;
+  --rule-soft: #141a2c;
+  --fg:        #eef1ff;
+  --fg-2:      #b6bdd9;
+  --fg-3:      #7b83a6;
+  --fg-4:      #555c7a;
 }
 
 /* ── type: one family, numbers that line up ── */
@@ -46,7 +64,7 @@ html.ui-nova :is(.stat-label, .ov-stat-label, .ov-label, .sidebar-section, .sect
   text-transform: none !important;
   letter-spacing: 0 !important;
 }
-html.ui-nova :is(.stat-label, .ov-stat-label, .ov-label, .cs-label) { font-size: 12px; font-weight: 500; color: var(--fg-3); }
+html.ui-nova :is(.stat-label, .ov-stat-label, .ov-label, .cs-label) { font-size: 12.5px; font-weight: 500; color: var(--fg-3); }
 html.ui-nova :is(.sidebar-section, .mob-more-section) { font-size: 11.5px; font-weight: 600; color: var(--fg-4); padding-top: 18px; }
 html.ui-nova th { font-size: 12px; font-weight: 500; color: var(--fg-3); }
 
@@ -58,15 +76,15 @@ html.ui-nova:not(.has-bg-image) body:not(.light-mode),
 html.ui-nova:not(.has-bg-image) body:not(.light-mode) :is(.main, #mobileView) { background-color: transparent; }
 html.ui-nova:not(.has-bg-image):has(body:not(.light-mode)) {
   background:
-    radial-gradient(60% 45% at 8% -8%, color-mix(in oklch, var(--accent) 20%, transparent), transparent 70%),
-    radial-gradient(50% 42% at 108% 0%, oklch(0.58 0.18 285 / 0.20), transparent 70%),
-    radial-gradient(70% 50% at 50% 118%, oklch(0.6 0.13 200 / 0.12), transparent 70%),
-    var(--bg);
+    radial-gradient(55% 45% at 5% -10%, color-mix(in oklch, var(--accent) 24%, transparent), transparent 70%),
+    radial-gradient(50% 45% at 105% -5%, oklch(0.6 0.2 292 / 0.26), transparent 70%),
+    radial-gradient(70% 55% at 50% 120%, oklch(0.62 0.14 230 / 0.16), transparent 70%),
+    #05060b;
   background-attachment: fixed;
 }
 
 /* ── surfaces: a lit top edge and a soft shadow, over the same colour ── */
-html.ui-nova :is(.ov-card, .stat-card, .table-wrap, .settings-card, .strategy-card, .card-face, .mob-v-equity-card) {
+html.ui-nova :is(.ov-card, .stat-card, .table-wrap, .settings-card, .strategy-card, .card-face, .mob-v-equity-card, .ov-stat) {
   border-radius: 20px !important;
   border-color: var(--nova-edge) !important;
   background-image: var(--nova-lit);
@@ -74,68 +92,103 @@ html.ui-nova :is(.ov-card, .stat-card, .table-wrap, .settings-card, .strategy-ca
 }
 html.ui-nova .stat-card { padding: 18px 20px; }
 html.ui-nova .ov-card { padding: 20px 22px; }
+html.ui-nova :is(.ov-grid, .ov-top-row) { gap: 18px; }
 
-/* The equity card is the hero: washed with the accent from its corner. */
-html.ui-nova :is(.ov-card:has(.ov-eq-val), .mob-v-equity-card) {
-  background-image:
-    radial-gradient(110% 120% at 0% 0%, color-mix(in oklch, var(--accent) 17%, transparent), transparent 58%),
-    radial-gradient(80% 90% at 100% 100%, oklch(0.58 0.18 285 / 0.10), transparent 60%),
-    var(--nova-lit) !important;
-  border-color: color-mix(in oklch, var(--accent) 22%, var(--nova-edge)) !important;
+/* The hero: the equity card, edged with the gradient and washed from its corner. */
+html.ui-nova :is(.ov-equity, .mob-v-equity-card) {
+  border: 1px solid transparent !important;
+  background:
+    radial-gradient(110% 120% at 0% 0%, color-mix(in oklch, var(--accent) 18%, transparent), transparent 58%) padding-box,
+    radial-gradient(80% 90% at 100% 100%, color-mix(in oklch, var(--nova-2) 14%, transparent), transparent 62%) padding-box,
+    linear-gradient(var(--panel), var(--panel)) padding-box,
+    linear-gradient(135deg, color-mix(in oklch, var(--accent) 75%, transparent), color-mix(in oklch, var(--nova-2) 55%, transparent) 55%, var(--nova-edge)) border-box !important;
+  box-shadow: 0 24px 60px -28px color-mix(in oklch, var(--accent) 45%, transparent), var(--nova-shadow);
+}
+/* An uploaded wallpaper keeps its see-through panel behind the hero too. */
+html.ui-nova.has-bg-image :is(.ov-equity, .mob-v-equity-card) {
+  background:
+    radial-gradient(110% 120% at 0% 0%, color-mix(in oklch, var(--accent) 18%, transparent), transparent 58%) padding-box,
+    linear-gradient(var(--panel), var(--panel)) padding-box,
+    linear-gradient(135deg, color-mix(in oklch, var(--accent) 75%, transparent), color-mix(in oklch, var(--nova-2) 55%, transparent) 55%, var(--nova-edge)) border-box !important;
 }
 
-/* ── big numbers ── */
-html.ui-nova .ov-eq-val { font-size: 40px; font-weight: 700; letter-spacing: -0.035em; }
-html.ui-nova :is(.stat-value, .ov-stat-val) { font-size: 19px; font-weight: 650; letter-spacing: -0.02em; }
-html.ui-nova .mob-v-balance { font-size: 44px; font-weight: 700; letter-spacing: -0.045em; }
+/* The stat strip becomes six floating tiles. */
+html.ui-nova .ov-stat-strip { gap: 12px; background: transparent; border: none; border-radius: 0; overflow: visible; }
+html.ui-nova .ov-stat { border: 1px solid var(--nova-edge); padding: 16px 18px; }
 
-/* ── desktop sidebar: roomy rows, an accent pill for where you are ── */
-html.ui-nova .sidebar { background-image: var(--nova-lit); border-right-color: var(--nova-edge); padding: 0 8px; }
-html.ui-nova .sidebar-item { padding: 10px 12px; border-radius: 12px; font-size: 13.5px; font-weight: 500; gap: 12px; margin: 1px 0; }
+/* ── big numbers: the hero figures carry the gradient ── */
+html.ui-nova .ov-eq-val { font-size: 46px; font-weight: 700; letter-spacing: -0.04em; }
+html.ui-nova .mob-v-balance { font-size: 46px; font-weight: 700; letter-spacing: -0.05em; }
+html.ui-nova :is(.ov-eq-val, .mob-v-balance) {
+  background: linear-gradient(110deg, var(--fg) 35%, color-mix(in oklch, var(--accent) 55%, var(--fg)) 75%, color-mix(in oklch, var(--nova-2) 60%, var(--fg)));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+html.ui-nova :is(.stat-value, .ov-stat-val, .ov-wl-val) { font-size: 21px; font-weight: 650; letter-spacing: -0.025em; }
+
+/* ── desktop: a floating sidebar ── */
+html.ui-nova .sidebar {
+  margin: 12px 0 12px 12px; border-radius: 24px;
+  border: 1px solid var(--nova-edge); background-image: var(--nova-lit);
+  box-shadow: var(--nova-shadow); padding: 0 8px;
+}
+html.ui-nova .sidebar-item { padding: 10px 12px; border-radius: 13px; font-size: 13.5px; font-weight: 500; gap: 12px; margin: 1px 0; }
 html.ui-nova .sidebar-item:hover { background: var(--panel-2); color: var(--fg); }
-html.ui-nova .sidebar-item.active { background: color-mix(in oklch, var(--accent) 15%, transparent); color: var(--fg); }
+html.ui-nova .sidebar-item.active { background: var(--nova-tint); color: var(--fg); box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent) 25%, transparent) inset; }
 html.ui-nova .sidebar-item.active svg { color: var(--accent); }
 html.ui-nova .sidebar-item.active::before { display: none; }
 
-/* ── topbar ── */
-html.ui-nova .topbar { border-bottom-color: var(--nova-edge); background-image: var(--nova-lit); }
+/* ── topbar and status bar: out of the way ── */
+html.ui-nova .topbar { background: transparent; border-bottom: none; }
+html.ui-nova .statusbar { background: transparent; border-top: none; }
 
-/* ── desktop tabs: a segmented pill bar instead of underlined capitals ── */
+/* ── desktop tabs: a segmented pill bar, the open one tinted with the gradient ── */
 html.ui-nova .nav-tabs {
   display: flex; width: fit-content; max-width: 100%;
-  gap: 2px; padding: 4px; margin-bottom: 22px;
-  background: var(--panel); border: 1px solid var(--nova-edge); border-radius: 16px;
+  gap: 2px; padding: 5px; margin-bottom: 24px;
+  background: var(--panel); background-image: var(--nova-lit);
+  border: 1px solid var(--nova-edge); border-radius: 18px;
   box-shadow: var(--nova-shadow);
 }
 html.ui-nova .nav-tab {
-  height: 34px; padding: 0 14px; border-radius: 12px; border-bottom: none !important; margin-bottom: 0;
+  height: 36px; padding: 0 15px; border-radius: 13px; border-bottom: none !important; margin-bottom: 0;
   text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 500; color: var(--fg-3);
 }
 html.ui-nova .nav-tab:hover { color: var(--fg); background: var(--panel-2); }
-html.ui-nova .nav-tab.active { color: var(--fg); font-weight: 600; background: var(--panel-3); box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 4px 12px -6px rgba(0, 0, 0, 0.6); }
+html.ui-nova .nav-tab.active { color: var(--fg); font-weight: 600; background: var(--nova-tint); box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent) 28%, transparent) inset; }
+
+/* ── primary actions: the gradient ── */
+html.ui-nova :is(.mob-v-act-pill.primary, .mob-v-bottom-trade, .btn-run-strategy, .ov-cta-ic) {
+  background: var(--nova-grad) !important; color: #fff !important; border-color: transparent !important;
+  box-shadow: 0 10px 28px -12px color-mix(in oklch, var(--accent) 70%, transparent);
+}
+html.ui-nova .ov-cta { border: 1px solid transparent !important; background: linear-gradient(var(--panel), var(--panel)) padding-box, var(--nova-grad) border-box !important; }
 
 /* ── controls: pills ── */
 html.ui-nova :is(.ov-range, .settings-seg) { border-radius: 999px; padding: 3px; }
 html.ui-nova :is(.ov-range-btn, .settings-seg-btn, .ov-ct-btn, .chart-tf-btn, .watch-tf-btn, .order-type-tab) { border-radius: 999px !important; }
+html.ui-nova :is(.ov-range-btn.active, .ov-ct-btn.active, .settings-seg-btn.active) { background: var(--nova-tint) !important; color: var(--fg) !important; }
 html.ui-nova :is(.btn-sm, .btn-run-strategy, .btn-stop-strategy, .btn-show-logs, .manage-btn) { border-radius: 999px; }
 html.ui-nova :is(.field-input, .search-input, input.sim-in, select) { border-radius: 12px; }
 html.ui-nova .ov-postab { font-weight: 600; }
-html.ui-nova .ov-postab.active { border-bottom-color: transparent; color: var(--fg); background: var(--panel-2); border-radius: 999px; padding: 6px 12px; }
+html.ui-nova .ov-postab.active { border-bottom-color: transparent; color: var(--fg); background: var(--nova-tint); border-radius: 999px; padding: 6px 13px; }
 html.ui-nova .ov-postabs { gap: 6px; align-items: center; }
 
 /* ── tables: lighter rules, a row you can follow ── */
 html.ui-nova :is(table) tr { transition: background 0.12s; }
-html.ui-nova :is(table) tbody tr:hover { background: color-mix(in oklch, var(--fg) 3.5%, transparent); }
+html.ui-nova :is(table) tbody tr:hover { background: color-mix(in oklch, var(--fg) 4%, transparent); }
 html.ui-nova :is(td, th) { border-color: var(--nova-edge) !important; }
 
 /* ── phone ── */
-html.ui-nova :is(.mob-v-act-pill) { border-radius: 999px; height: 46px; border-color: var(--nova-edge); }
-html.ui-nova .mob-v-act-sq { border-radius: 16px; border-color: var(--nova-edge); }
-html.ui-nova .mob-v-icon-btn { box-shadow: 0 0 0 1px var(--nova-edge) inset; }
-/* Tabs: the open one is filled, the rest are quiet. */
-html.ui-nova .mob-v-tab { border-radius: 999px; padding: 8px 14px; font-weight: 500; }
-html.ui-nova .mob-v-tab.active { background: var(--fg); color: var(--bg); font-weight: 600; }
-html.ui-nova .mob-v-tab.active .mob-tab-badge { background: color-mix(in oklch, var(--bg) 18%, transparent); color: var(--bg); }
+html.ui-nova .mob-v-avatar { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px color-mix(in oklch, var(--accent) 80%, var(--nova-2)); }
+html.ui-nova .mob-v-name { font-size: 18px; letter-spacing: -0.02em; }
+html.ui-nova .mob-v-icon-btn { background: var(--panel-2); box-shadow: 0 0 0 1px var(--nova-edge) inset; }
+html.ui-nova .mob-v-equity-card { border-radius: 26px !important; }
+html.ui-nova :is(.mob-v-act-pill) { border-radius: 999px; height: 48px; border-color: var(--nova-edge); background-image: var(--nova-lit); }
+html.ui-nova .mob-v-act-sq { border-radius: 50%; width: 48px; height: 48px; border-color: var(--nova-edge); background-image: var(--nova-lit); }
+/* Tabs: the open one carries the gradient, the rest are quiet. */
+html.ui-nova .mob-v-tab { border-radius: 999px; padding: 8px 15px; font-weight: 500; }
+html.ui-nova .mob-v-tab.active { background: var(--nova-grad); color: #fff; font-weight: 600; box-shadow: 0 8px 22px -12px color-mix(in oklch, var(--accent) 80%, transparent); }
+html.ui-nova .mob-v-tab.active .mob-tab-badge { background: rgba(255, 255, 255, 0.22); color: #fff; }
 
 /* The bottom bar floats as a dock. It keeps the classic bar's footprint (72px + the home
    indicator) so nothing the page reserves for it moves. Solid, not see-through. */
@@ -144,9 +197,10 @@ html.ui-nova .mob-v-bottom {
   height: 64px; padding: 0 8px;
   background: var(--panel-2); background-image: var(--nova-lit);
   border: 1px solid var(--nova-edge); border-radius: 24px;
-  box-shadow: 0 18px 40px -16px rgba(0, 0, 0, 0.75);
+  box-shadow: 0 18px 40px -16px rgba(0, 0, 0, 0.8);
 }
-html.ui-nova .mob-v-bottom-trade { border-radius: 18px; box-shadow: 0 6px 18px -6px color-mix(in oklch, var(--accent) 60%, transparent); }
+html.ui-nova .mob-v-bottom-trade { border-radius: 18px; }
+html.ui-nova .mob-v-bottom-btn.active { color: var(--fg); }
 
 /* More drawer and sheets: rounder, same solid colours. */
 html.ui-nova .mob-more-drawer { border-radius: 28px 28px 0 0; }

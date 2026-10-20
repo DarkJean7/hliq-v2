@@ -26,12 +26,22 @@ t('Settings has the switch on desktop', htm.includes('id="uiVersionSeg"') && htm
 t('and on the phone', cli.includes("window.__onUiVersion('nova');_mobVRenderContent()") && cli.includes("window.__onUiVersion('classic');_mobVRenderContent()"))
 t('switching remembers the choice and flips the one class', /window\.__onUiVersion = function[\s\S]{0,300}classList\.toggle\('ui-nova', nova\)[\s\S]{0,120}localStorage\.setItem\('hliq_ui'/.test(cli))
 
-// Colours are not its business: backdrops, wallpapers, light/dark and the accent carry over.
-t('it never redefines a colour token', !/--(bg|panel|panel-2|panel-3|fg|fg-2|fg-3|accent|pos|neg)\s*:/.test(css))
+// Its own palette — but only where nothing else owns the colours: dark, with no wallpaper. A photo
+// keeps its translucent panels (src/theme.js), light mode keeps its own, and the accent hue and the
+// profit/loss colours are never touched. (Reported after the first pass: "it barely changed".)
+const colourRules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+  .filter(m => /--(bg|panel|panel-2|panel-3|fg|fg-2|fg-3|fg-4|rule|rule-soft|accent|accent-h|pos|neg)\s*:/.test(m[2])).map(m => m[1].trim())
+t('colours are set only for dark without a wallpaper', colourRules.length === 1 && colourRules[0] === 'html.ui-nova:not(.has-bg-image) body:not(.light-mode)', colourRules)
+t('and never the accent or the profit/loss colours', !/--(accent|accent-h|pos|neg)\s*:/.test(css))
 // And nothing that was solid turns see-through: the only surfaces it clears are the page-sized
 // containers, so the glow behind the page shows — never a card, a sheet or a menu.
 const cleared = [...css.matchAll(/([^{}]+)\{[^{}]*background(-color)?\s*:\s*transparent[^{}]*\}/g)].map(m => m[1].trim())
-t('only the page containers are made clear', cleared.length === 1 && /\.main, #mobileView/.test(cleared[0]), cleared)
+// The page containers (for the glow); the stat strip's container, whose tiles are each solid now
+// (it used to be one surface whose colour drew the dividers); and the topbar and status bar,
+// which are rows of the layout grid, not overlays — nothing scrolls underneath them.
+const allowed = [/\.main, #mobileView/, /^html\.ui-nova \.ov-stat-strip$/, /^html\.ui-nova \.topbar$/, /^html\.ui-nova \.statusbar$/]
+t('only the page containers, the stat strip and the two bars are made clear — never a card, sheet or menu',
+  cleared.length === allowed.length && cleared.every(c => allowed.some(re => re.test(c))), cleared)
 t('and not over a wallpaper, which is its own picture', /html\.ui-nova:not\(\.has-bg-image\)/.test(css))
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
