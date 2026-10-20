@@ -93,6 +93,11 @@ await ctx.route(HL_HOST, (route) => {
   return route.fulfill({ status: 200, contentType: 'application/json', json: HL[b.type] ?? {} })
 })
 const p = await ctx.newPage()
+// The rate-limit model now survives a reload (src/hlbudget.js), and this file reloads three times
+// in ten seconds at ~250 weight a boot, so the third load is rightly paced. What is being tested
+// here is that a tab survives a reload, against a stubbed exchange with no limit at all, so every
+// load starts from an untouched bucket.
+await p.addInitScript(() => { try { localStorage.removeItem('hliq_hl_bucket') } catch {} })
 const errs = []
 p.on('pageerror', e => errs.push(e.message))
 

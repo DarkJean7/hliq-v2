@@ -265,7 +265,7 @@ import { bridgeCombined, acctBaseFrom, reanchor, snapshotRows, rowKey, booksFrom
 import { cashSample, classifyCashMove, posFingerprint } from './perpcash.js'
 import { mtmBook, mtmDelta, mtmCarry, bookState, advanceBook } from './mtmbridge.js'
 import { orderMarginByCoin, spotByCoin, SLICE_DUST } from './alloc.js'
-import { hlBudget as _hlBudget, meterTransport, weightOf as _hlWeightOf } from './hlbudget.js'
+import { hlBudget as _hlBudget, meterTransport, weightOf as _hlWeightOf, hlInfo as _hlInfo } from './hlbudget.js'
 import { holdingStart, fmtHeld, fmtWhen } from './holding.js'
 import { accountHealth as _hlHealth, healthClass as _hlHealthCls, approxHealth as _hlApproxHealth } from './health.js'
 import { sideOf as _tsSide, stopPrice as _tsStopPx, resolveSize as _tsSize,
@@ -11258,10 +11258,7 @@ async function _paperSettleCheck() {
   _paperSettleAt = Date.now()
   try {
     const events = await paperSettleOutcomes(async (outcome) => {
-      const r = await fetch('https://api.hyperliquid.xyz/info', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'settledOutcome', outcome }),
-      })
+      const r = await _hlInfo({ type: 'settledOutcome', outcome })
       if (r.status === 429) throw new Error('429')
       return r.ok ? r.json() : null
     })
@@ -24124,10 +24121,7 @@ async function _mobRenderTradeChart(coin, tf, canvasId = 'mobChartCanvas', heroI
     if ((state.selectedCoin || 'BTC') !== coin) return   // user navigated away mid-retry
     if (typeof _hlLimited === 'function' && _hlLimited()) { await new Promise(r => setTimeout(r, 1200)); continue }
     try {
-      const r = await fetch('https://api.hyperliquid.xyz/info', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval: hlInterval, startTime: Date.now() - lookbackMs, endTime: null } })
-      })
+      const r = await _hlInfo({ type: 'candleSnapshot', req: { coin, interval: hlInterval, startTime: Date.now() - lookbackMs, endTime: null } })
       if (r.status === 429) { await new Promise(res => setTimeout(res, 1000 * (attempt + 1))); continue }
       const j = await r.json()
       if (Array.isArray(j) && j.length >= 2) { candles = j; break }
@@ -24352,11 +24346,7 @@ async function _mobLoadHLChart(coin, tf) {
     if (_mobChartTf !== tf) return   // user changed timeframe mid-retry — abandon this load
     if (_hlLimited()) { await new Promise(r => setTimeout(r, 1500)); continue }
     try {
-      const r = await fetch('https://api.hyperliquid.xyz/info', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval: hlInterval, startTime: Date.now() - lookbackMs, endTime: null } })
-      })
+      const r = await _hlInfo({ type: 'candleSnapshot', req: { coin, interval: hlInterval, startTime: Date.now() - lookbackMs, endTime: null } })
       if (r.status === 429) { await new Promise(res => setTimeout(res, 1500 * (attempt + 1))); continue }
       const j = await r.json()
       if (Array.isArray(j) && j.length) { candles = j; break }
@@ -27892,10 +27882,7 @@ async function _devBotRequest(def, kind, payload, bot) {
   if (kind === 'info') {
     // Public market data. No key, no account, nothing to gate — the same endpoint any
     // browser tab can call.
-    const r = await fetch('https://api.hyperliquid.xyz/info', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload ?? {}),
-    })
+    const r = await _hlInfo(payload ?? {})
     if (!r.ok) throw new Error('info request failed: ' + r.status)
     return r.json()
   }
@@ -36173,10 +36160,7 @@ function _lazyResolveSettledOutcome(coin) {
   // transient pause, since this set is never cleared.
   if (_hlLimited()) return
   _settledOcSeen.add(outcome)
-  fetch('https://api.hyperliquid.xyz/info', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'settledOutcome', outcome })
-  })
+  _hlInfo({ type: 'settledOutcome', outcome })
     .then(r => r.json())
     .then(res => {
       const spec = res?.spec
@@ -38287,10 +38271,7 @@ window.__shareTrade = async function(coin, d) {
   let lev = isOc ? 1 : window.__coinLeverage(coin)   // open-position leverage (stable), else 1
   if (!isOc && lev <= 1) {
     try {
-      const r  = await fetch('https://api.hyperliquid.xyz/info', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'activeAssetData', user: state.addr, coin }),
-      })
+      const r  = await _hlInfo({ type: 'activeAssetData', user: state.addr, coin })
       const ad = await r.json()
       const v  = parseFloat(ad?.leverage?.value)
       if (Number.isFinite(v) && v > 0) lev = v

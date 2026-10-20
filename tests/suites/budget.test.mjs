@@ -124,7 +124,7 @@ console.log(nl + '-- and the app actually paces with it --')
   // One bucket, because the limit is per IP. main.js and api.js hold separate transports and
   // HL counts them together; two budgets tracking halves of one limit would each believe it
   // had headroom.
-  t('there is one bucket for the whole app, starting half full (another device may have just spent it)', bud.includes('export const hlBudget = createBudget({ startLevel: HL_BUDGET / 2 })'))
+  t('there is one bucket for the whole app, starting half full (another device may have just spent it)', bud.includes('export const hlBudget = createBudget({ startLevel: HL_BUDGET / 2, store: localStore })'))
   t('heavy history reads may wait longer than a balance', bud.includes("w >= 20 ? maxWaitHeavyMs : maxWaitMs") && bud.includes('export const HL_MAX_WAIT_HEAVY_MS = 30_000'))
   t('a 429 hidden by CORS ("network-shaped") drains the bucket too — most trips are that kind', /_hlLastTripReason = 'network-shaped'[\s\S]{0,600}_hlBudget\.drain\(\)/.test(cli))
   t('and the reason it is a singleton is written down', bud.includes('because the limit is per IP'))
@@ -157,6 +157,45 @@ console.log(nl + '-- and the app actually paces with it --')
   t('a real 429 empties the model', cli.includes("_hlLastTripReason = 'real-429'; _hlBudget.drain()"))
   t('the per-wallet cost is derived from the documented weights, not guessed',
     cli.includes('const _WALLET_FAN_WEIGHT = _hlWeightOf('))
+}
+
+console.log(nl + '-- the bucket outlives the page ("got rate limited for just entering the app") --')
+{
+  // A reload one second after a page spent 900 used to start from a fresh model while the real
+  // bucket was nearly empty — a 429 at sinceLoad=1s, ten wallets.
+  const c = clock()
+  let saved = null
+  const store = { load: () => saved, save: (v) => { saved = JSON.parse(JSON.stringify(v)) } }
+  const a = createBudget({ now: c.now, store })
+  a.spend(900)
+  c.advance(1)
+  const b = createBudget({ now: c.now, startLevel: HL_BUDGET / 2, store })
+  t('a reload continues from what was spent, refilled for the time since', Math.abs(b.level() - (HL_BUDGET - 900 + HL_REFILL_PER_SEC)) < 1e-6, b.level())
+  t('so the first burst after it waits', b.waitFor(200) > 0)
+  // Two tabs on one device, one IP: each sees the other's spend.
+  const c2 = clock(); let sv = null
+  const st2 = { load: () => sv, save: (v) => { sv = { ...v } } }
+  const x = createBudget({ now: c2.now, store: st2 }), y = createBudget({ now: c2.now, store: st2 })
+  x.spend(500)
+  t('a second tab sees what the first spent', y.level() === HL_BUDGET - 500, y.level())
+  y.drain()
+  t('and a 429 in one tab leaves the other paced', x.level() === 0 && x.shared())
+  // Nothing stored, or garbage: the half-full start, never a crash.
+  const g = createBudget({ now: c.now, startLevel: 600, store: { load: () => ({ level: 'x' }), save() {} } })
+  t('an unreadable record falls back to the start level', g.level() === 600)
+  const th = createBudget({ now: c.now, startLevel: 600, store: { load() { throw new Error('denied') }, save() { throw new Error('denied') } } })
+  th.spend(10)
+  t('and storage that throws (private mode) costs nothing', th.level() === 590)
+}
+
+console.log(nl + '-- no read of /info bypasses the bucket --')
+{
+  // The chart's candles, the history drawdown and the game's sparkline called fetch directly,
+  // so a cold load drew weight the model never saw.
+  const direct = ['src/main.js', 'src/render.js', 'src/game.js'].filter(f => fs.readFileSync(f, 'utf8').includes("fetch('https://api.hyperliquid.xyz/info'"))
+  t('main.js, render.js and game.js post to /info only through hlInfo', direct.length === 0, direct)
+  t('and each imports it', ['src/main.js', 'src/render.js', 'src/game.js'].every(f => /import \{[^}]*hlInfo as _hlInfo[^}]*\} from '\.\/hlbudget\.js'/.test(fs.readFileSync(f, 'utf8'))))
+  t('hlInfo claims its weight before it waits, like the transport', /const w = weightOf\(body\?\.type\)\r?\n\s*const ms = [^\n]*\n\s*budget\.spend\(w\)\r?\n\s*if \(ms > 0\) await/.test(fs.readFileSync('src/hlbudget.js', 'utf8')))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

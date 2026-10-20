@@ -2,6 +2,7 @@
 // The tamagotchi world: pets, den scenes, behavior brain, gestures, asset/skin
 // pipeline. Extracted from main.js — talks back through the window.__app bridge
 // (late-bound getters set at the end of main.js) plus window.* globals.
+import { hlInfo as _hlInfo } from './hlbudget.js'
 import { fmtUSD, fmtPrice, fmtSize, esc } from './format.js'
 import { coinLabel } from './api.js'
 import { placeMarketOrder, isConnected } from './trading.js'
@@ -1288,10 +1289,7 @@ async function _gmDrawSpark(coin) {
   const cid = coin.replace(/[^a-zA-Z0-9]/g, '_')
   try {
     if (!_gmSparkCache[coin]) {
-      _gmSparkCache[coin] = fetch('https://api.hyperliquid.xyz/info', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval: '1h', startTime: Date.now() - 24 * 3600 * 1000, endTime: null } }),
-      }).then(r => r.json())
+      _gmSparkCache[coin] = _hlInfo({ type: 'candleSnapshot', req: { coin, interval: '1h', startTime: Date.now() - 24 * 3600 * 1000, endTime: null } }).then(r => r.json())
     }
     const cs = await _gmSparkCache[coin]
     const el = document.getElementById('gmspark-' + cid)

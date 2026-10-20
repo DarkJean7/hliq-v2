@@ -74,6 +74,7 @@ export function createBudget({
   now = Date.now,
   startLevel = capacity,
   shareMs = SHARE_MS,
+  store = null,
 } = {}) {
   let level = Math.min(capacity, startLevel)
   let last  = now()
@@ -84,7 +85,25 @@ export function createBudget({
   let sharedUntil = 0
   const cap = () => (now() < sharedUntil ? capacity * SHARE : capacity)
 
+  // The bucket outlives the page. Reported: "got rate limited for just entering the app" — a
+  // 429 one second after load, ten wallets. Every load used to start from a model of a bucket
+  // nobody had touched, while the REAL one still held what the previous page, a reload a moment
+  // earlier, or another tab had just spent. With a store (localStorage in the app) the model
+  // carries on from what was actually spent: a reload continues the previous page's bucket, and
+  // two tabs on one device spend from one bucket instead of each believing it owns the IP.
+  const pull = () => {
+    if (!store) return
+    let v = null
+    try { v = store.load() } catch {}
+    if (!v || !Number.isFinite(v.level) || !Number.isFinite(v.last) || v.last > now() + 1000) return
+    level = Math.min(capacity, v.level); last = Math.min(v.last, now())
+    sharedUntil = Number.isFinite(v.sharedUntil) ? v.sharedUntil : 0
+  }
+  const push = () => { if (store) try { store.save({ level, last, sharedUntil }) } catch {} }
+  pull()
+
   const refill = () => {
+    pull()
     const t = now()
     if (t > last) {
       level = Math.min(cap(), level + ((t - last) / 1000) * refillPerSec * (t < sharedUntil ? SHARE : 1))
@@ -114,11 +133,11 @@ export function createBudget({
 
     /** Record a spend. Allowed to go below the reserve, and even negative: the caller may
      *  have had to proceed anyway, and the bucket must still describe reality afterwards. */
-    spend(w) { refill(); level -= Number(w) || 0; return level },
+    spend(w) { refill(); level -= Number(w) || 0; push(); return level },
 
     /** A 429 means the real bucket is emptier than this model thought. Believe the exchange
      *  over the model, and start again from empty. */
-    drain() { refill(); level = 0; last = now(); sharedUntil = now() + shareMs },
+    drain() { refill(); level = 0; last = now(); sharedUntil = now() + shareMs; push() },
 
     /** True while the bucket is assumed shared (after a 429). */
     shared() { return now() < sharedUntil },
@@ -136,7 +155,20 @@ export function createBudget({
 // may have just spent the bucket, and a cold All Accounts load is ~1,100 weight in its first
 // ten seconds — measured by tests/hl-weight.mjs with ten wallets. From half, the first ~300
 // go at once (what the overview needs first) and the rest at the refill rate.
-export const hlBudget = createBudget({ startLevel: HL_BUDGET / 2 })
+//
+// ...unless a previous page or another tab left a record, in which case that is where it starts.
+const HL_BUDGET_KEY = 'hliq_hl_bucket'
+const localStore = (() => {
+  try {
+    const ls = globalThis.localStorage
+    if (!ls) return null
+    return {
+      load: () => JSON.parse(ls.getItem(HL_BUDGET_KEY) || 'null'),
+      save: (v) => ls.setItem(HL_BUDGET_KEY, JSON.stringify(v)),
+    }
+  } catch { return null }
+})()
+export const hlBudget = createBudget({ startLevel: HL_BUDGET / 2, store: localStore })
 
 /**
  * Longest an info request will ever be held back.
@@ -184,4 +216,21 @@ export function meterTransport(transport, budget = hlBudget, { maxWaitMs = HL_MA
     return raw(endpoint, payload, signal)
   }
   return transport
+}
+
+/**
+ * A metered POST to Hyperliquid's public /info, for the reads that do not go through an SDK
+ * transport (the chart's candles, the history drawdown, the game's sparklines).
+ *
+ * They used to call fetch directly, so the bucket never saw them: a cold load drew a candle
+ * window the model did not know about on top of a wallet fan it thought it had paced. Same
+ * rule as meterTransport — claim the weight before waiting — and the same Response back, so a
+ * call site changes nothing but the function it calls.
+ */
+export async function hlInfo(body, { budget = hlBudget, url = 'https://api.hyperliquid.xyz/info', signal } = {}) {
+  const w = weightOf(body?.type)
+  const ms = Math.min(budget.waitFor(w), w >= 20 ? HL_MAX_WAIT_HEAVY_MS : HL_MAX_WAIT_MS)
+  budget.spend(w)
+  if (ms > 0) await new Promise(r => setTimeout(r, ms))
+  return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}), signal })
 }

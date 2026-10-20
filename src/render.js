@@ -1,3 +1,4 @@
+import { hlInfo as _hlInfo } from './hlbudget.js'
 import { accountHealth, healthClass, approxHealth } from './health.js'
 import { mtmDelta, mtmCarry } from './mtmbridge.js'
 import { groupTrades, countTrades } from './tradegroup.js'
@@ -1833,10 +1834,7 @@ const _ddTrips = new Map()
 
 // Public /info, the same endpoint any browser tab can call. No key, no account.
 async function _ddCandles(coin, interval, startTime, endTime) {
-  const r = await fetch('https://api.hyperliquid.xyz/info', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval, startTime, endTime } }),
-  })
+  const r = await _hlInfo({ type: 'candleSnapshot', req: { coin, interval, startTime, endTime } })
   if (!r.ok) throw new Error('candles ' + r.status)
   return r.json()
 }
