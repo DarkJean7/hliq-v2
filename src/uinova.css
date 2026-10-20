@@ -327,3 +327,5 @@ html.ui-nova .ov-ring text { font-size: 21px !important; font-weight: 700; lette
   html.ui-nova .ov-health .ov-ring-wrap { flex: none; padding: 0; }
   html.ui-nova .ov-health .ov-ring { width: 112px; height: 112px; }
 }
+/* The win/loss cards, moved into the stat row (src/uinova.js arrange), sized like the tiles around them. */
+html.ui-nova .ov-stat-strip > .ov-wl { padding: 16px 18px; }

@@ -83,10 +83,20 @@ for (const [w, h, mob] of [[1400, 900, false], [430, 930, true]]) {
     ok('choosing a page closes it again', (await sideX()) <= 0 && await p.evaluate(() => !document.documentElement.classList.contains('nova-nav-open')))
     await p.evaluate(() => window.switchTab('overview', null))
     await until('the quick actions', () => p.evaluate(() => document.querySelectorAll('.ov-equity .nova-actions .nova-act').length === 4))
+    // Asked: "swap biggest win and biggest loss with unrealized pnl and net pnl".
+    const labels = (sel) => p.evaluate((sel) => [...document.querySelectorAll(sel + ' > * .ov-stat-label')].map(e => e.textContent.trim()), sel)
+    await until('the swap', async () => (await labels('.ov-winloss')).join() === 'Unrealized PnL,Net PnL')
+    ok('Unrealized PnL and Net PnL sit where the win/loss pair was', (await labels('.ov-winloss')).join() === 'Unrealized PnL,Net PnL', await labels('.ov-winloss'))
+    ok('and Biggest Win / Biggest Loss lead the stat tiles', (await labels('.ov-stat-strip')).slice(0, 2).join() === 'Biggest Win,Biggest Loss', await labels('.ov-stat-strip'))
     ok('the overview has the four quick actions under the balance', await p.evaluate(() => [...document.querySelectorAll('.nova-act')].map(b => b.textContent).join() === 'Deposit,Withdraw,Send,Trade'))
   }
 
   await p.evaluate(() => window.__onUiVersion('classic'))
+  if (!mob) {
+    await until('the cards back', () => p.evaluate(() => [...document.querySelectorAll('.ov-winloss > * .ov-stat-label')].map(e => e.textContent.trim()).join() === 'Biggest Win,Biggest Loss'))
+    ok('and in Classic the cards are back where they always were', await p.evaluate(() =>
+      [...document.querySelectorAll('.ov-stat-strip > * .ov-stat-label')].map(e => e.textContent.trim()).slice(0, 2).join() === 'Unrealized PnL,Net PnL'))
+  }
   if (!mob) ok('back in Classic: the sidebar is where it was, the new controls are gone', await p.evaluate(() =>
     document.querySelector('.sidebar').getBoundingClientRect().left >= 0 && !document.getElementById('novaMenuBtn').offsetParent && !document.querySelector('.nova-actions')?.offsetParent))
   ok('and back to Classic in one tap, exactly as it was', !(await p.evaluate(() => document.documentElement.classList.contains('ui-nova'))) && (await font()) === classicFont)

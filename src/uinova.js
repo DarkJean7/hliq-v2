@@ -51,5 +51,34 @@ export function installNovaChrome(doc = document) {
     const head = card.querySelector('.ov-eq-head')
     head ? head.after(row) : card.prepend(row)
   }
-  if (host) { new MutationObserver(place).observe(host, { childList: true, subtree: true }); place() }
+  if (host) {
+    const tick = () => { place(); arrange(host, root) }
+    new MutationObserver(tick).observe(host, { childList: true, subtree: true })
+    // Switching between Classic and New flips a class on <html>: put the cards back, or swap them.
+    new MutationObserver(() => arrange(host, root)).observe(root, { attributes: true, attributeFilter: ['class'] })
+    tick()
+  }
+}
+
+/**
+ * Asked: "swap biggest win and biggest loss with unrealized pnl and net pnl". In the new interface
+ * Unrealized PnL and Net PnL sit in the right column under Account Health (where the win/loss
+ * pair was), and Biggest Win / Biggest Loss take the first two stat tiles. The two pairs live in
+ * different containers, so CSS cannot trade them; the nodes are exchanged instead — the same
+ * nodes, so anything the app updates by id keeps working — redone after each redraw, and undone
+ * the moment Classic is chosen, which then looks exactly as it always did.
+ */
+export function arrange(host, root = document.documentElement) {
+  const strip = host?.querySelector('.ov-stat-strip'), wl = host?.querySelector('.ov-winloss')
+  if (!strip || !wl) return
+  const swapped = !!wl.querySelector(':scope > .ov-stat')
+  const want = root.classList.contains('ui-nova')
+  if (swapped === want) return
+  const a = [...strip.children].slice(0, 2)            // swapped: the win/loss cards; else Unrealized, Net
+  const b = [...wl.children].slice(0, 2)
+  if (a.length < 2 || b.length < 2) return
+  for (let i = 0; i < 2; i++) {
+    const mark = document.createComment('')
+    a[i].replaceWith(mark); b[i].replaceWith(a[i]); mark.replaceWith(b[i])
+  }
 }
