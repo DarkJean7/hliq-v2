@@ -41,6 +41,8 @@
   <script>
     // The landing page at / skips itself for anyone who has been in the app; see landing.html.
     try { localStorage.setItem('hliq_app_entered', '1') } catch (e) {}
+    // Settings → Interface → New (src/uinova.css), set before first paint so it never flashes.
+    try { if (localStorage.getItem('hliq_ui') === 'nova') document.documentElement.classList.add('ui-nova') } catch (e) {}
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'))
     }
@@ -1450,6 +1452,18 @@
           <!-- APPEARANCE -->
           <div class="settings-card">
             <div class="settings-card-title">Appearance</div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Interface</div>
+                  <div class="settings-desc">Try the new look — switch back any time; your colours and wallpaper carry over</div>
+                </div>
+                <div class="settings-seg" id="uiVersionSeg">
+                  <button class="settings-seg-btn" onclick="window.__onUiVersion('classic')">Classic</button>
+                  <button class="settings-seg-btn" onclick="window.__onUiVersion('nova')">New</button>
+                </div>
+              </div>
+            </div>
             <div class="settings-section">
               <div class="settings-row">
                 <div>

@@ -1,4 +1,5 @@
 import './style.css'
+import './uinova.css'   // the alternative interface, inert unless html.ui-nova (Settings → Interface)
 window.__build = typeof __HLIQ_BUILD__ !== 'undefined' ? __HLIQ_BUILD__ : ''
 const _il = document.getElementById('init-loader')
 if (_il) _il.remove()
@@ -20389,6 +20390,13 @@ function _mobVRenderContent(tick = false) {
       <!-- Appearance -->
       <div class="mob-v-setting-group">
         <div class="mob-v-setting-row">
+          <span>${_T('Interface', 'Interfaz')}</span>
+          <div style="display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden">
+            ${segBtn(!document.documentElement.classList.contains('ui-nova'), _T('Classic', 'Clásica'), "window.__onUiVersion('classic');_mobVRenderContent()")}
+            ${segBtn(document.documentElement.classList.contains('ui-nova'), _T('New', 'Nueva'), "window.__onUiVersion('nova');_mobVRenderContent()")}
+          </div>
+        </div>
+        <div class="mob-v-setting-row">
           <span>Color Scheme</span>
           <div style="display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden">
             ${segBtn(!isLight, 'Dark', "window.__onThemeMode('dark');_mobVRenderContent()")}
@@ -31175,6 +31183,8 @@ function _syncSettingsTab() {
   const accentH   = parseInt(localStorage.getItem('hliq_accent_h') || '142')
   document.querySelectorAll('#colorSchemeSeg .settings-seg-btn').forEach((b, i) => b.classList.toggle('active', i === (isLight ? 1 : 0)))
   document.querySelectorAll('#themeStyleSeg .settings-seg-btn').forEach((b, i) => b.classList.toggle('active', i === (themeSt === 'soft' ? 1 : 0)))
+  const _nova = document.documentElement.classList.contains('ui-nova')
+  document.querySelectorAll('#uiVersionSeg .settings-seg-btn').forEach((b, i) => b.classList.toggle('active', i === (_nova ? 1 : 0)))
   document.querySelectorAll('.accent-swatch').forEach(b => b.classList.toggle('active', parseInt(b.dataset.hue) === accentH))
   const themeDesc = document.getElementById('themeStyleDesc')
   if (themeDesc) themeDesc.textContent = themeSt === 'soft' ? 'Soft Quant — rounded, more breathing room' : 'Terminal — sharp corners, high contrast'
@@ -31331,6 +31341,15 @@ window.__onThemeMode = function(mode) {
   // The backdrop ramp is dark-only, so switching schemes has to repaint it -- otherwise
   // going dark -> light leaves the dark greys sitting on top of the light palette.
   try { applyBackdrop(loadBackdrop(), { light: isLight, photo: !!loadBackdropImage() }); _syncBackdropUI() } catch {}
+}
+
+// Settings → Interface: the classic look or the new one (src/uinova.css). One class on <html>,
+// remembered on this device; index.html sets it before first paint.
+window.__onUiVersion = function(v) {
+  const nova = v === 'nova'
+  document.documentElement.classList.toggle('ui-nova', nova)
+  try { localStorage.setItem('hliq_ui', nova ? 'nova' : 'classic') } catch {}
+  document.querySelectorAll('#uiVersionSeg .settings-seg-btn').forEach((b, i) => b.classList.toggle('active', i === (nova ? 1 : 0)))
 }
 
 window.__onThemeStyle = function(style) {

@@ -1,0 +1,154 @@
+/* ─── NOVA — the alternative interface (Settings → Interface → New) ─────────────────────────
+ *
+ * A second look for the whole app, layered over the classic one. Everything here is scoped to
+ * html.ui-nova, so with it off this file does nothing and the classic UI is exactly as it was.
+ * The class is set before first paint (index.html) from localStorage 'hliq_ui'.
+ *
+ * What changes: shape (rounder, softer), type (Inter everywhere, tabular numbers, no
+ * letter-spaced monospace capitals), depth (lit card edges and soft shadows), navigation
+ * (pill tabs, a floating phone dock) and a light glow behind everything.
+ *
+ * What does NOT change: colour. Backdrop presets, an uploaded wallpaper, light/dark and the
+ * accent hue all paint through the same tokens as before, so a look you have tuned carries
+ * over. No surface becomes transparent that was solid: depth is added with background-image
+ * layered OVER the existing background colour, never instead of it.
+ */
+
+html.ui-nova {
+  --r-1: 8px;
+  --r-2: 12px;
+  --r-3: 18px;
+  --nova-edge: rgba(255, 255, 255, 0.085);
+  --nova-lit: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 160px);
+  --nova-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 14px 34px -18px rgba(0, 0, 0, 0.65);
+  --nova-font: "Inter", "Inter Tight", -apple-system, system-ui, sans-serif;
+}
+html.ui-nova body.light-mode {
+  --nova-edge: rgba(15, 20, 35, 0.08);
+  --nova-lit: none;
+  --nova-shadow: 0 1px 2px rgba(15, 20, 35, 0.04), 0 12px 30px -16px rgba(15, 20, 35, 0.18);
+}
+
+/* ── type: one family, numbers that line up ── */
+html.ui-nova body {
+  --font-sans: var(--nova-font);
+  --font-mono: var(--nova-font);
+  font-family: var(--nova-font);
+  font-feature-settings: "tnum", "cv11", "ss03";
+  letter-spacing: -0.005em;
+}
+/* Inline and hard-coded monospace too — the classic look's terminal flavour. Code stays code. */
+html.ui-nova body *:not(code):not(pre):not(kbd):not(samp) { font-family: var(--nova-font) !important; }
+
+/* Small capitals labels → quiet sentence-case labels. */
+html.ui-nova :is(.stat-label, .ov-stat-label, .ov-label, .sidebar-section, .section-title, .settings-card-title,
+  .table-title, .field-label, .cs-label, th, .mob-more-section) {
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+}
+html.ui-nova :is(.stat-label, .ov-stat-label, .ov-label, .cs-label) { font-size: 12px; font-weight: 500; color: var(--fg-3); }
+html.ui-nova :is(.sidebar-section, .mob-more-section) { font-size: 11.5px; font-weight: 600; color: var(--fg-4); padding-top: 18px; }
+html.ui-nova th { font-size: 12px; font-weight: 500; color: var(--fg-3); }
+
+/* ── the glow behind everything (not over a wallpaper, which is its own picture) ──
+   Painted on the page itself. The shells' full-size containers (.main, #mobileView) and body
+   painted --bg over it, so in this look they are clear and the page's own background — the
+   same --bg, plus the glow — shows through. Cards, sheets and menus keep their solid colours. */
+html.ui-nova:not(.has-bg-image) body:not(.light-mode),
+html.ui-nova:not(.has-bg-image) body:not(.light-mode) :is(.main, #mobileView) { background-color: transparent; }
+html.ui-nova:not(.has-bg-image):has(body:not(.light-mode)) {
+  background:
+    radial-gradient(60% 45% at 8% -8%, color-mix(in oklch, var(--accent) 20%, transparent), transparent 70%),
+    radial-gradient(50% 42% at 108% 0%, oklch(0.58 0.18 285 / 0.20), transparent 70%),
+    radial-gradient(70% 50% at 50% 118%, oklch(0.6 0.13 200 / 0.12), transparent 70%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+/* ── surfaces: a lit top edge and a soft shadow, over the same colour ── */
+html.ui-nova :is(.ov-card, .stat-card, .table-wrap, .settings-card, .strategy-card, .card-face, .mob-v-equity-card) {
+  border-radius: 20px !important;
+  border-color: var(--nova-edge) !important;
+  background-image: var(--nova-lit);
+  box-shadow: var(--nova-shadow);
+}
+html.ui-nova .stat-card { padding: 18px 20px; }
+html.ui-nova .ov-card { padding: 20px 22px; }
+
+/* The equity card is the hero: washed with the accent from its corner. */
+html.ui-nova :is(.ov-card:has(.ov-eq-val), .mob-v-equity-card) {
+  background-image:
+    radial-gradient(110% 120% at 0% 0%, color-mix(in oklch, var(--accent) 17%, transparent), transparent 58%),
+    radial-gradient(80% 90% at 100% 100%, oklch(0.58 0.18 285 / 0.10), transparent 60%),
+    var(--nova-lit) !important;
+  border-color: color-mix(in oklch, var(--accent) 22%, var(--nova-edge)) !important;
+}
+
+/* ── big numbers ── */
+html.ui-nova .ov-eq-val { font-size: 40px; font-weight: 700; letter-spacing: -0.035em; }
+html.ui-nova :is(.stat-value, .ov-stat-val) { font-size: 19px; font-weight: 650; letter-spacing: -0.02em; }
+html.ui-nova .mob-v-balance { font-size: 44px; font-weight: 700; letter-spacing: -0.045em; }
+
+/* ── desktop sidebar: roomy rows, an accent pill for where you are ── */
+html.ui-nova .sidebar { background-image: var(--nova-lit); border-right-color: var(--nova-edge); padding: 0 8px; }
+html.ui-nova .sidebar-item { padding: 10px 12px; border-radius: 12px; font-size: 13.5px; font-weight: 500; gap: 12px; margin: 1px 0; }
+html.ui-nova .sidebar-item:hover { background: var(--panel-2); color: var(--fg); }
+html.ui-nova .sidebar-item.active { background: color-mix(in oklch, var(--accent) 15%, transparent); color: var(--fg); }
+html.ui-nova .sidebar-item.active svg { color: var(--accent); }
+html.ui-nova .sidebar-item.active::before { display: none; }
+
+/* ── topbar ── */
+html.ui-nova .topbar { border-bottom-color: var(--nova-edge); background-image: var(--nova-lit); }
+
+/* ── desktop tabs: a segmented pill bar instead of underlined capitals ── */
+html.ui-nova .nav-tabs {
+  display: flex; width: fit-content; max-width: 100%;
+  gap: 2px; padding: 4px; margin-bottom: 22px;
+  background: var(--panel); border: 1px solid var(--nova-edge); border-radius: 16px;
+  box-shadow: var(--nova-shadow);
+}
+html.ui-nova .nav-tab {
+  height: 34px; padding: 0 14px; border-radius: 12px; border-bottom: none !important; margin-bottom: 0;
+  text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 500; color: var(--fg-3);
+}
+html.ui-nova .nav-tab:hover { color: var(--fg); background: var(--panel-2); }
+html.ui-nova .nav-tab.active { color: var(--fg); font-weight: 600; background: var(--panel-3); box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 4px 12px -6px rgba(0, 0, 0, 0.6); }
+
+/* ── controls: pills ── */
+html.ui-nova :is(.ov-range, .settings-seg) { border-radius: 999px; padding: 3px; }
+html.ui-nova :is(.ov-range-btn, .settings-seg-btn, .ov-ct-btn, .chart-tf-btn, .watch-tf-btn, .order-type-tab) { border-radius: 999px !important; }
+html.ui-nova :is(.btn-sm, .btn-run-strategy, .btn-stop-strategy, .btn-show-logs, .manage-btn) { border-radius: 999px; }
+html.ui-nova :is(.field-input, .search-input, input.sim-in, select) { border-radius: 12px; }
+html.ui-nova .ov-postab { font-weight: 600; }
+html.ui-nova .ov-postab.active { border-bottom-color: transparent; color: var(--fg); background: var(--panel-2); border-radius: 999px; padding: 6px 12px; }
+html.ui-nova .ov-postabs { gap: 6px; align-items: center; }
+
+/* ── tables: lighter rules, a row you can follow ── */
+html.ui-nova :is(table) tr { transition: background 0.12s; }
+html.ui-nova :is(table) tbody tr:hover { background: color-mix(in oklch, var(--fg) 3.5%, transparent); }
+html.ui-nova :is(td, th) { border-color: var(--nova-edge) !important; }
+
+/* ── phone ── */
+html.ui-nova :is(.mob-v-act-pill) { border-radius: 999px; height: 46px; border-color: var(--nova-edge); }
+html.ui-nova .mob-v-act-sq { border-radius: 16px; border-color: var(--nova-edge); }
+html.ui-nova .mob-v-icon-btn { box-shadow: 0 0 0 1px var(--nova-edge) inset; }
+/* Tabs: the open one is filled, the rest are quiet. */
+html.ui-nova .mob-v-tab { border-radius: 999px; padding: 8px 14px; font-weight: 500; }
+html.ui-nova .mob-v-tab.active { background: var(--fg); color: var(--bg); font-weight: 600; }
+html.ui-nova .mob-v-tab.active .mob-tab-badge { background: color-mix(in oklch, var(--bg) 18%, transparent); color: var(--bg); }
+
+/* The bottom bar floats as a dock. It keeps the classic bar's footprint (72px + the home
+   indicator) so nothing the page reserves for it moves. Solid, not see-through. */
+html.ui-nova .mob-v-bottom {
+  left: 10px; right: 10px; bottom: calc(8px + env(safe-area-inset-bottom));
+  height: 64px; padding: 0 8px;
+  background: var(--panel-2); background-image: var(--nova-lit);
+  border: 1px solid var(--nova-edge); border-radius: 24px;
+  box-shadow: 0 18px 40px -16px rgba(0, 0, 0, 0.75);
+}
+html.ui-nova .mob-v-bottom-trade { border-radius: 18px; box-shadow: 0 6px 18px -6px color-mix(in oklch, var(--accent) 60%, transparent); }
+
+/* More drawer and sheets: rounder, same solid colours. */
+html.ui-nova .mob-more-drawer { border-radius: 28px 28px 0 0; }
+html.ui-nova .mob-more-grid > button { border-radius: 16px !important; }
+html.ui-nova .mob-wallet-drawer { border-radius: 28px 28px 0 0; }
