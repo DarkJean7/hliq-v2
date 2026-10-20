@@ -97,9 +97,13 @@ export function createBudget({
     try { v = store.load() } catch {}
     if (!v || !Number.isFinite(v.level) || !Number.isFinite(v.last) || v.last > now() + 1000) return
     level = Math.min(capacity, v.level); last = Math.min(v.last, now())
-    sharedUntil = Number.isFinite(v.sharedUntil) ? v.sharedUntil : 0
   }
-  const push = () => { if (store) try { store.save({ level, last, sharedUntil }) } catch {} }
+  // Only what was SPENT is carried, never the "shared for ten minutes" guess a 429 sets. Carried
+  // too, one 429 made every reload for ten minutes start drained at half the bucket and half
+  // the refill, so a ten-wallet load crawled with prices and equity on dashes ("now the account
+  // equity is not loading"). What was spent is a fact the next page should know; that guess is
+  // this page's caution and dies with it.
+  const push = () => { if (store) try { store.save({ level, last }) } catch {} }
   pull()
 
   const refill = () => {

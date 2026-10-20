@@ -179,7 +179,16 @@ console.log(nl + '-- the bucket outlives the page ("got rate limited for just en
   x.spend(500)
   t('a second tab sees what the first spent', y.level() === HL_BUDGET - 500, y.level())
   y.drain()
-  t('and a 429 in one tab leaves the other paced', x.level() === 0 && x.shared())
+  // The other tab sees the bucket emptied, but not the ten-minute "shared" guess: carried across
+  // pages, that guess kept every reload after one 429 crawling at half rate with equity on dashes.
+  t('and a 429 in one tab empties the bucket for the other', x.level() === 0)
+  t('but the shared-for-ten-minutes guess stays with the page that got it', y.shared() && !x.shared())
+  const c3 = clock(); let s3 = null
+  const st3 = { load: () => s3, save: (v) => { s3 = { ...v } } }
+  createBudget({ now: c3.now, store: st3 }).drain()
+  c3.advance(5)
+  const r3 = createBudget({ now: c3.now, store: st3 })
+  t('a reload five seconds after a 429 refills at the full rate, not half', r3.level() === 5 * HL_REFILL_PER_SEC && !r3.shared(), r3.level())
   // Nothing stored, or garbage: the half-full start, never a crash.
   const g = createBudget({ now: c.now, startLevel: 600, store: { load: () => ({ level: 'x' }), save() {} } })
   t('an unreadable record falls back to the start level', g.level() === 600)
