@@ -2,14 +2,17 @@
 //
 // Reported: "when i cold start the mobile web app it shows the typical black screen, then a
 // blank white, then the app". iOS shows a launch image for a home-screen web app only if the page
-// names one per screen size (apple-touch-startup-image); with none it shows black. These are the
-// loading page itself — the app's background, the icon, and the three orange dots — so the
-// launch, the page's own loader and the app read as one screen.
+// names one per screen size (apple-touch-startup-image); with none it shows black.
 //
-//   node tests/make-splash.mjs        (re-run after changing the icon or the background)
+// Each image is a SCREENSHOT of the page's own loading screen (#init-loader in index.html — the
+// icon, the >insolvent. wordmark and the dots), taken at that iPhone's size and pixel density with
+// the app's code held back so the loader stays up. So the launch screen and the loading page are
+// the same picture, and changing the loader and re-running this keeps them so.
 //
-// The <link> tags in index.html are generated from the same list: SPLASH below.
-import sharp from 'sharp'
+//   npm run dev        (in another terminal)
+//   node tests/make-splash.mjs [--port=5175]
+//
+// The <link> tags in index.html come from the same list (SPLASH), written to splash-links.txt.
 import { mkdirSync, writeFileSync } from 'node:fs'
 
 export const BG = '#0a0c10'
@@ -29,25 +32,31 @@ export const SPLASH = [
   [640, 1136, 320, 568, 2],    // SE 1
 ]
 
-if (import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}` || process.argv[1]?.endsWith('make-splash.mjs')) {
+if (process.argv[1]?.endsWith('make-splash.mjs')) {
+  const { chromium } = await import('playwright')
+  const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
   mkdirSync('public/splash', { recursive: true })
-  for (const [w, h] of SPLASH) {
-    const icon = Math.round(w * 0.26)
-    const logo = await sharp('public/pwa-512x512.png').resize(icon, icon).png().toBuffer()
-    const dot = Math.round(w * 0.024), gap = Math.round(dot * 1.0)
-    const dotsW = dot * 3 + gap * 2
-    const dots = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${dotsW}" height="${dot}">${[0, 1, 2].map(i =>
-      `<circle cx="${dot / 2 + i * (dot + gap)}" cy="${dot / 2}" r="${dot / 2}" fill="#ff8a2a" opacity="${[0.35, 0.6, 1][i]}"/>`).join('')}</svg>`)
-    const top = Math.round(h / 2 - icon / 2 - dot * 2)
-    await sharp({ create: { width: w, height: h, channels: 3, background: BG } })
-      .composite([
-        { input: logo, left: Math.round((w - icon) / 2), top },
-        { input: dots, left: Math.round((w - dotsW) / 2), top: top + icon + dot * 3 },
-      ])
-      .png({ compressionLevel: 9 })
-      .toFile(`public/splash/${w}x${h}.png`)
+  const browser = await chromium.launch()
+  for (const [w, h, dw, dh, r] of SPLASH) {
+    const ctx = await browser.newContext({ viewport: { width: dw, height: dh }, deviceScaleFactor: r, isMobile: true })
+    // Hold the app back: with its code never arriving, the loading screen is all there is.
+    await ctx.route(/\/src\/main\.js|\/assets\/index-[^/]*\.js/, () => {})
+    const p = await ctx.newPage()
+    await p.goto(`http://localhost:${port}/app`, { waitUntil: 'commit' })
+    await p.waitForSelector('#init-loader .il-icon')
+    await p.evaluate(async () => {
+      await document.fonts.ready
+      const img = document.querySelector('#init-loader .il-icon')
+      if (!img.complete) await new Promise(res => { img.onload = img.onerror = res })
+      // A still frame of the dots: no bounce, a gentle left-to-right build.
+      const st = document.createElement('style')
+      st.textContent = '#init-loader .il-dots span{animation:none!important}#init-loader .il-dots span:nth-child(1){opacity:.35}#init-loader .il-dots span:nth-child(2){opacity:.6}'
+      document.head.appendChild(st)
+    })
+    await p.screenshot({ path: `public/splash/${w}x${h}.png` })
+    await ctx.close()
   }
-  // The tags for index.html, printed so they can be pasted (and checked by the suite).
+  await browser.close()
   writeFileSync('splash-links.txt', SPLASH.map(([w, h, dw, dh, r]) =>
     `<link rel="apple-touch-startup-image" media="(device-width: ${dw}px) and (device-height: ${dh}px) and (-webkit-device-pixel-ratio: ${r}) and (orientation: portrait)" href="/splash/${w}x${h}.png"/>`).join('\n') + '\n')
   console.log(`wrote ${SPLASH.length} launch screens to public/splash/`)
