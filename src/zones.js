@@ -332,7 +332,15 @@ export function readSetup({ zones, price, atrD, daily = [], ratio = null, prev =
   const edge = 0.15 * a
   const below = key.filter(z => z.hi + edge < price).sort((a, b) => b.px - a.px)
   const above = key.filter(z => z.lo - edge > price).sort((a, b) => a.px - b.px)
-  const inside = key.find(z => z.lo - edge <= price && z.hi + edge >= price) ?? null
+  // Which zone price is AT. With the buffer, price between two close zones can be "at" both, and
+  // taking whichever came first in the list made the reading — and every level of both plans —
+  // jump between them from one refresh to the next (HYPE at 78.9 between 75.83–78.29 and
+  // 79.39–80.78, reported with two screenshots seconds apart). So: the one it is in, else the
+  // nearest; and the zone it was at last time keeps it while price is still within its buffer.
+  const gap = (z) => (price < z.lo ? z.lo - price : price > z.hi ? price - z.hi : 0)
+  const near = key.filter(z => gap(z) <= edge)
+  const was = prev?.inside ? near.find(z => z.lo <= prev.inside.hi && z.hi >= prev.inside.lo) : null
+  const inside = was ?? near.slice().sort((a, b) => (gap(a) - gap(b)) || (b.score - a.score) || (a.px - b.px))[0] ?? null
 
   // Crossed recently: a recent daily close on the other side of a key zone near price.
   const recent = daily.slice(-6, -1).map(k => k.c)

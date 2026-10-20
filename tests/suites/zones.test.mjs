@@ -153,6 +153,16 @@ console.log('\n-- the setup --')
   const held = readSetup({ zones: zs2, price: 110.7, atrD: 2, daily, prev: bo })
   t('and a breakout holds while price only dips into the buffer — it changes when the market does', held.state === 'breakout' && held.long.zone.px === 110)
   t('back properly inside the zone, it is no longer a breakout', readSetup({ zones: zs2, price: 110.1, atrD: 2, daily, prev: bo }).state !== 'breakout')
+  // Reported next: the plans changed "dramatically for just small movements" — HYPE at 78.9 sat
+  // between two close zones, inside the buffer of both, and the first one in the list won.
+  const Zb = (lo, hi, score) => ({ px: (lo + hi) / 2, lo, hi, kind: 'support', key: true, score, confluence: 2 })
+  const twoNear = [Zb(75.825, 78.293, 70), Zb(79.388, 80.775, 70)]
+  const atA = readSetup({ zones: twoNear, price: 78.8, atrD: 4 })        // 0.51 above the lower zone, 0.59 below the upper
+  const atB = readSetup({ zones: twoNear.slice().reverse(), price: 78.8, atrD: 4 })
+  t('between two close zones, the nearest is the one price is at — whatever order they come in', atA.inside?.lo === 75.825 && atB.inside?.lo === 75.825, [atA.inside?.lo, atB.inside?.lo])
+  const stay = readSetup({ zones: twoNear, price: 78.85, atrD: 4, prev: atA })  // nearer the upper now (0.54 vs 0.56), still in the lower one's buffer
+  t('and it stays the zone while price is still within its buffer, though the other is now nearer', stay.inside?.lo === 75.825, stay.inside?.lo)
+  t('a real move to the other one does switch it', readSetup({ zones: twoNear, price: 79.6, atrD: 4, prev: atA }).inside?.lo === 79.388)
   const { smoothRatio } = await import('../../src/zones.js')
   t('the order book is smoothed: one snapshot counts for a third', Math.abs(smoothRatio(0.76, 0.92) - (0.76 * 2 / 3 + 0.92 / 3)) < 1e-12 && smoothRatio(null, 0.9) === 0.9 && smoothRatio(0.8, null) === 0.8)
   t('so a single wall cannot flip the lean: 0.76 then 0.92 still reads "more sellers"', smoothRatio(0.76, 0.92) <= 0.87)
