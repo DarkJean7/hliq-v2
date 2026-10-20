@@ -77,6 +77,31 @@
 </head>
 <body>
 <div id="init-loader"><span></span><span></span><span></span></div>
+<script>
+  // Boot watchdog. src/main.js removes #init-loader the moment it runs, and a module only runs once
+  // every file it imports has arrived — so if one never does (a request caught mid-deploy, a
+  // service worker holding a bad copy) the dots spin forever with nothing to do about it
+  // (reported 2026-10-20 as "infinite loading"). After 12 s the screen says so and offers a reload
+  // that also drops the service worker's cached assets, so a bad copy cannot keep it stuck.
+  setTimeout(function () {
+    var el = document.getElementById('init-loader')
+    if (!el) return
+    var box = document.createElement('div')
+    box.id = 'bootStuck'
+    box.style.cssText = 'position:fixed;left:50%;top:calc(50% + 40px);transform:translateX(-50%);text-align:center;font:14px system-ui,sans-serif;color:#aab1c0;z-index:99999'
+    box.innerHTML = 'Taking longer than it should.<br><button type="button" style="margin-top:12px;padding:10px 22px;border-radius:999px;border:0;background:#ff8a2a;color:#1a0d02;font-weight:700;font-size:14px;cursor:pointer">Reload</button>'
+    box.querySelector('button').onclick = function () {
+      var done = function () { location.reload() }
+      try {
+        Promise.all([
+          window.caches ? caches.keys().then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k) })) }) : null,
+          navigator.serviceWorker ? navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister() })) }) : null,
+        ]).then(done, done)
+      } catch (e) { done() }
+    }
+    document.body.appendChild(box)
+  }, 12000)
+</script>
 
 <!-- BOOT SPLASH (outside .app so it stays visible when .app is hidden on mobile) -->
 <div id="bootSplash">

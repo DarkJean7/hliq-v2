@@ -25,6 +25,11 @@ t('the app installs it, and the Grid Ladder opener uses it before alerting', mai
 // And the root cause: the deploy no longer deletes the chunks an open tab still asks for.
 const wf = fs.readFileSync('.github/workflows/deploy.yml', 'utf8')
 t('assets are synced without --delete', /rsync -avz --delay-updates dist\/assets\//.test(wf) && /--delete --delay-updates --exclude='\/assets\/' dist\//.test(wf))
+// And a boot that never starts (a file that never arrives) is not a silent spinner: reported as
+// "infinite loading" (2026-10-20).
+const htm = fs.readFileSync('index.html', 'utf8')
+t('after 12 s a stuck boot says so and offers a reload', /var el = document\.getElementById\('init-loader'\)[\s\S]{0,1400}Reload<\/button>[\s\S]{0,900}\}, 12000\)/.test(htm))
+t('which also drops the service worker and its cached assets', htm.includes('caches.delete(k)') && htm.includes('r.unregister()'))
 t('and old ones are pruned after 14 days', /find '\$DEPLOY_PATH\/dist\/assets' -type f -mtime \+14 -delete/.test(wf))
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
