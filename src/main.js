@@ -19230,7 +19230,7 @@ function _pulseRender(el) {
       el.innerHTML = _pulseSegHeader() + '<div id="pulseSegBody" class="ana-view"><div id="anaZ" class="ana-z"></div><div id="anaCharts"></div></div>'
       host = el.querySelector('#pulseSegBody')
     }
-    renderAnalysis(host.querySelector('#anaZ'), { T: _T, coin: () => state.selectedCoin || 'BTC', coins: _anaCoins, addAlert: _anaAddAlert })
+    renderAnalysis(host.querySelector('#anaZ'), { T: _T, coin: () => state.selectedCoin || 'BTC', coins: _anaCoins, addAlert: _anaAddAlert, limited: _hlLimited })
     _anaRender(host.querySelector('#anaCharts'))
     return
   }

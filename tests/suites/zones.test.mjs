@@ -175,7 +175,10 @@ console.log('\n-- the view --')
   const a = read('src/analysis.js'), css = read('src/analysis.css'), th = read('src/theme.js'), m = read('src/main.js')
   t('it reads through the METERED client, not trading.js\'s unpaced one', a.includes("import { infoClient } from './api.js'") && !a.includes("from './trading.js'"))
   t('candles are fetched one at a time, not in a burst', a.includes('for (const tf of TFS) {') && a.includes('await infoClient.candleSnapshot'))
-  t('nothing is fetched while it is off screen', a.includes("S.root.offsetParent !== null && !document.hidden"))
+  // Was the positive form (fetch only when visible). Off screen now also ABANDONS whatever
+  // was in flight rather than letting it land, so the check is an early return — same rule,
+  // one more thing done under it. tests/suites/anabudget.test.mjs covers the abort itself.
+  t('nothing is fetched while it is off screen', a.includes("S.root.offsetParent === null || document.hidden"))
   t('a failed timeframe is unknown, never "no market"', a.includes("if (!failed && TFS.every(tf => !out[tf].length)) { e.err = 'none'; return }"))
   t('"beyond the book" is said, not a zero', a.includes("beyond the book"))
   t('surfaces are solid: the view paints its own ground', css.includes('.ana-view { background: var(--bg)'))

@@ -3,7 +3,12 @@
 // Reads Hyperliquid directly — 4h, daily and weekly candles plus the order book at three
 // aggregations — through the METERED client in api.js, so it paces against the same
 // per-IP budget as everything else. Candles are kept five minutes, the book twenty seconds,
-// and nothing is fetched while the view is not on screen.
+// and nothing is fetched while the view is not on screen, while the global 429 breaker is
+// tripped, or for a market the person has already navigated away from.
+//
+// It is not a cheap view: a market never seen before costs three candle reads at weight 20
+// each plus the book at three aggregations, and tests/hl-weight.mjs --analysis=N measures what
+// browsing N of them does to the budget. Treat anything that fetches per market as expensive.
 //
 // Its surfaces are solid on purpose: with a wallpaper set the app's panels go translucent
 // (theme.js), and a table of prices you read the photo through is not readable. `.ana-view`
@@ -27,7 +32,7 @@ const RANGES = { 10: 0.10, 25: 0.25, all: Infinity }
 
 const cache = new Map()        // coin → { candles, candleAt, books, bookAt, err, loading }
 let S = null                   // view state, made on first render
-let deps = { T: (en) => en, coins: () => [], coin: () => 'BTC', addAlert: null }
+let deps = { T: (en) => en, coins: () => [], coin: () => 'BTC', addAlert: null, limited: () => false }
 let timer = null
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
@@ -62,16 +67,23 @@ function prefs() {
 function savePrefs() { try { localStorage.setItem(LS_PREFS, JSON.stringify({ sort: S.sort, range: S.range, tf: S.tf, all: S.all })) } catch {} }
 
 // ── data ────────────────────────────────────────────────────────────────────
-async function loadCandles(coin) {
+async function loadCandles(coin, signal) {
   const e = cache.get(coin)
   const now = Date.now()
   const out = {}
   let failed = 0
   // One at a time: the transport paces them anyway, and a burst is what the limiter punishes.
+  // Checked before each one rather than only at the top: tapping through chips used to load
+  // every market in full, so browsing six of them cost six markets of candles (weight 20 each)
+  // to look at one. Leaving a market abandons whatever it had not fetched yet.
   for (const tf of TFS) {
-    try { out[tf] = toCandles(await infoClient.candleSnapshot({ coin, interval: tf, startTime: now - SPAN[tf] })) }
+    if (signal?.aborted) return
+    try { out[tf] = toCandles(await infoClient.candleSnapshot({ coin, interval: tf, startTime: now - SPAN[tf] }, signal)) }
     catch { out[tf] = null; failed++ }
   }
+  // Walking away is not a failure. Letting an abort fall through to 'net' put a network error
+  // on a market the person had already left, and it was waiting for them when they came back.
+  if (signal?.aborted) return
   if (failed === TFS.length) { e.err = 'net'; return }
   // Every timeframe answered and none has a bar: there is no such market. A failed one is
   // unknown, not empty, so it never reads as "no market".
@@ -80,29 +92,48 @@ async function loadCandles(coin) {
   e.candles = out; e.candleAt = now; e.err = null
 }
 
-async function loadBooks(coin) {
+async function loadBooks(coin, signal) {
   const e = cache.get(coin)
   const raws = await Promise.all([undefined, 3, 2].map(n =>
-    infoClient.l2Book(n ? { coin, nSigFigs: n } : { coin }).catch(() => null)))
+    infoClient.l2Book(n ? { coin, nSigFigs: n } : { coin }, signal).catch(() => null)))
+  if (signal?.aborted) return
   const books = parseBooks(raws)
   if (books.length) { e.books = books; e.bookAt = Date.now(); e.ratio = smoothRatio(e.ratio, bookRatio(books)?.ratio ?? null) }
 }
 
+// The load for the market currently on screen, so leaving one can abandon it.
+let inflight = null   // { coin, ac }
+
 async function refresh(force = false) {
+  // The global 429 breaker. Every other poller in the app stands down when Hyperliquid
+  // throttles us; this one did not, because it reaches HL through api.js and never saw the
+  // breaker. So the pause that was meant to let the budget refill was spent with this tab
+  // still fetching — which re-tripped it, and the backoff doubled 15s → 30s → 60s → 120s and
+  // stuck at the cap. "Rate limited just by being in the Analysis tab" was this: the tab was
+  // not only paying its share, it was holding the whole app in the penalty box.
+  if (!force && deps.limited?.()) return
   const coin = S.coin
   if (!cache.has(coin)) cache.set(coin, { candles: null, candleAt: 0, books: null, bookAt: 0, err: null, loading: false })
   const e = cache.get(coin)
+  // A market left behind has nothing waiting on it. Cancelling frees the budget for the one
+  // being looked at instead of making it queue behind markets nobody is reading.
+  if (inflight && inflight.coin !== coin) { try { inflight.ac.abort() } catch {} ; inflight = null }
   if (e.loading) return
   const now = Date.now()
   const needC = force || now - e.candleAt > CANDLE_TTL
   const needB = force || now - e.bookAt > BOOK_TTL
   if (!needC && !needB) return
+  const ac = new AbortController()
+  inflight = { coin, ac }
   e.loading = true
   if (needC && !e.candles) draw()
   try {
-    await Promise.all([needC ? loadCandles(coin) : null, needB && e.err !== 'none' ? loadBooks(coin) : null])
-  } finally { e.loading = false }
-  if (S.coin === coin) { S.ver++; draw() }
+    await Promise.all([needC ? loadCandles(coin, ac.signal) : null, needB && e.err !== 'none' ? loadBooks(coin, ac.signal) : null])
+  } finally {
+    e.loading = false
+    if (inflight?.ac === ac) inflight = null
+  }
+  if (S.coin === coin && !ac.signal.aborted) { S.ver++; draw() }
 }
 
 function result() {
@@ -662,6 +693,13 @@ export function renderAnalysis(root, d) {
   refresh()
   if (!timer) timer = setInterval(() => {
     if (!S?.root?.isConnected) { clearInterval(timer); timer = null; return }
-    if (S.root.offsetParent !== null && !document.hidden) refresh()
+    // Off screen (another tab, another app): stand down, and drop whatever was still in
+    // flight when the view was left. An unexported hook would have to be wired from main.js
+    // and remembered at every call site; the tick already knows when nobody is looking.
+    if (S.root.offsetParent === null || document.hidden) {
+      if (inflight) { try { inflight.ac.abort() } catch {} ; inflight = null }
+      return
+    }
+    refresh()
   }, 5000)
 }
