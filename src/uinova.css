@@ -277,3 +277,19 @@ html:not(.ui-nova) :is(.nova-menu-btn, .nova-scrim, .nova-actions) { display: no
 @media (max-width: 880px) { html.ui-nova :is(.nova-menu-btn, .nova-scrim, .nova-actions) { display: none !important; } }
 /* Inter is wider than the classic monospace: the health ring's label is sized to stay inside it. */
 html.ui-nova .ov-ring text { font-size: 21px !important; font-weight: 700; letter-spacing: -0.03em; }
+
+/* Focus on a WIDE screen: the column was capped at 1000px, and on a large monitor that left most
+   of the page empty while the positions table — the thing that needs the room — was squeezed
+   (reported: "what's the point of the extra space when it is not being used"). From 1300px the
+   overview uses the width: the hero beside the health card, the stats and the positions full
+   width, and the old side column as one row of four underneath. */
+@media (min-width: 1300px) {
+  html.ui-nova #overviewStats { max-width: 1760px; }
+  html.ui-nova .ov-top-row { grid-template-columns: minmax(0, 1fr) 380px !important; }
+  /* Beside the hero, health goes back to its upright form: ring above its numbers. */
+  html.ui-nova .ov-health { display: flex; flex-direction: column; }
+  html.ui-nova .ov-health .ov-ring-wrap { flex: 1; }
+  html.ui-nova .ov-health .ov-health-rows { width: 100%; align-self: stretch; }
+  html.ui-nova .ov-side { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  html.ui-nova .ov-side > .ov-winloss { grid-column: span 2; }
+}
