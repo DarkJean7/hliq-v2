@@ -327,6 +327,7 @@ import { computeCompare, compareChartSvg, compareLegendHtml, compareSpread,
 import { ES_DICT } from './i18n-es.js'
 import { DISPLAY_NAMES } from './coinnames.js'
 import { installStaleChunkReload, reloadForStaleChunk } from './stalechunk.js'
+import { installScrollJank } from './scrolljank.js'
 import { installNovaChrome } from './uinova.js'
 import { ensurePortfoliosFrame, openPortfolios } from './pfembed.js'
 
@@ -12809,6 +12810,14 @@ function _chatAgo(ts) { const s = Math.floor((Date.now() - ts) / 1000); if (s < 
 
 // A tab older than the last deploy reloads to the new version when a lazy chunk is gone (src/stalechunk.js).
 try { installStaleChunkReload() } catch {}
+// Scroll stalls, measured on the device that has them (src/scrolljank.js): "kinda buggy" did
+// not reproduce headless, so the user's own browser says what it was doing when frames dropped.
+try {
+  installScrollJank({ report: ({ message, stack }) => fetch('/api/error', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ kind: 'scrolljank', message, stack, url: location.pathname, ua: navigator.userAgent }),
+  }).catch(() => {}) })
+} catch {}
 // The new interface's desktop menu button and quick actions (src/uinova.js); hidden in Classic by CSS.
 try { installNovaChrome() } catch {}
 // More → Portfolios on the phone: the page as a full-screen sheet, not a trip out of the app.
