@@ -330,6 +330,7 @@ import { installStaleChunkReload, reloadForStaleChunk } from './stalechunk.js'
 import { installScrollJank } from './scrolljank.js'
 import { scrollIdle as _scrollIdle } from './scrollidle.js'
 import { crossLiqPx, crossEquity, totalCrossMaint } from './liqest.js'
+import { createCountdowns } from './occountdown.js'
 import { installNovaChrome } from './uinova.js'
 import { ensurePortfoliosFrame, openPortfolios } from './pfembed.js'
 
@@ -36194,7 +36195,6 @@ window.__closePredictions = () => _predictSettle(false)
 
 // ─── OUTCOMES (PREDICTION MARKETS) ───────────────────────────────────────────
 let _ocCharts          = {}
-let _ocCountdownInterval = null
 let _ocRefreshInterval = null
 // { [outcomeId]: { px: number[], yes: number, no: number } }
 // `px` is indexed by side and is the authority; `yes`/`no` are kept as readable aliases for
@@ -36250,7 +36250,7 @@ let _ocActiveCat       = 'all'
 let _ocExpandedId      = null
 
 function _stopOcCountdown() {
-  if (_ocCountdownInterval) { clearInterval(_ocCountdownInterval); _ocCountdownInterval = null }
+  _ocCountdowns.stop()
   if (_ocRefreshInterval)   { clearInterval(_ocRefreshInterval);   _ocRefreshInterval   = null }
   Object.values(_ocCharts).forEach(c => { try { c.destroy() } catch {} })
   _ocCharts       = {}
@@ -36707,37 +36707,10 @@ function _expiryDate(raw) {
   return new Date(Date.UTC(+ds.slice(0,4), +ds.slice(4,6)-1, +ds.slice(6,8), +ts.slice(0,2), +ts.slice(2,4)))
 }
 
-function _fmtCountdown(ms) {
-  if (ms <= 0) return 'Expired'
-  const s   = Math.floor(ms / 1000)
-  const d   = Math.floor(s / 86400)
-  const h   = Math.floor((s % 86400) / 3600)
-  const m   = Math.floor((s % 3600) / 60)
-  const sec = s % 60
-  if (d > 0) return `${d}d ${h}h ${m}m`
-  if (h > 0) return `${h}h ${m}m ${sec}s`
-  return `${m}m ${sec}s`
-}
-
-function _startOcCountdown(expiryMap) {
-  if (_ocCountdownInterval) clearInterval(_ocCountdownInterval)
-  const tick = () => {
-    const now = Date.now()
-    for (const [id, expiry] of Object.entries(expiryMap)) {
-      const el = document.getElementById('oc-cd-' + id)
-      if (!el) continue
-      if (!expiry) { el.textContent = '—'; continue }
-      const remaining = expiry.getTime() - now
-      const fmt = _fmtCountdown(remaining)
-      el.textContent = fmt
-      el.className   = 'oc-countdown' + (remaining < 3600000 ? ' oc-countdown--urgent' : '')
-      const cEl = document.getElementById('oc-compact-cd-' + id)
-      if (cEl) cEl.textContent = fmt
-    }
-  }
-  tick()
-  _ocCountdownInterval = setInterval(tick, 1000)
-}
+// Expiry countdowns: only the ones on screen tick, and only when their text changes
+// (src/occountdown.js — the old one-second loop rewrote every market's and stalled scrolling).
+const _ocCountdowns = createCountdowns()
+function _startOcCountdown(expiryMap) { _ocCountdowns.start(expiryMap) }
 
 function _fmtOcK(n) {
   if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
@@ -37524,6 +37497,40 @@ window.__ocCloseExpanded = function() {
   if (ov) ov.style.zIndex = '0'   // restore — home lip becomes reachable again
 }
 
+/**
+ * Market chips: the outcomes on ONE underlying. Asked: "add like similar as our watch cards,
+ * but in outcomes for the available markets just similar as the image of outcome.xyz. that
+ * would allow to just see the outcomes available in the selected market". One chip per
+ * underlying that has a live outcome (HYPE, BTC, GOLD...), most markets first, built from the
+ * cards on screen so it can never offer a market with nothing behind it. Combines with the
+ * category row and the search box; "All" clears it.
+ */
+let _ocActiveUnd = 'all'
+function _ocUndKey(u) { return u ? String(coinLabel(u) || _ocStripDex(u)).toUpperCase() : '' }
+function _ocRenderUnds() {
+  const host = document.getElementById('ocUnds')
+  if (!host) return
+  const by = new Map()
+  for (const c of document.querySelectorAll('#ocGrid .oc-card[data-und]')) {
+    const k = c.dataset.und
+    if (!k) continue
+    const e = by.get(k) ?? { n: 0, raw: c.dataset.undRaw || k }
+    e.n++; by.set(k, e)
+  }
+  if (by.size < 2) { host.innerHTML = ''; host.style.display = 'none'; return }
+  if (_ocActiveUnd !== 'all' && !by.has(_ocActiveUnd)) _ocActiveUnd = 'all'
+  const chip = (k, inner, active) => `<button type="button" class="oc-und${active ? ' oc-und-active' : ''}" data-und="${esc(k)}" onclick="window.__ocSetUnd('${esc(k)}')">${inner}</button>`
+  host.style.display = ''
+  host.innerHTML = chip('all', `<span class="oc-und-name">${_T('All markets', 'Todos')}</span>`, _ocActiveUnd === 'all')
+    + [...by].sort((a, b) => b[1].n - a[1].n || a[0].localeCompare(b[0])).map(([k, e]) =>
+      chip(k, `<span class="oc-und-ic">${_coinIconHtml(e.raw)}</span><span class="oc-und-name">${esc(k)}</span><span class="oc-und-n">${e.n}</span>`, _ocActiveUnd === k)).join('')
+}
+window.__ocSetUnd = function(k) {
+  _ocActiveUnd = _ocActiveUnd === k ? 'all' : k      // pressing the active chip again clears it
+  document.querySelectorAll('#ocUnds .oc-und').forEach(b => b.classList.toggle('oc-und-active', b.dataset.und === _ocActiveUnd))
+  window.__ocFilter()
+}
+
 window.__ocSetCat = function(cat, btn) {
   _ocActiveCat = cat
   document.querySelectorAll('.oc-cat').forEach(b => b.classList.toggle('oc-cat-active', b.dataset.cat === cat))
@@ -37588,8 +37595,9 @@ window.__ocFilter = function() {
   const q = (document.getElementById('ocSearchInput')?.value || '').toLowerCase().trim()
   document.querySelectorAll('#ocGrid .oc-card').forEach(card => {
     const matchCat = _ocActiveCat === 'all' || card.dataset.cat === _ocActiveCat
+    const matchUnd = _ocActiveUnd === 'all' || card.dataset.und === _ocActiveUnd
     const matchQ   = !q || (card.dataset.q || '').includes(q)
-    card.style.display = (matchCat && matchQ) ? '' : 'none'
+    card.style.display = (matchCat && matchUnd && matchQ) ? '' : 'none'
   })
   // A category change rebuilds nothing, so the chosen order has to be re-applied over it.
   if ((document.getElementById('ocSortSel')?.value || 'default') !== 'default') {
@@ -37883,7 +37891,9 @@ window.__ocEvtToggle = function(evId, btn, total) {
 function _ocSectionVis() {
   const grid = document.getElementById('ocGrid')
   if (!grid) return
-  const show = _ocActiveCat === 'all' && !(document.getElementById('ocSearchInput')?.value ?? '').trim()
+  // A market chip is a filter like a category: the headings (and their counts) and Trending,
+  // which list everything, would otherwise sit over the one market chosen.
+  const show = _ocActiveCat === 'all' && _ocActiveUnd === 'all' && !(document.getElementById('ocSearchInput')?.value ?? '').trim()
   grid.querySelectorAll('.oc-sec-head, .oc-hot-scroll').forEach(el => { el.style.display = show ? '' : 'none' })
 }
 
@@ -37892,6 +37902,7 @@ async function renderOutcomes() {
   if (!root) return
   _stopOcCountdown()
   _ocActiveCat  = 'all'
+  _ocActiveUnd  = 'all'      // a fresh grid shows everything, chips included
   _ocExpandedId = null
   root.innerHTML = '<div class="ma-loading">Loading prediction markets…</div>'
   try {
@@ -37948,7 +37959,7 @@ async function renderOutcomes() {
       // Falls back to the parent question's deadline: a leg of an event carries no expiry
       // of its own, and without this every one of them sorted as "no closing time".
       const closeMs = _expiryDate(_ocDeadlineOf(o, d))?.getTime()
-      return `<div class="oc-card" id="oc-card-${o.outcome}" data-cat="${cat}" data-q="${esc(searchQ)}"${
+      return `<div class="oc-card" id="oc-card-${o.outcome}" data-cat="${cat}" data-und="${esc(_ocUndKey(full.underlying))}" data-und-raw="${esc(full.underlying ?? '')}" data-q="${esc(searchQ)}"${
         closeMs ? ` data-oc-close="${closeMs}"` : ''} onclick="window.__ocExpandCard(${o.outcome})">
         <div class="oc-compact-info">
           ${d.underlying ? `<span class="oc-compact-icon">${_coinIconHtml(d.underlying)}</span>` : ''}
@@ -38126,6 +38137,7 @@ async function renderOutcomes() {
           <button class="oc-cat" data-cat="other" onclick="window.__ocSetCat('other',this)">Other</button>
         </div>
       </div>
+      <div class="oc-unds no-swipe" id="ocUnds"></div>
       ${state.isAllAccounts ? `<div style="padding:0 12px 10px">${window.__tradeAcctPickerHtml()}</div>` : ''}
       <div class="oc-grid" id="ocGrid">${cardsHtml}</div>`
     _ocLiveOutcomes = outcomes
@@ -38138,6 +38150,7 @@ async function renderOutcomes() {
     // card is expanded) — load each chart lazily on expand to avoid firing ~76
     // candle requests at once and getting rate-limited.
     _ocSectionize()
+    _ocRenderUnds()
     if (_ocRefreshInterval) clearInterval(_ocRefreshInterval)
     _ocRefreshInterval = setInterval(_refreshOcPrices, 5000)
   } catch(e) {

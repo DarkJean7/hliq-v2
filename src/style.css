@@ -4084,6 +4084,28 @@ body.light-mode .strat-config-label::after {
   border-color: var(--accent);
   color: var(--accent);
 }
+/* Market chips: one per underlying with live outcomes (HYPE, BTC, GOLD...), styled as the watch
+   strip's cards so the two read as one family. Scrolls sideways by its own class, like .oc-cats
+   (no data-dragscroll: a JS drag handler would fight the native scroll). */
+.oc-unds {
+  display: flex; gap: 8px; margin: 10px 0 14px;
+  overflow-x: auto; -webkit-overflow-scrolling: touch; touch-action: pan-x;
+  overscroll-behavior-x: contain; scrollbar-width: none; padding-bottom: 2px;
+}
+.oc-unds::-webkit-scrollbar { display: none; }
+.oc-und {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 12px; border-radius: 10px; white-space: nowrap; cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--fg-2);
+  background: var(--panel-2); border: 1px solid var(--border);
+  transition: border-color .15s, background .15s, color .15s, transform .15s;
+}
+.oc-und:hover { border-color: var(--accent); color: var(--fg); transform: translateY(-1px); }
+.oc-und-active { color: var(--fg); border-color: var(--accent); background: color-mix(in oklch, var(--accent) 14%, var(--panel-2)); }
+.oc-und-ic { display: inline-flex; width: 18px; height: 18px; align-items: center; justify-content: center; }
+.oc-und-ic img, .oc-und-ic > * { width: 18px; height: 18px; border-radius: 50%; }
+.oc-und-n { font-size: 11px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
+.oc-und-active .oc-und-n { color: var(--accent); }
 .oc-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
