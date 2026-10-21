@@ -17,6 +17,9 @@ import { STRATEGIES, STRATEGY_LABEL, BOT_STRATEGIES, BOT_LABEL, backtest, botRun
 import { ladderRun, LADDER_DEFAULTS, LADDER_FIELDS, LADDER_DESC } from './pfladder.js'
 import { BT_FIELDS, BT_DEFAULTS, BT_STRATEGY_META, BT_STRATEGIES } from './backtest.js'
 import { initTrade } from './pftrade.js'
+import { adoptAppTheme } from './pftheme.js'
+// Inside the app (?embed=1) the page wears the app's theme, read live from it (src/pftheme.js).
+adoptAppTheme()
 // The gallery card's own backtest, shared with serve-prod.js so the two cannot price a card
 // differently depending on which of them answered.
 import { galBacktest } from './pfgallery.js'

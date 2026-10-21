@@ -5251,6 +5251,17 @@ body.layout-mobile .nav-tabs { display: none !important; }
 
 /* ─── SETTINGS TAB ───────────────────────────────────────────────────────── */
 .settings-body { display: flex; flex-direction: column; gap: 14px; max-width: 560px; }
+/* Desktop: centred, and two columns once there is room for them. It was one 560px column pinned
+   to the left of a 1900px screen ("make settings idk centered and with more sense in desktop").
+   Columns rather than a grid so each card keeps its own height and the two sides balance;
+   break-inside keeps a card whole. Phones keep the single column above. */
+@media (min-width: 769px) {
+  #tab-settings .settings-body { max-width: 640px; margin: 0 auto; }
+}
+@media (min-width: 1180px) {
+  #tab-settings .settings-body { display: block; column-count: 2; column-gap: 18px; max-width: 1200px; }
+  #tab-settings .settings-body > * { break-inside: avoid; margin: 0 0 18px; }
+}
 .settings-card {
   background: var(--bg3); border: 1px solid var(--border);
   border-radius: 12px; overflow: hidden;
@@ -8443,7 +8454,7 @@ input.sim-sw:checked::before { transform: translateX(14px); }
 .pa-alarm-tests .pa-alarm-test.on { flex: 2.4; border-color: var(--accent); color: var(--accent); }
 
 /* Portfolios tab: the /portfolios page inside the app (src/pfembed.js), filling its panel. */
-.pf-embed-frame { display: block; width: 100%; height: calc(100vh - 190px); min-height: 560px; border: 0; border-radius: var(--r-3); background: var(--bg); }
+.pf-embed-frame { display: block; width: 100%; height: calc(100vh - 190px); min-height: 560px; border: 0; border-radius: var(--r-3); background: transparent; }
 
 /* Dev-only entries (Grid Ladder for now): hidden unless dev mode is on. html.is-dev is set before
    first paint (index.html) and kept in step when dev mode is switched (_applyDevMode). */

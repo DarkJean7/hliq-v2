@@ -128,9 +128,10 @@ const acct = (label, equity, positions) => ({ label, addr: '0x' + label, account
 
   // The tab, and its position between Allocation and What moved.
   const header = /function _allocViewHeader\(\)[\s\S]{0,1400}?\n}/.exec(srcMain)?.[0] ?? ''
-  const iAlloc = header.indexOf("tab('allocation'")
-  const iExp   = header.indexOf("tab('exposure'")
-  const iMov   = header.indexOf("tab('movers'")
+  // The tabs are now a list handed to the shared _paneSegHeader (same header as Analysis).
+  const iAlloc = header.indexOf("['allocation'")
+  const iExp   = header.indexOf("['exposure'")
+  const iMov   = header.indexOf("['movers'")
   t('header renders an exposure tab', iExp > -1)
   t('exposure sits BETWEEN allocation and what-moved', iAlloc > -1 && iExp > iAlloc && iMov > iExp,
     `alloc=${iAlloc} exp=${iExp} movers=${iMov}`)

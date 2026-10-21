@@ -12454,11 +12454,7 @@ window.__openExposure = function() {
 
 // Shared header for the Allocation screen: an Allocation ⇄ What-moved segmented toggle + close.
 function _allocViewHeader() {
-  const tab = (k, lbl) => `<button onclick="window.__allocSetView('${k}')" style="padding:6px 15px;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;background:${_allocView === k ? 'var(--accent)' : 'transparent'};color:${_allocView === k ? '#000' : 'var(--muted)'};transition:background .15s">${lbl}</button>`
-  return `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 12px 10px;background:var(--bg);border-bottom:1px solid var(--border)">
-    <div style="display:flex;gap:3px;background:var(--panel-1);border-radius:10px;padding:3px">${tab('allocation', _T('Allocation', 'Asignación'))}${tab('exposure', _T('Exposure', 'Exposición'))}${tab('movers', _T('What moved', 'Qué movió'))}</div>
-    <button onclick="window.__paneClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
-  </div>`
+  return _paneSegHeader([['allocation', _T('Allocation', 'Asignación')], ['exposure', _T('Exposure', 'Exposición')], ['movers', _T('What moved', 'Qué movió')]], _allocView, '__allocSetView')
 }
 
 // Price formatter for attribution rows: outcome (prediction) markets price in cents/prob,
@@ -19360,13 +19356,22 @@ window.__pulseSetSeg = function(v) {
   _pulseRender(host)
 }
 
-function _pulseSegHeader() {
-  const tab = (k, lbl) => `<button onclick="window.__pulseSetSeg('${k}')" style="flex:1;padding:6px 10px;border:none;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap;background:${_pulseSeg === k ? 'var(--accent)' : 'transparent'};color:${_pulseSeg === k ? '#000' : 'var(--muted)'};transition:background .15s">${lbl}</button>`
-  return `<div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:8px;padding:11px 12px 9px;background:var(--bg);border-bottom:1px solid var(--border)">
-    <div style="flex:1;display:flex;gap:3px;background:var(--panel-1);border-radius:10px;padding:3px">${
-      tab('analysis', _T('Analysis', 'Análisis'))}${tab('signals', _T('Signals', 'Señales'))}${tab('pulse', 'Pulse')}</div>
+/**
+ * The sticky segment header of a full-pane screen: tabs that share the width, the active one
+ * filled with the accent, and a close button. One function for every screen that has one —
+ * Allocation's were a copy with compact tabs, and looked like a different app beside
+ * Analysis's ("fix allocation section tabs to be bigger and match other tabs like analysis").
+ */
+function _paneSegHeader(items, active, setter) {
+  const tab = ([k, lbl]) => `<button data-seg="${k}" onclick="window.${setter}('${k}')" style="flex:1;padding:6px 10px;border:none;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap;background:${active === k ? 'var(--accent)' : 'transparent'};color:${active === k ? '#000' : 'var(--muted)'};transition:background .15s">${lbl}</button>`
+  return `<div class="pane-seg-head" style="position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:8px;padding:11px 12px 9px;background:var(--bg);border-bottom:1px solid var(--border)">
+    <div style="flex:1;display:flex;gap:3px;background:var(--panel-1);border-radius:10px;padding:3px">${items.map(tab).join('')}</div>
     <button onclick="window.__paneClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
   </div>`
+}
+
+function _pulseSegHeader() {
+  return _paneSegHeader([['analysis', _T('Analysis', 'Análisis')], ['signals', _T('Signals', 'Señales')], ['pulse', 'Pulse']], _pulseSeg, '__pulseSetSeg')
 }
 
 function _pulseRender(el) {
