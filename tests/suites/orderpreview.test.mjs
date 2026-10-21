@@ -48,6 +48,8 @@ const harness = (state, tradeAcct) => new Function('STATE', 'ACCT', `
   // The market's maintenance rate (main.js _mmrOf, tests/suites/liqest.test.mjs); these tests
   // are about WHICH position is read, not the rate, so a fixed one stands in.
   const _mmrOf = () => 0.05
+  // The cross liq estimate is its own suite (tests/suites/crossliq.test.mjs); not under test here.
+  const _crossLiqEstimate = () => null
   const window = { __getTradeAcct: () => ACCT }
   ${grab('function _tradePositions()')}
   ${grab('function _orderEstimate(')}

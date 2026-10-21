@@ -329,6 +329,7 @@ import { DISPLAY_NAMES } from './coinnames.js'
 import { installStaleChunkReload, reloadForStaleChunk } from './stalechunk.js'
 import { installScrollJank } from './scrolljank.js'
 import { scrollIdle as _scrollIdle } from './scrollidle.js'
+import { crossLiqPx, crossEquity, totalCrossMaint } from './liqest.js'
 import { installNovaChrome } from './uinova.js'
 import { ensurePortfoliosFrame, openPortfolios } from './pfembed.js'
 
@@ -3737,6 +3738,54 @@ function _mmrOf(coin) {
   return m > 0 ? 1 / (2 * m) : 0.01
 }
 
+// Unified (or portfolio-margin) accounts keep their collateral on the SPOT side, which is what a
+// cross liq price has to be measured against (src/liqest.js). Asked once per account and kept;
+// until the answer lands, a unified account is recognised by its perp margin showing up as a
+// hold on spot USDC, which a standard account's spot side never carries.
+const _unifiedByAddr = new Map()
+function _acctUnified(addr, spotBalances, perpState) {
+  const a = String(addr ?? '').toLowerCase()
+  if (!/^0x[0-9a-f]{40}$/.test(a)) return false
+  if (_unifiedByAddr.has(a)) return _unifiedByAddr.get(a)
+  _unifiedByAddr.set(a, null)   // in flight
+  _hlInfo({ type: 'userAbstraction', user: a }).then(r => r.ok ? r.json() : null).then(mode => {
+    if (typeof mode === 'string') _unifiedByAddr.set(a, mode === 'unifiedAccount' || mode === 'portfolioMargin')
+    else _unifiedByAddr.delete(a)
+  }).catch(() => _unifiedByAddr.delete(a))
+  return _acctUnifiedGuess(spotBalances, perpState)
+}
+function _acctUnifiedGuess(spotBalances, perpState) {
+  const usdc = (spotBalances ?? []).find(b => Number(b?.token) === 0 || String(b?.coin).toUpperCase() === 'USDC')
+  const hold = parseFloat(usdc?.hold ?? 0), used = parseFloat(perpState?.marginSummary?.totalMarginUsed ?? 0)
+  return used > 0 && hold >= used * 0.5
+}
+
+/**
+ * Est. liq price of the CROSS position on `coin` after an order, for the account being traded
+ * from. Shared by the desktop preview and the mobile one so the two cannot disagree. Returns
+ * { px } | { px: null, none: true } (nothing liquidates it: "N/A") | null (cannot tell).
+ */
+function _crossLiqEstimate(coin, curSzi, newSzi, price, fee) {
+  let addr, spot, dex, perpAV, perpSt
+  if (state.isAllAccounts) {
+    addr = String(window.__getTradeAcct?.() ?? '').toLowerCase()
+    const row = (_allAcctLastResults ?? []).find(r => String(r?.addr ?? '').toLowerCase() === addr)
+    if (!row || row.error) return null
+    spot = row._spotBals ?? row.spotBalances; dex = row._dexStates; perpAV = row._perpLive
+  } else {
+    addr = state.addr
+    perpSt = (isConnected() && _tradePerpState) ? _tradePerpState : state.perpState
+    spot = state.spotState?.balances
+    dex = perpSt?._dexStates ?? state.perpState?._dexStates
+      ?? [{ crossMaintenanceMarginUsed: perpSt?.crossMaintenanceMarginUsed, assetPositions: perpSt?.assetPositions }]
+    perpAV = perpSt?.marginSummary?.accountValue
+  }
+  const unified = _unifiedByAddr.get(String(addr ?? '').toLowerCase()) ?? _acctUnified(addr, spot, perpSt ?? state.perpState)
+  const equity = crossEquity({ unified, spotBalances: spot, dexStates: dex, perpAccountValue: perpAV })
+  const mark = parseFloat(state.allMids?.[coin] ?? 0) || price
+  return crossLiqPx({ curSzi, newSzi, mark, price, fee, equity, crossMaint: totalCrossMaint(dex), mmr: _mmrOf(coin) })
+}
+
 // ─── TRADE CARD COIN SEARCH ───────────────────────────────────────────────────
 window._tcsFilter = function(q = '') {
   const results = document.getElementById('tcsResults')
@@ -5370,8 +5419,19 @@ function updatePositionPreview({ coin, coinSz, price, margin }) {
   const absCurSzi = Math.abs(curSzi)
   const absNewSzi = Math.abs(newSzi)
 
+  // CROSS goes through src/liqest.js: HL's own model, collateral measured where HL measures it.
+  // The branches below scaled the current liq price, and a position with none (HL's null —
+  // nothing liquidates it) fell through to "fresh position" backed by the perp-side value: a
+  // 5 VVV add to a 5 VVV long previewed liq $27.20, above the $25.91 price, where HL said N/A.
+  // Isolated keeps them: there the backing really is the position's own margin.
+  let liqNone = false
+  const crossPos = !state.isIsolated && existingPos?.leverage?.type !== 'isolated'
   if (newSzi === 0) {
     newLiqPx = 0
+  } else if (crossPos) {
+    const r = _crossLiqEstimate(coin, curSzi, newSzi, price, coinSz * price * (state.orderType === 'limit' ? 0.0002 : 0.00045))
+    if (r?.none) liqNone = true
+    else newLiqPx = r?.px > 0 ? r.px : curHlLiq   // cannot tell: HL's figure for the position as it stands
   } else if (absCurSzi > 0 && curHlLiq > 0 && Math.sign(curSzi) === Math.sign(newSzi)) {
     // Adding to existing position — anchor off current HL liq
     const orderSz = coinSz
@@ -5400,8 +5460,8 @@ function updatePositionPreview({ coin, coinSz, price, margin }) {
     newLiqPx = curHlLiq
   }
 
-  liqEl.textContent = newLiqPx > 0 ? '$' + fmtPrice(newLiqPx) : (newSzi === 0 ? '—' : '—')
-  const liqDist = newLiqPx > 0 && price > 0 ? Math.abs(newLiqPx - price) / price : 1
+  liqEl.textContent = liqNone ? 'N/A' : newLiqPx > 0 ? '$' + fmtPrice(newLiqPx) : '—'
+  const liqDist = !liqNone && newLiqPx > 0 && price > 0 ? Math.abs(newLiqPx - price) / price : 1
   liqEl.className = liqDist < 0.05 ? 'neg' : liqDist < 0.1 ? '' : 'pos-preview-liq-safe'
   document.getElementById('pp-new-margin').textContent = newMargin > 0 ? '$' + fmtUSD(newMargin) : '$' + fmtUSD(margin)
 
@@ -24984,9 +25044,16 @@ function _orderEstimate({ coin, side, coinSz, price, leverage, orderType }) {
   const newMargin = curMargin + margin
   const mmr = _mmrOf(coin)
   const absCur = Math.abs(curSzi), absNew = Math.abs(newSzi)
-  let newLiqPx = 0
+  let newLiqPx = 0, liqNone = false
+  // Cross: the same estimate as the desktop preview (_crossLiqEstimate, src/liqest.js) — see
+  // there for the VVV report. Isolated keeps the branches below.
+  const crossPos = !state.isIsolated && pos?.leverage?.type !== 'isolated'
   if (newSzi === 0) newLiqPx = 0
-  else if (absCur > 0 && curHlLiq > 0 && Math.sign(curSzi) === Math.sign(newSzi)) {
+  else if (crossPos) {
+    const r = _crossLiqEstimate(coin, curSzi, newSzi, price, fee)
+    if (r?.none) liqNone = true
+    else newLiqPx = r?.px > 0 ? r.px : curHlLiq
+  } else if (absCur > 0 && curHlLiq > 0 && Math.sign(curSzi) === Math.sign(newSzi)) {
     newLiqPx = newSzi > 0
       ? (price * coinSz + curHlLiq * absCur * (1 - mmr)) / (absNew * (1 - mmr))
       : (price * coinSz + curHlLiq * absCur * (1 + mmr)) / (absNew * (1 + mmr))
@@ -25005,7 +25072,7 @@ function _orderEstimate({ coin, side, coinSz, price, leverage, orderType }) {
   } else newLiqPx = curHlLiq
 
   const newSide = newSzi > 0 ? 'LONG' : newSzi < 0 ? 'SHORT' : 'CLOSED'
-  return { sizeUSD, margin, fee, funding, newSzi, newSide, newEntry, newLiqPx, newMargin }
+  return { sizeUSD, margin, fee, funding, newSzi, newSide, newEntry, newLiqPx, liqNone, newMargin }
 }
 
 function _mobUpdateOrderSummary() {
@@ -25055,7 +25122,7 @@ function _mobUpdateOrderSummary() {
       else { sizeEl.textContent = fmtSize(Math.abs(est.newSzi)) + ' ' + display + ' (' + est.newSide + ')'; sizeEl.style.color = est.newSzi > 0 ? 'var(--green)' : 'var(--red)' }
     }
     set('mobPpEntry',  est.newEntry > 0 ? '$' + fmtPrice(est.newEntry) : '—')
-    set('mobPpLiq',    est.newLiqPx > 0 ? '$' + fmtPrice(est.newLiqPx) : '—')
+    set('mobPpLiq',    est.liqNone ? 'N/A' : est.newLiqPx > 0 ? '$' + fmtPrice(est.newLiqPx) : '—')
     set('mobPpMargin', '$' + fmtUSD(est.newMargin))
   }
 }
