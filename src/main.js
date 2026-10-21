@@ -328,6 +328,7 @@ import { ES_DICT } from './i18n-es.js'
 import { DISPLAY_NAMES } from './coinnames.js'
 import { installStaleChunkReload, reloadForStaleChunk } from './stalechunk.js'
 import { installScrollJank } from './scrolljank.js'
+import { scrollIdle as _scrollIdle } from './scrollidle.js'
 import { installNovaChrome } from './uinova.js'
 import { ensurePortfoliosFrame, openPortfolios } from './pfembed.js'
 
@@ -9812,6 +9813,12 @@ async function _stopHistWs() {
 // hero NUMBER. The chart LINE is left untouched (drawn from portfolio history), so no
 // spike can appear at its tail; only the headline value ticks.
 function _allAcctLightPaint() {
+  // Not mid-scroll: on desktop this rebuilds the whole Overview and every wallet card, and with
+  // ten wallets pushing it landed in nearly every scroll as a 200-885ms freeze ("it stutters").
+  // It runs, with the latest data, a quarter second after the scroll stops. src/scrollidle.js.
+  _scrollIdle.run('allAcctLightPaint', _allAcctLightPaintNow)
+}
+function _allAcctLightPaintNow() {
   const hidden  = _maHiddenLoad()
   const visible = _allAcctLastResults.filter(r => !hidden.has(r.addr))
   state.perpState = _aggPerpState(visible)

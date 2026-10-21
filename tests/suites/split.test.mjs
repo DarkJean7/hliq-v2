@@ -162,7 +162,8 @@ t("Advanced's 1H/8H map onto the finest bucket HL actually has",
 
 // The 12s value tick patches the portfolio hero with the combined total. In split view the
 // hero holds the per-wallet summary and the scrub readout, so that patch erased both.
-const lp = grab(cli, 'function _allAcctLightPaint()')
+// The body moved to _allAcctLightPaintNow when the light paint learned to wait out a scroll (src/scrollidle.js).
+const lp = grab(cli, 'function _allAcctLightPaintNow()')
 t('the light paint leaves the split hero alone',
   lp.includes('!(_mobVPortSplit && state.isAllAccounts)'))
 t('but still patches it in the combined view, which is what it is for',
