@@ -45,7 +45,7 @@ function renderer() {
   } catch { return 'unknown' }
 }
 
-export function installScrollJank({ report, minGapMs = 5 * 60_000, maxReports = 6 } = {}) {
+export function installScrollJank({ report, minGapMs = 60_000, maxReports = 8 } = {}) {
   if (typeof window === 'undefined' || typeof requestAnimationFrame !== 'function') return
   let session = null, sent = 0, lastSent = 0, gpu = null
   const tasks = []
@@ -58,8 +58,39 @@ export function installScrollJank({ report, minGapMs = 5 * 60_000, maxReports = 
       }
     }).observe({ type: 'longtask', buffered: false })
   } catch {}
+  // WHICH script. The first reports from the field (Brave, 1920px, wallpaper on) showed frames
+  // were drawn in 6ms and the stalls were all JavaScript — long tasks of 200–885ms with ~1,100
+  // nodes rewritten in a two-second scroll — but a long task does not say whose. A long
+  // animation frame does: what invoked it (a timer, a socket message, a rAF), the function, and
+  // its offset in the bundle, which locates it in the shipped file even minified. Plus how much
+  // of the frame was style and layout, which is what rebuilding a section with innerHTML costs.
+  const frames = []
+  try {
+    new PerformanceObserver((l) => {
+      if (!session) return
+      for (const e of l.getEntries()) {
+        if (e.duration < 50) continue
+        const top = [...(e.scripts ?? [])].sort((a, b) => b.duration - a.duration).slice(0, 2).map(s =>
+          `${Math.round(s.duration)}ms ${s.invoker || s.invokerType || '?'} fn=${s.sourceFunctionName || '?'} @${String(s.sourceURL || '').split('/').pop()}:${s.sourceCharPosition ?? '?'}`)
+        frames.push(`[${Math.round(e.duration)}ms layout=${Math.round(e.styleAndLayoutDuration ?? 0)} ${top.join(' + ') || 'no script'}]`)
+      }
+    }).observe({ type: 'long-animation-frame', buffered: false })
+  } catch {}
+  // And WHERE: rewritten nodes counted by the nearest element with an id.
   let mutations = 0
-  try { new MutationObserver((ms) => { if (session) for (const m of ms) mutations += m.addedNodes.length + m.removedNodes.length }).observe(document.body, { childList: true, subtree: true }) } catch {}
+  const where = new Map()
+  try {
+    new MutationObserver((ms) => {
+      if (!session) return
+      for (const m of ms) {
+        const n = m.addedNodes.length + m.removedNodes.length
+        if (!n) continue
+        mutations += n
+        const id = (m.target.closest?.('[id]') ?? m.target.parentElement?.closest?.('[id]'))?.id || describe(m.target)
+        where.set(id, (where.get(id) ?? 0) + n)
+      }
+    }).observe(document.body, { childList: true, subtree: true })
+  } catch {}
 
   const end = () => {
     const s = session; session = null
@@ -77,7 +108,8 @@ export function installScrollJank({ report, minGapMs = 5 * 60_000, maxReports = 
           `frames=${sum.frames} p50=${sum.p50} p95=${sum.p95} worst=${sum.worst} secs=${((s.last - s.start) / 1000).toFixed(1)}`,
           `scrolled=${[...s.scrolled].join(',')}`,
           `longtasks=${tasks.splice(0).slice(0, 8).join(',') || 'none'}`,
-          `nodesRewritten=${mutations}`,
+          `nodesRewritten=${mutations} in ${[...where].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => k + ':' + v).join(',') || '-'}`,
+          `frames=${frames.splice(0).slice(0, 6).join(' ') || 'none'}`,
           `ui=${html.classList.contains('ui-nova') ? 'nova' : 'classic'} wallpaper=${html.classList.contains('has-bg-image') ? 1 : 0} dimmed=${html.classList.contains('ui-dimmed') ? 1 : 0}`,
           `viewport=${innerWidth}x${innerHeight}@${devicePixelRatio} gpu=${gpu}`,
         ].join(' | '),
@@ -98,7 +130,7 @@ export function installScrollJank({ report, minGapMs = 5 * 60_000, maxReports = 
     const t = performance.now()
     if (!session) {
       session = { start: t, last: t, prev: 0, gaps: [], scrolled: new Set(), where: describe(el) }
-      mutations = 0; tasks.length = 0
+      mutations = 0; tasks.length = 0; frames.length = 0; where.clear()
       requestAnimationFrame(frame)
     }
     session.last = t

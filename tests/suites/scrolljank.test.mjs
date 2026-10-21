@@ -21,10 +21,16 @@ t('an empty session is not jank and does not throw', summarise([]).janky === fal
 t('it says what was scrolling — a box inside the page feels different from the page', src.includes('scrolled=') && src.includes("return 'page'"))
 t('what blocked the page', src.includes("type: 'longtask'") && src.includes('longtasks='))
 t('whether the page was rewriting itself meanwhile', src.includes('nodesRewritten='))
+// The field said "JavaScript, 200–885ms" but not whose; these name it.
+t('which script: the long animation frame\'s invoker, function and bundle offset',
+  src.includes("type: 'long-animation-frame'") && src.includes('s.invoker') && src.includes('s.sourceCharPosition'))
+t('how much of the stall was style and layout', src.includes('styleAndLayoutDuration'))
+t('and which part of the page was rewritten, by nearest id', src.includes("closest?.('[id]')") && src.includes('where.set(id'))
+t('all reset per session', src.includes('frames.length = 0; where.clear()'))
 t('whether the wallpaper blur was on', src.includes("has-bg-image") && src.includes('wallpaper='))
 t('and whether the GPU is drawing at all', src.includes('UNMASKED_RENDERER_WEBGL') && src.includes('gpu='))
 t('a hidden tab reports nothing (rAF stops, which is not a stall)', src.includes('document.hidden) return'))
-t('throttled and capped per page', src.includes('minGapMs = 5 * 60_000') && src.includes('maxReports = 6'))
+t('throttled and capped per page', src.includes('minGapMs = 60_000') && src.includes('maxReports = 8'))
 t('the listener is passive, so measuring cannot cause the jank', /addEventListener\('scroll'[\s\S]{0,700}passive: true/.test(src))
 t('main.js installs it and posts kind=scrolljank', cli.includes("import { installScrollJank } from './scrolljank.js'") && cli.includes("kind: 'scrolljank'"))
 
