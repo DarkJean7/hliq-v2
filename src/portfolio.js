@@ -1435,8 +1435,74 @@ async function galleryClick(e) {
   if (ref.startsWith('f:')) { const p = (featured ?? []).find(x => x.id === ref.slice(2)); if (p) openPortfolio(p, p.id) }
   else { const p = saved[Number(ref.slice(2))]; if (p) openPortfolio(p) }
 }
+/**
+ * Phone: the gallery is a grid of small cards, and pressing one zooms it.
+ *
+ * Asked: "in mobile make the portfolio cards smaller so that the user can see at glance a few
+ * portfolios like lets say 9, when pressing one it should zoom the cards to make it more readable,
+ * with an x exit button". Below 760px the cards are three to a row with the essentials (CSS:
+ * .pf-gal on a phone). A tap opens that same card full size over the page — description, details,
+ * delete and publish included — with × to close and Open in builder to do what a tap used to.
+ * Everything inside goes through galleryClick, so it behaves exactly as the card always did.
+ */
+const PHONE = () => window.matchMedia('(max-width: 760px)').matches
+let zoomRef = null
+function zoomClose() {
+  document.getElementById('pfZoom')?.remove()
+  document.removeEventListener('keydown', zoomKey)
+  zoomRef = null
+}
+function zoomKey(e) { if (e.key === 'Escape') zoomClose() }
+const zoomSrc = (ref) => [...document.querySelectorAll('#pfGallery [data-load], #pfFeatured [data-load]')].find(c => c.dataset.load === ref)
+function zoomOpen(ref) {
+  const src = zoomSrc(ref)
+  if (!src) return
+  zoomClose()
+  zoomRef = ref
+  const ov = document.createElement('div')
+  ov.id = 'pfZoom'
+  ov.className = 'pf-zoom'
+  ov.setAttribute('role', 'dialog')
+  ov.innerHTML = `<div class="pf-zoom-box">
+      <button type="button" class="pf-zoom-x" aria-label="Close">×</button>
+      <div class="pf-zoom-card"></div>
+      <button type="button" class="pf-btn pf-zoom-open">Open in builder</button>
+    </div>`
+  ov.querySelector('.pf-zoom-card').appendChild(src.cloneNode(true))
+  ov.addEventListener('click', async (e) => {
+    if (e.target === ov || e.target.closest('.pf-zoom-x')) return zoomClose()
+    const card = ov.querySelector('[data-load]')
+    // The open button and the card body both open it; delete and publish act on it in place.
+    const opening = e.target.closest('.pf-zoom-open') || (!e.target.closest('[data-del], [data-pub]') && e.target.closest('[data-load]'))
+    if (opening) {
+      zoomClose()
+      await galleryClick({ target: card })
+      document.getElementById('pfBuilderSec')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return
+    }
+    const name = card.querySelector('.pf-gc-name b')?.textContent
+    await galleryClick(e)
+    // A first tap on delete arms it ("Delete?"); the gallery redrew, so show the redrawn card.
+    // Gone closes — and "gone" is checked by NAME: a saved portfolio's ref is its position, so
+    // after a delete the same ref is the NEXT portfolio, which the zoom would quietly show.
+    const again = zoomSrc(ref)
+    if (!again || again.querySelector('.pf-gc-name b')?.textContent !== name) return zoomClose()
+    ov.querySelector('.pf-zoom-card').replaceChildren(again.cloneNode(true))
+  })
+  document.addEventListener('keydown', zoomKey)
+  document.body.appendChild(ov)
+}
+function galleryTap(e) {
+  // A phone tap on a card in the grid zooms it; buttons and everything else behave as before.
+  if (PHONE() && !e.target.closest('[data-del], [data-pub], [data-new], [data-featured-retry], [data-dev-in], [data-dev-out]')) {
+    const card = e.target.closest('#pfGallery [data-load], #pfFeatured [data-load]')
+    if (card) { zoomOpen(card.dataset.load); return }
+  }
+  return galleryClick(e)
+}
+
 for (const id of ['pfGallery', 'pfFeatured', 'pfDevNote']) {
-  $(id).addEventListener('click', galleryClick)
+  $(id).addEventListener('click', galleryTap)
   $(id).addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[data-load]')) { e.preventDefault(); e.target.click() } })
 }
 document.addEventListener('click', e => {

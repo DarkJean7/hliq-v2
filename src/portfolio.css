@@ -315,11 +315,21 @@
   .pf-run-grid .pf-seg { flex-wrap: nowrap; }
   .pf-name { font-size: 19px; }
   .pf-w input { width: 66px; }
-  /* Saved portfolios: a row to swipe through, so the builder stays near the top. */
-  .pf-gal { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 78%; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; padding-bottom: 4px; }
-  .pf-gal::-webkit-scrollbar { display: none; }
-  .pf-gc { scroll-snap-align: start; }
-  .pf-gc--new { min-height: 0; }
+  /* Portfolios at a glance: three small cards to a row, nine on a screen, instead of one and a
+     half in a strip to swipe ("make the portfolio cards smaller so that the user can see at
+     glance a few portfolios like lets say 9"). Name, holdings, mix, return and the line; the
+     rest is one tap away in the zoomed card (portfolio.js zoomOpen). */
+  .pf-gal { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .pf-gal .pf-gc { padding: 9px 9px 0; border-radius: 11px; }
+  .pf-gal .pf-gc-desc, .pf-gal .pf-gc-sub, .pf-gal .pf-gc-btns, .pf-gal .pf-gc-name small { display: none; }
+  .pf-gal .pf-gc-name b { font-size: 12.5px; }
+  .pf-gal .pf-gc-icons { margin-top: 6px; overflow: hidden; }
+  .pf-gal .pf-gc-icons .mk-ico { width: 16px; height: 16px; margin-right: -3px; font-size: 9px; }
+  .pf-gal .pf-gc-icons > :not(.mk-ico) { font-size: 10px; margin-left: 7px; }
+  .pf-gal .pf-gc-bar { height: 3px; margin-top: 6px; }
+  .pf-gal .pf-gc-ret { margin-top: 5px; font-size: 15px; }
+  .pf-gal .pf-spark { width: calc(100% + 18px); height: 26px; margin: 3px -9px 0; }
+  .pf-gal .pf-gc--new { min-height: 0; padding: 9px; font-size: 12px; }
   .pf-w span { width: 42px; }
   .pf-cbar { grid-template-columns: 70px 1fr 90px; gap: 8px; }
   .pf-key { justify-content: flex-start; }
@@ -482,3 +492,18 @@ html.pf-embed .pf-suggest { background: var(--panel); border-color: var(--rule);
 html.pf-embed.pf-app-photo .pf-suggest { background: var(--bg); }
 html.pf-embed .pf-gal-sort select, html.pf-embed input, html.pf-embed textarea, html.pf-embed select { color-scheme: inherit; }
 html.pf-embed.pf-app-light .pf-src { background: var(--bg-2); }
+
+/* ── a card zoomed from the phone's grid (portfolio.js zoomOpen) ── */
+.pf-zoom { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, .6); backdrop-filter: blur(3px); }
+.pf-zoom-box { position: relative; width: min(440px, 100%); display: flex; flex-direction: column; gap: 10px; animation: pf-zoom-in .16s ease-out; }
+@keyframes pf-zoom-in { from { transform: scale(.92); opacity: 0 } to { transform: none; opacity: 1 } }
+.pf-zoom-card .pf-gc { cursor: pointer; background: var(--panel); box-shadow: 0 24px 60px rgba(0, 0, 0, .55); }
+html.pf-embed.pf-app-photo .pf-zoom-card .pf-gc { background: var(--bg); }
+.pf-zoom-card .pf-gc-desc { -webkit-line-clamp: unset; }
+.pf-zoom-x { position: absolute; top: -14px; right: -6px; z-index: 1; width: 34px; height: 34px; border-radius: 50%; font: inherit; font-size: 20px; line-height: 1; cursor: pointer; color: var(--fg); background: var(--panel); border: 1px solid var(--rule); box-shadow: 0 6px 18px rgba(0, 0, 0, .5); }
+.pf-zoom-open { align-self: stretch; padding: 11px; font-size: 14px; }
+/* In the zoom the card's own × would sit beside the close ×, and two crosses a thumb's width
+   apart is how a portfolio gets deleted by someone closing a card. Spelled out there instead. */
+.pf-zoom-card .pf-gc-del:not(.is-armed) { font-size: 0; padding: 4px 9px; border-color: color-mix(in srgb, var(--neg) 35%, transparent); }
+.pf-zoom-card .pf-gc-del:not(.is-armed)::after { content: 'Delete'; font-size: 12px; font-weight: 700; color: var(--neg); }
+.pf-zoom-card .pf-gc-btns { margin-right: 26px; }

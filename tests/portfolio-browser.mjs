@@ -122,6 +122,25 @@ async function run(label, opts) {
   })
   await ctx.route('**/icon/**', r => r.fulfill({ status: 404, body: '' }))
   const p = await ctx.newPage()
+  // On a phone a card zooms when tapped (portfolio.js zoomOpen): opening it is a tap and then
+  // "Open in builder", and its Delete / Publish buttons are in the zoom, not on the small card.
+  const phone = label === 'mobile'
+  const closeZoom = async () => { if (await p.locator('#pfZoom').count()) await p.click('#pfZoom .pf-zoom-x') }
+  const openCard = async (sel) => {
+    if (!phone) return p.click(sel)
+    await closeZoom(); await p.click(sel)
+    if (await p.locator('#pfZoom').count()) await p.click('#pfZoom .pf-zoom-open')
+  }
+  const cardBtn = async (sel) => {
+    if (!phone) return p.click(sel)
+    const { ref, attr } = await p.$eval(sel, el => ({ ref: el.closest('[data-load]').dataset.load, attr: el.hasAttribute('data-del') ? 'data-del' : 'data-pub' }))
+    if (await p.evaluate(r => document.querySelector('#pfZoom [data-load]')?.dataset.load !== r, ref)) {
+      await closeZoom()
+      await p.click(`#pfGallery [data-load="${ref}"] .pf-gc-name, #pfFeatured [data-load="${ref}"] .pf-gc-name`)
+      await p.waitForSelector('#pfZoom [' + attr + ']')
+    }
+    await p.click('#pfZoom [' + attr + ']')
+  }
   const errs = []
   p.on('pageerror', e => errs.push(e.message))
   await p.goto(BASE, { waitUntil: 'domcontentloaded' })
@@ -310,7 +329,7 @@ async function run(label, opts) {
   // Open a portfolio from its card.
   await p.click('#pfNew')
   ok('New empties the builder', await p.evaluate(() => window.__pf.state.items.length) === 0)
-  await p.click('#pfGallery [data-load="l:0"] .pf-gc-name')
+  await openCard('#pfGallery [data-load="l:0"] .pf-gc-name')
   ok('clicking a card opens it in the builder', await waitFor(p, 'loaded', () => window.__pf.state.name === 'Three' && window.__pf.state.items.length === 3, null, 5000))
 
   // A holding Hyperliquid has no prices for: the page names it and offers a retry.
@@ -321,15 +340,15 @@ async function run(label, opts) {
   ok('no history: says which holding, offers a retry', await p.locator('#pfRetry').count() === 1)
 
   // Delete takes two taps.
-  await p.click('#pfGallery [data-del="l:0"]')
+  await cardBtn('#pfGallery [data-del="l:0"]')
   ok('the first tap on × only asks', await p.locator('#pfGallery [data-load]').count() === 1 && /Delete\?/.test(await p.textContent('#pfGallery [data-del="l:0"]')))
-  await p.click('#pfGallery [data-del="l:0"]')
+  await cardBtn('#pfGallery [data-del="l:0"]')
   ok('the second deletes it', await p.locator('#pfGallery [data-load]').count() === 0 && /Portfolios you save appear here/.test(await p.textContent('#pfGallery')))
 
   // ── featured portfolios: everyone sees them; only the developer changes them ──
   ok('a visitor sees the featured portfolio, with its description and return', await waitFor(p, 'featured', () => /Featured One/.test(document.getElementById('pfFeatured').textContent) && /%/.test(document.querySelector('#pfFeatured .pf-gc-ret')?.textContent ?? '')) && /Picked by us\./.test(await p.textContent('#pfFeatured')))
   ok('but cannot remove or republish it', await p.locator('#pfFeatured [data-del], #pfFeatured [data-pub]').count() === 0)
-  await p.click('#pfFeatured [data-load="f:feat0001"] .pf-gc-name')
+  await openCard('#pfFeatured [data-load="f:feat0001"] .pf-gc-name')
   await waitFor(p, 'opened', () => window.__pf.state.featuredId === 'feat0001')
   ok('opening it says changes stay theirs, and Save becomes "Save a copy"', /nothing here changes it/.test(await p.textContent('#pfMode')) && (await p.textContent('#pfSave')).trim() === 'Save a copy')
   await p.fill('#pfHoldings [data-w="0"]', '90')
@@ -350,7 +369,7 @@ async function run(label, opts) {
   // A holding listed 50 days ago joins then; the card still covers the year, and says so.
   ok('a holding listed 50 days ago does not cut the year short: it joined later, and the card says so', /^1 year · 1 joined later · /.test(late) && /NVDA/.test(await p.getAttribute('#pfFeatured [data-load="f:feat0002"] .pf-gc-sub', 'title')), late)
   ok('a card with a full year still says "1 year"', /^1 year · /.test(full), full)
-  await p.click('#pfFeatured [data-load="f:feat0002"] .pf-gc-name')
+  await openCard('#pfFeatured [data-load="f:feat0002"] .pf-gc-name')
   await waitFor(p, 'the late basket\'s run', () => window.__pf.last?.joined?.length === 1)
   ok('the backtest covers the whole year and names who joined, and when', /Joined when listed: NVDA on /.test(await p.textContent('#pfResults')) && await p.evaluate(() => window.__pf.last.days.length) >= 360)
   await p.check('#pfWait')
@@ -397,7 +416,7 @@ async function run(label, opts) {
   await p.reload({ waitUntil: 'domcontentloaded' })
   await waitFor(p, 'the spot basket', () => !!document.querySelector('#pfFeatured [data-load="f:feat0003"]'))
   await waitFor(p, 'markets', () => document.querySelectorAll('#pfSectors button').length > 2)
-  await p.click('#pfFeatured [data-load="f:feat0003"] .pf-gc-name')
+  await openCard('#pfFeatured [data-load="f:feat0003"] .pf-gc-name')
   await waitFor(p, 'its run', () => window.__pf.state.featuredId === 'feat0003' && window.__pf.last?.runs?.length > 0 && !!document.querySelector('.pf-contrib'))
   const seen = (await p.evaluate(() => ['#pfHoldings', '#pfComp', '.pf-contrib', '#pfResults'].map(q => document.querySelector(q)?.textContent ?? '').join(' '))).replace(/\s+/g, ' ')
   ok('a spot holding reads as its token (DRV), never as its market id (@700)', /DRV/.test(seen) && !/@700/.test(seen), seen.slice(0, 300))
@@ -414,29 +433,29 @@ async function run(label, opts) {
   await p.evaluate(() => window.dispatchEvent(new Event('focus')))
   await p.reload({ waitUntil: 'domcontentloaded' })
   await waitFor(p, 'dev cards', () => document.querySelectorAll('#pfGallery [data-pub]').length > 0)
-  await p.click('#pfGallery [data-pub]')
+  await cardBtn('#pfGallery [data-pub]')
   await waitFor(p, 'published', () => document.querySelectorAll('#pfFeatured [data-load]').length === 2)
   ok('Publish puts it under Featured, sent with the PIN', featured.length === 2 && featured[0].name === 'Mine, published' && writes.at(-1).pin === 'devpin' && writes.at(-1).path.endsWith('/save'))
-  await p.click('#pfFeatured [data-load="f:feat0001"] .pf-gc-name')
+  await openCard('#pfFeatured [data-load="f:feat0001"] .pf-gc-name')
   await waitFor(p, 'opened', () => window.__pf.state.featuredId === 'feat0001')
   ok('for the developer, Save on a featured one is "Update featured"', (await p.textContent('#pfSave')).trim() === 'Update featured')
   await p.fill('#pfName', 'Featured One, revised')
   await p.click('#pfSave')
   await waitFor(p, 'updated', () => /revised/.test(document.getElementById('pfFeatured').textContent))
   ok('Update featured changes it for everyone, in place', featured.length === 2 && featured.find(x => x.id === 'feat0001')?.name === 'Featured One, revised')
-  await p.click('#pfFeatured [data-del="f:feat0001"]')
+  await cardBtn('#pfFeatured [data-del="f:feat0001"]')
   ok('removing a featured one also takes two taps', /Remove\?/.test(await p.textContent('#pfFeatured [data-del="f:feat0001"]')) && featured.length === 2)
-  await p.click('#pfFeatured [data-del="f:feat0001"]')
+  await cardBtn('#pfFeatured [data-del="f:feat0001"]')
   await waitFor(p, 'removed', () => document.querySelectorAll('#pfFeatured [data-load]').length === 1)
   ok('and the second removes it', featured.length === 1 && !featured.some(x => x.id === 'feat0001'))
   // A wrong PIN is refused by the server, and the page says so.
   await p.evaluate(() => localStorage.setItem('hliq_lb_pin', 'wrong'))
-  await p.click('#pfGallery [data-pub]')
+  await cardBtn('#pfGallery [data-pub]')
   await waitFor(p, 'refused', () => /not accepted/.test(document.getElementById('pfMode').textContent))
   ok('a wrong PIN is refused and the page says so', featured.length === 1 && /not accepted/.test(await p.textContent('#pfMode')))
   // Publish straight from the builder.
   await p.evaluate(() => localStorage.setItem('hliq_lb_pin', 'devpin'))
-  await p.click('#pfGallery [data-load="l:0"] .pf-gc-name')
+  await openCard('#pfGallery [data-load="l:0"] .pf-gc-name')
   await waitFor(p, 'the builder publish button', () => !document.getElementById('pfPublish').hidden)
   ok('the developer can publish what is in the builder', await p.locator('#pfPublish').isVisible())
   await p.click('#pfPublish')
