@@ -3364,6 +3364,17 @@ const _MKT_DISPLAY = DISPLAY_NAMES
 function _mktDisplay(coin) { return _MKT_DISPLAY[coin.replace(/.*:/, '')] ?? null }
 
 /**
+ * What the desktop trade ticket calls a market. Reported: opening HYPE from the watch strip showed
+ * "@107-USDC" — the spot pair's id, not its name — on the header, the ticket and the button. The
+ * phone already looked spot names up first (_spotNameMap); the desktop printed the raw id. Spot
+ * name, then HIP-3's display rename, then the bare ticker without its dex prefix.
+ */
+function _tradeName(coin) {
+  if (!coin) return coin
+  return _spotNameMap[coin] ?? _mktDisplay(coin) ?? coinLabel(coin)
+}
+
+/**
  * A market Hyperliquid has delisted, which it nonetheless keeps quoting.
  *
  * Reported: "the trade tab is showing the delisted version and not the new io one... why we
@@ -3665,7 +3676,7 @@ function updateCoinHeader(coin) {
     if (levEl)  levEl.style.display = 'none'
     return
   }
-  nameEl.textContent = (_mktDisplay(coin) ?? coin) + '-USDC'
+  nameEl.textContent = _tradeName(coin) + '-USDC'
   if (iconEl) {
     iconEl.innerHTML = _coinIconHtml(coin)
     iconEl.style.background = 'transparent'
@@ -3676,7 +3687,7 @@ function updateCoinHeader(coin) {
   // Also update trade card search bar
   const tcsInput = document.getElementById('tcsCoinInput')
   const tcsIcon  = document.getElementById('tcsCoinIcon')
-  if (tcsInput) tcsInput.value = coin ?? ''
+  if (tcsInput) tcsInput.value = _tradeName(coin) ?? ''
   if (tcsIcon)  {
     if (coin) { tcsIcon.innerHTML = _coinIconHtml(coin); tcsIcon.style.background = 'transparent' }
     else      { tcsIcon.textContent = '—'; tcsIcon.style.background = 'var(--bg3)' }
@@ -3830,7 +3841,7 @@ window._tcsBlur = function() {
     if (results) results.style.display = 'none'
     const inp  = document.getElementById('tcsCoinInput')
     const coin = state.selectedCoin
-    if (inp) inp.value = coin ?? ''
+    if (inp) inp.value = _tradeName(coin) ?? ''
   }, 150)
 }
 
@@ -4941,7 +4952,8 @@ function renderCoinDropdownItems(query) {
 
 window.__selectCoin = function (coin) {
   state.selectedCoin = coin
-  const price      = parseFloat(state.allMids[coin] ?? 0)
+  // allMids is the main dex; a HIP-3 market's price is in the market contexts.
+  const price      = parseFloat(state.allMids[coin] ?? _mktCtxMap[coin]?.markPx ?? 0)
   const maxLev     = _coinMaxLev(coin)
 
   updateCoinHeader(coin)
@@ -5296,12 +5308,12 @@ function updateOrderSummary() {
   const _lev   = _effLeverage(coin)
   const margin = _lev > 0 ? sizeUSD / _lev : 0
 
-  document.getElementById('sum-coin').textContent   = coin ?? '—'
+  document.getElementById('sum-coin').textContent   = _tradeName(coin) ?? '—'
   document.getElementById('sum-side').textContent   = state.tradeSide.toUpperCase()
   document.getElementById('sum-type').textContent   = proActive() ? _proById(proType()).label : state.orderType.charAt(0).toUpperCase() + state.orderType.slice(1)
   document.getElementById('sum-price').textContent  = price   > 0 ? '$' + fmtPrice(price)  : '—'
   document.getElementById('sum-size').textContent   = sizeUSD > 0 ? '$' + fmtUSD(sizeUSD)  : '—'
-  document.getElementById('sum-coins').textContent  = coinSz  > 0 ? fmtSize(coinSz) + (coin ? ' ' + coin : '') : '—'
+  document.getElementById('sum-coins').textContent  = coinSz  > 0 ? fmtSize(coinSz) + (coin ? ' ' + _tradeName(coin) : '') : '—'
   document.getElementById('sum-lev').textContent    = state.leverage + 'x'
   document.getElementById('sum-lev-row').textContent = state.leverage + 'x'
   document.getElementById('sum-margin').textContent = margin  > 0 ? '$' + fmtUSD(margin)   : '—'
@@ -5404,7 +5416,7 @@ function updatePositionPreview({ coin, coinSz, price, margin }) {
     newSizeEl.textContent = 'CLOSED'
     newSizeEl.style.color = 'var(--muted)'
   } else {
-    newSizeEl.textContent = fmtSize(Math.abs(newSzi)) + ' ' + coin + '  (' + newSideStr + ')'
+    newSizeEl.textContent = fmtSize(Math.abs(newSzi)) + ' ' + _tradeName(coin) + '  (' + newSideStr + ')'
     newSizeEl.style.color = newSzi > 0 ? 'var(--green)' : 'var(--red)'
   }
 
@@ -6214,9 +6226,9 @@ function updateSubmitBtn() {
     return
   }
   if (state.tradeSide === 'long') {
-    btn.className = 'btn-trade-long'; btn.textContent = `▲ Buy / Long  ${state.selectedCoin}`
+    btn.className = 'btn-trade-long'; btn.textContent = `▲ Buy / Long  ${_tradeName(state.selectedCoin)}`
   } else {
-    btn.className = 'btn-trade-short'; btn.textContent = `▼ Sell / Short  ${state.selectedCoin}`
+    btn.className = 'btn-trade-short'; btn.textContent = `▼ Sell / Short  ${_tradeName(state.selectedCoin)}`
   }
 }
 
@@ -33170,7 +33182,12 @@ window.__watchOpenTrade = function(coin) {
     // BTC from the watch strip after looking at another market left the button still saying
     // "Buy / Long io:OAI" and the leverage slider still capped at that market's 6x, over a
     // ticket that was otherwise all BTC. Reported exactly that way.
-    if (state.allMids?.[coin]) window.__selectCoin(coin)
+    //
+    // It used to select only a coin found in state.allMids, which is the MAIN dex: a HIP-3 card
+    // (BRENTOIL, GOLD, SP500) opened the Trade tab on whatever market was there before ("pressing
+    // the watch cards does not work in some markets like brentoil"). The phone always selected,
+    // and so does this now — once the market list that knows HIP-3 is loaded.
+    Promise.resolve(_ensureMarketData()).catch(() => {}).finally(() => window.__selectCoin(coin))
   }, 80)
 }
 
