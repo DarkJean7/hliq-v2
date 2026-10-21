@@ -88,7 +88,9 @@ t('a brand-new market with no previous close reads as 0%, not Infinity',
 // ── wiring ───────────────────────────────────────────────────────────────────
 t('the News stub is gone', !cli.includes("_mobVActiveTab === 'news'") && !cli.includes('Coming soon'))
 t('the tab is renamed everywhere, leaving no dead allowlist entry', !/'news'/.test(cli))
-t('the button opens it', html.includes("window.mobVGoTab('pulse')"))
+// The home button became Analysis ("change the pulse button from mobile home to analysis"):
+// Pulse is one of Analysis's sections now, so the button opens Analysis on its Analysis section.
+t('the home button opens Analysis, which holds Pulse', html.includes(`onclick="window.__mobMoreTab('analysis')" aria-label="Analysis"`) && !html.includes("window.mobVGoTab('pulse')"))
 t('and is no longer labelled News', !html.includes('aria-label="News"'))
 // Scoped to the pulse fetch: metaAndAssetCtxs is also called elsewhere in the app, which
 // is not this feature's business.
