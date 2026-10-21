@@ -280,6 +280,17 @@
   .pf-table tr { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; padding: 12px 14px; border-bottom: 1px solid var(--rule); }
   .pf-table td { display: flex; justify-content: space-between; gap: 8px; padding: 0; border: 0; font-size: 12.5px; text-align: right; }
   .pf-table td.mk-c-asset { grid-column: 1 / -1; display: block; text-align: left; margin-bottom: 4px; font-size: 14px; }
+  /* Reported: "in mobile the portfolio results are out of bounds. also the screen like is kinda
+     moving and not staying in place." A plain 1fr column cannot shrink below its content, and
+     the Costs breakdown was nowrap, so one long line pushed the right-hand column (Return, Max
+     drawdown, Sharpe, Trades) off the screen — and since this wrap does not scroll sideways, the
+     whole page did instead. Columns that may shrink, the two long figures across the full row,
+     and the breakdown allowed to wrap. */
+  .pf-table { width: 100%; }
+  .pf-table tr { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .pf-table td { min-width: 0; overflow-wrap: anywhere; }
+  .pf-table td[data-l="Costs"], .pf-table td[data-l="Best / worst day"] { grid-column: 1 / -1; }
+  .pf-table td[data-l="Costs"] .pf-costs { white-space: normal; }
   .pf-table td[data-l]::before { content: attr(data-l); color: var(--fg-3); font-size: 11.5px; text-align: left; }
   .pf-table tbody tr:hover td { background: none; }
 }

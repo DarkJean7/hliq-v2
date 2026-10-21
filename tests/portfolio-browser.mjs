@@ -517,6 +517,28 @@ async function run(label, opts) {
   ok('the days the one request did not reach are estimated, and the page says how many', cr.est > 20 && cr.est < cr.days && new RegExp(cr.est + ' of ' + cr.days + ' days estimated').test(cr.notes), [cr.est, cr.days])
   ok('slippage is charged on the buy and shown', cr.slip > 0 && /slip \d/.test(await p.textContent('.pf-table')), cr.slip)
   ok('the costs show in what each holding added', /Funding/.test(await p.textContent('.pf-contrib')) && /Slippage/.test(await p.textContent('.pf-contrib')))
+  // Reported on a phone: "the portfolio results are out of bounds. also the screen like is kinda
+  // moving". The Costs line was nowrap and pushed each row wider than the screen — and the page
+  // with it. Checked while costs are ON (the old check ran after they were switched off), with the
+  // reported line itself put in a cell, so it is the width of real numbers that is measured.
+  const fits = await p.evaluate(() => {
+    const cell = document.querySelector('.pf-table td[data-l="Costs"]')
+    if (cell) cell.innerHTML = '≈ <b>$1,484</b> <small class="pf-costs">fees 136 · funding 1,184 · slip 164 <span class="pf-costs-share">31% of avg. balance</span></small>'
+    const wrap = document.querySelector('.pf-table-wrap').getBoundingClientRect()
+    const rows = [...document.querySelectorAll('.pf-table tbody tr')]
+    // body's overflow-x:hidden hides an overflow from scrollWidth in Chromium, but iOS Safari does
+    // not honour it on the page itself (least of all in the app's frame) — there the page slides.
+    // So look for anything that actually reaches past the screen's edge.
+    const past = [...document.querySelectorAll('body *')].filter(el => {
+      const r = el.getBoundingClientRect(), cs = getComputedStyle(el)
+      if (!r.width || cs.position === 'fixed' || el.closest('.mk-sec-row, .pf-chips, .pf-sec-row, [data-dragscroll], .ln-nav')) return false
+      return r.right > innerWidth + 1
+    }).slice(0, 4).map(el => el.tagName.toLowerCase() + '.' + String(el.className).split(' ')[0] + ':' + Math.round(el.getBoundingClientRect().right))
+    return { over: rows.filter(r => r.getBoundingClientRect().right > wrap.right + 1 || r.scrollWidth > r.clientWidth + 1).length,
+             page: past.length ? past : 0 }
+  })
+  ok('every result row fits inside its card, with costs on', fits.over === 0, fits)
+  ok('and the page does not move sideways', fits.page <= 0, fits)
   await p.click('#pfSrc [data-src="tv"]')
   await waitFor(p, 'tv costs', () => window.__pf.state.source === 'tv' && /no funding is charged/.test(document.getElementById('pfResults').textContent))
   ok('on exchange prices — owning the asset — no funding is charged', await p.evaluate(() => window.__pf.last.runs[0].funding) === null)
