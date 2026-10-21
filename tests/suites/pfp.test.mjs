@@ -76,8 +76,13 @@ console.log(nl + '-- the image is re-encoded before it leaves the device --')
   t('one uploader, shared by both pickers', u.length > 400)
   // The canvas pass moved into _pfpDataUrl so the dev picker shares it.
   const du = grab(cli, 'function _pfpDataUrl(file)')
-  t('drawn through a 256px canvas', u.includes('await _pfpDataUrl(file)') && du.includes("canvas.width = 256; canvas.height = 256"))
-  t('and emitted as jpeg', du.includes("canvas.toDataURL('image/jpeg', 0.88)"))
+  // The person frames it first now (src/imgedit.js), and the editor draws the 256px canvas:
+  // "it should let the user resize, etc, and preview before putting it".
+  const ed = fs.readFileSync('src/imgedit.js', 'utf8')
+  t('drawn through a 256px canvas', u.includes('await _pfpDataUrl(file)') && du.includes("editImage(file, { kind: 'avatar', outW: 256, outH: 256")
+    && ed.includes('out.width = outW; out.height = outH'))
+  t('and emitted as jpeg', du.includes('quality: 0.88') && ed.includes("out.toDataURL('image/jpeg', quality)"))
+  t('backing out of the editor uploads nothing and says nothing', u.includes('if (dataUrl === IMG_CANCELLED) return { ok: false, cancelled: true }'))
   // That pass is what drops EXIF. A phone photo carries a GPS tag, and this ends up on a
   // public board.
   t('why that matters is stated', cli.includes('which drops EXIF'))

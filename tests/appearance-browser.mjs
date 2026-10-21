@@ -105,6 +105,39 @@ const st = await p.evaluate(() => {
 t('two columns', st.cols, '2')
 t('centred in its panel', st.off <= 2, true)
 
+console.log('\n-- a wallpaper is framed and previewed before it is used --')
+// "when uploading a photo (user image or background image), it should let the user resize, etc,
+// and preview before putting it". A busy 800×400 PNG so there is something to frame.
+const WALL = Buffer.from(await p.evaluate(() => {
+  const c = document.createElement('canvas'); c.width = 800; c.height = 400
+  const g = c.getContext('2d'); for (let i = 0; i < 40; i++) { g.fillStyle = `hsl(${i * 9} 70% 50%)`; g.fillRect(i * 20, 0, 20, 400) }
+  return c.toDataURL('image/png').split(',')[1]
+}), 'base64')
+const wallInput = 'input[type=file][onchange*="__onBackdropFile"]'
+await p.setInputFiles(wallInput, { name: 'wall.png', mimeType: 'image/png', buffer: WALL })
+t('picking one opens the editor', await waitFor(p, 'the editor', () => !!document.querySelector('.imged-ov .imged-cv')), true)
+t('in this screen\'s shape', await p.evaluate(() => { const s = document.querySelector('.imged-stage').getBoundingClientRect(); return Math.abs(s.width / s.height - innerWidth / innerHeight) < 0.03 }), true)
+t('under the dim the app will use, with a sample card to judge it by', await p.evaluate(() =>
+  !!document.querySelector('.imged-ov .imged-dim') && !!document.querySelector('.imged-ov .imged-sample')), true)
+t('not applied while it is being framed', await p.evaluate(() => document.documentElement.classList.contains('has-bg-image')), false)
+// Zoom in, then drag: the stage must still be covered (no empty edge), which cropRect guarantees.
+await p.evaluate(() => { const z = document.querySelector('.imged-zoom'); z.value = '2.5'; z.dispatchEvent(new Event('input')) })
+const box = await p.$eval('.imged-stage', el => { const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })
+await p.mouse.move(box.x, box.y); await p.mouse.down(); await p.mouse.move(box.x + 400, box.y + 200, { steps: 6 }); await p.mouse.up()
+t('the zoom took', await p.$eval('.imged-zoom', z => +z.value), 2.5)
+await p.click('.imged-ov [data-act="cancel"]')
+t('Cancel leaves the app as it was', await p.evaluate(() => !document.querySelector('.imged-ov') && !document.documentElement.classList.contains('has-bg-image')), true)
+await p.setInputFiles(wallInput, { name: 'wall.png', mimeType: 'image/png', buffer: WALL })
+await waitFor(p, 'the editor', () => !!document.querySelector('.imged-ov .imged-cv'))
+await p.click('.imged-ov [data-act="apply"]')
+await waitFor(p, 'the wallpaper', () => document.documentElement.classList.contains('has-bg-image'))
+t('Apply sets it', await p.evaluate(() => document.documentElement.classList.contains('has-bg-image')), true)
+t('as the framed crop, in this screen\'s shape', await p.evaluate(() => new Promise((res) => {
+  const url = (localStorage.getItem('hliq_backdrop_img') || getComputedStyle(document.documentElement).getPropertyValue('--app-bg-image').replace(/^url\("?|"?\)$/g, ''))
+  const img = new Image(); img.onload = () => res(Math.abs(img.width / img.height - innerWidth / innerHeight) < 0.03); img.onerror = () => res(false); img.src = url
+})), true)
+await p.evaluate(() => window.__onBackdropClear?.())
+
 console.log('\n-- Allocation tabs match Analysis --')
 const seg = async (tab) => {
   await p.evaluate((x) => window.switchTab(x), tab)

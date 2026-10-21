@@ -32,6 +32,9 @@ const SOLID_ON_PURPOSE = {
   // Asked for twice, about two different panels: "make the panel non-transparent". A menu
   // can show the wallpaper through it; a panel of prices you are deciding on cannot.
   '.sheet-solid':     'the opt-out: a sheet of numbers to read, not a window onto the photo',
+  // The image editor previews a new wallpaper under the same scrim the app will lay over it.
+  // It covers only its own preview frame (inset:0 of a small box), never the app's photo.
+  '.imged-dim':       'the editor preview\'s copy of the wallpaper scrim, inside its own frame',
 }
 
 /** The declaration block whose selector list starts at `marker`, selectors included. */

@@ -177,8 +177,22 @@ console.log(NL + '-- a visitor with NOTHING set up still sees it --')
 console.log(NL + '-- and the upload is authenticated and normalised --')
 // A 1x1 PNG, the smallest real image there is.
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+// The editor opens first ("let the user resize, etc, and preview before putting it"). Backing out
+// sends nothing and says nothing; Apply sends the framed picture.
 await p.setInputFiles('#mobVPfpInput', { name: 'me.png', mimeType: 'image/png', buffer: Buffer.from(PNG, 'base64') })
-await p.waitForTimeout(3000)
+t('picking a photo opens the editor, not an upload', await waitFor(p, 'the editor', () => !!document.querySelector('.imged-ov .imged-cv')), true)
+t('with previews at the sizes it is shown', await p.evaluate(() => document.querySelectorAll('.imged-ov .imged-pv').length), 3)
+t('and nothing sent yet', uploads.length, 0)
+await p.click('.imged-ov [data-act="cancel"]')
+await p.waitForTimeout(500)
+t('Cancel closes it', await p.evaluate(() => !document.querySelector('.imged-ov')), true)
+t('sends nothing', uploads.length, 0)
+t('and shows no error', await p.evaluate(() => /could not|✗/i.test(document.getElementById('paperToastHost')?.textContent ?? '')), false)
+await p.setInputFiles('#mobVPfpInput', { name: 'me.png', mimeType: 'image/png', buffer: Buffer.from(PNG, 'base64') })
+await waitFor(p, 'the editor', () => !!document.querySelector('.imged-ov .imged-cv'))
+await p.click('.imged-ov [data-act="apply"]')
+const tUp = Date.now()
+while (!uploads.length && Date.now() - tUp < 10000) await p.waitForTimeout(150)
 
 t('exactly one upload was sent', uploads.length, 1)
 t('for their own address', uploads[0]?.addr, MINE.toLowerCase())
@@ -206,10 +220,15 @@ console.log(NL + '-- a dev can set ANYONE\'s photo ("let me be able to change th
   await p.evaluate(() => { localStorage.setItem('hliq_dev', '1'); localStorage.setItem('hliq_lb_pin', 'test-pin') })
   const isDev = await p.evaluate(() => typeof window.isDev === 'function' ? window.isDev() : null)
   const chooser = p.waitForEvent('filechooser', { timeout: 10000 })
-  p.evaluate((a) => window.__lbSetPhoto(a), OTHER)
+  // Not awaited: it waits on the file picker and then the editor, which the test drives below.
+  // Kept as a handle so a rejection when the browser closes is not an unhandled one.
+  const devRun = p.evaluate((a) => window.__lbSetPhoto(a), OTHER).catch(() => {})
   const fc = await chooser.catch(() => null)
   t('in dev mode it opens a file picker' + (isDev === false ? ' (isDev() said false)' : ''), !!fc, true)
   if (fc) await fc.setFiles({ name: 'them.png', mimeType: 'image/png', buffer: Buffer.from(PNG, 'base64') })
+  // The dev path frames it in the same editor.
+  await waitFor(p, 'the editor', () => !!document.querySelector('.imged-ov .imged-cv'))
+  await p.click('.imged-ov [data-act="apply"]')
   const t0 = Date.now()
   while (uploads.length === before && Date.now() - t0 < 10000) await p.waitForTimeout(200)
   const up = uploads.at(-1)
@@ -217,6 +236,7 @@ console.log(NL + '-- a dev can set ANYONE\'s photo ("let me be able to change th
   t('proved by the dev PIN', up?.pin, 'test-pin')
   t('not by anyone\'s agent session', up?.auth, null)
   t('and through the same canvas pass', /^data:image\/jpeg;base64,/.test(up?.dataUrl ?? ''), true)
+  await Promise.race([devRun, p.waitForTimeout(3000)])   // let it finish its repaint before closing
 }
 
 await browser.close()

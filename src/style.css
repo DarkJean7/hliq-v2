@@ -8484,3 +8484,51 @@ html:not(.is-dev) .dev-gate { display: none !important; }
 /* index.html declares color-scheme: dark so the blank canvas of a cold start is dark, not white.
    In light mode the browser's own controls (scrollbars, native inputs) should be light again. */
 html:has(body.light-mode), body.light-mode { color-scheme: light; }
+
+/* ─── Image editor (src/imgedit.js): position, zoom and preview a photo before it is used ─── */
+.imged-ov {
+  position: fixed; inset: 0; z-index: 2147482000; display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(0, 0, 0, .62); backdrop-filter: blur(3px);
+}
+.imged {
+  width: min(620px, 100%); max-height: calc(100vh - 32px); overflow: auto;
+  display: flex; flex-direction: column; gap: 14px; padding: 18px;
+  background: var(--panel-3); border: 1px solid var(--border); border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .55); color: var(--fg);
+}
+html.has-bg-image .imged { background: var(--bg); }
+.imged-head { display: flex; flex-direction: column; gap: 3px; }
+.imged-head b { font-size: 16px; }
+.imged-head span { font-size: 12px; color: var(--muted); }
+.imged-body { display: flex; align-items: center; justify-content: center; gap: 22px; flex-wrap: wrap; }
+.imged-stage {
+  position: relative; overflow: hidden; border-radius: 12px; cursor: grab; touch-action: none;
+  background: repeating-conic-gradient(var(--panel-2) 0 25%, var(--panel) 0 50%) 0 0 / 16px 16px;
+  box-shadow: 0 0 0 1px var(--border);
+}
+.imged-stage:active { cursor: grabbing; }
+.imged-round { border-radius: 50%; }
+.imged-cv { display: block; }
+/* Solid --bg on purpose: the editor preview's copy of the wallpaper scrim, inside its own frame,
+   at the dim the app will use — never over the app's own photo. */
+.imged-dim { position: absolute; inset: 0; background: var(--bg); pointer-events: none; }
+.imged-sample {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 20px;
+  border-radius: 12px; background: var(--panel); border: 1px solid var(--border); backdrop-filter: blur(7px);
+}
+.imged-sample i { font-style: normal; font-size: 11px; color: var(--muted); }
+.imged-sample b { font-size: 22px; letter-spacing: -0.02em; }
+.imged-sample em { font-style: normal; font-size: 11px; font-weight: 700; color: var(--green); }
+.imged-previews { display: flex; align-items: center; gap: 12px; }
+.imged-pv { border-radius: 50%; box-shadow: 0 0 0 1px var(--border); }
+.imged-tools { display: flex; align-items: center; gap: 10px; }
+.imged-tools > span { color: var(--muted); font-weight: 700; width: 10px; text-align: center; }
+.imged-zoom { flex: 1; accent-color: var(--accent); }
+.imged-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.imged-btn {
+  font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; padding: 8px 14px; border-radius: 9px;
+  color: var(--fg); background: transparent; border: 1px solid var(--border);
+}
+.imged-btn:hover { border-color: var(--fg-3); }
+.imged-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg, #000); }

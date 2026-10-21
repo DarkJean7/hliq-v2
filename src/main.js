@@ -331,6 +331,7 @@ import { installScrollJank } from './scrolljank.js'
 import { scrollIdle as _scrollIdle } from './scrollidle.js'
 import { crossLiqPx, crossEquity, totalCrossMaint } from './liqest.js'
 import { createCountdowns } from './occountdown.js'
+import { editImage, CANCELLED as IMG_CANCELLED } from './imgedit.js'
 import { installNovaChrome } from './uinova.js'
 import { ensurePortfoliosFrame, openPortfolios } from './pfembed.js'
 
@@ -14564,26 +14565,15 @@ function _pfpOwnAddr() {
   return null
 }
 
-/** Any picked image as a 256×256 centre-cropped JPEG data URL, or null if it cannot be read. */
-function _pfpDataUrl(file) {
-  return new Promise((resolve) => {
-    const reader = new FileReader()
-    reader.onerror = () => resolve(null)
-    reader.onload = (e) => {
-      const img = new Image()
-      img.onerror = () => resolve(null)
-      img.onload = () => {
-        const canvas = document.createElement('canvas')
-        canvas.width = 256; canvas.height = 256
-        const ctx  = canvas.getContext('2d')
-        const size = Math.min(img.width, img.height)
-        ctx.drawImage(img, (img.width - size) / 2, (img.height - size) / 2, size, size, 0, 0, 256, 256)
-        resolve(canvas.toDataURL('image/jpeg', 0.88))
-      }
-      img.src = e.target.result
-    }
-    reader.readAsDataURL(file)
-  })
+/**
+ * A picked image as the 256×256 JPEG that is uploaded — framed by the person first (src/imgedit.js:
+ * move, zoom, rotate, preview at the sizes it is shown). It used to be centre-cropped with no say
+ * ("it should let the user resize, etc, and preview before putting it"). The canvas pass is still
+ * what drops EXIF. Resolves the data URL, IMG_CANCELLED if they backed out, or null if unreadable.
+ */
+async function _pfpDataUrl(file) {
+  const r = await editImage(file, { kind: 'avatar', outW: 256, outH: 256, quality: 0.88, T: _T })
+  return r === IMG_CANCELLED ? IMG_CANCELLED : (r?.dataUrl ?? null)
 }
 
 /** A picture now exists for `a`: clear the "none here" mark and repoint every img at it,
@@ -14602,6 +14592,7 @@ async function _pfpUpload(addr, file) {
   const a = String(addr ?? '').toLowerCase()
   if (!/^0x[0-9a-f]{40}$/.test(a) || !file) return { ok: false, error: 'no account' }
   const dataUrl = await _pfpDataUrl(file)
+  if (dataUrl === IMG_CANCELLED) return { ok: false, cancelled: true }
   if (!dataUrl) return { ok: false, error: 'could not read that image' }
 
   // Two ways to prove the account is yours, and the server takes either: an agent key
@@ -14655,6 +14646,7 @@ window.__lbSetPhoto = async function(addr) {
   })
   if (!file) return
   const dataUrl = await _pfpDataUrl(file)
+  if (dataUrl === IMG_CANCELLED) return
   if (!dataUrl) { _paperToast('Could not read that image', 'error'); return }
   const send = p => fetch('/api/pfp', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-lb-pin': p }, body: JSON.stringify({ addr: a, dataUrl }) })
   try {
@@ -14732,6 +14724,7 @@ window._mobVHandlePfp = async function(input) {
   const a = _pfpDrawerAddr()
   if (!file || !a) return
   const r = await _pfpUpload(a, file)
+  if (r.cancelled) return
   if (!r.ok) { _paperToast('✗ ' + (r.error === 'no account' ? _T('Open an account first', 'Abre una cuenta primero') : r.error)); return }
   // In All Accounts the avatar on screen is the combined one, so it will NOT change — say
   // which wallet the picture actually went to rather than looking like nothing happened.
@@ -31193,7 +31186,13 @@ window.__onBackdropFile = async function(input) {
   const file = input?.files?.[0]
   if (input) input.value = ''          // so re-picking the SAME file fires change again
   if (!file) return
-  const r = await readBackdropFile(file)
+  // Framed and previewed first (src/imgedit.js), in this screen's own shape and under the dim
+  // the app will put over it. The longer side stays 1600px: localStorage is the constraint.
+  const aspect = Math.max(0.3, Math.min(3.5, window.innerWidth / Math.max(1, window.innerHeight)))
+  const [outW, outH] = aspect >= 1 ? [1600, Math.round(1600 / aspect)] : [Math.round(1600 * aspect), 1600]
+  const e = await editImage(file, { kind: 'wallpaper', outW, outH, quality: 0.72, dim: Math.min(95, Math.max(25, loadBackdropDim())) / 100, T: _T })
+  if (e === IMG_CANCELLED) return
+  const r = e ? { ok: true, dataUrl: e.dataUrl, bytes: e.bytes } : { ok: false }
   if (!r.ok) { _paperToast(r.error || 'Could not read that image', 'err'); return }
   const saved = saveBackdropImage(r.dataUrl)
   if (!saved.ok) { _paperToast(saved.error, 'err'); return }
@@ -35372,6 +35371,7 @@ window.__lbChangePic = function(addr) {
     // Same authenticated path as the mobile picker, and the same canvas pass — this one used
     // to send the raw file, so a phone photo went up at full size with its EXIF intact.
     const r = await _pfpUpload(addr, file)
+    if (r.cancelled) return
     if (!r.ok) { _appAlert('Could not set that picture: ' + r.error); return }
     // The board is the reason to set one, so repaint it rather than waiting for the poll.
     try { _lbLastFetch = 0; renderLeaderboard() } catch {}
