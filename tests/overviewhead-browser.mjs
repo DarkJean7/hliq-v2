@@ -111,6 +111,26 @@ t('Realized shows realized', await head(), { label: 'Realized PnL · this week',
 await set('value')
 t('and going back restores the equity header exactly', await head(), { label: 'Account Value · Perp Equity', val: '$1,580.00', chg: '▲ +$580.00 · +58.00%' })
 
+// "the desktop chart is flickering. mobile is fine": every refresh rebuilt the Overview, which
+// gave the chart a new canvas, so charts.js destroyed it and drew a new one — a blank frame each
+// time. The chart now survives the rebuild: same canvas, no removal, still drawn.
+console.log('\n-- the chart survives a refresh (no flicker) --')
+await p.evaluate(() => { document.getElementById('overviewChart').__keep = 1 })
+// What a live tick runs (loadDashboard is a different thing: a fresh wallet shows a skeleton).
+for (let i = 0; i < 3; i++) {
+  await p.evaluate(() => window.__renderAccountSection())
+  await p.waitForTimeout(300)
+}
+t('three full refreshes later it is the same canvas', await p.evaluate(() => document.getElementById('overviewChart')?.__keep === 1), true)
+// The old wrapper leaves with the innerHTML swap and is put back in the SAME task, so the page is
+// never painted without it. Checked synchronously: by the time the repaint returns, it is back.
+t('back in the page before the repaint even returns — no frame without it', await p.evaluate(() => {
+  const c = document.getElementById('overviewChart'); window.__renderAccountSection(); return document.contains(c) && document.getElementById('overviewChart') === c }), true)
+t('still drawn', await p.evaluate(() => { const c = document.getElementById('overviewChart'); return c.width > 0 && c.height > 0 }), true)
+await set('accumulated')
+t('and the chart tabs still redraw it', (await head()).label, 'Accumulated PnL · this week')
+await set('value')
+
 await browser.close()
 console.log('\nerrors: ' + (errs.length ? JSON.stringify(errs.slice(0, 3)) : 'none'))
 console.log(pass + ' passed, ' + (fail + errs.length) + ' failed')

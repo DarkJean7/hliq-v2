@@ -1258,6 +1258,9 @@ function renderAccountSection() {
   renderSummaryCards(fills, perpState, spotState, portfolio)
 }
 
+// The repaint a live tick does — tests/overviewhead-browser.mjs runs it to show the chart survives.
+window.__renderAccountSection = () => renderAccountSection()
+
 function renderPositionSection() {
   const { perpState, spotState, openOrders, allMids } = state
   renderSpot(spotState, state.ocTokenMap)

@@ -773,6 +773,13 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
   const _ovStatsEl = document.getElementById('overviewStats')
   const _ovWinY    = window.scrollY
   const _ovPosTop  = _ovStatsEl?.querySelector('.ov-pos-scroll')?.scrollTop ?? 0
+  // The chart survives the swap too. Reported: "the desktop chart is flickering. mobile is fine".
+  // Every live tick rebuilt this whole block, so the chart got a NEW canvas each time; charts.js
+  // only updates in place when the canvas is the same one, so it destroyed the chart and drew a
+  // fresh one — a blank frame in between, up to twice a second in All Accounts. Kept is the
+  // wrapper, not just the canvas: Chart.js watches the wrapper's size, and a canvas moved into a
+  // new parent would stop resizing with the window.
+  const _ovChartWrapOld = _ovStatsEl?.querySelector('.ov-chart-wrap:has(#overviewChart)') ?? null
 
   _ovStatsEl.innerHTML = `
     <div class="ov-grid">
@@ -887,6 +894,8 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
       </div>
     </div>`
 
+  // Put the previous chart back in place of the fresh, empty one.
+  if (_ovChartWrapOld) _ovStatsEl.querySelector('.ov-chart-wrap:has(#overviewChart)')?.replaceWith(_ovChartWrapOld)
   // Restore scroll (window + inner positions list) after the innerHTML swap.
   const _newPosScroll = _ovStatsEl.querySelector('.ov-pos-scroll')
   if (_newPosScroll && _ovPosTop) _newPosScroll.scrollTop = _ovPosTop
