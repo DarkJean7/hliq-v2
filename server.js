@@ -15,6 +15,7 @@ import { createServer }                                       from 'node:http'
 import { spawn }                                              from 'node:child_process'
 import { existsSync, mkdirSync, appendFileSync, readFileSync, readdirSync, writeFileSync, chmodSync, unlinkSync, statSync, renameSync } from 'node:fs'
 import { publicRun, visibilityDefault } from './src/pflivepub.js'
+import { createBudget, weightOf as hlWeightOf, HL_BUDGET } from './src/hlbudget.js'
 import { join, dirname }                                      from 'node:path'
 import { fileURLToPath }                                      from 'node:url'
 import { homedir }                                            from 'node:os'
@@ -786,13 +787,32 @@ const isAddr = a => typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a)
 // no CORS header, so the browser can't call it directly — we proxy + cache here.
 const _heatmapCache = {}
 
+// This server's own reads of Hyperliquid, metered like the browser's (src/hlbudget.js).
+//
+// They were not metered at all. The leaderboard refresh, the subscription poll and the combined
+// snapshot each fired as fast as they could, and the error log was 3,021 lines of HL 429 out of
+// 3,758 ([lb] 1,195, [subs] 959, [combined] 867). The visible cost: the combined snapshot could
+// not complete a round, so every device was served one ten hours old and All Accounts withheld
+// Net PnL all day ("net pnl is for some reason not loading"). The invisible one is worse: this IP
+// is also where the trading bots place their orders, and the limit is per IP.
+//
+// So reads claim weight before they go and wait for the bucket to refill, keeping a large
+// RESERVE untouched for the bots' orders and cancels, which this model cannot see. A 429 drains
+// the model and halves what it assumes is ours for a while, exactly as in the browser. Waits are
+// capped so a request answering a person never hangs; past the cap it goes and is counted.
+const _srvBudget = createBudget({ startLevel: HL_BUDGET / 2, reserve: 500 })
+const SRV_HL_MAX_WAIT_MS = 20_000
 async function hlInfo(payload) {
+  const w = hlWeightOf(payload?.type)
+  const ms = Math.min(_srvBudget.waitFor(w), SRV_HL_MAX_WAIT_MS)
+  _srvBudget.spend(w)
+  if (ms > 0) await sleep(ms)
   const r = await fetch(HL_INFO, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
-  if (r.status === 429) throw Object.assign(new Error('HL 429'), { rateLimited: true })
+  if (r.status === 429) { _srvBudget.drain(); throw Object.assign(new Error('HL 429'), { rateLimited: true }) }
   if (!r.ok) throw new Error('HL ' + r.status)
   return r.json()
 }

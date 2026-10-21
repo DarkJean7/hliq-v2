@@ -15228,11 +15228,8 @@ function _comboPnlSums() {
   //
   // Two guards. First: a fill means the settled half is out of date, so go and get it.
   _comboRefreshOnFills()
-  // Second: if it is stale anyway, show nothing. A number drifting further from the truth
-  // every second is worse than a dash.
-  if (snap && Date.now() - Number(snap.updatedAt ?? 0) > COMBO_SNAP_MAX_AGE_MS) {
-    return _comboPnlHeld(rows.length)
-  }
+  // Second: if it is stale anyway, the snapshot's figures are not shown (below). Whether it is:
+  const snapStale = !!snap && Date.now() - Number(snap.updatedAt ?? 0) > COMBO_SNAP_MAX_AGE_MS
   // Every wallet's own HL figure, summed — the combined Net PnL, live and exact.
   //
   // The server's settled half is realized + funding − fees accrued from FILLS, which cannot
@@ -15249,13 +15246,21 @@ function _comboPnlSums() {
     }
     return sum
   })()
+  // This needs NOTHING from the server snapshot, so the snapshot's age does not gate it.
+  // It used to: the stale check above returned before this ran, and with the server's own
+  // reads being rate-limited its snapshot sat ten hours old — every wallet answering "ok",
+  // Net PnL a dash all day ("net pnl is for some reason not loading", kind=netwait). Only the
+  // breakdown comes from the snapshot, and only a fresh one is offered.
   if (_hlNet != null && haveUnreal) {
-    const parts = snap && Number.isFinite(Number(snap.settledPnl))
+    const parts = snap && !snapStale && Number.isFinite(Number(snap.settledPnl))
       ? { realized: Number(snap.realizedPnl), funding: Number(snap.funding), fees: Number(snap.fees) }
       : null
     _comboPnlLast = { net: _hlNet, unreal, wallets: rows.length, parts, at: Date.now() }
     return { net: _hlNet, unreal, parts }
   }
+  // From here on the figure IS the snapshot's: stale means show nothing. A number drifting
+  // further from the truth every second is worse than a dash.
+  if (snapStale) return _comboPnlHeld(rows.length)
   if (haveUnreal && snap && Number.isFinite(Number(snap.settledPnl))
       && snap.pnlWallets === rows.length && snap.wallets === rows.length) {
     // Settled (realized + funding - fees) from the server, live unrealized from here.

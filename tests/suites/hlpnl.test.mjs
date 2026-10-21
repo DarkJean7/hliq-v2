@@ -62,7 +62,15 @@ console.log(nl + '-- every wallet in All Accounts --')
   t('and refuses unless every wallet can answer',
     /if \(!Number\.isFinite\(cum\) \|\| !Number\.isFinite\(av\)\) return null/.test(cli))
   t('the itemised sum stays as the fallback', /if \(haveUnreal && snap && Number\.isFinite\(Number\(snap\.settledPnl\)\)/.test(cli))
-  t('and as the breakdown beside it', /parts = snap && Number\.isFinite\(Number\(snap\.settledPnl\)\)/.test(cli))
+  // ...a FRESH one only. The breakdown is the snapshot's; the total is the wallets' own.
+  t('and as the breakdown beside it', /parts = snap && !snapStale && Number\.isFinite\(Number\(snap\.settledPnl\)\)/.test(cli))
+  // "net pnl is for some reason not loading": every wallet answered, but the stale-snapshot
+  // check returned before the live sum ran. It now runs first, and stale only blocks the
+  // snapshot's own figure.
+  const sums = cli.slice(cli.indexOf('function _comboPnlSums()'), cli.indexOf('function _comboPnlSums()') + 6000)
+  t('a stale server snapshot does not hide the live total',
+    sums.indexOf('if (_hlNet != null && haveUnreal)') > -1 &&
+    sums.indexOf('if (snapStale) return _comboPnlHeld(rows.length)') > sums.indexOf('if (_hlNet != null && haveUnreal)'))
   t('combined Net Deposited is the sum of the wallets\' own', /cumLedger: visible\.reduce\(\(s, r\) => s \+ \(Number\.isFinite\(Number\(r\._cumLedger\)\)/.test(cli))
   t('with the ledger walk only where a wallet has not answered', /: \(r\.totalDeposited \|\| 0\) - \(r\.totalWithdrawn \|\| 0\)\), 0\) \}/.test(cli))
   t('and the Portfolio tab reads it in the combined view too', !/function _hlCumLedger\(\)\s*\{\s*\n\s*if \(state\.isAllAccounts\) return null/.test(cli))
