@@ -1,6 +1,7 @@
 import Chart from 'chart.js/auto'
 import { fmtTimeShort, fmtUSD, fmtPrice } from './format.js'
 import { frameFor } from './chartframe.js'
+import { chartDateTick, chartDateHover } from './chartdates.js'
 
 let portfolioChartInst = null
 let pnlChartInst       = null
@@ -60,7 +61,16 @@ function _ovChartOptions() {
       yPriceBoxes: false,
     },
     scales: {
-      x: { type: 'linear', display: false },
+      // Dates along the bottom ("lets add fixed days in the chart"): a handful, in a form that
+      // suits the span on screen — times for a day, days for a week or month, months for all time.
+      x: {
+        type: 'linear', display: true,
+        grid: { display: false }, border: { display: false },
+        ticks: {
+          color: '#9aa0b0', font: { family: 'Space Mono', size: 10 }, padding: 4, maxTicksLimit: 6, maxRotation: 0, autoSkip: true,
+          callback(v) { return chartDateTick(v, this.max - this.min) },
+        },
+      },
       y: {
         position: 'right',
         grid: { display: false },
@@ -682,9 +692,32 @@ const crosshairPlugin = {
       ctx.fillText(label, bx + 5, yPx)
     }
 
+    // X-axis cursor tag: the date of the point under the cursor, under the vertical line — the
+    // twin of the value tag above ("and the one when scrolling the chart like hovering"). Only
+    // for charts whose x is a time; an index-based chart has no date to show.
+    const xVal = typeof item === 'object' ? item.x : null
+    if (typeof xVal === 'number' && xVal > 1e12) {
+      const ds   = chart.data.datasets[0].data
+      const span = (ds.at(-1)?.x ?? xVal) - (ds[0]?.x ?? xVal)
+      const label = chartDateHover(xVal, span)
+      ctx.font = '9px "Space Mono", monospace'
+      const bw = ctx.measureText(label).width + 10, bh = 15
+      const bx = Math.min(Math.max(xPx - bw / 2, left), right - bw)
+      // Under the plot where there is an axis to sit on; just inside its bottom edge where there
+      // is not (a chart with a hidden x axis has no room below, and the tag would be cut off).
+      const by = bottom + 2 + bh <= chart.height ? bottom + 2 : bottom - bh - 2
+      ctx.fillStyle = 'rgba(70,70,90,0.95)'
+      ctx.fillRect(bx, by, bw, bh)
+      ctx.fillStyle    = '#d0d0e0'
+      ctx.textBaseline = 'middle'
+      ctx.textAlign    = 'center'
+      ctx.fillText(label, bx + bw / 2, by + bh / 2)
+    }
+
     ctx.restore()
   },
 }
+
 
 // Floating last-price pin: dashed line at current value + colored tag on right axis
 const lastPricePinPlugin = {
