@@ -178,7 +178,11 @@ const seg = (act, cur, opts) => `<span class="ana-seg">${opts.map(([v, l]) =>
   `<button data-act="${act}" data-v="${v}" class="${String(cur) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</span>`
 
 // ── the signal: where price is against the levels, and the two plans they describe ──
-const zoneTxt = z => `${fmtPx(z.px)} (${T('strength', 'fuerza')} ${z.score}, ${T(`${z.confluence} of 3`, `${z.confluence} de 3`)})`
+// Tolerates a missing zone. setupHtml builds the headline of EVERY kind up front and picks one,
+// so this runs for kinds that do not apply too — and a market with no zone on one side (a smooth
+// trend has none) threw "reading 'px' of undefined" and took the Analysis section down with it.
+const zoneTxt = z => !z ? T('a key level', 'un nivel clave')
+  : `${fmtPx(z.px)} (${T('strength', 'fuerza')} ${z.score}, ${T(`${z.confluence} of 3`, `${z.confluence} de 3`)})`
 const days = x => x == null ? '' : x < 0.1 ? T('right there', 'justo ahí') : T(`${x.toFixed(1)} day-ranges away`, `a ${x.toFixed(1)} rangos diarios`)
 
 function setupHtml(r) {

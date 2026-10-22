@@ -331,6 +331,7 @@ import { installScrollJank } from './scrolljank.js'
 import { scrollIdle as _scrollIdle } from './scrollidle.js'
 import { crossLiqPx, crossEquity, totalCrossMaint } from './liqest.js'
 import { createCountdowns } from './occountdown.js'
+import { dailyCloses as sigDailyCloses, yearsOf as sigYearsOf, monthReturns as sigMonthReturns, monthDays as sigMonthDays, tint as sigTint } from './sigcal.js'
 import { editImage, CANCELLED as IMG_CANCELLED } from './imgedit.js'
 import { installNovaChrome } from './uinova.js'
 import { ensurePortfoliosFrame, openPortfolios } from './pfembed.js'
@@ -18246,6 +18247,76 @@ window.__sigFlip = function(on) {
   _sigFlipped = !!on
   document.getElementById('sigIndCard')?.classList.toggle('sig-flipped', _sigFlipped)
 }
+/**
+ * Signals → Calendar: the market's return month by month for a year, and day by day for the
+ * month picked (src/sigcal.js). Asked: "what if we also add a calendar performance so i can see
+ * the asset performance on a desired month from the past". Reads the daily candles Signals
+ * already loads, so it adds no requests. UTC months and days, like Hyperliquid's candles.
+ */
+let _sigCalY = new Date().getUTCFullYear()
+let _sigCalM = new Date().getUTCMonth()
+const _SIG_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+function _sigCalPct(r) { return r == null ? '—' : (r >= 0 ? '+' : '') + (r * 100).toFixed(Math.abs(r) >= 1 ? 0 : 1) + '%' }
+function _sigCalCol(r) { return r == null ? 'var(--muted)' : r >= 0 ? 'var(--green)' : 'var(--red)' }
+function _sigCalBg(r, fullAt) {
+  const k = sigTint(r, fullAt)
+  if (!k) return 'transparent'
+  return `color-mix(in oklch, var(${r >= 0 ? '--green' : '--red'}) ${Math.round(10 + k * 45)}%, transparent)`
+}
+function _sigCalHtml() {
+  const raw = _pulseCandles[_sigCoin + '|1d']
+  const head = (extra = '') => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span style="font-size:12.5px;font-weight:800">${_T('Calendar', 'Calendario')}</span>
+      <span style="font-size:10.5px;color:var(--muted)">UTC</span><span style="flex:1"></span>${extra}</div>`
+  if (!Array.isArray(raw)) return head() + `<div style="font-size:11.5px;color:var(--muted);padding:6px 0">${raw === 'error'
+    ? _T('No daily history came back for this market.', 'No llegó historial diario para este mercado.')
+    : _T('Loading daily history…', 'Cargando historial diario…')}</div>`
+  const rows = sigDailyCloses(raw)
+  const years = sigYearsOf(rows)
+  if (!years.length) return head()
+  if (!years.includes(_sigCalY)) { _sigCalY = years[0]; _sigCalM = new Date(rows.at(-1).t).getUTCMonth() }
+  const yi = years.indexOf(_sigCalY)
+  const arrow = (d, on, lbl) => `<button data-calyear="${d}" onclick="window.__sigCalYear(${d})" ${on ? '' : 'disabled'} aria-label="${lbl}"
+    style="width:26px;height:26px;border-radius:8px;border:1px solid var(--border2);background:transparent;color:${on ? 'var(--fg)' : 'var(--muted)'};cursor:${on ? 'pointer' : 'default'};opacity:${on ? 1 : 0.4}">${d < 0 ? '‹' : '›'}</button>`
+  const yearNav = `${arrow(-1, yi < years.length - 1, _T('Previous year', 'Año anterior'))}
+    <b id="sigCalYearLbl" style="font-size:13px;min-width:38px;text-align:center">${_sigCalY}</b>${arrow(1, yi > 0, _T('Next year', 'Año siguiente'))}`
+
+  const months = sigMonthReturns(rows, _sigCalY)
+  const cmpRaw = _sigCmp ? _pulseCandles[_sigCmp + '|1d'] : null
+  const cmpRows = Array.isArray(cmpRaw) ? sigDailyCloses(cmpRaw) : null
+  const monthCell = (x) => {
+    const on = x.m === _sigCalM, has = x.ret != null
+    return `<button data-calm="${x.m}" onclick="window.__sigCalMonth(${x.m})" ${has ? '' : 'disabled'}
+      style="padding:7px 4px;border-radius:9px;border:1px solid ${on ? 'var(--accent)' : 'var(--border2)'};background:${_sigCalBg(x.ret, 0.3)};cursor:${has ? 'pointer' : 'default'};text-align:center;opacity:${has ? 1 : 0.35}">
+      <div style="font-size:10px;font-weight:700;color:var(--muted)">${_SIG_MONTHS[x.m]}${x.current ? ' ·' : ''}</div>
+      <div style="font-size:12px;font-weight:800;font-family:var(--font-mono);color:${_sigCalCol(x.ret)}">${_sigCalPct(x.ret)}${x.partial ? '*' : ''}</div>
+    </button>`
+  }
+  const md = sigMonthDays(rows, _sigCalY, _sigCalM)
+  const dow = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
+  const dayCell = (x) => `<div data-calday="${x.d}" title="${_SIG_MONTHS[_sigCalM]} ${x.d}" style="height:44px;min-width:0;border-radius:7px;border:1px solid var(--border2);background:${_sigCalBg(x.ret, 0.1)};display:flex;flex-direction:column;align-items:center;justify-content:center;opacity:${x.ret == null ? 0.35 : 1}">
+      <span style="font-size:9.5px;color:var(--muted);line-height:1">${x.d}</span>
+      <span style="font-size:10px;font-weight:700;font-family:var(--font-mono);line-height:1.3;color:${_sigCalCol(x.ret)}">${x.ret == null ? '' : _sigCalPct(x.ret)}</span></div>`
+  const cmpM = cmpRows ? sigMonthReturns(cmpRows, _sigCalY)[_sigCalM] : null
+  const label = (c) => esc(_ocCoinLabel(c))
+  const nth = (d) => d + (d % 10 === 1 && d !== 11 ? 'st' : d % 10 === 2 && d !== 12 ? 'nd' : d % 10 === 3 && d !== 13 ? 'rd' : 'th')
+  return head(yearNav) + `
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px">${months.map(monthCell).join('')}</div>
+    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:12px 0 7px">
+      <b id="sigCalMonthLbl" style="font-size:13px">${_SIG_MONTHS[_sigCalM]} ${_sigCalY}</b>
+      <span id="sigCalTotal" style="font-size:12.5px;font-weight:800;font-family:var(--font-mono);color:${_sigCalCol(md.total)}">${label(_sigCoin)} ${_sigCalPct(md.total)}</span>
+      ${cmpM ? `<span style="font-size:11.5px;font-family:var(--font-mono);color:var(--fg-2)">${label(_sigCmp)} ${_sigCalPct(cmpM.ret)}</span>` : ''}
+      ${md.best ? `<span style="font-size:11px;color:var(--muted)">${_T('best', 'mejor')} ${nth(md.best.d)} ${_sigCalPct(md.best.ret)} · ${_T('worst', 'peor')} ${nth(md.worst.d)} ${_sigCalPct(md.worst.ret)}</span>` : ''}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px">
+      ${dow.map(d => `<div style="text-align:center;font-size:9.5px;font-weight:700;color:var(--muted)">${d}</div>`).join('')}
+      ${'<div></div>'.repeat(md.lead)}${md.days.map(dayCell).join('')}
+    </div>
+    ${md.partial || months.some(x => x.partial) ? `<div style="font-size:10.5px;color:var(--muted);margin-top:7px">* ${_T('its first month of trading, measured from its first price', 'su primer mes, medido desde su primer precio')}</div>` : ''}`
+}
+window.__sigCalYear  = function(d) { _sigCalY += d; _sigCalM = d < 0 ? 11 : 0; _sigRerender() }
+window.__sigCalMonth = function(m) { _sigCalM = m; _sigRerender() }
+
 window.__sigSetTf   = function(l) { _sigTf = l; _sigViewReset(); try { localStorage.setItem('hliq_sig_tf', l) } catch {}; _sigRerender() }
 window.__sigSetInd  = function(k) { _sigInd = k; try { localStorage.setItem(SIG_KEY_IND, k) } catch {}; _sigRerender() }
 
@@ -19287,6 +19358,8 @@ function _sigRenderHtml() {
         ${_sigCmp ? perfRow(_sigCmp) : ''}
       </table>
     </div>
+
+    <div id="sigCalCard" style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;margin-top:10px">${_sigCalHtml()}</div>
 
     <div style="display:flex;align-items:center;gap:8px;margin:14px 0 7px">
       <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${_T('Indicator', 'Indicador')}</span>

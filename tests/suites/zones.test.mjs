@@ -208,5 +208,13 @@ console.log('\n-- the view --')
   t('a vertical swipe on a phone still scrolls the page', fs.readFileSync('src/analysis.css', 'utf8').includes('touch-action: pan-y'))
 }
 
+// setupHtml builds every kind's headline up front, so zoneTxt runs for kinds that do not apply,
+// with a zone that may not exist. A smooth trend (no zone on one side) threw "reading 'px' of
+// undefined" and took the Analysis section down — found by the Signals calendar's browser test.
+{
+  const an = read('src/analysis.js')
+  t('a missing zone is named, not dereferenced', an.includes("const zoneTxt = z => !z ? T('a key level', 'un nivel clave')"))
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
