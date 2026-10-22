@@ -5,7 +5,7 @@
 // names one per screen size (apple-touch-startup-image); with none it shows black.
 //
 // Each image is a SCREENSHOT of the page's own loading screen (#init-loader in index.html — the
-// icon, the >insolvent. wordmark and the dots), taken at that iPhone's size and pixel density with
+// >insolvent. wordmark and the dots), taken at that iPhone's size and pixel density with
 // the app's code held back so the loader stays up. So the launch screen and the loading page are
 // the same picture, and changing the loader and re-running this keeps them so.
 //
@@ -43,11 +43,9 @@ if (process.argv[1]?.endsWith('make-splash.mjs')) {
     await ctx.route(/\/src\/main\.js|\/assets\/index-[^/]*\.js/, () => {})
     const p = await ctx.newPage()
     await p.goto(`http://localhost:${port}/app`, { waitUntil: 'commit' })
-    await p.waitForSelector('#init-loader .il-icon')
+    await p.waitForSelector('#init-loader .il-word')
     await p.evaluate(async () => {
       await document.fonts.ready
-      const img = document.querySelector('#init-loader .il-icon')
-      if (!img.complete) await new Promise(res => { img.onload = img.onerror = res })
       // A still frame of the dots: no bounce, a gentle left-to-right build.
       const st = document.createElement('style')
       st.textContent = '#init-loader .il-dots span{animation:none!important}#init-loader .il-dots span:nth-child(1){opacity:.35}#init-loader .il-dots span:nth-child(2){opacity:.6}'
