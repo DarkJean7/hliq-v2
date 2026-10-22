@@ -61,7 +61,7 @@ t('a wallet with no HIP-3 is unaffected', coldNew([]) === MAIN)
 
 console.log('\n-- the watcher must never again say 0 for "not measured" --')
 t('the HIP-3 share comes from the positions, not _mainUnreal',
-  cli.includes("const h = ps.filter(x => String((x?.position ?? x)?.coin ?? '').includes(':'))"))
+  cli.includes("const h = ps.filter(x => _isHip3Coin((x?.position ?? x)?.coin))"))
 t('_mainUnreal is no longer what gates the measurement', !cli.includes('const m = Number(r._mainUnreal)'))
 t('rows with no positions are counted, not silently skipped', cli.includes('if (!ps.length) { noPos++; continue }'))
 t('the record carries that count', cli.includes('noPos=${ctx.noPos}'))

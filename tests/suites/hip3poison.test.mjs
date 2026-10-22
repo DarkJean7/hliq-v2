@@ -99,7 +99,7 @@ t('unrealized is split into its HIP-3 share', cli.includes('hip3=${ctx.hip3?.toF
 // hip3=0.00 -- which read as proof HIP-3 was uninvolved at the exact moment it was the
 // whole cause. See hip3cold.test.mjs. It now reads the positions, which are always there.
 t('the share is derived from the positions, which every row has',
-  cli.includes("const h = ps.filter(x => String((x?.position ?? x)?.coin ?? '').includes(':'))"))
+  cli.includes("const h = ps.filter(x => _isHip3Coin((x?.position ?? x)?.coin))"))
 t('a row with no positions is reported as unmeasured, not as zero HIP-3',
   cli.includes('if (!ps.length) { noPos++; continue }'))
 t('and near-zero shares do not inflate the row count', cli.includes('if (Math.abs(h) > 0.005)'))

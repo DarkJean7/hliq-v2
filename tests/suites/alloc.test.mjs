@@ -37,6 +37,10 @@ const _watchSpotNameMap = null
 let _shownEquity = null
 const shownAccountValue = () => _shownEquity
 let _allAcctLastResults = []
+// A renamed builder market ('xyz:CL' ships as 'WTIOIL') must not be scaled onto the main-dex
+// order-margin residual, and the real rename table is the only thing that knows which is which.
+import { hip3Original } from '../../src/api.js'
+
 // Off-exchange holdings (src/offexui.js) are their own arc now. Empty unless a test sets it,
 // so every assertion below still describes a Hyperliquid-only account.
 let offexItems = []
@@ -46,16 +50,17 @@ const _offexWheelItems = () => offexItems
 // re-implemented — a copy of _orderMarginReported here would pass while the real one was
 // broken, which is the whole thing this file exists to prevent.
 const NAMES = ['_freeMarginUsd', '_allocSpotMid', '_allocSpotBalances', '_allocLevOf',
-               '_orderMarginReported', '_allocationSlices']
+               '_orderMarginReported', '_isHip3Coin', '_allocationSlices']
 const body = NAMES.map(grab).join('\n') + '\nreturn { ' + NAMES.join(', ') + ' }'
 const built = new Function(
   'state', '_posMarkPx', '_coinMaxLev', '_lbIsOutcome', '_ocSidePrice', '_spotMid',
   '_maHiddenLoad', '_allAcctLastResults', 'orderMarginByCoin', 'spotByCoin', 'SLICE_DUST',
-  'isSpotCoin', '_watchSpotNameMap', 'shownAccountValue', '_offexWheelItems', body)
+  'isSpotCoin', '_watchSpotNameMap', 'shownAccountValue', '_offexWheelItems', 'hip3Original', body)
 const call = () => built(
   new Proxy({}, { get: (_, k) => state[k] }), _posMarkPx, _coinMaxLev, _lbIsOutcome,
   _ocSidePrice, _spotMid, _maHiddenLoad, _allAcctLastResults,
-  orderMarginByCoin, spotByCoin, SLICE_DUST, isSpotCoin, _watchSpotNameMap, shownAccountValue, _offexWheelItems)
+  orderMarginByCoin, spotByCoin, SLICE_DUST, isSpotCoin, _watchSpotNameMap, shownAccountValue, _offexWheelItems,
+  hip3Original)
 const _allocationSlices = () => call()._allocationSlices()
 
 let pass = 0, fail = 0

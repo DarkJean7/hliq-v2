@@ -4073,7 +4073,7 @@ function _allocationSlices() {
   const ordSaid   = _orderMarginReported()
   // HIP-3 orders reserve margin on a builder dex, which the main-dex residual never saw, and
   // neither do cash markets — so only plain perp coins are scaled onto it.
-  const isH3      = c => String(c).includes(':')
+  const isH3      = _isHip3Coin
   const scaled    = v => !isH3(v.coin) && !v.cash
   const mainEst   = [...ordByCoin.values()].filter(scaled).reduce((s, v) => s + v.margin, 0)
   // Scale onto the account's own figure only when there IS one and it is not zero. A zero
@@ -8851,7 +8851,18 @@ async function _allAcctFastMids() {
     for (const ap of (r.positions ?? [])) {
       const p = ap.position ?? ap
       const coin = p?.coin
-      if (!coin || parseFloat(state.allMids[coin] ?? 0) > 0) continue
+      if (!coin) continue
+      // Skip only coins a LIVE feed owns. The old test was "a value already exists", which is
+      // self-fulfilling for a builder-dex coin: allMids()/the WS never carry one, so the value
+      // this loop derived on the FIRST tick made every later tick skip, and the mark froze for
+      // as long as All Accounts stayed open. positionValue and unrealizedPnl kept refreshing
+      // underneath it, so the card showed a mark that did not agree with its own PnL -- a META
+      // position reading -$9.78 against a mark that said -$3.37. Reported as exactly that.
+      //
+      // Unlike the single-account tick, this path never calls fetchHip3Mids, so deriving the
+      // mark here is the only thing keeping it current. positionValue = |szi| x mark, so this
+      // recovers HL's own mark exactly, and costs no request: the positions are already here.
+      if (!_isHip3Coin(coin) && parseFloat(state.allMids[coin] ?? 0) > 0) continue
       const sz = Math.abs(parseFloat(p.szi ?? 0))
       const pv = Math.abs(parseFloat(p.positionValue ?? 0))
       if (sz > 0 && pv > 0) state.allMids[coin] = String(pv / sz)
@@ -9583,10 +9594,10 @@ async function _maReanchorRow(addr) {
     row._spotBook = _spotBookOf(row.spotBalances)
     row._cash     = cashSample(perpAt, cs.assetPositions)
     // HIP-3 from the row as it stands: the WebSocket keeps those live, and cs is main-dex only.
-    row._mtmBook  = mtmBook([...(cs.assetPositions ?? []), ...(row.positions ?? []).filter(ap => String((ap.position ?? ap)?.coin ?? '').includes(':'))])
+    row._mtmBook  = mtmBook([...(cs.assetPositions ?? []), ...(row.positions ?? []).filter(ap => _isHip3Coin((ap.position ?? ap)?.coin))])
     // And the state the row advances from here: this pairing is exact, so whatever the old
     // state had banked belongs to the snapshot that has just been replaced.
-    row._mtm      = bookState([...(cs.assetPositions ?? []), ...(row.positions ?? []).filter(ap => String((ap.position ?? ap)?.coin ?? '').includes(':'))])
+    row._mtm      = bookState([...(cs.assetPositions ?? []), ...(row.positions ?? []).filter(ap => _isHip3Coin((ap.position ?? ap)?.coin))])
     // The cached history store carries the pair too, so a later fan-out doesn't restore the
     // stale one. Keep everything else in the entry as it was.
     const hc = _maHistCache2.get(lc)
@@ -9630,7 +9641,7 @@ function _applyAcctLiveCs(r, cs, hip3Override) {
   // HIP-3 positions: from the WS push (live, all dexes) when given, else the ones merged into
   // the row by the heavy fetch. clearinghouseState/main-dex never carries them, so keeping
   // them here stops the summed unrealized from collapsing and jumping back.
-  const hip3 = hip3Override ?? (r.positions ?? []).filter(ap => String((ap.position ?? ap)?.coin ?? '').includes(':'))
+  const hip3 = hip3Override ?? (r.positions ?? []).filter(ap => _isHip3Coin((ap.position ?? ap)?.coin))
   const _base   = Number.isFinite(parseFloat(r._portVal))  ? parseFloat(r._portVal)  : parseFloat(r.accountValue ?? 0)
   const perpNow = parseFloat(cs.marginSummary?.accountValue ?? 0)
 
@@ -13287,6 +13298,19 @@ function _mobVSecurityHtml() {
 // coins not yet in the mids map. That ctx snapshot is fetched once and NEVER refreshes,
 // so it must never win over a live mid — reading it as the price is exactly what made the
 // same asset show two different numbers in Watch vs its position card.
+/**
+ * Is this a builder-dex (HIP-3) market?
+ *
+ * The obvious test is a ':' in the name, and that is what two call sites used -- but position
+ * coins are run through hip3Rename first, and a renamed market loses its prefix ('xyz:CL'
+ * becomes 'WTIOIL'). It then reads as a main-dex coin everywhere that tested for the colon,
+ * which is wrong in both directions: main-dex feeds do not carry it, and the code meant to
+ * look after it skips it. hip3Original puts the name back before asking.
+ */
+function _isHip3Coin(coin) {
+  return String(hip3Original(String(coin ?? '')) ?? '').includes(':')
+}
+
 function _livePx(coin) {
   const m = parseFloat(state.allMids?.[coin] ?? 0)
   if (m > 0) return m
@@ -15285,7 +15309,7 @@ function _comboPnlSums() {
     for (const r of rows) {
       const ps = r.positions ?? []
       if (!ps.length) { noPos++; continue }
-      const h = ps.filter(x => String((x?.position ?? x)?.coin ?? '').includes(':'))
+      const h = ps.filter(x => _isHip3Coin((x?.position ?? x)?.coin))
         .reduce((a, x) => a + parseFloat((x.position ?? x)?.unrealizedPnl ?? 0), 0)
       if (Math.abs(h) > 0.005) { hip3Sum += h; hip3Rows++ }
     }
@@ -34799,7 +34823,7 @@ async function _lbFetchResults(entries) {
     // So carry over whatever HIP-3 the row already holds — the socket streams it live, so
     // it is current, and it is the same carry-over _applyAcctLiveCs already does on the
     // REST path. The deferred pass replaces it with a fresh read moments later.
-    const _isHip3   = (x) => String((x?.position ?? x)?.coin ?? '').includes(':')
+    const _isHip3   = (x) => _isHip3Coin((x?.position ?? x)?.coin)
     const _keptHip3 = {
       positions: (prevRow?.positions  ?? []).filter(_isHip3),
       orders:    (prevRow?.openOrders ?? []).filter(_isHip3),
