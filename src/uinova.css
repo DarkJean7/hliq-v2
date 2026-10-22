@@ -329,3 +329,39 @@ html.ui-nova .ov-ring text { font-size: 21px !important; font-weight: 700; lette
 }
 /* The win/loss cards, moved into the stat row (src/uinova.js arrange), sized like the tiles around them. */
 html.ui-nova .ov-stat-strip > .ov-wl { padding: 16px 18px; }
+
+/* Wide desktop: positions above the fold. Asked: "i would like to make the desktop version like
+   positions, etc be almost seen without the need of scrolling. like at least show the first 4".
+   Measured at 1920×917 (the reporter's window) with 17 positions, row 4 ended at 1,329px: the
+   hero alone was 631px tall (260 of it above the chart), the six stat tiles sat in between, and
+   positions came last, under everything (tests/overviewfit-browser.mjs).
+   Now positions sit in the left column straight under the hero, beside Recent activity and the
+   deposits card; the stat tiles move below them; and the hero is compact — a smaller balance,
+   a shorter chart, and the quick actions sharing one row with the Equity / Acc. PnL / Realized
+   switch. Narrower windows keep the earlier layout. */
+@media (min-width: 1300px) {
+  html.ui-nova .ov-equity     { grid-row: 1 / span 2; }
+  html.ui-nova .ov-positions  { grid-column: 1; grid-row: 3 / span 3; }
+  html.ui-nova .ov-stat-strip { grid-column: 1 / -1; grid-row: 6; }
+
+  html.ui-nova .ov-equity { flex-flow: row wrap; align-items: center; justify-content: space-between; column-gap: 12px; padding: 20px 26px 16px; }
+  html.ui-nova .ov-equity > :is(.ov-eq-head, .ov-chart-wrap) { flex: 0 0 100%; }
+  /* The headline as a row: balance with its change beside it on the left, the period buttons on
+     the right — stacked and centred it took 200px above the chart. */
+  html.ui-nova .ov-eq-head { flex-direction: row; align-items: flex-end; justify-content: space-between; text-align: left; gap: 16px; }
+  html.ui-nova .ov-eq-head > div:first-child { flex-direction: row; align-items: flex-start !important; }
+  html.ui-nova .ov-eq-head > div:first-child > div:last-child { flex-direction: row; flex-wrap: wrap; align-items: center; column-gap: 14px; }
+  html.ui-nova .ov-eq-head > div:first-child > div:last-child > :is(.ov-label, .ov-eq-sub) { flex-basis: 100%; }
+  html.ui-nova .ov-eq-head > div:first-child > div:last-child > div:has(> .ov-chg) { margin-top: 4px !important; }
+  html.ui-nova .ov-eq-val { font-size: 50px; line-height: 1.05; }
+  html.ui-nova .ov-equity > .ov-chart-wrap { height: 150px; min-height: 0; margin-top: 10px; }
+  /* Positions: tighter rows and card head, so four of them clear the status bar. */
+  html.ui-nova .ov-positions { padding-top: 14px; padding-bottom: 10px; }
+  html.ui-nova .ov-positions .ov-card-head { margin-bottom: 4px; }
+  html.ui-nova .ov-pos-row { padding: 6px 4px; }
+  /* And a slimmer watch strip above it all: one row of chips does not need 56px. */
+  html.ui-nova .watch-ticker { padding: 5px 0 6px; }
+  html.ui-nova .ov-equity > .nova-actions  { margin-top: 12px; gap: 8px; justify-content: flex-start; }
+  html.ui-nova .ov-equity > .ov-chart-tabs { margin-top: 12px; }
+  html.ui-nova .ov-equity .nova-act { padding: 9px 18px; font-size: 13px; }
+}
