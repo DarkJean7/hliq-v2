@@ -18263,11 +18263,23 @@ function _sigCalBg(r, fullAt) {
   if (!k) return 'transparent'
   return `color-mix(in oklch, var(${r >= 0 ? '--green' : '--red'}) ${Math.round(10 + k * 45)}%, transparent)`
 }
+// The days of the picked month are folded away until asked for, and stay as the person left them
+// ("by default hide the month's days (add a toggle button)").
+let _sigCalDays = false
+try { _sigCalDays = localStorage.getItem('hliq_sig_cal_days') === '1' } catch {}
 function _sigCalHtml() {
   const raw = _pulseCandles[_sigCoin + '|1d']
+  const label = (c) => esc(_ocCoinLabel(c))
+  // Which market this is, said in the header with its icon: the months below are ITS returns.
+  // Reported: "make it more clear which asset is the one used for the calendar".
+  const asset = `<span id="sigCalAsset" style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px 3px 4px;border-radius:999px;border:1px solid var(--border2);background:var(--panel-2)">
+      <span style="display:inline-flex;width:18px;height:18px">${_coinIconHtml(_sigCoin)}</span><b style="font-size:12.5px">${label(_sigCoin)}</b></span>
+    ${_sigCmp ? `<span style="font-size:11px;color:var(--muted)">vs ${label(_sigCmp)}</span>` : ''}`
   const head = (extra = '') => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-      <span style="font-size:12.5px;font-weight:800">${_T('Calendar', 'Calendario')}</span>
-      <span style="font-size:10.5px;color:var(--muted)">UTC</span><span style="flex:1"></span>${extra}</div>`
+      <div style="display:flex;flex-direction:column;gap:1px">
+        <span style="font-size:12.5px;font-weight:800">${_T('Calendar', 'Calendario')}</span>
+        <span style="font-size:9.5px;color:var(--muted)">UTC</span></div>
+      ${asset}<span style="flex:1"></span>${extra}</div>`
   if (!Array.isArray(raw)) return head() + `<div style="font-size:11.5px;color:var(--muted);padding:6px 0">${raw === 'error'
     ? _T('No daily history came back for this market.', 'No llegó historial diario para este mercado.')
     : _T('Loading daily history…', 'Cargando historial diario…')}</div>`
@@ -18298,7 +18310,6 @@ function _sigCalHtml() {
       <span style="font-size:9.5px;color:var(--muted);line-height:1">${x.d}</span>
       <span style="font-size:10px;font-weight:700;font-family:var(--font-mono);line-height:1.3;color:${_sigCalCol(x.ret)}">${x.ret == null ? '' : _sigCalPct(x.ret)}</span></div>`
   const cmpM = cmpRows ? sigMonthReturns(cmpRows, _sigCalY)[_sigCalM] : null
-  const label = (c) => esc(_ocCoinLabel(c))
   const nth = (d) => d + (d % 10 === 1 && d !== 11 ? 'st' : d % 10 === 2 && d !== 12 ? 'nd' : d % 10 === 3 && d !== 13 ? 'rd' : 'th')
   return head(yearNav) + `
     <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px">${months.map(monthCell).join('')}</div>
@@ -18307,15 +18318,24 @@ function _sigCalHtml() {
       <span id="sigCalTotal" style="font-size:12.5px;font-weight:800;font-family:var(--font-mono);color:${_sigCalCol(md.total)}">${label(_sigCoin)} ${_sigCalPct(md.total)}</span>
       ${cmpM ? `<span style="font-size:11.5px;font-family:var(--font-mono);color:var(--fg-2)">${label(_sigCmp)} ${_sigCalPct(cmpM.ret)}</span>` : ''}
       ${md.best ? `<span style="font-size:11px;color:var(--muted)">${_T('best', 'mejor')} ${nth(md.best.d)} ${_sigCalPct(md.best.ret)} · ${_T('worst', 'peor')} ${nth(md.worst.d)} ${_sigCalPct(md.worst.ret)}</span>` : ''}
+      <span style="flex:1"></span>
+      <button id="sigCalDaysBtn" onclick="window.__sigCalDays()" aria-expanded="${_sigCalDays}"
+        style="padding:4px 10px;border-radius:999px;border:1px solid var(--border2);background:transparent;color:var(--fg-2);font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap">${
+        _sigCalDays ? _T('Hide days ▴', 'Ocultar días ▴') : _T('Show days ▾', 'Ver días ▾')}</button>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px">
+    ${_sigCalDays ? `<div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px">
       ${dow.map(d => `<div style="text-align:center;font-size:9.5px;font-weight:700;color:var(--muted)">${d}</div>`).join('')}
       ${'<div></div>'.repeat(md.lead)}${md.days.map(dayCell).join('')}
-    </div>
+    </div>` : ''}
     ${md.partial || months.some(x => x.partial) ? `<div style="font-size:10.5px;color:var(--muted);margin-top:7px">* ${_T('its first month of trading, measured from its first price', 'su primer mes, medido desde su primer precio')}</div>` : ''}`
 }
 window.__sigCalYear  = function(d) { _sigCalY += d; _sigCalM = d < 0 ? 11 : 0; _sigRerender() }
 window.__sigCalMonth = function(m) { _sigCalM = m; _sigRerender() }
+window.__sigCalDays  = function() {
+  _sigCalDays = !_sigCalDays
+  try { localStorage.setItem('hliq_sig_cal_days', _sigCalDays ? '1' : '0') } catch {}
+  _sigRerender()
+}
 
 window.__sigSetTf   = function(l) { _sigTf = l; _sigViewReset(); try { localStorage.setItem('hliq_sig_tf', l) } catch {}; _sigRerender() }
 window.__sigSetInd  = function(k) { _sigInd = k; try { localStorage.setItem(SIG_KEY_IND, k) } catch {}; _sigRerender() }

@@ -74,7 +74,18 @@ await p.evaluate(() => window.__goPaper())
 await waitFor(p, 'the dashboard', () => document.getElementById('dashboard')?.classList.contains('active'))
 await p.evaluate(() => document.querySelectorAll('#annModal, #langChooseModal, #onboardSheet').forEach(e => e.remove()))
 await p.evaluate(() => { window.switchTab('analysis'); window.__pulseSetSeg('signals') })
-await waitFor(p, 'the calendar', () => document.querySelectorAll('#sigCalCard [data-calday]').length >= 28)
+await waitFor(p, 'the calendar', () => document.querySelectorAll('#sigCalCard [data-calm]').length === 12)
+
+// "make it more clear which asset is the one used for the calendar. also by default hide the
+// month's days (add a toggle button)".
+console.log('\n-- it says which market, and keeps the days folded --')
+t('the header names the market the calendar is for', await p.evaluate(() => document.querySelector('#sigCalAsset b')?.textContent.trim()), 'BTC')
+t('the days are hidden at first', await p.evaluate(() => document.querySelectorAll('#sigCalCard [data-calday]').length), 0)
+t('behind a toggle', await p.evaluate(() => document.getElementById('sigCalDaysBtn')?.textContent.trim()), 'Show days ▾')
+await p.click('#sigCalDaysBtn')
+await waitFor(p, 'the days', () => document.querySelectorAll('#sigCalCard [data-calday]').length >= 28)
+t('which shows them', await p.evaluate(() => document.getElementById('sigCalDaysBtn')?.textContent.trim()), 'Hide days ▴')
+t('and is remembered', await p.evaluate(() => localStorage.getItem('hliq_sig_cal_days')), '1')
 
 const now = new Date()
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
