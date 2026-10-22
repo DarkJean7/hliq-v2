@@ -346,13 +346,21 @@ html.ui-nova .ov-stat-strip > .ov-wl { padding: 16px 18px; }
 
   html.ui-nova .ov-equity { flex-flow: row wrap; align-items: center; justify-content: space-between; column-gap: 12px; padding: 20px 26px 16px; }
   html.ui-nova .ov-equity > :is(.ov-eq-head, .ov-chart-wrap) { flex: 0 0 100%; }
-  /* The headline as a row: balance with its change beside it on the left, the period buttons on
-     the right — stacked and centred it took 200px above the chart. */
-  html.ui-nova .ov-eq-head { flex-direction: row; align-items: flex-end; justify-content: space-between; text-align: left; gap: 16px; }
-  html.ui-nova .ov-eq-head > div:first-child { flex-direction: row; align-items: flex-start !important; }
-  html.ui-nova .ov-eq-head > div:first-child > div:last-child { flex-direction: row; flex-wrap: wrap; align-items: center; column-gap: 14px; }
-  html.ui-nova .ov-eq-head > div:first-child > div:last-child > :is(.ov-label, .ov-eq-sub) { flex-basis: 100%; }
-  html.ui-nova .ov-eq-head > div:first-child > div:last-child > div:has(> .ov-chg) { margin-top: 4px !important; }
+  /* The headline, centred and compact: label, balance, then ONE line with the change pill and the
+     "17 open positions · this week" note. The period buttons (1D/1W/1M/All) leave the headline and
+     join the chart switch in the bottom row, since both steer the chart ("center the account
+     equity and fix the % location and also the timeframes location"). The head steps aside
+     (display: contents) so its two parts can be placed in the card's own row-wrap flow. */
+  html.ui-nova .ov-eq-head { display: contents; }
+  html.ui-nova .ov-eq-head > div:first-child { flex: 0 0 100%; order: 1; flex-direction: column; align-items: center !important; text-align: center; }
+  html.ui-nova .ov-eq-head > div:first-child > div:last-child { display: flex; flex-flow: row wrap; justify-content: center; align-items: center; column-gap: 12px; row-gap: 2px; }
+  html.ui-nova .ov-eq-head > div:first-child > div:last-child > :is(.ov-label, .ov-eq-val) { flex-basis: 100%; }
+  html.ui-nova .ov-eq-head > div:first-child > div:last-child > div:has(> .ov-chg) { margin-top: 0 !important; }
+  html.ui-nova .ov-eq-head > div:first-child > div:last-child > .ov-eq-sub { margin-top: 0; }
+  html.ui-nova .ov-equity > .ov-chart-wrap { order: 2; }
+  html.ui-nova .ov-equity > .nova-actions  { order: 3; }
+  html.ui-nova .ov-eq-head > .ov-range     { order: 4; margin: 12px 0 0 auto; }
+  html.ui-nova .ov-equity > .ov-chart-tabs { order: 5; }
   html.ui-nova .ov-eq-val { font-size: 50px; line-height: 1.05; }
   html.ui-nova .ov-equity > .ov-chart-wrap { height: 150px; min-height: 0; margin-top: 10px; }
   /* Positions: tighter rows and card head, so four of them clear the status bar. */
