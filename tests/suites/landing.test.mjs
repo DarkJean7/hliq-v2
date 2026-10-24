@@ -80,7 +80,8 @@ t('prod serves /app whatever Sec-Fetch-Dest says (SW re-fetch sends empty)', PRO
 t('the service worker leaves page loads alone', SW.includes("if (request.mode === 'navigate') return"))
 t('prod sends /app/ to /app', PROD.includes("url === '/app/'"))
 t('/app is answered by the navigation fallback with index.html',
-  /serveFile\(res, join\(DIST, 'index\.html'\)\)\s*\n\}\)\.listen/.test(PROD))
+  // (comment lines may sit between it and the listen call)
+  /serveFile\(res, join\(DIST, 'index\.html'\)\)\s*\n(?:\s*\/\/[^\n]*\n)*\}\)\.listen/.test(PROD))
 t('dev and preview rewrite / the same way',
   VITE.includes("req.url = '/landing.html'") && VITE.includes('configurePreviewServer'))
 t('both pages are build inputs, app keyed index (bundle stays assets/index-*.js)',

@@ -211,6 +211,19 @@ function claimOwner(address, agentKey) {
 
 // { signer, admin } or null. `explicitToken` supports EventSource (SSE), which can't
 // send an Authorization header, so the token arrives as a ?token= query param instead.
+/**
+ * Who is asking, for the per-IP rate limits (chat, bug reports, submissions, telemetry...).
+ *
+ * nginx sets X-Real-IP to the real client address and overwrites whatever a client sent; this
+ * server is reachable only through nginx (it listens on loopback). The old code read the FIRST
+ * entry of X-Forwarded-For — which nginx passes through from the client untouched — so anyone
+ * could put a new made-up address on every request and walk past every limit, and everyone who
+ * did not send one shared nginx's own address, 127.0.0.1, as a single bucket.
+ */
+function clientIp(req) {
+  return String(req.headers['x-real-ip'] || req.socket.remoteAddress || '?').trim()
+}
+
 function getAuth(req, explicitToken) {
   let tok = explicitToken
   if (!tok) { const m = /^Bearer\s+(.+)$/i.exec(req.headers['authorization'] || ''); if (m) tok = m[1].trim() }
@@ -2447,7 +2460,7 @@ const server = createServer(async (req, res) => {
   // Self-reported simulated results. Clamped to sane ranges so a bad payload
   // can't wreck the board's rendering, but the figures are NOT verifiable.
   if (method === 'POST' && path === '/api/leaderboard/paper') {
-    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    const ip = clientIp(req)
     if (!lbPaperAllowed(ip)) return json(res, 429, { error: 'too many submissions, try later' })
 
     const b    = await body(req)
@@ -2622,7 +2635,7 @@ const server = createServer(async (req, res) => {
   // only the lightweight diagnostics the client chose to attach.
   // ── POST /api/error → record an uncaught client error (telemetry) ────────────
   if (method === 'POST' && path === '/api/error') {
-    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    const ip = clientIp(req)
     if (!errAllowed(ip)) return json(res, 200, { ok: true })   // silently drop floods
     const b = await body(req)
     const message = String(b.message ?? '').trim().slice(0, 500)
@@ -2663,7 +2676,7 @@ const server = createServer(async (req, res) => {
   }
 
   if (method === 'POST' && path === '/api/bug-report') {
-    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    const ip = clientIp(req)
     if (!bugReportAllowed(ip)) return json(res, 429, { error: 'too many reports, try later' })
     const b = await body(req)
     const message = String(b.message ?? '').trim().slice(0, 4000)
@@ -2734,7 +2747,7 @@ const server = createServer(async (req, res) => {
   // Open to anyone, rate-limited, and capped: a bot file that will not fit in 64KB is not
   // a bot file. The code is never parsed, imported or executed here.
   if (method === 'POST' && path === '/api/bot-submit') {
-    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    const ip = clientIp(req)
     if (!submitAllowed(ip)) return json(res, 429, { error: 'too many submissions, try later' })
     const b = await body(req)
     const code = String(b.code ?? '')
@@ -2803,7 +2816,7 @@ const server = createServer(async (req, res) => {
   }
   // ── POST /api/chat { name, text, addr?, img?, sticker? } → append a message ──
   if (method === 'POST' && path === '/api/chat') {
-    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    const ip = clientIp(req)
     if (!chatAllowed(ip)) return json(res, 429, { error: 'slow down — too many messages' })
     const b    = await body(req)
     const text = _chatClean(b.text).slice(0, 280)
@@ -2886,7 +2899,7 @@ const server = createServer(async (req, res) => {
   }
   // ── POST /api/challenge/submit { id, name, netPnl } → keep this player's score ──
   if (method === 'POST' && path === '/api/challenge/submit') {
-    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    const ip = clientIp(req)
     if (!chalAllowed(ip)) return json(res, 429, { error: 'slow down' })
     if (Date.now() > CHALLENGE.end) return json(res, 200, { ok: true, ended: true })
     const b = await body(req)
@@ -3014,7 +3027,7 @@ const server = createServer(async (req, res) => {
   // removed-list below, which keeps an account that took itself off from being put back by
   // someone else's search.
   if (method === 'POST' && path === '/api/leaderboard/join') {
-    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '?'
+    const ip = clientIp(req)
     if (!lbJoinAllowed(ip)) return json(res, 429, { error: 'too many joins, try later' })
 
     const b = await body(req)
@@ -3422,7 +3435,9 @@ const server = createServer(async (req, res) => {
   json(res, 404, { error: 'not found' })
 })
 
-server.listen(PORT, () => {
+// Loopback only: nginx (/api/) is the way in, and nothing should reach this port from outside.
+// HLIQ_LISTEN_HOST overrides it for a dev box.
+server.listen(PORT, process.env.HLIQ_LISTEN_HOST || '127.0.0.1', () => {
   console.log(`\n  Insolvent Trade — Strategy Server`)
   console.log(`  Listening on http://localhost:${PORT}`)
   console.log(`  WALLET_KEY: ${process.env.WALLET_KEY ? '✓ set' : '✗ not set (bots use per-account keys)'}`)

@@ -5,7 +5,7 @@
 
 import { createServer, request as httpRequest } from 'node:http'
 import { createReadStream, statSync, existsSync, writeFileSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs'
-import { join, extname, dirname } from 'node:path'
+import { join, extname, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coinGeckoUpgrade } from './src/iconpick.js'
 import { EXT_MARKETS, extYahoo, extChartUrl, parseChart, EXT_TF, extChartUrlTf, parseSeries } from './src/extmarkets.js'
@@ -22,6 +22,9 @@ import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DIST      = join(__dirname, 'dist')
 const PORT        = 5175
+// Where the three servers listen: loopback, behind nginx. HLIQ_LISTEN_HOST overrides it (a dev box
+// reaching it from another machine); production never sets it.
+const LISTEN_HOST = process.env.HLIQ_LISTEN_HOST || '127.0.0.1'
 const API_PORT    = 3002
 const NOTIFY_PORT = 3001
 
@@ -655,7 +658,9 @@ function serveFile(res, filePath, allowIndexFallback = true) {
 
 function proxyTo(req, res, port, name) {
   const proxy = httpRequest({
-    hostname: 'localhost', port,
+    // 127.0.0.1, not "localhost": the servers listen on IPv4 loopback only, and on this box
+    // "localhost" resolves to ::1 first.
+    hostname: '127.0.0.1', port,
     path: req.url, method: req.method,
     headers: req.headers,
   }, upstream => {
@@ -1239,9 +1244,18 @@ createServer((req, res) => {
   }
   if (url === '/portfolios') return serveFile(res, join(DIST, 'portfolio.html'))
 
-  // Static files
+  // Static files — never outside dist/.
+  //
+  // join() resolves "..", so a path could climb out of dist/ and be served from anywhere this
+  // process can read. A path that does not land inside DIST is refused, however it is spelled.
   const candidate = join(DIST, url === '/' ? 'landing.html' : url)
-  if (existsSync(candidate) && !candidate.endsWith('/')) return serveFile(res, candidate)
+  if (candidate !== DIST && !candidate.startsWith(DIST + sep)) { res.writeHead(404).end(); return }
+  // A FILE, not just a path that exists: join() drops a trailing slash, so "/assets/" passed the
+  // old check as the assets DIRECTORY, and reading it threw EISDIR with no handler — one request
+  // took the process down.
+  let isFile = false
+  try { isFile = statSync(candidate).isFile() } catch {}
+  if (isFile) return serveFile(res, candidate)
 
   // SPA fallback — but ONLY for real navigations. Returning index.html with a 200
   // for a missing font/script/image makes the browser download 150KB of HTML and
@@ -1260,6 +1274,7 @@ createServer((req, res) => {
 
   if (!isNavigation) { res.writeHead(404).end(); return }
   serveFile(res, join(DIST, 'index.html'))
-}).listen(PORT, () => {
-  console.log(`Insolvent Trade — serving on http://localhost:${PORT}`)
+// Loopback only. nginx is the way in, with TLS; nothing should reach this port from outside.
+}).listen(PORT, LISTEN_HOST, () => {
+  console.log(`Insolvent Trade — serving on http://${LISTEN_HOST}:${PORT}`)
 })

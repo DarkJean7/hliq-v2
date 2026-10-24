@@ -518,7 +518,8 @@ app.post('/notify/unsubscribe', (req, res) => {
 })
 
 const PORT = 3001
-app.listen(PORT, () => console.log(`[notify] server on :${PORT}`))
+// Loopback only, behind nginx (/notify/).
+app.listen(PORT, process.env.HLIQ_LISTEN_HOST || '127.0.0.1', () => console.log(`[notify] server on 127.0.0.1:${PORT}`))
 
 // Kick off immediately, then every 60s. A rejected poll must never become an
 // unhandled rejection — that would exit the process and kill all alerts.
