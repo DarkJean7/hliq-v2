@@ -3595,9 +3595,7 @@ function _coinIconHtml(coin, style = '') {
   // Prediction-market codes have no token artwork — return a static letter
   // avatar (no <img>) so the icon doesn't blink retrying a 404 image.
   // Orders use "#N", spot holdings of the outcome use "+N" (same number).
-  if (typeof coin === 'string' && (coin[0] === '#' || coin[0] === '+')) {
-    return _cgLetterAvatar(state.ocTokenMap?.['#' + coin.slice(1)]?.name || coin)
-  }
+  if (typeof coin === 'string' && (coin[0] === '#' || coin[0] === '+')) return _ocCoinIcon(coin)
   // Already known to have no artwork — skip the <img> entirely (no blink on re-render)
   if (_iconFailed.has(coin) || _iconResolved.get(coin) === 'letter') return _cgLetterAvatar(coin)
   // An external market (DXY, gold, the S&P) is not on any coin CDN. Its artwork, when there
@@ -37132,6 +37130,23 @@ function _ocGlyphAvatar(glyph, seed, hue) {
     + `font-size:.62em;line-height:1">${glyph}</span>`
 }
 
+/**
+ * The face of an outcome position, order or fill ("#N" / "+N"), as its market's card shows it: the
+ * underlying's logo for a price market (gold for "Will GOLD be above…"), the sport or topic glyph
+ * for the rest (a basketball for the NBA), a crystal ball when nothing matches. It used to be a
+ * letter avatar of the label, which for every market was a coloured dot with a dash in it.
+ */
+function _ocCoinIcon(coin) {
+  const n = parseInt(String(coin).slice(1), 10)
+  const name = state.ocTokenMap?.['#' + n]?.name || ''
+  const u = state.ocInfoMap?.[Math.floor(n / 10)]?.u
+  if (u) return _coinIconHtml(u)
+  const tg = ocTopicGlyph(name)
+  if (tg) return _ocGlyphAvatar(tg.glyph, name, tg.hue)
+  if (/^Rate decision/.test(name)) return _ocGlyphAvatar('&#127963;&#65039;', 'fed', 218)
+  return name ? _ocGlyphAvatar('&#128302;', name) : _cgLetterAvatar(coin)
+}
+
 /** A standalone card's face when it has no coin: the topic's glyph, or nothing. */
 function _ocTopicIcon(...parts) {
   const tg = ocTopicGlyph(...parts)
@@ -38047,8 +38062,9 @@ function _ocSectionize() {
   scroller.className = 'oc-hot-scroll no-swipe'
   // The markets with the most open interest — single markets and events alike — not simply the
   // first six standalone cards ("in trending should be the markets with more open interest").
+  // Ten, not six: the NBA championship ranked seventh and a user looked for it there and missed it.
   const oiOf = (c) => Number(c.dataset.ocOi ?? -1)
-  ;[...standalone, ...eventCards].filter(c => oiOf(c) > 0).sort((a, b) => oiOf(b) - oiOf(a)).slice(0, 6).forEach((c, idx) => {
+  ;[...standalone, ...eventCards].filter(c => oiOf(c) > 0).sort((a, b) => oiOf(b) - oiOf(a)).slice(0, 10).forEach((c, idx) => {
     const isEvt = c.classList.contains('oc-event')
     const id = c.id.replace('oc-card-', '')
     const q  = c.querySelector('.oc-compact-q, .oc-evt-title')?.textContent ?? ''
