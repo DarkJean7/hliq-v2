@@ -16,7 +16,7 @@ t('nor a colon in a sentence', strip('BTC above $100k: yes') === 'BTC above $100
 t('nothing to strip, nothing changes', strip('USA vs Brazil') === 'USA vs Brazil' && strip(null) === null)
 
 // Once, wherever a name is made or loaded — so every surface that shows one shows it without.
-t('names are stripped as they are built', CLI.includes('const underlying  = _ocStripDex(d.underlying || o.name)') && CLI.includes('state.ocQuestionMap[oid] = _ocStripDex(qName)'))
+t('names are stripped as they are built', CLI.includes('const underlying  = _ocStripDex(d.underlying || o.name)') && CLI.includes('state.ocQuestionMap[oid] = _ocStripDex(title)'))
 t('and as saved ones load (names cached before this are cleaned)', /for \(const v of Object\.values\(cached\)\) if \(v && v\.name\) v\.name = _ocStripDex\(v\.name\)/.test(CLI))
 t('and in the label every surface reads (History, Calendar, positions, Outcomes)', CLI.includes('const nm = _ocStripDex(t.name); return t.side'))
 t('the Outcomes card says shares, not the name with its spaces turned into dashes', !CLI.includes("nm.replace(/\\s+/g, '-')") && CLI.includes("['Size', _prv(fmtSize(total)) + ' ' + _T('shares', 'acciones')]"))

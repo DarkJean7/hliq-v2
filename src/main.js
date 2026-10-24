@@ -36739,16 +36739,22 @@ function _buildOcTokenMap(meta) {
   // outcomeId → question name (e.g. 217 → "2026 World Cup Champion") for labels
   const questions = Array.isArray(meta) ? [] : (meta?.questions ?? [])
   const legTitle  = new Map()   // outcomeId -> its market's title
+  const legEnd    = new Map()   // outcomeId -> when its market settles
   for (const q of questions) {
     const qd = _parseOutcomeDesc(q.description || '')
     // Bucket questions are all named "Recurring" — useless as a grouping label.
     const qName = qd.class === 'priceBucket' && qd.underlying
       ? `${qd.underlying} closing price${qd.expiry ? ' · ' + _fmtOutcomeExpiry(qd.expiry) : ''}`
       : q.name
-    for (const oid of (q.namedOutcomes ?? [])) state.ocQuestionMap[oid] = _ocStripDex(qName)
-    // Each leg (and the fallback "Other") knows the market it belongs to, for its label below.
-    const title = _ocQuestionTitle(q)
-    for (const oid of [...(q.namedOutcomes ?? []), q.fallbackOutcome].filter(x => x != null)) legTitle.set(Number(oid), title)
+    // Each leg (and the fallback "Other") knows the market it belongs to, for its label below —
+    // and the position card's Question row reads the same title. It used to get the raw name,
+    // which for a new-template market is "template:sportsTournamentWinner".
+    const title = /^template:/.test(qName) ? _ocQuestionTitle(q) : qName
+    const legs  = [...(q.namedOutcomes ?? []), q.fallbackOutcome].filter(x => x != null)
+    for (const oid of legs) { state.ocQuestionMap[oid] = _ocStripDex(title); legTitle.set(Number(oid), _ocQuestionTitle(q)) }
+    // When it settles is on the question, not on its legs ("games are missing the settle").
+    const qEnd = qd.expiry || qd.scheduledDecision || qd.resolutionDeadline || qd.decisionDeadline || null
+    if (qEnd) for (const oid of legs) legEnd.set(Number(oid), qEnd)
   }
   for (const o of list) {
     try {
@@ -36773,7 +36779,10 @@ function _buildOcTokenMap(meta) {
       }
       // The market's terms, for the position cards (_ocFacts): what it tracks, the line, the window.
       const num = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : null }
-      state.ocInfoMap[o.outcome] = { u: d.underlying || null, t: num(d.targetPrice), lo: num(d.bucketLo), hi: num(d.bucketHi), exp: d.expiry || null,
+      // Its own date first (a price market's expiry, a game's resolutionDeadline), then its question's —
+      // the same order _ocDeadlineOf reads them in for the Outcomes cards.
+      const end = d.expiry || d.scheduledDecision || d.resolutionDeadline || d.decisionDeadline || legEnd.get(Number(o.outcome)) || null
+      state.ocInfoMap[o.outcome] = { u: d.underlying || null, t: num(d.targetPrice), lo: num(d.bucketLo), hi: num(d.bucketHi), exp: end,
         sides: (o.sideSpecs ?? []).map(sp => _ocSideName(sp.name, 'Yes')),
         // What it is about, for its icon in positions and orders (_ocCoinIcon).
         sp: d.sport || null, cmp: d.competition || null }
@@ -36803,9 +36812,12 @@ function _hydrateOcTokenMap() {
     // One-time migration: older caches stored labels with the "…, 02:00 AM GMT-4)" expiry
     // format. Drop that cache once so labels rebuild in the new date-only format.
     // '3': labels saved before template legs were named for their market and answer.
-    if (localStorage.getItem('hliq_oc_label_fmt') !== '3') {
+    // '4': question titles and settle dates saved before they were read off the question.
+    if (localStorage.getItem('hliq_oc_label_fmt') !== '4') {
       localStorage.removeItem('hliq_oc_token_map')
-      localStorage.setItem('hliq_oc_label_fmt', '3')
+      localStorage.removeItem('hliq_oc_question_map')
+      localStorage.removeItem('hliq_oc_info_map')
+      localStorage.setItem('hliq_oc_label_fmt', '4')
     }
     const cached = JSON.parse(localStorage.getItem('hliq_oc_token_map') || 'null')
     if (cached && Object.keys(cached).length) {
