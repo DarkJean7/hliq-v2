@@ -37,9 +37,14 @@ const OUTCOME_META = {
     { outcome: 14733, name: 'Recurring Fallback', description: 'other', sideSpecs: YN, quoteToken: 'USDC' },
     { outcome: 14200, name: 'template:sportsContestParticipant2', description: 'participant:Lyon', sideSpecs: YN, quoteToken: 'USDC', venue: 'out' },
     { outcome: 1488, name: 'template:sportsTournamentParticipant', description: 'participant:Buffalo Bills', sideSpecs: YN, quoteToken: 'USDC', venue: 'out' },
+    // The NFL winner market, as Hyperliquid lists it: a question whose legs are the teams.
+    { outcome: 1487, name: 'template:sportsTournamentParticipant', description: 'participant:Kansas City Chiefs', sideSpecs: YN, quoteToken: 'USDC', venue: 'out' },
+    { outcome: 1486, name: 'template:sportsTournamentFallback', description: 'other', sideSpecs: YN, quoteToken: 'USDC', venue: 'out' },
   ],
   questions: [{ question: 485, name: 'Recurring', description: live('class:priceBucket|underlying:BTC|expiry:20261021-0600|priceThresholds:80063,83330|period:1d'),
-    fallbackOutcome: 14733, namedOutcomes: [14734, 14735, 14736], settledNamedOutcomes: [] }],
+    fallbackOutcome: 14733, namedOutcomes: [14734, 14735, 14736], settledNamedOutcomes: [] },
+    { question: 200, name: 'template:sportsTournamentWinner', description: 'competition:USA National Football League (NFL)|officialSource:NFL|resolutionDeadline:20270221-1200|season:2027|sport:football',
+      fallbackOutcome: 1486, namedOutcomes: [1487, 1488], settledNamedOutcomes: [] }],
   deployers: [], feeScale: '1.0',
 }
 const MIDS = { BTC: '82000', ETH: '2400', SOL: '105', HYPE: '80' }
@@ -49,7 +54,12 @@ const UNIVERSE = ['BTC', 'ETH', 'SOL', 'HYPE'].map(name => ({ name, szDecimals: 
 const CTX = UNIVERSE.map(u => { const px = MIDS[u.name]; return { funding: '0', openInterest: '0', prevDayPx: px, dayNtlVlm: '0', premium: '0', oraclePx: px, markPx: px, midPx: px, impactPxs: [px, px] } })
 const BASE = {
   meta: { universe: UNIVERSE }, metaAndAssetCtxs: [{ universe: UNIVERSE }, CTX], perpDexs: [null],
-  spotMeta: { tokens: [], universe: [] }, spotMetaAndAssetCtxs: [{ tokens: [], universe: [] }, []],
+  // Every market's 24h volume (Yes side) and contracts outstanding, the way spotMetaAndAssetCtxs
+  // carries outcome sides: "#<id×10+side>". Open interest order: NFL event > SOL > HYPE > ETH > BTC.
+  spotMeta: { tokens: [], universe: [] }, spotMetaAndAssetCtxs: [{ tokens: [], universe: [] }, [
+    ...[[14730, 9000, 300], [14731, 7000, 2500], [14729, 5000, 90], [14726, 3000, 21439], [1487, 40000, 500], [1488, 30000, 400], [1486, 1000, 10]]
+      .flatMap(([id, oi, vol]) => [{ coin: '#' + id * 10, dayNtlVlm: String(vol), circulatingSupply: String(oi), markPx: '0.5' },
+                                   { coin: '#' + (id * 10 + 1), dayNtlVlm: '7777', circulatingSupply: String(Math.round(oi / 10)), markPx: '0.5' }])]],
 }
 
 let pass = 0, fail = 0
@@ -117,6 +127,31 @@ t('pressing it again shows everything', (await shown()).length, all.length)
 await p.evaluate(() => window.__ocSetUnd('BTC'))
 t('BTC brings its binary and its range market', (await shown()).every(u => u === 'BTC') && (await shown()).length >= 2, true)
 await p.evaluate(() => window.__ocSetUnd('all'))
+
+// "add a filter by open interest, volume, etc. by default sort by open interest. in trending should
+// be the markets with more open interest ... similar as outcome.xyz ... icons for like nba, football"
+console.log('\n-- open interest leads, volume shows, sports get their icon --')
+const shownIn = (cat) => p.evaluate((c) => [...document.querySelectorAll(`#ocGrid > .oc-card[data-cat="${c}"]`)]
+  .filter(x => x.offsetParent && !x.classList.contains('oc-grouped') && !x.classList.contains('oc-junk')).map(x => x.dataset.und), cat)
+await p.evaluate(() => { document.getElementById('ocSearchInput').value = ''; window.__ocSetUnd('all'); window.__ocSetCat('all') })
+t('the default sort is open interest', await p.evaluate(() => document.getElementById('ocSortSel').value), 'oi')
+t('Trending is the markets with the most open interest, first to last', await p.evaluate(() =>
+  [...document.querySelectorAll('.oc-hot-card .oc-hot-q')].map(e => e.textContent.trim().split(' ').slice(0, 2).join(' '))),
+  ['2027 USA', 'Will SOL', 'Will HYPE', 'Will ETH', 'Will BTC'])
+t('within a section, the largest market comes first', (await shownIn('crypto')).slice(0, 2), ['SOL', 'HYPE'])
+t('and the section headings stay', await p.evaluate(() => [...document.querySelectorAll('#ocGrid .oc-sec-head')].every(h => h.style.display !== 'none')), true)
+t('volume is the Yes side\'s, as Hyperliquid counts it', await p.evaluate(() => document.querySelector('#oc-card-14726 .oc-compact-vol')?.textContent), '$21.4k Vol.')
+await p.selectOption('#ocSortSel', 'vol')
+t('sorting by volume puts the most traded first', (await shownIn('crypto'))[0], 'BTC')
+await p.selectOption('#ocSortSel', 'oi')
+await p.evaluate(() => { const q = document.getElementById('ocSearchInput'); q.value = 'nfl'; window.__ocFilter() })
+const nfl = await p.evaluate(() => [...document.querySelectorAll('#ocGrid > .oc-card')]
+  .filter(c => c.style.display !== 'none' && c.offsetParent && !c.classList.contains('oc-grouped') && !c.classList.contains('oc-junk'))
+  .map(c => ({ t: c.querySelector('.oc-evt-title, .oc-compact-q')?.textContent.trim(), ic: c.querySelector('.oc-compact-icon')?.textContent.trim() })))
+t('an event is found by its title ("also missing new markets": mlb found nothing)', nfl.map(x => x.t), ['2027 USA National Football League (NFL)'])
+t('with the sport\'s icon', nfl[0]?.ic, '🏈')
+await p.evaluate(() => { const q = document.getElementById('ocSearchInput'); q.value = ''; window.__ocFilter() })
+t('the Trending strip is not a page swipe (it opened the More panel)', await p.evaluate(() => document.querySelector('.oc-hot-scroll').classList.contains('no-swipe')), true)
 
 console.log('\n-- countdowns tick without replacing anything --')
 const counts = await p.evaluate(() => new Promise((res) => {

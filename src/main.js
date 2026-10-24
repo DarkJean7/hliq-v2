@@ -331,6 +331,7 @@ import { installScrollJank } from './scrolljank.js'
 import { scrollIdle as _scrollIdle } from './scrollidle.js'
 import { crossLiqPx, crossEquity, totalCrossMaint } from './liqest.js'
 import { createCountdowns } from './occountdown.js'
+import { outcomeStats as ocOutcomeStats, eventStats as ocEventStats, fmtUsdShort as ocFmtUsd, topicGlyph as ocTopicGlyph } from './ocstats.js'
 import { dailyCloses as sigDailyCloses, yearsOf as sigYearsOf, monthReturns as sigMonthReturns, monthDays as sigMonthDays, tint as sigTint } from './sigcal.js'
 import { editImage, CANCELLED as IMG_CANCELLED } from './imgedit.js'
 import { installNovaChrome } from './uinova.js'
@@ -12208,7 +12209,7 @@ function mobVShow() {
 // `iframe` is here for the TradingView charts in Analysis. They are pannable surfaces
 // exactly like our own `canvas` ones, but nothing matched them, so a horizontal drag
 // across a chart navigated to Trade instead of scrubbing the time axis.
-const _SWIPE_BLOCKED_SEL = 'canvas, iframe, input, textarea, select, .mob-v-tabs, .mob-watch-rotator, .mob-more-drawer, .no-swipe, [data-dragscroll]'
+const _SWIPE_BLOCKED_SEL = 'canvas, iframe, input, textarea, select, .mob-v-tabs, .mob-watch-rotator, .mob-more-drawer, .no-swipe, [data-dragscroll], .oc-hot-scroll'
 const _swipeBlocked = t => !!(t && t.closest && t.closest(_SWIPE_BLOCKED_SEL))
 
 let _mobVSwipeInit = false
@@ -36368,6 +36369,8 @@ function _ocClampPending(list) {
 let _ocLiveOutcomes    = []   // stored for polling
 let _ocLiveQuestions   = []   // HL question groups (native event grouping)
 let _ocLiveInfo        = null
+// Each outcome's 24h volume and open interest, from one spotMetaAndAssetCtxs read (src/ocstats.js).
+let _ocStats           = new Map()
 let _ocActiveCat       = 'all'
 let _ocExpandedId      = null
 
@@ -37037,10 +37040,20 @@ function _ocGlyphAvatar(glyph, seed, hue) {
     + `font-size:.62em;line-height:1">${glyph}</span>`
 }
 
+/** A standalone card's face when it has no coin: the topic's glyph, or nothing. */
+function _ocTopicIcon(...parts) {
+  const tg = ocTopicGlyph(...parts)
+  return tg ? `<span class="oc-compact-icon">${_ocGlyphAvatar(tg.glyph, parts[0], tg.hue)}</span>` : ''
+}
+
 // The face for a grouped event: the underlying's logo when there is one, otherwise a
 // glyph chosen from what the question is actually about.
 function _ocEventIcon(q, qd) {
   if (qd.underlying) return _coinIconHtml(qd.underlying)
+  // The sport, competition or kind of question it is about: a basketball for the NBA, a ball
+  // for the leagues, a trophy for an award ("the more icons for like nba, football, etc").
+  const tg = ocTopicGlyph(q?.name, qd.competition, qd.sport, qd.award, qd.institution, qd.policyMeasure)
+  if (tg) return _ocGlyphAvatar(tg.glyph, q?.name, tg.hue)
   const name = String(q?.name ?? '')
   // 218 = a muted institutional blue, so the Fed card reads as officialdom rather than as
   // another randomly-hued token.
@@ -37700,17 +37713,27 @@ window.__ocSort = function() {
       return Number.isFinite(t) && t > 0 ? t : null
     }
     if (mode === 'chance') return num(el, '.oc-compact-pct, .oc-evt-pct, [id^="oc-chance-"]')
-    return num(el, '.oc-compact-vol, [id^="oc-vol-"]')
+    // Open interest and volume are known for every market at once (src/ocstats.js), not read
+    // off whatever each card happens to have loaded.
+    const v = Number(mode === 'oi' ? el.dataset.ocOi : el.dataset.ocVol)
+    return Number.isFinite(v) && el.dataset[mode === 'oi' ? 'ocOi' : 'ocVol'] != null ? v : null
   }
   const dir = mode === 'soon' ? 1 : -1
-  const cards = [...grid.querySelectorAll('.oc-card')]
-  cards.map(el => ({ el, k: keyOf(el) }))
-    // Unknown last, whichever way round the sort runs: a market with no closing time is not
-    // the soonest OR the latest, and letting it fall in as 0 put every one of them first.
-    .sort((a, b) => a.k === null ? 1 : b.k === null ? -1 : (a.k - b.k) * dir)
-    .forEach(x => grid.appendChild(x.el))
-  // Headings would now sit above whatever happened to land under them.
-  grid.querySelectorAll('.oc-sec-head, .oc-hot-scroll').forEach(el => { el.style.display = 'none' })
+  // Unknown last, whichever way round the sort runs: a market with no closing time is not
+  // the soonest OR the latest, and letting it fall in as 0 put every one of them first.
+  const byKey = (a, b) => a.k === null ? 1 : b.k === null ? -1 : (a.k - b.k) * dir
+  // Within each section, so the headings and Trending stay where they are: open interest is the
+  // default now, and flattening the page under every sort would have hidden them by default.
+  let run = []
+  const flush = (before) => {
+    run.map(el => ({ el, k: keyOf(el) })).sort(byKey).forEach(x => grid.insertBefore(x.el, before))
+    run = []
+  }
+  for (const el of [...grid.children]) {
+    if (el.classList.contains('oc-card')) run.push(el)
+    else flush(el)
+  }
+  flush(null)
 }
 
 window.__ocFilter = function() {
@@ -37871,7 +37894,16 @@ function _ocSectionize() {
     if (evtCloseMs) card.dataset.ocClose = String(evtCloseMs)
     card.dataset.q = ((qd.underlying ? qd.underlying + ' ' : '') + (q.name || '') + ' ' +
       members.map(o => rowName(o)).join(' ')).toLowerCase()
+    // ...and by what the card SAYS. The template name ("template:sportsTournamentWinner") was
+    // all it carried of the question, so "mlb", "premier league" or "baseball" found nothing
+    // though the card read "2026 MLB Championship" ("also missing new markets").
+    card.dataset.q += ' ' + [title, sub, qd.competition, qd.sport, qd.award, qd.institution, qd.season, qd.decisionLabel]
+      .filter(Boolean).join(' ').toLowerCase()
+    // A market chip selects it too (BTC's range market is an event, not a single card).
+    if (qd.underlying) { card.dataset.und = _ocUndKey(qd.underlying); card.dataset.undRaw = qd.underlying }
     card.id = 'oc-card-' + evId
+    const est = ocEventStats(members.map(o => o.outcome), _ocStats)
+    if (est) { card.dataset.ocOi = String(est.oi); card.dataset.ocVol = String(est.vol) }
     card.innerHTML = `
       <div class="oc-evt-head">
         <span class="oc-compact-icon">${evtIcon}</span>
@@ -37887,6 +37919,7 @@ function _ocSectionize() {
       <div class="oc-evt-rows" id="oc-evt-rows-${evId}" data-sort="odds">${rows}</div>
       <div class="oc-compact-foot">
         <span class="oc-live"><i class="oc-live-dot"></i>Live</span>
+        ${est ? `<span class="oc-compact-vol">${ocFmtUsd(est.vol)} Vol.</span>` : ''}
         <span class="oc-compact-when">${esc(evtWhen)}</span>
       </div>
       ${members.length > 5 ? `<button class="oc-evt-more" onclick="window.__ocEvtToggle('${evId}',this,${members.length})">Show all ${members.length}</button>` : ''}`
@@ -37932,16 +37965,24 @@ function _ocSectionize() {
   head.innerHTML = '<span class="oc-sec-emoji">🔥</span> Trending now'
   frag.appendChild(head)
   const scroller = document.createElement('div')
-  scroller.className = 'oc-hot-scroll'
-  standalone.slice(0, 6).forEach((c, idx) => {
+  // no-swipe: dragging it sideways was also read as the page swipe that opens More ("swapping
+  // the trending now outcome cards it sometimes opens the more side panel").
+  scroller.className = 'oc-hot-scroll no-swipe'
+  // The markets with the most open interest — single markets and events alike — not simply the
+  // first six standalone cards ("in trending should be the markets with more open interest").
+  const oiOf = (c) => Number(c.dataset.ocOi ?? -1)
+  ;[...standalone, ...eventCards].filter(c => oiOf(c) > 0).sort((a, b) => oiOf(b) - oiOf(a)).slice(0, 6).forEach((c, idx) => {
+    const isEvt = c.classList.contains('oc-event')
     const id = c.id.replace('oc-card-', '')
-    const q  = c.querySelector('.oc-compact-q')?.textContent ?? ''
+    const q  = c.querySelector('.oc-compact-q, .oc-evt-title')?.textContent ?? ''
+    const vol = Number(c.dataset.ocVol ?? 0)
     const d  = document.createElement('div')
     d.className = 'oc-hot-card oc-hot-' + (idx % 4)
-    d.innerHTML = `<div class="oc-hot-q">${esc(q)}</div><div class="oc-hot-pct" id="oc-hot-pct-${id}">—</div>`
+    d.dataset.hot = id
+    d.innerHTML = `<div class="oc-hot-q">${esc(q)}</div>${isEvt ? '' : `<div class="oc-hot-pct" id="oc-hot-pct-${id}">—</div>`}<div class="oc-hot-vol">${ocFmtUsd(vol)} Vol.</div>`
     d.onclick = () => {
       c.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      setTimeout(() => window.__ocExpandCard(parseInt(id)), 350)
+      if (!isEvt) setTimeout(() => window.__ocExpandCard(parseInt(id)), 350)
     }
     scroller.appendChild(d)
   })
@@ -38029,7 +38070,11 @@ async function renderOutcomes() {
   root.innerHTML = '<div class="ma-loading">Loading prediction markets…</div>'
   try {
     const info = new InfoClient({ transport: _transport })
-    const raw  = await info.outcomeMeta()
+    // The market list and, in the same breath, every outcome's 24h volume and open interest:
+    // Hyperliquid lists outcome sides in spotMetaAndAssetCtxs ("#<id×10+side>"), so one read
+    // ranks them all — sorting, Trending and the Vol. line (src/ocstats.js).
+    const [raw, spotCtx] = await Promise.all([info.outcomeMeta(), info.spotMetaAndAssetCtxs().catch(() => null)])
+    _ocStats = ocOutcomeStats(spotCtx)
 
     const outcomes = Array.isArray(raw) ? raw : (raw?.outcomes ?? [])
     _ocLiveQuestions = Array.isArray(raw?.questions) ? raw.questions : []
@@ -38081,10 +38126,11 @@ async function renderOutcomes() {
       // Falls back to the parent question's deadline: a leg of an event carries no expiry
       // of its own, and without this every one of them sorted as "no closing time".
       const closeMs = _expiryDate(_ocDeadlineOf(o, d))?.getTime()
+      const st      = _ocStats.get(Number(o.outcome))
       return `<div class="oc-card" id="oc-card-${o.outcome}" data-cat="${cat}" data-und="${esc(_ocUndKey(full.underlying))}" data-und-raw="${esc(full.underlying ?? '')}" data-q="${esc(searchQ)}"${
-        closeMs ? ` data-oc-close="${closeMs}"` : ''} onclick="window.__ocExpandCard(${o.outcome})">
+        closeMs ? ` data-oc-close="${closeMs}"` : ''}${st ? ` data-oc-oi="${st.oi}" data-oc-vol="${st.vol}"` : ''} onclick="window.__ocExpandCard(${o.outcome})">
         <div class="oc-compact-info">
-          ${d.underlying ? `<span class="oc-compact-icon">${_coinIconHtml(d.underlying)}</span>` : ''}
+          ${d.underlying ? `<span class="oc-compact-icon">${_coinIconHtml(d.underlying)}</span>` : _ocTopicIcon(o.name, line1, line2, full.competition, full.sport, full.award, full.institution)}
           <div class="oc-compact-q">${esc(line1)}${line2 ? ' ' + esc(line2) : ''}</div>
           <div class="oc-compact-right">
             <span class="oc-compact-pct" id="oc-compact-pct-${o.outcome}">—</span>
@@ -38097,6 +38143,7 @@ async function renderOutcomes() {
         </div>
         <div class="oc-compact-foot">
           <span class="oc-live"><i class="oc-live-dot"></i>Live</span>
+          ${st ? `<span class="oc-compact-vol">${ocFmtUsd(st.vol)} Vol.</span>` : ''}
           <span class="oc-compact-when">${esc(d.expiry ? _fmtOutcomeExpiry(d.expiry) : '')}</span>
         </div>
         <button class="oc-card-close" onclick="event.stopPropagation();window.__ocCloseExpanded()">✕</button>
@@ -38237,11 +38284,12 @@ async function renderOutcomes() {
             <svg class="oc-sort-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
               <path d="M3 4h10M4.5 8h7M6.5 12h3"/></svg>
             <select class="oc-sort" id="ocSortSel" onchange="window.__ocSort()" aria-label="Sort markets">
-              <option value="default">Featured</option>
+              <option value="oi" selected>Open interest</option>
+              <option value="vol">Volume (24h)</option>
               <option value="soon">Closing soonest</option>
               <option value="late">Closing latest</option>
               <option value="chance">Highest chance</option>
-              <option value="vol">Most traded</option>
+              <option value="default">Featured</option>
             </select>
           </div>
         </div>
@@ -38273,6 +38321,8 @@ async function renderOutcomes() {
     // candle requests at once and getting rate-limited.
     _ocSectionize()
     _ocRenderUnds()
+    // The default order is by open interest; apply it to the freshly built grid.
+    try { window.__ocSort() } catch {}
     if (_ocRefreshInterval) clearInterval(_ocRefreshInterval)
     _ocRefreshInterval = setInterval(_refreshOcPrices, 5000)
   } catch(e) {

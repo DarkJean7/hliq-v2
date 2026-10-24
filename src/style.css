@@ -7603,6 +7603,9 @@ body.is-mob-view .mob-v-bottom { display: grid; }
 
 .oc-compact-foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 10.5px; color: var(--muted); }
 .oc-compact-when { margin-left: auto; text-transform: uppercase; letter-spacing: .04em; }
+/* 24h volume, as outcome.xyz shows it under each market (src/ocstats.js). */
+.oc-compact-vol { font-variant-numeric: tabular-nums; color: var(--fg-2); }
+.oc-hot-vol { margin-top: 4px; font-size: 11px; font-weight: 600; color: rgba(255,255,255,.72); font-variant-numeric: tabular-nums; }
 .oc-live { display: inline-flex; align-items: center; gap: 5px; color: var(--red, #ff4d6d); font-weight: 700; }
 .oc-live-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: ocPulse 1.8s ease-in-out infinite; }
 @keyframes ocPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.8); } }
