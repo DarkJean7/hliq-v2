@@ -13558,7 +13558,7 @@ function _mobVMergedOrdCard(members) {
       </div>
       <div class="mob-v-row-right" style="width:86px;flex-shrink:0;flex-grow:0">
         <div class="mob-v-row-val">${fmtSize(g.totSz)}</div>
-        <div class="mob-v-row-pct" style="color:var(--muted)">${esc(_ocCoinLabel(g.coin))}</div>
+        <div class="mob-v-row-pct" style="color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(_ocOrdUnit(g.coin))}</div>
       </div>
       ${chev}
     </div>
@@ -20358,7 +20358,7 @@ function _mobVRenderContent(tick = false) {
         <div class="mob-v-row" style="cursor:pointer" onclick="${rowClick}">
           ${_mobVOrdSelMode ? checkbox : _mobVCoinIcon(o.coin)}
           <div class="mob-v-row-info">
-            <div class="mob-v-row-name">${esc(_ocCoinLabel(o.coin))}</div>
+            <div class="mob-v-row-name mob-v-ord-name">${esc(_ocCoinLabel(o.coin))}</div>
             <div class="mob-v-row-sub ${sideCls}">${side} · ${esc(o.orderType ?? 'Limit')}${o._acct ? `<span style="color:var(--accent)"> · ${esc(o._acct)}</span>` : ''}</div>
           </div>
           <div style="flex-shrink:0;width:74px;display:flex;flex-direction:column">
@@ -20375,7 +20375,7 @@ function _mobVRenderContent(tick = false) {
           </div>
           <div class="mob-v-row-right" style="width:86px;flex-shrink:0;flex-grow:0">
             <div class="mob-v-row-val">${fmtSize(parseFloat(o.sz ?? 0))}</div>
-            <div class="mob-v-row-pct" style="color:var(--muted)">${esc(_ocCoinLabel(o.coin))}</div>
+            <div class="mob-v-row-pct" style="color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(_ocOrdUnit(o.coin))}</div>
           </div>
           ${chev}
         </div>
@@ -36396,6 +36396,16 @@ function _ocStripDex(s) {
   return typeof s === 'string' ? s.replace(/\b[a-z][a-z0-9]{0,9}:(?=[A-Z0-9])/g, '') : s
 }
 
+// The unit under an order's size: an outcome's side ("Yes", "LAD"), not its whole label again —
+// "2026 MLB Championship · Los Angeles Dodgers · Yes" in an 86px column ran over its neighbours.
+function _ocOrdUnit(coin) {
+  if (typeof coin === 'string' && (coin[0] === '#' || coin[0] === '+')) {
+    const side = state.ocTokenMap?.['#' + coin.slice(1)]?.side
+    if (side) return side
+  }
+  return _ocCoinLabel(coin)
+}
+
 function _ocCoinLabel(coin) {
   // Orders use "#N"; spot holdings of the same outcome use "+N" — both map to
   // the "#N" entry in ocTokenMap.
@@ -36671,6 +36681,51 @@ function _ocFactsRows(f) {
   return rows
 }
 
+/**
+ * What one leg of a multi-outcome market IS: the team, the candidate, the range, "Other".
+ * Shared by the Outcomes cards and every label (orders, positions, history) — the label used to
+ * take the leg's NAME, which for new-template markets is the template itself, so an order read
+ * "template:sportsTournamentParticipant · Yes".
+ */
+function _ocLegName(o) {
+  const od = _ocDesc(o)
+  if (od.class === 'priceBucket') return _ocBucketLabel(od)
+  if (od.participant) return od.participant
+  if (od.candidate)   return od.candidate
+  const n = String(o?.name ?? '')
+  if (/fallback/i.test(n) || String(o?.description ?? '').trim() === 'other') return 'Other'
+  if (n.startsWith('template:policyRate')) {
+    return { Increase: 'Increase', Decrease: 'Decrease', NoChange: 'No change' }[n.slice('template:policyRate'.length)]
+         ?? n.slice('template:policyRate'.length)
+  }
+  if (/^template:sportsContestDraw/.test(n)) return 'Draw'
+  if (/^template:awardOther/.test(n)) return 'Other'
+  if (n.startsWith('template:')) {
+    const w = n.slice('template:'.length).replace(/([a-z])([A-Z])/g, '$1 $2')
+    return w.charAt(0).toUpperCase() + w.slice(1)
+  }
+  return n
+}
+
+/** A multi-outcome market's title, as its card shows it: "2026 MLB Championship", "Rate decision · October 2026". */
+function _ocQuestionTitle(q) {
+  const qd = _parseOutcomeDesc(q?.description || '')
+  const name = String(q?.name ?? '')
+  if (qd.class === 'priceBucket' && qd.underlying) return `${_ocUnderLabel(qd.underlying)} closing price${qd.expiry ? ' · ' + _fmtOutcomeExpiry(qd.expiry) : ''}`
+  if (name.startsWith('template:policyRateDecision')) return qd.decisionLabel ? `Rate decision · ${qd.decisionLabel}` : 'Rate decision'
+  if (name.startsWith('template:sportsTournament')) return [qd.season, qd.competition].filter(Boolean).join(' ').trim() || 'Tournament winner'
+  if (name.startsWith('template:sportsContest')) {
+    const vs = [qd.participantA, qd.participantB].filter(Boolean).join(' vs ')
+    return vs || [qd.competition, qd.season].filter(Boolean).join(' ') || 'Match'
+  }
+  if (name.startsWith('template:award')) return [qd.award, qd.period].filter(Boolean).join(' ') || 'Award'
+  if (name.startsWith('template:')) {
+    const w = name.slice('template:'.length).replace(/([a-z])([A-Z])/g, '$1 $2')
+    return w.charAt(0).toUpperCase() + w.slice(1)
+  }
+  return _ocStripDex(name)
+}
+
 function _buildOcTokenMap(meta) {
   // Every outcomeMeta fetch in the app funnels through here, so this is the one place
   // bucket members need flattening for the whole app to see them.
@@ -36685,6 +36740,7 @@ function _buildOcTokenMap(meta) {
   const list = Array.isArray(meta) ? meta : (meta?.outcomes ?? [])
   // outcomeId → question name (e.g. 217 → "2026 World Cup Champion") for labels
   const questions = Array.isArray(meta) ? [] : (meta?.questions ?? [])
+  const legTitle  = new Map()   // outcomeId -> its market's title
   for (const q of questions) {
     const qd = _parseOutcomeDesc(q.description || '')
     // Bucket questions are all named "Recurring" — useless as a grouping label.
@@ -36692,6 +36748,9 @@ function _buildOcTokenMap(meta) {
       ? `${qd.underlying} closing price${qd.expiry ? ' · ' + _fmtOutcomeExpiry(qd.expiry) : ''}`
       : q.name
     for (const oid of (q.namedOutcomes ?? [])) state.ocQuestionMap[oid] = _ocStripDex(qName)
+    // Each leg (and the fallback "Other") knows the market it belongs to, for its label below.
+    const title = _ocQuestionTitle(q)
+    for (const oid of [...(q.namedOutcomes ?? []), q.fallbackOutcome].filter(x => x != null)) legTitle.set(Number(oid), title)
   }
   for (const o of list) {
     try {
@@ -36702,13 +36761,24 @@ function _buildOcTokenMap(meta) {
       const bucketStr   = d.class === 'priceBucket' ? ' ' + _ocBucketLabel(d, true) : ''
       const target      = d.targetPrice ? ` >$${parseFloat(d.targetPrice).toLocaleString()}` : ''
       const expiry      = d.expiry ? ` (${_fmtOutcomeExpiry(d.expiry)})` : ''
-      const displayName = underlying + target + bucketStr + expiry
+      // A leg of a multi-outcome market: "2026 MLB Championship · Los Angeles Dodgers". A standalone
+      // new-template market: its question as the card asks it. Only the old format keeps the
+      // name-based label below — the template name was reaching orders and positions verbatim.
+      const qTitle = legTitle.get(Number(o.outcome))
+      const isTemplate = String(o.name ?? '').startsWith('template:') || /^(Recurring|template)\b/i.test(String(o.name ?? ''))
+      let displayName = underlying + target + bucketStr + expiry
+      if (qTitle && d.class !== 'priceBucket') displayName = qTitle + ' · ' + _ocLegName(o)
+      else if (isTemplate && d.class !== 'priceBucket') {
+        const fq = _buildFullQuestion(d, o.name)
+        const txt = [fq?.line1, fq?.line2].filter(Boolean).join(' ').replace(/\?$/, '').trim()
+        if (txt && !/^template:/.test(txt)) displayName = txt
+      }
       // The market's terms, for the position cards (_ocFacts): what it tracks, the line, the window.
       const num = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : null }
       state.ocInfoMap[o.outcome] = { u: d.underlying || null, t: num(d.targetPrice), lo: num(d.bucketLo), hi: num(d.bucketHi), exp: d.expiry || null,
         sides: (o.sideSpecs ?? []).map(sp => _ocSideName(sp.name, 'Yes')) }
       for (let i = 0; i < (o.sideSpecs?.length ?? 0); i++) {
-        state.ocTokenMap['#' + (o.outcome * 10 + i)] = { name: displayName, side: _ocSideName(o.sideSpecs[i].name, 'Yes') }
+        state.ocTokenMap['#' + (o.outcome * 10 + i)] = { name: displayName, side: _ocSideName(o.sideSpecs[i].name, 'Yes', d) }
       }
     } catch (e) {
       console.warn('_buildOcTokenMap entry error:', e.message)
@@ -36732,9 +36802,10 @@ function _hydrateOcTokenMap() {
   try {
     // One-time migration: older caches stored labels with the "…, 02:00 AM GMT-4)" expiry
     // format. Drop that cache once so labels rebuild in the new date-only format.
-    if (localStorage.getItem('hliq_oc_label_fmt') !== '2') {
+    // '3': labels saved before template legs were named for their market and answer.
+    if (localStorage.getItem('hliq_oc_label_fmt') !== '3') {
       localStorage.removeItem('hliq_oc_token_map')
-      localStorage.setItem('hliq_oc_label_fmt', '2')
+      localStorage.setItem('hliq_oc_label_fmt', '3')
     }
     const cached = JSON.parse(localStorage.getItem('hliq_oc_token_map') || 'null')
     if (cached && Object.keys(cached).length) {
@@ -36847,6 +36918,27 @@ function _fmtOcK(n) {
 function _buildFullQuestion(d, name) {
   // New-template markets. Without these every one of them rendered its raw internal name
   // — users saw the literal string "template:binaryPrice" as the question.
+  //
+  // Games and company events: their template name reached orders and positions verbatim
+  // ("template:sportsTotal · Over"), so each is asked the way its terms read.
+  const tn = String(name ?? '')
+  const vs = d.participantA && d.participantB ? `${d.participantA} vs ${d.participantB}` : null
+  const unit = d.measure ? ' ' + d.measure : ''
+  if (tn === 'template:sportsContestWinner' && vs) return { line1: `${vs}: who wins?`, line2: '' }
+  if (tn === 'template:sportsTotal' && vs && d.line != null) return { line1: `${vs}: over/under ${d.line}${unit}?`, line2: '' }
+  if (tn === 'template:sportsSpread' && vs && d.spread != null) {
+    const sp = parseFloat(d.spread)
+    // The spread arrives signed ("+6.5"); only a bare positive number gets a "+" added.
+    const spStr = String(d.spread).trim()
+    return { line1: `${vs}: ${d.shortNameA || d.participantA} ${sp > 0 && !spStr.startsWith('+') ? '+' : ''}${spStr}${unit}?`, line2: '' }
+  }
+  if (tn === 'template:companyIpoConfirmed' && d.company) {
+    return { line1: `Will ${d.company} go public`, line2: d.dateTime ? `by ${_fmtOcQuestionTime(d.dateTime)}?` : '?' }
+  }
+  if (tn === 'template:companyIpoFirstDayMarketCap' && d.company && d.marketCapThresholdB != null) {
+    return { line1: `Will ${d.company} close its first trading day above $${d.marketCapThresholdB}B`,
+             line2: d.listingDeadline ? `(if listed by ${_fmtOcQuestionTime(d.listingDeadline)})?` : '?' }
+  }
   if (d.class === 'priceTouch' && d.underlying) {
     const when = d.expiry ? _fmtOcQuestionTime(d.expiry) : null
     return {
@@ -37015,7 +37107,7 @@ async function _loadOcPrices(outcomes, info) {
     }
     const hotPct = document.getElementById('oc-hot-pct-' + o.outcome)
     if (hotPct) hotPct.textContent = (yesPx * 100).toFixed(0) + '%'
-    const s0 = esc(_ocSideName(o.sideSpecs?.[0]?.name, 'Yes')), s1 = esc(_ocSideName(o.sideSpecs?.[1]?.name, 'No'))
+    const _od = _ocDesc(o), s0 = esc(_ocSideName(o.sideSpecs?.[0]?.name, 'Yes', _od)), s1 = esc(_ocSideName(o.sideSpecs?.[1]?.name, 'No', _od))
     const miniY = document.getElementById('oc-mini-yes-' + o.outcome)
     if (miniY) miniY.innerHTML = _ocBetFace(s0, yesPx)
     const miniN = document.getElementById('oc-mini-no-' + o.outcome)
@@ -37063,10 +37155,14 @@ function _ocEventIcon(q, qd) {
 
 // HL names the legs of a new-template market "template:Yes" / "template:No". That prefix
 // is its template machinery leaking through; the side is the part after it.
-function _ocSideName(raw, fallback) {
-  const t = String(raw ?? '').trim()
+function _ocSideName(raw, fallback, d) {
+  let t = String(raw ?? '').trim()
   if (!t) return fallback
-  return t.startsWith('template:') ? (t.slice('template:'.length) || fallback) : t
+  if (t.startsWith('template:')) t = t.slice('template:'.length) || fallback
+  // A game-winner market names its sides "{shortNameA}" / "{shortNameB}" and puts the teams in
+  // its description; filled in, they read "KC" and "BUF", not the placeholder itself.
+  if (d && /\{\w+\}/.test(t)) t = t.replace(/\{(\w+)\}/g, (m, k) => d[k] ?? d[k.charAt(0).toLowerCase() + k.slice(1)] ?? m)
+  return t
 }
 
 // A share priced at 0.13 pays 1.00 if it lands — that is 7.7x your money, and "7.7x" is
@@ -37414,7 +37510,7 @@ async function _refreshOcPrices() {
         compactPct2.textContent = (yesPx * 100).toFixed(0) + '%'
         compactPct2.className   = 'oc-compact-pct ' + (yesPx > 0.5 ? 'pos' : 'neg')
       }
-      const s0 = esc(_ocSideName(o.sideSpecs?.[0]?.name, 'Yes')), s1 = esc(_ocSideName(o.sideSpecs?.[1]?.name, 'No'))
+      const _od = _ocDesc(o), s0 = esc(_ocSideName(o.sideSpecs?.[0]?.name, 'Yes', _od)), s1 = esc(_ocSideName(o.sideSpecs?.[1]?.name, 'No', _od))
       const miniY2 = document.getElementById('oc-mini-yes-' + o.outcome)
       // Same face as the first updater -- this one runs on every refresh, so leaving it
       // on the old cent form would repaint the buttons back a second later.
@@ -37849,26 +37945,7 @@ function _ocSectionize() {
       if (mm) { sub = mm[1]; title = mm[2] }
     }
     // A bucket member is named "Recurring Named Outcome"; the range is its identity.
-    const rowName = (o) => {
-      const od = _ocDesc(o)
-      if (od.class === 'priceBucket') return _ocBucketLabel(od)
-      // The team, the driver, the candidate. The leg's name is only its template
-      // ("template:sportsTournamentParticipant") -- the answer is in its description, and
-      // reading the name is why six rows all said "Sports Tournament Participant".
-      if (od.participant) return od.participant
-      // A leg of a new-template event is named for its template, not for itself:
-      // "template:policyRateIncrease". The leg IS the answer, so say the answer.
-      const n = String(o.name ?? '')
-      if (n.startsWith('template:policyRate')) {
-        return { Increase: 'Increase', Decrease: 'Decrease', NoChange: 'No change' }[n.slice('template:policyRate'.length)]
-             ?? n.slice('template:policyRate'.length)
-      }
-      if (n.startsWith('template:')) {
-        const w = n.slice('template:'.length).replace(/([a-z])([A-Z])/g, '$1 $2')
-        return w.charAt(0).toUpperCase() + w.slice(1)
-      }
-      return n
-    }
+    const rowName = (o) => _ocLegName(o)
     // The parsed spec, not an empty object: everything that says what this event IS lives
     // in the description, so passing nothing made every template question uncategorisable.
     let cat = _ocGetCategory({ name: q.name || '', description: q.description || '' }, qd)
@@ -38094,7 +38171,9 @@ async function renderOutcomes() {
 
     const cardsHtml = outcomes.map(o => {
       const d      = _ocDesc(o)
-      const { line1, line2 } = _buildFullQuestion(d, o.name)
+      // A leg's own card (opened from its event's row) asks what its label says, not its template name.
+      let { line1, line2 } = _buildFullQuestion(d, o.name)
+      if (/^template:|^Recurring Named/.test(line1 || '')) { line1 = state.ocTokenMap?.['#' + (o.outcome * 10)]?.name || line1; line2 = '' }
       const period = d.period || null
       const cls    = d.class || ''
       const cat    = _ocGetCategory(o, d)
@@ -38119,8 +38198,8 @@ async function renderOutcomes() {
       const isPriced    = !!(full.underlying || targetPrice || bands.length)
       const resolver    = full.officialSource || full.institution || ''
       const resolveOn   = _ocDeadlineOf(o, d)
-      const s0          = _ocSideName(o.sideSpecs?.[0]?.name, 'Yes')
-      const s1          = _ocSideName(o.sideSpecs?.[1]?.name, 'No')
+      const s0          = _ocSideName(o.sideSpecs?.[0]?.name, 'Yes', d)
+      const s1          = _ocSideName(o.sideSpecs?.[1]?.name, 'No', d)
       const searchQ     = (line1 + ' ' + (line2 || '') + ' ' + (o.name || '') + ' ' + s0 + ' ' + s1).toLowerCase()
 
       // Falls back to the parent question's deadline: a leg of an event carries no expiry

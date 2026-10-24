@@ -150,13 +150,16 @@ t('and each has a filter chip too', [...new Set(returned)].every(c => cli.includ
 t('the invariant is written down', cli.includes('its cards are built and then silently dropped'))
 
 console.log(String.fromCharCode(10) + '-- side names are sides, not template ids --')
-const side = new Function('raw', 'fallback', `${grab('function _ocSideName(raw, fallback)')}
- return _ocSideName(raw, fallback)`)
+// A third argument (the description) fills placeholder sides; without it the behaviour is unchanged.
+const side = new Function('raw', 'fallback', 'd', `${grab('function _ocSideName(raw, fallback, d)')}
+ return _ocSideName(raw, fallback, d)`)
 t('"template:Yes" reads as Yes', side('template:Yes', 'Yes') === 'Yes')
 t('"template:No" reads as No', side('template:No', 'No') === 'No')
 t('a plain name is untouched', side('Increase', 'Yes') === 'Increase')
 t('an empty name falls back', side('', 'Yes') === 'Yes')
 t('a bare "template:" falls back rather than becoming blank', side('template:', 'Yes') === 'Yes')
+t('a "{shortNameA}" side reads as the team', side('{shortNameA}', 'Yes', { shortNameA: 'CLE' }) === 'CLE')
+t('an unknown placeholder is left as written', side('{nope}', 'Yes', {}) === '{nope}')
 t('no call site still reads the raw sideSpec name',
   !/sideSpecs\?\.\[0\]\?\.name \|\| 'Yes'/.test(cli) && !/sideSpecs\[i\]\.name \}/.test(cli))
 
