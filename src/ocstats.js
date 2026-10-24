@@ -81,6 +81,10 @@ const GLYPHS = [
   [/weather|temperature|rain|snow|hurricane/i,                    '⛅', 195],
 ]
 export function topicGlyph(...parts) {
+  // A `sport` of plain "football" is the NFL in Hyperliquid's data (its NFL games, totals and
+  // spreads carry nothing else); soccer is "Soccer" or "football/soccer". Joined into one string
+  // it would read as soccer, so it is checked on its own first.
+  if (parts.some(p => /^\s*football\s*$/i.test(String(p ?? '')))) return { glyph: '🏈', hue: 20 }
   const s = parts.filter(Boolean).join(' ')
   for (const [re, glyph, hue] of GLYPHS) if (re.test(s)) return { glyph, hue }
   return null

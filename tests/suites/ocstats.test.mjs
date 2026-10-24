@@ -42,7 +42,14 @@ t('with volume beside it', cli.includes('<option value="vol">Volume (24h)</optio
 t('sorting keeps the sections (and Trending) instead of flattening the page', cli.includes("if (el.classList.contains('oc-card')) run.push(el)") && !cli.includes("Headings would now sit above whatever happened to land under them"))
 t('Trending is the markets with the most open interest', cli.includes('.sort((a, b) => oiOf(b) - oiOf(a)).slice(0, 10)'))
 // Ten: at six the NBA championship (seventh) was cut off.
-t('an outcome position shows its market\'s face, not a letter avatar', cli.includes("if (typeof coin === 'string' && (coin[0] === '#' || coin[0] === '+')) return _ocCoinIcon(coin)") && cli.includes('if (u) return _coinIconHtml(u)') && cli.includes('const tg = ocTopicGlyph(name)'))
+t('an outcome position shows its market\'s face, not a letter avatar', cli.includes("if (typeof coin === 'string' && (coin[0] === '#' || coin[0] === '+')) return _ocCoinIcon(coin)") && cli.includes('if (info?.u) return _coinIconHtml(info.u)') && cli.includes('const tg = ocTopicGlyph(info?.sp, info?.cmp, name)'))
+// Hyperliquid files its NFL games under a sport of plain "football"; soccer is "Soccer" or "football/soccer".
+t('a sport of plain "football" is the NFL', g('football', 'Green Bay Packers vs Detroit Lions') === '🏈' && g('Football', 'NFL') === '🏈')
+t('"football/soccer" and "Soccer" stay soccer', g('football/soccer', 'English Premier League') === '⚽' && g('Soccer', 'Spanish La Liga') === '⚽')
+t('the Ballon d\'Or ("France Football") is still a trophy', g("template:awardWinner", "Ballon d'Or", 'France Football') === '🏆')
+// 80 live markets — every NBA game, total, spread and IPO — were hidden for being named "template:…".
+t('a template market is hidden only when it cannot be phrased as a question', cli.includes("&& /^(template:|Recurring)/.test(_buildFullQuestion(d, o.name)?.line1 || 'template:')) hidden.add(id)"))
+t('a market is searchable by its league, sport and teams', cli.includes('full.competition, full.sport, full.stage, full.season,') && cli.includes('full.participantA, full.participantB, full.company].filter(Boolean).join'))
 t('the Trending strip is not a page swipe', cli.includes("scroller.className = 'oc-hot-scroll no-swipe'") && /_SWIPE_BLOCKED_SEL = '[^']*\.oc-hot-scroll'/.test(cli))
 t('an event card is found by its title, not only its legs', cli.includes("card.dataset.q += ' ' + [title, sub, qd.competition, qd.sport"))
 

@@ -36774,7 +36774,9 @@ function _buildOcTokenMap(meta) {
       // The market's terms, for the position cards (_ocFacts): what it tracks, the line, the window.
       const num = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : null }
       state.ocInfoMap[o.outcome] = { u: d.underlying || null, t: num(d.targetPrice), lo: num(d.bucketLo), hi: num(d.bucketHi), exp: d.expiry || null,
-        sides: (o.sideSpecs ?? []).map(sp => _ocSideName(sp.name, 'Yes')) }
+        sides: (o.sideSpecs ?? []).map(sp => _ocSideName(sp.name, 'Yes')),
+        // What it is about, for its icon in positions and orders (_ocCoinIcon).
+        sp: d.sport || null, cmp: d.competition || null }
       for (let i = 0; i < (o.sideSpecs?.length ?? 0); i++) {
         state.ocTokenMap['#' + (o.outcome * 10 + i)] = { name: displayName, side: _ocSideName(o.sideSpecs[i].name, 'Yes', d) }
       }
@@ -37139,9 +37141,9 @@ function _ocGlyphAvatar(glyph, seed, hue) {
 function _ocCoinIcon(coin) {
   const n = parseInt(String(coin).slice(1), 10)
   const name = state.ocTokenMap?.['#' + n]?.name || ''
-  const u = state.ocInfoMap?.[Math.floor(n / 10)]?.u
-  if (u) return _coinIconHtml(u)
-  const tg = ocTopicGlyph(name)
+  const info = state.ocInfoMap?.[Math.floor(n / 10)]
+  if (info?.u) return _coinIconHtml(info.u)
+  const tg = ocTopicGlyph(info?.sp, info?.cmp, name)
   if (tg) return _ocGlyphAvatar(tg.glyph, name, tg.hue)
   if (/^Rate decision/.test(name)) return _ocGlyphAvatar('&#127963;&#65039;', 'fed', 218)
   return name ? _ocGlyphAvatar('&#128302;', name) : _cgLetterAvatar(coin)
@@ -38025,7 +38027,11 @@ function _ocSectionize() {
     const id = String(o.outcome)
     if (!cardById[id] || hidden.has(id) || grouped.has(id)) continue
     const d = _ocDesc(o)
-    if (!d.class && /\b(fallback|recurring|named outcome|template)\b/i.test(o.name || '')) hidden.add(id)
+    // Hidden only when the market cannot be asked as a question. Every new-template market is named
+    // "template:…" and most have no class, so the name test alone hid 80 live ones — every NBA game,
+    // every over/under and spread, every IPO ("missing outcomes markets").
+    if (!d.class && /\b(fallback|recurring|named outcome|template)\b/i.test(o.name || '')
+        && /^(template:|Recurring)/.test(_buildFullQuestion(d, o.name)?.line1 || 'template:')) hidden.add(id)
   }
 
   _ocDiagReport(hidden, grouped)
@@ -38216,7 +38222,10 @@ async function renderOutcomes() {
       const resolveOn   = _ocDeadlineOf(o, d)
       const s0          = _ocSideName(o.sideSpecs?.[0]?.name, 'Yes', d)
       const s1          = _ocSideName(o.sideSpecs?.[1]?.name, 'No', d)
-      const searchQ     = (line1 + ' ' + (line2 || '') + ' ' + (o.name || '') + ' ' + s0 + ' ' + s1).toLowerCase()
+      // The league, sport and both teams in full: a game's question names them by their short form
+      // only, and "nba" found none of the games.
+      const searchQ     = [line1, line2, o.name, s0, s1, full.competition, full.sport, full.stage, full.season,
+                           full.participantA, full.participantB, full.company].filter(Boolean).join(' ').toLowerCase()
 
       // Falls back to the parent question's deadline: a leg of an event carries no expiry
       // of its own, and without this every one of them sorted as "no closing time".
