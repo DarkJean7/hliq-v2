@@ -13,28 +13,21 @@
 // Writes public/: apple-touch-icon.png (180, full-bleed: iOS rounds it), pwa-192x192.png and
 // pwa-512x512.png (rounded, for "any"), and pwa-maskable-512.png — full-bleed with the word kept
 // inside the centre 80% circle, because Android crops a maskable icon to its own shape.
-// favicon.png is the mark cut down to what a browser tab can show at 16–32px, where nine letters
-// smudge into a grey bar: the "s." of "solvent." — white s, orange dot — which is what is left of
-// the word once the "in" is struck out. Asked: "can we also change the browser icon?" (it was
-// still the old struck-through "in").
+// favicon.png is NOT redrawn: a browser tab shows it at 16–32px, where nine letters cannot be
+// read, so it keeps the "in".
 import { chromium } from 'playwright'
 
 const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
 
 export const ICONS = [
-  // [file, size px, rounded corners, mark width as a share of the icon, mark]
+  // [file, size px, rounded corners, wordmark width as a share of the icon]
   ['apple-touch-icon.png', 180, false, 0.84],
   ['pwa-192x192.png',      192, true,  0.84],
   ['pwa-512x512.png',      512, true,  0.84],
   ['pwa-maskable-512.png', 512, false, 0.66],
-  ['favicon.png',          256, true,  0.50, 's'],
 ]
 
-const MARKS = {
-  word: '<span class="in">in</span>solvent<span class="dot">.</span>',
-  s:    's<span class="dot">.</span>',
-}
-const page = (size, rounded, share, mark = 'word') => `<!doctype html><html><head>
+const page = (size, rounded, share) => `<!doctype html><html><head>
 <link rel="stylesheet" href="/fonts/fonts.css">
 <style>
   html,body{margin:0;background:transparent}
@@ -49,7 +42,7 @@ const page = (size, rounded, share, mark = 'word') => `<!doctype html><html><hea
   .in::after{content:'';position:absolute;left:-6%;right:-6%;top:52%;height:.15em;border-radius:.08em;background:#ff8a2a;transform:rotate(-10deg)}
   .dot{color:#ff8a2a}
 </style></head><body>
-<div class="ic"><div class="w" id="w">${MARKS[mark]}</div></div>
+<div class="ic"><div class="w" id="w"><span class="in">in</span>solvent<span class="dot">.</span></div></div>
 <script>
   // Size the word to the share of the icon it should span, after the font has loaded.
   document.fonts.ready.then(() => {
@@ -61,13 +54,11 @@ const page = (size, rounded, share, mark = 'word') => `<!doctype html><html><hea
 
 if (process.argv[1]?.endsWith('make-icons.mjs')) {
   const browser = await chromium.launch()
-  const only = (process.argv.find(a => a.startsWith('--only=')) || '').slice(7)
-  for (const [file, size, rounded, share, mark] of ICONS) {
-    if (only && file !== only) continue
+  for (const [file, size, rounded, share] of ICONS) {
     const ctx = await browser.newContext({ viewport: { width: size, height: size }, deviceScaleFactor: 1 })
     // Served from the dev server's own origin: fonts are not loaded across origins.
     const at = `http://localhost:${port}/__icon-${size}`
-    await ctx.route(at, r => r.fulfill({ status: 200, contentType: 'text/html', body: page(size, rounded, share, mark) }))
+    await ctx.route(at, r => r.fulfill({ status: 200, contentType: 'text/html', body: page(size, rounded, share) }))
     const p = await ctx.newPage()
     await p.goto(at, { waitUntil: 'networkidle' })
     await p.waitForSelector('body[data-ready="1"]')
