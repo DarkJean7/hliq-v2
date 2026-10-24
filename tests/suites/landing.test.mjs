@@ -90,5 +90,12 @@ t('a notification tap opens /app', SW.includes("clients.openWindow('/app')"))
 t('CI ships landing.html', CI.includes('rsync -avz landing.html'))
 t('the landing does not pull in the app', !/^import\b.*(main\.js|style\.css)/m.test(fs.readFileSync('src/landing.js', 'utf8')))
 
+// "lets add a contact tab in the landing page where it include my X account @insolventPR"
+t('a Contact section with the X account', /<section class="ln-sec" id="contact">[\s\S]{0,900}href="https:\/\/x\.com\/insolventPR" target="_blank" rel="noopener noreferrer"[\s\S]{0,400}@insolventPR/.test(LANDING))
+t('reachable from the menu on every public page',
+  LANDING.includes('<a href="#contact">Contact</a>') &&
+  ['markets.html', 'portfolio.html'].every(f => fs.readFileSync(f, 'utf8').includes('<a href="/?home#contact">Contact</a>')))
+t('and named in the footer', LANDING.includes('class="ln-foot__x" href="https://x.com/insolventPR"'))
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
