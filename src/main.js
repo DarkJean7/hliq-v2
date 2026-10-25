@@ -13528,8 +13528,13 @@ function _mobVMergedOrdCard(members) {
     ORDER_KIND_LABEL[g.kind] ?? g.kind}`
   const mark    = parseFloat(state.allMids?.[g.coin] ?? 0)
   const away    = nearestAwayPct(g, mark)
-  const _gPos   = _guardFindPos(g.coin, members[0]?._acctAddr ?? null)
-  const _gExp   = groupExpectedPnl(members, _gPos)
+  // Each order against ITS wallet's position: a combined-view group spans accounts, and the first
+  // order's position priced all of them ("if all fill -92??? thats wrong"). A wallet with no
+  // position here closes nothing — _guardFindPos would otherwise hand it another wallet's.
+  const _gExp   = groupExpectedPnl(members, (o) => {
+    const a = o?._acctAddr, p = _guardFindPos(g.coin, a ?? null)
+    return !a || String(p?._acctAddr ?? a).toLowerCase() === String(a).toLowerCase() ? p : null
+  })
   const gid     = _mobVGid(g.coin, g.side + '-' + g.kind)
   const id      = `ordg-${gid}`
   const xp      = _mobVExpandedIds.has(id)

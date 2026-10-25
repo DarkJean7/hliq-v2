@@ -139,14 +139,32 @@ export function expectedPnl(o, pos) {
   }
 }
 
-/** The group's total, over the members that actually close something. */
+/**
+ * The group's total, over the members that actually close something.
+ *
+ * `pos` is one position, or a function giving each order ITS position. A combined-view group
+ * holds several wallets' orders, and pricing all of them against the first one's entry is how
+ * eight HYPE sells across three accounts showed "If all fill −$92.65".
+ *
+ * A position is closed once: each order takes what the orders nearer to filling have left of it
+ * (a long's sells from the lowest price up, a short's buys from the highest down). Capping every
+ * order at the WHOLE position separately counted the same coins as closed several times over.
+ */
 export function groupExpectedPnl(members, pos) {
+  const posOf = typeof pos === 'function' ? pos : () => pos
+  const left = new Map()   // position -> size not yet closed by an earlier order
+  const rows = (members ?? []).map(o => ({ o, p: posOf(o) }))
+    .filter(r => r.p && parseFloat(r.p.szi ?? 0))
+    .sort((a, b) => (parseFloat(a.p.szi) > 0 ? orderPx(a.o) - orderPx(b.o) : orderPx(b.o) - orderPx(a.o)))
   let total = 0, any = false
-  for (const o of members ?? []) {
-    const e = expectedPnl(o, pos)
+  for (const { o, p } of rows) {
+    const rest = left.has(p) ? left.get(p) : Math.abs(parseFloat(p.szi))
+    if (!(rest > 0)) continue
+    const e = expectedPnl(o, { ...p, szi: String(Math.sign(parseFloat(p.szi)) * rest) })
     if (!e) continue
     any = true
     total += e.pnl
+    left.set(p, rest - e.closing)
   }
   return any ? total : null
 }

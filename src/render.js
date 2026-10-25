@@ -1317,7 +1317,9 @@ function _ovPosFor(o) {
       String(ap.position?._acctAddr ?? '').toLowerCase() === a)
     if (m) return m.position
   }
-  return list.find(ap => ap.position?.coin === o.coin)?.position ?? null
+  // An order that names its wallet is never priced against another wallet's position.
+  const any = list.find(ap => ap.position?.coin === o.coin)?.position ?? null
+  return !a || !any?._acctAddr ? any : null
 }
 
 /**
@@ -1376,7 +1378,8 @@ function _ovMergedOrdRow(g, allMids) {
   const away = nearestAwayPct(g, parseFloat(allMids?.[g.coin] ?? 0))
   // What the whole ladder books. Null when none of its rungs close anything -- an opening
   // ladder has nothing to book, and a zero there would read as "breaks even".
-  const _gp  = groupExpectedPnl(g.members, _ovPosFor(g.members[0]))
+  // Each order against its own wallet's position, not the first member's: a group spans accounts.
+  const _gp  = groupExpectedPnl(g.members, _ovPosFor)
   const price = g.spread
     ? `$${fmtPrice(g.loPx)}<i class="ov-roe">to $${fmtPrice(g.hiPx)}</i>`
     : `$${fmtPrice(g.avgPx)}`

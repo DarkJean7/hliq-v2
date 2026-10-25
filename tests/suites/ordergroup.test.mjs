@@ -145,6 +145,20 @@ console.log(nl + '-- what an order books is decided by what it DOES, not its lab
   t('an opening ladder books null, not zero',
     groupExpectedPnl([o({ side: 'B' }), o({ side: 'B' })], LONG) === null)
   t('and so does a ladder with no position behind it', groupExpectedPnl(ladder, null) === null)
+
+  // Reported: "If all fill -$92.65" on eight HYPE sells across three accounts. Every order was
+  // priced against the FIRST order's wallet, and each was capped at the whole position on its own.
+  const over = [110, 120].map(px => o({ side: 'A', sz: '6', limitPx: String(px) }))
+  t('a position is closed once: the second sell gets what the first left (none)',
+    near(groupExpectedPnl(over, LONG), 6 * 10), String(groupExpectedPnl(over, LONG)))
+  t('and the order nearest to filling closes it first, whatever order they are listed in',
+    near(groupExpectedPnl([...over].reverse(), LONG), 6 * 10))
+  t('a short is closed by its highest buy first',
+    near(groupExpectedPnl([90, 80].map(px => o({ side: 'B', sz: '6', limitPx: String(px) })), SHORT), 6 * 10))
+  const A = { szi: '2', entryPx: '80', _acctAddr: 'a' }, B = { szi: '2', entryPx: '100', _acctAddr: 'b' }
+  const both = [o({ side: 'A', sz: '2', limitPx: '90', _acctAddr: 'a' }), o({ side: 'A', sz: '2', limitPx: '90', _acctAddr: 'b' })]
+  t("each order is priced against its own wallet's position", near(groupExpectedPnl(both, x => (x._acctAddr === 'a' ? A : B)), 2 * 10 - 2 * 10))
+  t("not the first one's for all", !near(groupExpectedPnl(both, A), 0))
 }
 
 console.log(nl + '-- both shells fold with it --')
@@ -169,11 +183,13 @@ console.log(nl + '-- both shells fold with it --')
   t('and the desktop no longer demands a flag first',
     !RND.includes("if (!isTp && !isSl && !o.reduceOnly) return null"))
   t('the folded row says what the whole ladder books',
-    CLI.includes('groupExpectedPnl(members, _gPos)') && RND.includes('groupExpectedPnl(g.members'))
+    CLI.includes('const _gExp   = groupExpectedPnl(members, (o) => {') && RND.includes('groupExpectedPnl(g.members, _ovPosFor)'))
   // In the combined view two wallets hold the same coin; pricing against the wrong one is a
   // made-up number.
   t('the position is matched by owner, not just by coin',
     CLI.includes('_guardFindPos(o.coin, o._acctAddr ?? null)') && RND.includes('function _ovPosFor(o)'))
+  t("and an owned order never falls back to another wallet's position",
+    RND.includes('return !a || !any?._acctAddr ? any : null') && CLI.includes("return !a || String(p?._acctAddr ?? a).toLowerCase() === String(a).toLowerCase() ? p : null"))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
