@@ -256,6 +256,7 @@ import { BOT_PRESETS, botPreset } from './botpresets.js'
 import { aggregatePosGroup, groupPositions, posHealthPct } from './posgroup.js'
 import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL,
          expectedPnl, groupExpectedPnl } from './ordergroup.js'
+import { isStrictSpotToken, spotStrictOn, setSpotStrict, passesStrict } from './strictspot.js'
 import { probeNavGeometry } from './navprobe.js'
 import { accountRoe, partRoe, positionRoe, fmtRoe, compareRoe } from './roe.js'
 import { ordersForCoin, byAccount, statusesFrom, classifyCancels, describeOrders,
@@ -2973,6 +2974,13 @@ let _mktCapByName  = {}
 let _spotPairToAt  = {}   // 'TOKEN/USDC' → '@N'  (used to deduplicate allMids entries)
 let _spotCommunityKeys = new Set()  // @N keys with deployerTradingFeeShare == 0 (real community tokens)
 let _spotProtocolKeys  = new Set()  // @N keys that are protocol-deployed spot (BTC/ETH/stocks/ETFs) — feeShare != 0
+let _spotStrictKeys    = new Set()  // @N keys whose base token is on Hyperliquid's Strict list (src/strictspot.js)
+// Whether a market belongs in a list under the Strict/All setting. Every market list asks this —
+// there are five, and they share data but not code. Favourites always stay.
+const _strictOk = (k, favs = null) => passesStrict(k, { on: spotStrictOn(), strictKeys: _spotStrictKeys, favs: favs ?? loadFavCoins() })
+// The Spot tab under Strict is exactly Hyperliquid's list; under All it keeps the old rule.
+const _spotTabOk = (k) => spotStrictOn() && _spotStrictKeys.size ? _spotStrictKeys.has(k)
+  : (_spotProtocolKeys.has(k) && (_mktCtxMap[k]?.volume ?? 0) > 0) || _spotCommunityKeys.has(k)
 let _mktCtxReady   = false
 let _mktHip3Ready = false  // separate gate so HIP-3 ctx is fetched once allMetas is available
 let _mktDataInFlight = null // dedupe concurrent _ensureMarketData() calls (they each fired a full burst)
@@ -3051,6 +3059,7 @@ async function _doEnsureMarketData() {
       _spotPairToAt = {}
       _spotCommunityKeys = new Set()
       _spotProtocolKeys  = new Set()
+      _spotStrictKeys    = new Set()
       const { tokens = [], universe = [] } = spotR.value ?? {}
       // A token's INDEX is not its position in this array. Delistings have left gaps: 498
       // tokens carrying indices up to 871, so tokens[845] is undefined where token 845 is
@@ -3072,6 +3081,7 @@ async function _doEnsureMarketData() {
         // shows BOTH (like Hyperliquid) — protocol markets are why BTC/ETH/stocks must appear.
         if (parseFloat(base?.deployerTradingFeeShare ?? '0') === 0) _spotCommunityKeys.add(atKey)
         else _spotProtocolKeys.add(atKey)
+        if (isStrictSpotToken(base?.tokenId)) _spotStrictKeys.add(atKey)
       }
     } else { console.warn('[hliq] fetchSpotMeta failed:', spotR.reason) }
 
@@ -3811,7 +3821,7 @@ window._tcsFilter = function(q = '') {
   const entries = Object.entries(mids)
     // A delisted market is not something you can open a position in — HL's own UI does not
     // list it, and ours was offering the dead OPENAI as the only one there was.
-    .filter(([c]) => !_isDelistedMkt(c) && !_isDeadMkt(c))
+    .filter(([c]) => !_isDelistedMkt(c) && !_isDeadMkt(c) && _strictOk(c))
     .filter(([c]) => !q || c.toLowerCase().includes(lq) || (_mktDisplay(c) ?? '').toLowerCase().includes(lq))
     .sort((a, b) => {
       const d = _mktCtxMap[b[0]]?.oi ?? 0
@@ -4824,6 +4834,8 @@ function _fmtK(n) {
 }
 
 function renderCoinDropdownItems(query) {
+  // The Strict / All switch says what the setting is, not what the HTML started as.
+  document.querySelectorAll('#coinDropdown .mkt-strict-seg button').forEach(x => x.classList.toggle('active', (x.dataset.strict === '1') === spotStrictOn()))
   const list     = document.getElementById('coinDropdownList')
   const catTabsEl= document.getElementById('mktCatTabs')
   if (!list) return
@@ -4841,6 +4853,7 @@ function renderCoinDropdownItems(query) {
     // this is the OTHER market list, and fixing one of them fixed one of them.
     .filter(([k]) => !_isDelistedMkt(k))
     .filter(([k]) => favs.includes(k) || !_isDeadMkt(k))
+    .filter(([k]) => _strictOk(k, favs))
   if (q) entries = entries.filter(([k]) => k.toLowerCase().includes(q) || (k + '-USDC').toLowerCase().includes(q) || (_mktDisplay(k) ?? '').toLowerCase().includes(q))
 
   // Spot: the same set the phone's Spot filter shows — protocol tokens only with live volume
@@ -4852,7 +4865,7 @@ function renderCoinDropdownItems(query) {
       try { ensureSpotMeta() } catch {}
       return
     }
-    entries = entries.filter(([k]) => (_spotProtocolKeys.has(k) && (_mktCtxMap[k]?.volume ?? 0) > 0) || _spotCommunityKeys.has(k))
+    entries = entries.filter(([k]) => _spotTabOk(k))
   }
   if (_dropType === 'perps') { /* all — same as all */ }
   if (_dropType === 'crypto')    entries = entries.filter(([k]) => !_isTradFiCat(_mktCatMap[k]))
@@ -10538,7 +10551,7 @@ window.__searchMarketCard = function (query) {
   const q = query.trim().toLowerCase()
   if (!q) { results.innerHTML = ''; return }
   const matches = Object.entries(state.allMids)
-    .filter(([k]) => !_isDelistedMkt(k) && !_isDeadMkt(k))
+    .filter(([k]) => !_isDelistedMkt(k) && !_isDeadMkt(k) && _strictOk(k))
     .filter(([k]) => k.toLowerCase().startsWith(q) || (_mktDisplay(k) ?? '').toLowerCase().startsWith(q))
     .slice(0, 6)
   if (!matches.length) { results.innerHTML = '<div class="pokemon-search-no-results">No results</div>'; return }
@@ -23275,6 +23288,7 @@ function _mobVTradeCoinList(q = '') {
     .filter(([k]) => !_isDelistedMkt(k))
     // A favourite stays even with an empty book: someone put it there on purpose.
     .filter(([k]) => favs.includes(k) || !_isDeadMkt(k))
+    .filter(([k]) => _strictOk(k, favs))
   if (lq) entries = entries.filter(([k]) => k.toLowerCase().includes(lq) || k.replace(/.*:/, '').toLowerCase().includes(lq) || (_mktDisplay(k) ?? '').toLowerCase().includes(lq))
   if (_mobVPickerType === 'crypto')    entries = entries.filter(([k]) => !_isTradFiCat(_mktCatMap[k]))
   if (_mobVPickerType === 'tradfi')    entries = entries.filter(([k]) =>  _isTradFiCat(_mktCatMap[k]))
@@ -23757,6 +23771,18 @@ window._mobTradeSetSort = function(type) {
 
 // Multi-sort on or off. Turning it on starts from the column already sorting the list, so the
 // order on screen does not jump; the chosen columns are kept for next time it is turned on.
+// Strict / All, shared by every market list. Repaints whichever of them is on screen.
+window.__spotStrictToggle = function(on) {
+  setSpotStrict(on ?? !spotStrictOn())
+  const now = spotStrictOn()
+  const b = document.getElementById('mobMktStrictBtn')
+  if (b) { b.classList.toggle('on', now); b.setAttribute('aria-pressed', String(now)); b.textContent = now ? 'Strict' : 'All spot' }
+  document.querySelectorAll('#coinDropdown .mkt-strict-seg button').forEach(x => x.classList.toggle('active', (x.dataset.strict === '1') === now))
+  const rows = document.getElementById('mobMktRows')
+  if (rows) rows.innerHTML = _mobBuildMarketRows()
+  try { if (document.getElementById('coinDropdown')?.classList.contains('open')) window.filterCoinDropdown() } catch {}
+}
+
 window._mobTradeMulti = function() {
   _mobMultiSort.on = !_mobMultiSort.on
   if (_mobMultiSort.on && !_mobMultiSort.keys.length && ['oi', 'change', 'volume', 'price'].includes(_mobTradeSort))
@@ -23844,6 +23870,8 @@ function _mobBuildMarketRows() {
     // third to need saying: they do not share a renderer, only a data source.
     .filter(([k]) => !_isDelistedMkt(k))
     .filter(([k]) => favs.includes(k) || !_isDeadMkt(k))
+    // Strict, as Hyperliquid's own search is by default ("make our app trade search be strict").
+    .filter(([k]) => _strictOk(k, favs))
   if (lq) entries = entries.filter(([k]) => {
     const d = (_spotNameMap[k] ?? k.replace(/.*:/, '')).toLowerCase()
     return k.toLowerCase().includes(lq) || d.includes(lq)
@@ -23860,8 +23888,7 @@ function _mobBuildMarketRows() {
   // Community tokens are NOT held to a live volume check here: they're a smaller, pre-vetted set
   // (deduped by name upstream, kept only if EVER liquid) and real ones like PURR can show 0
   // volume for a quiet stretch — requiring it live would flicker them in and out of the list.
-  else if (f === 'spot')        entries = entries.filter(([k]) =>
-    (_spotProtocolKeys.has(k) && (_mktCtxMap[k]?.volume ?? 0) > 0) || _spotCommunityKeys.has(k))
+  else if (f === 'spot')        entries = entries.filter(([k]) => _spotTabOk(k))
   else if (f === 'hip3') {
     entries = entries.filter(([k]) => k.includes(':'))
     if (_mobTradeDex !== 'all') entries = entries.filter(([k]) => k.split(':')[0] === _mobTradeDex)
@@ -24039,6 +24066,7 @@ function _mobRenderTradeList(el) {
         <div style="flex:1;display:flex;align-items:center;gap:8px;min-width:0">
           <span style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:0.06em">Symbol</span>
           <button id="mobMktMultiBtn" class="mob-mkt-multibtn${_mobMultiSort.on ? ' on' : ''}" aria-pressed="${_mobMultiSort.on}" title="Sort by several columns at once" onclick="window._mobTradeMulti()">Multi</button>
+          <button id="mobMktStrictBtn" class="mob-mkt-multibtn${spotStrictOn() ? ' on' : ''}" aria-pressed="${spotStrictOn()}" title="Strict: only the spot tokens Hyperliquid's own search shows by default. Off: every spot token." onclick="window.__spotStrictToggle()">${spotStrictOn() ? 'Strict' : 'All spot'}</button>
         </div>
         <div style="display:flex;align-items:center">${sb('Vol','volume')}${sb('Chg%','change')}${sb('Price','price')}${sb('OI','oi')}</div>
       </div>
