@@ -11,7 +11,7 @@
 // the window has to be anchored the same way for both, and a market that was shut has to be
 // absent rather than flat.
 import fs from 'fs'
-import { EXT_TF, extChartUrlTf, parseSeries, EXT_MARKETS } from '../../src/extmarkets.js'
+import { EXT_TF, extChartUrlTf, parseSeries, EXT_MARKETS, extTwin } from '../../src/extmarkets.js'
 
 const CLI  = fs.readFileSync('src/main.js', 'utf8')
 const SRV  = fs.readFileSync('serve-prod.js', 'utf8')
@@ -48,8 +48,14 @@ console.log(nl + '-- every timeframe pill has an answer for a market, not just f
   t('with no extra timeframes nothing can ask for',
     Object.keys(EXT_TF).every(tf => tfs.includes(tf) || sigTfs.includes(tf)), Object.keys(EXT_TF).filter(tf => !tfs.includes(tf) && !sigTfs.includes(tf)))
   t('Signals loads an outside market through /extcandles, not Hyperliquid',
-    CLI.includes('const pts = isExtMarket(coin) ? await _pulseExtCandles(coin, iv) : await fetchCandles(coin, iv, start)'))
+    CLI.includes('let pts = isExtMarket(coin) ? await _pulseExtCandles(coin, iv) : await fetchCandles(coin, iv, start)'))
   t('its daily series starts where every other market\'s All does', EXT_TF.SIGALL?.since === Date.UTC(2023, 0, 1))
+  // xyz:DXY is the DXY Signals actually lists, and it has never traded: zero candles on Hyperliquid.
+  t('an untraded HIP-3 copy finds its outside twin', extTwin('xyz:DXY') === 'CAPITALCOM:DXY', extTwin('xyz:DXY'))
+  t('a main-dex coin never does', extTwin('GOLD') === null && extTwin('BTC') === null)
+  t('nor does a listing with no twin', extTwin('xyz:TSLA') === null)
+  t('Signals falls back to the twin only when Hyperliquid had nothing',
+    CLI.includes('const twin = !(Array.isArray(pts) && pts.length) && extTwin(coin)'))
 }
 
 console.log(nl + '-- each one asks Yahoo for MORE than it needs, then trims --')

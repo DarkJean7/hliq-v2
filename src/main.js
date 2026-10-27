@@ -276,7 +276,7 @@ import { guardPlan } from './guardplan.js'
 import { groupTrades, countTrades, closedTrades, tradeWindows } from './tradegroup.js'
 import { initSectorAlloc, loadSectorMeta, holdingsSectors, sectorAllocHtml, wireSectorAlloc } from './sectoralloc.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
-import { EXT_MARKETS, isExtMarket, extPriceStr } from './extmarkets.js'
+import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
 import { trackRecord, isSmallSample, openLossOf, holdsStep } from './trackrecord.js'
 import { createJoiner, ownedAddresses } from './lbjoin.js'
 import { readKey as _akRead, writeKey as _akWrite, removeKey as _akRemove,
@@ -17459,11 +17459,11 @@ async function _pulseEnsureCaps() {
 
 // An outside market's series for one of Signals' two intervals, as Hyperliquid-shaped candles
 // (strings, like theirs). Its points are closes only, so a candle's open/high/low are its close.
-async function _pulseExtCandles(coin, iv) {
+async function _pulseExtCandles(coin, iv, ext = coin) {
   const tf = iv === '1h' ? 'SIG1H' : 'SIGALL'
-  const r = await fetch(`/extcandles?tf=${tf}&s=${encodeURIComponent(coin)}`)
+  const r = await fetch(`/extcandles?tf=${tf}&s=${encodeURIComponent(ext)}`)
   if (!r.ok) return null
-  const pts = (await r.json())?.series?.[coin]
+  const pts = (await r.json())?.series?.[ext]
   const step = iv === '1h' ? 3_600_000 : 86_400_000
   return Array.isArray(pts) ? pts.map(p => {
     const c = String(p.c)
@@ -17484,7 +17484,12 @@ function _pulseLoadCandles(coin) {
         // DXY, the S&P and the rest are not on Hyperliquid: their history comes through our own
         // /extcandles, shaped like Hyperliquid's candles so nothing downstream has to know.
         // Reported: "trading view data is not working in here" — Hyperliquid had nothing for DXY.
-        const pts = isExtMarket(coin) ? await _pulseExtCandles(coin, iv) : await fetchCandles(coin, iv, start)
+        let pts = isExtMarket(coin) ? await _pulseExtCandles(coin, iv) : await fetchCandles(coin, iv, start)
+        // xyz:DXY is listed on Hyperliquid and has never traded, so it has no candles there at
+        // all — the row that still showed dashes after the line above went in. The same index's
+        // history comes from outside instead, labelled as the coin it was asked for.
+        const twin = !(Array.isArray(pts) && pts.length) && extTwin(coin)
+        if (twin) pts = await _pulseExtCandles(coin, iv, twin)
         _pulseCandles[key] = Array.isArray(pts) && pts.length ? pts : 'error'
       } catch { _pulseCandles[key] = 'error' }
       if (_viewOpen('pulse')) _pulseRender(_viewHost('deskPulse'))

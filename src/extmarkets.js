@@ -49,6 +49,21 @@ export const EXT_MARKETS = {
 /** Is this watchlist entry an external market (as opposed to a Hyperliquid coin)? */
 export function isExtMarket(sym) { return Object.hasOwn(EXT_MARKETS, String(sym ?? '')) }
 
+/**
+ * The outside market a Hyperliquid listing is a copy of, or null: `xyz:DXY` -> 'CAPITALCOM:DXY'.
+ *
+ * Some HIP-3 listings are these very instruments and have never traded, so Hyperliquid has no
+ * candles for them at all (xyz:DXY: zero, with open interest 0). A caller that got nothing from
+ * Hyperliquid can ask this for the same market's history from elsewhere. Only the dex-prefixed
+ * name is matched — a main-dex coin is a token, not an index that shares its ticker.
+ */
+export function extTwin(coin) {
+  const m = /^[a-z0-9]+:(.+)$/i.exec(String(coin ?? ''))
+  if (!m) return null
+  const name = m[1].toUpperCase()
+  return Object.keys(EXT_MARKETS).find(k => EXT_MARKETS[k].short === name) ?? null
+}
+
 /** The Yahoo symbol the server may fetch for this market, or null. Nothing else is fetchable. */
 export function extYahoo(sym) { return EXT_MARKETS[String(sym ?? '')]?.y ?? null }
 
