@@ -24349,7 +24349,7 @@ function _mobRenderTradeDetail(el) {
     ? `${esc(display)} trades spot against USDC on Hyperliquid's fully on-chain order book. Spot balances settle directly into your account — no leverage or funding applies.`
     : `The ${esc(display)} perpetual tracks ${esc(display)}'s price via an on-chain oracle, with funding settled hourly to keep the mark aligned with the underlying. Orders clear on Hyperliquid's on-chain book.`
 
-  const TFS = ['1m','5m','15m','1h','4h','1D','1W']
+  const TFS = ['1m','5m','15m','30m','1h','2h','4h','8h','12h','1D','3D','1W']
 
   el.innerHTML = `
     <div style="flex-shrink:0;padding:9px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
@@ -24393,9 +24393,9 @@ function _mobRenderTradeDetail(el) {
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
         </button>
         <div style="position:relative;height:400px;padding:26px 2px 2px"><canvas id="mobChartCanvas"></canvas></div>
-        <div style="display:flex;gap:2px;padding:7px 8px;border-top:1px solid var(--border)">
+        <div data-dragscroll style="display:flex;gap:2px;padding:7px 8px;border-top:1px solid var(--border);overflow-x:auto;scrollbar-width:none">
           ${TFS.map(tf => `<button class="mob-detail-tf" data-tf="${tf}" onclick="window._mobDetailSetTf('${tf}')"
-            style="flex:1;padding:6px 0;border-radius:7px;border:none;background:${_mobChartTf===tf?'var(--panel-3)':'transparent'};color:${_mobChartTf===tf?'var(--fg)':'var(--muted)'};font-size:11px;font-weight:700;cursor:pointer">${tf.toUpperCase()}</button>`).join('')}
+            style="flex:1 0 auto;min-width:40px;padding:6px 8px;border-radius:7px;border:none;background:${_mobChartTf===tf?'var(--panel-3)':'transparent'};color:${_mobChartTf===tf?'var(--fg)':'var(--muted)'};font-size:11px;font-weight:700;cursor:pointer">${tf.toUpperCase()}</button>`).join('')}
         </div>
       </div>
 
@@ -24498,6 +24498,9 @@ function _mobChartOverlays(coin) {
   const mark = _livePx(coin)
   if (!mark) return []
   const showThreshold = mark * 0.15 // only show overlays within ±15% of mark price
+  // Where the price is now, as a finer dotted line than the levels — refreshed with every tick,
+  // since the live refresh rebuilds this list.
+  overlays.push({ price: mark, color: '#9aa4b2', label: 'Mark', dash: [1, 3] })
 
   const pos = _tradePositions().find(ap => ap.position?.coin === coin)?.position
   if (pos && parseFloat(pos.szi ?? 0) !== 0) {
@@ -24528,11 +24531,11 @@ async function _mobRenderTradeChart(coin, tf, canvasId = 'mobChartCanvas', heroI
   if (!canvas) return
   if (hero) hero.innerHTML = '<span style="color:var(--muted)">Loading…</span>'
 
-  const hlInterval = { '1m':'1m','5m':'5m','15m':'15m','30m':'30m','1h':'1h','4h':'4h','8h':'8h','1D':'1d','1d':'1d','1W':'1w','1w':'1w' }[tf] ?? '1h'
+  const hlInterval = { '1m':'1m','5m':'5m','15m':'15m','30m':'30m','1h':'1h','2h':'2h','4h':'4h','8h':'8h','12h':'12h','1D':'1d','1d':'1d','3D':'3d','1W':'1w','1w':'1w' }[tf] ?? '1h'
   // Fetch deep history (~5000 candles, HL's per-request cap) so the user can
   // pan/zoom far back; the chart defaults to the recent window.
   const D = 86400 * 1000
-  const lookbackMs = { '1m':3.3*D,'5m':17*D,'15m':50*D,'30m':100*D,'1h':200*D,'4h':800*D,'8h':1600*D,'1D':3650*D,'1d':3650*D,'1W':3650*D,'1w':3650*D }[tf] ?? 200*D
+  const lookbackMs = { '1m':3.3*D,'5m':17*D,'15m':50*D,'30m':100*D,'1h':200*D,'2h':400*D,'4h':800*D,'8h':1600*D,'12h':2400*D,'1D':3650*D,'1d':3650*D,'3D':3650*D,'1W':3650*D,'1w':3650*D }[tf] ?? 200*D
 
   // Fetch with retry/backoff — a single 429 or network blip used to leave the chart blank
   // ("this happens sometimes"). Keep "Loading…" and retry a few times before giving up.

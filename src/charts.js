@@ -873,13 +873,15 @@ const mobOverlayLinesPlugin = {
       ctx.save()
       ctx.beginPath(); ctx.moveTo(chartArea.left, yPx); ctx.lineTo(chartArea.right, yPx)
       ctx.lineWidth = 1; ctx.strokeStyle = o.color; ctx.globalAlpha = 0.85
-      ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1
+      ctx.setLineDash(o.dash ?? [4, 3]); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1
       const labelY = Math.max(yPx, prevLabelY + 16)
       prevLabelY = labelY
       const label = o.label + ' ' + o.fmt
       ctx.font = 'bold 11px "Space Mono", monospace'
       const tw = ctx.measureText(label).width, bw = tw + 10, bh = 17
-      const bx = chartArea.right + 1, by = labelY - bh / 2
+      // Pulled back from the right edge when it is wider than the price column, which otherwise
+      // cut it to "Entry 655." — the number being the part anyone reads the tag for.
+      const bx = Math.min(chartArea.right + 1, chart.width - bw - 1), by = labelY - bh / 2
       ctx.fillStyle = o.color
       if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 3); ctx.fill() }
       else ctx.fillRect(bx, by, bw, bh)
@@ -918,7 +920,7 @@ function _mobHeroHtml(price, t) {
 // TradingView-style x-axis labels: show "DD Mon" at each new day, "HH:MM" within
 // a day (for intraday timeframes); always "DD Mon" for 4h+.
 function _mobXTick(tf) {
-  const intraday = ['1m', '5m', '15m', '1h'].includes(tf)
+  const intraday = ['1m', '5m', '15m', '30m', '1h', '2h'].includes(tf)
   return function(value, index, ticks) {
     const d   = new Date(value)
     const mon = d.toLocaleString('en-US', { month: 'short' })
@@ -1017,7 +1019,10 @@ export function renderMobTradeChart(canvas, candles, overlays, heroId, tf = '1h'
   const xMin0 = data[len - visN].x
   const xMax0 = lastT + dt * 5            // small "future" gap on the right
   const panMin = data[0].x
-  const panMax = lastT + dt * 30
+  // Right as far as the last candle reaching the LEFT edge, like Hyperliquid's chart — however
+  // wide the window is. Zooming changes the width, so onZoom moves this limit with it.
+  const panRight = (range) => lastT + Math.max(dt * 30, range - dt)
+  const panMax = panRight(xMax0 - xMin0)
   let lo = Infinity, hi = -Infinity
   for (const p of pts) {
     if (p.x < xMin0 || p.x > xMax0) continue
@@ -1043,7 +1048,10 @@ export function renderMobTradeChart(canvas, candles, overlays, heroId, tf = '1h'
       zoom: {
         limits: { x: { min: panMin, max: panMax, minRange: dt * 8 } },
         pan:  { enabled: true, mode: 'x', onPan: ({ chart }) => { _mobAutoScaleY(chart); chart.update('none') } },
-        zoom: { wheel: { enabled: true, speed: 0.08 }, pinch: { enabled: true }, mode: 'x', onZoom: ({ chart }) => { _mobAutoScaleY(chart); chart.update('none') } },
+        zoom: { wheel: { enabled: true, speed: 0.08 }, pinch: { enabled: true }, mode: 'x', onZoom: ({ chart }) => {
+          chart.options.plugins.zoom.limits.x.max = panRight(chart.scales.x.max - chart.scales.x.min)
+          _mobAutoScaleY(chart); chart.update('none')
+        } },
       },
     },
     scales: {
