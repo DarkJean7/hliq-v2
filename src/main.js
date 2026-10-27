@@ -17457,6 +17457,20 @@ async function _pulseEnsureCaps() {
   } catch {}
 }
 
+// An outside market's series for one of Signals' two intervals, as Hyperliquid-shaped candles
+// (strings, like theirs). Its points are closes only, so a candle's open/high/low are its close.
+async function _pulseExtCandles(coin, iv) {
+  const tf = iv === '1h' ? 'SIG1H' : 'SIGALL'
+  const r = await fetch(`/extcandles?tf=${tf}&s=${encodeURIComponent(coin)}`)
+  if (!r.ok) return null
+  const pts = (await r.json())?.series?.[coin]
+  const step = iv === '1h' ? 3_600_000 : 86_400_000
+  return Array.isArray(pts) ? pts.map(p => {
+    const c = String(p.c)
+    return { t: p.t, T: p.t + step - 1, s: coin, i: iv, o: c, h: c, l: c, c, v: '0', n: 0 }
+  }) : null
+}
+
 function _pulseLoadCandles(coin) {
   _pulseQueue(() => _pulseEnsureCaps())
   for (const [iv, lookbackMs] of [['1h', 31 * 24 * 3600e3], ['1d', 0]]) {
@@ -17467,7 +17481,10 @@ function _pulseLoadCandles(coin) {
       try {
         // Hyperliquid's own launch is the floor for "all time" — a 0 start is rejected.
         const start = lookbackMs ? Date.now() - lookbackMs : Date.UTC(2023, 0, 1)
-        const pts = await fetchCandles(coin, iv, start)
+        // DXY, the S&P and the rest are not on Hyperliquid: their history comes through our own
+        // /extcandles, shaped like Hyperliquid's candles so nothing downstream has to know.
+        // Reported: "trading view data is not working in here" — Hyperliquid had nothing for DXY.
+        const pts = isExtMarket(coin) ? await _pulseExtCandles(coin, iv) : await fetchCandles(coin, iv, start)
         _pulseCandles[key] = Array.isArray(pts) && pts.length ? pts : 'error'
       } catch { _pulseCandles[key] = 'error' }
       if (_viewOpen('pulse')) _pulseRender(_viewHost('deskPulse'))

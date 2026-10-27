@@ -42,8 +42,14 @@ console.log(nl + '-- every timeframe pill has an answer for a market, not just f
   t('the timeframes were found in main.js', tfs.length >= 5, tfs)
   t('and EXT_TF answers every one of them',
     tfs.every(tf => !!EXT_TF[tf]), tfs.filter(tf => !EXT_TF[tf]))
+  // Signals asks for two of its own (hourly 31 days, daily since 2023) for DXY and the like; they
+  // count as asked for only while its loader still names them.
+  const sigTfs = CLI.includes("const tf = iv === '1h' ? 'SIG1H' : 'SIGALL'") ? ['SIG1H', 'SIGALL'] : []
   t('with no extra timeframes nothing can ask for',
-    Object.keys(EXT_TF).every(tf => tfs.includes(tf)), Object.keys(EXT_TF).filter(tf => !tfs.includes(tf)))
+    Object.keys(EXT_TF).every(tf => tfs.includes(tf) || sigTfs.includes(tf)), Object.keys(EXT_TF).filter(tf => !tfs.includes(tf) && !sigTfs.includes(tf)))
+  t('Signals loads an outside market through /extcandles, not Hyperliquid',
+    CLI.includes('const pts = isExtMarket(coin) ? await _pulseExtCandles(coin, iv) : await fetchCandles(coin, iv, start)'))
+  t('its daily series starts where every other market\'s All does', EXT_TF.SIGALL?.since === Date.UTC(2023, 0, 1))
 }
 
 console.log(nl + '-- each one asks Yahoo for MORE than it needs, then trims --')

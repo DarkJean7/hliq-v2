@@ -150,6 +150,12 @@ export const EXT_TF = {
   '6M': { range: '1y',  interval: '1d',  span: 180 * 86400_000 },
   '1Y': { range: '2y',  interval: '1wk', span: 365 * 86400_000 },
   '5Y': { range: '10y', interval: '1mo', span: 5 * 365 * 86400_000 },
+  // Signals' two series, which every Hyperliquid market there is loaded as: hourly for the last
+  // 31 days, and daily from the start of 2023 (`since` — Hyperliquid's own launch is where every
+  // other market's "All" begins, so DXY's starts there too). Without these Signals asked
+  // Hyperliquid for DXY candles, got nothing, and showed a row of dashes.
+  'SIG1H':  { range: '3mo', interval: '1h', span: 31 * 86400_000 },
+  'SIGALL': { range: '5y',  interval: '1d', since: Date.UTC(2023, 0, 1) },
 }
 
 /** The Yahoo URL for one market over one timeframe. Unknown timeframe -> null, not a guess. */
@@ -191,7 +197,7 @@ export function parseSeries(json, tf, now = Date.now()) {
     .map((t, i) => ({ t: t * 1000, c: closes[i] }))
     .filter(p => Number.isFinite(p.t) && p.t > 0 && Number.isFinite(p.c) && p.c > 0)
   if (all.length < 2) return []
-  const cut = all.filter(p => p.t >= now - cfg.span)
+  const cut = all.filter(p => p.t >= (cfg.since ?? now - cfg.span))
   // One point is not a series: it has nothing to be a percentage of, and computeCompare would
   // drop it anyway. Say empty rather than sending a single point that reads as flat.
   return cut.length >= 2 ? cut : []
