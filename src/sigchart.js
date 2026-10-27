@@ -130,12 +130,18 @@ const path = (pts, px, py) => {
   return d
 }
 
+/** One colour per compared market, in the order they were added. None of them is the main line's cyan. */
+export const CMP_COLORS = ['#f472b6', '#a78bfa', '#fbbf24', '#34d399']
+
 /**
- * Render. `main` and `cmp` are [[t, price], ...]. With a `cmp` both are rebased to percent,
- * and so are the overlays; without one the pane is in price units.
+ * Render. `main` and each compared market are [[t, price], ...]. With any comparison every line
+ * is rebased to percent, and so are the overlays; without one the pane is in price units.
+ *
+ * `cmps` is [{ pts, label }] — several markets at once ("allow to compare with multiples assets
+ * simultaneously"). `cmp` / `cmpLabel` are the one-market form other charts still pass.
  */
 export function signalChartSvg({
-  main, cmp = null, mainLabel = '', cmpLabel = '', indicator = null, vals = [],
+  main, cmp = null, mainLabel = '', cmpLabel = '', cmps = null, indicator = null, vals = [],
   height = 132, subHeight = 46, fmtPrice = (v) => String(v),
   from = 0, to = null, markers = null, candles = null, grid = false, ordinal = false,
 } = {}) {
@@ -165,8 +171,11 @@ export function signalChartSvg({
   // The compared market is cut by TIME, not by index: the two series need not have the
   // same number of candles, and lining them up by position would slide one against the
   // other the moment either had a gap.
-  const cmpWin = cmp ? cmp.filter(p => +p[0] >= meta.t0 && +p[0] <= meta.t1) : null
-  const comparing = !!(cmpWin && cmpWin.length > 2)
+  const cmpList = (cmps ?? (cmp ? [{ pts: cmp, label: cmpLabel }] : []))
+    .map((c, i) => ({ ...c, color: CMP_COLORS[i % CMP_COLORS.length],
+      win: (c.pts ?? []).filter(p => +p[0] >= meta.t0 && +p[0] <= meta.t1) }))
+    .filter(c => c.win.length > 2)
+  const comparing = cmpList.length > 0
 
   /**
    * ORDINAL x, which is what a candle chart has always used.
@@ -195,7 +204,7 @@ export function signalChartSvg({
   const base = +clean[0][1]
   const toY = comparing ? (v) => (v / base - 1) * 100 : (v) => v
   const series = clean.map(([, v], i) => [dom(i), toY(+v)])
-  const cmpSeries = comparing ? rebase(cmpWin) : []
+  for (const c of cmpList) c.series = rebase(c.win)
   const overlays = (layers.overlays ?? []).map(o => ({
     ...o, pts: clean.map((_, i) => [dom(i), o.vals[lo + i] == null ? null : toY(o.vals[lo + i])]),
   }))
@@ -210,7 +219,7 @@ export function signalChartSvg({
   const allY = [
     ...(candleWin ?? []).flatMap(c => [+c.h, +c.l]).filter(Number.isFinite),
     ...series.map(p => p[1]),
-    ...cmpSeries.map(p => p[1]),
+    ...cmpList.flatMap(c => c.series.map(p => p[1])),
     ...overlays.flatMap(o => o.pts.map(p => p[1])),
   ].filter(v => v != null && Number.isFinite(v))
   let y0 = Math.min(...allY), y1 = Math.max(...allY)
@@ -267,7 +276,9 @@ export function signalChartSvg({
     body += `<path d="${path(series, px, py)}" fill="none" stroke="${mainColor}" stroke-width="1.9" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
   }
   if (comparing) {
-    body += `<path d="${path(cmpSeries, px, py)}" fill="none" stroke="#f472b6" stroke-width="1.7" stroke-linejoin="round" opacity="0.95" vector-effect="non-scaling-stroke"/>`
+    for (const c of cmpList) {
+      body += `<path d="${path(c.series, px, py)}" fill="none" stroke="${c.color}" stroke-width="1.7" stroke-linejoin="round" opacity="0.95" vector-effect="non-scaling-stroke"/>`
+    }
     // With two rebased lines, "flat since the left edge" is the reference the eye needs;
     // without it neither line means much on its own.
     if (y0 < 0 && y1 > 0) {
@@ -362,7 +373,7 @@ export function signalChartSvg({
   const dot = (c) => `<span style="width:8px;height:2px;background:${c};display:inline-block;vertical-align:middle"></span>`
   const legend = [
     `${dot(mainColor)} <span>${mainLabel}</span>`,
-    comparing ? `${dot('#f472b6')} <span>${cmpLabel}</span>` : '',
+    ...cmpList.map(c => `${dot(c.color)} <span>${c.label}</span>`),
     ...overlays.map(o => `${dot(o.color)} <span>${o.label}</span>`),
   ].filter(Boolean).join('<span style="width:10px;display:inline-block"></span>')
 

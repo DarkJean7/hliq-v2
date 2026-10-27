@@ -243,7 +243,7 @@ import { toDesktop as _shellToDesk, toMobile as _shellToMob, MOB_VIEWS as _MOB_V
 import { previewRows as _liqDepRows, sheetHtml as _liqDepSheetHtml } from './liqdeposit.js'
 import { gzipToString, gunzipFromString } from './gzstore.js'
 import { cloidBot } from './cloid.js'
-import { signalChartSvg } from './sigchart.js'
+import { signalChartSvg, CMP_COLORS } from './sigchart.js'
 import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
 import { tokyoWindowsFor } from './backtest.js'
 import { initSimulator, renderSimulator as _simRender } from './simulator.js'
@@ -17935,10 +17935,13 @@ const SIG_KEY_CMP   = 'hliq_sig_cmp'
 const SIG_KEY_IND   = 'hliq_sig_ind'
 const SIG_KEY_NOTES = 'hliq_sig_notes'
 
-let _sigCoin = null, _sigCmp = null, _sigInd = 'rsi', _sigTf = PULSE_TF_DEFAULT
+// Compared markets: several at once ("allow to compare with multiples assets simultaneously"),
+// up to one per line colour (CMP_COLORS). Stored comma-joined, so a single saved one still reads.
+const SIG_CMP_MAX = CMP_COLORS.length
+let _sigCoin = null, _sigCmps = [], _sigInd = 'rsi', _sigTf = PULSE_TF_DEFAULT
 try {
   _sigCoin = localStorage.getItem(SIG_KEY_COIN) || null
-  _sigCmp  = localStorage.getItem(SIG_KEY_CMP)  || null
+  _sigCmps = (localStorage.getItem(SIG_KEY_CMP) || '').split(',').filter(Boolean).slice(0, SIG_CMP_MAX)
   _sigInd  = localStorage.getItem(SIG_KEY_IND)  || 'rsi'
   _sigTf   = localStorage.getItem('hliq_sig_tf') || PULSE_TF_DEFAULT
 } catch {}
@@ -18230,13 +18233,27 @@ const _SIG_INDICATORS = {
   },
 }
 
-window.__sigSetCoin = function(c) { _sigCoin = c || null; _sigViewReset(); try { localStorage.setItem(SIG_KEY_COIN, _sigCoin ?? '') } catch {}; if (_sigCoin) _pulseLoadCandles(_sigCoin); _pulseRender(_viewHost('deskPulse')) }
+function _sigCmpSave() { try { localStorage.setItem(SIG_KEY_CMP, _sigCmps.join(',')) } catch {} }
+window.__sigSetCoin = function(c) {
+  _sigCoin = c || null; _sigViewReset()
+  try { localStorage.setItem(SIG_KEY_COIN, _sigCoin ?? '') } catch {}
+  // A market is not compared with itself.
+  if (_sigCmps.includes(_sigCoin)) { _sigCmps = _sigCmps.filter(x => x !== _sigCoin); _sigCmpSave() }
+  if (_sigCoin) _pulseLoadCandles(_sigCoin)
+  _pulseRender(_viewHost('deskPulse'))
+}
+// A press adds a market to the comparison, or takes it off; '' (None) clears them all.
 window.__sigSetCmp  = function(c) {
   // Deliberately keeps the zoom: adding a comparison is a question about the stretch you
   // are already looking at, and throwing the window away would answer a different one.
-  _sigCmp = (c && c !== _sigCoin) ? c : null
-  try { localStorage.setItem(SIG_KEY_CMP, _sigCmp ?? '') } catch {}
-  if (_sigCmp) _pulseLoadCandles(_sigCmp)
+  if (!c) _sigCmps = []
+  else if (_sigCmps.includes(c)) _sigCmps = _sigCmps.filter(x => x !== c)
+  else if (c !== _sigCoin) {
+    // Full: the oldest gives way, so a press always does what it shows.
+    _sigCmps = [..._sigCmps, c].slice(-SIG_CMP_MAX)
+    _pulseLoadCandles(c)
+  }
+  _sigCmpSave()
   _sigRerender()
 }
 // Changing an indicator re-renders the whole view, which threw away where you were: the
@@ -18281,6 +18298,17 @@ window.__sigSearch = function(v) {
   const none = document.getElementById('sigNoMatch')
   if (none) none.style.display = rows.any ? 'none' : ''
 }
+// Compare has its own search ("lets add also a search bar for Compare with"), repainting only
+// its own strip for the same reason.
+let _sigCmpQuery = ''
+window.__sigCmpSearch = function(v) {
+  _sigCmpQuery = String(v ?? '')
+  const rows = _sigChipRows()
+  const cm = document.getElementById('sigCmpRow')
+  if (cm) cm.innerHTML = rows.compare
+  const none = document.getElementById('sigCmpNoMatch')
+  if (none) none.style.display = rows.cmpAny ? 'none' : ''
+}
 
 // Not persisted: the back of the card is something you read once, not a mode to sit in.
 let _sigFlipped = false
@@ -18315,7 +18343,7 @@ function _sigCalHtml() {
   // Reported: "make it more clear which asset is the one used for the calendar".
   const asset = `<span id="sigCalAsset" style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px 3px 4px;border-radius:999px;border:1px solid var(--border2);background:var(--panel-2)">
       <span style="display:inline-flex;width:18px;height:18px">${_coinIconHtml(_sigCoin)}</span><b style="font-size:12.5px">${label(_sigCoin)}</b></span>
-    ${_sigCmp ? `<span style="font-size:11px;color:var(--muted)">vs ${label(_sigCmp)}</span>` : ''}`
+    ${_sigCmps.length ? `<span style="font-size:11px;color:var(--muted)">vs ${_sigCmps.map(label).join(', ')}</span>` : ''}`
   const head = (extra = '') => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
       <div style="display:flex;flex-direction:column;gap:1px">
         <span style="font-size:12.5px;font-weight:800">${_T('Calendar', 'Calendario')}</span>
@@ -18335,8 +18363,6 @@ function _sigCalHtml() {
     <b id="sigCalYearLbl" style="font-size:13px;min-width:38px;text-align:center">${_sigCalY}</b>${arrow(1, yi > 0, _T('Next year', 'Año siguiente'))}`
 
   const months = sigMonthReturns(rows, _sigCalY)
-  const cmpRaw = _sigCmp ? _pulseCandles[_sigCmp + '|1d'] : null
-  const cmpRows = Array.isArray(cmpRaw) ? sigDailyCloses(cmpRaw) : null
   const monthCell = (x) => {
     const on = x.m === _sigCalM, has = x.ret != null
     return `<button data-calm="${x.m}" onclick="window.__sigCalMonth(${x.m})" ${has ? '' : 'disabled'}
@@ -18350,14 +18376,19 @@ function _sigCalHtml() {
   const dayCell = (x) => `<div data-calday="${x.d}" title="${_SIG_MONTHS[_sigCalM]} ${x.d}" style="height:44px;min-width:0;border-radius:7px;border:1px solid var(--border2);background:${_sigCalBg(x.ret, 0.1)};display:flex;flex-direction:column;align-items:center;justify-content:center;opacity:${x.ret == null ? 0.35 : 1}">
       <span style="font-size:9.5px;color:var(--muted);line-height:1">${x.d}</span>
       <span style="font-size:10px;font-weight:700;font-family:var(--font-mono);line-height:1.3;color:${_sigCalCol(x.ret)}">${x.ret == null ? '' : _sigCalPct(x.ret)}</span></div>`
-  const cmpM = cmpRows ? sigMonthReturns(cmpRows, _sigCalY)[_sigCalM] : null
+  // Each compared market's return for the same month, in its line colour.
+  const cmpMs = _sigCmps.map((c, i) => {
+    const raw = _pulseCandles[c + '|1d']
+    const m = Array.isArray(raw) ? sigMonthReturns(sigDailyCloses(raw), _sigCalY)[_sigCalM] : null
+    return m ? `<span style="font-size:11.5px;font-family:var(--font-mono);color:var(--fg-2)"><span style="color:${CMP_COLORS[i]}">●</span> ${label(c)} ${_sigCalPct(m.ret)}</span>` : ''
+  }).join('')
   const nth = (d) => d + (d % 10 === 1 && d !== 11 ? 'st' : d % 10 === 2 && d !== 12 ? 'nd' : d % 10 === 3 && d !== 13 ? 'rd' : 'th')
   return head(yearNav) + `
     <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px">${months.map(monthCell).join('')}</div>
     <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:12px 0 7px">
       <b id="sigCalMonthLbl" style="font-size:13px">${_SIG_MONTHS[_sigCalM]} ${_sigCalY}</b>
       <span id="sigCalTotal" style="font-size:12.5px;font-weight:800;font-family:var(--font-mono);color:${_sigCalCol(md.total)}">${label(_sigCoin)} ${_sigCalPct(md.total)}</span>
-      ${cmpM ? `<span style="font-size:11.5px;font-family:var(--font-mono);color:var(--fg-2)">${label(_sigCmp)} ${_sigCalPct(cmpM.ret)}</span>` : ''}
+      ${cmpMs}
       ${md.best ? `<span style="font-size:11px;color:var(--muted)">${_T('best', 'mejor')} ${nth(md.best.d)} ${_sigCalPct(md.best.ret)} · ${_T('worst', 'peor')} ${nth(md.worst.d)} ${_sigCalPct(md.worst.ret)}</span>` : ''}
       <span style="flex:1"></span>
       <button id="sigCalDaysBtn" onclick="window.__sigCalDays()" aria-expanded="${_sigCalDays}"
@@ -18415,7 +18446,7 @@ function _sigPerfCell(coin, label) {
 let _sigView = { from: 0, to: null }
 // What was last drawn, so a pointer x can be turned back into a point without re-deriving
 // the series on every move.
-let _sigLast = { main: null, cmp: null, meta: null, comparing: false }
+let _sigLast = { main: null, cmps: [], meta: null, comparing: false }
 
 /** A fresh market, timeframe or indicator is a different chart; show all of it. */
 function _sigViewReset() { _sigView = { from: 0, to: null } }
@@ -18501,7 +18532,6 @@ window.__sigScrub = function(ev) {
   if (cross) { cross.style.display = 'block'; cross.style.left = (frac * 100).toFixed(2) + '%' }
   const read = document.getElementById('sigRead')
   if (!read) return
-  const cp = _sigLast.comparing ? _sigAt(_sigLast.cmp, t) : null
   const when = new Date(+mp[0]).toLocaleString(undefined,
     { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
   const pct = (p, series) => {
@@ -18513,7 +18543,14 @@ window.__sigScrub = function(ev) {
   read.innerHTML = `<span style="color:var(--fg-3)">${esc(when)}</span>` +
     `<span style="flex:1"></span>` +
     `<b>$${fmtPrice(+mp[1])}</b> ${pct(mp, _sigLast.main)}` +
-    (cp ? ` <span style="color:var(--fg-3)">·</span> <b>$${fmtPrice(+cp[1])}</b> ${pct(cp, _sigLast.cmp)}` : '')
+    // Each compared market at the same moment, marked with its line colour. With several, the
+    // percentage is what the lines show; the prices would not fit on a phone.
+    (_sigLast.cmps ?? []).map(c => {
+      const cp = _sigAt(c.pts, t)
+      if (!cp) return ''
+      return ` <span style="color:var(--fg-3)">·</span> <span style="color:${c.color}">●</span>` +
+        ((_sigLast.cmps.length > 1) ? ' ' : ` <b>$${fmtPrice(+cp[1])}</b> `) + pct(cp, c.pts)
+    }).join('')
 }
 
 window.__sigScrubEnd = function() {
@@ -18588,14 +18625,21 @@ function _sigChartInner() {
   const ind = _SIG_INDICATORS[_sigInd] ?? _SIG_INDICATORS.rsi
   const tfRow = _PULSE_TF.find(x => x[0] === _sigTf) ?? _PULSE_TF[3]
   const mainPts = ind.weekly ? _sigWeeklyPoints(_sigCoin) : _sigPoints(_sigCoin, tfRow[1], tfRow[2])
-  const cmpPts  = !_sigCmp ? null
-    : ind.weekly ? _sigWeeklyPoints(_sigCmp) : _sigPoints(_sigCmp, tfRow[1], tfRow[2])
+  // Every compared market, in the order added, which is also the order of CMP_COLORS. One whose
+  // history has not landed yet is left out of the chart until it does, so the colours of the
+  // rest do not shuffle: each keeps its index.
+  const cmpList = _sigCmps.map((c, i) => ({
+    coin: c, color: CMP_COLORS[i],
+    pts: ind.weekly ? _sigWeeklyPoints(c) : _sigPoints(c, tfRow[1], tfRow[2]),
+    label: esc(_ocCoinLabel(c)),
+  }))
   const series = ind.weekly ? _sigWeeklyCloses(_sigCoin) : _sigCloses(_sigCoin, tfRow[1], tfRow[2])
 
   const chart = signalChartSvg({
-    main: mainPts, cmp: cmpPts,
+    main: mainPts,
+    // An empty series in a slot keeps the next market on its own colour.
+    cmps: cmpList.map(c => ({ pts: c.pts ?? [], label: c.label })),
     mainLabel: esc(_ocCoinLabel(_sigCoin)),
-    cmpLabel: _sigCmp ? esc(_ocCoinLabel(_sigCmp)) : '',
     indicator: _sigInd,
     vals: series ?? [],
     fmtPrice: (v) => '$' + fmtPrice(v),
@@ -18603,7 +18647,7 @@ function _sigChartInner() {
   })
 
   if (chart.empty) {
-    _sigLast = { main: null, cmp: null, meta: null, comparing: false }
+    _sigLast = { main: null, cmps: [], meta: null, comparing: false }
     return `<div style="height:160px;display:flex;align-items:center;justify-content:center;font-size:11.5px;color:var(--muted);text-align:center">${
       _T('Not enough history for this window yet.', 'Aún no hay suficiente historial para esta ventana.')}</div>`
   }
@@ -18612,16 +18656,14 @@ function _sigChartInner() {
   // than to a recomputed guess.
   const m = chart.meta
   const win = (mainPts ?? []).slice(m.from, m.to)
-  _sigLast = {
-    main: win,
-    cmp: cmpPts ? cmpPts.filter(p => +p[0] >= m.t0 && +p[0] <= m.t1) : null,
-    meta: m,
-    comparing: !!(cmpPts && cmpPts.filter(p => +p[0] >= m.t0 && +p[0] <= m.t1).length > 2),
-  }
+  const cmps = cmpList
+    .map(c => ({ color: c.color, pts: (c.pts ?? []).filter(p => +p[0] >= m.t0 && +p[0] <= m.t1) }))
+    .filter(c => c.pts.length > 2)
+  _sigLast = { main: win, cmps, meta: m, comparing: cmps.length > 0 }
 
   return `<div style="display:flex;align-items:baseline;gap:8px;font-size:9.5px;color:var(--muted);margin-bottom:2px">
       <span>${esc(chart.hi)}</span><span style="flex:1"></span>
-      <span>${_sigCmp ? _T('% change since the left edge', '% de cambio desde el inicio') : esc(_sigTf)}</span>
+      <span>${_sigCmps.length ? _T('% change since the left edge', '% de cambio desde el inicio') : esc(_sigTf)}</span>
     </div>
     <div id="sigPlot" style="position:relative;touch-action:pan-y;cursor:crosshair"
       onpointerdown="window.__sigScrub(event)"
@@ -19329,8 +19371,14 @@ function _sigMarketSets() {
   // Whatever is selected stays on screen even when it is not in the top five, or picking a
   // market from search would make it vanish the moment the box was cleared.
   const coins = q ? matches
-    : [...new Set([...allCoins.slice(0, 5), _sigCoin, _sigCmp].filter(Boolean))].filter(c => allCoins.includes(c))
-  return { allCoins, coins, q }
+    : [...new Set([...allCoins.slice(0, 5), _sigCoin].filter(Boolean))].filter(c => allCoins.includes(c))
+  // Compare searches on its own: finding a market to compare against should not change the list
+  // of markets to look at.
+  const cq = _sigCmpQuery.trim().toUpperCase()
+  const cmpMatches = cq
+    ? allCoins.filter(c => String(_ocCoinLabel(c) ?? c).toUpperCase().includes(cq) || c.toUpperCase().includes(cq)).slice(0, 14)
+    : null
+  return { allCoins, coins, q, cmpMatches }
 }
 
 function _sigChip(c, sel, fn) {
@@ -19340,16 +19388,29 @@ function _sigChip(c, sel, fn) {
 }
 
 function _sigChipRows() {
-  const { allCoins, coins, q } = _sigMarketSets()
-  const cmpPool = q ? coins : [...new Set([...allCoins.slice(0, 5), _sigCmp].filter(Boolean))]
+  const { allCoins, coins, cmpMatches } = _sigMarketSets()
+  // The compared markets lead, so they stay in reach while searching for another; then the
+  // matches, or the usual five.
+  const cmpPool = [...new Set([..._sigCmps, ...(cmpMatches ?? allCoins.slice(0, 5))])].filter(c => c !== _sigCoin)
+  const none = !_sigCmps.length
   return {
     market: coins.map(c => _sigChip(c, c === _sigCoin, '__sigSetCoin')).join(''),
     compare: `<button onclick="window.__sigSetCmp('')" style="flex-shrink:0;padding:6px 12px;border-radius:999px;border:1px solid ${
-      !_sigCmp ? 'var(--accent)' : 'var(--border2)'};background:${!_sigCmp ? 'var(--accent)' : 'transparent'};color:${
-      !_sigCmp ? '#000' : 'var(--fg-2)'};font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">${_T('None', 'Ninguno')}</button>` +
-      cmpPool.filter(c => c !== _sigCoin).map(c => _sigChip(c, c === _sigCmp, '__sigSetCmp')).join(''),
+      none ? 'var(--accent)' : 'var(--border2)'};background:${none ? 'var(--accent)' : 'transparent'};color:${
+      none ? '#000' : 'var(--fg-2)'};font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">${_T('None', 'Ninguno')}</button>` +
+      cmpPool.map(c => _sigCmpChip(c)).join(''),
     any: coins.length > 0,
+    cmpAny: !cmpMatches || cmpMatches.length > 0,
   }
+}
+
+// A compare chip carries its line colour once picked, so the chip, the line, the table row and
+// the calendar figure are visibly the same market.
+function _sigCmpChip(c) {
+  const i = _sigCmps.indexOf(c)
+  if (i < 0) return _sigChip(c, false, '__sigSetCmp')
+  const col = CMP_COLORS[i]
+  return `<button onclick="window.__sigSetCmp('${esc(c)}')" aria-pressed="true" style="flex-shrink:0;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;border:1px solid ${col};background:color-mix(in oklch, ${col} 22%, transparent);color:var(--fg);font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap"><span style="width:8px;height:8px;border-radius:50%;background:${col}"></span>${esc(_ocCoinLabel(c))}<span style="opacity:.6;font-weight:600">×</span></button>`
 }
 
 function _sigRenderHtml() {
@@ -19363,15 +19424,15 @@ function _sigRenderHtml() {
   const { allCoins, coins, q } = _sigMarketSets()
   if (!_sigCoin && allCoins.length) _sigCoin = allCoins[0]
   if (_sigCoin) _pulseLoadCandles(_sigCoin)
-  if (_sigCmp)  _pulseLoadCandles(_sigCmp)
+  for (const c of _sigCmps) _pulseLoadCandles(c)
 
   if (!allCoins.length) return `<div class="mob-v-empty">${_T('Loading markets…', 'Cargando mercados…')}</div>`
 
   const chip = _sigChip   // one definition, shared with the search box
 
   const tfs = _PULSE_TF.map(x => x[0])
-  const perfRow = (coin) => `<tr>
-    <td style="padding:7px 8px 7px 0;font-size:12.5px;font-weight:700;white-space:nowrap">${esc(_ocCoinLabel(coin))}</td>
+  const perfRow = (coin, col = null) => `<tr>
+    <td style="padding:7px 8px 7px 0;font-size:12.5px;font-weight:700;white-space:nowrap">${col ? `<span style="color:${col}">●</span> ` : ''}${esc(_ocCoinLabel(coin))}</td>
     ${tfs.map(l => `<td style="padding:7px 4px;text-align:right;font-size:12px;font-family:var(--font-mono)">${_sigPerfCell(coin, l)}</td>`).join('')}
   </tr>`
 
@@ -19383,10 +19444,13 @@ function _sigRenderHtml() {
   // A 200-week average is the same number whatever chart you are on, so that one is fed
   // weekly closes and ignores the selected timeframe. The rest run on the window in view.
   const series    = ind.weekly ? _sigWeeklyCloses(_sigCoin) : _sigCloses(_sigCoin, tfRow[1], tfRow[2])
-  const cmpSeries = !_sigCmp ? null
-    : ind.weekly ? _sigWeeklyCloses(_sigCmp) : _sigCloses(_sigCmp, tfRow[1], tfRow[2])
   const reading    = series ? ind.run(series, tfRow[1]) : null
-  const cmpReading = cmpSeries ? ind.run(cmpSeries, tfRow[1]) : null
+  // What the same indicator reads on each compared market, in its line colour.
+  const cmpReadings = _sigCmps.map((c, i) => {
+    const s = ind.weekly ? _sigWeeklyCloses(c) : _sigCloses(c, tfRow[1], tfRow[2])
+    const r = s ? ind.run(s, tfRow[1]) : null
+    return r ? { coin: c, color: CMP_COLORS[i], r } : null
+  }).filter(Boolean)
   const detail     = (series && ind.detail) ? ind.detail(series, tfRow[1]) : null
   const toneCol = t => t === 'pos' ? 'var(--green)' : t === 'neg' ? 'var(--red)' : t === 'warn' ? 'var(--orange,#f59e0b)' : 'var(--fg)'
 
@@ -19408,7 +19472,16 @@ function _sigRenderHtml() {
       _T('No market matches that name.', 'Ningún mercado coincide con ese nombre.')}</div>
     <div id="sigMarketRow" data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${_sigChipRows().market}</div>
 
-    <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:6px 0">${_T('Compare with', 'Comparar con')}</div>
+    <div style="display:flex;align-items:center;gap:8px;margin:6px 0 7px">
+      <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${_T('Compare with', 'Comparar con')}</span>
+      <span style="font-size:10px;color:var(--fg-3)">${_T(`up to ${SIG_CMP_MAX}`, `hasta ${SIG_CMP_MAX}`)}</span>
+      <span style="flex:1"></span>
+      <input id="sigCmpSearch" type="search" value="${esc(_sigCmpQuery)}" placeholder="${_T('Search to compare', 'Buscar para comparar')}"
+        oninput="window.__sigCmpSearch(this.value)" autocomplete="off" autocorrect="off" spellcheck="false"
+        style="width:150px;max-width:52%;padding:5px 9px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg);font-size:11.5px">
+    </div>
+    <div id="sigCmpNoMatch" style="font-size:11px;color:var(--muted);padding:2px 0 8px;display:${_sigChipRows().cmpAny ? 'none' : ''}">${
+      _T('No market matches that name.', 'Ningún mercado coincide con ese nombre.')}</div>
     <div id="sigCmpRow" data-dragscroll style="display:flex;gap:6px;overflow-x:auto;padding-bottom:9px">${_sigChipRows().compare}</div>
 
     <div data-dragscroll style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;margin-top:12px;overflow-x:auto">
@@ -19416,7 +19489,7 @@ function _sigRenderHtml() {
       <table style="width:100%;border-collapse:collapse;min-width:340px">
         <tr><td></td>${tfs.map(l => `<td style="padding:0 4px;text-align:right;font-size:9.5px;color:var(--muted);text-transform:uppercase;font-weight:700">${l}</td>`).join('')}</tr>
         ${perfRow(_sigCoin)}
-        ${_sigCmp ? perfRow(_sigCmp) : ''}
+        ${_sigCmps.map((c, i) => perfRow(c, CMP_COLORS[i])).join('')}
       </table>
     </div>
 
@@ -19444,8 +19517,9 @@ function _sigRenderHtml() {
             <div style="display:flex;align-items:baseline;gap:10px">
               <span style="font-size:26px;font-weight:800;font-family:var(--font-mono);color:${toneCol(reading.tone)}">${esc(reading.head)}</span>
               <span style="font-size:12px;font-weight:700;color:var(--fg-2)">${esc(_ocCoinLabel(_sigCoin))}</span>
-              ${cmpReading ? `<span style="flex:1"></span><span style="font-size:15px;font-weight:800;font-family:var(--font-mono);color:${toneCol(cmpReading.tone)}">${esc(cmpReading.head)}</span><span style="font-size:11px;color:var(--muted)">${esc(_ocCoinLabel(_sigCmp))}</span>` : ''}
             </div>
+            ${cmpReadings.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:6px">${cmpReadings.map(x =>
+              `<span style="display:inline-flex;align-items:baseline;gap:5px"><span style="color:${x.color};font-size:10px">●</span><span style="font-size:15px;font-weight:800;font-family:var(--font-mono);color:${toneCol(x.r.tone)}">${esc(x.r.head)}</span><span style="font-size:11px;color:var(--muted)">${esc(_ocCoinLabel(x.coin))}</span></span>`).join('')}</div>` : ''}
             <p style="font-size:12px;line-height:1.55;color:var(--fg-2);margin:9px 0 0">${esc(reading.body)}</p>`
           : `<div style="font-size:12px;color:var(--fg-3);line-height:1.5">${
               series === null ? _T('Loading price history…', 'Cargando historial…')

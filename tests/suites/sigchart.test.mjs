@@ -54,12 +54,12 @@ console.log(String.fromCharCode(10) + '-- wired into Signals --')
 t('the chart is drawn from the same series as the reading', cli.includes('vals: series ?? [],'))
 // An SMA(200) of hourly candles is not a 200-week average of anything.
 t('the weekly indicator gets weekly points', cli.includes('const mainPts = ind.weekly ? _sigWeeklyPoints(_sigCoin)'))
-t('and so does the compared market', cli.includes('ind.weekly ? _sigWeeklyPoints(_sigCmp)'))
+t('and so does every compared market', cli.includes('pts: ind.weekly ? _sigWeeklyPoints(c) : _sigPoints(c, tfRow[1], tfRow[2]),'))
 t('the card holds its height so choosing an indicator does not jump the page', /min-height:2\d\dpx/.test(cli))
 
 console.log(String.fromCharCode(10) + '-- the picker is a shortlist plus search --')
 t('five, not twenty-four', cli.includes('allCoins.slice(0, 5)'))
-t('the selection stays visible even outside the top five', cli.includes("[...allCoins.slice(0, 5), _sigCoin, _sigCmp].filter(Boolean)"))
+t('the selection stays visible even outside the top five', cli.includes("[...allCoins.slice(0, 5), _sigCoin].filter(Boolean)") && cli.includes('[...new Set([..._sigCmps, ...(cmpMatches ?? allCoins.slice(0, 5))])]'))
 t('search matches the name shown, not just the raw id', cli.includes("String(_ocCoinLabel(c) ?? c).toUpperCase().includes(q)"))
 // Two markets can render under one name; two identical chips are a choice nobody can make.
 t('markets sharing a display name are de-duplicated', cli.includes('if (seen.has(lbl)) return false'))
@@ -100,14 +100,25 @@ t('the sub panel is cut to the same window', fs.readFileSync('src/sigchart.js', 
 // Two series need not share a candle count; aligning by position would slide one against
 // the other the moment either had a gap.
 t('the compared market is cut by time, not by index',
-  fs.readFileSync('src/sigchart.js', 'utf8').includes('cmp.filter(p => +p[0] >= meta.t0 && +p[0] <= meta.t1)'))
+  fs.readFileSync('src/sigchart.js', 'utf8').includes('win: (c.pts ?? []).filter(p => +p[0] >= meta.t0 && +p[0] <= meta.t1)'))
 t('and rebases to the visible left edge', signalChartSvg({
   main, cmp, fmtPrice: money, from: 200, to: 260 }).lo.includes('%'))
 
 console.log(String.fromCharCode(10) + '-- reading and moving it --')
 t('a drag reads values off the chart', cli.includes('window.__sigScrub = function(ev)'))
 t('and puts the crosshair where the finger is', cli.includes("cross.style.left = (frac * 100).toFixed(2)"))
-t('the readout names both markets when comparing', cli.includes('_sigLast.comparing ? _sigAt(_sigLast.cmp, t) : null'))
+t('the readout names every compared market', cli.includes('(_sigLast.cmps ?? []).map(c => {') && cli.includes('const cp = _sigAt(c.pts, t)'))
+
+// Several at once: each its own line, in its own colour, and the colours do not shuffle when one
+// has not loaded.
+{
+  const two = signalChartSvg({ main, cmps: [{ pts: cmp, label: 'A' }, { pts: cmp.map(([t, v]) => [t, v * 1.1]), label: 'B' }], fmtPrice: money })
+  t('two compared markets draw two lines', (two.svg.match(/stroke="#f472b6"/g) || []).length === 1 && (two.svg.match(/stroke="#a78bfa"/g) || []).length === 1)
+  t('and both are in the legend', two.legend.includes('>A<') && two.legend.includes('>B<'))
+  const gap = signalChartSvg({ main, cmps: [{ pts: [], label: 'A' }, { pts: cmp, label: 'B' }], fmtPrice: money })
+  t('one still loading keeps the next on its own colour', gap.svg.includes('#a78bfa') && !gap.svg.includes('#f472b6'))
+  t('the one-market form still works for other charts', signalChartSvg({ main, cmp, cmpLabel: 'X', fmtPrice: money }).legend.includes('>X<'))
+}
 t('releasing restores the hint', cli.includes('window.__sigScrubEnd = function()'))
 t('pinch zooms', cli.includes('window.__sigTouchStart') && cli.includes('window.__sigTouchMove'))
 t('two fingers sliding pans', cli.includes('window.__sigPan(-slide)'))
