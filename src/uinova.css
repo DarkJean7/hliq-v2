@@ -200,7 +200,9 @@ html.ui-nova .mob-v-bottom {
   box-shadow: 0 18px 40px -16px rgba(0, 0, 0, 0.8);
 }
 html.ui-nova .mob-v-bottom-trade { border-radius: 18px; }
-html.ui-nova .mob-v-bottom-btn.active { color: var(--fg); }
+/* Both white ("make the bottom nav More white like Home"); the dot under the active one says
+   which is open, so the grey was only making More look disabled. */
+html.ui-nova .mob-v-bottom-btn, html.ui-nova .mob-v-bottom-btn.active { color: var(--fg); }
 
 /* More drawer and sheets: rounder, same solid colours. */
 html.ui-nova .mob-more-drawer { border-radius: 28px 28px 0 0; }
