@@ -23209,7 +23209,14 @@ function _mobVBuildLbHtml(results, opts = {}) {
         </div>
         <div class="mob-v-row-right">
           <div class="mob-v-row-val ${netCls}">${net}</div>
-          <div class="mob-v-row-pct" style="color:var(--muted)">Net PnL</div>
+          ${(() => {
+            // ROE under the dollar figure, without opening the row: the board sorts by it.
+            // A row with no ROE (nothing it can be a return on) keeps the plain caption.
+            const roe = r.error ? null : accountRoe(r)
+            return roe == null || !Number.isFinite(roe)
+              ? `<div class="mob-v-row-pct" style="color:var(--muted)">Net PnL</div>`
+              : `<div class="mob-v-row-pct" style="color:${roe >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtRoe(roe)} <span style="color:var(--muted)">ROE</span></div>`
+          })()}
         </div>
         ${chev}
       </div>
