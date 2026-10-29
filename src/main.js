@@ -12080,7 +12080,8 @@ window._mobVOrdSortSheet = function() {
 let _mobVLbResults     = []   // cached leaderboard result objects
 // The board's sort, shared by both shells so switching device does not switch order.
 // Not _mobV-prefixed any more: the desktop table had no sort control at all and now uses this.
-let _lbSortBy          = 'value'  // 'value' | 'net' | 'roe'
+// ROE by default and first in the row (asked for): it ranks skill, where Value only ranks size.
+let _lbSortBy          = 'roe'    // 'roe' | 'net' | 'value'
 // -1 is highest first, which is what a leaderboard means by default. Lowest-first was asked
 // for because the interesting end of a board is not always the top: it is how you find the
 // accounts bleeding, and on the paper board it is who to learn from not to copy.
@@ -23039,7 +23040,7 @@ function _lbDeskSortBar() {
   }
   return `<div style="display:flex;gap:6px;align-items:center">
     <span style="font-size:11px;color:var(--muted)">Sort</span>
-    ${one('value', 'Value')}${one('net', 'Net PnL')}${one('roe', 'ROE')}
+    ${one('roe', 'ROE')}${one('net', 'Net PnL')}${one('value', 'Value')}
   </div>`
 }
 
@@ -23087,7 +23088,7 @@ function _mobVBuildLbHtml(results, opts = {}) {
   // Side by side they fought over about 130px each and both lost.
   const header = `<div class="lb-head">
     <div class="lb-acts">${leftBtn}${addMeBtn}</div>
-    <div class="lb-seg" role="group" aria-label="Sort the board by">${chip('value', 'Value')}${chip('net', 'Net PnL')}${chip('roe', 'ROE')}</div>
+    <div class="lb-seg" role="group" aria-label="Sort the board by">${chip('roe', 'ROE')}${chip('net', 'Net PnL')}${chip('value', 'Value')}</div>
   </div>`
   // `bare` (used by the Challenge standings) drops the full-screen header, the Real/Paper
   // mode bar and the action row — the caller supplies its own chrome and just wants the rows.

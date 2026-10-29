@@ -79,7 +79,7 @@ console.log(nl + '-- sorting, both directions --')
 
 console.log(nl + '-- the board offers it, in both shells --')
 {
-  t('one sort state, shared', cli.includes("let _lbSortBy          = 'value'") && cli.includes('let _lbSortDir         = -1'))
+  t('one sort state, shared', cli.includes("let _lbSortBy          = 'roe'") && cli.includes('let _lbSortDir         = -1'))
   t('and it is no longer mobile-only', !cli.includes('_mobVLbSortBy'))
   t('one comparator, used by both', cli.includes('function _lbSortRows(rows, sortBy = _lbSortBy, dir = _lbSortDir)'))
   t('an errored row ranks last either way', /_lbSortRows[\s\S]{0,400}if \(a\.error\) return 1[\s\S]{0,60}if \(b\.error\) return -1/.test(cli))
