@@ -22,6 +22,7 @@ import { homedir }                                            from 'node:os'
 import { randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual, createHash } from 'node:crypto'
 import { ethers }                                             from 'ethers'
 import { trackRecord, openLossOf, holdsStep, emptyHolds }     from './src/trackrecord.js'
+import { depositStep }                                        from './src/depositbasis.js'
 import { spotPxFrom, seedBook, SEED_MAX_MS }                            from './src/comboseed.js'
 import { isSticker }                                          from './src/stickers.js'
 import { isImageDataUrl, dataUrlBytes, CHAT_IMG_MAX_BYTES }   from './src/imgstore.js'
@@ -1650,6 +1651,26 @@ async function lbRefreshOne(addr, label, prev) {
     if (+f.time > lastFundingTs) lastFundingTs = +f.time
   }
 
+  // Money that came in, for the ROE of a row whose profits were withdrawn (src/depositbasis.js).
+  // Carried forward like the fills: a row cached before this has no lastLedgerTs and reads its
+  // whole ledger once. A failed read keeps what it had and tries again next refresh — a
+  // half-read ledger would publish a partial sum as the total.
+  let dep = { deposited: st.deposited, lastLedgerTs: st.lastLedgerTs }
+  try {
+    const rows = []
+    let start = (Number.isFinite(st.lastLedgerTs) ? st.lastLedgerTs : LB_GENESIS - 1) + 1
+    for (let page = 0; page < 10; page++) {
+      const batch = await hlInfo({ type: 'userNonFundingLedgerUpdates', user: addr, startTime: start })
+      if (!Array.isArray(batch) || !batch.length) break
+      rows.push(...batch)
+      if (batch.length < 2000) break
+      const maxT = Math.max(...batch.map(e => +e.time))
+      if (!(maxT >= start)) break
+      start = maxT + 1
+    }
+    dep = depositStep({ deposited: st.deposited, lastLedgerTs: Number.isFinite(st.lastLedgerTs) ? st.lastLedgerTs : LB_GENESIS - 1 }, rows, addr)
+  } catch (e) { if (e.rateLimited) throw e }
+
   // Main-dex positions plus any HIP-3 ones found above, so the count and the
   // unrealized total both cover the whole account.
   const rawPos = [
@@ -1716,6 +1737,8 @@ async function lbRefreshOne(addr, label, prev) {
     allTimeFunding: funding,
     // internal accumulators (stripped before the row is served)
     fees, volume, funding, lastFillTs, lastFundingTs, windows,
+    // Served: what ROE falls back to. lastLedgerTs is internal and stripped with the rest.
+    deposited: Number.isFinite(dep.deposited) ? dep.deposited : undefined, lastLedgerTs: dep.lastLedgerTs,
     // null when the backfill failed, so the next refresh tries it again
     holds: holds ?? undefined,
     // which HIP-3 dexes this account uses, so later refreshes skip the other 8
@@ -2616,7 +2639,7 @@ const server = createServer(async (req, res) => {
       .filter(r => isAdmin || !hidden.has(r.addr.toLowerCase()))
       .map(r => hidden.has(r.addr.toLowerCase()) ? { ...r, hidden: true } : r)
       // drop internal accumulators/cursors — `windows` in particular is large
-      .map(({ lastFillTs, lastFundingTs, windows, holds, fees, volume, funding, dexes, dexSweepAt, ...row }) => row)
+      .map(({ lastFillTs, lastFundingTs, lastLedgerTs, windows, holds, fees, volume, funding, dexes, dexSweepAt, ...row }) => row)
       .sort((a, b) => b.accountValue - a.accountValue)
     return json(res, 200, { updatedAt: s.updatedAt ?? 0, rows })
   }

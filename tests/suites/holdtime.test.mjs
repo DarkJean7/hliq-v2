@@ -117,7 +117,7 @@ console.log(nl + '-- it reaches the card --')
   t('the server keeps hold state across refreshes', /if \(st\.holds\) holds = holdsStep\(st\.holds, fills\)/.test(srv))
   // A row cached before this shipped would otherwise average only the trades after it.
   t('and backfills a row that predates it', /await hlFillsSince\(addr, LB_GENESIS - 1\)/.test(srv))
-  t('without serving the raw state', /\.map\(\(\{ lastFillTs, lastFundingTs, windows, holds,/.test(srv))
+  t('without serving the raw state', /\.map\(\(\{ lastFillTs, lastFundingTs, lastLedgerTs, windows, holds,/.test(srv))
   t('client-built and paper rows measure it too', (main.match(/holds: holdsStep\(null, /g) ?? []).length === 2)
   t('fills keep startPosition through the parser', /startPosition: f\.startPosition \?\? null/.test(fs.readFileSync('src/format.js', 'utf8')))
 }

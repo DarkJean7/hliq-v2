@@ -13,7 +13,9 @@
  *     is only for a row that arrived without one.
  *
  *   ACCOUNT ROE — net PnL against what the account started with, which is its value today less
- *     everything it has made or lost: `accountValue - netPnl`.
+ *     everything it has made or lost: `accountValue - netPnl`. Once profits are withdrawn that
+ *     goes negative (Spartan: +$922 on $518 now), so a row that carries `deposited` — every
+ *     dollar that came in, src/depositbasis.js — falls back to that instead of having no ROE.
  *
  * Both return NULL when there is no usable basis rather than 0 or Infinity. A fresh account
  * whose starting equity rounds to nothing has an UNKNOWN return, not a zero one, and printing
@@ -29,13 +31,20 @@ export const MIN_BASIS = 1
  * cannot be known.
  */
 export function accountRoe(entry) {
+  const basis = roeBasis(entry)
+  return basis == null ? null : (Number(entry.netPnl) / basis) * 100
+}
+
+/** What account ROE divides by, or null: the start value, else what was deposited. */
+export function roeBasis(entry) {
   if (!entry || entry.error) return null
   const value = Number(entry.accountValue)
   const net   = Number(entry.netPnl)
   if (!Number.isFinite(value) || !Number.isFinite(net)) return null
-  const basis = value - net
-  if (!(basis > MIN_BASIS)) return null
-  return (net / basis) * 100
+  const start = value - net
+  if (start > MIN_BASIS) return start
+  const dep = Number(entry.deposited)
+  return Number.isFinite(dep) && dep > MIN_BASIS ? dep : null
 }
 
 /** The same ratio for any one part of the PnL — realized alone, unrealized alone. */
@@ -43,11 +52,8 @@ export function partRoe(part, entry) {
   if (!entry || entry.error) return null
   const p = Number(part)
   if (!Number.isFinite(p)) return null
-  const value = Number(entry.accountValue), net = Number(entry.netPnl)
-  if (!Number.isFinite(value) || !Number.isFinite(net)) return null
-  const basis = value - net
-  if (!(basis > MIN_BASIS)) return null
-  return (p / basis) * 100
+  const basis = roeBasis(entry)
+  return basis == null ? null : (p / basis) * 100
 }
 
 /**
