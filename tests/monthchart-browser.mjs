@@ -38,7 +38,11 @@ const waitFor = async (p, label, fn, arg, ms = 45000) => {
 // ── a month with a shape ─────────────────────────────────────────────────────
 // This month: up, then a drawdown, then a recovery to +$375.50 — a month whose total says
 // nothing about the ride, which is the whole reason the row exists.
-const now   = new Date()
+// The page runs on a clock pinned to the 20th: the fixtures sit on the 3rd and the 9th, and on
+// a real clock the first eight days of every month had no 3rd or 9th yet — the deploy was
+// blocked on the 1st of November by nothing but the date.
+const real  = new Date()
+const now   = new Date(real.getFullYear(), real.getMonth(), 20, 12)
 const Y = now.getFullYear(), M = now.getMonth()
 const day   = (d, h = 12) => new Date(Y, M, Math.min(d, now.getDate()), h).getTime()
 const prevM = new Date(Y, M - 1, 15, 12).getTime()
@@ -71,7 +75,7 @@ const PERP = { vlm: '0',
   pnlHistory: [[prevM, '900'], [eve, '1000'], [day(9), '1400']] }
 const MARGIN = { accountValue: '9875.0', totalNtlPos: '0', totalRawUsd: '9875.0', totalMarginUsed: '0' }
 const STATE  = { marginSummary: MARGIN, crossMarginSummary: MARGIN, crossMaintenanceMarginUsed: '0',
-                 withdrawable: '9875.0', assetPositions: [], time: Date.now() }
+                 withdrawable: '9875.0', assetPositions: [], time: now.getTime() }
 const HL = {
   clearinghouseState: STATE, spotClearinghouseState: { balances: [] }, allMids: {},
   frontendOpenOrders: [], userFills: FILLS, userFillsByTime: FILLS, userFunding: [],
@@ -87,6 +91,7 @@ const HL = {
 
 const browser = await chromium.launch()
 const ctx = await browser.newContext({ ...devices['iPhone 14 Pro'] })
+await ctx.clock.setSystemTime(now)
 try { await ctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
 await ctx.route(HL_HOST, (route) => {
   let b = {}
@@ -311,10 +316,11 @@ console.log(NL + '-- and All Accounts has all three too --')
   const W2 = '0x974e086b541afc90acaf9ac5d3326d666a601e6b'
   const M2 = { accountValue: '5000', totalNtlPos: '0', totalRawUsd: '5000', totalMarginUsed: '0' }
   const S2 = { marginSummary: M2, crossMarginSummary: M2, crossMaintenanceMarginUsed: '0',
-               withdrawable: '5000', assetPositions: [], time: Date.now() }
+               withdrawable: '5000', assetPositions: [], time: now.getTime() }
   const W2WIN = { accountValueHistory: [[prevM, '5000'], [eve, '5000'], [day(9), '5000']],
                   pnlHistory: [[prevM, '0'], [eve, '0'], [day(9), '0']], vlm: '0' }
   const ctx2 = await browser.newContext({ ...devices['iPhone 14 Pro'] })
+  await ctx2.clock.setSystemTime(now)
   try { await ctx2.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
   await ctx2.route(HL_HOST, (route) => {
     let b = {}
