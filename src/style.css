@@ -5877,6 +5877,14 @@ body.layout-mobile .nav-tabs { display: none !important; }
 }
 .mob-pill-arrow { font-size: 9px; opacity: .85; }
 .mob-pill-icon { width: 26px; padding: 0; }        /* square icon-only variant */
+.mob-pill-alloc {
+  display: inline-flex; align-items: center; gap: 5px;
+  border-color: color-mix(in oklch, var(--accent) 55%, transparent);
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+  color: var(--accent); font-weight: 700;
+}
+.mob-pill-alloc:hover { background: color-mix(in oklch, var(--accent) 24%, transparent); color: var(--accent); }
+.ov-alloc-btn { margin-left: auto; margin-right: 8px; height: 26px; padding: 0 11px; cursor: pointer; }
 .mob-pill-danger {
   border-color: rgba(255, 77, 109, 0.40);
   background: rgba(255, 77, 109, 0.08);

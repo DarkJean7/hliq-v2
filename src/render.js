@@ -849,6 +849,10 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
               <button class="ov-postab${_ovPosTab === 'spot' ? ' active' : ''}" data-pt="spot" onclick="window.__ovSetPosTab('spot')">Spot <span class="count-pill">${_ovSpotCount()}</span></button>
               <button class="ov-postab${_ovPosTab === 'outcomes' ? ' active' : ''}" data-pt="outcomes" onclick="window.__ovSetPosTab('outcomes')">Outcomes <span class="count-pill">${_ovOcCount()}</span></button>
             </div>
+            <!-- Desktop's way into Allocation besides the health ring, which nothing says is pressable. -->
+            <button class="mob-pill mob-pill-alloc ov-alloc-btn" onclick="window.__openAllocation()" title="Where your margin is deployed">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 8 8"/></svg><span>Allocation</span>
+            </button>
             <button class="manage-btn close" id="ovPosAction" style="padding:4px 12px;font-size:11px;display:${(_ovPosTab === 'outcomes' || _ovPosTab === 'spot') ? 'none' : ''}" onclick="window.__ovPosAction()">${_ovPosTab === 'positions' ? 'Close all' : 'Cancel all'}</button>
           </div>
           <div id="ovPosBody">${_ovTabBody(_ovPosTab)}</div>

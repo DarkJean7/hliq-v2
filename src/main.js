@@ -12601,11 +12601,17 @@ function _attrEquityRange(windowStart, winMs) {
 // Build per-coin contributions over the selected window. Realized/fees/funding are exact
 // from fills+funding already in state; open-position uMove is sizeNow × (markNow − markStart)
 // — approximate when size changed mid-window, so we surface a reconciliation residual.
+// An outcome's balance is the token "+N" and its fills the market "#N"; one row for the two.
+const _attrKey = (c) => /^\+\d+$/.test(String(c)) ? '#' + String(c).slice(1) : c
+// A spot row is named like the perp beside it ("@107" and "HYPE" both read HYPE), so it says so.
+const _attrSpotTag = (c) => /^@\d+$|\//.test(String(c))
+  ? `<span style="margin-left:6px;font-size:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);border:1px solid var(--border2);border-radius:4px;padding:0 4px;vertical-align:middle">${_T('Spot', 'Spot')}</span>` : ''
+
 async function _attrCompute(windowStart, token, winMs) {
   const fills   = state.fills ?? []
   const funding = state.funding ?? []
   const byCoin  = {}
-  const row = c => (byCoin[c] ??= { coin: c, realized: 0, fees: 0, funding: 0, uMove: 0, firstFill: Infinity, trades: 0,
+  const row = c => (byCoin[c = _attrKey(c)] ??= { coin: c, realized: 0, fees: 0, funding: 0, uMove: 0, firstFill: Infinity, trades: 0,
     // Realized: size-weighted avg close & entry over the window's CLOSING fills.
     closeSz: 0, closeNtl: 0, entryNtlR: 0,
     // Unrealized: current open position's avg entry + live mark.
@@ -12647,6 +12653,43 @@ async function _attrCompute(windowStart, token, winMs) {
     bySz[c].absSz   += Math.abs(szi)
     bySz[c].entryNtl += Math.abs(szi) * parseFloat(ap.position.entryPx ?? 0)
     bySz[c].markNow  = parseFloat(mids[c] ?? ap.position.markPx ?? ap.position.entryPx ?? 0)
+  }
+  // Spot tokens and HIP-4 outcome positions still held — "what moved does not include spot,
+  // hip4 outcomes". Their closes were already in `fills`; the price move on what is still held
+  // was not, because only perp positions were read. Keyed as their fills are (the pair "@107",
+  // the market "#N"), so a token traded and held is one row. Long only, so szi is the balance.
+  // The token -> pair map ("HYPE" -> "@107") is loaded lazily; without it a holding has no key to
+  // meet its fills under, and was dropped. Its tag-only fallback still names it as spot.
+  if (!_spotMetaLoaded()) { try { await ensureSpotMeta() } catch {} }
+  for (const h of (window.__ovSpotHoldings?.() ?? [])) {
+    if (h.coin === 'USDC' || !(h.total > 0) || !(h.px > 0)) continue
+    const key = _spotPairOf(h.coin) ?? h.coin + '/USDC'
+    const p = (bySz[key] ??= { szi: 0, entryNtl: 0, absSz: 0, markNow: 0 })
+    p.szi += h.total; p.absSz += h.total; p.entryNtl += h.entryNtl > 0 ? h.entryNtl : h.total * h.px
+    p.markNow = h.px
+  }
+  for (const b of (window.__ovOutcomeHoldings?.() ?? [])) {
+    const total = parseFloat(b.total ?? 0), cost = parseFloat(b.entryNtl ?? 0)
+    if (!(total > 0)) continue
+    // The same mark the Outcomes tab prices the holding at (_ovOcRow): the book, else the panel.
+    const n = parseInt(String(b.coin).replace(/[^\d]/g, '')) || 0
+    const entry = cost > 0 ? cost / total : 0
+    // The book's mid is only cached once the Outcomes tab has been opened; read it here otherwise,
+    // or the mark falls back to the entry and a held outcome "moved" by exactly nothing.
+    if (!(_ocMarkCache[b.coin] > 0) && n && !_hlLimited()) {
+      try {
+        const book = await info.l2Book({ coin: '#' + n })
+        const bid = parseFloat(book?.levels?.[0]?.[0]?.px ?? 0), ask = parseFloat(book?.levels?.[1]?.[0]?.px ?? 0)
+        const mid = (bid > 0 && ask > 0) ? (bid + ask) / 2 : (bid || ask)
+        if (mid > 0) _ocMarkCache[b.coin] = mid
+      } catch {}
+    }
+    if (token !== _attrComputeToken) return null
+    const mark = (_ocMarkCache[b.coin] || 0) || (_ocSidePrice(Math.floor(n / 10), n % 10) || 0) || entry
+    if (!(mark > 0)) continue
+    const p = (bySz[_attrKey(b.coin)] ??= { szi: 0, entryNtl: 0, absSz: 0, markNow: 0 })
+    p.szi += total; p.absSz += total; p.entryNtl += cost > 0 ? cost : total * mark
+    p.markNow = mark
   }
   await Promise.all(Object.entries(bySz).map(async ([coin, p]) => {
     if (token !== _attrComputeToken) return
@@ -12693,7 +12736,10 @@ function _mobVRenderAttribution(el) {
   // Re-render guard: skip the async recompute when nothing that affects it changed. The
   // position hash is SORTED so a re-ordered assetPositions array (the combined view rebuilds
   // it every tick) doesn't spuriously flip the signature and force a scroll-resetting rebuild.
-  const posHash = (state.perpState?.assetPositions ?? []).map(p => `${p.position?.coin}:${p.position?.szi}`).sort().join(',')
+  const posHash = [
+    ...(state.perpState?.assetPositions ?? []).map(p => `${p.position?.coin}:${p.position?.szi}`),
+    ...(state.spotState?.balances ?? []).map(b => `${b.coin}:${b.total}`),
+  ].sort().join(',')
   const sig = `${_attrPeriod}|${_attrMode}|${state.addr}|${(state.fills ?? []).length}|${posHash}`
   if (el.dataset.attrSig === sig && document.getElementById('attrBody')) return
   const prevScroll = el.scrollTop   // preserve scroll across a genuine rebuild
@@ -12773,7 +12819,7 @@ function _mobVRenderAttribution(el) {
         return `<div style="padding:11px 0;border-bottom:1px solid var(--border)">
           <div style="display:flex;align-items:center;gap:10px">
             ${_mobVCoinIcon(r.coin)}
-            <div style="flex:1;min-width:0;font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_ocCoinLabel(r.coin))}</div>
+            <div style="flex:1;min-width:0;font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_ocCoinLabel(r.coin))}${_attrSpotTag(r.coin)}</div>
             ${total}
           </div>
           <div style="margin-top:7px;padding-left:38px;display:flex;flex-direction:column;gap:3px">${rowsInner.join('')}</div>
@@ -12788,7 +12834,7 @@ function _mobVRenderAttribution(el) {
         <div style="display:flex;align-items:center;gap:10px">
           ${_mobVCoinIcon(r.coin)}
           <div style="flex:1;min-width:0">
-            <div style="font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_ocCoinLabel(r.coin))}</div>
+            <div style="font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(_ocCoinLabel(r.coin))}${_attrSpotTag(r.coin)}</div>
             <div class="notranslate" style="font-size:11px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sub}</div>
           </div>
           ${total}
@@ -20205,9 +20251,11 @@ function _mobVRenderContent(tick = false) {
         ${_mobVSortPill('name','Asset')}
       </div>
       <div class="mob-sortbar-actions">
-        <button class="mob-pill mob-pill-icon" onclick="window.mobVGoTab('allocation')"
+        <!-- Labelled and in the accent ("make the allocation button more visible"): a bare grey
+             ring read as a loading spinner, not a button. -->
+        <button class="mob-pill mob-pill-alloc" onclick="window.mobVGoTab('allocation')"
           title="Margin allocation" aria-label="Margin allocation">
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 8 8"/></svg>
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 8 8"/></svg><span>Allocation</span>
         </button>
         ${state.isAllAccounts ? '' : `<button class="mob-pill mob-pill-danger" onclick="window.__closeAllPositions(this)">Close All</button>`}
       </div>
