@@ -1941,7 +1941,7 @@ export function renderTrades(fills) {
           ${esc(t.timeStr)}
         </div>
       </td>
-      <td><b>${esc(_lbl(t.coin))}</b></td>
+      <td><b>${esc(_lbl(t.coin))}</b>${t._acct ? ` <span class="acct-pill notranslate">${esc(t._acct)}</span>` : ''}</td>
       <td><span class="dir-badge ${_dirBadgeCls(dir)}">${esc(dir)}</span></td>
       <td>${sizeCell}</td>
       <td>$${fmtPrice(t.px)}</td>
