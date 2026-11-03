@@ -2123,9 +2123,43 @@ function _fanMetas(full) {
   return filtered.length > 1 ? filtered : null
 }
 
+// A single account heard about its own fills only on the poll (15s on History, 30s elsewhere),
+// so a take-profit, a bot, or a trade from another device landed half a minute late in History,
+// the Calendar and the celebration. The socket says the moment it happens; the forced refresh
+// that follows fetches fills, orders, spot and portfolio together, as an action of your own does.
+let _singleFillsSub = null, _singleFillsAddr = null, _singleFillsT = null, _singleFillsLast = 0
+async function _singleFillsWsSync() {
+  const want = !state.isAllAccounts && !isPaper() && _isRealAddr(state.addr) ? state.addr.toLowerCase() : null
+  if (want === _singleFillsAddr) return
+  const old = _singleFillsSub
+  _singleFillsSub = null; _singleFillsAddr = want
+  try { await old?.unsubscribe?.() } catch {}
+  if (!want) return
+  try {
+    const sub = await subsClient().userFills({ user: want }, (ev) => {
+      // The first message replays recent history; only a live push is news.
+      if (ev?.isSnapshot || !Array.isArray(ev?.fills) || !ev.fills.length) return
+      if (_singleFillsAddr !== want || state.addr?.toLowerCase() !== want) return
+      // One refresh per burst of pieces, and at most one every 5s: a grid bot on this account can
+      // fill every few seconds, and a forced tick spends weight-20 calls (CLAUDE.md, the peak).
+      if (_singleFillsT) return
+      const wait = Math.max(250, _singleFillsLast + 5000 - Date.now())
+      _singleFillsT = setTimeout(() => {
+        _singleFillsT = null; _singleFillsLast = Date.now()
+        refreshLive(true).catch?.(() => {})
+      }, wait)
+    })
+    if (_singleFillsAddr === want) _singleFillsSub = sub
+    else { try { await sub?.unsubscribe?.() } catch {} }
+  } catch (err) { console.warn('[ws] single-account userFills subscribe failed', err?.message) }
+}
+
+let _refreshAgain = false
 async function refreshLive(force = false) {
   if (force) _forceFreshNext = true
-  if (_refreshInProgress) return
+  _singleFillsWsSync().catch(() => {})
+  // A forced refresh asked for while one is running would otherwise wait for the next 5s tick.
+  if (_refreshInProgress) { if (force) _refreshAgain = true; return }
   if (state.isAllAccounts) return   // combined view has its own refresh loop
   if (isPaper()) return             // paper has its own loop; the sentinel isn't a real address
   if (_hlLimited()) return   // circuit breaker open — let HL cool down
@@ -2367,6 +2401,7 @@ async function refreshLive(force = false) {
     _hl429(e)   // rate limit → trip the global breaker (all pollers pause)
   } finally {
     _refreshInProgress = false
+    if (_refreshAgain) { _refreshAgain = false; setTimeout(() => { refreshLive(true).catch?.(() => {}) }, 0) }
   }
 }
 
@@ -9922,6 +9957,7 @@ async function _startHistWs(entries) {
       subs.push(await subsClient().userFills({ user: addr }, (ev) => {
         if (!state.isAllAccounts || !Array.isArray(ev?.fills)) return
         if (_histAppend(key, { fills: ev.fills })) _acctWsSchedulePaint()
+        _comboFillsLive(addr, ev.fills)
       }))
     } catch (err) { console.warn('[ws] userFills subscribe failed for', addr, err?.message) }
     try {
@@ -9933,6 +9969,26 @@ async function _startHistWs(entries) {
     if (subs.length) _histWsSubs.set(key, subs)
   }
 }
+// "make the app reaction faster when a trade is made ... the celebration of a trade being closed,
+// history, calendar". The socket's fills went into the stored history only, and everything that
+// reads the wallet's ROW (History, Calendar, the win celebration, the "Order filled" card) waited
+// for the five-minute combined refresh. Fold them into the row too, and repaint once per burst.
+let _comboFillsT = null
+function _comboFillsLive(addr, raw) {
+  const r = (_allAcctLastResults ?? []).find(x => x?.addr?.toLowerCase() === addr.toLowerCase())
+  if (!r || r.error) return
+  const have = new Set((r.fills ?? []).map(fillKey))
+  const add = parseFills(raw).filter(f => !have.has(fillKey(f)))
+  if (!add.length) return
+  r.fills = [...add, ...(r.fills ?? [])].sort((a, b) => (b.time ?? 0) - (a.time ?? 0))
+  try { if (_isRealAddr(r.addr) && !_maHiddenLoad().has(r.addr)) notifyFills(raw, { acct: r.addr, label: r.label || null }) } catch {}
+  if (_comboFillsT) return
+  _comboFillsT = setTimeout(() => {
+    _comboFillsT = null
+    if (state.isAllAccounts) { try { _allAcctReaggregate() } catch {} }
+  }, 300)
+}
+
 async function _stopHistWs() {
   for (const subs of _histWsSubs.values()) {
     for (const s of subs) { try { await s?.unsubscribe?.() } catch {} }
