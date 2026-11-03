@@ -43,6 +43,9 @@ console.log('-- /markets → Exchanges --')
   await shot(p, 'ex-cex')
   await p.click('#mkMode button[data-mode="market"]')
   t('back to Markets puts the filters back', await p.$eval('#mkTabs', e => getComputedStyle(e).display !== 'none'))
+  // The DEX/CEX switch set display in CSS over its hidden attribute, crowding the phone's controls row
+  // until the sector chips under it could not be tapped (markets-browser.mjs caught it in CI).
+  t('and hides the DEX/CEX switch', await p.$eval('#mkExKind', e => getComputedStyle(e).display === 'none'))
   await p.close()
 }
 

@@ -162,7 +162,7 @@ const setHtml = (el, html) => { if (el.__html !== html) { el.innerHTML = html; e
 function renderExchanges() {
   // style, not the hidden attribute: these rows set their own display in markets.css, which wins.
   for (const id of ['mkTabs', 'mkStrict', 'mkSectors', 'mkDexes']) $(id).style.display = 'none'
-  $('mkExKind').hidden = false
+  $('mkExKind').style.display = ''
   for (const b of $('mkExKind').querySelectorAll('button')) b.classList.toggle('is-on', b.dataset.ex === view.ex)
   for (const b of $('mkMode').querySelectorAll('button')) b.classList.toggle('is-on', b.dataset.mode === view.mode)
   $('mkRankBtns').innerHTML = EX_SORTS[view.ex].map(k => `<button data-sort="${k}" class="${k === view.sort ? 'is-on' : ''}">${EX_LBL[k]}</button>`).join('')
@@ -380,7 +380,7 @@ function renderStatus() {
 function render() {
   if (exView()) return renderExchanges()
   $('mkBody').__html = $('mkCards').__html = null    // the views below write these directly
-  $('mkExKind').hidden = true
+  $('mkExKind').style.display = 'none'
   for (const id of ['mkTabs', 'mkStrict', 'mkSectors', 'mkDexes']) $(id).style.display = ''
   const list = current()
   renderControls()
