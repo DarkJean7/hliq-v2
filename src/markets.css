@@ -230,3 +230,24 @@ html.pf-embed .mk-sub { font-size: 14px; }
 html.pf-embed .mk-status, html.pf-embed .mk-note, html.pf-embed .mk-hint { font-family: var(--font-sans); }
 html.pf-embed .mk-card, html.pf-embed .mk-status { border-radius: 14px; }
 html.pf-embed input { color-scheme: inherit; }
+
+/* Exchanges view: more columns than the markets table, so tighter cells to keep them on screen. */
+.mk-table--ex th, .mk-table--ex td { padding-left: 9px; padding-right: 9px; }
+.mk-table--ex .mk-c-asset b { white-space: nowrap; }
+
+/* ── phone: nothing wider than the screen ("in mobile it needs a lot of work") ──
+   The controls grid sized its one column to its widest child (the tabs, and the toggles row once
+   Exchanges and its Mixed/DEX/CEX switch were added), so the search box and everything under it
+   ran off the right edge. One column held to the screen; the tabs swipe; the toggles wrap. */
+@media (max-width: 760px) {
+  .mk-controls { grid-template-columns: minmax(0, 1fr); }
+  .mk-controls > * { min-width: 0; max-width: 100%; }
+  .mk-tabs { display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; justify-self: stretch; }
+  .mk-tabs::-webkit-scrollbar { display: none; }
+  .mk-tabs button { flex: 0 0 auto; }
+  .mk-toggles { flex-wrap: wrap; justify-self: stretch; }
+  .mk-search { width: 100%; box-sizing: border-box; }
+}
+/* In the app the panel colour is translucent over a wallpaper; the columns that stay put while the
+   figures scroll under them must not let those figures show through. */
+html.pf-embed .mk-table .mk-c-rank, html.pf-embed .mk-table .mk-c-asset { background: var(--panel-o, var(--panel)); }

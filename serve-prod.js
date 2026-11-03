@@ -17,7 +17,7 @@ import { dailyFunding, mergeDaily, fundingInfo, FUND_DAYS } from './src/pffundin
 import { isAllowedYahoo, yahooUrl, cgChartUrl, parseYahooDaily, parseCgChart, toUsd, FX_PER_USD, needsUsd, planFor, closesFor, wantsCg } from './src/pfsources.js'
 import { coinsOf, coinFile, stalest, buildPerf, HIST_FROM as PFC_FROM } from './src/pfgallery.js'
 import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
-import { buildDexes, buildCexes } from './src/exchanges.js'
+import { buildDexes, buildCexes, LLAMA_DEXVOL_URL } from './src/exchanges.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -77,8 +77,8 @@ cgFromDisk()
 function llamaRefresh() {
   if (llamaInflight) return llamaInflight
   const get = (u) => fetch(u, { signal: AbortSignal.timeout(45_000) }).then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-  llamaInflight = Promise.all([get(LLAMA_FEES_URL), get(LLAMA_LITE_URL), get(LLAMA_FEESPAID_URL).catch(() => null)])
-    .then(([rev, lite, paid]) => { llamaData = { at: Date.now(), bySym: buildRevenue(rev, lite, paid).bySym, dexes: buildDexes(rev, paid, lite) }; exBody = null })
+  llamaInflight = Promise.all([get(LLAMA_FEES_URL), get(LLAMA_LITE_URL), get(LLAMA_FEESPAID_URL).catch(() => null), get(LLAMA_DEXVOL_URL).catch(() => null)])
+    .then(([rev, lite, paid, vol]) => { llamaData = { at: Date.now(), bySym: buildRevenue(rev, lite, paid).bySym, dexes: buildDexes(rev, paid, lite, vol) }; exBody = null })
     .catch(e => console.warn('[markets-meta] DefiLlama refresh failed:', e.message))
     .finally(() => { llamaInflight = null })
   return llamaInflight

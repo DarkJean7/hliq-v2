@@ -18,6 +18,7 @@ export const TOKEN_MAP = {
   '--bg':         '--bg',
   '--bg-2':       '--panel',
   '--panel':      '--panel-2',
+  '--panel-o':    '--panel-2-o',   // opaque twin: what must not let content show through (markets.css)
   '--rule':       '--rule',
   '--fg':         '--fg',
   '--fg-2':       '--fg-2',

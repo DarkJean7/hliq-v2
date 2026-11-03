@@ -21,8 +21,11 @@ const add = (a, b) => (a == null ? b : b == null ? a : a + b)
 
 export const DEX_KIND = { Dexs: 'Spot', Derivatives: 'Perps', Options: 'Options' }
 
-/** One row per exchange (parent protocol), DEX categories only. */
-export function buildDexes(revFeed, feesFeed = null, lite = null) {
+/** DefiLlama's spot-DEX volume overview (/overview/dexs). Its perp-DEX one is paid. */
+export const LLAMA_DEXVOL_URL = 'https://api.llama.fi/overview/dexs?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true'
+
+/** One row per exchange (parent protocol), DEX categories only. `dexVol` adds spot volume. */
+export function buildDexes(revFeed, feesFeed = null, lite = null, dexVol = null) {
   const feeBy = new Map((Array.isArray(feesFeed?.protocols) ? feesFeed.protocols : []).map(p => [String(p.defillamaId), p]))
   const parents = new Map((Array.isArray(lite?.parentProtocols) ? lite.parentProtocols : []).map(p => [p.id, p]))
   const by = new Map()
@@ -47,6 +50,13 @@ export function buildDexes(revFeed, feesFeed = null, lite = null) {
     if (!parent && w > cur.top && f.logo) { cur.logo = f.logo; cur.top = w }
     by.set(key, cur)
   }
+  // Spot volume, onto the same groups: a protocol trading in the volume feed but earning nothing
+  // in the revenue one is not added as an exchange of its own.
+  for (const v of (Array.isArray(dexVol?.protocols) ? dexVol.protocols : [])) {
+    if (v?.category !== 'Dexs') continue
+    const cur = by.get(v.parentProtocol ?? 'p:' + v.defillamaId)
+    if (cur) cur.spotVol = add(cur.spotVol ?? null, n(v.total24h))
+  }
   return [...by.values()]
     .filter(d => (d.r30 ?? 0) > 0 || (d.f30 ?? 0) > 0 || (d.r24 ?? 0) > 0)
     .map(({ kinds, chains, top, ...d }) => ({ ...d, kind: [...kinds].join(' · '), chains: chains.size }))
@@ -64,7 +74,7 @@ export function buildCexes(feed) {
       slug: c.slug ?? null, ticker: CEX_TICKERS[c.name] ?? null,
       assets: n(c.cleanAssetsTvl) ?? n(c.currentTvl),
       in24: n(c.inflows_24h), in7: n(c.inflows_1w), in30: n(c.inflows_1m),
-      spotVol: n(c.spotVolume), derivVol: n(c.derivVolume), oi: n(c.oi),
+      spotVol: n(c.spotVolume), derivVol: n(c.derivVolume), vol24: add(n(c.spotVolume), n(c.derivVolume)), oi: n(c.oi),
     }))
 }
 
