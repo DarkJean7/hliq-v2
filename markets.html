@@ -15,6 +15,10 @@
   <meta name="theme-color" content="#0a0c10"/>
   <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=7"/>
   <link rel="icon" type="image/png" href="/favicon.png?v=7"/>
+  <!-- Shown inside the app (the Markets tab, src/pfembed.js) as /markets?embed=1: the same page,
+       without the public site's menu and footer — the app has its own around it. -->
+  <script>if (/[?&]embed=1/.test(location.search)) document.documentElement.classList.add('pf-embed')</script>
+  <style>html.pf-embed .ln-nav, html.pf-embed .ln-foot { display: none !important; }</style>
   <link rel="stylesheet" href="/fonts/fonts.css">
   <link rel="preload" as="font" type="font/woff2" href="/fonts/inter-tight-700-normal-latin.woff2" crossorigin>
   <link rel="preload" as="font" type="font/woff2" href="/fonts/jetbrains-mono-400-normal-latin.woff2" crossorigin>
@@ -66,7 +70,11 @@
         <button data-strict="1" class="is-on">Strict</button><button data-strict="0">All</button>
       </div>
       <div class="mk-seg" id="mkMode">
-        <button data-mode="market" class="is-on">Markets</button><button data-mode="revenue">Revenue</button>
+        <button data-mode="market" class="is-on">Markets</button><button data-mode="revenue">Revenue</button><button data-mode="exchanges">Exchanges</button>
+      </div>
+      <!-- Exchanges view only (src/exchanges.js): what DEXs earn, what CEXs hold. -->
+      <div class="mk-seg" id="mkExKind" hidden>
+        <button data-ex="dex" class="is-on">DEX</button><button data-ex="cex">CEX</button>
       </div>
     </div>
     <div class="mk-sectors" id="mkSectors" data-dragscroll></div>
@@ -87,7 +95,7 @@
     <p class="mk-note">
       Market cap is circulating supply × price, published by Hyperliquid for spot tokens; a perp
       shows one when its own spot token is listed. Blank means not known, never zero.
-      Revenue is protocol revenue from DefiLlama, credited to the token of the protocol that earned it; fees are what its users paid. Stocks show revenue reported to the SEC, by quarter (a fiscal fourth quarter, marked *, is the annual report less the three quarters before it); companies that do not file with the SEC show none. Categories: Hyperliquid's own, DefiLlama's for revenue tokens, and our own sectors. Strict shows the markets someone actually trades: every perp, live HIP-3 markets, and spot tokens that trade, earn, or are on our lists. Coming next: 7d and 30d price performance, market cap for every perp, and HIP-4 outcomes.
+      Revenue is protocol revenue from DefiLlama, credited to the token of the protocol that earned it; fees are what its users paid. Stocks show revenue reported to the SEC, by quarter (a fiscal fourth quarter, marked *, is the annual report less the three quarters before it); companies that do not file with the SEC show none. Categories: Hyperliquid's own, DefiLlama's for revenue tokens, and our own sectors. Strict shows the markets someone actually trades: every perp, live HIP-3 markets, and spot tokens that trade, earn, or are on our lists. Exchanges: a DEX's revenue and fees are DefiLlama's, summed across its protocols (Hyperliquid = its perps and its spot order book). A CEX's assets, net inflows, volume and open interest are DefiLlama's too; its revenue shows only where the company reports to the SEC, because the others do not publish it. Coming next: 7d and 30d price performance, market cap for every perp, and HIP-4 outcomes.
     </p>
   </section>
 </main>

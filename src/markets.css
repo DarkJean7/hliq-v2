@@ -216,3 +216,17 @@
   .rc-stats { grid-template-columns: 1fr 1fr; }
   .rc-stat b { font-size: 17px; }
 }
+
+/* ─── Inside the app (?embed=1) ────────────────────────────────────────────────────
+   The app's Markets tab is this page in a frame (src/pfembed.js), dressed like the Portfolios
+   tab (src/portfolio.css): colours from the app at run time (src/pftheme.js), the app's ground
+   and wallpaper showing through, the app's typeface, a tab-sized header. Public /markets never
+   gets html.pf-embed. */
+html.pf-embed, html.pf-embed body { background: transparent; }
+html.pf-embed body::after { display: none; }
+html.pf-embed .mk-head { padding-top: 22px; padding-bottom: 16px; }
+html.pf-embed .mk-title { display: none; }
+html.pf-embed .mk-sub { font-size: 14px; }
+html.pf-embed .mk-status, html.pf-embed .mk-note, html.pf-embed .mk-hint { font-family: var(--font-sans); }
+html.pf-embed .mk-card, html.pf-embed .mk-status { border-radius: 14px; }
+html.pf-embed input { color-scheme: inherit; }

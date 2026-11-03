@@ -336,7 +336,7 @@ import { outcomeStats as ocOutcomeStats, eventStats as ocEventStats, fmtUsdShort
 import { dailyCloses as sigDailyCloses, yearsOf as sigYearsOf, monthReturns as sigMonthReturns, monthDays as sigMonthDays, tint as sigTint } from './sigcal.js'
 import { editImage, CANCELLED as IMG_CANCELLED } from './imgedit.js'
 import { installNovaChrome } from './uinova.js'
-import { ensurePortfoliosFrame, openPortfolios } from './pfembed.js'
+import { ensurePortfoliosFrame, openPortfolios, ensureEmbedFrame, openEmbedSheet } from './pfembed.js'
 
 /**
  * "Can this view act on the account right now?"
@@ -8761,6 +8761,7 @@ function switchTab(name, btn) {
   if (name === 'trade')     { try { renderManageTables(state.perpState, state.openOrders, state.allMids); populateCoinDropdown(); updateTradeBalance(); _updateAvailDisplay() } catch (e) { console.error(e) } }
   if (name === 'performance') renderPerformance()
   if (name === 'portfolios') ensurePortfoliosFrame()       // /portfolios inside the app (src/pfembed.js)
+  if (name === 'markets')    ensureEmbedFrame('markets')   // /markets, the same way
   // Same renderers the mobile shell uses, mounted in their own desktop panes.
   if (name === 'pulse') {
     const _ph = _viewHost('deskPulse')
@@ -13035,6 +13036,7 @@ try {
 try { installNovaChrome() } catch {}
 // More → Portfolios on the phone: the page as a full-screen sheet, not a trip out of the app.
 window.__openPortfolios = () => openPortfolios()
+window.__openMarkets = () => openEmbedSheet('markets')
 // Grid Ladder: five HYPE grid bots, one account each (src/gridladder-ui.js), loaded on first open.
 window.__openGridLadder = function() {
   if (!isDev()) return            // dev mode only, for now (asked: "make grid ladder only visible in dev mode")

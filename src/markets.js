@@ -7,6 +7,10 @@ import { buildMarkets, sortRows, filterRows, summarize, onePerToken } from './ma
 import { SECTORS, SECTOR_LABEL } from './sectors.js'
 import { openRevenueChart } from './revchart.js'
 import { sideScroll, wasDrag } from './sidescroll.js'
+import { sortEx, withCexRevenue } from './exchanges.js'
+import { adoptAppTheme } from './pftheme.js'
+// Inside the app (?embed=1) the page wears the app's theme, read live from it (src/pftheme.js).
+adoptAppTheme()
 
 const API = 'https://api.hyperliquid.xyz/info'
 const PAGE = 100
@@ -18,7 +22,9 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<'
 
 let rows = []
 // tab: all | perp | hip3 | spot | crypto | tradfi. Strict is on by default, like Hyperliquid's.
-let view = { tab: 'all', dex: null, sector: null, q: '', sort: 'vol24', asc: false, shown: PAGE, strict: true, mode: 'market' }
+let view = { tab: 'all', dex: null, sector: null, q: '', sort: 'vol24', asc: false, shown: PAGE, strict: true, mode: 'market', ex: 'dex' }
+// Exchanges view (src/exchanges.js): /markets-exchanges, fetched the first time it is opened.
+let ex = { dex: null, cex: null, state: 'idle' }
 let loadedAt = 0
 let dexInfo = { ok: 0, total: 0 }
 // Each HIP-3 dex's last answer, kept across refreshes: rebuilding without them and adding them
@@ -121,7 +127,95 @@ async function loadMeta() {
   rebuild(); render()
 }
 
+async function loadExchanges() {
+  if (ex.state === 'loading') return
+  ex.state = 'loading'
+  try {
+    const r = await fetch('/markets-exchanges', { signal: AbortSignal.timeout(60_000) })
+    const j = r.ok ? await r.json() : null
+    if (Array.isArray(j?.dex)) ex.dex = j.dex
+    if (Array.isArray(j?.cex)) ex.cex = j.cex
+  } catch {}
+  ex.state = ex.dex || ex.cex ? 'ok' : 'down'
+  render()
+}
+
 // ── render ───────────────────────────────────────────────────────────────────
+const exView = () => view.mode === 'exchanges'
+const EX_SORTS = { dex: ['r24', 'r7', 'r30', 'f24', 'f30'], cex: ['assets', 'in24', 'in7', 'in30', 'derivVol', 'sttm'] }
+const EX_LBL = { r24: 'Revenue 24h', r7: 'Revenue 7d', r30: 'Revenue 30d', f24: 'Fees 24h', f30: 'Fees 30d',
+  assets: 'Assets', in24: 'Inflows 24h', in7: 'Inflows 7d', in30: 'Inflows 30d', spotVol: 'Spot volume 24h',
+  derivVol: 'Derivatives volume 24h', oi: 'Open interest', sttm: 'Revenue, 12 months' }
+const EX_COLS = { dex: ['r24', 'r7', 'r30', 'f24', 'f30'], cex: ['assets', 'in24', 'in7', 'in30', 'spotVol', 'derivVol', 'oi', 'sttm'] }
+const flow = (v) => v == null ? dash : `<span class="${v >= 0 ? 'mk-up' : 'mk-dn'}">${v >= 0 ? '+' : '−'}${money(Math.abs(v))}</span>`
+
+function exList() {
+  // A CEX's revenue is the SEC filing /markets-meta already carries, joined by ticker.
+  let list = view.ex === 'cex' ? withCexRevenue(ex.cex ?? [], stocks) : (ex.dex ?? [])
+  const q = view.q.trim().toLowerCase()
+  if (q) list = list.filter(r => r.name.toLowerCase().includes(q) || String(r.kind ?? '').toLowerCase().includes(q))
+  return sortEx(list, view.sort, view.asc)
+}
+
+// The HIP-3 load re-renders every few hundred ms; rewriting identical rows restarted every logo.
+const setHtml = (el, html) => { if (el.__html !== html) { el.innerHTML = html; el.__html = html } }
+function renderExchanges() {
+  // style, not the hidden attribute: these rows set their own display in markets.css, which wins.
+  for (const id of ['mkTabs', 'mkStrict', 'mkSectors', 'mkDexes']) $(id).style.display = 'none'
+  $('mkExKind').hidden = false
+  for (const b of $('mkExKind').querySelectorAll('button')) b.classList.toggle('is-on', b.dataset.ex === view.ex)
+  for (const b of $('mkMode').querySelectorAll('button')) b.classList.toggle('is-on', b.dataset.mode === view.mode)
+  $('mkRankBtns').innerHTML = EX_SORTS[view.ex].map(k => `<button data-sort="${k}" class="${k === view.sort ? 'is-on' : ''}">${EX_LBL[k]}</button>`).join('')
+  const list = exList(), cex = view.ex === 'cex'
+  // A total over rows that all lack the figure is unknown, not $0.
+  const sum = (k) => list.some(r => r[k] != null) ? list.reduce((a, r) => a + (r[k] ?? 0), 0) : null
+  const lead = (k) => list.reduce((best, r) => (r[k] ?? -Infinity) > (best?.[k] ?? -Infinity) ? r : best, null)
+  const top = lead(cex ? 'in24' : 'r30')
+  const cardsHtml = !list.length ? '' : cex ? [
+    card('Assets held', money(sum('assets')), `${list.length} exchanges · DefiLlama`),
+    card('Net inflows 24h', flow(sum('in24')), 'deposits minus withdrawals'),
+    card('Net inflows 7d', flow(sum('in7'))),
+    card('Derivatives volume 24h', money(sum('derivVol'))),
+    card('Biggest inflow 24h', top ? esc(top.name) : '—', top ? flow(top.in24) : ''),
+  ].join('') : [
+    card('Revenue 24h', money(sum('r24')), `${list.length} exchanges · DefiLlama`),
+    card('Revenue 30d', money(sum('r30'))),
+    card('Fees 24h', money(sum('f24')), 'what traders paid'),
+    card('Fees 30d', money(sum('f30'))),
+    card('Top earner 30d', top ? esc(top.name) : '—', top ? money(top.r30) : ''),
+  ].join('')
+  setHtml($('mkCards'), cardsHtml)
+  const cols = EX_COLS[view.ex]
+  $('mkHead').innerHTML = `<th class="mk-c-rank">#</th><th class="mk-c-asset">Exchange</th>` +
+    cols.map(k => `<th data-sort="${k}" class="${k === view.sort ? 'is-on' : ''}" data-dir="${k === view.sort ? (view.asc ? '▴' : '▾') : ''}">${EX_LBL[k]}</th>`).join('') +
+    (cex ? '' : `<th class="mk-c-cat">Type</th>`)
+  const logo = (r) => {
+    const src = cex ? (r.slug ? `https://icons.llamao.fi/icons/protocols/${encodeURIComponent(String(r.slug).toLowerCase())}?w=48&h=48` : null) : r.logo
+    return `<span class="mk-ico" data-l="${esc(r.name.slice(0, 1))}">${src ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">` : ''}</span>`
+  }
+  const cell = (k, r) => k.startsWith('in') ? flow(r[k]) : m(r[k])
+  const page = list.slice(0, view.shown)
+  const bodyHtml = page.length ? page.map((r, i) => `<tr>
+      <td class="mk-c-rank">${i + 1}</td>
+      <td class="mk-c-asset"><div class="mk-asset">${logo(r)}<div><b>${esc(r.name)}</b>${cex
+        ? (r.coin ? `<small>${esc(r.coin)}</small>` : '')
+        : `<small>${r.chains} ${r.chains === 1 ? 'chain' : 'chains'}</small>`}</div></div></td>
+      ${cols.map(k => `<td>${cell(k, r)}</td>`).join('')}
+      ${cex ? '' : `<td class="mk-c-cat"><span class="mk-tag">${esc(r.kind)}</span></td>`}
+    </tr>`).join('')
+    : `<tr><td colspan="${cols.length + 3}" class="mk-empty">${ex.state === 'down' ? 'Exchange data is not available right now.'
+        : (cex ? ex.cex : ex.dex) == null ? 'Loading exchanges from DefiLlama…' : 'Nothing matches.'}</td></tr>`
+  setHtml($('mkBody'), bodyHtml)
+  $('mkMore').hidden = list.length <= view.shown
+  $('mkMore').textContent = `Show more (${list.length - view.shown} left)`
+  const h = $('mkHint')
+  h.hidden = false
+  h.textContent = cex
+    ? 'Revenue shows only for exchanges that report to the SEC; the others do not publish it.'
+    : 'Protocol revenue — what the exchange kept — and the fees its traders paid.'
+  renderStatus()
+}
+
 const stockRevenueView = () => view.mode === 'revenue' && view.tab === 'tradfi'
 
 function current() {
@@ -284,6 +378,10 @@ function renderStatus() {
 }
 
 function render() {
+  if (exView()) return renderExchanges()
+  $('mkBody').__html = $('mkCards').__html = null    // the views below write these directly
+  $('mkExKind').hidden = true
+  for (const id of ['mkTabs', 'mkStrict', 'mkSectors', 'mkDexes']) $(id).style.display = ''
   const list = current()
   renderControls()
   renderCards(list)
@@ -296,6 +394,7 @@ function render() {
 const STOCK_SORTS = ['sq', 'sttm', 'syoy']
 const set = (patch) => {
   view = { ...view, ...patch, shown: PAGE }
+  if (exView()) return render()
   // Keep the sort meaningful across tab/mode changes: the stock revenue view ranks by its own
   // columns, and the crypto one cannot rank by a stock's quarter.
   if (stockRevenueView() && !STOCK_SORTS.includes(view.sort)) view = { ...view, sort: 'sq', asc: false }
@@ -306,7 +405,11 @@ $('mkTabs').addEventListener('click', e => { const b = e.target.closest('button[
 $('mkStrict').addEventListener('click', e => { const b = e.target.closest('button[data-strict]'); if (b) set({ strict: b.dataset.strict === '1' }) })
 $('mkMode').addEventListener('click', e => {
   const b = e.target.closest('button[data-mode]'); if (!b) return
-  set({ mode: b.dataset.mode, sort: b.dataset.mode === 'revenue' ? 'rev24' : 'vol24', asc: false })
+  if (b.dataset.mode === 'exchanges' && ex.state === 'idle') loadExchanges()
+  set({ mode: b.dataset.mode, sort: b.dataset.mode === 'exchanges' ? EX_SORTS[view.ex][0] : b.dataset.mode === 'revenue' ? 'rev24' : 'vol24', asc: false })
+})
+$('mkExKind').addEventListener('click', e => {
+  const b = e.target.closest('button[data-ex]'); if (b) set({ ex: b.dataset.ex, sort: EX_SORTS[b.dataset.ex][0], asc: false })
 })
 $('mkDexes').addEventListener('click', e => { const b = e.target.closest('button[data-dex]'); if (b) set({ dex: b.dataset.dex || null }) })
 $('mkSectors').addEventListener('click', e => {

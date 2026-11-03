@@ -214,6 +214,10 @@
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="5"/><line x1="14" y1="14" x2="10.35" y2="10.35"/></svg>
       <span>Watch</span>
     </div>
+    <div class="sidebar-item" data-tab="markets" onclick="switchTab('markets',null);setSidebarActive(this)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="3" y1="13" x2="3" y2="9"/><line x1="8" y1="13" x2="8" y2="4"/><line x1="13" y1="13" x2="13" y2="7"/></svg>
+      <span>Markets</span>
+    </div>
     <!-- Tabs the mobile shell already had and desktop did not. Replay and Simulator were
          the odd case: switchTab already rendered them and the panes already existed, so
          they were reachable by URL and by nothing a user could click. -->
@@ -360,6 +364,7 @@
       <button class="nav-tab" onclick="switchTab('tokens',this)"><svg viewBox="0 0 20 20" width="11" height="11" fill="currentColor"><rect x="0" y="13" width="4" height="7" rx="1"/><rect x="5.5" y="8" width="4" height="12" rx="1"/><rect x="11" y="4" width="4" height="16" rx="1"/><rect x="16.5" y="0" width="3.5" height="20" rx="1"/></svg>Scoreboard</button>
       <button class="nav-tab" onclick="switchTab('leaderboard',this)">Leaderboard</button>
       <button class="nav-tab" onclick="switchTab('watch',this)">Watch</button>
+      <button class="nav-tab" onclick="switchTab('markets',this)">Markets</button>
       <button class="nav-tab" onclick="switchTab('analysis',this)">Analysis</button>
       <!-- The sidebar's order, Bot Agents included: Simulator, Portfolios, Strategies, Grid Ladder, Performance. -->
       <button class="nav-tab" onclick="switchTab('simulator',this)">Simulator</button>
@@ -998,6 +1003,10 @@
 
     <!-- Portfolios: the /portfolios page itself, inside the app (src/pfembed.js), so it no longer
          leaves the app. Loaded the first time the tab is opened. -->
+    <!-- Markets: the /markets page inside the app, the same way (src/pfembed.js). -->
+    <div class="tab-panel" id="tab-markets">
+      <iframe id="mkEmbedFrame" class="pf-embed-frame" title="Markets" loading="lazy"></iframe>
+    </div>
     <div class="tab-panel" id="tab-portfolios">
       <iframe id="pfEmbedFrame" class="pf-embed-frame" title="Portfolios" loading="lazy"></iframe>
     </div>
@@ -2607,6 +2616,7 @@
     <!-- Challenge hidden 2026-08-10 (per request) — restore this button to re-enable the tab. -->
     <!-- <button onclick="window.__openChallenge()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 21h8M12 17v4M7 4h10v4a5 5 0 0 1-10 0zM7 6H4v1a3 3 0 0 0 3 3M17 6h3v1a3 3 0 0 1-3 3"/></svg>Challenge</button> -->
 
+    <button onclick="window.__openMarkets()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="20" x2="5" y2="13"/><line x1="12" y1="20" x2="12" y2="5"/><line x1="19" y1="20" x2="19" y2="10"/></svg>Markets</button>
     <button onclick="window.__mobMoreTab('watch')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Watch</button>
     <button onclick="window.__mobMoreTab('analysis')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><polyline points="7 15 11 10 14 13 20 6"/></svg>Analysis</button>
     <button onclick="window.__openChat()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>Global Chat</button>

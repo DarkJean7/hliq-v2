@@ -17,6 +17,7 @@ import { dailyFunding, mergeDaily, fundingInfo, FUND_DAYS } from './src/pffundin
 import { isAllowedYahoo, yahooUrl, cgChartUrl, parseYahooDaily, parseCgChart, toUsd, FX_PER_USD, needsUsd, planFor, closesFor, wantsCg } from './src/pfsources.js'
 import { coinsOf, coinFile, stalest, buildPerf, HIST_FROM as PFC_FROM } from './src/pfgallery.js'
 import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
+import { buildDexes, buildCexes } from './src/exchanges.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -77,10 +78,22 @@ function llamaRefresh() {
   if (llamaInflight) return llamaInflight
   const get = (u) => fetch(u, { signal: AbortSignal.timeout(45_000) }).then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
   llamaInflight = Promise.all([get(LLAMA_FEES_URL), get(LLAMA_LITE_URL), get(LLAMA_FEESPAID_URL).catch(() => null)])
-    .then(([rev, lite, paid]) => { llamaData = { at: Date.now(), bySym: buildRevenue(rev, lite, paid).bySym } })
+    .then(([rev, lite, paid]) => { llamaData = { at: Date.now(), bySym: buildRevenue(rev, lite, paid).bySym, dexes: buildDexes(rev, paid, lite) }; exBody = null })
     .catch(e => console.warn('[markets-meta] DefiLlama refresh failed:', e.message))
     .finally(() => { llamaInflight = null })
   return llamaInflight
+}
+// /markets-exchanges (src/exchanges.js): DEX revenue from the feeds above, CEX holdings from
+// DefiLlama's /cexs on the same half-hour clock. A failed CEX read keeps the last good one.
+let cexData = null, cexInflight = null, exBody = null
+function cexRefresh() {
+  if (cexInflight) return cexInflight
+  cexInflight = fetch('https://api.llama.fi/cexs', { signal: AbortSignal.timeout(45_000) })
+    .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+    .then(j => { const rows = buildCexes(j); if (rows.length) { cexData = { at: Date.now(), rows }; exBody = null } })
+    .catch(e => console.warn('[markets-exchanges] DefiLlama CEX refresh failed:', e.message))
+    .finally(() => { cexInflight = null })
+  return cexInflight
 }
 function cgRefresh() {
   if (cgInflight) return cgInflight
@@ -1082,6 +1095,22 @@ createServer((req, res) => {
       pfPerfBy.clear()
       return send(200, { portfolios: list })
     })()
+    return
+  }
+
+  if (url === '/markets-exchanges') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const send = () => {
+      if (!llamaData?.dexes && !cexData) return res.writeHead(503, { 'Content-Type': 'application/json' }).end('{"dex":null,"cex":null}')
+      // null, not [], for a half that has not loaded: the page says so instead of "none".
+      exBody ??= JSON.stringify({ dex: llamaData?.dexes ?? null, cex: cexData?.rows ?? null, at: llamaData?.at ?? null, cexAt: cexData?.at ?? null, source: 'DefiLlama' })
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' }).end(exBody)
+    }
+    const waits = []
+    if (!cexData || Date.now() - cexData.at > LLAMA_TTL) waits.push(cexRefresh())
+    if (!llamaData || Date.now() - llamaData.at > LLAMA_TTL) waits.push(llamaRefresh())
+    if (llamaData?.dexes && cexData) return send()          // stale halves refresh behind
+    Promise.all(waits).then(send)
     return
   }
 

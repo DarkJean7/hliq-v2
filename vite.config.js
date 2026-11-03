@@ -273,6 +273,15 @@ function strategyPlugin() {
           } catch { return sendJson(res, 502, { points: null }) }
         }
 
+        // Dev twin of serve-prod.js /markets-exchanges (no cache).
+        if (method === 'GET' && path === '/markets-exchanges') {
+          const L = await import('./src/llama.js'), X = await import('./src/exchanges.js')
+          // The fees feed is slow (~90s measured); a shorter timeout returns DEX fees as unknown.
+          const get = (u) => fetch(u, { signal: AbortSignal.timeout(150_000) }).then(r => r.json())
+          const [rev, lite, paid, cex] = await Promise.all([get(L.LLAMA_FEES_URL), get(L.LLAMA_LITE_URL), get(L.LLAMA_FEESPAID_URL), get('https://api.llama.fi/cexs')].map(p => p.catch(() => null)))
+          return sendJson(res, 200, { dex: rev ? X.buildDexes(rev, paid, lite) : null, cex: cex ? X.buildCexes(cex) : null, at: Date.now(), source: 'DefiLlama' })
+        }
+
         // Dev twin of serve-prod.js /markets-meta: same pipeline, cached in memory for the dev
         // session (CoinGecko's free API throttles, so it is fetched once, a few seconds apart).
         if (method === 'GET' && path === '/markets-meta') {
