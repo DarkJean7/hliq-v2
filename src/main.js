@@ -3925,6 +3925,7 @@ const _ALLOC_GROUP = {
   positions: { color: _ALLOC_POS_COLOR,  en: 'In positions', es: 'En posiciones' },
   orders:    { color: _ALLOC_ORD_COLOR,  en: 'In orders',    es: 'En órdenes' },
   spot:      { color: _ALLOC_SPOT_COLOR, en: 'Spot',         es: 'Spot' },
+  outcomes:  { color: '#B07CFF',         en: 'Outcomes',     es: 'Resultados' },
   offex:     { color: _ALLOC_OFFEX_COLOR, en: 'Off-exchange', es: 'Fuera del exchange' },
   free:      { color: _ALLOC_FREE_COLOR, en: 'Free margin',  es: 'Margen libre' },
 }
@@ -3938,6 +3939,7 @@ const _allocGroupSub = (g) => {
   const n = g.items.length
   if (g.kind === 'free')  return _T('Available to trade', 'Disponible para operar')
   if (g.kind === 'spot')  return n + ' ' + (n === 1 ? _T('token', 'token') : _T('tokens', 'tokens'))
+  if (g.kind === 'outcomes') return n + ' ' + (n === 1 ? _T('position', 'posición') : _T('positions', 'posiciones'))
   if (g.kind === 'offex') return n + ' ' + (n === 1 ? _T('token', 'token') : _T('tokens', 'tokens')) + ' · ' + _T('held outside Hyperliquid', 'fuera de Hyperliquid')
   if (g.kind === 'orders') {
     const c = g.items.reduce((a, x) => a + (x.count ?? 0), 0)
@@ -3948,9 +3950,16 @@ const _allocGroupSub = (g) => {
   return n + ' ' + (n === 1 ? _T('asset', 'activo') : _T('assets', 'activos'))
 }
 // An item inside a group: a coin, a token, or the one unattributed order row.
-const _allocItemLabel = (it) => it.unattributed
-  ? _T('Not yet attributed', 'Sin asignar todavía')
-  : it.offex ? it.label : _ocCoinLabel(it.coin)
+const _allocItemLabel = (it) => {
+  if (it.unattributed) return _T('Not yet attributed', 'Sin asignar todavía')
+  if (it.offex) return it.label
+  if (it.isOutcome) {
+    const n = parseInt(String(it.coin).replace(/[^\d]/g, '')) || 0
+    const q = state.ocQuestionMap?.[Math.floor(n / 10)]
+    if (q) return `${q} · ${n % 10 === 0 ? 'YES' : 'NO'}`
+  }
+  return _ocCoinLabel(it.coin)
+}
 
 /**
  * Price for anything that can sit on the spot side.
@@ -3962,7 +3971,19 @@ const _allocItemLabel = (it) => it.unattributed
 function _allocSpotMid(coin) {
   if (_lbIsOutcome(coin)) {
     const n = Number(String(coin).slice(1))
-    return Number.isFinite(n) ? _ocSidePrice(Math.floor(n / 10), n % 10) : 0
+    if (!Number.isFinite(n)) return 0
+    // The side price is only known once the Outcomes tab has loaded its markets, so a wallet
+    // that never opened it priced every share at 0 and the wheel dropped them. Fall back to
+    // the last book mid, then the mark each wallet's row was built with, then what was paid.
+    const live = _ocMarkCache[coin] || _ocSidePrice(Math.floor(n / 10), n % 10)
+    if (live > 0) return live
+    for (const r of (_allAcctLastResults ?? [])) {
+      const o = (r?.outcomes ?? []).find(x => x.coin === coin)
+      if (o?.mark > 0) return o.mark
+    }
+    const b = (state.spotState?.balances ?? []).find(x => x.coin === coin)
+    const total = parseFloat(b?.total ?? 0), cost = parseFloat(b?.entryNtl ?? 0)
+    return total > 0 && cost > 0 ? cost / total : 0
   }
   return _spotMid(coin)
 }
@@ -4113,15 +4134,20 @@ function _allocationSlices() {
   // were money the wheel could not see. Priced at the pair's mid (see _spotMid - balances are
   // keyed by token name, mids by pair), which is also what makes them appear in All Accounts,
   // where they live on the rows rather than on state.
-  const spotRows = [...spotByCoin(_allocSpotBalances(), _allocSpotMid).values()]
+  const heldRows = [...spotByCoin(_allocSpotBalances(), _allocSpotMid).values()]
     .filter(h => h.usd > SLICE_DUST)
     .sort((a, b) => b.usd - a.usd)
     .map(h => ({
-      coin: h.coin, isSpot: true, margin: h.usd, spotCost: h.cost, px: h.px,
+      coin: h.coin, isSpot: true, isOutcome: _lbIsOutcome(h.coin), margin: h.usd, spotCost: h.cost, px: h.px,
       notional: 0, size: h.size, uPnl: h.cost > 0 ? h.usd - h.cost : 0,
       longs: 0, shorts: 0, accts: h.accts,
     }))
-  const spot = spotRows.reduce((s, h) => s + h.margin, 0)
+  // Outcome shares sit on the spot side but are a different thing to hold, so they get their
+  // own arc rather than reading as a token called "#41590".
+  const spotRows = heldRows.filter(h => !h.isOutcome)
+  const ocRows   = heldRows.filter(h => h.isOutcome)
+  const spot     = spotRows.reduce((s, h) => s + h.margin, 0)
+  const outcomes = ocRows.reduce((s, h) => s + h.margin, 0)
 
   // ── free margin, and making the ring agree with the account card ───────────
   //
@@ -4146,7 +4172,7 @@ function _allocationSlices() {
   // which is the correct signal that something is wrong.
   const _reported = _freeMarginUsd()
   const _shown    = parseFloat(shownAccountValue())
-  const _parts    = used + orders + spot
+  const _parts    = used + orders + spot + outcomes
   let free = _reported
   if (Number.isFinite(_shown) && _shown > 0) {
     const balance = _shown - _parts
@@ -4176,6 +4202,7 @@ function _allocationSlices() {
     { kind: 'positions', value: used,   items: posRows  },
     { kind: 'orders',    value: orders, items: ordRows  },
     { kind: 'spot',      value: spot,   items: spotRows },
+    { kind: 'outcomes',  value: outcomes, items: ocRows },
     { kind: 'offex',     value: offex,  items: offexRows },
     { kind: 'free',      value: free,   items: []       },
   ].filter(g => g.value > SLICE_DUST)
@@ -4184,9 +4211,9 @@ function _allocationSlices() {
   // ring that is 100% one grey slice — but a wallet holding only spot, or only resting
   // orders, DOES have something to show and used to get the empty state anyway.
   return {
-    groups, total: used + orders + spot + free + offex,
-    hlTotal: used + orders + spot + free,
-    used, orders, spot, free, offex,
+    groups, total: used + orders + spot + outcomes + free + offex,
+    hlTotal: used + orders + spot + outcomes + free,
+    used, orders, spot, outcomes, free, offex,
     hasAny: groups.some(g => g.kind !== 'free'),
   }
 }
@@ -4197,8 +4224,8 @@ function _allocationSlices() {
 window.__allocParts = () => {
   // `total` stays the HYPERLIQUID total — it is what tests/allocation-browser.mjs checks
   // against the account card. Off-exchange value is reported beside it, not inside it.
-  const { hlTotal, used, orders, spot, free, offex } = _allocationSlices()
-  return { total: hlTotal, used, orders, spot, free, offex }
+  const { hlTotal, used, orders, spot, outcomes, free, offex } = _allocationSlices()
+  return { total: hlTotal, used, orders, spot, outcomes, free, offex }
 }
 
 // How much of the coin a row is: "41.83 HYPE". Empty where there is no coin to count — cash,
@@ -4582,12 +4609,14 @@ function _mobVRenderAllocation(el) {
       sub = it.unattributed
         ? _T('Reserved by the exchange, orders not loaded yet', 'Reservado por el exchange, órdenes aún sin cargar')
         : `${n} ${n === 1 ? _T('order', 'orden') : _T('orders', 'órdenes')}${legs ? ' · ' + legs : ''} · ${_T('Notional', 'Nocional')} ${_prv('$' + fmtUSD(it.notional, 2))}${acct}`
+    } else if (it.isOutcome) {
+      sub = `${_prv(fmtSize(it.size))} ${_T('shares', 'acciones')}${it.px ? ` · ${(it.px * 100).toFixed(1)}¢` : ''}${acct}`
     } else {
       sub = `${_prv(_allocSizeTxt(it))}${it.px ? ` · $${fmtPrice(it.px)}` : ''}${acct}`
     }
     // PnL only where there is a result: an order reserve has none, and a spot holding
     // transferred in rather than bought has no cost basis to measure against.
-    const showPnl = g.kind === 'positions' || ((g.kind === 'spot' || g.kind === 'offex') && it.spotCost > 0)
+    const showPnl = g.kind === 'positions' || ((g.kind === 'spot' || g.kind === 'outcomes' || g.kind === 'offex') && it.spotCost > 0)
     // An off-exchange token draws its own icon: its symbol may also be the name of some
     // unrelated Hyperliquid listing, whose logo would be the wrong one.
     const _ico = it.unattributed ? ''
