@@ -12440,14 +12440,47 @@ function _exposureRows() {
     const hidden = _maHiddenLoad()
     return (_allAcctLastResults ?? [])
       .filter(r => r && !r.error && !hidden.has(r.addr))
-      .map(r => ({ label: r.label, addr: r.addr, accountValue: r.accountValue, positions: r.positions }))
+      .map(r => ({ label: r.label, addr: r.addr, accountValue: r.accountValue, positions: r.positions,
+                   holdings: _expHoldings(r.spotBalances, r.outcomes) }))
   }
+  const bals = state.spotState?.balances ?? []
+  const oc = bals.filter(b => _lbIsOutcome(b.coin) && parseFloat(b.total ?? 0) > 0).map(b => {
+    const total = parseFloat(b.total ?? 0), cost = parseFloat(b.entryNtl ?? 0)
+    const n = parseInt(String(b.coin).replace(/[^\d]/g, '')) || 0
+    const entry = total > 0 ? cost / total : 0
+    const mark = _ocMarkCache[b.coin] || _ocSidePrice(Math.floor(n / 10), n % 10) || entry
+    return { coin: b.coin, total, cost, entry, mark }
+  })
   return [{
     label: _T('This account', 'Esta cuenta'),
     addr: state.addr,
     accountValue: computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids).accountValue,
     positions: state.perpState?.assetPositions ?? [],
+    holdings: _expHoldings(bals.filter(b => !_lbIsOutcome(b.coin)), oc),
   }]
+}
+
+// Spot tokens and outcome shares held, as long legs priced the way the Spot and Outcomes tabs
+// price them. USDC is cash, not exposure; a token with no mid is left out rather than valued at 0.
+function _expHoldings(spot, outcomes) {
+  const out = []
+  for (const b of (spot ?? [])) {
+    const total = parseFloat(b.total ?? 0)
+    if (!(total > 0) || String(b.coin).toUpperCase() === 'USDC') continue
+    const mark = _spotMid(b.coin)
+    if (!(mark > 0)) continue
+    const cost = parseFloat(b.entryNtl ?? 0)
+    out.push({ kind: 'spot', coin: b.coin, label: _ocCoinLabel(b.coin), szi: total, mark,
+               entry: cost > 0 ? cost / total : 0, ntl: total * mark, uPnl: cost > 0 ? total * mark - cost : 0 })
+  }
+  for (const o of (outcomes ?? [])) {
+    if (!(o.total > 0) || !(o.mark > 0)) continue
+    const n = parseInt(String(o.coin).replace(/[^\d]/g, '')) || 0
+    const q = state.ocQuestionMap?.[Math.floor(n / 10)] || _ocCoinLabel(o.coin)
+    out.push({ kind: 'outcome', coin: o.coin, label: `${q} · ${n % 10 === 0 ? 'YES' : 'NO'}`, szi: o.total, mark: o.mark,
+               entry: o.entry, ntl: o.total * o.mark, uPnl: (o.mark - o.entry) * o.total })
+  }
+  return out
 }
 
 // Coins that have a live TP or STOP trigger order standing. Same detection the chart uses:

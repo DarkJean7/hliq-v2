@@ -72,6 +72,17 @@ export function computeExposure(rows) {
       cur.legs.push({ who, dir: p.dir, ntl: p.ntl, uPnl: p.uPnl, szi: p.szi, entry: p.entry, mark: p.mark, liq: p.liq, health: p.health, lev: p.lev })
       byCoin.set(p.coin, cur)
     }
+    // Spot tokens and outcome shares: always long, no leverage, no liquidation. Their own rows,
+    // keyed apart from the perp of the same name — spot HYPE and perp HYPE are different books.
+    for (const h of (r?.holdings ?? [])) {
+      if (!(h?.ntl > 0)) continue
+      const key = h.kind + ':' + h.coin
+      const cur = byCoin.get(key) ?? { coin: key, name: h.label ?? h.coin, kind: h.kind, longNtl: 0, shortNtl: 0, uPnl: 0, legs: [] }
+      cur.longNtl += h.ntl
+      cur.uPnl += h.uPnl ?? 0
+      cur.legs.push({ who, dir: 1, ntl: h.ntl, uPnl: h.uPnl ?? 0, szi: h.szi, entry: h.entry ?? 0, mark: h.mark, liq: 0, health: null, lev: null, kind: h.kind })
+      byCoin.set(key, cur)
+    }
   }
 
   const coins = [...byCoin.values()].map(c => {
@@ -80,7 +91,8 @@ export function computeExposure(rows) {
     // The offsetting part. Long 10k / short 4k on the same coin = 4k hedged, 6k net long.
     // Only possible ACROSS wallets: HL nets a single account into one position per coin.
     const hedged = Math.min(c.longNtl, c.shortNtl)
-    return { ...c, net, gross, hedged, wallets: new Set(c.legs.map(l => l.who)).size }
+    // A HIP-3 market is named without its deployer ("xyz:META" reads as META); the key keeps it.
+    return { ...c, name: c.name ?? c.coin.replace(/^[a-z0-9]+:/i, ''), net, gross, hedged, wallets: new Set(c.legs.map(l => l.who)).size }
   }).sort((a, b) => Math.abs(b.net) - Math.abs(a.net) || b.gross - a.gross)
 
   const grossNotional = coins.reduce((s, c) => s + c.gross, 0)
@@ -116,7 +128,7 @@ export function exposureFindings(d, fmtUSD) {
   })
 
   if (d.hedgedNotional > 0) {
-    const names = d.coins.filter(c => c.hedged > 0).map(c => c.coin).join(', ')
+    const names = d.coins.filter(c => c.hedged > 0).map(c => c.name).join(', ')
     out.push({
       kind: 'warn',
       text: `${$(d.hedgedNotional)} is hedged against itself across wallets (${names}). `
@@ -140,7 +152,7 @@ export function exposureFindings(d, fmtUSD) {
     const share = Math.abs(top.net) / Math.abs(d.netDirectional) * 100
     if (share >= 50) out.push({
       kind: 'warn',
-      text: `${top.coin} alone is ${share.toFixed(0)}% of your net exposure `
+      text: `${top.name} alone is ${share.toFixed(0)}% of your net exposure `
           + `(${top.net >= 0 ? 'long' : 'short'} ${$(top.net)}).`,
     })
   }
@@ -293,6 +305,7 @@ export function exposureHtml(d, fmtUSD, T = (en) => en, opts = {}) {
   // inspection of what makes up the net above it, not a second place to trade from.
   const legCard = (l) => {
     const long = l.dir > 0
+    const px = (v) => l.kind === 'outcome' ? (v * 100).toFixed(1) + '¢' : '$' + fmtPx(v)
     const tone = l.uPnl >= 0 ? 'var(--green)' : 'var(--red)'
     const bar  = l.health == null ? '' : `
       <div style="margin-top:7px">
@@ -307,7 +320,7 @@ export function exposureHtml(d, fmtUSD, T = (en) => en, opts = {}) {
     return `
       <div style="margin:7px 0 0;padding:10px 11px;border-radius:10px;background:var(--panel-2);border:1px solid var(--border2)">
         <div style="display:flex;align-items:center;gap:7px">
-          <span style="font-size:9px;font-weight:800;padding:2px 6px;border-radius:6px;background:${long ? 'rgba(0,229,160,.15)' : 'rgba(255,77,109,.15)'};color:${long ? 'var(--green)' : 'var(--red)'}">${long ? T('LONG') : T('SHORT')}</span>
+          <span style="font-size:9px;font-weight:800;padding:2px 6px;border-radius:6px;background:${long ? 'rgba(0,229,160,.15)' : 'rgba(255,77,109,.15)'};color:${long ? 'var(--green)' : 'var(--red)'}">${l.kind === 'spot' ? T('SPOT') : l.kind === 'outcome' ? T('HELD') : long ? T('LONG') : T('SHORT')}</span>
           <span style="font-size:12px;font-weight:700;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(l.who)}</span>
           ${l.lev ? `<span style="font-size:10px;color:var(--muted)">${l.lev}×</span>` : ''}
           <span style="flex:1"></span>
@@ -315,8 +328,8 @@ export function exposureHtml(d, fmtUSD, T = (en) => en, opts = {}) {
         </div>
         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px">
           ${kv(T('Size'),  fmtPx(l.szi))}
-          ${kv(T('Entry'), l.entry > 0 ? '$' + fmtPx(l.entry) : '—')}
-          ${kv(T('Mark'),  '$' + fmtPx(l.mark))}
+          ${kv(T('Entry'), l.entry > 0 ? px(l.entry) : '—')}
+          ${kv(T('Mark'),  px(l.mark))}
           ${kv(T('Value'), $(l.ntl))}
         </div>
         ${bar}
@@ -338,11 +351,12 @@ export function exposureHtml(d, fmtUSD, T = (en) => en, opts = {}) {
         <div onclick="window.__expToggleAsset('${_esc(c.coin)}')" style="padding:10px 14px;cursor:pointer;touch-action:manipulation">
           <div style="display:flex;align-items:center;gap:8px">
             ${chev}
-            <span style="font-size:13px;font-weight:800">${_esc(c.coin)}</span>
+            <span style="font-size:13px;font-weight:800;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(c.name)}</span>
+            ${c.kind ? `<span style="flex-shrink:0;font-size:9px;font-weight:800;padding:2px 6px;border-radius:9px;background:var(--panel-2);border:1px solid var(--border2);color:var(--muted)">${c.kind === 'spot' ? T('Spot') : T('Outcome')}</span>` : ''}
             ${c.hedged > 0 ? `<span style="font-size:9px;font-weight:800;padding:2px 6px;border-radius:9px;
                background:rgba(255,159,10,0.15);color:var(--orange)">${T('SELF-HEDGED')} ${$(c.hedged)}</span>` : ''}
             <span style="flex:1"></span>
-            <span style="font-size:13px;font-weight:800;font-family:var(--font-mono);color:${netTone2}">
+            <span style="flex-shrink:0;font-size:13px;font-weight:800;font-family:var(--font-mono);color:${netTone2}">
               ${c.net >= 0 ? '+' : '−'}${$(c.net)}</span>
           </div>
           <div style="display:flex;align-items:baseline;gap:8px;margin-top:2px;padding-left:20px">
