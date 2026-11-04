@@ -8552,3 +8552,42 @@ html.has-bg-image .imged { background: var(--bg); }
 .mkt-strict-seg { display: flex; flex-shrink: 0; border: 1px solid var(--border2); border-radius: 8px; overflow: hidden; }
 .mkt-strict-seg button { background: transparent; border: none; color: var(--muted); font: 600 12px 'Inter', sans-serif; padding: 5px 12px; cursor: pointer; }
 .mkt-strict-seg button.active { background: color-mix(in oklch, var(--accent) 18%, transparent); color: var(--accent); }
+
+/* ─── Trade chart: header buttons, the desktop order book, full view ─────────────────────── */
+.chart-icon-btn { display: flex; align-items: center; justify-content: center; min-width: 30px; height: 30px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--border2); background: var(--panel-2); color: var(--fg-2); cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; }
+.chart-book-btn.is-on { color: var(--accent); border-color: var(--accent); background: color-mix(in oklch, var(--accent) 12%, transparent); }
+.chart-full-off { display: none; }
+.chart-full .chart-full-on { display: none; }
+.chart-full .chart-full-off { display: block; }
+
+/* The book beside the chart (src/deskbook.js). */
+.desk-book { width: 252px; flex-shrink: 0; display: flex; flex-direction: column; border-left: 1px solid var(--border); font-family: var(--font-mono); font-size: 11.5px; min-height: 0; }
+.desk-book.is-hidden { display: none; }
+.desk-book-head, .desk-book-row { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 6px; padding: 0 10px; }
+.desk-book-head { flex-shrink: 0; padding-top: 9px; padding-bottom: 7px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border); font-family: var(--font-sans); }
+.desk-book-head span + span, .desk-book-row span + span { text-align: right; }
+.desk-book-rows { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.desk-book-side { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.desk-book-asks { justify-content: flex-end; }
+.desk-book-row { position: relative; height: 19px; line-height: 19px; flex-shrink: 0; cursor: pointer; }
+.desk-book-row:hover { background: var(--panel-2); }
+.desk-book-row span { position: relative; color: var(--fg-2); white-space: nowrap; overflow: hidden; }
+.desk-book-row span.ask { color: var(--red); }
+.desk-book-row span.bid { color: var(--green); }
+.desk-book-row i { position: absolute; right: 0; top: 1px; bottom: 1px; }
+.desk-book-row i.ask { background: rgba(255, 77, 109, 0.10); }
+.desk-book-row i.bid { background: rgba(0, 229, 160, 0.10); }
+.desk-book-mid { flex-shrink: 0; display: flex; justify-content: space-between; align-items: baseline; padding: 6px 10px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--panel-2); }
+.desk-book-mid b { font-size: 13px; }
+.desk-book-mid span { font-size: 10px; color: var(--muted); font-family: var(--font-sans); }
+.desk-book-empty { margin: auto; color: var(--muted); font-family: var(--font-sans); padding: 20px; text-align: center; }
+
+/* Full view. The card is lifted over everything; the chart resizes itself to it. Solid on purpose
+   (tests/suites/backdrop.test.mjs): the Trade chart expanded to full view: prices to read, over the photo;
+   the phone chart expanded to full view: prices to read, over the photo. */
+.trade-chart-wrap.chart-full { position: fixed; inset: 0; z-index: 100060; margin: 0 !important; padding: 10px; display: flex; flex-direction: column; background: var(--bg); }
+.trade-chart-wrap.chart-full .trade-chart-body { flex: 1; height: auto !important; }
+.mob-chart-card.chart-full { position: fixed !important; inset: 0; z-index: 100060; border-radius: 0 !important; border: 0 !important; display: flex; flex-direction: column; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); background: var(--bg) !important; }
+.mob-chart-card.chart-full .mob-chart-plot { flex: 1; height: auto !important; }
+html.chart-full-open, html.chart-full-open body { overflow: hidden; }
+.mob-chart-card.chart-full > button, .mob-chart-card.chart-full > #mobChartHero { margin-top: env(safe-area-inset-top); }

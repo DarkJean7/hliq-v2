@@ -39,7 +39,8 @@ import {
   aggregateByHash,
 } from './render.js'
 import { renderCharts, destroyCharts, setPnlChartType, renderAcctCharts, destroyAcctCharts, setAcctPnlChartType, zoomAcctChartsToPeriod, renderPerfChart, destroyPerfCharts } from './charts.js'
-import { renderMobTradeChart, updateMobTradeChartData, destroyMobTradeChart, resetMobTradeChart, tradeChartState } from './tradechart.js'   // the Trade chart, on Lightweight Charts
+import { renderMobTradeChart, updateMobTradeChartData, destroyMobTradeChart, resetMobTradeChart, tradeChartState } from './tradechart.js'
+import { initDeskBook, setDeskBookCoin, toggleDeskBook } from './deskbook.js'   // the order book beside the desktop chart   // the Trade chart, on Lightweight Charts
 import 'hammerjs'
 import Chart from 'chart.js/auto'
 import zoomPlugin from 'chartjs-plugin-zoom'
@@ -6004,8 +6005,9 @@ async function loadTradeChart(coin, tf) {
   updateCoinHeader(coin)
   updateChartStats(coin)
 
-  // Reuse the mobile trade-chart engine (Chart.js + overlays/crosshair) on the desktop canvas
+  // The same chart engine as the phone (src/tradechart.js), on the desktop canvas
   _mobRenderTradeChart(coin, _mobChartTf, 'deskChartCanvas', 'deskChartHero')
+  setDeskBookCoin(coin)
 }
 
 function _refreshChartLines(coin) {
@@ -24561,7 +24563,11 @@ function _mobRenderTradeDetail(el) {
       </div>
 
       <!-- Chart -->
-      <div style="position:relative;border:1px solid var(--border);border-radius:16px;overflow:hidden;background:var(--panel)">
+      <div class="mob-chart-card" style="position:relative;border:1px solid var(--border);border-radius:16px;overflow:hidden;background:var(--panel)">
+        <button class="mob-chart-full-btn" onclick="window.__chartFull()" title="Expand the chart" style="position:absolute;top:6px;right:76px;z-index:3;display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg-2);cursor:pointer;padding:0">
+          <svg class="chart-full-on" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+          <svg class="chart-full-off" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>
+        </button>
         <div id="mobChartHero" style="position:absolute;top:8px;left:11px;z-index:2;font-size:12px;pointer-events:none"></div>
         <button id="mobChartTypeBtn" onclick="window._mobChartToggleType()" title="Toggle candlesticks" style="position:absolute;top:6px;right:42px;z-index:3;display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--muted);cursor:pointer;padding:0">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="7" y1="3" x2="7" y2="21"/><rect x="4.5" y="7" width="5" height="8" rx="1" fill="currentColor" stroke="none"/><line x1="17" y1="3" x2="17" y2="21"/><rect x="14.5" y="9.5" width="5" height="6.5" rx="1" fill="currentColor" stroke="none"/></svg>
@@ -24569,7 +24575,7 @@ function _mobRenderTradeDetail(el) {
         <button onclick="window._mobChartReset()" title="Reset chart" style="position:absolute;top:6px;right:8px;z-index:3;display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;border:1px solid var(--border2);background:var(--panel-2);color:var(--fg-2);cursor:pointer;padding:0">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
         </button>
-        <div style="position:relative;height:400px;padding:26px 2px 2px"><canvas id="mobChartCanvas"></canvas></div>
+        <div class="mob-chart-plot" style="position:relative;height:400px;padding:26px 2px 2px"><canvas id="mobChartCanvas"></canvas></div>
         <div data-dragscroll style="display:flex;gap:2px;padding:7px 8px;border-top:1px solid var(--border);overflow-x:auto;scrollbar-width:none">
           ${TFS.map(tf => `<button class="mob-detail-tf" data-tf="${tf}" onclick="window._mobDetailSetTf('${tf}')"
             style="flex:1 0 auto;min-width:40px;padding:6px 8px;border-radius:7px;border:none;background:${_mobChartTf===tf?'var(--panel-3)':'transparent'};color:${_mobChartTf===tf?'var(--fg)':'var(--muted)'};font-size:11px;font-weight:700;cursor:pointer">${tf.toUpperCase()}</button>`).join('')}
@@ -24629,6 +24635,34 @@ function _mobRenderTradeDetail(el) {
 
 window._mobChartReset = function() { resetMobTradeChart() }
 window.__tradeChartState = () => tradeChartState()   // tests/tradechart-live.mjs
+
+// "add the option to expand the chart to full view". The chart's card fills the window — on desktop
+// the order book comes with it — and the chart sizes itself to the new box (autoSize). Esc, or the
+// same button, puts it back.
+function _chartFullCard() {
+  return _isMobView() ? document.querySelector('.mob-chart-card') : document.querySelector('.trade-chart-wrap')
+}
+window.__chartFull = function(force) {
+  const card = _chartFullCard()
+  if (!card) return
+  const on = typeof force === 'boolean' ? force : !card.classList.contains('chart-full')
+  card.classList.toggle('chart-full', on)
+  document.documentElement.classList.toggle('chart-full-open', on)
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.querySelector('.chart-full')) window.__chartFull(false) })
+
+// The order book beside the desktop chart, on Hyperliquid's book socket (no request weight).
+initDeskBook({
+  subscribe: (c, cb) => subsClient().l2Book({ coin: c }, cb),
+  fmtPrice, fmtSize,
+  // A level clicked is a limit price: the form switches to Limit if it is on Market.
+  onPick: (px) => {
+    if (state.orderType === 'market') { try { setOrderType('limit') } catch {} }
+    const input = document.getElementById('limitPriceInput')
+    if (input) { input.value = String(px); input.dispatchEvent(new Event('input', { bubbles: true })) }
+  },
+})
+window.__toggleDeskBook = () => toggleDeskBook()
 
 // Which trade chart is on screen — mobile detail view or the desktop Trade tab.
 function _chartTarget() {

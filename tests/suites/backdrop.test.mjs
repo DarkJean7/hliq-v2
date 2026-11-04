@@ -35,6 +35,10 @@ const SOLID_ON_PURPOSE = {
   // The image editor previews a new wallpaper under the same scrim the app will lay over it.
   // It covers only its own preview frame (inset:0 of a small box), never the app's photo.
   '.imged-dim':       'the editor preview\'s copy of the wallpaper scrim, inside its own frame',
+  // "add the option to expand the chart to full view": candles to read prices off, with the
+  // book beside them on desktop — the same case as a sheet of numbers, not a window onto the photo.
+  '.trade-chart-wrap.chart-full': 'the Trade chart expanded to full view: prices to read, over the photo',
+  '.mob-chart-card.chart-full':   'the phone chart expanded to full view: prices to read, over the photo',
 }
 
 /** The declaration block whose selector list starts at `marker`, selectors included. */
