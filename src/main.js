@@ -38,7 +38,8 @@ import {
   resetLiveAccountValue,
   aggregateByHash,
 } from './render.js'
-import { renderCharts, destroyCharts, setPnlChartType, renderAcctCharts, destroyAcctCharts, setAcctPnlChartType, zoomAcctChartsToPeriod, renderMobTradeChart, updateMobTradeChartData, destroyMobTradeChart, resetMobTradeChart, renderPerfChart, destroyPerfCharts } from './charts.js'
+import { renderCharts, destroyCharts, setPnlChartType, renderAcctCharts, destroyAcctCharts, setAcctPnlChartType, zoomAcctChartsToPeriod, renderPerfChart, destroyPerfCharts } from './charts.js'
+import { renderMobTradeChart, updateMobTradeChartData, destroyMobTradeChart, resetMobTradeChart, tradeChartState } from './tradechart.js'   // the Trade chart, on Lightweight Charts
 import 'hammerjs'
 import Chart from 'chart.js/auto'
 import zoomPlugin from 'chartjs-plugin-zoom'
@@ -12273,7 +12274,7 @@ let _mobTradeSearchQ    = ''
 let _mobTradeObTimer    = null
 let _mobTradeAmtUnit    = 'usd'     // 'usd' (margin in USDC) | 'coin' (size in tokens)
 let _mobChartTf         = '1h'
-let _mobChartType       = 'line'    // 'line' | 'candle'
+let _mobChartType       = 'candle'  // 'line' | 'candle' — candles first, as a terminal opens (src/tradechart.js)
 
 function _isMobView() {
   if (localStorage.getItem('hliq_force_mobile') === '1') return true
@@ -24627,6 +24628,7 @@ function _mobRenderTradeDetail(el) {
 }
 
 window._mobChartReset = function() { resetMobTradeChart() }
+window.__tradeChartState = () => tradeChartState()   // tests/tradechart-live.mjs
 
 // Which trade chart is on screen — mobile detail view or the desktop Trade tab.
 function _chartTarget() {
@@ -24701,11 +24703,13 @@ function _mobChartOverlays(coin) {
 }
 
 // ─── Interactive trade-detail chart (Chart.js, same engine as the home charts) ─
+let _tradeChartSeq = 0
 async function _mobRenderTradeChart(coin, tf, canvasId = 'mobChartCanvas', heroId = 'mobChartHero') {
   const canvas = document.getElementById(canvasId)
   const hero   = document.getElementById(heroId)
   if (!canvas) return
   if (hero) hero.innerHTML = '<span style="color:var(--muted)">Loading…</span>'
+  const seq = ++_tradeChartSeq
 
   const hlInterval = { '1m':'1m','5m':'5m','15m':'15m','30m':'30m','1h':'1h','2h':'2h','4h':'4h','8h':'8h','12h':'12h','1D':'1d','1d':'1d','3D':'3d','1W':'1w','1w':'1w' }[tf] ?? '1h'
   // Fetch deep history (~5000 candles, HL's per-request cap) so the user can
@@ -24729,6 +24733,9 @@ async function _mobRenderTradeChart(coin, tf, canvasId = 'mobChartCanvas', heroI
   }
 
   const cv = document.getElementById(canvasId)
+  // Only the latest load draws: opening the tab and picking a coin both start one, and tapping
+  // 30m then 2h quickly could otherwise leave the 30m chart under the 2h pill.
+  if (seq !== _tradeChartSeq) return
   if (!cv || (state.selectedCoin || 'BTC') !== coin) return   // user navigated away
   if (!Array.isArray(candles) || candles.length < 2) {
     const h = document.getElementById(heroId)
