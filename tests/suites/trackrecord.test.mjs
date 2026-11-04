@@ -134,5 +134,27 @@ console.log(nl + '-- the sign on a losing position --')
   t('the signless form is gone', !cli.includes("${pnl >= 0 ? '+' : ''}$${fmtUSD(Math.abs(pnl))}"))
 }
 
+console.log(nl + '-- a trade keyed by its order counts --')
+{
+  // "profit factor is not loading in mobile". The app's tradeWindows keys a trade by its order
+  // ("0xabc|o123"); trackRecord took the number after the last "_" as the hour and dropped any
+  // key without one — every trade — so Profit Factor read "—" beside a 99.8% win rate.
+  const tr = trackRecord({ windows: { '0xa|o1': 10, '0xa|o2': -2, '0xa|t9': 5, '0xa|o3': 0 } })
+  t('every order-keyed trade is counted', tr.trades === 4, tr)
+  t('and the profit factor is wins over losses', tr.profitFactor === 7.5, tr.profitFactor)
+  t('a time it cannot know is unknown, not 1970', tr.firstTradeAt === null && tr.tradingDays === 0, tr)
+  const hr = trackRecord({ windows: { BTC_480000: 10, ETH_480024: -5 } })
+  t('the server\'s hour keys still date the record', hr.trades === 2 && hr.firstTradeAt === 480000 * 3600e3 && hr.tradingDays === 2, hr)
+}
+
+console.log(nl + '-- the phone\'s balance fits --')
+{
+  // "fix huge numbers in mobile": $368,079.73 at 46px ran under the sparkline.
+  const cli = fs.readFileSync('src/main.js', 'utf8')
+  t('from $100K the headline reads in K / M / B',
+    /const unit = shown >= 1e9 \? \['B', 1e9\] : shown >= 1e6 \? \['M', 1e6\] : shown >= 1e5 \? \['K', 1e3\] : null/.test(cli))
+  t('and keeps the exact figure on hover / long-press', /balEl\.title = _privacyMode \? '' : '\$' \+ fmtUSD\(shown, 2\)/.test(cli))
+}
+
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

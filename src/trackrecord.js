@@ -165,9 +165,17 @@ export function holdsStep(state, fills, { assumeFlatStart = false } = {}) {
 }
 
 export function trackRecord({ windows, portfolio, lastFillAt, openLoss, holds } = {}) {
+  // A key is an hour ("BTC_493012", the server's windows) or an order ("0xabc|o123", the app's
+  // tradeWindows since a trade became an order). Only the hour form carries a time; an order key
+  // is still a trade. Requiring the hour dropped every order key, so the phone's Profit Factor
+  // read "—" beside a 99.8% win rate built from the same trades.
   const entries = Object.entries(windows ?? {})
-    .map(([k, v]) => [Number(String(k).slice(String(k).lastIndexOf('_') + 1)), Number(v)])
-    .filter(([h, v]) => Number.isFinite(h) && Number.isFinite(v))
+    .map(([k, v]) => {
+      const s = String(k), us = s.lastIndexOf('_')
+      const h = us >= 0 ? Number(s.slice(us + 1)) : NaN
+      return [h, Number(v)]
+    })
+    .filter(([, v]) => Number.isFinite(v))
 
   let grossWin = 0, grossLoss = 0, wins = 0, losses = 0, best = null, worst = null
   let firstHour = Infinity
@@ -177,8 +185,10 @@ export function trackRecord({ windows, portfolio, lastFillAt, openLoss, holds } 
     else if (v < 0) { grossLoss += -v; losses++ }
     if (best === null || v > best) best = v
     if (worst === null || v < worst) worst = v
-    if (h < firstHour) firstHour = h
-    days.add(Math.floor((h * HOUR) / DAY))
+    if (Number.isFinite(h)) {
+      if (h < firstHour) firstHour = h
+      days.add(Math.floor((h * HOUR) / DAY))
+    }
   }
   const trades = entries.length
 

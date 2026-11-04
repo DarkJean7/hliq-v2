@@ -16058,9 +16058,16 @@ function _mobVRenderBalance() {
     const oxTag = _ox > 0
       ? `<div data-offex-tag style="font-size:11px;font-weight:600;letter-spacing:0;color:var(--muted);margin-top:2px">incl. ${_privacyMode ? '•••' : '$' + fmtUSD(_ox)} off-exchange</div>`
       : ''
+    // "fix huge numbers in mobile, maybe use K, M": at 46px a six-figure balance ran under the
+    // sparkline ($368,079.73 → "$368,07"). From $100K it reads $368.08K, the cents' place taken by
+    // the unit; below that the full figure fits and stays exact.
+    const unit = shown >= 1e9 ? ['B', 1e9] : shown >= 1e6 ? ['M', 1e6] : shown >= 1e5 ? ['K', 1e3] : null
     balEl.innerHTML = (_privacyMode
       ? `<span style="letter-spacing:4px;color:var(--muted)">•••••</span>`
-      : `$${fmtUSD(whole, 0)}<span style="color:var(--muted)">${cents}</span>`) + oxTag
+      : unit
+        ? `$${(shown / unit[1]).toFixed(2)}<span style="color:var(--muted)">${unit[0]}</span>`
+        : `$${fmtUSD(whole, 0)}<span style="color:var(--muted)">${cents}</span>`) + oxTag
+    balEl.title = _privacyMode ? '' : '$' + fmtUSD(shown, 2)   // the exact figure, on hover / long-press
   }
 
   // Today's change → colored pill ( ▲/▼  $X · Y% today )
