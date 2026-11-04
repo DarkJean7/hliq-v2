@@ -132,9 +132,11 @@ ok('NVDA is categorised as a stock', /Stocks/.test(await cell('NVDA', 8) ?? ''),
 await p.click('#mkTabs button[data-tab="all"]')
 await p.click('#mkMode button[data-mode="revenue"]')
 const rev = await syms()
-// "in markets revenue 'all' is not including trad-fi": companies are in, after the crypto ranked by
-// 24h — a quarter has no 24h figure — with a 30d that is a third of the last quarter, marked ≈.
-ok('Revenue view: tokens with revenue, ranked by it, and the companies too', JSON.stringify(rev) === JSON.stringify(['HYPE', 'DOGE', 'NVDA']), rev)
+// "in markets revenue 'all' is not including trad-fi", then "i dont see tradfi in revenue all":
+// companies are in, and the view opens ranked by 30d — the one figure both have (a company's is a
+// third of its last quarter, marked ≈). Ranked by 24h they all sat below the last crypto token.
+ok('Revenue view: opens ranked by 30d', await p.evaluate(() => document.querySelector('#mkRankBtns button.is-on')?.dataset.sort) === 'rev30')
+ok('companies and tokens in one ranking', JSON.stringify(rev) === JSON.stringify(['NVDA', 'HYPE', 'DOGE']), rev)
 ok("a company's 30d is a third of its quarter, marked ≈", (await cell('NVDA', 4))?.startsWith('≈ $32.07B'), await cell('NVDA', 4))
 ok("HYPE's category is DefiLlama's", /Derivatives/.test(await cell('HYPE', 8) ?? ''), await cell('HYPE', 8))
 ok('the revenue card sums each token once (HYPE perp and spot are one token)', /\$671\.0K/.test(await p.textContent('#mkCards')), await p.textContent('#mkCards'))

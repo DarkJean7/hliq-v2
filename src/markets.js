@@ -299,7 +299,7 @@ function renderControls() {
   }
   for (const b of $('mkStrict').querySelectorAll('button')) b.classList.toggle('is-on', (b.dataset.strict === '1') === view.strict)
   for (const b of $('mkMode').querySelectorAll('button')) b.classList.toggle('is-on', b.dataset.mode === view.mode)
-  const sorts = stockRevenueView() ? ['sq', 'sttm', 'syoy'] : view.mode === 'revenue' ? ['rev24', 'rev7', 'rev30', 'fee30', 'mcap'] : ['vol24', 'oi', 'mcap', 'chg24', 'funding1h', 'rev24']
+  const sorts = stockRevenueView() ? ['sq', 'sttm', 'syoy'] : view.mode === 'revenue' ? ['rev30', 'rev24', 'rev7', 'fee30', 'mcap'] : ['vol24', 'oi', 'mcap', 'chg24', 'funding1h', 'rev24']
   const LBL = { sq: 'Last quarter', sttm: 'Last 12 months', syoy: 'Growth YoY', fee30: 'Fees 30d', vol24: 'Volume', oi: 'Open interest', mcap: 'Market cap', chg24: '24h change', funding1h: 'Funding', rev24: 'Revenue 24h', rev7: 'Revenue 7d', rev30: 'Revenue 30d' }
   $('mkRankBtns').innerHTML = sorts.map(k => `<button data-sort="${k}" class="${k === view.sort ? 'is-on' : ''}">${LBL[k]}</button>`).join('')
 
@@ -433,7 +433,7 @@ const set = (patch) => {
   // Keep the sort meaningful across tab/mode changes: the stock revenue view ranks by its own
   // columns, and the crypto one cannot rank by a stock's quarter.
   if (stockRevenueView() && !STOCK_SORTS.includes(view.sort)) view = { ...view, sort: 'sq', asc: false }
-  else if (!stockRevenueView() && STOCK_SORTS.includes(view.sort)) view = { ...view, sort: view.mode === 'revenue' ? 'rev24' : 'vol24', asc: false }
+  else if (!stockRevenueView() && STOCK_SORTS.includes(view.sort)) view = { ...view, sort: view.mode === 'revenue' ? 'rev30' : 'vol24', asc: false }
   render()
 }
 $('mkTabs').addEventListener('click', e => { const b = e.target.closest('button[data-tab]'); if (b) set({ tab: b.dataset.tab, dex: null, sector: null }) })
@@ -441,7 +441,9 @@ $('mkStrict').addEventListener('click', e => { const b = e.target.closest('butto
 $('mkMode').addEventListener('click', e => {
   const b = e.target.closest('button[data-mode]'); if (!b) return
   if (b.dataset.mode === 'exchanges' && ex.state === 'idle') loadExchanges()
-  set({ mode: b.dataset.mode, sort: b.dataset.mode === 'exchanges' ? EX_SORTS[view.ex][0] : b.dataset.mode === 'revenue' ? 'rev24' : 'vol24', asc: false })
+  // Revenue opens on 30d: the one figure crypto (daily) and companies (a third of a quarter) both
+  // have. Ranked by 24h the companies, which have none, all sat below the last crypto token.
+  set({ mode: b.dataset.mode, sort: b.dataset.mode === 'exchanges' ? EX_SORTS[view.ex][0] : b.dataset.mode === 'revenue' ? 'rev30' : 'vol24', asc: false })
 })
 $('mkExKind').addEventListener('click', e => {
   const b = e.target.closest('button[data-ex]'); if (b) set({ ex: b.dataset.ex, sort: EX_SORTS[b.dataset.ex][0], asc: false })
