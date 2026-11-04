@@ -97,13 +97,14 @@ export function refreshPrices({ force = false, extra = [] } = {}) {
         // Hyperliquid's own book: the app already has these mids, so there is nothing to
         // fetch and nothing to spend. No contract exists to ask a DEX source about anyway.
         if (n === HL_NET) {
-          return addrs.map(a => {
-            const px = Number(ctx.hlPrice?.(a))
+          // hlPrice may first have to load the spot pair map, so it can answer later than now.
+          return Promise.all(addrs.map(async a => {
+            const px = Number(await ctx.hlPrice?.(a))
             return [quoteKey(n, a), Number.isFinite(px) && px > 0
               ? { addr: a, symbol: a, name: 'Hyperliquid spot', icon: null,
                   price: px, liq: null, thin: false, src: 'Hyperliquid', pool: null }
               : null]
-          })
+          }))
         }
         try {
           const r = await fetch('/offexprice?a=' + addrs.join(',') + (n === DEFAULT_NET ? '' : '&n=' + n))

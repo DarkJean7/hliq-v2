@@ -12072,13 +12072,15 @@ initOffex({
   // artwork for them — reported as HYPE and BTC showing a letter circle in the Spot tab. The
   // app already has the coin's icon; hand it over rather than teaching this module about it.
   coinIconHtml: (sym) => _coinIconHtml(sym),
-  hlPrice: (tok) => {
+  // The SPOT mid, through the same pair map the Spot tab and the wheel use. This read
+  // _spotNameMap, which only the Trade tab's market load fills, and fell back to mids[symbol]:
+  // HYPE and PURR "worked" because each has a perp of that name — priced off the perp — and DRV,
+  // spot-only (@700), was "not quoting" ("it is not letting me add drv").
+  hlPrice: async (tok) => {
     const t = String(tok ?? '').toUpperCase()
-    const mids = state.allMids ?? {}
-    const pair = Object.keys(_spotNameMap ?? {}).find(k => String(_spotNameMap[k]).toUpperCase() === t)
-    const raw  = mids[pair] ?? mids[t] ?? null
-    const n    = parseFloat(raw)
-    return Number.isFinite(n) && n > 0 ? n : null
+    if (!_spotMetaLoaded()) { try { await ensureSpotMeta() } catch {} }
+    const px = _spotMid(t)
+    return px > 0 ? px : null
   },
   // The mobile spot rows' own detail grid, so an off-exchange token opens to the same layout.
   detailGrid: (items) => _mobVDetailGrid(items),

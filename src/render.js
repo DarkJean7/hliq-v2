@@ -1451,16 +1451,22 @@ function _ovRecentActivity(fills) {
   const grouped = aggregateByHash(fills || []).sort((a, b) => b.time - a.time)
   const items = grouped.slice(0, 5).map(f => {
     const dir   = (f.dir ?? '').toLowerCase()
-    const isClose = dir.includes('close') || f.closedPnl !== 0
+    // A spot (or outcome) fill is a purchase or a sale, not a position: Hyperliquid's dir for it is
+    // "Buy"/"Sell", and it read as "Opened HYPE long" here while History said Buy.
+    const spot  = dir === 'buy' || dir === 'sell' || isSpotCoin(f.coin) || String(f.coin).startsWith('#')
+    const isClose = spot ? false : dir.includes('close') || f.closedPnl !== 0
     const sideWord = dir.includes('long') ? 'long' : dir.includes('short') ? 'short' : (f.side === 'BUY' ? 'long' : 'short')
-    const verb  = isClose ? 'Closed' : 'Opened'
-    const subCls = isClose && f.closedPnl ? (f.closedPnl >= 0 ? 'pos' : 'neg') : ''
-    const sub   = isClose && f.closedPnl ? fmtPnL(f.closedPnl).text + ' realized'
-               : '$' + fmtUSD(f.notional) + ' notional'
+    const head  = spot ? `${f.side === 'BUY' ? 'Bought' : 'Sold'} ${esc(_lbl(f.coin))}`
+                       : `${isClose ? 'Closed' : 'Opened'} ${esc(_lbl(f.coin))} ${sideWord}`
+    // A sale can still realise a result; a purchase is only what it cost.
+    const pnl   = (isClose || (spot && f.side !== 'BUY')) && f.closedPnl ? f.closedPnl : 0
+    const subCls = pnl ? (pnl >= 0 ? 'pos' : 'neg') : ''
+    const sub   = pnl ? fmtPnL(pnl).text + ' realized'
+               : '$' + fmtUSD(f.notional) + (spot ? '' : ' notional')
     const ago   = _ovTimeAgo(f.time)
     return `<div class="ov-act-row">
       ${_ovCoinIcon(f.coin)}
-      <span class="ov-act-main"><b>${verb} ${esc(_lbl(f.coin))} ${sideWord}</b><i class="${subCls}">${esc(sub)}</i></span>
+      <span class="ov-act-main"><b>${head}</b><i class="${subCls}">${esc(sub)}</i></span>
       <span class="ov-act-ago">${ago}</span>
     </div>`
   })

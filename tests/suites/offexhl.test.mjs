@@ -56,18 +56,38 @@ console.log(nl + '-- and the price comes from the app, not a DEX --')
 t('offexui resolves HL quotes locally', /if \(n === HL_NET\) \{[\s\S]{0,400}?ctx\.hlPrice/.test(UI))
 t('marked as sourced from Hyperliquid', /src: 'Hyperliquid'/.test(UI))
 t('never thin — an exchange book is not a pool', /src: 'Hyperliquid'[\s\S]{0,60}?|thin: false/.test(UI))
-t('main.js supplies the mids', /hlPrice: \(tok\) => \{/.test(CLI))
+t('main.js supplies the mids', /hlPrice: async \(tok\) => \{/.test(CLI))
+t('and the module waits for them', /Number\(await ctx\.hlPrice\?\.\(a\)\)/.test(UI))
 
 // Built from the source so the assertion tracks the real function.
-const hlPrice = (mids, names, tok) => new Function('stubs', `
-  const { state, _spotNameMap } = stubs
-  const o = { ${CLI.slice(CLI.indexOf('hlPrice: (tok) => {'), CLI.indexOf('},', CLI.indexOf('hlPrice: (tok) => {')) + 2)} }
-  return o.hlPrice('${tok}')
-`)({ state: { allMids: mids }, _spotNameMap: names })
-t('a bare symbol prices from mids', hlPrice({ HYPE: '97.505' }, {}, 'HYPE') === 97.505)
-t('a spot pair id prices through the name map', hlPrice({ '@107': '97.4595' }, { '@107': 'HYPE' }, 'HYPE') === 97.4595)
-t('an unknown token has no price, not a zero', hlPrice({}, {}, 'NOPE') === null)
-t('and a junk mid is refused rather than shown as 0', hlPrice({ HYPE: '0' }, {}, 'HYPE') === null)
+//
+// It used to read _spotNameMap — filled only by the Trade tab's market load — and fall back to
+// mids[symbol]. So "it is not letting me add drv": DRV is spot-only (@700), and HYPE and PURR only
+// "worked" because a perp shares each name, which priced them off the PERP. Now it goes through
+// _spotMid, the pair map the Spot tab and the wheel read, and loads that map when it has to.
+const SRC = CLI.slice(CLI.indexOf('hlPrice: async (tok) => {'), CLI.indexOf('\n  },', CLI.indexOf('hlPrice: async (tok) => {')) + 4)
+const hlPrice = (spot, loaded, tok) => {
+  const calls = { ensured: 0 }
+  const p = new Function('stubs', `
+    const { _spotMetaLoaded, ensureSpotMeta, _spotMid } = stubs
+    const o = { ${SRC} }
+    return o.hlPrice('${tok}')
+  `)({
+    _spotMetaLoaded: () => loaded.v,
+    ensureSpotMeta: async () => { calls.ensured++; loaded.v = true },
+    _spotMid: (t) => loaded.v ? (spot[t] ?? 0) : 0,
+  })
+  return p.then(v => ({ v, ...calls }))
+}
+{
+  const a = await hlPrice({ DRV: 0.3497 }, { v: true }, 'DRV')
+  t('a spot-only token prices through the pair map', a.v === 0.3497, a)
+  const b = await hlPrice({ DRV: 0.3497 }, { v: false }, 'drv')
+  t('the map is loaded first when no tab has loaded it', b.v === 0.3497 && b.ensured === 1, b)
+  t('a perp of the same name is not the spot price', !/mids\[t\]/.test(SRC))
+  t('an unknown token has no price, not a zero', (await hlPrice({}, { v: true }, 'NOPE')).v === null)
+  t('and a junk mid is refused rather than shown as 0', (await hlPrice({ HYPE: 0 }, { v: true }, 'HYPE')).v === null)
+}
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)
