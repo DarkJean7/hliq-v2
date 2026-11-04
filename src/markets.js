@@ -215,7 +215,9 @@ function renderExchanges() {
     const src = r.kind === 'CEX' ? (r.slug ? `https://icons.llamao.fi/icons/protocols/${encodeURIComponent(String(r.slug).toLowerCase())}?w=48&h=48` : null) : r.logo
     return `<span class="mk-ico" data-l="${esc(r.name.slice(0, 1))}">${src ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">` : ''}</span>`
   }
-  const cell = (k, r) => k.startsWith('in') ? flow(r[k]) : m(r[k])
+  // A CEX DefiLlama has no volume for (Robinhood) ranks last by volume; say why instead of a bare dash.
+  const noVol = '<span class="mk-dim" title="DefiLlama publishes no trading volume for this exchange — rank by Assets to compare it">not published</span>'
+  const cell = (k, r) => k.startsWith('in') ? flow(r[k]) : k === 'vol24' && r.kind === 'CEX' && r[k] == null ? noVol : m(r[k])
   const page = list.slice(0, view.shown)
   const bodyHtml = page.length ? page.map((r, i) => `<tr>
       <td class="mk-c-rank">${i + 1}</td>
@@ -252,7 +254,15 @@ function current() {
   // Stocks report by QUARTER: on the TradFi tab the Revenue view is theirs (SEC filings);
   // elsewhere it is crypto's daily figures, and stocks are not mixed in.
   if (view.mode === 'revenue' && stockRevenueView()) list = list.filter(r => r.sq != null)
-  else if (view.mode === 'revenue') list = onePerToken(list.filter(r => (r.rev30 ?? 0) > 0 || (r.rev24 ?? 0) > 0 || (r.fee30 ?? 0) > 0))
+  else if (view.mode === 'revenue') {
+    const crypto = onePerToken(list.filter(r => r.group !== 'tradfi' && ((r.rev30 ?? 0) > 0 || (r.rev24 ?? 0) > 0 || (r.fee30 ?? 0) > 0)))
+    // "in markets revenue 'all' is not including trad-fi". A company reports by QUARTER, so its
+    // 24h and 7d stay blank; its 30d is a third of the last quarter, marked ≈ in the cell, which
+    // is what lets NVDA and HYPE sit in one ranking. The TradFi tab keeps the quarterly columns.
+    const stocks = view.tab === 'crypto' ? [] : onePerToken(list.filter(r => r.sq != null && r.group === 'tradfi'))
+      .map(r => ({ ...r, rev30: r.sq / 3, rev30Approx: true }))
+    list = [...crypto, ...stocks]
+  }
   return list
 }
 
@@ -352,6 +362,7 @@ const qLabel = (r) => {
 const cellFor = (k, r) => k === 'sqPeriod' ? qLabel(r) : k === 'syoy' ? chg(r.syoy)
   : k === 'price' ? price(r.price) : k === 'chg24' ? chg(r.chg24) : k === 'funding1h' ? fund(r.funding1h)
   : k === 'mcap' && r.mcapFrom === 'coingecko' && r.mcap != null ? `<span title="Market cap from CoinGecko">${money(r.mcap)}</span>`
+  : k === 'rev30' && r.rev30Approx ? `<span title="A third of the last quarter reported to the SEC">≈ ${money(r.rev30)}</span>`
   : m(r[k])
 
 function renderTable(list) {
@@ -390,7 +401,7 @@ function renderHint() {
   if (!h) return
   const show = view.mode === 'revenue' && view.tab !== 'tradfi'
   h.hidden = !show
-  if (show) h.innerHTML = `Crypto protocols, by day — tap a row for its history. Stocks report revenue by quarter — <button data-tab="tradfi">see them on the TradFi tab</button>.`
+  if (show) h.innerHTML = `Crypto protocols by day; companies report by quarter, so their 30d is a third of the last one (≈). Tap a row for its history, or <button data-tab="tradfi">see the quarters on the TradFi tab</button>.`
   else if (stockRevenueView()) { h.hidden = false; h.textContent = 'Revenue reported to the SEC, by quarter — tap a row for the last four years.' }
 }
 

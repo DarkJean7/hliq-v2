@@ -109,9 +109,9 @@ await p.click('#mkRankBtns button[data-sort="chg24"]')
 ok('by 24h change: the biggest gainer first', (await syms())[0] === 'BTC' && (await syms()).at(-1) === 'DOGE', await syms())
 
 console.log('\n-- filtering --')
-await p.click('#mkTabs button[data-tab="hip3"]')
-ok('the HIP-3 tab shows only HIP-3 markets', JSON.stringify((await syms()).sort()) === JSON.stringify(['NVDA', 'SP500']), await syms())
-ok('with a chip per dex', await p.evaluate(() => [...document.querySelectorAll('#mkDexes button')].some(b => /XYZ/.test(b.textContent))))
+// "remove the perps, hip3, spot options": the tabs are All, Crypto and TradFi now.
+ok('the tabs are All, Crypto and TradFi', await p.evaluate(() =>
+  JSON.stringify([...document.querySelectorAll('#mkTabs button')].map(b => b.dataset.tab)) === JSON.stringify(['all', 'crypto', 'tradfi'])))
 await p.click('#mkTabs button[data-tab="all"]')
 await p.fill('#mkSearch', 'hyperl')
 await p.waitForFunction(() => document.querySelectorAll('#mkBody .mk-asset b').length === 1, null, { timeout: 3000 }).catch(() => {})
@@ -132,7 +132,10 @@ ok('NVDA is categorised as a stock', /Stocks/.test(await cell('NVDA', 8) ?? ''),
 await p.click('#mkTabs button[data-tab="all"]')
 await p.click('#mkMode button[data-mode="revenue"]')
 const rev = await syms()
-ok('Revenue view: only tokens with revenue, ranked by it', JSON.stringify(rev) === JSON.stringify(['HYPE', 'DOGE']), rev)
+// "in markets revenue 'all' is not including trad-fi": companies are in, after the crypto ranked by
+// 24h — a quarter has no 24h figure — with a 30d that is a third of the last quarter, marked ≈.
+ok('Revenue view: tokens with revenue, ranked by it, and the companies too', JSON.stringify(rev) === JSON.stringify(['HYPE', 'DOGE', 'NVDA']), rev)
+ok("a company's 30d is a third of its quarter, marked ≈", (await cell('NVDA', 4))?.startsWith('≈ $32.07B'), await cell('NVDA', 4))
 ok("HYPE's category is DefiLlama's", /Derivatives/.test(await cell('HYPE', 8) ?? ''), await cell('HYPE', 8))
 ok('the revenue card sums each token once (HYPE perp and spot are one token)', /\$671\.0K/.test(await p.textContent('#mkCards')), await p.textContent('#mkCards'))
 await p.click('#mkMode button[data-mode="market"]')
