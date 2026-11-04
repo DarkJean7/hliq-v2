@@ -198,6 +198,42 @@ export function renderMobTradeChart(canvas, candles, overlays, heroId, tf = '1h'
   return chart
 }
 
+/**
+ * Older history on demand. The chart opens with a recent page of candles; scrolled to within a
+ * few bars of the oldest one, `load(firstBarMs)` is asked for the candles before it (it resolves
+ * to them, or to null/[] when there are none), and they are added on the left without moving the
+ * view. One page at a time; an empty page means the start of the market's history.
+ */
+let olderLoad = null, olderBusy = false, olderDone = false
+export function onNeedOlder(load) {
+  olderLoad = load; olderBusy = false; olderDone = false
+  if (!chart) return
+  chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
+    if (!r || r.from > 30 || olderBusy || olderDone || !olderLoad || !bars.length) return
+    olderBusy = true
+    const mine = chart
+    Promise.resolve(olderLoad(bars[0].ms)).then((older) => {
+      if (mine !== chart) return
+      const add = toBars(older ?? []).filter(b => b.time < bars[0].time)
+      if (!add.length) { olderDone = true; return }
+      const view = chart.timeScale().getVisibleLogicalRange()
+      bars = [...add, ...bars]
+      price.setData(mode === 'candle' ? bars : bars.map(lineBar))
+      volume?.setData(bars.map(volBar))
+      // Same candles on screen: every index moved right by the number added.
+      if (view) chart.timeScale().setVisibleLogicalRange({ from: view.from + add.length, to: view.to + add.length })
+    }).catch(() => {}).finally(() => { olderBusy = false })
+  })
+}
+
+/** For tests/chartolder-live.mjs: put bar `i` at the left edge, as a long drag back would. */
+export function tradeChartScrollTo(i) {
+  if (!chart) return
+  const r = chart.timeScale().getVisibleLogicalRange()
+  const w = r ? r.to - r.from : VIEW_BARS
+  chart.timeScale().setVisibleLogicalRange({ from: i, to: i + w })
+}
+
 /** For tests/tradechart-live.mjs: what is drawn and where the view sits, in bar indexes. */
 export function tradeChartState() {
   return chart ? { bars: bars.length, mode, lines: lines.length, range: chart.timeScale().getVisibleLogicalRange() } : null

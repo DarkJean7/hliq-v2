@@ -39,7 +39,7 @@ import {
   aggregateByHash,
 } from './render.js'
 import { renderCharts, destroyCharts, setPnlChartType, renderAcctCharts, destroyAcctCharts, setAcctPnlChartType, zoomAcctChartsToPeriod, renderPerfChart, destroyPerfCharts } from './charts.js'
-import { renderMobTradeChart, updateMobTradeChartData, destroyMobTradeChart, resetMobTradeChart, tradeChartState } from './tradechart.js'
+import { renderMobTradeChart, updateMobTradeChartData, destroyMobTradeChart, resetMobTradeChart, tradeChartState, onNeedOlder, tradeChartScrollTo } from './tradechart.js'
 import { initDeskBook, setDeskBookCoin, toggleDeskBook } from './deskbook.js'   // the order book beside the desktop chart   // the Trade chart, on Lightweight Charts
 import 'hammerjs'
 import Chart from 'chart.js/auto'
@@ -24635,6 +24635,7 @@ function _mobRenderTradeDetail(el) {
 
 window._mobChartReset = function() { resetMobTradeChart() }
 window.__tradeChartState = () => tradeChartState()   // tests/tradechart-live.mjs
+window.__tradeChartScrollTo = (i) => tradeChartScrollTo(i)   // tests/chartolder-live.mjs
 
 // "add the option to expand the chart to full view". The chart's card fills the window — on desktop
 // the order book comes with it — and the chart sizes itself to the new box (autoSize). Esc, or the
@@ -24738,6 +24739,39 @@ function _mobChartOverlays(coin) {
 
 // ─── Interactive trade-detail chart (Chart.js, same engine as the home charts) ─
 let _tradeChartSeq = 0
+const _TRADE_IV = { '1m':'1m','5m':'5m','15m':'15m','30m':'30m','1h':'1h','2h':'2h','4h':'4h','8h':'8h','12h':'12h','1D':'1d','1d':'1d','3D':'3d','1W':'1w','1w':'1w' }
+const _TRADE_IV_MS = { '1m':6e4,'5m':3e5,'15m':9e5,'30m':18e5,'1h':36e5,'2h':72e5,'4h':144e5,'8h':288e5,'12h':432e5,'1d':864e5,'3d':2592e5,'1w':6048e5 }
+const _TRADE_PAGE_BARS = 1000          // per request: 20 + 17 weight
+const _tradeRecent = new Map()         // 'coin|iv' -> { at, p }: the recent page, shared by loads that overlap
+
+// Candles, with retry and backoff — a single 429 or network blip used to leave the chart blank
+// ("this happens sometimes"). The recent page is shared for 20s: opening the Trade tab and picking
+// a coin both ask for it, and the second used to pay for it again. 'gone' = the user moved on.
+async function _tradeCandles(coin, iv, startTime, endTime = null, recent = false) {
+  const key = coin + '|' + iv
+  const hit = recent ? _tradeRecent.get(key) : null
+  if (hit && Date.now() - hit.at < 20_000) return hit.p
+  const p = (async () => {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if ((state.selectedCoin || 'BTC') !== coin) return 'gone'
+      if (typeof _hlLimited === 'function' && _hlLimited()) { await new Promise(r => setTimeout(r, 1200)); continue }
+      try {
+        const r = await _hlInfo({ type: 'candleSnapshot', req: { coin, interval: iv, startTime, endTime } })
+        if (r.status === 429) { await new Promise(res => setTimeout(res, 1000 * (attempt + 1))); continue }
+        const j = await r.json()
+        if (Array.isArray(j)) return j
+      } catch {}
+      await new Promise(r => setTimeout(r, 700 * (attempt + 1)))
+    }
+    return []
+  })()
+  if (recent) {
+    _tradeRecent.set(key, { at: Date.now(), p })
+    p.then(v => { if (!Array.isArray(v) || v.length < 2) _tradeRecent.delete(key) })   // never keep a failure
+  }
+  return p
+}
+
 async function _mobRenderTradeChart(coin, tf, canvasId = 'mobChartCanvas', heroId = 'mobChartHero') {
   const canvas = document.getElementById(canvasId)
   const hero   = document.getElementById(heroId)
@@ -24745,26 +24779,12 @@ async function _mobRenderTradeChart(coin, tf, canvasId = 'mobChartCanvas', heroI
   if (hero) hero.innerHTML = '<span style="color:var(--muted)">Loading…</span>'
   const seq = ++_tradeChartSeq
 
-  const hlInterval = { '1m':'1m','5m':'5m','15m':'15m','30m':'30m','1h':'1h','2h':'2h','4h':'4h','8h':'8h','12h':'12h','1D':'1d','1d':'1d','3D':'3d','1W':'1w','1w':'1w' }[tf] ?? '1h'
-  // Fetch deep history (~5000 candles, HL's per-request cap) so the user can
-  // pan/zoom far back; the chart defaults to the recent window.
-  const D = 86400 * 1000
-  const lookbackMs = { '1m':3.3*D,'5m':17*D,'15m':50*D,'30m':100*D,'1h':200*D,'2h':400*D,'4h':800*D,'8h':1600*D,'12h':2400*D,'1D':3650*D,'1d':3650*D,'3D':3650*D,'1W':3650*D,'1w':3650*D }[tf] ?? 200*D
-
-  // Fetch with retry/backoff — a single 429 or network blip used to leave the chart blank
-  // ("this happens sometimes"). Keep "Loading…" and retry a few times before giving up.
-  let candles = []
-  for (let attempt = 0; attempt < 4; attempt++) {
-    if ((state.selectedCoin || 'BTC') !== coin) return   // user navigated away mid-retry
-    if (typeof _hlLimited === 'function' && _hlLimited()) { await new Promise(r => setTimeout(r, 1200)); continue }
-    try {
-      const r = await _hlInfo({ type: 'candleSnapshot', req: { coin, interval: hlInterval, startTime: Date.now() - lookbackMs, endTime: null } })
-      if (r.status === 429) { await new Promise(res => setTimeout(res, 1000 * (attempt + 1))); continue }
-      const j = await r.json()
-      if (Array.isArray(j) && j.length >= 2) { candles = j; break }
-    } catch {}
-    await new Promise(r => setTimeout(r, 700 * (attempt + 1)))
-  }
+  const hlInterval = _TRADE_IV[tf] ?? '1h'
+  // The recent PAGE_BARS candles, not 5,000: a candle costs 1 weight per 60 on top of the 20, so a
+  // 5,000-bar load was 104 weight against a 1,200/min budget the exchange's own tab shares ("i just
+  // got rate limited in hyperliquid.xyz"). Older history loads when you scroll back to it.
+  const candles = await _tradeCandles(coin, hlInterval, Date.now() - _TRADE_PAGE_BARS * _TRADE_IV_MS[hlInterval], null, true)
+  if (candles === 'gone') return
 
   const cv = document.getElementById(canvasId)
   // Only the latest load draws: opening the tab and picking a coin both start one, and tapping
@@ -24777,9 +24797,20 @@ async function _mobRenderTradeChart(coin, tf, canvasId = 'mobChartCanvas', heroI
     return
   }
 
-  window._mobTradeCandles = candles
-  renderMobTradeChart(cv, candles, _mobChartOverlays(coin), heroId, tf, _mobChartType)
+  // A copy: the live socket below pushes onto this array, and the page it came from is shared.
+  window._mobTradeCandles = candles.slice()
+  renderMobTradeChart(cv, window._mobTradeCandles, _mobChartOverlays(coin), heroId, tf, _mobChartType)
   _mobUpdateChartTypeBtn()
+  // Scrolled back to the oldest loaded candle: the page before it, one request at a time.
+  onNeedOlder(async (firstMs) => {
+    if (seq !== _tradeChartSeq) return null
+    const step = _TRADE_IV_MS[hlInterval]
+    const older = await _tradeCandles(coin, hlInterval, firstMs - _TRADE_PAGE_BARS * step, firstMs - 1)
+    if (seq !== _tradeChartSeq || !Array.isArray(older)) return null
+    const fresh = older.filter(k => +k.t < firstMs)
+    if (fresh.length) window._mobTradeCandles = [...fresh, ...window._mobTradeCandles]
+    return fresh
+  })
 
   // Live updates via candle WS
   _closeMobCandleWs()

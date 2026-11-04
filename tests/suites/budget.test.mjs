@@ -204,7 +204,26 @@ console.log(nl + '-- no read of /info bypasses the bucket --')
   const direct = ['src/main.js', 'src/render.js', 'src/game.js'].filter(f => fs.readFileSync(f, 'utf8').includes("fetch('https://api.hyperliquid.xyz/info'"))
   t('main.js, render.js and game.js post to /info only through hlInfo', direct.length === 0, direct)
   t('and each imports it', ['src/main.js', 'src/render.js', 'src/game.js'].every(f => /import \{[^}]*hlInfo as _hlInfo[^}]*\} from '\.\/hlbudget\.js'/.test(fs.readFileSync(f, 'utf8'))))
-  t('hlInfo claims its weight before it waits, like the transport', /const w = weightOf\(body\?\.type\)\r?\n\s*const ms = [^\n]*\n\s*budget\.spend\(w\)\r?\n\s*if \(ms > 0\) await/.test(fs.readFileSync('src/hlbudget.js', 'utf8')))
+  // The request goes in with its type now: a candle window is charged by how many candles it asks for.
+  t('hlInfo claims its weight before it waits, like the transport', /const w = weightOf\(body\?\.type, body\)\r?\n\s*const ms = [^\n]*\n\s*budget\.spend\(w\)\r?\n\s*if \(ms > 0\) await/.test(fs.readFileSync('src/hlbudget.js', 'utf8')))
+  t('and so does the transport', /const w = weightOf\(payload\?\.type, payload\)/.test(fs.readFileSync('src/hlbudget.js', 'utf8')))
+}
+
+console.log(nl + '-- candles are charged by the candle --')
+{
+  // "i just got rate limited in hyperliquid.xyz": candleSnapshot is 20 plus 1 per 60 candles, and the
+  // Trade chart asked for 5,000 — 104 weight a load, metered as 20.
+  const { weightOf, candleCount } = await import('../../src/hlbudget.js')
+  const now = Date.UTC(2026, 10, 4)
+  t('a 1,000-candle page is 20 + 17', weightOf('candleSnapshot', { req: { interval: '1h', startTime: now - 1000 * 3600e3, endTime: now } }) === 37)
+  t('the old 5,000-candle load was 104', weightOf('candleSnapshot', { req: { interval: '1h', startTime: now - 5000 * 3600e3, endTime: now } }) === 104)
+  t('more than HL returns is the cap, not more', candleCount({ interval: '1h', startTime: 0, endTime: now }) === 5000)
+  t('an interval it does not know is charged as the cap', candleCount({ interval: '7h', startTime: now - 3600e3, endTime: now }) === 5000)
+  t('other weights unchanged', weightOf('l2Book') === 2 && weightOf('portfolio') === 20 && weightOf('userRole') === 60)
+  const main = fs.readFileSync('src/main.js', 'utf8')
+  t('the Trade chart opens on a 1,000-candle page', /const _TRADE_PAGE_BARS = 1000/.test(main) && /Date\.now\(\) - _TRADE_PAGE_BARS \* _TRADE_IV_MS\[hlInterval\]/.test(main))
+  t('and the overlapping loads share it', /if \(hit && Date\.now\(\) - hit\.at < 20_000\) return hit\.p/.test(main))
+  t('older history only when scrolled back to', /onNeedOlder\(async \(firstMs\) =>/.test(main))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

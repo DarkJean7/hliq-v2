@@ -55,8 +55,20 @@ export const SHARE_MS = 10 * 60_000
 /** HL's documented weights: 2 for these, 60 for userRole, 20 for every other info request. */
 const CHEAP = new Set(['l2Book', 'allMids', 'clearinghouseState', 'orderStatus',
                        'spotClearinghouseState', 'exchangeStatus'])
-export function weightOf(type) {
+// candleSnapshot also costs 1 per 60 candles returned, and the Trade chart asked for 5,000: 104
+// weight a load, metered as 20. Reported as "i just got rate limited in hyperliquid.xyz" — the
+// budget is per IP, so the exchange's own tab was paying for ours.
+const CANDLE_MS = { '1m': 6e4, '3m': 18e4, '5m': 3e5, '15m': 9e5, '30m': 18e5, '1h': 36e5, '2h': 72e5,
+  '4h': 144e5, '8h': 288e5, '12h': 432e5, '1d': 864e5, '3d': 2592e5, '1w': 6048e5, '1M': 2592e6 }
+export function candleCount(req, now = Date.now()) {
+  const iv = CANDLE_MS[req?.interval]
+  const start = Number(req?.startTime), end = Number(req?.endTime ?? now) || now
+  if (!iv || !Number.isFinite(start)) return 5000          // unknown: assume the cap
+  return Math.max(1, Math.min(5000, Math.ceil((end - start) / iv)))
+}
+export function weightOf(type, payload = null) {
   if (type === 'userRole') return 60
+  if (type === 'candleSnapshot') return 20 + Math.ceil(candleCount(payload?.req) / 60)
   return CHEAP.has(type) ? 2 : 20
 }
 
@@ -205,7 +217,7 @@ export function meterTransport(transport, budget = hlBudget, { maxWaitMs = HL_MA
   const raw = transport.request.bind(transport)
   transport.__metered = true
   transport.request = async (endpoint, payload, signal) => {
-    const w = weightOf(payload?.type)
+    const w = weightOf(payload?.type, payload)
     // Ask AND claim in the same step, before awaiting anything.
     //
     // Spending after the wait is a check-then-act race, and this code path is almost entirely
@@ -232,7 +244,7 @@ export function meterTransport(transport, budget = hlBudget, { maxWaitMs = HL_MA
  * call site changes nothing but the function it calls.
  */
 export async function hlInfo(body, { budget = hlBudget, url = 'https://api.hyperliquid.xyz/info', signal } = {}) {
-  const w = weightOf(body?.type)
+  const w = weightOf(body?.type, body)
   const ms = Math.min(budget.waitFor(w), w >= 20 ? HL_MAX_WAIT_HEAVY_MS : HL_MAX_WAIT_MS)
   budget.spend(w)
   if (ms > 0) await new Promise(r => setTimeout(r, ms))
