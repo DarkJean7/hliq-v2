@@ -12800,13 +12800,10 @@ async function _attrCompute(windowStart, token, winMs) {
     const entry = cost > 0 ? cost / total : 0
     // The book's mid is only cached once the Outcomes tab has been opened; read it here otherwise,
     // or the mark falls back to the entry and a held outcome "moved" by exactly nothing.
-    if (!(_ocMarkCache[b.coin] > 0) && n && !_hlLimited()) {
-      try {
-        const book = await info.l2Book({ coin: '#' + n })
-        const bid = parseFloat(book?.levels?.[0]?.[0]?.px ?? 0), ask = parseFloat(book?.levels?.[1]?.[0]?.px ?? 0)
-        const mid = (bid > 0 && ask > 0) ? (bid + ask) / 2 : (bid || ask)
-        if (mid > 0) _ocMarkCache[b.coin] = mid
-      } catch {}
+    if (!(_ocMarkCache[b.coin] > 0) && n) {
+      let mid = _ocHeldMark(n)
+      if (!mid && !_hlLimited()) { try { mid = _ocHeldMark(n, await info.l2Book({ coin: '#' + n })) } catch {} }
+      if (mid > 0) _ocMarkCache[b.coin] = mid
     }
     if (token !== _attrComputeToken) return null
     const mark = (_ocMarkCache[b.coin] || 0) || (_ocSidePrice(Math.floor(n / 10), n % 10) || 0) || entry
@@ -14533,10 +14530,7 @@ async function _mobUpdateOcMarks(holdings) {
     try {
       let mark = bookCache[n]
       if (mark == null) {
-        const book = await infoClient.l2Book({ coin: '#' + n })
-        const bid  = parseFloat(book.levels?.[0]?.[0]?.px ?? 0)
-        const ask  = parseFloat(book.levels?.[1]?.[0]?.px ?? 0)
-        mark = (bid > 0 && ask > 0) ? (bid + ask) / 2 : (bid || ask)
+        mark = _ocHeldMark(n) || _ocHeldMark(n, await infoClient.l2Book({ coin: '#' + n }))
         bookCache[n] = mark
       }
       if (!(mark > 0)) continue
@@ -35034,14 +35028,11 @@ const _lbOcMarkCache = {}
 async function _lbOcMark(coin, info) {
   const c = _lbOcMarkCache[coin]
   if (c && Date.now() - c.ts < 60_000) return c.px
-  let px = 0
-  try {
-    const n    = parseInt(String(coin).replace(/[^\d]/g, '')) || 0
-    const book = await info.l2Book({ coin: '#' + n })
-    const bid  = parseFloat(book?.levels?.[0]?.[0]?.px ?? 0)
-    const ask  = parseFloat(book?.levels?.[1]?.[0]?.px ?? 0)
-    px = (bid > 0 && ask > 0) ? (bid + ask) / 2 : (bid || ask || 0)
-  } catch {}
+  // The combined view's copy of the held-outcome mark: the same rule (_ocHeldMark), so a wallet's
+  // outcome is worth the same in All Accounts as on its own. It took a lone book side too.
+  const n = parseInt(String(coin).replace(/[^\d]/g, '')) || 0
+  let px = _ocHeldMark(n)
+  if (!px) { try { px = _ocHeldMark(n, await info.l2Book({ coin: '#' + n })) } catch {} }
   _lbOcMarkCache[coin] = { px, ts: Date.now() }
   return px
 }
@@ -37416,6 +37407,20 @@ function _ocSidePrice(outcomeId, side) {
 // an empty book. Routing that poll through a helper that also fetches candles on a thin book
 // doubled the request count of the hottest loop in the app and re-triggered HL's rate limit.
 // The fallback belongs only to the one-shot initial load, which is where it started.
+// The mark a HELD outcome is valued at — the same rule as _ocSideMid below, for the three places
+// that price a holding (the Outcomes tab rows, their live refresh, What moved). "outcomes pnl is
+// spiking": those read the raw book mid, and took a lone side when the book was one-sided, so a
+// thin market Hyperliquid marked at 1.54¢ was valued at 13.03¢ whenever that refresh ran last and
+// the PnL flipped between +$42 and −$18. Hyperliquid's mark first (allMids, no request); then a
+// two-sided mid from a book, when one is given; never one side alone. 0 = no honest price.
+function _ocHeldMark(n, book = null) {
+  const mm = parseFloat(state.allMids?.['#' + n] ?? 0)
+  if (mm > 0 && mm < 1) return mm
+  const bid = parseFloat(book?.levels?.[0]?.[0]?.px ?? 0), ask = parseFloat(book?.levels?.[1]?.[0]?.px ?? 0)
+  const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : 0
+  return mid > 0 && mid < 1 ? mid : 0
+}
+
 // The DISPLAYED odds for one side. Not the price a trade fills at — that is _ocEffPx, which
 // must keep reading the book.
 async function _ocSideMid(pairIdx, info, candleFallback = false) {
@@ -39788,9 +39793,7 @@ window.__ovUpdateOcMarks = async function() {
   for (const b of window.__ovOutcomeHoldings()) {
     const n = parseInt(String(b.coin).replace(/[^\d]/g, '')) || 0; if (!n) continue
     try {
-      const book = await infoClient.l2Book({ coin: '#' + n })
-      const bid  = parseFloat(book.levels?.[0]?.[0]?.px ?? 0), ask = parseFloat(book.levels?.[1]?.[0]?.px ?? 0)
-      const mark = (bid > 0 && ask > 0) ? (bid + ask) / 2 : (bid || ask); if (!(mark > 0)) continue
+      const mark = _ocHeldMark(n) || _ocHeldMark(n, await infoClient.l2Book({ coin: '#' + n })); if (!(mark > 0)) continue
       _ocMarkCache[b.coin] = mark
       const total = parseFloat(b.total || 0), cost = parseFloat(b.entryNtl || 0), entry = total > 0 ? cost / total : 0
       const pnl = (mark - entry) * total, roe = cost > 0 ? pnl / cost * 100 : 0, cls = pnl >= 0 ? 'pos' : 'neg', key = String(n)
