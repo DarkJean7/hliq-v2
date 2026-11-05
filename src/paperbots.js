@@ -77,6 +77,10 @@ export function createPaperBots({ secret, slot, onOpsDone = () => {}, onOpFailed
   }
   return {
     start: (type, args, instance) => call('start', { type, slot: slot(), args, instance }),
+    // What the bot WOULD do on this paper account, placing nothing. The server runs the real
+    // strategy with --plan behind the paper preload, authorised by the owner's secret -- so a
+    // preview needs no wallet and no agent key, which a paper account can never have.
+    plan: (type, args, instance) => call('plan', { type, slot: slot(), args, instance }),
     stop: (type, instance) => call('stop', { type, instance }),
     pause: (type, instance) => call('pause', { type, instance }),
     resume: (type, instance) => call('resume', { type, instance }),

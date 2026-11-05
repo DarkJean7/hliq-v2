@@ -27095,6 +27095,42 @@ async function updateStrategyMob(type) {
 const PREVIEWABLE = new Set(['grid'])
 
 window.__botPreview = async function(type) {
+  // The preview must read the form the person is actually looking at. The two shells keep
+  // their inputs under different ids (grid-coin vs m-grid-coin) and Run already picks per
+  // shell -- runStrategy/buildArgv on desktop, the mobile run/buildArgvMob -- but this one
+  // function serves BOTH Preview buttons and always built the mobile argv. On desktop it
+  // therefore previewed the defaults rather than what was on screen: a plan the bot was
+  // never going to follow, which this file says outright is worse than no preview at all.
+  const argvFor = (t) => (_isMobView() ? buildArgvMob(t) : buildArgv(t))
+
+  // A paper account has no wallet and no agent key and needs neither. Run already knew that
+  // (runStrategy -> _paperServerStart, and the mobile run beside it); Preview did not, so it
+  // demanded a key the practice account can never have, fell through to the live bot-control
+  // token it also cannot mint, and the server answered 401 "authentication required" -- for
+  // an action that places nothing. The server has had the paper route all along
+  // (/api/paper/plan, authorised by the paper owner's secret); only this call site never
+  // used it. src/pftrade.js already previews portfolios that way.
+  if (isPaper()) {
+    _botPreviewSheet(type, null, true)
+    try {
+      await ensureAllMids()
+      _paperSyncStart()
+      // The server's copy of the account is what the bot would trade, and the plan sizes
+      // itself from that balance -- so bring it up to date before asking, exactly as
+      // starting a paper bot does. Without it the preview is drawn against a stale balance.
+      await _paperSync?.syncNow()
+      const argv = argvFor(type)
+      // _paperSyncStart swallows its own failures, so the bots client can still be absent;
+      // say so rather than throwing "cannot read properties of null" into the sheet.
+      if (!_paperBots) throw new Error(_T('The paper server could not be reached.', 'No se pudo contactar al servidor de práctica.'))
+      const r = await _paperBots.plan(type, argv, _argvInstance(argv))
+      _botPreviewSheet(type, r, false)
+    } catch (e) {
+      _botPreviewSheet(type, { ok: false, error: e.message || 'Server unreachable' }, false)
+    }
+    return
+  }
+
   const agentKey = _stratTargetKey()
                 || document.getElementById('m-agentKey')?.value?.trim()
                 || document.getElementById('agentKey')?.value?.trim()
@@ -27105,7 +27141,7 @@ window.__botPreview = async function(type) {
   _botPreviewSheet(type, null, true)
   try {
     await ensureAllMids()
-    const argv = buildArgvMob(type)
+    const argv = argvFor(type)
     const r = await serverFetch('/api/plan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

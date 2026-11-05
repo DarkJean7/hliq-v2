@@ -76,10 +76,41 @@ t("the bot's own refusal is passed through as the answer",
 console.log('\n── the UI ──')
 t('only bots with a knowable opening move offer it', cli.includes("const PREVIEWABLE = new Set(['grid'])"))
 t('the button is gated on that set', cli.includes('PREVIEWABLE.has(s.type)'))
+const pbots = fs.readFileSync('src/paperbots.js', 'utf8').replace(/\r\n/g, '\n')
 const pv = grab(cli, 'window.__botPreview = async function(type)')
 t('it needs an account picked', pv.includes('Pick which account to preview on first'))
 t('and a key, like running would', pv.includes('Connect an agent key first'))
-t('it sends the SAME argv the Run button builds', pv.includes('const argv = buildArgvMob(type)'))
+// Was: pv.includes('const argv = buildArgvMob(type)'). The RULE is unchanged -- preview sends
+// what Run would send -- but that line only satisfied it on the mobile shell. Both shells show
+// a Preview button and keep their inputs under different ids (grid-coin vs m-grid-coin), and
+// Run already picks per shell (runStrategy/buildArgv, the mobile run/buildArgvMob). Hardcoding
+// the mobile builder meant desktop previewed the DEFAULTS, not the form on screen.
+t('it sends the SAME argv the Run button builds, on whichever shell is showing',
+  pv.includes('const argvFor = (t) => (_isMobView() ? buildArgvMob(t) : buildArgv(t))'))
+t('and both paths use it, so neither shell can drift back', (pv.match(/argvFor\(type\)/g) ?? []).length === 2)
+
+console.log('\n── on a paper account ──')
+// A practice account has no wallet and no agent key. Preview demanded one anyway, then asked
+// for a bot-control token it cannot mint, and the server answered 401 "authentication
+// required" -- for an action that places nothing. Run had known better all along.
+t('paper is handled before the agent-key demand',
+  pv.indexOf('if (isPaper())') > 0 && pv.indexOf('if (isPaper())') < pv.indexOf('Connect an agent key first'))
+t('it goes to the paper route, not the agent-key one', pv.includes('_paperBots.plan(type, argv, _argvInstance(argv))'))
+t('no agent key is read on that path', grab(pv, 'if (isPaper())').includes('agentKey') === false)
+t('the account is synced first, since the plan sizes itself from that balance',
+  grab(pv, 'if (isPaper())').includes('await _paperSync?.syncNow()'))
+t('and the sync is started, not assumed', grab(pv, 'if (isPaper())').includes('_paperSyncStart()'))
+t('a missing bots client is said, not thrown as a null read', pv.includes('if (!_paperBots) throw new Error'))
+t('it still opens the sheet immediately', grab(pv, 'if (isPaper())').includes('_botPreviewSheet(type, null, true)'))
+t('why it was broken is recorded where the next reader will be', pv.includes('401 "authentication required"'))
+
+// The client half of the paper route.
+t('paperbots exposes plan', pbots.includes("plan: (type, args, instance) => call('plan', { type, slot: slot(), args, instance })"))
+t('it says a preview needs no key', pbots.includes('needs no wallet and no agent key'))
+// The server half has been there all along -- only this call site never used it.
+t('the server has a paper plan route', srv.includes("if (act === 'plan') return json(res, 200, await runPlan(type, SCRIPTS[type], ['--address', owner, ...args], secret))"))
+t('authorised by the paper owner secret, not a signed token', srv.includes("const owner = '0x' + createHash('sha256').update(secret).digest('hex').slice(0, 40)"))
+t('and it runs behind the paper preload', srv.includes("args.push('--paper', slot)"))
 t('the sheet opens immediately, in a loading state', pv.includes('_botPreviewSheet(type, null, true)'))
 t('a server failure still shows a sheet rather than nothing', pv.includes("_botPreviewSheet(type, { ok: false"))
 
