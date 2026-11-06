@@ -7530,13 +7530,25 @@ window.__guardedLiq = function(p) {
   try { return _posGuardedLiq(p, p?._acctAddr ?? null, parseFloat(p?.liquidationPx ?? 0)) } catch { return null }
 }
 
-/** The card row for it, or nothing when no guard is armed here. */
-function _guardedLiqCell(p, liqPx, acct = null) {
+/**
+ * Where liquidation ends up once an armed guard has spent its remaining fires, in parentheses
+ * beside the liq price it replaces. Empty when no guard is armed here.
+ *
+ * It was its own row ("Liq. after guard") under Margin Used, so the two prices sat one above
+ * the other in the same column. Asked for inline instead, and it reads better: the guard's
+ * number only means anything AGAINST the one it supersedes, and a row apart it looked like a
+ * separate fact rather than the same fact after the guard has done its work. The fire count
+ * moves to the tooltip rather than being dropped -- a price with no idea how many fires buy
+ * it is the half of this worth keeping.
+ */
+function _guardedLiqSuffix(p, liqPx, acct = null) {
   const gl = _posGuardedLiq(p, acct ?? p?._acctAddr ?? null, liqPx)
-  if (!gl) return []
-  const label = gl.mode === 'liqguard' ? _T('Liq. after guard', 'Liq. tras guardián') : _T('Liq. after brake', 'Liq. tras freno')
+  if (!gl) return ''
   const fires = `${gl.fires} ${gl.fires === 1 ? _T('fire', 'disparo') : _T('fires', 'disparos')}`
-  return [[label, _prv('$' + fmtPrice(gl.liq)) + ` <span style="font-size:10px;color:var(--muted)">· ${fires}</span>`, 'var(--accent)']]
+  const what  = gl.mode === 'liqguard' ? _T('guard', 'guardián') : _T('brake', 'freno')
+  const title = _T(`Where liquidation sits after the ${what}'s remaining ${fires}`,
+                   `Dónde queda la liquidación tras los ${fires} que le quedan al ${what}`)
+  return ` <span style="color:var(--accent)" title="${esc(title)}">(🛡 ${_prv('$' + fmtPrice(gl.liq))})</span>`
 }
 
 // Build a step-by-step projection of how the position evolves across the fires —
@@ -20602,13 +20614,8 @@ function _mobVRenderContent(tick = false) {
             ['Size', fmtSize(Math.abs(sz)) + ' ' + esc(_ocCoinLabel(p.coin))],
             ['Position Value', _prv('$' + fmtUSD(posVal))],
             ['Entry Price', '$' + fmtPrice(p.entryPx)],
-            ['Liq. Price', _prv(liqPx > 0 ? '$' + fmtPrice(liqPx) : '—'), liqPx > 0 && markPx > 0 && (sz > 0 ? liqPx > markPx * 0.9 : liqPx < markPx * 1.1) ? 'var(--red)' : ''],
+            ['Liq. Price', liqPx > 0 ? _prv('$' + fmtPrice(liqPx)) + _guardedLiqSuffix(p, liqPx) : _prv('—'), liqPx > 0 && markPx > 0 && (sz > 0 ? liqPx > markPx * 0.9 : liqPx < markPx * 1.1) ? 'var(--red)' : ''],
             ['Margin Used', _prv('$' + fmtUSD(margin))],
-            // Where liquidation ends up once an armed guard has spent its remaining fires.
-            // Under Margin Used rather than under Liq. Price: the two liq prices then sit in
-            // the same column, one above the other, which is how they are read against each
-            // other. Asked for in those words.
-            ..._guardedLiqCell(p, liqPx),
             // Effective leverage = notional ÷ margin. Unlike the leverage SETTING shown in
             // the header (e.g. 20x), this drops as margin is added — the real current ratio.
             ['Real Leverage', margin > 0 ? (posVal / margin).toFixed(2) + 'x' : '—'],
@@ -21854,7 +21861,9 @@ function _mobVSubPosRow(ap, pid) {
     ['PnL',     (pnl >= 0 ? '+' : '') + '$' + fmtUSD(Math.abs(pnl)), pc],
     ['ROE',     (roe >= 0 ? '+' : '') + roe.toFixed(2) + '%', pc],
     ['Lev',     lev || '—'],
-    ['Liq',     liqPx > 0 ? '$' + fmtPrice(liqPx) : '—'],
+    // The same figure the card above it carries: expanding a merged card must not make a
+    // guarded position read as riskier than the summary it was opened from.
+    ['Liq',     liqPx > 0 ? '$' + fmtPrice(liqPx) + _guardedLiqSuffix(p, liqPx) : '—'],
     ['Margin',  margin > 0 ? '$' + fmtUSD(margin) : '—'],
   ])
   return `<div>
@@ -36501,12 +36510,10 @@ function _maRenderPositions(results) {
             <div class="row-expand-item"><span>Position Value</span><span>$${fmtUSD(value)}</span></div>
             <div class="row-expand-item"><span>Mark Price</span><span>${mark ? '$' + fmtPrice(mark) : '—'}</span></div>
             <div class="row-expand-item"><span>Entry Price</span><span>$${fmtPrice(entryPx)}</span></div>
-            <div class="row-expand-item ${liqWarn ? 'liq-warn' : ''}"><span>Liq. Price</span><span>${liqWarn ? '⚠ ' : ''}$${fmtPrice(liqPx)}</span></div>
-            ${/* The same "after guard" figure the position cards show -- this table has its own
-                  copy of the Liq. Price row, and a guarded position must not read as riskier here
-                  than it does there. */
-              _guardedLiqCell(p, liqPx, r.addr).map(([label, val]) =>
-                `<div class="row-expand-item"><span>${label}</span><span style="color:var(--accent)">${val}</span></div>`).join('')}
+            ${/* The "after guard" figure rides beside the liq price here too -- this table
+                  keeps its own copy of the row, and a guarded position must not read as
+                  riskier here than it does on the cards. */''}
+            <div class="row-expand-item ${liqWarn ? 'liq-warn' : ''}"><span>Liq. Price</span><span>${liqWarn ? '⚠ ' : ''}$${fmtPrice(liqPx)}${_guardedLiqSuffix(p, liqPx, r.addr)}</span></div>
             <div class="row-expand-item"><span>Leverage</span><span>${lev}</span></div>
             <div class="row-expand-item"><span>Margin Used</span><span>$${fmtUSD(margin)}</span></div>
             <div class="row-expand-item"><span>ROE</span><span class="${rCls}">${(roe >= 0 ? '+' : '') + roe.toFixed(2) + '%'}</span></div>

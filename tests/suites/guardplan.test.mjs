@@ -94,7 +94,23 @@ console.log(nl + '-- nothing to say is said as nothing --')
 console.log(nl + '-- on the card, and one copy of the arithmetic --')
 {
   const cli = fs.readFileSync('src/main.js', 'utf8')
-  t('the card asks for the guarded liq', /\.\.\._guardedLiqCell\(p, liqPx\),/.test(cli))
+  // Was: /\.\.\._guardedLiqCell\(p, liqPx\),/ -- its own "Liq. after guard" row under Margin
+  // Used. The RULE is unchanged, and is the point of this test: the card asks for the guarded
+  // liq. It now rides in parentheses beside the liq price it supersedes instead of a row away.
+  t('the card asks for the guarded liq', /_guardedLiqSuffix\(p, liqPx\)/.test(cli))
+  t('beside the price it supersedes, not a row apart',
+    /\['Liq\. Price', liqPx > 0 \? _prv\('\$' \+ fmtPrice\(liqPx\)\) \+ _guardedLiqSuffix\(p, liqPx\)/.test(cli))
+  t('in parentheses, under the shield the card already carries', /\(\u{1F6E1} \$\{_prv/u.test(cli))
+  t('and only when there is a liq price to qualify', /liqPx > 0 \? _prv\('\$' \+ fmtPrice\(liqPx\)\) \+ _guardedLiqSuffix/.test(cli))
+  // Dropping the fire count would leave a second price with no idea what buys it.
+  t('the fire count survives, in the tooltip', /title="\$\{esc\(title\)\}"/.test(cli) && /remaining \$\{fires\}/.test(cli))
+  t('nothing when no guard is armed here', /const gl = _posGuardedLiq\(p, acct \?\? p\?\._acctAddr \?\? null, liqPx\)\n  if \(!gl\) return ''/.test(cli))
+  // Every surface that prints a position's liq price, so a guarded one cannot read as riskier
+  // on one of them than on another.
+  t('the merged card\u2019s per-account row carries it too',
+    /\['Liq',     liqPx > 0 \? '\$' \+ fmtPrice\(liqPx\) \+ _guardedLiqSuffix\(p, liqPx\)/.test(cli))
+  t('so does the All Accounts table row', /\$\{fmtPrice\(liqPx\)\}\$\{_guardedLiqSuffix\(p, liqPx, r\.addr\)\}/.test(cli))
+  t('the old standalone row is gone, so the figure is never shown twice', !/_guardedLiqCell/.test(cli))
   // Its own account's status, or the owning wallet's asked for separately — but never a
   // projection from defaults while the real config is still unknown.
   t('only when a guard is armed for this position, with its config known',

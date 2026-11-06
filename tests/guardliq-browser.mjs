@@ -112,14 +112,23 @@ await boot()
 
 console.log(NL + '-- with a guard armed --')
 {
-  const got = await waitFor(p, 'the guarded liq row', () => /Liq\. after guard/.test(document.getElementById('mobVContent')?.textContent ?? ''), null, 30000)
+  // It used to be its own "Liq. after guard" row under Margin Used; it now rides in
+  // parentheses beside the liq price it supersedes, which is where the two get compared.
+  const got = await waitFor(p, 'the guarded liq', () => /Liq\. Price \$90\.47\d* \(/.test((document.getElementById('mobVContent')?.textContent ?? '').replace(/\s+/g, ' ')), null, 30000)
   const txt = await cardText()
   ok('the card shows the liq price after the guard', got, txt.slice(0, 300))
-  // HL's own liq, still shown as itself.
-  ok('alongside the exchange\'s own liq price', /Liq\. Price \$90\.47/.test(txt), txt.match(/Liq\. Price[^A-Z]{0,20}/)?.[0])
+  // HL's own liq, still shown as itself and still first.
+  ok('alongside the exchange\'s own liq price', /Liq\. Price \$90\.47/.test(txt), txt.match(/Liq\. Price[^A-Z]{0,30}/)?.[0])
   // $20 over 2 fires on 1 CRCL at mf 0.05 → liq falls 2 × $10.53 → $69.42.
-  ok('projected from the guard\'s own config: $69.42', /Liq\. after guard \$69\.4/.test(txt), txt.match(/Liq\. after guard[^A-Z]{0,24}/)?.[0])
-  ok('and it says how many fires that assumes', /Liq\. after guard \$69\.4\d+ · 2 fires/.test(txt), txt.match(/Liq\. after guard[^A-Z]{0,30}/)?.[0])
+  ok('projected from the guard\'s own config: $69.42', /Liq\. Price \$90\.47\d* \(🛡 \$69\.4/.test(txt), txt.match(/Liq\. Price[^A-Z]{0,30}/)?.[0])
+  // The fire count is no longer printed beside it -- it would double the width of the cell --
+  // so it has to still be reachable, and the tooltip is where it went.
+  const tip = await p.evaluate(() => {
+    const el = [...document.querySelectorAll('#mobVContent span[title]')].find(x => /\$69\.4/.test(x.textContent ?? ''))
+    return el?.getAttribute('title') ?? ''
+  })
+  ok('and it still says how many fires that assumes', /2 fires/.test(tip), tip)
+  ok('the standalone row is gone, so the figure is not shown twice', !/Liq\. after guard/.test(txt), txt.match(/Liq\. after[^A-Z]{0,24}/)?.[0] ?? '(absent)')
 }
 
 console.log(NL + '-- the desktop rows carry both --')
