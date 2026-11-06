@@ -7,7 +7,7 @@ import { buildMarkets, sortRows, filterRows, summarize, onePerToken } from './ma
 import { SECTORS, SECTOR_LABEL } from './sectors.js'
 import { openRevenueChart } from './revchart.js'
 import { sideScroll, wasDrag } from './sidescroll.js'
-import { sortEx, withCexRevenue } from './exchanges.js'
+import { sortEx, withCexRevenue, worthOfCex } from './exchanges.js'
 import { adoptAppTheme } from './pftheme.js'
 // Inside the app (?embed=1) the page wears the app's theme, read live from it (src/pftheme.js).
 adoptAppTheme()
@@ -24,7 +24,7 @@ let rows = []
 // tab: all | perp | hip3 | spot | crypto | tradfi. Strict is on by default, like Hyperliquid's.
 let view = { tab: 'all', dex: null, sector: null, q: '', sort: 'vol24', asc: false, shown: PAGE, strict: true, mode: 'market', ex: 'mixed' }
 // Exchanges view (src/exchanges.js): /markets-exchanges, fetched the first time it is opened.
-let ex = { dex: null, cex: null, state: 'idle' }
+let ex = { dex: null, cex: null, shares: null, state: 'idle' }
 let loadedAt = 0
 let dexInfo = { ok: 0, total: 0 }
 // Each HIP-3 dex's last answer, kept across refreshes: rebuilding without them and adding them
@@ -135,6 +135,7 @@ async function loadExchanges() {
     const j = r.ok ? await r.json() : null
     if (Array.isArray(j?.dex)) ex.dex = j.dex
     if (Array.isArray(j?.cex)) ex.cex = j.cex
+    if (j?.shares) ex.shares = j.shares
   } catch {}
   ex.state = ex.dex || ex.cex ? 'ok' : 'down'
   render()
@@ -143,12 +144,12 @@ async function loadExchanges() {
 // ── render ───────────────────────────────────────────────────────────────────
 const exView = () => view.mode === 'exchanges'
 // Mixed is DEXs and CEXs in one table, ranked by the one thing both report: trading volume.
-const EX_SORTS = { mixed: ['vol24', 'r30', 'assets', 'in24'], dex: ['r24', 'r7', 'r30', 'f24', 'f30', 'vol24'], cex: ['assets', 'in24', 'in7', 'in30', 'vol24', 'sttm'] }
+const EX_SORTS = { mixed: ['vol24', 'r30', 'worth', 'assets', 'in24'], dex: ['r24', 'r7', 'r30', 'f24', 'f30', 'vol24', 'worth'], cex: ['assets', 'worth', 'in24', 'in7', 'in30', 'vol24', 'sttm'] }
 // Short labels: "the data is not completely visible" — eight long headers ran off the right edge.
 const EX_LBL = { r24: 'Revenue 24h', r7: 'Revenue 7d', r30: 'Revenue 30d', f24: 'Fees 24h', f30: 'Fees 30d',
   assets: 'Assets', in24: 'Inflow 24h', in7: 'Inflow 7d', in30: 'Inflow 30d', spotVol: 'Spot vol 24h',
-  derivVol: 'Deriv vol 24h', vol24: 'Volume 24h', oi: 'OI', sttm: 'Revenue 12m' }
-const EX_COLS = { mixed: ['vol24', 'r30', 'f30', 'assets', 'in24'], dex: ['r24', 'r7', 'r30', 'f30', 'vol24'], cex: ['assets', 'in24', 'in7', 'spotVol', 'derivVol', 'oi', 'sttm'] }
+  derivVol: 'Deriv vol 24h', vol24: 'Volume 24h', oi: 'OI', sttm: 'Revenue 12m', worth: 'Worth' }
+const EX_COLS = { mixed: ['vol24', 'r30', 'f30', 'worth', 'assets', 'in24'], dex: ['r24', 'r7', 'r30', 'f30', 'vol24', 'worth'], cex: ['assets', 'worth', 'in24', 'spotVol', 'derivVol', 'oi', 'sttm'] }
 const flow = (v) => v == null ? dash : `<span class="${v >= 0 ? 'mk-up' : 'mk-dn'}">${v >= 0 ? '+' : '−'}${money(Math.abs(v))}</span>`
 
 // DefiLlama's perp-DEX volume feed is paid, so a DEX's volume is its spot volume. Hyperliquid's
@@ -158,12 +159,13 @@ function dexRows() {
   return (ex.dex ?? []).map(d => {
     if (d.id !== 'parent#hyperliquid' || !hlPerps) return { ...d, vol24: d.spotVol ?? null }
     return { ...d, derivVol: hlPerps, vol24: (d.spotVol ?? 0) + hlPerps }
-  })
+  }).map(d => ({ ...d, worth: d.mcap ?? null, worthKind: d.mcap ? 'token' : null, worthSym: d.sym ?? null }))
 }
 
 function exList() {
   // A CEX's revenue is the SEC filing /markets-meta already carries, joined by ticker.
-  const cexes = () => withCexRevenue(ex.cex ?? [], stocks).map(c => ({ ...c, kind: 'CEX' }))
+  const stockPx = (tk) => rows.find(r => r.sym === tk && r.hlCat === 'stocks')?.price ?? null
+  const cexes = () => withCexRevenue(ex.cex ?? [], stocks).map(c => ({ ...c, kind: 'CEX', ...worthOfCex(c, { shares: ex.shares, cg, priceOf: stockPx }) }))
   let list = view.ex === 'cex' ? cexes() : view.ex === 'dex' ? dexRows()
     : [...dexRows().map(d => ({ ...d, kind: 'DEX · ' + d.kind })), ...cexes()]
   const q = view.q.trim().toLowerCase()
@@ -222,10 +224,18 @@ function renderExchanges() {
   const noVol = '<span class="mk-dim" title="DefiLlama does not track trading volume for this exchange — rank by Assets to compare it">not tracked</span>'
   const noAssets = '<span class="mk-dim" title="This exchange holds customer funds, but DefiLlama has no wallet list for it, so the amount is not tracked here — rank by Volume to compare it">not tracked</span>'
   const approx = (r) => `<span title="A third of the last quarter reported to the SEC">≈ ${money(r.r30)}</span>`
+  // "cant we not add the exchange worth?" A share price × shares is the company. A token's cap is the
+  // token, and BNB's is not what Binance is worth, so that cell names the token it is about.
+  const worthCell = (r) => r.worth == null
+    ? '<span class="mk-dim" title="Private, with no token: nothing public to read a value from">—</span>'
+    : r.worthKind === 'stock'
+      ? `<span title="Market cap: shares reported to the SEC × the live share price">≈ ${money(r.worth)}</span>`
+      : `<span title="Market cap of its token, ${esc(r.worthSym ?? '')}. What the token is worth, not a valuation of the exchange">${money(r.worth)}<small class="mk-dim mk-worth-sym">${esc(r.worthSym ?? 'token')}</small></span>`
   const cell = (k, r) => k.startsWith('in') ? flow(r[k])
     : k === 'vol24' && r.kind === 'CEX' && r[k] == null ? noVol
     : k === 'assets' && r.kind === 'CEX' && r[k] == null ? noAssets
-    : k === 'r30' && r.r30Approx ? approx(r) : m(r[k])
+    : k === 'r30' && r.r30Approx ? approx(r)
+    : k === 'worth' ? worthCell(r) : m(r[k])
   const page = list.slice(0, view.shown)
   const bodyHtml = page.length ? page.map((r, i) => `<tr>
       <td class="mk-c-rank">${i + 1}</td>

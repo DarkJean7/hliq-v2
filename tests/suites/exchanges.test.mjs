@@ -3,7 +3,7 @@
 // "im wondering where are some popular exchanges like coinbase, kraken". Requiring an assets figure
 // dropped Coinbase, Upbit and Bithumb, which have volume but no public wallet list.
 import fs from 'fs'
-import { buildCexes, sortEx, withCexRevenue } from '../../src/exchanges.js'
+import { buildCexes, buildDexes, sortEx, withCexRevenue, worthOfCex, sharesFromFacts } from '../../src/exchanges.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -35,6 +35,26 @@ t('marked as an approximation in the cell', /r\.r30Approx \? approx\(r\)/.test(m
 const bn = rev.find(r => r.name === 'Binance')
 t('one that does not has no figure, not a 0', bn.r30 === null && bn.r30Approx === false, bn)
 t('missing assets read as not tracked, not as not having any', />not tracked</.test(mk) && !/>not published</.test(mk))
+
+// "cant we not add the exchange worth?"
+const shares = { COIN: 264e6 }
+const cg = { BNB: ['binancecoin', 90e9] }
+const px = (tk) => tk === 'COIN' ? 136.37 : null
+const w = (o) => worthOfCex(o, { shares, cg, priceOf: px })
+t('a listed company: shares × the live price', w({ ticker: 'COIN' }).worth === 264e6 * 136.37 && w({ ticker: 'COIN' }).worthKind === 'stock')
+t('an exchange with a token: its cap, kept apart as the token', w({ coin: 'BNB' }).worth === 90e9 && w({ coin: 'BNB' }).worthKind === 'token' && w({ coin: 'BNB' }).worthSym === 'BNB')
+t('a company with shares but no price yet is unknown, not 0', w({ ticker: 'HOOD' }).worth === null, w({ ticker: 'HOOD' }))
+t('private with no token is unknown, not 0', w({ name: 'Bitstamp' }).worth === null)
+t('the token never stands in for a company that has a price', w({ ticker: 'COIN', coin: 'BNB' }).worthKind === 'stock')
+const facts = { facts: { 'us-gaap': { WeightedAverageNumberOfSharesOutstandingBasic: { units: { shares: [
+  { end: '2026-06-30', val: 260e6 }, { end: '2026-09-30', val: 263e6 }, { end: '2026-09-30', val: 264e6 }] } } } } }
+t('the shares are the latest period\'s, the larger of its entries', sharesFromFacts(facts) === 264e6, sharesFromFacts(facts))
+t('filings without them are unknown', sharesFromFacts({ facts: {} }) === null)
+const dx = buildDexes({ protocols: [{ defillamaId: '1', name: 'HL Perps', category: 'Derivatives', parentProtocol: 'parent#hl', total30d: 5 }, { defillamaId: '2', name: 'Solo', category: 'Dexs', total30d: 5 }] }, null,
+  { parentProtocols: [{ id: 'parent#hl', name: 'Hyperliquid', mcap: 18e9, symbol: 'HYPE' }], protocols: [{ defillamaId: '2', mcap: 0, symbol: '-' }] })
+t('a DEX takes its parent\'s token cap', dx.find(d => d.name === 'Hyperliquid').mcap === 18e9 && dx.find(d => d.name === 'Hyperliquid').sym === 'HYPE', dx)
+t('and one with no token has none, not 0', dx.find(d => d.name === 'Solo').mcap === null, dx)
+t('a token cell names its token', /mk-worth-sym/.test(fs.readFileSync('src/markets.js', 'utf8')))
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

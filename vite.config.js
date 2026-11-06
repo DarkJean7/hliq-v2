@@ -279,7 +279,10 @@ function strategyPlugin() {
           // The fees feed is slow (~90s measured); a shorter timeout returns DEX fees as unknown.
           const get = (u) => fetch(u, { signal: AbortSignal.timeout(150_000) }).then(r => r.json())
           const [rev, lite, paid, cex, vol] = await Promise.all([get(L.LLAMA_FEES_URL), get(L.LLAMA_LITE_URL), get(L.LLAMA_FEESPAID_URL), get('https://api.llama.fi/cexs'), get(X.LLAMA_DEXVOL_URL)].map(p => p.catch(() => null)))
-          return sendJson(res, 200, { dex: rev ? X.buildDexes(rev, paid, lite, vol) : null, cex: cex ? X.buildCexes(cex) : null, at: Date.now(), source: 'DefiLlama' })
+          const UA = { headers: { 'User-Agent': process.env.SEC_CONTACT || 'InsolventTerminal/1.0 (+https://insolvent.trade)' } }
+          const shares = {}
+          for (const [tk, cik] of Object.entries(X.CEX_CIK)) { try { const v = X.sharesFromFacts(await fetch(X.secFactsUrl(cik), UA).then(r => r.json())); if (v) shares[tk] = v } catch {} }
+          return sendJson(res, 200, { dex: rev ? X.buildDexes(rev, paid, lite, vol) : null, cex: cex ? X.buildCexes(cex) : null, shares, at: Date.now(), source: 'DefiLlama' })
         }
 
         // Dev twin of serve-prod.js /markets-meta: same pipeline, cached in memory for the dev

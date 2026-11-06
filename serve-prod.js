@@ -17,7 +17,7 @@ import { dailyFunding, mergeDaily, fundingInfo, FUND_DAYS } from './src/pffundin
 import { isAllowedYahoo, yahooUrl, cgChartUrl, parseYahooDaily, parseCgChart, toUsd, FX_PER_USD, needsUsd, planFor, closesFor, wantsCg } from './src/pfsources.js'
 import { coinsOf, coinFile, stalest, buildPerf, HIST_FROM as PFC_FROM } from './src/pfgallery.js'
 import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
-import { buildDexes, buildCexes, LLAMA_DEXVOL_URL } from './src/exchanges.js'
+import { buildDexes, buildCexes, LLAMA_DEXVOL_URL, CEX_CIK, secFactsUrl, sharesFromFacts } from './src/exchanges.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -86,7 +86,25 @@ function llamaRefresh() {
 // /markets-exchanges (src/exchanges.js): DEX revenue from the feeds above, CEX holdings from
 // DefiLlama's /cexs on the same half-hour clock. A failed CEX read keeps the last good one.
 let cexData = null, cexInflight = null, exBody = null
+// Shares behind Coinbase's and Robinhood's market cap. They change once a quarter, so a day is plenty;
+// a failed read keeps the last good count, and with none the cell falls back to unknown.
+let cexShares = null, cexSharesAt = 0
+async function cexSharesRefresh() {
+  if (Date.now() - cexSharesAt < 24 * 3600e3) return
+  cexSharesAt = Date.now()
+  const out = { ...(cexShares ?? {}) }
+  for (const [tk, cik] of Object.entries(CEX_CIK)) {
+    try {
+      const r = await fetch(secFactsUrl(cik), { headers: { 'User-Agent': SEC_UA }, signal: AbortSignal.timeout(30_000) })
+      const v = r.ok ? sharesFromFacts(await r.json()) : null
+      if (v) out[tk] = v
+    } catch {}
+    await new Promise(r => setTimeout(r, 170))
+  }
+  cexShares = out; exBody = null
+}
 function cexRefresh() {
+  cexSharesRefresh().catch(() => {})
   if (cexInflight) return cexInflight
   cexInflight = fetch('https://api.llama.fi/cexs', { signal: AbortSignal.timeout(45_000) })
     .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
@@ -1103,7 +1121,7 @@ createServer((req, res) => {
     const send = () => {
       if (!llamaData?.dexes && !cexData) return res.writeHead(503, { 'Content-Type': 'application/json' }).end('{"dex":null,"cex":null}')
       // null, not [], for a half that has not loaded: the page says so instead of "none".
-      exBody ??= JSON.stringify({ dex: llamaData?.dexes ?? null, cex: cexData?.rows ?? null, at: llamaData?.at ?? null, cexAt: cexData?.at ?? null, source: 'DefiLlama' })
+      exBody ??= JSON.stringify({ dex: llamaData?.dexes ?? null, cex: cexData?.rows ?? null, shares: cexShares, at: llamaData?.at ?? null, cexAt: cexData?.at ?? null, source: 'DefiLlama' })
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' }).end(exBody)
     }
     const waits = []

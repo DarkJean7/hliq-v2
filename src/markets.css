@@ -251,3 +251,4 @@ html.pf-embed input { color-scheme: inherit; }
 /* In the app the panel colour is translucent over a wallpaper; the columns that stay put while the
    figures scroll under them must not let those figures show through. */
 html.pf-embed .mk-table .mk-c-rank, html.pf-embed .mk-table .mk-c-asset { background: var(--panel-o, var(--panel)); }
+.mk-worth-sym { display: block; font-size: 10px; line-height: 1.2; }

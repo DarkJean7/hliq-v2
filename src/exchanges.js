@@ -28,6 +28,7 @@ export const LLAMA_DEXVOL_URL = 'https://api.llama.fi/overview/dexs?excludeTotal
 export function buildDexes(revFeed, feesFeed = null, lite = null, dexVol = null) {
   const feeBy = new Map((Array.isArray(feesFeed?.protocols) ? feesFeed.protocols : []).map(p => [String(p.defillamaId), p]))
   const parents = new Map((Array.isArray(lite?.parentProtocols) ? lite.parentProtocols : []).map(p => [p.id, p]))
+  const protos = new Map((Array.isArray(lite?.protocols) ? lite.protocols : []).map(p => [String(p.defillamaId ?? p.id), p]))
   const by = new Map()
   for (const f of (Array.isArray(revFeed?.protocols) ? revFeed.protocols : [])) {
     const kind = DEX_KIND[f?.category]
@@ -36,6 +37,8 @@ export function buildDexes(revFeed, feesFeed = null, lite = null, dexVol = null)
     const parent = f.parentProtocol ? parents.get(f.parentProtocol) : null
     const cur = by.get(key) ?? {
       id: key, name: parent?.name ?? f.displayName ?? f.name, logo: parent?.logo ?? f.logo ?? null,
+      // What its token is worth, when it has one: a token's cap, not a valuation of the exchange.
+      mcap: n((parent ?? protos.get(String(f.defillamaId)))?.mcap) || null, sym: (parent ?? protos.get(String(f.defillamaId)))?.symbol ?? null,
       kinds: new Set(), chains: new Set(), protocols: 0, top: -1,
       r24: null, r7: null, r30: null, f24: null, f7: null, f30: null,
     }
@@ -64,6 +67,36 @@ export function buildDexes(revFeed, feesFeed = null, lite = null, dexVol = null)
 
 /** Exchanges that file with the SEC, by DefiLlama name → ticker. */
 export const CEX_TICKERS = { Coinbase: 'COIN', Robinhood: 'HOOD', Bullish: 'BLSH', Gemini: 'GEMI', eToro: 'ETOR', Kraken: 'KRAK' }
+
+/** Companies whose market cap can be worked out: the SEC's number for the shares, by CIK. */
+export const CEX_CIK = { COIN: 1679788, HOOD: 1783879 }
+export const secFactsUrl = (cik) => `https://data.sec.gov/api/xbrl/companyfacts/CIK${String(cik).padStart(10, '0')}.json`
+/**
+ * Shares behind a company's market cap: the latest basic weighted average in its filings. Not the
+ * cover-page count, because only this concept covers both Coinbase and Robinhood (each has two
+ * share classes, and Robinhood stopped tagging CommonStockSharesOutstanding in 2021). A quarter's
+ * average runs close to the count, and the cell says ≈. Null when the filings do not have it.
+ */
+export function sharesFromFacts(facts) {
+  const u = facts?.facts?.['us-gaap']?.WeightedAverageNumberOfSharesOutstandingBasic?.units?.shares
+  if (!Array.isArray(u) || !u.length) return null
+  const end = u.reduce((a, b) => (String(b.end) > a ? String(b.end) : a), '')
+  const vals = u.filter(x => x.end === end).map(x => Number(x.val)).filter(x => x > 0)
+  return vals.length ? Math.max(...vals) : null
+}
+
+/**
+ * What an exchange is worth, as far as anyone can say. A listed company: shares × its live price.
+ * Otherwise its token's market cap, kept apart by `kind` because that is what the TOKEN is worth, not
+ * the business. Neither is unknown (null), never 0.
+ *   cg: /markets-meta's { SYM: [id, mcap] }; shares: { TICKER: n }; priceOf(ticker) → price
+ */
+export function worthOfCex(r, { shares = null, cg = null, priceOf = () => null } = {}) {
+  const px = r.ticker && shares?.[r.ticker] ? Number(priceOf(r.ticker)) : 0
+  if (px > 0) return { worth: px * shares[r.ticker], worthKind: 'stock' }
+  const cap = r.coin ? Number(cg?.[String(r.coin).toUpperCase()]?.[1]) : 0
+  return cap > 0 ? { worth: cap, worthKind: 'token', worthSym: r.coin } : { worth: null, worthKind: null }
+}
 
 export function buildCexes(feed) {
   const list = Array.isArray(feed?.cexs) ? feed.cexs : Array.isArray(feed) ? feed : []

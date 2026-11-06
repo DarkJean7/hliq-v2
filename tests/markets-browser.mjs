@@ -63,6 +63,16 @@ await ctx.route('**/markets-meta', (route) => route.fulfill({ status: 200, conte
 // Revenue history (/markets-revenue): 120 days for HYPE, $1,000 a day, fees $3,000.
 const revAsks = []
 let revFail = 0      // the next N answers are a 502, as when DefiLlama is slow or rate-limiting the server
+// Exchanges as /markets-exchanges serves it (src/exchanges.js).
+await ctx.route('**/markets-exchanges', (route) => route.fulfill({ status: 200, contentType: 'application/json', json: {
+  dex: [{ id: 'parent#hl', name: 'Hyperliquid', logo: null, r24: 1, r7: 2, r30: 3, f24: 1, f30: 4, kind: 'Perps', chains: 1, spotVol: 5e6, mcap: 18e9, sym: 'HYPE' }],
+  cex: [
+    { id: 'b', name: 'Binance', coin: 'BTC', slug: 'b', ticker: null, assets: 1e11, in24: 1e6, in7: 1e6, in30: 1e6, spotVol: 1e9, derivVol: 2e9, vol24: 3e9, oi: 1e9 },
+    { id: 'n', name: 'Nvidia Exchange', coin: null, slug: 'n', ticker: 'NVDA', assets: null, in24: null, in7: null, in30: null, spotVol: 1e9, derivVol: null, vol24: 1e9, oi: null },
+    { id: 's', name: 'Bitstamp', coin: null, slug: 's', ticker: null, assets: 4e9, in24: 1e6, in7: 1e6, in30: 1e6, spotVol: 4e8, derivVol: null, vol24: 4e8, oi: null },
+  ],
+  shares: { NVDA: 1e9 }, at: 1, source: 'DefiLlama',
+} }))
 await ctx.route('**/markets-revenue**', (route) => {
   const u = new URL(route.request().url())
   revAsks.push(u.searchParams.get('sym') + ':' + u.searchParams.get('type'))
@@ -145,6 +155,25 @@ const strictN = await p.evaluate(() => +document.querySelector('#mkTabs button[d
 await p.click('#mkStrict button[data-strict="0"]')
 const allN = await p.evaluate(() => +document.querySelector('#mkTabs button[data-tab="all"] i').textContent)
 ok('Strict by default; All adds the untraded spot token', allN === strictN + 1, { strictN, allN })
+
+console.log('\n-- exchanges: what each is worth --')
+// "cant we not add the exchange worth?" Live page, desktop width: the column has to fit beside the rest.
+await p.click('#mkMode button[data-mode="exchanges"]')
+await p.click('#mkExKind button[data-ex="cex"]')
+await p.waitForFunction(() => /Bitstamp/.test(document.getElementById('mkBody').textContent), null, { timeout: 8000 }).catch(() => {})
+const wcol = await p.evaluate(() => [...document.querySelectorAll('#mkHead th')].findIndex(t => /Worth/.test(t.textContent)))
+const wcell = (name) => p.evaluate(({ name, wcol }) => {
+  const tr = [...document.querySelectorAll('#mkBody tr')].find(r => r.querySelector('b')?.textContent === name)
+  return tr?.children[wcol]?.textContent.trim() ?? null
+}, { name, wcol })
+ok('the CEX table has a Worth column', wcol > 0)
+ok('a company reads shares × its price', /^≈ \$/.test(await wcell('Nvidia Exchange') ?? ''), await wcell('Nvidia Exchange'))
+ok('a token names the token it is about', /BTC$/.test(await wcell('Binance') ?? ''), await wcell('Binance'))
+ok('private with no token is a dash, not $0', await wcell('Bitstamp') === '—', await wcell('Bitstamp'))
+await p.click('#mkRankBtns button[data-sort="worth"]')
+ok('it can be ranked by', await p.evaluate(() => [...document.querySelectorAll('#mkBody tr b')].at(-1)?.textContent) === 'Bitstamp')
+await p.click('#mkMode button[data-mode="market"]')
+ok('and back to Markets is the table it was', await p.evaluate(() => /Volume 24h/.test(document.getElementById('mkHead').textContent)))
 
 console.log('\n-- stocks: reported revenue on the TradFi tab --')
 await p.click('#mkMode button[data-mode="revenue"]')
