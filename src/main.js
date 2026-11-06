@@ -15973,6 +15973,30 @@ window.__mobVFreeMarginBreakdown = function() {
   document.body.appendChild(ov)
 }
 
+// The balance reads in K / M / B from here up (see below), and so does its change beside it.
+const _EQ_COMPACT_FROM = 1e5
+function _eqChangeTxt(abs, balance) {
+  if (balance < _EQ_COMPACT_FROM || abs < 1e3) return '$' + fmtUSD(abs)
+  return abs >= 1e9 ? '$' + (abs / 1e9).toFixed(2) + 'B' : abs >= 1e6 ? '$' + (abs / 1e6).toFixed(2) + 'M' : '$' + (abs / 1e3).toFixed(2) + 'K'
+}
+// "make sure the chart does not draw above the equity": the number cannot wrap and the chart beside
+// it has a fixed width, so a wide figure ($4,123.93 at 46px on a 393px phone) ran under the chart.
+// It shrinks to the room its column has, from the stylesheet's size each time so it grows back.
+function _fitBalance(el) {
+  const num = el.querySelector('[data-eq-num]')
+  if (!num) return
+  el.style.fontSize = ''
+  // Measured to the chart itself: its canvas is wider than the button holding it, so the column's
+  // own width promised a few pixels that were already under the line.
+  const box = num.getBoundingClientRect(), spark = document.getElementById('mobVSpark')?.getBoundingClientRect()
+  const room = Math.min(el.clientWidth, spark?.width ? spark.left - box.left - 8 : Infinity), w = box.width
+  if (!(room > 0) || w <= room) return
+  el.style.fontSize = Math.max(22, Math.floor(parseFloat(getComputedStyle(el).fontSize) * room / w)) + 'px'
+}
+// The width it was fitted to changes when the real font arrives, and when the phone is turned.
+document.fonts?.ready?.then(() => { const el = document.getElementById('mobVBalance'); if (el) _fitBalance(el) })
+window.addEventListener('resize', () => { const el = document.getElementById('mobVBalance'); if (el) _fitBalance(el) })
+
 function _mobVRenderBalance() {
   const balEl    = document.getElementById('mobVBalance')
   const changeEl = document.getElementById('mobVChange')
@@ -16056,13 +16080,14 @@ function _mobVRenderBalance() {
     // "fix huge numbers in mobile, maybe use K, M": at 46px a six-figure balance ran under the
     // sparkline ($368,079.73 → "$368,07"). From $100K it reads $368.08K, the cents' place taken by
     // the unit; below that the full figure fits and stays exact.
-    const unit = shown >= 1e9 ? ['B', 1e9] : shown >= 1e6 ? ['M', 1e6] : shown >= 1e5 ? ['K', 1e3] : null
-    balEl.innerHTML = (_privacyMode
+    const unit = shown >= 1e9 ? ['B', 1e9] : shown >= 1e6 ? ['M', 1e6] : shown >= _EQ_COMPACT_FROM ? ['K', 1e3] : null
+    balEl.innerHTML = '<span data-eq-num>' + (_privacyMode
       ? `<span style="letter-spacing:4px;color:var(--muted)">•••••</span>`
       : unit
         ? `$${(shown / unit[1]).toFixed(2)}<span style="color:var(--muted)">${unit[0]}</span>`
-        : `$${fmtUSD(whole, 0)}<span style="color:var(--muted)">${cents}</span>`) + oxTag
+        : `$${fmtUSD(whole, 0)}<span style="color:var(--muted)">${cents}</span>`) + '</span>' + oxTag
     balEl.title = _privacyMode ? '' : '$' + fmtUSD(shown, 2)   // the exact figure, on hover / long-press
+    _fitBalance(balEl)
   }
 
   // Today's change → colored pill ( ▲/▼  $X · Y% today )
@@ -16086,11 +16111,13 @@ function _mobVRenderBalance() {
       const pct  = _chg?.pct ?? 0
       void todayStart
       const up   = diff >= 0
-      changeEl.style.cssText = `display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:8px;font-size:12px;font-weight:600;margin-top:7px;background:${up ? 'rgba(0,229,160,0.12)' : 'rgba(255,77,109,0.14)'};color:${up ? 'var(--green)' : 'var(--red)'}`
+      changeEl.style.cssText = `display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:8px;font-size:12px;font-weight:600;margin-top:7px;white-space:nowrap;background:${up ? 'rgba(0,229,160,0.12)' : 'rgba(255,77,109,0.14)'};color:${up ? 'var(--green)' : 'var(--red)'}`
       // Keep the ever-changing number in a .notranslate span, and "today" as its OWN stable text
       // node. Otherwise the whole "▲ $X · Y% today" string changes every tick, never caches, and
       // the translator re-fetches it forever → flicker between English and the target language.
-      const _num = _privacyMode ? '•••' : `${up ? '▲' : '▼'} $${fmtUSD(Math.abs(diff))} · ${Math.abs(pct).toFixed(2)}%`
+      // In the headline's format: a balance in K reads its change in K, not $22,731.59 wrapped onto
+      // two lines under $338.14K.
+      const _num = _privacyMode ? '•••' : `${up ? '▲' : '▼'} ${_eqChangeTxt(Math.abs(diff), val + _offexBalanceAdd())} · ${Math.abs(pct).toFixed(2)}%`
       changeEl.innerHTML = `<span class="notranslate">${_num}</span> today`
     } else {
       changeEl.style.display = 'none'
@@ -17139,6 +17166,9 @@ function _mobVDrawSpark() {
   canvas.height = displayH * dpr
   canvas.style.width  = displayW + 'px'
   canvas.style.height = displayH + 'px'
+  // Drawing can change the chart's width, and the balance beside it is fitted to what is left.
+  const _balEl = document.getElementById('mobVBalance')
+  if (_balEl) _fitBalance(_balEl)
   const ctx = canvas.getContext('2d')
   ctx.scale(dpr, dpr)
   const W = displayW, H = displayH

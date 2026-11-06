@@ -5645,7 +5645,9 @@ body.layout-mobile .nav-tabs { display: none !important; }
   color: var(--fg);
   line-height: 1.1;
   letter-spacing: -1px;
+  white-space: nowrap;   /* _fitBalance sizes it to its column */
 }
+.mob-v-balance [data-offex-tag] { white-space: normal; }
 .mob-v-change {
   font-size: 13px;
   color: var(--muted);

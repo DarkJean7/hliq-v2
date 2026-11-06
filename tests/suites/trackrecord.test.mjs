@@ -152,7 +152,7 @@ console.log(nl + '-- the phone\'s balance fits --')
   // "fix huge numbers in mobile": $368,079.73 at 46px ran under the sparkline.
   const cli = fs.readFileSync('src/main.js', 'utf8')
   t('from $100K the headline reads in K / M / B',
-    /const unit = shown >= 1e9 \? \['B', 1e9\] : shown >= 1e6 \? \['M', 1e6\] : shown >= 1e5 \? \['K', 1e3\] : null/.test(cli))
+    /const _EQ_COMPACT_FROM = 1e5/.test(cli) && /const unit = shown >= 1e9 \? \['B', 1e9\] : shown >= 1e6 \? \['M', 1e6\] : shown >= _EQ_COMPACT_FROM \? \['K', 1e3\] : null/.test(cli))
   t('and keeps the exact figure on hover / long-press', /balEl\.title = _privacyMode \? '' : '\$' \+ fmtUSD\(shown, 2\)/.test(cli))
 }
 
