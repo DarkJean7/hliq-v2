@@ -262,7 +262,7 @@ t('and shows a dash when the token does not trade spot', card.includes('mkt > 0 
 
 // Candles are one call PER COIN — fetching them for every row would be dozens of calls
 // for rows nobody opened.
-const lc = grab(cli, 'function _pulseLoadCandles(coin, { hourlyOnly = false } = {})')
+const lc = grab(cli, 'function _pulseLoadCandles(coin, { caps = true } = {})')
 t('candles are fetched lazily, on expand only', grab(cli, 'window.__pulseToggle = function(coin, id)').includes('_pulseLoadCandles(coin)'))
 t('and cached per coin AND interval — a card needs two series', lc.includes("const key = coin + '|' + iv"))
 // A year of hourly candles is 8,760 points and HL caps a snapshot at 5,000, so the long

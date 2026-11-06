@@ -68,7 +68,8 @@ async function open(opts) {
   await p.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, ADDR)
   return { p, asked, ctx }
 }
-const reads = (asked, coin) => asked.filter(x => x === coin + ':4h' || x === coin + ':1d' || x === coin + ':1w').length
+// Analysis's own requests: 4h and weekly. Daily is read by the Signals card as well, and hourly by the chart.
+const reads = (asked, coin) => asked.filter(x => x === coin + ':4h' || x === coin + ':1w').length
 
 console.log('-- desktop --')
 {
@@ -81,7 +82,7 @@ console.log('-- desktop --')
   t('a market only passed through costs nothing', reads(asked, 'BTC') === 0, asked)
   await p.waitForSelector('#deskTradeBrief .tb-h', { timeout: 20000 })
   const txt = await p.$eval('#deskTradeBrief', e => e.textContent)
-  t('shows the read for the market on screen', reads(asked, 'ETH') === 3 && /Support/.test(txt) && /Resistance/.test(txt), { asked, txt })
+  t('shows the read for the market on screen', reads(asked, 'ETH') === 2 && /Support/.test(txt) && /Resistance/.test(txt), { asked, txt })
   t('with the checks', await p.$$eval('#deskTradeBrief .tb-chk', e => e.length) >= 2)
   t('and says what the levels mean for the position held', /your long/.test(txt) && /Your liquidation/.test(txt), txt)
   t('holding a long, only the long plan', /Long plan/.test(txt) && !/Short plan/.test(txt), txt)
@@ -92,10 +93,15 @@ console.log('-- desktop --')
   const cards = await p.$$eval('#deskTradeBrief > .tb-card', es => es.map(e => e.querySelector('.tb-top span').textContent))
   t('the Signals card sits under the Analysis one', JSON.stringify(cards) === JSON.stringify(['Analysis', 'Signals']), cards)
   const perf = await p.$$eval('#deskTradeBrief .tb-perf-c', es => es.map(e => e.textContent.trim()))
-  t('with every window, 1H included, as a percentage', perf.length === 4 && perf.every(x => /^(1H|24H|7D|30D)[+-]\d+\.\d\d%$/.test(x)), perf)
+  t('with every window, 1H included, as a percentage', perf.slice(0, 4).every(x => /^(1H|24H|7D|30D)[+-]\d+\.\d\d%$/.test(x)), perf)
+  // "another row of timeframes under the current one with the longer timeframes".
+  await p.waitForFunction(() => [...document.querySelectorAll('#deskTradeBrief .tb-perf-c')].slice(4).every(e => /%/.test(e.textContent)), null, { timeout: 15000 }).catch(() => {})
+  const long = await p.$$eval('#deskTradeBrief .tb-perf-c', es => es.slice(4).map(e => e.textContent.trim()))
+  t('and a second row of the longer ones', long.length === 4 && long.every(x => /^(3M|6M|1Y|ALL)[+-]\d+\.\d\d%$/.test(x)), long)
+  const tops = await p.$$eval('#deskTradeBrief .tb-perf-c', es => es.map(e => Math.round(e.getBoundingClientRect().top)))
+  t('under the first, not beside it', new Set(tops.slice(0, 4)).size === 1 && new Set(tops.slice(4)).size === 1 && tops[4] > tops[0], tops)
   const inds = await p.$$eval('#deskTradeBrief .tb-ind span', es => es.map(e => e.textContent))
   t('and the indicators read', ['RSI', 'EMA', 'Bollinger', 'Volatility'].every(k => inds.some(x => x.includes(k))), inds)
-  t('hourly candles only: no daily read of its own', asked.filter(x => x === 'ETH:1d').length === 1, asked.filter(x => x.startsWith('ETH:')))
   t('it sits above the positions table', await p.evaluate(() => {
     const a = document.getElementById('deskTradeBrief'), m = document.querySelector('.trade-manage-tables')
     return !!(a.compareDocumentPosition(m) & Node.DOCUMENT_POSITION_FOLLOWING)
@@ -105,7 +111,7 @@ console.log('-- desktop --')
   await p.waitForFunction(() => /\$/.test(document.getElementById('deskChartHero')?.textContent ?? ''), null, { timeout: 10000 })
   // Something NOT happening has no condition to wait on: past the card's 1.5s delay, then check.
   await p.waitForTimeout(1800)
-  t('coming back within five minutes does not read it again', reads(asked, 'ETH') === 3, asked.slice(n))
+  t('coming back within five minutes does not read it again', reads(asked, 'ETH') === 2, asked.slice(n))
   await p.click('#deskTradeBrief [data-tb-open]')
   await p.waitForFunction(() => document.getElementById('tab-analysis')?.classList.contains('active') || !!document.querySelector('.tab-panel.active #anaZ'), null, { timeout: 5000 }).catch(() => {})
   t('Full analysis opens the Analysis tab on this market', await p.evaluate(() => localStorage.getItem('hliq_ana_coin')) === 'ETH')

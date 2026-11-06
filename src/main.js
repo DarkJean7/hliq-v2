@@ -17625,6 +17625,7 @@ const _PULSE_TF = [
   ['7d',  '1h',  7 * 24 * 3600e3],
   ['30d', '1h',  30 * 24 * 3600e3],
   ['3M',  '1d',  90 * 24 * 3600e3],
+  ['6M',  '1d',  182 * 24 * 3600e3],
   ['1y',  '1d',  365 * 24 * 3600e3],
   ['All', '1d',  0],
 ]
@@ -17677,10 +17678,10 @@ async function _pulseExtCandles(coin, iv, ext = coin) {
   }) : null
 }
 
-// hourlyOnly: the Trade tab's Signals card needs neither the daily series (~44 weight) nor the caps.
-function _pulseLoadCandles(coin, { hourlyOnly = false } = {}) {
-  if (!hourlyOnly) _pulseQueue(() => _pulseEnsureCaps())
-  for (const [iv, lookbackMs] of hourlyOnly ? [['1h', 31 * 24 * 3600e3]] : [['1h', 31 * 24 * 3600e3], ['1d', 0]]) {
+// caps: false for the Trade tab's Signals card, which shows no market cap.
+function _pulseLoadCandles(coin, { caps = true } = {}) {
+  if (caps) _pulseQueue(() => _pulseEnsureCaps())
+  for (const [iv, lookbackMs] of [['1h', 31 * 24 * 3600e3], ['1d', 0]]) {
     const key = coin + '|' + iv
     const have = _pulseCandles[key]
     // Stale ones reload, and stay on screen meanwhile. They never used to: hours into a session
@@ -19741,7 +19742,7 @@ function _sigRenderHtml() {
 
     <div data-dragscroll style="border:1px solid var(--border);border-radius:14px;background:var(--panel);padding:11px 12px;margin-top:12px;overflow-x:auto">
       <div style="font-size:12.5px;font-weight:800;margin-bottom:4px">${_T('Performance', 'Rendimiento')}</div>
-      <table style="width:100%;border-collapse:collapse;min-width:340px">
+      <table style="width:100%;border-collapse:collapse;min-width:440px">
         <tr><td></td>${tfs.map(l => `<td style="padding:0 4px;text-align:right;font-size:9.5px;color:var(--muted);text-transform:uppercase;font-weight:700">${l}</td>`).join('')}</tr>
         ${perfRow(_sigCoin)}
         ${_sigCmps.map((c, i) => perfRow(c, CMP_COLORS[i])).join('')}
@@ -24762,6 +24763,8 @@ initTradeBrief({
     return {
       state: 'ok',
       perf: [['1H', '1h'], ['24H', '24h'], ['7D', '7d'], ['30D', '30d']].map(([label, k]) => [label, _sigPerf(c, k)]),
+      // "another row of timeframes under the current one with the longer timeframes".
+      perfLong: [['3M', '3M'], ['6M', '6M'], ['1Y', '1y'], ['ALL', 'All']].map(([label, k]) => [label, _sigPerf(c, k)]),
       // Shorter names than the tab's: half a phone's width does not fit "EMA cross (9 / 21)".
       inds: [['rsi', 'RSI 14'], ['ema', 'EMA 9/21'], ['boll', 'Bollinger %B'], ['vol', _T('Volatility', 'Volatilidad')]].map(([id, label]) => {
         const r = closes ? _SIG_INDICATORS[id].run(closes, '1h') : null
@@ -24772,7 +24775,7 @@ initTradeBrief({
   loadSignals: (c) => {
     // A failed read waits a minute rather than asking again on every tick.
     if (!Array.isArray(_pulseCandles[c + '|1h']) && Date.now() - (_pulseCandlesAt[c + '|1h'] ?? 0) < 60e3) return
-    _pulseLoadCandles(c, { hourlyOnly: true })
+    _pulseLoadCandles(c, { caps: false })
   },
   openSignals: (c) => {
     window.__sigSetCoin?.(c)

@@ -21,9 +21,9 @@
  *
  * ── and the Signals tab's, under it ──
  * "lets add also signals summary under the trade tab analysis". How the market has moved and what
- * the indicators read now. signals(coin) → { state, perf: [[label, pct|null]], inds: [{ label, head,
- * tone }] }, worked out in main.js by the Signals tab's own functions, because that is where they
- * live. Hourly candles alone answer all of it, about 33 weight, read under the same rules as above.
+ * the indicators read now. signals(coin) → { state, perf, perfLong: [[label, pct|null]], inds: [{ label,
+ * head, tone }] }, worked out in main.js by the Signals tab's own functions, because that is where they
+ * live. Hourly and daily candles answer all of it, about 77 weight, read under the same rules as above.
  */
 import { analysisFor, analysisState, ensureAnalysis, setAnalysisDeps, setupHead, fmtPx, normCoin } from './analysis.js'
 
@@ -140,10 +140,10 @@ function signalsHtml(sig) {
       : T('Reading the candles…', 'Leyendo las velas…')}</div></div>`
   }
   // A window with no figure shows a dash: not known, never a 0.00% it did not measure.
-  const perf = sig.perf.map(([label, v]) => `<div class="tb-perf-c"><span>${esc(label)}</span><b class="${v == null ? '' : v >= 0 ? 'up' : 'dn'}">${v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2) + '%'}</b></div>`).join('')
+  const cells = (row) => (row ?? []).map(([label, v]) => `<div class="tb-perf-c"><span>${esc(label)}</span><b class="${v == null ? '' : v >= 0 ? 'up' : 'dn'}">${v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2) + '%'}</b></div>`).join('')
   const inds = sig.inds.map(i => `<div class="tb-ind"><span>${esc(i.label)}</span><b class="${i.tone === 'pos' ? 'up' : i.tone === 'neg' ? 'dn' : i.tone === 'warn' ? 'warn' : ''}">${esc(i.head)}</b></div>`).join('')
   return `<div class="tb-card">${head}
-    <div class="tb-perf">${perf}</div>
+    <div class="tb-perf">${cells(sig.perf)}${cells(sig.perfLong)}</div>
     ${inds ? `<div class="tb-inds">${inds}</div><div class="tb-note">${T('Indicators over the last 30 days of hourly candles. They describe, they do not predict.', 'Indicadores sobre los últimos 30 días de velas horarias. Describen, no predicen.')}</div>` : ''}
   </div>`
 }
