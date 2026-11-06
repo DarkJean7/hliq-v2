@@ -18,6 +18,12 @@
  *
  * position(coin) → { side: 'long'|'short', liq, hedged } | null. Takes what it needs from main.js
  * through that object, so it cannot reach into state — the shape src/agentkeys.js uses.
+ *
+ * ── and the Signals tab's, under it ──
+ * "lets add also signals summary under the trade tab analysis". How the market has moved and what
+ * the indicators read now. signals(coin) → { state, perf: [[label, pct|null]], inds: [{ label, head,
+ * tone }] }, worked out in main.js by the Signals tab's own functions, because that is where they
+ * live. Hourly candles alone answer all of it, about 33 weight, read under the same rules as above.
  */
 import { analysisFor, analysisState, ensureAnalysis, setAnalysisDeps, setupHead, fmtPx, normCoin } from './analysis.js'
 
@@ -27,8 +33,9 @@ const TICK_MS = 5000
 const REPAINT_MS = 30_000
 const HOSTS = ['mobTradeBrief', 'deskTradeBrief']
 
-let ctx = { T: (en) => en, limited: () => false, price: () => null, position: () => null, prv: (x) => x, open: null }
-let coin = null, ac = null, loadT = null, timer = null, paintedAt = 0, paintedState = null
+let ctx = { T: (en) => en, limited: () => false, price: () => null, position: () => null, prv: (x) => x, open: null,
+  signals: () => null, loadSignals: () => {}, openSignals: null }
+let coin = null, ac = null, loadT = null, timer = null, paintedAt = 0, paintedState = null, paintedSig = ''
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const T = (en, es) => ctx.T(en, es)
@@ -111,26 +118,53 @@ function cardHtml(c, r, pos) {
 
 const quiet = (msg) => `<div class="tb-card"><div class="tb-top"><span>${T('Analysis', 'Análisis')}</span></div><div class="tb-msg">${msg}</div></div>`
 
+function analysisHtml() {
+  const st = analysisState(coin)
+  paintedState = st
+  const r = st === 'ok' ? analysisFor(coin, ctx.price(coin)) : null
+  if (r?.setup) return cardHtml(coin, r, ctx.position(coin))
+  // Not read yet, and could not be read, are different things and say so.
+  if (st === 'none') return ''
+  return quiet(st === 'net' ? T('Analysis did not load. It will try again shortly.', 'El análisis no cargó. Se reintentará pronto.')
+    : st === 'ok' ? T('Not enough history here to read levels from.', 'No hay historial suficiente para leer niveles.')
+    : T('Reading the levels…', 'Leyendo los niveles…'))
+}
+
+function signalsHtml(sig) {
+  if (!sig) return ''
+  const head = `<div class="tb-top"><span>${T('Signals', 'Señales')}</span>
+    ${ctx.openSignals ? `<button type="button" data-tb-signals>${T('Full signals', 'Señales completas')} →</button>` : ''}</div>`
+  if (sig.state !== 'ok') {
+    return `<div class="tb-card">${head}<div class="tb-msg">${sig.state === 'error'
+      ? T('Signals did not load. They will try again shortly.', 'Las señales no cargaron. Se reintentará pronto.')
+      : T('Reading the candles…', 'Leyendo las velas…')}</div></div>`
+  }
+  // A window with no figure shows a dash: not known, never a 0.00% it did not measure.
+  const perf = sig.perf.map(([label, v]) => `<div class="tb-perf-c"><span>${esc(label)}</span><b class="${v == null ? '' : v >= 0 ? 'up' : 'dn'}">${v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2) + '%'}</b></div>`).join('')
+  const inds = sig.inds.map(i => `<div class="tb-ind"><span>${esc(i.label)}</span><b class="${i.tone === 'pos' ? 'up' : i.tone === 'neg' ? 'dn' : i.tone === 'warn' ? 'warn' : ''}">${esc(i.head)}</b></div>`).join('')
+  return `<div class="tb-card">${head}
+    <div class="tb-perf">${perf}</div>
+    ${inds ? `<div class="tb-inds">${inds}</div><div class="tb-note">${T('Indicators over the last 30 days of hourly candles. They describe, they do not predict.', 'Indicadores sobre los últimos 30 días de velas horarias. Describen, no predicen.')}</div>` : ''}
+  </div>`
+}
+
+const sigOf = () => { try { return readable(coin) ? ctx.signals(coin) : null } catch { return null } }
+
 function paint() {
   const el = host()
   if (!el) return
   paintedAt = Date.now()
-  if (!readable(coin)) { el.innerHTML = ''; return }
-  const st = analysisState(coin)
-  paintedState = st
-  const r = st === 'ok' ? analysisFor(coin, ctx.price(coin)) : null
-  if (r?.setup) { el.innerHTML = cardHtml(coin, r, ctx.position(coin)); return }
-  // Not read yet, and could not be read, are different things and say so.
-  if (st === 'none') { el.innerHTML = ''; return }
-  el.innerHTML = quiet(st === 'net' ? T('Analysis did not load. It will try again shortly.', 'El análisis no cargó. Se reintentará pronto.')
-    : st === 'ok' ? T('Not enough history here to read levels from.', 'No hay historial suficiente para leer niveles.')
-    : T('Reading the levels…', 'Leyendo los niveles…'))
+  if (!readable(coin)) { el.innerHTML = ''; paintedSig = ''; return }
+  const sig = sigOf()
+  paintedSig = JSON.stringify(sig)
+  el.innerHTML = analysisHtml() + signalsHtml(sig)
 }
 
 async function load() {
   if (!readable(coin) || !host()) return
   if (!ac || ac.signal.aborted) ac = new AbortController()
   const mine = coin, sig = ac.signal
+  if (!ctx.limited()) { try { ctx.loadSignals(mine) } catch {} }
   const p = ensureAnalysis(mine, sig)
   paint()
   await p
@@ -144,13 +178,24 @@ function tick() {
     return
   }
   load()
-  if (analysisState(coin) !== paintedState || Date.now() - paintedAt >= REPAINT_MS) paint()
+  // Signals arrive on the Signals tab's own queue, so a change in what they say is what repaints.
+  if (analysisState(coin) !== paintedState || JSON.stringify(sigOf()) !== paintedSig || Date.now() - paintedAt >= REPAINT_MS) paint()
 }
 
 export function initTradeBrief(opts) {
   ctx = { ...ctx, ...opts }
   setAnalysisDeps({ T: ctx.T, limited: ctx.limited })
-  for (const id of HOSTS) document.getElementById(id)?.addEventListener('click', (e) => { if (e.target.closest('[data-tb-open]')) ctx.open?.(coin) })
+  const desk = document.getElementById('deskTradeBrief')
+  if (desk) wire(desk)
+}
+
+function wire(el) {
+  if (el.__tb) return
+  el.__tb = true
+  el.addEventListener('click', (e) => {
+    if (e.target.closest('[data-tb-open]')) ctx.open?.(coin)
+    else if (e.target.closest('[data-tb-signals]')) ctx.openSignals?.(coin)
+  })
 }
 
 export function setTradeBriefCoin(next) {
@@ -161,7 +206,7 @@ export function setTradeBriefCoin(next) {
   }
   // The phone's host is rebuilt with its screen, so it gets its listener here rather than once.
   const el = document.getElementById('mobTradeBrief')
-  if (el && !el.__tb) { el.__tb = true; el.addEventListener('click', (e) => { if (e.target.closest('[data-tb-open]')) ctx.open?.(coin) }) }
+  if (el) wire(el)
   paint()
   clearTimeout(loadT)
   loadT = setTimeout(load, LOAD_AFTER_MS)

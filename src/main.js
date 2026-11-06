@@ -17677,9 +17677,10 @@ async function _pulseExtCandles(coin, iv, ext = coin) {
   }) : null
 }
 
-function _pulseLoadCandles(coin) {
-  _pulseQueue(() => _pulseEnsureCaps())
-  for (const [iv, lookbackMs] of [['1h', 31 * 24 * 3600e3], ['1d', 0]]) {
+// hourlyOnly: the Trade tab's Signals card needs neither the daily series (~44 weight) nor the caps.
+function _pulseLoadCandles(coin, { hourlyOnly = false } = {}) {
+  if (!hourlyOnly) _pulseQueue(() => _pulseEnsureCaps())
+  for (const [iv, lookbackMs] of hourlyOnly ? [['1h', 31 * 24 * 3600e3]] : [['1h', 31 * 24 * 3600e3], ['1d', 0]]) {
     const key = coin + '|' + iv
     const have = _pulseCandles[key]
     // Stale ones reload, and stay on screen meanwhile. They never used to: hours into a session
@@ -24752,6 +24753,33 @@ initTradeBrief({
     analysisShow(c)
     if (_isMobView()) window.__mobMoreTab('analysis')
     else window.switchTab('analysis', document.querySelector(`.nav-tab[onclick*="'analysis'"]`))
+  },
+  // The Signals tab's own functions, on the coin on screen and its 30-day window.
+  signals: (c) => {
+    const raw = _pulseCandles[c + '|1h']
+    if (!Array.isArray(raw)) return { state: raw === 'error' ? 'error' : 'loading' }
+    const closes = _sigCloses(c, '1h', 30 * 24 * 3600e3)
+    return {
+      state: 'ok',
+      perf: [['1H', '1h'], ['24H', '24h'], ['7D', '7d'], ['30D', '30d']].map(([label, k]) => [label, _sigPerf(c, k)]),
+      // Shorter names than the tab's: half a phone's width does not fit "EMA cross (9 / 21)".
+      inds: [['rsi', 'RSI 14'], ['ema', 'EMA 9/21'], ['boll', 'Bollinger %B'], ['vol', _T('Volatility', 'Volatilidad')]].map(([id, label]) => {
+        const r = closes ? _SIG_INDICATORS[id].run(closes, '1h') : null
+        return r ? { label, head: r.head, tone: r.tone } : null
+      }).filter(Boolean),
+    }
+  },
+  loadSignals: (c) => {
+    // A failed read waits a minute rather than asking again on every tick.
+    if (!Array.isArray(_pulseCandles[c + '|1h']) && Date.now() - (_pulseCandlesAt[c + '|1h'] ?? 0) < 60e3) return
+    _pulseLoadCandles(c, { hourlyOnly: true })
+  },
+  openSignals: (c) => {
+    window.__sigSetCoin?.(c)
+    if (_isMobView()) window.__mobMoreTab('analysis')
+    else window.switchTab('analysis', document.querySelector(`.nav-tab[onclick*="'analysis'"]`))
+    // After opening: both of those land on the Analysis segment, whatever was selected before.
+    window.__pulseSetSeg?.('signals')
   },
 })
 

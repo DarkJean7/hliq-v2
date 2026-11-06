@@ -17,7 +17,7 @@ const H4 = 4 * 3600e3, D = 864e5
 
 // A market with a shape: swings between 90 and 110, so it has levels on both sides of 100.
 function candles(iv, n) {
-  const step = iv === '4h' ? H4 : iv === '1d' ? D : 7 * D
+  const step = iv === '1h' ? 3600e3 : iv === '4h' ? H4 : iv === '1d' ? D : 7 * D
   const now = Date.now(), out = []
   for (let i = n; i > 0; i--) {
     const c = 100 + 10 * Math.sin(i / 9)
@@ -46,7 +46,7 @@ async function open(opts) {
     if (q.type === 'candleSnapshot') {
       asked.push(q.req.coin + ':' + q.req.interval)
       const iv = q.req.interval
-      return route.fulfill({ json: candles(iv, iv === '4h' ? 600 : iv === '1d' ? 400 : iv === '1w' ? 120 : 300) })
+      return route.fulfill({ json: candles(iv, iv === '4h' ? 600 : iv === '1d' ? 400 : iv === '1w' ? 120 : 800) })
     }
     const json = q.type === 'l2Book' ? book() : q.type === 'clearinghouseState' ? clearing()
       : q.type === 'allMids' ? { ETH: '100', BTC: '50000' }
@@ -86,6 +86,16 @@ console.log('-- desktop --')
   t('and says what the levels mean for the position held', /your long/.test(txt) && /Your liquidation/.test(txt), txt)
   t('holding a long, only the long plan', /Long plan/.test(txt) && !/Short plan/.test(txt), txt)
   t('and that it is not advice', /not advice/.test(txt))
+
+  // "lets add also signals summary under the trade tab analysis".
+  await p.waitForSelector('#deskTradeBrief .tb-perf', { timeout: 20000 })
+  const cards = await p.$$eval('#deskTradeBrief > .tb-card', es => es.map(e => e.querySelector('.tb-top span').textContent))
+  t('the Signals card sits under the Analysis one', JSON.stringify(cards) === JSON.stringify(['Analysis', 'Signals']), cards)
+  const perf = await p.$$eval('#deskTradeBrief .tb-perf-c', es => es.map(e => e.textContent.trim()))
+  t('with every window, 1H included, as a percentage', perf.length === 4 && perf.every(x => /^(1H|24H|7D|30D)[+-]\d+\.\d\d%$/.test(x)), perf)
+  const inds = await p.$$eval('#deskTradeBrief .tb-ind span', es => es.map(e => e.textContent))
+  t('and the indicators read', ['RSI', 'EMA', 'Bollinger', 'Volatility'].every(k => inds.some(x => x.includes(k))), inds)
+  t('hourly candles only: no daily read of its own', asked.filter(x => x === 'ETH:1d').length === 1, asked.filter(x => x.startsWith('ETH:')))
   t('it sits above the positions table', await p.evaluate(() => {
     const a = document.getElementById('deskTradeBrief'), m = document.querySelector('.trade-manage-tables')
     return !!(a.compareDocumentPosition(m) & Node.DOCUMENT_POSITION_FOLLOWING)
@@ -99,6 +109,11 @@ console.log('-- desktop --')
   await p.click('#deskTradeBrief [data-tb-open]')
   await p.waitForFunction(() => document.getElementById('tab-analysis')?.classList.contains('active') || !!document.querySelector('.tab-panel.active #anaZ'), null, { timeout: 5000 }).catch(() => {})
   t('Full analysis opens the Analysis tab on this market', await p.evaluate(() => localStorage.getItem('hliq_ana_coin')) === 'ETH')
+  await p.evaluate(() => { window.switchTab('trade') })
+  await p.waitForSelector('#deskTradeBrief [data-tb-signals]', { state: 'visible', timeout: 10000 })
+  await p.click('#deskTradeBrief [data-tb-signals]')
+  await p.waitForFunction(() => /Pick a market/.test(document.querySelector('.tab-panel.active')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
+  t('Full signals opens the Signals view', await p.evaluate(() => /Pick a market/.test(document.querySelector('.tab-panel.active')?.textContent ?? '')))
   await ctx.close()
 }
 
@@ -111,11 +126,13 @@ console.log('-- phone --')
   const txt = await p.$eval('#mobTradeBrief', e => e.textContent)
   t('the phone shows the read too', /Support/.test(txt) && /Resistance/.test(txt), txt)
   t('with the position in it', /your long/.test(txt), txt)
+  await p.waitForSelector('#mobTradeBrief .tb-perf', { timeout: 20000 })
+  t('and the Signals card under it', await p.$$eval('#mobTradeBrief > .tb-card', es => es.length) === 2)
   t('and nothing runs off the screen', await p.evaluate(() => {
     const W = document.documentElement.clientWidth
     return [...document.querySelectorAll('#mobTradeBrief *')].every(e => e.getBoundingClientRect().right <= W + 0.5)
   }))
-  if (arg('shot')) { await p.locator('#mobTradeBrief').scrollIntoViewIfNeeded(); await p.screenshot({ path: arg('shot') }) }
+  if (arg('shot')) { await p.locator('#mobTradeBrief .tb-perf').scrollIntoViewIfNeeded(); await p.screenshot({ path: arg('shot') }) }
   await ctx.close()
 }
 

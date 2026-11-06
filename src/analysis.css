@@ -201,3 +201,15 @@ html.has-bg-image .ana-view { background: var(--bg) !important; }
 .tb-plan i { display: block; font-style: normal; font-size: 10px; color: var(--muted); font-family: var(--font-sans); }
 .tb-note { font-size: 10.5px; color: var(--muted); }
 .tb-msg { font-size: 13px; color: var(--muted); }
+
+/* ...and the Signals card under it. */
+#mobTradeBrief:not(:empty), #deskTradeBrief:not(:empty) { display: flex; flex-direction: column; gap: 12px; }
+.tb-perf { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.tb-perf-c { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.tb-perf-c span { font-size: 11px; color: var(--muted); }
+.tb-perf-c b { font-size: 13.5px; font-family: var(--font-mono); white-space: nowrap; }
+.tb-inds { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; border-top: 1px solid var(--border); padding-top: 4px; }
+.tb-ind { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 5px 0; min-width: 0; }
+.tb-ind span { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tb-ind b { font-size: 13px; font-family: var(--font-mono); white-space: nowrap; }
+.tb-card .tb-ind b.warn { color: var(--orange, #f59e0b); }

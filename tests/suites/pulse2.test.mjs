@@ -48,7 +48,7 @@ t('but the fee bounds still refresh against live volume, from data already held'
 t('opening the tab no longer warms market data for cards nobody opened',
   !/mob-tab-full'\)\n\s*\/\/ Market caps come/.test(cli))
 t('market caps load on first expand, through the same queue',
-  grab(cli, 'function _pulseLoadCandles(coin)').includes('_pulseQueue(() => _pulseEnsureCaps())'))
+  grab(cli, 'function _pulseLoadCandles(coin, { hourlyOnly = false } = {})').includes('_pulseQueue(() => _pulseEnsureCaps())'))
 t('and cost ONE spot call rather than the ten-dex market-data fan-out',
   (grab(cli, 'async function _pulseEnsureCaps()').match(/await fetch/g) ?? []).length === 1)
 t('the volume chart reads OUR server, spending no HL budget',
@@ -59,10 +59,10 @@ t('all seven windows are offered', ['1h', '24h', '7d', '30d', '3M', '1y', 'All']
 t('long windows use DAILY candles — a year of hourly is 8,760 points and HL caps at 5,000',
   /\['1y',\s*'1d'/.test(cli) && /\['3M',\s*'1d'/.test(cli))
 t('short windows stay hourly', /\['1h',\s*'1h'/.test(cli) && /\['30d',\s*'1h'/.test(cli))
-t('so a card is two requests, not seven', (grab(cli, 'function _pulseLoadCandles(coin)').match(/fetchCandles\(/g) ?? []).length === 1)
+t('so a card is two requests, not seven', (grab(cli, 'function _pulseLoadCandles(coin, { hourlyOnly = false } = {})').match(/fetchCandles\(/g) ?? []).length === 1)
 t('each interval is cached separately', cli.includes("const key = coin + '|' + iv"))
 t('"all time" starts from a real date — HL rejects a 0 start',
-  grab(cli, 'function _pulseLoadCandles(coin)').includes('Date.UTC(2023, 0, 1)'))
+  grab(cli, 'function _pulseLoadCandles(coin, { hourlyOnly = false } = {})').includes('Date.UTC(2023, 0, 1)'))
 t('and All measures from the first candle actually returned, not a fixed cutoff',
   cli.includes('_pulseChangeFrom(pts, Date.now() - (+pts[0]?.t || 0))'))
 
