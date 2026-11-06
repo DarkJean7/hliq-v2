@@ -68,11 +68,14 @@ export const CEX_TICKERS = { Coinbase: 'COIN', Robinhood: 'HOOD', Bullish: 'BLSH
 export function buildCexes(feed) {
   const list = Array.isArray(feed?.cexs) ? feed.cexs : Array.isArray(feed) ? feed : []
   return list
-    .filter(c => c?.name && (n(c.cleanAssetsTvl) ?? n(c.currentTvl)) > 0)
+    // Anything it reports a number for. "where are some popular exchanges like coinbase": requiring
+    // assets dropped Coinbase, Upbit and Bithumb, which have volume but no public wallet list.
+    // Unknown assets are null, never 0.
+    .filter(c => c?.name && [c.cleanAssetsTvl, c.currentTvl, c.spotVolume, c.derivVolume, c.oi].some(v => n(v) > 0))
     .map(c => ({
       id: String(c.slug ?? c.name), name: String(c.name), coin: c.coinSymbol ?? null,
-      slug: c.slug ?? null, ticker: CEX_TICKERS[c.name] ?? null,
-      assets: n(c.cleanAssetsTvl) ?? n(c.currentTvl),
+      slug: c.slug ?? String(c.name).toLowerCase().replace(/[^a-z0-9]+/g, '-'), ticker: CEX_TICKERS[c.name] ?? null,
+      assets: n(c.cleanAssetsTvl) ?? n(c.currentTvl) ?? null,
       in24: n(c.inflows_24h), in7: n(c.inflows_1w), in30: n(c.inflows_1m),
       spotVol: n(c.spotVolume), derivVol: n(c.derivVolume), vol24: add(n(c.spotVolume), n(c.derivVolume)), oi: n(c.oi),
     }))

@@ -215,9 +215,13 @@ function renderExchanges() {
     const src = r.kind === 'CEX' ? (r.slug ? `https://icons.llamao.fi/icons/protocols/${encodeURIComponent(String(r.slug).toLowerCase())}?w=48&h=48` : null) : r.logo
     return `<span class="mk-ico" data-l="${esc(r.name.slice(0, 1))}">${src ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">` : ''}</span>`
   }
-  // A CEX DefiLlama has no volume for (Robinhood) ranks last by volume; say why instead of a bare dash.
+  // A CEX DefiLlama has no figure for ranks last by it; say why instead of a bare dash. Robinhood has
+  // assets and no volume, Coinbase has volume and no wallet list.
   const noVol = '<span class="mk-dim" title="DefiLlama publishes no trading volume for this exchange — rank by Assets to compare it">not published</span>'
-  const cell = (k, r) => k.startsWith('in') ? flow(r[k]) : k === 'vol24' && r.kind === 'CEX' && r[k] == null ? noVol : m(r[k])
+  const noAssets = '<span class="mk-dim" title="DefiLlama has no wallet list for this exchange, so its holdings are unknown — rank by Volume to compare it">not published</span>'
+  const cell = (k, r) => k.startsWith('in') ? flow(r[k])
+    : k === 'vol24' && r.kind === 'CEX' && r[k] == null ? noVol
+    : k === 'assets' && r.kind === 'CEX' && r[k] == null ? noAssets : m(r[k])
   const page = list.slice(0, view.shown)
   const bodyHtml = page.length ? page.map((r, i) => `<tr>
       <td class="mk-c-rank">${i + 1}</td>
@@ -236,7 +240,7 @@ function renderExchanges() {
   h.hidden = false
   h.textContent = mixed
     ? 'Ranked by 24h volume. A DEX\'s is its spot volume (perp-DEX volume is not published free), except Hyperliquid, whose perps are read from the exchange.'
-    : cex ? 'Revenue shows only for exchanges that report to the SEC; the others do not publish it.'
+    : cex ? 'Revenue shows only for exchanges that report to the SEC. Some, like Coinbase, publish no wallets: rank by Volume to compare those.'
     : 'Protocol revenue — what the exchange kept — and the fees its traders paid.'
   renderStatus()
 }
