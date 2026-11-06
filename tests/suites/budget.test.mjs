@@ -124,7 +124,7 @@ console.log(nl + '-- and the app actually paces with it --')
   // One bucket, because the limit is per IP. main.js and api.js hold separate transports and
   // HL counts them together; two budgets tracking halves of one limit would each believe it
   // had headroom.
-  t('there is one bucket for the whole app, starting half full (another device may have just spent it)', bud.includes('export const hlBudget = createBudget({ startLevel: HL_BUDGET / 2, store: localStore })'))
+  t('there is one bucket for the whole app, starting short of full (another device may have just spent it)', bud.includes('export const hlBudget = createBudget({ startLevel: HL_START, heavyReserve: HL_HEAVY_RESERVE, store: localStore })'))
   t('heavy history reads may wait longer than a balance', bud.includes("w >= 20 ? maxWaitHeavyMs : maxWaitMs") && bud.includes('export const HL_MAX_WAIT_HEAVY_MS = 30_000'))
   t('a 429 hidden by CORS ("network-shaped") drains the bucket too — most trips are that kind', /_hlLastTripReason = 'network-shaped'[\s\S]{0,600}_hlBudget\.drain\(\)/.test(cli))
   t('and the reason it is a singleton is written down', bud.includes('because the limit is per IP'))
@@ -207,6 +207,40 @@ console.log(nl + '-- no read of /info bypasses the bucket --')
   // The request goes in with its type now: a candle window is charged by how many candles it asks for.
   t('hlInfo claims its weight before it waits, like the transport', /const w = weightOf\(body\?\.type, body\)\r?\n\s*const ms = [^\n]*\n\s*budget\.spend\(w\)\r?\n\s*if \(ms > 0\) await/.test(fs.readFileSync('src/hlbudget.js', 'utf8')))
   t('and so does the transport', /const w = weightOf\(payload\?\.type, payload\)/.test(fs.readFileSync('src/hlbudget.js', 'utf8')))
+}
+
+console.log(nl + '-- the budget is shared with whatever else is on this IP --')
+{
+  // "i just got rate limited by just watching in the real hyperliquid dex website". A full bucket let
+  // a ten-wallet history refresh burst down to the reserve; the exchange's own tab took the 429, so
+  // nothing ever told the model. Heavy reads leave 700 standing; a balance still goes straight through.
+  const { HL_HEAVY_RESERVE, itemsWeight, meterTransport } = await import('../../src/hlbudget.js')
+  const c = clock()
+  const b = createBudget({ now: c.now, heavyReserve: HL_HEAVY_RESERVE })
+  let heavy = 0
+  while (b.waitFor(20) === 0 && heavy < 500) { b.spend(20); heavy++ }
+  t('a burst of heavy reads stops with 700 standing', Math.abs(b.level() - HL_HEAVY_RESERVE) <= 20, b.level())
+  t('at most 500 of the 1,200 at once', heavy * 20 <= 500, heavy * 20)
+  t('a balance still goes straight through', b.waitFor(2) === 0)
+  // Started under the heavy reserve, every read on a fresh page queued and the app opened empty.
+  const { HL_START } = await import('../../src/hlbudget.js')
+  const fresh = createBudget({ now: c.now, startLevel: HL_START, heavyReserve: HL_HEAVY_RESERVE })
+  t('a fresh page can read its first ~200 of history at once', fresh.waitFor(20) === 0 && HL_START - HL_HEAVY_RESERVE >= 200)
+  t('and the heavy read waits for the refill, no longer', b.waitFor(20) > 0 && b.waitFor(20) <= 2000, b.waitFor(20))
+
+  const s = createBudget({ now: c.now, heavyReserve: HL_HEAVY_RESERVE })
+  s.drain(); c.advance(60)
+  t('after a 429 the bucket is half as big, and the reserve does not outgrow it', Number.isFinite(s.waitFor(20)))
+
+  t('a page of 2,000 fills costs 100 more than its 20', itemsWeight('userFillsByTime', new Array(2000).fill(0)) === 100)
+  t('500 funding rows, 25 more', itemsWeight('userFunding', new Array(500).fill(0)) === 25)
+  t('an endpoint not charged by the item costs nothing extra', itemsWeight('portfolio', new Array(2000).fill(0)) === 0)
+  t('and an answer that is not a list, nothing', itemsWeight('userFills', null) === 0)
+
+  const spent = []
+  const tr = meterTransport({ request: async () => new Array(400).fill(0) }, { waitFor: () => 0, spend: (w) => spent.push(w) })
+  await tr.request('info', { type: 'userFills', user: '0x0' })
+  t('the transport charges it once the answer is in', JSON.stringify(spent) === JSON.stringify([20, 20]), spent)
 }
 
 console.log(nl + '-- candles are charged by the candle --')

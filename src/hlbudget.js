@@ -48,6 +48,19 @@ export const HL_REFILL_PER_SEC = HL_BUDGET / 60
  */
 export const HL_RESERVE = 300
 
+/**
+ * What the HEAVY reads (weight 20+: history, orders, candles) must leave in the bucket.
+ *
+ * "i just got rate limited by just watching in the real hyperliquid dex website". The model only
+ * sees this app, and with a full bucket it let a ten-wallet history refresh burst down to the
+ * reserve: 900 weight at once, on an IP hyperliquid.xyz, a phone or a second tab were sharing. They
+ * got the error, not us — so no 429 ever told the model. The telemetry agreed: ten wallets, hours
+ * into a session, on quiet tabs. Balances and positions keep the lower reserve, so a screen still
+ * fills at once; what can wait spends at most 500 in a burst and then the refill rate.
+ */
+export const HL_HEAVY_RESERVE = 700
+export const HL_START = 900
+
 /** After a 429: the share of the bucket assumed ours, and for how long. */
 export const SHARE = 0.5
 export const SHARE_MS = 10 * 60_000
@@ -72,6 +85,14 @@ export function weightOf(type, payload = null) {
   return CHEAP.has(type) ? 2 : 20
 }
 
+// These also cost 1 per 20 items returned, which only the answer can say: a page of 2,000 fills is
+// 120 weight, not 20. Charged after the response (itemsWeight), so the next caller waits for it.
+const PER_20 = new Set(['userFills', 'userFillsByTime', 'userFunding', 'userNonFundingLedgerUpdates', 'historicalOrders',
+  'fundingHistory', 'recentTrades', 'twapHistory', 'userTwapSliceFills', 'userTwapSliceFillsByTime', 'delegatorHistory', 'delegatorRewards', 'validatorStats'])
+export function itemsWeight(type, res) {
+  return PER_20.has(type) && Array.isArray(res) ? Math.floor(res.length / 20) : 0
+}
+
 /**
  * A token bucket you can ask "how long until I may spend this".
  *
@@ -83,6 +104,7 @@ export function createBudget({
   capacity = HL_BUDGET,
   refillPerSec = HL_REFILL_PER_SEC,
   reserve = HL_RESERVE,
+  heavyReserve = reserve,
   now = Date.now,
   startLevel = capacity,
   shareMs = SHARE_MS,
@@ -142,8 +164,10 @@ export function createBudget({
       // reserve. Waiting forever would hang the load, so let it through on a full bucket
       // rather than deadlock — being slightly over is recoverable, never loading is not.
       const c = cap()
-      if (weight > c - reserve) return level >= c ? 0 : Math.ceil(((c - level) / refillPerSec) * 1000)
-      const short = weight + reserve - level
+      // Scaled while the bucket is assumed half someone else's, or it would exceed the bucket.
+      const keep = weight >= 20 ? Math.min(heavyReserve, c * 0.6) : reserve
+      if (weight > c - keep) return level >= c ? 0 : Math.ceil(((c - level) / refillPerSec) * 1000)
+      const short = weight + keep - level
       return short <= 0 ? 0 : Math.ceil((short / refillPerSec) * 1000)
     },
 
@@ -167,10 +191,12 @@ export function createBudget({
  * bots poll, the combined view fans out — and HL counts every one of them together. Two
  * budgets tracking halves of one limit would each believe it had headroom.
  */
-// Starts HALF full, not full. A page load is exactly when another device or tab on the same IP
-// may have just spent the bucket, and a cold All Accounts load is ~1,100 weight in its first
-// ten seconds — measured by tests/hl-weight.mjs with ten wallets. From half, the first ~300
-// go at once (what the overview needs first) and the rest at the refill rate.
+// Starts short of full. A page load is exactly when another device or tab on the same IP may have
+// just spent the bucket, and a cold All Accounts load is ~1,100 weight in its first ten seconds —
+// measured by tests/hl-weight.mjs with ten wallets. From 900 the first ~200 of heavy reads go at
+// once (one wallet's first screen; HL_HEAVY_RESERVE holds the rest) and then the refill rate.
+// It was half full, which sits under that reserve: every read on a fresh page queued, open orders
+// included, and the app opened empty for half a minute.
 //
 // ...unless a previous page or another tab left a record, in which case that is where it starts.
 const HL_BUDGET_KEY = 'hliq_hl_bucket'
@@ -184,7 +210,7 @@ const localStore = (() => {
     }
   } catch { return null }
 })()
-export const hlBudget = createBudget({ startLevel: HL_BUDGET / 2, store: localStore })
+export const hlBudget = createBudget({ startLevel: HL_START, heavyReserve: HL_HEAVY_RESERVE, store: localStore })
 
 /**
  * Longest an info request will ever be held back.
@@ -229,7 +255,10 @@ export function meterTransport(transport, budget = hlBudget, { maxWaitMs = HL_MA
     const ms = endpoint === 'info' ? Math.min(budget.waitFor(w), w >= 20 ? maxWaitHeavyMs : maxWaitMs) : 0
     budget.spend(w)
     if (ms > 0) await new Promise(r => setTimeout(r, ms))
-    return raw(endpoint, payload, signal)
+    const res = await raw(endpoint, payload, signal)
+    const extra = endpoint === 'info' ? itemsWeight(payload?.type, res) : 0
+    if (extra) budget.spend(extra)
+    return res
   }
   return transport
 }

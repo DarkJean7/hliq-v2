@@ -193,6 +193,13 @@ thing that already failed.
   the RESERVE is the part that matters: the dashboard is not allowed to spend the last of the
   budget, because `/exchange` is in it and being throttled as you try to close a position is
   the failure that costs money. Order placement is counted but never delayed.
+- **The budget is not all ours, and a 429 may never reach us.** It is per IP: hyperliquid.xyz in
+  another tab, a phone on the same Wi-Fi. When the model let a ten-wallet history refresh burst down
+  to the reserve, the exchange's own site took the error and nothing told us — "rate limited just by
+  watching hyperliquid". So heavy reads (weight 20+) leave `HL_HEAVY_RESERVE` standing, and some
+  requests cost more than their type says: candles 1 per 60 returned, fills and funding 1 per 20
+  (`weightOf`, `itemsWeight`). `tests/hl-weight.mjs` stubs small answers, so it does not see the
+  per-item part. Live test harnesses spend from the IP you trade on; keep them small.
 - **Check-then-act on a shared budget is a race.** One wallet's fan fires six requests through
   `Promise.all`; if you ask "is there room" and only spend after awaiting, all six read the
   same level and all six go at once. Claim the weight before the wait.

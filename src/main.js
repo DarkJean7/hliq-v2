@@ -17549,6 +17549,8 @@ const _pulseApr = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v) >= 100 ? Math.rou
 // them for every row would be dozens of calls for rows nobody opened, so they are fetched
 // lazily on expand and cached for the session. One 1h series covers 1h, 24h, 7d and 30d.
 const _pulseCandles = {}      // "coin|interval" → points | 'loading' | 'error'
+const _pulseCandlesAt = {}    // when each was read: a session can stay open for hours
+const _PULSE_CANDLE_TTL = { '1h': 15 * 60e3, '1d': 6 * 3600e3 }
 
 // Candles are one request per coin per interval, and an expanded card wants two. Fired
 // straight at HL they arrive as a burst on top of everything else the app polls — which
@@ -17649,8 +17651,12 @@ function _pulseLoadCandles(coin) {
   _pulseQueue(() => _pulseEnsureCaps())
   for (const [iv, lookbackMs] of [['1h', 31 * 24 * 3600e3], ['1d', 0]]) {
     const key = coin + '|' + iv
-    if (_pulseCandles[key] && _pulseCandles[key] !== 'error') continue
-    _pulseCandles[key] = 'loading'
+    const have = _pulseCandles[key]
+    // Stale ones reload, and stay on screen meanwhile. They never used to: hours into a session
+    // every window ended at the candles read when the view first opened.
+    if (have === 'loading' || (Array.isArray(have) && Date.now() - (_pulseCandlesAt[key] ?? 0) < _PULSE_CANDLE_TTL[iv])) continue
+    if (!Array.isArray(have)) _pulseCandles[key] = 'loading'
+    _pulseCandlesAt[key] = Date.now()
     _pulseQueue(async () => {
       try {
         // Hyperliquid's own launch is the floor for "all time" — a 0 start is rejected.
@@ -17664,8 +17670,9 @@ function _pulseLoadCandles(coin) {
         // history comes from outside instead, labelled as the coin it was asked for.
         const twin = !(Array.isArray(pts) && pts.length) && extTwin(coin)
         if (twin) pts = await _pulseExtCandles(coin, iv, twin)
-        _pulseCandles[key] = Array.isArray(pts) && pts.length ? pts : 'error'
-      } catch { _pulseCandles[key] = 'error' }
+        // A failed reload keeps what it had: old candles are unknown-ish, not nothing.
+        _pulseCandles[key] = Array.isArray(pts) && pts.length ? pts : Array.isArray(_pulseCandles[key]) ? _pulseCandles[key] : 'error'
+      } catch { if (!Array.isArray(_pulseCandles[key])) _pulseCandles[key] = 'error' }
       if (_viewOpen('pulse')) _pulseRender(_viewHost('deskPulse'))
       if (_viewOpen('replay')) _repCandlesArrived()
     })
@@ -18227,9 +18234,30 @@ function _sigWeeklyPoints(coin) {
 function _sigPerf(coin, label) {
   const row = _PULSE_TF.find(x => x[0] === label)
   if (!row) return null
-  const c = _sigCloses(coin, row[1], row[2])
-  if (!c || c.length < 2) return null
-  return (c[c.length - 1] - c[0]) / c[0] * 100
+  const [, iv, ms] = row
+  const raw = _pulseCandles[coin + '|' + iv]
+  if (!Array.isArray(raw) || !raw.length) return null
+  const live = !isExtMarket(coin) && !extTwin(coin) ? _livePx(coin) : 0
+  const lastClose = parseFloat(raw[raw.length - 1].c)
+  const end = live > 0 ? live : lastClose
+  if (!ms) {
+    const c = _sigCloses(coin, iv, 0)
+    return c && c.length >= 2 && c[0] > 0 ? (end - c[0]) / c[0] * 100 : null
+  }
+  // The price when the window opened. "signals 1 hour performance is not showing": keeping only
+  // candles that STARTED inside the window leaves a 1-hour window with one hourly candle, and a
+  // change needs two points. So read the candle the window opens inside, part-way through it.
+  const cut = Date.now() - ms, step = iv === '1h' ? 3_600_000 : 86_400_000
+  if (+raw[raw.length - 1].t + step < cut) return null                 // nothing since: a dead market
+  let i = raw.length - 1
+  while (i >= 0 && +raw[i].t > cut) i--
+  let base
+  if (i < 0) base = parseFloat(raw[0].o)                                 // younger than the window
+  else {
+    const o = parseFloat(raw[i].o), cl = parseFloat(raw[i].c)
+    base = o + (cl - o) * Math.min(1, (cut - +raw[i].t) / step)
+  }
+  return base > 0 && Number.isFinite(end) ? (end - base) / base * 100 : null
 }
 
 // ── the indicators ──────────────────────────────────────────────────────────
