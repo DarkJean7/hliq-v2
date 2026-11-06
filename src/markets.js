@@ -216,12 +216,16 @@ function renderExchanges() {
     return `<span class="mk-ico" data-l="${esc(r.name.slice(0, 1))}">${src ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">` : ''}</span>`
   }
   // A CEX DefiLlama has no figure for ranks last by it; say why instead of a bare dash. Robinhood has
-  // assets and no volume, Coinbase has volume and no wallet list.
-  const noVol = '<span class="mk-dim" title="DefiLlama publishes no trading volume for this exchange — rank by Assets to compare it">not published</span>'
-  const noAssets = '<span class="mk-dim" title="DefiLlama has no wallet list for this exchange, so its holdings are unknown — rank by Volume to compare it">not published</span>'
+  // assets and no volume, Coinbase has volume and no wallet list. "Not tracked", and not "not
+  // published": "coinbase is appearing as not having assets, that seems kinda off" — it has them,
+  // it is our source that cannot see them.
+  const noVol = '<span class="mk-dim" title="DefiLlama does not track trading volume for this exchange — rank by Assets to compare it">not tracked</span>'
+  const noAssets = '<span class="mk-dim" title="This exchange holds customer funds, but DefiLlama has no wallet list for it, so the amount is not tracked here — rank by Volume to compare it">not tracked</span>'
+  const approx = (r) => `<span title="A third of the last quarter reported to the SEC">≈ ${money(r.r30)}</span>`
   const cell = (k, r) => k.startsWith('in') ? flow(r[k])
     : k === 'vol24' && r.kind === 'CEX' && r[k] == null ? noVol
-    : k === 'assets' && r.kind === 'CEX' && r[k] == null ? noAssets : m(r[k])
+    : k === 'assets' && r.kind === 'CEX' && r[k] == null ? noAssets
+    : k === 'r30' && r.r30Approx ? approx(r) : m(r[k])
   const page = list.slice(0, view.shown)
   const bodyHtml = page.length ? page.map((r, i) => `<tr>
       <td class="mk-c-rank">${i + 1}</td>
@@ -239,8 +243,8 @@ function renderExchanges() {
   const h = $('mkHint')
   h.hidden = false
   h.textContent = mixed
-    ? 'Ranked by 24h volume. A DEX\'s is its spot volume (perp-DEX volume is not published free), except Hyperliquid, whose perps are read from the exchange.'
-    : cex ? 'Revenue shows only for exchanges that report to the SEC. Some, like Coinbase, publish no wallets: rank by Volume to compare those.'
+    ? 'Ranked by 24h volume. A DEX\'s is its spot volume (perp-DEX volume is not published free), except Hyperliquid, whose perps are read from the exchange. A CEX shows revenue only where it reports to the SEC (≈ a third of its last quarter).'
+    : cex ? 'Revenue shows only for exchanges that report to the SEC. DefiLlama has no wallet list for some, like Coinbase: rank by Volume to compare those.'
     : 'Protocol revenue — what the exchange kept — and the fees its traders paid.'
   renderStatus()
 }

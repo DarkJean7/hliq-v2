@@ -2,7 +2,8 @@
 //
 // "im wondering where are some popular exchanges like coinbase, kraken". Requiring an assets figure
 // dropped Coinbase, Upbit and Bithumb, which have volume but no public wallet list.
-import { buildCexes, sortEx } from '../../src/exchanges.js'
+import fs from 'fs'
+import { buildCexes, sortEx, withCexRevenue } from '../../src/exchanges.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -24,6 +25,16 @@ t('an exchange with assets and no volume is still in', by.Robinhood.assets === 1
 t('one DefiLlama reports nothing for is not', !by.Voyager)
 t('ranked by assets, unknown goes last, not first', sortEx(rows, 'assets').at(-1).assets === null)
 t('ranked by volume, Coinbase sits among the others', sortEx(rows, 'vol24')[1].name === 'Coinbase', sortEx(rows, 'vol24').map(r => r.name))
+
+// "do we really not have the revenue, fees of popular cex": only the ones that report it.
+const rev = withCexRevenue(rows, { COIN: { q: 1.8e9, ttm: 5.6e9, yoy: 10 } })
+const coin = rev.find(r => r.name === 'Coinbase')
+t('a company that files shows a 30d of a third of its quarter', coin.r30 === 6e8 && coin.r30Approx === true, coin)
+const mk = fs.readFileSync('src/markets.js', 'utf8')
+t('marked as an approximation in the cell', /r\.r30Approx \? approx\(r\)/.test(mk))
+const bn = rev.find(r => r.name === 'Binance')
+t('one that does not has no figure, not a 0', bn.r30 === null && bn.r30Approx === false, bn)
+t('missing assets read as not tracked, not as not having any', />not tracked</.test(mk) && !/>not published</.test(mk))
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

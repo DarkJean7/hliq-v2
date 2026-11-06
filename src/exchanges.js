@@ -85,7 +85,8 @@ export function buildCexes(feed) {
 export function withCexRevenue(rows, stocks) {
   return rows.map(r => {
     const s = r.ticker && stocks ? stocks[r.ticker] : null
-    return { ...r, sq: s?.q ?? null, sttm: s?.ttm ?? null, syoy: s?.yoy ?? null }
+    // Its 30d is a third of the last quarter, marked ≈ where it shows, like a company on Revenue.
+    return { ...r, sq: s?.q ?? null, sttm: s?.ttm ?? null, syoy: s?.yoy ?? null, r30: s?.q != null ? s.q / 3 : null, r30Approx: s?.q != null }
   })
 }
 
