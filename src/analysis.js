@@ -6,9 +6,10 @@
 // and nothing is fetched while the view is not on screen, while the global 429 breaker is
 // tripped, or for a market the person has already navigated away from.
 //
-// It is not a cheap view: a market never seen before costs three candle reads at weight 20
-// each plus the book at three aggregations, and tests/hl-weight.mjs --analysis=N measures what
-// browsing N of them does to the budget. Treat anything that fetches per market as expensive.
+// It is not a cheap view: a market never seen before costs three candle reads — about 120 weight,
+// since candles are 20 plus 1 per 60 returned (src/hlbudget.js) — plus the book at three
+// aggregations, and tests/hl-weight.mjs --analysis=N measures what browsing N of them does to the
+// budget. Treat anything that fetches per market as expensive.
 //
 // Its surfaces are solid on purpose: with a wallpaper set the app's panels go translucent
 // (theme.js), and a table of prices you read the photo through is not readable. `.ana-view`
@@ -136,12 +137,15 @@ async function refresh(force = false) {
   if (S.coin === coin && !ac.signal.aborted) { S.ver++; draw() }
 }
 
-function result() {
-  const e = cache.get(S.coin)
+function result() { return resultFor(S.coin) }
+
+// `at`: the price to read the levels against, when the caller holds a fresher one than the book.
+function resultFor(coin, at = null) {
+  const e = cache.get(coin)
   if (!e?.candles) return null
   const c4 = e.candles['4h']
-  const price = bookMid(e.books) ?? c4[c4.length - 1]?.c ?? e.candles['1d'].at(-1)?.c
-  const key = `${S.coin}|${e.candleAt}|${price}`
+  const price = at ?? bookMid(e.books) ?? c4[c4.length - 1]?.c ?? e.candles['1d'].at(-1)?.c
+  const key = `${coin}|${e.candleAt}|${price}`
   if (e.memo?.key !== key) {
     const from = Date.now() - ZONE_4H_DAYS * 864e5
     const r = buildZones({ candles: { ...e.candles, '4h': c4.filter(k => k.t >= from) }, price })
@@ -150,6 +154,41 @@ function result() {
     e.memo = { key, r }
   }
   return e.memo.r
+}
+
+// ── for the Trade tab's card (src/tradebrief.js) ────────────────────────────
+/** Same reading the Analysis tab shows, from the same cache. Null until it has been loaded. */
+export function analysisFor(coin, price = null) { return resultFor(normCoin(coin), price) }
+/** 'loading' | 'net' | 'none' | 'ok' | null (never asked). */
+export function analysisState(coin) {
+  const e = cache.get(normCoin(coin))
+  if (!e) return null
+  return e.loading && !e.candles ? 'loading' : e.err ?? (e.candles ? 'ok' : null)
+}
+export function setAnalysisDeps(d) { deps = { ...deps, ...d } }
+/** Open the Analysis tab on this market: where it reads its starting market, and the live view. */
+export function analysisShow(coin) {
+  try { localStorage.setItem(LS_COIN, normCoin(coin)) } catch {}
+  if (S?.root?.isConnected) pick(coin)
+}
+/**
+ * Load a market's read if it is stale. Candles only reload past CANDLE_TTL, so opening a market
+ * the Analysis tab just read costs nothing; the book comes with them rather than on its own
+ * 20-second clock, because this card is a summary, not a live book. A failed read waits a minute
+ * rather than retrying on every tick, and a load abandoned by leaving the market does not count.
+ */
+export async function ensureAnalysis(coin, signal) {
+  coin = normCoin(coin)
+  if (!coin || deps.limited?.()) return
+  if (!cache.has(coin)) cache.set(coin, { candles: null, candleAt: 0, books: null, bookAt: 0, err: null, loading: false })
+  const e = cache.get(coin)
+  const now = Date.now()
+  if (e.loading || now - e.candleAt <= CANDLE_TTL || now - (e.triedAt ?? 0) < 60e3) return
+  e.triedAt = now
+  e.loading = true
+  try { await Promise.all([loadCandles(coin, signal), e.err === 'none' ? null : loadBooks(coin, signal)]) }
+  finally { e.loading = false; if (signal?.aborted) e.triedAt = 0 }
+  if (S?.coin === coin && !signal?.aborted) S.ver++
 }
 
 // ── drawing ─────────────────────────────────────────────────────────────────
@@ -185,11 +224,9 @@ const zoneTxt = z => !z ? T('a key level', 'un nivel clave')
   : `${fmtPx(z.px)} (${T('strength', 'fuerza')} ${z.score}, ${T(`${z.confluence} of 3`, `${z.confluence} de 3`)})`
 const days = x => x == null ? '' : x < 0.1 ? T('right there', 'justo ahí') : T(`${x.toFixed(1)} day-ranges away`, `a ${x.toFixed(1)} rangos diarios`)
 
-function setupHtml(r) {
-  const s = r.setup
-  if (!s) return ''
-  const p = r.price
-  const head = {
+/** A reading's headline: [title, tone 'up'|'dn'|'', the sentence that explains it]. */
+export function setupHead(s) {
+  return {
     breakout: [T('Broke above a key level', 'Rompió un nivel clave al alza'), 'up',
       T(`Price closed under ${zoneTxt(s.broke ?? s.long?.zone)} in the last week and is now above it. An old ceiling often becomes a floor: the long plan is a retest of it.`,
         `El precio cerró por debajo de ${zoneTxt(s.broke ?? s.long?.zone)} la última semana y ahora está encima. Un techo roto suele volverse suelo: el plan largo es volver a probarlo.`)],
@@ -209,6 +246,13 @@ function setupHtml(r) {
       T(`Support ${s.support ? fmtPx(s.support.px) : '—'} is ${days(s.toSupport)} below, resistance ${s.resistance ? fmtPx(s.resistance.px) : '—'} is ${days(s.toResistance)} above. In the middle, a trade risks the most for the least; the plans below are what to wait for.`,
         `El soporte ${s.support ? fmtPx(s.support.px) : '—'} está ${days(s.toSupport)} abajo y la resistencia ${s.resistance ? fmtPx(s.resistance.px) : '—'} ${days(s.toResistance)} arriba. En medio, una operación arriesga más por menos; los planes de abajo son lo que hay que esperar.`)],
   }[s.state]
+}
+
+function setupHtml(r) {
+  const s = r.setup
+  if (!s) return ''
+  const p = r.price
+  const head = setupHead(s)
   const conf = s.confidence ? `<span class="ana-conf c-${s.confidence}">${{ high: T('high confidence', 'confianza alta'), medium: T('medium confidence', 'confianza media'), low: T('low confidence', 'confianza baja') }[s.confidence]}</span>` : ''
   const leanTxt = { up: T('leans up', 'se inclina al alza'), down: T('leans down', 'se inclina a la baja'), flat: T('no clear lean', 'sin inclinación clara') }[s.bias.lean]
   const chip = b => {

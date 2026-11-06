@@ -18,7 +18,8 @@ const p = await (await b.newContext({ viewport: { width: 1500, height: 950 } }))
 const asked = []
 p.on('request', r => {
   if (!/hyperliquid/.test(new URL(r.url()).host) || r.method() !== 'POST') return
-  try { const j = JSON.parse(r.postData() || '{}'); if (j.type === 'candleSnapshot') asked.push(j.req) } catch {}
+  // The chart's 1h only; the analysis card reads 4h, 1d and 1w on its own budget.
+  try { const j = JSON.parse(r.postData() || '{}'); if (j.type === 'candleSnapshot' && j.req.interval === '1h') asked.push(j.req) } catch {}
 })
 await p.goto(APP, { waitUntil: 'domcontentloaded' })
 await p.evaluate(() => {

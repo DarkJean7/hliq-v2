@@ -154,7 +154,9 @@ t('there is real RWA volume to report', dx.rwaVol > 0, String(dx.rwaVol))
 t('the main dex counts as crypto, not as uncategorised',
   dx.cryptoVol >= d.totalVol, `${dx.cryptoVol} vs ${d.totalVol}`)
 t('the split is a share of the whole, not of HIP-3 alone',
-  dx.rwaVolShare > 0 && dx.rwaVolShare < 50, String(dx.rwaVolShare))
+  // Under 100, not under 50: this is live data, and RWA really was 50.8% of the whole on 2026-11-06.
+  // A share of HIP-3 alone would be near 100, and that is the mistake this guards against.
+  dx.rwaVolShare > 0 && dx.rwaVolShare < 90, String(dx.rwaVolShare))
 t('no dex is double counted',
   Math.abs(dx.builderVol - dx.dexes.reduce((s, x) => s + x.vol, 0)) < 1)
 t('an empty fan-out does not crash', computeDexes([], {}, d).dexes.length === 0)

@@ -61,8 +61,6 @@ await p.click('.chart-tf-btn:text-is("1h")')
 for (let i = 0; i < 200 && !asked.includes('1h'); i++) await p.waitForTimeout(100)
 await p.waitForFunction(() => document.getElementById('deskChartHero')?.textContent !== 'Loading…', null, { timeout: 30000 })
 await p.waitForFunction(() => (window.__tradeChartState?.()?.bars ?? 0) > 50 && /\$/.test(document.getElementById('deskChartHero')?.textContent ?? ''), null, { timeout: 20000 })
-// Opening the tab and selecting a coin each start a load; the guard lets only the newest draw.
-await p.waitForTimeout(0)
 const st0 = await p.evaluate(() => window.__tradeChartState())
 t('opens on candles', st0?.mode === 'candle', st0)
 t('the recent ~90 bars on screen, the newest at the right',

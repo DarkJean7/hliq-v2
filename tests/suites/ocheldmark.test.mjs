@@ -9,7 +9,7 @@ import fs from 'fs'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
-const main = fs.readFileSync('src/main.js', 'utf8')
+const main = fs.readFileSync('src/main.js', 'utf8').replace(/\r\n/g, '\n')   // a Windows checkout is CRLF
 
 const src = main.slice(main.indexOf('function _ocHeldMark('), main.indexOf('\n}\n', main.indexOf('function _ocHeldMark(')) + 2)
 const mark = (mids, book) => new Function('state', `${src}; return _ocHeldMark(7, ${JSON.stringify(book)})`)({ allMids: mids })

@@ -166,3 +166,38 @@ html.has-bg-image .ana-view { background: var(--bg) !important; }
   .ana-plans { grid-template-columns: 1fr; }
   .ana-sig-h { font-size: 18px; }
 }
+
+/* ── the Trade tab's card (src/tradebrief.js): the same read, compact ── */
+#deskTradeBrief:not(:empty) { margin-bottom: 24px; }
+.tb-card { border: 1px solid var(--border); border-radius: 16px; padding: 14px; background: var(--panel); display: flex; flex-direction: column; gap: 10px; }
+.tb-top { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.tb-top button { font: inherit; font-size: 12px; font-weight: 600; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; }
+.tb-h { font-size: 16px; font-weight: 800; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.tb-conf { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: var(--panel-2); color: var(--fg-2); }
+.tb-conf.c-high { color: var(--green); }
+.tb-conf.c-low { color: var(--muted); }
+.tb-card .up { color: var(--green); }
+.tb-card .dn { color: var(--red); }
+.tb-chks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.tb-chks > b { margin-right: 2px; }
+.tb-chk { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--panel-2); color: var(--fg-2); white-space: nowrap; }
+.tb-chk i { font-style: normal; margin-right: 3px; font-size: 9px; }
+.tb-card .tb-chk.up, .tb-card .tb-chk.dn { color: var(--fg-2); }
+.tb-chk.up i { color: var(--green); }
+.tb-chk.dn i { color: var(--red); }
+.tb-pos { font-size: 12.5px; line-height: 1.4; padding: 7px 10px; border-radius: 9px; background: var(--panel-2); border-left: 3px solid var(--border2); }
+.tb-card .tb-pos.up, .tb-card .tb-pos.dn { color: var(--fg); }
+.tb-pos.up { border-left-color: var(--green); }
+.tb-pos.dn { border-left-color: var(--red); }
+.tb-lvls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.tb-lvl { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.tb-lvl span { font-size: 11px; color: var(--muted); }
+.tb-lvl b { font-size: 15px; font-family: var(--font-mono); }
+.tb-lvl small { font-size: 11px; color: var(--muted); }
+.tb-plan { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px 10px; padding-top: 9px; border-top: 1px solid var(--border); font-size: 13px; font-family: var(--font-mono); }
+.tb-plan > b { grid-column: 1 / -1; font-size: 12px; font-family: var(--font-sans); }
+.tb-plan em { font-style: normal; font-size: 10px; font-weight: 700; margin-left: 5px; padding: 1px 6px; border-radius: 5px; background: var(--panel-2); color: var(--fg-2); }
+.tb-plan span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tb-plan i { display: block; font-style: normal; font-size: 10px; color: var(--muted); font-family: var(--font-sans); }
+.tb-note { font-size: 10.5px; color: var(--muted); }
+.tb-msg { font-size: 13px; color: var(--muted); }

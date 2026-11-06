@@ -233,7 +233,8 @@ import {
 } from './paper.js'
 import { startPaperSync, hasPaper } from './papersync.js'
 import { createPaperBots } from './paperbots.js'
-import { renderAnalysis } from './analysis.js'
+import { renderAnalysis, analysisShow } from './analysis.js'
+import { initTradeBrief, setTradeBriefCoin } from './tradebrief.js'   // the analysis card on the Trade tab
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
 import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fillPickerHtml,
@@ -24604,6 +24605,9 @@ function _mobRenderTradeDetail(el) {
 
       ${posBlocks}
 
+      <!-- The Analysis tab's read of this market (src/tradebrief.js) -->
+      <div id="mobTradeBrief"></div>
+
       <!-- About -->
       <div style="padding:2px 2px 0">
         <div style="font-size:12px;color:var(--muted);margin-bottom:5px">About this market</div>
@@ -24667,6 +24671,31 @@ initDeskBook({
   },
 })
 window.__toggleDeskBook = () => toggleDeskBook()
+
+// The Analysis tab's read of the selected market, on the Trade tab (src/tradebrief.js). In the
+// combined view one coin can be held on several wallets, so the side is the net of them; both sides
+// at once is "hedged", which the card reads as no one position.
+initTradeBrief({
+  T: (en, es) => _T(en, es ?? en), limited: () => _hlLimited(),
+  price: (c) => { const p = _livePx(c); return p > 0 ? p : null },
+  position: (c) => {
+    const rows = _tradePositions().map(ap => ap.position ?? ap).filter(p => p?.coin === c && parseFloat(p.szi ?? 0) !== 0)
+    if (!rows.length) return null
+    const szs = rows.map(p => parseFloat(p.szi))
+    const net = szs.reduce((a, b) => a + b, 0)
+    const hedged = szs.some(x => x > 0) && szs.some(x => x < 0)
+    const side = net >= 0 ? 'long' : 'short'
+    const liqs = rows.filter(p => (parseFloat(p.szi) > 0) === (side === 'long')).map(p => parseFloat(p.liquidationPx ?? 0)).filter(x => x > 0)
+    // The liquidation price reaches first: the highest under a long, the lowest over a short.
+    return { side, hedged, liq: liqs.length ? (side === 'long' ? Math.max(...liqs) : Math.min(...liqs)) : 0 }
+  },
+  prv: (x) => _privacyMode ? String(x).replace(/\d[\d,.]*/g, '•••') : x,
+  open: (c) => {
+    analysisShow(c)
+    if (_isMobView()) window.__mobMoreTab('analysis')
+    else window.switchTab('analysis', document.querySelector(`.nav-tab[onclick*="'analysis'"]`))
+  },
+})
 
 // Which trade chart is on screen — mobile detail view or the desktop Trade tab.
 function _chartTarget() {
@@ -24781,6 +24810,7 @@ async function _mobRenderTradeChart(coin, tf, canvasId = 'mobChartCanvas', heroI
   if (!canvas) return
   if (hero) hero.innerHTML = '<span style="color:var(--muted)">Loading…</span>'
   const seq = ++_tradeChartSeq
+  setTradeBriefCoin(coin)
 
   const hlInterval = _TRADE_IV[tf] ?? '1h'
   // The recent PAGE_BARS candles, not 5,000: a candle costs 1 weight per 60 on top of the 20, so a
