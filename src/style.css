@@ -8305,8 +8305,9 @@ html.has-bg-image .sheet-solid {
 /* The wake-alarm row must not change HEIGHT when it arms: this sheet is anchored to the
    bottom of the screen, so anything that grows pushes everything above it up — and a press
    that started on a control lands somewhere else by the time it is released. Two lines of
-   room for the status line, whichever of the three it is showing. */
-.pa-alarm-s { min-height: 2.7em; }
+   room for the status line, whichever of the three it is showing: 2 × its line-height of 1.45.
+   This was 2.7em, which is shy of two lines, so one line and two differed by 2px. */
+.pa-alarm-s { min-height: 2.9em; }
 
 /* ── TRADE SIMULATOR (src/simulator.js) ─────────────────────────────────────────
    Solid on purpose. It is a report full of small numbers and thin lines, and a wallpaper

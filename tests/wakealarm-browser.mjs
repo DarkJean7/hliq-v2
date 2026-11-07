@@ -163,6 +163,10 @@ console.log(NL + '-- arming it, and ringing --')
   await p.waitForTimeout(300)
   const h2 = await p.evaluate(() => document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm')?.getBoundingClientRect().height ?? 0)
   ok('and the row is the same height armed or not', h1 > 0 && Math.abs(h1 - h2) < 2, { h1, h2 })
+  // Which status lines wrap depends on the font and the width, so that check only bites on some
+  // machines. This one does not: a line and two lines come out the same if two lines are reserved.
+  const room = await p.evaluate(() => { const c = getComputedStyle(document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm-s')); return { min: parseFloat(c.minHeight), line: parseFloat(c.lineHeight) } })
+  ok('with room for two lines of status whatever it says', room.min >= room.line * 2 - 0.01, room)
   await p.click('#mobVContent [data-wake-alarm] .pin-toggle')
   await p.waitForTimeout(300)
 }

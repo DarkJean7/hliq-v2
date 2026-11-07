@@ -115,7 +115,7 @@ t('and in Spanish', cli.includes('retiene el audio del tel\u00e9fono'))
 const stateLine = cli.slice(cli.indexOf('<div class="pa-alarm-s">'), cli.indexOf('</div>', cli.indexOf('<div class="pa-alarm-s">')))
 t('on its own line, not in the one that changes with the state',
   cli.includes('<div class="pa-alarm-note">') && !/audio|holds the phone/.test(stateLine))
-t('so that line still fits the two rows reserved for it', css.includes('.pa-alarm-s { min-height: 2.7em; }'))
+t('so that line still fits the two rows reserved for it', css.includes('.pa-alarm-s { min-height: 2.9em; }'))
 t('and it is there armed or not', !/pa-alarm-note[^\n]*\$\{on /.test(cli))
 t('styled', css.includes('.pa-alarm-note {'))
 
