@@ -19724,8 +19724,6 @@ function _sigRenderHtml() {
   const detail     = (series && ind.detail) ? ind.detail(series, tfRow[1]) : null
   const toneCol = t => t === 'pos' ? 'var(--green)' : t === 'neg' ? 'var(--red)' : t === 'warn' ? 'var(--orange,#f59e0b)' : 'var(--fg)'
 
-  const notes = (_sigNotesLoad()[_sigCoin] ?? [])
-
   return `<div id="sigRoot" style="padding:10px 12px 26px">
     <div style="font-size:11.5px;color:var(--muted);line-height:1.45;margin-bottom:10px">${
       _T('Pick a market, read how it has moved, and see what one indicator currently says about it.',
@@ -19816,6 +19814,22 @@ function _sigRenderHtml() {
       </div>
     </div>
 
+  </div>`
+}
+
+/**
+ * The notes, at the very foot of Market. Redrawn only when the coin or its notes change: the rest of this
+ * view redraws on every candle fetch, and that would throw away a note half typed.
+ */
+function _sigNotesPaint(el) {
+  const host = el.querySelector('#sigNotes')
+  if (!host) return
+  if (!_sigCoin) { host.innerHTML = ''; host.dataset.sig = ''; return }
+  const notes = (_sigNotesLoad()[_sigCoin] ?? [])
+  const sig = _sigCoin + '|' + _currentLang + '|' + JSON.stringify(notes)
+  if (host.dataset.sig === sig) return
+  host.dataset.sig = sig
+  host.innerHTML = `
     <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:16px 0 7px">${_T('Your notes on', 'Tus notas sobre')} ${esc(_ocCoinLabel(_sigCoin))}</div>
     <textarea id="sigNoteInput" rows="2" placeholder="${_T('Why are you watching this market?', '¿Por qué sigues este mercado?')}"
       style="width:100%;box-sizing:border-box;background:var(--panel-2);border:1px solid var(--border);border-radius:10px;padding:9px 11px;font-size:13px;color:var(--fg);outline:none;resize:vertical;font-family:inherit"></textarea>
@@ -19831,8 +19845,7 @@ function _sigRenderHtml() {
       </div>`).join('')}</div>`
     : `<div style="font-size:11.5px;color:var(--fg-3);margin-top:9px;line-height:1.5">${
         _T('Nothing yet. A note about why you are watching a market outlasts any reading above it.',
-           'Nada aún. Una nota sobre por qué sigues un mercado dura más que cualquier lectura.')}</div>`}
-  </div>`
+           'Nada aún. Una nota sobre por qué sigues un mercado dura más que cualquier lectura.')}</div>`}`
 }
 
 // ── the three sections ──────────────────────────────────────────────────────
@@ -19936,9 +19949,10 @@ function _pulseRender(el) {
       } else {
         // The TradingView charts under Market reload if rebuilt, and this view redraws on every candle
         // fetch: only #sigBody is replaced, and the frame around it stays.
-        if (!el.querySelector('#sigBody')) el.innerHTML = _pulseSegHeader() + _sigViewSwitch() + '<div id="sigBody"></div>' + marketChartsShell()
+        if (!el.querySelector('#sigBody')) el.innerHTML = _pulseSegHeader() + _sigViewSwitch() + '<div id="sigBody"></div>' + marketChartsShell() + '<div id="sigNotes" style="padding:0 12px 26px"></div>'
         el.querySelector('#sigBody').innerHTML = _sigRenderHtml()
         marketChartsFill(el)
+        _sigNotesPaint(el)
       }
     }
     catch (e) { console.warn('[signals]', e.message); el.innerHTML = _pulseSegHeader() + `<div class="mob-v-empty">${_T('Could not draw this view.', 'No se pudo dibujar esta vista.')}</div>` }

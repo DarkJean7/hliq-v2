@@ -46,7 +46,7 @@ try { const s = JSON.parse(localStorage.getItem('hliq_macro_charts') || '{}'); i
 const saveCharts = () => { try { localStorage.setItem('hliq_macro_charts', JSON.stringify({ fng: _fngRange, tv: _tvSel })) } catch {} }
 const FNG_RANGES = [['30d', 30], ['90d', 90], ['1y', 365], ['3y', 1095], ['all', null]]
 
-export function macroFngRange(r) { if (FNG_RANGES.some(x => x[0] === r)) { _fngRange = r; saveCharts(); ctx.repaint() } }
+export function macroFngRange(r) { if (FNG_RANGES.some(x => x[0] === r)) { _fngRange = r; saveCharts(); chartsChanged() } }
 export function macroTvSel(card, k) { if (TV_CHARTS[card]?.[k]) { _tvSel[card] = k; saveCharts(); chartsChanged() } }
 
 const _evOpen = new Set()
@@ -248,7 +248,11 @@ export function macroFngScrub(ev) {
 
 function sentimentCard() {
   const { T, esc } = ctx
-  const f = _d.fng
+  const f = _d?.fng
+  if (!_d && !_failed) {
+    return `<div id="macroMood" style="${CARD}"><div style="${HEAD}">${T('Crypto sentiment', 'Sentimiento cripto')}</div>
+      <div style="font-size:12px;color:var(--fg-3);padding:6px 0">${T('Loading…', 'Cargando…')}</div></div>`
+  }
   if (!f?.days?.length) {
     return `<div id="macroMood" style="${CARD}"><div style="${HEAD}">${T('Crypto sentiment', 'Sentimiento cripto')}</div>
       <div style="font-size:12px;color:var(--fg-3);padding:6px 0">${T('The Fear &amp; Greed Index is unavailable right now.', 'El índice Fear &amp; Greed no está disponible ahora.')}</div></div>`
@@ -334,16 +338,17 @@ function tvCard(card) {
 }
 const _tvSeen = new WeakSet()
 let _tvObs = null
+function watchOnce(el) {
+  if (typeof IntersectionObserver !== 'function') { _tvSeen.add(el); return }
+  _tvObs ??= new IntersectionObserver((es) => {
+    for (const e of es) if (e.isIntersecting) { _tvSeen.add(e.target); _tvObs.unobserve(e.target); chartsChanged() }
+  }, { rootMargin: '250px' })
+  _tvObs.observe(el)
+}
 function tvMount(root, card) {
   const box = root.querySelector(`#macroCard_${card} [data-tv-mount]`)
   if (!box) return
-  if (typeof IntersectionObserver === 'function' && !_tvSeen.has(box)) {
-    _tvObs ??= new IntersectionObserver((es) => {
-      for (const e of es) if (e.isIntersecting) { _tvSeen.add(e.target); _tvObs.unobserve(e.target); chartsChanged() }
-    }, { rootMargin: '250px' })
-    _tvObs.observe(box)
-    return
-  }
+  if (!_tvSeen.has(box)) { watchOnce(box); if (!_tvSeen.has(box)) return }
   const o = TV_CHARTS[card][_tvSel[card]]
   const sig = `${o.sym}|${ctx.tvTheme()}`
   if (box.dataset.sig === sig) return       // the same chart: leave the iframe alone
@@ -397,17 +402,22 @@ function rowHtml(it, now) {
 }
 
 /**
- * The market-wide charts, at the foot of Signals → Market. They sit outside the part of that view which
+ * Sentiment and the market-wide charts, at the foot of Signals → Market. They sit outside the part of that view which
  * redraws itself on every candle fetch, because a rebuilt iframe reloads. Their numbers are only fetched
  * once one has been scrolled to, so reading a single market costs nothing extra.
  */
 export function marketChartsShell() {
-  return `<div id="sigCharts" style="padding:0 12px 26px">${tvCard('cap')}${tvCard('dom')}</div>`
+  return `<div id="sigCharts" style="padding:0 12px 16px"><div id="macroMoodHost"></div>${tvCard('cap')}${tvCard('dom')}</div>`
 }
 export function marketChartsFill(root) {
   const host = root.querySelector('#sigCharts')
   if (!host) return
-  let seen = false
+  // Rewritten only when its numbers or range change, so a redraw of Market cannot jump the crosshair.
+  const mood = host.querySelector('#macroMoodHost')
+  const moodSig = `${_at}|${_failed}|${_fngRange}|${ctx.T('en', 'es')}`
+  if (mood.dataset.sig !== moodSig) { mood.dataset.sig = moodSig; mood.innerHTML = sentimentCard() }
+  if (!_tvSeen.has(mood)) watchOnce(mood)
+  let seen = _tvSeen.has(mood)
   for (const card of ['cap', 'dom']) {
     const el = host.querySelector(`#macroCard_${card}`)
     el.querySelector('[data-tv-head]').innerHTML = tvHead(card)
@@ -427,7 +437,7 @@ function chartsChanged() {
 export function macroShell() {
   const { T } = ctx
   return `<div id="macroRoot" style="padding:10px 12px 26px">
-    <div style="font-size:11.5px;color:var(--muted);line-height:1.45">${T('The bigger picture behind every market: US economic reports, interest rates and sentiment. Tap a row for what it means and its history.', 'El contexto detrás de cada mercado: informes económicos de EE. UU., tipos de interés y sentimiento. Toca una fila para ver qué significa y su historial.')}</div>
+    <div style="font-size:11.5px;color:var(--muted);line-height:1.45">${T('The bigger picture behind every market: US economic reports, interest rates and sentiment. Tap a row for what it means and its history.', 'El contexto detrás de cada mercado: informes económicos de EE. UU., tipos de interés y ánimo del mercado. Toca una fila para ver qué significa y su historial.')}</div>
     <div id="macroA"></div>
     <div id="macroB"></div>
   </div>`
@@ -454,7 +464,7 @@ export function macroFill(root, now = Date.now()) {
       ${rows.map(i => rowHtml(i, now)).join('')}
     </div>`
   }
-  A.innerHTML = eventsCard(now) + sentimentCard()
+  A.innerHTML = eventsCard(now)
   B.innerHTML = `${group('sentiment')}${group('inflation')}${group('jobs')}${group('growth')}${group('rates')}
     <div style="${SMALL};margin-top:12px">${T('Economic data is for the US, via the St. Louis Fed (FRED). Each row shows the period it covers, because reports arrive weeks after the period ends. Forecasts are not included, so this does not show whether a report beat expectations. This is context and not trading advice.', 'Los datos económicos son de EE. UU., a través de la Fed de St. Louis (FRED). Cada fila indica el período que cubre, porque los informes llegan semanas después. No incluye previsiones, así que no muestra si un informe superó las expectativas. Es contexto, no asesoramiento de inversión.')}</div>`
 }
