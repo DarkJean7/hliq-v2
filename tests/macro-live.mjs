@@ -40,10 +40,18 @@ async function shot(viewport, isMobile, file) {
   if (isMobile) await p.evaluate(() => window.__mobMoreTab('analysis')); else await p.evaluate(() => window.switchTab('analysis', document.querySelector(`.nav-tab[onclick*="'analysis'"]`)))
   await p.evaluate(() => window.__pulseSetSeg('signals'))
   await p.waitForSelector('#macroFng', { timeout: 60000 })
-  await p.click('[data-macro-row="cpi"] .mob-v-row')
+  await p.waitForTimeout(7000)                 // the splash screen fades on a timer of its own
+  await p.$eval('#macroMood', e => e.scrollIntoView())
   await p.screenshot({ path: file })
-  await p.evaluate(() => document.querySelector('[data-macro-group="inflation"]')?.scrollIntoView())
+  // Mounting TradingView really does take this long, and there is nothing of ours to wait on inside its frame.
+  await p.$eval('#macroCard_cap', e => e.scrollIntoView())
+  await p.waitForSelector('#macroCard_cap iframe', { timeout: 30000 }); await p.waitForTimeout(7000)
   await p.screenshot({ path: file.replace(/\.png$/, '-2.png') })
+  await p.$eval('#macroCard_dom', e => e.scrollIntoView())
+  await p.waitForSelector('#macroCard_dom iframe', { timeout: 30000 }); await p.waitForTimeout(7000)
+  await p.screenshot({ path: file.replace(/\.png$/, '-3.png') })
+  await p.click('#macroCard_dom [data-tv-sel="vs"]'); await p.waitForTimeout(8000)
+  await p.screenshot({ path: file.replace(/\.png$/, '-4.png') })
   await ctx.close()
 }
 if (arg('shot')) await shot({ width: 430, height: 930 }, true, arg('shot'))

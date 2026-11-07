@@ -235,7 +235,7 @@ import { startPaperSync, hasPaper } from './papersync.js'
 import { createPaperBots } from './paperbots.js'
 import { renderAnalysis, analysisShow } from './analysis.js'
 import { initTradeBrief, setTradeBriefCoin } from './tradebrief.js'   // the analysis card on the Trade tab
-import { setMacroDeps, macroHtml, macroToggle } from './macroview.js'   // Signals → Macro
+import { setMacroDeps, macroShell, macroFill, macroToggle, macroFngRange, macroFngScrub, macroTvSel } from './macroview.js'   // Signals → Macro
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
 import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fillPickerHtml,
@@ -19869,10 +19869,15 @@ try { _sigPane = localStorage.getItem('hliq_sig_view') === 'macro' ? 'macro' : '
 setMacroDeps({
   T: _T, esc,
   chart: (pts, opts) => _pulseInteractiveChart(pts, opts),
+  tv: (el, url, cfg) => _tvInject(el, url, cfg),
+  tvTheme: () => _tvTheme(),
   visible: () => _viewOpen('pulse') && _pulseSeg === 'signals' && _sigPane === 'macro',
   repaint: () => _pulseRender(_viewHost('deskPulse')),
 })
 window.__macroToggle = macroToggle
+window.__macroFngRange = macroFngRange
+window.__macroFngScrub = macroFngScrub
+window.__macroTvSel = macroTvSel
 window.__sigSetView = function(v) {
   _sigPane = v === 'macro' ? 'macro' : 'market'
   try { localStorage.setItem('hliq_sig_view', _sigPane) } catch {}
@@ -19911,7 +19916,13 @@ function _pulseRender(el) {
     const _act = document.activeElement
     const _hadSearch = _act && _act.id === 'sigSearch'
     const _caret = _hadSearch && typeof _act.selectionStart === 'number' ? _act.selectionStart : null
-    try { el.innerHTML = _pulseSegHeader() + _sigViewSwitch() + (_sigPane === 'macro' ? macroHtml() : _sigRenderHtml()) }
+    try {
+      // Macro holds TradingView iframes, which reload if rebuilt: its frame stays, and only its text is redrawn.
+      if (_sigPane === 'macro') {
+        if (!el.querySelector('#macroRoot')) el.innerHTML = _pulseSegHeader() + _sigViewSwitch() + macroShell()
+        macroFill(el)
+      } else el.innerHTML = _pulseSegHeader() + _sigViewSwitch() + _sigRenderHtml()
+    }
     catch (e) { console.warn('[signals]', e.message); el.innerHTML = _pulseSegHeader() + `<div class="mob-v-empty">${_T('Could not draw this view.', 'No se pudo dibujar esta vista.')}</div>` }
     if (_hadSearch) {
       const back = document.getElementById('sigSearch')

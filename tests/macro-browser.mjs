@@ -38,7 +38,8 @@ const DATA = {
     row('fed', 'rates', 'pct2', 'd', '2025-12-11', 4, '2025-10-30', 4.25, 'fomc', { low: 3.75 }),
     row('vix', 'sentiment', 'num2', 'd', '2026-11-05', 28.18, '2026-11-04', 27, null),
   ],
-  fng: { value: 25, label: 'Extreme Fear', date: NOW, d1: 28, d7: 40, d30: null, pts: [[NOW - D, 28], [NOW, 25]] },
+  // A year of readings at 60, then 20 at 40 and the last at 25: 365 days, so 1y and 30d give different stats.
+  fng: { value: 25, label: 'Extreme Fear', date: NOW, d1: 40, d7: 40, d30: null, days: Array.from({ length: 900 }, (_, i) => [20000 + i, i === 899 ? 25 : i >= 880 ? 40 : i === 700 ? 90 : 60]) },
   global: { cap: 2.57e12, vol: 6e10, btc: 59.3, eth: 10.7, chg24: -2.5 },
   events: [{ t: NOW + 3600e3, kind: 'cpi' }, { t: NOW + 5 * D, kind: 'fomc', projections: true }, { t: NOW + 6 * D, kind: 'gdp', stage: 'second' }, { t: NOW + 30 * D, kind: 'cpi' }, { t: NOW - 3600e3, kind: 'ppi' }],
   unknownCal: [],
@@ -55,6 +56,7 @@ async function open(viewport, isMobile) {
     return route.fulfill({ status: 200, contentType: 'application/json', json: reply(q) })
   })
   await ctx.route('**/api/**', (route) => route.fulfill({ status: 503, body: 'offline in test' }))
+  await ctx.route(/s3\.tradingview\.com/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: '' }))
   await ctx.route('**/macro-data', (route) => {
     macroCalls++
     return macroMode === 'ok' ? route.fulfill({ status: 200, contentType: 'application/json', json: DATA }) : route.fulfill({ status: 503, contentType: 'application/json', json: { items: null } })
@@ -95,8 +97,54 @@ console.log('-- desktop, the server has nothing yet --')
   // Retried on its own, on a timer, with no action from the reader.
   await p.waitForSelector('#macroFng', { timeout: 60000 })
   t('fear and greed', (await text(p, '#macroMood')).includes('25') && /Extreme fear/.test(await text(p, '#macroMood')), await text(p, '#macroMood'))
+  t('how long it has been there', /20 days in fear/.test(await text(p, '#macroFngStreak')), await text(p, '#macroFngStreak'))
+  t('opens on a year', await p.$eval('[data-fng-range="1y"]', e => /accent/.test(e.getAttribute('style'))))
+  const stats = () => text(p, '#macroFngStats')
+  t('the window\'s high', /High ?90/.test(await stats()), await stats())
+  await p.click('[data-fng-range="30d"]')
+  await p.waitForFunction(() => !/High ?90/.test(document.getElementById('macroFngStats')?.textContent.replace(/\s+/g, ' ') ?? ''))
+  t('a shorter window drops it', /High ?60/.test(await stats()) && /Low ?25/.test(await stats()), await stats())
+  await p.click('[data-fng-range="all"]')
+  await p.waitForFunction(() => /90/.test(document.getElementById('macroFngStats')?.textContent ?? ''))
+  t('all of it brings it back', /High ?90/.test(await stats()), await stats())
+  await p.click('[data-fng-range="1y"]')
+  const plot = await (await p.$('#macroFngPlot')).boundingBox()
+  await p.mouse.move(plot.x + plot.width * 0.01, plot.y + 50)
+  const read = await text(p, '#macroFngRead')
+  t('the crosshair reads the day under it', /60/.test(read) && /Greed/.test(read), read)
+  await p.mouse.move(5, 5)
+  t('and goes back to today', /25/.test(await text(p, '#macroFngRead')), await text(p, '#macroFngRead'))
   t('a look-back with no value is a dash, not 0', /Month ago\s*—/.test(await text(p, '#macroMood')), await text(p, '#macroMood'))
-  t('market cap and dominance', /\$2\.57T/.test(await text(p, '#macroGlobal')) && /59\.3%/.test(await text(p, '#macroGlobal')), await text(p, '#macroGlobal'))
+  t('market cap', /\$2\.57T/.test(await text(p, '#macroGlobal')) && /−2\.5% 24h/.test(await text(p, '#macroGlobal')), await text(p, '#macroGlobal'))
+  t('the split adds up, with what is left named', /BTC 59\.3%/.test(await text(p, '#macroShare')) && /ETH 10\.7%/.test(await text(p, '#macroShare')) && /Everything else 30\.0%/.test(await text(p, '#macroShare')), await text(p, '#macroShare'))
+
+  console.log('-- TradingView charts --')
+  const sym = (c) => p.$eval(`#macroCard_${c} [data-tv-mount]`, e => e.dataset.symbol ?? null)
+  const cfg = (c) => p.$eval(`#macroCard_${c} [data-tv-mount] script`, e => JSON.parse(e.textContent))
+  await p.$eval('#macroCard_cap', e => e.scrollIntoView())
+  await p.waitForFunction(() => document.querySelector('#macroCard_cap [data-tv-mount]')?.dataset.symbol)
+  t('the market cap chart mounts when it comes into view', await sym('cap') === 'CRYPTOCAP:TOTAL', await sym('cap'))
+  await p.$eval('#macroCard_dom', e => e.scrollIntoView())
+  await p.waitForFunction(() => document.querySelector('#macroCard_dom [data-tv-mount]')?.dataset.symbol)
+  t('dominance opens on BTC', await sym('dom') === 'CRYPTOCAP:BTC.D', await sym('dom'))
+  t('a year of daily history, no volume bars', (await cfg('dom')).range === '12M' && (await cfg('dom')).hide_volume === true)
+  const marked = await p.$eval('#macroCard_dom [data-tv-mount] .tradingview-widget-container', e => { e.dataset.same = '1'; return true })
+  await p.click('[data-macro-row="unrate"] .mob-v-row')
+  await p.waitForSelector('[data-macro-row="unrate"] [data-macro-detail]')
+  t('redrawing the page leaves the chart alone', marked && await p.$eval('#macroCard_dom [data-tv-mount] .tradingview-widget-container', e => e.dataset.same === '1'))
+  await p.click('[data-macro-row="unrate"] .mob-v-row')
+  await p.click('#macroCard_dom [data-tv-sel="alts"]')
+  await p.waitForFunction(() => document.querySelector('#macroCard_dom [data-tv-mount]')?.dataset.symbol === '100-CRYPTOCAP:BTC.D')
+  t('alts share is the rest of the market', true)
+  t('and warns about stablecoins', /Stablecoins count/.test(await text(p, '#macroCard_dom [data-tv-foot]')), await text(p, '#macroCard_dom [data-tv-foot]'))
+  await p.click('#macroCard_dom [data-tv-sel="vs"]')
+  await p.waitForFunction(() => document.querySelector('#macroCard_dom [data-tv-mount]')?.dataset.symbol === 'CRYPTOCAP:BTC')
+  const vs = await cfg('dom')
+  t('BTC vs alts compares the two', vs.studies?.[0]?.inputs?.symbol === 'CRYPTOCAP:TOTAL2', vs.studies)
+  await p.click('#macroCard_cap [data-tv-sel="alts"]')
+  await p.waitForFunction(() => document.querySelector('#macroCard_cap [data-tv-mount]')?.dataset.symbol === 'CRYPTOCAP:TOTAL2')
+  t('one card\'s choice leaves the other alone', await sym('dom') === 'CRYPTOCAP:BTC', await sym('dom'))
+  await p.click('#macroCard_dom [data-tv-sel="btcd"]')
 
   const ev = await text(p, '#macroEvents')
   t('the next report first', /CPI inflation report/.test(ev) && ev.indexOf('CPI') < ev.indexOf('Fed rate'), ev)
@@ -151,6 +199,8 @@ console.log('-- phone --')
   t('nothing runs off the side', over <= 0, over)
   const wrapped = await p.$$eval('[data-macro-row] .mob-v-row-val', es => es.filter(e => e.scrollWidth > e.clientWidth + 1).length)
   t('every figure fits', wrapped === 0, wrapped)
+  const chipsOver = await p.$eval('#macroMood', e => e.scrollWidth - e.clientWidth)
+  t('the sentiment card fits', chipsOver <= 0, chipsOver)
   if (arg('shot')) await p.screenshot({ path: arg('shot'), fullPage: false })
   await p.tap('[data-macro-row="fed"] .mob-v-row')
   await p.waitForSelector('[data-macro-row="fed"] [data-macro-detail]')

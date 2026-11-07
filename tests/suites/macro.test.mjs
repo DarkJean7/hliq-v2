@@ -1,5 +1,5 @@
 // src/macro.js: dates, gaps and failures. No network; every fetch here is a stub.
-import { parseFredCsv, yoy, mom, monthDiff, buildMacro, parseFng, parseGlobal, parseIcs, blsEvents, beaEvents, parseFomc, easternToUtc, refreshMacro, fredUrl, macroHasData } from '../../src/macro.js'
+import { parseFredCsv, yoy, mom, monthDiff, buildMacro, parseFng, parseGlobal, fngWindow, fngZone, parseIcs, blsEvents, beaEvents, parseFomc, easternToUtc, refreshMacro, fredUrl, macroHasData } from '../../src/macro.js'
 import { fmtMacro, fmtDelta, periodLabel, nextOf } from '../../src/macroview.js'
 
 let pass = 0, fail = 0
@@ -46,11 +46,26 @@ t('dated by its last change, not today', fed.date === '2025-12-11', fed.date)
 t('and the rate before that', fed.prev === 4.25, fed.prev)
 
 // ── sentiment ──
-const fng = parseFng({ data: [{ value: '25', value_classification: 'Extreme Fear', timestamp: '300' }, { value: '28', value_classification: 'Fear', timestamp: '200' }, { value: 'x', timestamp: '100' }] })
+const DAYS = 86400, D0 = 20000
+const row = (d, v, l = 'Fear') => ({ value: String(v), value_classification: l, timestamp: String((D0 + d) * DAYS) })
+const fng = parseFng({ data: [row(30, 25, 'Extreme Fear'), row(29, 28), row(0, 60, 'Greed'), { value: 'x', timestamp: '100' }, { value: '', timestamp: '200' }] })
 t('newest wins whatever order it arrives in', fng.value === 25 && fng.label === 'Extreme Fear', fng)
 t('yesterday', fng.d1 === 28, fng)
-t('no value a week ago is null', fng.d7 === null, fng)
-t('history runs oldest first', fng.pts[0][1] === 28 && fng.pts.length === 2, fng.pts)
+t('a week ago with no reading is null', fng.d7 === null, fng)
+t('a month ago is found by date', fng.d30 === 60, fng)
+t('history runs oldest first, as day numbers', fng.days[0][0] === D0 && fng.days.length === 3, fng.days)
+t('a skipped day is not counted as "a week ago"', parseFng({ data: [row(7, 50), row(1, 40), row(0, 30)] }).d7 === 30)
+t('a blank value is not a reading of 0', !parseFng({ data: [row(0, 50), { value: '', timestamp: String((D0 + 1) * DAYS) }] }).days.some(r => r[1] === 0))
+t('the zone cut-offs match its labels', [[25, 'xfear'], [26, 'fear'], [46, 'fear'], [47, 'neutral'], [54, 'neutral'], [55, 'greed'], [75, 'greed'], [76, 'xgreed']].every(([v, z]) => fngZone(v) === z))
+const hist = [[1, 80], [2, 70], [3, 40], [4, 20], [6, 30], [7, 45]]
+const all = fngWindow(hist)
+t('average over the window', Math.abs(all.avg - 285 / 6) < 1e-9, all.avg)
+t('high and low with their days', all.hi[0] === 1 && all.lo[0] === 4, all)
+t('share of days on each side', Math.abs(all.fearPct - 400 / 6) < 1e-9 && Math.abs(all.greedPct - 200 / 6) < 1e-9, all)
+t('a streak stops at a skipped day', all.streak === 2 && all.side === 'fear', all)
+const win = fngWindow(hist, 3)
+t('a window counts back from the latest reading', win.rows.length === 2 && win.rows[0][0] === 6, win.rows)
+t('no history is null', fngWindow([]) === null && fngWindow(null) === null)
 t('nothing usable is null', parseFng({ data: [] }) === null && parseFng(null) === null)
 t('no market cap is null', parseGlobal({ data: { total_market_cap: {} } }) === null)
 t('global', parseGlobal({ data: { total_market_cap: { usd: 5 }, market_cap_percentage: { btc: 59 } } }).eth === null)
@@ -100,7 +115,13 @@ t('a minute later nothing is due', calls.length === 3, calls)   // only the thre
 calls = []
 const later = await refreshMacro(first, ok, NOW + 11 * 60e3)
 t('market cap refreshes sooner than reports', calls.some(u => u.includes('coingecko')) && !calls.some(u => u.includes('fredgraph')), calls)
-const down = await refreshMacro(first, async () => { throw new Error('down') }, NOW + 40 * 60e3)
+calls = []
+await refreshMacro({ ...first, fng: { value: 5, pts: [] } }, ok, NOW + 60e3)
+t('a file from before the full history reads it straight away', calls.some(u => u.includes('alternative.me')), calls)
+calls = []
+await refreshMacro(first, ok, NOW + 40 * 60e3)
+t('the index is not asked for every half hour', !calls.some(u => u.includes('alternative.me')), calls)
+const down = await refreshMacro(first, async () => { throw new Error('down') }, NOW + 4 * 3600e3)
 t('an outage keeps the last good data', down.series.UNRATE?.length === 1 && down.fng?.value === 50 && down.global?.cap === 9, down.fng)
 t('and tries again next time', down.srcAt['series:UNRATE'] === NOW, down.srcAt['series:UNRATE'])
 t('later is fine', later.at === NOW + 11 * 60e3)

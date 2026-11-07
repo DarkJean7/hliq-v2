@@ -8,7 +8,7 @@
 // against the wrong month for a whole year after any gap.
 
 const FRED_CSV = 'https://fred.stlouisfed.org/graph/fredgraph.csv'
-export const FNG_URL = 'https://api.alternative.me/fng/?limit=400'
+export const FNG_URL = 'https://api.alternative.me/fng/?limit=0'     // everything, back to February 2018
 export const CG_GLOBAL_URL = 'https://api.coingecko.com/api/v3/global'
 export const BLS_ICS_URL = 'https://www.bls.gov/schedule/news_release/bls.ics'
 export const BEA_ICS_URL = 'https://www.bea.gov/news/schedule/ics/online-calendar-subscription.ics'
@@ -124,14 +124,45 @@ export function buildMacro(raw, now = Date.now()) {
   }
 }
 
-/** Fear & Greed. Newest first from the source; stored oldest first, with the usual look-backs. */
+const DAY_MS = 864e5
+/** Fear & Greed. Newest first from the source; stored oldest first as [day number, value], which keeps six years small. */
 export function parseFng(json) {
-  const rows = (json?.data ?? []).map(r => [Number(r.timestamp) * 1000, Number(r.value), String(r.value_classification ?? '')])
-    .filter(r => Number.isFinite(r[0]) && r[1] >= 0 && r[1] <= 100).sort((a, b) => a[0] - b[0])
+  const rows = (json?.data ?? []).map(r => ({ day: Math.floor(Number(r.timestamp) / 86400), v: r.value === '' || r.value == null ? NaN : Number(r.value), label: String(r.value_classification ?? '') }))
+    .filter(r => Number.isFinite(r.day) && r.v >= 0 && r.v <= 100).sort((a, b) => a.day - b.day)
   const last = rows.at(-1)
   if (!last) return null
-  const back = (n) => rows.at(-1 - n)?.[1] ?? null
-  return { value: last[1], label: last[2], date: last[0], d1: back(1), d7: back(7), d30: back(30), pts: rows.map(r => [r[0], r[1]]) }
+  // By date, not by row: the source has skipped days, and "a week ago" must be a week ago.
+  const by = new Map(rows.map(r => [r.day, r.v]))
+  const back = (n) => by.get(last.day - n) ?? null
+  return { value: last.v, label: last.label, date: last.day * DAY_MS, d1: back(1), d7: back(7), d30: back(30), days: rows.map(r => [r.day, r.v]) }
+}
+
+/** Alternative.me's own cut-offs, read from its full history: every labelled value falls inside these. */
+export const FNG_ZONES = [['xfear', 0, 25], ['fear', 26, 46], ['neutral', 47, 54], ['greed', 55, 75], ['xgreed', 76, 100]]
+export const fngZone = (v) => (FNG_ZONES.find(z => v <= z[2]) ?? FNG_ZONES[4])[0]
+const fngSide = (v) => v <= 46 ? 'fear' : v >= 55 ? 'greed' : 'neutral'
+
+/** What a window of the index says. `n` is days back from the latest reading; null means all of it. */
+export function fngWindow(days, n = null) {
+  if (!days?.length) return null
+  const lastDay = days.at(-1)[0]
+  const rows = n == null ? days : days.filter(r => r[0] > lastDay - n)
+  let hi = rows[0], lo = rows[0], sum = 0, fear = 0, greed = 0
+  for (const r of rows) {
+    sum += r[1]
+    if (r[1] > hi[1]) hi = r
+    if (r[1] < lo[1]) lo = r
+    const s = fngSide(r[1])
+    if (s === 'fear') fear++; else if (s === 'greed') greed++
+  }
+  // How long the reading has been on this side, stopping at a skipped day rather than bridging it.
+  const side = fngSide(days.at(-1)[1])
+  let streak = 1
+  for (let i = days.length - 2; i >= 0; i--) {
+    if (days[i][0] !== days[i + 1][0] - 1 || fngSide(days[i][1]) !== side) break
+    streak++
+  }
+  return { rows, avg: sum / rows.length, hi, lo, fearPct: fear / rows.length * 100, greedPct: greed / rows.length * 100, side, streak }
 }
 
 export function parseGlobal(json) {
@@ -213,7 +244,8 @@ function mergeEvents(ev, now) {
   return lists.flat().filter(e => e.t >= now - 6 * 3600e3).sort((a, b) => a.t - b.t).slice(0, 40)
 }
 
-const TTL = { series: 30 * 60e3, fng: 30 * 60e3, global: 10 * 60e3, cal: 6 * 3600e3 }
+// The index is published once a day and its whole history is 300 KB, so it is not asked for often.
+const TTL = { series: 30 * 60e3, fng: 3 * 3600e3, global: 10 * 60e3, cal: 6 * 3600e3 }
 
 /**
  * One refresh: only what is due, and a failed read keeps the last good one, so an outage shows a stale
@@ -234,7 +266,8 @@ export async function refreshMacro(prev, getText, now = Date.now()) {
   }
   const json = (t) => { try { return JSON.parse(t) } catch { return null } }
   await Promise.all([
-    due('fng') && read(FNG_URL).then((t) => { const v = parseFng(json(t)); if (v) { raw.fng = v; raw.srcAt.fng = now } }),
+    // A file saved before the full history existed has no `days`, and three hours is too long to show nothing.
+    (due('fng') || !raw.fng?.days) && read(FNG_URL).then((t) => { const v = parseFng(json(t)); if (v) { raw.fng = v; raw.srcAt.fng = now } }),
     due('global') && read(CG_GLOBAL_URL).then((t) => { const v = parseGlobal(json(t)); if (v) { raw.global = v; raw.srcAt.global = now } }),
     due('cal:bls') && read(BLS_ICS_URL).then((t) => { const v = blsEvents(t); if (v?.length) { raw.events.bls = v; raw.srcAt['cal:bls'] = now } }),
     due('cal:bea') && read(BEA_ICS_URL).then((t) => { const v = beaEvents(t); if (v?.length) { raw.events.bea = v; raw.srcAt['cal:bea'] = now } }),
