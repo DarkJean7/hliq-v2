@@ -18,6 +18,7 @@ import { isAllowedYahoo, yahooUrl, cgChartUrl, parseYahooDaily, parseCgChart, to
 import { coinsOf, coinFile, stalest, buildPerf, HIST_FROM as PFC_FROM } from './src/pfgallery.js'
 import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
 import { buildDexes, buildCexes, LLAMA_DEXVOL_URL, CEX_CIK, secFactsUrl, sharesFromFacts } from './src/exchanges.js'
+import { refreshMacro, buildMacro, macroHasData, MACRO_UA } from './src/macro.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -112,6 +113,31 @@ function cexRefresh() {
     .catch(e => console.warn('[markets-exchanges] DefiLlama CEX refresh failed:', e.message))
     .finally(() => { cexInflight = null })
   return cexInflight
+}
+// /macro-data (src/macro.js): economic reports, rates, sentiment and release dates. One worker fetches
+// (lock) and all read the file, so a restart does not start from nothing and four workers do not each
+// ask FRED for twenty series. Refreshed only when someone is looking.
+const MACRO_FILE = join(__dirname, 'data', 'macro.json')
+const MACRO_LOCK = MACRO_FILE + '.lock'
+const MACRO_TTL = 10 * 60_000
+let macroRaw = null, macroInflight = null, macroBody = null
+function macroFromDisk() {
+  try { const d = JSON.parse(readFileSync(MACRO_FILE, 'utf8')); if (d?.at && (!macroRaw || d.at > macroRaw.at)) { macroRaw = d; macroBody = null } } catch {}
+}
+macroFromDisk()
+function macroRefresh() {
+  if (macroInflight) return macroInflight
+  macroInflight = (async () => {
+    macroFromDisk()
+    if (macroRaw && Date.now() - macroRaw.at < MACRO_TTL) return
+    try { if (Date.now() - statSync(MACRO_LOCK).mtimeMs < 3 * 60_000) return } catch {}
+    try { mkdirSync(dirname(MACRO_FILE), { recursive: true }); writeFileSync(MACRO_LOCK, String(process.pid)) } catch {}
+    const getText = (u) => fetch(u, { headers: { 'User-Agent': MACRO_UA }, signal: AbortSignal.timeout(25_000) }).then(r => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+    const raw = await refreshMacro(macroRaw, getText)
+    macroRaw = raw; macroBody = null
+    try { writeAtomic(MACRO_FILE, JSON.stringify(raw)) } catch {}
+  })().finally(() => { try { if (readFileSync(MACRO_LOCK, 'utf8') === String(process.pid)) unlinkSync(MACRO_LOCK) } catch {} }).catch(e => console.warn('[macro-data] refresh failed:', e.message)).finally(() => { macroInflight = null })
+  return macroInflight
 }
 function cgRefresh() {
   if (cgInflight) return cgInflight
@@ -1113,6 +1139,20 @@ createServer((req, res) => {
       pfPerfBy.clear()
       return send(200, { portfolios: list })
     })()
+    return
+  }
+
+  if (url === '/macro-data') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const send = () => {
+      if (!macroHasData(macroRaw)) return res.writeHead(503, { 'Content-Type': 'application/json' }).end('{"items":null}')
+      macroBody ??= JSON.stringify(buildMacro(macroRaw))
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' }).end(macroBody)
+    }
+    const stale = !macroRaw || Date.now() - macroRaw.at > MACRO_TTL
+    if (stale) macroFromDisk()
+    if (macroHasData(macroRaw)) { if (stale) macroRefresh(); return send() }     // stale data refreshes behind
+    macroRefresh().then(send)
     return
   }
 

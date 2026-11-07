@@ -273,6 +273,14 @@ function strategyPlugin() {
           } catch { return sendJson(res, 502, { points: null }) }
         }
 
+        // Dev twin of serve-prod.js /macro-data (in memory, so a restart reads it all again).
+        if (method === 'GET' && path === '/macro-data') {
+          const M = await import('./src/macro.js')
+          const getText = (u) => fetch(u, { headers: { 'User-Agent': M.MACRO_UA }, signal: AbortSignal.timeout(25_000) }).then(r => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+          globalThis.__devMacro = await M.refreshMacro(globalThis.__devMacro, getText)
+          return M.macroHasData(globalThis.__devMacro) ? sendJson(res, 200, M.buildMacro(globalThis.__devMacro)) : sendJson(res, 503, { items: null })
+        }
+
         // Dev twin of serve-prod.js /markets-exchanges (no cache).
         if (method === 'GET' && path === '/markets-exchanges') {
           const L = await import('./src/llama.js'), X = await import('./src/exchanges.js')

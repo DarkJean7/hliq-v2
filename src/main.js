@@ -235,6 +235,7 @@ import { startPaperSync, hasPaper } from './papersync.js'
 import { createPaperBots } from './paperbots.js'
 import { renderAnalysis, analysisShow } from './analysis.js'
 import { initTradeBrief, setTradeBriefCoin } from './tradebrief.js'   // the analysis card on the Trade tab
+import { setMacroDeps, macroHtml, macroToggle } from './macroview.js'   // Signals → Macro
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
 import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fillPickerHtml,
@@ -17978,7 +17979,7 @@ function _pulseDateLabel(ts, span) {
  *                   chart, where the honest answer is a range and a single line would
  *                   invent the maker/taker mix Hyperliquid does not publish.
  */
-function _pulseInteractiveChart(pts, { key, color = 'var(--accent)', h = 96, band = null, money = true, pct = false } = {}) {
+function _pulseInteractiveChart(pts, { key, color = 'var(--accent)', h = 96, band = null, money = true, pct = false, fmt: ownFmt = null } = {}) {
   const W = 300
   const clean = (pts ?? []).filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
   if (clean.length < 2) {
@@ -17990,7 +17991,7 @@ function _pulseInteractiveChart(pts, { key, color = 'var(--accent)', h = 96, ban
   const y0 = Math.min(...ys), y1 = Math.max(...ys)
   const x0 = Math.min(...xs), x1 = Math.max(...xs)
   const span = x1 - x0
-  _pulseChartData[key] = { pts: clean, band, money, pct, x0, x1, y0, y1, span, W, h }
+  _pulseChartData[key] = { pts: clean, band, money, pct, fmt: ownFmt, x0, x1, y0, y1, span, W, h }
 
   const px = (t) => 3 + ((t - x0) / (span || 1)) * (W - 6)
   const py = (v) => (y1 - y0) === 0 ? h / 2 : h - 3 - ((v - y0) / (y1 - y0)) * (h - 6)
@@ -18009,7 +18010,7 @@ function _pulseInteractiveChart(pts, { key, color = 'var(--accent)', h = 96, ban
   }
 
   const last = clean[clean.length - 1][1]
-  const fmt = pct ? (v) => v.toFixed(1) + '%' : money ? (v) => _pulseUsd(v) : (v) => '$' + fmtPrice(v)
+  const fmt = ownFmt ?? (pct ? (v) => v.toFixed(1) + '%' : money ? (v) => _pulseUsd(v) : (v) => '$' + fmtPrice(v))
   return `<div style="position:relative;margin-top:8px">
     <div id="rd-${key}" style="display:flex;justify-content:space-between;align-items:baseline;font-size:11px;min-height:15px">
       <span id="rdv-${key}" style="font-weight:700;color:var(--fg)">${fmt(last)}</span>
@@ -18056,7 +18057,7 @@ window.__pulseScrub = function(ev, key) {
   if (cd) { cd.setAttribute('cx', px); cd.setAttribute('cy', py); cd.setAttribute('opacity', '1') }
   const v = document.getElementById('rdv-' + key)
   const l = document.getElementById('rdt-' + key)
-  if (v) v.textContent = d.pct ? (+best[1]).toFixed(1) + '%' : d.money ? _pulseUsd(+best[1]) : '$' + fmtPrice(+best[1])
+  if (v) v.textContent = d.fmt ? d.fmt(+best[1]) : d.pct ? (+best[1]).toFixed(1) + '%' : d.money ? _pulseUsd(+best[1]) : '$' + fmtPrice(+best[1])
   if (l) l.textContent = new Date(+best[0]).toLocaleString(undefined,
     d.span <= 2 * 86400e3 ? { hour: 'numeric', minute: '2-digit' }
       : { day: 'numeric', month: 'short', year: d.span > 300 * 86400e3 ? 'numeric' : undefined })
@@ -19861,6 +19862,27 @@ function _paneSegHeader(items, active, setter) {
   </div>`
 }
 
+// Signals reads one market; Macro reads the world around it. Macro comes from our own server
+// (src/macroview.js), and leaving the market view unrendered also stops its candle requests.
+let _sigPane = 'market'
+try { _sigPane = localStorage.getItem('hliq_sig_view') === 'macro' ? 'macro' : 'market' } catch {}
+setMacroDeps({
+  T: _T, esc,
+  chart: (pts, opts) => _pulseInteractiveChart(pts, opts),
+  visible: () => _viewOpen('pulse') && _pulseSeg === 'signals' && _sigPane === 'macro',
+  repaint: () => _pulseRender(_viewHost('deskPulse')),
+})
+window.__macroToggle = macroToggle
+window.__sigSetView = function(v) {
+  _sigPane = v === 'macro' ? 'macro' : 'market'
+  try { localStorage.setItem('hliq_sig_view', _sigPane) } catch {}
+  _pulseRender(_viewHost('deskPulse'))
+}
+function _sigViewSwitch() {
+  const b = (k, lbl) => `<button data-sig-view="${k}" onclick="window.__sigSetView('${k}')" style="flex:1;padding:6px 10px;border:1px solid ${_sigPane === k ? 'var(--border2)' : 'transparent'};border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;background:${_sigPane === k ? 'var(--panel-3)' : 'transparent'};color:${_sigPane === k ? 'var(--fg)' : 'var(--muted)'}">${lbl}</button>`
+  return `<div style="display:flex;gap:3px;margin:10px 12px 0;padding:3px;border-radius:10px;background:var(--panel-1)">${b('market', _T('Market', 'Mercado'))}${b('macro', 'Macro')}</div>`
+}
+
 function _pulseSegHeader() {
   return _paneSegHeader([['analysis', _T('Analysis', 'Análisis')], ['signals', _T('Signals', 'Señales')], ['pulse', 'Pulse']], _pulseSeg, '__pulseSetSeg')
 }
@@ -19889,7 +19911,7 @@ function _pulseRender(el) {
     const _act = document.activeElement
     const _hadSearch = _act && _act.id === 'sigSearch'
     const _caret = _hadSearch && typeof _act.selectionStart === 'number' ? _act.selectionStart : null
-    try { el.innerHTML = _pulseSegHeader() + _sigRenderHtml() }
+    try { el.innerHTML = _pulseSegHeader() + _sigViewSwitch() + (_sigPane === 'macro' ? macroHtml() : _sigRenderHtml()) }
     catch (e) { console.warn('[signals]', e.message); el.innerHTML = _pulseSegHeader() + `<div class="mob-v-empty">${_T('Could not draw this view.', 'No se pudo dibujar esta vista.')}</div>` }
     if (_hadSearch) {
       const back = document.getElementById('sigSearch')
@@ -24788,6 +24810,7 @@ initTradeBrief({
   },
   openSignals: (c) => {
     window.__sigSetCoin?.(c)
+    _sigPane = 'market'
     if (_isMobView()) window.__mobMoreTab('analysis')
     else window.switchTab('analysis', document.querySelector(`.nav-tab[onclick*="'analysis'"]`))
     // After opening: both of those land on the Analysis segment, whatever was selected before.
