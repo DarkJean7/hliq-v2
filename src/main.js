@@ -235,6 +235,7 @@ import { startPaperSync, hasPaper } from './papersync.js'
 import { createPaperBots } from './paperbots.js'
 import { renderAnalysis, analysisShow } from './analysis.js'
 import { initTradeBrief, setTradeBriefCoin } from './tradebrief.js'   // the analysis card on the Trade tab
+import { settingsNavHtml, settingsHeadHtml, paintDesktopSettings, settingsJump } from './settingsnav.js'
 import { setMacroDeps, macroShell, macroFill, marketChartsShell, marketChartsFill, macroToggle, macroEvToggle, macroFngRange, macroFngScrub, macroTvSel } from './macroview.js'   // Signals → Macro
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
@@ -21065,13 +21066,16 @@ function _mobVRenderContent(tick = false) {
       `<label class="pin-toggle" style="flex-shrink:0"><input type="checkbox"${id ? ` id="${id}"` : ''} ${checked ? 'checked' : ''} onchange="${fn}"><span class="pin-toggle-slider"></span></label>`
     const segBtn = (active, label, fn) =>
       `<button onclick="${fn}" style="padding:5px 14px;border:none;font-size:12px;font-weight:600;cursor:pointer;background:${active ? 'var(--accent)' : 'var(--panel-2)'};color:${active ? '#000' : 'var(--muted)'}">${label}</button>`
-    el.innerHTML = `<div style="margin:10px 8px calc(82px + env(safe-area-inset-bottom));border:1px solid var(--border2);border-radius:18px;background:var(--bg2);overflow:hidden">
+    el.innerHTML = `<div id="mobSettings" style="margin:10px 8px calc(82px + env(safe-area-inset-bottom));border:1px solid var(--border2);border-radius:18px;background:var(--bg2);overflow:clip">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 16px 13px;border-bottom:1px solid var(--border)">
         <span style="font-size:18px;font-weight:700">Settings</span>
         <button onclick="window.__paneClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
       </div>
+      <div class="set-nav" data-dragscroll>${settingsNavHtml(_T)}</div>
 
-      <!-- Connections -->
+
+      <section data-settings-sec="account">
+        ${settingsHeadHtml('account', _T)}
       <div class="mob-v-setting-group">
         <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:6px">
           <div>
@@ -21104,153 +21108,10 @@ function _mobVRenderContent(tick = false) {
           <div style="margin-top:9px;font-size:11px;line-height:1.5;color:var(--muted)">${_T('🛡️ This key can trade but <b>never withdraw</b> your funds. It stays in your browser (bots store it encrypted on our server).', '🛡️ Esta clave puede operar pero <b>nunca retirar</b> tus fondos. Permanece en tu navegador (los bots la guardan cifrada en nuestro servidor).')} <a onclick="window.__openSecurityInfo()" style="color:var(--accent);cursor:pointer;font-weight:700">${_T('How keys are handled →', 'Cómo se manejan las claves →')}</a></div>
         </div>
       </div>
+      </section>
 
-      <!-- Appearance -->
-      <div class="mob-v-setting-group">
-        <div class="mob-v-setting-row">
-          <span>${_T('Interface', 'Interfaz')}</span>
-          <div style="display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden">
-            ${segBtn(!document.documentElement.classList.contains('ui-nova'), _T('Classic', 'Clásica'), "window.__onUiVersion('classic');_mobVRenderContent()")}
-            ${segBtn(document.documentElement.classList.contains('ui-nova'), _T('New', 'Nueva'), "window.__onUiVersion('nova');_mobVRenderContent()")}
-          </div>
-        </div>
-        <div class="mob-v-setting-row">
-          <span>Color Scheme</span>
-          <div style="display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden">
-            ${segBtn(!isLight, 'Dark', "window.__onThemeMode('dark');_mobVRenderContent()")}
-            ${segBtn(isLight,  'Light', "window.__onThemeMode('light');_mobVRenderContent()")}
-          </div>
-        </div>
-        <div class="mob-v-setting-row">
-          <span>Style</span>
-          <div style="display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden">
-            ${segBtn(themeSt !== 'soft', 'A · Pro',  "window.__onThemeStyle('pro');_mobVRenderContent()")}
-            ${segBtn(themeSt === 'soft', 'B · Soft', "window.__onThemeStyle('soft');_mobVRenderContent()")}
-          </div>
-        </div>
-        <div class="mob-v-setting-row">
-          <span>Accent</span>
-          <div style="display:flex;gap:8px">
-            ${[[142,'Green'],[50,'Orange'],[195,'Cyan'],[280,'Purple'],[350,'Pink']].map(([h, name]) =>
-              `<button onclick="window.__onAccentChange(${h})" title="${name}"
-                style="width:26px;height:26px;border-radius:50%;background:oklch(0.78 0.18 ${h});border:3px solid ${accentH === h ? 'var(--fg)' : 'transparent'};cursor:pointer;flex-shrink:0"></button>`
-            ).join('')}
-          </div>
-        </div>
-        <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:6px">
-          <div style="width:100%">
-            <div>Backdrop</div>
-            <div style="font-size:11px;color:var(--muted)">${
-              _mobIsLight() ? esc(backdropById(loadBackdrop()).name) + ' — applies in dark mode'
-                            : esc(backdropById(loadBackdrop()).hint)}</div>
-          </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;width:100%">
-            ${BACKDROPS.map(b => `<button onclick="window.__onBackdropPick('${b.id}');_mobVRenderContent()"
-              title="${esc(b.name)}" aria-pressed="${b.id === loadBackdrop()}"
-              style="width:30px;height:30px;border-radius:9px;flex-shrink:0;cursor:pointer;padding:0;
-                     background:linear-gradient(135deg, ${b.vars.bg} 0%, ${b.vars.bg} 45%, ${b.vars.p3} 100%);
-                     border:2px solid ${b.id === loadBackdrop() ? 'var(--accent)' : 'transparent'};
-                     box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)"></button>`).join('')}
-          </div>
-        </div>
-        <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:6px">
-          <div style="flex:1;min-width:0">
-            <div>Your own image</div>
-            <div style="font-size:11px;color:var(--muted)">${
-              loadBackdropImage() ? 'Stored on this device only' : 'Use a photo behind the app'}</div>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">
-            <label class="mob-v-setting-btn" style="cursor:pointer">Upload
-              <input type="file" accept="image/*" style="display:none"
-                     onchange="window.__onBackdropFile(this).then(()=>_mobVRenderContent())">
-            </label>
-            ${loadBackdropImage()
-              ? `<button class="mob-v-setting-btn" onclick="window.__onBackdropClear();_mobVRenderContent()">Remove</button>`
-              : ''}
-          </div>
-          ${loadBackdropImage() ? `<div style="width:100%">
-            <div style="font-size:11px;color:var(--muted)" id="mobVDimLbl">Dim ${loadBackdropDim()}% — keeps text readable</div>
-            <input type="range" style="width:100%;margin-top:2px" min="25" max="95" step="1" value="${loadBackdropDim()}"
-              oninput="window.__onBackdropDim(this.value);document.getElementById('mobVDimLbl').textContent='Dim '+this.value+'% — keeps text readable'">
-          </div>` : ''}
-        </div>
-        <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:4px">
-          <div><div>Brightness</div><div style="font-size:11px;color:var(--muted)" id="mobVBrightLbl">${brightness}%</div></div>
-          <input type="range" style="width:100%;margin-top:2px" min="50" max="150" step="5" value="${brightness}"
-            oninput="window.__onBrightnessChange(this.value);document.getElementById('mobVBrightLbl').textContent=this.value+'%'">
-        </div>
-        <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:8px">
-          <div><div>Sound on fill</div><div style="font-size:11px;color:var(--muted)">Plays when one of your orders fills</div></div>
-          ${_fillPickerHtml(_fillSound(), _fillVol())}
-        </div>
-        <div class="mob-v-setting-row">
-          <div><div>Order filled cards</div><div style="font-size:11px;color:var(--muted)">A small card when one of your orders fills: side, size, price, and what a close realized</div></div>
-          <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
-            <button class="mob-v-setting-btn" onclick="window.__previewFillToast()">Preview</button>
-            ${tog(_fillToastsOn(), 'window.__toggleFillToasts(this.checked)')}
-          </div>
-        </div>
-        <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:8px">
-          <div><div>Wake alarm</div><div style="font-size:11px;color:var(--muted)">A loud, repeating alarm when a price alert fires — over silent mode, with the screen off</div></div>
-          <div data-wake-alarm></div>
-        </div>
-        <div class="mob-v-setting-row">
-          <div><div>Celebrations</div><div style="font-size:11px;color:var(--muted)">Confetti on a new all-time high and on a big winning trade</div></div>
-          <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
-            <button class="mob-v-setting-btn" onclick="window.__celebratePreview()">Preview</button>
-            ${tog(fxEnabled(), 'window.__toggleCelebrate(this.checked)')}
-          </div>
-        </div>
-        <div class="mob-v-setting-row" style="flex-direction:column;align-items:flex-start;gap:8px">
-          <div>Language</div>
-          <div style="display:flex;flex-wrap:wrap;gap:6px">
-            ${Object.entries(_LANG_NAMES).map(([code, name]) =>
-              `<button onclick="window.__setLangMob('${code}')"
-                style="padding:4px 12px;border-radius:4px;border:1px solid ${savedLang === code ? 'var(--accent)' : 'var(--border2)'};background:${savedLang === code ? 'color-mix(in oklch,var(--accent) 15%,transparent)' : 'var(--panel-2)'};color:${savedLang === code ? 'var(--accent)' : 'var(--muted)'};font-size:12px;font-weight:600;cursor:pointer">${name}</button>`
-            ).join('')}
-          </div>
-        </div>
-      </div>
-
-
-      <!-- Security -->
-      <div class="mob-v-setting-group">
-        ${pinEnabled
-          ? `<div class="mob-v-setting-row">
-              <div><div>PIN Lock</div><div style="font-size:11px;color:var(--green)">Active</div></div>
-              <button class="mob-v-setting-btn" style="color:var(--neg);border-color:rgba(255,77,109,0.3)"
-                onclick="localStorage.removeItem('${PIN_KEY}');localStorage.removeItem('${PIN_ON_KEY}');localStorage.removeItem('hliq_biometric_cred');_mobVRenderContent()">Disable PIN &amp; Face ID</button>
-            </div>`
-          : `<div class="mob-v-setting-row" style="flex-direction:column;align-items:flex-start;gap:8px">
-              <div>PIN Lock</div>
-              <div style="display:flex;gap:8px;width:100%">
-                <input type="password" id="mobVPinInput" inputmode="numeric" maxlength="4" placeholder="4-digit PIN"
-                  style="flex:1;padding:7px 10px;background:var(--input-bg,var(--panel-2));border:1px solid var(--border2);border-radius:6px;color:var(--fg);font-size:16px;letter-spacing:4px;font-family:monospace">
-                <button class="mob-v-setting-btn" onclick="window._mobVSetPin()">Set PIN</button>
-              </div>
-            </div>`}
-        ${_bioAvail !== false ? `
-        <div class="mob-v-setting-row">
-          <div>
-            <div>Face ID / Touch ID</div>
-            <div style="font-size:11px;color:${!pinEnabled ? 'var(--muted)' : 'var(--muted)'}">${
-              _bioAvail === null ? 'Checking this device…'
-              : !pinEnabled ? 'Set a PIN first — it is the way back in if a scan fails'
-              : bioEnabled ? 'Unlocks instead of the PIN'
-              : 'Unlock with biometrics instead of PIN'}</div>
-          </div>
-          ${bioEnabled
-            ? `<button class="mob-v-setting-btn" style="color:var(--neg);border-color:rgba(255,77,109,0.3)"
-                onclick="localStorage.removeItem('hliq_biometric_cred');_mobVRenderContent()">Remove</button>`
-            // Shown but disabled without a PIN, rather than hidden. Hiding it is why this
-            // was reported as missing: it exists, it works, and there was no way to learn
-            // that from a screen with no PIN set yet.
-            : `<button class="mob-v-setting-btn" ${(!pinEnabled || _bioAvail === null) ? 'disabled style="opacity:.45"' : ''}
-                onclick="window._mobVEnableBiometric()">Set Up</button>`}
-        </div>` : ''}
-      </div>
-
-      <!-- Notifications -->
+      <section data-settings-sec="notifications">
+        ${settingsHeadHtml('notifications', _T)}
       <div class="mob-v-setting-group">
         <div class="mob-v-setting-row">
           <div>
@@ -21326,15 +21187,163 @@ function _mobVRenderContent(tick = false) {
           </div>
         </div>` : ''}
       </div>
-
-      <!-- Trading -->
       <div class="mob-v-setting-group">
-        <div class="mob-v-setting-row" onclick="window.__debug()" style="cursor:pointer">
-          <div><div>Debug panel</div><div style="font-size:11px;color:var(--muted)">Alert routing, live health, test notifications</div></div>
-          <span style="color:var(--muted);font-size:18px">›</span>
+        <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:8px">
+          <div><div>Sound on fill</div><div style="font-size:11px;color:var(--muted)">Plays when one of your orders fills</div></div>
+          ${_fillPickerHtml(_fillSound(), _fillVol())}
+        </div>
+        <div class="mob-v-setting-row">
+          <div><div>Order filled cards</div><div style="font-size:11px;color:var(--muted)">A small card when one of your orders fills: side, size, price, and what a close realized</div></div>
+          <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
+            <button class="mob-v-setting-btn" onclick="window.__previewFillToast()">Preview</button>
+            ${tog(_fillToastsOn(), 'window.__toggleFillToasts(this.checked)')}
+          </div>
+        </div>
+        <div class="mob-v-setting-row" style="flex-direction:column;align-items:stretch;gap:8px">
+          <div data-wake-alarm></div>
         </div>
       </div>
+      </section>
 
+      <section data-settings-sec="appearance">
+        ${settingsHeadHtml('appearance', _T)}
+      <div class="mob-v-setting-group">
+        <div class="mob-v-setting-row">
+          <span>${_T('Interface', 'Interfaz')}</span>
+          <div style="display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden">
+            ${segBtn(!document.documentElement.classList.contains('ui-nova'), _T('Classic', 'Clásica'), "window.__onUiVersion('classic');_mobVRenderContent()")}
+            ${segBtn(document.documentElement.classList.contains('ui-nova'), _T('New', 'Nueva'), "window.__onUiVersion('nova');_mobVRenderContent()")}
+          </div>
+        </div>
+        <div class="mob-v-setting-row">
+          <span>Color Scheme</span>
+          <div style="display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden">
+            ${segBtn(!isLight, 'Dark', "window.__onThemeMode('dark');_mobVRenderContent()")}
+            ${segBtn(isLight,  'Light', "window.__onThemeMode('light');_mobVRenderContent()")}
+          </div>
+        </div>
+        <div class="mob-v-setting-row">
+          <span>Style</span>
+          <div style="display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden">
+            ${segBtn(themeSt !== 'soft', 'A · Pro',  "window.__onThemeStyle('pro');_mobVRenderContent()")}
+            ${segBtn(themeSt === 'soft', 'B · Soft', "window.__onThemeStyle('soft');_mobVRenderContent()")}
+          </div>
+        </div>
+        <div class="mob-v-setting-row">
+          <span>Accent</span>
+          <div style="display:flex;gap:8px">
+            ${[[142,'Green'],[50,'Orange'],[195,'Cyan'],[280,'Purple'],[350,'Pink']].map(([h, name]) =>
+              `<button onclick="window.__onAccentChange(${h})" title="${name}"
+                style="width:26px;height:26px;border-radius:50%;background:oklch(0.78 0.18 ${h});border:3px solid ${accentH === h ? 'var(--fg)' : 'transparent'};cursor:pointer;flex-shrink:0"></button>`
+            ).join('')}
+          </div>
+        </div>
+        <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:6px">
+          <div style="width:100%">
+            <div>Backdrop</div>
+            <div style="font-size:11px;color:var(--muted)">${
+              _mobIsLight() ? esc(backdropById(loadBackdrop()).name) + ' — applies in dark mode'
+                            : esc(backdropById(loadBackdrop()).hint)}</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;width:100%">
+            ${BACKDROPS.map(b => `<button onclick="window.__onBackdropPick('${b.id}');_mobVRenderContent()"
+              title="${esc(b.name)}" aria-pressed="${b.id === loadBackdrop()}"
+              style="width:30px;height:30px;border-radius:9px;flex-shrink:0;cursor:pointer;padding:0;
+                     background:linear-gradient(135deg, ${b.vars.bg} 0%, ${b.vars.bg} 45%, ${b.vars.p3} 100%);
+                     border:2px solid ${b.id === loadBackdrop() ? 'var(--accent)' : 'transparent'};
+                     box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)"></button>`).join('')}
+          </div>
+        </div>
+        <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:6px">
+          <div style="flex:1;min-width:0">
+            <div>Your own image</div>
+            <div style="font-size:11px;color:var(--muted)">${
+              loadBackdropImage() ? 'Stored on this device only' : 'Use a photo behind the app'}</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">
+            <label class="mob-v-setting-btn" style="cursor:pointer">Upload
+              <input type="file" accept="image/*" style="display:none"
+                     onchange="window.__onBackdropFile(this).then(()=>_mobVRenderContent())">
+            </label>
+            ${loadBackdropImage()
+              ? `<button class="mob-v-setting-btn" onclick="window.__onBackdropClear();_mobVRenderContent()">Remove</button>`
+              : ''}
+          </div>
+          ${loadBackdropImage() ? `<div style="width:100%">
+            <div style="font-size:11px;color:var(--muted)" id="mobVDimLbl">Dim ${loadBackdropDim()}% — keeps text readable</div>
+            <input type="range" style="width:100%;margin-top:2px" min="25" max="95" step="1" value="${loadBackdropDim()}"
+              oninput="window.__onBackdropDim(this.value);document.getElementById('mobVDimLbl').textContent='Dim '+this.value+'% — keeps text readable'">
+          </div>` : ''}
+        </div>
+        <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:4px">
+          <div><div>Brightness</div><div style="font-size:11px;color:var(--muted)" id="mobVBrightLbl">${brightness}%</div></div>
+          <input type="range" style="width:100%;margin-top:2px" min="50" max="150" step="5" value="${brightness}"
+            oninput="window.__onBrightnessChange(this.value);document.getElementById('mobVBrightLbl').textContent=this.value+'%'">
+        </div>
+        <div class="mob-v-setting-row">
+          <div><div>Celebrations</div><div style="font-size:11px;color:var(--muted)">Confetti on a new all-time high and on a big winning trade</div></div>
+          <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
+            <button class="mob-v-setting-btn" onclick="window.__celebratePreview()">Preview</button>
+            ${tog(fxEnabled(), 'window.__toggleCelebrate(this.checked)')}
+          </div>
+        </div>
+        <div class="mob-v-setting-row" style="flex-direction:column;align-items:flex-start;gap:8px">
+          <div>Language</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            ${Object.entries(_LANG_NAMES).map(([code, name]) =>
+              `<button onclick="window.__setLangMob('${code}')"
+                style="padding:4px 12px;border-radius:4px;border:1px solid ${savedLang === code ? 'var(--accent)' : 'var(--border2)'};background:${savedLang === code ? 'color-mix(in oklch,var(--accent) 15%,transparent)' : 'var(--panel-2)'};color:${savedLang === code ? 'var(--accent)' : 'var(--muted)'};font-size:12px;font-weight:600;cursor:pointer">${name}</button>`
+            ).join('')}
+          </div>
+        </div>
+      </div>
+      </section>
+
+      <section data-settings-sec="security">
+        ${settingsHeadHtml('security', _T)}
+      <div class="mob-v-setting-group">
+        ${pinEnabled
+          ? `<div class="mob-v-setting-row">
+              <div><div>PIN Lock</div><div style="font-size:11px;color:var(--green)">Active</div></div>
+              <button class="mob-v-setting-btn" style="color:var(--neg);border-color:rgba(255,77,109,0.3)"
+                onclick="localStorage.removeItem('${PIN_KEY}');localStorage.removeItem('${PIN_ON_KEY}');localStorage.removeItem('hliq_biometric_cred');_mobVRenderContent()">Disable PIN &amp; Face ID</button>
+            </div>`
+          : `<div class="mob-v-setting-row" style="flex-direction:column;align-items:flex-start;gap:8px">
+              <div>PIN Lock</div>
+              <div style="display:flex;gap:8px;width:100%">
+                <input type="password" id="mobVPinInput" inputmode="numeric" maxlength="4" placeholder="4-digit PIN"
+                  style="flex:1;padding:7px 10px;background:var(--input-bg,var(--panel-2));border:1px solid var(--border2);border-radius:6px;color:var(--fg);font-size:16px;letter-spacing:4px;font-family:monospace">
+                <button class="mob-v-setting-btn" onclick="window._mobVSetPin()">Set PIN</button>
+              </div>
+            </div>`}
+        ${_bioAvail !== false ? `
+        <div class="mob-v-setting-row">
+          <div>
+            <div>Face ID / Touch ID</div>
+            <div style="font-size:11px;color:${!pinEnabled ? 'var(--muted)' : 'var(--muted)'}">${
+              _bioAvail === null ? 'Checking this device…'
+              : !pinEnabled ? 'Set a PIN first — it is the way back in if a scan fails'
+              : bioEnabled ? 'Unlocks instead of the PIN'
+              : 'Unlock with biometrics instead of PIN'}</div>
+          </div>
+          ${bioEnabled
+            ? `<button class="mob-v-setting-btn" style="color:var(--neg);border-color:rgba(255,77,109,0.3)"
+                onclick="localStorage.removeItem('hliq_biometric_cred');_mobVRenderContent()">Remove</button>`
+            // Shown but disabled without a PIN, rather than hidden. Hiding it is why this
+            // was reported as missing: it exists, it works, and there was no way to learn
+            // that from a screen with no PIN set yet.
+            : `<button class="mob-v-setting-btn" ${(!pinEnabled || _bioAvail === null) ? 'disabled style="opacity:.45"' : ''}
+                onclick="window._mobVEnableBiometric()">Set Up</button>`}
+        </div>` : ''}
+        <div class="mob-v-setting-row">
+          <div><div>Security &amp; Keys</div><div style="font-size:11px;color:var(--muted)">How keys are stored, why they can't withdraw, how to revoke</div></div>
+          <button class="mob-v-setting-btn" onclick="window.__openSecurityInfo()">Open</button>
+        </div>
+      </div>
+      </section>
+
+      <section data-settings-sec="trading">
+        ${settingsHeadHtml('trading', _T)}
       <div class="mob-v-setting-group">
         <div class="mob-v-setting-row">
           <div><div>News Pause</div><div style="font-size:11px;color:var(--muted)">Pause trading on matching headlines</div></div>
@@ -21386,13 +21395,11 @@ function _mobVRenderContent(tick = false) {
           </div>
         </div>` : ''}
       </div>
+      </section>
 
-      <!-- Data & Backup -->
+      <section data-settings-sec="data">
+        ${settingsHeadHtml('data', _T)}
       <div class="mob-v-setting-group">
-        <div class="mob-v-setting-row">
-          <div><div>🛡️ Security &amp; Keys</div><div style="font-size:11px;color:var(--muted)">How keys are stored, why they can't withdraw, how to revoke</div></div>
-          <button class="mob-v-setting-btn" onclick="window.__openSecurityInfo()">Open</button>
-        </div>
         <div class="mob-v-setting-row" style="flex-direction:column;align-items:flex-start;gap:6px">
           <div style="display:flex;align-items:center;justify-content:space-between;width:100%">
             <span>Export Settings</span>
@@ -21405,9 +21412,15 @@ function _mobVRenderContent(tick = false) {
           <label for="importFileInput" class="mob-v-setting-btn" style="cursor:pointer;display:inline-flex;align-items:center">Import JSON</label>
         </div>
       </div>
+      </section>
 
-      <!-- Developer -->
+      <section data-settings-sec="developer">
+        ${settingsHeadHtml('developer', _T)}
       <div class="mob-v-setting-group">
+        <div class="mob-v-setting-row" onclick="window.__debug()" style="cursor:pointer">
+          <div><div>Debug panel</div><div style="font-size:11px;color:var(--muted)">Alert routing, live health, test notifications</div></div>
+          <span style="color:var(--muted);font-size:18px">›</span>
+        </div>
         <div class="mob-v-setting-row">
           <div><div>Dev Mode</div><div style="font-size:11px;color:var(--muted)">Unlock leaderboard management</div></div>
           ${tog(devOn, 'window.toggleDevMode(this.checked)', 'mobDevModeToggle')}
@@ -21422,6 +21435,7 @@ function _mobVRenderContent(tick = false) {
           <button class="mob-v-setting-btn" onclick="window.__openBotSubmissions()">Open</button>
         </div>` : ''}
       </div>
+      </section>
 
       <!-- Sign Out -->
       <div class="mob-v-setting-group">
@@ -32060,6 +32074,7 @@ window.__clearAgentKey = async function() {
 
 // Sync toggle state whenever settings tab is opened
 function _syncSettingsTab() {
+  paintDesktopSettings(_T)
   // Backdrop swatches are built from BACKDROPS at open time, not baked into index.html.
   try { _syncBackdropUI() } catch {}
   // Language
@@ -32175,6 +32190,7 @@ function _syncSettingsTab() {
   _syncFillSoundUI()
 }
 
+window.__settingsJump = settingsJump
 window.__switchSettingsPanel = function(name, btn) {
   document.querySelectorAll('.settings-nav-btn').forEach(b => b.classList.remove('active'))
   document.querySelectorAll('.settings-card[id^="settings-panel-"]').forEach(p => p.style.display = 'none')

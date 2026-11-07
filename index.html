@@ -1548,184 +1548,11 @@
 
     <!-- SETTINGS -->
     <div class="tab-panel" id="tab-settings">
+      <div class="set-nav" id="settingsNav" data-dragscroll></div>
       <div class="settings-body">
 
-          <!-- APPEARANCE (includes language) is below -->
-
-          <!-- APPEARANCE -->
-          <div class="settings-card">
-            <div class="settings-card-title">Appearance</div>
-            <div class="settings-section">
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Interface</div>
-                  <div class="settings-desc">Try the new look — switch back any time; your colours and wallpaper carry over</div>
-                </div>
-                <div class="settings-seg" id="uiVersionSeg">
-                  <button class="settings-seg-btn" onclick="window.__onUiVersion('classic')">Classic</button>
-                  <button class="settings-seg-btn" onclick="window.__onUiVersion('nova')">New</button>
-                </div>
-              </div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Color Scheme</div>
-                  <div class="settings-desc">Dark or light interface</div>
-                </div>
-                <div class="settings-seg" id="colorSchemeSeg">
-                  <button class="settings-seg-btn" onclick="window.__onThemeMode('dark')">Dark</button>
-                  <button class="settings-seg-btn" onclick="window.__onThemeMode('light')">Light</button>
-                </div>
-              </div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Style</div>
-                  <div class="settings-desc" id="themeStyleDesc">Terminal — sharp corners, high contrast</div>
-                </div>
-                <div class="settings-seg" id="themeStyleSeg">
-                  <button class="settings-seg-btn" onclick="window.__onThemeStyle('pro')">A · Pro</button>
-                  <button class="settings-seg-btn" onclick="window.__onThemeStyle('soft')">B · Soft</button>
-                </div>
-              </div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Accent Color</div>
-                  <div class="settings-desc">Applied to highlights and interactive elements</div>
-                </div>
-                <div class="settings-swatches">
-                  <button class="accent-swatch" data-hue="142" style="--sw:oklch(0.78 0.18 142)" onclick="window.__onAccentChange(142)" title="Green"></button>
-                  <button class="accent-swatch" data-hue="50"  style="--sw:oklch(0.78 0.18 50)"  onclick="window.__onAccentChange(50)"  title="Orange"></button>
-                  <button class="accent-swatch" data-hue="195" style="--sw:oklch(0.78 0.18 195)" onclick="window.__onAccentChange(195)" title="Cyan"></button>
-                  <button class="accent-swatch" data-hue="280" style="--sw:oklch(0.78 0.18 280)" onclick="window.__onAccentChange(280)" title="Purple"></button>
-                  <button class="accent-swatch" data-hue="350" style="--sw:oklch(0.78 0.18 350)" onclick="window.__onAccentChange(350)" title="Pink"></button>
-                </div>
-              </div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Backdrop</div>
-                  <div class="settings-desc" id="backdropDesc">The default — cool near-black</div>
-                </div>
-                <div class="bd-swatches" id="backdropSwatches"></div>
-              </div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Your own image</div>
-                  <div class="settings-desc" id="backdropImgDesc">Use a photo behind the app</div>
-                </div>
-                <div style="display:flex;gap:8px;align-items:center">
-                  <label class="settings-seg-btn" style="cursor:pointer">Upload
-                    <input type="file" accept="image/*" style="display:none"
-                           onchange="window.__onBackdropFile(this)">
-                  </label>
-                  <button class="settings-seg-btn" id="backdropClearBtn"
-                          onclick="window.__onBackdropClear()" style="display:none">Remove</button>
-                </div>
-              </div>
-              <div class="settings-row" id="backdropDimRow" style="display:none">
-                <div>
-                  <div class="settings-label">Dim</div>
-                  <div class="settings-desc" id="backdropDimDesc">62% — keeps text readable over the photo</div>
-                </div>
-                <input type="range" class="settings-slider" id="backdropDimSlider"
-                       min="25" max="95" step="1" value="62"
-                       oninput="window.__onBackdropDim(this.value)">
-              </div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Brightness</div>
-                  <div class="settings-desc" id="brightnessDesc">100%</div>
-                </div>
-                <input type="range" class="settings-slider" id="brightnessSlider" min="50" max="150" step="5" value="100" oninput="window.__onBrightnessChange(this.value)">
-              </div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Language</div>
-                  <div class="settings-desc" id="langCurrentName">English</div>
-                </div>
-                <div class="lang-chips" id="langGrid">
-                  <button class="lang-chip active notranslate" data-lang="en" title="English"   onclick="window.__setLang('en')">English</button>
-                  <button class="lang-chip notranslate" data-lang="es" title="Español"          onclick="window.__setLang('es')">Español</button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- VIEW MODE -->
-          <div class="settings-card">
-            <div class="settings-card-title">View Mode</div>
-            <div class="settings-section">
-
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Compact (Mobile) UI</div>
-                  <div class="settings-desc">Force mobile layout on all screen sizes</div>
-                </div>
-                <label class="pin-toggle">
-                  <input type="checkbox" id="forceMobileToggle" onchange="window.__toggleForceMobile(this.checked)">
-                  <span class="pin-toggle-slider"></span>
-                </label>
-              </div>
-
-              <!-- Opt-out, not opt-in: the celebrations are part of the app's character,
-                   but nobody should have to watch confetti over a real account if they
-                   would rather not. Reduced-motion is honoured separately and always. -->
-              <!-- A fill happens on the exchange's schedule, not yours, and often while the
-                   tab is in the background. OFF by default: nobody's first session should make
-                   a noise they did not ask for. src/fillsound.js -->
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Sound on fill</div>
-                  <div class="settings-desc">Plays when one of your orders fills. Your browser only allows it after you have clicked the page once.</div>
-                </div>
-                <!-- Filled in from the stored setting by _syncFillSoundUI(), with the same
-                     markup the mobile shell uses — src/fillsound.js pickerHtml(). -->
-                <div id="fillSoundBox"></div>
-              </div>
-              <!-- The DEX-style card when an order fills. ON by default. src/fillnotify.js -->
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Order filled cards</div>
-                  <div class="settings-desc">A small card when one of your orders fills: side, size, price, and what a close realized</div>
-                </div>
-                <div style="display:flex;align-items:center;gap:10px">
-                  <button class="btn-sm" onclick="window.__previewFillToast()">Preview</button>
-                  <label class="pin-toggle">
-                    <input type="checkbox" id="fillToastToggle" checked onchange="window.__toggleFillToasts(this.checked)">
-                    <span class="pin-toggle-slider"></span>
-                  </label>
-                </div>
-              </div>
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Celebrations</div>
-                  <div class="settings-desc">Confetti on a new all-time high and on a big winning trade</div>
-                </div>
-                <div style="display:flex;align-items:center;gap:10px">
-                  <button class="btn-sm" onclick="window.__celebratePreview()">Preview</button>
-                  <label class="pin-toggle">
-                    <input type="checkbox" id="celebrateToggle" checked onchange="window.__toggleCelebrate(this.checked)">
-                    <span class="pin-toggle-slider"></span>
-                  </label>
-                </div>
-              </div>
-            </div>
-          </div>
-
           <!-- ACCOUNT -->
-          <div class="settings-card" id="settings-panel-account">
+          <div class="settings-card" id="settings-panel-account" data-settings-sec="account">
             <div class="settings-card-title">Account</div>
             <div class="settings-section">
               <div class="settings-row">
@@ -1736,61 +1563,10 @@
                 <button class="btn-sm" id="agentKeyClearBtn" onclick="window.__clearAgentKey()" style="display:none">Clear</button>
               </div>
             </div>
-            <div class="settings-section">
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">PIN Lock</div>
-                  <div class="settings-desc">Require a PIN each time you open the app</div>
-                </div>
-                <label class="pin-toggle">
-                  <input type="checkbox" id="pinToggle" onchange="window.__onPinToggle(this.checked)">
-                  <span class="pin-toggle-slider"></span>
-                </label>
-              </div>
-              <div id="pinSetupArea" style="display:none;margin-top:14px">
-                <div id="pinSettingStatus" style="font-size:11px;color:var(--accent);margin-bottom:8px;min-height:16px"></div>
-                <div style="display:flex;gap:8px;align-items:center">
-                  <input class="field-input" id="pinInput" type="password" inputmode="numeric" maxlength="4" placeholder="4-digit PIN" style="width:130px;letter-spacing:4px;font-size:16px"/>
-                  <button class="btn-sm" onclick="window.__setPin()">Save PIN</button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- DATA & BACKUP -->
-          <div class="settings-card">
-            <div class="settings-card-title">Data &amp; Backup</div>
-            <div class="settings-section">
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">🛡️ Security &amp; Keys</div>
-                  <div class="settings-desc">How your keys are stored, why they can't withdraw, and how to revoke</div>
-                </div>
-                <button class="btn-sm" onclick="window.__openSecurityInfo()">Open</button>
-              </div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Export Settings</div>
-                  <div class="settings-desc" style="color:var(--warn,#f5b73c)">⚠️ This backup contains your agent signing keys in plain text — anyone with the file can trade your accounts. Keep it offline.</div>
-                </div>
-                <button class="btn-sm" onclick="window.__exportSettings()">Export</button>
-              </div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-row">
-                <div>
-                  <div class="settings-label">Import Settings</div>
-                  <div class="settings-desc">Restore a backup — overwrites current settings and reloads</div>
-                </div>
-                <button class="btn-sm" onclick="window.__importSettings()">Import</button>
-              </div>
-            </div>
           </div>
 
           <!-- NOTIFICATIONS -->
-          <div class="settings-card" id="settings-panel-notifications">
+          <div class="settings-card" id="settings-panel-notifications" data-settings-sec="notifications">
             <div class="settings-card-title">Notifications</div>
             <div class="settings-section">
               <div class="settings-row">
@@ -1895,10 +1671,214 @@
                 <button class="btn-sm" onclick="window.__addPriceAlert()">Add</button>
               </div>
             </div>
+            <div class="settings-section">
+              <!-- A fill happens on the exchange's schedule, not yours, and often while the
+                   tab is in the background. OFF by default: nobody's first session should make
+                   a noise they did not ask for. src/fillsound.js -->
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Sound on fill</div>
+                  <div class="settings-desc">Plays when one of your orders fills. Your browser only allows it after you have clicked the page once.</div>
+                </div>
+                <!-- Filled in from the stored setting by _syncFillSoundUI(), with the same
+                     markup the mobile shell uses — src/fillsound.js pickerHtml(). -->
+                <div id="fillSoundBox"></div>
+              </div>
+            </div>
+            <div class="settings-section">
+              <!-- The DEX-style card when an order fills. ON by default. src/fillnotify.js -->
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Order filled cards</div>
+                  <div class="settings-desc">A small card when one of your orders fills: side, size, price, and what a close realized</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <button class="btn-sm" onclick="window.__previewFillToast()">Preview</button>
+                  <label class="pin-toggle">
+                    <input type="checkbox" id="fillToastToggle" checked onchange="window.__toggleFillToasts(this.checked)">
+                    <span class="pin-toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- APPEARANCE -->
+          <div class="settings-card" data-settings-sec="appearance">
+            <div class="settings-card-title">Appearance</div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Interface</div>
+                  <div class="settings-desc">Try the new look — switch back any time; your colours and wallpaper carry over</div>
+                </div>
+                <div class="settings-seg" id="uiVersionSeg">
+                  <button class="settings-seg-btn" onclick="window.__onUiVersion('classic')">Classic</button>
+                  <button class="settings-seg-btn" onclick="window.__onUiVersion('nova')">New</button>
+                </div>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Color Scheme</div>
+                  <div class="settings-desc">Dark or light interface</div>
+                </div>
+                <div class="settings-seg" id="colorSchemeSeg">
+                  <button class="settings-seg-btn" onclick="window.__onThemeMode('dark')">Dark</button>
+                  <button class="settings-seg-btn" onclick="window.__onThemeMode('light')">Light</button>
+                </div>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Style</div>
+                  <div class="settings-desc" id="themeStyleDesc">Terminal — sharp corners, high contrast</div>
+                </div>
+                <div class="settings-seg" id="themeStyleSeg">
+                  <button class="settings-seg-btn" onclick="window.__onThemeStyle('pro')">A · Pro</button>
+                  <button class="settings-seg-btn" onclick="window.__onThemeStyle('soft')">B · Soft</button>
+                </div>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Accent Color</div>
+                  <div class="settings-desc">Applied to highlights and interactive elements</div>
+                </div>
+                <div class="settings-swatches">
+                  <button class="accent-swatch" data-hue="142" style="--sw:oklch(0.78 0.18 142)" onclick="window.__onAccentChange(142)" title="Green"></button>
+                  <button class="accent-swatch" data-hue="50"  style="--sw:oklch(0.78 0.18 50)"  onclick="window.__onAccentChange(50)"  title="Orange"></button>
+                  <button class="accent-swatch" data-hue="195" style="--sw:oklch(0.78 0.18 195)" onclick="window.__onAccentChange(195)" title="Cyan"></button>
+                  <button class="accent-swatch" data-hue="280" style="--sw:oklch(0.78 0.18 280)" onclick="window.__onAccentChange(280)" title="Purple"></button>
+                  <button class="accent-swatch" data-hue="350" style="--sw:oklch(0.78 0.18 350)" onclick="window.__onAccentChange(350)" title="Pink"></button>
+                </div>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Backdrop</div>
+                  <div class="settings-desc" id="backdropDesc">The default — cool near-black</div>
+                </div>
+                <div class="bd-swatches" id="backdropSwatches"></div>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Your own image</div>
+                  <div class="settings-desc" id="backdropImgDesc">Use a photo behind the app</div>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label class="settings-seg-btn" style="cursor:pointer">Upload
+                    <input type="file" accept="image/*" style="display:none"
+                           onchange="window.__onBackdropFile(this)">
+                  </label>
+                  <button class="settings-seg-btn" id="backdropClearBtn"
+                          onclick="window.__onBackdropClear()" style="display:none">Remove</button>
+                </div>
+              </div>
+              <div class="settings-row" id="backdropDimRow" style="display:none">
+                <div>
+                  <div class="settings-label">Dim</div>
+                  <div class="settings-desc" id="backdropDimDesc">62% — keeps text readable over the photo</div>
+                </div>
+                <input type="range" class="settings-slider" id="backdropDimSlider"
+                       min="25" max="95" step="1" value="62"
+                       oninput="window.__onBackdropDim(this.value)">
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Brightness</div>
+                  <div class="settings-desc" id="brightnessDesc">100%</div>
+                </div>
+                <input type="range" class="settings-slider" id="brightnessSlider" min="50" max="150" step="5" value="100" oninput="window.__onBrightnessChange(this.value)">
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Compact (Mobile) UI</div>
+                  <div class="settings-desc">Force mobile layout on all screen sizes</div>
+                </div>
+                <label class="pin-toggle">
+                  <input type="checkbox" id="forceMobileToggle" onchange="window.__toggleForceMobile(this.checked)">
+                  <span class="pin-toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+              <!-- Opt-out, not opt-in: the celebrations are part of the app's character,
+                   but nobody should have to watch confetti over a real account if they
+                   would rather not. Reduced-motion is honoured separately and always. -->
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Celebrations</div>
+                  <div class="settings-desc">Confetti on a new all-time high and on a big winning trade</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <button class="btn-sm" onclick="window.__celebratePreview()">Preview</button>
+                  <label class="pin-toggle">
+                    <input type="checkbox" id="celebrateToggle" checked onchange="window.__toggleCelebrate(this.checked)">
+                    <span class="pin-toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Language</div>
+                  <div class="settings-desc" id="langCurrentName">English</div>
+                </div>
+                <div class="lang-chips" id="langGrid">
+                  <button class="lang-chip active notranslate" data-lang="en" title="English"   onclick="window.__setLang('en')">English</button>
+                  <button class="lang-chip notranslate" data-lang="es" title="Español"          onclick="window.__setLang('es')">Español</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SECURITY -->
+          <div class="settings-card" id="settings-panel-security" data-settings-sec="security">
+            <div class="settings-card-title">Security</div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">PIN Lock</div>
+                  <div class="settings-desc">Require a PIN each time you open the app</div>
+                </div>
+                <label class="pin-toggle">
+                  <input type="checkbox" id="pinToggle" onchange="window.__onPinToggle(this.checked)">
+                  <span class="pin-toggle-slider"></span>
+                </label>
+              </div>
+              <div id="pinSetupArea" style="display:none;margin-top:14px">
+                <div id="pinSettingStatus" style="font-size:11px;color:var(--accent);margin-bottom:8px;min-height:16px"></div>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <input class="field-input" id="pinInput" type="password" inputmode="numeric" maxlength="4" placeholder="4-digit PIN" style="width:130px;letter-spacing:4px;font-size:16px"/>
+                  <button class="btn-sm" onclick="window.__setPin()">Save PIN</button>
+                </div>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Security &amp; Keys</div>
+                  <div class="settings-desc">How your keys are stored, why they can't withdraw, and how to revoke</div>
+                </div>
+                <button class="btn-sm" onclick="window.__openSecurityInfo()">Open</button>
+              </div>
+            </div>
           </div>
 
           <!-- TRADING -->
-          <div class="settings-card" id="settings-panel-trading">
+          <div class="settings-card" id="settings-panel-trading" data-settings-sec="trading">
             <div class="settings-card-title">Trading</div>
             <div class="settings-section">
               <div class="settings-row">
@@ -1951,8 +1931,31 @@
             </div>
           </div>
 
+          <!-- DATA & BACKUP -->
+          <div class="settings-card" data-settings-sec="data">
+            <div class="settings-card-title">Data &amp; Backup</div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Export Settings</div>
+                  <div class="settings-desc" style="color:var(--warn,#f5b73c)">⚠️ This backup contains your agent signing keys in plain text — anyone with the file can trade your accounts. Keep it offline.</div>
+                </div>
+                <button class="btn-sm" onclick="window.__exportSettings()">Export</button>
+              </div>
+            </div>
+            <div class="settings-section">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-label">Import Settings</div>
+                  <div class="settings-desc">Restore a backup — overwrites current settings and reloads</div>
+                </div>
+                <button class="btn-sm" onclick="window.__importSettings()">Import</button>
+              </div>
+            </div>
+          </div>
+
           <!-- DEVELOPER -->
-          <div class="settings-card">
+          <div class="settings-card" data-settings-sec="developer">
             <div class="settings-card-title">Developer</div>
             <div class="settings-section">
               <div class="settings-row">
