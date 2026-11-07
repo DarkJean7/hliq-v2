@@ -10,9 +10,11 @@ const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, co
 const A1 = '0x' + '1'.repeat(40)
 const sum = { accountValue: '1000', totalNtlPos: '0', totalRawUsd: '1000', totalMarginUsed: '0' }
 const WIN = { accountValueHistory: [[Date.now() - 864e5, '1000'], [Date.now(), '1000']], pnlHistory: [[Date.now() - 864e5, '0'], [Date.now(), '0']], vlm: '0' }
+const P = (coin, szi, val) => ({ type: 'oneWay', position: { coin, szi: String(szi), entryPx: '100', positionValue: String(val), unrealizedPnl: '0', returnOnEquity: '0', liquidationPx: '1', marginUsed: '5', maxLeverage: 10, leverage: { type: 'cross', value: 10 }, cumFunding: { allTime: '0', sinceOpen: '0', sinceChange: '0' } } })
+const POSITIONS = [P('BTC', 1, 1500), P('ETH', -1, 500)]
 const reply = (q) => {
   switch (q.type) {
-    case 'clearinghouseState': return { marginSummary: sum, crossMarginSummary: sum, crossMaintenanceMarginUsed: '0', withdrawable: '1000', assetPositions: [], time: Date.now() }
+    case 'clearinghouseState': return { marginSummary: sum, crossMarginSummary: sum, crossMaintenanceMarginUsed: '0', withdrawable: '1000', assetPositions: q.dex ? [] : POSITIONS, time: Date.now() }
     case 'frontendOpenOrders': case 'userFills': case 'userFillsByTime': case 'userFunding': case 'userNonFundingLedgerUpdates': case 'candleSnapshot': case 'perpCategories': case 'perpConciseAnnotations': return []
     case 'spotClearinghouseState': return { balances: [] }
     case 'allMids': return { BTC: '100' }
@@ -43,11 +45,15 @@ const DATA = {
   global: { cap: 2.57e12, vol: 6e10, btc: 59.3, eth: 10.7, chg24: -2.5 },
   events: [{ t: NOW + 3600e3, kind: 'cpi' }, { t: NOW + 5 * D, kind: 'fomc', projections: true }, { t: NOW + 6 * D, kind: 'gdp', stage: 'second' }, { t: NOW + 30 * D, kind: 'cpi' }, { t: NOW - 3600e3, kind: 'ppi' }],
   unknownCal: [],
+  nowcast: { asOf: Date.UTC(2026, 10, 6), periods: { '2026-10': { m: { cpi: 0.24, core: 0.21 }, y: { cpi: 3.74, core: 2.48 } } }, miss: { m: { cpi: { n: 12, avg: 0.11, max: 0.36 } } } },
+  gdpnow: { date: '2026-10-01', value: 3.44 },
+  sep: { year: 2026, rate: 4.1, rateNext: 4.1, core: 3.4, unemp: 4.1, gdp: 2.3 },
+  reactions: { cpi: { n: 12, avgAbs: 2.1, up: 7, normal: 1.7, recent: [[20400, 1.25], [20370, -3.1]] } },
 }
 
 const b = await chromium.launch()
 let macroMode = 'fail', macroCalls = 0
-async function open(viewport, isMobile) {
+async function open(viewport, isMobile, privacy = '0') {
   const ctx = await b.newContext({ viewport, isMobile, hasTouch: isMobile, timezoneId: 'America/New_York', locale: 'en-US' })
   try { await ctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
   await ctx.route(/api\.hyperliquid\.xyz/, (route) => {
@@ -65,11 +71,11 @@ async function open(viewport, isMobile) {
   const errs = []
   p.on('pageerror', e => errs.push(e.message))
   await p.goto(APP, { waitUntil: 'domcontentloaded' })
-  await p.evaluate(() => {
+  await p.evaluate((priv) => {
     localStorage.clear()
     for (const k of ['hliq_onboard_done', 'hliq_lang_chosen', 'hliq_onboard_welcomed_v1', 'hliq_onboard_tour_v1', 'hliq_install_nudge_v2']) localStorage.setItem(k, '1')
-    localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_ann_dismissed', JSON.stringify(['*'])); localStorage.setItem('hliq_privacy', '0')
-  })
+    localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_ann_dismissed', JSON.stringify(['*'])); localStorage.setItem('hliq_privacy', priv)
+  }, privacy)
   await p.reload({ waitUntil: 'domcontentloaded' })
   await p.waitForFunction(() => !!window.loadDashboard, null, { timeout: 60000 })
   await p.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, A1)
@@ -164,6 +170,37 @@ console.log('-- desktop, the server has nothing yet --')
   t('the Fed as a range, since its last change', /3\.75–4\.00%/.test(fed) && /since Dec 2025/.test(fed) && /last move/.test(fed), fed)
   t('none of it is coloured good or bad', await p.$eval('[data-macro-row="payrolls"] .mob-v-row-val', e => !/green|red/.test(e.getAttribute('style') ?? '')))
 
+  console.log('-- a report opens --')
+  const ctl = '[data-macro-event="cpi"]'
+  await p.$eval(ctl, e => e.scrollIntoView())
+  await p.click(ctl)
+  await p.waitForSelector('[data-ev-detail]')
+  const evd = await text(p, '[data-ev-detail]')
+  t('what it is', /basket of everyday goods/.test(evd), evd)
+  t('the estimate beside the last report', /CPI, yearly\s*3\.7%\s*3\.1%/.test(evd) && /CPI, monthly\s*\+0\.24%\s*\+0\.30%/.test(evd), evd)
+  t('whose estimate, for which month', /Cleveland Fed nowcast for October 2026/.test(evd), evd)
+  t('and how often it has been wrong', /off by 0\.11 pt on average, and by as much as 0\.36 pt/.test(evd), evd)
+  t('both ways it can go', /Higher than expected/.test(evd) && /Lower than expected/.test(evd), evd)
+  t('what it means day to day', /Everyday money/.test(evd), evd)
+  t('what Bitcoin did, beside a normal day', /moved 2\.1% on average/.test(evd) && /1\.7% on a typical day/.test(evd) && /higher on 7 of 12/.test(evd), evd)
+  t('your positions, net', /\$1000 net long across 2 positions/.test(evd), evd)
+  t('and the rough size of it', /about \$21 either way/.test(evd), evd)
+  t('and that it is rough', /A rough scale/.test(evd), evd)
+  t('not advice', /not financial advice/.test(evd), evd)
+  t('it says it is open', await p.$eval(ctl, e => e.getAttribute('aria-expanded')) === 'true')
+  await p.click(ctl)
+  t('and closes', !(await p.$('[data-ev-detail]')))
+  await p.click('[data-macro-event="fomc"]')
+  await p.waitForSelector('[data-ev-detail]')
+  const fo = await text(p, '[data-ev-detail]')
+  t('the Fed: its own officials\' view', /Target range now\s*3\.75–4\.00%/.test(fo) && /end of 2026\s*4\.1%/.test(fo), fo)
+  t('no invented reaction when there is no history', !/How Bitcoin moved/.test(fo), fo)
+  await p.click('[data-macro-event="fomc"]')
+  await p.click('[data-macro-event="gdp"]')
+  await p.waitForSelector('[data-ev-detail]')
+  t('GDP: the Atlanta Fed, labelled for its own quarter', /Q4 2026, Atlanta Fed GDPNow\s*3\.4%/.test(await text(p, '[data-ev-detail]')), await text(p, '[data-ev-detail]'))
+  await p.click('[data-macro-event="gdp"]')
+
   console.log('-- a row opens --')
   await p.click('[data-macro-row="cpi"] .mob-v-row')
   await p.waitForSelector('[data-macro-row="cpi"] [data-macro-detail]')
@@ -192,7 +229,7 @@ console.log('-- desktop, the server has nothing yet --')
 
 console.log('-- phone --')
 {
-  const { ctx, p, errs } = await open({ width: 430, height: 930 }, true)
+  const { ctx, p, errs } = await open({ width: 430, height: 930 }, true, '1')
   await p.tap('[data-sig-view="macro"]')
   await p.waitForSelector('#macroFng', { timeout: 20000 })
   const over = await p.$eval('#macroRoot', e => e.scrollWidth - e.clientWidth)
@@ -205,6 +242,11 @@ console.log('-- phone --')
   await p.tap('[data-macro-row="fed"] .mob-v-row')
   await p.waitForSelector('[data-macro-row="fed"] [data-macro-detail]')
   t('a tap opens a row', true)
+  await p.tap('[data-macro-event="cpi"]')
+  await p.waitForSelector('[data-ev-detail]')
+  t('the report opens on a phone, and fits', await p.$eval('#macroEvents', e => e.scrollWidth - e.clientWidth) <= 0)
+  t('in privacy mode, your position sizes stay hidden', !(await p.$('[data-ev-yours]')) && /How Bitcoin moved/.test(await text(p, '[data-ev-detail]')), await text(p, '[data-ev-detail]'))
+  if (arg('evshot')) { await p.$eval('[data-ev-detail]', e => e.scrollIntoView()); await p.screenshot({ path: arg('evshot') }) }
   t('no page errors', !errs.length, errs)
   await ctx.close()
 }

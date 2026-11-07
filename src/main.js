@@ -235,7 +235,7 @@ import { startPaperSync, hasPaper } from './papersync.js'
 import { createPaperBots } from './paperbots.js'
 import { renderAnalysis, analysisShow } from './analysis.js'
 import { initTradeBrief, setTradeBriefCoin } from './tradebrief.js'   // the analysis card on the Trade tab
-import { setMacroDeps, macroShell, macroFill, macroToggle, macroFngRange, macroFngScrub, macroTvSel } from './macroview.js'   // Signals → Macro
+import { setMacroDeps, macroShell, macroFill, macroToggle, macroEvToggle, macroFngRange, macroFngScrub, macroTvSel } from './macroview.js'   // Signals → Macro
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
 import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fillPickerHtml,
@@ -19871,10 +19871,23 @@ setMacroDeps({
   chart: (pts, opts) => _pulseInteractiveChart(pts, opts),
   tv: (el, url, cfg) => _tvInject(el, url, cfg),
   tvTheme: () => _tvTheme(),
+  // Never in privacy mode: the numbers it would print are the ones that mode exists to hide.
+  exposure: () => {
+    if (_privacyMode) return null
+    let long = 0, short = 0, n = 0
+    for (const p of state.perpState?.assetPositions ?? []) {
+      const szi = parseFloat(p.position?.szi), val = Math.abs(parseFloat(p.position?.positionValue))
+      if (!szi || !Number.isFinite(val)) continue
+      n++
+      if (szi > 0) long += val; else short += val
+    }
+    return { n, long, short }
+  },
   visible: () => _viewOpen('pulse') && _pulseSeg === 'signals' && _sigPane === 'macro',
   repaint: () => _pulseRender(_viewHost('deskPulse')),
 })
 window.__macroToggle = macroToggle
+window.__macroEvToggle = macroEvToggle
 window.__macroFngRange = macroFngRange
 window.__macroFngScrub = macroFngScrub
 window.__macroTvSel = macroTvSel

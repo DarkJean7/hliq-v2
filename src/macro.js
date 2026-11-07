@@ -13,13 +13,18 @@ export const CG_GLOBAL_URL = 'https://api.coingecko.com/api/v3/global'
 export const BLS_ICS_URL = 'https://www.bls.gov/schedule/news_release/bls.ics'
 export const BEA_ICS_URL = 'https://www.bea.gov/news/schedule/ics/online-calendar-subscription.ics'
 export const FOMC_URL = 'https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm'
+export const NOWCAST_MONTH_URL = 'https://www.clevelandfed.org/-/media/files/webcharts/inflationnowcasting/nowcast_month.json'
+export const NOWCAST_YEAR_URL = 'https://www.clevelandfed.org/-/media/files/webcharts/inflationnowcasting/nowcast_year.json'
+export const BTC_CHART_URL = 'https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=365&interval=daily'
 export const MACRO_UA = 'InsolventTerminal/1.0 (+https://insolvent.trade)'
 
 const LONG = 7 * 365 * 864e5    // reports: six years to show, plus the year a year-on-year needs behind it
 const SHORT = 400 * 864e5       // daily markets: a year is plenty, and 8 × 6 years of days is a big answer
+const SEP_SPAN = 400 * 864e5   // the Fed's projections are dated by the year they describe, which run ahead of today
 export const MACRO_SERIES = {
   CPIAUCNS: LONG, CPIAUCSL: LONG, CPILFENS: LONG, CPILFESL: LONG, PCEPI: LONG, PCEPILFE: LONG, PPIFIS: LONG,
   UNRATE: LONG, PAYEMS: LONG, ICSA: SHORT, A191RL1Q225SBEA: LONG, UMCSENT: LONG,
+  JTSJOL: LONG, GDPNOW: SHORT, FEDTARMD: SEP_SPAN, PCECTPIMD: SEP_SPAN, JCXFEMD: SEP_SPAN, UNRATEMD: SEP_SPAN, GDPC1MD: SEP_SPAN,
   DFEDTARU: LONG, DFEDTARL: LONG, DGS10: SHORT, DGS2: SHORT, T10Y2Y: SHORT, DTWEXBGS: SHORT, DCOILWTICO: SHORT, VIXCLS: SHORT,
 }
 const DAY = (t) => new Date(t).toISOString().slice(0, 10)
@@ -104,6 +109,7 @@ export function buildMacro(raw, now = Date.now()) {
     item('unrate', 'jobs', 'pct1', 'm', lvl('UNRATE'), 'jobs'),
     item('payrolls', 'jobs', 'jobs', 'm', monthDiff(s.PAYEMS), 'jobs'),
     item('claims', 'jobs', 'k', 'w', lvl('ICSA').map(([d, v]) => [d, v / 1000])),
+    item('jolts', 'jobs', 'mil', 'm', lvl('JTSJOL').map(([d, v]) => [d, v / 1000]), 'jolts'),
     item('gdp', 'growth', 'pct1', 'q', lvl('A191RL1Q225SBEA'), 'gdp'),
     fedItem(s.DFEDTARU, s.DFEDTARL),
     item('y10', 'rates', 'pct2', 'd', lvl('DGS10')),
@@ -120,11 +126,102 @@ export function buildMacro(raw, now = Date.now()) {
     fng: raw?.fng ?? null,
     global: raw?.global ?? null,
     events: mergeEvents(raw?.events, now),
+    nowcast: raw?.nowcast ?? null,
+    gdpnow: (() => { const g = lastOf(s.GDPNOW); return g ? { date: g[0], value: g[1] } : null })(),
+    sep: sepFor(s, now),
+    reactions: btcReactions(raw?.events, raw?.btc, now),
     unknownCal: Object.entries(raw?.events ?? { bls: null, bea: null, fomc: null }).filter(([, v]) => !v).map(([k]) => k),
   }
 }
 
 const DAY_MS = 864e5
+/** The Fed's median projections for this year and next. Each row is dated January of the year it describes. */
+function sepFor(s, now) {
+  const year = new Date(now).getUTCFullYear()
+  const at = (id, y) => (s[id] ?? []).find(r => r[0] === `${y}-01-01`)?.[1] ?? null
+  const out = { year, rate: at('FEDTARMD', year), rateNext: at('FEDTARMD', year + 1), pce: at('PCECTPIMD', year), core: at('JCXFEMD', year), unemp: at('UNRATEMD', year), gdp: at('GDPC1MD', year) }
+  return Object.entries(out).some(([k, v]) => k !== 'year' && v != null) ? out : null
+}
+
+const NC_NAMES = { cpi: 'CPI Inflation', core: 'Core CPI Inflation', pce: 'PCE Inflation', corepce: 'Core PCE Inflation' }
+const NC_ACTUAL = { cpi: 'Actual CPI Inflation', core: 'Actual Core CPI Inflation', pce: 'Actual PCE Inflation', corepce: 'Actual Core PCE Inflation' }
+const nums = (series) => (series ?? []).map(p => (p?.value === '' || p?.value == null ? null : Number(p.value)))
+/** Reads one Cleveland Fed file: the estimate for each month not yet reported, and how far the final one missed for those that were. */
+function readNowcast(json) {
+  if (!Array.isArray(json)) return null
+  const est = {}, misses = Object.fromEntries(Object.keys(NC_NAMES).map(k => [k, []]))
+  let asOf = null
+  for (const chart of json.slice(-16)) {
+    const m = /^(\d{4})-(\d{1,2})$/.exec(chart?.chart?.subcaption ?? '')
+    if (!m) continue
+    const period = `${m[1]}-${m[2].padStart(2, '0')}`
+    const stamp = Date.parse(String(chart.chart._comment ?? '').replace(' ', 'T') + ':00Z')
+    if (Number.isFinite(stamp) && (asOf == null || stamp > asOf)) asOf = stamp
+    const by = Object.fromEntries((chart.dataset ?? []).map(d => [d.seriesname, d.data]))
+    for (const k of Object.keys(NC_NAMES)) {
+      const nc = nums(by[NC_NAMES[k]]), act = nums(by[NC_ACTUAL[k]])
+      const ai = act.findIndex(v => v != null && Number.isFinite(v))
+      if (ai >= 0) {
+        // The last estimate before the number came out, not the one on the day it was already known.
+        let before = null
+        for (let i = ai - 1; i >= 0; i--) if (nc[i] != null && Number.isFinite(nc[i])) { before = nc[i]; break }
+        if (before != null) misses[k].push(Math.abs(act[ai] - before))
+        continue
+      }
+      const last = nc.filter(v => v != null && Number.isFinite(v)).at(-1)
+      if (last != null) (est[period] ??= {})[k] = last
+    }
+  }
+  return { est, misses, asOf }
+}
+export function parseNowcast(monthJson, yearJson) {
+  const mo = readNowcast(monthJson), yr = readNowcast(yearJson)
+  if (!mo && !yr) return null
+  const periods = {}
+  for (const [p, v] of Object.entries(mo?.est ?? {})) (periods[p] ??= { m: {}, y: {} }).m = v
+  for (const [p, v] of Object.entries(yr?.est ?? {})) (periods[p] ??= { m: {}, y: {} }).y = v
+  if (!Object.keys(periods).length) return null
+  const sum = (src) => Object.fromEntries(Object.entries(src ?? {}).flatMap(([k, a]) => {
+    const r = a.slice(-12)
+    return r.length ? [[k, { n: r.length, avg: r.reduce((x, y) => x + y, 0) / r.length, max: Math.max(...r) }]] : []
+  }))
+  return { asOf: mo?.asOf ?? yr?.asOf ?? null, periods, miss: { m: sum(mo?.misses), y: sum(yr?.misses) } }
+}
+
+/** Daily closes as [day, price]. A point at 00:00 UTC is the price as that day began, and the last point is "now". */
+export function parseBtcChart(json) {
+  const seen = new Map()
+  for (const p of json?.prices ?? []) {
+    const day = Math.floor(p?.[0] / 864e5), v = Number(p?.[1])
+    if (Number.isFinite(day) && v > 0 && !seen.has(day)) seen.set(day, v)
+  }
+  const rows = [...seen].sort((a, b) => a[0] - b[0])
+  return rows.length ? rows : null
+}
+
+/** How much Bitcoin moved across the UTC day of each past report, by kind, beside a typical day. */
+export function btcReactions(events, btc, now = Date.now()) {
+  if (!btc?.length) return null
+  const px = new Map(btc)
+  const dayMove = (d) => { const a = px.get(d), b = px.get(d + 1); return a && b ? (b / a - 1) * 100 : null }
+  const all = btc.map(r => dayMove(r[0])).filter(v => v != null)
+  if (!all.length) return null
+  const normal = all.reduce((a, v) => a + Math.abs(v), 0) / all.length
+  const out = {}
+  const today = Math.floor(now / 864e5)
+  for (const e of Object.values(events ?? {}).flat()) {
+    if (!e || e.t > now) continue
+    const day = Math.floor(e.t / 864e5)
+    if (day >= today || day < today - 366) continue
+    const m = dayMove(day)
+    if (m != null) (out[e.kind] ??= new Map()).set(day, m)
+  }
+  return Object.fromEntries(Object.entries(out).map(([k, map]) => {
+    const rows = [...map].sort((a, b) => a[0] - b[0])
+    return [k, { n: rows.length, avgAbs: rows.reduce((a, r) => a + Math.abs(r[1]), 0) / rows.length, up: rows.filter(r => r[1] > 0).length, normal, recent: rows.slice(-6).reverse().map(([d, v]) => [d, +v.toFixed(2)]) }]
+  }))
+}
+
 /** Fear & Greed. Newest first from the source; stored oldest first as [day number, value], which keeps six years small. */
 export function parseFng(json) {
   const rows = (json?.data ?? []).map(r => ({ day: Math.floor(Number(r.timestamp) / 86400), v: r.value === '' || r.value == null ? NaN : Number(r.value), label: String(r.value_classification ?? '') }))
@@ -245,14 +342,14 @@ function mergeEvents(ev, now) {
 }
 
 // The index is published once a day and its whole history is 300 KB, so it is not asked for often.
-const TTL = { series: 30 * 60e3, fng: 3 * 3600e3, global: 10 * 60e3, cal: 6 * 3600e3 }
+const TTL = { series: 30 * 60e3, fng: 3 * 3600e3, global: 10 * 60e3, cal: 6 * 3600e3, nowcast: 3 * 3600e3, btc: 6 * 3600e3 }
 
 /**
  * One refresh: only what is due, and a failed read keeps the last good one, so an outage shows a stale
  * figure with its own date rather than a hole. `getText(url)` resolves to the body or rejects.
  */
 export async function refreshMacro(prev, getText, now = Date.now()) {
-  const raw = { series: { ...(prev?.series ?? {}) }, fng: prev?.fng ?? null, global: prev?.global ?? null,
+  const raw = { series: { ...(prev?.series ?? {}) }, fng: prev?.fng ?? null, global: prev?.global ?? null, nowcast: prev?.nowcast ?? null, btc: prev?.btc ?? null,
     events: { bls: null, bea: null, fomc: null, ...(prev?.events ?? {}) }, srcAt: { ...(prev?.srcAt ?? {}) } }
   const due = (k) => now - (raw.srcAt[k] ?? 0) >= TTL[k.split(':')[0]]
   const read = (url) => getText(url).catch(() => null)
@@ -269,6 +366,9 @@ export async function refreshMacro(prev, getText, now = Date.now()) {
     // A file saved before the full history existed has no `days`, and three hours is too long to show nothing.
     (due('fng') || !raw.fng?.days) && read(FNG_URL).then((t) => { const v = parseFng(json(t)); if (v) { raw.fng = v; raw.srcAt.fng = now } }),
     due('global') && read(CG_GLOBAL_URL).then((t) => { const v = parseGlobal(json(t)); if (v) { raw.global = v; raw.srcAt.global = now } }),
+    // The Cleveland files are about 7 MB each; only the few numbers used here are kept.
+    due('nowcast') && Promise.all([read(NOWCAST_MONTH_URL), read(NOWCAST_YEAR_URL)]).then(([m, y]) => { const v = parseNowcast(json(m), json(y)); if (v) { raw.nowcast = v; raw.srcAt.nowcast = now } }),
+    due('btc') && read(BTC_CHART_URL).then((t) => { const v = parseBtcChart(json(t)); if (v) { raw.btc = v; raw.srcAt.btc = now } }),
     due('cal:bls') && read(BLS_ICS_URL).then((t) => { const v = blsEvents(t); if (v?.length) { raw.events.bls = v; raw.srcAt['cal:bls'] = now } }),
     due('cal:bea') && read(BEA_ICS_URL).then((t) => { const v = beaEvents(t); if (v?.length) { raw.events.bea = v; raw.srcAt['cal:bea'] = now } }),
     due('cal:fomc') && read(FOMC_URL).then((t) => { const v = parseFomc(t); if (v) { raw.events.fomc = v; raw.srcAt['cal:fomc'] = now } }),

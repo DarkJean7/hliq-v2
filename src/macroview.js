@@ -6,6 +6,7 @@
 // what it means for a trader is the reader's call.
 
 import { fngWindow, fngZone, FNG_ZONES } from './macro.js'
+import { eventDetailHtml } from './macroevents.js'
 
 const REFRESH = 10 * 60e3
 const RETRY = 30e3
@@ -17,6 +18,7 @@ let ctx = {
   chart: () => '',              // main.js's interactive chart
   tv: () => {},                 // main.js's TradingView embed
   tvTheme: () => 'dark',
+  exposure: () => null,         // the open positions, or null when privacy mode hides them
   visible: () => false,         // is this view on screen
   repaint: () => {},
 }
@@ -47,6 +49,12 @@ const FNG_RANGES = [['30d', 30], ['90d', 90], ['1y', 365], ['3y', 1095], ['all',
 export function macroFngRange(r) { if (FNG_RANGES.some(x => x[0] === r)) { _fngRange = r; saveCharts(); ctx.repaint() } }
 export function macroTvSel(card, k) { if (TV_CHARTS[card]?.[k]) { _tvSel[card] = k; saveCharts(); ctx.repaint() } }
 
+const _evOpen = new Set()
+export function macroEvToggle(kind) {
+  if (_evOpen.has(kind)) _evOpen.delete(kind); else _evOpen.add(kind)
+  ctx.repaint()
+}
+
 export function macroToggle(key) {
   if (_open.has(key)) _open.delete(key); else _open.add(key)
   ctx.repaint()
@@ -62,6 +70,7 @@ export function fmtMacro(fmt, v) {
     case 'pts2': return (v > 0 ? '+' : '') + v.toFixed(2)
     case 'jobs': return signed(v, a => a.toFixed(0) + 'K')
     case 'k': return v.toFixed(0) + 'K'
+    case 'mil': return v.toFixed(2) + 'M'
     case 'num1': return v.toFixed(1)
     case 'num2': return v.toFixed(2)
     case 'usd2': return '$' + v.toFixed(2)
@@ -75,6 +84,7 @@ export function fmtDelta(fmt, d) {
     case 'pct1': return signed(+d.toFixed(1), a => a.toFixed(1)) + ' pt'
     case 'pct2': case 'pts2': return signed(+d.toFixed(2), a => a.toFixed(2)) + ' pt'
     case 'jobs': case 'k': return signed(+d.toFixed(0), a => a.toFixed(0) + 'K')
+    case 'mil': return signed(+d.toFixed(2), a => a.toFixed(2) + 'M')
     case 'num1': return signed(+d.toFixed(1), a => a.toFixed(1))
     case 'usd2': return signed(+d.toFixed(2), a => '$' + a.toFixed(2))
     default: return signed(+d.toFixed(2), a => a.toFixed(2))
@@ -106,6 +116,7 @@ function words() {
       unrate: [T('Unemployment', 'Desempleo'), T('Rate', 'Tasa'), T('The share of people looking for work who have none. The Fed is charged with keeping employment high as well as prices stable, so this feeds into rates.', 'El porcentaje de quienes buscan trabajo y no lo tienen. La Fed debe mantener un empleo alto además de precios estables, así que esto influye en los tipos.'), 'BLS'],
       payrolls: [T('Jobs added', 'Empleos creados'), T('Non-farm payrolls', 'Nóminas no agrícolas'), T('Jobs added or lost in the month. Later reports often revise these figures, sometimes by a lot.', 'Empleos creados o perdidos en el mes. Los informes posteriores suelen revisar estas cifras, a veces mucho.'), 'BLS'],
       claims: [T('Jobless claims', 'Solicitudes de desempleo'), T('Weekly, new claims', 'Semanal, nuevas'), T('New claims for unemployment benefits. Published every week, so it shows a turn in the jobs market sooner than the monthly report.', 'Nuevas solicitudes de prestación por desempleo. Sale cada semana, así que muestra un giro del empleo antes que el informe mensual.'), T('US Dept. of Labor', 'Dpto. de Trabajo de EE. UU.')],
+      jolts: [T('Job openings', 'Vacantes'), T('JOLTS', 'JOLTS'), T('How many jobs employers are trying to fill. It reports about two months after the period it covers.', 'Cuántos puestos intentan cubrir las empresas. Se publica unos dos meses después del período que cubre.'), 'BLS'],
       gdp: [T('GDP growth', 'Crecimiento del PIB'), T('Quarterly, annualised', 'Trimestral, anualizado'), T('How fast the US economy grew in the quarter, adjusted for inflation and stated as a yearly pace. Each quarter gets revised twice after the first estimate.', 'A qué ritmo creció la economía de EE. UU. en el trimestre, ajustado por inflación y expresado en ritmo anual. Cada trimestre se revisa dos veces tras la primera estimación.'), 'BEA'],
       fed: [T('Fed funds rate', 'Tipo de la Fed'), T('Target range', 'Rango objetivo'), T('The rate the Fed sets. Most other interest rates take their lead from it, and it affects how much money chases risk assets such as crypto.', 'El tipo que fija la Fed. La mayoría de los demás tipos lo toman como referencia, e influye en cuánto dinero busca activos de riesgo como las criptomonedas.'), T('Federal Reserve', 'Reserva Federal')],
       y10: [T('10-year yield', 'Bono a 10 años'), T('US Treasury', 'Tesoro de EE. UU.'), T('What the US government pays to borrow for ten years. A higher yield makes holding something that pays no interest less attractive by comparison.', 'Lo que paga el gobierno de EE. UU. por endeudarse a diez años. Un rendimiento mayor hace menos atractivo, en comparación, mantener algo que no paga intereses.'), T('Federal Reserve', 'Reserva Federal')],
@@ -146,16 +157,19 @@ function eventsCard(now) {
     const when = new Date(e.t)
     const soon = e.t - now < 2 * 864e5
     const sub = stage(e)
-    return `<div data-macro-event="${esc(e.kind)}" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border)">
+    const xp = _evOpen.has(e.kind)
+    return `<div style="border-top:1px solid var(--border)"><div data-macro-event="${esc(e.kind)}" role="button" tabindex="0" aria-expanded="${xp}" onclick="window.__macroEvToggle('${esc(e.kind)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.__macroEvToggle('${esc(e.kind)}')}" style="display:flex;align-items:center;gap:10px;padding:8px 0;cursor:pointer">
       <div style="flex:1;min-width:0">
         <div style="font-size:12.5px;font-weight:700">${esc(w.events[e.kind] ?? e.kind)}${sub ? `<span style="font-weight:500;color:var(--muted)"> · ${esc(sub)}</span>` : ''}</div>
         <div style="font-size:11px;color:var(--muted);margin-top:1px">${esc(when.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</div>
       </div>
       <div style="flex-shrink:0;font-size:11px;font-weight:700;color:${soon ? 'var(--accent)' : 'var(--fg-2)'}">${esc(whenLabel(e.t, now))}</div>
-    </div>`
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12" style="color:var(--muted);flex-shrink:0;transition:transform .2s${xp ? ';transform:rotate(90deg)' : ''}"><polyline points="9 6 15 12 9 18"/></svg>
+    </div>${xp ? eventDetailHtml(e.kind, _d, ctx) : ''}</div>`
   }).join('')
   return `<div id="macroEvents" style="${CARD}">
-    <div style="${HEAD};margin-bottom:7px">${T('Coming up', 'Próximamente')}</div>
+    <div style="${HEAD}">${T('Coming up', 'Próximamente')}</div>
+    <div style="font-size:11px;color:var(--muted);margin:1px 0 7px">${T('Tap a report for estimates and what it can mean for your money.', 'Toca un informe para ver estimaciones y qué puede significar para tu dinero.')}</div>
     ${rows || `<div style="font-size:12px;color:var(--fg-3);padding:4px 0">${_d.events ? T('No dates published yet for the coming weeks.', 'Aún no hay fechas publicadas para las próximas semanas.') : T('Release dates are unavailable right now.', 'Las fechas no están disponibles ahora.')}</div>`}
     <div style="${SMALL};margin-top:6px;border-top:1px solid var(--border);padding-top:7px">${T('Your local time. Official dates, and they can change.', 'En tu hora local. Fechas oficiales, que pueden cambiar.')}${missing && _d.events ? ' ' + T('Some calendars could not be read, so this list may be incomplete.', 'Algunos calendarios no se pudieron leer, así que la lista puede estar incompleta.') : ''}</div>
   </div>`

@@ -1,5 +1,5 @@
 // src/macro.js: dates, gaps and failures. No network; every fetch here is a stub.
-import { parseFredCsv, yoy, mom, monthDiff, buildMacro, parseFng, parseGlobal, fngWindow, fngZone, parseIcs, blsEvents, beaEvents, parseFomc, easternToUtc, refreshMacro, fredUrl, macroHasData } from '../../src/macro.js'
+import { parseFredCsv, yoy, mom, monthDiff, buildMacro, parseNowcast, parseBtcChart, btcReactions, MACRO_SERIES, parseFng, parseGlobal, fngWindow, fngZone, parseIcs, blsEvents, beaEvents, parseFomc, easternToUtc, refreshMacro, fredUrl, macroHasData } from '../../src/macro.js'
 import { fmtMacro, fmtDelta, periodLabel, nextOf } from '../../src/macroview.js'
 
 let pass = 0, fail = 0
@@ -106,12 +106,12 @@ const okCsv = (id) => `observation_date,${id}\n2026-01-01,5\n`
 let calls = []
 const ok = async (u) => { calls.push(u); if (u.includes('fredgraph')) return okCsv(u); if (u.includes('alternative.me')) return JSON.stringify({ data: [{ value: '50', value_classification: 'Neutral', timestamp: '9' }] }); if (u.includes('coingecko')) return JSON.stringify({ data: { total_market_cap: { usd: 9 }, market_cap_percentage: { btc: 50 } } }); throw new Error('no') }
 const first = await refreshMacro(null, ok, NOW)
-t('everything is read the first time', calls.filter(u => u.includes('fredgraph')).length === 20, calls.length)
+t('everything is read the first time', calls.filter(u => u.includes('fredgraph')).length === Object.keys(MACRO_SERIES).length, calls.length)
 t('reads the window it asked for', fredUrl('DGS10', NOW).includes('cosd=2025-'), fredUrl('DGS10', NOW))
 t('a calendar that failed stays unknown', first.events.bls === null)
 calls = []
 await refreshMacro(first, ok, NOW + 60e3)
-t('a minute later nothing is due', calls.length === 3, calls)   // only the three calendars, which failed and never succeeded
+t('a minute later nothing good is read again', !calls.some(u => /fredgraph|alternative\.me|api\/v3\/global/.test(u)), calls)   // only what failed and never succeeded
 calls = []
 const later = await refreshMacro(first, ok, NOW + 11 * 60e3)
 t('market cap refreshes sooner than reports', calls.some(u => u.includes('coingecko')) && !calls.some(u => u.includes('fredgraph')), calls)
@@ -125,6 +125,54 @@ const down = await refreshMacro(first, async () => { throw new Error('down') }, 
 t('an outage keeps the last good data', down.series.UNRATE?.length === 1 && down.fng?.value === 50 && down.global?.cap === 9, down.fng)
 t('and tries again next time', down.srcAt['series:UNRATE'] === NOW, down.srcAt['series:UNRATE'])
 t('later is fine', later.at === NOW + 11 * 60e3)
+
+// ── the Cleveland Fed's estimates ──
+const nc = (period, stamp, vals, actuals = {}) => ({ chart: { subcaption: period, _comment: stamp }, dataset: [
+  ...Object.entries({ 'CPI Inflation': vals.cpi, 'Core CPI Inflation': vals.core }).map(([seriesname, data]) => ({ seriesname, data: (data ?? []).map(value => ({ value: value === null ? '' : String(value) })) })),
+  ...Object.entries({ 'Actual CPI Inflation': actuals.cpi }).map(([seriesname, data]) => ({ seriesname, data: (data ?? []).map(value => ({ value: value === null ? '' : String(value) })) })),
+] })
+const ncM = [
+  nc('2026-9', '2026-10-14 00:00', { cpi: [0.3, 0.5, null], core: [0.2, 0.2, 0.2] }, { cpi: [null, null, 0.65] }),
+  nc('2026-10', '2026-11-06 00:00', { cpi: [0.2, 0.24], core: [0.21] }, { cpi: [null, null] }),
+  nc('2026-11', '2026-11-06 00:00', { cpi: [0.18], core: [0.2] }, { cpi: [null] }),
+]
+const ncY = [nc('2026-10', '2026-11-06 00:00', { cpi: [3.7, 3.74], core: [2.48] }, { cpi: [null, null] })]
+const nowcast = parseNowcast(ncM, ncY)
+t('the estimate is the latest one for that month', nowcast.periods['2026-10'].m.cpi === 0.24 && nowcast.periods['2026-10'].y.cpi === 3.74, nowcast.periods)
+t('months are zero-padded, as the data dates are', !!nowcast.periods['2026-10'] && !nowcast.periods['2026-9']?.m.cpi, Object.keys(nowcast.periods))
+t('a month already reported has no estimate', nowcast.periods['2026-9']?.m.cpi === undefined)
+t('the miss is against the last estimate before the number', Math.abs(nowcast.miss.m.cpi.avg - 0.15) < 1e-9 && nowcast.miss.m.cpi.n === 1, nowcast.miss.m)
+t('the date it was made', nowcast.asOf === Date.UTC(2026, 10, 6), nowcast.asOf)
+t('a file that cannot be read is no estimate at all', parseNowcast(null, null) === null && parseNowcast([], []) === null)
+t('one file missing still gives the other', parseNowcast(ncM, null).periods['2026-10'].m.cpi === 0.24)
+
+// ── what Bitcoin did on report days ──
+const D0B = 20000
+const btcPts = Array.from({ length: 12 }, (_, i) => [(D0B + i) * 864e5, 100 + i * 0])
+btcPts[5][1] = 100; btcPts[6][1] = 110      // day 5 to day 6: +10%
+btcPts[7][1] = 99                           // day 6 to day 7: -10%
+btcPts.push([(D0B + 11) * 864e5 + 5000, 500]) // "now": the same day as the last midnight, and must not replace it
+const btc = parseBtcChart({ prices: btcPts })
+t('one price a day, the first of it', btc.length === 12 && btc.at(-1)[1] === 100, btc.at(-1))
+t('no prices is null', parseBtcChart({ prices: [] }) === null && parseBtcChart(null) === null)
+const reNow = (D0B + 12) * 864e5
+const re = btcReactions({ bls: [{ t: (D0B + 5) * 864e5 + 3600e3, kind: 'cpi' }, { t: (D0B + 6) * 864e5 + 3600e3, kind: 'cpi' }, { t: reNow + 864e5, kind: 'cpi' }, { t: (D0B + 5) * 864e5, kind: 'jobs' }] }, btc, reNow)
+t('its move across that UTC day', re.cpi.recent.find(r => r[0] === D0B + 5)[1] === 10, re.cpi.recent)
+t('average size, either direction', Math.abs(re.cpi.avgAbs - 10) < 1e-9, re.cpi)
+t('days it rose', re.cpi.up === 1 && re.cpi.n === 2, re.cpi)
+t('a report still to come does not count', !re.cpi.recent.some(r => r[0] === D0B + 13), re.cpi.recent)
+t('newest first', re.cpi.recent[0][0] === D0B + 6, re.cpi.recent)
+t('kinds stay separate', re.jobs.n === 1, re.jobs)
+t('beside a typical day', re.cpi.normal > 0 && re.cpi.normal < re.cpi.avgAbs, re.cpi.normal)
+t('no price history is null, not "no reaction"', btcReactions({ bls: [] }, null) === null)
+const skip = btcReactions({ bls: [{ t: (D0B + 20) * 864e5, kind: 'cpi' }] }, btc, reNow + 30 * 864e5)
+t('a day with no price is left out', !skip.cpi, skip)
+
+// ── the Fed's projections ──
+const sep = buildMacro({ series: { FEDTARMD: [['2026-01-01', 4.1], ['2027-01-01', 3.9]], UNRATEMD: [['2026-01-01', 4.1]] } }, Date.UTC(2026, 10, 7)).sep
+t('this year and next, by date', sep.rate === 4.1 && sep.rateNext === 3.9 && sep.year === 2026, sep)
+t('one not read stays null', sep.core === null, sep)
+t('none at all is null', buildMacro({ series: {} }, 0).sep === null)
 
 // ── what the page prints ──
 t('jobs lost is signed', fmtMacro('jobs', -12) === '−12K', fmtMacro('jobs', -12))
