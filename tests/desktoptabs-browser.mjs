@@ -168,7 +168,7 @@ console.log(NL + '-- and the sort survives a reload --')
 {
   await p.evaluate(() => window.__ovSetPosTab('positions'))
   await p.waitForTimeout(300)
-  // Default is PnL descending. Pick something nobody would land on by accident.
+  // Default is PnL, lowest first as on the phone. Pick something nobody would land on by accident.
   await p.evaluate(() => window.__ovSortPos('market'))
   await p.waitForTimeout(300)
   const before = await p.evaluate(() => [...document.querySelectorAll('#ovPosBody .ov-pos-mkt b')].map(b => b.textContent))
@@ -181,7 +181,7 @@ console.log(NL + '-- and the sort survives a reload --')
   t('flipping reverses it', await p.evaluate(() =>
     document.querySelector('#ovPosBody .ov-pos-mkt b')?.textContent), 'SOL')
   t('and the direction is written down too',
-    await p.evaluate(() => localStorage.getItem('ovPosSortDir')), '-1')
+    await p.evaluate(() => localStorage.getItem('ovPosSortDir')), '1')
 
   await p.reload({ waitUntil: 'domcontentloaded' })
   await boot()

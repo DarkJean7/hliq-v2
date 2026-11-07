@@ -257,6 +257,7 @@ import { BACKDROPS, backdropById, loadBackdrop, saveBackdrop, applyBackdrop,
          loadBackdropDim, saveBackdropDim, readBackdropFile, restoreTheme } from './theme.js'
 import { BOT_PRESETS, botPreset } from './botpresets.js'
 import { aggregatePosGroup, groupPositions, posHealthPct } from './posgroup.js'
+import { posCmp, featuredMember } from './sortrules.js'
 import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL,
          expectedPnl, groupExpectedPnl } from './ordergroup.js'
 import { isStrictSpotToken, spotStrictOn, setSpotStrict, passesStrict } from './strictspot.js'
@@ -13639,12 +13640,12 @@ function _mobVMergedPosCard(members) {
   const _sBy = _mobVPosSortBy, _top = _mobVPosSortDir > 0
   let summary
   if (_sBy === 'unrl') {
-    let f = members[0]; for (const c of members) if (_top ? c.uPnl > f.uPnl : c.uPnl < f.uPnl) f = c
+    const f = featuredMember(members, 'pnl', _mobVPosSortDir).member
     summary = { mode: 'metric', label: _top ? _T('Top PnL', 'Mayor PnL') : _T('Lowest PnL', 'Menor PnL'),
       acct: f.acct || '—', valText: _prv((f.uPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(f.uPnl))),
       valColor: f.uPnl >= 0 ? '#00e5a0' : '#ff4d6d', health: f.healthPct }
   } else if (_sBy === 'posval') {
-    let f = members[0]; for (const c of members) if (_top ? c.posVal > f.posVal : c.posVal < f.posVal) f = c
+    const f = featuredMember(members, 'value', _mobVPosSortDir).member
     summary = { mode: 'metric', label: _top ? _T('Top value', 'Mayor valor') : _T('Lowest value', 'Menor valor'),
       acct: f.acct || '—', valText: _prv('$' + fmtUSD(f.posVal)), valColor: 'var(--fg)', health: f.healthPct }
   } else {
@@ -20421,8 +20422,7 @@ function _mobVRenderContent(tick = false) {
     const pos = [...rawPos].sort((a, b) => {
       const pa = a.position, pb = b.position
       if (_mobVPosSortBy === 'name') {
-        // Ascending A→Z when dir is 1; the shared `dir` flips it like the other keys.
-        return -_mobVPosSortDir * String(_ocCoinLabel(pa.coin)).localeCompare(String(_ocCoinLabel(pb.coin)))
+        return posCmp(String(_ocCoinLabel(pa.coin)), String(_ocCoinLabel(pb.coin)), _mobVPosSortDir)
       }
       let va, vb
       if (_mobVPosSortBy === 'posval') {
@@ -20433,7 +20433,7 @@ function _mobVRenderContent(tick = false) {
       } else {
         va = parseFloat(pa.unrealizedPnl ?? 0); vb = parseFloat(pb.unrealizedPnl ?? 0)
       }
-      return _mobVPosSortDir * (vb - va)
+      return posCmp(va, vb, _mobVPosSortDir)
     })
     const _mobVSortPill = (by, label) => {
       const active = _mobVPosSortBy === by

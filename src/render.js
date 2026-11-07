@@ -12,6 +12,7 @@ import { partRoe, fmtRoe } from './roe.js'
 import { aggregateFillsByCoin, coinLabel } from './api.js'
 import { renderOverviewChart } from './charts.js'
 import { aggregatePosGroup, groupPositions, posHealthPct, posSideOf } from './posgroup.js'
+import { posCmp, ordCmp, ordSideCmp, POS_FIRST_DIR, ORD_FIRST_DIR, featuredMember } from './sortrules.js'
 import { groupOrders, aggregateOrderGroup, nearestAwayPct, ORDER_KIND_LABEL,
          expectedPnl, groupExpectedPnl } from './ordergroup.js'
 import { setLedgerPeers, isPeerTransfer, isPeerMirror, peerRoute, peerAmount } from './ledgerpeers.js'
@@ -80,8 +81,8 @@ let _ovOrdBody = ''
 const _ovSortLoad = (k, dflt) => {
   try { return localStorage.getItem(k) ?? dflt } catch { return dflt }
 }
-const _ovSortLoadDir = (k) => {
-  try { const v = parseInt(localStorage.getItem(k) ?? '-1', 10); return v === 1 ? 1 : -1 } catch { return -1 }
+const _ovSortLoadDir = (k, dflt = POS_FIRST_DIR) => {
+  try { const v = parseInt(localStorage.getItem(k) ?? String(dflt), 10); return v === 1 ? 1 : -1 } catch { return dflt }
 }
 function _ovSortSave(keyName, dirName, key, dir) {
   try {
@@ -91,13 +92,11 @@ function _ovSortSave(keyName, dirName, key, dir) {
   } catch {}
 }
 
-let _ovPosSortKey = _ovSortLoad('ovPosSortBy', 'pnl')   // default: unrealized PnL, descending
+let _ovPosSortKey = _ovSortLoad('ovPosSortBy', 'pnl')   // default: unrealized PnL, ▼ lowest first, as the phone opens
 let _ovPosSortDir = _ovSortLoadDir('ovPosSortDir')
 let _ovPosData = null                          // { positions, allMids, tpslMap } for re-sort without full re-render
-// null is a real choice here — it means "the order the exchange gave them" — so an absent
-// key restores as null rather than falling back to a column the reader never picked.
-let _ovOrdSortKey = _ovSortLoad('ovOrdSortBy', null) || null
-let _ovOrdSortDir = _ovSortLoadDir('ovOrdSortDir')
+let _ovOrdSortKey = _ovSortLoad('ovOrdSortBy', 'market')   // default: coin A→Z, as the phone opens
+let _ovOrdSortDir = _ovSortLoadDir('ovOrdSortDir', ORD_FIRST_DIR)
 let _ovOrdData = null                          // { orders, allMids } for re-sort without full re-render
 const _ovExpanded = new Set()   // sanitized coin ids whose action row is open (survives re-renders)
 const _OV_PERIOD_KEY = { '1D': 'day', '1W': 'week', '1M': 'month', 'All': 'allTime' }
@@ -111,8 +110,8 @@ const _OV_PERIOD_LABEL = { day: 'today', week: 'this week', month: 'this month',
 let _tradesPage = 0
 let _lastUnrealPnl  = null
 let _ordSortKey  = null, _ordSortDir  = 1
-let _mPosSortKey = null, _mPosSortDir = 1
-let _mOrdSortKey  = null, _mOrdSortDir  = 1
+let _mPosSortKey = 'pnl', _mPosSortDir = POS_FIRST_DIR
+let _mOrdSortKey  = 'coin', _mOrdSortDir  = ORD_FIRST_DIR
 
 export function setSortOrd(key) {
   if (_ordSortKey === key) _ordSortDir *= -1
@@ -120,11 +119,11 @@ export function setSortOrd(key) {
 }
 export function setSortMPos(key) {
   if (_mPosSortKey === key) _mPosSortDir *= -1
-  else { _mPosSortKey = key; _mPosSortDir = 1 }
+  else { _mPosSortKey = key; _mPosSortDir = POS_FIRST_DIR }
 }
 export function setSortMOrd(key) {
   if (_mOrdSortKey === key) _mOrdSortDir *= -1
-  else { _mOrdSortKey = key; _mOrdSortDir = 1 }
+  else { _mOrdSortKey = key; _mOrdSortDir = ORD_FIRST_DIR }
 }
 export function setTradesPage(p) { _tradesPage = p }
 export function getTradesPage()  { return _tradesPage }
@@ -1166,25 +1165,6 @@ function _ovPosMember(ap, allMids) {
   }
 }
 
-// Sorting a GROUP by the column the user clicked. The group's value for a column is the
-// value it displays in that column — total margin, worst health, average entry — so the
-// order on screen matches the numbers on screen.
-function _ovGroupSortVal(g, key) {
-  switch (key) {
-    case 'market':  return String(_lbl(g.coin)).toUpperCase()
-    case 'side':    return g.side === 'LONG' ? 1 : 0
-    case 'size':    return g.totVal
-    case 'entry':   return g.avgEntry
-    case 'mark':    return g.markPx
-    case 'liq':     return parseFloat(g.worst?.liqPx ?? 0)
-    case 'margin':  return g.totMrg
-    case 'funding': return g.totFund
-    case 'health':  return g.healthPct
-    case 'pnl':     return g.totUPnl
-    default:        return Math.abs(g.totVal)
-  }
-}
-
 const _ovGroupExpanded = new Set()   // group ids whose member rows are open (survives re-render)
 const _ovGid = (coin, side) => `${String(coin).replace(/[^a-z0-9]/gi, '_')}-${side}`
 
@@ -1204,6 +1184,24 @@ window.__ovToggleGroup = function(gid) {
  * and do not merge: those show the worst member and name the account carrying it. An
  * averaged liq price would describe no wallet and no risk anyone actually holds.
  */
+// The line a merged row carries on the phone: which account the sort is about. "Top PnL · Near
+// +$0.12 · Health 100%" is what explains a row reading −$27 at the top of a biggest-first list.
+function _ovFeatLine(g) {
+  const metric = _ovPosSortKey === 'pnl' ? 'pnl' : _ovPosSortKey === 'size' ? 'value' : 'health'
+  const { mode, top, member: m } = featuredMember(g.members, metric, _ovPosSortDir, g.worst)
+  if (!m) return ''
+  const acct = esc(m.acct || '—')
+  const hp = (m.healthPct ?? 100).toFixed(0) + '%'
+  // Two lines: the market column is narrow, and this much text on one wrapped wherever it liked.
+  // <em> for the coloured figure, because `.ov-pos-mkt span` makes every span in here a column.
+  const lines = mode === 'pnl'
+    ? [`${top ? 'Top PnL' : 'Lowest PnL'} · ${acct}`, `<em style="font-style:normal;color:var(--${m.uPnl >= 0 ? 'green' : 'red'})">${fmtPnL(m.uPnl).text}</em> · ${hp} health`]
+    : mode === 'value'
+      ? [`${top ? 'Top value' : 'Lowest value'} · ${acct}`, `$${fmtUSD(m.posVal)} · ${hp} health`]
+      : [`Worst health · ${acct} ${hp}`]
+  return lines.map(l => `<i class="ov-pos-feat">${l}</i>`).join('')
+}
+
 function _ovMergedPosRow(g, allMids, tpslMap) {
   const gid     = _ovGid(g.coin, g.side)
   const open    = _ovGroupExpanded.has(gid)
@@ -1221,7 +1219,7 @@ function _ovMergedPosRow(g, allMids, tpslMap) {
     ? window._botBadgeGroupHtml(g.coin, g.members) : ''
   return `<div class="ov-pos-item ov-pos-group">
     <div class="ov-pos-row ov-pos-grouprow" onclick="window.__ovToggleGroup('${gid}')">
-      <span class="ov-pos-mkt">${_ovCoinIcon(g.coin)}<span class="ov-pos-info"><b>${esc(_lbl(g.coin))}</b><i>×${g.n} accounts · ${levLine}</i>${bots ? `<i class="ov-pos-meta">${bots}</i>` : ''}</span></span>
+      <span class="ov-pos-mkt">${_ovCoinIcon(g.coin)}<span class="ov-pos-info"><b>${esc(_lbl(g.coin))}</b><i>×${g.n} accounts · ${levLine}</i>${_ovFeatLine(g)}${bots ? `<i class="ov-pos-meta">${bots}</i>` : ''}</span></span>
       <span class="ov-side-badge ${sideCls}">${g.side}</span>
       <span class="ov-r ov-pos-size"><b>${_ovSz(g.totSz)}</b><i>$${fmtUSD(g.totVal)}</i></span>
       <span class="ov-r mono">$${_ovPx(g.avgEntry)}</span>
@@ -1242,7 +1240,7 @@ function _ovMergedPosRow(g, allMids, tpslMap) {
 
 function _ovBuildPosBody(positions, allMids, tpslMap) {
   if (!positions.length) return `<div class="ov-empty">No open positions</div>`
-  const cmp = (av, bv) => typeof av === 'string' ? av.localeCompare(bv) * _ovPosSortDir : (av - bv) * _ovPosSortDir
+  const cmp = (av, bv) => posCmp(av, bv, _ovPosSortDir)
   const sorted = [...positions].sort((a, b) => {
     if (!_ovPosSortKey) return Math.abs(parseFloat(b.position.positionValue ?? 0)) - Math.abs(parseFloat(a.position.positionValue ?? 0))
     return cmp(_ovPosSortVal(a, _ovPosSortKey, allMids), _ovPosSortVal(b, _ovPosSortKey, allMids))
@@ -1250,11 +1248,10 @@ function _ovBuildPosBody(positions, allMids, tpslMap) {
   // Collapse the same coin + same direction held on several accounts into one row, as the
   // mobile cards have always done. In a single account HL holds one position per coin, so
   // every group has one member and this renders exactly what it rendered before.
+  // A coin sits where its first account lands in the sort, also as the phone does, and the merged
+  // row names that account (_ovFeatLine) so the order explains itself.
   const groups = groupPositions(sorted.map(ap => _ovPosMember(ap, allMids)))
     .map(ms => aggregatePosGroup(ms))
-  if (_ovPosSortKey) {
-    groups.sort((a, b) => cmp(_ovGroupSortVal(a, _ovPosSortKey), _ovGroupSortVal(b, _ovPosSortKey)))
-  }
   const head = `<div class="ov-pos-head">
     ${_OV_SORT_COLS.map(([k, l, r]) => `<span class="ov-sort${r ? ' ov-r' : ''}" onclick="window.__ovSortPos('${k}')">${l}${_ovSortArr(k, _ovPosSortKey, _ovPosSortDir)}</span>`).join('')}
     <span></span>
@@ -1275,7 +1272,7 @@ function _ovSortArr(key, activeKey, dir) {
 
 window.__ovSortPos = function(key) {
   if (_ovPosSortKey === key) _ovPosSortDir *= -1
-  else { _ovPosSortKey = key; _ovPosSortDir = (key === 'market' || key === 'side') ? 1 : -1 }
+  else { _ovPosSortKey = key; _ovPosSortDir = POS_FIRST_DIR }
   _ovSortSave('ovPosSortBy', 'ovPosSortDir', _ovPosSortKey, _ovPosSortDir)
   if (!_ovPosData) return
   _ovPosBody = _ovBuildPosBody(_ovPosData.positions, _ovPosData.allMids, _ovPosData.tpslMap)
@@ -1344,9 +1341,8 @@ function _ovBuildOrdBody(orders, allMids) {
   if (!orders?.length) return `<div class="ov-empty">No open orders</div>`
   const sorted = [...orders].sort((a, b) => {
     if (!_ovOrdSortKey) return 0
-    const av = _ovOrdSortVal(a, _ovOrdSortKey, allMids), bv = _ovOrdSortVal(b, _ovOrdSortKey, allMids)
-    if (typeof av === 'string') return av.localeCompare(bv) * _ovOrdSortDir
-    return (av - bv) * _ovOrdSortDir
+    if (_ovOrdSortKey === 'side') return ordSideCmp(a, b, _ovOrdSortDir)
+    return ordCmp(_ovOrdSortVal(a, _ovOrdSortKey, allMids), _ovOrdSortVal(b, _ovOrdSortKey, allMids), _ovOrdSortDir)
   })
   const head = `<div class="ov-ord-head">
     ${_OV_ORD_COLS.map(([k, l, r]) => `<span class="ov-sort${r ? ' ov-r' : ''}" onclick="window.__ovSortOrd('${k}')">${l}${_ovSortArr(k, _ovOrdSortKey, _ovOrdSortDir)}</span>`).join('')}
@@ -1410,7 +1406,7 @@ function _ovMergedOrdRow(g, allMids) {
 
 window.__ovSortOrd = function(key) {
   if (_ovOrdSortKey === key) _ovOrdSortDir *= -1
-  else { _ovOrdSortKey = key; _ovOrdSortDir = (key === 'market' || key === 'side') ? 1 : -1 }
+  else { _ovOrdSortKey = key; _ovOrdSortDir = ORD_FIRST_DIR }
   _ovSortSave('ovOrdSortBy', 'ovOrdSortDir', _ovOrdSortKey, _ovOrdSortDir)
   if (!_ovOrdData) return
   _ovOrdBody = _ovBuildOrdBody(_ovOrdData.orders, _ovOrdData.allMids)
@@ -2389,7 +2385,7 @@ export function renderManagePositions(perpState, allMids) {
     }
     positions = [...positions].sort((a, b) => {
       const av = val(a), bv = val(b)
-      return typeof av === 'string' ? av.localeCompare(bv) * _mPosSortDir : (av - bv) * _mPosSortDir
+      return posCmp(av, bv, _mPosSortDir)
     })
   }
 
@@ -2459,10 +2455,11 @@ export function renderManageOrders(openOrders, perpState, allMids = {}) {
       if (_mOrdSortKey === 'coin') { av = a.coin; bv = b.coin }
       else if (_mOrdSortKey === 'size') { av = parseFloat(a.sz ?? 0); bv = parseFloat(b.sz ?? 0) }
       else if (_mOrdSortKey === 'price') {
-        av = parseFloat(a.triggerPx ?? a.limitPx ?? 0)
-        bv = parseFloat(b.triggerPx ?? b.limitPx ?? 0)
+        // triggerPx is the string "0.0" on a plain limit order, so `??` never reached limitPx.
+        av = parseFloat(a.triggerPx ?? 0) || parseFloat(a.limitPx ?? 0)
+        bv = parseFloat(b.triggerPx ?? 0) || parseFloat(b.limitPx ?? 0)
       }
-      return typeof av === 'string' ? av.localeCompare(bv) * _mOrdSortDir : (av - bv) * _mOrdSortDir
+      return ordCmp(av, bv, _mOrdSortDir)
     })
   }
 

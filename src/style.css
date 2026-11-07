@@ -8593,3 +8593,6 @@ html.has-bg-image .imged { background: var(--bg); }
 .mob-chart-card.chart-full .mob-chart-plot { flex: 1; height: auto !important; }
 html.chart-full-open, html.chart-full-open body { overflow: hidden; }
 .mob-chart-card.chart-full > button, .mob-chart-card.chart-full > #mobChartHero { margin-top: env(safe-area-inset-top); }
+
+/* The line a merged position row carries on the phone: the account the sort is about. */
+.ov-pos-info i.ov-pos-feat { display: block; font-style: normal; font-size: 10.5px; color: var(--muted); white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis; }

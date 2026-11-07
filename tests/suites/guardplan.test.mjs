@@ -104,7 +104,7 @@ console.log(nl + '-- on the card, and one copy of the arithmetic --')
   t('and only when there is a liq price to qualify', /liqPx > 0 \? _prv\('\$' \+ fmtPrice\(liqPx\)\) \+ _guardedLiqSuffix/.test(cli))
   // Dropping the fire count would leave a second price with no idea what buys it.
   t('the fire count survives, in the tooltip', /title="\$\{esc\(title\)\}"/.test(cli) && /remaining \$\{fires\}/.test(cli))
-  t('nothing when no guard is armed here', /const gl = _posGuardedLiq\(p, acct \?\? p\?\._acctAddr \?\? null, liqPx\)\n  if \(!gl\) return ''/.test(cli))
+  t('nothing when no guard is armed here', /const gl = _posGuardedLiq\(p, acct \?\? p\?\._acctAddr \?\? null, liqPx\)\r?\n  if \(!gl\) return ''/.test(cli))
   // Every surface that prints a position's liq price, so a guarded one cannot read as riskier
   // on one of them than on another.
   t('the merged card\u2019s per-account row carries it too',
