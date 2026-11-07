@@ -35,8 +35,8 @@ export function ensureMacro(now = Date.now()) {
     .catch(() => { _failed = true })
     .finally(() => {
       _busy = false
-      if (_failed) _retry = setTimeout(() => { _retry = null; if (ctx.visible()) ensureMacro() }, RETRY)
-      if (ctx.visible()) ctx.repaint()
+      if (_failed) _retry = setTimeout(() => { _retry = null; if (ctx.visible() || document.getElementById('sigCharts')) ensureMacro() }, RETRY)
+      chartsChanged()
     })
 }
 
@@ -47,7 +47,7 @@ const saveCharts = () => { try { localStorage.setItem('hliq_macro_charts', JSON.
 const FNG_RANGES = [['30d', 30], ['90d', 90], ['1y', 365], ['3y', 1095], ['all', null]]
 
 export function macroFngRange(r) { if (FNG_RANGES.some(x => x[0] === r)) { _fngRange = r; saveCharts(); ctx.repaint() } }
-export function macroTvSel(card, k) { if (TV_CHARTS[card]?.[k]) { _tvSel[card] = k; saveCharts(); ctx.repaint() } }
+export function macroTvSel(card, k) { if (TV_CHARTS[card]?.[k]) { _tvSel[card] = k; saveCharts(); chartsChanged() } }
 
 const _evOpen = new Set()
 export function macroEvToggle(kind) {
@@ -310,7 +310,7 @@ function tvHead(card) {
         <span style="font-size:24px;font-weight:800;font-family:var(--font-mono)">${fmtUsdBig(g.cap)}</span>
         ${g.chg24 == null ? '' : `<span style="font-size:12px;font-weight:700;color:var(--fg-2)">${fmtSigned(g.chg24)} 24h</span>`}
         ${g.vol == null ? '' : `<span style="font-size:11px;color:var(--muted)">${fmtUsdBig(g.vol)} ${T('traded in 24h', 'negociado en 24h')}</span>`}
-      </div>` : `<div style="font-size:12px;color:var(--fg-3);margin-top:5px">${T('Today\'s figure is unavailable right now.', 'La cifra de hoy no está disponible ahora.')}</div>`}${chips}`
+      </div>` : _d ? `<div style="font-size:12px;color:var(--fg-3);margin-top:5px">${T('Today\'s figure is unavailable right now.', 'La cifra de hoy no está disponible ahora.')}</div>` : ''}${chips}`
   }
   const rest = g ? 100 - g.btc - (g.eth ?? 0) : null
   const seg = (pct, bg) => `<div style="width:${pct}%;background:${bg};border-radius:3px"></div>`
@@ -319,7 +319,7 @@ function tvHead(card) {
     ${g ? `<div id="macroShare" style="margin-top:8px">
       <div role="img" aria-label="${T('Share of the crypto market', 'Parte del mercado cripto')}" style="display:flex;gap:2px;height:12px">${seg(g.btc, 'var(--accent)')}${g.eth != null ? seg(g.eth, 'var(--fg-2)') : ''}${seg(rest, 'var(--fg-3)')}</div>
       <div style="display:flex;flex-wrap:wrap;gap:4px 13px;margin-top:6px;font-size:11.5px">${key('var(--accent)', 'BTC', g.btc)}${g.eth != null ? key('var(--fg-2)', 'ETH', g.eth) : ''}${key('var(--fg-3)', T('Everything else', 'El resto'), rest)}</div>
-    </div>` : `<div style="font-size:12px;color:var(--fg-3);margin-top:5px">${T('Today\'s split is unavailable right now.', 'El reparto de hoy no está disponible ahora.')}</div>`}${chips}`
+    </div>` : _d ? `<div style="font-size:12px;color:var(--fg-3);margin-top:5px">${T('Today\'s split is unavailable right now.', 'El reparto de hoy no está disponible ahora.')}</div>` : ''}${chips}`
 }
 function tvFoot(card) {
   const { T, esc } = ctx
@@ -339,7 +339,7 @@ function tvMount(root, card) {
   if (!box) return
   if (typeof IntersectionObserver === 'function' && !_tvSeen.has(box)) {
     _tvObs ??= new IntersectionObserver((es) => {
-      for (const e of es) if (e.isIntersecting) { _tvSeen.add(e.target); _tvObs.unobserve(e.target); if (ctx.visible()) ctx.repaint() }
+      for (const e of es) if (e.isIntersecting) { _tvSeen.add(e.target); _tvObs.unobserve(e.target); chartsChanged() }
     }, { rootMargin: '250px' })
     _tvObs.observe(box)
     return
@@ -396,13 +396,39 @@ function rowHtml(it, now) {
   </div>`
 }
 
-/** The frame, built once per visit. Everything but the two chart mounts is filled in by macroFill. */
+/**
+ * The market-wide charts, at the foot of Signals → Market. They sit outside the part of that view which
+ * redraws itself on every candle fetch, because a rebuilt iframe reloads. Their numbers are only fetched
+ * once one has been scrolled to, so reading a single market costs nothing extra.
+ */
+export function marketChartsShell() {
+  return `<div id="sigCharts" style="padding:0 12px 26px">${tvCard('cap')}${tvCard('dom')}</div>`
+}
+export function marketChartsFill(root) {
+  const host = root.querySelector('#sigCharts')
+  if (!host) return
+  let seen = false
+  for (const card of ['cap', 'dom']) {
+    const el = host.querySelector(`#macroCard_${card}`)
+    el.querySelector('[data-tv-head]').innerHTML = tvHead(card)
+    el.querySelector('[data-tv-foot]').innerHTML = tvFoot(card)
+    tvMount(host, card)
+    if (_tvSeen.has(el.querySelector('[data-tv-mount]'))) seen = true
+  }
+  if (seen) ensureMacro()
+}
+function chartsChanged() {
+  const host = document.getElementById('sigCharts')
+  if (host) marketChartsFill(host.parentElement)
+  else if (ctx.visible()) ctx.repaint()
+}
+
+/** The frame, built once per visit and filled in by macroFill. */
 export function macroShell() {
   const { T } = ctx
   return `<div id="macroRoot" style="padding:10px 12px 26px">
     <div style="font-size:11.5px;color:var(--muted);line-height:1.45">${T('The bigger picture behind every market: US economic reports, interest rates and sentiment. Tap a row for what it means and its history.', 'El contexto detrás de cada mercado: informes económicos de EE. UU., tipos de interés y sentimiento. Toca una fila para ver qué significa y su historial.')}</div>
     <div id="macroA"></div>
-    <div id="macroCharts" style="display:none">${tvCard('cap')}${tvCard('dom')}</div>
     <div id="macroB"></div>
   </div>`
 }
@@ -410,8 +436,8 @@ export function macroShell() {
 export function macroFill(root, now = Date.now()) {
   ensureMacro(now)
   const { T } = ctx
-  const A = root.querySelector('#macroA'), B = root.querySelector('#macroB'), charts = root.querySelector('#macroCharts')
-  if (!A || !B || !charts) return
+  const A = root.querySelector('#macroA'), B = root.querySelector('#macroB')
+  if (!A || !B) return
   if (!_d) {
     A.innerHTML = `<div class="mob-v-empty" id="macroLoading">${_failed
       ? T('Macro data is unavailable right now. Trying again shortly.', 'Los datos macro no están disponibles ahora. Reintentando en breve.')
@@ -431,13 +457,6 @@ export function macroFill(root, now = Date.now()) {
   A.innerHTML = eventsCard(now) + sentimentCard()
   B.innerHTML = `${group('sentiment')}${group('inflation')}${group('jobs')}${group('growth')}${group('rates')}
     <div style="${SMALL};margin-top:12px">${T('Economic data is for the US, via the St. Louis Fed (FRED). Each row shows the period it covers, because reports arrive weeks after the period ends. Forecasts are not included, so this does not show whether a report beat expectations. This is context and not trading advice.', 'Los datos económicos son de EE. UU., a través de la Fed de St. Louis (FRED). Cada fila indica el período que cubre, porque los informes llegan semanas después. No incluye previsiones, así que no muestra si un informe superó las expectativas. Es contexto, no asesoramiento de inversión.')}</div>`
-  charts.style.display = ''
-  for (const card of ['cap', 'dom']) {
-    const el = charts.querySelector(`#macroCard_${card}`)
-    el.querySelector('[data-tv-head]').innerHTML = tvHead(card)
-    el.querySelector('[data-tv-foot]').innerHTML = tvFoot(card)
-    tvMount(root, card)
-  }
 }
 
 /** For tests. */

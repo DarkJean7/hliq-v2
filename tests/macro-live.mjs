@@ -64,6 +64,8 @@ async function shot(viewport, isMobile, file) {
   await p.screenshot({ path: file.replace(/.png$/, '-ev2.png') })
   await p.click('[data-macro-event="fomc"]')
   // Mounting TradingView really does take this long, and there is nothing of ours to wait on inside its frame.
+  await p.click('[data-sig-view="market"]')
+  await p.waitForSelector('#macroCard_cap', { state: 'attached' })
   await p.$eval('#macroCard_cap', e => e.scrollIntoView())
   await p.waitForSelector('#macroCard_cap iframe', { timeout: 30000 }); await p.waitForTimeout(7000)
   await p.screenshot({ path: file.replace(/\.png$/, '-2.png') })

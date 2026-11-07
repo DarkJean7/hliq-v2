@@ -235,7 +235,7 @@ import { startPaperSync, hasPaper } from './papersync.js'
 import { createPaperBots } from './paperbots.js'
 import { renderAnalysis, analysisShow } from './analysis.js'
 import { initTradeBrief, setTradeBriefCoin } from './tradebrief.js'   // the analysis card on the Trade tab
-import { setMacroDeps, macroShell, macroFill, macroToggle, macroEvToggle, macroFngRange, macroFngScrub, macroTvSel } from './macroview.js'   // Signals → Macro
+import { setMacroDeps, macroShell, macroFill, marketChartsShell, marketChartsFill, macroToggle, macroEvToggle, macroFngRange, macroFngScrub, macroTvSel } from './macroview.js'   // Signals → Macro
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
 import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fillPickerHtml,
@@ -19930,11 +19930,16 @@ function _pulseRender(el) {
     const _hadSearch = _act && _act.id === 'sigSearch'
     const _caret = _hadSearch && typeof _act.selectionStart === 'number' ? _act.selectionStart : null
     try {
-      // Macro holds TradingView iframes, which reload if rebuilt: its frame stays, and only its text is redrawn.
       if (_sigPane === 'macro') {
         if (!el.querySelector('#macroRoot')) el.innerHTML = _pulseSegHeader() + _sigViewSwitch() + macroShell()
         macroFill(el)
-      } else el.innerHTML = _pulseSegHeader() + _sigViewSwitch() + _sigRenderHtml()
+      } else {
+        // The TradingView charts under Market reload if rebuilt, and this view redraws on every candle
+        // fetch: only #sigBody is replaced, and the frame around it stays.
+        if (!el.querySelector('#sigBody')) el.innerHTML = _pulseSegHeader() + _sigViewSwitch() + '<div id="sigBody"></div>' + marketChartsShell()
+        el.querySelector('#sigBody').innerHTML = _sigRenderHtml()
+        marketChartsFill(el)
+      }
     }
     catch (e) { console.warn('[signals]', e.message); el.innerHTML = _pulseSegHeader() + `<div class="mob-v-empty">${_T('Could not draw this view.', 'No se pudo dibujar esta vista.')}</div>` }
     if (_hadSearch) {
