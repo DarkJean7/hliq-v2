@@ -55,11 +55,11 @@ for (const [w, h, mob] of [[1400, 900, false], [430, 930, true]]) {
 
   // Open Settings and flip the switch the way a person would.
   if (mob) {
-    await p.evaluate(() => window.mobVTab('settings'))
+    await p.evaluate(() => { window.__settingsOpen('appearance'); window.mobVTab('settings') })
     await until('the phone settings', () => p.evaluate(() => [...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'New')))
     await p.evaluate(() => [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'New').click())
   } else {
-    await p.evaluate(() => window.switchTab('settings', null))
+    await p.evaluate(() => { window.__settingsOpen('appearance'); window.switchTab('settings', null) })
     await until('the desktop switch', () => p.evaluate(() => !!document.querySelector('#uiVersionSeg')?.offsetParent))
     await p.click('#uiVersionSeg .settings-seg-btn:has-text("New")')
   }

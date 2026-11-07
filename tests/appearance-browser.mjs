@@ -100,7 +100,7 @@ await p.evaluate(() => window.switchTab('settings'))
 await p.waitForTimeout(300)
 const st = await p.evaluate(() => {
   const b = document.querySelector('#tab-settings .settings-body'), r = b.getBoundingClientRect(), pr = b.parentElement.getBoundingClientRect()
-  return { cols: getComputedStyle(b).columnCount, off: Math.round(Math.abs((r.left - pr.left) - (pr.right - r.right))) }
+  return { cols: String(getComputedStyle(b).gridTemplateColumns.split(' ').length), off: Math.round(Math.abs((r.left - pr.left) - (pr.right - r.right))) }
 })
 t('two columns', st.cols, '2')
 t('centred in its panel', st.off <= 2, true)

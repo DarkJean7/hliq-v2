@@ -235,7 +235,7 @@ import { startPaperSync, hasPaper } from './papersync.js'
 import { createPaperBots } from './paperbots.js'
 import { renderAnalysis, analysisShow } from './analysis.js'
 import { initTradeBrief, setTradeBriefCoin } from './tradebrief.js'   // the analysis card on the Trade tab
-import { settingsNavHtml, settingsHeadHtml, paintDesktopSettings, settingsJump } from './settingsnav.js'
+import { settingsHeadHtml, settingsSecClass, paintDesktopSettings, settingsToggle, settingsOpen } from './settingsnav.js'
 import { setMacroDeps, macroShell, macroFill, marketChartsShell, marketChartsFill, macroToggle, macroEvToggle, macroFngRange, macroFngScrub, macroTvSel } from './macroview.js'   // Signals → Macro
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
@@ -15216,7 +15216,7 @@ window._mobVOpenWalletSwitch = function() {
          but inline handlers run at global scope and main.js is a module, so that created an
          unrelated window._mobVActiveTab, the real tab never changed, and the button closed the
          drawer and redrew whatever was already open. */ ''}
-    <button class="mob-wallet-settings-btn" onclick="window._mobVCloseWalletSwitch();window.__mobMoreTab('settings')">Wallet settings</button>
+    <button class="mob-wallet-settings-btn" onclick="window._mobVCloseWalletSwitch();window.__settingsOpen('account');window.__mobMoreTab('settings')">Wallet settings</button>
     ${allAcctsRow}
     ${paperRow}
     <div class="mob-wallet-list">${walletRows}</div>
@@ -21066,16 +21066,16 @@ function _mobVRenderContent(tick = false) {
       `<label class="pin-toggle" style="flex-shrink:0"><input type="checkbox"${id ? ` id="${id}"` : ''} ${checked ? 'checked' : ''} onchange="${fn}"><span class="pin-toggle-slider"></span></label>`
     const segBtn = (active, label, fn) =>
       `<button onclick="${fn}" style="padding:5px 14px;border:none;font-size:12px;font-weight:600;cursor:pointer;background:${active ? 'var(--accent)' : 'var(--panel-2)'};color:${active ? '#000' : 'var(--muted)'}">${label}</button>`
+    const _setAlerts = _settingsAlerts()
     el.innerHTML = `<div id="mobSettings" style="margin:10px 8px calc(82px + env(safe-area-inset-bottom));border:1px solid var(--border2);border-radius:18px;background:var(--bg2);overflow:clip">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 16px 13px;border-bottom:1px solid var(--border)">
         <span style="font-size:18px;font-weight:700">Settings</span>
         <button onclick="window.__paneClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
       </div>
-      <div class="set-nav" data-dragscroll>${settingsNavHtml(_T)}</div>
 
 
-      <section data-settings-sec="account">
-        ${settingsHeadHtml('account', _T)}
+      <section class="${settingsSecClass('account')}" data-settings-sec="account">
+        ${settingsHeadHtml('account', _T, _setAlerts.account)}
       <div class="mob-v-setting-group">
         <div class="mob-v-setting-row" style="flex-wrap:wrap;gap:6px">
           <div>
@@ -21110,8 +21110,8 @@ function _mobVRenderContent(tick = false) {
       </div>
       </section>
 
-      <section data-settings-sec="notifications">
-        ${settingsHeadHtml('notifications', _T)}
+      <section class="${settingsSecClass('notifications')}" data-settings-sec="notifications">
+        ${settingsHeadHtml('notifications', _T, _setAlerts.notifications)}
       <div class="mob-v-setting-group">
         <div class="mob-v-setting-row">
           <div>
@@ -21205,8 +21205,8 @@ function _mobVRenderContent(tick = false) {
       </div>
       </section>
 
-      <section data-settings-sec="appearance">
-        ${settingsHeadHtml('appearance', _T)}
+      <section class="${settingsSecClass('appearance')}" data-settings-sec="appearance">
+        ${settingsHeadHtml('appearance', _T, _setAlerts.appearance)}
       <div class="mob-v-setting-group">
         <div class="mob-v-setting-row">
           <span>${_T('Interface', 'Interfaz')}</span>
@@ -21299,8 +21299,8 @@ function _mobVRenderContent(tick = false) {
       </div>
       </section>
 
-      <section data-settings-sec="security">
-        ${settingsHeadHtml('security', _T)}
+      <section class="${settingsSecClass('security')}" data-settings-sec="security">
+        ${settingsHeadHtml('security', _T, _setAlerts.security)}
       <div class="mob-v-setting-group">
         ${pinEnabled
           ? `<div class="mob-v-setting-row">
@@ -21342,8 +21342,8 @@ function _mobVRenderContent(tick = false) {
       </div>
       </section>
 
-      <section data-settings-sec="trading">
-        ${settingsHeadHtml('trading', _T)}
+      <section class="${settingsSecClass('trading')}" data-settings-sec="trading">
+        ${settingsHeadHtml('trading', _T, _setAlerts.trading)}
       <div class="mob-v-setting-group">
         <div class="mob-v-setting-row">
           <div><div>News Pause</div><div style="font-size:11px;color:var(--muted)">Pause trading on matching headlines</div></div>
@@ -21397,8 +21397,8 @@ function _mobVRenderContent(tick = false) {
       </div>
       </section>
 
-      <section data-settings-sec="data">
-        ${settingsHeadHtml('data', _T)}
+      <section class="${settingsSecClass('data')}" data-settings-sec="data">
+        ${settingsHeadHtml('data', _T, _setAlerts.data)}
       <div class="mob-v-setting-group">
         <div class="mob-v-setting-row" style="flex-direction:column;align-items:flex-start;gap:6px">
           <div style="display:flex;align-items:center;justify-content:space-between;width:100%">
@@ -21414,8 +21414,8 @@ function _mobVRenderContent(tick = false) {
       </div>
       </section>
 
-      <section data-settings-sec="developer">
-        ${settingsHeadHtml('developer', _T)}
+      <section class="${settingsSecClass('developer')}" data-settings-sec="developer">
+        ${settingsHeadHtml('developer', _T, _setAlerts.developer)}
       <div class="mob-v-setting-group">
         <div class="mob-v-setting-row" onclick="window.__debug()" style="cursor:pointer">
           <div><div>Debug panel</div><div style="font-size:11px;color:var(--muted)">Alert routing, live health, test notifications</div></div>
@@ -32073,8 +32073,25 @@ window.__clearAgentKey = async function() {
 }
 
 // Sync toggle state whenever settings tab is opened
+/**
+ * What a closed group must still say. These two warnings live inside their groups, and collapsing those
+ * would hide a key that will fail mid-order, or the reason nothing is trading.
+ */
+function _settingsAlerts() {
+  const out = {}
+  const addr = _agentUiAddr()
+  const key = _agentKeyInView()
+  if (key && window.__agentKeyBad?.(addr)) out.account = _T('Hyperliquid does not recognize your agent key', 'Hyperliquid no reconoce tu clave de agente')
+  else if (key) {
+    const days = window.__agentKeyExpiringIn?.(addr)
+    if (days) out.account = _T(`Agent key expires in ${days}d`, `La clave de agente caduca en ${days} d`)
+  }
+  if (riskMgmtEnabled && getRiskState().paused) out.trading = _T('Trading is paused', 'Trading en pausa')
+  return out
+}
+
 function _syncSettingsTab() {
-  paintDesktopSettings(_T)
+  paintDesktopSettings(_T, _settingsAlerts())
   // Backdrop swatches are built from BACKDROPS at open time, not baked into index.html.
   try { _syncBackdropUI() } catch {}
   // Language
@@ -32190,7 +32207,8 @@ function _syncSettingsTab() {
   _syncFillSoundUI()
 }
 
-window.__settingsJump = settingsJump
+window.__settingsToggle = settingsToggle
+window.__settingsOpen = settingsOpen
 window.__switchSettingsPanel = function(name, btn) {
   document.querySelectorAll('.settings-nav-btn').forEach(b => b.classList.remove('active'))
   document.querySelectorAll('.settings-card[id^="settings-panel-"]').forEach(p => p.style.display = 'none')

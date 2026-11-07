@@ -119,7 +119,7 @@ console.log(NL + '-- removing a wallet asks, and the answer is honoured --')
 
 console.log(NL + '-- the sound on fill --')
 {
-  await p.evaluate(() => window.mobVTab('settings'))
+  await p.evaluate(() => { window.__settingsOpen('notifications'); window.mobVTab('settings') })
   await waitFor(p, 'settings', () => /Sound on fill/.test(document.getElementById('mobVContent')?.textContent ?? ''))
   ok('the setting is in Settings', /Sound on fill/.test(await p.evaluate(() => document.getElementById('mobVContent')?.textContent ?? '')))
   ok('and starts off', await p.evaluate(() => localStorage.getItem('hliq_fill_sound')) === null)

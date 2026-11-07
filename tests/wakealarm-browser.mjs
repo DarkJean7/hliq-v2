@@ -111,7 +111,7 @@ await boot()
 
 console.log(NL + '-- it can be armed from the phone --')
 {
-  await p.evaluate(() => window.mobVTab('settings'))
+  await p.evaluate(() => { window.__settingsOpen('notifications'); window.mobVTab('settings') })
   const there = await waitFor(p, 'the wake alarm row',
     () => /Wake alarm/i.test(document.getElementById('mobVContent')?.textContent ?? ''), null, 30000)
   ok('the phone Settings screen offers it', there)
@@ -134,7 +134,7 @@ console.log(NL + '-- and from the sheet where an alert is set --')
 
 console.log(NL + '-- arming it, and ringing --')
 {
-  await p.evaluate(() => window.mobVTab('settings'))
+  await p.evaluate(() => { window.__settingsOpen('notifications'); window.mobVTab('settings') })
   await waitFor(p, 'the row', () => !!document.querySelector('#mobVContent [data-wake-alarm] input'))
   // Through the control itself, because arming has to happen inside a real gesture.
   await p.click('#mobVContent [data-wake-alarm] .pin-toggle')
@@ -173,7 +173,7 @@ console.log(NL + '-- arming it, and ringing --')
 
 console.log(NL + '-- and there is more than one sound to wake to --')
 {
-  await p.evaluate(() => window.mobVTab('settings'))
+  await p.evaluate(() => { window.__settingsOpen('notifications'); window.mobVTab('settings') })
   await waitFor(p, 'the alarm row', () => !!document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm'), null, 20000)
   await waitFor(p, 'the sound pills', () =>
     document.querySelectorAll('#mobVContent [data-wake-alarm] [data-alarm-snd]').length >= 3, null, 20000)
@@ -192,7 +192,7 @@ console.log(NL + '-- and there is more than one sound to wake to --')
     !!document.querySelector('#mobVContent [data-wake-alarm] [data-alarm-snd="classic"].on')))
   // It survives a reload, which is the only way an alarm set at bedtime is any use.
   await boot()
-  await p.evaluate(() => window.mobVTab('settings'))
+  await p.evaluate(() => { window.__settingsOpen('notifications'); window.mobVTab('settings') })
   await waitFor(p, 'the alarm row again', () => !!document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm'), null, 20000)
   ok('and the next night still has it', await waitFor(p, 'the chosen sound to come back', () =>
     !!document.querySelector('#mobVContent [data-wake-alarm] [data-alarm-snd="classic"].on'), null, 20000))
@@ -247,7 +247,7 @@ console.log(NL + '-- an alert reads as the price it was set at --')
 console.log(NL + '-- a reload does not silently lose it --')
 {
   await boot()
-  await p.evaluate(() => window.mobVTab('settings'))
+  await p.evaluate(() => { window.__settingsOpen('notifications'); window.mobVTab('settings') })
   await waitFor(p, 'the row', () => !!document.querySelector('#mobVContent [data-wake-alarm] .pa-alarm'), null, 20000)
   // Arming needs a gesture, so a reload cannot do it alone — but it must SAY so rather than
   // leave someone believing an alarm is set.
