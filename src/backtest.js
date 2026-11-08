@@ -1481,6 +1481,15 @@ export function runBacktest(candles, params = {}) {
       break
     }
 
+    // Still open when the candles ran out: valued at the last close, as an exchange shows an
+    // open position -- with the taker fee closing it would cost. It used to book only its
+    // opening fee, so a long from $59.94 with HYPE at $77 read as -$0.27. Not a win or a loss:
+    // it has not ended, so the win rate leaves it out. Grid and DCA already count their open
+    // inventory the same way.
+    const last = rows[rows.length - 1]
+    const markPx = outcome === 'open' && last ? last.c : null
+    const markAt = markPx != null ? last.t : null
+
     // ── the money ─────────────────────────────────────────────────────────
     const cost = p.useFees ? balance * (p.feePct / 100) : 0
     let delta = -cost
@@ -1494,6 +1503,8 @@ export function runBacktest(candles, params = {}) {
         if (outcome === 'timeout') { if (moved > 0) won++; else if (moved < 0) lost++ }
         else if (outcome === 'win') won++
         else if (outcome === 'loss') lost++
+      } else if (markPx != null) {
+        delta = closePnl(pos, long ? 1 : -1, entry, markPx, p, 'taker')
       } else {
         // Never closed, so never scored -- but it was opened, and opening paid its fee.
         delta = -pos.openFee
@@ -1514,6 +1525,9 @@ export function runBacktest(candles, params = {}) {
         delta += balance * (p.riskPct / 100) * (slDist > 0 ? moved / slDist : 0)
         if (moved > 0) won++
         else if (moved < 0) lost++
+      } else if (markPx != null) {
+        const moved = long ? markPx - entry : entry - markPx
+        delta += balance * (p.riskPct / 100) * (slDist > 0 ? moved / slDist : 0)
       }
     } else {
       if (outcome === 'win') { delta += balance * (p.winPct / 100); won++ }
@@ -1542,6 +1556,7 @@ export function runBacktest(candles, params = {}) {
       i, time: rows[i].t, side: long ? 'long' : 'short', entry, tp, sl: sl0, exitBy, riskDist: slDist,
       ...(rMult != null ? { mult: rMult, cat: (rows[i].red ? -1 : 1) * categoryOf(rMult) } : {}),
       outcome, exitAt, exitPx, heldFor, balance, delta, ...(liquidated ? { liq: true } : {}),
+      ...(markPx != null ? { markPx, markAt } : {}),
       mae, ...(pos ? { q: pos.q, margin: pos.margin, liqPx: pos.liq ?? null } : {}),
     })
 
@@ -1963,8 +1978,8 @@ export const BT_OVERVIEW = [
  * multiply it. Turning it off answers the other question -- what each market would have
  * done with the whole account behind it -- and the two are very different numbers.
  *
- * A trade still open when its market's candles ran out is skipped, exactly as it is in a
- * single-market run: counted there, never scored.
+ * A trade still open when its market's candles ran out counts at its mark (the last close),
+ * at the end of the data, exactly as in a single-market run; it is neither won nor lost.
  */
 export function runPortfolio(runs, params = {}) {
   const p = { ...BT_DEFAULTS, ...params }
@@ -1974,10 +1989,11 @@ export function runPortfolio(runs, params = {}) {
   const all = []
   for (const { coin, result } of live) {
     for (const t of result.trades) {
-      if (t.outcome === 'open') continue
+      // An open one counts at its mark, at the end of the data, like the single-market run.
+      if (t.outcome === 'open' && t.markPx == null) continue
       // A trade acts on the balance when it CLOSES, not when it opened -- that is the
       // ordering that makes a shared balance mean anything.
-      all.push({ ...t, coin, closedAt: t.exitAt ?? t.time })
+      all.push({ ...t, coin, closedAt: t.exitAt ?? t.markAt ?? t.time })
     }
   }
   all.sort((a, b) => (a.closedAt ?? 0) - (b.closedAt ?? 0))
@@ -1987,7 +2003,8 @@ export function runPortfolio(runs, params = {}) {
   const trades = []
   for (const t of all) {
     const long = t.side === 'long'
-    const moved = t.exitPx != null ? (long ? t.exitPx - t.entry : t.entry - t.exitPx) : 0
+    const out = t.exitPx ?? t.markPx
+    const moved = out != null ? (long ? out - t.entry : t.entry - out) : 0
     // With the stop switched off a trade has no `sl`, but it was still sized as if one were there.
     const slDist = t.sl != null ? Math.abs(t.entry - t.sl) : (t.riskDist ?? 0)
     const cost = p.useFees ? balance * (p.feePct / 100) / split : 0

@@ -64,6 +64,18 @@ t('a trail that climbed past entry closes a WIN, said to be the trail', tr0?.out
 t('and is counted as one', trail.won === 1 && trail.lost === 0, [trail.won, trail.lost])
 t('it paid what the price moved, not a loss', tr0?.delta > 0, tr0?.delta)
 const none = R({ useTp: false, useSl: false })
+{
+  // "how is that negative when the entry was at 59.942 and current price is ~77"
+  const up = normalise(Array.from({ length: 80 }, (_, i) => {
+    const big = i === 30, c = i <= 30 ? 100 : 100 + (i - 30) * 0.5
+    return { t: i * 36e5, o: big ? c - 4 : c, h: c + (big ? 0.5 : 0.5), l: c - (big ? 4.5 : 0.5), c }
+  }))
+  const o = runBacktest(up, { strategy: 'range', entryCategory: 3, useTp: false, useSl: false, useCooldown: false, baselineLookback: 20 })
+  const t0 = o.trades[0], lastC = up.at(-1).c
+  t('an open long in a rising market is valued at the last close, so it shows the gain', t0?.outcome === 'open' && t0.markPx === lastC && t0.delta > 0 && t0.exitPx === null, t0)
+  t('but it is neither won nor lost', o.won === 0 && o.lost === 0 && o.winRate === null && o.unresolved === 1)
+  t('and the balance carries it', Math.abs(o.netPnl - t0.delta) < 1e-9)
+}
 t('no target and no stop: nothing closes it, and it says unresolved rather than inventing an end', none.trades[0]?.outcome === 'open' && none.trades[0]?.sl === null && none.unresolved === 1, none.trades[0])
 const withTp = R({ takeProfitPct: 2 })
 t('with the target on, it closes there and says so', withTp.trades[0]?.exitBy === 'tp' && withTp.trades[0]?.outcome === 'win')

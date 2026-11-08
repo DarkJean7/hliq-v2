@@ -89,8 +89,10 @@ t('the choice survives coercion as a boolean, not a string',
   coerceParams({ splitRisk: 'false' }).splitRisk === false &&
   coerceParams({ splitRisk: 'true' }).splitRisk === true)
 
-console.log(nl + '-- an unfinished trade is not scored --')
-t('open trades are skipped in the merge', eng.includes("if (t.outcome === 'open') continue"))
+console.log(nl + '-- an unfinished trade is valued, not scored --')
+// It was skipped outright; it now counts at its mark (the last close), as in a single run.
+t('open trades without a mark are skipped in the merge', eng.includes("if (t.outcome === 'open' && t.markPx == null) continue"))
+t('one with a mark lands at the end of the data', eng.includes("closedAt: t.exitAt ?? t.markAt ?? t.time"))
 t('but still counted and reported', port.unresolved >= 0 && 'unresolved' in port)
 
 console.log(nl + '-- the market box takes a list --')

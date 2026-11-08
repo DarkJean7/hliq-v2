@@ -95,7 +95,9 @@ t('why it is paged is recorded', cli.includes('locks the phone for seconds'))
 
 console.log(nl + '-- what each row shows --')
 t('entry and exit prices', view.includes('fmtPrice(t.entry)') && view.includes('fmtPrice(t.exitPx)'))
-t('an exit that never happened is a dash, not a zero', view.includes("t.exitPx != null ? fmtPrice(t.exitPx) : '—'"))
+// An open trade now shows its mark ("77.01 now") rather than a dash: it used to read as if it
+// had made nothing, which is what a long from 59.94 with HYPE at 77 looked like.
+t('an exit that never happened is a dash or the mark, not a zero', view.includes("t.exitPx != null ? fmtPrice(t.exitPx) : t.markPx != null") && /: '—'}<\/span>/.test(view))
 t('both timestamps', view.includes('_simWhen(t.time)') && view.includes('_simWhen(t.exitAt)'))
 t('how long it was held', view.includes('t.heldFor'))
 t('what it did to the balance, signed', view.includes('signed(t.delta)'))

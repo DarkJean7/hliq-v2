@@ -1564,7 +1564,9 @@ function _simTradeRow(t, multi) {
     <span style="min-width:0;flex:1">
       <span class="mono">${fmtPrice(t.entry)}</span>
       <span style="color:var(--muted)"> → </span>
-      <span class="mono">${t.exitPx != null ? fmtPrice(t.exitPx) : '—'}</span>
+      <span class="mono">${t.exitPx != null ? fmtPrice(t.exitPx) : t.markPx != null
+        ? `<span title="${_T('Still open: valued at the last candle\'s close', 'Sigue abierta: valorada al último cierre')}">${fmtPrice(t.markPx)} <span style="color:var(--muted);font-family:var(--font-sans);font-size:10px">${_T('now', 'ahora')}</span></span>`
+        : '—'}</span>
       ${multi ? `<span class="notranslate" style="color:var(--accent);font-weight:700;margin-left:5px">${esc(_ocCoinLabel(t.coin ?? ''))}</span>` : ''}
       ${t.so ? `<span class="sim-badge" style="margin-left:5px">${t.so} SO</span>` : ''}
       ${Number.isFinite(t.q) ? `<span class="sim-lbl-u" style="margin-left:5px">${fmtSizeCoin(t.q)}</span>` : ''}
@@ -2523,8 +2525,8 @@ function _simResultHtml() {
       : '',
     r.halted ? _T('The run halted after the losing streak set under Modules.', 'La ejecución se detuvo tras la racha de pérdidas.') : '',
     r.unresolved > 0 && !r.grid && !r.dca
-      ? _T(`${r.unresolved} trade${r.unresolved === 1 ? '' : 's'} never hit either level before the data ended.`,
-           `${r.unresolved} operación(es) no alcanzaron ningún nivel antes del final.`)
+      ? _T(`${r.unresolved} trade${r.unresolved === 1 ? '' : 's'} never hit either level before the data ended${r.trades?.some(t => t.markPx != null) ? ' — still open, valued at the last close and left out of the win rate' : ''}.`,
+           `${r.unresolved} operación(es) no alcanzaron ningún nivel antes del final${r.trades?.some(t => t.markPx != null) ? ' — siguen abiertas, valoradas al último cierre' : ''}.`)
       : '',
   ].filter(Boolean)
 
