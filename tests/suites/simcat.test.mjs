@@ -8,7 +8,7 @@
 import fs from 'fs'
 import { runBacktest, signals, normalise, coerceParams, classify, categoryOf, rangeBaseline, runPortfolio,
          BT_DEFAULTS, BT_FIELDS, BT_CHOICES } from '../../src/backtest.js'
-import { catStats, catGuideHtml, levelsHtml } from '../../src/simcat.js'
+import { catStats, catGuideHtml, levelsHtml, catTradeStats } from '../../src/simcat.js'
 
 const sim = fs.readFileSync('src/simulator.js', 'utf8').replace(/\r\n/g, '\n')
 
@@ -97,6 +97,29 @@ t('each says its size in dollars and how many happened', /Category 3: 3–4× no
 t('the band in words, with real sizes', /Your band, <b>3× to 5×<\/b>/.test(g) && /▲ 2 long/.test(g))
 const g0 = catGuideHtml(null, BT_DEFAULTS, { label: 'HYPE' })
 t('with no candles yet it explains instead of showing zeros', /Run once/.test(g0) && !/qualified/.test(g0))
+
+console.log(nl + '-- how many of each --')
+// "display how many of each candle are. like how many of each category"
+t('each candle carries its count on screen, not only in a tooltip', (g.match(/class="simcat-c"/g) ?? []).length === 7 && /class="simcat-c">1</.test(g))
+const tb = g.slice(g.indexOf('simcat-tbl'))
+t('and a table has every category as a row', (tb.match(/<tr class="(on)?"/g) ?? []).length === 7, (tb.match(/<tr class="(on)?"/g) ?? []).length)
+t('green, red and total add up to the candles judged', st.counts.reduce((a, c) => a + c.green + c.red, 0) === st.judged && tb.includes(`<td class="n">${st.judged.toLocaleString()}</td>`))
+t('it scrolls sideways on a phone rather than being cut off', /class="simcat-tbl" data-dragscroll/.test(g))
+t('without a run it says the trades table is coming', !g.includes('data-tbl="trades"') && /Run it and a second table/.test(g))
+const ran = runBacktest(rows, { strategy: 'range', entryCategory: 3, useCooldown: false, useOnePos: false })
+const ts = catTradeStats(ran.trades)
+t('trades are tallied by the candle that opened them', ts[3].n === 1 && ts[5].n === 1 && ts[6].n === 1 && ts[0].n === 0, ts.map(c => c.n))
+t('with their profit', Math.abs(ts.reduce((a, c) => a + c.pnl, 0) - ran.trades.reduce((a, t) => a + t.delta, 0)) < 1e-9)
+t('another strategy\'s trades have no category, so there is nothing to tally', catTradeStats([{ outcome: 'win', delta: 5 }]) === null)
+const g2 = catGuideHtml(st, { ...BT_DEFAULTS, entryCategory: 3 }, { label: 'HYPE', trades: ran.trades })
+const tt = g2.slice(g2.indexOf('data-tbl="trades"'))
+// Two narrow tables, not one wide one: in the desktop settings column nine columns scrolled the
+// trade figures -- the answer -- out of view.
+t('after a run a second table: trades, won, lost, win rate and PnL per category',
+  g2.includes('data-tbl="trades"') && /Trades<\/th><th class="g">Won<\/th><th class="r">Lost<\/th>\s*<th>Win rate<\/th><th>PnL<\/th>/.test(tt) && !/Run it and a second table/.test(g2))
+t('it lists the categories in the band or that traded', (tt.match(/<tr class="(on)?"/g) ?? []).length === 4, (tt.match(/<tr class="(on)?"/g) ?? []).length)
+t('neither table is wider than six columns', [...g2.matchAll(/<thead><tr>([\s\S]*?)<\/tr><\/thead>/g)].every(m => (m[1].match(/<th/g) ?? []).length <= 6))
+t('the simulator only hands it a Range run on this market', /_simResult\?\.params\?\.strategy === 'range' && \(_simRunMeta\?\.coins \?\? \[\]\)\.includes\(coin\)/.test(sim))
 
 console.log(nl + '-- the levels --')
 const lv = levelsHtml({ ...BT_DEFAULTS })

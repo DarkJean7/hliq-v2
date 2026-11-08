@@ -38,3 +38,26 @@
 .sim-lbl .sim-sw.sim-sw-s { transform: scale(.82); transform-origin: right center; margin-left: 2px; }
 .sim-field.off .sim-in { opacity: .4; }
 .sim-field.off .sim-hint { opacity: .6; }
+
+/* The count under each candle, and the table of every category. */
+.simcat-c { font-size: 9.5px; font-weight: 600; fill: var(--fg-2); font-family: var(--font-mono); }
+.simcat-tbl { margin-top: 8px; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+.simcat-tbl table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: var(--font-mono); white-space: nowrap; }
+.simcat-tbl th { font-family: var(--font-sans); font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); text-align: right; padding: 6px 5px; border-bottom: 1px solid var(--border); }
+.simcat-tbl td { text-align: right; padding: 5px 5px; color: var(--fg-2); }
+.simcat-tbl th:first-child, .simcat-tbl td:first-child { text-align: left; }
+.simcat-tbl td.sz { color: var(--fg-2); }
+.simcat-tbl td.n { color: var(--fg); font-weight: 700; }
+.simcat-tbl .g { color: var(--green); }
+.simcat-tbl .r { color: var(--red); }
+.simcat-tbl tbody tr { cursor: pointer; }
+.simcat-tbl tbody tr:first-child { cursor: default; }
+.simcat-tbl tbody tr.on { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.simcat-tbl tbody tr:not(:first-child):hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.simcat-tbl td.k { font-weight: 700; color: var(--fg); }
+.simcat-tbl td.k i { font-style: normal; color: var(--accent); font-size: 8px; vertical-align: middle; }
+.simcat-tbl tfoot td { border-top: 1px solid var(--border); color: var(--muted); font-size: 10.5px; }
+.simcat-shbar { display: inline-block; width: 24px; height: 4px; border-radius: 2px; background: var(--border); margin-right: 5px; vertical-align: middle; overflow: hidden; }
+.simcat-shbar i { display: block; height: 100%; background: var(--fg-2); border-radius: 2px; }
+.simcat-note { margin-top: 5px; font-size: 10.5px; color: var(--muted); line-height: 1.4; }
+.simcat-sub { margin-top: 10px; font-size: 10.5px; font-weight: 700; color: var(--fg); }

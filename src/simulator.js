@@ -316,8 +316,11 @@ function _simGuideRows() {
 function _simCatGuide() {
   const g = _simGuideRows()
   const coin = _simCoinList()[0]
+  // What the trades did, per category -- only from a Range run that included this market, or
+  // the table would credit another strategy's trades to candles they were never opened on.
+  const ranHere = _simResult?.params?.strategy === 'range' && (_simRunMeta?.coins ?? []).includes(coin)
   return catGuideHtml(g ? catStats(g.rows, _simParams) : null, _simParams,
-    { T: _T, fmtPrice, label: coin ? _mktName(coin) : null, iv: g?.iv ?? _simIv })
+    { T: _T, fmtPrice, label: coin ? _mktName(coin) : null, iv: g?.iv ?? _simIv, trades: ranHere ? _simRepTrades(coin) : null })
 }
 
 const _simLevels = () => levelsHtml(_simParams, { T: _T })

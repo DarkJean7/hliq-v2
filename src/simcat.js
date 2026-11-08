@@ -56,7 +56,7 @@ export function catGuideHtml(s, p, o = {}) {
   const fade = p.rangeMode === 'fade'
   // The figure: one candle per category, its height its size, the band lit. Bottom-aligned so
   // the eye compares heights, with "normal" as a dashed line across all of them.
-  const W = 322, H = 118, base = 92, unit = 12.5, colW = W / CAT_N
+  const W = 322, H = 132, base = 92, unit = 12.5, colW = W / CAT_N
   const maxCount = s ? Math.max(1, ...s.counts.map(c => c.green + c.red)) : 1
   const cols = Array.from({ length: CAT_N }, (_, k) => {
     const cx = colW * k + colW / 2
@@ -80,6 +80,7 @@ export function catGuideHtml(s, p, o = {}) {
       <rect x="${colW * k + 1}" y="0" width="${colW - 2}" height="${H}" rx="6" fill="${inBand ? 'var(--accent)' : 'transparent'}" opacity="${inBand ? 0.08 : 0}"/>
       ${candle(cx - gap - bw / 2 + 2, 'var(--green)', op)}${candle(cx + gap + bw / 2 - 2, 'var(--red)', op)}
       <text x="${cx}" y="${base + 12}" text-anchor="middle" class="simcat-k">${k === 0 ? '<1×' : k === 6 ? '6×+' : k + '×'}</text>
+      ${c ? `<text x="${cx}" y="${base + 25}" text-anchor="middle" class="simcat-c">${n.toLocaleString()}</text>` : ''}
       ${bar}
     </g>`
   }).join('')
@@ -114,8 +115,114 @@ export function catGuideHtml(s, p, o = {}) {
   return `<div class="simcat">
     <div class="simcat-h"><span>${T('What each category means', 'Qué significa cada categoría')}</span><span class="simcat-hint">${T('tap a candle to start the band there', 'toca una vela para empezar la banda ahí')}</span></div>
     ${svg}
+    ${s ? catTableHtml(s, p, o) : ''}
     ${facts}
   </div>`
+}
+
+/**
+ * The last run's trades, per category of the candle that opened each: how many, how many won
+ * and lost (an unresolved trade is neither), and what they made. Null without trades that
+ * carry a category -- another strategy's run, or none -- which is unknown, not zero.
+ */
+export function catTradeStats(trades) {
+  const withCat = (trades ?? []).filter(t => Number.isFinite(t?.cat))
+  if (!withCat.length) return null
+  const out = Array.from({ length: CAT_N }, (_, cat) => ({ cat, n: 0, won: 0, lost: 0, pnl: 0 }))
+  for (const t of withCat) {
+    const c = out[Math.min(6, Math.abs(t.cat))]
+    c.n++
+    if (t.outcome === 'win') c.won++
+    else if (t.outcome === 'loss') c.lost++
+    else if (t.outcome === 'timeout' && t.exitPx != null) {
+      const up = t.side === 'long' ? t.exitPx > t.entry : t.exitPx < t.entry
+      if (up) c.won++; else c.lost++
+    }
+    if (Number.isFinite(t.delta)) c.pnl += t.delta
+  }
+  return out
+}
+
+/**
+ * Two tables, each narrow enough for the settings column, so nothing hides off to the side.
+ *
+ *   How many of each   every category: the smallest candle in it, green and red counts, the
+ *                      total, and its share of the candles judged.
+ *   What they did      after a Range run: per category of the candle that opened each trade,
+ *                      how many, won and lost, win rate, and PnL. The question the counts
+ *                      raise is "and which of these made money" -- this answers it.
+ *
+ * One table of nine columns was tried first; in the desktop settings column it scrolled the
+ * trade figures out of view, which is where the answer was.
+ */
+function catTableHtml(s, p, o) {
+  const T = o.T ?? ((en) => en)
+  const lo = Math.max(1, p.entryCategory | 0), hi = Math.max(lo, Math.min(6, p.entryCategoryMax ?? 6))
+  const ts = catTradeStats(o.trades)
+  const usd = (v) => money(v, o.fmtPrice)
+  const signed = (v) => (v >= 0 ? '+' : '−') + '$' + Math.abs(v).toFixed(2)
+  const pc = (v) => v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1) : v > 0 ? v.toFixed(2) : '0'
+  const kCell = (cat, inBand) => `<td class="k">${cat}${inBand ? ' <i>●</i>' : ''}</td>`
+  const rowAttrs = (cat, inBand) => `class="${inBand ? 'on' : ''}"${cat ? ` onclick="window.__simCatPick(${cat})"` : ''}`
+
+  const rows = s.counts.map(c => {
+    const n = c.green + c.red
+    const share = s.judged ? n / s.judged * 100 : 0
+    const inBand = c.cat >= lo && c.cat <= hi
+    // The floor alone: the next row's floor is this one's ceiling, so a range would say it twice.
+    const size = s.normal ? (c.cat === 0 ? `< ${usd(s.normal)}` : `${usd(s.normal * c.cat)}`) : '—'
+    return `<tr ${rowAttrs(c.cat, inBand)}>
+      ${kCell(c.cat, inBand)}
+      <td class="sz">${size}</td>
+      <td class="g">${c.green.toLocaleString()}</td>
+      <td class="r">${c.red.toLocaleString()}</td>
+      <td class="n">${n.toLocaleString()}</td>
+      <td class="sh"><span class="simcat-shbar"><i style="width:${Math.min(100, share).toFixed(1)}%"></i></span>${pc(share)}%</td>
+    </tr>`
+  }).join('')
+  const tot = s.counts.reduce((a, c) => ({ g: a.g + c.green, r: a.r + c.red }), { g: 0, r: 0 })
+  const counts = `<div class="simcat-tbl" data-dragscroll data-tbl="counts">
+    <table>
+      <thead><tr>
+        <th>${T('Cat', 'Cat')}</th><th>${T('From', 'Desde')}</th>
+        <th class="g">▲ ${T('Green', 'Verdes')}</th><th class="r">▼ ${T('Red', 'Rojas')}</th>
+        <th>${T('Total', 'Total')}</th><th>${T('Share', 'Parte')}</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td></td><td>${T('judged', 'medidas')}</td><td class="g">${tot.g.toLocaleString()}</td><td class="r">${tot.r.toLocaleString()}</td><td class="n">${s.judged.toLocaleString()}</td><td>100%</td></tr></tfoot>
+    </table>
+  </div>`
+
+  let trades = `<div class="simcat-note">${T('Run it and a second table shows what the trades from each category did.', 'Ejecuta y una segunda tabla muestra qué hicieron las operaciones de cada categoría.')}</div>`
+  if (ts) {
+    // Categories with trades, plus any in the band that had none -- "0 trades" is an answer too.
+    const shown = ts.filter(c => c.cat > 0 && (c.n > 0 || (c.cat >= lo && c.cat <= hi)))
+    const all = ts.reduce((a, c) => ({ n: a.n + c.n, won: a.won + c.won, lost: a.lost + c.lost, pnl: a.pnl + c.pnl }), { n: 0, won: 0, lost: 0, pnl: 0 })
+    const wr = (c) => c.won + c.lost ? (c.won / (c.won + c.lost) * 100).toFixed(0) + '%' : '—'
+    const tone = (c) => c.n ? (c.pnl >= 0 ? 'g' : 'r') : ''
+    trades = `<div class="simcat-sub">${T('What the last run\'s trades did, by the candle that opened them', 'Qué hicieron las operaciones de la última ejecución, por la vela que las abrió')}</div>
+    <div class="simcat-tbl" data-dragscroll data-tbl="trades">
+      <table>
+        <thead><tr>
+          <th>${T('Cat', 'Cat')}</th><th>${T('Trades', 'Ops')}</th><th class="g">${T('Won', 'Gan.')}</th><th class="r">${T('Lost', 'Perd.')}</th>
+          <th>${T('Win rate', 'Aciertos')}</th><th>${T('PnL', 'PnL')}</th>
+        </tr></thead>
+        <tbody>${shown.map(c => {
+          const inBand = c.cat >= lo && c.cat <= hi
+          return `<tr ${rowAttrs(c.cat, inBand)}>
+            ${kCell(c.cat, inBand)}
+            <td class="n">${c.n}</td><td class="g">${c.won}</td><td class="r">${c.lost}</td>
+            <td>${wr(c)}</td><td class="${tone(c)}">${c.n ? signed(c.pnl) : '—'}</td>
+          </tr>`
+        }).join('')}</tbody>
+        <tfoot><tr><td></td><td class="n">${all.n}</td><td class="g">${all.won}</td><td class="r">${all.lost}</td><td>${wr(all)}</td><td class="${tone(all)}">${signed(all.pnl)}</td></tr></tfoot>
+      </table>
+    </div>`
+  }
+  return `<div class="simcat-sub">${T('How many of each', 'Cuántas de cada una')}</div>
+  ${counts}
+  ${s.candles > s.judged ? `<div class="simcat-note">${T(`The first ${(s.candles - s.judged).toLocaleString()} candles have too little history before them to judge.`, `Las primeras ${(s.candles - s.judged).toLocaleString()} velas no tienen historia suficiente.`)}</div>` : ''}
+  ${trades}`
 }
 
 /**
