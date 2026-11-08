@@ -184,6 +184,28 @@ console.log(NL + '-- desktop --')
   ok('and the price range is on the chart', await p.evaluate(() => document.querySelectorAll('#simReplayBody .sim-eq-y').length === 2))
   await p.evaluate(() => document.getElementById('simReplayBody')?.scrollIntoView({ block: 'center' }))
   await shot(p, 'simchart-replay')
+
+  console.log(NL + '-- leaving a replay that is playing --')
+  // "i went to overview, then replay, then trades, and i got stuck. its not letting me do
+  // nothing." The replay's timer kept firing behind the Trades tab, found no replay to paint and
+  // re-rendered the whole simulator every frame, so nothing under the pointer stayed put.
+  await p.evaluate(() => window.__simReplaySpeed(8))
+  await p.evaluate(() => window.__simReplayPlay())
+  await waitFor(p, 'playing', () => /❚❚/.test(document.querySelector('#deskSim .sim-btn-p[onclick*="__simReplayPlay"]')?.textContent ?? ''))
+  await p.click('#deskSim .sim-tab:has-text("Trades")')
+  await waitFor(p, 'the trades tab', () => !!document.querySelector('#deskSim .sim-trade'))
+  const steady = await p.evaluate(() => new Promise(res => {
+    // Thirty frames is several replay ticks at 8x; a page being rebuilt swaps its nodes out.
+    const root = document.querySelector('#deskSim .sim-root'), row = document.querySelector('#deskSim .sim-trade')
+    let n = 0
+    const tick = () => (++n < 30 ? requestAnimationFrame(tick) : res(root.isConnected && row.isConnected))
+    requestAnimationFrame(tick)
+  }))
+  ok('the page holds still behind the other tab instead of rebuilding every frame', steady)
+  await p.click('#deskSim button:has-text("Newest first"), #deskSim button:has-text("Oldest first")')
+  ok('and still answers a click', await waitFor(p, 'the order flips', () => /Oldest first|Newest first/.test(document.querySelector('#deskSim .sim-trade')?.closest('.sim-results')?.textContent ?? '')))
+  await p.click('#deskSim .sim-tab:has-text("Replay")')
+  ok('coming back, the replay is paused where it was', await waitFor(p, 'paused', () => /▶/.test(document.querySelector('#deskSim .sim-btn-p[onclick*="__simReplayPlay"]')?.textContent ?? '') && +document.getElementById('simRepSeek')?.value > 0))
   ok('no errors on the page', errs.length === 0, errs)
   await browser.close()
 }

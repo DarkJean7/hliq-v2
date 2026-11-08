@@ -552,7 +552,8 @@ window.__simLoadPortfolio = function() {
 
 window.__simSetModel = function(v) { window.__simStructural(() => { _simParams.pnlModel = v }) }
 window.__simToggleModule = function() { window.__simStructural(() => {}) }
-window.__simSetTab = function(v) { _simTab = v; _simRender() }
+// Leaving the replay pauses it where it is; it does not play on behind another tab.
+window.__simSetTab = function(v) { if (v !== 'replay') _simRepStop(); _simTab = v; _simRender() }
 
 /**
  * A box changed. Only the staleness notice is repainted -- a full render would take the
@@ -1750,7 +1751,10 @@ window.__simReplayStep = function(d) {
  */
 function _simRepPaint() {
   const el = document.getElementById('simReplayBody')
-  if (!el) { _simRender(); return }
+  // No replay on screen -- another tab is. Stop rather than re-render the whole simulator: a
+  // playing replay's timer did exactly that every frame after you switched tabs, rebuilding
+  // the page under the pointer until nothing could be clicked ("i got stuck").
+  if (!el) { _simRepStop(); return }
   el.innerHTML = _simRepBodyHtml()
   const sk = document.getElementById('simRepSeek')
   if (sk && _simRep) sk.value = String(_simRep.i)
@@ -2705,7 +2709,9 @@ function _simResultHtml() {
       <div class="sim-kpis">
         ${_simKpi(_T('Net PnL', 'PnL neto'), signed(r.netPnl), pct(r.roe), tone(r.netPnl))}
         ${_simKpi(_T('vs buy & hold', 'vs mantener'), s.edge == null ? '—' : (s.edge >= 0 ? '+' : '') + s.edge.toFixed(1) + ' pp',
-          s.bench ? _T('hold', 'mantener') + ' ' + pct(s.bench.retPct, 1) : '', tone(s.edge ?? 0))}
+          // "what means vs buy & hold -233.4 pp": the strategy's return minus holding's, in
+          // percentage points. Both returns are spelled out under it so the subtraction shows.
+          s.bench ? `${_T('you', 'tú')} ${pct(r.roe, 1)} · ${_T('holding', 'mantener')} ${pct(s.bench.retPct, 1)}` : '', tone(s.edge ?? 0))}
         ${_simKpi(_T('Max drawdown', 'Caída máx.'), ddTxt(s.maxDD), s.risk.calmar != null ? 'Calmar ' + num(s.risk.calmar) : '', s.maxDD > 0 ? 'var(--red)' : '')}
         ${_simKpi(_T('Win rate', 'Aciertos'), wr == null ? '—' : wr.toFixed(1) + '%', r.grid || (r.dca && wr == null)
           ? _T('100% by construction', '100% por diseño') : `${r.won}W · ${r.lost}L`)}
