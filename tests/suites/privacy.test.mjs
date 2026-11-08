@@ -54,7 +54,8 @@ console.log(nl + '-- the Spot row covers what you hold --')
     ['the profit',         "['Profit', _prv("],
     ['the ROI row',        "['ROI', _prv("],
     ['what is available',  "['Available', _prv(fmtSize(avail))"],
-    ['what is in orders',  "['In Orders', hold > 0 ? _prv(fmtSize(hold))"],
+    // The label reads "Margin & orders" for USDC now (its hold is position margin too); the amount is still masked.
+    ['what is in orders',  "hold > 0 ? _prv(fmtSize(hold)) + ' ' + esc(_ocCoinLabel(b.coin))"],
     ['the value row',      "['Value', _prv(usd > 0 ?"],
   ]) t(what + ' is masked', spotRow.includes(needle), needle)
 
