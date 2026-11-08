@@ -46,7 +46,8 @@ t('a candle is judged against the ones BEFORE it', bt.includes('out[i] = (runnin
 t('and never against itself', bt.includes('// the candle itself is not in its own baseline'))
 t('no verdict at all until there is history', cats.slice(0, 10).every(c => c === null))
 // null is not 0: 0 would mean "an ordinary candle" and could be traded against a threshold.
-t('that verdict is null, not zero', cats[0] === null && cats.some(c => c === 0))
+// The nine-step scale has no 0: an ordinary candle is category 5, so null cannot be mistaken for one.
+t('that verdict is null, not a category', cats[0] === null && cats.some(c => c != null && Math.abs(c) >= 1))
 t('whole-sample is still available for comparison', classify(normalise(rows), { baselineLookback: 0 }).some(c => c != null))
 t('and the view says so when it is used', cli.includes('including candles after each trade'))
 
@@ -100,7 +101,7 @@ t('a typed value is used', coerceParams({ startBalance: '5000' }).startBalance =
 // cleared baseline into whole-sample lookahead.
 t('an empty box falls back to the default, never 0',
   coerceParams({ cooldownCandles: '', baselineLookback: '' }).baselineLookback === BT_DEFAULTS.baselineLookback)
-t('the entry category is clamped to what exists', coerceParams({ entryCategory: '99' }).entryCategory === 6)
+t('the entry category is clamped to what exists', coerceParams({ entryCategory: '99' }).entryCategory === 9)
 t('an unknown choice is ignored', coerceParams({ ambiguous: 'nope' }).ambiguous === 'loss')
 
 console.log(String.fromCharCode(10) + '-- wired into the app --')

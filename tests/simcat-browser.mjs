@@ -132,7 +132,8 @@ console.log(NL + '-- desktop --')
   await waitFor(p, 'the simulator', () => !!document.querySelector('#deskSim .sim-root'))
   await p.click('#deskSim .sim-strat:has-text("Range category")')
   ok('Range shows the category guide', await waitFor(p, 'the guide', () => !!document.querySelector('#deskSim #simCatGuide .simcat-svg')))
-  ok('seven candles, 3 and up lit by default', (await lit(p, '#deskSim')) === '3,4,5,6', await lit(p, '#deskSim'))
+  // Nine categories, normal (5) in the middle; the default band 8-9 is the old "3x and up".
+  ok('nine candles, 8 and 9 lit by default', (await lit(p, '#deskSim')) === '8,9' && await p.evaluate(() => document.querySelectorAll('#simCatGuide .simcat-col').length === 9), await lit(p, '#deskSim'))
   ok('before any candles it explains instead of showing zeros', await p.evaluate(() => /Run once/.test(document.getElementById('simCatGuide').textContent)))
   ok('and the exits are drawn: 2.0 : 1, even at 33%', await p.evaluate(() => /2\.0 : 1/.test(document.getElementById('simLevels')?.textContent ?? '') && /33%/.test(document.getElementById('simLevels').textContent)))
 
@@ -144,12 +145,14 @@ console.log(NL + '-- desktop --')
   ok('with how many candles qualified, each way', await p.evaluate(() => /qualified: ▲ \d+ long · ▼ \d+ short/.test(document.getElementById('simCatGuide').textContent)))
 
   console.log(NL + '-- desktop: tap, type --')
-  await p.click('#deskSim #simCatGuide .simcat-col[data-cat="4"]')
-  ok('tapping a candle starts the band there', await waitFor(p, 'the band', () => document.getElementById('sim_entryCategory')?.value === '4'))
-  ok('and lights 4 and up', (await lit(p, '#deskSim')) === '4,5,6', await lit(p, '#deskSim'))
-  await p.fill('#sim_entryCategoryMax', '5')
-  ok('typing a top repaints the band as you type', await waitFor(p, 'repaint', () => [...document.querySelectorAll('#simCatGuide .simcat-col.on')].map(g => g.dataset.cat).join(',') === '4,5', null, 3000))
+  await p.click('#deskSim #simCatGuide .simcat-col[data-cat="6"]')
+  ok('tapping a candle starts the band there', await waitFor(p, 'the band', () => document.getElementById('sim_entryCategory')?.value === '6'))
+  ok('and lights 6 and up', (await lit(p, '#deskSim')) === '6,7,8,9', await lit(p, '#deskSim'))
+  await p.fill('#sim_entryCategoryMax', '8')
+  ok('typing a top repaints the band as you type', await waitFor(p, 'repaint', () => [...document.querySelectorAll('#simCatGuide .simcat-col.on')].map(g => g.dataset.cat).join(',') === '6,7,8', null, 3000))
   ok('without taking the keyboard', await p.evaluate(() => document.activeElement?.id === 'sim_entryCategoryMax'))
+  await p.click('#deskSim #simCatGuide .simcat-col[data-cat="1"]')
+  ok('the smallest candles can be picked too', await waitFor(p, 'band 1', () => document.getElementById('sim_entryCategory')?.value === '1'))
   await p.selectOption('#sim_rangeMode', 'fade')
   await p.evaluate(() => window.__simTouch())
   ok('fade says green candles open shorts', await waitFor(p, 'fade', () => /faded: green ones open shorts/.test(document.getElementById('simCatGuide').textContent), null, 3000))
@@ -169,26 +172,25 @@ console.log(NL + '-- desktop --')
   await p.fill('#sim_shortTpPct', '0.3'); await p.fill('#sim_shortSlPct', '0.3')
   ok('drawn per side, 1 : 1 needs half', await waitFor(p, 'per side', () => { const t = document.getElementById('simLevels').textContent; return /Longs/.test(t) && /Shorts/.test(t) && /1\.0 : 1/.test(t) && /50%/.test(t) }, null, 3000))
 
-  // The generated candles are smooth and never reach 3x; start the band at 1 so the run has trades to show.
-  await p.click('#deskSim #simCatGuide .simcat-col[data-cat="1"]')
-  await waitFor(p, 'band 1', () => document.getElementById('sim_entryCategory')?.value === '1')
-  await p.fill('#sim_entryCategoryMax', '6')
+  // The generated candles are smooth and never reach 3x; start the band at normal (5) so the run has trades to show.
+  await p.click('#deskSim #simCatGuide .simcat-col[data-cat="5"]')
+  await waitFor(p, 'band 5', () => document.getElementById('sim_entryCategory')?.value === '5')
+  await p.fill('#sim_entryCategoryMax', '9')
   await p.evaluate(() => { window.__simRun() })
   await waitFor(p, 'the run', () => /long TP 1% \/ SL 0\.5% · short TP 0\.3% \/ SL 0\.3%/.test(document.querySelector('#deskSim .sim-results')?.textContent ?? ''), null, 20000)
   ok('the result states both pairs', await p.evaluate(() => /short TP 0\.3% \/ SL 0\.3%/.test(document.querySelector('#deskSim .sim-results').textContent)))
   await p.evaluate(() => window.__simSetTab('trades'))
   ok('each trade says the candle that opened it and how it closed', await waitFor(p, 'trade rows', () => {
     const rows = [...document.querySelectorAll('#deskSim .sim-trade')]
-    return rows.length > 0 && rows.every(r => /cat [1-6] \(\d+\.\d×\)/.test(r.textContent)) && rows.some(r => /· (target|stop|trail)/.test(r.textContent))
+    return rows.length > 0 && rows.every(r => /cat [5-9] \(\d+\.\d×\)/.test(r.textContent)) && rows.some(r => /· (target|stop|trail)/.test(r.textContent))
   }, null, 5000))
   await p.evaluate(() => window.__simSetTab('overview'))
   console.log(NL + '-- desktop: how many of each --')
-  // Eight, not seven: "under 1x" is most candles, so it shows as under-half and half-to-1x.
-  ok('a count under every candle', await p.evaluate(() => document.querySelectorAll('#simCatGuide .simcat-c').length === 8))
+  ok('a count under every candle', await p.evaluate(() => document.querySelectorAll('#simCatGuide .simcat-c').length === 9))
   ok('a row per category, totals adding up', await p.evaluate(() => {
     const rows = [...document.querySelectorAll('#simCatGuide [data-tbl="counts"] tbody tr')]
     const sum = rows.reduce((a, r) => a + +r.children[4].textContent.replace(/,/g, ''), 0)
-    return rows.length === 8 && sum === +document.querySelector('#simCatGuide [data-tbl="counts"] tfoot td.n').textContent.replace(/,/g, '')
+    return rows.length === 9 && sum === +document.querySelector('#simCatGuide [data-tbl="counts"] tfoot td.n').textContent.replace(/,/g, '')
   }))
   ok('after the run: trades, won, lost, win rate and PnL per category', await p.evaluate(() => {
     const th = [...document.querySelectorAll('#simCatGuide [data-tbl="trades"] th')].map(x => x.textContent.trim())
@@ -198,7 +200,7 @@ console.log(NL + '-- desktop --')
   ok('both tables fit the settings column: nothing hidden off to the side', await p.evaluate(() =>
     [...document.querySelectorAll('#simCatGuide .simcat-tbl')].every(t => t.scrollWidth <= t.clientWidth + 1)))
   await p.click('#simCatGuide [data-tbl="counts"] tbody tr:nth-child(4)')
-  ok('a row can be tapped to start the band there', await waitFor(p, 'band 2', () => document.getElementById('sim_entryCategory')?.value === '2'))
+  ok('a row can be tapped to start the band there', await waitFor(p, 'band 4', () => document.getElementById('sim_entryCategory')?.value === '4'))
 
   console.log(NL + '-- desktop: average or median --')
   const sizeOf = () => p.evaluate(() => (document.getElementById('simCatGuide').textContent.match(/candle on HYPE is \$([\d.,]+)/) ?? [])[1])

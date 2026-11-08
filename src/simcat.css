@@ -73,3 +73,8 @@
 .sim-eq-mk:hover { transform: scale(1.5); }
 .sim-eq-legend i.band { height: 9px; width: 10px; background: color-mix(in srgb, var(--fg-3) 30%, transparent); border-radius: 2px; }
 .sim-eq-legend i.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 4px 0 0 -0px transparent; }
+
+/* Nine categories, normal (5) in the middle: its range under the number, and the middle one marked. */
+.simcat-r { font-size: 7.5px; fill: var(--muted); font-family: var(--font-mono); }
+.simcat-col.mid .simcat-k { fill: var(--accent); }
+.simcat-tbl tr.mid td.k { color: var(--accent); }

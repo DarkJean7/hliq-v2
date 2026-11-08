@@ -23,7 +23,7 @@
  * limiter is per IP and shared with order placement; a simulator that trips it is a simulator
  * that makes closing a real position slower.
  */
-import { runBacktest, coerceParams, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW,
+import { runBacktest, coerceParams, migrateCatScale, BT_DEFAULTS, BT_FIELDS, BT_CHOICES, BT_OVERVIEW,
          BT_STRATEGIES, BT_MODULES, BT_STRATEGY_META, BT_CATEGORIES, strategyKind,
          tokyoWindowsFor, tokyoMarkets, runPortfolio, normalise, dcaDeviations, dcaFullDeal,
          sizePosition, effLeverage, mmRate } from './backtest.js'
@@ -110,7 +110,8 @@ try {
   if (typeof s.coin === 'string') _simCoin = s.coin
   if (typeof s.iv === 'string' && s.iv) _simIv = s.iv
   if (Number.isFinite(+s.count)) _simCount = +s.count
-  if (s.params && typeof s.params === 'object') _simParams = coerceParams(s.params)
+  // A save from the old 1-6 category scale is moved to the nine-step one by what it meant.
+  if (s.params && typeof s.params === 'object') _simParams = coerceParams(migrateCatScale(s.params))
   if (typeof s.cat === 'string') _simCat = s.cat
   // Saves from before the money model existed were all 'fixed' by default rather than by
   // choice. `modelV` marks a save made after position sizing became the default, so only a
@@ -339,7 +340,7 @@ function _simVisualsPaint() {
 window.__simCatPick = function(k) {
   window.__simStructural(() => {
     _simParams.entryCategory = k
-    if ((_simParams.entryCategoryMax ?? 6) < k) _simParams.entryCategoryMax = k
+    if ((_simParams.entryCategoryMax ?? 9) < k) _simParams.entryCategoryMax = k
   })
 }
 

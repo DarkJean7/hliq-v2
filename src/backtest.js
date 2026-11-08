@@ -28,9 +28,10 @@
 export const BT_DEFAULTS = {
   // ── what opens a trade ──────────────────────────────────────────────────
   strategy: 'range',      // see BT_STRATEGIES
-  entryCategory: 3,       // range: candle must be this many times the baseline
+  entryCategory: 8,       // range: lowest category traded, 1-9 (5 = normal; 8 = 3-5x, the old "3 and up")
   baselineLookback: 200,  // range: candles of PAST history for the baseline; 0 = whole sample
-  entryCategoryMax: 6,    // range: and no bigger than this -- 6 is "no ceiling"
+  entryCategoryMax: 9,    // range: highest category traded -- 9 is 5x and up, "no ceiling"
+  catScale: 9,            // range: marks a save made on the nine-step scale (see migrateCatScale)
   rangeMode: 'follow',    // range: 'follow' trades the candle's way | 'fade' trades against it
   baselineKind: 'mean',   // range: "normal" is the window's 'mean' (the original script) or 'median'
 
@@ -355,8 +356,43 @@ export function classify(rows, p = {}) {
   })
 }
 
-/** A multiple of the normal range -> its whole-number category, 0 to 6. */
-export const categoryOf = (mult) => mult >= 6 ? 6 : mult >= 5 ? 5 : mult >= 4 ? 4 : mult >= 3 ? 3 : mult >= 2 ? 2 : mult >= 1 ? 1 : 0
+/**
+ * Nine categories with NORMAL IN THE MIDDLE ("lets truly make the median category the middle
+ * number category and make all categories selectable"). The old scale was 0 for anything under
+ * 1x, then 1-6 by whole multiples, so most of the market was one untradeable bucket.
+ *
+ * The edges mirror each other around 1x -- 0.8/1.25, 0.5/2, 1/3 and 3, 0.2/5 -- so a candle a
+ * third of normal is as far below as one three times normal is above. With the median as normal,
+ * category 5 sits on the middle candle and the counts fall away to both sides.
+ *
+ *   1 <0.2x   2 0.2-0.33x   3 0.33-0.5x   4 0.5-0.8x   5 0.8-1.25x (normal)
+ *   6 1.25-2x   7 2-3x   8 3-5x   9 5x+
+ */
+export const CAT_EDGES = [0, 0.2, 1 / 3, 0.5, 0.8, 1.25, 2, 3, 5]   // lower edge of 1..9
+export const CAT_COUNT = 9, CAT_MID = 5
+/** A multiple of the normal range -> its category, 1 to 9. */
+export const categoryOf = (mult) => {
+  for (let k = CAT_COUNT; k > 1; k--) if (mult >= CAT_EDGES[k - 1]) return k
+  return 1
+}
+/** A category's range in multiples of normal: [low, high), high null for the top one. */
+export const catRange = (k) => [CAT_EDGES[k - 1], k < CAT_COUNT ? CAT_EDGES[k] : null]
+
+/**
+ * A save from the old 1-6 scale, where N meant "N times normal". Moved to the nine-step scale
+ * by the multiples it meant, so "3 and up" stays three-times-and-up (8-9) rather than becoming
+ * category 3, a candle a third of normal. Its top N meant "under N+1 times".
+ */
+export function migrateCatScale(params) {
+  if (!params || params.catScale === 9) return params
+  const lo = Number(params.entryCategory), hi = Number(params.entryCategoryMax)
+  const at = (mult) => categoryOf(mult)
+  return {
+    ...params, catScale: 9,
+    ...(Number.isFinite(lo) ? { entryCategory: at(Math.max(1, lo)) } : {}),
+    ...(Number.isFinite(hi) ? { entryCategoryMax: hi >= 5 ? 9 : at(hi + 1 - 1e-9) } : {}),
+  }
+}
 
 /**
  * What a "normal" candle's range was at each candle: the average of the candles BEFORE it.
@@ -719,14 +755,15 @@ export function signals(rows, p) {
   const cats = classify(rows, p)
   // A band, not just a floor: "3 and up" was the only question it could ask, and the biggest
   // candles are often a different animal (news, a liquidation cascade) from the merely large.
-  const lo = p.entryCategory, hi = Math.max(lo, p.entryCategoryMax ?? 6)
+  const lo = p.entryCategory, hi = Math.max(lo, p.entryCategoryMax ?? CAT_COUNT)
   // Fade trades against the candle: a huge green one opens a short, betting it overshot.
   const way = p.rangeMode === 'fade' ? -1 : 1
   for (let i = 0; i < rows.length; i++) {
     if (cats[i] == null) continue
     const a = Math.abs(cats[i])
-    // A category-0 candle has no colour worth acting on; it never fires, whatever the band.
-    out[i] = a >= lo && a <= hi && a > 0 ? (cats[i] > 0 ? way : -way) : 0
+    // Every category can be traded now, small candles included -- a quiet-candle band is a
+    // question someone may want to ask. The sign is the candle's colour.
+    out[i] = a >= lo && a <= hi ? (cats[i] > 0 ? way : -way) : 0
   }
   return out
 }
@@ -1611,13 +1648,13 @@ export const BT_FIELDS = [
     hint: 'What the run begins with.',
     help: 'Every gain and loss is a percentage of the balance at the time, so this scales the money but not the shape of the result. Doubling it doubles the profit and leaves the win rate and the drawdown percentage exactly where they were.' },
 
-  { key: 'entryCategory', label: 'Entry category', unit: 'x', step: '1', strategy: 'range',
-    hint: 'How unusual a candle must be. 1-6.',
-    help: 'Each candle is measured by its high-to-low range, divided by the average range of the candles before it. A category of 3 means "three times the recent normal". Any candle at or above it opens a trade in the direction it closed. Higher is rarer and trades less; if a run reports no trades, this is usually why.' },
+  { key: 'entryCategory', label: 'From category', unit: '', step: '1', strategy: 'range',
+    hint: '1-9. 5 is a normal candle; 8 is 3-5x normal.',
+    help: 'Each candle is measured by its high-to-low range against a normal candle (the average or median of the ones before it), and sorted into nine categories with normal in the middle: 1 under 0.2x, 2 0.2-0.33x, 3 0.33-0.5x, 4 0.5-0.8x, 5 0.8-1.25x (normal), 6 1.25-2x, 7 2-3x, 8 3-5x, 9 5x and up. Any candle in the band opens a trade in the direction it closed. Every category can be traded, the quiet ones too. Higher is rarer; if a run reports no trades, this is usually why.' },
 
-  { key: 'entryCategoryMax', label: 'Up to category', unit: 'x', step: '1', strategy: 'range',
-    hint: 'Skip candles bigger than this. 6 = no limit.',
-    help: 'The top of the band. Category 6 means six times normal OR MORE, so leaving this at 6 takes every candle from the entry category up. Lower it to skip the most extreme candles -- news spikes, liquidation cascades -- which often behave differently from merely large ones. It can never be below the entry category.' },
+  { key: 'entryCategoryMax', label: 'Up to category', unit: '', step: '1', strategy: 'range',
+    hint: 'Skip candles bigger than this. 9 = no limit.',
+    help: 'The top of the band. Category 9 means five times normal OR MORE, so leaving this at 9 takes every candle from the first category up. Lower it to skip the most extreme candles -- news spikes, liquidation cascades -- which often behave differently from merely large ones. It can never be below the first category.' },
 
   { key: 'baselineLookback', label: 'Baseline window', unit: 'candles', step: '10', strategy: 'range',
     hint: 'How much history counts as "normal".',
@@ -2125,8 +2162,9 @@ export function coerceParams(raw = {}) {
     if (typeof raw[m.key] === 'boolean') out[m.key] = raw[m.key]
   }
   for (const k of ['useTp', 'useSl', 'splitLevels']) if (typeof raw[k] === 'boolean') out[k] = raw[k]
-  out.entryCategory = Math.max(1, Math.min(6, Math.round(out.entryCategory)))
-  out.entryCategoryMax = Math.max(out.entryCategory, Math.min(6, Math.round(out.entryCategoryMax)))
+  out.entryCategory = Math.max(1, Math.min(CAT_COUNT, Math.round(out.entryCategory)))
+  out.entryCategoryMax = Math.max(out.entryCategory, Math.min(CAT_COUNT, Math.round(out.entryCategoryMax)))
+  out.catScale = 9
   // A zero target is a trade that wins the instant it opens; switching it off is the way to have none.
   out.takeProfitPct = Math.max(0.01, out.takeProfitPct)
   out.stopLossPct = Math.max(0.01, out.stopLossPct)

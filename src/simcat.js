@@ -15,139 +15,138 @@
  * Pure: candles and settings in, HTML out. The arithmetic is backtest.js's own
  * (rangeBaseline, categoryOf), so the picture of "category 3" is exactly what the trades used.
  */
-import { rangeBaseline, categoryOf, signals } from './backtest.js'
+import { rangeBaseline, categoryOf, signals, catRange, CAT_COUNT, CAT_MID } from './backtest.js'
 // Its stylesheet, simcat.css, is imported by simulator.js: this file stays loadable in plain Node.
 
-const CAT_N = 7   // categories 0..6; 6 means "six times normal or more"
+const CATS = Array.from({ length: CAT_COUNT }, (_, i) => i + 1)   // 1..9, 5 = normal
 
 /**
  * Counts per category over a run's candles, and the latest normal range.
  * `rows` are normalised candles; null or too few gives `null` -- unknown, not zero.
+ * `counts[k - 1]` is category k.
  */
 export function catStats(rows, p) {
   if (!Array.isArray(rows) || rows.length < 12) return null
   const base = rangeBaseline(rows, p)
-  const counts = Array.from({ length: CAT_N }, (_, cat) => ({ cat, green: 0, red: 0 }))
-  // Under 1x is most of the market (61% of HYPE 1h against the average), so it is split once
-  // more: `half` is the part of category 0 under half of normal. Display only -- the rule has
-  // no category between 0 and 1.
-  const half = { green: 0, red: 0 }
+  const counts = CATS.map(cat => ({ cat, green: 0, red: 0 }))
   let judged = 0
   for (let i = 0; i < rows.length; i++) {
     if (!(base[i] > 0)) continue
     judged++
-    const mult = rows[i].range / base[i]
-    const c = counts[categoryOf(mult)]
+    const c = counts[categoryOf(rows[i].range / base[i]) - 1]
     if (rows[i].red) c.red++; else c.green++
-    if (mult < 0.5) { if (rows[i].red) half.red++; else half.green++ }
   }
-  // The most recent normal, which is what "a category-3 candle" would mean if one closed now.
+  // The most recent normal, which is what "a category-8 candle" would mean if one closed now.
   let normal = null, px = null
   for (let i = rows.length - 1; i >= 0; i--) if (base[i] > 0) { normal = base[i]; px = rows[i].c; break }
   const sig = signals(rows, { ...p, strategy: 'range' })
   const longs = sig.filter(s => s > 0).length, shorts = sig.filter(s => s < 0).length
-  return { counts, half, judged, normal, px, longs, shorts, candles: rows.length }
+  return { counts, judged, normal, px, longs, shorts, candles: rows.length }
 }
 
-/**
- * The rows the guide and table show: category 0 split at half of normal, then 1 to 6.
- * `cat` is the rule's category (both halves are 0); `mult` the row's lower edge in normals.
- */
-function bands(s) {
-  const c0 = s?.counts[0], h = s?.half
-  const lowHalf = c0 && h ? { green: h.green, red: h.red } : null
-  const highHalf = c0 && h ? { green: c0.green - h.green, red: c0.red - h.red } : null
-  return [
-    { id: '0', cat: 0, mult: 0, lbl: '<½×', k: '<½', c: lowHalf },
-    { id: '0.5', cat: 0, mult: 0.5, lbl: '½×', k: '½', c: highHalf },
-    ...[1, 2, 3, 4, 5, 6].map(k => ({ id: String(k), cat: k, mult: k, lbl: k === 6 ? '6×+' : k + '×', k: String(k), c: s?.counts[k] ?? null })),
-  ]
-}
 const isMedian = (p) => p.baselineKind === 'median'
+const band = (p) => {
+  const lo = Math.max(1, Math.min(CAT_COUNT, (p.entryCategory | 0) || 1))
+  return [lo, Math.max(lo, Math.min(CAT_COUNT, p.entryCategoryMax ?? CAT_COUNT))]
+}
+// A multiple as people say it: .2, ⅓, ½, 1.25.
+const mx = (m) => m === 1 / 3 ? '⅓' : m === 0.5 ? '½' : String(+m.toFixed(2)).replace(/^0\./, '.')
+/** "0.8–1.25×", "5× and up", "under .2×" */
+export function catLabel(k, T = (en) => en) {
+  const [a, b] = catRange(k)
+  return k === 1 ? T(`under ${mx(b)}×`, `menos de ${mx(b)}×`) : b == null ? T(`${mx(a)}× and up`, `${mx(a)}× o más`) : `${mx(a)}–${mx(b)}×`
+}
 
 const money = (v, fmtPrice) => '$' + (fmtPrice ? fmtPrice(v) : (+v).toPrecision(4))
 const pct = (v) => (v >= 10 ? v.toFixed(1) : v >= 1 ? v.toFixed(2) : v.toFixed(3)).replace(/\.?0+$/, '') + '%'
 
 /**
  * The guide. `s` is catStats() or null (no candles yet); `p` the settings; `o` carries the
- * app's T, fmtPrice, the market's label and the interval. Columns call __simCatPick(k).
+ * app's T, fmtPrice, the market's label and the interval. Every column calls __simCatPick(k).
  */
 export function catGuideHtml(s, p, o = {}) {
   const T = o.T ?? ((en) => en)
-  const lo = Math.max(1, p.entryCategory | 0), hi = Math.max(lo, Math.min(6, p.entryCategoryMax ?? 6))
+  const [lo, hi] = band(p)
   const fade = p.rangeMode === 'fade'
-  // The figure: one candle per category, its height its size, the band lit. Bottom-aligned so
-  // the eye compares heights, with "normal" as a dashed line across all of them.
-  const B = bands(s)
-  const W = 322, H = 132, base = 92, unit = 12.5, colW = W / B.length
-  const maxCount = s ? Math.max(1, ...B.map(b => b.c ? b.c.green + b.c.red : 0)) : 1
-  const word = isMedian(p) ? T('median', 'mediana') : T('normal', 'lo normal')
-  const cols = B.map((b, i) => {
-    const k = b.cat
+  // The figure: one candle per category, heights stepping evenly -- the edges grow by a
+  // ratio, so even steps are a log scale, and a fifth-of-normal candle is still visible.
+  // Bottom-aligned so the eye compares heights; "normal" is a dashed line at the middle one.
+  const W = 322, H = 144, base = 86, colW = W / CAT_COUNT
+  const hOf = (k) => 5 + (k - 1) * 9
+  const maxCount = s ? Math.max(1, ...s.counts.map(c => c.green + c.red)) : 1
+  const word = isMedian(p) ? T('the median', 'la mediana') : T('normal', 'lo normal')
+  const cols = CATS.map((k, i) => {
     const cx = colW * i + colW / 2
-    const h = unit * (b.mult === 0 ? 0.35 : b.mult === 0.5 ? 0.75 : k + 0.5)
+    const h = hOf(k)
     const inBand = k >= lo && k <= hi
-    const c = b.c
+    const c = s?.counts[i]
     const n = c ? c.green + c.red : null
     // Green and red side by side: in follow mode a green one is a long, in fade mode a short.
-    const bw = 7, gap = 3
-    const candle = (x, col, op) => `<line x1="${x}" y1="${base - h - 6}" x2="${x}" y2="${base}" stroke="${col}" stroke-width="1.4" opacity="${op}"/>` +
-      `<rect x="${x - bw / 2}" y="${base - h}" width="${bw}" height="${Math.max(2, h - 4)}" rx="1.5" fill="${col}" opacity="${op}"/>`
+    const bw = 6, gap = 2.5
+    const candle = (x, col, op) => `<line x1="${x}" y1="${base - h - 5}" x2="${x}" y2="${base}" stroke="${col}" stroke-width="1.3" opacity="${op}"/>` +
+      `<rect x="${x - bw / 2}" y="${base - h}" width="${bw}" height="${Math.max(2, h - 3)}" rx="1.5" fill="${col}" opacity="${op}"/>`
     const op = inBand ? 1 : 0.28
-    const range = b.mult === 0 ? T('under ½×', 'menos de ½×') : b.mult === 0.5 ? '½–1×' : k === 6 ? T('6× or more', '6× o más') : `${k}–${k + 1}×`
-    const size = s?.normal && b.mult ? ` · ${T('at least', 'al menos')} ${money(s.normal * b.mult, o.fmtPrice)}` : ''
-    const tip = `${k ? `${T('Category', 'Categoría')} ${k}` : T('Category 0 (never traded)', 'Categoría 0 (nunca se opera)')}: ${range} ${word}${size}${
+    const [a] = catRange(k)
+    const size = s?.normal ? (k === 1 ? ` · ${T('under', 'menos de')} ${money(s.normal * catRange(1)[1], o.fmtPrice)}` : ` · ${T('from', 'desde')} ${money(s.normal * a, o.fmtPrice)}`) : ''
+    const tip = `${T('Category', 'Categoría')} ${k}${k === CAT_MID ? ' (' + T('normal', 'normal') + ')' : ''}: ${catLabel(k, T)} ${word}${size}${
       c ? ` · ${n} ${T('candles', 'velas')} (${c.green} ${T('green', 'verdes')}, ${c.red} ${T('red', 'rojas')})` : ''}`
     // A faint bar under each column: how common the category is in the run's own candles.
-    const bar = c ? `<rect x="${cx - colW / 2 + 5}" y="${H - 6}" width="${(colW - 10) * Math.min(1, n / maxCount)}" height="3" rx="1.5" fill="var(--fg-2)" opacity="${inBand ? 0.7 : 0.25}"/>` : ''
-    return `<g class="simcat-col${inBand ? ' on' : ''}${k === 0 ? ' zero' : ''}" data-cat="${b.id}"${k ? ` onclick="window.__simCatPick(${k})" role="button" tabindex="0" aria-label="${esc(tip)}"` : ''}>
+    const bar = c ? `<rect x="${cx - colW / 2 + 4}" y="${H - 5}" width="${(colW - 8) * Math.min(1, n / maxCount)}" height="3" rx="1.5" fill="var(--fg-2)" opacity="${inBand ? 0.7 : 0.25}"/>` : ''
+    return `<g class="simcat-col${inBand ? ' on' : ''}${k === CAT_MID ? ' mid' : ''}" data-cat="${k}" onclick="window.__simCatPick(${k})" role="button" tabindex="0" aria-label="${esc(tip)}">
       <title>${esc(tip)}</title>
       <rect x="${colW * i + 1}" y="0" width="${colW - 2}" height="${H}" rx="6" fill="${inBand ? 'var(--accent)' : 'transparent'}" opacity="${inBand ? 0.08 : 0}"/>
       ${candle(cx - gap - bw / 2 + 2, 'var(--green)', op)}${candle(cx + gap + bw / 2 - 2, 'var(--red)', op)}
-      <text x="${cx}" y="${base + 12}" text-anchor="middle" class="simcat-k">${b.lbl}</text>
-      ${c ? `<text x="${cx}" y="${base + 25}" text-anchor="middle" class="simcat-c">${n.toLocaleString()}</text>` : ''}
+      <text x="${cx}" y="${base + 12}" text-anchor="middle" class="simcat-k">${k}</text>
+      <text x="${cx}" y="${base + 22}" text-anchor="middle" class="simcat-r">${k === 1 ? '<' + mx(catRange(1)[1]) : mx(a) + (k === CAT_COUNT ? '+' : '')}×</text>
+      ${c ? `<text x="${cx}" y="${base + 34}" text-anchor="middle" class="simcat-c">${n.toLocaleString()}</text>` : ''}
       ${bar}
     </g>`
   }).join('')
-  const normalY = base - unit * 1
+  const midX = colW * (CAT_MID - 1)
+  const normalY = base - hOf(CAT_MID) + 2
   const svg = `<svg class="simcat-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="group" aria-label="${T('Candle size categories', 'Categorías de tamaño de vela')}">
-    <line x1="0" x2="${W}" y1="${normalY}" y2="${normalY}" stroke="var(--fg-2)" stroke-dasharray="3 3" opacity=".55"/>
-    <text x="3" y="${normalY - 4}" text-anchor="start" class="simcat-n">${isMedian(p) ? T('median', 'mediana') : T('average', 'media')}</text>
+    <line x1="0" x2="${W}" y1="${normalY}" y2="${normalY}" stroke="var(--fg-2)" stroke-dasharray="3 3" opacity=".45"/>
+    <text x="${midX + colW / 2}" y="9" text-anchor="middle" class="simcat-n">${isMedian(p) ? T('median', 'mediana') : T('average', 'media')}</text>
     ${cols}
   </svg>`
 
-  // The table under it: one row per category in the band, with real sizes and counts.
   const lbl = o.label ? esc(o.label) : T('this market', 'este mercado')
+  const bandTxt = lo === hi ? `${T('category', 'categoría')} ${lo}` : `${T('categories', 'categorías')} ${lo}–${hi}`
+  const [bLo] = catRange(lo), [, bHi] = catRange(hi)
+  const bandMult = lo === 1 && bHi == null ? T('every candle', 'todas las velas')
+    : lo === 1 ? T(`under ${mx(bHi)}× normal`, `menos de ${mx(bHi)}×`)
+    : bHi == null ? T(`${mx(bLo)}× normal and up`, `${mx(bLo)}× o más`) : `${mx(bLo)}–${mx(bHi)}× ${T('normal', 'lo normal')}`
   let facts
   if (s && s.normal) {
     const nPct = s.px ? s.normal / s.px * 100 : null
-    const inBand = s.counts.filter(c => c.cat >= lo && c.cat <= hi)
-    const nb = inBand.reduce((a, c) => a + c.green + c.red, 0)
+    const nb = s.counts.filter(c => c.cat >= lo && c.cat <= hi).reduce((a, c) => a + c.green + c.red, 0)
     const fires = s.longs + s.shorts
     const every = fires ? Math.round(s.judged / fires) : null
-    const under = s.judged ? (s.counts[0].green + s.counts[0].red) / s.judged * 100 : 0
+    const share = (f) => s.judged ? s.counts.filter(c => f(c.cat)).reduce((a, c) => a + c.green + c.red, 0) / s.judged * 100 : 0
+    const below = share(k => k < CAT_MID), mid = share(k => k === CAT_MID), above = share(k => k > CAT_MID)
     const of = p.baselineLookback ? T(`the ${p.baselineLookback} candles before it`, `las ${p.baselineLookback} velas anteriores`) : T('the whole sample', 'la muestra entera')
+    const range = (a, b) => b == null ? T(`of at least <b>${money(s.normal * a, o.fmtPrice)}</b>`, `de al menos <b>${money(s.normal * a, o.fmtPrice)}</b>`)
+      : a === 0 ? T(`under <b>${money(s.normal * b, o.fmtPrice)}</b>`, `de menos de <b>${money(s.normal * b, o.fmtPrice)}</b>`)
+      : T(`from <b>${money(s.normal * a, o.fmtPrice)}</b> to under ${money(s.normal * b, o.fmtPrice)}`, `de <b>${money(s.normal * a, o.fmtPrice)}</b> a ${money(s.normal * b, o.fmtPrice)}`)
     facts = `<div class="simcat-facts">
       <div>${isMedian(p)
-        ? T(`A normal ${esc(o.iv ?? '')} candle on ${lbl} is <b>${money(s.normal, o.fmtPrice)}</b> high to low${nPct != null ? ` (${pct(nPct)})` : ''} — the <b>median</b> of ${of}: the middle one, half smaller and half bigger.`,
-            `Una vela ${esc(o.iv ?? '')} normal en ${lbl} mide <b>${money(s.normal, o.fmtPrice)}</b>${nPct != null ? ` (${pct(nPct)})` : ''} — la <b>mediana</b> de ${of}.`)
-        : T(`A normal ${esc(o.iv ?? '')} candle on ${lbl} is <b>${money(s.normal, o.fmtPrice)}</b> high to low${nPct != null ? ` (${pct(nPct)})` : ''} — the <b>average</b> of ${of}.`,
-            `Una vela ${esc(o.iv ?? '')} normal en ${lbl} mide <b>${money(s.normal, o.fmtPrice)}</b>${nPct != null ? ` (${pct(nPct)})` : ''} — la <b>media</b> de ${of}.`)}</div>
-      <div>${isMedian(p)
-        ? T(`<b>${pct(under)}</b> of candles came in under 1×.`, `<b>${pct(under)}</b> de las velas quedaron bajo 1×.`)
-        : T(`<b>${pct(under)}</b> of candles came in under 1×: a few huge ones pull the average up, so most sit below it. Switch "Normal is the" to Median for the typical candle.`,
-            `<b>${pct(under)}</b> de las velas quedaron bajo 1×: unas pocas enormes suben la media. Cambia a Mediana para la vela típica.`)}</div>
-      <div>${T(`Your band, <b>${lo}×${hi === 6 ? ' and up' : ` to ${hi}×`}</b>, trades candles at least <b>${money(s.normal * lo, o.fmtPrice)}</b>${nPct != null ? ` (${pct(nPct * lo)})` : ''}${hi < 6 ? ` and under ${money(s.normal * (hi + 1), o.fmtPrice)}` : ''}.`,
-              `Tu banda, <b>${lo}×${hi === 6 ? ' o más' : ` a ${hi}×`}</b>, opera velas de al menos <b>${money(s.normal * lo, o.fmtPrice)}</b>.`)}</div>
+        ? T(`A normal ${esc(o.iv ?? '')} candle on ${lbl} is <b>${money(s.normal, o.fmtPrice)}</b> high to low${nPct != null ? ` (${pct(nPct)})` : ''} — the <b>median</b> of ${of}: the middle one, half smaller and half bigger. That is category <b>5</b>.`,
+            `Una vela ${esc(o.iv ?? '')} normal en ${lbl} mide <b>${money(s.normal, o.fmtPrice)}</b>${nPct != null ? ` (${pct(nPct)})` : ''} — la <b>mediana</b> de ${of}. Es la categoría <b>5</b>.`)
+        : T(`A normal ${esc(o.iv ?? '')} candle on ${lbl} is <b>${money(s.normal, o.fmtPrice)}</b> high to low${nPct != null ? ` (${pct(nPct)})` : ''} — the <b>average</b> of ${of}. That is category <b>5</b>.`,
+            `Una vela ${esc(o.iv ?? '')} normal en ${lbl} mide <b>${money(s.normal, o.fmtPrice)}</b>${nPct != null ? ` (${pct(nPct)})` : ''} — la <b>media</b> de ${of}. Es la categoría <b>5</b>.`)}</div>
+      <div>${T(`<b>${pct(below)}</b> smaller than normal (1–4) · <b>${pct(mid)}</b> normal (5) · <b>${pct(above)}</b> bigger (6–9).${isMedian(p) ? '' : ' A few huge candles pull the average up, so more sit below it; switch "Normal is the" to Median to centre it.'}`,
+              `<b>${pct(below)}</b> más pequeñas (1–4) · <b>${pct(mid)}</b> normales (5) · <b>${pct(above)}</b> más grandes (6–9).`)}</div>
+      <div>${T(`Your band, <b>${bandTxt}</b> (${bandMult}), trades candles ${range(bLo, bHi)}.`,
+              `Tu banda, <b>${bandTxt}</b> (${bandMult}), opera velas ${range(bLo, bHi)}.`)}</div>
       <div>${T(`In these ${s.candles.toLocaleString()} candles, <b>${nb}</b> qualified: <span style="color:var(--green)">▲ ${s.longs} long</span> · <span style="color:var(--red)">▼ ${s.shorts} short</span>${fade ? ' (faded: green ones open shorts)' : ''}${every ? ` — about one every ${every}` : ''}. Cooldown and one-at-a-time take fewer.`,
               `En estas ${s.candles.toLocaleString()} velas califican <b>${nb}</b>: ▲ ${s.longs} · ▼ ${s.shorts}.`)}</div>
     </div>`
   } else {
-    facts = `<div class="simcat-facts"><div>${T(`Each candle is measured against the ${isMedian(p) ? 'median' : 'average'} size of the ones before it. Category 3 means three times that normal. Run once and this fills in with ${lbl}'s real sizes and how often each happened.`,
-      `Cada vela se mide contra el tamaño medio de las anteriores. Categoría 3 = tres veces lo normal. Ejecuta una vez para ver los tamaños reales de ${lbl}.`)}</div></div>`
+    facts = `<div class="simcat-facts"><div>${T(`Each candle is measured against the ${isMedian(p) ? 'median' : 'average'} size of the ones before it and put in one of nine categories: <b>5</b> is normal, 1–4 smaller, 6–9 bigger (8 is three to five times normal). Your band is <b>${bandTxt}</b> (${bandMult}). Run once and this fills in with ${lbl}'s real sizes and how often each happened.`,
+      `Cada vela se mide contra el tamaño de las anteriores y cae en una de nueve categorías: <b>5</b> es lo normal, 1–4 más pequeñas, 6–9 más grandes. Ejecuta una vez para ver los tamaños reales de ${lbl}.`)}</div></div>`
   }
   return `<div class="simcat">
-    <div class="simcat-h"><span>${T('What each category means', 'Qué significa cada categoría')}</span><span class="simcat-hint">${T('tap a candle to start the band there', 'toca una vela para empezar la banda ahí')}</span></div>
+    <div class="simcat-h"><span>${T('What each category means', 'Qué significa cada categoría')}</span><span class="simcat-hint">${T('tap any candle to start the band there', 'toca una vela para empezar la banda ahí')}</span></div>
     ${svg}
     ${s ? catTableHtml(s, p, o) : ''}
     ${facts}
@@ -162,9 +161,9 @@ export function catGuideHtml(s, p, o = {}) {
 export function catTradeStats(trades) {
   const withCat = (trades ?? []).filter(t => Number.isFinite(t?.cat))
   if (!withCat.length) return null
-  const out = Array.from({ length: CAT_N }, (_, cat) => ({ cat, n: 0, won: 0, lost: 0, pnl: 0 }))
+  const out = CATS.map(cat => ({ cat, n: 0, won: 0, lost: 0, pnl: 0 }))
   for (const t of withCat) {
-    const c = out[Math.min(6, Math.abs(t.cat))]
+    const c = out[Math.max(1, Math.min(CAT_COUNT, Math.abs(t.cat))) - 1]
     c.n++
     if (t.outcome === 'win') c.won++
     else if (t.outcome === 'loss') c.lost++
@@ -191,23 +190,23 @@ export function catTradeStats(trades) {
  */
 function catTableHtml(s, p, o) {
   const T = o.T ?? ((en) => en)
-  const lo = Math.max(1, p.entryCategory | 0), hi = Math.max(lo, Math.min(6, p.entryCategoryMax ?? 6))
+  const [lo, hi] = band(p)
   const ts = catTradeStats(o.trades)
   const usd = (v) => money(v, o.fmtPrice)
   const signed = (v) => (v >= 0 ? '+' : '−') + '$' + Math.abs(v).toFixed(2)
   const pc = (v) => v >= 10 ? v.toFixed(0) : v >= 1 ? v.toFixed(1) : v > 0 ? v.toFixed(2) : '0'
   const kCell = (cat, inBand) => `<td class="k">${cat}${inBand ? ' <i>●</i>' : ''}</td>`
-  const rowAttrs = (cat, inBand) => `class="${inBand ? 'on' : ''}"${cat ? ` onclick="window.__simCatPick(${cat})"` : ''}`
+  const rowAttrs = (cat, inBand) => `class="${inBand ? 'on' : ''}${cat === CAT_MID ? ' mid' : ''}" onclick="window.__simCatPick(${cat})"`
 
-  const rows = bands(s).map(b => {
-    const c = b.c ?? { green: 0, red: 0 }
+  const rows = s.counts.map(c => {
     const n = c.green + c.red
     const share = s.judged ? n / s.judged * 100 : 0
-    const inBand = b.cat >= lo && b.cat <= hi
+    const inBand = c.cat >= lo && c.cat <= hi
     // The floor alone: the next row's floor is this one's ceiling, so a range would say it twice.
-    const size = s.normal ? (b.mult === 0 ? `< ${usd(s.normal * 0.5)}` : `${usd(s.normal * b.mult)}`) : '—'
-    return `<tr ${rowAttrs(b.cat, inBand)}${b.cat ? '' : ` title="${T('Category 0 — never traded', 'Categoría 0 — nunca se opera')}"`}>
-      <td class="k">${b.k}${inBand ? ' <i>●</i>' : ''}</td>
+    const [a, b] = catRange(c.cat)
+    const size = s.normal ? (c.cat === 1 ? `< ${usd(s.normal * b)}` : `${usd(s.normal * a)}`) : '—'
+    return `<tr ${rowAttrs(c.cat, inBand)} title="${esc(catLabel(c.cat, T) + ' ' + T('normal', 'lo normal'))}">
+      ${kCell(c.cat, inBand)}
       <td class="sz">${size}</td>
       <td class="g">${c.green.toLocaleString()}</td>
       <td class="r">${c.red.toLocaleString()}</td>
@@ -231,7 +230,7 @@ function catTableHtml(s, p, o) {
   let trades = `<div class="simcat-note">${T('Run it and a second table shows what the trades from each category did.', 'Ejecuta y una segunda tabla muestra qué hicieron las operaciones de cada categoría.')}</div>`
   if (ts) {
     // Categories with trades, plus any in the band that had none -- "0 trades" is an answer too.
-    const shown = ts.filter(c => c.cat > 0 && (c.n > 0 || (c.cat >= lo && c.cat <= hi)))
+    const shown = ts.filter(c => c.n > 0 || (c.cat >= lo && c.cat <= hi))
     const all = ts.reduce((a, c) => ({ n: a.n + c.n, won: a.won + c.won, lost: a.lost + c.lost, pnl: a.pnl + c.pnl }), { n: 0, won: 0, lost: 0, pnl: 0 })
     const wr = (c) => c.won + c.lost ? (c.won / (c.won + c.lost) * 100).toFixed(0) + '%' : '—'
     const tone = (c) => c.n ? (c.pnl >= 0 ? 'g' : 'r') : ''
