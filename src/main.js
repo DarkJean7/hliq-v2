@@ -252,6 +252,7 @@ import { signalChartSvg, CMP_COLORS } from './sigchart.js'
 import { walkFills, summarise, markersUpto, frameTime } from './replay.js'
 import { tokyoWindowsFor } from './backtest.js'
 import { initSimulator, renderSimulator as _simRender } from './simulator.js'
+import { initLabs, renderLabs as _labsRender } from './labsview.js'
 import { computeExposure, exposureHtml, computeStress, computeUnprotected, stressHtml } from './exposure.js'
 import { DeviceBot, devBotsLoad, devBotsSave, DEVBOT_TEMPLATE, parseBotParams, botCoins } from './devicebot.js'
 import { BACKDROPS, backdropById, loadBackdrop, saveBackdrop, applyBackdrop,
@@ -8829,6 +8830,7 @@ function switchTab(name, btn) {
   // both names are honoured here.
   if (name === 'replay' || name === 'portfolio') _repRender(_viewHost('deskReplay'))
   if (name === 'simulator')  _simRender(_viewHost('deskSim'))
+  if (name === 'labs')       _labsRender(_viewHost('deskLabs'))
   if (name === 'settings') { _syncSettingsTab(); _applyDevMode() }
   if (name === 'leaderboard') {
     const root = document.getElementById('leaderboardRoot')
@@ -8877,7 +8879,7 @@ window.__mobMoreTab = function(name) {
   const backdrop = document.getElementById('mobMoreBackdrop')
   drawer?.classList.remove('open')
   backdrop?.classList.remove('open')
-  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'pulse', 'allocation', 'heatmap', 'analysis', 'replay', 'simulator'])
+  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'pulse', 'allocation', 'heatmap', 'analysis', 'replay', 'simulator', 'labs'])
   if (mobileTabs.has(name)) {
     // Reached deliberately from the menu, Strats opens full screen. It is the densest view
     // in the app — a bot list, a config form and a running-instance list — and half a
@@ -12026,6 +12028,42 @@ window._mobVTogglePrivacy = window.__togglePrivacy
 // src/offexui.js. This is the seam: which REAL accounts the view covers, the privacy mask,
 // and how to repaint. Never state.addr raw — in the combined view it is '__all_accounts__',
 // and in paper mode a sentinel, and a holding saved under either is never read back.
+// Every perp, main dex and HIP-3, named the way the rest of the app names it so nobody has
+// to know a market lives at xyz:SMSN to find it. Spot, outcomes and delisted markets are
+// left out: there is nothing to backtest on them. Shared by the Trade Simulator and Labs.
+function _testableMarkets() {
+  return Object.keys(state.allMids ?? {})
+    .filter(k => !k.startsWith('@') && !k.startsWith('#') && !k.includes('/') && !_spotNameMap[k] && !_isDelistedMkt(k))
+    .map(k => ({
+      id: k,
+      name: _mktDisplay(k) ?? hip3Rename(k).replace(/.*:/, ''),
+      dex: deployerOf(k) ? _dexLabel(deployerOf(k)) : '',
+      px: _livePx(k),
+      vol: _mktCtxMap[k]?.volume ?? 0,
+    }))
+}
+const _hlMaxLev = (id) => state.assetMap?.[id]?.maxLeverage
+  ?? (state.allMetas ?? []).flatMap(m => m.universe ?? []).find(u => u?.name === id)?.maxLeverage
+  ?? _mktCtxMap[id]?.maxLeverage ?? null
+
+// Labs (src/labsview.js): build a strategy from signals, groups and rules and backtest it.
+// Like the simulator it cannot see `state`: nothing in it is per-account, and it never trades.
+initLabs({
+  T: (en, es) => _T(en, es),
+  viewHost: (id) => _viewHost(id),
+  fullHeader: (title) => _mobVFullHeader(title),
+  toast: (msg) => _paperToast(msg),
+  resolveMarketId: (name) => _resolveMarketId(name),
+  coinLabel: (c) => _ocCoinLabel(c),
+  markets: () => _testableMarkets(),
+  maxLeverage: (id) => _hlMaxLev(id),
+  isShowing: () => {
+    const d = document.getElementById('deskLabs')
+    if (d && d.offsetParent !== null) return true
+    return _isMobView() && _mobVActiveTab === 'labs'
+  },
+})
+
 // The Trade Simulator cannot see `state` and has no reason to: nothing in it is per-account.
 // It borrows how to speak, where to mount, and how a typed market name resolves.
 initSimulator({
@@ -12035,18 +12073,7 @@ initSimulator({
   toast: (msg) => _paperToast(msg),
   resolveMarketId: (name) => _resolveMarketId(name),
   coinLabel: (c) => _ocCoinLabel(c),
-  // Every perp, main dex and HIP-3, named the way the rest of the app names it so nobody has
-  // to know a market lives at xyz:SMSN to find it. Spot, outcomes and delisted markets are
-  // left out: there is nothing to backtest on them here.
-  markets: () => Object.keys(state.allMids ?? {})
-    .filter(k => !k.startsWith('@') && !k.startsWith('#') && !k.includes('/') && !_spotNameMap[k] && !_isDelistedMkt(k))
-    .map(k => ({
-      id: k,
-      name: _mktDisplay(k) ?? hip3Rename(k).replace(/.*:/, ''),
-      dex: deployerOf(k) ? _dexLabel(deployerOf(k)) : '',
-      px: _livePx(k),
-      vol: _mktCtxMap[k]?.volume ?? 0,
-    })),
+  markets: () => _testableMarkets(),
   icon: (id) => _coinIconHtml(id),
   loadMarkets: () => _ensureMarketData(),
   // Hyperliquid's own per-market ceiling. It sets the maintenance margin, and so where a
@@ -12409,7 +12436,7 @@ const _MOBV_NAV_ORDER = ['trades', 'positions', 'orders', 'outcomes', 'spot', 's
 // strip / sub-tabs) is hidden and the view renders its own sticky header + × back
 // button instead of sitting in the bottom half. Shared by the chrome-hide logic and
 // the watch-strip visibility check so they never drift apart.
-const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 'transfers', 'trades', 'tokens', 'leaderboard', 'allocation', 'analysis', 'performance', 'replay', 'simulator'])
+const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 'transfers', 'trades', 'tokens', 'leaderboard', 'allocation', 'analysis', 'performance', 'replay', 'simulator', 'labs'])
 
 // Sticky full-page header with a × that returns to the home view. Used by every
 // full-screen tab so they share one look.
@@ -21835,6 +21862,10 @@ function _mobVRenderContent(tick = false) {
     _simRender(el)
     return
   }
+  if (_mobVActiveTab === 'labs') {
+    _labsRender(el)
+    return
+  }
   if (_mobVActiveTab === 'replay') {
     // A redraw from elsewhere would replace the search box mid-word and take the keyboard
     // with it, so put focus back where it was -- the same fix Signals needed.
@@ -26208,7 +26239,7 @@ window.mobVGoTab = function(tabName) {
   if (tabName === 'trades') _mobVTradesPage = 0   // start History at the latest page
   if (tabName === 'allocation') _allocView = 'allocation'   // the donut pill always opens the donut
   document.querySelectorAll('.mob-v-bottom-btn').forEach(b => b.classList.remove('active'))
-  const _mobTabs = new Set(['trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'pulse', 'allocation', 'analysis', 'replay', 'simulator'])
+  const _mobTabs = new Set(['trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'pulse', 'allocation', 'analysis', 'replay', 'simulator', 'labs'])
   if (_mobTabs.has(tabName)) {
     _mobVActiveTab = tabName
     document.querySelectorAll('.mob-v-tab').forEach(b => b.classList.remove('active'))

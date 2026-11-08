@@ -70,7 +70,7 @@ export const MOB_VIEWS = new Set([
   'positions', 'orders', 'spot', 'outcomes', 'accounts', 'attribution',
   'portfolio', 'watch', 'strategies', 'trades', 'leaderboard', 'calendar', 'tokens',
   'performance', 'transfers', 'settings', 'trade', 'pulse', 'analysis', 'allocation',
-  'heatmap', 'replay', 'simulator',
+  'heatmap', 'replay', 'simulator', 'labs',
 ])
 
 /**

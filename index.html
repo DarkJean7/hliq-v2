@@ -233,6 +233,10 @@
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="9" rx="1"/><line x1="5" y1="15" x2="11" y2="15"/></svg>
       <span>Simulator</span>
     </div>
+    <div class="sidebar-item" data-tab="labs" onclick="switchTab('labs',null);setSidebarActive(this)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M6 2h4M6.5 2v4.5L3 13a1 1 0 0 0 .9 1.5h8.2A1 1 0 0 0 13 13L9.5 6.5V2"/><line x1="4.6" y1="10.5" x2="11.4" y2="10.5"/></svg>
+      <span>Labs</span>
+    </div>
     <div class="sidebar-item" data-tab="portfolios" onclick="switchTab('portfolios',null);setSidebarActive(this)">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M8 2l6 3.3L8 8.6 2 5.3z"/><path d="M2 8.6l6 3.3 6-3.3"/><path d="M2 11.6l6 3.3 6-3.3"/></svg>
       <span>Portfolios</span>
@@ -368,6 +372,7 @@
       <button class="nav-tab" onclick="switchTab('analysis',this)">Analysis</button>
       <!-- The sidebar's order, Bot Agents included: Simulator, Portfolios, Strategies, Grid Ladder, Performance. -->
       <button class="nav-tab" onclick="switchTab('simulator',this)">Simulator</button>
+      <button class="nav-tab" onclick="switchTab('labs',this)">Labs</button>
       <button class="nav-tab" onclick="switchTab('portfolios',this)">Portfolios</button>
       <button class="nav-tab" onclick="switchTab('strategies',this)"><svg viewBox="0 0 20 22" width="11" height="11" fill="currentColor"><rect x="1" y="0" width="4" height="5" rx="1"/><rect x="8" y="0" width="4" height="5" rx="1"/><rect x="15" y="0" width="4" height="5" rx="1"/><rect x="2" y="5" width="16" height="11" rx="1"/><rect x="0" y="16" width="20" height="5" rx="1"/></svg>Strategies</button>
       <button class="nav-tab dev-gate" onclick="window.__openGridLadder()">Grid Ladder</button>
@@ -1024,6 +1029,11 @@
     <!-- Same renderer as the mobile tab. -->
     <div class="tab-panel" id="tab-simulator">
       <div id="deskSim"></div>
+    </div>
+
+    <!-- LABS: strategy builder + backtest (src/labsview.js). Same renderer as the phone's. -->
+    <div class="tab-panel" id="tab-labs">
+      <div id="deskLabs"></div>
     </div>
 
     <div class="tab-panel" id="tab-performance">
@@ -2643,6 +2653,7 @@
     <div class="mob-more-section">Bot Agents</div>
     <!-- In the order you use them: test an idea (Simulator, Portfolios), run it (Strategies, Grid Ladder), then see how it did (Bot Performance). -->
     <button onclick="window.__mobMoreTab('simulator')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v7L5 19a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8-3l-5-9V3"/><line x1="8" y1="16" x2="16" y2="16"/></svg>Trade Simulator</button>
+    <button onclick="window.__mobMoreTab('labs')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6.5L4.6 18.8A1.5 1.5 0 0 0 5.9 21h12.2a1.5 1.5 0 0 0 1.3-2.2L14 9.5V3"/><path d="M7 15h10"/><circle cx="10" cy="18" r=".6"/><circle cx="14" cy="17" r=".6"/></svg>Labs</button>
     <button onclick="window.__openPortfolios()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/><path d="M3 17.5l9 5 9-5"/></svg>Portfolios</button>
     <button onclick="window.__mobMoreTab('strategies')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="8" height="8" rx="1"/><rect x="14" y="2" width="8" height="8" rx="1"/><rect x="2" y="14" width="8" height="8" rx="1"/><path d="M14 18h8M18 14v8"/></svg>Strategies</button>
     <button class="dev-gate" onclick="window.__openGridLadder()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="5" x2="20" y2="5"/><line x1="4" y1="10" x2="20" y2="10"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="4" y1="20" x2="20" y2="20"/><line x1="6" y1="3" x2="6" y2="22"/><line x1="18" y1="3" x2="18" y2="22"/></svg>Grid Ladder</button>
