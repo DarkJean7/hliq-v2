@@ -2474,10 +2474,77 @@ function _simStatsHtml(r, s) {
   return `<div class="sim-stats">${blocks.join('')}</div>`
 }
 
-function _simOverviewHtml(r, s) {
+// The overview chart shows the balance OR the market with the trades on it -- one slot, a
+// switch above it ("make it changeable so it does not take extra space").
+let _simEqView = 'balance'   // 'balance' | 'price'
+let _simEqCoin = null        // which market, when the run had several
+window.__simEqView = function(v, coin) {
+  if (v) _simEqView = v === 'price' ? 'price' : 'balance'
+  if (coin) _simEqCoin = coin
+  const box = document.getElementById('simEqBox')
+  if (box && _simResult) box.innerHTML = _simEqBoxHtml(_simResult, _simSum ?? summarize(_simResult))
+  else _simRender()
+}
+
+/**
+ * The market over the run, every entry and exit on it, each round turn joined in the colour it
+ * ended. Drawn at the box's real width so markers are not stretched; until the box exists the
+ * first paint repaints itself once it does.
+ */
+function _simPriceHtml(r) {
+  const coins = _simRepCoins()
+  if (!coins.length) return `<div class="sim-empty-s" style="height:240px;display:flex;align-items:center;justify-content:center">${_T('No candles kept for this run.', 'No hay velas guardadas para esta ejecución.')}</div>`
+  const coin = coins.includes(_simEqCoin) ? _simEqCoin : coins[0]
+  const rows = _simBars[coin] ?? []
+  const trades = _simRepTrades(coin)
+  const box = document.getElementById('simEqBox')
+  const w = box?.clientWidth >= 180 ? box.clientWidth - 20 : null   // the box has 10px of padding a side
+  if (!w) requestAnimationFrame(() => { if (document.getElementById('simEqBox')?.clientWidth && _simEqView === 'price') window.__simEqView() })
+  const G = 'var(--green,#22c55e)', Rd = 'var(--red,#ef4444)', M = 'var(--fg-3,#8891a0)'
+  const last = rows[rows.length - 1]
+  const links = trades.filter(t => Number.isFinite(+t.time)).map(t => t.outcome !== 'open' && t.exitPx != null
+    ? { t0: +t.time, v0: +t.entry, t1: +t.exitAt, v1: +t.exitPx, color: (t.delta ?? 0) >= 0 ? G : Rd }
+    : { t0: +t.time, v0: +t.entry, t1: +(t.markAt ?? last?.t), v1: +(t.markPx ?? last?.c), color: M, dash: '3 3' })
+  const day = (t) => new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+  const marks = replayMarks(trades).map(m => {
+    return { t: m.t, v: m.v, buy: m.buy,
+      title: esc(`${m.kind === 'entry' ? (m.side === 'long' ? _T('Long', 'Largo') : _T('Short', 'Corto')) + ' ' + _T('in', 'entra') : _T('Out', 'Sale')} @ $${fmtPrice(m.v)} · ${day(m.t)}${m.kind === 'exit' ? ' · ' + signed(m.delta ?? 0) : ''}`),
+      // Labelled only while there are few: twenty "+$41" labels over 2,000 candles are a smear.
+      label: trades.length <= 12 && m.kind === 'exit' ? `${(m.delta ?? 0) >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(m.delta ?? 0))}` : '' }
+  })
+  const chart = signalChartSvg({
+    main: rows.map(x => [x.t, x.c]),
+    // Candles while they are wide enough to read as candles; past that, the close as a line.
+    candles: rows.length <= 400 ? rows : null,
+    ordinal: rows.length <= 400, grid: true, width: w, height: 240,
+    markers: marks, links, fmtPrice: (v) => '$' + fmtPrice(v),
+  })
+  const pick = coins.length > 1 ? `<select class="sim-in sim-sel" style="width:auto;padding:2px 6px;font-size:11px" onchange="window.__simEqView(null, this.value)">${
+    coins.map(c => `<option value="${esc(c)}"${c === coin ? ' selected' : ''}>${esc(_ocCoinLabel(c))}</option>`).join('')}</select>` : ''
+  return `<div class="sim-eq-legend">
+      <span><b style="color:var(--green)">▲</b> ${_T('buy', 'compra')}</span><span><b style="color:var(--red)">▼</b> ${_T('sell', 'venta')}</span>
+      <span><i style="background:var(--green)"></i>${_T('won', 'ganada')}</span><span><i style="background:var(--red)"></i>${_T('lost', 'perdida')}</span>
+      ${trades.some(t => t.outcome === 'open') ? `<span><i class="dash"></i>${_T('still open', 'abierta')}</span>` : ''}
+      <span style="flex:1"></span>${pick}
+    </div>
+    ${chart.svg ? `<div style="position:relative">${chart.svg}
+      <span class="sim-eq-y" style="top:2px">${chart.hi}</span><span class="sim-eq-y" style="bottom:2px">${chart.lo}</span></div>
+      <div class="sim-eq-x"><span>${esc(day(rows[0].t))}</span><span>${esc(day(last.t))}</span></div>`
+      : `<div class="sim-empty-s" style="height:240px">${_T('Not enough candles to draw.', 'No hay velas suficientes.')}</div>`}`
+}
+
+function _simEqBoxHtml(r, s) {
   const stepped = !(Array.isArray(r.curve) && r.curve.length)
+  const canPrice = !r.grid && !r.dca && _simRepCoins().length > 0
+  const view = canPrice ? _simEqView : 'balance'
+  const chip = (v, label) => `<button type="button" class="sim-chip sim-chip-sm${view === v ? ' on' : ''}" onclick="window.__simEqView('${v}')">${label}</button>`
+  return `${canPrice ? `<div class="sim-eq-switch">${chip('balance', _T('Balance', 'Balance'))}${chip('price', _T('Price + trades', 'Precio + operaciones'))}</div>` : ''}
+    ${view === 'price' ? _simPriceHtml(r) : _simEquityHtml(s, r.startBalance, stepped, r.grid || r.dca ? null : r.trades)}`
+}
+
+function _simOverviewHtml(r, s) {
   return `
-    <div class="sim-inset" style="padding:10px 10px 8px">${_simEquityHtml(s, r.startBalance, stepped, r.grid || r.dca ? null : r.trades)}</div>
+    <div class="sim-inset" id="simEqBox" style="padding:10px 10px 8px">${_simEqBoxHtml(r, s)}</div>
     ${_simStatsHtml(r, s)}
     <div class="sim-hint" style="margin-top:10px">${_T('Day by day and month by month: the Calendar tab. Every setting this run used: Settings.',
       'Día a día y mes a mes: pestaña Calendario. Cada ajuste usado: Ajustes.')}</div>`

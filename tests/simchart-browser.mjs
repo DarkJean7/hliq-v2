@@ -147,6 +147,27 @@ console.log(NL + '-- desktop --')
   await p.evaluate(() => document.querySelector('#deskSim .sim-eq')?.scrollIntoView({ block: 'center' }))
   await shot(p, 'simchart-equity')
 
+  console.log(NL + '-- the same slot, switched to the market --')
+  // "add the asset market chart with the simulated enters and exits ... make it changable so
+  // it does not take extra space"
+  const slotH = await p.evaluate(() => document.getElementById('simEqBox').getBoundingClientRect().height)
+  await p.click('#simEqBox button:has-text("Price + trades")')
+  ok('one switch turns the balance chart into the market', await waitFor(p, 'price view', () => !!document.querySelector('#simEqBox svg polygon') && !document.querySelector('#simEqBox .sim-eq-mk')))
+  const pv = await p.evaluate(() => {
+    const svg = document.querySelector('#simEqBox svg')
+    return { vb: svg.viewBox.baseVal.width, px: svg.getBoundingClientRect().width, marks: svg.querySelectorAll('polygon').length,
+      h: document.getElementById('simEqBox').getBoundingClientRect().height }
+  })
+  const nT = await p.evaluate(() => +(document.querySelector('#deskSim .sim-tab:nth-child(3)')?.textContent.replace(/\D/g, '') ?? 0))
+  ok('drawn at its real width, not stretched', Math.abs(pv.vb - pv.px) <= 6, pv)
+  ok('an entry and an exit per closed trade', pv.marks >= nT && pv.marks <= nT * 2, [pv.marks, nT])
+  ok('each says what it was on hover', await p.evaluate(() => /(in|Out) @ \$/.test(document.querySelector('#simEqBox svg polygon title')?.textContent ?? '')))
+  ok('in about the space the balance chart took', Math.abs(pv.h - slotH) < 60, [slotH, pv.h])
+  await p.evaluate(() => document.getElementById('simEqBox')?.scrollIntoView({ block: 'center' }))
+  await shot(p, 'simchart-price')
+  await p.click('#simEqBox button:has-text("Balance")')
+  ok('and back', await waitFor(p, 'balance view', () => !!document.querySelector('#simEqBox .sim-eq-mk')))
+
   console.log(NL + '-- the replay --')
   await p.evaluate(() => window.__simSetTab('replay'))
   await p.click('#deskSim button:has-text("Replay this run")')

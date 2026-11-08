@@ -78,3 +78,7 @@
 .simcat-r { font-size: 7.5px; fill: var(--muted); font-family: var(--font-mono); }
 .simcat-col.mid .simcat-k { fill: var(--accent); }
 .simcat-tbl tr.mid td.k { color: var(--accent); }
+
+/* Balance or price-with-trades in the one overview slot. */
+.sim-eq-switch { display: flex; gap: 6px; margin-bottom: 8px; }
+.sim-eq-legend b { font-size: 9px; margin-right: 2px; }

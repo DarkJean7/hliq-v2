@@ -354,7 +354,7 @@ export function signalChartSvg({
       // still reads as a direction rather than a smudge.
       const tri = mk.buy ? `${x},${R(y - h2)} ${R(x - w2)},${R(y + w2)} ${R(x + w2)},${R(y + w2)}`
                          : `${x},${R(y + h2)} ${R(x - w2)},${R(y - w2)} ${R(x + w2)},${R(y - w2)}`
-      body += `<polygon points="${tri}" fill="${c}" stroke="var(--panel,#111)" stroke-width="0.5" opacity="0.92"/>`
+      body += `<polygon points="${tri}" fill="${c}" stroke="var(--panel,#111)" stroke-width="0.5" opacity="0.92">${mk.title ? `<title>${mk.title}</title>` : ''}</polygon>`
       // A label, when one is asked for and there is room. Buys read below the marker and
       // sells above, matching the direction the triangle points, and the anchor flips near
       // either edge so a label never runs off the chart.
