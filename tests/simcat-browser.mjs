@@ -183,11 +183,12 @@ console.log(NL + '-- desktop --')
   }, null, 5000))
   await p.evaluate(() => window.__simSetTab('overview'))
   console.log(NL + '-- desktop: how many of each --')
-  ok('a count under every candle', await p.evaluate(() => document.querySelectorAll('#simCatGuide .simcat-c').length === 7))
+  // Eight, not seven: "under 1x" is most candles, so it shows as under-half and half-to-1x.
+  ok('a count under every candle', await p.evaluate(() => document.querySelectorAll('#simCatGuide .simcat-c').length === 8))
   ok('a row per category, totals adding up', await p.evaluate(() => {
     const rows = [...document.querySelectorAll('#simCatGuide [data-tbl="counts"] tbody tr')]
     const sum = rows.reduce((a, r) => a + +r.children[4].textContent.replace(/,/g, ''), 0)
-    return rows.length === 7 && sum === +document.querySelector('#simCatGuide [data-tbl="counts"] tfoot td.n').textContent.replace(/,/g, '')
+    return rows.length === 8 && sum === +document.querySelector('#simCatGuide [data-tbl="counts"] tfoot td.n').textContent.replace(/,/g, '')
   }))
   ok('after the run: trades, won, lost, win rate and PnL per category', await p.evaluate(() => {
     const th = [...document.querySelectorAll('#simCatGuide [data-tbl="trades"] th')].map(x => x.textContent.trim())
@@ -196,8 +197,17 @@ console.log(NL + '-- desktop --')
   }))
   ok('both tables fit the settings column: nothing hidden off to the side', await p.evaluate(() =>
     [...document.querySelectorAll('#simCatGuide .simcat-tbl')].every(t => t.scrollWidth <= t.clientWidth + 1)))
-  await p.click('#simCatGuide [data-tbl="counts"] tbody tr:nth-child(3)')
+  await p.click('#simCatGuide [data-tbl="counts"] tbody tr:nth-child(4)')
   ok('a row can be tapped to start the band there', await waitFor(p, 'band 2', () => document.getElementById('sim_entryCategory')?.value === '2'))
+
+  console.log(NL + '-- desktop: average or median --')
+  const sizeOf = () => p.evaluate(() => (document.getElementById('simCatGuide').textContent.match(/candle on HYPE is \$([\d.,]+)/) ?? [])[1])
+  const meanNormal = await sizeOf()
+  ok('with the average it explains why most candles are under 1x', await p.evaluate(() => /pull the average up/.test(document.getElementById('simCatGuide').textContent)))
+  await p.selectOption('#sim_baselineKind', 'median')
+  await p.evaluate(() => window.__simTouch())
+  ok('switching normal to the median redraws it as a median', await waitFor(p, 'median', () => /the median of/.test(document.getElementById('simCatGuide')?.textContent ?? '') && /median/.test(document.querySelector('#simCatGuide .simcat-n')?.textContent), null, 3000))
+  ok('and normal is a different size', (await sizeOf()) !== meanNormal, [meanNormal, await sizeOf()])
   await p.evaluate(() => document.querySelector('#simCatGuide .simcat-sub')?.scrollIntoView({ block: 'start' }))
   await shot(p, 'simcat-desktop')
   ok('no errors on the page', errs.length === 0, errs)

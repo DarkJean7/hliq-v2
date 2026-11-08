@@ -90,7 +90,8 @@ t('and how many the band would trade, each way', st.longs === 2 && st.shorts ===
 t('normal is the latest baseline, in the market\'s dollars', Math.abs(st.normal - 1) < 0.1, st.normal)
 t('too few candles is unknown, not zero', catStats(rows.slice(0, 5), BT_DEFAULTS) === null)
 const g = catGuideHtml(st, { ...BT_DEFAULTS, entryCategory: 3, entryCategoryMax: 5 }, { label: 'HYPE', iv: '1h' })
-t('seven candles, one per category', (g.match(/data-cat="/g) ?? []).length === 7)
+// Eight, not seven: under 1x is most of the market, so it is drawn as two -- under half, and half to 1x.
+t('eight candles: under 1x split at half, then 1 to 6', (g.match(/data-cat="/g) ?? []).length === 8 && /data-cat="0\.5"/.test(g))
 t('the band is lit: 3, 4 and 5', (g.match(/simcat-col on/g) ?? []).length === 3 && /data-cat="6"/.test(g) && !/simcat-col on[^"]*" data-cat="6"/.test(g))
 t('a candle can be tapped to start the band there, except "under 1x"', /__simCatPick\(3\)/.test(g) && !/__simCatPick\(0\)/.test(g))
 t('each says its size in dollars and how many happened', /Category 3: 3–4× normal · at least \$/.test(g) && /1 candles \(1 green, 0 red\)/.test(g))
@@ -100,12 +101,39 @@ t('with no candles yet it explains instead of showing zeros', /Run once/.test(g0
 
 console.log(nl + '-- how many of each --')
 // "display how many of each candle are. like how many of each category"
-t('each candle carries its count on screen, not only in a tooltip', (g.match(/class="simcat-c"/g) ?? []).length === 7 && /class="simcat-c">1</.test(g))
+t('each candle carries its count on screen, not only in a tooltip', (g.match(/class="simcat-c"/g) ?? []).length === 8 && /class="simcat-c">1</.test(g))
 const tb = g.slice(g.indexOf('simcat-tbl'))
-t('and a table has every category as a row', (tb.match(/<tr class="(on)?"/g) ?? []).length === 7, (tb.match(/<tr class="(on)?"/g) ?? []).length)
+t('and a table has every category as a row, 0 in two halves', (tb.match(/<tr class="(on)?"/g) ?? []).length === 8, (tb.match(/<tr class="(on)?"/g) ?? []).length)
 t('green, red and total add up to the candles judged', st.counts.reduce((a, c) => a + c.green + c.red, 0) === st.judged && tb.includes(`<td class="n">${st.judged.toLocaleString()}</td>`))
 t('it scrolls sideways on a phone rather than being cut off', /class="simcat-tbl" data-dragscroll/.test(g))
 t('without a run it says the trades table is coming', !g.includes('data-tbl="trades"') && /Run it and a second table/.test(g))
+t('the two halves of 0 add up to category 0', st.half.green <= st.counts[0].green && st.half.red <= st.counts[0].red, st.half)
+t('and the half-to-1x row is not tappable: the rule has no category there', !/__simCatPick\(0/.test(tb))
+
+console.log(nl + '-- median baseline --')
+// "would the median not be more accurate?" -- for "a typical candle", yes; offered beside the
+// average rather than replacing it, since the original script used the average.
+const skew = normalise(Array.from({ length: 60 }, (_, i) => {
+  const r = i % 10 === 9 ? 10 : 1                 // nine quiet candles, then one ten times bigger
+  return { t: i * 36e5, o: 100, h: 100 + r / 2, l: 100 - r / 2, c: 100 }
+}))
+const bMean = rangeBaseline(skew, { baselineLookback: 20 })
+const bMed = rangeBaseline(skew, { baselineLookback: 20, baselineKind: 'median' })
+t('the average is pulled up by the spikes', Math.abs(bMean[40] - 1.9) < 1e-9, bMean[40])
+t('the median is the typical candle', bMed[40] === 1, bMed[40])
+t('median uses only candles BEFORE: the same null start as the average', bMed.findIndex(v => v != null) === bMean.findIndex(v => v != null), [bMed.findIndex(v => v != null), bMean.findIndex(v => v != null)])
+const one = normalise(Array.from({ length: 40 }, (_, i) => { const r = i === 30 ? 10 : 1; return { t: i * 36e5, o: 100, h: 100 + r / 2, l: 100 - r / 2, c: 100 } }))
+const oMean = rangeBaseline(one, { baselineLookback: 20 }), oMed = rangeBaseline(one, { baselineLookback: 20, baselineKind: 'median' })
+t('one spike lifts the average for the candles after it, not the median', oMean[31] > oMean[30] * 1.4 && oMed[31] === oMed[30], [oMean[30], oMean[31], oMed[30], oMed[31]])
+t('an even window averages its two middle candles', rangeBaseline(normalise([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((k, i) => ({ t: i * 36e5, o: 100, h: 100 + k + 1, l: 100, c: 100 }))), { baselineLookback: 200, baselineKind: 'median' })[10] === 5.5)
+t('lookback 0 is the whole sample, the same look-ahead caveat', new Set(rangeBaseline(skew, { baselineLookback: 0, baselineKind: 'median' })).size === 1)
+t('the choice is offered, average first and default', BT_DEFAULTS.baselineKind === 'mean' && coerceParams({ baselineKind: 'median' }).baselineKind === 'median' && coerceParams({ baselineKind: 'mode' }).baselineKind === 'mean')
+const medRun = runBacktest(skew, { strategy: 'range', entryCategory: 3, baselineLookback: 20, baselineKind: 'median', useCooldown: false })
+const meanRun = runBacktest(skew, { strategy: 'range', entryCategory: 6, baselineLookback: 20, useCooldown: false })
+t('a 10x spike is category 6 against the median, but mostly not against the inflated average', medRun.trades.length > 0 && medRun.trades.every(x => x.cat === 6) && meanRun.trades.length < medRun.trades.length, [medRun.trades.length, meanRun.trades.length])
+const gMed = catGuideHtml(catStats(skew, { ...BT_DEFAULTS, baselineLookback: 20, baselineKind: 'median' }), { ...BT_DEFAULTS, baselineKind: 'median' }, {})
+t('the guide says median when it is one', /the <b>median<\/b>/.test(gMed) && />median<\/text>/.test(gMed))
+t('and with the average it says why most candles are under 1x', /pull the average up/.test(g))
 const ran = runBacktest(rows, { strategy: 'range', entryCategory: 3, useCooldown: false, useOnePos: false })
 const ts = catTradeStats(ran.trades)
 t('trades are tallied by the candle that opened them', ts[3].n === 1 && ts[5].n === 1 && ts[6].n === 1 && ts[0].n === 0, ts.map(c => c.n))

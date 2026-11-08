@@ -32,6 +32,7 @@ export const BT_DEFAULTS = {
   baselineLookback: 200,  // range: candles of PAST history for the baseline; 0 = whole sample
   entryCategoryMax: 6,    // range: and no bigger than this -- 6 is "no ceiling"
   rangeMode: 'follow',    // range: 'follow' trades the candle's way | 'fade' trades against it
+  baselineKind: 'mean',   // range: "normal" is the window's 'mean' (the original script) or 'median'
 
   // volbreak -- the Volatility Breakout bot's own flags, same names and defaults
   vbLookback: 20,         // candles in the rolling average
@@ -362,7 +363,8 @@ export const categoryOf = (mult) => mult >= 6 ? 6 : mult >= 5 ? 5 : mult >= 4 ? 
  * Null while there are fewer than ten to average. Shared by the rule and by the category
  * guide on screen, so the picture of "category 3" is the same arithmetic the trades used.
  */
-export function rangeBaseline(rows, { baselineLookback = 200 } = {}) {
+export function rangeBaseline(rows, { baselineLookback = 200, baselineKind = 'mean' } = {}) {
+  if (baselineKind === 'median') return rangeMedianBaseline(rows, baselineLookback)
   const out = new Array(rows.length).fill(null)
   const whole = baselineLookback === 0
   const wholeAvg = whole && rows.length ? rows.reduce((a, r) => a + r.range, 0) / rows.length : 0
@@ -379,6 +381,31 @@ export function rangeBaseline(rows, { baselineLookback = 200 } = {}) {
     const n = Math.min(i, baselineLookback)
     if (n < 10) continue                             // too little history to call anything large
     out[i] = (runningSum - rows[i].range) / n        // the candle itself is not in its own baseline
+  }
+  return out
+}
+
+/**
+ * The same window, but its MIDDLE candle rather than its average. Candle ranges are skewed:
+ * a few huge hours pull the average up until most candles sit below "1x" (61% on HYPE 1h), and
+ * one spike inflates the average for the whole window after it, making the next big candles
+ * score lower. The median is the typical candle and barely moves for one spike. Same rules
+ * otherwise: prior candles only, null under ten, 0 = whole sample (look-ahead, measured only).
+ * A sorted copy of the window is kept by binary insert/remove: O(n x window), no re-sort.
+ */
+function rangeMedianBaseline(rows, lookback) {
+  const out = new Array(rows.length).fill(null)
+  const mid = (a) => a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2
+  if (lookback === 0) {
+    if (rows.length) out.fill(mid(rows.map(r => r.range).sort((a, b) => a - b)))
+    return out
+  }
+  const at = (a, v) => { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < v) lo = m + 1; else hi = m } return lo }
+  const win = []
+  for (let i = 0; i < rows.length; i++) {
+    if (win.length >= 10) out[i] = mid(win)       // the window holds only candles BEFORE this one
+    win.splice(at(win, rows[i].range), 0, rows[i].range)
+    if (i >= lookback) win.splice(at(win, rows[i - lookback].range), 1)
   }
   return out
 }
@@ -1865,6 +1892,10 @@ export const BT_CHOICES = [
   { key: 'rangeMode', label: 'Trade the candle', strategy: 'range',
     options: [['follow', 'Its way (momentum)'], ['fade', 'Against it (reversal)']],
     help: 'Its way: a huge green candle opens a long, a huge red one a short -- betting the move carries on. Against it: the opposite, betting it overshot and snaps back. Same candles, opposite bets; run both and the market tells you which kind it is.' },
+
+  { key: 'baselineKind', label: 'Normal is the', strategy: 'range',
+    options: [['mean', 'Average (original script)'], ['median', 'Median (typical candle)']],
+    help: 'What a "normal" candle is, out of the baseline window. Average: add the ranges up and divide -- what the original script did. A few huge candles pull it up, so most candles land below 1x, and after a spike every candle in the window is measured against an inflated normal. Median: the middle candle -- half are smaller, half bigger, and one spike barely moves it. The median is smaller, so each category starts at fewer dollars and the same band trades more often.' },
 
   { key: 'bbMode', label: 'Trade the band', strategy: 'bollinger',
     options: [['revert', 'Fade it (mean reversion)'], ['breakout', 'Follow it (breakout)']],

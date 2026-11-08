@@ -50,10 +50,9 @@
 .simcat-tbl td.n { color: var(--fg); font-weight: 700; }
 .simcat-tbl .g { color: var(--green); }
 .simcat-tbl .r { color: var(--red); }
-.simcat-tbl tbody tr { cursor: pointer; }
-.simcat-tbl tbody tr:first-child { cursor: default; }
+.simcat-tbl tbody tr[onclick] { cursor: pointer; }
 .simcat-tbl tbody tr.on { background: color-mix(in srgb, var(--accent) 9%, transparent); }
-.simcat-tbl tbody tr:not(:first-child):hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.simcat-tbl tbody tr[onclick]:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .simcat-tbl td.k { font-weight: 700; color: var(--fg); }
 .simcat-tbl td.k i { font-style: normal; color: var(--accent); font-size: 8px; vertical-align: middle; }
 .simcat-tbl tfoot td { border-top: 1px solid var(--border); color: var(--muted); font-size: 10.5px; }
