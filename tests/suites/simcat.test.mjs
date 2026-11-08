@@ -122,6 +122,9 @@ t('without a run it says the trades table is coming', !g.includes('data-tbl="tra
 t('the two halves of 0 add up to category 0', st.half.green <= st.counts[0].green && st.half.red <= st.counts[0].red, st.half)
 t('and the half-to-1x row is not tappable: the rule has no category there', !/__simCatPick\(0/.test(tb))
 
+// "profit factor not showing": 5 wins and no loss is unbounded -- infinity, not a dash.
+t('a run with wins and no losing trade shows profit factor as infinity', sim.includes("t.profitFactor.toFixed(2) : _simPfNoLoss(t) ? '∞' : '—'") && sim.includes('(t?.grossLoss ?? 0) === 0'))
+
 console.log(nl + '-- median baseline --')
 // "would the median not be more accurate?" -- for "a typical candle", yes; offered beside the
 // average rather than replacing it, since the original script used the average.

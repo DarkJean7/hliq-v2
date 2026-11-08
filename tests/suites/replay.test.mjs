@@ -139,7 +139,8 @@ t('the last few are labelled', cli.includes("k < marks.length - 4 ? ''"))
 t('and no longer states the notional, which was never the question',
   !cli.includes('$${fmtUSD(m.px * m.sz)}'))
 // Trades cluster; four labels on the same pixels is a smudge rather than four facts.
-t('colliding labels step clear of each other', chart.includes('placed.some(q => Math.abs(q.x - x) < 52'))
+// The gap is wider at real pixel width (a chart drawn at its true size has wider labels).
+t('colliding labels step clear of each other', chart.includes('placed.some(q => Math.abs(q.x - x) < (real ? 64 : 52)'))
 t('and are dropped rather than run off the chart', chart.includes('if (ly > 8 && ly < height - 2 && tries < 4)'))
 // +null is 0, and 0 is finite -- which drew every equity marker along the bottom edge.
 t('a marker with no price sits on the line, not at zero', chart.includes('const hasV = mk.v != null && Number.isFinite(+mk.v)'))

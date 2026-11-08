@@ -60,3 +60,16 @@
 .simcat-shbar i { display: block; height: 100%; background: var(--fg-2); border-radius: 2px; }
 .simcat-note { margin-top: 5px; font-size: 10.5px; color: var(--muted); line-height: 1.4; }
 .simcat-sub { margin-top: 10px; font-size: 10.5px; font-weight: 700; color: var(--fg); }
+
+/* The replay's key under its chart, and the trades drawn on the equity chart. */
+.sim-rep-key { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 4px 10px 6px; font-size: 10px; color: var(--muted); }
+.sim-rep-key b { font-size: 9px; margin-right: 2px; }
+.sim-rep-key i { display: inline-block; width: 14px; height: 2px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+.sim-rep-key i.dash { background: repeating-linear-gradient(90deg, var(--fg-3) 0 3px, transparent 3px 6px); }
+.sim-eq-mk { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; border: 2px solid var(--panel-2); box-sizing: border-box; pointer-events: auto; cursor: default; }
+.sim-eq-mk.w { background: var(--green); }
+.sim-eq-mk.l { background: var(--red); }
+.sim-eq-mk.o { background: var(--panel-2); border-color: var(--fg-3); }
+.sim-eq-mk:hover { transform: scale(1.5); }
+.sim-eq-legend i.band { height: 9px; width: 10px; background: color-mix(in srgb, var(--fg-3) 30%, transparent); border-radius: 2px; }
+.sim-eq-legend i.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 4px 0 0 -0px transparent; }

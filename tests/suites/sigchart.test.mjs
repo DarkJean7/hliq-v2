@@ -211,5 +211,22 @@ t('toggling repaints rather than rebuilding', /__repMarkers = function\(\)[\s\S]
 t('the chip is in both players', cli.includes("for (const id of ['repStyles', 'repStyles2'])") &&
   cli.includes('id="repStyles2"'))
 
+// The Simulator replay "looks weird": a 320-wide drawing stretched to ~1,050px smeared every
+// label three times wider than tall. Given its real width, one unit is one pixel.
+{
+  const rows = Array.from({ length: 40 }, (_, i) => ({ t: i * 36e5, o: 10 + i * 0.1, h: 10.3 + i * 0.1, l: 9.8 + i * 0.1, c: 10.1 + i * 0.1 }))
+  const base = { main: rows.map(r => [r.t, r.c]), candles: rows, ordinal: true, from: 0, to: 40, height: 240 }
+  const wide = signalChartSvg({ ...base, width: 1000,
+    markers: [{ t: 5 * 36e5, v: 10.5, buy: true, label: 'LONG' }, { t: 20 * 36e5, v: 12, buy: false, label: '+$41.42' }],
+    links: [{ t0: 5 * 36e5, v0: 10.5, t1: 20 * 36e5, v1: 12, color: 'var(--green)' }],
+    levels: [{ v: 12.5, color: 'var(--green)', label: 'target 12.5' }] })
+  t('given a width, the viewBox is that width', /viewBox="0 0 1000 240"/.test(wide.svg))
+  t('and labels are a readable size with a halo', /font-size="10.5"[^>]*paint-order="stroke"/.test(wide.svg))
+  t('an entry is joined to its exit', (wide.svg.match(/<line [^>]*stroke="var\(--green\)" stroke-width="1.4"/g) ?? []).length === 1)
+  t('a level is a dashed line with its label', /target 12\.5/.test(wide.svg))
+  const old = signalChartSvg(base)
+  t('without a width it is the 320 drawing it always was', /viewBox="0 0 320 240"/.test(old.svg))
+}
+
 console.log(String.fromCharCode(10) + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

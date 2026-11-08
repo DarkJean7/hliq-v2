@@ -144,8 +144,15 @@ export function signalChartSvg({
   main, cmp = null, mainLabel = '', cmpLabel = '', cmps = null, indicator = null, vals = [],
   height = 132, subHeight = 46, fmtPrice = (v) => String(v),
   from = 0, to = null, markers = null, candles = null, grid = false, ordinal = false,
+  width = null, links = null, levels = null,
 } = {}) {
-  const W = 320, PAD = 4
+  // `width`: the pixels the chart will actually occupy. Without it the drawing is 320 wide and
+  // stretched to the box, which is fine for lines but smears text and triangles sideways --
+  // the Simulator replay at 1,050px drew its "+$41.42" three times wider than tall
+  // ("looks weird"). With it, one unit is one pixel and nothing is distorted.
+  const W = Number.isFinite(+width) && +width >= 160 ? Math.round(+width) : 320, PAD = 4
+  const real = Number.isFinite(+width) && +width >= 160
+  const FS = real ? 10.5 : 7.5
   const full = (main ?? []).filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
   if (full.length < 3) return { svg: '', legend: '', hi: '', lo: '', empty: true, meta: null }
 
@@ -290,7 +297,17 @@ export function signalChartSvg({
   // bought at your price and not at the candle close. Without a `v` it sits on the line
   // itself, which is what an equity chart needs -- a fill price means nothing on an axis
   // measured in account value.
-  if (markers?.length) {
+  // Levels: horizontal lines across the window -- an open trade's entry, target and stop, so
+  // a replay shows what the trade is waiting for, not only where it began.
+  for (const lv of levels ?? []) {
+    const v = comparing ? null : +lv.v
+    if (v == null || !Number.isFinite(v) || v < y0 || v > y1) continue
+    const yy = R(py(v))
+    body += `<line x1="${PAD}" x2="${W - PAD}" y1="${yy}" y2="${yy}" stroke="${lv.color}" stroke-width="1" stroke-dasharray="${lv.dash ?? '4 3'}" opacity="0.75" vector-effect="non-scaling-stroke"/>`
+    if (lv.label) body += `<text x="${W - PAD - 2}" y="${R(yy - 3)}" text-anchor="end" font-size="${FS - 1}" font-weight="700" fill="${lv.color}">${lv.label}</text>`
+  }
+
+  if (markers?.length || links?.length) {
     const times = clean.map(p => +p[0])
     // A marker carries a TIME, and the axis may be measured in slots. Interpolating between
     // the two samples it fell between puts a fill where it happened rather than snapping it
@@ -312,8 +329,17 @@ export function signalChartSvg({
       }
       return best
     }
+    // Links: one line per round turn, entry to exit, in the colour of how it ended -- which
+    // pairs a buy with ITS sell when several are on screen. Clipped to the window by time.
+    for (const lk of links ?? []) {
+      const a = +lk.t0, b = +lk.t1
+      if (!(b >= meta.t0 && a <= meta.t1) || comparing) continue
+      const ta = Math.max(a, meta.t0), tb = Math.min(b, meta.t1)
+      const at = (t) => +lk.v0 + (b > a ? (t - a) / (b - a) : 0) * (+lk.v1 - +lk.v0)
+      body += `<line x1="${R(px(domAt(ta)))}" y1="${R(py(at(ta)))}" x2="${R(px(domAt(tb)))}" y2="${R(py(at(tb)))}" stroke="${lk.color}" stroke-width="1.4" stroke-dasharray="${lk.dash ?? ''}" opacity="0.8" vector-effect="non-scaling-stroke"/>`
+    }
     const placed = []
-    for (const mk of markers) {
+    for (const mk of markers ?? []) {
       if (+mk.t < meta.t0 || +mk.t > meta.t1) continue
       const hasV = mk.v != null && Number.isFinite(+mk.v)
       const yv = hasV ? toY(+mk.v) : yNear(+mk.t)
@@ -322,7 +348,7 @@ export function signalChartSvg({
       const c = mk.buy ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)'
       // Sized to the slot, not fixed. A 4px triangle over a 3px candle covers the bar it is
       // annotating, and sixty of them in a row are a solid band rather than sixty facts.
-      const w2 = ordinalOn ? Math.max(2.2, Math.min(4, ((W - PAD * 2) / slots) * 0.62)) : 4
+      const w2 = ordinalOn ? Math.max(2.2, Math.min(real ? 6 : 4, ((W - PAD * 2) / slots) * 0.62)) : 4
       const h2 = w2 * 0.75
       // Buys point up from below the price, sells point down from above, so a cluster
       // still reads as a direction rather than a smudge.
@@ -335,18 +361,19 @@ export function signalChartSvg({
       if (mk.label) {
         const near0 = x < 46, near1 = x > W - 46
         const anchor = near0 ? 'start' : near1 ? 'end' : 'middle'
-        let ly = mk.buy ? Math.min(height - 3, y + 15) : Math.max(9, y - 11)
+        let ly = mk.buy ? Math.min(height - 3, y + w2 + FS + 2) : Math.max(FS + 1, y - w2 - 4)
         // Trades cluster, and four labels on the same few pixels is a smudge rather than
         // four facts. Step a colliding one clear of the last, and give up rather than run
         // off the chart -- an unreadable label is worse than none.
         let tries = 0
-        while (tries < 4 && placed.some(q => Math.abs(q.x - x) < 52 && Math.abs(q.y - ly) < 9)) {
-          ly += mk.buy ? 10 : -10
+        while (tries < 4 && placed.some(q => Math.abs(q.x - x) < (real ? 64 : 52) && Math.abs(q.y - ly) < FS + 1.5)) {
+          ly += mk.buy ? FS + 2.5 : -(FS + 2.5)
           tries++
         }
         if (ly > 8 && ly < height - 2 && tries < 4) {
           placed.push({ x, y: ly })
-          body += `<text x="${x}" y="${R(ly)}" text-anchor="${anchor}" font-size="7.5" font-weight="700" fill="${c}" opacity="0.95">${mk.label}</text>`
+          // A dark halo under the text so it stays readable where it crosses a candle.
+          body += `<text x="${x}" y="${R(ly)}" text-anchor="${anchor}" font-size="${FS}" font-weight="700" fill="${mk.labelColor ?? c}" opacity="0.95"${real ? ' stroke="var(--panel,#111)" stroke-width="3" paint-order="stroke" font-family="var(--font-mono,monospace)"' : ''}>${mk.label}</text>`
         }
       }
     }

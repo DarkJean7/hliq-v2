@@ -1379,7 +1379,15 @@ let _simEq = null         // what the equity chart drew, for the hover readout
  * the same weight on a phone and a monitor. Labels are HTML beside it rather than SVG text,
  * which would shrink to nothing on a narrow screen.
  */
-function _simEquityHtml(sum, startBal, stepped) {
+/**
+ * Profit factor is gross wins over gross losses. With wins and no losing trade it is unbounded:
+ * the number stays null (it cannot be ranked) but the screen says infinity, not a dash that
+ * reads as "unknown" on a 5-0 run.
+ */
+const _simPfNoLoss = (t) => t?.profitFactor == null && (t?.grossWin ?? 0) > 0 && (t?.grossLoss ?? 0) === 0
+const _simPf = (t) => t?.profitFactor != null ? t.profitFactor.toFixed(2) : _simPfNoLoss(t) ? '∞' : '—'
+
+function _simEquityHtml(sum, startBal, stepped, trades = null) {
   const pts = downsample(sum.curve, 600)
   if (pts.length < 2) return ''
   const bpts = sum.bench ? downsample(sum.bench.curve, 600) : []
@@ -1403,9 +1411,31 @@ function _simEquityHtml(sum, startBal, stepped) {
   const dd = drawdownCurve(pts)
   const ddMin = Math.min(-0.01, ...dd.map(p => p[1]))
   const dy = (v) => 2 + (v / ddMin) * (DH - 4)
-  const ddPath = dd.map(([t, v], i) => `${i ? 'L' : 'M'}${R(x(t))},${R(dy(v))}`).join('') + `L${W},2L0,2Z`
+  // Stepped like the balance it comes from: a trade-by-trade curve is flat between closes, and
+  // a sloped line drew a seven-week slide where there was one drop at the end.
+  const ddPath = dd.map(([t, v], i) => i && stepped ? `H${R(x(t))}V${R(dy(v))}` : `${i ? 'L' : 'M'}${R(x(t))},${R(dy(v))}`).join('') + `L${W},2L0,2Z`
   const end = pts[pts.length - 1][1]
   const up = end >= startBal
+
+  // The trades themselves ("make the chart show the transactions"): a faint band for the time
+  // each was open, and a dot where it closed, on the balance it left. Hover for the trade.
+  // Past a few hundred they are a solid smear, so then the curve speaks alone.
+  const tr = (trades ?? []).filter(t => Number.isFinite(+t?.time) && Number.isFinite(+t?.balance))
+  const showTr = tr.length > 0 && tr.length <= 300
+  // Bands only while they are separate shapes; at hundreds they merge into one tint.
+  const showBands = showTr && tr.length <= 80
+  const bands = showBands ? tr.map(t => {
+    const a = R(x(+t.time)), b = R(x(+(t.exitAt ?? t.markAt ?? t1)))
+    const col = t.outcome === 'open' ? 'var(--fg-3)' : (t.delta ?? 0) >= 0 ? 'var(--green)' : 'var(--red)'
+    return `<rect x="${a}" y="0" width="${Math.max(1.5, b - a)}" height="${H}" fill="${col}" opacity=".08"/>`
+  }).join('') : ''
+  const dots = showTr ? tr.map(t => {
+    const at = +(t.exitAt ?? t.markAt ?? t1)
+    const cls = t.outcome === 'open' ? 'o' : (t.delta ?? 0) >= 0 ? 'w' : 'l'
+    const out = t.exitPx ?? t.markPx
+    const tip = `${t.side === 'long' ? _T('Long', 'Largo') : _T('Short', 'Corto')}${t.coin ? ' ' + _ocCoinLabel(t.coin) : ''} ${fmtPrice(t.entry)} → ${out != null ? fmtPrice(out) : '—'} · ${signed(t.delta ?? 0)}${t.outcome === 'open' ? ' · ' + _T('still open', 'aún abierta') : ''} · ${new Date(+t.time).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`
+    return `<span class="sim-eq-mk ${cls}" style="left:${(x(at) / W * 100).toFixed(2)}%;top:${(y(+t.balance) / H * 200).toFixed(1)}px" title="${esc(tip)}"></span>`
+  }).join('') : ''
   _simEq = { pts, bpts, t0, t1, start: startBal }
   const when = (t) => new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: '2-digit' })
   return `
@@ -1413,6 +1443,7 @@ function _simEquityHtml(sum, startBal, stepped) {
       <div class="sim-eq-legend">
         <span><i style="background:${up ? 'var(--green)' : 'var(--red)'}"></i>${_T('Strategy', 'Estrategia')}</span>
         ${bpts.length ? `<span><i class="dash"></i>${_T('Buy & hold', 'Comprar y mantener')}</span>` : ''}
+        ${showTr ? `${showBands ? `<span><i class="band"></i>${_T('in a trade', 'en operación')}</span>` : ''}<span><i class="dot"></i>${_T('trade closed (hover)', 'operación cerrada (pasa el ratón)')}</span>` : ''}
         <span style="flex:1"></span>
         <span id="simEqTip" class="sim-eq-tip"></span>
       </div>
@@ -1422,10 +1453,12 @@ function _simEquityHtml(sum, startBal, stepped) {
             <stop offset="0" stop-color="${up ? 'var(--green)' : 'var(--red)'}" stop-opacity=".22"/>
             <stop offset="1" stop-color="${up ? 'var(--green)' : 'var(--red)'}" stop-opacity="0"/></linearGradient></defs>
           <line x1="0" x2="${W}" y1="${R(y(startBal))}" y2="${R(y(startBal))}" stroke="var(--border2)" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
+          ${bands}
           <path d="${area}" fill="url(#simEqG)"/>
           ${bd ? `<path d="${bd}" fill="none" stroke="var(--fg-3)" stroke-width="1.3" stroke-dasharray="5 4" vector-effect="non-scaling-stroke" opacity=".85"/>` : ''}
           <path d="${d}" fill="none" stroke="${up ? 'var(--green)' : 'var(--red)'}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
         </svg>
+        ${dots}
         <div id="simEqLine" class="sim-eq-cross" style="display:none"></div>
         <span class="sim-eq-y" style="top:2px">${money(hi - pad)}</span>
         <span class="sim-eq-y" style="bottom:2px">${money(lo + pad)}</span>
@@ -1726,6 +1759,22 @@ function _simRepPaint() {
   if (ct && _simRep) ct.textContent = (_simRep.i + 1) + '/' + ((_simBars[_simRep.coin] ?? []).length || 1)
 }
 
+/**
+ * The pixels the replay chart will fill, so it is drawn at that size instead of stretched
+ * from 320 (which smeared every label sideways). Null before the panel exists; the first
+ * render then repaints once it does.
+ */
+function _simRepWidth() {
+  const el = document.getElementById('simReplayBody')
+  const w = el?.clientWidth ? el.clientWidth - 4 : 0
+  if (w >= 160) return w
+  if (!_simRepWidth._queued) {
+    _simRepWidth._queued = true
+    requestAnimationFrame(() => { _simRepWidth._queued = false; if (document.getElementById('simReplayBody')?.clientWidth) _simRepPaint() })
+  }
+  return null
+}
+
 /** The stake an open trade is marked against, for the running line beside the replay. */
 function _simRepStakeFrac() {
   const p = _simResult?.params ?? {}
@@ -1745,8 +1794,26 @@ function _simRepBodyHtml() {
   const trades = _simRepTrades(_simRep.coin)
   const marks  = marksUpto(replayMarks(trades), t)
   const st     = simStateAt(trades, t, start)
+  const G = 'var(--green,#22c55e)', Rd = 'var(--red,#ef4444)', M = 'var(--fg-3,#8891a0)'
+  // Every round turn revealed so far, entry joined to exit; the one in flight joined to the
+  // price now, dashed, because it can still go either way.
+  const links = trades.filter(x => +x.time <= t).map(x => {
+    const closed = x.outcome !== 'open' && Number.isFinite(+x.exitAt) && +x.exitAt <= t
+    return closed
+      ? { t0: +x.time, v0: +x.entry, t1: +x.exitAt, v1: +x.exitPx, color: (x.delta ?? 0) >= 0 ? G : Rd }
+      : { t0: +x.time, v0: +x.entry, t1: t, v1: px, color: M, dash: '3 3' }
+  })
+  // What the open trade is waiting for: its target and its stop, and where it came in.
+  const op0 = st.open
+  const levels = op0 ? [
+    { v: op0.entry, color: M, label: _T('entry', 'entrada') + ' ' + fmtPrice(op0.entry), dash: '2 3' },
+    ...(op0.tp != null ? [{ v: op0.tp, color: G, label: _T('target', 'objetivo') + ' ' + fmtPrice(op0.tp) }] : []),
+    ...(op0.sl != null ? [{ v: op0.sl, color: Rd, label: _T('stop', 'stop') + ' ' + fmtPrice(op0.sl) }] : []),
+  ] : []
+  const w = _simRepWidth()
 
   const chart = signalChartSvg({
+    width: w, links, levels,
     main: rows.map(r => [r.t, r.c]),
     candles: rows,
     grid: true,
@@ -1759,7 +1826,7 @@ function _simRepBodyHtml() {
     from: i + 1 - SIM_REP_SPAN, to: i + 1,
     mainLabel: esc(_ocCoinLabel(_simRep.coin)),
     fmtPrice: (v) => '$' + fmtPrice(v),
-    height: 190,
+    height: w ? 240 : 190,
     // Only the last few are labelled: forty labels over sixty candles is a wall of text.
     // An exit says what it made, an entry says which way it went.
     markers: marks.map((m, k) => ({
@@ -1791,7 +1858,10 @@ function _simRepBodyHtml() {
   return `
     <div class="sim-inset" style="overflow:hidden;padding:0">
       ${chart.svg
-        ? `<div style="padding:4px 2px 0">${chart.svg}</div>`
+        ? `<div style="padding:4px 2px 0;position:relative">${chart.svg}
+            <span class="sim-eq-y" style="top:4px;left:6px;right:auto">${chart.hi}</span>
+            <span class="sim-eq-y" style="bottom:2px;left:6px;right:auto">${chart.lo}</span></div>
+          <div class="sim-rep-key"><span><b style="color:var(--green)">▲</b> ${_T('buy', 'compra')}</span><span><b style="color:var(--red)">▼</b> ${_T('sell', 'venta')}</span><span><i style="background:var(--green)"></i>${_T('entry → exit, won', 'entrada → salida, ganada')}</span><span><i style="background:var(--red)"></i>${_T('lost', 'perdida')}</span>${op ? `<span><i class="dash"></i>${_T('open, to the price now', 'abierta, hasta el precio actual')}</span>` : ''}</div>`
         : `<div class="sim-empty-s" style="height:190px;display:flex;align-items:center;justify-content:center">${
             _T('Not enough of this market to draw yet.', 'Aún no hay suficiente para dibujar.')}</div>`}
       <div style="display:flex;flex-wrap:wrap;gap:14px;padding:9px 12px 11px;border-top:1px solid var(--border)">
@@ -2351,7 +2421,7 @@ function _simStatsHtml(r, s) {
     ${_row(_T('Trades', 'Operaciones'), `${r.tradesMade}${perDay != null ? ` <span class="sim-lbl-u">· ${perDay >= 1 ? perDay.toFixed(1) : (perDay * 7).toFixed(1)}/${perDay >= 1 ? _T('day', 'día') : _T('wk', 'sem')}</span>` : ''}`)}
     ${_row(_T('Won / lost', 'Ganadas / perdidas'), `${r.won} / ${r.lost}`)}
     ${_row(_T('Win rate', 'Aciertos'), r.winRate == null ? '—' : r.winRate.toFixed(1) + '%')}
-    ${_row(_T('Profit factor', 'Factor de beneficio'), t.profitFactor == null ? '—' : t.profitFactor.toFixed(2), t.profitFactor == null ? '' : tone(t.profitFactor - 1))}
+    ${_row(_T('Profit factor', 'Factor de beneficio'), _simPf(t), _simPfNoLoss(t) ? 'var(--green)' : t.profitFactor == null ? '' : tone(t.profitFactor - 1))}
     ${_row(_T('Expectancy / trade', 'Esperanza / op.'), t.expectancy == null ? '—' : signed(t.expectancy), tone(t.expectancy ?? 0))}
     ${_row(_T('Avg win / avg loss', 'Media gan. / pérd.'), `${t.avgWin == null ? '—' : signed(t.avgWin)} / ${t.avgLoss == null ? '—' : signed(t.avgLoss)}`)}
     ${_row(_T('Payoff ratio', 'Ratio de pago'), num(t.payoff))}
@@ -2406,7 +2476,7 @@ function _simStatsHtml(r, s) {
 function _simOverviewHtml(r, s) {
   const stepped = !(Array.isArray(r.curve) && r.curve.length)
   return `
-    <div class="sim-inset" style="padding:10px 10px 8px">${_simEquityHtml(s, r.startBalance, stepped)}</div>
+    <div class="sim-inset" style="padding:10px 10px 8px">${_simEquityHtml(s, r.startBalance, stepped, r.grid || r.dca ? null : r.trades)}</div>
     ${_simStatsHtml(r, s)}
     <div class="sim-hint" style="margin-top:10px">${_T('Day by day and month by month: the Calendar tab. Every setting this run used: Settings.',
       'Día a día y mes a mes: pestaña Calendario. Cada ajuste usado: Ajustes.')}</div>`
@@ -2571,8 +2641,9 @@ function _simResultHtml() {
         ${_simKpi(_T('Max drawdown', 'Caída máx.'), ddTxt(s.maxDD), s.risk.calmar != null ? 'Calmar ' + num(s.risk.calmar) : '', s.maxDD > 0 ? 'var(--red)' : '')}
         ${_simKpi(_T('Win rate', 'Aciertos'), wr == null ? '—' : wr.toFixed(1) + '%', r.grid || (r.dca && wr == null)
           ? _T('100% by construction', '100% por diseño') : `${r.won}W · ${r.lost}L`)}
-        ${_simKpi(_T('Profit factor', 'F. beneficio'), t.profitFactor == null ? '—' : t.profitFactor.toFixed(2),
-          t.expectancy == null ? '' : signed(t.expectancy) + ' / ' + _T('trade', 'op'), t.profitFactor == null ? '' : tone(t.profitFactor - 1))}
+        ${_simKpi(_T('Profit factor', 'F. beneficio'), _simPf(t),
+          _simPfNoLoss(t) ? _T('no losing trade', 'ninguna perdedora') + (t.expectancy == null ? '' : ' · ' + signed(t.expectancy) + ' / ' + _T('trade', 'op'))
+            : t.expectancy == null ? '' : signed(t.expectancy) + ' / ' + _T('trade', 'op'), _simPfNoLoss(t) ? 'var(--green)' : t.profitFactor == null ? '' : tone(t.profitFactor - 1))}
         ${_simKpi('Sharpe', num(s.risk.sharpe), 'Sortino ' + num(s.risk.sortino), tone(s.risk.sharpe ?? 0))}
         ${_simKpi(_T('Trades', 'Operaciones'), `${r.tradesMade}`, r.avgHeld ? _T('avg ', 'media ') + _simDur(r.avgHeld, meta.iv) : '')}
         ${_simKpi(_T('Time in market', 'En mercado'), s.exposure == null ? '—' : s.exposure.toFixed(0) + '%', s.risk.cagr != null ? pct(s.risk.cagr, 0) + ' ' + _T('/yr', '/año') : '')}
