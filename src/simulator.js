@@ -34,6 +34,8 @@ import { hlPool } from './api.js'
 import { fetchCandles } from './trading.js'
 import { fmtUSD, fmtPrice, esc } from './format.js'
 import { runLadderSim, LadderTooSmall } from './simladder.js'
+import { catStats, catGuideHtml, levelsHtml } from './simcat.js'
+import './simcat.css'
 
 let ctx = {
   /** The app's two-language string picker. */
@@ -297,6 +299,47 @@ function _simPreviewPaint() {
   pv.innerHTML = _simPosPreview()
 }
 
+/**
+ * The candles the category guide speaks about: the first market at the interval and length
+ * on screen, if they have been fetched; else the last run's, which still say what a category
+ * looks like on that market. Null when there are none -- the guide then explains without numbers.
+ */
+function _simGuideRows() {
+  const coin = _simCoinList()[0]
+  if (!coin) return null
+  const hit = _simCache.get(`${coin}|${_simIv}|${_simCount}`)
+  if (hit) return { rows: hit.rows, iv: _simIv }
+  if (_simBars[coin]?.length) return { rows: _simBars[coin], iv: _simRunMeta?.iv ?? _simIv }
+  return null
+}
+
+function _simCatGuide() {
+  const g = _simGuideRows()
+  const coin = _simCoinList()[0]
+  return catGuideHtml(g ? catStats(g.rows, _simParams) : null, _simParams,
+    { T: _T, fmtPrice, label: coin ? _mktName(coin) : null, iv: g?.iv ?? _simIv })
+}
+
+const _simLevels = () => levelsHtml(_simParams, { T: _T })
+
+/** Repaint the category guide and the exit picture from the boxes, keeping the keyboard. */
+function _simVisualsPaint() {
+  const cg = document.getElementById('simCatGuide'), lv = document.getElementById('simLevels')
+  if (!cg && !lv) return
+  _simCollect()
+  if (cg) cg.innerHTML = _simCatGuide()
+  if (lv) lv.innerHTML = _simLevels()
+}
+
+// A tapped candle in the guide starts the band there, keeping its top unless that would
+// put it below the start.
+window.__simCatPick = function(k) {
+  window.__simStructural(() => {
+    _simParams.entryCategory = k
+    if ((_simParams.entryCategoryMax ?? 6) < k) _simParams.entryCategoryMax = k
+  })
+}
+
 /** Repaint the chips and the search results without touching the box being typed in. */
 function _simMktPaint() {
   const c = document.getElementById('simChips')
@@ -366,6 +409,8 @@ function _simSetCoins(ids) {
   _simSave()
 }
 
+const SIM_EXIT_SWITCHES = ['useTp', 'useSl', 'splitLevels']
+
 /** Read every box at once, so one run cannot use a mix of old and new values. */
 function _simCollect() {
   const raw = {}
@@ -380,6 +425,11 @@ function _simCollect() {
     const el = document.getElementById('sim_' + m.key)
     if (el) raw[m.key] = !!el.checked
     else raw[m.key] = _simParams[m.key]
+  }
+  // The exit switches sit beside their boxes rather than in Modules; same rule for a missing one.
+  for (const k of SIM_EXIT_SWITCHES) {
+    const el = document.getElementById('sim_' + k)
+    raw[k] = el ? !!el.checked : _simParams[k]
   }
   // A box that is not on screen keeps its value too: coerceParams would otherwise hand every
   // other strategy's settings back to their defaults each time this one was collected.
@@ -509,6 +559,7 @@ window.__simTouch = function() {
   const cnt = parseInt(document.getElementById('sim_count')?.value ?? '', 10)
   if (span && Number.isFinite(cnt)) span.textContent = _simSpanText(Math.max(50, Math.min(5000, cnt)))
   _simPreviewPaint()
+  _simVisualsPaint()
   if (!_simResult || _simStale) return
   _simStale = true
   const el = document.getElementById('simStale')
@@ -982,6 +1033,7 @@ function _simFieldVisible(f, P = _simParams) {
   if (f.group === 'riskModel') return P.pnlModel === 'risk'
   if (f.group === 'fixedModel') return P.pnlModel === 'fixed'
   if (f.group === 'notionalModel') return P.pnlModel === 'notional'
+  if (f.group === 'splitLevels') return !!P.splitLevels
   if (f.group && f.group.startsWith('use')) return !!P[f.group]
   return true
 }
@@ -1077,6 +1129,7 @@ function _simStrategyCard() {
     <div class="sim-desc">${esc(strat[2])}</div>
     ${cur === 'tokyo' ? _simTokyoNote() : ''}
     ${fields || choices ? `<div style="margin-top:12px">${_simGrid(fields + choices)}</div>` : ''}
+    ${cur === 'range' ? `<div id="simCatGuide">${_simCatGuide()}</div>` : ''}
     ${cur === 'dca' ? _simDcaNote() : ''}`)
 }
 
@@ -1112,12 +1165,58 @@ function _simDataCard() {
     </div>`)
 }
 
+/**
+ * A field with an on/off switch in its label row. A div, not a label: a label around two
+ * inputs hands every click on it to the first one, so tapping the hint would flip the switch.
+ * Off greys the box out but keeps its number, so switching back on restores it.
+ */
+function _simSwitchedFieldHtml(f, sw, label, ownSwitch = true) {
+  const on = _simParams[sw] !== false
+  return `<div class="sim-field${on ? '' : ' off'}">
+    <div class="sim-lbl">
+      <span class="sim-lbl-t">${esc(label ?? f.label)}</span>
+      <span class="sim-lbl-u" id="simU_${f.key}">${esc(_simUnit(f))}</span>
+      <span style="flex:1"></span>
+      ${_simQ(f.key)}
+      ${ownSwitch ? `<input id="sim_${sw}" type="checkbox" class="sim-sw sim-sw-s" ${on ? 'checked' : ''} onchange="window.__simToggleModule()"
+        aria-label="${esc((label ?? f.label) + ' ' + _T('on or off', 'sí o no'))}">` : ''}
+    </div>
+    <input id="sim_${f.key}" class="sim-in" type="number" inputmode="decimal" step="${f.step}" value="${_simParams[f.key]}" oninput="window.__simTouch()"${on ? '' : ' disabled'}>
+    <div class="sim-hint">${on ? esc(f.hint) : (sw === 'useTp' ? _T('Off — no target.', 'Apagado — sin objetivo.') : _T('Off — no stop.', 'Apagado — sin stop.'))}</div>
+    ${_simHelpHtml(f.key, f.help ?? '')}
+  </div>`
+}
+
 function _simExitCard() {
   const cur = _simParams.strategy
-  const fields = BT_FIELDS.filter(f => !f.strategy && !f.group && f.key !== 'startBalance' && _simFieldVisible(f)).map(_simFieldHtml).join('')
+  const byKey = (k) => BT_FIELDS.find(f => f.key === k)
+  const tpF = byKey('takeProfitPct'), slF = byKey('stopLossPct')
+  const levels = _simFieldVisible(tpF)
+  const split = !!_simParams.splitLevels
+  // Any other plain field that lands here, so a new one is not silently dropped.
+  const rest = BT_FIELDS.filter(f => !f.strategy && !f.group && f.key !== 'startBalance' &&
+    f.key !== 'takeProfitPct' && f.key !== 'stopLossPct' && _simFieldVisible(f)).map(_simFieldHtml).join('')
   const choices = BT_CHOICES.filter(c => !c.group && !c.strategy && c.key !== 'splitRisk' && !c.notFor?.includes(cur)).map(_simChoiceHtml).join('')
-  if (!fields && !choices) return ''
-  return _simCard(3, _T('Entry and exit', 'Entrada y salida'), _simGrid(fields + choices))
+  if (!levels && !rest && !choices) return ''
+  const shortF = BT_FIELDS.filter(f => f.group === 'splitLevels')
+  const lvHtml = levels ? `
+    ${_simGrid(_simSwitchedFieldHtml(tpF, 'useTp', split ? _T('Long take profit', 'Objetivo largo') : null) +
+               _simSwitchedFieldHtml(slF, 'useSl', split ? _T('Long stop loss', 'Stop largo') : null))}
+    <div class="sim-mod${split ? ' on' : ''}" style="margin-top:10px">
+      <label class="sim-mod-h">
+        <span style="min-width:0;flex:1">
+          <span class="sim-mod-n">${_T('Different levels for shorts', 'Niveles distintos para cortos')}</span>
+          <span class="sim-mod-b">${_T('Like the original script: 100/50 pips on a buy, 30/30 on a sell.', 'Como el script original: 100/50 pips en compra, 30/30 en venta.')}</span>
+        </span>
+        <input id="sim_splitLevels" type="checkbox" class="sim-sw" ${split ? 'checked' : ''} onchange="window.__simToggleModule()">
+      </label>
+      ${split ? `<div class="sim-mod-body">${_simGrid(shortF.map(f =>
+        // The long side's switch governs both: "no stop" is a decision about the strategy.
+        _simSwitchedFieldHtml(f, f.key === 'shortTpPct' ? 'useTp' : 'useSl', null, false)).join(''))}</div>` : ''}
+    </div>
+    <div id="simLevels">${_simLevels()}</div>` : ''
+  return _simCard(3, _T('Entry and exit', 'Entrada y salida'), lvHtml +
+    (rest || choices ? `<div style="margin-top:12px">${_simGrid(rest + choices)}</div>` : ''))
 }
 
 /** A segmented control for one of the Hyperliquid choices, backed by a hidden input _simCollect reads. */
@@ -1450,6 +1549,11 @@ window.__simTradeOrder = function() {
 const _simWhen = (t) => t ? new Date(t).toLocaleString(undefined,
   { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'
 const _simOutCol = { win: 'var(--green)', loss: 'var(--red)', open: 'var(--warn)' }
+// What closed it. A trail that locked in profit is a win closed by a stop, and says so.
+const _SIM_EXIT_BY = {
+  tp: () => _T('target', 'objetivo'), stop: () => _T('stop', 'stop'),
+  trail: () => _T('trail', 'trailing'),
+}
 function _simTradeRow(t, multi) {
   const held = t.heldFor != null ? _simDur(t.heldFor, _simRunMeta?.iv) : ''
   return `<div class="sim-trade">
@@ -1464,12 +1568,14 @@ function _simTradeRow(t, multi) {
       <span style="display:block;color:var(--muted);font-size:10px;margin-top:2px">${
         esc(_simWhen(t.time))}${t.exitAt ? ' → ' + esc(_simWhen(t.exitAt)) : ''}${held ? ' · ' + held : ''}${
         t.liqPx ? ` · <span style="color:var(--red)">liq $${fmtPrice(t.liqPx)}</span>` : ''}${
-        t.mae > 0 ? ` · ${_T('worst', 'peor')} -${t.mae.toFixed(1)}%` : ''}</span>
+        t.mae > 0 ? ` · ${_T('worst', 'peor')} -${t.mae.toFixed(1)}%` : ''}${
+        t.mult != null ? ` · <span title="${_T('The entry candle against a normal one', 'La vela de entrada contra una normal')}">${_T('cat', 'cat')} ${Math.abs(t.cat)} (${t.mult.toFixed(1)}×)</span>` : ''}</span>
     </span>
     <span style="flex-shrink:0;text-align:right">
       <span class="mono" style="font-weight:700;color:${tone(t.delta ?? 0)}">${
         Number.isFinite(t.delta) ? signed(t.delta) : '—'}</span>
-      <span style="display:block;font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:${_simOutCol[t.outcome] ?? 'var(--muted)'}">${esc(t.liq ? _T('liquidated', 'liquidada') : t.outcome)}</span>
+      <span style="display:block;font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:${_simOutCol[t.outcome] ?? 'var(--muted)'}">${esc(t.liq ? _T('liquidated', 'liquidada') : t.outcome)}${
+        _SIM_EXIT_BY[t.exitBy] && !t.liq ? `<span style="color:var(--muted)"> · ${esc(_SIM_EXIT_BY[t.exitBy]())}</span>` : ''}</span>
     </span>
   </div>`
 }
@@ -2068,7 +2174,12 @@ function _simSetupSections(r) {
   }
 
   const exits = []
-  for (const f of BT_FIELDS) if (!f.strategy && !f.group && f.key !== 'startBalance' && _simFieldVisible(f, p)) exits.push([f.label, fieldVal(f)])
+  // A switched-off level is recorded as off, not as the number still sitting in its box.
+  const offOr = (f) => (f.key === 'takeProfitPct' || f.key === 'shortTpPct') && p.useTp === false ? _T('off', 'apagado')
+    : (f.key === 'stopLossPct' || f.key === 'shortSlPct') && p.useSl === false ? _T('off', 'apagado') : fieldVal(f)
+  for (const f of BT_FIELDS) if (!f.strategy && !f.group && f.key !== 'startBalance' && _simFieldVisible(f, p))
+    exits.push([p.splitLevels && /^(takeProfit|stopLoss)Pct$/.test(f.key) ? 'Long ' + f.label.toLowerCase() : f.label, offOr(f)])
+  if (p.splitLevels && kind === 'signal' && p.strategy !== 'volbreak') for (const f of BT_FIELDS) if (f.group === 'splitLevels') exits.push([f.label, offOr(f)])
   if (kind === 'signal') for (const c of BT_CHOICES) if (c.key === 'ambiguous') exits.push([c.label, choiceVal(c)])
 
   const pos = [[_T('Starting balance', 'Balance inicial'), money(p.startBalance)]]
@@ -2306,7 +2417,12 @@ function _simUsedBits(r) {
     bits.push(`${f.label.toLowerCase()} ${p[f.key]}`)
   }
   for (const c of BT_CHOICES) if (c.strategy === p.strategy) bits.push(c.options.find(o => o[0] === String(p[c.key]))?.[1] ?? '')
-  if (kind === 'signal' && p.strategy !== 'volbreak') bits.push(`${_T('TP', 'TP')} ${p.takeProfitPct}% / ${_T('SL', 'SL')} ${p.stopLossPct}%`)
+  if (kind === 'signal' && p.strategy !== 'volbreak') {
+    const lv = (tp, sl) => `${_T('TP', 'TP')} ${p.useTp === false ? _T('off', 'no') : tp + '%'} / ${_T('SL', 'SL')} ${p.useSl === false ? _T('off', 'no') : sl + '%'}`
+    bits.push(p.splitLevels
+      ? `${_T('long', 'largo')} ${lv(p.takeProfitPct, p.stopLossPct)} · ${_T('short', 'corto')} ${lv(p.shortTpPct, p.shortSlPct)}`
+      : lv(p.takeProfitPct, p.stopLossPct))
+  }
   if (kind === 'signal') {
     const dirLbl = { both: _T('both ways', 'ambos'), long: _T('long only', 'solo largos'), short: _T('short only', 'solo cortos') }[p.useDirection ? p.direction : 'both']
     bits.push(dirLbl)

@@ -42,7 +42,7 @@ console.log(String.fromCharCode(10) + '-- no lookahead in the baseline --')
 // The original averaged every candle in the dataset, including ones after the trade, and
 // judged each candle against that. Nobody has that number at the time.
 const cats = classify(normalise(rows), { baselineLookback: 200 })
-t('a candle is judged against the ones BEFORE it', bt.includes('avg = (runningSum - rows[i].range) / n'))
+t('a candle is judged against the ones BEFORE it', bt.includes('out[i] = (runningSum - rows[i].range) / n'))
 t('and never against itself', bt.includes('// the candle itself is not in its own baseline'))
 t('no verdict at all until there is history', cats.slice(0, 10).every(c => c === null))
 // null is not 0: 0 would mean "an ordinary candle" and could be traded against a threshold.
@@ -61,10 +61,10 @@ t('the view flags it when set to the target', cli.includes('were counted as wins
 
 console.log(String.fromCharCode(10) + '-- targets are percentages, not price offsets --')
 // 0.01 added to a price is 100 pips on EUR/USD and a rounding error on BTC.
-t('the target scales with the price', bt.includes('entry * (p.takeProfitPct / 100)') &&
-  bt.includes('const tp = long ? entry + tpDist : entry - tpDist'))
-t('as does the stop', bt.includes('entry * (p.stopLossPct / 100)') &&
-  bt.includes('const sl0 = long ? entry - slDist : entry + slDist'))
+t('the target scales with the price', bt.includes('entry * (tpPct / 100)') && bt.includes("shortLv ? p.shortTpPct : p.takeProfitPct") &&
+  bt.includes('(long ? entry + tpDist : entry - tpDist)'))
+t('as does the stop', bt.includes('entry * (slPct / 100)') && bt.includes("shortLv ? p.shortSlPct : p.stopLossPct") &&
+  bt.includes('(long ? entry - slDist : entry + slDist)'))
 const cheap = runBacktest(rows.map(r => ({ ...r, o: +r.o / 1e4, h: +r.h / 1e4, l: +r.l / 1e4, c: +r.c / 1e4 })))
 t('so a market priced 10,000x lower behaves the same', cheap.tradesMade === runBacktest(rows).tradesMade,
   [cheap.tradesMade, runBacktest(rows).tradesMade])

@@ -1,0 +1,40 @@
+/* Trade Simulator: the category guide and the exit levels (src/simcat.js). Tokens only. */
+
+.simcat { margin-top: 12px; padding: 10px 11px 9px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }
+.simcat-h { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 11px; font-weight: 700; color: var(--fg); margin-bottom: 6px; }
+.simcat-hint { font-weight: 500; color: var(--muted); font-size: 10.5px; }
+.simcat-svg { display: block; width: 100%; max-width: 420px; height: auto; margin: 0 auto; overflow: visible; }
+.simcat-svg .simcat-col:not(.zero) { cursor: pointer; }
+.simcat-svg .simcat-col:not(.zero):hover > rect:first-of-type { fill: var(--accent); opacity: .14; }
+.simcat-svg .simcat-col:focus { outline: none; }
+.simcat-svg .simcat-col:focus-visible > rect:first-of-type { stroke: var(--accent); stroke-width: 1.5; opacity: 1; fill: transparent; }
+.simcat-k { font-size: 10px; font-weight: 700; fill: var(--muted); font-family: var(--font-mono); }
+.simcat-col.on .simcat-k { fill: var(--fg); }
+.simcat-n { font-size: 9px; fill: var(--muted); }
+.simcat-facts { margin-top: 6px; display: grid; gap: 4px; font-size: 11px; line-height: 1.45; color: var(--fg-2); }
+.simcat-facts b { color: var(--fg); font-weight: 700; }
+
+/* The exits: stop to the left of entry, target to the right, on one scale. */
+.simlv { margin-top: 12px; display: grid; gap: 9px; }
+.simlv-row { display: grid; grid-template-columns: 1fr; gap: 3px; }
+.simlv-name { font-size: 10.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.simlv-track { display: flex; align-items: center; height: 22px; }
+.simlv-half { flex: 1; display: flex; height: 100%; align-items: center; min-width: 0; }
+.simlv-half.l { justify-content: flex-end; }
+.simlv-seg { height: 100%; display: flex; align-items: center; border-radius: 5px; min-width: 0; position: relative; }
+.simlv-seg.sl { background: color-mix(in srgb, var(--red) 22%, transparent); border: 1px solid color-mix(in srgb, var(--red) 55%, transparent); justify-content: flex-start; }
+.simlv-seg.tp { background: color-mix(in srgb, var(--green) 22%, transparent); border: 1px solid color-mix(in srgb, var(--green) 55%, transparent); justify-content: flex-end; }
+.simlv-seg.off { background: transparent; border-style: dashed; border-color: var(--border2, var(--border)); }
+.simlv-seg i { font-style: normal; font-size: 10.5px; font-weight: 700; font-family: var(--font-mono); padding: 0 6px; white-space: nowrap; color: var(--fg); }
+.simlv-seg.off i { color: var(--muted); font-family: inherit; font-weight: 600; }
+.simlv-entry { width: 2px; height: 30px; background: var(--fg); border-radius: 1px; margin: 0 3px; flex-shrink: 0; }
+.simlv-rr { font-size: 11px; color: var(--fg-2); }
+.simlv-rr b { color: var(--fg); }
+.simlv-warn { font-size: 11px; line-height: 1.45; color: var(--warn); }
+.simlv-warn.soft { color: var(--fg-2); }
+.simlv-foot { font-size: 10px; color: var(--muted); }
+
+/* A switch in a field's label row: the box below it greys out when off. */
+.sim-lbl .sim-sw.sim-sw-s { transform: scale(.82); transform-origin: right center; margin-left: 2px; }
+.sim-field.off .sim-in { opacity: .4; }
+.sim-field.off .sim-hint { opacity: .6; }

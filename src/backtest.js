@@ -30,6 +30,8 @@ export const BT_DEFAULTS = {
   strategy: 'range',      // see BT_STRATEGIES
   entryCategory: 3,       // range: candle must be this many times the baseline
   baselineLookback: 200,  // range: candles of PAST history for the baseline; 0 = whole sample
+  entryCategoryMax: 6,    // range: and no bigger than this -- 6 is "no ceiling"
+  rangeMode: 'follow',    // range: 'follow' trades the candle's way | 'fade' trades against it
 
   // volbreak -- the Volatility Breakout bot's own flags, same names and defaults
   vbLookback: 20,         // candles in the rolling average
@@ -57,6 +59,11 @@ export const BT_DEFAULTS = {
   // ── what closes it ──────────────────────────────────────────────────────
   takeProfitPct: 1.0,
   stopLossPct: 0.5,
+  useTp: true,            // off: no target -- it closes by the stop, a trail, a time exit or the end
+  useSl: true,            // off: no stop -- only liquidation, a trail or a time exit can end a loser
+  splitLevels: false,     // shorts get their own target and stop (the original script's 30/30)
+  shortTpPct: 1.0,
+  shortSlPct: 0.5,
   ambiguous: 'loss',      // 'loss' | 'win'
 
   // ── the money ───────────────────────────────────────────────────────────
@@ -338,28 +345,40 @@ export function normalise(candles) {
  * candle, -3 a large red one. Null while there is not enough history to judge it, which is
  * different from 0 and must not be traded on.
  */
-export function classify(rows, { baselineLookback = 200 } = {}) {
+export function classify(rows, p = {}) {
+  const avg = rangeBaseline(rows, p)
+  return rows.map((r, i) => {
+    if (!(avg[i] > 0)) return null
+    const cat = categoryOf(r.range / avg[i])
+    return r.red ? -cat : cat
+  })
+}
+
+/** A multiple of the normal range -> its whole-number category, 0 to 6. */
+export const categoryOf = (mult) => mult >= 6 ? 6 : mult >= 5 ? 5 : mult >= 4 ? 4 : mult >= 3 ? 3 : mult >= 2 ? 2 : mult >= 1 ? 1 : 0
+
+/**
+ * What a "normal" candle's range was at each candle: the average of the candles BEFORE it.
+ * Null while there are fewer than ten to average. Shared by the rule and by the category
+ * guide on screen, so the picture of "category 3" is the same arithmetic the trades used.
+ */
+export function rangeBaseline(rows, { baselineLookback = 200 } = {}) {
   const out = new Array(rows.length).fill(null)
   const whole = baselineLookback === 0
   const wholeAvg = whole && rows.length ? rows.reduce((a, r) => a + r.range, 0) / rows.length : 0
   let runningSum = 0
   for (let i = 0; i < rows.length; i++) {
-    let avg
     if (whole) {
       // Every candle in the set, including ones after this trade. Kept only so the cost of
       // that assumption can be measured; it is not a baseline anyone could have had.
-      avg = wholeAvg
-    } else {
-      runningSum += rows[i].range
-      if (i > baselineLookback) runningSum -= rows[i - baselineLookback - 1].range
-      const n = Math.min(i, baselineLookback)
-      if (n < 10) { out[i] = null; continue }   // too little history to call anything large
-      avg = (runningSum - rows[i].range) / n    // the candle itself is not in its own baseline
+      out[i] = wholeAvg
+      continue
     }
-    if (!(avg > 0)) { out[i] = null; continue }
-    const mult = rows[i].range / avg
-    const cat = mult >= 6 ? 6 : mult >= 5 ? 5 : mult >= 4 ? 4 : mult >= 3 ? 3 : mult >= 2 ? 2 : mult >= 1 ? 1 : 0
-    out[i] = rows[i].red ? -cat : cat
+    runningSum += rows[i].range
+    if (i > baselineLookback) runningSum -= rows[i - baselineLookback - 1].range
+    const n = Math.min(i, baselineLookback)
+    if (n < 10) continue                             // too little history to call anything large
+    out[i] = (runningSum - rows[i].range) / n        // the candle itself is not in its own baseline
   }
   return out
 }
@@ -671,9 +690,16 @@ export function signals(rows, p) {
     return out
   }
   const cats = classify(rows, p)
+  // A band, not just a floor: "3 and up" was the only question it could ask, and the biggest
+  // candles are often a different animal (news, a liquidation cascade) from the merely large.
+  const lo = p.entryCategory, hi = Math.max(lo, p.entryCategoryMax ?? 6)
+  // Fade trades against the candle: a huge green one opens a short, betting it overshot.
+  const way = p.rangeMode === 'fade' ? -1 : 1
   for (let i = 0; i < rows.length; i++) {
     if (cats[i] == null) continue
-    out[i] = Math.abs(cats[i]) >= p.entryCategory ? (cats[i] > 0 ? 1 : -1) : 0
+    const a = Math.abs(cats[i])
+    // A category-0 candle has no colour worth acting on; it never fires, whatever the band.
+    out[i] = a >= lo && a <= hi && a > 0 ? (cats[i] > 0 ? way : -way) : 0
   }
   return out
 }
@@ -1278,6 +1304,7 @@ export function runBacktest(candles, params = {}) {
   const sig = signals(rows, p)
   const trend = p.useTrendFilter ? sma(rows, Math.max(2, Math.round(p.trendMa))) : null
   const avgRange = p.strategy === 'volbreak' ? avgRangeSeries(rows, Math.max(2, Math.round(p.vbLookback))) : null
+  const rBase = p.strategy === 'range' ? rangeBaseline(rows, p) : null
 
   let balance = p.startBalance
   let peak = p.startBalance, maxDD = 0
@@ -1349,10 +1376,19 @@ export function runBacktest(candles, params = {}) {
     // and narrow with volatility instead of being a fixed percentage of price. Using
     // percentages here would be a different strategy wearing its name.
     const vbAvg = p.strategy === 'volbreak' ? avgRange?.[i] : null
-    const tpDist = vbAvg != null ? vbAvg * p.vbTpMult : entry * (p.takeProfitPct / 100)
-    const slDist = vbAvg != null ? vbAvg * p.vbSlMult : entry * (p.stopLossPct / 100)
-    const tp = long ? entry + tpDist : entry - tpDist
-    const sl0 = long ? entry - slDist : entry + slDist
+    // Shorts can carry their own pair -- the original script took 100/50 pips on a buy and
+    // 30/30 on a sell. Either level can be switched off; the volatility bot always has both.
+    const shortLv = !long && p.splitLevels
+    const tpPct = shortLv ? p.shortTpPct : p.takeProfitPct
+    const slPct = shortLv ? p.shortSlPct : p.stopLossPct
+    const tpDist = vbAvg != null ? vbAvg * p.vbTpMult : entry * (tpPct / 100)
+    // With the stop off this distance still SIZES a risk-based trade ("risk 1% as if the stop
+    // were here") -- it just never closes one.
+    const slDist = vbAvg != null ? vbAvg * p.vbSlMult : entry * (slPct / 100)
+    const tpOn = vbAvg != null || p.useTp !== false
+    const slOn = vbAvg != null || p.useSl !== false
+    const tp = tpOn ? (long ? entry + tpDist : entry - tpDist) : null
+    const sl0 = slOn ? (long ? entry - slDist : entry + slDist) : null
     // Under Hyperliquid sizing the entry is an order the exchange can refuse -- too small, or
     // more margin than the account has left. A refused signal is a trade that did not happen.
     let pos = null
@@ -1367,30 +1403,37 @@ export function runBacktest(candles, params = {}) {
 
     let stop = sl0, best = entry
     let outcome = 'open', exitAt = null, exitPx = null, heldFor = 0, exitIdx = rows.length, liquidated = false
+    // HOW it closed, which outcome alone cannot say: a trailing stop above entry is a win
+    // that was closed by a stop. 'tp' | 'stop' | 'trail' | 'liq' | 'timeout' | null.
+    let exitBy = null
     let mae = 0
+    // The tighter of the stop and the liquidation line, either of which may not exist.
+    const tighter = (a, b) => a == null ? b : b == null ? a : (long ? Math.max(a, b) : Math.min(a, b))
     for (let x = i + 1; x < rows.length; x++) {
       heldFor = x - i
       // The worst it went against the trade, which is what decides whether a looser stop or
       // more leverage would have survived it.
       mae = Math.max(mae, (long ? entry - rows[x].l : rows[x].h - entry) / entry * 100)
-      const eff = liq == null ? stop : (long ? Math.max(stop, liq) : Math.min(stop, liq))
-      const hitTp = long ? rows[x].h >= tp : rows[x].l <= tp
-      const hitSl = long ? rows[x].l <= eff : rows[x].h >= eff
+      const eff = tighter(stop, liq)
+      const hitTp = tp != null && (long ? rows[x].h >= tp : rows[x].l <= tp)
+      const hitSl = eff != null && (long ? rows[x].l <= eff : rows[x].h >= eff)
+      let byTp
       if (hitTp && hitSl) {
         // Both levels inside one candle. OHLC cannot say which came first.
-        outcome = p.ambiguous === 'win' ? 'win' : 'loss'
-      } else if (hitTp) outcome = 'win'
-      else if (hitSl) outcome = 'loss'
+        byTp = p.ambiguous === 'win'
+      } else if (hitTp) byTp = true
+      else if (hitSl) byTp = false
       else {
         // The trail is extended only AFTER this candle failed to stop the trade, so the
         // stop can never be moved out of the way of a hit that already happened.
         if (p.useTrailing) {
           best = long ? Math.max(best, rows[x].h) : Math.min(best, rows[x].l)
           const trailed = long ? best * (1 - p.trailPct / 100) : best * (1 + p.trailPct / 100)
-          stop = long ? Math.max(stop, trailed) : Math.min(stop, trailed)
+          stop = tighter(stop, trailed)
         }
         if (p.useTimeExit && heldFor >= p.timeExitCandles) {
           outcome = 'timeout'
+          exitBy = 'timeout'
           exitAt = rows[x].t
           exitPx = rows[x].c
           exitIdx = x
@@ -1399,9 +1442,15 @@ export function runBacktest(candles, params = {}) {
         continue
       }
       exitAt = rows[x].t
-      exitPx = outcome === 'win' ? tp : eff
-      liquidated = outcome === 'loss' && eff === liq
       exitIdx = x
+      if (byTp) { outcome = 'win'; exitBy = 'tp'; exitPx = tp; break }
+      exitPx = eff
+      liquidated = eff === liq
+      // A stop is a loss only if it is on the losing side of entry. A trail that has
+      // climbed past entry closes a WINNER -- it used to be counted as a loss.
+      const gained = long ? eff - entry : entry - eff
+      exitBy = liquidated ? 'liq' : (stop !== sl0 ? 'trail' : 'stop')
+      outcome = !liquidated && gained > 0 ? 'win' : 'loss'
       break
     }
 
@@ -1413,7 +1462,7 @@ export function runBacktest(candles, params = {}) {
       // exchange charges it. The target is a resting order (maker); the stop, a timeout and a
       // liquidation all cross the book (taker).
       if (exitPx != null) {
-        delta = closePnl(pos, long ? 1 : -1, entry, exitPx, p, outcome === 'win' && !liquidated ? 'maker' : 'taker')
+        delta = closePnl(pos, long ? 1 : -1, entry, exitPx, p, exitBy === 'tp' ? 'maker' : 'taker')
         const moved = long ? exitPx - entry : entry - exitPx
         if (outcome === 'timeout') { if (moved > 0) won++; else if (moved < 0) lost++ }
         else if (outcome === 'win') won++
@@ -1429,10 +1478,11 @@ export function runBacktest(candles, params = {}) {
       // From the distances actually used, so a volatility-scaled pair is priced by its own
       // ratio rather than by percentage boxes the strategy ignored.
       const rr = slDist > 0 ? tpDist / slDist : 0
-      if (outcome === 'win') { delta += balance * (p.riskPct / 100) * rr; won++ }
-      else if (outcome === 'loss') { delta -= balance * (p.riskPct / 100); lost++ }
-      else if (outcome === 'timeout' && exitPx != null) {
-        // Closed where it stood, not at either level, so it is valued by how far it got.
+      if (exitBy === 'tp') { delta += balance * (p.riskPct / 100) * rr; won++ }
+      else if (exitBy === 'stop') { delta -= balance * (p.riskPct / 100); lost++ }
+      else if (exitPx != null) {
+        // A timeout or a trail closed it where it stood, not at either level, so it is valued
+        // by how far it got: a trail above entry pays, one below costs less than the full stop.
         const moved = long ? exitPx - entry : entry - exitPx
         delta += balance * (p.riskPct / 100) * (slDist > 0 ? moved / slDist : 0)
         if (moved > 0) won++
@@ -1458,8 +1508,12 @@ export function runBacktest(candles, params = {}) {
     peak = Math.max(peak, balance)
     if (peak > 0) maxDD = Math.max(maxDD, (peak - balance) / peak * 100)
 
+    // The candle that opened it, measured: "category 4, 4.3× normal" is what makes a trade
+    // list read as the rule doing what it says.
+    const rMult = rBase?.[i] > 0 ? rows[i].range / rBase[i] : null
     trades.push({
-      i, time: rows[i].t, side: long ? 'long' : 'short', entry, tp, sl: sl0,
+      i, time: rows[i].t, side: long ? 'long' : 'short', entry, tp, sl: sl0, exitBy, riskDist: slDist,
+      ...(rMult != null ? { mult: rMult, cat: (rows[i].red ? -1 : 1) * categoryOf(rMult) } : {}),
       outcome, exitAt, exitPx, heldFor, balance, delta, ...(liquidated ? { liq: true } : {}),
       mae, ...(pos ? { q: pos.q, margin: pos.margin, liqPx: pos.liq ?? null } : {}),
     })
@@ -1518,6 +1572,10 @@ export const BT_FIELDS = [
   { key: 'entryCategory', label: 'Entry category', unit: 'x', step: '1', strategy: 'range',
     hint: 'How unusual a candle must be. 1-6.',
     help: 'Each candle is measured by its high-to-low range, divided by the average range of the candles before it. A category of 3 means "three times the recent normal". Any candle at or above it opens a trade in the direction it closed. Higher is rarer and trades less; if a run reports no trades, this is usually why.' },
+
+  { key: 'entryCategoryMax', label: 'Up to category', unit: 'x', step: '1', strategy: 'range',
+    hint: 'Skip candles bigger than this. 6 = no limit.',
+    help: 'The top of the band. Category 6 means six times normal OR MORE, so leaving this at 6 takes every candle from the entry category up. Lower it to skip the most extreme candles -- news spikes, liquidation cascades -- which often behave differently from merely large ones. It can never be below the entry category.' },
 
   { key: 'baselineLookback', label: 'Baseline window', unit: 'candles', step: '10', strategy: 'range',
     hint: 'How much history counts as "normal".',
@@ -1722,7 +1780,15 @@ export const BT_FIELDS = [
 
   { key: 'stopLossPct', notFor: ['volbreak', 'trend', 'grid', 'gridladder', 'tokyo', 'supertrend', 'dca'], label: 'Stop loss', unit: '%', step: '0.05',
     hint: 'How far against you before it is a loss.',
-    help: 'The mirror of the target. Whichever level the price touches FIRST ends the trade, checked candle by candle after entry. If neither is ever touched before the data runs out, the trade is reported as unresolved: not a win, not a loss.' },
+    help: 'The mirror of the target. Whichever level the price touches FIRST ends the trade, checked candle by candle after entry. If neither is ever touched before the data runs out, the trade is reported as unresolved: not a win, not a loss. Switched off, nothing but a liquidation, a trailing stop or a time exit closes a losing trade. Under the risk-based model the number still sizes each trade -- "risk this much as if the stop were here" -- it just never closes one.' },
+
+  { key: 'shortTpPct', notFor: ['volbreak', 'trend', 'grid', 'gridladder', 'tokyo', 'supertrend', 'dca'], group: 'splitLevels', label: 'Short take profit', unit: '%', step: '0.05',
+    hint: 'How far price must fall for a short to win.',
+    help: 'The target for shorts only, when shorts have their own levels. The original script took 100 pips on a buy but only 30 on a sell -- about 0.9% and 0.27% on EUR/USD.' },
+
+  { key: 'shortSlPct', notFor: ['volbreak', 'trend', 'grid', 'gridladder', 'tokyo', 'supertrend', 'dca'], group: 'splitLevels', label: 'Short stop loss', unit: '%', step: '0.05',
+    hint: 'How far price may rise against a short.',
+    help: 'The stop for shorts only. With its own pair, a short pays by ITS ratio: 0.27% against 0.27% is one-to-one, however the longs are set.' },
 
   { key: 'riskPct', label: 'Risk per trade', unit: '%', step: '0.25', group: 'riskModel',
     hint: 'Lost at the stop. The win follows the ratio.',
@@ -1795,6 +1861,10 @@ export const BT_CHOICES = [
   { key: 'orderUnit', label: 'Order sizes in', group: 'hl',
     options: [['usd', 'USDC'], ['coin', 'Coin']],
     help: 'Whether the order sizes above are USDC or an amount of the coin. In USDC every order is worth the same and buys more coins lower down; in coins every order is the same size and costs less lower down.' },
+
+  { key: 'rangeMode', label: 'Trade the candle', strategy: 'range',
+    options: [['follow', 'Its way (momentum)'], ['fade', 'Against it (reversal)']],
+    help: 'Its way: a huge green candle opens a long, a huge red one a short -- betting the move carries on. Against it: the opposite, betting it overshot and snaps back. Same candles, opposite bets; run both and the market tells you which kind it is.' },
 
   { key: 'bbMode', label: 'Trade the band', strategy: 'bollinger',
     options: [['revert', 'Fade it (mean reversion)'], ['breakout', 'Follow it (breakout)']],
@@ -1887,7 +1957,8 @@ export function runPortfolio(runs, params = {}) {
   for (const t of all) {
     const long = t.side === 'long'
     const moved = t.exitPx != null ? (long ? t.exitPx - t.entry : t.entry - t.exitPx) : 0
-    const slDist = t.sl != null ? Math.abs(t.entry - t.sl) : 0
+    // With the stop switched off a trade has no `sl`, but it was still sized as if one were there.
+    const slDist = t.sl != null ? Math.abs(t.entry - t.sl) : (t.riskDist ?? 0)
     const cost = p.useFees ? balance * (p.feePct / 100) / split : 0
     let delta = -cost
     if (p.absolute) {
@@ -2005,7 +2076,14 @@ export function coerceParams(raw = {}) {
   for (const m of BT_MODULES) {
     if (typeof raw[m.key] === 'boolean') out[m.key] = raw[m.key]
   }
+  for (const k of ['useTp', 'useSl', 'splitLevels']) if (typeof raw[k] === 'boolean') out[k] = raw[k]
   out.entryCategory = Math.max(1, Math.min(6, Math.round(out.entryCategory)))
+  out.entryCategoryMax = Math.max(out.entryCategory, Math.min(6, Math.round(out.entryCategoryMax)))
+  // A zero target is a trade that wins the instant it opens; switching it off is the way to have none.
+  out.takeProfitPct = Math.max(0.01, out.takeProfitPct)
+  out.stopLossPct = Math.max(0.01, out.stopLossPct)
+  out.shortTpPct = Math.max(0.01, out.shortTpPct)
+  out.shortSlPct = Math.max(0.01, out.shortSlPct)
   out.baselineLookback = Math.max(0, Math.round(out.baselineLookback))
   out.cooldownCandles = Math.max(0, Math.round(out.cooldownCandles))
   out.emaFast = Math.max(2, Math.round(out.emaFast))
