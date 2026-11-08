@@ -1591,6 +1591,7 @@ const _simOutCol = { win: 'var(--green)', loss: 'var(--red)', open: 'var(--warn)
 const _SIM_EXIT_BY = {
   tp: () => _T('target', 'objetivo'), stop: () => _T('stop', 'stop'),
   trail: () => _T('trail', 'trailing'),
+  breakeven: () => _T('breakeven', 'en entrada'),
 }
 function _simTradeRow(t, multi) {
   const held = t.heldFor != null ? _simDur(t.heldFor, _simRunMeta?.iv) : ''
@@ -1609,7 +1610,10 @@ function _simTradeRow(t, multi) {
         esc(_simWhen(t.time))}${t.exitAt ? ' → ' + esc(_simWhen(t.exitAt)) : ''}${held ? ' · ' + held : ''}${
         t.liqPx ? ` · <span style="color:var(--red)">liq $${fmtPrice(t.liqPx)}</span>` : ''}${
         t.mae > 0 ? ` · ${_T('worst', 'peor')} -${t.mae.toFixed(1)}%` : ''}${
-        t.mult != null ? ` · <span title="${_T('The entry candle against a normal one', 'La vela de entrada contra una normal')}">${_T('cat', 'cat')} ${Math.abs(t.cat)} (${t.mult.toFixed(1)}×)</span>` : ''}</span>
+        t.mult != null ? ` · <span title="${_T('The entry candle against a normal one', 'La vela de entrada contra una normal')}">${_T('cat', 'cat')} ${Math.abs(t.cat)} (${t.mult.toFixed(1)}×)</span>` : ''}${
+        t.adds?.length ? ` · <span style="color:var(--fg-2)">+${t.adds.length} ${_T(t.adds.length === 1 ? 'add' : 'adds', 'añadidos')}, ${_T('avg', 'media')} ${fmtPrice(t.avgEntry)}</span>` : ''}${
+        t.addsRefused ? ` · <span style="color:var(--warn)">${t.addsRefused} ${_T('add refused', 'rechazado')}</span>` : ''}${
+        t.partial ? ` · <span style="color:var(--fg-2)">${_T('part out', 'parcial')} @ ${fmtPrice(t.partial.px)} <b style="color:${t.partial.pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${signed(t.partial.pnl)}</b></span>` : ''}</span>
     </span>
     <span style="flex-shrink:0;text-align:right">
       <span class="mono" style="font-weight:700;color:${tone(t.delta ?? 0)}">${
@@ -1839,6 +1843,8 @@ function _simRepBodyHtml() {
       label: k < marks.length - 3 ? ''
         : m.kind === 'exit'
           ? `${(m.delta ?? 0) >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(m.delta ?? 0))}`
+          : m.kind === 'partial' ? `${_T('part', 'parcial')} ${(m.delta ?? 0) >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(m.delta ?? 0))}`
+          : m.kind === 'add' ? _T('ADD', 'AÑADE')
           : (m.side === 'long' ? _T('LONG', 'LARGO') : _T('SHORT', 'CORTO')),
     })),
   })
@@ -2512,7 +2518,8 @@ function _simPriceHtml(r) {
   const day = (t) => new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
   const marks = replayMarks(trades).map(m => {
     return { t: m.t, v: m.v, buy: m.buy,
-      title: esc(`${m.kind === 'entry' ? (m.side === 'long' ? _T('Long', 'Largo') : _T('Short', 'Corto')) + ' ' + _T('in', 'entra') : _T('Out', 'Sale')} @ $${fmtPrice(m.v)} · ${day(m.t)}${m.kind === 'exit' ? ' · ' + signed(m.delta ?? 0) : ''}`),
+      title: esc(`${m.kind === 'entry' ? (m.side === 'long' ? _T('Long', 'Largo') : _T('Short', 'Corto')) + ' ' + _T('in', 'entra')
+        : m.kind === 'add' ? _T('Added', 'Añadido') : m.kind === 'partial' ? _T('Part out', 'Salida parcial') : _T('Out', 'Sale')} @ $${fmtPrice(m.v)} · ${day(m.t)}${m.kind === 'exit' || m.kind === 'partial' ? ' · ' + signed(m.delta ?? 0) : ''}`),
       // Labelled only while there are few: twenty "+$41" labels over 2,000 candles are a smear.
       label: trades.length <= 12 && m.kind === 'exit' ? `${(m.delta ?? 0) >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(m.delta ?? 0))}` : '' }
   })

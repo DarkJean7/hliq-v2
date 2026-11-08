@@ -37,6 +37,14 @@ export function replayMarks(trades = []) {
       t: +t.time, v: +t.entry, buy: long, kind: 'entry',
       side: t.side, outcome: t.outcome ?? 'open',
     })
+    // A position that changed size while open: each add is another fill the trade's way, and
+    // a partial take-profit is a fill against it, before the final exit.
+    for (const a of t.adds ?? []) {
+      if (Number.isFinite(+a.at) && Number.isFinite(+a.px)) out.push({ t: +a.at, v: +a.px, buy: long, kind: 'add', side: t.side, outcome: t.outcome ?? 'open' })
+    }
+    if (t.partial && Number.isFinite(+t.partial.at)) {
+      out.push({ t: +t.partial.at, v: +t.partial.px, buy: !long, kind: 'partial', side: t.side, outcome: t.outcome, delta: +t.partial.pnl })
+    }
     // An unresolved trade has no exit yet — it was still open when the data ran out. Inventing
     // one at the last candle would report a close the rule never made.
     if (t.outcome !== 'open' && Number.isFinite(+t.exitAt) && Number.isFinite(+t.exitPx)) {

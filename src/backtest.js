@@ -92,6 +92,14 @@ export const BT_DEFAULTS = {
 
   useTrailing: false,     // move the stop up behind the best price reached
   trailPct: 0.5,
+  usePartialTp: false,    // close part of the position at a first, nearer target
+  ptpPct: 0.5,            //   the first target, % from the (average) entry
+  ptpPortion: 50,         //   % of the position closed there
+  ptpBreakeven: 'yes',    //   then move the rest's stop to the entry: 'yes' | 'no'
+  useScaleIn: false,      // add to an open position when another signal fires the same way
+  addPortion: 50,         //   each add, % of the first position's size
+  maxAdds: 2,             //   at most this many adds per trade
+  addLevels: 'average',   //   target and stop then follow the average entry, or stay: 'average' | 'first'
 
   useMaxLosses: false,    // stop the whole run after a losing streak
   maxConsecLosses: 3,
@@ -1451,8 +1459,8 @@ export function runBacktest(candles, params = {}) {
     const slDist = vbAvg != null ? vbAvg * p.vbSlMult : entry * (slPct / 100)
     const tpOn = vbAvg != null || p.useTp !== false
     const slOn = vbAvg != null || p.useSl !== false
-    const tp = tpOn ? (long ? entry + tpDist : entry - tpDist) : null
-    const sl0 = slOn ? (long ? entry - slDist : entry + slDist) : null
+    let tp = tpOn ? (long ? entry + tpDist : entry - tpDist) : null
+    let sl0 = slOn ? (long ? entry - slDist : entry + slDist) : null
     // Under Hyperliquid sizing the entry is an order the exchange can refuse -- too small, or
     // more margin than the account has left. A refused signal is a trade that did not happen.
     let pos = null
@@ -1462,8 +1470,23 @@ export function runBacktest(candles, params = {}) {
     }
     // Leverage puts a second line under the trade. It only matters when it sits CLOSER than
     // the stop -- a 5% stop at 20x never gets the chance to fire.
-    const liq = pos?.liq ?? null
+    let liq = pos?.liq ?? null
     if (p.useCooldown) cooldown = p.cooldownCandles
+
+    // ── a position that changes size while open ("tp just a portion ... add a portion based on
+    // signals"). Both need a real position to change, so they act under Hyperliquid sizing only.
+    // `avg` is the average entry: it moves when the trade is added to, and every level, the
+    // liquidation line and the final PnL are measured from it.
+    let avg = entry
+    const side = long ? 1 : -1
+    const q0 = pos?.q ?? 0
+    const ptpOn = !!pos && p.usePartialTp && p.ptpPortion > 0 && p.ptpPortion < 100
+    let ptpPx = ptpOn ? avg * (1 + side * p.ptpPct / 100) : null
+    let partial = null           // { at, px, q, pnl } once the first target has paid
+    let realized = 0             // what the partial already put in the account
+    const addsOn = !!pos && p.useScaleIn && p.addPortion > 0 && p.maxAdds > 0
+    const adds = []              // [{ at, px, q }] each add, in order
+    let addsRefused = 0, beStop = null
 
     let stop = sl0, best = entry
     let outcome = 'open', exitAt = null, exitPx = null, heldFor = 0, exitIdx = rows.length, liquidated = false
@@ -1477,10 +1500,25 @@ export function runBacktest(candles, params = {}) {
       heldFor = x - i
       // The worst it went against the trade, which is what decides whether a looser stop or
       // more leverage would have survived it.
-      mae = Math.max(mae, (long ? entry - rows[x].l : rows[x].h - entry) / entry * 100)
+      mae = Math.max(mae, (long ? avg - rows[x].l : rows[x].h - avg) / avg * 100)
       const eff = tighter(stop, liq)
       const hitTp = tp != null && (long ? rows[x].h >= tp : rows[x].l <= tp)
       const hitSl = eff != null && (long ? rows[x].l <= eff : rows[x].h >= eff)
+      // The first target: close part of the position there, a resting order (maker). If the
+      // same candle also reaches the stop, OHLC cannot say which came first; the tie setting
+      // decides, as it does for the main pair. Taken before the main exit is judged, since it is
+      // the nearer level.
+      if (ptpOn && !partial && (long ? rows[x].h >= ptpPx : rows[x].l <= ptpPx) && (!hitSl || p.ambiguous === 'win')) {
+        const qPart = pos.q * (p.ptpPortion / 100)
+        const feePart = pos.openFee * (p.ptpPortion / 100)
+        const pnl = side * qPart * (ptpPx - avg) - feePart - qPart * ptpPx * feeRate(p, 'maker')
+        realized += pnl
+        partial = { at: rows[x].t, px: ptpPx, q: qPart, pnl }
+        pos = { ...pos, q: pos.q - qPart, openFee: pos.openFee - feePart, margin: pos.margin * (1 - p.ptpPortion / 100) }
+        // Optionally the rest can no longer lose: its stop moves to the average entry, from the
+        // NEXT candle -- inside this one the order of the two prices is unknown.
+        if (p.ptpBreakeven === 'yes') beStop = avg
+      }
       let byTp
       if (hitTp && hitSl) {
         // Both levels inside one candle. OHLC cannot say which came first.
@@ -1495,6 +1533,7 @@ export function runBacktest(candles, params = {}) {
           const trailed = long ? best * (1 - p.trailPct / 100) : best * (1 + p.trailPct / 100)
           stop = tighter(stop, trailed)
         }
+        if (beStop != null) { stop = tighter(stop, beStop); beStop = null }
         if (p.useTimeExit && heldFor >= p.timeExitCandles) {
           outcome = 'timeout'
           exitBy = 'timeout'
@@ -1502,6 +1541,32 @@ export function runBacktest(candles, params = {}) {
           exitPx = rows[x].c
           exitIdx = x
           break
+        }
+        // Scale in: another signal the same way, acted on at this candle's close like any entry.
+        // Each add is a share of the FIRST position, up to the limit, and the exchange can refuse
+        // one the account cannot margin -- counted, not silently made.
+        const sx = sig[x]
+        if (addsOn && adds.length < p.maxAdds && sx && (sx > 0) === long) {
+          const px = rows[x].c
+          const qAdd = q0 * (p.addPortion / 100)
+          const notional = qAdd * px, lev = pos.lev ?? effLeverage(p)
+          const mAdd = notional / lev, fAdd = notional * feeRate(p, 'taker')
+          if (notional < HL_MIN_NOTIONAL - 1e-9 || pos.margin + mAdd + pos.openFee + fAdd > balance + realized + 1e-9) addsRefused++
+          else {
+            const was = avg
+            avg = (pos.q * avg + qAdd * px) / (pos.q + qAdd)
+            pos = { ...pos, q: pos.q + qAdd, openFee: pos.openFee + fAdd, margin: pos.margin + mAdd }
+            adds.push({ at: rows[x].t, px, q: qAdd })
+            // Levels follow the average unless asked to stay put. A stop the trail has already
+            // moved is left where the trail put it.
+            if (p.addLevels !== 'first') {
+              if (tp != null) tp = avg * (tp / was)          // the same % from the new average
+              if (ptpPx != null && !partial) ptpPx = avg * (1 + side * p.ptpPct / 100)
+              if (sl0 != null) { const moved = stop !== sl0; sl0 = avg * (sl0 / was); if (!moved) stop = sl0 }
+            }
+            const A = p.marginMode === 'isolated' ? pos.margin : balance + realized - pos.openFee
+            liq = hlLiqPrice(side, avg, pos.q, A, mmRate(p))
+          }
         }
         continue
       }
@@ -1512,8 +1577,8 @@ export function runBacktest(candles, params = {}) {
       liquidated = eff === liq
       // A stop is a loss only if it is on the losing side of entry. A trail that has
       // climbed past entry closes a WINNER -- it used to be counted as a loss.
-      const gained = long ? eff - entry : entry - eff
-      exitBy = liquidated ? 'liq' : (stop !== sl0 ? 'trail' : 'stop')
+      const gained = long ? eff - avg : avg - eff
+      exitBy = liquidated ? 'liq' : partial && p.ptpBreakeven === 'yes' && Math.abs(eff - avg) < 1e-9 * avg ? 'breakeven' : (stop !== sl0 ? 'trail' : 'stop')
       outcome = !liquidated && gained > 0 ? 'win' : 'loss'
       break
     }
@@ -1534,17 +1599,21 @@ export function runBacktest(candles, params = {}) {
       // What the position actually made: its size times the move, each fill charged as the
       // exchange charges it. The target is a resting order (maker); the stop, a timeout and a
       // liquidation all cross the book (taker).
+      // Measured from the AVERAGE entry, on what is left after a partial, plus what the partial
+      // already paid. A trade that banked half at the first target and stopped out at breakeven
+      // made money, and is scored by that rather than by where its last piece closed.
       if (exitPx != null) {
-        delta = closePnl(pos, long ? 1 : -1, entry, exitPx, p, exitBy === 'tp' ? 'maker' : 'taker')
-        const moved = long ? exitPx - entry : entry - exitPx
+        delta = realized + closePnl(pos, long ? 1 : -1, avg, exitPx, p, exitBy === 'tp' ? 'maker' : 'taker')
+        if (partial && (outcome === 'win' || outcome === 'loss')) outcome = delta > 0 ? 'win' : 'loss'
+        const moved = long ? exitPx - avg : avg - exitPx
         if (outcome === 'timeout') { if (moved > 0) won++; else if (moved < 0) lost++ }
         else if (outcome === 'win') won++
         else if (outcome === 'loss') lost++
       } else if (markPx != null) {
-        delta = closePnl(pos, long ? 1 : -1, entry, markPx, p, 'taker')
+        delta = realized + closePnl(pos, long ? 1 : -1, avg, markPx, p, 'taker')
       } else {
         // Never closed, so never scored -- but it was opened, and opening paid its fee.
-        delta = -pos.openFee
+        delta = realized - pos.openFee
       }
     } else if (p.pnlModel === 'risk') {
       // Sized from the actual distance to the stop: risking `riskPct` of the balance, a
@@ -1594,7 +1663,10 @@ export function runBacktest(candles, params = {}) {
       ...(rMult != null ? { mult: rMult, cat: (rows[i].red ? -1 : 1) * categoryOf(rMult) } : {}),
       outcome, exitAt, exitPx, heldFor, balance, delta, ...(liquidated ? { liq: true } : {}),
       ...(markPx != null ? { markPx, markAt } : {}),
-      mae, ...(pos ? { q: pos.q, margin: pos.margin, liqPx: pos.liq ?? null } : {}),
+      mae, ...(pos ? { q: pos.q, margin: pos.margin, liqPx: liq ?? null } : {}),
+      // A position that changed size: where it was added to, and the part taken early.
+      ...(adds.length ? { adds, avgEntry: avg } : {}), ...(addsRefused ? { addsRefused } : {}),
+      ...(partial ? { partial } : {}),
     })
 
     // One position at a time: the next entry is looked for from the candle this one closed
@@ -1897,6 +1969,19 @@ export const BT_FIELDS = [
     hint: 'Close a trade that goes nowhere.',
     help: 'A trade still open after this many candles is closed at that candle price, whatever it is. It turns unresolved trades into real outcomes and stops one dead position sitting open for the rest of the run. Under the fixed money model a timeout scores as a full win or loss by which side of entry it ended on; the risk-based model can price the partial move properly.' },
 
+  { key: 'ptpPct', label: 'First target', unit: '%', step: '0.05', group: 'usePartialTp',
+    hint: 'Nearer than the main target.',
+    help: 'Where part of the position is closed, as a % move from the entry (the average entry after any adds). It should sit before the main take profit; the rest of the position keeps the main target, the stop and any trail. Filled as a resting order, so at the maker fee. Applies under Hyperliquid sizing, where there is a real position to take part of.' },
+  { key: 'ptpPortion', label: 'Close there', unit: '% of position', step: '5', group: 'usePartialTp',
+    hint: 'How much to bank at the first target.',
+    help: 'The share of the position closed at the first target. 50 banks half and lets half run. A trade that took its first target and then stopped out is scored by what the whole trade made, so banking half and closing the rest at breakeven counts as a win.' },
+  { key: 'addPortion', label: 'Each add', unit: '% of first size', step: '5', group: 'useScaleIn',
+    hint: 'Size of every add, against the opening size.',
+    help: 'While a trade is open, another signal in the same direction adds this share of the FIRST position at the close of that candle -- 50 adds half again. The average entry moves, and with it the liquidation price. An add the account cannot margin is refused, as the exchange would, and counted on the trade. Applies under Hyperliquid sizing.' },
+  { key: 'maxAdds', label: 'At most', unit: 'adds', step: '1', group: 'useScaleIn',
+    hint: 'Adds per trade.',
+    help: 'The most adds one trade can take. Each add makes the position bigger, so a run of signals into a reversal is where scaling in loses the most; this caps it.' },
+
   { key: 'trailPct', label: 'Trail distance', unit: '%', step: '0.05', group: 'useTrailing',
     hint: 'Stop follows this far behind the best price.',
     help: 'Once on, the stop moves up behind the best price the trade has reached and never moves back. It is extended only after a candle has failed to stop the trade, so the stop can never be moved out of the way of a hit that already happened. A tight trail turns winners into small wins; a loose one barely does anything.' },
@@ -1941,6 +2026,13 @@ export const BT_CHOICES = [
     options: [['usd', 'USDC'], ['coin', 'Coin']],
     help: 'Whether the order sizes above are USDC or an amount of the coin. In USDC every order is worth the same and buys more coins lower down; in coins every order is the same size and costs less lower down.' },
 
+  { key: 'ptpBreakeven', label: 'After the first target', group: 'usePartialTp',
+    options: [['yes', 'Move the stop to entry'], ['no', 'Keep the stop where it is']],
+    help: 'Moving the stop to the entry once part is banked means the rest can no longer lose -- at the cost of being stopped out by an ordinary pullback that the trade would have survived. It takes effect from the candle after the first target, since inside one candle the order of prices is unknown.' },
+  { key: 'addLevels', label: 'After an add', group: 'useScaleIn',
+    options: [['average', 'Levels follow the average entry'], ['first', 'Levels stay where they were']],
+    help: 'Following the average keeps the same % target and stop from the new average entry, so an add into strength pushes both up. Staying put keeps the levels the first entry set, so the target is closer to the new average and the stop further from it. A stop the trailing stop has already moved is left where it is.' },
+
   { key: 'rangeMode', label: 'Trade the candle', strategy: 'range',
     options: [['follow', 'Its way (momentum)'], ['fade', 'Against it (reversal)']],
     help: 'Its way: a huge green candle opens a long, a huge red one a short -- betting the move carries on. Against it: the opposite, betting it overshot and snaps back. Same candles, opposite bets; run both and the market tells you which kind it is.' },
@@ -1978,6 +2070,8 @@ export const BT_MODULES = [
   { key: 'useTrendFilter', label: 'Trend filter',     blurb: 'Only trade with the longer trend.' },
   { key: 'useTimeExit',    label: 'Time exit',        blurb: 'Close a trade that goes nowhere.' },
   { key: 'useTrailing',    label: 'Trailing stop',    blurb: 'Move the stop up behind price.' },
+  { key: 'usePartialTp',   label: 'Partial take profit', blurb: 'Bank part at a first target, let the rest run.' },
+  { key: 'useScaleIn',     label: 'Scale in',         blurb: 'Add to a trade on another signal the same way.' },
   { key: 'useMaxLosses',   label: 'Stop on a streak', blurb: 'Halt the run after N losses.' },
   { key: 'useFees',        label: 'Trading costs',    blurb: 'Charge a fee on every trade.' },
 ]
@@ -2176,7 +2270,11 @@ export function coerceParams(raw = {}) {
   out.emaSlow = Math.max(2, Math.round(out.emaSlow))
   out.breakoutLookback = Math.max(2, Math.round(out.breakoutLookback))
   out.trendMa = Math.max(2, Math.round(out.trendMa))
-  out.timeExitCandles = Math.max(1, Math.round(out.timeExitCandles))
+  out.ptpPct = Math.max(0.01, out.ptpPct)
+  out.ptpPortion = Math.max(1, Math.min(99, out.ptpPortion))
+  out.addPortion = Math.max(1, Math.min(500, out.addPortion))
+  out.maxAdds = Math.max(1, Math.min(10, Math.round(out.maxAdds)))
+  out.trailPct = Math.max(1, Math.round(out.timeExitCandles))
   out.maxConsecLosses = Math.max(1, Math.round(out.maxConsecLosses))
   out.tokyoStopPct = Math.max(0, out.tokyoStopPct)
   out.rsiLen = Math.max(2, Math.round(out.rsiLen))
