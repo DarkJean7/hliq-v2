@@ -139,6 +139,13 @@
       } catch (e) { done() }
     }
     document.body.appendChild(box)
+    // A slow boot that FINISHES after 12 s removes the loader but not this, which then sat over
+    // the working app (reported 2026-11-08). It goes the moment the loader does.
+    var gone = setInterval(function () {
+      if (document.getElementById('init-loader')) return
+      clearInterval(gone)
+      if (box.parentNode) box.parentNode.removeChild(box)
+    }, 300)
   }, 12000)
 </script>
 

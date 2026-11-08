@@ -3,6 +3,7 @@ import './uinova.css'   // the alternative interface, inert unless html.ui-nova 
 window.__build = typeof __HLIQ_BUILD__ !== 'undefined' ? __HLIQ_BUILD__ : ''
 const _il = document.getElementById('init-loader')
 if (_il) _il.remove()
+document.getElementById('bootStuck')?.remove()   // a boot slower than the 12 s watchdog still finished
 import { InfoClient, HttpTransport } from '@nktkas/hyperliquid'
 import { updateGameMode as _updateGameMode, gmOrdersInvalidate } from './game.js'
 import { initOnboarding } from './onboard.js'   // also registers window.__glossary/__openLearn/__startMainTour/__term

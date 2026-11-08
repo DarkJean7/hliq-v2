@@ -28,7 +28,11 @@ t('assets are synced without --delete', /rsync -avz --delay-updates dist\/assets
 // And a boot that never starts (a file that never arrives) is not a silent spinner: reported as
 // "infinite loading" (2026-10-20).
 const htm = fs.readFileSync('index.html', 'utf8')
-t('after 12 s a stuck boot says so and offers a reload', /var el = document\.getElementById\('init-loader'\)[\s\S]{0,1400}Reload<\/button>[\s\S]{0,900}\}, 12000\)/.test(htm))
+t('after 12 s a stuck boot says so and offers a reload', /var el = document\.getElementById\('init-loader'\)[\s\S]{0,1400}Reload<\/button>[\s\S]{0,1400}\}, 12000\)/.test(htm))
+// "taking longer than it should ... reload stays after it appears": a slow boot that finished
+// removed the loader and left the message over the working app.
+t('and the message goes when the boot finishes after all', /if \(document\.getElementById\('init-loader'\)\) return[\s\S]{0,120}removeChild\(box\)/.test(htm)
+  && fs.readFileSync('src/main.js', 'utf8').includes("document.getElementById('bootStuck')?.remove()"))
 t('which also drops the service worker and its cached assets', htm.includes('caches.delete(k)') && htm.includes('r.unregister()'))
 t('and old ones are pruned after 14 days', /find '\$DEPLOY_PATH\/dist\/assets' -type f -mtime \+14 -delete/.test(wf))
 
