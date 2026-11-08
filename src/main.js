@@ -20254,7 +20254,11 @@ function _mobVRenderContent(tick = false) {
           ...(() => { const h = _spotHeldTxt(b.coin, total); return h ? [['Held', h]] : [] })(),
           ...(() => { const l = _spotLastBuyTxt(b.coin, total); return l ? [['Last bought', l]] : [] })(),
           ['Available', _prv(fmtSize(avail)) + ' ' + esc(_ocCoinLabel(b.coin))],
-          ['In Orders', hold > 0 ? _prv(fmtSize(hold)) + ' ' + esc(_ocCoinLabel(b.coin)) : '—'],
+          // USDC's hold is not only orders. On a unified account the margin behind every open
+          // position is held out of spot USDC too, so "In orders 120.86" showed with no order on
+          // the book (reported). For any other token it is what resting sells have locked.
+          [String(b.coin).toUpperCase() === 'USDC' ? _T('Margin & orders', 'Margen y órdenes') : 'In Orders',
+           hold > 0 ? _prv(fmtSize(hold)) + ' ' + esc(_ocCoinLabel(b.coin)) : '—'],
           ['Price', px > 0 ? '$' + fmtPrice(px) : '—'],
           ['Value', _prv(usd > 0 ? '$' + fmtUSD(usd, 2) : '—')],
         ])}${b.coin !== 'USDC' && avail > 0 && !state.isAllAccounts ? `<div style="padding:4px 16px 12px"><button class="mob-spot-sell" onclick="event.stopPropagation();window.__spotSell('${esc(b.coin)}')" style="width:100%;padding:11px;border-radius:11px;border:1px solid var(--red);background:color-mix(in srgb, var(--red) 14%, transparent);color:var(--red);font-weight:800;font-size:14px;cursor:pointer">${_T('Sell', 'Vender')} ${esc(_ocCoinLabel(b.coin))}</button></div>` : ''}</div>
@@ -39993,7 +39997,7 @@ window.__ovBuildSpotBody = function() {
           ${h.entryNtl > 0 && h.total > 0 ? `<span><i>Avg buy</i>$${fmtPrice(h.entryNtl / h.total)}</span>` : ''}
           ${held ? `<span><i>Held</i>${esc(held)}</span>` : ''}
           ${last ? `<span><i>Last bought</i>${esc(last)}</span>` : ''}
-          ${h.hold > 0 ? `<span><i>In orders</i>${_prv(fmtSize(h.hold))}</span>` : ''}
+          ${h.hold > 0 ? `<span><i>${String(h.coin).toUpperCase() === 'USDC' ? _T('Margin & orders', 'Margen y órdenes') : 'In orders'}</i>${_prv(fmtSize(h.hold))}</span>` : ''}
         </div>
         ${sellable ? `<div style="display:flex;justify-content:flex-end;padding:4px 2px 2px"><button class="ov-spot-sell" onclick="event.stopPropagation();window.__spotSell('${esc(h.coin)}')" style="padding:7px 16px;border-radius:9px;border:1px solid var(--red);background:color-mix(in srgb, var(--red) 14%, transparent);color:var(--red);font-weight:800;font-size:12.5px;cursor:pointer">${_T('Sell', 'Vender')} ${esc(_ocCoinLabel(h.coin))}</button></div>` : ''}
         ${h.parts.some(p => p.acct) ? h.parts.map(p => `

@@ -261,8 +261,22 @@ export function getHlSigner(forAddr = null) {
       ]
       let lastErr
       for (const run of attempts) {
-        try { const sig = await run(); if (typeof sig === 'string' && sig.startsWith('0x')) return sig }
-        catch (e) { lastErr = e }
+        let sig
+        try { sig = await run() } catch (e) { lastErr = e; continue }
+        if (!(typeof sig === 'string' && sig.startsWith('0x'))) continue
+        // Hyperliquid acts for whoever SIGNED, not for the address we asked to sign. A wallet
+        // holding several accounts can sign with the one it has selected, and the action then
+        // lands on that account: a Send "from 0x974e…" to 0xaa7a… signed by 0xaa7a… is a send to
+        // itself, refused as "Invalid send" -- and an order would go on the wrong account. So
+        // the signature is checked here and a mismatch is stopped before anything is sent.
+        // Only a definite mismatch stops it; if the check itself cannot run, the sign stands.
+        let who = null
+        try { who = ethers.verifyTypedData(domain, types, message, sig) } catch (_) {}
+        if (who && who.toLowerCase() !== String(address).toLowerCase()) {
+          const s = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`
+          throw new Error(`Your wallet signed as ${s(who)}, not ${s(address)}. Switch to ${s(address)} in your wallet and try again.`)
+        }
+        return sig
       }
       throw lastErr || new Error('signTypedData failed')
     },
