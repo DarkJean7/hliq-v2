@@ -1186,20 +1186,25 @@ window.__ovToggleGroup = function(gid) {
  */
 // The line a merged row carries on the phone: which account the sort is about. "Top PnL · Near
 // +$0.12 · Health 100%" is what explains a row reading −$27 at the top of a biggest-first list.
+// It sits under the column it is about (PnL, Size, Health), not under the market name: "Top PnL"
+// in the market column read as a fact about the coin, and the PnL figure it explains was far away.
+// Returns the html and which column carries it.
 function _ovFeatLine(g) {
   const metric = _ovPosSortKey === 'pnl' ? 'pnl' : _ovPosSortKey === 'size' ? 'value' : 'health'
   const { mode, top, member: m } = featuredMember(g.members, metric, _ovPosSortDir, g.worst)
-  if (!m) return ''
+  if (!m) return { col: null, html: '', hp: '' }
   const acct = esc(m.acct || '—')
   const hp = (m.healthPct ?? 100).toFixed(0) + '%'
-  // Two lines: the market column is narrow, and this much text on one wrapped wherever it liked.
-  // <em> for the coloured figure, because `.ov-pos-mkt span` makes every span in here a column.
+  // Two short lines: the PnL and Size columns are narrow, and "· 100% health" on the end of the
+  // figure was cut off there. That account's health goes under the Health column beside it.
+  // <em> for the coloured figure, so it does not take the cell's own colour class.
   const lines = mode === 'pnl'
-    ? [`${top ? 'Top PnL' : 'Lowest PnL'} · ${acct}`, `<em style="font-style:normal;color:var(--${m.uPnl >= 0 ? 'green' : 'red'})">${fmtPnL(m.uPnl).text}</em> · ${hp} health`]
+    ? [`${top ? 'Top PnL' : 'Lowest PnL'} · ${acct}`, `<em style="font-style:normal;color:var(--${m.uPnl >= 0 ? 'green' : 'red'})">${fmtPnL(m.uPnl).text}</em>`]
     : mode === 'value'
-      ? [`${top ? 'Top value' : 'Lowest value'} · ${acct}`, `$${fmtUSD(m.posVal)} · ${hp} health`]
-      : [`Worst health · ${acct} ${hp}`]
-  return lines.map(l => `<i class="ov-pos-feat">${l}</i>`).join('')
+      ? [`${top ? 'Top value' : 'Lowest value'} · ${acct}`, `$${fmtUSD(m.posVal)}`]
+      : [`Worst · ${acct}`]
+  const wrap = (l) => `<i class="ov-pos-feat">${l}</i>`
+  return { col: mode, html: lines.map(wrap).join(''), hp: mode === 'health' ? '' : wrap(`${acct} · ${hp}`) }
 }
 
 function _ovMergedPosRow(g, allMids, tpslMap) {
@@ -1217,18 +1222,20 @@ function _ovMergedPosRow(g, allMids, tpslMap) {
     : `${g.members[0]?.lev ?? 1}× ${g.members[0]?.isIso ? 'iso' : 'cross'}`
   const bots = (typeof window !== 'undefined' && window._botBadgeGroupHtml)
     ? window._botBadgeGroupHtml(g.coin, g.members) : ''
+  const feat = _ovFeatLine(g)
+  const featIn = (col) => feat.col === col ? feat.html : col === 'health' ? feat.hp : ''
   return `<div class="ov-pos-item ov-pos-group">
     <div class="ov-pos-row ov-pos-grouprow" onclick="window.__ovToggleGroup('${gid}')">
-      <span class="ov-pos-mkt">${_ovCoinIcon(g.coin)}<span class="ov-pos-info"><b>${esc(_lbl(g.coin))}</b><i>×${g.n} accounts · ${levLine}</i>${_ovFeatLine(g)}${bots ? `<i class="ov-pos-meta">${bots}</i>` : ''}</span></span>
+      <span class="ov-pos-mkt">${_ovCoinIcon(g.coin)}<span class="ov-pos-info"><b>${esc(_lbl(g.coin))}</b><i>×${g.n} accounts · ${levLine}</i>${bots ? `<i class="ov-pos-meta">${bots}</i>` : ''}</span></span>
       <span class="ov-side-badge ${sideCls}">${g.side}</span>
-      <span class="ov-r ov-pos-size"><b>${_ovSz(g.totSz)}</b><i>$${fmtUSD(g.totVal)}</i></span>
+      <span class="ov-r ov-pos-size"><b>${_ovSz(g.totSz)}</b><i>$${fmtUSD(g.totVal)}</i>${featIn('value')}</span>
       <span class="ov-r mono">$${_ovPx(g.avgEntry)}</span>
       <span class="ov-r mono">${g.markPx > 0 ? '$' + _ovPx(g.markPx) : '—'}</span>
       <span class="ov-r mono neg" title="Nearest liquidation across the ${g.n} accounts${g.worst?.acct ? ` — ${esc(g.worst.acct)}` : ''}">${worstLiq > 0 ? '$' + _ovPx(worstLiq) : '—'}<i class="ov-roe">${g.worst?.acct ? esc(g.worst.acct) : 'nearest'}</i></span>
       <span class="ov-r mono">$${fmtUSD(g.totMrg)}</span>
       <span class="ov-r mono ${g.totFund >= 0 ? 'pos' : 'neg'}">${g.totFund >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(g.totFund))}</span>
-      <span class="ov-r ov-hp"><span class="ov-hp-bar"><i style="width:${g.healthPct.toFixed(0)}%;background:${hpColor}"></i></span><em>${g.healthPct.toFixed(0)}%</em></span>
-      <span class="ov-r mono ${pnlCls}">${fmtPnL(g.totUPnl).text}<i class="ov-roe">${g.roe >= 0 ? '+' : ''}${g.roe.toFixed(2)}%</i></span>
+      <span class="ov-r ov-hp"><span class="ov-hp-bar"><i style="width:${g.healthPct.toFixed(0)}%;background:${hpColor}"></i></span><em>${g.healthPct.toFixed(0)}%</em>${featIn('health')}</span>
+      <span class="ov-r mono ${pnlCls}">${fmtPnL(g.totUPnl).text}<i class="ov-roe">${g.roe >= 0 ? '+' : ''}${g.roe.toFixed(2)}%</i>${featIn('pnl')}</span>
       <span class="ov-r"><i class="ov-group-chev" id="ovgc-${gid}">${open ? '▾' : '▸'}</i></span>
     </div>
     <div class="ov-pos-group-body" id="ovgb-${gid}" style="display:${open ? 'block' : 'none'}">

@@ -82,7 +82,7 @@ t('PnL ▲', /^PnL▲/i.test(await arrow() ?? ''), await arrow())
 // The phone's screenshot exactly: UNI's total is −$27.08 and it still leads, because Near is +$0.12.
 t('UNI still leads, because one of its accounts is up', (await markets()).join() === 'UNI,XRP', await markets())
 t('and the row says which: Top PnL · Near', /Top PnL · Near/.test(await feat()), await feat())
-t('with that account\'s health', /\d+% health/.test(await feat()), await feat())
+t('with that account\'s health, under Health', /Near · \d+%/.test(await p.$eval('#ovPosBody .ov-pos-grouprow .ov-hp', e => e.textContent)), await feat())
 
 console.log('-- every column starts where the phone does --')
 await p.evaluate(() => window.__ovSortPos('size'))
@@ -91,7 +91,7 @@ t('value: lowest first', (await markets()).join() === 'UNI,XRP' && /Lowest value
 await p.evaluate(() => window.__ovSortPos('size'))
 t('flipped: the biggest position first', /Top value · Brrr/.test(await feat()), await feat())
 await p.evaluate(() => window.__ovSortPos('health'))
-t('on any other column it shows the riskiest account', /Worst health/.test(await feat()), await feat())
+t('on any other column it shows the riskiest account', /Worst · /.test(await feat()), await feat())
 await p.evaluate(() => window.__ovSortPos('market'))
 t('names read A→Z on the first press', (await markets()).join() === 'UNI,XRP' && /▼/.test(await arrow() ?? ''), [await markets(), await arrow()])
 await p.evaluate(() => window.__ovSortPos('market'))
@@ -112,9 +112,12 @@ t('type: buys first, by coin within them', (await ordCoins()).join() === 'BTC,ET
 t('no page errors', !errs.length, errs)
 await p.evaluate(() => window.__ovSetPosTab('positions'))
 await p.evaluate(() => window.__ovSortPos('pnl'))
-// The market column is narrow: this label wrapped onto three lines and stretched the row.
+// The PnL column is narrow: the label is two short lines there, and the account's health goes under Health.
 const lineH = await p.$$eval('#ovPosBody .ov-pos-grouprow .ov-pos-feat', es => es.map(e => e.getBoundingClientRect().height))
-t('the label is two lines, neither wrapping', lineH.length === 2 && lineH.every(h => h < 20), lineH)
+t('two lines under PnL and one under Health, none wrapping', lineH.length === 3 && lineH.every(h => h < 20), lineH)
+const cut = await p.$$eval('#ovPosBody .ov-pos-grouprow .ov-pos-feat', es => es.filter(e => e.scrollWidth > e.clientWidth + 1).map(e => e.textContent))
+t('and none cut off', !cut.length, cut)
+t('it is not in the market column', !(await p.$$('#ovPosBody .ov-pos-grouprow .ov-pos-mkt .ov-pos-feat')).length)
 if (arg('shot')) { await p.evaluate(() => window.__ovSetPosTab('positions')); await p.evaluate(() => { window.__ovSortPos('pnl') }); await p.screenshot({ path: arg('shot') }) }
 console.log(`\n${pass} passed, ${fail} failed`)
 await b.close()

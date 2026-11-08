@@ -48,7 +48,10 @@ t('Trade tab positions', /return posCmp\(av, bv, _mPosSortDir\)/.test(r))
 t('Trade tab orders', /return ordCmp\(av, bv, _mOrdSortDir\)/.test(r))
 t('a new column starts where the phone does, on all four', /_ovPosSortDir = POS_FIRST_DIR/.test(r) && /_ovOrdSortDir = ORD_FIRST_DIR/.test(r) && /_mPosSortDir = POS_FIRST_DIR \}/.test(r) && /_mOrdSortDir = ORD_FIRST_DIR \}/.test(r))
 t('the phone reads the same rules', /return posCmp\(va, vb, _mobVPosSortDir\)/.test(m) && /featuredMember\(members, 'pnl', _mobVPosSortDir\)/.test(m))
-t('the merged desktop row names the account', /\$\{_ovFeatLine\(g\)\}/.test(r))
+t('the merged desktop row names the account', /const feat = _ovFeatLine\(g\)/.test(r))
+// Under the column the sort is about, not the market name: "Top PnL" beside the coin read as a
+// fact about the coin, far from the PnL figure it explains.
+t('under the column it is about', /featIn\('pnl'\)/.test(r) && /featIn\('value'\)/.test(r) && /featIn\('health'\)/.test(r))
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)

@@ -8616,5 +8616,10 @@ html.has-bg-image .imged { background: var(--bg); }
 html.chart-full-open, html.chart-full-open body { overflow: hidden; }
 .mob-chart-card.chart-full > button, .mob-chart-card.chart-full > #mobChartHero { margin-top: env(safe-area-inset-top); }
 
-/* The line a merged position row carries on the phone: the account the sort is about. */
+/* The line a merged position row carries: the account the sort is about, under the column it
+   is about (PnL, Size or Health). Muted, whatever colour the figure above it is. */
+.ov-pos-row i.ov-pos-feat { display: block; font-style: normal; font-size: 10.5px; color: var(--muted); font-family: var(--font-sans); font-weight: 500; white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis; }
+.ov-pos-row :not(.ov-pos-feat) + i.ov-pos-feat { margin-top: 3px; }
+.ov-hp:has(.ov-pos-feat) { flex-wrap: wrap; row-gap: 0; }
+.ov-hp i.ov-pos-feat { flex-basis: 100%; text-align: center; }
 .ov-pos-info i.ov-pos-feat { display: block; font-style: normal; font-size: 10.5px; color: var(--muted); white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis; }
