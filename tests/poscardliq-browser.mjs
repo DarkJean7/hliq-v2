@@ -148,6 +148,9 @@ const o1 = await overlaps()
 ok('the liq price overlaps nothing on its row', o1.length === 0, o1)
 const s1 = await solCard()
 ok('the merged card shows the liquidation nearest the mark: $71.0284', /Liq \$71\.0284/.test(s1?.text ?? ''), s1)
+// "when sort by pnl is selected stop showing the health in the card so instead is the pnl"
+const pnlRow = await p.evaluate(() => [...document.querySelectorAll('#mobVContent [data-lp-coin="SOL"]')][0]?.parentElement?.querySelector('.mob-liq-slot')?.parentElement?.textContent.replace(/\s+/g, ' ').trim())
+ok('sorted by PnL the row says the PnL, not the health', /PnL/i.test(pnlRow ?? '') && /-\$[\d,.]+/.test(pnlRow ?? '') && !/Health/i.test(pnlRow ?? ''), pnlRow)
 if (SHOTS) {
   await p.evaluate(() => [...document.querySelectorAll('#mobVContent [data-lp-coin="SOL"]')][0]?.parentElement?.scrollIntoView({ block: 'center' }))
   const box = await p.evaluate(() => { const r = [...document.querySelectorAll('#mobVContent [data-lp-coin="SOL"]')][0].parentElement.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: Math.min(r.height, 220) } })

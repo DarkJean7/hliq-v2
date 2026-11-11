@@ -13722,7 +13722,6 @@ function _mobVMergedPosCard(members) {
       valText: healthPct.toFixed(1) + '%', valColor: barColor, health: healthPct }
   }
   const sHealth   = Math.max(0, Math.min(100, summary.health))
-  const sBarColor = sHealth > 70 ? '#00e5a0' : sHealth > 40 ? '#f59e0b' : sHealth > 20 ? '#ff9444' : '#ff4d6d'
   const gid     = _mobVGid(coin, first.side)
   const id      = `posg-${gid}`
   const xp      = _mobVExpandedIds.has(id)
@@ -13754,7 +13753,7 @@ function _mobVMergedPosCard(members) {
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
           <span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;flex-shrink:0">${summary.label}</span>
           ${_mobVLiqSlot(_mobVLiqLine(members, markPx))}
-          <span style="font-size:11px;font-weight:700;flex-shrink:0;text-align:right;min-width:${_MOB_LIQ_RIGHT_MIN}px"><span class="notranslate" style="color:var(--accent);font-weight:700">${esc(summary.acct)}</span> <span ${summary.mode === 'health' ? `id="pos-hpct-g-${gid}"` : ''} style="color:${summary.valColor}">${summary.valText}</span>${summary.mode !== 'health' ? ` <span style="color:var(--muted);font-weight:600;font-size:10px">· Health <span style="color:${sBarColor};font-weight:700">${sHealth.toFixed(0)}%</span></span>` : ''}</span>
+          <span style="font-size:11px;font-weight:700;flex-shrink:0;text-align:right;min-width:${_MOB_LIQ_RIGHT_MIN}px"><span class="notranslate" style="color:var(--accent);font-weight:700">${esc(summary.acct)}</span> <span ${summary.mode === 'health' ? `id="pos-hpct-g-${gid}"` : ''} style="color:${summary.valColor}">${summary.valText}</span></span>
         </div>
         <div style="position:relative;height:6px;border-radius:3px;background:linear-gradient(90deg,#ff4d6d 0%,#f5a623 50%,#00e5a0 100%)">
           <div ${summary.mode === 'health' ? `id="pos-hdot-g-${gid}"` : ''} style="position:absolute;top:50%;left:${sHealth.toFixed(1)}%;width:12px;height:12px;border-radius:50%;background:#fff;border:2px solid var(--bg);transform:translate(-50%,-50%);box-shadow:0 1px 3px rgba(0,0,0,0.45)"></div>
