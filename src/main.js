@@ -13753,10 +13753,10 @@ function _mobVMergedPosCard(members) {
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
           <span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;flex-shrink:0">${summary.label}</span>
           ${_mobVLiqSlot(_mobVLiqLine(members, markPx))}
-          <span style="font-size:11px;font-weight:700;flex-shrink:0;text-align:right;min-width:${_MOB_LIQ_RIGHT_MIN}px"><span class="notranslate" style="color:var(--accent);font-weight:700">${esc(summary.acct)}</span> <span ${summary.mode === 'health' ? `id="pos-hpct-g-${gid}"` : ''} style="color:${summary.valColor}">${summary.valText}</span></span>
+          <span style="font-size:11px;font-weight:700;flex-shrink:0;text-align:right;min-width:${_MOB_LIQ_RIGHT_MIN}px"><span class="notranslate" id="pos-facct-g-${gid}" style="color:var(--accent);font-weight:700">${esc(summary.acct)}</span> <span id="${summary.mode === 'health' ? `pos-hpct-g-${gid}` : `pos-fval-g-${gid}`}" style="color:${summary.valColor}">${summary.valText}</span></span>
         </div>
         <div style="position:relative;height:6px;border-radius:3px;background:linear-gradient(90deg,#ff4d6d 0%,#f5a623 50%,#00e5a0 100%)">
-          <div ${summary.mode === 'health' ? `id="pos-hdot-g-${gid}"` : ''} style="position:absolute;top:50%;left:${sHealth.toFixed(1)}%;width:12px;height:12px;border-radius:50%;background:#fff;border:2px solid var(--bg);transform:translate(-50%,-50%);box-shadow:0 1px 3px rgba(0,0,0,0.45)"></div>
+          <div id="pos-hdot-g-${gid}" style="position:absolute;top:50%;left:${sHealth.toFixed(1)}%;width:12px;height:12px;border-radius:50%;background:#fff;border:2px solid var(--bg);transform:translate(-50%,-50%);box-shadow:0 1px 3px rgba(0,0,0,0.45)"></div>
         </div>
       </div>
     </div>
@@ -14296,12 +14296,15 @@ function _mobVUpdatePositionsLive() {
       if (members.length < 2) continue
       const gid = _mobVGid(members[0].position.coin, k.split('|')[1])
       let totUPnl = 0, totMrg = 0, worst = 101, markPx = 0
+      const rows = []
       for (const ap of members) {
         const p = ap.position
         totUPnl += parseFloat(p.unrealizedPnl ?? 0)
         totMrg  += parseFloat(p.marginUsed ?? 0)
         markPx   = _posMarkPx(p)
         const h  = _mobVPosHealth(p); if (h < worst) worst = h
+        rows.push({ acct: p._acct || '', uPnl: parseFloat(p.unrealizedPnl ?? 0),
+          posVal: parseFloat(p.positionValue ?? Math.abs(parseFloat(p.szi ?? 0)) * _posMarkPx(p)), healthPct: h })
       }
       const roe = totMrg > 0 ? totUPnl / totMrg * 100 : 0
       const pnlCls = totUPnl >= 0 ? 'pos' : 'neg'
@@ -14314,7 +14317,19 @@ function _mobVUpdatePositionsLive() {
       if (rEl)  { rEl.textContent  = _prv((roe >= 0 ? '+' : '-') + Math.abs(roe).toFixed(2) + '%'); rEl.className = 'mob-v-row-pct ' + pnlCls }
       if (mEl)  mEl.textContent = markPx > 0 ? '$' + fmtPrice(markPx) : '—'
       if (hEl)  { hEl.textContent = worst.toFixed(1) + '%'; hEl.style.color = worst > 70 ? '#00e5a0' : worst > 40 ? '#f59e0b' : worst > 20 ? '#ff9444' : '#ff4d6d' }
-      if (dEl)  dEl.style.left = Math.max(0, Math.min(100, worst)).toFixed(1) + '%'
+      // Sorted by PnL or value the row names one account and its figure. It was set at render
+      // and never ticked, while that account's own card below did: "HYPE +$0.10" on the merged
+      // card over a HYPE card reading +$0.00 ("pnl is not matching"). Same pick, same numbers,
+      // every tick -- including WHICH account leads, which can change as prices move.
+      const metric = _mobVPosSortBy === 'unrl' ? 'pnl' : _mobVPosSortBy === 'posval' ? 'value' : null
+      const fv = document.getElementById(`pos-fval-g-${gid}`), fa = document.getElementById(`pos-facct-g-${gid}`)
+      if (metric && fv) {
+        const f = featuredMember(rows, metric, _mobVPosSortDir).member
+        if (fa) fa.textContent = f.acct || '—'
+        if (metric === 'pnl') { fv.textContent = _prv((f.uPnl >= 0 ? '+' : '-') + '$' + fmtUSD(Math.abs(f.uPnl))); fv.style.color = f.uPnl >= 0 ? '#00e5a0' : '#ff4d6d' }
+        else fv.textContent = _prv('$' + fmtUSD(f.posVal))
+        if (dEl) dEl.style.left = Math.max(0, Math.min(100, f.healthPct)).toFixed(1) + '%'
+      } else if (dEl) dEl.style.left = Math.max(0, Math.min(100, worst)).toFixed(1) + '%'
     }
   }
 }

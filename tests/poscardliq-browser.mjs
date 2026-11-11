@@ -157,6 +157,25 @@ if (SHOTS) {
   await p.screenshot({ path: `${SHOTS}/poscardliq-pnl.png`, clip: box })
 }
 
+console.log(NL + '-- a live tick moves one account\'s PnL --')
+{
+  // "pnl is not matching": the merged card read "HYPE +$0.10" over a HYPE card reading +$0.00.
+  // The featured figure was set at render and never ticked; the per-account cards did. Move
+  // Brrr's SOL into profit (same size, so it is a tick, not a rebuild) and the merged card must
+  // follow -- figure AND which account leads.
+  const feat = () => p.evaluate(() => {
+    const fv = document.querySelector('[id^="pos-fval-g-"]'), fa = document.querySelector('[id^="pos-facct-g-"]')
+    return fv && fa ? { acct: fa.textContent.trim(), val: fv.textContent.trim() } : null
+  })
+  const card = (addr) => p.evaluate((a) => document.getElementById('pos-upnl-SOL-' + a.slice(2, 8))?.textContent.trim() ?? null, addr)
+  const before = await feat()
+  POS[A1.toLowerCase()][0] = pos('SOL', 12, 80.0, 50.0, 20)      // was entry 107.2: now +$52.60
+  const moved = await waitFor(p, 'Brrr\'s card to tick into profit', (a) => /^\+\$52\.6/.test(document.getElementById('pos-upnl-SOL-' + a.slice(2, 8))?.textContent.trim() ?? ''), A1, 45000)
+  ok('the account\'s own card ticks', moved, await card(A1))
+  const f = await feat(), byAcct = { Brrr: await card(A1), Insolvent: await card(A2) }
+  ok('and the merged card names the same figure that account\'s card shows', !!f && byAcct[f.acct] === f.val, { before, after: f, cards: byAcct })
+}
+
 console.log(NL + '-- sorted by health --')
 await p.evaluate(() => { window._mobVSortPos('health') })
 await waitFor(p, 'the health summary', () => /Worst health/i.test(document.getElementById('mobVContent')?.textContent ?? ''), null, 15000)
