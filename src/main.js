@@ -13619,6 +13619,28 @@ function _armedGuardKeys() {
 /** The same badges for the desktop rows, which have no room for a block: one line, inline. */
 window.__guardBadgeHtml = function(coin) { return _mobVGuardBadge(coin, true) }
 
+/**
+ * "Liq $X" under a card's mark price. For a card that merges several accounts, the one CLOSEST
+ * to being liquidated -- the nearest liquidation price to the mark -- since that is the line that
+ * gets crossed first ("in multiple cards use the closest to get liquidated"). Coloured by how near
+ * it is: red inside 10% of the mark, amber inside 25%.
+ *
+ * A position with no liquidation price (HL reports none when the collateral covers it) says
+ * "none" -- that is a fact, not a gap. Only when no member could be read is it left out.
+ */
+function _mobVLiqLine(members, markPx) {
+  const rows = (members ?? []).map(m => ({ liq: parseFloat(m?.liquidationPx ?? 0), acct: m?._acct ?? '' }))
+  if (!rows.length || !(markPx > 0)) return ''
+  const live = rows.filter(r => r.liq > 0)
+  const lbl = `<span style="color:var(--muted)">${_T('Liq', 'Liq')}</span>`
+  if (!live.length) return `<div class="mob-liq" style="font-size:10px;margin-top:2px;white-space:nowrap" title="${esc(_T('Hyperliquid reports no liquidation price: the collateral covers this position', 'Hyperliquid no informa precio de liquidación: el colateral cubre esta posición'))}">${lbl} <span style="color:var(--muted)">${_T('none', 'ninguna')}</span></div>`
+  const near = live.reduce((a, r) => Math.abs(markPx - r.liq) < Math.abs(markPx - a.liq) ? r : a)
+  const dist = Math.abs(markPx - near.liq) / markPx
+  const col = dist < 0.10 ? 'var(--red)' : dist < 0.25 ? 'var(--warn)' : 'var(--fg-2)'
+  const who = rows.length > 1 && near.acct ? ` · ${near.acct}` : ''
+  return `<div class="mob-liq" style="font-size:10px;margin-top:2px;white-space:nowrap" title="${esc(`${_T('Liquidation', 'Liquidación')} $${fmtPrice(near.liq)}, ${(dist * 100).toFixed(1)}% ${_T('from the mark', 'del precio')}${who}`)}">${lbl} <span class="mono" style="color:${col};font-weight:600">$${fmtPrice(near.liq)}</span></div>`
+}
+
 function _mobVGuardBadge(coin, inline = false) {
   const c   = String(coin).toUpperCase()
   const _armed = _armedGuardKeys()
@@ -13703,6 +13725,7 @@ function _mobVMergedPosCard(members) {
         <div style="text-align:center;flex-shrink:0">
           <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
           <div id="pos-mark-g-${gid}" style="font-size:13px;font-weight:600;margin-top:2px">${markPx > 0 ? '$' + fmtPrice(markPx) : '—'}</div>
+          ${_mobVLiqLine(members, markPx)}
           ${_mobVGuardBadge(coin)}
         </div>
         <div style="text-align:right;flex-shrink:0;min-width:64px">
@@ -20689,6 +20712,7 @@ function _mobVRenderContent(tick = false) {
             <div style="text-align:center;flex-shrink:0">
               <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
               <div id="pos-mark-${uid}" style="font-size:13px;font-weight:600;margin-top:2px">${markPx > 0 ? '$' + fmtPrice(markPx) : '—'}</div>
+              ${_mobVLiqLine([p], markPx)}
               ${_mobVGuardBadge(p.coin)}
             </div>
             <div style="text-align:right;flex-shrink:0;min-width:64px">

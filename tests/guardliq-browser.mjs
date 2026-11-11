@@ -110,6 +110,24 @@ const cardText = () => p.evaluate(() => document.getElementById('mobVContent')?.
 
 await boot()
 
+console.log(NL + '-- the liq price under the mark, on the closed card --')
+{
+  // "under positions mark price lets have 'liq price'" -- visible without opening the card.
+  const line = await waitFor(p, 'the liq line', () => /Liq \$90\.47/.test(document.querySelector('#mobVContent .mob-liq')?.textContent.replace(/\s+/g, ' ') ?? ''), null, 30000)
+  ok('the closed card says Liq $90.47 under the mark', line, await p.evaluate(() => document.querySelector('#mobVContent .mob-liq')?.textContent ?? '(none)'))
+  ok('in the mark column, not somewhere else on the card', await p.evaluate(() => {
+    const l = document.querySelector('#mobVContent .mob-liq'), m = document.querySelector('#mobVContent [id^="pos-mark-"]')
+    return !!l && !!m && l.parentElement === m.parentElement
+  }))
+  ok('and it does not push the card wider than the phone', await p.evaluate(() =>
+    [...document.querySelectorAll('#mobVContent .mob-liq')].every(e => e.getBoundingClientRect().right <= window.innerWidth)))
+  const SHOTS = (process.argv.find(a => a.startsWith('--shots=')) || '').split('=')[1]
+  if (SHOTS) {
+    await waitFor(p, 'the splash to clear', () => { const s = document.getElementById('bootSplash'); return !s || getComputedStyle(s).display === 'none' || getComputedStyle(s).opacity === '0' || !s.isConnected }, null, 20000)
+    await p.locator('#mobVContent [data-lp-coin]').first().screenshot({ path: `${SHOTS}/liqline-phone.png` })
+  }
+}
+
 console.log(NL + '-- with a guard armed --')
 {
   // It used to be its own "Liq. after guard" row under Margin Used; it now rides in
