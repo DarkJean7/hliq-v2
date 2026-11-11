@@ -33,10 +33,12 @@ t('a short works the same way: liquidation above the mark', val(_mobVLiqLine([{ 
 t('an account with none does not hide the others', val(_mobVLiqLine([{ liquidationPx: null }, { liquidationPx: '80' }], 100)) === '80.00')
 
 console.log('-- on both cards --')
-// "move the liq price lower, to the same level as health" -- on the health row, not under the mark.
-t('the multi-account card carries it on its health row', src.includes('${summary.label}</span>${_mobVLiqLine(members, markPx)}</span>'))
-t('and the single-account card', src.includes('>Health</span>${_mobVLiqLine([p], markPx)}</span>'))
-t('no longer under the mark', !/pos-mark-[^\n]*\n\s*\$\{_mobVLiqLine/.test(src))
+// "move the liq price lower, to the same level as health" then "ok but under mark price": in the
+// mark column, hung down to the health row's level.
+t('the multi-account card hangs it from its mark column', src.includes('${_mobVLiqUnder(_mobVLiqLine(members, markPx))}'))
+t('and the single-account card', src.includes('${_mobVLiqUnder(_mobVLiqLine([p], markPx))}'))
+t('dropped to the health row: level with the health row, under a column that fills the top row', src.includes('top:calc(100% + 9px)') && (src.match(/position:relative;align-self:stretch;display:flex;flex-direction:column;justify-content:center/g) ?? []).length === 2)
+t('and no longer beside the word Health', !src.includes('${summary.label}</span>${_mobVLiqLine') && !src.includes('>Health</span>${_mobVLiqLine'))
 // It said "none" on every merged card: the members it was handed had no liquidation price.
 t('the merged card\'s members carry each account\'s liquidation price', src.includes("acctAddr: p._acctAddr ?? null, liquidationPx: liqPx,"))
 

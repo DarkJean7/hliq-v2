@@ -13628,6 +13628,16 @@ window.__guardBadgeHtml = function(coin) { return _mobVGuardBadge(coin, true) }
  * A position with no liquidation price (HL reports none when the collateral covers it) says
  * "none" -- that is a fact, not a gap. Only when no member could be read is it left out.
  */
+/**
+ * Where the line sits: under the MARK column, but down at the level of the health row ("ok but
+ * under mark price" -- after "move the liq price lower, to the same level as health"). It hangs
+ * from the mark column, which stretches to the top row's height, so 12px below it is the health
+ * row's own top margin. Absolute, so it takes no room from either row.
+ */
+function _mobVLiqUnder(html) {
+  return html ? `<span style="position:absolute;left:50%;transform:translateX(-50%);top:calc(100% + 9px);line-height:1.15;pointer-events:auto">${html}</span>` : ''
+}
+
 function _mobVLiqLine(members, markPx) {
   const rows = (members ?? []).map(m => ({ liq: parseFloat(m?.liquidationPx ?? 0), acct: m?._acct || m?.acct || '' }))
   if (!rows.length || !(markPx > 0)) return ''
@@ -13722,7 +13732,8 @@ function _mobVMergedPosCard(members) {
           <div style="font-size:11px;color:var(--muted);margin-top:2px"><span class="notranslate">×${n}</span> ${_T('accounts', 'cuentas')} · <span class="notranslate">${esc(levLine)}</span></div>
           ${_botBadgeGroupHtml(coin, members)}
         </div>
-        <div style="text-align:center;flex-shrink:0">
+        <div style="text-align:center;flex-shrink:0;position:relative;align-self:stretch;display:flex;flex-direction:column;justify-content:center">
+          ${_mobVLiqUnder(_mobVLiqLine(members, markPx))}
           <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
           <div id="pos-mark-g-${gid}" style="font-size:13px;font-weight:600;margin-top:2px">${markPx > 0 ? '$' + fmtPrice(markPx) : '—'}</div>
           ${_mobVGuardBadge(coin)}
@@ -13735,7 +13746,7 @@ function _mobVMergedPosCard(members) {
       </div>
       <div style="margin-top:12px">
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
-          <span style="display:flex;align-items:baseline;gap:8px;min-width:0"><span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">${summary.label}</span>${_mobVLiqLine(members, markPx)}</span>
+          <span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">${summary.label}</span>
           <span style="font-size:11px;font-weight:700"><span class="notranslate" style="color:var(--accent);font-weight:700">${esc(summary.acct)}</span> <span ${summary.mode === 'health' ? `id="pos-hpct-g-${gid}"` : ''} style="color:${summary.valColor}">${summary.valText}</span>${summary.mode !== 'health' ? ` <span style="color:var(--muted);font-weight:600;font-size:10px">· Health <span style="color:${sBarColor};font-weight:700">${sHealth.toFixed(0)}%</span></span>` : ''}</span>
         </div>
         <div style="position:relative;height:6px;border-radius:3px;background:linear-gradient(90deg,#ff4d6d 0%,#f5a623 50%,#00e5a0 100%)">
@@ -20708,7 +20719,8 @@ function _mobVRenderContent(tick = false) {
                 </div>`
               })()}
             </div>
-            <div style="text-align:center;flex-shrink:0">
+            <div style="text-align:center;flex-shrink:0;position:relative;align-self:stretch;display:flex;flex-direction:column;justify-content:center">
+              ${_mobVLiqUnder(_mobVLiqLine([p], markPx))}
               <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
               <div id="pos-mark-${uid}" style="font-size:13px;font-weight:600;margin-top:2px">${markPx > 0 ? '$' + fmtPrice(markPx) : '—'}</div>
               ${_mobVGuardBadge(p.coin)}
@@ -20721,7 +20733,7 @@ function _mobVRenderContent(tick = false) {
           </div>
           <div style="margin-top:12px">
             <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
-              <span style="display:flex;align-items:baseline;gap:8px;min-width:0"><span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Health</span>${_mobVLiqLine([p], markPx)}</span>
+              <span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Health</span>
               <span style="font-size:11px;font-weight:700;color:${liqBarColorRaw}">${healthPct.toFixed(1)}%</span>
             </div>
             <div style="position:relative;height:6px;border-radius:3px;background:linear-gradient(90deg,#ff4d6d 0%,#f5a623 50%,#00e5a0 100%)">

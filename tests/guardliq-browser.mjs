@@ -115,12 +115,18 @@ console.log(NL + '-- the liq price under the mark, on the closed card --')
   // "under positions mark price lets have 'liq price'" -- visible without opening the card.
   const line = await waitFor(p, 'the liq line', () => /Liq \$90\.47/.test(document.querySelector('#mobVContent .mob-liq')?.textContent.replace(/\s+/g, ' ') ?? ''), null, 30000)
   ok('the closed card says Liq $90.47 under the mark', line, await p.evaluate(() => document.querySelector('#mobVContent .mob-liq')?.textContent ?? '(none)'))
-  // "move the liq price lower, to the same level as health" -- on the health row, level with it.
-  ok('on the health row, level with the word Health', await p.evaluate(() => {
-    const l = document.querySelector('#mobVContent .mob-liq')
-    const h = l?.parentElement?.firstElementChild
-    return !!l && /health/i.test(h?.textContent ?? '') && Math.abs(l.getBoundingClientRect().bottom - h.getBoundingClientRect().bottom) < 4
-  }))
+  // "move the liq price lower, to the same level as health" / "ok but under mark price":
+  // centred under the mark price, level with the word Health.
+  const geo = await p.evaluate(() => {
+    const l = document.querySelector('#mobVContent .mob-liq'), card = l?.closest('[data-lp-coin]')
+    const mark = card?.querySelector('[id^="pos-mark-"]')
+    const hl = [...(card?.querySelectorAll('span') ?? [])].find(e => /^\s*health\s*$/i.test(e.textContent))
+    if (!l || !mark || !hl) return null
+    const L = l.getBoundingClientRect(), M = mark.getBoundingClientRect(), H = hl.getBoundingClientRect()
+    return { dx: Math.abs((L.left + L.right) / 2 - (M.left + M.right) / 2), dy: Math.abs((L.top + L.bottom) / 2 - (H.top + H.bottom) / 2) }
+  })
+  ok('centred under the mark price', geo && geo.dx < 3, geo)
+  ok('level with the word Health', geo && geo.dy < 2, geo)
   ok('and it does not push the card wider than the phone', await p.evaluate(() =>
     [...document.querySelectorAll('#mobVContent .mob-liq')].every(e => e.getBoundingClientRect().right <= window.innerWidth)))
   const SHOTS = (process.argv.find(a => a.startsWith('--shots=')) || '').split('=')[1]
