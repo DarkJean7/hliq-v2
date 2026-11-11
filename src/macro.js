@@ -104,7 +104,12 @@ function fedItem(hi, lo) {
 /** The page's answer. A source that has never answered is null, and the page says so. */
 export function buildMacro(raw, now = Date.now()) {
   const s = raw?.series ?? {}
-  const momOf = (id) => { const m = mom(s[id]).at(-1); return m ? { mom: m[1], momDate: m[0] } : null }
+  // momPts: the monthly change's history, for Past reports. A month with no partner a year back (October
+  // 2026, after the shutdown's missing October 2025) has no yearly figure but does have this one.
+  const momOf = (id) => {
+    const all = mom(s[id]), m = all.at(-1)
+    return m ? { mom: m[1], momDate: m[0], momPts: all.slice(-CUT.m).map(([d, v]) => [STAMP(d), +v.toFixed(3)]) } : null
+  }
   const lvl = (id) => known(s[id])
   const items = [
     item('cpi', 'inflation', 'pct1', 'm', yoy(s.CPIAUCNS), 'cpi', momOf('CPIAUCSL')),

@@ -43,24 +43,41 @@ export function pastRows(d, kind, years = null, now = Date.now()) {
   const def = DEFS[kind]
   if (!def) return []
   const by = Object.fromEntries((d?.items ?? []).map(i => [i.key, i]))
-  const pts = (by[def.main]?.pts ?? []).filter(p => p && Number.isFinite(p[1]))
-  const second = new Map((def.second ? by[def.second]?.pts ?? [] : []).map(p => [ym(p[0]), p[1]]))
+  const fin = (a) => (a ?? []).filter(p => p && Number.isFinite(p[1]))
+  const main = new Map(fin(by[def.main]?.pts).map(p => [ym(p[0]), p]))
+  const second = new Map(fin(def.second ? by[def.second]?.pts : null).map(p => [ym(p[0]), p[1]]))
+  // A month that WAS reported but has no yearly figure: October 2026 CPI came out, but October 2025 never
+  // did, so there is nothing to compare it with a year on. Listing months by the yearly series alone left
+  // the newest report off the card entirely. The month-on-month change still exists, so the month is
+  // listed from either, and shows what it has.
+  const mainMom = new Map(fin(by[def.main]?.momPts).map(p => [ym(p[0]), p]))
+  const secondMom = new Map(fin(def.second ? by[def.second]?.momPts : null).map(p => [ym(p[0]), p[1]]))
+  const months = [...new Set([...main.keys(), ...mainMom.keys()])].sort()
   // By the month (or quarter) each release names. Matching by timing instead put every jobs report after
   // the 2025 shutdown on the following month's date, because one release had covered two months.
   const rel = new Map((d?.past ?? []).filter(e => e.kind === kind && e.period && (!def.stage || e.stage === def.stage)).map(e => [e.period, e]))
   const step = def.quarter ? 3 : 1
   const rows = []
-  pts.forEach((p, i) => {
-    // A month with no figure (October 2025: the shutdown stopped the survey) is a row that says so, not a
-    // silent hole, and the month after it has no "change": that would be two months' worth.
-    let next = i > 0 ? addMonths(pts[i - 1][0], step) : null
-    for (; next != null && ym(next) < ym(p[0]); next = addMonths(next, step)) rows.push({ at: next, year: yearOf(next), gap: true })
-    const adjacent = i > 0 && ym(addMonths(pts[i - 1][0], step)) === ym(p[0])
-    const row = { at: p[0], year: yearOf(p[0]), v: p[1], chg: adjacent ? p[1] - pts[i - 1][1] : null, v2: second.get(ym(p[0])) ?? null }
-    const e = rel.get(ym(p[0]))
+  let prevAt = null
+  for (const m of months) {
+    const at = (main.get(m) ?? mainMom.get(m))[0]
+    // A month with no figure at all (October 2025: the shutdown stopped the survey) is a row that says so,
+    // not a silent hole, and the month after it has no "change": that would be two months' worth.
+    let next = prevAt != null ? addMonths(prevAt, step) : null
+    for (; next != null && ym(next) < m; next = addMonths(next, step)) rows.push({ at: next, year: yearOf(next), gap: true })
+    const v = main.get(m)?.[1] ?? null, before = prevAt != null && ym(addMonths(prevAt, step)) === m ? main.get(ym(prevAt))?.[1] ?? null : null
+    const row = { at, year: yearOf(at), v, chg: v != null && before != null ? v - before : null, v2: second.get(m) ?? null }
+    if (mainMom.has(m)) row.mom = mainMom.get(m)[1]
+    if (secondMom.has(m)) row.mom2 = secondMom.get(m)
+    const e = rel.get(m)
     if (e) { row.rel = e.t; if (e.btc != null) row.btc = e.btc }
     rows.push(row)
-  })
+    prevAt = at
+  }
+  // The next one, from the calendar: the period after the newest is what it will cover. A GDP release that
+  // only revises a quarter already listed is not a new row.
+  const next = (d?.events ?? []).find(e => e.kind === kind && e.t > now && (!def.stage || e.stage === def.stage))
+  if (next && prevAt != null) { const at = addMonths(prevAt, step); rows.push({ at, year: yearOf(at), pending: true, rel: next.t }) }
   return windowed(rows, years, now, def.quarter ? 4 : 12)
 }
 
@@ -84,16 +101,18 @@ function fedRows(d, years, now) {
     if (e.btc != null) row.btc = e.btc
     return row
   })
+  const next = (d?.events ?? []).find(e => e.kind === 'fomc' && e.t > now)
+  if (next) rows.push({ at: next.t, year: yearOf(next.t), pending: true, rel: next.t, projections: !!next.projections })
   if (years == null) return rows.filter(r => r.at > now - 366 * DAY).reverse()
   return rows.filter(r => r.year >= yearOf(now) - years).reverse()
 }
 
 /** One line for a year: what the report did across it. */
 export function yearSummary(kind, all, T) {
-  const rows = all.filter(r => !r.gap)
-  const vs = rows.map(r => r.v).filter(Number.isFinite)
+  const rows = all.filter(r => !r.gap && !r.pending && Number.isFinite(r.v))
+  const vs = rows.map(r => r.v)
   if (!vs.length) return ''
-  const last = rows[0]     // newest first
+  const last = rows[0]     // newest first with a figure
   const avg = vs.reduce((a, b) => a + b, 0) / vs.length
   switch (kind) {
     case 'fomc': {
@@ -152,7 +171,11 @@ function rowHtml(kind, r, T, esc) {
   const def = DEFS[kind]
   const cell = (main, sub = '') => `<div style="text-align:right;min-width:0"><div style="font-size:12px;font-weight:800;font-family:var(--font-mono);white-space:nowrap">${main}</div>${sub ? `<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);white-space:nowrap">${sub}</div>` : ''}</div>`
   let a, b
-  if (r.gap) {
+  const onMonth = (x) => x == null ? '' : sgn(x, 1, '% ') + T('m/m', 'mensual')
+  if (r.pending) {
+    a = cell('…', T('Not out yet', 'Aún no sale'))
+    b = kind === 'fomc' || def.second ? cell('…') : '<div></div>'
+  } else if (r.gap) {
     a = cell('—', T('No figure', 'Sin cifra'))
     b = def.second ? cell('—') : '<div></div>'
   } else if (kind === 'fomc') {
@@ -160,12 +183,14 @@ function rowHtml(kind, r, T, esc) {
     b = cell(rangeOf(r.v))
   } else {
     const chg = r.chg == null || kind === 'jobs' ? '' : def.fmt === 'mil' ? sgn(r.chg, 2, 'M') : sgn(r.chg, 1, ' pt')
-    a = cell(esc(fmtV(def.fmt, r.v)), chg)
-    b = def.second ? cell(esc(fmtV(def.fmt2, r.v2))) : '<div></div>'
+    // No yearly figure, but a monthly one: say what there is rather than a bare dash.
+    a = cell(esc(fmtV(def.fmt, r.v)), r.v == null ? onMonth(r.mom) || T('No yearly figure', 'Sin cifra anual') : chg)
+    b = def.second ? cell(esc(fmtV(def.fmt2, r.v2)), r.v2 == null ? onMonth(r.mom2) : '') : '<div></div>'
   }
-  const rel = kind === 'fomc'
-    ? (r.projections ? T('with projections', 'con proyecciones') : '')
-    : r.rel ? T('Out', 'Salió') + ' ' + new Date(r.rel).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''
+  const day = r.rel ? new Date(r.rel).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''
+  const rel = r.pending ? T('Due', 'Sale el') + ' ' + day
+    : kind === 'fomc' ? (r.projections ? T('with projections', 'con proyecciones') : '')
+    : r.rel ? T('Out', 'Salió') + ' ' + day : ''
   return `<div data-past-row style="display:contents">
     <div style="min-width:0"><div style="font-size:12px;font-weight:700;white-space:nowrap">${esc(periodText(kind, r.at))}</div>${rel ? `<div style="font-size:10px;color:var(--muted);white-space:nowrap">${esc(rel)}</div>` : ''}</div>
     ${a}${b}

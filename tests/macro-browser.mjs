@@ -289,6 +289,7 @@ console.log('-- phone --')
   const past = await text(p, '#macroPast')
   t('the newest says when it came out and how Bitcoin moved', /Out [A-Z][a-z]{2} \d{1,2}/.test(past) && /−1\.8%/.test(past), past.slice(0, 300))
   t('the month never published says so', /No figure/.test(past), past)
+  t('the next report is listed, with when it is due', /Due [A-Z][a-z]{2} \d{1,2}/.test(past) && /Not out yet/.test(past), past.slice(0, 300))
   const pastOver = await p.$eval('#macroPast', e => e.scrollWidth - e.clientWidth)
   t('it fits on a phone', pastOver <= 0, pastOver)
   if (arg('pastshot')) { await p.$eval('#macroPast', e => e.scrollIntoView()); await p.screenshot({ path: arg('pastshot') }) }

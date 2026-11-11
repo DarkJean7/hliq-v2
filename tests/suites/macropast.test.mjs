@@ -98,6 +98,21 @@ t('a year sums up', /^avg [\d.]+% · ended [\d.]+%$/.test(yearSummary('cpi', y5.
 const j = pastRows(d, 'jobs', null, NOW)
 t('jobs dated from the archive', iso(j[0].rel) === '2026-11-06T13:30' && j[0].btc === -2 && j[0].v2 === 4.1, j[0])
 
+// October 2026 was reported, but October 2025 never was: no yearly figure, a monthly one. It was missing
+// from the card entirely ("we are missing the recent october ... reports").
+const oct = { ...d, items: d.items.map(i => i.key === 'cpi' ? { ...i, momPts: [[STAMP('2026-09-01'), 0.3], [STAMP('2026-10-01'), 0.2]] } : i),
+  past: [...d.past, { t: Date.UTC(2026, 10, 10, 13, 30), kind: 'cpi', period: '2026-10', btc: 1.1 }],
+  events: [{ t: Date.UTC(2026, 11, 10, 13, 30), kind: 'cpi' }, { t: Date.UTC(2026, 11, 9, 19), kind: 'fomc', projections: true }] }
+const o1 = pastRows(oct, 'cpi', null, NOW)
+t('the next report is a row, due on its calendar date', o1[0].pending && iso(o1[0].at).startsWith('2026-11') && iso(o1[0].rel) === '2026-12-10T13:30', o1[0])
+t('a reported month with no yearly figure is still listed', iso(o1[1].at).startsWith('2026-10') && o1[1].v === null && o1[1].mom === 0.2 && iso(o1[1].rel) === '2026-11-10T13:30', o1[1])
+t('and has no change, having nothing to change from', o1[1].chg === null)
+const oh = pastCardHtml(oct, { T, esc: String }, NOW)
+t('it shows its monthly figure instead', oh.includes('+0.2% m/m') && oh.includes('Out Nov 10'), oh.slice(0, 200))
+t('the next one says when', oh.includes('Due Dec 10') && oh.includes('Not out yet'))
+t('a year summary skips the month it cannot count', /ended [\d.]+%/.test(yearSummary('cpi', pastRows(oct, 'cpi', 5, NOW).filter(r => r.year === 2026), T)))
+t('the next Fed meeting too', pastRows(oct, 'fomc', null, NOW)[0].pending === true)
+
 const fed = pastRows(d, 'fomc', null, NOW)
 t('every past meeting in the year, newest first, whatever order they came in', fed.length === 4 && fed.every((r, i) => i === 0 || r.at < fed[i - 1].at), fed.map(r => iso(r.at)))
 const fx = Object.fromEntries(fed.map(r => [iso(r.at).slice(0, 10), r]))
