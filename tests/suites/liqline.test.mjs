@@ -33,12 +33,13 @@ t('a short works the same way: liquidation above the mark', val(_mobVLiqLine([{ 
 t('an account with none does not hide the others', val(_mobVLiqLine([{ liquidationPx: null }, { liquidationPx: '80' }], 100)) === '80.00')
 
 console.log('-- on both cards --')
-// "move the liq price lower, to the same level as health" then "ok but under mark price": in the
-// mark column, hung down to the health row's level.
-t('the multi-account card hangs it from its mark column', src.includes('${_mobVLiqUnder(_mobVLiqLine(members, markPx))}'))
-t('and the single-account card', src.includes('${_mobVLiqUnder(_mobVLiqLine([p], markPx))}'))
-t('dropped to the health row: level with the health row, under a column that fills the top row', src.includes('top:calc(100% + 9px)') && (src.match(/position:relative;align-self:stretch;display:flex;flex-direction:column;justify-content:center/g) ?? []).length === 2)
-t('and no longer beside the word Health', !src.includes('${summary.label}</span>${_mobVLiqLine') && !src.includes('>Health</span>${_mobVLiqLine'))
+// "move the liq price lower, to the same level as health" / "ok but under mark price" -- and then
+// "in my real phone the cards new added liq price is looking bad": hung absolutely under the mark,
+// it ran into a long right-hand figure (sorted by PnL). Now a slot in the health row's own flow.
+t('the multi-account card puts it in its health row', src.includes('${_mobVLiqSlot(_mobVLiqLine(members, markPx))}'))
+t('and the single-account card', src.includes('${_mobVLiqSlot(_mobVLiqLine([p], markPx))}'))
+t('in the flow, not a layer over it: nothing absolute left', !src.includes('_mobVLiqUnder') && !/mob-liq-slot[^>]*position:absolute/.test(src))
+t('the right-hand figure keeps the PnL column\'s width, so a short one leaves the slot under the mark', (src.match(/min-width:\$\{_MOB_LIQ_RIGHT_MIN\}px/g) ?? []).length === 2)
 // It said "none" on every merged card: the members it was handed had no liquidation price.
 t('the merged card\'s members carry each account\'s liquidation price', src.includes("acctAddr: p._acctAddr ?? null, liquidationPx: liqPx,"))
 

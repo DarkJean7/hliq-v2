@@ -125,7 +125,9 @@ console.log(NL + '-- the liq price under the mark, on the closed card --')
     const L = l.getBoundingClientRect(), M = mark.getBoundingClientRect(), H = hl.getBoundingClientRect()
     return { dx: Math.abs((L.left + L.right) / 2 - (M.left + M.right) / 2), dy: Math.abs((L.top + L.bottom) / 2 - (H.top + H.bottom) / 2) }
   })
-  ok('centred under the mark price', geo && geo.dx < 3, geo)
+  // Under the mark, not pinned to it: it is a slot in the row's flow now, so a long right-hand
+  // figure can push it left rather than print over it (tests/poscardliq-browser.mjs).
+  ok('under the mark price', geo && geo.dx < 30, geo)
   ok('level with the word Health', geo && geo.dy < 2, geo)
   ok('and it does not push the card wider than the phone', await p.evaluate(() =>
     [...document.querySelectorAll('#mobVContent .mob-liq')].every(e => e.getBoundingClientRect().right <= window.innerWidth)))

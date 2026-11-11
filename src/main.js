@@ -13629,13 +13629,20 @@ window.__guardBadgeHtml = function(coin) { return _mobVGuardBadge(coin, true) }
  * "none" -- that is a fact, not a gap. Only when no member could be read is it left out.
  */
 /**
- * Where the line sits: under the MARK column, but down at the level of the health row ("ok but
- * under mark price" -- after "move the liq price lower, to the same level as health"). It hangs
- * from the mark column, which stretches to the top row's height, so 12px below it is the health
- * row's own top margin. Absolute, so it takes no room from either row.
+ * Where the line sits: on the health row, toward the mark column ("move the liq price lower, to
+ * the same level as health" / "ok but under mark price").
+ *
+ * It is a slot IN the row, between the label and the right-hand figure, not a layer over it. It
+ * was first hung absolutely under the mark, which looked right sorted by health (the right side
+ * reads "Brrr 32%") and collided on a real phone sorted by PnL, where the right side reads
+ * "Dark -$294.32 · Health 49%" and runs straight under the mark. In the row's flow nothing can
+ * overlap: the right-hand figure keeps at least the PnL column's width, which puts the slot under
+ * the mark when it is short, and a long one pushes the slot left instead of over it. Squeezed
+ * past its width, the slot clips with an ellipsis rather than breaking the row.
  */
-function _mobVLiqUnder(html) {
-  return html ? `<span style="position:absolute;left:50%;transform:translateX(-50%);top:calc(100% + 9px);line-height:1.15;pointer-events:auto">${html}</span>` : ''
+const _MOB_LIQ_RIGHT_MIN = 88   // ~ the PnL column plus the chevron, so a short figure leaves the slot under the mark
+function _mobVLiqSlot(html) {
+  return html ? `<span class="mob-liq-slot" style="margin-left:auto;margin-right:10px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${html}</span>` : ''
 }
 
 function _mobVLiqLine(members, markPx) {
@@ -13732,8 +13739,7 @@ function _mobVMergedPosCard(members) {
           <div style="font-size:11px;color:var(--muted);margin-top:2px"><span class="notranslate">×${n}</span> ${_T('accounts', 'cuentas')} · <span class="notranslate">${esc(levLine)}</span></div>
           ${_botBadgeGroupHtml(coin, members)}
         </div>
-        <div style="text-align:center;flex-shrink:0;position:relative;align-self:stretch;display:flex;flex-direction:column;justify-content:center">
-          ${_mobVLiqUnder(_mobVLiqLine(members, markPx))}
+        <div style="text-align:center;flex-shrink:0">
           <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
           <div id="pos-mark-g-${gid}" style="font-size:13px;font-weight:600;margin-top:2px">${markPx > 0 ? '$' + fmtPrice(markPx) : '—'}</div>
           ${_mobVGuardBadge(coin)}
@@ -13746,8 +13752,9 @@ function _mobVMergedPosCard(members) {
       </div>
       <div style="margin-top:12px">
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
-          <span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">${summary.label}</span>
-          <span style="font-size:11px;font-weight:700"><span class="notranslate" style="color:var(--accent);font-weight:700">${esc(summary.acct)}</span> <span ${summary.mode === 'health' ? `id="pos-hpct-g-${gid}"` : ''} style="color:${summary.valColor}">${summary.valText}</span>${summary.mode !== 'health' ? ` <span style="color:var(--muted);font-weight:600;font-size:10px">· Health <span style="color:${sBarColor};font-weight:700">${sHealth.toFixed(0)}%</span></span>` : ''}</span>
+          <span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;flex-shrink:0">${summary.label}</span>
+          ${_mobVLiqSlot(_mobVLiqLine(members, markPx))}
+          <span style="font-size:11px;font-weight:700;flex-shrink:0;text-align:right;min-width:${_MOB_LIQ_RIGHT_MIN}px"><span class="notranslate" style="color:var(--accent);font-weight:700">${esc(summary.acct)}</span> <span ${summary.mode === 'health' ? `id="pos-hpct-g-${gid}"` : ''} style="color:${summary.valColor}">${summary.valText}</span>${summary.mode !== 'health' ? ` <span style="color:var(--muted);font-weight:600;font-size:10px">· Health <span style="color:${sBarColor};font-weight:700">${sHealth.toFixed(0)}%</span></span>` : ''}</span>
         </div>
         <div style="position:relative;height:6px;border-radius:3px;background:linear-gradient(90deg,#ff4d6d 0%,#f5a623 50%,#00e5a0 100%)">
           <div ${summary.mode === 'health' ? `id="pos-hdot-g-${gid}"` : ''} style="position:absolute;top:50%;left:${sHealth.toFixed(1)}%;width:12px;height:12px;border-radius:50%;background:#fff;border:2px solid var(--bg);transform:translate(-50%,-50%);box-shadow:0 1px 3px rgba(0,0,0,0.45)"></div>
@@ -20719,8 +20726,7 @@ function _mobVRenderContent(tick = false) {
                 </div>`
               })()}
             </div>
-            <div style="text-align:center;flex-shrink:0;position:relative;align-self:stretch;display:flex;flex-direction:column;justify-content:center">
-              ${_mobVLiqUnder(_mobVLiqLine([p], markPx))}
+            <div style="text-align:center;flex-shrink:0">
               <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
               <div id="pos-mark-${uid}" style="font-size:13px;font-weight:600;margin-top:2px">${markPx > 0 ? '$' + fmtPrice(markPx) : '—'}</div>
               ${_mobVGuardBadge(p.coin)}
@@ -20733,8 +20739,9 @@ function _mobVRenderContent(tick = false) {
           </div>
           <div style="margin-top:12px">
             <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
-              <span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Health</span>
-              <span style="font-size:11px;font-weight:700;color:${liqBarColorRaw}">${healthPct.toFixed(1)}%</span>
+              <span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;flex-shrink:0">Health</span>
+              ${_mobVLiqSlot(_mobVLiqLine([p], markPx))}
+              <span style="font-size:11px;font-weight:700;color:${liqBarColorRaw};flex-shrink:0;text-align:right;min-width:${_MOB_LIQ_RIGHT_MIN}px">${healthPct.toFixed(1)}%</span>
             </div>
             <div style="position:relative;height:6px;border-radius:3px;background:linear-gradient(90deg,#ff4d6d 0%,#f5a623 50%,#00e5a0 100%)">
               <div style="position:absolute;top:50%;left:${Math.max(0, Math.min(100, healthPct)).toFixed(1)}%;width:12px;height:12px;border-radius:50%;background:#fff;border:2px solid var(--bg);transform:translate(-50%,-50%);box-shadow:0 1px 3px rgba(0,0,0,0.45)"></div>
