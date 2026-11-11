@@ -7,6 +7,7 @@
 
 import { fngWindow, fngZone, FNG_ZONES } from './macro.js'
 import { eventDetailHtml } from './macroevents.js'
+import { pastCardHtml, macroPastSet } from './macropast.js'
 
 const REFRESH = 10 * 60e3
 const RETRY = 30e3
@@ -24,6 +25,7 @@ let ctx = {
 }
 const TV_URL = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js'
 export function setMacroDeps(deps) { ctx = { ...ctx, ...deps } }
+if (typeof window !== 'undefined') window.__macroPast = (what, v) => macroPastSet(what, v, () => ctx.repaint())
 
 /** Fetch if it is due. Each render calls this; it does nothing most of the time. */
 export function ensureMacro(now = Date.now()) {
@@ -464,7 +466,7 @@ export function macroFill(root, now = Date.now()) {
       ${rows.map(i => rowHtml(i, now)).join('')}
     </div>`
   }
-  A.innerHTML = eventsCard(now)
+  A.innerHTML = eventsCard(now) + pastCardHtml(_d, ctx, now)
   B.innerHTML = `${group('sentiment')}${group('inflation')}${group('jobs')}${group('growth')}${group('rates')}
     <div style="${SMALL};margin-top:12px">${T('Economic data is for the US, via the St. Louis Fed (FRED). Each row shows the period it covers, because reports arrive weeks after the period ends. Forecasts are not included, so this does not show whether a report beat expectations. This is context and not trading advice.', 'Los datos económicos son de EE. UU., a través de la Fed de St. Louis (FRED). Cada fila indica el período que cubre, porque los informes llegan semanas después. No incluye previsiones, así que no muestra si un informe superó las expectativas. Es contexto, no asesoramiento de inversión.')}</div>`
 }

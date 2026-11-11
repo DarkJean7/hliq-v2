@@ -51,6 +51,24 @@ const DATA = {
   reactions: { cpi: { n: 12, avgAbs: 2.1, up: 7, normal: 1.7, recent: [[20400, 1.25], [20370, -3.1]] } },
 }
 
+// Past reports: six years of monthly CPI with one month never published, five months back, as October
+// 2025 was. The newest month has its release on file and Bitcoin's move that day; the Fed cut at a meeting.
+{
+  const now = new Date(NOW), mon = (k) => Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - k, 1, 12)
+  const ymOf = (ms) => new Date(ms).toISOString().slice(0, 7)
+  const cpi = []
+  // The newest is the row's own 3.1, which its chart reads out below.
+  for (let k = 74; k >= 2; k--) if (k !== 5) cpi.push([mon(k), k === 2 ? 3.1 : +(2.5 + Math.sin(k) / 2).toFixed(3)])
+  const it = (key) => DATA.items.find(i => i.key === key)
+  it('cpi').pts = cpi
+  it('core').pts = []
+  DATA.past = [
+    { t: mon(1) + 13 * D, kind: 'cpi', period: ymOf(mon(2)), btc: -1.82 },
+    { t: NOW - 40 * D, kind: 'fomc' },
+  ]
+  it('fed').pts = [[NOW - 900 * D, 4.25], [NOW - 39 * D, 4]]
+}
+
 const b = await chromium.launch()
 let macroMode = 'fail', macroCalls = 0
 async function open(viewport, isMobile, privacy = '0') {
@@ -262,6 +280,36 @@ console.log('-- phone --')
   const wrapped = await p.$$eval('[data-macro-row] .mob-v-row-val', es => es.filter(e => e.scrollWidth > e.clientWidth + 1).length)
   t('every figure fits', wrapped === 0, wrapped)
   if (arg('shot')) await p.screenshot({ path: arg('shot'), fullPage: false })
+
+  console.log('-- past reports --')
+  await p.waitForSelector('#macroPast')
+  t('past reports sit under what is coming up', await p.evaluate(() => document.getElementById('macroEvents').nextElementSibling?.id === 'macroPast'))
+  t('opens on CPI, the last year', await p.$eval('[data-past-kind="cpi"]', e => e.getAttribute('aria-pressed')) === 'true' && await p.$eval('[data-past-range="1y"]', e => e.getAttribute('aria-pressed')) === 'true')
+  t('twelve months of it', (await p.$$('#macroPast [data-past-row]')).length === 12, (await p.$$('#macroPast [data-past-row]')).length)
+  const past = await text(p, '#macroPast')
+  t('the newest says when it came out and how Bitcoin moved', /Out [A-Z][a-z]{2} \d{1,2}/.test(past) && /−1\.8%/.test(past), past.slice(0, 300))
+  t('the month never published says so', /No figure/.test(past), past)
+  const pastOver = await p.$eval('#macroPast', e => e.scrollWidth - e.clientWidth)
+  t('it fits on a phone', pastOver <= 0, pastOver)
+  if (arg('pastshot')) { await p.$eval('#macroPast', e => e.scrollIntoView()); await p.screenshot({ path: arg('pastshot') }) }
+  await p.tap('[data-past-range="5y"]')
+  await p.waitForSelector('[data-past-year]')
+  const years = await p.$$eval('[data-past-year]', es => es.map(e => [e.dataset.pastYear, e.getAttribute('aria-expanded')]))
+  t('five years, a line each, the newest open', years.length >= 5 && years.length <= 6 && years[0][1] === 'true' && years.slice(1).every(y => y[1] === 'false'), years)
+  t('a year says what it did', /avg [\d.]+% · ended [\d.]+%/.test(await text(p, `[data-past-year="${years[3][0]}"]`)), await text(p, `[data-past-year="${years[3][0]}"]`))
+  const before = (await p.$$('#macroPast [data-past-row]')).length
+  await p.tap(`[data-past-year="${years[3][0]}"]`)
+  await p.waitForFunction((y) => document.querySelector(`[data-past-year="${y}"]`)?.getAttribute('aria-expanded') === 'true', years[3][0])
+  t('an older year opens into its months', (await p.$$('#macroPast [data-past-row]')).length === before + 12, [before, (await p.$$('#macroPast [data-past-row]')).length])
+  t('and still fits', await p.$eval('#macroPast', e => e.scrollWidth - e.clientWidth) <= 0)
+  if (arg('pastshot5')) { await p.$eval(`[data-past-year="${years[3][0]}"]`, e => e.scrollIntoView()); await p.screenshot({ path: arg('pastshot5') }) }
+  await p.tap('[data-past-range="1y"]')
+  await p.tap('[data-past-kind="fomc"]')
+  await p.waitForFunction(() => document.querySelector('[data-past-kind="fomc"]')?.getAttribute('aria-pressed') === 'true')
+  t('the Fed reads as decisions', /Cut 0\.25/.test(await text(p, '#macroPast')) && /3\.75–4\.00%/.test(await text(p, '#macroPast')), await text(p, '#macroPast'))
+  t('the choice is kept', JSON.parse(await p.evaluate(() => localStorage.getItem('hliq_macro_past'))).kind === 'fomc')
+  await p.tap('[data-past-kind="cpi"]')
+
   await p.tap('[data-macro-row="fed"] .mob-v-row')
   await p.waitForSelector('[data-macro-row="fed"] [data-macro-detail]')
   t('a tap opens a row', true)

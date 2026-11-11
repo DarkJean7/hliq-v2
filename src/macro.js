@@ -12,6 +12,12 @@ export const FNG_URL = 'https://api.alternative.me/fng/?limit=0'     // everythi
 export const CG_GLOBAL_URL = 'https://api.coingecko.com/api/v3/global'
 export const BLS_ICS_URL = 'https://www.bls.gov/schedule/news_release/bls.ics'
 export const BEA_ICS_URL = 'https://www.bea.gov/news/schedule/ics/online-calendar-subscription.ics'
+// Every past release of each BLS report, by the month it covers. The calendar above has dates but not
+// periods, and only from 2025; these pages name the month and go back decades.
+export const BLS_ARCHIVE = {
+  cpi: 'https://www.bls.gov/bls/news-release/cpi.htm', jobs: 'https://www.bls.gov/bls/news-release/empsit.htm',
+  ppi: 'https://www.bls.gov/bls/news-release/ppi.htm', jolts: 'https://www.bls.gov/bls/news-release/jolts.htm',
+}
 export const FOMC_URL = 'https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm'
 export const NOWCAST_MONTH_URL = 'https://www.clevelandfed.org/-/media/files/webcharts/inflationnowcasting/nowcast_month.json'
 export const NOWCAST_YEAR_URL = 'https://www.clevelandfed.org/-/media/files/webcharts/inflationnowcasting/nowcast_year.json'
@@ -130,6 +136,7 @@ export function buildMacro(raw, now = Date.now()) {
     gdpnow: (() => { const g = lastOf(s.GDPNOW); return g ? { date: g[0], value: g[1] } : null })(),
     sep: sepFor(s, now),
     reactions: btcReactions(raw?.events, raw?.btc, now),
+    past: pastEvents(raw?.events, raw?.rel, raw?.btc, now),
     unknownCal: Object.entries(raw?.events ?? { bls: null, bea: null, fomc: null }).filter(([, v]) => !v).map(([k]) => k),
   }
 }
@@ -302,13 +309,56 @@ export function blsEvents(text) {
   const all = parseIcs(text)
   return all && all.flatMap(e => BLS_KIND[e.summary] ? [{ t: e.t, kind: BLS_KIND[e.summary] }] : [])
 }
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+const pad2 = (n) => String(n).padStart(2, '0')
+/**
+ * BEA titles name the period, in two styles: "GDP (Advance Estimate), 3rd Quarter 2026" and, through 2025,
+ * "Gross Domestic Product, 1st Quarter 2025 (Advance Estimate)". The shutdown's Q3 2025 first estimate was
+ * called "Initial", and it is the first estimate. A quarter's period is its first month.
+ * "Personal Income and Outlays, October and November 2025" was one release for two months, so it is two rows.
+ */
 export function beaEvents(text) {
   const all = parseIcs(text)
   return all && all.flatMap((e) => {
-    const gdp = /^GDP \((Advance|Second|Third)/.exec(e.summary)      // not "Gross Domestic Product by County"
-    if (gdp) return [{ t: e.t, kind: 'gdp', stage: gdp[1].toLowerCase() }]
-    return /^Personal Income and Outlays/.test(e.summary) ? [{ t: e.t, kind: 'pce' }] : []
+    // not "Gross Domestic Product by County", nor "for Puerto Rico": neither carries an estimate stage
+    const gdp = /^(?:GDP|Gross Domestic Product)\b[^(]*?\((Advance|Second|Third|Initial) Estimate/.exec(e.summary)
+    if (gdp) {
+      const q = /(\d)(?:st|nd|rd|th) Quarter(?: and Year)? (\d{4})/.exec(e.summary)
+      const stage = gdp[1].toLowerCase() === 'initial' ? 'advance' : gdp[1].toLowerCase()
+      return [{ t: e.t, kind: 'gdp', stage, ...(q ? { period: `${q[2]}-${pad2((+q[1] - 1) * 3 + 1)}` } : {}) }]
+    }
+    const pce = /^Personal Income and Outlays,\s*(.+)$/.exec(e.summary)
+    if (!pce) return []
+    const y = /(\d{4})\s*$/.exec(pce[1].trim())?.[1]
+    const months = MONTH_NAMES.flatMap((m, i) => new RegExp(`\\b${m}\\b`).test(pce[1]) ? [i + 1] : [])
+    if (!y || !months.length) return [{ t: e.t, kind: 'pce' }]
+    return months.map(m => ({ t: e.t, kind: 'pce', period: `${y}-${pad2(m)}` }))
   })
+}
+
+/**
+ * One BLS archive page: { t, kind, period } for each release, newest month first on the page. Commented-out
+ * placeholders for releases not yet out are dropped before reading. The first link in an entry is named with
+ * its release date (cpi_10142026.htm); a date that is not after its month, or is months late, is a link to
+ * something else and is skipped. BLS releases at 8:30 New York time, JOLTS at 10:00.
+ */
+export function parseBlsArchive(html, kind) {
+  const s = String(html ?? '').replace(/<!--[\s\S]*?-->/g, '')
+  const out = new Map()
+  for (const li of s.split(/<li[\s>]/i).slice(1)) {
+    const body = li.split(/<\/li>/i)[0]
+    const text = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
+    const p = /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\b/.exec(text)
+    const f = /_(\d{2})(\d{2})(\d{4})\.(?:htm|txt|pdf)/i.exec(body)
+    if (!p || !f) continue
+    const mo = MONTH_NAMES.indexOf(p[1]) + 1, y = +p[2]
+    const t = easternToUtc(+f[3], +f[1], +f[2], kind === 'jolts' ? 10 : 8, kind === 'jolts' ? 0 : 30)
+    const end = Date.UTC(y, mo, 1)
+    if (!(t > end) || t > end + 160 * DAY_MS) continue
+    const period = `${y}-${pad2(mo)}`
+    if (!out.has(period)) out.set(period, { t, kind, period })
+  }
+  return out.size ? [...out.values()].sort((a, b) => a.t - b.t) : null
 }
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
@@ -335,6 +385,29 @@ export function parseFomc(html) {
   return out.length ? out : null
 }
 
+/**
+ * Releases that have already happened, oldest first, for "Past reports". Each carries Bitcoin's move across
+ * its UTC day when the price history reaches that far, and no `btc` at all when it does not: a missing move
+ * is unknown, not flat. A calendar that failed contributes nothing, and the page says dates may be missing.
+ */
+export function pastEvents(ev, rel, btc, now = Date.now()) {
+  // BLS reports come from their archives, which say which month each release covered; the BLS calendar does
+  // not, and guessing from timing went wrong after the 2025 shutdown, when one release covered two months.
+  const lists = [ev?.bea, ev?.fomc, ...Object.values(rel ?? {})].filter(Boolean)
+  if (!lists.length) return null
+  const px = new Map(btc ?? [])
+  const from = now - 6.2 * 365 * DAY_MS
+  return lists.flat().filter(e => e && e.t < now && e.t >= from).sort((a, b) => a.t - b.t).map((e) => {
+    const day = Math.floor(e.t / DAY_MS), a = px.get(day), b = px.get(day + 1)
+    const out = { t: e.t, kind: e.kind }
+    if (e.stage) out.stage = e.stage
+    if (e.period) out.period = e.period
+    if (e.projections) out.projections = true
+    if (a && b) out.btc = +((b / a - 1) * 100).toFixed(2)
+    return out
+  })
+}
+
 function mergeEvents(ev, now) {
   const lists = Object.values(ev ?? {}).filter(Boolean)
   if (!lists.length) return null
@@ -342,7 +415,7 @@ function mergeEvents(ev, now) {
 }
 
 // The index is published once a day and its whole history is 300 KB, so it is not asked for often.
-const TTL = { series: 30 * 60e3, fng: 3 * 3600e3, global: 10 * 60e3, cal: 6 * 3600e3, nowcast: 3 * 3600e3, btc: 6 * 3600e3 }
+const TTL = { series: 30 * 60e3, fng: 3 * 3600e3, global: 10 * 60e3, cal: 6 * 3600e3, nowcast: 3 * 3600e3, btc: 6 * 3600e3, rel: 12 * 3600e3 }
 
 /**
  * One refresh: only what is due, and a failed read keeps the last good one, so an outage shows a stale
@@ -350,7 +423,7 @@ const TTL = { series: 30 * 60e3, fng: 3 * 3600e3, global: 10 * 60e3, cal: 6 * 36
  */
 export async function refreshMacro(prev, getText, now = Date.now()) {
   const raw = { series: { ...(prev?.series ?? {}) }, fng: prev?.fng ?? null, global: prev?.global ?? null, nowcast: prev?.nowcast ?? null, btc: prev?.btc ?? null,
-    events: { bls: null, bea: null, fomc: null, ...(prev?.events ?? {}) }, srcAt: { ...(prev?.srcAt ?? {}) } }
+    events: { bls: null, bea: null, fomc: null, ...(prev?.events ?? {}) }, rel: { ...(prev?.rel ?? {}) }, srcAt: { ...(prev?.srcAt ?? {}) } }
   const due = (k) => now - (raw.srcAt[k] ?? 0) >= TTL[k.split(':')[0]]
   const read = (url) => getText(url).catch(() => null)
 
@@ -371,6 +444,7 @@ export async function refreshMacro(prev, getText, now = Date.now()) {
     due('btc') && read(BTC_CHART_URL).then((t) => { const v = parseBtcChart(json(t)); if (v) { raw.btc = v; raw.srcAt.btc = now } }),
     due('cal:bls') && read(BLS_ICS_URL).then((t) => { const v = blsEvents(t); if (v?.length) { raw.events.bls = v; raw.srcAt['cal:bls'] = now } }),
     due('cal:bea') && read(BEA_ICS_URL).then((t) => { const v = beaEvents(t); if (v?.length) { raw.events.bea = v; raw.srcAt['cal:bea'] = now } }),
+    ...Object.entries(BLS_ARCHIVE).map(([k, url]) => due('rel:' + k) && read(url).then((t) => { const v = parseBlsArchive(t, k); if (v?.length) { raw.rel[k] = v; raw.srcAt['rel:' + k] = now } })),
     due('cal:fomc') && read(FOMC_URL).then((t) => { const v = parseFomc(t); if (v) { raw.events.fomc = v; raw.srcAt['cal:fomc'] = now } }),
   ])
   raw.at = now
