@@ -51,8 +51,32 @@ jobs:
       # only ran when someone remembered; agent keys broke for a day in exactly the gap that
       # leaves. It is hermetic (its own server and the exchange are both stubbed) and takes
       # about fifteen seconds, which is what makes it cheap enough to gate on.
+      # Chromium is downloaded once and kept: two deploys in a row (2026-11-11) failed here after
+      # ten minutes of a stalled download, before a single browser test ran. Cached by the
+      # installed Playwright version, so a version bump fetches the matching browser.
+      - name: Playwright version
+        id: pw
+        run: echo "v=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-chromium-${{ runner.os }}-${{ steps.pw.outputs.v }}
+
+      # Each part bounded, so a stall fails fast or retries instead of eating the job's twenty
+      # minutes. The download is retried; the system libraries are best-effort, because the
+      # ubuntu runner already carries what Chromium needs. This does not loosen the gate: if
+      # Chromium cannot start, the browser tests below fail and nothing ships.
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+        run: |
+          ok=0
+          for i in 1 2 3; do
+            if timeout 240 npx playwright install chromium; then ok=1; break; fi
+            echo "Chromium download attempt $i failed or stalled; retrying"; sleep 10
+          done
+          [ "$ok" = 1 ] || { echo "Could not download Chromium after 3 attempts"; exit 1; }
+          timeout 240 npx playwright install-deps chromium || echo "install-deps did not finish; relying on the runner's own libraries"
 
       # Served from dist/, not the dev server: this gates the artifact that is about to ship.
       - name: Browser tests
