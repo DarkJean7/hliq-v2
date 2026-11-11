@@ -13629,16 +13629,16 @@ window.__guardBadgeHtml = function(coin) { return _mobVGuardBadge(coin, true) }
  * "none" -- that is a fact, not a gap. Only when no member could be read is it left out.
  */
 function _mobVLiqLine(members, markPx) {
-  const rows = (members ?? []).map(m => ({ liq: parseFloat(m?.liquidationPx ?? 0), acct: m?._acct ?? '' }))
+  const rows = (members ?? []).map(m => ({ liq: parseFloat(m?.liquidationPx ?? 0), acct: m?._acct || m?.acct || '' }))
   if (!rows.length || !(markPx > 0)) return ''
   const live = rows.filter(r => r.liq > 0)
   const lbl = `<span style="color:var(--muted)">${_T('Liq', 'Liq')}</span>`
-  if (!live.length) return `<div class="mob-liq" style="font-size:10px;margin-top:2px;white-space:nowrap" title="${esc(_T('Hyperliquid reports no liquidation price: the collateral covers this position', 'Hyperliquid no informa precio de liquidación: el colateral cubre esta posición'))}">${lbl} <span style="color:var(--muted)">${_T('none', 'ninguna')}</span></div>`
+  if (!live.length) return `<span class="mob-liq" style="font-size:10px;white-space:nowrap" title="${esc(_T('Hyperliquid reports no liquidation price: the collateral covers this position', 'Hyperliquid no informa precio de liquidación: el colateral cubre esta posición'))}">${lbl} <span style="color:var(--muted)">${_T('none', 'ninguna')}</span></span>`
   const near = live.reduce((a, r) => Math.abs(markPx - r.liq) < Math.abs(markPx - a.liq) ? r : a)
   const dist = Math.abs(markPx - near.liq) / markPx
   const col = dist < 0.10 ? 'var(--red)' : dist < 0.25 ? 'var(--warn)' : 'var(--fg-2)'
   const who = rows.length > 1 && near.acct ? ` · ${near.acct}` : ''
-  return `<div class="mob-liq" style="font-size:10px;margin-top:2px;white-space:nowrap" title="${esc(`${_T('Liquidation', 'Liquidación')} $${fmtPrice(near.liq)}, ${(dist * 100).toFixed(1)}% ${_T('from the mark', 'del precio')}${who}`)}">${lbl} <span class="mono" style="color:${col};font-weight:600">$${fmtPrice(near.liq)}</span></div>`
+  return `<span class="mob-liq" style="font-size:10px;white-space:nowrap" title="${esc(`${_T('Liquidation', 'Liquidación')} $${fmtPrice(near.liq)}, ${(dist * 100).toFixed(1)}% ${_T('from the mark', 'del precio')}${who}`)}">${lbl} <span class="mono" style="color:${col};font-weight:600">$${fmtPrice(near.liq)}</span></span>`
 }
 
 function _mobVGuardBadge(coin, inline = false) {
@@ -13725,7 +13725,6 @@ function _mobVMergedPosCard(members) {
         <div style="text-align:center;flex-shrink:0">
           <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
           <div id="pos-mark-g-${gid}" style="font-size:13px;font-weight:600;margin-top:2px">${markPx > 0 ? '$' + fmtPrice(markPx) : '—'}</div>
-          ${_mobVLiqLine(members, markPx)}
           ${_mobVGuardBadge(coin)}
         </div>
         <div style="text-align:right;flex-shrink:0;min-width:64px">
@@ -13736,7 +13735,7 @@ function _mobVMergedPosCard(members) {
       </div>
       <div style="margin-top:12px">
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
-          <span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">${summary.label}</span>
+          <span style="display:flex;align-items:baseline;gap:8px;min-width:0"><span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">${summary.label}</span>${_mobVLiqLine(members, markPx)}</span>
           <span style="font-size:11px;font-weight:700"><span class="notranslate" style="color:var(--accent);font-weight:700">${esc(summary.acct)}</span> <span ${summary.mode === 'health' ? `id="pos-hpct-g-${gid}"` : ''} style="color:${summary.valColor}">${summary.valText}</span>${summary.mode !== 'health' ? ` <span style="color:var(--muted);font-weight:600;font-size:10px">· Health <span style="color:${sBarColor};font-weight:700">${sHealth.toFixed(0)}%</span></span>` : ''}</span>
         </div>
         <div style="position:relative;height:6px;border-radius:3px;background:linear-gradient(90deg,#ff4d6d 0%,#f5a623 50%,#00e5a0 100%)">
@@ -20712,7 +20711,6 @@ function _mobVRenderContent(tick = false) {
             <div style="text-align:center;flex-shrink:0">
               <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Mark</div>
               <div id="pos-mark-${uid}" style="font-size:13px;font-weight:600;margin-top:2px">${markPx > 0 ? '$' + fmtPrice(markPx) : '—'}</div>
-              ${_mobVLiqLine([p], markPx)}
               ${_mobVGuardBadge(p.coin)}
             </div>
             <div style="text-align:right;flex-shrink:0;min-width:64px">
@@ -20723,7 +20721,7 @@ function _mobVRenderContent(tick = false) {
           </div>
           <div style="margin-top:12px">
             <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
-              <span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Health</span>
+              <span style="display:flex;align-items:baseline;gap:8px;min-width:0"><span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">Health</span>${_mobVLiqLine([p], markPx)}</span>
               <span style="font-size:11px;font-weight:700;color:${liqBarColorRaw}">${healthPct.toFixed(1)}%</span>
             </div>
             <div style="position:relative;height:6px;border-radius:3px;background:linear-gradient(90deg,#ff4d6d 0%,#f5a623 50%,#00e5a0 100%)">
@@ -20748,7 +20746,7 @@ function _mobVRenderContent(tick = false) {
           ${actions}
         </div>
       </div>`
-      return { coin: p.coin, side: apiSide, healthPct, acct: p._acct || '', acctAddr: p._acctAddr ?? null, lev: levVal, isIso, absSz: Math.abs(sz), entryPx, posVal, uPnl, margin, funding, markPx, html: _cardHtml }
+      return { coin: p.coin, side: apiSide, healthPct, acct: p._acct || '', acctAddr: p._acctAddr ?? null, liquidationPx: liqPx, lev: levVal, isIso, absSz: Math.abs(sz), entryPx, posVal, uPnl, margin, funding, markPx, html: _cardHtml }
     })
     // Combined view: collapse multiple accounts holding the SAME coin + SAME direction into
     // one summary card (additive exposure/PnL + worst-case health) that expands to the
