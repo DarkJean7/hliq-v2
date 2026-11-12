@@ -285,6 +285,7 @@ import { groupTrades, countTrades, closedTrades, tradeWindows } from './tradegro
 import { initSectorAlloc, loadSectorMeta, holdingsSectors, sectorAllocHtml, wireSectorAlloc } from './sectoralloc.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
+import { setExtChartDeps, openExtChart, extChartTf, extChartQuote } from './extchart.js'   // an outside market's own chart
 import { trackRecord, isSmallSample, openLossOf, holdsStep } from './trackrecord.js'
 import { createJoiner, ownedAddresses } from './lbjoin.js'
 import { readKey as _akRead, writeKey as _akWrite, removeKey as _akRemove,
@@ -33914,6 +33915,7 @@ async function _ensureExtQuotes(force = false) {
     }
     if (got) {
       _extFetchedAt = Date.now()
+      try { extChartQuote() } catch {}
       _mobWatchRender()
       if (_mobVActiveTab === 'watch') _mobWatchDrawSparks()
     }
@@ -34238,7 +34240,13 @@ function _tvInject(el, src, config) {
 // renderers instead. The full-size TradingView chart is still what a tap opens.
 
 // Full-screen advanced chart overlay.
+// An outside market we have data for opens the app's own chart, from the same source as its price
+// in the strip (src/extchart.js) -- TradingView can only embed a broker's version of DXY, at its
+// own price ("price is not matching"). A symbol typed in by hand still opens TradingView.
+setExtChartDeps({ T: _T, esc, chart: (pts, opts) => _pulseInteractiveChart(pts, opts), quote: (s) => _extQuotes[s] ?? null })
+window.__extChartTf = extChartTf
 window.__tvOpenChart = function(sym) {
+  if (openExtChart(sym)) return
   let ov = document.getElementById('tvChartOverlay')
   if (!ov) {
     ov = document.createElement('div')
