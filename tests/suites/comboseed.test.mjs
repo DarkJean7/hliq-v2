@@ -44,6 +44,10 @@ console.log(nl + '-- the book --')
     seedBook([], [{ coin: 'DUST', total: '9', entryNtl: String(SEED_UNPRICED_USD - 1) }], {}) != null)
   t('a real holding it cannot price refuses the whole book -- never a wallet carried as if it did not own it',
     seedBook([], [{ coin: 'KNTQ', total: '500', entryNtl: '180' }], {}) === null)
+  // The real wallet: 526 of an outcome token worth $26, no USDC, nothing else. It had no seed at all.
+  const oc = seedBook([], [{ coin: 'USDC', total: '0.00000049' }, { coin: '+114980', total: '526.0', entryNtl: '26.42098' }], {})
+  t('an outcome token does not refuse the book -- it has no spot pair to be priced by', oc != null && !('+114980' in oc.spot), oc)
+  t('nor do the other outcome spellings', seedBook([], [{ coin: '#12', total: '50', entryNtl: '40' }, { coin: 'o7', total: '50', entryNtl: '40' }], {}) != null)
 }
 
 console.log(nl + '-- carried by price, and only by price --')

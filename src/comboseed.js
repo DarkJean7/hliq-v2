@@ -73,7 +73,15 @@ export function spotPxFrom(metaAndCtxs) {
  * What a wallet held when the server read it: `{ perp: {coin: [szi, mark]}, spot: {coin: [size, px]} }`.
  * Null when a holding worth counting cannot be priced -- a seed that silently leaves out a token
  * would carry the wallet as though it did not own it.
+ *
+ * Outcome tokens (HIP-4: "+114980", "#…", "o12") are the exception. They have no USDC spot pair to
+ * be priced by, so one of them refused the whole book -- and a wallet holding $26 of a prediction
+ * market never had a seed, so the All Accounts equity stayed blank on every reopen until that one
+ * wallet's own read came back ("8 of 8 wallets have no value", "0xE12ddb:cached/noseed"). The
+ * app's own row carry already leaves them out (_spotBookOf skips _lbIsOutcome), so the seed now
+ * does the same: they stay at the value they were read at, on both sides.
  */
+export const isOutcomeToken = (c) => typeof c === 'string' && (c[0] === '+' || c[0] === '#' || /^o\d/.test(c))
 export function seedBook(assetPositions, spotBalances, spotPx) {
   const perp = {}
   for (const ap of assetPositions ?? []) {
@@ -85,7 +93,7 @@ export function seedBook(assetPositions, spotBalances, spotPx) {
   const spot = {}
   for (const b of spotBalances ?? []) {
     const size = num(b?.total)
-    if (!b?.coin || b.coin === 'USDC' || !(size > 0)) continue
+    if (!b?.coin || b.coin === 'USDC' || isOutcomeToken(b.coin) || !(size > 0)) continue
     const px = spotPx?.[b.coin]
     if (px > 0) { spot[b.coin] = [size, px]; continue }
     if ((num(b.entryNtl) ?? 0) >= SEED_UNPRICED_USD) return null

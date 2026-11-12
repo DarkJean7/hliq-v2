@@ -10090,12 +10090,39 @@ async function _allAcctFetchAndRender(entries) {
   _allAcctRetryMissing(entries)   // some wallet didn't land → refetch soon so the loader clears
   if (_hlLimited()) return   // breaker tripped mid-fetch — don't chase it with enrichment
   _maEnrichResults(base, false).then(enriched => {
-    const ok = _allAcctMerge(enriched, _allAcctLastResults)
-    if (!ok.length || !state.isAllAccounts) return
+    if (!state.isAllAccounts) return
+    const ok = _allAcctApplyLedger(_allAcctLastResults, enriched)
+    if (!ok.length) return
     _allAcctLastResults = ok
     _allAcctReaggregate()
     _allAcctCachePersist()
   }).catch(() => {})
+}
+
+/**
+ * The ledger pass's answer, put onto the rows as they are NOW.
+ *
+ * _maEnrichResults copies every row when it starts and walks the wallets one at a time, a few
+ * seconds in all. Swapping its copies in as the rows threw away every live tick taken
+ * meanwhile, so each wallet's value jumped back to where it stood when the pass began, then
+ * forward again on the next push: "the equity, PnL, unrealized... change a lot for ten seconds
+ * when I enter the app". eqstep had the whole total swinging $3,155 <-> $3,448 five times in
+ * seven seconds, every wallet moving together and back; on a reopen the copy could be last
+ * session's cached rows, hours old. tests/eqflicker-probe.mjs caught it on real wallets: every
+ * value back to its figure of 7.5 seconds before, to the cent.
+ *
+ * Only what the pass is FOR is taken from it -- the transfers and their totals. A wallet it did
+ * not reach (an error, or no entries) keeps what it had.
+ */
+function _allAcctApplyLedger(current, enriched) {
+  const cur = current ?? []
+  if (!cur.length) return enriched ?? []
+  const byAddr = new Map((enriched ?? []).map(r => [String(r.addr).toLowerCase(), r]))
+  return cur.map((r) => {
+    const e = byAddr.get(String(r.addr).toLowerCase())
+    if (!e || r.error || !Array.isArray(e.ledgerEntries)) return r
+    return { ...r, ledgerEntries: e.ledgerEntries, totalDeposited: e.totalDeposited, totalWithdrawn: e.totalWithdrawn }
+  })
 }
 
 // A wallet missing from the combined total holds the equity behind a loader, so don't make the
@@ -10132,7 +10159,8 @@ async function _allAcctSilentRefresh(entries) {
     _allAcctReaggregate()
 
     if (_hlLimited()) return   // breaker tripped mid-fetch — don't chase it with enrichment
-    const enriched = _allAcctMerge(await _maEnrichResults(base, false), _allAcctLastResults)
+    // Onto the rows as they are when it finishes, not the copies it took (_allAcctApplyLedger).
+    const enriched = _allAcctApplyLedger(_allAcctLastResults, await _maEnrichResults(base, false))
     if (enriched.length && state.isAllAccounts) {
       _allAcctLastResults = enriched
       _allAcctReaggregate()
@@ -15871,6 +15899,16 @@ function _comboRowsValue() {
 // calendar exposes its own points. The card keeps its dash: it is the right thing to show for
 // a total we do not have, and this screen has been bitten before by a card that changed height.
 if (typeof window !== 'undefined') window.__comboWaiting = () => _comboWaitingOn()
+// Each wallet's part of the headline and where it came from, for a probe tracing a flicker
+// (tests/eqflicker-probe.mjs): its own row, or the server's read carried by price.
+if (typeof window !== 'undefined') window.__comboParts = () => {
+  const now = Date.now()
+  return (_allAcctLastResults ?? []).map((r) => {
+    const cached = Number(r?._cachedAt) > 0 && now - Number(r._cachedAt) >= ROW_FRESH_MS
+    const seed = seedEval(_comboSeeds[String(r.addr).toLowerCase()], c => state.allMids?.[c], _spotMid, now)
+    return { a: String(r.addr).slice(0, 8), row: +parseFloat(r.accountValue).toFixed(2), cached, err: !!r.error, seed: seed.value != null ? +seed.value.toFixed(2) : seed.why }
+  })
+}
 
 /** A saved wallet's own name, or its short address — what the card says it is waiting on. */
 function _comboLabelOf(addr) {

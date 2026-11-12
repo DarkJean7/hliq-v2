@@ -138,7 +138,19 @@ jobs:
           bots=$(rsync -azc -i --exclude='*.json' strategies/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/strategies/")
           echo "${srv:-(server.js unchanged)}"
           echo "${bots:-(strategies unchanged)}"
-          if { echo "$srv"; echo "$bots"; } | grep -qE '^[<>]f'; then
+          # What server.js IMPORTS from src/ runs in the same process, and src/ is copied by the
+          # step above without telling anyone what changed -- so an edit to src/comboseed.js
+          # (or any of the modules serverdeps.mjs finds) shipped to disk and never ran until
+          # something else restarted hliq-strat. Hash the whole set and compare it with the hash
+          # recorded at the last restart; the restart step writes the new one only once it has
+          # actually restarted, so a failed restart is retried by the next deploy.
+          deps=$(node serverdeps.mjs server.js)
+          echo "server.js loads:"; echo "$deps" | sed 's/^/  /'
+          hash=$(echo "$deps" | xargs sha256sum | sha256sum | cut -d' ' -f1)
+          old=$(ssh "$DEPLOY_USER@$DEPLOY_HOST" "cat '$DEPLOY_PATH/.strat-deps.sha' 2>/dev/null" || true)
+          echo "deps hash $hash (last restart: ${old:-none})"
+          echo "depshash=$hash" >> "$GITHUB_OUTPUT"
+          if { echo "$srv"; echo "$bots"; } | grep -qE '^[<>]f' || [ "$hash" != "$old" ]; then
             echo "changed=yes" >> "$GITHUB_OUTPUT"
           else
             echo "changed=no"  >> "$GITHUB_OUTPUT"
@@ -195,7 +207,7 @@ jobs:
 
       - name: Restart strategy server
         if: steps.syncstrat.outputs.changed == 'yes'
-        run: ssh "$DEPLOY_USER@$DEPLOY_HOST" "pm2 restart hliq-strat"
+        run: ssh "$DEPLOY_USER@$DEPLOY_HOST" "pm2 restart hliq-strat && echo '${{ steps.syncstrat.outputs.depshash }}' > '$DEPLOY_PATH/.strat-deps.sha'"
 
       # hliq-notify holds no bots, so bouncing it costs at most one poll cycle.
       - name: Restart notify server
