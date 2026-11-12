@@ -189,6 +189,27 @@ if (SHOTS) {
   await p.screenshot({ path: `${SHOTS}/poscardliq-health.png`, clip: box })
 }
 
+// A card one wallet holds names that wallet on the health row, beside the figure, the way the
+// merged card names its account ("move the account name next to the health, just like combined
+// cards") -- not under the leverage, where it was.
+const one = await p.evaluate(() => {
+  const card = document.querySelector('#mobVContent [data-lp-coin="CRCL"]')
+  const name = card?.querySelector('[data-pos-acct]')
+  const row = name?.closest('div[style*="justify-content:space-between"]')
+  const hr = row?.getBoundingClientRect(), nr = name?.getBoundingClientRect()
+  return name && { text: name.textContent.trim(), row: row.textContent.replace(/\s+/g, ' ').trim(), right: Math.round(hr.right - nr.right), over: row.scrollWidth - row.clientWidth,
+    elsewhere: [...card.querySelectorAll('.notranslate')].filter(e => e !== name && e.textContent.trim() === name.textContent.trim()).length }
+})
+ok('a single wallet\'s card names it on the health row', one && /^Health\b/i.test(one.row) && one.row.includes(one.text) && /%$/.test(one.row), one)
+ok('beside the figure, at the right', one && one.right < 60, one)
+ok('and only there', one && one.elsewhere === 0, one)
+ok('the row fits', one && one.over <= 0, one)
+if (SHOTS) {
+  await p.evaluate(() => document.querySelector('#mobVContent [data-lp-coin="CRCL"]')?.parentElement?.scrollIntoView({ block: 'center' }))
+  const box = await p.evaluate(() => { const r = document.querySelector('#mobVContent [data-lp-coin="CRCL"]').parentElement.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: Math.min(r.height, 220) } })
+  await p.screenshot({ path: `${SHOTS}/poscardliq-single.png`, clip: box })
+}
+
 if (errs.length) { fail++; console.log('  FAIL page errors → ' + JSON.stringify(errs.slice(0, 4))) }
 console.log(NL + `${pass} passed, ${fail} failed`)
 await browser.close()

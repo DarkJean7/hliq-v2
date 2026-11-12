@@ -20767,15 +20767,11 @@ function _mobVRenderContent(tick = false) {
                 <span class="notranslate">${lev}</span>${levType ? ` <span>${levType}</span>` : ''}
               </div>
               ${(() => {
-                // Account name and running-bot badge share one row. The name truncates
-                // (min-width:0) and the badge does not shrink, so a long account label
-                // eats its own ellipsis rather than pushing the badge off the card.
+                // The running-bot badge. The account name moved to the health row, beside the
+                // figure, where the combined card names its account ("move the account name next
+                // to the health, just like combined cards").
                 const _bb = _botBadgeHtml(p.coin, p._acctAddr, true)
-                if (!p._acct && !_bb) return ''
-                return `<div style="display:flex;align-items:center;gap:6px;margin-top:3px;min-width:0">
-                  ${p._acct ? `<span class="notranslate" style="font-size:11px;font-weight:700;color:var(--accent);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p._acct)}</span>` : ''}
-                  ${_bb}
-                </div>`
+                return _bb ? `<div style="display:flex;align-items:center;gap:6px;margin-top:3px;min-width:0">${_bb}</div>` : ''
               })()}
             </div>
             <div style="text-align:center;flex-shrink:0">
@@ -20793,7 +20789,7 @@ function _mobVRenderContent(tick = false) {
             <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
               <span style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;flex-shrink:0">Health</span>
               ${_mobVLiqSlot(_mobVLiqLine([p], markPx))}
-              <span style="font-size:11px;font-weight:700;color:${liqBarColorRaw};flex-shrink:0;text-align:right;min-width:${_MOB_LIQ_RIGHT_MIN}px">${healthPct.toFixed(1)}%</span>
+              <span style="font-size:11px;font-weight:700;flex-shrink:0;text-align:right;min-width:${_MOB_LIQ_RIGHT_MIN}px;white-space:nowrap">${p._acct ? `<span class="notranslate" data-pos-acct style="color:var(--accent);font-weight:700;display:inline-block;max-width:96px;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom">${esc(p._acct)}</span> ` : ''}<span style="color:${liqBarColorRaw}">${healthPct.toFixed(1)}%</span></span>
             </div>
             <div style="position:relative;height:6px;border-radius:3px;background:linear-gradient(90deg,#ff4d6d 0%,#f5a623 50%,#00e5a0 100%)">
               <div style="position:absolute;top:50%;left:${Math.max(0, Math.min(100, healthPct)).toFixed(1)}%;width:12px;height:12px;border-radius:50%;background:#fff;border:2px solid var(--bg);transform:translate(-50%,-50%);box-shadow:0 1px 3px rgba(0,0,0,0.45)"></div>
