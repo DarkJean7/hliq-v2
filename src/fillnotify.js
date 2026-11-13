@@ -42,7 +42,15 @@ let ctx = {
   dex: (coin) => (String(coin ?? '').includes(':') ? String(coin).split(':')[0] : null),
   privacy: () => false,
   now: () => Date.now(),
+  /**
+   * Coins about to be shown → a promise to wait on first, or null when every name is known.
+   * Spot fills arrive as "@107"; the table that turns that into HYPE is loaded lazily, and a
+   * card shown before it lands said "Buy 5.6 @107".
+   */
+  ready: (coins) => null,
 }
+/** Longest a card waits for names before it shows anyway: late is fine, lost is not. */
+export const NAME_WAIT_MS = 4000
 export function initFillNotify(c) { ctx = { ...ctx, ...c } }
 
 /** On by default — a DEX terminal tells you when you get filled. */
@@ -110,7 +118,17 @@ export function notifyFills(fills, { acct = '', label = null } = {}) {
   const recent = fresh.filter(f => now - Number(f.time) < MAX_AGE_MS)
   if (!recent.length || !enabled()) return []
   const groups = groupByOrder(recent, a)
-  if (typeof document !== 'undefined') for (const g of groups) show(g, label)
+  if (typeof document !== 'undefined') {
+    const paint = () => { for (const g of groups) show(g, label) }
+    let wait = null
+    try { wait = ctx.ready(groups.map(g => g.coin)) } catch {}
+    if (wait && typeof wait.then === 'function') {
+      let done = false
+      const once = () => { if (!done) { done = true; paint() } }
+      wait.then(once, once)
+      setTimeout(once, NAME_WAIT_MS)
+    } else paint()
+  }
   return groups
 }
 

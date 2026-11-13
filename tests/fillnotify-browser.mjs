@@ -33,6 +33,9 @@ const WINDOW = { accountValueHistory: [[Date.now() - 86400e3, '2000'], [Date.now
 const rawFill = (o) => ({ coin: 'BTC', px: '86000', sz: '0.1', side: 'B', time: Date.now(), startPosition: '0', dir: 'Open Long',
   closedPnl: '0', hash: '0x' + '0'.repeat(64), oid: 1, crossed: true, fee: '1.0', tid: 1, feeToken: 'USDC', ...o })
 
+const SPOT_META = { tokens: [{ name: 'USDC', index: 0, szDecimals: 8, weiDecimals: 8, tokenId: '0x' + '0'.repeat(32) }, { name: 'HYPE', index: 150, szDecimals: 2, weiDecimals: 8, tokenId: '0x' + '1'.repeat(32) }],
+  universe: [{ name: '@107', tokens: [150, 0], index: 107, isCanonical: false }] }
+
 async function run(label, opts) {
   console.log('\n-- ' + label + ' --')
   // An old fill (an hour ago): history. Later fills are pushed in as the test goes.
@@ -43,8 +46,9 @@ async function run(label, opts) {
     allPerpMetas: [{ universe: [] }], outcomeMeta: {}, perpDexs: [null], perpCategories: [],
     portfolio: ['day', 'week', 'month', 'allTime'].map(w => [w, WINDOW]),
     webData2: { clearinghouseState: STATE, openOrders: [] },
-    meta: { universe: [] }, spotMeta: { tokens: [], universe: [] },
-    metaAndAssetCtxs: [{ universe: [] }, []], spotMetaAndAssetCtxs: [{ tokens: [], universe: [] }, []],
+    // Spot HYPE is pair @107 (token 150 against USDC) -- a fill on it arrives as coin "@107".
+    meta: { universe: [] }, spotMeta: SPOT_META,
+    metaAndAssetCtxs: [{ universe: [] }, []], spotMetaAndAssetCtxs: [SPOT_META, [{ coin: '@107', markPx: '44', midPx: '44', prevDayPx: '44', dayNtlVlm: '1', circulatingSupply: '1' }]],
   }
   const browser = await chromium.launch()
   const ctx = await browser.newContext(opts)
@@ -128,6 +132,14 @@ async function run(label, opts) {
   await p.click('#fillToasts .ft-card .ft-x >> nth=0')
   await waitFor(p, 'dismiss', () => document.querySelectorAll('#fillToasts .ft-card:not(.ft-out)').length === 1, null, 3000)
   ok('× dismisses it', await p.evaluate(() => document.querySelectorAll('#fillToasts .ft-card:not(.ft-out)').length === 1))
+
+  // A spot fill. Reported: the card said "@107" -- the pair's id -- because the table that names
+  // it is only loaded when a coin picker opens, and nothing on this screen had opened one.
+  fills.push(rawFill({ tid: 351, oid: 90, time: Date.now(), coin: '@107', px: '44', sz: '5.62', dir: 'Buy' }))
+  await p.evaluate(() => window.__refreshAfterAction(0))
+  await waitFor(p, 'the spot card', () => [...document.querySelectorAll('#fillToasts .ft-card')].some(c => /5\.62/.test(c.textContent)), null, 20000)
+  const spot = [...await p.locator('#fillToasts .ft-card').allTextContents()].map(x => x.replace(/\s+/g, ' ')).find(x => /5\.62/.test(x)) ?? ''
+  ok('a spot fill is named by its token, not its pair id', /HYPE/.test(spot) && !/@107/.test(spot), spot)
 
   // Switched off in Settings: the next fill is silent.
   await p.evaluate(() => window.__toggleFillToasts(false))

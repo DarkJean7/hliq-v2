@@ -1631,6 +1631,9 @@ initFillNotify({
   name: (c) => { const s = String(c ?? ''); return _spotNameMap[s] || (s.includes(':') ? s.split(':')[1] : s) },
   dex: (c) => { const s = String(c ?? ''); return s.includes(':') ? s.split(':')[0] : null },
   privacy: () => _privacyMode,
+  // A spot fill is "@107" until the spot table has loaded, and nothing loads it until a coin
+  // picker opens -- so a card for a spot fill waits for it rather than saying "@107".
+  ready: (coins) => coins.some(c => String(c ?? '').startsWith('@') && !_spotNameMap[c]) ? _ensureMarketData() : null,
 })
 window.__toggleFillToasts = function (on) { _setFillToasts(on) }
 window.__previewFillToast = function () { _previewFillToast() }
