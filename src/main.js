@@ -283,6 +283,7 @@ import { armedGuardKey, firedSummary } from './guardkey.js'
 import { guardPlan } from './guardplan.js'
 import { groupTrades, countTrades, closedTrades, tradeWindows } from './tradegroup.js'
 import { initSectorAlloc, loadSectorMeta, holdingsSectors, sectorAllocHtml, wireSectorAlloc } from './sectoralloc.js'
+import { flipPlan, flipOutcome } from './posflip.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
 import { setExtChartDeps, openExtChart, extChartTf, extChartQuote } from './extchart.js'   // an outside market's own chart
@@ -14591,6 +14592,55 @@ window._mobVClosePos = function(btn, coin, side, szi, mark, acct) {
   window.__openCloseModal(coin, side, szi, mark, acct)
 }
 
+// ─── POSITION CARD: TRADE / FLIP ───────────────────────────────────────────────
+// Trade opens this market in the trade view; in the combined view it also picks the wallet
+// that holds the position as the one to trade from, so the ticket is about the card you tapped.
+window.__posTrade = function(coin, acct = null) {
+  if (state.isAllAccounts && acct) { try { window.__setTradeAcct(acct) } catch {} }
+  window.__watchOpenTrade(coin)
+}
+
+// Flip: one market order for twice the size, the other way (src/posflip.js). Routed to the
+// wallet that owns the position, like Close.
+window.__posFlip = async function(btn, coin, acct = null) {
+  // The combined view has no "current" account: without an owner this would match some
+  // wallet's position and sign for another. Refused rather than guessed.
+  if (state.isAllAccounts && !acct) { _showChartToast('✗ Which account? Open it from its own card'); return }
+  const ap = (state.perpState?.assetPositions ?? []).find(a =>
+    a.position?.coin === coin && parseFloat(a.position.szi ?? 0) !== 0 &&
+    (!acct || (a.position._acctAddr ?? '').toLowerCase() === String(acct).toLowerCase()))
+  const plan = flipPlan(ap?.position)
+  if (!plan) { _showChartToast('✗ No open position to flip'); return }
+  if (!isPaper() && !window.__acctCanTrade(acct)) { _showChartToast('✗ Connect agent key first'); return }
+  const name = _ocCoinLabel(coin)
+  const n = (v) => +v.toPrecision(8)
+  if (!await _appConfirm({
+    title: `Flip ${name} ${plan.from} → ${plan.to}?`,
+    body: `${plan.isBuy ? 'Buys' : 'Sells'} ${n(plan.sz)} ${name} at market: closes your ${n(plan.size)} ${name} ${plan.from} and opens ${n(plan.size)} ${name} ${plan.to}, at ${plan.leverage}x ${plan.isIsolated ? 'isolated' : 'cross'}.`,
+    confirmText: `Flip to ${plan.to}`, danger: true,
+  })) return
+  if (!isPaper() && !await _guardAgent(acct)) return
+  const label = btn?.textContent
+  if (btn) { btn.disabled = true; btn.textContent = 'Flipping…' }
+  const done = () => { if (btn?.isConnected) { btn.disabled = false; btn.textContent = label } }
+  try {
+    const mark = parseFloat(_livePx(coin) || 0) || (parseFloat(ap.position.positionValue) / plan.size)
+    const result = await placeMarketOrder({ coin, isBuy: plan.isBuy, sz: plan.sz, markPrice: mark, leverage: plan.leverage, isIsolated: plan.isIsolated, acct })
+    const parsed = parseOrderResult(result)
+    if (!parsed.ok) { done(); _showChartToast('✗ ' + parsed.errors.join(', ')); return }
+    const filled = parsed.filled.reduce((s, f) => s + parseFloat(f.filled?.totalSz ?? 0), 0)
+    const out = flipOutcome(plan, filled)
+    if (out.kind === 'flipped') _showChartToast(`✓ Flipped: now ${n(plan.size)} ${name} ${plan.to}`)
+    else if (out.kind === 'none') _showChartToast('✗ Did not fill — the market may have moved. Nothing changed.')
+    else _showChartToast(`⚠ Partly filled: you now hold ${n(out.left)} ${name} ${out.side}`)
+    done()
+    window.__refreshAfterAction(1000, acct)
+  } catch (e) {
+    done()
+    _showChartToast('✗ ' + (e.message || String(e)))
+  }
+}
+
 window._mobVAdjustMargin = function(coin, acct = null) {
   const ap = (state.perpState?.assetPositions ?? []).find(ap =>
     ap.position.coin === coin && parseFloat(ap.position.szi ?? 0) !== 0 &&
@@ -20819,6 +20869,11 @@ function _mobVRenderContent(tick = false) {
           style="flex:1;min-width:80px;padding:8px;background:rgba(99,179,237,0.12);border:none;border-radius:8px;color:#63b3ed;font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Liq. preview</button>`}
         <button onclick="event.stopPropagation();window.__openShareCard({coin:'${_jsStr(p.coin)}',title:'${_jsStr(_ocCoinLabel(p.coin))}',side:'${side}',lev:${levVal},roePct:${roe.toFixed(2)},entry:'$${fmtPrice(entryPx)}',mark:'$${fmtPrice(markPx)}'})"
           style="flex:1;min-width:80px;padding:8px;background:rgba(255,138,42,0.12);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">↗ Share</button>
+        <button onclick="event.stopPropagation();window.__posTrade('${_jsStr(p.coin)}',${_acctArg})" data-pos-trade
+          style="flex:1;min-width:80px;padding:8px;background:rgba(255,255,255,0.06);border:none;border-radius:8px;color:var(--fg);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Trade</button>
+        <button ${_dis}${_noKey} data-pos-flip onclick="event.stopPropagation();window.__posFlip(this,'${_jsStr(p.coin)}',${_acctArg})"
+          title="One market order for twice the size, the other way: closes this position and opens the same size ${sz > 0 ? 'short' : 'long'}"
+          style="${_disCss}flex:1;min-width:80px;padding:8px;background:rgba(245,158,11,0.12);border:none;border-radius:8px;color:#f59e0b;font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">⇅ Flip</button>
         <button ${_dis}${_noKey} onclick="event.stopPropagation();window._mobVClosePos(this,'${esc(p.coin)}','${apiSide}','${p.szi}','${markPx}',${_acctArg})"
           style="${_disCss}flex:1;min-width:80px;padding:8px;background:rgba(255,77,109,0.1);border:none;border-radius:8px;color:var(--red);font-size:12px;font-weight:600;cursor:pointer;touch-action:manipulation">Close</button>
       </div>`

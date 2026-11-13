@@ -1076,6 +1076,8 @@ function _ovPositionRow(p, allMids, tpslMap = {}, member = false) {
     <div class="ov-pos-actions" id="ovpa-${sid}" style="display:${open ? 'flex' : 'none'}">
       <button class="manage-btn"${dis} onclick="event.stopPropagation();window.__openEditModal('${esc(p.coin)}','${side}','${p.szi}','${p.entryPx}',${t.tpPx ?? 0},${t.slPx ?? 0},${t.tpOid ?? 0},${t.slOid ?? 0},${lev},${acctArg})">✏ TP/SL · Leverage</button>
       <button class="manage-btn" onclick="event.stopPropagation();window.__openShareCard({coin:'${esc(p.coin)}',title:'${esc(_lbl(p.coin))}',side:'${side}',lev:${lev},roePct:${roe.toFixed(2)},entry:'$${fmtPrice(entry)}',mark:'$${fmtPrice(mark)}'})">↗ Share PnL</button>
+      <button class="manage-btn" data-pos-trade onclick="event.stopPropagation();window.__posTrade('${esc(p.coin)}',${acctArg})">Trade</button>
+      <button class="manage-btn"${dis} data-pos-flip title="One market order for twice the size, the other way: closes this position and opens the same size ${side === 'LONG' ? 'short' : 'long'}" onclick="event.stopPropagation();window.__posFlip(this,'${esc(p.coin)}',${acctArg})">⇅ Flip</button>
       ${isIso ? `<button class="manage-btn margin"${dis} onclick="event.stopPropagation();window.__openAdjustMarginModal('${esc(p.coin)}','${side}',${margin},${notional},${lev},${acctArg})">⊕ Margin</button>
       <button class="manage-btn"${dis} onclick="event.stopPropagation();window.__openGuardModal('liqguard','${esc(p.coin)}','${side}',${acctArg})">🛡 Liq Guard</button>
       <button class="manage-btn"${dis} onclick="event.stopPropagation();window.__openGuardModal('levbrake','${esc(p.coin)}','${side}',${acctArg})">🛑 Lev Brake</button>` : ''}
