@@ -19175,6 +19175,43 @@ function _repThinMarks(marks, candles) {
   return [...slot.values()].sort((a, b) => +a.t - +b.t)
 }
 
+/**
+ * The line's twin of _repThinMarks: one triangle per direction per few pixels of chart.
+ *
+ * A line has no candles to group to, so a hundred and fifty trades were a hundred and fifty
+ * triangles -- on a wide screen a continuous red-and-green band along the line, which is most of
+ * "the portfolio replay looks really awful and barely understandable". Grouped to slots of about
+ * sixteen pixels across the window on screen, with the count, the same as candle mode.
+ */
+function _repThinByWidth(marks, t0, t1, width) {
+  if (!marks?.length || !(t1 > t0)) return marks
+  const slots = Math.max(8, Math.floor((width || 320) / 16))
+  const at = (t) => Math.min(slots - 1, Math.max(0, Math.floor(((+t - t0) / (t1 - t0)) * slots)))
+  const slot = new Map()
+  for (const m of marks) {
+    if (+m.t < t0 || +m.t > t1) continue
+    const k = at(m.t) + (m.buy ? 'b' : 's')
+    slot.set(k, { ...m, n: (slot.get(k)?.n ?? 0) + (m.n ?? 1) })
+  }
+  return [...slot.values()].sort((a, b) => +a.t - +b.t)
+}
+
+/**
+ * The width the replay chart will really be drawn at, or null before it is on screen.
+ *
+ * The chart used to be drawn 320 wide and stretched to the box. On a desktop that is six times
+ * over: every triangle flattened into a sliver and every label smeared sideways ("+$3.67 BUY BUY
+ * BUY" in letters wider than they were tall). Drawn at the box's own width, nothing stretches --
+ * the same fix the simulator's chart had.
+ */
+function _repWidth(big) {
+  const el = document.getElementById(big ? 'repFullStage' : 'repStage')
+  if (!el?.clientWidth) return null
+  const cs = getComputedStyle(el)
+  const w = el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0)
+  return w >= 180 ? Math.floor(w) : null
+}
+
 function _repAllCoins() {
   const seen = new Map()
   for (const f of state.fills ?? []) {
@@ -19450,7 +19487,13 @@ function _repStageHtml(big = false) {
 
   const useCandles = _useCandles
   const span = big ? Math.round(REP_SPAN * 1.6) : REP_SPAN
+  const width = _repWidth(big)
+  // Not on screen yet (the first render builds the box this measures): draw again once it is.
+  if (!width) requestAnimationFrame(() => { if (_repWidth(big)) _repPaint() })
+  const winFrom = Math.max(0, i + 1 - span)
+  const shown = useCandles ? marks : _repThinByWidth(marks, frameTime(d.points, winFrom), t, width ?? 320)
   const chart = signalChartSvg({
+    width,
     main: d.points,
     candles: useCandles ? d.candles : null,
     grid: true,
@@ -19469,7 +19512,9 @@ function _repStageHtml(big = false) {
     from: i + 1 - span, to: i + 1,
     mainLabel: _repMode === 'account' ? _T('Account', 'Cuenta') : esc(_ocCoinLabel(d.coin)),
     fmtPrice: (v) => (v < 0 ? '-$' : '$') + fmtUSD(Math.abs(v)),
-    height: big ? 330 : 168,
+    // Taller where there is room: a wide chart 168 high is a strip, and the line's shape is
+    // what a replay is watched for.
+    height: big ? 330 : (width && width > 700 ? 260 : 168),
     // Only the last few are labelled. Every trade labelled is a wall of text over the
     // candles, and the ones worth naming are the ones that just happened.
     //
@@ -19480,10 +19525,14 @@ function _repStageHtml(big = false) {
     //
     // And they can be turned off. Five hundred trades is five hundred triangles over the
     // chart, and sometimes the shape of the account is the thing being looked at.
-    markers: !_repMarkers ? null : marks.map((m, k) => ({
+    //
+    // Only the LATEST is labelled now. Four labels on the last few trades -- which happen within
+    // seconds of each other -- stacked into "BUY BUY BUY" over the line.
+    markers: !_repMarkers ? null : shown.map((m, k) => ({
       t: m.t, buy: m.buy,
       v: _repMode === 'market' ? m.px : null,
-      label: k < marks.length - 4 ? ''
+      title: `${m.buy ? _T('Buy', 'Compra') : _T('Sell', 'Venta')}${m.n > 1 ? ` ×${m.n}` : ''}`,
+      label: k < shown.length - 1 ? ''
         : (m.closedPnl !== 0
             ? `${m.net >= 0 ? '+' : '-'}$${fmtUSD(Math.abs(m.net))}`
             : (m.buy ? _T('BUY', 'COMPRA') : _T('SELL', 'VENTA')))
@@ -19672,7 +19721,14 @@ window.__openReplay = function() {
   _repSave()
   _repReset()
   if (_isMobView()) { window.__mobMoreTab('replay'); return }
-  switchTab('replay', null)
+  // On desktop the replay lives inside Portfolio ("Replay this portfolio", #deskReplayWrap); there
+  // is no #tab-replay to switch to, so switchTab('replay') threw and the "▶ Replay" button under
+  // the full equity chart did nothing. Open Portfolio, open the section, and bring it into view.
+  switchTab('portfolio', null)
+  const wrap = document.getElementById('deskReplayWrap')
+  if (wrap && !wrap.open) wrap.open = true
+  _repRender(_viewHost('deskReplay'))
+  try { wrap?.scrollIntoView({ block: 'start', behavior: 'smooth' }) } catch {}
 }
 
 function _repRender(el) {

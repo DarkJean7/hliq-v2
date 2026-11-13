@@ -135,7 +135,11 @@ t('comparing two markets stays a line', chart.includes('(candles && !comparing)'
 t('the app can switch between them', cli.includes("window.__repStyle") && cli.includes("_repStyle === 'candle'"))
 
 console.log(String.fromCharCode(10) + '-- markers say what they were --')
-t('the last few are labelled', cli.includes("k < marks.length - 4 ? ''"))
+// Was the last four. Trades come seconds apart, so four labels stacked into "BUY BUY BUY" over
+// the line ("the portfolio replay looks really awful"); only the latest is named now.
+t('the latest trade is labelled, and only it', cli.includes("k < shown.length - 1 ? ''"))
+t('the line thins its triangles to the width on screen', cli.includes('_repThinByWidth(marks, frameTime(d.points, winFrom), t, width ?? 320)'))
+t('and the chart is drawn at its real width, not stretched', cli.includes('const width = _repWidth(big)') && /signalChartSvg\(\{\s*width,/.test(cli))
 t('and no longer states the notional, which was never the question',
   !cli.includes('$${fmtUSD(m.px * m.sz)}'))
 // Trades cluster; four labels on the same pixels is a smudge rather than four facts.
