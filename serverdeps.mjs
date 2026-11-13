@@ -27,5 +27,9 @@ export function serverDeps(entry, root = process.cwd()) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))) {
-  for (const f of serverDeps(process.argv[2] || 'server.js')) console.log(f)
+  // Several entries: the union. CI passes server.js AND every strategies/*.js, because a bot
+  // script's own imports (src/gridcap.js, src/gridheld.js) are just as stale in a running bot
+  // as server.js's are in the server.
+  const entries = process.argv.slice(2).length ? process.argv.slice(2) : ['server.js']
+  for (const f of [...new Set(entries.flatMap(e => serverDeps(e)))].sort()) console.log(f)
 }

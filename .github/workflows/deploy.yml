@@ -144,8 +144,8 @@ jobs:
           # something else restarted hliq-strat. Hash the whole set and compare it with the hash
           # recorded at the last restart; the restart step writes the new one only once it has
           # actually restarted, so a failed restart is retried by the next deploy.
-          deps=$(node serverdeps.mjs server.js)
-          echo "server.js loads:"; echo "$deps" | sed 's/^/  /'
+          deps=$(node serverdeps.mjs server.js strategies/*.js)
+          echo "server.js and the bots load:"; echo "$deps" | sed 's/^/  /'
           hash=$(echo "$deps" | xargs sha256sum | sha256sum | cut -d' ' -f1)
           old=$(ssh "$DEPLOY_USER@$DEPLOY_HOST" "cat '$DEPLOY_PATH/.strat-deps.sha' 2>/dev/null" || true)
           echo "deps hash $hash (last restart: ${old:-none})"

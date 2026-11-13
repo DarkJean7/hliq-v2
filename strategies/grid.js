@@ -28,6 +28,7 @@ import { parseArgs } from 'node:util'
 import { isPaused, onPause, onResume } from './_pause.js'
 import { botCloid, cloidBot } from '../src/cloid.js'
 import { orderMargin, isEntry, capPlan, fitsCap } from '../src/gridcap.js'
+import { heldFromFills, applyFill, clampToInventory, isHeld } from '../src/gridheld.js'
 
 // ─── CLI ARGS ─────────────────────────────────────────────────────────────────
 const { values: args } = parseArgs({
@@ -113,6 +114,12 @@ let realizedPnl  = 0            // cumulative realized P&L — sourced from HL f
 let totalFees    = 0            // cumulative fees from HL fills
 let lastFillScan = 0            // high-water timestamp of fills already counted
 const warnedForeign = new Set() // oids of non-grid orders we've already logged
+// Levels still holding the lot they bought (src/gridheld.js). Built from the account's fills,
+// not from memory, so a restart does not forget it; until it has been built once, no new
+// entries are placed — a level is never re-bought just because the bot could not yet look.
+let heldLots = new Map()
+let heldUpto = -1               // newest fill already applied to `heldLots`; -1 = not built yet
+const HELD_LOOKBACK_MS = 30 * 24 * 3600e3
 
 // ─── LOGGING ──────────────────────────────────────────────────────────────────
 function log(tag, msg) {
@@ -306,8 +313,20 @@ async function updateRealized() {
       if (f.coin !== COIN) continue
       realizedPnl += parseFloat(f.closedPnl ?? 0)
       totalFees   += parseFloat(f.fee ?? 0)
+      if (heldUpto >= 0 && f.time > heldUpto) { applyFill(heldLots, f, { prices: PRICES, isShort: IS_SHORT }); heldUpto = f.time }
     }
   } catch { /* keep last known totals; retry next cycle */ }
+}
+
+async function buildHeld() {
+  try {
+    const fills = await info.userFillsByTime({ user: QUERY_ADDR, startTime: Date.now() - HELD_LOOKBACK_MS })
+    if (!Array.isArray(fills)) return
+    heldLots = heldFromFills(fills, { coin: COIN, prices: PRICES, isShort: IS_SHORT })
+    heldUpto = fills.reduce((m, f) => Math.max(m, f.time ?? 0), 0)
+    const lv = [...heldLots.keys()].sort((a, b) => a - b)
+    log('INIT', lv.length ? `Levels still holding their lot: ${lv.map(i => '$' + PRICES[i]).join(', ')} — not re-entered until sold` : 'No grid level is holding a lot')
+  } catch { /* retried next cycle; entries wait for it */ }
 }
 
 // ─── ORDER OPS ────────────────────────────────────────────────────────────────
@@ -450,6 +469,14 @@ async function reconcile() {
   if (IS_SHORT  && markPx <= LOWER) { if (await closeAtBoundary(markPx, levelOrders)) return }
 
   await detectFills(levelOrders)
+  // Orders a previous run placed are adopted for fill detection too. Without this a deploy
+  // restart forgot every resting oid, and a fill of one was never logged.
+  for (const [i, e] of levelOrders) if (e.oid !== 'pending' && !trackedOids.has(e.oid)) trackedOids.set(e.oid, { side: e.side, levelIdx: i, px: e.px, sz: e.sz })
+  // New fills are read HERE, before any entry is placed: they are what tells a level it is
+  // holding a lot. Read at the end of the cycle (where this used to be), the fill that had just
+  // happened was not known yet and its level was re-bought in the same pass.
+  if (heldUpto < 0) await buildHeld()
+  else await updateRealized()
 
   // Duplicate orders at the same level — cancel the extras (auto-heals old runs)
   for (const s of surplus) {
@@ -464,6 +491,7 @@ async function reconcile() {
   const avgEntry  = parseFloat(pos?.position?.entryPx ?? 0)
   const { szDecimals } = await getAssetInfo(COIN)
   const szEps     = (ORDER_USD / UPPER) * 0.25   // tolerance: a quarter of the smallest lot
+  clampToInventory(heldLots, inventory, { isShort: IS_SHORT })
 
   // Account health = HL's "Unified Account Ratio": 1 − maintenanceMargin / USDC balance.
   // This is the % the app shows in the header, so a 70% stop means the same thing the
@@ -650,6 +678,10 @@ async function reconcile() {
       }
       continue
     }
+    // Still holding the lot this level bought — its exit may sit far from pairIdx, where the
+    // profit gate moved it, so "no exit one level up" does not mean the level is free. Only
+    // blocks a NEW entry: a resting, partly filled one is left to finish.
+    if (heldUpto < 0 || isHeld(heldLots, i, entrySzAt(i, szDecimals))) continue
     if (open || blocked || placed >= MAX_PLACE_PER_CYCLE) continue
     if (Date.now() < _marginBackoffUntil) continue   // margin exhausted — don't spam
 
@@ -677,7 +709,6 @@ async function reconcile() {
     }
   }
 
-  await updateRealized()
   const liveBuys  = [...levelOrders.values()].filter(e => e.side === 'buy').length
   const liveSells = [...levelOrders.values()].filter(e => e.side === 'sell').length
   const held = uncovered > szEps && avgEntry > 0
