@@ -71,6 +71,7 @@ export async function connectWallet(rdns, wantAddr = null) {
       },
     })
     await wc.connect()
+    _wakeOnSent(wc)
     wc.on('disconnect', () => { disconnectMainWallet(); _onDisconnect?.() })
     wc.on('session_expire', () => { disconnectMainWallet(); _onDisconnect?.() })
     raw = wc
@@ -285,16 +286,24 @@ export function getHlSigner(forAddr = null) {
 
 // Mobile WalletConnect: a sign/approve request is relayed to the wallet app over the
 // WC relay, but the browser tab is NOT switched to the wallet, so the user never sees
-// the prompt and the action appears to hang forever ("stuck at approving on HL"). This
-// best-effort opens the wallet's stored deep link so its approval screen surfaces.
+// the prompt and the action appears to hang forever ("stuck at approving on HL"). The
+// wallet's stored deep link is opened so its approval screen surfaces.
 // No-op for injected/extension providers (no session), which show their own popup.
-export function wakeWallet(forAddr = null) {
+//
+// WHEN it is opened is the whole fix. Every caller used to fire the request and open the wallet
+// on a 350ms timer -- but the request is only sent after the app's own reads (a Send asks
+// Hyperliquid for balances, the account mode and the token first, each paced by the rate-limit
+// budget), and those take longer than that. The wallet opened with nothing in it, and on a phone
+// the browser is suspended the moment it leaves the screen, so the request was never sent at
+// all: "the message to sign the tx was not getting in the wallet app", the Send button stuck on
+// "Check your wallet". WalletConnect says when a request has actually gone out
+// (`session_request_sent`, emitted after the relay publish), so the wallet is opened then, for
+// every request on that session, and the timers no longer open anything.
+function _openWalletApp(raw) {
   try {
-    const raw = _entry(forAddr)?.raw
-    if (!raw) return false
     // EthereumProvider (WC v2) keeps the peer's redirect metadata on the active session;
     // the inner UniversalProvider mirrors it at raw.signer.session.
-    const session  = raw.session || raw.signer?.session
+    const session  = raw?.session || raw?.signer?.session
     const redirect = session?.peer?.metadata?.redirect
     const url      = redirect?.native || redirect?.universal
     if (!url) return false
@@ -302,6 +311,35 @@ export function wakeWallet(forAddr = null) {
     return true
   } catch (_) { return false }
 }
+function _wakeOnSent(raw) {
+  const client = raw?.signer?.client
+  if (!client?.on || raw.__wakeOnSent) return
+  try {
+    client.on('session_request_sent', (ev) => {
+      // Only this session's requests: one client could in principle hold another.
+      const topic = (raw.session || raw.signer?.session)?.topic
+      if (topic && ev?.topic && ev.topic !== topic) return
+      _openWalletApp(raw)
+    })
+    raw.__wakeOnSent = true
+  } catch (_) {}
+}
+export function wakeWallet(forAddr = null) {
+  const raw = _entry(forAddr)?.raw
+  if (!raw) return false
+  // Hooked to the request actually going out (above): a timer here could only be early.
+  if (raw.__wakeOnSent) return true
+  return _openWalletApp(raw)
+}
+/**
+ * Open the wallet app now, from a tap: the "Open wallet app" link shown while a request waits.
+ * True when there was a WalletConnect session with somewhere to go.
+ */
+export function openWalletApp(forAddr = null) { return _openWalletApp(_entry(forAddr)?.raw) }
+/** Is the account's wallet a WalletConnect session (a separate app), rather than an extension? */
+export function isWalletConnect(forAddr = null) { return !!_entry(forAddr)?.raw?.setDefaultChain }
+/** For tests: wire a provider-shaped object the way connectWallet wires a WalletConnect one. */
+export const _wakeOnSentForTest = (raw) => _wakeOnSent(raw)
 
 /**
  * Disconnect one wallet — by default the one for the account in view. Pass

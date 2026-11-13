@@ -216,7 +216,7 @@ import {
   generateAgentWallet,
   ensureChain,
   getHlSigner,
-  wakeWallet,
+  wakeWallet, openWalletApp, isWalletConnect,
   setActiveWallet,
   getConnectedWallets,
   hasWalletFor,
@@ -26749,6 +26749,7 @@ window.__sendPreview = function() {
   btn.style.opacity     = v.ok ? '1' : '.55'
 }
 
+window.__openWalletApp = function() { try { openWalletApp() } catch {} }
 window.__sendExecute = async function() {
   const dest = (document.getElementById('sendDest')?.value ?? '').trim()
   const amt  = parseFloat(document.getElementById('sendAmount')?.value ?? '')
@@ -26760,12 +26761,21 @@ window.__sendExecute = async function() {
   const set = (t, dis) => { if (btn) { btn.disabled = dis; btn.textContent = t } }
   if (st) st.innerHTML = ''
   set(_T('Check your wallet…', 'Revisa tu billetera…'), true)
+  // A wallet in another app (WalletConnect) is opened when the request has actually gone out
+  // (src/wallet.js, _wakeOnSent). If the phone did not switch -- no deep link, or it asked and was
+  // ignored -- a tap here opens it: a tap is allowed to open another app where a script may not.
+  const _waitHint = isWalletConnect() ? setTimeout(() => {
+    if (st && btn?.disabled) st.innerHTML = `<span style="color:var(--fg-2)">${_T('Not seeing it?', '¿No lo ves?')} <button onclick="window.__openWalletApp()" style="background:none;border:none;padding:0;color:var(--accent);font-weight:700;cursor:pointer">${_T('Open your wallet app', 'Abre tu app de billetera')}</button></span>`
+  }, 4000) : null
   try {
     // One tap, one signature — never retried after a prompt has been shown. See
     // sendUsdcOnCore for why a fallback here is worse than an honest failure.
     const p = sendUsdcOnCore({ from, destination: dest, amount: amt, signer: getHlSigner(), source: _sendSource })
+    // Opens a wallet that is not a WalletConnect session; for one that is, the wallet opens
+    // when the request actually goes out, not on this timer (src/wallet.js).
     setTimeout(() => { try { wakeWallet() } catch {} }, 350)
     await p
+    clearTimeout(_waitHint)
     if (st) st.innerHTML = `<span style="color:var(--green)">✓ ${_T('Sent', 'Enviado')} $${fmtUSD(amt)} → ${dest.slice(0, 6)}…${dest.slice(-4)}</span>`
     _paperToast(_T('Sent', 'Enviado'), 'ok')
     _sendLoadBalances()
@@ -26774,6 +26784,7 @@ window.__sendExecute = async function() {
     // The balance the dashboard shows came from before this transfer.
     setTimeout(() => { try { refreshLive(true) } catch {} }, 1200)
   } catch (e) {
+    clearTimeout(_waitHint)
     // The SDK's top-level message is always the generic signing error; the reason the
     // user cares about is nested on .cause, sometimes more than one deep.
     const parts = []
