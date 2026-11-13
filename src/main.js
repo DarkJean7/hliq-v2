@@ -3274,12 +3274,20 @@ async function _hip3CtxTick() {
 // Repaint whichever markets view is currently on screen, so staggered ctx fills in live.
 function _repaintMarketsLive() {
   const rows = document.getElementById('mobMktRows')
-  if (rows && _mobTradeView === 'list') rows.innerHTML = _mobBuildMarketRows()
+  if (rows && _mobTradeView === 'list') {
+    const list = document.getElementById('mobMktList'), top = list?.scrollTop ?? 0
+    rows.innerHTML = _mobBuildMarketRows()
+    if (list) list.scrollTop = top
+  }
   const dd = document.getElementById('coinDropdown')
   if (dd && dd.classList.contains('open')) {
     renderCoinDropdownItems(document.getElementById('coinDropdownSearch')?.value ?? '')
   }
 }
+
+// For tests/mktscroll-browser.mjs: the two background repaints that reach the market list.
+window.__repaintMarketsLive = _repaintMarketsLive
+window.__mobBgRefresh = () => updateMobileView(true)
 
 // ─── FAVORITES ────────────────────────────────────────────────────────────────
 function loadFavCoins()     { try { return JSON.parse(localStorage.getItem('favCoins') || '[]') } catch { return [] } }
@@ -22048,7 +22056,21 @@ function _mobVRenderContent(tick = false) {
   }
 
   if (_mobVActiveTab === 'trade') {
-    if (_mobTradeView === 'list') { _mobTradeDetailCoin = null; _mobRenderTradeList(el); return }
+    if (_mobTradeView === 'list') {
+      _mobTradeDetailCoin = null
+      // A background refresh lands here too (updateMobileView on every data poll). Rebuilding
+      // the whole list replaced the scroller, so anyone scrolling the markets was thrown back to
+      // the top every few seconds. When the list is already on screen, refresh its rows in place
+      // and keep the scroll where the reader left it.
+      const rows = el.querySelector('#mobMktRows'), list = el.querySelector('#mobMktList')
+      if (rows && list && _mktCtxReady) {
+        const top = list.scrollTop
+        rows.innerHTML = _mobBuildMarketRows()
+        list.scrollTop = top
+        return
+      }
+      _mobRenderTradeList(el); return
+    }
     // Preserve the live chart across BACKGROUND re-renders. A full rebuild destroys the chart
     // canvas and its candle WebSocket — which is exactly what blanked the chart ~1s after
     // opening an asset (a fills/data refresh fired updateMobileView(true) → _mobVRenderContent).
