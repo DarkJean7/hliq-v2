@@ -45,12 +45,18 @@ const SPOT = { balances: [
   { coin: 'HYPE', token: 150, hold: '0', total: '1.5',   entryNtl: '130' },
   { coin: 'KNTQ', token: 300, hold: '0', total: '199.8', entryNtl: '40' },
   { coin: 'USDC', token: 0,   hold: '0', total: '50',    entryNtl: '0' },
+  // "hide small spot amounts. currently kntq is irrelevant": TINY is dust ($0.0026); NOPX has
+  // no market price at all — unknown, not worthless, so "Hide small" must leave it alone.
+  { coin: 'TINY', token: 400, hold: '0', total: '0.013', entryNtl: '0.01' },
+  { coin: 'NOPX', token: 500, hold: '0', total: '3',     entryNtl: '0' },
 ] }
 const SPOT_META = {
-  tokens: [{ index: 150, name: 'HYPE' }, { index: 0, name: 'USDC' }, { index: 300, name: 'KNTQ' }],
+  tokens: [{ index: 150, name: 'HYPE' }, { index: 0, name: 'USDC' }, { index: 300, name: 'KNTQ' }, { index: 400, name: 'TINY' }, { index: 500, name: 'NOPX' }],
   universe: [
     { name: '@107', index: 107, tokens: [150, 0] },   // HYPE/USDC
     { name: '@334', index: 334, tokens: [300, 0] },   // KNTQ/USDC
+    { name: '@400', index: 400, tokens: [400, 0] },   // TINY/USDC
+    { name: '@500', index: 500, tokens: [500, 0] },   // NOPX/USDC — never in allMids
   ],
 }
 
@@ -59,7 +65,7 @@ const HL = () => ({
   clearinghouseState: STATE, spotClearinghouseState: SPOT,
   // The pair mids, plus a HYPE PERP at a DIFFERENT price. Pricing a spot holding off the perp
   // is the bug; the assertions below are that the spot pair wins.
-  allMids: { BTC: '100', HYPE: '92.9235', '@107': '92.881', '@334': '0.26438' },
+  allMids: { BTC: '100', HYPE: '92.9235', '@107': '92.881', '@334': '0.26438', '@400': '0.2' },
   frontendOpenOrders: [], userFills: [], userFillsByTime: [], userFunding: [],
   userNonFundingLedgerUpdates: [], subAccounts: [], candleSnapshot: [], extraAgents: [],
   allPerpMetas: [], outcomeMeta: {},
@@ -113,7 +119,7 @@ console.log('\n-- the Spot tab opens at all --')
 await p.evaluate(() => window.mobVTab('spot'))
 await p.waitForTimeout(1500)
 const rows = await p.evaluate(() => document.querySelectorAll('#mobVContent .mob-v-row').length)
-t('it renders its rows', rows, 3)
+t('it renders its rows', rows, 5)
 t('and threw nothing', errs.filter(e => /toFixed/.test(e)), [])
 
 console.log(NL + '-- a spot holding is priced through its PAIR, not its name --')
@@ -125,6 +131,25 @@ console.log(NL + '-- a spot holding is priced through its PAIR, not its name --'
   // HYPE has a perp at 92.9235 and a spot pair at 92.881. The holding is SPOT.
   t('HYPE uses its spot pair', /92\.88/.test(txt), true)
   t('not the perp of the same name', !/92\.9235/.test(txt), true)
+}
+
+console.log(NL + '-- "Hide small (< $1)" --')
+{
+  // Real clicks from here on, so nothing may sit over the list.
+  await p.evaluate(() => { document.querySelectorAll('#annModal, #langChooseModal, #onboardSheet').forEach(e => e.remove()); document.getElementById('bootSplash')?.remove() })
+  const names = () => p.evaluate(() => [...document.querySelectorAll('#mobVContent .mob-v-row')].map(r => r.innerText).join(' | '))
+  t('the chip is offered (there is dust to hide)', await p.evaluate(() => /Hide small/.test(document.querySelector('[data-spot-hide-small]')?.innerText ?? '')), true)
+  t('off by default: every row is there', /TINY/.test(await names()), true)
+  await p.click('[data-spot-hide-small]')
+  const after = await names()
+  t('on: the dust row is gone', /TINY/.test(after), false)
+  t('but a token with NO price stays — unknown is not worthless', /NOPX/.test(after), true)
+  t('and the real holdings stay', /HYPE/.test(after) && /KNTQ/.test(after) && /USDC/.test(after), true)
+  t('it says how many it is hiding', await p.evaluate(() => document.querySelector('.spot-small-n')?.innerText ?? ''), '1 hidden')
+  t('and remembers the choice', await p.evaluate(() => localStorage.getItem('hliq_spot_hide_small')), '1')
+  await p.click('[data-spot-hide-small]')
+  t('off again: the dust is back', /TINY/.test(await names()), true)
+  await p.click('[data-spot-hide-small]')   // left ON for the All Accounts check below
 }
 
 console.log(NL + '-- the strip says HYPE, not @107 --')
@@ -166,6 +191,9 @@ console.log(NL + '-- and the same tab in ALL ACCOUNTS --')
   t('and it drew something', txt.length > 0, true)
   // Grouped rows price through the pair too, so KNTQ is not a dash here either.
   if (/KNTQ/.test(txt)) t('KNTQ is priced in the combined view', /0\.264/.test(txt), true)
+  // The combined view's own copy of the list (renderSpotGroup) hides dust too — judged by the
+  // token's value across every wallet.
+  t('Hide small applies in All Accounts too', /TINY/.test(txt) || !/Hide small/.test(txt), false)
 }
 
 await browser.close()

@@ -284,6 +284,7 @@ import { guardPlan } from './guardplan.js'
 import { groupTrades, countTrades, closedTrades, tradeWindows } from './tradegroup.js'
 import { initSectorAlloc, loadSectorMeta, holdingsSectors, sectorAllocHtml, wireSectorAlloc } from './sectoralloc.js'
 import { flipPlan, flipOutcome } from './posflip.js'
+import { hideSmallOn, setHideSmall, splitSmall, hideSmallBar } from './spotsmall.js'
 import { PERIOD_SPAN, PERIOD_WINDOW, sliceSince, stitchHistories, timeTicks, fmtPointTime, fmtRange } from './portchart.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
@@ -20932,7 +20933,7 @@ function _mobVRenderContent(tick = false) {
 
     if (_mobVActiveTab === 'spot') {
       // On a tick, only rebuild when a holding's displayed USD value actually changed.
-      if (_mobVTickSkip(tick, 'spot:' + spots.map(b => {
+      if (_mobVTickSkip(tick, 'spot:' + (hideSmallOn() ? 'h:' : '') + spots.map(b => {
         const px = _spotMid(b.coin)
         const usd = px > 0 ? parseFloat(b.total) * px : (b.coin === 'USDC' ? parseFloat(b.total) : 0)
         return `${b.coin}:${b._acct ?? ''}:${usd.toFixed(2)}:${parseFloat(b.entryNtl ?? 0).toFixed(2)}`
@@ -20944,18 +20945,25 @@ function _mobVRenderContent(tick = false) {
         return s + (px > 0 ? parseFloat(b.total) * px : (b.coin === 'USDC' ? parseFloat(b.total) : 0))
       }, 0)
       const _offex = _offexSectionHtml({ spotUsd: _spotUsd })
+      // "Hide small" (src/spotsmall.js) hides rows, not money: the total above still counts them.
+      const _hs = hideSmallOn()
+      const _val = (coin, total) => { const px = coin === 'USDC' ? 1 : _spotMid(coin); return { px, usd: px > 0 ? total * px : 0 } }
       if (state.isAllAccounts) {
         const groups = {}
         for (const b of spots) (groups[b.coin] ??= []).push(b)
-        const keys = Object.keys(groups)
-        el.innerHTML = (keys.length
+        // A token is small by what it is worth across every wallet, not on any one of them.
+        const { keep, small } = splitSmall(Object.keys(groups), (coin) => _val(coin, groups[coin].reduce((s, b) => s + parseFloat(b.total ?? 0), 0)))
+        const keys = _hs ? keep : Object.keys(groups)
+        el.innerHTML = hideSmallBar({ smallCount: small.length, on: _hs, onclick: "window.__spotHideSmall('m')" }) + (keys.length
           ? `<div style="padding-top:6px">${keys.map((coin, gi) => renderSpotGroup(coin, groups[coin], `spg-${gi}`)).join('')}</div>`
-          : `<div class="mob-v-empty">No spot balances</div>`) + _offex
+          : `<div class="mob-v-empty">${_hs && small.length ? 'Only small balances — tap above to show them' : 'No spot balances'}</div>`) + _offex
         return
       }
-      el.innerHTML = (spots.length
-        ? `<div style="padding-top:6px">${spots.map((b, i) => renderSpotRow(b, `sp-${i}`)).join('')}</div>`
-        : `<div class="mob-v-empty">No spot balances</div>`) + _offex
+      const { keep, small } = splitSmall(spots, (b) => _val(b.coin, parseFloat(b.total ?? 0)))
+      const shown = _hs ? keep : spots
+      el.innerHTML = hideSmallBar({ smallCount: small.length, on: _hs, onclick: "window.__spotHideSmall('m')" }) + (shown.length
+        ? `<div style="padding-top:6px">${shown.map((b, i) => renderSpotRow(b, `sp-${i}`)).join('')}</div>`
+        : `<div class="mob-v-empty">${_hs && small.length ? 'Only small balances — tap above to show them' : 'No spot balances'}</div>`) + _offex
       return
     }
     // Outcomes tab — prediction holdings as position-style cards. On a tick, skip the rebuild
@@ -40454,14 +40462,27 @@ window.__spotSell = async function(coin) {
   return _spotSell.open(coin)
 }
 
+// The Spot list's "Hide small" chip (src/spotsmall.js). 'm' = the phone's Spot tab, 'd' = the
+// desktop Overview's — each redraws its own list.
+window.__spotHideSmall = function(where) {
+  setHideSmall(!hideSmallOn())
+  if (where === 'd') window.__ovSetPosTab?.('spot')
+  else _mobVRenderContent()
+}
+
 window.__ovBuildSpotBody = function() {
-  const rows = window.__ovSpotHoldings()
+  const allRows = window.__ovSpotHoldings()
+  const _hs = hideSmallOn()
+  const { keep, small } = splitSmall(allRows, (h) => ({ usd: h.usd, px: h.px }))
+  const rows = _hs ? keep : allRows
+  const bar = hideSmallBar({ smallCount: small.length, on: _hs, onclick: "window.__spotHideSmall('d')" })
   // The off-exchange group sits under the Hyperliquid rows here as well — the same renderer
   // the mobile Spot tab uses, so there is one copy of it to keep right.
   // Drawn as rows of this same table (desk: true) so a token held off-exchange reads like one
   // held on Hyperliquid — the same columns, icon, and press-to-open detail.
-  const offex = (withHead = false) => `<div class="ov-offex">${_offexSectionHtml({ spotUsd: rows.reduce((s, h) => s + (h.usd > 0 ? h.usd : 0), 0), desk: true, withHead })}</div>`
-  if (!rows.length) return '<div class="ov-empty">No spot holdings</div>' + offex(true)
+  // Summed over every row, hidden ones too: hiding a row does not take its money out of the total.
+  const offex = (withHead = false) => `<div class="ov-offex">${_offexSectionHtml({ spotUsd: allRows.reduce((s, h) => s + (h.usd > 0 ? h.usd : 0), 0), desk: true, withHead })}</div>`
+  if (!rows.length) return bar + `<div class="ov-empty">${_hs && small.length ? 'Only small balances — click above to show them' : 'No spot holdings'}</div>` + offex(true)
   const head = `<div class="ov-ord-head ov-spot-row"><span>Token</span><span class="ov-r">Price</span><span class="ov-r">Balance</span><span class="ov-r">Value</span><span class="ov-r">PnL</span></div>`
   const body = rows.map((h, i) => {
     // entryNtl is HL's cost basis. It is 0 for USDC (the quote asset never has one) and for
@@ -40513,7 +40534,7 @@ window.__ovBuildSpotBody = function() {
       ${detail}
     </div>`
   }).join('')
-  return `${head}<div class="ov-pos-scroll">${body}</div>` + offex()
+  return bar + `${head}<div class="ov-pos-scroll">${body}</div>` + offex()
 }
 window.__ovToggleSpot = function(id) {
   const el = document.getElementById('ovspd-' + id)
