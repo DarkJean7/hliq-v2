@@ -132,6 +132,39 @@ t('and its last button can be reached', await p.evaluate(() => {
   const ov = document.getElementById('advChartOverlay'), last = ov.querySelector('.adv-foot .pc-chip:last-child')
   const r = last.getBoundingClientRect(); return r.bottom <= innerHeight + 1 && r.top >= 0
 }))
+// "scrolling inside the chart line does not work the same as basic mode" / "let me scroll
+// freely over left and right outside the chart similar as trade assets": a sideways drag ON the
+// line reads it (the Portfolio page's gesture); anywhere else it slides through time, with momentum.
+await p.evaluate(() => { document.getElementById('advChartOverlay').scrollTop = 0 })
+await p.click('[data-adv-period="1D"]')
+const swipe = (fromX, y, toX) => p.evaluate(([fromX, y, toX]) => {
+  const c = document.getElementById('advChart'), r = c.getBoundingClientRect()
+  const T = (x) => new Touch({ identifier: 1, target: c, clientX: r.left + x, clientY: r.top + y })
+  const fire = (type, x) => c.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, touches: type === 'touchend' ? [] : [T(x)], changedTouches: [T(x)] }))
+  fire('touchstart', fromX)
+  return new Promise(res => {
+    let k = 0; const N = 8
+    const tick = () => { k++; fire('touchmove', fromX + (toX - fromX) * k / N); if (k < N) setTimeout(tick, 12); else { fire('touchend', toX); res() } }
+    setTimeout(tick, 12)
+  })
+}, [fromX, y, toX])
+{
+  const cb = await p.locator('#advChart').boundingBox()
+  const x = cb.width * 0.7, ly = await p.evaluate((x) => window.__advLineY(x), x)
+  const s0 = await p.evaluate(() => window.__advDbg())
+  await swipe(x, ly, cb.width * 0.4)
+  const s1 = await p.evaluate(() => window.__advDbg())
+  t('a sideways drag ON the line reads it: the crosshair follows, the window stays put', s1.cross >= 0 && s1.t0 === s0.t0 && s1.t1 === s0.t1, { s0, s1 })
+  const offY = ly > cb.height / 2 ? 20 : cb.height - 40
+  await swipe(cb.width * 0.3, offY, cb.width * 0.8)
+  const s2 = await p.evaluate(() => window.__advDbg())
+  t('a sideways drag OFF the line moves back through time, like the Trade chart', s2.t1 < s1.t1 && s2.cross === -1, { s1, s2 })
+  await p.waitForTimeout(50)
+  const s3 = await p.evaluate(() => window.__advDbg())
+  await waitFor(p, 'the fling to settle', () => !window.__advDbg().flinging, null, 4000)
+  t('and a quick throw keeps going after the finger lifts', s3.t1 < s2.t1 || s2.flinging, { s2, s3 })
+}
+await p.evaluate(() => { document.getElementById('advChartOverlay').scrollTop = 0 })
 if (SHOT) {
   await p.evaluate(() => { document.getElementById('advChartOverlay').scrollTop = 0 })
   await p.click('[data-adv-period="1D"]')
@@ -139,6 +172,12 @@ if (SHOT) {
   await p.locator('#advChart').click({ position: { x: cb.width * 0.62, y: cb.height * 0.5 } })
   await p.screenshot({ path: `${SHOT}/portchart-advanced.png` })
 }
+
+// "replay is also not working in advanced mode": it opened UNDER the overlay.
+await p.evaluate(() => document.getElementById('advChartOverlay').scrollTop = 9999)
+await p.click('[data-adv-replay]')
+const rp = await p.evaluate(() => ({ adv: getComputedStyle(document.getElementById('advChartOverlay')).display, open: window.__advDbg().open, replay: /Replay|Repetici/.test(document.body.innerText) && !!document.querySelector('[onclick*="__replayBack"]') }))
+t('Replay from Advanced closes Advanced and shows the replay', rp.adv === 'none' && !rp.open && rp.replay, rp)
 
 t('no page errors', !errs.length, errs)
 await browser.close()

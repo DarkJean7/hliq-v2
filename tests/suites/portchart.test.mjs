@@ -69,6 +69,8 @@ console.log('-- wiring --')
   t('its touch listeners never block a scroll', !/addEventListener\('touch\w+',\s*_advTouch\w+,\s*\{ passive: false \}/.test(m) && (m.match(/_advTouch\w+,\s*\{ passive: true \}/g) ?? []).length === 3)
   t('a swipe over the overview strip scrolls too', /\.adv-nav-wrap \{[^}]*touch-action: pan-y/.test(css))
   t('nothing blurs behind a control as the page scrolls', !/\.adv-zoom \{[^}]*backdrop-filter/.test(css))
+  t('Replay leaves Advanced first (it opened underneath it)', m.includes('onclick="window.mobVCloseAdvChart(); window.__openReplay()"'))
+  t('on the line a drag reads it, off it a drag pans', m.includes("(tc.onLine ? 'scrub' : 'pan')"))
   t('the wheel scrolls the page when it can; ctrl+wheel (a pinch) zooms', m.includes("if (!e.ctrlKey && ov && ov.scrollHeight > ov.clientHeight + 1) return"))
 }
 

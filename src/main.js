@@ -17064,7 +17064,7 @@ function _advSyncControls() {
   const hint = document.querySelector('#advChartOverlay .adv-hint-line')
   if (hint) hint.textContent = split
     ? 'Each wallet as % from the start of the period · drag to read a point'
-    : 'Drag sideways to pan · pinch, scroll or double-tap to zoom · drag the strip below to move'
+    : 'Drag on the line to read it · drag anywhere else to move through time · pinch or double-tap to zoom'
 }
 
 function _advDraw() {
@@ -17112,6 +17112,7 @@ function _advDraw() {
   // small headroom
   mn -= range * 0.06; mx += range * 0.06; range = mx - mn || 1
   const yOf = v => padTop + plotH - ((v - mn) / range) * plotH
+  _adv.lineY = (i) => (i >= 0 && i < n && isFinite(vals[i])) ? yOf(vals[i]) : null   // for "is this touch on the line"
   // Where the crosshair's pills will sit: the axis labels under them step aside.
   const _crossOn = _adv.cross >= 0 && _adv.cross < n
   const _cX = _crossOn ? xOfT(+hist[_adv.cross][0]) : null
@@ -17384,8 +17385,13 @@ function _advTouchStart(e) {
     _adv.touch = { mode: 'pinch', d0: Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY),
                    midT: _advTimeAtPx(_advCanvasX((t1.clientX + t2.clientX) / 2)),
                    w0: _adv.t1 - _adv.t0 }
+    _adv.cross = -1; _advHideTip()
   } else if (e.touches.length === 1) {
-    _adv.touch = { mode: 'maybe', x0: e.touches[0].clientX, y0: e.touches[0].clientY, lastX: e.touches[0].clientX, moved: false }
+    _advFlingStop()
+    const x0 = e.touches[0].clientX, y0 = e.touches[0].clientY
+    const ly = _adv.lineY?.(_advNearestIdx(_advCanvasX(x0)))
+    const onLine = ly != null && Math.abs(ly - (y0 - document.getElementById('advChart').getBoundingClientRect().top)) < 36
+    _adv.touch = { mode: 'maybe', x0, y0, lastX: x0, lastT: performance.now(), v: 0, moved: false, onLine }
   }
 }
 let _advLastTap = { t: 0, x: 0 }
@@ -17395,21 +17401,27 @@ function _advTouchMove(e) {
     const [t1, t2] = e.touches
     const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY) || 1
     _advSetWindow(tc.midT, tc.w0 * (tc.d0 / dist))
-    _advDraw()
+    // Two fingers both zoom and pan: the time that was between them stays between them.
+    const W = document.getElementById('advChart').clientWidth || 1, w = _adv.t1 - _adv.t0
+    _adv.t0 = tc.midT - (_advCanvasX((t1.clientX + t2.clientX) / 2) / W) * w; _adv.t1 = _adv.t0 + w
+    _advClampView(); _advDraw()
   } else if (e.touches.length === 1) {
     const x = e.touches[0].clientX, y = e.touches[0].clientY
     // Direction decides. Up/down is the PAGE scrolling — the canvas is touch-action: pan-y, so
-    // the browser does it and nothing here gets in the way. Every swipe used to be taken as a
-    // pan and preventDefault'd, which is why the overlay could not be scrolled at all.
+    // the browser does it and nothing here gets in the way. Sideways reads the line under the
+    // finger, exactly as the chart on the Portfolio page does; moving through time is two
+    // fingers or the strip below. (One finger used to pan, so the two charts disagreed about
+    // what the same gesture meant.)
     if (!tc.moved && Math.hypot(x - tc.x0, y - tc.y0) > 6) {
       tc.moved = true
-      tc.mode = Math.abs(x - tc.x0) > Math.abs(y - tc.y0) ? 'pan' : 'scroll'
-      if (tc.mode === 'pan') _advHideTip()
+      // On the line it reads the line; anywhere else on the chart it slides through time,
+      // freely, the way the Trade chart does.
+      tc.mode = Math.abs(x - tc.x0) > Math.abs(y - tc.y0) ? (tc.onLine ? 'scrub' : 'pan') : 'scroll'
+      if (tc.mode !== 'scroll') _advHideTip()
+      if (tc.mode === 'pan') _adv.cross = -1
     }
-    if (tc.mode === 'pan') {
-      const w = document.getElementById('advChart').clientWidth || 1
-      _advPanTime((x - tc.lastX) / w); tc.lastX = x; _advDraw()
-    }
+    if (tc.mode === 'scrub') { _adv.cross = _advNearestIdx(_advCanvasX(x)); _advDraw() }
+    else if (tc.mode === 'pan') _advPanStep(tc, x)
   }
 }
 function _advTouchEnd(e) {
@@ -17421,7 +17433,32 @@ function _advTouchEnd(e) {
     _advTapAt(px, tc.y0 - document.getElementById('advChart').getBoundingClientRect().top)
   }
   if (tc && tc.mode === 'pinch') _advSyncControls()   // preset highlight cleared by zoom
+  if (tc && tc.mode === 'pan') _advFling(tc)
   _adv.touch = null
+}
+// Panning with momentum: the drag's last speed carries on and eases out, as a list does.
+function _advPanStep(tc, x) {
+  const now = performance.now(), dt = Math.max(1, now - tc.lastT)
+  const w = document.getElementById('advChart').clientWidth || 1
+  tc.v = 0.75 * ((x - tc.lastX) / dt) + 0.25 * tc.v          // px per ms, smoothed
+  _advPanTime((x - tc.lastX) / w); tc.lastX = x; tc.lastT = now; _advDraw()
+}
+let _advFlingRaf = 0
+function _advFlingStop() { if (_advFlingRaf) cancelAnimationFrame(_advFlingRaf); _advFlingRaf = 0 }
+function _advFling(tc) {
+  _advFlingStop()
+  let v = tc.v, last = performance.now()
+  if (performance.now() - tc.lastT > 80 || Math.abs(v) < 0.15) return   // lifted after stopping: no throw
+  const w = document.getElementById('advChart').clientWidth || 1
+  const step = (now) => {
+    const dt = Math.min(40, now - last); last = now
+    const t0 = _adv.t0
+    _advPanTime(v * dt / w); _advDraw()
+    v *= Math.pow(0.994, dt)
+    if (Math.abs(v) < 0.02 || _adv.t0 === t0 || !_adv.open) { _advFlingRaf = 0; return }   // stopped, or hit an end
+    _advFlingRaf = requestAnimationFrame(step)
+  }
+  _advFlingRaf = requestAnimationFrame(step)
 }
 function _advWheel(e) {
   // A trackpad's sideways swipe pans; the vertical wheel zooms on the point under the cursor,
@@ -17440,19 +17477,18 @@ function _advWheel(e) {
 }
 // Desktop mouse drag = pan; a click without drag = tap.
 function _advMouseDown(e) {
-  _adv.touch = { mode: 'maybe', x0: e.clientX, y0: e.clientY, lastX: e.clientX, moved: false, mouse: true }
+  _advFlingStop()
+  _adv.touch = { mode: 'maybe', x0: e.clientX, y0: e.clientY, lastX: e.clientX, lastT: performance.now(), v: 0, moved: false, mouse: true }
   const mv = (ev) => {
     const tc = _adv.touch; if (!tc) return
     if (!tc.moved && Math.abs(ev.clientX - tc.x0) > 5) { tc.moved = true; tc.mode = 'pan'; _advHideTip() }
-    if (tc.mode === 'pan') {
-      const w = document.getElementById('advChart').clientWidth || 1
-      _advPanTime((ev.clientX - tc.lastX) / w); tc.lastX = ev.clientX; _advDraw()
-    }
+    if (tc.mode === 'pan') _advPanStep(tc, ev.clientX)
   }
   const up = (ev) => {
     const tc = _adv.touch
     if (tc && tc.mode === 'maybe' && !tc.moved)
       _advTapAt(_advCanvasX(ev.clientX), ev.clientY - document.getElementById('advChart').getBoundingClientRect().top)
+    if (tc && tc.mode === 'pan') _advFling(tc)
     _adv.touch = null
     window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up)
   }
@@ -17494,7 +17530,7 @@ window.mobVOpenAdvChart = function() {
       <div class="adv-foot">
         <button class="pc-chip" id="advStyleBtn" onclick="window.advToggleStyle()"></button>
         <button class="pc-chip" id="advMarkersBtn" onclick="window.advToggleMarkers()">${_PC_ICON.pin}Markers</button>
-        <button class="pc-chip" onclick="window.__openReplay()">${_PC_ICON.play}Replay</button>
+        <button class="pc-chip" data-adv-replay onclick="window.mobVCloseAdvChart(); window.__openReplay()">${_PC_ICON.play}Replay</button>
         ${state.isAllAccounts ? `<button class="pc-chip" id="advSplitBtn" onclick="window.advToggleSplit()"></button>` : ''}
       </div>
       <div class="adv-hint-line"></div>`
@@ -17509,6 +17545,12 @@ window.mobVOpenAdvChart = function() {
     c.addEventListener('touchend',   _advTouchEnd,   { passive: true })
     c.addEventListener('wheel',      _advWheel, { passive: false })
     c.addEventListener('mousedown',  _advMouseDown)
+    c.addEventListener('mousemove',  (e) => {
+      if (_adv.touch || e.buttons || !_adv.data) return
+      const i = _advNearestIdx(_advCanvasX(e.clientX)); if (i === _adv.cross) return
+      _advHideTip(); _adv.cross = i; _advDraw()
+    })
+    c.addEventListener('mouseleave', () => { if (_adv.touch || _adv.cross < 0) return; _adv.cross = -1; _advDraw() })
     c.addEventListener('dblclick',   (e) => _advZoomAt(_advCanvasX(e.clientX), 0.4))
     ov.querySelector('#advNav').addEventListener('pointerdown', _advNavDown)
     window.addEventListener('resize', _advOnResize)
@@ -17523,9 +17565,13 @@ function _advOnResize() { if (_adv.open) _advDraw() }
 window.__portChartDbg = () => { const d = _mobVPortChartData; return d ? { t0: d.t0, t1: d.t1, n: d.hist.length } : null }
 window.__advDbg = () => {
   const h = _adv.data?.hist ?? []
-  return { t0: _adv.t0, t1: _adv.t1, period: _adv.periodSel, total: h.length, inView: h.filter(p => +p[0] >= _adv.t0 && +p[0] <= _adv.t1).length }
+  return { t0: _adv.t0, t1: _adv.t1, period: _adv.periodSel, total: h.length, inView: h.filter(p => +p[0] >= _adv.t0 && +p[0] <= _adv.t1).length,
+           cross: _adv.cross, open: !!_adv.open, flinging: !!_advFlingRaf }
 }
+// The line's y at a canvas x, so a test can put a finger on it (or well away from it).
+window.__advLineY = (px) => _adv.lineY?.(_advNearestIdx(px)) ?? null
 window.mobVCloseAdvChart = function() {
+  _advFlingStop()
   const ov = document.getElementById('advChartOverlay')
   if (ov) ov.style.display = 'none'
   _adv.open = false
