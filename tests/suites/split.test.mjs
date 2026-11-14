@@ -1,5 +1,6 @@
 // Per-wallet chart lines in All Accounts, driven against REAL Hyperliquid portfolio history.
 import fs from 'fs'
+import { PERIOD_WINDOW, PERIOD_SPAN, sliceSince } from '../../src/portchart.js'
 import { computeCompare, assignCompareColors, compareChartSvg, compareLegendHtml }
   from '../../src/compare.js'
 
@@ -32,13 +33,13 @@ for (const addr of ADDRS) {
 }
 t('real portfolio history fetched for every wallet', rows.every(r => Array.isArray(r.portfolio)))
 
-const mkExtract = (period, type) => new Function('_allAcctLastResults', `
+const mkExtract = (period, type) => new Function('_allAcctLastResults', 'PERIOD_WINDOW', 'PERIOD_SPAN', 'sliceSince', `
   const _mobVPortPeriod = '${period}'
   const _mobVPortChartType = '${type}'
   const _maHiddenLoad = () => new Set()
   ${grab(cli, 'function _splitSeriesByWallet(period = _mobVPortPeriod)')}
   return _splitSeriesByWallet('${period}')
-`)(rows)
+`)(rows, PERIOD_WINDOW, PERIOD_SPAN, sliceSince)
 
 let { byWallet, labels } = mkExtract('allTime', 'value')
 t('one series per wallet', labels.length === 3, JSON.stringify(labels))
@@ -64,13 +65,13 @@ t('with one path per wallet', (svg.match(/<path/g) ?? []).length >= 3)
 t('the legend names them', d.series.every(s => compareLegendHtml(d, { colors }).includes(s.coin)))
 
 // ── the awkward inputs ───────────────────────────────────────────────────────
-const one = (over) => new Function('_allAcctLastResults', `
+const one = (over) => new Function('_allAcctLastResults', 'PERIOD_WINDOW', 'PERIOD_SPAN', 'sliceSince', `
   const _mobVPortPeriod = 'allTime'
   const _mobVPortChartType = 'value'
   const _maHiddenLoad = () => new Set(${JSON.stringify([...(over.hidden ?? [])])})
   ${grab(cli, 'function _splitSeriesByWallet(period = _mobVPortPeriod)')}
   return _splitSeriesByWallet('allTime')
-`)(over.rows)
+`)(over.rows, PERIOD_WINDOW, PERIOD_SPAN, sliceSince)
 
 t('an errored wallet is skipped, not plotted as a flat zero',
   one({ rows: [{ addr: '0x' + '1'.repeat(40), error: 'boom', portfolio: rows[0].portfolio }] }).labels.length === 0)
@@ -92,7 +93,8 @@ t('a series starting at zero is dropped rather than plotted as infinity', zero.s
 
 // ── wiring ───────────────────────────────────────────────────────────────────
 t('the toggle exists', cli.includes('window.mobVTogglePortSplit'))
-t('it only appears in All Accounts', cli.includes('${state.isAllAccounts ? `<div style="padding:8px 16px 0">'))
+// The toggle became a chip beside the timeframes (it was its own row); still gated the same way.
+t('it only appears in All Accounts', /\$\{state\.isAllAccounts \? `<button class="pc-chip\$\{_mobVPortSplit \? ' on' : ''\}" onclick="window\.mobVTogglePortSplit\(\)"/.test(cli))
 t('split takes over before the canvas is touched',
   grab(cli, 'function _mobVDrawPortChart()').includes('if (_mobVPortSplit && state.isAllAccounts) { _mobVDrawPortSplit(); return }'))
 t('the canvas is hidden while split is on', cli.includes("display:${_mobVPortSplit && state.isAllAccounts ? 'none' : 'block'}"))
@@ -157,8 +159,15 @@ t('candles and markers are disabled while split — they mean nothing across nor
   grab(cli, 'function _advSyncControls()').includes("for (const id of ['advStyleBtn', 'advMarkersBtn'])"))
 t('the hint line says what the chart is now showing',
   grab(cli, 'function _advSyncControls()').includes('% from the start of the period'))
-t("Advanced's 1H/8H map onto the finest bucket HL actually has",
-  grab(cli, 'function _splitSeriesByWallet(period = _mobVPortPeriod)').includes("'1H': 'day', '8H': 'day'"))
+// The map moved to src/portchart.js when 4H joined 1H/8H; the split view reads it from there
+// and cuts the day's history to the timeframe, rather than showing the whole day under "4H".
+{
+  const pc = fs.readFileSync('src/portchart.js', 'utf8')
+  const split = grab(cli, 'function _splitSeriesByWallet(period = _mobVPortPeriod)')
+  t("1H/4H/8H map onto the finest bucket HL actually has",
+    /'1H': 'day', '4H': 'day', '8H': 'day'/.test(pc) && split.includes('PERIOD_WINDOW[period]'))
+  t('and the split view cuts that day down to the timeframe', split.includes('sliceSince(full, cut)'))
+}
 
 // The 12s value tick patches the portfolio hero with the combined total. In split view the
 // hero holds the per-wallet summary and the scrub readout, so that patch erased both.

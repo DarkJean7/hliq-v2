@@ -284,6 +284,7 @@ import { guardPlan } from './guardplan.js'
 import { groupTrades, countTrades, closedTrades, tradeWindows } from './tradegroup.js'
 import { initSectorAlloc, loadSectorMeta, holdingsSectors, sectorAllocHtml, wireSectorAlloc } from './sectoralloc.js'
 import { flipPlan, flipOutcome } from './posflip.js'
+import { PERIOD_SPAN, PERIOD_WINDOW, sliceSince, stitchHistories, timeTicks, fmtPointTime, fmtRange } from './portchart.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
 import { setExtChartDeps, openExtChart, extChartTf, extChartQuote } from './extchart.js'   // an outside market's own chart
@@ -16404,10 +16405,10 @@ function _netDepositedFromLedger() {
   return net
 }
 
-function _mobVPortHeroHtml(hist, vals, idx, baseRef = 0) {
+function _mobVPortHeroHtml(hist, vals, idx, baseRef = 0, baseOverride = null) {
   const val  = vals[idx]
   const ts   = hist[idx][0]
-  const date = new Date(+ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  const date = fmtPointTime(ts)
   const isLatest = idx === vals.length - 1
   if (_mobVPortChartType === 'value') {
     // At the latest point the hero is "now", so it shows the headline's live equity and the
@@ -16415,7 +16416,7 @@ function _mobVPortHeroHtml(hist, vals, idx, baseRef = 0) {
     // point against its first and disagree with the pill on the page behind it. Scrubbing
     // back shows that point's value against the same base.
     const live = isLatest ? window.__lastHeadlineVal?.() : null
-    const shared = _periodBase(_mobVPortPeriod)
+    const shared = baseOverride ?? _periodBase(_mobVPortPeriod)
     const base = shared ?? vals[0]
     const shownVal = isLatest && Number.isFinite(live) ? live : val
     const diff = shownVal - base
@@ -16444,13 +16445,40 @@ function _mobVPortHeroHtml(hist, vals, idx, baseRef = 0) {
 function _mobVDrawPortCanvas(canvas, crosshairIdx) {
   const d = _mobVPortChartData
   if (!d) return
-  const { pts, vals, hist, W, H, isUp, color, dpr, min, max, range, padY } = d
+  const { pts, vals, hist, W, H, plotH, t0, t1, xOfT, isUp, color, dpr, min, max, range, padY } = d
   const ctx = canvas.getContext('2d')
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, W, H)
 
-  const smoothPath = (p) => {
-    ctx.moveTo(p[0][0], p[0][1])
+  // Time axis: round local times, the time of day on intraday charts, and the DATE where a
+  // new day starts — with a faint line through the chart there — so a day reads without a
+  // hover (src/portchart.js timeTicks).
+  ctx.font = '10px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'
+  let _lastLblR = -Infinity
+  for (const tk of timeTicks(t0, t1, W, 66)) {
+    const x = xOfT(tk.t)
+    if (x < 2 || x > W - 2) continue
+    ctx.beginPath()
+    ctx.strokeStyle = tk.day ? 'rgba(255,255,255,0.11)' : 'rgba(255,255,255,0.05)'
+    ctx.lineWidth = 1
+    if (tk.day) ctx.setLineDash([2, 3])
+    ctx.moveTo(Math.round(x) + 0.5, 4); ctx.lineTo(Math.round(x) + 0.5, plotH); ctx.stroke()
+    ctx.setLineDash([])
+    const tw2 = ctx.measureText(tk.label).width
+    const lx = Math.max(tw2 / 2 + 1, Math.min(W - tw2 / 2 - 1, x))
+    if (lx - tw2 / 2 < _lastLblR + 6) continue          // never let two labels touch
+    if (crosshairIdx >= 0 && pts[crosshairIdx] && Math.abs(lx - pts[crosshairIdx][0]) < tw2 / 2 + 50) continue   // under the time pill
+    ctx.fillStyle = tk.day ? 'rgba(255,255,255,0.62)' : 'rgba(255,255,255,0.38)'
+    ctx.font = tk.day ? '600 10px system-ui, sans-serif' : '10px system-ui, sans-serif'
+    ctx.fillText(tk.label, lx, H - 6)
+    _lastLblR = lx + tw2 / 2
+  }
+
+  // `cont`: carry on the current path rather than start a new one. The fill used to call this
+  // after its own moveTo, so the curve began a SECOND sub-path and the fill closed on a straight
+  // chord from the first point -- a diagonal wedge instead of the area under the line.
+  const smoothPath = (p, cont = false) => {
+    cont ? ctx.lineTo(p[0][0], p[0][1]) : ctx.moveTo(p[0][0], p[0][1])
     for (let i = 0; i < p.length - 1; i++) {
       const mx = (p[i][0] + p[i + 1][0]) / 2
       const my = (p[i][1] + p[i + 1][1]) / 2
@@ -16460,20 +16488,20 @@ function _mobVDrawPortCanvas(canvas, crosshairIdx) {
   }
 
   // Gradient fill
-  const grad = ctx.createLinearGradient(0, 0, 0, H)
+  const grad = ctx.createLinearGradient(0, 0, 0, plotH)
   grad.addColorStop(0, isUp ? 'rgba(0,229,160,0.22)' : 'rgba(255,77,109,0.22)')
   grad.addColorStop(1, 'rgba(0,0,0,0)')
   ctx.beginPath()
-  ctx.moveTo(pts[0][0], H)
-  smoothPath(pts)
-  ctx.lineTo(pts.at(-1)[0], H)
+  ctx.moveTo(pts[0][0], plotH)
+  smoothPath(pts, true)
+  ctx.lineTo(pts.at(-1)[0], plotH)
   ctx.closePath()
   ctx.fillStyle = grad
   ctx.fill()
 
   // Zero line for pnl/realized charts when values cross zero
   if (_mobVPortChartType !== 'value' && min < 0 && max > 0) {
-    const zeroY = H - padY - ((0 - min) / range) * (H - padY * 2)
+    const zeroY = plotH - padY - ((0 - min) / range) * (plotH - padY * 2)
     ctx.beginPath()
     ctx.strokeStyle = 'rgba(255,255,255,0.18)'
     ctx.lineWidth   = 1
@@ -16496,11 +16524,11 @@ function _mobVDrawPortCanvas(canvas, crosshairIdx) {
   // Y-axis labels
   const labelW = 52
   ctx.font      = '10px system-ui, sans-serif'
-  ctx.textAlign = 'right'
+  ctx.textAlign = 'left'      // left edge: the live dot is always at the right end of the line
   ctx.fillStyle = 'rgba(255,255,255,0.35)'
   const fmtAxisVal = v => Math.abs(v) >= 1000 ? (v >= 0 ? '' : '-') + '$' + fmtUSD(Math.abs(v), 0) : (v >= 0 ? '' : '-') + '$' + Math.abs(v).toFixed(2)
-  ctx.fillText(fmtAxisVal(max), W - 3, padY + 9)
-  ctx.fillText(fmtAxisVal(min), W - 3, H - padY - 2)
+  ctx.fillText(fmtAxisVal(max), 3, padY + 9)
+  ctx.fillText(fmtAxisVal(min), 3, plotH - padY - 2)
 
   // Crosshair
   if (crosshairIdx >= 0 && crosshairIdx < pts.length) {
@@ -16509,8 +16537,8 @@ function _mobVDrawPortCanvas(canvas, crosshairIdx) {
     ctx.strokeStyle = 'rgba(255,255,255,0.3)'
     ctx.lineWidth   = 1
     ctx.setLineDash([3, 3])
-    ctx.moveTo(cp[0], padY)
-    ctx.lineTo(cp[0], H - padY)
+    ctx.moveTo(cp[0], 4)
+    ctx.lineTo(cp[0], plotH)
     ctx.stroke()
     ctx.setLineDash([])
     ctx.shadowColor = color
@@ -16520,6 +16548,15 @@ function _mobVDrawPortCanvas(canvas, crosshairIdx) {
     ctx.fillStyle = color
     ctx.fill()
     ctx.shadowBlur = 0
+    // The point's time, as a pill on the axis it belongs to.
+    const lbl = fmtPointTime(hist[crosshairIdx][0])
+    ctx.font = '600 10px system-ui, sans-serif'
+    const pw = ctx.measureText(lbl).width + 12
+    const px = Math.max(0, Math.min(W - pw, cp[0] - pw / 2))
+    ctx.fillStyle = '#1d2330'; ctx.strokeStyle = 'rgba(255,255,255,0.18)'
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(px, H - 18, pw, 16, 8) : ctx.rect(px, H - 18, pw, 16); ctx.fill(); ctx.stroke()
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center'
+    ctx.fillText(lbl, px + pw / 2, H - 6)
   } else {
     // Live dot at end
     const lp = pts[pts.length - 1]
@@ -16542,7 +16579,7 @@ function _mobVDrawPortCanvas(canvas, crosshairIdx) {
       let i = 0; while (i < n - 1 && +hist[i + 1][0] < t) i++
       const ta = +hist[i][0], tb = +hist[i + 1][0]
       const f  = tb > ta ? (t - ta) / (tb - ta) : 0
-      return [ (i + f) / (n - 1) * (W - 4), pts[i][1] + (pts[i + 1][1] - pts[i][1]) * f ]
+      return [ xOfT(t), pts[i][1] + (pts[i + 1][1] - pts[i][1]) * f ]
     }
     const evs = []
     for (const fl of (state.fills ?? [])) {
@@ -16569,7 +16606,7 @@ function _mobVDrawPortCanvas(canvas, crosshairIdx) {
       seen.add(key)
       const s  = style[ev.type]
       const mx = Math.max(7, Math.min(W - 7, xy[0]))
-      const my = Math.max(padY + 2, Math.min(H - 2, xy[1] + s.dy))
+      const my = Math.max(padY + 2, Math.min(plotH - 2, xy[1] + s.dy))
       ctx.beginPath(); ctx.arc(mx, my, 6.5, 0, Math.PI * 2)
       ctx.globalAlpha = 0.94; ctx.fillStyle = s.c; ctx.fill(); ctx.globalAlpha = 1
       ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(10,12,16,0.55)'; ctx.stroke()
@@ -16603,26 +16640,37 @@ function _mobVPortTouchEnd() {
 // Build the [ts, value] series for a given period + chart type. Shared by the inline
 // mobile chart and the Advanced interactive chart so both stay perfectly in sync.
 function _portSeries(period, type) {
-  const periodKey = { '1D': 'day', '7D': 'week', '1M': 'month', 'allTime': 'allTime' }[period] ?? 'allTime'
+  // 'stitched' is Advanced: every resolution Hyperliquid publishes, joined (src/portchart.js),
+  // so zooming in finds real points. 1H/4H/8H are the tail of the 'day' history — HL has no
+  // finer window — cut at their own start so the chart begins at its left edge.
+  const stitched  = period === 'stitched'
+  const periodKey = stitched ? 'allTime' : (PERIOD_WINDOW[period] ?? 'allTime')
   const portEntry = (state.portfolio ?? []).find(p => p[0] === periodKey)
+  const span      = stitched ? null : PERIOD_SPAN[period]
+  const cut       = span && periodKey === 'day' && span < 86_400_000 ? Date.now() - span : null
+  const pick      = (key) => stitched ? stitchHistories(state.portfolio, key)
+    : cut != null ? sliceSince(portEntry?.[1]?.[key] ?? [], cut) : (portEntry?.[1]?.[key] ?? [])
   // Denominator for the PnL %. Prefer the account value at the START of the period
   // (same basis the Value tab uses) — precise for 1D/7D/1M. On All-time that value is
   // ~$0 (account genesis), so fall back to net invested capital, giving an all-time
   // return % instead of hiding it.
-  const _avHist   = portEntry?.[1]?.accountValueHistory ?? []
+  const _avHist   = pick('accountValueHistory')
   const _startVal = parseFloat(_avHist[0]?.[1] ?? 0)
   const baseRef   = _startVal > 1 ? _startVal : _netDepositedFromLedger()
   let hist = []
   if (type === 'value') {
-    hist = portEntry?.[1]?.accountValueHistory ?? []
+    hist = _avHist
   } else if (type === 'pnl') {
-    hist = portEntry?.[1]?.pnlHistory ?? []
+    hist = pick('pnlHistory')
+    // A 4H chart of the day's PnL is the PnL made in those four hours: counted from zero at
+    // its own start, not carrying whatever the day had made before it.
+    if (cut != null && hist.length) { const z = parseFloat(hist[0][1]); hist = hist.map(([t, v]) => [t, String(parseFloat(v) - z)]) }
   } else {
     // realized: bucket fills into period pnlHistory timestamps, cumulative sum
-    const pnlHist = portEntry?.[1]?.pnlHistory ?? []
+    const pnlHist = pick('pnlHistory')
     const buckets = pnlHist.map(p => +p[0])
     if (buckets.length >= 2) {
-      const cutoffMs = { '1D': 86400000, '7D': 7 * 86400000, '1M': 30 * 86400000 }[period]
+      const cutoffMs = stitched ? null : PERIOD_SPAN[period]
       const cutoffTs = cutoffMs ? Date.now() - cutoffMs : 0
       const fills    = (state.fills ?? []).filter(f => !cutoffTs || f.time >= cutoffTs)
       const bucketPnl = new Array(buckets.length).fill(0)
@@ -16711,14 +16759,17 @@ function _splitSeriesByWallet(period = _mobVPortPeriod) {
   // Advanced offers 1H and 8H, which Hyperliquid's portfolio history does not have — its
   // finest bucket is 'day'. Map them onto that rather than silently falling back to
   // all-time, which would answer a completely different question from the one asked.
-  const periodKey = { '1H': 'day', '8H': 'day', '1D': 'day', '7D': 'week', '1M': 'month', 'allTime': 'allTime' }[period] ?? 'allTime'
+  const periodKey = PERIOD_WINDOW[period] ?? 'allTime'
+  const span      = PERIOD_SPAN[period]
+  const cut       = span && span < 86_400_000 ? Date.now() - span : null   // 1H/4H/8H: the day's tail
   const histKey   = _mobVPortChartType === 'pnl' ? 'pnlHistory' : 'accountValueHistory'
   const hidden    = _maHiddenLoad()
   const byWallet  = {}
   const labels    = []
   for (const r of (_allAcctLastResults ?? [])) {
     if (!r || r.error || hidden.has(r.addr)) continue
-    const hist = (r.portfolio ?? []).find(x => x[0] === periodKey)?.[1]?.[histKey] ?? []
+    const full = (r.portfolio ?? []).find(x => x[0] === periodKey)?.[1]?.[histKey] ?? []
+    const hist = cut != null ? sliceSince(full, cut) : full
     if (hist.length < 2) continue
     const label = r.label || (r.addr.slice(0, 6) + '…' + r.addr.slice(-4))
     // Two wallets can carry the same label; the series are keyed by it, so keep them apart.
@@ -16767,27 +16818,34 @@ function _mobVDrawPortChart() {
   const dpr      = window.devicePixelRatio || 1
   const rect     = canvas.getBoundingClientRect()
   const displayW = Math.round(rect.width) || 340
-  const displayH = 140
+  const displayH = 172
   canvas.width        = displayW * dpr
   canvas.height       = displayH * dpr
   canvas.style.width  = displayW + 'px'
   canvas.style.height = displayH + 'px'
   const W = displayW, H = displayH
+  // The bottom band carries the time axis; the line is drawn above it.
+  const AX = 20, plotH = H - AX
 
   const vals  = hist.map(h => parseFloat(h[1]))
   const min   = Math.min(...vals)
   const max   = Math.max(...vals)
   const range = max - min || 1
-  const padY  = H * 0.12
+  const padY  = plotH * 0.1
+  // Placed by TIME, not by index. Hyperliquid's points are not evenly spaced — the all-time
+  // history thins out further back — so index spacing squeezed recent weeks and stretched
+  // old ones, and no time axis could have been honest under it.
+  const t0 = +hist[0][0], t1 = +hist[hist.length - 1][0], tw = (t1 - t0) || 1
+  const xOfT = (t) => (t - t0) / tw * (W - 4)
   const pts   = vals.map((v, i) => [
-    i / (vals.length - 1) * (W - 4),
-    H - padY - ((v - min) / range) * (H - padY * 2),
+    xOfT(+hist[i][0]),
+    plotH - padY - ((v - min) / range) * (plotH - padY * 2),
   ])
   const lastV = vals.at(-1)
   const isUp  = _mobVPortChartType === 'value' ? lastV >= vals[0] : lastV >= 0
   const color = isUp ? '#00e5a0' : '#ff4d6d'
 
-  _mobVPortChartData = { hist, pts, vals, W, H, isUp, color, dpr, min, max, range, padY, baseRef: _baseRef }
+  _mobVPortChartData = { hist, pts, vals, W, H, plotH, t0, t1, xOfT, isUp, color, dpr, min, max, range, padY, baseRef: _baseRef }
   _mobVDrawPortCanvas(canvas, -1)
 
   // Bind touch handlers once per canvas instance
@@ -16796,24 +16854,34 @@ function _mobVDrawPortChart() {
     canvas.addEventListener('touchstart', _mobVPortTouchMove, { passive: false })
     canvas.addEventListener('touchmove',  _mobVPortTouchMove, { passive: false })
     canvas.addEventListener('touchend',   _mobVPortTouchEnd)
+    // A mouse reads the chart by hovering — the desktop frame had no way to read a point.
+    canvas.addEventListener('mousemove',  (e) => _mobVPortTouchMove({ preventDefault() {}, touches: [{ clientX: e.clientX }] }))
+    canvas.addEventListener('mouseleave', _mobVPortTouchEnd)
   }
 }
 
+// Icons for the chart's chips: drawn, not emoji, so they take the button's own colour and
+// sit on the text's baseline on every platform.
+const _PC_ICON = {
+  pin:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>',
+  expand: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>',
+  play:   '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>',
+  split:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-5 4 3 9-9"/><path d="M3 21l6-3 4 1 8-6" opacity=".55"/></svg>',
+  candle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M7 3v18M17 3v18"/><rect x="4.5" y="7" width="5" height="8" rx="1" fill="currentColor"/><rect x="14.5" y="9" width="5" height="6" rx="1"/></svg>',
+  line:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/></svg>',
+}
 const _mobVPortBtnStyle = (active) => `padding:4px 10px;border:1px solid var(--border2);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;touch-action:manipulation;background:${active ? 'var(--panel-2)' : 'transparent'};color:${active ? 'var(--fg)' : 'var(--muted)'}`
 
 window.mobVSetPortPeriod = function(p) {
   _mobVPortPeriod = p
-  document.querySelectorAll('[data-port-period]').forEach(btn => {
-    btn.style.cssText = _mobVPortBtnStyle(btn.dataset.portPeriod === p)
-  })
+  document.querySelectorAll('[data-port-period]').forEach(btn => btn.classList.toggle('on', btn.dataset.portPeriod === p))
+  // The split view slices by period too, and draws from the same call below.
   _mobVDrawPortChart()
 }
 
 window.mobVSetPortChartType = function(t) {
   _mobVPortChartType = t
-  document.querySelectorAll('[data-port-type]').forEach(btn => {
-    btn.style.cssText = _mobVPortBtnStyle(btn.dataset.portType === t)
-  })
+  document.querySelectorAll('[data-port-type]').forEach(btn => btn.classList.toggle('on', btn.dataset.portType === t))
   _mobVDrawPortChart()
 }
 
@@ -16861,17 +16929,19 @@ function _advClampView() {
 
 // Timeframe = window WIDTH anchored at "now". "All" shows the full range.
 function _advApplyPeriodSpan() {
-  const days = { '1H': 1 / 24, '8H': 8 / 24, '1D': 1, '7D': 7, '1M': 30, 'allTime': null }[_adv.periodSel]
-  if (days == null) { _adv.t0 = _adv.dataMin; _adv.t1 = _adv.dataMax; return }
+  const span = PERIOD_SPAN[_adv.periodSel]
+  if (span == null) { _adv.t0 = _adv.dataMin; _adv.t1 = _adv.dataMax; return }
   _adv.t1 = _adv.dataMax
-  _adv.t0 = _adv.dataMax - days * _ADV_DAYMS
+  _adv.t0 = _adv.dataMax - span
   _advClampView()
 }
 
 // Resize the window to `newW` (ms) keeping `centerT` fixed on screen (zoom).
 function _advSetWindow(centerT, newW) {
   const range = _adv.dataMax - _adv.dataMin
-  const minW = Math.max(1800000, range / 2000)   // ~30-min floor
+  // Ten minutes: the 'day' history has points a few minutes apart, so this is as close as
+  // there is anything to see. (It was 30 min, over a series whose points were DAYS apart.)
+  const minW = Math.min(range, 600_000)
   newW = Math.max(minW, Math.min(range, newW))
   const cur = _adv.t1 - _adv.t0
   const p = cur > 0 ? (centerT - _adv.t0) / cur : 0.5
@@ -16925,7 +16995,7 @@ function _advBuildEvents() {
 // Rebuild the cached series (call on open + whenever type / markers change). Advanced
 // always loads the FULL history; the timeframe controls the visible window width.
 function _advRebuild() {
-  const { hist, baseRef } = _portSeries('allTime', _mobVPortChartType)
+  const { hist, baseRef } = _portSeries('stitched', _mobVPortChartType)
   const vals = hist.map(h => parseFloat(h[1]))
   _adv.data = { hist, vals, baseRef, evs: _advBuildEvents() }
   _adv.cross = -1
@@ -16972,16 +17042,19 @@ window.advToggleSplit = function() {
 
 function _advSyncControls() {
   document.querySelectorAll('#advChartOverlay [data-adv-type]').forEach(btn =>
-    btn.style.cssText = _mobVPortBtnStyle(btn.dataset.advType === _mobVPortChartType))
+    btn.classList.toggle('on', btn.dataset.advType === _mobVPortChartType))
   document.querySelectorAll('#advChartOverlay [data-adv-period]').forEach(btn =>
-    btn.style.cssText = _mobVPortBtnStyle(btn.dataset.advPeriod === _adv.periodSel))
+    btn.classList.toggle('on', btn.dataset.advPeriod === _adv.periodSel))
   const mk = document.getElementById('advMarkersBtn')
-  if (mk) { mk.style.borderColor = _mobVPortMarkers ? '#00e5a0' : ''; mk.style.color = _mobVPortMarkers ? 'var(--fg)' : '' }
+  if (mk) mk.classList.toggle('on', !!_mobVPortMarkers)
   const sb = document.getElementById('advStyleBtn')
-  if (sb) { sb.textContent = _adv.style === 'candle' ? '📈 Line' : '🕯 Candles'; sb.style.borderColor = _adv.style === 'candle' ? '#00e5a0' : ''; sb.style.color = _adv.style === 'candle' ? 'var(--fg)' : '' }
+  if (sb) { sb.innerHTML = _adv.style === 'candle' ? _PC_ICON.line + 'Line' : _PC_ICON.candle + 'Candles'; sb.classList.toggle('on', _adv.style === 'candle') }
   const split = _mobVPortSplit && state.isAllAccounts
   const spb = document.getElementById('advSplitBtn')
-  if (spb) { spb.textContent = split ? '⇢ Combined' : '⇉ Per wallet'; spb.style.borderColor = split ? '#00e5a0' : ''; spb.style.color = split ? 'var(--fg)' : '' }
+  if (spb) { spb.innerHTML = _PC_ICON.split + (split ? 'Combined' : 'Per wallet'); spb.classList.toggle('on', split) }
+  const nav = document.querySelector('#advChartOverlay .adv-nav-wrap'), zm = document.querySelector('#advChartOverlay .adv-zoom')
+  if (nav) nav.style.display = split ? 'none' : ''
+  if (zm) zm.style.display = split ? 'none' : ''
   // Candles and zoom mean nothing across eight normalised series; dim them rather than
   // leaving controls that appear to work and do not.
   for (const id of ['advStyleBtn', 'advMarkersBtn']) {
@@ -16991,7 +17064,7 @@ function _advSyncControls() {
   const hint = document.querySelector('#advChartOverlay .adv-hint-line')
   if (hint) hint.textContent = split
     ? 'Each wallet as % from the start of the period · drag to read a point'
-    : 'Drag to pan · pinch / scroll to zoom · tap a point or marker'
+    : 'Drag sideways to pan · pinch, scroll or double-tap to zoom · drag the strip below to move'
 }
 
 function _advDraw() {
@@ -17039,6 +17112,10 @@ function _advDraw() {
   // small headroom
   mn -= range * 0.06; mx += range * 0.06; range = mx - mn || 1
   const yOf = v => padTop + plotH - ((v - mn) / range) * plotH
+  // Where the crosshair's pills will sit: the axis labels under them step aside.
+  const _crossOn = _adv.cross >= 0 && _adv.cross < n
+  const _cX = _crossOn ? xOfT(+hist[_adv.cross][0]) : null
+  const _cY = _crossOn ? yOf(vals[_adv.cross]) : null
 
   const lastV = vals.at(-1)
   const isUp = _mobVPortChartType === 'value' ? lastV >= vals[0] : lastV >= 0
@@ -17058,7 +17135,7 @@ function _advDraw() {
     ctx.beginPath(); ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1
     ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke()
     ctx.fillStyle = 'rgba(255,255,255,0.4)'
-    ctx.fillText(fmtAxisVal(v), W - 3, y - 3)
+    if (_cY == null || Math.abs((y - 7) - _cY) > 16) ctx.fillText(fmtAxisVal(v), W - 3, y - 3)
   }
   // Zero baseline for pnl charts.
   if (_mobVPortChartType !== 'value' && mn < 0 && mx > 0) {
@@ -17067,8 +17144,8 @@ function _advDraw() {
     ctx.setLineDash([4, 4]); ctx.moveTo(0, zy); ctx.lineTo(W, zy); ctx.stroke(); ctx.setLineDash([])
   }
 
-  const smoothPath = (p) => {
-    ctx.moveTo(p[0][0], p[0][1])
+  const smoothPath = (p, cont = false) => {     // cont: see the inline chart's smoothPath
+    cont ? ctx.lineTo(p[0][0], p[0][1]) : ctx.moveTo(p[0][0], p[0][1])
     for (let i = 0; i < p.length - 1; i++) {
       const mxp = (p[i][0] + p[i + 1][0]) / 2, myp = (p[i][1] + p[i + 1][1]) / 2
       ctx.quadraticCurveTo(p[i][0], p[i][1], mxp, myp)
@@ -17102,25 +17179,35 @@ function _advDraw() {
     const grad = ctx.createLinearGradient(0, padTop, 0, H - padY)
     grad.addColorStop(0, isUp ? 'rgba(0,229,160,0.20)' : 'rgba(255,77,109,0.20)')
     grad.addColorStop(1, 'rgba(0,0,0,0)')
-    ctx.beginPath(); ctx.moveTo(pts[0][0], H - padY); smoothPath(pts)
+    ctx.beginPath(); ctx.moveTo(pts[0][0], H - padY); smoothPath(pts, true)
     ctx.lineTo(pts.at(-1)[0], H - padY); ctx.closePath(); ctx.fillStyle = grad; ctx.fill()
     // Line
     ctx.beginPath(); smoothPath(pts); ctx.strokeStyle = color; ctx.lineWidth = 2
     ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke()
   }
 
-  // X-axis date ticks (visible time range, evenly spaced in TIME).
-  ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.font = '10px system-ui, sans-serif'
-  const spanDays = winMs / _ADV_DAYMS
-  const dOpts = spanDays > 200 ? { month: 'short', year: '2-digit' }
-    : spanDays > 2 ? { month: 'short', day: 'numeric' }
-    : spanDays > 0.5 ? { month: 'short', day: 'numeric', hour: 'numeric' }
-    : { hour: 'numeric', minute: '2-digit' }
-  for (let g = 0; g <= 3; g++) {
-    const t = t0 + winMs * g / 3
-    let x = xOfT(t); x = Math.max(24, Math.min(W - 24, x))
-    ctx.fillText(new Date(t).toLocaleString('en-US', dOpts).replace(',', ''), x, H - 8)
+  // X axis: round local times; on intraday windows the time of day, and the DATE wherever a
+  // new day starts, with a line through the chart there (src/portchart.js timeTicks).
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'
+  let _lastR = -Infinity
+  for (const tk of timeTicks(t0, t1, W, 78)) {
+    const x = xOfT(tk.t)
+    if (x < 2 || x > W - 2) continue
+    ctx.beginPath(); ctx.lineWidth = 1
+    ctx.strokeStyle = tk.day ? 'rgba(255,255,255,0.13)' : 'rgba(255,255,255,0.05)'
+    if (tk.day) ctx.setLineDash([2, 3])
+    ctx.moveTo(Math.round(x) + 0.5, padTop); ctx.lineTo(Math.round(x) + 0.5, H - padY); ctx.stroke(); ctx.setLineDash([])
+    ctx.font = tk.day ? '600 10.5px system-ui, sans-serif' : '10.5px system-ui, sans-serif'
+    const w2 = ctx.measureText(tk.label).width
+    const lx = Math.max(w2 / 2 + 2, Math.min(W - w2 / 2 - 2, x))
+    if (lx - w2 / 2 < _lastR + 8) continue
+    if (_cX != null && Math.abs(lx - _cX) < w2 / 2 + 48) continue      // under the time pill
+    ctx.fillStyle = tk.day ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.42)'
+    ctx.fillText(tk.label, lx, H - 8)
+    _lastR = lx + w2 / 2
   }
+  const rangeEl = document.getElementById('advRange')
+  if (rangeEl) rangeEl.textContent = fmtRange(t0, t1)
 
   // Crosshair
   if (_adv.cross >= 0 && _adv.cross < n) {
@@ -17130,6 +17217,19 @@ function _advDraw() {
       ctx.setLineDash([3, 3]); ctx.moveTo(cx, padTop); ctx.lineTo(cx, H - padY); ctx.stroke(); ctx.setLineDash([])
       ctx.shadowColor = color; ctx.shadowBlur = 8
       ctx.beginPath(); ctx.arc(cx, cy, 4.5, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); ctx.shadowBlur = 0
+      // Time pill on the axis, value pill on the right edge.
+      const pill = (txt, x, y, align) => {
+        ctx.font = '600 10.5px system-ui, sans-serif'
+        const pw = ctx.measureText(txt).width + 14, ph = 18
+        let px = align === 'right' ? W - pw - 2 : x - pw / 2
+        px = Math.max(1, Math.min(W - pw - 1, px))
+        ctx.fillStyle = '#1d2330'; ctx.strokeStyle = 'rgba(255,255,255,0.22)'; ctx.lineWidth = 1
+        ctx.beginPath(); ctx.roundRect ? ctx.roundRect(px, y - ph / 2, pw, ph, 9) : ctx.rect(px, y - ph / 2, pw, ph); ctx.fill(); ctx.stroke()
+        ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+        ctx.fillText(txt, px + pw / 2, y + 0.5); ctx.textBaseline = 'alphabetic'
+      }
+      pill(fmtPointTime(hist[_adv.cross][0]), cx, H - 12)
+      pill(fmtAxisVal(vals[_adv.cross]), 0, Math.max(padTop + 9, Math.min(H - padY - 9, cy)), 'right')
     }
   }
 
@@ -17164,12 +17264,60 @@ function _advDraw() {
     ctx.textBaseline = 'alphabetic'
   }
 
-  // Hero (big value for crosshair position, else latest).
+  // Hero (big value for crosshair position, else latest). The change is measured from the
+  // start of what is ON SCREEN — zoomed to a day, it is that day's change, not the all-time one.
   const heroEl = document.getElementById('advHero')
   if (heroEl) {
     const idx = _adv.cross >= 0 ? _adv.cross : n - 1
-    heroEl.innerHTML = _mobVPortHeroHtml(hist, vals, idx, d.baseRef)
+    const fi = _advFiAtTime(t0), fl = Math.floor(fi)
+    const startV = vals[fl] + (vals[Math.min(n - 1, fl + 1)] - vals[fl]) * (fi - fl)
+    heroEl.innerHTML = _mobVPortHeroHtml(hist, vals, idx, d.baseRef, _adv.periodSel === 'allTime' ? null : startV)
   }
+  _advDrawNav()
+}
+
+// The overview strip: the whole history, small, with the window on screen lit up. Drag the
+// window to move through time, tap anywhere to jump there. Zooming without it, the only way
+// to know where you were was to zoom back out.
+function _advDrawNav() {
+  const c = document.getElementById('advNav'), d = _adv.data
+  if (!c || !d || d.hist.length < 2) return
+  const dpr = window.devicePixelRatio || 1
+  const W = Math.max(100, Math.round(c.parentElement.clientWidth)), H = 40
+  c.width = W * dpr; c.height = H * dpr; c.style.width = W + 'px'; c.style.height = H + 'px'
+  const ctx = c.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H)
+  const { hist, vals } = d, span = (_adv.dataMax - _adv.dataMin) || 1
+  const xs = (t) => (t - _adv.dataMin) / span * W
+  let mn = Infinity, mx = -Infinity; for (const v of vals) { if (v < mn) mn = v; if (v > mx) mx = v }
+  const rg = (mx - mn) || 1, ys = (v) => H - 4 - (v - mn) / rg * (H - 8)
+  ctx.beginPath()
+  hist.forEach((p, i) => { const x = xs(+p[0]), y = ys(vals[i]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y) })
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.2; ctx.stroke()
+  const a = xs(_adv.t0), b = xs(_adv.t1)
+  ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, 0, a, H); ctx.fillRect(b, 0, W - b, H)
+  ctx.fillStyle = 'rgba(0,229,160,0.10)'; ctx.fillRect(a, 0, Math.max(2, b - a), H)
+  ctx.strokeStyle = 'rgba(0,229,160,0.85)'; ctx.lineWidth = 1.5; ctx.strokeRect(a + 0.75, 0.75, Math.max(2, b - a) - 1.5, H - 1.5)
+  // Grips on the window's edges, so it reads as something to hold.
+  ctx.fillStyle = 'rgba(0,229,160,0.95)'
+  for (const x of [a, b]) ctx.fillRect(Math.round(x) - 1.5, H / 2 - 7, 3, 14)
+}
+function _advNavDown(e) {
+  const c = document.getElementById('advNav'); if (!c || !_adv.data) return
+  e.preventDefault()
+  const r = c.getBoundingClientRect(), span = (_adv.dataMax - _adv.dataMin) || 1
+  const tAt = (cx) => _adv.dataMin + (cx - r.left) / r.width * span
+  const w = _adv.t1 - _adv.t0, t = tAt(e.clientX)
+  // Grabbing the window moves it from where it was held; anywhere else centres it there.
+  const off = (t >= _adv.t0 && t <= _adv.t1) ? t - _adv.t0 : w / 2
+  const move = (cx) => { _adv.t0 = tAt(cx) - off; _adv.t1 = _adv.t0 + w; _advClampView(); _adv.cross = -1; _advHideTip(); _advDraw() }
+  move(e.clientX)
+  const mv = (ev) => move(ev.clientX), up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up) }
+  window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
+}
+// Double-tap / double-click: zoom in where you tapped.
+function _advZoomAt(px, factor) {
+  _advSetWindow(_advTimeAtPx(px), (_adv.t1 - _adv.t0) * factor)
+  _advSyncControls(); _advDraw()
 }
 
 // ---- input: unified pointer / touch / wheel --------------------------------
@@ -17233,6 +17381,7 @@ function _advTouchStart(e) {
     _adv.touch = { mode: 'maybe', x0: e.touches[0].clientX, y0: e.touches[0].clientY, lastX: e.touches[0].clientX, moved: false }
   }
 }
+let _advLastTap = { t: 0, x: 0 }
 function _advTouchMove(e) {
   const tc = _adv.touch; if (!tc) return
   if (tc.mode === 'pinch' && e.touches.length === 2) {
@@ -17242,8 +17391,15 @@ function _advTouchMove(e) {
     _advSetWindow(tc.midT, tc.w0 * (tc.d0 / dist))
     _advDraw()
   } else if (e.touches.length === 1) {
-    const x = e.touches[0].clientX
-    if (!tc.moved && Math.hypot(x - tc.x0, e.touches[0].clientY - tc.y0) > 6) { tc.moved = true; tc.mode = 'pan'; _advHideTip() }
+    const x = e.touches[0].clientX, y = e.touches[0].clientY
+    // Direction decides. Up/down is the PAGE scrolling — the canvas is touch-action: pan-y, so
+    // the browser does it and nothing here gets in the way. Every swipe used to be taken as a
+    // pan and preventDefault'd, which is why the overlay could not be scrolled at all.
+    if (!tc.moved && Math.hypot(x - tc.x0, y - tc.y0) > 6) {
+      tc.moved = true
+      tc.mode = Math.abs(x - tc.x0) > Math.abs(y - tc.y0) ? 'pan' : 'scroll'
+      if (tc.mode === 'pan') _advHideTip()
+    }
     if (tc.mode === 'pan') {
       e.preventDefault()
       const w = document.getElementById('advChart').clientWidth || 1
@@ -17254,15 +17410,25 @@ function _advTouchMove(e) {
 function _advTouchEnd(e) {
   const tc = _adv.touch
   if (tc && tc.mode === 'maybe' && !tc.moved) {
-    _advTapAt(_advCanvasX(tc.x0), tc.y0 - document.getElementById('advChart').getBoundingClientRect().top)
+    const px = _advCanvasX(tc.x0), now = Date.now()
+    if (now - _advLastTap.t < 320 && Math.abs(px - _advLastTap.x) < 30) { _advLastTap = { t: 0, x: 0 }; _advZoomAt(px, 0.4); _adv.touch = null; return }
+    _advLastTap = { t: now, x: px }
+    _advTapAt(px, tc.y0 - document.getElementById('advChart').getBoundingClientRect().top)
   }
   if (tc && tc.mode === 'pinch') _advSyncControls()   // preset highlight cleared by zoom
   _adv.touch = null
 }
 function _advWheel(e) {
+  // A trackpad's sideways swipe pans; the vertical wheel zooms on the point under the cursor,
+  // by how far it turned rather than a fixed step, so a trackpad zoom is smooth, not jumpy.
+  if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+    e.preventDefault()
+    _advPanTime(-e.deltaX / (document.getElementById('advChart').clientWidth || 1)); _advDraw(); return
+  }
   e.preventDefault()
   const centerT = _advTimeAtPx(_advCanvasX(e.clientX))
-  _advSetWindow(centerT, (_adv.t1 - _adv.t0) * (e.deltaY > 0 ? 1.18 : 0.85))
+  const k = Math.exp(Math.max(-1, Math.min(1, e.deltaY / (e.deltaMode === 1 ? 8 : 240))))
+  _advSetWindow(centerT, (_adv.t1 - _adv.t0) * k)
   _advSyncControls(); _advDraw()
 }
 // Desktop mouse drag = pan; a click without drag = tap.
@@ -17293,34 +17459,38 @@ window.mobVOpenAdvChart = function() {
     ov.id = 'advChartOverlay'
     ov.className = 'adv-overlay'
     const types   = [['Value', 'value'], ['Accum. PnL', 'pnl'], ['Realized', 'realized']]
-    const periods = [['1H', '1H'], ['8H', '8H'], ['1D', '1D'], ['7D', '7D'], ['1M', '1M'], ['All', 'allTime']]
+    const periods = [['1H', '1H'], ['4H', '4H'], ['8H', '8H'], ['1D', '1D'], ['7D', '7D'], ['1M', '1M'], ['All', 'allTime']]
     ov.innerHTML = `
       <div class="adv-head">
-        <span class="adv-title">Portfolio Chart</span>
+        <div style="min-width:0">
+          <div class="adv-title">Portfolio Chart</div>
+          <div id="advRange" class="adv-range"></div>
+        </div>
         <button class="adv-x" onclick="window.mobVCloseAdvChart()" aria-label="Close">&times;</button>
       </div>
-      <div class="adv-row" style="padding-top:8px">
-        ${types.map(([l, t]) => `<button data-adv-type="${t}" onclick="window.advSetType('${t}')">${l}</button>`).join('')}
-      </div>
-      <div class="adv-row" style="padding-top:6px">
-        ${periods.map(([l, p]) => `<button data-adv-period="${p}" onclick="window.advSetPeriod('${p}')">${l}</button>`).join('')}
+      <div class="adv-controls">
+        <div class="pc-seg pc-seg-fill">${types.map(([l, t]) => `<button data-adv-type="${t}" onclick="window.advSetType('${t}')">${l}</button>`).join('')}</div>
+        <div class="pc-seg pc-seg-fill" data-dragscroll>${periods.map(([l, p]) => `<button data-adv-period="${p}" onclick="window.advSetPeriod('${p}')">${l}</button>`).join('')}</div>
       </div>
       <div id="advHero" class="adv-hero"></div>
       <div class="adv-canvas-wrap">
         <canvas id="advChart"></canvas>
         <div id="advTip" class="adv-tip"></div>
+        <div class="adv-zoom">
+          <button onclick="window.advZoom(0.5)" aria-label="Zoom in" title="Zoom in">+</button>
+          <button onclick="window.advZoom(2)" aria-label="Zoom out" title="Zoom out">&minus;</button>
+          <button onclick="window.advReset()" aria-label="Show everything" title="Show everything"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></button>
+        </div>
       </div>
-      <div id="advSplit" style="display:none;overflow-y:auto"></div>
+      <div class="adv-nav-wrap"><canvas id="advNav"></canvas></div>
+      <div id="advSplit" style="display:none"></div>
       <div class="adv-foot">
-        <button onclick="window.advZoom(0.6)" aria-label="Zoom in">＋</button>
-        <button onclick="window.advZoom(1.6667)" aria-label="Zoom out">－</button>
-        <button onclick="window.advReset()">Reset</button>
-        <button id="advStyleBtn" onclick="window.advToggleStyle()">🕯 Candles</button>
-        <button id="advMarkersBtn" onclick="window.advToggleMarkers()">📍 Markers</button>
-        <button onclick="window.__openReplay()">▶ Replay</button>
-        ${state.isAllAccounts ? `<button id="advSplitBtn" onclick="window.advToggleSplit()">⇉ Per wallet</button>` : ''}
+        <button class="pc-chip" id="advStyleBtn" onclick="window.advToggleStyle()"></button>
+        <button class="pc-chip" id="advMarkersBtn" onclick="window.advToggleMarkers()">${_PC_ICON.pin}Markers</button>
+        <button class="pc-chip" onclick="window.__openReplay()">${_PC_ICON.play}Replay</button>
+        ${state.isAllAccounts ? `<button class="pc-chip" id="advSplitBtn" onclick="window.advToggleSplit()"></button>` : ''}
       </div>
-      <div class="adv-hint-line">Drag to pan · pinch / scroll to zoom · tap a point or marker</div>`
+      <div class="adv-hint-line"></div>`
     document.body.appendChild(ov)
     const c = ov.querySelector('#advChart')
     c.addEventListener('touchstart', _advTouchStart, { passive: false })
@@ -17328,6 +17498,8 @@ window.mobVOpenAdvChart = function() {
     c.addEventListener('touchend',   _advTouchEnd)
     c.addEventListener('wheel',      _advWheel, { passive: false })
     c.addEventListener('mousedown',  _advMouseDown)
+    c.addEventListener('dblclick',   (e) => _advZoomAt(_advCanvasX(e.clientX), 0.4))
+    ov.querySelector('#advNav').addEventListener('pointerdown', _advNavDown)
     window.addEventListener('resize', _advOnResize)
   }
   ov.style.display = 'flex'
@@ -17336,16 +17508,26 @@ window.mobVOpenAdvChart = function() {
   requestAnimationFrame(() => _advRebuild())
 }
 function _advOnResize() { if (_adv.open) _advDraw() }
+// For tests/portchart-browser.mjs: what each chart is showing, without reading pixels.
+window.__portChartDbg = () => { const d = _mobVPortChartData; return d ? { t0: d.t0, t1: d.t1, n: d.hist.length } : null }
+window.__advDbg = () => {
+  const h = _adv.data?.hist ?? []
+  return { t0: _adv.t0, t1: _adv.t1, period: _adv.periodSel, total: h.length, inView: h.filter(p => +p[0] >= _adv.t0 && +p[0] <= _adv.t1).length }
+}
 window.mobVCloseAdvChart = function() {
   const ov = document.getElementById('advChartOverlay')
   if (ov) ov.style.display = 'none'
   _adv.open = false
   document.body.style.overflow = ''
 }
-window.advSetType = function(t) { _mobVPortChartType = t; if (_mobVActiveTab === 'portfolio') { document.querySelectorAll('[data-port-type]').forEach(b => b.style.cssText = _mobVPortBtnStyle(b.dataset.portType === t)); _mobVDrawPortChart() } _advRebuild() }
+window.advSetType = function(t) { _mobVPortChartType = t; if (_mobVActiveTab === 'portfolio') { document.querySelectorAll('[data-port-type]').forEach(b => b.classList.toggle('on', b.dataset.portType === t)); _mobVDrawPortChart() } _advRebuild() }
 // Timeframe = visible window width over the full series (scrollable), not a dataset swap.
 window.advSetPeriod = function(p) { _adv.periodSel = p; _adv.cross = -1; _advHideTip(); _advApplyPeriodSpan(); _advSyncControls(); _advDraw() }
-window.advZoom = function(factor) { _advSetWindow((_adv.t0 + _adv.t1) / 2, (_adv.t1 - _adv.t0) * factor); _advSyncControls(); _advDraw() }
+// Zooms on the point you are reading when there is one, so + keeps it on screen; else the middle.
+window.advZoom = function(factor) {
+  const c = _adv.cross >= 0 && _adv.data ? +_adv.data.hist[_adv.cross][0] : (_adv.t0 + _adv.t1) / 2
+  _advSetWindow(c, (_adv.t1 - _adv.t0) * factor); _advSyncControls(); _advDraw()
+}
 window.advReset = function() { _adv.periodSel = 'allTime'; _adv.cross = -1; _advHideTip(); _advApplyPeriodSpan(); _advSyncControls(); _advDraw() }
 window.advToggleMarkers = function() { window.mobVTogglePortMarkers() }
 window.advToggleStyle = function() { _adv.style = _adv.style === 'candle' ? 'line' : 'candle'; _advSyncControls(); _advDraw() }
@@ -21782,7 +21964,7 @@ function _mobVRenderContent(tick = false) {
     const pnlFmt = v => (v >= 0 ? '+$' : '-$') + fmtUSD(Math.abs(v))
     const pnlCls = v => v >= 0 ? 'pos' : 'neg'
     const btnStyle = (active) => `padding:4px 10px;border:1px solid var(--border2);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;touch-action:manipulation;background:${active ? 'var(--panel-2)' : 'transparent'};color:${active ? 'var(--fg)' : 'var(--muted)'}`
-    const periods   = [['1D','1D'],['7D','7D'],['1M','1M'],['All','allTime']]
+    const periods   = [['4H','4H'],['8H','8H'],['1D','1D'],['7D','7D'],['1M','1M'],['All','allTime']]
     const chartTypes = [['Value','value'],['Accum. PnL','pnl'],['Realized','realized']]
     // Full-page header (these views hide the home chrome now) + optional Accounts cards
     // pinned to the TOP in the combined view.
@@ -21805,30 +21987,26 @@ function _mobVRenderContent(tick = false) {
       </div>` : ''
     el.innerHTML = `<div style="padding:0 0 24px">
       ${portHeader}
-      <div data-dragscroll style="display:flex;gap:4px;padding:12px 16px 0;overflow-x:auto;scrollbar-width:none">
-        ${chartTypes.map(([lbl,t]) => `<button data-port-type="${t}" onclick="window.mobVSetPortChartType('${t}')"
-          style="${btnStyle(t === _mobVPortChartType)}">${lbl}</button>`).join('')}
-        <span style="flex:1"></span>
-        ${periods.map(([lbl,val]) => `<button data-port-period="${val}" onclick="window.mobVSetPortPeriod('${val}')"
-          style="${btnStyle(val === _mobVPortPeriod)}">${lbl}</button>`).join('')}
+      <div style="padding:12px 16px 0;display:flex;flex-direction:column;gap:8px">
+        <div class="pc-seg pc-seg-fill">
+          ${chartTypes.map(([lbl,t]) => `<button data-port-type="${t}" class="${t === _mobVPortChartType ? 'on' : ''}" onclick="window.mobVSetPortChartType('${t}')">${lbl}</button>`).join('')}
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div class="pc-seg" data-dragscroll style="overflow-x:auto;scrollbar-width:none;max-width:100%">
+            ${periods.map(([lbl,val]) => `<button data-port-period="${val}" class="${val === _mobVPortPeriod ? 'on' : ''}" onclick="window.mobVSetPortPeriod('${val}')">${lbl}</button>`).join('')}
+          </div>
+          ${state.isAllAccounts ? `<button class="pc-chip${_mobVPortSplit ? ' on' : ''}" onclick="window.mobVTogglePortSplit()" style="margin-left:auto">${_PC_ICON.split}${_mobVPortSplit ? _T('Combined', 'Combinado') : _T('Per wallet', 'Por cartera')}</button>` : ''}
+        </div>
       </div>
-      ${state.isAllAccounts ? `<div style="padding:8px 16px 0">
-        <button onclick="window.mobVTogglePortSplit()" style="${btnStyle(_mobVPortSplit)}">
-          ${_mobVPortSplit ? '⇢ ' + _T('Combined', 'Combinado') : '⇉ ' + _T('Per wallet', 'Por cartera')}
-        </button>
-      </div>` : ''}
       <div id="mobVPortHero" style="padding:8px 16px 4px;min-height:44px"></div>
       <div style="padding:0 16px 8px;display:${_mobVPortSplit && state.isAllAccounts ? 'none' : 'block'}">
-        <canvas id="mobVPortChart" height="120" style="width:100%;display:block"></canvas>
+        <canvas id="mobVPortChart" height="172" style="width:100%;display:block"></canvas>
       </div>
       <div id="mobVPortSplit" style="padding:0 0 8px;display:${_mobVPortSplit && state.isAllAccounts ? 'block' : 'none'}"></div>
-      <div style="padding:0 16px 6px;display:flex;align-items:center;gap:8px">
-        <button id="mobVPortMarkersBtn" data-port-markers onclick="window.mobVTogglePortMarkers()"
-          style="${_mobVPortBtnStyle(_mobVPortMarkers)}">📍 Markers</button>
-        <button onclick="window.mobVOpenAdvChart()"
-          style="${_mobVPortBtnStyle(false)}">⛶ Advanced</button>
-        <button onclick="window.__openReplay()"
-          style="${_mobVPortBtnStyle(false)}">▶ Replay</button>
+      <div style="padding:2px 16px 6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <button id="mobVPortMarkersBtn" data-port-markers class="pc-chip${_mobVPortMarkers ? ' on' : ''}" onclick="window.mobVTogglePortMarkers()">${_PC_ICON.pin}Markers</button>
+        <button class="pc-chip" data-port-adv onclick="window.mobVOpenAdvChart()">${_PC_ICON.expand}Advanced</button>
+        <button class="pc-chip" onclick="window.__openReplay()">${_PC_ICON.play}Replay</button>
         ${_mobVPortMarkers ? `<span style="display:flex;gap:8px;font-size:9.5px;color:var(--muted);font-weight:600;margin-left:auto;flex-wrap:wrap;justify-content:flex-end">
           <span style="color:#00e5a0">● Buy</span><span style="color:#ff4d6d">● Sell</span><span style="color:#4aa3ff">● Deposit</span><span style="color:#f5a623">● Withdraw</span>
         </span>` : ''}
