@@ -155,7 +155,12 @@ const swipe = (fromX, y, toX) => p.evaluate(([fromX, y, toX]) => {
   await swipe(x, ly, cb.width * 0.4)
   const s1 = await p.evaluate(() => window.__advDbg())
   t('a sideways drag ON the line reads it: the crosshair follows, the window stays put', s1.cross >= 0 && s1.t0 === s0.t0 && s1.t1 === s0.t1, { s0, s1 })
-  const offY = ly > cb.height / 2 ? 20 : cb.height - 40
+  // Off the line WHERE THE FINGER LANDS. The fixture is built from Date.now(), so the line's
+  // shape moves with the time of day; a fixed y was on the line on some runs (CI, 2026-11-14).
+  const sx = cb.width * 0.3, sy = await p.evaluate((x) => window.__advLineY(x), sx)
+  const offY = [20, cb.height * 0.3, cb.height * 0.5, cb.height * 0.7, cb.height - 40]
+    .reduce((best, y) => Math.abs(y - sy) > Math.abs(best - sy) ? y : best, 20)
+  t('(the off-line touch really is off the line)', Math.abs(offY - sy) >= 60, { offY, sy })
   await swipe(cb.width * 0.3, offY, cb.width * 0.8)
   const s2 = await p.evaluate(() => window.__advDbg())
   t('a sideways drag OFF the line moves back through time, like the Trade chart', s2.t1 < s1.t1 && s2.cross === -1, { s1, s2 })
