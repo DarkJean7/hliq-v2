@@ -7406,12 +7406,13 @@ body.is-mob-view .mob-v-bottom { display: grid; }
 .adv-canvas-wrap {
   position: relative; height: clamp(260px, 50vh, 520px); margin: 0 8px;
   touch-action: pan-y;   /* up/down scrolls the page; sideways and pinch are the chart's */
+  transform: translateZ(0);   /* its own layer: scrolling moves the chart, it does not repaint it */
 }
 .adv-canvas-wrap canvas { display: block; width: 100%; height: 100%; touch-action: pan-y; cursor: crosshair; }
 .adv-zoom {
   position: absolute; top: 8px; left: 8px; display: flex; gap: 4px; z-index: 4;
-  padding: 3px; border-radius: 10px; background: rgba(12,15,20,0.72); border: 1px solid var(--border);
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  padding: 3px; border-radius: 10px; background: rgba(12,15,20,0.88); border: 1px solid var(--border);
+  /* opaque, not blurred: a blur over a canvas is re-rendered on every frame the page scrolls */
 }
 .adv-zoom button {
   width: 30px; height: 28px; border: 0; border-radius: 7px; background: transparent; color: var(--fg);
@@ -7422,7 +7423,7 @@ body.is-mob-view .mob-v-bottom { display: grid; }
 .adv-zoom svg { width: 15px; height: 15px; }
 .adv-nav-wrap {
   margin: 8px 16px 0; height: 40px; border-radius: 8px; overflow: hidden;
-  border: 1px solid var(--border); background: rgba(255,255,255,0.025); touch-action: none; cursor: grab;
+  border: 1px solid var(--border); background: rgba(255,255,255,0.025); touch-action: pan-y; cursor: grab;
 }
 .adv-nav-wrap canvas { display: block; }
 .adv-tip {

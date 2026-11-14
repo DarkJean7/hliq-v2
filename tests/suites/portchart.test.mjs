@@ -64,6 +64,12 @@ console.log('-- wiring --')
   const adv = css.slice(css.indexOf('.adv-overlay {'), css.indexOf('.adv-overlay {') + 400)
   t('the Advanced overlay scrolls', /overflow-y:\s*auto/.test(adv))
   t('and a vertical swipe on its chart is the page\'s', /\.adv-canvas-wrap canvas \{[^}]*touch-action: pan-y/.test(css))
+  // "scrolling in advanced mode is not smooth": blocking touch listeners made every scroll that
+  // started on the chart wait for the page's JavaScript.
+  t('its touch listeners never block a scroll', !/addEventListener\('touch\w+',\s*_advTouch\w+,\s*\{ passive: false \}/.test(m) && (m.match(/_advTouch\w+,\s*\{ passive: true \}/g) ?? []).length === 3)
+  t('a swipe over the overview strip scrolls too', /\.adv-nav-wrap \{[^}]*touch-action: pan-y/.test(css))
+  t('nothing blurs behind a control as the page scrolls', !/\.adv-zoom \{[^}]*backdrop-filter/.test(css))
+  t('the wheel scrolls the page when it can; ctrl+wheel (a pinch) zooms', m.includes("if (!e.ctrlKey && ov && ov.scrollHeight > ov.clientHeight + 1) return"))
 }
 
 console.log(`${pass} passed, ${fail} failed`)

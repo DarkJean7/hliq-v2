@@ -17303,16 +17303,24 @@ function _advDrawNav() {
 }
 function _advNavDown(e) {
   const c = document.getElementById('advNav'); if (!c || !_adv.data) return
-  e.preventDefault()
+  const touch = e.pointerType === 'touch'
+  if (!touch) e.preventDefault()
   const r = c.getBoundingClientRect(), span = (_adv.dataMax - _adv.dataMin) || 1
   const tAt = (cx) => _adv.dataMin + (cx - r.left) / r.width * span
   const w = _adv.t1 - _adv.t0, t = tAt(e.clientX)
   // Grabbing the window moves it from where it was held; anywhere else centres it there.
   const off = (t >= _adv.t0 && t <= _adv.t1) ? t - _adv.t0 : w / 2
   const move = (cx) => { _adv.t0 = tAt(cx) - off; _adv.t1 = _adv.t0 + w; _advClampView(); _adv.cross = -1; _advHideTip(); _advDraw() }
-  move(e.clientX)
-  const mv = (ev) => move(ev.clientX), up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up) }
-  window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up)
+  // A touch waits to see where it goes: a vertical swipe is the page scrolling (touch-action:
+  // pan-y hands it to the browser, which cancels the pointer), so it must not jump the chart.
+  let moved = !touch
+  if (!touch) move(e.clientX)
+  const mv = (ev) => { if (!moved && Math.abs(ev.clientX - e.clientX) < 4) return; moved = true; move(ev.clientX) }
+  const done = (ev) => {
+    window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', done); window.removeEventListener('pointercancel', done)
+    if (ev.type === 'pointerup' && !moved) move(e.clientX)   // a tap jumps there
+  }
+  window.addEventListener('pointermove', mv); window.addEventListener('pointerup', done); window.addEventListener('pointercancel', done)
 }
 // Double-tap / double-click: zoom in where you tapped.
 function _advZoomAt(px, factor) {
@@ -17376,7 +17384,6 @@ function _advTouchStart(e) {
     _adv.touch = { mode: 'pinch', d0: Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY),
                    midT: _advTimeAtPx(_advCanvasX((t1.clientX + t2.clientX) / 2)),
                    w0: _adv.t1 - _adv.t0 }
-    e.preventDefault()
   } else if (e.touches.length === 1) {
     _adv.touch = { mode: 'maybe', x0: e.touches[0].clientX, y0: e.touches[0].clientY, lastX: e.touches[0].clientX, moved: false }
   }
@@ -17385,7 +17392,6 @@ let _advLastTap = { t: 0, x: 0 }
 function _advTouchMove(e) {
   const tc = _adv.touch; if (!tc) return
   if (tc.mode === 'pinch' && e.touches.length === 2) {
-    e.preventDefault()
     const [t1, t2] = e.touches
     const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY) || 1
     _advSetWindow(tc.midT, tc.w0 * (tc.d0 / dist))
@@ -17401,7 +17407,6 @@ function _advTouchMove(e) {
       if (tc.mode === 'pan') _advHideTip()
     }
     if (tc.mode === 'pan') {
-      e.preventDefault()
       const w = document.getElementById('advChart').clientWidth || 1
       _advPanTime((x - tc.lastX) / w); tc.lastX = x; _advDraw()
     }
@@ -17425,6 +17430,8 @@ function _advWheel(e) {
     e.preventDefault()
     _advPanTime(-e.deltaX / (document.getElementById('advChart').clientWidth || 1)); _advDraw(); return
   }
+  const ov = document.getElementById('advChartOverlay')
+  if (!e.ctrlKey && ov && ov.scrollHeight > ov.clientHeight + 1) return   // the page's scroll, not a zoom
   e.preventDefault()
   const centerT = _advTimeAtPx(_advCanvasX(e.clientX))
   const k = Math.exp(Math.max(-1, Math.min(1, e.deltaY / (e.deltaMode === 1 ? 8 : 240))))
@@ -17493,9 +17500,13 @@ window.mobVOpenAdvChart = function() {
       <div class="adv-hint-line"></div>`
     document.body.appendChild(ov)
     const c = ov.querySelector('#advChart')
-    c.addEventListener('touchstart', _advTouchStart, { passive: false })
-    c.addEventListener('touchmove',  _advTouchMove,  { passive: false })
-    c.addEventListener('touchend',   _advTouchEnd)
+    // PASSIVE. A blocking touch listener makes the browser wait for this page's JavaScript
+    // before every scroll that starts on the chart — half the screen — and on a busy page that
+    // wait is the stutter. Nothing needs to block: the canvas is touch-action: pan-y, so the
+    // browser never pans sideways or pinch-zooms it, and up/down is left to the page.
+    c.addEventListener('touchstart', _advTouchStart, { passive: true })
+    c.addEventListener('touchmove',  _advTouchMove,  { passive: true })
+    c.addEventListener('touchend',   _advTouchEnd,   { passive: true })
     c.addEventListener('wheel',      _advWheel, { passive: false })
     c.addEventListener('mousedown',  _advMouseDown)
     c.addEventListener('dblclick',   (e) => _advZoomAt(_advCanvasX(e.clientX), 0.4))
