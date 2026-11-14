@@ -188,7 +188,8 @@ t('and the desktop Overview tile shows that same figure, not its own itemised su
   fs.readFileSync('src/main.js', 'utf8').includes('headlineNet: _headlineNetPnl })') &&
   fs.readFileSync('src/render.js', 'utf8').includes("typeof headlineNet === 'function' ? headlineNet(_localAcctVal) : undefined"))
 t('and in the combined view with nothing to show it shows a dash, not a third basis',
-  bal.includes('const _pnlMissing = _pnlNet && state.isAllAccounts && !_cp')
+  // (Realized joined the stat later, with the same rule: no server figure, no figure.)
+  bal.includes('const _pnlMissing = (_pnlNet && state.isAllAccounts && !_cp) || (_pnlReal && state.isAllAccounts && _cpReal == null)')
     && bal.includes('!_pnlMissing &&'))
 // The gate also short-circuits on HL's own all-time PnL, which is equity less everything ever
 // paid in and so needs no fill history at all.

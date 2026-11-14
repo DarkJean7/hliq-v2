@@ -126,6 +126,15 @@ console.log(NL + '-- and so does the balance card --')
   await waitFor(p, 'the Net PnL stat', () => /net/i.test(document.getElementById('mobVUnrealPnlLbl')?.textContent ?? ''))
   const stat = await p.evaluate(() => document.getElementById('mobVUnrealPnl')?.textContent?.trim() ?? '')
   ok('the Net PnL stat reads the same figure', /3,443|3\.44K|-\$3\.4K/i.test(stat), stat)
+  // "add realized also here": one more tap shows Realized, the same figure as the breakdown.
+  await p.evaluate(() => window.__mobVTogglePnlStat())
+  await waitFor(p, 'the Realized stat', () => /realized/i.test(document.getElementById('mobVUnrealPnlLbl')?.textContent ?? ''))
+  // A sum over ALL-TIME fills, so it waits for that history rather than print the 14-day one.
+  await waitFor(p, 'the realized figure', () => /\d/.test(document.getElementById('mobVUnrealPnl')?.textContent ?? ''), null, 8000)
+  const real = await p.evaluate(() => document.getElementById('mobVUnrealPnl')?.textContent?.trim() ?? '')
+  ok('the next tap shows Realized PnL, the breakdown\'s figure', /^\+\$(261\.85|262)$/.test(real), real)
+  await p.evaluate(() => window.__mobVTogglePnlStat())
+  ok('and the one after goes back to Unrealized', /unreal/i.test(await label()), await label())
 }
 
 console.log(NL + '-- the desktop Overview tile shows the same figure as the phone --')

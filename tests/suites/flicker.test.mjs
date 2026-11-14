@@ -153,7 +153,9 @@ t('Net PnL is not printed from a partial single-account history',
 // HL's own figure joins the short-circuits: it needs no fill history either.
 t('unrealized PnL is unaffected — it needs no fill history, so both gates short-circuit on it',
   bal.includes('!_pnlNet || state.isAllAccounts || _hlPnl != null || state.fillsFull !== false')
-    && bal.includes('_pnlMissing = _pnlNet &&'))
+    && bal.includes('_pnlMissing = (_pnlNet &&')
+    // Realized is a sum over all-time fills, so it takes the fill gate and none of the shortcuts.
+    && bal.includes("_pnlReal ? (state.isAllAccounts || state.fillsFull !== false)"))
 t('an empty slot shows a dash rather than staying blank', bal.includes("upEl.textContent = '—'"))
 t('a previously correct value is left alone rather than overwritten with a wrong one',
   bal.includes("} else if (upEl && !upEl.textContent.trim()) {"))

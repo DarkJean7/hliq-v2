@@ -16128,10 +16128,12 @@ function _comboEqFilter(val) {
   return _comboEqLast
 }
 
-// Home balance card: the Unreal/Net PnL stat toggles between the two on tap.
-function _mobVPnlStatMode() { return localStorage.getItem('hliq_mobv_pnlstat') === 'net' ? 'net' : 'unreal' }
+// Home balance card: the PnL stat cycles Unrealized → Net → Realized on tap.
+const _PNL_STAT_MODES = ['unreal', 'net', 'realized']
+function _mobVPnlStatMode() { let m = 'unreal'; try { m = localStorage.getItem('hliq_mobv_pnlstat') } catch {} return _PNL_STAT_MODES.includes(m) ? m : 'unreal' }
 window.__mobVTogglePnlStat = function() {
-  localStorage.setItem('hliq_mobv_pnlstat', _mobVPnlStatMode() === 'net' ? 'unreal' : 'net')
+  const next = _PNL_STAT_MODES[(_PNL_STAT_MODES.indexOf(_mobVPnlStatMode()) + 1) % _PNL_STAT_MODES.length]
+  try { localStorage.setItem('hliq_mobv_pnlstat', next) } catch {}
   _mobVRenderBalance()
 }
 
@@ -16224,7 +16226,7 @@ function _mobVRenderBalance() {
     return
   }
 
-  const { accountValue: _rawVal, healthStr, healthCls, healthPct, accountLeverage, withdrawable, maintMargin, unrealizedPnl, netPnl } = computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids)
+  const { accountValue: _rawVal, healthStr, healthCls, healthPct, accountLeverage, withdrawable, maintMargin, unrealizedPnl, netPnl, realizedPnl } = computeAcctStats(state.perpState, state.spotState, state.fills, state.portfolio, state.funding, state.allMids)
   // Combined view: filter transient glitch spikes (a single bad poll shouldn't flash a huge
   // fake equity). Single accounts are already smooth (one authoritative source).
   // Prefer the server-anchored total in the combined view so every device agrees. Falls
@@ -16341,13 +16343,18 @@ function _mobVRenderBalance() {
 
   // Stats row — leverage is a ratio (not masked); free margin + maint respect privacy.
   // The Unreal/Net PnL stat is tappable — toggles which of the two it shows (__mobVTogglePnlStat)
-  const _pnlNet = _mobVPnlStatMode() === 'net'
+  const _pnlMode = _mobVPnlStatMode()
+  const _pnlNet = _pnlMode === 'net', _pnlReal = _pnlMode === 'realized'
   // Combined view: the server figure. Single account: the computed one. In the combined view
   // `netPnl` from computeAcctStats is yet another basis — it re-derives realized and fees
   // from the merged fills and sees no funding at all — so falling back to it would reinstate
   // the very step this removes. With nothing authoritative to show, show nothing.
   const _cp = _comboPnlSums()
-  const _pnlMissing = _pnlNet && state.isAllAccounts && !_cp
+  // Realized, combined: the server's accrued figure, the same one the Net PnL breakdown shows.
+  // Summing this device's merged fills would be the per-device basis that made a phone and a
+  // desktop disagree, so with no server figure there is no figure (a dash), not a guess.
+  const _cpReal = Number.isFinite(_cp?.parts?.realized) ? _cp.parts.realized : null
+  const _pnlMissing = (_pnlNet && state.isAllAccounts && !_cp) || (_pnlReal && state.isAllAccounts && _cpReal == null)
   // "Count in balance": what the off-exchange holdings have made belongs to this stat for the
   // same reason their value belongs to the balance above it. The single-account figures already
   // carry it (computeAcctStats); the combined ones come from the server and do not.
@@ -16360,7 +16367,9 @@ function _mobVRenderBalance() {
   // The same function the desktop Overview tile uses, so the two shells cannot disagree.
   const _pnlVal = _pnlNet
     ? (_headlineNetPnl(_rawVal) ?? netPnl)
-    : (_cp ? _cp.unreal + _oxPnl : unrealizedPnl)
+    : _pnlReal
+      ? (state.isAllAccounts ? _cpReal : realizedPnl)
+      : (_cp ? _cp.unreal + _oxPnl : unrealizedPnl)
   const upEl = document.getElementById('mobVUnrealPnl')
   // Net PnL needs the ALL-TIME fills; unrealized does not. While only the 14-day window is
   // loaded, leave whatever is already on screen rather than flashing a wrong all-time total
@@ -16370,7 +16379,11 @@ function _mobVRenderBalance() {
   // HL's own all-time figure needs no fills at all — it is equity less everything ever paid in
   // — so when it is in hand the stat can be shown at once instead of waiting out the all-time
   // fill walk (which is what the `fillsFull` gate is for).
-  const _pnlReady = !_pnlMissing && (!_pnlNet || state.isAllAccounts || _hlPnl != null || state.fillsFull !== false)
+  const _pnlReady = !_pnlMissing && (_pnlReal ? (state.isAllAccounts || state.fillsFull !== false)
+    : (!_pnlNet || state.isAllAccounts || _hlPnl != null || state.fillsFull !== false))
+  // "Leave what is on screen" is only right while it is the SAME figure: after a tap it would
+  // be last mode's number under this mode's label.
+  if (upEl && upEl.dataset.mode !== _pnlMode) { upEl.textContent = ''; upEl.dataset.mode = _pnlMode }
   if (upEl && _pnlReady) {
     upEl.textContent = _privacyMode ? '•••' : (_pnlVal >= 0 ? '+' : '') + _mobVStatUSD(_pnlVal)
     upEl.style.color = _pnlVal > 0 ? 'var(--green)' : _pnlVal < 0 ? 'var(--red)' : ''
@@ -16382,7 +16395,7 @@ function _mobVRenderBalance() {
   // tiles are the smallest type in the app, and a percentage crowded against "Net PnL" made
   // the row harder to read than the figure was worth. The ROE lives on the Portfolio tab and
   // on the leaderboard, where there is room for it.
-  if (upLbl) upLbl.innerHTML = `${_pnlNet ? 'Net PnL' : 'Unreal. PnL'} <span style="opacity:.45;font-size:9px">⇄</span>`
+  if (upLbl) upLbl.innerHTML = `${_pnlNet ? 'Net PnL' : _pnlReal ? 'Realized PnL' : 'Unreal. PnL'} <span style="opacity:.45;font-size:9px">⇄</span>`
   const levEl = document.getElementById('mobVLeverage')
   if (levEl) levEl.textContent = accountLeverage > 0 ? accountLeverage.toFixed(2) + 'x' : '—'
   const fmEl = document.getElementById('mobVFreeMargin')
