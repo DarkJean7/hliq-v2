@@ -6,7 +6,7 @@
 // the bot took $70 to be free and bought it again: 15.87 → 21.49 → 27.11 HYPE, nothing sold.
 // The end-to-end replay against the real script is tests/gridheld-sim.mjs.
 import fs from 'fs'
-import { levelOf, applyFill, heldFromFills, clampToInventory, isHeld } from '../../src/gridheld.js'
+import { levelOf, applyFill, heldFromFills, clampToInventory, isHeld, goneVerdict, fillKey, GONE_LIMBO_MS, FILL_OVERLAP_MS } from '../../src/gridheld.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -88,6 +88,25 @@ console.log(nl + '-- and a deploy actually runs it --')
   // server.js imports, so a change to this module alone would have shipped to disk and sat there.
   const wf = fs.readFileSync('.github/workflows/deploy.yml', 'utf8')
   t('CI hashes what the bot scripts import, not only server.js', /node serverdeps\.mjs server\.js strategies\/\*\.js/.test(wf))
+}
+
+console.log('-- an order that left the book (PURR duplicate, 0x974E, 2026-11-14) --')
+{
+  t('"filled" is filled', goneVerdict('filled') === 'filled')
+  t('a status that says it ended unfilled is unfilled', ['canceled', 'marginCanceled', 'reduceOnlyCanceled', 'rejected', 'tickRejected', 'scheduledCancel'].every(s => goneVerdict(s) === 'unfilled'))
+  t('"open" after it left the book is NOT "not filled" — HL had not caught up', goneVerdict('open') === 'unknown')
+  t('nor is no answer, or a failed call', goneVerdict('') === 'unknown' && goneVerdict(undefined) === 'unknown' && goneVerdict('triggered') === 'unknown')
+  t('an unknown is waited out for minutes, not forever', GONE_LIMBO_MS >= 60e3 && GONE_LIMBO_MS <= 10 * 60e3)
+  t('fills are counted once by trade id, even when scans overlap', fillKey({ tid: 7, oid: 1 }) === fillKey({ tid: 7, oid: 2 }) && fillKey({ tid: 7 }) !== fillKey({ tid: 8 }))
+  t('every scan re-reads a window behind the newest fill', FILL_OVERLAP_MS >= 30e3)
+  const g = fs.readFileSync('strategies/grid.js', 'utf8')
+  t('the bot judges a vanished order with goneVerdict, not "anything but filled"', g.includes('verdict = goneVerdict(status)') && !g.includes("if (status === 'filled')"))
+  t('and holds an unknown level as occupied', g.includes("levelOrders.set(t.levelIdx, { oid: 'pending'"))
+  t('fills are read before vanished orders are judged', g.indexOf('else await updateRealized()') < g.indexOf('await detectFills(levelOrders)'))
+  t('the fill scan overlaps instead of resuming strictly after the newest fill', g.includes('startTime: Math.max(0, lastFillScan - FILL_OVERLAP_MS)') && !g.includes('startTime: lastFillScan + 1'))
+  const acc = fs.readFileSync('strategies/accumulator.js', 'utf8')
+  t('so does the accumulator scan, floored where its run took over so a resume does not count a fill twice',
+    acc.includes('startTime: Math.max(scanFloor, lastFillScan - FILL_OVERLAP_MS)') && acc.includes('seenFills.has(k) || f.time <= scanFloor') && acc.includes('scanFloor = lastFillScan'))
 }
 
 console.log(`${pass} passed, ${fail} failed`)

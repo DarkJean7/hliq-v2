@@ -1,13 +1,18 @@
 // A fake Hyperliquid for running strategies/grid.js end to end (tests/gridheld-sim.mjs).
 // Loaded with `node --import`; replaces fetch. The test steers it through a control file:
 //   { mark, fills: [{ id, px }] }  — each new fill id fills the resting order at that price.
+//   lagMs   — HL's info endpoints catching up: for this long after a fill, orderStatus still
+//             says "open" and userFillsByTime does not return the fill (the PURR duplicate,
+//             0x974E…6B, 2026-11-14 16:48 UTC), though openOrders and the position already show it.
+//   other   — [{ id }]: a fill on ANOTHER coin, published at once (another bot on the wallet).
 // Every order, cancel and fill is appended to the events file as one JSON line.
 import fs from 'node:fs'
 
 const CTL = process.env.HLSTUB_CTL, EV = process.env.HLSTUB_EV
 const S = JSON.parse(process.env.HLSTUB_INIT)   // { coin, szi, entryPx, mark, fills: [] }
 const open = new Map()                           // oid → order
-const filled = new Set(), doneFills = new Set()
+const filled = new Map(), doneFills = new Set()   // filled: oid → fill time
+let nextTid = 1
 let nextOid = 1000 + Math.floor(Math.random() * 1e6)
 const ev = (o) => fs.appendFileSync(EV, JSON.stringify(o) + '\n')
 const ctl = () => { try { return JSON.parse(fs.readFileSync(CTL, 'utf8')) } catch { return { mark: S.mark } } }
@@ -18,13 +23,18 @@ function tick() {
     if (doneFills.has(f.id)) continue
     const o = [...open.values()].find(o => Math.abs(o.px - f.px) < 1e-9)
     if (!o) continue
-    doneFills.add(f.id); open.delete(o.oid); filled.add(o.oid)
+    doneFills.add(f.id); open.delete(o.oid); filled.set(o.oid, Date.now())
     const sz = o.sz, px = o.px, buy = o.side === 'B'
     const newSzi = S.szi + (buy ? sz : -sz)
     if (buy) S.entryPx = (S.szi * S.entryPx + sz * px) / newSzi
     S.szi = newSzi
-    S.fills.push({ coin: S.coin, px: String(px), sz: String(sz), side: o.side, time: Date.now(), closedPnl: buy ? '0' : String((px - S.entryPx) * sz), fee: '0', oid: o.oid })
+    S.fills.push({ coin: S.coin, px: String(px), sz: String(sz), side: o.side, time: Date.now(), closedPnl: buy ? '0' : String((px - S.entryPx) * sz), fee: '0', oid: o.oid, tid: nextTid++ })
     ev({ kind: 'fill', side: o.side, px, sz })
+  }
+  for (const f of c.other ?? []) {
+    if (doneFills.has('o' + f.id)) continue
+    doneFills.add('o' + f.id)
+    S.fills.push({ coin: 'OTHER', px: '1', sz: '1', side: 'B', time: Date.now(), closedPnl: '0', fee: '0', oid: nextOid++, tid: nextTid++, now: true })
   }
   return c
 }
@@ -62,8 +72,12 @@ globalThis.fetch = async (url, init = {}) => {
     case 'activeAssetData': return ok({ user: body.user, coin: S.coin, leverage: { type: 'cross', value: 10 }, maxTradeSzs: ['1000', '1000'], availableToTrade: ['15000', '15000'], markPx: String(mark) })
     case 'openOrders': case 'frontendOpenOrders':
       return ok([...open.values()].map(o => ({ coin: S.coin, side: o.side, limitPx: String(o.px), sz: String(o.sz), oid: o.oid, timestamp: 0, origSz: String(o.sz), cloid: o.cloid, reduceOnly: o.reduceOnly })))
-    case 'orderStatus': return ok({ status: 'order', order: { status: filled.has(body.oid) ? 'filled' : 'canceled', order: {}, statusTimestamp: 0 } })
-    case 'userFillsByTime': return ok(S.fills.filter(f => f.time >= (body.startTime ?? 0)))
+    case 'orderStatus': {
+      const ft = filled.get(body.oid)
+      const st = ft == null ? 'canceled' : Date.now() - ft < (c.lagMs ?? 0) ? 'open' : 'filled'
+      return ok({ status: 'order', order: { status: st, order: {}, statusTimestamp: 0 } })
+    }
+    case 'userFillsByTime': return ok(S.fills.filter(f => f.time >= (body.startTime ?? 0) && (f.now || Date.now() - f.time >= (c.lagMs ?? 0))))
     default: return ok({})
   }
 }

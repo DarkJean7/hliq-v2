@@ -95,3 +95,32 @@ export function clampToInventory(held, inventory, { isShort }) {
 export function isHeld(held, i, lotSz) {
   return (held.get(i) ?? 0) > lotSz * 0.25
 }
+
+// ─── An order that left the book: filled, not filled, or not known yet ───────────────────────
+//
+// Reported: two PURR buys at $0.083641, 8 seconds apart, on 0x974E…6B (2026-11-14 16:48 UTC).
+// The level-2 buy filled at 16:48:03. At 16:48:09 it was no longer in openOrders, but
+// orderStatus still said "open" — Hyperliquid's info endpoints do not update at the same
+// instant. The bot read anything but "filled" as "not filled", logged GONE, re-placed the
+// level, and it filled again at 16:48:27. Its own scan line already showed inventory up by the
+// 555 it had just bought.
+//
+// So only a status that SAYS it ended unfilled counts as unfilled. "open", "triggered", an
+// empty answer or a failed call is UNKNOWN, and an unknown level is left alone until it resolves.
+export function goneVerdict(status) {
+  const s = String(status ?? '')
+  if (s === 'filled') return 'filled'
+  if (/canceled$|rejected$/i.test(s) || s === 'scheduledCancel') return 'unfilled'
+  return 'unknown'
+}
+// How long an unknown is waited out before the level is released anyway. HL settles in seconds;
+// this only bounds a status that never resolves, so a level cannot be frozen forever.
+export const GONE_LIMBO_MS = 3 * 60e3
+
+// A fill's identity, for counting each once when scans overlap.
+export function fillKey(f) {
+  return f?.tid != null ? 'tid:' + f.tid : `${f?.oid}:${f?.time}:${f?.sz}:${f?.px}`
+}
+// Each fill scan re-reads this far back: a fill can be published a beat after a LATER fill on
+// another coin, and a scan that resumed strictly after the newest fill it saw skipped it forever.
+export const FILL_OVERLAP_MS = 2 * 60e3

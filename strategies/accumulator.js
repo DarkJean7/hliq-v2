@@ -37,6 +37,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { isPaused, onPause, onResume } from './_pause.js'
 import { botCloid } from '../src/cloid.js'
+import { fillKey, FILL_OVERLAP_MS } from '../src/gridheld.js'
 
 // ─── CLI ARGS ─────────────────────────────────────────────────────────────────
 const { values: args } = parseArgs({
@@ -90,6 +91,8 @@ const QUERY_ADDR  = args.address ?? ADDRESS      // master wallet — reads
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 let lastFillScan  = Date.now()   // fill cursor (ms) — only profit from arm-time forward
+let scanFloor     = lastFillScan  // fills at or before this were counted by an earlier run (or predate the arm)
+const seenFills   = new Map()    // fillKey → time: the scan overlaps, each fill counts once
 let toBuyUsd      = 0            // skimmed-but-unspent USD buffer
 let lifetimeSpent = 0            // cumulative USD spent on the asset
 let lifetimeQty   = 0            // cumulative asset units bought
@@ -194,17 +197,23 @@ async function getFreeSpotUsdc() {
 // (or windows that are all fees) are skipped. Cursor advances regardless.
 async function scanWindow() {
   let fills
-  try { fills = await info.userFillsByTime({ user: QUERY_ADDR, startTime: lastFillScan + 1 }) }
+  // Overlapping, de-duplicated (grid.js does the same): a fill HL publishes a beat after a
+  // later one was skipped for good when the cursor resumed strictly after the newest seen.
+  try { fills = await info.userFillsByTime({ user: QUERY_ADDR, startTime: Math.max(scanFloor, lastFillScan - FILL_OVERLAP_MS) }) }
   catch (e) { log('WARN', `Fill scan failed: ${e.message} — retry next cycle`); return 0 }
   if (!Array.isArray(fills) || !fills.length) return 0
 
   let sumClosed = 0, sumFees = 0, newest = lastFillScan
   for (const f of fills) {
     if (f.time > newest) newest = f.time
+    const k = fillKey(f)
+    if (seenFills.has(k) || f.time <= scanFloor) continue
+    seenFills.set(k, f.time)
     sumClosed += parseFloat(f.closedPnl ?? 0)
     sumFees   += parseFloat(f.fee ?? 0)
   }
   lastFillScan = newest
+  for (const [k, t] of seenFills) if (t < newest - 2 * FILL_OVERLAP_MS) seenFills.delete(k)
 
   const net = NET_FEES ? (sumClosed - sumFees) : sumClosed
   return net
@@ -370,6 +379,9 @@ async function tick() {
     lastFillScan = Date.now()    // only count profit from now forward
     saveState()
   }
+  // The overlapping scan never reaches back past where this run took over: on a resume, those
+  // fills were already counted before the restart, and a fresh arm must not re-skim history.
+  scanFloor = lastFillScan
 
   log('START', `Accumulator on ${QUERY_ADDR} | skim ${(CUT_PCT * 100).toFixed(0)}% of net PnL → buy ${ASSET_SYM} (spot ${spot.name}) | threshold $${THRESHOLD}${MAX_DAILY > 0 ? ` | daily cap $${MAX_DAILY}` : ''} | net-of-fees ${NET_FEES}${DRY_RUN ? ' | DRY-RUN' : ''}`)
 

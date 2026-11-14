@@ -28,7 +28,7 @@ import { parseArgs } from 'node:util'
 import { isPaused, onPause, onResume } from './_pause.js'
 import { botCloid, cloidBot } from '../src/cloid.js'
 import { orderMargin, isEntry, capPlan, fitsCap } from '../src/gridcap.js'
-import { heldFromFills, applyFill, clampToInventory, isHeld } from '../src/gridheld.js'
+import { heldFromFills, applyFill, clampToInventory, isHeld, goneVerdict, GONE_LIMBO_MS, fillKey, FILL_OVERLAP_MS } from '../src/gridheld.js'
 
 // ─── CLI ARGS ─────────────────────────────────────────────────────────────────
 const { values: args } = parseArgs({
@@ -120,6 +120,14 @@ const warnedForeign = new Set() // oids of non-grid orders we've already logged
 let heldLots = new Map()
 let heldUpto = -1               // newest fill already applied to `heldLots`; -1 = not built yet
 const HELD_LOOKBACK_MS = 30 * 24 * 3600e3
+// Orders that left the book while HL could not yet say whether they filled (goneVerdict).
+// oid → { side, levelIdx, px, sz, since }. Their level is treated as occupied until it resolves.
+const limbo = new Map()
+// Fills already counted, so overlapping scans count each once (fillKey). Bounded: trimmed to
+// what the overlap window can still return.
+const seenFills = new Map()     // key → fill time
+const seenFillOids = new Map()  // key → oid, so a fill can settle an order orderStatus has not
+let pnlFloor = 0                // realized P&L counts fills after this run started
 
 // ─── LOGGING ──────────────────────────────────────────────────────────────────
 function log(tag, msg) {
@@ -276,13 +284,34 @@ async function snapshotOrders() {
 async function detectFills(levelOrders) {
   const openOids = new Set([...levelOrders.values()].map(e => e.oid))
   const gone = [...trackedOids.entries()].filter(([oid]) => !openOids.has(oid))
+  for (const [oid, t] of limbo) if (!gone.some(([o]) => o === oid)) gone.push([oid, t])
 
   for (const [oid, t] of gone) {
     trackedOids.delete(oid)
+    let status = '', verdict = 'unknown'
     try {
-      const res    = await info.orderStatus({ user: QUERY_ADDR, oid: parseInt(oid) })
-      const status = res?.order?.status ?? ''
-      if (status === 'filled') {
+      const res = await info.orderStatus({ user: QUERY_ADDR, oid: parseInt(oid) })
+      status  = res?.order?.status ?? ''
+      verdict = goneVerdict(status)
+    } catch { /* unknown */ }
+    // A fill already in the account's fills settles it whatever orderStatus says.
+    if (verdict !== 'filled' && [...seenFillOids.values()].includes(String(oid))) verdict = 'filled'
+    if (verdict === 'unknown') {
+      const since = limbo.get(oid)?.since ?? Date.now()
+      if (Date.now() - since < GONE_LIMBO_MS) {
+        if (!limbo.has(oid)) log('WAIT', `Level ${t.levelIdx} ${t.side.toUpperCase()} oid=${oid} left the book but HL says "${status || 'no answer'}" — level held until it settles`)
+        limbo.set(oid, { ...t, since })
+        // Occupied for this cycle: nothing re-places a level whose last order may have filled.
+        if (!levelOrders.has(t.levelIdx)) levelOrders.set(t.levelIdx, { oid: 'pending', side: t.side, px: t.px, sz: 0 })
+        continue
+      }
+      log('GONE', `Level ${t.levelIdx} ${t.side.toUpperCase()} oid=${oid} still "${status || 'no answer'}" after ${Math.round(GONE_LIMBO_MS / 60e3)} min — released`)
+      limbo.delete(oid)
+      continue
+    }
+    limbo.delete(oid)
+    {
+      if (verdict === 'filled') {
         log('FILL', `Level ${t.levelIdx} ${t.side.toUpperCase()} @ $${t.px} filled  sz=${t.sz}`)
         if (t.side === (IS_SHORT ? 'buy' : 'sell')) {
           // An exit filled — one grid cycle complete. Per-lot prices shown for
@@ -293,10 +322,8 @@ async function detectFills(levelOrders) {
           log('WIN', `${COIN} grid cycle complete | ${IS_SHORT ? `sell $${entryPx} → buy $${t.px}` : `buy $${entryPx} → sell $${t.px}`}`)
         }
       } else {
-        log('GONE', `Level ${t.levelIdx} ${t.side.toUpperCase()} oid=${oid} ${status || 'removed'} (not filled)`)
+        log('GONE', `Level ${t.levelIdx} ${t.side.toUpperCase()} oid=${oid} ${status} (not filled)`)
       }
-    } catch {
-      log('GONE', `Level ${t.levelIdx} ${t.side.toUpperCase()} oid=${oid} — status check failed`)
     }
   }
 }
@@ -306,15 +333,25 @@ async function detectFills(levelOrders) {
 // for this coin. This is literally the number HL shows, not a local estimate.
 async function updateRealized() {
   try {
-    const fills = await info.userFillsByTime({ user: QUERY_ADDR, startTime: lastFillScan + 1 })
+    // Overlapping window, each fill counted once (fillKey): resuming strictly after the newest
+    // fill seen skipped one HL published a beat late — and the high-water mark moves on ANY
+    // coin's fill, so another bot on this wallet was enough to bury a fill of this one.
+    const fills = await info.userFillsByTime({ user: QUERY_ADDR, startTime: Math.max(0, lastFillScan - FILL_OVERLAP_MS) })
     if (!Array.isArray(fills) || !fills.length) return
     for (const f of fills) {
       if (f.time > lastFillScan) lastFillScan = f.time
       if (f.coin !== COIN) continue
-      realizedPnl += parseFloat(f.closedPnl ?? 0)
-      totalFees   += parseFloat(f.fee ?? 0)
-      if (heldUpto >= 0 && f.time > heldUpto) { applyFill(heldLots, f, { prices: PRICES, isShort: IS_SHORT }); heldUpto = f.time }
+      const k = fillKey(f)
+      if (seenFills.has(k)) continue
+      seenFills.set(k, f.time); seenFillOids.set(k, String(f.oid))
+      if (f.time > pnlFloor) {
+        realizedPnl += parseFloat(f.closedPnl ?? 0)
+        totalFees   += parseFloat(f.fee ?? 0)
+      }
+      if (heldUpto >= 0) { applyFill(heldLots, f, { prices: PRICES, isShort: IS_SHORT }); heldUpto = Math.max(heldUpto, f.time) }
     }
+    const cut = lastFillScan - 2 * FILL_OVERLAP_MS
+    for (const [k, t] of seenFills) if (t < cut) { seenFills.delete(k); seenFillOids.delete(k) }
   } catch { /* keep last known totals; retry next cycle */ }
 }
 
@@ -324,6 +361,9 @@ async function buildHeld() {
     if (!Array.isArray(fills)) return
     heldLots = heldFromFills(fills, { coin: COIN, prices: PRICES, isShort: IS_SHORT })
     heldUpto = fills.reduce((m, f) => Math.max(m, f.time ?? 0), 0)
+    // Everything this saw is already in heldLots: an overlapping scan must not apply it again.
+    for (const f of fills) if (f.coin === COIN) { const k = fillKey(f); seenFills.set(k, f.time); seenFillOids.set(k, String(f.oid)) }
+    if (heldUpto > lastFillScan) lastFillScan = heldUpto
     const lv = [...heldLots.keys()].sort((a, b) => a - b)
     log('INIT', lv.length ? `Levels still holding their lot: ${lv.map(i => '$' + PRICES[i]).join(', ')} — not re-entered until sold` : 'No grid level is holding a lot')
   } catch { /* retried next cycle; entries wait for it */ }
@@ -468,15 +508,16 @@ async function reconcile() {
   if (!IS_SHORT && markPx >= UPPER) { if (await closeAtBoundary(markPx, levelOrders)) return }
   if (IS_SHORT  && markPx <= LOWER) { if (await closeAtBoundary(markPx, levelOrders)) return }
 
+  // New fills are read HERE, before any entry is placed and before orders that left the book
+  // are judged: they are what tells a level it is holding a lot, and a fill in hand settles an
+  // order orderStatus has not caught up with. Read at the end of the cycle (where this used to
+  // be), the fill that had just happened was not known yet and its level was re-bought.
+  if (heldUpto < 0) await buildHeld()
+  else await updateRealized()
   await detectFills(levelOrders)
   // Orders a previous run placed are adopted for fill detection too. Without this a deploy
   // restart forgot every resting oid, and a fill of one was never logged.
   for (const [i, e] of levelOrders) if (e.oid !== 'pending' && !trackedOids.has(e.oid)) trackedOids.set(e.oid, { side: e.side, levelIdx: i, px: e.px, sz: e.sz })
-  // New fills are read HERE, before any entry is placed: they are what tells a level it is
-  // holding a lot. Read at the end of the cycle (where this used to be), the fill that had just
-  // happened was not known yet and its level was re-bought in the same pass.
-  if (heldUpto < 0) await buildHeld()
-  else await updateRealized()
 
   // Duplicate orders at the same level — cancel the extras (auto-heals old runs)
   for (const s of surplus) {
@@ -1180,6 +1221,7 @@ async function run() {
 
   // Realized P&L counts fills from this run forward (matches HL from now on)
   lastFillScan = Date.now()
+  pnlFloor = lastFillScan
 
   // First reconcile adopts any existing grid orders, cancels duplicates from
   // old runs, and places whatever the desired state is missing.
