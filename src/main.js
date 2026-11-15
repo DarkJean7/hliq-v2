@@ -1262,7 +1262,34 @@ async function loadDashboard() {
 }
 
 // ─── RENDER SECTIONS ──────────────────────────────────────────────────────────
+// ─── Panels nobody can see are not redrawn ───────────────────────────────────────
+// "the scrolling is still not smooth. are you still destroying and rebuilding the cards??" —
+// the scroll-jank reports from that Outcomes session named it: 180-380 ms tasks right after a
+// Hyperliquid response, rewriting ordersTbody (90 nodes), allAcctCards (40), overviewStats,
+// portfolioStats — the Overview, Positions and Portfolio panels, every refresh, behind the
+// Outcomes page. On these desktop tabs none of that is on screen, so a refresh only marks it
+// out of date, and switchTab draws it once, from the latest data, when you go back.
+const _DESK_SELF_CONTAINED = new Set(['outcomes', 'leaderboard', 'markets', 'portfolios', 'pulse', 'simulator', 'labs'])
+const _deskStale = { acct: false, pos: false, cards: false }
+function _deskOffscreen(part) {
+  // _activeTab is declared further down this module; a render during module start-up would hit
+  // it before its declaration has run, which throws. Then it is simply "not skipped".
+  let tab; try { tab = _activeTab } catch { return false }
+  if (_isMobView() || !_DESK_SELF_CONTAINED.has(tab)) return false
+  _deskStale[part] = true
+  return true
+}
+function _deskCatchUp() {
+  if (_isMobView() || _DESK_SELF_CONTAINED.has(_activeTab)) return
+  const d = { ..._deskStale }
+  _deskStale.acct = _deskStale.pos = _deskStale.cards = false
+  try { if (d.acct) renderAccountSection() } catch (e) { console.error(e) }
+  try { if (d.pos) renderPositionSection() } catch (e) { console.error(e) }
+  try { if (d.cards) _syncAllAcctCards() } catch (e) { console.error(e) }
+}
+
 function renderAccountSection() {
+  if (_deskOffscreen('acct')) return
   const { perpState, spotState, fills, funding, portfolio, allMids, openOrders, ledger } = state
   // ONCE per render, not once per card: _comboEqFilter is stateful, and calling it twice in
   // the same pass would advance the spike filter twice for a single reading.
@@ -1280,6 +1307,7 @@ function renderAccountSection() {
 window.__renderAccountSection = () => renderAccountSection()
 
 function renderPositionSection() {
+  if (_deskOffscreen('pos')) return
   const { perpState, spotState, openOrders, allMids } = state
   renderSpot(spotState, state.ocTokenMap)
   renderOrders(openOrders, perpState, state.ocTokenMap)
@@ -1632,12 +1660,22 @@ window.__setFillVolume = function (v) { _setFillVol(v); _unlockSound() }
 // src/fillnotify.js draws them; the app supplies the names it shows everywhere else (a HIP-3
 // market without its dex prefix, a spot pair by its token) and the privacy setting.
 initFillNotify({
-  name: (c) => { const s = String(c ?? ''); return _spotNameMap[s] || (s.includes(':') ? s.split(':')[1] : s) },
+  // An outcome fill ("#237450") is named the way its position and its History row are:
+  // "Market question · Side". It used to fall through to the raw code ("Bought 213 #237450").
+  name: (c) => { const s = String(c ?? ''); if (/^[#+]\d+$/.test(s)) return _ocCoinLabel(s); return _spotNameMap[s] || (s.includes(':') ? s.split(':')[1] : s) },
   dex: (c) => { const s = String(c ?? ''); return s.includes(':') ? s.split(':')[0] : null },
   privacy: () => _privacyMode,
   // A spot fill is "@107" until the spot table has loaded, and nothing loads it until a coin
-  // picker opens -- so a card for a spot fill waits for it rather than saying "@107".
-  ready: (coins) => coins.some(c => String(c ?? '').startsWith('@') && !_spotNameMap[c]) ? _ensureMarketData() : null,
+  // picker opens -- so a card for a spot fill waits for it rather than saying "@107". An
+  // outcome fill waits for the outcome names the same way (one outcomeMeta, if they are missing).
+  ready: (coins) => {
+    const cs = coins.map(c => String(c ?? ''))
+    const waits = []
+    if (cs.some(c => c.startsWith('@') && !_spotNameMap[c])) waits.push(_ensureMarketData())
+    if (cs.some(c => /^[#+]\d+$/.test(c) && !state.ocTokenMap?.['#' + c.slice(1)]) && !_hlLimited())
+      waits.push(infoClient.outcomeMeta().then(m => { if (m) _buildOcTokenMap(m) }).catch(e => { _hl429(e) }))
+    return waits.length ? Promise.all(waits) : null
+  },
 })
 window.__toggleFillToasts = function (on) { _setFillToasts(on) }
 window.__previewFillToast = function () { _previewFillToast() }
@@ -8819,6 +8857,7 @@ function switchTab(name, btn) {
   if (name !== 'replay') _repLeave()
   _stopTabTimers()
   _activeTab = name
+  _deskCatchUp()   // panels skipped while a self-contained tab was open (_deskOffscreen)
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'))
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'))
   // Pulse has no tab of its own any more — it is a segment of Analysis — so the Pulse pane lights
@@ -10443,6 +10482,7 @@ function _allAcctCardsHtml() {
 }
 
 function _syncAllAcctCards() {
+  if (_deskOffscreen('cards')) return
   const show = state.isAllAccounts && _allAcctLastResults.length > 0
   const wrap = document.getElementById('allAcctCardsWrap')
   if (wrap) wrap.style.display = show ? '' : 'none'
@@ -39329,6 +39369,7 @@ function _ocSectionize() {
   grid.innerHTML = ''
   grid.appendChild(frag)
   _ocSectionVis()
+  _ocMasonry()
 }
 
 // Sports, one sport at a time under its own banner (src/ocsport.js): the multi-column flow used to
@@ -39346,6 +39387,49 @@ function _ocAppendSports(frag, list) {
       .forEach(x => frag.appendChild(x.el))
   }
 }
+
+// ── Desktop: no holes in the grid ────────────────────────────────────────────────
+// "why the missing space. it does not make sense" — a tall event card (an 8-team futures list)
+// made its whole grid row as tall as itself, and the short game cards beside it left a hole
+// beneath them. The grid's rows are now 4px (CSS, desktop only) and every item spans as many as
+// it is tall, so the next card starts right under the one above it. Order is kept: cards are
+// still placed left to right, in order; nothing is packed back into an earlier hole, so a
+// sport never leaks above its own banner.
+const _OC_ROW = 4, _OC_GAP = 14
+let _ocMasonryRaf = 0, _ocMasonryRO = null
+function _ocMasonry() {
+  const grid = document.getElementById('ocGrid')
+  if (!grid) return
+  if (getComputedStyle(grid).gridAutoRows !== _OC_ROW + 'px') {
+    // The phone (a flex column): no spans may linger from a desktop layout.
+    for (const el of grid.children) if (el._ocSpan) { el._ocSpan = 0; el.style.gridRowEnd = '' }
+    return
+  }
+  _ocMasonryApply()
+  // A card that grows or shrinks (Show all, a value that wraps) re-spans itself.
+  if (typeof ResizeObserver === 'function') {
+    _ocMasonryRO?.disconnect()
+    _ocMasonryRO = new ResizeObserver(() => _ocMasonrySoon())
+    for (const el of grid.children) _ocMasonryRO.observe(el)
+  }
+}
+function _ocMasonrySoon() {
+  if (_ocMasonryRaf) return
+  _ocMasonryRaf = requestAnimationFrame(() => { _ocMasonryRaf = 0; try { _ocMasonryApply() } catch {} })
+}
+// Spans from heights: every height read first, then every write -- one layout, not one per card.
+function _ocMasonryApply() {
+  const grid = document.getElementById('ocGrid')
+  if (!grid || getComputedStyle(grid).gridAutoRows !== _OC_ROW + 'px') return
+  const items = [...grid.children]
+  const spans = items.map(el => {
+    if (el.offsetParent === null) return 0
+    const cs = el.classList.contains('oc-card') ? null : getComputedStyle(el)
+    return Math.ceil((el.getBoundingClientRect().height + (cs ? parseFloat(cs.marginTop) + parseFloat(cs.marginBottom) : 0) + _OC_GAP) / _OC_ROW)
+  })
+  items.forEach((el, i) => { if (spans[i] && el._ocSpan !== spans[i]) { el._ocSpan = spans[i]; el.style.gridRowEnd = 'span ' + spans[i] } })
+}
+window.addEventListener('resize', () => _ocMasonrySoon())
 
 // Sort an event card's rows: by odds (desc, default) or by name
 function _ocEvtApplySort(wrap) {
@@ -39404,6 +39488,7 @@ function _ocSectionVis() {
   const showSport = (_ocActiveCat === 'all' || _ocActiveCat === 'sports') && _ocActiveUnd === 'all'
     && !(document.getElementById('ocSearchInput')?.value ?? '').trim()
   grid.querySelectorAll('.oc-sport-head').forEach(el => { el.style.display = showSport ? '' : 'none' })
+  _ocMasonrySoon()   // the visible set changed (filter, search, chip, sort)
 }
 
 async function renderOutcomes() {
@@ -39627,6 +39712,7 @@ async function renderOutcomes() {
 
     root.innerHTML = `
       <div class="oc-expand-backdrop" id="ocExpandBackdrop" onclick="window.__ocCloseExpanded()"></div>
+      ${state.isAllAccounts ? `<div class="oc-acct-top">${window.__tradeAcctPickerHtml()}</div>` : ''}
       <div class="oc-header">
         <div class="oc-search-row">
           <div class="oc-search-wrap">
@@ -39661,7 +39747,6 @@ async function renderOutcomes() {
         </div>
       </div>
       <div class="oc-unds no-swipe" id="ocUnds"></div>
-      ${state.isAllAccounts ? `<div style="padding:0 12px 10px">${window.__tradeAcctPickerHtml()}</div>` : ''}
       <div class="oc-grid" id="ocGrid">${cardsHtml}</div>`
     _ocLiveOutcomes = outcomes
     _ocLiveInfo     = info

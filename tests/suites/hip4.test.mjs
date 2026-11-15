@@ -229,7 +229,7 @@ console.log(String.fromCharCode(10) + '-- the desktop masonry stays on the deskt
   const stray = ['column-width:', 'column-span:', 'break-inside: avoid'].filter(d => decls.includes(d))
   t('no multicol declaration is left at all', stray.length === 0, stray.join(' | '))
   t('the desktop grid is behind a desktop media query',
-    /@media \(min-width: 769px\) \{[\s\S]{0,120}#outcomesRoot \.oc-grid \{ display: grid;/.test(CSS))
+    /@media \(min-width: 769px\) \{[\s\S]{0,600}#outcomesRoot \.oc-grid \{ display: grid;/.test(CSS))
   t('and the phone keeps the flex column it was written with',
     CSS.includes('#mobPredictOverlay .oc-grid { display: flex'))
   t('why the scope matters is written down', CSS.includes('SCOPED TO DESKTOP, and it has to be'))

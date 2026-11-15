@@ -60,6 +60,21 @@ const OUTCOME_META = {
       fallbackOutcome: 35424, namedOutcomes: [33723, 33724, 35423], settledNamedOutcomes: [] }],
   deployers: [], feeScale: '1.0',
 }
+// "why the missing space": a tall NBA futures card (eight teams) beside short game cards left a
+// hole under the games. Four more games, and the futures question, so the grid has a tall card to
+// flow around.
+{
+  const NBA = (id, a, b, sa, sb, day) => ({ outcome: id, name: 'template:sportsContestWinner', quoteToken: 'USDC', venue: 'out',
+    description: `competition:NBA|contestType:Game|participantA:${a}|participantB:${b}|resolutionDeadline:202711${day}-0000|shortNameA:${sa}|shortNameB:${sb}|sport:Basketball`,
+    sideSpecs: [{ name: 'template:{shortNameA}' }, { name: 'template:{shortNameB}' }] })
+  OUTCOME_META.outcomes.push(NBA(33801, 'Boston Celtics', 'Dallas Mavericks', 'BOS', 'DAL', 25), NBA(33802, 'Miami Heat', 'Orlando Magic', 'MIA', 'ORL', 26),
+    NBA(33803, 'Utah Jazz', 'San Antonio Spurs', 'UTA', 'SAS', 27), NBA(33804, 'Toronto Raptors', 'New York Knicks', 'TOR', 'NYK', 28))
+  const teams = ['Cleveland Cavaliers', 'San Antonio Spurs', 'Oklahoma City Thunder', 'Miami Heat', 'Philadelphia 76ers', 'Boston Celtics', 'New York Knicks', 'Denver Nuggets']
+  teams.forEach((t, i) => OUTCOME_META.outcomes.push({ outcome: 34000 + i, name: 'template:sportsTournamentParticipant', description: 'participant:' + t, sideSpecs: YN, quoteToken: 'USDC', venue: 'out' }))
+  OUTCOME_META.outcomes.push({ outcome: 34099, name: 'template:sportsTournamentFallback', description: 'other', sideSpecs: YN, quoteToken: 'USDC', venue: 'out' })
+  OUTCOME_META.questions.push({ question: 950, name: 'template:sportsTournamentWinner', description: 'competition:NBA|officialSource:NBA|resolutionDeadline:20270630-1200|season:2026/2027|sport:Basketball',
+    fallbackOutcome: 34099, namedOutcomes: teams.map((_, i) => 34000 + i), settledNamedOutcomes: [] })
+}
 const MIDS = { BTC: '82000', ETH: '2400', SOL: '105', HYPE: '80' }
 for (const o of OUTCOME_META.outcomes) { MIDS['#' + (o.outcome * 10)] = '0.5'; MIDS['#' + (o.outcome * 10 + 1)] = '0.5' }
 // The markets paper mode needs to start at all.
@@ -192,16 +207,31 @@ t('and under each banner only that sport — no NFL between two NBA games', runs
 t('the banners show with Sports chosen, which is when they help', await p.evaluate(() => [...document.querySelectorAll('.oc-sport-head')].every(h => h.style.display !== 'none')), true)
 t('the basketball banner names its league', await p.evaluate(() => document.querySelector('.oc-sport-head[data-sport="basketball"] .oc-sport-leagues')?.textContent), 'NBA')
 t('and carries its drawn court', await p.evaluate(() => !!document.querySelector('.oc-sport-head[data-sport="basketball"] svg.oc-sport-art')), true)
-// Rows, not columns: the two NBA games sit side by side, both right under their banner.
-const nbaRow = await p.evaluate(() => {
-  const g = [...document.querySelectorAll('#ocGrid > .oc-card[data-sport="basketball"]')].filter(c => c.offsetParent).map(c => c.getBoundingClientRect())
-  const h = document.querySelector('.oc-sport-head[data-sport="basketball"]').getBoundingClientRect()
-  return { n: g.length, sameRow: g.length === 2 && Math.abs(g[0].top - g[1].top) < 2, under: g.every(r => r.top >= h.bottom && r.top - h.bottom < 40) }
+// Rows, not columns, and no holes: the futures card first, games beside it, more games right
+// under those -- not below the futures card's full height.
+const nba = await p.evaluate(() => {
+  const r = (el) => el.getBoundingClientRect()
+  const h = r(document.querySelector('.oc-sport-head[data-sport="basketball"]'))
+  const evt = document.querySelector('#ocGrid > .oc-card.oc-event[data-sport="basketball"]')
+  const games = [...document.querySelectorAll('#ocGrid > .oc-card[data-sport="basketball"]:not(.oc-event)')].filter(c => c.offsetParent).map(r)
+  const e = r(evt)
+  // For every game: the nearest card above it in the same column, and the space between them.
+  const all = [...document.querySelectorAll('#ocGrid > .oc-card[data-sport="basketball"]')].filter(c => c.offsetParent).map(r)
+  const gaps = games.map(g => {
+    const above = all.filter(o => Math.abs(o.left - g.left) < 2 && o.bottom <= g.top + 1).sort((a, b) => b.bottom - a.bottom)[0]
+    return above ? Math.round(g.top - above.bottom) : Math.round(g.top - h.bottom)
+  })
+  return { firstRow: games.filter(g => Math.abs(g.top - e.top) < 2).length, under: Math.round(e.top - h.bottom), tall: e.height > games[0].height * 1.5, maxGap: Math.max(...gaps) }
 })
-t('the grid fills rows left to right, so a sport stays together', nbaRow, { n: 2, sameRow: true, under: true })
+t('the futures card starts the sport, right under its banner', nba.under >= 0 && nba.under < 40, true)
+t('the games fill the rest of its row', nba.firstRow >= 2, true)
+t('the futures card is the tall one', nba.tall, true)
+console.log('     ', JSON.stringify(nba))
+t('and no game sits under a hole: each starts right below the card above it', nba.maxGap <= 20, true)
 // A sort works inside each sport: its banner ends one run of cards and starts the next.
 await p.selectOption('#ocSortSel', 'soon')
-t('a sort reorders a sport within its own block', await p.evaluate(() => [...document.querySelectorAll('#ocGrid > .oc-card[data-sport="basketball"]')].map(c => c.id)), ['oc-card-33714', 'oc-card-33713'])
+t('a sort reorders a sport within its own block', await p.evaluate(() => [...document.querySelectorAll('#ocGrid > .oc-card[data-sport="basketball"]:not(.oc-event):not(.oc-grouped)')].map(c => c.id)),
+  ['oc-card-33714', 'oc-card-33713', 'oc-card-33801', 'oc-card-33802', 'oc-card-33803', 'oc-card-33804'])
 t('and keeps every sport under its banner', await p.evaluate(() => {
   let cur = null, ok = true
   for (const el of document.querySelectorAll('#ocGrid > *')) {
@@ -225,6 +255,33 @@ t('no wallpaper blur behind an Outcomes card', await p.evaluate(() => {
   document.documentElement.classList.remove('has-bg-image')
   return v
 }), 'none')
+
+// "are you still destroying and rebuilding the cards??" — the scroll-jank reports showed every
+// refresh rewriting the Overview and Positions panels (ordersTbody, overviewStats) behind this page.
+console.log('\n-- panels behind this tab are not redrawn, and catch up on return --')
+{
+  const hits = () => p.evaluate(() => new Promise((res) => {
+    const els = ['overviewStats', 'ordersTbody'].map(id => document.getElementById(id)).filter(Boolean)
+    let n = 0
+    const mo = new MutationObserver((ms) => { n += ms.length })
+    els.forEach(el => mo.observe(el, { childList: true, subtree: true, characterData: true }))
+    window.__renderAccountSection()
+    setTimeout(() => { mo.disconnect(); res({ n, watched: els.length }) }, 300)
+  }))
+  const behind = await hits()
+  t('a refresh while Outcomes is open does not touch the Overview behind it', behind.watched > 0 && behind.n === 0, true)
+  const back = await p.evaluate(() => new Promise((res) => {
+    const el = document.getElementById('overviewStats')
+    let n = 0
+    const mo = new MutationObserver((ms) => { n += ms.length })
+    mo.observe(el, { childList: true, subtree: true, characterData: true })
+    window.switchTab('overview')
+    setTimeout(() => { mo.disconnect(); res(n) }, 300)
+  }))
+  t('and going back to Overview draws it once, from the latest data', back > 0, true)
+  await p.evaluate(() => window.switchTab('outcomes'))
+  await waitFor(p, 'the outcome cards again', () => document.querySelectorAll('#ocGrid .oc-card').length >= 4)
+}
 
 console.log('\n-- a price tick writes only what changed --')
 await p.waitForTimeout(5500)   // let the first tick land: it fills in values that were still "—"

@@ -36,6 +36,11 @@ const rawFill = (o) => ({ coin: 'BTC', px: '86000', sz: '0.1', side: 'B', time: 
 const SPOT_META = { tokens: [{ name: 'USDC', index: 0, szDecimals: 8, weiDecimals: 8, tokenId: '0x' + '0'.repeat(32) }, { name: 'HYPE', index: 150, szDecimals: 2, weiDecimals: 8, tokenId: '0x' + '1'.repeat(32) }],
   universe: [{ name: '@107', tokens: [150, 0], index: 107, isCanonical: false }] }
 
+// An NBA game, as Hyperliquid lists it (2026-11-15). Its side 0 trades as "#237450".
+const OUTCOME_META = { outcomes: [{ outcome: 23745, name: 'template:sportsContestWinner', quoteToken: 'USDC',
+  description: 'competition:NBA|contestType:Game|participantA:Los Angeles Lakers|participantB:Charlotte Hornets|resolutionDeadline:20271120-0000|shortNameA:LAL|shortNameB:CHA|sport:Basketball',
+  sideSpecs: [{ name: 'template:{shortNameA}' }, { name: 'template:{shortNameB}' }] }], questions: [] }
+
 async function run(label, opts) {
   console.log('\n-- ' + label + ' --')
   // An old fill (an hour ago): history. Later fills are pushed in as the test goes.
@@ -43,7 +48,7 @@ async function run(label, opts) {
   const HL = {
     clearinghouseState: STATE, spotClearinghouseState: { balances: [] }, allMids: { BTC: '86000', ETH: '2700' },
     frontendOpenOrders: [], userFunding: [], userNonFundingLedgerUpdates: [], subAccounts: [], candleSnapshot: [], extraAgents: [],
-    allPerpMetas: [{ universe: [] }], outcomeMeta: {}, perpDexs: [null], perpCategories: [],
+    allPerpMetas: [{ universe: [] }], outcomeMeta: OUTCOME_META, perpDexs: [null], perpCategories: [],
     portfolio: ['day', 'week', 'month', 'allTime'].map(w => [w, WINDOW]),
     webData2: { clearinghouseState: STATE, openOrders: [] },
     // Spot HYPE is pair @107 (token 150 against USDC) -- a fill on it arrives as coin "@107".
@@ -140,6 +145,13 @@ async function run(label, opts) {
   await waitFor(p, 'the spot card', () => [...document.querySelectorAll('#fillToasts .ft-card')].some(c => /5\.62/.test(c.textContent)), null, 20000)
   const spot = [...await p.locator('#fillToasts .ft-card').allTextContents()].map(x => x.replace(/\s+/g, ' ')).find(x => /5\.62/.test(x)) ?? ''
   ok('a spot fill is named by its token, not its pair id', /HYPE/.test(spot) && !/@107/.test(spot), spot)
+
+  // An outcome fill. Reported: "Bought 213 #237450" -- the outcome's code, not its market.
+  fills.push(rawFill({ tid: 352, oid: 91, time: Date.now(), coin: '#237450', px: '0.23458', sz: '213', dir: 'Buy' }))
+  await p.evaluate(() => window.__refreshAfterAction(0))
+  await waitFor(p, 'the outcome card', () => [...document.querySelectorAll('#fillToasts .ft-card')].some(c => /\b213\b/.test(c.textContent)), null, 20000)
+  const oc = [...await p.locator('#fillToasts .ft-card').allTextContents()].map(x => x.replace(/\s+/g, ' ')).find(x => /\b213\b/.test(x)) ?? ''
+  ok('an outcome fill is named by its market, not "#237450"', /Lakers|LAL/.test(oc) && !/#237450/.test(oc), oc)
 
   // Switched off in Settings: the next fill is silent.
   await p.evaluate(() => window.__toggleFillToasts(false))
