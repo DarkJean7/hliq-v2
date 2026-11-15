@@ -7226,7 +7226,12 @@ body.is-mob-view .mob-v-bottom { display: grid; }
 #mobPredictOverlay .oc-evt-more { width: 100%; margin-top: 4px; padding: 9px 0; border: none; border-top: 1px solid rgba(255,255,255,0.05); background: none; color: var(--accent); font-size: 12px; font-weight: 700; cursor: pointer; }
 
 /* ═══ Desktop Outcomes — grouped/compact cards (reuses the mobile structure) ═══ */
-/* Masonry via CSS multi-column so a tall event card doesn't leave gaps in its row.
+/* A GRID that fills rows left to right. It was masonry via CSS multi-column, which fills
+ * columns top to bottom: Sports read NBA down the first column, NFL and soccer in the next,
+ * NBA again two columns over ("i selected nba finals and it kind of be lost"). Multi-column
+ * also re-balances every column when any card changes, which is a cost paid while scrolling.
+ * The gaps masonry avoided are mostly gone anyway: each sport lists its futures (tall) first
+ * and its games (short, all one height) after, so a row is rarely a mix.
  *
  * SCOPED TO DESKTOP, and it has to be. On mobile #outcomesRoot is physically relocated into
  * #mobPredictBody, so these unscoped rules also matched the phone — and being later in the
@@ -7237,9 +7242,9 @@ body.is-mob-view .mob-v-bottom { display: grid; }
  * This is the second time an unscoped #outcomesRoot rule has reached the phone this way; the
  * expanded-card rule below carries the same warning. */
 @media (min-width: 769px) {
-  #outcomesRoot .oc-grid { display: block; column-width: 330px; column-gap: 14px; }
-  #outcomesRoot .oc-grid > .oc-card { break-inside: avoid; -webkit-column-break-inside: avoid; margin: 0 0 14px; width: 100%; }
-  #outcomesRoot .oc-sec-head, #outcomesRoot .oc-hot-scroll { column-span: all; -webkit-column-span: all; }
+  #outcomesRoot .oc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; align-items: start; }
+  #outcomesRoot .oc-grid > .oc-card { margin: 0; width: auto; min-width: 0; }
+  #outcomesRoot .oc-sec-head, #outcomesRoot .oc-hot-scroll, #outcomesRoot .oc-sport-head { grid-column: 1 / -1; }
 }
 #outcomesRoot .oc-card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 16px; cursor: pointer; }
 #outcomesRoot .oc-card:not(.oc-expanded) .oc-card-head,
@@ -8045,7 +8050,6 @@ html.has-bg-image .chart-container,
 html.has-bg-image .multi-acct-card,
 html.has-bg-image .ma-section-wrap,
 html.has-bg-image .mob-v-card,
-html.has-bg-image .oc-card,
 html.has-bg-image .strategy-card,
 html.has-bg-image .mob-strat-card,
 html.has-bg-image .lb-table,
@@ -8686,3 +8690,55 @@ html.chart-full-open, html.chart-full-open body { overflow: hidden; }
 .spot-small-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px 2px; }
 .spot-small-bar .pc-chip { padding: 5px 10px 5px 8px; font-size: 11.5px; }
 .spot-small-n { font-size: 11px; color: var(--muted); }
+
+/* Outcomes cards are NOT blurred over a wallpaper (removed from the list above). Outcomes shows
+   dozens at once, more than any other page, and each blur is a layer the compositor re-renders
+   on every scrolled frame: the scroll-jank reports from that page were 50-110 ms frames with no
+   script and no layout running at all -- pure painting. A denser panel reads as well. */
+html.has-bg-image .oc-card { background: color-mix(in oklch, var(--panel) 88%, #000 12%); }
+
+/* ── Sports, one sport at a time (src/ocsport.js) ─────────────────────────────── */
+.oc-sport-head {
+  position: relative; overflow: hidden; display: flex; align-items: center; gap: 14px;
+  min-height: 74px; margin: 14px 0 2px; padding: 14px 18px; border-radius: 16px;
+  background: linear-gradient(115deg, var(--sp-a) -20%, var(--sp-b) 55%, #07090c 120%);
+  border: 1px solid color-mix(in oklch, var(--sp-a) 45%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+}
+.oc-sport-art {
+  position: absolute; right: 96px; top: 50%; transform: translateY(-50%);
+  width: 46%; max-width: 360px; height: 150%; color: #fff; opacity: .16; pointer-events: none;
+}
+.oc-sport-glyph {
+  position: relative; display: grid; place-items: center; width: 50px; height: 50px; flex-shrink: 0;
+  font-size: 30px; line-height: 1; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, rgba(255,255,255,.28), rgba(255,255,255,.06) 70%);
+  box-shadow: 0 4px 14px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.25);
+}
+.oc-sport-txt { position: relative; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.oc-sport-name { font-size: 19px; font-weight: 800; letter-spacing: -.01em; color: #fff; text-shadow: 0 1px 8px rgba(0,0,0,.4); }
+.oc-sport-leagues { font-size: 11.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: rgba(255,255,255,.78); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.oc-sport-n {
+  position: relative; margin-left: auto; flex-shrink: 0; font-size: 11px; font-weight: 800; color: #fff;
+  padding: 4px 10px; border-radius: 999px; background: rgba(0,0,0,.32); border: 1px solid rgba(255,255,255,.18);
+}
+/* Each sports card carries its sport's colour down its left edge, so a run of them reads as one
+   group and a stray one from another sport stands out. */
+.oc-card[data-sport], #outcomesRoot .oc-card[data-sport] { border-left: 3px solid var(--sp-a, var(--accent)); }
+.oc-card[data-sport="basketball"] { --sp-a: #f2732b; }
+.oc-card[data-sport="football"]   { --sp-a: #c9822b; }
+.oc-card[data-sport="baseball"]   { --sp-a: #e2453c; }
+.oc-card[data-sport="soccer"]     { --sp-a: #22b35e; }
+.oc-card[data-sport="hockey"]     { --sp-a: #4cb8ef; }
+.oc-card[data-sport="tennis"]     { --sp-a: #b6dc3a; }
+.oc-card[data-sport="motorsport"] { --sp-a: #e8423b; }
+.oc-card[data-sport="combat"]     { --sp-a: #e0344f; }
+.oc-card[data-sport="golf"]       { --sp-a: #5fc25a; }
+.oc-card[data-sport="cricket"]    { --sp-a: #d6b24a; }
+.oc-card[data-sport="esports"]    { --sp-a: #8f6cf0; }
+.oc-card[data-sport="other"]      { --sp-a: #d9a93b; }
+@media (max-width: 768px) {
+  .oc-sport-head { min-height: 62px; padding: 11px 14px; margin: 12px 0 8px; border-radius: 14px; }
+  .oc-sport-glyph { width: 42px; height: 42px; font-size: 25px; }
+  .oc-sport-name { font-size: 16.5px; }
+}

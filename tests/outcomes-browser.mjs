@@ -20,6 +20,7 @@ import { chromium } from 'playwright'
 const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
 const URL  = `http://localhost:${port}/app`
 const HL_HOST = /^https?:\/\/[a-z0-9.-]*hyperliquid[a-z0-9.-]*\.xyz\//i
+const SHOT = (process.argv.find(a => a.startsWith('--shot=')) || '').split('=')[1] || ''   // a folder for a screenshot
 
 const SOON = (() => { const d = new Date(Date.now() + 5 * 3600e3), p = (n) => String(n).padStart(2, '0')
   return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}-${p(d.getUTCHours())}${p(d.getUTCMinutes())}` })()
@@ -40,11 +41,23 @@ const OUTCOME_META = {
     // The NFL winner market, as Hyperliquid lists it: a question whose legs are the teams.
     { outcome: 1487, name: 'template:sportsTournamentParticipant', description: 'participant:Kansas City Chiefs', sideSpecs: YN, quoteToken: 'USDC', venue: 'out' },
     { outcome: 1486, name: 'template:sportsTournamentFallback', description: 'other', sideSpecs: YN, quoteToken: 'USDC', venue: 'out' },
+    // Games, shaped as Hyperliquid sends them (outcomeMeta, 2026-11-15): two NBA games, and a
+    // soccer match whose QUESTION names both sides and whose legs are the teams and a draw.
+    { outcome: 33713, name: 'template:sportsContestWinner', description: 'competition:NBA|contestType:Game|officialSource:National Basketball Association (NBA)|participantA:Washington Wizards|participantB:Houston Rockets|resolutionDeadline:20271123-0000|scheduledStart:20271116-0000|season:2026/2027|shortNameA:WAS|shortNameB:HOU|sport:Basketball',
+      sideSpecs: [{ name: 'template:{shortNameA}' }, { name: 'template:{shortNameB}' }], quoteToken: 'USDC', venue: 'out' },
+    { outcome: 33714, name: 'template:sportsContestWinner', description: 'competition:NBA|contestType:Game|officialSource:National Basketball Association (NBA)|participantA:Los Angeles Lakers|participantB:Charlotte Hornets|resolutionDeadline:20271120-0000|scheduledStart:20271113-0000|season:2026/2027|shortNameA:LAL|shortNameB:CHA|sport:Basketball',
+      sideSpecs: [{ name: 'template:{shortNameA}' }, { name: 'template:{shortNameB}' }], quoteToken: 'USDC', venue: 'out' },
+    { outcome: 33723, name: 'template:sportsContestParticipant2', description: 'participant:Ireland', sideSpecs: YN, quoteToken: 'USDC', venue: 'out' },
+    { outcome: 33724, name: 'template:sportsContestParticipant2', description: 'participant:Kosovo', sideSpecs: YN, quoteToken: 'USDC', venue: 'out' },
+    { outcome: 35423, name: 'template:sportsContestDraw2', description: '', sideSpecs: YN, quoteToken: 'USDC', venue: 'out' },
+    { outcome: 35424, name: 'template:sportsContestFallback', description: 'other', sideSpecs: YN, quoteToken: 'USDC', venue: 'out' },
   ],
   questions: [{ question: 485, name: 'Recurring', description: live('class:priceBucket|underlying:BTC|expiry:20261021-0600|priceThresholds:80063,83330|period:1d'),
     fallbackOutcome: 14733, namedOutcomes: [14734, 14735, 14736], settledNamedOutcomes: [] },
     { question: 200, name: 'template:sportsTournamentWinner', description: 'competition:USA National Football League (NFL)|officialSource:NFL|resolutionDeadline:20270221-1200|season:2027|sport:football',
-      fallbackOutcome: 1486, namedOutcomes: [1487, 1488], settledNamedOutcomes: [] }],
+      fallbackOutcome: 1486, namedOutcomes: [1487, 1488], settledNamedOutcomes: [] },
+    { question: 901, name: 'template:sportsContestResult', description: 'competition:UEFA Nations League|contestType:Match|officialSource:Union of European Football Associations|participantA:Ireland|participantB:Kosovo|resolutionDeadline:20271124-1945|sport:Soccer',
+      fallbackOutcome: 35424, namedOutcomes: [33723, 33724, 35423], settledNamedOutcomes: [] }],
   deployers: [], feeScale: '1.0',
 }
 const MIDS = { BTC: '82000', ETH: '2400', SOL: '105', HYPE: '80' }
@@ -152,6 +165,83 @@ t('an event is found by its title ("also missing new markets": mlb found nothing
 t('with the sport\'s icon', nfl[0]?.ic, '🏈')
 await p.evaluate(() => { const q = document.getElementById('ocSearchInput'); q.value = ''; window.__ocFilter() })
 t('the Trending strip is not a page swipe (it opened the More panel)', await p.evaluate(() => document.querySelector('.oc-hot-scroll').classList.contains('no-swipe')), true)
+
+// "make popular sports like nba, mlb, futboll more eye captive" / "i selected nba finals and it
+// kind of be lost with all types of cards. at the right unrelated sports, more to the right more
+// nba stuff" / "scrolling in the desktop outcomes is not smooth".
+console.log('\n-- Sports: one sport at a time, under its own banner --')
+await p.evaluate(() => { document.getElementById('ocSearchInput').value = ''; window.__ocSetUnd('all'); window.__ocSetCat('sports') })
+const runs = await p.evaluate(() => {
+  const out = []
+  for (const el of document.querySelectorAll('#ocGrid > *')) {
+    if (el.classList.contains('oc-sport-head')) out.push({ head: el.dataset.sport, cards: [] })
+    else if (el.classList.contains('oc-card') && el.dataset.cat === 'sports' && el.offsetParent && out.length) out.at(-1).cards.push(el.dataset.sport)
+  }
+  return out
+})
+t('a banner per sport, the most markets first', runs.map(r => r.head), ['basketball', 'football', 'soccer'])
+if (SHOT) {
+  await p.evaluate(() => document.querySelector('.oc-sport-head')?.scrollIntoView({ block: 'start' }))
+  await p.waitForTimeout(300)
+  await p.screenshot({ path: `${SHOT}/outcomes-sports.png` })
+  // Back to the top: the countdown check below watches on-screen countdowns, and the sports
+  // ones (days away) only change once a minute.
+  await p.evaluate(() => { document.getElementById('ocGrid').scrollIntoView({ block: 'start' }); document.querySelector('.main')?.scrollTo?.(0, 0); window.scrollTo(0, 0) })
+}
+t('and under each banner only that sport — no NFL between two NBA games', runs.every(r => r.cards.length > 0 && r.cards.every(s => s === r.head)), true)
+t('the banners show with Sports chosen, which is when they help', await p.evaluate(() => [...document.querySelectorAll('.oc-sport-head')].every(h => h.style.display !== 'none')), true)
+t('the basketball banner names its league', await p.evaluate(() => document.querySelector('.oc-sport-head[data-sport="basketball"] .oc-sport-leagues')?.textContent), 'NBA')
+t('and carries its drawn court', await p.evaluate(() => !!document.querySelector('.oc-sport-head[data-sport="basketball"] svg.oc-sport-art')), true)
+// Rows, not columns: the two NBA games sit side by side, both right under their banner.
+const nbaRow = await p.evaluate(() => {
+  const g = [...document.querySelectorAll('#ocGrid > .oc-card[data-sport="basketball"]')].filter(c => c.offsetParent).map(c => c.getBoundingClientRect())
+  const h = document.querySelector('.oc-sport-head[data-sport="basketball"]').getBoundingClientRect()
+  return { n: g.length, sameRow: g.length === 2 && Math.abs(g[0].top - g[1].top) < 2, under: g.every(r => r.top >= h.bottom && r.top - h.bottom < 40) }
+})
+t('the grid fills rows left to right, so a sport stays together', nbaRow, { n: 2, sameRow: true, under: true })
+// A sort works inside each sport: its banner ends one run of cards and starts the next.
+await p.selectOption('#ocSortSel', 'soon')
+t('a sort reorders a sport within its own block', await p.evaluate(() => [...document.querySelectorAll('#ocGrid > .oc-card[data-sport="basketball"]')].map(c => c.id)), ['oc-card-33714', 'oc-card-33713'])
+t('and keeps every sport under its banner', await p.evaluate(() => {
+  let cur = null, ok = true
+  for (const el of document.querySelectorAll('#ocGrid > *')) {
+    if (el.classList.contains('oc-sport-head')) cur = el.dataset.sport
+    else if (el.classList.contains('oc-sec-head')) cur = null
+    else if (cur && el.classList.contains('oc-card') && el.offsetParent && el.dataset.sport !== cur) ok = false
+  }
+  return ok
+}), true)
+await p.selectOption('#ocSortSel', 'oi')
+t('a soccer match is named by its teams, not "Sports Contest Result"', await p.evaluate(() =>
+  document.querySelector('.oc-card.oc-event[data-sport="soccer"] .oc-evt-title')?.textContent), 'Ireland vs Kosovo')
+await p.evaluate(() => { const q = document.getElementById('ocSearchInput'); q.value = 'lakers'; window.__ocFilter() })
+t('a search puts the cards in one run, so the banners step aside', await p.evaluate(() => [...document.querySelectorAll('.oc-sport-head')].every(h => h.style.display === 'none')), true)
+await p.evaluate(() => { const q = document.getElementById('ocSearchInput'); q.value = ''; window.__ocSetCat('all') })
+// Over a wallpaper, Outcomes cards are not blurred: dozens of blur layers re-rendered on every
+// scrolled frame were the stalls in the scroll-jank reports.
+t('no wallpaper blur behind an Outcomes card', await p.evaluate(() => {
+  document.documentElement.classList.add('has-bg-image')
+  const v = getComputedStyle(document.querySelector('#ocGrid .oc-card')).backdropFilter
+  document.documentElement.classList.remove('has-bg-image')
+  return v
+}), 'none')
+
+console.log('\n-- a price tick writes only what changed --')
+await p.waitForTimeout(5500)   // let the first tick land: it fills in values that were still "—"
+const writes = await p.evaluate(() => new Promise((res) => {
+  const grid = document.getElementById('ocGrid')
+  const seen = {}
+  const mo = new MutationObserver((ms) => { for (const m of ms) {
+    const el = m.target.nodeType === 3 ? m.target.parentElement : m.target
+    const id = el?.id || el?.closest?.('[id]')?.id || '?'
+    if (/^oc-(compact-)?cd-/.test(id)) continue
+    const k = m.type + ':' + id.replace(/\d+/g, 'N') + (m.attributeName ? '@' + m.attributeName : '')
+    seen[k] = (seen[k] || 0) + 1
+  } })
+  mo.observe(grid, { childList: true, characterData: true, subtree: true, attributes: true })
+  setTimeout(() => { mo.disconnect(); res(seen) }, 11000)   // two 5-second ticks at unchanged prices
+}))
+t('two ticks at unchanged prices rewrite nothing on the cards', writes, {})
 
 console.log('\n-- countdowns tick without replacing anything --')
 const counts = await p.evaluate(() => new Promise((res) => {

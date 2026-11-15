@@ -285,6 +285,7 @@ import { groupTrades, countTrades, closedTrades, tradeWindows } from './tradegro
 import { initSectorAlloc, loadSectorMeta, holdingsSectors, sectorAllocHtml, wireSectorAlloc } from './sectoralloc.js'
 import { flipPlan, flipOutcome } from './posflip.js'
 import { hideSmallOn, setHideSmall, splitSmall, hideSmallBar } from './spotsmall.js'
+import { sportOf, leagueOf, sportHeadHtml, sportOrder, matchTitle, SPORT_ORDER } from './ocsport.js'
 import { PERIOD_SPAN, PERIOD_WINDOW, sliceSince, stitchHistories, timeTicks, fmtPointTime, fmtRange } from './portchart.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
@@ -38297,25 +38298,26 @@ async function _loadOcPrices(outcomes, info) {
       chanceEl.textContent = (yesPx * 100).toFixed(0) + '%'
       chanceEl.className   = 'oc-stat-val ' + (yesPx > 0.5 ? 'pos' : 'neg')
     }
+    // The same write-only-on-change setters the 5-second refresh uses, so that refresh finds
+    // what was written here and has nothing to redo.
     const compactPct = document.getElementById('oc-compact-pct-' + o.outcome)
     if (compactPct) {
-      compactPct.textContent = (yesPx * 100).toFixed(0) + '%'
-      compactPct.className   = 'oc-compact-pct ' + (yesPx > 0.5 ? 'pos' : 'neg')
+      _ocSetText(compactPct, (yesPx * 100).toFixed(0) + '%')
+      _ocSetClass(compactPct, 'oc-compact-pct ' + (yesPx > 0.5 ? 'pos' : 'neg'))
     }
     const evtPct = document.getElementById('oc-evt-pct-' + o.outcome)
     if (evtPct) {
-      evtPct.textContent = (yesPx * 100).toFixed(0) + '%'
+      _ocSetText(evtPct, (yesPx * 100).toFixed(0) + '%')
       evtPct.style.color = yesPx >= 0.5 ? 'var(--green, #00e5a0)' : 'var(--fg)'
       const row = evtPct.closest('.oc-evt-row')
       if (row) row.dataset.p = yesPx
     }
-    const hotPct = document.getElementById('oc-hot-pct-' + o.outcome)
-    if (hotPct) hotPct.textContent = (yesPx * 100).toFixed(0) + '%'
+    _ocSetText(document.getElementById('oc-hot-pct-' + o.outcome), (yesPx * 100).toFixed(0) + '%')
     const _od = _ocDesc(o), s0 = esc(_ocSideName(o.sideSpecs?.[0]?.name, 'Yes', _od)), s1 = esc(_ocSideName(o.sideSpecs?.[1]?.name, 'No', _od))
     const miniY = document.getElementById('oc-mini-yes-' + o.outcome)
-    if (miniY) miniY.innerHTML = _ocBetFace(s0, yesPx)
+    if (miniY) _ocSetHtml(miniY, _ocBetFace(s0, yesPx))
     const miniN = document.getElementById('oc-mini-no-' + o.outcome)
-    if (miniN) miniN.innerHTML = _ocBetFace(s1, noPx)
+    if (miniN) _ocSetHtml(miniN, _ocBetFace(s1, noPx))
   }))
   _ocEvtResortAll()
 }
@@ -38520,9 +38522,10 @@ function _ocChartDecor() {
 function _ocSetCurrentPx(outcome, mid, targetPrice) {
   const el = document.getElementById('oc-current-' + outcome)
   if (!el || !(mid > 0)) return
-  el.textContent = '$' + fmtPrice(mid)
+  // Only when it changed: this runs for every market on every price tick (see _ocSetText).
+  _ocSetText(el, '$' + fmtPrice(mid))
   const t = parseFloat(targetPrice)
-  el.className = 'oc-price-current' + (Number.isFinite(t) && t > 0 ? (mid >= t ? ' oc-above' : ' oc-below') : '')
+  _ocSetClass(el, 'oc-price-current' + (Number.isFinite(t) && t > 0 ? (mid >= t ? ' oc-above' : ' oc-below') : ''))
 }
 
 // Market lifetime from the description's period tag ("1H", "1D", "7D"), in ms. `M` is read
@@ -38689,6 +38692,11 @@ async function _initOcCharts(outcomes) {
 }
 
 // Poll live prices every 30s and update charts + DOM
+function _ocSetText(el, t) { if (el && el.textContent !== t) el.textContent = t }
+function _ocSetClass(el, c) { if (el && el.className !== c) el.className = c }
+// innerHTML reads back normalised, so compare with what was last written instead.
+function _ocSetHtml(el, h) { if (el && el._ocHtml !== h) { el._ocHtml = h; el.innerHTML = h } }
+
 async function _refreshOcPrices() {
   if (_hlLimited()) return   // global 429 breaker
   const outcomes = _ocLiveOutcomes
@@ -38709,13 +38717,14 @@ async function _refreshOcPrices() {
       if (String(o.outcome) === String(_ocExpandedId)) window.__ocUpdCalc(o.outcome)
 
       // Update YES/NO buttons
+      // Every write below is skipped when the value has not changed. On desktop the cards share
+      // one grid, and a write to any of them -- even of the same text -- dirties the layout of
+      // the page; 76 markets x 5 writes, every 5 s, while you scroll ("not smooth").
       const updBtn = (id, px) => {
         const btn = document.getElementById(id)
         if (!btn) return
-        const pctEl   = btn.querySelector('.oc-sel-pct')
-        const priceEl = btn.querySelector('.oc-sel-price')
-        if (pctEl)   pctEl.textContent   = (px * 100).toFixed(0) + '%'
-        if (priceEl) priceEl.textContent = (px * 100).toFixed(3) + '¢'
+        _ocSetText(btn.querySelector('.oc-sel-pct'), (px * 100).toFixed(0) + '%')
+        _ocSetText(btn.querySelector('.oc-sel-price'), (px * 100).toFixed(3) + '¢')
       }
       updBtn('oc-sel-yes-' + o.outcome, yesPx)
       updBtn('oc-sel-no-'  + o.outcome, noPx)
@@ -38723,37 +38732,38 @@ async function _refreshOcPrices() {
       // Update chance stat
       const chanceEl = document.getElementById('oc-chance-' + o.outcome)
       if (chanceEl) {
-        chanceEl.textContent = (yesPx * 100).toFixed(0) + '%'
-        chanceEl.className   = 'oc-stat-val ' + (yesPx > 0.5 ? 'pos' : 'neg')
+        _ocSetText(chanceEl, (yesPx * 100).toFixed(0) + '%')
+        _ocSetClass(chanceEl, 'oc-stat-val ' + (yesPx > 0.5 ? 'pos' : 'neg'))
       }
       const compactPct2 = document.getElementById('oc-compact-pct-' + o.outcome)
       if (compactPct2) {
-        compactPct2.textContent = (yesPx * 100).toFixed(0) + '%'
-        compactPct2.className   = 'oc-compact-pct ' + (yesPx > 0.5 ? 'pos' : 'neg')
+        _ocSetText(compactPct2, (yesPx * 100).toFixed(0) + '%')
+        _ocSetClass(compactPct2, 'oc-compact-pct ' + (yesPx > 0.5 ? 'pos' : 'neg'))
       }
       const _od = _ocDesc(o), s0 = esc(_ocSideName(o.sideSpecs?.[0]?.name, 'Yes', _od)), s1 = esc(_ocSideName(o.sideSpecs?.[1]?.name, 'No', _od))
       const miniY2 = document.getElementById('oc-mini-yes-' + o.outcome)
       // Same face as the first updater -- this one runs on every refresh, so leaving it
       // on the old cent form would repaint the buttons back a second later.
-      if (miniY2) miniY2.innerHTML = _ocBetFace(s0, yesPx)
+      if (miniY2) _ocSetHtml(miniY2, _ocBetFace(s0, yesPx))
       const miniN2 = document.getElementById('oc-mini-no-' + o.outcome)
-      if (miniN2) miniN2.innerHTML = _ocBetFace(s1, 1 - yesPx)
+      if (miniN2) _ocSetHtml(miniN2, _ocBetFace(s1, 1 - yesPx))
       const evtPct2 = document.getElementById('oc-evt-pct-' + o.outcome)
       if (evtPct2) {
-        evtPct2.textContent = (yesPx * 100).toFixed(0) + '%'
-        evtPct2.style.color = yesPx >= 0.5 ? 'var(--green, #00e5a0)' : 'var(--fg)'
+        _ocSetText(evtPct2, (yesPx * 100).toFixed(0) + '%')
+        const col = yesPx >= 0.5 ? 'var(--green, #00e5a0)' : 'var(--fg)'
+        if (evtPct2.style.color !== col) evtPct2.style.color = col
         const row2 = evtPct2.closest('.oc-evt-row')
-        if (row2) row2.dataset.p = yesPx
+        if (row2 && row2.dataset.p !== String(yesPx)) row2.dataset.p = yesPx
       }
-      const hotPct2 = document.getElementById('oc-hot-pct-' + o.outcome)
-      if (hotPct2) hotPct2.textContent = (yesPx * 100).toFixed(0) + '%'
+      _ocSetText(document.getElementById('oc-hot-pct-' + o.outcome), (yesPx * 100).toFixed(0) + '%')
 
       // Update live dot — only move the last real data point, not future nulls
       const chart = _ocCharts[o.outcome]
-      if (chart) {
+      // A collapsed desktop card keeps its chart display:none; redrawing it draws nothing.
+      if (chart && chart.canvas?.offsetParent) {
         const data = chart.data.datasets[0].data
         const idx  = chart._dataIdx ?? data.length - 1
-        if (idx >= 0) {
+        if (idx >= 0 && data[idx] !== yesPx * 100) {
           data[idx] = yesPx * 100
           chart.update('none')
         }
@@ -39158,6 +39168,11 @@ function _ocSectionize() {
       // not "Sports Tournament Winner", which is what our template calls it.
       sub   = qd.sport ? _ocSportLabel(qd.sport) : 'Sports'
       title = [qd.season, qd.competition].filter(Boolean).join(' ') || 'Tournament winner'
+    } else if (/^template:sports/i.test(q.name || '') && matchTitle(qd.participantA && qd.participantB ? [qd.participantA, qd.participantB] : members.map(o => _ocLegName(o)))) {
+      // A match: "Denmark vs Norway", not the template's "Sports Contest Result" (src/ocsport.js).
+      // The question names both sides; failing that, its legs do (less the Draw).
+      sub   = qd.competition || (qd.sport ? _ocSportLabel(qd.sport) : 'Match')
+      title = matchTitle(qd.participantA && qd.participantB ? [qd.participantA, qd.participantB] : members.map(o => _ocLegName(o)))
     } else if (String(q.name || '').startsWith('template:')) {
       title = q.name.slice('template:'.length).replace(/([a-z])([A-Z])/g, '$1 $2')
       title = title.charAt(0).toUpperCase() + title.slice(1)
@@ -39186,6 +39201,11 @@ function _ocSectionize() {
     const card = document.createElement('div')
     card.className = 'oc-card oc-event'
     card.dataset.cat = cat
+    if (cat === 'sports') {
+      card.dataset.sport = sportOf(qd.sport, qd.competition, q.name, title, sub)
+      const lg = leagueOf(qd.competition, title, sub, q.name)
+      if (lg) card.dataset.league = lg
+    }
     // Sorting by time reads this rather than the countdown text, which is a moving target
     // and is "-" until the first tick.
     const evtCloseMs = evtDeadline ? _expiryDate(evtDeadline)?.getTime() : null
@@ -39298,7 +39318,8 @@ function _ocSectionize() {
     h.className = 'oc-sec-head'
     h.innerHTML = `<span class="oc-sec-emoji">${emoji}</span> ${label} <span class="oc-sec-count">${list.length}</span>`
     frag.appendChild(h)
-    list.forEach(c => frag.appendChild(c))
+    if (cat === 'sports') _ocAppendSports(frag, list)
+    else list.forEach(c => frag.appendChild(c))
   }
   // grouped + junk member cards parked at the end (hidden; expand still works)
   for (const c of cards) {
@@ -39308,6 +39329,22 @@ function _ocSectionize() {
   grid.innerHTML = ''
   grid.appendChild(frag)
   _ocSectionVis()
+}
+
+// Sports, one sport at a time under its own banner (src/ocsport.js): the multi-column flow used to
+// put NBA in the first column, NFL and soccer in the next, and more NBA two columns over.
+function _ocAppendSports(frag, list) {
+  const by = new Map()
+  for (const c of list) { const k = c.dataset.sport || 'other'; if (!by.has(k)) by.set(k, []); by.get(k).push(c) }
+  const kinds = [...by.keys()].sort((a, b) => (by.get(b).length - by.get(a).length) || (SPORT_ORDER.indexOf(a) - SPORT_ORDER.indexOf(b)))
+  for (const k of kinds) {
+    const cs = by.get(k)
+    const t = document.createElement('template')
+    t.innerHTML = sportHeadHtml(k, cs.length, cs.map(c => c.dataset.league), esc)
+    frag.appendChild(t.content.firstElementChild)
+    sportOrder(cs.map(c => ({ el: c, isEvent: c.classList.contains('oc-event'), oi: Number(c.dataset.ocOi ?? 0), close: Number(c.dataset.ocClose) || Infinity })))
+      .forEach(x => frag.appendChild(x.el))
+  }
 }
 
 // Sort an event card's rows: by odds (desc, default) or by name
@@ -39361,6 +39398,12 @@ function _ocSectionVis() {
   // which list everything, would otherwise sit over the one market chosen.
   const show = _ocActiveCat === 'all' && _ocActiveUnd === 'all' && !(document.getElementById('ocSearchInput')?.value ?? '').trim()
   grid.querySelectorAll('.oc-sec-head, .oc-hot-scroll').forEach(el => { el.style.display = show ? '' : 'none' })
+  // A sport's banner stays when Sports itself is the filter -- that is when it helps most. Not
+  // under a search or a market chip, which are about one thing. A sort is fine: __ocSort sorts
+  // within each run of cards, and a banner ends a run, so every sport sorts in its own block.
+  const showSport = (_ocActiveCat === 'all' || _ocActiveCat === 'sports') && _ocActiveUnd === 'all'
+    && !(document.getElementById('ocSearchInput')?.value ?? '').trim()
+  grid.querySelectorAll('.oc-sport-head').forEach(el => { el.style.display = showSport ? '' : 'none' })
 }
 
 async function renderOutcomes() {
@@ -39435,7 +39478,9 @@ async function renderOutcomes() {
       // of its own, and without this every one of them sorted as "no closing time".
       const closeMs = _expiryDate(_ocDeadlineOf(o, d))?.getTime()
       const st      = _ocStats.get(Number(o.outcome))
-      return `<div class="oc-card" id="oc-card-${o.outcome}" data-cat="${cat}" data-und="${esc(_ocUndKey(full.underlying))}" data-und-raw="${esc(full.underlying ?? '')}" data-q="${esc(searchQ)}"${
+      const spK     = cat === 'sports' ? sportOf(full.sport, full.competition, o.name, line1, line2) : null
+      const spL     = spK ? leagueOf(full.competition, line1, line2, o.name) : null
+      return `<div class="oc-card" id="oc-card-${o.outcome}" data-cat="${cat}"${spK ? ` data-sport="${spK}"` : ''}${spL ? ` data-league="${esc(spL)}"` : ''} data-und="${esc(_ocUndKey(full.underlying))}" data-und-raw="${esc(full.underlying ?? '')}" data-q="${esc(searchQ)}"${
         closeMs ? ` data-oc-close="${closeMs}"` : ''}${st ? ` data-oc-oi="${st.oi}" data-oc-vol="${st.vol}"` : ''} onclick="window.__ocExpandCard(${o.outcome})">
         <div class="oc-compact-info">
           ${d.underlying ? `<span class="oc-compact-icon">${_coinIconHtml(d.underlying)}</span>` : _ocTopicIcon(o.name, line1, line2, full.competition, full.sport, full.award, full.institution)}

@@ -220,16 +220,16 @@ console.log(String.fromCharCode(10) + '-- the desktop masonry stays on the deskt
   // `css` at the top of this file is already CRLF-normalised; a newline in a needle would
   // never match the raw file otherwise.
   const CSS = css
-  // Every multicol declaration must live inside the desktop block. Checked by slicing that
-  // block out and requiring the whole set to be inside it — brace-counting across a 7,500
-  // line stylesheet is the kind of clever that quietly stops working.
-  const mq = CSS.indexOf('@media (min-width: 769px) {\n  #outcomesRoot .oc-grid { display: block;')
-  const desktopBlock = mq < 0 ? '' : CSS.slice(mq, CSS.indexOf('\n}', mq) + 2)
-  const stray = ['column-width: 330px', 'column-span: all', 'break-inside: avoid']
-    .filter(d => CSS.includes(d) && !desktopBlock.includes(d))
-  t('no multicol declaration is left outside the desktop block', stray.length === 0, stray.join(' | '))
-  t('the multi-column rules are behind a desktop media query',
-    /@media \(min-width: 769px\) \{[\s\S]{0,120}#outcomesRoot \.oc-grid \{ display: block; column-width/.test(CSS))
+  // The desktop grid was multi-column masonry; it is now a row-major grid, because columns
+  // filled top to bottom and scattered one sport across the page ("i selected nba finals and
+  // it kind of be lost"). The scoping rule is unchanged: the desktop layout must not reach the
+  // phone, so it stays behind the desktop media query — and no multicol declaration is left
+  // anywhere (comments aside), since a `column-span` spanner is what WebKit painted over cards.
+  const decls = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+  const stray = ['column-width:', 'column-span:', 'break-inside: avoid'].filter(d => decls.includes(d))
+  t('no multicol declaration is left at all', stray.length === 0, stray.join(' | '))
+  t('the desktop grid is behind a desktop media query',
+    /@media \(min-width: 769px\) \{[\s\S]{0,120}#outcomesRoot \.oc-grid \{ display: grid;/.test(CSS))
   t('and the phone keeps the flex column it was written with',
     CSS.includes('#mobPredictOverlay .oc-grid { display: flex'))
   t('why the scope matters is written down', CSS.includes('SCOPED TO DESKTOP, and it has to be'))
