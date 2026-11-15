@@ -1,33 +1,61 @@
-// Work that can wait for the page to stop scrolling.
-//
-// "scrolling is still not very smooth" — the scroll-jank report from that session (desktop,
-// 2026-11-15 19:03 UTC) had nothing on the page rewritten at all; its two big stalls (404 ms and
-// 285 ms) were IndexedDB reads finishing: a wallet's whole saved trade history being decoded on
-// the main thread, which happens once per wallet after a page load. Nothing about it is urgent
-// to the millisecond, and decoding it mid-swipe is a frozen frame. So it waits for a pause.
-//
-// The wait is bounded: a page scrolled without a break still gets its data, just later.
+/**
+ * Hold a repaint while the person is scrolling; run it when they stop.
+ *
+ * Reported: "currently when scrolling down for example its kinda buggy" / "it stutters". The
+ * scroll-jank telemetry (src/scrolljank.js) settled it from the user's own browser: frames drew in
+ * 6ms, and the stutter was JavaScript — 88 to 885ms tasks with ~1,100 nodes rewritten in a two-
+ * second scroll. All Accounts repaints on every live push from any wallet, coalesced to one per
+ * 500ms, and on desktop that repaint rebuilds the whole Overview and every wallet card from
+ * scratch. Ten wallets pushing prices means one of those rebuilds lands in nearly every scroll.
+ *
+ * The data keeps updating; only putting it on screen waits, and only while a scroll is actually
+ * moving. A quarter second after the last scroll event the latest paint runs once — repeated
+ * requests for the same key collapse into it, so nothing is painted twice for one pause.
+ */
+export const SCROLL_IDLE_MS = 250
 
-let last = 0
-if (typeof addEventListener === 'function') {
-  // Capture, so a scroll inside any container counts, not only the window's.
-  addEventListener('scroll', () => { last = Date.now() }, { passive: true, capture: true })
-}
+export function createScrollIdle({ now = () => performance.now(), setTimer = setTimeout, idleMs = SCROLL_IDLE_MS } = {}) {
+  let lastScroll = -Infinity
+  const pending = new Map()   // key -> fn (latest wins)
+  let timer = null
 
-export const scrolledAgo = (now = Date.now()) => now - last
-
-/** Resolves once nothing has scrolled for `quietMs`, or after `maxWaitMs` regardless. */
-export function whenScrollIdle({ quietMs = 300, maxWaitMs = 6000, now = () => Date.now(), wait = (ms) => new Promise(r => setTimeout(r, ms)) } = {}) {
-  const t0 = now()
-  const step = async () => {
-    for (;;) {
-      const since = now() - last
-      if (since >= quietMs || now() - t0 >= maxWaitMs) return
-      await wait(Math.max(16, quietMs - since))
-    }
+  const flush = () => {
+    timer = null
+    const wait = lastScroll + idleMs - now()
+    if (wait > 0) { timer = setTimer(flush, wait); return }
+    const fns = [...pending.values()]
+    pending.clear()
+    for (const fn of fns) { try { fn() } catch {} }
   }
-  return step()
+
+  return {
+    /** Call from a scroll listener. */
+    noteScroll() { lastScroll = now() },
+    /** True while a scroll moved within the last idleMs. */
+    scrolling() { return now() - lastScroll < idleMs },
+    /** Run `fn` now if nobody is scrolling, else once when they stop. Same key = latest only. */
+    run(key, fn) {
+      if (!(now() - lastScroll < idleMs) && !pending.size) { fn(); return true }
+      pending.set(key, fn)
+      if (!timer) timer = setTimer(flush, Math.max(0, lastScroll + idleMs - now()))
+      return false
+    },
+  }
 }
 
-// For tests: pretend a scroll happened at `t`.
-export const _markScroll = (t = Date.now()) => { last = t }
+/**
+ * Await a pause in scrolling, for work that is not a repaint but still freezes a frame. Added
+ * for the stored-history read: decoding a wallet's whole saved history from IndexedDB is a
+ * 300-400 ms main-thread task (scroll-jank report, 2026-11-15 19:03 UTC). Bounded, so a page
+ * scrolled without a break still gets its data — later, not never.
+ */
+export function whenScrollIdle({ si = scrollIdle, maxWaitMs = 6000, now = () => performance.now(), wait = (ms) => new Promise(r => setTimeout(r, ms)) } = {}) {
+  const t0 = now()
+  return (async () => { while (si.scrolling() && now() - t0 < maxWaitMs) await wait(50) })()
+}
+
+/** The app's one instance, fed by a passive capture listener so every scroller counts. */
+export const scrollIdle = createScrollIdle()
+if (typeof window !== 'undefined') {
+  try { addEventListener('scroll', () => scrollIdle.noteScroll(), { capture: true, passive: true }) } catch {}
+}
