@@ -286,6 +286,7 @@ import { initSectorAlloc, loadSectorMeta, holdingsSectors, sectorAllocHtml, wire
 import { flipPlan, flipOutcome } from './posflip.js'
 import { hideSmallOn, setHideSmall, splitSmall, hideSmallBar } from './spotsmall.js'
 import { sportOf, leagueOf, sportHeadHtml, sportOrder, matchTitle, SPORT_ORDER } from './ocsport.js'
+import { whenScrollIdle } from './scrollidle.js'
 import { PERIOD_SPAN, PERIOD_WINDOW, sliceSince, stitchHistories, timeTicks, fmtPointTime, fmtRange } from './portchart.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
@@ -35939,6 +35940,10 @@ function _histSet(key, val) {
 // Pull a wallet's stored history into memory before the freshness check reads it. Costs
 // one DB read per address per session; after that the Map answers.
 async function _histEnsure(key) {
+  if (_maHistCache2.has(key)) return _maHistCache2.get(key)
+  // Decoding a wallet's whole stored history is a 300-400 ms main-thread task (scroll-jank
+  // telemetry, 2026-11-15): wait for a pause in scrolling rather than freeze one (src/scrollidle.js).
+  await whenScrollIdle()
   if (_maHistCache2.has(key)) return _maHistCache2.get(key)
   const stored = await _histDbGet(key)
   // Re-check: a concurrent wallet in the same fan may have filled this slot while we waited.
