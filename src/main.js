@@ -285,8 +285,9 @@ import { groupTrades, countTrades, closedTrades, tradeWindows } from './tradegro
 import { initSectorAlloc, loadSectorMeta, holdingsSectors, sectorAllocHtml, wireSectorAlloc } from './sectoralloc.js'
 import { flipPlan, flipOutcome } from './posflip.js'
 import { hideSmallOn, setHideSmall, splitSmall, hideSmallBar } from './spotsmall.js'
-import { sportOf, leagueOf, sportHeadHtml, sportOrder, matchTitle, SPORT_ORDER } from './ocsport.js'
+import { sportOf, leagueOf, sportHeadHtml, sportOrder, matchTitle, SPORT_ORDER, SPORTS, sportArt } from './ocsport.js'
 import { whenScrollIdle } from './scrollidle.js'
+import { catHeadHtml, groupHeadHtml, groupKeyOf, foldShows, CAT_THEME } from './ocfold.js'
 import { PERIOD_SPAN, PERIOD_WINDOW, sliceSince, stitchHistories, timeTicks, fmtPointTime, fmtRange } from './portchart.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
@@ -38365,6 +38366,7 @@ async function _loadOcPrices(outcomes, info) {
     if (miniN) _ocSetHtml(miniN, _ocBetFace(s1, noPx))
   }))
   _ocEvtResortAll()
+  _ocHotLeaders()
 }
 
 // An event with no underlying coin still needs a face. The Fed rate decision is the live
@@ -38820,6 +38822,7 @@ async function _refreshOcPrices() {
     } catch {}
   }))
   _ocEvtResortAll()
+  _ocHotLeaders()
 }
 
 // A leg's parent question. A sports leg's own description is just "participant:Arsenal" --
@@ -39345,11 +39348,24 @@ function _ocSectionize() {
     const q  = c.querySelector('.oc-compact-q, .oc-evt-title')?.textContent ?? ''
     const vol = Number(c.dataset.ocVol ?? 0)
     const d  = document.createElement('div')
-    d.className = 'oc-hot-card oc-hot-' + (idx % 4)
+    // "make trending cards also more showy": each wears its market's colours (its sport's, or its
+    // section's), the sport's drawn field, its icon and its rank; an event shows who leads it.
+    const sp = c.dataset.sport ? SPORTS[c.dataset.sport] : null
+    const th = sp ?? CAT_THEME[c.dataset.cat] ?? CAT_THEME.other
+    const kicker = sp ? (c.dataset.league || sp.label) : (_OC_SECTIONS.find(s => s[0] === c.dataset.cat)?.[2] ?? '')
+    const ic = c.querySelector('.oc-compact-icon')?.innerHTML ?? ''
+    d.className = 'oc-hot-card oc-hot-' + (idx % 4) + ' oc-hot-themed'
     d.dataset.hot = id
-    d.innerHTML = `<div class="oc-hot-q">${esc(q)}</div>${isEvt ? '' : `<div class="oc-hot-pct" id="oc-hot-pct-${id}">—</div>`}<div class="oc-hot-vol">${ocFmtUsd(vol)} Vol.</div>`
+    d.style.setProperty('--sp-a', th.a); d.style.setProperty('--sp-b', th.b)
+    d.innerHTML = (c.dataset.sport ? sportArt(c.dataset.sport) : '') +
+      `<div class="oc-hot-top"><span class="oc-hot-rank">#${idx + 1}</span><span class="oc-hot-kick">${esc(kicker)}</span>${ic ? `<span class="oc-hot-ic">${ic}</span>` : ''}</div>` +
+      `<div class="oc-hot-q">${esc(q)}</div>` +
+      (isEvt ? `<div class="oc-hot-lead" id="oc-hot-lead-${id}"><span class="oc-hot-lead-n">—</span><b class="oc-hot-lead-p"></b></div>`
+             : `<div class="oc-hot-pct" id="oc-hot-pct-${id}">—</div>`) +
+      `<div class="oc-hot-vol">${ocFmtUsd(vol)} Vol.</div>`
     d.onclick = () => {
       if (c.dataset.cat) window.__ocToggleSec(c.dataset.cat, true)   // its section may be folded
+      if (c.dataset.cat && c.dataset.sub) window.__ocToggleSub(c.dataset.cat, c.dataset.sub, true)   // and its group
       c.scrollIntoView({ behavior: 'smooth', block: 'center' })
       if (!isEvt) setTimeout(() => window.__ocExpandCard(parseInt(id)), 350)
     }
@@ -39366,10 +39382,10 @@ function _ocSectionize() {
     h.setAttribute('role', 'button'); h.tabIndex = 0
     h.onclick = () => window.__ocToggleSec(cat)
     h.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); window.__ocToggleSec(cat) } }
-    h.innerHTML = `<span class="oc-sec-emoji">${emoji}</span> ${label} <span class="oc-sec-count">${list.length}</span><span class="oc-sec-chev" aria-hidden="true"></span>`
+    h.classList.add('oc-cat-head')
+    h.innerHTML = catHeadHtml({ cat, emoji, label, count: list.length, preview: _ocSecPreview(cat, list) }, esc)
     frag.appendChild(h)
-    if (cat === 'sports') _ocAppendSports(frag, list)
-    else list.forEach(c => frag.appendChild(c))
+    _ocAppendGroups(frag, cat, list)
   }
   // grouped + junk member cards parked at the end (hidden; expand still works)
   for (const c of cards) {
@@ -39384,18 +39400,47 @@ function _ocSectionize() {
 
 // Sports, one sport at a time under its own banner (src/ocsport.js): the multi-column flow used to
 // put NBA in the first column, NFL and soccer in the next, and more NBA two columns over.
-function _ocAppendSports(frag, list) {
+// A section's groups (src/ocfold.js): a sport, or the coin/asset a market is about. Each group is a
+// banner that folds; a section with a single group (or none) lists its cards directly.
+function _ocGroupsOf(cat, list) {
   const by = new Map()
-  for (const c of list) { const k = c.dataset.sport || 'other'; if (!by.has(k)) by.set(k, []); by.get(k).push(c) }
-  const kinds = [...by.keys()].sort((a, b) => (by.get(b).length - by.get(a).length) || (SPORT_ORDER.indexOf(a) - SPORT_ORDER.indexOf(b)))
-  for (const k of kinds) {
+  for (const c of list) {
+    const k = groupKeyOf(cat, { sport: c.dataset.sport, und: c.dataset.und })
+    if (!by.has(k)) by.set(k, []); by.get(k).push(c)
+  }
+  return by
+}
+function _ocSecPreview(cat, list) {
+  const by = _ocGroupsOf(cat, list)
+  const keys = [...by.keys()].filter(Boolean).sort((a, b) => by.get(b).length - by.get(a).length)
+  if (cat === 'sports') return keys.map(k => SPORTS[k]?.label ?? k)
+  if (keys.length) return keys
+  // Ungrouped: the biggest markets by name, so a folded section still says what is in it.
+  return [...list].sort((a, b) => Number(b.dataset.ocOi ?? 0) - Number(a.dataset.ocOi ?? 0)).slice(0, 2)
+    .map(c => (c.querySelector('.oc-evt-title, .oc-compact-q')?.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 42))
+}
+function _ocAppendGroups(frag, cat, list) {
+  const by = _ocGroupsOf(cat, list)
+  if (by.size < 2 || (by.size === 1 && by.has(null))) { list.forEach(c => { delete c.dataset.sub; frag.appendChild(c) }); return }
+  const keys = [...by.keys()].sort((a, b) => (a === null) - (b === null) || (by.get(b).length - by.get(a).length)
+    || (cat === 'sports' ? SPORT_ORDER.indexOf(a) - SPORT_ORDER.indexOf(b) : String(a).localeCompare(String(b))))
+  for (const k of keys) {
     const cs = by.get(k)
+    if (k === null) { cs.forEach(c => { delete c.dataset.sub; frag.appendChild(c) }); continue }
     const t = document.createElement('template')
-    t.innerHTML = sportHeadHtml(k, cs.length, cs.map(c => c.dataset.league), esc)
-    t.content.firstElementChild.dataset.cat = 'sports'   // folds with the Sports section
-    frag.appendChild(t.content.firstElementChild)
-    sportOrder(cs.map(c => ({ el: c, isEvent: c.classList.contains('oc-event'), oi: Number(c.dataset.ocOi ?? 0), close: Number(c.dataset.ocClose) || Infinity })))
-      .forEach(x => frag.appendChild(x.el))
+    t.innerHTML = cat === 'sports'
+      ? sportHeadHtml(k, cs.length, cs.map(c => c.dataset.league), esc)
+      : groupHeadHtml({ cat, key: k, label: _ocUnderLabel(cs[0].dataset.undRaw || k), count: cs.length, icon: cs[0].dataset.undRaw ? _coinIconHtml(cs[0].dataset.undRaw) : '' }, esc)
+    const head = t.content.firstElementChild
+    head.dataset.cat = cat                    // folds with its section
+    head.setAttribute('role', 'button'); head.tabIndex = 0
+    head.onclick = () => window.__ocToggleSub(cat, k)
+    head.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); window.__ocToggleSub(cat, k) } }
+    frag.appendChild(head)
+    const ordered = cat === 'sports'
+      ? sportOrder(cs.map(c => ({ el: c, isEvent: c.classList.contains('oc-event'), oi: Number(c.dataset.ocOi ?? 0), close: Number(c.dataset.ocClose) || Infinity }))).map(x => x.el)
+      : cs
+    ordered.forEach(c => { c.dataset.sub = k; frag.appendChild(c) })
   }
 }
 
@@ -39462,6 +39507,18 @@ window.__ocEvtSort = function(evId, btn) {
   _ocEvtApplySort(wrap)
 }
 
+// A Trending event card names its leader ("Arsenal 34%"), read off the event's own rows.
+function _ocHotLeaders() {
+  for (const el of document.querySelectorAll('.oc-hot-lead[id^="oc-hot-lead-"]')) {
+    const evt = document.getElementById('oc-card-' + el.id.slice('oc-hot-lead-'.length))
+    let best = null, bp = -1
+    for (const r of evt?.querySelectorAll('.oc-evt-row') ?? []) { const v = parseFloat(r.dataset.p || 0); if (v > bp) { bp = v; best = r } }
+    if (!best || !(bp > 0)) continue
+    _ocSetText(el.querySelector('.oc-hot-lead-n'), best.querySelector('.oc-evt-name')?.textContent ?? '')
+    _ocSetText(el.querySelector('.oc-hot-lead-p'), (bp * 100).toFixed(0) + '%')
+  }
+}
+
 // After a price tick, re-sort odds-ordered rows — only if the order changed
 function _ocEvtResortAll() {
   document.querySelectorAll('.oc-evt-rows').forEach(wrap => {
@@ -39493,16 +39550,12 @@ function _ocSectionVis() {
   // which list everything, would otherwise sit over the one market chosen.
   const show = _ocActiveCat === 'all' && _ocActiveUnd === 'all' && !(document.getElementById('ocSearchInput')?.value ?? '').trim()
   grid.querySelectorAll('.oc-sec-head, .oc-hot-scroll').forEach(el => { el.style.display = show ? '' : 'none' })
-  // A sport's banner stays when Sports itself is the filter -- that is when it helps most. Not
-  // under a search or a market chip, which are about one thing. A sort is fine: __ocSort sorts
-  // within each run of cards, and a banner ends a run, so every sport sorts in its own block.
-  const showSport = (_ocActiveCat === 'all' || _ocActiveCat === 'sports') && _ocActiveUnd === 'all'
-    && !(document.getElementById('ocSearchInput')?.value ?? '').trim()
-  grid.querySelectorAll('.oc-sport-head').forEach(el => { el.style.display = showSport ? '' : 'none' })
-  // Folded sections ("make the outcomes markets be unextended initially ... so the user can see
-  // all types of outcomes markets"): every section starts as its heading alone, and a tap opens
-  // it. Only while the headings are shown -- a search, a category or a market chip is a request
-  // for results, and those show whatever is folded.
+  // Folding (src/ocfold.js): a section is one banner until opened, and so is each group inside it
+  // (a sport; a coin). Choosing a category opens that section and shows its groups folded. A
+  // search or a market chip is a request for results and shows them whatever is folded. A sort
+  // is fine: __ocSort sorts within each run of cards, and a banner ends a run.
+  const view = { cat: _ocActiveCat, browsing: _ocActiveUnd === 'all' && !(document.getElementById('ocSearchInput')?.value ?? '').trim() }
+  const open = { secs: _ocOpenSecs, subs: _ocOpenSubs }
   for (const head of grid.querySelectorAll('.oc-sec-head[data-sec]')) {
     const shut = show && !_ocOpenSecs.has(head.dataset.sec)
     head.classList.toggle('oc-sec-shut', shut)
@@ -39510,7 +39563,16 @@ function _ocSectionVis() {
   }
   for (const el of grid.children) {
     const cat = el.dataset.cat
-    if (cat) el.classList.toggle('oc-sec-hide', show && !_ocOpenSecs.has(cat))
+    if (!cat) continue
+    if (el.classList.contains('oc-sub-head')) {
+      const vis = foldShows('group', cat, el.dataset.sub, view, open)
+      el.style.display = vis ? '' : 'none'
+      const shut = !_ocOpenSubs.has(cat + ':' + el.dataset.sub)
+      el.classList.toggle('oc-sec-shut', shut)
+      el.setAttribute('aria-expanded', String(!shut))
+    } else if (el.classList.contains('oc-card')) {
+      el.classList.toggle('oc-sec-hide', !foldShows('card', cat, el.dataset.sub || null, view, open))
+    }
   }
   _ocMasonrySoon()   // the visible set changed (filter, search, chip, sort, fold)
 }
@@ -39518,9 +39580,16 @@ function _ocSectionVis() {
 // Which sections are open. Starts empty -- all folded -- and lives for the session, so a
 // section you opened is still open when you come back to the tab.
 const _ocOpenSecs = new Set()
+const _ocOpenSubs = new Set()   // "cat:group"
 window.__ocToggleSec = function(cat, open) {
   const on = open ?? !_ocOpenSecs.has(cat)
   if (on) _ocOpenSecs.add(cat); else _ocOpenSecs.delete(cat)
+  _ocSectionVis()
+}
+window.__ocToggleSub = function(cat, key, open) {
+  const k = cat + ':' + key
+  const on = open ?? !_ocOpenSubs.has(k)
+  if (on) _ocOpenSubs.add(k); else _ocOpenSubs.delete(k)
   _ocSectionVis()
 }
 

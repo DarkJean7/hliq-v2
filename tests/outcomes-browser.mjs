@@ -173,8 +173,16 @@ console.log('\n-- sections start folded --')
   if (SHOT) await p.screenshot({ path: `${SHOT}/outcomes-folded.png` })
   t('Trending still shows above them', await p.evaluate(() => !!document.querySelector('.oc-hot-scroll')?.offsetParent), true)
   await p.click('#ocGrid .oc-sec-head[data-sec="crypto"]')
-  const s1 = await p.evaluate(() => [...document.querySelectorAll('#ocGrid > .oc-card')].filter(c => c.offsetParent).map(c => c.dataset.cat))
-  t('tapping a heading opens just that section', s1.length > 0 && s1.every(c => c === 'crypto'), true)
+  // "lets also unextend all other types of types": opening a section shows its GROUPS, folded.
+  const s1 = await p.evaluate(() => ({
+    groups: [...document.querySelectorAll('#ocGrid > .oc-sub-head')].filter(c => c.offsetParent).map(c => c.dataset.cat + ':' + c.dataset.sub),
+    cards: [...document.querySelectorAll('#ocGrid > .oc-card')].filter(c => c.offsetParent).length,
+  }))
+  t('tapping a heading opens that section, its groups still folded', s1.cards === 0 && s1.groups.length >= 2 && s1.groups.every(g => g.startsWith('crypto:')), true)
+  await p.click('#ocGrid .oc-sub-head[data-cat="crypto"][data-sub="BTC"]')
+  const s1b = await p.evaluate(() => [...document.querySelectorAll('#ocGrid > .oc-card')].filter(c => c.offsetParent).map(c => c.dataset.und))
+  t('and a group opens just its markets', s1b.length > 0 && s1b.every(u => u === 'BTC'), true)
+  await p.click('#ocGrid .oc-sub-head[data-cat="crypto"][data-sub="BTC"]')
   t('and says so to a screen reader', await p.evaluate(() => document.querySelector('#ocGrid .oc-sec-head[data-sec="crypto"]').getAttribute('aria-expanded')), 'true')
   await p.click('#ocGrid .oc-sec-head[data-sec="crypto"]')
   t('tapping it again folds it', (await st()).cards, 0)
@@ -182,14 +190,26 @@ console.log('\n-- sections start folded --')
   t('a search finds markets in folded sections', await p.evaluate(() => [...document.querySelectorAll('#ocGrid > .oc-card')].filter(c => c.offsetParent).length) > 0, true)
   await p.evaluate(() => { const q = document.getElementById('ocSearchInput'); q.value = ''; window.__ocFilter() })
   await p.evaluate(() => window.__ocSetCat('sports'))
-  t('choosing a category shows its markets, folded or not', await p.evaluate(() => [...document.querySelectorAll('#ocGrid > .oc-card[data-cat="sports"]')].filter(c => c.offsetParent).length) > 0, true)
+  // "if i press sports it should show me the folded types of outcomes"
+  const sp = await p.evaluate(() => ({
+    groups: [...document.querySelectorAll('#ocGrid > .oc-sub-head')].filter(c => c.offsetParent).map(c => c.dataset.sub),
+    cards: [...document.querySelectorAll('#ocGrid > .oc-card')].filter(c => c.offsetParent).length,
+  }))
+  t('pressing Sports shows each sport folded', [sp.groups, sp.cards], [['basketball', 'football', 'soccer'], 0])
+  await p.click('#ocGrid .oc-sub-head[data-sub="basketball"]')
+  t('and a sport opens to its markets', await p.evaluate(() => [...document.querySelectorAll('#ocGrid > .oc-card')].filter(c => c.offsetParent).every(c => c.dataset.sport === 'basketball')
+    && [...document.querySelectorAll('#ocGrid > .oc-card')].some(c => c.offsetParent)), true)
+  await p.click('#ocGrid .oc-sub-head[data-sub="basketball"]')
   await p.evaluate(() => window.__ocSetCat('all'))
   // A Trending card points into a section; pressing it opens that section so its card is there.
   await p.evaluate(() => document.querySelector('.oc-hot-card')?.click())
   t('a Trending card opens the section its market is in', await p.evaluate(() => document.querySelectorAll('#ocGrid .oc-sec-head.oc-sec-shut').length < document.querySelectorAll('#ocGrid .oc-sec-head[data-sec]').length), true)
   await p.evaluate(() => window.__ocCloseExpanded?.())
   // The rest of this file reads cards: open every section.
-  await p.evaluate(() => document.querySelectorAll('#ocGrid .oc-sec-head[data-sec]').forEach(h => window.__ocToggleSec(h.dataset.sec, true)))
+  await p.evaluate(() => {
+    document.querySelectorAll('#ocGrid .oc-sec-head[data-sec]').forEach(h => window.__ocToggleSec(h.dataset.sec, true))
+    document.querySelectorAll('#ocGrid .oc-sub-head').forEach(h => window.__ocToggleSub(h.dataset.cat, h.dataset.sub, true))
+  })
 }
 
 // "add a filter by open interest, volume, etc. by default sort by open interest. in trending should
@@ -202,7 +222,9 @@ t('the default sort is open interest', await p.evaluate(() => document.getElemen
 t('Trending is the markets with the most open interest, first to last', await p.evaluate(() =>
   [...document.querySelectorAll('.oc-hot-card .oc-hot-q')].map(e => e.textContent.trim().split(' ').slice(0, 2).join(' '))),
   ['2027 USA', 'Will SOL', 'Will HYPE', 'Will ETH', 'Will BTC'])
-t('within a section, the largest market comes first', (await shownIn('crypto')).slice(0, 2), ['SOL', 'HYPE'])
+// Crypto is grouped by coin now (src/ocfold.js): the coin with the most markets leads, and the
+// open-interest sort works inside each group.
+t('within a section, the coin with the most markets comes first', (await shownIn('crypto'))[0], 'BTC')
 t('and the section headings stay', await p.evaluate(() => [...document.querySelectorAll('#ocGrid .oc-sec-head')].every(h => h.style.display !== 'none')), true)
 t('volume is the Yes side\'s, as Hyperliquid counts it', await p.evaluate(() => document.querySelector('#oc-card-14726 .oc-compact-vol')?.textContent), '$21.4k Vol.')
 await p.selectOption('#ocSortSel', 'vol')
@@ -384,6 +406,9 @@ console.log('\n-- the phone: sections start folded too --')
   }))
   t('every section is a folded heading, no cards', [ms.shut, ms.cards], [true, 0])
   await m.evaluate(() => document.querySelector('#mobPredictBody .oc-sec-head[data-sec="crypto"]').click())
+  t('a section opens to its groups, folded', await m.evaluate(() => [...document.querySelectorAll('#mobPredictBody #ocGrid > .oc-sub-head')].filter(c => c.offsetParent).length >= 2
+    && ![...document.querySelectorAll('#mobPredictBody #ocGrid > .oc-card')].some(c => c.offsetParent)), true)
+  await m.evaluate(() => document.querySelector('#mobPredictBody .oc-sub-head[data-cat="crypto"][data-sub="BTC"]').click())
   t('a tap opens one', await m.evaluate(() => [...document.querySelectorAll('#mobPredictBody #ocGrid > .oc-card')].filter(c => c.offsetParent).every(c => c.dataset.cat === 'crypto')
     && [...document.querySelectorAll('#mobPredictBody #ocGrid > .oc-card')].some(c => c.offsetParent)), true)
   // Not placed by the desktop masonry: the phone's list is a column.

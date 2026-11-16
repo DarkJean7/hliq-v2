@@ -88,11 +88,11 @@ export function sportArt(kind) {
 export function sportHeadHtml(kind, count, leagues = [], esc = (s) => s) {
   const s = SPORTS[kind] ?? SPORTS.other
   const sub = [...new Set(leagues.filter(Boolean))].slice(0, 4).join(' · ')
-  return `<div class="oc-sport-head" data-sport="${kind}" style="--sp-a:${s.a};--sp-b:${s.b}">` +
+  return `<div class="oc-sport-head oc-sub-head" data-sport="${kind}" data-sub="${kind}" style="--sp-a:${s.a};--sp-b:${s.b}">` +
     sportArt(kind) +
     `<span class="oc-sport-glyph">${s.glyph}</span>` +
     `<span class="oc-sport-txt"><span class="oc-sport-name">${esc(s.label)}</span>${sub ? `<span class="oc-sport-leagues">${esc(sub)}</span>` : ''}</span>` +
-    `<span class="oc-sport-n">${count} market${count === 1 ? '' : 's'}</span></div>`
+    `<span class="oc-sport-n">${count} market${count === 1 ? '' : 's'}</span><span class="oc-sec-chev" aria-hidden="true"></span></div>`
 }
 
 // Futures first (who wins the league), biggest first; then the games, soonest first.

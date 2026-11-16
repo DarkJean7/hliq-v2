@@ -28,7 +28,8 @@ t('every sport has a colour pair and a glyph', Object.values(SPORTS).every(s => 
 
 console.log('-- wiring --')
 const m = fs.readFileSync('src/main.js', 'utf8')
-t('Sports is laid out one sport at a time', m.includes("if (cat === 'sports') _ocAppendSports(frag, list)"))
+// Grouping went general (src/ocfold.js): Sports by sport, Crypto by coin — each group a folding banner.
+t('Sports is laid out one sport at a time', m.includes('_ocAppendGroups(frag, cat, list)') && m.includes("sportHeadHtml(k, cs.length, cs.map(c => c.dataset.league), esc)"))
 t('every sports card says which sport it is', m.includes('card.dataset.sport = sportOf(') && m.includes('data-sport="${spK}"'))
 t('the 5-second price tick writes only what changed', m.includes('function _ocSetText(el, t) { if (el && el.textContent !== t)') && !/compactPct2\.textContent = /.test(m))
 t('and redraws no chart that is not on screen', m.includes('if (chart && chart.canvas?.offsetParent)'))
