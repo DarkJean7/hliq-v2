@@ -15,7 +15,7 @@
 // underlying. Expiries are moved a few hours ahead so every countdown is live during the run.
 //
 // Run:  npm run test:browser        (expects a dev server; pass --port=NNNN)
-import { chromium } from 'playwright'
+import { chromium, devices } from 'playwright'
 
 const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
 const URL  = `http://localhost:${port}/app`
@@ -155,6 +155,42 @@ t('pressing it again shows everything', (await shown()).length, all.length)
 await p.evaluate(() => window.__ocSetUnd('BTC'))
 t('BTC brings its binary and its range market', (await shown()).every(u => u === 'BTC') && (await shown()).length >= 2, true)
 await p.evaluate(() => window.__ocSetUnd('all'))
+
+// "lets make the outcomes markets be unextended initially. both in mobile and desktop. so the user
+// can see all types of outcomes markets"
+console.log('\n-- sections start folded --')
+{
+  await p.evaluate(() => { document.getElementById('ocSearchInput').value = ''; window.__ocSetUnd('all'); window.__ocSetCat('all') })
+  const st = () => p.evaluate(() => ({
+    heads: [...document.querySelectorAll('#ocGrid .oc-sec-head[data-sec]')].filter(h => h.offsetParent).map(h => h.dataset.sec),
+    shut: [...document.querySelectorAll('#ocGrid .oc-sec-head[data-sec]')].every(h => h.classList.contains('oc-sec-shut')),
+    cards: [...document.querySelectorAll('#ocGrid > .oc-card')].filter(c => c.offsetParent).length,
+    banners: [...document.querySelectorAll('#ocGrid > .oc-sport-head')].filter(c => c.offsetParent).length,
+  }))
+  const s0 = await st()
+  t('every kind of market is listed by its heading', ['crypto', 'sports'].every(c => s0.heads.includes(c)), true)
+  t('and every one starts folded: no cards, no sport banners', [s0.shut, s0.cards, s0.banners], [true, 0, 0])
+  if (SHOT) await p.screenshot({ path: `${SHOT}/outcomes-folded.png` })
+  t('Trending still shows above them', await p.evaluate(() => !!document.querySelector('.oc-hot-scroll')?.offsetParent), true)
+  await p.click('#ocGrid .oc-sec-head[data-sec="crypto"]')
+  const s1 = await p.evaluate(() => [...document.querySelectorAll('#ocGrid > .oc-card')].filter(c => c.offsetParent).map(c => c.dataset.cat))
+  t('tapping a heading opens just that section', s1.length > 0 && s1.every(c => c === 'crypto'), true)
+  t('and says so to a screen reader', await p.evaluate(() => document.querySelector('#ocGrid .oc-sec-head[data-sec="crypto"]').getAttribute('aria-expanded')), 'true')
+  await p.click('#ocGrid .oc-sec-head[data-sec="crypto"]')
+  t('tapping it again folds it', (await st()).cards, 0)
+  await p.evaluate(() => { const q = document.getElementById('ocSearchInput'); q.value = 'lakers'; window.__ocFilter() })
+  t('a search finds markets in folded sections', await p.evaluate(() => [...document.querySelectorAll('#ocGrid > .oc-card')].filter(c => c.offsetParent).length) > 0, true)
+  await p.evaluate(() => { const q = document.getElementById('ocSearchInput'); q.value = ''; window.__ocFilter() })
+  await p.evaluate(() => window.__ocSetCat('sports'))
+  t('choosing a category shows its markets, folded or not', await p.evaluate(() => [...document.querySelectorAll('#ocGrid > .oc-card[data-cat="sports"]')].filter(c => c.offsetParent).length) > 0, true)
+  await p.evaluate(() => window.__ocSetCat('all'))
+  // A Trending card points into a section; pressing it opens that section so its card is there.
+  await p.evaluate(() => document.querySelector('.oc-hot-card')?.click())
+  t('a Trending card opens the section its market is in', await p.evaluate(() => document.querySelectorAll('#ocGrid .oc-sec-head.oc-sec-shut').length < document.querySelectorAll('#ocGrid .oc-sec-head[data-sec]').length), true)
+  await p.evaluate(() => window.__ocCloseExpanded?.())
+  // The rest of this file reads cards: open every section.
+  await p.evaluate(() => document.querySelectorAll('#ocGrid .oc-sec-head[data-sec]').forEach(h => window.__ocToggleSec(h.dataset.sec, true)))
+}
 
 // "add a filter by open interest, volume, etc. by default sort by open interest. in trending should
 // be the markets with more open interest ... similar as outcome.xyz ... icons for like nba, football"
@@ -311,6 +347,49 @@ const counts = await p.evaluate(() => new Promise((res) => {
 t('three seconds of ticking replaced no countdown nodes', counts.list, 0)
 t('while the countdowns did change', counts.text > 0, true)
 t('and they show time left, not a dash', await p.evaluate(() => /\d+h \d+m \d+s/.test(document.querySelector('[id^="oc-cd-"]')?.textContent ?? '')), true)
+
+// The phone: the same list, in the Predictions sheet. Folded there too.
+console.log('\n-- the phone: sections start folded too --')
+{
+  const mctx = await browser.newContext({ ...devices['iPhone 14 Pro'] })
+  try { await mctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
+  await mctx.route('**/api/**', r => r.fulfill({ status: 503, body: 'offline in test' }))
+  await mctx.route(HL_HOST, (route) => {
+    let b = {}
+    try { b = JSON.parse(route.request().postData() || '{}') } catch {}
+    const json = b.type === 'outcomeMeta' ? OUTCOME_META : b.type === 'allMids' ? MIDS
+      : b.type in BASE ? BASE[b.type]
+      : ['candleSnapshot', 'perpCategories', 'userFills', 'frontendOpenOrders', 'allPerpMetas'].includes(b.type) ? [] : {}
+    return route.fulfill({ status: 200, contentType: 'application/json', json })
+  })
+  const m = await mctx.newPage()
+  m.on('pageerror', e => errs.push('mobile: ' + e.message))
+  await m.goto(URL, { waitUntil: 'domcontentloaded' })
+  await m.evaluate(() => {
+    localStorage.clear()
+    localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_onboard_done', '1')
+    localStorage.setItem('hliq_lang_chosen', '1'); localStorage.setItem('hliq_onboard_welcomed_v1', '1')
+  })
+  await m.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(m, 'boot', () => !!window.__goPaper)
+  await m.evaluate(() => window.__goPaper())
+  await waitFor(m, 'the mobile shell', () => !!window.__openPredictions)
+  await m.evaluate(() => document.querySelectorAll('#annModal, #langChooseModal, #onboardSheet').forEach(e => e.remove()))
+  await m.evaluate(() => window.__openPredictions())
+  await waitFor(m, 'the sheet headings', () => document.querySelectorAll('#mobPredictBody .oc-sec-head[data-sec]').length >= 2)
+  const ms = await m.evaluate(() => ({
+    heads: document.querySelectorAll('#mobPredictBody .oc-sec-head[data-sec]').length,
+    shut: [...document.querySelectorAll('#mobPredictBody .oc-sec-head[data-sec]')].every(h => h.classList.contains('oc-sec-shut')),
+    cards: [...document.querySelectorAll('#mobPredictBody #ocGrid > .oc-card')].filter(c => c.offsetParent).length,
+  }))
+  t('every section is a folded heading, no cards', [ms.shut, ms.cards], [true, 0])
+  await m.evaluate(() => document.querySelector('#mobPredictBody .oc-sec-head[data-sec="crypto"]').click())
+  t('a tap opens one', await m.evaluate(() => [...document.querySelectorAll('#mobPredictBody #ocGrid > .oc-card')].filter(c => c.offsetParent).every(c => c.dataset.cat === 'crypto')
+    && [...document.querySelectorAll('#mobPredictBody #ocGrid > .oc-card')].some(c => c.offsetParent)), true)
+  // Not placed by the desktop masonry: the phone's list is a column.
+  t('and the phone keeps its column (no desktop row spans)', await m.evaluate(() => [...document.querySelectorAll('#mobPredictBody #ocGrid > *')].every(el => !el.style.gridRowEnd)), true)
+  await mctx.close()
+}
 
 await browser.close()
 console.log('\nerrors: ' + (errs.length ? JSON.stringify(errs.slice(0, 3)) : 'none'))

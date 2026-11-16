@@ -8748,3 +8748,12 @@ html.has-bg-image .oc-card { background: color-mix(in oklch, var(--panel) 88%, #
 /* Outcomes: "Trade from account" sits at the very top, above search and the categories. */
 .oc-acct-top { padding: 0 0 12px; }
 @media (max-width: 768px) { .oc-acct-top { padding: 0 12px 10px; } }
+
+/* Outcomes: folded sections. A heading is a button; a folded section shows its heading alone. */
+.oc-sec-toggle { cursor: pointer; user-select: none; -webkit-user-select: none; border-radius: 12px; padding: 10px 12px !important; background: var(--panel); border: 1px solid var(--border); }
+.oc-sec-toggle:hover { border-color: color-mix(in oklch, var(--accent) 45%, var(--border)); }
+.oc-sec-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.oc-sec-chev { width: 9px; height: 9px; margin-left: 10px; flex-shrink: 0; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg) translate(-2px, -2px); transition: transform .18s; }
+.oc-sec-shut .oc-sec-chev { transform: rotate(-45deg); }
+.oc-sec-hide { display: none !important; }
+#outcomesRoot .oc-sec-toggle.oc-sec-shut, #mobPredictOverlay .oc-sec-toggle.oc-sec-shut { margin-top: 8px; margin-bottom: 0; }

@@ -39349,6 +39349,7 @@ function _ocSectionize() {
     d.dataset.hot = id
     d.innerHTML = `<div class="oc-hot-q">${esc(q)}</div>${isEvt ? '' : `<div class="oc-hot-pct" id="oc-hot-pct-${id}">—</div>`}<div class="oc-hot-vol">${ocFmtUsd(vol)} Vol.</div>`
     d.onclick = () => {
+      if (c.dataset.cat) window.__ocToggleSec(c.dataset.cat, true)   // its section may be folded
       c.scrollIntoView({ behavior: 'smooth', block: 'center' })
       if (!isEvt) setTimeout(() => window.__ocExpandCard(parseInt(id)), 350)
     }
@@ -39360,8 +39361,12 @@ function _ocSectionize() {
     const list = byCat[cat]
     if (!list?.length) continue
     const h = document.createElement('div')
-    h.className = 'oc-sec-head'
-    h.innerHTML = `<span class="oc-sec-emoji">${emoji}</span> ${label} <span class="oc-sec-count">${list.length}</span>`
+    h.className = 'oc-sec-head oc-sec-toggle'
+    h.dataset.sec = cat
+    h.setAttribute('role', 'button'); h.tabIndex = 0
+    h.onclick = () => window.__ocToggleSec(cat)
+    h.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); window.__ocToggleSec(cat) } }
+    h.innerHTML = `<span class="oc-sec-emoji">${emoji}</span> ${label} <span class="oc-sec-count">${list.length}</span><span class="oc-sec-chev" aria-hidden="true"></span>`
     frag.appendChild(h)
     if (cat === 'sports') _ocAppendSports(frag, list)
     else list.forEach(c => frag.appendChild(c))
@@ -39387,6 +39392,7 @@ function _ocAppendSports(frag, list) {
     const cs = by.get(k)
     const t = document.createElement('template')
     t.innerHTML = sportHeadHtml(k, cs.length, cs.map(c => c.dataset.league), esc)
+    t.content.firstElementChild.dataset.cat = 'sports'   // folds with the Sports section
     frag.appendChild(t.content.firstElementChild)
     sportOrder(cs.map(c => ({ el: c, isEvent: c.classList.contains('oc-event'), oi: Number(c.dataset.ocOi ?? 0), close: Number(c.dataset.ocClose) || Infinity })))
       .forEach(x => frag.appendChild(x.el))
@@ -39493,7 +39499,29 @@ function _ocSectionVis() {
   const showSport = (_ocActiveCat === 'all' || _ocActiveCat === 'sports') && _ocActiveUnd === 'all'
     && !(document.getElementById('ocSearchInput')?.value ?? '').trim()
   grid.querySelectorAll('.oc-sport-head').forEach(el => { el.style.display = showSport ? '' : 'none' })
-  _ocMasonrySoon()   // the visible set changed (filter, search, chip, sort)
+  // Folded sections ("make the outcomes markets be unextended initially ... so the user can see
+  // all types of outcomes markets"): every section starts as its heading alone, and a tap opens
+  // it. Only while the headings are shown -- a search, a category or a market chip is a request
+  // for results, and those show whatever is folded.
+  for (const head of grid.querySelectorAll('.oc-sec-head[data-sec]')) {
+    const shut = show && !_ocOpenSecs.has(head.dataset.sec)
+    head.classList.toggle('oc-sec-shut', shut)
+    head.setAttribute('aria-expanded', String(!shut))
+  }
+  for (const el of grid.children) {
+    const cat = el.dataset.cat
+    if (cat) el.classList.toggle('oc-sec-hide', show && !_ocOpenSecs.has(cat))
+  }
+  _ocMasonrySoon()   // the visible set changed (filter, search, chip, sort, fold)
+}
+
+// Which sections are open. Starts empty -- all folded -- and lives for the session, so a
+// section you opened is still open when you come back to the tab.
+const _ocOpenSecs = new Set()
+window.__ocToggleSec = function(cat, open) {
+  const on = open ?? !_ocOpenSecs.has(cat)
+  if (on) _ocOpenSecs.add(cat); else _ocOpenSecs.delete(cat)
+  _ocSectionVis()
 }
 
 async function renderOutcomes() {
