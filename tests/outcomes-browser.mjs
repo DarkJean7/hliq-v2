@@ -182,6 +182,17 @@ console.log('\n-- sections start folded --')
   await p.click('#ocGrid .oc-sub-head[data-cat="crypto"][data-sub="BTC"]')
   const s1b = await p.evaluate(() => [...document.querySelectorAll('#ocGrid > .oc-card')].filter(c => c.offsetParent).map(c => c.dataset.und))
   t('and a group opens just its markets', s1b.length > 0 && s1b.every(u => u === 'BTC'), true)
+  // "highlight the selected section ... make the non-selected section cards darker"
+  await p.waitForTimeout(350)   // the dim fades in over 0.2 s
+  const lit = await p.evaluate(() => {
+    const op = (sel) => { const el = document.querySelector(sel); return el ? parseFloat(getComputedStyle(el).opacity) : null }
+    return { open: op('#ocGrid .oc-sec-head[data-sec="crypto"]'), other: op('#ocGrid .oc-sec-head[data-sec="sports"]'),
+      glow: getComputedStyle(document.querySelector('#ocGrid .oc-sec-head[data-sec="crypto"]')).boxShadow !== 'none',
+      sibGroup: op('#ocGrid .oc-sub-head[data-cat="crypto"][data-sub="ETH"]'), openGroup: op('#ocGrid .oc-sub-head[data-cat="crypto"][data-sub="BTC"]') }
+  })
+  if (SHOT) await p.screenshot({ path: `${SHOT}/outcomes-open.png` })
+  t('the open section is lit, the others step back', lit.open === 1 && lit.other < 0.5 && lit.glow, true)
+  t('and inside it, the open group is lit and its neighbours step back', lit.openGroup === 1 && lit.sibGroup < 0.5, true)
   await p.click('#ocGrid .oc-sub-head[data-cat="crypto"][data-sub="BTC"]')
   t('and says so to a screen reader', await p.evaluate(() => document.querySelector('#ocGrid .oc-sec-head[data-sec="crypto"]').getAttribute('aria-expanded')), 'true')
   await p.click('#ocGrid .oc-sec-head[data-sec="crypto"]')

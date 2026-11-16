@@ -39383,6 +39383,7 @@ function _ocSectionize() {
     h.onclick = () => window.__ocToggleSec(cat)
     h.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); window.__ocToggleSec(cat) } }
     h.classList.add('oc-cat-head')
+    h.style.setProperty('--sp-a', (CAT_THEME[cat] ?? CAT_THEME.other).a)   // its glow when open
     h.innerHTML = catHeadHtml({ cat, emoji, label, count: list.length, preview: _ocSecPreview(cat, list) }, esc)
     frag.appendChild(h)
     _ocAppendGroups(frag, cat, list)
@@ -39556,11 +39557,19 @@ function _ocSectionVis() {
   // is fine: __ocSort sorts within each run of cards, and a banner ends a run.
   const view = { cat: _ocActiveCat, browsing: _ocActiveUnd === 'all' && !(document.getElementById('ocSearchInput')?.value ?? '').trim() }
   const open = { secs: _ocOpenSecs, subs: _ocOpenSubs }
-  for (const head of grid.querySelectorAll('.oc-sec-head[data-sec]')) {
+  // "highlight the selected section, so it does not look confusing ... make the non-selected
+  // section cards darker": once something is open, what is not open steps back -- sections
+  // beside an open section, and groups beside an open group in the same section.
+  const secHeads = [...grid.querySelectorAll('.oc-sec-head[data-sec]')]
+  const anySecOpen = show && secHeads.some(h => _ocOpenSecs.has(h.dataset.sec))
+  for (const head of secHeads) {
     const shut = show && !_ocOpenSecs.has(head.dataset.sec)
     head.classList.toggle('oc-sec-shut', shut)
+    head.classList.toggle('oc-sec-dim', anySecOpen && shut)
+    head.classList.toggle('oc-sec-lit', show && !shut)
     head.setAttribute('aria-expanded', String(!shut))
   }
+  const openGroupIn = new Set([..._ocOpenSubs].map(k => k.split(':')[0]))
   for (const el of grid.children) {
     const cat = el.dataset.cat
     if (!cat) continue
@@ -39569,6 +39578,8 @@ function _ocSectionVis() {
       el.style.display = vis ? '' : 'none'
       const shut = !_ocOpenSubs.has(cat + ':' + el.dataset.sub)
       el.classList.toggle('oc-sec-shut', shut)
+      el.classList.toggle('oc-sec-dim', vis && shut && openGroupIn.has(cat))
+      el.classList.toggle('oc-sec-lit', vis && !shut)
       el.setAttribute('aria-expanded', String(!shut))
     } else if (el.classList.contains('oc-card')) {
       el.classList.toggle('oc-sec-hide', !foldShows('card', cat, el.dataset.sub || null, view, open))

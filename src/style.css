@@ -8834,3 +8834,12 @@ html.has-bg-image .oc-card { background: color-mix(in oklch, var(--panel) 88%, #
 .oc-hot-lead-p { font-size: 22px; font-weight: 900; color: #fff; margin-left: auto; flex-shrink: 0; }
 .oc-hot-themed .oc-hot-pct { font-size: 26px !important; color: #fff !important; text-shadow: 0 2px 12px rgba(0,0,0,.35); }
 .oc-hot-themed .oc-hot-vol { font-size: 11px; font-weight: 700; color: rgba(255,255,255,.7); }
+
+/* Outcomes: the open section stands out, the rest step back. Opacity, not filter: it is drawn by
+   the compositor, so a dimmed banner costs nothing while scrolling. */
+.oc-sec-head.oc-sec-dim, .oc-sub-head.oc-sec-dim { opacity: .38; transition: opacity .2s; }
+.oc-sec-head.oc-sec-dim:hover, .oc-sub-head.oc-sec-dim:hover { opacity: .8; }
+.oc-sec-head.oc-cat-head.oc-sec-lit, .oc-sub-head.oc-sec-lit {
+  border-color: color-mix(in oklch, var(--sp-a, var(--accent)) 85%, transparent) !important;
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--sp-a, var(--accent)) 70%, transparent), 0 10px 34px color-mix(in oklch, var(--sp-a, var(--accent)) 30%, transparent);
+}
