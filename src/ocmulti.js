@@ -85,3 +85,17 @@ export function fmtTick(t, spanMs) {
   if (spanMs > 36 * 3600e3) return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: 'numeric' })
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
+
+// More options than the hand-picked colours: further ones are spread round the colour wheel.
+export function lineColor(i) {
+  return i < LINE_COLORS.length ? LINE_COLORS[i] : `hsl(${Math.round((i * 137.5) % 360)} 70% 62%)`
+}
+
+// The other side of a two-sided market: one market, two prices summing to 100.
+export function bothSides(pcts) {
+  return pcts.map(v => (Number.isFinite(v) ? Math.round((100 - v) * 100) / 100 : v))
+}
+
+// Which lines a market's chart shows: 'both' (default), 'a' or 'b'. One side alone is what the
+// fitted range can zoom in on -- with both drawn, a 1% market spans 0-100 again.
+export function sideVisible(mode, i) { return mode === 'both' || (mode === 'a' ? i === 0 : i === 1) }

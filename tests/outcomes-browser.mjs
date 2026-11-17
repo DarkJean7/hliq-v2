@@ -227,6 +227,8 @@ console.log('\n-- sections start folded --')
   // A Trending card points into a section; pressing it opens that section so its card is there.
   await p.evaluate(() => document.querySelector('.oc-hot-card')?.click())
   t('a Trending card opens the section its market is in', await p.evaluate(() => document.querySelectorAll('#ocGrid .oc-sec-head.oc-sec-shut').length < document.querySelectorAll('#ocGrid .oc-sec-head[data-sec]').length), true)
+  // A single market opens 350 ms after the scroll to it starts; close it only once it has.
+  await waitFor(p, 'the trending market to open', () => !!document.querySelector('.oc-card.oc-expanded'), null, 3000)
   await p.evaluate(() => window.__ocCloseExpanded?.())
   // The rest of this file reads cards: open every section.
   await p.evaluate(() => {
@@ -241,15 +243,27 @@ console.log('\n-- charts: a range that fits, and an event chart of its options -
   await p.evaluate(() => window.__ocExpandCard(14726))
   await waitFor(p, 'the BTC chart', () => !!window.__ocChartDbg?.(14726))
   const one = await p.evaluate(() => window.__ocChartDbg(14726))
-  t('a market at 1-3% gets a y-axis that fits it, not 0-100', one.y[0] >= 0 && one.y[1] <= 15 && one.n >= 40, true)
+  // "the chart is working only for yes side": both are drawn by default...
+  t('a market charts both its sides by default', one.shown, ['Yes', 'No'])
+  // ...and one alone is what the range zooms in on ("more responsive").
+  if (SHOT) await p.screenshot({ path: `${SHOT}/outcomes-sides.png` })
+  await p.evaluate(() => document.querySelector('#oc-card-14726 .oc-chart-sides button[data-side="a"]').click())
+  const yes = await p.evaluate(() => window.__ocChartDbg(14726))
+  t('one side alone gets a y-axis that fits it, not 0-100', yes.shown.length === 1 && yes.y[0] >= 0 && yes.y[1] <= 15 && yes.n >= 40, true)
+  await p.evaluate(() => document.querySelector('#oc-card-14726 .oc-chart-sides button[data-side="both"]').click())
   await p.evaluate(() => window.__ocCloseExpanded?.())
   await p.click('#oc-card-evt-950 .oc-evt-chartbtn')
   await waitFor(p, 'the NBA chart', () => !!window.__ocEvtChartDbg?.('evt-950'))
   const ev = await p.evaluate(() => window.__ocEvtChartDbg('evt-950'))
-  t('an event charts its leading options, one line each', ev.lines.length, 4)
+  t('an event charts every option it has, one line each ("allow all available")', ev.lines.length, 8)
   t('each named and drawn over its history', ev.lines.every(l => l.label && l.n >= 40), true)
   t('fitted to where they are, not 0-100', ev.y[0] >= 0 && ev.y[1] < 60, true)
+  // "add the trade button also for outcomes, so i can get there faster": it opens the market.
+  await p.evaluate(() => { window.__ocCloseExpanded?.(); return window.__ocGoTrade(14731) })
+  t('Trade on an outcome opens that market', await p.evaluate(() => document.getElementById('oc-card-14731')?.classList.contains('oc-expanded')), true)
+  await p.evaluate(() => window.__ocCloseExpanded?.())
   if (SHOT) await p.locator('#oc-card-evt-950').screenshot({ path: `${SHOT}/outcomes-evtchart.png` })
+  t('and the chart grows to give every label room', await p.evaluate(() => parseFloat(document.querySelector('#oc-card-evt-950 .oc-evt-chart').style.height)) >= 8 * 26, true)
   t('pressed again, it closes', await p.evaluate(() => { document.querySelector('#oc-card-evt-950 .oc-evt-chartbtn').click(); return !document.querySelector('#oc-card-evt-950 .oc-evt-chart') }), true)
 }
 
@@ -260,9 +274,10 @@ const shownIn = (cat) => p.evaluate((c) => [...document.querySelectorAll(`#ocGri
   .filter(x => x.offsetParent && !x.classList.contains('oc-grouped') && !x.classList.contains('oc-junk')).map(x => x.dataset.und), cat)
 await p.evaluate(() => { document.getElementById('ocSearchInput').value = ''; window.__ocSetUnd('all'); window.__ocSetCat('all') })
 t('the default sort is open interest', await p.evaluate(() => document.getElementById('ocSortSel').value), 'oi')
-t('Trending is the markets with the most open interest, first to last', await p.evaluate(() =>
+// "sort trending now by volume": 24h volume BTC $21.4k, HYPE $2.5k, the NFL event $910, SOL $300, ETH $90.
+t('Trending is the most traded markets, by 24h volume', await p.evaluate(() =>
   [...document.querySelectorAll('.oc-hot-card .oc-hot-q')].map(e => e.textContent.trim().split(' ').slice(0, 2).join(' '))),
-  ['2027 USA', 'Will SOL', 'Will HYPE', 'Will ETH', 'Will BTC'])
+  ['Will BTC', 'Will HYPE', '2027 USA', 'Will SOL', 'Will ETH'])
 // Crypto is grouped by coin now (src/ocfold.js): the coin with the most markets leads, and the
 // open-interest sort works inside each group.
 t('within a section, the coin with the most markets comes first', (await shownIn('crypto'))[0], 'BTC')

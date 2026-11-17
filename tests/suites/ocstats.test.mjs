@@ -40,7 +40,8 @@ const cli = fs.readFileSync('src/main.js', 'utf8')
 t('open interest is the default sort', cli.includes('<option value="oi" selected>Open interest</option>'))
 t('with volume beside it', cli.includes('<option value="vol">Volume (24h)</option>'))
 t('sorting keeps the sections (and Trending) instead of flattening the page', cli.includes("if (el.classList.contains('oc-card')) run.push(el)") && !cli.includes("Headings would now sit above whatever happened to land under them"))
-t('Trending is the markets with the most open interest', cli.includes('.sort((a, b) => oiOf(b) - oiOf(a)).slice(0, 10)'))
+// Trending moved from open interest to 24h volume ("sort trending now by volume"); the list sort stays OI.
+t('Trending is the most traded markets, by 24h volume', cli.includes('.sort((a, b) => volOf(b) - volOf(a)).slice(0, 10)'))
 // Ten: at six the NBA championship (seventh) was cut off.
 t('an outcome position shows its market\'s face, not a letter avatar', cli.includes("if (typeof coin === 'string' && (coin[0] === '#' || coin[0] === '+')) return _ocCoinIcon(coin)") && cli.includes('if (info?.u) return _coinIconHtml(info.u)') && cli.includes('const tg = ocTopicGlyph(info?.sp, info?.cmp, name)'))
 // Hyperliquid files its NFL games under a sport of plain "football"; soccer is "Soccer" or "football/soccer".

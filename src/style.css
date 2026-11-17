@@ -8849,3 +8849,8 @@ html.has-bg-image .oc-card { background: color-mix(in oklch, var(--panel) 88%, #
 .oc-evt-chart { position: relative; height: 210px; margin: 4px 0 10px; }
 .oc-evt-chart canvas { display: block; width: 100% !important; height: 100% !important; touch-action: pan-y; }
 .oc-evt-chart-msg { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; color: var(--muted); }
+
+/* Outcome chart: which side(s) it draws. */
+.oc-chart-sides { position: absolute; top: 4px; left: 44px; z-index: 3; display: flex; gap: 4px; }
+.oc-chart-sides button { padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border2, rgba(255,255,255,.12)); background: rgba(12,15,20,.85); color: var(--muted); font-size: 10.5px; font-weight: 700; cursor: pointer; }
+.oc-chart-sides button.on { color: var(--accent); border-color: var(--accent); }

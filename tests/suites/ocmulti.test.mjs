@@ -35,7 +35,7 @@ t('ticks: dates over a week, date+hour over two days, time within one',
 console.log('-- wiring --')
 const m = fs.readFileSync('src/main.js', 'utf8')
 t('the single chart fits its range', m.includes('display: true, min: yr.min, max: yr.max, grace: 0,'))
-t('and follows the live tick', m.includes('const r = yRange(data); chart.options.scales.y.min = r.min'))
+t('and follows the live tick, both sides kept in step', m.includes('other[idx] = Math.round((100 - yesPx * 100) * 100) / 100') && m.includes('const r = yRange(chart.data.datasets.filter(ds => !ds.hidden).flatMap(ds => ds.data))'))
 t('outcome charts opt out of the Trade chart\'s global plugins', (m.match(/yPriceBoxes: false, markDot: false/g) ?? []).length === 2)
 t('an event\'s chart loads on a press, never for every card', m.includes("window.__ocEvtChart = async function(evId, btn)") && !/_ocLegHistory\([^)]*\)[^\n]*forEach/.test(m))
 t('and its history is kept a few minutes', m.includes('Date.now() - hit.t < 300_000'))

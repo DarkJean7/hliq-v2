@@ -288,7 +288,7 @@ import { hideSmallOn, setHideSmall, splitSmall, hideSmallBar } from './spotsmall
 import { sportOf, leagueOf, sportHeadHtml, sportOrder, matchTitle, SPORT_ORDER, SPORTS, sportArt } from './ocsport.js'
 import { whenScrollIdle } from './scrollidle.js'
 import { catHeadHtml, groupHeadHtml, groupKeyOf, foldShows, CAT_THEME } from './ocfold.js'
-import { yRange, pickLegs, alignSeries, spreadLabels, shortName, fmtTick, LINE_COLORS } from './ocmulti.js'
+import { yRange, pickLegs, alignSeries, spreadLabels, shortName, fmtTick, lineColor, bothSides, sideVisible } from './ocmulti.js'
 import { PERIOD_SPAN, PERIOD_WINDOW, sliceSince, stitchHistories, timeTicks, fmtPointTime, fmtRange } from './portchart.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
@@ -14641,6 +14641,31 @@ window._mobVClosePos = function(btn, coin, side, szi, mark, acct) {
 // ─── POSITION CARD: TRADE / FLIP ───────────────────────────────────────────────
 // Trade opens this market in the trade view; in the combined view it also picks the wallet
 // that holds the position as the one to trade from, so the ticket is about the card you tapped.
+// "add the trade button also for outcomes, so i can get there faster. similar as positions
+// cards": opens the market's own card on the Outcomes page, its section unfolded. In the
+// combined view the account that holds it becomes the one trading, as for a perp position.
+// Not __ocTrade: that name is the order placement in the Outcomes panel (further down).
+window.__ocGoTrade = async function(oid, acct = null) {
+  if (state.isAllAccounts && acct) { try { window.__setTradeAcct(acct) } catch {} }
+  // Opening the tab rebuilds its cards (renderOutcomes, after a fetch), so a card found before
+  // that lands would be replaced under us: wait for the NEW one. Already there, nothing rebuilds.
+  const before = document.getElementById('oc-card-' + oid)
+  let rebuilds = false
+  if (_isMobView()) { rebuilds = !window.__predictRendered; window.__openPredictions?.() }
+  else if (_activeTab !== 'outcomes') { rebuilds = true; window.switchTab('outcomes') }
+  let card = null
+  for (let i = 0; i < 80; i++) {
+    card = document.getElementById('oc-card-' + oid)
+    if (card && (!rebuilds || card !== before)) break
+    card = null
+    await new Promise(r => setTimeout(r, 150))
+  }
+  if (!card) { _showChartToast('✗ That market is no longer listed'); return }
+  if (card.dataset.cat) window.__ocToggleSec(card.dataset.cat, true)
+  if (card.dataset.cat && card.dataset.sub) window.__ocToggleSub(card.dataset.cat, card.dataset.sub, true)
+  window.__ocExpandCard(oid)
+}
+
 window.__posTrade = function(coin, acct = null) {
   if (state.isAllAccounts && acct) { try { window.__setTradeAcct(acct) } catch {} }
   window.__watchOpenTrade(coin)
@@ -20847,7 +20872,10 @@ function _mobVRenderContent(tick = false) {
             <button onclick="window._mobOcClose('#${n}','limit','${id}',this,${b._acctAddr ? `'${esc(b._acctAddr)}'` : 'null'})" style="flex:1;padding:8px;background:rgba(0,229,160,0.1);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation">Limit Close</button>
             <button onclick="window._mobOcClose('#${n}','market','${id}',this,${b._acctAddr ? `'${esc(b._acctAddr)}'` : 'null'})" style="flex:1;padding:8px;background:rgba(255,77,109,0.1);border:none;border-radius:8px;color:var(--red);font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation">Market Close</button>
           </div>
-          <button onclick="window.__openShareCard({coin:'${_jsStr(b.coin)}',title:'${_jsStr(title)}',side:'${sideTxt}',roePct:${roe.toFixed(2)},entry:'${(entry * 100).toFixed(2)}¢',mark:'${mark > 0 ? (mark * 100).toFixed(2) + '¢' : '—'}'})" style="width:100%;margin-top:8px;padding:8px;background:rgba(255,138,42,0.12);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation">↗ Share PnL</button>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button onclick="window.__openShareCard({coin:'${_jsStr(b.coin)}',title:'${_jsStr(title)}',side:'${sideTxt}',roePct:${roe.toFixed(2)},entry:'${(entry * 100).toFixed(2)}¢',mark:'${mark > 0 ? (mark * 100).toFixed(2) + '¢' : '—'}'})" style="flex:1;padding:8px;background:rgba(255,138,42,0.12);border:none;border-radius:8px;color:var(--accent);font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation">↗ Share PnL</button>
+            <button data-oc-trade onclick="window.__ocGoTrade(${oid},${b._acctAddr ? `'${esc(b._acctAddr)}'` : 'null'})" style="flex:1;padding:8px;background:rgba(255,255,255,0.06);border:none;border-radius:8px;color:var(--fg);font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation">Trade</button>
+          </div>
           <div id="ocst-${id}" style="font-size:11px;margin-top:6px;text-align:center"></div>
         </div>`
       return `<div style="margin:0 12px 8px;border-radius:14px;background:${cardBg};border:1px solid rgba(255,255,255,0.07);border-left:3px solid ${accent};overflow:hidden">
@@ -38633,9 +38661,16 @@ async function _initOcCharts(outcomes) {
     // CLOSES IN countdown directly above the chart, so the axis does not need to encode it.
     const labels = candles.map(c => c.t)
     const pcts   = candles.map(c => parseFloat(c.c) * 100)
+    // Both sides ("the chart is working only for yes side"): a game is LAL against CHA, not
+    // just LAL. The other side is the complement -- one market, two prices that sum to 100 --
+    // so it costs no second request. Names as the buttons show them.
+    const _sd   = _ocDesc(o)
+    const sideA = _ocSideName(o.sideSpecs?.[0]?.name, 'Yes', _sd), sideB = _ocSideName(o.sideSpecs?.[1]?.name, 'No', _sd)
+    const pctsB = bothSides(pcts)
     // The y range fits the line (src/ocmulti.js): fixed at 0-100 a market at 1-3% was a flat line
     // on the floor ("make them more responsive").
-    const yr     = yRange(pcts)
+    const sideMode = _ocChartSide.get(String(o.outcome)) ?? 'both'
+    const yr     = yRange([...(sideVisible(sideMode, 0) ? pcts : []), ...(sideVisible(sideMode, 1) ? pctsB : [])])
     const spanMs = labels.length > 1 ? labels[labels.length - 1] - labels[0] : 0
 
     const last    = candles[candles.length - 1]
@@ -38659,11 +38694,19 @@ async function _initOcCharts(outcomes) {
       data: {
         labels,
         datasets: [{
+          label: sideA,
           data: pcts, borderColor: col, backgroundColor: grad, fill: true,
           tension: 0.3, borderWidth: 1.5,
-          spanGaps: false,
+          spanGaps: false, hidden: !sideVisible(sideMode, 0),
           pointRadius: (ctx2) => ctx2.dataIndex === dataLen - 1 ? 3 : 0,
           pointBackgroundColor: col, pointBorderColor: '#000', pointBorderWidth: 1,
+        }, {
+          // The other side, quieter: a dashed line, no fill.
+          label: sideB,
+          data: pctsB, borderColor: 'rgba(160,170,190,0.75)', borderDash: [4, 3], fill: false,
+          tension: 0.3, borderWidth: 1.3, spanGaps: false, hidden: !sideVisible(sideMode, 1),
+          pointRadius: (ctx2) => ctx2.dataIndex === dataLen - 1 ? 2.5 : 0,
+          pointBackgroundColor: 'rgba(160,170,190,0.9)', pointBorderColor: '#000', pointBorderWidth: 1,
         }],
       },
       options: {
@@ -38671,7 +38714,7 @@ async function _initOcCharts(outcomes) {
         // Room for the odds pill at the line's end without it touching the card edge.
         // Right padding keeps the live end-point dot off the plot border instead of half
         // clipped against it; the axes supply their own spacing on the other sides.
-        layout: { padding: { top: 10, right: 10, bottom: 2, left: 2 } },
+        layout: { padding: { top: 30, right: 10, bottom: 2, left: 2 } },   // top: room for the Yes / No / Both toggle
         // Touch is included so the line can be scrubbed on a phone, which is where this is
         // actually used. The old mouse-only list existed because touch events let the chart
         // swallow vertical drags and made the sheet feel stuck; `touch-action: pan-y` on the
@@ -38693,7 +38736,7 @@ async function _initOcCharts(outcomes) {
             titleFont: { size: 10 }, bodyFont: { size: 12, weight: '700' },
             callbacks: {
               title: it => { const t = Number(it?.[0]?.label); return Number.isFinite(t) ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric' }) : '' },
-              label: it => (it.parsed.y == null ? '' : `${it.parsed.y.toFixed(1)}% chance`),
+              label: it => (it.parsed.y == null ? '' : `${it.dataset.label}  ${it.parsed.y.toFixed(1)}%`),
             },
           },
           zoom: { zoom: { wheel: { enabled: false }, drag: { enabled: false } }, pan: { enabled: false } },
@@ -38736,6 +38779,11 @@ async function _initOcCharts(outcomes) {
 
     // Store index so _refreshOcPrices updates the right (last real) data point
     _ocCharts[o.outcome]._dataIdx = dataLen - 1
+    // Yes / No / Both: one side alone is what the fitted range can zoom in on.
+    let chips = wrap.querySelector('.oc-chart-sides')
+    if (!chips) { chips = document.createElement('div'); chips.className = 'oc-chart-sides'; wrap.prepend(chips) }
+    chips.innerHTML = [['a', sideA], ['b', sideB], ['both', 'Both']].map(([k, l]) =>
+      `<button class="${k === sideMode ? 'on' : ''}" data-side="${k}" onclick="event.stopPropagation();window.__ocChartSide(${o.outcome},'${k}')">${esc(l)}</button>`).join('')
 
     // Set initial current price from allMids. fmtPrice (not maximumFractionDigits:0) — the
     // target sits beside it at full precision ("$76.285"), so rounding the current price to
@@ -38819,7 +38867,9 @@ async function _refreshOcPrices() {
         const idx  = chart._dataIdx ?? data.length - 1
         if (idx >= 0 && data[idx] !== yesPx * 100) {
           data[idx] = yesPx * 100
-          const r = yRange(data); chart.options.scales.y.min = r.min; chart.options.scales.y.max = r.max
+          const other = chart.data.datasets[1]?.data
+          if (other && idx < other.length) other[idx] = Math.round((100 - yesPx * 100) * 100) / 100
+          const r = yRange(chart.data.datasets.filter(ds => !ds.hidden).flatMap(ds => ds.data)); chart.options.scales.y.min = r.min; chart.options.scales.y.max = r.max
           chart.update('none')
         }
       }
@@ -39350,8 +39400,10 @@ function _ocSectionize() {
   // The markets with the most open interest — single markets and events alike — not simply the
   // first six standalone cards ("in trending should be the markets with more open interest").
   // Ten, not six: the NBA championship ranked seventh and a user looked for it there and missed it.
-  const oiOf = (c) => Number(c.dataset.ocOi ?? -1)
-  ;[...standalone, ...eventCards].filter(c => oiOf(c) > 0).sort((a, b) => oiOf(b) - oiOf(a)).slice(0, 10).forEach((c, idx) => {
+  // By 24h VOLUME ("sort trending now by volume"): what is being traded now. Open interest,
+  // what it was sorted by, ranks a market by money parked in it, however quiet it has gone.
+  const volOf = (c) => Number(c.dataset.ocVol ?? -1)
+  ;[...standalone, ...eventCards].filter(c => volOf(c) > 0).sort((a, b) => volOf(b) - volOf(a)).slice(0, 10).forEach((c, idx) => {
     const isEvt = c.classList.contains('oc-event')
     const id = c.id.replace('oc-card-', '')
     const q  = c.querySelector('.oc-compact-q, .oc-evt-title')?.textContent ?? ''
@@ -39547,12 +39599,17 @@ window.__ocEvtChart = async function(evId, btn) {
   box.innerHTML = '<canvas></canvas><div class="oc-evt-chart-msg">Loading…</div>'
   card.querySelector('.oc-evt-head')?.after(box)
   const rows = [...card.querySelectorAll('.oc-evt-row')].map(r => ({ id: r.dataset.oc, name: r.querySelector('.oc-evt-name')?.textContent ?? '', p: parseFloat(r.dataset.p || 0) }))
-  const legs = pickLegs(rows, 4)
+  // Every option ("allow all available"), most likely first. Each is a candle request; the
+  // metered transport paces them, so a long list arrives a little later rather than tripping
+  // the limiter.
+  const legs = pickLegs(rows, rows.length)
   const hist = await Promise.all(legs.map(l => _ocLegHistory(l.id)))
   if (!box.isConnected) return
   const keep = legs.map((l, i) => ({ ...l, candles: hist[i] })).filter(l => l.candles.length)
   if (!keep.length) { box.querySelector('.oc-evt-chart-msg').textContent = 'No price history yet'; return }
   box.querySelector('.oc-evt-chart-msg').remove()
+  // Room for every end label: 26px each, never shorter than the default.
+  box.style.height = Math.max(210, keep.length * 26 + 50) + 'px'
   const { times, lines } = alignSeries(keep.map(l => l.candles))
   // The live odds on the last point, so the end labels match the rows under the chart.
   lines.forEach((ln, i) => { if (keep[i].p > 0) ln[ln.length - 1] = keep[i].p * 100 })
@@ -39578,7 +39635,7 @@ window.__ocEvtChart = async function(evId, btn) {
   const ch = new Chart(box.querySelector('canvas').getContext('2d'), {
     type: 'line',
     data: { labels: times, datasets: keep.map((l, i) => ({
-      label: shortName(l.name), fullName: l.name, data: lines[i], borderColor: LINE_COLORS[i % LINE_COLORS.length],
+      label: shortName(l.name), fullName: l.name, data: lines[i], borderColor: lineColor(i),
       borderWidth: i === 0 ? 2 : 1.6, pointRadius: 0, tension: 0, stepped: true, spanGaps: true, fill: false,
     })) },
     options: {
@@ -39612,7 +39669,17 @@ window.__ocEvtChart = async function(evId, btn) {
   })
   _ocEvtCharts.set(evId, ch)
 }
-window.__ocChartDbg = (oc) => { const ch = _ocCharts[oc]; return ch ? { y: [ch.options.scales.y.min, ch.options.scales.y.max], n: ch.data.datasets[0].data.length } : null }
+const _ocChartSide = new Map()   // outcome -> 'a' | 'b' | 'both'
+window.__ocChartSide = function(oc, mode) {
+  _ocChartSide.set(String(oc), mode)
+  const ch = _ocCharts[oc]; if (!ch) return
+  ch.data.datasets.forEach((ds, i) => { ds.hidden = !sideVisible(mode, i) })
+  const r = yRange(ch.data.datasets.filter(ds => !ds.hidden).flatMap(ds => ds.data))
+  ch.options.scales.y.min = r.min; ch.options.scales.y.max = r.max
+  ch.update('none')
+  document.querySelectorAll(`#oc-chart-${oc}`).forEach(cv => cv.parentElement?.querySelectorAll('.oc-chart-sides button').forEach(b => b.classList.toggle('on', b.dataset.side === mode)))
+}
+window.__ocChartDbg = (oc) => { const ch = _ocCharts[oc]; return ch ? { y: [ch.options.scales.y.min, ch.options.scales.y.max], n: ch.data.datasets[0].data.length, shown: ch.data.datasets.filter(d => !d.hidden).map(d => d.label) } : null }
 window.__ocEvtChartDbg = (evId) => { const ch = _ocEvtCharts.get(evId); return ch ? { lines: ch.data.datasets.map(d => ({ label: d.label, last: d.data[d.data.length - 1], n: d.data.length })), y: [ch.options.scales.y.min, ch.options.scales.y.max] } : null }
 
 // A Trending event card names its leader ("Arsenal 34%"), read off the event's own rows.
@@ -40935,6 +41002,7 @@ function _ovOcRow(b, id) {
         <button class="manage-btn" onclick="window._mobOcClose('#${n}','limit','${id}',this)">Limit Close</button>
         <button class="manage-btn close" onclick="window._mobOcClose('#${n}','market','${id}',this)">Market Close</button>
         <button class="manage-btn" onclick="window.__openShareCard({coin:'${_jsStr(b.coin)}',title:'${_jsStr(title)}',side:'${sideTxt}',roePct:${roe.toFixed(2)},entry:'${(entry * 100).toFixed(2)}¢',mark:'${mark > 0 ? (mark * 100).toFixed(2) + '¢' : '—'}'})">↗ Share</button>
+        <button class="manage-btn" data-oc-trade onclick="window.__ocGoTrade(${Math.floor(n / 10)},${b._acctAddr ? `'${esc(b._acctAddr)}'` : 'null'})">Trade</button>
       </div>
       <div id="ocst-${id}" class="ov-oc-status"></div>
     </div>
