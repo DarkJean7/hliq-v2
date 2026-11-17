@@ -295,6 +295,33 @@ t('with the sport\'s icon', nfl[0]?.ic, '🏈')
 await p.evaluate(() => { const q = document.getElementById('ocSearchInput'); q.value = ''; window.__ocFilter() })
 t('the Trending strip is not a page swipe (it opened the More panel)', await p.evaluate(() => document.querySelector('.oc-hot-scroll').classList.contains('no-swipe')), true)
 
+// "is not letting me scroll the trending now cards": with a mouse, the row past the fifth card was
+// out of reach -- scrollbar hidden, and the wheel scrolls vertically. Narrowed so five overflow.
+console.log('\n-- a mouse can move the Trending strip --')
+{
+  await p.setViewportSize({ width: 900, height: 950 })
+  await waitFor(p, 'the strip to overflow', () => { const s = document.querySelector('.oc-hot-scroll'); return s && s.scrollWidth > s.clientWidth + 50 })
+  await p.evaluate(() => { const s = document.querySelector('.oc-hot-scroll'); s.scrollIntoView({ block: 'center' }); s.scrollLeft = 0 })
+  const box = await p.locator('.oc-hot-scroll').boundingBox()
+  const left = () => p.evaluate(() => document.querySelector('.oc-hot-scroll').scrollLeft)
+  await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await p.mouse.wheel(0, 300)
+  await waitFor(p, 'the wheel to move it', () => document.querySelector('.oc-hot-scroll').scrollLeft > 0, null, 3000)
+  t('the wheel moves it sideways', await left() > 0, true)
+  await p.evaluate(() => { document.querySelector('.oc-hot-scroll').scrollLeft = 0 })
+  const expandedBefore = await p.evaluate(() => document.querySelectorAll('.oc-card.oc-expanded, .oc-card.expanded').length)
+  await p.mouse.move(box.x + box.width - 60, box.y + box.height / 2)
+  await p.mouse.down()
+  for (let i = 1; i <= 8; i++) await p.mouse.move(box.x + box.width - 60 - i * 30, box.y + box.height / 2)
+  await p.mouse.up()
+  t('a drag moves it', await left() >= 150, true)
+  await p.waitForTimeout(600)   // a click would expand its market 350ms later; give it the chance to
+  t('and letting go is not a click on the card under the mouse',
+    await p.evaluate(() => document.querySelectorAll('.oc-card.oc-expanded, .oc-card.expanded').length), expandedBefore)
+  await p.evaluate(() => { document.querySelector('.oc-hot-scroll').scrollLeft = 0; window.scrollTo(0, 0) })
+  await p.setViewportSize({ width: 1600, height: 950 })
+}
+
 // "make popular sports like nba, mlb, futboll more eye captive" / "i selected nba finals and it
 // kind of be lost with all types of cards. at the right unrelated sports, more to the right more
 // nba stuff" / "scrolling in the desktop outcomes is not smooth".

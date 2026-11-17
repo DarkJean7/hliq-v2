@@ -289,6 +289,7 @@ import { sportOf, leagueOf, sportHeadHtml, sportOrder, matchTitle, SPORT_ORDER, 
 import { whenScrollIdle } from './scrollidle.js'
 import { catHeadHtml, groupHeadHtml, groupKeyOf, foldShows, CAT_THEME } from './ocfold.js'
 import { yRange, pickLegs, alignSeries, spreadLabels, shortName, fmtTick, lineColor, bothSides, sideVisible } from './ocmulti.js'
+import { enableMouseScroll } from './dragx.js'
 import { PERIOD_SPAN, PERIOD_WINDOW, sliceSince, stitchHistories, timeTicks, fmtPointTime, fmtRange } from './portchart.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
@@ -39397,6 +39398,10 @@ function _ocSectionize() {
   // no-swipe: dragging it sideways was also read as the page swipe that opens More ("swapping
   // the trending now outcome cards it sometimes opens the more side panel").
   scroller.className = 'oc-hot-scroll no-swipe'
+  // data-dragscroll: the touch fallback for iOS, where the Predictions sheet is a fixed overlay
+  // and native overflow scrolling inside one is unreliable. The mouse gets drag + wheel.
+  scroller.setAttribute('data-dragscroll', '')
+  enableMouseScroll(scroller)
   // The markets with the most open interest — single markets and events alike — not simply the
   // first six standalone cards ("in trending should be the markets with more open interest").
   // Ten, not six: the NBA championship ranked seventh and a user looked for it there and missed it.

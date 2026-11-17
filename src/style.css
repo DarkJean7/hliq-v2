@@ -8854,3 +8854,10 @@ html.has-bg-image .oc-card { background: color-mix(in oklch, var(--panel) 88%, #
 .oc-chart-sides { position: absolute; top: 4px; left: 44px; z-index: 3; display: flex; gap: 4px; }
 .oc-chart-sides button { padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border2, rgba(255,255,255,.12)); background: rgba(12,15,20,.85); color: var(--muted); font-size: 10.5px; font-weight: 700; cursor: pointer; }
 .oc-chart-sides button.on { color: var(--accent); border-color: var(--accent); }
+
+/* Trending: a mouse drags it (src/dragx.js); show it can move. */
+@media (hover: hover) and (pointer: fine) {
+  #outcomesRoot .oc-hot-scroll { cursor: grab; }
+  #outcomesRoot .oc-hot-scroll.dragx-on { cursor: grabbing; user-select: none; }
+  #outcomesRoot .oc-hot-scroll.dragx-on .oc-hot-card { pointer-events: none; }
+}
