@@ -8843,3 +8843,9 @@ html.has-bg-image .oc-card { background: color-mix(in oklch, var(--panel) 88%, #
   border-color: color-mix(in oklch, var(--sp-a, var(--accent)) 85%, transparent) !important;
   box-shadow: 0 0 0 1px color-mix(in oklch, var(--sp-a, var(--accent)) 70%, transparent), 0 10px 34px color-mix(in oklch, var(--sp-a, var(--accent)) 30%, transparent);
 }
+
+/* Outcomes: an event's multi-option chart (src/ocmulti.js). */
+.oc-evt-chartbtn.on { color: var(--accent); border-color: var(--accent); background: color-mix(in oklch, var(--accent) 12%, transparent); }
+.oc-evt-chart { position: relative; height: 210px; margin: 4px 0 10px; }
+.oc-evt-chart canvas { display: block; width: 100% !important; height: 100% !important; touch-action: pan-y; }
+.oc-evt-chart-msg { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; color: var(--muted); }

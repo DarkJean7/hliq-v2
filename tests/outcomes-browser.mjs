@@ -77,6 +77,8 @@ const OUTCOME_META = {
 }
 const MIDS = { BTC: '82000', ETH: '2400', SOL: '105', HYPE: '80' }
 for (const o of OUTCOME_META.outcomes) { MIDS['#' + (o.outcome * 10)] = '0.5'; MIDS['#' + (o.outcome * 10 + 1)] = '0.5' }
+// The NBA futures legs trade where their history ends, so the chart's live end matches its line.
+;[0.21, 0.14, 0.10, 0.08, 0.07, 0.06, 0.05, 0.04].forEach((p, i) => { MIDS['#' + ((34000 + i) * 10)] = String(p); MIDS['#' + ((34000 + i) * 10 + 1)] = String(1 - p) })
 // The markets paper mode needs to start at all.
 const UNIVERSE = ['BTC', 'ETH', 'SOL', 'HYPE'].map(name => ({ name, szDecimals: 2, maxLeverage: 20 }))
 const CTX = UNIVERSE.map(u => { const px = MIDS[u.name]; return { funding: '0', openInterest: '0', prevDayPx: px, dayNtlVlm: '0', premium: '0', oraclePx: px, markPx: px, midPx: px, impactPxs: [px, px] } })
@@ -105,6 +107,16 @@ const waitFor = async (p, label, fn, arg, ms = 25000) => {
   }
 }
 
+// Price history for the charts: the BTC binary (#147260) drifting between 1% and 3% -- the
+// "flat line on the floor" case -- and the NBA futures legs (#340000...) at distinct levels.
+const CANDLES = (coin) => {
+  const now = Date.now(), H = 3600e3
+  const at = (fn) => Array.from({ length: 48 }, (_, i) => ({ t: now - (48 - i) * H, T: now - (47 - i) * H, c: String(fn(i)), o: '0', h: '0', l: '0', v: '1', n: 1 }))
+  if (coin === '#147260') return at(i => 0.02 + 0.01 * Math.sin(i / 6))
+  const m = /^#3400(\d)0$/.exec(coin)
+  if (m) return at(i => [0.21, 0.14, 0.10, 0.08, 0.07, 0.06, 0.05, 0.04][+m[1]] + 0.01 * Math.sin(i / 5 + +m[1]))
+  return []
+}
 const browser = await chromium.launch()
 const ctx = await browser.newContext({ viewport: { width: 1600, height: 950 } })
 try { await ctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
@@ -112,7 +124,7 @@ await ctx.route('**/api/**', r => r.fulfill({ status: 503, body: 'offline in tes
 await ctx.route(HL_HOST, (route) => {
   let b = {}
   try { b = JSON.parse(route.request().postData() || '{}') } catch {}
-  const json = b.type === 'outcomeMeta' ? OUTCOME_META : b.type === 'allMids' ? MIDS
+  const json = b.type === 'outcomeMeta' ? OUTCOME_META : b.type === 'allMids' ? MIDS : b.type === 'candleSnapshot' ? CANDLES(b.req?.coin)
     : b.type in BASE ? BASE[b.type]
     : ['candleSnapshot', 'perpCategories', 'userFills', 'frontendOpenOrders', 'allPerpMetas'].includes(b.type) ? [] : {}
   return route.fulfill({ status: 200, contentType: 'application/json', json })
@@ -221,6 +233,24 @@ console.log('\n-- sections start folded --')
     document.querySelectorAll('#ocGrid .oc-sec-head[data-sec]').forEach(h => window.__ocToggleSec(h.dataset.sec, true))
     document.querySelectorAll('#ocGrid .oc-sub-head').forEach(h => window.__ocToggleSub(h.dataset.cat, h.dataset.sub, true))
   })
+}
+
+// "lets update the outcomes charts to make them more responsive. also show charts of multiple options"
+console.log('\n-- charts: a range that fits, and an event chart of its options --')
+{
+  await p.evaluate(() => window.__ocExpandCard(14726))
+  await waitFor(p, 'the BTC chart', () => !!window.__ocChartDbg?.(14726))
+  const one = await p.evaluate(() => window.__ocChartDbg(14726))
+  t('a market at 1-3% gets a y-axis that fits it, not 0-100', one.y[0] >= 0 && one.y[1] <= 15 && one.n >= 40, true)
+  await p.evaluate(() => window.__ocCloseExpanded?.())
+  await p.click('#oc-card-evt-950 .oc-evt-chartbtn')
+  await waitFor(p, 'the NBA chart', () => !!window.__ocEvtChartDbg?.('evt-950'))
+  const ev = await p.evaluate(() => window.__ocEvtChartDbg('evt-950'))
+  t('an event charts its leading options, one line each', ev.lines.length, 4)
+  t('each named and drawn over its history', ev.lines.every(l => l.label && l.n >= 40), true)
+  t('fitted to where they are, not 0-100', ev.y[0] >= 0 && ev.y[1] < 60, true)
+  if (SHOT) await p.locator('#oc-card-evt-950').screenshot({ path: `${SHOT}/outcomes-evtchart.png` })
+  t('pressed again, it closes', await p.evaluate(() => { document.querySelector('#oc-card-evt-950 .oc-evt-chartbtn').click(); return !document.querySelector('#oc-card-evt-950 .oc-evt-chart') }), true)
 }
 
 // "add a filter by open interest, volume, etc. by default sort by open interest. in trending should
@@ -390,7 +420,7 @@ console.log('\n-- the phone: sections start folded too --')
   await mctx.route(HL_HOST, (route) => {
     let b = {}
     try { b = JSON.parse(route.request().postData() || '{}') } catch {}
-    const json = b.type === 'outcomeMeta' ? OUTCOME_META : b.type === 'allMids' ? MIDS
+    const json = b.type === 'outcomeMeta' ? OUTCOME_META : b.type === 'allMids' ? MIDS : b.type === 'candleSnapshot' ? CANDLES(b.req?.coin)
       : b.type in BASE ? BASE[b.type]
       : ['candleSnapshot', 'perpCategories', 'userFills', 'frontendOpenOrders', 'allPerpMetas'].includes(b.type) ? [] : {}
     return route.fulfill({ status: 200, contentType: 'application/json', json })

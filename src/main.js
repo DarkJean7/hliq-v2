@@ -288,6 +288,7 @@ import { hideSmallOn, setHideSmall, splitSmall, hideSmallBar } from './spotsmall
 import { sportOf, leagueOf, sportHeadHtml, sportOrder, matchTitle, SPORT_ORDER, SPORTS, sportArt } from './ocsport.js'
 import { whenScrollIdle } from './scrollidle.js'
 import { catHeadHtml, groupHeadHtml, groupKeyOf, foldShows, CAT_THEME } from './ocfold.js'
+import { yRange, pickLegs, alignSeries, spreadLabels, shortName, fmtTick, LINE_COLORS } from './ocmulti.js'
 import { PERIOD_SPAN, PERIOD_WINDOW, sliceSince, stitchHistories, timeTicks, fmtPointTime, fmtRange } from './portchart.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
@@ -38632,6 +38633,10 @@ async function _initOcCharts(outcomes) {
     // CLOSES IN countdown directly above the chart, so the axis does not need to encode it.
     const labels = candles.map(c => c.t)
     const pcts   = candles.map(c => parseFloat(c.c) * 100)
+    // The y range fits the line (src/ocmulti.js): fixed at 0-100 a market at 1-3% was a flat line
+    // on the floor ("make them more responsive").
+    const yr     = yRange(pcts)
+    const spanMs = labels.length > 1 ? labels[labels.length - 1] - labels[0] : 0
 
     const last    = candles[candles.length - 1]
     const lastPct = parseFloat(last.c) * 100
@@ -38674,6 +38679,10 @@ async function _initOcCharts(outcomes) {
         // horizontal gestures reach the chart. Removing that CSS reintroduces the stuck sheet.
         events: ['mousemove', 'mouseout', 'click', 'touchstart', 'touchmove'],
         plugins: {
+          // The Trade chart's plugins are registered globally and would draw on this one too:
+          // price boxes down the right edge (the dark tabs in the screenshot) and the trade
+          // chart's live dot moved to this chart's last point.
+          yPriceBoxes: false, markDot: false,
           legend: { display: false },
           // Scrub the line to read the odds at any past moment.
           tooltip: {
@@ -38705,20 +38714,18 @@ async function _initOcCharts(outcomes) {
               maxRotation: 0, autoSkip: true, maxTicksLimit: 4, padding: 4,
               callback(value) {
                 const t = Number(this.getLabelForValue(value))
-                return Number.isFinite(t)
-                  ? new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-                  : ''
+                return Number.isFinite(t) ? fmtTick(t, spanMs) : ''   // dates across days, times within one
               },
             },
           },
           y: {
-            display: true, min: 0, max: 100, grace: 0,
+            display: true, min: yr.min, max: yr.max, grace: 0,
             grid: { color: 'rgba(255,255,255,0.05)', drawTicks: false },
             border: { display: false },
             ticks: {
               color: 'rgba(255,255,255,0.40)',
               font: { size: 9, family: "'JetBrains Mono', ui-monospace, monospace" },
-              stepSize: 25, padding: 6,
+              maxTicksLimit: 5, padding: 6, precision: 0,
               callback: v => v + '%',
             },
           },
@@ -38812,6 +38819,7 @@ async function _refreshOcPrices() {
         const idx  = chart._dataIdx ?? data.length - 1
         if (idx >= 0 && data[idx] !== yesPx * 100) {
           data[idx] = yesPx * 100
+          const r = yRange(data); chart.options.scales.y.min = r.min; chart.options.scales.y.max = r.max
           chart.update('none')
         }
       }
@@ -39237,7 +39245,7 @@ function _ocSectionize() {
 
     const evId = 'evt-' + (q.question ?? members[0].outcome)
     const rows = members.map(o => `
-      <div class="oc-evt-row" data-name="${esc(rowName(o).toLowerCase())}" data-p="0" onclick="window.__ocExpandCard(${o.outcome})">
+      <div class="oc-evt-row" data-oc="${o.outcome}" data-name="${esc(rowName(o).toLowerCase())}" data-p="0" onclick="window.__ocExpandCard(${o.outcome})">
         <span class="oc-evt-name">${esc(rowName(o))}</span>
         <span class="oc-evt-pct" id="oc-evt-pct-${o.outcome}">—</span>
       </div>`).join('')
@@ -39278,6 +39286,7 @@ function _ocSectionize() {
           <div class="oc-evt-title">${esc(title)}</div>
         </div>
         <div class="oc-evt-head-r">
+          ${members.length >= 2 ? `<button class="oc-evt-sort oc-evt-chartbtn" onclick="event.stopPropagation();window.__ocEvtChart('${evId}',this)" aria-pressed="false">📈 Chart</button>` : ''}
           <button class="oc-evt-sort" onclick="event.stopPropagation();window.__ocEvtSort('${evId}',this)">⇅ Odds</button>
           <span class="oc-sec-count">${members.length}</span>
         </div>
@@ -39507,6 +39516,104 @@ window.__ocEvtSort = function(evId, btn) {
   if (btn) btn.textContent = wrap.dataset.sort === 'name' ? '⇅ A–Z' : '⇅ Odds'
   _ocEvtApplySort(wrap)
 }
+
+// ── An event's leading options on one chart (src/ocmulti.js) ─────────────────────
+// "show charts of multiple options", like outcome.xyz's NBA winner: a line per leading option,
+// its name and odds at the end. Loaded on a press, never for every card: each option is a
+// candle request (~23 of the 1200/min IP budget), so a page of events drawn eagerly would spend
+// the budget the trading screen needs. Kept 5 minutes, so reopening is free.
+const _ocLegCandles = new Map()   // outcome id -> { t, candles }
+async function _ocLegHistory(oc) {
+  const hit = _ocLegCandles.get(oc)
+  if (hit && Date.now() - hit.t < 300_000) return hit.candles
+  const candles = await fetchCandles('#' + (Number(oc) * 10), '1h', Date.now() - 7 * 24 * 3600e3).catch(() => [])
+  if (Array.isArray(candles) && candles.length) _ocLegCandles.set(oc, { t: Date.now(), candles })
+  return Array.isArray(candles) ? candles : []
+}
+const _ocEvtCharts = new Map()    // evId -> Chart
+window.__ocEvtChart = async function(evId, btn) {
+  const card = document.getElementById('oc-card-' + evId)
+  if (!card) return
+  const open = card.querySelector('.oc-evt-chart')
+  if (open) {   // a second press closes it
+    try { _ocEvtCharts.get(evId)?.destroy() } catch {}
+    _ocEvtCharts.delete(evId); open.remove()
+    btn?.setAttribute('aria-pressed', 'false'); btn?.classList.remove('on')
+    return
+  }
+  btn?.setAttribute('aria-pressed', 'true'); btn?.classList.add('on')
+  const box = document.createElement('div')
+  box.className = 'oc-evt-chart'
+  box.innerHTML = '<canvas></canvas><div class="oc-evt-chart-msg">Loading…</div>'
+  card.querySelector('.oc-evt-head')?.after(box)
+  const rows = [...card.querySelectorAll('.oc-evt-row')].map(r => ({ id: r.dataset.oc, name: r.querySelector('.oc-evt-name')?.textContent ?? '', p: parseFloat(r.dataset.p || 0) }))
+  const legs = pickLegs(rows, 4)
+  const hist = await Promise.all(legs.map(l => _ocLegHistory(l.id)))
+  if (!box.isConnected) return
+  const keep = legs.map((l, i) => ({ ...l, candles: hist[i] })).filter(l => l.candles.length)
+  if (!keep.length) { box.querySelector('.oc-evt-chart-msg').textContent = 'No price history yet'; return }
+  box.querySelector('.oc-evt-chart-msg').remove()
+  const { times, lines } = alignSeries(keep.map(l => l.candles))
+  // The live odds on the last point, so the end labels match the rows under the chart.
+  lines.forEach((ln, i) => { if (keep[i].p > 0) ln[ln.length - 1] = keep[i].p * 100 })
+  const yr = yRange(lines.flat())
+  const spanMs = times.length > 1 ? times[times.length - 1] - times[0] : 0
+  const endLabels = {
+    id: 'ocEndLabels',
+    afterDatasetsDraw(ch) {
+      const c = ch.ctx, area = ch.chartArea
+      const ys = ch.data.datasets.map((ds, i) => { const m = ch.getDatasetMeta(i).data; return m[m.length - 1]?.y ?? area.bottom })
+      const placed = spreadLabels(ys, 26, area.top + 8, area.bottom - 6)
+      c.save(); c.textAlign = 'left'
+      ch.data.datasets.forEach((ds, i) => {
+        const m = ch.getDatasetMeta(i).data, pt = m[m.length - 1]; if (!pt) return
+        const v = ds.data[ds.data.length - 1]
+        c.fillStyle = ds.borderColor; c.beginPath(); c.arc(pt.x, pt.y, 3, 0, Math.PI * 2); c.fill()
+        c.font = '700 10px system-ui, sans-serif'; c.fillText(ds.label, area.right + 8, placed[i] - 5)
+        c.font = '800 15px system-ui, sans-serif'; c.fillText(v == null ? '—' : Math.round(v) + '%', area.right + 8, placed[i] + 11)
+      })
+      c.restore()
+    },
+  }
+  const ch = new Chart(box.querySelector('canvas').getContext('2d'), {
+    type: 'line',
+    data: { labels: times, datasets: keep.map((l, i) => ({
+      label: shortName(l.name), fullName: l.name, data: lines[i], borderColor: LINE_COLORS[i % LINE_COLORS.length],
+      borderWidth: i === 0 ? 2 : 1.6, pointRadius: 0, tension: 0, stepped: true, spanGaps: true, fill: false,
+    })) },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      layout: { padding: { top: 6, right: 74, bottom: 0, left: 0 } },   // room for the end labels
+      interaction: { mode: 'index', intersect: false },
+      events: ['mousemove', 'mouseout', 'touchstart', 'touchmove'],
+      plugins: {
+        yPriceBoxes: false, markDot: false,   // the Trade chart's global plugins (see the single chart)
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(18,20,26,.94)', borderColor: 'rgba(255,255,255,.12)', borderWidth: 1, padding: 8,
+          titleFont: { size: 10 }, bodyFont: { size: 11.5, weight: '700' }, boxWidth: 8, boxHeight: 8, usePointStyle: true,
+          itemSort: (a, b) => (b.parsed.y ?? -1) - (a.parsed.y ?? -1),
+          callbacks: {
+            title: it => { const t = Number(it?.[0]?.label); return Number.isFinite(t) ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric' }) : '' },
+            label: it => it.parsed.y == null ? '' : `${it.dataset.fullName}  ${it.parsed.y.toFixed(1)}%`,
+          },
+        },
+        zoom: { zoom: { wheel: { enabled: false }, drag: { enabled: false } }, pan: { enabled: false } },
+      },
+      scales: {
+        x: { display: true, grid: { display: false }, border: { color: 'rgba(255,255,255,0.10)' },
+          ticks: { color: 'rgba(255,255,255,0.40)', font: { size: 9 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 4,
+            callback(v) { const t = Number(this.getLabelForValue(v)); return Number.isFinite(t) ? fmtTick(t, spanMs) : '' } } },
+        y: { display: true, position: 'left', min: yr.min, max: yr.max, grid: { color: 'rgba(255,255,255,0.05)', drawTicks: false }, border: { display: false },
+          ticks: { color: 'rgba(255,255,255,0.40)', font: { size: 9 }, maxTicksLimit: 5, padding: 6, precision: 0, callback: v => v + '%' } },
+      },
+    },
+    plugins: [endLabels],
+  })
+  _ocEvtCharts.set(evId, ch)
+}
+window.__ocChartDbg = (oc) => { const ch = _ocCharts[oc]; return ch ? { y: [ch.options.scales.y.min, ch.options.scales.y.max], n: ch.data.datasets[0].data.length } : null }
+window.__ocEvtChartDbg = (evId) => { const ch = _ocEvtCharts.get(evId); return ch ? { lines: ch.data.datasets.map(d => ({ label: d.label, last: d.data[d.data.length - 1], n: d.data.length })), y: [ch.options.scales.y.min, ch.options.scales.y.max] } : null }
 
 // A Trending event card names its leader ("Arsenal 34%"), read off the event's own rows.
 function _ocHotLeaders() {
