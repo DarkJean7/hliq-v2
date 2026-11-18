@@ -25570,6 +25570,26 @@ initTradeBrief({
     if (!Array.isArray(_pulseCandles[c + '|1h']) && Date.now() - (_pulseCandlesAt[c + '|1h'] ?? 0) < 60e3) return
     _pulseLoadCandles(c, { caps: false })
   },
+  // What /markets knows about this market (src/trademkt.js). Everything here is already in
+  // memory -- the asset context from the markets fan, the candles from the Signals card beside
+  // it -- so the card it draws costs Hyperliquid nothing.
+  market: (c) => {
+    const ctx = _mktCtxMap[c] ?? _mktCtxMap[hip3Original(c)] ?? null
+    const h1 = _pulseCandles[c + '|1h'], d1 = _pulseCandles[c + '|1d']
+    if (!ctx && !Array.isArray(h1) && !Array.isArray(d1)) return null
+    return {
+      // Hyperliquid's own category for the coin, which is half of what decides whether this is
+      // a crypto market or a TradFi one (src/sectors.js classify()).
+      hlCat: _mktCatMap[c] ?? _mktCatMap[hip3Original(c)] ?? null,
+      ctx,
+      h1: Array.isArray(h1) ? h1 : null,
+      d1: Array.isArray(d1) ? d1 : null,
+    }
+  },
+  openMarkets: () => {
+    if (_isMobView()) window.__mobMoreTab('markets')
+    else window.switchTab('markets', document.querySelector(`.nav-tab[onclick*="'markets'"]`))
+  },
   openSignals: (c) => {
     window.__sigSetCoin?.(c)
     _sigPane = 'market'

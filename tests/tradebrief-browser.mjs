@@ -21,7 +21,9 @@ function candles(iv, n) {
   const now = Date.now(), out = []
   for (let i = n; i > 0; i--) {
     const c = 100 + 10 * Math.sin(i / 9)
-    out.push({ t: now - i * step, T: now - i * step + step - 1, s: 'ETH', i: iv, o: String(c - 0.4), c: String(c), h: String(c + 1.2), l: String(c - 1.6), v: '1000', n: 50 })
+    // Volume scales with the bar, or a day's candle would carry an hour's trading and the
+    // Market card's 3M window would come out smaller than its 30D one.
+    out.push({ t: now - i * step, T: now - i * step + step - 1, s: 'ETH', i: iv, o: String(c - 0.4), c: String(c), h: String(c + 1.2), l: String(c - 1.6), v: String(1000 * (step / 3600e3)), n: 50 })
   }
   return out
 }
@@ -57,6 +59,15 @@ async function open(opts) {
     return route.fulfill({ json })
   })
   await ctx.route('**/api/**', (route) => route.fulfill({ status: 503, body: 'offline in test' }))
+  // The Market card's one request. Our own server, so it is not under /api/ and the rule above
+  // does not catch it -- unstubbed it would reach DefiLlama for real and the suite would stop
+  // being hermetic.
+  await ctx.route('**/markets-meta', (route) => route.fulfill({ json: {
+    revenue: { ETH: { name: 'Ethereum', category: 'Chain', r24: 1_200_000, r7: 8_000_000, r30: 30_000_000,
+                      f24: 2_400_000, f7: 16_000_000, f30: 60_000_000 } },
+    cg: { ETH: ['ethereum', 210_000_000_000] },
+    stocks: {}, sic: {},
+  } }))
   const p = await ctx.newPage()
   await p.goto(APP, { waitUntil: 'domcontentloaded' })
   await p.evaluate(() => {
@@ -91,17 +102,45 @@ console.log('-- desktop --')
   // "lets add also signals summary under the trade tab analysis".
   await p.waitForSelector('#deskTradeBrief .tb-perf', { timeout: 20000 })
   const cards = await p.$$eval('#deskTradeBrief > .tb-card', es => es.map(e => e.querySelector('.tb-top span').textContent))
-  t('the Signals card sits under the Analysis one', JSON.stringify(cards) === JSON.stringify(['Analysis', 'Signals']), cards)
-  const perf = await p.$$eval('#deskTradeBrief .tb-perf-c', es => es.map(e => e.textContent.trim()))
+  t('the Signals card sits under the Analysis one, and Market under that',
+    JSON.stringify(cards) === JSON.stringify(['Analysis', 'Signals', 'Market']), cards)
+  // Scoped to the Signals card. These used to index #deskTradeBrief .tb-perf-c, which was every
+  // window cell on the tab -- fine while Signals was the only card with a window strip, and
+  // wrong the moment the Market card arrived with one of its own.
+  const SIG = '#deskTradeBrief > .tb-card:nth-of-type(2)'
+  const perf = await p.$$eval(SIG + ' .tb-perf-c', es => es.map(e => e.textContent.trim()))
   t('with every window, 1H included, as a percentage', perf.slice(0, 4).every(x => /^(1H|24H|7D|30D)[+-]\d+\.\d\d%$/.test(x)), perf)
   // "another row of timeframes under the current one with the longer timeframes".
-  await p.waitForFunction(() => [...document.querySelectorAll('#deskTradeBrief .tb-perf-c')].slice(4).every(e => /%/.test(e.textContent)), null, { timeout: 15000 }).catch(() => {})
-  const long = await p.$$eval('#deskTradeBrief .tb-perf-c', es => es.slice(4).map(e => e.textContent.trim()))
+  await p.waitForFunction((sel) => [...document.querySelectorAll(sel + ' .tb-perf-c')].slice(4).every(e => /%/.test(e.textContent)), SIG, { timeout: 15000 }).catch(() => {})
+  const long = await p.$$eval(SIG + ' .tb-perf-c', es => es.slice(4).map(e => e.textContent.trim()))
   t('and a second row of the longer ones', long.length === 4 && long.every(x => /^(3M|6M|1Y|ALL)[+-]\d+\.\d\d%$/.test(x)), long)
-  const tops = await p.$$eval('#deskTradeBrief .tb-perf-c', es => es.map(e => Math.round(e.getBoundingClientRect().top)))
+  const tops = await p.$$eval(SIG + ' .tb-perf-c', es => es.map(e => Math.round(e.getBoundingClientRect().top)))
   t('under the first, not beside it', new Set(tops.slice(0, 4)).size === 1 && new Set(tops.slice(4)).size === 1 && tops[4] > tops[0], tops)
-  const inds = await p.$$eval('#deskTradeBrief .tb-ind span', es => es.map(e => e.textContent))
+  const inds = await p.$$eval(SIG + ' .tb-ind span', es => es.map(e => e.textContent))
   t('and the indicators read', ['RSI', 'EMA', 'Bollinger', 'Volatility'].every(k => inds.some(x => x.includes(k))), inds)
+  // "i would like to have the data available like volume(time frames), open interest(time
+  // frames), revenue(time frame), fees(time frame), worth" -- src/trademkt.js.
+  const MKT = '#deskTradeBrief > .tb-card:nth-of-type(3)'
+  await p.waitForFunction((sel) => /Open interest/.test(document.querySelector(sel)?.textContent ?? ''), MKT, { timeout: 20000 })
+  const mtxt = await p.$eval(MKT, e => e.textContent)
+  const vols = await p.$$eval(MKT + ' .tb-perf-c', es => es.map(e => e.textContent.trim()))
+  t('volume runs across six windows', vols.length === 6 && /^24H/.test(vols[0]) && /^1Y/.test(vols[5]), vols)
+  t('each window is money or a dash, never a bare number', vols.every(x => /(\$|—)/.test(x)), vols)
+  // A longer window cannot hold less trading than a shorter one. The short windows are summed
+  // off hourly candles and the long ones off daily, so this is what catches the two series
+  // being read against each other wrongly -- on live data they agree to within 2%.
+  t('and a longer window never holds less than a shorter one', await p.$$eval(MKT + ' .tb-perf-c b', es => {
+    const n = es.map(e => { const m = /\$([\d.]+)([KMBT]?)/.exec(e.textContent); return m ? +m[1] * ({ '': 1, K: 1e3, M: 1e6, B: 1e9, T: 1e12 }[m[2]]) : null })
+    return n.every((v, i) => v == null || i === 0 || n[i - 1] == null || v >= n[i - 1] * 0.999)
+  }), vols)
+  t('open interest is there', /Open interest/.test(mtxt), mtxt)
+  t('with the worth of the asset', /Worth/.test(mtxt) && /\$210\.00B/.test(mtxt), mtxt)
+  t('revenue over its windows', /Revenue 24h/.test(mtxt) && /Revenue 7d/.test(mtxt) && /Revenue 30d/.test(mtxt), mtxt)
+  t('and fees over theirs', /Fees 24h/.test(mtxt) && /Fees 7d/.test(mtxt) && /Fees 30d/.test(mtxt), mtxt)
+  t('whose revenue it is, is said', /are Ethereum's, across every chain/.test(mtxt), mtxt)
+  // The whole point of reading main.js's own context and candles rather than asking again.
+  t('and the card costs the exchange no extra request', reads(asked, 'ETH') === 2, asked)
+
   t('it sits above the positions table', await p.evaluate(() => {
     const a = document.getElementById('deskTradeBrief'), m = document.querySelector('.trade-manage-tables')
     return !!(a.compareDocumentPosition(m) & Node.DOCUMENT_POSITION_FOLLOWING)
@@ -133,12 +172,15 @@ console.log('-- phone --')
   t('the phone shows the read too', /Support/.test(txt) && /Resistance/.test(txt), txt)
   t('with the position in it', /your long/.test(txt), txt)
   await p.waitForSelector('#mobTradeBrief .tb-perf', { timeout: 20000 })
-  t('and the Signals card under it', await p.$$eval('#mobTradeBrief > .tb-card', es => es.length) === 2)
+  await p.waitForFunction(() => /Open interest/.test(document.getElementById('mobTradeBrief')?.textContent ?? ''), null, { timeout: 20000 }).catch(() => {})
+  t('and the Signals and Market cards under it', await p.$$eval('#mobTradeBrief > .tb-card', es => es.length) === 3,
+    await p.$$eval('#mobTradeBrief > .tb-card', es => es.map(e => e.querySelector('.tb-top span')?.textContent)))
+  t('the phone gets the market figures too', /Open interest/.test(await p.$eval('#mobTradeBrief', e => e.textContent)))
   t('and nothing runs off the screen', await p.evaluate(() => {
     const W = document.documentElement.clientWidth
     return [...document.querySelectorAll('#mobTradeBrief *')].every(e => e.getBoundingClientRect().right <= W + 0.5)
   }))
-  if (arg('shot')) { await p.locator('#mobTradeBrief .tb-perf').scrollIntoViewIfNeeded(); await p.screenshot({ path: arg('shot') }) }
+  if (arg('shot')) { await p.locator('#mobTradeBrief > .tb-card').last().scrollIntoViewIfNeeded(); await p.screenshot({ path: arg('shot') }) }
   await ctx.close()
 }
 

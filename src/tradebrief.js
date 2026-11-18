@@ -24,8 +24,14 @@
  * the indicators read now. signals(coin) → { state, perf, perfLong: [[label, pct|null]], inds: [{ label,
  * head, tone }] }, worked out in main.js by the Signals tab's own functions, because that is where they
  * live. Hourly and daily candles answer all of it, about 77 weight, read under the same rules as above.
+ *
+ * ── and what /markets knows about it, under that ──
+ * "i would like to have the data available like volume(time frames), open interest(time frames),
+ * revenue(time frame), fees(time frame), worth". src/trademkt.js draws it; market(coin) hands it
+ * the context and the candles main.js already holds, so the card costs the exchange nothing.
  */
 import { analysisFor, analysisState, ensureAnalysis, setAnalysisDeps, setupHead, fmtPx, normCoin } from './analysis.js'
+import { loadMarketMeta, marketMeta, marketFacts, marketCardHtml } from './trademkt.js'
 
 const LOAD_AFTER_MS = 1500
 const TICK_MS = 5000
@@ -34,7 +40,7 @@ const REPAINT_MS = 30_000
 const HOSTS = ['mobTradeBrief', 'deskTradeBrief']
 
 let ctx = { T: (en) => en, limited: () => false, price: () => null, position: () => null, prv: (x) => x, open: null,
-  signals: () => null, loadSignals: () => {}, openSignals: null }
+  signals: () => null, loadSignals: () => {}, openSignals: null, market: () => null, openMarkets: null }
 let coin = null, ac = null, loadT = null, timer = null, paintedAt = 0, paintedState = null, paintedSig = ''
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
@@ -150,6 +156,21 @@ function signalsHtml(sig) {
 
 const sigOf = () => { try { return readable(coin) ? ctx.signals(coin) : null } catch { return null } }
 
+/**
+ * What /markets knows about this market. Drawn from what main.js already holds, so a market with
+ * no context yet simply has no card rather than a request of its own.
+ */
+function marketHtml() {
+  if (!readable(coin)) return ''
+  let m = null
+  try { m = ctx.market(coin) } catch { return '' }
+  if (!m) return ''
+  try {
+    const facts = marketFacts({ coin, hlCat: m.hlCat, ctx: m.ctx, h1: m.h1, d1: m.d1, meta: marketMeta() })
+    return marketCardHtml(facts, { T, prv: ctx.prv, full: ctx.openMarkets })
+  } catch { return '' }
+}
+
 function paint() {
   const el = host()
   if (!el) return
@@ -157,7 +178,7 @@ function paint() {
   if (!readable(coin)) { el.innerHTML = ''; paintedSig = ''; return }
   const sig = sigOf()
   paintedSig = JSON.stringify(sig)
-  el.innerHTML = analysisHtml() + signalsHtml(sig)
+  el.innerHTML = analysisHtml() + signalsHtml(sig) + marketHtml()
 }
 
 async function load() {
@@ -165,6 +186,9 @@ async function load() {
   if (!ac || ac.signal.aborted) ac = new AbortController()
   const mine = coin, sig = ac.signal
   if (!ctx.limited()) { try { ctx.loadSignals(mine) } catch {} }
+  // Our own server, cached, and already fetched for the Allocation view: it does not go through
+  // the exchange's budget, so the rate-limit gate above does not apply to it.
+  loadMarketMeta().then(() => { if (mine === coin && !sig.aborted) paint() }).catch(() => {})
   const p = ensureAnalysis(mine, sig)
   paint()
   await p
@@ -195,6 +219,7 @@ function wire(el) {
   el.addEventListener('click', (e) => {
     if (e.target.closest('[data-tb-open]')) ctx.open?.(coin)
     else if (e.target.closest('[data-tb-signals]')) ctx.openSignals?.(coin)
+    else if (e.target.closest('[data-tb-markets]')) ctx.openMarkets?.(coin)
   })
 }
 
