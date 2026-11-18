@@ -9,6 +9,7 @@ import { panelHtml as calChartPanel, drawMonthChart, drawDayChart, chartData as 
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
 import { pairTrades, drawdownFor } from './drawdown.js'
 import { partRoe, fmtRoe } from './roe.js'
+import { pnlCurveFactor } from './pfnet.js'
 import { aggregateFillsByCoin, coinLabel } from './api.js'
 import { renderOverviewChart } from './charts.js'
 import { aggregatePosGroup, groupPositions, posHealthPct, posSideOf } from './posgroup.js'
@@ -524,8 +525,12 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
 
   // ── Current streak & profit factor ───────────────────────────────────────
   const currentStreak = computeCurrentStreak(fills)
-  const _grossWin  = fills.reduce((s, f) => f.closedPnl > 0 ? s + f.closedPnl : s, 0)
-  const _grossLoss = fills.reduce((s, f) => f.closedPnl < 0 ? s + Math.abs(f.closedPnl) : s, 0)
+  // All-time, from net PnL ("i want profit factor to be based from all time, net pnl"): the
+  // fills here are only the ones Hyperliquid still serves, and a wallet read 3.46 beside -$22M.
+  // Without the portfolio curve it falls back to those closing fills.
+  const _curve     = pnlCurveFactor(portfolio)
+  const _grossWin  = _curve ? _curve.gain : fills.reduce((s, f) => f.closedPnl > 0 ? s + f.closedPnl : s, 0)
+  const _grossLoss = _curve ? _curve.loss : fills.reduce((s, f) => f.closedPnl < 0 ? s + Math.abs(f.closedPnl) : s, 0)
   const profitFactor = _grossLoss > 0 ? _grossWin / _grossLoss : _grossWin > 0 ? Infinity : 0
 
   const worstWindow = allWindows.reduce(
@@ -626,7 +631,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
     {
       label: 'Profit Factor',
       value: profitFactor === Infinity ? 'No losses' : profitFactor > 0 ? profitFactor.toFixed(2) : '—',
-      sub:   'Gross wins ÷ gross losses',
+      sub:   _curve ? 'All-time PnL gains ÷ losses' : 'Closed trades: wins ÷ losses',
       cls:   profitFactor >= 1 ? 'pos' : profitFactor > 0 ? 'neg' : 'neu',
     },
     {
@@ -735,7 +740,7 @@ export function renderOverview({ perpState, spotState, fills, funding = [], open
       return { label: 'Net PnL', value: fmtPnL(n).text, sub: (roe ? 'ROE ' + roe : 'incl. funding') + (offexPnl ? ' · incl. off-exchange' : ''), cls: fmtPnL(n).cls }
     })(),
     { label: 'Win Rate',      value: winRate + (closedTrades > 0 ? '%' : ''), sub: winningTrades + ' / ' + closedTrades, cls: 'neu' },
-    { label: 'Profit Factor', value: profitFactor === Infinity ? '∞' : profitFactor > 0 ? profitFactor.toFixed(2) : '—', sub: 'wins ÷ losses', cls: profitFactor >= 1 ? 'pos' : profitFactor > 0 ? 'neg' : 'neu' },
+    { label: 'Profit Factor', value: profitFactor === Infinity ? '∞' : profitFactor > 0 ? profitFactor.toFixed(2) : '—', sub: _curve ? 'all-time PnL gains ÷ losses' : 'wins ÷ losses', cls: profitFactor >= 1 ? 'pos' : profitFactor > 0 ? 'neg' : 'neu' },
     { label: 'Total Volume',  value: '$' + fmtCompact(totalVolume), sub: fills.length + ' fills', cls: 'neu', id: 'statTotalVolume' },
     { label: 'Current Streak', value: currentStreak === 0 ? '—' : Math.abs(currentStreak) + (currentStreak > 0 ? ' win' : ' loss') + (Math.abs(currentStreak) !== 1 ? (currentStreak > 0 ? 's' : 'es') : ''), sub: 'consecutive', cls: currentStreak > 0 ? 'pos' : currentStreak < 0 ? 'neg' : 'neu' },
   ]

@@ -296,6 +296,7 @@ import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEn
 import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
 import { setExtChartDeps, openExtChart, extChartTf, extChartQuote } from './extchart.js'   // an outside market's own chart
 import { trackRecord, isSmallSample, openLossOf, holdsStep } from './trackrecord.js'
+import { pnlCurveFactor } from './pfnet.js'
 import { createJoiner, ownedAddresses } from './lbjoin.js'
 import { readKey as _akRead, writeKey as _akWrite, removeKey as _akRemove,
          migrateLegacy as _akMigrateLegacy, strayEntries as _akStrays,
@@ -35562,6 +35563,10 @@ async function _lbFetchRows(entries) {
 const _lbJoiner = createJoiner({ storage: localStorage, fetch: (...a) => fetch(...a) })
 
 function _lbJoin(addr, equity = null) {
+  // Not the Popular board's accounts. They have a board of their own, and Visit on one loads it
+  // through loadDashboard like any search -- which joined James Wynn and smartestmoney to the
+  // Real board: "remove the popular accounts from real. i never said to add them over there".
+  if (KNOWN.some(k => k.addr === String(addr ?? '').toLowerCase())) return Promise.resolve({ status: 'skip' })
   return _lbJoiner.join(addr, equity)
 }
 
@@ -36416,8 +36421,11 @@ async function _lbFetchResults(entries) {
     const _spotFree        = _spotUSDC ? Math.max(0, parseFloat(_spotUSDC.total ?? 0) - parseFloat(_spotUSDC.hold ?? 0)) : 0
     const withdrawable     = parseFloat(csNow.withdrawable ?? 0) + _spotFree
     const totalVolume      = fills.reduce((s, f) => s + parseFloat(f.sz ?? 0) * parseFloat(f.px ?? 0), 0)
-    let grossWin = 0, grossLoss = 0
-    for (const f of fills) {
+    // All-time, from net PnL (src/trackrecord.js pnlCurveFactor); the combined Profit Factor
+    // sums these, so it is all-time too. Closing fills only when there is no curve.
+    const _pfCurve = pnlCurveFactor(portfolio)
+    let grossWin = _pfCurve?.gain ?? 0, grossLoss = _pfCurve?.loss ?? 0
+    if (!_pfCurve) for (const f of fills) {
       const pnl = parseFloat(f.closedPnl ?? 0)
       if (pnl > 0) grossWin += pnl
       else if (pnl < 0) grossLoss += Math.abs(pnl)
@@ -37029,7 +37037,7 @@ function _maStatsHtml(results) {
     { label: 'Total Volume',     value: '$'  + fmtCompact(totalVolume),   sub: 'Notional traded all-time',          cls: 'neu' },
     { label: 'All Time Funding', value: fmtPnL(allTimeFunding).text,      sub: 'Cumulative funding received',       cls: allTimeFunding >= 0 ? 'pos' : 'neg' },
     { label: 'Total Fees Paid',  value: '-$' + fmtUSD(totalFees),         sub: 'Paid to exchange across all fills', cls: 'neg' },
-    { label: 'Profit Factor',    value: profitFactor,                      sub: 'Gross wins ÷ gross losses',         cls: pfCls },
+    { label: 'Profit Factor',    value: profitFactor,                      sub: 'All-time PnL gains ÷ losses',        cls: pfCls },
     { label: 'Win Rate',         value: winRate,                           sub: 'Winning trade windows',             cls: wrCls },
   ]
   return cards.map(c => `
