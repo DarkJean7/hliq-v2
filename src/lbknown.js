@@ -12,8 +12,14 @@
 //   - disputed or unconfirmed links say so in `note`. Ownership claimed by trackers is a label,
 //     not a fact, and the board says that once at the top.
 // Left out on purpose (Nov 2026): Arthur Hayes (wallets disputed, he denied one), AguilaTrades
-// (only a truncated address public), qwatio (no address tied to him), "smartestmoney" (no
-// source ties an address to it).
+// (only a truncated address public), qwatio (no address tied to him), onchainmonk (no address
+// published anywhere, and no onchainmonk.hl name registered).
+//
+// A ".hl" name is NOT the trading account. Hyperliquid Names (api.hlnames.xyz) resolves
+// smartestmoney.hl and loracle.hl to near-empty wallets, not to the accounts trackers report
+// trading under those names, and neither ledger shows a transfer between the two. So those
+// rows rest on the tracker's attribution, and their notes say so rather than implying the name
+// proves it.
 //
 // Numbers come from Hyperliquid's public stats feed (a CDN file -- no /info weight); serve-prod.js
 // fetches it and keeps only these addresses' rows. Pure functions below, shared with the suite.
@@ -34,8 +40,11 @@ export const KNOWN = [
     note: "Hyperliquidity Provider: Hyperliquid's own market-making and liquidation vault.",
     src: 'Trading Strategy', url: 'https://tradingstrategy.ai/trading-view/vaults/address/0xdfc24b077bc1425ad1dea75bcb6f8158e10df303' },
   { addr: '0x8def9f50456c6c4e37fa5d3d57f108ed23992dae', name: 'Loracle', tag: 'Trader',
-    note: 'loracle.hl, an early Hyperliquid contributor; known for a large HYPE short.',
+    note: 'An early Hyperliquid contributor, known for a large HYPE short. Attributed by trackers; the loracle.hl name itself is on a different wallet.',
     src: 'Bitget News', url: 'https://www.bitget.com/news/detail/12560605717139' },
+  { addr: '0x082e843a431aef031264dc232693dd710aedca88', name: 'smartestmoney', tag: 'Trader',
+    note: 'Known for a 1.38M HYPE long from $38.68. Labelled by OnchainLens; the smartestmoney.hl name itself is on a different wallet.',
+    src: 'KuCoin News', url: 'https://www.kucoin.com/news/flash/smartestmoney-hl-s-1-38m-hype-long-hits-79m-unrealized-profit' },
   { addr: '0x020ca66c30bec2c4fe3861a94e4db4a498a35872', name: 'Machi Big Brother', tag: 'Trader',
     note: 'Jeffrey Huang. Labelled by Arkham and Lookonchain; the account names itself too.',
     src: 'Cointelegraph', url: 'https://cointelegraph.com/news/machi-big-brother-44m-profit-10m-loss' },
