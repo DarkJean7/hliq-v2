@@ -273,18 +273,20 @@ function strategyPlugin() {
           } catch { return sendJson(res, 502, { points: null }) }
         }
 
-        // Dev twin of serve-prod.js /lb-known (in memory for the dev session, 15 minutes).
+        // Dev twin of serve-prod.js /lb-known (in memory, 3 minutes, unpaced -- dev only).
         if (method === 'GET' && path === '/lb-known') {
           const K = await import('./src/lbknown.js')
           const c = globalThis.__devKnown
-          if (!c || Date.now() - c.at > 15 * 60_000) {
-            try {
-              const stats = K.statsFor(await fetch(K.STATS_URL, { signal: AbortSignal.timeout(60_000) }).then(r => r.text()), K.KNOWN.map(k => k.addr))
-              if (Object.keys(stats).length) globalThis.__devKnown = { at: Date.now(), stats }
-            } catch {}
+          if (!c || Date.now() - c.at > 3 * 60_000) {
+            const post = (body) => fetch('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())
+            const rows = {}
+            for (const { addr } of K.KNOWN) {
+              try { rows[addr] = K.knownRow(addr, await post({ type: 'portfolio', user: addr }), await post({ type: 'clearinghouseState', user: addr })) } catch { rows[addr] = null }
+            }
+            if (Object.values(rows).some(Boolean)) globalThis.__devKnown = { at: Date.now(), rows }
           }
           const d = globalThis.__devKnown
-          return d ? sendJson(res, 200, { at: d.at, stats: d.stats }) : sendJson(res, 503, { stats: null })
+          return d ? sendJson(res, 200, { at: d.at, rows: d.rows }) : sendJson(res, 503, { rows: null })
         }
 
         // Dev twin of serve-prod.js /macro-data (in memory, so a restart reads it all again).

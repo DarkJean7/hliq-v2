@@ -21,11 +21,6 @@
 // rows rest on the tracker's attribution, and their notes say so rather than implying the name
 // proves it.
 //
-// Numbers come from Hyperliquid's public stats feed (a CDN file -- no /info weight); serve-prod.js
-// fetches it and keeps only these addresses' rows. Pure functions below, shared with the suite.
-
-export const STATS_URL = 'https://stats-data.hyperliquid.xyz/Mainnet/leaderboard'
-
 export const KNOWN = [
   { addr: '0x5b5d51203a0f9079f8aeb098a6523a13f298c060', name: 'Abraxas Capital', tag: 'Fund',
     note: 'Wallet 1 of 2. Labelled by Arkham and Nansen.',
@@ -56,48 +51,47 @@ export const KNOWN = [
     src: 'The Block', url: 'https://www.theblock.co/post/374383/alleged-hyperliquid-whale-denies-trump-ties-thanks-cz-for-doxing-and-pitches-market-stabilization-fund' },
 ]
 
-// [key, chip label, the feed's window name]
-export const PERIODS = [['d', '24h', 'day'], ['w', '7d', 'week'], ['m', '30d', 'month'], ['a', 'All', 'allTime']]
+// Numbers: LIVE from Hyperliquid, per account -- `portfolio` (the account value and all-time PnL
+// its own portfolio page shows) and `clearinghouseState` (positions, unrealized PnL). They were
+// first taken from Hyperliquid's leaderboard stats file, which lags: smartestmoney read value
+// $19.68M / PnL +$30.64M on the board while its page said $17.46M / +$28.37M, and "nothing
+// matches". Every figure in a row now comes from the same moment, so they add up:
+// net = unrealized + realized. serve-prod.js fetches them, paced, at most every few minutes,
+// only while someone is looking; knownRow below shapes one, in the Real board's row shape so
+// the Real board's renderers draw it.
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null }
 
-/** One feed row → { v: account value, p/r/x: pnl/roi/volume per period }. */
-export function compactStats(row) {
-  const w = new Map((row?.windowPerformances ?? []).map(x => [x?.[0], x?.[1] ?? {}]))
-  const pick = (f) => Object.fromEntries(PERIODS.map(([k, , win]) => [k, num(w.get(win)?.[f])]))
-  return { v: num(row?.accountValue), p: pick('pnl'), r: pick('roi'), x: pick('vlm') }
-}
+// [key, label, portfolio window]
+export const KNOWN_PERIODS = [['d', '24h', 'day'], ['w', '7d', 'week'], ['m', '30d', 'month'], ['a', 'All', 'allTime']]
 
 /**
- * The stats of `addrs` out of the whole feed's text (~40 MB, ~48,000 rows) without parsing every
- * row into an object -- this runs on the box that also runs the bots. Rows start with
- * {"ethAddress": "0x…"; only the wanted ones are parsed. Whitespace is not assumed (the feed is
- * pretty-printed today). → { addr: stats } -- an address absent from the feed is absent here,
- * which the board shows as unknown, not as zero.
+ * One account's row from its `portfolio` and `clearinghouseState` answers. Null when the
+ * portfolio has no all-time point: without it there is no value and no PnL to show, and a row of
+ * zeros would read as an empty account.
  */
-export function statsFor(text, addrs) {
-  const want = new Set([...addrs].map(a => String(a).toLowerCase()))
-  const START = /\{\s*"ethAddress"\s*:\s*"(0x[0-9a-fA-F]{40})"/g
-  const out = {}
-  const end = text.lastIndexOf(']')
-  let m = START.exec(text)
-  while (m) {
-    const i = m.index, a = m[1].toLowerCase()
-    const next = START.exec(text)
-    if (want.has(a) && !out[a]) {
-      try { out[a] = compactStats(JSON.parse(text.slice(i, next ? next.index : end).replace(/[\s,]+$/, ''))) } catch {}
-    }
-    m = next
+export function knownRow(addr, portfolio, cs, now = Date.now()) {
+  const win = new Map((Array.isArray(portfolio) ? portfolio : []).map(p => [p?.[0], p?.[1] ?? {}]))
+  const last = (arr) => (Array.isArray(arr) && arr.length ? num(arr[arr.length - 1]?.[1]) : null)
+  const all = win.get('allTime')
+  const accountValue = last(all?.accountValueHistory), netPnl = last(all?.pnlHistory)
+  if (accountValue == null || netPnl == null) return null
+  const open = (cs?.assetPositions ?? []).filter(ap => num(ap?.position?.szi))
+  const unrealizedPnl = open.reduce((t, ap) => t + (num(ap.position.unrealizedPnl) ?? 0), 0)
+  const positions = open.map(ap => ({ position: {
+    coin: ap.position.coin, szi: ap.position.szi, entryPx: ap.position.entryPx,
+    positionValue: ap.position.positionValue, unrealizedPnl: ap.position.unrealizedPnl,
+    liquidationPx: ap.position.liquidationPx, leverage: ap.position.leverage,
+    returnOnEquity: ap.position.returnOnEquity, marginUsed: ap.position.marginUsed,
+  } }))
+  return {
+    addr, accountValue, netPnl, unrealizedPnl,
+    // Hyperliquid's PnL is everything since the account began, open positions included; what is
+    // not open has been realized -- closed trades, funding and fees together.
+    realizedPnl: netPnl - unrealizedPnl,
+    periods: Object.fromEntries(KNOWN_PERIODS.map(([k, , w]) => [k, last(win.get(w)?.pnlHistory)])),
+    totalVolume: num(all?.vlm) ?? 0,
+    positions, openOrders: [], outcomes: [],
+    updatedAt: now,
   }
-  return out
-}
-
-/**
- * The board: each known entity with its stats (or null), sorted. sort: 'pnl' | 'roi' over
- * `period`, or 'value'. Unknown numbers sort last, never as zero.
- */
-export function knownView(stats, { period = 'a', sort = 'pnl' } = {}) {
-  const rows = KNOWN.map(k => ({ ...k, s: stats?.[k.addr] ?? null }))
-  const key = sort === 'value' ? (r) => r.s?.v : sort === 'roi' ? (r) => r.s?.r?.[period] : (r) => r.s?.p?.[period]
-  return rows.sort((x, y) => (key(y) ?? -Infinity) - (key(x) ?? -Infinity))
 }

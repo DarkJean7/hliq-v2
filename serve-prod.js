@@ -19,7 +19,7 @@ import { coinsOf, coinFile, stalest, buildPerf, HIST_FROM as PFC_FROM } from './
 import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
 import { buildDexes, buildCexes, LLAMA_DEXVOL_URL, CEX_CIK, secFactsUrl, sharesFromFacts } from './src/exchanges.js'
 import { refreshMacro, buildMacro, macroHasData, MACRO_UA } from './src/macro.js'
-import { STATS_URL as KNOWN_STATS_URL, KNOWN, statsFor } from './src/lbknown.js'
+import { KNOWN, knownRow } from './src/lbknown.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -140,19 +140,28 @@ function macroRefresh() {
   })().finally(() => { try { if (readFileSync(MACRO_LOCK, 'utf8') === String(process.pid)) unlinkSync(MACRO_LOCK) } catch {} }).catch(e => console.warn('[macro-data] refresh failed:', e.message)).finally(() => { macroInflight = null })
   return macroInflight
 }
-// /lb-known (src/lbknown.js): numbers for the leaderboard's Popular board -- a curated list of
-// publicly known entities. Hyperliquid's public stats feed is ~40 MB for ~48,000 rows; one worker
-// fetches it (lock), keeps only the listed addresses' rows, and every worker reads the file.
-// Refreshed only when someone is looking, at most every fifteen minutes. A CDN file, not /info: it
-// spends nothing from the IP's Hyperliquid rate budget.
+// /lb-known (src/lbknown.js): the leaderboard's Popular board -- a curated list of publicly known
+// accounts, each row LIVE from Hyperliquid (portfolio + clearinghouseState), in the Real board's
+// row shape. It spends from this box's /info budget, which the bots share, so: one worker fetches
+// (lock) and every worker reads the file; only while someone is looking; at most every three
+// minutes; one request at a time, 1.5s apart (~22 weight per account, ~13 weight/s at peak, under
+// the ~20/s refill). A 429 stops the round and keeps what it had. An account that fails keeps
+// its previous row rather than dropping off the board.
 const POP_FILE = join(__dirname, 'data', 'lb-known.json')
 const POP_LOCK = POP_FILE + '.lock'
-const POP_TTL = 15 * 60_000
+const POP_TTL = 3 * 60_000
+const POP_GAP = 1500
 let popData = null, popInflight = null, popBody = null
 function popFromDisk() {
-  try { const d = JSON.parse(readFileSync(POP_FILE, 'utf8')); if (d?.at && (!popData || d.at > popData.at)) { popData = d; popBody = null } } catch {}
+  try { const d = JSON.parse(readFileSync(POP_FILE, 'utf8')); if (d?.at && d.rows && (!popData || d.at > popData.at)) { popData = d; popBody = null } } catch {}
 }
 popFromDisk()
+async function popInfo(body) {
+  const r = await fetch('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) })
+  if (r.status === 429) { const e = new Error('rate limited'); e.rateLimited = true; throw e }
+  if (!r.ok) throw new Error('HTTP ' + r.status)
+  return r.json()
+}
 function popRefresh() {
   if (popInflight) return popInflight
   popInflight = (async () => {
@@ -160,12 +169,24 @@ function popRefresh() {
     if (popData && Date.now() - popData.at < POP_TTL) return
     try { if (Date.now() - statSync(POP_LOCK).mtimeMs < 3 * 60_000) return } catch {}
     try { mkdirSync(dirname(POP_FILE), { recursive: true }); writeFileSync(POP_LOCK, String(process.pid)) } catch {}
-    const r = await fetch(KNOWN_STATS_URL, { signal: AbortSignal.timeout(60_000) })
-    if (!r.ok) throw new Error('HTTP ' + r.status)
-    const stats = statsFor(await r.text(), KNOWN.map(k => k.addr))
-    // A feed that changed shape finds nobody: keep the last good numbers instead.
-    if (!Object.keys(stats).length) throw new Error('no listed address in the feed')
-    popData = { at: Date.now(), stats }; popBody = null
+    const prev = popData?.rows ?? {}
+    const rows = {}
+    let first = true
+    for (const { addr } of KNOWN) {
+      try {
+        if (!first) await new Promise(r => setTimeout(r, POP_GAP))
+        const portfolio = await popInfo({ type: 'portfolio', user: addr })
+        await new Promise(r => setTimeout(r, POP_GAP))
+        const cs = await popInfo({ type: 'clearinghouseState', user: addr })
+        rows[addr] = knownRow(addr, portfolio, cs) ?? prev[addr] ?? null
+      } catch (e) {
+        rows[addr] = prev[addr] ?? null
+        if (e.rateLimited) { for (const k of KNOWN) if (!(k.addr in rows)) rows[k.addr] = prev[k.addr] ?? null; break }
+      }
+      first = false
+    }
+    if (!Object.values(rows).some(Boolean)) throw new Error('no account answered')
+    popData = { at: Date.now(), rows }; popBody = null
     try { writeAtomic(POP_FILE, JSON.stringify(popData)) } catch {}
   })().finally(() => { try { if (readFileSync(POP_LOCK, 'utf8') === String(process.pid)) unlinkSync(POP_LOCK) } catch {} }).catch(e => console.warn('[lb-known] refresh failed:', e.message)).finally(() => { popInflight = null })
   return popInflight
@@ -1177,13 +1198,13 @@ createServer((req, res) => {
     if (req.method !== 'GET') { res.writeHead(405).end(); return }
     const send = () => {
       // null, not {}: "not loaded yet" is not "none of them trade".
-      if (!popData?.stats) return res.writeHead(503, { 'Content-Type': 'application/json' }).end('{"stats":null}')
-      popBody ??= JSON.stringify({ at: popData.at, stats: popData.stats })
+      if (!popData?.rows) return res.writeHead(503, { 'Content-Type': 'application/json' }).end('{"rows":null}')
+      popBody ??= JSON.stringify({ at: popData.at, rows: popData.rows })
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' }).end(popBody)
     }
     const stale = !popData || Date.now() - popData.at > POP_TTL
     if (stale) popFromDisk()
-    if (popData?.stats) { if (Date.now() - popData.at > POP_TTL) popRefresh(); return send() }
+    if (popData?.rows) { if (Date.now() - popData.at > POP_TTL) popRefresh(); return send() }
     popRefresh().then(send)
     return
   }

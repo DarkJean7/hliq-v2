@@ -30,11 +30,14 @@ const waitFor = async (p, label, fn, arg, ms = 25000) => {
   }
 }
 
-// Numbers for all but the last entity: that one is "not in the feed" and must show dashes.
-const per = (pnl, roi) => ({ d: pnl / 100, w: pnl / 10, m: pnl / 4, a: pnl })
-const STATS = Object.fromEntries(KNOWN.slice(0, -1).map((k, i) => [k.addr, {
-  v: 1e6 * (i + 1), p: per((i % 2 ? -1 : 1) * 1e6 * (KNOWN.length - i), 0), r: { d: 0.01, w: 0.02, m: 0.03, a: 0.5 }, x: { d: 1e6, w: 1e7, m: 1e8, a: 1e9 },
-}]))
+// Live rows for all but the last entity: that one has no data and must show as such, not as $0.
+// Values rise with the index; net PnL alternates sign, so value order and PnL order differ.
+const pos = (coin, szi, upnl) => ({ position: { coin, szi: String(szi), entryPx: '10', positionValue: String(Math.abs(szi) * 12), unrealizedPnl: String(upnl), liquidationPx: '5', leverage: { type: 'cross', value: 3 }, returnOnEquity: '0.2', marginUsed: '1000' } })
+const ROWS = Object.fromEntries(KNOWN.map((k, i) => [k.addr, i === KNOWN.length - 1 ? null : (() => {
+  const net = (i % 2 ? -1 : 1) * 1e6 * (KNOWN.length - i), unreal = 2e5 * (i + 1)
+  return { addr: k.addr, accountValue: 1e6 * (i + 1) + 5e6, netPnl: net, unrealizedPnl: unreal, realizedPnl: net - unreal,
+    periods: { d: net / 100, w: net / 10, m: net / 4, a: net }, totalVolume: 1e9, positions: [pos('HYPE', 1000 * (i + 1), unreal)], openOrders: [], outcomes: [] }
+})()]))
 // Enough exchange for paper mode to boot; any other request type gets [] -- this test is about
 // the leaderboard, not the market data.
 const MIDS = { BTC: '90000', ETH: '3000', SOL: '150', HYPE: '40' }
@@ -48,7 +51,7 @@ async function open(ctxOpts) {
   const ctx = await browser.newContext(ctxOpts)
   try { await ctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
   await ctx.route('**/api/**', r => r.fulfill({ status: 503, body: 'offline in test' }))
-  await ctx.route('**/lb-known', r => r.fulfill({ status: 200, contentType: 'application/json', json: { at: Date.now() - 120_000, stats: STATS } }))
+  await ctx.route('**/lb-known', r => r.fulfill({ status: 200, contentType: 'application/json', json: { at: Date.now() - 120_000, rows: ROWS } }))
   await ctx.route(HL_HOST, (route) => {
     let b = {}
     try { b = JSON.parse(route.request().postData() || '{}') } catch {}
@@ -71,11 +74,11 @@ async function open(ctxOpts) {
   return { ctx, p }
 }
 
-const board = (p) => p.evaluate(() => [...document.querySelectorAll('.lbk-row')].filter(r => r.offsetParent).map(r => ({
-  addr: r.dataset.lbk, name: r.querySelector('.lbk-name .notranslate')?.textContent, main: r.querySelector('.lbk-main')?.textContent.trim() })))
-
 const errs = []
 const browser = await chromium.launch()
+const named = KNOWN.filter(k => ROWS[k.addr])
+const byValue = [...named].sort((a, b) => ROWS[b.addr].accountValue - ROWS[a.addr].accountValue).map(k => k.addr)
+const byNet = [...named].sort((a, b) => ROWS[b.addr].netPnl - ROWS[a.addr].netPnl).map(k => k.addr)
 
 console.log('\n-- desktop --')
 {
@@ -83,38 +86,39 @@ console.log('\n-- desktop --')
   await waitFor(p, 'the dashboard', () => document.getElementById('dashboard')?.classList.contains('active'))
   await p.evaluate(() => window.switchTab('leaderboard'))
   await waitFor(p, 'the mode bar', () => /Popular/.test(document.getElementById('leaderboardRoot')?.textContent ?? ''))
+  t('Popular sits between Real and Paper', await p.evaluate(() => [...document.querySelectorAll('#leaderboardRoot .lb-toolbar button')].map(b => b.textContent.trim()).filter(x => /Real|Popular|Paper/.test(x)).slice(0, 3)), ['Real', '⭐ Popular', '📝 Paper'])
   await p.evaluate(() => window.__lbDeskMode('popular'))
-  await waitFor(p, 'the rows with numbers', () => document.querySelectorAll('#leaderboardRoot .lbk-row').length > 0 && !document.querySelector('#leaderboardRoot .lbk-status'))
-  const rows = await board(p)
-  t('every known entity is listed', rows.length, KNOWN.length)
-  t('ranked by all-time PnL, the entity without numbers last', rows[rows.length - 1].name, KNOWN[KNOWN.length - 1].name)
-  t('which shows a dash, not $0', rows[rows.length - 1].main, '—')
-  t('and the leader is the biggest PnL', rows[0].main.startsWith('+$'), true)
-  // By address: two rows are both "Abraxas Capital".
-  const want = KNOWN.filter(k => STATS[k.addr]).sort((a, b) => STATS[b.addr].p.a - STATS[a.addr].p.a).map(k => k.addr)
-  t('in descending order of all-time PnL', rows.slice(0, -1).map(r => r.addr), want)
-
-  await p.evaluate(() => window.__lbKnownSet('sort', 'value'))
-  const byVal = await board(p)
-  t('sorting by value reorders it', byVal[0].name, KNOWN[KNOWN.length - 2].name)
-  await p.evaluate(() => window.__lbKnownSet('sort', 'pnl'))
-
-  await p.locator('#leaderboardRoot .lbk-row').first().click()
-  const x = await p.evaluate(() => {
-    const el = document.querySelector('#leaderboardRoot .lbk-x')
-    return el && { src: el.querySelector('.lbk-why a')?.href ?? '', blank: el.querySelector('.lbk-why a')?.target,
-      grid: el.querySelectorAll('.lbk-grid > span').length, visit: /Visit/.test(el.textContent), copy: /Copy trade/.test(el.textContent) }
-  })
-  t('a row opens to its source link, in a new tab', !!x && /^https:\/\//.test(x.src) && x.blank === '_blank', true)
-  t('with every period (a blank corner, then 4 rows × 4 cells)', x?.grid, 17)
-  t('and Visit / Copy trade, as on the Real board', [x?.visit, x?.copy], [true, true])
-  if (SHOT) await p.locator('#leaderboardRoot').screenshot({ path: `${SHOT}/lbk-desktop.png` })
+  await waitFor(p, 'the rows', () => document.querySelectorAll('#leaderboardRoot .lb-table tr.lb-row').length > 0)
+  const rows = () => p.evaluate(() => [...document.querySelectorAll('#leaderboardRoot tr.lb-row')].map(r => ({
+    label: r.querySelector('.lb-label')?.textContent.trim(), val: r.querySelector('.lb-val')?.textContent.trim(),
+    uid: (r.getAttribute('onclick') ?? '').match(/'(lbx-[^']+)'/)?.[1] })))
+  const d0 = await rows()
+  t('every known entity is a Real-board row', d0.length, KNOWN.length)
+  t('the one without data says so instead of $0', d0.some(r => r.label === KNOWN.at(-1).name && /Error|—/.test(r.val)), true)
+  await p.evaluate(() => window.__lbSort('value'))
+  const dv = await p.evaluate(() => [...document.querySelectorAll('#leaderboardRoot tr.lb-row')].map(r => r.querySelector('.lb-val')?.textContent.trim()))
+  t('sorting by value, highest first, with the Real board sort bar', dv[0], '$' + ROWS[byValue[0]].accountValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
+  const first = (await rows())[0]
+  await p.evaluate((uid) => window.__lbToggle(uid, document.querySelector('tr.lb-row[onclick*="' + uid + '"]')), first.uid)
+  const x = await p.evaluate((uid) => {
+    const el = document.getElementById(uid)
+    return el && { shown: el.style.display !== 'none', src: el.querySelector('.lbk-why a')?.href ?? '', blank: el.querySelector('.lbk-why a')?.target,
+      periods: el.querySelectorAll('.lbk-per').length, visit: /Visit/.test(el.textContent), copy: /Copy trade/.test(el.textContent),
+      pos: /HYPE/.test(el.textContent), remove: /Remove|Rename|Unhide|🙈/.test(el.textContent) }
+  }, first.uid)
+  t('a row opens', x?.shown, true)
+  t('to its source link, in a new tab', !!x && x.src.startsWith('https://') && x.blank === '_blank', true)
+  t('its PnL for 24h / 7d / 30d / All', x?.periods, 4)
+  t('its positions and Visit / Copy trade, as on the Real board', [x?.pos, x?.visit, x?.copy], [true, true, true])
+  t('and no remove / rename / hide (they are not on the real board)', x?.remove, false)
+  await p.evaluate(() => window.__lbSort('roe'))
 
   // A real-board load landing after the switch must not replace Popular.
   await p.evaluate(() => window.__lbDeskMode('real'))
   await p.evaluate(() => window.__lbDeskMode('popular'))
   await p.waitForTimeout(800)
-  t('switching back and forth leaves Popular showing', await p.evaluate(() => !!document.querySelector('#leaderboardRoot .lbk')), true)
+  t('switching back and forth leaves Popular showing', await p.evaluate(() => /known accounts/.test(document.querySelector('#leaderboardRoot .lb-count')?.textContent ?? '')), true)
+  if (SHOT) await p.locator('#leaderboardRoot').screenshot({ path: SHOT + '/lbk-desktop.png' })
 
   console.log('\n-- desktop: copy your own address from the Accounts menu --')
   const btns = await p.evaluate(() => [...document.querySelectorAll('.ws-wallet-row .ws-addr-copy')].map(b => b.closest('.ws-wallet-row').dataset.wsAddr))
@@ -132,14 +136,20 @@ console.log('\n-- phone --')
   await waitFor(p, 'the mobile shell', () => !!window.mobVGoTab)
   await p.evaluate(() => window.mobVGoTab('leaderboard'))
   await waitFor(p, 'the mode bar', () => /Popular/.test(document.getElementById('mobVContent')?.textContent ?? ''))
+  t('Popular sits between Real and Paper', await p.evaluate(() => [...document.querySelectorAll('#mobVContent button')].map(b => b.textContent.trim()).filter(x => /^(Real|⭐ Popular|📝 Paper)$/.test(x))), ['Real', '⭐ Popular', '📝 Paper'])
   await p.evaluate(() => window._mobVLbMode('popular'))
-  await waitFor(p, 'the rows', () => document.querySelectorAll('#mobVContent .lbk-row').length > 0 && !document.querySelector('#mobVContent .lbk-status'))
-  t('every known entity is listed', (await board(p)).length, KNOWN.length)
-  const fit = await p.evaluate(() => { const r = document.querySelector('#mobVContent .lbk-row').getBoundingClientRect(); return r.right <= innerWidth + 0.5 && document.documentElement.scrollWidth <= innerWidth })
-  t('rows fit the phone, no sideways scroll', fit, true)
-  await p.evaluate(() => window.__lbKnownSet('period', 'd'))
-  if (SHOT) { await p.locator('#mobVContent .lbk-row').nth(1).click(); await p.screenshot({ path: `${SHOT}/lbk-phone.png`, fullPage: false }) }
-  t('the 24h chip is the one lit', await p.evaluate(() => [...document.querySelectorAll('#mobVContent .lbk-chip.on')].map(b => b.textContent)), ['24h', 'PnL'])
+  await waitFor(p, 'the rows', () => document.querySelectorAll('#mobVContent .mob-v-row').length > 0)
+  const names = await p.evaluate(() => [...document.querySelectorAll('#mobVContent .mob-v-row .mob-v-row-name')].map(e => e.textContent.trim()))
+  t('every known entity is a Real-board row', names.length, KNOWN.length)
+  t('no "My name" / "Add me" -- these are not our users', await p.evaluate(() => /My name|Add me/.test(document.getElementById('mobVContent').textContent)), false)
+  await p.evaluate(() => window._mobVLbSort('net'))
+  const nets = await p.evaluate(() => [...document.querySelectorAll('#mobVContent .mob-v-row .mob-v-row-val')].map(e => e.textContent.trim()))
+  t('the sort chips re-sort Popular (by net PnL), the no-data row last', nets[0].startsWith('+$') && nets.at(-1) === '—', true)
+  t('it fits the phone, no sideways scroll', await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+  const id = 'lb-' + byNet[0].slice(2, 10)
+  await p.evaluate((id) => window._mobVToggleRow(id), id)
+  t('a row opens to its source and periods', await p.evaluate((id) => { const el = document.getElementById('mrd-' + id); return !!el && el.style.display !== 'none' && el.querySelectorAll('.lbk-per').length === 4 && !!el.querySelector('.lbk-why a') }, id), true)
+  if (SHOT) await p.screenshot({ path: SHOT + '/lbk-phone.png' })
   await ctx.close()
 }
 

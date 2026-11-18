@@ -290,7 +290,7 @@ import { whenScrollIdle } from './scrollidle.js'
 import { catHeadHtml, groupHeadHtml, groupKeyOf, foldShows, CAT_THEME } from './ocfold.js'
 import { yRange, pickLegs, alignSeries, spreadLabels, shortName, fmtTick, lineColor, bothSides, sideVisible } from './ocmulti.js'
 import { enableMouseScroll } from './dragx.js'
-import { KNOWN, PERIODS as LBK_PERIODS, knownView } from './lbknown.js'
+import { KNOWN, KNOWN_PERIODS } from './lbknown.js'
 import { PERIOD_SPAN, PERIOD_WINDOW, sliceSince, stitchHistories, timeTicks, fmtPointTime, fmtRange } from './portchart.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
@@ -22943,7 +22943,7 @@ window._mobVLbSort = function(by) {
   // The sort chips are shared by both boards. This always rebuilt the REAL board,
   // so tapping "Net PnL" while on the Paper board replaced the paper rows with the
   // real accounts. Re-render whichever board is actually showing.
-  if (_lbMode === 'popular') return   // it has its own sort chips
+  if (_lbMode === 'popular') { el.innerHTML = _lbKnownMobHtml(); return }
   if (_lbMode === 'paper') el.innerHTML = _lbPaperHtml()
   else if (_mobVLbResults.length) el.innerHTML = _mobVBuildLbHtml(_mobVLbResults)
 }
@@ -23199,112 +23199,112 @@ function _lbModeBar() {
       background:${on ? 'rgba(0,255,204,0.10)' : 'transparent'};
       color:${on ? 'var(--accent)' : 'var(--muted)'}">${label}</button>`
   }
-  return `<div style="display:flex;gap:7px;padding:8px 16px 4px">${tab('real', 'Real')}${tab('paper', '📝 Paper')}${tab('popular', '⭐ Popular')}</div>`
+  return `<div style="display:flex;gap:7px;padding:8px 16px 4px">${tab('real', 'Real')}${tab('popular', '⭐ Popular')}${tab('paper', '📝 Paper')}</div>`
 }
 
 // ─── POPULAR: publicly known entities ─────────────────────────────────────────
-// "a new section similar as real and paper, but for popular accounts ... public known entities".
-// The list is curated in src/lbknown.js, every entry with its source; the numbers come from
-// serve-prod's /lb-known (Hyperliquid's public stats feed, filtered to these addresses). One
-// renderer for both shells: the phone puts it under the mode bar, the desktop under its toolbar.
-const _lbKnown = { stats: null, at: 0, loading: false, failed: false, period: 'a', sort: 'pnl', open: new Set() }
+// "a new section similar as real and paper, but for popular accounts ... public known entities",
+// then "make the popular leaderboard like the real": the curated list (src/lbknown.js) arrives
+// from serve-prod's /lb-known LIVE from Hyperliquid, in the Real board's row shape, and the Real
+// board's own renderers draw it -- the same row, sort, expand, positions and Visit / Copy /
+// Copy-trade. What a known row adds: where its name comes from, and its 24h / 7d / 30d PnL.
+const _lbKnown = { rows: null, at: 0, fetchedAt: 0, loading: false, failed: false, tries: 0 }
 async function _lbKnownLoad(force = false) {
   if (_lbKnown.loading) return
-  if (!force && _lbKnown.stats && Date.now() - _lbKnown.at < 5 * 60_000) return
+  // The server refreshes every few minutes; asking it more than once a minute buys nothing.
+  if (!force && _lbKnown.rows && Date.now() - _lbKnown.fetchedAt < 60_000) return
   _lbKnown.loading = true
   try {
     const r = await fetch('/lb-known')
     const j = r.ok ? await r.json() : null
-    if (j?.stats) { _lbKnown.stats = j.stats; _lbKnown.at = j.at || Date.now(); _lbKnown.failed = false }
+    if (j?.rows) { _lbKnown.rows = j.rows; _lbKnown.at = j.at || Date.now(); _lbKnown.failed = false; _lbKnown.tries = 0 }
     else _lbKnown.failed = true
   } catch { _lbKnown.failed = true }
-  finally { _lbKnown.loading = false }
+  finally { _lbKnown.fetchedAt = Date.now(); _lbKnown.loading = false }
 }
-const _lbKnownStale = () => !_lbKnown.stats || Date.now() - _lbKnown.at > 5 * 60_000
-function _lbKnownRepaint() { document.querySelectorAll('.lbk').forEach(el => { el.outerHTML = _lbKnownHtml() }) }
-async function _lbKnownShow(el) {
-  el.innerHTML = _mobVFullHeader('Leaderboard') + _lbModeBar() + _lbKnownHtml()
-  if (!_lbKnownStale()) return
-  await _lbKnownLoad()
-  if (_mobVActiveTab === 'leaderboard' && _lbMode === 'popular') _lbKnownRepaint()
+const _lbKnownFresh = () => !!_lbKnown.rows && Date.now() - _lbKnown.fetchedAt < 60_000
+/** Every listed account; one the server has no numbers for is an error row (dashes), not $0. */
+function _lbKnownRows() {
+  return KNOWN.map(k => {
+    const r = _lbKnown.rows?.[k.addr]
+    return r ? { ...r, label: k.name, known: k } : { addr: k.addr, label: k.name, known: k, error: _T('No data yet', 'Sin datos aún') }
+  })
 }
-async function _lbRenderDeskKnown(root) {
-  const paint = () => {
-    root.innerHTML = `<div class="lb-toolbar">${_lbDeskModeBar()}<div class="lb-count">${KNOWN.length} known accounts</div></div>` + _lbKnownHtml()
+const _lbKnownNote = () => _T('Publicly known accounts, as labelled by on-chain trackers and the press. A label is attribution, not proof of ownership; each row links its source.',
+  'Cuentas conocidas públicamente, según rastreadores on-chain y prensa. Una etiqueta es atribución, no prueba de propiedad; cada fila enlaza su fuente.')
+function _lbKnownStatusHtml() {
+  return (_lbKnown.failed && !_lbKnown.loading && _lbKnown.tries >= 6)
+    ? `<div class="mob-v-empty">${_T('The accounts did not load.', 'No se cargaron las cuentas.')}<br><button class="lb-act" style="margin-top:10px" onclick="window.__lbKnownRetry()">${_T('Retry', 'Reintentar')}</button></div>`
+    : `<div class="mob-v-empty">${_T('Loading the accounts…', 'Cargando las cuentas…')}</div>`
+}
+const _lbKnownFootHtml = () => _lbKnown.rows
+  ? `<div class="lbk-foot">${_T('Live from Hyperliquid', 'En vivo desde Hyperliquid')} · ${_chatAgo(_lbKnown.at)} ${_T('ago', 'atrás')}</div>` : ''
+/** What a known row adds inside its expansion: the attribution and the PnL by period. */
+function _lbKnownExtraHtml(r) {
+  const k = r.known
+  if (!k) return ''
+  const p = r.periods ?? {}
+  const cell = ([key, label]) => {
+    const v = p[key]
+    // Compact: four of these share a phone's width, and "+$18,908,139.18" does not fit a quarter.
+    return `<span class="lbk-per"><span>${label}</span><b class="${v == null ? '' : v >= 0 ? 'pos' : 'neg'}">${v == null ? '—' : (v >= 0 ? '+' : '-') + '$' + fmtCompact(Math.abs(v))}</b></span>`
   }
-  paint()
-  if (!_lbKnownStale()) return
-  await _lbKnownLoad()
-  if (_lbDeskMode === 'popular') paint()
-}
-function _lbkUsd(v) {
-  return v >= 1e9 ? (v / 1e9).toFixed(2) + 'B' : v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'K' : v.toFixed(0)
-}
-// No /pfp lookup: these are not our users, and eight photo requests would all 404.
-function _lbkAvatar(name, addr) {
-  const hue = parseInt(addr.slice(2, 8), 16) % 360
-  const w = String(name).split(/\s+/).filter(Boolean)
-  const init = (w.length > 1 ? w[0][0] + w[1][0] : String(name).slice(0, 2)).toUpperCase()
-  return `<div class="lbk-av" style="background:oklch(0.5 0.17 ${hue})">${esc(init)}</div>`
-}
-function _lbKnownHtml() {
-  const st = _lbKnown, P = st.period
-  const rows = knownView(st.stats, { period: P, sort: st.sort })
-  const perLabel = LBK_PERIODS.find(p => p[0] === P)?.[1] ?? ''
-  const chip = (on, act, label) => `<button class="lbk-chip${on ? ' on' : ''}" onclick="event.stopPropagation();${act}">${label}</button>`
-  // Unknown is a dash, never $0: an address missing from the feed has not "made nothing".
-  const money = (v) => v == null ? '—' : (v < 0 ? '−' : '') + '$' + _lbkUsd(Math.abs(v))
-  const signed = (v) => v == null ? '—' : (v >= 0 ? '+' : '−') + '$' + _lbkUsd(Math.abs(v))
-  const pct = (v) => v == null ? '—' : (v >= 0 ? '+' : '−') + Math.abs(v * 100).toFixed(1) + '%'
-  const tone = (v) => v == null ? '' : v >= 0 ? 'pos' : 'neg'
-  const status = st.stats ? '' : (st.failed && !st.loading)
-    ? `<div class="lbk-status">${_T('Numbers did not load.', 'No se cargaron las cifras.')} ${chip(false, 'window.__lbKnownRetry()', _T('Retry', 'Reintentar'))}</div>`
-    : `<div class="lbk-status">${_T('Loading numbers…', 'Cargando cifras…')}</div>`
-  const rowHtml = (r, i) => {
-    const s = r.s, open = st.open.has(r.addr)
-    const mainV = st.sort === 'value' ? s?.v : st.sort === 'roi' ? s?.r?.[P] : s?.p?.[P]
-    const main = st.sort === 'value' ? money(mainV) : st.sort === 'roi' ? pct(mainV) : signed(mainV)
-    const sub = st.sort === 'value' ? `${perLabel} ${signed(s?.p?.[P])}` : `${_T('Value', 'Valor')} ${money(s?.v)}`
-    return `<div class="lbk-row${open ? ' open' : ''}" data-lbk="${r.addr}" onclick="window.__lbKnownToggle('${r.addr}')">
-      <div class="lbk-rank">${i + 1}</div>
-      ${_lbkAvatar(r.name, r.addr)}
-      <div class="lbk-id">
-        <div class="lbk-name"><span class="notranslate">${esc(r.name)}</span> <span class="lbk-tag">${esc(r.tag)}</span></div>
-        <div class="lbk-addr">${r.addr.slice(0, 6)}…${r.addr.slice(-4)}</div>
-      </div>
-      <div class="lbk-num"><div class="lbk-main ${st.sort === 'value' ? '' : tone(mainV)}">${main}</div><div class="lbk-sub">${sub}</div></div>
-    </div>` + (open ? `<div class="lbk-x">
-      <div class="lbk-why">${esc(r.note)} <a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${_T('Source', 'Fuente')}: ${esc(r.src)} ↗</a></div>
-      <div class="lbk-grid"><span></span><b>PnL</b><b>ROI</b><b>${_T('Volume', 'Volumen')}</b>
-        ${LBK_PERIODS.map(([k, l]) => `<span>${l}</span><span class="${tone(s?.p?.[k])}">${signed(s?.p?.[k])}</span><span class="${tone(s?.r?.[k])}">${pct(s?.r?.[k])}</span><span>${money(s?.x?.[k])}</span>`).join('')}
-      </div>
-      ${_lbSocialHtml({ addr: r.addr, label: r.name })}
-    </div>` : '')
-  }
-  return `<div class="lbk">
-    <div class="lbk-note">${_T('Publicly known accounts, as labelled by on-chain trackers and the press. A label is attribution, not proof of ownership; each row links its source.',
-      'Cuentas conocidas públicamente, según rastreadores on-chain y prensa. Una etiqueta es atribución, no prueba de propiedad; cada fila enlaza su fuente.')}</div>
-    <div class="lbk-bar">
-      <div class="lbk-seg">${LBK_PERIODS.map(([k, l]) => chip(P === k, `window.__lbKnownSet('period','${k}')`, l)).join('')}</div>
-      <div class="lbk-seg">${chip(st.sort === 'pnl', "window.__lbKnownSet('sort','pnl')", 'PnL')}${chip(st.sort === 'roi', "window.__lbKnownSet('sort','roi')", 'ROI')}${chip(st.sort === 'value', "window.__lbKnownSet('sort','value')", _T('Value', 'Valor'))}</div>
-    </div>
-    ${status}
-    <div class="lbk-list">${rows.map(rowHtml).join('')}</div>
-    ${st.stats ? `<div class="lbk-foot">${_T('Numbers', 'Cifras')}: Hyperliquid ${_T('public stats', 'estadísticas públicas')} · ${_chatAgo(st.at)} ${_T('ago', 'atrás')}</div>` : ''}
+  return `<div class="lbk-extra">
+    <div class="lbk-why">${esc(k.note)} <a href="${esc(k.url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${_T('Source', 'Fuente')}: ${esc(k.src)} ↗</a></div>
+    ${r.error ? '' : `<div class="lbk-pers">${KNOWN_PERIODS.map(cell).join('')}</div>
+    <div class="lbk-why" style="padding-top:2px">${_T('Net PnL is Hyperliquid\'s all-time figure; realized is all of it that is not open: closed trades, funding and fees.',
+      'El PnL neto es la cifra histórica de Hyperliquid; lo realizado es todo lo que no está abierto: operaciones cerradas, funding y comisiones.')}</div>`}
   </div>`
 }
-window.__lbKnownSet = function(k, v) {
-  if (k === 'period' && LBK_PERIODS.some(p => p[0] === v)) _lbKnown.period = v
-  if (k === 'sort' && ['pnl', 'roi', 'value'].includes(v)) _lbKnown.sort = v
-  _lbKnownRepaint()
+// Phone.
+function _lbKnownMobHtml() {
+  if (!_lbKnown.rows) return _mobVFullHeader('Leaderboard') + _lbModeBar() + _lbKnownStatusHtml()
+  return _mobVBuildLbHtml(_lbKnownRows(), { known: true }) + _lbKnownFootHtml()
 }
-window.__lbKnownToggle = function(addr) {
-  if (_lbKnown.open.has(addr)) _lbKnown.open.delete(addr); else _lbKnown.open.add(addr)
-  _lbKnownRepaint()
+async function _lbKnownShow(el) {
+  el.innerHTML = _lbKnownMobHtml()
+  if (_lbKnownFresh()) return
+  await _lbKnownLoad()
+  if (!(_mobVActiveTab === 'leaderboard' && _lbMode === 'popular')) return
+  // Before the server's first round the answer is 503: try again shortly, a few times.
+  if (!_lbKnown.rows && _lbKnown.failed && ++_lbKnown.tries < 6) {
+    setTimeout(() => { if (_mobVActiveTab === 'leaderboard' && _lbMode === 'popular') { _lbKnown.fetchedAt = 0; _lbKnownShow(document.getElementById('mobVContent')) } }, 5000)
+  }
+  el.innerHTML = _lbKnownMobHtml()
+}
+// Desktop.
+async function _lbRenderDeskKnown(root) {
+  const paint = () => {
+    const rows = _lbKnown.rows ? _lbSortRows(_lbKnownRows()) : null
+    root.innerHTML = `
+    <div class="lb-toolbar">
+      ${_lbDeskModeBar()}
+      <div class="lb-count">${KNOWN.length} ${_T('known accounts', 'cuentas conocidas')}</div>
+      ${rows ? _lbDeskSortBar() : ''}
+      <button class="btn-sm" onclick="window.__lbKnownRetry()">↻ Refresh</button>
+    </div>
+    <div class="lbk-note">${_lbKnownNote()}</div>
+    ${rows ? `<div class="table-wrap">
+      <table class="lb-table">
+        ${_lbDeskHead}
+        <tbody>${rows.map((r, i) => _lbRowHtml(r, i + 1, _lbSortDir < 0)).join('')}</tbody>
+      </table>
+    </div>${_lbKnownFootHtml()}` : _lbKnownStatusHtml()}`
+  }
+  paint()
+  if (_lbKnownFresh()) return
+  await _lbKnownLoad()
+  if (_lbDeskMode !== 'popular') return
+  if (!_lbKnown.rows && _lbKnown.failed && ++_lbKnown.tries < 6) {
+    setTimeout(() => { if (_lbDeskMode === 'popular') { _lbKnown.fetchedAt = 0; renderLeaderboard() } }, 5000)
+  }
+  paint()
 }
 window.__lbKnownRetry = async function() {
-  _lbKnown.failed = false; _lbKnownRepaint()
-  await _lbKnownLoad(true); _lbKnownRepaint()
+  _lbKnown.tries = 0; _lbKnown.failed = false; _lbKnown.fetchedAt = 0
+  if (_lbDeskMode === 'popular') { try { renderLeaderboard() } catch {} }
+  const el = document.getElementById('mobVContent')
+  if (el && _mobVActiveTab === 'leaderboard' && _lbMode === 'popular') _lbKnownShow(el)
 }
 
 function _lbPaperHtml() {
@@ -24092,7 +24092,7 @@ function _mobVBuildLbHtml(results, opts = {}) {
   // Both boards: "✏️ My name" on the left, and the one control that decides whether you are
   // on the board beside it (➕ Add me for a wallet, share / stop sharing for paper — every
   // paper account on this device posts automatically, so that is the switch it has).
-  const leftBtn = opts.paper
+  const leftBtn = opts.known ? '' : opts.paper
     ? (isPaper()
         ? `<button class="lb-act" onclick="window.__paperRename()" title="Rename the paper account you are in">✏️ My name</button>`
         : '')
@@ -24102,7 +24102,7 @@ function _mobVBuildLbHtml(results, opts = {}) {
 
   // When your connected account isn't on the board (e.g. after removing it), offer an
   // explicit re-add. Auto-join never brings a removed account back on its own.
-  const myAddr  = opts.paper ? null : _lbMyActiveAddr()
+  const myAddr  = (opts.paper || opts.known) ? null : _lbMyActiveAddr()
   const listed  = myAddr && sorted.some(r => String(r.addr ?? '').toLowerCase() === myAddr)
   const addMeBtn = (myAddr && !listed)
     ? `<button class="lb-act on" onclick="window.__lbAddMe()" title="Add your connected account to the leaderboard">➕ Add me</button>`
@@ -24110,7 +24110,7 @@ function _mobVBuildLbHtml(results, opts = {}) {
   // Two lines: what you can change about your own entry, then what the board is sorted by.
   // Side by side they fought over about 130px each and both lost.
   const header = `<div class="lb-head">
-    <div class="lb-acts">${leftBtn}${addMeBtn}</div>
+    ${opts.known ? `<div class="lbk-note">${_lbKnownNote()}</div>` : `<div class="lb-acts">${leftBtn}${addMeBtn}</div>`}
     <div class="lb-seg" role="group" aria-label="Sort the board by">${chip('roe', 'ROE')}${chip('net', 'Net PnL')}${chip('value', 'Value')}</div>
   </div>`
   // `bare` (used by the Challenge standings) drops the full-screen header, the Real/Paper
@@ -24154,7 +24154,8 @@ function _mobVBuildLbHtml(results, opts = {}) {
         ['Realized',   _lbPnl(r.realizedPnl,   null), rCls],
         ['Net PnL',    _lbPnl(r.netPnl,         null), nCls],
         ['ROE',        fmtRoe(accountRoe(r)), nCls],
-        ['Health',     r.healthPct > 0 ? r.healthPct.toFixed(1) + '%' : '—', hCls],
+        // Unknown health is a plain dash: in red it read as a dying account.
+        ['Health',     r.healthPct > 0 ? r.healthPct.toFixed(1) + '%' : '—', r.healthPct > 0 ? hCls : 'var(--muted)'],
         ['Win Rate',   winRateHtml],
         ['Volume',     '$' + fmtCompact(r.totalVolume ?? 0)],
       ])
@@ -24163,6 +24164,7 @@ function _mobVBuildLbHtml(results, opts = {}) {
       if (r.addr) expandHtml += _lbTrackHtml(r)
       // The actions come before the holdings: acting on the person is the point of the
       // row, and it must not sit below eleven orders.
+      if (r.addr && opts.known) expandHtml += _lbKnownExtraHtml(r)   // Popular: its source and its PnL by period
       if (r.addr) expandHtml += opts.paper ? _lbPaperSocialHtml(r) : _lbSocialHtml(r)
       const openPos = (r.positions ?? []).filter(ap => parseFloat(ap.position?.szi ?? 0) !== 0)
       if (openPos.length) {
@@ -24201,7 +24203,7 @@ function _mobVBuildLbHtml(results, opts = {}) {
           : ''
         removeBtn = `<div style="display:flex;gap:8px;padding:10px 16px 14px">${hideBtn}<button onclick="event.stopPropagation();window.__lbPaperRemove('${encodeURIComponent(pname)}','${via}')" style="flex:1;background:transparent;border:1px solid var(--red);color:var(--red);border-radius:8px;padding:9px;font-size:12px;font-weight:700;cursor:pointer">Remove from leaderboard</button></div>`
       }
-    } else if (r.addr) {
+    } else if (r.addr && !opts.known) {
       const owner = _lbMyActiveAddr() && r.addr.toLowerCase() === _lbMyActiveAddr()
       if (dev || owner) {
         const via = dev ? 'dev' : 'owner'   // dev mode → PIN (works on any row); else owner signature
@@ -35873,7 +35875,7 @@ function _lbRowHtml(entry, rank, podium = true) {
               </span>
             </div>
           </div>
-          ${isP ? `
+          ${entry.known ? '' : isP ? `
           ${entry._slot && isPaper() && entry._slot === paperSlot() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__paperRename()">✎ Rename</button>` : ''}
           ${isDev() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbPaperToggleHide('${encodeURIComponent(entry._pname)}',${entry.hidden ? 'false' : 'true'})">${entry.hidden ? '👁 Unhide' : '🙈 Hide'}</button>` : ''}
           ${(isDev() || entry._slot) ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbPaperRemove('${encodeURIComponent(entry._pname)}','${isDev() ? 'dev' : 'owner'}')">🗑 Remove</button>` : ''}
@@ -35905,6 +35907,7 @@ function _lbRowHtml(entry, rank, podium = true) {
           </div>
           ${_lbTrackHtml(entry)}
           ${/* Desktop had no way to copy a wallet from the board at all — only the phone did. */ ''}
+          ${entry.known ? _lbKnownExtraHtml(entry) : ''}
           ${isP ? _lbPaperSocialHtml(entry) : _lbSocialHtml(entry)}
           ${_lbPosHtml(entry.positions)}
           ${_lbOutcomesHtml(entry.outcomes)}
@@ -36604,7 +36607,7 @@ window.__lbDeskMode = function(m) { _lbDeskMode = m === 'paper' ? 'paper' : m ==
 function _lbDeskModeBar() {
   const tab = (m, label) => `<button class="btn-sm${_lbDeskMode === m ? ' active' : ''}" onclick="window.__lbDeskMode('${m}')"
     style="${_lbDeskMode === m ? 'border-color:var(--accent);color:var(--accent)' : ''}">${label}</button>`
-  return `<div style="display:flex;gap:6px">${tab('real', 'Real')}${tab('paper', '📝 Paper')}${tab('popular', '⭐ Popular')}</div>`
+  return `<div style="display:flex;gap:6px">${tab('real', 'Real')}${tab('popular', '⭐ Popular')}${tab('paper', '📝 Paper')}</div>`
 }
 const _lbDeskHead = `<thead><tr>
           <th>#</th>
