@@ -10,6 +10,7 @@
 // one put James Wynn and smartestmoney there ("i never said to add them over there").
 import fs from 'fs'
 import { pnlCurveFactor } from '../../src/pfnet.js'
+import { trackRecord } from '../../src/trackrecord.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -27,16 +28,23 @@ t('a first point away from 0 counts as a step from 0', pnlCurveFactor(curve([-10
 t('no curve → null, not 0', pnlCurveFactor([]) === null && pnlCurveFactor(null) === null && pnlCurveFactor(curve([5])) === null)
 t('bad points are skipped, not read as 0', pnlCurveFactor([['allTime', { pnlHistory: [[0, '0'], [1, 'x'], [2, '4']] }]]).gain === 4)
 
-// The Real board's track record (server-computed, trackrecord.js) is NOT switched yet: changing
-// what the bot server loads restarts it, and the bots with it, on deploy. That waits for a yes.
+console.log('-- the Real board\'s track record uses it --')
+// Recent closed trades: all wins. The old figure would have been "no losses".
+const tr = trackRecord({ windows: { BTC_1: 500, BTC_2: 800, ETH_3: 300 }, portfolio: wynn, openLoss: 1000 })
+t('profit factor is the all-time one', Math.abs(tr.profitFactor - c.pf) < 1e-12, tr.profitFactor)
+t('and says so', tr.pfBasis === 'net')
+t('no "counting open losses" second reading: net PnL already counts them', tr.profitFactorOpen === null)
+t('trade figures beside it stay trade-based', tr.trades === 3 && tr.avgWin === 1600 / 3 && tr.wins === 3)
+const paper = trackRecord({ windows: { BTC_1: 10, BTC_2: -5 } })
+t('without a curve (a paper row) it is the closed-trade figure, and says so', paper.profitFactor === 2 && paper.pfBasis === 'trades')
 
 console.log('-- wiring --')
 const render = fs.readFileSync('src/render.js', 'utf8')
 t('the account stats cards use it', /const _curve\s+= pnlCurveFactor\(portfolio\)/.test(render) && /_curve \? _curve\.gain/.test(render))
 t('and their caption says which basis', /_curve \? 'All-time PnL gains ÷ losses' : 'Closed trades: wins ÷ losses'/.test(render))
 const main = fs.readFileSync('src/main.js', 'utf8')
-t('the bot server does not load it (so shipping it restarts no bot)',
-  !fs.readFileSync('server.js', 'utf8').includes('pfnet.js') && !fs.readFileSync('src/trackrecord.js', 'utf8').includes('pfnet'))
+t('the Real board (server, trackrecord.js) and the cards share one definition',
+  /import \{ pnlCurveFactor \} from '\.\/pfnet\.js'/.test(fs.readFileSync('src/trackrecord.js', 'utf8')))
 t('the All Accounts total sums the all-time figures', /const _pfCurve = pnlCurveFactor\(portfolio\)/.test(main) && /let grossWin = _pfCurve\?\.gain \?\? 0, grossLoss = _pfCurve\?\.loss \?\? 0/.test(main))
 t('a Popular account is never auto-joined to the Real board',
   /function _lbJoin\(addr, equity = null\) \{[\s\S]{0,400}KNOWN\.some\(k => k\.addr === String\(addr \?\? ''\)\.toLowerCase\(\)\)\) return Promise\.resolve\(\{ status: 'skip' \}\)/.test(main))

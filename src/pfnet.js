@@ -11,8 +11,8 @@
 // and fall inside one step net out: it measures the account, not each decision; the trade
 // figures beside it (avg win/loss, win rate) still do that.
 //
-// Its own module, not trackrecord.js: server.js imports that one, and any change to what the bot
-// server loads restarts it (and the bots) on deploy.
+// Shared: the account stats cards and the All Accounts total (browser), and the Real board's
+// track record (trackrecord.js, in the bot server), so all three read the same number.
 
 /** { gain, loss, pf, noLosses } from a `portfolio` answer, or null without its all-time curve. */
 export function pnlCurveFactor(portfolio) {

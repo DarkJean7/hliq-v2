@@ -10,8 +10,8 @@
  *
  * Pure. The server computes it for every board row (server.js lbRefreshOne) and the browser
  * computes the same thing when it has to build rows itself, so the two can never disagree.
- * NOTE: server.js imports this file, but a deploy restarts the bot server only when server.js
- * or strategies/ change — an edit here alone reaches the server's rows on its next restart.
+ * NOTE: server.js imports this file, so an edit here (or to anything it imports) restarts the
+ * bot server, and the bots with it, on deploy: CI hashes everything hliq-strat loads.
  *
  * ─── WHAT "A TRADE" MEANS HERE ───────────────────────────────────────────────────────────
  * The same unit win rate already uses: every closing fill in one coin within one clock hour,
@@ -24,6 +24,8 @@
  * because copy trading copies perps only. Each series restarts at 0 at the start of its window,
  * so its last point IS the window's P&L — no subtraction, no deposits to correct for.
  */
+
+import { pnlCurveFactor } from './pfnet.js'
 
 const HOUR = 3_600_000
 const DAY  = 86_400_000
@@ -191,6 +193,10 @@ export function trackRecord({ windows, portfolio, lastFillAt, openLoss, holds } 
     }
   }
   const trades = entries.length
+  // Profit factor is all-time, from net PnL, when Hyperliquid's curve is there (src/pfnet.js:
+  // "i want profit factor to be based from all time, net pnl"). A paper row has no curve and
+  // keeps the closed-trade figure; pfBasis says which one a row carries.
+  const curve = pnlCurveFactor(portfolio)
 
   return {
     trades,
@@ -198,15 +204,18 @@ export function trackRecord({ windows, portfolio, lastFillAt, openLoss, holds } 
     grossWin, grossLoss,
     // No losses is not "infinite": it is a record too short or too lucky to have one, and the
     // UI says that in words. Null when there is nothing to divide at all.
-    profitFactor: grossLoss > 0 ? grossWin / grossLoss : null,
-    noLosses: trades > 0 && losses === 0 && wins > 0,
+    profitFactor: curve ? curve.pf : grossLoss > 0 ? grossWin / grossLoss : null,
+    pfBasis: curve ? 'net' : 'trades',
+    noLosses: curve ? curve.noLosses : trades > 0 && losses === 0 && wins > 0,
     // Profit factor only sees CLOSED trades, and a grid bot never closes a losing level — it
     // holds it. A real wallet read 914 on $555.53 won against $0.61 lost, while $76 sat in
     // two losing open positions. Counting those as if closed now, the same wallet is ~7.
     // Reported beside the closed figure, not instead of it: both are true, and the gap
     // between them is the thing a copier needs to see.
     openLoss: Number(openLoss) > 0 ? Number(openLoss) : 0,
-    profitFactorOpen: Number(openLoss) > 0 && grossWin > 0
+    // Net PnL already counts open positions at their mark, so the all-time factor has no
+    // "counting open losses" second reading; only the closed-trade one needs it.
+    profitFactorOpen: !curve && Number(openLoss) > 0 && grossWin > 0
       ? grossWin / (grossLoss + Number(openLoss)) : null,
     avgWin:  wins   ? grossWin  / wins   : null,
     avgLoss: losses ? grossLoss / losses : null,
