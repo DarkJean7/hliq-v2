@@ -290,6 +290,7 @@ import { whenScrollIdle } from './scrollidle.js'
 import { catHeadHtml, groupHeadHtml, groupKeyOf, foldShows, CAT_THEME } from './ocfold.js'
 import { yRange, pickLegs, alignSeries, spreadLabels, shortName, fmtTick, lineColor, bothSides, sideVisible } from './ocmulti.js'
 import { enableMouseScroll } from './dragx.js'
+import { KNOWN, PERIODS as LBK_PERIODS, knownView } from './lbknown.js'
 import { PERIOD_SPAN, PERIOD_WINDOW, sliceSince, stitchHistories, timeTicks, fmtPointTime, fmtRange } from './portchart.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
 import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
@@ -776,7 +777,7 @@ function renderWalletStrip(addr) {
            onclick="window.__switchWallet('${esc(w.addr)}')">
         <div class="ws-wallet-row-info">
           <span class="ws-wallet-row-name notranslate">${esc(w.label)}</span>
-          <span class="ws-wallet-row-addr">${wShort}</span>
+          <span class="ws-wallet-row-addr">${wShort}<button class="ws-addr-copy" title="Copy address" onclick="event.stopPropagation();window.__lbCopyAddr('${esc(w.addr)}')">⧉</button></span>
         </div>
         <div class="ws-wallet-row-acts" onclick="event.stopPropagation()">
           <button class="ws-row-btn"     title="Rename" onclick="window.__panelRename('${esc(w.addr)}')">✎</button>
@@ -21553,6 +21554,7 @@ function _mobVRenderContent(tick = false) {
   }
 
   if (_mobVActiveTab === 'leaderboard') {
+    if (_lbMode === 'popular') { _lbKnownShow(el); return }
     if (_lbMode === 'paper') {
       if (_lbPaperRows.length && Date.now() - _lbPaperLoaded < 30_000) el.innerHTML = _lbPaperHtml()
       else _lbPaperFetch(el)
@@ -21562,7 +21564,7 @@ function _mobVRenderContent(tick = false) {
     if (_mobVLbResults.length && !stale) {
       el.innerHTML = _mobVBuildLbHtml(_mobVLbResults)
     } else {
-      if (!_mobVLbResults.length) el.innerHTML = _mobVFullHeader('Leaderboard') + `<div class="mob-v-empty">Loading…</div>`
+      if (!_mobVLbResults.length) el.innerHTML = _mobVFullHeader('Leaderboard') + _lbModeBar() + `<div class="mob-v-empty">Loading…</div>`
       _mobVFetchLeaderboard(el)
     }
     return
@@ -22941,6 +22943,7 @@ window._mobVLbSort = function(by) {
   // The sort chips are shared by both boards. This always rebuilt the REAL board,
   // so tapping "Net PnL" while on the Paper board replaced the paper rows with the
   // real accounts. Re-render whichever board is actually showing.
+  if (_lbMode === 'popular') return   // it has its own sort chips
   if (_lbMode === 'paper') el.innerHTML = _lbPaperHtml()
   else if (_mobVLbResults.length) el.innerHTML = _mobVBuildLbHtml(_mobVLbResults)
 }
@@ -22987,7 +22990,7 @@ window.__lbSetMyName = async function() {
     if (row) row.label = j.label ?? name
     _lbLastFetch = 0
     const el = document.getElementById('mobVContent')
-    if (el && _mobVActiveTab === 'leaderboard') el.innerHTML = _mobVBuildLbHtml(_mobVLbResults)
+    if (el && _mobVActiveTab === 'leaderboard' && _lbMode === 'real') el.innerHTML = _mobVBuildLbHtml(_mobVLbResults)
     try { renderLeaderboard() } catch {}
   } catch (e) {
     _appAlert('Signing failed: ' + (e?.message ?? e))
@@ -23012,7 +23015,7 @@ function _lbAfterRemove() {
   _lbLastFetch = 0
   const el = document.getElementById('mobVContent')
   if (_lbMode === 'paper') { if (el) _lbPaperFetch(el) }
-  else if (el && _mobVActiveTab === 'leaderboard') { _mobVFetchLeaderboard(el) }
+  else if (el && _mobVActiveTab === 'leaderboard' && _lbMode === 'real') { _mobVFetchLeaderboard(el) }
   try { renderLeaderboard() } catch {}
 }
 
@@ -23134,15 +23137,16 @@ async function _lbSetMyVisibility(addr, hidden) {
 // device and submitted by the client, so they are self-reported and unverifiable.
 // Keeping them apart is what protects the real ranking's meaning — and the UI
 // says plainly that these numbers are not verified.
-let _lbMode        = 'real'     // 'real' | 'paper'
+let _lbMode        = 'real'     // 'real' | 'paper' | 'popular'
 let _lbPaperRows   = []
 let _lbPaperLoaded = 0
 
 window._mobVLbMode = function(mode) {
-  _lbMode = mode === 'paper' ? 'paper' : 'real'
+  _lbMode = mode === 'paper' ? 'paper' : mode === 'popular' ? 'popular' : 'real'
   const el = document.getElementById('mobVContent')
   if (!el) return
   if (_lbMode === 'paper') { _lbPaperFetch(el) }
+  else if (_lbMode === 'popular') _lbKnownShow(el)
   else el.innerHTML = _mobVBuildLbHtml(_mobVLbResults)
 }
 
@@ -23195,7 +23199,112 @@ function _lbModeBar() {
       background:${on ? 'rgba(0,255,204,0.10)' : 'transparent'};
       color:${on ? 'var(--accent)' : 'var(--muted)'}">${label}</button>`
   }
-  return `<div style="display:flex;gap:7px;padding:8px 16px 4px">${tab('real', 'Real')}${tab('paper', '📝 Paper')}</div>`
+  return `<div style="display:flex;gap:7px;padding:8px 16px 4px">${tab('real', 'Real')}${tab('paper', '📝 Paper')}${tab('popular', '⭐ Popular')}</div>`
+}
+
+// ─── POPULAR: publicly known entities ─────────────────────────────────────────
+// "a new section similar as real and paper, but for popular accounts ... public known entities".
+// The list is curated in src/lbknown.js, every entry with its source; the numbers come from
+// serve-prod's /lb-known (Hyperliquid's public stats feed, filtered to these addresses). One
+// renderer for both shells: the phone puts it under the mode bar, the desktop under its toolbar.
+const _lbKnown = { stats: null, at: 0, loading: false, failed: false, period: 'a', sort: 'pnl', open: new Set() }
+async function _lbKnownLoad(force = false) {
+  if (_lbKnown.loading) return
+  if (!force && _lbKnown.stats && Date.now() - _lbKnown.at < 5 * 60_000) return
+  _lbKnown.loading = true
+  try {
+    const r = await fetch('/lb-known')
+    const j = r.ok ? await r.json() : null
+    if (j?.stats) { _lbKnown.stats = j.stats; _lbKnown.at = j.at || Date.now(); _lbKnown.failed = false }
+    else _lbKnown.failed = true
+  } catch { _lbKnown.failed = true }
+  finally { _lbKnown.loading = false }
+}
+const _lbKnownStale = () => !_lbKnown.stats || Date.now() - _lbKnown.at > 5 * 60_000
+function _lbKnownRepaint() { document.querySelectorAll('.lbk').forEach(el => { el.outerHTML = _lbKnownHtml() }) }
+async function _lbKnownShow(el) {
+  el.innerHTML = _mobVFullHeader('Leaderboard') + _lbModeBar() + _lbKnownHtml()
+  if (!_lbKnownStale()) return
+  await _lbKnownLoad()
+  if (_mobVActiveTab === 'leaderboard' && _lbMode === 'popular') _lbKnownRepaint()
+}
+async function _lbRenderDeskKnown(root) {
+  const paint = () => {
+    root.innerHTML = `<div class="lb-toolbar">${_lbDeskModeBar()}<div class="lb-count">${KNOWN.length} known accounts</div></div>` + _lbKnownHtml()
+  }
+  paint()
+  if (!_lbKnownStale()) return
+  await _lbKnownLoad()
+  if (_lbDeskMode === 'popular') paint()
+}
+function _lbkUsd(v) {
+  return v >= 1e9 ? (v / 1e9).toFixed(2) + 'B' : v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'K' : v.toFixed(0)
+}
+// No /pfp lookup: these are not our users, and eight photo requests would all 404.
+function _lbkAvatar(name, addr) {
+  const hue = parseInt(addr.slice(2, 8), 16) % 360
+  const w = String(name).split(/\s+/).filter(Boolean)
+  const init = (w.length > 1 ? w[0][0] + w[1][0] : String(name).slice(0, 2)).toUpperCase()
+  return `<div class="lbk-av" style="background:oklch(0.5 0.17 ${hue})">${esc(init)}</div>`
+}
+function _lbKnownHtml() {
+  const st = _lbKnown, P = st.period
+  const rows = knownView(st.stats, { period: P, sort: st.sort })
+  const perLabel = LBK_PERIODS.find(p => p[0] === P)?.[1] ?? ''
+  const chip = (on, act, label) => `<button class="lbk-chip${on ? ' on' : ''}" onclick="event.stopPropagation();${act}">${label}</button>`
+  // Unknown is a dash, never $0: an address missing from the feed has not "made nothing".
+  const money = (v) => v == null ? '—' : (v < 0 ? '−' : '') + '$' + _lbkUsd(Math.abs(v))
+  const signed = (v) => v == null ? '—' : (v >= 0 ? '+' : '−') + '$' + _lbkUsd(Math.abs(v))
+  const pct = (v) => v == null ? '—' : (v >= 0 ? '+' : '−') + Math.abs(v * 100).toFixed(1) + '%'
+  const tone = (v) => v == null ? '' : v >= 0 ? 'pos' : 'neg'
+  const status = st.stats ? '' : (st.failed && !st.loading)
+    ? `<div class="lbk-status">${_T('Numbers did not load.', 'No se cargaron las cifras.')} ${chip(false, 'window.__lbKnownRetry()', _T('Retry', 'Reintentar'))}</div>`
+    : `<div class="lbk-status">${_T('Loading numbers…', 'Cargando cifras…')}</div>`
+  const rowHtml = (r, i) => {
+    const s = r.s, open = st.open.has(r.addr)
+    const mainV = st.sort === 'value' ? s?.v : st.sort === 'roi' ? s?.r?.[P] : s?.p?.[P]
+    const main = st.sort === 'value' ? money(mainV) : st.sort === 'roi' ? pct(mainV) : signed(mainV)
+    const sub = st.sort === 'value' ? `${perLabel} ${signed(s?.p?.[P])}` : `${_T('Value', 'Valor')} ${money(s?.v)}`
+    return `<div class="lbk-row${open ? ' open' : ''}" data-lbk="${r.addr}" onclick="window.__lbKnownToggle('${r.addr}')">
+      <div class="lbk-rank">${i + 1}</div>
+      ${_lbkAvatar(r.name, r.addr)}
+      <div class="lbk-id">
+        <div class="lbk-name"><span class="notranslate">${esc(r.name)}</span> <span class="lbk-tag">${esc(r.tag)}</span></div>
+        <div class="lbk-addr">${r.addr.slice(0, 6)}…${r.addr.slice(-4)}</div>
+      </div>
+      <div class="lbk-num"><div class="lbk-main ${st.sort === 'value' ? '' : tone(mainV)}">${main}</div><div class="lbk-sub">${sub}</div></div>
+    </div>` + (open ? `<div class="lbk-x">
+      <div class="lbk-why">${esc(r.note)} <a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${_T('Source', 'Fuente')}: ${esc(r.src)} ↗</a></div>
+      <div class="lbk-grid"><span></span><b>PnL</b><b>ROI</b><b>${_T('Volume', 'Volumen')}</b>
+        ${LBK_PERIODS.map(([k, l]) => `<span>${l}</span><span class="${tone(s?.p?.[k])}">${signed(s?.p?.[k])}</span><span class="${tone(s?.r?.[k])}">${pct(s?.r?.[k])}</span><span>${money(s?.x?.[k])}</span>`).join('')}
+      </div>
+      ${_lbSocialHtml({ addr: r.addr, label: r.name })}
+    </div>` : '')
+  }
+  return `<div class="lbk">
+    <div class="lbk-note">${_T('Publicly known accounts, as labelled by on-chain trackers and the press. A label is attribution, not proof of ownership; each row links its source.',
+      'Cuentas conocidas públicamente, según rastreadores on-chain y prensa. Una etiqueta es atribución, no prueba de propiedad; cada fila enlaza su fuente.')}</div>
+    <div class="lbk-bar">
+      <div class="lbk-seg">${LBK_PERIODS.map(([k, l]) => chip(P === k, `window.__lbKnownSet('period','${k}')`, l)).join('')}</div>
+      <div class="lbk-seg">${chip(st.sort === 'pnl', "window.__lbKnownSet('sort','pnl')", 'PnL')}${chip(st.sort === 'roi', "window.__lbKnownSet('sort','roi')", 'ROI')}${chip(st.sort === 'value', "window.__lbKnownSet('sort','value')", _T('Value', 'Valor'))}</div>
+    </div>
+    ${status}
+    <div class="lbk-list">${rows.map(rowHtml).join('')}</div>
+    ${st.stats ? `<div class="lbk-foot">${_T('Numbers', 'Cifras')}: Hyperliquid ${_T('public stats', 'estadísticas públicas')} · ${_chatAgo(st.at)} ${_T('ago', 'atrás')}</div>` : ''}
+  </div>`
+}
+window.__lbKnownSet = function(k, v) {
+  if (k === 'period' && LBK_PERIODS.some(p => p[0] === v)) _lbKnown.period = v
+  if (k === 'sort' && ['pnl', 'roi', 'value'].includes(v)) _lbKnown.sort = v
+  _lbKnownRepaint()
+}
+window.__lbKnownToggle = function(addr) {
+  if (_lbKnown.open.has(addr)) _lbKnown.open.delete(addr); else _lbKnown.open.add(addr)
+  _lbKnownRepaint()
+}
+window.__lbKnownRetry = async function() {
+  _lbKnown.failed = false; _lbKnownRepaint()
+  await _lbKnownLoad(true); _lbKnownRepaint()
 }
 
 function _lbPaperHtml() {
@@ -24144,15 +24253,17 @@ async function _mobVFetchLeaderboard(el) {
   _lbFetching = true
   try {
     const entries = await _lbLoad()
+    if (_mobVActiveTab !== 'leaderboard' || _lbMode !== 'real') return
     if (!entries.length) {
-      el.innerHTML = _mobVFullHeader('Leaderboard') + `<div class="mob-v-empty">No wallets tracked yet.<br>Add wallets in the Leaderboard tab.</div>`
+      el.innerHTML = _mobVFullHeader('Leaderboard') + _lbModeBar() + `<div class="mob-v-empty">No wallets tracked yet.<br>Add wallets in the Leaderboard tab.</div>`
       return
     }
     const results = await _lbFetchRows(entries)
     _lbLastFetch = Date.now()
     _mobVLbResults = results
-    if (_mobVActiveTab !== 'leaderboard') return
-    if (!results.length) { el.innerHTML = _mobVFullHeader('Leaderboard') + `<div class="mob-v-empty">No data available</div>`; return }
+    // Switched to Paper or Popular while this loaded: the real rows must not paint over it.
+    if (_mobVActiveTab !== 'leaderboard' || _lbMode !== 'real') return
+    if (!results.length) { el.innerHTML = _mobVFullHeader('Leaderboard') + _lbModeBar() + `<div class="mob-v-empty">No data available</div>`; return }
     el.innerHTML = _mobVBuildLbHtml(results)
   } finally {
     _lbFetching = false
@@ -36489,11 +36600,11 @@ async function _lbSilentUpdate() {
 // Desktop had no paper board at all. It now has the same Real / Paper switch as the phone,
 // and paper rows go through the same row renderer as real ones.
 let _lbDeskMode = 'real'
-window.__lbDeskMode = function(m) { _lbDeskMode = m === 'paper' ? 'paper' : 'real'; renderLeaderboard() }
+window.__lbDeskMode = function(m) { _lbDeskMode = m === 'paper' ? 'paper' : m === 'popular' ? 'popular' : 'real'; renderLeaderboard() }
 function _lbDeskModeBar() {
   const tab = (m, label) => `<button class="btn-sm${_lbDeskMode === m ? ' active' : ''}" onclick="window.__lbDeskMode('${m}')"
     style="${_lbDeskMode === m ? 'border-color:var(--accent);color:var(--accent)' : ''}">${label}</button>`
-  return `<div style="display:flex;gap:6px">${tab('real', 'Real')}${tab('paper', '📝 Paper')}</div>`
+  return `<div style="display:flex;gap:6px">${tab('real', 'Real')}${tab('paper', '📝 Paper')}${tab('popular', '⭐ Popular')}</div>`
 }
 const _lbDeskHead = `<thead><tr>
           <th>#</th>
@@ -36530,6 +36641,7 @@ async function renderLeaderboard() {
   // Before the busy check: that flag belongs to the REAL board's fetch, which opening the tab
   // starts, and it used to swallow the switch to Paper entirely.
   if (_lbDeskMode === 'paper') return _lbRenderDeskPaper(root)
+  if (_lbDeskMode === 'popular') return _lbRenderDeskKnown(root)
   if (_lbFetching) return
 
   root.innerHTML = `<div class="lb-loading">Fetching wallets…</div>`
@@ -36538,9 +36650,11 @@ async function renderLeaderboard() {
   let entries, results
   try {
     entries = await _lbLoad()
+    // Switched to Paper or Popular while this loaded: not ours to paint any more.
+    if (_lbDeskMode !== 'real') return
 
     if (!entries.length) {
-      root.innerHTML = `<div class="lb-empty">${isDev() ? 'Add wallet addresses below to start tracking.' : 'No wallets tracked yet.'}</div>`
+      root.innerHTML = `<div class="lb-toolbar">${_lbDeskModeBar()}</div><div class="lb-empty">${isDev() ? 'Add wallet addresses below to start tracking.' : 'No wallets tracked yet.'}</div>`
       if (isDev()) root.appendChild(_lbFormEl(entries))
       return
     }

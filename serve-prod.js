@@ -19,6 +19,7 @@ import { coinsOf, coinFile, stalest, buildPerf, HIST_FROM as PFC_FROM } from './
 import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, LLAMA_FEES_URL, LLAMA_LITE_URL, LLAMA_FEESPAID_URL } from './src/llama.js'
 import { buildDexes, buildCexes, LLAMA_DEXVOL_URL, CEX_CIK, secFactsUrl, sharesFromFacts } from './src/exchanges.js'
 import { refreshMacro, buildMacro, macroHasData, MACRO_UA } from './src/macro.js'
+import { STATS_URL as KNOWN_STATS_URL, KNOWN, statsFor } from './src/lbknown.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -138,6 +139,36 @@ function macroRefresh() {
     try { writeAtomic(MACRO_FILE, JSON.stringify(raw)) } catch {}
   })().finally(() => { try { if (readFileSync(MACRO_LOCK, 'utf8') === String(process.pid)) unlinkSync(MACRO_LOCK) } catch {} }).catch(e => console.warn('[macro-data] refresh failed:', e.message)).finally(() => { macroInflight = null })
   return macroInflight
+}
+// /lb-known (src/lbknown.js): numbers for the leaderboard's Popular board -- a curated list of
+// publicly known entities. Hyperliquid's public stats feed is ~40 MB for ~48,000 rows; one worker
+// fetches it (lock), keeps only the listed addresses' rows, and every worker reads the file.
+// Refreshed only when someone is looking, at most every fifteen minutes. A CDN file, not /info: it
+// spends nothing from the IP's Hyperliquid rate budget.
+const POP_FILE = join(__dirname, 'data', 'lb-known.json')
+const POP_LOCK = POP_FILE + '.lock'
+const POP_TTL = 15 * 60_000
+let popData = null, popInflight = null, popBody = null
+function popFromDisk() {
+  try { const d = JSON.parse(readFileSync(POP_FILE, 'utf8')); if (d?.at && (!popData || d.at > popData.at)) { popData = d; popBody = null } } catch {}
+}
+popFromDisk()
+function popRefresh() {
+  if (popInflight) return popInflight
+  popInflight = (async () => {
+    popFromDisk()
+    if (popData && Date.now() - popData.at < POP_TTL) return
+    try { if (Date.now() - statSync(POP_LOCK).mtimeMs < 3 * 60_000) return } catch {}
+    try { mkdirSync(dirname(POP_FILE), { recursive: true }); writeFileSync(POP_LOCK, String(process.pid)) } catch {}
+    const r = await fetch(KNOWN_STATS_URL, { signal: AbortSignal.timeout(60_000) })
+    if (!r.ok) throw new Error('HTTP ' + r.status)
+    const stats = statsFor(await r.text(), KNOWN.map(k => k.addr))
+    // A feed that changed shape finds nobody: keep the last good numbers instead.
+    if (!Object.keys(stats).length) throw new Error('no listed address in the feed')
+    popData = { at: Date.now(), stats }; popBody = null
+    try { writeAtomic(POP_FILE, JSON.stringify(popData)) } catch {}
+  })().finally(() => { try { if (readFileSync(POP_LOCK, 'utf8') === String(process.pid)) unlinkSync(POP_LOCK) } catch {} }).catch(e => console.warn('[lb-known] refresh failed:', e.message)).finally(() => { popInflight = null })
+  return popInflight
 }
 function cgRefresh() {
   if (cgInflight) return cgInflight
@@ -1139,6 +1170,21 @@ createServer((req, res) => {
       pfPerfBy.clear()
       return send(200, { portfolios: list })
     })()
+    return
+  }
+
+  if (url === '/lb-known') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const send = () => {
+      // null, not {}: "not loaded yet" is not "none of them trade".
+      if (!popData?.stats) return res.writeHead(503, { 'Content-Type': 'application/json' }).end('{"stats":null}')
+      popBody ??= JSON.stringify({ at: popData.at, stats: popData.stats })
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' }).end(popBody)
+    }
+    const stale = !popData || Date.now() - popData.at > POP_TTL
+    if (stale) popFromDisk()
+    if (popData?.stats) { if (Date.now() - popData.at > POP_TTL) popRefresh(); return send() }
+    popRefresh().then(send)
     return
   }
 

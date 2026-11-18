@@ -273,6 +273,20 @@ function strategyPlugin() {
           } catch { return sendJson(res, 502, { points: null }) }
         }
 
+        // Dev twin of serve-prod.js /lb-known (in memory for the dev session, 15 minutes).
+        if (method === 'GET' && path === '/lb-known') {
+          const K = await import('./src/lbknown.js')
+          const c = globalThis.__devKnown
+          if (!c || Date.now() - c.at > 15 * 60_000) {
+            try {
+              const stats = K.statsFor(await fetch(K.STATS_URL, { signal: AbortSignal.timeout(60_000) }).then(r => r.text()), K.KNOWN.map(k => k.addr))
+              if (Object.keys(stats).length) globalThis.__devKnown = { at: Date.now(), stats }
+            } catch {}
+          }
+          const d = globalThis.__devKnown
+          return d ? sendJson(res, 200, { at: d.at, stats: d.stats }) : sendJson(res, 503, { stats: null })
+        }
+
         // Dev twin of serve-prod.js /macro-data (in memory, so a restart reads it all again).
         if (method === 'GET' && path === '/macro-data') {
           const M = await import('./src/macro.js')
