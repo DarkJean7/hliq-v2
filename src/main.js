@@ -290,6 +290,7 @@ import { whenScrollIdle } from './scrollidle.js'
 import { catHeadHtml, groupHeadHtml, groupKeyOf, foldShows, CAT_THEME } from './ocfold.js'
 import { yRange, pickLegs, alignSeries, spreadLabels, shortName, fmtTick, lineColor, bothSides, sideVisible } from './ocmulti.js'
 import { enableMouseScroll } from './dragx.js'
+import { enableReorder, applyOrder } from './watchorder.js'
 import { KNOWN, KNOWN_PERIODS } from './lbknown.js'
 import { PERIOD_SPAN, PERIOD_WINDOW, sliceSince, stitchHistories, timeTicks, fmtPointTime, fmtRange } from './portchart.js'
 import { initFillNotify, notifyFills, seedFills, enabled as _fillToastsOn, setEnabled as _setFillToasts, previewFill as _previewFillToast } from './fillnotify.js'
@@ -14117,7 +14118,7 @@ function _mobWatchVals(coin) {
 }
 const _mobWatchId = coin => 'mw-' + String(coin).replace(/[^a-z0-9]/gi, '_')
 
-function _mobWatchCell(coin) {
+function _mobWatchCell(coin, g = 'c') {
   // Same single price source as the position card and the markets list (_livePx = live mid,
   // else the once-fetched market-ctx mark). Only when the asset is in neither do we fall back
   // to the last 1D candle close — that stale close is what made the watch chip and this coin's
@@ -14127,7 +14128,7 @@ function _mobWatchCell(coin) {
   // An external market opens its chart instead of the trade screen — there is nothing to
   // trade here. Everything else about the cell is the same, which is the point.
   const open = isExtMarket(coin) ? 'window.__tvOpenChart' : 'window.__watchOpenTrade'
-  return `<button class="mob-watch-cell" onclick="${open}('${esc(coin)}')">
+  return `<button class="mob-watch-cell" data-wk="${esc(coin)}" data-wg="${g}" onclick="${open}('${esc(coin)}')">
     <span class="mob-watch-cell-ic">${_mobVCoinIcon(coin)}</span>
     <span class="mob-watch-cell-body">
       <span class="mob-watch-cell-name">${esc(watchCoinLabel(coin))}</span>
@@ -14146,9 +14147,12 @@ function _mobWatchRender() {
   // Coins first, then the external markets. They were missing from this strip entirely —
   // "dxy is not appearing above under the deposit/withdraw/send" — because it was built from
   // the coin watchlist alone while they lived in a separate list.
-  const list = [...loadWatchlist(), ...loadTvWatch()]
+  const coins = loadWatchlist(), tvs = loadTvWatch()
+  const list = [...coins, ...tvs]
   if (!list.length) { el.style.display = 'none'; return }
   el.style.display = 'flex'
+  // Hold a card, then drag it along the strip to move it (src/watchorder.js).
+  enableReorder(el, { item: '.mob-watch-cell', axis: 'x', key: n => n.dataset.wk, group: n => n.dataset.wg, onOrder: _watchSaveOrder })
 
   // Rebuild ONLY when the watched set changes. This runs on every position tick, and
   // replacing innerHTML would both recreate every coin icon and — now that the strip
@@ -14168,7 +14172,7 @@ function _mobWatchRender() {
   const key = list.join('|') + (_iconsReady ? '|i1' : '|i0') + (_spotNamesReady ? '|s1' : '|s0')
   if (key !== _mobWatchLastKey) {
     _mobWatchLastKey = key
-    el.innerHTML = list.map(_mobWatchCell).join('')
+    el.innerHTML = coins.map(c => _mobWatchCell(c, 'c')).join('') + tvs.map(s => _mobWatchCell(s, 't')).join('')
   } else {
     for (const coin of list) {
       const { chg, cls, pxStr } = _mobWatchVals(coin)
@@ -22328,7 +22332,8 @@ function _mobVRenderContent(tick = false) {
         : list.map(coin => {
             const px = parseFloat(state.allMids?.[coin] ?? 0)
             const cid = 'watchspark-' + coin.replace(/[^a-z0-9]/gi, '_')
-            return `<div class="mob-v-row mob-watch-row">
+            return `<div class="mob-v-row mob-watch-row" data-wk="${esc(coin)}" data-wg="c">
+              ${_woGrip()}
               ${_mobVCoinIcon(coin)}
               <div class="mob-v-row-info" onclick="window.__watchOpenTrade('${esc(coin)}')" style="cursor:pointer">
                 <div class="mob-v-row-name">${esc(watchCoinLabel(coin))}</div>
@@ -22360,7 +22365,8 @@ function _mobVRenderContent(tick = false) {
         : tvList.map(sym => {
             const { pxStr } = _mobWatchVals(sym)
             const cid = 'watchspark-' + _tvId(sym)
-            return `<div class="mob-v-row mob-watch-row">
+            return `<div class="mob-v-row mob-watch-row" data-wk="${esc(sym)}" data-wg="t">
+              ${_woGrip()}
               ${_mobVCoinIcon(sym)}
               <div class="mob-v-row-info" onclick="window.__tvOpenChart('${esc(sym)}')" style="cursor:pointer">
                 <div class="mob-v-row-name">${esc(_tvShort(sym))}</div>
@@ -22377,6 +22383,10 @@ function _mobVRenderContent(tick = false) {
       }
     `
     if (list.length) { _mobWatchDrawSparks(); _ensureTickerCandles() }
+    // The grip drags at once; holding the name drags too. Not the sparkline (it scrubs) and
+    // not the ✕. Delegated on #mobVContent, so it survives every rebuild of the rows.
+    enableReorder(el, { item: '.mob-watch-row', axis: 'y', handle: '.wo-grip', ignore: 'canvas, button',
+      key: n => n.dataset.wk, group: n => n.dataset.wg, onOrder: _watchSaveOrder })
     // Force, rather than waiting out the one-minute throttle: the tab was just opened and an
     // empty row is the thing being looked at. Draws the sparklines again when it lands.
     if (tvList.length) _ensureExtQuotes(true).then(() => _mobWatchDrawSparks())
@@ -34405,9 +34415,9 @@ function renderWatchTab(allTfData) {
       chgHtml = `<span class="watch-chg-cell neu">—</span>`
     }
 
-    return `<tr onclick="window.__watchOpenTrade('${esc(coin)}')">
+    return `<tr data-wk="${esc(coin)}" data-wg="c" onclick="window.__watchOpenTrade('${esc(coin)}')">
       <td>
-        <div class="watch-coin-name">${esc(label)}</div>
+        ${_woGrip()}<div class="watch-coin-name">${esc(label)}</div>
         <span class="watch-market-badge ${mType}">${BADGES[mType] ?? mType.toUpperCase()}</span>
       </td>
       <td class="watch-price-cell">${isLoading ? '···' : curPx ? '$' + fmtPrice(curPx) : '—'}</td>
@@ -34430,6 +34440,8 @@ function renderWatchTab(allTfData) {
         <tbody>${rows}</tbody>
       </table>
     </div>`
+  enableReorder(wrap, { item: 'tr[data-wk]', axis: 'y', handle: '.wo-grip', ignore: 'button',
+    key: n => n.dataset.wk, group: n => n.dataset.wg, onOrder: _watchSaveOrder })
 }
 
 // Fetch candles for a single timeframe for all watched coins
@@ -34676,6 +34688,18 @@ window.__watchAdd = function(coin) {
   if (res) { res.style.display = 'none'; res.innerHTML = '' }
   updateWatchTicker()
   refreshWatchTab()
+}
+
+// A watch card dropped in a new place (src/watchorder.js). Every surface reads these two
+// lists, so the strip, the Watch tab, the desktop table and the ticker all follow. `g` is
+// which list: 'c' coins, 't' TradingView markets. The DOM is already in the new order, so
+// nothing is rebuilt here beyond what the next render would do anyway.
+function _woGrip() { return `<span class="wo-grip" title="Drag to reorder" aria-hidden="true"><svg viewBox="0 0 10 16" width="8" height="14" fill="currentColor"><circle cx="2.5" cy="3" r="1.4"/><circle cx="7.5" cy="3" r="1.4"/><circle cx="2.5" cy="8" r="1.4"/><circle cx="7.5" cy="8" r="1.4"/><circle cx="2.5" cy="13" r="1.4"/><circle cx="7.5" cy="13" r="1.4"/></svg></span>` }
+function _watchSaveOrder(keys, g) {
+  if (g === 't') saveTvWatch(applyOrder(loadTvWatch(), keys))
+  else saveWatchlist(applyOrder(loadWatchlist(), keys))
+  try { updateWatchTicker() } catch {}
+  _mobWatchRender()
 }
 
 window.__watchRemove = function(coin) {

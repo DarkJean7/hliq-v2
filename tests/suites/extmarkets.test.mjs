@@ -131,8 +131,10 @@ console.log(nl + '-- and one renderer draws both kinds of row --')
   t('the quote is written into the coin cache',
     CLI.includes('_watchCandleCache[`${sym}_1D`] = { ts: Date.now(), candles: q.points.map(c => ({ c })) }'))
   t('the row is the coin row', CLI.includes('<canvas class="mob-watch-spark" id="${cid}" data-coin="${esc(sym)}"'))
-  t('the home strip carries them too', CLI.includes('const list = [...loadWatchlist(), ...loadTvWatch()]'))
-  t('so does the desktop ticker', (CLI.match(/\[\.\.\.loadWatchlist\(\), \.\.\.loadTvWatch\(\)\]/g) ?? []).length >= 2)
+  // The strip names its two halves now (coins, tvs) so each card knows which list a drag
+  // reorders (src/watchorder.js); it still carries both.
+  t('the home strip carries them too', CLI.includes('const coins = loadWatchlist(), tvs = loadTvWatch()') && CLI.includes('const list = [...coins, ...tvs]'))
+  t('so does the desktop ticker', (CLI.match(/\[\.\.\.loadWatchlist\(\), \.\.\.loadTvWatch\(\)\]/g) ?? []).length >= 1)
   // There is nothing to trade here, so a tap opens the chart instead of the trade screen.
   t('a market opens its chart, a coin opens the trade screen',
     CLI.includes("const open = isExtMarket(coin) ? 'window.__tvOpenChart' : 'window.__watchOpenTrade'"))

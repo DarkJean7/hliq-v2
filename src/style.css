@@ -5737,6 +5737,16 @@ body.layout-mobile .nav-tabs { display: none !important; }
 .mob-watch-cell-chg { font-size: 10.5px; font-weight: 600; margin-top: 1px; white-space: nowrap; overflow: hidden; }
 .mob-watch-cell-px { font-size: 12.5px; font-weight: 700; color: var(--fg); font-family: 'JetBrains Mono', monospace; flex-shrink: 0; white-space: nowrap; }
 
+/* Drag to reorder (src/watchorder.js). A long press must not select text or open the
+   system menu — that hold is the gesture. Snap is off while a card is carried, or the
+   strip's own snapping fights the auto-scroll at its edges. */
+.mob-watch-cell, .mob-watch-row, .watch-table tr[data-wk] { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.wo-active { scroll-snap-type: none !important; }
+.wo-lifted { position: relative; z-index: 30; transition: none !important; box-shadow: 0 8px 22px rgba(0,0,0,.45); background: var(--panel-3) !important; outline: 1px solid var(--accent); outline-offset: -1px; border-radius: 10px; opacity: .97; }
+.wo-grip { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 22px; align-self: stretch; margin: -8px 2px -8px -8px; color: var(--muted); opacity: .55; cursor: grab; touch-action: none; }
+.wo-grip:active { cursor: grabbing; opacity: 1; }
+.watch-table .wo-grip { float: left; width: 14px; height: 18px; margin: 0 6px 0 -4px; }
+
 /* Watch tab row: price centred, interactive sparkline where the price used to be */
 .mob-watch-row { align-items: center; }
 .mob-watch-mid-px {
