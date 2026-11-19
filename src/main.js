@@ -14247,6 +14247,9 @@ function _mobWatchDrawSparks() {
       }
       cv.addEventListener('touchstart', e => { cv._startX = e.touches[0].clientX; cv._moved = false }, { passive: true })
       cv.addEventListener('touchmove',  e => {
+        // The row is being carried (src/watchorder.js): that drag owns the finger. Scrubbing
+        // here would also stopPropagation and the row would never hear it move.
+        if (cv.closest('.wo-lifted')) { cv._moved = true; return }
         if (Math.abs(e.touches[0].clientX - cv._startX) > 6) cv._moved = true
         if (cv._moved) { e.stopPropagation(); scrubAt(e.touches[0].clientX) }
       }, { passive: true })
@@ -22383,9 +22386,10 @@ function _mobVRenderContent(tick = false) {
       }
     `
     if (list.length) { _mobWatchDrawSparks(); _ensureTickerCandles() }
-    // The grip drags at once; holding the name drags too. Not the sparkline (it scrubs) and
-    // not the ✕. Delegated on #mobVContent, so it survives every rebuild of the rows.
-    enableReorder(el, { item: '.mob-watch-row', axis: 'y', handle: '.wo-grip', ignore: 'canvas, button',
+    // The grip drags at once; holding anywhere else on the row drags too ("make the whole row
+    // dragable") — the sparkline included, which scrubs only when the finger moves BEFORE the
+    // hold. Not the ✕. Delegated on #mobVContent, so it survives every rebuild of the rows.
+    enableReorder(el, { item: '.mob-watch-row', axis: 'y', handle: '.wo-grip', ignore: 'button',
       key: n => n.dataset.wk, group: n => n.dataset.wg, onOrder: _watchSaveOrder })
     // Force, rather than waiting out the one-minute throttle: the tab was just opened and an
     // empty row is the thing being looked at. Draws the sparklines again when it lands.

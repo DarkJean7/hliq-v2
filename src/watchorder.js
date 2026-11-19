@@ -33,7 +33,7 @@ export function applyOrder(list, keys) {
   return out
 }
 
-const HOLD_MS = 380
+const HOLD_MS = 300
 const SLOP = 8          // px a finger may wander during the hold before it counts as a scroll
 const EDGE = 44         // px from the scroller's edge where carrying a card scrolls it
 
@@ -41,7 +41,7 @@ function scrollerOf(el, axis) {
   for (let n = el.parentElement; n; n = n.parentElement) {
     const cs = getComputedStyle(n)
     const ov = axis === 'x' ? cs.overflowX : cs.overflowY
-    const room = axis === 'x' ? n.scrollWidth > n.clientWidth : n.scrollHeight > n.clientHeight
+    const room = axis === 'x' ? n.scrollWidth > n.clientWidth + 4 : n.scrollHeight > n.clientHeight + 4
     if (room && /(auto|scroll)/.test(ov)) return n
   }
   return document.scrollingElement
@@ -60,16 +60,20 @@ export function enableReorder(container, o) {
   const groupOf = o.group ?? (() => '')
   const pos = (p) => axis === 'x' ? p.clientX : p.clientY
 
-  let cand = null      // { el, x, y, timer } — pressed, not yet lifted
-  let drag = null      // { el, start, natural, last, scroller, raf, moved }
+  let cand = null      // { el, x, y, timer, mouse } — pressed, not yet lifted
+  let drag = null      // { el, grab, last, off, scroller, raf, moved }
 
   const peers = (el) => [...container.querySelectorAll(o.item)].filter(n => groupOf(n) === groupOf(el))
-  const natural = (el) => axis === 'x' ? el.offsetLeft : el.offsetTop
+  const edge = (el) => { const b = el.getBoundingClientRect(); return axis === 'x' ? b.left : b.top }
 
   function begin(el, p) {
     cand = null
-    drag = { el, start: pos(p), natural: natural(el), last: pos(p), scroller: scrollerOf(el, axis), moved: false, scroll0: 0 }
-    drag.scroll0 = axis === 'x' ? drag.scroller.scrollLeft : drag.scroller.scrollTop
+    // Where on the card the finger took hold. Everything after is measured from the card's
+    // real place on screen, never from offsetTop or a scroll delta: those are relative to
+    // whatever offsetParent and scroller the card happens to sit in, and in the desktop table
+    // they disagreed by hundreds of pixels — the card flew off the screen while it was being
+    // carried ("is becoming invisible when dragging").
+    drag = { el, grab: pos(p) - edge(el), last: pos(p), off: 0, scroller: scrollerOf(el, axis), moved: false }
     el.classList.add('wo-lifted')
     container.classList.add('wo-active')
     try { navigator.vibrate?.(12) } catch {}
@@ -79,12 +83,15 @@ export function enableReorder(container, o) {
         ? { lo: 0, hi: axis === 'x' ? innerWidth : innerHeight }
         : (() => { const b = drag.scroller.getBoundingClientRect(); return axis === 'x' ? { lo: b.left, hi: b.right } : { lo: b.top, hi: b.bottom } })()
       const v = drag.last < r.lo + EDGE ? -8 : drag.last > r.hi - EDGE ? 8 : 0
-      if (v) {
-        if (axis === 'x') drag.scroller.scrollLeft += v; else drag.scroller.scrollTop += v
-        follow()
-      }
+      if (v) { if (axis === 'x') drag.scroller.scrollLeft += v; else drag.scroller.scrollTop += v }
+      // Every frame, not only after our own scroll: a strip still coasting from the swipe
+      // before the hold, or snapping, moves the cards under a finger that has not moved, and
+      // the carried card drifted away from it.
+      follow()
       drag.raf = requestAnimationFrame(tick)
     }
+    // Stop a coasting scroll where it is — assigning the position ends the fling.
+    if (axis === 'x') drag.scroller.scrollLeft = drag.scroller.scrollLeft; else drag.scroller.scrollTop = drag.scroller.scrollTop
     drag.raf = requestAnimationFrame(tick)
   }
 
@@ -93,7 +100,6 @@ export function enableReorder(container, o) {
   // it for free; the transform only makes up the difference to where the finger is.
   function follow() {
     const { el } = drag
-    const scrolled = (axis === 'x' ? drag.scroller.scrollLeft : drag.scroller.scrollTop) - drag.scroll0
     const list = peers(el)
     let i = list.indexOf(el)
     for (;;) {
@@ -103,8 +109,11 @@ export function enableReorder(container, o) {
       if (prev && drag.last < mid(prev)) { prev.before(el); list.splice(i, 1); list.splice(i - 1, 0, el); i--; drag.moved = true; continue }
       break
     }
-    const d = drag.last - drag.start + scrolled - (natural(el) - drag.natural)
-    el.style.transform = axis === 'x' ? `translateX(${d}px)` : `translateY(${d}px)`
+    // Untransformed place = where it is drawn minus the shift already applied; the new shift
+    // puts the point it was grabbed by back under the finger.
+    const home = edge(el) - drag.off
+    drag.off = drag.last - drag.grab - home
+    el.style.transform = axis === 'x' ? `translate3d(${drag.off}px,0,0)` : `translate3d(0,${drag.off}px,0)`
   }
 
   function end() {
@@ -126,12 +135,20 @@ export function enableReorder(container, o) {
     return true
   }
 
-  function press(target, p) {
+  function press(target, p, mouse = false) {
     const el = target.closest?.(o.item)
     if (!el || !container.contains(el)) return
     if (o.ignore && target.closest(o.ignore) && !(o.handle && target.closest(o.handle))) return
     if (o.handle && target.closest(o.handle)) { begin(el, p); return true }
-    cand = { el, x: p.clientX, y: p.clientY, timer: setTimeout(() => cand && begin(cand.el, { clientX: cand.x, clientY: cand.y }), holdMs) }
+    cand = { el, x: p.clientX, y: p.clientY, mouse, timer: setTimeout(() => {
+      if (!cand) return
+      // Only lift what is still under the finger. A strip still coasting from the swipe
+      // before can carry the card a whole slot away during the hold; lifting it then left it
+      // a card's width from the finger for the whole drag.
+      const b = cand.el.getBoundingClientRect()
+      if (cand.x < b.left || cand.x > b.right || cand.y < b.top || cand.y > b.bottom) { cand = null; return }
+      begin(cand.el, { clientX: cand.x, clientY: cand.y })
+    }, holdMs) }
     return false
   }
 
@@ -158,9 +175,13 @@ export function enableReorder(container, o) {
   // ── mouse ──
   container.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return
-    if (press(e.target, e)) e.preventDefault()   // no text selection while dragging a grip
+    if (press(e.target, e, true)) e.preventDefault()   // no text selection while dragging a grip
     const move = (ev) => {
-      if (cand && (Math.abs(ev.clientX - cand.x) > SLOP || Math.abs(ev.clientY - cand.y) > SLOP)) { clearTimeout(cand.timer); cand = null }
+      // A mouse has no page to scroll by dragging, so the whole row is a handle: press
+      // anywhere on it and move, and it is carried. A click that does not move still opens.
+      if (cand?.mouse && (Math.abs(ev.clientX - cand.x) > SLOP || Math.abs(ev.clientY - cand.y) > SLOP)) {
+        clearTimeout(cand.timer); const c = cand; begin(c.el, { clientX: c.x, clientY: c.y })
+      }
       if (!drag) return
       ev.preventDefault()
       drag.last = pos(ev)

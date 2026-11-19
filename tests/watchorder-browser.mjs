@@ -67,10 +67,11 @@ const carry = async (a, b, steps = 12) => { for (let i = 1; i <= steps; i++) { a
 
 const settleStrip = async () => {
   for (let i = 0; i < 20; i++) {
+    // Snap holds it a few px off 0; what matters is that it has stopped moving.
     const a = await p.evaluate(() => { const r = document.getElementById('mobWatchRotator'); r.scrollLeft = 0; return r.scrollLeft })
     await p.waitForTimeout(120)
     const b = await p.evaluate(() => document.getElementById('mobWatchRotator').scrollLeft)
-    if (a === 0 && b === 0) return
+    if (a === b && b < 20) return
   }
 }
 
@@ -79,17 +80,6 @@ await waitFor(p, 'the strip', () => document.querySelectorAll('#mobWatchRotator 
 const order = () => p.evaluate(() => [...document.querySelectorAll('#mobWatchRotator .mob-watch-cell')].map(n => n.dataset.wk))
 t('the strip starts in the saved order', await order(), WATCH)
 
-{ // A drag without the hold is a scroll, and moves nothing.
-  const a = await centre('#mobWatchRotator [data-wk="ETH"]')
-  await touch('touchStart', a.x, a.y)
-  await carry(a, { x: a.x - 150, y: a.y }, 8)
-  await touch('touchEnd')
-  await p.waitForTimeout(450)
-  t('a quick drag does not pick a card up', await saved(), WATCH)
-  // That swipe flings the strip; let the momentum die and put it back at the start before
-  // measuring where the cards are.
-  await settleStrip()
-}
 await p.evaluate(() => { window.__opened = []; window.__realOpen = window.__watchOpenTrade; window.__watchOpenTrade = c => window.__opened.push(c) })
 { // Hold BTC, carry it past ETH's middle, let go.
   const a = await centre('#mobWatchRotator [data-wk="BTC"]')
@@ -97,6 +87,9 @@ await p.evaluate(() => { window.__opened = []; window.__realOpen = window.__watc
   await touch('touchStart', a.x, a.y)
   t('holding lifts the card', await waitFor(p, 'the lift', () => !!document.querySelector('#mobWatchRotator .wo-lifted'), null, 2000), true)
   await carry(a, { x: e.x + 20, y: a.y })
+  // "is becoming invisible when dragging": the card must be under the finger, on screen.
+  const lift = await p.evaluate(() => { const b = document.querySelector('.wo-lifted').getBoundingClientRect(); return { l: b.left, c: b.left + b.width / 2 } })
+  t('the carried card stays under the finger', Math.abs(lift.c - (e.x + 20)) < 4, true)
   await touch('touchEnd')
   await p.waitForTimeout(100)
   t('dropped after ETH, it stays there', await saved(), ['ETH', 'BTC', 'SOL', 'HYPE'])
@@ -110,6 +103,18 @@ await p.evaluate(() => { window.__opened = []; window.__realOpen = window.__watc
   await touch('touchStart', s.x, s.y); await touch('touchEnd')
   t('a tap still opens it', await waitFor(p, 'the tap', () => window.__opened.length > 0, null, 3000) && await p.evaluate(() => window.__opened), ['ETH'])
   await p.evaluate(() => { window.__watchOpenTrade = window.__realOpen })
+}
+// Last on the strip: the fling it leaves behind must not move cards under the drags above.
+{ // A drag without the hold is a scroll, and moves nothing.
+  const a = await centre('#mobWatchRotator [data-wk="ETH"]')
+  await touch('touchStart', a.x, a.y)
+  await carry(a, { x: a.x - 150, y: a.y }, 8)
+  await touch('touchEnd')
+  await p.waitForTimeout(450)
+  t('a quick drag does not pick a card up', await saved(), ['ETH', 'BTC', 'SOL', 'HYPE'])
+  // That swipe flings the strip; let the momentum die and put it back at the start before
+  // measuring where the cards are.
+  await settleStrip()
 }
 
 console.log('\n-- the Watch tab --')
@@ -132,6 +137,75 @@ t('every row has a grip', await p.evaluate(() => document.querySelectorAll('#mob
 }
 await waitFor(p, 'the strip to follow', () => document.querySelector('#mobWatchRotator .mob-watch-cell')?.dataset.wk === 'HYPE', null, 4000)
 t('the strip follows the Watch tab', await order(), ['HYPE', 'ETH', 'BTC', 'SOL'])
+
+{ // "make the whole row dragable": hold the SPARKLINE of SOL and carry it to the top.
+  await p.evaluate(() => document.querySelector('#mobVContent [data-wk="SOL"]').scrollIntoView({ block: 'center' }))
+  await p.waitForTimeout(100)
+  const s = await centre('#mobVContent [data-wk="SOL"] canvas')
+  const top = await centre('#mobVContent [data-wk="HYPE"]')
+  await touch('touchStart', s.x, s.y)
+  t('holding the sparkline lifts the row', await waitFor(p, 'the lift', () => !!document.querySelector('#mobVContent .wo-lifted'), null, 2000), true)
+  const dest = { x: s.x, y: top.y - top.h / 2 + 4 }
+  await carry(s, dest, 16)
+  const mid = await p.evaluate(() => { const b = document.querySelector('.wo-lifted').getBoundingClientRect(); return b.top + b.height / 2 })
+  t('the carried row stays under the finger', Math.abs(mid - dest.y) < 4, true)
+  await touch('touchEnd')
+  await p.waitForTimeout(100)
+  t('SOL carried by its sparkline to the top', await saved(), ['SOL', 'HYPE', 'ETH', 'BTC'])
+}
+// "in mobile the asset names is bugged": the grip took the name column's width and GOLD
+// broke as GOL / D. Every name is one line, at the narrowest phone too.
+await p.setViewportSize({ width: 360, height: 800 })
+await p.evaluate(() => { localStorage.setItem('hliq_watchlist', JSON.stringify(['BRENTOIL_TEST_LONGNAME', 'BTC', 'ETH', 'HYPE'])); window._mobVRenderContent?.() })
+await p.waitForTimeout(300)
+t('names stay on one line', await p.evaluate(() => [...document.querySelectorAll('#mobVContent .mob-watch-row .mob-v-row-name')].every(n => n.getBoundingClientRect().height < 24)), true)
+t('BTC is spelled whole, not wrapped', await p.evaluate(() => { const n = document.querySelector('#mobVContent [data-wk="BTC"] .mob-v-row-name'); return n.scrollWidth <= n.clientWidth }), true)
+
+console.log('\n-- desktop: the whole row, with a mouse --')
+{
+  const dctx = await browser.newContext({ viewport: { width: 1500, height: 950 } })
+  try { await dctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
+  await dctx.route('**/api/**', r => r.fulfill({ status: 503, body: 'offline in test' }))
+  await dctx.route(HL_HOST, (route) => {
+    let b = {}
+    try { b = JSON.parse(route.request().postData() || '{}') } catch {}
+    return route.fulfill({ status: 200, contentType: 'application/json', json: b.type in HL ? HL[b.type] : [] })
+  })
+  const d = await dctx.newPage()
+  d.on('pageerror', e => errs.push(e.message))
+  await d.goto(URL, { waitUntil: 'domcontentloaded' })
+  await d.evaluate((w) => {
+    localStorage.clear()
+    localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_onboard_done', '1')
+    localStorage.setItem('hliq_lang_chosen', '1'); localStorage.setItem('hliq_onboard_welcomed_v1', '1')
+    localStorage.setItem('hliq_watchlist', JSON.stringify(w))
+  }, WATCH)
+  await d.reload({ waitUntil: 'domcontentloaded' })
+  await waitFor(d, 'boot', () => !!window.__goPaper)
+  await d.evaluate(() => window.__goPaper())
+  await d.evaluate(() => document.querySelectorAll('#annModal, #langChooseModal, #onboardSheet').forEach(e => e.remove()))
+  await waitFor(d, 'the dashboard', () => !!window.switchTab)
+  await d.evaluate(() => window.switchTab('watch'))
+  await waitFor(d, 'the table', () => document.querySelectorAll('#watchTableWrap tr[data-wk]').length === 4)
+  await d.evaluate(() => { window.__opened = []; window.__watchOpenTrade = c => window.__opened.push(c) })
+  // Press on the PRICE cell (not the grip) of BTC and move down past SOL.
+  const at = (s) => d.evaluate((s) => { const b = document.querySelector(s).getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2, h: b.height } }, s)
+  const a = await at('#watchTableWrap tr[data-wk="BTC"] .watch-price-cell')
+  const sol = await at('#watchTableWrap tr[data-wk="SOL"]')
+  await d.mouse.move(a.x, a.y); await d.mouse.down()
+  const dest = sol.y + sol.h / 2 - 6
+  for (let i = 1; i <= 12; i++) { await d.mouse.move(a.x, a.y + (dest - a.y) * i / 12); await d.waitForTimeout(16) }
+  const mid = await d.evaluate(() => { const b = document.querySelector('.wo-lifted')?.getBoundingClientRect(); return b ? b.top + b.height / 2 : null })
+  t('the carried row stays under the mouse (it flew 215px off before)', mid != null && Math.abs(mid - dest) < 4, true)
+  await d.mouse.up()
+  await d.waitForTimeout(450)
+  t('dropped after SOL', await d.evaluate(() => JSON.parse(localStorage.getItem('hliq_watchlist'))), ['ETH', 'SOL', 'BTC', 'HYPE'])
+  t('a drag is not a click', await d.evaluate(() => window.__opened), [])
+  const e = await at('#watchTableWrap tr[data-wk="ETH"] .watch-price-cell')
+  await d.mouse.click(e.x, e.y)
+  t('a click still opens', await waitFor(d, 'the click', () => window.__opened.length > 0, null, 3000) && await d.evaluate(() => window.__opened), ['ETH'])
+  await dctx.close()
+}
 
 t('no page errors', errs, [])
 await browser.close()

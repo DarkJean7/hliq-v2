@@ -15,7 +15,7 @@ t('no keys leaves the list alone', applyOrder(['A', 'B'], null).join() === 'A,B'
 console.log('-- wiring --')
 const main = fs.readFileSync('src/main.js', 'utf8')
 t('the home strip reorders sideways', /enableReorder\(el, \{ item: '\.mob-watch-cell', axis: 'x'/.test(main))
-t('the Watch tab reorders, by grip, never from the sparkline', /item: '\.mob-watch-row', axis: 'y', handle: '\.wo-grip', ignore: 'canvas, button'/.test(main))
+t('the Watch tab reorders, by grip or by holding anywhere but the ✕', /item: '\.mob-watch-row', axis: 'y', handle: '\.wo-grip', ignore: 'button'/.test(main))
 t('the desktop table reorders', /item: 'tr\[data-wk\]'/.test(main))
 t('coins and markets are separate groups, saved to their own list',
   /if \(g === 't'\) saveTvWatch\(applyOrder\(loadTvWatch\(\), keys\)\)\s+else saveWatchlist\(applyOrder\(loadWatchlist\(\), keys\)\)/.test(main))
