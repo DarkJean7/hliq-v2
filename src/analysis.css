@@ -213,3 +213,21 @@ html.has-bg-image .ana-view { background: var(--bg) !important; }
 .tb-ind span { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-ind b { font-size: 13px; font-family: var(--font-mono); white-space: nowrap; }
 .tb-card .tb-ind b.warn { color: var(--orange, #f59e0b); }
+
+/* Trade tab → My trades (src/tradefills.js): the account's own recent trades in this market. */
+.tf-cols, .tf-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) auto; gap: 10px; align-items: baseline; }
+.tf-cols { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.tf-cols span:last-child { text-align: right; }
+.tf-rows { display: flex; flex-direction: column; }
+.tf-row { padding: 7px 0; border-top: 1px solid var(--border); }
+.tf-row:first-child { border-top: 0; }
+.tf-side { font-size: 12.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tf-what { font-size: 12.5px; font-family: var(--font-mono); color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tf-what i { font-style: normal; color: var(--muted); }
+.tf-what em { font-style: normal; font-family: inherit; font-size: 10.5px; color: var(--muted); margin-left: 6px; padding: 1px 5px; border-radius: 5px; background: rgba(255,255,255,.06); }
+.tf-pnl { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.tf-pnl b { font-size: 12.5px; font-family: var(--font-mono); white-space: nowrap; }
+.tf-pnl b.tf-none { color: var(--muted); font-weight: 500; }
+.tf-pnl small { font-size: 10.5px; color: var(--muted); }
+.tf-more { align-self: stretch; font: inherit; font-size: 12px; font-weight: 700; color: var(--accent); background: rgba(255,255,255,.04); border: 1px solid var(--border); border-radius: 10px; padding: 8px; cursor: pointer; }
+.tf-more:hover { border-color: var(--accent); }

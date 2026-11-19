@@ -29,9 +29,15 @@
  * "i would like to have the data available like volume(time frames), open interest(time frames),
  * revenue(time frame), fees(time frame), worth". src/trademkt.js draws it; market(coin) hands it
  * the context and the candles main.js already holds, so the card costs the exchange nothing.
+ *
+ * ── and your own trades in it, under that ──
+ * "below the new markets data, lets add the recent trades made in the selected asset. show 3, as
+ * unexpanded and 10 when expanded" -- the account's own (src/tradefills.js). fills(coin) → this
+ * account's fills in the market, or null while they have not loaded; undefined leaves the card out.
  */
 import { analysisFor, analysisState, ensureAnalysis, setAnalysisDeps, setupHead, fmtPx, normCoin } from './analysis.js'
 import { loadMarketMeta, marketMeta, marketFacts, marketCardHtml } from './trademkt.js'
+import { recentTrades, myTradesCardHtml } from './tradefills.js'
 
 const LOAD_AFTER_MS = 1500
 const TICK_MS = 5000
@@ -40,8 +46,11 @@ const REPAINT_MS = 30_000
 const HOSTS = ['mobTradeBrief', 'deskTradeBrief']
 
 let ctx = { T: (en) => en, limited: () => false, price: () => null, position: () => null, prv: (x) => x, open: null,
-  signals: () => null, loadSignals: () => {}, openSignals: null, market: () => null, openMarkets: null }
+  signals: () => null, loadSignals: () => {}, openSignals: null, market: () => null, openMarkets: null,
+  fills: () => undefined, combined: () => false, openTrades: null }
 let coin = null, ac = null, loadT = null, timer = null, paintedAt = 0, paintedState = null, paintedSig = ''
+// My trades: folded to three until asked for ten. Kept across markets -- a preference, not a market's.
+let tradesOpen = false, paintedFills = ''
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const T = (en, es) => ctx.T(en, es)
@@ -171,14 +180,26 @@ function marketHtml() {
   } catch { return '' }
 }
 
+/** This account's fills in the market: an array, null while loading, undefined when not wired. */
+const fillsOf = () => { try { return readable(coin) ? ctx.fills(coin) : undefined } catch { return undefined } }
+/** What would change the card: how many fills, and the newest. */
+const fillsSig = (f) => f === undefined ? '' : f === null ? 'null' : f.length + ':' + f.reduce((m, x) => Math.max(m, Number(x.time) || 0), 0)
+
+function tradesHtml(f) {
+  if (f === undefined) return ''
+  return myTradesCardHtml(recentTrades(f), { T, prv: ctx.prv, fmtPx, coin, expanded: tradesOpen,
+    combined: !!ctx.combined(), all: !!ctx.openTrades })
+}
+
 function paint() {
   const el = host()
   if (!el) return
   paintedAt = Date.now()
-  if (!readable(coin)) { el.innerHTML = ''; paintedSig = ''; return }
-  const sig = sigOf()
+  if (!readable(coin)) { el.innerHTML = ''; paintedSig = ''; paintedFills = ''; return }
+  const sig = sigOf(), f = fillsOf()
   paintedSig = JSON.stringify(sig)
-  el.innerHTML = analysisHtml() + signalsHtml(sig) + marketHtml()
+  paintedFills = fillsSig(f)
+  el.innerHTML = analysisHtml() + signalsHtml(sig) + marketHtml() + tradesHtml(f)
 }
 
 async function load() {
@@ -203,7 +224,8 @@ function tick() {
   }
   load()
   // Signals arrive on the Signals tab's own queue, so a change in what they say is what repaints.
-  if (analysisState(coin) !== paintedState || JSON.stringify(sigOf()) !== paintedSig || Date.now() - paintedAt >= REPAINT_MS) paint()
+  // A new fill of yours repaints too: the card is about what you just did.
+  if (analysisState(coin) !== paintedState || JSON.stringify(sigOf()) !== paintedSig || fillsSig(fillsOf()) !== paintedFills || Date.now() - paintedAt >= REPAINT_MS) paint()
 }
 
 export function initTradeBrief(opts) {
@@ -220,6 +242,8 @@ function wire(el) {
     if (e.target.closest('[data-tb-open]')) ctx.open?.(coin)
     else if (e.target.closest('[data-tb-signals]')) ctx.openSignals?.(coin)
     else if (e.target.closest('[data-tb-markets]')) ctx.openMarkets?.(coin)
+    else if (e.target.closest('[data-tb-fills-more]')) { tradesOpen = !tradesOpen; paint() }
+    else if (e.target.closest('[data-tb-trades]')) ctx.openTrades?.(coin)
   })
 }
 

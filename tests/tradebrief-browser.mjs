@@ -37,6 +37,18 @@ const clearing = () => ({ marginSummary: { accountValue: '1000', totalNtlPos: '2
   crossMarginSummary: { accountValue: '1000', totalNtlPos: '200', totalRawUsd: '1000', totalMarginUsed: '20' },
   crossMaintenanceMarginUsed: '5', withdrawable: '900', assetPositions: [pos], time: Date.now() })
 
+// The account's own trades, for the My trades card: twelve ETH orders, the newest filled in three
+// pieces (one trade, not three), and two BTC ones that must stay out of the ETH card.
+const FILLS = (() => {
+  const now = Date.now(), out = []
+  const fill = (coin, oid, t, px, sz, side, dir, pnl) => ({ coin, oid, tid: oid * 10 + out.length, time: t, px: String(px), sz: String(sz), side, dir,
+    closedPnl: String(pnl), fee: '0.01', feeToken: 'USDC', hash: '0x' + '0'.repeat(64), startPosition: '0', crossed: true })
+  for (const [i, px] of [100, 101, 102].entries()) out.push(fill('ETH', 1, now - 60e3 - i, px, 1, 'A', 'Close Long', 5))
+  for (let k = 2; k <= 12; k++) out.push(fill('ETH', k, now - k * 3600e3, 90 + k, 0.5, k % 2 ? 'B' : 'A', k % 2 ? 'Open Long' : 'Close Long', k % 2 ? 0 : -1))
+  out.push(fill('BTC', 50, now - 30e3, 50000, 0.01, 'B', 'Open Long', 0), fill('BTC', 51, now - 90e3, 50100, 0.01, 'A', 'Close Long', 1))
+  return out.sort((a, b) => b.time - a.time)
+})()
+
 const b = await chromium.launch()
 async function open(opts) {
   const ctx = await b.newContext(opts)
@@ -54,7 +66,8 @@ async function open(opts) {
       : q.type === 'allMids' ? { ETH: '100', BTC: '50000' }
       : q.type === 'meta' ? { universe: [{ name: 'BTC', szDecimals: 5, maxLeverage: 40 }, { name: 'ETH', szDecimals: 4, maxLeverage: 25 }] }
       : q.type === 'metaAndAssetCtxs' ? [{ universe: [{ name: 'BTC', szDecimals: 5, maxLeverage: 40 }, { name: 'ETH', szDecimals: 4, maxLeverage: 25 }] }, [{ markPx: '50000', midPx: '50000', funding: '0', openInterest: '1', dayNtlVlm: '1', prevDayPx: '50000' }, { markPx: '100', midPx: '100', funding: '0', openInterest: '1', dayNtlVlm: '1', prevDayPx: '100' }]]
-      : ['frontendOpenOrders', 'userFills', 'userFillsByTime', 'userFunding', 'userNonFundingLedgerUpdates', 'perpDexs', 'perpCategories'].includes(q.type) ? []
+      : q.type === 'userFills' || q.type === 'userFillsByTime' ? FILLS
+      : ['frontendOpenOrders', 'userFunding', 'userNonFundingLedgerUpdates', 'perpDexs', 'perpCategories'].includes(q.type) ? []
       : q.type === 'spotClearinghouseState' ? { balances: [] } : {}
     return route.fulfill({ json })
   })
@@ -102,8 +115,33 @@ console.log('-- desktop --')
   // "lets add also signals summary under the trade tab analysis".
   await p.waitForSelector('#deskTradeBrief .tb-perf', { timeout: 20000 })
   const cards = await p.$$eval('#deskTradeBrief > .tb-card', es => es.map(e => e.querySelector('.tb-top span').textContent))
-  t('the Signals card sits under the Analysis one, and Market under that',
-    JSON.stringify(cards) === JSON.stringify(['Analysis', 'Signals', 'Market']), cards)
+  await p.waitForSelector('#deskTradeBrief .tf-row', { timeout: 20000 })
+  const cards2 = await p.$$eval('#deskTradeBrief > .tb-card', es => es.map(e => e.querySelector('.tb-top span').textContent))
+  t('the Signals card sits under the Analysis one, Market under that, and My trades last',
+    JSON.stringify(cards2) === JSON.stringify(['Analysis', 'Signals', 'Market', 'My trades · ETH']), { cards, cards2 })
+
+  // "below the new markets data, lets add the recent trades made in the selected asset. show 3,
+  // as unexpanded and 10 when expanded" -- the account's own (src/tradefills.js).
+  const TR = '#deskTradeBrief .tf-card'
+  const rows = () => p.$$eval(TR + ' .tf-row', es => es.map(e => e.textContent.replace(/\s+/g, ' ').trim()))
+  const r3 = await rows()
+  t('three trades, folded', r3.length === 3, r3)
+  t('newest first: the order filled in three pieces is ONE trade, at its size-weighted price', /Close long/.test(r3[0]) && /3 @ 101/.test(r3[0]) && /\+\$15\.00/.test(r3[0]), r3[0])
+  t('only this market\'s trades (no BTC)', r3.every(r => !/50,?0\d\d/.test(r)), r3)
+  t('an opening trade has no closed PnL: a dash, not $0', /Open long/.test(r3[2]) && /—/.test(r3[2]), r3[2])
+  t('it offers ten', /Show 10/.test(await p.$eval(TR + ' [data-tb-fills-more]', e => e.textContent)))
+  await p.click(TR + ' [data-tb-fills-more]')
+  t('expanded: ten', (await rows()).length === 10, await rows())
+  await p.click(TR + ' [data-tb-fills-more]')
+  t('and folds back to three', (await rows()).length === 3)
+  await p.evaluate(() => window.__selectCoin('BTC'))
+  await p.waitForFunction(() => /My trades · BTC/.test(document.getElementById('deskTradeBrief')?.textContent ?? ''), null, { timeout: 10000 }).catch(() => {})
+  t('another market lists its own: BTC\'s two, no toggle', (await rows()).length === 2 && !(await p.$(TR + ' [data-tb-fills-more]')), await rows())
+  await p.click(TR + ' [data-tb-trades]')
+  await p.waitForFunction(() => document.querySelector('.nav-tab.active')?.getAttribute('onclick')?.includes("'trades'"), null, { timeout: 5000 }).catch(() => {})
+  t('All trades opens the Trades tab', await p.evaluate(() => !!document.querySelector('.nav-tab.active')?.getAttribute('onclick')?.includes("'trades'")))
+  await p.evaluate(() => { window.switchTab('trade'); window.__selectCoin('ETH') })
+  await p.waitForFunction(() => /My trades · ETH/.test(document.getElementById('deskTradeBrief')?.textContent ?? ''), null, { timeout: 10000 })
   // Scoped to the Signals card. These used to index #deskTradeBrief .tb-perf-c, which was every
   // window cell on the tab -- fine while Signals was the only card with a window strip, and
   // wrong the moment the Market card arrived with one of its own.
@@ -173,8 +211,12 @@ console.log('-- phone --')
   t('with the position in it', /your long/.test(txt), txt)
   await p.waitForSelector('#mobTradeBrief .tb-perf', { timeout: 20000 })
   await p.waitForFunction(() => /Open interest/.test(document.getElementById('mobTradeBrief')?.textContent ?? ''), null, { timeout: 20000 }).catch(() => {})
-  t('and the Signals and Market cards under it', await p.$$eval('#mobTradeBrief > .tb-card', es => es.length) === 3,
+  await p.waitForSelector('#mobTradeBrief .tf-row', { timeout: 20000 })
+  t('and the Signals, Market and My trades cards under it', await p.$$eval('#mobTradeBrief > .tb-card', es => es.length) === 4,
     await p.$$eval('#mobTradeBrief > .tb-card', es => es.map(e => e.querySelector('.tb-top span')?.textContent)))
+  t('the phone lists three trades too', await p.$$eval('#mobTradeBrief .tf-row', es => es.length) === 3)
+  await p.click('#mobTradeBrief [data-tb-fills-more]')
+  t('and ten when expanded', await p.$$eval('#mobTradeBrief .tf-row', es => es.length) === 10)
   t('the phone gets the market figures too', /Open interest/.test(await p.$eval('#mobTradeBrief', e => e.textContent)))
   t('and nothing runs off the screen', await p.evaluate(() => {
     const W = document.documentElement.clientWidth

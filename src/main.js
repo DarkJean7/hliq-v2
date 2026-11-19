@@ -1206,6 +1206,7 @@ async function loadDashboard() {
       if (state.fillsFull && !full) return
       const fills = parseFills(rawFills).map(f => ({ ...f, coin: hip3Rename(f.coin) }))
       state.fills = fills
+      state.fillsFor = addr   // whose fills these are: the Trade tab's "My trades" waits for a match
       state.fillsFull = full
       // What already happened is history: recorded so the "Order filled" cards only show news.
       if (_isRealAddr(addr)) seedFills(fills, addr)
@@ -10525,6 +10526,7 @@ function _allAcctReaggregate() {
       _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr,
     }))) },
     fills:       visible.flatMap(r => (r.fills ?? []).map(f => ({ ...f, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr }))),
+    fillsFor:    '__all_accounts__',
     openOrders:  visible.flatMap(r => (r.openOrders ?? []).map(o => ({ ...o, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr }))),
     funding:     visible.flatMap(r => (r.funding ?? []).map(f => ({ ...f, _acct: r.label || r.addr.slice(0, 6) + '…', _acctAddr: r.addr }))),
     portfolio:   _mergePortfolio(visible),
@@ -11175,6 +11177,7 @@ function _paperRefresh() {
   state.spotState  = paperSpotState()
   state.portfolio  = paperPortfolio()
   state.fills      = parseFills(paperFills())
+  state.fillsFor   = PAPER_ADDR
   state.ledger     = paperLedger()   // Transfers tab reads this
   // Net PnL is equity less what was paid in (webData.cumLedger). A paper account has no
   // webData2, so this used to be the LAST REAL ACCOUNT's — reported as -$2.7K Net PnL on a
@@ -25589,6 +25592,19 @@ initTradeBrief({
   openMarkets: () => {
     if (_isMobView()) window.__mobMoreTab('markets')
     else window.switchTab('markets', document.querySelector(`.nav-tab[onclick*="'markets'"]`))
+  },
+  // My trades (src/tradefills.js): this account's fills in the market on screen, already in
+  // memory. NULL until fills have landed for the account now showing -- a switch of account
+  // leaves the previous one's in state.fills for a moment, and those are not yours to list here.
+  fills: (c) => {
+    if (state.fillsFor !== state.addr || !Array.isArray(state.fills)) return null
+    const want = hip3Original(c)
+    return state.fills.filter(f => f.coin === c || hip3Original(f.coin) === want)
+  },
+  combined: () => !!state.isAllAccounts,
+  openTrades: () => {
+    if (_isMobView()) window.mobVGoTab?.('trades')
+    else window.switchTab('trades', document.querySelector(`.nav-tab[onclick*="'trades'"]`))
   },
   openSignals: (c) => {
     window.__sigSetCoin?.(c)
