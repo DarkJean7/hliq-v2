@@ -34716,6 +34716,13 @@ function _outlookCtx() {
     funding: (c) => _mktCtxReady ? (_mktCtxMap[c]?.funding ?? null) : null,
     coinLabel: (c) => _tradeName(c),
     openCoin: (c) => window.__watchOpenTrade(c),
+    // For "+ Add a market": every perp the app knows (main dex, and HIP-3 once its meta is in),
+    // and the coins on the user's own watchlist as one-tap suggestions.
+    markets: () => {
+      const names = (_perpNames && _perpNames.length) ? _perpNames : Object.keys(state.allMids ?? {}).filter(k => !k.startsWith('@'))
+      return names.filter(c => !_isDelistedMkt(c)).map(c => ({ coin: c, label: _tradeName(c) }))
+    },
+    watchlist: () => loadWatchlist().filter(c => !String(c).startsWith('@')),
     // The account a single-account view is about, by name. The combined view's positions carry
     // their own (_acct); its state.addr is the sentinel, not an account, so it has none here.
     acctName: () => state.addr === PAPER_ADDR ? _paperName()

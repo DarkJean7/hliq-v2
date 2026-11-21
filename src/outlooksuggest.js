@@ -97,3 +97,46 @@ export function actionsFor(L, out, setup) {
   }
   return acts
 }
+
+/**
+ * For a market watched but not held ("let the user add assets that he does not have as
+ * positions"): which side the lean favours, a stop beyond the case against it (or the key level
+ * past it), and a first target at the next level its way. `out` is outlookFor with no position.
+ * No lean, or no edge: nothing to enter on.
+ */
+export function ideaFor(L, out, setup) {
+  if (!L || L.conviction === 0 || L.lean === 'flat') return [{ id: 'noEdge' }]
+  const long = L.lean === 'up'
+  const cs = out?.cases
+  const against = long ? [cs?.bear?.px, setup?.support?.lo] : [cs?.bull?.px, setup?.resistance?.hi]
+  const valid = against.filter(v => v > 0)
+  const stop = valid.length ? (long ? Math.min(...valid) * 0.995 : Math.max(...valid) * 1.005) : null
+  const target = long ? (setup?.resistance?.lo ?? cs?.bull?.px) : (setup?.support?.hi ?? cs?.bear?.px)
+  return [{ id: 'entryIdea', side: long ? 'long' : 'short', stop, target: target > 0 ? target : null }]
+}
+
+/** The ways the cards can be ordered ("add sorts"). Each section is sorted on its own. */
+export const ORACLE_SORTS = ['default', 'strong', 'bull', 'bear', 'conviction', 'pnl', 'risk', 'az']
+
+/**
+ * Order cards by `by`. Each item carries `keys` — { score, conviction, pnl, risk (the nearest
+ * liquidation in σ), name } — or null while it is still loading; those keep their place at the
+ * end. `default` is the order given: positions as the app lists them, watched as added.
+ * A missing value (a watched market has no P&L, a position no liquidation in range) sorts last.
+ */
+export function sortCards(items, by) {
+  const ready = items.filter(i => i.keys), waiting = items.filter(i => !i.keys)
+  const last = (v, dir) => v == null || !Number.isFinite(v) ? (dir > 0 ? Infinity : -Infinity) : v
+  const num = (get, dir) => (a, b) => dir * (last(get(a.keys), dir) - last(get(b.keys), dir))
+  const cmp = {
+    strong: num(k => k.score == null ? null : Math.abs(k.score), -1),
+    bull: num(k => k.score, -1),
+    bear: num(k => k.score, 1),
+    conviction: (a, b) => (b.keys.conviction - a.keys.conviction) || (Math.abs(b.keys.score ?? 0) - Math.abs(a.keys.score ?? 0)),
+    pnl: num(k => k.pnl, -1),
+    risk: num(k => k.risk, 1),
+    az: (a, b) => String(a.keys.name).localeCompare(String(b.keys.name)),
+  }[by]
+  const sorted = cmp ? ready.map((x, i) => [x, i]).sort((a, b) => cmp(a[0], b[0]) || a[1] - b[1]).map(([x]) => x) : ready
+  return [...sorted, ...waiting]
+}

@@ -12,7 +12,7 @@ import './outlook.css'
 import { ensureAnalysis, analysisFor, analysisRaw, analysisState, setAnalysisDeps, fmtPx } from './analysis.js'
 import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, TESTED_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, coneScale } from './outlook.js'
 import { catLabel } from './simcat.js'
-import { leanOf, actionsFor } from './outlooksuggest.js'
+import { leanOf, actionsFor, ideaFor, sortCards, ORACLE_SORTS } from './outlooksuggest.js'
 
 const LS_H = 'hliq_outlook_h'
 const RELOAD_MS = 15 * 60e3
@@ -97,7 +97,7 @@ async function pump() {
     for (;;) {
       if (!last?.host?.isConnected) return
       const ps = positionsOf(last.ctx) ?? []
-      const coins = [...new Set(ps.map(p => p.coin))]
+      const coins = [...new Set([...ps.map(p => p.coin), ...watchList()])]
       const due = coins.find(c => {
         const raw = analysisRaw(c), st = analysisState(c)
         if (st === 'loading') return false
@@ -126,7 +126,21 @@ export function renderOutlook(host, ctx, tick = false) {
   if (ctx.limited) setAnalysisDeps({ limited: ctx.limited })
   if (!host._ol) {
     host._ol = true
+    host.addEventListener('input', (e) => { if (e.target.matches?.('.ol-add-in')) { addMsg = ''; addResults(host, last.ctx, e.target.value) } })
     host.addEventListener('click', (e) => {
+      const rm = e.target.closest('[data-ol-rm]')
+      if (rm) { saveWatch(watchList().filter(c => c !== rm.dataset.olRm)); cardOpen.delete(rm.dataset.olRm); saveOpen(); paint(true); return }
+      const ad = e.target.closest('[data-ol-add]')
+      if (ad) {
+        addWatch(ad.dataset.olAdd, last.ctx)
+        const inp = host.querySelector('.ol-add-in')
+        if (inp && !addMsg) inp.value = ''
+        addResults(host, last.ctx, addMsg ? 'x' : '')
+        if (addMsg) host.querySelector('.ol-add-res').innerHTML = `<div class="ol-add-msg">${esc(addMsg)}</div>`
+        paint(true); pump(); return
+      }
+      const so = e.target.closest('[data-ol-sort]')
+      if (so) { sortBy = so.dataset.olSort; try { localStorage.setItem(LS_SORT, sortBy) } catch {} ; paint(true); return }
       const h = e.target.closest('[data-ol-h]')
       if (h) { horizon = h.dataset.olH; try { localStorage.setItem(LS_H, horizon) } catch {} ; paint(true); return }
       const c = e.target.closest('[data-ol-coin]')
@@ -143,32 +157,101 @@ export function renderOutlook(host, ctx, tick = false) {
   pump()
 }
 
+// ── what is on the tab: positions, and markets watched without a position ───────
+// "let the user add assets that he does not have as positions. make it organized. add sorts."
+// Watched markets are kept on this device (a convenience; storage failing just means none) and
+// capped: each one never seen costs ~120 weight of the per-IP budget to load, then reloads every
+// 15 minutes — still one at a time.
+const LS_WATCH = 'hliq_oracle_watch', LS_SORT = 'hliq_oracle_sort'
+export const ORACLE_WATCH_MAX = 12
+const watchList = () => { try { const v = JSON.parse(localStorage.getItem(LS_WATCH)); return Array.isArray(v) ? v.filter(c => typeof c === 'string') : [] } catch { return [] } }
+const saveWatch = (list) => { try { localStorage.setItem(LS_WATCH, JSON.stringify(list)) } catch {} }
+let sortBy = (() => { try { const v = localStorage.getItem(LS_SORT); return ORACLE_SORTS.includes(v) ? v : 'default' } catch { return 'default' } })()
+let addMsg = ''
+
+/** The tab's frame. The add box lives OUTSIDE what repaints, or a price tick would wipe what is
+ *  being typed and drop the keyboard. Rebuilt only when something else took the host over. */
+function shell(host, ctx) {
+  if (host.querySelector(':scope > .ol-view > .ol-addbox')) return false
+  const { T } = ctx
+  host.innerHTML = `<div class="ol-view"><div class="ol-top"></div>
+    <div class="ol-addbox"><input class="ol-add-in" type="search" autocomplete="off" spellcheck="false"
+      placeholder="${esc(T('+ Add a market to watch — BTC, HYPE, GOLD…', '+ Añade un mercado — BTC, HYPE, GOLD…'))}"><div class="ol-add-res"></div></div>
+    <div class="ol-body"></div></div>`
+  return true
+}
+function addResults(host, ctx, q) {
+  const box = host.querySelector('.ol-add-res')
+  if (!box) return
+  const { T } = ctx
+  q = String(q ?? '').trim().toUpperCase()
+  if (!q) { box.innerHTML = addMsg ? `<div class="ol-add-msg">${esc(addMsg)}</div>` : ''; return }
+  const held = new Set((positionsOf(ctx) ?? []).map(p => p.coin)), have = new Set(watchList())
+  const hits = (ctx.markets?.() ?? [])
+    .filter(m => !held.has(m.coin) && !have.has(m.coin))
+    .filter(m => m.coin.toUpperCase().includes(q) || String(m.label ?? '').toUpperCase().includes(q))
+    .sort((a, b) => (String(a.label).toUpperCase().startsWith(q) ? 0 : 1) - (String(b.label).toUpperCase().startsWith(q) ? 0 : 1) || String(a.label).localeCompare(String(b.label)))
+    .slice(0, 8)
+  box.innerHTML = hits.length
+    ? hits.map(m => `<button data-ol-add="${esc(m.coin)}"><b>${esc(m.label ?? m.coin)}</b>${m.label && m.label !== m.coin ? ` <em>${esc(m.coin)}</em>` : ''}</button>`).join('')
+    : `<div class="ol-add-msg">${T('No market matches', 'Ningún mercado coincide')}</div>`
+}
+function addWatch(coin, ctx) {
+  const list = watchList()
+  if (list.includes(coin)) return
+  if (list.length >= ORACLE_WATCH_MAX) { addMsg = ctx.T(`You can watch up to ${ORACLE_WATCH_MAX} markets — remove one first.`, `Puedes seguir hasta ${ORACLE_WATCH_MAX} mercados — quita uno primero.`); return }
+  addMsg = ''
+  saveWatch([...list, coin])
+}
+
+const SORT_NAME = {
+  default: ['Default', 'Por defecto'], strong: ['Strongest', 'Más fuerte'], bull: ['Most bullish', 'Más alcista'], bear: ['Most bearish', 'Más bajista'],
+  conviction: ['Conviction', 'Convicción'], pnl: ['P&L', 'P&L'], risk: ['Liq. risk', 'Riesgo liq.'], az: ['A–Z', 'A–Z'],
+}
+function toolsHtml(ctx, held) {
+  const { T } = ctx
+  const have = new Set(watchList())
+  const wl = (ctx.watchlist?.() ?? []).filter(c => !held.has(c) && !have.has(c)).slice(0, 10)
+  return `<div class="ol-tools">
+      <span class="ol-tools-l">${T('Sort', 'Orden')}</span>
+      <div class="ol-sorts" data-dragscroll>${ORACLE_SORTS.map(k => `<button data-ol-sort="${k}" class="${k === sortBy ? 'on' : ''}">${T(...SORT_NAME[k])}</button>`).join('')}</div>
+    </div>
+    ${wl.length ? `<div class="ol-wl"><span>${T('From your watchlist', 'De tu lista')}</span>${wl.map(c => `<button data-ol-add="${esc(c)}">+ ${esc(ctx.coinLabel(c))}</button>`).join('')}</div>` : ''}`
+}
+function secHtml(title, list, empty) {
+  return `<div class="ol-sec"><div class="ol-sec-h">${title} <span>${list.length}</span></div>${list.length
+    ? `<div class="ol-cards">${sortCards(list, sortBy).map(i => i.html).join('')}</div>`
+    : `<div class="ol-empty ol-empty-s">${empty}</div>`}</div>`
+}
+
 function paint(force) {
   const { host, ctx } = last ?? {}
   if (!host?.isConnected) return
+  if (shell(host, ctx)) force = true
+  const T = ctx.T
   const ps = positionsOf(ctx)
   // One card per market, its accounts in the order the app lists them.
   const groups = new Map()
   for (const p of ps ?? []) { if (!groups.has(p.coin)) groups.set(p.coin, []); groups.get(p.coin).push(p) }
-  const items = [...groups].map(([coin, list]) => {
-    const raw = analysisRaw(coin)
-    return { coin, ps: list, raw, price: priceOf(ctx, coin, raw), state: analysisState(coin) }
-  })
+  const itemOf = (coin, list) => { const raw = analysisRaw(coin); return { coin, ps: list, raw, price: priceOf(ctx, coin, raw), state: analysisState(coin) } }
+  const held = [...groups].map(([coin, list]) => itemOf(coin, list))
+  // A market both held and watched is shown once, as the position.
+  const watched = watchList().filter(c => !groups.has(c)).map(c => itemOf(c, []))
+  const items = [...held, ...watched]
   // Repaint only when something on the card would change: a position, a load landing, the price
-  // moving a twentieth of a percent, a toggle.
-  const sig = [horizon, recVer, ps == null ? 'unknown' : '', [...whyOpen].join(','), [...cardOpen].join(','), ...items.map(i =>
-    `${i.ps.map(p => `${keyOf(p)}:${p.szi}:${p.entryPx}:${p.liquidationPx}:${p.unrealizedPnl}`).join(',')}:${i.raw?.at ?? 0}:${i.state}:${i.price ? Math.round(Math.log(i.price) * 2000) : 0}`)].join('|')
+  // moving a twentieth of a percent, a toggle, the sort, the list watched.
+  const sig = [horizon, sortBy, watchList().join(','), recVer, ps == null ? 'unknown' : '', [...whyOpen].join(','), [...cardOpen].join(','), ...items.map(i =>
+    `${i.coin}:${i.ps.map(p => `${keyOf(p)}:${p.szi}:${p.entryPx}:${p.liquidationPx}:${p.unrealizedPnl}`).join(',')}:${i.raw?.at ?? 0}:${i.state}:${i.price ? Math.round(Math.log(i.price) * 2000) : 0}`)].join('|')
   if (!force && sig === painted) return
   painted = sig
-  const T = ctx.T
-  host.innerHTML = `<div class="ol-view">${headHtml(T)}${ps?.length ? pooledHtml(items, ctx) : ''}${ps == null
-    ? `<div class="ol-empty">${T('Loading your positions…', 'Cargando tus posiciones…')}</div>`
-    : !ps.length
-      ? `<div class="ol-empty"><b>${T('No open positions', 'Sin posiciones abiertas')}</b><br>${T('Outlook reads the positions you hold: what could happen to each one, and what the signals lean towards.', 'Outlook lee tus posiciones abiertas: qué podría pasarle a cada una y hacia dónde se inclinan las señales.')}</div>`
-      : `<div class="ol-cards">${items.map(i => cardHtml(i, ctx)).join('')}</div>`
-  }<div class="ol-foot">${T(
+  for (const i of items) i.html = cardHtml(i, ctx)
+  host.querySelector('.ol-top').innerHTML = headHtml(T) + toolsHtml(ctx, new Set(groups.keys()))
+  host.querySelector('.ol-body').innerHTML = `${items.length >= 2 ? pooledHtml(items, ctx) : ''}
+    ${secHtml(T('Your positions', 'Tus posiciones'), held, ps == null ? T('Loading your positions…', 'Cargando tus posiciones…') : T('No open positions.', 'Sin posiciones abiertas.'))}
+    ${secHtml(T('Watching', 'Siguiendo'), watched, T('Add any market above to read it here, held or not.', 'Añade cualquier mercado arriba para leerlo aquí, lo tengas o no.'))}
+    <div class="ol-foot">${T(
     `Not a prediction. The cone is how far each market has moved in ${horizon} from its last 180 4h candles, calibrated to how often its past moves stayed inside; chances assume no drift and are for touching a price, not ending there. The score is a lean from six signals — read the reasons, not just the number.`,
-    `No es una predicción. El cono es cuánto se ha movido cada mercado en ${horizon} según sus últimas 180 velas de 4h; las probabilidades suponen que no hay tendencia y son de tocar un precio, no de terminar ahí. La puntuación es una inclinación de seis señales: lee los motivos, no solo el número.`)}</div></div>`
+    `No es una predicción. El cono es cuánto se ha movido cada mercado en ${horizon} según sus últimas 180 velas de 4h; las probabilidades suponen que no hay tendencia y son de tocar un precio, no de terminar ahí. La puntuación es una inclinación de seis señales: lee los motivos, no solo el número.`)}</div>`
 }
 
 const BAND_NAME = (s, T) => {
@@ -308,7 +391,7 @@ function pooledHtml(items, ctx) {
 function headHtml(T) {
   return `<div class="ol-head">
     <div><div class="ol-title">${T('Oracle', 'Oráculo')}</div>
-    <div class="ol-sub">${T('Your positions: three cases, and what the signals lean towards', 'Tus posiciones: tres escenarios y hacia dónde se inclinan las señales')}</div></div>
+    <div class="ol-sub">${T('Your positions and the markets you watch: three cases, and what the signals lean towards', 'Tus posiciones y los mercados que sigues: tres escenarios y hacia dónde se inclinan las señales')}</div></div>
     <div class="ol-seg">${Object.keys(HORIZONS).map(h => `<button data-ol-h="${h}" class="${h === horizon ? 'on' : ''}">${h}</button>`).join('')}</div>
   </div>`
 }
@@ -325,7 +408,9 @@ const STRENGTH = { neutral: ['Neutral', 'Neutral'], weak: ['Weak', 'Débil'], mo
  * every account's P&L in each case; and each account gets its own row — name, side, size, entry,
  * P&L now, liquidation, its own TP and stop, and what each case does to it.
  */
-function cardHtml({ coin, ps, raw, price, state }, ctx) {
+function cardHtml(item, ctx) {
+  const { coin, ps, raw, price, state } = item
+  const watch = !ps.length
   const { T, fmtPrice, fmtUSD, prv } = ctx
   const k = coin
   const lab = ctx.coinLabel(coin)
@@ -338,7 +423,12 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
   const money = (v) => v == null ? '—' : prv((v >= 0 ? '+$' : '−$') + fmtUSD(Math.abs(v)))
   const net = ps.reduce((s, p) => s + parseFloat(p.szi), 0)
   const hedged = multi && new Set(ps.map(sideOf)).size > 1
-  const head = multi
+  const head = watch
+    ? `<div class="ol-card-head" data-ol-open="${esc(coin)}">
+        <button class="ol-coin" data-ol-coin="${esc(coin)}">${esc(lab)}</button>
+        <span class="ol-watching">${T('Watching', 'Siguiendo')}</span>
+        <button class="ol-rm" data-ol-rm="${esc(coin)}" title="${esc(T('Stop watching', 'Dejar de seguir'))}">✕</button>`
+    : multi
     ? `<div class="ol-card-head" data-ol-open="${esc(coin)}">
         <button class="ol-coin" data-ol-coin="${esc(coin)}">${esc(lab)}</button>
         <span class="ol-naccts">${T(`${ps.length} accounts`, `${ps.length} cuentas`)}</span>
@@ -358,7 +448,7 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
   // The market's read is the same for every account; each position adds its own P&L and risk.
   // The candle signals weighted by how they have done on this market (learnedWeights, walk-forward).
   const past = pastAt(coin, raw, HORIZONS[horizon])
-  const outs = ps.map(p => outlookFor({ position: p, price, c4: raw.candles['4h'], c1: raw.candles['1d'], setup, ratio: raw.ratio,
+  const outs = (watch ? [null] : ps).map(p => outlookFor({ position: p, price, c4: raw.candles['4h'], c1: raw.candles['1d'], setup, ratio: raw.ratio,
     fundingPctHr: ctx.funding(coin), orders, hours: HORIZONS[horizon], mult: past.mult, sigmaScale: past.scale }))
   const o = outs[0]
   const L = suggestionFor(coin, raw, price, setup, ps, outs, o, ctx, orders)
@@ -370,7 +460,7 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
 
   // With or against: per account, named, when there is more than one.
   let agree = ''
-  if (sc && sc.lean !== 'flat') {
+  if (!watch && sc && sc.lean !== 'flat') {
     const lean = T(LEAN[sc.lean][0], LEAN[sc.lean][1])
     if (!multi) {
       const a = o.agrees, s = sideWord(sideOf(ps[0]))
@@ -399,7 +489,7 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
     return `<div class="ol-case ${key}">
       <div class="ol-case-name">${name}</div>
       <div class="ol-case-px">$${fmtPrice(c.px)} <span>${c.pct >= 0 ? '+' : ''}${c.pct.toFixed(1)}%</span></div>
-      <div class="ol-case-pnl ${(!multi && c.liquidated) || t.pnl < 0 ? 'neg' : 'pos'}">${pnlHtml}</div>
+      ${watch ? '' : `<div class="ol-case-pnl ${(!multi && c.liquidated) || t.pnl < 0 ? 'neg' : 'pos'}">${pnlHtml}</div>`}
       ${multi && t.liq ? `<div class="ol-case-liq">${T(`${t.liq} liquidated`, `${t.liq} liquidada${t.liq > 1 ? 's' : ''}`)}</div>` : ''}
       <div class="ol-case-p">${key === 'neutral' ? T('stays between', 'se queda entre') : T('touch', 'tocar')} ${chance(c.p)}</div>
       ${c.level ? `<div class="ol-case-lvl">${c.level === 'resistance' ? T('next resistance', 'próxima resistencia') : T('next support', 'próximo soporte')}</div>` : ''}
@@ -428,25 +518,28 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
       ${multi ? `<div class="ol-acct-cases">${caseCell('bear', T('Bearish', 'Bajista'))}${caseCell('neutral', T('Neutral', 'Neutral'))}${caseCell('bull', T('Bullish', 'Alcista'))}</div>` : ''}
     </div>`
   }).join('')
-  const accounts = `<div class="ol-accts">${multi ? `<div class="ol-accts-h">${T('By account', 'Por cuenta')}</div>` : ''}${rows}</div>`
+  const accounts = watch ? '' : `<div class="ol-accts">${multi ? `<div class="ol-accts-h">${T('By account', 'Por cuenta')}</div>` : ''}${rows}</div>`
 
   // The chart's reference lines: one position draws its entry, liquidation and orders; a group
   // draws each account's liquidation, named, since that is the line that ends a position.
   const marks = []
   // `short`: a named line leaves its price to the account row; "Liq Swing ↓ $52.000" ran off the chart.
   const add = (px, cls, label, short = false) => { if (px > 0) marks.push({ px, cls, label, short }) }
-  if (!multi) {
+  if (watch) { /* nothing held: no entry, liquidation or orders to draw */ } else if (!multi) {
     add(o.pos?.entry, 'entry', T('Entry', 'Entrada'))
     add(o.risk?.liq?.px, 'liq', T('Liq', 'Liq'))
     add(o.risk?.tp?.px, 'tp', 'TP')
     add(o.risk?.sl?.px, 'sl', 'SL')
   } else ps.forEach((p, i) => add(outs[i].risk?.liq?.px, 'liq', `${T('Liq', 'Liq')} ${nameOf(p) ?? ''}`.trim(), true))
+  // What the sorts read (sortCards).
+  const liqs = outs.map(x => x.risk?.liq?.sig).filter(v => Number.isFinite(v))
+  item.keys = { score: sc?.score ?? null, conviction: L.conviction, pnl: watch ? null : ps.reduce((s, p) => s + (parseFloat(p.unrealizedPnl) || 0), 0), risk: liqs.length ? Math.min(...liqs) : null, name: lab }
 
   const open = whyOpen.has(k)
   const why = sc ? `<button class="ol-why-btn" data-ol-why="${esc(k)}">${open ? T('Hide why', 'Ocultar motivos') : T(`Why ${sc.score > 0 ? '+' : ''}${sc.score}? ${sc.agree} of ${sc.of} signals agree`, `¿Por qué ${sc.score > 0 ? '+' : ''}${sc.score}? ${sc.agree} de ${sc.of} señales coinciden`)}</button>
     ${open ? `<div class="ol-why">${o.factors.map(f => factorHtml(f, ctx, past.signals)).join('')}<div class="ol-why-note">${T(`${candleNames(HORIZONS[horizon], T)} are weighted by how each has called ${esc(lab)} over the past year (×0.25 to ×2), at ${HZ[HORIZONS[horizon]]}.`, `${candleNames(HORIZONS[horizon], T)} se ponderan según cómo ha acertado cada una en ${esc(lab)} el último año (×0,25 a ×2), a ${HZ[HORIZONS[horizon]]}.`)}</div>${HORIZONS[horizon] <= 4 ? `<div class="ol-why-note">${T('At 4h the score is a different set. Tested on a year of 4h candles across 19 markets, fading a 3-day move and a Bollinger stretch called the next 4 hours better than chance in both halves of the year; momentum called it wrong (43% vs 50%), so it is left out here.', 'A 4h la puntuación usa otro conjunto. Probado con un año de velas de 4h en 19 mercados, ir contra el movimiento de 3 días y el estiramiento de Bollinger acertaron las siguientes 4 horas mejor que el azar en ambas mitades del año; el momento falló (43% vs 50%), así que aquí se omite.')}</div>` : ''}${sc.coverage < 0.999 ? `<div class="ol-why-note">${T('Signals without data are left out, not counted as neutral.', 'Las señales sin datos se omiten, no cuentan como neutrales.')}</div>` : ''}</div>` : ''}` : ''
-  if (!cardOpen.has(coin)) return miniHtml({ coin, ps, outs, o, L, head, chip, multi, setup, total, money, ctx })
-  return `<div class="ol-card${multi ? ' ol-group' : ''}">${head}${chip}</div>${agree}
+  if (!cardOpen.has(coin)) return miniHtml({ coin, ps, outs, o, L, head, chip, multi, setup, total, money, ctx, watch, price })
+  return `<div class="ol-card${multi ? ' ol-group' : ''}${watch ? ' ol-watch' : ''}">${head}${chip}</div>${agree}
     ${sugHtml(L, ps, outs, setup, ctx, lab, multi)}
     ${coneSvg(o, raw.candles['4h'], ctx, marks)}
     ${cases}${accounts}${recordHtml(coin, raw, o, ctx, past)}${why}
@@ -455,17 +548,19 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
 
 /** A folded card: the lean and how sure, the P&L now and in each case, and a warning if any
  *  account's liquidation is close. Tapping it opens the whole card. */
-function miniHtml({ coin, ps, outs, o, L, head, chip, multi, setup, total, money, ctx }) {
-  const { T } = ctx
+function miniHtml({ coin, ps, outs, o, L, head, chip, multi, setup, total, money, ctx, watch, price }) {
+  const { T, fmtPrice } = ctx
   const tone = L.lean === 'up' ? 'up' : L.lean === 'down' ? 'down' : 'flat'
   const now = ps.reduce((s, p) => s + (parseFloat(p.unrealizedPnl) || 0), 0)
-  const cell = (key, name) => { const t = total(key); return o.cases?.[key] ? `<span class="${key}">${name} <b class="${t.pnl < 0 ? 'neg' : 'pos'}">${money(t.pnl)}</b></span>` : '' }
+  const cell = (key, name) => { const c = o.cases?.[key], t = total(key); return !c ? '' : watch
+    ? `<span class="${key}">${name} <b>$${fmtPrice(c.px)}</b> <i>${c.pct >= 0 ? '+' : ''}${c.pct.toFixed(1)}%</i></span>`
+    : `<span class="${key}">${name} <b class="${t.pnl < 0 ? 'neg' : 'pos'}">${money(t.pnl)}</b></span>` }
   const close = ps.filter((p, i) => actionsFor(L, outs[i], setup).some(a => a.id === 'cutRisk'))
-  return `<div class="ol-card ol-mini${multi ? ' ol-group' : ''}" data-ol-open="${esc(coin)}">${head}${chip}</div>
+  return `<div class="ol-card ol-mini${multi ? ' ol-group' : ''}${watch ? ' ol-watch' : ''}" data-ol-open="${esc(coin)}">${head}${chip}</div>
     <button class="ol-mini-body" data-ol-open="${esc(coin)}">
       <div class="ol-mini-lean ${tone}">${T(...KIND[L.kind])}
         <span class="ol-conv c${L.conviction}">${[1, 2, 3].map(k => `<i class="${k <= L.conviction ? 'on' : ''}"></i>`).join('')} ${T(...CONV[L.conviction])}</span></div>
-      <div class="ol-mini-row"><span>${T('P&L now', 'P&L ahora')} <b class="${now < 0 ? 'neg' : 'pos'}">${money(now)}</b></span>${cell('bear', T('Bear', 'Bajista'))}${cell('neutral', T('Neutral', 'Neutral'))}${cell('bull', T('Bull', 'Alcista'))}</div>
+      <div class="ol-mini-row">${watch ? `<span>${T('Price', 'Precio')} <b>$${fmtPrice(price)}</b></span>` : `<span>${T('P&L now', 'P&L ahora')} <b class="${now < 0 ? 'neg' : 'pos'}">${money(now)}</b></span>`}${cell('bear', T('Bear', 'Bajista'))}${cell('neutral', T('Neutral', 'Neutral'))}${cell('bull', T('Bull', 'Alcista'))}</div>
       ${close.length ? `<div class="ol-mini-warn">${T('Liquidation close', 'Liquidación cerca')}${multi ? ': ' + close.map(p => esc(p._acct ?? '?')).join(', ') : ''}</div>` : ''}
       <div class="ol-mini-more">${T('Details', 'Detalles')} ▾</div>
     </button>
@@ -551,6 +646,9 @@ function sugHtml(L, ps, outs, setup, ctx, lab, multi) {
     if (multi && n > 1 && a.id === 'setStop' && !samePx) return `<li class="ol-act setStop">${T(`No stop on these ${sideWord(side, n)}`, `Sin stop en estos ${sideWord(side, n)}`)} — ${T('consider one beyond', 'considera uno más allá de')} ${members.map(m => `<b>${nameOf(m.p)}</b> ${px(m.a.px)}`).join(', ')}.</li>`
     return `<li class="ol-act ${a.id}">${who}${words(a, side, n)}</li>`
   })
+  if (!ps.length) for (const a of ideaFor(L, outs[0], setup)) items.push(a.id === 'entryIdea'
+    ? `<li class="ol-act entryIdea">${T(`Not held. If you want in, the lean favors a ${a.side === 'long' ? 'long' : 'short'}`, `Sin posición. Si quieres entrar, la inclinación favorece un ${a.side === 'long' ? 'largo' : 'corto'}`)}${a.stop ? T(`: a stop beyond ${px(a.stop)}`, `: un stop más allá de ${px(a.stop)}`) : ''}${a.target ? T(`, a first target near ${px(a.target)}`, `, un primer objetivo cerca de ${px(a.target)}`) : ''}.</li>`
+    : `<li class="ol-act noEdge">${words(a, 'long')}</li>`)
   const tone = L.lean === 'up' ? 'up' : L.lean === 'down' ? 'down' : 'flat'
   return `<div class="ol-sug ${tone}">
     <div class="ol-sug-top"><span class="ol-sug-tag">${T(`Suggestion · next ${HZ[L.hours]}`, `Sugerencia · próximas ${HZ[L.hours]}`)}</span>

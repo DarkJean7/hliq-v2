@@ -17,7 +17,7 @@ const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, co
 
 const ADDR = '0x' + 'b'.repeat(40)
 const H4 = 4 * 3600e3, D = 864e5
-const BASE = { ETH: 100, BTC: 50000 }
+const BASE = { ETH: 100, BTC: 50000, SOL: 150 }
 
 // A market with a shape, ending in two large green 4h candles so the Range factor has
 // something to say.
@@ -71,11 +71,11 @@ async function open(opts) {
       inflight--
       return route.fulfill({ json: candles(q.req.coin, iv, iv === '4h' ? 600 : iv === '1d' ? 400 : iv === '1w' ? 120 : 800) })
     }
-    const meta = { universe: [{ name: 'BTC', szDecimals: 5, maxLeverage: 40 }, { name: 'ETH', szDecimals: 4, maxLeverage: 25 }] }
+    const meta = { universe: [{ name: 'BTC', szDecimals: 5, maxLeverage: 40 }, { name: 'ETH', szDecimals: 4, maxLeverage: 25 }, { name: 'SOL', szDecimals: 2, maxLeverage: 20 }] }
     const json = q.type === 'l2Book' ? book(q.coin) : q.type === 'clearinghouseState' ? clearing(q.user)
-      : q.type === 'allMids' ? { ETH: '100', BTC: '50000' }
+      : q.type === 'allMids' ? { ETH: '100', BTC: '50000', SOL: '150' }
       : q.type === 'meta' ? meta
-      : q.type === 'metaAndAssetCtxs' ? [meta, [{ markPx: '50000', midPx: '50000', funding: '0.0000125', openInterest: '1', dayNtlVlm: '1', prevDayPx: '50000' }, { markPx: '100', midPx: '100', funding: '0.0002', openInterest: '1', dayNtlVlm: '1', prevDayPx: '100' }]]
+      : q.type === 'metaAndAssetCtxs' ? [meta, [{ markPx: '50000', midPx: '50000', funding: '0.0000125', openInterest: '1', dayNtlVlm: '1', prevDayPx: '50000' }, { markPx: '100', midPx: '100', funding: '0.0002', openInterest: '1', dayNtlVlm: '1', prevDayPx: '100' }, { markPx: '150', midPx: '150', funding: '0.00001', openInterest: '1', dayNtlVlm: '1', prevDayPx: '150' }]]
       : q.type === 'frontendOpenOrders' ? (BY_USER[String(q.user ?? '').toLowerCase()] ? [] : ORDERS)
       : ['portfolio', 'userFills', 'userFillsByTime', 'userFunding', 'userNonFundingLedgerUpdates', 'perpDexs', 'perpCategories'].includes(q.type) ? []
       : q.type === 'spotClearinghouseState' ? { balances: [] } : {}
@@ -222,6 +222,49 @@ console.log('-- phone --')
   await p.evaluate(() => [...document.querySelectorAll('#mobVContent .ol-card')].find(c => c.querySelector('.ol-coin')?.textContent === 'ETH')?.querySelector('.ol-coin')?.click())
   t('phone: the coin name opens its market and does not fold the card', JSON.stringify(await p.evaluate(() => window.__opened)) === '["ETH"]' && !(await isMini()))
   await p.evaluate(() => { window.__watchOpenTrade = window.__realOpen2 })
+
+  // "let the user add assets that he does not have as positions. make it organized. add sorts."
+  const secs = () => p.$$eval('#mobVContent .ol-sec', els => els.map(e => ({ h: e.querySelector('.ol-sec-h')?.textContent.replace(/\s+/g, ' ').trim(), coins: [...e.querySelectorAll('.ol-card .ol-coin')].map(c => c.textContent) })))
+  let sx = await secs()
+  t('phone: two sections, positions and watching', sx.length === 2 && /^Your positions 2$/.test(sx[0].h) && /^Watching 0$/.test(sx[1].h), sx)
+  await p.fill('#mobVContent .ol-add-in', 'so')
+  await p.waitForSelector('#mobVContent .ol-add-res [data-ol-add]', { timeout: 5000 }).catch(() => {})
+  const res = await p.$$eval('#mobVContent .ol-add-res [data-ol-add]', els => els.map(e => e.dataset.olAdd))
+  t('phone: search finds a market not held, and not the ones already there', res.includes('SOL') && !res.includes('ETH') && !res.includes('BTC'), res)
+  // A price tick repaints the cards; what is being typed must survive it.
+  await p.evaluate(() => window.mobVTab && window._mobVRenderContent?.(true))
+  t('phone: what is typed survives a repaint', (await p.$eval('#mobVContent .ol-add-in', e => e.value)) === 'so')
+  await p.click('#mobVContent .ol-add-res [data-ol-add="SOL"]')
+  await p.waitForFunction(() => [...document.querySelectorAll('#mobVContent .ol-sec')][1]?.querySelector('.ol-card.ol-mini .ol-mini-row'), null, { timeout: 30000 }).catch(() => {})
+  sx = await secs()
+  t('phone: added, it is under Watching', /^Watching 1$/.test(sx[1].h) && sx[1].coins.join() === 'SOL' && (await p.$eval('#mobVContent .ol-add-in', e => e.value)) === '', sx)
+  const solMini = await p.$eval('#mobVContent .ol-watch .ol-mini-row', e => e.textContent.replace(/\s+/g, ' ')).catch(() => '')
+  t('phone: folded, a watched market shows its price and the cases\' prices', /Price \$150/.test(solMini) && /Bear \$[\d,.]+ [−+-]\d/.test(solMini), solMini)
+  t('phone: and it remembers', JSON.stringify(await p.evaluate(() => JSON.parse(localStorage.getItem('hliq_oracle_watch')))) === '["SOL"]')
+  await p.evaluate(() => document.querySelector('#mobVContent .ol-watch [data-ol-open]')?.click())
+  await p.waitForSelector('#mobVContent .ol-watch .ol-sug', { timeout: 5000 }).catch(() => {})
+  const sol = await p.$eval('#mobVContent .ol-watch', e => ({ accts: e.querySelectorAll('.ol-acct-row').length, pnl: e.querySelectorAll('.ol-case-pnl').length, acts: [...e.querySelectorAll('.ol-act')].map(a => a.textContent), chart: !!e.querySelector('svg.ol-chart'), cases: e.querySelectorAll('.ol-case').length })).catch(() => null)
+  t('phone: open, it has the cone and cases but no position parts', sol && sol.chart && sol.cases === 3 && sol.accts === 0 && sol.pnl === 0, sol)
+  t('phone: its suggestion speaks to getting in, not to a position', sol && sol.acts.length === 1 && /^(Not held\. If you want in, the lean favors a (long|short)|No edge in the next)/.test(sol.acts[0]), sol?.acts)
+  // Sorts.
+  const order = async () => (await secs())[0].coins.join()
+  await p.evaluate(() => document.querySelector('#mobVContent [data-ol-sort="az"]')?.click())
+  t('phone: A–Z', await order() === 'BTC,ETH')
+  const scores = await p.evaluate(() => [...(document.querySelectorAll('#mobVContent .ol-sec')[0]?.querySelectorAll('.ol-card') ?? [])].map(e => [e.querySelector('.ol-coin')?.textContent, parseInt(e.querySelector('.ol-score b')?.textContent ?? 'NaN')]))
+  await p.evaluate(() => document.querySelector('#mobVContent [data-ol-sort="bull"]')?.click())
+  const bullOrder = [...scores].sort((a, b) => b[1] - a[1]).map(x => x[0]).join()
+  // Highest score first; a tie keeps the default order, so check the scores never rise down the list.
+  const after = await p.evaluate(() => [...(document.querySelectorAll('#mobVContent .ol-sec')[0]?.querySelectorAll('.ol-card') ?? [])].map(e => parseInt(e.querySelector('.ol-score b')?.textContent ?? 'NaN')))
+  t('phone: most bullish first', after.length === 2 && after.every((v, i) => !i || v <= after[i - 1]), { after, scores, bullOrder })
+  await p.evaluate(() => document.querySelector('#mobVContent [data-ol-sort="pnl"]')?.click())
+  t('phone: P&L, biggest first (ETH +$100 before BTC +$50)', await order() === 'ETH,BTC')
+  t('phone: the sort is remembered and shown', (await p.evaluate(() => localStorage.getItem('hliq_oracle_sort'))) === 'pnl' && (await p.$eval('#mobVContent .ol-sorts .on', e => e.dataset.olSort)) === 'pnl')
+  t('phone: the sort row can be dragged sideways', await p.$eval('#mobVContent .ol-sorts', e => e.hasAttribute('data-dragscroll')))
+  await p.evaluate(() => document.querySelector('#mobVContent [data-ol-sort="default"]')?.click())
+  // Remove.
+  await p.evaluate(() => document.querySelector('#mobVContent .ol-watch [data-ol-rm="SOL"]')?.click())
+  sx = await secs()
+  t('phone: ✕ stops watching it', /^Watching 0$/.test(sx[1].h) && (await p.evaluate(() => localStorage.getItem('hliq_oracle_watch'))) === '[]', sx)
   // "in phone it glitches after a while": once everything has loaded, nothing on the tab may be
   // wider than the screen — at the narrowest phone too.
   for (const w of [430, 360]) {
