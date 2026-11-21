@@ -10,7 +10,7 @@
 // price comes from the mids the app already has.
 import './outlook.css'
 import { ensureAnalysis, analysisFor, analysisRaw, analysisState, setAnalysisDeps, fmtPx } from './analysis.js'
-import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, coneScale } from './outlook.js'
+import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, TESTED_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, coneScale } from './outlook.js'
 import { catLabel } from './simcat.js'
 import { leanOf, actionsFor } from './outlooksuggest.js'
 
@@ -129,12 +129,14 @@ export function renderOutlook(host, ctx, tick = false) {
     host.addEventListener('click', (e) => {
       const h = e.target.closest('[data-ol-h]')
       if (h) { horizon = h.dataset.olH; try { localStorage.setItem(LS_H, horizon) } catch {} ; paint(true); return }
-      const op = e.target.closest('[data-ol-open]')
-      if (op) { const k = op.dataset.olOpen; cardOpen.has(k) ? cardOpen.delete(k) : cardOpen.add(k); saveOpen(); paint(true); return }
+      const c = e.target.closest('[data-ol-coin]')
+      if (c) { last?.ctx.openCoin?.(c.dataset.olCoin); return }
       const w = e.target.closest('[data-ol-why]')
       if (w) { const k = w.dataset.olWhy; whyOpen.has(k) ? whyOpen.delete(k) : whyOpen.add(k); paint(true); return }
-      const c = e.target.closest('[data-ol-coin]')
-      if (c) last?.ctx.openCoin?.(c.dataset.olCoin)
+      // "make the cards be able to unextend more easily": a folded card opens from anywhere on it,
+      // an open one folds from its header row (and from "Show less" at the bottom).
+      const op = e.target.closest('[data-ol-open]')
+      if (op) { const k = op.dataset.olOpen; cardOpen.has(k) ? cardOpen.delete(k) : cardOpen.add(k); saveOpen(); paint(true); return }
     })
   }
   paint(!tick)
@@ -183,7 +185,7 @@ const VERDICT = {
 }
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`
 
-const HZ = { 4: '4h', 24: '24h', 72: '3d', 168: '7d' }
+const HZ = { 1: '1h', 4: '4h', 24: '24h', 72: '3d', 168: '7d', 720: '30d' }
 const mv = (x) => x == null ? '—' : `${x >= 0 ? '+' : ''}${x.toFixed(2)}%`
 const CONE_V = {
   calibrated: ['The cone fits this market', 'El cono se ajusta a este mercado'],
@@ -220,7 +222,8 @@ function recordHtml(coin, raw, o, ctx, past) {
   // Past year, fixed weights — and how big the move was.
   const fx = fixedNow == null ? null : pastRecord(past.samples, fixedNow, hours)
   let pastLine
-  if (!fx) pastLine = T('Not enough history to replay.', 'No hay historial suficiente.')
+  if (!fx && hours < 4) pastLine = T('No replay at 1h: the candles here are 4h, so the shortest outcome there is to check is 4h.', 'Sin repetición a 1h: aquí las velas son de 4h, así que el resultado más corto que se puede revisar es a 4h.')
+  else if (!fx) pastLine = T('Not enough history to replay.', 'No hay historial suficiente.')
   else if (!fx.n) pastLine = `${T(`The candle signals read ${BAND_NAME(fixedNow, T)} now (${signed(fixedNow)}).`, `Las señales de velas marcan ${BAND_NAME(fixedNow, T)} ahora (${signed(fixedNow)}).`)} ${verdictEm('none', T)}`
   else {
     const band = fx.widened ? LEAN_NAME(fixedNow, T) : BAND_NAME(fixedNow, T)
@@ -336,11 +339,11 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
   const net = ps.reduce((s, p) => s + parseFloat(p.szi), 0)
   const hedged = multi && new Set(ps.map(sideOf)).size > 1
   const head = multi
-    ? `<div class="ol-card-head">
+    ? `<div class="ol-card-head" data-ol-open="${esc(coin)}">
         <button class="ol-coin" data-ol-coin="${esc(coin)}">${esc(lab)}</button>
         <span class="ol-naccts">${T(`${ps.length} accounts`, `${ps.length} cuentas`)}</span>
         <span class="ol-net">${net === 0 ? T('Net flat', 'Neto plano') : `${T('Net', 'Neto')} ${sideWord(net > 0 ? 'long' : 'short')} ${prv(size(net))}`}${hedged ? ` · ${T('hedged', 'cubierto')}` : ''}</span>`
-    : `<div class="ol-card-head">
+    : `<div class="ol-card-head" data-ol-open="${esc(coin)}">
         <button class="ol-coin" data-ol-coin="${esc(coin)}">${esc(lab)}</button>
         ${badge(ps[0])}
         ${nameOf(ps[0]) ? `<em class="ol-acct">${esc(nameOf(ps[0]))}</em>` : ''}`
@@ -348,7 +351,7 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
     const msg = state === 'net' ? T('Could not load this market. It will try again.', 'No se pudo cargar este mercado. Se reintentará.')
       : state === 'none' ? T('No candles for this market.', 'Sin velas para este mercado.')
       : T('Loading candles…', 'Cargando velas…')
-    return `<div class="ol-card">${head}</div><div class="ol-wait">${msg}</div></div>`
+    return `<div class="ol-card ol-loading">${head}</div><div class="ol-wait">${msg}</div></div>`
   }
   const setup = analysisFor(coin, price)?.setup ?? null
   const orders = ctx.orders()
@@ -458,7 +461,7 @@ function miniHtml({ coin, ps, outs, o, L, head, chip, multi, setup, total, money
   const now = ps.reduce((s, p) => s + (parseFloat(p.unrealizedPnl) || 0), 0)
   const cell = (key, name) => { const t = total(key); return o.cases?.[key] ? `<span class="${key}">${name} <b class="${t.pnl < 0 ? 'neg' : 'pos'}">${money(t.pnl)}</b></span>` : '' }
   const close = ps.filter((p, i) => actionsFor(L, outs[i], setup).some(a => a.id === 'cutRisk'))
-  return `<div class="ol-card ol-mini${multi ? ' ol-group' : ''}">${head}${chip}</div>
+  return `<div class="ol-card ol-mini${multi ? ' ol-group' : ''}" data-ol-open="${esc(coin)}">${head}${chip}</div>
     <button class="ol-mini-body" data-ol-open="${esc(coin)}">
       <div class="ol-mini-lean ${tone}">${T(...KIND[L.kind])}
         <span class="ol-conv c${L.conviction}">${[1, 2, 3].map(k => `<i class="${k <= L.conviction ? 'on' : ''}"></i>`).join('')} ${T(...CONV[L.conviction])}</span></div>
@@ -480,12 +483,15 @@ const KIND = {
 }
 /** The lean for the next 4h, from the tested 4h set, with this market's record for a reading like it. */
 function suggestionFor(coin, raw, price, setup, ps, outs, o, ctx, orders) {
-  const p4 = pastAt(coin, raw, 4)
-  const o4 = o.hours === 4 ? o : outlookFor({ position: ps[0], price, c4: raw.candles['4h'], c1: raw.candles['1d'], setup, ratio: raw.ratio,
-    fundingPctHr: ctx.funding(coin), orders, hours: 4, mult: p4.mult, sigmaScale: p4.scale })
-  const learned4 = weightedScore(candleValues(o4.factors, 4), p4.mult, 4)
-  const rec4 = learned4 == null ? null : pastRecord(p4.samples, learned4, 4, x => p4.learned.get(x))
-  return leanOf(o4, rec4)
+  // "build it": the horizon on screen, like the rest of the card. Its conviction is capped where
+  // no signal set has beaten chance (TESTED_HORIZONS), and the box says so.
+  const h = o.hours
+  const p4 = pastAt(coin, raw, h)
+  const o4 = o.hours === h ? o : outlookFor({ position: ps[0], price, c4: raw.candles['4h'], c1: raw.candles['1d'], setup, ratio: raw.ratio,
+    fundingPctHr: ctx.funding(coin), orders, hours: h, mult: p4.mult, sigmaScale: p4.scale })
+  const learned4 = weightedScore(candleValues(o4.factors, h), p4.mult, h)
+  const rec4 = learned4 == null ? null : pastRecord(p4.samples, learned4, h, x => p4.learned.get(x))
+  return { ...leanOf(o4, rec4, TESTED_HORIZONS.includes(h)), hours: h }
 }
 function sugHtml(L, ps, outs, setup, ctx, lab, multi) {
   const { T, fmtPrice } = ctx
@@ -506,13 +512,13 @@ function sugHtml(L, ps, outs, setup, ctx, lab, multi) {
     why = T(`Trend and large candles point ${L.lean === 'up' ? 'up' : 'down'}, and the mean-reversion signals do not stand in the way.`, `La tendencia y las velas grandes apuntan ${L.lean === 'up' ? 'arriba' : 'abajo'}, y las señales de reversión no se oponen.`)
   }
   const r = L.record
-  const recLine = !r?.n ? '' : `<div class="ol-sug-rec">${T(`On ${esc(lab)}, a 4h reading like this was right ${pct(r.rate)} of ${r.n} times (chance ${pct(r.base)}).`, `En ${esc(lab)}, una lectura de 4h así acertó ${pct(r.rate)} de ${r.n} veces (azar ${pct(r.base)}).`)} ${verdictEm(r.verdict, T)}</div>`
+  const recLine = !r?.n ? '' : `<div class="ol-sug-rec">${T(`On ${esc(lab)}, a ${HZ[L.hours]} reading like this was right ${pct(r.rate)} of ${r.n} times (chance ${pct(r.base)}).`, `En ${esc(lab)}, una lectura de ${HZ[L.hours]} así acertó ${pct(r.rate)} de ${r.n} veces (azar ${pct(r.base)}).`)} ${verdictEm(r.verdict, T)}</div>`
   const sideWord = (side, n) => side === 'long' ? (n > 1 ? T('longs', 'largos') : T('long', 'largo')) : (n > 1 ? T('shorts', 'cortos') : T('short', 'corto'))
   const words = (a, side, n = 1) => {
     const s = sideWord(side, n), th = n > 1 ? T('these', 'estos') : T('this', 'este')
     switch (a.id) {
       case 'cutRisk': return T(`Liquidation at ${px(a.px)} is only ${a.sig.toFixed(1)}σ away: consider reducing size or adding margin.`, `La liquidación en ${px(a.px)} está a solo ${a.sig.toFixed(1)}σ: considera reducir tamaño o añadir margen.`)
-      case 'noEdge': return T('No edge in the next 4 hours: stick to your plan.', 'Sin ventaja en las próximas 4 horas: sigue tu plan.')
+      case 'noEdge': return T(`No edge in the next ${HZ[L.hours]}: stick to your plan.`, `Sin ventaja en las próximas ${HZ[L.hours]}: sigue tu plan.`)
       case 'setStop': return T(`No stop on ${th} ${s}: consider one beyond ${px(a.px)}.`, `Sin stop en ${th} ${s}: considera uno más allá de ${px(a.px)}.`)
       case 'takeSome': return T(`In profit with the lean against you: consider taking some off.`, `En ganancia con la inclinación en contra: considera tomar parte.`)
       case 'dontAdd': return a.px ? T(`The lean is against ${th} ${s}: hold off adding; a better price may come near ${px(a.px)}.`, `La inclinación va contra ${th} ${s}: no añadas aún; un mejor precio podría llegar cerca de ${px(a.px)}.`)
@@ -547,13 +553,16 @@ function sugHtml(L, ps, outs, setup, ctx, lab, multi) {
   })
   const tone = L.lean === 'up' ? 'up' : L.lean === 'down' ? 'down' : 'flat'
   return `<div class="ol-sug ${tone}">
-    <div class="ol-sug-top"><span class="ol-sug-tag">${T('Suggestion · next 4h', 'Sugerencia · próximas 4h')}</span>
+    <div class="ol-sug-top"><span class="ol-sug-tag">${T(`Suggestion · next ${HZ[L.hours]}`, `Sugerencia · próximas ${HZ[L.hours]}`)}</span>
       <span class="ol-conv c${L.conviction}" title="${esc(T('How strong the reading is, and whether this market\'s own record backs it', 'Qué tan fuerte es la lectura y si el historial de este mercado la respalda'))}">${[1, 2, 3].map(k => `<i class="${k <= L.conviction ? 'on' : ''}"></i>`).join('')} ${T(...CONV[L.conviction])}</span></div>
     <div class="ol-sug-lean">${T(...KIND[L.kind])}</div>
+    ${L.tested ? '' : `<div class="ol-sug-untested">${L.hours < 4
+      ? T('Untested at 1h: there is no replay at 1h, so this reads the 4h signals and conviction stays Low.', 'Sin probar a 1h: no hay repetición a 1h, así que lee las señales de 4h y la convicción se queda baja.')
+      : T(`Untested at ${HZ[L.hours]}: no signal set has beaten chance at this timeframe, so conviction stays Low. Tested: 4h.`, `Sin probar a ${HZ[L.hours]}: ningún conjunto de señales superó al azar en este marco, así que la convicción se queda baja. Probado: 4h.`)}</div>`}
     <div class="ol-sug-why">${why}</div>
     ${recLine}
     ${items.length ? `<ul class="ol-acts">${items.join('')}</ul>` : ''}
-    <div class="ol-sug-note">${T('A reading of the signals that beat chance in testing, not financial advice. Conviction stays low unless this market\'s own record backs it.', 'Una lectura de las señales que superaron al azar en pruebas, no asesoría financiera. La convicción se queda baja salvo que el historial de este mercado la respalde.')}</div>
+    <div class="ol-sug-note">${T('A reading of the signals, not financial advice. Conviction stays low unless the timeframe is tested and this market\'s own record backs it.', 'Una lectura de las señales, no asesoría financiera. La convicción se queda baja salvo que el marco esté probado y el historial de este mercado la respalde.')}</div>
   </div>`
 }
 
@@ -608,7 +617,8 @@ function factorHtml(f, ctx, recs) {
 function coneSvg(o, c4, { fmtPrice, T }, marks = []) {
   if (!o.sigma || !o.price || !o.cases) return ''
   const W = 360, H = 168, padR = 66, padT = 8, padB = 10
-  const histN = o.hours <= 4 ? 18 : o.hours <= 24 ? 30 : 42
+  // 4h candles of history before "now": about three times the horizon, within reason.
+  const histN = { 1: 12, 4: 18, 24: 30, 72: 36, 168: 42, 720: 120 }[o.hours] ?? 30
   const hist = (c4 ?? []).slice(-histN).map(k => +k.c).filter(v => v > 0)
   if (hist.length < 2) return ''
   const plotW = W - padR

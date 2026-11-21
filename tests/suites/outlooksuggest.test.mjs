@@ -31,6 +31,15 @@ t('no record at all: low', leanOf(stretchedUp, null).conviction === 1)
 t('a weak reading the record backs: medium at most', leanOf({ ...stretchedUp, score: { score: -25, lean: 'down' } }, better).conviction === 2)
 t('no score: no edge', leanOf(null, better).conviction === 0)
 
+console.log('-- untested horizons --')
+t('untested: a strong reading the record backs is still only Low', leanOf(stretchedUp, better, false).conviction === 1 && leanOf(stretchedUp, better, true).conviction === 3)
+t('untested: the lean itself is still shown', leanOf(stretchedUp, better, false).lean === 'down' && leanOf(stretchedUp, better, false).tested === false)
+t('untested and quiet: still no edge, not Low', leanOf(quiet, better, false).conviction === 0)
+const { TESTED_HORIZONS, HORIZONS } = await import('../../src/outlook.js')
+const research = JSON.parse(fs.readFileSync('tests/research/signal-results.json', 'utf8'))
+t('the tested horizons are where the research found a signal set that passed', JSON.stringify(TESTED_HORIZONS) === JSON.stringify([...new Set(research.results.filter(r => r.pass).map(r => r.h))].sort((x, y) => x - y)))
+t('six horizons, 1h to 30d', Object.values(HORIZONS).join() === '1,4,24,72,168,720')
+
 console.log('-- what it means for a position --')
 const out = (side, { upnl = 50, liq = null, tp = null, sl = null } = {}) => ({
   pos: { side, upnl }, cases: { bear: { px: 95 }, bull: { px: 105 }, neutral: { px: 100 } },
@@ -52,8 +61,11 @@ t('a bounce read on a long: adding into the dip fits', ids(actionsFor(leanOf({ s
 
 console.log('-- wiring --')
 const view = fs.readFileSync('src/outlookview.js', 'utf8')
-t('the lean always comes from the 4h set', /const p4 = pastAt\(coin, raw, 4\)/.test(view) && /hours: 4, mult: p4\.mult, sigmaScale: p4\.scale/.test(view))
-t('its record is the learned 4h score\'s, on this market', /pastRecord\(p4\.samples, learned4, 4, x => p4\.learned\.get\(x\)\)/.test(view))
+// "build it": the suggestion reads the horizon on screen, and is capped where it is untested.
+t('the lean reads the horizon on screen, not always 4h', view.includes('const h = o.hours') && view.includes('const p4 = pastAt(coin, raw, h)') && view.includes('hours: h, mult: p4.mult, sigmaScale: p4.scale'))
+t('its record is the learned score at that horizon, on this market', view.includes('pastRecord(p4.samples, learned4, h, x => p4.learned.get(x))'))
+t('whether the horizon is tested decides the cap', view.includes('leanOf(o4, rec4, TESTED_HORIZONS.includes(h))'))
+t('and the box says when it is untested', view.includes('Untested at ${HZ[L.hours]}: no signal set has beaten chance at this timeframe'))
 t('each account gets its own actions', /actionsFor\(L, outs\[i\], setup\)/.test(view))
 t('it says it is not financial advice', /not financial advice/.test(view))
 

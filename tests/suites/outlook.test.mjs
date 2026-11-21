@@ -122,7 +122,8 @@ const Y4 = walk(2190, 4 * 3600e3, 0.03), Y1 = walk(1000, 864e5, 0.07, -635 * 864
 const S = pastSamples(Y4, Y1)
 t('one sample a day across the year', S.length > 300 && S.length < 340, S.length)
 t('each keeps its signals, its score and an outcome per horizon', S.every(x => Number.isInteger(x.s) && 'trend' in x.f && PAST_HORIZONS.every(h => h in x.out)))
-t('replayed at 4h, 24h, 3d and 7d', PAST_HORIZONS.join() === '4,24,72,168')
+// 30d added with "add more smaller and higher timeframes". 1h is not here: the candles are 4h.
+t('replayed at 4h, 24h, 3d, 7d and 30d', PAST_HORIZONS.join() === '4,24,72,168,720')
 const k10 = S[10], i10 = k10.i
 t('a 24h outcome is six 4h candles on', Math.abs(k10.out[24].ret - Math.log(Y4[i10 + 6].c / Y4[i10].c)) < 1e-12)
 t('it knows whether the cone\'s lines were touched on the way', typeof k10.out[24].up === 'boolean' && typeof k10.out[24].dn === 'boolean')

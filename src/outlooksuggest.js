@@ -30,9 +30,9 @@ const REVERT = ['rev3d', 'bbFade']
  *         'trend-up' | 'trend-down'      trend and range carry it
  *         'none'                         no lean
  */
-export function leanOf(o4, rec4) {
+export function leanOf(o4, rec4, tested = true) {
   const sc = o4?.score
-  if (!sc) return { lean: 'flat', kind: 'none', conviction: 0, score: null, stretch: null, record: rec4 ?? null }
+  if (!sc) return { lean: 'flat', kind: 'none', conviction: 0, score: null, stretch: null, record: rec4 ?? null, tested }
   const fs = o4.factors ?? []
   const pull = (ids) => fs.filter(f => ids.includes(f.id)).reduce((s, f) => s + f.w * f.v, 0)
   const rev = pull(REVERT), rest = pull(fs.map(f => f.id).filter(id => !REVERT.includes(id)))
@@ -44,8 +44,11 @@ export function leanOf(o4, rec4) {
   const v = rec4?.verdict
   if (conviction && v === 'better') conviction = Math.min(3, conviction + 1)
   else if (conviction && v !== 'better') conviction = 1          // the market's own record does not back it
+  // A horizon where no signal set has beaten chance on real candles (outlook.js TESTED_HORIZONS):
+  // the lean is still shown, but it is never more than Low, however loud the score.
+  if (!tested) conviction = Math.min(conviction, 1)
   const st = Object.fromEntries(fs.filter(f => REVERT.includes(f.id)).map(f => [f.id, f.x]))
-  return { lean, kind, conviction, score: sc.score, stretch: { move3d: st.rev3d?.move ?? null, sd: st.bbFade?.sd ?? null }, record: rec4 ?? null }
+  return { lean, kind, conviction, score: sc.score, stretch: { move3d: st.rev3d?.move ?? null, sd: st.bbFade?.sd ?? null }, record: rec4 ?? null, tested }
 }
 
 /**

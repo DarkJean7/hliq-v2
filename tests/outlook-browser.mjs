@@ -125,7 +125,7 @@ async function v2(p, root, label, logged) {
   t(`${label}: the learned-weights record, against chance, and whether learning helped`, /Weighted by how each signal did on ETH \(now [+-]?\d+\): right \d+% of \d+ days — chance \d+%/.test(rec.ETH) && /Learning (helped|made it worse|made little difference)/.test(rec.ETH), rec.ETH)
   t(`${label}: the cone checked, past and live`, /Ended inside the 1σ band on \d+% of \d+ days \(expect 68%\) · touched the bullish line \d+%, the bearish \d+% \(expect 32% each\)\./.test(rec.ETH) && /Live: inside on 75% of 12 graded/.test(rec.ETH), rec.ETH)
   t(`${label}: the cone is calibrated, and says by how much`, /So the cone on this card is scaled ×\d\.\d\d to fit, and so are its touch chances/.test(rec.ETH), rec.ETH)
-  t(`${label}: every horizon, the one on screen marked`, await p.$$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-hz`, els => els.map(e => e.textContent.trim().split(' ')[0]).join() + '|' + els.filter(e => e.classList.contains('cur')).length) === '4h,24h,3d,7d|1')
+  t(`${label}: every horizon, the one on screen marked`, await p.$$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-hz`, els => els.map(e => e.textContent.trim().split(' ')[0]).join() + '|' + els.filter(e => e.classList.contains('cur')).length) === '4h,24h,3d,7d,30d|1')
   t(`${label}: all the markets pooled, at the top`, /Your 2 markets pooled · past year · 24h/.test(await p.$eval(`${root} .ol-pool`, e => e.textContent).catch(() => '')))
   const whyTxt = await p.$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-why`, e => e.textContent.replace(/\s+/g, ' ')).catch(() => '')
   t(`${label}: why gives each candle signal its own record`, (whyTxt.match(/Past year: (right \d+% of \d+ calls · chance \d+% · avg [+-]\d+\.\d\d% per call|it made no calls)/g) ?? []).length === 3, whyTxt.slice(0, 600))
@@ -137,7 +137,11 @@ async function v2(p, root, label, logged) {
     return s && { tag: s.querySelector('.ol-sug-tag')?.textContent, lean: s.querySelector('.ol-sug-lean')?.textContent, conv: s.querySelector('.ol-conv')?.textContent.trim(),
       acts: [...s.querySelectorAll('.ol-act')].map(a => a.textContent), note: s.querySelector('.ol-sug-note')?.textContent }
   }))
-  t(`${label}: every card has a suggestion for the next 4h`, sug.length === 2 && sug.every(x => x && /Suggestion · next 4h/i.test(x.tag)), sug)
+  t(`${label}: every card has a suggestion, for the timeframe on screen (24h)`, sug.length === 2 && sug.every(x => x && /Suggestion · next 24h/i.test(x.tag)), sug)
+  // "build it": 24h is untested, and the box says so; its conviction is never above Low.
+  const unt = await p.$$eval(`${root} .ol-sug`, els => els.map(e => ({ note: e.querySelector('.ol-sug-untested')?.textContent ?? '', conv: e.querySelector('.ol-conv')?.textContent.trim() })))
+  t(`${label}: at 24h it says it is untested, and stays Low at most`, unt.every(u => /Untested at 24h: no signal set has beaten chance at this timeframe, so conviction stays Low\. Tested: 4h\./.test(u.note) && /(No edge|Low)$/.test(u.conv)), unt)
+  t(`${label}: six timeframes, 1h to 30d`, (await p.$$eval(`${root} [data-ol-h]`, els => els.map(e => e.textContent).join())) === '1h,4h,24h,3d,7d,30d')
   t(`${label}: it names its lean, and how sure`, sug.every(x => /Leans to a (pullback|bounce) \(mean reversion\)|Leans (up|down) \(trend\)|No clear lean/.test(x.lean) && /(No edge|Low|Medium|High)$/.test(x.conv)), sug.map(x => [x.lean, x.conv]))
   t(`${label}: and what to consider for the position`, sug.every(x => x.acts.length >= 1), sug.map(x => x.acts))
   t(`${label}: and that it is not financial advice`, sug.every(x => /not financial advice/.test(x.note)))
@@ -145,6 +149,7 @@ async function v2(p, root, label, logged) {
   await p.click(`${root} [data-ol-h="4h"]`)
   await p.waitForFunction((r) => document.querySelector(`${r} [data-ol-h="4h"]`)?.classList.contains('on'), root)
   const why4 = await p.$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-why`, e => e.textContent.replace(/\s+/g, ' ')).catch(() => '')
+  t(`${label}: at 4h, tested: no untested note`, await p.$$eval(`${root} .ol-sug`, els => els.every(e => !e.querySelector('.ol-sug-untested') && /Suggestion · next 4h/.test(e.textContent))))
   t(`${label}: at 4h, the 3-day fade and the Bollinger stretch are in`, /3-day fade/.test(why4) && /Bollinger stretch/.test(why4) && /in 3 days · leaning against it/.test(why4) && /sd (above|below) its 20-candle average/.test(why4), why4.slice(0, 500))
   t(`${label}: momentum is out, and it says why`, !/Momentum\s*\d+%/.test(why4) && /momentum called it wrong \(43% vs 50%\), so it is left out here/.test(why4))
   t(`${label}: the 4h record replays the 4h set`, /trend, range, 3-day fade and Bollinger stretch only: the signals with history/i.test(await p.$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-rec`, e => e.textContent.replace(/\s+/g, ' '))))
@@ -206,6 +211,17 @@ console.log('-- phone --')
   await p.evaluate(() => window.mobVTab('outlook'))
   await checks(p, '#mobVContent', 'phone')
   await v2(p, '#mobVContent', 'phone', logged)
+  // "make the cards be able to unextend more easily": an open card folds from its header row,
+  // a folded one opens from anywhere on it — but the coin's name still opens its market.
+  const isMini = () => p.$eval('#mobVContent .ol-card:has(.ol-coin:text-is("ETH"))', e => e.classList.contains('ol-mini'))
+  await p.evaluate(() => [...document.querySelectorAll('#mobVContent .ol-card')].find(c => c.querySelector('.ol-coin')?.textContent === 'ETH')?.querySelector('.ol-net, .ol-side')?.click())
+  t('phone: an open card folds from its header row', await isMini())
+  await p.evaluate(() => [...document.querySelectorAll('#mobVContent .ol-card')].find(c => c.querySelector('.ol-coin')?.textContent === 'ETH')?.querySelector('.ol-mini-row')?.click())
+  t('phone: a folded card opens from anywhere on it', !(await isMini()))
+  await p.evaluate(() => { window.__opened = []; window.__realOpen2 = window.__watchOpenTrade; window.__watchOpenTrade = c => window.__opened.push(c) })
+  await p.evaluate(() => [...document.querySelectorAll('#mobVContent .ol-card')].find(c => c.querySelector('.ol-coin')?.textContent === 'ETH')?.querySelector('.ol-coin')?.click())
+  t('phone: the coin name opens its market and does not fold the card', JSON.stringify(await p.evaluate(() => window.__opened)) === '["ETH"]' && !(await isMini()))
+  await p.evaluate(() => { window.__watchOpenTrade = window.__realOpen2 })
   // "in phone it glitches after a while": once everything has loaded, nothing on the tab may be
   // wider than the screen — at the narrowest phone too.
   for (const w of [430, 360]) {

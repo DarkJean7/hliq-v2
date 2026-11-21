@@ -288,7 +288,16 @@ export function guardsOf(pos, orders) {
   return { tp, sl }
 }
 
-export const HORIZONS = { '4h': 4, '24h': 24, '7d': 168 }
+// "add more smaller and higher timeframes": 1h to 30d. 1h reads the 4h set (the nearest tested one)
+// but cannot be replayed — the candles here are 4h, so the shortest outcome there is to check is 4h.
+export const HORIZONS = { '1h': 1, '4h': 4, '24h': 24, '3d': 72, '7d': 168, '30d': 720 }
+/**
+ * Where a signal set has BEATEN CHANCE on real candles (tests/signal-research.mjs; results in
+ * tests/research/signal-results.json — 20 markets, a year, re-run with 30d added): only 4h. At
+ * 24h, 3d, 7d and 30d nothing passed, and 1h has no replay. The suggestion still reads every
+ * horizon, but caps its conviction at Low where the horizon is not in here, and says why.
+ */
+export const TESTED_HORIZONS = [4]
 
 /**
  * The three cases for one position over `hours`.
@@ -358,7 +367,7 @@ export function outlookFor({ position, price, c4, c1, setup, ratio = null, fundi
 export const CANDLE_FACTORS = ['trend', 'momentum', 'range']
 export const candleScoreOf = (fs, hours = 24) => scoreOf(fs.filter(f => candleIds(hours).includes(f.id)), hours)
 /** The horizons replayed, in hours: "more samples" — some signals work at one and not another. */
-export const PAST_HORIZONS = [4, 24, 72, 168]
+export const PAST_HORIZONS = [4, 24, 72, 168, 720]
 /** A signal "calls" a direction when it leans at least this far. */
 export const CALL_AT = 0.25
 const INSIDE_1S = 0.6827, TOUCH_1S = 0.3173

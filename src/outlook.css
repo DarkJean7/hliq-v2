@@ -187,3 +187,17 @@
 .ol-rec .v, .ol-pool .v, .ol-hz { white-space: normal; }
 .ol-card-head { min-width: 0; }
 .ol-score { flex-shrink: 0; }
+
+/* Folding: the header row of an open card folds it, a folded card opens from anywhere on it. */
+.ol-card-head[data-ol-open] { cursor: pointer; border-radius: 8px; margin: -4px -6px 0; padding: 4px 6px; }
+.ol-card-head[data-ol-open]:hover { background: color-mix(in srgb, var(--fg, #fff) 4%, transparent); }
+.ol-card-head::after { content: "▴"; color: var(--muted); font-size: 12px; margin-left: 2px; order: 99; }
+.ol-mini .ol-card-head::after { content: "▾"; }
+.ol-loading .ol-card-head::after { content: none; }
+.ol-card.ol-mini { cursor: pointer; }
+.ol-card.ol-mini:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.ol-score { order: 98; }
+/* Six timeframes on a phone. */
+.ol-seg { flex-wrap: wrap; justify-content: flex-end; }
+.ol-seg button { padding: 6px 8px; }
+.ol-sug-untested { font-size: 11.5px; font-weight: 700; color: #f5a524; }
