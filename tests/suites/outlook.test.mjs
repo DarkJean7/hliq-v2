@@ -184,7 +184,8 @@ t('candles come from the Analysis cache', /export function analysisRaw/.test(ana
 t('markets load one at a time, and not again for 15 minutes', /const RELOAD_MS = 15 \* 60e3/.test(view) && /for \(;;\)/.test(view))
 t('the footer says it is not a prediction', /Not a prediction/.test(view))
 // "group same assets cards together with all individual and account data including account name"
-t('one card per market: positions are grouped by coin', /groups\.get\(p\.coin\)\.push\(p\)/.test(view) && /function cardHtml\(\{ coin, ps, raw, price, state \}, ctx\)/.test(view))
+// The card now takes the whole item, so it can leave its sort keys on it (sortCards).
+t('one card per market: positions are grouped by coin', view.includes('groups.get(p.coin).push(p)') && view.includes('function cardHtml(item, ctx) {') && view.includes('const { coin, ps, raw, price, state } = item'))
 t('a single-account view names its account too', /acctName: \(\) => state\.addr === PAPER_ADDR/.test(main) && /nameOf = \(p\) => p\._acct \?\? ctx\.acctName\?\.\(\)/.test(view))
 t('the card weighs the candle signals by how they did on that market', /mult: past\.mult/.test(view) && /learnedWeights\(e\.samples, h\)/.test(view))
 t('the replay is once per market load, shared by every horizon', /pastSamples\(raw\.candles\['4h'\], raw\.candles\['1d'\]\)/.test(view))
