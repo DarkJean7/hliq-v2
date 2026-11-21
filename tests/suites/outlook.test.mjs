@@ -152,6 +152,10 @@ t('positions are unknown until loaded, not empty', /positions: \(\) => state\.pe
 t('candles come from the Analysis cache', /export function analysisRaw/.test(ana) && /ensureAnalysis\(due\)/.test(view))
 t('markets load one at a time, and not again for 15 minutes', /const RELOAD_MS = 15 \* 60e3/.test(view) && /for \(;;\)/.test(view))
 t('the footer says it is not a prediction', /Not a prediction/.test(view))
+// "group same assets cards together with all individual and account data including account name"
+t('one card per market: positions are grouped by coin', /groups\.get\(p\.coin\)\.push\(p\)/.test(view) && /function cardHtml\(\{ coin, ps, raw, price, state \}, ctx\)/.test(view))
+t('a single-account view names its account too', /acctName: \(\) => state\.addr === PAPER_ADDR/.test(main) && /nameOf = \(p\) => p\._acct \?\? ctx\.acctName\?\.\(\)/.test(view))
+t('only a full read is reported to the live record', /if \(\(o\.score\?\.coverage \?\? 0\) >= 0\.9\) logRating/.test(view))
 
 console.log(`${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

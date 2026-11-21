@@ -128,15 +128,17 @@ function paint(force) {
   const { host, ctx } = last ?? {}
   if (!host?.isConnected) return
   const ps = positionsOf(ctx)
-  const items = (ps ?? []).map(p => {
-    const raw = analysisRaw(p.coin)
-    const price = priceOf(ctx, p.coin, raw)
-    return { p, raw, price, state: analysisState(p.coin) }
+  // One card per market, its accounts in the order the app lists them.
+  const groups = new Map()
+  for (const p of ps ?? []) { if (!groups.has(p.coin)) groups.set(p.coin, []); groups.get(p.coin).push(p) }
+  const items = [...groups].map(([coin, list]) => {
+    const raw = analysisRaw(coin)
+    return { coin, ps: list, raw, price: priceOf(ctx, coin, raw), state: analysisState(coin) }
   })
   // Repaint only when something on the card would change: a position, a load landing, the price
   // moving a twentieth of a percent, a toggle.
   const sig = [horizon, recVer, ps == null ? 'unknown' : '', [...whyOpen].join(','), ...items.map(i =>
-    `${keyOf(i.p)}:${i.p.szi}:${i.p.entryPx}:${i.p.liquidationPx}:${i.raw?.at ?? 0}:${i.state}:${i.price ? Math.round(Math.log(i.price) * 2000) : 0}`)].join('|')
+    `${i.ps.map(p => `${keyOf(p)}:${p.szi}:${p.entryPx}:${p.liquidationPx}:${p.unrealizedPnl}`).join(',')}:${i.raw?.at ?? 0}:${i.state}:${i.price ? Math.round(Math.log(i.price) * 2000) : 0}`)].join('|')
   if (!force && sig === painted) return
   painted = sig
   const T = ctx.T
@@ -173,7 +175,9 @@ function recordHtml(coin, raw, o, ctx) {
   const { T } = ctx
   const hours = o.hours, hz = hours === 24 ? '24h' : '7d'
   const lab = esc(ctx.coinLabel(coin))
-  logRating(coin, hours, o.score?.score ?? null, o.sigma)
+  // Only a full read is reported: a first paint before the levels and the book have loaded
+  // scored -9 where the full one said -37, and the record would grade a number nobody saw for long.
+  if ((o.score?.coverage ?? 0) >= 0.9) logRating(coin, hours, o.score.score, o.sigma)
   ensureRecord(coin, hours)
 
   const cs = candleScoreOf(o.factors)
@@ -231,54 +235,131 @@ const LEAN = {
 }
 const STRENGTH = { neutral: ['Neutral', 'Neutral'], weak: ['Weak', 'Débil'], moderate: ['Moderate', 'Moderado'], strong: ['Strong', 'Fuerte'] }
 
-function cardHtml({ p, raw, price, state }, ctx) {
+/**
+ * One card per MARKET. "group same assets cards together with all individual and account data
+ * including account name": in the combined view the same coin held in three accounts was three
+ * cards with the same chart, score and cases. The market's read is shown once; the tiles add up
+ * every account's P&L in each case; and each account gets its own row — name, side, size, entry,
+ * P&L now, liquidation, its own TP and stop, and what each case does to it.
+ */
+function cardHtml({ coin, ps, raw, price, state }, ctx) {
   const { T, fmtPrice, fmtUSD, prv } = ctx
-  const k = keyOf(p)
-  const lab = ctx.coinLabel(p.coin)
-  const szi = parseFloat(p.szi), side = szi > 0 ? 'long' : 'short'
-  const lev = p.leverage?.value
-  const head = `<div class="ol-card-head">
-      <button class="ol-coin" data-ol-coin="${esc(p.coin)}">${esc(lab)}</button>
-      <span class="ol-side ${side}">${side === 'long' ? T('Long', 'Largo') : T('Short', 'Corto')}${lev ? ` ${lev}×` : ''}</span>
-      ${p._acct ? `<em class="ol-acct">${esc(p._acct)}</em>` : ''}`
+  const k = coin
+  const lab = ctx.coinLabel(coin)
+  const multi = ps.length > 1
+  const sideOf = (p) => parseFloat(p.szi) > 0 ? 'long' : 'short'
+  const sideWord = (s) => s === 'long' ? T('long', 'largo') : T('short', 'corto')
+  const badge = (p) => { const s = sideOf(p), lev = p.leverage?.value; return `<span class="ol-side ${s}">${s === 'long' ? T('Long', 'Largo') : T('Short', 'Corto')}${lev ? ` ${lev}×` : ''}</span>` }
+  const nameOf = (p) => p._acct ?? ctx.acctName?.() ?? null
+  const size = (v) => Number(Math.abs(v).toPrecision(5)).toLocaleString('en-US', { maximumFractionDigits: 6 })
+  const money = (v) => v == null ? '—' : prv((v >= 0 ? '+$' : '−$') + fmtUSD(Math.abs(v)))
+  const net = ps.reduce((s, p) => s + parseFloat(p.szi), 0)
+  const hedged = multi && new Set(ps.map(sideOf)).size > 1
+  const head = multi
+    ? `<div class="ol-card-head">
+        <button class="ol-coin" data-ol-coin="${esc(coin)}">${esc(lab)}</button>
+        <span class="ol-naccts">${T(`${ps.length} accounts`, `${ps.length} cuentas`)}</span>
+        <span class="ol-net">${net === 0 ? T('Net flat', 'Neto plano') : `${T('Net', 'Neto')} ${sideWord(net > 0 ? 'long' : 'short')} ${prv(size(net))}`}${hedged ? ` · ${T('hedged', 'cubierto')}` : ''}</span>`
+    : `<div class="ol-card-head">
+        <button class="ol-coin" data-ol-coin="${esc(coin)}">${esc(lab)}</button>
+        ${badge(ps[0])}
+        ${nameOf(ps[0]) ? `<em class="ol-acct">${esc(nameOf(ps[0]))}</em>` : ''}`
   if (!raw) {
     const msg = state === 'net' ? T('Could not load this market. It will try again.', 'No se pudo cargar este mercado. Se reintentará.')
       : state === 'none' ? T('No candles for this market.', 'Sin velas para este mercado.')
       : T('Loading candles…', 'Cargando velas…')
     return `<div class="ol-card">${head}</div><div class="ol-wait">${msg}</div></div>`
   }
-  const setup = analysisFor(p.coin, price)?.setup ?? null
-  const o = outlookFor({ position: p, price, c4: raw.candles['4h'], c1: raw.candles['1d'], setup, ratio: raw.ratio,
-    fundingPctHr: ctx.funding(p.coin), orders: ctx.orders(), hours: HORIZONS[horizon] })
+  const setup = analysisFor(coin, price)?.setup ?? null
+  const orders = ctx.orders()
+  // The market's read is the same for every account; each position adds its own P&L and risk.
+  const outs = ps.map(p => outlookFor({ position: p, price, c4: raw.candles['4h'], c1: raw.candles['1d'], setup, ratio: raw.ratio,
+    fundingPctHr: ctx.funding(coin), orders, hours: HORIZONS[horizon] }))
+  const o = outs[0]
   const sc = o.score
   const tone = !sc ? 'flat' : sc.lean
   const chip = sc ? `<span class="ol-score ${tone}"><b>${sc.score > 0 ? '+' : ''}${sc.score}</b>${T(STRENGTH[sc.strength][0], STRENGTH[sc.strength][1])}${sc.lean !== 'flat' ? ' ' + T(LEAN[sc.lean][0], LEAN[sc.lean][1]) : ''}</span>` : ''
-  const agree = o.agrees == null ? '' : `<div class="ol-agree ${o.agrees ? 'with' : 'against'}">${o.agrees
-    ? T(`Signals lean ${LEAN[sc.lean][0]} — with your ${side}`, `Las señales se inclinan ${LEAN[sc.lean][1]} — a favor de tu ${side === 'long' ? 'largo' : 'corto'}`)
-    : T(`Signals lean ${LEAN[sc.lean][0]} — against your ${side}`, `Las señales se inclinan ${LEAN[sc.lean][1]} — en contra de tu ${side === 'long' ? 'largo' : 'corto'}`)}</div>`
-  const money = (v) => v == null ? '—' : prv((v >= 0 ? '+$' : '−$') + fmtUSD(Math.abs(v)))
-  const tile = (key, c, name) => !c ? '' : `<div class="ol-case ${key}">
+
+  // With or against: per account, named, when there is more than one.
+  let agree = ''
+  if (sc && sc.lean !== 'flat') {
+    const lean = T(LEAN[sc.lean][0], LEAN[sc.lean][1])
+    if (!multi) {
+      const a = o.agrees, s = sideWord(sideOf(ps[0]))
+      agree = `<div class="ol-agree ${a ? 'with' : 'against'}">${a
+        ? T(`Signals lean ${lean} — with your ${s}`, `Las señales se inclinan ${lean} — a favor de tu ${s}`)
+        : T(`Signals lean ${lean} — against your ${s}`, `Las señales se inclinan ${lean} — en contra de tu ${s}`)}</div>`
+    } else {
+      const names = (want) => ps.filter((_, i) => outs[i].agrees === want).map(p => `${esc(nameOf(p) ?? '?')} (${sideWord(sideOf(p))})`)
+      const w = names(true), a = names(false)
+      const cls = !a.length ? 'with' : !w.length ? 'against' : 'mixed'
+      agree = `<div class="ol-agree ${cls}">${T(`Signals lean ${lean}`, `Las señales se inclinan ${lean}`)}${w.length ? ` — ${T('with', 'a favor de')} ${w.join(', ')}` : ''}${a.length ? `${w.length ? ' ·' : ' —'} ${T('against', 'en contra de')} ${a.join(', ')}` : ''}</div>`
+    }
+  }
+
+  // The tiles: every account's P&L in each case, added up.
+  const total = (key) => {
+    let pnl = 0, liq = 0
+    outs.forEach(x => { const c = x.cases?.[key]; if (!c) return; pnl += c.pnl ?? 0; if (c.liquidated) liq++ })
+    return { pnl, liq }
+  }
+  const tile = (key, name) => {
+    const c = o.cases?.[key]
+    if (!c) return ''
+    const t = total(key)
+    const pnlHtml = !multi && c.liquidated ? T('Liquidated', 'Liquidada') : money(t.pnl)
+    return `<div class="ol-case ${key}">
       <div class="ol-case-name">${name}</div>
       <div class="ol-case-px">$${fmtPrice(c.px)} <span>${c.pct >= 0 ? '+' : ''}${c.pct.toFixed(1)}%</span></div>
-      <div class="ol-case-pnl ${c.liquidated ? 'neg' : c.pnl >= 0 ? 'pos' : 'neg'}">${c.liquidated ? T('Liquidated', 'Liquidada') : money(c.pnl)}</div>
+      <div class="ol-case-pnl ${(!multi && c.liquidated) || t.pnl < 0 ? 'neg' : 'pos'}">${pnlHtml}</div>
+      ${multi && t.liq ? `<div class="ol-case-liq">${T(`${t.liq} liquidated`, `${t.liq} liquidada${t.liq > 1 ? 's' : ''}`)}</div>` : ''}
       <div class="ol-case-p">${key === 'neutral' ? T('stays between', 'se queda entre') : T('touch', 'tocar')} ${chance(c.p)}</div>
       ${c.level ? `<div class="ol-case-lvl">${c.level === 'resistance' ? T('next resistance', 'próxima resistencia') : T('next support', 'próximo soporte')}</div>` : ''}
     </div>`
-  const cs = o.cases
-  const cases = cs ? `<div class="ol-cases">${tile('bear', cs.bear, T('Bearish', 'Bajista'))}${tile('neutral', cs.neutral, T('Neutral', 'Neutral'))}${tile('bull', cs.bull, T('Bullish', 'Alcista'))}</div>` : ''
-  const r = o.risk
-  const risk = r ? `<div class="ol-risk">
-      ${r.liq ? `<div><span>${T('Liquidation', 'Liquidación')}</span><b class="neg">$${fmtPrice(r.liq.px)}</b><em>${r.liq.sig.toFixed(1)}σ · ${T('touch', 'tocar')} ${chance(r.liq.p)}</em></div>` : `<div><span>${T('Liquidation', 'Liquidación')}</span><b>—</b><em>${T('none in range', 'ninguna cerca')}</em></div>`}
-      ${r.tp ? `<div><span>${T('Take profit', 'Take profit')}</span><b class="pos">$${fmtPrice(r.tp.px)}</b><em>${T('touch', 'tocar')} ${chance(r.tp.p)}</em></div>` : ''}
-      ${r.sl ? `<div><span>${T('Stop', 'Stop')}</span><b class="warn">$${fmtPrice(r.sl.px)}</b><em>${T('touch', 'tocar')} ${chance(r.sl.p)}</em></div>` : ''}
-      ${r.tpFirst != null ? `<div class="ol-first">${T(`TP before stop, whenever it happens: ${pct(r.tpFirst)}`, `TP antes que el stop, cuando sea: ${pct(r.tpFirst)}`)}</div>` : ''}
-    </div>` : ''
+  }
+  const cases = o.cases ? `${multi ? `<div class="ol-cases-cap">${T(`P&L across all ${ps.length} accounts`, `P&L de las ${ps.length} cuentas`)}</div>` : ''}<div class="ol-cases">${tile('bear', T('Bearish', 'Bajista'))}${tile('neutral', T('Neutral', 'Neutral'))}${tile('bull', T('Bullish', 'Alcista'))}</div>` : ''
+
+  // One row per account.
+  const rows = ps.map((p, i) => {
+    const x = outs[i], r = x.risk, cs = x.cases
+    const name = nameOf(p)
+    const bits = [
+      r?.liq ? `${T('Liq', 'Liq')} <b class="neg">$${fmtPrice(r.liq.px)}</b> <em>${r.liq.sig.toFixed(1)}σ · ${T('touch', 'tocar')} ${chance(r.liq.p)}</em>` : `${T('Liq', 'Liq')} <b>—</b> <em>${T('none in range', 'ninguna cerca')}</em>`,
+      r?.tp ? `TP <b class="pos">$${fmtPrice(r.tp.px)}</b> <em>${T('touch', 'tocar')} ${chance(r.tp.p)}</em>` : null,
+      r?.sl ? `${T('Stop', 'Stop')} <b class="warn">$${fmtPrice(r.sl.px)}</b> <em>${T('touch', 'tocar')} ${chance(r.sl.p)}</em>` : null,
+      r?.tpFirst != null ? `<em>${T(`TP before stop: ${pct(r.tpFirst)}`, `TP antes que el stop: ${pct(r.tpFirst)}`)}</em>` : null,
+    ].filter(Boolean)
+    const caseCell = (key, word) => { const c = cs?.[key]; return c ? `<span class="${key}">${word} <b class="${c.liquidated || c.pnl < 0 ? 'neg' : 'pos'}">${c.liquidated ? T('liquidated', 'liquidada') : money(c.pnl)}</b></span>` : '' }
+    return `<div class="ol-acct-row">
+      <div class="ol-acct-top">
+        ${multi ? `<b class="ol-acct-name">${esc(name ?? '?')}</b>${badge(p)}` : ''}
+        <span class="ol-acct-pos">${prv(size(p.szi))} ${esc(lab)} @ $${fmtPrice(parseFloat(p.entryPx))}</span>
+        <span class="ol-acct-upnl">${T('P&L', 'P&L')} <b class="${(parseFloat(p.unrealizedPnl) || 0) >= 0 ? 'pos' : 'neg'}">${money(parseFloat(p.unrealizedPnl) || 0)}</b></span>
+      </div>
+      <div class="ol-acct-risk">${bits.map(b => `<span>${b}</span>`).join('')}</div>
+      ${multi ? `<div class="ol-acct-cases">${caseCell('bear', T('Bearish', 'Bajista'))}${caseCell('neutral', T('Neutral', 'Neutral'))}${caseCell('bull', T('Bullish', 'Alcista'))}</div>` : ''}
+    </div>`
+  }).join('')
+  const accounts = `<div class="ol-accts">${multi ? `<div class="ol-accts-h">${T('By account', 'Por cuenta')}</div>` : ''}${rows}</div>`
+
+  // The chart's reference lines: one position draws its entry, liquidation and orders; a group
+  // draws each account's liquidation, named, since that is the line that ends a position.
+  const marks = []
+  // `short`: a named line leaves its price to the account row; "Liq Swing ↓ $52.000" ran off the chart.
+  const add = (px, cls, label, short = false) => { if (px > 0) marks.push({ px, cls, label, short }) }
+  if (!multi) {
+    add(o.pos?.entry, 'entry', T('Entry', 'Entrada'))
+    add(o.risk?.liq?.px, 'liq', T('Liq', 'Liq'))
+    add(o.risk?.tp?.px, 'tp', 'TP')
+    add(o.risk?.sl?.px, 'sl', 'SL')
+  } else ps.forEach((p, i) => add(outs[i].risk?.liq?.px, 'liq', `${T('Liq', 'Liq')} ${nameOf(p) ?? ''}`.trim(), true))
+
   const open = whyOpen.has(k)
   const why = sc ? `<button class="ol-why-btn" data-ol-why="${esc(k)}">${open ? T('Hide why', 'Ocultar motivos') : T(`Why ${sc.score > 0 ? '+' : ''}${sc.score}? ${sc.agree} of ${sc.of} signals agree`, `¿Por qué ${sc.score > 0 ? '+' : ''}${sc.score}? ${sc.agree} de ${sc.of} señales coinciden`)}</button>
     ${open ? `<div class="ol-why">${o.factors.map(f => factorHtml(f, ctx)).join('')}${sc.coverage < 0.999 ? `<div class="ol-why-note">${T('Signals without data are left out, not counted as neutral.', 'Las señales sin datos se omiten, no cuentan como neutrales.')}</div>` : ''}</div>` : ''}` : ''
-  return `<div class="ol-card">${head}${chip}</div>${agree}
-    ${coneSvg(o, raw.candles['4h'], ctx)}
-    ${cases}${risk}${recordHtml(p.coin, raw, o, ctx)}${why}</div>`
+  return `<div class="ol-card${multi ? ' ol-group' : ''}">${head}${chip}</div>${agree}
+    ${coneSvg(o, raw.candles['4h'], ctx, marks)}
+    ${cases}${accounts}${recordHtml(coin, raw, o, ctx)}${why}</div>`
 }
 
 const FACTOR_NAME = {
@@ -319,7 +400,7 @@ function factorHtml(f, ctx) {
 }
 
 // ── the chart: the last days of price, then the cone ──────────────────────
-function coneSvg(o, c4, { fmtPrice, T }) {
+function coneSvg(o, c4, { fmtPrice, T }, marks = []) {
   if (!o.sigma || !o.price || !o.cases) return ''
   const W = 360, H = 168, padR = 66, padT = 8, padB = 10
   const histN = o.hours <= 24 ? 30 : 42
@@ -333,12 +414,6 @@ function coneSvg(o, c4, { fmtPrice, T }) {
   const span = hi - lo
   // Entry, liquidation and the orders are drawn when they are within reach; one far away would
   // squash the cone flat, so it gets an arrow at the edge instead.
-  const marks = []
-  const add = (px, cls, label) => { if (px > 0) marks.push({ px, cls, label }) }
-  add(o.pos?.entry, 'entry', T('Entry', 'Entrada'))
-  add(o.risk?.liq?.px, 'liq', T('Liq', 'Liq'))
-  add(o.risk?.tp?.px, 'tp', 'TP')
-  add(o.risk?.sl?.px, 'sl', 'SL')
   for (const m of marks) if (m.px >= lo - span * 0.35 && m.px <= hi + span * 0.35) { lo = Math.min(lo, m.px); hi = Math.max(hi, m.px) }
   const yAt = (v) => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB)
   const steps = 16
@@ -359,12 +434,12 @@ function coneSvg(o, c4, { fmtPrice, T }) {
   const lines = []
   for (const m of marks) {
     if (m.px < lo || m.px > hi) {
-      labels.push({ y: m.px > hi ? padT + 4 : H - padB - 2, cls: m.cls, t: `${m.label} ${m.px > hi ? '↑' : '↓'} $${fmtPrice(m.px)}` })
+      labels.push({ y: m.px > hi ? padT + 4 : H - padB - 2, cls: m.cls, t: `${m.label} ${m.px > hi ? '↑' : '↓'}${m.short ? '' : ` $${fmtPrice(m.px)}`}` })
       continue
     }
     const y = yAt(m.px)
     lines.push(`<line class="ol-m ${m.cls}" x1="0" x2="${plotW}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"/>`)
-    labels.push({ y, cls: m.cls, t: `${m.label} $${fmtPrice(m.px)}` })
+    labels.push({ y, cls: m.cls, t: m.short ? m.label : `${m.label} $${fmtPrice(m.px)}` })
   }
   labels.sort((a, b) => a.y - b.y)
   for (let i = 1; i < labels.length; i++) if (labels[i].y - labels[i - 1].y < 11) labels[i].y = labels[i - 1].y + 11

@@ -102,3 +102,23 @@
 .ol-rec .v.better { color: var(--green); }
 .ol-rec .v.worse { color: var(--red); }
 .ol-rec .v.chance, .ol-rec .v.thin, .ol-rec .v.none { color: #f5a524; }
+
+/* Grouped cards: one per market, a row per account. */
+.ol-naccts { font-size: 11px; font-weight: 800; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); padding: 2px 7px; border-radius: 6px; }
+.ol-net { font-size: 11px; color: var(--muted); }
+.ol-agree.mixed { color: var(--muted); }
+.ol-cases-cap { font-size: 10.5px; font-weight: 700; color: var(--muted); margin: 2px 0 4px; }
+.ol-case-liq { font-size: 10.5px; font-weight: 700; color: var(--red); margin-top: 1px; }
+.ol-accts { margin-top: 9px; display: grid; gap: 6px; }
+.ol-accts-h { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.ol-group .ol-acct-row { border: 1px solid var(--border); border-radius: 10px; padding: 7px 9px; }
+.ol-acct-top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 12px; }
+.ol-acct-name { font-size: 12.5px; color: var(--fg, var(--text)); }
+.ol-acct-pos { color: var(--fg, var(--text)); font-family: var(--font-mono, "JetBrains Mono", monospace); font-size: 11.5px; }
+.ol-acct-upnl { margin-left: auto; color: var(--muted); font-size: 11.5px; }
+.ol-acct-upnl b { font-family: var(--font-mono, "JetBrains Mono", monospace); }
+.ol-acct-risk { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+.ol-acct-risk b { font-family: var(--font-mono, "JetBrains Mono", monospace); }
+.ol-acct-risk em { font-style: normal; font-size: 11px; }
+.ol-acct-cases { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+.ol-acct-cases b { font-family: var(--font-mono, "JetBrains Mono", monospace); }

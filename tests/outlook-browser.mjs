@@ -41,9 +41,12 @@ const P = (coin, szi, entry, liq, lev) => ({ type: 'oneWay', position: { coin, s
   unrealizedPnl: String(szi * (BASE[coin] - entry)), returnOnEquity: '0.1', liquidationPx: String(liq), marginUsed: String(Math.abs(szi) * BASE[coin] / lev),
   maxLeverage: 40, leverage: { type: 'cross', value: lev }, cumFunding: { allTime: '0', sinceOpen: '0', sinceChange: '0' } } })
 const POSITIONS = [P('ETH', 20, 95, 60, 10), P('BTC', -0.05, 51000, 70000, 5)]
-const clearing = () => ({ marginSummary: { accountValue: '5000', totalNtlPos: '4500', totalRawUsd: '5000', totalMarginUsed: '700' },
+// "group same assets cards together": two more accounts hold ETH — one hedged short, one long.
+const A2 = '0x' + 'c'.repeat(40), A3 = '0x' + 'd'.repeat(40)
+const BY_USER = { [A2]: [P('ETH', -5, 104, 140, 3)], [A3]: [P('ETH', 4, 98, 52, 2)] }
+const clearing = (user) => ({ marginSummary: { accountValue: '5000', totalNtlPos: '4500', totalRawUsd: '5000', totalMarginUsed: '700' },
   crossMarginSummary: { accountValue: '5000', totalNtlPos: '4500', totalRawUsd: '5000', totalMarginUsed: '700' },
-  crossMaintenanceMarginUsed: '50', withdrawable: '4000', assetPositions: POSITIONS, time: Date.now() })
+  crossMaintenanceMarginUsed: '50', withdrawable: '4000', assetPositions: BY_USER[String(user ?? '').toLowerCase()] ?? POSITIONS, time: Date.now() })
 // The ETH long's own TP and stop, and a plain limit that is NOT protection.
 const ORDERS = [
   { coin: 'ETH', side: 'A', limitPx: '0', sz: '20', oid: 1, timestamp: 1, triggerCondition: 'tp', isTrigger: true, triggerPx: '112', orderType: 'Take Profit Market', reduceOnly: true, isPositionTpsl: true, origSz: '20', tif: null, cloid: null },
@@ -69,11 +72,11 @@ async function open(opts) {
       return route.fulfill({ json: candles(q.req.coin, iv, iv === '4h' ? 600 : iv === '1d' ? 400 : iv === '1w' ? 120 : 800) })
     }
     const meta = { universe: [{ name: 'BTC', szDecimals: 5, maxLeverage: 40 }, { name: 'ETH', szDecimals: 4, maxLeverage: 25 }] }
-    const json = q.type === 'l2Book' ? book(q.coin) : q.type === 'clearinghouseState' ? clearing()
+    const json = q.type === 'l2Book' ? book(q.coin) : q.type === 'clearinghouseState' ? clearing(q.user)
       : q.type === 'allMids' ? { ETH: '100', BTC: '50000' }
       : q.type === 'meta' ? meta
       : q.type === 'metaAndAssetCtxs' ? [meta, [{ markPx: '50000', midPx: '50000', funding: '0.0000125', openInterest: '1', dayNtlVlm: '1', prevDayPx: '50000' }, { markPx: '100', midPx: '100', funding: '0.0002', openInterest: '1', dayNtlVlm: '1', prevDayPx: '100' }]]
-      : q.type === 'frontendOpenOrders' ? ORDERS
+      : q.type === 'frontendOpenOrders' ? (BY_USER[String(q.user ?? '').toLowerCase()] ? [] : ORDERS)
       : ['portfolio', 'userFills', 'userFillsByTime', 'userFunding', 'userNonFundingLedgerUpdates', 'perpDexs', 'perpCategories'].includes(q.type) ? []
       : q.type === 'spotClearinghouseState' ? { balances: [] } : {}
     return route.fulfill({ json })
@@ -128,8 +131,8 @@ async function checks(p, root, label) {
   t(`${label}: each with bearish, neutral and bullish`, cards.every(c => c.cases === 3 && /Bearish/.test(c.text) && /Neutral/.test(c.text) && /Bullish/.test(c.text)))
   t(`${label}: each with a score and a chart`, cards.every(c => /^[+-]?\d+$/.test(c.score) && c.chart), cards.map(c => c.score))
   const eth = cards.find(c => c.coin === 'ETH')?.text ?? ''
-  t(`${label}: the ETH long reads its own TP and stop, not the plain limit`, /Take profit\$112/.test(eth) && /Stop\$90/.test(eth) && /TP before stop/.test(eth), eth.slice(0, 400))
-  t(`${label}: and its liquidation`, /Liquidation\$60/.test(eth))
+  t(`${label}: the ETH long reads its own TP and stop, not the plain limit`, /TP \$112/.test(eth) && /Stop \$90/.test(eth) && /TP before stop/.test(eth), eth.slice(0, 400))
+  t(`${label}: and its liquidation`, /Liq \$60/.test(eth))
   // Why: the six factors, the Range one on 4h among them.
   await p.click(`${root} .ol-card:has(.ol-coin:text-is("ETH")) [data-ol-why]`)
   const why = await p.$$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-f`, els => els.map(e => e.textContent))
@@ -169,6 +172,60 @@ console.log('-- desktop --')
   await v2(p, '#deskOutlook', 'desktop', logged)
   if (SHOT) await p.screenshot({ path: `${SHOT}/outlook-desktop.png`, fullPage: false })
   t('desktop: no page errors', errs.length === 0, errs)
+}
+
+console.log('-- All Accounts: one card per market --')
+{
+  const { p, errs } = await open({ ...devices['iPhone 14 Pro Max'], viewport: { width: 430, height: 930 } })
+  await p.waitForFunction(() => !!window.mobVTab, null, { timeout: 30000 })
+  await p.evaluate(({ a1, a2, a3 }) => {
+    const ws = [{ addr: a1, label: 'Main' }, { addr: a2, label: 'Hedge' }, { addr: a3, label: 'Swing' }]
+    localStorage.setItem('savedWallets', JSON.stringify(ws))
+    localStorage.setItem('hliq_multi_accounts', JSON.stringify(ws))
+  }, { a1: ADDR, a2: A2, a3: A3 })
+  await p.evaluate(() => window.__goAllAccounts?.())
+  await p.waitForFunction(() => (document.getElementById('mobVBalance')?.textContent ?? '').length > 0 && /All Accounts|combined/i.test(document.body.textContent ?? ''), null, { timeout: 40000 })
+  await p.evaluate(() => window.mobVTab('outlook'))
+  await p.waitForFunction(() => {
+    const c = [...document.querySelectorAll('#mobVContent .ol-card')]
+    return c.length === 2 && c.every(e => e.querySelector('.ol-cases')) && document.querySelectorAll('#mobVContent .ol-group .ol-acct-row').length === 3
+  }, null, { timeout: 40000 }).catch(() => {})
+  const cards = await p.$$eval('#mobVContent .ol-card', els => els.map(e => ({
+    coin: e.querySelector('.ol-coin')?.textContent, group: e.classList.contains('ol-group'),
+    rows: [...e.querySelectorAll('.ol-acct-row')].map(r => r.textContent.replace(/\s+/g, ' ').trim()),
+    head: e.querySelector('.ol-card-head')?.textContent.replace(/\s+/g, ' ').trim(),
+    agree: e.querySelector('.ol-agree')?.textContent ?? '',
+    tiles: [...e.querySelectorAll('.ol-case-pnl')].map(x => x.textContent.trim()),
+    cap: e.querySelector('.ol-cases-cap')?.textContent ?? '',
+    liqLabels: [...e.querySelectorAll('svg .ol-lbl.liq')].map(x => x.textContent) })))
+  const eth = cards.find(c => c.coin === 'ETH'), btc = cards.find(c => c.coin === 'BTC')
+  t('combined: one card per market, not one per position', cards.length === 2 && !!eth && !!btc, cards.map(c => c.coin))
+  t('combined: the ETH card holds all three accounts', eth?.group && eth.rows.length === 3 && /3 accounts/.test(eth.head), eth?.head)
+  t('combined: net size, and it says the group is hedged', /Net long 19 · hedged/.test(eth?.head ?? ''), eth?.head)
+  t('combined: each row is named', ['Main', 'Hedge', 'Swing'].every(n => eth?.rows.some(r => r.startsWith(n))), eth?.rows)
+  const row = (n) => eth?.rows.find(r => r.startsWith(n)) ?? ''
+  t('combined: a row has its side, size, entry and P&L now', /Long 10× 20 ETH @ \$95\.0+ P&L \+\$100\.00/.test(row('Main')) && /Short 3× 5 ETH @ \$104\.0+ P&L \+\$20\.00/.test(row('Hedge')), [row('Main'), row('Hedge')])
+  t('combined: its own liquidation', /Liq \$140\.00/.test(row('Hedge')) && /Liq \$52\.000/.test(row('Swing')))
+  t('combined: only Main has a TP and stop, and only Main shows them', /TP \$112/.test(row('Main')) && /Stop \$90/.test(row('Main')) && !/TP \$/.test(row('Hedge')) && !/TP \$/.test(row('Swing')))
+  t('combined: and what each case does to it', ['Main', 'Hedge', 'Swing'].every(n => /Bearish\s*[−+]\$[\d,.]+\s*Neutral\s*[−+]\$[\d,.]+\s*Bullish\s*[−+]\$[\d,.]+/.test(row(n))), row('Swing'))
+  // Each tile is the three rows' figure for that case, added up.
+  const money = (x) => { const m = /([−+])\$([\d,.]+)/.exec(x); return m ? (m[1] === '−' ? -1 : 1) * parseFloat(m[2].replace(/,/g, '')) : NaN }
+  const sumOf = (word) => ['Main', 'Hedge', 'Swing'].reduce((s, n) => s + money(new RegExp(word + '\\s*([−+]\\$[\\d,.]+)').exec(row(n))?.[1] ?? ''), 0)
+  const okTiles = ['Bearish', 'Neutral', 'Bullish'].every((w, i) => Math.abs(money(eth?.tiles[i] ?? '') - sumOf(w)) < 0.02)
+  t('combined: the tiles add every account up', /P&L across all 3 accounts/.test(eth?.cap ?? '') && okTiles, { tiles: eth?.tiles, sums: ['Bearish', 'Neutral', 'Bullish'].map(sumOf) })
+  // Who the lean is with and against, by name — when it leans at all; a flat read has no line.
+  const leanTxt = eth?.agree ?? ''
+  const okAgree = !leanTxt ? /Neutral/.test(eth?.head ?? '')
+    : /bearish/.test(leanTxt) ? /with Hedge \(short\)/.test(leanTxt) && /against Main \(long\), Swing \(long\)/.test(leanTxt)
+    : /with Main \(long\), Swing \(long\)/.test(leanTxt) && /against Hedge \(short\)/.test(leanTxt)
+  t('combined: it says who the lean is with and against, by name', okAgree, { leanTxt, head: eth?.head })
+  t('combined: each account\'s liquidation is on the chart, named', ['Main', 'Hedge', 'Swing'].every(n => eth?.liqLabels.some(l => l.includes(n))), eth?.liqLabels)
+  t('combined: a market one account holds is a single card, with its account named', !btc?.group && /Main/.test(btc?.head ?? '') && btc?.rows.length === 1, btc?.head)
+  t('combined: no page errors', errs.length === 0, errs)
+  if (SHOT) {
+    await p.evaluate(() => document.querySelector('#mobVContent .ol-group .ol-accts')?.scrollIntoView({ block: 'center' }))
+    await p.screenshot({ path: `${SHOT}/outlook-group.png` })
+  }
 }
 
 await b.close()

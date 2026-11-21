@@ -34716,6 +34716,11 @@ function _outlookCtx() {
     funding: (c) => _mktCtxReady ? (_mktCtxMap[c]?.funding ?? null) : null,
     coinLabel: (c) => _tradeName(c),
     openCoin: (c) => window.__watchOpenTrade(c),
+    // The account a single-account view is about, by name. The combined view's positions carry
+    // their own (_acct); its state.addr is the sentinel, not an account, so it has none here.
+    acctName: () => state.addr === PAPER_ADDR ? _paperName()
+      : !state.addr || state.addr === '__all_accounts__' ? null
+      : (WM.getLabel(state.addr) || state.addr.slice(0, 6) + '…' + state.addr.slice(-4)),
   }
 }
 // Desktop: drawn on open by switchTab, and on each data tick while it is the tab on screen.
