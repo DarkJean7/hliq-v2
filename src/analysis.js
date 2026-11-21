@@ -16,6 +16,7 @@
 // pins them back to the preset's opaque colours (analysis.css).
 import './analysis.css'
 import { infoClient } from './api.js'
+import { getCandles, putCandles, mergeCandles, readFrom } from './candlestore.js'
 import { TFS, toCandles, buildZones, parseBooks, bookMid, wallFor, bookReach, bookRatio, readSetup, smoothRatio } from './zones.js'
 
 const LS_COIN = 'hliq_ana_coin', LS_PREFS = 'hliq_ana_prefs'
@@ -78,8 +79,14 @@ async function loadCandles(coin, signal) {
   // every market in full, so browsing six of them cost six markets of candles (weight 20 each)
   // to look at one. Leaving a market abandons whatever it had not fetched yet.
   for (const tf of TFS) {
+    // From the last candle kept, not a whole year again: what is kept is merged with what is new
+    // (candlestore.js). A market never read starts from the whole span, as before.
+    const kept = e.candles?.[tf], spanStart = now - SPAN[tf]
     if (signal?.aborted) return
-    try { out[tf] = toCandles(await infoClient.candleSnapshot({ coin, interval: tf, startTime: now - SPAN[tf] }, signal)) }
+    try {
+      const fresh = toCandles(await infoClient.candleSnapshot({ coin, interval: tf, startTime: readFrom(kept, spanStart) }, signal))
+      out[tf] = kept?.length ? mergeCandles(kept, fresh, spanStart) : fresh
+    }
     catch { out[tf] = null; failed++ }
   }
   // Walking away is not a failure. Letting an abort fall through to 'net' put a network error
@@ -91,6 +98,7 @@ async function loadCandles(coin, signal) {
   if (!failed && TFS.every(tf => !out[tf].length)) { e.err = 'none'; return }
   for (const tf of TFS) if (!out[tf]) out[tf] = e.candles?.[tf] ?? []
   e.candles = out; e.candleAt = now; e.err = null
+  putCandles(coin, { at: now, candles: out })   // for the next visit; best effort
 }
 
 async function loadBooks(coin, signal) {
@@ -104,6 +112,32 @@ async function loadBooks(coin, signal) {
 
 // The load for the market currently on screen, so leaving one can abandon it.
 let inflight = null   // { coin, ac }
+
+/**
+ * What was kept on the device for this market (candlestore.js), restored once per page: shown at
+ * once, and only refreshed when it is older than the market needs. "each time i open the app or
+ * reload and then i open oracle it fetches all the data again".
+ */
+async function hydrate(coin) {
+  const e = cache.get(coin)
+  if (!e || e.candles || e.hydrated) return false
+  e.hydrated = true
+  const d = await getCandles(coin)
+  if (!d || e.candles) return false
+  e.candles = d.candles; e.candleAt = d.at; e.err = null
+  return true
+}
+/** Restore every market in `coins` from the device, so a tab can draw before it fetches. */
+export async function hydrateAnalysis(coins) {
+  let any = false
+  for (const c of coins ?? []) {
+    const k = normCoin(c)
+    if (!k) continue
+    if (!cache.has(k)) cache.set(k, { candles: null, candleAt: 0, books: null, bookAt: 0, err: null, loading: false })
+    if (await hydrate(k)) any = true
+  }
+  return any
+}
 
 async function refresh(force = false) {
   // The global 429 breaker. Every other poller in the app stands down when Hyperliquid
@@ -119,6 +153,7 @@ async function refresh(force = false) {
   // A market left behind has nothing waiting on it. Cancelling frees the budget for the one
   // being looked at instead of making it queue behind markets nobody is reading.
   if (inflight && inflight.coin !== coin) { try { inflight.ac.abort() } catch {} ; inflight = null }
+  if (!e.candles && await hydrate(coin)) { if (S.coin !== coin) return; S.ver++; draw() }
   if (e.loading) return
   const now = Date.now()
   const needC = force || now - e.candleAt > CANDLE_TTL
@@ -191,11 +226,15 @@ export async function ensureAnalysis(coin, signal) {
   if (!coin || deps.limited?.()) return
   if (!cache.has(coin)) cache.set(coin, { candles: null, candleAt: 0, books: null, bookAt: 0, err: null, loading: false })
   const e = cache.get(coin)
+  if (!e.candles) await hydrate(coin)
   const now = Date.now()
-  if (e.loading || now - e.candleAt <= CANDLE_TTL || now - (e.triedAt ?? 0) < 60e3) return
+  // Candles restored from the device and still fresh need no read — only the book, which is not
+  // kept (it is seconds old or it is nothing). Weight 2 a request, three of them.
+  const needC = now - e.candleAt > CANDLE_TTL, needB = needC || !e.books
+  if (e.loading || !needB || now - (e.triedAt ?? 0) < 60e3) return
   e.triedAt = now
   e.loading = true
-  try { await Promise.all([loadCandles(coin, signal), e.err === 'none' ? null : loadBooks(coin, signal)]) }
+  try { await Promise.all([needC ? loadCandles(coin, signal) : null, e.err === 'none' ? null : loadBooks(coin, signal)]) }
   finally { e.loading = false; if (signal?.aborted) e.triedAt = 0 }
   if (S?.coin === coin && !signal?.aborted) S.ver++
 }

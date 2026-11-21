@@ -45,7 +45,9 @@ t('the abort happens BEFORE the loading guard, or a stuck load would block the n
   refresh.indexOf('inflight.coin !== coin') < refresh.indexOf('if (e.loading) return'))
 t('each load carries its own controller', refresh.includes('const ac = new AbortController()'))
 t('candles take the signal', ana.includes('async function loadCandles(coin, signal)'))
-t('...and pass it to Hyperliquid', ana.includes('interval: tf, startTime: now - SPAN[tf] }, signal)'))
+// The read now starts from the last candle kept on the device (candlestore.js readFrom) rather than
+// a whole span every time — "each time i open the app or reload ... it fetches all the data again".
+t('...and pass it to Hyperliquid', ana.includes('interval: tf, startTime: readFrom(kept, spanStart) }, signal)'))
 t('books take it too', ana.includes('async function loadBooks(coin, signal)') && ana.includes('{ coin, nSigFigs: n } : { coin }, signal)'))
 t('the next timeframe is skipped once aborted — the point is the ones never sent',
   grab(ana, 'async function loadCandles(coin, signal)').includes('if (signal?.aborted) return\n    try {'))

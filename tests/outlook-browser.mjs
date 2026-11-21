@@ -58,7 +58,7 @@ const b = await chromium.launch()
 async function open(opts) {
   const ctx = await b.newContext(opts)
   try { await ctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
-  const asked = []
+  const asked = [], starts = []
   let inflight = 0, peak = 0
   await ctx.route(/api\.hyperliquid\.xyz/, async (route) => {
     let q = {}
@@ -66,6 +66,7 @@ async function open(opts) {
     if (q.type === 'candleSnapshot') {
       const iv = q.req.interval
       asked.push(q.req.coin + ':' + iv)
+      starts.push({ coin: q.req.coin, iv, start: q.req.startTime })
       inflight++; peak = Math.max(peak, inflight)
       await new Promise(r => setTimeout(r, 40))
       inflight--
@@ -105,7 +106,7 @@ async function open(opts) {
   await p.reload({ waitUntil: 'domcontentloaded' })
   await p.waitForFunction(() => !!window.loadDashboard, null, { timeout: 60000 })
   await p.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, ADDR)
-  return { p, asked, ctx, errs, peak: () => peak, logged }
+  return { p, asked, ctx, errs, peak: () => peak, logged, starts }
 }
 
 // Version 2: the track record on each card, and what was reported to the server.
@@ -205,7 +206,7 @@ async function checks(p, root, label) {
 
 console.log('-- phone --')
 {
-  const { p, asked, errs, peak, logged } = await open({ ...devices['iPhone 14 Pro Max'], viewport: { width: 430, height: 930 } })
+  const { p, asked, errs, peak, logged, starts } = await open({ ...devices['iPhone 14 Pro Max'], viewport: { width: 430, height: 930 } })
   await p.waitForFunction(() => document.getElementById('mobVTab-outlook'), null, { timeout: 30000 })
   await p.waitForFunction(() => (window.__state?.perpState ?? true) && document.querySelectorAll('.mob-v-row').length >= 0, null, { timeout: 30000 })
   await p.evaluate(() => window.mobVTab('outlook'))
@@ -264,6 +265,42 @@ console.log('-- phone --')
   // Remove.
   await p.evaluate(() => document.querySelector('#mobVContent .ol-watch [data-ol-rm="SOL"]')?.click())
   sx = await secs()
+  // "each time i open the app or reload and then i open oracle it fetches all the data again":
+  // a reload draws the cards from what this device kept, and reads no candles while they are fresh.
+  const reopen = async () => {
+    await p.reload({ waitUntil: 'domcontentloaded' })
+    await p.waitForFunction(() => !!window.loadDashboard && !!window.mobVTab, null, { timeout: 60000 })
+    await p.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, ADDR)
+    await p.waitForFunction(() => document.getElementById('mobVTab-outlook'), null, { timeout: 30000 })
+    await p.evaluate(() => window.mobVTab('outlook'))
+  }
+  const askedFirst = [...asked]   // "each market read once" is about the first load, before the reloads below
+  starts.length = 0
+  await reopen()
+  const drawn = await p.waitForFunction(() => document.querySelectorAll('#mobVContent .ol-sec .ol-card .ol-score').length === 2, null, { timeout: 15000 }).then(() => true, () => false)
+  await p.waitForTimeout(800)   // anything that was going to be fetched has had its chance
+  t('phone: after a reload the cards come from this device, at once', drawn)
+  t('phone: and no candles are read again while they are fresh', !starts.some(x => x.coin === 'ETH' || x.coin === 'BTC'), starts)
+  // Kept twenty minutes ago: stale for Oracle, so it reads again — only from the last kept candle.
+  await p.evaluate(() => new Promise((res) => {
+    const r = indexedDB.open('hliq-candles', 1)
+    r.onsuccess = () => {
+      const tx = r.result.transaction('analysis', 'readwrite'), st = tx.objectStore('analysis')
+      const q = st.openCursor()
+      q.onsuccess = () => { const c = q.result; if (!c) return; c.update({ ...c.value, at: Date.now() - 20 * 60e3 }); c.continue() }
+      tx.oncomplete = () => res(true)
+    }
+    r.onerror = () => res(false)
+  }))
+  starts.length = 0
+  await reopen()
+  await p.waitForFunction(() => document.querySelectorAll('#mobVContent .ol-sec .ol-card .ol-score').length === 2, null, { timeout: 15000 }).catch(() => {})
+  await p.waitForFunction(() => true)
+  // Up to a minute: by now this browser has spent a lot of the per-IP budget, and the app's pacer
+  // holds a heavy read until the bucket refills — as it should.
+  for (let i = 0; i < 240 && !starts.some(x => x.coin === 'BTC' && x.iv === '4h'); i++) await p.waitForTimeout(250)
+  const s4 = starts.filter(x => x.iv === '4h')
+  t('phone: stale, it reads again — from the last candle kept, not a year back', s4.length >= 1 && s4.every(x => Date.now() - x.start < 2 * 864e5), s4.map(x => ({ coin: x.coin, hoursBack: Math.round((Date.now() - x.start) / 3600e3) })))
   t('phone: ✕ stops watching it', /^Watching 0$/.test(sx[1].h) && (await p.evaluate(() => localStorage.getItem('hliq_oracle_watch'))) === '[]', sx)
   // "in phone it glitches after a while": once everything has loaded, nothing on the tab may be
   // wider than the screen — at the narrowest phone too.
@@ -276,7 +313,7 @@ console.log('-- phone --')
   }
   await p.setViewportSize({ width: 430, height: 930 })
   t('phone: markets load one at a time, never in parallel', peak() === 1, { peak: peak(), asked })
-  t('phone: each market read once', asked.filter(x => x === 'ETH:4h').length === 1 && asked.filter(x => x === 'BTC:4h').length === 1, asked)
+  t('phone: each market read once', askedFirst.filter(x => x === 'ETH:4h').length === 1 && askedFirst.filter(x => x === 'BTC:4h').length === 1, askedFirst)
   if (SHOT) { await p.evaluate(() => document.querySelector('#mobVContent .ol-view')?.scrollIntoView()); await p.screenshot({ path: `${SHOT}/outlook-phone.png`, fullPage: false }) }
   t('phone: no page errors', errs.length === 0, errs)
   if (errs.length) console.log(errs)

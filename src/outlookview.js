@@ -9,7 +9,7 @@
 // loaded market is not reloaded for 15 minutes: 4h candles do not change in five, and the live
 // price comes from the mids the app already has.
 import './outlook.css'
-import { ensureAnalysis, analysisFor, analysisRaw, analysisState, setAnalysisDeps, fmtPx } from './analysis.js'
+import { ensureAnalysis, analysisFor, analysisRaw, analysisState, setAnalysisDeps, fmtPx, hydrateAnalysis } from './analysis.js'
 import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, TESTED_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, coneScale } from './outlook.js'
 import { catLabel } from './simcat.js'
 import { leanOf, actionsFor, ideaFor, sortCards, ORACLE_SORTS } from './outlooksuggest.js'
@@ -98,19 +98,23 @@ async function pump() {
       if (!last?.host?.isConnected) return
       const ps = positionsOf(last.ctx) ?? []
       const coins = [...new Set([...ps.map(p => p.coin), ...watchList()])]
+      // First what this device kept from last time: every card drawn at once, before any fetch.
+      if (await hydrateAnalysis(coins)) paint(true)
+      // Then, one at a time, only what is stale — or has no order book yet (it is not kept).
       const due = coins.find(c => {
         const raw = analysisRaw(c), st = analysisState(c)
         if (st === 'loading') return false
         if (st === 'none') return false
-        return !raw || Date.now() - raw.at > RELOAD_MS
+        return !raw || Date.now() - raw.at > RELOAD_MS || raw.ratio == null
       })
       if (!due) return
-      const before = analysisRaw(due)?.at ?? 0
+      const mark = (r) => r ? `${r.at}|${r.ratio}` : ''
+      const before = mark(analysisRaw(due))
       await ensureAnalysis(due)
       paint(true)
       // ensureAnalysis waits a minute after a failure, and stands down while the app is rate
       // limited. Either way nothing loaded: stop, and the next render tries again.
-      if ((analysisRaw(due)?.at ?? 0) === before) return
+      if (mark(analysisRaw(due)) === before) return
     }
   } finally { pumping = false }
 }
