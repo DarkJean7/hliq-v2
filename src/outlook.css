@@ -144,3 +144,24 @@
 .ol-f-rec .v { font-style: normal; font-weight: 700; }
 .ol-f-rec .v.better { color: var(--green); } .ol-f-rec .v.worse { color: var(--red); } .ol-f-rec .v.chance, .ol-f-rec .v.thin, .ol-f-rec .v.none { color: #f5a524; }
 .ol-f-top em b { font-weight: 800; }
+
+/* Suggestion (src/outlooksuggest.js): the lean of the tested 4h signals, and what it means per position. */
+.ol-sug { margin: 9px 0 4px; border: 1px solid var(--border); border-left-width: 3px; border-radius: 10px; padding: 8px 10px; display: grid; gap: 4px; font-size: 12px; color: var(--fg, var(--text)); background: color-mix(in srgb, var(--panel-3) 60%, transparent); }
+.ol-sug.up { border-left-color: var(--green); }
+.ol-sug.down { border-left-color: var(--red); }
+.ol-sug.flat { border-left-color: var(--muted); }
+.ol-sug-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ol-sug-tag { font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.ol-conv { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 700; color: var(--muted); }
+.ol-conv i { width: 7px; height: 7px; border-radius: 50%; background: var(--panel-3); border: 1px solid var(--border); }
+.ol-conv i.on { background: var(--accent); border-color: var(--accent); }
+.ol-sug-lean { font-size: 14px; font-weight: 800; }
+.ol-sug.up .ol-sug-lean { color: var(--green); }
+.ol-sug.down .ol-sug-lean { color: var(--red); }
+.ol-sug-why { color: var(--muted); line-height: 1.45; }
+.ol-sug-rec { font-size: 11.5px; color: var(--muted); }
+.ol-sug-rec .v { font-style: normal; font-weight: 700; }
+.ol-sug-rec .v.better { color: var(--green); } .ol-sug-rec .v.worse { color: var(--red); } .ol-sug-rec .v.chance, .ol-sug-rec .v.thin, .ol-sug-rec .v.none { color: #f5a524; }
+.ol-acts { margin: 3px 0 0; padding-left: 17px; display: grid; gap: 3px; line-height: 1.4; }
+.ol-act.cutRisk { color: var(--red); font-weight: 700; }
+.ol-sug-note { font-size: 10.5px; color: var(--muted); font-style: italic; }

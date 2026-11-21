@@ -130,6 +130,16 @@ async function v2(p, root, label, logged) {
   t(`${label}: why gives each candle signal its own record`, (whyTxt.match(/Past year: (right \d+% of \d+ calls · chance \d+% · avg [+-]\d+\.\d\d% per call|it made no calls)/g) ?? []).length === 3, whyTxt.slice(0, 600))
   t(`${label}: and says the others have no history to check`, /No history here to check this one/.test(whyTxt))
   t(`${label}: and how the weights were learned`, /weighted by how each has called ETH over the past year \(×0\.25 to ×2\)/.test(whyTxt))
+  // "something to act as a suggestion": every card leans somewhere, says how sure, and what to consider.
+  const sug = await p.$$eval(`${root} .ol-card`, els => els.map(e => {
+    const s = e.querySelector('.ol-sug')
+    return s && { tag: s.querySelector('.ol-sug-tag')?.textContent, lean: s.querySelector('.ol-sug-lean')?.textContent, conv: s.querySelector('.ol-conv')?.textContent.trim(),
+      acts: [...s.querySelectorAll('.ol-act')].map(a => a.textContent), note: s.querySelector('.ol-sug-note')?.textContent }
+  }))
+  t(`${label}: every card has a suggestion for the next 4h`, sug.length === 2 && sug.every(x => x && /Suggestion · next 4h/i.test(x.tag)), sug)
+  t(`${label}: it names its lean, and how sure`, sug.every(x => /Leans to a (pullback|bounce) \(mean reversion\)|Leans (up|down) \(trend\)|No clear lean/.test(x.lean) && /(No edge|Low|Medium|High)$/.test(x.conv)), sug.map(x => [x.lean, x.conv]))
+  t(`${label}: and what to consider for the position`, sug.every(x => x.acts.length >= 1), sug.map(x => x.acts))
+  t(`${label}: and that it is not financial advice`, sug.every(x => /not financial advice/.test(x.note)))
   // "do 1": at 4h the score is the set that earned it — the two fades in, momentum out.
   await p.click(`${root} [data-ol-h="4h"]`)
   await p.waitForFunction((r) => document.querySelector(`${r} [data-ol-h="4h"]`)?.classList.contains('on'), root)
@@ -241,6 +251,8 @@ console.log('-- All Accounts: one card per market --')
   t('combined: it says who the lean is with and against, by name', okAgree, { leanTxt, head: eth?.head })
   t('combined: each account\'s liquidation is on the chart, named', ['Main', 'Hedge', 'Swing'].every(n => eth?.liqLabels.some(l => l.includes(n))), eth?.liqLabels)
   t('combined: a market one account holds is a single card, with its account named', !btc?.group && /Main/.test(btc?.head ?? '') && btc?.rows.length === 1, btc?.head)
+  const groupActs = await p.$$eval('#mobVContent .ol-group .ol-act', els => els.map(e => e.textContent))
+  t('combined: the suggestion speaks to each account, by name', ['Main', 'Hedge', 'Swing'].every(n => groupActs.some(a => a.startsWith(n + ' ('))), groupActs)
   t('combined: no page errors', errs.length === 0, errs)
   if (SHOT) {
     await p.evaluate(() => document.querySelector('#mobVContent .ol-group .ol-accts')?.scrollIntoView({ block: 'center' }))

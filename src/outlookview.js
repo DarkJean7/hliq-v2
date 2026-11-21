@@ -12,6 +12,7 @@ import './outlook.css'
 import { ensureAnalysis, analysisFor, analysisRaw, analysisState, setAnalysisDeps, fmtPx } from './analysis.js'
 import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, coneScale } from './outlook.js'
 import { catLabel } from './simcat.js'
+import { leanOf, actionsFor } from './outlooksuggest.js'
 
 const LS_H = 'hliq_outlook_h'
 const RELOAD_MS = 15 * 60e3
@@ -353,6 +354,7 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
   const outs = ps.map(p => outlookFor({ position: p, price, c4: raw.candles['4h'], c1: raw.candles['1d'], setup, ratio: raw.ratio,
     fundingPctHr: ctx.funding(coin), orders, hours: HORIZONS[horizon], mult: past.mult, sigmaScale: past.scale }))
   const o = outs[0]
+  const L = suggestionFor(coin, raw, price, setup, ps, outs, o, ctx, orders)
   const sc = o.score
   const tone = !sc ? 'flat' : sc.lean
   const chip = sc ? `<span class="ol-score ${tone}"><b>${sc.score > 0 ? '+' : ''}${sc.score}</b>${T(STRENGTH[sc.strength][0], STRENGTH[sc.strength][1])}${sc.lean !== 'flat' ? ' ' + T(LEAN[sc.lean][0], LEAN[sc.lean][1]) : ''}</span>` : ''
@@ -435,8 +437,79 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
   const why = sc ? `<button class="ol-why-btn" data-ol-why="${esc(k)}">${open ? T('Hide why', 'Ocultar motivos') : T(`Why ${sc.score > 0 ? '+' : ''}${sc.score}? ${sc.agree} of ${sc.of} signals agree`, `¿Por qué ${sc.score > 0 ? '+' : ''}${sc.score}? ${sc.agree} de ${sc.of} señales coinciden`)}</button>
     ${open ? `<div class="ol-why">${o.factors.map(f => factorHtml(f, ctx, past.signals)).join('')}<div class="ol-why-note">${T(`${candleNames(HORIZONS[horizon], T)} are weighted by how each has called ${esc(lab)} over the past year (×0.25 to ×2), at ${HZ[HORIZONS[horizon]]}.`, `${candleNames(HORIZONS[horizon], T)} se ponderan según cómo ha acertado cada una en ${esc(lab)} el último año (×0,25 a ×2), a ${HZ[HORIZONS[horizon]]}.`)}</div>${HORIZONS[horizon] <= 4 ? `<div class="ol-why-note">${T('At 4h the score is a different set. Tested on a year of 4h candles across 19 markets, fading a 3-day move and a Bollinger stretch called the next 4 hours better than chance in both halves of the year; momentum called it wrong (43% vs 50%), so it is left out here.', 'A 4h la puntuación usa otro conjunto. Probado con un año de velas de 4h en 19 mercados, ir contra el movimiento de 3 días y el estiramiento de Bollinger acertaron las siguientes 4 horas mejor que el azar en ambas mitades del año; el momento falló (43% vs 50%), así que aquí se omite.')}</div>` : ''}${sc.coverage < 0.999 ? `<div class="ol-why-note">${T('Signals without data are left out, not counted as neutral.', 'Las señales sin datos se omiten, no cuentan como neutrales.')}</div>` : ''}</div>` : ''}` : ''
   return `<div class="ol-card${multi ? ' ol-group' : ''}">${head}${chip}</div>${agree}
+    ${sugHtml(L, ps, outs, setup, ctx, lab, multi)}
     ${coneSvg(o, raw.candles['4h'], ctx, marks)}
     ${cases}${accounts}${recordHtml(coin, raw, o, ctx, past)}${why}</div>`
+}
+
+// ── the suggestion (src/outlooksuggest.js) ────────────────────────────────────
+const CONV = [['No edge', 'Sin ventaja'], ['Low', 'Baja'], ['Medium', 'Media'], ['High', 'Alta']]
+const KIND = {
+  pullback: ['Leans to a pullback (mean reversion)', 'Se inclina a un retroceso (reversión a la media)'],
+  bounce: ['Leans to a bounce (mean reversion)', 'Se inclina a un rebote (reversión a la media)'],
+  'trend-up': ['Leans up (trend)', 'Se inclina al alza (tendencia)'],
+  'trend-down': ['Leans down (trend)', 'Se inclina a la baja (tendencia)'],
+  none: ['No clear lean', 'Sin inclinación clara'],
+}
+/** The lean for the next 4h, from the tested 4h set, with this market's record for a reading like it. */
+function suggestionFor(coin, raw, price, setup, ps, outs, o, ctx, orders) {
+  const p4 = pastAt(coin, raw, 4)
+  const o4 = o.hours === 4 ? o : outlookFor({ position: ps[0], price, c4: raw.candles['4h'], c1: raw.candles['1d'], setup, ratio: raw.ratio,
+    fundingPctHr: ctx.funding(coin), orders, hours: 4, mult: p4.mult, sigmaScale: p4.scale })
+  const learned4 = weightedScore(candleValues(o4.factors, 4), p4.mult, 4)
+  const rec4 = learned4 == null ? null : pastRecord(p4.samples, learned4, 4, x => p4.learned.get(x))
+  return leanOf(o4, rec4)
+}
+function sugHtml(L, ps, outs, setup, ctx, lab, multi) {
+  const { T, fmtPrice } = ctx
+  const px = (v) => `$${fmtPrice(v)}`
+  const st = L.stretch ?? {}
+  let why
+  if (L.kind === 'pullback' || L.kind === 'bounce') {
+    const bits = [
+      st.move3d != null ? T(`${st.move3d >= 0 ? 'up' : 'down'} ${Math.abs(st.move3d * 100).toFixed(1)}% in 3 days`, `${st.move3d >= 0 ? 'subió' : 'bajó'} ${Math.abs(st.move3d * 100).toFixed(1)}% en 3 días`) : null,
+      st.sd != null ? T(`${Math.abs(st.sd).toFixed(1)} sd ${st.sd >= 0 ? 'above' : 'below'} its 20-candle average`, `${Math.abs(st.sd).toFixed(1)} de ${st.sd >= 0 ? 'sobre' : 'bajo'} su media de 20 velas`) : null,
+    ].filter(Boolean)
+    why = `${esc(lab)} ${T('is', 'está')} ${bits.join(T(' and ', ' y '))}. ${L.kind === 'pullback'
+      ? T('The tested 4h signals expect it to give some of that back.', 'Las señales de 4h probadas esperan que devuelva parte.')
+      : T('The tested 4h signals expect it to recover some of that.', 'Las señales de 4h probadas esperan que recupere parte.')}`
+  } else if (L.kind === 'none') {
+    why = T('The tested 4h signals are quiet or cancel each other out.', 'Las señales de 4h probadas están tranquilas o se anulan.')
+  } else {
+    why = T(`Trend and large candles point ${L.lean === 'up' ? 'up' : 'down'}, and the mean-reversion signals do not stand in the way.`, `La tendencia y las velas grandes apuntan ${L.lean === 'up' ? 'arriba' : 'abajo'}, y las señales de reversión no se oponen.`)
+  }
+  const r = L.record
+  const recLine = !r?.n ? '' : `<div class="ol-sug-rec">${T(`On ${esc(lab)}, a 4h reading like this was right ${pct(r.rate)} of ${r.n} times (chance ${pct(r.base)}).`, `En ${esc(lab)}, una lectura de 4h así acertó ${pct(r.rate)} de ${r.n} veces (azar ${pct(r.base)}).`)} ${verdictEm(r.verdict, T)}</div>`
+  const words = (a, p, side) => {
+    const s = side === 'long' ? T('long', 'largo') : T('short', 'corto')
+    switch (a.id) {
+      case 'cutRisk': return T(`Liquidation at ${px(a.px)} is only ${a.sig.toFixed(1)}σ away: consider reducing size or adding margin.`, `La liquidación en ${px(a.px)} está a solo ${a.sig.toFixed(1)}σ: considera reducir tamaño o añadir margen.`)
+      case 'noEdge': return T('No edge in the next 4 hours: stick to your plan.', 'Sin ventaja en las próximas 4 horas: sigue tu plan.')
+      case 'setStop': return T(`No stop on this ${s}: consider one beyond ${px(a.px)}.`, `Sin stop en este ${s}: considera uno más allá de ${px(a.px)}.`)
+      case 'takeSome': return T(`In profit with the lean against you: consider taking some off.`, `En ganancia con la inclinación en contra: considera tomar parte.`)
+      case 'dontAdd': return a.px ? T(`The lean is against this ${s}: hold off adding; a better price may come near ${px(a.px)}.`, `La inclinación va contra este ${s}: no añadas aún; un mejor precio podría llegar cerca de ${px(a.px)}.`)
+        : T(`The lean is against this ${s}: hold off adding.`, `La inclinación va contra este ${s}: no añadas aún.`)
+      case 'hold': return T(`The lean is with this ${s}: holding fits.`, `La inclinación va con este ${s}: mantener encaja.`)
+      case 'setTarget': return T(`No take-profit: the next level your way is ${px(a.px)}.`, `Sin take-profit: el próximo nivel a tu favor es ${px(a.px)}.`)
+      case 'addOnDip': return side === 'long' ? T('Adding into the dip fits the bounce read.', 'Añadir en la caída encaja con el rebote.') : T('Adding into the rally fits the pullback read.', 'Añadir en la subida encaja con el retroceso.')
+    }
+    return ''
+  }
+  const items = ps.flatMap((p, i) => {
+    const side = parseFloat(p.szi) > 0 ? 'long' : 'short'
+    const who = multi ? `<b>${esc(p._acct ?? '?')}</b> (${side === 'long' ? T('long', 'largo') : T('short', 'corto')}): ` : ''
+    return actionsFor(L, outs[i], setup).map(a => `<li class="ol-act ${a.id}">${who}${words(a, p, side)}</li>`)
+  })
+  const tone = L.lean === 'up' ? 'up' : L.lean === 'down' ? 'down' : 'flat'
+  return `<div class="ol-sug ${tone}">
+    <div class="ol-sug-top"><span class="ol-sug-tag">${T('Suggestion · next 4h', 'Sugerencia · próximas 4h')}</span>
+      <span class="ol-conv c${L.conviction}" title="${esc(T('How strong the reading is, and whether this market\'s own record backs it', 'Qué tan fuerte es la lectura y si el historial de este mercado la respalda'))}">${[1, 2, 3].map(k => `<i class="${k <= L.conviction ? 'on' : ''}"></i>`).join('')} ${T(...CONV[L.conviction])}</span></div>
+    <div class="ol-sug-lean">${T(...KIND[L.kind])}</div>
+    <div class="ol-sug-why">${why}</div>
+    ${recLine}
+    ${items.length ? `<ul class="ol-acts">${items.join('')}</ul>` : ''}
+    <div class="ol-sug-note">${T('A reading of the signals that beat chance in testing, not financial advice. Conviction stays low unless this market\'s own record backs it.', 'Una lectura de las señales que superaron al azar en pruebas, no asesoría financiera. La convicción se queda baja salvo que el historial de este mercado la respalde.')}</div>
+  </div>`
 }
 
 const FACTOR_NAME = {
