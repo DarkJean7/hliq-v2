@@ -291,6 +291,7 @@ import { whenScrollIdle } from './scrollidle.js'
 import { catHeadHtml, groupHeadHtml, groupKeyOf, foldShows, CAT_THEME } from './ocfold.js'
 import { yRange, pickLegs, alignSeries, spreadLabels, shortName, fmtTick, lineColor, bothSides, sideVisible } from './ocmulti.js'
 import { enableMouseScroll } from './dragx.js'
+import { fitSticky } from './stickycol.js'
 import { enableReorder, applyOrder } from './watchorder.js'
 import { KNOWN, KNOWN_PERIODS } from './lbknown.js'
 import { PERIOD_SPAN, PERIOD_WINDOW, sliceSince, stitchHistories, timeTicks, fmtPointTime, fmtRange } from './portchart.js'
@@ -8879,7 +8880,7 @@ function switchTab(name, btn) {
   _ensureTabRendered(name)   // trades / calendar / transfers render on first open
   if (name === 'portfolio') { _syncAllAcctCards(); setTimeout(() => renderChartPeriod(state.currentPeriod), 60) }
   if (name === 'tokens')    renderMarkets({ fills: state.fills, allMids: state.allMids, perpState: state.perpState })
-  if (name === 'trade')     { try { renderManageTables(state.perpState, state.openOrders, state.allMids); populateCoinDropdown(); updateTradeBalance(); _updateAvailDisplay() } catch (e) { console.error(e) } }
+  if (name === 'trade')     { try { renderManageTables(state.perpState, state.openOrders, state.allMids); populateCoinDropdown(); updateTradeBalance(); _updateAvailDisplay() } catch (e) { console.error(e) } ; try { fitSticky(document.querySelector('.trade-order-col'))() } catch {} }
   if (name === 'performance') renderPerformance()
   if (name === 'portfolios') ensurePortfoliosFrame()       // /portfolios inside the app (src/pfembed.js)
   if (name === 'markets')    ensureEmbedFrame('markets')   // /markets, the same way
@@ -9162,6 +9163,12 @@ window.__canTradeUI = function() {
   document.addEventListener('touchcancel', end, { passive: true })
 })()
 
+// "i cannot scroll the accounts from 'trade from account'": .hscroll-x strips scroll natively by
+// touch but hide their scrollbar, so with a mouse there was no way to move them. The first time
+// the pointer is over one, give it dragx's wheel and drag (a drag does not also click). One
+// listener for every such strip, present or rendered later.
+document.addEventListener('mouseover', (e) => { const s = e.target?.closest?.('.hscroll-x'); if (s) enableMouseScroll(s) }, { passive: true })
+
 window.__tradeAcctPickerHtml = function() {
   if (!state.isAllAccounts) return ''
   const opts = _maLoad().filter(w => hasAgentFor(w.addr))
@@ -9406,6 +9413,10 @@ function _showAllAcctLoader() {
 function _hideAllAcctLoader() {
   const ov = document.getElementById('allAcctLoader')
   if (ov) ov.style.display = 'none'
+  // The "Trade from account" picker can be drawn while the combined view is still being put
+  // together — when it is not yet the combined view, so it draws nothing — and nothing drew it
+  // again until the order form was touched. Every way the load ends comes through here.
+  try { _syncTradeAcctPicker() } catch {}
 }
 
 // ── Snapshot cache ────────────────────────────────────────────────────────────
