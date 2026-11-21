@@ -187,7 +187,10 @@ export function scoreOf(fs) {
   const strength = a < 15 ? 'neutral' : a < 40 ? 'weak' : a < 70 ? 'moderate' : 'strong'
   const lean = a < 15 ? 'flat' : score > 0 ? 'up' : 'down'
   const agree = fs.filter(f => Math.sign(f.v) === Math.sign(score) && f.v !== 0).length
-  return { score, strength, lean, agree, of: fs.length, coverage: w / total }
+  // Coverage is of the BASE weights: learned multipliers change how much a signal counts, not
+  // whether its data is there.
+  const have = fs.reduce((s, f) => s + (WEIGHTS[f.id] ?? f.w), 0)
+  return { score, strength, lean, agree, of: fs.length, coverage: have / total }
 }
 
 // ── the position ────────────────────────────────────────────────────────────
@@ -263,11 +266,13 @@ export function scenarios({ pos, price, sigma, setup }) {
  * Everything one card needs. `c4`/`c1` are 4h and daily candles ({t,o,h,l,c}), `setup` the
  * Analysis reading (zones.js readSetup), `ratio` the book ratio, `fundingPctHr` percent per hour.
  */
-export function outlookFor({ position, price, c4, c1, setup, ratio = null, fundingPctHr = null, orders = [], hours = 24 }) {
+export function outlookFor({ position, price, c4, c1, setup, ratio = null, fundingPctHr = null, orders = [], hours = 24, mult = null }) {
   const pos = posOf(position)
   const v4 = vol4h(c4)
   const sigma = sigmaFor(v4, hours)
-  const fs = price > 0 ? factors({ price, c4, c1, setup, fundingPctHr, ratio }) : []
+  // `mult`: learned multipliers for the candle signals (learnedWeights), {trend: 1.4, ...}.
+  const fs = (price > 0 ? factors({ price, c4, c1, setup, fundingPctHr, ratio }) : [])
+    .map(f => mult?.[f.id] != null ? { ...f, w: f.w * mult[f.id], m: mult[f.id] } : f)
   const sc = scoreOf(fs)
   const g = pos ? guardsOf(pos, orders) : { tp: null, sl: null }
   const risk = pos && price > 0 && sigma > 0 ? {
@@ -284,7 +289,7 @@ export function outlookFor({ position, price, c4, c1, setup, ratio = null, fundi
   return { pos, price, hours, v4, sigma, factors: fs, score: sc, cases: scenarios({ pos, price, sigma, setup }), risk, agrees, setup: setup ?? null }
 }
 
-// ── version 2: the past record ───────────────────────────────────────────────
+// ── the track record ───────────────────────────────────────────────────────
 
 /**
  * The signals that can be replayed from candles alone. Levels need the zones as they stood then,
@@ -293,61 +298,186 @@ export function outlookFor({ position, price, c4, c1, setup, ratio = null, fundi
  */
 export const CANDLE_FACTORS = ['trend', 'momentum', 'range']
 export const candleScoreOf = (fs) => scoreOf(fs.filter(f => CANDLE_FACTORS.includes(f.id)))
+/** The horizons replayed, in hours: "more samples" — some signals work at one and not another. */
+export const PAST_HORIZONS = [4, 24, 72, 168]
+/** A signal "calls" a direction when it leans at least this far. */
+export const CALL_AT = 0.25
+const INSIDE_1S = 0.6827, TOUCH_1S = 0.3173
 
 const DAY_MS = 864e5, H4_MS = 4 * 3600e3
 const bandOf = (s) => Math.abs(s) < 15 ? 'flat' : (s > 0 ? 'up' : 'down') + (Math.abs(s) >= 40 ? '+' : '')
-const leanOfScore = (s) => Math.abs(s) < 15 ? 'flat' : s > 0 ? 'up' : 'down'
+export const leanOfScore = (s) => Math.abs(s) < 15 ? 'flat' : s > 0 ? 'up' : 'down'
+const mean = (a) => a.length ? a.reduce((s, x) => s + x, 0) / a.length : null
+const pctOfLog = (r) => r == null ? null : Math.expm1(r) * 100
 
 /**
- * Replay the candle score once a day (every sixth 4h candle) over the candles given, and pair
- * each with what happened next: the log return `hours` later, and the cone's 1σ at the time.
- * Everything at a sample is computed from candles that had CLOSED by then — a daily candle counts
- * only once its day is over — so no sample sees its own future.
+ * One replay of the past year, done once per market and shared by every record below.
+ *
+ * Once a day (every sixth 4h candle) it reads the candle signals as they stood — from candles that
+ * had CLOSED by then; a daily candle counts only once its day is over — and keeps their values,
+ * the fixed-weight score and the 4h volatility. Then, for each horizon, what happened next: the
+ * log return, the cone's 1σ at the time, and whether the price TOUCHED the cone's ±1σ line on the
+ * way (from the highs and lows in between). A horizon not yet over at the end of the data is null.
  */
-export function pastSamples(c4, c1, hours) {
-  const ahead = Math.round(hours / 4)
+export function pastSamples(c4, c1) {
   const daily = (c1 ?? []).filter(k => +k.c > 0)
   const out = []
   if (!c4?.length) return out
   const first = RANGE_LOOKBACK + RANGE_RECENT + 1
   let d = 0
-  for (let i = first; i + ahead < c4.length; i += 6) {
+  for (let i = first; i < c4.length - 1; i += 6) {
     const closeAt = +c4[i].t + H4_MS
     while (d < daily.length && +daily[d].t + DAY_MS <= closeAt) d++
     const price = +c4[i].c
     const fs = factors({ price, c4: c4.slice(Math.max(0, i + 1 - RANGE_CANDLES), i + 1), c1: daily.slice(Math.max(0, d - 260), d) })
-    const sc = candleScoreOf(fs)
-    const sigma = sigmaFor(vol4h(c4.slice(Math.max(0, i - 180), i + 1)), hours)
-    const end = +c4[i + ahead].c
-    if (!sc || !(sigma > 0) || !(price > 0) || !(end > 0)) continue
-    out.push({ t: +c4[i].t, s: sc.score, ret: Math.log(end / price), sigma })
+      .filter(f => CANDLE_FACTORS.includes(f.id))
+    const sc = scoreOf(fs)
+    const v4 = vol4h(c4.slice(Math.max(0, i - 180), i + 1))
+    if (!sc || !(v4 > 0) || !(price > 0)) continue
+    const o = {}
+    for (const h of PAST_HORIZONS) {
+      const a = h / 4
+      if (i + a >= c4.length) { o[h] = null; continue }
+      const sigma = v4 * Math.sqrt(h / 4), end = +c4[i + a].c
+      let hi = 0, lo = Infinity
+      for (let j = i + 1; j <= i + a; j++) { hi = Math.max(hi, +c4[j].h); lo = Math.min(lo, +c4[j].l) }
+      o[h] = end > 0 ? { ret: Math.log(end / price), sigma, up: hi >= price * Math.exp(sigma), dn: lo <= price * Math.exp(-sigma) } : null
+    }
+    out.push({ t: +c4[i].t, i, f: Object.fromEntries(fs.map(f => [f.id, f.v])), s: sc.score, out: o })
+  }
+  return out
+}
+
+const resolved = (samples, h) => (samples ?? []).filter(x => x.out?.[h])
+
+/** Was a call right? up: higher; down: lower; flat (neutral): ended within 1σ. */
+const hitFor = (lean) => (x, o) => lean === 'up' ? o.ret > 0 : lean === 'down' ? o.ret < 0 : Math.abs(o.ret) < o.sigma
+
+/** Rate against chance, with a verdict. `div` thins overlapping windows (a week sampled daily). */
+function judge(hits, n, chance, div) {
+  if (!n) return { n: 0, verdict: 'none' }
+  const rate = hits / n
+  const nEff = n / Math.max(1, div)
+  const z = (rate - chance) / Math.sqrt(Math.max(1e-9, chance * (1 - chance)) / nEff)
+  return { n, rate, chance, z, verdict: nEff < 10 ? 'thin' : z >= 2 ? 'better' : z <= -2 ? 'worse' : 'chance' }
+}
+
+/**
+ * How often a reading like `score` was right at horizon `h`, against how often the same call was
+ * right on ANY day (the base rate), and the average move after it against the average on any day.
+ * "Like this" is the same lean and strength band (under 40 / 40 and over); under 20 such days it
+ * widens to the same lean, and says so. `scoreOf` picks the score replayed: the fixed weights
+ * (x.s) or the learned ones (learnedScores).
+ */
+export function pastRecord(samples, score, h, scoreOfX = (x) => x.s) {
+  const all = resolved(samples, h).filter(x => scoreOfX(x) != null)
+  if (!all.length || score == null) return null
+  const lean = leanOfScore(score), hit = hitFor(lean)
+  let match = all.filter(x => bandOf(scoreOfX(x)) === bandOf(score)), widened = false
+  if (match.length < 20 && bandOf(score) !== lean) { match = all.filter(x => leanOfScore(scoreOfX(x)) === lean); widened = true }
+  const base = all.filter(x => hit(x, x.out[h])).length / all.length
+  const j = judge(match.filter(x => hit(x, x.out[h])).length, match.length, base, h / 24)
+  return { ...j, lean, base, widened, days: all.length, from: all[0].t,
+    avgAfter: pctOfLog(mean(match.map(x => x.out[h].ret))), avgAll: pctOfLog(mean(all.map(x => x.out[h].ret))) }
+}
+
+/**
+ * Each candle signal on its own: on the days it called a direction, how often was the price that
+ * way at horizon `h`? Chance is what calls in the same up/down mix would have scored on any day.
+ * `edge` is the average move in the called direction, per call — a signal can be right less than
+ * half the time and still be worth having if its right calls are the bigger ones.
+ */
+export function signalRecords(samples, h) {
+  const all = resolved(samples, h)
+  if (!all.length) return {}
+  const up = all.filter(x => x.out[h].ret > 0).length / all.length
+  const dn = all.filter(x => x.out[h].ret < 0).length / all.length
+  const out = {}
+  for (const id of CANDLE_FACTORS) {
+    const calls = all.filter(x => Math.abs(x.f[id] ?? 0) >= CALL_AT)
+    const ups = calls.filter(x => x.f[id] > 0).length
+    const hits = calls.filter(x => Math.sign(x.f[id]) === Math.sign(x.out[h].ret) && x.out[h].ret !== 0).length
+    const chance = calls.length ? (ups * up + (calls.length - ups) * dn) / calls.length : 0.5
+    out[id] = { ...judge(hits, calls.length, chance, h / 24), edge: pctOfLog(mean(calls.map(x => Math.sign(x.f[id]) * x.out[h].ret))) }
   }
   return out
 }
 
 /**
- * How often a score like `score` was right, against how often the same call would have been
- * right on ANY day — the base rate. A bullish read that was right 58% of the time in a market
- * that rose on 57% of days is no read at all, and this says so.
- *
- * "Like this" is the same lean and strength band (under 40 / 40 and over); with fewer than 20
- * such days it widens to the same lean, and says it did. Samples a week apart overlap when the
- * horizon is a week, so the test of whether it beats the base rate counts days ÷ 7, not days.
+ * Weights learned from a market's own past: a signal that has called this market better than
+ * chance counts more, one that has done worse counts less — between ×0.25 and ×2, never flipped
+ * (a signal that "works backwards" is more likely noise than a signal), and pulled towards ×1
+ * when it has made few calls. Learned only from samples whose outcome was KNOWN at bar `upto`, so
+ * a replayed day never learns from its own future.
  */
-export function pastRecord(samples, score, hours) {
-  if (!samples?.length || score == null) return null
-  const lean = leanOfScore(score)
-  const hit = (x) => lean === 'up' ? x.ret > 0 : lean === 'down' ? x.ret < 0 : Math.abs(x.ret) < x.sigma
-  let match = samples.filter(x => bandOf(x.s) === bandOf(score)), widened = false
-  if (match.length < 20 && bandOf(score) !== lean) { match = samples.filter(x => leanOfScore(x.s) === lean); widened = true }
-  const n = match.length
-  const base = samples.filter(hit).length / samples.length
-  if (!n) return { lean, n: 0, base, widened, verdict: 'none', days: samples.length }
-  const rate = match.filter(hit).length / n
-  const nEff = n / Math.max(1, hours / 24)
-  const se = Math.sqrt(Math.max(1e-9, base * (1 - base)) / nEff)
-  const z = (rate - base) / se
-  const verdict = nEff < 10 ? 'thin' : z >= 2 ? 'better' : z <= -2 ? 'worse' : 'chance'
-  const avg = match.reduce((s, x) => s + x.ret, 0) / n
-  return { lean, n, rate, base, z, verdict, widened, avg: Math.expm1(avg) * 100, days: samples.length, from: samples[0].t }
+export function learnedWeights(samples, h, upto = Infinity) {
+  const known = resolved(samples, h).filter(x => x.i + h / 4 <= upto)
+  const rec = signalRecords(known, h)
+  const m = {}
+  for (const id of CANDLE_FACTORS) {
+    const r = rec[id]
+    if (!r?.n) { m[id] = 1; continue }
+    const shrink = r.n / (r.n + 60)
+    m[id] = clamp(1 + 5 * (r.rate - r.chance) * shrink, 0.25, 2)
+  }
+  return m
+}
+
+/** The candle score with multipliers applied, from a sample's signal values. */
+export function weightedScore(f, m) {
+  let w = 0, s = 0
+  for (const id of CANDLE_FACTORS) if (f[id] != null) { const k = WEIGHTS[id] * (m?.[id] ?? 1); w += k; s += k * f[id] }
+  return w ? Math.round(100 * s / w) : null
+}
+
+/**
+ * The learned score on every past day, each with the weights it could have had THEN (walk-forward).
+ * This is what makes "learned weights help" a claim the record can test rather than an assumption:
+ * learning from the whole year and grading the same year would always look good.
+ */
+export function learnedScores(samples, h) {
+  const m = new Map()
+  for (const x of samples ?? []) m.set(x, weightedScore(x.f, learnedWeights(samples, h, x.i)))
+  return m
+}
+
+/**
+ * The cone, checked: how often the price ended inside ±1σ (it should be ~68%) and how often it
+ * touched each 1σ line on the way (~32% each, the chance the card prints for them). If the moves
+ * ran bigger than the cone, its chances are too low, and the card should say so.
+ */
+export function coneRecord(samples, h) {
+  const all = resolved(samples, h)
+  if (!all.length) return null
+  const n = all.length
+  const inside = all.filter(x => Math.abs(x.out[h].ret) < x.out[h].sigma).length / n
+  const up = all.filter(x => x.out[h].up).length / n, dn = all.filter(x => x.out[h].dn).length / n
+  const off = inside - INSIDE_1S
+  const verdict = n / Math.max(1, h / 24) < 10 ? 'thin' : off < -0.07 ? 'narrow' : off > 0.07 ? 'wide' : 'calibrated'
+  return { n, inside, up, dn, expInside: INSIDE_1S, expTouch: TOUCH_1S, verdict }
+}
+
+/**
+ * Every market pooled — more days than any one has. Per lean: how often the fixed score's calls
+ * were right, against each market's own base rate weighted by how many calls it made.
+ */
+export function pooledRecord(byCoin, h) {
+  const out = {}
+  for (const lean of ['up', 'down']) {
+    let hits = 0, n = 0, chance = 0
+    for (const samples of byCoin) {
+      const all = resolved(samples, h)
+      if (!all.length) continue
+      const hit = hitFor(lean)
+      const calls = all.filter(x => leanOfScore(x.s) === lean)
+      const base = all.filter(x => hit(x, x.out[h])).length / all.length
+      hits += calls.filter(x => hit(x, x.out[h])).length; n += calls.length; chance += calls.length * base
+    }
+    out[lean] = judge(hits, n, n ? chance / n : 0.5, h / 24)
+  }
+  const cones = byCoin.map(s => coneRecord(s, h)).filter(Boolean)
+  const cn = cones.reduce((s, c) => s + c.n, 0)
+  out.cone = cn ? { n: cn, inside: cones.reduce((s, c) => s + c.inside * c.n, 0) / cn } : null
+  out.markets = byCoin.filter(s => resolved(s, h).length).length
+  return out
 }

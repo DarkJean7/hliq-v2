@@ -77,16 +77,17 @@ export function gradeDue(log, mids, now) {
   for (const e of dueEntries(log, now)) {
     const due = e.t + e.hours * HOUR
     const px = Number(mids?.[e.coin])
-    if (px > 0 && now - due <= OL_GRACE) { e.end = px; e.hit = hitOf(e, px); e.gradedAt = now; n++ }
+    if (px > 0 && now - due <= OL_GRACE) { e.end = px; e.hit = hitOf(e, px); e.inside = Math.abs(Math.log(px / e.px)) < e.sigma; e.gradedAt = now; n++ }
     else if (now - due > OL_GRACE) { e.expired = true; n++ }
   }
   return n
 }
 
 const tally = (list) => {
-  const out = { n: 0, hits: 0, up: { n: 0, hits: 0 }, down: { n: 0, hits: 0 }, flat: { n: 0, hits: 0 } }
+  // inside: graded entries that ended within the cone's 1σ — the cone checked live (~68% if right).
+  const out = { n: 0, hits: 0, inside: 0, up: { n: 0, hits: 0 }, down: { n: 0, hits: 0 }, flat: { n: 0, hits: 0 } }
   for (const e of list) {
-    out.n++; out[e.lean].n++
+    out.n++; out[e.lean].n++; if (e.inside) out.inside++
     if (e.hit) { out.hits++; out[e.lean].hits++ }
   }
   return out

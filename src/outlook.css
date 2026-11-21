@@ -122,3 +122,25 @@
 .ol-acct-risk em { font-style: normal; font-size: 11px; }
 .ol-acct-cases { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 4px; font-size: 11.5px; color: var(--muted); }
 .ol-acct-cases b { font-family: var(--font-mono, "JetBrains Mono", monospace); }
+
+/* Track record, expanded: move size, learned weights, the cone, horizons; pooled summary. */
+.ol-rec-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.ol-rec-sub b { color: var(--fg, var(--text)); font-family: var(--font-mono, "JetBrains Mono", monospace); }
+.ol-hzs { display: flex; flex-wrap: wrap; gap: 5px; }
+.ol-hz { font-size: 11.5px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 7px; color: var(--muted); white-space: nowrap; }
+.ol-hz b { color: var(--fg, var(--text)); }
+.ol-hz i { font-style: normal; font-size: 10.5px; }
+.ol-hz.better { border-color: color-mix(in srgb, var(--green) 55%, var(--border)); }
+.ol-hz.better b { color: var(--green); }
+.ol-hz.worse { border-color: color-mix(in srgb, var(--red) 55%, var(--border)); }
+.ol-hz.worse b { color: var(--red); }
+.ol-hz.cur { box-shadow: inset 0 0 0 1px var(--accent); }
+.ol-pool { background: linear-gradient(var(--panel-2), var(--panel-2)), var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 9px 12px; margin-bottom: 12px; display: grid; gap: 5px; font-size: 12px; color: var(--fg, var(--text)); }
+.ol-pool-rows { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.ol-pool i { font-style: normal; color: var(--muted); }
+.ol-pool .v { font-style: normal; font-weight: 700; white-space: nowrap; }
+.ol-pool .v.better { color: var(--green); } .ol-pool .v.worse { color: var(--red); } .ol-pool .v.chance, .ol-pool .v.thin, .ol-pool .v.none { color: #f5a524; }
+.ol-f-rec { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.ol-f-rec .v { font-style: normal; font-weight: 700; }
+.ol-f-rec .v.better { color: var(--green); } .ol-f-rec .v.worse { color: var(--red); } .ol-f-rec .v.chance, .ol-f-rec .v.thin, .ol-f-rec .v.none { color: #f5a524; }
+.ol-f-top em b { font-weight: 800; }

@@ -10,7 +10,7 @@
 // price comes from the mids the app already has.
 import './outlook.css'
 import { ensureAnalysis, analysisFor, analysisRaw, analysisState, setAnalysisDeps, fmtPx } from './analysis.js'
-import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, pastSamples, pastRecord, candleScoreOf } from './outlook.js'
+import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, CANDLE_FACTORS, PAST_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord } from './outlook.js'
 import { catLabel } from './simcat.js'
 
 const LS_H = 'hliq_outlook_h'
@@ -26,18 +26,24 @@ let pumping = false
 // market), once per load and horizon. The live record is the server's (/outlook-record), asked
 // at most every two minutes per market; and each rating shown is reported to it once an hour per
 // market and horizon (/outlook-log) — coin, horizon, score and volatility, nothing about who.
-const pastMemo = new Map()     // coin|loadedAt|hours → samples
+const pastMemo = new Map()     // coin → { k: coin|loadedAt, samples, byH: hours → records }
 const recs = new Map()         // coin|hours → { at, data, err }
 const logged = new Set()       // coin|hours|hour already reported from this page
 let recVer = 0
-function pastFor(coin, raw, hours) {
-  const k = `${coin}|${raw.at}|${hours}`
-  if (!pastMemo.has(k)) {
-    for (const key of [...pastMemo.keys()]) if (key.startsWith(coin + '|') && key.endsWith('|' + hours)) pastMemo.delete(key)
-    pastMemo.set(k, pastSamples(raw.candles['4h'], raw.candles['1d'], hours))
-  }
-  return pastMemo.get(k)
+function pastFor(coin, raw) {
+  const k = `${coin}|${raw.at}`
+  let e = pastMemo.get(coin)
+  if (!e || e.k !== k) { e = { k, samples: pastSamples(raw.candles['4h'], raw.candles['1d']), byH: new Map() }; pastMemo.set(coin, e) }
+  return e
 }
+/** One horizon's view of the replay: learned multipliers now, the walk-forward learned score on
+ *  each past day, each signal's record and the cone's. Computed once per load and horizon. */
+function pastAt(coin, raw, h) {
+  const e = pastFor(coin, raw)
+  if (!e.byH.has(h)) e.byH.set(h, { mult: learnedWeights(e.samples, h), learned: learnedScores(e.samples, h), signals: signalRecords(e.samples, h), cone: coneRecord(e.samples, h) })
+  return { samples: e.samples, ...e.byH.get(h) }
+}
+
 function ensureRecord(coin, hours) {
   const k = `${coin}|${hours}`, r = recs.get(k)
   if (r && (r.inflight || Date.now() - r.at < 120e3)) return
@@ -142,7 +148,7 @@ function paint(force) {
   if (!force && sig === painted) return
   painted = sig
   const T = ctx.T
-  host.innerHTML = `<div class="ol-view">${headHtml(T)}${ps == null
+  host.innerHTML = `<div class="ol-view">${headHtml(T)}${ps?.length ? pooledHtml(items, ctx) : ''}${ps == null
     ? `<div class="ol-empty">${T('Loading your positions…', 'Cargando tus posiciones…')}</div>`
     : !ps.length
       ? `<div class="ol-empty"><b>${T('No open positions', 'Sin posiciones abiertas')}</b><br>${T('Outlook reads the positions you hold: what could happen to each one, and what the signals lean towards.', 'Outlook lee tus posiciones abiertas: qué podría pasarle a cada una y hacia dónde se inclinan las señales.')}</div>`
@@ -166,38 +172,77 @@ const VERDICT = {
 }
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`
 
+const HZ = { 4: '4h', 24: '24h', 72: '3d', 168: '7d' }
+const mv = (x) => x == null ? '—' : `${x >= 0 ? '+' : ''}${x.toFixed(2)}%`
+const CONE_V = {
+  calibrated: ['The cone fits this market', 'El cono se ajusta a este mercado'],
+  narrow: ['Moves ran bigger than the cone: its chances read low', 'Los movimientos superaron el cono: sus probabilidades se quedan cortas'],
+  wide: ['Moves ran smaller than the cone: its chances read high', 'Los movimientos fueron menores que el cono: sus probabilidades se pasan'],
+  thin: ['Too few days to tell', 'Muy pocos días para saber'],
+}
+const verdictEm = (v, T) => `<em class="v ${v}">${T(...VERDICT[v])}</em>`
+const candleValues = (fs) => Object.fromEntries(fs.filter(f => CANDLE_FACTORS.includes(f.id)).map(f => [f.id, f.v]))
+
 /**
- * Track record: the past year (the candle signals replayed, against the base rate) and the live
- * record (the server's grading of the full score as shown). Rendering it also reports this
- * rating and asks for the record — both rate-limited above.
+ * Track record. Past year: the candle signals replayed (fixed weights, then learned ones,
+ * walk-forward), with the size of the move after and the base rate; the cone checked; the same
+ * reading at every horizon. Live: the server's grading of the full score as shown, and of the cone.
+ * Rendering it also reports this rating and asks for the record — both rate-limited above.
  */
-function recordHtml(coin, raw, o, ctx) {
+function recordHtml(coin, raw, o, ctx, past) {
   const { T } = ctx
-  const hours = o.hours, hz = hours === 24 ? '24h' : '7d'
+  const hours = o.hours, hz = HZ[hours]
   const lab = esc(ctx.coinLabel(coin))
   // Only a full read is reported: a first paint before the levels and the book have loaded
   // scored -9 where the full one said -37, and the record would grade a number nobody saw for long.
   if ((o.score?.coverage ?? 0) >= 0.9) logRating(coin, hours, o.score.score, o.sigma)
   ensureRecord(coin, hours)
 
-  const cs = candleScoreOf(o.factors)
-  const past = cs ? pastRecord(pastFor(coin, raw, hours), cs.score, hours) : null
-  const happened = (lean) => lean === 'up' ? T(`higher ${hz} later`, `más alto ${hz} después`)
-    : lean === 'down' ? T(`lower ${hz} later`, `más bajo ${hz} después`)
-    : T(`within its usual range ${hz} later`, `dentro de su rango usual ${hz} después`)
+  const fv = candleValues(o.factors)
+  const fixedNow = weightedScore(fv, null), learnedNow = weightedScore(fv, past.mult)
+  const happened = (lean, h) => lean === 'up' ? T(`higher ${HZ[h]} later`, `más alto ${HZ[h]} después`)
+    : lean === 'down' ? T(`lower ${HZ[h]} later`, `más bajo ${HZ[h]} después`)
+    : T(`within its usual range ${HZ[h]} later`, `dentro de su rango usual ${HZ[h]} después`)
+
+  // Past year, fixed weights — and how big the move was.
+  const fx = fixedNow == null ? null : pastRecord(past.samples, fixedNow, hours)
   let pastLine
-  if (!past) pastLine = T('Not enough history to replay.', 'No hay historial suficiente.')
-  else if (past.verdict === 'none') pastLine = `${T(`The candle signals read ${BAND_NAME(cs.score, T)} now (${signed(cs.score)}).`, `Las señales de velas marcan ${BAND_NAME(cs.score, T)} ahora (${signed(cs.score)}).`)} <em class="v none">${T(...VERDICT.none)}</em>`
+  if (!fx) pastLine = T('Not enough history to replay.', 'No hay historial suficiente.')
+  else if (!fx.n) pastLine = `${T(`The candle signals read ${BAND_NAME(fixedNow, T)} now (${signed(fixedNow)}).`, `Las señales de velas marcan ${BAND_NAME(fixedNow, T)} ahora (${signed(fixedNow)}).`)} ${verdictEm('none', T)}`
   else {
-    const band = past.widened ? LEAN_NAME(cs.score, T) : BAND_NAME(cs.score, T)
-    pastLine = `${T(`When ${lab}'s candle signals read ${band} (now ${signed(cs.score)}), it was ${happened(past.lean)} on`,
-      `Cuando las señales de velas de ${lab} marcaron ${band} (ahora ${signed(cs.score)}), estuvo ${happened(past.lean)} en`)}
-      <b>${pct(past.rate)}</b> ${T(`of ${past.n} days`, `de ${past.n} días`)} — ${T('on all days', 'en todos los días')} ${pct(past.base)}.
-      <em class="v ${past.verdict}">${T(...VERDICT[past.verdict])}</em>`
+    const band = fx.widened ? LEAN_NAME(fixedNow, T) : BAND_NAME(fixedNow, T)
+    pastLine = `${T(`When ${lab}'s candle signals read ${band} (now ${signed(fixedNow)}), it was ${happened(fx.lean, hours)} on`,
+      `Cuando las señales de velas de ${lab} marcaron ${band} (ahora ${signed(fixedNow)}), estuvo ${happened(fx.lean, hours)} en`)}
+      <b>${pct(fx.rate)}</b> ${T(`of ${fx.n} days`, `de ${fx.n} días`)} — ${T('on all days', 'en todos los días')} ${pct(fx.base)}. ${verdictEm(fx.verdict, T)}
+      <div class="ol-rec-sub">${T('Average move after', 'Movimiento medio después')} <b>${mv(fx.avgAfter)}</b> · ${T('on all days', 'en todos los días')} ${mv(fx.avgAll)}</div>`
   }
 
+  // Past year, learned weights — graded walk-forward, against the fixed ones.
+  const lx = learnedNow == null ? null : pastRecord(past.samples, learnedNow, hours, x => past.learned.get(x))
+  const learnedLine = !lx?.n ? T('Not enough history to learn from yet.', 'Aún no hay historial suficiente para aprender.')
+    : `${T(`Weighted by how each signal did on ${lab} (now ${signed(learnedNow)}): right`, `Ponderadas por cómo le fue a cada señal en ${lab} (ahora ${signed(learnedNow)}): acertó`)}
+      <b>${pct(lx.rate)}</b> ${T(`of ${lx.n} days`, `de ${lx.n} días`)} — ${T('chance', 'azar')} ${pct(lx.base)}. ${verdictEm(lx.verdict, T)}
+      ${fx?.n ? `<div class="ol-rec-sub">${lx.z > fx.z + 0.5 ? T('Learning helped on this market.', 'Aprender ayudó en este mercado.') : lx.z < fx.z - 0.5 ? T('Learning made it worse here.', 'Aprender lo empeoró aquí.') : T('Learning made little difference here.', 'Aprender cambió poco aquí.')} ${T('Each day used only what was known by then.', 'Cada día usó solo lo que se sabía entonces.')}</div>` : ''}`
+
+  // The cone, past and live.
   const r = recs.get(`${coin}|${hours}`)
   const d = r?.data
+  const c = past.cone
+  const coneLine = !c ? T('Not enough history to check.', 'No hay historial suficiente.')
+    : `${T('Ended inside the 1σ band on', 'Terminó dentro de la banda de 1σ en')} <b>${pct(c.inside)}</b> ${T(`of ${c.n} days (expect 68%) · touched the bullish line ${pct(c.up)}, the bearish ${pct(c.dn)} (expect 32% each).`, `de ${c.n} días (se espera 68%) · tocó la línea alcista ${pct(c.up)}, la bajista ${pct(c.dn)} (se espera 32% cada una).`)}
+      <em class="v ${c.verdict === 'calibrated' ? 'better' : c.verdict === 'thin' ? 'thin' : 'worse'}">${T(...CONE_V[c.verdict])}</em>
+      ${d?.coin?.n && d.coin.inside != null ? `<div class="ol-rec-sub">${T(`Live: inside on ${pct(d.coin.inside / d.coin.n)} of ${d.coin.n} graded.`, `En vivo: dentro en ${pct(d.coin.inside / d.coin.n)} de ${d.coin.n} calificadas.`)}</div>` : ''}`
+
+  // The same reading at every horizon.
+  const cells = fixedNow == null ? [] : PAST_HORIZONS.map(h => {
+    const x = pastRecord(past.samples, fixedNow, h)
+    return x?.n
+      ? `<span class="ol-hz ${x.verdict}${h === hours ? ' cur' : ''}">${HZ[h]} <b>${pct(x.rate)}</b> <i>${T('vs', 'vs')} ${pct(x.base)}</i></span>`
+      : `<span class="ol-hz${h === hours ? ' cur' : ''}">${HZ[h]} —</span>`
+  })
+  const hzLine = cells.length ? `<div class="ol-hzs">${cells.join('')}</div><div class="ol-rec-note">${T('How often this reading was right at each horizon, vs any day. Green beat chance, red did worse.', 'Con qué frecuencia esta lectura acertó en cada horizonte, vs cualquier día. Verde superó al azar, rojo lo hizo peor.')}</div>` : ''
+
+  // Live.
   let liveLine
   if (!d) liveLine = r?.err ? T('Live record unavailable right now.', 'Registro en vivo no disponible ahora.') : T('Loading the live record…', 'Cargando el registro en vivo…')
   else if (!d.coin?.n) {
@@ -205,20 +250,41 @@ function recordHtml(coin, raw, o, ctx) {
     const all = d.all?.n ? T(` All markets so far: ${pct(d.all.hits / d.all.n)} right of ${d.all.n}.`, ` Todos los mercados: ${pct(d.all.hits / d.all.n)} acertadas de ${d.all.n}.`) : ''
     liveLine = T(`Grading started: every rating is checked ${hz} after it was shown.`, `Calificación iniciada: cada lectura se revisa ${hz} después de mostrarse.`) + waiting + all
   } else {
-    const c = d.coin
+    const cc = d.coin
     const parts = [
-      c.up.n ? `${T('bullish', 'alcistas')} ${c.up.hits}/${c.up.n}` : null,
-      c.down.n ? `${T('bearish', 'bajistas')} ${c.down.hits}/${c.down.n}` : null,
-      c.flat.n ? `${T('neutral', 'neutrales')} ${c.flat.hits}/${c.flat.n}` : null,
+      cc.up.n ? `${T('bullish', 'alcistas')} ${cc.up.hits}/${cc.up.n}` : null,
+      cc.down.n ? `${T('bearish', 'bajistas')} ${cc.down.hits}/${cc.down.n}` : null,
+      cc.flat.n ? `${T('neutral', 'neutrales')} ${cc.flat.hits}/${cc.flat.n}` : null,
       `${T('all markets', 'todos')} ${pct(d.all.hits / d.all.n)} ${T('of', 'de')} ${d.all.n}`,
       d.pending ? `${d.pending} ${T('waiting', 'pendientes')}` : null,
     ].filter(Boolean)
-    liveLine = `${T(`${c.n} graded ${lab} calls,`, `${c.n} lecturas calificadas de ${lab},`)} <b>${pct(c.hits / c.n)}</b> ${T('right', 'acertadas')} · ${parts.join(' · ')}`
+    liveLine = `${T(`${cc.n} graded ${lab} calls,`, `${cc.n} lecturas calificadas de ${lab},`)} <b>${pct(cc.hits / cc.n)}</b> ${T('right', 'acertadas')} · ${parts.join(' · ')}`
   }
+  const row = (tag, body, note = '') => `<div class="ol-rec-row"><span class="ol-rec-tag">${tag}</span><div>${body}${note ? `<div class="ol-rec-note">${note}</div>` : ''}</div></div>`
   return `<div class="ol-rec">
-    <div class="ol-rec-h">${T('Track record', 'Historial')}</div>
-    <div class="ol-rec-row"><span class="ol-rec-tag">${T('Past year', 'Último año')}</span><div>${pastLine}<div class="ol-rec-note">${T('Trend, momentum and range only: the signals with history. One check a day.', 'Solo tendencia, momento y rango: las señales con historial. Una revisión al día.')}</div></div></div>
-    <div class="ol-rec-row"><span class="ol-rec-tag">${T('Live', 'En vivo')}</span><div>${liveLine}<div class="ol-rec-note">${T('The full score as shown, graded by the server at its own price.', 'La puntuación completa tal como se mostró, calificada por el servidor con su propio precio.')}</div></div></div>
+    <div class="ol-rec-h">${T(`Track record · ${hz}`, `Historial · ${hz}`)}</div>
+    ${row(T('Past year', 'Último año'), pastLine, T('Trend, momentum and range only: the signals with history. One check a day.', 'Solo tendencia, momento y rango: las señales con historial. Una revisión al día.'))}
+    ${row(T('Learned', 'Aprendido'), learnedLine)}
+    ${row(T('Cone', 'Cono'), coneLine)}
+    ${row(T('Horizons', 'Horizontes'), hzLine)}
+    ${row(T('Live', 'En vivo'), liveLine, T('The full score as shown, graded by the server at its own price.', 'La puntuación completa tal como se mostró, calificada por el servidor con su propio precio.'))}
+  </div>`
+}
+
+/** All the markets on screen, pooled: more days than any one of them has. Two or more only. */
+function pooledHtml(items, ctx) {
+  const { T } = ctx
+  const h = HORIZONS[horizon]
+  const byCoin = items.filter(i => i.raw).map(i => pastFor(i.coin, i.raw).samples)
+  if (byCoin.length < 2) return ''
+  const r = pooledRecord(byCoin, h)
+  const part = (lean, word) => r[lean]?.n ? `<span>${word} ${T('reads right', 'acertaron')} <b>${pct(r[lean].rate)}</b> ${T('of', 'de')} ${r[lean].n} <i>(${T('chance', 'azar')} ${pct(r[lean].chance)})</i> ${verdictEm(r[lean].verdict, T)}</span>` : null
+  const parts = [part('up', T('Bullish', 'Alcistas')), part('down', T('Bearish', 'Bajistas'))].filter(Boolean)
+  if (!parts.length && !r.cone) return ''
+  return `<div class="ol-pool">
+    <div class="ol-rec-h">${T(`Your ${r.markets} markets pooled · past year · ${HZ[h]}`, `Tus ${r.markets} mercados juntos · último año · ${HZ[h]}`)}</div>
+    <div class="ol-pool-rows">${parts.join('')}</div>
+    ${r.cone ? `<div class="ol-rec-note">${T(`Cone: ended inside 1σ on ${pct(r.cone.inside)} of ${r.cone.n} days (expect 68%).`, `Cono: terminó dentro de 1σ en ${pct(r.cone.inside)} de ${r.cone.n} días (se espera 68%).`)}</div>` : ''}
   </div>`
 }
 
@@ -273,8 +339,10 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
   const setup = analysisFor(coin, price)?.setup ?? null
   const orders = ctx.orders()
   // The market's read is the same for every account; each position adds its own P&L and risk.
+  // The candle signals weighted by how they have done on this market (learnedWeights, walk-forward).
+  const past = pastAt(coin, raw, HORIZONS[horizon])
   const outs = ps.map(p => outlookFor({ position: p, price, c4: raw.candles['4h'], c1: raw.candles['1d'], setup, ratio: raw.ratio,
-    fundingPctHr: ctx.funding(coin), orders, hours: HORIZONS[horizon] }))
+    fundingPctHr: ctx.funding(coin), orders, hours: HORIZONS[horizon], mult: past.mult }))
   const o = outs[0]
   const sc = o.score
   const tone = !sc ? 'flat' : sc.lean
@@ -356,10 +424,10 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
 
   const open = whyOpen.has(k)
   const why = sc ? `<button class="ol-why-btn" data-ol-why="${esc(k)}">${open ? T('Hide why', 'Ocultar motivos') : T(`Why ${sc.score > 0 ? '+' : ''}${sc.score}? ${sc.agree} of ${sc.of} signals agree`, `¿Por qué ${sc.score > 0 ? '+' : ''}${sc.score}? ${sc.agree} de ${sc.of} señales coinciden`)}</button>
-    ${open ? `<div class="ol-why">${o.factors.map(f => factorHtml(f, ctx)).join('')}${sc.coverage < 0.999 ? `<div class="ol-why-note">${T('Signals without data are left out, not counted as neutral.', 'Las señales sin datos se omiten, no cuentan como neutrales.')}</div>` : ''}</div>` : ''}` : ''
+    ${open ? `<div class="ol-why">${o.factors.map(f => factorHtml(f, ctx, past.signals)).join('')}<div class="ol-why-note">${T(`Trend, momentum and range are weighted by how each has called ${esc(lab)} over the past year (×0.25 to ×2), at ${HZ[HORIZONS[horizon]]}.`, `Tendencia, momento y rango se ponderan según cómo ha acertado cada una en ${esc(lab)} el último año (×0,25 a ×2), a ${HZ[HORIZONS[horizon]]}.`)}</div>${sc.coverage < 0.999 ? `<div class="ol-why-note">${T('Signals without data are left out, not counted as neutral.', 'Las señales sin datos se omiten, no cuentan como neutrales.')}</div>` : ''}</div>` : ''}` : ''
   return `<div class="ol-card${multi ? ' ol-group' : ''}">${head}${chip}</div>${agree}
     ${coneSvg(o, raw.candles['4h'], ctx, marks)}
-    ${cases}${accounts}${recordHtml(coin, raw, o, ctx)}${why}</div>`
+    ${cases}${accounts}${recordHtml(coin, raw, o, ctx, past)}${why}</div>`
 }
 
 const FACTOR_NAME = {
@@ -389,13 +457,20 @@ function factorText(f, { T, fmtPrice }) {
   return ''
 }
 
-function factorHtml(f, ctx) {
+function factorHtml(f, ctx, recs) {
   const { T } = ctx
   const w = Math.round(Math.abs(f.v) * 50)
+  const base = WEIGHTS[f.id] ?? f.w
+  const wt = f.m != null && Math.abs(f.m - 1) > 0.005 ? `${base}% <b class="${f.m > 1 ? 'pos' : 'neg'}">×${f.m.toFixed(2)}</b>` : `${base}%`
+  const r = recs?.[f.id]
+  const hist = !CANDLE_FACTORS.includes(f.id) ? T('No history here to check this one.', 'Aquí no hay historial para revisar esta.')
+    : !r?.n ? T('Past year: it made no calls.', 'Último año: no hizo ninguna lectura.')
+    : `${T(`Past year: right ${pct(r.rate)} of ${r.n} calls · chance ${pct(r.chance)} · avg ${mv(r.edge)} per call`, `Último año: acertó ${pct(r.rate)} de ${r.n} · azar ${pct(r.chance)} · media ${mv(r.edge)} por lectura`)} ${verdictEm(r.verdict, T)}`
   return `<div class="ol-f">
-    <div class="ol-f-top"><span>${T(FACTOR_NAME[f.id][0], FACTOR_NAME[f.id][1])}</span><em>${f.w}%</em></div>
+    <div class="ol-f-top"><span>${T(FACTOR_NAME[f.id][0], FACTOR_NAME[f.id][1])}</span><em>${wt}</em></div>
     <div class="ol-f-bar"><i class="${f.v >= 0 ? 'pos' : 'neg'}" style="${f.v >= 0 ? 'left:50%' : `left:${50 - w}%`};width:${w}%"></i></div>
     <div class="ol-f-x">${esc(factorText(f, ctx))}</div>
+    <div class="ol-f-rec">${hist}</div>
   </div>`
 }
 

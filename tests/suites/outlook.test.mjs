@@ -2,7 +2,7 @@
 // include strength/rating" and "include ... the range category ... 4h candles and a good amount
 // of candles".
 import fs from 'fs'
-import { normCdf, vol4h, sigmaFor, touchProb, firstTouchUp, macdHist, rangeRead, factors, scoreOf, posOf, guardsOf, scenarios, outlookFor, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, pastSamples, pastRecord, candleScoreOf, CANDLE_FACTORS } from '../../src/outlook.js'
+import { normCdf, vol4h, sigmaFor, touchProb, firstTouchUp, macdHist, rangeRead, factors, scoreOf, posOf, guardsOf, scenarios, outlookFor, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, pastSamples, pastRecord, candleScoreOf, CANDLE_FACTORS, PAST_HORIZONS, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord } from '../../src/outlook.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -112,36 +112,66 @@ t('it says whether the lean agrees with the position', o.agrees === null || type
 t('a flat lean neither agrees nor disagrees', outlookFor({ position: P, price, c4: candles(RANGE_CANDLES), c1: [], hours: 24 }).score?.lean !== 'flat' || outlookFor({ position: P, price, c4: candles(RANGE_CANDLES), c1: [], hours: 24 }).agrees === null)
 t('no price: no cases, not made-up ones', outlookFor({ position: P, price: null, c4, c1 }).cases === null)
 
-console.log('-- version 2: the past record --')
+console.log('-- the track record: the replay --')
 // A year of 4h candles and three of daily, from a seeded random walk: no signal can know where
-// it goes next, so the record must not claim one does.
+// it goes next, so no record may claim one does.
 let seed = 7
 const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647
 const walk = (n, step, vol, t0 = 0) => { let c = 100; return Array.from({ length: n }, (_, i) => { const o = c; c = o * (1 + (rnd() - 0.5) * vol); return { t: t0 + i * step, o, c, h: Math.max(o, c) * 1.004, l: Math.min(o, c) * 0.996 } }) }
 const Y4 = walk(2190, 4 * 3600e3, 0.03), Y1 = walk(1000, 864e5, 0.07, -635 * 864e5)
-const S24 = pastSamples(Y4, Y1, 24)
-t('one sample a day across the year', S24.length > 300 && S24.length < 340, S24.length)
-t('each pairs a candle score with what happened 24h later', S24.every(x => Number.isInteger(x.s) && Number.isFinite(x.ret) && x.sigma > 0))
-const iSample = Y4.findIndex(k => k.t === S24[10].t)
-t('a 24h return is six 4h candles on', Math.abs(S24[10].ret - Math.log(Y4[iSample + 6].c / Y4[iSample].c)) < 1e-12)
-// Change everything after a sample's own candle (except the one its return is read from): its
-// score must not move. If it did, it was reading its own future.
-const cut = Y4.map((k, i) => i > iSample && i !== iSample + 6 ? { ...k, c: k.c * 3, h: k.h * 3, l: k.l * 3, o: k.o * 3 } : k)
-const S24b = pastSamples(cut, Y1, 24)
-t('no sample sees its own future', S24b.find(x => x.t === S24[10].t)?.s === S24[10].s, { was: S24[10].s, now: S24b.find(x => x.t === S24[10].t)?.s })
-const R = pastRecord(S24, 50, 24)
+const S = pastSamples(Y4, Y1)
+t('one sample a day across the year', S.length > 300 && S.length < 340, S.length)
+t('each keeps its signals, its score and an outcome per horizon', S.every(x => Number.isInteger(x.s) && 'trend' in x.f && PAST_HORIZONS.every(h => h in x.out)))
+t('replayed at 4h, 24h, 3d and 7d', PAST_HORIZONS.join() === '4,24,72,168')
+const k10 = S[10], i10 = k10.i
+t('a 24h outcome is six 4h candles on', Math.abs(k10.out[24].ret - Math.log(Y4[i10 + 6].c / Y4[i10].c)) < 1e-12)
+t('it knows whether the cone\'s lines were touched on the way', typeof k10.out[24].up === 'boolean' && typeof k10.out[24].dn === 'boolean')
+t('a horizon not over by the end of the data is unknown, not 0', S.at(-1).out[168] === null)
+// Change everything after a sample's own candle: its signals must not move. If they did, it was
+// reading its own future.
+const cut = Y4.map((k, i) => i > i10 ? { ...k, c: k.c * 3, h: k.h * 3, l: k.l * 3, o: k.o * 3 } : k)
+const Sb = pastSamples(cut, Y1)
+t('no sample sees its own future', JSON.stringify(Sb.find(x => x.t === k10.t)?.f) === JSON.stringify(k10.f))
+
+console.log('-- the track record: what it says --')
+const R = pastRecord(S, 50, 24)
 t('a random walk is no better than chance', ['chance', 'thin'].includes(R.verdict), R)
 t('the base rate is reported alongside', R.base > 0.3 && R.base < 0.7)
-t('few days like this: it widens to the same lean and says so', typeof R.widened === 'boolean')
-// A market whose candle score always called it: the record should say so.
-const rigged = Array.from({ length: 300 }, (_, i) => ({ t: i, s: i % 2 ? 55 : -55, ret: i % 2 ? 0.01 : -0.01, sigma: 0.02 }))
-t('a score that called it is better than the base rate', pastRecord(rigged, 60, 24).verdict === 'better' && pastRecord(rigged, 60, 24).rate === 1)
-const wrong = rigged.map(x => ({ ...x, ret: -x.ret }))
-t('and one that called it backwards is worse', pastRecord(wrong, 60, 24).verdict === 'worse')
-t('7 days overlap, so the test counts days ÷ 7', pastRecord(rigged.slice(0, 40), 60, 168).verdict === 'thin')
+t('and the size of the move: after the reading, and on any day', typeof R.avgAfter === 'number' && typeof R.avgAll === 'number')
+const sig = signalRecords(S, 24)
+t('each candle signal has its own record', CANDLE_FACTORS.every(id => id in sig))
+t('on a random walk none of them beats chance', CANDLE_FACTORS.every(id => ['chance', 'thin', 'none'].includes(sig[id].verdict)), sig)
+const cone = coneRecord(S, 168)
+t('the cone is checked: inside 1σ, and each line touched', cone.n > 300 && cone.inside > 0.5 && cone.inside < 0.9 && cone.up > 0.15 && cone.dn > 0.15, cone)
+t('expected: 68% inside, 32% a touch', cone.expInside === 0.6827 && cone.expTouch === 0.3173)
+
+// A market where TREND always calls it and momentum always calls it backwards.
+const mk = (n) => Array.from({ length: n }, (_, j) => {
+  const dir = j % 3 ? 1 : -1, ret = dir * 0.01
+  return { t: j, i: j * 6, f: { trend: dir * 0.8, momentum: -dir * 0.8, range: 0 }, s: 0, out: Object.fromEntries(PAST_HORIZONS.map(h => [h, { ret, sigma: 0.02, up: dir > 0, dn: dir < 0 }])) }
+})
+const M = mk(300)
+const sr = signalRecords(M, 24)
+t('a signal that called it is better than chance, one that called it backwards worse', sr.trend.verdict === 'better' && sr.trend.rate === 1 && sr.momentum.verdict === 'worse', sr)
+t('its edge is the average move in the called direction', sr.trend.edge > 0.9 && sr.momentum.edge < -0.9)
+const lw = learnedWeights(M, 24)
+t('learned: the one that works counts more, the one that does not counts less', lw.trend > 1.5 && lw.momentum < 0.5 && lw.range === 1, lw)
+t('never below ×0.25 or above ×2, never flipped', Object.values(lw).every(m => m >= 0.25 && m <= 2))
+t('few calls pull towards ×1', learnedWeights(mk(12), 24).trend < lw.trend)
+t('learning uses only outcomes known by then', JSON.stringify(learnedWeights(M, 24, 0)) === '{"trend":1,"momentum":1,"range":1}'
+  && learnedWeights(M, 24, M[5].i).trend < lw.trend)
+const L = learnedScores(M, 24)
+t('the learned score on each past day used only the days before it', L.get(M[0]) === weightedScore(M[0].f, null) && L.get(M[299]) !== L.get(M[0]) * 0 + weightedScore(M[299].f, null))
+const lr = pastRecord(M, weightedScore(M.at(-1).f, lw), 24, x => L.get(x))
+t('and graded that way, learning that helps shows as better than chance', lr.verdict === 'better', lr)
+t('weighted score: the multipliers count', weightedScore({ trend: 1, momentum: -1 }, { trend: 2, momentum: 0.25 }) > weightedScore({ trend: 1, momentum: -1 }, null))
+const pool = pooledRecord([S, M], 24)
+t('pooled across markets: both leans, the markets counted, the cone', pool.markets === 2 && pool.up.n > 0 && pool.down.n > 0 && pool.cone.n > 0, pool)
+t('no samples: no record, not a 0% one', pastRecord([], 40, 24) === null && coneRecord([], 24) === null)
 t('the past record replays only the signals with history', CANDLE_FACTORS.join() === 'trend,momentum,range'
   && candleScoreOf([{ id: 'trend', w: 25, v: 1 }, { id: 'book', w: 10, v: -1 }]).score === 100)
-t('no samples: no record, not a 0% one', pastRecord([], 40, 24) === null)
+const om = outlookFor({ position: P, price, c4, c1, hours: 24, mult: { trend: 2, momentum: 0.25, range: 1 } })
+t('the card\'s score takes the learned multipliers; its coverage does not', om.factors.find(f => f.id === 'trend').m === 2 && om.score.coverage <= 1)
 
 console.log('-- wiring --')
 const main = fs.readFileSync('src/main.js', 'utf8'), html = fs.readFileSync('index.html', 'utf8'), ana = fs.readFileSync('src/analysis.js', 'utf8')
@@ -155,6 +185,8 @@ t('the footer says it is not a prediction', /Not a prediction/.test(view))
 // "group same assets cards together with all individual and account data including account name"
 t('one card per market: positions are grouped by coin', /groups\.get\(p\.coin\)\.push\(p\)/.test(view) && /function cardHtml\(\{ coin, ps, raw, price, state \}, ctx\)/.test(view))
 t('a single-account view names its account too', /acctName: \(\) => state\.addr === PAPER_ADDR/.test(main) && /nameOf = \(p\) => p\._acct \?\? ctx\.acctName\?\.\(\)/.test(view))
+t('the card weighs the candle signals by how they did on that market', /mult: past\.mult/.test(view) && /learnedWeights\(e\.samples, h\)/.test(view))
+t('the replay is once per market load, shared by every horizon', /pastSamples\(raw\.candles\['4h'\], raw\.candles\['1d'\]\)/.test(view))
 t('only a full read is reported to the live record', /if \(\(o\.score\?\.coverage \?\? 0\) >= 0\.9\) logRating/.test(view))
 
 console.log(`${pass} passed, ${fail} failed`)

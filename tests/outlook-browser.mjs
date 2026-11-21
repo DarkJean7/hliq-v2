@@ -90,7 +90,7 @@ async function open(opts) {
     const u = new URL(route.request().url()), coin = u.searchParams.get('coin'), h = Number(u.searchParams.get('h'))
     const z = { n: 0, hits: 0 }
     const all = { n: 40, hits: 22, up: { n: 20, hits: 12 }, down: { n: 15, hits: 7 }, flat: { n: 5, hits: 3 } }
-    const eth = { n: 12, hits: 8, up: { n: 7, hits: 5 }, down: { n: 5, hits: 3 }, flat: z }
+    const eth = { n: 12, hits: 8, inside: 9, up: { n: 7, hits: 5 }, down: { n: 5, hits: 3 }, flat: z }
     return route.fulfill({ json: { hours: h, coin: coin === 'ETH' ? eth : { n: 0, hits: 0, up: z, down: z, flat: z }, all, pending: 3 } })
   })
   const p = await ctx.newPage()
@@ -119,6 +119,16 @@ async function v2(p, root, label, logged) {
   // must not have sent it again. 7d was opened once, so it reported once too.
   const by = (coin, h) => logged.filter(x => x.coin === coin && x.hours === h)
   t(`${label}: each rating reported once per market and horizon`, by('ETH', 24).length === 1 && by('BTC', 24).length === 1 && by('ETH', 168).length === 1 && by('BTC', 168).length === 1, logged)
+  // "do all": the record grows — move size, learned weights, the cone, every horizon, pooled.
+  t(`${label}: the size of the move after the reading, and on any day`, /Average move after [+-]\d+\.\d\d% · on all days [+-]\d+\.\d\d%/.test(rec.ETH), rec.ETH)
+  t(`${label}: the learned-weights record, against chance, and whether learning helped`, /Weighted by how each signal did on ETH \(now [+-]?\d+\): right \d+% of \d+ days — chance \d+%/.test(rec.ETH) && /Learning (helped|made it worse|made little difference)/.test(rec.ETH), rec.ETH)
+  t(`${label}: the cone checked, past and live`, /Ended inside the 1σ band on \d+% of \d+ days \(expect 68%\) · touched the bullish line \d+%, the bearish \d+% \(expect 32% each\)\./.test(rec.ETH) && /Live: inside on 75% of 12 graded/.test(rec.ETH), rec.ETH)
+  t(`${label}: every horizon, the one on screen marked`, await p.$$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-hz`, els => els.map(e => e.textContent.trim().split(' ')[0]).join() + '|' + els.filter(e => e.classList.contains('cur')).length) === '4h,24h,3d,7d|1')
+  t(`${label}: all the markets pooled, at the top`, /Your 2 markets pooled · past year · 24h/.test(await p.$eval(`${root} .ol-pool`, e => e.textContent).catch(() => '')))
+  const whyTxt = await p.$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-why`, e => e.textContent.replace(/\s+/g, ' ')).catch(() => '')
+  t(`${label}: why gives each candle signal its own record`, (whyTxt.match(/Past year: (right \d+% of \d+ calls · chance \d+% · avg [+-]\d+\.\d\d% per call|it made no calls)/g) ?? []).length === 3, whyTxt.slice(0, 600))
+  t(`${label}: and says the others have no history to check`, /No history here to check this one/.test(whyTxt))
+  t(`${label}: and how the weights were learned`, /weighted by how each has called ETH over the past year \(×0\.25 to ×2\)/.test(whyTxt))
   t(`${label}: what is reported is the coin, horizon, score and volatility, nothing else`, logged.every(x => Object.keys(x).sort().join() === 'coin,hours,score,sigma' && Number.isInteger(x.score) && x.sigma > 0), logged[0])
 }
 
@@ -170,7 +180,7 @@ console.log('-- desktop --')
   await p.evaluate(() => window.switchTab('outlook'))
   await checks(p, '#deskOutlook', 'desktop')
   await v2(p, '#deskOutlook', 'desktop', logged)
-  if (SHOT) await p.screenshot({ path: `${SHOT}/outlook-desktop.png`, fullPage: false })
+  if (SHOT) { await p.screenshot({ path: `${SHOT}/outlook-desktop.png`, fullPage: false }); await p.evaluate(() => document.querySelector('#deskOutlook .ol-card .ol-rec')?.scrollIntoView({ block: 'start' })); await p.screenshot({ path: `${SHOT}/outlook-record.png`, fullPage: false }) }
   t('desktop: no page errors', errs.length === 0, errs)
 }
 
