@@ -10,7 +10,7 @@
 // price comes from the mids the app already has.
 import './outlook.css'
 import { ensureAnalysis, analysisFor, analysisRaw, analysisState, setAnalysisDeps, fmtPx } from './analysis.js'
-import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK } from './outlook.js'
+import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, pastSamples, pastRecord, candleScoreOf } from './outlook.js'
 import { catLabel } from './simcat.js'
 
 const LS_H = 'hliq_outlook_h'
@@ -20,6 +20,41 @@ const whyOpen = new Set()   // card keys whose factor list is open
 let last = null             // { host, ctx } — the latest render, for repaints when a load lands
 let painted = ''
 let pumping = false
+
+// ── version 2: the track record ────────────────────────────────────────────
+// The past record replays the candle score over the year of 4h candles already loaded (~40ms a
+// market), once per load and horizon. The live record is the server's (/outlook-record), asked
+// at most every two minutes per market; and each rating shown is reported to it once an hour per
+// market and horizon (/outlook-log) — coin, horizon, score and volatility, nothing about who.
+const pastMemo = new Map()     // coin|loadedAt|hours → samples
+const recs = new Map()         // coin|hours → { at, data, err }
+const logged = new Set()       // coin|hours|hour already reported from this page
+let recVer = 0
+function pastFor(coin, raw, hours) {
+  const k = `${coin}|${raw.at}|${hours}`
+  if (!pastMemo.has(k)) {
+    for (const key of [...pastMemo.keys()]) if (key.startsWith(coin + '|') && key.endsWith('|' + hours)) pastMemo.delete(key)
+    pastMemo.set(k, pastSamples(raw.candles['4h'], raw.candles['1d'], hours))
+  }
+  return pastMemo.get(k)
+}
+function ensureRecord(coin, hours) {
+  const k = `${coin}|${hours}`, r = recs.get(k)
+  if (r && (r.inflight || Date.now() - r.at < 120e3)) return
+  recs.set(k, { ...(r ?? {}), inflight: true })
+  fetch(`/outlook-record?coin=${encodeURIComponent(coin)}&h=${hours}`)
+    .then(res => res.ok ? res.json() : Promise.reject(new Error(String(res.status))))
+    .then(data => recs.set(k, { at: Date.now(), data, err: false }))
+    .catch(() => recs.set(k, { at: Date.now(), data: r?.data ?? null, err: true }))
+    .finally(() => { recVer++; paint(false) })
+}
+function logRating(coin, hours, score, sigma) {
+  if (score == null || !(sigma > 0)) return
+  const k = `${coin}|${hours}|${Math.floor(Date.now() / 3600e3)}`
+  if (logged.has(k)) return
+  logged.add(k)
+  fetch('/outlook-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ coin, hours, score, sigma }) }).catch(() => {})
+}
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const keyOf = (p) => `${p.coin}|${p._acctAddr ?? ''}`
@@ -100,7 +135,7 @@ function paint(force) {
   })
   // Repaint only when something on the card would change: a position, a load landing, the price
   // moving a twentieth of a percent, a toggle.
-  const sig = [horizon, ps == null ? 'unknown' : '', [...whyOpen].join(','), ...items.map(i =>
+  const sig = [horizon, recVer, ps == null ? 'unknown' : '', [...whyOpen].join(','), ...items.map(i =>
     `${keyOf(i.p)}:${i.p.szi}:${i.p.entryPx}:${i.p.liquidationPx}:${i.raw?.at ?? 0}:${i.state}:${i.price ? Math.round(Math.log(i.price) * 2000) : 0}`)].join('|')
   if (!force && sig === painted) return
   painted = sig
@@ -113,6 +148,74 @@ function paint(force) {
   }<div class="ol-foot">${T(
     `Not a prediction. The cone is how far each market has moved in ${horizon} from its last 180 4h candles; chances assume no drift and are for touching a price, not ending there. The score is a lean from six signals — read the reasons, not just the number.`,
     `No es una predicción. El cono es cuánto se ha movido cada mercado en ${horizon} según sus últimas 180 velas de 4h; las probabilidades suponen que no hay tendencia y son de tocar un precio, no de terminar ahí. La puntuación es una inclinación de seis señales: lee los motivos, no solo el número.`)}</div></div>`
+}
+
+const BAND_NAME = (s, T) => {
+  const a = Math.abs(s)
+  if (a < 15) return T('neutral', 'neutral')
+  const w = a >= 40 ? T('strongly ', 'fuertemente ') : ''
+  return w + (s > 0 ? T('bullish', 'alcista') : T('bearish', 'bajista'))
+}
+const LEAN_NAME = (s, T) => Math.abs(s) < 15 ? T('neutral', 'neutral') : s > 0 ? T('bullish', 'alcista') : T('bearish', 'bajista')
+const VERDICT = {
+  better: ['Better than the base rate', 'Mejor que la tasa base'], worse: ['Worse than the base rate', 'Peor que la tasa base'],
+  chance: ['No better than chance', 'No mejor que el azar'], thin: ['Too few days to tell', 'Muy pocos días para saber'],
+  none: ['Never read like this in the past year', 'Nunca marcó así en el último año'],
+}
+const signed = (n) => `${n > 0 ? '+' : ''}${n}`
+
+/**
+ * Track record: the past year (the candle signals replayed, against the base rate) and the live
+ * record (the server's grading of the full score as shown). Rendering it also reports this
+ * rating and asks for the record — both rate-limited above.
+ */
+function recordHtml(coin, raw, o, ctx) {
+  const { T } = ctx
+  const hours = o.hours, hz = hours === 24 ? '24h' : '7d'
+  const lab = esc(ctx.coinLabel(coin))
+  logRating(coin, hours, o.score?.score ?? null, o.sigma)
+  ensureRecord(coin, hours)
+
+  const cs = candleScoreOf(o.factors)
+  const past = cs ? pastRecord(pastFor(coin, raw, hours), cs.score, hours) : null
+  const happened = (lean) => lean === 'up' ? T(`higher ${hz} later`, `más alto ${hz} después`)
+    : lean === 'down' ? T(`lower ${hz} later`, `más bajo ${hz} después`)
+    : T(`within its usual range ${hz} later`, `dentro de su rango usual ${hz} después`)
+  let pastLine
+  if (!past) pastLine = T('Not enough history to replay.', 'No hay historial suficiente.')
+  else if (past.verdict === 'none') pastLine = `${T(`The candle signals read ${BAND_NAME(cs.score, T)} now (${signed(cs.score)}).`, `Las señales de velas marcan ${BAND_NAME(cs.score, T)} ahora (${signed(cs.score)}).`)} <em class="v none">${T(...VERDICT.none)}</em>`
+  else {
+    const band = past.widened ? LEAN_NAME(cs.score, T) : BAND_NAME(cs.score, T)
+    pastLine = `${T(`When ${lab}'s candle signals read ${band} (now ${signed(cs.score)}), it was ${happened(past.lean)} on`,
+      `Cuando las señales de velas de ${lab} marcaron ${band} (ahora ${signed(cs.score)}), estuvo ${happened(past.lean)} en`)}
+      <b>${pct(past.rate)}</b> ${T(`of ${past.n} days`, `de ${past.n} días`)} — ${T('on all days', 'en todos los días')} ${pct(past.base)}.
+      <em class="v ${past.verdict}">${T(...VERDICT[past.verdict])}</em>`
+  }
+
+  const r = recs.get(`${coin}|${hours}`)
+  const d = r?.data
+  let liveLine
+  if (!d) liveLine = r?.err ? T('Live record unavailable right now.', 'Registro en vivo no disponible ahora.') : T('Loading the live record…', 'Cargando el registro en vivo…')
+  else if (!d.coin?.n) {
+    const waiting = d.pending ? T(` ${d.pending} waiting on ${lab}.`, ` ${d.pending} pendientes en ${lab}.`) : ''
+    const all = d.all?.n ? T(` All markets so far: ${pct(d.all.hits / d.all.n)} right of ${d.all.n}.`, ` Todos los mercados: ${pct(d.all.hits / d.all.n)} acertadas de ${d.all.n}.`) : ''
+    liveLine = T(`Grading started: every rating is checked ${hz} after it was shown.`, `Calificación iniciada: cada lectura se revisa ${hz} después de mostrarse.`) + waiting + all
+  } else {
+    const c = d.coin
+    const parts = [
+      c.up.n ? `${T('bullish', 'alcistas')} ${c.up.hits}/${c.up.n}` : null,
+      c.down.n ? `${T('bearish', 'bajistas')} ${c.down.hits}/${c.down.n}` : null,
+      c.flat.n ? `${T('neutral', 'neutrales')} ${c.flat.hits}/${c.flat.n}` : null,
+      `${T('all markets', 'todos')} ${pct(d.all.hits / d.all.n)} ${T('of', 'de')} ${d.all.n}`,
+      d.pending ? `${d.pending} ${T('waiting', 'pendientes')}` : null,
+    ].filter(Boolean)
+    liveLine = `${T(`${c.n} graded ${lab} calls,`, `${c.n} lecturas calificadas de ${lab},`)} <b>${pct(c.hits / c.n)}</b> ${T('right', 'acertadas')} · ${parts.join(' · ')}`
+  }
+  return `<div class="ol-rec">
+    <div class="ol-rec-h">${T('Track record', 'Historial')}</div>
+    <div class="ol-rec-row"><span class="ol-rec-tag">${T('Past year', 'Último año')}</span><div>${pastLine}<div class="ol-rec-note">${T('Trend, momentum and range only: the signals with history. One check a day.', 'Solo tendencia, momento y rango: las señales con historial. Una revisión al día.')}</div></div></div>
+    <div class="ol-rec-row"><span class="ol-rec-tag">${T('Live', 'En vivo')}</span><div>${liveLine}<div class="ol-rec-note">${T('The full score as shown, graded by the server at its own price.', 'La puntuación completa tal como se mostró, calificada por el servidor con su propio precio.')}</div></div></div>
+  </div>`
 }
 
 function headHtml(T) {
@@ -175,7 +278,7 @@ function cardHtml({ p, raw, price, state }, ctx) {
     ${open ? `<div class="ol-why">${o.factors.map(f => factorHtml(f, ctx)).join('')}${sc.coverage < 0.999 ? `<div class="ol-why-note">${T('Signals without data are left out, not counted as neutral.', 'Las señales sin datos se omiten, no cuentan como neutrales.')}</div>` : ''}</div>` : ''}` : ''
   return `<div class="ol-card">${head}${chip}</div>${agree}
     ${coneSvg(o, raw.candles['4h'], ctx)}
-    ${cases}${risk}${why}</div>`
+    ${cases}${risk}${recordHtml(p.coin, raw, o, ctx)}${why}</div>`
 }
 
 const FACTOR_NAME = {

@@ -80,6 +80,16 @@ async function open(opts) {
   })
   await ctx.route('**/api/**', (route) => route.fulfill({ status: 503, body: 'offline in test' }))
   await ctx.route('**/markets-meta', (route) => route.fulfill({ json: { revenue: {}, cg: {}, stocks: {}, sic: {} } }))
+  // Version 2's server: what the page reports, and a live record for ETH (BTC has none yet).
+  const logged = []
+  await ctx.route('**/outlook-log', (route) => { try { logged.push(JSON.parse(route.request().postData())) } catch {} ; return route.fulfill({ status: 204, body: '' }) })
+  await ctx.route('**/outlook-record?**', (route) => {
+    const u = new URL(route.request().url()), coin = u.searchParams.get('coin'), h = Number(u.searchParams.get('h'))
+    const z = { n: 0, hits: 0 }
+    const all = { n: 40, hits: 22, up: { n: 20, hits: 12 }, down: { n: 15, hits: 7 }, flat: { n: 5, hits: 3 } }
+    const eth = { n: 12, hits: 8, up: { n: 7, hits: 5 }, down: { n: 5, hits: 3 }, flat: z }
+    return route.fulfill({ json: { hours: h, coin: coin === 'ETH' ? eth : { n: 0, hits: 0, up: z, down: z, flat: z }, all, pending: 3 } })
+  })
   const p = await ctx.newPage()
   const errs = []
   p.on('pageerror', e => errs.push(e.message))
@@ -91,7 +101,22 @@ async function open(opts) {
   await p.reload({ waitUntil: 'domcontentloaded' })
   await p.waitForFunction(() => !!window.loadDashboard, null, { timeout: 60000 })
   await p.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, ADDR)
-  return { p, asked, ctx, errs, peak: () => peak }
+  return { p, asked, ctx, errs, peak: () => peak, logged }
+}
+
+// Version 2: the track record on each card, and what was reported to the server.
+async function v2(p, root, label, logged) {
+  await p.waitForFunction((r) => [...document.querySelectorAll(`${r} .ol-rec`)].filter(e => /graded|Grading started/.test(e.textContent)).length === 2, root, { timeout: 15000 }).catch(() => {})
+  const rec = await p.$$eval(`${root} .ol-card`, els => Object.fromEntries(els.map(e => [e.querySelector('.ol-coin')?.textContent, e.querySelector('.ol-rec')?.textContent.replace(/\s+/g, ' ') ?? ''])))
+  t(`${label}: a past-year line with its base rate and verdict`, /candle signals read .* on \d+% of \d+ days — on all days \d+%\. (Better than the base rate|Worse than the base rate|No better than chance|Too few days to tell)/.test(rec.ETH)
+    || /Never read like this in the past year/.test(rec.ETH), rec.ETH)
+  t(`${label}: the live record for ETH`, /12 graded ETH calls, 67% right · bullish 5\/7 · bearish 3\/5 · all markets 55% of 40 · 3 waiting/.test(rec.ETH), rec.ETH)
+  t(`${label}: BTC has none yet, and says grading has started`, /Grading started: every rating is checked 24h after it was shown\. 3 waiting on BTC\. All markets so far: 55% right of 40\./.test(rec.BTC), rec.BTC)
+  // Each card reported its rating once for this hour and horizon — the toggles and ticks since
+  // must not have sent it again. 7d was opened once, so it reported once too.
+  const by = (coin, h) => logged.filter(x => x.coin === coin && x.hours === h)
+  t(`${label}: each rating reported once per market and horizon`, by('ETH', 24).length === 1 && by('BTC', 24).length === 1 && by('ETH', 168).length === 1 && by('BTC', 168).length === 1, logged)
+  t(`${label}: what is reported is the coin, horizon, score and volatility, nothing else`, logged.every(x => Object.keys(x).sort().join() === 'coin,hours,score,sigma' && Number.isInteger(x.score) && x.sigma > 0), logged[0])
 }
 
 async function checks(p, root, label) {
@@ -122,11 +147,12 @@ async function checks(p, root, label) {
 
 console.log('-- phone --')
 {
-  const { p, asked, errs, peak } = await open({ ...devices['iPhone 14 Pro Max'], viewport: { width: 430, height: 930 } })
+  const { p, asked, errs, peak, logged } = await open({ ...devices['iPhone 14 Pro Max'], viewport: { width: 430, height: 930 } })
   await p.waitForFunction(() => document.getElementById('mobVTab-outlook'), null, { timeout: 30000 })
   await p.waitForFunction(() => (window.__state?.perpState ?? true) && document.querySelectorAll('.mob-v-row').length >= 0, null, { timeout: 30000 })
   await p.evaluate(() => window.mobVTab('outlook'))
   await checks(p, '#mobVContent', 'phone')
+  await v2(p, '#mobVContent', 'phone', logged)
   t('phone: markets load one at a time, never in parallel', peak() === 1, { peak: peak(), asked })
   t('phone: each market read once', asked.filter(x => x === 'ETH:4h').length === 1 && asked.filter(x => x === 'BTC:4h').length === 1, asked)
   if (SHOT) { await p.evaluate(() => document.querySelector('#mobVContent .ol-view')?.scrollIntoView()); await p.screenshot({ path: `${SHOT}/outlook-phone.png`, fullPage: false }) }
@@ -136,10 +162,11 @@ console.log('-- phone --')
 
 console.log('-- desktop --')
 {
-  const { p, errs } = await open({ viewport: { width: 1500, height: 950 } })
+  const { p, errs, logged } = await open({ viewport: { width: 1500, height: 950 } })
   await p.waitForFunction(() => document.getElementById('dashboard')?.classList.contains('active'), null, { timeout: 30000 })
   await p.evaluate(() => window.switchTab('outlook'))
   await checks(p, '#deskOutlook', 'desktop')
+  await v2(p, '#deskOutlook', 'desktop', logged)
   if (SHOT) await p.screenshot({ path: `${SHOT}/outlook-desktop.png`, fullPage: false })
   t('desktop: no page errors', errs.length === 0, errs)
 }

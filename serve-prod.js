@@ -4,7 +4,7 @@
 // and forwards /api/* to the strategy server on port 3001.
 
 import { createServer, request as httpRequest } from 'node:http'
-import { createReadStream, statSync, existsSync, writeFileSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs'
+import { createReadStream, statSync, existsSync, writeFileSync, mkdirSync, readFileSync, renameSync, unlinkSync, openSync, closeSync } from 'node:fs'
 import { join, extname, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coinGeckoUpgrade } from './src/iconpick.js'
@@ -20,6 +20,7 @@ import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, 
 import { buildDexes, buildCexes, LLAMA_DEXVOL_URL, CEX_CIK, secFactsUrl, sharesFromFacts } from './src/exchanges.js'
 import { refreshMacro, buildMacro, macroHasData, MACRO_UA } from './src/macro.js'
 import { KNOWN, knownRow } from './src/lbknown.js'
+import { emptyLog, cleanSubmission, addEntry, dueEntries, gradeDue, recordOf, OL_HOURS } from './src/outlooklog.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -191,6 +192,69 @@ function popRefresh() {
   })().finally(() => { try { if (readFileSync(POP_LOCK, 'utf8') === String(process.pid)) unlinkSync(POP_LOCK) } catch {} }).catch(e => console.warn('[lb-known] refresh failed:', e.message)).finally(() => { popInflight = null })
   return popInflight
 }
+// /outlook-log and /outlook-record (src/outlooklog.js): the Outlook tab's live track record.
+// Browsers report the score they showed; THIS server stamps the time and the price (Hyperliquid
+// mids) and grades with its own price once the horizon has passed. Nothing identifies who was
+// looking. Two workers share one file, so every write goes through an exclusive lock file
+// (open 'wx' fails if it exists) and an atomic rename; a lock older than 20s is from a worker
+// that died mid-write. Prices are allMids (weight 2), cached a minute per dex, and at most ten
+// fetches a minute per worker whatever the requests ask for: this box's budget is the bots'.
+const OL_FILE = join(__dirname, 'data', 'outlook-log.json')
+const OL_LOCK = OL_FILE + '.lock'
+let olMem = null, olMemAt = 0
+function olRead() {
+  try { const d = JSON.parse(readFileSync(OL_FILE, 'utf8')); if (Array.isArray(d?.entries)) return d } catch {}
+  return emptyLog()
+}
+function olLoad() {
+  if (!olMem || Date.now() - olMemAt > 30_000) { olMem = olRead(); olMemAt = Date.now() }
+  return olMem
+}
+function olLocked(fn) {
+  let fd
+  try { mkdirSync(dirname(OL_FILE), { recursive: true }); fd = openSync(OL_LOCK, 'wx') }
+  catch { try { if (Date.now() - statSync(OL_LOCK).mtimeMs > 20_000) unlinkSync(OL_LOCK) } catch {} ; return false }
+  try {
+    const log = olRead()
+    if (fn(log)) { writeAtomic(OL_FILE, JSON.stringify(log)); olMem = log; olMemAt = Date.now() }
+    return true
+  } finally { try { closeSync(fd) } catch {} ; try { unlinkSync(OL_LOCK) } catch {} }
+}
+const olMids = new Map()    // dex ('' = main) → { at, mids }
+let olFetches = []          // times of this worker's recent allMids calls
+async function olMidsFor(coins) {
+  const out = {}
+  for (const dex of new Set(coins.map(c => c.includes(':') ? c.split(':')[0] : ''))) {
+    let m = olMids.get(dex)
+    if (!m || Date.now() - m.at > 60_000) {
+      olFetches = olFetches.filter(t => Date.now() - t < 60_000)
+      if (olFetches.length >= 10) continue
+      olFetches.push(Date.now())
+      try {
+        const mids = await popInfo(dex ? { type: 'allMids', dex } : { type: 'allMids' })
+        if (!mids || typeof mids !== 'object' || Array.isArray(mids)) continue
+        m = { at: Date.now(), mids }
+        olMids.set(dex, m)
+        if (olMids.size > 50) olMids.delete(olMids.keys().next().value)
+      } catch { continue }
+    }
+    Object.assign(out, m.mids)
+  }
+  return out
+}
+let olGrading = false
+async function olGradeNow() {
+  if (olGrading) return
+  const due = dueEntries(olLoad(), Date.now())
+  if (!due.length) return
+  olGrading = true
+  try {
+    const mids = await olMidsFor(due.map(e => e.coin))
+    olLocked(log => gradeDue(log, mids, Date.now()) > 0)
+  } catch (e) { console.warn('[outlook] grading failed:', e.message) } finally { olGrading = false }
+}
+setInterval(() => { olGradeNow() }, 5 * 60_000).unref?.()
+
 function cgRefresh() {
   if (cgInflight) return cgInflight
   cgInflight = (async () => {
@@ -1191,6 +1255,29 @@ createServer((req, res) => {
       pfPerfBy.clear()
       return send(200, { portfolios: list })
     })()
+    return
+  }
+
+  if (url === '/outlook-log') {
+    if (req.method !== 'POST') { res.writeHead(405).end(); return }
+    ;(async () => {
+      const sub = cleanSubmission(await readJson(req, 2_000))
+      if (!sub) return res.writeHead(400).end()
+      const px = Number((await olMidsFor([sub.coin]))[sub.coin])
+      if (!(px > 0)) return res.writeHead(422).end()      // no price for it here: not logged
+      olLocked(log => addEntry(log, sub, px, Date.now()))
+      res.writeHead(204).end()
+    })().catch(() => { try { res.writeHead(500).end() } catch {} })
+    return
+  }
+
+  if (url === '/outlook-record') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const q = new URL(req.url, 'http://x').searchParams
+    const coin = String(q.get('coin') ?? ''), hours = Number(q.get('h'))
+    if (!cleanSubmission({ coin, hours, score: 0, sigma: 0.01 }) || !OL_HOURS.includes(hours)) { res.writeHead(400).end(); return }
+    olGradeNow()
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' }).end(JSON.stringify(recordOf(olLoad(), coin, hours)))
     return
   }
 

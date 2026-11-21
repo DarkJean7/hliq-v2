@@ -283,3 +283,71 @@ export function outlookFor({ position, price, c4, c1, setup, ratio = null, fundi
   const agrees = !pos || !sc || sc.lean === 'flat' ? null : (sc.lean === 'up') === (pos.side === 'long')
   return { pos, price, hours, v4, sigma, factors: fs, score: sc, cases: scenarios({ pos, price, sigma, setup }), risk, agrees, setup: setup ?? null }
 }
+
+// ── version 2: the past record ───────────────────────────────────────────────
+
+/**
+ * The signals that can be replayed from candles alone. Levels need the zones as they stood then,
+ * and there is no history here of the order book or of funding, so the past record is of these
+ * three (65% of the weight) and says so. The live record (outlooklog.js) grades all six.
+ */
+export const CANDLE_FACTORS = ['trend', 'momentum', 'range']
+export const candleScoreOf = (fs) => scoreOf(fs.filter(f => CANDLE_FACTORS.includes(f.id)))
+
+const DAY_MS = 864e5, H4_MS = 4 * 3600e3
+const bandOf = (s) => Math.abs(s) < 15 ? 'flat' : (s > 0 ? 'up' : 'down') + (Math.abs(s) >= 40 ? '+' : '')
+const leanOfScore = (s) => Math.abs(s) < 15 ? 'flat' : s > 0 ? 'up' : 'down'
+
+/**
+ * Replay the candle score once a day (every sixth 4h candle) over the candles given, and pair
+ * each with what happened next: the log return `hours` later, and the cone's 1σ at the time.
+ * Everything at a sample is computed from candles that had CLOSED by then — a daily candle counts
+ * only once its day is over — so no sample sees its own future.
+ */
+export function pastSamples(c4, c1, hours) {
+  const ahead = Math.round(hours / 4)
+  const daily = (c1 ?? []).filter(k => +k.c > 0)
+  const out = []
+  if (!c4?.length) return out
+  const first = RANGE_LOOKBACK + RANGE_RECENT + 1
+  let d = 0
+  for (let i = first; i + ahead < c4.length; i += 6) {
+    const closeAt = +c4[i].t + H4_MS
+    while (d < daily.length && +daily[d].t + DAY_MS <= closeAt) d++
+    const price = +c4[i].c
+    const fs = factors({ price, c4: c4.slice(Math.max(0, i + 1 - RANGE_CANDLES), i + 1), c1: daily.slice(Math.max(0, d - 260), d) })
+    const sc = candleScoreOf(fs)
+    const sigma = sigmaFor(vol4h(c4.slice(Math.max(0, i - 180), i + 1)), hours)
+    const end = +c4[i + ahead].c
+    if (!sc || !(sigma > 0) || !(price > 0) || !(end > 0)) continue
+    out.push({ t: +c4[i].t, s: sc.score, ret: Math.log(end / price), sigma })
+  }
+  return out
+}
+
+/**
+ * How often a score like `score` was right, against how often the same call would have been
+ * right on ANY day — the base rate. A bullish read that was right 58% of the time in a market
+ * that rose on 57% of days is no read at all, and this says so.
+ *
+ * "Like this" is the same lean and strength band (under 40 / 40 and over); with fewer than 20
+ * such days it widens to the same lean, and says it did. Samples a week apart overlap when the
+ * horizon is a week, so the test of whether it beats the base rate counts days ÷ 7, not days.
+ */
+export function pastRecord(samples, score, hours) {
+  if (!samples?.length || score == null) return null
+  const lean = leanOfScore(score)
+  const hit = (x) => lean === 'up' ? x.ret > 0 : lean === 'down' ? x.ret < 0 : Math.abs(x.ret) < x.sigma
+  let match = samples.filter(x => bandOf(x.s) === bandOf(score)), widened = false
+  if (match.length < 20 && bandOf(score) !== lean) { match = samples.filter(x => leanOfScore(x.s) === lean); widened = true }
+  const n = match.length
+  const base = samples.filter(hit).length / samples.length
+  if (!n) return { lean, n: 0, base, widened, verdict: 'none', days: samples.length }
+  const rate = match.filter(hit).length / n
+  const nEff = n / Math.max(1, hours / 24)
+  const se = Math.sqrt(Math.max(1e-9, base * (1 - base)) / nEff)
+  const z = (rate - base) / se
+  const verdict = nEff < 10 ? 'thin' : z >= 2 ? 'better' : z <= -2 ? 'worse' : 'chance'
+  const avg = match.reduce((s, x) => s + x.ret, 0) / n
+  return { lean, n, rate, base, z, verdict, widened, avg: Math.expm1(avg) * 100, days: samples.length, from: samples[0].t }
+}

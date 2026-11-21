@@ -91,3 +91,14 @@
   .ol-view { max-width: 1120px; }
   .ol-cards { grid-template-columns: 1fr 1fr; align-items: start; }
 }
+
+/* Track record (version 2). */
+.ol-rec { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 9px; display: grid; gap: 7px; }
+.ol-rec-h { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.ol-rec-row { display: grid; grid-template-columns: 64px 1fr; gap: 8px; font-size: 12px; line-height: 1.45; color: var(--fg, var(--text)); }
+.ol-rec-tag { font-size: 10.5px; font-weight: 800; color: var(--muted); padding-top: 1px; }
+.ol-rec-note { font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+.ol-rec .v { font-style: normal; font-weight: 700; white-space: nowrap; }
+.ol-rec .v.better { color: var(--green); }
+.ol-rec .v.worse { color: var(--red); }
+.ol-rec .v.chance, .ol-rec .v.thin, .ol-rec .v.none { color: #f5a524; }

@@ -273,6 +273,14 @@ function strategyPlugin() {
           } catch { return sendJson(res, 502, { points: null }) }
         }
 
+        // Dev twin of serve-prod.js /outlook-log + /outlook-record: accepts and forgets, and has
+        // no record. The real log needs the server's own prices; dev has nothing to grade.
+        if (method === 'POST' && path === '/outlook-log') { res.statusCode = 204; return res.end() }
+        if (method === 'GET' && path === '/outlook-record') {
+          const OL = await import('./src/outlooklog.js')
+          const q = new URL(req.url, 'http://x').searchParams
+          return sendJson(res, 200, OL.recordOf(OL.emptyLog(), String(q.get('coin') ?? ''), Number(q.get('h')) || 24))
+        }
         // Dev twin of serve-prod.js /lb-known (in memory, 3 minutes, unpaced -- dev only).
         if (method === 'GET' && path === '/lb-known') {
           const K = await import('./src/lbknown.js')
