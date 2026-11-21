@@ -189,6 +189,9 @@ t('one card per market: positions are grouped by coin', view.includes('groups.ge
 t('a single-account view names its account too', /acctName: \(\) => state\.addr === PAPER_ADDR/.test(main) && /nameOf = \(p\) => p\._acct \?\? ctx\.acctName\?\.\(\)/.test(view))
 t('the card weighs the candle signals by how they did on that market', /mult: past\.mult/.test(view) && /learnedWeights\(e\.samples, h\)/.test(view))
 t('the replay is once per market load, shared by every horizon', /pastSamples\(raw\.candles\['4h'\], raw\.candles\['1d'\]\)/.test(view))
+// "when i visit the oracle section and exit it redirects me again to oracle"
+t('a redraw after the tab was left draws nothing; only opening the tab builds it', view.includes('if (!onScreen(host) && !fromRender) return') && view.includes('paint(!tick, true)'))
+t('and loading for it stops once it is left', view.includes('if (!onScreen(last?.host)) return'))
 t('only a full read is reported to the live record', /if \(\(o\.score\?\.coverage \?\? 0\) >= 0\.9\) logRating/.test(view))
 
 console.log(`${pass} passed, ${fail} failed`)

@@ -59,7 +59,7 @@ async function open(opts) {
   const ctx = await b.newContext(opts)
   try { await ctx.routeWebSocket(/hyperliquid/i, ws => ws.close()) } catch {}
   const asked = [], starts = []
-  let inflight = 0, peak = 0
+  let inflight = 0, peak = 0, slow = 0
   await ctx.route(/api\.hyperliquid\.xyz/, async (route) => {
     let q = {}
     try { q = JSON.parse(route.request().postData() || '{}') } catch {}
@@ -68,7 +68,7 @@ async function open(opts) {
       asked.push(q.req.coin + ':' + iv)
       starts.push({ coin: q.req.coin, iv, start: q.req.startTime })
       inflight++; peak = Math.max(peak, inflight)
-      await new Promise(r => setTimeout(r, 40))
+      await new Promise(r => setTimeout(r, 40 + slow))
       inflight--
       return route.fulfill({ json: candles(q.req.coin, iv, iv === '4h' ? 600 : iv === '1d' ? 400 : iv === '1w' ? 120 : 800) })
     }
@@ -87,7 +87,10 @@ async function open(opts) {
   // Version 2's server: what the page reports, and a live record for ETH (BTC has none yet).
   const logged = []
   await ctx.route('**/outlook-log', (route) => { try { logged.push(JSON.parse(route.request().postData())) } catch {} ; return route.fulfill({ status: 204, body: '' }) })
-  await ctx.route('**/outlook-record?**', (route) => {
+  let recAsked = 0
+  await ctx.route('**/outlook-record?**', async (route) => {
+    recAsked++
+    if (slow) await new Promise(r => setTimeout(r, slow))
     const u = new URL(route.request().url()), coin = u.searchParams.get('coin'), h = Number(u.searchParams.get('h'))
     const z = { n: 0, hits: 0 }
     const all = { n: 40, hits: 22, up: { n: 20, hits: 12 }, down: { n: 15, hits: 7 }, flat: { n: 5, hits: 3 } }
@@ -106,7 +109,7 @@ async function open(opts) {
   await p.reload({ waitUntil: 'domcontentloaded' })
   await p.waitForFunction(() => !!window.loadDashboard, null, { timeout: 60000 })
   await p.evaluate((a) => { document.getElementById('walletInput').value = a; return window.loadDashboard() }, ADDR)
-  return { p, asked, ctx, errs, peak: () => peak, logged, starts }
+  return { p, asked, ctx, errs, peak: () => peak, logged, starts, setSlow: (ms) => { slow = ms }, recAsked: () => recAsked }
 }
 
 // Version 2: the track record on each card, and what was reported to the server.
@@ -206,10 +209,42 @@ async function checks(p, root, label) {
 
 console.log('-- phone --')
 {
-  const { p, asked, errs, peak, logged, starts } = await open({ ...devices['iPhone 14 Pro Max'], viewport: { width: 430, height: 930 } })
+  const { p, asked, errs, peak, logged, starts, setSlow, recAsked } = await open({ ...devices['iPhone 14 Pro Max'], viewport: { width: 430, height: 930 } })
   await p.waitForFunction(() => document.getElementById('mobVTab-outlook'), null, { timeout: 30000 })
   await p.waitForFunction(() => (window.__state?.perpState ?? true) && document.querySelectorAll('.mob-v-row').length >= 0, null, { timeout: 30000 })
+  // "when i visit the oracle section and exit it redirects me again to oracle": leave while its
+  // first market is still loading; when that load lands it must not draw Oracle over Positions.
+  // A real connection: loads take a while, so they land after the person has gone.
+  // A market only Oracle loads (watched, not held), on a slow connection: it is still loading
+  // when the person leaves, as with a dozen markets on a phone.
+  // Cards open, so each asks the server for its live record — and that answer arrives late.
+  await p.evaluate(() => localStorage.setItem('hliq_oracle_open', '["ETH","BTC"]'))
   await p.evaluate(() => window.mobVTab('outlook'))
+  await p.waitForFunction(() => document.querySelectorAll('#mobVContent .ol-card .ol-cases').length === 2, null, { timeout: 30000 }).catch(() => {})
+  setSlow(2500)
+  const r0 = recAsked()
+  await p.evaluate(() => { document.querySelector('#mobVContent [data-ol-h="7d"]')?.click() })   // a new horizon: a new record to ask for
+  for (let i = 0; i < 100 && recAsked() === r0; i++) await p.waitForTimeout(30)
+  await p.evaluate(() => window.mobVTab('positions'))
+  // Watch the whole time, not once at the end: a later repaint of Positions can cover the
+  // intrusion before a single look would see it — on a phone it often does not.
+  await p.evaluate(() => {
+    window.__sawOracle = false
+    const el = document.getElementById('mobVContent')
+    window.__oracleWatch = new MutationObserver(() => { if (el.querySelector('.ol-view')) window.__sawOracle = true })
+    window.__oracleWatch.observe(el, { childList: true, subtree: true })
+  })
+  await p.waitForTimeout(4000)
+  // And deterministically: any redraw Oracle starts while away — a late answer, a load landing —
+  // goes through the same paint. Start one (its own delegated click) and it must draw nothing.
+  await p.evaluate(() => { const b = document.createElement('button'); b.dataset.olSort = 'az'; document.getElementById('mobVContent').appendChild(b); b.click(); b.remove() })
+  await p.waitForTimeout(300)
+  setSlow(0)
+  await p.evaluate(() => { localStorage.setItem('hliq_oracle_open', '[]'); localStorage.setItem('hliq_outlook_h', '24h') })
+  const away = await p.evaluate(() => { window.__oracleWatch.disconnect(); return { sawOracle: window.__sawOracle, tab: document.querySelector('.mob-v-tab.active')?.id } })
+  t('phone: leaving Oracle mid-load, it never comes back over the tab moved to', !away.sawOracle && away.tab === 'mobVTab-positions', away)
+  await p.evaluate(() => window.mobVTab('outlook'))
+  await p.evaluate(() => { document.querySelector('#mobVContent [data-ol-h="24h"]')?.click(); document.querySelector('#mobVContent [data-ol-sort="default"]')?.click(); document.querySelectorAll('#mobVContent .ol-card:not(.ol-mini) .ol-less').forEach(b => b.click()) })
   await checks(p, '#mobVContent', 'phone')
   await v2(p, '#mobVContent', 'phone', logged)
   // "make the cards be able to unextend more easily": an open card folds from its header row,

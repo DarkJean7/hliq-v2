@@ -95,7 +95,7 @@ async function pump() {
   pumping = true
   try {
     for (;;) {
-      if (!last?.host?.isConnected) return
+      if (!onScreen(last?.host)) return   // left the tab: stop loading for it
       const ps = positionsOf(last.ctx) ?? []
       const coins = [...new Set([...ps.map(p => p.coin), ...watchList()])]
       // First what this device kept from last time: every card drawn at once, before any fetch.
@@ -157,7 +157,7 @@ export function renderOutlook(host, ctx, tick = false) {
       if (op) { const k = op.dataset.olOpen; cardOpen.has(k) ? cardOpen.delete(k) : cardOpen.add(k); saveOpen(); paint(true); return }
     })
   }
-  paint(!tick)
+  paint(!tick, true)
   pump()
 }
 
@@ -175,8 +175,9 @@ let addMsg = ''
 
 /** The tab's frame. The add box lives OUTSIDE what repaints, or a price tick would wipe what is
  *  being typed and drop the keyboard. Rebuilt only when something else took the host over. */
+const onScreen = (host) => !!host?.isConnected && !!host.querySelector(':scope > .ol-view > .ol-addbox')
 function shell(host, ctx) {
-  if (host.querySelector(':scope > .ol-view > .ol-addbox')) return false
+  if (onScreen(host)) return false
   const { T } = ctx
   host.innerHTML = `<div class="ol-view"><div class="ol-top"></div>
     <div class="ol-addbox"><input class="ol-add-in" type="search" autocomplete="off" spellcheck="false"
@@ -228,9 +229,14 @@ function secHtml(title, list, empty) {
     : `<div class="ol-empty ol-empty-s">${empty}</div>`}</div>`
 }
 
-function paint(force) {
+function paint(force, fromRender = false) {
   const { host, ctx } = last ?? {}
   if (!host?.isConnected) return
+  // "when i visit the oracle section and exit it redirects me again to oracle": on the phone this
+  // tab draws into the same element every home tab does, and a load landing after it was left
+  // used to rebuild it there, over the tab the person had moved to. Background work never builds
+  // the frame; only an open of the tab (renderOutlook) does.
+  if (!onScreen(host) && !fromRender) return
   if (shell(host, ctx)) force = true
   const T = ctx.T
   const ps = positionsOf(ctx)
