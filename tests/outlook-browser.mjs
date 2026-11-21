@@ -100,6 +100,7 @@ async function open(opts) {
   await p.evaluate(() => {
     localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_onboard_done', '1'); localStorage.setItem('hliq_onboard_welcomed_v1', '1')
     localStorage.setItem('hliq_lang_chosen', '1'); localStorage.setItem('hliq_ann_dismissed', JSON.stringify(['*']))
+    ;['hliq_onboard_tour_v1', 'hliq_install_nudge_v2'].forEach(k => localStorage.setItem(k, '1'))
   })
   await p.reload({ waitUntil: 'domcontentloaded' })
   await p.waitForFunction(() => !!window.loadDashboard, null, { timeout: 60000 })
@@ -152,7 +153,26 @@ async function v2(p, root, label, logged) {
   t(`${label}: what is reported is the coin, horizon, score and volatility, nothing else`, logged.every(x => Object.keys(x).sort().join() === 'coin,hours,score,sigma' && Number.isInteger(x.score) && x.sigma > 0), logged[0])
 }
 
+// "make the cards unextended": they start folded, and a tap opens one.
+async function unfold(p, root, label, n = 2) {
+  await p.waitForFunction(({ r, n }) => document.querySelectorAll(`${r} .ol-card.ol-mini`).length === n, { r: root, n }, { timeout: 30000 }).catch(() => {})
+  if (label) {
+    const mini = await p.$$eval(`${root} .ol-card.ol-mini`, els => els.map(e => ({ cases: !!e.querySelector('.ol-cases'), lean: e.querySelector('.ol-mini-lean')?.textContent ?? '', row: e.querySelector('.ol-mini-row')?.textContent.replace(/\s+/g, ' ') ?? '' })))
+    t(`${label}: the cards start folded`, mini.length === n && mini.every(m => !m.cases), mini)
+    t(`${label}: folded, a card still shows the lean, how sure, and the P&L in each case`, mini.every(m => /(Leans|No clear lean)/.test(m.lean) && /(No edge|Low|Medium|High)/.test(m.lean) && /P&L now\s*[−+]\$[\d,.]+\s*Bear\s*[−+]\$[\d,.]+\s*Neutral\s*[−+]\$[\d,.]+\s*Bull\s*[−+]\$[\d,.]+/.test(m.row)), mini)
+  }
+  // The app's own prompts (install, announcements) can sit over the cards in a fresh browser.
+  await p.evaluate(() => document.querySelectorAll('#annModal, #langChooseModal, #onboardSheet').forEach(e => e.remove()))
+  // Found and tapped in one step: a price tick can repaint the cards between finding one and
+  // tapping it, and a tap on the old copy goes nowhere. The real handler, not a shortcut to it.
+  for (let k = 0; k < n + 3; k++) {
+    const left = await p.evaluate((r) => { const b = document.querySelector(`${r} .ol-card.ol-mini [data-ol-open]`); b?.click(); return document.querySelectorAll(`${r} .ol-card.ol-mini`).length }, root)
+    if (!left) break
+  }
+}
+
 async function checks(p, root, label) {
+  await unfold(p, root, label)
   await p.waitForFunction((r) => document.querySelectorAll(`${r} .ol-card .ol-cases`).length === 2, root, { timeout: 30000 }).catch(() => {})
   const cards = await p.$$eval(`${root} .ol-card`, els => els.map(e => ({
     coin: e.querySelector('.ol-coin')?.textContent, cases: e.querySelectorAll('.ol-case').length,
@@ -186,6 +206,16 @@ console.log('-- phone --')
   await p.evaluate(() => window.mobVTab('outlook'))
   await checks(p, '#mobVContent', 'phone')
   await v2(p, '#mobVContent', 'phone', logged)
+  // "in phone it glitches after a while": once everything has loaded, nothing on the tab may be
+  // wider than the screen — at the narrowest phone too.
+  for (const w of [430, 360]) {
+    await p.setViewportSize({ width: w, height: 900 })
+    await p.waitForTimeout(150)
+    const over = await p.evaluate(() => [...document.querySelectorAll('#mobVContent .ol-view, #mobVContent .ol-card, #mobVContent .ol-sug, #mobVContent .ol-rec, #mobVContent .ol-pool')]
+      .map(e => ({ c: e.className, r: Math.round(e.getBoundingClientRect().right) })).filter(x => x.r > innerWidth + 1))
+    t(`phone: at ${w}px every card stays inside the screen`, over.length === 0, over.slice(0, 4))
+  }
+  await p.setViewportSize({ width: 430, height: 930 })
   t('phone: markets load one at a time, never in parallel', peak() === 1, { peak: peak(), asked })
   t('phone: each market read once', asked.filter(x => x === 'ETH:4h').length === 1 && asked.filter(x => x === 'BTC:4h').length === 1, asked)
   if (SHOT) { await p.evaluate(() => document.querySelector('#mobVContent .ol-view')?.scrollIntoView()); await p.screenshot({ path: `${SHOT}/outlook-phone.png`, fullPage: false }) }
@@ -216,6 +246,7 @@ console.log('-- All Accounts: one card per market --')
   await p.evaluate(() => window.__goAllAccounts?.())
   await p.waitForFunction(() => (document.getElementById('mobVBalance')?.textContent ?? '').length > 0 && /All Accounts|combined/i.test(document.body.textContent ?? ''), null, { timeout: 40000 })
   await p.evaluate(() => window.mobVTab('outlook'))
+  await unfold(p, '#mobVContent', null)
   await p.waitForFunction(() => {
     const c = [...document.querySelectorAll('#mobVContent .ol-card')]
     return c.length === 2 && c.every(e => e.querySelector('.ol-cases')) && document.querySelectorAll('#mobVContent .ol-group .ol-acct-row').length === 3
@@ -252,7 +283,11 @@ console.log('-- All Accounts: one card per market --')
   t('combined: each account\'s liquidation is on the chart, named', ['Main', 'Hedge', 'Swing'].every(n => eth?.liqLabels.some(l => l.includes(n))), eth?.liqLabels)
   t('combined: a market one account holds is a single card, with its account named', !btc?.group && /Main/.test(btc?.head ?? '') && btc?.rows.length === 1, btc?.head)
   const groupActs = await p.$$eval('#mobVContent .ol-group .ol-act', els => els.map(e => e.textContent))
-  t('combined: the suggestion speaks to each account, by name', ['Main', 'Hedge', 'Swing'].every(n => groupActs.some(a => a.startsWith(n + ' ('))), groupActs)
+  t('combined: the suggestion speaks to each account, by name', ['Main', 'Hedge', 'Swing'].every(n => groupActs.some(a => a.includes(n))), groupActs)
+  // "group them so it does not keep repeating the same stuff": the two longs share their lines.
+  t('combined: accounts given the same advice share one line', groupActs.some(a => /^Main, Swing \(longs\)/.test(a)), groupActs)
+  const kinds = await p.$$eval('#mobVContent .ol-group .ol-act', els => els.map(e => e.className))
+  t('combined: no piece of advice is repeated per account', kinds.every(k => kinds.filter(x => x === k).length <= 2), kinds)
   t('combined: no page errors', errs.length === 0, errs)
   if (SHOT) {
     await p.evaluate(() => document.querySelector('#mobVContent .ol-group .ol-accts')?.scrollIntoView({ block: 'center' }))

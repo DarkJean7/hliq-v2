@@ -89,6 +89,7 @@ export const ES_DICT = {
   'Strats': 'Estrategias',
   'Strategies': 'Estrategias',
   'Watch': 'Seguimiento',
+  'Oracle': 'Oráculo',
   'Trade': 'Operar',
   'Transfers': 'Transferencias',
   'History': 'Historial',
