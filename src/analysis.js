@@ -165,6 +165,15 @@ export function analysisState(coin) {
   if (!e) return null
   return e.loading && !e.candles ? 'loading' : e.err ?? (e.candles ? 'ok' : null)
 }
+/**
+ * The cached candles behind a reading, for the Outlook tab (src/outlookview.js), with when they
+ * loaded and the smoothed book ratio. Null until loaded. Read-only: it hands out the cache's
+ * own arrays, so callers must not change them.
+ */
+export function analysisRaw(coin) {
+  const e = cache.get(normCoin(coin))
+  return e?.candles ? { candles: e.candles, at: e.candleAt, ratio: e.ratio ?? null } : null
+}
 export function setAnalysisDeps(d) { deps = { ...deps, ...d } }
 /** Open the Analysis tab on this market: where it reads its starting market, and the live view. */
 export function analysisShow(coin) {

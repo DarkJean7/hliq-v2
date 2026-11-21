@@ -230,6 +230,10 @@
          they were reachable by URL and by nothing a user could click. -->
     <!-- allocation: reached from the Account Health ring, not a sidebar row -->
     <!-- replay: reached from Portfolio, not a sidebar row -->
+    <div class="sidebar-item" data-tab="outlook" onclick="switchTab('outlook',null);setSidebarActive(this)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 12l4-4 3 2 6-6"/><path d="M8 10l6 3M8 10l6-1" stroke-dasharray="1.5 1.5"/></svg>
+      <span>Outlook</span>
+    </div>
     <div class="sidebar-item" data-tab="analysis" onclick="switchTab('analysis',null);setSidebarActive(this)">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2v12h12"/><polyline points="4.5 10 7 6.5 9 8.5 13.5 3.5"/></svg>
       <span>Analysis</span>
@@ -367,6 +371,7 @@
     <div class="nav-tabs fade-in">
       <button class="nav-tab active" onclick="switchTab('overview',this)">Overview</button>
       <button class="nav-tab" onclick="switchTab('trade',this)">Trade</button>
+      <button class="nav-tab" onclick="switchTab('outlook',this)">Outlook</button>
       <button class="nav-tab" onclick="switchTab('outcomes',this)">Outcomes</button>
       <button class="nav-tab" onclick="switchTab('portfolio',this)">Portfolio</button>
       <button class="nav-tab" onclick="switchTab('calendar',this)">Calendar</button>
@@ -1039,6 +1044,10 @@
     </div>
 
     <!-- LABS: strategy builder + backtest (src/labsview.js). Same renderer as the phone's. -->
+    <!-- Outlook: three cases and a lean for each open position (src/outlookview.js) -->
+    <div class="tab-panel" id="tab-outlook">
+      <div id="deskOutlook"></div>
+    </div>
     <div class="tab-panel" id="tab-labs">
       <div id="deskLabs"></div>
     </div>
@@ -2603,6 +2612,7 @@
   <!-- Spot / Positions / Orders tabs -->
   <div class="mob-v-tabs">
     <button class="mob-v-tab active" id="mobVTab-positions"  onclick="window.mobVTab('positions')">Positions<span class="mob-tab-badge" id="mobPosCount">0</span></button>
+    <button class="mob-v-tab"        id="mobVTab-outlook"    onclick="window.mobVTab('outlook')">Outlook</button>
     <button class="mob-v-tab"        id="mobVTab-orders"     onclick="window.mobVTab('orders')">Orders<span class="mob-tab-badge mob-tab-badge-ord" id="mobOrdCount">0</span></button>
     <button class="mob-v-tab"        id="mobVTab-outcomes"   onclick="window.mobVTab('outcomes')">Outcomes<span class="mob-tab-badge mob-tab-badge-oc" id="mobOcCount" style="display:none">0</span></button>
     <button class="mob-v-tab"        id="mobVTab-spot"       onclick="window.mobVTab('spot')">Spot<span class="mob-tab-badge mob-tab-badge-oc" id="mobSpotCount" style="display:none">0</span></button>

@@ -235,6 +235,7 @@ import {
 import { startPaperSync, hasPaper } from './papersync.js'
 import { createPaperBots } from './paperbots.js'
 import { renderAnalysis, analysisShow } from './analysis.js'
+import { renderOutlook } from './outlookview.js'
 import { initTradeBrief, setTradeBriefCoin } from './tradebrief.js'   // the analysis card on the Trade tab
 import { settingsHeadHtml, settingsSecClass, paintDesktopSettings, settingsToggle, settingsOpen } from './settingsnav.js'
 import { setMacroDeps, macroShell, macroFill, marketChartsShell, marketChartsFill, macroToggle, macroEvToggle, macroFngRange, macroFngScrub, macroTvSel } from './macroview.js'   // Signals → Macro
@@ -2453,6 +2454,7 @@ async function refreshLive(force = false) {
     updateWatchTicker()
     if (state.selectedCoin) updateChartStats(state.selectedCoin)
     updateMobileView()
+    _outlookDeskTick()
     _singleEqWatch(!!freshPortfolio)
     _hlOk()   // clean pass — reset the breaker's escalation
 
@@ -8895,6 +8897,7 @@ function switchTab(name, btn) {
   if (name === 'replay' || name === 'portfolio') _repRender(_viewHost('deskReplay'))
   if (name === 'simulator')  _simRender(_viewHost('deskSim'))
   if (name === 'labs')       _labsRender(_viewHost('deskLabs'))
+  if (name === 'outlook')    renderOutlook(_viewHost('deskOutlook'), _outlookCtx())
   if (name === 'settings') { _syncSettingsTab(); _applyDevMode() }
   if (name === 'leaderboard') {
     const root = document.getElementById('leaderboardRoot')
@@ -12525,7 +12528,7 @@ function _mobSwipeCloseMore() {
 // Direction comes from the tab's position in the nav order so a forward move enters from
 // the right, a back move from the left.
 let _mobVLastTab = null
-const _MOBV_NAV_ORDER = ['trades', 'positions', 'orders', 'outcomes', 'spot', 'strategies', 'watch', 'trade', 'settings', 'leaderboard', 'transfers', 'portfolio', 'calendar', 'tokens', 'pulse', 'performance', 'allocation', 'analysis']
+const _MOBV_NAV_ORDER = ['trades', 'positions', 'outlook', 'orders', 'outcomes', 'spot', 'strategies', 'watch', 'trade', 'settings', 'leaderboard', 'transfers', 'portfolio', 'calendar', 'tokens', 'pulse', 'performance', 'allocation', 'analysis']
 
 // Tabs that take the WHOLE mobile screen: the home chrome (hero / actions / watch
 // strip / sub-tabs) is hidden and the view renders its own sticky header + × back
@@ -14303,6 +14306,8 @@ function updateMobileView(fullData = false) {
     _mobVRenderContent(true)   // tick — skips the rebuild when the visible data is unchanged
   } else if (_mobVActiveTab === 'watch') {
     _mobVRenderContent(true)   // tick — updates prices in place, skips the full rebuild
+  } else if (_mobVActiveTab === 'outlook') {
+    _mobVRenderContent(true)   // tick — outlookview repaints only when a card would change
   } else if (_mobVActiveTab === 'positions') {
     const hash = _mobVPosStructHash()
     if (hash !== _mobVLastPosHash) { _mobVLastPosHash = hash; _mobVRenderContent() }
@@ -22394,6 +22399,11 @@ function _mobVRenderContent(tick = false) {
     // Force, rather than waiting out the one-minute throttle: the tab was just opened and an
     // empty row is the thing being looked at. Draws the sparklines again when it lands.
     if (tvList.length) _ensureExtQuotes(true).then(() => _mobWatchDrawSparks())
+    return
+  }
+
+  if (_mobVActiveTab === 'outlook') {
+    renderOutlook(el, _outlookCtx(), tick)
     return
   }
 
@@ -34692,6 +34702,26 @@ window.__watchAdd = function(coin) {
   if (res) { res.style.display = 'none'; res.innerHTML = '' }
   updateWatchTicker()
   refreshWatchTab()
+}
+
+// The Outlook tab (src/outlookview.js): what it reads from the app. Positions are null until
+// the account has loaded — unknown, not "no positions". In the combined view they carry their
+// account (_acct/_acctAddr) and so do the orders, so each card finds its own TP and stop.
+function _outlookCtx() {
+  return {
+    T: (en, es) => _T(en, es ?? en), fmtPrice, fmtUSD, prv: _prv, limited: () => _hlLimited(),
+    positions: () => state.perpState ? (state.perpState.assetPositions ?? []) : null,
+    orders: () => state.openOrders ?? [],
+    mid: (c) => _livePx(c),
+    funding: (c) => _mktCtxReady ? (_mktCtxMap[c]?.funding ?? null) : null,
+    coinLabel: (c) => _tradeName(c),
+    openCoin: (c) => window.__watchOpenTrade(c),
+  }
+}
+// Desktop: drawn on open by switchTab, and on each data tick while it is the tab on screen.
+function _outlookDeskTick() {
+  const host = document.getElementById('deskOutlook')
+  if (host && document.getElementById('tab-outlook')?.classList.contains('active')) renderOutlook(host, _outlookCtx(), true)
 }
 
 // A watch card dropped in a new place (src/watchorder.js). Every surface reads these two
