@@ -10,7 +10,7 @@
 // price comes from the mids the app already has.
 import './outlook.css'
 import { ensureAnalysis, analysisFor, analysisRaw, analysisState, setAnalysisDeps, fmtPx } from './analysis.js'
-import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, CANDLE_FACTORS, PAST_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord } from './outlook.js'
+import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, coneScale } from './outlook.js'
 import { catLabel } from './simcat.js'
 
 const LS_H = 'hliq_outlook_h'
@@ -40,7 +40,10 @@ function pastFor(coin, raw) {
  *  each past day, each signal's record and the cone's. Computed once per load and horizon. */
 function pastAt(coin, raw, h) {
   const e = pastFor(coin, raw)
-  if (!e.byH.has(h)) e.byH.set(h, { mult: learnedWeights(e.samples, h), learned: learnedScores(e.samples, h), signals: signalRecords(e.samples, h), cone: coneRecord(e.samples, h) })
+  if (!e.byH.has(h)) {
+    const cone = coneRecord(e.samples, h)
+    e.byH.set(h, { mult: learnedWeights(e.samples, h), learned: learnedScores(e.samples, h), signals: signalRecords(e.samples, h), cone, scale: coneScale(cone, h) })
+  }
   return { samples: e.samples, ...e.byH.get(h) }
 }
 
@@ -154,7 +157,7 @@ function paint(force) {
       ? `<div class="ol-empty"><b>${T('No open positions', 'Sin posiciones abiertas')}</b><br>${T('Outlook reads the positions you hold: what could happen to each one, and what the signals lean towards.', 'Outlook lee tus posiciones abiertas: qué podría pasarle a cada una y hacia dónde se inclinan las señales.')}</div>`
       : `<div class="ol-cards">${items.map(i => cardHtml(i, ctx)).join('')}</div>`
   }<div class="ol-foot">${T(
-    `Not a prediction. The cone is how far each market has moved in ${horizon} from its last 180 4h candles; chances assume no drift and are for touching a price, not ending there. The score is a lean from six signals — read the reasons, not just the number.`,
+    `Not a prediction. The cone is how far each market has moved in ${horizon} from its last 180 4h candles, calibrated to how often its past moves stayed inside; chances assume no drift and are for touching a price, not ending there. The score is a lean from six signals — read the reasons, not just the number.`,
     `No es una predicción. El cono es cuánto se ha movido cada mercado en ${horizon} según sus últimas 180 velas de 4h; las probabilidades suponen que no hay tendencia y son de tocar un precio, no de terminar ahí. La puntuación es una inclinación de seis señales: lee los motivos, no solo el número.`)}</div></div>`
 }
 
@@ -181,7 +184,12 @@ const CONE_V = {
   thin: ['Too few days to tell', 'Muy pocos días para saber'],
 }
 const verdictEm = (v, T) => `<em class="v ${v}">${T(...VERDICT[v])}</em>`
-const candleValues = (fs) => Object.fromEntries(fs.filter(f => CANDLE_FACTORS.includes(f.id)).map(f => [f.id, f.v]))
+const candleValues = (fs, h) => Object.fromEntries(fs.filter(f => candleIds(h).includes(f.id)).map(f => [f.id, f.v]))
+/** "Trend, momentum and range" — or at 4h, "trend, range, 3-day fade and Bollinger stretch". */
+const candleNames = (h, T) => {
+  const n = candleIds(h).map(id => T(FACTOR_NAME[id][0], FACTOR_NAME[id][1]).replace(' (4h)', ''))
+  return n.slice(0, -1).join(', ') + ' ' + T('and', 'y') + ' ' + n.at(-1)
+}
 
 /**
  * Track record. Past year: the candle signals replayed (fixed weights, then learned ones,
@@ -198,8 +206,8 @@ function recordHtml(coin, raw, o, ctx, past) {
   if ((o.score?.coverage ?? 0) >= 0.9) logRating(coin, hours, o.score.score, o.sigma)
   ensureRecord(coin, hours)
 
-  const fv = candleValues(o.factors)
-  const fixedNow = weightedScore(fv, null), learnedNow = weightedScore(fv, past.mult)
+  const fv = candleValues(o.factors, hours)
+  const fixedNow = weightedScore(fv, null, hours), learnedNow = weightedScore(fv, past.mult, hours)
   const happened = (lean, h) => lean === 'up' ? T(`higher ${HZ[h]} later`, `más alto ${HZ[h]} después`)
     : lean === 'down' ? T(`lower ${HZ[h]} later`, `más bajo ${HZ[h]} después`)
     : T(`within its usual range ${HZ[h]} later`, `dentro de su rango usual ${HZ[h]} después`)
@@ -231,6 +239,7 @@ function recordHtml(coin, raw, o, ctx, past) {
   const coneLine = !c ? T('Not enough history to check.', 'No hay historial suficiente.')
     : `${T('Ended inside the 1σ band on', 'Terminó dentro de la banda de 1σ en')} <b>${pct(c.inside)}</b> ${T(`of ${c.n} days (expect 68%) · touched the bullish line ${pct(c.up)}, the bearish ${pct(c.dn)} (expect 32% each).`, `de ${c.n} días (se espera 68%) · tocó la línea alcista ${pct(c.up)}, la bajista ${pct(c.dn)} (se espera 32% cada una).`)}
       <em class="v ${c.verdict === 'calibrated' ? 'better' : c.verdict === 'thin' ? 'thin' : 'worse'}">${T(...CONE_V[c.verdict])}</em>
+      ${Math.abs(past.scale - 1) >= 0.005 ? `<div class="ol-rec-sub">${T(`So the cone on this card is scaled <b>×${past.scale.toFixed(2)}</b> to fit, and so are its touch chances.`, `Así que el cono de esta tarjeta está escalado <b>×${past.scale.toFixed(2)}</b> para ajustarse, y sus probabilidades también.`)}</div>` : ''}
       ${d?.coin?.n && d.coin.inside != null ? `<div class="ol-rec-sub">${T(`Live: inside on ${pct(d.coin.inside / d.coin.n)} of ${d.coin.n} graded.`, `En vivo: dentro en ${pct(d.coin.inside / d.coin.n)} de ${d.coin.n} calificadas.`)}</div>` : ''}`
 
   // The same reading at every horizon.
@@ -263,7 +272,7 @@ function recordHtml(coin, raw, o, ctx, past) {
   const row = (tag, body, note = '') => `<div class="ol-rec-row"><span class="ol-rec-tag">${tag}</span><div>${body}${note ? `<div class="ol-rec-note">${note}</div>` : ''}</div></div>`
   return `<div class="ol-rec">
     <div class="ol-rec-h">${T(`Track record · ${hz}`, `Historial · ${hz}`)}</div>
-    ${row(T('Past year', 'Último año'), pastLine, T('Trend, momentum and range only: the signals with history. One check a day.', 'Solo tendencia, momento y rango: las señales con historial. Una revisión al día.'))}
+    ${row(T('Past year', 'Último año'), pastLine, T(`${candleNames(hours, T)} only: the signals with history. One check a day.`, `Solo ${candleNames(hours, T)}: las señales con historial. Una revisión al día.`))}
     ${row(T('Learned', 'Aprendido'), learnedLine)}
     ${row(T('Cone', 'Cono'), coneLine)}
     ${row(T('Horizons', 'Horizontes'), hzLine)}
@@ -342,7 +351,7 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
   // The candle signals weighted by how they have done on this market (learnedWeights, walk-forward).
   const past = pastAt(coin, raw, HORIZONS[horizon])
   const outs = ps.map(p => outlookFor({ position: p, price, c4: raw.candles['4h'], c1: raw.candles['1d'], setup, ratio: raw.ratio,
-    fundingPctHr: ctx.funding(coin), orders, hours: HORIZONS[horizon], mult: past.mult }))
+    fundingPctHr: ctx.funding(coin), orders, hours: HORIZONS[horizon], mult: past.mult, sigmaScale: past.scale }))
   const o = outs[0]
   const sc = o.score
   const tone = !sc ? 'flat' : sc.lean
@@ -424,7 +433,7 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
 
   const open = whyOpen.has(k)
   const why = sc ? `<button class="ol-why-btn" data-ol-why="${esc(k)}">${open ? T('Hide why', 'Ocultar motivos') : T(`Why ${sc.score > 0 ? '+' : ''}${sc.score}? ${sc.agree} of ${sc.of} signals agree`, `¿Por qué ${sc.score > 0 ? '+' : ''}${sc.score}? ${sc.agree} de ${sc.of} señales coinciden`)}</button>
-    ${open ? `<div class="ol-why">${o.factors.map(f => factorHtml(f, ctx, past.signals)).join('')}<div class="ol-why-note">${T(`Trend, momentum and range are weighted by how each has called ${esc(lab)} over the past year (×0.25 to ×2), at ${HZ[HORIZONS[horizon]]}.`, `Tendencia, momento y rango se ponderan según cómo ha acertado cada una en ${esc(lab)} el último año (×0,25 a ×2), a ${HZ[HORIZONS[horizon]]}.`)}</div>${sc.coverage < 0.999 ? `<div class="ol-why-note">${T('Signals without data are left out, not counted as neutral.', 'Las señales sin datos se omiten, no cuentan como neutrales.')}</div>` : ''}</div>` : ''}` : ''
+    ${open ? `<div class="ol-why">${o.factors.map(f => factorHtml(f, ctx, past.signals)).join('')}<div class="ol-why-note">${T(`${candleNames(HORIZONS[horizon], T)} are weighted by how each has called ${esc(lab)} over the past year (×0.25 to ×2), at ${HZ[HORIZONS[horizon]]}.`, `${candleNames(HORIZONS[horizon], T)} se ponderan según cómo ha acertado cada una en ${esc(lab)} el último año (×0,25 a ×2), a ${HZ[HORIZONS[horizon]]}.`)}</div>${HORIZONS[horizon] <= 4 ? `<div class="ol-why-note">${T('At 4h the score is a different set. Tested on a year of 4h candles across 19 markets, fading a 3-day move and a Bollinger stretch called the next 4 hours better than chance in both halves of the year; momentum called it wrong (43% vs 50%), so it is left out here.', 'A 4h la puntuación usa otro conjunto. Probado con un año de velas de 4h en 19 mercados, ir contra el movimiento de 3 días y el estiramiento de Bollinger acertaron las siguientes 4 horas mejor que el azar en ambas mitades del año; el momento falló (43% vs 50%), así que aquí se omite.')}</div>` : ''}${sc.coverage < 0.999 ? `<div class="ol-why-note">${T('Signals without data are left out, not counted as neutral.', 'Las señales sin datos se omiten, no cuentan como neutrales.')}</div>` : ''}</div>` : ''}` : ''
   return `<div class="ol-card${multi ? ' ol-group' : ''}">${head}${chip}</div>${agree}
     ${coneSvg(o, raw.candles['4h'], ctx, marks)}
     ${cases}${accounts}${recordHtml(coin, raw, o, ctx, past)}${why}</div>`
@@ -432,6 +441,7 @@ function cardHtml({ coin, ps, raw, price, state }, ctx) {
 
 const FACTOR_NAME = {
   trend: ['Trend', 'Tendencia'], momentum: ['Momentum', 'Momento'], range: ['Range (4h)', 'Rango (4h)'],
+  rev3d: ['3-day fade', 'Contra 3 días'], bbFade: ['Bollinger stretch', 'Estiramiento Bollinger'],
   levels: ['Levels', 'Niveles'], book: ['Order book', 'Libro'], funding: ['Funding', 'Funding'],
 }
 
@@ -452,6 +462,8 @@ function factorText(f, { T, fmtPrice }) {
     case 'levels': return ({ breakout: T('Broke above a key level', 'Rompió sobre un nivel clave'), breakdown: T('Broke below a key level', 'Rompió bajo un nivel clave'),
       support: T('At support', 'En soporte'), resistance: T('At resistance', 'En resistencia') })[x.state] ?? T('Between key levels', 'Entre niveles clave')
     case 'book': return T(`Bids ${x.ratio.toFixed(2)}× asks near the price`, `Compras ${x.ratio.toFixed(2)}× ventas cerca del precio`)
+    case 'rev3d': return x.move == null ? '' : `${x.move >= 0 ? T('Up', 'Subió') : T('Down', 'Bajó')} ${Math.abs(x.move * 100).toFixed(1)}% ${T('in 3 days', 'en 3 días')} · ${T('leaning against it', 'en contra')}`
+    case 'bbFade': return `${T('Close', 'Cierre')} ${Math.abs(x.sd).toFixed(1)} ${T('sd', 'de')} ${x.sd >= 0 ? T('above', 'sobre') : T('below', 'bajo')} ${T('its 20-candle average', 'su media de 20 velas')} · ${T('leaning back', 'inclina de vuelta')}`
     case 'funding': return `${x.pctHr >= 0 ? '+' : ''}${x.pctHr.toFixed(4)}%/h · ${x.pctHr > 0.003 ? T('longs crowded', 'largos saturados') : x.pctHr < 0 ? T('shorts crowded', 'cortos saturados') : T('normal', 'normal')}`
   }
   return ''
@@ -460,10 +472,10 @@ function factorText(f, { T, fmtPrice }) {
 function factorHtml(f, ctx, recs) {
   const { T } = ctx
   const w = Math.round(Math.abs(f.v) * 50)
-  const base = WEIGHTS[f.id] ?? f.w
+  const base = weightsFor(HORIZONS[horizon])[f.id] ?? f.w
   const wt = f.m != null && Math.abs(f.m - 1) > 0.005 ? `${base}% <b class="${f.m > 1 ? 'pos' : 'neg'}">×${f.m.toFixed(2)}</b>` : `${base}%`
   const r = recs?.[f.id]
-  const hist = !CANDLE_FACTORS.includes(f.id) ? T('No history here to check this one.', 'Aquí no hay historial para revisar esta.')
+  const hist = !candleIds(HORIZONS[horizon]).includes(f.id) ? T('No history here to check this one.', 'Aquí no hay historial para revisar esta.')
     : !r?.n ? T('Past year: it made no calls.', 'Último año: no hizo ninguna lectura.')
     : `${T(`Past year: right ${pct(r.rate)} of ${r.n} calls · chance ${pct(r.chance)} · avg ${mv(r.edge)} per call`, `Último año: acertó ${pct(r.rate)} de ${r.n} · azar ${pct(r.chance)} · media ${mv(r.edge)} por lectura`)} ${verdictEm(r.verdict, T)}`
   return `<div class="ol-f">
@@ -478,7 +490,7 @@ function factorHtml(f, ctx, recs) {
 function coneSvg(o, c4, { fmtPrice, T }, marks = []) {
   if (!o.sigma || !o.price || !o.cases) return ''
   const W = 360, H = 168, padR = 66, padT = 8, padB = 10
-  const histN = o.hours <= 24 ? 30 : 42
+  const histN = o.hours <= 4 ? 18 : o.hours <= 24 ? 30 : 42
   const hist = (c4 ?? []).slice(-histN).map(k => +k.c).filter(v => v > 0)
   if (hist.length < 2) return ''
   const plotW = W - padR
@@ -531,7 +543,9 @@ function coneSvg(o, c4, { fmtPrice, T }, marks = []) {
     <line class="ol-path neutral" x1="${xNow.toFixed(1)}" y1="${yNow.toFixed(1)}" x2="${plotW}" y2="${end(o.cases.neutral.px)}"/>
     <line class="ol-path bear" x1="${xNow.toFixed(1)}" y1="${yNow.toFixed(1)}" x2="${plotW}" y2="${end(o.cases.bear.px)}"/>
     <circle class="ol-dot" cx="${xNow.toFixed(1)}" cy="${yNow.toFixed(1)}" r="3.2"/>
-    ${labels.map(l => `<text class="ol-lbl ${l.cls}" x="${plotW + 4}" y="${(l.y + 3.5).toFixed(1)}">${esc(l.t)}</text>`).join('')}
+    ${labels.map(l => l.t.length > 11
+      ? `<text class="ol-lbl ${l.cls}" x="${W - 1}" text-anchor="end" y="${(l.y + 3.5).toFixed(1)}">${esc(l.t)}</text>`
+      : `<text class="ol-lbl ${l.cls}" x="${plotW + 4}" y="${(l.y + 3.5).toFixed(1)}">${esc(l.t)}</text>`).join('')}
     <text class="ol-axis" x="2" y="${H - 1}">${T(`${hist.length * 4 / 24 | 0}d ago`, `hace ${hist.length * 4 / 24 | 0}d`)}</text>
     <text class="ol-axis" x="${(xNow + 3).toFixed(1)}" y="${H - 1}">${T('now', 'ahora')} → ${horizon}</text>
   </svg>`

@@ -22,6 +22,7 @@
  */
 import { normalise, classify } from './backtest.js'
 import { sma, rsi } from './zones.js'
+import { readCandidates } from './outlooksignals.js'
 
 // ── maths ───────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,36 @@ export function vol4h(c4, n = 180) {
 
 /** One standard deviation of log price over `hours`, from the 4h figure (square-root of time). */
 export const sigmaFor = (v4, hours) => v4 == null ? null : v4 * Math.sqrt(hours / 4)
+
+/** Inverse standard normal CDF (Acklam; relative error < 1.2e-9). */
+export function normInv(p) {
+  if (!(p > 0 && p < 1)) return NaN
+  const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.357751867269, -30.66479806614716, 2.506628277459239]
+  const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572]
+  const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783]
+  const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416]
+  const lo = 0.02425
+  if (p < lo) { const q = Math.sqrt(-2 * Math.log(p)); return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1) }
+  if (p > 1 - lo) return -normInv(1 - p)
+  const q = p - 0.5, r = q * q
+  return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1)
+}
+
+/**
+ * The cone, calibrated ("do 2"): the multiplier on σ that would have put the measured share of
+ * days inside ±1σ at the normal 68.3%. If a market ended inside 73% of the time its moves ran
+ * smaller than its volatility said, and the cone narrows (×0.91); 60% widens it. Pulled towards
+ * ×1 on few days — a week sampled daily counts days ÷ 7 — and kept within ×0.6 to ×1.6. One number
+ * from a year of the market's own days: the touch chances the card prints for a liquidation, a
+ * stop or a take-profit move with it.
+ */
+export function coneScale(cone, hours = 24) {
+  if (!cone?.n) return 1
+  const p = clamp(cone.inside, 0.3, 0.97)
+  const k = 1 / normInv((1 + p) / 2)
+  const nEff = cone.n / Math.max(1, hours / 24)
+  return clamp(1 + (k - 1) * nEff / (nEff + 100), 0.6, 1.6)
+}
 
 /**
  * The chance the price TOUCHES `level` at some point within the horizon (not just ends there),
@@ -135,6 +166,19 @@ export function rangeRead(c4) {
 // ── the score ─────────────────────────────────────────────────────────────
 
 export const WEIGHTS = { trend: 25, momentum: 20, range: 20, levels: 15, book: 10, funding: 10 }
+/**
+ * At 4h the score is a different set ("do 1": tests/signal-research.mjs, results in
+ * tests/research/signal-results.json). Across 19 markets and a year of 4h candles, two signals
+ * that FADE a stretched price called the next 4 hours better than chance — pooled, by the money,
+ * and in both halves of the year: the 3-day move (54.3% of 3,576 calls vs 49.6%) and the
+ * Bollinger stretch (55.7% of 4,548 vs 49.6%). Momentum called it WRONG — 42.7% of 4,338 vs 50.1%,
+ * in both halves — so at 4h it is out and they are in. At 24h, 3d and 7d nothing new passed, and
+ * those keep the set they had.
+ */
+export const WEIGHTS_4H = { trend: 25, range: 20, rev3d: 15, bbFade: 15, levels: 15, book: 10, funding: 10 }
+export const weightsFor = (hours) => hours <= 4 ? WEIGHTS_4H : WEIGHTS
+/** The signals that can be replayed from candles, per horizon: the past record is of these. */
+export const candleIds = (hours) => hours <= 4 ? ['trend', 'range', 'rev3d', 'bbFade'] : ['trend', 'momentum', 'range']
 // Hyperliquid's resting funding: 0.01% per 8h, so 0.00125% an hour. Above it longs pay more
 // than the default — crowded long; below, crowded short.
 const BASE_FUNDING = 0.00125
@@ -144,44 +188,58 @@ const BASE_FUNDING = 0.00125
  * and left out when its data is missing. `fundingPctHr` is percent per hour (as _mktCtxMap holds
  * it); `ratio` is bid ÷ ask depth near the price.
  */
-export function factors({ price, c4, c1, setup, fundingPctHr = null, ratio = null }) {
+export function factors({ price, c4, c1, setup, fundingPctHr = null, ratio = null, hours = 24 }) {
+  const W = weightsFor(hours)
   const out = []
   // Trend — daily: price against its 50-day average, and the 50 against the 200.
   const s50 = sma(c1, 50), s200 = sma(c1, 200)
   if (s50 != null) {
     const a = price > s50 ? 1 : -1
     const b = s200 != null ? (s50 > s200 ? 1 : -1) : null
-    out.push({ id: 'trend', w: WEIGHTS.trend, v: b == null ? a : (a + b) / 2, x: { s50, s200, above: a > 0, golden: b == null ? null : b > 0 } })
+    out.push({ id: 'trend', w: W.trend, v: b == null ? a : (a + b) / 2, x: { s50, s200, above: a > 0, golden: b == null ? null : b > 0 } })
   }
   // Momentum — 4h: RSI (stretched readings lean back the other way) and the MACD histogram.
-  const r = rsi(c4)
-  const m = macdHist((c4 ?? []).map(k => +k.c))
-  if (r != null || m) {
+  // Not at 4h: it called the next four hours wrong (see WEIGHTS_4H).
+  const r = W.momentum ? rsi(c4) : null
+  const m = W.momentum ? macdHist((c4 ?? []).map(k => +k.c)) : null
+  if (W.momentum && (r != null || m)) {
     const vr = r == null ? null : r >= 75 ? -0.5 : r <= 25 ? 0.5 : clamp((r - 50) / 20, -1, 1)
     const vm = m == null ? null : (m.now > 0 ? 0.5 : -0.5) + (m.now > m.prev ? 0.5 : -0.5)
     const vs = [vr, vm].filter(v => v != null)
-    out.push({ id: 'momentum', w: WEIGHTS.momentum, v: vs.reduce((s, v) => s + v, 0) / vs.length, x: { rsi: r, macd: m } })
+    out.push({ id: 'momentum', w: W.momentum, v: vs.reduce((s, v) => s + v, 0) / vs.length, x: { rsi: r, macd: m } })
   }
   // Range category — 4h, see rangeRead.
   const rr = rangeRead(c4)
-  if (rr) out.push({ id: 'range', w: WEIGHTS.range, v: rr.v, x: rr })
+  if (rr) out.push({ id: 'range', w: W.range, v: rr.v, x: rr })
+  // At 4h: the two fading signals that earned a place (src/outlooksignals.js).
+  if (W.rev3d || W.bbFade) {
+    const i = (c4?.length ?? 0) - 1
+    const c = readCandidates(c4, i, vol4h(c4), null, ['rev3d', 'bbFade'])
+    if (W.rev3d && c.rev3d != null) out.push({ id: 'rev3d', w: W.rev3d, v: c.rev3d, x: { move: i >= 18 ? +c4[i].c / +c4[i - 18].c - 1 : null } })
+    if (W.bbFade && c.bbFade != null) {
+      const cl = c4.slice(-20).map(k => +k.c), mean = cl.reduce((a, b) => a + b, 0) / cl.length
+      const sd = Math.sqrt(cl.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, cl.length - 1))
+      out.push({ id: 'bbFade', w: W.bbFade, v: c.bbFade, x: { sd: sd > 0 ? (cl.at(-1) - mean) / sd : 0 } })
+    }
+  }
   // Levels — where price sits against the support/resistance the Analysis tab finds.
   if (setup?.state) {
     const v = { breakout: 1, breakdown: -1, support: 0.5, resistance: -0.5 }[setup.state] ?? 0
-    out.push({ id: 'levels', w: WEIGHTS.levels, v, x: { state: setup.state } })
+    out.push({ id: 'levels', w: W.levels, v, x: { state: setup.state } })
   }
   // Book — more bids than asks near the price leans up.
-  if (ratio > 0) out.push({ id: 'book', w: WEIGHTS.book, v: clamp(Math.log2(ratio) / Math.log2(1.5), -1, 1), x: { ratio } })
+  if (ratio > 0) out.push({ id: 'book', w: W.book, v: clamp(Math.log2(ratio) / Math.log2(1.5), -1, 1), x: { ratio } })
   // Funding — contrarian: a crowded side is the one that gets squeezed.
-  if (Number.isFinite(fundingPctHr)) out.push({ id: 'funding', w: WEIGHTS.funding, v: -clamp((fundingPctHr - BASE_FUNDING) / 0.01, -1, 1), x: { pctHr: fundingPctHr } })
+  if (Number.isFinite(fundingPctHr)) out.push({ id: 'funding', w: W.funding, v: -clamp((fundingPctHr - BASE_FUNDING) / 0.01, -1, 1), x: { pctHr: fundingPctHr } })
   return out
 }
 
 /** -100..100 over the factors that have data, with how much of the full weight that is. */
-export function scoreOf(fs) {
+export function scoreOf(fs, hours = 24) {
+  const W = weightsFor(hours)
   const w = fs.reduce((s, f) => s + f.w, 0)
   if (!w) return null
-  const total = Object.values(WEIGHTS).reduce((s, x) => s + x, 0)
+  const total = Object.values(W).reduce((s, x) => s + x, 0)
   const score = Math.round(100 * fs.reduce((s, f) => s + f.w * f.v, 0) / w)
   const a = Math.abs(score)
   const strength = a < 15 ? 'neutral' : a < 40 ? 'weak' : a < 70 ? 'moderate' : 'strong'
@@ -189,7 +247,7 @@ export function scoreOf(fs) {
   const agree = fs.filter(f => Math.sign(f.v) === Math.sign(score) && f.v !== 0).length
   // Coverage is of the BASE weights: learned multipliers change how much a signal counts, not
   // whether its data is there.
-  const have = fs.reduce((s, f) => s + (WEIGHTS[f.id] ?? f.w), 0)
+  const have = fs.reduce((s, f) => s + (W[f.id] ?? f.w), 0)
   return { score, strength, lean, agree, of: fs.length, coverage: have / total }
 }
 
@@ -230,7 +288,7 @@ export function guardsOf(pos, orders) {
   return { tp, sl }
 }
 
-export const HORIZONS = { '24h': 24, '7d': 168 }
+export const HORIZONS = { '4h': 4, '24h': 24, '7d': 168 }
 
 /**
  * The three cases for one position over `hours`.
@@ -266,14 +324,15 @@ export function scenarios({ pos, price, sigma, setup }) {
  * Everything one card needs. `c4`/`c1` are 4h and daily candles ({t,o,h,l,c}), `setup` the
  * Analysis reading (zones.js readSetup), `ratio` the book ratio, `fundingPctHr` percent per hour.
  */
-export function outlookFor({ position, price, c4, c1, setup, ratio = null, fundingPctHr = null, orders = [], hours = 24, mult = null }) {
+export function outlookFor({ position, price, c4, c1, setup, ratio = null, fundingPctHr = null, orders = [], hours = 24, mult = null, sigmaScale = 1 }) {
   const pos = posOf(position)
   const v4 = vol4h(c4)
-  const sigma = sigmaFor(v4, hours)
+  // sigmaScale: the cone calibrated to the market's own past (coneScale); 1 = as measured.
+  const sigma = sigmaFor(v4, hours) == null ? null : sigmaFor(v4, hours) * sigmaScale
   // `mult`: learned multipliers for the candle signals (learnedWeights), {trend: 1.4, ...}.
-  const fs = (price > 0 ? factors({ price, c4, c1, setup, fundingPctHr, ratio }) : [])
+  const fs = (price > 0 ? factors({ price, c4, c1, setup, fundingPctHr, ratio, hours }) : [])
     .map(f => mult?.[f.id] != null ? { ...f, w: f.w * mult[f.id], m: mult[f.id] } : f)
-  const sc = scoreOf(fs)
+  const sc = scoreOf(fs, hours)
   const g = pos ? guardsOf(pos, orders) : { tp: null, sl: null }
   const risk = pos && price > 0 && sigma > 0 ? {
     liq: pos.liq != null ? { px: pos.liq, p: touchProb(price, pos.liq, sigma), sig: Math.abs(Math.log(pos.liq / price)) / sigma } : null,
@@ -297,7 +356,7 @@ export function outlookFor({ position, price, c4, c1, setup, ratio = null, fundi
  * three (65% of the weight) and says so. The live record (outlooklog.js) grades all six.
  */
 export const CANDLE_FACTORS = ['trend', 'momentum', 'range']
-export const candleScoreOf = (fs) => scoreOf(fs.filter(f => CANDLE_FACTORS.includes(f.id)))
+export const candleScoreOf = (fs, hours = 24) => scoreOf(fs.filter(f => candleIds(hours).includes(f.id)), hours)
 /** The horizons replayed, in hours: "more samples" — some signals work at one and not another. */
 export const PAST_HORIZONS = [4, 24, 72, 168]
 /** A signal "calls" a direction when it leans at least this far. */
@@ -343,7 +402,8 @@ export function pastSamples(c4, c1) {
       for (let j = i + 1; j <= i + a; j++) { hi = Math.max(hi, +c4[j].h); lo = Math.min(lo, +c4[j].l) }
       o[h] = end > 0 ? { ret: Math.log(end / price), sigma, up: hi >= price * Math.exp(sigma), dn: lo <= price * Math.exp(-sigma) } : null
     }
-    out.push({ t: +c4[i].t, i, f: Object.fromEntries(fs.map(f => [f.id, f.v])), s: sc.score, out: o })
+    const extra = readCandidates(c4, i, v4, null, ['rev3d', 'bbFade'])
+    out.push({ t: +c4[i].t, i, f: { ...Object.fromEntries(fs.map(f => [f.id, f.v])), ...extra }, s: sc.score, out: o })
   }
   return out
 }
@@ -369,7 +429,7 @@ function judge(hits, n, chance, div) {
  * widens to the same lean, and says so. `scoreOf` picks the score replayed: the fixed weights
  * (x.s) or the learned ones (learnedScores).
  */
-export function pastRecord(samples, score, h, scoreOfX = (x) => x.s) {
+export function pastRecord(samples, score, h, scoreOfX = (x) => weightedScore(x.f, null, h)) {
   const all = resolved(samples, h).filter(x => scoreOfX(x) != null)
   if (!all.length || score == null) return null
   const lean = leanOfScore(score), hit = hitFor(lean)
@@ -393,7 +453,7 @@ export function signalRecords(samples, h) {
   const up = all.filter(x => x.out[h].ret > 0).length / all.length
   const dn = all.filter(x => x.out[h].ret < 0).length / all.length
   const out = {}
-  for (const id of CANDLE_FACTORS) {
+  for (const id of candleIds(h)) {
     const calls = all.filter(x => Math.abs(x.f[id] ?? 0) >= CALL_AT)
     const ups = calls.filter(x => x.f[id] > 0).length
     const hits = calls.filter(x => Math.sign(x.f[id]) === Math.sign(x.out[h].ret) && x.out[h].ret !== 0).length
@@ -414,7 +474,7 @@ export function learnedWeights(samples, h, upto = Infinity) {
   const known = resolved(samples, h).filter(x => x.i + h / 4 <= upto)
   const rec = signalRecords(known, h)
   const m = {}
-  for (const id of CANDLE_FACTORS) {
+  for (const id of candleIds(h)) {
     const r = rec[id]
     if (!r?.n) { m[id] = 1; continue }
     const shrink = r.n / (r.n + 60)
@@ -424,9 +484,10 @@ export function learnedWeights(samples, h, upto = Infinity) {
 }
 
 /** The candle score with multipliers applied, from a sample's signal values. */
-export function weightedScore(f, m) {
+export function weightedScore(f, m, h = 24) {
+  const W = weightsFor(h)
   let w = 0, s = 0
-  for (const id of CANDLE_FACTORS) if (f[id] != null) { const k = WEIGHTS[id] * (m?.[id] ?? 1); w += k; s += k * f[id] }
+  for (const id of candleIds(h)) if (f[id] != null) { const k = W[id] * (m?.[id] ?? 1); w += k; s += k * f[id] }
   return w ? Math.round(100 * s / w) : null
 }
 
@@ -437,7 +498,7 @@ export function weightedScore(f, m) {
  */
 export function learnedScores(samples, h) {
   const m = new Map()
-  for (const x of samples ?? []) m.set(x, weightedScore(x.f, learnedWeights(samples, h, x.i)))
+  for (const x of samples ?? []) m.set(x, weightedScore(x.f, learnedWeights(samples, h, x.i), h))
   return m
 }
 
@@ -469,7 +530,7 @@ export function pooledRecord(byCoin, h) {
       const all = resolved(samples, h)
       if (!all.length) continue
       const hit = hitFor(lean)
-      const calls = all.filter(x => leanOfScore(x.s) === lean)
+      const calls = all.filter(x => leanOfScore(weightedScore(x.f, null, h)) === lean)
       const base = all.filter(x => hit(x, x.out[h])).length / all.length
       hits += calls.filter(x => hit(x, x.out[h])).length; n += calls.length; chance += calls.length * base
     }

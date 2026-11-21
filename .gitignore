@@ -33,3 +33,6 @@ data/
 
 # Playwright screenshots from local verification runs
 /*.png
+
+# signal research cache (tests/signal-research.mjs)
+tests/.research-cache/

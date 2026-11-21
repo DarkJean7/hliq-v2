@@ -16,7 +16,7 @@
  * Pure: the log is a plain object, the clock and the prices are passed in.
  */
 
-export const OL_HOURS = [24, 168]
+export const OL_HOURS = [4, 24, 168]
 export const OL_MAX = 20_000                   // newest entries kept
 export const OL_GRACE = 45 * 60_000             // grade within this long of the horizon, or not at all
 
