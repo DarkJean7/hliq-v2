@@ -100,7 +100,9 @@ async function open(opts) {
       { t: Date.now() - 26 * 3600e3, score: -40, lean: 'down', px: 102, end: 100, hit: true, inside: true },
       { t: Date.now() - 50 * 3600e3, score: 25, lean: 'up', px: 101, end: 99, hit: false, inside: true },
     ] : []
-    return route.fulfill({ json: { hours: h, coin: coin === 'ETH' ? eth : { n: 0, hits: 0, up: z, down: z, flat: z }, all, pending: 3, recent } })
+    return route.fulfill({ json: { hours: h, coin: coin === 'ETH' ? eth : { n: 0, hits: 0, up: z, down: z, flat: z }, all, pending: 3, recent,
+      ...(coin === 'ETH' ? { since: Date.now() - 9 * 86400e3, allSince: Date.now() - 12 * 86400e3, logged: 15, expired: 0,
+        waiting: [{ t: Date.now() - 2 * 3600e3, score: 31, lean: 'up', px: 104.5, due: Date.now() + 22 * 3600e3 }] } : { since: null, logged: 0, waiting: [] }) } })
   })
   const p = await ctx.newPage()
   const errs = []
@@ -170,12 +172,12 @@ async function v2(p, root, label, logged) {
   for (const k of ['past', 'learned', 'cone', 'hz', 'live']) await p.evaluate(([root, k]) => [...document.querySelectorAll(`${root} .ol-card`)].find(c => c.querySelector('.ol-coin')?.textContent === 'ETH')?.querySelector(`.ol-rec-tag[data-ol-rec$="|${k}"]`)?.click(), [root, k])
   const det = await p.$$eval(`${ethCard} .ol-rec-detail`, els => els.map(e => e.textContent.replace(/\s+/g, ' ')))
   t(`${label}: all five open, one detail each`, det.length === 5, det.length)
-  t(`${label}: past year — every reading band, both halves, the last days like today`, /Every reading, 24h after/.test(det[0]) && /Strongly bearish/.test(det[0]) && /Strongly bullish/.test(det[0]) && /First half/.test(det[0]) && /Second half/.test(det[0]) && /days that read like today/.test(det[0]), det[0]?.slice(0, 300))
+  t(`${label}: past year — every reading band, both halves, the last days like today`, /Every reading, 24h after/.test(det[0]) && det[0]?.includes('Replayed on') && det[0]?.includes('days of ETH') && /Strongly bearish/.test(det[0]) && /Strongly bullish/.test(det[0]) && /First half/.test(det[0]) && /Second half/.test(det[0]) && /days that read like today/.test(det[0]), det[0]?.slice(0, 300))
   t(`${label}: today's band is the one highlighted`, (await p.$eval(ethCard, c => c.querySelector('.ol-rec-detail')?.querySelectorAll('tr.cur').length ?? 0)) >= 1)
   t(`${label}: learned — each signal with its calls and weight, and the weights through the year`, /Each signal on ETH, at 24h/.test(det[1]) && /×\d\.\d\d/.test(det[1]) && /How the weights moved through the year/.test(det[1]), det[1]?.slice(0, 300))
   t(`${label}: cone — move sizes against the normal, and every timeframe`, /How big the moves were, 24h after/.test(det[2]) && /over 2σ/.test(det[2]) && /The cone at every timeframe/.test(det[2]) && /30d/.test(det[2]), det[2]?.slice(0, 300))
   t(`${label}: horizons — the table at every timeframe`, /Avg move after/.test(det[3]) && /4h/.test(det[3]) && /30d/.test(det[3]), det[3]?.slice(0, 300))
-  t(`${label}: live — calls by lean, every market, and the last graded calls`, /ETH, 24h/.test(det[4]) && /Every market, 24h/.test(det[4]) && /The last 2 graded calls on ETH/.test(det[4]) && /\$102\.00 → \$100\.00/.test(det[4]), det[4]?.slice(0, 400))
+  t(`${label}: live — since when, calls by lean, every market, what is waiting, and the log`, /ETH, 24h/.test(det[4]) && /Every market, 24h/.test(det[4]) && /Log: the last 2 graded calls on ETH/.test(det[4]) && /Tracking ETH at 24h since/.test(det[4]) && /15 logged/.test(det[4]) && /Every market since/.test(det[4]) && /Waiting to be graded/.test(det[4]) && det[4]?.includes('$104.50') && /\$102\.00 → \$100\.00/.test(det[4]), det[4]?.slice(0, 400))
   t(`${label}: wide tables can be dragged sideways`, await p.$$eval(`${ethCard} .ol-tbl-wrap`, els => els.length > 0 && els.every(e => e.hasAttribute('data-dragscroll'))))
   for (const k of ['past', 'learned', 'cone', 'hz', 'live']) await p.evaluate(([root, k]) => [...document.querySelectorAll(`${root} .ol-card`)].find(c => c.querySelector('.ol-coin')?.textContent === 'ETH')?.querySelector(`.ol-rec-tag[data-ol-rec$="|${k}"]`)?.click(), [root, k])
   t(`${label}: and each closes again`, (await p.$$eval(`${ethCard} .ol-rec-detail`, e => e.length)) === 0)
