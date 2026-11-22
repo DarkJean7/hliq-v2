@@ -10,7 +10,7 @@
 // price comes from the mids the app already has.
 import './outlook.css'
 import { ensureAnalysis, analysisFor, analysisRaw, analysisState, setAnalysisDeps, fmtPx, hydrateAnalysis } from './analysis.js'
-import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, TESTED_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, coneScale } from './outlook.js'
+import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, TESTED_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, coneScale, bandTable, bandOfScore, halvesRecord, recentLike, weightsOverTime, moveDistribution } from './outlook.js'
 import { catLabel } from './simcat.js'
 import { leanOf, actionsFor, ideaFor, sortCards, ORACLE_SORTS } from './outlooksuggest.js'
 
@@ -18,6 +18,7 @@ const LS_H = 'hliq_outlook_h'
 const RELOAD_MS = 15 * 60e3
 let horizon = (() => { try { const h = localStorage.getItem(LS_H); return h in HORIZONS ? h : '24h' } catch { return '24h' } })()
 const whyOpen = new Set()   // card keys whose factor list is open
+const recOpen = new Set()   // coin|row of the track record rows opened to their detail
 // Cards start folded ("make the cards unextended"): the lean, the score and the P&L in each case.
 // The ones opened are remembered on this device — a convenience, so storage failing is fine.
 const LS_OPEN = 'hliq_oracle_open'
@@ -149,6 +150,8 @@ export function renderOutlook(host, ctx, tick = false) {
       if (h) { horizon = h.dataset.olH; try { localStorage.setItem(LS_H, horizon) } catch {} ; paint(true); return }
       const c = e.target.closest('[data-ol-coin]')
       if (c) { last?.ctx.openCoin?.(c.dataset.olCoin); return }
+      const rc = e.target.closest('[data-ol-rec]')
+      if (rc) { const k = rc.dataset.olRec; recOpen.has(k) ? recOpen.delete(k) : recOpen.add(k); paint(true); return }
       const w = e.target.closest('[data-ol-why]')
       if (w) { const k = w.dataset.olWhy; whyOpen.has(k) ? whyOpen.delete(k) : whyOpen.add(k); paint(true); return }
       // "make the cards be able to unextend more easily": a folded card opens from anywhere on it,
@@ -250,7 +253,7 @@ function paint(force, fromRender = false) {
   const items = [...held, ...watched]
   // Repaint only when something on the card would change: a position, a load landing, the price
   // moving a twentieth of a percent, a toggle, the sort, the list watched.
-  const sig = [horizon, sortBy, watchList().join(','), recVer, ps == null ? 'unknown' : '', [...whyOpen].join(','), [...cardOpen].join(','), ...items.map(i =>
+  const sig = [horizon, sortBy, watchList().join(','), recVer, ps == null ? 'unknown' : '', [...whyOpen].join(','), [...recOpen].join(','), [...cardOpen].join(','), ...items.map(i =>
     `${i.coin}:${i.ps.map(p => `${keyOf(p)}:${p.szi}:${p.entryPx}:${p.liquidationPx}:${p.unrealizedPnl}`).join(',')}:${i.raw?.at ?? 0}:${i.state}:${i.price ? Math.round(Math.log(i.price) * 2000) : 0}`)].join('|')
   if (!force && sig === painted) return
   painted = sig
@@ -286,6 +289,8 @@ const CONE_V = {
   wide: ['Moves ran smaller than the cone: its chances read high', 'Los movimientos fueron menores que el cono: sus probabilidades se pasan'],
   thin: ['Too few days to tell', 'Muy pocos días para saber'],
 }
+const VSHORT = { better: ['Beat chance', 'Superó al azar'], worse: ['Worse', 'Peor'], chance: ['Chance', 'Azar'], thin: ['Too few', 'Muy pocos'], none: ['—', '—'] }
+const BANDN = { sbear: ['Strongly bearish', 'Muy bajista'], bear: ['Bearish', 'Bajista'], neutral: ['Neutral', 'Neutral'], bull: ['Bullish', 'Alcista'], sbull: ['Strongly bullish', 'Muy alcista'] }
 const verdictEm = (v, T) => `<em class="v ${v}">${T(...VERDICT[v])}</em>`
 const candleValues = (fs, h) => Object.fromEntries(fs.filter(f => candleIds(h).includes(f.id)).map(f => [f.id, f.v]))
 /** "Trend, momentum and range" — or at 4h, "trend, range, 3-day fade and Bollinger stretch". */
@@ -370,14 +375,99 @@ function recordHtml(coin, raw, o, ctx, past) {
     ].filter(Boolean)
     liveLine = `${T(`${cc.n} graded ${lab} calls,`, `${cc.n} lecturas calificadas de ${lab},`)} <b>${pct(cc.hits / cc.n)}</b> ${T('right', 'acertadas')} · ${parts.join(' · ')}`
   }
-  const row = (tag, body, note = '') => `<div class="ol-rec-row"><span class="ol-rec-tag">${tag}</span><div>${body}${note ? `<div class="ol-rec-note">${note}</div>` : ''}</div></div>`
+  // ── Each row opens to its detail ("make this section each individually expandable") ──
+  const isOpen = (key) => recOpen.has(`${coin}|${key}`)
+  const day = (t) => new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  const when = (t) => new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const tbl = (head, rows) => `<div class="ol-tbl-wrap" data-dragscroll><table class="ol-tbl"><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`
+  const vshort = (v) => `<span class="v ${v}">${T(...VSHORT[v ?? 'none'])}</span>`
+  const ok = (h) => h ? `<span class="ok">✓</span>` : `<span class="no">✗</span>`
+  const sub = (s) => `<div class="ol-rec-dh">${s}</div>`
+
+  const pastDetail = () => {
+    if (fixedNow == null) return ''
+    const bt = bandTable(past.samples, hours)
+    const cur = bandOfScore(fixedNow)?.id
+    const halves = halvesRecord(past.samples, fixedNow, hours)
+    const like = recentLike(past.samples, fixedNow, hours)
+    return [
+      bt ? sub(T(`Every reading, ${hz} after`, `Cada lectura, ${hz} después`)) + tbl(
+        [T('Reading', 'Lectura'), T('Days', 'Días'), T('Right', 'Acertó'), T('Chance', 'Azar'), T('Avg move', 'Mov. medio'), ''],
+        bt.map(b => `<tr class="${b.band === cur ? 'cur' : ''}"><td>${T(...BANDN[b.band])}</td><td>${b.n}</td><td>${b.n ? pct(b.rate) : '—'}</td><td>${pct(b.base)}</td><td>${b.n ? mv(b.avgAfter) : '—'}</td><td>${b.n ? vshort(b.verdict) : ''}</td></tr>`)) : '',
+      halves ? sub(T('Did it hold across the year?', '¿Se sostuvo durante el año?')) + `<div class="ol-rec-pair">${halves.map((x, i) => `<span><b>${i ? T('Second half', 'Segunda mitad') : T('First half', 'Primera mitad')}</b> ${x?.n ? `${pct(x.rate)} ${T('of', 'de')} ${x.n} · ${T('chance', 'azar')} ${pct(x.base)} ${vshort(x.verdict)}` : '—'}</span>`).join('')}</div>` : '',
+      like.length ? sub(T(`The last ${like.length} days that read like today`, `Los últimos ${like.length} días que marcaron como hoy`)) + tbl(
+        [T('Day', 'Día'), T('Score', 'Puntaje'), T(`Move ${hz} after`, `Mov. ${hz} después`), T('Right?', '¿Acertó?')],
+        like.map(x => `<tr><td>${day(x.t)}</td><td>${signed(x.s)}</td><td class="${x.move >= 0 ? 'pos' : 'neg'}">${mv(x.move)}</td><td>${ok(x.hit)}</td></tr>`)) : '',
+    ].join('')
+  }
+
+  const learnedDetail = () => {
+    const ids = candleIds(hours)
+    const sig = past.signals ?? {}
+    const over = weightsOverTime(past.samples, hours)
+    return [
+      sub(T(`Each signal on ${lab}, at ${hz}`, `Cada señal en ${lab}, a ${hz}`)) + tbl(
+        [T('Signal', 'Señal'), T('Calls', 'Lecturas'), T('Right', 'Acertó'), T('Chance', 'Azar'), T('Avg per call', 'Media/lectura'), T('Weight', 'Peso')],
+        ids.map(id => { const r = sig[id]; const m = past.mult?.[id] ?? 1
+          return `<tr><td>${T(...FACTOR_NAME[id])}</td><td>${r?.n ?? 0}</td><td>${r?.n ? pct(r.rate) : '—'}</td><td>${r?.n ? pct(r.chance) : '—'}</td><td>${r?.n ? mv(r.edge) : '—'}</td><td class="${m > 1.005 ? 'pos' : m < 0.995 ? 'neg' : ''}">×${m.toFixed(2)}</td></tr>` })),
+      over.length ? sub(T('How the weights moved through the year', 'Cómo cambiaron los pesos durante el año')) + tbl(
+        [T('Up to', 'Hasta'), ...ids.map(id => T(...FACTOR_NAME[id]))],
+        over.map(w => `<tr><td>${day(w.t)}</td>${ids.map(id => `<td>×${(w.m[id] ?? 1).toFixed(2)}</td>`).join('')}</tr>`)) : '',
+      `<div class="ol-rec-note">${T('A signal right more often than chance on this market counts more (up to ×2), one right less often counts less (down to ×0.25); few calls pull it towards ×1.', 'Una señal que acierta más que el azar en este mercado cuenta más (hasta ×2), una que acierta menos cuenta menos (hasta ×0,25); pocas lecturas la acercan a ×1.')}</div>`,
+    ].join('')
+  }
+
+  const coneDetail = () => {
+    const dist = moveDistribution(past.samples, hours)
+    const lo = (b) => b.hi === Infinity ? T(`over ${b.lo}σ`, `más de ${b.lo}σ`) : `${b.lo}–${b.hi}σ`
+    return [
+      dist ? sub(T(`How big the moves were, ${hz} after`, `Qué tan grandes fueron los movimientos, ${hz} después`)) + tbl(
+        [T('Move', 'Movimiento'), T('Days', 'Días'), T('Share', 'Parte'), T('Expected', 'Esperado')],
+        dist.map(b => `<tr><td>${lo(b)}</td><td>${b.n}</td><td class="${b.share > b.expect + 0.05 ? 'warn' : ''}">${pct(b.share)}</td><td>${pct(b.expect)}</td></tr>`)) : '',
+      sub(T('The cone at every timeframe', 'El cono en cada marco')) + tbl(
+        [T('Timeframe', 'Marco'), T('Days', 'Días'), T('Inside 1σ', 'Dentro 1σ'), T('Bull line', 'Línea alcista'), T('Bear line', 'Línea bajista'), T('Scale', 'Escala')],
+        PAST_HORIZONS.map(h => { const c = coneRecord(past.samples, h); return c ? `<tr class="${h === hours ? 'cur' : ''}"><td>${HZ[h]}</td><td>${c.n}</td><td>${pct(c.inside)}</td><td>${pct(c.up)}</td><td>${pct(c.dn)}</td><td>×${coneScale(c, h).toFixed(2)}</td></tr>` : `<tr><td>${HZ[h]}</td><td colspan="5">—</td></tr>` })),
+      `<div class="ol-rec-note">${T('Expected: 68% inside 1σ, 32% touching each line. Moves bigger than that make the cone too narrow, smaller ones too wide; the scale corrects it.', 'Esperado: 68% dentro de 1σ, 32% tocando cada línea. Movimientos mayores hacen el cono angosto, menores ancho; la escala lo corrige.')}</div>`,
+    ].join('')
+  }
+
+  const hzDetail = () => fixedNow == null ? '' : tbl(
+    [T('Timeframe', 'Marco'), T('Days', 'Días'), T('Right', 'Acertó'), T('Chance', 'Azar'), T('Avg move after', 'Mov. medio después'), T('On any day', 'Cualquier día'), ''],
+    PAST_HORIZONS.map(h => { const x = pastRecord(past.samples, fixedNow, h); return x?.n
+      ? `<tr class="${h === hours ? 'cur' : ''}"><td>${HZ[h]}</td><td>${x.n}</td><td>${pct(x.rate)}</td><td>${pct(x.base)}</td><td>${mv(x.avgAfter)}</td><td>${mv(x.avgAll)}</td><td>${vshort(x.verdict)}</td></tr>`
+      : `<tr><td>${HZ[h]}</td><td colspan="6">—</td></tr>` })) + `<div class="ol-rec-note">${T(`For a reading like today's (${signed(fixedNow)}). 7d and 30d windows overlap day to day, so they need more days to say anything.`, `Para una lectura como la de hoy (${signed(fixedNow)}). Las ventanas de 7d y 30d se solapan, así que necesitan más días.`)}</div>`
+
+  const liveDetail = () => {
+    if (!d) return ''
+    const leanRow = (name, x) => `<tr><td>${name}</td><td>${x?.n ?? 0}</td><td>${x?.n ? x.hits : '—'}</td><td>${x?.n ? pct(x.hits / x.n) : '—'}</td></tr>`
+    const t1 = (title, rec) => sub(title) + tbl([T('Call', 'Lectura'), T('Graded', 'Calificadas'), T('Right', 'Acertadas'), '%'],
+      [leanRow(T('Bullish', 'Alcista'), rec?.up), leanRow(T('Bearish', 'Bajista'), rec?.down), leanRow(T('Neutral', 'Neutral'), rec?.flat),
+       `<tr class="cur"><td>${T('All', 'Todas')}</td><td>${rec?.n ?? 0}</td><td>${rec?.n ? rec.hits : '—'}</td><td>${rec?.n ? pct(rec.hits / rec.n) : '—'}</td></tr>`])
+    const rows = (d.recent ?? []).map(e => `<tr><td>${when(e.t)}</td><td>${signed(e.score)}</td><td>$${fmtPx(e.px)} → $${fmtPx(e.end)}</td><td class="${e.end >= e.px ? 'pos' : 'neg'}">${mv((e.end / e.px - 1) * 100)}</td><td>${ok(e.hit)}</td></tr>`)
+    return [
+      t1(T(`${lab}, ${hz}`, `${lab}, ${hz}`), d.coin),
+      t1(T(`Every market, ${hz}`, `Todos los mercados, ${hz}`), d.all),
+      d.coin?.n && d.coin.inside != null ? `<div class="ol-rec-note">${T(`Ended inside the cone's 1σ on ${pct(d.coin.inside / d.coin.n)} of ${d.coin.n} graded (expect 68%).`, `Terminó dentro de 1σ del cono en ${pct(d.coin.inside / d.coin.n)} de ${d.coin.n} calificadas (se espera 68%).`)}</div>` : '',
+      rows.length ? sub(T(`The last ${rows.length} graded calls on ${lab}`, `Las últimas ${rows.length} lecturas calificadas de ${lab}`)) + tbl(
+        [T('Shown', 'Mostrada'), T('Score', 'Puntaje'), T(`Price → ${hz} later`, `Precio → ${hz} después`), T('Move', 'Mov.'), T('Right?', '¿Acertó?')], rows) : '',
+      d.pending ? `<div class="ol-rec-note">${T(`${d.pending} more waiting to be graded.`, `${d.pending} más esperando calificación.`)}</div>` : '',
+    ].join('')
+  }
+
+  const row = (key, tag, body, note = '', detail = null) => {
+    const open = isOpen(key), k = `${esc(coin)}|${key}`
+    return `<div class="ol-rec-row${open ? ' open' : ''}">
+      <button class="ol-rec-tag" data-ol-rec="${k}" aria-expanded="${open}">${tag} <i>${open ? '▴' : '▾'}</i></button>
+      <div class="ol-rec-sum" data-ol-rec="${k}">${body}${note ? `<div class="ol-rec-note">${note}</div>` : ''}</div>
+    </div>${open ? `<div class="ol-rec-detail">${(detail && detail()) || `<div class="ol-rec-note">${T('Nothing more to show yet.', 'Nada más que mostrar aún.')}</div>`}</div>` : ''}`
+  }
   return `<div class="ol-rec">
-    <div class="ol-rec-h">${T(`Track record · ${hz}`, `Historial · ${hz}`)}</div>
-    ${row(T('Past year', 'Último año'), pastLine, T(`${candleNames(hours, T)} only: the signals with history. One check a day.`, `Solo ${candleNames(hours, T)}: las señales con historial. Una revisión al día.`))}
-    ${row(T('Learned', 'Aprendido'), learnedLine)}
-    ${row(T('Cone', 'Cono'), coneLine)}
-    ${row(T('Horizons', 'Horizontes'), hzLine)}
-    ${row(T('Live', 'En vivo'), liveLine, T('The full score as shown, graded by the server at its own price.', 'La puntuación completa tal como se mostró, calificada por el servidor con su propio precio.'))}
+    <div class="ol-rec-h">${T(`Track record · ${hz}`, `Historial · ${hz}`)} <span>${T('tap a row for its detail', 'toca una fila para ver el detalle')}</span></div>
+    ${row('past', T('Past year', 'Último año'), pastLine, T(`${candleNames(hours, T)} only: the signals with history. One check a day.`, `Solo ${candleNames(hours, T)}: las señales con historial. Una revisión al día.`), pastDetail)}
+    ${row('learned', T('Learned', 'Aprendido'), learnedLine, '', learnedDetail)}
+    ${row('cone', T('Cone', 'Cono'), coneLine, '', coneDetail)}
+    ${row('hz', T('Horizons', 'Horizontes'), hzLine, '', hzDetail)}
+    ${row('live', T('Live', 'En vivo'), liveLine, T('The full score as shown, graded by the server at its own price.', 'La puntuación completa tal como se mostró, calificada por el servidor con su propio precio.'), liveDetail)}
   </div>`
 }
 

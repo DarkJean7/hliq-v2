@@ -228,3 +228,24 @@
 .ol-rm { background: none; border: 0; color: var(--muted); font-size: 13px; cursor: pointer; padding: 2px 6px; order: 97; }
 .ol-rm:hover { color: var(--red); }
 .ol-mini-row i { font-style: normal; font-size: 11px; }
+
+/* Track record rows open to their detail ("make this section each individually expandable"). */
+.ol-rec-h span { font-weight: 600; text-transform: none; letter-spacing: 0; margin-left: 6px; font-size: 10.5px; opacity: .8; }
+.ol-rec-tag { all: unset; cursor: pointer; font-size: 10.5px; font-weight: 800; color: var(--muted); padding-top: 1px; align-self: start; }
+.ol-rec-tag i { font-style: normal; font-size: 10px; color: var(--accent); margin-left: 2px; }
+.ol-rec-sum { cursor: pointer; min-width: 0; }
+.ol-rec-row { border-radius: 8px; margin: 0 -6px; padding: 4px 6px; }
+.ol-rec-row:hover { background: color-mix(in srgb, var(--fg, #fff) 3%, transparent); }
+.ol-rec-row.open { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.ol-rec-detail { margin: 2px 0 8px; padding: 8px 10px; border-left: 2px solid var(--accent); border-radius: 0 8px 8px 0; background: color-mix(in srgb, var(--panel-3) 55%, transparent); display: grid; gap: 6px; font-size: 12px; min-width: 0; }
+.ol-rec-dh { font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-top: 4px; }
+.ol-rec-pair { display: grid; gap: 3px; }
+.ol-tbl-wrap { overflow-x: auto; max-width: 100%; }
+.ol-tbl { border-collapse: collapse; width: 100%; font-size: 11.5px; white-space: nowrap; }
+.ol-tbl th { text-align: left; font-weight: 700; color: var(--muted); font-size: 10.5px; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--border); position: static; background: none; }
+.ol-tbl td { padding: 3px 8px 3px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); font-family: var(--font-mono, "JetBrains Mono", monospace); color: var(--fg, var(--text)); }
+.ol-tbl td:first-child { font-family: inherit; }
+.ol-tbl tr.cur td { font-weight: 800; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.ol-tbl .ok { color: var(--green); font-weight: 800; } .ol-tbl .no { color: var(--red); font-weight: 800; }
+.ol-rec-detail .v { font-style: normal; font-weight: 700; white-space: nowrap; }
+.ol-rec-detail .v.better { color: var(--green); } .ol-rec-detail .v.worse { color: var(--red); } .ol-rec-detail .v.chance, .ol-rec-detail .v.thin { color: #f5a524; }

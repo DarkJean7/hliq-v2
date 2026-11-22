@@ -551,3 +551,77 @@ export function pooledRecord(byCoin, h) {
   out.markets = byCoin.filter(s => resolved(s, h).length).length
   return out
 }
+
+// ── the track record, in detail (each row of the record opens to these) ──────────
+// "make this section each individually expandable ... more detailed, more data ... so the user
+// can see the records better". Everything below reads the same replay (pastSamples).
+
+/** The reading bands, strongest bearish to strongest bullish. */
+export const BANDS = [
+  { id: 'sbear', lean: 'down', lo: -Infinity, hi: -40 },
+  { id: 'bear', lean: 'down', lo: -40, hi: -15 },
+  { id: 'neutral', lean: 'flat', lo: -15, hi: 15 },
+  { id: 'bull', lean: 'up', lo: 15, hi: 40 },
+  { id: 'sbull', lean: 'up', lo: 40, hi: Infinity },
+]
+const inBand = (b, s) => b.id === 'sbear' ? s <= -40 : b.id === 'sbull' ? s >= 40 : b.id === 'neutral' ? Math.abs(s) < 15 : b.id === 'bear' ? s > -40 && s <= -15 : s >= 15 && s < 40
+export const bandOfScore = (s) => BANDS.find(b => inBand(b, s)) ?? null
+
+/**
+ * Every band at horizon `h`: how many days read that way, how often the band's call was right, the
+ * same call's chance on any day, and the average move after. `scoreOfX` picks fixed or learned.
+ */
+export function bandTable(samples, h, scoreOfX = (x) => weightedScore(x.f, null, h)) {
+  const all = resolved(samples, h).filter(x => scoreOfX(x) != null)
+  if (!all.length) return null
+  return BANDS.map(b => {
+    const hit = hitFor(b.lean)
+    const days = all.filter(x => inBand(b, scoreOfX(x)))
+    const base = all.filter(x => hit(x, x.out[h])).length / all.length
+    const j = judge(days.filter(x => hit(x, x.out[h])).length, days.length, base, h / 24)
+    return { ...j, band: b.id, lean: b.lean, base, avgAfter: pctOfLog(mean(days.map(x => x.out[h].ret))) }
+  })
+}
+
+/** The same reading in each half of the year — did it hold, or was it one lucky stretch? */
+export function halvesRecord(samples, score, h, scoreOfX) {
+  const all = resolved(samples, h)
+  if (all.length < 4) return null
+  const mid = all[Math.floor(all.length / 2)].t
+  return [all.filter(x => x.t < mid), all.filter(x => x.t >= mid)].map(part => pastRecord(part, score, h, scoreOfX))
+}
+
+/** The last `k` days that read like `score`, newest first: when, the score, the move after, right? */
+export function recentLike(samples, score, h, scoreOfX = (x) => weightedScore(x.f, null, h), k = 8) {
+  const b = bandOfScore(score)
+  if (!b) return []
+  const hit = hitFor(b.lean)
+  return resolved(samples, h).filter(x => { const s = scoreOfX(x); return s != null && inBand(b, s) })
+    .slice(-k).reverse()
+    .map(x => ({ t: x.t, s: scoreOfX(x), move: pctOfLog(x.out[h].ret), hit: hit(x, x.out[h]), inside: Math.abs(x.out[h].ret) < x.out[h].sigma }))
+}
+
+/** How the learned weights moved through the year: at a quarter, half, three quarters, and now. */
+export function weightsOverTime(samples, h) {
+  const all = resolved(samples, h)
+  if (all.length < 8) return []
+  return [0.25, 0.5, 0.75, 1].map(q => {
+    const x = all[Math.min(all.length - 1, Math.floor(all.length * q) - 1)]
+    return { t: x.t, m: learnedWeights(samples, h, q === 1 ? Infinity : x.i + h / 4) }
+  })
+}
+
+/**
+ * How big the moves were, in the cone's own σ, against what a normal distribution expects: the
+ * share of days whose move was under 0.5σ, 0.5–1σ, 1–1.5σ, 1.5–2σ and over 2σ.
+ */
+export const MOVE_BINS = [[0, 0.5], [0.5, 1], [1, 1.5], [1.5, 2], [2, Infinity]]
+export function moveDistribution(samples, h) {
+  const all = resolved(samples, h)
+  if (!all.length) return null
+  return MOVE_BINS.map(([a, b]) => {
+    const n = all.filter(x => { const z = Math.abs(x.out[h].ret) / x.out[h].sigma; return z >= a && z < b }).length
+    const expect = 2 * ((b === Infinity ? 1 : normCdf(b)) - normCdf(a))
+    return { lo: a, hi: b, share: n / all.length, expect, n }
+  })
+}

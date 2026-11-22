@@ -101,5 +101,8 @@ export function recordOf(log, coin, hours) {
     coin: tally(graded.filter(e => e.coin === coin)),
     all: tally(graded),
     pending: log.entries.filter(e => e.coin === coin && e.hours === hours && e.end == null && !e.expired).length,
+    // The last ten graded calls on this coin and horizon, newest first, for the record's detail.
+    recent: graded.filter(e => e.coin === coin).slice(-10).reverse()
+      .map(e => ({ t: e.t, score: e.score, lean: e.lean, px: e.px, end: e.end, hit: e.hit, inside: e.inside ?? null })),
   }
 }

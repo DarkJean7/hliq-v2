@@ -95,7 +95,12 @@ async function open(opts) {
     const z = { n: 0, hits: 0 }
     const all = { n: 40, hits: 22, up: { n: 20, hits: 12 }, down: { n: 15, hits: 7 }, flat: { n: 5, hits: 3 } }
     const eth = { n: 12, hits: 8, inside: 9, up: { n: 7, hits: 5 }, down: { n: 5, hits: 3 }, flat: z }
-    return route.fulfill({ json: { hours: h, coin: coin === 'ETH' ? eth : { n: 0, hits: 0, up: z, down: z, flat: z }, all, pending: 3 } })
+    // ETH's last two graded calls, for the Live row's detail.
+    const recent = coin === 'ETH' ? [
+      { t: Date.now() - 26 * 3600e3, score: -40, lean: 'down', px: 102, end: 100, hit: true, inside: true },
+      { t: Date.now() - 50 * 3600e3, score: 25, lean: 'up', px: 101, end: 99, hit: false, inside: true },
+    ] : []
+    return route.fulfill({ json: { hours: h, coin: coin === 'ETH' ? eth : { n: 0, hits: 0, up: z, down: z, flat: z }, all, pending: 3, recent } })
   })
   const p = await ctx.newPage()
   const errs = []
@@ -159,6 +164,21 @@ async function v2(p, root, label, logged) {
   t(`${label}: the 4h record replays the 4h set`, /trend, range, 3-day fade and Bollinger stretch only: the signals with history/i.test(await p.$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-rec`, e => e.textContent.replace(/\s+/g, ' '))))
   await p.click(`${root} [data-ol-h="24h"]`)
   await p.waitForFunction((r) => document.querySelector(`${r} [data-ol-h="24h"]`)?.classList.contains('on'), root)
+  // "make this section each individually expandable ... more detailed, more data": every row opens.
+  const ethCard = `${root} .ol-card:has(.ol-coin:text-is("ETH"))`
+  t(`${label}: each record row can be opened`, (await p.$$eval(`${ethCard} .ol-rec-tag[data-ol-rec]`, els => els.map(e => e.dataset.olRec.split('|')[1]).join())) === 'past,learned,cone,hz,live')
+  for (const k of ['past', 'learned', 'cone', 'hz', 'live']) await p.evaluate(([root, k]) => [...document.querySelectorAll(`${root} .ol-card`)].find(c => c.querySelector('.ol-coin')?.textContent === 'ETH')?.querySelector(`.ol-rec-tag[data-ol-rec$="|${k}"]`)?.click(), [root, k])
+  const det = await p.$$eval(`${ethCard} .ol-rec-detail`, els => els.map(e => e.textContent.replace(/\s+/g, ' ')))
+  t(`${label}: all five open, one detail each`, det.length === 5, det.length)
+  t(`${label}: past year — every reading band, both halves, the last days like today`, /Every reading, 24h after/.test(det[0]) && /Strongly bearish/.test(det[0]) && /Strongly bullish/.test(det[0]) && /First half/.test(det[0]) && /Second half/.test(det[0]) && /days that read like today/.test(det[0]), det[0]?.slice(0, 300))
+  t(`${label}: today's band is the one highlighted`, (await p.$eval(ethCard, c => c.querySelector('.ol-rec-detail')?.querySelectorAll('tr.cur').length ?? 0)) >= 1)
+  t(`${label}: learned — each signal with its calls and weight, and the weights through the year`, /Each signal on ETH, at 24h/.test(det[1]) && /×\d\.\d\d/.test(det[1]) && /How the weights moved through the year/.test(det[1]), det[1]?.slice(0, 300))
+  t(`${label}: cone — move sizes against the normal, and every timeframe`, /How big the moves were, 24h after/.test(det[2]) && /over 2σ/.test(det[2]) && /The cone at every timeframe/.test(det[2]) && /30d/.test(det[2]), det[2]?.slice(0, 300))
+  t(`${label}: horizons — the table at every timeframe`, /Avg move after/.test(det[3]) && /4h/.test(det[3]) && /30d/.test(det[3]), det[3]?.slice(0, 300))
+  t(`${label}: live — calls by lean, every market, and the last graded calls`, /ETH, 24h/.test(det[4]) && /Every market, 24h/.test(det[4]) && /The last 2 graded calls on ETH/.test(det[4]) && /\$102\.00 → \$100\.00/.test(det[4]), det[4]?.slice(0, 400))
+  t(`${label}: wide tables can be dragged sideways`, await p.$$eval(`${ethCard} .ol-tbl-wrap`, els => els.length > 0 && els.every(e => e.hasAttribute('data-dragscroll'))))
+  for (const k of ['past', 'learned', 'cone', 'hz', 'live']) await p.evaluate(([root, k]) => [...document.querySelectorAll(`${root} .ol-card`)].find(c => c.querySelector('.ol-coin')?.textContent === 'ETH')?.querySelector(`.ol-rec-tag[data-ol-rec$="|${k}"]`)?.click(), [root, k])
+  t(`${label}: and each closes again`, (await p.$$eval(`${ethCard} .ol-rec-detail`, e => e.length)) === 0)
   t(`${label}: what is reported is the coin, horizon, score and volatility, nothing else`, logged.every(x => Object.keys(x).sort().join() === 'coin,hours,score,sigma' && Number.isInteger(x.score) && x.sigma > 0), logged[0])
 }
 
@@ -361,7 +381,7 @@ console.log('-- desktop --')
   await p.evaluate(() => window.switchTab('outlook'))
   await checks(p, '#deskOutlook', 'desktop')
   await v2(p, '#deskOutlook', 'desktop', logged)
-  if (SHOT) { await p.screenshot({ path: `${SHOT}/outlook-desktop.png`, fullPage: false }); await p.evaluate(() => document.querySelector('#deskOutlook .ol-card .ol-rec')?.scrollIntoView({ block: 'start' })); await p.screenshot({ path: `${SHOT}/outlook-record.png`, fullPage: false }) }
+  if (SHOT) { await p.screenshot({ path: `${SHOT}/outlook-desktop.png`, fullPage: false }); await p.evaluate(() => { const c = document.querySelector('#deskOutlook .ol-card:not(.ol-mini)'); for (const k of ['past', 'live']) c?.querySelector(`.ol-rec-tag[data-ol-rec$="|${k}"]`)?.click(); document.querySelector('#deskOutlook .ol-card .ol-rec')?.scrollIntoView({ block: 'start' }) }); await p.screenshot({ path: `${SHOT}/outlook-record.png`, fullPage: false }) }
   t('desktop: no page errors', errs.length === 0, errs)
 }
 
