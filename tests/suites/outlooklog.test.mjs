@@ -2,7 +2,7 @@
 // "do version 2": every rating shown is graded once its horizon has passed, by the server, at the
 // server's own price.
 import fs from 'fs'
-import { cleanSubmission, addEntry, dueEntries, gradeDue, hitOf, recordOf, emptyLog, leanOf, olKey, OL_MAX, OL_GRACE } from '../../src/outlooklog.js'
+import { cleanSubmission, addEntry, dueEntries, gradeDue, hitOf, recordOf, emptyLog, leanOf, olKey, compact, OL_MAX, OL_KEEP, OL_GRACE, OL_CADENCE } from '../../src/outlooklog.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -21,8 +21,11 @@ const log = emptyLog()
 const sub = cleanSubmission({ coin: 'ETH', hours: 24, score: 42, sigma: 0.03 })
 t('logged at the server\'s own price and time', addEntry(log, sub, 3000, 10 * H) && log.entries[0].px === 3000 && log.entries[0].t === 10 * H)
 t('the lean comes from the score', log.entries[0].lean === 'up' && leanOf(-20) === 'down' && leanOf(14) === 'flat')
-t('the same coin, horizon and hour counts once', !addEntry(log, sub, 3100, 10 * H + 50 * 60e3) && log.entries.length === 1)
-t('the next hour is a new entry', addEntry(log, sub, 3010, 11 * H) && log.entries.length === 2)
+// Was one per hour on every horizon. The server now logs every perp itself, and a 24h call every
+// hour is 24 overlapping copies of one bet, so each horizon has its slot (OL_CADENCE).
+t('the same coin, horizon and slot counts once', !addEntry(log, sub, 3100, 11 * H + 50 * 60e3) && log.entries.length === 1)
+t('the next slot is a new entry', addEntry(log, sub, 3010, 12 * H) && log.entries.length === 2)
+t('slots: hourly for 1h, 4-hourly to 24h, daily beyond', OL_CADENCE[1] === 1 && OL_CADENCE[4] === 4 && OL_CADENCE[24] === 4 && OL_CADENCE[72] === 24 && OL_CADENCE[720] === 24)
 t('another horizon is a new entry', addEntry(log, { ...sub, hours: 168 }, 3000, 10 * H) && log.entries.length === 3)
 t('no price, no entry', !addEntry(log, { ...sub, coin: 'BTC' }, null, 10 * H))
 const big = emptyLog()
@@ -50,17 +53,38 @@ t('per coin: graded only', rec.coin.n === 1 && rec.coin.hits === 1 && rec.coin.u
 t('and across every market', rec.all.n === 2 && rec.all.hits === 1 && rec.all.down.n === 1)
 t('per horizon', recordOf(g, 'ETH', 168).all.n === 0)
 t('what is still waiting', recordOf(log, 'ETH', 24).pending === 2)
-t('keys are coin, horizon and hour', olKey({ coin: 'ETH', hours: 24, t: 5.5 * H }) === 'ETH|24|5')
+t('keys are coin, horizon and slot', olKey({ coin: 'ETH', hours: 1, t: 5.5 * H }) === 'ETH|1|5' && olKey({ coin: 'ETH', hours: 24, t: 5.5 * H }) === 'ETH|24|1')
 // For the record's detail: the coin's log, newest first. It was ten; "are they showing since when
 // the test started reading, like a log?" made it thirty, plus the start and what is still waiting.
 const many = emptyLog()
-for (let i = 0; i < 40; i++) { addEntry(many, { ...sub, score: i % 2 ? 30 : -30 }, 100 + i, i * H); }
-for (let i = 0; i < 34; i++) gradeDue(many, { ETH: 120 }, i * H + 24 * H + 60e3)   // each graded on time, six left waiting
-const mr = recordOf(many, 'ETH', 24), rc = mr.recent
+const s1 = { ...sub, hours: 1 }
+for (let i = 0; i < 40; i++) { addEntry(many, { ...s1, score: i % 2 ? 30 : -30 }, 100 + i, i * H); }
+for (let i = 0; i < 34; i++) gradeDue(many, { ETH: 120 }, i * H + H + 60e3)   // each graded on time, six left waiting
+const mr = recordOf(many, 'ETH', 1), rc = mr.recent
 t('the last graded calls, newest first, thirty at most', rc.length === 30 && rc.every((e, i) => !i || e.t < rc[i - 1].t), rc.map(e => e.t / H))
 t('since when: the first call logged, graded or not', mr.since === 0 && mr.allSince === 0 && mr.logged === 40)
-t('what is waiting, with when it will be graded', mr.waiting.length === 6 && mr.pending === 6 && mr.waiting[0].t === 39 * H && mr.waiting[0].due === 63 * H)
-t('nothing logged has no start, not a start of zero', recordOf(many, 'BTC', 24).since === null)
+t('what is waiting, with when it will be graded', mr.waiting.length === 6 && mr.pending === 6 && mr.waiting[0].t === 39 * H && mr.waiting[0].due === 40 * H)
+t('nothing logged has no start, not a start of zero', recordOf(many, 'BTC', 1).since === null)
+
+console.log('-- every perp, kept small --')
+// "log every coin automatically": ~190 markets x six horizons. Only what the tab shows is kept —
+// what is waiting, and the newest OL_KEEP graded — and the rest is folded into totals first.
+const before = JSON.stringify(recordOf(many, 'ETH', 1).coin), b4 = recordOf(many, 'ETH', 1)
+addEntry(many, { ...s1, coin: 'BTC' }, 50, 0); gradeDue(many, { BTC: 49 }, H + 60e3)
+const allBefore = JSON.stringify(recordOf(many, 'ETH', 1).all)
+t('compacting changes the entries', compact(many) === true && many.entries.filter(e => e.coin === 'ETH' && e.hit != null).length === OL_KEEP)
+const af = recordOf(many, 'ETH', 1)
+t('but not the record: totals carry what was dropped', JSON.stringify(af.coin) === before && JSON.stringify(af.all) === allBefore, [before, af.coin])
+t('nor since when, nor how many were logged', af.since === b4.since && af.logged === b4.logged && af.pending === 6)
+t('what is waiting is never dropped', many.entries.filter(e => e.end == null && !e.expired).length === 6)
+t('a second pass has nothing to do', compact(many) === false)
+t('the log still knows what it holds after compacting', !addEntry(many, { ...s1, score: 5 }, 1, 39 * H + 60e3) && addEntry(many, { ...s1, score: 5 }, 1, 40 * H))
+const capped = emptyLog()
+for (let i = 0; i < 50; i++) { addEntry(capped, { ...s1, coin: 'C' + i }, 1, 0) }
+gradeDue(capped, Object.fromEntries(Array.from({ length: 50 }, (_, i) => ['C' + i, 2])), H)
+t('a hard ceiling drops the oldest finished first, still counted', compact(capped, 20) && capped.entries.length === 20 && recordOf(capped, 'C0', 1).coin.n === 1 && recordOf(capped, 'C0', 1).all.n === 50)
+const old = { v: 1, entries: [{ coin: 'X', hours: 1, t: 0, px: 1, lean: 'up', score: 20, sigma: 0.01, end: 2, hit: true }] }
+t('a log written before totals existed still reads', recordOf(old, 'X', 1).coin.n === 1 && compact(old) === false)
 t('each with its score, the price then and at the horizon, and whether it was right', rc.every(e => Number.isInteger(e.score) && e.px > 0 && e.end === 120 && typeof e.hit === 'boolean'))
 t('only this coin\'s', recordOf(many, 'BTC', 24).recent.length === 0)
 

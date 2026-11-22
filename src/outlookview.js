@@ -13,6 +13,7 @@ import { ensureAnalysis, analysisFor, analysisRaw, analysisState, setAnalysisDep
 import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, TESTED_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, coneScale, bandTable, bandOfScore, halvesRecord, recentLike, weightsOverTime, moveDistribution } from './outlook.js'
 import { catLabel } from './simcat.js'
 import { leanOf, actionsFor, ideaFor, sortCards, ORACLE_SORTS } from './outlooksuggest.js'
+import { posHealthPct } from './posgroup.js'
 
 const LS_H = 'hliq_outlook_h'
 const RELOAD_MS = 15 * 60e3
@@ -213,7 +214,7 @@ function addWatch(coin, ctx) {
 }
 
 const SORT_NAME = {
-  default: ['Default', 'Por defecto'], strong: ['Strongest', 'Más fuerte'], bull: ['Most bullish', 'Más alcista'], bear: ['Most bearish', 'Más bajista'],
+  default: ['Worst health', 'Peor salud'], strong: ['Strongest', 'Más fuerte'], bull: ['Most bullish', 'Más alcista'], bear: ['Most bearish', 'Más bajista'],
   conviction: ['Conviction', 'Convicción'], pnl: ['P&L', 'P&L'], risk: ['Liq. risk', 'Riesgo liq.'], az: ['A–Z', 'A–Z'],
 }
 function toolsHtml(ctx, held) {
@@ -644,7 +645,10 @@ function cardHtml(item, ctx) {
   } else ps.forEach((p, i) => add(outs[i].risk?.liq?.px, 'liq', `${T('Liq', 'Liq')} ${nameOf(p) ?? ''}`.trim(), true))
   // What the sorts read (sortCards).
   const liqs = outs.map(x => x.risk?.liq?.sig).filter(v => Number.isFinite(v))
-  item.keys = { score: sc?.score ?? null, conviction: L.conviction, pnl: watch ? null : ps.reduce((s, p) => s + (parseFloat(p.unrealizedPnl) || 0), 0), risk: liqs.length ? Math.min(...liqs) : null, name: lab }
+  // Health as the position cards show it (posgroup.js): 100 at entry, 0 at liquidation. The card's
+  // is its worst account's — liquidation is per account and does not merge. A watched market has none.
+  const healths = ps.map(p => posHealthPct(p.szi, p.entryPx, p.liquidationPx, price)).filter(Number.isFinite)
+  item.keys = { health: healths.length ? Math.min(...healths) : null, score: sc?.score ?? null, conviction: L.conviction, pnl: watch ? null : ps.reduce((s, p) => s + (parseFloat(p.unrealizedPnl) || 0), 0), risk: liqs.length ? Math.min(...liqs) : null, name: lab }
 
   const open = whyOpen.has(k)
   const why = sc ? `<button class="ol-why-btn" data-ol-why="${esc(k)}">${open ? T('Hide why', 'Ocultar motivos') : T(`Why ${sc.score > 0 ? '+' : ''}${sc.score}? ${sc.agree} of ${sc.of} signals agree`, `¿Por qué ${sc.score > 0 ? '+' : ''}${sc.score}? ${sc.agree} de ${sc.of} señales coinciden`)}</button>

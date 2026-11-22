@@ -120,8 +120,10 @@ export const ORACLE_SORTS = ['default', 'strong', 'bull', 'bear', 'conviction', 
 
 /**
  * Order cards by `by`. Each item carries `keys` — { score, conviction, pnl, risk (the nearest
- * liquidation in σ), name } — or null while it is still loading; those keep their place at the
- * end. `default` is the order given: positions as the app lists them, watched as added.
+ * liquidation in σ), health, name } — or null while it is still loading; those keep their place at
+ * the end. `default` is worst health first ("make the default sort be by positions with the worst
+ * health"): a position nearest its liquidation leads; ties, and watched markets (no health), keep
+ * the order given.
  * A missing value (a watched market has no P&L, a position no liquidation in range) sorts last.
  */
 export function sortCards(items, by) {
@@ -129,6 +131,7 @@ export function sortCards(items, by) {
   const last = (v, dir) => v == null || !Number.isFinite(v) ? (dir > 0 ? Infinity : -Infinity) : v
   const num = (get, dir) => (a, b) => dir * (last(get(a.keys), dir) - last(get(b.keys), dir))
   const cmp = {
+    default: num(k => k.health, 1),
     strong: num(k => k.score == null ? null : Math.abs(k.score), -1),
     bull: num(k => k.score, -1),
     bear: num(k => k.score, 1),

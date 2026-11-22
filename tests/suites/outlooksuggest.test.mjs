@@ -71,14 +71,16 @@ t('a market with no position gets no position actions', actionsFor(L1, free, set
 
 console.log('-- sorting ("add sorts") --')
 const cards = [
-  { keys: { score: -50, conviction: 1, pnl: 10, risk: 3, name: 'SOL' } },
-  { keys: { score: 20, conviction: 2, pnl: null, risk: null, name: 'ARB' } },
+  { keys: { score: -50, conviction: 1, pnl: 10, risk: 3, health: 62, name: 'SOL' } },
+  { keys: { score: 20, conviction: 2, pnl: null, risk: null, health: null, name: 'ARB' } },
   { keys: null, coin: 'still loading' },
-  { keys: { score: 70, conviction: 1, pnl: -40, risk: 1.5, name: 'ETH' } },
+  { keys: { score: 70, conviction: 1, pnl: -40, risk: 1.5, health: 18, name: 'ETH' } },
 ]
 const by = (k) => sortCards(cards, k).map(c => c.keys?.name ?? '…').join()
 t('every sort is offered', ORACLE_SORTS.join() === 'default,strong,bull,bear,conviction,pnl,risk,az')
-t('default keeps the order given', by('default') === 'SOL,ARB,ETH,…')
+// Default was the order given; "make the default sort be by positions with the worst health".
+t('default: worst health first, a market not held last', by('default') === 'ETH,SOL,ARB,…')
+t('equal health keeps the order given', sortCards([{ keys: { health: 100, name: 'A' } }, { keys: { health: 100, name: 'B' } }], 'default').map(c => c.keys.name).join() === 'A,B')
 t('strongest signal first, either way', by('strong') === 'ETH,SOL,ARB,…')
 t('most bullish first', by('bull') === 'ETH,ARB,SOL,…')
 t('most bearish first', by('bear') === 'SOL,ARB,ETH,…')

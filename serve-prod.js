@@ -20,7 +20,8 @@ import { buildRevenue, verifyRevenue, cgForHyperliquid, cgMarketsUrl, CG_PAGES, 
 import { buildDexes, buildCexes, LLAMA_DEXVOL_URL, CEX_CIK, secFactsUrl, sharesFromFacts } from './src/exchanges.js'
 import { refreshMacro, buildMacro, macroHasData, MACRO_UA } from './src/macro.js'
 import { KNOWN, knownRow } from './src/lbknown.js'
-import { emptyLog, cleanSubmission, addEntry, dueEntries, gradeDue, recordOf, OL_HOURS } from './src/outlooklog.js'
+import { emptyLog, cleanSubmission, addEntry, dueEntries, gradeDue, recordOf, compact, hasEntry, OL_HOURS } from './src/outlooklog.js'
+import { createOracleLogger } from './src/oraclelogger.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -203,7 +204,7 @@ const OL_FILE = join(__dirname, 'data', 'outlook-log.json')
 const OL_LOCK = OL_FILE + '.lock'
 let olMem = null, olMemAt = 0
 function olRead() {
-  try { const d = JSON.parse(readFileSync(OL_FILE, 'utf8')); if (Array.isArray(d?.entries)) return d } catch {}
+  try { const d = JSON.parse(readFileSync(OL_FILE, 'utf8')); if (Array.isArray(d?.entries)) { d.stats ??= {}; return d } } catch {}
   return emptyLog()
 }
 function olLoad() {
@@ -216,7 +217,10 @@ function olLocked(fn) {
   catch { try { if (Date.now() - statSync(OL_LOCK).mtimeMs > 20_000) unlinkSync(OL_LOCK) } catch {} ; return false }
   try {
     const log = olRead()
-    if (fn(log)) { writeAtomic(OL_FILE, JSON.stringify(log)); olMem = log; olMemAt = Date.now() }
+    // Every write compacts: the server logs every perp now, so only what the tab shows is kept and
+    // the rest is folded into totals (outlooklog.js compact).
+    const changed = fn(log); const squeezed = compact(log)
+    if (changed || squeezed) { writeAtomic(OL_FILE, JSON.stringify(log)); olMem = log; olMemAt = Date.now() }
     return true
   } finally { try { closeSync(fd) } catch {} ; try { unlinkSync(OL_LOCK) } catch {} }
 }
@@ -254,6 +258,19 @@ async function olGradeNow() {
   } catch (e) { console.warn('[outlook] grading failed:', e.message) } finally { olGrading = false }
 }
 setInterval(() => { olGradeNow() }, 5 * 60_000).unref?.()
+// "log every coin automatically even if nobody opens it" (src/oraclelogger.js): one worker, by
+// lease, reads one main-dex perp every 15 seconds and logs its calls; ~190 perps fit in an hour.
+// Its own ceiling of 100 weight a minute keeps it well inside what the bots on this IP need.
+const oracleLogger = createOracleLogger({
+  dir: join(__dirname, 'data', 'oracle'),
+  info: popInfo,
+  addEntries: (list) => {
+    // The lock is taken or it is not: a busy lock means another write is in progress, so try again.
+    for (let i = 0; i < 3; i++) if (olLocked(log => { let n = 0; for (const e of list) if (addEntry(log, e, e.px, e.t)) n++; return n > 0 })) return
+    throw new Error('outlook log busy')
+  },
+})
+setInterval(() => { oracleLogger.tick() }, 15_000).unref?.()
 
 function cgRefresh() {
   if (cgInflight) return cgInflight
@@ -1263,6 +1280,9 @@ createServer((req, res) => {
     ;(async () => {
       const sub = cleanSubmission(await readJson(req, 2_000))
       if (!sub) return res.writeHead(400).end()
+      // Most main-dex calls are already in, logged by the server itself (oraclelogger.js): answer
+      // those from memory rather than lock and rewrite the file to learn it was a duplicate.
+      if (hasEntry(olLoad(), sub, Date.now())) return res.writeHead(204).end()
       const px = Number((await olMidsFor([sub.coin]))[sub.coin])
       if (!(px > 0)) return res.writeHead(422).end()      // no price for it here: not logged
       olLocked(log => addEntry(log, sub, px, Date.now()))
