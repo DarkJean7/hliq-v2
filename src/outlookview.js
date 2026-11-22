@@ -378,6 +378,7 @@ function recordHtml(coin, raw, o, ctx, past) {
   // ── Each row opens to its detail ("make this section each individually expandable") ──
   const isOpen = (key) => recOpen.has(`${coin}|${key}`)
   const day = (t) => new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  const dayY = (t) => new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
   const when = (t) => new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
   const tbl = (head, rows) => `<div class="ol-tbl-wrap" data-dragscroll><table class="ol-tbl"><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`
   const vshort = (v) => `<span class="v ${v}">${T(...VSHORT[v ?? 'none'])}</span>`
@@ -390,7 +391,9 @@ function recordHtml(coin, raw, o, ctx, past) {
     const cur = bandOfScore(fixedNow)?.id
     const halves = halvesRecord(past.samples, fixedNow, hours)
     const like = recentLike(past.samples, fixedNow, hours)
+    const s0 = past.samples?.[0]?.t, s1 = past.samples?.at(-1)?.t
     return [
+      s0 != null ? `<div class="ol-rec-since">${T(`Replayed on ${past.samples.length} days of ${lab}, <b>${dayY(s0)}</b> to <b>${dayY(s1)}</b>`, `Reproducido en ${past.samples.length} días de ${lab}, <b>${dayY(s0)}</b> a <b>${dayY(s1)}</b>`)}</div>` : '',
       bt ? sub(T(`Every reading, ${hz} after`, `Cada lectura, ${hz} después`)) + tbl(
         [T('Reading', 'Lectura'), T('Days', 'Días'), T('Right', 'Acertó'), T('Chance', 'Azar'), T('Avg move', 'Mov. medio'), ''],
         bt.map(b => `<tr class="${b.band === cur ? 'cur' : ''}"><td>${T(...BANDN[b.band])}</td><td>${b.n}</td><td>${b.n ? pct(b.rate) : '—'}</td><td>${pct(b.base)}</td><td>${b.n ? mv(b.avgAfter) : '—'}</td><td>${b.n ? vshort(b.verdict) : ''}</td></tr>`)) : '',
@@ -444,13 +447,21 @@ function recordHtml(coin, raw, o, ctx, past) {
       [leanRow(T('Bullish', 'Alcista'), rec?.up), leanRow(T('Bearish', 'Bajista'), rec?.down), leanRow(T('Neutral', 'Neutral'), rec?.flat),
        `<tr class="cur"><td>${T('All', 'Todas')}</td><td>${rec?.n ?? 0}</td><td>${rec?.n ? rec.hits : '—'}</td><td>${rec?.n ? pct(rec.hits / rec.n) : '—'}</td></tr>`])
     const rows = (d.recent ?? []).map(e => `<tr><td>${when(e.t)}</td><td>${signed(e.score)}</td><td>$${fmtPx(e.px)} → $${fmtPx(e.end)}</td><td class="${e.end >= e.px ? 'pos' : 'neg'}">${mv((e.end / e.px - 1) * 100)}</td><td>${ok(e.hit)}</td></tr>`)
+    const wait = (d.waiting ?? []).map(e => `<tr><td>${when(e.t)}</td><td>${signed(e.score)}</td><td>$${fmtPx(e.px)}</td><td>${when(e.due)}</td></tr>`)
+    // Since when: the first call this coin's log holds at this horizon, and the whole log's.
+    const since = d.since != null
+      ? `<div class="ol-rec-since">${T(`Tracking ${lab} at ${hz} since <b>${when(d.since)}</b>`, `Siguiendo ${lab} a ${hz} desde <b>${when(d.since)}</b>`)} · ${d.logged ?? 0} ${T('logged', 'registradas')} · ${d.coin?.n ?? 0} ${T('graded', 'calificadas')} · ${d.pending ?? 0} ${T('waiting', 'pendientes')}${d.expired ? ` · ${d.expired} ${T('missed (server was late)', 'perdidas (servidor tarde)')}` : ''}${d.allSince != null ? `<br>${T('Every market since', 'Todos los mercados desde')} ${when(d.allSince)}` : ''}</div>`
+      : ''
     return [
+      since,
       t1(T(`${lab}, ${hz}`, `${lab}, ${hz}`), d.coin),
       t1(T(`Every market, ${hz}`, `Todos los mercados, ${hz}`), d.all),
       d.coin?.n && d.coin.inside != null ? `<div class="ol-rec-note">${T(`Ended inside the cone's 1σ on ${pct(d.coin.inside / d.coin.n)} of ${d.coin.n} graded (expect 68%).`, `Terminó dentro de 1σ del cono en ${pct(d.coin.inside / d.coin.n)} de ${d.coin.n} calificadas (se espera 68%).`)}</div>` : '',
-      rows.length ? sub(T(`The last ${rows.length} graded calls on ${lab}`, `Las últimas ${rows.length} lecturas calificadas de ${lab}`)) + tbl(
+      wait.length ? sub(T('Waiting to be graded', 'Esperando calificación')) + tbl(
+        [T('Shown', 'Mostrada'), T('Score', 'Puntaje'), T('Price then', 'Precio entonces'), T('Graded at', 'Se califica')], wait)
+        + (d.pending > wait.length ? `<div class="ol-rec-note">${T(`and ${d.pending - wait.length} more.`, `y ${d.pending - wait.length} más.`)}</div>` : '') : '',
+      rows.length ? sub(T(`Log: the last ${rows.length} graded calls on ${lab}`, `Registro: las últimas ${rows.length} lecturas calificadas de ${lab}`)) + tbl(
         [T('Shown', 'Mostrada'), T('Score', 'Puntaje'), T(`Price → ${hz} later`, `Precio → ${hz} después`), T('Move', 'Mov.'), T('Right?', '¿Acertó?')], rows) : '',
-      d.pending ? `<div class="ol-rec-note">${T(`${d.pending} more waiting to be graded.`, `${d.pending} más esperando calificación.`)}</div>` : '',
     ].join('')
   }
 

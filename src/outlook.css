@@ -249,3 +249,7 @@
 .ol-tbl .ok { color: var(--green); font-weight: 800; } .ol-tbl .no { color: var(--red); font-weight: 800; }
 .ol-rec-detail .v { font-style: normal; font-weight: 700; white-space: nowrap; }
 .ol-rec-detail .v.better { color: var(--green); } .ol-rec-detail .v.worse { color: var(--red); } .ol-rec-detail .v.chance, .ol-rec-detail .v.thin { color: #f5a524; }
+
+/* Since when the record has been kept — the first line of a row's detail. */
+.ol-rec-since{font-size:11px;color:var(--muted);padding:6px 2px 4px;line-height:1.5}
+.ol-rec-since b{color:var(--fg, var(--text));font-weight:600}

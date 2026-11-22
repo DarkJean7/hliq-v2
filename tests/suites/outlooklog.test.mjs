@@ -51,12 +51,16 @@ t('and across every market', rec.all.n === 2 && rec.all.hits === 1 && rec.all.do
 t('per horizon', recordOf(g, 'ETH', 168).all.n === 0)
 t('what is still waiting', recordOf(log, 'ETH', 24).pending === 2)
 t('keys are coin, horizon and hour', olKey({ coin: 'ETH', hours: 24, t: 5.5 * H }) === 'ETH|24|5')
-// For the record's detail: the coin's last graded calls, newest first, at most ten.
+// For the record's detail: the coin's log, newest first. It was ten; "are they showing since when
+// the test started reading, like a log?" made it thirty, plus the start and what is still waiting.
 const many = emptyLog()
-for (let i = 0; i < 14; i++) { addEntry(many, { ...sub, score: i % 2 ? 30 : -30 }, 100 + i, i * H); }
-for (let i = 0; i < 14; i++) gradeDue(many, { ETH: 120 }, i * H + 24 * H + 60e3)   // each graded on time
-const rc = recordOf(many, 'ETH', 24).recent
-t('the last graded calls, newest first, ten at most', rc.length === 10 && rc.every((e, i) => !i || e.t < rc[i - 1].t), rc.map(e => e.t / H))
+for (let i = 0; i < 40; i++) { addEntry(many, { ...sub, score: i % 2 ? 30 : -30 }, 100 + i, i * H); }
+for (let i = 0; i < 34; i++) gradeDue(many, { ETH: 120 }, i * H + 24 * H + 60e3)   // each graded on time, six left waiting
+const mr = recordOf(many, 'ETH', 24), rc = mr.recent
+t('the last graded calls, newest first, thirty at most', rc.length === 30 && rc.every((e, i) => !i || e.t < rc[i - 1].t), rc.map(e => e.t / H))
+t('since when: the first call logged, graded or not', mr.since === 0 && mr.allSince === 0 && mr.logged === 40)
+t('what is waiting, with when it will be graded', mr.waiting.length === 6 && mr.pending === 6 && mr.waiting[0].t === 39 * H && mr.waiting[0].due === 63 * H)
+t('nothing logged has no start, not a start of zero', recordOf(many, 'BTC', 24).since === null)
 t('each with its score, the price then and at the horizon, and whether it was right', rc.every(e => Number.isInteger(e.score) && e.px > 0 && e.end === 120 && typeof e.hit === 'boolean'))
 t('only this coin\'s', recordOf(many, 'BTC', 24).recent.length === 0)
 

@@ -96,13 +96,24 @@ const tally = (list) => {
 /** The record for one coin and horizon, and across every coin, from graded entries only. */
 export function recordOf(log, coin, hours) {
   const graded = log.entries.filter(e => e.hit != null && e.hours === hours)
+  const mine = log.entries.filter(e => e.coin === coin && e.hours === hours)
+  const waiting = mine.filter(e => e.end == null && !e.expired)
+  const firstT = (xs) => xs.length ? Math.min(...xs.map(e => e.t)) : null
   return {
     hours,
     coin: tally(graded.filter(e => e.coin === coin)),
     all: tally(graded),
-    pending: log.entries.filter(e => e.coin === coin && e.hours === hours && e.end == null && !e.expired).length,
-    // The last ten graded calls on this coin and horizon, newest first, for the record's detail.
-    recent: graded.filter(e => e.coin === coin).slice(-10).reverse()
+    pending: waiting.length,
+    // When this coin's log at this horizon began, and how much of it there is — "since when the
+    // test started reading". null, not 0, when nothing was ever logged: we have no start.
+    since: firstT(mine),
+    allSince: firstT(log.entries.filter(e => e.hours === hours)),
+    logged: mine.length,
+    expired: mine.filter(e => e.expired).length,
+    // The log itself, newest first: the last thirty graded calls, and the ten waiting soonest-made.
+    recent: graded.filter(e => e.coin === coin).slice(-30).reverse()
       .map(e => ({ t: e.t, score: e.score, lean: e.lean, px: e.px, end: e.end, hit: e.hit, inside: e.inside ?? null })),
+    waiting: waiting.slice(-10).reverse()
+      .map(e => ({ t: e.t, score: e.score, lean: e.lean, px: e.px, due: e.t + hours * HOUR })),
   }
 }
