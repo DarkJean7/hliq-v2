@@ -14,8 +14,21 @@ const grab = (str, sig) => {
   for (; j < str.length; j++) { if (str[j] === '{') dd++; else if (str[j] === '}') { dd--; if (!dd) return str.slice(i, j + 1) } }
   return ''
 }
-let pass = 0, fail = 0
+let pass = 0, fail = 0, skipped = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, x))
+/**
+ * For the assertions that read LIVE Hyperliquid data.
+ *
+ * This file shares an IP with everything else the suite runs, and `npm test` runs the
+ * network-touching suites together: the exchange rate-limits the lot and answers this one with
+ * nothing. That was reading as `broken`, which gates the deploy -- a busy exchange stopping a
+ * push is the flake CLAUDE.md says gets a test deleted rather than trusted.
+ *
+ * So: when the exchange did not answer, the assertion is SKIPPED and says so. When it did
+ * answer, the assertion is as hard as it ever was. The difference is "we could not look" versus
+ * "we looked and it was wrong" -- the distinction this repo keeps paying for elsewhere.
+ */
+const tLive = (got, n, c, x = '') => { if (!got) { skipped++; console.log('  SKIP', n, '(Hyperliquid did not answer)'); return } ; t(n, c, x) }
 
 const pair = await fetch('https://api.hyperliquid.xyz/info', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -191,13 +204,15 @@ const [afSt, afPf, mids] = await Promise.all([
 ])
 const pr = computeProtocol({ afBalances: afSt?.balances, afPortfolio: afPf,
   hypeMid: mids.HYPE, perpVol: d.totalVol, spotVol: sp.vol })
-console.log(`  (fund: ${pr.afHype.toLocaleString(undefined,{maximumFractionDigits:0})} HYPE = $${(pr.afUsd/1e9).toFixed(2)}B; fees $${(pr.feesLow/1e6).toFixed(2)}M-$${(pr.feesHigh/1e6).toFixed(2)}M)`)
+console.log(`  (fund: ${(pr.afHype ?? 0).toLocaleString(undefined,{maximumFractionDigits:0})} HYPE = $${((pr.afUsd ?? 0)/1e9).toFixed(2)}B; fees $${((pr.feesLow ?? 0)/1e6).toFixed(2)}M-$${((pr.feesHigh ?? 0)/1e6).toFixed(2)}M)`)
 
-t('the Assistance Fund is readable like any account', pr.ok && pr.afHype > 1e6, String(pr.afHype))
-t('and is worth billions, which is the point of showing it', pr.afUsd > 1e9)
-t('valued at the live HYPE price, not a stored one',
+// Did the exchange actually give us the fund? Everything below needs all three replies.
+const afLive = !!(afSt?.balances?.length && afPf && Number(mids?.HYPE) > 0)
+tLive(afLive, 'the Assistance Fund is readable like any account', pr.ok && pr.afHype > 1e6, String(pr.afHype))
+tLive(afLive, 'and is worth billions, which is the point of showing it', pr.afUsd > 1e9)
+tLive(afLive, 'valued at the live HYPE price, not a stored one',
   Math.abs(pr.afUsd - pr.afHype * Number(mids.HYPE)) < 1)
-t('its start date comes from the fund history', pr.since > 0 && pr.since < Date.now())
+tLive(afLive, 'its start date comes from the fund history', pr.since > 0 && pr.since < Date.now())
 
 // Fees are bounds, never a point estimate — the maker/taker mix is not published.
 t('the low bound is the maker rate', Math.abs(pr.feesLow - pr.vol * HL_FEE_MAKER) < 1e-6)
@@ -290,5 +305,5 @@ t('a trillion market cap reads as $1.62T, not $1620.67B', usd(1.6207e12) === '$1
 t('billions still read as billions', usd(2.91e9) === '$2.91B', usd(2.91e9))
 t('and the smaller tiers are untouched', usd(1.7e6) === '$1.7M' && usd(5e3) === '$5k')
 
-console.log('\n' + pass + ' passed, ' + fail + ' failed')
+console.log('\n' + pass + ' passed, ' + fail + ' failed' + (skipped ? `, ${skipped} skipped (Hyperliquid did not answer)` : ''))
 process.exit(fail ? 1 : 0)
