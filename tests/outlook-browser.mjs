@@ -138,6 +138,30 @@ async function v2(p, root, label, logged) {
   t(`${label}: the cone is calibrated, and says by how much`, /So the cone on this card is scaled ×\d\.\d\d to fit, and so are its touch chances/.test(rec.ETH), rec.ETH)
   t(`${label}: every horizon, the one on screen marked`, await p.$$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-hz`, els => els.map(e => e.textContent.trim().split(' ')[0]).join() + '|' + els.filter(e => e.classList.contains('cur')).length) === '4h,24h,3d,7d,30d|1')
   t(`${label}: all the markets pooled, at the top`, /Your 2 markets pooled · past year · 24h/.test(await p.$eval(`${root} .ol-pool`, e => e.textContent).catch(() => '')))
+  // "can we add more data/signals and also expand it? I mean the pooled section": it was three
+  // flat lines; it now opens row by row like the per-market record beside it.
+  {
+    const tags = await p.$$eval(`${root} .ol-pool .ol-rec-tag`, els => els.map(e => e.textContent.replace(/[▴▾]/g, '').trim()))
+    t(`${label}: the pooled section has its own rows`, tags.join() === 'Calls,Signals,Horizons,Cone', tags)
+    t(`${label}: each folded to its summary`, await p.$$eval(`${root} .ol-pool .ol-rec-detail`, els => els.length) === 0)
+    // Opening one must open THAT one, on the pooled section, not the same-named row on a card.
+    await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Signals")`)
+    await p.waitForSelector(`${root} .ol-pool .ol-rec-detail`, { timeout: 10000 })
+    const det = await p.$eval(`${root} .ol-pool .ol-rec-detail`, e => e.textContent.replace(/\s+/g, ' '))
+    t(`${label}: Signals opens to each signal pooled`, /Each signal, across your 2 markets, at 24h/.test(det), det.slice(0, 200))
+    t(`${label}: with calls, right, chance and the move per call`, /Signal\s*Calls\s*Right\s*Chance\s*Avg per call/.test(det), det.slice(0, 260))
+    t(`${label}: and only the pooled row opened`, await p.$$eval(`${root} .ol-pool .ol-rec-detail`, els => els.length) === 1)
+    await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Horizons")`)
+    await p.waitForFunction((r) => document.querySelectorAll(r + ' .ol-pool .ol-rec-detail').length === 2, root, { timeout: 10000 })
+    const hzd = await p.$$eval(`${root} .ol-pool .ol-rec-detail`, els => els.map(e => e.textContent.replace(/\s+/g, ' ')))
+    t(`${label}: Horizons opens to every window, the one on screen marked`,
+      /Timeframe\s*Calls\s*Right\s*Chance\s*Inside the cone/.test(hzd.join(' ')) && /4h/.test(hzd.join(' ')) && /30d/.test(hzd.join(' ')), hzd.at(-1)?.slice(0, 220))
+    t(`${label}: the open pooled rows survive a repaint`, await p.$$eval(`${root} .ol-pool .ol-rec-row.open`, els => els.length) === 2)
+    // Fold them again so the next shell starts from the same place.
+    await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Signals")`)
+    await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Horizons")`)
+    await p.waitForFunction((r) => document.querySelectorAll(r + ' .ol-pool .ol-rec-detail').length === 0, root, { timeout: 10000 })
+  }
   const whyTxt = await p.$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-why`, e => e.textContent.replace(/\s+/g, ' ')).catch(() => '')
   t(`${label}: why gives each candle signal its own record`, (whyTxt.match(/Past year: (right \d+% of \d+ calls · chance \d+% · avg [+-]\d+\.\d\d% per call|it made no calls)/g) ?? []).length === 3, whyTxt.slice(0, 600))
   t(`${label}: and says the others have no history to check`, /No history here to check this one/.test(whyTxt))

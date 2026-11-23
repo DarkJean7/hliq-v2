@@ -552,6 +552,135 @@ export function pooledRecord(byCoin, h) {
   return out
 }
 
+/**
+ * Pooled, the way pooledRecord does it: hits and calls ADD across markets, and chance is each
+ * market's OWN base rate weighted by how many calls it made there. Pooling the raw days instead
+ * would let one market's drift stand in for every other's -- a coin that only went up all year
+ * makes "bullish" look right everywhere, and the pooled number would be measuring the year
+ * rather than the signal.
+ *
+ * `per` is called once per market and returns { hits, n, chance, ...extra } or null.
+ */
+function poolBy(byCoin, div, per) {
+  let hits = 0, n = 0, chance = 0, markets = 0, wsum = 0, wn = 0
+  for (const samples of byCoin) {
+    const r = per(samples)
+    if (!r || !r.n) continue
+    hits += r.hits; n += r.n; chance += r.n * r.chance; markets++
+    if (r.weighted != null) { wsum += r.weighted * r.n; wn += r.n }
+  }
+  return { ...judge(hits, n, n ? chance / n : 0.5, div), markets, weighted: wn ? wsum / wn : null }
+}
+
+/**
+ * Each signal, pooled across every market on screen. The per-market version (signalRecords) is
+ * the one the learned weights come from; this is the same question asked of all of them at once,
+ * which is the only way a signal with forty calls on each of eight markets ever says anything.
+ * `edge` is the average move in the called direction, per call.
+ */
+export function pooledSignals(byCoin, h) {
+  const out = {}
+  for (const id of candleIds(h)) {
+    out[id] = poolBy(byCoin, h / 24, (samples) => {
+      const all = resolved(samples, h)
+      if (!all.length) return null
+      const up = all.filter(x => x.out[h].ret > 0).length / all.length
+      const dn = all.filter(x => x.out[h].ret < 0).length / all.length
+      const calls = all.filter(x => Math.abs(x.f[id] ?? 0) >= CALL_AT)
+      if (!calls.length) return null
+      const ups = calls.filter(x => x.f[id] > 0).length
+      return {
+        hits: calls.filter(x => Math.sign(x.f[id]) === Math.sign(x.out[h].ret) && x.out[h].ret !== 0).length,
+        n: calls.length,
+        chance: (ups * up + (calls.length - ups) * dn) / calls.length,
+        weighted: pctOfLog(mean(calls.map(x => Math.sign(x.f[id]) * x.out[h].ret))),
+      }
+    })
+    out[id].edge = out[id].weighted
+  }
+  return out
+}
+
+/** Every reading band, pooled: how often a band's call was right across all the markets. */
+export function pooledBands(byCoin, h, scoreOfX = (x) => weightedScore(x.f, null, h)) {
+  return BANDS.map(b => {
+    const hit = hitFor(b.lean)
+    const r = poolBy(byCoin, h / 24, (samples) => {
+      const all = resolved(samples, h).filter(x => scoreOfX(x) != null)
+      if (!all.length) return null
+      const days = all.filter(x => inBand(b, scoreOfX(x)))
+      if (!days.length) return null
+      return {
+        hits: days.filter(x => hit(x, x.out[h])).length,
+        n: days.length,
+        chance: all.filter(x => hit(x, x.out[h])).length / all.length,
+        weighted: pctOfLog(mean(days.map(x => x.out[h].ret))),
+      }
+    })
+    return { ...r, band: b.id, lean: b.lean, avgAfter: r.weighted }
+  })
+}
+
+/** Every DIRECTIONAL call pooled -- bullish and bearish together -- at horizon `h`. */
+function pooledCalls(byCoin, h) {
+  return poolBy(byCoin, h / 24, (samples) => {
+    const all = resolved(samples, h)
+    if (!all.length) return null
+    // This market's own base rate for each direction, worked out once rather than per call.
+    const base = { up: all.filter(x => hitFor('up')(x, x.out[h])).length / all.length,
+                   down: all.filter(x => hitFor('down')(x, x.out[h])).length / all.length }
+    let hits = 0, chance = 0, n = 0
+    for (const x of all) {
+      const lean = leanOfScore(weightedScore(x.f, null, h) ?? 0)
+      if (lean === 'flat') continue
+      n++
+      if (hitFor(lean)(x, x.out[h])) hits++
+      chance += base[lean]
+    }
+    return n ? { hits, n, chance: chance / n } : null
+  })
+}
+
+/**
+ * The same directional calls in each half of the sample, pooled. One lucky stretch across eight
+ * markets still looks like an edge until it is split in two. Each market is halved at its OWN
+ * midpoint, because they do not all have the same amount of history.
+ */
+export function pooledHalves(byCoin, h) {
+  const first = [], second = []
+  for (const samples of byCoin) {
+    const all = resolved(samples, h)
+    if (all.length < 4) continue
+    const mid = all[Math.floor(all.length / 2)].t
+    first.push(all.filter(x => x.t < mid))
+    second.push(all.filter(x => x.t >= mid))
+  }
+  if (!first.length) return null
+  return [pooledCalls(first, h), pooledCalls(second, h)]
+}
+
+/** Every horizon, pooled: which window these markets have actually been readable at. */
+export function pooledHorizons(byCoin) {
+  return PAST_HORIZONS.map(h => {
+    const r = pooledCalls(byCoin, h)
+    const cones = byCoin.map(s => coneRecord(s, h)).filter(Boolean)
+    const cn = cones.reduce((a, c) => a + c.n, 0)
+    return { h, ...r, cone: cn ? cones.reduce((a, c) => a + c.inside * c.n, 0) / cn : null, coneN: cn }
+  })
+}
+
+/** The cone pooled, with both lines, not just the share that ended inside. */
+export function pooledCone(byCoin, h) {
+  const cones = byCoin.map(s => coneRecord(s, h)).filter(Boolean)
+  const n = cones.reduce((a, c) => a + c.n, 0)
+  if (!n) return null
+  const w = (k) => cones.reduce((a, c) => a + c[k] * c.n, 0) / n
+  const inside = w('inside')
+  const off = inside - INSIDE_1S
+  return { n, markets: cones.length, inside, up: w('up'), dn: w('dn'), expInside: INSIDE_1S, expTouch: TOUCH_1S,
+    verdict: n / Math.max(1, h / 24) < 10 ? 'thin' : off < -0.07 ? 'narrow' : off > 0.07 ? 'wide' : 'calibrated' }
+}
+
 // ── the track record, in detail (each row of the record opens to these) ──────────
 // "make this section each individually expandable ... more detailed, more data ... so the user
 // can see the records better". Everything below reads the same replay (pastSamples).

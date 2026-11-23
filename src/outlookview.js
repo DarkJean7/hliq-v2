@@ -10,7 +10,7 @@
 // price comes from the mids the app already has.
 import './outlook.css'
 import { ensureAnalysis, analysisFor, analysisRaw, analysisState, setAnalysisDeps, fmtPx, hydrateAnalysis } from './analysis.js'
-import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, TESTED_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, coneScale, bandTable, bandOfScore, halvesRecord, recentLike, weightsOverTime, moveDistribution } from './outlook.js'
+import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, TESTED_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, pooledSignals, pooledBands, pooledHalves, pooledHorizons, pooledCone, coneScale, bandTable, bandOfScore, halvesRecord, recentLike, weightsOverTime, moveDistribution } from './outlook.js'
 import { catLabel } from './simcat.js'
 import { leanOf, actionsFor, ideaFor, sortCards, ORACLE_SORTS } from './outlooksuggest.js'
 import { posHealthPct } from './posgroup.js'
@@ -292,6 +292,12 @@ const CONE_V = {
 }
 const VSHORT = { better: ['Beat chance', 'Superó al azar'], worse: ['Worse', 'Peor'], chance: ['Chance', 'Azar'], thin: ['Too few', 'Muy pocos'], none: ['—', '—'] }
 const BANDN = { sbear: ['Strongly bearish', 'Muy bajista'], bear: ['Bearish', 'Bajista'], neutral: ['Neutral', 'Neutral'], bull: ['Bullish', 'Alcista'], sbull: ['Strongly bullish', 'Muy alcista'] }
+// Shared by the per-market record and the pooled one. They were local to the record function
+// until the pooled section grew tables of its own; two copies of a table renderer is how two
+// sections stop looking alike.
+const tbl = (head, rows) => `<div class="ol-tbl-wrap" data-dragscroll><table class="ol-tbl"><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`
+const sub = (s) => `<div class="ol-rec-dh">${s}</div>`
+const vshortOf = (v, T) => `<span class="v ${v ?? 'none'}">${T(...VSHORT[v ?? 'none'])}</span>`
 const verdictEm = (v, T) => `<em class="v ${v}">${T(...VERDICT[v])}</em>`
 const candleValues = (fs, h) => Object.fromEntries(fs.filter(f => candleIds(h).includes(f.id)).map(f => [f.id, f.v]))
 /** "Trend, momentum and range" — or at 4h, "trend, range, 3-day fade and Bollinger stretch". */
@@ -381,10 +387,8 @@ function recordHtml(coin, raw, o, ctx, past) {
   const day = (t) => new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   const dayY = (t) => new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
   const when = (t) => new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-  const tbl = (head, rows) => `<div class="ol-tbl-wrap" data-dragscroll><table class="ol-tbl"><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`
-  const vshort = (v) => `<span class="v ${v}">${T(...VSHORT[v ?? 'none'])}</span>`
+  const vshort = (v) => vshortOf(v, T)
   const ok = (h) => h ? `<span class="ok">✓</span>` : `<span class="no">✗</span>`
-  const sub = (s) => `<div class="ol-rec-dh">${s}</div>`
 
   const pastDetail = () => {
     if (fixedNow == null) return ''
@@ -483,20 +487,95 @@ function recordHtml(coin, raw, o, ctx, past) {
   </div>`
 }
 
-/** All the markets on screen, pooled: more days than any one of them has. Two or more only. */
+/**
+ * All the markets on screen, pooled: more days than any one of them has. Two or more only.
+ *
+ * "can we add more data/signals and also expand it? I mean the pooled section". It was three
+ * flat lines -- bullish, bearish, cone -- while the per-market record beside it opened into five
+ * tables. Now it opens the same way, and the pooling is what makes these answerable at all: a
+ * signal with forty calls on each of eight markets says nothing on any one of them and something
+ * across all of them. Each row uses the same recOpen set as the per-market rows, under the coin
+ * key `__pool__`, so the one [data-ol-rec] handler drives both.
+ */
 function pooledHtml(items, ctx) {
   const { T } = ctx
   const h = HORIZONS[horizon]
+  const hz = HZ[h]
   const byCoin = items.filter(i => i.raw).map(i => pastFor(i.coin, i.raw).samples)
   if (byCoin.length < 2) return ''
   const r = pooledRecord(byCoin, h)
+  const vshort = (v) => vshortOf(v, T)
+  const isOpen = (key) => recOpen.has(`__pool__|${key}`)
+
   const part = (lean, word) => r[lean]?.n ? `<span>${word} ${T('reads right', 'acertaron')} <b>${pct(r[lean].rate)}</b> ${T('of', 'de')} ${r[lean].n} <i>(${T('chance', 'azar')} ${pct(r[lean].chance)})</i> ${verdictEm(r[lean].verdict, T)}</span>` : null
   const parts = [part('up', T('Bullish', 'Alcistas')), part('down', T('Bearish', 'Bajistas'))].filter(Boolean)
-  if (!parts.length && !r.cone) return ''
+  const cone = pooledCone(byCoin, h)
+  if (!parts.length && !cone) return ''
+
+  // ── the rows ──
+  const callsDetail = () => {
+    const bands = pooledBands(byCoin, h)
+    const halves = pooledHalves(byCoin, h)
+    return [
+      sub(T(`Every reading band, across your ${r.markets} markets`, `Cada banda de lectura, en tus ${r.markets} mercados`)) + tbl(
+        [T('Reading', 'Lectura'), T('Days', 'Días'), T('Right', 'Acertó'), T('Chance', 'Azar'), T('Avg move after', 'Mov. medio después'), ''],
+        bands.map(b => `<tr><td>${T(...BANDN[b.band])}</td><td>${b.n}</td><td>${b.n ? pct(b.rate) : '—'}</td><td>${b.n ? pct(b.chance) : '—'}</td><td>${b.n ? mv(b.avgAfter) : '—'}</td><td>${b.n ? vshort(b.verdict) : ''}</td></tr>`)),
+      halves ? sub(T('Did it hold across the year?', '¿Se sostuvo durante el año?')) + `<div class="ol-rec-pair">${halves.map((x, i) => `<span><b>${i ? T('Second half', 'Segunda mitad') : T('First half', 'Primera mitad')}</b> ${x?.n ? `${pct(x.rate)} ${T('of', 'de')} ${x.n} · ${T('chance', 'azar')} ${pct(x.chance)} ${vshort(x.verdict)}` : '—'}</span>`).join('')}</div>` : '',
+      `<div class="ol-rec-note">${T('Each market is halved at its own midpoint, and chance is each market\u2019s own base rate weighted by the calls it made there \u2014 pooling the raw days would let one market\u2019s year stand in for every other\u2019s.', 'Cada mercado se divide por su propia mitad, y el azar es la tasa base de cada mercado ponderada por sus lecturas \u2014 juntar los días sin más dejaría que el año de un mercado hablara por todos.')}</div>`,
+    ].join('')
+  }
+
+  const signalsDetail = () => {
+    const sig = pooledSignals(byCoin, h)
+    const ids = candleIds(h)
+    return sub(T(`Each signal, across your ${r.markets} markets, at ${hz}`, `Cada señal, en tus ${r.markets} mercados, a ${hz}`)) + tbl(
+      [T('Signal', 'Señal'), T('Calls', 'Lecturas'), T('Right', 'Acertó'), T('Chance', 'Azar'), T('Avg per call', 'Media/lectura'), ''],
+      ids.map(id => { const x = sig[id]
+        return `<tr><td>${T(...FACTOR_NAME[id])}</td><td>${x?.n ?? 0}</td><td>${x?.n ? pct(x.rate) : '—'}</td><td>${x?.n ? pct(x.chance) : '—'}</td><td>${x?.n ? mv(x.edge) : '—'}</td><td>${x?.n ? vshort(x.verdict) : ''}</td></tr>` }))
+      + `<div class="ol-rec-note">${T('The same question the learned weights ask of one market, asked of all of them at once. A signal can be right less than half the time and still earn its place if its right calls are the bigger ones.', 'La misma pregunta que los pesos aprendidos hacen a un mercado, hecha a todos a la vez. Una señal puede acertar menos de la mitad y aun así valer, si sus aciertos son los grandes.')}</div>`
+  }
+
+  const hzDetail = () => tbl(
+    [T('Timeframe', 'Marco'), T('Calls', 'Lecturas'), T('Right', 'Acertó'), T('Chance', 'Azar'), T('Inside the cone', 'Dentro del cono'), ''],
+    pooledHorizons(byCoin).map(x => x.n
+      ? `<tr class="${x.h === h ? 'cur' : ''}"><td>${HZ[x.h]}</td><td>${x.n}</td><td>${pct(x.rate)}</td><td>${pct(x.chance)}</td><td>${x.cone == null ? '—' : pct(x.cone)}</td><td>${vshort(x.verdict)}</td></tr>`
+      : `<tr><td>${HZ[x.h]}</td><td colspan="5">—</td></tr>`))
+    + `<div class="ol-rec-note">${T('Every directional call on every market, by window. 7d and 30d windows overlap day to day, so they need more days before they say anything.', 'Cada lectura direccional en cada mercado, por ventana. Las ventanas de 7d y 30d se solapan, así que necesitan más días.')}</div>`
+
+  const coneDetail = () => !cone ? '' : tbl(
+    [T('Timeframe', 'Marco'), T('Days', 'Días'), T('Inside 1σ', 'Dentro 1σ'), T('Bull line', 'Línea alcista'), T('Bear line', 'Línea bajista'), ''],
+    PAST_HORIZONS.map(hh => { const c = pooledCone(byCoin, hh); return c
+      ? `<tr class="${hh === h ? 'cur' : ''}"><td>${HZ[hh]}</td><td>${c.n}</td><td>${pct(c.inside)}</td><td>${pct(c.up)}</td><td>${pct(c.dn)}</td><td>${vshort(c.verdict)}</td></tr>`
+      : `<tr><td>${HZ[hh]}</td><td colspan="5">—</td></tr>` }))
+    + `<div class="ol-rec-note">${T('Expected: 68% inside 1σ, 32% touching each line. Wider than that and the cone is too narrow for these markets; narrower and it is too wide.', 'Esperado: 68% dentro de 1σ, 32% tocando cada línea. Más y el cono es angosto para estos mercados; menos y es ancho.')}</div>`
+
+  const row = (key, tag, body, detail) => {
+    const open = isOpen(key), k = `__pool__|${key}`
+    return `<div class="ol-rec-row${open ? ' open' : ''}">
+      <button class="ol-rec-tag" data-ol-rec="${k}" aria-expanded="${open}">${tag} <i>${open ? '▴' : '▾'}</i></button>
+      <div class="ol-rec-sum" data-ol-rec="${k}">${body}</div>
+    </div>${open ? `<div class="ol-rec-detail">${detail() || `<div class="ol-rec-note">${T('Nothing more to show yet.', 'Nada más que mostrar aún.')}</div>`}</div>` : ''}`
+  }
+
+  const sig = pooledSignals(byCoin, h)
+  const best = candleIds(h).map(id => ({ id, ...sig[id] })).filter(x => x.n).sort((a, b) => (b.rate - b.chance) - (a.rate - a.chance))[0]
+  const sigLine = best
+    ? T(`Best: ${FACTOR_NAME[best.id][0]} right ${pct(best.rate)} of ${best.n} (chance ${pct(best.chance)})`, `Mejor: ${FACTOR_NAME[best.id][1]} acertó ${pct(best.rate)} de ${best.n} (azar ${pct(best.chance)})`)
+    : T('No signal has enough calls yet.', 'Ninguna señal tiene lecturas suficientes.')
+  const hzBest = pooledHorizons(byCoin).filter(x => x.n).sort((a, b) => (b.rate - b.chance) - (a.rate - a.chance))[0]
+  const hzLine = hzBest
+    ? T(`Best window: ${HZ[hzBest.h]}, right ${pct(hzBest.rate)} of ${hzBest.n} (chance ${pct(hzBest.chance)})`, `Mejor ventana: ${HZ[hzBest.h]}, acertó ${pct(hzBest.rate)} de ${hzBest.n} (azar ${pct(hzBest.chance)})`)
+    : T('Not enough graded days yet.', 'Aún no hay días suficientes.')
+  const coneLine = cone
+    ? T(`Ended inside 1σ on ${pct(cone.inside)} of ${cone.n} days (expect 68%)`, `Terminó dentro de 1σ en ${pct(cone.inside)} de ${cone.n} días (se espera 68%)`)
+    : T('No cone history yet.', 'Sin historial del cono aún.')
+
   return `<div class="ol-pool">
-    <div class="ol-rec-h">${T(`Your ${r.markets} markets pooled · past year · ${HZ[h]}`, `Tus ${r.markets} mercados juntos · último año · ${HZ[h]}`)}</div>
-    <div class="ol-pool-rows">${parts.join('')}</div>
-    ${r.cone ? `<div class="ol-rec-note">${T(`Cone: ended inside 1σ on ${pct(r.cone.inside)} of ${r.cone.n} days (expect 68%).`, `Cono: terminó dentro de 1σ en ${pct(r.cone.inside)} de ${r.cone.n} días (se espera 68%).`)}</div>` : ''}
+    <div class="ol-rec-h">${T(`Your ${r.markets} markets pooled · past year · ${hz}`, `Tus ${r.markets} mercados juntos · último año · ${hz}`)} <span>${T('tap a row for its detail', 'toca una fila para ver el detalle')}</span></div>
+    ${row('calls', T('Calls', 'Lecturas'), parts.length ? `<div class="ol-pool-rows">${parts.join('')}</div>` : T('No directional calls yet.', 'Sin lecturas direccionales aún.'), callsDetail)}
+    ${row('signals', T('Signals', 'Señales'), sigLine, signalsDetail)}
+    ${row('hz', T('Horizons', 'Horizontes'), hzLine, hzDetail)}
+    ${row('cone', T('Cone', 'Cono'), coneLine, coneDetail)}
   </div>`
 }
 

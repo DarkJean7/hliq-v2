@@ -2,7 +2,7 @@
 // include strength/rating" and "include ... the range category ... 4h candles and a good amount
 // of candles".
 import fs from 'fs'
-import { normCdf, vol4h, sigmaFor, touchProb, firstTouchUp, macdHist, rangeRead, factors, scoreOf, posOf, guardsOf, scenarios, outlookFor, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, pastSamples, pastRecord, candleScoreOf, CANDLE_FACTORS, PAST_HORIZONS, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord } from '../../src/outlook.js'
+import { normCdf, vol4h, sigmaFor, touchProb, firstTouchUp, macdHist, rangeRead, factors, scoreOf, posOf, guardsOf, scenarios, outlookFor, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, pastSamples, pastRecord, candleScoreOf, CANDLE_FACTORS, PAST_HORIZONS, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, pooledSignals, pooledBands, pooledHalves, pooledHorizons, pooledCone, BANDS, candleIds } from '../../src/outlook.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -168,6 +168,60 @@ t('and graded that way, learning that helps shows as better than chance', lr.ver
 t('weighted score: the multipliers count', weightedScore({ trend: 1, momentum: -1 }, { trend: 2, momentum: 0.25 }) > weightedScore({ trend: 1, momentum: -1 }, null))
 const pool = pooledRecord([S, M], 24)
 t('pooled across markets: both leans, the markets counted, the cone', pool.markets === 2 && pool.up.n > 0 && pool.down.n > 0 && pool.cone.n > 0, pool)
+
+// ── the pooled section's own figures ("add more data/signals ... I mean the pooled section") ──
+{
+  const B = [S, M]
+  console.log('\n-- pooled: each signal across every market --')
+  const ps = pooledSignals(B, 24)
+  t('every signal with history gets a record', candleIds(24).every(id => ps[id] && typeof ps[id].n === 'number'), ps)
+  t('a signal that called it counts as better than chance, one that called it backwards worse',
+    ps.trend.verdict === 'better' && ps.momentum.verdict === 'worse', { t: ps.trend, m: ps.momentum })
+  t('its edge is the average move in the called direction', ps.trend.edge > 0 && ps.momentum.edge < 0)
+  // `markets` counts the ones that actually made calls, not the ones handed in: a market whose
+  // signal never crossed CALL_AT has nothing to contribute and must not inflate the count.
+  const withTrend = [S, M].filter(x => (signalRecords(x, 24).trend?.n ?? 0) > 0).length
+  t('and it says how many markets actually contributed calls', ps.trend.markets === withTrend, [ps.trend.markets, withTrend])
+  t('a market that made no calls is not counted as one that did', pooledSignals([M, []], 24).trend.markets === 1)
+  // Pooling ADDS the calls: one market's record cannot be the pooled one.
+  t('calls add across markets', ps.trend.n === signalRecords(S, 24).trend.n + signalRecords(M, 24).trend.n,
+    [ps.trend.n, signalRecords(S, 24).trend.n, signalRecords(M, 24).trend.n])
+
+  console.log('\n-- pooled: the reading bands --')
+  const pb = pooledBands(B, 24)
+  t('one row per band, in order', pb.length === BANDS.length && pb.map(b => b.band).join() === BANDS.map(b => b.id).join(), pb.map(b => b.band))
+  t('every day lands in exactly one band', pb.reduce((a, b) => a + b.n, 0) === S.filter(x => x.out[24]).length + M.filter(x => x.out[24]).length,
+    pb.map(b => b.n))
+  t('a band with no days is not a 0% one, it is nothing', pooledBands([[]], 24).every(b => b.n === 0 && b.verdict === 'none'))
+
+  console.log('\n-- pooled: both halves, and every horizon --')
+  const ph = pooledHalves(B, 24)
+  t('two halves', ph.length === 2 && ph.every(x => x && x.n > 0), ph)
+  t('together they are every directional call', ph[0].n + ph[1].n === pool.up.n + pool.down.n, [ph[0].n, ph[1].n, pool.up.n + pool.down.n])
+  t('too little history: no halves at all, rather than two empty ones', pooledHalves([mk(2)], 24) === null)
+
+  const hz = pooledHorizons(B)
+  t('one row per horizon', hz.length === PAST_HORIZONS.length && hz.map(x => x.h).join() === PAST_HORIZONS.join())
+  t('the 24h row is the same calls pooledRecord counted', hz.find(x => x.h === 24).n === pool.up.n + pool.down.n)
+
+  console.log('\n-- pooled: the cone, with both its lines --')
+  const pc = pooledCone(B, 24)
+  t('it agrees with the cone the summary line shows', pc.n === pool.cone.n && Math.abs(pc.inside - pool.cone.inside) < 1e-9, [pc.inside, pool.cone.inside])
+  t('and adds the two lines the summary did not have', pc.up != null && pc.dn != null && pc.markets === 2, pc)
+  t('no history, no cone', pooledCone([[], []], 24) === null)
+
+  console.log('\n-- pooling does not let one market speak for the others --')
+  // A market that only ever went up makes "bullish" look right on its own terms. Chance is each
+  // market's OWN base rate weighted by the calls it made there, so the pooled figure is measured
+  // against the market it came from rather than against the whole basket's drift.
+  const drift = Array.from({ length: 200 }, (_, j) => ({ t: j, i: j * 6, f: { trend: 0.8, momentum: 0.8, range: 0 }, s: 0,
+    out: Object.fromEntries(PAST_HORIZONS.map(h => [h, { ret: 0.01, sigma: 0.02, up: true, dn: false }])) }))
+  const withDrift = pooledSignals([M, drift], 24)
+  t('a one-way market cannot drag a signal past chance on its own',
+    withDrift.trend.chance > 0.6, withDrift.trend.chance)
+  t('its own base rate is what its calls are judged against', signalRecords(drift, 24).trend.chance > 0.9,
+    signalRecords(drift, 24).trend.chance)
+}
 t('no samples: no record, not a 0% one', pastRecord([], 40, 24) === null && coneRecord([], 24) === null)
 t('the past record replays only the signals with history', CANDLE_FACTORS.join() === 'trend,momentum,range'
   && candleScoreOf([{ id: 'trend', w: 25, v: 1 }, { id: 'book', w: 10, v: -1 }]).score === 100)
