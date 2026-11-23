@@ -238,7 +238,7 @@ import { renderAnalysis, analysisShow } from './analysis.js'
 import { renderOutlook } from './outlookview.js'
 import { initTradeBrief, setTradeBriefCoin } from './tradebrief.js'   // the analysis card on the Trade tab
 import { settingsHeadHtml, settingsSecClass, paintDesktopSettings, settingsToggle, settingsOpen } from './settingsnav.js'
-import { setMacroDeps, macroShell, macroFill, marketChartsShell, marketChartsFill, macroToggle, macroEvToggle, macroFngRange, macroFngScrub, macroTvSel } from './macroview.js'   // Signals → Macro
+import { setMacroDeps, macroShell, macroFill, marketChartsShell, marketChartsFill, macroToggle, macroEvToggle, macroFngRange, macroFngScrub, macroTvSel, ensureMacro, macroData, macroWords } from './macroview.js'   // Signals → Macro
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtCompact, esc, parseFills, parseFunding, fillKey, isSpotCoin } from './format.js'
 import { celebrate, fxEnabled, setFxEnabled } from './celebrate.js'
 import { soundName as _fillSound, setSound as _setFillSound, pickerHtml as _fillPickerHtml,
@@ -34727,6 +34727,11 @@ function _outlookCtx() {
     funding: (c) => _mktCtxReady ? (_mktCtxMap[c]?.funding ?? null) : null,
     coinLabel: (c) => _tradeName(c),
     openCoin: (c) => window.__watchOpenTrade(c),
+    // What Macro knows: the scheduled reports, where the big readings stand, and the past
+    // report days the pooled section measures these markets over. Our own server, cached by
+    // macroview and shared with the Macro view, so the Oracle adds no fetch of its own.
+    macro: () => { try { ensureMacro(); return macroData() } catch { return null } },
+    macroWords: () => { try { return macroWords() } catch { return null } },
     // For "+ Add a market": every perp the app knows (main dex, and HIP-3 once its meta is in),
     // and the coins on the user's own watchlist as one-tap suggestions.
     markets: () => {

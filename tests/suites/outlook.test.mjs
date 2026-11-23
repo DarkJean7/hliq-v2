@@ -2,7 +2,7 @@
 // include strength/rating" and "include ... the range category ... 4h candles and a good amount
 // of candles".
 import fs from 'fs'
-import { normCdf, vol4h, sigmaFor, touchProb, firstTouchUp, macdHist, rangeRead, factors, scoreOf, posOf, guardsOf, scenarios, outlookFor, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, pastSamples, pastRecord, candleScoreOf, CANDLE_FACTORS, PAST_HORIZONS, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, pooledSignals, pooledBands, pooledHalves, pooledHorizons, pooledCone, BANDS, candleIds } from '../../src/outlook.js'
+import { normCdf, vol4h, sigmaFor, touchProb, firstTouchUp, macdHist, rangeRead, factors, scoreOf, posOf, guardsOf, scenarios, outlookFor, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, pastSamples, pastRecord, candleScoreOf, CANDLE_FACTORS, PAST_HORIZONS, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, pooledSignals, pooledBands, pooledHalves, pooledHorizons, pooledCone, pooledEventMoves, BANDS, candleIds } from '../../src/outlook.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x = '') => c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, JSON.stringify(x)))
@@ -209,6 +209,45 @@ t('pooled across markets: both leans, the markets counted, the cone', pool.marke
   t('it agrees with the cone the summary line shows', pc.n === pool.cone.n && Math.abs(pc.inside - pool.cone.inside) < 1e-9, [pc.inside, pool.cone.inside])
   t('and adds the two lines the summary did not have', pc.up != null && pc.dn != null && pc.markets === 2, pc)
   t('no history, no cone', pooledCone([[], []], 24) === null)
+
+  console.log('\n-- pooled: what the scheduled reports do to these markets --')
+  {
+    const H = 3600e3
+    // Two markets, one sample a day, windows opening at 09:00 so they do NOT line up with midnight.
+    const mk2 = (base, moves) => moves.map((ret, j) => ({ t: base + j * 24 * H, i: j * 6, f: { trend: 0, momentum: 0, range: 0 }, s: 0,
+      out: { 24: { ret, sigma: 0.02, up: ret > 0, dn: ret < 0 } } }))
+    const t0 = Date.UTC(2026, 0, 1, 9)
+    // Day 2 is the big one on both markets; everything else is quiet.
+    const A = mk2(t0, [0.001, 0.001, 0.05, 0.001, 0.001])
+    const B = mk2(t0, [0.002, 0.002, 0.06, 0.002, 0.002])
+    const NOW = t0 + 30 * 24 * H
+    // The release is at 13:30 on the calendar day AFTER the window that contains it opened --
+    // exactly the case a calendar-day match gets wrong.
+    const cpiAt = t0 + 2 * 24 * H + 5 * H          // 14:00 on day 2, inside day 2's 09:00 window
+    const ev = [{ t: cpiAt, kind: 'cpi' }]
+    const r = pooledEventMoves([A, B], ev, 24, NOW)
+    t('it finds the report inside the sample window that contains it', r && r.kinds.length === 1 && r.kinds[0].kind === 'cpi', r)
+    t('counted once per market', r.kinds[0].n === 2, r.kinds[0].n)
+    t('and it is the big day that was measured', r.kinds[0].avgAbs > 5 && r.kinds[0].avgAbs < 6.2, r.kinds[0].avgAbs)
+    t('against what an ordinary day does on these markets', r.normal > 0 && r.normal < r.kinds[0].avgAbs, [r.normal, r.kinds[0].avgAbs])
+    t('vsNormal says how much bigger', r.kinds[0].vsNormal > 1, r.kinds[0].vsNormal)
+    t('both went up, and it says so', r.kinds[0].up === 2)
+    t('every graded day counts towards normal', r.days === A.length + B.length, r.days)
+
+    // A release 20 hours earlier falls in the PREVIOUS window; a calendar-day match would still
+    // pin it to day 2 and read the big move as the report's.
+    const early = pooledEventMoves([A, B], [{ t: cpiAt - 20 * H, kind: 'cpi' }], 24, NOW)
+    t('a release in the window before is attributed there, not to the next day',
+      early.kinds[0].avgAbs < r.kinds[0].avgAbs, [early.kinds[0].avgAbs, r.kinds[0].avgAbs])
+
+    t('a report still to come is not measured', pooledEventMoves([A, B], [{ t: NOW + 864e5, kind: 'cpi' }], 24, NOW) === null)
+    t('no events at all: nothing, not a table of zeroes', pooledEventMoves([A, B], [], 24, NOW) === null)
+    t('no samples: nothing', pooledEventMoves([], ev, 24, NOW) === null)
+    t('an event with no timestamp is skipped rather than thrown on',
+      pooledEventMoves([A, B], [{ kind: 'cpi' }, { t: cpiAt, kind: 'cpi' }], 24, NOW).kinds[0].n === 2)
+    const many = pooledEventMoves([A, B], [{ t: cpiAt, kind: 'cpi' }, { t: t0 + 5 * H, kind: 'jobs' }], 24, NOW)
+    t('several kinds, biggest mover first', many.kinds.length === 2 && many.kinds[0].kind === 'cpi', many.kinds.map(k => k.kind))
+  }
 
   console.log('\n-- pooling does not let one market speak for the others --')
   // A market that only ever went up makes "bullish" look right on its own terms. Chance is each

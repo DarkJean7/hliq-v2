@@ -669,6 +669,47 @@ export function pooledHorizons(byCoin) {
   })
 }
 
+/**
+ * How the markets on screen have actually moved over the scheduled reports -- CPI, the Fed, jobs
+ * -- against how much they move on an ordinary day. Pooled, because one market over one year has
+ * a dozen CPI days and that is not enough to say anything; eight markets have a hundred.
+ *
+ * An event counts for a sample when it falls inside that sample's OWN outcome window,
+ * [x.t, x.t + h). Matching by calendar day would be wrong by up to a day: pastSamples steps 24h
+ * from wherever the candle series happens to start, so its windows do not line up with midnight,
+ * and a 13:30 release often belongs to the window that opened the day before.
+ *
+ * `events` is the macro feed's PAST list (/macro-data `past`); its `events` key holds only what
+ * is still to come. Returns null when nothing lines up rather than a table of zeroes.
+ */
+export function pooledEventMoves(byCoin, events, h = 24, now = Date.now()) {
+  const past = (events ?? []).filter(e => e && Number.isFinite(e.t) && e.t <= now).sort((a, b) => a.t - b.t)
+  if (!past.length) return null
+  const out = new Map()
+  let nsum = 0, nn = 0
+  for (const samples of byCoin) {
+    for (const x of resolved(samples, h)) {
+      const mv = Math.abs(pctOfLog(x.out[h].ret))
+      nsum += mv; nn++
+      const to = x.t + h * 3600e3
+      for (const e of past) {
+        if (e.t < x.t) continue
+        if (e.t >= to) break
+        const k = out.get(e.kind) ?? { kind: e.kind, n: 0, sum: 0, up: 0 }
+        k.n++; k.sum += mv; if (x.out[h].ret > 0) k.up++
+        out.set(e.kind, k)
+      }
+    }
+  }
+  if (!nn || !out.size) return null
+  const normal = nsum / nn
+  return {
+    normal, days: nn, markets: byCoin.filter(s => resolved(s, h).length).length,
+    kinds: [...out.values()].map(k => ({ kind: k.kind, n: k.n, up: k.up, avgAbs: k.sum / k.n, vsNormal: k.sum / k.n / normal - 1 }))
+      .sort((a, b) => b.avgAbs - a.avgAbs),
+  }
+}
+
 /** The cone pooled, with both lines, not just the share that ended inside. */
 export function pooledCone(byCoin, h) {
   const cones = byCoin.map(s => coneRecord(s, h)).filter(Boolean)

@@ -42,6 +42,15 @@ export function ensureMacro(now = Date.now()) {
     })
 }
 
+/**
+ * What Macro holds right now, or null before it has landed. The Oracle's pooled section reads
+ * the same payload rather than fetching /macro-data a second time -- one copy, one refresh, and
+ * the two views can never disagree about what the next report is.
+ */
+export function macroData() { return _d }
+/** The names Macro gives the reports and readings, so nothing else keeps a second list of them. */
+export function macroWords() { return words() }
+
 let _fngRange = '1y'
 let _tvSel = { cap: 'total', dom: 'btcd' }
 try { const s = JSON.parse(localStorage.getItem('hliq_macro_charts') || '{}'); if (s.fng) _fngRange = s.fng; _tvSel = { ..._tvSel, ...s.tv } } catch {}

@@ -10,7 +10,8 @@
 // price comes from the mids the app already has.
 import './outlook.css'
 import { ensureAnalysis, analysisFor, analysisRaw, analysisState, setAnalysisDeps, fmtPx, hydrateAnalysis } from './analysis.js'
-import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, TESTED_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, pooledSignals, pooledBands, pooledHalves, pooledHorizons, pooledCone, coneScale, bandTable, bandOfScore, halvesRecord, recentLike, weightsOverTime, moveDistribution } from './outlook.js'
+import { fmtMacro } from './macroview.js'
+import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, TESTED_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, pooledSignals, pooledBands, pooledHalves, pooledHorizons, pooledCone, pooledEventMoves, coneScale, bandTable, bandOfScore, halvesRecord, recentLike, weightsOverTime, moveDistribution } from './outlook.js'
 import { catLabel } from './simcat.js'
 import { leanOf, actionsFor, ideaFor, sortCards, ORACLE_SORTS } from './outlooksuggest.js'
 import { posHealthPct } from './posgroup.js'
@@ -566,6 +567,50 @@ function pooledHtml(items, ctx) {
   const hzLine = hzBest
     ? T(`Best window: ${HZ[hzBest.h]}, right ${pct(hzBest.rate)} of ${hzBest.n} (chance ${pct(hzBest.chance)})`, `Mejor ventana: ${HZ[hzBest.h]}, acertó ${pct(hzBest.rate)} de ${hzBest.n} (azar ${pct(hzBest.chance)})`)
     : T('Not enough graded days yet.', 'Aún no hay días suficientes.')
+  // ── Macro: the scheduled reports, and what they have done to THESE markets ──
+  // "it can include macro data, upcoming events, etc". The readings and the calendar come from
+  // the same /macro-data the Macro view uses (ctx.macro, cached there, no second fetch). What is
+  // new here is the pooled half: how much these markets actually moved over past report days
+  // against an ordinary day, which one market's dozen CPI days could never have said.
+  const mac = (() => { try { return ctx.macro?.() ?? null } catch { return null } })()
+  const mw = (() => { try { return ctx.macroWords?.() ?? null } catch { return null } })()
+  const evName = (k) => mw?.events?.[k] ?? k.toUpperCase()
+  const itemName = (k) => mw?.items?.[k]?.[0] ?? k
+  const upcoming = (mac?.events ? Object.values(mac.events).flat() : [])
+    .filter(e => e && Number.isFinite(e.t) && e.t > Date.now()).sort((a, b) => a.t - b.t)
+  const inDays = (t) => Math.round((t - Date.now()) / 864e5)
+  const whenWord = (t) => { const d = inDays(t); return d <= 0 ? T('today', 'hoy') : d === 1 ? T('tomorrow', 'mañana') : T(`in ${d} days`, `en ${d} días`) }
+  // Report days are a day's story, so they are measured over 24h whatever window is selected: a
+  // 4h window from a fixed hour simply misses most 13:30 releases, and would show three reports
+  // out of seven for no reason the reader could see.
+  const evMoves = mac?.past ? pooledEventMoves(byCoin, Object.values(mac.past).flat(), 24) : null
+
+  const macroDetail = () => {
+    const stand = ['cpi', 'unrate', 'fed', 'y10', 'vix'].map(k => (mac?.items ?? []).find(i => i.key === k)).filter(Boolean)
+    const fng = mac?.fng
+    return [
+      upcoming.length ? sub(T('Coming up', 'Próximos')) + tbl(
+        [T('Report', 'Informe'), T('When', 'Cuándo'), T('Date', 'Fecha')],
+        upcoming.slice(0, 8).map(e => `<tr class="${inDays(e.t) <= 1 ? 'cur' : ''}"><td>${esc(evName(e.kind))}</td><td>${whenWord(e.t)}</td><td>${new Date(e.t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td></tr>`)) : '',
+      stand.length ? sub(T('Where things stand', 'Cómo está el panorama')) + tbl(
+        [T('Reading', 'Indicador'), T('Now', 'Ahora'), T('Before', 'Antes'), ''],
+        stand.map(i => { const up = i.prev != null && i.value != null && i.value > i.prev, dn = i.prev != null && i.value != null && i.value < i.prev
+          return `<tr><td>${esc(itemName(i.key))}</td><td>${fmtMacro(i.fmt, i.value)}</td><td>${i.prev == null ? '—' : fmtMacro(i.fmt, i.prev)}</td><td class="${up ? 'neg' : dn ? 'pos' : ''}">${up ? '▲' : dn ? '▼' : '—'}</td></tr>` })
+        .concat(fng?.value != null ? [`<tr><td>${T('Fear &amp; Greed', 'Miedo y codicia')}</td><td>${fng.value}</td><td>${fng.d30 ?? '—'}</td><td>${esc(fng.label ?? '')}</td></tr>`] : [])) : '',
+      evMoves ? sub(T(`Your ${evMoves.markets} markets on past report days`, `Tus ${evMoves.markets} mercados en días de informe`)) + tbl(
+        [T('Report', 'Informe'), T('Days', 'Días'), T('Moved', 'Se movió'), T('vs a normal day', 'vs un día normal'), T('Up', 'Subió')],
+        evMoves.kinds.map(k => `<tr><td>${esc(evName(k.kind))}</td><td>${k.n}</td><td>${k.avgAbs.toFixed(2)}%</td><td class="${k.vsNormal > 0.1 ? 'warn' : ''}">${k.vsNormal >= 0 ? '+' : ''}${(k.vsNormal * 100).toFixed(0)}%</td><td>${k.up}/${k.n}</td></tr>`))
+        + `<div class="ol-rec-note">${T(`Size of the move only, not its direction: an ordinary day moves these markets ${evMoves.normal.toFixed(2)}%, over ${evMoves.days} graded days. Measured over the 24 hours containing each release, whatever window is selected above.`, `Solo el tamaño del movimiento, no su dirección: un día normal mueve estos mercados ${evMoves.normal.toFixed(2)}%, sobre ${evMoves.days} días. Medido en las 24 horas que contienen cada publicación.`)}</div>` : '',
+      !mac ? `<div class="ol-rec-note">${T('Macro data has not loaded yet.', 'Los datos macro aún no han cargado.')}</div>` : '',
+    ].join('')
+  }
+
+  const macroLine = upcoming.length
+    ? T(`Next: ${evName(upcoming[0].kind)} ${whenWord(upcoming[0].t)}`, `Próximo: ${evName(upcoming[0].kind)} ${whenWord(upcoming[0].t)}`)
+      + (upcoming[1] ? ` · ${evName(upcoming[1].kind)} ${whenWord(upcoming[1].t)}` : '')
+    : mac ? T('No reports scheduled in the calendar.', 'No hay informes programados.')
+    : T('Loading the calendar…', 'Cargando el calendario…')
+
   const coneLine = cone
     ? T(`Ended inside 1σ on ${pct(cone.inside)} of ${cone.n} days (expect 68%)`, `Terminó dentro de 1σ en ${pct(cone.inside)} de ${cone.n} días (se espera 68%)`)
     : T('No cone history yet.', 'Sin historial del cono aún.')
@@ -576,6 +621,9 @@ function pooledHtml(items, ctx) {
     ${row('signals', T('Signals', 'Señales'), sigLine, signalsDetail)}
     ${row('hz', T('Horizons', 'Horizontes'), hzLine, hzDetail)}
     ${row('cone', T('Cone', 'Cono'), coneLine, coneDetail)}
+    ${/* Last, and apart: the four above are these markets' own record, this one is the world
+          around them -- the only row here that looks forward rather than back. */''}
+    ${row('macro', T('Macro', 'Macro'), macroLine, macroDetail)}
   </div>`
 }
 

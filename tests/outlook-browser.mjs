@@ -84,6 +84,25 @@ async function open(opts) {
   })
   await ctx.route('**/api/**', (route) => route.fulfill({ status: 503, body: 'offline in test' }))
   await ctx.route('**/markets-meta', (route) => route.fulfill({ json: { revenue: {}, cg: {}, stocks: {}, sic: {} } }))
+  // The pooled section's Macro row. A calendar fixed relative to now, so the assertions below
+  // are about the app and not about what the Fed did this week.
+  const NOW = Date.now()
+  await ctx.route('**/macro-data', (route) => route.fulfill({ json: {
+    at: NOW,
+    items: [
+      { key: 'cpi', group: 'inflation', fmt: 'pct1', period: 'm', date: '2026-09-01', value: 3.74, prev: 3.4 },
+      { key: 'unrate', group: 'jobs', fmt: 'pct1', period: 'm', date: '2026-10-01', value: 4.1, prev: 4.2 },
+      { key: 'fed', group: 'rates', fmt: 'pct2', period: 'd', date: '2026-09-17', value: 4, prev: 3.75 },
+      { key: 'y10', group: 'rates', fmt: 'pct2', period: 'd', date: '2026-11-19', value: 5.04, prev: 5.07 },
+      { key: 'vix', group: 'sentiment', fmt: 'num2', period: 'd', date: '2026-11-19', value: 28.44, prev: 24.56 },
+    ],
+    fng: { value: 11, label: 'Extreme Fear', date: NOW, d1: 12, d7: 10, d30: 50, days: [] },
+    // Future only, the way the real feed splits them.
+    events: [{ t: NOW + 2 * 864e5, kind: 'cpi' }, { t: NOW + 9 * 864e5, kind: 'fomc' }],
+    // and the history the pooled measurement reads
+    past: [{ t: NOW - 3 * 864e5, kind: 'cpi' }, { t: NOW - 31 * 864e5, kind: 'cpi' }, { t: NOW - 17 * 864e5, kind: 'fomc' }],
+    nowcast: null, gdpnow: null, sep: null, reactions: {}, unknownCal: null,
+  } }))
   // Version 2's server: what the page reports, and a live record for ETH (BTC has none yet).
   const logged = []
   await ctx.route('**/outlook-log', (route) => { try { logged.push(JSON.parse(route.request().postData())) } catch {} ; return route.fulfill({ status: 204, body: '' }) })
@@ -142,7 +161,7 @@ async function v2(p, root, label, logged) {
   // flat lines; it now opens row by row like the per-market record beside it.
   {
     const tags = await p.$$eval(`${root} .ol-pool .ol-rec-tag`, els => els.map(e => e.textContent.replace(/[▴▾]/g, '').trim()))
-    t(`${label}: the pooled section has its own rows`, tags.join() === 'Calls,Signals,Horizons,Cone', tags)
+    t(`${label}: the pooled section has its own rows`, tags.join() === 'Calls,Signals,Horizons,Cone,Macro', tags)
     t(`${label}: each folded to its summary`, await p.$$eval(`${root} .ol-pool .ol-rec-detail`, els => els.length) === 0)
     // Opening one must open THAT one, on the pooled section, not the same-named row on a card.
     await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Signals")`)
@@ -157,6 +176,18 @@ async function v2(p, root, label, logged) {
     t(`${label}: Horizons opens to every window, the one on screen marked`,
       /Timeframe\s*Calls\s*Right\s*Chance\s*Inside the cone/.test(hzd.join(' ')) && /4h/.test(hzd.join(' ')) && /30d/.test(hzd.join(' ')), hzd.at(-1)?.slice(0, 220))
     t(`${label}: the open pooled rows survive a repaint`, await p.$$eval(`${root} .ol-pool .ol-rec-row.open`, els => els.length) === 2)
+    // "it can include macro data, upcoming events, etc"
+    const macLine = await p.$eval(`${root} .ol-pool .ol-rec-row:has(.ol-rec-tag:text-matches("Macro")) .ol-rec-sum`, e => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => '')
+    t(`${label}: Macro says what is next and when`, /Next: CPI inflation report in 2 days · Fed rate decision in 9 days/.test(macLine), macLine)
+    await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Macro")`)
+    await p.waitForFunction((r) => /Coming up/.test(document.querySelector(r + ' .ol-pool')?.textContent ?? ''), root, { timeout: 10000 })
+    const macD = await p.$$eval(`${root} .ol-pool .ol-rec-detail`, els => els.map(e => e.textContent.replace(/\s+/g, ' ')).join(' | '))
+    t(`${label}: and opens to the calendar`, /Coming up.*CPI inflation report.*in 2 days/.test(macD), macD.slice(0, 260))
+    t(`${label}: where the readings stand`, /Where things stand/.test(macD) && /3\.7%/.test(macD) && /28\.44/.test(macD), macD.slice(0, 700))
+    t(`${label}: a rising reading is marked, Fear & Greed carried`, /Extreme Fear/.test(macD), macD.slice(0, 900))
+    t(`${label}: and what past report days did to these markets`, /on past report days/.test(macD) && /vs a normal day/.test(macD), macD.slice(0, 1200))
+    await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Macro")`)
+    await p.waitForFunction((r) => !/Coming up/.test(document.querySelector(r + ' .ol-pool')?.textContent ?? ''), root, { timeout: 10000 })
     // Fold them again so the next shell starts from the same place.
     await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Signals")`)
     await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Horizons")`)
