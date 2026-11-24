@@ -22,6 +22,7 @@ import { refreshMacro, buildMacro, macroHasData, MACRO_UA } from './src/macro.js
 import { KNOWN, knownRow } from './src/lbknown.js'
 import { emptyLog, cleanSubmission, addEntry, dueEntries, gradeDue, recordOf, compact, hasEntry, OL_HOURS } from './src/outlooklog.js'
 import { createOracleLogger } from './src/oraclelogger.js'
+import { createAgentRunner, latestReadings } from './src/agentrunner.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -485,6 +486,20 @@ async function paperTickOnce() {
   } finally { paperBusy = false }
 }
 setInterval(() => { paperTickOnce().catch(() => {}) }, PAPER_TICK).unref?.()
+
+// ── the Agent Arena (src/agents.js, src/agentrunner.js) ──────────────────────────────────
+// Shared paper agents, each its own paper account of a server-owned owner, traded through the
+// paperHost above, so the tick above also fills their stops. Decisions come from what is on disk
+// (the Oracle's log and its logger's candles); prices are allMids. One worker runs it, by lease.
+const AGENTS_DIR = join(__dirname, 'data', 'agents')
+const agentRunner = createAgentRunner({
+  dir: AGENTS_DIR,
+  paperHost,
+  post: popInfo,
+  readings: () => latestReadings(olLoad().entries, 24),
+  oracleDir: join(__dirname, 'data', 'oracle'),
+})
+setInterval(() => { agentRunner.tick() }, 60_000).unref?.()
 
 // ── /portfolios-data: the featured portfolios on /portfolios (src/pfshared.js) ───────────
 // Public to read; writes need the dev PIN. The PIN is not known here — the strategy server
@@ -1298,6 +1313,16 @@ createServer((req, res) => {
     if (!cleanSubmission({ coin, hours, score: 0, sigma: 0.01 }) || !OL_HOURS.includes(hours)) { res.writeHead(400).end(); return }
     olGradeNow()
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' }).end(JSON.stringify(recordOf(olLoad(), coin, hours)))
+    return
+  }
+
+  if (url === '/agents-data') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    let body = null
+    try { body = readFileSync(agentRunner.summaryFile, 'utf8') } catch {}
+    // Not yet: the arena's first run is a minute after a start. Unknown, not empty.
+    if (!body) { res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end('{"agents":null}'); return }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=30' }).end(body)
     return
   }
 

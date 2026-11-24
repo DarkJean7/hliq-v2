@@ -98,6 +98,7 @@ export const ES_DICT = {
   'Calendar': 'Calendario',
   'Scoreboard': 'Marcador',
   'Leaderboard': 'Clasificación',
+  'Agent Arena': 'Arena de agentes',
   'Challenge': 'Desafío',
   'Predictions': 'Predicciones',
   'Overview': 'Resumen',

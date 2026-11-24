@@ -281,6 +281,8 @@ function strategyPlugin() {
           const q = new URL(req.url, 'http://x').searchParams
           return sendJson(res, 200, OL.recordOf(OL.emptyLog(), String(q.get('coin') ?? ''), Number(q.get('h')) || 24))
         }
+        // Dev twin of serve-prod.js /agents-data: the arena runs only on the server.
+        if (method === 'GET' && path === '/agents-data') return sendJson(res, 503, { agents: null })
         // Dev twin of serve-prod.js /lb-known (in memory, 3 minutes, unpaced -- dev only).
         if (method === 'GET' && path === '/lb-known') {
           const K = await import('./src/lbknown.js')

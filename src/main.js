@@ -13255,6 +13255,13 @@ window.__openGridLadder = function() {
   import('./gridladder-ui.js').then(m => m.openGridLadder()).catch(e => { if (!reloadForStaleChunk(e)) _appAlert('Could not open the Grid Ladder: ' + e.message) })
 }
 
+// Agent Arena: the shared paper agents the server runs (src/agentsview.js), loaded on first open.
+window.__openAgents = function() {
+  document.getElementById('mobMoreDrawer')?.classList.remove('open')
+  document.getElementById('mobMoreBackdrop')?.classList.remove('open')
+  import('./agentsview.js').then(m => m.openAgentArena({ t: _T })).catch(e => { if (!reloadForStaleChunk(e)) _appAlert('Could not open the Agent Arena: ' + e.message) })
+}
+
 window.__openChat = function() {
   document.getElementById('mobMoreDrawer')?.classList.remove('open')
   document.getElementById('mobMoreBackdrop')?.classList.remove('open')
