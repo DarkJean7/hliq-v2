@@ -284,6 +284,7 @@ function strategyPlugin() {
         // Dev twin of serve-prod.js /agents-data: the arena runs only on the server.
         if (method === 'GET' && path === '/agents-data') return sendJson(res, 503, { agents: null })
         if (method === 'POST' && path === '/agents-config') return sendJson(res, 503, { error: 'the agents run only on the server' })
+        if (method === 'POST' && path === '/agents-control') return sendJson(res, 503, { error: 'the agents run only on the server' })
         // Dev twin of serve-prod.js /lb-known (in memory, 3 minutes, unpaced -- dev only).
         if (method === 'GET' && path === '/lb-known') {
           const K = await import('./src/lbknown.js')

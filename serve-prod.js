@@ -1349,6 +1349,24 @@ createServer((req, res) => {
     return
   }
 
+  // Rekt-01's controls: start, pause, stop, restart, clear its track. Dev mode only, like its settings.
+  if (url === '/agents-control') {
+    if (req.method !== 'POST') { res.writeHead(405).end(); return }
+    const send = (code, obj) => res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(obj))
+    ;(async () => {
+      const ok = await devPinOk(req.headers['x-lb-pin'])
+      if (ok === null) return send(503, { error: 'could not check the PIN right now' })
+      if (!ok) return send(403, { error: 'dev mode only' })
+      const b = await readJson(req)
+      let config
+      try { config = agentRunner.control(String(b?.action ?? '')) } catch (e) { return send(400, { error: e.message }) }
+      // Applied now when this worker holds the lease and is not mid-run; otherwise within a minute.
+      try { await agentRunner.tick() } catch {}
+      return send(200, { ok: true, config })
+    })()
+    return
+  }
+
   if (url === '/lb-known') {
     if (req.method !== 'GET') { res.writeHead(405).end(); return }
     const send = () => {

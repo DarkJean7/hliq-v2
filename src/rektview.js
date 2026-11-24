@@ -52,7 +52,6 @@ function settingsHtml(cfg, { T, dev, draft, status }) {
       ${row(T('Markets', 'Mercados'), esc(T(...MODE_NAME[c.markets.mode])) + (c.markets.mode !== 'all' && c.markets.list.length ? ': ' + esc(c.markets.list.join(', ')) : ''))}
       ${row(T('Style', 'Estilo'), esc(T(...STYLE_NAME[c.style])) + ' · ' + esc(T(...HORIZON_NAME[c.horizon])))}
       ${row(T('In the arena', 'En la arena'), c.arena ? T('Yes', 'Sí') : T('No', 'No'))}
-      ${row(T('Status', 'Estado'), c.paused ? T('Paused', 'En pausa') : T('Running', 'Activo'))}
     </div><p class="ag-none">${T('Settings can be changed in dev mode.', 'Los ajustes se cambian en modo dev.')}</p>`
   }
   const opt = (map, v) => Object.keys(map).map(k => `<option value="${k}"${k === v ? ' selected' : ''}>${esc(T(...map[k]))}</option>`).join('')
@@ -74,7 +73,6 @@ function settingsHtml(cfg, { T, dev, draft, status }) {
     </fieldset>
     <fieldset><legend>${T('Arena', 'Arena')}</legend>
       <label class="rk-check"><input type="checkbox" name="arena"${c.arena ? ' checked' : ''}> ${T('Show it on the Agent Arena board', 'Mostrarlo en la Arena de agentes')}</label>
-      <label class="rk-check"><input type="checkbox" name="paused"${c.paused ? ' checked' : ''}> ${T('Paused (keeps managing what it holds, opens nothing new)', 'En pausa (gestiona lo que tiene, no abre nada nuevo)')}</label>
     </fieldset>
     <div class="rk-actions"><button type="button" class="rk-save" data-rk-save>${T('Save settings', 'Guardar ajustes')}</button><span class="rk-status">${esc(status ?? '')}</span></div>
   </form>`
@@ -86,11 +84,32 @@ export function readForm(form) {
   return {
     maxLev: +f('maxLev').value, maxPositions: +f('maxPositions').value, maxLossPct: +f('maxLossPct').value, pauseDDPct: +f('pauseDDPct').value,
     markets: { mode: f('mode').value, list: f('list').value.split(/[\s,]+/).filter(Boolean) },
-    style: f('style').value, horizon: f('horizon').value, arena: f('arena').checked, paused: f('paused').checked,
+    style: f('style').value, horizon: f('horizon').value, arena: f('arena').checked,
   }
 }
 
-export function rektHtml(a, { T, dev, draft, status, width = 600 }) {
+const STATUS_NAME = { running: ['Running', 'Activo'], paused: ['Paused', 'En pausa'], stopped: ['Stopped', 'Detenido'] }
+
+/**
+ * Start / pause / stop / restart / clear track (POST /agents-control). Buttons in dev mode only;
+ * everyone sees the status. Clear and stop ask first in the view (agentsview.js).
+ */
+function controlsHtml(cfg, { T, dev, ctlStatus }) {
+  const st = cfg.status ?? 'running'
+  const badge = `<span class="rk-st rk-st-${st}">${esc(T(...STATUS_NAME[st]))}</span>`
+  if (!dev) return `<div class="rk-ctl">${badge}</div>`
+  const b = (action, label, show = true, cls = '') => show ? `<button type="button" class="rk-cb${cls}" data-rk-ctl="${action}">${label}</button>` : ''
+  return `<div class="rk-ctl">${badge}
+    ${b('start', T('▶ Start', '▶ Iniciar'), st !== 'running')}
+    ${b('pause', T('⏸ Pause', '⏸ Pausar'), st === 'running')}
+    ${b('stop', T('⏹ Stop', '⏹ Detener'), st !== 'stopped')}
+    ${b('restart', T('↻ Restart', '↻ Reiniciar'))}
+    ${b('clear', T('Clear track', 'Borrar historial'), true, ' rk-danger')}
+    <span class="rk-ctl-status">${esc(ctlStatus ?? '')}</span>
+  </div>`
+}
+
+export function rektHtml(a, { T, dev, draft, status, ctlStatus, width = 600 }) {
   const L = a.learn, cfg = a.config
   if (!L || !cfg) return ''
   const w = L.weights ?? {}
@@ -102,10 +121,12 @@ export function rektHtml(a, { T, dev, draft, status, width = 600 }) {
       <span class="rk-ws">${st.n ? T(`right ${pct(st.hit ?? 0)} · ${st.n.toLocaleString()} checks`, `acierta ${pct(st.hit ?? 0)} · ${st.n.toLocaleString()} pruebas`) : T('no checks yet', 'sin pruebas aún')}</span></div>`
   }).join('')
   const paused = L.pausedBy ? T(`Paused by itself: down ${L.pausedBy.dd.toFixed(1)}% from its peak (resumes when back within ${(cfg.pauseDDPct / 2).toFixed(0)}%).`, `En pausa por sí mismo: cae ${L.pausedBy.dd.toFixed(1)}% desde su máximo (vuelve cuando esté a menos de ${(cfg.pauseDDPct / 2).toFixed(0)}%).`)
-    : cfg.paused ? T('Paused in its settings: managing what it holds, opening nothing new.', 'En pausa en sus ajustes: gestiona lo que tiene, no abre nada nuevo.') : ''
+    : cfg.status === 'paused' ? T('Paused: managing what it holds, opening nothing new.', 'En pausa: gestiona lo que tiene, no abre nada nuevo.')
+    : cfg.status === 'stopped' ? T('Stopped: it holds nothing, opens nothing and learns nothing until started.', 'Detenido: no tiene nada, no abre nada y no aprende hasta que se inicie.') : ''
   const checks = SIGNALS.reduce((s, k) => s + (L.stats?.[k]?.n ?? 0), 0)
   return `<div class="rk">
-    ${paused ? `<p class="rk-paused">⏸ ${esc(paused)}</p>` : ''}
+    ${controlsHtml(cfg, { T, dev, ctlStatus })}
+    ${paused ? `<p class="rk-paused">${cfg.status === 'stopped' && !L.pausedBy ? '⏹' : '⏸'} ${esc(paused)}</p>` : ''}
     <h4>${T('What it has learned', 'Lo que ha aprendido')}</h4>
     <p class="ag-when">${T(`Learning since ${new Date(L.since).toLocaleDateString()} · ${checks.toLocaleString()} signal checks scored · ${L.pending.toLocaleString()} waiting for their ${HORIZONS[cfg.horizon].evalH}h result · ${L.trades} of its own trades`, `Aprendiendo desde ${new Date(L.since).toLocaleDateString()} · ${checks.toLocaleString()} pruebas puntuadas · ${L.pending.toLocaleString()} esperando su resultado de ${HORIZONS[cfg.horizon].evalH} h · ${L.trades} operaciones propias`)}</p>
     <div class="rk-ws-list">${bars}</div>

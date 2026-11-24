@@ -18,12 +18,15 @@
  * last 2,000 minutes), and the journal of every open, close and stop with its reason.
  * dir/summary.json is what GET /agents-data serves.
  */
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, statSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, statSync, readdirSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { AGENTS, planOf, sizeFor, maxDrawdown, thin } from './agents.js'
 import { marketFor } from './paperhost.js'
 import { rektAgent, cleanConfig, initLearn } from './rekt.js'
+
+/** Rekt-01's controls (POST /agents-control, dev mode): what each sets its status to. */
+export const CONTROLS = { start: 'running', pause: 'paused', stop: 'stopped', restart: 'running', clear: null }
 
 const HOUR = 3600e3, DAY = 24 * HOUR
 export const SUMMARY_MS = 5 * 60e3
@@ -49,7 +52,28 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
   // Rekt-01's settings (src/rekt.js), written by POST /agents-config in dev mode, read every run.
   const CONFIG = join(dir, 'rekt-config.json')
   const configOf = () => cleanConfig(readJson(CONFIG) ?? {})
-  function saveConfig(c) { const cfg = cleanConfig(c); writeJson(CONFIG, cfg); return cfg }
+  // The settings form does not carry the status: the controls own it, so a save never un-stops it.
+  function saveConfig(c) { const cfg = cleanConfig({ ...c, status: configOf().status }); writeJson(CONFIG, cfg); return cfg }
+  // A control is queued for the worker holding the lease — the only one that may touch state.json
+  // and the paper store — and the status written now, so the board says it at once.
+  const COMMANDS = join(dir, 'rekt-commands.json')
+  function control(action) {
+    if (!Object.hasOwn(CONTROLS, action)) throw new Error('unknown control')
+    const q = readJson(COMMANDS)
+    writeJson(COMMANDS, [...(Array.isArray(q) ? q : []), { action, t: now() }].slice(-20))
+    const status = CONTROLS[action]
+    const cfg = status ? cleanConfig({ ...configOf(), status }) : configOf()
+    writeJson(CONFIG, cfg)
+    return cfg
+  }
+  function takeCommands() {
+    if (!existsSync(COMMANDS)) return []
+    const work = COMMANDS + '.work'
+    try { renameSync(COMMANDS, work) } catch { return [] }
+    const q = readJson(work)
+    try { unlinkSync(work) } catch {}
+    return Array.isArray(q) ? q : []
+  }
   let secret = null
   function secretOf() {
     if (secret) return secret
@@ -175,6 +199,45 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
     })
   }
 
+  /**
+   * Close everything at the mark and cancel its stops: stop, restart. Not the agent's choice, so
+   * the trade teaches its stop/hold arms nothing and the coin does not cool down.
+   */
+  function flatten(a, as, mk, why) {
+    const t = now()
+    return paperHost.withStore(secretOf(), a.id, mk, (P) => {
+      reconcile(P, a, as)
+      for (const p of [...P.paperStore().positions].filter(x => x.szi)) {
+        const before = P.paperFills().length
+        const r = order(P, p.coin, p.szi < 0, Math.abs(p.szi), { reduce: true })
+        if (r.error) { as.journal.push({ t, kind: 'error', coin: p.coin, why: r.error }); continue }
+        const f = P.paperFills().slice(0, P.paperFills().length - before)
+        as.journal.push({ t, kind: 'close', coin: p.coin, side: sideOf(p.szi), px: r.px, pnl: f.reduce((s, x) => s + Number(x.closedPnl || 0) - Number(x.fee || 0), 0), why })
+        if (as.learn?.open) delete as.learn.open[p.coin]
+      }
+      for (const o of [...P.paperStore().orders]) P.paperCancel(o.oid)
+      as.held = []
+    })
+  }
+
+  /** One queued control, applied by the leased worker. Status is already in the config. */
+  function applyCommand(st, { action, t }, mk) {
+    const a = agents.find(x => x.personal)
+    if (!a) return
+    const as = agentState(st, a.id)
+    if (action === 'clear') {
+      // A clean slate: a fresh $1,000 paper account, no record, nothing learned.
+      paperHost.withStore(secretOf(), a.id, mk, (P) => P.paperReset())
+      st.agents[a.id] = { last: 0, held: [], cool: {}, curve: [], journal: [{ t, kind: 'note', why: 'track cleared: a fresh $1,000 and nothing learned' }], learn: initLearn(t) }
+      return
+    }
+    if (action === 'stop' || action === 'restart') flatten(a, as, mk, action === 'stop' ? 'stopped by you' : 'restarted by you')
+    if (action === 'restart') as.cool = {}
+    as.journal.push({ t, kind: 'note', why: { start: 'started by you', pause: 'paused by you: keeps what it holds, opens nothing new', stop: 'stopped by you: holds nothing until started', restart: 'restarted by you: closed everything, deciding afresh' }[action] })
+    // Start and restart act now, not at the end of the hour.
+    if (action === 'start' || action === 'restart') as.last = 0
+  }
+
   /** The board: every agent's account now, its curve and its journal → dir/summary.json. */
   function summarize(st, mk) {
     const t = now()
@@ -214,8 +277,13 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
     try {
       const st = readJson(STATE) ?? emptyState()
       const t = now()
+      const cmds = takeCommands()
+      if (!cmds.length && !agents.some(a => t - agentState(st, a.id).last >= a.every) && t - lastSummary < SUMMARY_MS) return
+      if (cmds.length) {
+        const m0 = await marketWith(agents.flatMap(a => agentState(st, a.id).held.map(h => h.coin)))
+        for (const c of cmds) { try { applyCommand(st, c, m0) } catch (e) { log.warn?.(`[agents] control ${c.action}: ${e.message}`) } }
+      }
       const due = agents.filter(a => t - agentState(st, a.id).last >= a.every)
-      if (!due.length && t - lastSummary < SUMMARY_MS) return
       const needDaily = due.some(a => a.id !== 'oracle' && a.id !== 'hodl')
       const ctxBase = {
         config: configOf(),
@@ -242,7 +310,7 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
     } finally { busy = false }
   }
 
-  return { tick, secret: secretOf, summaryFile: SUMMARY, configOf, saveConfig, _state: () => readJson(STATE) }
+  return { tick, secret: secretOf, summaryFile: SUMMARY, configOf, saveConfig, control, _state: () => readJson(STATE) }
 }
 
 /** The latest 24h call per market from the Oracle's log entries ({ coin, hours, score, sigma, t }). */

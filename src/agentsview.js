@@ -27,6 +27,7 @@ function ago(ms, T) {
 
 let data = null, err = null, timer = null, open = new Set(), T = (en) => en
 let rkDraft = null, rkStatus = ''   // Rekt-01's settings being edited, and what the last save said
+let rkCtl = '', rkBusy = false       // what its last control said, and one at a time
 
 /** Return % series per agent, for the chart: [[t, pct]]. */
 function pctCurve(a) { return (a.curve ?? []).map(([t, v]) => [t, (v / a.start - 1) * 100]) }
@@ -71,7 +72,7 @@ function cardHtml(a, hodl, rank) {
     const stop = (a.stops ?? []).find(s => s.coin === p.coin)
     return `<tr><td><b>${esc(p.coin)}</b></td><td class="${p.szi > 0 ? 'pos' : 'neg'}">${p.szi > 0 ? T('Long', 'Largo') : T('Short', 'Corto')} ${p.lev ? p.lev + '×' : ''}</td><td>${usd(Math.abs(p.value), 0)}</td><td>${pxFmt(p.entryPx)}</td><td>${pxFmt(p.mark)}</td><td class="${cls(p.upnl)}">${sgnUsd(p.upnl)}</td><td>${stop ? pxFmt(stop.px) : '—'}</td></tr>`
   }).join('')
-  const KIND = { open: T('Opened', 'Abrió'), close: T('Closed', 'Cerró'), stop: T('Stopped', 'Stop'), skip: T('Skipped', 'Omitió'), error: T('Error', 'Error') }
+  const KIND = { open: T('Opened', 'Abrió'), close: T('Closed', 'Cerró'), stop: T('Stopped', 'Stop'), skip: T('Skipped', 'Omitió'), error: T('Error', 'Error'), note: T('You', 'Tú') }
   const jr = (a.journal ?? []).map(j => `<tr class="ag-j-${j.kind}"><td>${esc(dt(j.t))}</td><td>${KIND[j.kind] ?? esc(j.kind)}</td><td>${j.coin ? `<b>${esc(j.coin)}</b>` : ''}${j.side ? ` <span class="${j.side === 'long' ? 'pos' : 'neg'}">${j.side === 'long' ? T('long', 'largo') : T('short', 'corto')}</span>` : ''}</td><td>${j.px ? pxFmt(j.px) : ''}</td><td class="${cls(j.pnl)}">${Number.isFinite(j.pnl) ? sgnUsd(j.pnl) : ''}</td><td class="ag-why">${esc(j.why ?? '')}</td></tr>`).join('')
   const now = data?.at ?? Date.now()
   return `<div class="ag-card${isOpen ? ' open' : ''}${a.baseline ? ' base' : ''}" data-ag="${esc(a.id)}">
@@ -91,7 +92,7 @@ function cardHtml(a, hodl, rank) {
     ${isOpen ? `<div class="ag-body">
       <p class="ag-blurb">${esc(T(a.blurb?.[0] ?? '', a.blurb?.[1] ?? a.blurb?.[0] ?? ''))}</p>
       <p class="ag-when">${a.last ? T(`Last look ${ago(now - a.last, T)} ago`, `Última revisión hace ${ago(now - a.last, T)}`) : ''}${a.next ? ` · ${T('next', 'próxima')} ${a.next <= now ? T('within a minute', 'en un minuto') : T(`in ${ago(a.next - now, T)}`, `en ${ago(a.next - now, T)}`)}` : ''} · ${a.lev}× · ${T(`up to ${a.max} positions`, `hasta ${a.max} posiciones`)}</p>
-      ${a.personal ? rektHtml(a, { T, dev: isDevMode(), draft: rkDraft, status: rkStatus, width: chartWidth() - 24 }) : ''}
+      ${a.personal ? rektHtml(a, { T, dev: isDevMode(), draft: rkDraft, status: rkStatus, ctlStatus: rkCtl, width: chartWidth() - 24 }) : ''}
       <h4>${T('Positions', 'Posiciones')}</h4>
       ${pos ? `<div class="ag-tbl-wrap" data-dragscroll><table class="ag-tbl"><thead><tr><th>${T('Market', 'Mercado')}</th><th>${T('Side', 'Lado')}</th><th>${T('Size', 'Tamaño')}</th><th>${T('Entry', 'Entrada')}</th><th>${T('Mark', 'Marca')}</th><th>PnL</th><th>Stop</th></tr></thead><tbody>${pos}</tbody></table></div>` : `<p class="ag-none">${T('Flat — nothing qualifies right now.', 'Sin posiciones — nada califica ahora mismo.')}</p>`}
       <h4>${T('Journal', 'Diario')}</h4>
@@ -180,6 +181,8 @@ export function openAgentArena({ t } = {}) {
       const b = e.target.closest('[data-ag-open]')
       if (b) { const id = b.dataset.agOpen; open.has(id) ? open.delete(id) : open.add(id); paint() }
       if (e.target.closest('[data-rk-save]')) saveRekt(e.target.closest('[data-rk-form]'))
+      const c = e.target.closest('[data-rk-ctl]')
+      if (c) controlRekt(c.dataset.rkCtl)
     })
     ov.addEventListener('input', (e) => { const f = e.target.closest('[data-rk-form]'); if (f) { rkDraft = readForm(f); rkStatus = T('Not saved yet', 'Aún sin guardar'); const s = f.querySelector('.rk-status'); if (s) s.textContent = rkStatus } })
     ov.addEventListener('pointermove', onMove)
@@ -208,6 +211,32 @@ async function saveRekt(form) {
     if (a) { a.config = j.config; a.hidden = !j.config.arena }
   } catch (e) { rkStatus = T('Not saved: ', 'No guardado: ') + e.message }
   document.activeElement?.blur?.()
+  paint()
+}
+
+const CONFIRM = {
+  stop: ['Stop Rekt-01? It closes every position now at the market and opens nothing until you start it again.', '¿Detener Rekt-01? Cierra todas sus posiciones ahora a mercado y no abre nada hasta que lo inicies.'],
+  restart: ['Restart Rekt-01? It closes every position now and decides afresh. Its money, record and what it learned stay.', '¿Reiniciar Rekt-01? Cierra todas sus posiciones ahora y decide de nuevo. Su dinero, historial y lo aprendido se mantienen.'],
+  clear: ["Clear Rekt-01's track? Its positions, record, chart and everything it learned are wiped, and it starts again with $1,000. This cannot be undone.", '¿Borrar el historial de Rekt-01? Se borran sus posiciones, historial, gráfico y todo lo aprendido, y empieza de nuevo con $1,000. No se puede deshacer.'],
+}
+async function controlRekt(action) {
+  if (!isDevMode() || rkBusy) return
+  if (CONFIRM[action] && !confirm(T(...CONFIRM[action]))) return
+  rkBusy = true
+  rkCtl = T('Working…', 'Procesando…'); paint()
+  try {
+    const r = await fetch('/agents-control', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-lb-pin': devPin() }, body: JSON.stringify({ action }) })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status)
+    const a = data?.agents?.find(x => x.personal)
+    if (a) a.config = j.config
+    rkCtl = T('Done.', 'Hecho.')
+    await load()
+    // The worker was mid-run: the board is a minute behind the control.
+    const fresh = data?.agents?.find(x => x.personal)
+    if (fresh && fresh.config?.status !== j.config.status) { fresh.config = j.config; rkCtl = T('Queued — applied within a minute.', 'En cola — se aplica en menos de un minuto.') }
+  } catch (e) { rkCtl = T('Failed: ', 'Falló: ') + e.message }
+  rkBusy = false
   paint()
 }
 

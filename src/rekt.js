@@ -43,9 +43,10 @@ export const STOPS = [3, 5, 8, 12, 18]
 export const ETA = 0.05            // learning rate of the signal weights
 export const FLOOR = 0.05          // no signal's share falls below 5%: it can always come back
 
+export const STATUSES = ['running', 'paused', 'stopped']
 export const DEFAULT_CONFIG = {
   maxLev: 3, maxPositions: 4, maxLossPct: 2, pauseDDPct: 25,
-  markets: { mode: 'all', list: [] }, style: 'balanced', horizon: 'days', arena: true, paused: false,
+  markets: { mode: 'all', list: [] }, style: 'balanced', horizon: 'days', arena: true, status: 'running',
 }
 
 const num = (x, lo, hi, d) => { const n = Number(x); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d }
@@ -66,7 +67,9 @@ export function cleanConfig(c = {}) {
     style: c.style in STYLES ? c.style : D.style,
     horizon: c.horizon in HORIZONS ? c.horizon : D.horizon,
     arena: c.arena == null ? D.arena : !!c.arena,
-    paused: !!c.paused,
+    // running | paused (keeps what it holds, opens nothing) | stopped (holds nothing, learns nothing).
+    // Set by the controls (POST /agents-control), not the settings form; an old file's paused:true reads as paused.
+    status: STATUSES.includes(c.status) ? c.status : c.paused ? 'paused' : 'running',
   }
 }
 
@@ -206,6 +209,8 @@ export const rektAgent = {
   decide(ctx) {
     const cfg = ctx.config, L = ctx.learn
     if (!Object.keys(ctx.daily ?? {}).length || !Object.keys(ctx.marks ?? {}).length) return null
+    // Stopped: wants nothing (the runner closes what is left) and stops learning too.
+    if (cfg.status === 'stopped') return []
     learnSignals(L, ctx, cfg)
     const { enter } = STYLES[cfg.style], { holds } = HORIZONS[cfg.horizon]
     const lev = this.levOf(cfg), max = cfg.maxPositions
@@ -227,7 +232,7 @@ export const rektAgent = {
       if (sc != null && (h.side === 'long' ? sc : -sc) < -enter / 2) continue  // closed: the blend turned against it
       keep.push({ coin: h.coin, side: h.side, why: `score ${sc == null ? '—' : (sc >= 0 ? '+' : '') + sc.toFixed(2)}, ${Math.floor(age)}h of ${o?.hold ?? '?'}h` })
     }
-    if (cfg.paused || L.pausedBy) return keep
+    if (cfg.status === 'paused' || L.pausedBy) return keep
     const cands = universeOf(ctx, cfg).map(coin => ({ coin, sc: score(coin), sig: signalsOf(coin, ctx) }))
       .filter(x => x.sc != null && Math.abs(x.sc) >= enter && !keep.some(k => k.coin === x.coin) && (ctx.cool?.[x.coin] ?? 0) <= ctx.now)
       .sort((a, b) => Math.abs(b.sc) - Math.abs(a.sc))

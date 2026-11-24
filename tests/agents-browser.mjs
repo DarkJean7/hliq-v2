@@ -135,10 +135,12 @@ for (const [label, opts] of [['phone', { ...devices['iPhone 14 Pro'] }], ['deskt
   const rk = await p.evaluate(() => {
     const c = document.querySelector('.ag-card[data-ag="rekt01"]')
     return { yours: !!c.querySelector('.ag-yours'), bars: [...c.querySelectorAll('.rk-wn')].map(e => e.textContent.trim()), top: c.querySelector('.rk-wv')?.textContent,
-      chart: !!c.querySelector('.rk-wchart path'), bestStop: c.querySelector('.rk-arms th.rk-best')?.textContent, form: !!c.querySelector('[data-rk-form]'), ro: !!c.querySelector('.rk-set.ro'), hint: /dev mode/.test(c.textContent) }
+      chart: !!c.querySelector('.rk-wchart path'), bestStop: c.querySelector('.rk-arms th.rk-best')?.textContent, form: !!c.querySelector('[data-rk-form]'), ro: !!c.querySelector('.rk-set.ro'), hint: /dev mode/.test(c.textContent),
+      st: c.querySelector('.rk-st')?.textContent, ctl: c.querySelectorAll('[data-rk-ctl]').length }
   })
   t(`${label}: Rekt-01 shows what it has learned, most trusted signal first`, [rk.yours, rk.bars[0], rk.top, rk.chart, rk.bestStop], [true, 'Oracle call', '40%', true, '8%'])
   t(`${label}: without dev mode its settings are read-only`, [rk.form, rk.ro, rk.hint], [false, true, true])
+  t(`${label}: without dev mode: its status, no controls`, [rk.st, rk.ctl], ['Running', 0])
   if (SHOT) await p.locator('.ag-card[data-ag="rekt01"]').screenshot({ path: `${SHOT}/rekt-${label}.png` })
   await p.click('[data-ag-close]')
   t(`${label}: × closes it`, await p.evaluate(() => getComputedStyle(document.getElementById('agentArenaOverlay')).display), 'none')
@@ -162,6 +164,22 @@ for (const [label, opts] of [['phone', { ...devices['iPhone 14 Pro'] }], ['deskt
   t(`${label}: Save sends the PIN and the values`, saved && [saved.pin, saved.body.config.maxLev, saved.body.config.markets.mode, saved.body.config.markets.list, saved.body.config.style, saved.body.config.arena], ['test-pin', 5, 'allow', ['btc', 'eth'], 'cautious', false])
   t(`${label}: and says it was saved, flagged out of the arena`, await p.evaluate(() => [/Saved/.test(document.querySelector('.rk-status').textContent), /not in the arena/.test(document.querySelector('.ag-card[data-ag="rekt01"] .ag-name').textContent)]), [true, true])
   t(`${label}: the settings form fits too`, await p.evaluate(() => document.querySelector('.ag-scroll').scrollWidth <= document.querySelector('.ag-scroll').clientWidth), true)
+  // The controls: "restart, pause, stop, start … clear its track". Each carries the PIN; clear asks first.
+  const ctl = []
+  await ctx.route('**/agents-control', async (r) => { const b = JSON.parse(r.request().postData() || '{}'); ctl.push([r.request().headers()['x-lb-pin'], b.action]); await r.fulfill({ status: 200, contentType: 'application/json', json: { ok: true, config: { ...DEFAULT_CONFIG, status: { pause: 'paused', stop: 'stopped' }[b.action] ?? 'running' } } }) })
+  t(`${label}: running shows Pause, Stop, Restart, Clear — not Start`, await p.evaluate(() => [...document.querySelectorAll('[data-rk-ctl]')].map(b => b.dataset.rkCtl)), ['pause', 'stop', 'restart', 'clear'])
+  await p.click('[data-rk-ctl="pause"]')
+  await waitFor(p, 'the pause', () => !!document.querySelector('[data-rk-ctl="start"]'), null, 8000)
+  t(`${label}: Pause sends the PIN; the board shows it paused, with Start`, [ctl.at(-1), await p.evaluate(() => [document.querySelector('.rk-st').textContent, /Paused:/.test(document.querySelector('.rk-paused')?.textContent ?? '')])], [['test-pin', 'pause'], ['Paused', true]])
+  p.once('dialog', d => d.dismiss())
+  await p.click('[data-rk-ctl="clear"]')
+  await p.waitForTimeout(300)
+  t(`${label}: Clear track asks first; Cancel sends nothing`, ctl.length, 1)
+  p.once('dialog', d => d.accept())
+  await p.click('[data-rk-ctl="clear"]')
+  await waitFor(p, 'the clear', () => /Done|Queued/.test(document.querySelector('.rk-ctl-status')?.textContent ?? ''), null, 8000)
+  t(`${label}: OK sends it`, ctl.at(-1), ['test-pin', 'clear'])
+  await ctx.unroute('**/agents-control')
   if (SHOT) await p.locator('.ag-card[data-ag="rekt01"] .rk-form').screenshot({ path: `${SHOT}/rekt-form-${label}.png` })
   await p.click('[data-ag-close]')
   await ctx.unroute('**/agents-data')
