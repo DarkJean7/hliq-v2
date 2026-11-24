@@ -305,5 +305,25 @@ t('a redraw after the tab was left draws nothing; only opening the tab builds it
 t('and loading for it stops once it is left', view.includes('if (!onScreen(last?.host)) return'))
 t('only a full read is reported to the live record', /if \(\(o\.score\?\.coverage \?\? 0\) >= 0\.9\) logRating/.test(view))
 
+console.log('-- the pooled cone, and macro back in time --')
+{
+  const { MACRO_AGO, macroAgo, pooledCone: pc } = await import('../../src/outlook.js')
+  const v = fs.readFileSync('src/outlookview.js', 'utf8')
+  // "cone section is not expanding": pooledCone says calibrated / narrow / wide, and the label table
+  // had none of them, so drawing the row threw and took the tab down (telemetry: is not iterable).
+  t('every verdict the cone can give has a label', ["calibrated: ['Calibrated'", "narrow: ['Too narrow'", "wide: ['Too wide'", "thin: ['Too few'"].every(k => v.includes(k)))
+  t('an unknown verdict shows its name rather than throwing', v.includes("VSHORT[v ?? 'none'] ?? [String(v), String(v)]") && v.includes('VERDICT[v] ?? [String(v), String(v)]'))
+  t('a detail that fails draws a note, not an exception out of paint', (v.match(/safeDetail\(detail, T\)/g) ?? []).length === 2)
+  t('expand and collapse all, on the pooled section and on each card', v.includes("allBtn('__pool__', ['calls', 'signals', 'hz', 'cone', 'macro'], T)") && v.includes("allBtn(coin, ['past', 'learned', 'cone', 'hz', 'live'], T)"))
+  t('the pooled period: 1M, 3M, 6M, 1Y, with the dates it covers', v.includes("[[30, '1M'], [91, '3M'], [182, '6M'], [365, '1Y']]") && v.includes('Calls, Signals, Horizons and Cone: '))
+  const M = (y, m) => Date.UTC(y, m, 1)
+  const monthly = [[M(2025, 8), 1], [M(2026, 2), 2], [M(2026, 5), 3], [M(2026, 7), 4], [M(2026, 8), 5]]
+  const L = monthly.at(-1)[0]
+  t('back in time on a monthly series, from its latest release', MACRO_AGO.map(([d]) => macroAgo(monthly, L, d)).join() === '4,3,2,1', MACRO_AGO.map(([d]) => macroAgo(monthly, L, d)))
+  t('history that does not reach is unknown, not the oldest value', macroAgo(monthly.slice(2), L, 365) === null && macroAgo([], L, 30) === null)
+  const fed = [[Date.UTC(2025, 11, 11), 3.75], [Date.UTC(2026, 8, 17), 4]]
+  t('a step series reads the level in force then', macroAgo(fed, Date.UTC(2026, 10, 20), 30) === 4 && macroAgo(fed, Date.UTC(2026, 10, 20), 182) === 3.75)
+}
+
 console.log(`${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

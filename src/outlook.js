@@ -795,3 +795,24 @@ export function moveDistribution(samples, h) {
     return { lo: a, hi: b, share: n / all.length, expect, n }
   })
 }
+
+// ── macro, back in time ─────────────────────────────────────────────────────
+// "in macro we have some readings that say now and before but the before is since when? ... add also
+// smaller timeframes like 1month, 3month, 6 month". The columns the Oracle's macro table shows.
+export const MACRO_AGO = [[30, '1M'], [91, '3M'], [182, '6M'], [365, '1Y']]
+/**
+ * The value `days` before the latest point of a series ([[t, value], ...], oldest first): the last
+ * point at or before then, allowing five days for monthly series dated the 1st. A step series (the
+ * Fed's rate, dated at each change) reads right the same way. Null when the history does not
+ * reach that far back — not the oldest value, which would claim a date it is not from.
+ */
+export function macroAgo(pts, lastT, days) {
+  if (!Array.isArray(pts) || !pts.length || !Number.isFinite(lastT)) return null
+  const target = lastT - days * 864e5 + 5 * 864e5
+  let v = null
+  for (const [t, x] of pts) {
+    if (!(t < lastT)) break
+    if (t <= target && x != null && Number.isFinite(Number(x))) v = Number(x)
+  }
+  return v
+}

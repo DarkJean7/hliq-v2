@@ -156,7 +156,7 @@ async function v2(p, root, label, logged) {
   t(`${label}: the cone checked, past and live`, /Ended inside the 1σ band on \d+% of \d+ days \(expect 68%\) · touched the bullish line \d+%, the bearish \d+% \(expect 32% each\)\./.test(rec.ETH) && /Live: inside on 75% of 12 graded/.test(rec.ETH), rec.ETH)
   t(`${label}: the cone is calibrated, and says by how much`, /So the cone on this card is scaled ×\d\.\d\d to fit, and so are its touch chances/.test(rec.ETH), rec.ETH)
   t(`${label}: every horizon, the one on screen marked`, await p.$$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-hz`, els => els.map(e => e.textContent.trim().split(' ')[0]).join() + '|' + els.filter(e => e.classList.contains('cur')).length) === '4h,24h,3d,7d,30d|1')
-  t(`${label}: all the markets pooled, at the top`, /Your 2 markets pooled · past year · 24h/.test(await p.$eval(`${root} .ol-pool`, e => e.textContent).catch(() => '')))
+  t(`${label}: all the markets pooled, at the top`, /Your 2 markets pooled · 24h/.test(await p.$eval(`${root} .ol-pool`, e => e.textContent).catch(() => '')) && /Calls, Signals, Horizons and Cone: \w{3} \d+, \d{4} – \w{3} \d+, \d{4}/.test(await p.$eval(`${root} .ol-pool`, e => e.textContent).catch(() => '')))
   // "can we add more data/signals and also expand it? I mean the pooled section": it was three
   // flat lines; it now opens row by row like the per-market record beside it.
   {
@@ -184,6 +184,8 @@ async function v2(p, root, label, logged) {
     const macD = await p.$$eval(`${root} .ol-pool .ol-rec-detail`, els => els.map(e => e.textContent.replace(/\s+/g, ' ')).join(' | '))
     t(`${label}: and opens to the calendar`, /Coming up.*CPI inflation report.*in 2 days/.test(macD), macD.slice(0, 260))
     t(`${label}: where the readings stand`, /Where things stand/.test(macD) && /3\.7%/.test(macD) && /28\.44/.test(macD), macD.slice(0, 700))
+    // "the before is since when?": each reading dated, the previous release named, and 1M–1Y back.
+    t(`${label}: each reading says when it is from, and 1M to 1Y before`, macD.includes('Previous release') && macD.includes('1M before') && macD.includes('6M before') && macD.includes('1Y before') && macD.includes('count back from each reading'), macD.slice(0, 900))
     t(`${label}: a rising reading is marked, Fear & Greed carried`, /Extreme Fear/.test(macD), macD.slice(0, 900))
     t(`${label}: and what past report days did to these markets`, /on past report days/.test(macD) && /vs a normal day/.test(macD), macD.slice(0, 1200))
     await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Macro")`)
@@ -192,6 +194,34 @@ async function v2(p, root, label, logged) {
     await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Signals")`)
     await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Horizons")`)
     await p.waitForFunction((r) => document.querySelectorAll(r + ' .ol-pool .ol-rec-detail').length === 0, root, { timeout: 10000 })
+    // "cone section is not expanding": its verdicts had no label and the throw took the tab down.
+    const coneErrs = [], onErr = (e) => coneErrs.push(e.message)
+    p.on('pageerror', onErr)
+    await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Cone")`)
+    await p.waitForFunction((r) => document.querySelectorAll(r + ' .ol-pool .ol-rec-detail').length === 1, root, { timeout: 10000 }).catch(() => {})
+    const coneD = await p.$eval(`${root} .ol-pool .ol-rec-detail`, e => e.textContent.replace(/\s+/g, ' ')).catch(() => '')
+    t(`${label}: the pooled cone opens, every timeframe with its verdict`, coneD.includes('Inside 1σ') && /Calibrated|Too narrow|Too wide|Too few/.test(coneD) && !coneD.includes('could not be drawn'), coneD.slice(0, 300))
+    t(`${label}: and nothing threw`, coneErrs.length === 0, coneErrs)
+    await p.click(`${root} .ol-pool .ol-rec-tag:text-matches("Cone")`)
+    await p.waitForFunction((r) => document.querySelectorAll(r + ' .ol-pool .ol-rec-detail').length === 0, root, { timeout: 10000 })
+    p.off('pageerror', onErr)
+    // "add a button to expand/unexpand all sections at once"
+    await p.click(`${root} .ol-pool .ol-rec-all`)
+    await p.waitForFunction((r) => document.querySelectorAll(r + ' .ol-pool .ol-rec-detail').length === 5, root, { timeout: 10000 }).catch(() => {})
+    t(`${label}: Expand all opens every pooled row`, await p.$$eval(`${root} .ol-pool .ol-rec-detail`, els => els.length) === 5 && /Collapse all/.test(await p.$eval(`${root} .ol-pool .ol-rec-all`, e => e.textContent)))
+    await p.click(`${root} .ol-pool .ol-rec-all`)
+    await p.waitForFunction((r) => document.querySelectorAll(r + ' .ol-pool .ol-rec-detail').length === 0, root, { timeout: 10000 }).catch(() => {})
+    t(`${label}: and Collapse all folds them`, await p.$$eval(`${root} .ol-pool .ol-rec-detail`, els => els.length) === 0)
+    // "add also smaller timeframes like 1month, 3month, 6 month"
+    const rangeOf = () => p.$eval(`${root} .ol-pool-range`, e => e.textContent).catch(() => '')
+    const yr = await rangeOf()
+    await p.click(`${root} .ol-pool [data-ol-pool="30"]`)
+    await p.waitForFunction(([r, y]) => (document.querySelector(r + ' .ol-pool-range')?.textContent ?? y) !== y, [root, yr], { timeout: 10000 }).catch(() => {})
+    const q = await rangeOf()
+    const span = (txt) => { const m = txt.match(/: (.+) – (.+)$/); return m ? (Date.parse(m[2]) - Date.parse(m[1])) / 864e5 : null }
+    t(`${label}: 1M narrows the pooled record to one month`, span(q) != null && span(q) <= 31 && span(yr) > 45, [yr, q])
+    await p.click(`${root} .ol-pool [data-ol-pool="365"]`)
+    await p.waitForFunction(([r, y]) => document.querySelector(r + ' .ol-pool-range')?.textContent === y, [root, yr], { timeout: 10000 }).catch(() => {})
   }
   const whyTxt = await p.$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-why`, e => e.textContent.replace(/\s+/g, ' ')).catch(() => '')
   t(`${label}: why gives each candle signal its own record`, (whyTxt.match(/Past year: (right \d+% of \d+ calls · chance \d+% · avg [+-]\d+\.\d\d% per call|it made no calls)/g) ?? []).length === 3, whyTxt.slice(0, 600))

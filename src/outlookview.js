@@ -11,6 +11,7 @@
 import './outlook.css'
 import { ensureAnalysis, analysisFor, analysisRaw, analysisState, setAnalysisDeps, fmtPx, hydrateAnalysis } from './analysis.js'
 import { fmtMacro } from './macroview.js'
+import { MACRO_AGO, macroAgo } from './outlook.js'
 import { outlookFor, HORIZONS, RANGE_CANDLES, RANGE_LOOKBACK, WEIGHTS, weightsFor, candleIds, PAST_HORIZONS, TESTED_HORIZONS, pastSamples, pastRecord, signalRecords, learnedWeights, learnedScores, weightedScore, coneRecord, pooledRecord, pooledSignals, pooledBands, pooledHalves, pooledHorizons, pooledCone, pooledEventMoves, coneScale, bandTable, bandOfScore, halvesRecord, recentLike, weightsOverTime, moveDistribution } from './outlook.js'
 import { catLabel } from './simcat.js'
 import { leanOf, actionsFor, ideaFor, sortCards, ORACLE_SORTS } from './outlooksuggest.js'
@@ -152,6 +153,15 @@ export function renderOutlook(host, ctx, tick = false) {
       if (h) { horizon = h.dataset.olH; try { localStorage.setItem(LS_H, horizon) } catch {} ; paint(true); return }
       const c = e.target.closest('[data-ol-coin]')
       if (c) { last?.ctx.openCoin?.(c.dataset.olCoin); return }
+      const ra = e.target.closest('[data-ol-recall]')
+      if (ra) {
+        const id = ra.dataset.olRecall, keys = String(ra.dataset.keys ?? '').split(',').filter(Boolean)
+        const all = keys.every(k => recOpen.has(`${id}|${k}`))
+        for (const k of keys) all ? recOpen.delete(`${id}|${k}`) : recOpen.add(`${id}|${k}`)
+        paint(true); return
+      }
+      const pp = e.target.closest('[data-ol-pool]')
+      if (pp) { poolDays = Number(pp.dataset.olPool); try { localStorage.setItem(LS_POOL, String(poolDays)) } catch {} ; paint(true); return }
       const rc = e.target.closest('[data-ol-rec]')
       if (rc) { const k = rc.dataset.olRec; recOpen.has(k) ? recOpen.delete(k) : recOpen.add(k); paint(true); return }
       const w = e.target.closest('[data-ol-why]')
@@ -172,6 +182,10 @@ export function renderOutlook(host, ctx, tick = false) {
 // capped: each one never seen costs ~120 weight of the per-IP budget to load, then reloads every
 // 15 minutes — still one at a time.
 const LS_WATCH = 'hliq_oracle_watch', LS_SORT = 'hliq_oracle_sort'
+// The pooled section's period: "add also smaller timeframes like 1month, 3month, 6 month".
+const LS_POOL = 'hliq_oracle_pool_days'
+export const POOL_PERIODS = [[30, '1M'], [91, '3M'], [182, '6M'], [365, '1Y']]
+let poolDays = (() => { try { const v = Number(localStorage.getItem(LS_POOL)); return POOL_PERIODS.some(([d]) => d === v) ? v : 365 } catch { return 365 } })()
 export const ORACLE_WATCH_MAX = 12
 const watchList = () => { try { const v = JSON.parse(localStorage.getItem(LS_WATCH)); return Array.isArray(v) ? v.filter(c => typeof c === 'string') : [] } catch { return [] } }
 const saveWatch = (list) => { try { localStorage.setItem(LS_WATCH, JSON.stringify(list)) } catch {} }
@@ -255,7 +269,7 @@ function paint(force, fromRender = false) {
   const items = [...held, ...watched]
   // Repaint only when something on the card would change: a position, a load landing, the price
   // moving a twentieth of a percent, a toggle, the sort, the list watched.
-  const sig = [horizon, sortBy, watchList().join(','), recVer, ps == null ? 'unknown' : '', [...whyOpen].join(','), [...recOpen].join(','), [...cardOpen].join(','), ...items.map(i =>
+  const sig = [horizon, sortBy, poolDays, watchList().join(','), recVer, ps == null ? 'unknown' : '', [...whyOpen].join(','), [...recOpen].join(','), [...cardOpen].join(','), ...items.map(i =>
     `${i.coin}:${i.ps.map(p => `${keyOf(p)}:${p.szi}:${p.entryPx}:${p.liquidationPx}:${p.unrealizedPnl}`).join(',')}:${i.raw?.at ?? 0}:${i.state}:${i.price ? Math.round(Math.log(i.price) * 2000) : 0}`)].join('|')
   if (!force && sig === painted) return
   painted = sig
@@ -291,15 +305,28 @@ const CONE_V = {
   wide: ['Moves ran smaller than the cone: its chances read high', 'Los movimientos fueron menores que el cono: sus probabilidades se pasan'],
   thin: ['Too few days to tell', 'Muy pocos días para saber'],
 }
-const VSHORT = { better: ['Beat chance', 'Superó al azar'], worse: ['Worse', 'Peor'], chance: ['Chance', 'Azar'], thin: ['Too few', 'Muy pocos'], none: ['—', '—'] }
+const VSHORT = { better: ['Beat chance', 'Superó al azar'], worse: ['Worse', 'Peor'], chance: ['Chance', 'Azar'], thin: ['Too few', 'Muy pocos'], none: ['—', '—'],
+  // The cone's own verdicts (pooledCone). Missing, they threw and took the whole tab down.
+  calibrated: ['Calibrated', 'Calibrado'], narrow: ['Too narrow', 'Muy angosto'], wide: ['Too wide', 'Muy ancho'] }
 const BANDN = { sbear: ['Strongly bearish', 'Muy bajista'], bear: ['Bearish', 'Bajista'], neutral: ['Neutral', 'Neutral'], bull: ['Bullish', 'Alcista'], sbull: ['Strongly bullish', 'Muy alcista'] }
 // Shared by the per-market record and the pooled one. They were local to the record function
 // until the pooled section grew tables of its own; two copies of a table renderer is how two
 // sections stop looking alike.
 const tbl = (head, rows) => `<div class="ol-tbl-wrap" data-dragscroll><table class="ol-tbl"><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`
 const sub = (s) => `<div class="ol-rec-dh">${s}</div>`
-const vshortOf = (v, T) => `<span class="v ${v ?? 'none'}">${T(...VSHORT[v ?? 'none'])}</span>`
-const verdictEm = (v, T) => `<em class="v ${v}">${T(...VERDICT[v])}</em>`
+// A verdict with no label shows its own name rather than throwing: one table must never take the tab down.
+const vshortOf = (v, T) => `<span class="v ${esc(v ?? 'none')}">${T(...(VSHORT[v ?? 'none'] ?? [String(v), String(v)]))}</span>`
+const verdictEm = (v, T) => `<em class="v ${esc(v)}">${T(...(VERDICT[v] ?? [String(v), String(v)]))}</em>`
+/** A row's detail, or a note if drawing it failed — never an exception out of paint(). */
+function safeDetail(fn, T) {
+  try { return fn ? fn() : '' }
+  catch (e) { console.error('[oracle] a detail failed to draw', e); return `<div class="ol-rec-note">${T('This table could not be drawn.', 'No se pudo dibujar esta tabla.')}</div>` }
+}
+/** "Expand all" / "Collapse all" for one record: `id` is the coin (or __pool__), `keys` its rows. */
+function allBtn(id, keys, T) {
+  const all = keys.every(k => recOpen.has(`${id}|${k}`))
+  return `<button class="ol-rec-all" data-ol-recall="${esc(id)}" data-keys="${keys.join(',')}">${all ? T('Collapse all', 'Contraer todo') : T('Expand all', 'Expandir todo')}</button>`
+}
 const candleValues = (fs, h) => Object.fromEntries(fs.filter(f => candleIds(h).includes(f.id)).map(f => [f.id, f.v]))
 /** "Trend, momentum and range" — or at 4h, "trend, range, 3-day fade and Bollinger stretch". */
 const candleNames = (h, T) => {
@@ -476,10 +503,10 @@ function recordHtml(coin, raw, o, ctx, past) {
     return `<div class="ol-rec-row${open ? ' open' : ''}">
       <button class="ol-rec-tag" data-ol-rec="${k}" aria-expanded="${open}">${tag} <i>${open ? '▴' : '▾'}</i></button>
       <div class="ol-rec-sum" data-ol-rec="${k}">${body}${note ? `<div class="ol-rec-note">${note}</div>` : ''}</div>
-    </div>${open ? `<div class="ol-rec-detail">${(detail && detail()) || `<div class="ol-rec-note">${T('Nothing more to show yet.', 'Nada más que mostrar aún.')}</div>`}</div>` : ''}`
+    </div>${open ? `<div class="ol-rec-detail">${safeDetail(detail, T) || `<div class="ol-rec-note">${T('Nothing more to show yet.', 'Nada más que mostrar aún.')}</div>`}</div>` : ''}`
   }
   return `<div class="ol-rec">
-    <div class="ol-rec-h">${T(`Track record · ${hz}`, `Historial · ${hz}`)} <span>${T('tap a row for its detail', 'toca una fila para ver el detalle')}</span></div>
+    <div class="ol-rec-h">${T(`Track record · ${hz}`, `Historial · ${hz}`)} <span>${T('tap a row for its detail', 'toca una fila para ver el detalle')}</span>${allBtn(coin, ['past', 'learned', 'cone', 'hz', 'live'], T)}</div>
     ${row('past', T('Past year', 'Último año'), pastLine, T(`${candleNames(hours, T)} only: the signals with history. One check a day.`, `Solo ${candleNames(hours, T)}: las señales con historial. Una revisión al día.`), pastDetail)}
     ${row('learned', T('Learned', 'Aprendido'), learnedLine, '', learnedDetail)}
     ${row('cone', T('Cone', 'Cono'), coneLine, '', coneDetail)}
@@ -502,8 +529,19 @@ function pooledHtml(items, ctx) {
   const { T } = ctx
   const h = HORIZONS[horizon]
   const hz = HZ[h]
-  const byCoin = items.filter(i => i.raw).map(i => pastFor(i.coin, i.raw).samples)
-  if (byCoin.length < 2) return ''
+  const full = items.filter(i => i.raw).map(i => pastFor(i.coin, i.raw).samples)
+  if (full.length < 2) return ''
+  // The period: the last poolDays of each market's replay, counted back from the newest day any of
+  // them has. The pooled record uses fixed weights (no walk-forward), so a shorter window is the
+  // same question asked of fewer days, not a different model.
+  const endT = Math.max(...full.map(s => s.at(-1)?.t ?? 0))
+  const fromT = endT - poolDays * 864e5
+  const byCoin = full.map(s => s.filter(x => x.t >= fromT))
+  const ts = byCoin.flat().map(x => x.t)
+  const firstT = ts.length ? Math.min(...ts) : null
+  const dY = (t) => new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+  const range = firstT != null ? `${dY(firstT)} – ${dY(endT)}` : '—'
+  const perLab = POOL_PERIODS.find(([d]) => d === poolDays)?.[1] ?? '1Y'
   const r = pooledRecord(byCoin, h)
   const vshort = (v) => vshortOf(v, T)
   const isOpen = (key) => recOpen.has(`__pool__|${key}`)
@@ -521,7 +559,7 @@ function pooledHtml(items, ctx) {
       sub(T(`Every reading band, across your ${r.markets} markets`, `Cada banda de lectura, en tus ${r.markets} mercados`)) + tbl(
         [T('Reading', 'Lectura'), T('Days', 'Días'), T('Right', 'Acertó'), T('Chance', 'Azar'), T('Avg move after', 'Mov. medio después'), ''],
         bands.map(b => `<tr><td>${T(...BANDN[b.band])}</td><td>${b.n}</td><td>${b.n ? pct(b.rate) : '—'}</td><td>${b.n ? pct(b.chance) : '—'}</td><td>${b.n ? mv(b.avgAfter) : '—'}</td><td>${b.n ? vshort(b.verdict) : ''}</td></tr>`)),
-      halves ? sub(T('Did it hold across the year?', '¿Se sostuvo durante el año?')) + `<div class="ol-rec-pair">${halves.map((x, i) => `<span><b>${i ? T('Second half', 'Segunda mitad') : T('First half', 'Primera mitad')}</b> ${x?.n ? `${pct(x.rate)} ${T('of', 'de')} ${x.n} · ${T('chance', 'azar')} ${pct(x.chance)} ${vshort(x.verdict)}` : '—'}</span>`).join('')}</div>` : '',
+      halves ? sub(T(`Did it hold across the period? (${perLab}, first half vs second)`, `¿Se sostuvo en el periodo? (${perLab}, primera mitad vs segunda)`)) + `<div class="ol-rec-pair">${halves.map((x, i) => `<span><b>${i ? T('Second half', 'Segunda mitad') : T('First half', 'Primera mitad')}</b> ${x?.n ? `${pct(x.rate)} ${T('of', 'de')} ${x.n} · ${T('chance', 'azar')} ${pct(x.chance)} ${vshort(x.verdict)}` : '—'}</span>`).join('')}</div>` : '',
       `<div class="ol-rec-note">${T('Each market is halved at its own midpoint, and chance is each market\u2019s own base rate weighted by the calls it made there \u2014 pooling the raw days would let one market\u2019s year stand in for every other\u2019s.', 'Cada mercado se divide por su propia mitad, y el azar es la tasa base de cada mercado ponderada por sus lecturas \u2014 juntar los días sin más dejaría que el año de un mercado hablara por todos.')}</div>`,
     ].join('')
   }
@@ -555,7 +593,7 @@ function pooledHtml(items, ctx) {
     return `<div class="ol-rec-row${open ? ' open' : ''}">
       <button class="ol-rec-tag" data-ol-rec="${k}" aria-expanded="${open}">${tag} <i>${open ? '▴' : '▾'}</i></button>
       <div class="ol-rec-sum" data-ol-rec="${k}">${body}</div>
-    </div>${open ? `<div class="ol-rec-detail">${detail() || `<div class="ol-rec-note">${T('Nothing more to show yet.', 'Nada más que mostrar aún.')}</div>`}</div>` : ''}`
+    </div>${open ? `<div class="ol-rec-detail">${safeDetail(detail, T) || `<div class="ol-rec-note">${T('Nothing more to show yet.', 'Nada más que mostrar aún.')}</div>`}</div>` : ''}`
   }
 
   const sig = pooledSignals(byCoin, h)
@@ -588,19 +626,28 @@ function pooledHtml(items, ctx) {
   const macroDetail = () => {
     const stand = ['cpi', 'unrate', 'fed', 'y10', 'vix'].map(k => (mac?.items ?? []).find(i => i.key === k)).filter(Boolean)
     const fng = mac?.fng
+    // "the before is since when?": Before was the previous release — last month for CPI and jobs,
+    // the previous day for yields and the VIX, the last decision for the Fed. Each now says its
+    // date, and 1M/3M/6M/1Y are read from the series' own history, counted back from its latest.
+    const dS = (t) => t == null ? '' : new Date(t).toLocaleDateString(undefined, { year: '2-digit', month: 'short', day: 'numeric' })
+    const tOf = (d) => d == null ? null : typeof d === 'number' ? d : Date.parse(d)
+    const fngPts = (fng?.days ?? []).map(([day, v]) => [day * 864e5, v])
+    const agoCells = (fmt, pts, lastT) => MACRO_AGO.map(([days]) => { const v = macroAgo(pts, lastT, days); return `<td>${v == null ? '—' : fmt(v)}</td>` }).join('')
     return [
       upcoming.length ? sub(T('Coming up', 'Próximos')) + tbl(
         [T('Report', 'Informe'), T('When', 'Cuándo'), T('Date', 'Fecha')],
         upcoming.slice(0, 8).map(e => `<tr class="${inDays(e.t) <= 1 ? 'cur' : ''}"><td>${esc(evName(e.kind))}</td><td>${whenWord(e.t)}</td><td>${new Date(e.t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td></tr>`)) : '',
       stand.length ? sub(T('Where things stand', 'Cómo está el panorama')) + tbl(
-        [T('Reading', 'Indicador'), T('Now', 'Ahora'), T('Before', 'Antes'), ''],
+        [T('Reading', 'Indicador'), T('Latest', 'Último'), T('Previous release', 'Publicación anterior'), ...MACRO_AGO.map(([, l]) => T(`${l} before`, `${l} antes`)), ''],
         stand.map(i => { const up = i.prev != null && i.value != null && i.value > i.prev, dn = i.prev != null && i.value != null && i.value < i.prev
-          return `<tr><td>${esc(itemName(i.key))}</td><td>${fmtMacro(i.fmt, i.value)}</td><td>${i.prev == null ? '—' : fmtMacro(i.fmt, i.prev)}</td><td class="${up ? 'neg' : dn ? 'pos' : ''}">${up ? '▲' : dn ? '▼' : '—'}</td></tr>` })
-        .concat(fng?.value != null ? [`<tr><td>${T('Fear &amp; Greed', 'Miedo y codicia')}</td><td>${fng.value}</td><td>${fng.d30 ?? '—'}</td><td>${esc(fng.label ?? '')}</td></tr>`] : [])) : '',
+          const lastT = i.pts?.at(-1)?.[0] ?? tOf(i.date)
+          return `<tr><td>${esc(itemName(i.key))}</td><td>${fmtMacro(i.fmt, i.value)} <i class="ol-when">${dS(tOf(i.date))}</i></td><td>${i.prev == null ? '—' : `${fmtMacro(i.fmt, i.prev)} <i class="ol-when">${dS(tOf(i.prevDate))}</i>`}</td>${agoCells(v => fmtMacro(i.fmt, v), i.pts ?? [], lastT)}<td class="${up ? 'neg' : dn ? 'pos' : ''}">${up ? '▲' : dn ? '▼' : '—'}</td></tr>` })
+        .concat(fng?.value != null ? [`<tr><td>${T('Fear &amp; Greed', 'Miedo y codicia')}</td><td>${fng.value} <i class="ol-when">${dS(fng.date)}</i></td><td>${fng.d1 ?? '—'} <i class="ol-when">${T('day before', 'día antes')}</i></td>${agoCells(v => String(v), fngPts, fngPts.at(-1)?.[0] ?? fng.date)}<td>${esc(fng.label ?? '')}</td></tr>`] : []))
+        + `<div class="ol-rec-note">${T('Previous release: the one before the latest — last month for inflation and jobs, the day before for yields and the VIX, the last decision for the Fed. The 1M–1Y columns count back from each reading\u2019s latest date.', 'Publicación anterior: la previa a la última — el mes anterior para inflación y empleo, el día anterior para rendimientos y VIX, la última decisión para la Fed. Las columnas 1M–1A cuentan hacia atrás desde la fecha más reciente de cada indicador.')}</div>` : '',
       evMoves ? sub(T(`Your ${evMoves.markets} markets on past report days`, `Tus ${evMoves.markets} mercados en días de informe`)) + tbl(
         [T('Report', 'Informe'), T('Days', 'Días'), T('Moved', 'Se movió'), T('vs a normal day', 'vs un día normal'), T('Up', 'Subió')],
         evMoves.kinds.map(k => `<tr><td>${esc(evName(k.kind))}</td><td>${k.n}</td><td>${k.avgAbs.toFixed(2)}%</td><td class="${k.vsNormal > 0.1 ? 'warn' : ''}">${k.vsNormal >= 0 ? '+' : ''}${(k.vsNormal * 100).toFixed(0)}%</td><td>${k.up}/${k.n}</td></tr>`))
-        + `<div class="ol-rec-note">${T(`Size of the move only, not its direction: an ordinary day moves these markets ${evMoves.normal.toFixed(2)}%, over ${evMoves.days} graded days. Measured over the 24 hours containing each release, whatever window is selected above.`, `Solo el tamaño del movimiento, no su dirección: un día normal mueve estos mercados ${evMoves.normal.toFixed(2)}%, sobre ${evMoves.days} días. Medido en las 24 horas que contienen cada publicación.`)}</div>` : '',
+        + `<div class="ol-rec-note">${T(`Size of the move only, not its direction: an ordinary day moves these markets ${evMoves.normal.toFixed(2)}%, over ${evMoves.days} graded days. Measured over the 24 hours containing each release, whatever window is selected above, on report days from ${range} (the period above).`, `Solo el tamaño del movimiento, no su dirección: un día normal mueve estos mercados ${evMoves.normal.toFixed(2)}%, sobre ${evMoves.days} días. Medido en las 24 horas que contienen cada publicación.`)}</div>` : '',
       !mac ? `<div class="ol-rec-note">${T('Macro data has not loaded yet.', 'Los datos macro aún no han cargado.')}</div>` : '',
     ].join('')
   }
@@ -616,7 +663,9 @@ function pooledHtml(items, ctx) {
     : T('No cone history yet.', 'Sin historial del cono aún.')
 
   return `<div class="ol-pool">
-    <div class="ol-rec-h">${T(`Your ${r.markets} markets pooled · past year · ${hz}`, `Tus ${r.markets} mercados juntos · último año · ${hz}`)} <span>${T('tap a row for its detail', 'toca una fila para ver el detalle')}</span></div>
+    <div class="ol-rec-h">${T(`Your ${r.markets} markets pooled · ${hz}`, `Tus ${r.markets} mercados juntos · ${hz}`)} <span>${T('tap a row for its detail', 'toca una fila para ver el detalle')}</span>${allBtn('__pool__', ['calls', 'signals', 'hz', 'cone', 'macro'], T)}</div>
+    <div class="ol-pool-per"><div class="ol-sorts" data-dragscroll>${POOL_PERIODS.map(([d, l]) => `<button data-ol-pool="${d}" class="${d === poolDays ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <span class="ol-pool-range">${T(`Calls, Signals, Horizons and Cone: ${range}`, `Lecturas, Señales, Horizontes y Cono: ${range}`)}</span></div>
     ${row('calls', T('Calls', 'Lecturas'), parts.length ? `<div class="ol-pool-rows">${parts.join('')}</div>` : T('No directional calls yet.', 'Sin lecturas direccionales aún.'), callsDetail)}
     ${row('signals', T('Signals', 'Señales'), sigLine, signalsDetail)}
     ${row('hz', T('Horizons', 'Horizontes'), hzLine, hzDetail)}
