@@ -94,7 +94,7 @@ try {
   await runner.tick()
   const s1 = JSON.parse(fs.readFileSync(runner.summaryFile, 'utf8'))
   const by = Object.fromEntries(s1.agents.map(a => [a.id, a]))
-  t('summary: all five agents, each starting at $1,000', s1.agents.length === 5 && s1.agents.every(a => a.start === 1000))
+  t('summary: all six agents (five house + Rekt-01), each starting at $1,000', s1.agents.length === 6 && s1.agents.every(a => a.start === 1000))
   t('hodl bought BTC at 1×', by.hodl.positions.length === 1 && by.hodl.positions[0].coin === 'BTC' && by.hodl.positions[0].lev === 1, by.hodl.positions)
   t('oracle opened C0 long with a stop', by.oracle.positions.some(p => p.coin === 'C0' && p.szi > 0) && by.oracle.stops.some(s => s.coin === 'C0'), by.oracle)
   t('momentum opened four, every one with a stop', by.momentum.positions.length === 4 && by.momentum.stops.length === 4, by.momentum.positions)

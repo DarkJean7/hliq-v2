@@ -9,6 +9,7 @@
 // Run:  npm run test:browser        (expects a dev server; pass --port=NNNN)
 import { chromium, devices } from 'playwright'
 import { AGENTS } from '../src/agents.js'
+import { rektAgent, DEFAULT_CONFIG, STOPS, HORIZONS } from '../src/rekt.js'
 
 const port = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
 const URL  = `http://localhost:${port}/app`
@@ -32,10 +33,10 @@ const waitFor = async (p, label, fn, arg, ms = 25000) => {
 
 // Returns chosen so the board order differs from the AGENTS order: momentum first, hodl third.
 const NOW = Date.now(), H = 3600e3
-const RET = { oracle: 1.5, momentum: 6.2, dip: -3.1, funding: 0.4, hodl: 2.0 }
+const RET = { oracle: 1.5, momentum: 6.2, dip: -3.1, funding: 0.4, hodl: 2.0, rekt01: 3.0 }
 const SUMMARY = {
   at: NOW - 60e3, started: NOW - 48 * H,
-  agents: AGENTS.map(a => {
+  agents: [...AGENTS, rektAgent].map(a => {
     const end = 1000 * (1 + RET[a.id] / 100)
     const curve = Array.from({ length: 49 }, (_, i) => [NOW - (48 - i) * H, 1000 + (end - 1000) * i / 48])
     return {
@@ -44,6 +45,12 @@ const SUMMARY = {
       positions: a.id === 'momentum' ? [{ coin: 'SOL', szi: 3.2, entryPx: 150, mark: 155, upnl: 16, lev: 2, value: 496 }, { coin: 'DOGE', szi: -2000, entryPx: 0.2, mark: 0.19, upnl: 20, lev: 2, value: 380 }] : [],
       stops: a.id === 'momentum' ? [{ coin: 'SOL', px: 132 }] : [],
       last: NOW - 2 * H, next: NOW + 22 * H, curve,
+      ...(a.personal ? { personal: true, hidden: false, config: DEFAULT_CONFIG, learn: {
+        since: NOW - 48 * H, weights: { oracle: 0.4, momentum: 0.3, reversion: 0.1, funding: 0.2 }, trades: 3, pending: 420,
+        hist: Array.from({ length: 9 }, (_, i) => [NOW - (8 - i) * 6 * H, { oracle: 0.25 + i * 0.02, momentum: 0.25 + i * 0.006, reversion: 0.25 - i * 0.02, funding: 0.25 - i * 0.006 }]),
+        stats: { oracle: { n: 900, hit: 0.58, avg: 0.04 }, momentum: { n: 1200, hit: 0.54, avg: 0.02 }, reversion: { n: 1200, hit: 0.44, avg: -0.03 }, funding: { n: 800, hit: 0.51, avg: 0.01 } },
+        stops: STOPS.map(v => ({ v, n: v === 8 ? 2 : v === 5 ? 1 : 0, avg: v === 8 ? 1.2 : v === 5 ? -0.8 : null })), holds: HORIZONS.days.holds.map(v => ({ v, n: v === 96 ? 3 : 0, avg: v === 96 ? 0.5 : null })),
+        pausedBy: null, peak: 1031 } } : {}),
       journal: a.id === 'momentum' ? [
         { t: NOW - 2 * H, kind: 'open', coin: 'SOL', side: 'long', px: 150, why: '30d +24.0%: among the strongest' },
         { t: NOW - 3 * H, kind: 'stop', coin: 'ETH', side: 'long', px: 2800, pnl: -42.5, why: 'stop hit' },
@@ -94,20 +101,20 @@ for (const [label, opts] of [['phone', { ...devices['iPhone 14 Pro'] }], ['deskt
   t(`${label}: More has an Agent Arena entry`, await p.evaluate(() => !!document.querySelector('#mobMoreDrawer button[onclick="window.__openAgents()"]')), true)
   if (label === 'desktop') t('desktop: and the sidebar has one, visible', await p.evaluate(() => { const e = document.querySelector('.sidebar-item[onclick="window.__openAgents()"]'); return !!e && e.offsetParent !== null }), true)
   await p.evaluate(() => window.__openAgents())
-  await waitFor(p, 'the board', () => document.querySelectorAll('#agentArenaOverlay .ag-card').length === 5)
+  await waitFor(p, 'the board', () => document.querySelectorAll('#agentArenaOverlay .ag-card').length === 6)
   const b = await board(p)
-  t(`${label}: ranked by return, best first`, b.map(x => x.id), ['momentum', 'hodl', 'oracle', 'funding', 'dip'])
-  t(`${label}: returns signed`, b.map(x => x.ret), ['+6.20%', '+2.00%', '+1.50%', '+0.40%', '−3.10%'])
+  t(`${label}: ranked by return, best first`, b.map(x => x.id), ['momentum', 'rekt01', 'hodl', 'oracle', 'funding', 'dip'])
+  t(`${label}: returns signed`, b.map(x => x.ret), ['+6.20%', '+3.00%', '+2.00%', '+1.50%', '+0.40%', '−3.10%'])
   t(`${label}: HODL BTC is marked as the benchmark`, await p.evaluate(() => /benchmark/.test(document.querySelector('.ag-card[data-ag="hodl"] .ag-name')?.textContent ?? '')), true)
   t(`${label}: every other agent says how far it is from HODL`, await p.evaluate(() => document.querySelector('.ag-card[data-ag="momentum"] .ag-stats')?.textContent.includes('+4.20%')), true)
   t(`${label}: a dot keeps the agent's colour, whatever its rank`, await p.evaluate((c) => getComputedStyle(document.querySelector('.ag-card[data-ag="momentum"] .ag-name i')).backgroundColor, AGENTS.find(a => a.id === 'momentum').color), 'rgb(167, 139, 250)')
-  t(`${label}: the chart has a line per agent and a legend`, await p.evaluate(() => [document.querySelectorAll('#agentArenaOverlay .ag-chart svg path').length, document.querySelectorAll('#agentArenaOverlay .ag-leg').length]), [5, 5])
+  t(`${label}: the chart has a line per agent and a legend`, await p.evaluate(() => [document.querySelectorAll('#agentArenaOverlay .ag-chart svg path').length, document.querySelectorAll('#agentArenaOverlay .ag-leg').length]), [6, 6])
 
   // Hover the middle of the chart: the readout lists all five, best first.
   const box = await p.locator('#agentArenaOverlay .ag-chart svg').boundingBox()
   await p.mouse.move(box.x + box.width * 0.75, box.y + box.height / 2)
   await waitFor(p, 'the readout', () => getComputedStyle(document.querySelector('.ag-tip')).display !== 'none', null, 4000)
-  t(`${label}: hovering the chart reads every agent at that time`, await p.evaluate(() => document.querySelectorAll('.ag-tip > div i').length), 5)
+  t(`${label}: hovering the chart reads every agent at that time`, await p.evaluate(() => document.querySelectorAll('.ag-tip > div i').length), 6)
 
   await p.click('.ag-card[data-ag="momentum"] [data-ag-open]')
   await waitFor(p, 'the card opens', () => !!document.querySelector('.ag-card[data-ag="momentum"] .ag-body'))
@@ -121,8 +128,44 @@ for (const [label, opts] of [['phone', { ...devices['iPhone 14 Pro'] }], ['deskt
   t(`${label}: a card opens to its rules, positions (with stops) and journal`, body, { rules: true, pos: 2, stop: '132.000', jr: 2, stopped: true, loss: '−$42.50', why: true, drag: true })
   t(`${label}: it fits, no sideways page scroll`, await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.querySelector('.ag-scroll').scrollWidth <= document.querySelector('.ag-scroll').clientWidth), true)
   if (SHOT) await p.screenshot({ path: `${SHOT}/agents-${label}.png` })
+
+  // Rekt-01: "my own personal agent that learns itself"; settings "only changeable by users with dev mode on".
+  await p.click('.ag-card[data-ag="rekt01"] [data-ag-open]')
+  await waitFor(p, 'Rekt-01 opens', () => !!document.querySelector('.ag-card[data-ag="rekt01"] .rk'))
+  const rk = await p.evaluate(() => {
+    const c = document.querySelector('.ag-card[data-ag="rekt01"]')
+    return { yours: !!c.querySelector('.ag-yours'), bars: [...c.querySelectorAll('.rk-wn')].map(e => e.textContent.trim()), top: c.querySelector('.rk-wv')?.textContent,
+      chart: !!c.querySelector('.rk-wchart path'), bestStop: c.querySelector('.rk-arms th.rk-best')?.textContent, form: !!c.querySelector('[data-rk-form]'), ro: !!c.querySelector('.rk-set.ro'), hint: /dev mode/.test(c.textContent) }
+  })
+  t(`${label}: Rekt-01 shows what it has learned, most trusted signal first`, [rk.yours, rk.bars[0], rk.top, rk.chart, rk.bestStop], [true, 'Oracle call', '40%', true, '8%'])
+  t(`${label}: without dev mode its settings are read-only`, [rk.form, rk.ro, rk.hint], [false, true, true])
+  if (SHOT) await p.locator('.ag-card[data-ag="rekt01"]').screenshot({ path: `${SHOT}/rekt-${label}.png` })
   await p.click('[data-ag-close]')
   t(`${label}: × closes it`, await p.evaluate(() => getComputedStyle(document.getElementById('agentArenaOverlay')).display), 'none')
+
+  // Dev mode: the form, and a save that carries the PIN and the values typed.
+  await p.evaluate(() => { localStorage.setItem('hliq_dev', '1'); localStorage.setItem('hliq_lb_pin', 'test-pin') })
+  let saved = null
+  await ctx.route('**/agents-config', async (r) => { saved = { pin: r.request().headers()['x-lb-pin'], body: JSON.parse(r.request().postData() || '{}') }; await r.fulfill({ status: 200, contentType: 'application/json', json: { ok: true, config: { ...DEFAULT_CONFIG, ...saved.body.config } } }) })
+  let pinSent = null
+  await ctx.route('**/agents-data', r => { pinSent = r.request().headers()['x-lb-pin'] ?? null; return r.fulfill({ status: 200, contentType: 'application/json', json: SUMMARY }) })
+  await p.evaluate(() => window.__openAgents())
+  await waitFor(p, 'the form', () => !!document.querySelector('.ag-card[data-ag="rekt01"] [data-rk-form]'))
+  t(`${label}: dev mode asks with its PIN and gets the form`, [pinSent, await p.evaluate(() => !!document.querySelector('[data-rk-form] [name=maxLev]'))], ['test-pin', true])
+  await p.fill('[data-rk-form] [name=maxLev]', '5')
+  await p.selectOption('[data-rk-form] [name=mode]', 'allow')
+  await p.fill('[data-rk-form] [name=list]', 'btc, eth')
+  await p.selectOption('[data-rk-form] [name=style]', 'cautious')
+  await p.uncheck('[data-rk-form] [name=arena]')
+  await p.click('[data-rk-save]')
+  await waitFor(p, 'the save', () => /Saved/.test(document.querySelector('.rk-status')?.textContent ?? ''), null, 8000)
+  t(`${label}: Save sends the PIN and the values`, saved && [saved.pin, saved.body.config.maxLev, saved.body.config.markets.mode, saved.body.config.markets.list, saved.body.config.style, saved.body.config.arena], ['test-pin', 5, 'allow', ['btc', 'eth'], 'cautious', false])
+  t(`${label}: and says it was saved, flagged out of the arena`, await p.evaluate(() => [/Saved/.test(document.querySelector('.rk-status').textContent), /not in the arena/.test(document.querySelector('.ag-card[data-ag="rekt01"] .ag-name').textContent)]), [true, true])
+  t(`${label}: the settings form fits too`, await p.evaluate(() => document.querySelector('.ag-scroll').scrollWidth <= document.querySelector('.ag-scroll').clientWidth), true)
+  if (SHOT) await p.locator('.ag-card[data-ag="rekt01"] .rk-form').screenshot({ path: `${SHOT}/rekt-form-${label}.png` })
+  await p.click('[data-ag-close]')
+  await ctx.unroute('**/agents-data')
+  await ctx.route('**/agents-data', r => r.fulfill({ status: answer.status, contentType: 'application/json', json: answer.json }))
 
   // Before the server's first run the answer is unknown, and the screen says so — not "no agents".
   answer = { status: 503, json: { agents: null } }

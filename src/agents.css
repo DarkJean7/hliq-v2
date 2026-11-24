@@ -50,3 +50,31 @@
 .ag-j-skip td, .ag-j-error td { color: var(--muted); }
 #agentArenaOverlay .pos { color: var(--pos); }
 #agentArenaOverlay .neg { color: var(--neg); }
+
+/* Rekt-01 (src/rektview.js): what it has learned, and its settings. */
+.ag-name em.ag-yours { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.rk { margin: 4px 0 8px; }
+.rk-paused { font-size: 12px; background: color-mix(in srgb, var(--warn, #f5a524) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warn, #f5a524) 40%, transparent); border-radius: 8px; padding: 7px 9px; margin: 0 0 8px; }
+.rk-ws-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.rk-w { display: grid; grid-template-columns: minmax(96px, 130px) 1fr 40px; grid-template-areas: "n b v" "s s s"; align-items: center; gap: 2px 8px; font-size: 12px; }
+.rk-wn { grid-area: n; display: inline-flex; align-items: center; gap: 6px; }
+.rk-wn i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.rk-bar { grid-area: b; height: 8px; background: var(--panel-3, var(--bg3)); border-radius: 4px; overflow: hidden; }
+.rk-bar b { display: block; height: 100%; border-radius: 4px; }
+.rk-wv { grid-area: v; text-align: right; font-family: var(--font-mono, monospace); font-weight: 700; }
+.rk-ws { grid-area: s; font-size: 10.5px; color: var(--muted); padding-left: 15px; }
+.rk-wchart { display: block; max-width: 100%; margin: 4px 0 2px; }
+.rk-arms th.rk-best { color: var(--accent); }
+.rk-dev { font-size: 10px; font-weight: 700; color: var(--accent-fg, #000); background: var(--accent); border-radius: 4px; padding: 1px 5px; vertical-align: middle; }
+.rk-set.ro { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 14px; font-size: 12px; margin-bottom: 6px; }
+.rk-set.ro small { display: block; font-size: 10px; color: var(--muted); }
+.rk-form fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px 10px; margin: 0 0 8px; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 12px; min-width: 0; }
+.rk-form legend { font-size: 11px; font-weight: 700; color: var(--muted); padding: 0 4px; }
+.rk-form label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; min-width: 0; }
+.rk-form label em { font-style: normal; font-size: 10px; color: var(--muted); }
+.rk-form label.rk-wide { grid-column: 1 / -1; }
+.rk-form label.rk-check { flex-direction: row; align-items: center; gap: 7px; grid-column: 1 / -1; }
+.rk-form input[type=number], .rk-form input[type=text], .rk-form select { background: var(--bg1, var(--bg)); color: var(--fg, var(--text)); border: 1px solid var(--border); border-radius: 6px; padding: 7px 8px; font: inherit; font-size: 14px; width: 100%; box-sizing: border-box; }
+.rk-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rk-save { background: var(--accent); color: var(--accent-fg, #000); border: none; border-radius: 8px; padding: 9px 14px; font-weight: 700; cursor: pointer; font: inherit; font-weight: 700; }
+.rk-status { font-size: 11.5px; color: var(--muted); }

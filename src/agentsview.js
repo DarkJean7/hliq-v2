@@ -8,6 +8,7 @@
  */
 import './agents.css'
 import { valueAt } from './agents.js'
+import { rektHtml, readForm, isDevMode, devPin } from './rektview.js'
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const usd = (x, d = 2) => (x < 0 ? '−$' : '$') + Math.abs(x).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
@@ -25,6 +26,7 @@ function ago(ms, T) {
 }
 
 let data = null, err = null, timer = null, open = new Set(), T = (en) => en
+let rkDraft = null, rkStatus = ''   // Rekt-01's settings being edited, and what the last save said
 
 /** Return % series per agent, for the chart: [[t, pct]]. */
 function pctCurve(a) { return (a.curve ?? []).map(([t, v]) => [t, (v / a.start - 1) * 100]) }
@@ -75,7 +77,7 @@ function cardHtml(a, hodl, rank) {
   return `<div class="ag-card${isOpen ? ' open' : ''}${a.baseline ? ' base' : ''}" data-ag="${esc(a.id)}">
     <button class="ag-head" data-ag-open="${esc(a.id)}" aria-expanded="${isOpen}">
       <span class="ag-rank">${rank}</span>
-      <span class="ag-name"><i style="background:${a.color}"></i>${esc(a.name)}${a.baseline ? `<em>${T('benchmark', 'referencia')}</em>` : ''}</span>
+      <span class="ag-name"><i style="background:${a.color}"></i>${esc(a.name)}${a.baseline ? `<em>${T('benchmark', 'referencia')}</em>` : ''}${a.personal ? `<em class="ag-yours">${T('yours · learning', 'tuyo · aprendiendo')}</em>` : ''}${a.hidden ? `<em>${T('not in the arena', 'fuera de la arena')}</em>` : ''}</span>
       <span class="ag-ret ${cls(a.ret)}">${sgnPct(a.ret)}</span>
       <span class="ag-chev">${isOpen ? '▴' : '▾'}</span>
     </button>
@@ -89,6 +91,7 @@ function cardHtml(a, hodl, rank) {
     ${isOpen ? `<div class="ag-body">
       <p class="ag-blurb">${esc(T(a.blurb?.[0] ?? '', a.blurb?.[1] ?? a.blurb?.[0] ?? ''))}</p>
       <p class="ag-when">${a.last ? T(`Last look ${ago(now - a.last, T)} ago`, `Última revisión hace ${ago(now - a.last, T)}`) : ''}${a.next ? ` · ${T('next', 'próxima')} ${a.next <= now ? T('within a minute', 'en un minuto') : T(`in ${ago(a.next - now, T)}`, `en ${ago(a.next - now, T)}`)}` : ''} · ${a.lev}× · ${T(`up to ${a.max} positions`, `hasta ${a.max} posiciones`)}</p>
+      ${a.personal ? rektHtml(a, { T, dev: isDevMode(), draft: rkDraft, status: rkStatus, width: chartWidth() - 24 }) : ''}
       <h4>${T('Positions', 'Posiciones')}</h4>
       ${pos ? `<div class="ag-tbl-wrap" data-dragscroll><table class="ag-tbl"><thead><tr><th>${T('Market', 'Mercado')}</th><th>${T('Side', 'Lado')}</th><th>${T('Size', 'Tamaño')}</th><th>${T('Entry', 'Entrada')}</th><th>${T('Mark', 'Marca')}</th><th>PnL</th><th>Stop</th></tr></thead><tbody>${pos}</tbody></table></div>` : `<p class="ag-none">${T('Flat — nothing qualifies right now.', 'Sin posiciones — nada califica ahora mismo.')}</p>`}
       <h4>${T('Journal', 'Diario')}</h4>
@@ -123,6 +126,8 @@ function paint() {
   const ov = document.getElementById('agentArenaOverlay')
   if (!ov) return
   const body = ov.querySelector('.ag-scroll')
+  // Not while someone is typing in Rekt-01's settings: a repaint would take the field from under them.
+  if (document.activeElement?.closest?.('[data-rk-form]') && body.contains(document.activeElement)) return
   const top = body.scrollTop
   body.innerHTML = bodyHtml()
   body.scrollTop = top
@@ -130,7 +135,8 @@ function paint() {
 
 async function load() {
   try {
-    const r = await fetch('/agents-data', { cache: 'no-store' })
+    // Dev mode also sees Rekt-01 when it is out of the arena; the server checks the PIN.
+    const r = await fetch('/agents-data', { cache: 'no-store', headers: isDevMode() ? { 'x-lb-pin': devPin() } : {} })
     const j = await r.json().catch(() => null)
     if (!j) throw new Error('HTTP ' + r.status)
     data = j; err = null
@@ -173,7 +179,9 @@ export function openAgentArena({ t } = {}) {
       if (e.target.closest('[data-ag-close]')) return closeAgentArena()
       const b = e.target.closest('[data-ag-open]')
       if (b) { const id = b.dataset.agOpen; open.has(id) ? open.delete(id) : open.add(id); paint() }
+      if (e.target.closest('[data-rk-save]')) saveRekt(e.target.closest('[data-rk-form]'))
     })
+    ov.addEventListener('input', (e) => { const f = e.target.closest('[data-rk-form]'); if (f) { rkDraft = readForm(f); rkStatus = T('Not saved yet', 'Aún sin guardar'); const s = f.querySelector('.rk-status'); if (s) s.textContent = rkStatus } })
     ov.addEventListener('pointermove', onMove)
     let rz = null
     addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (ov.style.display !== 'none') paint() }, 150) })
@@ -184,6 +192,23 @@ export function openAgentArena({ t } = {}) {
   load()
   clearInterval(timer)
   timer = setInterval(() => { if (document.visibilityState === 'visible') load() }, 60_000)
+}
+
+async function saveRekt(form) {
+  if (!form || !isDevMode()) return
+  const config = readForm(form)
+  rkStatus = T('Saving…', 'Guardando…'); form.querySelector('.rk-status').textContent = rkStatus
+  try {
+    const r = await fetch('/agents-config', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-lb-pin': devPin() }, body: JSON.stringify({ config }) })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status)
+    rkDraft = null
+    rkStatus = T('Saved — it uses them from its next run (within the hour).', 'Guardado — los usa desde su próxima revisión (en menos de una hora).')
+    const a = data?.agents?.find(x => x.personal)
+    if (a) { a.config = j.config; a.hidden = !j.config.arena }
+  } catch (e) { rkStatus = T('Not saved: ', 'No guardado: ') + e.message }
+  document.activeElement?.blur?.()
+  paint()
 }
 
 export function closeAgentArena() {

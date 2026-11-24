@@ -1322,7 +1322,30 @@ createServer((req, res) => {
     try { body = readFileSync(agentRunner.summaryFile, 'utf8') } catch {}
     // Not yet: the arena's first run is a minute after a start. Unknown, not empty.
     if (!body) { res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end('{"agents":null}'); return }
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=30' }).end(body)
+    // Rekt-01 out of the arena (its "Enter the arena" setting off) is shown to dev mode only.
+    if (!body.includes('"hidden":true')) { res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=30' }).end(body); return }
+    ;(async () => {
+      const dev = req.headers['x-lb-pin'] ? await devPinOk(req.headers['x-lb-pin']) === true : false
+      let out = body
+      if (!dev) { try { const j = JSON.parse(body); j.agents = j.agents.filter(a => !a.hidden); out = JSON.stringify(j) } catch {} }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'private, no-store' }).end(out)
+    })()
+    return
+  }
+
+  // Rekt-01's settings: "its settings should be only changeable by users with dev mode on".
+  if (url === '/agents-config') {
+    if (req.method !== 'POST') { res.writeHead(405).end(); return }
+    const send = (code, obj) => res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(obj))
+    ;(async () => {
+      const ok = await devPinOk(req.headers['x-lb-pin'])
+      if (ok === null) return send(503, { error: 'could not check the PIN right now' })
+      if (!ok) return send(403, { error: 'dev mode only' })
+      const b = await readJson(req)
+      if (!b?.config || typeof b.config !== 'object') return send(400, { error: 'bad request' })
+      try { return send(200, { ok: true, config: agentRunner.saveConfig(b.config) }) }
+      catch (e) { return send(500, { error: e.message }) }
+    })()
     return
   }
 

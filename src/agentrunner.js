@@ -23,6 +23,7 @@ import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { AGENTS, planOf, sizeFor, maxDrawdown, thin } from './agents.js'
 import { marketFor } from './paperhost.js'
+import { rektAgent, cleanConfig, initLearn } from './rekt.js'
 
 const HOUR = 3600e3, DAY = 24 * HOUR
 export const SUMMARY_MS = 5 * 60e3
@@ -40,9 +41,15 @@ const sideOf = (szi) => (szi > 0 ? 'long' : 'short')
  *   post(body): Hyperliquid /info; readings(): { coin: { score, sigma, t } } — the latest 24h call
  *   oracleDir: the logger's per-market candle files
  */
-export function createAgentRunner({ dir, paperHost, post, readings = () => ({}), oracleDir, now = () => Date.now(), log = console, agents = AGENTS }) {
+export const ALL_AGENTS = [...AGENTS, rektAgent]
+
+export function createAgentRunner({ dir, paperHost, post, readings = () => ({}), oracleDir, now = () => Date.now(), log = console, agents = ALL_AGENTS, rng = Math.random }) {
   mkdirSync(dir, { recursive: true })
   const SECRET = join(dir, 'secret'), STATE = join(dir, 'state.json'), SUMMARY = join(dir, 'summary.json'), LEASE = join(dir, 'lease')
+  // Rekt-01's settings (src/rekt.js), written by POST /agents-config in dev mode, read every run.
+  const CONFIG = join(dir, 'rekt-config.json')
+  const configOf = () => cleanConfig(readJson(CONFIG) ?? {})
+  function saveConfig(c) { const cfg = cleanConfig(c); writeJson(CONFIG, cfg); return cfg }
   let secret = null
   function secretOf() {
     if (secret) return secret
@@ -100,6 +107,7 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
       const f = P.paperFills().filter(x => x.coin === h.coin && x.time >= (h.openedAt ?? 0) && Number(x.closedPnl))
       const pnl = f.length ? Number(f[0].closedPnl) - Number(f[0].fee || 0) : null
       as.journal.push({ t, kind: 'stop', coin: h.coin, side: h.side, px: f.length ? Number(f[0].px) : null, pnl, why: 'stop hit' })
+      if (as.learn) a.onClose?.(as.learn, h.coin, pnl)
       as.cool[h.coin] = t + COOL_MS
     }
     as.held = heldNow
@@ -121,7 +129,8 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
     return paperHost.withStore(secretOf(), a.id, mk, (P) => {
       const held = reconcile(P, a, as)
       for (const [c, u] of Object.entries(as.cool)) if (u <= t) delete as.cool[c]
-      const wanted = a.decide({ ...ctxBase, now: t, held, cool: as.cool })
+      if (a.stateful) as.learn ??= initLearn(t)
+      const wanted = a.decide({ ...ctxBase, now: t, held, cool: as.cool, learn: as.learn, config: ctxBase.config, equity: P.paperEquity(), rng })
       if (wanted == null) { if (as.journal.at(-1)?.kind !== 'skip') as.journal.push({ t, kind: 'skip', why: 'data missing: nothing changed' }); return }
       const { close, open } = planOf(held, wanted)
       for (const h of close) {
@@ -133,6 +142,7 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
         const f = P.paperFills().slice(0, P.paperFills().length - before)
         const pnl = f.reduce((s, x) => s + Number(x.closedPnl || 0) - Number(x.fee || 0), 0)
         as.journal.push({ t, kind: 'close', coin: h.coin, side: h.side, px: r.px, pnl, why: wanted.find(w => w.coin === h.coin)?.why ?? 'no longer qualifies' })
+        if (as.learn) a.onClose?.(as.learn, h.coin, pnl)
         as.cool[h.coin] = t + COOL_MS
       }
       // Closed here, not stopped: the next reconcile must not read them as stop-outs.
@@ -144,9 +154,10 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
         const px = P.paperMark(w.coin)
         const asset = mk.assets?.[w.coin]
         if (!(px > 0) || !asset) { as.journal.push({ t, kind: 'error', coin: w.coin, why: 'no price' }); continue }
-        const lev = Math.min(a.lev, asset.maxLeverage ?? a.lev)
+        const lev = Math.min(w.lev ?? a.lev, asset.maxLeverage ?? a.lev)
         // 2% left over for the fee and the slippage: at 1× the whole equity is not enough margin.
-        const sz = sizeFor(equity * 0.98, lev, a.max, px, asset.szDecimals)
+        // An agent may size it itself (Rekt-01 sizes by the most its stop may lose).
+        const sz = w.notional != null ? sizeFor(w.notional, 1, 1, px, asset.szDecimals) : sizeFor(equity * 0.98, lev, a.max, px, asset.szDecimals)
         if (!(sz > 0)) continue
         P.paperSetLeverage(w.coin, lev)
         const isBuy = w.side === 'long'
@@ -158,6 +169,7 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
           order(P, w.coin, !isBuy, sz, { trigger: stop })
         }
         as.journal.push({ t, kind: 'open', coin: w.coin, side: w.side, px: r.px, sz, lev, stop, why: w.why })
+        if (as.learn) a.onOpen?.(as.learn, w, { t, equity })
       }
       reconcile(P, a, as)
     })
@@ -166,6 +178,7 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
   /** The board: every agent's account now, its curve and its journal → dir/summary.json. */
   function summarize(st, mk) {
     const t = now()
+    const cfg = configOf()
     const rows = []
     for (const a of agents) {
       const as = agentState(st, a.id)
@@ -183,7 +196,8 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
       const closed = as.journal.filter(j => (j.kind === 'close' || j.kind === 'stop') && Number.isFinite(j.pnl))
       const curve = [...as.curve, [t, acct.equity]]
       rows.push({
-        id: a.id, name: a.name, color: a.color, blurb: a.blurb, lev: a.lev, max: a.max, every: a.every, baseline: !!a.baseline,
+        id: a.id, name: a.name, color: a.color, blurb: a.blurb, lev: a.levOf?.(cfg) ?? a.lev, max: a.maxOf?.(cfg) ?? a.max, every: a.every, baseline: !!a.baseline,
+        ...(a.personal ? { personal: true, hidden: !cfg.arena, config: cfg, learn: a.describe(as.learn ?? initLearn(t), cfg) } : {}),
         equity: acct.equity, start: acct.deposited, ret: (acct.equity / acct.deposited - 1) * 100,
         maxDD: maxDrawdown(curve), trades: closed.length, wins: closed.filter(j => j.pnl > 0).length,
         positions: acct.positions, stops: acct.stops, last: as.last, next: as.last + a.every,
@@ -204,12 +218,14 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
       if (!due.length && t - lastSummary < SUMMARY_MS) return
       const needDaily = due.some(a => a.id !== 'oracle' && a.id !== 'hodl')
       const ctxBase = {
-        readings: due.some(a => a.id === 'oracle') ? readings() : {},
+        config: configOf(),
+        readings: due.some(a => a.id === 'oracle' || a.stateful) ? readings() : {},
         daily: needDaily ? daily() : {},
       }
       const heldCoins = agents.flatMap(a => agentState(st, a.id).held.map(h => h.coin))
       const mk = await marketWith(heldCoins)
       ctxBase.funding = mk.funding ?? {}
+      ctxBase.marks = mk.marks ?? {}
       for (const a of due) {
         const as = agentState(st, a.id)
         try { run(a, as, ctxBase, mk) } catch (e) { as.journal.push({ t, kind: 'error', why: String(e.message).slice(0, 200) }); log.warn?.(`[agents] ${a.id}: ${e.message}`) }
@@ -226,7 +242,7 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
     } finally { busy = false }
   }
 
-  return { tick, secret: secretOf, summaryFile: SUMMARY, _state: () => readJson(STATE) }
+  return { tick, secret: secretOf, summaryFile: SUMMARY, configOf, saveConfig, _state: () => readJson(STATE) }
 }
 
 /** The latest 24h call per market from the Oracle's log entries ({ coin, hours, score, sigma, t }). */
