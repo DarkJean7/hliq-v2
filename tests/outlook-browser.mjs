@@ -222,6 +222,36 @@ async function v2(p, root, label, logged) {
     t(`${label}: 1M narrows the pooled record to one month`, span(q) != null && span(q) <= 31 && span(yr) > 45, [yr, q])
     await p.click(`${root} .ol-pool [data-ol-pool="365"]`)
     await p.waitForFunction(([r, y]) => document.querySelector(r + ' .ol-pool-range')?.textContent === y, [root, yr], { timeout: 10000 }).catch(() => {})
+    // "add the period buttons to each card's track record too": one period for every record.
+    const cardRec = `${root} .ol-card .ol-rec`
+    if (await p.$(cardRec)) {
+      const tagsOf = () => p.$$eval(`${cardRec} .ol-rec-tag`, els => els.map(e => e.textContent.replace(/[▴▾]/g, '').trim()))
+      t(`${label}: a card's record has the period buttons and its dates`, !!(await p.$(`${cardRec} [data-ol-pool="30"]`)) && /Past, Learned, Cone and Horizons: \w{3} \d+, \d{4} – /.test(await p.$eval(`${cardRec} .ol-pool-range`, e => e.textContent).catch(() => '')))
+      await p.click(`${cardRec} [data-ol-pool="30"]`)
+      await p.waitForFunction((r) => [...document.querySelectorAll(r + ' .ol-rec-tag')].some(e => /Past 1M/.test(e.textContent)), cardRec, { timeout: 10000 }).catch(() => {})
+      const t1 = await tagsOf()
+      t(`${label}: 1M on a card renames its row and keeps the model's note`, t1.some(x => x === 'Past 1M') && /weights still learned on the full year/.test(await p.$eval(`${cardRec} .ol-pool-range`, e => e.textContent)), t1)
+      t(`${label}: and the pooled section follows it`, await p.$eval(`${root} .ol-pool [data-ol-pool="30"]`, e => e.classList.contains('on')).catch(() => false))
+      await p.click(`${cardRec} [data-ol-pool="365"]`)
+      await p.waitForFunction((r) => [...document.querySelectorAll(r + ' .ol-rec-tag')].some(e => /Past year/.test(e.textContent)), cardRec, { timeout: 10000 }).catch(() => {})
+    }
+    // "add expand all to positions too"
+    const secAll = `${root} .ol-sec[data-sec="held"] .ol-sec-h .ol-rec-all`
+    if (await p.$(secAll)) {
+      const openBefore = await p.$$eval(`${root} .ol-sec[data-sec="held"] .ol-card:not(.ol-mini)`, els => els.length)
+      const total = await p.$$eval(`${root} .ol-sec[data-sec="held"] .ol-cards > *`, els => els.length)
+      const wasAll = /Collapse all/.test(await p.$eval(secAll, e => e.textContent))
+      await p.click(secAll)
+      await p.waitForFunction(([r, w]) => /Collapse all|Expand all/.test(document.querySelector(r)?.textContent ?? '') && (document.querySelector(r)?.textContent ?? '').includes(w ? 'Expand all' : 'Collapse all'), [secAll, wasAll], { timeout: 10000 }).catch(() => {})
+      const openAfter = await p.$$eval(`${root} .ol-sec[data-sec="held"] .ol-card:not(.ol-mini)`, els => els.length)
+      t(`${label}: Expand all on positions opens every card, Collapse all folds them`, wasAll ? openAfter === 0 : openAfter === total, { openBefore, openAfter, total, wasAll })
+      await p.click(secAll)
+      await p.waitForFunction(([r, n]) => document.querySelectorAll(r).length === n, [`${root} .ol-sec[data-sec="held"] .ol-card:not(.ol-mini)`, wasAll ? total : 0], { timeout: 10000 }).catch(() => {})
+      // put the cards back as they were, one by one, if they started mixed
+      if (!wasAll && openBefore) {
+        await p.evaluate(([r]) => { for (const c of document.querySelectorAll(r + ' .ol-sec[data-sec="held"] .ol-card.ol-mini [data-ol-open]')) c.click() }, [root])
+      }
+    }
   }
   const whyTxt = await p.$eval(`${root} .ol-card:has(.ol-coin:text-is("ETH")) .ol-why`, e => e.textContent.replace(/\s+/g, ' ')).catch(() => '')
   t(`${label}: why gives each candle signal its own record`, (whyTxt.match(/Past year: (right \d+% of \d+ calls · chance \d+% · avg [+-]\d+\.\d\d% per call|it made no calls)/g) ?? []).length === 3, whyTxt.slice(0, 600))
@@ -367,7 +397,7 @@ console.log('-- phone --')
   await p.evaluate(() => { window.__watchOpenTrade = window.__realOpen2 })
 
   // "let the user add assets that he does not have as positions. make it organized. add sorts."
-  const secs = () => p.$$eval('#mobVContent .ol-sec', els => els.map(e => ({ h: e.querySelector('.ol-sec-h')?.textContent.replace(/\s+/g, ' ').trim(), coins: [...e.querySelectorAll('.ol-card .ol-coin')].map(c => c.textContent) })))
+  const secs = () => p.$$eval('#mobVContent .ol-sec', els => els.map(e => ({ h: (() => { const x = e.querySelector('.ol-sec-h')?.cloneNode(true); x?.querySelector('.ol-rec-all')?.remove(); return x?.textContent.replace(/\s+/g, ' ').trim() })(), coins: [...e.querySelectorAll('.ol-card .ol-coin')].map(c => c.textContent) })))
   let sx = await secs()
   t('phone: two sections, positions and watching', sx.length === 2 && /^Your positions 2$/.test(sx[0].h) && /^Watching 0$/.test(sx[1].h), sx)
   await p.fill('#mobVContent .ol-add-in', 'so')

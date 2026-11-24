@@ -153,6 +153,13 @@ export function renderOutlook(host, ctx, tick = false) {
       if (h) { horizon = h.dataset.olH; try { localStorage.setItem(LS_H, horizon) } catch {} ; paint(true); return }
       const c = e.target.closest('[data-ol-coin]')
       if (c) { last?.ctx.openCoin?.(c.dataset.olCoin); return }
+      const ca = e.target.closest('[data-ol-cardall]')
+      if (ca) {
+        const coins = String(ca.dataset.olCardall ?? '').split('\u0001').filter(Boolean)
+        const all = coins.every(c => cardOpen.has(c))
+        for (const c of coins) all ? cardOpen.delete(c) : cardOpen.add(c)
+        saveOpen(); paint(true); return
+      }
       const ra = e.target.closest('[data-ol-recall]')
       if (ra) {
         const id = ra.dataset.olRecall, keys = String(ra.dataset.keys ?? '').split(',').filter(Boolean)
@@ -242,8 +249,11 @@ function toolsHtml(ctx, held) {
     </div>
     ${wl.length ? `<div class="ol-wl"><span>${T('From your watchlist', 'De tu lista')}</span>${wl.map(c => `<button data-ol-add="${esc(c)}">+ ${esc(ctx.coinLabel(c))}</button>`).join('')}</div>` : ''}`
 }
-function secHtml(title, list, empty) {
-  return `<div class="ol-sec"><div class="ol-sec-h">${title} <span>${list.length}</span></div>${list.length
+function secHtml(title, list, empty, T = (en) => en, key = '') {
+  const coins = [...new Set(list.map(i => i.coin).filter(Boolean))]
+  const all = coins.length && coins.every(c => cardOpen.has(c))
+  const btn = coins.length ? `<button class="ol-rec-all" data-ol-cardall="${esc(coins.join('\u0001'))}">${all ? T('Collapse all', 'Contraer todo') : T('Expand all', 'Expandir todo')}</button>` : ''
+  return `<div class="ol-sec" data-sec="${key}"><div class="ol-sec-h">${title} <span>${list.length}</span>${btn}</div>${list.length
     ? `<div class="ol-cards">${sortCards(list, sortBy).map(i => i.html).join('')}</div>`
     : `<div class="ol-empty ol-empty-s">${empty}</div>`}</div>`
 }
@@ -276,8 +286,8 @@ function paint(force, fromRender = false) {
   for (const i of items) i.html = cardHtml(i, ctx)
   host.querySelector('.ol-top').innerHTML = headHtml(T) + toolsHtml(ctx, new Set(groups.keys()))
   host.querySelector('.ol-body').innerHTML = `${items.length >= 2 ? pooledHtml(items, ctx) : ''}
-    ${secHtml(T('Your positions', 'Tus posiciones'), held, ps == null ? T('Loading your positions…', 'Cargando tus posiciones…') : T('No open positions.', 'Sin posiciones abiertas.'))}
-    ${secHtml(T('Watching', 'Siguiendo'), watched, T('Add any market above to read it here, held or not.', 'Añade cualquier mercado arriba para leerlo aquí, lo tengas o no.'))}
+    ${secHtml(T('Your positions', 'Tus posiciones'), held, ps == null ? T('Loading your positions…', 'Cargando tus posiciones…') : T('No open positions.', 'Sin posiciones abiertas.'), T, 'held')}
+    ${secHtml(T('Watching', 'Siguiendo'), watched, T('Add any market above to read it here, held or not.', 'Añade cualquier mercado arriba para leerlo aquí, lo tengas o no.'), T, 'watch')}
     <div class="ol-foot">${T(
     `Not a prediction. The cone is how far each market has moved in ${horizon} from its last 180 4h candles, calibrated to how often its past moves stayed inside; chances assume no drift and are for touching a price, not ending there. The score is a lean from six signals — read the reasons, not just the number.`,
     `No es una predicción. El cono es cuánto se ha movido cada mercado en ${horizon} según sus últimas 180 velas de 4h; las probabilidades suponen que no hay tendencia y son de tocar un precio, no de terminar ahí. La puntuación es una inclinación de seis señales: lee los motivos, no solo el número.`)}</div>`
@@ -340,9 +350,33 @@ const candleNames = (h, T) => {
  * reading at every horizon. Live: the server's grading of the full score as shown, and of the cone.
  * Rendering it also reports this rating and asks for the record — both rate-limited above.
  */
-function recordHtml(coin, raw, o, ctx, past) {
+/**
+ * A market's replay narrowed to the period on screen ("add the period buttons to each card's track
+ * record too"). One period for every record — the cards and the pooled section — so they always
+ * compare like with like. The MODEL stays the full year's: the learned multipliers, the walk-forward
+ * scores and the cone's scale were fitted on everything and are what the card draws with. Only what
+ * is graded and shown narrows: the days, each signal's record, the cone's own record.
+ */
+function periodPast(past, hours) {
+  const full = past.samples ?? []
+  const endT = full.at(-1)?.t ?? 0
+  const fromT = endT - poolDays * 864e5
+  const firstIn = full.find(x => x.t >= fromT)?.t ?? null
+  if (poolDays >= 365) return { ...past, allSamples: full, fromT: full[0]?.t ?? null, endT, firstT: full[0]?.t ?? null }
+  const samples = full.filter(x => x.t >= fromT)
+  return { ...past, samples, allSamples: full, signals: signalRecords(samples, hours), cone: coneRecord(samples, hours), fromT, endT, firstT: firstIn }
+}
+const dYear = (t) => new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+const perName = () => POOL_PERIODS.find(([d]) => d === poolDays)?.[1] ?? '1Y'
+function periodBar(T, what) {
+  return `<div class="ol-pool-per"><div class="ol-sorts" data-dragscroll>${POOL_PERIODS.map(([d, l]) => `<button data-ol-pool="${d}" class="${d === poolDays ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <span class="ol-pool-range">${what}</span></div>`
+}
+
+function recordHtml(coin, raw, o, ctx, pastFull) {
   const { T } = ctx
   const hours = o.hours, hz = HZ[hours]
+  const past = periodPast(pastFull, hours)
   const lab = esc(ctx.coinLabel(coin))
   ensureRecord(coin, hours)
 
@@ -440,7 +474,7 @@ function recordHtml(coin, raw, o, ctx, past) {
   const learnedDetail = () => {
     const ids = candleIds(hours)
     const sig = past.signals ?? {}
-    const over = weightsOverTime(past.samples, hours)
+    const over = weightsOverTime(past.allSamples ?? past.samples, hours).filter(w => past.fromT == null || w.t >= past.fromT)
     return [
       sub(T(`Each signal on ${lab}, at ${hz}`, `Cada señal en ${lab}, a ${hz}`)) + tbl(
         [T('Signal', 'Señal'), T('Calls', 'Lecturas'), T('Right', 'Acertó'), T('Chance', 'Azar'), T('Avg per call', 'Media/lectura'), T('Weight', 'Peso')],
@@ -507,7 +541,8 @@ function recordHtml(coin, raw, o, ctx, past) {
   }
   return `<div class="ol-rec">
     <div class="ol-rec-h">${T(`Track record · ${hz}`, `Historial · ${hz}`)} <span>${T('tap a row for its detail', 'toca una fila para ver el detalle')}</span>${allBtn(coin, ['past', 'learned', 'cone', 'hz', 'live'], T)}</div>
-    ${row('past', T('Past year', 'Último año'), pastLine, T(`${candleNames(hours, T)} only: the signals with history. One check a day.`, `Solo ${candleNames(hours, T)}: las señales con historial. Una revisión al día.`), pastDetail)}
+    ${past.firstT != null ? periodBar(T, T(`Past, Learned, Cone and Horizons: ${dYear(past.firstT)} – ${dYear(past.endT)}${poolDays < 365 ? ' · weights still learned on the full year' : ''} · Live: since its first call`, `Pasado, Aprendido, Cono y Horizontes: ${dYear(past.firstT)} – ${dYear(past.endT)}${poolDays < 365 ? ' · pesos aprendidos con el año completo' : ''} · En vivo: desde su primera lectura`)) : ''}
+    ${row('past', poolDays >= 365 ? T('Past year', 'Último año') : T(`Past ${perName()}`, `Últimos ${perName()}`), pastLine, T(`${candleNames(hours, T)} only: the signals with history. One check a day.`, `Solo ${candleNames(hours, T)}: las señales con historial. Una revisión al día.`), pastDetail)}
     ${row('learned', T('Learned', 'Aprendido'), learnedLine, '', learnedDetail)}
     ${row('cone', T('Cone', 'Cono'), coneLine, '', coneDetail)}
     ${row('hz', T('Horizons', 'Horizontes'), hzLine, '', hzDetail)}
@@ -664,8 +699,7 @@ function pooledHtml(items, ctx) {
 
   return `<div class="ol-pool">
     <div class="ol-rec-h">${T(`Your ${r.markets} markets pooled · ${hz}`, `Tus ${r.markets} mercados juntos · ${hz}`)} <span>${T('tap a row for its detail', 'toca una fila para ver el detalle')}</span>${allBtn('__pool__', ['calls', 'signals', 'hz', 'cone', 'macro'], T)}</div>
-    <div class="ol-pool-per"><div class="ol-sorts" data-dragscroll>${POOL_PERIODS.map(([d, l]) => `<button data-ol-pool="${d}" class="${d === poolDays ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <span class="ol-pool-range">${T(`Calls, Signals, Horizons and Cone: ${range}`, `Lecturas, Señales, Horizontes y Cono: ${range}`)}</span></div>
+    ${periodBar(T, T(`Calls, Signals, Horizons and Cone: ${range}`, `Lecturas, Señales, Horizontes y Cono: ${range}`))}
     ${row('calls', T('Calls', 'Lecturas'), parts.length ? `<div class="ol-pool-rows">${parts.join('')}</div>` : T('No directional calls yet.', 'Sin lecturas direccionales aún.'), callsDetail)}
     ${row('signals', T('Signals', 'Señales'), sigLine, signalsDetail)}
     ${row('hz', T('Horizons', 'Horizontes'), hzLine, hzDetail)}
