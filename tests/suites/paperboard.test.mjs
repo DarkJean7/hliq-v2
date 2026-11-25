@@ -46,7 +46,13 @@ t('an agent out of the arena is not on it', srv.includes('const agents = (board?
 t('Visit answers for an agent from its own trades', srv.includes('if (isAgentName(name))') && main.includes("fetch('/paper-board/one?name='"))
 t('the app reads the board from there, and a failure keeps the rows it has', main.includes("fetch('/paper-board', pin ?") && main.includes("if (!x.ok) throw new Error(); return x.json()"))
 t('its own quiet account is not re-posted on every view', main.includes('if (!_lbPaperQuiet.has(mine) && !_lbPaperRows.some('))
-t('an agent row offers no hide, remove or copy trade', main.includes('if (pname && !r._agent && (dev || owner))') && main.includes("const ct = r._agent ? ''") && main.includes("${entry.known || entry._agent ? '' : isP"))
+t('an agent row offers no hide or remove', main.includes('if (pname && !r._agent && (dev || owner))') && main.includes("${entry.known || entry._agent ? '' : isP"))
+// "make the agents copy-tradeable from the paper leaderboard": the button, and hliq-strat's feed —
+// the copy bot reads /api/leaderboard/paper/one there — answering for an agent from board.json.
+const strat = fs.readFileSync('server.js', 'utf8')
+t('an agent row offers Copy trade like any paper account', !main.includes("const ct = r._agent ? ''") && main.includes('const ct = _stratsUnlocked()'))
+t("hliq-strat answers an agent's feed from the arena's board file, hidden ones withheld", strat.includes("import { isAgentName }") && strat.includes("join(__dirname, 'data', 'agents', 'board.json')") && /if \(isAgentName\(name\)\) \{[\s\S]{0,700}!x\.hidden[\s\S]{0,300}fills: \(a\.fills \?\? \[\]\)\.filter\(f => f\.time > since\)/.test(strat))
+t('no board file yet is 503 (retry), not 404 (gone)', strat.includes("if (!board) return json(res, 503, { error: 'agents not running yet' })"))
 t('posting still goes to hliq-strat', main.includes("const post = (name) => fetch('/api/leaderboard/paper', {"))
 t('a dev twin, so the board loads under vite too', vite.includes("path === '/paper-board' || path === '/paper-board/one'"))
 

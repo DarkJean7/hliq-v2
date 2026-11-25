@@ -70,7 +70,7 @@ console.log(nl + '-- the server keeps them per account, not in the board file --
 
 console.log(nl + '-- one account, with its trades: the endpoint both features read --')
 {
-  const one = srv.slice(srv.indexOf("path === '/api/leaderboard/paper/one'"), srv.indexOf("path === '/api/leaderboard/paper/one'") + 1200)
+  const one = srv.slice(srv.indexOf("path === '/api/leaderboard/paper/one'"), srv.indexOf("path === '/api/leaderboard/paper/one'") + 2400)   // room for the Agent Arena branch at its top
   t('the endpoint exists', one.length > 200)
   t('it needs a name', one.includes("if (!name) return json(res, 400, { error: 'name required' })"))
   t('the secret never leaves the server', one.includes('const { secret, ...pub } = row'))

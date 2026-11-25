@@ -26,11 +26,13 @@ import { depositStep }                                        from './src/deposi
 import { spotPxFrom, seedBook, SEED_MAX_MS }                            from './src/comboseed.js'
 import { isSticker }                                          from './src/stickers.js'
 import { isImageDataUrl, dataUrlBytes, CHAT_IMG_MAX_BYTES }   from './src/imgstore.js'
+import { isAgentName }                                        from './src/paperboard.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const PORT       = 3002
 const LOGS_DIR        = join(__dirname, 'logs')
 const LEADERBOARD_FILE = join(__dirname, 'leaderboard.json')
+const AGENTS_BOARD_FILE = join(__dirname, 'data', 'agents', 'board.json')   // written by serve-prod's agent runner
 const LB_STATS_FILE    = join(__dirname, 'leaderboard-stats.json')
 
 // Admin/dev PIN for leaderboard management (replace list, remove entries, dev mode).
@@ -2471,6 +2473,18 @@ const server = createServer(async (req, res) => {
     const name  = lbCleanName(url.searchParams.get('name') ?? '')
     const since = Number(url.searchParams.get('since') ?? 0) || 0
     if (!name) return json(res, 400, { error: 'name required' })
+    // An Agent Arena agent: run by serve-prod (the Agent Arena runner), which writes its board row and
+    // trades to data/agents/board.json. Answered from there so a copy bot can follow one — asked:
+    // "make the agents copy-tradeable from the paper leaderboard". Nobody can post a "(agent)" row.
+    if (isAgentName(name)) {
+      let board = null
+      try { board = JSON.parse(readFileSync(AGENTS_BOARD_FILE, 'utf8')) } catch {}
+      // Unknown is not "none": no file yet is a 503 the bot retries, not a 404 that reads as gone.
+      if (!board) return json(res, 503, { error: 'agents not running yet' })
+      const a = (board.agents ?? []).find(x => !x.hidden && (x.row?.name ?? '').toLowerCase() === name.toLowerCase())
+      if (!a) return json(res, 404, { error: 'no such paper account' })
+      return json(res, 200, { ok: true, row: a.row, fills: (a.fills ?? []).filter(f => f.time > since), simulated: true, agent: true })
+    }
     const isAdmin = !!LB_PIN && (req.headers['x-lb-pin'] ?? '') === LB_PIN
     const row = lbPaperRead().find(r => (r.name ?? '').toLowerCase() === name.toLowerCase())
     if (!row || (row.hidden && !isAdmin)) return json(res, 404, { error: 'no such paper account' })

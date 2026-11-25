@@ -23551,9 +23551,8 @@ function _lbPaperSocialHtml(r) {
   const copy = btn(`navigator.clipboard?.writeText(decodeURIComponent('${enc}')).then(()=>_paperToast(_T('Name copied','Nombre copiado')))`, '⧉', _T('Copy', 'Copiar'))
   // A paper account CAN be followed now: its owner posts its trades with its board row, and
   // the bot reads them from there. The orders it places on your account are real.
-  // Not an agent: the copy bot reads its leader from hliq-strat, which does not know them.
-  const ct = r._agent ? ''
-    : _stratsUnlocked()
+  // An Agent Arena agent too: hliq-strat answers its feed from the agents' own board file.
+  const ct = _stratsUnlocked()
     ? btn(`window.__lbCopyTrade('', decodeURIComponent('${enc}'), { paper: decodeURIComponent('${enc}') })`, '⇄', _T('Copy trade', 'Copiar ops'), true)
     : btn(`window.__subOpenPaywall()`, '🔒', _T('Copy trade', 'Copiar ops'))
   return `<div style="display:flex;gap:7px;padding:11px 16px;background:var(--panel-2);border-bottom:1px solid rgba(255,255,255,0.04)" data-name="${nm}">
