@@ -1,6 +1,7 @@
 /**
  * The Agent Arena screen: the shared paper agents (src/agents.js) that the server runs
- * (src/agentrunner.js), read from GET /agents-data. More → Agent Arena.
+ * (src/agentrunner.js), read from GET /agents-data. A tab on both shells: the desktop nav and
+ * sidebar, and More → Agent Arena on the phone.
  *
  * Read-only and public: nobody's account is involved, so it works before a wallet is connected.
  * Colours follow the AGENT, never its rank — the board re-sorts by return and a line must keep its
@@ -64,14 +65,54 @@ function niceStep(raw) {
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p
 }
 
+// Size in tokens: 4.84M HMSTR, 1,234.5 HYPE, 0.0123 BTC. The exact figure is in the tooltip.
+function szFmt(n) {
+  const a = Math.abs(n)
+  if (!(a > 0)) return '0'
+  if (a >= 1e6) return (a / 1e6).toFixed(2) + 'M'
+  if (a >= 1e4) return a.toLocaleString('en-US', { maximumFractionDigits: 0 })
+  if (a >= 1) return a.toLocaleString('en-US', { maximumFractionDigits: 2 })
+  return a.toPrecision(3)
+}
+const kv = (k, v, c = '') => `<span><small>${k}</small><b class="${c}">${v}</b></span>`
+
+// One open position, with what the Trade screen's position row shows: size in tokens, value,
+// entry, mark, liquidation and how far it is, margin, stop, take-profit, funding, when it opened.
+function posHtml(a, p) {
+  const trig = (a.stops ?? []).filter(s => s.coin === p.coin)
+  const sl = trig.find(s => !s.tp), tp = trig.find(s => s.tp)
+  const long = p.szi > 0
+  const roe = p.margin > 0 ? p.upnl / p.margin * 100 : null
+  // null = cannot be liquidated on price alone (HL's own null). Undefined = an older summary.
+  const liq = p.liq === undefined ? '—' : p.liq == null || !(p.liq > 0) ? T('None', 'Ninguna') : `${pxFmt(p.liq)} <i class="ag-dim">${(Math.abs(p.mark - p.liq) / p.mark * 100).toFixed(1)}%</i>`
+  const opened = (a.journal ?? []).find(j => j.kind === 'open' && j.coin === p.coin)
+  return `<div class="ag-pos">
+    <div class="ag-pos-h"><b>${esc(p.coin)}</b><span class="ag-side ${long ? 'pos' : 'neg'}">${long ? T('Long', 'Largo') : T('Short', 'Corto')}${p.lev ? ' ' + p.lev + '×' : ''}${p.cross === false ? ' ' + T('isolated', 'aislada') : p.cross ? ' ' + T('cross', 'cruzada') : ''}</span>
+      <span class="ag-pos-pnl ${cls(p.upnl)}">${sgnUsd(p.upnl)}${roe != null ? ` <i>(${sgnPct(roe, 1)})</i>` : ''}</span></div>
+    <div class="ag-kv">
+      ${kv(T('Size', 'Tamaño'), `<span title="${Math.abs(p.szi)}">${szFmt(p.szi)} ${esc(p.coin)}</span>`)}
+      ${kv(T('Value', 'Valor'), usd(Math.abs(p.value)))}
+      ${kv(T('Entry', 'Entrada'), pxFmt(p.entryPx))}
+      ${kv(T('Mark', 'Marca'), pxFmt(p.mark))}
+      ${kv(T('Liq. price', 'Precio liq.'), liq, 'ag-liq')}
+      ${kv(T('Margin', 'Margen'), Number.isFinite(p.margin) ? usd(p.margin) : '—')}
+      ${kv('Stop', sl ? pxFmt(sl.px) : '—')}
+      ${kv(T('Take profit', 'Toma de ganancia'), tp ? pxFmt(tp.px) : '—')}
+      ${kv(T('Funding', 'Funding'), Number.isFinite(p.funding) ? sgnUsd(p.funding) : '—', cls(p.funding))}
+      ${kv(T('Opened', 'Abierta'), opened ? esc(dt(opened.t)) : '—')}
+    </div>
+  </div>`
+}
+
 function cardHtml(a, hodl, rank) {
   const vs = hodl && !a.baseline ? a.ret - hodl.ret : null
   const isOpen = open.has(a.id)
   const wr = a.trades ? Math.round(a.wins / a.trades * 100) : null
-  const pos = (a.positions ?? []).map(p => {
-    const stop = (a.stops ?? []).find(s => s.coin === p.coin)
-    return `<tr><td><b>${esc(p.coin)}</b></td><td class="${p.szi > 0 ? 'pos' : 'neg'}">${p.szi > 0 ? T('Long', 'Largo') : T('Short', 'Corto')} ${p.lev ? p.lev + '×' : ''}</td><td>${usd(Math.abs(p.value), 0)}</td><td>${pxFmt(p.entryPx)}</td><td>${pxFmt(p.mark)}</td><td class="${cls(p.upnl)}">${sgnUsd(p.upnl)}</td><td>${stop ? pxFmt(stop.px) : '—'}</td></tr>`
-  }).join('')
+  const ps = a.positions ?? []
+  const upnl = ps.reduce((x, p) => x + (p.upnl || 0), 0)
+  const expo = ps.reduce((x, p) => x + Math.abs(p.value || 0), 0)
+  const margin = ps.every(p => Number.isFinite(p.margin)) ? ps.reduce((x, p) => x + p.margin, 0) : null
+  const pos = ps.map(p => posHtml(a, p)).join('')
   const KIND = { open: T('Opened', 'Abrió'), close: T('Closed', 'Cerró'), stop: T('Stopped', 'Stop'), skip: T('Skipped', 'Omitió'), error: T('Error', 'Error'), note: T('You', 'Tú') }
   const jr = (a.journal ?? []).map(j => `<tr class="ag-j-${j.kind}"><td>${esc(dt(j.t))}</td><td>${KIND[j.kind] ?? esc(j.kind)}</td><td>${j.coin ? `<b>${esc(j.coin)}</b>` : ''}${j.side ? ` <span class="${j.side === 'long' ? 'pos' : 'neg'}">${j.side === 'long' ? T('long', 'largo') : T('short', 'corto')}</span>` : ''}</td><td>${j.px ? pxFmt(j.px) : ''}</td><td class="${cls(j.pnl)}">${Number.isFinite(j.pnl) ? sgnUsd(j.pnl) : ''}</td><td class="ag-why">${esc(j.why ?? '')}</td></tr>`).join('')
   const now = data?.at ?? Date.now()
@@ -83,18 +124,23 @@ function cardHtml(a, hodl, rank) {
       <span class="ag-chev">${isOpen ? '▴' : '▾'}</span>
     </button>
     <div class="ag-stats">
-      <span><small>${T('Equity', 'Capital')}</small>${usd(a.equity)}</span>
-      <span><small>${T('vs HODL BTC', 'vs HODL BTC')}</small>${vs == null ? '—' : `<b class="${cls(vs)}">${sgnPct(vs)}</b>`}</span>
-      <span><small>${T('Max drawdown', 'Caída máx.')}</small>${a.maxDD > 0 ? '−' + a.maxDD.toFixed(1) + '%' : '0%'}</span>
-      <span><small>${T('Trades', 'Operaciones')}</small>${a.trades}${wr != null ? ` · ${wr}% ${T('won', 'ganadas')}` : ''}</span>
-      <span><small>${T('Open', 'Abiertas')}</small>${(a.positions ?? []).length}/${a.max}</span>
+      ${kv(T('Equity', 'Capital'), usd(a.equity))}
+      ${kv(T('Unrealized PnL', 'PnL no realizado'), sgnUsd(upnl), cls(upnl))}
+      ${kv(T('Realized PnL', 'PnL realizado'), Number.isFinite(a.realized) ? sgnUsd(a.realized) : '—', cls(a.realized))}
+      ${kv(T('vs HODL BTC', 'vs HODL BTC'), vs == null ? '—' : sgnPct(vs), cls(vs))}
+      ${kv(T('Max drawdown', 'Caída máx.'), a.maxDD > 0 ? '−' + a.maxDD.toFixed(1) + '%' : '0%')}
+      ${kv(T('Trades', 'Operaciones'), `${a.trades}${wr != null ? ` · ${wr}% ${T('won', 'ganadas')}` : ''}`)}
+      ${kv(T('Exposure', 'Exposición'), `${usd(expo, 0)}${a.equity > 0 && expo > 0 ? ` <i class="ag-dim">${(expo / a.equity).toFixed(2)}×</i>` : ''}`)}
+      ${kv(T('Margin used', 'Margen usado'), margin == null ? '—' : usd(margin))}
+      ${kv(T('Free cash', 'Disponible'), Number.isFinite(a.cash) ? usd(a.cash) : '—')}
+      ${kv(T('Open', 'Abiertas'), `${ps.length}/${a.max}`)}
     </div>
+    ${pos ? `<div class="ag-poss">${pos}</div>` : ''}
     ${isOpen ? `<div class="ag-body">
       <p class="ag-blurb">${esc(T(a.blurb?.[0] ?? '', a.blurb?.[1] ?? a.blurb?.[0] ?? ''))}</p>
       <p class="ag-when">${a.last ? T(`Last look ${ago(now - a.last, T)} ago`, `Última revisión hace ${ago(now - a.last, T)}`) : ''}${a.next ? ` · ${T('next', 'próxima')} ${a.next <= now ? T('within a minute', 'en un minuto') : T(`in ${ago(a.next - now, T)}`, `en ${ago(a.next - now, T)}`)}` : ''} · ${a.lev}× · ${T(`up to ${a.max} positions`, `hasta ${a.max} posiciones`)}</p>
       ${a.personal ? rektHtml(a, { T, dev: isDevMode(), draft: rkDraft, status: rkStatus, ctlStatus: rkCtl, width: chartWidth() - 24 }) : ''}
-      <h4>${T('Positions', 'Posiciones')}</h4>
-      ${pos ? `<div class="ag-tbl-wrap" data-dragscroll><table class="ag-tbl"><thead><tr><th>${T('Market', 'Mercado')}</th><th>${T('Side', 'Lado')}</th><th>${T('Size', 'Tamaño')}</th><th>${T('Entry', 'Entrada')}</th><th>${T('Mark', 'Marca')}</th><th>PnL</th><th>Stop</th></tr></thead><tbody>${pos}</tbody></table></div>` : `<p class="ag-none">${T('Flat — nothing qualifies right now.', 'Sin posiciones — nada califica ahora mismo.')}</p>`}
+      ${pos ? '' : `<p class="ag-none">${T('Flat — nothing qualifies right now.', 'Sin posiciones — nada califica ahora mismo.')}</p>`}
       <h4>${T('Journal', 'Diario')}</h4>
       ${jr ? `<div class="ag-tbl-wrap" data-dragscroll><table class="ag-tbl ag-journal"><thead><tr><th>${T('When', 'Cuándo')}</th><th>${T('Action', 'Acción')}</th><th>${T('Market', 'Mercado')}</th><th>${T('Price', 'Precio')}</th><th>PnL</th><th>${T('Why', 'Por qué')}</th></tr></thead><tbody>${jr}</tbody></table></div>` : `<p class="ag-none">${T('No trades yet.', 'Aún sin operaciones.')}</p>`}
     </div>` : ''}
@@ -117,24 +163,27 @@ function bodyHtml() {
 
 // The chart's inner width: the scroller less its padding, the chart's border and padding.
 function chartWidth() {
-  const sc = document.querySelector('#agentArenaOverlay .ag-scroll')
+  const sc = root?.querySelector('.ag-scroll')
   if (!sc?.clientWidth) return 640
   const cs = getComputedStyle(sc)
   return sc.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 22
 }
 
+// The arena's root in whichever tab it is mounted: the desktop pane or the phone's content area.
+let root = null
+const showing = () => !!root && root.isConnected && root.offsetParent !== null
+
 function paint() {
-  const ov = document.getElementById('agentArenaOverlay')
-  if (!ov) return
-  const body = ov.querySelector('.ag-scroll')
+  if (!root?.isConnected) return
+  const body = root.querySelector('.ag-scroll')
   // Not while someone is typing in Rekt-01's settings: a repaint would take the field from under them.
   if (document.activeElement?.closest?.('[data-rk-form]') && body.contains(document.activeElement)) return
-  const top = body.scrollTop
   body.innerHTML = bodyHtml()
-  body.scrollTop = top
 }
 
+let lastLoad = 0
 async function load() {
+  lastLoad = Date.now()
   try {
     // Dev mode also sees Rekt-01 when it is out of the arena; the server checks the PIN.
     const r = await fetch('/agents-data', { cache: 'no-store', headers: isDevMode() ? { 'x-lb-pin': devPin() } : {} })
@@ -168,16 +217,38 @@ function onLeave(e) {
   ch.querySelector('.ag-tip').style.display = 'none'; ch.querySelector('.ag-cross').style.display = 'none'
 }
 
-export function openAgentArena({ t } = {}) {
+/**
+ * Mount the arena in a tab: `host` is the desktop pane (#deskAgents) or the phone's content area,
+ * `header` the app's own full-page header, so it looks and closes like every other tab.
+ *
+ * It was a fixed overlay over the whole app — "not take the whole window and behave like all
+ * tabs". The phone shell re-renders its content area on every tick; a host that already holds the
+ * arena is left alone, so the scroll position and the open cards survive it.
+ */
+export function renderAgentArena(host, { t, header = '', enter = false } = {}) {
   if (typeof t === 'function') T = t
-  let ov = document.getElementById('agentArenaOverlay')
-  if (!ov) {
-    ov = document.createElement('div')
-    ov.id = 'agentArenaOverlay'
-    ov.innerHTML = `<div class="ag-top"><span class="ag-title">${T('Agent Arena', 'Arena de agentes')}</span><button class="ag-x" data-ag-close aria-label="${T('Close', 'Cerrar')}">×</button></div><div class="ag-scroll"></div>`
-    document.body.appendChild(ov)
+  if (!host) return
+  const mounted = host.querySelector(':scope > .ag-root')
+  if (!mounted) {
+    host.innerHTML = `${header}<div class="ag-root" id="agentArena"><div class="ag-scroll"></div></div>`
+    root = host.querySelector('.ag-root')
+    wire(root)
+    paint()
+    load()
+  } else {
+    root = mounted
+    // Back on the desktop tab (its pane keeps the arena while hidden): fresh numbers, and dev mode
+    // may have changed. The phone's ticks re-render without `enter`, and only reload when stale.
+    if (enter || Date.now() - lastLoad > 60_000) { paint(); load() }
+  }
+  clearInterval(timer)
+  // Stops itself once the tab is left, rather than relying on every way out to stop it.
+  timer = setInterval(() => { if (!showing()) { clearInterval(timer); timer = null; return } if (document.visibilityState === 'visible') load() }, 60_000)
+}
+
+let resizeWired = false
+function wire(ov) {
     ov.addEventListener('click', (e) => {
-      if (e.target.closest('[data-ag-close]')) return closeAgentArena()
       const b = e.target.closest('[data-ag-open]')
       if (b) { const id = b.dataset.agOpen; open.has(id) ? open.delete(id) : open.add(id); paint() }
       if (e.target.closest('[data-rk-save]')) saveRekt(e.target.closest('[data-rk-form]'))
@@ -186,15 +257,12 @@ export function openAgentArena({ t } = {}) {
     })
     ov.addEventListener('input', (e) => { const f = e.target.closest('[data-rk-form]'); if (f) { rkDraft = readForm(f); rkStatus = T('Not saved yet', 'Aún sin guardar'); const s = f.querySelector('.rk-status'); if (s) s.textContent = rkStatus } })
     ov.addEventListener('pointermove', onMove)
-    let rz = null
-    addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (ov.style.display !== 'none') paint() }, 150) })
     ov.addEventListener('pointerleave', onLeave, true)
-  }
-  ov.style.display = 'flex'
-  paint()
-  load()
-  clearInterval(timer)
-  timer = setInterval(() => { if (document.visibilityState === 'visible') load() }, 60_000)
+    if (!resizeWired) {
+      resizeWired = true
+      let rz = null
+      addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (showing()) paint() }, 150) })
+    }
 }
 
 async function saveRekt(form) {
@@ -240,8 +308,3 @@ async function controlRekt(action) {
   paint()
 }
 
-export function closeAgentArena() {
-  const ov = document.getElementById('agentArenaOverlay')
-  if (ov) ov.style.display = 'none'
-  clearInterval(timer); timer = null
-}

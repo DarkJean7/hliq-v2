@@ -1279,7 +1279,7 @@ async function loadDashboard() {
 // portfolioStats — the Overview, Positions and Portfolio panels, every refresh, behind the
 // Outcomes page. On these desktop tabs none of that is on screen, so a refresh only marks it
 // out of date, and switchTab draws it once, from the latest data, when you go back.
-const _DESK_SELF_CONTAINED = new Set(['outcomes', 'leaderboard', 'markets', 'portfolios', 'pulse', 'simulator', 'labs'])
+const _DESK_SELF_CONTAINED = new Set(['outcomes', 'leaderboard', 'markets', 'portfolios', 'pulse', 'simulator', 'labs', 'agents'])
 const _deskStale = { acct: false, pos: false, cards: false }
 function _deskOffscreen(part) {
   // _activeTab is declared further down this module; a render during module start-up would hit
@@ -8898,6 +8898,7 @@ function switchTab(name, btn) {
   if (name === 'replay' || name === 'portfolio') _repRender(_viewHost('deskReplay'))
   if (name === 'simulator')  _simRender(_viewHost('deskSim'))
   if (name === 'labs')       _labsRender(_viewHost('deskLabs'))
+  if (name === 'agents')     _agentsRender(_viewHost('deskAgents'), true)
   if (name === 'outlook')    renderOutlook(_viewHost('deskOutlook'), _outlookCtx())
   if (name === 'settings') { _syncSettingsTab(); _applyDevMode() }
   if (name === 'leaderboard') {
@@ -8947,12 +8948,13 @@ window.__mobMoreTab = function(name) {
   const backdrop = document.getElementById('mobMoreBackdrop')
   drawer?.classList.remove('open')
   backdrop?.classList.remove('open')
-  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'pulse', 'allocation', 'heatmap', 'analysis', 'replay', 'simulator', 'labs'])
+  const mobileTabs = new Set(['settings', 'transfers', 'trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'trade', 'pulse', 'allocation', 'heatmap', 'analysis', 'replay', 'simulator', 'labs', 'agents'])
   if (mobileTabs.has(name)) {
     // Reached deliberately from the menu, Strats opens full screen. It is the densest view
     // in the app — a bot list, a config form and a running-instance list — and half a
     // screen was never enough for it.
     if (name === 'strategies') { _stratsFull = true; _stratsApplyFull() }
+    if (name === 'agents') _agentsEnter = true
     _mobVActiveTab = name
     document.querySelectorAll('.mob-v-tab').forEach(b => b.classList.remove('active'))
     _mobVRenderContent()
@@ -12545,7 +12547,7 @@ const _MOBV_NAV_ORDER = ['trades', 'positions', 'outlook', 'orders', 'outcomes',
 // strip / sub-tabs) is hidden and the view renders its own sticky header + × back
 // button instead of sitting in the bottom half. Shared by the chrome-hide logic and
 // the watch-strip visibility check so they never drift apart.
-const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 'transfers', 'trades', 'tokens', 'leaderboard', 'allocation', 'analysis', 'performance', 'replay', 'simulator', 'labs'])
+const _MOBV_FULLPAGE = new Set(['trade', 'settings', 'portfolio', 'calendar', 'transfers', 'trades', 'tokens', 'leaderboard', 'allocation', 'analysis', 'performance', 'replay', 'simulator', 'labs', 'agents'])
 
 // Sticky full-page header with a × that returns to the home view. Used by every
 // full-screen tab so they share one look.
@@ -13256,10 +13258,21 @@ window.__openGridLadder = function() {
 }
 
 // Agent Arena: the shared paper agents the server runs (src/agentsview.js), loaded on first open.
+// A tab like any other — it was a full-screen overlay over the whole app until asked: "make the
+// agent arena not take the whole window and behave like all tabs".
+// Set by the phone's menu: this render is someone arriving, not the shell's tick repainting it.
+let _agentsEnter = false
+function _agentsRender(host, enter = false) {
+  if (!host) return
+  enter = enter || _agentsEnter; _agentsEnter = false
+  import('./agentsview.js').then(m => m.renderAgentArena(host, { t: _T, header: _mobVFullHeader(_T('Agent Arena', 'Arena de agentes')), enter }))
+    .catch(e => { if (!reloadForStaleChunk(e)) _appAlert('Could not open the Agent Arena: ' + e.message) })
+}
+// Kept for links that open it by name: the desktop tab, or the phone's.
 window.__openAgents = function() {
-  document.getElementById('mobMoreDrawer')?.classList.remove('open')
-  document.getElementById('mobMoreBackdrop')?.classList.remove('open')
-  import('./agentsview.js').then(m => m.openAgentArena({ t: _T })).catch(e => { if (!reloadForStaleChunk(e)) _appAlert('Could not open the Agent Arena: ' + e.message) })
+  const app = document.querySelector('.app')
+  if (document.getElementById('tab-agents') && app && getComputedStyle(app).display !== 'none') return switchTab('agents', null)
+  window.__mobMoreTab('agents')
 }
 
 window.__openChat = function() {
@@ -22460,6 +22473,10 @@ function _mobVRenderContent(tick = false) {
     _labsRender(el)
     return
   }
+  if (_mobVActiveTab === 'agents') {
+    _agentsRender(el)
+    return
+  }
   if (_mobVActiveTab === 'replay') {
     // A redraw from elsewhere would replace the search box mid-word and take the keyboard
     // with it, so put focus back where it was -- the same fix Signals needed.
@@ -27001,9 +27018,10 @@ window._mobVTradesPageChange = function(d) {
 
 window.mobVGoTab = function(tabName) {
   if (tabName === 'trades') _mobVTradesPage = 0   // start History at the latest page
+  if (tabName === 'agents') _agentsEnter = true
   if (tabName === 'allocation') _allocView = 'allocation'   // the donut pill always opens the donut
   document.querySelectorAll('.mob-v-bottom-btn').forEach(b => b.classList.remove('active'))
-  const _mobTabs = new Set(['trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'pulse', 'allocation', 'analysis', 'replay', 'simulator', 'labs'])
+  const _mobTabs = new Set(['trades', 'leaderboard', 'portfolio', 'calendar', 'tokens', 'watch', 'strategies', 'performance', 'transfers', 'settings', 'trade', 'pulse', 'allocation', 'analysis', 'replay', 'simulator', 'labs', 'agents'])
   if (_mobTabs.has(tabName)) {
     _mobVActiveTab = tabName
     document.querySelectorAll('.mob-v-tab').forEach(b => b.classList.remove('active'))

@@ -1,9 +1,6 @@
-/* The Agent Arena (src/agentsview.js). Same layer as the other full-screen sheets. */
-#agentArenaOverlay { position: fixed; inset: 0; z-index: 100055; background: var(--bg); display: flex; flex-direction: column; color: var(--fg, var(--text)); }
-.ag-top { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); }
-.ag-title { font-size: 17px; font-weight: 700; }
-.ag-x { background: none; border: none; color: var(--muted); font-size: 24px; cursor: pointer; padding: 0 4px; line-height: 1; }
-.ag-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 12px 16px 40px; max-width: 860px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+/* The Agent Arena (src/agentsview.js): a tab, in the page's own scroll like every other one. */
+.ag-root { color: var(--fg, var(--text)); }
+.ag-scroll { padding: 12px 16px 40px; max-width: 1100px; width: 100%; margin: 0 auto; box-sizing: border-box; overflow-x: hidden; }
 .ag-msg { color: var(--muted); padding: 40px 0; text-align: center; font-size: 13px; }
 .ag-intro { font-size: 12.5px; color: var(--muted); line-height: 1.5; margin: 0 0 14px; }
 .ag-h { font-size: 13px; font-weight: 700; margin: 0 0 8px; }
@@ -34,8 +31,25 @@
 .ag-name em { font-style: normal; font-weight: 600; font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
 .ag-ret { font-family: var(--font-mono, monospace); font-weight: 700; font-size: 15px; }
 .ag-chev { color: var(--muted); font-size: 11px; }
-.ag-stats { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 4px 12px 11px 36px; font-size: 12px; font-family: var(--font-mono, monospace); }
-.ag-stats small { display: block; font-family: var(--font-sans, inherit); font-size: 10px; color: var(--muted); }
+.ag-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px 14px; padding: 4px 12px 11px 36px; font-size: 12px; font-family: var(--font-mono, monospace); }
+.ag-stats small, .ag-kv small { display: block; font-family: var(--font-sans, inherit); font-size: 10px; color: var(--muted); white-space: nowrap; }
+.ag-stats b, .ag-kv b { font-weight: 600; white-space: nowrap; }
+.ag-dim { font-style: normal; color: var(--muted); font-size: 10.5px; }
+/* Open positions: always on the card, everything the Trade screen's position row has. */
+.ag-poss { display: flex; flex-direction: column; gap: 6px; padding: 0 12px 11px 36px; }
+.ag-pos { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: color-mix(in srgb, var(--bg) 40%, transparent); }
+.ag-pos-h { display: flex; align-items: baseline; gap: 8px; font-size: 13px; margin-bottom: 6px; }
+.ag-side { font-size: 11.5px; font-weight: 600; }
+.ag-pos-pnl { margin-left: auto; font-family: var(--font-mono, monospace); font-weight: 700; font-size: 12.5px; }
+.ag-pos-pnl i { font-style: normal; font-weight: 500; font-size: 11px; }
+.ag-kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px 12px; font-size: 11.5px; font-family: var(--font-mono, monospace); }
+.ag-liq b { color: var(--warn, #f5a524); }
+@media (max-width: 520px) {
+  .ag-stats, .ag-poss { padding-left: 12px; }
+  .ag-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ag-kv { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ag-stats b, .ag-kv b { white-space: normal; word-break: break-word; }
+}
 .ag-body { border-top: 1px solid var(--border); padding: 10px 12px 12px; }
 .ag-blurb { font-size: 12.5px; line-height: 1.5; margin: 0 0 6px; }
 .ag-when { font-size: 11px; color: var(--muted); margin: 0 0 10px; }
@@ -48,8 +62,8 @@
 .ag-tbl td:first-child { font-family: inherit; }
 .ag-journal .ag-why { font-family: inherit; white-space: normal; min-width: 180px; color: var(--fg-2, var(--text)); }
 .ag-j-skip td, .ag-j-error td { color: var(--muted); }
-#agentArenaOverlay .pos { color: var(--pos); }
-#agentArenaOverlay .neg { color: var(--neg); }
+.ag-root .pos { color: var(--pos); }
+.ag-root .neg { color: var(--neg); }
 
 /* Rekt-01 (src/rektview.js): what it has learned, and its settings. */
 .ag-name em.ag-yours { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }

@@ -286,8 +286,12 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
         const ps = P.paperPerpState()
         return {
           equity: P.paperEquity(), deposited: P.paperDeposited(),
-          positions: ps.assetPositions.map(({ position: p }) => ({ coin: p.coin, szi: Number(p.szi), entryPx: Number(p.entryPx), mark: P.paperMark(p.coin), upnl: Number(p.unrealizedPnl), lev: p.leverage?.value ?? null, value: Number(p.positionValue) })),
-          stops: P.paperStore().orders.filter(o => o.isTrigger).map(o => ({ coin: o.coin, px: o.triggerPx })),
+          // What a position row on the Trade screen shows. liq null is HL's "cannot be liquidated on
+          // price alone", not zero; funding is the cashflow (+ received), HL's sinceOpen negated.
+          positions: ps.assetPositions.map(({ position: p }) => ({ coin: p.coin, szi: Number(p.szi), entryPx: Number(p.entryPx), mark: P.paperMark(p.coin), upnl: Number(p.unrealizedPnl), lev: p.leverage?.value ?? null, value: Number(p.positionValue),
+            liq: p.liquidationPx == null ? null : Number(p.liquidationPx), margin: Number(p.marginUsed), cross: p.leverage?.type !== 'isolated', funding: -Number(p.cumFunding?.sinceOpen ?? 0) })),
+          cash: Number(ps.withdrawable),
+          stops: P.paperStore().orders.filter(o => o.isTrigger).map(o => ({ coin: o.coin, px: o.triggerPx, tp: o.tpsl === 'tp' })),
           board: boardRow(P, a),
         }
       })
@@ -301,6 +305,7 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
         ...(a.personal ? { personal: true, hidden: !cfg.arena, config: cfg, learn: a.describe(as.learn ?? initLearn(t), cfg) } : {}),
         equity: acct.equity, start: acct.deposited, ret: (acct.equity / acct.deposited - 1) * 100,
         maxDD: maxDrawdown(curve), trades: closed.length, wins: closed.filter(j => j.pnl > 0).length,
+        realized: closed.reduce((x, j) => x + j.pnl, 0), cash: Number.isFinite(acct.cash) ? acct.cash : null,
         positions: acct.positions, stops: acct.stops, last: as.last, next: as.last + a.every,
         curve: thin(curve, 400), journal: as.journal.slice(-80).reverse(),
       })

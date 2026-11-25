@@ -42,8 +42,9 @@ const SUMMARY = {
     return {
       id: a.id, name: a.name, color: a.color, blurb: a.blurb, lev: a.lev, max: a.max, every: a.every, baseline: !!a.baseline,
       equity: end, start: 1000, ret: RET[a.id], maxDD: a.id === 'dip' ? 4.2 : 0, trades: a.id === 'momentum' ? 4 : 0, wins: a.id === 'momentum' ? 3 : 0,
-      positions: a.id === 'momentum' ? [{ coin: 'SOL', szi: 3.2, entryPx: 150, mark: 155, upnl: 16, lev: 2, value: 496 }, { coin: 'DOGE', szi: -2000, entryPx: 0.2, mark: 0.19, upnl: 20, lev: 2, value: 380 }] : [],
-      stops: a.id === 'momentum' ? [{ coin: 'SOL', px: 132 }] : [],
+      positions: a.id === 'momentum' ? [{ coin: 'SOL', szi: 3.2, entryPx: 150, mark: 155, upnl: 16, lev: 2, value: 496, liq: 80.5, margin: 248, cross: true, funding: -0.42 }, { coin: 'DOGE', szi: -2000, entryPx: 0.2, mark: 0.19, upnl: 20, lev: 2, value: 380, liq: null, margin: 190, cross: true, funding: 0.1 }] : [],
+      realized: a.id === 'momentum' ? 45.5 : 0, cash: 300,
+      stops: a.id === 'momentum' ? [{ coin: 'SOL', px: 132 }, { coin: 'SOL', px: 180, tp: true }] : [],
       last: NOW - 2 * H, next: NOW + 22 * H, curve,
       ...(a.personal ? { personal: true, hidden: false, config: DEFAULT_CONFIG, learn: {
         since: NOW - 48 * H, weights: { oracle: 0.4, momentum: 0.3, reversion: 0.1, funding: 0.2 }, trades: 3, pending: 420,
@@ -82,14 +83,17 @@ async function open(ctxOpts) {
     localStorage.clear()
     localStorage.setItem('hliq_lang', 'en'); localStorage.setItem('hliq_onboard_done', '1')
     localStorage.setItem('hliq_lang_chosen', '1'); localStorage.setItem('hliq_onboard_welcomed_v1', '1')
+    localStorage.setItem('hliq_sub_unlocked', '1')
   })
   await p.reload({ waitUntil: 'domcontentloaded' })
-  await waitFor(p, 'boot', () => !!window.__openAgents)
+  await waitFor(p, 'boot', () => !!window.__openAgents && !!window.__goPaper)
+  // A tab lives inside the app, so open one: the paper account needs no wallet.
+  await p.evaluate(() => window.__goPaper())
   await p.evaluate(() => document.querySelectorAll('#annModal, #langChooseModal, #onboardSheet').forEach(e => e.remove()))
   return { ctx, p }
 }
 
-const board = (p) => p.evaluate(() => [...document.querySelectorAll('#agentArenaOverlay .ag-card')].map(c => ({ id: c.dataset.ag, ret: c.querySelector('.ag-ret')?.textContent.trim() })))
+const board = (p) => p.evaluate(() => [...document.querySelectorAll('#agentArena .ag-card')].map(c => ({ id: c.dataset.ag, ret: c.querySelector('.ag-ret')?.textContent.trim() })))
 
 const errs = []
 const browser = await chromium.launch()
@@ -98,20 +102,28 @@ for (const [label, opts] of [['phone', { ...devices['iPhone 14 Pro'] }], ['deskt
   console.log(`\n-- ${label} --`)
   answer = { status: 200, json: SUMMARY }
   const { ctx, p } = await open(opts)
-  t(`${label}: More has an Agent Arena entry`, await p.evaluate(() => !!document.querySelector('#mobMoreDrawer button[onclick="window.__openAgents()"]')), true)
-  if (label === 'desktop') t('desktop: and the sidebar has one, visible', await p.evaluate(() => { const e = document.querySelector('.sidebar-item[onclick="window.__openAgents()"]'); return !!e && e.offsetParent !== null }), true)
-  await p.evaluate(() => window.__openAgents())
-  await waitFor(p, 'the board', () => document.querySelectorAll('#agentArenaOverlay .ag-card').length === 6)
+  t(`${label}: More has an Agent Arena entry`, await p.evaluate(() => !!document.querySelector(`#mobMoreDrawer button[onclick="window.__mobMoreTab('agents')"]`)), true)
+  if (label === 'desktop') {
+    t('desktop: and the sidebar has one, visible', await p.evaluate(() => { const e = document.querySelector('.sidebar-item[data-tab="agents"]'); return !!e && e.offsetParent !== null }), true)
+    await p.evaluate(() => document.querySelector('.sidebar-item[data-tab="agents"]').click())   // the sidebar scrolls; the row may be below its fold
+  } else await p.evaluate(() => window.__mobMoreTab('agents'))
+  await waitFor(p, 'the board', () => document.querySelectorAll('#agentArena .ag-card').length === 6)
+  // "not take the whole window and behave like all tabs": in the page, the app's own navigation still there.
+  t(`${label}: a tab, not an overlay over the app`, await p.evaluate(() => {
+    const r = document.getElementById('agentArena')
+    const nav = document.querySelector(innerWidth > 900 ? '.sidebar-item.active[data-tab="agents"]' : '#mobVBotMore')   // the sidebar is fixed, so ask its size, not offsetParent
+    return [!!r.closest(innerWidth > 900 ? '#tab-agents.active' : '#mobVContent'), getComputedStyle(r).position !== 'fixed', !!nav && nav.getBoundingClientRect().width > 0]
+  }), [true, true, true])
   const b = await board(p)
   t(`${label}: ranked by return, best first`, b.map(x => x.id), ['momentum', 'rekt01', 'hodl', 'oracle', 'funding', 'dip'])
   t(`${label}: returns signed`, b.map(x => x.ret), ['+6.20%', '+3.00%', '+2.00%', '+1.50%', '+0.40%', '−3.10%'])
   t(`${label}: HODL BTC is marked as the benchmark`, await p.evaluate(() => /benchmark/.test(document.querySelector('.ag-card[data-ag="hodl"] .ag-name')?.textContent ?? '')), true)
   t(`${label}: every other agent says how far it is from HODL`, await p.evaluate(() => document.querySelector('.ag-card[data-ag="momentum"] .ag-stats')?.textContent.includes('+4.20%')), true)
   t(`${label}: a dot keeps the agent's colour, whatever its rank`, await p.evaluate((c) => getComputedStyle(document.querySelector('.ag-card[data-ag="momentum"] .ag-name i')).backgroundColor, AGENTS.find(a => a.id === 'momentum').color), 'rgb(167, 139, 250)')
-  t(`${label}: the chart has a line per agent and a legend`, await p.evaluate(() => [document.querySelectorAll('#agentArenaOverlay .ag-chart svg path').length, document.querySelectorAll('#agentArenaOverlay .ag-leg').length]), [6, 6])
+  t(`${label}: the chart has a line per agent and a legend`, await p.evaluate(() => [document.querySelectorAll('#agentArena .ag-chart svg path').length, document.querySelectorAll('#agentArena .ag-leg').length]), [6, 6])
 
   // Hover the middle of the chart: the readout lists all five, best first.
-  const box = await p.locator('#agentArenaOverlay .ag-chart svg').boundingBox()
+  const box = await p.locator('#agentArena .ag-chart svg').boundingBox()
   await p.mouse.move(box.x + box.width * 0.75, box.y + box.height / 2)
   await waitFor(p, 'the readout', () => getComputedStyle(document.querySelector('.ag-tip')).display !== 'none', null, 4000)
   t(`${label}: hovering the chart reads every agent at that time`, await p.evaluate(() => document.querySelectorAll('.ag-tip > div i').length), 6)
@@ -120,12 +132,20 @@ for (const [label, opts] of [['phone', { ...devices['iPhone 14 Pro'] }], ['deskt
   await waitFor(p, 'the card opens', () => !!document.querySelector('.ag-card[data-ag="momentum"] .ag-body'))
   const body = await p.evaluate(() => {
     const c = document.querySelector('.ag-card[data-ag="momentum"]')
-    return { rules: /30-day trends/.test(c.querySelector('.ag-blurb')?.textContent ?? ''), pos: c.querySelectorAll('.ag-body table:not(.ag-journal) tbody tr').length,
-      stop: c.querySelector('.ag-body table:not(.ag-journal) tbody tr td:last-child')?.textContent, jr: c.querySelectorAll('.ag-journal tbody tr').length,
+    return { rules: /30-day trends/.test(c.querySelector('.ag-blurb')?.textContent ?? ''), pos: c.querySelectorAll('.ag-pos').length,
+      stop: /Stop132\.000/.test(c.querySelector('.ag-pos').textContent), jr: c.querySelectorAll('.ag-journal tbody tr').length,
       stopped: /Stopped/.test(c.querySelector('.ag-journal')?.textContent ?? ''), loss: c.querySelector('.ag-j-stop .neg')?.textContent, why: /among the strongest/.test(c.textContent),
       drag: [...c.querySelectorAll('.ag-tbl-wrap')].every(w => w.hasAttribute('data-dragscroll')) }
   })
-  t(`${label}: a card opens to its rules, positions (with stops) and journal`, body, { rules: true, pos: 2, stop: '132.000', jr: 2, stopped: true, loss: '−$42.50', why: true, drag: true })
+  t(`${label}: a card opens to its rules, positions (with stops) and journal`, body, { rules: true, pos: 2, stop: true, jr: 2, stopped: true, loss: '−$42.50', why: true, drag: true })
+  // "we missing important data like liq price, size in tokens, etc" — on the card, open or not.
+  const kvOf = (coin) => p.evaluate((coin) => { const e = [...document.querySelectorAll('.ag-card[data-ag="momentum"] .ag-pos')].find(x => x.querySelector('.ag-pos-h b').textContent === coin)
+    return Object.fromEntries([...e.querySelectorAll('.ag-kv > span')].map(s => [s.querySelector('small').textContent, s.querySelector('b').textContent.replace(/\s+/g, ' ').trim()])) }, coin)
+  const sol = await kvOf('SOL'), doge = await kvOf('DOGE')
+  t(`${label}: a position shows size in tokens, liq price and how far, margin, stop, take profit, funding`, [sol.Size, sol['Liq. price'], sol.Margin, sol.Stop, sol['Take profit'], sol.Funding], ['3.2 SOL', '80.500 48.1%', '$248.00', '132.000', '180.000', '−$0.42'])
+  t(`${label}: no liquidation price is "None", not 0; a short's size in its tokens`, [doge['Liq. price'], doge.Size], ['None', '2,000 DOGE'])
+  t(`${label}: the card adds unrealized, realized, exposure, margin and free cash`, await p.evaluate(() => { const s = document.querySelector('.ag-card[data-ag="momentum"] .ag-stats').textContent.replace(/\s+/g, ' ')
+    return ['Unrealized PnL+$36.00', 'Realized PnL+$45.50', 'Exposure$876', 'Margin used$438.00', 'Free cash$300.00'].filter(x => !s.includes(x)) }), [])
   t(`${label}: it fits, no sideways page scroll`, await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.querySelector('.ag-scroll').scrollWidth <= document.querySelector('.ag-scroll').clientWidth), true)
   if (SHOT) await p.screenshot({ path: `${SHOT}/agents-${label}.png` })
 
@@ -142,8 +162,8 @@ for (const [label, opts] of [['phone', { ...devices['iPhone 14 Pro'] }], ['deskt
   t(`${label}: without dev mode its settings are read-only`, [rk.form, rk.ro, rk.hint], [false, true, true])
   t(`${label}: without dev mode: its status, no controls`, [rk.st, rk.ctl], ['Running', 0])
   if (SHOT) await p.locator('.ag-card[data-ag="rekt01"]').screenshot({ path: `${SHOT}/rekt-${label}.png` })
-  await p.click('[data-ag-close]')
-  t(`${label}: × closes it`, await p.evaluate(() => getComputedStyle(document.getElementById('agentArenaOverlay')).display), 'none')
+  await p.click('#agentArena >> xpath=.. >> button[aria-label="Close"]')
+  t(`${label}: × leaves it, like any tab`, await p.evaluate(() => { const r = document.getElementById('agentArena'); return !r || r.offsetParent === null }), true)
 
   // Dev mode: the form, and a save that carries the PIN and the values typed.
   await p.evaluate(() => { localStorage.setItem('hliq_dev', '1'); localStorage.setItem('hliq_lb_pin', 'test-pin') })
@@ -181,15 +201,15 @@ for (const [label, opts] of [['phone', { ...devices['iPhone 14 Pro'] }], ['deskt
   t(`${label}: OK sends it`, ctl.at(-1), ['test-pin', 'clear'])
   await ctx.unroute('**/agents-control')
   if (SHOT) await p.locator('.ag-card[data-ag="rekt01"] .rk-form').screenshot({ path: `${SHOT}/rekt-form-${label}.png` })
-  await p.click('[data-ag-close]')
+  await p.click('#agentArena >> xpath=.. >> button[aria-label="Close"]')
   await ctx.unroute('**/agents-data')
   await ctx.route('**/agents-data', r => r.fulfill({ status: answer.status, contentType: 'application/json', json: answer.json }))
 
   // Before the server's first run the answer is unknown, and the screen says so — not "no agents".
   answer = { status: 503, json: { agents: null } }
   await p.evaluate(() => window.__openAgents())
-  await waitFor(p, 'the starting message', () => /starting up/.test(document.querySelector('#agentArenaOverlay .ag-scroll')?.textContent ?? ''), null, 8000)
-  t(`${label}: before the first run it says the agents are starting`, await p.evaluate(() => /starting up/.test(document.querySelector('#agentArenaOverlay .ag-scroll').textContent)), true)
+  await waitFor(p, 'the starting message', () => /starting up/.test(document.querySelector('#agentArena .ag-scroll')?.textContent ?? ''), null, 8000)
+  t(`${label}: before the first run it says the agents are starting`, await p.evaluate(() => /starting up/.test(document.querySelector('#agentArena .ag-scroll').textContent)), true)
   await ctx.close()
 }
 
