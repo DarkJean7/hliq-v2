@@ -135,12 +135,12 @@ function cardHtml(a, hodl, rank) {
       ${kv(T('Free cash', 'Disponible'), Number.isFinite(a.cash) ? usd(a.cash) : '—')}
       ${kv(T('Open', 'Abiertas'), `${ps.length}/${a.max}`)}
     </div>
-    ${pos ? `<div class="ag-poss">${pos}</div>` : ''}
-    ${isOpen ? `<div class="ag-body">
+    ${isOpen ?`<div class="ag-body">
       <p class="ag-blurb">${esc(T(a.blurb?.[0] ?? '', a.blurb?.[1] ?? a.blurb?.[0] ?? ''))}</p>
       <p class="ag-when">${a.last ? T(`Last look ${ago(now - a.last, T)} ago`, `Última revisión hace ${ago(now - a.last, T)}`) : ''}${a.next ? ` · ${T('next', 'próxima')} ${a.next <= now ? T('within a minute', 'en un minuto') : T(`in ${ago(a.next - now, T)}`, `en ${ago(a.next - now, T)}`)}` : ''} · ${a.lev}× · ${T(`up to ${a.max} positions`, `hasta ${a.max} posiciones`)}</p>
       ${a.personal ? rektHtml(a, { T, dev: isDevMode(), draft: rkDraft, status: rkStatus, ctlStatus: rkCtl, width: chartWidth() - 24 }) : ''}
-      ${pos ? '' : `<p class="ag-none">${T('Flat — nothing qualifies right now.', 'Sin posiciones — nada califica ahora mismo.')}</p>`}
+      <h4>${T('Positions', 'Posiciones')}</h4>
+      ${pos ? `<div class="ag-poss">${pos}</div>` : `<p class="ag-none">${T('Flat — nothing qualifies right now.', 'Sin posiciones — nada califica ahora mismo.')}</p>`}
       <h4>${T('Journal', 'Diario')}</h4>
       ${jr ? `<div class="ag-tbl-wrap" data-dragscroll><table class="ag-tbl ag-journal"><thead><tr><th>${T('When', 'Cuándo')}</th><th>${T('Action', 'Acción')}</th><th>${T('Market', 'Mercado')}</th><th>${T('Price', 'Precio')}</th><th>PnL</th><th>${T('Why', 'Por qué')}</th></tr></thead><tbody>${jr}</tbody></table></div>` : `<p class="ag-none">${T('No trades yet.', 'Aún sin operaciones.')}</p>`}
     </div>` : ''}

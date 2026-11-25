@@ -138,7 +138,8 @@ for (const [label, opts] of [['phone', { ...devices['iPhone 14 Pro'] }], ['deskt
       drag: [...c.querySelectorAll('.ag-tbl-wrap')].every(w => w.hasAttribute('data-dragscroll')) }
   })
   t(`${label}: a card opens to its rules, positions (with stops) and journal`, body, { rules: true, pos: 2, stop: true, jr: 2, stopped: true, loss: '−$42.50', why: true, drag: true })
-  // "we missing important data like liq price, size in tokens, etc" — on the card, open or not.
+  // "we missing important data like liq price, size in tokens, etc" — inside the opened card ("unexpand the positions": closed cards list none).
+  t(`${label}: a closed card lists no positions`, await p.evaluate(() => document.querySelectorAll('.ag-card:not(.open) .ag-pos').length), 0)
   const kvOf = (coin) => p.evaluate((coin) => { const e = [...document.querySelectorAll('.ag-card[data-ag="momentum"] .ag-pos')].find(x => x.querySelector('.ag-pos-h b').textContent === coin)
     return Object.fromEntries([...e.querySelectorAll('.ag-kv > span')].map(s => [s.querySelector('small').textContent, s.querySelector('b').textContent.replace(/\s+/g, ' ').trim()])) }, coin)
   const sol = await kvOf('SOL'), doge = await kvOf('DOGE')

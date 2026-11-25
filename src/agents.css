@@ -36,7 +36,7 @@
 .ag-stats b, .ag-kv b { font-weight: 600; white-space: nowrap; }
 .ag-dim { font-style: normal; color: var(--muted); font-size: 10.5px; }
 /* Open positions: always on the card, everything the Trade screen's position row has. */
-.ag-poss { display: flex; flex-direction: column; gap: 6px; padding: 0 12px 11px 36px; }
+.ag-poss { display: flex; flex-direction: column; gap: 6px; padding: 0; }
 .ag-pos { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: color-mix(in srgb, var(--bg) 40%, transparent); }
 .ag-pos-h { display: flex; align-items: baseline; gap: 8px; font-size: 13px; margin-bottom: 6px; }
 .ag-side { font-size: 11.5px; font-weight: 600; }
@@ -45,7 +45,7 @@
 .ag-kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px 12px; font-size: 11.5px; font-family: var(--font-mono, monospace); }
 .ag-liq b { color: var(--warn, #f5a524); }
 @media (max-width: 520px) {
-  .ag-stats, .ag-poss { padding-left: 12px; }
+  .ag-stats { padding-left: 12px; }
   .ag-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .ag-kv { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .ag-stats b, .ag-kv b { white-space: normal; word-break: break-word; }
