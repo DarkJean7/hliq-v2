@@ -23,6 +23,7 @@ import { KNOWN, knownRow } from './src/lbknown.js'
 import { emptyLog, cleanSubmission, addEntry, dueEntries, gradeDue, recordOf, compact, hasEntry, OL_HOURS } from './src/outlooklog.js'
 import { createOracleLogger } from './src/oraclelogger.js'
 import { createAgentRunner, latestReadings } from './src/agentrunner.js'
+import { paperBoard, isAgentName } from './src/paperboard.js'
 import { fetchQuotes, normAnyAddr, normTokenAddr, pickDeepest, normNet, quoteKey, dsFindUrl, pickNetwork, MAX_PER_REQUEST as OFFEX_MAX } from './src/offex.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -1363,6 +1364,47 @@ createServer((req, res) => {
       // Applied now when this worker holds the lease and is not mid-run; otherwise within a minute.
       try { await agentRunner.tick() } catch {}
       return send(200, { ok: true, config })
+    })()
+    return
+  }
+
+  // ── /paper-board: the paper leaderboard, as the app reads it (src/paperboard.js) ──────────
+  // hliq-strat keeps the posted rows (/api/leaderboard/paper, which nginx sends straight there);
+  // this adds the arena agents and leaves quiet accounts off. Here rather than in server.js so
+  // shipping it never restarts a bot. Posting, hiding and removing still go to /api.
+  if (url === '/paper-board' || url === '/paper-board/one') {
+    if (req.method !== 'GET') { res.writeHead(405).end(); return }
+    const send = (code, obj) => res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify(obj))
+    const q = new URL(req.url, 'http://x').searchParams
+    const pin = req.headers['x-lb-pin'] ? { 'x-lb-pin': String(req.headers['x-lb-pin']).slice(0, 200) } : {}
+    let board = null
+    try { board = JSON.parse(readFileSync(agentRunner.boardFile, 'utf8')) } catch {}
+    const agents = (board?.agents ?? []).filter(a => !a.hidden)
+    ;(async () => {
+      if (url === '/paper-board/one') {
+        const name = String(q.get('name') ?? '').slice(0, 64)
+        if (isAgentName(name)) {
+          const a = agents.find(x => x.row.name.toLowerCase() === name.trim().toLowerCase())
+          if (!a) return send(404, { error: 'no such paper account' })
+          const since = Number(q.get('since') ?? 0) || 0
+          return send(200, { ok: true, row: a.row, fills: a.fills.filter(x => x.time > since), simulated: true, agent: true })
+        }
+        try {
+          const r = await fetch(`http://127.0.0.1:${API_PORT}/api/leaderboard/paper/one?${q}`, { headers: pin })
+          return send(r.status, await r.json())
+        } catch { return send(502, { error: 'paper board unreachable' }) }
+      }
+      let posted
+      try {
+        const r = await fetch(`http://127.0.0.1:${API_PORT}/api/leaderboard/paper`, { headers: pin })
+        if (!r.ok) throw new Error()
+        posted = await r.json()
+      } catch {
+        // Not "the agents are the whole board": the people's rows are unknown, so say so.
+        return send(502, { error: 'paper board unreachable' })
+      }
+      const { rows, quiet } = paperBoard(posted.rows, agents.map(a => a.row), Date.now())
+      return send(200, { rows, quiet, simulated: true, updatedAt: posted.updatedAt ?? Date.now() })
     })()
     return
   }

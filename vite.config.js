@@ -285,6 +285,18 @@ function strategyPlugin() {
         if (method === 'GET' && path === '/agents-data') return sendJson(res, 503, { agents: null })
         if (method === 'POST' && path === '/agents-config') return sendJson(res, 503, { error: 'the agents run only on the server' })
         if (method === 'POST' && path === '/agents-control') return sendJson(res, 503, { error: 'the agents run only on the server' })
+        // Dev twin of serve-prod.js /paper-board: the posted rows from a local strategy server when
+        // one runs, quiet ones left off; the agents run only on the server, so none here.
+        if (method === 'GET' && (path === '/paper-board' || path === '/paper-board/one')) {
+          const PB = await import('./src/paperboard.js')
+          const q = new URL(req.url, 'http://x').searchParams
+          try {
+            const r = await fetch('http://127.0.0.1:3002/api/leaderboard/paper' + (path.endsWith('/one') ? '/one?' + q : ''))
+            const j = await r.json()
+            if (path.endsWith('/one')) return sendJson(res, r.status, j)
+            return sendJson(res, 200, { ...PB.paperBoard(j.rows, [], Date.now()), simulated: true, updatedAt: j.updatedAt })
+          } catch { return sendJson(res, 502, { error: 'paper board unreachable' }) }
+        }
         // Dev twin of serve-prod.js /lb-known (in memory, 3 minutes, unpaced -- dev only).
         if (method === 'GET' && path === '/lb-known') {
           const K = await import('./src/lbknown.js')

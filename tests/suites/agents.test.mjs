@@ -95,6 +95,12 @@ try {
   const s1 = JSON.parse(fs.readFileSync(runner.summaryFile, 'utf8'))
   const by = Object.fromEntries(s1.agents.map(a => [a.id, a]))
   t('summary: all six agents (five house + Rekt-01), each starting at $1,000', s1.agents.length === 6 && s1.agents.every(a => a.start === 1000))
+  // "add the agents to the paper leaderboard with their names and besides the name "(agent)""
+  const b1 = JSON.parse(fs.readFileSync(runner.boardFile, 'utf8'))
+  const bh = b1.agents.find(a => a.id === 'hodl')
+  t('board: every agent as a paper row named "<name> (agent)"', b1.agents.length === 6 && b1.agents.every(a => a.row.agent && a.row.name.endsWith(' (agent)')) && bh.row.name === 'HODL BTC (agent)', b1.agents.map(a => a.row.name))
+  t('board: the row a person\'s account posts — equity, PnL, track, HL-shaped positions', Math.abs(bh.row.equity - by.hodl.equity) < 1e-6 && Number.isFinite(bh.row.pnl) && bh.row.track && bh.row.positions[0]?.position?.coin === 'BTC' && Number.isFinite(bh.row.healthPct), bh.row)
+  t('board: its trades, for Visit — open fills with tid and startPosition', bh.fills.length === 1 && bh.fills[0].tid && bh.fills[0].startPosition === '0', bh.fills)
   t('hodl bought BTC at 1×', by.hodl.positions.length === 1 && by.hodl.positions[0].coin === 'BTC' && by.hodl.positions[0].lev === 1, by.hodl.positions)
   t('oracle opened C0 long with a stop', by.oracle.positions.some(p => p.coin === 'C0' && p.szi > 0) && by.oracle.stops.some(s => s.coin === 'C0'), by.oracle)
   t('momentum opened four, every one with a stop', by.momentum.positions.length === 4 && by.momentum.stops.length === 4, by.momentum.positions)

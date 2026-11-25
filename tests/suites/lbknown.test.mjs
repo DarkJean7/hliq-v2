@@ -45,7 +45,7 @@ const main = fs.readFileSync('src/main.js', 'utf8')
 t('Popular sits between Real and Paper, on both shells',
   (main.match(/tab\('real', 'Real'\)\}\$\{tab\('popular', '⭐ Popular'\)\}\$\{tab\('paper', '📝 Paper'\)\}/g) ?? []).length === 2)
 t('drawn by the Real board\'s renderers', /_mobVBuildLbHtml\(_lbKnownRows\(\), \{ known: true \}\)/.test(main) && /_lbRowHtml\(r, i \+ 1, _lbSortDir < 0\)/.test(main))
-t('a known row offers no remove / hide (it is not on the real board)', /\} else if \(r\.addr && !opts\.known\) \{/.test(main) && /\$\{entry\.known \? '' : isP \? `/.test(main))
+t('a known row offers no remove / hide (it is not on the real board)', /\} else if \(r\.addr && !opts\.known\) \{/.test(main) && /\$\{entry\.known \|\| entry\._agent \? '' : isP \? `/.test(main))
 t('a late real-board load does not paint over Popular (phone)', /_mobVActiveTab !== 'leaderboard' \|\| _lbMode !== 'real'\) return/.test(main))
 const srv = fs.readFileSync('serve-prod.js', 'utf8')
 t('serve-prod builds the rows live, one request at a time', /url === '\/lb-known'/.test(srv) && /knownRow\(addr, portfolio, cs\)/.test(srv) && /POP_GAP/.test(srv))

@@ -24,6 +24,10 @@ import { randomBytes } from 'node:crypto'
 import { AGENTS, planOf, sizeFor, maxDrawdown, thin } from './agents.js'
 import { marketFor } from './paperhost.js'
 import { rektAgent, cleanConfig, initLearn } from './rekt.js'
+import { tradeWindows } from './tradegroup.js'
+import { trackRecord, openLossOf, holdsStep } from './trackrecord.js'
+import { posHealthPct } from './posgroup.js'
+import { agentName } from './paperboard.js'
 
 /** Rekt-01's controls (POST /agents-control, dev mode): what each sets its status to. */
 export const CONTROLS = { start: 'running', pause: 'paused', stop: 'stopped', restart: 'running', clear: null }
@@ -49,6 +53,8 @@ export const ALL_AGENTS = [...AGENTS, rektAgent]
 export function createAgentRunner({ dir, paperHost, post, readings = () => ({}), oracleDir, now = () => Date.now(), log = console, agents = ALL_AGENTS, rng = Math.random }) {
   mkdirSync(dir, { recursive: true })
   const SECRET = join(dir, 'secret'), STATE = join(dir, 'state.json'), SUMMARY = join(dir, 'summary.json'), LEASE = join(dir, 'lease')
+  // The agents' rows on the paper leaderboard, and their trades for its Visit view (src/paperboard.js).
+  const BOARD = join(dir, 'board.json')
   // Rekt-01's settings (src/rekt.js), written by POST /agents-config in dev mode, read every run.
   const CONFIG = join(dir, 'rekt-config.json')
   const configOf = () => cleanConfig(readJson(CONFIG) ?? {})
@@ -238,11 +244,41 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
     if (action === 'start' || action === 'restart') as.last = 0
   }
 
+  /**
+   * One agent as a paper-board row — the fields and the track record main.js _lbPaperPayload
+   * posts for a person's account, from the same modules, so the board and its Visit view render
+   * it with no special case.
+   */
+  function boardRow(P, a) {
+    const s = P.paperStore()
+    const pos = P.paperPerpState().assetPositions
+    const fills = s.fills ?? []
+    const closed = fills.filter(f => parseFloat(f.closedPnl ?? 0) !== 0)
+    const track = trackRecord({
+      windows: tradeWindows(closed), portfolio: P.paperPortfolio(),
+      lastFillAt: fills.reduce((m, f) => Math.max(m, +f.time || 0), 0) || null,
+      openLoss: openLossOf(pos), holds: holdsStep(null, fills),
+    })
+    const health = pos.map(({ position: p }) => posHealthPct(p.szi, p.entryPx, p.liquidationPx, P.paperMark(p.coin))).filter(Number.isFinite)
+    return {
+      row: {
+        name: agentName(a.name), agent: true, agentId: a.id,
+        equity: P.paperEquity(), pnl: P.paperPnl(), trades: track.trades, wins: track.wins, track,
+        unrealizedPnl: pos.reduce((x, ap) => x + parseFloat(ap.position?.unrealizedPnl ?? 0), 0),
+        realizedPnl: closed.reduce((x, f) => x + parseFloat(f.closedPnl ?? 0), 0),
+        volume: fills.reduce((x, f) => x + Math.abs(parseFloat(f.sz ?? 0)) * parseFloat(f.px ?? 0), 0),
+        healthPct: health.length ? Math.min(...health) : 100,
+        positions: pos, openOrders: P.paperOpenOrders(), created: s.created ?? null,
+      },
+      fills: fills.slice(0, 200).map(f => ({ coin: f.coin, tid: f.tid, time: f.time, side: f.side, px: f.px, sz: f.sz, closedPnl: f.closedPnl, fee: f.fee, startPosition: f.startPosition ?? null, dir: f.dir })),
+    }
+  }
+
   /** The board: every agent's account now, its curve and its journal → dir/summary.json. */
   function summarize(st, mk) {
     const t = now()
     const cfg = configOf()
-    const rows = []
+    const rows = [], boards = []
     for (const a of agents) {
       const as = agentState(st, a.id)
       const acct = paperHost.withStore(secretOf(), a.id, mk, (P) => {
@@ -252,8 +288,10 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
           equity: P.paperEquity(), deposited: P.paperDeposited(),
           positions: ps.assetPositions.map(({ position: p }) => ({ coin: p.coin, szi: Number(p.szi), entryPx: Number(p.entryPx), mark: P.paperMark(p.coin), upnl: Number(p.unrealizedPnl), lev: p.leverage?.value ?? null, value: Number(p.positionValue) })),
           stops: P.paperStore().orders.filter(o => o.isTrigger).map(o => ({ coin: o.coin, px: o.triggerPx })),
+          board: boardRow(P, a),
         }
       })
+      boards.push({ id: a.id, hidden: a.personal ? !cfg.arena : false, row: { ...acct.board.row, updated: t }, fills: acct.board.fills })
       const lastPt = as.curve.at(-1)
       if (!lastPt || t - lastPt[0] >= HOUR) as.curve.push([t, acct.equity])
       const closed = as.journal.filter(j => (j.kind === 'close' || j.kind === 'stop') && Number.isFinite(j.pnl))
@@ -268,6 +306,7 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
       })
     }
     writeJson(SUMMARY, { at: t, started: st.started, agents: rows })
+    writeJson(BOARD, { at: t, agents: boards })
   }
 
   let busy = false, lastSummary = 0
@@ -310,7 +349,7 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
     } finally { busy = false }
   }
 
-  return { tick, secret: secretOf, summaryFile: SUMMARY, configOf, saveConfig, control, _state: () => readJson(STATE) }
+  return { tick, secret: secretOf, summaryFile: SUMMARY, boardFile: BOARD, configOf, saveConfig, control, _state: () => readJson(STATE) }
 }
 
 /** The latest 24h call per market from the Oracle's log entries ({ coin, hours, score, sigma, t }). */

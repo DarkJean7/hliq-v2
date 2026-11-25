@@ -23185,6 +23185,7 @@ async function _lbSetMyVisibility(addr, hidden) {
 // says plainly that these numbers are not verified.
 let _lbMode        = 'real'     // 'real' | 'paper' | 'popular'
 let _lbPaperRows   = []
+let _lbPaperQuiet  = new Set()   // names /paper-board left off as quiet (src/paperboard.js)
 let _lbPaperLoaded = 0
 
 window._mobVLbMode = function(mode) {
@@ -23209,8 +23210,11 @@ async function _lbPaperFetch(el) {
   }
   try {
     const pin = isDev() ? _lbGetPin() : ''
-    const r = await fetch('/api/leaderboard/paper', pin ? { headers: { 'x-lb-pin': pin } } : undefined).then(x => x.json())
+    // /paper-board (serve-prod.js, src/paperboard.js): the posted rows plus the arena agents,
+    // less the accounts that have gone quiet. A failure throws, keeping the rows already shown.
+    const r = await fetch('/paper-board', pin ? { headers: { 'x-lb-pin': pin } } : undefined).then(x => { if (!x.ok) throw new Error(); return x.json() })
     _lbPaperRows   = r?.rows ?? []
+    _lbPaperQuiet  = new Set((r?.quiet ?? []).map(n => String(n).toLowerCase()))
     _lbPaperLoaded = Date.now()
   } catch { /* keep the rows we already have rather than blanking the board */ }
   finally { _lbPaperFetching = false }
@@ -23221,13 +23225,15 @@ async function _lbPaperFetch(el) {
   // the local numbers to change — otherwise a missing row stays missing forever.
   if (isPaper() && localStorage.getItem('hliq_paper_lb_optout') !== '1' && !_lbHealFailed) {
     const mine = _lbPaperName().toLowerCase()
-    if (!_lbPaperRows.some(r => String(r.name ?? '').toLowerCase() === mine)) {
+    // Left off for being quiet (no position, no trade in two weeks) is not lost: re-posting it
+    // would only be left off again, on every view.
+    if (!_lbPaperQuiet.has(mine) && !_lbPaperRows.some(r => String(r.name ?? '').toLowerCase() === mine)) {
       const r = await _lbPaperSync(true)
       // A rejected re-post (name taken, rate limited) must not retry on every view.
       if (r && !r.ok) _lbHealFailed = true
       if (r?.ok) {
         try {
-          const fresh = await fetch('/api/leaderboard/paper').then(x => x.json())
+          const fresh = await fetch('/paper-board').then(x => { if (!x.ok) throw new Error(); return x.json() })
           _lbPaperRows = fresh?.rows ?? _lbPaperRows
           _lbPaperLoaded = Date.now()
           if (el && _mobVActiveTab === 'leaderboard' && _lbMode === 'paper') el.innerHTML = _lbPaperHtml()
@@ -23379,6 +23385,9 @@ function _lbPaperRowsMapped() {
     _slot: slots[String(r.name ?? '').toLowerCase()] ?? null,   // set only for this device's accounts
     paper: true,
     hidden: !!r.hidden,
+    // An Agent Arena agent (src/paperboard.js): run by the server, not posted by anyone, so it
+    // has no owner to hide or remove it, and the copy bot cannot follow it yet.
+    _agent: !!r.agent,
     track: r.track ?? null,
 
     accountValue:  r.equity ?? 0,
@@ -23428,7 +23437,8 @@ window.__paperVisit = async function(name) {
   ov.scrollTop = 0
   ov.innerHTML = `<div class="mob-v-empty" style="padding:40px 16px">${_T('Loading…', 'Cargando…')}</div>`
   let data = null
-  try { data = await fetch('/api/leaderboard/paper/one?name=' + encodeURIComponent(name)).then(r => r.json()) } catch {}
+  // /paper-board/one answers for the arena agents too (serve-prod.js); anyone else is passed on.
+  try { data = await fetch('/paper-board/one?name=' + encodeURIComponent(name)).then(r => r.json()) } catch {}
   if (!data?.ok) {
     ov.innerHTML = `<div style="padding:14px 16px;display:flex;justify-content:space-between">
       <span style="font-size:18px;font-weight:700">${esc(name)}</span>
@@ -23444,7 +23454,7 @@ window.__paperVisit = async function(name) {
   // The same row shape the board builds, so the track record and the sub-rows below are the
   // very same renderers a real account gets.
   const asRow = {
-    addr: PAPER_ADDR, _pname: row.name, _slot: slot ?? null, paper: true, track: row.track ?? null,
+    addr: PAPER_ADDR, _pname: row.name, _slot: slot ?? null, paper: true, _agent: !!row.agent, track: row.track ?? null,
     accountValue: row.equity ?? 0, netPnl: row.pnl ?? 0,
     unrealizedPnl: row.unrealizedPnl ?? 0, realizedPnl: row.realizedPnl ?? 0,
     totalVolume: row.volume ?? 0, healthPct: row.healthPct ?? 0,
@@ -23524,7 +23534,9 @@ function _lbPaperSocialHtml(r) {
   const copy = btn(`navigator.clipboard?.writeText(decodeURIComponent('${enc}')).then(()=>_paperToast(_T('Name copied','Nombre copiado')))`, '⧉', _T('Copy', 'Copiar'))
   // A paper account CAN be followed now: its owner posts its trades with its board row, and
   // the bot reads them from there. The orders it places on your account are real.
-  const ct = _stratsUnlocked()
+  // Not an agent: the copy bot reads its leader from hliq-strat, which does not know them.
+  const ct = r._agent ? ''
+    : _stratsUnlocked()
     ? btn(`window.__lbCopyTrade('', decodeURIComponent('${enc}'), { paper: decodeURIComponent('${enc}') })`, '⇄', _T('Copy trade', 'Copiar ops'), true)
     : btn(`window.__subOpenPaywall()`, '🔒', _T('Copy trade', 'Copiar ops'))
   return `<div style="display:flex;gap:7px;padding:11px 16px;background:var(--panel-2);border-bottom:1px solid rgba(255,255,255,0.04)" data-name="${nm}">
@@ -24241,7 +24253,7 @@ function _mobVBuildLbHtml(results, opts = {}) {
     } else if (opts.paper) {
       const pname = r._pname ?? ''
       const owner = !!pname && !!r._slot
-      if (pname && (dev || owner)) {
+      if (pname && !r._agent && (dev || owner)) {
         const via = dev ? 'dev' : 'owner'   // dev mode → PIN (works on any row); else owner secret
         // The same pair as a real row: Hide (dev only) beside Remove.
         const hideBtn = dev
@@ -36009,7 +36021,7 @@ function _lbRowHtml(entry, rank, podium = true) {
               </span>
             </div>
           </div>
-          ${entry.known ? '' : isP ? `
+          ${entry.known || entry._agent ? '' : isP ? `
           ${entry._slot && isPaper() && entry._slot === paperSlot() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__paperRename()">✎ Rename</button>` : ''}
           ${isDev() ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbPaperToggleHide('${encodeURIComponent(entry._pname)}',${entry.hidden ? 'false' : 'true'})">${entry.hidden ? '👁 Unhide' : '🙈 Hide'}</button>` : ''}
           ${(isDev() || entry._slot) ? `<button class="lb-rename-btn" onclick="event.stopPropagation();window.__lbPaperRemove('${encodeURIComponent(entry._pname)}','${isDev() ? 'dev' : 'owner'}')">🗑 Remove</button>` : ''}

@@ -107,7 +107,7 @@ console.log(nl + '-- the row’s three buttons all work now --')
 console.log(nl + '-- the profile is built from the same renderers a real row uses --')
 {
   const v = grab(cli, 'window.__paperVisit = async function(name)')
-  t('it reads the one-account endpoint', v.includes("fetch('/api/leaderboard/paper/one?name='"))
+  t('it reads the one-account endpoint', v.includes("fetch('/paper-board/one?name='"))
   t('a missing account says so instead of hanging', v.includes('no longer on the board'))
   t('the track record is the same block', v.includes('_lbTrackHtml(asRow)'))
   t('positions and orders are the same sub-rows', v.includes('_mobVSubPosRow(ap,') && v.includes('_mobVSubOrdRow(o,'))
