@@ -303,6 +303,13 @@ import { pnlCurveFactor } from './pfnet.js'
 import { createJoiner, ownedAddresses, joinMessage } from './lbjoin.js'
 import { initNavGroups } from './navgroups.js'
 import { trialMessage, payFromMessage } from './ownerproof.js'
+import { guardFetch, checkStoredPin } from './pinguard.js'
+// A PIN the server has stopped accepting must not empty the page (src/pinguard.js).
+let _pinLockToasted = false
+window.fetch = guardFetch(window.fetch.bind(window), {
+  clearPin: () => { try { localStorage.removeItem('hliq_lb_pin') } catch {} },
+  onLocked: () => { if (_pinLockToasted) return; _pinLockToasted = true; setTimeout(() => { try { _paperToast(_T('Dev PIN not accepted — too many tries from this network. Try the new PIN later.', 'PIN dev no aceptado — demasiados intentos desde esta red. Prueba el nuevo PIN más tarde.'), 'err') } catch {} }, 0) },
+})
 initNavGroups(document.querySelector('.nav-tabs'))   // main tabs alone, the rest in groups
 import { readKey as _akRead, writeKey as _akWrite, removeKey as _akRemove,
          migrateLegacy as _akMigrateLegacy, strayEntries as _akStrays,
@@ -23133,11 +23140,25 @@ async function _lbAdminPin(force = false) {
   if (!pin) return ''
   try {
     const r = await fetch('/api/leaderboard/verify-pin', { method: 'POST', headers: { 'x-lb-pin': pin } })
+    if (r.status === 429) { await _showPinModal({ title: 'Too many tries', desc: 'Too many wrong PINs from this network. Wait up to an hour, then try again.', confirmText: 'OK', type: 'text' }); return '' }
     if (!r.ok) { await _showPinModal({ title: 'Wrong PIN', desc: 'That PIN is incorrect.', confirmText: 'OK', type: 'text' }); return '' }
   } catch { await _showPinModal({ title: 'Offline', desc: 'Could not reach the server.', confirmText: 'OK', type: 'text' }); return '' }
   localStorage.setItem('hliq_lb_pin', pin)
   return pin
 }
+
+// Dev mode on with a PIN the server has since replaced: find out once, at start, rather than
+// by sending it with every refresh — each of those counts as a wrong guess (src/pinguard.js).
+setTimeout(async () => {
+  try {
+    if (!isDev()) return
+    const st = await checkStoredPin({ fetchImpl: window.fetch, getPin: _lbGetPin, clearPin: () => localStorage.removeItem('hliq_lb_pin') })
+    if (st === 'stale') {
+      _paperToast(_T('The dev PIN has changed — enter the new one', 'El PIN dev ha cambiado — introduce el nuevo'), 'err')
+      if (await _lbAdminPin(true)) { try { if (document.getElementById('tab-leaderboard')?.classList.contains('active')) { _lbLastFetch = 0; renderLeaderboard() } } catch {} }
+    }
+  } catch {}
+}, 2500)
 
 // Remove a real-board account. via 'owner' → wallet signature; via 'dev' → LB PIN.
 window.__lbRemove = async function(addr, via) {
@@ -35723,6 +35744,10 @@ window.toggleDevMode = async function(wantOn) {
   }
   if (status === 503) {
     await _showPinModal({ title: 'Unavailable', desc: 'The dev PIN is not configured on the server.', confirmText: 'OK', type: 'text' })
+    _applyDevMode(); return
+  }
+  if (status === 429) {
+    await _showPinModal({ title: 'Too many tries', desc: 'Too many wrong PINs from this network. Wait up to an hour, then try again.', confirmText: 'OK', type: 'text' })
     _applyDevMode(); return
   }
   if (status !== 200) {
