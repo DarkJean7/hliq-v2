@@ -71,7 +71,8 @@ console.log(nl + '-- an owner who left is not put back in view by someone else -
   // joining"). Leaving is a HIDE now, and only the owner's signature shows the row again.
   t('the removed list is gone', !/lbIsRemoved|lbMarkRemoved|lbClearRemoved|LB_REMOVED_FILE/.test(SRV))
   t('and its stale file is cleaned up', SRV.includes("unlinkSync(join(__dirname, 'leaderboard-removed.json'))"))
-  const join = SRV.slice(SRV.indexOf("path === '/api/leaderboard/join'"), SRV.indexOf("path === '/api/leaderboard/join'") + 1500)
+  // Wider than it was (1500): the ownership proof now sits at the top of the handler.
+  const join = SRV.slice(SRV.indexOf("path === '/api/leaderboard/join'"), SRV.indexOf("path === '/api/leaderboard/join'") + 4000)
   t('the join has no force and no block', !/force|blocked/.test(join))
   t('it tells an already-listed caller whether the row is hidden',
     join.includes('return json(res, 200, { ok: true, already: true, hidden: lbReadHidden().includes(key) })'))
@@ -121,7 +122,10 @@ console.log(nl + '-- which lookups post, and how often --')
   // again on that device — part of why an owner "connected the wallet, reloaded, etc." and
   // still could not join.
   const { createJoiner, ownedAddresses, isSettled, JOINED_KEY, COOLDOWN_KEY } = await import('../../src/lbjoin.js')
-  const mk = (reply = () => [200, { ok: true, added: true }], clock = { t: 1_000_000 }) => {
+  // Every rule below is about a wallet this device CAN prove is its own; the proof itself has
+  // its own section further down.
+  const PROOF = async () => ({ body: { ts: 1, signature: '0xsig' } })
+  const mk = (reply = () => [200, { ok: true, added: true }], clock = { t: 1_000_000 }, prove = PROOF) => {
     const store = new Map()
     const posts = []
     const storage = {
@@ -136,11 +140,32 @@ console.log(nl + '-- which lookups post, and how often --')
       const [status, json] = reply(body)
       return { status, ok: status < 300, json: async () => json }
     }
-    const j = createJoiner({ storage, fetch, now: () => clock.t })
+    const j = createJoiner({ storage, fetch, prove, now: () => clock.t })
     return { ...j, store, posts, storage, clock }
   }
+
   const A = '0x' + 'a'.repeat(40)
   const B = '0x' + 'b'.repeat(40)
+
+  // "require a signed message to join": no proof, no request.
+  {
+    const { join, posts } = mk(undefined, undefined, async () => null)
+    const r = await join(A)
+    t('a wallet this device cannot prove is its own sends nothing', posts.length === 0 && r.status === 'unproven', r)
+    const again = await join(A)
+    t('and is not remembered as settled: proving it later still works', again.status === 'unproven')
+  }
+  {
+    const seen = []
+    const { join, posts } = mk(undefined, undefined, async (a, o) => { seen.push(o.fresh); return { headers: { Authorization: 'Bearer t' }, body: { ts: 5, signature: '0xs' } } })
+    await join(A, null, { fresh: true })
+    t('the proof rides on the request: a session header, or ts + signature', posts[0]?.body.signature === '0xs' && posts[0]?.body.ts === 5 && posts[0]?.body.addr === A)
+    t('and prove() is told whether a person asked (Add me) or it is automatic', seen[0] === true)
+  }
+  {
+    const { join } = mk(undefined, undefined, async () => { throw new Error('rejected') })
+    t('a prove() that throws (signature refused) is "unproven", not a crash', (await join(A)).status === 'unproven')
+  }
 
   {
     const { join, posts } = mk()
@@ -223,7 +248,8 @@ console.log(nl + '-- which lookups post, and how often --')
     t('an automatic join does not ask twice', (await join(A)).status === 'known' && posts.length === 1)
     const r = await join(A, null, { fresh: true })
     t('Add me asks anyway, and hears it is hidden', posts.length === 2 && r.status === 'already' && r.hidden === true, r)
-    t('without telling the server anything new', Object.keys(posts[1].body).join() === 'addr')
+    // The address and its proof of ownership — nothing else (no force flag, as there once was).
+    t('without telling the server anything new', Object.keys(posts[1].body).sort().join() === 'addr,signature,ts')
   }
   t('settled means the server decided', isSettled(200, { added: true }) && isSettled(200, { already: true })
     && !isSettled(200, { ok: true, blocked: true }) && isSettled(400, { error: 'invalid address' })
@@ -260,8 +286,21 @@ console.log(nl + '-- a lookup is not ownership: only your own wallets join --')
   t('it asks for this user\'s own wallets instead: connected, or with an agent key saved here',
     CLI.includes('setTimeout(_lbJoinOwned, 8000)') && CLI.includes('ownedAddresses(localStorage, connected).filter(_lbNotKnown)'))
   t('why is written down', CLI.includes('a lookup is not ownership'))
-  // The server still cannot verify ownership, and still guards itself: rate limit, cap, floor.
-  t('the server says it cannot assume ownership', SRV.includes('not just for a wallet the caller owns'))
+  // And the server no longer takes it on trust: "require a signed message to join".
+  const jn = SRV.slice(SRV.indexOf("path === '/api/leaderboard/join'"), SRV.indexOf("path === '/api/leaderboard/join'") + 4000)
+  const proofAt = jn.indexOf('PROOF OF OWNERSHIP'), writeAt = jn.indexOf('lbWriteList(list)')
+  t('the server wants proof before it lists anything', proofAt > 0 && writeAt > proofAt)
+  t('no proof is a 401, logged', jn.includes("if (!b.signature) { jlog('refused: no proof of ownership'); return json(res, 401"))
+  t('an agent key Hyperliquid approves for the wallet is proof', jn.includes('await agentApprovedFor(key, auth.signer)'))
+  t('a signature from the wallet itself is proof, and must be fresh', jn.includes('ethers.verifyMessage(lbJoinMessage(key, ts), String(b.signature))') && jn.includes('Math.abs(Date.now() - ts) > 10 * 60 * 1000') && jn.includes("if (signer.toLowerCase() !== key)"))
+  t('a wrong PIN is refused, not waved through', jn.includes("if (pinHdr && !byOperator) return json(res, 403"))
+  const { joinMessage } = await import('../../src/lbjoin.js')
+  const srvMsg = new Function('return ' + SRV.slice(SRV.indexOf('function lbJoinMessage('), SRV.indexOf('function lbSetHidden(')).trim())()
+  t('client and server sign the same words', joinMessage('0xAbC', 7) === srvMsg('0xAbC', 7) && /join leaderboard/.test(joinMessage('0x1', 1)))
+  t('the app proves with an agent-key session or the connected wallet, and remembers a refusal', CLI.includes('prove: _lbJoinProof') && CLI.includes("if (tok) return { headers: { Authorization: 'Bearer ' + tok } }") && CLI.includes('if (main !== key) return null') && CLI.includes('_LB_JOIN_DECLINED'))
+  // The admin overwrite wrote bare addresses as-is and wiped every row's name.
+  const adm = SRV.slice(SRV.indexOf("method === 'POST' && path === '/api/leaderboard')"), SRV.indexOf("path === '/api/leaderboard/remove'"))
+  t('the admin overwrite keeps names: a bare address keeps its current entry', adm.includes("typeof x === 'string' ? (cur.get(x.toLowerCase())") && adm.includes("every entry needs a valid addr"))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

@@ -987,6 +987,10 @@ function lbWriteHidden(list) { writeFileSync(LB_HIDDEN_FILE, JSON.stringify([...
 function lbVisibilityMessage(addr, hidden, ts) {
   return `Insolvent Trade — ${hidden ? 'hide from' : 'show on'} leaderboard\naddress: ${String(addr).toLowerCase()}\nts: ${ts}`
 }
+/** What an owner signs to join the board. The client (src/lbjoin.js) builds the same string. */
+function lbJoinMessage(addr, ts) {
+  return `Insolvent Trade — join leaderboard\naddress: ${String(addr).toLowerCase()}\nts: ${ts}`
+}
 function lbSetHidden(addr, on) {
   const k = String(addr).toLowerCase()
   const cur = lbReadHidden()
@@ -3057,27 +3061,47 @@ const server = createServer(async (req, res) => {
   }
 
   // ── POST /api/leaderboard/join { addr } → self-serve add ──────────────────
-  // Called for EVERY address the app looks up, not just for a wallet the caller owns — the
-  // search box, a recent address, a saved wallet, a connect. The server cannot verify
-  // ownership without a signed message and now cannot even assume it, so its own guards are
-  // the whole protection: per-IP rate limit, the 500 cap, the equity floor, and the
-  // removed-list below, which keeps an account that took itself off from being put back by
-  // someone else's search.
+  // It used to be called for every address the app looked up, not just for a wallet the
+  // caller owns, and the server took that on trust. Now the caller must prove ownership (see
+  // PROOF OF OWNERSHIP below). The per-IP rate limit, the 500 cap and the traded-or-funded
+  // floor still apply on top of that.
   if (method === 'POST' && path === '/api/leaderboard/join') {
     const ip = clientIp(req)
     if (!lbJoinAllowed(ip)) return json(res, 429, { error: 'too many joins, try later' })
 
     const b = await body(req)
     if (!isAddr(b.addr)) return json(res, 400, { error: 'invalid address' })
+    const key   = b.addr.toLowerCase()
+    const jlog = (what) => console.log(`[lb] join ${key.slice(0, 10)}… ${what}`)
+
+    // PROOF OF OWNERSHIP. A wallet joins only on its owner's word — asked for: "only connecting
+    // should make a wallet appear in leaderboard. not just looking", then "require a signed
+    // message to join", after a stranger's lookup put 0xEE98… on the board. Same three proofs
+    // as /api/pfp: the operator PIN; an agent-key session Hyperliquid CURRENTLY lists as
+    // approved for the address (how most people here join, with no wallet prompt); or a
+    // personal_sign of lbJoinMessage from the address itself. Fails closed.
+    const pinHdr = req.headers['x-lb-pin'] ?? ''
+    const byOperator = !!LB_PIN && pinHdr === LB_PIN
+    if (pinHdr && !byOperator) return json(res, 403, { error: 'forbidden' })
+    const auth = byOperator ? null : getAuth(req)
+    const byAgent = byOperator || (!!auth && (auth.admin || await agentApprovedFor(key, auth.signer)))
+    if (!byAgent) {
+      if (!b.signature) { jlog('refused: no proof of ownership'); return json(res, 401, { error: 'sign to join', needSignature: true }) }
+      const ts = Number(b.ts ?? 0)
+      if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > 10 * 60 * 1000)
+        return json(res, 400, { error: 'stale request — try again' })
+      let signer
+      try { signer = ethers.verifyMessage(lbJoinMessage(key, ts), String(b.signature)) }
+      catch { return json(res, 400, { error: 'bad signature' }) }
+      if (signer.toLowerCase() !== key) { jlog('refused: signature from another address'); return json(res, 403, { error: 'signature does not match that address' }) }
+    }
     if (b.refBy) recordReferral(b.refBy, b.addr)   // attribute the invite that brought this wallet
 
     const list  = lbReadList()
-    const key   = b.addr.toLowerCase()
     // Already listed. Say whether it is hidden: an owner pressing "Add me" on a row they hid
     // earlier needs to know it is there but not shown, not a bare "ok".
-    // Every outcome is logged. "Why is this wallet not joining" had to be answered by reading
-    // state files; this answers it from the pm2 log.
-    const jlog = (what) => console.log(`[lb] join ${key.slice(0, 10)}… ${what}`)
+    // Every outcome is logged (jlog, above). "Why is this wallet not joining" had to be answered
+    // by reading state files; this answers it from the pm2 log.
     if (list.some(e => e.addr.toLowerCase() === key))
       return json(res, 200, { ok: true, already: true, hidden: lbReadHidden().includes(key) })
     if (list.length >= LB_MAX) { jlog('refused: board full'); return json(res, 507, { error: 'leaderboard full' }) }
@@ -3405,7 +3429,17 @@ const server = createServer(async (req, res) => {
 
     const b = await body(req)
     if (!Array.isArray(b.addrs)) return json(res, 400, { error: 'addrs must be array' })
-    writeFileSync(LEADERBOARD_FILE, JSON.stringify(b.addrs))
+    // Whole entries, not bare addresses. A list of strings was written as-is and wiped every
+    // row's name, namedBy and hidden flag — "why you removed the accounts names". An address
+    // sent alone keeps whatever its current entry holds; anything not an address is refused.
+    const cur = new Map(lbReadList().map(e => [e.addr.toLowerCase(), e]))
+    const next = []
+    for (const x of b.addrs) {
+      const e = typeof x === 'string' ? (cur.get(x.toLowerCase()) ?? { addr: x, label: '' }) : x
+      if (!e || !isAddr(e.addr)) return json(res, 400, { error: 'every entry needs a valid addr' })
+      next.push(e)
+    }
+    writeFileSync(LEADERBOARD_FILE, JSON.stringify(next))
     return json(res, 200, { ok: true })
   }
 

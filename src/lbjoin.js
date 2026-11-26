@@ -26,8 +26,17 @@
  *
  * What still holds: hliq_lb_optout on this device suppresses every automatic post.
  *
- * Pure apart from the `storage` and `fetch` it is handed, so the suite can drive it.
+ * PROOF. The server lists a wallet only on its owner's word: "require a signed message to
+ * join", after a stranger's lookup put a wallet on the board. `prove(addr, { fresh })` is
+ * handed in and returns what to attach — an agent-key session header, or a signature of
+ * joinMessage — or null when this device cannot prove the wallet is its own. Null sends
+ * nothing.
+ *
+ * Pure apart from the `storage`, `fetch` and `prove` it is handed, so the suite can drive it.
  */
+
+/** What an owner signs to join. server.js lbJoinMessage builds the same string. */
+export const joinMessage = (addr, ts) => `Insolvent Trade — join leaderboard\naddress: ${String(addr).toLowerCase()}\nts: ${ts}`
 
 export const LB_MIN_EQUITY = 10
 // v3: v1 recorded failures as done; v2 recorded "blocked" (the removed list) as done. A new
@@ -70,7 +79,7 @@ export function ownedAddresses(storage, connected = []) {
   return [...out]
 }
 
-export function createJoiner({ storage, fetch, now = () => Date.now() }) {
+export function createJoiner({ storage, fetch, prove = async () => null, now = () => Date.now() }) {
   const inflight = new Set()
   const readJSON = (k, d) => { try { return JSON.parse(storage.getItem(k)) ?? d } catch { return d } }
   const writeJSON = (k, v) => { try { storage.setItem(k, JSON.stringify(v)) } catch {} }
@@ -112,10 +121,13 @@ export function createJoiner({ storage, fetch, now = () => Date.now() }) {
     if (inflight.has(key)) return done('known')
     inflight.add(key)
     try {
+      let proof = null
+      try { proof = await prove(addr, { fresh }) } catch { proof = null }
+      if (!proof) return done('unproven')
       const r = await fetch('/api/leaderboard/join', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ addr }),
+        headers: { 'Content-Type': 'application/json', ...(proof.headers ?? {}) },
+        body: JSON.stringify({ addr, ...(proof.body ?? {}) }),
       })
       const body = await r.json().catch(() => null)
       if (isSettled(r.status, body)) {

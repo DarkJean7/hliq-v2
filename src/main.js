@@ -300,7 +300,7 @@ import { EXT_MARKETS, isExtMarket, extPriceStr, extTwin } from './extmarkets.js'
 import { setExtChartDeps, openExtChart, extChartTf, extChartQuote } from './extchart.js'   // an outside market's own chart
 import { trackRecord, isSmallSample, openLossOf, holdsStep } from './trackrecord.js'
 import { pnlCurveFactor } from './pfnet.js'
-import { createJoiner, ownedAddresses } from './lbjoin.js'
+import { createJoiner, ownedAddresses, joinMessage } from './lbjoin.js'
 import { readKey as _akRead, writeKey as _akWrite, removeKey as _akRemove,
          migrateLegacy as _akMigrateLegacy, strayEntries as _akStrays,
          onAgentKeyMisuse, LEGACY_KEY as _AK_LEGACY } from './agentkeys.js'
@@ -23166,6 +23166,7 @@ window.__lbAddMe = async function() {
   if (!addr) { _paperToast('Connect the account you want to add first.', 'error'); return }
   if (!(await _appConfirm({ title: 'Join the leaderboard?', body: 'Your account value and PnL become publicly visible on the board. You can remove yourself anytime.', confirmText: '➕ Add me' }))) return
   const r = await _lbJoiner.join(addr, null, { fresh: true })
+  if (r.status === 'unproven') { _paperToast('Could not prove this wallet is yours — sign the message, or save its agent key.', 'error'); return }
   if (r.status === 'retry') { _paperToast('Could not add: ' + (r.error ?? 'try again'), 'error'); return }
   if (r.hidden && !(await _lbSetMyVisibility(addr, false))) return
   _lbAfterRemove()
@@ -35716,7 +35717,32 @@ async function _lbFetchRows(entries) {
  * re-checks the equity floor, dedupes, rate-limits per IP and caps the list.
  */
 // The rules — which answers are final, what is retried and when — live in src/lbjoin.js.
-const _lbJoiner = createJoiner({ storage: localStorage, fetch: (...a) => fetch(...a) })
+// Proof that a wallet is this user's, for the server's join check ("require a signed message to
+// join"). An agent key saved here signs a session silently — the server asks Hyperliquid that
+// the key is approved for the wallet. Otherwise the connected wallet itself signs joinMessage:
+// one prompt, and a refusal is remembered so an automatic join never asks again (Add me does).
+// Anything else — an address merely looked up — has no proof, and nothing is sent.
+const _LB_JOIN_DECLINED = 'hliq_lb_join_declined'
+async function _lbJoinProof(addr, { fresh = false } = {}) {
+  const key = String(addr ?? '').toLowerCase()
+  const tok = await _ensureBotToken(key)
+  if (tok) return { headers: { Authorization: 'Bearer ' + tok } }
+  let main = null
+  try { if (isMainWalletConnected()) main = String(getMainAddress?.() ?? '').toLowerCase() } catch {}
+  if (main !== key) return null
+  let declined = []
+  try { declined = JSON.parse(localStorage.getItem(_LB_JOIN_DECLINED) || '[]') } catch {}
+  if (!fresh && declined.includes(key)) return null
+  try {
+    const ts = Date.now()
+    const signature = await getMainSigner().signMessage(joinMessage(key, ts))
+    return { body: { ts, signature } }
+  } catch {
+    if (!fresh) try { localStorage.setItem(_LB_JOIN_DECLINED, JSON.stringify([...new Set([...declined, key])].slice(-50))) } catch {}
+    return null
+  }
+}
+const _lbJoiner = createJoiner({ storage: localStorage, fetch: (...a) => fetch(...a), prove: _lbJoinProof })
 
 // Not the Popular board's accounts, even if one were somehow "owned" here. They have a board of
 // their own; Visit on one used to join James Wynn and smartestmoney to the Real board: "remove
