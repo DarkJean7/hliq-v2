@@ -9641,7 +9641,7 @@ async function loadAllAccountsDashboard() {
   try { _syncAgentKeyUI() } catch {}
   try { _reportStrayAgentKeys() } catch {}
   // Powers the "Grid:HYPE" bot pills on the per-account cards.
-  serverFetch('/api/status/all').then(st => {
+  _botStatusMine().then(st => {
     _maBotStatus = st ?? {}; _syncAllAcctCards()
     // Refresh the mobile view once bot status lands: the Strats badge counts from it, and
     // the Strats tab lists the running bots.
@@ -31430,6 +31430,17 @@ function _botApiAddr() {
   return /^0x[0-9a-fA-F]{40}$/.test(a) ? a : null
 }
 
+/**
+ * Which bots run on the wallets saved HERE. Not the server's whole list: that told anyone who
+ * asked which wallets run real-money bots on this server, and a scripted scan used exactly that
+ * (2026-11-12). The server now answers only for the addresses named.
+ */
+function _botStatusMine() {
+  const addrs = [...new Set((_maLoad() ?? []).map(e => String(e?.addr ?? '').toLowerCase()).filter(a => /^0x[0-9a-f]{40}$/.test(a)))]
+  if (!addrs.length) return Promise.resolve({})
+  return serverFetch('/api/status/all?addrs=' + addrs.slice(0, 50).join(','))
+}
+
 async function serverFetch(path, opts = {}) {
   const addr = _botReqAddr(path, opts)
   if (addr) {
@@ -37392,7 +37403,7 @@ async function renderMultiAccount() {
   }
   const [results] = await Promise.all([
     _lbFetchResults(entries),
-    serverFetch('/api/status/all').then(s => { _maBotStatus = s ?? {} }).catch(() => {}),
+    _botStatusMine().then(s => { _maBotStatus = s ?? {} }).catch(() => {}),
   ])
   root.__maResults = results
   // Stamp fetch time now so the 30s tick does light updates instead of re-fetching immediately
@@ -37737,7 +37748,7 @@ async function _maSilentUpdate() {
   root.__maResults = results
 
   // Always refresh live cards and aggregate (account value, positions, health)
-  serverFetch('/api/status/all').then(s => { _maBotStatus = s ?? {} }).catch(() => {})
+  _botStatusMine().then(s => { _maBotStatus = s ?? {} }).catch(() => {})
   const agg = root.querySelector('.ma-aggregate')
   if (agg) agg.innerHTML = _maAggregateHtml(results)
   const grid = root.querySelector('#maGrid')

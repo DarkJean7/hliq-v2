@@ -278,6 +278,34 @@ async function agentApprovedFor(address, agentAddr) {
 }
 
 // Gate an operation on `address`'s bots. On failure, writes the response and returns false.
+/**
+ * The operator PIN is short, and every operator route took it with no limit on guesses: a
+ * scripted scan on 2026-11-12 tried thirty in a row. Wrong guesses are now counted per IP and
+ * across the whole server — someone rotating addresses still hits the second — over a sliding
+ * hour, and past either limit every request carrying a PIN is refused before it is compared.
+ * Requests relayed by serve-prod (portfolio publishing) arrive from 127.0.0.1 and share one
+ * bucket; the global count covers them. The cost of an attack is that the operator's own PIN
+ * is refused for up to an hour too. That is the right way round.
+ */
+const PIN_WINDOW_MS = 60 * 60 * 1000, PIN_IP_MAX = 5, PIN_GLOBAL_MAX = 20
+const _pinFails = new Map()   // ip -> [timestamps]
+let _pinFailsAll = []
+function pinMatches(p) {
+  const a = Buffer.from(String(p)), b = Buffer.from(String(LB_PIN))
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+function pinLocked(ip, now = Date.now()) {
+  _pinFailsAll = _pinFailsAll.filter(t => now - t < PIN_WINDOW_MS)
+  const mine = (_pinFails.get(ip) ?? []).filter(t => now - t < PIN_WINDOW_MS)
+  if (mine.length) _pinFails.set(ip, mine); else _pinFails.delete(ip)
+  return mine.length >= PIN_IP_MAX || _pinFailsAll.length >= PIN_GLOBAL_MAX
+}
+function pinFailed(ip, now = Date.now()) {
+  _pinFails.set(ip, [...(_pinFails.get(ip) ?? []), now])
+  _pinFailsAll.push(now)
+  console.warn(`[security] wrong PIN from ${ip} (${_pinFails.get(ip).length} from it, ${_pinFailsAll.length} in all this hour)`)
+}
+
 async function requireOwner(req, res, address, explicitToken) {
   const auth = getAuth(req, explicitToken)
   if (!auth) { json(res, 401, { error: 'authentication required' }); return false }
@@ -2170,6 +2198,15 @@ const server = createServer(async (req, res) => {
 
   if (method === 'OPTIONS') { res.writeHead(204, CORS); return res.end() }
 
+  // PIN GUESSING. Checked here, once, before any route sees the PIN: a request carrying one
+  // from an IP (or a server) that has been guessing is refused whatever route it names.
+  const offeredPin = String(req.headers['x-lb-pin'] || url.searchParams.get('pin') || '')
+  if (offeredPin && LB_PIN) {
+    const ip = clientIp(req)
+    if (pinLocked(ip)) return json(res, 429, { error: 'too many wrong PINs — try again later' })
+    if (!pinMatches(offeredPin)) pinFailed(ip)
+  }
+
   // ── GET /api/auth/nonce → { nonce } to be signed by the account's agent key ──
   if (method === 'GET' && path === '/api/auth/nonce') {
     return json(res, 200, { nonce: issueNonce(), ttl: NONCE_TTL_MS })
@@ -2404,10 +2441,18 @@ const server = createServer(async (req, res) => {
   }
 
   // ── GET /api/status/all  → { "0xaddr": ["grid","dca",...] } ───────────────
+  // Answers for the addresses NAMED (?addrs=a,b,…, at most 50), never the whole list without
+  // the operator's PIN or token: that list was every wallet running real-money bots here, and a
+  // scripted scan on 2026-11-12 read it to choose its targets.
   if (method === 'GET' && path === '/api/status/all') {
+    const auth = getAuth(req)
+    const operator = (auth?.admin) || (!!LB_PIN && pinMatches(req.headers['x-lb-pin'] || url.searchParams.get('pin') || ''))
+    const named = new Set(String(url.searchParams.get('addrs') ?? '').toLowerCase().split(',').filter(a => /^0x[0-9a-f]{40}$/.test(a)).slice(0, 50))
+    if (!operator && !named.size) return json(res, 200, {})
     const out = {}
     for (const [key, p] of Object.entries(procs)) {
       const [type, addr] = key.split(':')
+      if (!operator && !named.has(addr)) continue
       if (!out[addr]) out[addr] = []
       out[addr].push(p.instance ? `${type}:${p.instance}` : type)
     }
