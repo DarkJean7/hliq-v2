@@ -1132,13 +1132,13 @@ async function loadDashboard() {
     initRisk(totalPerpEquity(perpState))
     updateRiskUI()
 
-    // The address resolved, so this is the cheapest place to put it on the public board —
-    // before any of the deferred fetches below. No equity is passed: the perp figure alone
-    // turned away accounts that keep their USDC in spot, and the server checks the whole
-    // account anyway. See src/lbjoin.js.
-    _lbJoin(addr, null)
-    // And every other wallet of this user's, once this load has had its requests — and every
-    // paper account on this device, which exist whether or not paper mode is open.
+    // The address on screen is NOT joined just for being loaded: a lookup is not ownership.
+    // Asked for: "only connecting should make a wallet appear in leaderboard. not just
+    // looking", after a stranger's search listed 0xEE98… on the Real board. Only this user's
+    // own wallets join — connected now, or holding an agent key saved here, which the wallet
+    // itself had to approve (_lbJoinOwned, src/lbjoin.js) — once this load has had its
+    // requests. And every paper account on this device, which exist whether or not paper mode
+    // is open.
     setTimeout(_lbJoinOwned, 8000)
     setTimeout(_lbPaperSyncAll, 15000)
 
@@ -35698,16 +35698,14 @@ async function _lbFetchRows(entries) {
 }
 
 /**
- * Every address this app looks up goes on the public board.
+ * A user's OWN wallets go on the public board — not every address the app looks up.
  *
- * Asked for directly: "make that any address that is being searched from my app is
- * automatically added to the leaderboard". It runs from loadDashboard(), which is the one
- * funnel every lookup goes through — the search box, a recent address, switching to a saved
- * wallet, and connecting your own.
- *
- * Note what that means and does not mean. Hyperliquid balances are public on-chain, so
- * nothing secret is being published; but the address being added is usually NOT the searcher's
- * own, and its owner has never used this app. Two things therefore still hold:
+ * It used to be every lookup ("make that any address that is being searched from my app is
+ * automatically added to the leaderboard"), run from loadDashboard(). That listed strangers:
+ * a first-time visitor searched 0xEE98…, a trader who had never used this app, and it appeared
+ * on the Real board. Reversed: "only connecting should make a wallet appear in leaderboard. not
+ * just looking". Now only _lbJoinOwned joins — a wallet connected now, or one with an agent key
+ * saved here (which that wallet had to approve). Two things still hold:
  *
  *   LEAVING WINS.       An owner who removes themselves is HIDDEN, not deleted, so a stranger
  *                       searching them re-lists nothing anyone can see. Only the owner's own
@@ -35720,13 +35718,10 @@ async function _lbFetchRows(entries) {
 // The rules — which answers are final, what is retried and when — live in src/lbjoin.js.
 const _lbJoiner = createJoiner({ storage: localStorage, fetch: (...a) => fetch(...a) })
 
-function _lbJoin(addr, equity = null) {
-  // Not the Popular board's accounts. They have a board of their own, and Visit on one loads it
-  // through loadDashboard like any search -- which joined James Wynn and smartestmoney to the
-  // Real board: "remove the popular accounts from real. i never said to add them over there".
-  if (KNOWN.some(k => k.addr === String(addr ?? '').toLowerCase())) return Promise.resolve({ status: 'skip' })
-  return _lbJoiner.join(addr, equity)
-}
+// Not the Popular board's accounts, even if one were somehow "owned" here. They have a board of
+// their own; Visit on one used to join James Wynn and smartestmoney to the Real board: "remove
+// the popular accounts from real. i never said to add them over there".
+const _lbNotKnown = (a) => !KNOWN.some(k => k.addr === String(a ?? '').toLowerCase())
 
 /**
  * Every wallet that is this user's in this app — an agent key saved here, or connected now —
@@ -35798,7 +35793,7 @@ async function _lbJoinOwned() {
   try {
     let connected = []
     try { connected = getConnectedWallets() } catch {}
-    const owned = ownedAddresses(localStorage, connected)
+    const owned = ownedAddresses(localStorage, connected).filter(_lbNotKnown)
     await _lbJoiner.joinAll(owned)
     // Then the names. A row has to exist before it can be named, which is why this comes
     // after the joins rather than beside them.

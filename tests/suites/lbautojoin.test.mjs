@@ -250,21 +250,18 @@ console.log(nl + '-- which lookups post, and how often --')
   }
 }
 
-console.log(nl + '-- and it runs from the one funnel every lookup goes through --')
+console.log(nl + '-- a lookup is not ownership: only your own wallets join --')
 {
-  // loadDashboard is the search box, a recent address, switching to a saved wallet, and
-  // connecting your own. Hooking it here is what makes "any address that is searched" true
-  // without a second call site to keep in sync.
-  // No equity is passed any more: the perp figure alone turned away accounts holding their
-  // USDC in spot, and the server checks the whole account.
-  t('loadDashboard joins once the account resolves',
-    CLI.includes('_lbJoin(addr, null)'))
-  // After the first two calls land, so a typo'd or empty address never reaches the board.
-  t('and only after its state came back',
-    CLI.indexOf('_lbJoin(addr, null)') > CLI.indexOf('infoClient.clearinghouseState({ user: addr })'))
-  t('why the address may not be the searcher’s own is written down',
-    CLI.includes('its owner has never used this app'))
-  t('and the server says so too', SRV.includes('not just for a wallet the caller owns'))
+  // It used to join every address loadDashboard loaded — the search box included — and a
+  // first-time visitor's search put a stranger's wallet on the Real board. Asked: "only
+  // connecting should make a wallet appear in leaderboard. not just looking".
+  t('loadDashboard no longer joins the address it loaded',
+    !CLI.includes('_lbJoin(addr, null)') && !/function _lbJoin\(/.test(CLI))
+  t('it asks for this user\'s own wallets instead: connected, or with an agent key saved here',
+    CLI.includes('setTimeout(_lbJoinOwned, 8000)') && CLI.includes('ownedAddresses(localStorage, connected).filter(_lbNotKnown)'))
+  t('why is written down', CLI.includes('a lookup is not ownership'))
+  // The server still cannot verify ownership, and still guards itself: rate limit, cap, floor.
+  t('the server says it cannot assume ownership', SRV.includes('not just for a wallet the caller owns'))
 }
 
 console.log(nl + pass + ' passed, ' + fail + ' failed')

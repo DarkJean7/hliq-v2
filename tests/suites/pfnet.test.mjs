@@ -47,7 +47,7 @@ t('the Real board (server, trackrecord.js) and the cards share one definition',
   /import \{ pnlCurveFactor \} from '\.\/pfnet\.js'/.test(fs.readFileSync('src/trackrecord.js', 'utf8')))
 t('the All Accounts total sums the all-time figures', /const _pfCurve = pnlCurveFactor\(portfolio\)/.test(main) && /let grossWin = _pfCurve\?\.gain \?\? 0, grossLoss = _pfCurve\?\.loss \?\? 0/.test(main))
 t('a Popular account is never auto-joined to the Real board',
-  /function _lbJoin\(addr, equity = null\) \{[\s\S]{0,400}KNOWN\.some\(k => k\.addr === String\(addr \?\? ''\)\.toLowerCase\(\)\)\) return Promise\.resolve\(\{ status: 'skip' \}\)/.test(main))
+  main.includes("const _lbNotKnown = (a) => !KNOWN.some(k => k.addr === String(a ?? '').toLowerCase())") && main.includes('.filter(_lbNotKnown)') && !main.includes('_lbJoin(addr, null)'))
 
 console.log(`${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
