@@ -120,8 +120,10 @@ export function initNavGroups(bar) {
       const chrome = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth)
       const gap = parseFloat(cs.columnGap) || 0
       const shown = all.filter(el => el.offsetWidth > 0)
-      const width = (list) => list.reduce((s, el) => s + el.offsetWidth, 0) + gap * Math.max(0, list.length - 1)
-      if (width(shown) + chrome <= avail) { more.classList.remove('active'); return }
+      // Items stretch to share the bar, so their widths always add up to it: ask whether the
+      // labels overflow instead. When they do there is no space to share, so offsetWidth below
+      // is each item's own width again.
+      if (bar.scrollWidth <= bar.clientWidth + 1) { more.classList.remove('active'); return }
       more.hidden = false
       let used = chrome + moreBtn.offsetWidth + gap, keep = 0
       for (const el of shown) {

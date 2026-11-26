@@ -703,6 +703,10 @@ body.priv .perf-table-wrap tbody td:not(:first-child):not(:nth-child(2)) {
   flex-wrap: nowrap;   /* one row: the main tabs, then groups (src/navgroups.js) */
 }
 .nav-tabs > [data-nav-overflow] { display: none !important; }
+/* The bar spans the window and its items share the width, each at least as wide as its label. */
+.nav-tabs > :is(.nav-tab, .nav-group, .nav-more) { flex: 1 0 auto; }
+.nav-tabs > .nav-tab, .nav-tabs > :is(.nav-group, .nav-more) > .nav-group-btn { justify-content: center; }
+.nav-tabs > :is(.nav-group, .nav-more) > .nav-group-btn { flex: 1 0 auto; }
 
 /* A group: a button that looks like a tab, and a menu that drops below it. The tabs inside are
    the same .nav-tab buttons, laid out as rows. */
@@ -726,23 +730,25 @@ body.priv .perf-table-wrap tbody td:not(:first-child):not(:nth-child(2)) {
 .nav-group-menu, .nav-more-menu {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 400; min-width: 200px;
   display: flex; flex-direction: column; padding: 5px; gap: 1px;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  /* Solid even over a wallpaper, where --panel goes see-through (theme.js sets the -o copies). */
+  background: var(--panel-o, var(--panel)); border: 1px solid var(--border); border-radius: 12px;
   box-shadow: 0 12px 32px rgba(0,0,0,.45);
 }
+.nav-group-menu { left: 50%; transform: translateX(-50%); }   /* under its group, which now stretches */
 .nav-more-menu { left: auto; right: 0; }
 .nav-group-menu[hidden], .nav-more-menu[hidden] { display: none; }
 .nav-group-menu > .nav-tab {
   height: 36px; padding: 0 12px; border-radius: 8px; border-bottom: none !important; margin: 0;
   justify-content: flex-start; text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 500; color: var(--fg-2);
 }
-.nav-group-menu > .nav-tab:hover { background: var(--panel-2); color: var(--fg); }
+.nav-group-menu > .nav-tab:hover { background: var(--panel-2-o, var(--panel-2)); color: var(--fg); }
 .nav-group-menu > .nav-tab.active { color: var(--fg); font-weight: 600; background: color-mix(in oklch, var(--accent) 12%, transparent); }
 .nav-more-head { padding: 8px 12px 3px; font: 600 10px var(--font-sans); letter-spacing: .08em; text-transform: uppercase; color: var(--fg-3); }
 .nav-more-item {
   display: flex; align-items: center; gap: 7px; height: 34px; padding: 0 12px; border: none; border-radius: 8px;
   background: none; color: var(--fg-2); font: 500 13px var(--font-sans); text-align: left; cursor: pointer; white-space: nowrap;
 }
-.nav-more-item:hover { background: var(--panel-2); color: var(--fg); }
+.nav-more-item:hover { background: var(--panel-2-o, var(--panel-2)); color: var(--fg); }
 .nav-more-item.active { color: var(--fg); font-weight: 600; background: color-mix(in oklch, var(--accent) 12%, transparent); }
 .nav-tab {
   background: none;

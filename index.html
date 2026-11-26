@@ -382,7 +382,8 @@
            finds a tab by name work unchanged. Bots follows the sidebar's "Bot Agents" order. -->
       <button class="nav-tab active" onclick="switchTab('overview',this)">Overview</button>
       <button class="nav-tab" onclick="switchTab('trade',this)">Trade</button>
-      <button class="nav-tab" onclick="switchTab('markets',this)">Markets</button>
+      <button class="nav-tab" onclick="switchTab('outlook',this)">Oracle</button>
+      <button class="nav-tab" onclick="switchTab('outcomes',this)">Outcomes</button>
       <button class="nav-tab" onclick="switchTab('portfolio',this)">Portfolio</button>
       <div class="nav-group" data-group="account">
         <button type="button" class="nav-group-btn" aria-haspopup="true" aria-expanded="false"><span class="nav-group-label">Account</span><span class="nav-group-cur"></span><svg class="nav-group-chev" viewBox="0 0 10 6" width="9" height="6" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 1l4 4 4-4"/></svg></button>
@@ -396,9 +397,8 @@
       <div class="nav-group" data-group="research">
         <button type="button" class="nav-group-btn" aria-haspopup="true" aria-expanded="false"><span class="nav-group-label">Research</span><span class="nav-group-cur"></span><svg class="nav-group-chev" viewBox="0 0 10 6" width="9" height="6" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 1l4 4 4-4"/></svg></button>
         <div class="nav-group-menu" role="menu" hidden>
+          <button class="nav-tab" onclick="switchTab('markets',this)">Markets</button>
           <button class="nav-tab" onclick="switchTab('analysis',this)">Analysis</button>
-          <button class="nav-tab" onclick="switchTab('outlook',this)">Oracle</button>
-          <button class="nav-tab" onclick="switchTab('outcomes',this)">Outcomes</button>
           <button class="nav-tab" onclick="switchTab('watch',this)">Watch</button>
         </div>
       </div>

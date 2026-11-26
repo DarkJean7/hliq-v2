@@ -54,7 +54,7 @@ for (const classic of [false, true]) for (const width of [1920, 1440, 1100]) {
   })
   t(`${label}: one row, nothing outside the bar`, { rows: r.rows, out: r.out }, { rows: 1, out: [] })
   t(`${label}: every tab is in the bar or a group`, r.reach, [...ALL].sort())
-  t(`${label}: the main tabs stand alone`, r.single, ['Overview', 'Trade', 'Markets', 'Portfolio', 'Settings'])
+  t(`${label}: the main tabs stand alone`, r.single, ['Overview', 'Trade', 'Oracle', 'Outcomes', 'Portfolio', 'Settings'])
 
   if (width === 1440) {
     // Open Bots, pick Strategies: the tab opens, the menu closes, Bots is lit and says so.

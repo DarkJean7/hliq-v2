@@ -145,7 +145,7 @@ html.ui-nova .statusbar { background: transparent; border-top: none; }
 /* One row: the main tabs, then groups that drop a menu (src/navgroups.js). Not a hidden-
    scrollbar strip ("settings is missing") and not a wrap (Settings alone on a second row). */
 html.ui-nova .nav-tabs {
-  display: flex; flex-wrap: nowrap; width: fit-content; max-width: 100%;
+  display: flex; flex-wrap: nowrap; width: 100%;   /* the whole width: a short bar centred in it looked lost */
   gap: 2px; padding: 5px; margin-bottom: 24px;
   background: var(--panel); background-image: var(--nova-lit);
   border: 1px solid var(--nova-edge); border-radius: 18px;
@@ -167,9 +167,10 @@ html.ui-nova .nav-group.active > .nav-group-btn, html.ui-nova .nav-more.active >
 }
 html.ui-nova :is(.nav-group-menu, .nav-more-menu) {
   top: calc(100% + 10px); border-radius: 16px; border-color: var(--nova-edge);
-  background: var(--panel); background-image: var(--nova-lit); box-shadow: var(--nova-shadow), 0 16px 40px rgba(0,0,0,.4);
+  background: var(--panel-o, var(--panel)); background-image: var(--nova-lit); box-shadow: var(--nova-shadow), 0 16px 40px rgba(0,0,0,.4);
 }
 html.ui-nova .nav-group-menu > .nav-tab { height: 36px; border-radius: 10px; box-shadow: none; }
+html.ui-nova .nav-group-menu > .nav-tab:hover { background: var(--panel-2-o, var(--panel-2)); }
 html.ui-nova .nav-group-menu > .nav-tab.active { background: var(--nova-tint); }
 
 /* ── primary actions: the gradient ── */
