@@ -99,5 +99,15 @@ t('/api/status/all: without the PIN it answers only for addresses it is given',
   /if \(!operator && !named\.size\) return json\(res, 200, \{\}\)/.test(all) && /!operator && !named\.has\(addr\)/.test(all), true)
 t('the app asks only about its own saved wallets', !/serverFetch\('\/api\/status\/all'\)/.test(CLI) && /\/api\/status\/all\?addrs=/.test(grab(CLI, 'function _botStatusMine(')), true)
 
+// ── a chat message carries only an address its sender proved ──
+const chat = (() => { const i = SRV.indexOf("method === 'POST' && path === '/api/chat'"); return SRV.slice(i, SRV.indexOf('\n  }\n', i)) })()
+const chatIdx = (s) => chat.indexOf(s)
+t('/api/chat: an address is kept only for its own session or an approved agent, before the message is stored',
+  /auth\.signer === addr \|\| await agentApprovedFor\(addr, auth\.signer\)/.test(chat) && /if \(!ok\) addr = null/.test(chat) &&
+  chatIdx('if (!ok) addr = null') < chatIdx('saveChat('), true)
+const send = grab(CLI, 'window.__chatSend = async function')
+t('the app sends its session with a message, and no address it cannot back', /await _chatToken\(addr\)/.test(send) && /if \(!tok\) addr = null/.test(send) && /Authorization: 'Bearer ' \+ tok/.test(send), true)
+t('a wallet-signed chat session is not cached as a bot session', !/_botTokens\[/.test(grab(CLI, 'async function _chatToken(')), true)
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

@@ -13398,6 +13398,38 @@ function _chatRender(forceBottom) {
  * `sticker` is sent on its own, straight from the picker: staging one behind a Send button
  * is a step no chat app makes you take.
  */
+/**
+ * A session proving this device speaks for `addr` in the chat. The account's agent key signs
+ * it with no prompt; failing that the connected wallet signs once, and the token lasts the
+ * session. Kept apart from _botTokens: a wallet-signed session controls no bots, and cached
+ * there it would stand in for the agent-key one bot routes need.
+ * Null when declined or impossible — the message is then sent without an address.
+ */
+const _chatTokens = {}
+let _chatSignDeclined = false
+async function _chatToken(addr) {
+  const key = String(addr).toLowerCase()
+  const agentTok = await _ensureBotToken(key).catch(() => null)
+  if (agentTok) return agentTok
+  const c = _chatTokens[key]
+  if (c && c.exp - 60_000 > Date.now()) return c.token
+  if (_chatSignDeclined) return null
+  try {
+    const { nonce } = await (await fetch('/api/auth/nonce')).json()
+    if (!nonce) return null
+    const signature = await getMainSigner().signMessage(`Insolvent Trade — bot control login
+Account: ${key}
+Nonce: ${nonce}`)
+    const j = await (await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: key, nonce, signature }) })).json()
+    if (!j.token) return null
+    _chatTokens[key] = { token: j.token, exp: j.exp ?? Date.now() + 3600_000 }
+    return j.token
+  } catch {
+    _chatSignDeclined = true    // asked once; not on every message
+    return null
+  }
+}
+
 window.__chatSend = async function(sticker = null) {
   const inp  = document.getElementById('chatInput')
   const text = sticker ? '' : (inp?.value.trim() ?? '')
@@ -13406,13 +13438,15 @@ window.__chatSend = async function(sticker = null) {
   if (inp && !sticker) inp.value = ''
   if (!sticker) _chatSetPending(null)
   let addr = null; try { if (isMainWalletConnected()) addr = getMainAddress() } catch {}
+  const tok = addr ? await _chatToken(addr) : null
+  if (!tok) addr = null          // the server would drop an address it cannot verify anyway
   const name = _chatName()
   // Shown at once, with the picture it is about to upload rather than a gap: the row is
   // replaced by the server's copy on the next poll, which carries the id instead.
   _chatMsgs = [..._chatMsgs, { id: 'tmp' + Date.now(), name, addr, text, sticker, imgData: img, ts: Date.now() }].slice(-200)
   _chatRender(true)
   try {
-    const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, text, addr, img, sticker }) })
+    const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(tok ? { Authorization: 'Bearer ' + tok } : {}) }, body: JSON.stringify({ name, text, addr, img, sticker }) })
     const j = await r.json()
     if (j.ok && j.message) _chatLastTs = Math.max(_chatLastTs, j.message.ts)
     else if (j.error) _paperToast('⚠ ' + j.error)

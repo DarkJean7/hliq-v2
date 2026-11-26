@@ -2953,7 +2953,16 @@ const server = createServer(async (req, res) => {
     if (!text && !img && !sticker) return json(res, 400, { error: 'empty message' })
 
     const name = _chatClean(b.name).slice(0, 24) || 'anon'
-    const addr = isAddr(b.addr) ? String(b.addr).toLowerCase() : null
+    // An address shown beside a message is one its sender PROVED: a session signed by that
+    // wallet, or by an agent key Hyperliquid lists as approved for it. It used to be taken on
+    // trust, and a scripted scan posted "test" under one of the owner's wallets. Unproven, the
+    // message still goes out — without an address.
+    let addr = isAddr(b.addr) ? String(b.addr).toLowerCase() : null
+    if (addr) {
+      const auth = getAuth(req)
+      const ok = !!auth && (auth.admin || auth.signer === addr || await agentApprovedFor(addr, auth.signer))
+      if (!ok) addr = null
+    }
     const msg  = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, addr, text, img, sticker, ts: Date.now() }
     let list = loadChat()
     list.push(msg)
