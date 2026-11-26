@@ -302,6 +302,7 @@ import { trackRecord, isSmallSample, openLossOf, holdsStep } from './trackrecord
 import { pnlCurveFactor } from './pfnet.js'
 import { createJoiner, ownedAddresses, joinMessage } from './lbjoin.js'
 import { initNavOverflow } from './navoverflow.js'
+import { trialMessage, payFromMessage } from './ownerproof.js'
 initNavOverflow(document.querySelector('.nav-tabs'))   // one row of desktop tabs, the rest under "More"
 import { readKey as _akRead, writeKey as _akWrite, removeKey as _akRemove,
          migrateLegacy as _akMigrateLegacy, strayEntries as _akStrays,
@@ -28951,13 +28952,35 @@ window.__subSent = function() {
   _subPaintWatch()
 }
 
+/**
+ * Proof that this device controls `addr`, for the server's owner-only writes (src/ownerproof.js):
+ * its agent-key session if it has one — no prompt — or else a signature from the connected main
+ * wallet, when that wallet IS `addr`. Null when neither: the request would be refused anyway.
+ * Throws when the person declines to sign.
+ */
+async function _ownerProof(addr, message) {
+  const key = String(addr ?? '').toLowerCase()
+  const tok = await _ensureBotToken(key).catch(() => null)
+  if (tok) return { headers: { Authorization: 'Bearer ' + tok }, body: {} }
+  let main = null
+  try { if (isMainWalletConnected()) main = String(getMainAddress?.() ?? '').toLowerCase() } catch {}
+  if (main !== key) return null
+  const ts = Date.now()
+  const signature = await getMainSigner().signMessage(message(ts))
+  return { headers: {}, body: { ts, signature } }
+}
+
 window.__subStartTrial = async function() {
   const addr = _botApiAddr()
   if (!addr) { _paperToast(_T('Load a wallet first', 'Carga una cuenta primero'), 'err'); return }
   try {
+    let proof
+    try { proof = await _ownerProof(addr, ts => trialMessage(addr, ts)) }
+    catch { _paperToast(_T('Signature cancelled', 'Firma cancelada'), 'err'); return }
+    if (!proof) { _paperToast(_T('Connect this wallet (or add its agent key) to start its trial', 'Conecta esta cartera (o añade su clave de agente) para iniciar la prueba'), 'err'); return }
     const r = await fetch('/api/sub/trial', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address: addr }),
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...proof.headers },
+      body: JSON.stringify({ address: addr, ...proof.body }),
     })
     const j = await r.json().catch(() => ({}))
     if (!r.ok) { _paperToast(j.error || _T('Could not start the trial', 'No se pudo iniciar la prueba'), 'err'); return }
@@ -28974,11 +28997,16 @@ window.__subPayFrom = async function() {
   const addr = _botApiAddr()
   if (!/^0x[0-9a-fA-F]{40}$/.test(payer || '')) { _paperToast(_T('Enter the paying wallet', 'Introduce la cartera que paga'), 'err'); return }
   try {
+    // The PAYING wallet confirms it: it is that wallet's money being pointed somewhere.
+    let proof
+    try { proof = await _ownerProof(payer, ts => payFromMessage(payer, addr, ts)) }
+    catch { _paperToast(_T('Signature cancelled', 'Firma cancelada'), 'err'); return }
+    if (!proof) { _paperToast(_T('Connect the paying wallet to confirm it is yours', 'Conecta la cartera que paga para confirmar que es tuya'), 'err'); return }
     const r = await fetch('/api/sub/payfrom', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address: addr, payer }),
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...proof.headers },
+      body: JSON.stringify({ address: addr, payer, ...proof.body }),
     })
-    if (!r.ok) { _paperToast(_T('Could not save that', 'No se pudo guardar'), 'err'); return }
+    if (!r.ok) { const j = await r.json().catch(() => ({})); _paperToast(j.error || _T('Could not save that', 'No se pudo guardar'), 'err'); return }
     _paperToast(_T('Saved — send from that wallet', 'Guardado — envía desde esa cartera'), 'ok')
   } catch { _paperToast(_T('Server unreachable', 'Servidor no disponible'), 'err') }
 }

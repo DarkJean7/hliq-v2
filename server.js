@@ -27,6 +27,7 @@ import { spotPxFrom, seedBook, SEED_MAX_MS }                            from './
 import { isSticker }                                          from './src/stickers.js'
 import { isImageDataUrl, dataUrlBytes, CHAT_IMG_MAX_BYTES }   from './src/imgstore.js'
 import { isAgentName }                                        from './src/paperboard.js'
+import { trialMessage, payFromMessage, PROOF_MAX_AGE_MS }    from './src/ownerproof.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 const PORT       = 3002
@@ -990,6 +991,29 @@ function lbVisibilityMessage(addr, hidden, ts) {
 /** What an owner signs to join the board. The client (src/lbjoin.js) builds the same string. */
 function lbJoinMessage(addr, ts) {
   return `Insolvent Trade — join leaderboard\naddress: ${String(addr).toLowerCase()}\nts: ${ts}`
+}
+/**
+ * Does this request prove its sender controls `addr`? The three proofs every owner-only
+ * write accepts (src/ownerproof.js says why): the operator PIN; an agent-key session that
+ * Hyperliquid CURRENTLY lists as approved for `addr`; or `b.signature` over `message(ts)`
+ * from `addr` itself, `b.ts` at most ten minutes old. Fails closed.
+ * Resolves to null when proven, else { status, body } to send back.
+ */
+async function ownerProofError(req, b, addr, message) {
+  const key = String(addr).toLowerCase()
+  const pinHdr = req.headers['x-lb-pin'] ?? ''
+  if (pinHdr) return LB_PIN && pinHdr === LB_PIN ? null : { status: 403, body: { error: 'forbidden' } }
+  const auth = getAuth(req)
+  if (auth && (auth.admin || await agentApprovedFor(key, auth.signer))) return null
+  if (!b?.signature) return { status: 401, body: { error: 'sign with that wallet to confirm', needSignature: true } }
+  const ts = Number(b.ts ?? 0)
+  if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > PROOF_MAX_AGE_MS)
+    return { status: 400, body: { error: 'stale request — try again' } }
+  let signer
+  try { signer = ethers.verifyMessage(message(ts), String(b.signature)) }
+  catch { return { status: 400, body: { error: 'bad signature' } } }
+  if (signer.toLowerCase() !== key) return { status: 403, body: { error: 'signature does not match that address' } }
+  return null
 }
 function lbSetHidden(addr, on) {
   const k = String(addr).toLowerCase()
@@ -3002,8 +3026,17 @@ const server = createServer(async (req, res) => {
     const id = String(b.id || '')
     if (!REF_CODE_RE.test(id)) return json(res, 400, { error: 'bad id' })
     if (!isAddr(b.addr))       return json(res, 400, { error: 'invalid address' })
+    // A player id is not a secret — it is on the public board — so whoever knew it could
+    // rewrite the winner's payout wallet. The first claim stands; only the operator changes
+    // one, and nobody claims after the round has closed.
+    const pinHdr = req.headers['x-lb-pin'] ?? ''
+    const byOperator = !!LB_PIN && pinHdr === LB_PIN
+    if (pinHdr && !byOperator) return json(res, 403, { error: 'forbidden' })
     const store = loadChal()
     if (!store[id]) return json(res, 404, { error: 'no entry for this player' })
+    if (!byOperator && Date.now() > CHALLENGE.end + 14 * 86400_000) return json(res, 403, { error: 'this round is closed' })
+    if (!byOperator && store[id].addr && store[id].addr !== String(b.addr).toLowerCase())
+      return json(res, 409, { error: 'a payout wallet is already set — contact us to change it' })
     store[id] = { ...store[id], addr: String(b.addr).toLowerCase(), claimedAt: new Date().toISOString() }
     saveChal(store)
     console.log(`[chal] claim: ${id} → ${String(b.addr).slice(0, 8)}… (netPnl ${store[id].netPnl})`)
@@ -3150,6 +3183,9 @@ const server = createServer(async (req, res) => {
     const b = await body(req)
     if (!isAddr(b.address)) return json(res, 400, { error: 'invalid address' })
     if (!SUB_TRIAL_DAYS)    return json(res, 400, { error: 'no trial available' })
+    // Only the wallet's owner starts its trial — anyone else could spend it for them.
+    const denied = await ownerProofError(req, b, b.address, ts => trialMessage(b.address, ts))
+    if (denied) return json(res, denied.status, denied.body)
     const cur = subGet(b.address)
     // One trial per wallet, ever — otherwise it is not a trial, it is a free product.
     if (cur?.trialUsed) return json(res, 400, { error: 'trial already used for this wallet' })
@@ -3176,6 +3212,10 @@ const server = createServer(async (req, res) => {
   if (method === 'POST' && path === '/api/sub/payfrom') {
     const b = await body(req)
     if (!isAddr(b.address) || !isAddr(b.payer)) return json(res, 400, { error: 'invalid address' })
+    // Signed by the PAYER: it says where their money's credit goes. Taken on trust, anyone
+    // could point a real customer's payment at a wallet of their own.
+    const denied = await ownerProofError(req, b, b.payer, ts => payFromMessage(b.payer, b.address, ts))
+    if (denied) return json(res, denied.status, denied.body)
     const st = subPayRead()
     st.binds = st.binds ?? {}
     st.binds[String(b.payer).toLowerCase()] = String(b.address).toLowerCase()
