@@ -301,9 +301,9 @@ import { setExtChartDeps, openExtChart, extChartTf, extChartQuote } from './extc
 import { trackRecord, isSmallSample, openLossOf, holdsStep } from './trackrecord.js'
 import { pnlCurveFactor } from './pfnet.js'
 import { createJoiner, ownedAddresses, joinMessage } from './lbjoin.js'
-import { initNavOverflow } from './navoverflow.js'
+import { initNavGroups } from './navgroups.js'
 import { trialMessage, payFromMessage } from './ownerproof.js'
-initNavOverflow(document.querySelector('.nav-tabs'))   // one row of desktop tabs, the rest under "More"
+initNavGroups(document.querySelector('.nav-tabs'))   // main tabs alone, the rest in groups
 import { readKey as _akRead, writeKey as _akWrite, removeKey as _akRemove,
          migrateLegacy as _akMigrateLegacy, strayEntries as _akStrays,
          onAgentKeyMisuse, LEGACY_KEY as _AK_LEGACY } from './agentkeys.js'

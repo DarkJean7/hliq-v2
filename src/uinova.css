@@ -142,7 +142,7 @@ html.ui-nova .topbar { background: transparent; border-bottom: none; }
 html.ui-nova .statusbar { background: transparent; border-top: none; }
 
 /* ── desktop tabs: a segmented pill bar, the open one tinted with the gradient ── */
-/* One row; tabs that do not fit go into its "More" menu (src/navoverflow.js). Not a hidden-
+/* One row: the main tabs, then groups that drop a menu (src/navgroups.js). Not a hidden-
    scrollbar strip ("settings is missing") and not a wrap (Settings alone on a second row). */
 html.ui-nova .nav-tabs {
   display: flex; flex-wrap: nowrap; width: fit-content; max-width: 100%;
@@ -157,6 +157,20 @@ html.ui-nova .nav-tab {
 }
 html.ui-nova .nav-tab:hover { color: var(--fg); background: var(--panel-2); }
 html.ui-nova .nav-tab.active { color: var(--fg); font-weight: 600; background: var(--nova-tint); box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent) 28%, transparent) inset; }
+html.ui-nova .nav-group-btn {
+  height: 36px; padding: 0 15px; border-radius: 13px; border-bottom: none; margin-bottom: 0;
+  text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 500; color: var(--fg-3);
+}
+html.ui-nova .nav-group-btn:hover, html.ui-nova .nav-group.open > .nav-group-btn { color: var(--fg); background: var(--panel-2); }
+html.ui-nova .nav-group.active > .nav-group-btn, html.ui-nova .nav-more.active > .nav-group-btn {
+  color: var(--fg); background: var(--nova-tint); box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent) 28%, transparent) inset;
+}
+html.ui-nova :is(.nav-group-menu, .nav-more-menu) {
+  top: calc(100% + 10px); border-radius: 16px; border-color: var(--nova-edge);
+  background: var(--panel); background-image: var(--nova-lit); box-shadow: var(--nova-shadow), 0 16px 40px rgba(0,0,0,.4);
+}
+html.ui-nova .nav-group-menu > .nav-tab { height: 36px; border-radius: 10px; box-shadow: none; }
+html.ui-nova .nav-group-menu > .nav-tab.active { background: var(--nova-tint); }
 
 /* ── primary actions: the gradient ── */
 html.ui-nova :is(.mob-v-act-pill.primary, .mob-v-bottom-trade, .btn-run-strategy, .ov-cta-ic) {

@@ -377,28 +377,50 @@
     </div>
 
     <div class="nav-tabs fade-in">
+      <!-- The tabs used most stand alone; the rest are grouped (src/navgroups.js). Each grouped
+           tab is still a .nav-tab button with its own onclick, so switchTab and everything that
+           finds a tab by name work unchanged. Bots follows the sidebar's "Bot Agents" order. -->
       <button class="nav-tab active" onclick="switchTab('overview',this)">Overview</button>
       <button class="nav-tab" onclick="switchTab('trade',this)">Trade</button>
-      <button class="nav-tab" onclick="switchTab('outlook',this)">Oracle</button>
-      <button class="nav-tab" onclick="switchTab('outcomes',this)">Outcomes</button>
-      <button class="nav-tab" onclick="switchTab('portfolio',this)">Portfolio</button>
-      <button class="nav-tab" onclick="switchTab('calendar',this)">Calendar</button>
-      <button class="nav-tab" onclick="switchTab('trades',this)">History <span class="tab-badge" id="fillCount">0</span></button>
-      <button class="nav-tab" onclick="switchTab('transfers',this)">Transfers</button>
-      <button class="nav-tab" onclick="switchTab('tokens',this)"><svg viewBox="0 0 20 20" width="11" height="11" fill="currentColor"><rect x="0" y="13" width="4" height="7" rx="1"/><rect x="5.5" y="8" width="4" height="12" rx="1"/><rect x="11" y="4" width="4" height="16" rx="1"/><rect x="16.5" y="0" width="3.5" height="20" rx="1"/></svg>Scoreboard</button>
-      <button class="nav-tab" onclick="switchTab('leaderboard',this)">Leaderboard</button>
-      <button class="nav-tab" onclick="switchTab('watch',this)">Watch</button>
       <button class="nav-tab" onclick="switchTab('markets',this)">Markets</button>
-      <button class="nav-tab" onclick="switchTab('analysis',this)">Analysis</button>
-      <button class="nav-tab" onclick="window.__openChat()">Global Chat</button>
-      <!-- The sidebar's order, Bot Agents included: Simulator, Portfolios, Strategies, Grid Ladder, Performance. -->
-      <button class="nav-tab" onclick="switchTab('simulator',this)">Simulator</button>
-      <button class="nav-tab" onclick="switchTab('labs',this)">Labs</button>
-      <button class="nav-tab" onclick="switchTab('portfolios',this)">Portfolios</button>
-      <button class="nav-tab" onclick="switchTab('strategies',this)"><svg viewBox="0 0 20 22" width="11" height="11" fill="currentColor"><rect x="1" y="0" width="4" height="5" rx="1"/><rect x="8" y="0" width="4" height="5" rx="1"/><rect x="15" y="0" width="4" height="5" rx="1"/><rect x="2" y="5" width="16" height="11" rx="1"/><rect x="0" y="16" width="20" height="5" rx="1"/></svg>Strategies</button>
-      <button class="nav-tab" onclick="switchTab('agents',this)">Agent Arena</button>
-      <button class="nav-tab dev-gate" onclick="window.__openGridLadder()">Grid Ladder</button>
-      <button class="nav-tab" onclick="switchTab('performance',this)">Performance</button>
+      <button class="nav-tab" onclick="switchTab('portfolio',this)">Portfolio</button>
+      <div class="nav-group" data-group="account">
+        <button type="button" class="nav-group-btn" aria-haspopup="true" aria-expanded="false"><span class="nav-group-label">Account</span><span class="nav-group-cur"></span><svg class="nav-group-chev" viewBox="0 0 10 6" width="9" height="6" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 1l4 4 4-4"/></svg></button>
+        <div class="nav-group-menu" role="menu" hidden>
+          <button class="nav-tab" onclick="switchTab('trades',this)">History <span class="tab-badge" id="fillCount">0</span></button>
+          <button class="nav-tab" onclick="switchTab('transfers',this)">Transfers</button>
+          <button class="nav-tab" onclick="switchTab('calendar',this)">Calendar</button>
+          <button class="nav-tab" onclick="switchTab('tokens',this)"><svg viewBox="0 0 20 20" width="11" height="11" fill="currentColor"><rect x="0" y="13" width="4" height="7" rx="1"/><rect x="5.5" y="8" width="4" height="12" rx="1"/><rect x="11" y="4" width="4" height="16" rx="1"/><rect x="16.5" y="0" width="3.5" height="20" rx="1"/></svg>Scoreboard</button>
+        </div>
+      </div>
+      <div class="nav-group" data-group="research">
+        <button type="button" class="nav-group-btn" aria-haspopup="true" aria-expanded="false"><span class="nav-group-label">Research</span><span class="nav-group-cur"></span><svg class="nav-group-chev" viewBox="0 0 10 6" width="9" height="6" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 1l4 4 4-4"/></svg></button>
+        <div class="nav-group-menu" role="menu" hidden>
+          <button class="nav-tab" onclick="switchTab('analysis',this)">Analysis</button>
+          <button class="nav-tab" onclick="switchTab('outlook',this)">Oracle</button>
+          <button class="nav-tab" onclick="switchTab('outcomes',this)">Outcomes</button>
+          <button class="nav-tab" onclick="switchTab('watch',this)">Watch</button>
+        </div>
+      </div>
+      <div class="nav-group" data-group="community">
+        <button type="button" class="nav-group-btn" aria-haspopup="true" aria-expanded="false"><span class="nav-group-label">Community</span><span class="nav-group-cur"></span><svg class="nav-group-chev" viewBox="0 0 10 6" width="9" height="6" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 1l4 4 4-4"/></svg></button>
+        <div class="nav-group-menu" role="menu" hidden>
+          <button class="nav-tab" onclick="switchTab('leaderboard',this)">Leaderboard</button>
+          <button class="nav-tab" onclick="switchTab('agents',this)">Agent Arena</button>
+          <button class="nav-tab" onclick="window.__openChat()">Global Chat</button>
+        </div>
+      </div>
+      <div class="nav-group" data-group="bots">
+        <button type="button" class="nav-group-btn" aria-haspopup="true" aria-expanded="false"><span class="nav-group-label">Bots</span><span class="nav-group-cur"></span><svg class="nav-group-chev" viewBox="0 0 10 6" width="9" height="6" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 1l4 4 4-4"/></svg></button>
+        <div class="nav-group-menu" role="menu" hidden>
+          <button class="nav-tab" onclick="switchTab('strategies',this)"><svg viewBox="0 0 20 22" width="11" height="11" fill="currentColor"><rect x="1" y="0" width="4" height="5" rx="1"/><rect x="8" y="0" width="4" height="5" rx="1"/><rect x="15" y="0" width="4" height="5" rx="1"/><rect x="2" y="5" width="16" height="11" rx="1"/><rect x="0" y="16" width="20" height="5" rx="1"/></svg>Strategies</button>
+          <button class="nav-tab" onclick="switchTab('portfolios',this)">Portfolios</button>
+          <button class="nav-tab" onclick="switchTab('simulator',this)">Simulator</button>
+          <button class="nav-tab" onclick="switchTab('labs',this)">Labs</button>
+          <button class="nav-tab dev-gate" onclick="window.__openGridLadder()">Grid Ladder</button>
+          <button class="nav-tab" onclick="switchTab('performance',this)">Performance</button>
+        </div>
+      </div>
       <button class="nav-tab" onclick="switchTab('settings',this)">Settings</button>
     </div>
 
