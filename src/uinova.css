@@ -306,6 +306,9 @@ html.ui-nova .ov-ring text { font-size: 21px !important; font-weight: 700; lette
    width, and the old side column as one row of four underneath. */
 @media (min-width: 1300px) {
   html.ui-nova #overviewStats { max-width: 1760px; }
+  /* The tab bar lines up with the cards beneath it ("make it match the account equity and
+     positions card"), not the window. */
+  html.ui-nova :is(.nav-tabs, #overviewPositionsWrap) { max-width: 1760px; margin-inline: auto; }
   html.ui-nova .ov-top-row { grid-template-columns: minmax(0, 1fr) 380px !important; }
   /* Beside the hero, health goes back to its upright form: ring above its numbers. */
   html.ui-nova .ov-health { display: flex; flex-direction: column; }
