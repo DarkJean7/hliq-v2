@@ -700,7 +700,7 @@ body.priv .perf-table-wrap tbody td:not(:first-child):not(:nth-child(2)) {
   gap: 0;
   border-bottom: 1px solid var(--rule);
   margin-bottom: 20px;
-  overflow-x: auto;
+  flex-wrap: wrap;   /* not a hidden-scrollbar strip: every tab stays reachable (see uinova.css) */
 }
 .nav-tab {
   background: none;
