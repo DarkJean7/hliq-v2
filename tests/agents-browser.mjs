@@ -174,6 +174,10 @@ for (const [label, opts] of [['phone', { ...devices['iPhone 14 Pro'] }], ['deskt
   await ctx.route('**/agents-data', r => { pinSent = r.request().headers()['x-lb-pin'] ?? null; return r.fulfill({ status: 200, contentType: 'application/json', json: SUMMARY }) })
   await p.evaluate(() => window.__openAgents())
   await waitFor(p, 'the form', () => !!document.querySelector('.ag-card[data-ag="rekt01"] [data-rk-form]'))
+  // The desktop tab keeps the arena while hidden, so coming back paints the form from what it
+  // has BEFORE the refetch goes out. Wait for the request itself, not just the form: reading
+  // pinSent at once passed locally and failed on CI's slower runner.
+  for (const t0 = Date.now(); pinSent === null && Date.now() - t0 < 8000;) await new Promise(r => setTimeout(r, 50))
   t(`${label}: dev mode asks with its PIN and gets the form`, [pinSent, await p.evaluate(() => !!document.querySelector('[data-rk-form] [name=maxLev]'))], ['test-pin', true])
   await p.fill('[data-rk-form] [name=maxLev]', '5')
   await p.selectOption('[data-rk-form] [name=mode]', 'allow')
