@@ -238,6 +238,10 @@
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2v12h12"/><polyline points="4.5 10 7 6.5 9 8.5 13.5 3.5"/></svg>
       <span>Analysis</span>
     </div>
+    <div class="sidebar-item" onclick="window.__openChat()">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M14 7.6a5.6 5.6 0 0 1-8.2 5L2 14l1.3-3.6A5.6 5.6 0 1 1 14 7.6z"/></svg>
+      <span>Global Chat</span>
+    </div>
     <div class="sidebar-section">Bot Agents</div>
     <!-- Test (Simulator, Portfolios) → run (Strategies, Grid Ladder) → review (Performance); same order as the phone's More drawer. -->
     <div class="sidebar-item" data-tab="simulator" onclick="switchTab('simulator',null);setSidebarActive(this)">
@@ -386,6 +390,7 @@
       <button class="nav-tab" onclick="switchTab('watch',this)">Watch</button>
       <button class="nav-tab" onclick="switchTab('markets',this)">Markets</button>
       <button class="nav-tab" onclick="switchTab('analysis',this)">Analysis</button>
+      <button class="nav-tab" onclick="window.__openChat()">Global Chat</button>
       <!-- The sidebar's order, Bot Agents included: Simulator, Portfolios, Strategies, Grid Ladder, Performance. -->
       <button class="nav-tab" onclick="switchTab('simulator',this)">Simulator</button>
       <button class="nav-tab" onclick="switchTab('labs',this)">Labs</button>

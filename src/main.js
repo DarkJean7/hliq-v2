@@ -301,6 +301,8 @@ import { setExtChartDeps, openExtChart, extChartTf, extChartQuote } from './extc
 import { trackRecord, isSmallSample, openLossOf, holdsStep } from './trackrecord.js'
 import { pnlCurveFactor } from './pfnet.js'
 import { createJoiner, ownedAddresses, joinMessage } from './lbjoin.js'
+import { initNavOverflow } from './navoverflow.js'
+initNavOverflow(document.querySelector('.nav-tabs'))   // one row of desktop tabs, the rest under "More"
 import { readKey as _akRead, writeKey as _akWrite, removeKey as _akRemove,
          migrateLegacy as _akMigrateLegacy, strayEntries as _akStrays,
          onAgentKeyMisuse, LEGACY_KEY as _AK_LEGACY } from './agentkeys.js'
@@ -13284,6 +13286,12 @@ window.__openChat = function() {
     ov.style.cssText = 'position:fixed;inset:0;z-index:100055;background:var(--bg);display:flex;flex-direction:column'
     document.body.appendChild(ov)
   }
+  // On a desktop window, a panel down the right side rather than a page over everything.
+  const wide = matchMedia('(min-width: 900px)').matches
+  ov.style.left = wide ? 'auto' : '0'
+  ov.style.width = wide ? '440px' : ''
+  ov.style.borderLeft = wide ? '1px solid var(--border)' : ''
+  ov.style.boxShadow = wide ? '-16px 0 40px rgba(0,0,0,.4)' : ''
   ov.style.display = 'flex'
   ov.innerHTML = `
     <div style="flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border)">

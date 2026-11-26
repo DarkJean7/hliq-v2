@@ -700,8 +700,25 @@ body.priv .perf-table-wrap tbody td:not(:first-child):not(:nth-child(2)) {
   gap: 0;
   border-bottom: 1px solid var(--rule);
   margin-bottom: 20px;
-  flex-wrap: wrap;   /* not a hidden-scrollbar strip: every tab stays reachable (see uinova.css) */
+  flex-wrap: nowrap;   /* one row; what does not fit is in the More menu (src/navoverflow.js) */
 }
+.nav-tab[data-nav-overflow] { display: none !important; }
+.nav-more { position: relative; display: flex; flex-shrink: 0; }
+.nav-more[hidden] { display: none; }
+.nav-more-btn svg { opacity: .7; }
+.nav-more-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 400; min-width: 190px;
+  display: flex; flex-direction: column; padding: 5px; gap: 1px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.45);
+}
+.nav-more-menu[hidden] { display: none; }
+.nav-more-item {
+  display: flex; align-items: center; gap: 7px; height: 34px; padding: 0 12px; border: none; border-radius: 8px;
+  background: none; color: var(--fg-2); font: 500 13px var(--font-sans); text-align: left; cursor: pointer; white-space: nowrap;
+}
+.nav-more-item:hover { background: var(--panel-2); color: var(--fg); }
+.nav-more-item.active { color: var(--fg); font-weight: 600; background: color-mix(in oklch, var(--accent) 12%, transparent); }
 .nav-tab {
   background: none;
   border: none;

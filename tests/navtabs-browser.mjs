@@ -1,7 +1,8 @@
-// The desktop tab bar: every tab reachable, whatever the window width.
-// "i cannot access all tabs. settings is missing" — Agent Arena, dev mode's Grid Ladder and the
-// History count made the bar wider than the window, and its scrollbar is hidden, so the last
-// tabs could not be reached with a mouse. It wraps now. Both designs, a few widths.
+// The desktop tab bar: one row, and every tab reachable, whatever the window width.
+// "i cannot access all tabs. settings is missing" — the bar outgrew the window and its scrollbar
+// was hidden. Wrapping fixed that and put Settings alone on a second row: "the tab looks awful".
+// Now it is one row and what does not fit is in a "More" menu (src/navoverflow.js). Both
+// designs, a few widths, dev mode on so Grid Ladder is in the bar too.
 import { chromium } from 'playwright'
 const PORT = (process.argv.find(a => a.startsWith('--port=')) || '').split('=')[1] || '5175'
 const URL = `http://localhost:${PORT}/app`
@@ -27,14 +28,32 @@ for (const classic of [false, true]) for (const width of [1920, 1440, 1100]) {
   await p.reload({ waitUntil: 'domcontentloaded' })
   await p.waitForFunction(() => !!window.__goPaper, null, { timeout: 30000 })
   await p.evaluate(() => window.__goPaper())
-  await p.waitForFunction(() => document.querySelector('.nav-tabs')?.offsetParent != null, null, { timeout: 30000 })
-  const r = await p.evaluate(() => {
+  await p.waitForFunction(() => document.querySelector('.nav-tabs')?.offsetParent != null && document.querySelector('.nav-tabs')?.dataset.navOverflow, null, { timeout: 30000 })
+  const read = () => p.evaluate(() => {
     const n = document.querySelector('.nav-tabs'), nr = n.getBoundingClientRect()
-    const tabs = [...n.querySelectorAll('.nav-tab')].filter(b => b.offsetParent !== null)
-    const out = tabs.filter(b => { const r = b.getBoundingClientRect(); return r.right > nr.right + 1 || r.left < nr.left - 1 || r.right > innerWidth }).map(b => b.textContent.trim())
-    return { out, settings: tabs.some(b => /Settings/.test(b.textContent)), dev: tabs.some(b => /Grid Ladder/.test(b.textContent)) }
+    const vis = [...n.querySelectorAll('.nav-tab')].filter(b => b.offsetParent !== null)
+    const tops = new Set(vis.map(b => Math.round(b.getBoundingClientRect().top)))
+    const out = vis.filter(b => { const r = b.getBoundingClientRect(); return r.right > nr.right + 1 || r.left < nr.left - 1 || r.right > innerWidth }).map(b => b.textContent.trim())
+    const inBar = vis.filter(b => !b.classList.contains('nav-more-btn')).map(b => b.textContent.trim())
+    const more = n.querySelector('.nav-more-btn'); more?.offsetParent && more.click()
+    const inMenu = [...n.querySelectorAll('.nav-more-item')].map(b => b.textContent.trim())
+    more?.offsetParent && more.click()
+    const all = [...inBar, ...inMenu].join('|')
+    return { rows: tops.size, out, settings: /Settings/.test(all), dev: /Grid Ladder/.test(all), chat: /Global Chat/.test(all) }
   })
-  t(`${label}: every tab is inside the bar and the window (Settings and dev mode's Grid Ladder too)`, r, { out: [], settings: true, dev: true })
+  t(`${label}: one row, nothing outside the bar, every tab in the bar or under More`, await read(), { rows: 1, out: [], settings: true, dev: true, chat: true })
+  if (width === 1100) {
+    // A tab that lives under More still opens, and More lights up while it is the open one.
+    const r = await p.evaluate(async () => {
+      const n = document.querySelector('.nav-tabs'), more = n.querySelector('.nav-more-btn')
+      more.click()
+      const it = [...n.querySelectorAll('.nav-more-item')].find(b => /Settings/.test(b.textContent))
+      it?.click()
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+      return { found: !!it, open: document.getElementById('tab-settings')?.classList.contains('active') ?? false, lit: more.classList.contains('active'), menuClosed: n.querySelector('.nav-more-menu').hidden }
+    })
+    t(`${label}: Settings opens from More, and More is lit while it is open`, r, { found: true, open: true, lit: true, menuClosed: true })
+  }
   await ctx.close()
 }
 t('no page errors', errs, [])

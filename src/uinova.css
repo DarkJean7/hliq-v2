@@ -142,11 +142,10 @@ html.ui-nova .topbar { background: transparent; border-bottom: none; }
 html.ui-nova .statusbar { background: transparent; border-top: none; }
 
 /* ── desktop tabs: a segmented pill bar, the open one tinted with the gradient ── */
-/* Wraps to a second row rather than scrolling: the scrollbar is hidden, so a bar wider than the
-   window left its last tabs unreachable with a mouse — "i cannot access all tabs. settings is
-   missing", once Agent Arena (and dev mode's Grid Ladder) made it longer than the screen. */
+/* One row; tabs that do not fit go into its "More" menu (src/navoverflow.js). Not a hidden-
+   scrollbar strip ("settings is missing") and not a wrap (Settings alone on a second row). */
 html.ui-nova .nav-tabs {
-  display: flex; flex-wrap: wrap; justify-content: center; width: fit-content; max-width: 100%;
+  display: flex; flex-wrap: nowrap; width: fit-content; max-width: 100%;
   gap: 2px; padding: 5px; margin-bottom: 24px;
   background: var(--panel); background-image: var(--nova-lit);
   border: 1px solid var(--nova-edge); border-radius: 18px;
