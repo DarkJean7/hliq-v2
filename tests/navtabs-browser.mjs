@@ -80,6 +80,16 @@ for (const classic of [false, true]) for (const width of [1920, 1440, 1100]) {
     await p.click('.nav-tabs > .nav-tab[onclick*="\'overview\'"]')
     await p.waitForFunction(() => !document.querySelector('.nav-group.active'), null, { timeout: 5000 }).catch(() => {})
     t(`${label}: back on Overview, no group is lit`, await p.evaluate(() => document.querySelectorAll('.nav-group.active').length), 0)
+
+    // "i pressed the account tab … then i changed to oracle tab and the account tab options kept
+    // open": a click on another tab in the bar closes the menu.
+    await p.click('.nav-group[data-group="account"] > .nav-group-btn')
+    await p.click('.nav-tabs > .nav-tab[onclick*="\'outlook\'"]')
+    const left = await p.evaluate(() => ({
+      open: [...document.querySelectorAll('.nav-group-menu')].filter(m => !m.hidden).length,
+      oracle: document.querySelector('.nav-tabs > .nav-tab[onclick*="\'outlook\'"]').classList.contains('active'),
+    }))
+    t(`${label}: Account open, then Oracle → Oracle opens and the menu closes`, left, { open: 0, oracle: true })
   }
   await ctx.close()
 }

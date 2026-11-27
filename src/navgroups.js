@@ -89,7 +89,15 @@ export function initNavGroups(bar) {
     closeAll(more); setOpen(more, opening)
   })
 
-  document.addEventListener('click', (e) => { if (!bar.contains(e.target)) closeAll(null) })
+  // Any click outside the open menu closes it — including another tab in the bar: "i pressed
+  // the account tab … then i changed to oracle tab and the account tab options kept open".
+  // A group's own button stops its click, so opening one is not undone here.
+  document.addEventListener('click', (e) => {
+    // Only a click inside an open menu (its padding, a heading) leaves that one menu open;
+    // a pick inside it has already closed it.
+    const menu = e.target.closest?.('.nav-group-menu, .nav-more-menu')
+    closeAll(menu ? menu.parentElement : null)
+  })
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAll(null) })
 
   // ── which group holds the open tab ──
