@@ -38,7 +38,7 @@ function chartHtml(agents, width = 640) {
   const W = Math.max(260, Math.round(width)), H = 220, L = 44, R = 12, Tp = 10, B = 22
   const series = agents.map(a => ({ a, c: pctCurve(a) })).filter(s => s.c.length)
   const pts = series.flatMap(s => s.c)
-  if (pts.length < 2) return `<div class="ag-chart-empty">${T('The chart fills in as the agents trade — one point an hour.', 'El gráfico se llena a medida que operan — un punto por hora.')}</div>`
+  if (pts.length < 2) return `<div class="ag-chart-empty">${T('The chart fills in as the bots trade — one point an hour.', 'El gráfico se llena a medida que operan — un punto por hora.')}</div>`
   const t0 = Math.min(...pts.map(p => p[0])), t1 = Math.max(...pts.map(p => p[0]))
   let lo = Math.min(0, ...pts.map(p => p[1])), hi = Math.max(0, ...pts.map(p => p[1]))
   const pad = Math.max(0.5, (hi - lo) * 0.08); lo -= pad; hi += pad
@@ -55,7 +55,7 @@ function chartHtml(agents, width = 640) {
   const legend = series.map(({ a }) => `<span class="ag-leg"><i style="background:${a.color}"></i>${esc(a.name)}</span>`).join('')
   return `<div class="ag-chart" data-t0="${t0}" data-t1="${t1}" data-l="${L}" data-r="${R}" data-w="${W}">
     <div class="ag-legend">${legend}</div>
-    <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${esc(T('Return since start, per agent', 'Rentabilidad desde el inicio, por agente'))}">${grid}${xl}${lines}<line class="ag-cross" x1="0" x2="0" y1="${Tp}" y2="${H - B}" style="display:none"/></svg>
+    <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${esc(T('Return since start, per bot', 'Rentabilidad desde el inicio, por bot'))}">${grid}${xl}${lines}<line class="ag-cross" x1="0" x2="0" y1="${Tp}" y2="${H - B}" style="display:none"/></svg>
     <div class="ag-tip" style="display:none"></div>
   </div>`
 }
@@ -119,7 +119,7 @@ function cardHtml(a, hodl, rank) {
   return `<div class="ag-card${isOpen ? ' open' : ''}${a.baseline ? ' base' : ''}" data-ag="${esc(a.id)}">
     <button class="ag-head" data-ag-open="${esc(a.id)}" aria-expanded="${isOpen}">
       <span class="ag-rank">${rank}</span>
-      <span class="ag-name"><i style="background:${a.color}"></i>${esc(a.name)}${a.baseline ? `<em>${T('benchmark', 'referencia')}</em>` : ''}${a.personal ? `<em class="ag-yours">${T('yours · learning', 'tuyo · aprendiendo')}</em>` : ''}${a.hidden ? `<em>${T('not in the arena', 'fuera de la arena')}</em>` : ''}</span>
+      <span class="ag-name"><i style="background:${a.color}"></i>${esc(a.name)}${a.baseline ? `<em>${T('benchmark', 'referencia')}</em>` : ''}${a.personal ? `<em class="ag-yours">${T('yours · learning', 'tuyo · aprendiendo')}</em>` : ''}${a.hidden ? `<em>${T('not in the Bot Pit', 'fuera del Bot Pit')}</em>` : ''}</span>
       <span class="ag-ret ${cls(a.ret)}">${sgnPct(a.ret)}</span>
       <span class="ag-chev">${isOpen ? '▴' : '▾'}</span>
     </button>
@@ -150,11 +150,11 @@ function cardHtml(a, hodl, rank) {
 function bodyHtml() {
   if (err && !data) return `<div class="ag-msg">${T('Could not load the arena', 'No se pudo cargar la arena')}: ${esc(err)}</div>`
   if (!data) return `<div class="ag-msg">${T('Loading…', 'Cargando…')}</div>`
-  if (!Array.isArray(data.agents)) return `<div class="ag-msg">${T('The agents are starting up — their first look is within a minute or two. Check back shortly.', 'Los agentes están arrancando — su primera revisión es en uno o dos minutos. Vuelve en breve.')}</div>`
+  if (!Array.isArray(data.agents)) return `<div class="ag-msg">${T('The bots are starting up — their first look is within a minute or two. Check back shortly.', 'Los bots están arrancando — su primera revisión es en uno o dos minutos. Vuelve en breve.')}</div>`
   const agents = data.agents
   const hodl = agents.find(a => a.baseline)
   const ranked = [...agents].sort((p, q) => q.ret - p.ret)
-  return `<p class="ag-intro">${T(`${agents.length} paper agents, $1,000 each, trading live Hyperliquid prices since ${esc(dday(data.started))}. Same fees, slippage and funding as your paper account. Paper money — not advice.`, `${agents.length} agentes de papel, $1.000 cada uno, operando precios reales de Hyperliquid desde ${esc(dday(data.started))}. Mismas comisiones, deslizamiento y funding que tu cuenta de papel. Dinero ficticio — no es asesoría.`)}</p>
+  return `<p class="ag-intro">${T(`${agents.length} paper bots, $1,000 each, trading live Hyperliquid prices since ${esc(dday(data.started))}. Same fees, slippage and funding as your paper account. Paper money — not advice.`, `${agents.length} bots de papel, $1.000 cada uno, operando precios reales de Hyperliquid desde ${esc(dday(data.started))}. Mismas comisiones, deslizamiento y funding que tu cuenta de papel. Dinero ficticio — no es asesoría.`)}</p>
     <h3 class="ag-h">${T('Return since start', 'Rentabilidad desde el inicio')}</h3>
     ${chartHtml(agents, chartWidth())}
     <div class="ag-board-h"><h3 class="ag-h">${T('Standings', 'Clasificación')}</h3><span class="ag-upd">${T('updated', 'actualizado')} ${esc(dt(data.at))}</span></div>

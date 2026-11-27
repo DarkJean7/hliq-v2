@@ -304,6 +304,7 @@ import { createJoiner, ownedAddresses, joinMessage } from './lbjoin.js'
 import { initNavGroups } from './navgroups.js'
 import { trialMessage, payFromMessage } from './ownerproof.js'
 import { guardFetch, checkStoredPin } from './pinguard.js'
+import { showName } from './botname.js'
 // A PIN the server has stopped accepting must not empty the page (src/pinguard.js).
 let _pinLockToasted = false
 window.fetch = guardFetch(window.fetch.bind(window), {
@@ -13275,8 +13276,8 @@ let _agentsEnter = false
 function _agentsRender(host, enter = false) {
   if (!host) return
   enter = enter || _agentsEnter; _agentsEnter = false
-  import('./agentsview.js').then(m => m.renderAgentArena(host, { t: _T, header: _mobVFullHeader(_T('Agent Arena', 'Arena de agentes')), enter }))
-    .catch(e => { if (!reloadForStaleChunk(e)) _appAlert('Could not open the Agent Arena: ' + e.message) })
+  import('./agentsview.js').then(m => m.renderAgentArena(host, { t: _T, header: _mobVFullHeader(_T('Bot Pit', 'Bot Pit')), enter }))
+    .catch(e => { if (!reloadForStaleChunk(e)) _appAlert('Could not open the Bot Pit: ' + e.message) })
 }
 // Kept for links that open it by name: the desktop tab, or the phone's.
 window.__openAgents = function() {
@@ -23463,7 +23464,7 @@ function _lbPaperRowsMapped() {
     addr:  PAPER_ADDR,
     _id:   'p' + i + '-' + String(r.name ?? '').replace(/[^a-z0-9]/gi, '').slice(0, 8),
     _pname: r.name ?? '',
-    label: (r.name ?? '') + (mine.has(String(r.name ?? '').toLowerCase()) ? ' (you)' : ''),
+    label: showName(r.name) + (mine.has(String(r.name ?? '').toLowerCase()) ? ' (you)' : ''),
     _slot: slots[String(r.name ?? '').toLowerCase()] ?? null,   // set only for this device's accounts
     paper: true,
     hidden: !!r.hidden,
@@ -23523,7 +23524,7 @@ window.__paperVisit = async function(name) {
   try { data = await fetch('/paper-board/one?name=' + encodeURIComponent(name)).then(r => r.json()) } catch {}
   if (!data?.ok) {
     ov.innerHTML = `<div style="padding:14px 16px;display:flex;justify-content:space-between">
-      <span style="font-size:18px;font-weight:700">${esc(name)}</span>
+      <span style="font-size:18px;font-weight:700">${esc(showName(name))}</span>
       <button onclick="window.__paperVisitClose()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">&times;</button></div>
       <div class="mob-v-empty">${_T('That paper account is no longer on the board.', 'Esa cuenta de papel ya no está en el tablero.')}</div>`
     return
@@ -23552,11 +23553,11 @@ window.__paperVisit = async function(name) {
     <span style="font-size:18px;font-weight:700">${title}</span>
     <button onclick="window.__paperVisitClose()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
   </div>`
-  ov.innerHTML = head(esc(row.name ?? name)) + `
+  ov.innerHTML = head(esc(showName(row.name ?? name))) + `
     <div style="display:flex;align-items:center;gap:12px;padding:14px 16px 10px">
       ${_mobVAvatarHtml(PAPER_ADDR, 46)}
       <div style="min-width:0">
-        <div style="font-size:17px;font-weight:800">${esc(row.name ?? name)}${mine ? ' (' + _T('you', 'tú') + ')' : ''}</div>
+        <div style="font-size:17px;font-weight:800">${esc(showName(row.name ?? name))}${mine ? ' (' + _T('you', 'tú') + ')' : ''}</div>
         <div style="font-size:11.5px;color:var(--muted)">${_T('Paper account · simulated, not verifiable', 'Cuenta de papel · simulada, no verificable')} · ${
           _T('updated', 'actualizada')} ${age}</div>
       </div>
@@ -24054,7 +24055,7 @@ window.__lbCopyTrade = function(addr = '', name = '', opts = {}) {
 
   ov.innerHTML = `<div style="background:var(--panel-2,#1a1d24);border:1px solid var(--border2,#2a2e39);border-radius:20px 20px 0 0;padding:20px 18px calc(18px + env(safe-area-inset-bottom));max-height:88vh;overflow-y:auto">
     <div style="width:38px;height:4px;border-radius:2px;background:var(--border2,#2a2e39);margin:-8px auto 15px"></div>
-    <div style="font-size:18px;font-weight:800;margin-bottom:3px">⇄ ${_T('Copy trade', 'Copiar operaciones')}${name ? ' ' + esc(name) : ''}</div>
+    <div style="font-size:18px;font-weight:800;margin-bottom:3px">⇄ ${_T('Copy trade', 'Copiar operaciones')}${name ? ' ' + esc(showName(name)) : ''}</div>
     <div style="font-size:12.5px;line-height:1.5;color:var(--fg-2,#c9cdd6);margin-bottom:16px">${
       _T('Mirrors every new perp trade they make onto your account, scaled down. Their existing positions are <b>not</b> bought — you follow what they do from now on.',
          'Refleja cada nueva operación de perps que hagan en tu cuenta, a escala. Sus posiciones actuales <b>no</b> se compran — sigues lo que hagan desde ahora.')}${

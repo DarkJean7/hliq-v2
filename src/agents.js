@@ -139,8 +139,8 @@ export const AGENTS = [
   },
   {
     id: 'hodl', name: 'HODL BTC', color: '#94a3b8', lev: 1, max: 1, every: 24 * HOUR, baseline: true,
-    blurb: ['The benchmark: bought BTC at 1× on day one and never sells. An agent that cannot beat this is not adding anything.',
-            'La referencia: compró BTC a 1× el primer día y nunca vende. Un agente que no supera esto no aporta nada.'],
+    blurb: ['The benchmark: bought BTC at 1× on day one and never sells. A bot that cannot beat this is not adding anything.',
+            'La referencia: compró BTC a 1× el primer día y nunca vende. Un bot que no supera esto no aporta nada.'],
     decide(ctx) { return [{ coin: 'BTC', side: 'long', why: (ctx.held ?? []).length ? 'held since day one' : 'buy and hold' }] },
   },
 ]

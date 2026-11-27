@@ -87,7 +87,8 @@ async function visitOf(p) {
   await waitFor(p, 'the visit sheet', () => { const o = document.getElementById('paperVisitOv'); return o && o.style.display !== 'none' && /SOL/.test(o.textContent) })
   return p.evaluate(() => {
     const o = document.getElementById('paperVisitOv')
-    return { name: /Oracle \(agent\)/.test(o.textContent), sol: /SOL/.test(o.textContent), trades: /ETH/.test(o.textContent),
+    // Shown as "(bot)" ("are the agents really agents or just bots?"); stored and asked for as "(agent)".
+    return { name: /Oracle \(bot\)/.test(o.textContent) && !/\(agent\)/.test(o.textContent), sol: /SOL/.test(o.textContent), trades: /ETH/.test(o.textContent),
       copyTrade: /Copy trade/.test(o.textContent), remove: /Remove from leaderboard/.test(o.textContent) }
   })
 }
@@ -106,7 +107,7 @@ console.log('\n-- phone --')
   await waitFor(p, 'the rows', () => document.querySelectorAll('#mobVContent .mob-v-row').length >= 3)
   const names = await p.evaluate(() => [...document.querySelectorAll('#mobVContent .mob-v-row .mob-v-row-name')].map(e => e.textContent.trim()))
   t('phone: the board is read from /paper-board', asked.includes('board'), true)
-  t('phone: the agents are on it, named "(agent)"', ['Oracle (agent)', 'HODL BTC (agent)'].every(n => names.some(x => x.includes(n))), true)
+  t('phone: the arena bots are on it, shown as "(bot)"', ['Oracle (bot)', 'HODL BTC (bot)'].every(n => names.some(x => x.includes(n))) && !names.some(x => /\(agent\)/.test(x)), true)
   const id = await p.evaluate(() => [...document.querySelectorAll('#mobVContent [id^="mrd-lb-"]')].map(e => e.id.slice(4)).find(x => /Oracle/.test(x)))
   await p.evaluate((id) => window._mobVToggleRow(id), id)
   const x = await p.evaluate((id) => { const el = document.getElementById('mrd-' + id); return el && { shown: el.style.display !== 'none', visit: /Visit/.test(el.textContent), copyTrade: /Copy trade/.test(el.textContent), remove: /Remove from leaderboard|Hide/.test(el.textContent), sol: /SOL/.test(el.textContent) } }, id)
@@ -133,8 +134,8 @@ console.log('\n-- desktop --')
   await p.evaluate(() => window.__lbDeskMode('paper'))
   await waitFor(p, 'the rows', () => document.querySelectorAll('#leaderboardRoot tr.lb-row').length >= 3)
   const labels = await p.evaluate(() => [...document.querySelectorAll('#leaderboardRoot tr.lb-row .lb-label')].map(e => e.textContent.trim()))
-  t('desktop: the agents are on it, named "(agent)"', ['Oracle (agent)', 'HODL BTC (agent)'].every(n => labels.some(x => x.includes(n))), true)
-  const uid = await p.evaluate(() => { const r = [...document.querySelectorAll('#leaderboardRoot tr.lb-row')].find(r => /Oracle \(agent\)/.test(r.textContent)); return (r.getAttribute('onclick') ?? '').match(/'(lbx-[^']+)'/)?.[1] })
+  t('desktop: the arena bots are on it, shown as "(bot)"', ['Oracle (bot)', 'HODL BTC (bot)'].every(n => labels.some(x => x.includes(n))) && !labels.some(x => /\(agent\)/.test(x)), true)
+  const uid = await p.evaluate(() => { const r = [...document.querySelectorAll('#leaderboardRoot tr.lb-row')].find(r => /Oracle \(bot\)/.test(r.textContent)); return (r.getAttribute('onclick') ?? '').match(/'(lbx-[^']+)'/)?.[1] })
   await p.evaluate((uid) => window.__lbToggle(uid, document.querySelector('tr.lb-row[onclick*="' + uid + '"]')), uid)
   const x = await p.evaluate((uid) => { const el = document.getElementById(uid); return el && { visit: /Visit/.test(el.textContent), copyTrade: /Copy trade/.test(el.textContent), remove: /Remove|Hide|Rename/.test(el.textContent) } }, uid)
   t('desktop: an agent row has Visit and Copy trade, no hide / remove', [x?.visit, x?.copyTrade, x?.remove], [true, true, false])

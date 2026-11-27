@@ -202,8 +202,8 @@ export function learnTrade(L, coin, pnl) {
  */
 export const rektAgent = {
   id: REKT_ID, name: 'Rekt-01', color: '#f5a524', lev: 3, max: 4, every: HOUR, personal: true, stateful: true,
-  blurb: ['Your own agent. It blends the Oracle\'s call, the 30-day trend, the 7-day bounce and funding into one score, and learns by itself how much to trust each — every hour it checks what each signal said against what the price then did. It also learns its own stop distance and holding time from its trades. Its settings are changed in dev mode.',
-          'Tu propio agente. Combina la lectura del Oráculo, la tendencia de 30 días, el rebote de 7 días y el funding en una puntuación, y aprende solo cuánto confiar en cada una — cada hora compara lo que dijo cada señal con lo que hizo el precio. También aprende su distancia de stop y tiempo de tenencia de sus propias operaciones. Sus ajustes se cambian en modo dev.'],
+  blurb: ['Your own bot, and it tunes itself. It blends the Oracle\'s call, the 30-day trend, the 7-day bounce and funding into one score, and learns by itself how much to trust each — every hour it checks what each signal said against what the price then did. It also learns its own stop distance and holding time from its trades. Its settings are changed in dev mode.',
+          'Tu propio bot, que se ajusta solo. Combina la lectura del Oráculo, la tendencia de 30 días, el rebote de 7 días y el funding en una puntuación, y aprende solo cuánto confiar en cada una — cada hora compara lo que dijo cada señal con lo que hizo el precio. También aprende su distancia de stop y tiempo de tenencia de sus propias operaciones. Sus ajustes se cambian en modo dev.'],
   maxOf: (cfg) => cfg.maxPositions,
   levOf: (cfg) => Math.max(1, Math.min(cfg.maxLev, Math.round(cfg.maxLev * STYLES[cfg.style].levMul))),
   decide(ctx) {

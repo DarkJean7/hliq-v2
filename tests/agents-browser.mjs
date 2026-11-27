@@ -187,7 +187,7 @@ for (const [label, opts] of [['phone', { ...devices['iPhone 14 Pro'] }], ['deskt
   await p.click('[data-rk-save]')
   await waitFor(p, 'the save', () => /Saved/.test(document.querySelector('.rk-status')?.textContent ?? ''), null, 8000)
   t(`${label}: Save sends the PIN and the values`, saved && [saved.pin, saved.body.config.maxLev, saved.body.config.markets.mode, saved.body.config.markets.list, saved.body.config.style, saved.body.config.arena], ['test-pin', 5, 'allow', ['btc', 'eth'], 'cautious', false])
-  t(`${label}: and says it was saved, flagged out of the arena`, await p.evaluate(() => [/Saved/.test(document.querySelector('.rk-status').textContent), /not in the arena/.test(document.querySelector('.ag-card[data-ag="rekt01"] .ag-name').textContent)]), [true, true])
+  t(`${label}: and says it was saved, flagged out of the Bot Pit`, await p.evaluate(() => [/Saved/.test(document.querySelector('.rk-status').textContent), /not in the Bot Pit/.test(document.querySelector('.ag-card[data-ag="rekt01"] .ag-name').textContent)]), [true, true])
   t(`${label}: the settings form fits too`, await p.evaluate(() => document.querySelector('.ag-scroll').scrollWidth <= document.querySelector('.ag-scroll').clientWidth), true)
   // The controls: "restart, pause, stop, start … clear its track". Each carries the PIN; clear asks first.
   const ctl = []

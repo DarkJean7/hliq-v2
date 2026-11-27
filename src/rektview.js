@@ -51,7 +51,7 @@ function settingsHtml(cfg, { T, dev, draft, status }) {
       ${row(T('Pause if down', 'Pausa si cae'), c.pauseDDPct + '% ' + T('from its peak', 'desde su máximo'))}
       ${row(T('Markets', 'Mercados'), esc(T(...MODE_NAME[c.markets.mode])) + (c.markets.mode !== 'all' && c.markets.list.length ? ': ' + esc(c.markets.list.join(', ')) : ''))}
       ${row(T('Style', 'Estilo'), esc(T(...STYLE_NAME[c.style])) + ' · ' + esc(T(...HORIZON_NAME[c.horizon])))}
-      ${row(T('In the arena', 'En la arena'), c.arena ? T('Yes', 'Sí') : T('No', 'No'))}
+      ${row(T('In the Bot Pit', 'En el Bot Pit'), c.arena ? T('Yes', 'Sí') : T('No', 'No'))}
     </div><p class="ag-none">${T('Settings can be changed in dev mode.', 'Los ajustes se cambian en modo dev.')}</p>`
   }
   const opt = (map, v) => Object.keys(map).map(k => `<option value="${k}"${k === v ? ' selected' : ''}>${esc(T(...map[k]))}</option>`).join('')
@@ -72,7 +72,7 @@ function settingsHtml(cfg, { T, dev, draft, status }) {
       <label><span>${T('Horizon', 'Horizonte')}</span><select name="horizon">${opt(HORIZON_NAME, c.horizon)}</select></label>
     </fieldset>
     <fieldset><legend>${T('Arena', 'Arena')}</legend>
-      <label class="rk-check"><input type="checkbox" name="arena"${c.arena ? ' checked' : ''}> ${T('Show it on the Agent Arena board', 'Mostrarlo en la Arena de agentes')}</label>
+      <label class="rk-check"><input type="checkbox" name="arena"${c.arena ? ' checked' : ''}> ${T('Show it in the Bot Pit', 'Mostrarlo en el Bot Pit')}</label>
     </fieldset>
     <div class="rk-actions"><button type="button" class="rk-save" data-rk-save>${T('Save settings', 'Guardar ajustes')}</button><span class="rk-status">${esc(status ?? '')}</span></div>
   </form>`
