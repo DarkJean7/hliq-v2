@@ -10,7 +10,7 @@ let pass = 0, fail = 0
 const t = (n, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); ok ? pass++ : fail++; console.log(ok ? '  PASS' : '  FAIL', n, ok ? '' : `→ ${JSON.stringify(got)} (wanted ${JSON.stringify(want)})`) }
 const errs = []
 const ALL = ['Overview', 'Trade', 'Markets', 'Portfolio', 'History', 'Transfers', 'Calendar', 'Scoreboard', 'Analysis', 'Oracle', 'Outcomes', 'Watch',
-  'Leaderboard', 'Agent Arena', 'Global Chat', 'Strategies', 'Portfolios', 'Simulator', 'Labs', 'Grid Ladder', 'Performance', 'Settings']
+  'Leaderboard', 'Bot Pit', 'Global Chat', 'Strategies', 'Portfolios', 'Simulator', 'Labs', 'Grid Ladder', 'Performance', 'Settings']
 const browser = await chromium.launch()
 for (const classic of [false, true]) for (const width of [1920, 1440, 1100]) {
   const label = `${classic ? 'classic' : 'nova'} ${width}px`
