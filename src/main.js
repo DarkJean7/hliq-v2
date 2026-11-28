@@ -23891,9 +23891,14 @@ function _lbTrackHtml(r) {
   const dd = tr.maxDrawdown
   // The mirror (trackrecord.js upside): the largest climb from a low. Absent on a row the server
   // computed before it existed — shown as a dash until its next refresh, never as $0.
+  // Its percentage is of everything DEPOSITED ("measure it against total deposits instead"), not
+  // of the balance at the low — that read +1,199% for a wallet that climbed $883 from $74. No
+  // deposit history (or under $1 of it) means no percentage, never a made-up one.
   const up = tr.maxUpside
+  const dep = Number(r?.deposited)
+  const upPct = up?.usd > 0 && dep > 1 ? up.usd / dep * 100 : null
   const upStr = !up ? '—' : up.usd > 0
-    ? '+$' + fmtUSD(up.usd) + (up.pct != null ? ` (${up.pct.toFixed(1)}%)` : '')
+    ? '+$' + fmtUSD(up.usd) + (upPct != null ? ` (${upPct.toFixed(1)}%)` : '')
     : '$0'
   const ddStr = !dd ? '—' : dd.usd > 0
     ? '−$' + fmtUSD(dd.usd) + (dd.pct != null ? ` (${dd.pct.toFixed(1)}%)` : '')

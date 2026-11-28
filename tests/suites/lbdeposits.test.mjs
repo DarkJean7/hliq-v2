@@ -25,5 +25,11 @@ t('addresses match whatever their case', merged.map(x => x.deposited), [199.6, 7
 t('a row that already has deposits keeps its own', withDeposits([{ addr: '0xab33', deposited: 5 }], server)[0].deposited, 5)
 t('no server rows → rows untouched', withDeposits(own, null), own)
 t('the board\'s fallback goes through it', /return _lbWithDeposits\(await _lbFetchResults\(entries\), stale\)/.test(grab(CLI, 'async function _lbFetchRows(')), true)
+// The wallet card's max upside percent is of total deposits: "measure it against total deposits
+// instead" — against the balance at the low it read +1,199% for $883 climbed from $74.
+const track = grab(CLI, 'function _lbTrackHtml(')
+t('the card\'s max upside percent divides by deposits, not the balance at the low',
+  /const upPct = up\?\.usd > 0 && dep > 1 \? up\.usd \/ dep \* 100 : null/.test(track) && /const dep = Number\(r\?\.deposited\)/.test(track) && !/up\.pct/.test(track), true)
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
