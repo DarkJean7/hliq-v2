@@ -231,7 +231,38 @@ export function trackRecord({ windows, portfolio, lastFillAt, openLoss, holds } 
     pnl7d:  seriesLast(portfolio, ['perpWeek', 'week']),
     pnl30d: seriesLast(portfolio, ['perpMonth', 'month']),
     maxDrawdown: drawdown(portfolio),
+    maxUpside: upside(portfolio),
   }
+}
+
+/**
+ * The mirror of drawdown(): the largest climb of all-time PnL from a low to a later high —
+ * "lets also include max upside". Dollars from the PnL history, so deposits and withdrawals
+ * do not count as a climb. The percentage is against what the account held AT THE LOW, the
+ * money that made the move; left null when that was under $50, where a ratio means nothing
+ * (a $3 account that made $200 is not "+6,600%" of anything useful).
+ */
+function upside(portfolio) {
+  const series = (name) => (portfolio ?? []).find(p => p?.[0] === name)?.[1]
+  const pnlSrc = series('perpAllTime') ?? series('allTime')
+  const pnl = (pnlSrc?.pnlHistory ?? [])
+    .map(([t, v]) => [+t, parseFloat(v)]).filter(([t, v]) => t > 0 && Number.isFinite(v))
+  if (pnl.length < 2) return null
+  const av = ((series('allTime') ?? pnlSrc)?.accountValueHistory ?? [])
+    .map(([t, v]) => [+t, parseFloat(v)]).filter(([t, v]) => t > 0 && Number.isFinite(v))
+
+  let low = pnl[0], best = 0, at = null
+  for (const p of pnl) {
+    if (p[1] < low[1]) low = p
+    const rise = p[1] - low[1]
+    if (rise > best) { best = rise; at = { troughT: low[0], peakT: p[0] } }
+  }
+  if (!(best > 0)) return { usd: 0, pct: 0 }
+  let base = null
+  for (const [t, v] of av) { if (t <= at.troughT) base = v; else break }
+  if (base == null) base = av.find(([t]) => t >= at.troughT)?.[1] ?? null
+  const pct = base != null && base >= 50 ? (best / base) * 100 : null
+  return { usd: best, pct, troughAt: at.troughT, peakAt: at.peakT }
 }
 
 /**
