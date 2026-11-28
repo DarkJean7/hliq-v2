@@ -104,9 +104,11 @@ console.log(nl + '-- and it is shown where a PnL is shown --')
 {
   t('the bracketed percentage on a board row IS ROE, and says so',
     cli.includes('title="Return on equity'))
-  t('it comes from the module, not its own arithmetic', cli.includes('const pct = partRoe(val, { accountValue: acctVal, netPnl, error: err })'))
+  // From the module, and handed the WHOLE row: it used to pass value and net PnL only, which
+  // dropped `deposited`, so every account that had withdrawn its profits showed no percentage.
+  t('it comes from the module, given the whole row', cli.includes('const pct = partRoe(val, entry)'))
   t('unrealized carries it too, not just realized and net',
-    cli.includes('${_lbPnl(entry.unrealizedPnl, entry.error)}${_lbPct(entry.unrealizedPnl, entry.accountValue, entry.netPnl, entry.error)}'))
+    cli.includes('${_lbPnl(entry.unrealizedPnl, entry.error)}${_lbPct(entry.unrealizedPnl, entry)}'))
   t('the expanded row states it outright', cli.includes('<span class="lb-pnl-lbl">ROE</span>'))
   t('so does the mobile row', cli.includes("['ROE',        fmtRoe(accountRoe(r)), nCls],"))
   // Tried on the mobile equity card's PnL label and taken off on sight: those four tiles are

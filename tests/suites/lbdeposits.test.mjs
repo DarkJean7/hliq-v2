@@ -25,6 +25,19 @@ t('addresses match whatever their case', merged.map(x => x.deposited), [199.6, 7
 t('a row that already has deposits keeps its own', withDeposits([{ addr: '0xab33', deposited: 5 }], server)[0].deposited, 5)
 t('no server rows → rows untouched', withDeposits(own, null), own)
 t('the board\'s fallback goes through it', /return _lbWithDeposits\(await _lbFetchResults\(entries\), stale\)/.test(grab(CLI, 'async function _lbFetchRows(')), true)
+// …and the board's bracketed percentages use them. "where is the roe%????": _lbPct was handed
+// value and net PnL only, so even a row WITH deposits printed nothing. Run the real helper.
+const { partRoe, fmtRoe } = await import('../../src/roe.js')
+const lbPct = new Function('partRoe', 'fmtRoe', `${grab(CLI, 'function _lbPct(')}; return _lbPct`)(partRoe, fmtRoe)
+const hype = { accountValue: 323.77, netPnl: 667.24, realizedPnl: 902.94, deposited: 199.6 }
+t('HYPE\'s row prints its net ROE: +$667.24 on $199.60 deposited', /\(\+334\.3%\)/.test(lbPct(hype.netPnl, hype)), true)
+t('…and its realized one', /\(\+452\.4%\)/.test(lbPct(hype.realizedPnl, hype)), true)
+t('every board cell passes the whole row', (CLI.match(/_lbPct\(entry\.\w+, entry\)/g) || []).length, 3)
+
+// "the leaderboard reloads itself and sorts the leaderboard in a wrong way": its background
+// refresh drew the server's rows in the server's order (account value) under a lit ROE chip.
+t('the board\'s background refresh draws rows in the chosen order', /tbody\.innerHTML = _lbSortRows\(results\)\.map/.test(CLI) && !/tbody\.innerHTML = results\.map\(\(r, i\) => _lbRowHtml/.test(CLI), true)
+
 // The wallet card's max upside percent is of total deposits: "measure it against total deposits
 // instead" — against the balance at the low it read +1,199% for $883 climbed from $74.
 const track = grab(CLI, 'function _lbTrackHtml(')

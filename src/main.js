@@ -36110,8 +36110,11 @@ function _lbPnl(val, err) {
  * Nothing is printed when the basis is unusable. A fresh account has an UNKNOWN return, not a
  * zero one, and "+0.0%" beside a real trader's number is worse than nothing.
  */
-function _lbPct(val, acctVal, netPnl, err) {
-  const pct = partRoe(val, { accountValue: acctVal, netPnl, error: err })
+function _lbPct(val, entry) {
+  // The whole row, not just its value and net PnL: an account that withdrew its profits has a
+  // negative start value and needs `deposited` (src/roe.js). Passing two fields here dropped it,
+  // and every such row lost its percentage — "where is the roe%????".
+  const pct = partRoe(val, entry)
   if (pct == null) return ''
   return `<span title="Return on equity — this against what the account started with" style="font-size:10px;opacity:0.65;margin-left:4px">(${fmtRoe(pct)})</span>`
 }
@@ -36176,9 +36179,9 @@ function _lbRowHtml(entry, rank, podium = true) {
         </div>
       </td>
       <td class="lb-val">${valStr}</td>
-      <td class="lb-pnl ${uCls}">${_lbPnl(entry.unrealizedPnl, entry.error)}${_lbPct(entry.unrealizedPnl, entry.accountValue, entry.netPnl, entry.error)}</td>
-      <td class="lb-pnl ${rCls} lb-col-full">${_lbPnl(entry.realizedPnl, entry.error)}${_lbPct(entry.realizedPnl, entry.accountValue, entry.netPnl, entry.error)}</td>
-      <td class="lb-pnl ${nCls} lb-col-full">${_lbPnl(entry.netPnl, entry.error)}${_lbPct(entry.netPnl, entry.accountValue, entry.netPnl, entry.error)}</td>
+      <td class="lb-pnl ${uCls}">${_lbPnl(entry.unrealizedPnl, entry.error)}${_lbPct(entry.unrealizedPnl, entry)}</td>
+      <td class="lb-pnl ${rCls} lb-col-full">${_lbPnl(entry.realizedPnl, entry.error)}${_lbPct(entry.realizedPnl, entry)}</td>
+      <td class="lb-pnl ${nCls} lb-col-full">${_lbPnl(entry.netPnl, entry.error)}${_lbPct(entry.netPnl, entry)}</td>
       <td class="lb-chev">▶</td>
     </tr>
     <tr class="lb-expand" id="${uid}" style="display:none">
@@ -36899,7 +36902,10 @@ async function _lbSilentUpdate() {
     // Re-render tbody only if data changed
     const newLbKey = results.map(r => `${r.addr}:${r.accountValue.toFixed(2)}:${r.healthPct?.toFixed(1)}`).join('|')
     if (tbody.dataset.lbHash === newLbKey) return
-    tbody.innerHTML = results.map((r, i) => _lbRowHtml(r, i + 1)).join('')
+    // In the order the person chose. The server sends rows by account value, and this background
+    // refresh drew them that way under a lit "ROE" chip: "the leaderboard reloads itself and sorts
+    // the leaderboard in a wrong way". The full render already sorted; this copy did not.
+    tbody.innerHTML = _lbSortRows(results).map((r, i) => _lbRowHtml(r, i + 1, _lbSortDir < 0)).join('')
     tbody.dataset.lbHash = newLbKey
 
     // Restore expanded rows
