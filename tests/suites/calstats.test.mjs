@@ -225,7 +225,7 @@ t('Trades Made is a card', sum.includes('Trades Made'))
 // that Green / Red Days has been removed — it restated what Best and Worst Day already show,
 // and its denominator was the only reason the two were counted apart. The count is asserted
 // so a card cannot be dropped in a refactor without this going red.
-t('there are nine cards now', (sum.match(/class="stat-card"/g) || []).length === 9)
+t('there are ten cards now (Max Upside beside Max Drawdown)', (sum.match(/class="stat-card"/g) || []).length === 10)
 t('drawdown is a RUN, not the worst single day',
   src.includes('ddPeak - ddRun') && src.includes('This is the run'))
 // Reported: "some of my accounts are experiencing a drawdown. despite that the card max
@@ -233,7 +233,7 @@ t('drawdown is a RUN, not the worst single day',
 // closed PnL, so a month that gave back $600 of OPEN profit and closed nothing at a loss
 // read "$0 · never gave any back" under a chart that plainly showed the dip.
 t('the drawdown is measured on the month PnL curve, unrealized included',
-  src.includes('curveDrawdown(monthAccumSeries(') && src.includes("ddBasis = 'live'"))
+  src.includes('_monthSeries = monthAccumSeries(') && src.includes('curveDrawdown(_monthSeries)') && src.includes("ddBasis = 'live'"))
 t('with the closed-day walk kept as the fallback where there is no account history',
   src.includes("ddBasis = 'closed'") && src.includes('ddPeak - ddRun'))
 t('and the card says which of the two answered',

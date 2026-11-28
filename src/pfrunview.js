@@ -1,5 +1,6 @@
 // A running portfolio, opened: how it has done since it started (src/pflivepub.js shapes the
 // data, server.js serves it). Used for everyone's public runs and for your own.
+import { maxRunupPct } from './runup.js'
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const pct = (x, d = 2) => x == null || !Number.isFinite(x) ? '—' : (x >= 0 ? '+' : '') + (x * 100).toFixed(d) + '%'
@@ -88,6 +89,11 @@ export function openRunView(run, { labels = {}, nameOf = (c) => c, iconOf = () =
     <div class="pf-run-stats">
       ${stat('Return', pct(r.ret), r.ret == null ? '' : r.ret >= 0 ? 'up' : 'dn')}
       ${stat('Max drawdown', pct(r.maxDd), 'dn')}
+      ${(() => {
+        // The mirror, from the run's own curve (a return: 0 at the start, so 1 + v is the balance).
+        const up = maxRunupPct((r.curve ?? []).map(([t, v]) => [t, 1 + Number(v)]))
+        return stat('Max upside', up == null ? '—' : pct(up / 100), 'up')
+      })()}
       ${stat('Costs', r.costPct == null ? '—' : (r.costPct * 100).toFixed(2) + '% of budget')}
       ${stat('Trades', String(r.trades ?? 0))}
       ${r.budget != null ? stat('Value', `${usd(r.equity)} <small>of ${usd(r.budget)}</small>`) : stat('Positions', String(r.positions ?? 0))}

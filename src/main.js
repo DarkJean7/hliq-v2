@@ -23889,6 +23889,12 @@ function _lbTrackHtml(r) {
   const tone  = (v) => v == null ? '' : v >= 0 ? G : R
   const pf = _pfCell(tr)
   const dd = tr.maxDrawdown
+  // The mirror (trackrecord.js upside): the largest climb from a low. Absent on a row the server
+  // computed before it existed — shown as a dash until its next refresh, never as $0.
+  const up = tr.maxUpside
+  const upStr = !up ? '—' : up.usd > 0
+    ? '+$' + fmtUSD(up.usd) + (up.pct != null ? ` (${up.pct.toFixed(1)}%)` : '')
+    : '$0'
   const ddStr = !dd ? '—' : dd.usd > 0
     ? '−$' + fmtUSD(dd.usd) + (dd.pct != null ? ` (${dd.pct.toFixed(1)}%)` : '')
     : '$0'
@@ -23912,6 +23918,7 @@ function _lbTrackHtml(r) {
     [_T('30D PnL', 'PnL 30D'), money(tr.pnl30d), tone(tr.pnl30d)],
     [_T('Per trade', 'Por operación'), money(tr.expectancy), tone(tr.expectancy)],
     [_T('Max drawdown', 'Caída máx.'), ddStr, dd?.usd > 0 ? R : ''],
+    [_T('Max upside', 'Subida máx.'), upStr, up?.usd > 0 ? G : ''],
     [_T('Best / worst', 'Mejor / peor'),
       `<span style="color:${G}">${money(tr.best)}</span> / <span style="color:${R}">${money(tr.worst)}</span>`],
     [_T('Trades', 'Operaciones'), `${tr.trades.toLocaleString()} · ${tr.tradingDays} ${_T('days', 'días')}`],
@@ -35788,6 +35795,7 @@ async function _lbLoad() {
 // freshly-joined address.
 const _LB_STATS_MAX_AGE = 15 * 60 * 1000
 async function _lbFetchRows(entries) {
+  let stale = null
   try {
     // In dev mode send the PIN: the server withholds hidden rows from everyone else, and
     // without it the dev board could not show — or un-hide — what it just hid.
@@ -35795,6 +35803,7 @@ async function _lbFetchRows(entries) {
     const r = await fetch('/api/leaderboard/stats', pin ? { headers: { 'x-lb-pin': pin } } : undefined)
     if (r.ok) {
       const { updatedAt, rows } = await r.json()
+      if (Array.isArray(rows)) stale = rows
       const fresh = Array.isArray(rows) && rows.length && (Date.now() - updatedAt) < _LB_STATS_MAX_AGE
       if (fresh) {
         const have = new Set(rows.map(x => x.addr.toLowerCase()))
@@ -35802,7 +35811,21 @@ async function _lbFetchRows(entries) {
       }
     }
   } catch {}
-  return _lbFetchResults(entries)
+  return _lbWithDeposits(await _lbFetchResults(entries), stale)
+}
+
+/**
+ * The browser's own read of a wallet has no deposit history — only the server keeps that — and
+ * without it an account that has WITHDRAWN its profits has no ROE: its start value (value − net
+ * PnL) is negative, and `deposited` is the fallback (src/roe.js). "why some accounts dont
+ * display the (roe)": the server's rows were past their 15 minutes, its refresh backing off
+ * Hyperliquid's 429s, and every row that had taken money out lost its percentage. Deposits
+ * barely move, so a stale server row still has the right figure; carry it over.
+ */
+function _lbWithDeposits(rows, serverRows) {
+  if (!Array.isArray(rows) || !serverRows?.length) return rows
+  const dep = new Map(serverRows.filter(x => Number.isFinite(Number(x?.deposited))).map(x => [String(x.addr).toLowerCase(), Number(x.deposited)]))
+  return rows.map(x => x && x.deposited == null && dep.has(String(x.addr).toLowerCase()) ? { ...x, deposited: dep.get(String(x.addr).toLowerCase()) } : x)
 }
 
 /**

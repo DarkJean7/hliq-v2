@@ -86,7 +86,7 @@
 .lab-act-hold { color: var(--warn) !important; }
 
 .lab-range { color: var(--fg-3); font-size: 11.5px; margin: 6px 0 8px; }
-.lab-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.lab-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }   /* nine tiles: 3 × 3 */
 @media (max-width: 520px) { .lab-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .lab-tile { background: var(--panel-2); border-radius: var(--r-2); padding: 7px 8px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .lab-tile span { color: var(--fg-3); font-size: 10.5px; }

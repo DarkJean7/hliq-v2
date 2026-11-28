@@ -239,12 +239,12 @@ console.log(NL + '-- desktop: the page --')
   await p.click('#deskSim .sim-tab:has-text("Calendar")')
   ok('it has the calendar\'s header, cards and grid', await waitFor(p, 'calendar', () =>
     !!document.querySelector('#deskSim .cal-header-row .cal-month-label') &&
-    document.querySelectorAll('#deskSim .cal-summary .stat-card').length === 9 &&
+    document.querySelectorAll('#deskSim .cal-summary .stat-card').length === 10 &&   // nine, and Max Upside
     document.querySelectorAll('#deskSim .cal-grid .cal-cell').length >= 28, null, 5000))
   ok('days that made or lost money are coloured the same way', await p.evaluate(() =>
     document.querySelectorAll('#deskSim .cal-grid .cal-pos, #deskSim .cal-grid .cal-neg').length > 0))
   const cards = await p.evaluate(() => [...document.querySelectorAll('#deskSim .cal-summary .stat-label')].map(e => e.textContent.trim()))
-  ok('with the same summary, deposits swapped for what a backtest has', ['Month PnL', 'Best Day', 'Worst Day', 'Avg / Day', 'Max Drawdown', 'Trades Made', 'Month Volume', 'Fees Paid', 'Liquidations'].every(k => cards.includes(k)), cards)
+  ok('with the same summary, deposits swapped for what a backtest has', ['Month PnL', 'Best Day', 'Worst Day', 'Avg / Day', 'Max Drawdown', 'Max Upside', 'Trades Made', 'Month Volume', 'Fees Paid', 'Liquidations'].every(k => cards.includes(k)), cards)
   const monthBefore = await p.evaluate(() => document.querySelector('#deskSim .cal-month-label').textContent)
   await p.click('#deskSim .cal-nav-btn:has-text("Prev")')
   const monthAfter = await p.evaluate(() => document.querySelector('#deskSim .cal-month-label').textContent)

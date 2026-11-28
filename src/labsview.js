@@ -413,6 +413,7 @@ function resultsHtml() {
     ${tile(T('Return', 'Rendimiento'), pct(r.roe), cls(r.roe), fmtUSD(r.balance - r.startBalance))}
     ${tile(T('Buy & hold', 'Comprar y mantener'), pct(bench?.retPct), cls(bench?.retPct), sum.edge != null ? (sum.edge >= 0 ? T('beat by ', 'superado por ') : T('trailed by ', 'por detrás ')) + Math.abs(sum.edge).toFixed(1) + ' pt' : '')}
     ${tile(T('Max drawdown', 'Caída máx.'), sum.maxDD ? '−' + sum.maxDD.toFixed(1) + '%' : '0%', sum.maxDD > 0 ? 'lab-neg' : '', bench ? T('hold: ', 'mantener: ') + '−' + bench.maxDD.toFixed(1) + '%' : '')}
+    ${tile(T('Max upside', 'Subida máx.'), sum.maxUp ? '+' + sum.maxUp.toFixed(1) + '%' : '0%', sum.maxUp > 0 ? 'lab-pos' : '', bench ? T('hold: ', 'mantener: ') + '+' + (bench.maxUp ?? 0).toFixed(1) + '%' : '')}
     ${tile(T('Trades', 'Operaciones'), String(tr.closed), '', r.trades.some(x => x.outcome === 'open') ? T('+1 still open', '+1 abierta') : '')}
     ${tile(T('Win rate', 'Acierto'), winRate == null ? '—' : winRate.toFixed(0) + '%', '', tr.closed ? `${T('long', 'largo')} ${tr.long.n} · ${T('short', 'corto')} ${tr.short.n}` : '')}
     ${tile(T('Profit factor', 'Factor de beneficio'), fmtNum(tr.profitFactor), tr.profitFactor == null ? '' : tr.profitFactor >= 1 ? 'lab-pos' : 'lab-neg', tr.expectancy != null ? fmtUSD(tr.expectancy) + ' ' + T('/ trade', '/ op.') : '')}

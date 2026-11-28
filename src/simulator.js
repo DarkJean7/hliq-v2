@@ -143,6 +143,7 @@ const num    = (v, d = 2) => v == null || !Number.isFinite(v) ? '—' : v.toFixe
 const tone   = (v) => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--fg-2)'
 /** A drawdown as a fall. Under a twentieth of a percent is none, not "-0.0%". */
 const ddTxt  = (v, d = 1) => !Number.isFinite(v) || v < 0.05 ? '0.0%' : '-' + v.toFixed(d) + '%'
+const upTxt  = (v, d = 1) => !Number.isFinite(v) || v < 0.05 ? '0.0%' : '+' + v.toFixed(d) + '%'   // max upside, the mirror
 
 /** Candles held, as time. "37c" means nothing to anyone who did not pick the interval. */
 function _simDur(candles, iv = _simIv) {
@@ -2119,10 +2120,14 @@ function _simCalendarHtml(r, s) {
   // The month's drawdown from its own curve, open positions included, in dollars -- the same
   // reading the real calendar takes from the account's history.
   let peak = null, maxDD = 0, ddFrom = null, ddTo = null, peakAt = null
+  // …and its mirror, max upside: the biggest climb from a low to a later high.
+  let low = null, maxUp = 0, upFrom = null, upTo = null, lowAt = null
   for (const [t, v] of s.curve ?? []) {
     if (t < mStart || t >= mEnd) continue
     if (peak == null || v > peak) { peak = v; peakAt = t }
     if (peak - v > maxDD) { maxDD = peak - v; ddFrom = peakAt; ddTo = t }
+    if (low == null || v < low) { low = v; lowAt = t }
+    if (v - low > maxUp) { maxUp = v - low; upFrom = lowAt; upTo = t }
   }
 
   const MONTHS = Array.from({ length: 12 }, (_, i) => new Date(2020, i, 1).toLocaleDateString(undefined, { month: 'long' }))
@@ -2188,6 +2193,9 @@ function _simCalendarHtml(r, s) {
       <div class="stat-card"><div class="stat-label">${_T('Max Drawdown', 'Caída máx.')}</div>
         <div class="stat-value ${maxDD > 0 ? 'neg' : 'neu'}">${maxDD > 0 ? '-$' + fmtUSD(maxDD) : '$0'}</div>
         <div class="stat-sub">${maxDD > 0 ? (lblT(ddFrom) === lblT(ddTo) ? lblT(ddTo) : lblT(ddFrom) + ' → ' + lblT(ddTo)) : _T('never gave any back', 'nunca devolvió nada')}</div></div>
+      <div class="stat-card"><div class="stat-label">${_T('Max Upside', 'Subida máx.')}</div>
+        <div class="stat-value ${maxUp > 0 ? 'pos' : 'neu'}">${maxUp > 0 ? '+$' + fmtUSD(maxUp) : '$0'}</div>
+        <div class="stat-sub">${maxUp > 0 ? (lblT(upFrom) === lblT(upTo) ? lblT(upTo) : lblT(upFrom) + ' → ' + lblT(upTo)) : _T('never climbed', 'nunca subió')}</div></div>
       <div class="stat-card"><div class="stat-label">${_T('Trades Made', 'Operaciones')}</div>
         <div class="stat-value neu">${monthTrades}</div>
         ${days.length ? `<div class="stat-sub">${_T('over', 'en')} ${days.length} ${days.length === 1 ? _T('day', 'día') : _T('days', 'días')} · ${monthTrades ? Math.round(monthWon / monthTrades * 100) : 0}% ${_T('won', 'ganadas')}</div>` : ''}</div>
@@ -2421,6 +2429,8 @@ function _simStatsHtml(r, s) {
   blocks.push(`<div class="sim-inset"><div class="sim-sub">${_T('Risk', 'Riesgo')}</div>
     ${_row(_T('Max drawdown', 'Caída máxima'), ddTxt(s.maxDD, 2), s.maxDD > 0 ? 'var(--red)' : '')}
     ${_row(_T('Hold max drawdown', 'Caída máx. mantener'), s.bench ? ddTxt(s.bench.maxDD, 2) : '—')}
+    ${_row(_T('Max upside', 'Subida máxima'), upTxt(s.maxUp, 2), s.maxUp > 0 ? 'var(--green)' : '')}
+    ${_row(_T('Hold max upside', 'Subida máx. mantener'), s.bench ? upTxt(s.bench.maxUp, 2) : '—')}
     ${_row('Sharpe', num(k.sharpe), tone(k.sharpe ?? 0))}
     ${_row('Sortino', num(k.sortino), tone(k.sortino ?? 0))}
     ${_row(_T('Calmar (annual ÷ DD)', 'Calmar (anual ÷ DD)'), num(k.calmar))}
@@ -2719,7 +2729,7 @@ function _simResultHtml() {
           // "what means vs buy & hold -233.4 pp": the strategy's return minus holding's, in
           // percentage points. Both returns are spelled out under it so the subtraction shows.
           s.bench ? `${_T('you', 'tú')} ${pct(r.roe, 1)} · ${_T('holding', 'mantener')} ${pct(s.bench.retPct, 1)}` : '', tone(s.edge ?? 0))}
-        ${_simKpi(_T('Max drawdown', 'Caída máx.'), ddTxt(s.maxDD), s.risk.calmar != null ? 'Calmar ' + num(s.risk.calmar) : '', s.maxDD > 0 ? 'var(--red)' : '')}
+        ${_simKpi(_T('Max drawdown', 'Caída máx.'), ddTxt(s.maxDD), _T('max upside ', 'subida máx. ') + upTxt(s.maxUp), s.maxDD > 0 ? 'var(--red)' : '')}
         ${_simKpi(_T('Win rate', 'Aciertos'), wr == null ? '—' : wr.toFixed(1) + '%', r.grid || (r.dca && wr == null)
           ? _T('100% by construction', '100% por diseño') : `${r.won}W · ${r.lost}L`)}
         ${_simKpi(_T('Profit factor', 'F. beneficio'), _simPf(t),

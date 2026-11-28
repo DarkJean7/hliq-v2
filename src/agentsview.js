@@ -9,6 +9,7 @@
  */
 import './agents.css'
 import { valueAt } from './agents.js'
+import { maxRunupPct } from './runup.js'
 import { rektHtml, readForm, isDevMode, devPin } from './rektview.js'
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
@@ -129,6 +130,7 @@ function cardHtml(a, hodl, rank) {
       ${kv(T('Realized PnL', 'PnL realizado'), Number.isFinite(a.realized) ? sgnUsd(a.realized) : '—', cls(a.realized))}
       ${kv(T('vs HODL BTC', 'vs HODL BTC'), vs == null ? '—' : sgnPct(vs), cls(vs))}
       ${kv(T('Max drawdown', 'Caída máx.'), a.maxDD > 0 ? '−' + a.maxDD.toFixed(1) + '%' : '0%')}
+      ${(() => { const up = Number.isFinite(a.maxUp) ? a.maxUp : maxRunupPct(a.curve); return kv(T('Max upside', 'Subida máx.'), up == null ? '—' : up > 0 ? '+' + up.toFixed(1) + '%' : '0%', up > 0 ? 'pos' : '') })()}
       ${kv(T('Trades', 'Operaciones'), `${a.trades}${wr != null ? ` · ${wr}% ${T('won', 'ganadas')}` : ''}`)}
       ${kv(T('Exposure', 'Exposición'), `${usd(expo, 0)}${a.equity > 0 && expo > 0 ? ` <i class="ag-dim">${(expo / a.equity).toFixed(2)}×</i>` : ''}`)}
       ${kv(T('Margin used', 'Margen usado'), margin == null ? '—' : usd(margin))}

@@ -1918,7 +1918,7 @@ html.has-bg-image .mkt-panel-search { background: transparent; }
 /* Ten cards at three across was four rows of chrome before the month itself started. Five
    across makes it two, and the cards below are compacted to match -- the calendar is the
    point of this tab, the summary is the caption. (Nine cards since Green / Red Days was
-   removed: still two rows here, four and five.) */
+   removed, ten with Max Upside: two rows of five here.) */
 .cal-summary {
   display: grid; grid-template-columns: repeat(5, 1fr);
   gap: 8px; margin-bottom: 12px;
@@ -5224,6 +5224,9 @@ body.layout-mobile .nav-tabs { display: none !important; }
      little over half what it was. */
   .cal-summary { grid-template-columns: repeat(3, 1fr); gap: 5px; margin-bottom: 8px; }
   .cal-summary .stat-card { padding: 6px 7px; min-width: 0; }
+  /* Ten cards since Max Upside: three rows of three and one left over, which spans the row
+     rather than sitting alone in a corner. */
+  .cal-summary .stat-card:last-child:nth-child(3n + 1) { grid-column: 1 / -1; }
   /* Tighter tracking so the longest labels left — "Max Drawdown", "Month Volume" — still fit
      a narrow card. */
   .cal-summary .stat-label { font-size: 8px; letter-spacing: 0.04em; margin-bottom: 2px; }

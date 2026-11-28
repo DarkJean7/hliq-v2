@@ -24,6 +24,7 @@ import { randomBytes } from 'node:crypto'
 import { AGENTS, planOf, sizeFor, maxDrawdown, thin } from './agents.js'
 import { marketFor } from './paperhost.js'
 import { rektAgent, cleanConfig, initLearn } from './rekt.js'
+import { maxRunupPct } from './runup.js'
 import { tradeWindows } from './tradegroup.js'
 import { trackRecord, openLossOf, holdsStep } from './trackrecord.js'
 import { posHealthPct } from './posgroup.js'
@@ -304,7 +305,7 @@ export function createAgentRunner({ dir, paperHost, post, readings = () => ({}),
         id: a.id, name: a.name, color: a.color, blurb: a.blurb, lev: a.levOf?.(cfg) ?? a.lev, max: a.maxOf?.(cfg) ?? a.max, every: a.every, baseline: !!a.baseline,
         ...(a.personal ? { personal: true, hidden: !cfg.arena, config: cfg, learn: a.describe(as.learn ?? initLearn(t), cfg) } : {}),
         equity: acct.equity, start: acct.deposited, ret: (acct.equity / acct.deposited - 1) * 100,
-        maxDD: maxDrawdown(curve), trades: closed.length, wins: closed.filter(j => j.pnl > 0).length,
+        maxDD: maxDrawdown(curve), maxUp: maxRunupPct(curve) ?? 0, trades: closed.length, wins: closed.filter(j => j.pnl > 0).length,
         realized: closed.reduce((x, j) => x + j.pnl, 0), cash: Number.isFinite(acct.cash) ? acct.cash : null,
         positions: acct.positions, stops: acct.stops, last: as.last, next: as.last + a.every,
         curve: thin(curve, 400), journal: as.journal.slice(-80).reverse(),

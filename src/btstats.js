@@ -14,6 +14,7 @@
  *     their losing lives in inventory that never closes. Everything else steps at the trades
  *     that closed, which is the only moment its balance changed.
  */
+import { maxRunupPct } from './runup.js'
 
 const DAY = 86400e3
 
@@ -109,6 +110,7 @@ export function riskStats(curve) {
     volatility: enough && sd != null ? sd * Math.sqrt(365) * 100 : null,
     cagr,
     maxDD,
+    maxUp: maxRunupPct(curve) ?? 0,   // the mirror of maxDD: the largest climb from a low (src/runup.js)
     calmar: cagr != null && maxDD > 0 ? cagr / maxDD : null,
     bestDay: rets.length ? Math.max(...rets) * 100 : null,
     worstDay: rets.length ? Math.min(...rets) * 100 : null,
@@ -211,7 +213,7 @@ export function buyHold(bars, coins, startBalance) {
   const end = curve[curve.length - 1][1]
   let maxDD = 0
   for (const [, d] of drawdownCurve(curve)) if (-d > maxDD) maxDD = -d
-  return { curve, retPct: (end / startBalance - 1) * 100, net: end - startBalance, maxDD }
+  return { curve, retPct: (end / startBalance - 1) * 100, net: end - startBalance, maxDD, maxUp: maxRunupPct(curve) ?? 0 }
 }
 
 /**
@@ -230,6 +232,7 @@ export function summarize(r, bars = null, coins = null) {
     // The engine's own drawdown for grid and DCA is already marked to market; for the rest
     // the curve's is the same number measured the same way, so either is the drawdown.
     maxDD: Math.max(r?.maxDrawdown ?? 0, risk.maxDD),
+    maxUp: risk.maxUp,
     // Beat buy-and-hold by this many percentage points, or trailed it.
     edge: bench && r?.roe != null ? r.roe - bench.retPct : null,
   }

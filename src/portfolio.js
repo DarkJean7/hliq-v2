@@ -23,6 +23,7 @@ adoptAppTheme()
 // The gallery card's own backtest, shared with serve-prod.js so the two cannot price a card
 // differently depending on which of them answered.
 import { galBacktest } from './pfgallery.js'
+import { maxRunupPct } from './runup.js'
 import { SOURCES, planFor, closesFor, wantsCg } from './pfsources.js'
 import { dailyFunding, fundingInfo, FUND_DAYS } from './pffunding.js'
 
@@ -554,7 +555,7 @@ function cardHtml(p, ref, { kind, res = galResult(p) }) {
   if (res.state === 'ok') {
     const r = res.run
     body = `<div class="pf-gc-ret ${cls(r.ret)}">${pct(r.ret)}</div>
-      <div class="pf-gc-sub"${galTitle(p, res)}>${spanLabel(res)}${res.joined.length ? ` · ${res.joined.length} joined later` : ''} · ${r.maxDd < -0.0005 ? `max drawdown ${(r.maxDd * 100).toFixed(1)}%` : 'no drawdown'}</div>
+      <div class="pf-gc-sub"${galTitle(p, res)}>${spanLabel(res)}${res.joined.length ? ` · ${res.joined.length} joined later` : ''} · ${r.maxDd < -0.0005 ? `max drawdown ${(r.maxDd * 100).toFixed(1)}%` : 'no drawdown'}${upOf(r) > 0.0005 ? ` · max upside ${(upOf(r) * 100).toFixed(1)}%` : ''}</div>
       ${spark(r.equity, (r.ret ?? 0) >= 0)}`
   } else if (res.state === 'loading') body = '<div class="pf-gc-ret mk-dim">…</div><div class="pf-gc-sub">loading prices</div><div class="pf-spark pf-spark--empty"></div>'
   else if (res.state === 'failed') body = '<div class="pf-gc-ret mk-dim">—</div><div class="pf-gc-sub">prices did not load for every holding</div><div class="pf-spark pf-spark--empty"></div>'
@@ -1071,14 +1072,25 @@ function lineChart(series, days, { h = 300, fmt = short$, minZero = false, signe
 // ── the results table: sortable by any column ──
 const RES_COLS = [
   ['label', 'Strategy', 'Name'], ['final', 'Final', 'Final value'], ['ret', 'Return', 'Total return over the window'],
-  ['cagr', 'Annual', 'Annualised return (only over a year or more)'], ['maxDd', 'Max DD', 'Largest fall from a high'],
+  ['cagr', 'Annual', 'Annualised return (only over a year or more)'], ['maxDd', 'Max DD', 'Largest fall from a high'], ['maxUp', 'Max up', 'Largest climb from a low'],
   ['vol', 'Vol.', 'Annualised volatility of daily returns'], ['sharpe', 'Sharpe', 'Mean daily return over its volatility, annualised; no risk-free rate'],
   ['best', 'Best / worst', 'Best and worst single day (sorted by best)'], ['trades', 'Trades', 'Trades (trading strategies) or rebalances (allocation)'],
   ['costs', 'Costs', 'Fees + funding + slippage (funding: paid when positive, received when negative)'],
 ]
 let resSort = { key: null, asc: false }
 const costOf = (x) => (x.fees ?? 0) + (x.funding ?? 0) + (x.slippage ?? 0)
-const runKey = (x, k) => k === 'label' ? x.label : k === 'trades' ? (x.trades ?? x.rebalances ?? null) : k === 'costs' ? costOf(x) : x[k]
+/**
+ * Max upside, as a fraction like maxDd: the largest climb from a low (src/runup.js), from the
+ * run's own equity — computed here rather than in pfbacktest.js, which the strategy server also
+ * loads (a change there restarts every bot). Null when the run carries no curve.
+ */
+const upOf = (x) => {
+  if (x == null) return null
+  if (Number.isFinite(x.maxUp)) return x.maxUp
+  const pct = Array.isArray(x.equity) ? maxRunupPct(x.equity) : null
+  return pct == null ? null : pct / 100
+}
+const runKey = (x, k) => k === 'label' ? x.label : k === 'trades' ? (x.trades ?? x.rebalances ?? null) : k === 'costs' ? costOf(x) : k === 'maxUp' ? upOf(x) : x[k]
 /** "$1,410" over "fees 79 · funding 1,212 · slip 119"; funding received reads as a negative cost. */
 function costCell(x) {
   if (x.fees == null && x.funding == null && x.slippage == null) return '—'
@@ -1176,7 +1188,7 @@ function renderResults() {
       <div class="mk-card"><div class="mk-card__lbl">Best</div><div class="mk-card__val">${esc(best?.label ?? '—')}</div><div class="mk-card__sub ${cls(best?.ret)}">${pct(best?.ret)} · ${usd(best?.final)}</div></div>
       <div class="mk-card"><div class="mk-card__lbl">Window</div><div class="mk-card__val">${L.days.length - 1} days</div><div class="mk-card__sub">${dLabel(L.days[0])} → ${dLabel(L.days[L.days.length - 1])}</div></div>
       <div class="mk-card"><div class="mk-card__lbl">Capital</div><div class="mk-card__val">${usd(L.opts.capital)}</div><div class="mk-card__sub">${S.lev === 'max' ? 'max leverage' : esc(String(S.lev)) + '×'} ${esc(L.opts.margin)} · fee ${(L.opts.feeBps / 100).toFixed(3)}% a trade</div></div>
-      ${L.bench ? `<div class="mk-card"><div class="mk-card__lbl">BTC, held</div><div class="mk-card__val ${cls(L.bench.ret)}">${pct(L.bench.ret)}</div><div class="mk-card__sub">max drawdown ${pct(L.bench.maxDd)}</div></div>` : ''}
+      ${L.bench ? `<div class="mk-card"><div class="mk-card__lbl">BTC, held</div><div class="mk-card__val ${cls(L.bench.ret)}">${pct(L.bench.ret)}</div><div class="mk-card__sub">max drawdown ${pct(L.bench.maxDd)} · max upside ${pct(upOf(L.bench))}</div></div>` : ''}
     </div>
     <div class="pf-card pf-chart-card">
       <div class="pf-chart-head"><div class="pf-lbl">Value</div><div class="pf-key">${all.map(s => `<button data-focus="${esc(s.id)}" class="${s.id === focus ? 'is-on' : ''}"><i style="background:${s.color}${s.dash ? ';opacity:.6' : ''}"></i>${esc(s.label)}</button>`).join('')}</div></div>
@@ -1190,7 +1202,7 @@ function renderResults() {
         <tbody>${sortRuns(all).map(x => `<tr data-focus="${esc(x.id)}" class="${x.id === focus ? 'is-focus' : ''}${x.id === '__bench' ? ' pf-bench' : ''}">
           <td class="mk-c-asset"><span class="pf-runname"><i style="background:${x.color}"></i>${esc(x.label)}</span>${x.liquidated ? `<small class="mk-dn pf-liq">${x.liqCount > 1 ? `liquidated ${x.liqCount}× · first ` : 'liquidated '}${dLabel(x.liquidated)}</small>` : ''}</td>
           <td data-l="Final value">${usd(x.final)}</td><td data-l="Return" class="${cls(x.ret)}">${pct(x.ret)}</td><td data-l="Annualised" class="${cls(x.cagr)}">${x.cagr == null ? '<span class="mk-dim" title="Only over a year or more">—</span>' : pct(x.cagr)}</td>
-          <td data-l="Max drawdown" class="mk-dn">${pct(x.maxDd)}</td><td data-l="Volatility">${x.vol ? (x.vol * 100).toFixed(0) + '%' : '—'}</td><td data-l="Sharpe">${x.sharpe == null ? '—' : x.sharpe.toFixed(2)}</td>
+          <td data-l="Max drawdown" class="mk-dn">${pct(x.maxDd)}</td><td data-l="Max upside" class="mk-up">${pct(upOf(x))}</td><td data-l="Volatility">${x.vol ? (x.vol * 100).toFixed(0) + '%' : '—'}</td><td data-l="Sharpe">${x.sharpe == null ? '—' : x.sharpe.toFixed(2)}</td>
           <td data-l="Best / worst day"><span class="${cls(x.best)}">${pct(x.best)}</span> <span class="mk-dim">/</span> <span class="${cls(x.worst)}">${pct(x.worst)}</span></td>
           <td data-l="Trades">${tradesOf(x)}</td>
           <td data-l="Costs">${costCell(x)}</td>

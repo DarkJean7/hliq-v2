@@ -8,6 +8,7 @@ import { panelHtml as calChartPanel, drawMonthChart, drawDayChart, chartData as 
          monthBounds, dayBounds, MONTH as CHART_MONTH, DAY as CHART_DAY } from './monthchart.js'
 import { fmtUSD, fmtPrice, fmtSize, fmtPnL, fmtPct, fmtCompact, fmtTime, esc, isSpotCoin } from './format.js'
 import { pairTrades, drawdownFor } from './drawdown.js'
+import { maxRunupUsd } from './runup.js'
 import { partRoe, fmtRoe } from './roe.js'
 import { pnlCurveFactor } from './pfnet.js'
 import { aggregateFillsByCoin, coinLabel } from './api.js'
@@ -1889,6 +1890,13 @@ window.__ddShow = async function(eid) {
     ' (' + d.pct.toFixed(2) + '%)'
   el.title = 'Worst unrealised point: $' + fmtPrice(d.px) +
     (d.at ? ' at ' + fmtTime(d.at) : '')
+  // The same price path answers the mirror question — one fetch for both.
+  const up = document.getElementById('du-' + eid)
+  if (up && d.up) {
+    up.className = d.up.usd > 0 ? 'pos' : 'neu'
+    up.textContent = (d.up.usd > 0 ? '+$' + fmtUSD(d.up.usd) : '$0.00') + ' (+' + d.up.pct.toFixed(2) + '%)'
+    up.title = d.up.px ? 'Best unrealised point: $' + fmtPrice(d.up.px) + (d.up.at ? ' at ' + fmtTime(d.up.at) : '') : ''
+  }
 }
 
 export function renderTrades(fills) {
@@ -1978,6 +1986,10 @@ export function renderTrades(fills) {
           <div class="row-expand-item"><span>Net PnL</span><span class="${fmtPnL(netPnl).cls}">${hasPnl ? fmtPnL(netPnl).text : '—'}</span></div>
           <div class="row-expand-item"><span>Direction</span><span class="dir-badge ${_dirBadgeCls(dir)}">${esc(dir)}</span></div>
           <div class="row-expand-item"><span>Max drawdown</span><span id="dd-${eid}" class="neu">${
+            _trip
+              ? `<button class="dd-btn" onclick="event.stopPropagation();window.__ddShow('${eid}')">Show</button>`
+              : '—'}</span></div>
+          <div class="row-expand-item"><span>Max upside</span><span id="du-${eid}" class="neu">${
             _trip
               ? `<button class="dd-btn" onclick="event.stopPropagation();window.__ddShow('${eid}')">Show</button>`
               : '—'}</span></div>
@@ -2929,8 +2941,28 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
     const gap = ddPeak - ddRun
     if (gap > maxDD) { maxDD = gap; ddFrom = ddPeakKey; ddTo = k }
   }
+  // Max upside, the mirror (src/runup.js): the biggest climb from a low to a later high —
+  // "lets also include max upside". Same two sources, same order of preference.
+  let upLow = 0, upRun = 0, maxUp = 0, upFrom = null, upTo = null, upLowKey = null
+  for (const k of ordered) {
+    upRun += byDay[k].pnl
+    if (upRun < upLow) { upLow = upRun; upLowKey = k }
+    if (upRun - upLow > maxUp) { maxUp = upRun - upLow; upFrom = upLowKey; upTo = k }
+  }
+  const _monthSeries = monthAccumSeries(monthChartData(fills).portfolio, monthBounds(year, month))
   {
-    const _curve = curveDrawdown(monthAccumSeries(monthChartData(fills).portfolio, monthBounds(year, month)))
+    const _up = maxRunupUsd(_monthSeries)
+    if (_up) {
+      const _k = (ts) => Number.isFinite(ts)
+        ? `${new Date(ts).getFullYear()}-${String(new Date(ts).getMonth() + 1).padStart(2, '0')}-${String(new Date(ts).getDate()).padStart(2, '0')}`
+        : null
+      maxUp  = _up.rise
+      upFrom = _up.rise > 0 ? _k(_up.from) : null
+      upTo   = _up.rise > 0 ? _k(_up.to)   : null
+    }
+  }
+  {
+    const _curve = curveDrawdown(_monthSeries)
     if (_curve) {
       ddBasis = 'live'
       maxDD   = _curve.drop
@@ -3052,6 +3084,17 @@ export function renderPnLCalendar(fills, month, year, ledger = [], rootId = 'cal
               ? fmtDayLabel(ddFrom) + ' → ' + fmtDayLabel(ddTo)
               : fmtDayLabel(ddTo)}</div>`
           : `<div class="stat-sub">${ddBasis === 'live' ? 'never gave any back' : 'no closed losses'}</div>`}
+      </div>
+      <div class="stat-card" title="${ddBasis === 'live'
+        ? 'The most this month&apos;s PnL climbed from a low, unrealized included'
+        : 'From the closed days only — this view has no account history to read'}">
+        <div class="stat-label">Max Upside</div>
+        <div class="stat-value ${maxUp > 0 ? 'pos' : 'neu'}">${maxUp > 0 ? '+$' + fmtUSD(maxUp) : '$0'}</div>
+        ${maxUp > 0 && upTo
+          ? `<div class="stat-sub">${upFrom && upFrom !== upTo
+              ? fmtDayLabel(upFrom) + ' → ' + fmtDayLabel(upTo)
+              : fmtDayLabel(upTo)}</div>`
+          : `<div class="stat-sub">${ddBasis === 'live' ? 'never climbed' : 'no closed gains'}</div>`}
       </div>
       <div class="stat-card">
         <div class="stat-label">Trades Made</div>

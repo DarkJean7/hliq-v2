@@ -138,13 +138,16 @@ export function maxAdverse(trip, candles) {
     if (d > 0) { bar = d; break }
   }
 
-  let worst = null, at = null
+  // …and the best it ever looked, from the same path: the highest high for a long, the
+  // lowest low for a short ("lets also include max upside").
+  let worst = null, at = null, best = null, bestAt = null
   for (const k of candles) {
     const t = Number(k.t ?? k.T ?? 0)
     if (!(t + bar > from && t <= to)) continue
     const px = trip.side === 'LONG' ? Number(k.l) : Number(k.h)
-    if (!Number.isFinite(px) || px <= 0) continue
-    if (worst === null || (trip.side === 'LONG' ? px < worst : px > worst)) { worst = px; at = t }
+    const fx = trip.side === 'LONG' ? Number(k.h) : Number(k.l)
+    if (Number.isFinite(px) && px > 0 && (worst === null || (trip.side === 'LONG' ? px < worst : px > worst))) { worst = px; at = t }
+    if (Number.isFinite(fx) && fx > 0 && (best === null || (trip.side === 'LONG' ? fx > best : fx < best))) { best = fx; bestAt = t }
   }
   if (worst === null) return null
 
@@ -152,11 +155,15 @@ export function maxAdverse(trip, candles) {
   // distinct from the null above.
   const move = trip.side === 'LONG' ? (worst - entry) / entry : (entry - worst) / entry
   const pct  = Math.min(0, move) * 100
+  // Likewise a trade that never traded above its entry has an upside of exactly zero.
+  const gain = best === null ? 0 : trip.side === 'LONG' ? (best - entry) / entry : (entry - best) / entry
+  const upPct = Math.max(0, gain) * 100
   return {
     px: worst,
     at,
     pct,
     usd: -Math.abs(pct / 100) * entry * (Number(trip.size) || 0),
+    up: { px: best, at: bestAt, pct: upPct, usd: (upPct / 100) * entry * (Number(trip.size) || 0) },
   }
 }
 
